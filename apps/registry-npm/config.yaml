@@ -1,0 +1,34 @@
+# Verdaccio 私有 npm 仓库配置
+storage: /verdaccio/storage
+auth:
+  htpasswd:
+    file: /verdaccio/conf/htpasswd
+    max_users: 100
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+security:
+  api:
+    jwt:
+      sign:
+        expiresIn: 60d
+      verify:
+        someProp: []
+  web:
+    sign:
+      expiresIn: 7d
+packages:
+  '@autoflow/*':
+    access: $authenticated
+    publish: $authenticated
+    unpublish: $authenticated
+  '**':
+    access: $all
+    publish: $authenticated
+    unpublish: $authenticated
+    proxy: npmjs
+web:
+  title: AutoFlow npm Registry
+  darkMode: true
+listen: 0.0.0.0:4873
+log: { type: stdout, format: pretty, level: http }

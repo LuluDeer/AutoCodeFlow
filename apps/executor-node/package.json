@@ -1,0 +1,24 @@
+{
+  "name": "executor-node",
+  "version": "1.0.0",
+  "description": "AutoFlow Node.js Executor",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "ts-node-dev --respawn src/main.ts"
+  },
+  "dependencies": {
+    "axios": "1.9.0",
+    "express": "4.21.2",
+    "js-yaml": "^4.1.0",
+    "winston": "3.17.0"
+  },
+  "devDependencies": {
+    "@types/express": "4.17.21",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "22.15.21",
+    "ts-node-dev": "2.0.0",
+    "typescript": "5.8.3"
+  }
+}

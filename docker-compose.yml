@@ -1,0 +1,128 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: autoflow
+      POSTGRES_PASSWORD: autoflow123
+      POSTGRES_DB: autoflow
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U autoflow']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  admin-api:
+    build:
+      context: ./apps/admin-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - '3001:3001'
+    environment:
+      NODE_ENV: production
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: autoflow
+      DB_PASSWORD: autoflow123
+      DB_DATABASE: autoflow
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: change-this-secret-in-production
+      AI_PROVIDER: disabled
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  admin-web:
+    build:
+      context: ./apps/admin-web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - '80:80'
+    depends_on:
+      - admin-api
+
+  executor-python:
+    build:
+      context: ./apps/executor-python
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - '8001:8001'
+    environment:
+      APP_NAME: executor-python-1
+      PORT: 8001
+      EXECUTOR_ADDRESS: executor-python:8001
+      ADMIN_API_URL: http://admin-api:3001
+      WORK_DIR: /tmp/autoflow/tasks
+    depends_on:
+      - admin-api
+
+  executor-node:
+    build:
+      context: ./apps/executor-node
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - '8002:8002'
+    environment:
+      APP_NAME: executor-node-1
+      PORT: 8002
+      EXECUTOR_ADDRESS: executor-node:8002
+      ADMIN_API_URL: http://admin-api:3001
+      WORK_DIR: /tmp/autoflow/tasks
+      MAX_CONCURRENT_TASKS: 10
+    depends_on:
+      - admin-api
+
+  registry-pypi:
+    build:
+      context: ./apps/registry-pypi
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - '8003:8003'
+    environment:
+      REGISTRY_USER: admin
+      REGISTRY_PASS: admin123
+      PACKAGES_DIR: /data/packages
+    volumes:
+      - pypi_data:/data/packages
+
+  registry-npm:
+    image: verdaccio/verdaccio:5
+    restart: unless-stopped
+    ports:
+      - '4873:4873'
+    volumes:
+      - npm_data:/verdaccio/storage
+      - ./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro
+
+volumes:
+  postgres_data:
+  redis_data:
+  pypi_data:
+  npm_data:
