@@ -20,12 +20,17 @@ export const useAuthStore = create<AuthState>()(
     (set) => ({
       token: null,
       user: null,
-      // Q-02: token is persisted via zustand persist to key 'autoflow-auth'.
-      // Do NOT also write to a separate 'token' key — client.ts reads from 'autoflow-auth'.
       setToken: (token) => set({ token }),
       setUser: (user) => set({ user }),
       logout: () => { set({ token: null, user: null }); },
     }),
-    { name: 'autoflow-auth', partialize: (s) => ({ token: s.token, user: s.user }) },
+    {
+      name: 'autoflow-auth',
+      // FE-01: Only persist user metadata, NOT the access token.
+      // The token is kept in memory only; on page refresh the app silently
+      // re-fetches a new token via the /auth/refresh endpoint.
+      // Keeping the token out of localStorage prevents XSS token theft.
+      partialize: (s) => ({ user: s.user }),
+    },
   ),
 );

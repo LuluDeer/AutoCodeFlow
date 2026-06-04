@@ -38,6 +38,9 @@ services:
       context: ./apps/admin-api
       dockerfile: Dockerfile
     restart: unless-stopped
+    # OPS-01: resource limits prevent a runaway process from starving other services
+    mem_limit: 768m
+    cpus: '1.0'
     ports:
       - '3001:3001'
     environment:
@@ -74,6 +77,9 @@ services:
       context: ./apps/executor-python
       dockerfile: Dockerfile
     restart: unless-stopped
+    # OPS-01: tighter limits for executors — task code must not starve the host
+    mem_limit: 512m
+    cpus: '1.0'
     ports:
       - '8001:8001'
     environment:

@@ -44,6 +44,10 @@ interface ExecuteRequest {
     entrypoint?: string;
     timeout?: number;
     requirements?: string[];
+    gitRepo?: string;
+    gitCommit?: string;
+    gitBranch?: string;
+    [key: string]: unknown;
   };
   params?: Record<string, unknown>;
 }
@@ -131,12 +135,22 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     }
   }
 
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    EXECUTION_ID: executionId,
-    TASK_ID: String(task.id || ''),
-    TASK_NAME: String(task.name || ''),
-  };
+  // SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
+  const ENV_WHITELIST = new Set([
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'NODE_PATH', 'npm_config_cache', 'npm_config_prefix',
+    'TMPDIR', 'TEMP', 'TMP',
+    'USER', 'LOGNAME', 'SHELL',
+    'SYSTEMROOT', 'WINDIR', // Windows compat
+  ]);
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (ENV_WHITELIST.has(k)) env[k] = v;
+  }
+  // inject task-scoped context
+  env['EXECUTION_ID'] = executionId;
+  env['TASK_ID'] = String(task.id || '');
+  env['TASK_NAME'] = String(task.name || '');
 
   if (params) {
     for (const [k, v] of Object.entries(params)) {

@@ -49,13 +49,14 @@ export default () => ({
   executor: {
     // S-04: shared token executors must present; empty only allowed in dev (with warning)
     sharedToken: (() => {
-      const t = process.env.EXECUTOR_SHARED_TOKEN || '';
+      // SEC-04: read EXECUTOR_SECRET (matches docker-compose.yml injection key)
+      const t = process.env.EXECUTOR_SECRET || process.env.EXECUTOR_SHARED_TOKEN || '';
       if (!t) {
         if (process.env.NODE_ENV === 'production') {
-          throw new Error('[AutoFlow] EXECUTOR_SHARED_TOKEN must be set in production');
+          throw new Error('[AutoFlow] EXECUTOR_SECRET must be set in production');
         }
         // eslint-disable-next-line no-console
-        console.warn('[AutoFlow] WARNING: EXECUTOR_SHARED_TOKEN is empty — executor auth is disabled (dev only)');
+        console.warn('[AutoFlow] WARNING: EXECUTOR_SECRET is empty — executor auth is disabled (dev only)');
       }
       return t;
     })(),

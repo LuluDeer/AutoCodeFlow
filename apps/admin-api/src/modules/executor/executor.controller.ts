@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, UseGuards, UnauthorizedException, Headers } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, UnauthorizedException, Headers, Param } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -53,4 +53,13 @@ export class ExecutorController {
   @Get()
   @ApiOperation({ summary: '执行器列表' })
   findAll() { return this.svc.findAll(); }
+
+  // SEC-03: rotate per-executor token; returns new raw token (shown once)
+  @ApiBearerAuth('JWT')
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/rotate-token')
+  @ApiOperation({ summary: '轮换执行器 Token（返回新 token，仅显示一次）' })
+  rotateToken(@Param('id') id: string) {
+    return this.svc.rotateToken(id);
+  }
 }

@@ -108,12 +108,27 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   async enqueue(task: Task, triggerType: string) {
-    // 分布式锁：防止多实例重复触发，key 按任务ID + 10s时间窗口
-    const lockKey = `lock:schedule:${task.id}:${Math.floor(Date.now() / 10000)}`;
-    const client = await (this.queue as any).client;
-    const locked = await client.set(lockKey, '1', 'NX', 'PX', 70000);
-    if (!locked) {
-      this.logger.debug(`Task "${task.name}" lock held by another instance, skip`);
+    // TASK-01: replace time-window Redis lock with a database CAS update.
+    // Only the instance that successfully updates lastTriggerTime proceeds to enqueue,
+    // which is atomic and immune to clock skew between multiple admin-api replicas.
+    const minIntervalMs =
+      task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate
+        ? task.fixedRate * 1000
+        : 5_000; // 5s guard window for cron tasks
+    const threshold = new Date(Date.now() - minIntervalMs);
+    const cas = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ lastTriggerTime: () => 'NOW()' })
+      .where('id = :id', { id: task.id })
+      .andWhere('status = :status', { status: TaskStatus.ACTIVE })
+      .andWhere(
+        '("lastTriggerTime" IS NULL OR "lastTriggerTime" < :threshold)',
+        { threshold },
+      )
+      .execute();
+    if (!cas.affected || cas.affected === 0) {
+      this.logger.debug(`Task "${task.name}" recently triggered by another instance, skip`);
       return null;
     }
 

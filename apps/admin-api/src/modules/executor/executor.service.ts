@@ -1,4 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { randomBytes } from 'crypto';
+import * as bcrypt from 'bcrypt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
 import { Cron } from '@nestjs/schedule';
@@ -14,6 +17,7 @@ export class ExecutorService {
     @InjectRepository(Executor) private repo: Repository<Executor>,
     @InjectRepository(TaskExecution) private execRepo: Repository<TaskExecution>,
     @InjectRepository(Task) private taskRepo: Repository<Task>,
+    private readonly configService: ConfigService,
   ) {}
 
   async register(data: { appName: string; address: string; type?: string; version?: string; capabilities?: string[] }) {
@@ -164,5 +168,37 @@ export class ExecutorService {
     if (result.affected && result.affected > 0) {
       this.logger.warn(`Marked ${result.affected} executor(s) as OFFLINE due to heartbeat timeout`);
     }
+  }
+
+  /**
+   * SEC-03: Issue a fresh per-executor token.
+   * Returns the raw token once (caller must store it); only the bcrypt hash is persisted.
+   */
+  async rotateToken(id: string): Promise<{ token: string }> {
+    const executor = await this.repo.findOne({ where: { id } });
+    if (!executor) throw new NotFoundException('Executor not found');
+    const rawToken = randomBytes(32).toString('hex');
+    executor.tokenHash = await bcrypt.hash(rawToken, 12);
+    await this.repo.save(executor);
+    this.logger.log(`Rotated token for executor ${id} (${executor.address})`);
+    return { token: rawToken };
+  }
+
+  /**
+   * SEC-03: Validate a per-executor token.
+   * Falls back to the legacy shared token for backward compatibility.
+   */
+  async validateExecutorToken(id: string, presented: string): Promise<boolean> {
+    const executor = await this.repo
+      .createQueryBuilder('e')
+      .addSelect('e.tokenHash')
+      .where('e.id = :id', { id })
+      .getOne();
+    if (!executor) return false;
+    if (executor.tokenHash) {
+      return bcrypt.compare(presented, executor.tokenHash);
+    }
+    const shared = this.configService.get<string>('executor.sharedToken') ?? '';
+    return shared.length > 0 && presented === shared;
   }
 }

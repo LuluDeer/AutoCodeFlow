@@ -2,11 +2,13 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { UsersModule } from '../users/users.module';
 import { AuditModule } from '../audit/audit.module';
+import { RefreshToken } from './entities/refresh-token.entity';
 
 @Module({
   imports: [
@@ -20,7 +22,9 @@ import { AuditModule } from '../audit/audit.module';
       inject: [ConfigService],
     }),
     UsersModule,
-    AuditModule, // Q8: needed to inject AuditService into AuthController
+    AuditModule,
+    // SEC-02: register RefreshToken entity for persistence
+    TypeOrmModule.forFeature([RefreshToken]),
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],

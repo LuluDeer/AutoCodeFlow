@@ -33,6 +33,13 @@ export class User {
   @Column({ default: true })
   isActive: boolean;
 
+  // SEC-05: track consecutive login failures for account lockout
+  @Column({ default: 0 })
+  loginFailCount: number;
+
+  @Column({ nullable: true, type: 'timestamp' })
+  lockedUntil: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

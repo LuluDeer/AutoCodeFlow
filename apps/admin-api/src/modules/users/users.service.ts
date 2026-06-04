@@ -63,4 +63,30 @@ export class UsersService {
     await this.usersRepository.remove(user);
     return { deleted: true };
   }
+
+  /**
+   * SEC-05: Increment loginFailCount; lock the account when threshold is reached.
+   */
+  async recordLoginFailure(
+    userId: number,
+    opts: { maxFail: number; lockMinutes: number },
+  ): Promise<void> {
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) return;
+    user.loginFailCount += 1;
+    if (user.loginFailCount >= opts.maxFail) {
+      user.lockedUntil = new Date(
+        Date.now() + opts.lockMinutes * 60_000,
+      );
+    }
+    await this.usersRepository.save(user);
+  }
+
+  /** SEC-05: Reset failure counter and lock on successful login. */
+  async resetLoginFailure(userId: number): Promise<void> {
+    await this.usersRepository.update(userId, {
+      loginFailCount: 0,
+      lockedUntil: undefined as any,
+    });
+  }
 }

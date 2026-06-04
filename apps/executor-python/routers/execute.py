@@ -142,14 +142,21 @@ async def run_task(req: ExecuteRequest) -> dict:
     requirements: list[str] = task.get('requirements', [])
     task_id = str(task.get('id', req.executionId))
 
-    # 将 params 写入环境变量
-    env = os.environ.copy()
-    if req.params:
-        for k, v in req.params.items():
-            env[f'AUTOFLOW_{k.upper()}'] = str(v)
+    # SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
+    _ENV_WHITELIST = {
+        'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+        'PYTHONPATH', 'PYTHONHASHSEED', 'VIRTUAL_ENV',
+        'NODE_PATH', 'TMPDIR', 'TEMP', 'TMP',
+        'USER', 'LOGNAME', 'SHELL',
+    }
+    env = {k: v for k, v in os.environ.items() if k in _ENV_WHITELIST}
+    # inject task-scoped context
     env['EXECUTION_ID'] = req.executionId
     env['TASK_ID'] = str(task.get('id', ''))
     env['TASK_NAME'] = task.get('name', '')
+    if req.params:
+        for k, v in req.params.items():
+            env[f'AUTOFLOW_{k.upper()}'] = str(v)
 
     if runtime == 'python':
         if requirements:

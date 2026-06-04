@@ -101,17 +101,22 @@ export class TaskService {
     const exec = await this.execRepo.findOne({ where: { id: execId } });
     if (!exec) throw new NotFoundException('Execution not found');
     // N10: use typed logLineRepo instead of string-based getRepository
-    const lines = await this.logLineRepo
-      .createQueryBuilder('l')
-      .where('l.executionId = :id', { id: execId })
-      .andWhere('l.lineNumber >= :from', { from: fromLine })
-      .orderBy('l.lineNumber', 'ASC')
-      .select(['l.lineNumber', 'l.content'])
-      .getMany();
+    // CODE-01: fetch true total in parallel so pagination metadata is accurate
+    const [lines, totalLines] = await Promise.all([
+      this.logLineRepo
+        .createQueryBuilder('l')
+        .where('l.executionId = :id', { id: execId })
+        .andWhere('l.lineNumber >= :from', { from: fromLine })
+        .orderBy('l.lineNumber', 'ASC')
+        .select(['l.lineNumber', 'l.content'])
+        .getMany(),
+      this.logLineRepo.count({ where: { executionId: execId } }),
+    ]);
     return {
       lines: lines.map((r) => r.content),
-      totalLines: lines.length + fromLine,
-      hasMore: false,
+      // CODE-01: true total count, not (currentBatch + offset)
+      totalLines,
+      hasMore: fromLine + lines.length < totalLines,
     };
   }
 

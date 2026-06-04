@@ -108,7 +108,6 @@ export class TaskProcessor {
             resource: 'task_execution',
             resourceId: exec.id,
             detail: { task: task.name, error: notifyErr.message },
-result: 'failure',
           });
         } catch { /* audit is best-effort */ }
       }

@@ -1,24 +1,29 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsOptional, IsString, IsInt, Min } from 'class-validator';
-import { TaskTriggerType, TaskRuntime } from '../entities/task.entity';
+import { IsString, IsNotEmpty, IsOptional, IsEnum, IsInt, IsObject, Min, Max, IsArray } from 'class-validator';
+import { TaskStatus, TaskTriggerType, TaskRuntime, BlockStrategy, MisfireStrategy } from '../entities/task.entity';
 
 export class CreateTaskDto {
   @ApiProperty() @IsString() @IsNotEmpty() name: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() description?: string;
-  @ApiProperty({ enum: TaskTriggerType }) @IsEnum(TaskTriggerType) triggerType: TaskTriggerType;
-  @ApiPropertyOptional() @IsOptional() @IsString() cronExpression?: string;
-  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) fixedRate?: number;
-  @ApiPropertyOptional({ enum: TaskRuntime }) @IsOptional() @IsEnum(TaskRuntime) runtime?: TaskRuntime;
-  @ApiPropertyOptional() @IsOptional() @IsString() runtimeVersion?: string;
-  @ApiPropertyOptional() @IsOptional() dependencies?: Record<string, string>;
-  @ApiPropertyOptional() @IsOptional() @IsString() entrypoint?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() gitRepo?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() gitBranch?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() gitCommit?: string;
-  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) timeout?: number;
-  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) maxRetry?: number;
-  @ApiPropertyOptional() @IsOptional() params?: Record<string, any>;
-  @ApiPropertyOptional() @IsOptional() @IsString() executorAppName?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() alarmEmail?: string;
-  @ApiPropertyOptional() @IsOptional() alarmChannels?: string[];
+  @ApiPropertyOptional() @IsString() @IsOptional() description?: string;
+  @ApiPropertyOptional() @IsEnum(TaskStatus) @IsOptional() status?: TaskStatus;
+  @ApiProperty() @IsEnum(TaskTriggerType) triggerType: TaskTriggerType;
+  @ApiPropertyOptional() @IsString() @IsOptional() cronExpression?: string;
+  @ApiPropertyOptional() @IsInt() @Min(1) @IsOptional() fixedRate?: number;
+  @ApiPropertyOptional() @IsEnum(TaskRuntime) @IsOptional() runtime?: TaskRuntime;
+  @ApiPropertyOptional() @IsString() @IsOptional() runtimeVersion?: string;
+  @ApiPropertyOptional() @IsObject() @IsOptional() dependencies?: Record<string, string>;
+  @ApiPropertyOptional() @IsString() @IsOptional() entrypoint?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() gitRepo?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() gitBranch?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() gitCommit?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() currentVersion?: string;
+  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() timeout?: number;
+  // TASK-02: cap retries to prevent runaway queue exhaustion
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) @Max(10) maxRetry?: number;
+  @ApiPropertyOptional() @IsEnum(BlockStrategy) @IsOptional() blockStrategy?: BlockStrategy;
+  @ApiPropertyOptional() @IsEnum(MisfireStrategy) @IsOptional() misfireStrategy?: MisfireStrategy;
+  @ApiPropertyOptional() @IsString() @IsOptional() alarmEmail?: string;
+  @ApiPropertyOptional() @IsArray() @IsOptional() alarmChannels?: string[];
+  @ApiPropertyOptional() @IsObject() @IsOptional() params?: Record<string, any>;
+  @ApiPropertyOptional() @IsString() @IsOptional() executorAppName?: string;
 }
