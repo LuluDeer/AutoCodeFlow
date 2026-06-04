@@ -5,6 +5,7 @@ import { Cron } from '@nestjs/schedule';
 import axios from 'axios';
 import { Executor, ExecutorStatus } from './entities/executor.entity';
 import { TaskExecution, ExecutionStatus } from '../task/entities/task-execution.entity';
+import { Task } from '../task/entities/task.entity';
 
 @Injectable()
 export class ExecutorService {
@@ -12,6 +13,7 @@ export class ExecutorService {
   constructor(
     @InjectRepository(Executor) private repo: Repository<Executor>,
     @InjectRepository(TaskExecution) private execRepo: Repository<TaskExecution>,
+    @InjectRepository(Task) private taskRepo: Repository<Task>,
   ) {}
 
   async register(data: { appName: string; address: string; type?: string; version?: string; capabilities?: string[] }) {
@@ -31,7 +33,7 @@ export class ExecutorService {
 
   findAll() { return this.repo.find({ order: { createdAt: 'DESC' } }); }
 
-  async dispatch(task: any, execution: TaskExecution) {
+  async dispatch(task: Task, execution: TaskExecution) {
     const all = await this.repo.find({ where: { status: ExecutorStatus.ONLINE } });
 
     let candidates = all;
@@ -54,16 +56,38 @@ export class ExecutorService {
       }
     }
 
-    // 3. 按负载（runningTaskCount）最小值选择
-    const matched = candidates.sort((a, b) => a.runningTaskCount - b.runningTaskCount)[0];
-    if (!matched) throw new Error('No available executor');
+    // 3. 按负载（runningTaskCount）升序排列，依次尝试乐观锁抢占
+    const sorted = candidates.sort((a, b) => a.runningTaskCount - b.runningTaskCount);
+
+    let matched: Executor | null = null;
+    for (const candidate of sorted) {
+      const maxConcurrent = candidate.maxConcurrentTasks ?? Infinity;
+      // 乐观锁：仅当 runningTaskCount < maxConcurrentTasks 时才 increment
+      const result = await this.repo
+        .createQueryBuilder()
+        .update(Executor)
+        .set({ runningTaskCount: () => 'running_task_count + 1' })
+        .where('id = :id', { id: candidate.id })
+        .andWhere('status = :status', { status: ExecutorStatus.ONLINE })
+        .andWhere(
+          maxConcurrent === Infinity
+            ? '1=1'
+            : 'running_task_count < :max',
+          maxConcurrent === Infinity ? {} : { max: maxConcurrent },
+        )
+        .execute();
+      if (result.affected && result.affected > 0) {
+        matched = candidate;
+        candidate.runningTaskCount += 1; // sync local state after DB increment
+        break;
+      }
+    }
+
+    if (!matched) throw new Error('No available executor (all at capacity or concurrency conflict)');
 
     this.logger.log(`Dispatching task "${task.name}" to executor ${matched.address} (runningTasks=${matched.runningTaskCount})`);
     execution.executorAddress = matched.address;
-    // N15: do NOT optimistically increment runningTaskCount here — the count is
-    // authoritative only when reported by the executor via heartbeat (every 30s).
-    // Incrementing here without a matching decrement on completion caused the
-    // counter to grow unboundedly until the next heartbeat corrected it.
+
     try {
       const resp = await axios.post(
         `http://${matched.address}/api/execute`,
@@ -71,7 +95,14 @@ export class ExecutorService {
         { timeout: ((task.timeout || 300) + 10) * 1000 },
       );
       return resp.data;
-    } catch (err) {
+    } catch (err: unknown) {
+      // 派发失败时回退计数，避免泄漏
+      await this.repo
+        .createQueryBuilder()
+        .update(Executor)
+        .set({ runningTaskCount: () => 'GREATEST(running_task_count - 1, 0)' })
+        .where('id = :id', { id: matched.id })
+        .execute();
       throw err;
     }
   }

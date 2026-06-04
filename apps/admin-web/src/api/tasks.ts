@@ -10,7 +10,7 @@ export interface Task {
   triggerType: string;
   fixedRate?: number;
   cronExpression?: string;
-  params?: Record<string, any>;
+  params?: Record<string, string | number | boolean>;
   maxRetry: number;
   timeout: number;
   createdAt: string;

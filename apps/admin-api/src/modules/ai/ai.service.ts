@@ -7,10 +7,29 @@ export class AiService {
   private readonly logger = new Logger(AiService.name);
   constructor(private config: ConfigService) {}
 
+  /**
+   * S-10: sanitize logs before sending to external AI service.
+   * Strips common secret patterns (env var assignments, Bearer/API tokens,
+   * long hex/base64 strings) to reduce data-leakage risk.
+   */
+  private sanitizeLogs(raw: string): string {
+    return raw
+      // env var assignments: KEY=value or KEY=VALUE
+      .replace(/([A-Z_]{3,}\s*=\s*)[^\s\n]+/g, '$1[REDACTED]')
+      // Bearer / token headers
+      .replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, '$1[REDACTED]')
+      // long hex strings (≥32 chars — likely keys/tokens)
+      .replace(/[0-9a-fA-F]{32,}/g, '[REDACTED_HEX]')
+      // long base64-like strings (≥40 chars)
+      .replace(/[A-Za-z0-9+/]{40,}={0,2}/g, '[REDACTED_B64]')
+      .slice(0, 3000);
+  }
+
   async analyzeFailure(task: any, logs: string): Promise<string> {
     const provider = this.config.get<string>('ai.provider', 'disabled');
     if (provider === 'disabled') return '';
-    const prompt = `你是自动化任务分析助手。任务"${task.name}"(${task.runtime})执行失败，请分析原因并给出修复建议。\n\n错误日志:\n${logs.slice(0, 3000)}\n\n请用中文回答：\n**失败原因：** ...\n**修复建议：** ...`;
+    const sanitized = this.sanitizeLogs(logs);
+    const prompt = `你是自动化任务分析助手。任务"${task.name}"(${task.runtime})执行失败，请分析原因并给出修复建议。\n\n错误日志:\n${sanitized}\n\n请用中文回答：\n**失败原因：** ...\n**修复建议：** ...`;
     try {
       if (provider === 'openai') return await this.callOpenAI(prompt);
       if (provider === 'ollama') return await this.callOllama(prompt);

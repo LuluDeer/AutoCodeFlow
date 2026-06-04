@@ -11,5 +11,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
+
+# Q-09: run as non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
+    && mkdir -p /data/tasks && chown -R appuser:appgroup /data/tasks /app
+USER appuser
+
 EXPOSE 8002
 CMD ["node", "dist/main.js"]

@@ -26,8 +26,8 @@ export const registryApi = {
       (import.meta.env.VITE_PYPI_URL || 'http://localhost:8003') + '/simple/',
     );
     const html = await resp.text();
-    const matches = html.matchAll(/<a href[^>]*>([^<]+)<\/a>/g);
-    return Array.from(matches).map(m => m[1]);
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return Array.from(doc.querySelectorAll('a')).map(a => a.textContent ?? '').filter(Boolean);
   },
 
   // Get files for a PyPI package
@@ -36,12 +36,15 @@ export const registryApi = {
       (import.meta.env.VITE_PYPI_URL || 'http://localhost:8003') + `/simple/${name}/`,
     );
     const html = await resp.text();
-    const matches = html.matchAll(/<a href="([^"]+)"(?:[^>]*)>([^<]+)<\/a>/g);
-    return Array.from(matches).map(m => ({
-      url: m[1].split('#')[0],
-      sha256: m[1].includes('#sha256=') ? m[1].split('#sha256=')[1] : '',
-      filename: m[2],
-    }));
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return Array.from(doc.querySelectorAll('a')).map(a => {
+      const href = a.getAttribute('href') ?? '';
+      return {
+        url: href.split('#')[0],
+        sha256: href.includes('#sha256=') ? href.split('#sha256=')[1] : '',
+        filename: a.textContent ?? '',
+      };
+    }).filter(f => f.filename);
   },
 
   // Upload PyPI package (admin API proxy)

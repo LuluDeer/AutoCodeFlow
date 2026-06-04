@@ -24,8 +24,18 @@ security = HTTPBasic()
 PACKAGES_DIR = Path(os.getenv("PACKAGES_DIR", "/data/packages"))
 PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
 
-REGISTRY_USER = os.getenv("REGISTRY_USER", "admin")
-REGISTRY_PASS = os.getenv("REGISTRY_PASS", "admin123")
+REGISTRY_USER = os.getenv("REGISTRY_USER", "")
+REGISTRY_PASS = os.getenv("REGISTRY_PASS", "")
+
+# S-05: fail fast if credentials not configured
+if not REGISTRY_USER or not REGISTRY_PASS:
+    import sys
+    print(
+        "[AutoFlow] FATAL: REGISTRY_USER and REGISTRY_PASS must be set via environment variables.\n"
+        "Example: REGISTRY_USER=myuser REGISTRY_PASS=strongpassword uvicorn main:app",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def verify_auth(credentials: HTTPBasicCredentials = Depends(security)):

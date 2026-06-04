@@ -24,9 +24,12 @@ def get_execution_logs(
     execution_id: str,
     fromLine: int = Query(default=0, ge=0),
 ) -> LogsResponse:
-    # Path traversal guard
+    # Path traversal guard: reject IDs that contain '..' or path separators
+    if '..' in execution_id or '/' in execution_id or '\\' in execution_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid executionId')
     base = Path(settings.work_dir).resolve()
-    log_file = (base / f'{execution_id}.log').resolve()
+    # B-05: log is written inside the execution's work subdirectory by execute.py
+    log_file = (base / execution_id / f'{execution_id}.log').resolve()
     if not str(log_file).startswith(str(base)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid executionId')
 

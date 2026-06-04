@@ -6,9 +6,10 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from typing import Any, Optional
 import scheduler as sched
+from auth import verify_token
 from config import settings
 from manifest import load_manifest, merge_task_with_manifest
 try:
@@ -55,13 +56,9 @@ logger = logging.getLogger(__name__)
 UV_BIN = shutil.which('uv') or '/root/.local/bin/uv'
 
 
-class ExecuteRequest(BaseModel):
-    executionId: str
-    task: dict
-    params: Optional[dict[str, Any]] = None
+# Q-01: removed duplicate ExecuteRequest definition — use the SDK class (or fallback above)
 
-
-@router.post('/execute')
+@router.post('/execute', dependencies=[Depends(verify_token)])
 async def execute(req: ExecuteRequest):
     if sched.running_count >= settings.max_concurrent_tasks:
         raise HTTPException(status_code=429, detail='Executor is at capacity')

@@ -1,5 +1,7 @@
 import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, Index } from 'typeorm';
 
+// D-04: GIN index on the jsonb `detail` column for fast containment queries (@> operator)
+@Index('idx_audit_log_detail_gin', ['detail'], { synchronize: false })
 @Entity('audit_logs')
 export class AuditLog {
   @PrimaryGeneratedColumn()

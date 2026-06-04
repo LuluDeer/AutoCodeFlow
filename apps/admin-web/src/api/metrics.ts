@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { client as apiClient } from './client';
 
 export interface MetricsSummary {
   totalTasks: number;
@@ -36,8 +36,8 @@ export interface RecentFailure {
 }
 
 export const metricsApi = {
-  getSummary: () => apiClient.get<MetricsSummary>('/metrics/summary').then(r => r.data),
-  getDailyTrend: (days = 7) => apiClient.get<DailyTrend[]>(`/metrics/trend?days=${days}`).then(r => r.data),
-  getExecutorStats: () => apiClient.get<ExecutorStat[]>('/metrics/executors').then(r => r.data),
-  getRecentFailures: () => apiClient.get<RecentFailure[]>('/metrics/failures').then(r => r.data),
+  getSummary: () => apiClient.get<MetricsSummary>('/metrics/summary'),
+  getDailyTrend: (days = 7) => apiClient.get<DailyTrend[]>(`/metrics/trend?days=${days}`),
+  getExecutorStats: () => apiClient.get<ExecutorStat[]>('/metrics/executors'),
+  getRecentFailures: () => apiClient.get<RecentFailure[]>('/metrics/failures'),
 };

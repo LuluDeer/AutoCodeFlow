@@ -8,6 +8,10 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // S-11: cap JSON body size to 1 MB to prevent oversized-payload DoS
+  app.use(require('express').json({ limit: '1mb' }));
+  app.use(require('express').urlencoded({ limit: '1mb', extended: true }));
+
   // Trust proxy — required for req.ip to reflect the real client IP
   // when the app runs behind a reverse proxy (nginx, load balancer, etc.)
   app.getHttpAdapter().getInstance().set('trust proxy', 1);

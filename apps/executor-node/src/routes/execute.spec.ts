@@ -27,25 +27,87 @@ jest.mock('../manifest', () => ({
 jest.mock('child_process');
 
 import { executeRouter } from './execute';
+import { executorAuthMiddleware } from './logs';
 
-const app = express();
-app.use(express.json());
-app.use('/api', executeRouter);
+// App without auth — used only for non-auth behaviour tests
+const appNoAuth = express();
+appNoAuth.use(express.json());
+appNoAuth.use('/api', executeRouter);
+
+// App with auth middleware — mirrors production wiring in main.ts
+const TEST_TOKEN = 'test-secret-token';
+const appWithAuth = express();
+appWithAuth.use(express.json());
+appWithAuth.use('/api', executorAuthMiddleware, executeRouter);
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 const mockCp = childProcess as jest.Mocked<typeof childProcess>;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  delete process.env.EXECUTOR_SHARED_TOKEN;
   (mockFs.existsSync as jest.Mock).mockReturnValue(false);
   (mockFs.mkdirSync as jest.Mock).mockReturnValue(undefined);
   (mockFs.chmodSync as jest.Mock).mockReturnValue(undefined);
   (mockFs.writeFileSync as jest.Mock).mockReturnValue(undefined);
 });
 
+afterEach(() => {
+  delete process.env.EXECUTOR_SHARED_TOKEN;
+});
+
+// ---------------------------------------------------------------------------
+// S-01: Authentication tests
+// ---------------------------------------------------------------------------
+describe('POST /api/execute — authentication (S-01)', () => {
+  beforeEach(() => {
+    process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
+  });
+
+  it('returns 401 when no Authorization header is provided', async () => {
+    const res = await request(appWithAuth)
+      .post('/api/execute')
+      .send({ executionId: 'exec-auth-001', task: { runtime: 'node' } });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/Invalid or missing executor token/);
+  });
+
+  it('returns 401 when a wrong token is provided', async () => {
+    const res = await request(appWithAuth)
+      .post('/api/execute')
+      .set('Authorization', 'Bearer wrong-token')
+      .send({ executionId: 'exec-auth-002', task: { runtime: 'node' } });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/Invalid or missing executor token/);
+  });
+
+  it('returns 401 when Authorization scheme is not Bearer', async () => {
+    const res = await request(appWithAuth)
+      .post('/api/execute')
+      .set('Authorization', `Basic ${TEST_TOKEN}`)
+      .send({ executionId: 'exec-auth-003', task: { runtime: 'node' } });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/Invalid or missing executor token/);
+  });
+
+  it('passes through with correct token', async () => {
+    // The request itself will fail at runtime validation (unsupported runtime)
+    // but it should NOT be blocked by auth — status must not be 401
+    const res = await request(appWithAuth)
+      .post('/api/execute')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ executionId: 'exec-auth-004', task: { runtime: 'unsupported' } });
+    expect(res.status).not.toBe(401);
+    expect(res.status).toBe(400); // blocked by runtime validation, not auth
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Functional tests (no secret configured — dev mode, auth passthrough)
+// ---------------------------------------------------------------------------
 describe('POST /api/execute', () => {
   it('returns 400 when executionId is missing', async () => {
-    const res = await request(app).post('/api/execute').send({ task: { runtime: 'node' } });
+    const res = await request(appNoAuth).post('/api/execute').send({ task: { runtime: 'node' } });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/executionId/);
   });
@@ -62,7 +124,7 @@ describe('POST /api/execute', () => {
     };
     (mockCp.spawn as jest.Mock).mockReturnValue(mockSpawn);
 
-    const res = await request(app)
+    const res = await request(appNoAuth)
       .post('/api/execute')
       .send({ executionId: 'exec-001', task: { runtime: 'java' } });
     expect(res.status).toBe(400);
@@ -70,7 +132,7 @@ describe('POST /api/execute', () => {
   });
 
   it('returns 400 for invalid gitRepo scheme', async () => {
-    const res = await request(app).post('/api/execute').send({
+    const res = await request(appNoAuth).post('/api/execute').send({
       executionId: 'exec-002',
       task: { runtime: 'node', gitRepo: 'file:///etc/passwd' },
     });
@@ -79,7 +141,7 @@ describe('POST /api/execute', () => {
   });
 
   it('returns 400 for invalid npm package name', async () => {
-    const res = await request(app).post('/api/execute').send({
+    const res = await request(appNoAuth).post('/api/execute').send({
       executionId: 'exec-003',
       task: { runtime: 'node', requirements: ['valid-pkg', '; rm -rf /'] },
     });
@@ -98,7 +160,7 @@ describe('POST /api/execute', () => {
     };
     (mockCp.spawn as jest.Mock).mockReturnValue(mockSpawn);
 
-    const res = await request(app).post('/api/execute').send({
+    const res = await request(appNoAuth).post('/api/execute').send({
       executionId: 'exec-004',
       task: { runtime: 'node', entrypoint: 'index.js' },
     });

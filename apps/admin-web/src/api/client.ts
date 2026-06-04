@@ -7,8 +7,9 @@ export const client = axios.create({
   timeout: 30000,
 });
 
+// Q-02: read token from the Zustand auth store — single source of truth.
 client.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
+  const token = useAuthStore.getState().token;
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
@@ -17,7 +18,7 @@ client.interceptors.response.use(
   (res) => res.data,
   (err) => {
     if (err.response?.status === 401) {
-      localStorage.removeItem('token');
+      useAuthStore.getState().logout();
       window.location.href = '/login';
     }
     return Promise.reject(err.response?.data || err);

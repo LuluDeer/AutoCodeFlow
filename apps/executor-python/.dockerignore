@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.dist-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test artefacts
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Environment files (never bake secrets into image)
+.env
+.env.*

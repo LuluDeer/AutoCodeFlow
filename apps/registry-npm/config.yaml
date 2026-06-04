@@ -23,7 +23,9 @@ packages:
     publish: $authenticated
     unpublish: $authenticated
   '**':
-    access: $all
+    # S-09: restrict access to authenticated users only to avoid exposing
+    # internal npm traffic and package version information
+    access: $authenticated
     publish: $authenticated
     unpublish: $authenticated
     proxy: npmjs

@@ -65,5 +65,9 @@ import { AuditModule } from './modules/audit/audit.module';
     SystemConfigModule,
     AuditModule,
   ],
+  providers: [
+    // A-02: apply ThrottlerGuard globally
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
 export class AppModule {}

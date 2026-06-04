@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { client as apiClient } from './client';
 
 export interface User {
   id: number;

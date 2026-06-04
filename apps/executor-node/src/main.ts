@@ -5,14 +5,15 @@ import { logger } from './logger';
 import { startHeartbeat } from './scheduler';
 import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
-import { logsRouter } from './routes/logs';
+// S-01: import auth middleware alongside router — all /api routes require authentication
+import { logsRouter, executorAuthMiddleware } from './routes/logs';
 
 const app = express();
 app.use(express.json());
 
 app.use('/', healthRouter);
-app.use('/api', executeRouter);
-app.use('/api', logsRouter);
+app.use('/api', executorAuthMiddleware, executeRouter);
+app.use('/api', executorAuthMiddleware, logsRouter);
 
 // S5/S14: attach shared token so admin-api can verify executor identity
 function executorHeaders(): Record<string, string> {

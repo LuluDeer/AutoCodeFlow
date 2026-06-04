@@ -37,3 +37,39 @@ class HttpClient:
             resp = c.delete(path, **kwargs)
             resp.raise_for_status()
             return resp
+
+
+class AsyncHttpClient:
+    """Async HTTP client backed by httpx.AsyncClient."""
+
+    def __init__(self, base_url: str = "", timeout: float = 30.0, headers: Optional[Dict[str, str]] = None):
+        self.base_url = base_url.rstrip("/")
+        self._timeout = timeout
+        self._headers = headers or {}
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self._timeout, headers=self._headers)
+
+    async def __aenter__(self) -> "AsyncHttpClient":
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        await self._client.aclose()
+
+    async def get(self, path: str, **kwargs) -> httpx.Response:
+        resp = await self._client.get(path, **kwargs)
+        resp.raise_for_status()
+        return resp
+
+    async def post(self, path: str, json: Any = None, **kwargs) -> httpx.Response:
+        resp = await self._client.post(path, json=json, **kwargs)
+        resp.raise_for_status()
+        return resp
+
+    async def put(self, path: str, json: Any = None, **kwargs) -> httpx.Response:
+        resp = await self._client.put(path, json=json, **kwargs)
+        resp.raise_for_status()
+        return resp
+
+    async def delete(self, path: str, **kwargs) -> httpx.Response:
+        resp = await self._client.delete(path, **kwargs)
+        resp.raise_for_status()
+        return resp

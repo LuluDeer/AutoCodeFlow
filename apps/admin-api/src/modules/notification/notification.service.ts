@@ -16,12 +16,26 @@ export class NotificationService {
   ) {}
 
   async sendAll(payload: NotificationPayload) {
-    await Promise.allSettled([
-      this.wecom.send(payload).catch(e => this.logger.warn(`wecom: ${e.message}`)),
-      this.dingtalk.send(payload).catch(e => this.logger.warn(`dingtalk: ${e.message}`)),
-      this.email.send(payload).catch(e => this.logger.warn(`email: ${e.message}`)),
-      this.slack.send(payload).catch(e => this.logger.warn(`slack: ${e.message}`)),
+    const results = await Promise.allSettled([
+      this.wecom.send(payload),
+      this.dingtalk.send(payload),
+      this.email.send(payload),
+      this.slack.send(payload),
     ]);
+
+    const channelNames = ['wecom', 'dingtalk', 'email', 'slack'];
+    const failures: string[] = [];
+    results.forEach((result, i) => {
+      if (result.status === 'rejected') {
+        const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        this.logger.error(`${channelNames[i]} notification failed: ${msg}`, result.reason instanceof Error ? result.reason.stack : undefined);
+        failures.push(`${channelNames[i]}: ${msg}`);
+      }
+    });
+
+    if (failures.length > 0) {
+      throw new Error(`Notification failed on channel(s): ${failures.join('; ')}`);
+    }
   }
 
   notifyFailure(taskName: string, execId: string, error: string, aiAnalysis?: string) {
@@ -45,11 +59,25 @@ export class NotificationService {
       content: `执行ID: ${execId}\n错误: ${error}${aiAnalysis ? `\n\nAI分析:\n${aiAnalysis}` : ''}${alarmEmail ? `\n收件人: ${alarmEmail}` : ''}`,
       level: 'error',
     };
-    const sends: Promise<any>[] = [];
-    if (alarmChannels.includes('email')) sends.push(this.email.send(payload).catch(e => this.logger.warn(`email: ${e.message}`)));
-    if (alarmChannels.includes('slack')) sends.push(this.slack.send(payload).catch(e => this.logger.warn(`slack: ${e.message}`)));
-    if (alarmChannels.includes('dingtalk')) sends.push(this.dingtalk.send(payload).catch(e => this.logger.warn(`dingtalk: ${e.message}`)));
-    if (alarmChannels.includes('wecom')) sends.push(this.wecom.send(payload).catch(e => this.logger.warn(`wecom: ${e.message}`)));
-    await Promise.allSettled(sends);
+
+    const entries: Array<{ name: string; promise: Promise<any> }> = [];
+    if (alarmChannels.includes('email')) entries.push({ name: 'email', promise: this.email.send(payload) });
+    if (alarmChannels.includes('slack')) entries.push({ name: 'slack', promise: this.slack.send(payload) });
+    if (alarmChannels.includes('dingtalk')) entries.push({ name: 'dingtalk', promise: this.dingtalk.send(payload) });
+    if (alarmChannels.includes('wecom')) entries.push({ name: 'wecom', promise: this.wecom.send(payload) });
+
+    const results = await Promise.allSettled(entries.map(e => e.promise));
+    const failures: string[] = [];
+    results.forEach((result, i) => {
+      if (result.status === 'rejected') {
+        const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        this.logger.error(`${entries[i].name} notification failed: ${msg}`, result.reason instanceof Error ? result.reason.stack : undefined);
+        failures.push(`${entries[i].name}: ${msg}`);
+      }
+    });
+
+    if (failures.length > 0) {
+      throw new Error(`Notification failed on channel(s): ${failures.join('; ')}`);
+    }
   }
 }

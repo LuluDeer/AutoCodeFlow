@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 'typeorm';
 
 export enum ExecutionStatus {
   PENDING = 'pending', RUNNING = 'running', SUCCESS = 'success',
@@ -6,6 +6,9 @@ export enum ExecutionStatus {
 }
 
 @Entity('task_executions')
+@Index(['taskId'])
+@Index(['status'])
+@Index(['taskId', 'status'])
 export class TaskExecution {
   @PrimaryGeneratedColumn('uuid') id: string;
   @Column() taskId: string;

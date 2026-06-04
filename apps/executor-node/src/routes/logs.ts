@@ -6,21 +6,23 @@ import { logger } from '../logger';
 
 export const logsRouter = Router();
 
-/** Validate Bearer token from EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET env. */
-function checkAuth(req: Request, res: Response): boolean {
+/** S-01: Express middleware — validates Bearer token from EXECUTOR_SHARED_TOKEN env. */
+export function executorAuthMiddleware(req: Request, res: Response, next: () => void): void {
   const secret = process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || '';
-  if (!secret) return true; // dev mode: no secret configured
+  if (!secret) {
+    next(); // dev mode: no secret configured
+    return;
+  }
   const auth = req.headers.authorization || '';
   const [scheme, token] = auth.split(' ');
   if (scheme?.toLowerCase() !== 'bearer' || token !== secret) {
     res.status(401).json({ error: 'Invalid or missing executor token' });
-    return false;
+    return;
   }
-  return true;
+  next();
 }
 
 logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
-  if (!checkAuth(req, res)) return;
 
   const { executionId } = req.params;
   // N4: basename guard — reject if executionId contains path separators or is modified by basename

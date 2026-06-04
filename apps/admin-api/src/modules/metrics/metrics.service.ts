@@ -58,7 +58,7 @@ export class MetricsService {
       .select("DATE_TRUNC('day', e.createdAt)", 'day')
       .addSelect('e.status', 'status')
       .addSelect('COUNT(*)', 'count')
-      .where("e.createdAt >= NOW() - INTERVAL :days * INTERVAL '1 day'", { days })
+      .where("e.createdAt >= NOW() - CAST(:days || ' days' AS INTERVAL)", { days })
       .groupBy("DATE_TRUNC('day', e.createdAt), e.status")
       .orderBy("DATE_TRUNC('day', e.createdAt)", 'ASC')
       .getRawMany();

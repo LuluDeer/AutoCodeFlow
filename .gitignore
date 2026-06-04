@@ -1,47 +1,52 @@
-# Dependencies
-node_modules/
-.venv/
-venv/
+# 环境变量
 .env
 .env.local
 .env.*.local
 
-# Build outputs
+# Node.js
+node_modules/
 dist/
-build/
-*.tsbuildinfo
-*.js.map
-*.d.ts
+.npm
 
 # Python
 __pycache__/
-*.pyc
-*.pyo
-.Python
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.egg
+build/
+.pytest_cache/
 
-# Logs
-logs/
+# 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 日志
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+logs/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Testing
+# 测试
 coverage/
 .nyc_output/
 
-# Misc
+# 构建产物
+*.tsbuildinfo
+*.js.map
+*.d.ts
+
+# 任务工作目录
+apps/executor-*/work/
+apps/executor-*/tasks/
+/tmp/
+
+# 缓存
 .cache/
 .temp/
-*.egg-info/

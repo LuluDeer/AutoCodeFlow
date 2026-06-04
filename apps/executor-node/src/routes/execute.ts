@@ -75,9 +75,9 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   try { fs.chmodSync(workDir, 0o700); } catch (_) { /* ignore on unsupported filesystems */ }
 
   // --- Git 版本绑定：若任务指定了 gitRepo 则 clone/checkout 到工作目录 ---
-  const gitRepo: string | undefined = (body.task as any).gitRepo;
-  const gitCommit: string | undefined = (body.task as any).gitCommit;
-  const gitBranch: string = (body.task as any).gitBranch || 'main';
+  const gitRepo = body.task.gitRepo;
+  const gitCommit = body.task.gitCommit;
+  const gitBranch = body.task.gitBranch ?? 'main';
   if (gitRepo) {
     // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
     const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
@@ -164,8 +164,9 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   try {
     const result = await runProcess(cmd, args, workDir, env, timeout, executionId);
     res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
   } finally {
     decrementRunning();
   }
@@ -180,14 +181,26 @@ function runProcess(
   _executionId?: string,
 ): Promise<{ success: boolean; logs: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args, { cwd, env });
+    // B-06: detached=true creates a new process group so we can kill the entire group on timeout
+    const proc = spawn(cmd, args, { cwd, env, detached: true });
     let logs = '';
 
     proc.stdout.on('data', (d: Buffer) => { logs += d.toString(); });
     proc.stderr.on('data', (d: Buffer) => { logs += d.toString(); });
 
     const timer = setTimeout(() => {
-      proc.kill();
+      // B-06: kill the entire process group so child processes spawned by the task are also terminated
+      try {
+        if (proc.pid !== undefined) {
+          if (process.platform !== 'win32') {
+            process.kill(-proc.pid, 'SIGKILL');
+          } else {
+            proc.kill('SIGKILL');
+          }
+        }
+      } catch (_) {
+        proc.kill('SIGKILL');
+      }
       reject(new Error(`Task timeout after ${timeoutSec}s`));
     }, timeoutSec * 1000);
 

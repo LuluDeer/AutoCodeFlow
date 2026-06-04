@@ -6,6 +6,7 @@ import { TaskService } from './task.service';
 import { TaskProcessor } from './task.processor';
 import { Task } from './entities/task.entity';
 import { TaskExecution } from './entities/task-execution.entity';
+import { ExecutionLogLine } from './entities/execution-log-line.entity';
 import { ExecutorModule } from '../executor/executor.module';
 import { AiModule } from '../ai/ai.module';
 import { NotificationModule } from '../notification/notification.module';

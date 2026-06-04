@@ -15,6 +15,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private timers = new Map<string, NodeJS.Timeout>();
   // cron tasks
   private cronTasks = new Map<string, nodeCron.ScheduledTask>();
+  // B-04: 追踪 fixed_rate 任务是否正在执行，防止重入
+  private runningTasks = new Map<string, boolean>();
 
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
@@ -69,7 +71,21 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
     for (const t of tasks) {
       if (t.triggerType === TaskTriggerType.FIXED_RATE && t.fixedRate && !this.timers.has(t.id)) {
-        const timer = setInterval(() => this.enqueue(t, 'fixed_rate'), t.fixedRate * 1000);
+        const taskId = t.id;
+        const timer = setInterval(async () => {
+          // B-04: 若上次执行未结束则跳过本次，防止重入
+          if (this.runningTasks.get(taskId)) {
+            this.logger.warn(`Fixed_rate task "${t.name}" still running, skipping trigger`);
+            return;
+          }
+          this.runningTasks.set(taskId, true);
+          try {
+            const latest = await this.taskRepo.findOne({ where: { id: taskId, status: TaskStatus.ACTIVE } });
+            if (latest) await this.enqueue(latest, 'fixed_rate');
+          } finally {
+            this.runningTasks.delete(taskId);
+          }
+        }, t.fixedRate * 1000);
         this.timers.set(t.id, timer);
         this.logger.log(`Scheduled fixed_rate task "${t.name}" every ${t.fixedRate}s`);
       }
@@ -127,6 +143,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
     const cronTask = this.cronTasks.get(taskId);
     if (cronTask) { cronTask.stop(); this.cronTasks.delete(taskId); }
+
+    this.runningTasks.delete(taskId);
   }
 
   /** 注册单个任务的调度，供 TaskService update 后精确调用，避免等待下次 reload */
@@ -134,7 +152,21 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     this.stop(task.id);
 
     if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
-      const timer = setInterval(() => this.enqueue(task, 'fixed_rate'), task.fixedRate * 1000);
+      const taskId = task.id;
+      const timer = setInterval(async () => {
+        // B-04: 防止重入
+        if (this.runningTasks.get(taskId)) {
+          this.logger.warn(`Fixed_rate task "${task.name}" still running, skipping trigger`);
+          return;
+        }
+        this.runningTasks.set(taskId, true);
+        try {
+          const latest = await this.taskRepo.findOne({ where: { id: taskId, status: TaskStatus.ACTIVE } });
+          if (latest) await this.enqueue(latest, 'fixed_rate');
+        } finally {
+          this.runningTasks.delete(taskId);
+        }
+      }, task.fixedRate * 1000);
       this.timers.set(task.id, timer);
       this.logger.log(`Re-scheduled fixed_rate task "${task.name}" every ${task.fixedRate}s`);
     }

@@ -1,5 +1,6 @@
 import { Process, Processor } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Job } from 'bull';
@@ -9,6 +10,7 @@ import { Task } from './entities/task.entity';
 import { ExecutorService } from '../executor/executor.service';
 import { AiService } from '../ai/ai.service';
 import { NotificationService } from '../notification/notification.service';
+import { AuditService } from '../audit/audit.service';
 
 @Processor('task-queue')
 export class TaskProcessor {
@@ -21,6 +23,8 @@ export class TaskProcessor {
     private executorService: ExecutorService,
     private aiService: AiService,
     private notificationService: NotificationService,
+    private configService: ConfigService,
+    private auditService: AuditService,
   ) {}
 
   /**
@@ -51,9 +55,10 @@ export class TaskProcessor {
         await this.logLineRepo.save(entities.slice(i, i + CHUNK));
       }
       this.logger.log(`Stored ${entities.length} log lines for execution ${exec.id}`);
-    } catch (err) {
+    } catch (err: unknown) {
       // Non-fatal: log but do not fail the execution record
-      this.logger.warn(`Failed to fetch log lines for ${exec.id}: ${err.message}`);
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Failed to fetch log lines for ${exec.id}: ${message}`);
     }
   }
 
@@ -94,7 +99,19 @@ export class TaskProcessor {
       this.logger.error(`Task ${task.id} failed: ${err.message}`);
       try {
         await this.notificationService.notifyFailureWithConfig(task.name, exec.id, err.message, exec.aiAnalysis, task.alarmEmail, task.alarmChannels);
-      } catch {}
+      } catch (notifyErr) {
+        // B-08: record notification failure to audit log so it is not silently discarded
+        this.logger.error(`Notification failed for execution ${exec.id}: ${notifyErr.message}`);
+        try {
+          await this.auditService.log({
+            action: 'NOTIFICATION_FAILED',
+            resource: 'task_execution',
+            resourceId: exec.id,
+            detail: { task: task.name, error: notifyErr.message },
+result: 'failure',
+          });
+        } catch { /* audit is best-effort */ }
+      }
       // Q1: rethrow so BullMQ sees the job as failed and applies maxRetry attempts
       throw err;
     } finally {

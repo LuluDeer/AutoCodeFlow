@@ -47,8 +47,18 @@ export default () => ({
     ollamaModel: process.env.OLLAMA_MODEL || 'llama3',
   },
   executor: {
-    // S5/S14: shared token executors must include; leave empty in dev to skip check
-    sharedToken: process.env.EXECUTOR_SHARED_TOKEN || '',
+    // S-04: shared token executors must present; empty only allowed in dev (with warning)
+    sharedToken: (() => {
+      const t = process.env.EXECUTOR_SHARED_TOKEN || '';
+      if (!t) {
+        if (process.env.NODE_ENV === 'production') {
+          throw new Error('[AutoFlow] EXECUTOR_SHARED_TOKEN must be set in production');
+        }
+        // eslint-disable-next-line no-console
+        console.warn('[AutoFlow] WARNING: EXECUTOR_SHARED_TOKEN is empty — executor auth is disabled (dev only)');
+      }
+      return t;
+    })(),
   },
   notification: {
     wecomWebhook: process.env.WECOM_WEBHOOK || '',

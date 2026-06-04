@@ -13,10 +13,21 @@ import RegistryPage from './pages/RegistryPage';
 import SettingsPage from './pages/settings/index';
 import AuditLogPage from './pages/audit/index';
 
-const token = () => localStorage.getItem('token');
+// S-06: read auth state from Zustand store (persisted under key 'autoflow-auth'),
+// not from a separate 'token' key, to ensure a single source of truth.
+function getPersistedToken(): string | null {
+  try {
+    const raw = localStorage.getItem('autoflow-auth');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { state?: { token?: string | null } };
+    return parsed?.state?.token ?? null;
+  } catch {
+    return null;
+  }
+}
 
 const PrivateRoute = ({ children }: { children: React.ReactNode }) =>
-  token() ? <>{children}</> : <Navigate to="/login" replace />;
+  getPersistedToken() ? <>{children}</> : <Navigate to="/login" replace />;
 
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },

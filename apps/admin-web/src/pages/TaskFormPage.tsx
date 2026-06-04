@@ -15,7 +15,7 @@ export default function TaskFormPage() {
     onSuccess: (data) => form.setFieldsValue(data),
   });
 
-  const onFinish = async (values: any) => {
+  const onFinish = async (values: Record<string, unknown>) => {
     try {
       if (isEdit) await tasksApi.update(id!, values);
       else await tasksApi.create(values);

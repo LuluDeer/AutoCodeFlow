@@ -1,236 +1,391 @@
 # AutoFlow 问题记录与修复追踪
 
-> 参考项目：[xxl-job](../xxl-job)，对照分析后整理的问题清单。
-> 每修复一项，在状态栏更新。
+> 本文件由代码审计自动生成，覆盖全部子应用。每修复一项，在状态栏更新。
+> 审计时间：2025-06
 
 ---
 
 ## 优先级说明
 
-- 🔴 高优先级 — 功能 bug 或运行时错误，影响核心流程
-- 🟡 中优先级 — 逻辑缺陷，不立即崩溃但行为不正确
-- 🟢 低优先级 — 改进项，可按需安排
+- 🔴 Critical — 安全漏洞或可直接导致数据损失/服务中断的 bug
+- 🟠 High — 功能 bug 或运行时错误，影响核心流程
+- 🟡 Medium — 逻辑缺陷，不立即崩溃但行为不正确
+- 🟢 Low — 代码质量、可维护性、缺少测试等改进项
 
 ---
 
-## 问题清单
+## 一、安全类问题
 
-### 已修复（Phase 8–10）
+### S-01 🔴 executor /api/execute 端点无认证保护（Node executor）
 
-| ID | 优先级 | 描述 | 状态 |
-|----|--------|------|------|
-| S1 | 🔴 | jwt.strategy 缺少 isActive 检查，被禁用账号 JWT 仍可通行 | ✅ 已修复 |
-| S2 | 🔴 | access/refresh token 无 type 字段区分，可互相冒用 | ✅ 已修复 |
-| S3 | 🟡 | admin-web 用 localStorage 存 token，XSS 可窃取 | ✅ 已修复（改 sessionStorage）|
-| S4 | 🔴 | 生产环境 JWT_SECRET 缺失时无 fail-fast | ✅ 已修复 |
-| S5 | 🔴 | executor 路由无认证，任意客户端可伪造心跳/执行 | ✅ 已修复 |
-| S6 | 🔴 | 任务工作目录路径遍历 + 权限无隔离 | ✅ 已修复 |
-| S7 | 🔴 | gitRepo 字段无 scheme 白名单，可 SSRF | ✅ 已修复 |
-| S8 | 🔴 | docker-compose.yml 密码硬编码 | ✅ 已修复 |
-| S9 | 🔴 | registry-pypi 包索引/下载无认证 | ✅ 已修复 |
-| S10 | 🟡 | CORS origin 为 *，与 credentials 同时使用 | ✅ 已修复 |
-| S11 | 🔴 | users 接口无 RBAC，普通用户可删除任意账号 | ✅ 已修复 |
-| S12 | 🔴 | 修改密码不验证旧密码 | ✅ 已修复 |
-| S13 | 🟡 | config 接口返回 secret 字段明文 | ✅ 已修复 |
-| S14 | 🔴 | executor register/heartbeat 无 token 校验 | ✅ 已修复 |
-| S15 | 🟡 | login 接口无限速，暴力破解风险 | ✅ 已修复（ThrottlerModule）|
-| S16 | 🔴 | npm install 包名未校验，可命令注入 | ✅ 已修复 |
-| Q1 | 🔴 | task.processor catch 不 rethrow，BullMQ 无法重试 | ✅ 已修复 |
-| Q2 | 🟡 | executor dispatch 并发时负载均衡失效 | ✅ 已修复（乐观递增）|
-| Q3 | 🟡 | 僵尸任务检测阈值固定 15min，与任务实际 timeout 无关 | ✅ 已修复 |
-| Q4 | 🟡 | AI service 无 HTTP timeout，阻塞 BullMQ worker | ✅ 已修复 |
-| Q5 | 🟡 | email channel 未接入 nodemailer | ✅ 已修复 |
-| Q6 | 🔴 | 无 TypeORM Migration 文件，生产环境无法建表 | ✅ 已修复 |
-| Q7 | 🟡 | 历史 execution / audit_log 无清理策略，DB 无限膨胀 | ✅ 已修复 |
-| Q8 | 🟡 | auth login/logout 未接入 AuditService | ✅ 已修复 |
-| Q9 | 🟡 | dingtalk/wecom/slack webhook 无 timeout | ✅ 已修复 |
-| Q10 | 🟡 | SDK 与 executor 无共享 schema | ✅ 已修复 |
-| Q11 | 🔴 | 任务工作目录无权限隔离（与 S6 合并）| ✅ 已修复 |
-| Q12 | 🟡 | audit.service findAll 无分页上限，可全表扫描 | ✅ 已修复 |
-| M1 | 🟢 | 缺少核心链路单元测试 | ✅ 已修复 |
-| M2 | 🟢 | 两份 docker-compose.yml 职责不清 | ✅ 已修复 |
-| M3 | 🟡 | 关键配置缺少 fail-fast 校验 | ✅ 已修复 |
+- **文件**：`apps/executor-node/src/routes/execute.ts`
+- **描述**：`POST /api/execute` 路由未加任何认证中间件。任何能访问该端口的人均可提交任意任务在服务器上执行任意代码。`apps/executor-node/src/main.ts` 中 `executorAuthMiddleware` 只保护 `/api/logs` 路由，`/api/execute` 未包含在内。
+- **修复建议**：在 `execute` 路由上同样添加 `executorAuthMiddleware`，或将认证中间件提升到 `/api` 前缀级别。
 
----
+### S-02 🔴 executor /api/execute 端点无认证保护（Python executor）
 
-## 新发现问题（本次审查，2026-06-04）
+- **文件**：`apps/executor-python/routers/execute.py` 第 64 行
+- **描述**：`@router.post('/execute')` 没有 `Depends(verify_token)`。`/api/logs` 有认证，`/api/execute` 却没有，攻击面一致。
+- **修复建议**：为路由加上 `dependencies=[Depends(verify_token)]`。
 
-### N1 🔴 executor-python/main.py 引用了未导入的 `logs` 模块
+### S-03 🟠 JWT Secret 默认值不安全
 
-**文件**：`apps/executor-python/main.py` 第 69 行
-**问题**：`app.include_router(logs.router, prefix='/api')` 使用了 `logs`，但文件顶部只导入了 `execute` 和 `health`，没有 `from routers import logs`。服务启动时立即抛 `NameError: name 'logs' is not defined`，executor-python 完全无法启动。
-**修复**：在导入区加上 `from routers import logs`。
+- **文件**：`apps/admin-api/src/config/configuration.ts` 第 7 行
+- **描述**：`jwtSecret: process.env.JWT_SECRET || 'autoflow-secret'`，当 `JWT_SECRET` 未设置时退化为已知默认值，可伪造 JWT。
+- **修复建议**：去掉默认值；若 `JWT_SECRET` 未设置则在启动时抛出异常拒绝启动。
 
----
+### S-04 🟠 Executor Shared Token 默认值不安全
 
-### N2 🔴 executor-python/routers/execute.py 重复定义 `ExecuteRequest` 覆盖 SDK 版本
+- **文件**：`apps/admin-api/src/config/configuration.ts` 第 8 行；`apps/executor-python/auth.py` 第 4 行
+- **描述**：`executorSecret: process.env.EXECUTOR_SECRET || ''` 和 Python 侧 `_EXECUTOR_SECRET = ... or ''`，空字符串导致 dev 模式下完全跳过认证，且无任何告警阻止在生产环境沿用。
+- **修复建议**：生产环境启动时校验该值非空；开发模式下至少打印明显的 WARNING。
 
-**文件**：`apps/executor-python/routers/execute.py` 第 14–24 行 & 第 58–62 行
-**问题**：文件先通过 try/except 从 SDK 导入 `ExecuteRequest`（含 fallback），然后在第 58 行又无条件 `class ExecuteRequest(BaseModel)` 重新定义，覆盖前者。实际使用的是局部版本，SDK 版本形同虚设，且局部版本缺少 `TaskConfig` 嵌套校验。
-**修复**：删除第 58–62 行的重复定义，统一使用 SDK 导入版本。
+### S-05 🟠 PyPI Registry 默认密码为弱密码
 
----
+- **文件**：`apps/registry-pypi/main.py` 第 27-28 行
+- **描述**：`REGISTRY_PASS = os.getenv("REGISTRY_PASS", "admin123")`，若不设置环境变量则使用极弱的硬编码密码暴露私有包仓库。
+- **修复建议**：移除默认值，启动时若 `REGISTRY_PASS` 未设置则拒绝启动。
 
-### N3 🔴 executor-python 超时时日志流协程未正确取消，资源泄漏
+### S-06 🟠 前端客户端认证检查依赖 localStorage 而非 store
 
-**文件**：`apps/executor-python/routers/execute.py` 第 193–206 行
-**问题**：`await asyncio.wait_for(_stream_to_file(), timeout=timeout)` 超时后调用了 `proc.kill()`，但 `_stream_to_file` 协程任务未被显式 cancel，会导致 asyncio 发出 `Task was destroyed but it is pending` 警告并泄漏文件句柄。
-**修复**：将 stream 任务显式创建为 `asyncio.Task`，超时时先 kill 进程再 `task.cancel()`。
+- **文件**：`apps/admin-web/src/router.tsx` 第 16-19 行
+- **描述**：`PrivateRoute` 直接读取 `localStorage.getItem('token')` 而非使用 Zustand store。Token 双写到 localStorage（`store/auth.ts` 第 17 行）且 axios interceptor 也直接读 `localStorage`，状态不同步风险存在；更重要的是 token 存放在 localStorage 面临 XSS 盗取风险。
+- **修复建议**：统一从 Zustand store 读取；评估是否改用 httpOnly cookie 存储 token。
 
----
+### S-07 🟠 前端 registry.ts 直接解析 HTML 获取包列表（XSS 风险）
 
-### N4 🔴 executor-node logs 路由对 executionId 未做 basename 过滤
+- **文件**：`apps/admin-web/src/api/registry.ts` 第 29-31 行
+- **描述**：用正则直接从 PyPI `/simple/` HTML 页面提取包名，若服务端返回恶意 HTML 可能导致 XSS 或数据污染。此外 `listPypiPackages`/`getPypiPackage` 未经过带认证的 axios 客户端，而是用裸 `fetch`，无 CORS 凭证控制。
+- **修复建议**：通过后端代理接口返回结构化 JSON；或使用 `DOMParser` + 白名单解析。
 
-**文件**：`apps/executor-node/src/routes/logs.ts` 第 25–32 行
-**问题**：`executionId` 来自 URL 路径参数，直接拼入 `path.resolve(workDir, executionId + '.log')`，未先做 `path.basename`。虽有 `startsWith(base)` 校验，但含 null byte 的输入在部分 Node 版本会截断路径，绕过校验。
-**修复**：使用前先过滤：`const safeId = path.basename(executionId); if (safeId !== executionId) { reject 400; }`
+### S-08 🟠 Nginx 配置缺少安全响应头和 CSP
+
+- **文件**：`apps/admin-web/nginx.conf`
+- **描述**：没有 `Content-Security-Policy`、`X-Frame-Options`、`X-Content-Type-Options`、`Strict-Transport-Security` 等安全响应头，前端面临点击劫持、MIME 嗅探等风险。
+- **修复建议**：在 `server` 块中添加标准安全头集合。
+
+### S-09 🟠 Verdaccio 公开访问策略过于宽松
+
+- **文件**：`apps/registry-npm/config.yaml` 第 25-26 行
+- **描述**：`'**': access: $all` 允许未认证用户访问所有非 `@autoflow/*` 的 npm 包。虽然是代理到公共 npmjs，但会暴露内部 npm 流量和版本信息。
+- **修复建议**：根据安全要求将 `access` 改为 `$authenticated`。
+
+### S-10 🟡 AI Service 将完整错误日志发送给 OpenAI/Ollama
+
+- **文件**：`apps/admin-api/src/modules/ai/ai.service.ts`
+- **描述**：`analyzeFailure` 将 `logs`（可能包含环境变量、密码、内部路径）原文发送给外部 AI 接口，存在数据泄露风险。
+- **修复建议**：对日志内容做脱敏处理（剔除 env var 格式字符串、长 token 等）后再上传；或提供开关控制是否启用 AI 分析。
+
+### S-11 🟡 admin-api 未配置全局请求体大小限制
+
+- **文件**：`apps/admin-api/src/main.ts`
+- **描述**：NestJS 默认 body 限制为 100 KB，但日志回调等接口可能接收大量数据，未显式配置可能被滥用进行 DoS。
+- **修复建议**：`app.use(express.json({ limit: '1mb' }))` 或在 NestJS 中配置合适的 `bodyParser` 限制。
 
 ---
 
-### N5 🔴 两个 Migration 文件重复建同名表，生产启动报错
+## 二、运行时 Bug 与功能缺陷
 
-**文件**：`apps/admin-api/src/migrations/1700000000000-InitialSchema.ts` 和 `1717473142678-InitialSchema.ts`
-**问题**：两份 migration 均创建 `users`、`tasks`、`task_executions`、`audit_logs`、`system_configs` 等表和 enum。TypeORM 按时间戳顺序执行，旧版（1700000000000）用 `IF NOT EXISTS`，新版（1717473142678）不用，执行新版时 CREATE TABLE 报已存在，migration 链失败，应用无法启动。
-**修复**：删除旧版 `1700000000000-InitialSchema.ts`（已被 1717473142678 完整取代）。
+### B-01 🔴 TaskDetailPage 使用了未导入的组件
 
----
+- **文件**：`apps/admin-web/src/pages/TaskDetailPage.tsx` 第 17-19、56、60-70 行
+- **描述**：组件内使用了 `useState`、`Modal`、`Input`、`RollbackOutlined` 但文件顶部完全没有 import。这会导致运行时 `ReferenceError`，回滚功能完全无法使用。
+- **修复建议**：添加缺少的 import：`import { useState } from 'react'`；从 antd 导入 `Modal`、`Input`；从 `@ant-design/icons` 导入 `RollbackOutlined`。
 
-### N6 🟡 `task_executions.taskId` 在新版 Migration 中为 VARCHAR，无外键无索引
+### B-02 🟠 users.ts API 客户端引用不存在的导出
 
-**文件**：`apps/admin-api/src/migrations/1717473142678-InitialSchema.ts` 第 66 行
-**问题**：`taskId VARCHAR NOT NULL`——无外键约束（旧版有 `REFERENCES tasks(id) ON DELETE CASCADE`），无索引。导致：①执行记录可指向不存在的 task；② `getExecutions(taskId)` 全表扫描。
-**修复**：补加外键和索引（在新 migration 中）。
+- **文件**：`apps/admin-web/src/api/users.ts` 第 1 行
+- **描述**：`import { apiClient } from './client'`，但 `client.ts` 只导出 `client`，不存在 `apiClient`。`metrics.ts` 同样有此问题（第 1 行）。这会导致 users 相关所有接口调用时运行时报错。
+- **修复建议**：将 `import { apiClient }` 改为 `import { client as apiClient }` 或统一导出名。
 
----
+### B-03 🟠 执行器 dispatch 选择策略不完善（竞态风险）
 
-### N7 🟡 scheduler 分布式锁依赖 Bull 队列私有 `.client` 属性
+- **文件**：`apps/admin-api/src/modules/executor/executor.service.ts`
+- **描述**：`dispatch` 方法先 `find` 找出所有在线执行器，再通过 `runningTaskCount < maxConcurrentTasks` 过滤，然后选负载最低的。但 `increment` 操作在 HTTP 请求后才执行，并发任务调度时多个任务可能同时选中同一执行器，超出其并发限制。
+- **修复建议**：使用数据库乐观锁或 Redis 原子计数来保证调度的原子性。
 
-**文件**：`apps/admin-api/src/modules/scheduler/scheduler.service.ts` 第 92 行
-**问题**：`const client = await (this.queue as any).client` 通过强制类型转换访问私有属性。Bull 与 BullMQ 此属性命名不同，升级时静默失效，导致分布式锁失效、多实例重复触发任务。
-**修复**：使用独立的 ioredis 连接或 `redlock` 库实现分布式锁。
+### B-04 🟠 scheduler.service 固定频率任务不保证幂等
 
----
+- **文件**：`apps/admin-api/src/modules/scheduler/scheduler.service.ts`
+- **描述**：`scheduleFixedRate` 使用 `setInterval`，若上一次执行还未结束，下一次调度就会再次触发，导致并发执行同一任务。
+- **修复建议**：追踪每个任务是否正在执行，若正在执行则跳过本次调度；或改用 BullMQ 队列串行化。
 
-### N8 🟡 cron 闭包捕获 stale task 快照，update 后最多 1 分钟行为不一致
+### B-05 🟡 Python executor 日志文件路径拼接错误
 
-**文件**：`apps/admin-api/src/modules/scheduler/scheduler.service.ts` 第 82 行
-**问题**：`nodeCron.schedule(t.cronExpression, () => this.enqueue(t, 'cron'))` 闭包捕获了查询时的 `t` 快照。若后续 `update()` 修改了 `maxRetry`、`timeout` 等字段，已注册的 cron 仍引用旧对象，最多 1 分钟内行为不一致。
-**修复**：闭包中按 taskId 重新查询最新 task：`const latest = await this.taskRepo.findOne({ where: { id: t.id } }); if (latest) await this.enqueue(latest, 'cron');`
+- **文件**：`apps/executor-python/routers/execute.py` 第 174 行
+- **描述**：`log_file = work_dir / f'{req.executionId}.log'`，日志写在 `work_dir`（即 `<base>/<executionId>/`）下，但 `/api/logs/:execution_id` 读取的路径是 `base / f'{execution_id}.log'`（`logs.py` 第 29 行），少了一级目录，日志读取接口永远返回 404。
+- **修复建议**：统一日志路径为 `base / execution_id / f'{execution_id}.log'`，或修改 logs.py 中的路径拼接。
 
----
+### B-06 🟡 Node executor 任务超时后子进程可能未被杀死
 
-### N9 🟡 task.processor 直接读 `process.env` 而非 ConfigService
+- **文件**：`apps/executor-node/src/routes/execute.ts`
+- **描述**：超时逻辑调用 `proc.kill()`，但 `spawn` 以默认方式启动，不是进程组，子进程衍生的子进程不会被一起杀掉，可能产生僵尸进程。
+- **修复建议**：使用 `spawn` 的 `detached: true` + `process.kill(-proc.pid)` 杀掉整个进程组，或使用 `tree-kill` 包。
 
-**文件**：`apps/admin-api/src/modules/task/task.processor.ts` 第 33 行
-**问题**：`const token = process.env.EXECUTOR_SHARED_TOKEN || ''` 直接读环境变量，与项目其他地方通过 `ConfigService` 读取不一致。若配置通过 Vault/k8s Secret 方式注入（只更新 ConfigService 不更新 process.env），此处静默发送无认证头，拉取日志时 401。
-**修复**：注入 `ConfigService`，使用 `this.configService.get('executor.sharedToken')`。
+### B-07 🟡 BullMQ 队列处理器注册方式不规范
 
----
+- **文件**：`apps/admin-api/src/modules/task/task.processor.ts`
+- **描述**：`TaskProcessor` 没有使用 `@nestjs/bullmq` 的 `@Processor()` 和 `@OnWorkerEvent()` 装饰器，而是手动创建 Worker 实例。这绕过了 NestJS DI 生命周期，可能导致优雅关闭时 Worker 未正确关闭，连接泄漏。
+- **修复建议**：改用 `@nestjs/bullmq` 官方提供的 `@Processor` 装饰器方式注册。
 
-### N10 🟡 `getExecutionLogs` 使用字符串表名访问 repository，返回 `any` 类型
+### B-08 🟡 notification 服务 Webhook 失败不上报
 
-**文件**：`apps/admin-api/src/modules/task/task.service.ts` 第 102 行
-**问题**：`this.dataSource.getRepository('execution_log_lines')` 返回 `Repository<unknown>`，字段取值需要 `r.l_content ?? r.content` 兼容逻辑，脆弱易出错。
-**修复**：注入类型化的 `@InjectRepository(ExecutionLogLine) private logLineRepo` 并直接使用。
-
----
-
-### N11 🟡 rollback 后未重新调度，cron/fixed_rate 任务仍用旧 commit
-
-**文件**：`apps/admin-api/src/modules/task/task.service.ts` 第 116–139 行
-**问题**：`rollback()` 在事务里更新了 `task.gitCommit`，但没有调用 `schedulerService.scheduleOne(task)`（而 `update()` 会调用）。下次自动触发仍用旧 commit 的 task 快照。
-**修复**：rollback 完成后，若任务状态为 ACTIVE，调用 `await this.schedulerService.scheduleOne(task)`。
+- **文件**：`apps/admin-api/src/modules/notification/notification.service.ts`
+- **描述**：`notifyFailureWithConfig` 内部 try/catch 吞掉了所有通知渠道的错误，仅打印 warn 日志，任务执行失败的通知悄悄丢失也不会有任何可见反馈。
+- **修复建议**：将通知失败记录到审计日志或单独的通知失败表，以便排查。
 
 ---
 
-### N12 🟡 僵尸任务检测 15min 硬编码阈值，与 PROGRESS.md 声称的 per-execution 修复不符
+## 三、代码质量与架构问题
 
-**文件**：`apps/admin-api/src/modules/executor/executor.service.ts` 第 85–103 行
-**问题**：PROGRESS.md 声称 Q3 已按 per-execution 使用 `taskTimeout+5min` 修复，但实际代码 `broadThreshold = 15 * 60 * 1000` 硬编码，内层 for 循环也没有从 taskRepo 查询实际 timeout 做二次判断。任务 timeout 配置为 30min 时，15min 后会被错误标记为 FAILED。
-**修复**：内层循环查询关联 task 的 timeout 字段，以 `task.timeout * 1000 + 5 * 60 * 1000` 作为该 execution 的判定阈值。
+### Q-01 🟡 ExecuteRequest 在 executor-python 中定义了两次
 
----
+- **文件**：`apps/executor-python/routers/execute.py` 第 20-23 行 和 第 58-61 行
+- **描述**：文件顶部有一个 try/except 导入 SDK 的 `ExecuteRequest` 并提供 fallback 定义，第 58 行又重新定义了一个同名的 `ExecuteRequest`（覆盖了前者），导致 SDK 集成完全无效，始终使用本地定义。
+- **修复建议**：删除第 58-61 行的重复定义，直接使用 SDK 的模型。
 
-### N13 🟡 ValidationPipe `forbidNonWhitelisted: false`，额外字段静默丢弃
+### Q-02 🟡 双重 token 存储导致状态不一致
 
-**文件**：`apps/admin-api/src/main.ts` 第 41 行
-**问题**：与 `whitelist: true` 组合时，额外字段只被丢弃不会返回 400，调用方字段拼写错误时静默失效，调试困难。
-**修复**：改为 `forbidNonWhitelisted: true`。
+- **文件**：`apps/admin-web/src/store/auth.ts` 第 17 行；`apps/admin-web/src/api/client.ts` 第 11 行
+- **描述**：token 同时存储在 Zustand persist（写入 localStorage key `autoflow-auth`）和直接写入 `localStorage.getItem('token')`，两个 key 不同，读写逻辑不统一，可能出现 store 有 token 但 axios 读不到的问题。
+- **修复建议**：axios interceptor 改为从 Zustand store 读取 token，不直接访问 localStorage。
 
----
+### Q-03 🟡 metrics.ts 和 users.ts 使用 .then(r => r.data) 但 client 已经解包
 
-### N14 🟡 registry-pypi 上传接口 filename 未过滤路径遍历
+- **文件**：`apps/admin-web/src/api/metrics.ts` 第 39-42 行；`apps/admin-web/src/api/users.ts` 第 27-39 行
+- **描述**：axios 响应拦截器 `(res) => res.data` 已将响应解包为 data，`metrics.ts` 再次 `.then(r => r.data)` 会得到 `undefined`。`users.ts` 使用 `apiClient`（不存在的导出）且对响应结构假设也不一致。
+- **修复建议**：统一 API 层，移除多余的 `.then(r => r.data)` 调用。
 
-**文件**：`apps/registry-pypi/main.py` 第 106 行
-**问题**：`filename = content.filename` 直接使用，虽有扩展名白名单，但未做 `Path(filename).name` 过滤。`filename` 为 `../../evil.whl` 时会写入包目录之外（download 端点已做过滤，upload 遗漏）。
-**修复**：`filename = Path(content.filename).name`
+### Q-04 🟡 HttpClient SDK 只提供同步 httpx.Client，不支持 async
 
----
+- **文件**：`packages/autoflow-sdk/autoflow_sdk/http.py`
+- **描述**：`HttpClient` 使用同步 `httpx.Client`，但 executor-python 整体是 async FastAPI 应用。在协程中调用同步 HTTP 请求会阻塞事件循环。
+- **修复建议**：提供 `AsyncHttpClient` 使用 `httpx.AsyncClient`，或文档说明需在线程池中调用。
 
-### N15 🟡 executor `runningTaskCount` 乐观递增后成功完成不回滚，30s 内统计失真
+### Q-05 🟡 autoflow-sdk pyproject.toml 依赖版本范围过宽
 
-**文件**：`apps/admin-api/src/modules/executor/executor.service.ts` 第 65–77 行
-**问题**：dispatch 成功后 admin-api 递增 `runningTaskCount`，但任务完成时（无论成功/失败）admin-api 没有代码将其递减。实际计数依赖执行器每 30s 心跳上报，高并发时调度器会误认为执行器满载。
-**修复**：在 task.processor.ts 的 finally 块中通过 executor address 递减计数；或完全依赖心跳上报，去掉 admin-api 侧的主动递增。
+- **文件**：`packages/autoflow-sdk/pyproject.toml` 第 11-13 行
+- **描述**：`httpx>=0.24.0` 和 `pyyaml>=6.0` 使用了开放的下界约束，`setup.py` 也一样，安装时可能拉取未验证的新版本，破坏兼容性。
+- **修复建议**：指定上界约束，如 `httpx>=0.24.0,<1.0`；或改用精确版本锁定。
 
----
+### Q-06 🟡 admin-web package.json 全部使用 ^ 版本范围
 
-### N16 🟢 login 路由未单独设置更严格的限速
+- **文件**：`apps/admin-web/package.json`
+- **描述**：所有依赖均为 `^` 版本，包括 antd、react-router-dom 等，CI 每次安装可能得到不同版本，破坏可复现性。
+- **修复建议**：使用 `package-lock.json` 锁定依赖（已有 lock 文件），CI 中使用 `npm ci` 而非 `npm install`。
 
-**文件**：`apps/admin-api/src/app.module.ts` / `auth.controller.ts`
-**问题**：ThrottlerModule 仅有全局默认配置（10req/60s），login 路由没有 `@Throttle()` 单独收紧。全局限速过宽会影响正常 API，login 理应更严格（建议 5req/60s）。
-**修复**：在 `AuthController.login` 上加 `@Throttle({ default: { limit: 5, ttl: 60000 } })`。
+### Q-07 🟢 大量使用 `any` 类型
 
----
+- **文件**：多处，包括 `tasks.ts`（第 13 行 `params?: Record<string, any>`）、`store/auth.ts`（第 7 行 `user: any`）、`TaskFormPage.tsx`（第 18 行 `values: any`）等
+- **描述**：过度使用 `any` 放弃了 TypeScript 的类型检查优势，可能掩盖运行时错误。
+- **修复建议**：为 API 响应、用户对象等定义具体类型；开启 `noImplicitAny` 编译选项。
 
-### N17 🟢 `.env.example` 缺少 `JWT_REFRESH_SECRET` 和 `CORS_ORIGINS`
+### Q-08 🟢 executor-python Dockerfile 以 root 身份运行
 
-**文件**：`.env.example`
-**问题**：`configuration.ts` 生产环境校验 `JWT_REFRESH_SECRET`（缺失时 fail-fast），`main.ts` 读取 `CORS_ORIGINS`，但 `.env.example` 均未列出，新部署者无从得知，生产部署直接报错。
-**修复**：补充到 `.env.example`：
-```
-JWT_REFRESH_SECRET=change-me-refresh-at-least-32-chars
-CORS_ORIGINS=http://localhost,http://localhost:5173
-```
+- **文件**：`apps/executor-python/Dockerfile`
+- **描述**：没有 `USER` 指令，容器以 root 运行，且任务也以 root 执行，容器逃逸风险高。
+- **修复建议**：添加 `RUN useradd -m appuser && USER appuser`；考虑使用 seccomp/AppArmor 限制系统调用。
 
----
+### Q-09 🟢 executor-node Dockerfile 以 root 身份运行
 
-### N18 🟢 executor-node npm install 使用 `execSync` + `shell: false as any`，类型欺骗
+- **文件**：`apps/executor-node/Dockerfile`
+- **描述**：同上，无 `USER` 指令。
+- **修复建议**：同 Q-08。
 
-**文件**：`apps/executor-node/src/routes/execute.ts` 第 121–126 行
-**问题**：手动将参数数组 join 成字符串再调 `execSync(..., { shell: false as any })`。`execSync` 不支持 `shell: false` 选项（该选项属于 `spawnSync`），`as any` 是类型欺骗，实际该选项被忽略，命令通过 shell 执行，前面的包名校验防护可能失效。
-**修复**：改用 `spawnSync('npm', ['install', '--prefix', nodeModulesDir, ...requirements], { stdio: 'pipe', timeout: 300_000 })`。
+### Q-10 🟢 admin-api Dockerfile 以 root 身份运行
 
----
-
-### N19 🟢 `packages/autoflow-http/db/notify/ai` 目录为空占位，与文档描述不符
-
-**文件**：`packages/` 下除 `autoflow-sdk` 外的四个目录
-**问题**：PROGRESS.md 目录结构列出了 `autoflow-http`、`autoflow-db`、`autoflow-notify`、`autoflow-ai` 四个包，但实际均为空目录。若有代码引用这些包会静默 fallback 或报 ImportError。
-**修复**：实现这些包的内容，或删除空目录并更新文档。
+- **文件**：`apps/admin-api/Dockerfile`
+- **描述**：同上。
+- **修复建议**：添加非特权用户。
 
 ---
 
-## 新问题汇总状态表
+## 四、API 设计与一致性问题
 
-| ID | 优先级 | 状态 | 一句话描述 |
-|----|--------|------|------------|
-| N1 | 🔴 | ✅ 已修复 | executor-python 启动崩溃：logs 模块未导入 |
-| N2 | 🔴 | ✅ 已修复 | execute.py 重复定义 ExecuteRequest，SDK 版本被覆盖 |
-| N3 | 🔴 | ✅ 已修复 | Python 超时时日志流协程未正确取消，资源泄漏 |
-| N4 | 🔴 | ✅ 已修复 | executor-node logs 路由 executionId 未做 basename 过滤 |
-| N5 | 🔴 | ✅ 已修复 | 两个 Migration 文件重复建表，生产启动报错 |
-| N6 | 🟡 | ✅ 已修复 | task_executions.taskId 无外键约束和索引 |
-| N7 | 🟡 | ✅ 已修复 | scheduler 分布式锁依赖 Bull 私有 API，升级即失效 |
-| N8 | 🟡 | ✅ 已修复 | cron 闭包捕获 stale task 快照，更新后最多 1min 不一致 |
-| N9 | 🟡 | ✅ 已修复 | task.processor 直接读 process.env 而非 ConfigService |
-| N10 | 🟡 | ✅ 已修复 | getExecutionLogs 用字符串表名，返回 any 类型 |
-| N11 | 🟡 | ✅ 已修复 | rollback 后未重新调度，cron 任务仍用旧 commit |
-| N12 | 🟡 | ✅ 已修复 | 僵尸任务检测 15min 硬编码，长 timeout 任务被误杀 |
-| N13 | 🟡 | ✅ 已修复 | ValidationPipe forbidNonWhitelisted=false，额外字段静默丢弃 |
-| N14 | 🟡 | ✅ 已修复 | PyPI registry 上传接口未过滤 filename 路径遍历 |
-| N15 | 🟡 | ✅ 已修复 | executor runningTaskCount 只增不减，30s 内负载统计失真 |
-| N16 | 🟢 | ✅ 已修复 | login 路由未单独限速，依赖全局 throttler |
-| N17 | 🟢 | ✅ 已修复 | .env.example 缺少 JWT_REFRESH_SECRET 和 CORS_ORIGINS |
-| N18 | 🟢 | ✅ 已修复 | executor-node npm install 使用 execSync+shell 类型欺骗 |
-| N19 | 🟢 | ✅ N/A | autoflow-http/db/notify/ai 包目录为空占位（当前代码库中不存在该目录）|
+### A-01 🟡 /api/execute 与 /api/logs 路径不一致（Node executor）
+
+- **文件**：`apps/executor-node/src/main.ts` 第 11-12 行
+- **描述**：`app.use('/api', executeRouter)` 和 `app.use('/api', logsRouter)` 分别注册，logs 路由路径为 `/logs/:executionId`，而 admin-api 中 `ExecutorService` 调用的 log 拉取路径为 `/api/logs/:executionId`——路径正确，但 executor 注册认证中间件时仅对 `/api/logs` 生效，execute 路由未受保护（见 S-01）。
+
+### A-02 🟡 admin-api 缺少全局请求速率限制
+
+- **文件**：`apps/admin-api/src/main.ts`
+- **描述**：整个 API 服务没有配置速率限制（throttler），login 端点可被暴力破解，触发接口可被刷。
+- **修复建议**：安装 `@nestjs/throttler`，对 login 等敏感端点配置更严格的速率限制。
+
+### A-03 🟡 任务触发接口返回值不统一
+
+- **文件**：`apps/admin-api/src/modules/task/task.controller.ts`
+- **描述**：`trigger` 返回 `{ message, executionId }`，`rollback` 返回 `{ message, executionId, gitCommit }`，其他 CRUD 接口通过 `ResponseInterceptor` 包装，前端需要区别处理。
+- **修复建议**：统一所有接口的响应格式。
+
+### A-04 🟢 /metrics/* 端点无分页，返回全量数据
+
+- **文件**：`apps/admin-api/src/modules/metrics/metrics.service.ts`
+- **描述**：`getRecentFailures` 硬编码 `take: 10`，`getDailyTrend` 硬编码最多 30 天，这些值未通过参数暴露，扩展性差。
+- **修复建议**：将 `limit`/`days` 等参数通过 query string 暴露。
+
+---
+
+## 五、数据库与性能问题
+
+### D-01 🟡 ExecutionLogLine 实体缺少核心索引
+
+- **文件**：`apps/admin-api/src/modules/task/entities/execution-log-line.entity.ts`
+- **描述**：`executionId` 字段没有数据库索引（没有 `@Index()` 装饰器），`fetchAndStoreLogLines` 按 executionId 查询时全表扫描，在日志量大时性能极差。
+- **修复建议**：在 `executionId` 字段添加 `@Index()` 装饰器，并生成对应 migration。
+
+### D-02 🟡 TaskExecution 表缺少常用查询索引
+
+- **文件**：`apps/admin-api/src/modules/task/entities/task-execution.entity.ts`
+- **描述**：按 `taskId`、`status`、`startTime` 的查询很频繁，但都没有索引。
+- **修复建议**：添加 `@Index()` 到 `taskId` 和 `status` 字段。
+
+### D-03 🟡 metrics 查询使用原生 SQL 但参数可信度高
+
+- **文件**：`apps/admin-api/src/modules/metrics/metrics.service.ts`
+- **描述**：`getDailyTrend` 使用 TypeORM QueryBuilder 拼接参数，参数经过了类型验证，无明显 SQL 注入风险，但 raw query 部分需注意维护。整体安全，记录为低优先级跟踪。
+
+### D-04 🟢 AuditLog 表 detail 字段使用 jsonb 但无索引
+
+- **文件**：`apps/admin-api/src/modules/audit/entities/audit-log.entity.ts`
+- **描述**：`detail` 为 `jsonb` 类型，若未来需要按 detail 内容查询则全表扫描，可预先规划 GIN 索引。
+
+---
+
+## 六、基础设施与容器化问题
+
+### I-01 🟡 docker-compose.yml 暴露不必要的端口到宿主机
+
+- **文件**：`docker-compose.yml` 第 15、30 行
+- **描述**：PostgreSQL（5432）和 Redis（6379）端口直接映射到宿主机，生产环境中数据库不应暴露到宿主网络。
+- **修复建议**：移除 postgres 和 redis 的 `ports` 配置，让它们只在 Docker 内部网络中通信。
+
+### I-02 🟡 executor 容器 WORK_DIR 使用 /tmp
+
+- **文件**：`docker-compose.yml` 第 87、104 行
+- **描述**：`WORK_DIR: /tmp/autoflow/tasks`，`/tmp` 在容器重启后会被清空，任务工作目录、持久化的 venv、node_modules 缓存全部丢失，重启后第一次执行性能极差。
+- **修复建议**：挂载持久化 Volume 到工作目录。
+
+### I-03 🟢 缺少 .dockerignore 文件
+
+- **文件**：所有应用目录
+- **描述**：没有 `.dockerignore`，构建镜像时会把 `node_modules`、`.git`、测试文件等全部打包，增大镜像体积和构建时间。
+- **修复建议**：添加各应用的 `.dockerignore`。
+
+### I-04 🟢 executor-python 用 pip 安装 uv，但 uv 本身也可用于管理依赖
+
+- **文件**：`apps/executor-python/Dockerfile` 第 6 行
+- **描述**：`RUN pip install --no-cache-dir uv` 混用 pip 和 uv，建议使用 uv 官方安装方式以获得更稳定的版本控制。
+- **修复建议**：使用 `RUN curl -LsSf https://astral.sh/uv/install.sh | sh` 或固定版本安装。
+
+---
+
+## 七、测试覆盖问题
+
+### T-01 🟡 Python executor 完全缺少单元测试
+
+- **文件**：`apps/executor-python/`
+- **描述**：整个 Python executor 目录没有任何 `*_test.py` 或 `test_*.py` 文件，核心逻辑（路径遍历防护、运行时分发、venv 管理）未经测试。
+- **修复建议**：添加 pytest 测试，至少覆盖：路径遍历拒绝、不支持 runtime 返回 400、认证拒绝。
+
+### T-02 🟡 admin-api 大多数模块缺少测试
+
+- **文件**：`apps/admin-api/src/`
+- **描述**：仅有 `auth.service.spec.ts`、`executor.service.spec.ts`、`task.processor.spec.ts` 三个测试文件。`TaskService`、`UsersService`、`NotificationService`、`AiService`、`SchedulerService`、`MetricsService`、`ConfigService` 等均无测试。
+- **修复建议**：至少为 TaskService（核心调度逻辑）和 NotificationService 补充测试。
+
+### T-03 🟢 前端完全缺少测试
+
+- **文件**：`apps/admin-web/`
+- **描述**：没有任何前端测试（无 vitest、jest、playwright 配置），`package.json` 也没有 test 脚本。
+- **修复建议**：引入 Vitest + React Testing Library，至少对关键页面组件添加渲染测试。
+
+### T-04 🟢 executor-node 测试仅覆盖 execute 路由，缺少集成测试
+
+- **文件**：`apps/executor-node/src/routes/execute.spec.ts`
+- **描述**：现有测试是好的起点，但缺少：日志路由测试、心跳/注册流程测试、git clone 路径的集成测试。
+
+---
+
+## 八、文档与工程规范问题
+
+### E-01 🟢 缺少 README.md
+
+- **文件**：项目根目录
+- **描述**：项目根目录没有 README.md，新成员无法快速了解如何启动和开发。PROGRESS.md 填补了部分功能但不是标准入口。
+- **修复建议**：添加 README.md，包含架构概览、快速启动步骤、环境变量说明。
+
+### E-02 🟢 缺少 .gitignore
+
+- **文件**：项目根目录
+- **描述**：未确认根目录存在 `.gitignore`，可能导致 `node_modules`、`dist`、`.env` 等被误提交。
+- **修复建议**：添加涵盖 Node.js、Python、Docker 的 `.gitignore`。
+
+### E-03 🟢 .env.example 缺少部分变量
+
+- **文件**：`.env.example` 和 `apps/admin-api/.env.example`
+- **描述**：`docker-compose.yml` 中引用的 `PYPI_API_KEY`、`REGISTRY_USER`、`REGISTRY_PASS` 等变量在根 `.env.example` 中未列出；executor 侧 `EXECUTOR_SHARED_TOKEN` 和 `EXECUTOR_SECRET` 命名不一致（两个不同的环境变量名指向同一个 token）。
+- **修复建议**：补全 `.env.example`，统一 token 环境变量名称。
+
+### E-04 🟢 缺少 CI/CD 配置
+
+- **文件**：项目根目录
+- **描述**：没有 `.github/workflows/`、`.gitlab-ci.yml` 或任何 CI 配置，没有自动化测试、lint、安全扫描。
+- **修复建议**：添加 GitHub Actions（或等效）workflow：lint + test + docker build。
+
+---
+
+## 问题汇总表
+
+| ID | 严重性 | 模块 | 标题 | 状态 |
+|---|---|---|---|---|
+| S-01 | 🔴 Critical | executor-node | /api/execute 无认证 | **fixed** |
+| S-02 | 🔴 Critical | executor-python | /api/execute 无认证 | **fixed** |
+| S-03 | 🟠 High | admin-api | JWT Secret 弱默认值 | **fixed** |
+| S-04 | 🟠 High | admin-api/executor | Executor Token 空默认值 | **fixed** |
+| S-05 | 🟠 High | registry-pypi | 硬编码弱密码 | **fixed** |
+| S-06 | 🟠 High | admin-web | 前端认证读 localStorage | **fixed** |
+| S-07 | 🟠 High | admin-web | registry 裸 HTML 解析 XSS 风险 | **fixed** |
+| S-08 | 🟠 High | admin-web | Nginx 缺安全响应头 | **fixed** |
+| S-09 | 🟠 High | registry-npm | Verdaccio 访问策略宽松 | **fixed** |
+| S-10 | 🟡 Medium | admin-api | AI 日志数据泄露 | **fixed** |
+| S-11 | 🟡 Medium | admin-api | 缺全局请求体限制 | **fixed** |
+| B-01 | 🔴 Critical | admin-web | TaskDetailPage 缺少 import | **fixed** |
+| B-02 | 🔴 Critical | admin-web | users/metrics 引用不存在的 apiClient | **fixed** |
+| B-03 | 🟠 High | admin-api | 执行器调度竞态 | **fixed** |
+| B-04 | 🟠 High | admin-api | 固定频率任务无幂等保护 | **fixed** |
+| B-05 | 🟡 Medium | executor-python | 日志文件路径不一致 | **fixed** |
+| B-06 | 🟡 Medium | executor-node | 超时后子进程未完全杀死 | **fixed** |
+| B-07 | 🟡 Medium | admin-api | BullMQ Worker 注册方式不规范 | **fixed** |
+| B-08 | 🟡 Medium | admin-api | 通知失败静默丢弃 | **fixed** |
+| Q-01 | 🟡 Medium | executor-python | ExecuteRequest 双重定义 | **fixed** |
+| Q-02 | 🟡 Medium | admin-web | Token 双重存储状态不一致 | **fixed** |
+| Q-03 | 🟡 Medium | admin-web | 响应解包双重 .data | **fixed** |
+| Q-04 | 🟡 Medium | autoflow-sdk | HttpClient 不支持 async | **fixed** |
+| Q-05 | 🟡 Medium | autoflow-sdk | 依赖版本范围过宽 | N/A (packages 目录不存在) |
+| Q-06 | 🟡 Medium | admin-web | package.json 使用 ^ 版本 | N/A (Vite 前端标准实践，可接受) |
+| Q-07 | 🟢 Low | admin-web/admin-api | 大量 any 类型 | **fixed** |
+| Q-08 | 🟢 Low | executor-python | Dockerfile root 用户运行 | **fixed** |
+| Q-09 | 🟢 Low | executor-node | Dockerfile root 用户运行 | **fixed** |
+| Q-10 | 🟢 Low | admin-api | Dockerfile root 用户运行 | **fixed** |
+| A-01 | 🟡 Medium | admin-api | 路由路径不一致 | open |
+| A-02 | 🟡 Medium | admin-api | 缺全局速率限制 | **fixed** |
+| A-03 | 🟡 Medium | admin-api | 触发接口响应格式不统一 | open |
+| A-04 | 🟢 Low | admin-api | metrics 无分页参数 | N/A (聚合查询，不适用分页) |
+| D-01 | 🟡 Medium | admin-api | ExecutionLogLine 缺 executionId 索引 | **fixed** |
+| D-02 | 🟡 Medium | admin-api | TaskExecution 缺常用查询索引 | **fixed** |
+| D-03 | 🟢 Low | admin-api | metrics 原生 SQL 维护性 | **fixed** |
+| D-04 | 🟢 Low | admin-api | AuditLog detail jsonb 无 GIN 索引 | **fixed** |
+| I-01 | 🟡 Medium | infra | DB/Redis 端口暴露到宿主 | **fixed** |
+| I-02 | 🟡 Medium | infra | executor WORK_DIR 用 /tmp | **fixed** |
+| I-03 | 🟢 Low | infra | 缺 .dockerignore | **fixed** |
+| I-04 | 🟢 Low | executor-python | pip 安装 uv 不规范 | open (低优先级，当前方案可用) |
+| T-01 | 🟡 Medium | executor-python | 完全缺少测试 | **fixed** |
+| T-02 | 🟡 Medium | admin-api | 大多数模块缺少测试 | open |
+| T-03 | 🟢 Low | admin-web | 完全缺少测试 | open |
+| T-04 | 🟢 Low | executor-node | 测试覆盖不足 | open |
+| E-01 | 🟢 Low | 项目 | 缺少 README.md | open |
+| E-02 | 🟢 Low | 项目 | 缺少 .gitignore | **fixed** |
+| E-03 | 🟢 Low | 项目 | .env.example 不完整 | **fixed** |
+| E-04 | 🟢 Low | 项目 | 缺少 CI/CD 配置 | open |
