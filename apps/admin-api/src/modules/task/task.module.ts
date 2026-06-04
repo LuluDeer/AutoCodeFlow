@@ -14,7 +14,7 @@ import { SchedulerModule } from '../scheduler/scheduler.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Task, TaskExecution]),
+    TypeOrmModule.forFeature([Task, TaskExecution, ExecutionLogLine]),
     BullModule.registerQueue({ name: 'task-queue' }),
     ExecutorModule,
     AiModule,

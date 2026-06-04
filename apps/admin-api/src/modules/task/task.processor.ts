@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Job } from 'bull';
 import { TaskExecution, ExecutionStatus } from './entities/task-execution.entity';
+import { ExecutionLogLine } from './entities/execution-log-line.entity';
 import { Task } from './entities/task.entity';
 import { ExecutorService } from '../executor/executor.service';
 import { AiService } from '../ai/ai.service';
@@ -16,10 +17,45 @@ export class TaskProcessor {
   constructor(
     @InjectRepository(TaskExecution) private execRepo: Repository<TaskExecution>,
     @InjectRepository(Task) private taskRepo: Repository<Task>,
+    @InjectRepository(ExecutionLogLine) private logLineRepo: Repository<ExecutionLogLine>,
     private executorService: ExecutorService,
     private aiService: AiService,
     private notificationService: NotificationService,
   ) {}
+
+  /**
+   * Fetch log lines from executor's /api/logs/{executionId} endpoint and
+   * persist them as ExecutionLogLine rows for structured querying.
+   */
+  private async fetchAndStoreLogLines(exec: TaskExecution, executorAddress: string): Promise<void> {
+    if (!executorAddress) return;
+    try {
+      // N9: use ConfigService instead of direct process.env access
+      const token = this.configService.get<string>('executor.sharedToken') ?? '';
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const { default: axios } = await import('axios');
+      const resp = await axios.get(
+        `http://${executorAddress}/api/logs/${exec.id}`,
+        { headers, timeout: 15000 },
+      );
+      const lines: string[] = resp.data?.lines ?? [];
+      if (lines.length === 0) return;
+      // Delete stale lines first (idempotent on retry)
+      await this.logLineRepo.delete({ executionId: exec.id });
+      const entities = lines.map((content, idx) =>
+        this.logLineRepo.create({ executionId: exec.id, lineNumber: idx, content }),
+      );
+      // Bulk insert in chunks of 500 to avoid hitting DB param limits
+      const CHUNK = 500;
+      for (let i = 0; i < entities.length; i += CHUNK) {
+        await this.logLineRepo.save(entities.slice(i, i + CHUNK));
+      }
+      this.logger.log(`Stored ${entities.length} log lines for execution ${exec.id}`);
+    } catch (err) {
+      // Non-fatal: log but do not fail the execution record
+      this.logger.warn(`Failed to fetch log lines for ${exec.id}: ${err.message}`);
+    }
+  }
 
   @Process('execute')
   async handle(job: Job<{ executionId: string }>) {
@@ -46,6 +82,8 @@ export class TaskProcessor {
       exec.status = ExecutionStatus.SUCCESS;
       exec.result = result;
       exec.logs = result?.logs || '';
+      // Fetch and store structured log lines from executor
+      await this.fetchAndStoreLogLines(exec, result?.executorAddress ?? exec.executorAddress);
     } catch (err) {
       exec.status = ExecutionStatus.FAILED;
       exec.errorMessage = err.message;
@@ -57,6 +95,8 @@ export class TaskProcessor {
       try {
         await this.notificationService.notifyFailureWithConfig(task.name, exec.id, err.message, exec.aiAnalysis, task.alarmEmail, task.alarmChannels);
       } catch {}
+      // Q1: rethrow so BullMQ sees the job as failed and applies maxRetry attempts
+      throw err;
     } finally {
       exec.endTime = new Date();
       exec.duration = exec.endTime.getTime() - exec.startTime.getTime();

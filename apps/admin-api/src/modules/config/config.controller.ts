@@ -22,14 +22,18 @@ export class ConfigController {
 
   @Get()
   @ApiOperation({ summary: '获取所有配置项' })
-  findAll() {
-    return this.configService.findAll();
+  async findAll() {
+    // S13: mask value of secret config entries before returning to client
+    const configs = await this.configService.findAll();
+    return configs.map((c) => (c.isSecret ? { ...c, value: '***' } : c));
   }
 
   @Get(':key')
   @ApiOperation({ summary: '获取单个配置项' })
-  findOne(@Param('key') key: string) {
-    return this.configService.findOne(key);
+  async findOne(@Param('key') key: string) {
+    // S13: mask secret value
+    const c = await this.configService.findOne(key);
+    return c.isSecret ? { ...c, value: '***' } : c;
   }
 
   @Put()

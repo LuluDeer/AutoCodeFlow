@@ -15,12 +15,15 @@ async function sendHeartbeat() {
     const freeMem = os.freemem();
     const memUsage = ((totalMem - freeMem) / totalMem) * 100;
 
+    // S5/S14: include shared token in heartbeat
+    const token = process.env.EXECUTOR_SHARED_TOKEN;
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
     await axios.post(`${config.adminApiUrl}/api/executors/heartbeat`, {
       address: config.executorAddress,
       cpuUsage,
       memUsage,
       runningTaskCount: runningCount,
-    }, { timeout: 5000 });
+    }, { timeout: 5000, headers });
   } catch (err: any) {
     logger.warn(`Heartbeat failed: ${err.message}`);
   }

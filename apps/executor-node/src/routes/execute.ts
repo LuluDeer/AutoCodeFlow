@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { spawn, execSync, spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { config } from '../config';
@@ -63,13 +63,28 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   }
 
   const workDir = path.join(config.workDir, executionId);
+  // S6/Q11: path traversal guard — ensure workDir stays within configured base
+  const resolvedWorkDir = path.resolve(workDir);
+  const resolvedBase = path.resolve(config.workDir);
+  if (!resolvedWorkDir.startsWith(resolvedBase + path.sep) && resolvedWorkDir !== resolvedBase) {
+    res.status(400).json({ error: 'Invalid executionId: path traversal detected' });
+    return;
+  }
   fs.mkdirSync(workDir, { recursive: true });
+  // S6/Q11: restrict permissions so sibling tasks cannot read this directory
+  try { fs.chmodSync(workDir, 0o700); } catch (_) { /* ignore on unsupported filesystems */ }
 
   // --- Git 版本绑定：若任务指定了 gitRepo 则 clone/checkout 到工作目录 ---
   const gitRepo: string | undefined = (body.task as any).gitRepo;
   const gitCommit: string | undefined = (body.task as any).gitCommit;
   const gitBranch: string = (body.task as any).gitBranch || 'main';
   if (gitRepo) {
+    // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
+    const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
+    if (!allowedGitPattern.test(gitRepo)) {
+      res.status(400).json({ error: `gitRepo URL scheme not allowed: ${gitRepo}` });
+      return;
+    }
     const ref = gitCommit || gitBranch;
     logger.info(`Checking out ${gitRepo}@${ref} to ${workDir}`);
     gitCheckoutTo(gitRepo, ref, workDir);
@@ -93,11 +108,27 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     if (!fs.existsSync(pkgJson)) {
       fs.writeFileSync(pkgJson, JSON.stringify({ name: `task-${taskId}`, version: '1.0.0' }));
     }
+    // S16: validate each package name against npm naming rules before shell expansion
+    const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
+    for (const pkg of requirements) {
+      if (!npmNameRe.test(pkg)) {
+        res.status(400).json({ error: `Invalid npm package name: ${pkg}` });
+        return;
+      }
+    }
     logger.info(`Installing ${requirements.length} packages for task ${taskId}`);
-    execSync(`npm install --prefix "${nodeModulesDir}" ${requirements.join(' ')}`, {
-      stdio: 'pipe',
-      timeout: 300_000,
-    });
+    // N18: use spawnSync instead of execSync so shell: false is actually honoured
+    // (execSync ignores shell: false — it is a spawnSync-only option)
+    const installResult = spawnSync(
+      'npm',
+      ['install', '--prefix', nodeModulesDir, ...requirements],
+      { stdio: 'pipe', timeout: 300_000 },
+    );
+    if (installResult.status !== 0) {
+      const errMsg = installResult.stderr?.toString() || 'npm install failed';
+      res.status(500).json({ error: `Dependency installation failed: ${errMsg}` });
+      return;
+    }
   }
 
   const env: NodeJS.ProcessEnv = {
@@ -131,7 +162,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   incrementRunning();
 
   try {
-    const result = await runProcess(cmd, args, workDir, env, timeout);
+    const result = await runProcess(cmd, args, workDir, env, timeout, executionId);
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -146,6 +177,7 @@ function runProcess(
   cwd: string,
   env: NodeJS.ProcessEnv,
   timeoutSec: number,
+  _executionId?: string,
 ): Promise<{ success: boolean; logs: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args, { cwd, env });

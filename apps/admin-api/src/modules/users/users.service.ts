@@ -40,6 +40,11 @@ export class UsersService {
     return user;
   }
 
+  // S12: expose raw user (including hashed password) for current-password verification
+  async findByIdRaw(id: number): Promise<import('./entities/user.entity').User | null> {
+    return this.usersRepository.findOne({ where: { id } });
+  }
+
   async findByUsername(username: string) {
     return this.usersRepository.findOne({ where: { username } });
   }

@@ -1,3 +1,7 @@
+# docker-compose.yml  —  完整部署（生产 / staging / CI）
+# 所有机密信息通过环境变量注入，请先复制 .env.example 为 .env 并填写。
+# 本地开发仅启动基础设施请改用 infra/docker-compose.yml。
+
 version: '3.9'
 
 services:
@@ -5,15 +9,15 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: autoflow
-      POSTGRES_PASSWORD: autoflow123
-      POSTGRES_DB: autoflow
+      POSTGRES_USER: ${POSTGRES_USER:-autoflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE:-autoflow}
     ports:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U autoflow']
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-autoflow}']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -40,15 +44,17 @@ services:
       - '3001:3001'
     environment:
       NODE_ENV: production
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USERNAME: autoflow
-      DB_PASSWORD: autoflow123
-      DB_DATABASE: autoflow
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      JWT_SECRET: change-this-secret-in-production
-      AI_PROVIDER: disabled
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USERNAME: ${DB_USERNAME:-autoflow}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE: ${DB_DATABASE:-autoflow}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      JWT_SECRET: ${JWT_SECRET}
+      EXECUTOR_SECRET: ${EXECUTOR_SECRET}
+      ADMIN_WEB_ORIGIN: ${ADMIN_WEB_ORIGIN:-http://localhost}
+      AI_PROVIDER: ${AI_PROVIDER:-disabled}
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,6 +83,7 @@ services:
       PORT: 8001
       EXECUTOR_ADDRESS: executor-python:8001
       ADMIN_API_URL: http://admin-api:3001
+      EXECUTOR_SECRET: ${EXECUTOR_SECRET}
       WORK_DIR: /tmp/autoflow/tasks
     depends_on:
       - admin-api
@@ -93,6 +100,7 @@ services:
       PORT: 8002
       EXECUTOR_ADDRESS: executor-node:8002
       ADMIN_API_URL: http://admin-api:3001
+      EXECUTOR_SECRET: ${EXECUTOR_SECRET}
       WORK_DIR: /tmp/autoflow/tasks
       MAX_CONCURRENT_TASKS: 10
     depends_on:
@@ -106,8 +114,9 @@ services:
     ports:
       - '8003:8003'
     environment:
-      REGISTRY_USER: admin
-      REGISTRY_PASS: admin123
+      REGISTRY_USER: ${REGISTRY_USER:-admin}
+      REGISTRY_PASS: ${REGISTRY_PASS}
+      PYPI_API_KEY: ${PYPI_API_KEY}
       PACKAGES_DIR: /data/packages
     volumes:
       - pypi_data:/data/packages

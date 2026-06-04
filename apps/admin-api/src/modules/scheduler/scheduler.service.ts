@@ -79,7 +79,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(`Invalid cron expression for task "${t.name}": ${t.cronExpression}`);
           continue;
         }
-        const cronTask = nodeCron.schedule(t.cronExpression, () => this.enqueue(t, 'cron'));
+        // N8: re-fetch task at trigger time to avoid stale closure snapshot
+        const taskId = t.id;
+        const cronTask = nodeCron.schedule(t.cronExpression, async () => {
+          const latest = await this.taskRepo.findOne({ where: { id: taskId, status: TaskStatus.ACTIVE } });
+          if (latest) await this.enqueue(latest, 'cron');
+        });
         this.cronTasks.set(t.id, cronTask);
         this.logger.log(`Scheduled cron task "${t.name}" with expression: ${t.cronExpression}`);
       }
@@ -139,7 +144,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         this.logger.warn(`Invalid cron expression for task "${task.name}": ${task.cronExpression}`);
         return;
       }
-      const cronTask = nodeCron.schedule(task.cronExpression, () => this.enqueue(task, 'cron'));
+      // N8: re-fetch task at trigger time to avoid stale closure snapshot
+      const taskId = task.id;
+      const cronTask = nodeCron.schedule(task.cronExpression, async () => {
+        const latest = await this.taskRepo.findOne({ where: { id: taskId, status: TaskStatus.ACTIVE } });
+        if (latest) await this.enqueue(latest, 'cron');
+      });
       this.cronTasks.set(task.id, cronTask);
       this.logger.log(`Re-scheduled cron task "${task.name}" with expression: ${task.cronExpression}`);
     }

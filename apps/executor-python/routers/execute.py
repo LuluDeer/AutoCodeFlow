@@ -1,16 +1,26 @@
 import asyncio
 import logging
 import os
+import stat
 import re
 import shutil
 import subprocess
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from typing import Any, Optional
 import scheduler as sched
 from config import settings
 from manifest import load_manifest, merge_task_with_manifest
+try:
+    from autoflow_sdk.models import ExecuteRequest
+except ImportError:
+    # Fallback if SDK is not installed — define locally for compatibility
+    from pydantic import BaseModel
+    from typing import Dict
+    class ExecuteRequest(BaseModel):  # type: ignore[no-redef]
+        executionId: str
+        task: Dict[str, Any]
+        params: Optional[Dict[str, Any]] = None
 
 
 def _repo_dir_name(repo_url: str) -> str:
@@ -98,13 +108,27 @@ async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
 async def run_task(req: ExecuteRequest) -> dict:
     # 工作目录
     work_dir = Path(settings.work_dir) / req.executionId
+    # S6/Q11: path traversal guard — executionId must not escape the base work_dir
+    base = Path(settings.work_dir).resolve()
+    resolved = work_dir.resolve()
+    if not str(resolved).startswith(str(base) + os.sep) and resolved != base:
+        raise HTTPException(status_code=400, detail='Invalid executionId: path traversal detected')
     work_dir.mkdir(parents=True, exist_ok=True)
+    # S6/Q11: restrict permissions so sibling tasks cannot read this directory
+    try:
+        os.chmod(work_dir, stat.S_IRWXU)  # 0o700
+    except Exception:
+        pass
 
     # --- Git 版本绑定：若任务指定了 gitRepo 则 clone/checkout 到工作目录 ---
     git_repo: str | None = req.task.get('gitRepo') or req.task.get('git_repo')
     git_commit: str | None = req.task.get('gitCommit') or req.task.get('git_commit')
     git_branch: str = req.task.get('gitBranch') or req.task.get('git_branch') or 'main'
     if git_repo:
+        # S7: SSRF guard — only allow http(s) and ssh git URLs
+        import re as _re
+        if not _re.match(r'^(https?://|git@|ssh://)', git_repo, _re.IGNORECASE):
+            raise HTTPException(status_code=400, detail=f'gitRepo URL scheme not allowed: {git_repo}')
         ref = git_commit if git_commit else git_branch
         logger.info(f'Checking out {git_repo}@{ref} to {work_dir}')
         await asyncio.get_event_loop().run_in_executor(
@@ -147,6 +171,7 @@ async def run_task(req: ExecuteRequest) -> dict:
 
     logger.info(f'Running task {task.get("name")} [{req.executionId}]: {cmd}')
 
+    log_file = work_dir / f'{req.executionId}.log'
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -155,8 +180,27 @@ async def run_task(req: ExecuteRequest) -> dict:
             cwd=str(work_dir),
             env=env,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        logs = stdout.decode('utf-8', errors='replace')
+        log_chunks: list[str] = []
+
+        async def _stream_to_file() -> None:
+            with open(log_file, 'a', encoding='utf-8') as lf:
+                async for raw_line in proc.stdout:  # type: ignore[union-attr]
+                    line = raw_line.decode('utf-8', errors='replace')
+                    log_chunks.append(line)
+                    lf.write(line)
+                    lf.flush()
+
+        stream_task = asyncio.ensure_future(_stream_to_file())
+        try:
+            await asyncio.wait_for(asyncio.shield(stream_task), timeout=timeout)
+        except asyncio.TimeoutError:
+            stream_task.cancel()
+            raise
+        await proc.wait()
+
+        logs_full = ''.join(log_chunks)
+        # Truncate to last 10000 chars to avoid large HTTP responses
+        logs = logs_full[-10000:] if len(logs_full) > 10000 else logs_full
 
         if proc.returncode != 0:
             raise RuntimeError(f'Process exited with code {proc.returncode}\n{logs}')

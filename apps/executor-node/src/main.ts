@@ -5,12 +5,20 @@ import { logger } from './logger';
 import { startHeartbeat } from './scheduler';
 import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
+import { logsRouter } from './routes/logs';
 
 const app = express();
 app.use(express.json());
 
 app.use('/', healthRouter);
 app.use('/api', executeRouter);
+app.use('/api', logsRouter);
+
+// S5/S14: attach shared token so admin-api can verify executor identity
+function executorHeaders(): Record<string, string> {
+  const token = process.env.EXECUTOR_SHARED_TOKEN;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 async function registerExecutor() {
   try {
@@ -20,7 +28,7 @@ async function registerExecutor() {
       type: 'node',
       version: '1.0.0',
       capabilities: ['node', 'shell'],
-    }, { timeout: 10_000 });
+    }, { timeout: 10_000, headers: executorHeaders() });
     logger.info('Registered to admin-api');
   } catch (err: any) {
     logger.warn(`Register failed (will retry via heartbeat): ${err.message}`);

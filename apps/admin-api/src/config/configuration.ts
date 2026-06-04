@@ -11,7 +11,27 @@ export default () => ({
     database: process.env.DB_DATABASE || 'autoflow',
   },
   jwt: {
-    secret: process.env.JWT_SECRET || 'default-secret-change-in-production',
+    // S4: fail-fast on weak/missing secrets — throw at startup rather than silently using defaults
+    secret: (() => {
+      const s = process.env.JWT_SECRET;
+      if (!s || s === 'default-secret-change-in-production' || s.length < 32) {
+        if (process.env.NODE_ENV === 'production') {
+          throw new Error('JWT_SECRET must be set to a strong value (>=32 chars) in production');
+        }
+        return s || 'default-secret-change-in-production';
+      }
+      return s;
+    })(),
+    refreshSecret: (() => {
+      const s = process.env.JWT_REFRESH_SECRET;
+      if (!s || s.length < 32) {
+        if (process.env.NODE_ENV === 'production') {
+          throw new Error('JWT_REFRESH_SECRET must be set to a strong value (>=32 chars) in production');
+        }
+        return s || 'default-refresh-secret-change-in-production';
+      }
+      return s;
+    })(),
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
   },
   redis: {
@@ -25,6 +45,10 @@ export default () => ({
     openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     ollamaHost: process.env.OLLAMA_HOST || 'http://localhost:11434',
     ollamaModel: process.env.OLLAMA_MODEL || 'llama3',
+  },
+  executor: {
+    // S5/S14: shared token executors must include; leave empty in dev to skip check
+    sharedToken: process.env.EXECUTOR_SHARED_TOKEN || '',
   },
   notification: {
     wecomWebhook: process.env.WECOM_WEBHOOK || '',
@@ -41,3 +65,17 @@ export default () => ({
     },
   },
 });
+
+// M3: fail-fast in production for critical secrets that have known weak defaults
+if (process.env.NODE_ENV === 'production') {
+  const weakValues = new Set([
+    'autoflow123', 'change-this-secret-in-production',
+    'change-me-in-production', 'postgres', '',
+  ]);
+  if (weakValues.has(process.env.DB_PASSWORD ?? '')) {
+    throw new Error('[AutoFlow] DB_PASSWORD is unset or using a weak default in production');
+  }
+  if (!process.env.EXECUTOR_SECRET || process.env.EXECUTOR_SECRET.length < 16) {
+    throw new Error('[AutoFlow] EXECUTOR_SECRET must be set (>=16 chars) in production');
+  }
+}

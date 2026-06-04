@@ -60,25 +60,45 @@ export class ExecutorService {
 
     this.logger.log(`Dispatching task "${task.name}" to executor ${matched.address} (runningTasks=${matched.runningTaskCount})`);
     execution.executorAddress = matched.address;
-    const resp = await axios.post(
-      `http://${matched.address}/api/execute`,
-      { executionId: execution.id, task, params: execution.params },
-      { timeout: ((task.timeout || 300) + 10) * 1000 },
-    );
-    return resp.data;
+    // N15: do NOT optimistically increment runningTaskCount here — the count is
+    // authoritative only when reported by the executor via heartbeat (every 30s).
+    // Incrementing here without a matching decrement on completion caused the
+    // counter to grow unboundedly until the next heartbeat corrected it.
+    try {
+      const resp = await axios.post(
+        `http://${matched.address}/api/execute`,
+        { executionId: execution.id, task, params: execution.params },
+        { timeout: ((task.timeout || 300) + 10) * 1000 },
+      );
+      return resp.data;
+    } catch (err) {
+      throw err;
+    }
   }
 
   /** 每 5 分钟扫描 RUNNING 超时且执行器已离线的 execution，防止僵尸任务 */
   @Cron('0 */5 * * * *')
   async detectLostExecutions() {
-    const threshold = new Date(Date.now() - 15 * 60 * 1000);
+    // N12: use a broad threshold for initial query (max sane timeout 24h),
+    // then per-execution check uses actual task.timeout + 5min buffer
+    const broadThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const lostExecs = await this.execRepo
       .createQueryBuilder('exec')
       .where('exec.status = :status', { status: ExecutionStatus.RUNNING })
-      .andWhere('exec.startTime < :threshold', { threshold })
+      .andWhere('exec.startTime < :threshold', { threshold: broadThreshold })
       .getMany();
     if (lostExecs.length === 0) return;
     for (const exec of lostExecs) {
+      // N12: per-execution threshold based on actual task timeout
+      const task = exec.taskId
+        ? await this.taskRepo.findOne({ where: { id: exec.taskId } })
+        : null;
+      const taskTimeoutMs = task?.timeout ? task.timeout * 1000 : 5 * 60 * 1000;
+      const perExecThreshold = new Date(Date.now() - (taskTimeoutMs + 5 * 60 * 1000));
+      if (exec.startTime && exec.startTime > perExecThreshold) {
+        // Not yet past this task's timeout+buffer — skip
+        continue;
+      }
       if (exec.executorAddress) {
         const executor = await this.repo.findOne({ where: { address: exec.executorAddress } });
         if (executor && executor.status === ExecutorStatus.ONLINE) continue;
@@ -89,6 +109,16 @@ export class ExecutorService {
       exec.logs = (exec.logs || '') + '\n[系统] 执行记录超时未收到回调，已强制标记为 FAILED';
       await this.execRepo.save(exec);
       this.logger.warn(`Lost execution marked FAILED: execId=${exec.id}, taskId=${exec.taskId}`);
+    }
+  }
+
+  /** Q7: 每天凌晨 2 点清理旧执行记录（90天）和审计日志（180天），防止数据库无限膨胀 */
+  @Cron('0 0 2 * * *')
+  async cleanupOldRecords(): Promise<void> {
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const execResult = await this.execRepo.delete({ createdAt: LessThan(ninetyDaysAgo) });
+    if (execResult.affected && execResult.affected > 0) {
+      this.logger.log(`Q7 Cleanup: removed ${execResult.affected} old task executions (>90 days)`);
     }
   }
 

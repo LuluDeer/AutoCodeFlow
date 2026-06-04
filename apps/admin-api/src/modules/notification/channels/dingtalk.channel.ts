@@ -10,6 +10,7 @@ export class DingtalkChannel extends BaseChannel {
   async send(p: NotificationPayload) {
     const url = this.config.get<string>('notification.dingtalkWebhook');
     if (!url) return;
-    await axios.post(url, { msgtype: 'markdown', markdown: { title: p.title, text: `## ${p.title}\n${p.content}` } });
+    // Q9: add timeout to prevent indefinite hang
+    await axios.post(url, { msgtype: 'markdown', markdown: { title: p.title, text: `## ${p.title}\n${p.content}` } }, { timeout: 10_000 });
   }
 }

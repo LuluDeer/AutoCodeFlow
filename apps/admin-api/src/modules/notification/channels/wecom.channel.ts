@@ -10,6 +10,8 @@ export class WecomChannel extends BaseChannel {
   async send(p: NotificationPayload) {
     const url = this.config.get<string>('notification.wecomWebhook');
     if (!url) return;
-    await axios.post(url, { msgtype: 'markdown', markdown: { content: `## ${p.title}\n${p.content}` } });
+    // Q9: add timeout to prevent indefinite hang
+    await axios.post(url, { msgtype: 'markdown', markdown: { content: `## ${p.title}
+${p.content}` } }, { timeout: 10_000 });
   }
 }

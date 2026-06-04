@@ -10,13 +10,27 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 @ApiTags('认证')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly auditService: AuditService,
+  ) {}
 
+  // N16: tightened to 5 attempts per 60s — tighter than the global 10/60s default
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @Public()
   @Post('login')
   @ApiOperation({ summary: '用户登录' })
-  login(@Body() loginDto: LoginDto) {
-    return this.authService.login(loginDto);
+  async login(@Body() loginDto: LoginDto, @Req() req: Request) {
+    const result = await this.authService.login(loginDto);
+    // Q8: audit every login attempt
+    await this.auditService.log({
+      userId: (result as any).user?.id,
+      username: loginDto.username,
+      action: 'auth.login',
+      resource: 'auth',
+      ip: req.ip,
+    }).catch(() => {});
+    return result;
   }
 
   @Public()

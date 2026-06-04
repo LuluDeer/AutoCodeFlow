@@ -6,7 +6,7 @@ import logging
 import os
 import httpx
 
-from routers import execute, health
+from routers import execute, health, logs
 from config import settings
 from scheduler import heartbeat_task
 
@@ -27,6 +27,9 @@ async def lifespan(app: FastAPI):
 
 async def register_executor():
     try:
+        import os as _os
+        _token = _os.environ.get('EXECUTOR_SHARED_TOKEN')
+        _headers = {'Authorization': f'Bearer {_token}'} if _token else {}
         async with httpx.AsyncClient() as client:
             await client.post(
                 f'{settings.admin_api_url}/api/executors/register',
@@ -37,6 +40,7 @@ async def register_executor():
                     'version': '1.0.0',
                     'capabilities': ['python', 'shell'],
                 },
+                headers=_headers,
                 timeout=10,
             )
             logger.info('Registered to admin-api')
@@ -50,15 +54,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# S10: restrict CORS to explicit origin whitelist
+import os as _os
+_cors_origins = [o.strip() for o in _os.environ.get('CORS_ORIGINS', 'http://localhost:5173').split(',') if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
+    allow_origins=_cors_origins,
+    allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
 )
-
 app.include_router(health.router)
 app.include_router(execute.router, prefix='/api')
+app.include_router(logs.router, prefix='/api')
 
 if __name__ == '__main__':
     import uvicorn

@@ -24,11 +24,14 @@ export class AuthService {
 
   async refreshToken(token: string) {
     try {
-      const payload = this.jwtService.verify<JwtPayload>(token, {
-        secret: this.configService.get<string>('jwt.secret'),
+      // S2: verify using the dedicated refresh secret and require type='refresh'
+      const payload = this.jwtService.verify<JwtPayload & { type: string }>(token, {
+        secret: this.configService.get<string>('jwt.refreshSecret'),
       });
+      if (payload.type !== 'refresh') throw new UnauthorizedException('Invalid token type');
       const user = await this.usersService.findById(payload.sub);
       if (!user) throw new UnauthorizedException();
+      if (!user.isActive) throw new UnauthorizedException('Account is disabled');
       return this.generateTokens(user);
     } catch {
       throw new UnauthorizedException('Invalid refresh token');
@@ -36,12 +39,20 @@ export class AuthService {
   }
 
   private generateTokens(user: { id: number; username: string }) {
-    const payload: JwtPayload = { sub: user.id, username: user.username };
+    // S2: include 'type' claim and use separate secrets for access/refresh tokens
+    const base: JwtPayload = { sub: user.id, username: user.username };
     return {
-      accessToken: this.jwtService.sign(payload, {
-        expiresIn: this.configService.get<string>('jwt.expiresIn'),
-      }),
-      refreshToken: this.jwtService.sign(payload, { expiresIn: '30d' }),
+      accessToken: this.jwtService.sign(
+        { ...base, type: 'access' },
+        { expiresIn: this.configService.get<string>('jwt.expiresIn') },
+      ),
+      refreshToken: this.jwtService.sign(
+        { ...base, type: 'refresh' },
+        {
+          secret: this.configService.get<string>('jwt.refreshSecret'),
+          expiresIn: '30d',
+        },
+      ),
     };
   }
 }

@@ -12,9 +12,20 @@ async function bootstrap() {
   // when the app runs behind a reverse proxy (nginx, load balancer, etc.)
   app.getHttpAdapter().getInstance().set('trust proxy', 1);
 
-  // CORS
+  // S10: CORS — use explicit origin whitelist; '*' + credentials is rejected by browsers
+  const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
   app.enableCors({
-    origin: '*',
+    origin: (origin, callback) => {
+      // Allow server-to-server calls (no Origin header) and whitelisted origins
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`Origin ${origin} not allowed by CORS`));
+      }
+    },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });
@@ -27,7 +38,9 @@ async function bootstrap() {
     new ValidationPipe({
       whitelist: true,
       transform: true,
-      forbidNonWhitelisted: false,
+      // N13: reject requests that contain extra fields not declared in the DTO
+      // so callers get a 400 instead of silent field stripping
+      forbidNonWhitelisted: true,
     }),
   );
 

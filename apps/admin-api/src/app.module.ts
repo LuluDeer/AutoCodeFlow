@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bull';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 import configuration from './config/configuration';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
@@ -32,6 +34,8 @@ import { AuditModule } from './modules/audit/audit.module';
         password: cfg.get('database.password'),
         database: cfg.get('database.database'),
         entities: [__dirname + '/**/*.entity{.ts,.js}'],
+        migrations: [__dirname + '/migrations/*{.ts,.js}'],
+        migrationsRun: cfg.get('app.nodeEnv') !== 'development',
         synchronize: cfg.get('app.nodeEnv') === 'development',
         logging: cfg.get('app.nodeEnv') === 'development',
       }),

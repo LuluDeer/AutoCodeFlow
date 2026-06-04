@@ -115,6 +115,15 @@ export class TaskController {
     return this.taskService.getExecution(execId);
   }
 
+  @Get(':id/executions/:execId/logs')
+  @ApiOperation({ summary: '执行日志（按行分页）' })
+  executionLogs(
+    @Param('execId') execId: string,
+    @Query('fromLine') fromLine?: string,
+  ) {
+    return this.taskService.getExecutionLogs(execId, fromLine ? parseInt(fromLine, 10) : 0);
+  }
+
   @Post(':id/rollback')
   @ApiOperation({ summary: '一键回滚到指定 commit' })
   async rollback(

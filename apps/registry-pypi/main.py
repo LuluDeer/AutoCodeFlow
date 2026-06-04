@@ -53,8 +53,10 @@ def health():
     return {"status": "ok", "service": "pypi-registry"}
 
 
+# S9: also protect simple-index and download endpoints so unauthenticated
+# clients cannot enumerate or download private packages
 @app.get("/simple/", response_class=HTMLResponse)
-def simple_index():
+def simple_index(_user: str = Depends(verify_auth)):
     """PEP 503 root index."""
     pkgs = [d.name for d in PACKAGES_DIR.iterdir() if d.is_dir()]
     links = "".join(f'<a href="/simple/{p}/">{p}</a><br/>\n' for p in sorted(pkgs))
@@ -63,7 +65,7 @@ def simple_index():
 
 
 @app.get("/simple/{package_name}/", response_class=HTMLResponse)
-def package_index(package_name: str):
+def package_index(package_name: str, _user: str = Depends(verify_auth)):
     """PEP 503 per-package index."""
     d = PACKAGES_DIR / normalize(package_name)
     if not d.exists():
@@ -78,9 +80,12 @@ def package_index(package_name: str):
 
 
 @app.get("/packages/{package_name}/{filename}")
-def download_package(package_name: str, filename: str):
-    f = PACKAGES_DIR / normalize(package_name) / filename
-    if not f.exists():
+def download_package(package_name: str, filename: str, _user: str = Depends(verify_auth)):
+    # S9: path-traversal guard — reject filenames that escape the package directory
+    safe_name = normalize(package_name)
+    safe_filename = Path(filename).name  # strip any directory components
+    f = PACKAGES_DIR / safe_name / safe_filename
+    if not f.exists() or not f.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(str(f))
 
@@ -93,7 +98,8 @@ async def upload_package(
     _user: str = Depends(verify_auth),
 ):
     """twine-compatible upload endpoint."""
-    filename = content.filename
+    # N14: strip directory components to prevent path traversal via filename
+    filename = Path(content.filename).name if content.filename else ""
     if not filename:
         raise HTTPException(status_code=400, detail="No filename")
     if not re.search(r'\.(whl|tar\.gz|zip|egg)$', filename, re.IGNORECASE):

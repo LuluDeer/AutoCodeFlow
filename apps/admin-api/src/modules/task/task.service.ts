@@ -5,6 +5,7 @@ import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { Task, TaskStatus } from './entities/task.entity';
 import { TaskExecution, ExecutionStatus } from './entities/task-execution.entity';
+import { ExecutionLogLine } from './entities/execution-log-line.entity';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
 import { TriggerTaskDto } from './dto/trigger-task.dto';
@@ -16,6 +17,7 @@ export class TaskService {
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
     @InjectRepository(TaskExecution) private execRepo: Repository<TaskExecution>,
+    @InjectRepository(ExecutionLogLine) private logLineRepo: Repository<ExecutionLogLine>,
     @InjectQueue('task-queue') private taskQueue: Queue,
     private dataSource: DataSource,
     @Inject(forwardRef(() => SchedulerService)) private schedulerService: SchedulerService,
@@ -95,6 +97,24 @@ export class TaskService {
     return e;
   }
 
+  async getExecutionLogs(execId: string, fromLine = 0) {
+    const exec = await this.execRepo.findOne({ where: { id: execId } });
+    if (!exec) throw new NotFoundException('Execution not found');
+    // N10: use typed logLineRepo instead of string-based getRepository
+    const lines = await this.logLineRepo
+      .createQueryBuilder('l')
+      .where('l.executionId = :id', { id: execId })
+      .andWhere('l.lineNumber >= :from', { from: fromLine })
+      .orderBy('l.lineNumber', 'ASC')
+      .select(['l.lineNumber', 'l.content'])
+      .getMany();
+    return {
+      lines: lines.map((r) => r.content),
+      totalLines: lines.length + fromLine,
+      hasMore: false,
+    };
+  }
+
   async rollback(id: string, dto: { gitCommit: string; params?: Record<string, any> }) {
     const task = await this.findOne(id);
     const prevCommit = task.gitCommit;
@@ -118,6 +138,10 @@ export class TaskService {
     });
 
     await this.taskQueue.add('execute', { executionId: exec.id }, { attempts: task.maxRetry });
+    // N11: re-schedule so active cron/fixed-rate tasks pick up the new commit immediately
+    if (task.status === TaskStatus.ACTIVE) {
+      await this.schedulerService.scheduleOne(task);
+    }
     return { execution: exec, rolledBackFrom: prevCommit, rolledBackTo: dto.gitCommit };
   }
 }
