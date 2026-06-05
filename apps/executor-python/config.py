@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     admin_api_url: str = 'http://admin-api:3001'
     work_dir: str = '/tmp/autoflow/tasks'
     max_concurrent_tasks: int = 10
+    task_timeout_seconds: int = 300  # Default task timeout (5 minutes)
+    heartbeat_interval_seconds: int = 30  # Heartbeat interval
 
     class Config:
         env_file = '.env'

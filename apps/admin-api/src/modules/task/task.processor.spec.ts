@@ -78,4 +78,49 @@ describe('TaskProcessor', () => {
     const saved = execRepo.save.mock.calls.map((c: any) => c[0]);
     expect(saved.some((e: any) => e.status === ExecutionStatus.FAILED)).toBe(true);
   });
+
+  it('ERR-01: original error is not masked when save in finally fails', async () => {
+    // Mock dispatch to throw an error
+    const originalError = new Error('dispatch failed');
+    executorService.dispatch.mockRejectedValue(originalError);
+    
+    // Mock save to fail in the finally block
+    let callCount = 0;
+    execRepo.save = jest.fn((entity) => {
+      callCount++;
+      // First two saves (RUNNING status, FAILED status) succeed
+      if (callCount <= 2) {
+        return Promise.resolve(entity);
+      }
+      // Third save (finally block) fails
+      return Promise.reject(new Error('database connection failed'));
+    });
+
+    // The original error should still be thrown, not the save error
+    await expect(processor.handle({ data: { executionId: 'exec-1' } } as any)).rejects.toThrow('dispatch failed');
+    
+    // Verify save was called multiple times (for RUNNING status, FAILED status, and finally)
+    expect(execRepo.save).toHaveBeenCalled();
+  });
+
+  it('ERR-02: duration is 0 when startTime is null', async () => {
+    // Create an execution without startTime
+    const execWithoutStartTime = { 
+      id: 'exec-2', 
+      taskId: 't1', 
+      status: ExecutionStatus.PENDING, 
+      params: {},
+      startTime: null 
+    } as unknown as TaskExecution;
+    execRepo.findOne = jest.fn().mockResolvedValue(execWithoutStartTime);
+    
+    // Mock task not found to trigger early failure before startTime is set
+    taskRepo.findOne.mockResolvedValue(null);
+    
+    await processor.handle({ data: { executionId: 'exec-2' } } as any);
+    
+    const saved = execRepo.save.mock.calls.map((c: any) => c[0]);
+    const finalSave = saved[saved.length - 1];
+    expect(finalSave.duration).toBe(0);
+  });
 });

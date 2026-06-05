@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { config } from '../config';
 import { logger } from '../logger';
-import { incrementRunning, decrementRunning, runningCount } from '../scheduler';
+import { incrementRunning, decrementRunning, getRunningCount } from '../scheduler';
 import { loadManifest, mergeTaskWithManifest } from '../manifest';
 
 /** 将 git URL 转成安全缓存目录名 */
@@ -53,7 +53,8 @@ interface ExecuteRequest {
 }
 
 executeRouter.post('/execute', async (req: Request, res: Response) => {
-  if (runningCount >= config.maxConcurrentTasks) {
+  // BUG-03: Use atomic operation to check running count
+  if (getRunningCount() >= config.maxConcurrentTasks) {
     res.status(429).json({ error: 'Executor is at capacity' });
     return;
   }
@@ -74,6 +75,37 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'Invalid executionId: path traversal detected' });
     return;
   }
+
+  // SEC-04: Check for symbolic link attacks
+  try {
+    // Check if the base directory exists and is not a symlink
+    const baseStats = fs.lstatSync(resolvedBase);
+    if (baseStats.isSymbolicLink()) {
+      res.status(400).json({ error: 'Base work directory cannot be a symbolic link' });
+      return;
+    }
+
+    // If workDir already exists, check if it's a symlink
+    if (fs.existsSync(resolvedWorkDir)) {
+      const workDirStats = fs.lstatSync(resolvedWorkDir);
+      if (workDirStats.isSymbolicLink()) {
+        res.status(400).json({ error: 'Work directory cannot be a symbolic link' });
+        return;
+      }
+
+      // Check the real path to prevent symlink escape
+      const realWorkDir = fs.realpathSync(resolvedWorkDir);
+      const realBase = fs.realpathSync(resolvedBase);
+      if (!realWorkDir.startsWith(realBase + path.sep) && realWorkDir !== realBase) {
+        res.status(400).json({ error: 'Symbolic link escape detected' });
+        return;
+      }
+    }
+  } catch (err) {
+    res.status(400).json({ error: `Path validation failed: ${err instanceof Error ? err.message : 'Unknown error'}` });
+    return;
+  }
+
   fs.mkdirSync(workDir, { recursive: true });
   // S6/Q11: restrict permissions so sibling tasks cannot read this directory
   try { fs.chmodSync(workDir, 0o700); } catch (_) { /* ignore on unsupported filesystems */ }

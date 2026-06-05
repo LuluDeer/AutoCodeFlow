@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Tabs, Card, Button, Descriptions, Tag, Table, Typography, Space, message, Modal, Input } from 'antd';
-import { PlayCircleOutlined, ArrowLeftOutlined, RollbackOutlined } from '@ant-design/icons';
+import { Tabs, Card, Button, Descriptions, Tag, Table, Typography, Space, message, Modal, Input, List, Popconfirm } from 'antd';
+import { PlayCircleOutlined, ArrowLeftOutlined, RollbackOutlined, PauseCircleOutlined, PlaySquareOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useParams, useNavigate } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
+import ExecutionCompare from '../components/ExecutionCompare';
 
 const execStatusColor: Record<string, string> = {
   pending: 'default', running: 'processing', success: 'green', failed: 'red', cancelled: 'orange',
@@ -12,12 +13,20 @@ const execStatusColor: Record<string, string> = {
 export default function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
-  const { data: task } = useRequest(() => tasksApi.get(id!));
+  const { data: task, refresh: refreshTask } = useRequest(() => tasksApi.get(id!));
   const { data: execs, loading } = useRequest(() => tasksApi.executions(id!, { pageSize: 50 }));
+
+  // Fetch dependency task details
+  const depIds = task?.dependencies ? Object.values(task.dependencies) : [];
+  const { data: depTasks } = useRequest(
+    () => Promise.all(depIds.map((depId: string) => tasksApi.get(depId))),
+    { ready: depIds.length > 0 },
+  );
 
   const [rollbackModal, setRollbackModal] = useState(false);
   const [rollbackCommit, setRollbackCommit] = useState('');
   const [rollbackLoading, setRollbackLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
   const trigger = async () => {
     try { await tasksApi.trigger(id!); message.success('已触发'); } catch { message.error('触发失败'); }
@@ -38,6 +47,26 @@ export default function TaskDetailPage() {
     }
   };
 
+  const pauseTask = async () => {
+    setActionLoading(true);
+    try {
+      const res = await tasksApi.pause(id!);
+      message.success(res.message);
+      refreshTask();
+    } catch { message.error('暂停失败'); }
+    finally { setActionLoading(false); }
+  };
+
+  const resumeTask = async () => {
+    setActionLoading(true);
+    try {
+      const res = await tasksApi.resume(id!);
+      message.success(res.message);
+      refreshTask();
+    } catch { message.error('恢复失败'); }
+    finally { setActionLoading(false); }
+  };
+
   const execColumns = [
     { title: '执行ID', dataIndex: 'id', key: 'id', width: 280 },
     { title: '触发方式', dataIndex: 'triggerType', key: 'triggerType' },
@@ -56,6 +85,15 @@ export default function TaskDetailPage() {
         {task?.gitRepo && (
           <Button icon={<RollbackOutlined />} onClick={() => setRollbackModal(true)}>一键回滚</Button>
         )}
+        {task?.status === 'active' ? (
+          <Popconfirm title="确定要暂停此任务吗？" onConfirm={pauseTask}>
+            <Button icon={<PauseCircleOutlined />} loading={actionLoading}>暂停</Button>
+          </Popconfirm>
+        ) : task?.status === 'paused' ? (
+          <Popconfirm title="确定要恢复此任务吗？" onConfirm={resumeTask}>
+            <Button icon={<PlaySquareOutlined />} loading={actionLoading}>恢复</Button>
+          </Popconfirm>
+        ) : null}
       </Space>
 
       <Modal
@@ -88,6 +126,9 @@ export default function TaskDetailPage() {
               <Descriptions.Item label="最大重试">{task?.maxRetry}</Descriptions.Item>
               <Descriptions.Item label="状态"><Tag>{task?.status}</Tag></Descriptions.Item>
               <Descriptions.Item label="描述" span={2}>{task?.description || '-'}</Descriptions.Item>
+              <Descriptions.Item label="指定执行器">{task?.executorAppName || '-'}</Descriptions.Item>
+              <Descriptions.Item label="执行器分组">{task?.executorGroup || '-'}</Descriptions.Item>
+              <Descriptions.Item label="执行器标签">{task?.executorTags?.length ? task.executorTags.map((t: string) => <Tag key={t}>{t}</Tag>) : '-'}</Descriptions.Item>
               {task?.gitRepo && (
                 <>
                   <Descriptions.Item label="Git 仓库" span={2}>{task.gitRepo}</Descriptions.Item>
@@ -99,7 +140,26 @@ export default function TaskDetailPage() {
           </Card>
         </Tabs.TabPane>
         <Tabs.TabPane tab="执行记录" key="executions">
-          <Table rowKey="id" columns={execColumns} dataSource={execs?.list} loading={loading} />
+          <ExecutionCompare taskId={id!} executions={execs?.list ?? []} />
+        </Tabs.TabPane>
+        <Tabs.TabPane tab="任务依赖" key="dependencies">
+          {depIds.length === 0 ? (
+            <Card><Typography.Text type="secondary">暂无依赖任务</Typography.Text></Card>
+          ) : (
+            <List
+              header={<Typography.Text>前置依赖任务（需全部执行成功后才会触发此任务）</Typography.Text>}
+              bordered
+              dataSource={depTasks ?? []}
+              renderItem={(dep: any) => (
+                <List.Item actions={[<a key="view" onClick={() => nav(`/tasks/${dep.id}`)}>查看</a>]}>
+                  <List.Item.Meta
+                    title={dep.name}
+                    description={`运行时: ${dep.runtime} | 入口: ${dep.entrypoint}`}
+                  />
+                </List.Item>
+              )}
+            />
+          )}
         </Tabs.TabPane>
       </Tabs>
     </div>

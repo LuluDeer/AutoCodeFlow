@@ -4,32 +4,76 @@ from contextlib import asynccontextmanager
 import asyncio
 import logging
 import os
+import signal
 import httpx
 
-from routers import execute, health, logs
+from routers import execute, health, logs, config as config_router
 from config import settings
-from scheduler import heartbeat_task
+from scheduler import heartbeat_task, running_count
+from auth import get_current_token
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
+# Graceful shutdown state
+_shutting_down = False
+_heartbeat_task = None
+
+
+def is_shutting_down() -> bool:
+    return _shutting_down
+
+
+async def notify_offline():
+    """Send offline notification to admin-api during graceful shutdown."""
+    try:
+        token = await get_current_token()
+        headers = {'Authorization': f'Bearer {token}'} if token else {}
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f'{settings.admin_api_url}/api/executors/offline',
+                json={'address': settings.executor_address},
+                headers=headers,
+                timeout=5,
+            )
+            logger.info('Sent offline notification to admin-api')
+    except Exception as e:
+        logger.warning(f'Failed to send offline notification: {e}')
+
+
+async def wait_for_tasks(timeout_seconds: int = 30):
+    """Wait for running tasks to complete with timeout."""
+    start_time = asyncio.get_event_loop().time()
+    while running_count > 0:
+        if asyncio.get_event_loop().time() - start_time > timeout_seconds:
+            logger.warning(f'Grace period expired, {running_count} tasks still running, forcing shutdown')
+            return
+        logger.info(f'Waiting for {running_count} task(s) to complete...')
+        await asyncio.sleep(2)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _heartbeat_task
     # 启动时注册到 admin-api
     await register_executor()
     # 启动心跳后台任务
-    task = asyncio.create_task(heartbeat_task())
+    _heartbeat_task = asyncio.create_task(heartbeat_task())
     logger.info(f'Executor started: {settings.app_name} @ {settings.executor_address}')
     yield
-    task.cancel()
+    # 优雅停机：等待正在执行的任务完成
+    _heartbeat_task.cancel()
+    if running_count > 0:
+        logger.info(f'Graceful shutdown: waiting for {running_count} task(s) to finish...')
+        await wait_for_tasks()
+    await notify_offline()
+    logger.info('Executor shutdown complete')
 
 
 async def register_executor():
     try:
-        import os as _os
-        _token = _os.environ.get('EXECUTOR_SHARED_TOKEN')
-        _headers = {'Authorization': f'Bearer {_token}'} if _token else {}
+        token = await get_current_token()
+        headers = {'Authorization': f'Bearer {token}'} if token else {}
         async with httpx.AsyncClient() as client:
             await client.post(
                 f'{settings.admin_api_url}/api/executors/register',
@@ -40,7 +84,7 @@ async def register_executor():
                     'version': '1.0.0',
                     'capabilities': ['python', 'shell'],
                 },
-                headers=_headers,
+                headers=headers,
                 timeout=10,
             )
             logger.info('Registered to admin-api')
@@ -55,8 +99,7 @@ app = FastAPI(
 )
 
 # S10: restrict CORS to explicit origin whitelist
-import os as _os
-_cors_origins = [o.strip() for o in _os.environ.get('CORS_ORIGINS', 'http://localhost:5173').split(',') if o.strip()]
+_cors_origins = [o.strip() for o in os.environ.get('CORS_ORIGINS', 'http://localhost:5173').split(',') if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -67,7 +110,18 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(execute.router, prefix='/api')
 app.include_router(logs.router, prefix='/api')
+app.include_router(config_router.router, prefix='/api')
 
 if __name__ == '__main__':
     import uvicorn
+    
+    # Signal handlers for graceful shutdown
+    def handle_signal(sig):
+        global _shutting_down
+        _shutting_down = True
+        logger.info(f'Received signal {sig}, initiating graceful shutdown...')
+    
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda s, _: handle_signal(s))
+    
     uvicorn.run('main:app', host='0.0.0.0', port=settings.port, reload=False)

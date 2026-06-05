@@ -47,7 +47,18 @@ export class AuditService {
   }): Promise<{ data: AuditLog[]; total: number }> {
     const { page = 1, pageSize = 20, action, resource, userId } = options;
     const qb = this.repo.createQueryBuilder('log').orderBy('log.createdAt', 'DESC');
-    if (action) qb.andWhere('log.action ILIKE :action', { action: `%${action}%` });
+
+    // SEC-03: Validate and sanitize action parameter to prevent SQL injection and performance issues
+    if (action) {
+      // Limit action length to prevent DoS
+      const sanitizedAction = action.trim().slice(0, 100);
+      // Only allow alphanumeric, underscore, hyphen, and space characters
+      if (!/^[a-zA-Z0-9_\-\s]+$/.test(sanitizedAction)) {
+        throw new Error('Invalid action parameter: only alphanumeric characters, underscores, hyphens, and spaces are allowed');
+      }
+      qb.andWhere('log.action ILIKE :action', { action: `%${sanitizedAction}%` });
+    }
+
     if (resource) qb.andWhere('log.resource = :resource', { resource });
     if (userId) qb.andWhere('log.userId = :userId', { userId });
     // Q12: cap pageSize to prevent full-table scans regardless of caller input

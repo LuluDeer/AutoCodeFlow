@@ -32,6 +32,13 @@ export class Task {
   @Column({ type: 'simple-array', nullable: true }) alarmChannels: string[];
   @Column({ type: 'jsonb', nullable: true }) params: Record<string, any>;
   @Column({ nullable: true }) executorAppName: string;
+  
+  /** Executor group to use for this task. */
+  @Column({ nullable: true }) executorGroup: string | null;
+  
+  /** Executor tags required for this task. */
+  @Column({ type: 'simple-array', nullable: true }) executorTags: string[] | null;
+  
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;
 }

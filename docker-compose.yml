@@ -4,7 +4,15 @@
 
 version: '3.9'
 
+networks:
+  # 内部网络，服务间通信
+  autoflow-internal:
+    internal: true
+  # 对外暴露网络
+  autoflow-public:
+
 services:
+  # ── Infrastructure ──────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -12,7 +20,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-autoflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${DB_DATABASE:-autoflow}
-    # I-01: do not expose DB port to host — services communicate over the internal Docker network
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -20,11 +27,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
+    networks:
+      - autoflow-internal
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # I-01: do not expose Redis port to host — services communicate over internal Docker network
     volumes:
       - redis_data:/data
     healthcheck:
@@ -32,13 +46,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    networks:
+      - autoflow-internal
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
 
+  # ── Core Services ──────────────────────────────────────
   admin-api:
     build:
       context: ./apps/admin-api
       dockerfile: Dockerfile
     restart: unless-stopped
-    # OPS-01: resource limits prevent a runaway process from starving other services
     mem_limit: 768m
     cpus: '1.0'
     ports:
@@ -56,11 +78,26 @@ services:
       EXECUTOR_SECRET: ${EXECUTOR_SECRET}
       ADMIN_WEB_ORIGIN: ${ADMIN_WEB_ORIGIN:-http://localhost}
       AI_PROVIDER: ${AI_PROVIDER:-disabled}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3001/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
 
   admin-web:
     build:
@@ -70,15 +107,32 @@ services:
     ports:
       - '80:80'
     depends_on:
-      - admin-api
+      admin-api:
+        condition: service_healthy
+    environment:
+      REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:3001}
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
 
+  # ── Executors ──────────────────────────────────────
   executor-python:
     build:
       context: ./apps/executor-python
       dockerfile: Dockerfile
     restart: unless-stopped
-    # OPS-01: tighter limits for executors — task code must not starve the host
-    mem_limit: 512m
+    mem_limit: 1G
     cpus: '1.0'
     ports:
       - '8001:8001'
@@ -88,18 +142,35 @@ services:
       EXECUTOR_ADDRESS: executor-python:8001
       ADMIN_API_URL: http://admin-api:3001
       EXECUTOR_SECRET: ${EXECUTOR_SECRET}
-      # I-02: use a named volume so work dir survives restarts (venv/node_modules cache)
       WORK_DIR: /data/tasks
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - executor_python_data:/data/tasks
     depends_on:
-      - admin-api
+      admin-api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8001/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
 
   executor-node:
     build:
       context: ./apps/executor-node
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 1G
+    cpus: '1.0'
     ports:
       - '8002:8002'
     environment:
@@ -108,14 +179,30 @@ services:
       EXECUTOR_ADDRESS: executor-node:8002
       ADMIN_API_URL: http://admin-api:3001
       EXECUTOR_SECRET: ${EXECUTOR_SECRET}
-      # I-02: use a named volume for the work dir so task artefacts survive restarts
       WORK_DIR: /data/tasks
       MAX_CONCURRENT_TASKS: 10
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - executor_node_data:/data/tasks
     depends_on:
-      - admin-api
+      admin-api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8002/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
 
+  # ── Package Registry ──────────────────────────────────────
   registry-pypi:
     build:
       context: ./apps/registry-pypi
@@ -130,6 +217,20 @@ services:
       PACKAGES_DIR: /data/packages
     volumes:
       - pypi_data:/data/packages
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8003/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
 
   registry-npm:
     image: verdaccio/verdaccio:5
@@ -139,6 +240,20 @@ services:
     volumes:
       - npm_data:/verdaccio/storage
       - ./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:4873/-/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
 
 volumes:
   postgres_data:

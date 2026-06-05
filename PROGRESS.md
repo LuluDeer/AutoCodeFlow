@@ -119,6 +119,93 @@ autoflow/
 - [x] TaskModule / UsersModule / SystemConfigModule 导入 AuditModule
 - [x] 前端 audit/index.tsx 修复字段对齐（result/detail/data）、简化筛选器
 
+### Phase 8：测试覆盖完善 ✅ 已完成
+
+- [x] task.processor.spec.ts 添加 finally 块 save 失败场景测试
+- [x] scheduler.service.spec.ts 添加分布式锁并发场景测试
+- [x] executor-python 心跳重试测试（test_scheduler.py）
+- [x] auth.service.spec.ts 添加 Refresh Token 吊销测试
+- [x] executor 容量限制返回 429 测试
+- [x] 子进程环境变量隔离测试（SEC-01）
+- [x] 配置 CI 覆盖率门槛（jest 80%/70%，pytest 80%）
+
+### Phase 9：安全加固增强 ✅ 已完成
+
+- [x] 执行器 Token 过期与轮换机制（动态 token，30分钟自动刷新）
+- [x] admin-api 添加 /api/executors/token 端点发放动态 token
+- [x] executor-python auth.py 支持动态 token 自动刷新
+- [x] 心跳验证支持动态 token + 静态 token 双模式
+
+### Phase 10：监控与可观测性优化 ✅ 已完成
+
+- [x] 跨服务请求追踪（Trace ID）—— X-Trace-Id header 在链路中传递
+- [x] TraceMiddleware 全局中间件生成和传播 traceId
+- [x] TraceService 服务供各模块使用
+- [x] executor-python 心跳和执行请求支持 traceId
+
+### Phase 11：高可用与扩展性 ✅ 已完成
+
+- [x] executor-node 动态 Token 支持（与 executor-python 一致）
+- [x] 优雅停机机制（SIGTERM/SIGINT 处理，等待任务完成后关闭）
+- [x] 离线通知（关闭时向 admin-api 发送 offline 通知）
+- [x] 配置热更新端点（POST /api/config/reload）
+- [x] Issue1 修复：token 为空时不发送 Authorization 头
+- [x] Issue2 修复：uuid 模块移至文件顶部导入
+
+### Phase 12：执行器增强 ✅ 已完成
+
+- [x] 执行器分组与标签功能（分组名/标签数组/描述字段）
+- [x] 前端配置热更新管理界面（通过 admin-api 向执行器推送配置）
+- [x] 任务超时自动重试机制（BullMQ maxRetry 支持）
+- [x] 执行器详情页面（历史任务/性能指标）
+  - 后端新增 GET /executors/:id/executions（分页）
+  - 后端新增 GET /executors/:id/metrics（7天统计）
+- [x] 任务分发支持按分组和标签筛选
+- [x] 前端执行器详情页（ExecutorDetailPage）
+  - 显示执行器基本信息、分组、标签
+  - 显示7天性能指标统计
+  - 显示历史任务执行记录
+  - 支持编辑执行器元数据
+  - 支持配置热更新推送
+  - 支持Token轮换
+- [x] 前端执行器列表页增强
+  - 显示分组和标签列
+  - 添加详情跳转按钮
+- [x] 前端任务表单增强
+  - 添加执行器分组选择
+  - 添加执行器标签多选
+
+### Phase 13：功能增强与用户体验优化 ✅ 已完成
+
+- [x] 任务详情页显示执行器分组/标签
+- [x] 通知配置管理界面
+  - 后端：NotificationConfigController + NotificationConfigService
+  - 支持邮件/Slack/钉钉/企业微信渠道配置
+  - 支持渠道启用/禁用
+  - 支持发送测试通知
+- [x] 任务依赖链功能
+  - 后端：任务成功后自动触发依赖任务
+  - 前端：任务表单支持选择依赖任务
+  - 前端：任务详情页显示依赖任务列表
+
+### Phase 14：高级功能增强 ✅ 已完成
+
+- [x] 执行器性能监控增强
+  - 新增磁盘使用率、网络延迟、任务统计等扩展指标
+  - 前端详情页展示实时资源使用率（CPU/内存/磁盘）图表
+  - 前端详情页展示性能统计（成功率、平均耗时等）
+- [x] 任务执行历史对比
+  - 新增 ExecutionCompare 组件
+  - 支持选择多条执行记录进行对比
+  - Modal 展示对比表格
+- [x] 任务暂停/恢复功能
+  - 后端新增 `POST /tasks/:id/pause` 和 `POST /tasks/:id/resume` API
+  - 暂停后任务不再被调度，但可手动触发
+  - 前端详情页添加暂停/恢复按钮
+- [x] 批量操作功能
+  - 后端新增批量触发/暂停/恢复/删除 API
+  - 前端任务列表页支持多选
+  - 批量操作按钮在有选中项时显示
 
 ## 最近操作记录
 

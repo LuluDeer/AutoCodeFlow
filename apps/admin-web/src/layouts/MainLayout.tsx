@@ -9,6 +9,7 @@ import {
   AppstoreOutlined,
   SettingOutlined,
   FileTextOutlined,
+  BellOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/auth';
 
@@ -27,6 +28,8 @@ export default function MainLayout() {
     ? 'registry'
     : loc.pathname.startsWith('/settings')
     ? 'settings'
+    : loc.pathname.startsWith('/notification')
+    ? 'notification'
     : loc.pathname.startsWith('/audit')
     ? 'audit'
     : loc.pathname.startsWith('/tasks')
@@ -39,6 +42,7 @@ export default function MainLayout() {
     { key: 'executors', icon: <CloudServerOutlined />, label: '执行器', onClick: () => nav('/executors') },
     { key: 'users', icon: <TeamOutlined />, label: '用户管理', onClick: () => nav('/users') },
     { key: 'registry', icon: <AppstoreOutlined />, label: '包市场', onClick: () => nav('/registry') },
+    { key: 'notification', icon: <BellOutlined />, label: '通知设置', onClick: () => nav('/notification') },
     { key: 'settings', icon: <SettingOutlined />, label: '系统设置', onClick: () => nav('/settings') },
     { key: 'audit', icon: <FileTextOutlined />, label: '审计日志', onClick: () => nav('/audit') },
   ];

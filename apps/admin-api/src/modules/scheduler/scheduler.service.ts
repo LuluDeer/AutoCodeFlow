@@ -61,12 +61,18 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     const tasks = await this.taskRepo.find({ where: { status: TaskStatus.ACTIVE } });
     const activeIds = new Set(tasks.map(t => t.id));
 
-    // 停止已不在活跃列表中的旧定时器
+    // BUG-01: Stop and clean up timers for tasks that are no longer active
+    // This prevents memory leaks from accumulating inactive task references
     for (const id of this.timers.keys()) {
       if (!activeIds.has(id)) this.stop(id);
     }
     for (const id of this.cronTasks.keys()) {
       if (!activeIds.has(id)) this.stop(id);
+    }
+
+    // BUG-01: Clean up running tasks map for tasks that are no longer active
+    for (const id of this.runningTasks.keys()) {
+      if (!activeIds.has(id)) this.runningTasks.delete(id);
     }
 
     for (const t of tasks) {

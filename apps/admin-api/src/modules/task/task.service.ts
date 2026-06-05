@@ -63,6 +63,28 @@ export class TaskService {
     return { deleted: true };
   }
 
+  async pause(id: string) {
+    const t = await this.findOne(id);
+    if (t.status === TaskStatus.PAUSED) {
+      return { success: true, message: '任务已经是暂停状态' };
+    }
+    this.schedulerService.stop(id);
+    t.status = TaskStatus.PAUSED;
+    await this.taskRepo.save(t);
+    return { success: true, message: '任务已暂停' };
+  }
+
+  async resume(id: string) {
+    const t = await this.findOne(id);
+    if (t.status !== TaskStatus.PAUSED) {
+      return { success: true, message: '任务不是暂停状态' };
+    }
+    t.status = TaskStatus.ACTIVE;
+    await this.taskRepo.save(t);
+    await this.schedulerService.scheduleOne(t);
+    return { success: true, message: '任务已恢复' };
+  }
+
   async trigger(id: string, dto: TriggerTaskDto) {
     const task = await this.findOne(id);
     const exec = await this.dataSource.transaction(async (manager) => {

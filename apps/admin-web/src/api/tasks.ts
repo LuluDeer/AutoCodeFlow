@@ -13,6 +13,10 @@ export interface Task {
   params?: Record<string, string | number | boolean>;
   maxRetry: number;
   timeout: number;
+  executorAppName?: string | null;
+  executorGroup?: string | null;
+  executorTags?: string[] | null;
+  dependencies?: Record<string, string> | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,4 +51,10 @@ export const tasksApi = {
     client.get<any, TaskExecution>(`/tasks/${taskId}/executions/${execId}`),
   rollback: (id: string, gitCommit: string) =>
     client.post(`/tasks/${id}/rollback`, { gitCommit }),
+  pause: (id: string) => client.post<any, { success: boolean; message: string }>(`/tasks/${id}/pause`),
+  resume: (id: string) => client.post<any, { success: boolean; message: string }>(`/tasks/${id}/resume`),
+  batchTrigger: (taskIds: string[]) => client.post('/tasks/batch/trigger', { taskIds }),
+  batchPause: (taskIds: string[]) => client.post('/tasks/batch/pause', { taskIds }),
+  batchResume: (taskIds: string[]) => client.post('/tasks/batch/resume', { taskIds }),
+  batchDelete: (taskIds: string[]) => client.post('/tasks/batch/delete', { taskIds }),
 };

@@ -8,26 +8,20 @@ import TaskFormPage from './pages/TaskFormPage';
 import ExecutionDetailPage from './pages/ExecutionDetailPage';
 import UserListPage from './pages/UserListPage';
 import ExecutorListPage from './pages/ExecutorListPage';
+import ExecutorDetailPage from './pages/ExecutorDetailPage';
 import DashboardPage from './pages/DashboardPage';
 import RegistryPage from './pages/RegistryPage';
 import SettingsPage from './pages/settings/index';
+import NotificationSettingsPage from './pages/NotificationSettingsPage';
 import AuditLogPage from './pages/audit/index';
+import { useAuthStore } from './store/auth';
 
-// S-06: read auth state from Zustand store (persisted under key 'autoflow-auth'),
-// not from a separate 'token' key, to ensure a single source of truth.
-function getPersistedToken(): string | null {
-  try {
-    const raw = localStorage.getItem('autoflow-auth');
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { state?: { token?: string | null } };
-    return parsed?.state?.token ?? null;
-  } catch {
-    return null;
-  }
-}
-
-const PrivateRoute = ({ children }: { children: React.ReactNode }) =>
-  getPersistedToken() ? <>{children}</> : <Navigate to="/login" replace />;
+// BUG-04: Use auth store directly instead of reading from localStorage
+// The token is kept in memory only for security (prevents XSS token theft)
+const PrivateRoute = ({ children }: { children: React.ReactNode }) => {
+  const token = useAuthStore((state) => state.token);
+  return token ? <>{children}</> : <Navigate to="/login" replace />;
+};
 
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
@@ -43,9 +37,11 @@ export const router = createBrowserRouter([
       { path: 'tasks/:id/edit', element: <TaskFormPage /> },
       { path: 'tasks/:taskId/executions/:execId', element: <ExecutionDetailPage /> },
       { path: 'executors', element: <ExecutorListPage /> },
+      { path: 'executors/:id', element: <ExecutorDetailPage /> },
       { path: 'users', element: <UserListPage /> },
       { path: 'registry', element: <RegistryPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'notification', element: <NotificationSettingsPage /> },
       { path: 'audit', element: <AuditLogPage /> },
     ],
   },

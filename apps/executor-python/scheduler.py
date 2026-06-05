@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import os
+import uuid
 import httpx
 from tenacity import (
     retry,
@@ -11,6 +11,7 @@ from tenacity import (
 )
 from config import settings
 import psutil
+from auth import get_current_token
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +26,12 @@ running_count = 0
     retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException, OSError)),
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
-async def _send_heartbeat(client: httpx.AsyncClient, token: str) -> None:
+async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str = None) -> None:
     """ERR-04: single heartbeat attempt — tenacity retries this on transient failures."""
     headers = {'Authorization': f'Bearer {token}'} if token else {}
+    # OPS-03: propagate trace ID for cross-service tracing
+    if trace_id:
+        headers['X-Trace-Id'] = trace_id
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory().percent
     await client.post(
@@ -47,10 +51,13 @@ async def heartbeat_task() -> None:
     while True:
         try:
             await asyncio.sleep(30)
-            # SEC-04: unified token variable name
-            token = os.environ.get('EXECUTOR_SECRET') or os.environ.get('EXECUTOR_SHARED_TOKEN') or ''
+            # SEC-03: use dynamic token with auto-refresh
+            token = await get_current_token()
+            # OPS-03: generate trace ID for heartbeat
+            trace_id = str(uuid.uuid4())
+            logger.info(f'[{trace_id}] Sending heartbeat')
             async with httpx.AsyncClient() as client:
-                await _send_heartbeat(client, token)
+                await _send_heartbeat(client, token, trace_id)
         except Exception as e:
             # ERR-04: all retries exhausted — log as warning and keep the loop alive
             logger.warning(f'Heartbeat failed after all retries: {e}')

@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bull';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+import * as Joi from 'joi';
 import configuration from './config/configuration';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
@@ -16,6 +17,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { SystemConfigModule } from './modules/config/config.module';
 import { AuditModule } from './modules/audit/audit.module';
+import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
@@ -23,6 +25,63 @@ import { AuditModule } from './modules/audit/audit.module';
       isGlobal: true,
       load: [configuration],
       envFilePath: '.env',
+      // INFRA-04: Add configuration schema validation
+      validationSchema: Joi.object({
+        // Application
+        NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
+        PORT: Joi.number().port().default(3001),
+        LOG_LEVEL: Joi.string().valid('error', 'warn', 'info', 'debug', 'verbose').default('info'),
+
+        // Database
+        DB_HOST: Joi.string().hostname().default('localhost'),
+        DB_PORT: Joi.number().port().default(5432),
+        DB_USERNAME: Joi.string().default('postgres'),
+        DB_PASSWORD: Joi.string().min(1).required(),
+        DB_DATABASE: Joi.string().default('autoflow'),
+
+        // Redis
+        REDIS_HOST: Joi.string().hostname().default('localhost'),
+        REDIS_PORT: Joi.number().port().default(6379),
+        REDIS_PASSWORD: Joi.string().allow('').optional(),
+
+        // JWT
+        JWT_SECRET: Joi.string().min(32).required(),
+        JWT_REFRESH_SECRET: Joi.string().min(32).required(),
+        JWT_EXPIRES_IN: Joi.string().default('7d'),
+
+        // Executor
+        EXECUTOR_SECRET: Joi.string().min(16).required(),
+        EXECUTOR_SHARED_TOKEN: Joi.string().min(16).optional(),
+
+        // CORS
+        CORS_ORIGINS: Joi.string().required(),
+
+        // AI (optional)
+        AI_PROVIDER: Joi.string().valid('disabled', 'openai', 'ollama').default('disabled'),
+        OPENAI_API_KEY: Joi.string().allow('').optional(),
+        OPENAI_MODEL: Joi.string().default('gpt-4o-mini'),
+        OLLAMA_HOST: Joi.string().uri().default('http://localhost:11434'),
+        OLLAMA_MODEL: Joi.string().default('llama3'),
+
+        // Email (optional)
+        EMAIL_HOST: Joi.string().allow('').optional(),
+        EMAIL_PORT: Joi.number().port().default(465),
+        EMAIL_SECURE: Joi.string().valid('true', 'false').default('true'),
+        EMAIL_USER: Joi.string().allow('').optional(),
+        EMAIL_PASS: Joi.string().allow('').optional(),
+        EMAIL_FROM: Joi.string().email().allow('').optional(),
+        EMAIL_TO: Joi.string().email().allow('').optional(),
+
+        // Notification webhooks (optional)
+        WECOM_WEBHOOK: Joi.string().uri().allow('').optional(),
+        DINGTALK_WEBHOOK: Joi.string().uri().allow('').optional(),
+        SLACK_WEBHOOK: Joi.string().uri().allow('').optional(),
+      }),
+      // Only validate in production and test environments
+      validationOptions: {
+        allowUnknown: true, // Allow unknown environment variables
+        abortEarly: false, // Report all validation errors, not just the first one
+      },
     }),
 
     TypeOrmModule.forRootAsync({
@@ -50,6 +109,24 @@ import { AuditModule } from './modules/audit/audit.module';
           host: cfg.get('redis.host'),
           port: cfg.get<number>('redis.port'),
           password: cfg.get('redis.password'),
+          // PERF-03: Redis connection pool optimization
+          maxRetriesPerRequest: 3, // Maximum retries per request
+          enableReadyCheck: true, // Check if Redis is ready before executing commands
+          enableOfflineQueue: true, // Queue commands when offline
+          connectTimeout: 10000, // 10 seconds connection timeout
+          lazyConnect: false, // Connect immediately on startup
+          keepAlive: 10000, // Keep-alive interval (10 seconds)
+          family: 4, // IPv4
+          // Connection pool settings for better performance
+          maxRedirections: 3, // Maximum redirections for cluster mode
+          retryStrategy: (times: number) => {
+            if (times > 10) {
+              // Stop retrying after 10 attempts
+              return null;
+            }
+            // Exponential backoff: 100ms, 200ms, 400ms, etc.
+            return Math.min(times * 100, 3000);
+          },
         },
       }),
       inject: [ConfigService],
@@ -65,6 +142,7 @@ import { AuditModule } from './modules/audit/audit.module';
     MetricsModule,
     SystemConfigModule,
     AuditModule,
+    HealthModule,
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally

@@ -82,11 +82,45 @@ if (process.env.NODE_ENV === 'production') {
   const weakValues = new Set([
     'autoflow123', 'change-this-secret-in-production',
     'change-me-in-production', 'postgres', '',
+    'admin123', 'password', 'secret', 'changeme',
+    'change-me-at-least-32-chars-in-production',
+    'change-me-refresh-secret-at-least-32-chars',
+    'change-me-executor-shared-secret',
+    'change-me-pypi-password', 'change-me-pypi-api-key',
   ]);
-  if (weakValues.has(process.env.DB_PASSWORD ?? '')) {
-    throw new Error('[AutoFlow] DB_PASSWORD is unset or using a weak default in production');
+
+  // Validate database password
+  const dbPassword = process.env.DB_PASSWORD ?? '';
+  if (weakValues.has(dbPassword) || dbPassword.length < 16) {
+    throw new Error('[AutoFlow] DB_PASSWORD must be set to a strong value (>=16 chars, not a weak default) in production');
   }
-  if (!process.env.EXECUTOR_SECRET || process.env.EXECUTOR_SECRET.length < 16) {
-    throw new Error('[AutoFlow] EXECUTOR_SECRET must be set (>=16 chars) in production');
+
+  // Validate JWT secrets
+  const jwtSecret = process.env.JWT_SECRET ?? '';
+  if (weakValues.has(jwtSecret) || jwtSecret.length < 32) {
+    throw new Error('[AutoFlow] JWT_SECRET must be set to a strong value (>=32 chars, not a weak default) in production');
+  }
+
+  const jwtRefreshSecret = process.env.JWT_REFRESH_SECRET ?? '';
+  if (weakValues.has(jwtRefreshSecret) || jwtRefreshSecret.length < 32) {
+    throw new Error('[AutoFlow] JWT_REFRESH_SECRET must be set to a strong value (>=32 chars, not a weak default) in production');
+  }
+
+  // Validate executor secret
+  const executorSecret = process.env.EXECUTOR_SECRET || process.env.EXECUTOR_SHARED_TOKEN || '';
+  if (weakValues.has(executorSecret) || executorSecret.length < 16) {
+    throw new Error('[AutoFlow] EXECUTOR_SECRET must be set to a strong value (>=16 chars, not a weak default) in production');
+  }
+
+  // Validate CORS origins
+  const corsOrigins = process.env.CORS_ORIGINS ?? '';
+  if (!corsOrigins || corsOrigins.includes('localhost') || corsOrigins.includes('127.0.0.1')) {
+    throw new Error('[AutoFlow] CORS_ORIGINS must be set to production domains (no localhost) in production');
+  }
+
+  // Validate initial admin password is changed
+  const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD ?? '';
+  if (weakValues.has(initialAdminPassword)) {
+    console.warn('[AutoFlow] WARNING: INITIAL_ADMIN_PASSWORD is using a weak default. Change it immediately after first deployment.');
   }
 }

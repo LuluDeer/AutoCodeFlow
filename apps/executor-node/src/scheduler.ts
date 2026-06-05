@@ -1,12 +1,32 @@
 import axios from 'axios';
 import * as os from 'os';
+import { v4 as uuidv4 } from 'uuid';
 import { config } from './config';
 import { logger } from './logger';
+import { getCurrentToken } from './middleware/auth';
 
-export let runningCount = 0;
+// BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
+// SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
+// we use a simple lock-free approach with Atomics for consistency
+const sharedBuffer = new SharedArrayBuffer(4);
+const runningCountArray = new Int32Array(sharedBuffer);
 
-export function incrementRunning() { runningCount++; }
-export function decrementRunning() { runningCount--; }
+export function getRunningCount(): number {
+  return Atomics.load(runningCountArray, 0);
+}
+
+export function incrementRunning(): void {
+  Atomics.add(runningCountArray, 0, 1);
+}
+
+export function decrementRunning(): void {
+  Atomics.sub(runningCountArray, 0, 1);
+}
+
+// For backward compatibility
+export const runningCount = new Proxy({}, {
+  get() { return getRunningCount(); }
+});
 
 async function sendHeartbeat() {
   try {
@@ -15,9 +35,18 @@ async function sendHeartbeat() {
     const freeMem = os.freemem();
     const memUsage = ((totalMem - freeMem) / totalMem) * 100;
 
-    // S5/S14: include shared token in heartbeat
-    const token = process.env.EXECUTOR_SHARED_TOKEN;
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    // SEC-03: use dynamic token with auto-refresh
+    // OPS-03: generate trace ID for heartbeat
+    const traceId = uuidv4();
+    const token = await getCurrentToken();
+    const headers: Record<string, string> = {};
+    // Issue1 fix: only add Authorization header when token is non-empty
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    headers['X-Trace-Id'] = traceId;
+
+    logger.info(`[${traceId}] Sending heartbeat`);
     await axios.post(`${config.adminApiUrl}/api/executors/heartbeat`, {
       address: config.executorAddress,
       cpuUsage,

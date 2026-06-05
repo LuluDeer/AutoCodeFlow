@@ -2,6 +2,7 @@ import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuditService } from './audit.service';
+import { PaginationDto } from '../../common/dto/pagination.dto';
 
 @ApiTags('audit')
 @ApiBearerAuth('JWT')
@@ -16,14 +17,13 @@ export class AuditController {
   @ApiQuery({ name: 'action', required: false })
   @ApiQuery({ name: 'resource', required: false })
   findAll(
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
+    @Query() pagination: PaginationDto,
     @Query('action') action?: string,
     @Query('resource') resource?: string,
   ) {
     return this.svc.findAll({
-      page: page ? parseInt(page, 10) : 1,
-      pageSize: pageSize ? parseInt(pageSize, 10) : 20,
+      page: pagination.page,
+      pageSize: pagination.pageSize,
       action,
       resource,
     });
