@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timedelta
 from fastapi import Header, HTTPException, status
 import httpx
+from config import settings
 
 # Static token for backward compatibility (falls back if dynamic token not available)
 _STATIC_TOKEN = os.environ.get('EXECUTOR_SHARED_TOKEN') or os.environ.get('EXECUTOR_SECRET') or ''
@@ -12,8 +13,15 @@ _dynamic_token = None
 _token_expires_at = None
 _token_refresh_interval = 30 * 60  # 30 minutes
 
-# Admin API URL for token refresh
-_ADMIN_API_URL = os.environ.get('ADMIN_API_URL') or 'http://localhost:3001'
+
+def _get_admin_api_url() -> str:
+    """Get the appropriate admin API URL based on configuration."""
+    # Priority: external URL if configured, then internal, then default
+    if settings.admin_api_url_external:
+        return settings.admin_api_url_external
+    if settings.admin_api_url_internal:
+        return settings.admin_api_url_internal
+    return settings.admin_api_url
 
 
 async def _fetch_token() -> str | None:
@@ -26,10 +34,10 @@ async def _fetch_token() -> str | None:
                 headers['Authorization'] = f'Bearer {_STATIC_TOKEN}'
             
             response = await client.post(
-                f'{_ADMIN_API_URL}/api/executors/token',
+                f'{_get_admin_api_url()}/api/executors/token',
                 json={
-                    'address': os.environ.get('EXECUTOR_ADDRESS', ''),
-                    'appName': os.environ.get('APP_NAME', 'executor-python'),
+                    'address': settings.executor_address_public or settings.executor_address,
+                    'appName': settings.app_name,
                 },
                 headers=headers,
             )

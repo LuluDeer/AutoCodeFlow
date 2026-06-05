@@ -14,6 +14,16 @@ let dynamicToken: string | null = null;
 let tokenExpiresAt: Date | null = null;
 const TOKEN_REFRESH_INTERVAL = 30 * 60 * 1000; // 30 minutes
 
+function getAdminApiUrl(): string {
+  if (config.adminApiUrlExternal) {
+    return config.adminApiUrlExternal;
+  }
+  if (config.adminApiUrlInternal) {
+    return config.adminApiUrlInternal;
+  }
+  return config.adminApiUrl;
+}
+
 async function fetchToken(): Promise<string | null> {
   try {
     const headers: Record<string, string> = {};
@@ -23,9 +33,9 @@ async function fetchToken(): Promise<string | null> {
     }
 
     const response = await axios.post(
-      `${config.adminApiUrl}/api/executors/token`,
+      `${getAdminApiUrl()}/api/executors/token`,
       {
-        address: config.executorAddress,
+        address: config.executorAddressPublic || config.executorAddress,
         appName: process.env.APP_NAME || 'executor-node',
       },
       { timeout: 10000, headers },

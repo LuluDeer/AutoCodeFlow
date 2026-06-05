@@ -60,15 +60,15 @@ UV_BIN = shutil.which('uv') or '/root/.local/bin/uv'
 
 @router.post('/execute', dependencies=[Depends(verify_token)])
 async def execute(req: ExecuteRequest):
-    if sched.running_count >= settings.max_concurrent_tasks:
+    if sched.get_running_count() >= settings.max_concurrent_tasks:
         raise HTTPException(status_code=429, detail='Executor is at capacity')
 
-    sched.running_count += 1
+    sched.increment_running()
     try:
         result = await run_task(req)
         return result
     finally:
-        sched.running_count -= 1
+        sched.decrement_running()
 
 
 async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
@@ -126,6 +126,12 @@ async def run_task(req: ExecuteRequest) -> dict:
         import re as _re
         if not _re.match(r'^(https?://|git@|ssh://)', git_repo, _re.IGNORECASE):
             raise HTTPException(status_code=400, detail=f'gitRepo URL scheme not allowed: {git_repo}')
+
+        # S7: SSRF guard — block private IP addresses and localhost
+        private_ip_pattern = r'(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
+        if _re.search(private_ip_pattern, git_repo, _re.IGNORECASE):
+            raise HTTPException(status_code=400, detail=f'gitRepo URL contains restricted address: {git_repo}')
+
         ref = git_commit if git_commit else git_branch
         logger.info(f'Checking out {git_repo}@{ref} to {work_dir}')
         await asyncio.get_event_loop().run_in_executor(
@@ -167,9 +173,15 @@ async def run_task(req: ExecuteRequest) -> dict:
         else:
             cmd = ['python3', entrypoint]
     elif runtime == 'node':
-        cmd = ['node', entrypoint]
+        import sys
+        node_exe = 'node.exe' if sys.platform == 'win32' else 'node'
+        cmd = [node_exe, entrypoint]
     elif runtime == 'shell':
-        cmd = ['bash', entrypoint]
+        import sys
+        if sys.platform == 'win32':
+            cmd = ['cmd.exe', '/c', entrypoint]
+        else:
+            cmd = ['bash', '-c', f'cd "{work_dir}" && exec "{entrypoint}"']
     else:
         raise HTTPException(status_code=400, detail=f'Unsupported runtime: {runtime}')
 
@@ -203,8 +215,13 @@ async def run_task(req: ExecuteRequest) -> dict:
         await proc.wait()
 
         logs_full = ''.join(log_chunks)
-        # Truncate to last 10000 chars to avoid large HTTP responses
-        logs = logs_full[-10000:] if len(logs_full) > 10000 else logs_full
+        # Truncate to keep both beginning and end, preserving important context
+        max_length = 10000
+        if len(logs_full) > max_length:
+            half = max_length // 2
+            logs = f'{logs_full[:half]}\n...[truncated, total {len(logs_full)} chars]...\n{logs_full[-half:]}'
+        else:
+            logs = logs_full
 
         if proc.returncode != 0:
             raise RuntimeError(f'Process exited with code {proc.returncode}\n{logs}')

@@ -2,6 +2,7 @@ export default () => ({
   app: {
     port: parseInt(process.env.PORT, 10) || 3001,
     nodeEnv: process.env.NODE_ENV || 'development',
+    protocol: process.env.APP_PROTOCOL || 'http',
   },
   database: {
     host: process.env.DB_HOST || 'localhost',

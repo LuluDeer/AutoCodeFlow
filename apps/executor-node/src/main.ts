@@ -21,6 +21,16 @@ app.use('/api', verifyToken, executeRouter);
 app.use('/api', verifyToken, logsRouter);
 app.use('/api', configRouter);
 
+function getAdminApiUrl(): string {
+  if (config.adminApiUrlExternal) {
+    return config.adminApiUrlExternal;
+  }
+  if (config.adminApiUrlInternal) {
+    return config.adminApiUrlInternal;
+  }
+  return config.adminApiUrl;
+}
+
 // S5/S14: attach dynamic or static token for executor registration
 async function executorHeaders(): Promise<Record<string, string>> {
   const token = await getCurrentToken();
@@ -30,9 +40,9 @@ async function executorHeaders(): Promise<Record<string, string>> {
 async function registerExecutor() {
   try {
     const headers = await executorHeaders();
-    await axios.post(`${config.adminApiUrl}/api/executors/register`, {
+    await axios.post(`${getAdminApiUrl()}/api/executors/register`, {
       appName: config.appName,
-      address: config.executorAddress,
+      address: config.executorAddressPublic || config.executorAddress,
       type: 'node',
       version: '1.0.0',
       capabilities: ['node', 'shell'],
@@ -46,8 +56,8 @@ async function registerExecutor() {
 async function notifyOffline(): Promise<void> {
   try {
     const headers = await executorHeaders();
-    await axios.post(`${config.adminApiUrl}/api/executors/offline`, {
-      address: config.executorAddress,
+    await axios.post(`${getAdminApiUrl()}/api/executors/offline`, {
+      address: config.executorAddressPublic || config.executorAddress,
     }, { timeout: 5000, headers });
     logger.info('Sent offline notification to admin-api');
   } catch (err: any) {

@@ -79,6 +79,7 @@ services:
       ADMIN_WEB_ORIGIN: ${ADMIN_WEB_ORIGIN:-http://localhost}
       AI_PROVIDER: ${AI_PROVIDER:-disabled}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      APP_PROTOCOL: ${APP_PROTOCOL:-http}
     depends_on:
       postgres:
         condition: service_healthy
@@ -111,6 +112,8 @@ services:
         condition: service_healthy
     environment:
       REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:3001}
+      VITE_API_URL_INTERNAL: ${VITE_API_URL_INTERNAL:-http://localhost:3001}
+      VITE_API_URL_EXTERNAL: ${VITE_API_URL_EXTERNAL:-}
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost/health']
       interval: 30s
@@ -140,7 +143,10 @@ services:
       APP_NAME: executor-python-1
       PORT: 8001
       EXECUTOR_ADDRESS: executor-python:8001
+      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_PYTHON_PUBLIC_ADDRESS:-executor-python:8001}
       ADMIN_API_URL: http://admin-api:3001
+      ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3001}
+      ADMIN_API_URL_EXTERNAL: ${ADMIN_API_URL_EXTERNAL:-}
       EXECUTOR_SECRET: ${EXECUTOR_SECRET}
       WORK_DIR: /data/tasks
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -177,7 +183,10 @@ services:
       APP_NAME: executor-node-1
       PORT: 8002
       EXECUTOR_ADDRESS: executor-node:8002
+      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_NODE_PUBLIC_ADDRESS:-executor-node:8002}
       ADMIN_API_URL: http://admin-api:3001
+      ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3001}
+      ADMIN_API_URL_EXTERNAL: ${ADMIN_API_URL_EXTERNAL:-}
       EXECUTOR_SECRET: ${EXECUTOR_SECRET}
       WORK_DIR: /data/tasks
       MAX_CONCURRENT_TASKS: 10

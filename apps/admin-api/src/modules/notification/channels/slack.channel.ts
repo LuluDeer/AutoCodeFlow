@@ -15,18 +15,20 @@ export class SlackChannel extends BaseChannel {
   async send(p: NotificationPayload) {
     const webhook = this.config.get<string>('notification.slackWebhook');
     if (!webhook) return;
+
     try {
-      // Q9: add timeout to prevent indefinite hang when Slack webhook is unresponsive
-      await axios.post(webhook, {
-        text: `*${p.title}*`,
-        blocks: [
-          { type: 'header', text: { type: 'plain_text', text: p.title } },
-          { type: 'section', text: { type: 'mrkdwn', text: p.content.slice(0, 3000) } },
-        ],
-      }, { timeout: 10_000 });
+      await this.withRetry(async () => {
+        await axios.post(webhook, {
+          text: `*${p.title}*`,
+          blocks: [
+            { type: 'header', text: { type: 'plain_text', text: p.title } },
+            { type: 'section', text: { type: 'mrkdwn', text: p.content.slice(0, 3000) } },
+          ],
+        }, { timeout: 10_000 });
+      });
       this.logger.log(`[Slack] sent: ${p.title}`);
-    } catch (e) {
-      this.logger.error(`[Slack] send failed: ${e.message}`);
+    } catch (error) {
+      this.logger.error(`[Slack] send failed after retries: ${error.message}`);
     }
   }
 }

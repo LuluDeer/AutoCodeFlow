@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { config } from '../config';
 import { logger } from '../logger';
-import { incrementRunning, decrementRunning, getRunningCount } from '../scheduler';
+import { getRunningCountArray } from '../scheduler';
 import { loadManifest, mergeTaskWithManifest } from '../manifest';
 
 /** 将 git URL 转成安全缓存目录名 */
@@ -53,17 +53,25 @@ interface ExecuteRequest {
 }
 
 executeRouter.post('/execute', async (req: Request, res: Response) => {
-  // BUG-03: Use atomic operation to check running count
-  if (getRunningCount() >= config.maxConcurrentTasks) {
+  // BUG-03: Use atomic operations to prevent race conditions in capacity checking
+  // Atomically increment counter first, then check if over capacity
+  const current = Atomics.add(getRunningCountArray(), 0, 1);
+  if (current >= config.maxConcurrentTasks) {
+    Atomics.sub(getRunningCountArray(), 0, 1);
     res.status(429).json({ error: 'Executor is at capacity' });
     return;
   }
+
+  // Helper function to send error response (DO NOT decrement - finally block handles that)
+  const sendError = (status: number, error: string) => {
+    res.status(status).json({ error });
+  };
 
   const body = req.body as ExecuteRequest;
   const { executionId, params } = body;
 
   if (!executionId || !body.task) {
-    res.status(400).json({ error: 'executionId and task are required' });
+    sendError(400, 'executionId and task are required');
     return;
   }
 
@@ -72,7 +80,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   const resolvedWorkDir = path.resolve(workDir);
   const resolvedBase = path.resolve(config.workDir);
   if (!resolvedWorkDir.startsWith(resolvedBase + path.sep) && resolvedWorkDir !== resolvedBase) {
-    res.status(400).json({ error: 'Invalid executionId: path traversal detected' });
+    sendError(400, 'Invalid executionId: path traversal detected');
     return;
   }
 
@@ -81,7 +89,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     // Check if the base directory exists and is not a symlink
     const baseStats = fs.lstatSync(resolvedBase);
     if (baseStats.isSymbolicLink()) {
-      res.status(400).json({ error: 'Base work directory cannot be a symbolic link' });
+      sendError(400, 'Base work directory cannot be a symbolic link');
       return;
     }
 
@@ -89,7 +97,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     if (fs.existsSync(resolvedWorkDir)) {
       const workDirStats = fs.lstatSync(resolvedWorkDir);
       if (workDirStats.isSymbolicLink()) {
-        res.status(400).json({ error: 'Work directory cannot be a symbolic link' });
+        sendError(400, 'Work directory cannot be a symbolic link');
         return;
       }
 
@@ -97,12 +105,12 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
       const realWorkDir = fs.realpathSync(resolvedWorkDir);
       const realBase = fs.realpathSync(resolvedBase);
       if (!realWorkDir.startsWith(realBase + path.sep) && realWorkDir !== realBase) {
-        res.status(400).json({ error: 'Symbolic link escape detected' });
+        sendError(400, 'Symbolic link escape detected');
         return;
       }
     }
   } catch (err) {
-    res.status(400).json({ error: `Path validation failed: ${err instanceof Error ? err.message : 'Unknown error'}` });
+    sendError(400, `Path validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     return;
   }
 
@@ -118,9 +126,17 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
     const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
     if (!allowedGitPattern.test(gitRepo)) {
-      res.status(400).json({ error: `gitRepo URL scheme not allowed: ${gitRepo}` });
+      sendError(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
       return;
     }
+
+    // S7: SSRF guard — block private IP addresses and localhost
+    const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
+    if (privateIpPattern.test(gitRepo)) {
+      sendError(400, `gitRepo URL contains restricted address: ${gitRepo}`);
+      return;
+    }
+
     const ref = gitCommit || gitBranch;
     logger.info(`Checking out ${gitRepo}@${ref} to ${workDir}`);
     gitCheckoutTo(gitRepo, ref, workDir);
@@ -148,7 +164,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
     for (const pkg of requirements) {
       if (!npmNameRe.test(pkg)) {
-        res.status(400).json({ error: `Invalid npm package name: ${pkg}` });
+        sendError(400, `Invalid npm package name: ${pkg}`);
         return;
       }
     }
@@ -162,7 +178,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     );
     if (installResult.status !== 0) {
       const errMsg = installResult.stderr?.toString() || 'npm install failed';
-      res.status(500).json({ error: `Dependency installation failed: ${errMsg}` });
+      sendError(500, `Dependency installation failed: ${errMsg}`);
       return;
     }
   }
@@ -194,27 +210,31 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   let args: string[];
 
   if (runtime === 'node') {
-    cmd = 'node';
+    cmd = process.platform === 'win32' ? 'node.exe' : 'node';
     args = [entrypoint];
   } else if (runtime === 'shell') {
-    cmd = 'bash';
-    args = [entrypoint];
+    if (process.platform === 'win32') {
+      cmd = 'cmd.exe';
+      args = ['/c', entrypoint];
+    } else {
+      cmd = 'bash';
+      args = ['-c', `cd "${workDir}" && exec "${entrypoint}"`];
+    }
   } else {
-    res.status(400).json({ error: `Unsupported runtime: ${runtime}` });
+    sendError(400, `Unsupported runtime: ${runtime}`);
     return;
   }
 
   logger.info(`Running task ${String(task.name)} [${executionId}]: ${cmd} ${args.join(' ')}`);
-  incrementRunning();
 
   try {
     const result = await runProcess(cmd, args, workDir, env, timeout, executionId);
     res.json(result);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: message });
+    sendError(500, message);
   } finally {
-    decrementRunning();
+    Atomics.sub(getRunningCountArray(), 0, 1);
   }
 });
 

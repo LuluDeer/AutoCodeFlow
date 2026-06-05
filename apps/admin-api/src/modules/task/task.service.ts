@@ -23,8 +23,60 @@ export class TaskService {
     @Inject(forwardRef(() => SchedulerService)) private schedulerService: SchedulerService,
   ) {}
 
-  create(dto: CreateTaskDto) {
+  async create(dto: CreateTaskDto) {
+    if (dto.dependencies && Object.keys(dto.dependencies).length > 0) {
+      await this.checkCircularDependency(dto.id, dto.dependencies);
+    }
     return this.taskRepo.save(this.taskRepo.create(dto));
+  }
+
+  private async checkCircularDependency(taskId: string, dependencies: Record<string, string>): Promise<void> {
+    const visited = new Set<string>();
+    const currentPath = new Set<string>();
+    
+    const dependencyIds = Object.values(dependencies);
+    
+    for (const depId of dependencyIds) {
+      if (depId === taskId) {
+        throw new Error(`Circular dependency detected: task ${taskId} depends on itself`);
+      }
+    }
+
+    await this.detectCycle(taskId, dependencyIds, visited, currentPath);
+  }
+
+  private async detectCycle(
+    taskId: string,
+    dependencyIds: string[],
+    visited: Set<string>,
+    currentPath: Set<string>,
+  ): Promise<void> {
+    for (const depId of dependencyIds) {
+      if (depId === taskId) {
+        throw new Error(`Circular dependency detected: task ${taskId} has a cyclic dependency chain`);
+      }
+      
+      if (currentPath.has(depId)) {
+        throw new Error(`Circular dependency detected: task ${taskId} -> ... -> ${depId} (cycle)`);
+      }
+      
+      if (visited.has(depId)) {
+        continue;
+      }
+
+      visited.add(depId);
+      currentPath.add(depId);
+
+      try {
+        const depTask = await this.taskRepo.findOne({ where: { id: depId } });
+        if (depTask && depTask.dependencies && Object.keys(depTask.dependencies).length > 0) {
+          const childDependencies = Object.values(depTask.dependencies);
+          await this.detectCycle(taskId, childDependencies, visited, currentPath);
+        }
+      } finally {
+        currentPath.delete(depId);
+      }
+    }
   }
 
   async findAll(p: PaginationDto) {

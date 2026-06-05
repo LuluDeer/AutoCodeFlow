@@ -24,6 +24,15 @@ def is_shutting_down() -> bool:
     return _shutting_down
 
 
+def _get_admin_api_url() -> str:
+    """Get the appropriate admin API URL."""
+    if settings.admin_api_url_external:
+        return settings.admin_api_url_external
+    if settings.admin_api_url_internal:
+        return settings.admin_api_url_internal
+    return settings.admin_api_url
+
+
 async def notify_offline():
     """Send offline notification to admin-api during graceful shutdown."""
     try:
@@ -31,8 +40,8 @@ async def notify_offline():
         headers = {'Authorization': f'Bearer {token}'} if token else {}
         async with httpx.AsyncClient() as client:
             await client.post(
-                f'{settings.admin_api_url}/api/executors/offline',
-                json={'address': settings.executor_address},
+                f'{_get_admin_api_url()}/api/executors/offline',
+                json={'address': settings.executor_address_public or settings.executor_address},
                 headers=headers,
                 timeout=5,
             )
@@ -76,10 +85,10 @@ async def register_executor():
         headers = {'Authorization': f'Bearer {token}'} if token else {}
         async with httpx.AsyncClient() as client:
             await client.post(
-                f'{settings.admin_api_url}/api/executors/register',
+                f'{_get_admin_api_url()}/api/executors/register',
                 json={
                     'appName': settings.app_name,
-                    'address': settings.executor_address,
+                    'address': settings.executor_address_public or settings.executor_address,
                     'type': 'python',
                     'version': '1.0.0',
                     'capabilities': ['python', 'shell'],

@@ -14,12 +14,23 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
 @Injectable()
 export class ExecutorService {
   private readonly logger = new Logger(ExecutorService.name);
+  private readonly protocol: string;
+  
   constructor(
     @InjectRepository(Executor) private repo: Repository<Executor>,
     @InjectRepository(TaskExecution) private execRepo: Repository<TaskExecution>,
     @InjectRepository(Task) private taskRepo: Repository<Task>,
     private readonly configService: ConfigService,
-  ) {}
+  ) {
+    this.protocol = this.configService.get<string>('app.protocol') || 'http';
+  }
+  
+  private getExecutorUrl(address: string, path: string): string {
+    if (address.startsWith('http://') || address.startsWith('https://')) {
+      return `${address}/${path}`;
+    }
+    return `${this.protocol}://${address}/${path}`;
+  }
 
   async register(data: { appName: string; address: string; type?: string; version?: string; capabilities?: string[] }) {
     let e: Executor | null = await this.repo.findOne({ where: { address: data.address } });
@@ -165,7 +176,7 @@ export class ExecutorService {
 
     try {
       const resp = await axios.post(
-        `http://${matched.address}/api/execute`,
+        this.getExecutorUrl(matched.address, 'api/execute'),
         { executionId: execution.id, task, params: execution.params },
         { timeout: ((task.timeout || 300) + 10) * 1000 },
       );

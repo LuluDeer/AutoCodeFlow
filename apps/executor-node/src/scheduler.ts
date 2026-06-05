@@ -15,6 +15,10 @@ export function getRunningCount(): number {
   return Atomics.load(runningCountArray, 0);
 }
 
+export function getRunningCountArray(): Int32Array {
+  return runningCountArray;
+}
+
 export function incrementRunning(): void {
   Atomics.add(runningCountArray, 0, 1);
 }
@@ -27,6 +31,16 @@ export function decrementRunning(): void {
 export const runningCount = new Proxy({}, {
   get() { return getRunningCount(); }
 });
+
+function getAdminApiUrl(): string {
+  if (config.adminApiUrlExternal) {
+    return config.adminApiUrlExternal;
+  }
+  if (config.adminApiUrlInternal) {
+    return config.adminApiUrlInternal;
+  }
+  return config.adminApiUrl;
+}
 
 async function sendHeartbeat() {
   try {
@@ -47,8 +61,8 @@ async function sendHeartbeat() {
     headers['X-Trace-Id'] = traceId;
 
     logger.info(`[${traceId}] Sending heartbeat`);
-    await axios.post(`${config.adminApiUrl}/api/executors/heartbeat`, {
-      address: config.executorAddress,
+    await axios.post(`${getAdminApiUrl()}/api/executors/heartbeat`, {
+      address: config.executorAddressPublic || config.executorAddress,
       cpuUsage,
       memUsage,
       runningTaskCount: runningCount,

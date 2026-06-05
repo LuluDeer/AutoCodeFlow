@@ -9,7 +9,14 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
 
 function verifyExecutorToken(authHeader: string | undefined, configService: ConfigService): void {
   const token = configService.get<string>('executor.sharedToken');
+  const nodeEnv = configService.get<string>('app.nodeEnv');
+  
+  if (nodeEnv === 'production' && !token) {
+    throw new UnauthorizedException('Executor authentication is required in production');
+  }
+  
   if (!token) return;
+  
   const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
   if (!provided || provided !== token) {
     throw new UnauthorizedException('Invalid executor token');
@@ -242,11 +249,8 @@ export class ExecutorController {
     }
     const token = await this.svc.rotateToken(id);
     const headers = { Authorization: `Bearer ${token.token}` };
-    const resp = await axios.post(
-      `http://${executor.address}/api/config/reload`,
-      body,
-      { headers, timeout: 10_000 },
-    );
+    const url = this.svc.getExecutorUrl(executor.address, 'api/config/reload');
+    const resp = await axios.post(url, body, { headers, timeout: 10_000 });
     return resp.data;
   }
 

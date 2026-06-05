@@ -30,15 +30,17 @@ export class EmailChannel extends BaseChannel {
     });
 
     try {
-      await transporter.sendMail({
-        from: this.config.get<string>('notification.email.from') || user,
-        to,
-        subject: p.title,
-        text: p.content,
+      await this.withRetry(async () => {
+        await transporter.sendMail({
+          from: this.config.get<string>('notification.email.from') || user,
+          to,
+          subject: p.title,
+          text: p.content,
+        });
       });
       this.logger.log(`[Email] sent: ${p.title} -> ${to}`);
-    } catch (e) {
-      this.logger.error(`[Email] send failed: ${e.message}`);
+    } catch (error) {
+      this.logger.error(`[Email] send failed after retries: ${error.message}`);
     }
   }
 }

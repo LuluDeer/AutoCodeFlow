@@ -43,10 +43,8 @@ export class TaskProcessor {
       const token = this.configService.get<string>('executor.sharedToken') ?? '';
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const { default: axios } = await import('axios');
-      const resp = await axios.get(
-        `http://${executorAddress}/api/logs/${exec.id}`,
-        { headers, timeout: 15000 },
-      );
+      const url = this.executorService.getExecutorUrl(executorAddress, `api/logs/${exec.id}`);
+      const resp = await axios.get(url, { headers, timeout: 15000 });
       const lines: string[] = resp.data?.lines ?? [];
       if (lines.length === 0) return;
       // Delete stale lines first (idempotent on retry)

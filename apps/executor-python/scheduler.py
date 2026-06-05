@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 import httpx
+import threading
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -15,8 +16,36 @@ from auth import get_current_token
 
 logger = logging.getLogger(__name__)
 
-# Global count of currently-running tasks (updated by routers/execute.py)
-running_count = 0
+# Global count of currently-running tasks with thread-safe operations
+_running_count = 0
+_running_count_lock = threading.Lock()
+
+def get_running_count() -> int:
+    global _running_count
+    with _running_count_lock:
+        return _running_count
+
+def increment_running() -> None:
+    global _running_count
+    with _running_count_lock:
+        _running_count += 1
+
+def decrement_running() -> None:
+    global _running_count
+    with _running_count_lock:
+        _running_count = max(0, _running_count - 1)
+
+# For backward compatibility
+running_count = property(lambda self: get_running_count())
+
+
+def _get_admin_api_url() -> str:
+    """Get the appropriate admin API URL for heartbeat."""
+    if settings.admin_api_url_external:
+        return settings.admin_api_url_external
+    if settings.admin_api_url_internal:
+        return settings.admin_api_url_internal
+    return settings.admin_api_url
 
 
 @retry(
@@ -35,9 +64,9 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory().percent
     await client.post(
-        f'{settings.admin_api_url}/api/executors/heartbeat',
+        f'{_get_admin_api_url()}/api/executors/heartbeat',
         json={
-            'address': settings.executor_address,
+            'address': settings.executor_address_public or settings.executor_address,
             'cpuUsage': cpu,
             'memUsage': mem,
             'runningTaskCount': running_count,
