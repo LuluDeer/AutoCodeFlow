@@ -7,6 +7,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import * as nodeCron from 'node-cron';
 import { Task, TaskStatus, TaskTriggerType, BlockStrategy, MisfireStrategy } from '../task/entities/task.entity';
 import { TaskExecution, ExecutionStatus } from '../task/entities/task-execution.entity';
+import { RedisLockService } from '../../common/services/redis-lock.service';
 
 @Injectable()
 export class SchedulerService implements OnModuleInit, OnModuleDestroy {
@@ -22,6 +23,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     @InjectRepository(Task) private taskRepo: Repository<Task>,
     @InjectRepository(TaskExecution) private execRepo: Repository<TaskExecution>,
     @InjectQueue('task-queue') private queue: Queue,
+    private redisLockService: RedisLockService,
   ) {}
 
   async onModuleInit() {
@@ -114,47 +116,66 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   async enqueue(task: Task, triggerType: string) {
-    // TASK-01: replace time-window Redis lock with a database CAS update.
-    // Only the instance that successfully updates lastTriggerTime proceeds to enqueue,
-    // which is atomic and immune to clock skew between multiple admin-api replicas.
     const minIntervalMs =
       task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate
         ? task.fixedRate * 1000
-        : 5_000; // 5s guard window for cron tasks
-    const threshold = new Date(Date.now() - minIntervalMs);
-    const cas = await this.taskRepo
-      .createQueryBuilder()
-      .update(Task)
-      .set({ lastTriggerTime: () => 'NOW()' })
-      .where('id = :id', { id: task.id })
-      .andWhere('status = :status', { status: TaskStatus.ACTIVE })
-      .andWhere(
-        '("lastTriggerTime" IS NULL OR "lastTriggerTime" < :threshold)',
-        { threshold },
-      )
-      .execute();
-    if (!cas.affected || cas.affected === 0) {
+        : 5_000;
+
+    const lock = await this.redisLockService.acquireLock(`task:trigger:${task.id}`, minIntervalMs);
+    if (!lock) {
       this.logger.debug(`Task "${task.name}" recently triggered by another instance, skip`);
       return null;
     }
 
-    // DISCARD 策略：已有 RUNNING execution 时丢弃本次触发
-    if (task.blockStrategy === BlockStrategy.DISCARD) {
-      const running = await this.execRepo.findOne({
-        where: { taskId: task.id, status: ExecutionStatus.RUNNING },
-      });
-      if (running) {
-        this.logger.warn(`Task "${task.name}" is RUNNING (blockStrategy=DISCARD), skip trigger`);
+    try {
+      const taskRecord = await this.taskRepo.findOne({ where: { id: task.id, status: TaskStatus.ACTIVE } });
+      if (!taskRecord) {
+        this.logger.debug(`Task "${task.name}" is no longer active, skip`);
         return null;
       }
+
+      if (task.blockStrategy === BlockStrategy.DISCARD) {
+        const running = await this.execRepo.findOne({
+          where: { taskId: task.id, status: ExecutionStatus.RUNNING },
+        });
+        if (running) {
+          this.logger.warn(`Task "${task.name}" is RUNNING (blockStrategy=DISCARD), skip trigger`);
+          return null;
+        }
+      }
+
+      if (task.blockStrategy === BlockStrategy.COVER_EARLY) {
+        const running = await this.execRepo.findOne({
+          where: { taskId: task.id, status: ExecutionStatus.RUNNING },
+        });
+        if (running) {
+          this.logger.warn(`Task "${task.name}" is RUNNING (blockStrategy=COVER_EARLY), cancelling running execution ${running.id}`);
+          running.status = ExecutionStatus.CANCELLED;
+          running.errorMessage = 'Task was covered by new trigger';
+          running.endTime = new Date();
+          await this.execRepo.save(running);
+        }
+      }
+
+      const exec = await this.execRepo.save(this.execRepo.create({
+        taskId: task.id, taskName: task.name,
+        status: ExecutionStatus.PENDING, params: task.params,
+        triggerType, taskVersion: task.currentVersion,
+      }));
+      
+      const queueOptions = {
+        attempts: task.maxRetry,
+        backoff: task.retryDelay > 0 ? {
+          type: 'exponential' as const,
+          delay: task.retryDelay * 1000,
+        } : undefined,
+        priority: task.priority,
+      };
+      await this.queue.add('execute', { executionId: exec.id, task }, queueOptions);
+      return exec;
+    } finally {
+      await lock.release();
     }
-    const exec = await this.execRepo.save(this.execRepo.create({
-      taskId: task.id, taskName: task.name,
-      status: ExecutionStatus.PENDING, params: task.params,
-      triggerType, taskVersion: task.currentVersion,
-    }));
-    await this.queue.add('execute', { executionId: exec.id, task }, { attempts: task.maxRetry });
-    return exec;
   }
 
   /** 停止并移除指定任务的所有调度 */

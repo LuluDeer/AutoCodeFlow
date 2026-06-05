@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Task } from '../task/entities/task.entity';
 import { TaskExecution, ExecutionStatus } from '../task/entities/task-execution.entity';
 import { Executor, ExecutorStatus } from '../executor/entities/executor.entity';
+import { ExecutionReport } from './entities/execution-report.entity';
 
 @Injectable()
 export class MetricsService {
@@ -11,6 +12,7 @@ export class MetricsService {
     @InjectRepository(Task) private taskRepo: Repository<Task>,
     @InjectRepository(TaskExecution) private execRepo: Repository<TaskExecution>,
     @InjectRepository(Executor) private executorRepo: Repository<Executor>,
+    @InjectRepository(ExecutionReport) private reportRepo: Repository<ExecutionReport>,
   ) {}
 
   async getSummary() {
@@ -98,5 +100,88 @@ export class MetricsService {
       take: 10,
       select: ['id', 'taskId', 'taskName', 'errorMessage', 'createdAt', 'duration'],
     });
+  }
+
+  /** 生成指定日期的执行报告 */
+  async generateReport(date: Date): Promise<ExecutionReport> {
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(date);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const stats = await this.execRepo
+      .createQueryBuilder('e')
+      .select('e.status', 'status')
+      .addSelect('COUNT(*)', 'count')
+      .where('e.createdAt >= :start', { start: startOfDay })
+      .andWhere('e.createdAt <= :end', { end: endOfDay })
+      .groupBy('e.status')
+      .getRawMany();
+
+    const durationStats = await this.execRepo
+      .createQueryBuilder('e')
+      .select('AVG(e.duration)', 'avg')
+      .addSelect('MAX(e.duration)', 'max')
+      .addSelect('MIN(e.duration)', 'min')
+      .where('e.createdAt >= :start', { start: startOfDay })
+      .andWhere('e.createdAt <= :end', { end: endOfDay })
+      .andWhere('e.status = :status', { status: ExecutionStatus.SUCCESS })
+      .andWhere('e.duration IS NOT NULL')
+      .getRawOne();
+
+    const statMap: Record<string, number> = {};
+    for (const row of stats) {
+      statMap[row.status] = parseInt(row.count, 10);
+    }
+
+    const report = this.reportRepo.create({
+      triggerDay: startOfDay,
+      runningCount: statMap[ExecutionStatus.RUNNING] ?? 0,
+      successCount: statMap[ExecutionStatus.SUCCESS] ?? 0,
+      failCount: statMap[ExecutionStatus.FAILED] ?? 0,
+      timeoutCount: statMap[ExecutionStatus.TIMEOUT] ?? 0,
+      cancelledCount: statMap[ExecutionStatus.CANCELLED] ?? 0,
+      avgDurationMs: parseFloat(durationStats?.avg ?? '0'),
+      maxDurationMs: parseFloat(durationStats?.max ?? '0'),
+      minDurationMs: parseFloat(durationStats?.min ?? '0'),
+    });
+
+    return this.reportRepo.save(report);
+  }
+
+  /** 获取指定日期范围的执行报告 */
+  async getReports(startDate: Date, endDate: Date): Promise<ExecutionReport[]> {
+    return this.reportRepo.find({
+      where: {
+        triggerDay: {
+          gte: startDate,
+          lte: endDate,
+        },
+      },
+      order: { triggerDay: 'ASC' },
+    });
+  }
+
+  /** 获取今日执行报告（如果不存在则生成） */
+  async getTodayReport(): Promise<ExecutionReport> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let report = await this.reportRepo.findOne({ where: { triggerDay: today } });
+    if (!report) {
+      report = await this.generateReport(today);
+    }
+    return report;
+  }
+
+  /** 获取最近 N 天的执行报告 */
+  async getRecentReports(days: number): Promise<ExecutionReport[]> {
+    const endDate = new Date();
+    endDate.setHours(0, 0, 0, 0);
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days + 1);
+    startDate.setHours(0, 0, 0, 0);
+
+    return this.getReports(startDate, endDate);
   }
 }

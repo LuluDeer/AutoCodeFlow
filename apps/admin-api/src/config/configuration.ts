@@ -48,6 +48,8 @@ export default () => ({
     ollamaModel: process.env.OLLAMA_MODEL || 'llama3',
   },
   executor: {
+    heartbeatInterval: parseInt(process.env.EXECUTOR_HEARTBEAT_INTERVAL, 10) || 30000,
+    heartbeatTimeoutMultiplier: parseInt(process.env.EXECUTOR_HEARTBEAT_TIMEOUT_MULTIPLIER, 10) || 3,
     // S-04: shared token executors must present; empty only allowed in dev (with warning)
     sharedToken: (() => {
       // SEC-04: read EXECUTOR_SECRET (matches docker-compose.yml injection key)

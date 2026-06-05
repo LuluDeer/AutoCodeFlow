@@ -6,6 +6,8 @@ export const config = {
   adminApiUrl: process.env.ADMIN_API_URL || 'http://admin-api:3001',
   adminApiUrlInternal: process.env.ADMIN_API_URL_INTERNAL || process.env.ADMIN_API_URL || 'http://admin-api:3001',
   adminApiUrlExternal: process.env.ADMIN_API_URL_EXTERNAL || '',
+  adminApiUrls: (process.env.ADMIN_API_URLS || '').split(',').filter(url => url.trim()),
   workDir: process.env.WORK_DIR || '/tmp/autoflow/tasks',
   maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_TASKS || '10', 10),
+  logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
 };

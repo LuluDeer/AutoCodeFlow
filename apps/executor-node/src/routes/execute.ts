@@ -6,6 +6,9 @@ import { config } from '../config';
 import { logger } from '../logger';
 import { getRunningCountArray } from '../scheduler';
 import { loadManifest, mergeTaskWithManifest } from '../manifest';
+import { pushCallback } from '../callback';
+import { appendLog } from '../file-logger';
+import { taskWorkerManager } from '../task-worker';
 
 /** 将 git URL 转成安全缓存目录名 */
 function repoDirName(repoUrl: string): string {
@@ -227,16 +230,46 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
 
   logger.info(`Running task ${String(task.name)} [${executionId}]: ${cmd} ${args.join(' ')}`);
 
+  const taskInfo = {
+    taskId,
+    task: { ...task, runtime, entrypoint, timeout, workDir, env, cmd, args },
+    params,
+    executionId,
+  };
+
+  taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId });
+  
+  res.json({ status: 'accepted', executionId });
+});
+
+export async function runTask(task: any, params: Record<string, any>, executionId: string): Promise<void> {
+  const { cmd, args, workDir, env, timeout } = task;
+  const startTime = Date.now();
+  Atomics.add(getRunningCountArray(), 0, 1);
+  
   try {
     const result = await runProcess(cmd, args, workDir, env, timeout, executionId);
-    res.json(result);
+    
+    pushCallback({
+      executionId,
+      status: 'success',
+      exitCode: result.exitCode,
+      logs: result.logs,
+      durationMs: Date.now() - startTime,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    sendError(500, message);
+    
+    pushCallback({
+      executionId,
+      status: 'failed',
+      errorMessage: message,
+      durationMs: Date.now() - startTime,
+    });
   } finally {
     Atomics.sub(getRunningCountArray(), 0, 1);
   }
-});
+}
 
 function runProcess(
   cmd: string,
@@ -244,15 +277,22 @@ function runProcess(
   cwd: string,
   env: NodeJS.ProcessEnv,
   timeoutSec: number,
-  _executionId?: string,
+  executionId?: string,
 ): Promise<{ success: boolean; logs: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
-    // B-06: detached=true creates a new process group so we can kill the entire group on timeout
     const proc = spawn(cmd, args, { cwd, env, detached: true });
     let logs = '';
 
-    proc.stdout.on('data', (d: Buffer) => { logs += d.toString(); });
-    proc.stderr.on('data', (d: Buffer) => { logs += d.toString(); });
+    proc.stdout.on('data', (d: Buffer) => { 
+      const output = d.toString();
+      logs += output;
+      if (executionId) appendLog(executionId, output);
+    });
+    proc.stderr.on('data', (d: Buffer) => { 
+      const output = d.toString();
+      logs += output;
+      if (executionId) appendLog(executionId, output);
+    });
 
     const timer = setTimeout(() => {
       // B-06: kill the entire process group so child processes spawned by the task are also terminated

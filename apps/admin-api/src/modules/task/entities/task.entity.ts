@@ -1,7 +1,18 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 
 export enum TaskStatus { ACTIVE = 'active', PAUSED = 'paused', DELETED = 'deleted' }
-export enum BlockStrategy { SERIAL = 'serial', DISCARD = 'discard' }
+export enum BlockStrategy { SERIAL = 'serial', DISCARD = 'discard', COVER_EARLY = 'cover_early' }
+
+export enum TaskPriority {
+  LOW = 1,
+  NORMAL = 2,
+  HIGH = 3,
+  CRITICAL = 4,
+}
+export enum ExecuteMode {
+  SINGLE = 'single',
+  BROADCAST = 'broadcast',
+}
 export enum MisfireStrategy { IGNORE = 'ignore', FIRE_ONCE = 'fire_once' }
 export enum TaskTriggerType { CRON = 'cron', FIXED_RATE = 'fixed_rate', API = 'api', MANUAL = 'manual' }
 export enum TaskRuntime { PYTHON = 'python', NODE = 'node', SHELL = 'shell' }
@@ -25,8 +36,12 @@ export class Task {
   @Column({ nullable: true }) currentVersion: string;
   @Column({ type: 'int', default: 0 }) timeout: number;
   @Column({ type: 'int', default: 3 }) maxRetry: number;
+  @Column({ type: 'int', default: 0 }) retryDelay: number;
+  @Column({ type: 'simple-array', nullable: true }) retryableErrors: string[];
   @Column({ type: 'enum', enum: BlockStrategy, default: BlockStrategy.SERIAL }) blockStrategy: BlockStrategy;
   @Column({ type: 'enum', enum: MisfireStrategy, default: MisfireStrategy.IGNORE }) misfireStrategy: MisfireStrategy;
+  @Column({ type: 'enum', enum: TaskPriority, default: TaskPriority.NORMAL }) priority: TaskPriority;
+  @Column({ type: 'enum', enum: ExecuteMode, default: ExecuteMode.SINGLE }) executeMode: ExecuteMode;
   @Column({ nullable: true }) lastTriggerTime: Date;
   @Column({ nullable: true }) alarmEmail: string;
   @Column({ type: 'simple-array', nullable: true }) alarmChannels: string[];

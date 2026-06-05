@@ -3,6 +3,7 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 
 export enum ExecutionStatus {
   PENDING = 'pending', RUNNING = 'running', SUCCESS = 'success',
   FAILED = 'failed', TIMEOUT = 'timeout', KILLED = 'killed',
+  CANCELLED = 'cancelled',
 }
 
 @Entity('task_executions')

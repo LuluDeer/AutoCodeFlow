@@ -6,6 +6,7 @@ import { Queue } from 'bull';
 import { Task, TaskStatus } from './entities/task.entity';
 import { TaskExecution, ExecutionStatus } from './entities/task-execution.entity';
 import { ExecutionLogLine } from './entities/execution-log-line.entity';
+import { TaskVersion } from './entities/task-version.entity';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
 import { TriggerTaskDto } from './dto/trigger-task.dto';
@@ -18,6 +19,7 @@ export class TaskService {
     @InjectRepository(Task) private taskRepo: Repository<Task>,
     @InjectRepository(TaskExecution) private execRepo: Repository<TaskExecution>,
     @InjectRepository(ExecutionLogLine) private logLineRepo: Repository<ExecutionLogLine>,
+    @InjectRepository(TaskVersion) private versionRepo: Repository<TaskVersion>,
     @InjectQueue('task-queue') private taskQueue: Queue,
     private dataSource: DataSource,
     @Inject(forwardRef(() => SchedulerService)) private schedulerService: SchedulerService,
@@ -222,5 +224,149 @@ export class TaskService {
       await this.schedulerService.scheduleOne(task);
     }
     return { execution: exec, rolledBackFrom: prevCommit, rolledBackTo: dto.gitCommit };
+  }
+
+  async handleCallback(callbacks: Array<{
+    executionId: string;
+    status: 'success' | 'failed';
+    exitCode?: number;
+    logs?: string;
+    errorMessage?: string;
+    durationMs?: number;
+  }>) {
+    const results = [];
+    for (const cb of callbacks) {
+      try {
+        const execution = await this.execRepo.findOne({ where: { id: cb.executionId } });
+        if (!execution) {
+          results.push({ executionId: cb.executionId, success: false, error: 'Execution not found' });
+          continue;
+        }
+
+        execution.status = cb.status === 'success' ? ExecutionStatus.SUCCESS : ExecutionStatus.FAILED;
+        execution.endTime = new Date();
+        execution.duration = cb.durationMs;
+        
+        if (cb.status === 'failed') {
+          execution.errorMessage = cb.errorMessage;
+        }
+        
+        if (cb.logs) {
+          execution.logs = cb.logs;
+          // 同时保存到日志表
+          const logLines = cb.logs.split('\n');
+          for (let i = 0; i < logLines.length; i++) {
+            await this.logLineRepo.save(this.logLineRepo.create({
+              executionId: cb.executionId,
+              lineNumber: i,
+              content: logLines[i],
+            }));
+          }
+        }
+
+        await this.execRepo.save(execution);
+        results.push({ executionId: cb.executionId, success: true });
+      } catch (error: any) {
+        results.push({ executionId: cb.executionId, success: false, error: error.message });
+      }
+    }
+    return results;
+  }
+
+  async saveVersion(taskId: string, createdBy?: string, description?: string): Promise<TaskVersion> {
+    const task = await this.taskRepo.findOne({ where: { id: taskId } });
+    if (!task) {
+      throw new NotFoundException('Task not found');
+    }
+
+    const existingVersions = await this.versionRepo.find({ where: { taskId } });
+    const versionNum = existingVersions.length + 1;
+    const version = `v${versionNum}`;
+
+    const snapshot: Record<string, any> = {
+      id: task.id,
+      name: task.name,
+      description: task.description,
+      runtime: task.runtime,
+      entrypoint: task.entrypoint,
+      params: task.params,
+      timeout: task.timeout,
+      maxRetry: task.maxRetry,
+      retryDelay: task.retryDelay,
+      retryableErrors: task.retryableErrors,
+      triggerType: task.triggerType,
+      cronExpression: task.cronExpression,
+      fixedRate: task.fixedRate,
+      blockStrategy: task.blockStrategy,
+      misfireStrategy: task.misfireStrategy,
+      priority: task.priority,
+      executeMode: task.executeMode,
+      currentVersion: task.currentVersion,
+      gitCommit: task.gitCommit,
+    };
+
+    return this.versionRepo.save(this.versionRepo.create({
+      taskId,
+      version,
+      gitCommit: task.gitCommit,
+      snapshot,
+      createdBy,
+      description,
+    }));
+  }
+
+  async getVersions(taskId: string): Promise<TaskVersion[]> {
+    return this.versionRepo.find({
+      where: { taskId },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async getVersion(taskId: string, versionId: string): Promise<TaskVersion> {
+    const version = await this.versionRepo.findOne({
+      where: { id: versionId, taskId },
+    });
+    if (!version) {
+      throw new NotFoundException('Version not found');
+    }
+    return version;
+  }
+
+  async rollbackToVersion(taskId: string, versionId: string): Promise<Task> {
+    const version = await this.getVersion(taskId, versionId);
+    
+    const task = await this.taskRepo.findOne({ where: { id: taskId } });
+    if (!task) {
+      throw new NotFoundException('Task not found');
+    }
+
+    Object.assign(task, version.snapshot);
+    task.currentVersion = version.version;
+    
+    return this.taskRepo.save(task);
+  }
+
+  async compareVersions(taskId: string, versionId1: string, versionId2: string): Promise<Record<string, { old: any; new: any }>> {
+    const v1 = await this.getVersion(taskId, versionId1);
+    const v2 = await this.getVersion(taskId, versionId2);
+    
+    const allKeys = new Set([...Object.keys(v1.snapshot), ...Object.keys(v2.snapshot)]);
+    const diff: Record<string, { old: any; new: any }> = {};
+    
+    for (const key of allKeys) {
+      if (JSON.stringify(v1.snapshot[key]) !== JSON.stringify(v2.snapshot[key])) {
+        diff[key] = {
+          old: v1.snapshot[key],
+          new: v2.snapshot[key],
+        };
+      }
+    }
+    
+    return diff;
+  }
+
+  async deleteVersion(taskId: string, versionId: string): Promise<void> {
+    const version = await this.getVersion(taskId, versionId);
+    await this.versionRepo.delete(version.id);
   }
 }

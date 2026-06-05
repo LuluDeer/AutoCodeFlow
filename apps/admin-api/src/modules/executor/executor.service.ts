@@ -239,16 +239,34 @@ export class ExecutorService {
     }
   }
 
-  /** 每 30s 自动扫描，将心跳超时 90s 的执行器标记为 OFFLINE */
+  /** 每 30s 自动扫描，将心跳超时的执行器标记为 OFFLINE */
   @Cron('*/30 * * * * *')
   async markStaleOffline() {
-    const cutoff = new Date(Date.now() - 90_000);
+    // 使用配置的心跳间隔和超时倍数计算超时时间
+    const heartbeatInterval = this.configService.get<number>('executor.heartbeatInterval') || 30000;
+    const timeoutMultiplier = this.configService.get<number>('executor.heartbeatTimeoutMultiplier') || 3;
+    const timeoutMs = heartbeatInterval * timeoutMultiplier;
+    const cutoff = new Date(Date.now() - timeoutMs);
+    
     const result = await this.repo.update(
       { status: ExecutorStatus.ONLINE, lastHeartbeat: LessThan(cutoff) },
       { status: ExecutorStatus.OFFLINE },
     );
     if (result.affected && result.affected > 0) {
-      this.logger.warn(`Marked ${result.affected} executor(s) as OFFLINE due to heartbeat timeout`);
+      this.logger.warn(`Marked ${result.affected} executor(s) as OFFLINE due to heartbeat timeout (${timeoutMs}ms)`);
+    }
+  }
+
+  /** 每小时执行，清理离线超过7天的执行器记录 */
+  @Cron('0 0 * * * *')
+  async cleanupOfflineExecutors() {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const result = await this.repo.delete({
+      status: ExecutorStatus.OFFLINE,
+      lastHeartbeat: LessThan(sevenDaysAgo),
+    });
+    if (result.affected && result.affected > 0) {
+      this.logger.log(`Cleaned up ${result.affected} offline executor(s) (>7 days)`);
     }
   }
 
