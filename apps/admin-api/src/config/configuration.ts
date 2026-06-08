@@ -9,7 +9,7 @@ export default () => ({
     port: parseInt(process.env.DB_PORT, 10) || 5432,
     username: process.env.DB_USERNAME || 'postgres',
     password: process.env.DB_PASSWORD || 'postgres',
-    database: process.env.DB_DATABASE || 'autoflow',
+    database: process.env.DB_DATABASE | autocodeflow',
   },
   jwt: {
     // S4: fail-fast on weak/missing secrets — throw at startup rather than silently using defaults
@@ -74,7 +74,7 @@ export default () => ({
       secure: process.env.EMAIL_SECURE !== 'false',
       user: process.env.EMAIL_USER || '',
       pass: process.env.EMAIL_PASS || '',
-      from: process.env.EMAIL_FROM || 'autoflow@noreply.com',
+      from: process.env.EMAIL_FROM || 'autocodeflow@noreply.com',
       to: process.env.EMAIL_TO || '',
     },
   },
@@ -83,7 +83,7 @@ export default () => ({
 // M3: fail-fast in production for critical secrets that have known weak defaults
 if (process.env.NODE_ENV === 'production') {
   const weakValues = new Set([
-    'autoflow123', 'change-this-secret-in-production',
+    'autocodeflow123', 'change-this-secret-in-production',
     'change-me-in-production', 'postgres', '',
     'admin123', 'password', 'secret', 'changeme',
     'change-me-at-least-32-chars-in-production',

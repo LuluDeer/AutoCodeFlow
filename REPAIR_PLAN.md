@@ -41,9 +41,9 @@
 2. 执行器根据运行环境选择正确的回调地址
 
 **涉及文件**:
-- [apps/executor-node/src/config.ts](file:///home/yongsheng/project/autoflow/apps/executor-node/src/config.ts)
-- [apps/executor-python/config.py](file:///home/yongsheng/project/autoflow/apps/executor-python/config.py)
-- [apps/executor-python/auth.py](file:///home/yongsheng/project/autoflow/apps/executor-python/auth.py)
+- [apps/executor-node/src/config.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/executor-node/src/config.ts)
+- [apps/executor-python/config.py](file:///home/yongsheng/project/AutoCodeFlow/apps/executor-python/config.py)
+- [apps/executor-python/auth.py](file:///home/yongsheng/project/AutoCodeFlow/apps/executor-python/auth.py)
 
 **计划时间**: 2小时
 
@@ -58,8 +58,8 @@
 2. 根据执行器注册地址自动选择协议
 
 **涉及文件**:
-- [apps/admin-api/src/modules/executor/executor.service.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/modules/executor/executor.service.ts)
-- [apps/admin-api/src/modules/task/task.processor.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/modules/task/task.processor.ts)
+- [apps/admin-api/src/modules/executor/executor.service.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/modules/executor/executor.service.ts)
+- [apps/admin-api/src/modules/task/task.processor.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/modules/task/task.processor.ts)
 
 **计划时间**: 2小时
 
@@ -74,8 +74,8 @@
 2. 在前端提供网络环境切换功能
 
 **涉及文件**:
-- [apps/admin-web/vite.config.ts](file:///home/yongsheng/project/autoflow/apps/admin-web/vite.config.ts)
-- [apps/admin-web/src/api/client.ts](file:///home/yongsheng/project/autoflow/apps/admin-web/src/api/client.ts)
+- [apps/admin-web/vite.config.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-web/vite.config.ts)
+- [apps/admin-web/src/api/client.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-web/src/api/client.ts)
 
 **计划时间**: 3小时
 
@@ -92,8 +92,8 @@
 2. 在配置验证中增加检查
 
 **涉及文件**:
-- [apps/admin-api/src/modules/executor/executor.controller.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/modules/executor/executor.controller.ts)
-- [apps/admin-api/src/config/configuration.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/config/configuration.ts)
+- [apps/admin-api/src/modules/executor/executor.controller.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/modules/executor/executor.controller.ts)
+- [apps/admin-api/src/config/configuration.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/config/configuration.ts)
 
 **计划时间**: 1小时
 
@@ -108,10 +108,10 @@
 2. 记录通知失败日志
 
 **涉及文件**:
-- [apps/admin-api/src/modules/notification/channels/wecom.channel.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/modules/notification/channels/wecom.channel.ts)
-- [apps/admin-api/src/modules/notification/channels/dingtalk.channel.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/modules/notification/channels/dingtalk.channel.ts)
-- [apps/admin-api/src/modules/notification/channels/email.channel.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/modules/notification/channels/email.channel.ts)
-- [apps/admin-api/src/modules/notification/channels/slack.channel.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/modules/notification/channels/slack.channel.ts)
+- [apps/admin-api/src/modules/notification/channels/wecom.channel.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/modules/notification/channels/wecom.channel.ts)
+- [apps/admin-api/src/modules/notification/channels/dingtalk.channel.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/modules/notification/channels/dingtalk.channel.ts)
+- [apps/admin-api/src/modules/notification/channels/email.channel.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/modules/notification/channels/email.channel.ts)
+- [apps/admin-api/src/modules/notification/channels/slack.channel.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/modules/notification/channels/slack.channel.ts)
 
 **计划时间**: 3小时
 
@@ -126,8 +126,8 @@
 2. 仅允许白名单域名
 
 **涉及文件**:
-- [apps/executor-python/routers/execute.py](file:///home/yongsheng/project/autoflow/apps/executor-python/routers/execute.py)
-- [apps/executor-node/src/routes/execute.ts](file:///home/yongsheng/project/autoflow/apps/executor-node/src/routes/execute.ts)
+- [apps/executor-python/routers/execute.py](file:///home/yongsheng/project/AutoCodeFlow/apps/executor-python/routers/execute.py)
+- [apps/executor-node/src/routes/execute.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/executor-node/src/routes/execute.ts)
 
 **计划时间**: 2小时
 
@@ -144,8 +144,8 @@
 2. 在创建/更新任务时检查依赖关系
 
 **涉及文件**:
-- [apps/admin-api/src/modules/task/task.service.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/modules/task/task.service.ts)
-- [apps/admin-api/src/modules/task/task.processor.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/modules/task/task.processor.ts)
+- [apps/admin-api/src/modules/task/task.service.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/modules/task/task.service.ts)
+- [apps/admin-api/src/modules/task/task.processor.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/modules/task/task.processor.ts)
 
 **计划时间**: 4小时
 
@@ -160,8 +160,8 @@
 2. 确保容量检查和递增在同一事务中
 
 **涉及文件**:
-- [apps/executor-node/src/routes/execute.ts](file:///home/yongsheng/project/autoflow/apps/executor-node/src/routes/execute.ts)
-- [apps/executor-python/routers/execute.py](file:///home/yongsheng/project/autoflow/apps/executor-python/routers/execute.py)
+- [apps/executor-node/src/routes/execute.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/executor-node/src/routes/execute.ts)
+- [apps/executor-python/routers/execute.py](file:///home/yongsheng/project/AutoCodeFlow/apps/executor-python/routers/execute.py)
 
 **计划时间**: 2小时
 
@@ -176,8 +176,8 @@
 2. 中间用省略号连接
 
 **涉及文件**:
-- [apps/executor-python/routers/execute.py](file:///home/yongsheng/project/autoflow/apps/executor-python/routers/execute.py)
-- [apps/executor-node/src/routes/execute.ts](file:///home/yongsheng/project/autoflow/apps/executor-node/src/routes/execute.ts)
+- [apps/executor-python/routers/execute.py](file:///home/yongsheng/project/AutoCodeFlow/apps/executor-python/routers/execute.py)
+- [apps/executor-node/src/routes/execute.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/executor-node/src/routes/execute.ts)
 
 **计划时间**: 1小时
 
@@ -194,7 +194,7 @@
 2. 支持执行器通过不同网络注册
 
 **涉及文件**:
-- [docker-compose.yml](file:///home/yongsheng/project/autoflow/docker-compose.yml)
+- [docker-compose.yml](file:///home/yongsheng/project/AutoCodeFlow/docker-compose.yml)
 
 **计划时间**: 2小时
 
@@ -209,8 +209,8 @@
 2. 添加 SSL 证书配置支持
 
 **涉及文件**:
-- [docker-compose.yml](file:///home/yongsheng/project/autoflow/docker-compose.yml)
-- [apps/admin-api/src/main.ts](file:///home/yongsheng/project/autoflow/apps/admin-api/src/main.ts)
+- [docker-compose.yml](file:///home/yongsheng/project/AutoCodeFlow/docker-compose.yml)
+- [apps/admin-api/src/main.ts](file:///home/yongsheng/project/AutoCodeFlow/apps/admin-api/src/main.ts)
 
 **计划时间**: 2小时
 

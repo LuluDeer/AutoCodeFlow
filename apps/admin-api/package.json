@@ -1,7 +1,7 @@
 {
   "name": "admin-api",
   "version": "0.0.1",
-  "description": "AutoFlow Admin API",
+  "description": "AutoCodeFlow Admin API",
   "author": "",
   "private": true,
   "license": "UNLICENSED",
