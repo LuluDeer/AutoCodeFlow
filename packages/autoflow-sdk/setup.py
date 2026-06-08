@@ -1,9 +1,9 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="autoflow-sdk",
+    name="autocodeflow-sdk",
     version="0.1.0",
-    description="AutoFlow Python SDK — base utilities for task execution",
+    description="AutoCodeFlow Python SDK — base utilities for task execution",
     packages=find_packages(exclude=["tests*"]),
     python_requires=">=3.9",
     install_requires=[

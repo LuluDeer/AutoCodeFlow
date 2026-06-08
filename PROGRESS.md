@@ -1,10 +1,10 @@
-# AutoFlow 开发进度记录
+# AutoCodeFlow 开发进度记录
 
 > 本文件用于记录开发进度，防止中断后丢失上下文。每完成一个阶段自动更新。
 
 ## 项目简介
 
-AutoFlow 是一个面向开发者的分布式自动化任务编排平台，类比影刀但面向工程师，支持：
+AutoCodeFlow 是一个面向开发者的分布式自动化任务编排平台，类比影刀但面向工程师，支持：
 
 - 中台统一调度与监控（NestJS + React）
 - Python / Node.js 执行器，任务隔离运行
@@ -32,7 +32,7 @@ AutoFlow 是一个面向开发者的分布式自动化任务编排平台，类�
 ## 目录结构
 
 ```
-autoflow/
+AutoCodeFlow/
 ├── apps/
 │   ├── admin-api/          # 中台 NestJS API
 │   ├── admin-web/          # 中台 React 前端
@@ -40,11 +40,11 @@ autoflow/
 │   ├── executor-node/      # Node.js 执行器 Agent
 │   └── registry/           # 包仓库服务
 ├── packages/
-│   ├── autoflow-sdk/       # 基础 SDK（Python）
-│   ├── autoflow-http/      # HTTP 封装库
-│   ├── autoflow-db/        # 数据库连接库
-│   ├── autoflow-notify/    # 通知库
-│   └── autoflow-ai/        # AI 分析库
+│   ├── autocodeflow-sdk/       # 基础 SDK（Python）
+│   ├── autocodeflow-http/      # HTTP 封装库
+│   ├── autocodeflow-db/        # 数据库连接库
+│   ├── autocodeflow-notify/    # 通知库
+│   └── autocodeflow-ai/        # AI 分析库
 ├── infra/
 │   ├── docker-compose.yml  # Docker Compose 配置
 │   ├── nginx/              # Nginx 配置
@@ -90,7 +90,7 @@ autoflow/
 
 - [x] 私有 PyPI 服务（FastAPI PEP 503 + 上传/下载/认证，端口 8003）
 - [x] 私有 npm 仓库（Verdaccio 5，端口 4873，@autoflow/\* 私有包）
-- [x] autoflow-sdk 基础包（TaskContext/TaskResult/HttpClient/get\_logger）
+- [x] autocodeflow-sdk 基础包（TaskContext/TaskResult/HttpClient/get\_logger）
 - [x] 包市场 UI（RegistryPage，PyPI/npm 双 Tab，上传/列表/跳转）
 - [x] 包版本管理（PyPI sha256 文件索引 + Verdaccio 版本列表）
 

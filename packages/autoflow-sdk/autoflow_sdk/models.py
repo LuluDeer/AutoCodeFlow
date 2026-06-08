@@ -1,4 +1,4 @@
-"""Shared Pydantic models for autoflow-sdk <-> executor HTTP protocol.
+"""Shared Pydantic models for autocodeflow-sdk <-> executor HTTP protocol.
 
 Using these models in both the executor and any consumer ensures that
 field renames / type changes are caught at import time rather than at runtime.

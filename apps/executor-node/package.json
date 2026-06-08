@@ -1,7 +1,7 @@
 {
   "name": "executor-node",
   "version": "1.0.0",
-  "description": "AutoFlow Node.js Executor",
+  "description": "AutoCodeFlow Node.js Executor",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc",

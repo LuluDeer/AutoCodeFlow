@@ -1,11 +1,11 @@
-"""Structured logger for AutoFlow tasks."""
+"""Structured logger for AutoCodeFlow tasks."""
 import logging
 import sys
 
 
-def get_logger(name: str = "autoflow") -> logging.Logger:
+def get_logger(name: str = "autocodeflow") -> logging.Logger:
     """Return a logger with a consistent format."""
-    logger = logging.getLogger(f"autoflow.{name}")
+    logger = logging.getLogger(f"autocodeflow.{name}")
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
         fmt = logging.Formatter(

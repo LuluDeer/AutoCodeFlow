@@ -37,7 +37,7 @@ import { HealthModule } from './modules/health/health.module';
         DB_PORT: Joi.number().port().default(5432),
         DB_USERNAME: Joi.string().default('postgres'),
         DB_PASSWORD: Joi.string().min(1).required(),
-        DB_DATABASE: Joi.string().default('autoflow'),
+        DB_DATABASE | autocodeflow'),
 
         // Redis
         REDIS_HOST: Joi.string().hostname().default('localhost'),

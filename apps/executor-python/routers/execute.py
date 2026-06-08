@@ -13,7 +13,7 @@ from auth import verify_token
 from config import settings
 from manifest import load_manifest, merge_task_with_manifest
 try:
-    from autoflow_sdk.models import ExecuteRequest
+    from autocodeflow_sdk.models import ExecuteRequest
 except ImportError:
     # Fallback if SDK is not installed — define locally for compatibility
     from pydantic import BaseModel

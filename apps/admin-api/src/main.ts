@@ -159,12 +159,12 @@ AutoFlow 是一个现代化的工作流自动化平台，提供任务编排、�
     .setVersion('1.0.0')
     .setContact(
       'AutoFlow Team',
-      'https://github.com/autoflow',
-      'support@autoflow.io',
+      'https://github.com/autocodeflow',
+      'support@autocodeflow.io',
     )
     .setLicense(
       'MIT License',
-      'https://github.com/autoflow/autoflow/blob/main/LICENSE',
+      'https://github.com/autocodeflow/autocodeflow/blob/main/LICENSE',
     )
     .addBearerAuth(
       { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
@@ -172,7 +172,7 @@ AutoFlow 是一个现代化的工作流自动化平台，提供任务编排、�
     )
     .addSecurityRequirements('JWT')
     .addServer('http://localhost:3001', '本地开发环境')
-    .addServer('http://api.autoflow.io', '生产环境')
+    .addServer('http://api.autocodeflow.io', '生产环境')
     .build();
 
   const document = SwaggerModule.createDocument(app, config, {

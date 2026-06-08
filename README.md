@@ -1,8 +1,10 @@
-# AutoFlow
+# AutoCodeFlow
 
 > 企业级分布式任务调度系统
 
-AutoFlow 是一个现代化的分布式任务调度系统，提供可靠的任务调度、执行和监控能力。支持多语言执行器（Node.js/Python）、动态任务管理、实时监控和告警通知。
+AutoCodeFlow 是一个现代化的分布式任务调度系统，提供可靠的任务调度、执行和监控能力。支持多语言执行器（Node.js/Python）、动态任务管理、实时监控和告警通知。
+
+**AutoCodeFlow** = **Auto**（自动化）+ **Code**（代码）+ **Flow**（工作流）—— 让代码自动化流转，让任务调度更简单、更可靠。
 
 ---
 
@@ -153,13 +155,13 @@ docker-compose down
 
 **Linux/macOS:**
 ```bash
-docker run -d -p 5432:5432 -e POSTGRES_DB=autoflow -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=password postgres:15
+docker run -d -p 5432:5432 -e POSTGRES_DB=autocodeflow -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=password postgres:15
 docker run -d -p 6379:6379 redis:7
 ```
 
 **Windows (PowerShell):**
 ```powershell
-docker run -d -p 5432:5432 -e POSTGRES_DB=autoflow -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=password postgres:15
+docker run -d -p 5432:5432 -e POSTGRES_DB=autocodeflow -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=password postgres:15
 docker run -d -p 6379:6379 redis:7
 ```
 
@@ -254,7 +256,7 @@ autoflow/
 │   ├── executor-python/    # Python 执行器
 │   └── registry-*/         # 私有包仓库
 ├── packages/
-│   └── autoflow-sdk/       # Python SDK
+│   └── autocodeflow-sdk/       # Python SDK
 └── infra/                  # 基础设施配置
 ```
 
@@ -262,7 +264,7 @@ autoflow/
 
 1. **克隆项目**：
    ```bash
-   git clone https://github.com/your-username/autoflow.git
+   git clone https://github.com/your-username/AutoCodeFlow.git
    cd autoflow
    ```
 
@@ -311,8 +313,8 @@ AutoFlow 支持创建完整的自动化应用项目，包含多个任务、依�
 
 ```bash
 # 创建项目目录
-mkdir my-autoflow-app
-cd my-autoflow-app
+mkdir my-autocodeflow-app
+cd my-autocodeflow-app
 
 # 创建项目结构
 mkdir -p src/tasks
@@ -325,7 +327,7 @@ touch .gitignore
 
 项目结构：
 ```
-my-autoflow-app/
+my-autocodeflow-app/
 ├── src/
 │   ├── tasks/           # 任务代码目录
 │   │   ├── daily-report.js
@@ -344,12 +346,12 @@ my-autoflow-app/
 
 ```json
 {
-  "name": "my-autoflow-app",
+  "name": "my-autocodeflow-app",
   "version": "1.0.0",
   "description": "我的自动化应用",
   "main": "src/tasks/index.js",
   "dependencies": {
-    "@autoflow/sdk": "^1.0.0",
+    "@autocodeflow/sdk": "^1.0.0",
     "axios": "^1.6.0",
     "moment": "^2.29.0"
   },
@@ -363,7 +365,7 @@ my-autoflow-app/
 
 ```json
 {
-  "name": "my-autoflow-app",
+  "name": "my-autocodeflow-app",
   "version": "1.0.0",
   "description": "企业自动化报告生成应用",
   "author": "your-name",
@@ -400,7 +402,7 @@ my-autoflow-app/
     "API_BASE_URL": "https://api.example.com"
   },
   "git": {
-    "repo": "https://github.com/your-username/my-autoflow-app.git",
+    "repo": "https://github.com/your-username/my-autocodeflow-app.git",
     "branch": "main"
   }
 }
@@ -411,7 +413,7 @@ my-autoflow-app/
 **每日报告任务** (`src/tasks/daily-report.js`)：
 
 ```javascript
-const { AutoFlowContext } = require('@autoflow/sdk');
+const { AutoFlowContext } = require('@autocodeflow/sdk');
 
 async function handler(event, context) {
   const logger = context.logger;
@@ -446,7 +448,7 @@ module.exports = { handler };
 **周报汇总任务** (`src/tasks/weekly-summary.js`)：
 
 ```javascript
-const { AutoFlowContext } = require('@autoflow/sdk');
+const { AutoFlowContext } = require('@autocodeflow/sdk');
 
 async function handler(event, context) {
   const logger = context.logger;
@@ -514,7 +516,7 @@ module.exports = {
 ```yaml
 # 应用配置
 app:
-  name: my-autoflow-app
+  name: my-autocodeflow-app
   version: 1.0.0
 
 # 数据源配置
@@ -542,7 +544,7 @@ logging:
 git init
 git add .
 git commit -m "Initial commit"
-git remote add origin https://github.com/your-username/my-autoflow-app.git
+git remote add origin https://github.com/your-username/my-autocodeflow-app.git
 git push -u origin main
 ```
 
@@ -553,8 +555,8 @@ curl -X POST http://localhost:3001/api/applications \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{
-    "name": "my-autoflow-app",
-    "gitRepo": "https://github.com/your-username/my-autoflow-app.git",
+    "name": "my-autocodeflow-app",
+    "gitRepo": "https://github.com/your-username/my-autocodeflow-app.git",
     "gitBranch": "main",
     "gitCommit": "HEAD"
   }'
@@ -564,12 +566,12 @@ curl -X POST http://localhost:3001/api/applications \
 
 ```bash
 # 打包应用
-zip -r my-autoflow-app.zip .
+zip -r my-autocodeflow-app.zip .
 
 # 上传应用
 curl -X POST http://localhost:3001/api/applications/upload \
   -H "Authorization: Bearer <token>" \
-  -F "file=@my-autoflow-app.zip"
+  -F "file=@my-autocodeflow-app.zip"
 ```
 
 #### 8. 注册任务
@@ -583,7 +585,7 @@ curl -X POST http://localhost:3001/api/tasks \
   -d '{
     "id": "daily-report",
     "name": "每日报告",
-    "applicationId": "my-autoflow-app",
+    "applicationId": "my-autocodeflow-app",
     "entrypoint": "src/tasks/daily-report.js",
     "triggerType": "cron",
     "cronExpression": "0 0 8 * * *",
@@ -625,7 +627,7 @@ curl -X POST http://localhost:3001/api/tasks \
 **Node.js 任务示例**：
 ```javascript
 // reports/daily.js
-const { AutoFlowContext } = require('@autoflow/sdk');
+const { AutoFlowContext } = require('@autocodeflow/sdk');
 
 async function handler(event, context) {
   const logger = context.logger;
@@ -748,7 +750,7 @@ curl -X POST http://localhost:3001/api/tasks \
 #### 安装 SDK
 
 ```bash
-pip install autoflow-sdk
+pip install autocodeflow-sdk
 ```
 
 #### 使用示例
@@ -791,13 +793,13 @@ result = {
 #### 安装 SDK
 
 ```bash
-npm install @autoflow/sdk
+npm install @autocodeflow/sdk
 ```
 
 #### 使用示例
 
 ```javascript
-const { AutoFlowContext } = require('@autoflow/sdk');
+const { AutoFlowContext } = require('@autocodeflow/sdk');
 
 // 创建上下文
 const context = new AutoFlowContext({
@@ -931,7 +933,7 @@ const result = {
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| `DATABASE_URL` | 数据库连接地址 | `postgresql://admin:password@localhost:5432/autoflow` |
+| `DATABASE_URL` | 数据库连接地址 | `postgresql://admin:password@localhost:5432/autocodeflow` |
 | `REDIS_URL` | Redis 连接地址 | `redis://localhost:6379` |
 | `JWT_SECRET` | JWT 密钥 | - |
 | `JWT_EXPIRES_IN` | JWT 过期时间 | `1h` |
@@ -964,7 +966,7 @@ const result = {
 
 ```env
 # Admin API
-DATABASE_URL=postgresql://admin:password@localhost:5432/autoflow
+DATABASE_URL=postgresql://admin:password@localhost:5432/autocodeflow
 REDIS_URL=redis://localhost:6379
 JWT_SECRET=your-secret-key
 PORT=3001
@@ -1057,16 +1059,16 @@ curl -X PUT http://localhost:3001/api/tasks/daily-report \
 
 ```bash
 # 构建 Admin API
-docker build -t autoflow-admin-api ./apps/admin-api
+docker build -t autocodeflow-admin-api ./apps/admin-api
 
 # 构建 Admin Web
-docker build -t autoflow-admin-web ./apps/admin-web
+docker build -t autocodeflow-admin-web ./apps/admin-web
 
 # 构建 Node Executor
-docker build -t autoflow-executor-node ./apps/executor-node
+docker build -t autocodeflow-executor-node ./apps/executor-node
 
 # 构建 Python Executor
-docker build -t autoflow-executor-python ./apps/executor-python
+docker build -t autocodeflow-executor-python ./apps/executor-python
 ```
 
 #### Docker Compose 部署
@@ -1094,9 +1096,9 @@ services:
       - "6379:6379"
 
   admin-api:
-    image: autoflow-admin-api
+    image: autocodeflow-admin-api
     environment:
-      DATABASE_URL: postgresql://admin:password@postgres:5432/autoflow
+      DATABASE_URL: postgresql://admin:password@postgres:5432/autocodeflow
       REDIS_URL: redis://redis:6379
       JWT_SECRET: your-secret-key
     depends_on:
@@ -1106,7 +1108,7 @@ services:
       - "3001:3001"
 
   admin-web:
-    image: autoflow-admin-web
+    image: autocodeflow-admin-web
     environment:
       REACT_APP_API_URL: http://localhost:3001
     depends_on:
@@ -1115,7 +1117,7 @@ services:
       - "3000:80"
 
   executor-node:
-    image: autoflow-executor-node
+    image: autocodeflow-executor-node
     environment:
       ADMIN_API_URL: http://admin-api:3001
     depends_on:
@@ -1134,20 +1136,20 @@ volumes:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: autoflow-admin-api
+  name: autocodeflow-admin-api
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: autoflow-admin-api
+      app: autocodeflow-admin-api
   template:
     metadata:
       labels:
-        app: autoflow-admin-api
+        app: autocodeflow-admin-api
     spec:
       containers:
       - name: admin-api
-        image: autoflow-admin-api:latest
+        image: autocodeflow-admin-api:latest
         ports:
         - containerPort: 3001
         env:
@@ -1218,9 +1220,9 @@ MIT License
 
 ## 📧 联系方式
 
-- **项目地址**：https://github.com/your-username/autoflow
+- **项目地址**：https://github.com/your-username/AutoCodeFlow
 - **文档地址**：https://docs.autoflow.io
-- **问题反馈**：https://github.com/your-username/autoflow/issues
+- **问题反馈**：https://github.com/your-username/AutoCodeFlow/issues
 
 ---
 
