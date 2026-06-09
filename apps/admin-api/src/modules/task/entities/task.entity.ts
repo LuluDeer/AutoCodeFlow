@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 
 export enum TaskStatus { ACTIVE = 'active', PAUSED = 'paused', DELETED = 'deleted' }
 export enum BlockStrategy { SERIAL = 'serial', DISCARD = 'discard', COVER_EARLY = 'cover_early' }
@@ -47,12 +47,23 @@ export class Task {
   @Column({ type: 'simple-array', nullable: true }) alarmChannels: string[];
   @Column({ type: 'jsonb', nullable: true }) params: Record<string, any>;
   @Column({ nullable: true }) executorAppName: string;
+  @Column({ nullable: true }) applicationId: string;
+  
+  @ManyToOne('Application', 'tasks', { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'applicationId' })
+  application: any;
   
   /** Executor group to use for this task. */
   @Column({ nullable: true }) executorGroup: string | null;
   
   /** Executor tags required for this task. */
   @Column({ type: 'simple-array', nullable: true }) executorTags: string[] | null;
+  
+  /** Glue script: source code editable in the admin UI (XXL-JOB GLUE mode). */
+  @Column({ type: 'text', nullable: true }) glueSource: string | null;
+  
+  /** Language of the glue script: python, javascript, shell. */
+  @Column({ nullable: true }) glueLanguage: string | null;
   
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;

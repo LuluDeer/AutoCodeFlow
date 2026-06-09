@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     max_concurrent_tasks: int = 10
     task_timeout_seconds: int = 300  # Default task timeout (5 minutes)
     heartbeat_interval_seconds: int = 30  # Heartbeat interval
+    pypi_registry_url: str = ''  # Private PyPI registry URL for task dependencies
 
     class Config:
         env_file = '.env'

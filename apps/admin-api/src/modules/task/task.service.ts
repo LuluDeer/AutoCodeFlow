@@ -108,6 +108,13 @@ export class TaskService {
     return updated;
   }
 
+  async updateGlue(id: string, source: string, language?: string) {
+    const t = await this.findOne(id);
+    t.glueSource = source;
+    if (language) t.glueLanguage = language;
+    return this.taskRepo.save(t);
+  }
+
   async remove(id: string) {
     const t = await this.findOne(id);
     // 立即停止调度，不等下次 reload
@@ -302,6 +309,8 @@ export class TaskService {
       priority: task.priority,
       executeMode: task.executeMode,
       currentVersion: task.currentVersion,
+      gitRepo: task.gitRepo,
+      gitBranch: task.gitBranch,
       gitCommit: task.gitCommit,
     };
 

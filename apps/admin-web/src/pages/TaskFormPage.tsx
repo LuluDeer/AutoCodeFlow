@@ -5,6 +5,7 @@ import { useRequest } from 'ahooks';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { useState } from 'react';
+import GlueEditor from '../components/GlueEditor';
 
 export default function TaskFormPage() {
   const nav = useNavigate();
@@ -113,13 +114,24 @@ export default function TaskFormPage() {
                 </Form.Item>
               ) : null;
             }}
-          </Form.Item>
+          </Form.Item>)}
 
           <Form.Item>
             <Button type="primary" htmlType="submit">{isEdit ? '保存' : '创建'}</Button>
           </Form.Item>
         </Form>
       </Card>
+
+      {isEdit && (
+        <Card title="Glue 脚本编辑" style={{ marginTop: 24 }}>
+          <GlueEditor
+            taskId={id!}
+            initialSource={form.getFieldValue('glueSource')}
+            initialLanguage={form.getFieldValue('glueLanguage')}
+            taskRuntime={form.getFieldValue('runtime')}
+          />
+        </Card>
+      )}
     </div>
   );
 }

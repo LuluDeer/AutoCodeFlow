@@ -303,182 +303,287 @@ autoflow/
 
 ---
 
-## 📦 任务开发
+## 📦 任务开发快速开始
 
-### 创建自动化应用项目
+### 方式一：Glue 脚本（在线编辑，最简单）
 
-AutoFlow 支持创建完整的自动化应用项目，包含多个任务、依赖管理和配置文件。
+在管理后台创建任务后，直接在线编辑代码，无需搭建本地项目：
+
+1. 在管理后台 → 任务管理 → 创建任务（选择 runtime: python / javascript / shell）
+2. 在任务详情页的「Glue 脚本编辑」卡片中编写代码
+3. 点击「保存脚本」即完成开发
+
+```javascript
+// Node.js Glue 任务示例
+const { AutoFlowContext } = require('@autocodeflow/sdk');
+const ctx = AutoFlowContext.fromEnv();
+
+ctx.logger.info(`Task ${ctx.taskId} started`);
+const date = ctx.getParam('date', new Date().toISOString());
+
+// Your business logic here...
+const result = await fetch(`https://api.example.com/data?date=${date}`);
+const data = await result.json();
+
+ctx.logger.info(`Fetched ${data.length} records`);
+```
+
+```python
+# Python Glue 任务示例
+from autoflow_sdk import TaskContext
+
+ctx = TaskContext.from_env()
+ctx.log.info(f"Task {ctx.task_id} started")
+date = ctx.get_param("date")
+
+# Your business logic here...
+import requests
+resp = requests.get(f"https://api.example.com/data?date={date}")
+
+ctx.log.info(f"Fetched {len(resp.json())} records")
+```
+
+### 方式二：Git 项目（推荐团队协作）
 
 #### 1. 创建项目结构
 
-```bash
-# 创建项目目录
-mkdir my-autocodeflow-app
-cd my-autocodeflow-app
-
-# 创建项目结构
-mkdir -p src/tasks
-mkdir -p src/utils
-mkdir -p config
-touch package.json
-touch manifest.json
-touch .gitignore
+```
+my-app/
+├── src/tasks/           # 任务代码目录
+│   ├── daily-report.js
+│   └── monthly-report.py
+├── manifest.json        # 应用清单（部署时自动注册任务）
+├── package.json         # Node.js 依赖
+├── requirements.txt     # Python 依赖
+└── .gitignore
 ```
 
-项目结构：
-```
-my-autocodeflow-app/
-├── src/
-│   ├── tasks/           # 任务代码目录
-│   │   ├── daily-report.js
-│   │   ├── weekly-summary.js
-│   │   └── monthly-report.js
-│   └── utils/           # 工具函数目录
-│       └── helpers.js
-├── config/              # 配置文件目录
-│   └── default.yaml
-├── package.json         # Node.js 依赖配置
-├── manifest.json        # 应用清单
-└── .gitignore          # Git 忽略配置
-```
-
-#### 2. 配置 package.json
+#### 2. 编写 manifest.json
 
 ```json
 {
-  "name": "my-autocodeflow-app",
+  "name": "my-app",
   "version": "1.0.0",
-  "description": "我的自动化应用",
-  "main": "src/tasks/index.js",
-  "dependencies": {
-    "@autocodeflow/sdk": "^1.0.0",
-    "axios": "^1.6.0",
-    "moment": "^2.29.0"
-  },
-  "devDependencies": {
-    "eslint": "^8.0.0"
-  }
-}
-```
-
-#### 3. 配置 manifest.json
-
-```json
-{
-  "name": "my-autocodeflow-app",
-  "version": "1.0.0",
-  "description": "企业自动化报告生成应用",
-  "author": "your-name",
-  "license": "MIT",
   "runtime": "node",
   "tasks": [
     {
       "id": "daily-report",
       "name": "每日报告",
       "entrypoint": "src/tasks/daily-report.js",
-      "description": "每天早上8点生成业务报告",
-      "defaultTrigger": {
-        "type": "cron",
-        "expression": "0 0 8 * * *"
-      },
+      "cron": "0 0 8 * * *",
       "timeout": 300,
-      "maxRetry": 3
+      "maxRetry": 3,
+      "requirements": ["@autocodeflow/sdk", "axios"]
     },
     {
-      "id": "weekly-summary",
-      "name": "周报汇总",
-      "entrypoint": "src/tasks/weekly-summary.js",
-      "description": "每周一汇总上周数据",
-      "defaultTrigger": {
-        "type": "cron",
-        "expression": "0 0 9 * * 1"
-      },
+      "id": "monthly-report",
+      "name": "月度报告",
+      "entrypoint": "src/tasks/monthly-report.py",
+      "cron": "0 0 8 1 * *",
       "timeout": 600,
-      "maxRetry": 2
+      "maxRetry": 2,
+      "requirements": ["autoflow-sdk", "requests"]
     }
-  ],
-  "env": {
-    "NODE_ENV": "production",
-    "API_BASE_URL": "https://api.example.com"
-  },
-  "git": {
-    "repo": "https://github.com/your-username/my-autocodeflow-app.git",
-    "branch": "main"
+  ]
+}
+```
+
+#### 3. 编写任务代码
+
+```javascript
+// src/tasks/daily-report.js
+const { AutoFlowContext } = require('@autocodeflow/sdk');
+
+async function main() {
+  // AutoFlowContext.fromEnv() 从环境变量自动读取 executionId/taskId/params
+  const ctx = AutoFlowContext.fromEnv();
+
+  ctx.logger.info('开始生成每日报告');
+
+  try {
+    // 你的业务逻辑
+    const outputPath = ctx.getParam('outputPath', '/tmp/reports');
+    ctx.logger.info(`输出路径: ${outputPath}`);
+
+    // 返回成功结果
+    console.log(JSON.stringify({ success: true, outputPath }));
+    process.exit(0);
+  } catch (err) {
+    ctx.logger.error(`任务失败: ${err.message}`);
+    console.log(JSON.stringify({ success: false, error: err.message }));
+    process.exit(1);
   }
 }
+
+main();
 ```
 
-#### 4. 编写任务代码
+```python
+# src/tasks/monthly-report.py
+import sys
+import json
+from autoflow_sdk import TaskContext
 
-**每日报告任务** (`src/tasks/daily-report.js`)：
+def main():
+    # from_env() 从环境变量自动读取上下文
+    ctx = TaskContext.from_env()
+    ctx.log.info("开始生成月度报告")
 
+    try:
+        # 你的业务逻辑
+        output_path = ctx.get_param("outputPath", "/tmp/reports")
+        ctx.log.info(f"输出路径: {output_path}")
+
+        print(json.dumps({"success": True, "outputPath": output_path}))
+        sys.exit(0)
+    except Exception as e:
+        ctx.log.error(f"任务失败: {e}")
+        print(json.dumps({"success": False, "error": str(e)}))
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+```
+
+#### 4. 部署与自动注册
+
+在管理后台创建 Application（填入 Git 仓库地址），系统会：
+1. Clone 仓库
+2. 解析 manifest.json
+3. 自动注册所有任务
+4. 任务自动进入调度队列
+
+或使用 curl：
+
+```bash
+curl -X POST http://localhost:3001/api/applications \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "name": "my-app",
+    "version": "1.0.0",
+    "runtime": "node",
+    "gitRepo": "https://github.com/your-org/my-app.git",
+    "gitBranch": "main"
+  }'
+```
+
+### 方式三：手动 API 注册（灵活控制）
+
+```bash
+curl -X POST http://localhost:3001/api/tasks \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "id": "custom-task",
+    "name": "自定义任务",
+    "runtime": "node",
+    "entrypoint": "task.js",
+    "cronExpression": "0 0 8 * * *",
+    "timeout": 300,
+    "maxRetry": 3,
+    "retryDelay": 60,
+    "priority": 2,
+    "blockStrategy": "serial",
+    "executeMode": "single"
+  }'
+```
+
+---
+
+## 🔄 任务执行生命周期
+
+了解任务执行的全流程有助于排查问题：
+
+```
+┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌──────────┐
+│ Scheduler │───▶│  Task    │───▶│   Executor   │───▶│ Callback │
+│ 触发调度  │    │ Queue   │    │ 执行任务代码  │    │ 结果回写  │
+└──────────┘    └──────────┘    └──────────────┘    └──────────┘
+
+1. 调度触发（Scheduler）
+   - Cron 表达式到期 或 手动触发
+   - 检查阻塞策略（blockStrategy）
+   - 生成 executionId 并写入执行记录
+
+2. 任务分发（Task Queue）
+   - 根据路由策略选择 Executor
+   - 发送 HTTP POST /execute 到目标 Executor
+   - 携带 params、gitRepo、requirements 等上下文
+
+3. 执行任务（Executor）
+   a. 创建工作目录 /tmp/autocodeflow/tasks/{executionId}/
+   b. 如果是 Git 任务：clone 仓库到工作目录
+   c. 如果是 Glue 任务：写入 glueSource 到临时文件
+   d. 安装依赖（uv pip install / npm install）
+   e. 注入环境变量：
+      - EXECUTION_ID — 本次执行ID
+      - TASK_ID — 任务ID
+      - TASK_NAME — 任务名称
+      - AUTOFLOW_{PARAM} — 任务参数（params 字段）
+   f. 启动子进程执行（python3 entrypoint.py / node entrypoint.js）
+   g. 收集 stdout/stderr 作为日志
+
+4. 结果回写（Callback）
+   - 执行完成后 POST /api/execution-callback 回写结果
+   - 更新执行状态（success/failed）
+   - 触发通知（如果启用）
+   - 触发失败重试（如果 maxRetry > 0）
+```
+
+---
+
+## 🔧 常见问题排查
+
+### 任务代码中的 context/logger 报 undefined/None
+
+**症状**: `context is not defined` 或 `NameError: name 'context' is not defined`
+
+**原因**: 没有使用 `fromEnv()` 工厂方法初始化 context
+
+**解决**:
 ```javascript
+// ❌ 错误：context 不存在
+ctx.logger.info('xxx');
+
+// ✅ 正确：从环境变量初始化
 const { AutoFlowContext } = require('@autocodeflow/sdk');
-
-async function handler(event, context) {
-  const logger = context.logger;
-  const params = context.params;
-  
-  logger.info('开始生成每日报告');
-  
-  // 获取业务数据
-  const data = await fetchBusinessData(params.date);
-  
-  // 生成报告
-  const report = await generateReport(data);
-  
-  // 保存报告
-  await saveReport(report, params.outputPath);
-  
-  logger.info(`每日报告生成完成: ${report.filename}`);
-  
-  return {
-    success: true,
-    data: {
-      filename: report.filename,
-      recordCount: data.length,
-      generatedAt: new Date().toISOString()
-    }
-  };
-}
-
-module.exports = { handler };
+const ctx = AutoFlowContext.fromEnv();
+ctx.logger.info('xxx');
 ```
 
-**周报汇总任务** (`src/tasks/weekly-summary.js`)：
+### 依赖安装失败
 
-```javascript
-const { AutoFlowContext } = require('@autocodeflow/sdk');
+**症状**: `uv pip install failed` 或 `npm install failed`
 
-async function handler(event, context) {
-  const logger = context.logger;
-  
-  logger.info('开始汇总周报数据');
-  
-  // 获取本周每日报告
-  const dailyReports = await fetchDailyReports();
-  
-  // 汇总数据
-  const summary = await summarizeData(dailyReports);
-  
-  // 生成周报
-  const weeklyReport = await generateWeeklyReport(summary);
-  
-  logger.info('周报汇总完成');
-  
-  return {
-    success: true,
-    data: {
-      weekStart: summary.weekStart,
-      weekEnd: summary.weekEnd,
-      totalRecords: summary.totalRecords,
-      reportPath: weeklyReport.path
-    }
-  };
-}
+**排查**:
+1. Python 任务：确保 `requirements` 字段中的包名正确（不是 `requirements.txt` 路径，是包名列表）
+2. Node 任务：确保 `requirements` 字段中的包名符合 npm 命名规范
+3. 私有包：检查 `PYPI_REGISTRY_URL` / `NPM_REGISTRY_URL` 环境变量是否配置到 Executor
 
-module.exports = { handler };
-```
+### 任务一直 pending 不执行
+
+1. 检查 Executor 是否在线：管理后台 → 执行器管理
+2. 检查任务的 `executorAppName` 是否匹配在线 Executor 的 APP_NAME
+3. 如果所有 Executor 的 `runningTaskCount` 达到 `maxConcurrentTasks`，任务会排队等待
+
+### Git 部署后任务未自动注册
+
+1. 确认仓库根目录存在 `manifest.json`
+2. 确认 `manifest.json` 中 `tasks` 数组有任务定义
+3. 查看 ApplicationService 日志：`docker logs autocodeflow-admin-api-1`
+
+### 版本回滚后代码未还原
+
+版本回滚只恢复任务配置（cron、timeout、params 等），如需回滚代码：
+1. 手动更新任务的 `gitCommit` 字段
+2. 或通过 `POST /api/applications/webhook` 触发重新部署
+
+### 日志在哪看
+
+1. 管理后台 → 任务 → 执行记录 → 日志
+2. Executor 本地日志：`docker logs autocodeflow-executor-python-1`
+3. 文件日志（Executor 侧）：`/data/tasks/{executionId}/output.log`
 
 #### 5. 编写工具函数
 
@@ -756,36 +861,26 @@ pip install autocodeflow-sdk
 #### 使用示例
 
 ```python
-from autoflow_sdk import AutoFlowContext, AutoFlowLogger
+from autoflow_sdk import TaskContext
 
-# 创建上下文
-context = AutoFlowContext(
-    execution_id="exec-123",
+# 推荐方式：从环境变量自动初始化（executor 自动注入）
+ctx = TaskContext.from_env()
+ctx.log.info(f"Task {ctx.task_id} started")
+date = ctx.get_param("date")
+
+# 手动方式（用于本地测试）
+ctx = TaskContext(
     task_id="daily-report",
-    params={"outputPath": "/data"}
+    execution_id="exec-123",
+    task_name="每日报告",
+    params={"date": "2024-01-01"}
 )
-
-# 使用日志
-logger = context.logger
-logger.info("任务开始")
-logger.warn("注意：数据量较大")
-logger.error("处理失败")
-
-# 获取参数
-output_path = context.params.get("outputPath")
-
-# 获取执行信息
-exec_id = context.execution_id
-task_id = context.task_id
+ctx.log.info("任务开始")
+output_path = ctx.get_param("outputPath", "/tmp/reports")
 
 # 发送 HTTP 请求
-response = context.http.get("https://api.example.com/data")
-
-# 返回结果
-result = {
-    "success": True,
-    "data": {"count": 100}
-}
+import httpx
+# ctx.env 提供任务级环境变量
 ```
 
 ### Node.js SDK
@@ -801,48 +896,40 @@ npm install @autocodeflow/sdk
 ```javascript
 const { AutoFlowContext } = require('@autocodeflow/sdk');
 
-// 创建上下文
-const context = new AutoFlowContext({
+// 推荐方式：从环境变量自动初始化（executor 自动注入）
+const ctx = AutoFlowContext.fromEnv();
+ctx.logger.info(`Task ${ctx.taskId} started`);
+const date = ctx.getParam('date');
+
+// 手动方式（用于本地测试）
+const ctx2 = new AutoFlowContext({
     executionId: "exec-123",
     taskId: "daily-report",
     params: { outputPath: "/data" }
 });
 
 // 使用日志
-const logger = context.logger;
-logger.info("任务开始");
-logger.warn("注意：数据量较大");
-logger.error("处理失败");
-
-// 获取参数
-const outputPath = context.params.outputPath;
-
-// 获取执行信息
-const execId = context.executionId;
-const taskId = context.taskId;
+ctx2.logger.info("任务开始");
+ctx2.logger.warn("注意：数据量较大");
+ctx2.logger.error("处理失败");
 
 // 发送 HTTP 请求
-const response = await context.http.get("https://api.example.com/data");
-
-// 返回结果
-const result = {
-    success: true,
-    data: { count: 100 }
-};
+const response = await ctx2.http.get("https://api.example.com/data");
 ```
 
 ### SDK API 参考
 
-#### AutoFlowContext
+#### AutoFlowContext / TaskContext
 
 | 方法/属性 | 说明 | 示例 |
 |-----------|------|------|
-| `params` | 获取任务参数 | `context.params.outputPath` |
-| `executionId` | 获取执行ID | `context.executionId` |
-| `taskId` | 获取任务ID | `context.taskId` |
-| `logger` | 获取日志实例 | `context.logger.info()` |
-| `http` | HTTP 客户端 | `context.http.get(url)` |
-| `config` | 获取配置 | `context.config.get(key)` |
+| `fromEnv()` | **推荐**：从环境变量初始化上下文 | `AutoFlowContext.fromEnv()` / `TaskContext.from_env()` |
+| `params` | 获取任务参数 | `ctx.params.outputPath` |
+| `executionId` / `execution_id` | 获取执行ID | `ctx.executionId` |
+| `taskId` / `task_id` | 获取任务ID | `ctx.taskId` |
+| `logger` / `log` | 获取日志实例 | `ctx.logger.info()` / `ctx.log.info()` |
+| `http` | HTTP 客户端 | `ctx.http.get(url)` |
+| `getParam(key, default)` / `get_param(key, default)` | 获取参数（带默认值） | `ctx.getParam('date', '2024-01-01')` |
 
 #### AutoFlowLogger
 

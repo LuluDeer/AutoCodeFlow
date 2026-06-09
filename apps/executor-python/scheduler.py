@@ -17,26 +17,23 @@ from auth import get_current_token
 logger = logging.getLogger(__name__)
 
 # Global count of currently-running tasks with thread-safe operations
-_running_count = 0
+running_count = 0
 _running_count_lock = threading.Lock()
 
 def get_running_count() -> int:
-    global _running_count
+    global running_count
     with _running_count_lock:
-        return _running_count
+        return running_count
 
 def increment_running() -> None:
-    global _running_count
+    global running_count
     with _running_count_lock:
-        _running_count += 1
+        running_count += 1
 
 def decrement_running() -> None:
-    global _running_count
+    global running_count
     with _running_count_lock:
-        _running_count = max(0, _running_count - 1)
-
-# For backward compatibility
-running_count = property(lambda self: get_running_count())
+        running_count = max(0, running_count - 1)
 
 
 def _get_admin_api_url() -> str:
@@ -69,7 +66,7 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
             'address': settings.executor_address_public or settings.executor_address,
             'cpuUsage': cpu,
             'memUsage': mem,
-            'runningTaskCount': running_count,
+            'runningTaskCount': get_running_count(),
         },
         headers=headers,
         timeout=5,

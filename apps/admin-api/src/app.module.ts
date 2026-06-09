@@ -18,6 +18,7 @@ import { MetricsModule } from './modules/metrics/metrics.module';
 import { SystemConfigModule } from './modules/config/config.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { HealthModule } from './modules/health/health.module';
+import { ApplicationModule } from './modules/application/application.module';
 
 @Module({
   imports: [
@@ -37,7 +38,7 @@ import { HealthModule } from './modules/health/health.module';
         DB_PORT: Joi.number().port().default(5432),
         DB_USERNAME: Joi.string().default('postgres'),
         DB_PASSWORD: Joi.string().min(1).required(),
-        DB_DATABASE | autocodeflow'),
+        DB_DATABASE: Joi.string().default('autocodeflow'),
 
         // Redis
         REDIS_HOST: Joi.string().hostname().default('localhost'),
@@ -82,6 +83,10 @@ import { HealthModule } from './modules/health/health.module';
         allowUnknown: true, // Allow unknown environment variables
         abortEarly: false, // Report all validation errors, not just the first one
       },
+    }),
+
+    ThrottlerModule.forRoot({
+      throttlers: [{ ttl: 60_000, limit: 100 }],
     }),
 
     TypeOrmModule.forRootAsync({
@@ -143,6 +148,7 @@ import { HealthModule } from './modules/health/health.module';
     SystemConfigModule,
     AuditModule,
     HealthModule,
+    ApplicationModule,
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally

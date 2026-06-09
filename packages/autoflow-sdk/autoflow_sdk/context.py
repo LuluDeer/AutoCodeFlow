@@ -32,6 +32,34 @@ class TaskContext:
             object.__setattr__(self, "_logger", get_logger(self.task_name))
         return self._logger
 
+    @classmethod
+    def from_env(cls) -> "TaskContext":
+        """
+        Create TaskContext from environment variables injected by the executor.
+
+        Reads EXECUTION_ID, TASK_ID, TASK_NAME, and all AUTOFLOW_* vars as params.
+        This is the recommended way to initialize context in task code.
+
+        Usage::
+
+            from autoflow_sdk import TaskContext
+
+            ctx = TaskContext.from_env()
+            ctx.log.info(f"Task {ctx.task_id} started")
+            date = ctx.get_param("date")
+        """
+        params: dict[str, Any] = {}
+        for k, v in os.environ.items():
+            if k.startswith("AUTOFLOW_") and v:
+                params[k[len("AUTOFLOW_"):].lower()] = v
+
+        return cls(
+            task_id=os.environ.get("TASK_ID", "unknown"),
+            execution_id=os.environ.get("EXECUTION_ID", "unknown"),
+            task_name=os.environ.get("TASK_NAME", "unknown"),
+            params=params,
+        )
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "task_id": self.task_id,

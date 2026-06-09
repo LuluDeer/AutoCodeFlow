@@ -26,10 +26,8 @@ export function decrementRunning(): void {
   Atomics.sub(runningCountArray, 0, 1);
 }
 
-// For backward compatibility
-export const runningCount = new Proxy({}, {
-  get() { return getRunningCount(); }
-});
+// For backward compatibility — use getRunningCount() directly for new code
+export const runningCount = getRunningCount;  // alias to the function
 
 async function sendHeartbeat() {
   try {
@@ -46,7 +44,7 @@ async function sendHeartbeat() {
       address: config.executorAddressPublic || config.executorAddress,
       cpuUsage,
       memUsage,
-      runningTaskCount: runningCount,
+      runningTaskCount: getRunningCount(),
     });
   } catch (err: any) {
     logger.warn(`Heartbeat failed: ${err.message}`);

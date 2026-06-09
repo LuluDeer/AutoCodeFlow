@@ -150,6 +150,7 @@ services:
       EXECUTOR_SECRET: ${EXECUTOR_SECRET}
       WORK_DIR: /data/tasks
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      PYPI_REGISTRY_URL: ${PYPI_REGISTRY_URL:-http://registry-pypi:8003/simple/}
     volumes:
       - executor_python_data:/data/tasks
     depends_on:
@@ -191,6 +192,8 @@ services:
       WORK_DIR: /data/tasks
       MAX_CONCURRENT_TASKS: 10
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      NPM_REGISTRY_URL: ${NPM_REGISTRY_URL:-http://registry-npm:4873}
+      PYTHON_REGISTRY_URL: ${PYTHON_REGISTRY_URL:-http://registry-pypi:8003/simple/}
     volumes:
       - executor_node_data:/data/tasks
     depends_on:
