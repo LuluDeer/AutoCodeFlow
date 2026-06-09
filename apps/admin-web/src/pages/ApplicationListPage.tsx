@@ -4,6 +4,7 @@ import {
 } from 'antd';
 import { PlusOutlined, UploadOutlined, DeleteOutlined, ReloadOutlined, GithubOutlined } from '@ant-design/icons';
 import { applicationsApi, Application } from '../api/applications';
+import { useNavigate } from 'react-router-dom';
 
 const { Text } = Typography;
 
@@ -20,6 +21,7 @@ const statusColors: Record<string, string> = {
 };
 
 export default function ApplicationListPage() {
+  const nav = useNavigate();
   const [apps, setApps] = useState<Application[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -110,7 +112,9 @@ export default function ApplicationListPage() {
       render: (name: string, record: Application) => (
         <Space>
           {record.gitRepo && <GithubOutlined />}
-          <Text strong>{name}</Text>
+          <a onClick={() => nav(`/applications/${record.id}`)}>
+            <Text strong>{name}</Text>
+          </a>
         </Space>
       ),
     },

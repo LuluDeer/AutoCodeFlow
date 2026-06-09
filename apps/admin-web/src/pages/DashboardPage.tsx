@@ -8,6 +8,7 @@ import {
   UnorderedListOutlined,
 } from '@ant-design/icons';
 import { metricsApi, RecentFailure, ExecutorStat } from '../api/metrics';
+import { tasksApi } from '../api/tasks';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 const { Title } = Typography;
@@ -34,6 +35,12 @@ export default function DashboardPage() {
   const { data: failures = [], isLoading: loadingFailures } = useQuery({
     queryKey: ['metrics-failures'],
     queryFn: () => metricsApi.getRecentFailures(),
+    refetchInterval: 30000,
+  });
+
+  const { data: schedulerStats } = useQuery({
+    queryKey: ['scheduler-stats'],
+    queryFn: () => tasksApi.schedulerStats(),
     refetchInterval: 30000,
   });
 
@@ -185,6 +192,44 @@ export default function DashboardPage() {
           </Card>
         </Col>
       </Row>
+
+      {/* 调度器状态 */}
+      {schedulerStats && (
+        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+          <Col span={24}>
+            <Card
+              title={
+                <Space>
+                  调度器状态
+                  <Tag color={schedulerStats.healthy ? 'green' : 'red'}>
+                    {schedulerStats.healthy ? '正常' : '异常'}
+                  </Tag>
+                </Space>
+              }
+              size="small"
+            >
+              <Row gutter={[24, 8]}>
+                <Col xs={12} sm={6}>
+                  <Statistic title="定时器任务" value={schedulerStats.activeTimers} suffix="个" />
+                </Col>
+                <Col xs={12} sm={6}>
+                  <Statistic title="Cron 任务" value={schedulerStats.activeCronTasks} suffix="个" />
+                </Col>
+                <Col xs={12} sm={6}>
+                  <Statistic title="调度总数" value={schedulerStats.totalScheduledTasks} suffix="个" />
+                </Col>
+                <Col xs={12} sm={6}>
+                  <Statistic
+                    title="运行时长"
+                    value={Math.floor(schedulerStats.uptime / 3600)}
+                    suffix={`h ${Math.floor((schedulerStats.uptime % 3600) / 60)}m`}
+                  />
+                </Col>
+              </Row>
+            </Card>
+          </Col>
+        </Row>
+      )}
 
       {/* 执行器状态 */}
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>

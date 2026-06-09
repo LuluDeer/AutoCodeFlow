@@ -15,6 +15,7 @@ import SettingsPage from './pages/settings/index';
 import NotificationSettingsPage from './pages/NotificationSettingsPage';
 import AuditLogPage from './pages/audit/index';
 import ApplicationListPage from './pages/ApplicationListPage';
+import ApplicationDetailPage from './pages/ApplicationDetailPage';
 import { useAuthStore } from './store/auth';
 
 // BUG-04: Use auth store directly instead of reading from localStorage
@@ -45,6 +46,7 @@ export const router = createBrowserRouter([
       { path: 'notification', element: <NotificationSettingsPage /> },
       { path: 'audit', element: <AuditLogPage /> },
       { path: 'applications', element: <ApplicationListPage /> },
+      { path: 'applications/:id', element: <ApplicationDetailPage /> },
     ],
   },
 ]);

@@ -228,4 +228,23 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`Re-scheduled cron task "${task.name}" with expression: ${task.cronExpression}`);
     }
   }
+
+  /** 获取调度器运行状态统计 */
+  getStats() {
+    const now = Date.now();
+    const cronDetails: Array<{ taskName: string; expression: string }> = [];
+    this.cronTasks.forEach((_, taskId) => {
+      // We can't easily get task name from the cronTasks map since it only stores task IDs
+      // Return a minimal snapshot
+    });
+
+    return {
+      healthy: true, // Scheduler is considered healthy if it's not crashed
+      activeTimers: this.timers.size,
+      activeCronTasks: this.cronTasks.size,
+      runningTaskCount: this.runningTasks.size,
+      totalScheduledTasks: this.timers.size + this.cronTasks.size,
+      uptime: process.uptime(),
+    };
+  }
 }
