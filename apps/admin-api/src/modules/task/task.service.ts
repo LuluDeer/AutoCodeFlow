@@ -378,4 +378,9 @@ export class TaskService {
     const version = await this.getVersion(taskId, versionId);
     await this.versionRepo.delete(version.id);
   }
+
+  /** 获取调度器运行状态统计 */
+  getSchedulerStats() {
+    return this.schedulerService.getStats();
+  }
 }

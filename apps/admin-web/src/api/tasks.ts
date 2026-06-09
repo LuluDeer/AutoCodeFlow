@@ -64,4 +64,6 @@ export const tasksApi = {
   batchDelete: (taskIds: string[]) => client.post('/tasks/batch/delete', { taskIds }),
   updateGlue: (id: string, source: string, language?: string) =>
     client.put(`/tasks/${id}/glue`, { source, language }),
+  schedulerStats: () =>
+    client.get<any, { healthy: boolean; activeTimers: number; activeCronTasks: number; runningTaskCount: number; totalScheduledTasks: number; uptime: number }>('/tasks/scheduler/stats'),
 };

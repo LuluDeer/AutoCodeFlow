@@ -113,12 +113,22 @@ export class TaskProcessor {
     await this.execRepo.save(exec);
 
     try {
-      const result = await this.executorService.dispatch(task, exec);
+      // 广播模式：派发到所有在线执行器
+      // 单任务模式：派发到负载最低的一个执行器
+      const isBroadcast = task.executeMode === 'broadcast';
+      const rawResult = isBroadcast
+        ? await this.executorService.dispatchBroadcast(task, exec)
+        : await this.executorService.dispatch(task, exec);
       exec.status = ExecutionStatus.SUCCESS;
-      exec.result = result;
-      exec.logs = result?.logs || '';
+      exec.result = isBroadcast
+        ? { broadcast: true, executorCount: rawResult.length, results: rawResult }
+        : rawResult;
+      exec.logs = isBroadcast
+        ? JSON.stringify(rawResult)
+        : (rawResult?.logs || '');
       // Fetch and store structured log lines from executor
-      await this.fetchAndStoreLogLines(exec, result?.executorAddress ?? exec.executorAddress);
+      const targetAddr = isBroadcast ? undefined : rawResult?.executorAddress ?? exec.executorAddress;
+      await this.fetchAndStoreLogLines(exec, targetAddr);
     } catch (err) {
       exec.status = ExecutionStatus.FAILED;
       exec.errorMessage = err.message;

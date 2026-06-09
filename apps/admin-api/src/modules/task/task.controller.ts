@@ -496,4 +496,17 @@ export class TaskController {
     });
     return results;
   }
+
+  @Get('scheduler/stats')
+  @ApiOperation({
+    summary: '调度器状态',
+    description: '获取调度器运行状态统计，包括活跃定时器、Cron任务数、运行中任务数等。'
+  })
+  @ApiResponse({
+    status: 200,
+    description: '调度器运行状态',
+  })
+  async schedulerStats() {
+    return this.taskService.getSchedulerStats();
+  }
 }

@@ -3,12 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcrypt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan, MoreThanOrEqual } from 'typeorm';
+import { Repository, LessThan, MoreThanOrEqual, In } from 'typeorm';
 import { Cron } from '@nestjs/schedule';
 import axios from 'axios';
 import { Executor, ExecutorStatus } from './entities/executor.entity';
 import { TaskExecution, ExecutionStatus } from '../task/entities/task-execution.entity';
-import { Task } from '../task/entities/task.entity';
+import { Task, ExecuteMode } from '../task/entities/task.entity';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 
 @Injectable()
@@ -191,6 +191,80 @@ export class ExecutorService {
         .execute();
       throw err;
     }
+  }
+
+  /**
+   * Broadcast dispatch: send the task to ALL online executors simultaneously.
+   * Used when task.executeMode === ExecuteMode.BROADCAST.
+   * Returns a list of results for each executor.
+   */
+  async dispatchBroadcast(task: Task, execution: TaskExecution): Promise<any[]> {
+    const all = await this.repo.find({ where: { status: ExecutorStatus.ONLINE } });
+    let candidates = all;
+
+    // Apply same filters as dispatch
+    if (task.executorAppName) {
+      candidates = all.filter(e => e.appName === task.executorAppName);
+    } else {
+      let filtered = all;
+      if (task.executorGroup) {
+        filtered = filtered.filter(e => e.groupName === task.executorGroup);
+      }
+      if (task.executorTags && task.executorTags.length > 0) {
+        filtered = filtered.filter(e => {
+          if (!e.tags) return false;
+          return task.executorTags!.every(tag => e.tags!.includes(tag));
+        });
+      }
+      if (task.runtime) {
+        filtered = filtered.filter(e =>
+          !e.capabilities || e.capabilities.length === 0
+            ? true
+            : e.capabilities.includes(task.runtime),
+        );
+      }
+      if (filtered.length > 0) candidates = filtered;
+    }
+
+    if (candidates.length === 0) {
+      throw new Error('No available executor for broadcast dispatch');
+    }
+
+    this.logger.log(`Broadcasting task "${task.name}" to ${candidates.length} executors`);
+
+    // Fire all dispatches in parallel and collect results
+    const results = await Promise.allSettled(
+      candidates.map(async (executor) => {
+        const dispatchUrl = this.getExecutorUrl(executor.address, 'api/execute');
+        const resp = await axios.post(
+          dispatchUrl,
+          { executionId: execution.id, task, params: execution.params },
+          { timeout: ((task.timeout || 300) + 10) * 1000 },
+        );
+        return { executor: executor.address, result: resp.data };
+      }),
+    );
+
+    const successes: any[] = [];
+    const failures: string[] = [];
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        successes.push(r.value);
+      } else {
+        const errMsg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+        failures.push(`${candidates[i].address}: ${errMsg}`);
+      }
+    });
+
+    if (failures.length > 0) {
+      this.logger.warn(`Broadcast partially failed for task "${task.name}": ${failures.join('; ')}`);
+    }
+
+    if (successes.length === 0) {
+      throw new Error(`Broadcast failed on all ${candidates.length} executors: ${failures.join('; ')}`);
+    }
+
+    return successes;
   }
 
   /** 每 5 分钟扫描 RUNNING 超时且执行器已离线的 execution，防止僵尸任务 */
