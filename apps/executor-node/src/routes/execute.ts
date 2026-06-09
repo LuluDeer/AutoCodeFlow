@@ -65,8 +65,9 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     return;
   }
 
-  // Helper function to send error response (DO NOT decrement - finally block handles that)
+  // Helper function to send error response and decrement capacity counter
   const sendError = (status: number, error: string) => {
+    Atomics.sub(getRunningCountArray(), 0, 1);
     res.status(status).json({ error });
   };
 
@@ -155,8 +156,41 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   const requirements: string[] = (task.requirements as string[]) || [];
   const taskId = String(task.id || executionId);
 
+  // Glue script support: write inline source to a temp file and use it as entrypoint
+  let actualRuntime = runtime;
+  let actualEntrypoint = entrypoint;
+  let actualRequirements = requirements;
+  const glueSource = (task as any).glueSource || (task as any).glue_source;
+  const glueLanguage = (task as any).glueLanguage || (task as any).glue_language;
+  if (glueSource) {
+    let glueFile: string;
+    if (glueLanguage === 'javascript' || (!glueLanguage && runtime === 'node')) {
+      glueFile = path.join(workDir, 'glue_script.js');
+      actualRuntime = 'node';
+    } else if (glueLanguage === 'python' || (!glueLanguage && runtime === 'python')) {
+      glueFile = path.join(workDir, 'glue_script.py');
+      actualRuntime = 'python';
+    } else if (glueLanguage === 'shell') {
+      glueFile = path.join(workDir, 'glue_script.sh');
+      actualRuntime = 'shell';
+    } else {
+      sendError(400, `Unsupported glue language: ${glueLanguage}`);
+      return;
+    }
+
+    if (typeof glueSource !== 'string') {
+      sendError(400, 'glueSource must be a string');
+      return;
+    }
+    fs.writeFileSync(glueFile, glueSource, 'utf-8');
+    fs.chmodSync(glueFile, 0o755);
+    logger.info(`Glue script written to ${glueFile} (${glueSource.length} bytes)`);
+    actualEntrypoint = actualRuntime === 'shell' ? glueFile : path.basename(glueFile);
+    actualRequirements = [];  // Glue scripts use system runtime, no per-task deps
+  }
+
   // node runtime: 按需安装依赖到任务隔离目录
-  if (runtime === 'node' && requirements.length > 0) {
+  if (actualRuntime === 'node' && actualRequirements.length > 0) {
     const nodeModulesDir = path.join(config.workDir, '.node_modules', taskId);
     fs.mkdirSync(nodeModulesDir, { recursive: true });
     const pkgJson = path.join(nodeModulesDir, 'package.json');
@@ -165,18 +199,26 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     }
     // S16: validate each package name against npm naming rules before shell expansion
     const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
-    for (const pkg of requirements) {
+    for (const pkg of actualRequirements) {
       if (!npmNameRe.test(pkg)) {
         sendError(400, `Invalid npm package name: ${pkg}`);
         return;
       }
     }
-    logger.info(`Installing ${requirements.length} packages for task ${taskId}`);
-    // N18: use spawnSync instead of execSync so shell: false is actually honoured
-    // (execSync ignores shell: false — it is a spawnSync-only option)
+    logger.info(`Installing ${actualRequirements.length} packages for task ${taskId}`);
+    // Generate .npmrc to use private registry for @autocodeflow scoped packages
+    if (config.npmRegistryUrl) {
+      const npmrc = path.join(nodeModulesDir, '.npmrc');
+      const hasAutoflowPackage = actualRequirements.some(pkg => pkg.startsWith('@autocodeflow/'));
+      const registryConfig = hasAutoflowPackage
+        ? `@autocodeflow:registry=${config.npmRegistryUrl}\n`
+        : `registry=${config.npmRegistryUrl}\n`;
+      fs.writeFileSync(npmrc, registryConfig);
+      logger.info(`Using npm registry: ${config.npmRegistryUrl} for task ${taskId}`);
+    }
     const installResult = spawnSync(
       'npm',
-      ['install', '--prefix', nodeModulesDir, ...requirements],
+      ['install', '--prefix', nodeModulesDir, ...actualRequirements],
       { stdio: 'pipe', timeout: 300_000 },
     );
     if (installResult.status !== 0) {
@@ -212,19 +254,22 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   let cmd: string;
   let args: string[];
 
-  if (runtime === 'node') {
+  if (actualRuntime === 'node') {
     cmd = process.platform === 'win32' ? 'node.exe' : 'node';
-    args = [entrypoint];
-  } else if (runtime === 'shell') {
+    args = [actualEntrypoint];
+  } else if (actualRuntime === 'python') {
+    cmd = process.platform === 'win32' ? 'python.exe' : 'python3';
+    args = [actualEntrypoint];
+  } else if (actualRuntime === 'shell') {
     if (process.platform === 'win32') {
       cmd = 'cmd.exe';
-      args = ['/c', entrypoint];
+      args = ['/c', actualEntrypoint];
     } else {
       cmd = 'bash';
-      args = ['-c', `cd "${workDir}" && exec "${entrypoint}"`];
+      args = ['-c', `cd "${workDir}" && exec "${actualEntrypoint}"`];
     }
   } else {
-    sendError(400, `Unsupported runtime: ${runtime}`);
+    sendError(400, `Unsupported runtime: ${actualRuntime}`);
     return;
   }
 
@@ -232,12 +277,14 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
 
   const taskInfo = {
     taskId,
-    task: { ...task, runtime, entrypoint, timeout, workDir, env, cmd, args },
+    task: { ...task, runtime: actualRuntime, entrypoint: actualEntrypoint, timeout, workDir, env, cmd, args },
     params,
     executionId,
   };
 
-  taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId });
+  taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId }, () => {
+    Atomics.sub(getRunningCountArray(), 0, 1);
+  });
   
   res.json({ status: 'accepted', executionId });
 });
@@ -245,7 +292,6 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
 export async function runTask(task: any, params: Record<string, any>, executionId: string): Promise<void> {
   const { cmd, args, workDir, env, timeout } = task;
   const startTime = Date.now();
-  Atomics.add(getRunningCountArray(), 0, 1);
   
   try {
     const result = await runProcess(cmd, args, workDir, env, timeout, executionId);
@@ -267,7 +313,7 @@ export async function runTask(task: any, params: Record<string, any>, executionI
       durationMs: Date.now() - startTime,
     });
   } finally {
-    Atomics.sub(getRunningCountArray(), 0, 1);
+    // No-op: counter is managed by the route handler
   }
 }
 

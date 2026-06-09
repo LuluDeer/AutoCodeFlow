@@ -2,7 +2,7 @@ import express from 'express';
 import * as http from 'http';
 import { config } from './config';
 import { logger } from './logger';
-import { startHeartbeat, runningCount } from './scheduler';
+import { getRunningCount } from './scheduler';
 import { startCallbackThread, stopCallbackThread } from './callback';
 import { startLogCleanup, stopLogCleanup } from './file-logger';
 import { initAdminClients, post } from './admin-client';
@@ -75,12 +75,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
   // Wait for running tasks (max 30 seconds)
   const maxWait = 30_000;
   const startTime = Date.now();
-  while (runningCount > 0) {
+  while (getRunningCount() > 0) {
     if (Date.now() - startTime > maxWait) {
-      logger.warn(`Grace period expired, ${runningCount} task(s) still running, forcing shutdown`);
+      logger.warn(`Grace period expired, ${getRunningCount()} task(s) still running, forcing shutdown`);
       break;
     }
-    logger.info(`Waiting for ${runningCount} task(s) to complete...`);
+    logger.info(`Waiting for ${getRunningCount()} task(s) to complete...`);
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
 

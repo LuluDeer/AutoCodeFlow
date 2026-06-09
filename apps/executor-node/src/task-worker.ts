@@ -4,6 +4,7 @@ interface TaskQueueItem {
   executionId: string;
   task: any;
   params: Record<string, any>;
+  onComplete?: () => void;
 }
 
 interface WorkerState {
@@ -31,8 +32,8 @@ class TaskWorker {
     this.runningCount = 0;
   }
 
-  enqueue(executionId: string, task: any, params: Record<string, any>): void {
-    this.state.queue.push({ executionId, task, params });
+  enqueue(executionId: string, task: any, params: Record<string, any>, onComplete?: () => void): void {
+    this.state.queue.push({ executionId, task, params, onComplete });
     logger.debug(`Task ${this.taskId}: Enqueued execution ${executionId}, queue size: ${this.state.queue.length}`);
     this.process();
   }
@@ -53,7 +54,7 @@ class TaskWorker {
   }
 
   private async executeItem(item: TaskQueueItem): Promise<void> {
-    const { executionId, task, params } = item;
+    const { executionId, task, params, onComplete } = item;
     
     try {
       logger.debug(`Task ${this.taskId}: Starting execution ${executionId}`);
@@ -64,6 +65,8 @@ class TaskWorker {
       logger.debug(`Task ${this.taskId}: Completed execution ${executionId}`);
     } catch (error: any) {
       logger.error(`Task ${this.taskId}: Execution ${executionId} failed: ${error.message}`);
+    } finally {
+      onComplete?.();
     }
   }
 
@@ -99,9 +102,9 @@ class TaskWorkerManager {
     return worker;
   }
 
-  async execute(taskId: string, executionId: string, task: any, params: Record<string, any>): Promise<void> {
+  async execute(taskId: string, executionId: string, task: any, params: Record<string, any>, onComplete?: () => void): Promise<void> {
     const worker = this.getWorker(taskId);
-    worker.enqueue(executionId, task, params);
+    worker.enqueue(executionId, task, params, onComplete);
   }
 
   stopWorker(taskId: string): void {

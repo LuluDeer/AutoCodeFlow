@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autocodeflow-http"
+version = "0.1.0"
+description = "AutoCodeFlow HTTP client library with retry, auth, and circuit breaker"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.25.0",
+    "tenacity>=8.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "pytest-httpx"]

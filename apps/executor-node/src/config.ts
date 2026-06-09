@@ -10,4 +10,6 @@ export const config = {
   workDir: process.env.WORK_DIR || '/tmp/autocodeflow/tasks',
   maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_TASKS || '10', 10),
   logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
+  npmRegistryUrl: process.env.NPM_REGISTRY_URL || '',  // Private npm registry for task dependencies
+  pythonRegistryUrl: process.env.PYTHON_REGISTRY_URL || '',  // Private PyPI registry for task dependencies
 };

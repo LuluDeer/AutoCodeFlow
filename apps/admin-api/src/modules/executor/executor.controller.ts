@@ -6,6 +6,7 @@ import { Public } from '../../common/decorators/public.decorator';
 import { ExecutorService } from './executor.service';
 import axios from 'axios';
 import { PaginationDto } from '../../common/dto/pagination.dto';
+import * as crypto from 'crypto';
 
 function verifyExecutorToken(authHeader: string | undefined, configService: ConfigService): void {
   const token = configService.get<string>('executor.sharedToken');
@@ -18,7 +19,7 @@ function verifyExecutorToken(authHeader: string | undefined, configService: Conf
   if (!token) return;
   
   const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
-  if (!provided || provided !== token) {
+  if (!provided || !crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(token))) {
     throw new UnauthorizedException('Invalid executor token');
   }
 }

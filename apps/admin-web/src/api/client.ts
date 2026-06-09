@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { useAuthStore } from '../store/auth';
 
 const API_URL_INTERNAL = import.meta.env.VITE_API_URL_INTERNAL || '/api';
 const API_URL_EXTERNAL = import.meta.env.VITE_API_URL_EXTERNAL || '';

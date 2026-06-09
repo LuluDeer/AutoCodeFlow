@@ -49,12 +49,19 @@ export const tasksApi = {
     client.get<any, any>(`/tasks/${id}/executions`, { params: p }),
   execution: (taskId: string, execId: string) =>
     client.get<any, TaskExecution>(`/tasks/${taskId}/executions/${execId}`),
-  rollback: (id: string, gitCommit: string) =>
-    client.post(`/tasks/${id}/rollback`, { gitCommit }),
+  rollback: (id: string, gitCommit: string, params?: Record<string, any>) =>
+    client.post(`/tasks/${id}/rollback`, { gitCommit, params }),
+  rollbackToVersion: (taskId: string, versionId: string) =>
+    client.post<any, any>(`/tasks/${taskId}/versions/${versionId}/rollback`),
+  compareVersions: (taskId: string, versionId1: string, versionId2: string) =>
+    client.get<any, any>(`/tasks/${taskId}/versions/${versionId1}/compare/${versionId2}`),
+  versions: (id: string) => client.get<any, any>(`/tasks/${id}/versions`),
   pause: (id: string) => client.post<any, { success: boolean; message: string }>(`/tasks/${id}/pause`),
   resume: (id: string) => client.post<any, { success: boolean; message: string }>(`/tasks/${id}/resume`),
   batchTrigger: (taskIds: string[]) => client.post('/tasks/batch/trigger', { taskIds }),
   batchPause: (taskIds: string[]) => client.post('/tasks/batch/pause', { taskIds }),
   batchResume: (taskIds: string[]) => client.post('/tasks/batch/resume', { taskIds }),
   batchDelete: (taskIds: string[]) => client.post('/tasks/batch/delete', { taskIds }),
+  updateGlue: (id: string, source: string, language?: string) =>
+    client.put(`/tasks/${id}/glue`, { source, language }),
 };

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 import stat
 import re
 import shutil
@@ -88,10 +89,16 @@ async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
 
     if requirements:
         logger.info(f'Installing {len(requirements)} packages into {venv_dir}')
-        proc = await asyncio.create_subprocess_exec(
+        install_args = [
             UV_BIN, 'pip', 'install',
             '--python', str(python_bin),
-            *requirements,
+        ]
+        # Use private PyPI registry if configured (e.g., for internal @autocodeflow packages)
+        if settings.pypi_registry_url:
+            install_args.extend(['--index-url', settings.pypi_registry_url])
+        install_args.extend(requirements)
+        proc = await asyncio.create_subprocess_exec(
+            *install_args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -148,6 +155,29 @@ async def run_task(req: ExecuteRequest) -> dict:
     requirements: list[str] = task.get('requirements', [])
     task_id = str(task.get('id', req.executionId))
 
+    # Glue script support: write inline source to a temp file and use it as entrypoint
+    glue_source = task.get('glueSource') or task.get('glue_source')
+    glue_language = task.get('glueLanguage') or task.get('glue_language')
+    if glue_source:
+        if glue_language == 'python' or (not glue_language and runtime == 'python'):
+            glue_file = work_dir / 'glue_script.py'
+            glue_runtime = 'python'
+        elif glue_language == 'javascript' or (not glue_language and runtime == 'node'):
+            glue_file = work_dir / 'glue_script.js'
+            glue_runtime = 'node'
+        elif glue_language == 'shell':
+            glue_file = work_dir / 'glue_script.sh'
+            glue_runtime = 'shell'
+        else:
+            raise HTTPException(status_code=400, detail=f'Unsupported glue language: {glue_language}')
+
+        glue_file.write_text(glue_source, encoding='utf-8')
+        glue_file.chmod(0o755)
+        logger.info(f'Glue script written to {glue_file} ({len(glue_source)} bytes)')
+        runtime = glue_runtime
+        entrypoint = str(glue_file) if glue_runtime == 'shell' else glue_file.name
+        requirements = []  # Glue scripts use system Python/node, no per-task venv
+
     # SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
     _ENV_WHITELIST = {
         'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
@@ -195,6 +225,7 @@ async def run_task(req: ExecuteRequest) -> dict:
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(work_dir),
             env=env,
+            preexec_fn=os.setsid,  # Create a new process group for clean termination
         )
         log_chunks: list[str] = []
 
@@ -228,7 +259,12 @@ async def run_task(req: ExecuteRequest) -> dict:
 
         return {'success': True, 'logs': logs, 'exitCode': proc.returncode}
     except asyncio.TimeoutError:
-        proc.kill()
+        # B-06: kill the entire process group so child processes spawned by the task are also terminated
+        try:
+            if proc.pid is not None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            proc.kill()
         raise HTTPException(status_code=408, detail=f'Task timeout after {timeout}s')
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

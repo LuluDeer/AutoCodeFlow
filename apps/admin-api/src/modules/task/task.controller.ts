@@ -123,6 +123,31 @@ export class TaskController {
     return result;
   }
 
+  @Put(':id/glue')
+  @ApiOperation({ 
+    summary: '更新GLUE脚本', 
+    description: '更新任务的GLUE脚本源码，支持在线编辑执行逻辑。'
+  })
+  @ApiParam({ name: 'id', description: '任务ID' })
+  @ApiBody({ schema: { type: 'object', properties: { source: { type: 'string' }, language: { type: 'string' } } } })
+  async updateGlue(
+    @Param('id') id: string,
+    @Body() body: { source: string; language?: string },
+    @CurrentUser() user: any,
+    @Req() req: Request,
+  ) {
+    const result = await this.taskService.updateGlue(id, body.source, body.language);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: 'task.updateGlue',
+      resource: 'task',
+      resourceId: id,
+      ip: req.ip,
+    });
+    return result;
+  }
+
   @Delete(':id')
   @ApiOperation({ 
     summary: '删除任务', 
@@ -255,6 +280,45 @@ export class TaskController {
       ip: req.ip,
     });
     return result;
+  }
+
+  @Post(':id/versions/:versionId/rollback')
+  @ApiOperation({ 
+    summary: '版本回滚', 
+    description: '将任务配置回滚到指定的历史版本。'
+  })
+  @ApiParam({ name: 'id', description: '任务ID' })
+  @ApiParam({ name: 'versionId', description: '版本ID' })
+  async rollbackToVersion(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+    @CurrentUser() user: any,
+    @Req() req: Request,
+  ) {
+    const result = await this.taskService.rollbackToVersion(id, versionId);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: 'task.rollbackToVersion',
+      resource: 'task',
+      resourceId: id,
+      detail: { versionId },
+      ip: req.ip,
+    });
+    return result;
+  }
+
+  @Get(':id/versions/:versionId1/compare/:versionId2')
+  @ApiOperation({ 
+    summary: '版本对比', 
+    description: '比较两个版本的差异。'
+  })
+  async compareVersions(
+    @Param('id') id: string,
+    @Param('versionId1') versionId1: string,
+    @Param('versionId2') versionId2: string,
+  ) {
+    return this.taskService.compareVersions(id, versionId1, versionId2);
   }
 
   @Post(':id/pause')

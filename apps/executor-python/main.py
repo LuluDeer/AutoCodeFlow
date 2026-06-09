@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from functools import partial
 import asyncio
 import logging
 import os
@@ -9,7 +10,7 @@ import httpx
 
 from routers import execute, health, logs, config as config_router
 from config import settings
-from scheduler import heartbeat_task, running_count
+from scheduler import heartbeat_task, get_running_count
 from auth import get_current_token
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
@@ -53,11 +54,11 @@ async def notify_offline():
 async def wait_for_tasks(timeout_seconds: int = 30):
     """Wait for running tasks to complete with timeout."""
     start_time = asyncio.get_event_loop().time()
-    while running_count > 0:
+    while get_running_count() > 0:
         if asyncio.get_event_loop().time() - start_time > timeout_seconds:
-            logger.warning(f'Grace period expired, {running_count} tasks still running, forcing shutdown')
+            logger.warning(f'Grace period expired, {get_running_count()} tasks still running, forcing shutdown')
             return
-        logger.info(f'Waiting for {running_count} task(s) to complete...')
+        logger.info(f'Waiting for {get_running_count()} task(s) to complete...')
         await asyncio.sleep(2)
 
 
@@ -72,8 +73,8 @@ async def lifespan(app: FastAPI):
     yield
     # 优雅停机：等待正在执行的任务完成
     _heartbeat_task.cancel()
-    if running_count > 0:
-        logger.info(f'Graceful shutdown: waiting for {running_count} task(s) to finish...')
+    if get_running_count() > 0:
+        logger.info(f'Graceful shutdown: waiting for {get_running_count()} task(s) to finish...')
         await wait_for_tasks()
     await notify_offline()
     logger.info('Executor shutdown complete')
@@ -131,6 +132,6 @@ if __name__ == '__main__':
         logger.info(f'Received signal {sig}, initiating graceful shutdown...')
     
     for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, lambda s, _: handle_signal(s))
+        signal.signal(sig, partial(handle_signal, sig))
     
     uvicorn.run('main:app', host='0.0.0.0', port=settings.port, reload=False)

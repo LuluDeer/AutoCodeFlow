@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autocodeflow-db"
+version = "0.1.0"
+description = "AutoCodeFlow database connection helpers"
+requires-python = ">=3.10"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
