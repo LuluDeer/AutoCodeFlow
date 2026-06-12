@@ -1,6 +1,6 @@
-import { Injectable, Scope } from '@nestjs/common';
-import { AsyncLocalStorage } from 'async_hooks';
-import { v4 as uuidv4 } from 'uuid';
+import { Injectable, Scope } from "@nestjs/common";
+import { AsyncLocalStorage } from "async_hooks";
+import { v4 as uuidv4 } from "uuid";
 
 /**
  * OPS-03: Trace service for managing request-scoped trace IDs.
@@ -47,7 +47,7 @@ export class TraceService {
       ...config,
       headers: {
         ...config.headers,
-        'X-Trace-Id': this._traceId,
+        "X-Trace-Id": this._traceId,
       },
     };
   }
@@ -56,6 +56,6 @@ export class TraceService {
    * Get headers object with traceId for external service calls.
    */
   getTraceHeaders(): Record<string, string> {
-    return { 'X-Trace-Id': this._traceId };
+    return { "X-Trace-Id": this._traceId };
   }
 }

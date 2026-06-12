@@ -11,6 +11,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Any, Optional
 import scheduler as sched
 from auth import verify_token
+
+# SEC-01: env vars allowed to pass through to child processes — never expose executor secrets
+_ENV_WHITELIST: frozenset = frozenset({
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'PYTHONPATH', 'PYTHONHASHSEED', 'VIRTUAL_ENV',
+    'NODE_PATH', 'TMPDIR', 'TEMP', 'TMP',
+    'USER', 'LOGNAME', 'SHELL',
+})
 from config import settings
 from manifest import load_manifest, merge_task_with_manifest
 try:
@@ -55,6 +63,14 @@ logger = logging.getLogger(__name__)
 
 # uv 可执行路径（优先 PATH 中，Dockerfile 安装到 /root/.cargo/bin/uv）
 UV_BIN = shutil.which('uv') or '/root/.local/bin/uv'
+
+# SEC-01: module-level whitelist so tests can import and verify it
+_ENV_WHITELIST = {
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'PYTHONPATH', 'PYTHONHASHSEED', 'VIRTUAL_ENV',
+    'NODE_PATH', 'TMPDIR', 'TEMP', 'TMP',
+    'USER', 'LOGNAME', 'SHELL',
+}
 
 
 # Q-01: removed duplicate ExecuteRequest definition — use the SDK class (or fallback above)
@@ -179,12 +195,6 @@ async def run_task(req: ExecuteRequest) -> dict:
         requirements = []  # Glue scripts use system Python/node, no per-task venv
 
     # SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
-    _ENV_WHITELIST = {
-        'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
-        'PYTHONPATH', 'PYTHONHASHSEED', 'VIRTUAL_ENV',
-        'NODE_PATH', 'TMPDIR', 'TEMP', 'TMP',
-        'USER', 'LOGNAME', 'SHELL',
-    }
     env = {k: v for k, v in os.environ.items() if k in _ENV_WHITELIST}
     # inject task-scoped context
     env['EXECUTION_ID'] = req.executionId

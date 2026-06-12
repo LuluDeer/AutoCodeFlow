@@ -1,15 +1,15 @@
-def test_no_token_returns_401(auth_client):
+def test_no_token_returns_401(client):
     """POST /api/execute without Authorization header should return 401."""
-    response = auth_client.post('/api/execute', json={
+    response = client.post('/api/execute', json={
         'executionId': 'test-exec-1',
         'task': {'name': 'test'},
     })
     assert response.status_code == 401
 
 
-def test_wrong_token_returns_401(auth_client):
+def test_wrong_token_returns_401(client):
     """POST /api/execute with wrong Bearer token should return 401."""
-    response = auth_client.post(
+    response = client.post(
         '/api/execute',
         json={
             'executionId': 'test-exec-2',

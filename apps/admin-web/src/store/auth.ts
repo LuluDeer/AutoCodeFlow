@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 
 export interface AuthUser {
   id: number;
@@ -9,28 +9,37 @@ export interface AuthUser {
 
 interface AuthState {
   token: string | null;
+  refreshToken: string | null;
   user: AuthUser | null;
+  _hasHydrated: boolean;
   setToken: (token: string) => void;
+  setRefreshToken: (refreshToken: string) => void;
+  setAuth: (token: string, refreshToken: string, user: AuthUser) => void;
   setUser: (user: AuthUser) => void;
   logout: () => void;
+  setHasHydrated: (state: boolean) => void;
 }
 
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
       token: null,
+      refreshToken: null,
       user: null,
+      _hasHydrated: false,
       setToken: (token) => set({ token }),
+      setRefreshToken: (refreshToken) => set({ refreshToken }),
+      setAuth: (token, refreshToken, user) => set({ token, refreshToken, user }),
       setUser: (user) => set({ user }),
-      logout: () => { set({ token: null, user: null }); },
+      logout: () => { set({ token: null, refreshToken: null, user: null }); },
+      setHasHydrated: (state) => set({ _hasHydrated: state }),
     }),
     {
       name: 'autoflow-auth',
-      // FE-01: Only persist user metadata, NOT the access token.
-      // The token is kept in memory only; on page refresh the app silently
-      // re-fetches a new token via the /auth/refresh endpoint.
-      // Keeping the token out of localStorage prevents XSS token theft.
-      partialize: (s) => ({ user: s.user }),
+      storage: createJSONStorage(() => localStorage),
+      onRehydrateStorage: () => (state) => {
+        state?.setHasHydrated(true);
+      },
     },
   ),
 );

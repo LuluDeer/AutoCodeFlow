@@ -1,5 +1,5 @@
-import { IsString, IsOptional, IsObject, IsEnum } from 'class-validator';
-import { ApplicationStatus } from '../entities/application.entity';
+import { IsString, IsOptional, IsObject, IsEnum } from "class-validator";
+import { ApplicationStatus } from "../entities/application.entity";
 
 export class CreateApplicationDto {
   @IsString() name: string;

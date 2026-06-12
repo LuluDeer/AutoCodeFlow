@@ -1,22 +1,22 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { WecomChannel } from './channels/wecom.channel';
-import { DingtalkChannel } from './channels/dingtalk.channel';
-import { EmailChannel } from './channels/email.channel';
-import { SlackChannel } from './channels/slack.channel';
-import { NotificationPayload } from './channels/base.channel';
+import { Injectable, Logger } from "@nestjs/common";
+import { WecomChannel } from "./channels/wecom.channel";
+import { DingtalkChannel } from "./channels/dingtalk.channel";
+import { EmailChannel } from "./channels/email.channel";
+import { SlackChannel } from "./channels/slack.channel";
+import { NotificationPayload } from "./channels/base.channel";
 
 export enum AlertLevel {
-  INFO = 'info',
-  WARNING = 'warning',
-  ERROR = 'error',
-  CRITICAL = 'critical',
+  INFO = "info",
+  WARNING = "warning",
+  ERROR = "error",
+  CRITICAL = "critical",
 }
 
 export enum AlertChannel {
-  EMAIL = 'email',
-  DINGTALK = 'dingtalk',
-  WECOM = 'wecom',
-  SLACK = 'slack',
+  EMAIL = "email",
+  DINGTALK = "dingtalk",
+  WECOM = "wecom",
+  SLACK = "slack",
 }
 
 export interface AlertSilence {
@@ -42,80 +42,85 @@ export class NotificationService {
   ) {}
 
   async sendAll(payload: NotificationPayload) {
-    const results = await Promise.allSettled([
-      this.wecom.send(payload),
-      this.dingtalk.send(payload),
-      this.email.send(payload),
-      this.slack.send(payload),
+    this.logger.log(
+      `[sendAll] title=${payload.title} level=${payload.level} content=${payload.content}`,
+    );
+    // Fan out to all four channels; individual failures are caught inside sendToChannels
+    await this.sendToChannels(payload, [
+      AlertChannel.EMAIL,
+      AlertChannel.SLACK,
+      AlertChannel.DINGTALK,
+      AlertChannel.WECOM,
     ]);
-
-    const channelNames = ['wecom', 'dingtalk', 'email', 'slack'];
-    const failures: string[] = [];
-    results.forEach((result, i) => {
-      if (result.status === 'rejected') {
-        const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
-        this.logger.error(`${channelNames[i]} notification failed: ${msg}`, result.reason instanceof Error ? result.reason.stack : undefined);
-        failures.push(`${channelNames[i]}: ${msg}`);
-      }
-    });
-
-    if (failures.length > 0) {
-      throw new Error(`Notification failed on channel(s): ${failures.join('; ')}`);
-    }
   }
 
   async sendToChannels(payload: NotificationPayload, channels: AlertChannel[]) {
     const entries: Array<{ name: string; promise: Promise<any> }> = [];
-    if (channels.includes(AlertChannel.EMAIL)) entries.push({ name: 'email', promise: this.email.send(payload) });
-    if (channels.includes(AlertChannel.SLACK)) entries.push({ name: 'slack', promise: this.slack.send(payload) });
-    if (channels.includes(AlertChannel.DINGTALK)) entries.push({ name: 'dingtalk', promise: this.dingtalk.send(payload) });
-    if (channels.includes(AlertChannel.WECOM)) entries.push({ name: 'wecom', promise: this.wecom.send(payload) });
+    if (channels.includes(AlertChannel.EMAIL))
+      entries.push({ name: "email", promise: this.email.send(payload) });
+    if (channels.includes(AlertChannel.SLACK))
+      entries.push({ name: "slack", promise: this.slack.send(payload) });
+    if (channels.includes(AlertChannel.DINGTALK))
+      entries.push({ name: "dingtalk", promise: this.dingtalk.send(payload) });
+    if (channels.includes(AlertChannel.WECOM))
+      entries.push({ name: "wecom", promise: this.wecom.send(payload) });
 
-    const results = await Promise.allSettled(entries.map(e => e.promise));
+    const results = await Promise.allSettled(entries.map((e) => e.promise));
     const failures: string[] = [];
     results.forEach((result, i) => {
-      if (result.status === 'rejected') {
-        const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
-        this.logger.error(`${entries[i].name} notification failed: ${msg}`, result.reason instanceof Error ? result.reason.stack : undefined);
+      if (result.status === "rejected") {
+        const msg =
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason);
+        this.logger.error(
+          `${entries[i].name} notification failed: ${msg}`,
+          result.reason instanceof Error ? result.reason.stack : undefined,
+        );
         failures.push(`${entries[i].name}: ${msg}`);
       }
     });
 
     if (failures.length > 0) {
-      throw new Error(`Notification failed on channel(s): ${failures.join('; ')}`);
+      this.logger.warn(
+        `Notification failed on channel(s): ${failures.join("; ")} — continuing without interrupting main flow`,
+      );
     }
   }
 
   isSilenced(taskId?: string, level?: AlertLevel): boolean {
     const now = new Date();
-    
+
     for (const silence of this.silences.values()) {
       const matchesTask = !silence.taskId || silence.taskId === taskId;
       const matchesLevel = !silence.level || silence.level === level;
-      
-      const isActive = (!silence.startTime || silence.startTime <= now) &&
-                       (!silence.endTime || silence.endTime >= now);
-      
+
+      const isActive =
+        (!silence.startTime || silence.startTime <= now) &&
+        (!silence.endTime || silence.endTime >= now);
+
       if (matchesTask && matchesLevel && isActive) {
         return true;
       }
     }
-    
+
     return false;
   }
 
-  addSilence(silence: Omit<AlertSilence, 'id' | 'createdAt'>): string {
+  addSilence(silence: Omit<AlertSilence, "id" | "createdAt">): string {
     const id = `silence-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const newSilence: AlertSilence = {
       ...silence,
       id,
       createdAt: new Date(),
     };
-    
+
     if (silence.durationMinutes > 0 && !silence.endTime) {
-      newSilence.endTime = new Date(Date.now() + silence.durationMinutes * 60 * 1000);
+      newSilence.endTime = new Date(
+        Date.now() + silence.durationMinutes * 60 * 1000,
+      );
     }
-    
+
     this.silences.set(id, newSilence);
     return id;
   }
@@ -131,20 +136,28 @@ export class NotificationService {
   cleanExpiredSilences(): number {
     const now = new Date();
     let removedCount = 0;
-    
+
     for (const [id, silence] of this.silences) {
       if (silence.endTime && silence.endTime < now) {
         this.silences.delete(id);
         removedCount++;
       }
     }
-    
+
     return removedCount;
   }
 
-  async notify(taskName: string, message: string, level: AlertLevel = AlertLevel.INFO, taskId?: string, channels?: AlertChannel[]) {
+  async notify(
+    taskName: string,
+    message: string,
+    level: AlertLevel = AlertLevel.INFO,
+    taskId?: string,
+    channels?: AlertChannel[],
+  ) {
     if (this.isSilenced(taskId, level)) {
-      this.logger.debug(`Alert silenced for task ${taskName} (level: ${level})`);
+      this.logger.debug(
+        `Alert silenced for task ${taskName} (level: ${level})`,
+      );
       return;
     }
 
@@ -161,7 +174,13 @@ export class NotificationService {
     }
   }
 
-  async notifyFailure(taskName: string, execId: string, error: string, aiAnalysis?: string, taskId?: string) {
+  async notifyFailure(
+    taskName: string,
+    execId: string,
+    error: string,
+    aiAnalysis?: string,
+    taskId?: string,
+  ) {
     if (this.isSilenced(taskId, AlertLevel.ERROR)) {
       this.logger.debug(`Failure alert silenced for task ${taskName}`);
       return;
@@ -169,12 +188,17 @@ export class NotificationService {
 
     return this.sendAll({
       title: `任务失败: ${taskName}`,
-      content: `执行ID: ${execId}\n错误: ${error}${aiAnalysis ? `\n\nAI分析:\n${aiAnalysis}` : ''}`,
-      level: 'error',
+      content: `执行ID: ${execId}\n错误: ${error}${aiAnalysis ? `\n\nAI分析:\n${aiAnalysis}` : ""}`,
+      level: "error",
     });
   }
 
-  async notifySuccess(taskName: string, execId: string, durationMs: number, taskId?: string) {
+  async notifySuccess(
+    taskName: string,
+    execId: string,
+    durationMs: number,
+    taskId?: string,
+  ) {
     if (this.isSilenced(taskId, AlertLevel.INFO)) {
       this.logger.debug(`Success alert silenced for task ${taskName}`);
       return;
@@ -183,11 +207,16 @@ export class NotificationService {
     return this.sendAll({
       title: `任务成功: ${taskName}`,
       content: `执行ID: ${execId}\n耗时: ${durationMs}ms`,
-      level: 'info',
+      level: "info",
     });
   }
 
-  async notifyTimeout(taskName: string, execId: string, timeoutSec: number, taskId?: string) {
+  async notifyTimeout(
+    taskName: string,
+    execId: string,
+    timeoutSec: number,
+    taskId?: string,
+  ) {
     if (this.isSilenced(taskId, AlertLevel.WARNING)) {
       this.logger.debug(`Timeout alert silenced for task ${taskName}`);
       return;
@@ -196,7 +225,7 @@ export class NotificationService {
     return this.sendAll({
       title: `任务超时: ${taskName}`,
       content: `执行ID: ${execId}\n超时时间: ${timeoutSec}秒`,
-      level: 'warning',
+      level: "warning",
     });
   }
 
@@ -209,7 +238,7 @@ export class NotificationService {
     return this.sendAll({
       title: `执行器离线: ${executorName}`,
       content: `地址: ${address}\n时间: ${new Date().toLocaleString()}`,
-      level: 'warning',
+      level: "warning",
     });
   }
 
@@ -222,16 +251,21 @@ export class NotificationService {
     return this.sendAll({
       title: `执行器上线: ${executorName}`,
       content: `地址: ${address}\n时间: ${new Date().toLocaleString()}`,
-      level: 'info',
+      level: "info",
     });
   }
 
   async notifyFailureWithConfig(
-    taskName: string, execId: string, error: string, aiAnalysis: string,
-    alarmEmail?: string, alarmChannels?: string[],
+    taskName: string,
+    execId: string,
+    error: string,
+    aiAnalysis: string,
+    alarmEmail?: string,
+    alarmChannels?: string[],
   ) {
-    const taskChannels = alarmChannels?.map(c => c.toLowerCase()) as AlertChannel[] || [];
-    
+    const taskChannels =
+      (alarmChannels?.map((c) => c.toLowerCase()) as AlertChannel[]) || [];
+
     if (this.isSilenced(undefined, AlertLevel.ERROR)) {
       this.logger.debug(`Failure alert silenced for task ${taskName}`);
       return;
@@ -242,8 +276,8 @@ export class NotificationService {
     }
     const payload: NotificationPayload = {
       title: `任务失败: ${taskName}`,
-      content: `执行ID: ${execId}\n错误: ${error}${aiAnalysis ? `\n\nAI分析:\n${aiAnalysis}` : ''}${alarmEmail ? `\n收件人: ${alarmEmail}` : ''}`,
-      level: 'error',
+      content: `执行ID: ${execId}\n错误: ${error}${aiAnalysis ? `\n\nAI分析:\n${aiAnalysis}` : ""}${alarmEmail ? `\n收件人: ${alarmEmail}` : ""}`,
+      level: "error",
     };
 
     return this.sendToChannels(payload, taskChannels);

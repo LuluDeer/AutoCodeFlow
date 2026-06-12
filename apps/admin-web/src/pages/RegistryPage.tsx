@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
   Tabs,
   Table,
@@ -13,6 +13,7 @@ import {
   Modal,
   Form,
   Input,
+  Alert,
 } from 'antd';
 import {
   CloudUploadOutlined,
@@ -24,6 +25,9 @@ import { useQuery } from '@tanstack/react-query';
 import { registryApi } from '../api/registry';
 
 const { Title, Text } = Typography;
+
+const PYPI_URL = (import.meta.env.VITE_PYPI_URL as string | undefined) || 'http://localhost:8003';
+const NPM_URL = (import.meta.env.VITE_NPM_URL as string | undefined) || 'http://localhost:4873';
 
 function PypiTab() {
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -50,10 +54,10 @@ function PypiTab() {
       title: '操作',
       key: 'action',
       width: 160,
-      render: (_: unknown, name: string) => (
+      render: (_: unknown, record: { name: string }) => (
         <Button
           size="small"
-          href={`${import.meta.env.VITE_PYPI_URL || 'http://localhost:8003'}/simple/${name}/`}
+          href={`${PYPI_URL}/simple/${record.name}/`}
           target="_blank"
         >
           查看文件
@@ -61,6 +65,8 @@ function PypiTab() {
       ),
     },
   ];
+
+  const tableData = packages.map(name => ({ name, key: name }));
 
   const handleUpload = async (values: { name: string; version: string; file: File }) => {
     const fd = new FormData();
@@ -88,10 +94,24 @@ function PypiTab() {
           </Button>
         </Space>
       </div>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="发布命令"
+        description={
+          <pre style={{ margin: 0, fontSize: 12 }}>{`# 配置私有源
+pip config set global.index-url ${PYPI_URL}/simple/
+pip config set global.trusted-host $(new URL('${PYPI_URL}').hostname)
 
-      <Table
+# 上传包（需安装 twine）
+twine upload --repository-url ${PYPI_URL}/ dist/*`}</pre>
+        }
+      />
+
+      <Table<{ name: string; key: string }>
         loading={isLoading}
-        dataSource={packages.map(name => ({ name, key: name }))}
+        dataSource={tableData}
         columns={columns}
         size="small"
         pagination={{ pageSize: 20 }}
@@ -165,7 +185,7 @@ function NpmTab() {
       render: (_: unknown, row: { name: string }) => (
         <Button
           size="small"
-          href={`${import.meta.env.VITE_NPM_URL || 'http://localhost:4873'}/-/web/detail/${row.name}`}
+          href={`${NPM_URL}/-/web/detail/${row.name}`}
           target="_blank"
         >
           详情
@@ -181,13 +201,29 @@ function NpmTab() {
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()}>刷新</Button>
           <Button
-            href={`${import.meta.env.VITE_NPM_URL || 'http://localhost:4873'}`}
+            href={NPM_URL}
             target="_blank"
           >
             打开 Verdaccio UI
           </Button>
         </Space>
       </div>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="发布命令"
+        description={
+          <pre style={{ margin: 0, fontSize: 12 }}>{`# 配置私有源
+npm config set registry ${NPM_URL}
+
+# 登录（首次需要）
+npm adduser --registry ${NPM_URL}
+
+# 发布包
+npm publish --registry ${NPM_URL}`}</pre>
+        }
+      />
       <Table
         loading={isLoading}
         dataSource={packages.map(p => ({ ...p, key: p.name }))}

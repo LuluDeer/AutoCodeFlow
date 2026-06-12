@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault('ADMIN_API_URL', 'http://localhost:9999')
 os.environ.setdefault('EXECUTOR_ADDRESS', 'localhost:8001')
 os.environ.setdefault('EXECUTOR_TOKEN', 'testsecret')
+os.environ.setdefault('EXECUTOR_SHARED_TOKEN', 'testsecret')
 os.environ.setdefault('APP_NAME', 'test-executor')
 
 

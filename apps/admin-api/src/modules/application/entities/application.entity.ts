@@ -1,15 +1,22 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
-import { Task } from '../../task/entities/task.entity';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  OneToMany,
+} from "typeorm";
+import { Task } from "../../task/entities/task.entity";
 
 export enum ApplicationStatus {
-  ACTIVE = 'active',
-  DEPLOYING = 'deploying',
-  FAILED = 'failed',
+  ACTIVE = "active",
+  DEPLOYING = "deploying",
+  FAILED = "failed",
 }
 
-@Entity('applications')
+@Entity("applications")
 export class Application {
-  @PrimaryGeneratedColumn('uuid') id: string;
+  @PrimaryGeneratedColumn("uuid") id: string;
 
   @Column({ unique: true }) name: string;
 
@@ -19,7 +26,11 @@ export class Application {
 
   @Column() runtime: string;
 
-  @Column({ type: 'enum', enum: ApplicationStatus, default: ApplicationStatus.ACTIVE })
+  @Column({
+    type: "enum",
+    enum: ApplicationStatus,
+    default: ApplicationStatus.ACTIVE,
+  })
   status: ApplicationStatus;
 
   @Column({ nullable: true }) gitRepo: string;
@@ -28,9 +39,9 @@ export class Application {
 
   @Column({ nullable: true }) gitCommit: string;
 
-  @Column({ type: 'jsonb', nullable: true }) manifest: Record<string, any>;
+  @Column({ type: "jsonb", nullable: true }) manifest: Record<string, any>;
 
-  @Column({ type: 'jsonb', nullable: true }) env: Record<string, string>;
+  @Column({ type: "jsonb", nullable: true }) env: Record<string, string>;
 
   @Column({ nullable: true }) entrypoint: string;
 
@@ -38,6 +49,6 @@ export class Application {
 
   @UpdateDateColumn() updatedAt: Date;
 
-  @OneToMany('Task', 'application')
+  @OneToMany("Task", "application")
   tasks: any[];
 }

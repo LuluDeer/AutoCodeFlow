@@ -1,17 +1,35 @@
-import { MigrationInterface, QueryRunner } from 'typeorm';
+import { MigrationInterface, QueryRunner } from "typeorm";
 
 export class InitialSchema1717473142678 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     // Enums
-    await queryRunner.query(`CREATE TYPE "user_role_enum" AS ENUM ('admin', 'user')`);
-    await queryRunner.query(`CREATE TYPE "task_status_enum" AS ENUM ('active', 'paused', 'deleted')`);
-    await queryRunner.query(`CREATE TYPE "task_triggertype_enum" AS ENUM ('cron', 'fixed_rate', 'api', 'manual')`);
-    await queryRunner.query(`CREATE TYPE "task_runtime_enum" AS ENUM ('python', 'node', 'shell')`);
-    await queryRunner.query(`CREATE TYPE "task_blockstrategy_enum" AS ENUM ('serial', 'discard')`);
-    await queryRunner.query(`CREATE TYPE "task_misfirestrategy_enum" AS ENUM ('ignore', 'fire_once')`);
-    await queryRunner.query(`CREATE TYPE "executor_status_enum" AS ENUM ('online', 'offline')`);
-    await queryRunner.query(`CREATE TYPE "executor_type_enum" AS ENUM ('python', 'node', 'universal')`);
-    await queryRunner.query(`CREATE TYPE "execution_status_enum" AS ENUM ('pending', 'running', 'success', 'failed', 'timeout', 'killed')`);
+    await queryRunner.query(
+      `CREATE TYPE "user_role_enum" AS ENUM ('admin', 'user')`,
+    );
+    await queryRunner.query(
+      `CREATE TYPE "task_status_enum" AS ENUM ('active', 'paused', 'deleted')`,
+    );
+    await queryRunner.query(
+      `CREATE TYPE "task_triggertype_enum" AS ENUM ('cron', 'fixed_rate', 'api', 'manual')`,
+    );
+    await queryRunner.query(
+      `CREATE TYPE "task_runtime_enum" AS ENUM ('python', 'node', 'shell')`,
+    );
+    await queryRunner.query(
+      `CREATE TYPE "task_blockstrategy_enum" AS ENUM ('serial', 'discard')`,
+    );
+    await queryRunner.query(
+      `CREATE TYPE "task_misfirestrategy_enum" AS ENUM ('ignore', 'fire_once')`,
+    );
+    await queryRunner.query(
+      `CREATE TYPE "executor_status_enum" AS ENUM ('online', 'offline')`,
+    );
+    await queryRunner.query(
+      `CREATE TYPE "executor_type_enum" AS ENUM ('python', 'node', 'universal')`,
+    );
+    await queryRunner.query(
+      `CREATE TYPE "execution_status_enum" AS ENUM ('pending', 'running', 'success', 'failed', 'timeout', 'killed')`,
+    );
 
     // users
     await queryRunner.query(`
@@ -91,7 +109,9 @@ export class InitialSchema1717473142678 implements MigrationInterface {
         "content"     TEXT NOT NULL
       )
     `);
-    await queryRunner.query(`CREATE INDEX "IDX_execution_log_lines_executionId_lineNumber" ON "execution_log_lines" ("executionId", "lineNumber")`);
+    await queryRunner.query(
+      `CREATE INDEX "IDX_execution_log_lines_executionId_lineNumber" ON "execution_log_lines" ("executionId", "lineNumber")`,
+    );
 
     // executors
     await queryRunner.query(`
@@ -127,8 +147,12 @@ export class InitialSchema1717473142678 implements MigrationInterface {
         "createdAt"  TIMESTAMP NOT NULL DEFAULT now()
       )
     `);
-    await queryRunner.query(`CREATE INDEX "IDX_audit_logs_userId" ON "audit_logs" ("userId")`);
-    await queryRunner.query(`CREATE INDEX "IDX_audit_logs_createdAt" ON "audit_logs" ("createdAt")`);
+    await queryRunner.query(
+      `CREATE INDEX "IDX_audit_logs_userId" ON "audit_logs" ("userId")`,
+    );
+    await queryRunner.query(
+      `CREATE INDEX "IDX_audit_logs_createdAt" ON "audit_logs" ("createdAt")`,
+    );
 
     // system_configs
     await queryRunner.query(`
@@ -151,7 +175,9 @@ export class InitialSchema1717473142678 implements MigrationInterface {
     await queryRunner.query(`DROP INDEX "IDX_audit_logs_userId"`);
     await queryRunner.query(`DROP TABLE "audit_logs"`);
     await queryRunner.query(`DROP TABLE "executors"`);
-    await queryRunner.query(`DROP INDEX "IDX_execution_log_lines_executionId_lineNumber"`);
+    await queryRunner.query(
+      `DROP INDEX "IDX_execution_log_lines_executionId_lineNumber"`,
+    );
     await queryRunner.query(`DROP TABLE "execution_log_lines"`);
     await queryRunner.query(`DROP TABLE "task_executions"`);
     await queryRunner.query(`DROP TABLE "tasks"`);

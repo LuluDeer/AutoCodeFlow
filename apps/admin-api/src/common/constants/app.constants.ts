@@ -37,7 +37,7 @@ export const SecurityConstants = {
   ACCOUNT_LOCKOUT_DURATION_MINUTES: 30,
 
   // Token expiration
-  JWT_DEFAULT_EXPIRES_IN: '7d',
+  JWT_DEFAULT_EXPIRES_IN: "7d",
   REFRESH_TOKEN_EXPIRES_IN_DAYS: 30,
 
   // Rate limiting
@@ -121,7 +121,7 @@ export const QueueConstants = {
   REDIS_MAX_RETRY_DELAY_MS: 3000,
 
   // Queue names
-  TASK_QUEUE_NAME: 'task-queue',
+  TASK_QUEUE_NAME: "task-queue",
 } as const;
 
 /**
@@ -140,7 +140,7 @@ export const FileSystemConstants = {
  * Environment constants
  */
 export const EnvironmentConstants = {
-  DEVELOPMENT: 'development',
-  PRODUCTION: 'production',
-  TEST: 'test',
+  DEVELOPMENT: "development",
+  PRODUCTION: "production",
+  TEST: "test",
 } as const;

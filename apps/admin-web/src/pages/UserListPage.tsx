@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
   Table, Button, Space, Popconfirm, Modal, Form, Input, Select, message, Tag,
 } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, KeyOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, User, CreateUserDto, UpdateUserDto } from '../api/users';
 
@@ -15,9 +15,14 @@ export default function UserListPage() {
   const [editing, setEditing] = useState<User | null>(null);
   const [form] = Form.useForm();
 
+  // Reset password modal state
+  const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [resetTarget, setResetTarget] = useState<User | null>(null);
+  const [resetForm] = Form.useForm();
+
   const { data, isLoading } = useQuery({
     queryKey: ['users', page],
-    queryFn: () => usersApi.list(page, 20).then(r => r.data),
+    queryFn: () => usersApi.list(page, 20),
   });
 
   const createMutation = useMutation({
@@ -38,6 +43,17 @@ export default function UserListPage() {
     onError: () => message.error('删除失败'),
   });
 
+  const resetPasswordMutation = useMutation({
+    mutationFn: ({ id, password }: { id: number; password: string }) =>
+      usersApi.update(id, { password }),
+    onSuccess: () => {
+      message.success('密码已重置');
+      setResetModalOpen(false);
+      resetForm.resetFields();
+    },
+    onError: () => message.error('重置密码失败'),
+  });
+
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
@@ -50,6 +66,12 @@ export default function UserListPage() {
     setModalOpen(true);
   };
 
+  const openResetPassword = (user: User) => {
+    setResetTarget(user);
+    resetForm.resetFields();
+    setResetModalOpen(true);
+  };
+
   const handleSubmit = async () => {
     const values = await form.validateFields();
     if (editing) {
@@ -59,6 +81,12 @@ export default function UserListPage() {
     } else {
       createMutation.mutate(values as CreateUserDto);
     }
+  };
+
+  const handleResetPassword = async () => {
+    const values = await resetForm.validateFields();
+    if (!resetTarget) return;
+    resetPasswordMutation.mutate({ id: resetTarget.id, password: values.newPassword });
   };
 
   const roleColor: Record<string, string> = { admin: 'red', operator: 'blue', viewer: 'default' };
@@ -87,6 +115,13 @@ export default function UserListPage() {
             onClick={() => openEdit(record)}
           >
             编辑
+          </Button>
+          <Button
+            size="small"
+            icon={<KeyOutlined />}
+            onClick={() => openResetPassword(record)}
+          >
+            重置密码
           </Button>
           <Popconfirm
             title="确认删除该用户？"
@@ -122,6 +157,7 @@ export default function UserListPage() {
         }}
       />
 
+      {/* 新建 / 编辑用户 Modal */}
       <Modal
         title={editing ? '编辑用户' : '新建用户'}
         open={modalOpen}
@@ -150,6 +186,49 @@ export default function UserListPage() {
               <Option value="operator">操作员</Option>
               <Option value="viewer">观察者</Option>
             </Select>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 重置密码 Modal */}
+      <Modal
+        title={`重置密码 — ${resetTarget?.username ?? ''}`}
+        open={resetModalOpen}
+        onOk={handleResetPassword}
+        onCancel={() => { setResetModalOpen(false); resetForm.resetFields(); }}
+        confirmLoading={resetPasswordMutation.isPending}
+        okText="确认重置"
+        okButtonProps={{ danger: true }}
+        destroyOnClose
+      >
+        <Form form={resetForm} layout="vertical" autoComplete="off">
+          <Form.Item
+            name="newPassword"
+            label="新密码"
+            rules={[
+              { required: true, message: '请输入新密码' },
+              { min: 6, message: '密码至少 6 位' },
+            ]}
+          >
+            <Input.Password placeholder="请输入新密码" />
+          </Form.Item>
+          <Form.Item
+            name="confirmPassword"
+            label="确认新密码"
+            dependencies={['newPassword']}
+            rules={[
+              { required: true, message: '请再次输入密码' },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('newPassword') === value) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error('两次密码不一致'));
+                },
+              }),
+            ]}
+          >
+            <Input.Password placeholder="请再次输入新密码" />
           </Form.Item>
         </Form>
       </Modal>

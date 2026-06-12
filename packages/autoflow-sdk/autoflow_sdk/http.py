@@ -12,7 +12,12 @@ class HttpClient:
         self._headers = headers or {}
 
     def _client(self) -> httpx.Client:
-        return httpx.Client(base_url=self.base_url, timeout=self._timeout, headers=self._headers)
+        return httpx.Client(
+            base_url=self.base_url,
+            timeout=self._timeout,
+            headers=self._headers,
+            trust_env=False,
+        )
 
     def get(self, path: str, **kwargs) -> httpx.Response:
         with self._client() as c:
@@ -46,7 +51,12 @@ class AsyncHttpClient:
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._headers = headers or {}
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self._timeout, headers=self._headers)
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=self._timeout,
+            headers=self._headers,
+            trust_env=False,
+        )
 
     async def __aenter__(self) -> "AsyncHttpClient":
         return self

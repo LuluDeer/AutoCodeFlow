@@ -1,13 +1,24 @@
-import { Injectable, Logger, NotFoundException, ConflictException, Inject, forwardRef, OnModuleInit } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { ModuleRef } from '@nestjs/core';
-import { Repository } from 'typeorm';
-import { Application, ApplicationStatus } from './entities/application.entity';
-import { CreateApplicationDto, UpdateApplicationDto } from './dto/application.dto';
-import { execSync } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ConflictException,
+  Inject,
+  forwardRef,
+  OnModuleInit,
+} from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
+import { ModuleRef } from "@nestjs/core";
+import { Repository } from "typeorm";
+import { Application, ApplicationStatus } from "./entities/application.entity";
+import {
+  CreateApplicationDto,
+  UpdateApplicationDto,
+} from "./dto/application.dto";
+import { execSync } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
 
 @Injectable()
 export class ApplicationService implements OnModuleInit {
@@ -24,15 +35,17 @@ export class ApplicationService implements OnModuleInit {
   async onModuleInit() {
     // Lazy-resolve TaskService to avoid circular dependency with TaskModule
     try {
-      const { TaskService } = await import('../task/task.service');
+      const { TaskService } = await import("../task/task.service");
       this._taskService = this.moduleRef.get(TaskService, { strict: false });
     } catch (e) {
-      this.logger.warn('TaskService not available — manifest auto-registration disabled');
+      this.logger.warn(
+        "TaskService not available — manifest auto-registration disabled",
+      );
     }
   }
 
   async findAll(): Promise<Application[]> {
-    return this.repo.find({ order: { createdAt: 'DESC' } });
+    return this.repo.find({ order: { createdAt: "DESC" } });
   }
 
   async findById(id: string): Promise<Application> {
@@ -53,15 +66,24 @@ export class ApplicationService implements OnModuleInit {
 
     const app = this.repo.create({
       ...dto,
-      status: dto.gitRepo ? ApplicationStatus.DEPLOYING : ApplicationStatus.ACTIVE,
+      status: dto.gitRepo
+        ? ApplicationStatus.DEPLOYING
+        : ApplicationStatus.ACTIVE,
     });
     const saved = await this.repo.save(app);
     this.logger.log(`Application created: ${saved.name} (${saved.id})`);
 
     // If gitRepo is provided, trigger async deployment
     if (dto.gitRepo) {
-      this.deployFromGit(saved.id, dto.gitRepo, dto.gitBranch || 'main', dto.gitCommit).catch(err => {
-        this.logger.error(`Deployment failed for ${saved.name}: ${err.message}`);
+      this.deployFromGit(
+        saved.id,
+        dto.gitRepo,
+        dto.gitBranch || "main",
+        dto.gitCommit,
+      ).catch((err) => {
+        this.logger.error(
+          `Deployment failed for ${saved.name}: ${err.message}`,
+        );
       });
     }
 
@@ -80,7 +102,12 @@ export class ApplicationService implements OnModuleInit {
     this.logger.log(`Application removed: ${app.name}`);
   }
 
-  async deployFromGit(id: string, gitRepo: string, gitBranch: string, gitCommit?: string): Promise<void> {
+  async deployFromGit(
+    id: string,
+    gitRepo: string,
+    gitBranch: string,
+    gitCommit?: string,
+  ): Promise<void> {
     const app = await this.findById(id);
     app.status = ApplicationStatus.DEPLOYING;
     app.gitRepo = gitRepo;
@@ -88,32 +115,50 @@ export class ApplicationService implements OnModuleInit {
     if (gitCommit) app.gitCommit = gitCommit;
     await this.repo.save(app);
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autocodeflow-deploy-'));
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "autocodeflow-deploy-"),
+    );
     try {
       // Clone repository
-      const cloneArgs = ['clone', '--depth', '1', '--branch', gitBranch];
+      const cloneArgs = ["clone", "--depth", "1", "--branch", gitBranch];
       if (gitCommit) cloneArgs.push(gitCommit);
-      else cloneArgs.push('HEAD');
+      else cloneArgs.push("HEAD");
       cloneArgs.push(gitRepo, tmpDir);
       // SEC: repo URL is validated as a URL by class-validator on the DTO; use --branch (not -b) with full spelling
       this.logger.log(`Cloning ${gitRepo}@${gitBranch} into ${tmpDir}`);
-      execSync('git clone --depth 1 --branch ' + gitBranch + ' ' + gitRepo + ' ' + tmpDir, {
-        timeout: 120_000,
-        stdio: 'pipe',
-      });
+      execSync(
+        "git clone --depth 1 --branch " +
+          gitBranch +
+          " " +
+          gitRepo +
+          " " +
+          tmpDir,
+        {
+          timeout: 120_000,
+          stdio: "pipe",
+        },
+      );
 
-      app.gitCommit = execSync('git -C ' + tmpDir + ' rev-parse HEAD', { encoding: 'utf-8' }).trim();
+      app.gitCommit = execSync("git -C " + tmpDir + " rev-parse HEAD", {
+        encoding: "utf-8",
+      }).trim();
 
       // Parse manifest.json and auto-register tasks
-      const manifestPath = path.join(tmpDir, 'manifest.json');
+      const manifestPath = path.join(tmpDir, "manifest.json");
       if (fs.existsSync(manifestPath)) {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
         app.manifest = manifest;
         app.runtime = manifest.runtime || app.runtime;
         app.entrypoint = manifest.entrypoint || app.entrypoint;
 
-        if (manifest.tasks && Array.isArray(manifest.tasks) && this._taskService) {
-          this.logger.log(`Auto-registering ${manifest.tasks.length} tasks from manifest.json`);
+        if (
+          manifest.tasks &&
+          Array.isArray(manifest.tasks) &&
+          this._taskService
+        ) {
+          this.logger.log(
+            `Auto-registering ${manifest.tasks.length} tasks from manifest.json`,
+          );
           for (const taskDef of manifest.tasks) {
             try {
               await this._taskService.create({
@@ -131,10 +176,14 @@ export class ApplicationService implements OnModuleInit {
                 glueLanguage: taskDef.glueLanguage,
               } as any);
             } catch (err: any) {
-              if (err?.message?.includes('already exists')) {
-                this.logger.warn(`Task "${taskDef.id || taskDef.name}" already exists, skipping`);
+              if (err?.message?.includes("already exists")) {
+                this.logger.warn(
+                  `Task "${taskDef.id || taskDef.name}" already exists, skipping`,
+                );
               } else {
-                this.logger.error(`Failed to register task "${taskDef.name}": ${err.message}`);
+                this.logger.error(
+                  `Failed to register task "${taskDef.name}": ${err.message}`,
+                );
               }
             }
           }
@@ -150,26 +199,35 @@ export class ApplicationService implements OnModuleInit {
       this.logger.error(`Deployment failed for ${app.name}: ${err.message}`);
       throw err;
     } finally {
-      try { fs.rmSync(tmpDir, { recursive: true }); } catch (_) {}
+      try {
+        fs.rmSync(tmpDir, { recursive: true });
+      } catch (_) {}
     }
   }
 
   /**
    * Parse manifest.json from a file path or raw JSON and sync task registrations.
    */
-  async syncTasksFromManifest(appId: string, manifestPath?: string): Promise<number> {
+  async syncTasksFromManifest(
+    appId: string,
+    manifestPath?: string,
+  ): Promise<number> {
     const app = await this.findById(appId);
     let manifest: any;
 
     if (manifestPath && fs.existsSync(manifestPath)) {
-      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
     } else if (app.manifest) {
       manifest = app.manifest;
     } else {
       return 0;
     }
 
-    if (!manifest.tasks || !Array.isArray(manifest.tasks) || !this._taskService) {
+    if (
+      !manifest.tasks ||
+      !Array.isArray(manifest.tasks) ||
+      !this._taskService
+    ) {
       return 0;
     }
 
@@ -190,8 +248,10 @@ export class ApplicationService implements OnModuleInit {
         } as any);
         count++;
       } catch (err: any) {
-        if (err?.message?.includes('already exists')) {
-          this.logger.warn(`Task "${taskDef.id || taskDef.name}" already exists, skipping`);
+        if (err?.message?.includes("already exists")) {
+          this.logger.warn(
+            `Task "${taskDef.id || taskDef.name}" already exists, skipping`,
+          );
         } else {
           this.logger.error(`Failed to register task: ${err.message}`);
         }

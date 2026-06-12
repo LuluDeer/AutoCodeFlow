@@ -1,5 +1,5 @@
-import { IsString, IsOptional, IsBoolean } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsString, IsOptional, IsBoolean } from "class-validator";
+import { ApiProperty } from "@nestjs/swagger";
 
 export class UpsertConfigDto {
   @ApiProperty()
@@ -16,7 +16,7 @@ export class UpsertConfigDto {
   @IsString()
   description?: string;
 
-  @ApiProperty({ required: false, default: 'string' })
+  @ApiProperty({ required: false, default: "string" })
   @IsOptional()
   @IsString()
   valueType?: string;

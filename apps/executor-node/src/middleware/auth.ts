@@ -4,6 +4,7 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import axios from 'axios';
+import { timingSafeEqual } from 'crypto';
 import { config } from '../config';
 
 // Static token for backward compatibility (falls back if dynamic token not available)
@@ -89,7 +90,13 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
   }
 
   const token = parts[1];
-  if (!validTokens.includes(token)) {
+  const tokenBuf = Buffer.from(token);
+  const matched = validTokens.some((validToken) => {
+    const validBuf = Buffer.from(validToken);
+    // timingSafeEqual requires same-length buffers; mismatched lengths still reject
+    return tokenBuf.length === validBuf.length && timingSafeEqual(tokenBuf, validBuf);
+  });
+  if (!matched) {
     res.status(401).json({ error: 'Invalid or missing executor token' });
     return;
   }

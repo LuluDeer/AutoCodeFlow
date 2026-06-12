@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, List, Tag, Typography, Alert, Checkbox } from 'antd';
+import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, Tag, Typography, Alert, Checkbox, Result } from 'antd';
+import { CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { client } from '../../api/client';
+import { client } from '../api/client';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -12,6 +13,12 @@ interface NotificationChannel {
   enabled: boolean;
   config: Record<string, string>;
   description: string;
+}
+
+interface TestResult {
+  success: boolean;
+  message: string;
+  channel?: string;
 }
 
 const notificationApi = {
@@ -48,6 +55,8 @@ const CHANNEL_CONFIG_FIELDS: Record<string, Array<{ key: string; label: string; 
 export default function NotificationSettingsPage() {
   const [activeTab, setActiveTab] = useState('email');
   const [form] = Form.useForm();
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [globalTestResult, setGlobalTestResult] = useState<TestResult | null>(null);
 
   const { data: channels, loading, refresh } = useRequest(notificationApi.getChannels);
   const channel = channels?.find((c) => c.key === activeTab);
@@ -62,8 +71,7 @@ export default function NotificationSettingsPage() {
   const { run: testChannel, loading: testing } = useRequest(
     async (values: Record<string, string>) => {
       const result = await notificationApi.testChannel(activeTab, values);
-      if (result.success) message.success('测试消息发送成功');
-      else message.error(`测试失败: ${result.message}`);
+      setTestResult({ success: result.success, message: result.message, channel: channel?.name });
     },
     { manual: true },
   );
@@ -71,8 +79,7 @@ export default function NotificationSettingsPage() {
   const { run: sendTest, loading: sending } = useRequest(
     async (data: { channels: string[]; title: string; content: string }) => {
       const result = await notificationApi.sendTestNotification(data);
-      if (result.success) message.success('测试消息发送成功');
-      else message.error(`测试失败: ${result.message}`);
+      setGlobalTestResult({ success: result.success, message: result.message });
     },
     { manual: true },
   );
@@ -96,16 +103,43 @@ export default function NotificationSettingsPage() {
       >
         {fields.map((f) => (
           <Form.Item key={f.key} name={f.key} label={f.label}>
-            <Input.Password
-              type={f.key === 'webhookUrl' ? 'text' : undefined}
-              placeholder={f.placeholder}
-            />
+            {f.key === 'password' ? (
+              <Input.Password placeholder={f.placeholder} />
+            ) : (
+              <Input placeholder={f.placeholder} />
+            )}
           </Form.Item>
         ))}
         <Form.Item>
-          <Space>
-            <Button type="primary" htmlType="submit" loading={updating}>保存</Button>
-            <Button onClick={() => testChannel(form.getFieldsValue())} loading={testing}>发送测试</Button>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Space>
+              <Button type="primary" htmlType="submit" loading={updating}>保存</Button>
+              <Button
+                onClick={() => {
+                  setTestResult(null);
+                  testChannel(form.getFieldsValue());
+                }}
+                loading={testing}
+              >
+                发送测试
+              </Button>
+            </Space>
+            {testResult && (
+              <Alert
+                type={testResult.success ? 'success' : 'error'}
+                icon={testResult.success
+                  ? <CheckCircleFilled style={{ color: '#52c41a' }} />
+                  : <CloseCircleFilled style={{ color: '#ff4d4f' }} />}
+                showIcon
+                message={
+                  testResult.success
+                    ? `${testResult.channel ?? activeTab} 测试消息发送成功`
+                    : `测试失败：${testResult.message}`
+                }
+                closable
+                onClose={() => setTestResult(null)}
+              />
+            )}
           </Space>
         </Form.Item>
       </Form>
@@ -146,7 +180,7 @@ export default function NotificationSettingsPage() {
       <Card loading={loading}>
         <Tabs
           activeKey={activeTab}
-          onChange={(k) => { setActiveTab(k); form.resetFields(); }}
+          onChange={(k) => { setActiveTab(k); form.resetFields(); setTestResult(null); }}
           items={tabItems}
         />
       </Card>
@@ -154,7 +188,7 @@ export default function NotificationSettingsPage() {
       <Card title="全局测试" style={{ marginTop: 16 }}>
         <Form
           layout="vertical"
-          onFinish={(values) => sendTest(values)}
+          onFinish={(values) => { setGlobalTestResult(null); sendTest(values); }}
         >
           <Form.Item name="channels" label="选择渠道" rules={[{ required: true, message: '请选择至少一个渠道' }]}>
             <Checkbox.Group>
@@ -173,7 +207,25 @@ export default function NotificationSettingsPage() {
             <TextArea rows={3} placeholder="这是一条测试通知..." />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" htmlType="submit" loading={sending}>发送测试通知</Button>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Button type="primary" htmlType="submit" loading={sending}>发送测试通知</Button>
+              {globalTestResult && (
+                <Alert
+                  type={globalTestResult.success ? 'success' : 'error'}
+                  icon={globalTestResult.success
+                    ? <CheckCircleFilled style={{ color: '#52c41a' }} />
+                    : <CloseCircleFilled style={{ color: '#ff4d4f' }} />}
+                  showIcon
+                  message={
+                    globalTestResult.success
+                      ? '测试通知已发送到所选渠道'
+                      : `发送失败：${globalTestResult.message}`
+                  }
+                  closable
+                  onClose={() => setGlobalTestResult(null)}
+                />
+              )}
+            </Space>
           </Form.Item>
         </Form>
       </Card>

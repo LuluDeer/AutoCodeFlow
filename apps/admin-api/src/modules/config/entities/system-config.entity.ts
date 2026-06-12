@@ -1,6 +1,12 @@
-import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from "typeorm";
 
-@Entity('system_configs')
+@Entity("system_configs")
 export class SystemConfig {
   @PrimaryGeneratedColumn()
   id: number;
@@ -8,13 +14,13 @@ export class SystemConfig {
   @Column({ unique: true })
   key: string;
 
-  @Column({ type: 'text', nullable: true })
+  @Column({ type: "text", nullable: true })
   value: string;
 
   @Column({ nullable: true })
   description: string;
 
-  @Column({ default: 'string' })
+  @Column({ default: "string" })
   valueType: string; // 'string' | 'number' | 'boolean' | 'json'
 
   @Column({ default: false })

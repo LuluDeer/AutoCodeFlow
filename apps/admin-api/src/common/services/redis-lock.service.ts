@@ -1,7 +1,7 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import Redis from 'ioredis';
-import { randomBytes } from 'crypto';
+import { Injectable, OnModuleInit, OnModuleDestroy } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import Redis from "ioredis";
+import { randomBytes } from "crypto";
 
 @Injectable()
 export class RedisLockService implements OnModuleInit, OnModuleDestroy {
@@ -11,9 +11,9 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     this.client = new Redis({
-      host: this.configService.get('redis.host'),
-      port: this.configService.get<number>('redis.port'),
-      password: this.configService.get('redis.password'),
+      host: this.configService.get("redis.host"),
+      port: this.configService.get<number>("redis.port"),
+      password: this.configService.get("redis.password"),
       retryStrategy: (times) => Math.min(times * 100, 3000),
     });
   }
@@ -23,16 +23,16 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
   }
 
   async acquireLock(key: string, ttlMs: number): Promise<Lock | null> {
-    const lockId = randomBytes(16).toString('hex');
-    const result = await this.client.set(
+    const lockId = randomBytes(16).toString("hex");
+    const result = await (this.client as any).set(
       `lock:${key}`,
       lockId,
-      'NX',
-      'PX',
+      "NX",
+      "PX",
       ttlMs,
     );
 
-    if (result === 'OK') {
+    if (result === "OK") {
       return {
         key,
         lockId,
@@ -58,14 +58,19 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
     return result === 1;
   }
 
-  async tryLock(key: string, ttlMs: number, maxRetries: number = 3, retryDelayMs: number = 100): Promise<Lock | null> {
+  async tryLock(
+    key: string,
+    ttlMs: number,
+    maxRetries: number = 3,
+    retryDelayMs: number = 100,
+  ): Promise<Lock | null> {
     for (let i = 0; i < maxRetries; i++) {
       const lock = await this.acquireLock(key, ttlMs);
       if (lock) {
         return lock;
       }
       if (i < maxRetries - 1) {
-        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
       }
     }
     return null;

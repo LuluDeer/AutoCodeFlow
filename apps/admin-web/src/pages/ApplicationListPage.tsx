@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  Table, Button, Space, Tag, Modal, Form, Input, Select, Upload, message, Popconfirm, Typography,
+  Table, Button, Space, Tag, Modal, Form, Input, Select, Upload, message, Popconfirm, Typography, Input as AntInput,
 } from 'antd';
-import { PlusOutlined, UploadOutlined, DeleteOutlined, ReloadOutlined, GithubOutlined } from '@ant-design/icons';
+import { PlusOutlined, UploadOutlined, ReloadOutlined, GithubOutlined, SearchOutlined, FilterOutlined } from '@ant-design/icons';
 import { applicationsApi, Application } from '../api/applications';
 import { useNavigate } from 'react-router-dom';
 
@@ -20,6 +20,12 @@ const statusColors: Record<string, string> = {
   failed: 'red',
 };
 
+const statusLabels: Record<string, string> = {
+  active: '正常',
+  deploying: '部署中',
+  failed: '失败',
+};
+
 export default function ApplicationListPage() {
   const nav = useNavigate();
   const [apps, setApps] = useState<Application[]>([]);
@@ -29,6 +35,9 @@ export default function ApplicationListPage() {
   const [editingApp, setEditingApp] = useState<Application | null>(null);
   const [form] = Form.useForm();
   const [uploadForm] = Form.useForm();
+  const [searchText, setSearchText] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [runtimeFilter, setRuntimeFilter] = useState<string | undefined>();
 
   const fetchApps = useCallback(async () => {
     setLoading(true);
@@ -43,6 +52,19 @@ export default function ApplicationListPage() {
   }, []);
 
   useEffect(() => { fetchApps(); }, [fetchApps]);
+
+  const filtered = useMemo(() => {
+    return apps.filter((a) => {
+      const matchSearch = !searchText ||
+        a.name.toLowerCase().includes(searchText.toLowerCase()) ||
+        (a.description?.toLowerCase().includes(searchText.toLowerCase()) ?? false);
+      const matchStatus = !statusFilter || a.status === statusFilter;
+      const matchRuntime = !runtimeFilter || a.runtime === runtimeFilter;
+      return matchSearch && matchStatus && matchRuntime;
+    });
+  }, [apps, searchText, statusFilter, runtimeFilter]);
+
+  const hasFilters = !!(searchText || statusFilter || runtimeFilter);
 
   const handleCreate = () => {
     setEditingApp(null);
@@ -109,6 +131,7 @@ export default function ApplicationListPage() {
       title: 'Name',
       dataIndex: 'name',
       key: 'name',
+      sorter: (a: Application, b: Application) => a.name.localeCompare(b.name),
       render: (name: string, record: Application) => (
         <Space>
           {record.gitRepo && <GithubOutlined />}
@@ -137,20 +160,23 @@ export default function ApplicationListPage() {
       dataIndex: 'status',
       key: 'status',
       width: 120,
-      render: (s: string) => <Tag color={statusColors[s] || 'default'}>{s}</Tag>,
+      render: (s: string) => <Tag color={statusColors[s] || 'default'}>{statusLabels[s] || s}</Tag>,
     },
     {
       title: 'Description',
       dataIndex: 'description',
       key: 'description',
       ellipsis: true,
+      render: (v: string) => v || '-',
     },
     {
       title: 'Created',
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 180,
-      render: (v: string) => v ? new Date(v).toLocaleString() : '-',
+      sorter: (a: Application, b: Application) =>
+        new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime(),
+      render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-',
     },
     {
       title: 'Actions',
@@ -158,9 +184,9 @@ export default function ApplicationListPage() {
       width: 160,
       render: (_: unknown, record: Application) => (
         <Space>
-          <Button type="link" size="small" onClick={() => handleEdit(record)}>Edit</Button>
-          <Popconfirm title="Delete this application?" onConfirm={() => handleDelete(record.id)}>
-            <Button type="link" size="small" danger>Delete</Button>
+          <Button type="link" size="small" onClick={() => handleEdit(record)}>编辑</Button>
+          <Popconfirm title="确认删除此应用？" onConfirm={() => handleDelete(record.id)}>
+            <Button type="link" size="small" danger>删除</Button>
           </Popconfirm>
         </Space>
       ),
@@ -169,62 +195,112 @@ export default function ApplicationListPage() {
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-          Create Application
-        </Button>
-        <Button icon={<UploadOutlined />} onClick={() => {
-          uploadForm.resetFields();
-          setUploadModalOpen(true);
-        }}>
-          Upload ZIP
-        </Button>
-        <Button icon={<ReloadOutlined />} onClick={fetchApps}>Refresh</Button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <Typography.Title level={4} style={{ margin: 0 }}>应用管理</Typography.Title>
+        <Space>
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
+            创建应用
+          </Button>
+          <Button icon={<UploadOutlined />} onClick={() => {
+            uploadForm.resetFields();
+            setUploadModalOpen(true);
+          }}>
+            上传 ZIP
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={fetchApps} loading={loading}>刷新</Button>
+        </Space>
+      </div>
+
+      {/* 搜索/筛选栏 */}
+      <Space style={{ marginBottom: 16 }} wrap>
+        <AntInput
+          placeholder="搜索应用名、描述"
+          prefix={<SearchOutlined />}
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          allowClear
+          style={{ width: 220 }}
+        />
+        <Select
+          placeholder="状态筛选"
+          allowClear
+          style={{ width: 130 }}
+          value={statusFilter}
+          onChange={setStatusFilter}
+          suffixIcon={<FilterOutlined />}
+          options={[
+            { value: 'active', label: '正常' },
+            { value: 'deploying', label: '部署中' },
+            { value: 'failed', label: '失败' },
+          ]}
+        />
+        <Select
+          placeholder="运行时"
+          allowClear
+          style={{ width: 120 }}
+          value={runtimeFilter}
+          onChange={setRuntimeFilter}
+          options={runtimeOptions}
+        />
+        {hasFilters && (
+          <Button
+            size="small"
+            onClick={() => { setSearchText(''); setStatusFilter(undefined); setRuntimeFilter(undefined); }}
+          >
+            清除筛选
+          </Button>
+        )}
+        {hasFilters && (
+          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+            {filtered.length} / {apps.length} 条
+          </Typography.Text>
+        )}
       </Space>
 
       <Table
         columns={columns}
-        dataSource={apps}
+        dataSource={filtered}
         rowKey="id"
         loading={loading}
-        pagination={{ pageSize: 10 }}
+        pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }}
       />
 
       {/* Create/Edit Modal */}
       <Modal
-        title={editingApp ? 'Edit Application' : 'Create Application'}
+        title={editingApp ? '编辑应用' : '创建应用'}
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
         width={600}
+        destroyOnClose
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Please enter name' }]}>
+          <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="my-autocodeflow-app" />
           </Form.Item>
-          <Form.Item name="description" label="Description">
-            <Input.TextArea rows={2} placeholder="Application description" />
+          <Form.Item name="description" label="描述">
+            <Input.TextArea rows={2} placeholder="应用描述" />
           </Form.Item>
           <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item name="version" label="Version" rules={[{ required: true }]}>
+            <Form.Item name="version" label="版本" rules={[{ required: true }]}>
               <Input placeholder="1.0.0" style={{ width: 160 }} />
             </Form.Item>
-            <Form.Item name="runtime" label="Runtime" rules={[{ required: true }]}>
+            <Form.Item name="runtime" label="运行时" rules={[{ required: true }]}>
               <Select options={runtimeOptions} style={{ width: 140 }} />
             </Form.Item>
           </Space>
-          <Form.Item name="gitRepo" label="Git Repository">
+          <Form.Item name="gitRepo" label="Git 仓库">
             <Input placeholder="https://github.com/user/repo.git" />
           </Form.Item>
           <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item name="gitBranch" label="Git Branch">
+            <Form.Item name="gitBranch" label="Git 分支">
               <Input placeholder="main" style={{ width: 200 }} />
             </Form.Item>
             <Form.Item name="gitCommit" label="Git Commit">
               <Input placeholder="HEAD" style={{ width: 200 }} />
             </Form.Item>
           </Space>
-          <Form.Item name="entrypoint" label="Entrypoint">
+          <Form.Item name="entrypoint" label="入口文件">
             <Input placeholder="src/tasks/index.js" />
           </Form.Item>
         </Form>
@@ -232,21 +308,22 @@ export default function ApplicationListPage() {
 
       {/* Upload Modal */}
       <Modal
-        title="Upload Application"
+        title="上传应用"
         open={uploadModalOpen}
         onOk={handleUpload}
         onCancel={() => setUploadModalOpen(false)}
+        destroyOnClose
       >
         <Form form={uploadForm} layout="vertical">
-          <Form.Item name="name" label="Name" rules={[{ required: true }]}>
+          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
             <Input placeholder="my-app" />
           </Form.Item>
-          <Form.Item name="runtime" label="Runtime" initialValue="node">
+          <Form.Item name="runtime" label="运行时" initialValue="node">
             <Select options={runtimeOptions} />
           </Form.Item>
-          <Form.Item name="file" label="File" rules={[{ required: true }]} valuePropName="file">
+          <Form.Item name="file" label="ZIP 文件" rules={[{ required: true, message: '请选择文件' }]} valuePropName="file">
             <Upload maxCount={1} beforeUpload={() => false} accept=".zip">
-              <Button icon={<UploadOutlined />}>Select ZIP file</Button>
+              <Button icon={<UploadOutlined />}>选择 ZIP 文件</Button>
             </Upload>
           </Form.Item>
         </Form>

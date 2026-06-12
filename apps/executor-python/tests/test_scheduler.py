@@ -45,11 +45,13 @@ class TestHeartbeatRetry:
             httpx.ConnectError("Connection refused"),
             httpx.ConnectError("Connection refused"),
         ])
-        
-        # Should NOT raise an exception (reraise=False)
-        await _send_heartbeat(mock_client, "test-token")
-        
-        # Should have tried exactly 3 times
+
+        # Patch asyncio.sleep so tenacity's wait_exponential doesn't slow tests
+        with patch('asyncio.sleep', new_callable=AsyncMock):
+            # reraise=False: tenacity swallows the error after exhausting retries
+            await _send_heartbeat(mock_client, "test-token")
+
+        # Should have tried exactly 3 times (stop_after_attempt(3))
         assert mock_client.post.call_count == 3
 
     @pytest.mark.asyncio

@@ -1,18 +1,23 @@
-import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Task } from '../task/entities/task.entity';
-import { TaskExecution, ExecutionStatus } from '../task/entities/task-execution.entity';
-import { Executor, ExecutorStatus } from '../executor/entities/executor.entity';
-import { ExecutionReport } from './entities/execution-report.entity';
+import { Injectable } from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository, MoreThanOrEqual, LessThanOrEqual } from "typeorm";
+import { Task } from "../task/entities/task.entity";
+import {
+  TaskExecution,
+  ExecutionStatus,
+} from "../task/entities/task-execution.entity";
+import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
+import { ExecutionReport } from "./entities/execution-report.entity";
 
 @Injectable()
 export class MetricsService {
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
-    @InjectRepository(TaskExecution) private execRepo: Repository<TaskExecution>,
+    @InjectRepository(TaskExecution)
+    private execRepo: Repository<TaskExecution>,
     @InjectRepository(Executor) private executorRepo: Repository<Executor>,
-    @InjectRepository(ExecutionReport) private reportRepo: Repository<ExecutionReport>,
+    @InjectRepository(ExecutionReport)
+    private reportRepo: Repository<ExecutionReport>,
   ) {}
 
   async getSummary() {
@@ -23,10 +28,10 @@ export class MetricsService {
     ]);
 
     const execStats = await this.execRepo
-      .createQueryBuilder('e')
-      .select('e.status', 'status')
-      .addSelect('COUNT(*)', 'count')
-      .groupBy('e.status')
+      .createQueryBuilder("e")
+      .select("e.status", "status")
+      .addSelect("COUNT(*)", "count")
+      .groupBy("e.status")
       .getRawMany();
 
     const statMap: Record<string, number> = {};
@@ -38,9 +43,9 @@ export class MetricsService {
     const running = statMap[ExecutionStatus.RUNNING] ?? 0;
 
     const avgDuration = await this.execRepo
-      .createQueryBuilder('e')
-      .select('AVG(e.duration)', 'avg')
-      .where('e.status = :s', { s: ExecutionStatus.SUCCESS })
+      .createQueryBuilder("e")
+      .select("AVG(e.duration)", "avg")
+      .where("e.status = :s", { s: ExecutionStatus.SUCCESS })
       .getRawOne();
 
     return {
@@ -49,38 +54,47 @@ export class MetricsService {
       onlineExecutors,
       executions: { total, success, failed, running },
       successRate: total > 0 ? Math.round((success / total) * 10000) / 100 : 0,
-      avgDurationMs: Math.round(parseFloat(avgDuration?.avg ?? '0')),
+      avgDurationMs: Math.round(parseFloat(avgDuration?.avg ?? "0")),
     };
   }
 
   /** 最近 N 天每天的执行次数（成功 vs 失败） */
   async getDailyTrend(days = 7) {
     const rows = await this.execRepo
-      .createQueryBuilder('e')
-      .select("DATE_TRUNC('day', e.createdAt)", 'day')
-      .addSelect('e.status', 'status')
-      .addSelect('COUNT(*)', 'count')
-      .where("e.createdAt >= NOW() - CAST(:days || ' days' AS INTERVAL)", { days })
+      .createQueryBuilder("e")
+      .select("DATE_TRUNC('day', e.createdAt)", "day")
+      .addSelect("e.status", "status")
+      .addSelect("COUNT(*)", "count")
+      .where("e.createdAt >= NOW() - CAST(:days || ' days' AS INTERVAL)", {
+        days,
+      })
       .groupBy("DATE_TRUNC('day', e.createdAt), e.status")
-      .orderBy("DATE_TRUNC('day', e.createdAt)", 'ASC')
+      .orderBy("DATE_TRUNC('day', e.createdAt)", "ASC")
       .getRawMany();
 
     // 聚合成 { date, success, failed } 格式
-    const map = new Map<string, { date: string; success: number; failed: number }>();
+    const map = new Map<
+      string,
+      { date: string; success: number; failed: number }
+    >();
     for (const row of rows) {
       const date = new Date(row.day).toISOString().slice(0, 10);
       if (!map.has(date)) map.set(date, { date, success: 0, failed: 0 });
       const entry = map.get(date)!;
-      if (row.status === ExecutionStatus.SUCCESS) entry.success += parseInt(row.count, 10);
-      if (row.status === ExecutionStatus.FAILED) entry.failed += parseInt(row.count, 10);
+      if (row.status === ExecutionStatus.SUCCESS)
+        entry.success += parseInt(row.count, 10);
+      if (row.status === ExecutionStatus.FAILED)
+        entry.failed += parseInt(row.count, 10);
     }
     return Array.from(map.values());
   }
 
   /** 各执行器当前状态及负载 */
   async getExecutorStats() {
-    const executors = await this.executorRepo.find({ order: { appName: 'ASC' } });
-    return executors.map(e => ({
+    const executors = await this.executorRepo.find({
+      order: { appName: "ASC" },
+    });
+    return executors.map((e) => ({
       id: e.id,
       appName: e.appName,
       address: e.address,
@@ -96,9 +110,16 @@ export class MetricsService {
   async getRecentFailures() {
     return this.execRepo.find({
       where: { status: ExecutionStatus.FAILED },
-      order: { createdAt: 'DESC' },
+      order: { createdAt: "DESC" },
       take: 10,
-      select: ['id', 'taskId', 'taskName', 'errorMessage', 'createdAt', 'duration'],
+      select: [
+        "id",
+        "taskId",
+        "taskName",
+        "errorMessage",
+        "createdAt",
+        "duration",
+      ],
     });
   }
 
@@ -110,23 +131,23 @@ export class MetricsService {
     endOfDay.setHours(23, 59, 59, 999);
 
     const stats = await this.execRepo
-      .createQueryBuilder('e')
-      .select('e.status', 'status')
-      .addSelect('COUNT(*)', 'count')
-      .where('e.createdAt >= :start', { start: startOfDay })
-      .andWhere('e.createdAt <= :end', { end: endOfDay })
-      .groupBy('e.status')
+      .createQueryBuilder("e")
+      .select("e.status", "status")
+      .addSelect("COUNT(*)", "count")
+      .where("e.createdAt >= :start", { start: startOfDay })
+      .andWhere("e.createdAt <= :end", { end: endOfDay })
+      .groupBy("e.status")
       .getRawMany();
 
     const durationStats = await this.execRepo
-      .createQueryBuilder('e')
-      .select('AVG(e.duration)', 'avg')
-      .addSelect('MAX(e.duration)', 'max')
-      .addSelect('MIN(e.duration)', 'min')
-      .where('e.createdAt >= :start', { start: startOfDay })
-      .andWhere('e.createdAt <= :end', { end: endOfDay })
-      .andWhere('e.status = :status', { status: ExecutionStatus.SUCCESS })
-      .andWhere('e.duration IS NOT NULL')
+      .createQueryBuilder("e")
+      .select("AVG(e.duration)", "avg")
+      .addSelect("MAX(e.duration)", "max")
+      .addSelect("MIN(e.duration)", "min")
+      .where("e.createdAt >= :start", { start: startOfDay })
+      .andWhere("e.createdAt <= :end", { end: endOfDay })
+      .andWhere("e.status = :status", { status: ExecutionStatus.SUCCESS })
+      .andWhere("e.duration IS NOT NULL")
       .getRawOne();
 
     const statMap: Record<string, number> = {};
@@ -141,9 +162,9 @@ export class MetricsService {
       failCount: statMap[ExecutionStatus.FAILED] ?? 0,
       timeoutCount: statMap[ExecutionStatus.TIMEOUT] ?? 0,
       cancelledCount: statMap[ExecutionStatus.CANCELLED] ?? 0,
-      avgDurationMs: parseFloat(durationStats?.avg ?? '0'),
-      maxDurationMs: parseFloat(durationStats?.max ?? '0'),
-      minDurationMs: parseFloat(durationStats?.min ?? '0'),
+      avgDurationMs: parseFloat(durationStats?.avg ?? "0"),
+      maxDurationMs: parseFloat(durationStats?.max ?? "0"),
+      minDurationMs: parseFloat(durationStats?.min ?? "0"),
     });
 
     return this.reportRepo.save(report);
@@ -153,12 +174,9 @@ export class MetricsService {
   async getReports(startDate: Date, endDate: Date): Promise<ExecutionReport[]> {
     return this.reportRepo.find({
       where: {
-        triggerDay: {
-          gte: startDate,
-          lte: endDate,
-        },
+        triggerDay: MoreThanOrEqual(startDate),
       },
-      order: { triggerDay: 'ASC' },
+      order: { triggerDay: "ASC" },
     });
   }
 
@@ -167,7 +185,9 @@ export class MetricsService {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    let report = await this.reportRepo.findOne({ where: { triggerDay: today } });
+    let report = await this.reportRepo.findOne({
+      where: { triggerDay: today },
+    });
     if (!report) {
       report = await this.generateReport(today);
     }

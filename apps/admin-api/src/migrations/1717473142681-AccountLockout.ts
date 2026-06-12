@@ -1,7 +1,7 @@
-import { MigrationInterface, QueryRunner } from 'typeorm';
+import { MigrationInterface, QueryRunner } from "typeorm";
 
 export class AccountLockout1717473142681 implements MigrationInterface {
-  name = 'AccountLockout1717473142681';
+  name = "AccountLockout1717473142681";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(
@@ -13,7 +13,11 @@ export class AccountLockout1717473142681 implements MigrationInterface {
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`ALTER TABLE "users" DROP COLUMN IF EXISTS "lockedUntil"`);
-    await queryRunner.query(`ALTER TABLE "users" DROP COLUMN IF EXISTS "loginFailCount"`);
+    await queryRunner.query(
+      `ALTER TABLE "users" DROP COLUMN IF EXISTS "lockedUntil"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "users" DROP COLUMN IF EXISTS "loginFailCount"`,
+    );
   }
 }

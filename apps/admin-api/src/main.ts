@@ -1,25 +1,36 @@
-import { NestFactory, Reflector } from '@nestjs/core';
-import { ClassSerializerInterceptor, ValidationPipe } from '@nestjs/common';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
-import { AppModule } from './app.module';
-import { HttpExceptionFilter } from './common/filters/http-exception.filter';
-import { ResponseInterceptor } from './common/interceptors/response.interceptor';
-import { TraceMiddleware } from './common/middleware/trace.middleware';
+import { NestFactory, Reflector } from "@nestjs/core";
+import { ClassSerializerInterceptor, ValidationPipe } from "@nestjs/common";
+import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
+import { AppModule } from "./app.module";
+import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
+import { ResponseInterceptor } from "./common/interceptors/response.interceptor";
+// import { TraceMiddleware } from "./common/middleware/trace.middleware";
 
 async function bootstrap() {
   // SEC-02: Validate CORS origins in production environment
-  if (process.env.NODE_ENV === 'production') {
+  if (process.env.NODE_ENV === "production") {
     const corsOrigins = process.env.CORS_ORIGINS;
     if (!corsOrigins) {
-      throw new Error('CORS_ORIGINS must be set in production environment');
+      throw new Error("CORS_ORIGINS must be set in production environment");
     }
-    const origins = corsOrigins.split(',').map(o => o.trim()).filter(Boolean);
+    const origins = corsOrigins
+      .split(",")
+      .map((o) => o.trim())
+      .filter(Boolean);
     for (const origin of origins) {
-      if (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('0.0.0.0')) {
-        throw new Error(`CORS_ORIGINS contains development origin "${origin}" in production. Use production domains only.`);
+      if (
+        origin.includes("localhost") ||
+        origin.includes("127.0.0.1") ||
+        origin.includes("0.0.0.0")
+      ) {
+        throw new Error(
+          `CORS_ORIGINS contains development origin "${origin}" in production. Use production domains only.`,
+        );
       }
-      if (!origin.startsWith('https://') && !origin.startsWith('http://')) {
-        throw new Error(`CORS_ORIGINS origin "${origin}" must start with http:// or https://`);
+      if (!origin.startsWith("https://") && !origin.startsWith("http://")) {
+        throw new Error(
+          `CORS_ORIGINS origin "${origin}" must start with http:// or https://`,
+        );
       }
     }
   }
@@ -27,16 +38,16 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // S-11: cap JSON body size to 1 MB to prevent oversized-payload DoS
-  app.use(require('express').json({ limit: '1mb' }));
-  app.use(require('express').urlencoded({ limit: '1mb', extended: true }));
+  app.use(require("express").json({ limit: "1mb" }));
+  app.use(require("express").urlencoded({ limit: "1mb", extended: true }));
 
   // Trust proxy — required for req.ip to reflect the real client IP
   // when the app runs behind a reverse proxy (nginx, load balancer, etc.)
-  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+  app.getHttpAdapter().getInstance().set("trust proxy", 1);
 
   // S10: CORS — use explicit origin whitelist; '*' + credentials is rejected by browsers
-  const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173')
-    .split(',')
+  const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:5173")
+    .split(",")
     .map((o) => o.trim())
     .filter(Boolean);
   app.enableCors({
@@ -48,15 +59,14 @@ async function bootstrap() {
         callback(new Error(`Origin ${origin} not allowed by CORS`));
       }
     },
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    methods: "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
     credentials: true,
   });
 
-  // OPS-03: Cross-service request tracing middleware
-  app.use(new TraceMiddleware());
+  // OPS-03: Cross-service request tracing middleware is configured in AppModule
 
   // Global prefix
-  app.setGlobalPrefix('api');
+  app.setGlobalPrefix("api");
 
   // Global pipes
   app.useGlobalPipes(
@@ -82,8 +92,9 @@ async function bootstrap() {
 
   // Swagger Configuration
   const config = new DocumentBuilder()
-    .setTitle('AutoFlow Admin API')
-    .setDescription(`
+    .setTitle("AutoFlow Admin API")
+    .setDescription(
+      `
 ## AutoFlow 管理后台 API 文档
 
 AutoFlow 是一个现代化的工作流自动化平台，提供任务编排、执行管理和监控功能。
@@ -155,24 +166,25 @@ AutoFlow 是一个现代化的工作流自动化平台，提供任务编排、�
 2. 请求参数需要符合 DTO 定义，否则会被拒绝
 3. 敏感信息（如密码、密钥）会在响应中被脱敏显示
 4. 生产环境中 Swagger 文档不会暴露
-    `)
-    .setVersion('1.0.0')
+    `,
+    )
+    .setVersion("1.0.0")
     .setContact(
-      'AutoFlow Team',
-      'https://github.com/autocodeflow',
-      'support@autocodeflow.io',
+      "AutoFlow Team",
+      "https://github.com/autocodeflow",
+      "support@autocodeflow.io",
     )
     .setLicense(
-      'MIT License',
-      'https://github.com/autocodeflow/autocodeflow/blob/main/LICENSE',
+      "MIT License",
+      "https://github.com/autocodeflow/autocodeflow/blob/main/LICENSE",
     )
     .addBearerAuth(
-      { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
-      'JWT',
+      { type: "http", scheme: "bearer", bearerFormat: "JWT" },
+      "JWT",
     )
-    .addSecurityRequirements('JWT')
-    .addServer('http://localhost:3001', '本地开发环境')
-    .addServer('http://api.autocodeflow.io', '生产环境')
+    .addSecurityRequirements("JWT")
+    .addServer("http://localhost:3105", "本地开发环境")
+    .addServer("http://api.autocodeflow.io", "生产环境")
     .build();
 
   const document = SwaggerModule.createDocument(app, config, {
@@ -180,19 +192,19 @@ AutoFlow 是一个现代化的工作流自动化平台，提供任务编排、�
   });
 
   // SEC-06: only expose Swagger UI in non-production environments
-  if (process.env.NODE_ENV !== 'production') {
-    SwaggerModule.setup('api/docs', app, document, {
+  if (process.env.NODE_ENV !== "production") {
+    SwaggerModule.setup("api/docs", app, document, {
       swaggerOptions: {
         persistAuthorization: true,
-        tagsSorter: 'alpha',
-        operationsSorter: 'method',
+        tagsSorter: "alpha",
+        operationsSorter: "method",
         defaultModelsExpandDepth: -1,
       },
-      customSiteTitle: 'AutoFlow Admin API',
+      customSiteTitle: "AutoFlow Admin API",
     });
   }
 
-  const port = process.env.PORT || 3001;
+  const port = process.env.PORT || 3105;
   await app.listen(port);
   console.log(`Application is running on: http://localhost:${port}`);
   console.log(`Swagger docs: http://localhost:${port}/api/docs`);

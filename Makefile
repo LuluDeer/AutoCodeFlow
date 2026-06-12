@@ -16,26 +16,26 @@ dev: ## 启动完整开发环境（基础设施 + 所有服务）
 	@echo "==> 安装依赖..."
 	cd apps/admin-api && npm install
 	cd apps/admin-web && npm install
-	cd apps/executor-python && pip install -r requirements.txt
+	cd apps/executor-python && ([ -d .venv ] || python3 -m venv .venv) && .venv/bin/pip install -r requirements.txt
 	cd apps/executor-node && npm install
 	@echo "==> 运行数据库迁移..."
 	cd apps/admin-api && npm run migration:run
 	@echo "==> 启动所有开发服务..."
-	@echo "  admin-api:       http://localhost:3001"
+	@echo "  admin-api:       http://localhost:3105"
 	@echo "  admin-web:       http://localhost:5173"
 	@echo "  executor-python: http://localhost:8001"
 	@echo "  executor-node:   http://localhost:8002"
-	@echo "  API Docs:        http://localhost:3001/api/docs"
+	@echo "  API Docs:        http://localhost:3105/api/docs"
 	cd apps/admin-api && npm run start:dev &
 	cd apps/admin-web && npm run dev &
-	cd apps/executor-python && uvicorn main:app --host 0.0.0.0 --port 8001 --reload &
+	cd apps/executor-python && .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001 --reload &
 	cd apps/executor-node && npm run dev &
 	@wait
 
 install: ## 安装所有项目依赖
 	cd apps/admin-api && npm install
 	cd apps/admin-web && npm install
-	cd apps/executor-python && pip install -r requirements.txt
+	cd apps/executor-python && ([ -d .venv ] || python3 -m venv .venv) && .venv/bin/pip install -r requirements.txt
 	cd apps/executor-node && npm install
 	@echo "==> 所有依赖安装完成"
 
@@ -68,7 +68,7 @@ restart: stop start ## 重启所有服务
 # ── 代码质量 ──────────────────────────────────────────────────
 test: ## 运行所有测试
 	cd apps/admin-api && npm test
-	cd apps/executor-python && python -m pytest tests/ -v
+	cd apps/executor-python && .venv/bin/pytest tests/ -v
 	cd apps/executor-node && npm test
 
 lint: ## 运行代码检查
@@ -98,7 +98,7 @@ status: ## 查看服务运行状态
 	docker-compose ps
 	@echo ""
 	@echo "==> 健康检查端点:"
-	@echo "  admin-api:       curl -s http://localhost:3001/health"
+	@echo "  admin-api:       curl -s http://localhost:3105/health"
 	@echo "  executor-python: curl -s http://localhost:8001/health"
 	@echo "  executor-node:   curl -s http://localhost:8002/health"
 

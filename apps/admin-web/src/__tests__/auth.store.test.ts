@@ -29,6 +29,11 @@ describe('useAuthStore — initial state', () => {
     expect(result.current.token).toBeNull();
   });
 
+  it('has null refreshToken by default', () => {
+    const { result } = renderHook(() => useAuthStore());
+    expect(result.current.refreshToken).toBeNull();
+  });
+
   it('has null user by default', () => {
     const { result } = renderHook(() => useAuthStore());
     expect(result.current.user).toBeNull();
@@ -62,7 +67,7 @@ describe('useAuthStore — setToken', () => {
 describe('useAuthStore — setUser', () => {
   it('updates the user in state', () => {
     const { result } = renderHook(() => useAuthStore());
-    const mockUser = { id: 1, name: 'Alice', email: 'alice@example.com' };
+    const mockUser = { id: 1, username: 'Alice', email: 'alice@example.com' };
 
     act(() => {
       result.current.setUser(mockUser);
@@ -72,7 +77,7 @@ describe('useAuthStore — setUser', () => {
   });
 
   it('persists user to localStorage under key autoflow-auth', () => {
-    const mockUser = { id: 2, name: 'Bob' };
+    const mockUser = { id: 2, username: 'Bob' };
     act(() => {
       useAuthStore.getState().setUser(mockUser);
     });
@@ -83,23 +88,64 @@ describe('useAuthStore — setUser', () => {
   });
 });
 
+describe('useAuthStore — setRefreshToken', () => {
+  it('updates refreshToken in state', () => {
+    const { result } = renderHook(() => useAuthStore());
+
+    act(() => {
+      result.current.setRefreshToken('my-refresh-token');
+    });
+
+    expect(result.current.refreshToken).toBe('my-refresh-token');
+  });
+
+  it('persists refreshToken to localStorage', () => {
+    act(() => {
+      useAuthStore.getState().setRefreshToken('persisted-refresh');
+    });
+
+    const raw = localStorage.getItem('autoflow-auth');
+    expect(raw).not.toBeNull();
+    const parsed = JSON.parse(raw!);
+    expect(parsed.state.refreshToken).toBe('persisted-refresh');
+  });
+});
+
+describe('useAuthStore — setAuth', () => {
+  it('sets token, refreshToken and user atomically', () => {
+    const { result } = renderHook(() => useAuthStore());
+    const mockUser = { id: 3, username: 'charlie', email: 'c@example.com' };
+
+    act(() => {
+      result.current.setAuth('access-abc', 'refresh-xyz', mockUser);
+    });
+
+    expect(result.current.token).toBe('access-abc');
+    expect(result.current.refreshToken).toBe('refresh-xyz');
+    expect(result.current.user).toEqual(mockUser);
+  });
+});
+
 describe('useAuthStore — logout', () => {
-  it('clears token and user on logout', () => {
+  it('clears token, refreshToken and user on logout', () => {
     const { result } = renderHook(() => useAuthStore());
 
     act(() => {
       result.current.setToken('some-token');
-      result.current.setUser({ id: 1 });
+      result.current.setRefreshToken('some-refresh');
+      result.current.setUser({ id: 1, username: 'test' });
     });
 
     expect(result.current.token).toBe('some-token');
-    expect(result.current.user).toEqual({ id: 1 });
+    expect(result.current.refreshToken).toBe('some-refresh');
+    expect(result.current.user).toEqual({ id: 1, username: 'test' });
 
     act(() => {
       result.current.logout();
     });
 
     expect(result.current.token).toBeNull();
+    expect(result.current.refreshToken).toBeNull();
     expect(result.current.user).toBeNull();
   });
 
@@ -128,7 +174,7 @@ describe('useAuthStore — combined flow', () => {
     expect(result.current.user).toBeNull(); // user not affected
 
     act(() => {
-      result.current.setUser({ id: 99 });
+      result.current.setUser({ id: 99, username: 'test99' });
     });
     expect(result.current.token).toBe('token-abc'); // token not affected
   });

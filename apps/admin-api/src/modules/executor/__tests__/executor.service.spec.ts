@@ -1,0 +1,464 @@
+import { Test } from "@nestjs/testing";
+import { getRepositoryToken } from "@nestjs/typeorm";
+import { NotFoundException } from "@nestjs/common";
+import { ExecutorService } from "../executor.service";
+import { Executor, ExecutorStatus } from "../entities/executor.entity";
+import { Task } from "../../task/entities/task.entity";
+import {
+  TaskExecution,
+  ExecutionStatus,
+} from "../../task/entities/task-execution.entity";
+import axios from "axios";
+import { ConfigService } from "@nestjs/config";
+import * as bcrypt from "bcrypt";
+import { NotificationService } from "../../notification/notification.service";
+
+jest.mock("axios");
+const mockedAxios = axios as jest.Mocked<typeof axios>;
+
+const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
+  findOne: jest.fn(),
+  find: jest.fn().mockResolvedValue([]),
+  create: jest.fn((d) => d),
+  save: jest.fn((e) => Promise.resolve(e)),
+  update: jest.fn().mockResolvedValue({ affected: 1 }),
+  increment: jest.fn().mockResolvedValue(undefined),
+  decrement: jest.fn().mockResolvedValue(undefined),
+  delete: jest.fn().mockResolvedValue({ affected: 1 }),
+  count: jest.fn().mockResolvedValue(0),
+  findAndCount: jest.fn().mockResolvedValue([[], 0]),
+  createQueryBuilder: jest.fn(() => ({
+    update: jest.fn().mockReturnThis(),
+    set: jest.fn().mockReturnThis(),
+    leftJoin: jest.fn().mockReturnThis(),
+    innerJoin: jest.fn().mockReturnThis(),
+    getMany: jest.fn().mockResolvedValue([]),
+    getOne: jest.fn().mockResolvedValue(null),
+    select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    getRawMany: jest.fn().mockResolvedValue([]),
+    getRawOne: jest.fn().mockResolvedValue(null),
+    getCount: jest.fn().mockResolvedValue(0),
+    execute: jest.fn().mockResolvedValue({ affected: 1 }),
+  })),
+  ...overrides,
+});
+
+describe("ExecutorService (__tests__)", () => {
+  let service: ExecutorService;
+  let executorRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let configService: jest.Mocked<Pick<ConfigService, "get">>;
+
+  beforeEach(async () => {
+    executorRepo = makeRepo();
+    execRepo = makeRepo();
+    configService = { get: jest.fn().mockReturnValue("http") };
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: executorRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: makeRepo() },
+        { provide: ConfigService, useValue: configService },
+        { provide: NotificationService, useValue: { notifyFailure: jest.fn(), notifyFailureWithConfig: jest.fn(), notifyExecutorOnline: jest.fn().mockResolvedValue(undefined), sendAll: jest.fn() } },
+      ],
+    }).compile();
+    service = module.get(ExecutorService);
+    jest.clearAllMocks();
+  });
+
+  describe("register", () => {
+    it("creates a new executor when address is not registered", async () => {
+      executorRepo.findOne.mockResolvedValue(null);
+      executorRepo.save.mockResolvedValue({
+        id: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+      });
+      const result = await service.register({
+        appName: "e1",
+        address: "127.0.0.1:3105",
+      });
+      expect(executorRepo.save).toHaveBeenCalled();
+      expect(result.status).toBe(ExecutorStatus.ONLINE);
+    });
+
+    it("updates existing executor to ONLINE on re-register", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.OFFLINE,
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.register({ appName: "e1", address: "127.0.0.1:3105" });
+      expect(existing.status).toBe(ExecutorStatus.ONLINE);
+    });
+  });
+
+  describe("heartbeat", () => {
+    it("updates lastHeartbeat and metrics on heartbeat", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.heartbeat("127.0.0.1:3105", {
+        cpuUsage: 30,
+        memUsage: 50,
+        runningTaskCount: 1,
+      });
+      expect(executorRepo.save).toHaveBeenCalled();
+    });
+
+    it("revives an OFFLINE executor on heartbeat", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.OFFLINE,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.heartbeat("127.0.0.1:3105", {});
+      expect(executor.status).toBe(ExecutorStatus.ONLINE);
+    });
+
+    it("throws NotFoundException when executor address not found", async () => {
+      executorRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.heartbeat("unknown:9999", {}),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe("findAll", () => {
+    it("returns all executors", async () => {
+      const list = [{ id: "e1" }, { id: "e2" }];
+      executorRepo.find.mockResolvedValue(list);
+      const result = await service.findAll();
+      expect(result).toHaveLength(2);
+    });
+  });
+
+  describe("findOne", () => {
+    it("returns executor when found", async () => {
+      const ex = { id: "e1", address: "127.0.0.1" };
+      executorRepo.findOne.mockResolvedValue(ex);
+      await expect(service.findOne("e1")).resolves.toEqual(ex);
+    });
+
+    it("throws NotFoundException when not found", async () => {
+      executorRepo.findOne.mockResolvedValue(null);
+      await expect(service.findOne("missing")).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe("update", () => {
+    it("merges data into executor and saves", async () => {
+      const executor = { id: "e1", groupName: "old", tags: [] };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const result = await service.update("e1", {
+        groupName: "production",
+        tags: ["nodejs"],
+      });
+      expect(result.groupName).toBe("production");
+      expect(result.tags).toEqual(["nodejs"]);
+    });
+
+    it("throws NotFoundException when executor not found", async () => {
+      executorRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.update("missing", { groupName: "x" }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe("getGroups", () => {
+    it("returns distinct groupNames", async () => {
+      const qb = executorRepo.createQueryBuilder();
+      qb.getRawMany.mockResolvedValue([
+        { groupName: "prod" },
+        { groupName: "staging" },
+      ]);
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      const result = await service.getGroups();
+      expect(result).toEqual(["prod", "staging"]);
+    });
+
+    it("filters out null groupNames", async () => {
+      const qb = executorRepo.createQueryBuilder();
+      qb.getRawMany.mockResolvedValue([{ groupName: null }, { groupName: "prod" }]);
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      const result = await service.getGroups();
+      expect(result).toEqual(["prod"]);
+    });
+  });
+
+  describe("getTags", () => {
+    it("returns sorted unique tags across all executors", async () => {
+      executorRepo.find.mockResolvedValue([
+        { tags: ["nodejs", "prod"] },
+        { tags: ["python", "nodejs"] },
+      ]);
+      const result = await service.getTags();
+      expect(result).toEqual(["nodejs", "prod", "python"]);
+    });
+
+    it("returns empty array when no executors have tags", async () => {
+      executorRepo.find.mockResolvedValue([{ tags: null }, { tags: [] }]);
+      const result = await service.getTags();
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe("dispatch", () => {
+    const executor = {
+      id: "e1",
+      address: "127.0.0.1:3105",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      capabilities: ["node"],
+      token: "tok",
+    };
+    const execution = { id: "exec-1", params: {} } as TaskExecution;
+    const task = {
+      id: "task-1",
+      name: "test",
+      runtime: "node",
+      timeout: 10,
+      status: "active",
+      triggerType: "manual",
+    } as unknown as Task;
+
+    it("dispatches to an online executor and returns response data", async () => {
+      executorRepo.find.mockResolvedValue([executor]);
+      mockedAxios.post.mockResolvedValue({
+        data: { success: true, logs: "done" },
+      });
+      const result = await service.dispatch(task, execution);
+      expect(result.success).toBe(true);
+      expect(executorRepo.createQueryBuilder).toHaveBeenCalled();
+    });
+
+    it("decrements running count when dispatch HTTP call fails", async () => {
+      executorRepo.find.mockResolvedValue([executor]);
+      mockedAxios.post.mockRejectedValue(new Error("connection refused"));
+      await expect(service.dispatch(task, execution)).rejects.toThrow(
+        "connection refused",
+      );
+      expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
+    });
+
+    it("throws when no executor is available", async () => {
+      executorRepo.find.mockResolvedValue([]);
+      await expect(service.dispatch(task, execution)).rejects.toThrow(
+        "No available executor",
+      );
+    });
+
+    it("skips offline executors when selecting", async () => {
+      const offline = { ...executor, status: ExecutorStatus.OFFLINE };
+      executorRepo.find.mockResolvedValue([offline]);
+      await expect(service.dispatch(task, execution)).rejects.toThrow();
+    });
+
+    it("filters by executorGroup when specified", async () => {
+      const taskWithGroup = { ...task, executorGroup: "production" } as unknown as Task;
+      const wrongGroup = { ...executor, id: "e2", groupName: "staging" };
+      const rightGroup = { ...executor, id: "e3", groupName: "production" };
+      executorRepo.find.mockResolvedValue([wrongGroup, rightGroup]);
+      mockedAxios.post.mockResolvedValue({ data: { success: true } });
+      await service.dispatch(taskWithGroup, execution);
+      const postCall = mockedAxios.post.mock.calls[0][0] as string;
+      expect(postCall).toContain(rightGroup.address);
+    });
+  });
+
+  describe("dispatchBroadcast", () => {
+    const execution = { id: "exec-1", params: {} } as TaskExecution;
+    const task = {
+      id: "task-1",
+      name: "broadcast-task",
+      timeout: 10,
+    } as unknown as Task;
+
+    it("sends to all online executors and returns successes", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "host1:3002", status: ExecutorStatus.ONLINE },
+        { id: "e2", address: "host2:3002", status: ExecutorStatus.ONLINE },
+      ]);
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      const results = await service.dispatchBroadcast(task, execution);
+      expect(results).toHaveLength(2);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    });
+
+    it("throws when all executors fail", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "host1:3002", status: ExecutorStatus.ONLINE },
+      ]);
+      mockedAxios.post.mockRejectedValue(new Error("timeout"));
+      await expect(service.dispatchBroadcast(task, execution)).rejects.toThrow(
+        "Broadcast failed",
+      );
+    });
+
+    it("throws when no executors are available", async () => {
+      executorRepo.find.mockResolvedValue([]);
+      await expect(service.dispatchBroadcast(task, execution)).rejects.toThrow(
+        "No available executor",
+      );
+    });
+
+    it("returns partial successes when some executors fail", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "host1:3002", status: ExecutorStatus.ONLINE },
+        { id: "e2", address: "host2:3002", status: ExecutorStatus.ONLINE },
+      ]);
+      mockedAxios.post
+        .mockResolvedValueOnce({ data: { ok: true } })
+        .mockRejectedValueOnce(new Error("host2 down"));
+      const results = await service.dispatchBroadcast(task, execution);
+      expect(results).toHaveLength(1);
+    });
+  });
+
+  describe("markOffline", () => {
+    it("sets executor status to OFFLINE", async () => {
+      executorRepo.update.mockResolvedValue({ affected: 1 });
+      await service.markOffline("127.0.0.1:3105");
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        { address: "127.0.0.1:3105" },
+        expect.objectContaining({ status: ExecutorStatus.OFFLINE }),
+      );
+    });
+  });
+
+  describe("rotateToken", () => {
+    it("generates a new token, hashes and saves it", async () => {
+      const executor = { id: "e1", address: "127.0.0.1", tokenHash: null };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const result = await service.rotateToken("e1");
+      expect(result).toHaveProperty("token");
+      expect(typeof result.token).toBe("string");
+      expect(result.token.length).toBeGreaterThan(0);
+      expect(executor.tokenHash).toBeTruthy();
+    });
+
+    it("throws NotFoundException when executor not found", async () => {
+      executorRepo.findOne.mockResolvedValue(null);
+      await expect(service.rotateToken("missing")).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe("validateTokenByAddress", () => {
+    it("returns true for valid per-executor token", async () => {
+      const rawToken = "raw-secret";
+      const hash = await bcrypt.hash(rawToken, 1);
+      const qb = executorRepo.createQueryBuilder();
+      qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: hash });
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      const result = await service.validateTokenByAddress("host:3002", rawToken);
+      expect(result).toBe(true);
+    });
+
+    it("falls back to shared token when no per-executor hash", async () => {
+      const qb = executorRepo.createQueryBuilder();
+      qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: null });
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      configService.get.mockReturnValue("shared-secret");
+      const result = await service.validateTokenByAddress("host:3002", "shared-secret");
+      expect(result).toBe(true);
+    });
+
+    it("returns false for invalid token", async () => {
+      const qb = executorRepo.createQueryBuilder();
+      qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: null });
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      configService.get.mockReturnValue("");
+      const result = await service.validateTokenByAddress("host:3002", "wrong");
+      expect(result).toBe(false);
+    });
+  });
+
+  describe("getExecutorExecutions", () => {
+    it("returns paginated executions for executor", async () => {
+      const executor = { id: "e1", address: "host:3002" };
+      executorRepo.findOne.mockResolvedValue(executor);
+      execRepo.findAndCount.mockResolvedValue([[{ id: "ex1" }], 1]);
+      const result = await service.getExecutorExecutions("e1", {
+        page: 1,
+        pageSize: 10,
+      });
+      expect(result.total).toBe(1);
+      expect(result.items).toHaveLength(1);
+    });
+
+    it("throws when executor not found", async () => {
+      executorRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.getExecutorExecutions("missing", { page: 1, pageSize: 10 }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe("getExecutorMetrics", () => {
+    it("returns stats for a given executor", async () => {
+      const executor = {
+        id: "e1",
+        address: "host:3002",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 2,
+        cpuUsage: 40,
+        memUsage: 60,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      execRepo.count
+        .mockResolvedValueOnce(100)  // total
+        .mockResolvedValueOnce(95)   // successful
+        .mockResolvedValueOnce(5);   // failed
+      const qb = execRepo.createQueryBuilder();
+      qb.getRawOne.mockResolvedValue({ avg: "1200" });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      const result = await service.getExecutorMetrics("e1");
+      expect(result.sevenDayStats.totalExecutions).toBe(100);
+      expect(result.sevenDayStats.successful).toBe(95);
+      expect(result.current.runningTaskCount).toBe(2);
+    });
+  });
+
+  describe("cleanupOldRecords", () => {
+    it("deletes executions older than 90 days", async () => {
+      execRepo.delete.mockResolvedValue({ affected: 5 });
+      await service.cleanupOldRecords();
+      expect(execRepo.delete).toHaveBeenCalledWith(
+        expect.objectContaining({ createdAt: expect.anything() }),
+      );
+    });
+  });
+
+  describe("markStaleOffline", () => {
+    it("marks heartbeat-timeout executors as OFFLINE", async () => {
+      configService.get
+        .mockReturnValueOnce(30000)  // heartbeatInterval
+        .mockReturnValueOnce(3);     // timeoutMultiplier
+      executorRepo.update.mockResolvedValue({ affected: 2 });
+      await service.markStaleOffline();
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        expect.objectContaining({ status: ExecutorStatus.ONLINE }),
+        { status: ExecutorStatus.OFFLINE },
+      );
+    });
+  });
+});

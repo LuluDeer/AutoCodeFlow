@@ -1,12 +1,14 @@
 """SEC-03: Executor token management with expiration and rotation support."""
+import hmac
 import os
 from datetime import datetime, timedelta
 from fastapi import Header, HTTPException, status
 import httpx
 from config import settings
 
-# Static token for backward compatibility (falls back if dynamic token not available)
-_STATIC_TOKEN = os.environ.get('EXECUTOR_SHARED_TOKEN') or os.environ.get('EXECUTOR_SECRET') or ''
+def _get_static_token() -> str:
+    """Read static token from env each call so test fixtures can override it."""
+    return os.environ.get('EXECUTOR_SHARED_TOKEN') or os.environ.get('EXECUTOR_SECRET') or ''
 
 # Dynamic token storage (refreshed periodically)
 _dynamic_token = None
@@ -30,8 +32,9 @@ async def _fetch_token() -> str | None:
         async with httpx.AsyncClient(timeout=10) as client:
             # Issue1 fix: only add Authorization header when token is non-empty
             headers = {}
-            if _STATIC_TOKEN:
-                headers['Authorization'] = f'Bearer {_STATIC_TOKEN}'
+            static_token = _get_static_token()
+            if static_token:
+                headers['Authorization'] = f'Bearer {static_token}'
             
             response = await client.post(
                 f'{_get_admin_api_url()}/api/executors/token',
@@ -65,22 +68,29 @@ async def _refresh_token_if_needed() -> None:
 
 async def verify_token(authorization: str = Header(default='')) -> None:
     """Dependency: validate Bearer token from dynamic token or fallback to static."""
-    # Try to refresh token if needed
-    await _refresh_token_if_needed()
+    # Try to refresh token if needed (failure is non-fatal — fall back to static token)
+    try:
+        await _refresh_token_if_needed()
+    except Exception:
+        pass
     
     # Priority: dynamic token first, then static token
     valid_tokens = []
     if _dynamic_token:
         valid_tokens.append(_dynamic_token)
-    if _STATIC_TOKEN:
-        valid_tokens.append(_STATIC_TOKEN)
+    static_token = _get_static_token()
+    if static_token:
+        valid_tokens.append(static_token)
     
     # If no tokens configured at all, allow all requests (dev mode)
     if not valid_tokens:
         return
     
     scheme, _, token = authorization.partition(' ')
-    if scheme.lower() != 'bearer' or token not in valid_tokens:
+    token_valid = scheme.lower() == 'bearer' and any(
+        hmac.compare_digest(token, vt) for vt in valid_tokens
+    )
+    if not token_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Invalid or missing executor token',
@@ -91,4 +101,4 @@ async def verify_token(authorization: str = Header(default='')) -> None:
 async def get_current_token() -> str | None:
     """Get the current valid token (for outgoing requests to admin-api)."""
     await _refresh_token_if_needed()
-    return _dynamic_token or _STATIC_TOKEN
+    return _dynamic_token or _get_static_token() or None

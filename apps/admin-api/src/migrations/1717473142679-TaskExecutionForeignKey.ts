@@ -1,4 +1,4 @@
-import { MigrationInterface, QueryRunner } from 'typeorm';
+import { MigrationInterface, QueryRunner } from "typeorm";
 
 /**
  * N6: Add foreign key constraint and index on task_executions.taskId.
@@ -27,8 +27,12 @@ export class TaskExecutionForeignKey1717473142679 implements MigrationInterface 
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`ALTER TABLE "task_executions" DROP CONSTRAINT "FK_task_executions_taskId"`);
+    await queryRunner.query(
+      `ALTER TABLE "task_executions" DROP CONSTRAINT "FK_task_executions_taskId"`,
+    );
     await queryRunner.query(`DROP INDEX "IDX_task_executions_taskId"`);
-    await queryRunner.query(`ALTER TABLE "task_executions" ALTER COLUMN "taskId" TYPE VARCHAR`);
+    await queryRunner.query(
+      `ALTER TABLE "task_executions" ALTER COLUMN "taskId" TYPE VARCHAR`,
+    );
   }
 }

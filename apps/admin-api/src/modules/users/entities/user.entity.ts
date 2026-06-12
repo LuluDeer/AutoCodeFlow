@@ -4,15 +4,15 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
-} from 'typeorm';
-import { Exclude } from 'class-transformer';
+} from "typeorm";
+import { Exclude } from "class-transformer";
 
 export enum UserRole {
-  ADMIN = 'admin',
-  USER = 'user',
+  ADMIN = "admin",
+  USER = "user",
 }
 
-@Entity('users')
+@Entity("users")
 export class User {
   @PrimaryGeneratedColumn()
   id: number;
@@ -27,7 +27,7 @@ export class User {
   @Exclude()
   password: string;
 
-  @Column({ type: 'enum', enum: UserRole, default: UserRole.USER })
+  @Column({ type: "enum", enum: UserRole, default: UserRole.USER })
   role: UserRole;
 
   @Column({ default: true })
@@ -37,7 +37,7 @@ export class User {
   @Column({ default: 0 })
   loginFailCount: number;
 
-  @Column({ nullable: true, type: 'timestamp' })
+  @Column({ nullable: true, type: "timestamp" })
   lockedUntil: Date | null;
 
   @CreateDateColumn()

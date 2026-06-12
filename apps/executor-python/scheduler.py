@@ -45,12 +45,18 @@ def _get_admin_api_url() -> str:
     return settings.admin_api_url
 
 
+def _heartbeat_retry_exhausted(retry_state):
+    """Called when all retries are exhausted — return None to suppress RetryError."""
+    logger.warning(f'Heartbeat failed after all retries: {retry_state.outcome.exception()}')
+    return None
+
+
 @retry(
-    reraise=False,
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=8),
-    retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException, OSError)),
+    retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException, httpx.TransportError, OSError)),
     before_sleep=before_sleep_log(logger, logging.WARNING),
+    retry_error_callback=_heartbeat_retry_exhausted,
 )
 async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str = None) -> None:
     """ERR-04: single heartbeat attempt — tenacity retries this on transient failures."""
@@ -82,7 +88,7 @@ async def heartbeat_task() -> None:
             # OPS-03: generate trace ID for heartbeat
             trace_id = str(uuid.uuid4())
             logger.info(f'[{trace_id}] Sending heartbeat')
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(trust_env=False) as client:
                 await _send_heartbeat(client, token, trace_id)
         except Exception as e:
             # ERR-04: all retries exhausted — log as warning and keep the loop alive
