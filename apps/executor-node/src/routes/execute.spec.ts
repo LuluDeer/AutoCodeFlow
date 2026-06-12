@@ -15,14 +15,28 @@ jest.mock('../config', () => ({
   },
 }));
 jest.mock('../logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
+// Provide a real SharedArrayBuffer-backed Int32Array for getRunningCountArray
+const _sharedBuf = new SharedArrayBuffer(4);
+const _runningCountArr = new Int32Array(_sharedBuf);
 jest.mock('../scheduler', () => ({
   incrementRunning: jest.fn(),
   decrementRunning: jest.fn(),
   runningCount: 0,
+  getRunningCountArray: jest.fn(() => _runningCountArr),
+  getRunningCount: jest.fn(() => 0),
 }));
 jest.mock('../manifest', () => ({
   loadManifest: jest.fn(() => ({})),
   mergeTaskWithManifest: jest.fn((_task: any, _manifest: any) => _task),
+}));
+jest.mock('../callback', () => ({ pushCallback: jest.fn() }));
+jest.mock('../file-logger', () => ({ appendLog: jest.fn() }));
+jest.mock('../task-worker', () => ({
+  taskWorkerManager: {
+    execute: jest.fn((_taskId: string, _execId: string, _task: any, _params: any, onComplete?: () => void) => {
+      if (onComplete) onComplete();
+    }),
+  },
 }));
 jest.mock('child_process');
 
@@ -50,6 +64,10 @@ beforeEach(() => {
   (mockFs.mkdirSync as jest.Mock).mockReturnValue(undefined);
   (mockFs.chmodSync as jest.Mock).mockReturnValue(undefined);
   (mockFs.writeFileSync as jest.Mock).mockReturnValue(undefined);
+  // Return a non-symlink stat object so path validation passes
+  const nonSymlinkStat = { isSymbolicLink: () => false } as any;
+  (mockFs.lstatSync as jest.Mock).mockReturnValue(nonSymlinkStat);
+  (mockFs.realpathSync as unknown as jest.Mock).mockImplementation((p: string) => p);
 });
 
 afterEach(() => {
@@ -149,23 +167,13 @@ describe('POST /api/execute', () => {
     expect(res.body.error).toMatch(/Invalid npm package name/);
   });
 
-  it('runs node task and returns success', async () => {
-    const mockSpawn = {
-      stdout: { on: jest.fn((_e: string, cb: Function) => cb(Buffer.from('hello\n'))) },
-      stderr: { on: jest.fn() },
-      on: jest.fn((event: string, cb: Function) => {
-        if (event === 'close') cb(0);
-      }),
-      kill: jest.fn(),
-    };
-    (mockCp.spawn as jest.Mock).mockReturnValue(mockSpawn);
-
+  it('runs node task and returns accepted', async () => {
     const res = await request(appNoAuth).post('/api/execute').send({
       executionId: 'exec-004',
       task: { runtime: 'node', entrypoint: 'index.js' },
     });
     expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.logs).toContain('hello');
+    expect(res.body.status).toBe('accepted');
+    expect(res.body.executionId).toBe('exec-004');
   });
 });

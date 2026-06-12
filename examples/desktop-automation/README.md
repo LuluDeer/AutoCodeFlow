@@ -265,7 +265,7 @@ sudo apt-get install libnotify-bin
 ### 方式二：通过 API 创建任务
 
 ```bash
-curl -X POST http://localhost:3001/api/tasks \
+curl -X POST http://localhost:3105/api/tasks \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{

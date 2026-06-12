@@ -1,4 +1,4 @@
-import { MigrationInterface, QueryRunner } from 'typeorm';
+import { MigrationInterface, QueryRunner } from "typeorm";
 
 export class AddPerformanceIndexes1717473142683 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
@@ -58,15 +58,25 @@ export class AddPerformanceIndexes1717473142683 implements MigrationInterface {
     // Drop tasks indexes
     await queryRunner.query(`DROP INDEX IF EXISTS "idx_tasks_status"`);
     await queryRunner.query(`DROP INDEX IF EXISTS "idx_tasks_trigger_type"`);
-    await queryRunner.query(`DROP INDEX IF EXISTS "idx_tasks_status_trigger_type"`);
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "idx_tasks_status_trigger_type"`,
+    );
 
     // Drop task executions indexes
-    await queryRunner.query(`DROP INDEX IF EXISTS "idx_task_executions_created_at"`);
-    await queryRunner.query(`DROP INDEX IF EXISTS "idx_task_executions_task_id_created_at"`);
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "idx_task_executions_created_at"`,
+    );
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "idx_task_executions_task_id_created_at"`,
+    );
 
     // Drop execution log lines indexes
-    await queryRunner.query(`DROP INDEX IF EXISTS "idx_execution_log_lines_execution_id"`);
-    await queryRunner.query(`DROP INDEX IF EXISTS "idx_execution_log_lines_line_number"`);
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "idx_execution_log_lines_execution_id"`,
+    );
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "idx_execution_log_lines_line_number"`,
+    );
 
     // Drop audit logs indexes
     await queryRunner.query(`DROP INDEX IF EXISTS "idx_audit_logs_created_at"`);
@@ -76,6 +86,8 @@ export class AddPerformanceIndexes1717473142683 implements MigrationInterface {
 
     // Drop executors indexes
     await queryRunner.query(`DROP INDEX IF EXISTS "idx_executors_status"`);
-    await queryRunner.query(`DROP INDEX IF EXISTS "idx_executors_last_heartbeat"`);
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "idx_executors_last_heartbeat"`,
+    );
   }
 }

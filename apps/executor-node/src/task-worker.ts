@@ -1,4 +1,5 @@
 import { logger } from './logger';
+import { runTask } from './routes/execute';
 
 interface TaskQueueItem {
   executionId: string;
@@ -59,7 +60,6 @@ class TaskWorker {
     try {
       logger.debug(`Task ${this.taskId}: Starting execution ${executionId}`);
       
-      const { runTask } = await import('./routes/execute');
       await runTask(task, params, executionId);
       
       logger.debug(`Task ${this.taskId}: Completed execution ${executionId}`);

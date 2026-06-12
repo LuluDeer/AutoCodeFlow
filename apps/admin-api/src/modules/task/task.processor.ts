@@ -1,34 +1,39 @@
-import { Process, Processor } from '@nestjs/bull';
-import { Logger, Inject, forwardRef } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In, DataSource, QueryRunner } from 'typeorm';
-import { InjectQueue } from '@nestjs/bull';
-import { Job, Queue } from 'bull';
-import { TaskExecution, ExecutionStatus } from './entities/task-execution.entity';
-import { ExecutionLogLine } from './entities/execution-log-line.entity';
-import { Task } from './entities/task.entity';
-import { ExecutorService } from '../executor/executor.service';
-import { AiService } from '../ai/ai.service';
-import { NotificationService } from '../notification/notification.service';
-import { AuditService } from '../audit/audit.service';
-import { TaskService } from './task.service';
+import { Process, Processor } from "@nestjs/bull";
+import { Logger, Inject, forwardRef } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository, In, DataSource } from "typeorm";
+import { InjectQueue } from "@nestjs/bull";
+import { Job, Queue } from "bull";
+import {
+  TaskExecution,
+  ExecutionStatus,
+} from "./entities/task-execution.entity";
+import { ExecutionLogLine } from "./entities/execution-log-line.entity";
+import { Task } from "./entities/task.entity";
+import { ExecutorService } from "../executor/executor.service";
+import { AiService } from "../ai/ai.service";
+import { NotificationService } from "../notification/notification.service";
+import { AuditService } from "../audit/audit.service";
+import { TaskService } from "./task.service";
 
-@Processor('task-queue')
+@Processor("task-queue")
 export class TaskProcessor {
   private readonly logger = new Logger(TaskProcessor.name);
 
   constructor(
-    @InjectRepository(TaskExecution) private execRepo: Repository<TaskExecution>,
+    @InjectRepository(TaskExecution)
+    private execRepo: Repository<TaskExecution>,
     @InjectRepository(Task) private taskRepo: Repository<Task>,
-    @InjectRepository(ExecutionLogLine) private logLineRepo: Repository<ExecutionLogLine>,
+    @InjectRepository(ExecutionLogLine)
+    private logLineRepo: Repository<ExecutionLogLine>,
     private executorService: ExecutorService,
     private aiService: AiService,
     private notificationService: NotificationService,
     private configService: ConfigService,
     private auditService: AuditService,
     @Inject(forwardRef(() => TaskService)) private taskService: TaskService,
-    @InjectQueue('task-queue') private taskQueue: Queue,
+    @InjectQueue("task-queue") private taskQueue: Queue,
     private dataSource: DataSource,
   ) {}
 
@@ -36,21 +41,32 @@ export class TaskProcessor {
    * Fetch log lines from executor's /api/logs/{executionId} endpoint and
    * persist them as ExecutionLogLine rows for structured querying.
    */
-  private async fetchAndStoreLogLines(exec: TaskExecution, executorAddress: string): Promise<void> {
+  private async fetchAndStoreLogLines(
+    exec: TaskExecution,
+    executorAddress: string,
+  ): Promise<void> {
     if (!executorAddress) return;
     try {
       // N9: use ConfigService instead of direct process.env access
-      const token = this.configService.get<string>('executor.sharedToken') ?? '';
+      const token =
+        this.configService.get<string>("executor.sharedToken") ?? "";
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const { default: axios } = await import('axios');
-      const url = this.executorService.getExecutorUrl(executorAddress, `api/logs/${exec.id}`);
+      const { default: axios } = await import("axios");
+      const url = this.executorService.getExecutorUrl(
+        executorAddress,
+        `api/logs/${exec.id}`,
+      );
       const resp = await axios.get(url, { headers, timeout: 15000 });
       const lines: string[] = resp.data?.lines ?? [];
       if (lines.length === 0) return;
       // Delete stale lines first (idempotent on retry)
       await this.logLineRepo.delete({ executionId: exec.id });
       const entities = lines.map((content, idx) =>
-        this.logLineRepo.create({ executionId: exec.id, lineNumber: idx, content }),
+        this.logLineRepo.create({
+          executionId: exec.id,
+          lineNumber: idx,
+          content,
+        }),
       );
 
       // PERF-02: Adaptive batch size based on entity count
@@ -75,7 +91,9 @@ export class TaskProcessor {
         // If this chunk took too long, reduce chunk size for next iteration
         if (chunkDuration > 1000 && chunkSize > 100) {
           chunkSize = Math.max(100, Math.floor(chunkSize * 0.8));
-          this.logger.debug(`Reduced chunk size to ${chunkSize} due to slow insertion (${chunkDuration}ms)`);
+          this.logger.debug(
+            `Reduced chunk size to ${chunkSize} due to slow insertion (${chunkDuration}ms)`,
+          );
         }
         // If chunk was very fast, try increasing chunk size
         else if (chunkDuration < 100 && chunkSize < 1000) {
@@ -84,7 +102,9 @@ export class TaskProcessor {
       }
 
       const totalDuration = Date.now() - startTime;
-      this.logger.log(`Stored ${entities.length} log lines for execution ${exec.id} in ${totalDuration}ms (final chunk size: ${chunkSize})`);
+      this.logger.log(
+        `Stored ${entities.length} log lines for execution ${exec.id} in ${totalDuration}ms (final chunk size: ${chunkSize})`,
+      );
     } catch (err: unknown) {
       // Non-fatal: log but do not fail the execution record
       const message = err instanceof Error ? err.message : String(err);
@@ -92,7 +112,7 @@ export class TaskProcessor {
     }
   }
 
-  @Process('execute')
+  @Process("execute")
   async handle(job: Job<{ executionId: string }>) {
     const { executionId } = job.data;
     const exec = await this.execRepo.findOne({ where: { id: executionId } });
@@ -101,7 +121,9 @@ export class TaskProcessor {
     // 从数据库查询最新 task，避免使用队列中可能过期的序列化对象
     const task = await this.taskRepo.findOne({ where: { id: exec.taskId } });
     if (!task) {
-      this.logger.error(`Task ${exec.taskId} not found for execution ${executionId}`);
+      this.logger.error(
+        `Task ${exec.taskId} not found for execution ${executionId}`,
+      );
       exec.status = ExecutionStatus.FAILED;
       exec.errorMessage = `Task ${exec.taskId} not found`;
       await this.execRepo.save(exec);
@@ -115,19 +137,25 @@ export class TaskProcessor {
     try {
       // 广播模式：派发到所有在线执行器
       // 单任务模式：派发到负载最低的一个执行器
-      const isBroadcast = task.executeMode === 'broadcast';
+      const isBroadcast = task.executeMode === "broadcast";
       const rawResult = isBroadcast
         ? await this.executorService.dispatchBroadcast(task, exec)
         : await this.executorService.dispatch(task, exec);
       exec.status = ExecutionStatus.SUCCESS;
       exec.result = isBroadcast
-        ? { broadcast: true, executorCount: rawResult.length, results: rawResult }
+        ? {
+            broadcast: true,
+            executorCount: rawResult.length,
+            results: rawResult,
+          }
         : rawResult;
       exec.logs = isBroadcast
         ? JSON.stringify(rawResult)
-        : (rawResult?.logs || '');
+        : rawResult?.logs || "";
       // Fetch and store structured log lines from executor
-      const targetAddr = isBroadcast ? undefined : rawResult?.executorAddress ?? exec.executorAddress;
+      const targetAddr = isBroadcast
+        ? undefined
+        : (rawResult?.executorAddress ?? exec.executorAddress);
       await this.fetchAndStoreLogLines(exec, targetAddr);
     } catch (err) {
       exec.status = ExecutionStatus.FAILED;
@@ -138,18 +166,29 @@ export class TaskProcessor {
       } catch {}
       this.logger.error(`Task ${task.id} failed: ${err.message}`);
       try {
-        await this.notificationService.notifyFailureWithConfig(task.name, exec.id, err.message, exec.aiAnalysis, task.alarmEmail, task.alarmChannels);
+        await this.notificationService.notifyFailureWithConfig(
+          task.name,
+          exec.id,
+          err.message,
+          exec.aiAnalysis,
+          task.alarmEmail,
+          task.alarmChannels,
+        );
       } catch (notifyErr) {
         // B-08: record notification failure to audit log so it is not silently discarded
-        this.logger.error(`Notification failed for execution ${exec.id}: ${notifyErr.message}`);
+        this.logger.error(
+          `Notification failed for execution ${exec.id}: ${notifyErr.message}`,
+        );
         try {
           await this.auditService.log({
-            action: 'NOTIFICATION_FAILED',
-            resource: 'task_execution',
+            action: "NOTIFICATION_FAILED",
+            resource: "task_execution",
             resourceId: exec.id,
             detail: { task: task.name, error: notifyErr.message },
           });
-        } catch { /* audit is best-effort */ }
+        } catch {
+          /* audit is best-effort */
+        }
       }
       // Q1: rethrow so BullMQ sees the job as failed and applies maxRetry attempts
       throw err;
@@ -169,10 +208,15 @@ export class TaskProcessor {
       try {
         await queryRunner.manager.save(exec);
         await queryRunner.commitTransaction();
-        this.logger.debug(`Successfully saved execution ${exec.id} final state in transaction`);
+        this.logger.debug(
+          `Successfully saved execution ${exec.id} final state in transaction`,
+        );
       } catch (saveErr) {
         await queryRunner.rollbackTransaction();
-        this.logger.error(`Failed to save execution ${exec.id} final state, transaction rolled back`, saveErr);
+        this.logger.error(
+          `Failed to save execution ${exec.id} final state, transaction rolled back`,
+          saveErr,
+        );
 
         // Attempt to repair state in a separate transaction
         try {
@@ -182,7 +226,10 @@ export class TaskProcessor {
 
           try {
             // Re-fetch the execution to get current state
-            const currentExec = await repairRunner.manager.findOne(TaskExecution, { where: { id: exec.id } });
+            const currentExec = await repairRunner.manager.findOne(
+              TaskExecution,
+              { where: { id: exec.id } },
+            );
             if (currentExec) {
               // Only update if the execution is still in RUNNING state
               if (currentExec.status === ExecutionStatus.RUNNING) {
@@ -194,18 +241,26 @@ export class TaskProcessor {
                 currentExec.errorMessage = exec.errorMessage;
                 currentExec.aiAnalysis = exec.aiAnalysis;
                 await repairRunner.manager.save(currentExec);
-                this.logger.log(`Repaired execution ${exec.id} state after transaction failure`);
+                this.logger.log(
+                  `Repaired execution ${exec.id} state after transaction failure`,
+                );
               }
             }
             await repairRunner.commitTransaction();
           } catch (repairErr) {
             await repairRunner.rollbackTransaction();
-            this.logger.error(`Failed to repair execution ${exec.id} state`, repairErr);
+            this.logger.error(
+              `Failed to repair execution ${exec.id} state`,
+              repairErr,
+            );
           } finally {
             await repairRunner.release();
           }
         } catch (repairAttemptErr) {
-          this.logger.error(`Failed to attempt repair for execution ${exec.id}`, repairAttemptErr);
+          this.logger.error(
+            `Failed to attempt repair for execution ${exec.id}`,
+            repairAttemptErr,
+          );
         }
       } finally {
         await queryRunner.release();
@@ -225,15 +280,20 @@ export class TaskProcessor {
     try {
       // Find all tasks that have dependencies on the completed task
       const dependentTasks = await this.taskRepo
-        .createQueryBuilder('t')
-        .where("EXISTS (SELECT 1 FROM jsonb_each(t.dependencies) WHERE value = :taskId)", { taskId: completedTaskId })
+        .createQueryBuilder("t")
+        .where(
+          "EXISTS (SELECT 1 FROM jsonb_each(t.dependencies) WHERE value = :taskId)",
+          { taskId: completedTaskId },
+        )
         .getMany();
 
       for (const task of dependentTasks) {
         // Check if all dependencies are satisfied
         const canTrigger = await this.checkDependencies(task);
         if (canTrigger) {
-          this.logger.log(`All dependencies satisfied for task ${task.id}, triggering`);
+          this.logger.log(
+            `All dependencies satisfied for task ${task.id}, triggering`,
+          );
           await this.taskService.trigger(task.id, {});
         }
       }
@@ -255,7 +315,7 @@ export class TaskProcessor {
 
     const recentExecutions = await this.execRepo.find({
       where: { taskId: In(dependencyIds as string[]) },
-      order: { createdAt: 'DESC' },
+      order: { createdAt: "DESC" },
     });
 
     // Group by taskId and get the most recent execution for each

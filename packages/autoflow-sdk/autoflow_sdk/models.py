@@ -25,8 +25,7 @@ class TaskConfig(BaseModel):
     alarmEmail: Optional[str] = None
     alarmChannels: List[str] = Field(default_factory=list)
 
-    class Config:
-        extra = 'allow'  # forward-compatible: unknown fields are preserved
+    model_config = {'extra': 'allow'}  # forward-compatible: unknown fields are preserved
 
 
 class ExecuteRequest(BaseModel):

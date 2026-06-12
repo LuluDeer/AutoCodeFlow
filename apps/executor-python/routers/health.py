@@ -1,10 +1,23 @@
 from fastapi import APIRouter, HTTPException
+from datetime import datetime, timezone
 import psutil
 import httpx
 import os
 from config import settings
 
 router = APIRouter()
+
+# Module-level state updated by heartbeat task
+_last_heartbeat_time: str | None = None
+_admin_api_reachable: bool | None = None
+
+
+def record_heartbeat(success: bool) -> None:
+    """Called by the heartbeat task to update last heartbeat state."""
+    global _last_heartbeat_time, _admin_api_reachable
+    _admin_api_reachable = success
+    if success:
+        _last_heartbeat_time = datetime.now(timezone.utc).isoformat()
 
 
 async def _check_admin_api():
@@ -24,13 +37,19 @@ async def _check_admin_api():
 
 @router.get('/health')
 async def health():
-    """Liveness probe - basic health check."""
+    """Liveness probe - returns resource metrics and connectivity state."""
+    # Use cached reachability if available, otherwise probe on demand
+    admin_ok = _admin_api_reachable if _admin_api_reachable is not None else await _check_admin_api()
+    token = os.environ.get('EXECUTOR_SECRET') or os.environ.get('EXECUTOR_SHARED_TOKEN') or ''
     return {
         'status': 'ok',
         'appName': settings.app_name,
         'address': settings.executor_address,
         'cpu': psutil.cpu_percent(),
         'mem': psutil.virtual_memory().percent,
+        'adminApiReachable': admin_ok,
+        'tokenValid': bool(token),
+        'lastHeartbeat': _last_heartbeat_time,
     }
 
 

@@ -1,16 +1,14 @@
 import { useState } from 'react';
-import { Card, Table, Tag, Button, Space, Typography, Row, Col, Statistic, Modal, Select, message } from 'antd';
-import { useRequest } from 'ahooks';
+import { Card, Table, Tag, Button, Space, Typography, Row, Col, Statistic, Modal, message } from 'antd';
 import { TaskExecution } from '../api/tasks';
 
 const { Text } = Typography;
 
 interface ExecutionCompareProps {
-  taskId: string;
   executions: TaskExecution[];
 }
 
-export default function ExecutionCompare({ taskId, executions }: ExecutionCompareProps) {
+export default function ExecutionCompare({ executions }: ExecutionCompareProps) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [compareOpen, setCompareOpen] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
@@ -55,11 +53,14 @@ export default function ExecutionCompare({ taskId, executions }: ExecutionCompar
         return {
           title: <Text copyable={{ text: id }}>{exec?.startTime ? new Date(exec.startTime).toLocaleString() : id.slice(0, 8)}</Text>,
           key: id,
-          render: (_: any, record: any) => {
+          render: (_: any, record: { metric: string; key: string }) => {
             const val = exec?.[record.key as keyof TaskExecution];
             if (record.key === 'status') {
               const color = val === 'success' ? 'green' : val === 'failed' ? 'red' : 'default';
-              return <Tag color={color}>{String(val)}</Tag>;
+              return <Tag color={color}>{String(val ?? '-')}</Tag>;
+            }
+            if (record.key === 'startTime' || record.key === 'endTime') {
+              return val ? new Date(String(val)).toLocaleString() : '-';
             }
             return String(val ?? '-');
           },
@@ -68,13 +69,13 @@ export default function ExecutionCompare({ taskId, executions }: ExecutionCompar
     ];
 
     const rows = [
-      { metric: '状态', status: true },
-      { metric: '触发方式', triggerType: true },
-      { metric: '开始时间', startTime: true },
-      { metric: '结束时间', endTime: true },
-      { metric: '耗时(ms)', duration: true },
-      { metric: '执行人', triggeredBy: true },
-      { metric: '错误信息', errorMessage: true },
+      { metric: '状态', key: 'status' },
+      { metric: '触发方式', key: 'triggerType' },
+      { metric: '开始时间', key: 'startTime' },
+      { metric: '结束时间', key: 'endTime' },
+      { metric: '耗时(ms)', key: 'duration' },
+      { metric: '执行人', key: 'triggeredBy' },
+      { metric: '错误信息', key: 'errorMessage' },
     ];
 
     return <Table columns={cols} dataSource={rows} rowKey="metric" pagination={false} size="small" />;

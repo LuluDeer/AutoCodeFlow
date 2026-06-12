@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
   Table, Button, Space, Popconfirm, Modal, Form, Input, Select, Switch, Tag, message,
 } from 'antd';

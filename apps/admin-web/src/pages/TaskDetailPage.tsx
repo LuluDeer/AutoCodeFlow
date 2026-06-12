@@ -1,23 +1,20 @@
 import { useState } from 'react';
-import { Tabs, Card, Button, Descriptions, Tag, Table, Typography, Space, message, Modal, Input, List, Popconfirm } from 'antd';
-import { PlayCircleOutlined, ArrowLeftOutlined, RollbackOutlined, PauseCircleOutlined, PlaySquareOutlined } from '@ant-design/icons';
+import { Tabs, Card, Button, Descriptions, Tag, Typography, Space, message, Modal, Input, List, Popconfirm, Breadcrumb } from 'antd';
+import { PlayCircleOutlined, ArrowLeftOutlined, RollbackOutlined, PauseCircleOutlined, PlaySquareOutlined, EditOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import ExecutionCompare from '../components/ExecutionCompare';
-
-const execStatusColor: Record<string, string> = {
-  pending: 'default', running: 'processing', success: 'green', failed: 'red', cancelled: 'orange',
-};
 
 export default function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
   const { data: task, refresh: refreshTask } = useRequest(() => tasksApi.get(id!));
-  const { data: execs, loading } = useRequest(() => tasksApi.executions(id!, { pageSize: 50 }));
+  const { data: execs } = useRequest(() => tasksApi.executions(id!, { pageSize: 50 }));
 
   // Fetch dependency task details
-  const depIds = task?.dependencies ? Object.values(task.dependencies) : [];
+  // dependencies format: { taskId: taskName } — keys are UUIDs
+  const depIds = task?.dependencies ? Object.keys(task.dependencies) : [];
   const { data: depTasks } = useRequest(
     () => Promise.all(depIds.map((depId: string) => tasksApi.get(depId))),
     { ready: depIds.length > 0 },
@@ -67,20 +64,20 @@ export default function TaskDetailPage() {
     finally { setActionLoading(false); }
   };
 
-  const execColumns = [
-    { title: '执行ID', dataIndex: 'id', key: 'id', width: 280 },
-    { title: '触发方式', dataIndex: 'triggerType', key: 'triggerType' },
-    { title: '状态', dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={execStatusColor[v]}>{v}</Tag> },
-    { title: '耗时(ms)', dataIndex: 'duration', key: 'duration' },
-    { title: '开始时间', dataIndex: 'startTime', key: 'startTime', render: (v: string) => v ? new Date(v).toLocaleString() : '-' },
-    { title: '操作', key: 'action', render: (_: any, r: any) => <a onClick={() => nav(`/tasks/${id}/executions/${r.id}`)}>详情</a> },
-  ];
-
   return (
     <div>
+      <Breadcrumb
+        items={[
+          { title: <Link to="/dashboard">首页</Link> },
+          { title: <Link to="/tasks">任务管理</Link> },
+          { title: '任务详情' },
+        ]}
+        style={{ marginBottom: 16 }}
+      />
       <Space style={{ marginBottom: 16 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/tasks')}>返回</Button>
         <Typography.Title level={4} style={{ margin: 0 }}>{task?.name}</Typography.Title>
+        <Button icon={<EditOutlined />} onClick={() => nav(`/tasks/${id}/edit`)}>编辑</Button>
         <Button type="primary" icon={<PlayCircleOutlined />} onClick={trigger}>手动触发</Button>
         {task?.gitRepo && (
           <Button icon={<RollbackOutlined />} onClick={() => setRollbackModal(true)}>一键回滚</Button>
@@ -119,12 +116,18 @@ export default function TaskDetailPage() {
             <Descriptions column={2}>
               <Descriptions.Item label="运行时">{task?.runtime}</Descriptions.Item>
               <Descriptions.Item label="入口文件">{task?.entrypoint}</Descriptions.Item>
-              <Descriptions.Item label="触发方式">{task?.triggerType}</Descriptions.Item>
+              <Descriptions.Item label="触发方式">
+                {task?.triggerType === 'manual' ? '手动' : task?.triggerType === 'fixed_rate' ? '固定频率' : task?.triggerType === 'cron' ? 'Cron' : task?.triggerType}
+              </Descriptions.Item>
               <Descriptions.Item label="固定频率">{task?.fixedRate ? `${task.fixedRate}s` : '-'}</Descriptions.Item>
               <Descriptions.Item label="Cron">{task?.cronExpression || '-'}</Descriptions.Item>
               <Descriptions.Item label="超时">{task?.timeout}s</Descriptions.Item>
               <Descriptions.Item label="最大重试">{task?.maxRetry}</Descriptions.Item>
-              <Descriptions.Item label="状态"><Tag>{task?.status}</Tag></Descriptions.Item>
+              <Descriptions.Item label="状态">
+                <Tag color={task?.status === 'active' ? 'green' : task?.status === 'paused' ? 'orange' : task?.status === 'disabled' ? 'red' : 'default'}>
+                  {task?.status === 'active' ? '运行中' : task?.status === 'paused' ? '已暂停' : task?.status === 'disabled' ? '已禁用' : task?.status}
+                </Tag>
+              </Descriptions.Item>
               <Descriptions.Item label="描述" span={2}>{task?.description || '-'}</Descriptions.Item>
               <Descriptions.Item label="指定执行器">{task?.executorAppName || '-'}</Descriptions.Item>
               <Descriptions.Item label="执行器分组">{task?.executorGroup || '-'}</Descriptions.Item>
@@ -140,7 +143,7 @@ export default function TaskDetailPage() {
           </Card>
         </Tabs.TabPane>
         <Tabs.TabPane tab="执行记录" key="executions">
-          <ExecutionCompare taskId={id!} executions={execs?.list ?? []} />
+          <ExecutionCompare executions={execs?.list ?? []} />
         </Tabs.TabPane>
         <Tabs.TabPane tab="任务依赖" key="dependencies">
           {depIds.length === 0 ? (

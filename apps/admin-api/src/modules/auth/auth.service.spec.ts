@@ -1,32 +1,51 @@
-import { Test } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
-import { getRepositoryToken } from '@nestjs/typeorm';
-import { AuthService } from './auth.service';
-import { UsersService } from '../users/users.service';
-import { RefreshToken } from './entities/refresh-token.entity';
-import * as bcrypt from 'bcrypt';
+import { Test } from "@nestjs/testing";
+import { UnauthorizedException } from "@nestjs/common";
+import { JwtService } from "@nestjs/jwt";
+import { ConfigService } from "@nestjs/config";
+import { getRepositoryToken } from "@nestjs/typeorm";
+import { AuthService } from "./auth.service";
+import { UsersService } from "../users/users.service";
+import { RefreshToken } from "./entities/refresh-token.entity";
+import * as bcrypt from "bcrypt";
 
-const mockUser = { id: 1, username: 'admin', password: 'hashed', isActive: true };
-const mockJti = 'test-jti-uuid';
+const mockUser = {
+  id: 1,
+  username: "admin",
+  password: "hashed",
+  isActive: true,
+};
+const mockJti = "test-jti-uuid";
 
-describe('AuthService', () => {
+describe("AuthService", () => {
   let service: AuthService;
-  let usersService: jest.Mocked<Pick<UsersService, 'findByUsername' | 'findById' | 'recordLoginFailure' | 'resetLoginFailure'>>;
-  let jwtService: jest.Mocked<Pick<JwtService, 'sign' | 'verify'>>;
-  let configService: jest.Mocked<Pick<ConfigService, 'get'>>;
-  let refreshTokenRepo: jest.Mocked<{ findOne: jest.Mock; save: jest.Mock; update: jest.Mock; delete: jest.Mock; create: jest.Mock }>;
+  let usersService: jest.Mocked<
+    Pick<
+      UsersService,
+      "findByUsername" | "findById" | "recordLoginFailure" | "resetLoginFailure"
+    >
+  >;
+  let jwtService: jest.Mocked<Pick<JwtService, "sign" | "verify">>;
+  let configService: jest.Mocked<Pick<ConfigService, "get">>;
+  let refreshTokenRepo: jest.Mocked<{
+    findOne: jest.Mock;
+    save: jest.Mock;
+    update: jest.Mock;
+    delete: jest.Mock;
+    create: jest.Mock;
+  }>;
 
   beforeEach(async () => {
-    usersService = { 
-      findByUsername: jest.fn(), 
+    usersService = {
+      findByUsername: jest.fn(),
       findById: jest.fn(),
       recordLoginFailure: jest.fn().mockResolvedValue(undefined),
       resetLoginFailure: jest.fn().mockResolvedValue(undefined),
     };
-    jwtService = { sign: jest.fn().mockReturnValue('token'), verify: jest.fn() };
-    configService = { get: jest.fn().mockReturnValue('secret') };
+    jwtService = {
+      sign: jest.fn().mockReturnValue("token"),
+      verify: jest.fn(),
+    };
+    configService = { get: jest.fn().mockReturnValue("secret") };
     refreshTokenRepo = {
       findOne: jest.fn().mockResolvedValue(null),
       save: jest.fn().mockResolvedValue({}),
@@ -41,87 +60,137 @@ describe('AuthService', () => {
         { provide: UsersService, useValue: usersService },
         { provide: JwtService, useValue: jwtService },
         { provide: ConfigService, useValue: configService },
-        { provide: getRepositoryToken(RefreshToken), useValue: refreshTokenRepo },
+        {
+          provide: getRepositoryToken(RefreshToken),
+          useValue: refreshTokenRepo,
+        },
       ],
     }).compile();
     service = module.get(AuthService);
   });
 
-  describe('login', () => {
-    it('returns tokens on valid credentials', async () => {
+  describe("login", () => {
+    it("returns tokens on valid credentials", async () => {
       usersService.findByUsername.mockResolvedValue(mockUser as any);
-      jest.spyOn(bcrypt, 'compare').mockResolvedValue(true as never);
-      const result = await service.login({ username: 'admin', password: 'pass' });
-      expect(result).toHaveProperty('accessToken');
-      expect(result).toHaveProperty('refreshToken');
+      jest.spyOn(bcrypt, "compare").mockResolvedValue(true as never);
+      const result = await service.login({
+        username: "admin",
+        password: "pass",
+      });
+      expect(result).toHaveProperty("accessToken");
+      expect(result).toHaveProperty("refreshToken");
     });
 
-    it('throws UnauthorizedException when user not found', async () => {
+    it("throws UnauthorizedException when user not found", async () => {
       usersService.findByUsername.mockResolvedValue(null);
-      await expect(service.login({ username: 'x', password: 'y' })).rejects.toThrow(UnauthorizedException);
+      await expect(
+        service.login({ username: "x", password: "y" }),
+      ).rejects.toThrow(UnauthorizedException);
     });
 
-    it('throws UnauthorizedException on wrong password', async () => {
+    it("throws UnauthorizedException on wrong password", async () => {
       usersService.findByUsername.mockResolvedValue(mockUser as any);
-      jest.spyOn(bcrypt, 'compare').mockResolvedValue(false as never);
-      await expect(service.login({ username: 'admin', password: 'wrong' })).rejects.toThrow(UnauthorizedException);
+      jest.spyOn(bcrypt, "compare").mockResolvedValue(false as never);
+      await expect(
+        service.login({ username: "admin", password: "wrong" }),
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 
-  describe('refreshToken', () => {
-    it('returns new tokens for valid refresh token', async () => {
-      jwtService.verify.mockReturnValue({ sub: 1, username: 'admin', type: 'refresh' } as any);
+  describe("refreshToken", () => {
+    it("returns new tokens for valid refresh token", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+      } as any);
       usersService.findById.mockResolvedValue({ ...mockUser } as any);
-      const result = await service.refreshToken('valid-token');
-      expect(result).toHaveProperty('accessToken');
+      const result = await service.refreshToken("valid-token");
+      expect(result).toHaveProperty("accessToken");
     });
 
-    it('throws if token type is not refresh', async () => {
-      jwtService.verify.mockReturnValue({ sub: 1, username: 'admin', type: 'access' } as any);
-      await expect(service.refreshToken('bad')).rejects.toThrow(UnauthorizedException);
-    });
-
-    it('throws if user is inactive', async () => {
-      jwtService.verify.mockReturnValue({ sub: 1, username: 'admin', type: 'refresh' } as any);
-      usersService.findById.mockResolvedValue({ ...mockUser, isActive: false } as any);
-      await expect(service.refreshToken('token')).rejects.toThrow(UnauthorizedException);
-    });
-
-    it('SEC-02: throws when refresh token is revoked', async () => {
-      jwtService.verify.mockReturnValue({ sub: 1, username: 'admin', type: 'refresh', jti: mockJti } as any);
-      // Mock revoked token record
-      refreshTokenRepo.findOne.mockResolvedValue({ jti: mockJti, revoked: true } as any);
-      
-      await expect(service.refreshToken('revoked-token')).rejects.toThrow(
+    it("throws if token type is not refresh", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "access",
+      } as any);
+      await expect(service.refreshToken("bad")).rejects.toThrow(
         UnauthorizedException,
       );
     });
 
-    it('SEC-02: throws when refresh token record not found', async () => {
-      jwtService.verify.mockReturnValue({ sub: 1, username: 'admin', type: 'refresh', jti: mockJti } as any);
+    it("throws if user is inactive", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+      } as any);
+      usersService.findById.mockResolvedValue({
+        ...mockUser,
+        isActive: false,
+      } as any);
+      await expect(service.refreshToken("token")).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it("SEC-02: throws when refresh token is revoked", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+        jti: mockJti,
+      } as any);
+      // Mock revoked token record
+      refreshTokenRepo.findOne.mockResolvedValue({
+        jti: mockJti,
+        revoked: true,
+      } as any);
+
+      await expect(service.refreshToken("revoked-token")).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it("SEC-02: throws when refresh token record not found", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+        jti: mockJti,
+      } as any);
       // Token not found in database
       refreshTokenRepo.findOne.mockResolvedValue(null);
-      
-      await expect(service.refreshToken('unknown-token')).rejects.toThrow(
+
+      await expect(service.refreshToken("unknown-token")).rejects.toThrow(
         UnauthorizedException,
       );
     });
 
-    it('SEC-02: token rotation - consumed token is immediately revoked', async () => {
+    it("SEC-02: token rotation - consumed token is immediately revoked", async () => {
       const mockTokenRecord = { jti: mockJti, revoked: false } as any;
-      jwtService.verify.mockReturnValue({ sub: 1, username: 'admin', type: 'refresh', jti: mockJti } as any);
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+        jti: mockJti,
+      } as any);
       usersService.findById.mockResolvedValue(mockUser as any);
       refreshTokenRepo.findOne.mockResolvedValue(mockTokenRecord);
-      
-      await service.refreshToken('valid-token');
-      
+
+      await service.refreshToken("valid-token");
+
       // Verify the token was revoked after use
-      expect(refreshTokenRepo.save).toHaveBeenCalledWith({ ...mockTokenRecord, revoked: true });
+      expect(refreshTokenRepo.save).toHaveBeenCalledWith({
+        ...mockTokenRecord,
+        revoked: true,
+      });
     });
 
-    it('SEC-02: revokeAllForUser marks all user tokens as revoked', async () => {
+    it("SEC-02: revokeAllForUser marks all user tokens as revoked", async () => {
       await service.revokeAllForUser(1);
-      
+
       expect(refreshTokenRepo.update).toHaveBeenCalledWith(
         { userId: 1, revoked: false },
         { revoked: true },

@@ -1,18 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Descriptions, Badge, Card, Table, Button, Space, Tag, Typography, message, Spin, Empty,
-  Row, Col, Collapse, Popconfirm, Tooltip,
+  Row, Col, Collapse, Tooltip, Tabs,
 } from 'antd';
 import {
   ArrowLeftOutlined, SyncOutlined, ReloadOutlined, GithubOutlined,
-  CheckCircleOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
-  ClockCircleOutlined, EditOutlined,
+  CheckCircleOutlined, CloseCircleOutlined, EditOutlined, RocketOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { applicationsApi, Application } from '../api/applications';
 import { tasksApi, Task } from '../api/tasks';
+import AppDeploymentPage from './AppDeploymentPage';
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 const { Panel } = Collapse;
 
 const statusColors: Record<string, string> = {
@@ -52,10 +52,8 @@ export default function ApplicationDetailPage() {
   const fetchTasks = useCallback(async () => {
     if (!id) return;
     try {
-      const res = await tasksApi.list({ page: 1, pageSize: 100 });
-      // Frontend filter: find tasks associated with this application
-      const appTasks = (res as any)?.items?.filter((t: Task) => (t as any).applicationId === id) || [];
-      setTasks(appTasks);
+      const res = await tasksApi.list({ page: 1, pageSize: 100, applicationId: id });
+      setTasks((res as any)?.items || []);
     } catch {
       // Non-critical
     }
@@ -251,32 +249,47 @@ export default function ApplicationDetailPage() {
         </Card>
       )}
 
-      {/* Associated Tasks */}
-      <Card
-        title={`Associated Tasks (${tasks.length})`}
-        style={{ marginBottom: 16 }}
-        extra={
-          <Button
-            type="primary"
-            size="small"
-            onClick={() => nav(`/tasks/new?applicationId=${app.id}`)}
-          >
-            Create Task
-          </Button>
-        }
-      >
-        {tasks.length === 0 ? (
-          <Empty description="No tasks associated with this application" />
-        ) : (
-          <Table<Task>
-            columns={taskColumns}
-            dataSource={tasks}
-            rowKey="id"
-            size="small"
-            pagination={{ pageSize: 10 }}
-          />
-        )}
-      </Card>
+      {/* Tabs: Tasks & Deployments */}
+      <Tabs
+        defaultActiveKey="tasks"
+        items={[
+          {
+            key: 'tasks',
+            label: <span>关联任务 ({tasks.length})</span>,
+            children: (
+              <Card
+                bordered={false}
+                extra={
+                  <Button
+                    type="primary"
+                    size="small"
+                    onClick={() => nav(`/tasks/new?applicationId=${app.id}`)}
+                  >
+                    新建任务
+                  </Button>
+                }
+              >
+                {tasks.length === 0 ? (
+                  <Empty description="该应用暂无关联任务" />
+                ) : (
+                  <Table<Task>
+                    columns={taskColumns}
+                    dataSource={tasks}
+                    rowKey="id"
+                    size="small"
+                    pagination={{ pageSize: 10 }}
+                  />
+                )}
+              </Card>
+            ),
+          },
+          {
+            key: 'deployments',
+            label: <span><RocketOutlined /> 部署管理</span>,
+            children: <AppDeploymentPage applicationId={app.id} />,
+          },
+        ]}
+      />
     </div>
   );
 }

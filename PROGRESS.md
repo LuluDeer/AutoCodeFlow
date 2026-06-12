@@ -41,6 +41,7 @@ AutoCodeFlow/
 │   └── registry/           # 包仓库服务
 ├── packages/
 │   ├── autocodeflow-sdk/       # 基础 SDK（Python）
+│   ├── autocodeflow-node-sdk/  # Node.js SDK（AutoFlowContext/Logger/HTTP）
 │   ├── autocodeflow-http/      # HTTP 封装库
 │   ├── autocodeflow-db/        # 数据库连接库
 │   ├── autocodeflow-notify/    # 通知库
@@ -207,6 +208,41 @@ AutoCodeFlow/
   - 前端任务列表页支持多选
   - 批量操作按钮在有选中项时显示
 
+### Phase 15：应用管理与代码完善 ✅ 已完成
+
+- [x] Application 实体创建（name/version/runtime/gitRepo/gitBranch/gitCommit/manifest/env）
+- [x] 数据库迁移（AddApplicationAndTaskFields）
+- [x] Application CRUD + Git Webhook 自动部署
+- [x] manifest.json 自动解析注册任务（syncTasksFromManifest）
+- [x] 任务-应用关联（applicationId + @OneToMany）
+- [x] 版本回滚支持代码回退（gitCommit）
+- [x] SDK 接口一致性统一（fromEnv/from_env 自动初始化）
+- [x] CreateTaskDto/UpdateApplicationDto 字段补全
+- [x] ApplicationController sync-tasks 端点
+- [x] 前端 ApplicationDetailPage（应用详情/Manifest/关联任务/SyncTasks）
+- [x] 前端 ApplicationListPage 名称点击跳转详情
+- [x] executor-python/.env.example
+- [x] executor-node/.env.example 补全
+
+### Phase 18：Bug 修复与安全加固 ✅ 已完成
+
+- [x] executor.controller.ts `timingSafeEqual` 长度不匹配崩溃修复（长度不等时直接拒绝）
+- [x] notification.service.ts `sendAll` 空实现修复（实际分发到全部渠道）
+- [x] autocodeflow-node-sdk 5/5 单元测试通过
+
+### Phase 16：调度增强与开发体验 ✅ 已完成
+
+- [x] 广播执行模式（ExecuteMode.BROADCAST）
+  - ExecutorService.dispatchBroadcast() 并行派发到所有执行器
+  - TaskProcessor 自动识别广播模式
+- [x] 调度器健康检查端点（GET /tasks/scheduler/stats）
+- [x] 前端 Dashboard 调度器状态卡片（定时器/Cron/调度总数/运行时长）
+- [x] 前端 tasksApi.schedulerStats() 方法
+- [x] Makefile 统一开发命令入口（15+ 命令）
+- [x] dev.sh 快速开发启动脚本（start/infra/stop/status/clean）
+- [x] .pre-commit-config.yaml 代码质量钩子
+- [x] admin-web/.env.example
+
 ## 最近操作记录
 
 | 时间         | 操作                                                | 状态 |
@@ -217,20 +253,27 @@ AutoCodeFlow/
 | Phase 5 基础 | AI失败分析、企微/钉钉/邮件通知渠道、失败时自动推送通知                                               | ✅  |
 | Phase 3 部分 | Python venv隔离(uv)、manifest.yaml解析、Node node\_modules隔离                      | ✅  |
 | Phase 7 完成 | 三个 Controller 接入 AuditService，前端审计日志页修复                                     | ✅  |
+| Phase 17 完成 | E2E 集成测试（auth/tasks/executors）+ jest-e2e.json + test:e2e 脚本 + docs 四份文档 | ✅  |
+| Phase 18 完成 | Bug 修复：timingSafeEqual 崩溃、signal handler 闭包；Node.js SDK 完整实现并通过 5/5 单元测试 | ✅  |
+| Phase 19 完成 | 新增测试覆盖：registry-pypi 21/21、autoflow-sdk-node 16/16、Python packages 36/36 全部通过 | ✅  |
+| Phase 20 完成 | autoflow-sdk Python 包 61/61 测试全部通过；修复 AsyncHttpClient 代理兼容性（trust_env=False）；升级 TaskConfig 到 Pydantic V2 ConfigDict | ✅  |
+| Phase 21 完成 | 全量验证所有 Python 包测试：autocodeflow-http 11/11、autocodeflow-notify 7/7、autocodeflow-db 8/8、autocodeflow-ai 10/10，共 36 个测试全部通过 | ✅  |
+| Phase 22 完成 | autoflow-sdk-node 补齐 logger/http/admin 三个测试文件，4 个 suite 共 43 个测试全部通过 | ✅  |
 
 ## 恢复上下文指南
 
 如果 AI 中断，重新开始时请：
 
 1. 阅读本文件了解当前进度
-2. 查看 Phase 10 各项状态（所有项均已 ✅ 完成）
-3. 查阅 ISSUES.md 汇总表确认剩余 open 项（当前：S6沙箱隔离、Q10 SDK无共享schema 为架构级限制，其余均已修复）
+2. 当前最高完成阶段：Phase 22（autoflow-sdk-node 补齐测试，全部通过）
+3. 所有 CODE_REVIEW.md 审查项均已修复（4.1 getExecutorUrl 已为 public；5.2 Python 超时进程组级别终止已实现；6.4 signal handler 已改用 functools.partial；task.service.ts 循环依赖检测 Bug 修复 Object.keys→Object.values）
+4. admin-api 全量 18 suites 214/214 测试全部通过
 
 ## 各模块骨架说明
 
 ### admin-api
 
-- NestJS + TypeScript，端口 3001
+- NestJS + TypeScript，端口 3105
 - 模块：executor（注册/心跳）、task、execution、auth、users、notification、ai、scheduler
 - TypeORM + PostgreSQL，BullMQ + Redis
 - Swagger 文档：/api/docs
@@ -259,3 +302,4 @@ AutoCodeFlow/
 
 - 包含：postgres:16、redis:7、admin-api、admin-web、executor-python、executor-node
 - postgres/redis 带 healthcheck，admin-api 等待 db/redis 就绪后启动
+| Phase 17 | E2E 集成测试 | admin-api test/ 目录：helpers/app.helper.ts、auth.e2e-spec.ts、tasks.e2e-spec.ts、executors.e2e-spec.ts、jest-e2e.json；package.json 添加 test:e2e 脚本 | ✅ |

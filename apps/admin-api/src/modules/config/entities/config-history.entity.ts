@@ -1,6 +1,11 @@
-import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn } from 'typeorm';
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  CreateDateColumn,
+} from "typeorm";
 
-@Entity('config_history')
+@Entity("config_history")
 export class ConfigHistory {
   @PrimaryGeneratedColumn()
   id: number;
@@ -8,17 +13,17 @@ export class ConfigHistory {
   @Column()
   configKey: string;
 
-  @Column({ type: 'text', nullable: true })
+  @Column({ type: "text", nullable: true })
   oldValue: string;
 
-  @Column({ type: 'text', nullable: true })
+  @Column({ type: "text", nullable: true })
   newValue: string;
 
   @Column({ nullable: true })
   description: string;
 
   @Column()
-  action: 'create' | 'update' | 'delete';
+  action: "create" | "update" | "delete";
 
   @Column({ nullable: true })
   userId: string;

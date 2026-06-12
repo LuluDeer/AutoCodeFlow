@@ -4,13 +4,13 @@ import {
   Column,
   CreateDateColumn,
   Index,
-} from 'typeorm';
+} from "typeorm";
 
 /**
  * SEC-02: Persistent refresh token record for revocation support.
  * Each issued refresh token is stored here; logout / rotation marks it revoked.
  */
-@Entity('refresh_tokens')
+@Entity("refresh_tokens")
 export class RefreshToken {
   @PrimaryGeneratedColumn()
   id: number;
