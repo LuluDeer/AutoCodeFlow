@@ -1,7 +1,7 @@
-import { useParams } from 'react-router-dom';
-import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Spin, Progress, Typography } from 'antd';
+import { useParams, Link } from 'react-router-dom';
+import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Spin, Progress, Typography, Breadcrumb, Empty } from 'antd';
 import { useRequest } from 'ahooks';
-import { executorsApi, Executor, ExecutorMetrics, ExecutorExecution } from '../api/executors';
+import { executorsApi } from '../api/executors';
 import { useState } from 'react';
 
 const { Text } = Typography;
@@ -23,7 +23,7 @@ export default function ExecutorDetailPage() {
     { ready: !!id, refreshDeps: [id], pollingInterval: 30000 },
   );
 
-  const { data: executions, loading: loadingExecutions, refresh: refreshExecutions } = useRequest(
+  const { data: executions, loading: loadingExecutions } = useRequest(
     () => executorsApi.getExecutions(id!, { page: 1, limit: 20 }),
     { ready: !!id, refreshDeps: [id] },
   );
@@ -46,6 +46,12 @@ export default function ExecutorDetailPage() {
   if (loadingExecutor) return <Spin style={{ display: 'flex', justifyContent: 'center', marginTop: 100 }} />;
   if (!executor) return <div>执行器不存在</div>;
 
+  const breadcrumbItems = [
+    { title: <Link to="/dashboard">首页</Link> },
+    { title: <Link to="/executors">执行器管理</Link> },
+    { title: '执行器详情' },
+  ];
+
   const execColumns = [
     { title: '任务ID', dataIndex: 'taskId', key: 'taskId', width: 280 },
     { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (v: string) => (
@@ -58,6 +64,7 @@ export default function ExecutorDetailPage() {
 
   return (
     <div>
+      <Breadcrumb items={breadcrumbItems} style={{ marginBottom: 16 }} />
       <Card title="执行器详情" extra={
         <Button.Group>
           <Button onClick={() => { editForm.setFieldsValue(executor); setEditOpen(true); }}>编辑</Button>
@@ -117,15 +124,22 @@ export default function ExecutorDetailPage() {
         </Col>
         <Col span={12}>
           <Card title="性能统计（近7天）" loading={loadingMetrics}>
-            {metrics && (
+            {metrics ? (
               <Row gutter={16}>
                 <Col span={8}><Statistic title="总执行次数" value={metrics.sevenDayStats.totalExecutions} /></Col>
                 <Col span={8}>
-                  <Statistic title="成功率" value={metrics.sevenDayStats.successRate} suffix="%" valueStyle={{ color: '#3f8600' }} />
+                  <Statistic title="成功率" value={parseFloat(metrics.sevenDayStats.successRate)} suffix="%" valueStyle={{ color: '#3f8600' }} precision={1} />
                   <Text type="secondary" style={{ fontSize: 12 }}>成功 {metrics.sevenDayStats.successful} / 失败 {metrics.sevenDayStats.failed}</Text>
                 </Col>
-                <Col span={8}><Statistic title="平均耗时" value={metrics.sevenDayStats.averageDurationMs} suffix="ms" /></Col>
+                <Col span={8}><Statistic title="平均耗时" value={parseFloat(metrics.sevenDayStats.averageDurationMs)} suffix="ms" precision={0} /></Col>
               </Row>
+            ) : (
+              !loadingMetrics && (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description="暂无性能数据，执行任务后将在此显示统计信息"
+                />
+              )
             )}
           </Card>
         </Col>
@@ -167,6 +181,14 @@ export default function ExecutorDetailPage() {
           dataSource={executions?.items ?? []}
           loading={loadingExecutions}
           pagination={{ total: executions?.total, pageSize: 20 }}
+          locale={{
+            emptyText: (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="该执行器暂无历史执行记录"
+              />
+            ),
+          }}
         />
       </Card>
 

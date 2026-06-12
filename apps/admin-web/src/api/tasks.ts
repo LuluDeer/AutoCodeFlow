@@ -17,6 +17,9 @@ export interface Task {
   executorGroup?: string | null;
   executorTags?: string[] | null;
   dependencies?: Record<string, string> | null;
+  gitRepo?: string | null;
+  gitBranch?: string | null;
+  gitCommit?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -37,7 +40,7 @@ export interface TaskExecution {
 }
 
 export const tasksApi = {
-  list: (params?: { page?: number; pageSize?: number }) =>
+  list: (params?: { page?: number; pageSize?: number; name?: string; status?: string; runtime?: string; applicationId?: string }) =>
     client.get<any, any>('/tasks', { params }),
   get: (id: string) => client.get<any, Task>(`/tasks/${id}`),
   create: (data: Partial<Task>) => client.post<any, Task>('/tasks', data),
@@ -58,10 +61,10 @@ export const tasksApi = {
   versions: (id: string) => client.get<any, any>(`/tasks/${id}/versions`),
   pause: (id: string) => client.post<any, { success: boolean; message: string }>(`/tasks/${id}/pause`),
   resume: (id: string) => client.post<any, { success: boolean; message: string }>(`/tasks/${id}/resume`),
-  batchTrigger: (taskIds: string[]) => client.post('/tasks/batch/trigger', { taskIds }),
-  batchPause: (taskIds: string[]) => client.post('/tasks/batch/pause', { taskIds }),
-  batchResume: (taskIds: string[]) => client.post('/tasks/batch/resume', { taskIds }),
-  batchDelete: (taskIds: string[]) => client.post('/tasks/batch/delete', { taskIds }),
+  batchTrigger: (taskIds: string[]) => client.post('/tasks-batch/trigger', { taskIds }),
+  batchPause: (taskIds: string[]) => client.post('/tasks-batch/pause', { taskIds }),
+  batchResume: (taskIds: string[]) => client.post('/tasks-batch/resume', { taskIds }),
+  batchDelete: (taskIds: string[]) => client.post('/tasks-batch/delete', { taskIds }),
   updateGlue: (id: string, source: string, language?: string) =>
     client.put(`/tasks/${id}/glue`, { source, language }),
   schedulerStats: () =>

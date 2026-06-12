@@ -26,7 +26,7 @@ class NotifyClient:
 
     Usage::
 
-        client = NotifyClient(admin_api_url="http://localhost:3001")
+        client = NotifyClient(admin_api_url="http://localhost:3105")
         await client.notify(
             task_name="daily-report",
             message="Report generation completed",
@@ -35,7 +35,7 @@ class NotifyClient:
         )
     """
 
-    def __init__(self, admin_api_url: str = "http://localhost:3001", auth_token: Optional[str] = None):
+    def __init__(self, admin_api_url: str = "http://localhost:3105", auth_token: Optional[str] = None):
         self._base = admin_api_url.rstrip("/")
         self._token = auth_token
 

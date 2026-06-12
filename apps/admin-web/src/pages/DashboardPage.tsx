@@ -1,24 +1,31 @@
 import { useQuery } from '@tanstack/react-query';
-import { Row, Col, Card, Statistic, Table, Tag, Progress, Spin, Typography } from 'antd';
+import { Row, Col, Card, Statistic, Table, Tag, Progress, Spin, Typography, Space, Button } from 'antd';
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   SyncOutlined,
   CloudServerOutlined,
   UnorderedListOutlined,
+  PlusOutlined,
+  DesktopOutlined,
+  PlayCircleOutlined,
 } from '@ant-design/icons';
 import { metricsApi, RecentFailure, ExecutorStat } from '../api/metrics';
 import { tasksApi } from '../api/tasks';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { useNavigate } from 'react-router-dom';
 
 const { Title } = Typography;
 
 export default function DashboardPage() {
-  const { data: summary, isLoading: loadingSummary } = useQuery({
+  const navigate = useNavigate();
+  const { data: summaryResponse, isLoading: loadingSummary } = useQuery({
     queryKey: ['metrics-summary'],
     queryFn: () => metricsApi.getSummary(),
     refetchInterval: 30000,
   });
+
+  const summary = summaryResponse;
 
   const { data: trend = [], isLoading: loadingTrend } = useQuery({
     queryKey: ['metrics-trend'],
@@ -37,6 +44,9 @@ export default function DashboardPage() {
     queryFn: () => metricsApi.getRecentFailures(),
     refetchInterval: 30000,
   });
+
+  const successRate = summary?.successRate ?? 0;
+  const successRateColor = successRate >= 95 ? '#52c41a' : successRate >= 80 ? '#faad14' : '#ff4d4f';
 
   const { data: schedulerStats } = useQuery({
     queryKey: ['scheduler-stats'],
@@ -79,11 +89,66 @@ export default function DashboardPage() {
     },
   ];
 
+  const isAllEmpty =
+    !loadingSummary &&
+    (summary?.totalTasks ?? 0) === 0 &&
+    (summary?.totalExecutors ?? 0) === 0 &&
+    (summary?.executions?.total ?? 0) === 0;
+
   if (loadingSummary) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
 
   return (
     <div style={{ padding: '0 4px' }}>
       <Title level={4} style={{ marginBottom: 24 }}>数据看板</Title>
+
+      {/* 空状态快速开始引导 */}
+      {isAllEmpty && (
+        <Card style={{ marginBottom: 24, background: 'linear-gradient(135deg, #f0f5ff 0%, #e6f7ff 100%)', border: '1px solid #91caff' }}>
+          <div style={{ textAlign: 'center', padding: '16px 0 8px' }}>
+            <Typography.Title level={4} style={{ color: '#1677ff', marginBottom: 8 }}>欢迎使用 AutoCodeFlow 🎉</Typography.Title>
+            <Typography.Text type="secondary">系统暂无数据，按照以下步骤快速开始吧</Typography.Text>
+          </div>
+          <Row gutter={[24, 16]} style={{ marginTop: 24 }} justify="center">
+            <Col xs={24} sm={8}>
+              <Card
+                size="small"
+                hoverable
+                style={{ textAlign: 'center', cursor: 'pointer' }}
+                onClick={() => navigate('/tasks/new')}
+              >
+                <PlusOutlined style={{ fontSize: 28, color: '#1677ff', marginBottom: 8, display: 'block' }} />
+                <Typography.Text strong>第 1 步：创建任务</Typography.Text>
+                <div><Typography.Text type="secondary" style={{ fontSize: 12 }}>配置调度规则和执行逻辑</Typography.Text></div>
+                <Button type="primary" size="small" style={{ marginTop: 12 }} onClick={(e) => { e.stopPropagation(); navigate('/tasks/new'); }}>去创建</Button>
+              </Card>
+            </Col>
+            <Col xs={24} sm={8}>
+              <Card
+                size="small"
+                hoverable
+                style={{ textAlign: 'center', cursor: 'pointer' }}
+                onClick={() => navigate('/executors/install')}
+              >
+                <DesktopOutlined style={{ fontSize: 28, color: '#52c41a', marginBottom: 8, display: 'block' }} />
+                <Typography.Text strong>第 2 步：注册执行器</Typography.Text>
+                <div><Typography.Text type="secondary" style={{ fontSize: 12 }}>在目标服务器安装执行器程序</Typography.Text></div>
+                <Button size="small" style={{ marginTop: 12 }} onClick={(e) => { e.stopPropagation(); navigate('/executors/install'); }}>去安装</Button>
+              </Card>
+            </Col>
+            <Col xs={24} sm={8}>
+              <Card
+                size="small"
+                style={{ textAlign: 'center', opacity: 0.6 }}
+              >
+                <PlayCircleOutlined style={{ fontSize: 28, color: '#fa8c16', marginBottom: 8, display: 'block' }} />
+                <Typography.Text strong>第 3 步：触发执行</Typography.Text>
+                <div><Typography.Text type="secondary" style={{ fontSize: 12 }}>手动触发或等待调度器自动执行</Typography.Text></div>
+                <Button size="small" disabled style={{ marginTop: 12 }}>完成前两步后可用</Button>
+              </Card>
+            </Col>
+          </Row>
+        </Card>
+      )}
 
       {/* 统计卡片 */}
       <Row gutter={[16, 16]}>
@@ -139,10 +204,10 @@ export default function DashboardPage() {
           <Card>
             <Statistic
               title="成功率"
-              value={summary?.successRate ?? 0}
+              value={successRate}
               suffix="%"
               precision={1}
-              valueStyle={{ color: (summary?.successRate ?? 0) >= 90 ? '#52c41a' : '#faad14' }}
+              valueStyle={{ color: successRateColor }}
             />
           </Card>
         </Col>
@@ -180,7 +245,7 @@ export default function DashboardPage() {
                 <Col style={{ textAlign: 'center' }}>
                   <div style={{ color: '#888', fontSize: 12 }}>运行中</div>
                   <div style={{ fontSize: 24, color: '#1677ff' }}>
-                    <SyncOutlined spin={summary?.executions.running > 0} /> {summary?.executions.running ?? 0}
+                    <SyncOutlined spin={(summary?.executions?.running ?? 0) > 0} /> {summary?.executions?.running ?? 0}
                   </div>
                 </Col>
                 <Col style={{ textAlign: 'center' }}>

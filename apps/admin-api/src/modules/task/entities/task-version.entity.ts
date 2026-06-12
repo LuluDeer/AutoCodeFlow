@@ -1,8 +1,13 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+} from "typeorm";
 
-@Entity('task_versions')
+@Entity("task_versions")
 export class TaskVersion {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryGeneratedColumn("uuid")
   id: string;
 
   @Column()
@@ -14,7 +19,7 @@ export class TaskVersion {
   @Column({ nullable: true })
   gitCommit: string;
 
-  @Column({ type: 'jsonb' })
+  @Column({ type: "jsonb" })
   snapshot: Record<string, any>;
 
   @Column({ nullable: true })

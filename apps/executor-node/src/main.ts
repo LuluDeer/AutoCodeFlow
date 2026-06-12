@@ -2,7 +2,7 @@ import express from 'express';
 import * as http from 'http';
 import { config } from './config';
 import { logger } from './logger';
-import { getRunningCount } from './scheduler';
+import { getRunningCount, startHeartbeat } from './scheduler';
 import { startCallbackThread, stopCallbackThread } from './callback';
 import { startLogCleanup, stopLogCleanup } from './file-logger';
 import { initAdminClients, post } from './admin-client';
@@ -11,6 +11,7 @@ import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
 import { configRouter } from './routes/config';
 import { logsRouter, executorAuthMiddleware } from './routes/logs';
+import { deployRouter } from './routes/deploy';
 import { verifyToken } from './middleware/auth';
 
 const app = express();
@@ -19,6 +20,7 @@ app.use(express.json());
 app.use('/', healthRouter);
 app.use('/api', verifyToken, executeRouter);
 app.use('/api', verifyToken, logsRouter);
+app.use('/api', verifyToken, deployRouter);
 app.use('/api', configRouter);
 
 async function registerExecutor() {

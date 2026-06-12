@@ -1,7 +1,7 @@
-import { MigrationInterface, QueryRunner } from 'typeorm';
+import { MigrationInterface, QueryRunner } from "typeorm";
 
 export class RefreshTokenTable1717473142680 implements MigrationInterface {
-  name = 'RefreshTokenTable1717473142680';
+  name = "RefreshTokenTable1717473142680";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

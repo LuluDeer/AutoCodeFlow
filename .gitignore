@@ -50,3 +50,8 @@ apps/executor-*/tasks/
 # 缓存
 .cache/
 .temp/
+
+# 工具运行时文件
+.codegraph/
+.env.isolated
+*.pid

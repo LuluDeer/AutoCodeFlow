@@ -64,7 +64,7 @@ services:
     mem_limit: 768m
     cpus: '1.0'
     ports:
-      - '3001:3001'
+      - '3105:3105'
     environment:
       NODE_ENV: production
       DB_HOST: ${DB_HOST:-postgres}
@@ -75,8 +75,10 @@ services:
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
       JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
       EXECUTOR_SECRET: ${EXECUTOR_SECRET}
       ADMIN_WEB_ORIGIN: ${ADMIN_WEB_ORIGIN:-http://localhost}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:5173}
       AI_PROVIDER: ${AI_PROVIDER:-disabled}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       APP_PROTOCOL: ${APP_PROTOCOL:-http}
@@ -86,7 +88,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:3001/health']
+      test: ['CMD', 'curl', '-f', 'http://localhost:3105/health']
       interval: 30s
       timeout: 10s
       retries: 3
@@ -111,8 +113,8 @@ services:
       admin-api:
         condition: service_healthy
     environment:
-      REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:3001}
-      VITE_API_URL_INTERNAL: ${VITE_API_URL_INTERNAL:-http://localhost:3001}
+      REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:3105}
+      VITE_API_URL_INTERNAL: ${VITE_API_URL_INTERNAL:-http://localhost:3105}
       VITE_API_URL_EXTERNAL: ${VITE_API_URL_EXTERNAL:-}
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost/health']
@@ -144,8 +146,8 @@ services:
       PORT: 8001
       EXECUTOR_ADDRESS: executor-python:8001
       EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_PYTHON_PUBLIC_ADDRESS:-executor-python:8001}
-      ADMIN_API_URL: http://admin-api:3001
-      ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3001}
+      ADMIN_API_URL: http://admin-api:3105
+      ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3105}
       ADMIN_API_URL_EXTERNAL: ${ADMIN_API_URL_EXTERNAL:-}
       EXECUTOR_SECRET: ${EXECUTOR_SECRET}
       WORK_DIR: /data/tasks
@@ -185,8 +187,8 @@ services:
       PORT: 8002
       EXECUTOR_ADDRESS: executor-node:8002
       EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_NODE_PUBLIC_ADDRESS:-executor-node:8002}
-      ADMIN_API_URL: http://admin-api:3001
-      ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3001}
+      ADMIN_API_URL: http://admin-api:3105
+      ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3105}
       ADMIN_API_URL_EXTERNAL: ${ADMIN_API_URL_EXTERNAL:-}
       EXECUTOR_SECRET: ${EXECUTOR_SECRET}
       WORK_DIR: /data/tasks
@@ -230,7 +232,7 @@ services:
     volumes:
       - pypi_data:/data/packages
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:8003/health']
+      test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:8003/health")']
       interval: 30s
       timeout: 10s
       retries: 3
@@ -253,7 +255,7 @@ services:
       - npm_data:/verdaccio/storage
       - ./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:4873/-/health']
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:4873/-/ping']
       interval: 30s
       timeout: 10s
       retries: 3

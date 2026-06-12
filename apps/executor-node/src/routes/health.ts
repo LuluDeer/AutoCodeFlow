@@ -1,16 +1,46 @@
 import { Router, Request, Response } from 'express';
 import * as os from 'os';
 import * as fs from 'fs';
+import * as http from 'http';
 import { config } from '../config';
 import { runningCount } from '../scheduler';
 import { taskWorkerManager } from '../task-worker';
+
+// Track last successful heartbeat time
+let lastHeartbeatTime: string | null = null;
+let adminApiReachable: boolean | null = null;
+
+export function recordHeartbeat(success: boolean): void {
+  if (success) lastHeartbeatTime = new Date().toISOString();
+  adminApiReachable = success;
+}
+
+async function checkAdminApi(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const adminUrl = new URL(config.adminApiUrl || 'http://localhost:3000');
+    const reqOptions = {
+      hostname: adminUrl.hostname,
+      port: adminUrl.port || 80,
+      path: '/api/health',
+      method: 'GET',
+      timeout: 3000,
+    };
+    const req = http.request(reqOptions, (res) => {
+      resolve(res.statusCode !== undefined && res.statusCode < 500);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.end();
+  });
+}
 
 export const healthRouter = Router();
 
 function getDiskUsage(): number {
   try {
-    const stats = fs.statfs('/');
-    const used = (stats.total - stats.available) / stats.total;
+    // statfsSync fields: blocks (total), bfree/bavail (free blocks)
+    const stats = fs.statfsSync('/');
+    const used = (stats.blocks - stats.bavail) / stats.blocks;
     return used * 100;
   } catch {
     return -1;
@@ -23,9 +53,13 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
   const cpuUsage = os.loadavg()[0];
   const memUsage = ((totalMem - freeMem) / totalMem) * 100;
   const diskUsage = await getDiskUsage();
-  
+
+  // Check admin-api connectivity and update cached state
+  const reachable = await checkAdminApi();
+  adminApiReachable = reachable;
+
   const isHealthy = cpuUsage < 80 && memUsage < 80 && (diskUsage < 90 || diskUsage < 0);
-  
+
   res.json({
     status: isHealthy ? 'healthy' : 'degraded',
     appName: config.appName,
@@ -33,9 +67,12 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
     cpuUsage: Math.round(cpuUsage * 100) / 100,
     memUsage: Math.round(memUsage * 100) / 100,
     diskUsage: diskUsage >= 0 ? Math.round(diskUsage * 100) / 100 : undefined,
-    runningTasks: runningCount,
+    runningTasks: runningCount(),
     maxConcurrentTasks: config.maxConcurrentTasks,
     workerStats: taskWorkerManager.getStats(),
+    adminApiReachable: reachable,
+    tokenValid: !!(process.env.EXECUTOR_SECRET || process.env.EXECUTOR_SHARED_TOKEN),
+    lastHeartbeat: lastHeartbeatTime,
     timestamp: new Date().toISOString(),
   });
 });
