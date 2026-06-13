@@ -19,6 +19,7 @@ import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { AiService } from "../ai/ai.service";
 
 @Injectable()
 export class ApplicationService implements OnModuleInit {
@@ -28,6 +29,7 @@ export class ApplicationService implements OnModuleInit {
     @InjectRepository(Application)
     private readonly repo: Repository<Application>,
     private readonly moduleRef: ModuleRef,
+    private readonly aiService: AiService,
   ) {}
 
   private _taskService: import('../task/task.service').TaskService | null = null;
@@ -56,6 +58,18 @@ export class ApplicationService implements OnModuleInit {
 
   async findByName(name: string): Promise<Application | null> {
     return this.repo.findOne({ where: { name } });
+  }
+
+  /**
+   * Like findByName but also loads the webhookSecret column (excluded by default via select:false).
+   * Use only when HMAC signature validation is needed — never expose the secret in API responses.
+   */
+  async findByNameWithSecret(name: string): Promise<Application | null> {
+    return this.repo
+      .createQueryBuilder('app')
+      .addSelect('app.webhookSecret')
+      .where('app.name = :name', { name })
+      .getOne();
   }
 
   async create(dto: CreateApplicationDto): Promise<Application> {
@@ -100,6 +114,81 @@ export class ApplicationService implements OnModuleInit {
     const app = await this.findById(id);
     await this.repo.remove(app);
     this.logger.log(`Application removed: ${app.name}`);
+  }
+
+  /**
+   * AI health analysis for an application.
+   * Aggregates execution stats across all tasks belonging to this app,
+   * then calls the AI service to produce a health assessment.
+   */
+  async analyzeHealth(appId: string): Promise<{
+    appId: string;
+    appName: string;
+    analysis: string;
+    stats: {
+      totalTasks: number;
+      avgSuccessRate: number;
+      avgDuration: number;
+      criticalTasks: string[];
+    };
+  }> {
+    const app = await this.findById(appId);
+
+    // Gather task-level stats via TaskService
+    let tasks: Array<{ id: string; name: string }> = [];
+    if (this._taskService) {
+      const result = await this._taskService.findAll({
+        applicationId: appId,
+        page: 1,
+        pageSize: 100,
+      } as any);
+      tasks = (result.list || result) as Array<{ id: string; name: string }>;
+    }
+
+    // Gather stats for each task concurrently
+    const statsResults = await Promise.allSettled(
+      tasks.map((t) =>
+        this._taskService
+          ? this._taskService.getExecutionStats(t.id)
+          : Promise.resolve({ successRate: 100, avgDuration: 0, totalRuns: 0 }),
+      ),
+    );
+
+    const statsArray = statsResults
+      .map((r, i) => (r.status === 'fulfilled' ? { ...r.value, taskId: tasks[i].id, taskName: tasks[i].name } : null))
+      .filter(Boolean) as Array<{ taskId: string; taskName: string; successRate: number; avgDuration: number; totalRuns: number }>;
+
+    const avgSuccessRate =
+      statsArray.length > 0
+        ? Math.round(statsArray.reduce((sum, s) => sum + s.successRate, 0) / statsArray.length * 10) / 10
+        : 100;
+    const avgDuration =
+      statsArray.length > 0
+        ? Math.round(statsArray.reduce((sum, s) => sum + s.avgDuration, 0) / statsArray.length)
+        : 0;
+    const criticalTasks = statsArray
+      .filter((s) => s.successRate < 50 && s.totalRuns > 3)
+      .map((s) => s.taskName);
+
+    const analysis = await this.aiService.analyzeAppHealth(app.name, {
+      totalTasks: tasks.length,
+      avgSuccessRate,
+      avgDurationMs: avgDuration,
+      criticalTasks,
+      perTask: statsArray.map((s) => ({
+        name: s.taskName,
+        successRate: s.successRate,
+        avgDuration: s.avgDuration,
+        totalRuns: s.totalRuns,
+      })),
+    });
+
+    return {
+      appId: app.id,
+      appName: app.name,
+      analysis: analysis || 'AI analysis not available (AI provider not configured).',
+      stats: { totalTasks: tasks.length, avgSuccessRate, avgDuration, criticalTasks },
+    };
   }
 
   async deployFromGit(

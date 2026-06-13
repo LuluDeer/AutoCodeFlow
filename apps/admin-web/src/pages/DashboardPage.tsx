@@ -176,6 +176,10 @@ export default function DashboardPage() {
     ? Math.round((summary.onlineExecutors / summary.totalExecutors) * 100)
     : 0) : 0;
 
+  const todayFailed = summary ? (summary.todayRuns > 0
+    ? Math.round(summary.todayRuns * (1 - successRate / 100))
+    : 0) : 0;
+
   const statCards = [
     {
       title: '今日执行',
@@ -191,6 +195,13 @@ export default function DashboardPage() {
       color: successRate >= 90 ? '#52c41a' : successRate >= 70 ? '#fa8c16' : '#ff4d4f',
       suffix: '%',
       precision: 1,
+    },
+    {
+      title: '今日失败',
+      value: todayFailed,
+      icon: <CloseCircleOutlined />,
+      color: todayFailed > 0 ? '#ff4d4f' : '#8c8c8c',
+      suffix: '次',
     },
     {
       title: '运行中',
@@ -309,7 +320,7 @@ export default function DashboardPage() {
       {/* 统计卡片 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
         {statCards.map(card => (
-          <Col xs={24} sm={12} lg={6} key={card.title}>
+          <Col xs={24} sm={12} lg={5} key={card.title}>
             <Card styles={{ body: { padding: '20px 24px' } }} style={{ borderTop: `3px solid ${card.color}` }}>
               <Statistic
                 title={<Text style={{ fontSize: 13, color: '#888' }}>{card.title}</Text>}

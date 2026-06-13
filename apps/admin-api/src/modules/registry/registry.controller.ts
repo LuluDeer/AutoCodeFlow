@@ -66,7 +66,9 @@ export class RegistryController {
 
   /** Parse PyPI simple index HTML → list of package names */
   private parsePypiIndex(html: string): string[] {
-    const matches = html.matchAll(/<a[^>]*>([^<]+)<\/a>/gi);
+    // Use [\s\S]*? (non-greedy, dotall-equivalent) so attributes that span
+    // multiple lines in the <a> tag are still matched correctly.
+    const matches = html.matchAll(/<a[\s\S]*?>([^<]+)<\/a>/gi);
     const names: string[] = [];
     for (const m of matches) {
       const name = m[1].trim();

@@ -12,6 +12,8 @@ import {
   Logger,
   Query,
   BadRequestException,
+  UnauthorizedException,
+  Headers,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import {
@@ -131,16 +133,41 @@ export class ApplicationController {
   @ApiOperation({
     summary: "Version release webhook",
     description:
-      "Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments.",
+      "Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments. If the application has a webhookSecret configured, the caller must include a valid X-Hub-Signature-256 header (sha256=<hex>).",
   })
-  async webhook(@Body() dto: AppReleaseWebhookDto) {
+  async webhook(
+    @Body() dto: AppReleaseWebhookDto,
+    @Headers("x-hub-signature-256") signature?: string,
+  ) {
     const logger = new Logger("ReleaseWebhook");
 
-    // Find application by name
-    const targetApp = await this.svc.findByName(dto.appName);
+    // Find application by name (include webhookSecret for HMAC validation)
+    const targetApp = await this.svc.findByNameWithSecret(dto.appName);
     if (!targetApp) {
       logger.warn(`Webhook: no application found with name "${dto.appName}"`);
       return { ok: true, message: "No matching application" };
+    }
+
+    // HMAC-SHA256 signature verification (same convention as GitHub webhooks)
+    // If the application has a webhookSecret, the X-Hub-Signature-256 header is required.
+    if (targetApp.webhookSecret) {
+      if (!signature) {
+        logger.warn(`Webhook: missing X-Hub-Signature-256 header for app "${dto.appName}"`);
+        throw new UnauthorizedException('X-Hub-Signature-256 header is required');
+      }
+      const { createHmac, timingSafeEqual } = await import('crypto');
+      const body = Buffer.from(JSON.stringify(dto));
+      const expected = 'sha256=' + createHmac('sha256', targetApp.webhookSecret).update(body).digest('hex');
+      const expectedBuf = Buffer.from(expected);
+      const receivedBuf = Buffer.from(signature);
+      // Constant-time comparison to prevent timing attacks
+      const valid =
+        expectedBuf.length === receivedBuf.length &&
+        timingSafeEqual(expectedBuf, receivedBuf);
+      if (!valid) {
+        logger.warn(`Webhook: invalid signature for app "${dto.appName}"`);
+        throw new UnauthorizedException('Invalid webhook signature');
+      }
     }
 
     // Update version / git metadata
@@ -213,6 +240,15 @@ export class ApplicationController {
   async syncTasks(@Param("id") id: string) {
     const count = await this.svc.syncTasksFromManifest(id);
     return { ok: true, registeredCount: count };
+  }
+
+  @Post(":id/analyze")
+  @ApiOperation({
+    summary: "AI application health analysis",
+    description: "Aggregate execution stats across all tasks in this app and run AI health assessment",
+  })
+  async analyzeHealth(@Param("id") id: string) {
+    return this.svc.analyzeHealth(id);
   }
 
   @Post(":id/rollback/:deploymentId")

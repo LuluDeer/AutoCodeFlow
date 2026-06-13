@@ -7,6 +7,7 @@ import { WecomChannel } from "./channels/wecom.channel";
 import { DingtalkChannel } from "./channels/dingtalk.channel";
 import { EmailChannel } from "./channels/email.channel";
 import { SlackChannel } from "./channels/slack.channel";
+import { WebhookChannel } from "./channels/webhook.channel";
 
 @Module({
   imports: [ConfigModule],
@@ -18,6 +19,7 @@ import { SlackChannel } from "./channels/slack.channel";
     DingtalkChannel,
     EmailChannel,
     SlackChannel,
+    WebhookChannel,
   ],
   exports: [NotificationService, NotificationConfigService],
 })

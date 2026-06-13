@@ -3,6 +3,7 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { ApplicationService } from "../application.service";
 import { Application, ApplicationStatus } from "../entities/application.entity";
 import { ModuleRef } from "@nestjs/core";
+import { AiService } from "../../ai/ai.service";
 
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findOne: jest.fn(),
@@ -25,6 +26,7 @@ describe("ApplicationService", () => {
         ApplicationService,
         { provide: getRepositoryToken(Application), useValue: appRepo },
         { provide: ModuleRef, useValue: { get: jest.fn() } },
+        { provide: AiService, useValue: { analyzeAppHealth: jest.fn().mockResolvedValue({ aiAnalysis: '' }) } },
       ],
     }).compile();
     service = module.get(ApplicationService);

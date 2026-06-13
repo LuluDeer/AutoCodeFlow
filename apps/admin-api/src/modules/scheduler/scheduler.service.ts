@@ -77,31 +77,49 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * REC-01: Periodically find executions stuck in RUNNING (e.g. from a crash)
    * and mark them FAILED so the UI never shows permanently-running tasks.
    * Runs on startup and every 10 minutes thereafter.
+   *
+   * Timeout logic:
+   * - If the associated task has a timeout > 0, use that as the stale threshold.
+   * - Otherwise fall back to a 1-hour global grace window.
    */
   @Cron('0 */10 * * * *')
   async recoverStaleExecutions() {
     const runningExecs = await this.execRepo.find({
       where: { status: ExecutionStatus.RUNNING },
+      relations: ['task'],
     });
     if (!runningExecs.length) return;
 
     const now = Date.now();
-    // Use a1-hour grace window (no per-execution timeout stored on the entity)
-    const STALE_MS = 60 * 60 * 1000;
+    const DEFAULT_STALE_MS = 60 * 60 * 1000; // 1-hour fallback
     let recovered = 0;
     for (const exec of runningExecs) {
       const anchor = exec.startTime ?? exec.createdAt;
       if (!anchor) continue;
-      if (now - anchor.getTime() > STALE_MS) {
+
+      // Prefer per-task timeout (seconds → ms); fall back to global default
+      const taskTimeoutSec = (exec as any).task?.timeout;
+      const staleMs =
+        taskTimeoutSec && taskTimeoutSec > 0
+          ? taskTimeoutSec * 1000
+          : DEFAULT_STALE_MS;
+
+      if (now - anchor.getTime() > staleMs) {
         exec.status = ExecutionStatus.FAILED;
         exec.endTime = new Date();
-        exec.errorMessage = 'Execution did not complete (recovered on node restart)';
+        exec.errorMessage =
+          taskTimeoutSec && taskTimeoutSec > 0
+            ? `Execution timed out after ${taskTimeoutSec}s`
+            : 'Execution did not complete (recovered on node restart)';
         await this.execRepo.save(exec);
         recovered++;
+        this.logger.warn(
+          `REC-01: execution ${exec.id} (task=${exec.taskId}) timed out after ${staleMs / 1000}s`,
+        );
       }
     }
     if (recovered > 0) {
-      this.logger.warn(`REC-01: recovered ${recovered} stale RUNNING execution(s) on startup`);
+      this.logger.warn(`REC-01: recovered ${recovered} stale RUNNING execution(s)`);
     }
   }
 

@@ -3,11 +3,20 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { AuditService } from "../audit.service";
 import { AuditLog } from "../entities/audit-log.entity";
 
+const makeQb = () => ({
+  orderBy: jest.fn().mockReturnThis(),
+  andWhere: jest.fn().mockReturnThis(),
+  skip: jest.fn().mockReturnThis(),
+  take: jest.fn().mockReturnThis(),
+  getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+});
+
 const makeRepo = () => ({
   create: jest.fn((d: any) => d),
   save: jest.fn((e: any) => Promise.resolve(e)),
   find: jest.fn(),
   delete: jest.fn().mockResolvedValue({ affected: 0 }),
+  createQueryBuilder: jest.fn(() => makeQb()),
 });
 
 describe("AuditService", () => {
@@ -23,6 +32,79 @@ describe("AuditService", () => {
       ],
     }).compile();
     service = module.get(AuditService);
+  });
+
+  describe("findAll", () => {
+    it("returns paginated results", async () => {
+      repo.find.mockResolvedValue([]);
+      // createQueryBuilder is used internally; mock it
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      const result = await service.findAll({ page: 1, pageSize: 10 });
+      expect(result).toEqual({ data: [], total: 0 });
+      expect(qbMock.getManyAndCount).toHaveBeenCalled();
+    });
+
+    it("applies action filter", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ action: 'auth.login' });
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('action'),
+        expect.objectContaining({ action: expect.stringContaining('auth') }),
+      );
+    });
+
+    it("applies userId filter", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ userId: 42 });
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        'log.userId = :userId',
+        { userId: 42 },
+      );
+    });
+
+    it("rejects invalid action characters", async () => {
+      await expect(service.findAll({ action: "inject'xss" })).rejects.toThrow(
+        'Invalid action parameter',
+      );
+    });
+
+    it("caps pageSize at 100", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ pageSize: 9999 });
+      expect(qbMock.take).toHaveBeenCalledWith(100);
+    });
   });
 
   describe("log", () => {

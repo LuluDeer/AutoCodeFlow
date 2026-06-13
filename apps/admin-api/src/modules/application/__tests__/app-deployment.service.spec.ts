@@ -123,8 +123,8 @@ describe("AppDeploymentService", () => {
       expect(executorService.findOne).toHaveBeenCalledWith("exec-1");
     });
 
-    it("throws BadRequestException when app has no gitRepo", async () => {
-      appService.findById.mockResolvedValue({ ...mockApp, gitRepo: undefined } as any);
+    it("throws BadRequestException when app already has an in-flight deployment", async () => {
+      repo.findOne.mockResolvedValue({ id: "deploy-existing", status: "deploying" });
       await expect(
         service.deploy("app-1", { executorId: "exec-1", runMode: RunMode.DAEMON }),
       ).rejects.toThrow(BadRequestException);
