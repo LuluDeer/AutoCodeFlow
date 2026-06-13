@@ -6,12 +6,16 @@ import {
 import {
   ThunderboltOutlined, ClockCircleOutlined, ArrowLeftOutlined,
   InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined,
+  CodeOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 import { CronHelper } from '../components/CronHelper';
+import ParamsEditor from '../components/ParamsEditor';
+import GlueEditor from '../components/GlueEditor';
+import AlarmConfig from '../components/AlarmConfig';
 
 const { Title, Text } = Typography;
 
@@ -73,6 +77,9 @@ export default function TaskFormPage() {
   const [saving, setSaving] = useState(false);
   const [loadingTask, setLoadingTask] = useState(isEdit);
   const [showCronHelper, setShowCronHelper] = useState(false);
+  // Glue: createdTaskId is set after create so GlueEditor can save to the real task id
+  const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
+  const [savedRuntime, setSavedRuntime] = useState('python');
 
   useEffect(() => {
     executorsApi.getGroups().then(setGroups).catch(() => message.warning('获取执行器分组失败'));
@@ -92,13 +99,13 @@ export default function TaskFormPage() {
     setLoadingTask(true);
     tasksApi.get(editId)
       .then((task) => {
-        // Determine executorMode from task fields
         let mode: 'auto' | 'group' | 'pinned' | 'broadcast' = 'auto';
         if (task.executeMode === 'broadcast') mode = 'broadcast';
         else if (task.executorAppName) mode = 'pinned';
         else if (task.executorGroup || (task.executorTags && task.executorTags.length > 0)) mode = 'group';
         setExecutorMode(mode);
         setTriggerType(task.triggerType || 'manual');
+        setSavedRuntime(task.runtime || 'python');
         form.setFieldsValue({
           name: task.name,
           description: task.description,
@@ -113,6 +120,9 @@ export default function TaskFormPage() {
           executorAppName: task.executorAppName,
           executorGroup: task.executorGroup,
           executorTags: task.executorTags,
+          params: task.params ?? {},
+          alarmEmail: task.alarmEmail,
+          alarmChannels: task.alarmChannels,
         });
       })
       .catch(() => message.error('加载任务失败'))
@@ -126,11 +136,21 @@ export default function TaskFormPage() {
     } catch (_err) {}
   };
 
+  const handleStep1Next = async () => {
+    try {
+      const fields = ['triggerType'];
+      if (triggerType === 'cron') fields.push('cronExpression');
+      if (triggerType === 'fixed_rate') fields.push('fixedRate');
+      if (executorMode === 'pinned') fields.push('executorAppName');
+      await form.validateFields(fields);
+      setStep(2);
+    } catch (_err) {}
+  };
+
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
       setSaving(true);
-      // Map UI executorMode → backend executeMode + executor selector fields
       const payload = { ...values };
       if (executorMode === 'broadcast') {
         payload.executeMode = 'broadcast';
@@ -142,11 +162,9 @@ export default function TaskFormPage() {
         delete payload.executorAppName;
       } else if (executorMode === 'pinned') {
         payload.executeMode = 'single';
-        // executorAppName already set from form values
         delete payload.executorGroup;
         delete payload.executorTags;
       } else {
-        // auto
         payload.executeMode = 'single';
         delete payload.executorGroup;
         delete payload.executorTags;
@@ -157,9 +175,11 @@ export default function TaskFormPage() {
         message.success('任务更新成功');
         nav(`/tasks/${editId}`);
       } else {
-        await tasksApi.create(payload);
-        message.success('任务创建成功');
-        nav('/tasks');
+        const created = await tasksApi.create(payload);
+        message.success('任务创建成功，可在下方编辑 Glue 脚本（可选）');
+        setSavedRuntime(payload.runtime || 'python');
+        setCreatedTaskId(created.id);
+        setStep(3);
       }
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) return;
@@ -174,8 +194,10 @@ export default function TaskFormPage() {
     return <div style={{ display: 'flex', justifyContent: 'center', marginTop: 100 }}><Spin size="large" tip="加载任务数据..." /></div>;
   }
 
+  const glueTaskId = createdTaskId || (isEdit ? editId : null);
+
   return (
-    <div style={{ maxWidth: 680}}>
+    <div style={{ maxWidth: 720 }}>
       <Space style={{ marginBottom: 20 }}>
         <Button icon={<ArrowLeftOutlined />} type="text" onClick={() => nav(-1)} />
         <Title level={4} style={{ margin: 0 }}>{isEdit ? '编辑任务' : '创建任务'}</Title>
@@ -187,18 +209,20 @@ export default function TaskFormPage() {
         items={[
           { title: '基本配置', icon: <ThunderboltOutlined /> },
           { title: '触发 & 执行器', icon: <ClockCircleOutlined /> },
+          { title: '参数配置', icon: <ApartmentOutlined /> },
+          { title: 'Glue 脚本', icon: <CodeOutlined />, description: '可选' },
         ]}
       />
 
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ triggerType:'manual', runtime: 'python', timeout: 300, maxRetry: 3 }}
+        initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3 }}
         onValuesChange={(changed) => {
           if (changed.triggerType) setTriggerType(changed.triggerType);
         }}
       >
-        {/* Step 0:基本配置 */}
+        {/* Step 0: 基本配置 */}
         {step === 0 && (
           <Card>
             <Form.Item
@@ -265,7 +289,6 @@ export default function TaskFormPage() {
         {/* Step 1: 触发 & 执行器 */}
         {step === 1 && (
           <Card>
-            {/* Trigger section */}
             <Form.Item name="triggerType" label="触发方式">
               <Radio.Group>
                 <Space direction="vertical">
@@ -315,7 +338,6 @@ export default function TaskFormPage() {
 
             <Divider style={{ margin: '16px 0' }} />
 
-            {/* Executor selection — card-style radio for clarity */}
             <Form.Item label="执行器策略" required
               tooltip={{ title: '控制任务如何分配到执行器节点', icon: <InfoCircleOutlined /> }}>
               <Radio.Group
@@ -348,7 +370,6 @@ export default function TaskFormPage() {
               </Radio.Group>
             </Form.Item>
 
-            {/* Pinned mode: select a specific executor by appName */}
             {executorMode === 'pinned' && (
               <Form.Item name="executorAppName" label="指定执行器" required
                 rules={[{ required: true, message: '请选择执行器' }]}
@@ -365,7 +386,6 @@ export default function TaskFormPage() {
               </Form.Item>
             )}
 
-            {/* Group mode: show group + tags selectors */}
             {executorMode === 'group' && (
               <>
                 <Form.Item name="executorGroup" label="执行器分组"
@@ -398,10 +418,60 @@ export default function TaskFormPage() {
             <Divider />
             <Space>
               <Button onClick={() => setStep(0)}>上一步</Button>
+              <Button type="primary" onClick={handleStep1Next}>下一步：参数配置</Button>
+            </Space>
+          </Card>
+        )}
+
+        {/* Step 2: 参数配置 */}
+        {step === 2 && (
+          <Card>
+            <Alert
+              type="info"
+              showIcon
+              message="任务默认参数"
+              description="以下参数会在每次执行时以环境变量 AUTOFLOW_<KEY> 的形式注入到任务中。触发时可传入同名参数覆盖默认值。"
+              style={{ marginBottom: 20 }}
+            />
+            <Form.Item name="params" label="默认参数">
+              <ParamsEditor />
+            </Form.Item>
+
+            <Divider style={{ margin: '20px 0 16px' }} />
+            <div style={{ marginBottom: 8 }}>
+              <Typography.Text strong>告警配置</Typography.Text>
+            </div>
+            <AlarmConfig />
+
+            <Divider />
+            <Space>
+              <Button onClick={() => setStep(1)}>上一步</Button>
               <Button type="primary" onClick={handleSubmit} loading={saving}
                 icon={<ThunderboltOutlined />}>
                 {isEdit ? '保存更改' : '创建任务'}
               </Button>
+            </Space>
+          </Card>
+        )}
+
+        {/* Step 3: Glue 脚本（创建后可选） */}
+        {step === 3 && glueTaskId && (
+          <Card>
+            <Alert
+              type="success"
+              showIcon
+              message="任务已创建成功！"
+              description="你可以在下方编写 Glue 脚本（可选）。Glue 脚本是一段在执行器节点上直接运行的代码，无需关联代码仓库。"
+              style={{ marginBottom: 20 }}
+            />
+            <GlueEditor
+              taskId={glueTaskId}
+              taskRuntime={savedRuntime}
+            />
+            <Divider />
+            <Space>
+              <Button type="primary" onClick={() => nav(`/tasks/${glueTaskId}`)}>完成，前往任务详情</Button>
+              <Button onClick={() => nav('/tasks')}>跳过，返回任务列表</Button>
             </Space>
           </Card>
         )}

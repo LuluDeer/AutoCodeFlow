@@ -1,17 +1,20 @@
 import { useState } from 'react';
 import {
   Card, Descriptions, Tag, Typography, Button, Space, Table, Badge, Tabs,
-  Spin, Empty, message, Popconfirm, Tooltip,
+  Spin, Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
   PlayCircleOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
-  EyeOutlined, ClockCircleOutlined, StopOutlined,
+  EyeOutlined, ClockCircleOutlined, StopOutlined, RobotOutlined, CodeOutlined,
+  CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useRequest } from 'ahooks';
 import { tasksApi, TaskExecution } from '../api/tasks';
+import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg } from '../utils/error';
+import GlueEditor from '../components/GlueEditor';
 
 const { Text } = Typography;
 
@@ -44,6 +47,24 @@ export default function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
   const [execPage, setExecPage] = useState(1);
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+  const [aiSuggestion, setAiSuggestion] = useState<ScheduleSuggestion | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+
+  const handleAiSuggest = async () => {
+    if (!id) return;
+    setAiLoading(true);
+    setAiModalOpen(true);
+    try {
+      const result = await aiApi.suggestSchedule(id);
+      setAiSuggestion(result);
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, 'AI 分析失败'));
+      setAiModalOpen(false);
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   const { data: schedulerStats } = useRequest(
     tasksApi.schedulerStats,
@@ -58,6 +79,11 @@ export default function TaskDetailPage() {
   const { data: execData, loading: execLoading, refresh: refreshExecs } = useRequest(
     () => tasksApi.executions(id!, { page: execPage, pageSize: 20 }),
     { ready: !!id, refreshDeps: [id, execPage] },
+  );
+
+  const { data: taskStats } = useRequest(
+    () => tasksApi.stats(id!),
+    { ready: !!id, refreshDeps: [id], pollingInterval: 60_000 },
   );
 
   const executions: TaskExecution[] = execData?.items ?? [];
@@ -176,12 +202,59 @@ export default function TaskDetailPage() {
           <Button icon={<ThunderboltOutlined />} type="primary" onClick={handleTrigger}>立即触发</Button>
           {isActive && <Button icon={<PauseCircleOutlined />} onClick={handlePause}>暂停</Button>}
           {isPaused && <Button icon={<PlayCircleOutlined />} type="primary" onClick={handleResume}>恢复</Button>}
+          <Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading}>AI 调度建议</Button>
           <Button icon={<EditOutlined />} onClick={handleEdit}>编辑</Button>
           <Popconfirm title="确认删除此任务？" onConfirm={handleDelete} okText="删除" okButtonProps={{ danger: true }}>
             <Button icon={<DeleteOutlined />} danger>删除</Button>
           </Popconfirm>
         </Space>
       </div>
+
+      {/* Stats row */}
+      {taskStats && (
+        <Row gutter={16} style={{ marginBottom: 16 }}>
+          <Col span={6}>
+            <Card size="small">
+              <Statistic
+                title="总执行次数"
+                value={taskStats.totalRuns ?? 0}
+                prefix={<FieldTimeOutlined />}
+              />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card size="small">
+              <Statistic
+                title="成功率"
+                value={((taskStats.successRate ?? 0) * 100).toFixed(1)}
+                suffix="%"
+                valueStyle={{ color: '#52c41a' }}
+                prefix={<CheckCircleOutlined />}
+              />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card size="small">
+              <Statistic
+                title="失败次数"
+                value={taskStats.totalRuns > 0 ? Math.round(taskStats.totalRuns * (1 - (taskStats.successRate ?? 0))) : 0}
+                valueStyle={taskStats.totalRuns > 0 && taskStats.successRate < 1 ? { color: '#ff4d4f' } : undefined}
+                prefix={<CloseCircleOutlined />}
+              />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card size="small">
+              <Statistic
+                title="平均耗时"
+                value={taskStats.avgDuration ? (taskStats.avgDuration / 1000).toFixed(1) : '-'}
+                suffix={taskStats.avgDuration ? 's' : ''}
+                prefix={<FieldTimeOutlined />}
+              />
+            </Card>
+          </Col>
+        </Row>
+      )}
 
       <Tabs
         items={[
@@ -216,6 +289,22 @@ export default function TaskDetailPage() {
                   )}
                   <Descriptions.Item label="执行器分组">{task.executorGroup || '任意'}</Descriptions.Item>
                 </Descriptions>
+              </Card>
+            ),
+          },
+          {
+            key: 'glue',
+            label: (
+              <span><CodeOutlined /> Glue 脚本</span>
+            ),
+            children: (
+              <Card>
+                <GlueEditor
+                  taskId={id!}
+                  initialSource={task.glueSource ?? undefined}
+                  initialLanguage={task.glueLanguage ?? undefined}
+                  taskRuntime={task.runtime}
+                />
               </Card>
             ),
           },
@@ -256,6 +345,40 @@ export default function TaskDetailPage() {
         ]}
       />
 
+      {/* AI 调度建议弹窗 */}
+      <Modal
+        title={<Space><RobotOutlined /> AI 调度建议</Space>}
+        open={aiModalOpen}
+        onCancel={() => setAiModalOpen(false)}
+        footer={[
+          aiSuggestion?.suggestedCron && (
+            <Button key="apply" type="primary" onClick={() => {
+              nav(`/tasks/${id}/edit?suggestCron=${encodeURIComponent(aiSuggestion.suggestedCron)}`);
+              setAiModalOpen(false);
+            }}>应用建议 Cron</Button>
+          ),
+          <Button key="close" onClick={() => setAiModalOpen(false)}>关闭</Button>,
+        ]}
+        width={560}
+      >
+        {aiLoading ? (
+          <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="AI 分析中…" /></div>
+        ) : aiSuggestion ? (
+          <div>
+            <Descriptions size="small" column={1} bordered style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="成功率">{(aiSuggestion.successRate * 100).toFixed(1)}%</Descriptions.Item>
+              <Descriptions.Item label="P95 耗时">{aiSuggestion.p95Duration ? `${(aiSuggestion.p95Duration / 1000).toFixed(1)}s` : '-'}</Descriptions.Item>
+              <Descriptions.Item label="当前 Cron">{aiSuggestion.currentCron || '无'}</Descriptions.Item>
+              <Descriptions.Item label="建议 Cron"><Text code style={{ color: '#52c41a' }}>{aiSuggestion.suggestedCron || '无建议'}</Text></Descriptions.Item>
+            </Descriptions>
+            {aiSuggestion.reasoning && (
+              <Card size="small" title="AI 分析">
+                <Text style={{ whiteSpace: 'pre-wrap' }}>{aiSuggestion.reasoning}</Text>
+              </Card>
+            )}
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }

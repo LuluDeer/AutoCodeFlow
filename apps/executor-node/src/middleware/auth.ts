@@ -45,8 +45,12 @@ async function fetchToken(): Promise<string | null> {
     if (response.status === 200) {
       return response.data.token;
     }
-  } catch (err) {
+  } catch (_err: unknown) {
     // Fall back to static token if dynamic token fetch fails
+    // Log at warn level so token refresh failures are visible in diagnostics
+    const msg = _err instanceof Error ? _err.message : String(_err);
+    // eslint-disable-next-line no-console
+    console.warn(`[auth] fetchToken failed: ${msg}`);
   }
   return null;
 }

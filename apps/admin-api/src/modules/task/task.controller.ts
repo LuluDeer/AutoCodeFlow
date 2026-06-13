@@ -289,6 +289,26 @@ export class TaskController {
     return this.taskService.getSchedulerStats();
   }
 
+  @Get(":id/stats")
+  @ApiOperation({
+    summary: "Task execution stats",
+    description: "Get execution statistics for a task: success rate, average duration, and last 20 executions.",
+  })
+  @ApiParam({ name: "id", description: "Task ID" })
+  getStats(@Param("id") id: string) {
+    return this.taskService.getExecutionStats(id);
+  }
+
+  @Post(":id/suggest-schedule")
+  @ApiOperation({
+    summary: "AI schedule suggestion",
+    description: "Analyze execution history and return an AI-recommended cron expression with reasoning",
+  })
+  @ApiParam({ name: "id", description: "Task ID" })
+  async suggestSchedule(@Param("id") id: string) {
+    return this.taskService.suggestSchedule(id);
+  }
+
   @Get(":id")
   @ApiOperation({
     summary: "Task details",
@@ -652,6 +672,31 @@ export class TaskController {
       action: "task.resume",
       resource: "task",
       resourceId: id,
+      ip: req.ip,
+    });
+    return result;
+  }
+
+  @Post(":id/executions/:execId/analyze")
+  @ApiOperation({
+    summary: "AI analyze execution",
+    description: "Trigger on-demand AI analysis for an execution. Stores result in DB and returns it.",
+  })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiResponse({ status: 200, description: "AI analysis result" })
+  async analyzeExecution(
+    @Param("execId") execId: string,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    const result = await this.taskService.analyzeExecution(execId);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: "task.analyzeExecution",
+      resource: "task_execution",
+      resourceId: execId,
       ip: req.ip,
     });
     return result;

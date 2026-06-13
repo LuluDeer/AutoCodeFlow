@@ -1,5 +1,5 @@
 import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, Breadcrumb, message, Alert } from 'antd';
-import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { useRequest } from 'ahooks';
 import { useParams, useNavigate, Link } from 'react-router-dom';
@@ -43,6 +43,7 @@ export default function ExecutionDetailPage() {
   const logRef = useRef<HTMLPreElement>(null);
   const [retrying, setRetrying] = useState(false);
   const [killing, setKilling] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [streamLines, setStreamLines] = useState<string[] | null>(null);
   const [streaming, setStreaming] = useState(false);
   const token = useAuthStore((s) => s.token);
@@ -161,6 +162,26 @@ export default function ExecutionDetailPage() {
               onClick={handleRetry}
             >
               重新触发
+            </Button>
+          )}
+          {(data?.status === 'failed' || data?.status === 'timeout') && (
+            <Button
+              icon={<RobotOutlined />}
+              loading={analyzing}
+              onClick={async () => {
+                setAnalyzing(true);
+                try {
+                  await tasksApi.analyzeExecution(taskId!, execId!);
+                  message.success('AI 分析完成');
+                  refresh();
+                } catch (err: unknown) {
+                  message.error(getErrMsg(err, 'AI 分析失败'));
+                } finally {
+                  setAnalyzing(false);
+                }
+              }}
+            >
+              AI 分析
             </Button>
           )}
           <Button icon={<SyncOutlined />} onClick={refresh} loading={loading}>刷新</Button>

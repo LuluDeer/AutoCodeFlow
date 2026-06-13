@@ -1,15 +1,107 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Descriptions, Badge, Card, Table, Button, Space, Tag, Typography, message, Modal, Spin, Empty,
-  Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select,
+  Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select, Progress, Statistic, Alert,
 } from 'antd';
 import {
   ArrowLeftOutlined, SyncOutlined, ReloadOutlined, GithubOutlined,
   SaveOutlined, HistoryOutlined,
-  RocketOutlined,
+  RocketOutlined, RobotOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { applicationsApi, Application } from '../api/applications';
+import { aiApi, AppHealthReport } from '../api/ai';
+import { getErrMsg } from '../utils/error';
+
+// ─── AI Analysis Tab ────────────────────────────────────────────────────────────
+function AiAnalysisTab({ appId }: { appId: string }) {
+  const [loading, setLoading] = useState(false);
+  const [report, setReport] = useState<AppHealthReport | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const runAnalysis = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await aiApi.analyzeApp(appId);
+      setReport(result);
+    } catch (err: unknown) {
+      setError(getErrMsg(err, 'AI 分析失败，请检查 AI 配置是否正确'));
+    } finally {
+      setLoading(false);
+    }
+  }, [appId]);
+
+  return (
+    <Card
+      title={<span><RobotOutlined /> AI 健康分析</span>}
+      extra={<Button icon={<ReloadOutlined />} onClick={runAnalysis} loading={loading}>重新分析</Button>}
+    >
+      {!report && !loading && !error && (
+        <Empty
+          description="点击「重新分析」让 AI 分析该应用的健康状态"
+          image={<RobotOutlined style={{ fontSize: 48, color: '#1677ff' }} />}
+        >
+          <Button type="primary" icon={<RobotOutlined />} onClick={runAnalysis}>开始分析</Button>
+        </Empty>
+      )}
+      {loading && <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="AI 分析中…" size="large" /></div>}
+      {error && <Alert type="error" message={error} showIcon />}
+      {report && !loading && (
+        <div>
+          <Row gutter={16} style={{ marginBottom: 24 }}>
+            <Col span={8}>
+              <Card size="small">
+                <Statistic title="关联任务数" value={report.taskCount} />
+              </Card>
+            </Col>
+            <Col span={8}>
+              <Card size="small">
+                <Statistic
+                  title="成功率"
+                  value={(report.successRate * 100).toFixed(1)}
+                  suffix="%"
+                  valueStyle={{ color: report.successRate >= 0.9 ? '#3f8600' : report.successRate >= 0.7 ? '#d48806' : '#cf1322' }}
+                />
+              </Card>
+            </Col>
+            <Col span={8}>
+              <Card size="small">
+                <Statistic title="平均耗时" value={report.avgDuration ? `${(report.avgDuration / 1000).toFixed(1)}s` : '-'} />
+              </Card>
+            </Col>
+          </Row>
+          {report.successRate < 1 && (
+            <Progress
+              percent={Math.round(report.successRate * 100)}
+              strokeColor={report.successRate >= 0.9 ? '#52c41a' : report.successRate >= 0.7 ? '#faad14' : '#ff4d4f'}
+              style={{ marginBottom: 16 }}
+            />
+          )}
+          {report.failedTasks.length > 0 && (
+            <Card size="small" title="高失败率任务" style={{ marginBottom: 16 }}>
+              {report.failedTasks.map(t => (
+                <div key={t.id} style={{ marginBottom: 4 }}>
+                  <Tag color="red">{(t.failureRate * 100).toFixed(1)}%</Tag>
+                  <span>{t.name}</span>
+                </div>
+              ))}
+            </Card>
+          )}
+          {report.aiAnalysis && (
+            <Alert
+              type="info"
+              message="AI 分析结论"
+              description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{report.aiAnalysis}</pre>}
+              showIcon
+              icon={<RobotOutlined />}
+            />
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
 import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
 import { getErrMsg, isFormValidationError } from '../utils/error';
@@ -397,6 +489,11 @@ export default function ApplicationDetailPage() {
             key: 'settings',
             label: '设置',
             children: <SettingsTab app={app} onUpdated={(updated) => setApp(updated)} />,
+          },
+          {
+            key: 'ai',
+            label: <span><RobotOutlined /> AI 健康分析</span>,
+            children: <AiAnalysisTab appId={app.id} />,
           },
         ]}
       />

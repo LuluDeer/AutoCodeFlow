@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { AiService } from '../ai.service';
+import { SystemConfigService } from '../../config/config.service';
 import axios from 'axios';
 
 jest.mock('axios');
@@ -18,6 +19,12 @@ describe('AiService', () => {
           provide: ConfigService,
           useValue: {
             get: jest.fn(),
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockResolvedValue(null),
           },
         },
       ],
@@ -100,6 +107,95 @@ describe('AiService', () => {
         'error log',
       );
       expect(result).toBe('');
+    });
+  });
+
+  describe('suggestSchedule', () => {
+    it('should return default cron when provider is disabled', async () => {
+      configService.get.mockReturnValue('disabled');
+      const result = await service.suggestSchedule('my-task', '0 * * * *', {
+        total: 10, successes: 8, failures: 2, avgDurationMs: 500, p95DurationMs: 900, bestHoursUtc: [2, 3],
+      });
+      expect(result.suggestedCron).toBe('0 * * * *');
+      expect(result.reasoning).toContain('not configured');
+    });
+
+    it('should parse valid JSON response from provider', async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === 'ai.provider') return 'openai';
+        if (key === 'ai.openaiApiKey') return 'test-key';
+        return defaultVal;
+      });
+      mockedAxios.post = jest.fn().mockResolvedValue({
+        data: { choices: [{ message: { content: '{"suggestedCron":"0 2 * * *","reasoning":"Best hours are 2-3 UTC"}' } }] },
+      });
+      const result = await service.suggestSchedule('my-task', null, {
+        total: 20, successes: 18, failures: 2, avgDurationMs: 400, p95DurationMs: 800, bestHoursUtc: [2, 3],
+      });
+      expect(result.suggestedCron).toBe('0 2 * * *');
+      expect(result.reasoning).toBe('Best hours are 2-3 UTC');
+    });
+
+    it('should fall back to current cron when AI returns invalid JSON', async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === 'ai.provider') return 'openai';
+        if (key === 'ai.openaiApiKey') return 'test-key';
+        return defaultVal;
+      });
+      mockedAxios.post = jest.fn().mockResolvedValue({
+        data: { choices: [{ message: { content: 'not valid json at all' } }] },
+      });
+      const result = await service.suggestSchedule('my-task', '*/5 * * * *', {
+        total: 5, successes: 3, failures: 2, avgDurationMs: 200, p95DurationMs: 400, bestHoursUtc: [],
+      });
+      expect(result.suggestedCron).toBe('*/5 * * * *');
+      expect(result.reasoning).toContain('unparseable');
+    });
+  });
+
+  describe('analyzeAppHealth', () => {
+    it('should return empty string when provider is disabled', async () => {
+      configService.get.mockReturnValue('disabled');
+      const result = await service.analyzeAppHealth('my-app', {
+        totalTasks: 3, avgSuccessRate: 95, avgDurationMs: 300, criticalTasks: [],
+        perTask: [{ name: 'task1', successRate: 95, avgDuration: 300, totalRuns: 10 }],
+      });
+      expect(result).toBe('');
+    });
+
+    it('should return AI analysis string when provider is configured', async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === 'ai.provider') return 'openai';
+        if (key === 'ai.openaiApiKey') return 'test-key';
+        return defaultVal;
+      });
+      mockedAxios.post = jest.fn().mockResolvedValue({
+        data: { choices: [{ message: { content: '**Health status:** Healthy\n**Key findings:** All tasks running fine.' } }] },
+      });
+      const result = await service.analyzeAppHealth('my-app', {
+        totalTasks: 2, avgSuccessRate: 98, avgDurationMs: 250, criticalTasks: [],
+        perTask: [{ name: 'task1', successRate: 98, avgDuration: 250, totalRuns: 50 }],
+      });
+      expect(result).toContain('Healthy');
+    });
+
+    it('should mention critical tasks in prompt when present', async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === 'ai.provider') return 'openai';
+        if (key === 'ai.openaiApiKey') return 'test-key';
+        return defaultVal;
+      });
+      let capturedPrompt = '';
+      mockedAxios.post = jest.fn().mockImplementation((_url, body: any) => {
+        capturedPrompt = body.messages[0].content;
+        return Promise.resolve({ data: { choices: [{ message: { content: 'analysis' } }] } });
+      });
+      await service.analyzeAppHealth('my-app', {
+        totalTasks: 2, avgSuccessRate: 40, avgDurationMs: 1000, criticalTasks: ['bad-task'],
+        perTask: [{ name: 'bad-task', successRate: 30, avgDuration: 1000, totalRuns: 10 }],
+      });
+      expect(capturedPrompt).toContain('bad-task');
+      expect(capturedPrompt).toContain('Critical tasks');
     });
   });
 

@@ -68,6 +68,18 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
     return;
   }
 
+  // Only allow http(s) schemes to prevent SSRF via file://, ftp://, etc.
+  try {
+    const parsedUrl = new URL(body.downloadUrl);
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      res.status(400).json({ error: `downloadUrl scheme not allowed: ${parsedUrl.protocol}. Only http and https are permitted.` });
+      return;
+    }
+  } catch {
+    res.status(400).json({ error: 'downloadUrl is not a valid URL' });
+    return;
+  }
+
   if (updateInProgress) {
     res.status(409).json({ error: 'An update is already in progress' });
     return;

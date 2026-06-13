@@ -3,6 +3,7 @@ import { WecomChannel } from "./channels/wecom.channel";
 import { DingtalkChannel } from "./channels/dingtalk.channel";
 import { EmailChannel } from "./channels/email.channel";
 import { SlackChannel } from "./channels/slack.channel";
+import { WebhookChannel } from "./channels/webhook.channel";
 import { NotificationPayload } from "./channels/base.channel";
 
 export enum AlertLevel {
@@ -17,6 +18,7 @@ export enum AlertChannel {
   DINGTALK = "dingtalk",
   WECOM = "wecom",
   SLACK = "slack",
+  WEBHOOK = "webhook",
 }
 
 export interface AlertSilence {
@@ -39,22 +41,28 @@ export class NotificationService {
     private dingtalk: DingtalkChannel,
     private email: EmailChannel,
     private slack: SlackChannel,
+    private webhook: WebhookChannel,
   ) {}
 
   async sendAll(payload: NotificationPayload) {
     this.logger.log(
       `[sendAll] title=${payload.title} level=${payload.level} content=${payload.content}`,
     );
-    // Fan out to all four channels; individual failures are caught inside sendToChannels
+    // Fan out to all channels; individual failures are caught inside sendToChannels
     await this.sendToChannels(payload, [
       AlertChannel.EMAIL,
       AlertChannel.SLACK,
       AlertChannel.DINGTALK,
       AlertChannel.WECOM,
+      AlertChannel.WEBHOOK,
     ]);
   }
 
-  async sendToChannels(payload: NotificationPayload, channels: AlertChannel[]) {
+  async sendToChannels(
+    payload: NotificationPayload,
+    channels: AlertChannel[],
+    webhookUrl?: string,
+  ) {
     const entries: Array<{ name: string; promise: Promise<any> }> = [];
     if (channels.includes(AlertChannel.EMAIL))
       entries.push({ name: "email", promise: this.email.send(payload) });
@@ -64,6 +72,8 @@ export class NotificationService {
       entries.push({ name: "dingtalk", promise: this.dingtalk.send(payload) });
     if (channels.includes(AlertChannel.WECOM))
       entries.push({ name: "wecom", promise: this.wecom.send(payload) });
+    if (channels.includes(AlertChannel.WEBHOOK))
+      entries.push({ name: "webhook", promise: this.webhook.send(payload, webhookUrl) });
 
     const results = await Promise.allSettled(entries.map((e) => e.promise));
     const failures: string[] = [];
@@ -262,6 +272,7 @@ export class NotificationService {
     aiAnalysis: string,
     alarmEmail?: string,
     alarmChannels?: string[],
+    webhookUrl?: string,
   ) {
     const taskChannels =
       (alarmChannels?.map((c) => c.toLowerCase()) as AlertChannel[]) || [];
@@ -280,6 +291,14 @@ export class NotificationService {
       level: "error",
     };
 
-    return this.sendToChannels(payload, taskChannels);
+    return this.sendToChannels(payload, taskChannels, webhookUrl);
+  }
+
+  /**
+   * Send a one-off outbound webhook notification to a specific URL.
+   * Useful for per-task webhook callbacks configured by the user.
+   */
+  async sendWebhook(payload: NotificationPayload, url: string) {
+    return this.webhook.send(payload, url);
   }
 }
