@@ -3,7 +3,7 @@ import { ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
 import { HealthService } from "./health.service";
 import { Public } from "../../common/decorators/public.decorator";
 
-@ApiTags("健康检查")
+@ApiTags("Health Check")
 @Controller("health")
 export class HealthController {
   constructor(private readonly healthService: HealthService) {}
@@ -11,13 +11,13 @@ export class HealthController {
   @Public()
   @Get()
   @ApiOperation({
-    summary: "完整健康检查",
+    summary: "Full health check",
     description:
-      "检查所有核心服务的健康状态，包括数据库、Redis、消息队列、执行器和调度器。返回详细的健康状态和指标。",
+      "Check health of all core services including database, Redis, message queue, executors, and scheduler. Returns detailed health status and metrics.",
   })
   @ApiResponse({
     status: 200,
-    description: "健康检查结果",
+    description: "Health check result",
     schema: {
       example: {
         status: "healthy",
@@ -54,13 +54,13 @@ export class HealthController {
   @Public()
   @Get("live")
   @ApiOperation({
-    summary: "存活检查",
+    summary: "Liveness check",
     description:
-      "简单的存活检查，仅返回服务是否运行。用于 Kubernetes liveness probe。",
+      "Simple liveness check, returns whether the service is running. Used for Kubernetes liveness probe.",
   })
   @ApiResponse({
     status: 200,
-    description: "服务存活",
+    description: "Service alive",
     schema: {
       example: { status: "healthy" },
     },
@@ -72,13 +72,13 @@ export class HealthController {
   @Public()
   @Get("ready")
   @ApiOperation({
-    summary: "就绪检查",
+    summary: "Readiness check",
     description:
-      "检查服务是否准备好接收请求。验证数据库和 Redis 连接。用于 Kubernetes readiness probe。",
+      "Check whether the service is ready to accept requests. Verifies DB and Redis connections. Used for Kubernetes readiness probe.",
   })
   @ApiResponse({
     status: 200,
-    description: "就绪检查结果",
+    description: "Readiness check result",
     schema: {
       example: {
         status: "ready",
@@ -97,12 +97,12 @@ export class HealthController {
   @Public()
   @Get("services")
   @ApiOperation({
-    summary: "服务状态",
-    description: "获取各个核心服务的健康状态详情。",
+    summary: "Service status",
+    description: "Get health status details for each core service.",
   })
   @ApiResponse({
     status: 200,
-    description: "服务状态列表",
+    description: "Service status list",
     schema: {
       example: {
         database: { status: "healthy" },
@@ -127,12 +127,12 @@ export class HealthController {
   @Public()
   @Get("metrics")
   @ApiOperation({
-    summary: "系统指标",
-    description: "获取系统关键指标，包括任务数、执行器数、队列大小等。",
+    summary: "System metrics",
+    description: "Get key system metrics including task count, executor count, queue size, etc.",
   })
   @ApiResponse({
     status: 200,
-    description: "系统指标",
+    description: "System metrics",
     schema: {
       example: {
         totalTasks: 10,

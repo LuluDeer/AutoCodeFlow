@@ -15,7 +15,7 @@ import {
   CreateApplicationDto,
   UpdateApplicationDto,
 } from "./dto/application.dto";
-import { execSync } from "child_process";
+import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -30,14 +30,14 @@ export class ApplicationService implements OnModuleInit {
     private readonly moduleRef: ModuleRef,
   ) {}
 
-  private _taskService: any = null;
+  private _taskService: import('../task/task.service').TaskService | null = null;
 
   async onModuleInit() {
     // Lazy-resolve TaskService to avoid circular dependency with TaskModule
     try {
       const { TaskService } = await import("../task/task.service");
       this._taskService = this.moduleRef.get(TaskService, { strict: false });
-    } catch (e) {
+    } catch (_e: unknown) {
       this.logger.warn(
         "TaskService not available — manifest auto-registration disabled",
       );
@@ -119,29 +119,29 @@ export class ApplicationService implements OnModuleInit {
       path.join(os.tmpdir(), "autocodeflow-deploy-"),
     );
     try {
-      // Clone repository
-      const cloneArgs = ["clone", "--depth", "1", "--branch", gitBranch];
-      if (gitCommit) cloneArgs.push(gitCommit);
-      else cloneArgs.push("HEAD");
-      cloneArgs.push(gitRepo, tmpDir);
-      // SEC: repo URL is validated as a URL by class-validator on the DTO; use --branch (not -b) with full spelling
-      this.logger.log(`Cloning ${gitRepo}@${gitBranch} into ${tmpDir}`);
-      execSync(
-        "git clone --depth 1 --branch " +
-          gitBranch +
-          " " +
-          gitRepo +
-          " " +
-          tmpDir,
-        {
-          timeout: 120_000,
-          stdio: "pipe",
-        },
-      );
+      // SEC: validate branch name and repo URL to prevent command injection
+      if (!/^[a-zA-Z0-9._/\-]+$/.test(gitBranch)) {
+        throw new Error(`Invalid git branch name: ${gitBranch}`);
+      }
+      if (!/^(https?:\/\/|git@|ssh:\/\/)[\w.\-/:@]+(\.git)?$/.test(gitRepo)) {
+        throw new Error(`Invalid git repository URL: ${gitRepo}`);
+      }
 
-      app.gitCommit = execSync("git -C " + tmpDir + " rev-parse HEAD", {
-        encoding: "utf-8",
-      }).trim();
+      this.logger.log(`Cloning ${gitRepo}@${gitBranch} into ${tmpDir}`);
+      // SEC: spawnSync with array args — no shell expansion, no injection risk
+      const cloneResult = spawnSync(
+        'git',
+        ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, tmpDir],
+        { timeout: 120_000, stdio: 'pipe' },
+      );
+      if (cloneResult.status !== 0) {
+        const errMsg = cloneResult.stderr?.toString('utf-8') || 'git clone failed';
+        throw new Error(errMsg);
+      }
+
+      const revResult = spawnSync('git', ['-C', tmpDir, 'rev-parse', 'HEAD'], { encoding: 'utf-8' });
+      if (revResult.status !== 0) throw new Error('git rev-parse HEAD failed');
+      app.gitCommit = (revResult.stdout as string).trim();
 
       // Parse manifest.json and auto-register tasks
       const manifestPath = path.join(tmpDir, "manifest.json");
@@ -175,14 +175,15 @@ export class ApplicationService implements OnModuleInit {
                 glueSource: taskDef.glueSource,
                 glueLanguage: taskDef.glueLanguage,
               } as any);
-            } catch (err: any) {
-              if (err?.message?.includes("already exists")) {
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              if (msg.includes("already exists")) {
                 this.logger.warn(
                   `Task "${taskDef.id || taskDef.name}" already exists, skipping`,
                 );
               } else {
                 this.logger.error(
-                  `Failed to register task "${taskDef.name}": ${err.message}`,
+                  `Failed to register task "${taskDef.name}": ${msg}`,
                 );
               }
             }
@@ -193,15 +194,19 @@ export class ApplicationService implements OnModuleInit {
       app.status = ApplicationStatus.ACTIVE;
       await this.repo.save(app);
       this.logger.log(`Application ${app.name} deployed successfully`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       app.status = ApplicationStatus.FAILED;
       await this.repo.save(app);
-      this.logger.error(`Deployment failed for ${app.name}: ${err.message}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Deployment failed for ${app.name}: ${msg}`);
       throw err;
     } finally {
       try {
         fs.rmSync(tmpDir, { recursive: true });
-      } catch (_) {}
+      } catch (cleanErr: unknown) {
+        const msg = cleanErr instanceof Error ? cleanErr.message : String(cleanErr);
+        this.logger.warn(`Failed to clean up temp dir ${tmpDir}: ${msg}`);
+      }
     }
   }
 
@@ -213,7 +218,7 @@ export class ApplicationService implements OnModuleInit {
     manifestPath?: string,
   ): Promise<number> {
     const app = await this.findById(appId);
-    let manifest: any;
+    let manifest: Record<string, any> & { tasks?: any[]; runtime?: string; entrypoint?: string; timeout?: number };
 
     if (manifestPath && fs.existsSync(manifestPath)) {
       manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
@@ -247,13 +252,14 @@ export class ApplicationService implements OnModuleInit {
           applicationId: app.id,
         } as any);
         count++;
-      } catch (err: any) {
-        if (err?.message?.includes("already exists")) {
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("already exists")) {
           this.logger.warn(
             `Task "${taskDef.id || taskDef.name}" already exists, skipping`,
           );
         } else {
-          this.logger.error(`Failed to register task: ${err.message}`);
+          this.logger.error(`Failed to register task: ${msg}`);
         }
       }
     }

@@ -1,10 +1,11 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Redis from "ioredis";
 import { randomBytes } from "crypto";
 
 @Injectable()
 export class RedisLockService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(RedisLockService.name);
   private client: Redis;
 
   constructor(private configService: ConfigService) {}
@@ -15,6 +16,10 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
       port: this.configService.get<number>("redis.port"),
       password: this.configService.get("redis.password"),
       retryStrategy: (times) => Math.min(times * 100, 3000),
+    });
+    this.client.on('error', (err: Error) => {
+      // Prevent unhandled rejection — ioredis auto-reconnects on connection errors
+      this.logger.error(`Redis connection error: ${err.message}`);
     });
   }
 
@@ -33,13 +38,19 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
     );
 
     if (result === "OK") {
-      return {
+      const lock: Lock = {
         key,
         lockId,
         ttlMs,
         released: false,
-        release: async () => this.releaseLock(key, lockId),
+        release: async () => {
+          if (lock.released) return false;
+          const ok = await this.releaseLock(key, lockId);
+          if (ok) lock.released = true;
+          return ok;
+        },
       };
+      return lock;
     }
 
     return null;

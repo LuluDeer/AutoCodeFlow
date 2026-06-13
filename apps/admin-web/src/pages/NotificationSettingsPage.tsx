@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, Tag, Typography, Alert, Checkbox, Result } from 'antd';
+import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, Tag, Typography, Alert, Checkbox } from 'antd';
 import { CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { client } from '../api/client';
@@ -22,13 +22,13 @@ interface TestResult {
 }
 
 const notificationApi = {
-  getChannels: () => client.get<any, NotificationChannel[]>('/notification/channels'),
+  getChannels: () => client.get('/notification/channels') as Promise<NotificationChannel[]>,
   updateChannel: (key: string, data: Partial<NotificationChannel>) =>
-    client.patch<any, NotificationChannel>(`/notification/channels/${key}`, data),
+    client.patch(`/notification/channels/${key}`, data) as Promise<NotificationChannel>,
   testChannel: (key: string, data: Record<string, string>) =>
-    client.post<any, { success: boolean; message: string }>(`/notification/channels/${key}/test`, data),
+    client.post(`/notification/channels/${key}/test`, data) as Promise<{ success: boolean; message: string }>,
   sendTestNotification: (data: { channels: string[]; title: string; content: string }) =>
-    client.post<any, { success: boolean; message: string }>('/notification/test', data),
+    client.post('/notification/test', data) as Promise<{ success: boolean; message: string }>,
 };
 
 const CHANNEL_CONFIG_FIELDS: Record<string, Array<{ key: string; label: string; placeholder?: string }>> = {
@@ -102,7 +102,16 @@ export default function NotificationSettingsPage() {
         onFinish={updateChannel}
       >
         {fields.map((f) => (
-          <Form.Item key={f.key} name={f.key} label={f.label}>
+          <Form.Item
+            key={f.key}
+            name={f.key}
+            label={f.label}
+            rules={[
+              f.key !== 'password'
+                ? { required: true, whitespace: true, message: `请输入 ${f.label}` }
+                : { required: false },
+            ]}
+          >
             {f.key === 'password' ? (
               <Input.Password placeholder={f.placeholder} />
             ) : (
@@ -146,7 +155,7 @@ export default function NotificationSettingsPage() {
     );
   };
 
-  const tabItems = channels?.map((c) => ({
+  const tabItems = channels?.map((c: NotificationChannel) => ({
     key: c.key,
     label: (
       <span>
@@ -168,7 +177,7 @@ export default function NotificationSettingsPage() {
             {renderConfigFields()}
           </>
         ) : (
-          <Alert message="此通知渠道已禁用" type="info" showIcon />
+          <Alert message="此通知渠道已禁用，启用后可配置推送参数" type="info" showIcon />
         )}
       </div>
     ),

@@ -16,7 +16,7 @@ export class TraceMiddleware implements NestMiddleware {
     const traceId = (req.headers["x-trace-id"] as string) || uuidv4();
 
     // Attach traceId to request object for use in services/controllers
-    (req as any).traceId = traceId;
+    req.traceId = traceId;
 
     // Set response header so clients can track the trace
     res.setHeader("X-Trace-Id", traceId);

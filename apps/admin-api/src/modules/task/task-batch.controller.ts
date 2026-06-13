@@ -15,15 +15,16 @@ import {
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { TaskService } from "./task.service";
 import { BatchTaskIdsDto } from "./dto/batch-task.dto";
 import { AuditService } from "../audit/audit.service";
 
 /**
- * 批量操作控制器 — 独立 Controller 避免与 :id 参数路由冲突
- * 路径: POST /api/tasks/batch/trigger|pause|resume|delete
+ * Batch operations controller — separate controller to avoid :id param route conflicts
+ * Routes: POST /api/tasks/batch/trigger|pause|resume|delete
  */
-@ApiTags("任务管理")
+@ApiTags("Task Management")
 @ApiBearerAuth("JWT")
 @UseGuards(JwtAuthGuard)
 @Controller("tasks-batch")
@@ -35,17 +36,17 @@ export class TaskBatchController {
 
   @Post("trigger")
   @ApiOperation({
-    summary: "批量触发任务",
-    description: "批量触发多个任务执行。部分任务失败不会影响其他任务。",
+    summary: "Batch trigger tasks",
+    description: "Trigger multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "批量触发结果列表" })
+  @ApiResponse({ status: 200, description: "Batch trigger results" })
   @ApiBody({
-    description: "批量触发参数",
+    description: "Batch trigger parameters",
     schema: { example: { taskIds: ["uuid-1", "uuid-2"] } },
   })
   async batchTrigger(
     @Body() body: BatchTaskIdsDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const results = await Promise.all(
@@ -68,13 +69,13 @@ export class TaskBatchController {
 
   @Post("pause")
   @ApiOperation({
-    summary: "批量暂停任务",
-    description: "批量暂停多个任务。部分任务失败不会影响其他任务。",
+    summary: "Batch pause tasks",
+    description: "Pause multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "批量暂停结果列表" })
+  @ApiResponse({ status: 200, description: "Batch pause results" })
   async batchPause(
     @Body() body: BatchTaskIdsDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const results = await Promise.all(
@@ -97,13 +98,13 @@ export class TaskBatchController {
 
   @Post("resume")
   @ApiOperation({
-    summary: "批量恢复任务",
-    description: "批量恢复多个任务。部分任务失败不会影响其他任务。",
+    summary: "Batch resume tasks",
+    description: "Resume multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "批量恢复结果列表" })
+  @ApiResponse({ status: 200, description: "Batch resume results" })
   async batchResume(
     @Body() body: BatchTaskIdsDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const results = await Promise.all(
@@ -126,13 +127,13 @@ export class TaskBatchController {
 
   @Post("delete")
   @ApiOperation({
-    summary: "批量删除任务",
-    description: "批量删除多个任务。部分任务失败不会影响其他任务。",
+    summary: "Batch delete tasks",
+    description: "Delete multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "批量删除结果列表" })
+  @ApiResponse({ status: 200, description: "Batch delete results" })
   async batchDelete(
     @Body() body: BatchTaskIdsDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const results = await Promise.all(

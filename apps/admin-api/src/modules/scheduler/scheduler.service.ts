@@ -30,7 +30,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private timers = new Map<string, NodeJS.Timeout>();
   // cron tasks
   private cronTasks = new Map<string, nodeCron.ScheduledTask>();
-  // B-04: 追踪 fixed_rate 任务是否正在执行，防止重入
+  // B-04: Track whether a fixed_rate task is currently executing to prevent re-entry
   private runningTasks = new Map<string, boolean>();
 
   constructor(
@@ -44,9 +44,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     await this.reload();
     await this.checkMisfires();
+    await this.recoverStaleExecutions();
   }
 
-  /** 启动时检测 misfire，按策略补偿执行 */
+  /** Detect misfires on startup and compensate according to policy */
   async checkMisfires() {
     const tasks = await this.taskRepo.find({
       where: { status: TaskStatus.ACTIVE },
@@ -72,12 +73,44 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * REC-01: Periodically find executions stuck in RUNNING (e.g. from a crash)
+   * and mark them FAILED so the UI never shows permanently-running tasks.
+   * Runs on startup and every 10 minutes thereafter.
+   */
+  @Cron('0 */10 * * * *')
+  async recoverStaleExecutions() {
+    const runningExecs = await this.execRepo.find({
+      where: { status: ExecutionStatus.RUNNING },
+    });
+    if (!runningExecs.length) return;
+
+    const now = Date.now();
+    // Use a1-hour grace window (no per-execution timeout stored on the entity)
+    const STALE_MS = 60 * 60 * 1000;
+    let recovered = 0;
+    for (const exec of runningExecs) {
+      const anchor = exec.startTime ?? exec.createdAt;
+      if (!anchor) continue;
+      if (now - anchor.getTime() > STALE_MS) {
+        exec.status = ExecutionStatus.FAILED;
+        exec.endTime = new Date();
+        exec.errorMessage = 'Execution did not complete (recovered on node restart)';
+        await this.execRepo.save(exec);
+        recovered++;
+      }
+    }
+    if (recovered > 0) {
+      this.logger.warn(`REC-01: recovered ${recovered} stale RUNNING execution(s) on startup`);
+    }
+  }
+
   onModuleDestroy() {
     this.timers.forEach((t) => clearInterval(t));
     this.cronTasks.forEach((t) => t.stop());
   }
 
-  /** 每分钟重新扫描活跃任务，注册尚未调度的任务 */
+  /** Re-scan active tasks every minute and register any unscheduled tasks */
   @Cron(CronExpression.EVERY_MINUTE)
   async reload() {
     const tasks = await this.taskRepo.find({
@@ -107,7 +140,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       ) {
         const taskId = t.id;
         const timer = setInterval(async () => {
-          // B-04: 若上次执行未结束则跳过本次，防止重入
+          // B-04: Skip if previous execution is still running to prevent re-entry
           if (this.runningTasks.get(taskId)) {
             this.logger.warn(
               `Fixed_rate task "${t.name}" still running, skipping trigger`,
@@ -222,7 +255,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       );
 
       const queueOptions = {
-        attempts: task.maxRetry,
+        attempts: Math.max(1, task.maxRetry ?? 1),
         backoff:
           task.retryDelay > 0
             ? {
@@ -243,7 +276,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** 停止并移除指定任务的所有调度 */
+  /** Stop and remove all schedules for the given task */
   stop(taskId: string) {
     const timer = this.timers.get(taskId);
     if (timer) {
@@ -260,14 +293,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     this.runningTasks.delete(taskId);
   }
 
-  /** 注册单个任务的调度，供 TaskService update 后精确调用，避免等待下次 reload */
+  /** Register scheduling for a single task; call after TaskService update to avoid waiting for the next reload */
   async scheduleOne(task: Task) {
     this.stop(task.id);
 
     if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
       const taskId = task.id;
       const timer = setInterval(async () => {
-        // B-04: 防止重入
+        // B-04: Prevent re-entry
         if (this.runningTasks.get(taskId)) {
           this.logger.warn(
             `Fixed_rate task "${task.name}" still running, skipping trigger`,
@@ -312,14 +345,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** 获取调度器运行状态统计 */
+  /** Get scheduler runtime statistics */
   getStats() {
-    const cronDetails: Array<{ taskName: string; expression: string }> = [];
-    this.cronTasks.forEach((_job, _taskId) => {
-      // We can't easily get task name from the cronTasks map since it only stores task IDs
-      // Return a minimal snapshot
-    });
-
     return {
       healthy: true, // Scheduler is considered healthy if it's not crashed
       activeTimers: this.timers.size,

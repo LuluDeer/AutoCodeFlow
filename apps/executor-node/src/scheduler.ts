@@ -1,5 +1,5 @@
 import * as os from 'os';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { config } from './config';
 import { logger } from './logger';
 import { post } from './admin-client';
@@ -29,15 +29,44 @@ export function decrementRunning(): void {
 // For backward compatibility — use getRunningCount() directly for new code
 export const runningCount = getRunningCount;  // alias to the function
 
+/**
+ * Measure actual CPU usage by sampling cpu times over 500ms.
+ * os.loadavg() always returns [0,0,0] on Windows, so we use this instead.
+ */
+async function measureCpuUsage(): Promise<number> {
+  return new Promise((resolve) => {
+    const cpus1 = os.cpus();
+    setTimeout(() => {
+      const cpus2 = os.cpus();
+      let idle = 0, total = 0;
+      for (let i = 0; i < cpus1.length; i++) {
+        const t1 = cpus1[i].times;
+        const t2 = cpus2[i].times;
+        const idleDiff = t2.idle - t1.idle;
+        const totalDiff =
+          (t2.user - t1.user) +
+          (t2.nice - t1.nice) +
+          (t2.sys - t1.sys) +
+          (t2.idle - t1.idle) +
+          (t2.irq - t1.irq);
+        idle += idleDiff;
+        total += totalDiff;
+      }
+      const usage = total > 0 ? ((total - idle) / total) * 100 : 0;
+      resolve(Math.round(usage * 100) / 100);
+    }, 500);
+  });
+}
+
 async function sendHeartbeat() {
   try {
-    const cpuUsage = os.loadavg()[0]; // 1-min load avg
+    const cpuUsage = await measureCpuUsage();
     const totalMem = os.totalmem();
     const freeMem = os.freemem();
     const memUsage = ((totalMem - freeMem) / totalMem) * 100;
 
     // OPS-03: generate trace ID for heartbeat
-    const traceId = uuidv4();
+    const traceId = randomUUID();
 
     logger.info(`[${traceId}] Sending heartbeat`);
     await post('/api/executors/heartbeat', {
@@ -46,8 +75,8 @@ async function sendHeartbeat() {
       memUsage,
       runningTaskCount: getRunningCount(),
     });
-  } catch (err: any) {
-    logger.warn(`Heartbeat failed: ${err.message}`);
+  } catch (err: unknown) {
+    logger.warn(`Heartbeat failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

@@ -424,12 +424,8 @@ describe("ExecutorService (__tests__)", () => {
         memUsage: 60,
       };
       executorRepo.findOne.mockResolvedValue(executor);
-      execRepo.count
-        .mockResolvedValueOnce(100)  // total
-        .mockResolvedValueOnce(95)   // successful
-        .mockResolvedValueOnce(5);   // failed
       const qb = execRepo.createQueryBuilder();
-      qb.getRawOne.mockResolvedValue({ avg: "1200" });
+      qb.getRawOne.mockResolvedValue({ total: '100', successful: '95', failed: '5', avgDuration: '1200' });
       execRepo.createQueryBuilder.mockReturnValue(qb);
       const result = await service.getExecutorMetrics("e1");
       expect(result.sevenDayStats.totalExecutions).toBe(100);

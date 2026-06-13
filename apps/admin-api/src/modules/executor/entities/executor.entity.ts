@@ -4,6 +4,7 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from "typeorm";
 
 export enum ExecutorStatus {
@@ -17,6 +18,9 @@ export enum ExecutorType {
 }
 
 @Entity("executors")
+@Index(["status"])
+@Index(["groupName"])
+@Index(["lastHeartbeat"])
 export class Executor {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() appName: string;

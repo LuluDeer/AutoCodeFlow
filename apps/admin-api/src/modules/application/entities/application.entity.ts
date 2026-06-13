@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   OneToMany,
+  Index,
 } from "typeorm";
 import { Task } from "../../task/entities/task.entity";
 
@@ -15,6 +16,8 @@ export enum ApplicationStatus {
 }
 
 @Entity("applications")
+@Index(["status"])
+@Index(["createdAt"])
 export class Application {
   @PrimaryGeneratedColumn("uuid") id: string;
 
@@ -45,10 +48,12 @@ export class Application {
 
   @Column({ nullable: true }) entrypoint: string;
 
+  @Column({ nullable: true }) packageUrl: string;
+
   @CreateDateColumn() createdAt: Date;
 
   @UpdateDateColumn() updatedAt: Date;
 
   @OneToMany("Task", "application")
-  tasks: any[];
+  tasks: Task[];
 }

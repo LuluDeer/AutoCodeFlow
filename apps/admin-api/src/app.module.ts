@@ -5,6 +5,7 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { BullModule } from "@nestjs/bull";
 import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
 import { APP_GUARD } from "@nestjs/core";
+import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import * as Joi from "joi";
 import configuration from "./config/configuration";
 import { AuthModule } from "./modules/auth/auth.module";
@@ -20,6 +21,7 @@ import { AuditModule } from "./modules/audit/audit.module";
 import { HealthModule } from "./modules/health/health.module";
 import { ApplicationModule } from "./modules/application/application.module";
 import { ExecutorPackageModule } from "./modules/executor-package/executor-package.module";
+import { RegistryModule } from "./modules/registry/registry.module";
 
 @Module({
   imports: [
@@ -60,7 +62,7 @@ import { ExecutorPackageModule } from "./modules/executor-package/executor-packa
         EXECUTOR_SHARED_TOKEN: Joi.string().min(16).optional(),
 
         // CORS
-        CORS_ORIGINS: Joi.string().required(),
+        CORS_ORIGINS: Joi.string().default("http://localhost:5173"),
 
         // AI (optional)
         AI_PROVIDER: Joi.string()
@@ -110,6 +112,12 @@ import { ExecutorPackageModule } from "./modules/executor-package/executor-packa
         migrationsRun: cfg.get("app.nodeEnv") !== "development",
         synchronize: cfg.get("app.nodeEnv") === "development",
         logging: cfg.get("app.nodeEnv") === "development",
+        // PERF-04: PostgreSQL connection pool — default 10 is insufficient under concurrent load
+        extra: {
+          max: cfg.get<number>("database.poolSize"),
+          idleTimeoutMillis: 30000,
+          connectionTimeoutMillis: 5000,
+        },
       }),
       inject: [ConfigService],
     }),
@@ -155,10 +163,13 @@ import { ExecutorPackageModule } from "./modules/executor-package/executor-packa
     HealthModule,
     ApplicationModule,
     ExecutorPackageModule,
+    RegistryModule,
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // A-03: apply JwtAuthGuard globally — use @Public() decorator to opt-out
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
 })
 export class AppModule implements NestModule {

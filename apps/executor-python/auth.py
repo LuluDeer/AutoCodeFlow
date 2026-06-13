@@ -49,7 +49,8 @@ async def _fetch_token() -> str | None:
                 return data.get('token')
     except Exception as e:
         # Fall back to static token if dynamic token fetch fails
-        pass
+        import logging as _logging
+        _logging.getLogger(__name__).warning("Dynamic token fetch failed (will use static): %s", e)
     return None
 
 

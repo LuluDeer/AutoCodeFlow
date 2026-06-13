@@ -1,7 +1,9 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file='.env')
+
     app_name: str = 'executor-python-1'
     port: int = 8001
     executor_address: str = 'executor-python:8001'
@@ -15,9 +17,6 @@ class Settings(BaseSettings):
     task_timeout_seconds: int = 300  # Default task timeout (5 minutes)
     heartbeat_interval_seconds: int = 30  # Heartbeat interval
     pypi_registry_url: str = ''  # Private PyPI registry URL for task dependencies
-
-    class Config:
-        env_file = '.env'
 
 
 settings = Settings()

@@ -12,13 +12,22 @@ import hashlib
 import os
 import re
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi import Depends
 import secrets
 
 app = FastAPI(title="AutoFlow PyPI Registry", version="1.0.0")
+
+# Allow admin-web (and any other frontend) to call the upload endpoint directly
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 security = HTTPBasic()
 
 # Use PACKAGES_DIR env var; default to a local ./packages dir for dev convenience

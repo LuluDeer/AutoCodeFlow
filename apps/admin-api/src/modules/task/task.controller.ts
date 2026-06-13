@@ -10,7 +10,9 @@ import {
   Query,
   UseGuards,
   Req,
+  Res,
 } from "@nestjs/common";
+import { Response } from "express";
 import {
   ApiTags,
   ApiOperation,
@@ -23,6 +25,7 @@ import {
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { TaskService } from "./task.service";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
@@ -32,7 +35,7 @@ import { BatchTaskIdsDto } from "./dto/batch-task.dto";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { AuditService } from "../audit/audit.service";
 
-@ApiTags("任务管理")
+@ApiTags("Task Management")
 @ApiBearerAuth("JWT")
 @UseGuards(JwtAuthGuard)
 @Controller("tasks")
@@ -44,21 +47,21 @@ export class TaskController {
 
   @Post()
   @ApiOperation({
-    summary: "创建任务",
+    summary: "Create task",
     description:
-      "创建一个新的自动化任务，支持定时调度、Webhook触发和事件触发三种模式。任务创建后默认处于暂停状态，需要手动触发或等待定时触发。",
+      "Create a new automation task. Supports cron, webhook, and event trigger modes. Tasks start in paused state.",
   })
   @ApiResponse({
     status: 201,
-    description: "任务创建成功",
+    description: "Task created successfully",
     schema: {
       example: {
         code: 200,
         message: "success",
         data: {
           id: "task-uuid",
-          name: "数据同步任务",
-          description: "每天凌晨同步数据库数据",
+          name: "Data sync task",
+          description: "Sync database data at midnight daily",
           type: "cron",
           schedule: "0 0 * * *",
           status: "paused",
@@ -69,7 +72,7 @@ export class TaskController {
   })
   async create(
     @Body() dto: CreateTaskDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const result = await this.taskService.create(dto);
@@ -86,17 +89,17 @@ export class TaskController {
 
   @Get()
   @ApiOperation({
-    summary: "任务列表",
-    description: "获取任务列表，支持分页和搜索。可通过状态筛选任务。",
+    summary: "List tasks",
+    description: "Get task list with pagination and search support. Filter by status.",
   })
-  @ApiQuery({ name: "page", required: false, description: "页码，默认1" })
-  @ApiQuery({ name: "pageSize", required: false, description: "每页数量，默认20" })
-  @ApiQuery({ name: "status", required: false, description: "任务状态过滤 (active/paused/inactive)" })
-  @ApiQuery({ name: "name", required: false, description: "任务名称模糊搜索" })
-  @ApiQuery({ name: "runtime", required: false, description: "运行时过滤 (python/node/shell)" })
+  @ApiQuery({ name: "page", required: false, description: "Page number, default 1" })
+  @ApiQuery({ name: "pageSize", required: false, description: "Page size, default 20" })
+  @ApiQuery({ name: "status", required: false, description: "Filter by status (active/paused/inactive)" })
+  @ApiQuery({ name: "name", required: false, description: "Fuzzy search by task name" })
+  @ApiQuery({ name: "runtime", required: false, description: "Filter by runtime (python/node/shell)" })
   @ApiResponse({
     status: 200,
-    description: "任务列表",
+    description: "Task list",
     schema: {
       example: {
         code: 200,
@@ -116,12 +119,12 @@ export class TaskController {
 
   @Post("batch/trigger")
   @ApiOperation({
-    summary: "批量触发任务",
-    description: "批量触发多个任务执行。部分任务失败不会影响其他任务。",
+    summary: "Batch trigger tasks",
+    description: "Trigger multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "批量触发结果列表" })
+  @ApiResponse({ status: 200, description: "Batch trigger results" })
   @ApiBody({
-    description: "批量触发参数",
+    description: "Batch trigger parameters",
     schema: {
       example: {
         taskIds: ["task1", "task2", "task3"],
@@ -130,7 +133,7 @@ export class TaskController {
   })
   async batchTrigger(
     @Body() body: BatchTaskIdsDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const results = await Promise.all(
@@ -153,12 +156,12 @@ export class TaskController {
 
   @Post("batch/pause")
   @ApiOperation({
-    summary: "批量暂停任务",
-    description: "批量暂停多个任务。部分任务失败不会影响其他任务。",
+    summary: "Batch pause tasks",
+    description: "Pause multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "批量暂停结果列表" })
+  @ApiResponse({ status: 200, description: "Batch pause results" })
   @ApiBody({
-    description: "批量暂停参数",
+    description: "Batch pause parameters",
     schema: {
       example: {
         taskIds: ["task1", "task2", "task3"],
@@ -167,7 +170,7 @@ export class TaskController {
   })
   async batchPause(
     @Body() body: BatchTaskIdsDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const results = await Promise.all(
@@ -188,12 +191,12 @@ export class TaskController {
 
   @Post("batch/resume")
   @ApiOperation({
-    summary: "批量恢复任务",
-    description: "批量恢复多个任务。部分任务失败不会影响其他任务。",
+    summary: "Batch resume tasks",
+    description: "Resume multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "批量恢复结果列表" })
+  @ApiResponse({ status: 200, description: "Batch resume results" })
   @ApiBody({
-    description: "批量恢复参数",
+    description: "Batch resume parameters",
     schema: {
       example: {
         taskIds: ["task1", "task2", "task3"],
@@ -202,7 +205,7 @@ export class TaskController {
   })
   async batchResume(
     @Body() body: BatchTaskIdsDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const results = await Promise.all(
@@ -225,12 +228,12 @@ export class TaskController {
 
   @Post("batch/delete")
   @ApiOperation({
-    summary: "批量删除任务",
-    description: "批量删除多个任务。部分任务失败不会影响其他任务。",
+    summary: "Batch delete tasks",
+    description: "Delete multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "批量删除结果列表" })
+  @ApiResponse({ status: 200, description: "Batch delete results" })
   @ApiBody({
-    description: "批量删除参数",
+    description: "Batch delete parameters",
     schema: {
       example: {
         taskIds: ["task1", "task2", "task3"],
@@ -239,7 +242,7 @@ export class TaskController {
   })
   async batchDelete(
     @Body() body: BatchTaskIdsDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const results = await Promise.all(
@@ -261,7 +264,7 @@ export class TaskController {
   }
 
   @Get("executions/all")
-  @ApiOperation({ summary: "全局执行记录" })
+  @ApiOperation({ summary: "Global execution records" })
   @ApiQuery({ name: "page", required: false })
   @ApiQuery({ name: "pageSize", required: false })
   @ApiQuery({ name: "status", required: false })
@@ -281,34 +284,34 @@ export class TaskController {
   }
 
   @Get("scheduler/stats")
-  @ApiOperation({ summary: "调度器状态" })
+  @ApiOperation({ summary: "Scheduler status" })
   async schedulerStats() {
     return this.taskService.getSchedulerStats();
   }
 
   @Get(":id")
   @ApiOperation({
-    summary: "任务详情",
-    description: "获取单个任务的详细信息，包括配置、状态和执行统计。",
+    summary: "Task details",
+    description: "Get detailed info for a single task including config, status, and execution stats.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiResponse({ status: 404, description: "任务不存在" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiResponse({ status: 404, description: "Task not found" })
   findOne(@Param("id") id: string) {
     return this.taskService.findOne(id);
   }
 
   @Patch(":id")
   @ApiOperation({
-    summary: "更新任务",
-    description: "更新任务配置。注意：正在执行中的任务不会立即应用新配置。",
+    summary: "Update task",
+    description: "Update task configuration. Note: running tasks are not immediately affected.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiResponse({ status: 200, description: "更新成功" })
-  @ApiResponse({ status: 404, description: "任务不存在" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiResponse({ status: 200, description: "Updated successfully" })
+  @ApiResponse({ status: 404, description: "Task not found" })
   async update(
     @Param("id") id: string,
     @Body() dto: UpdateTaskDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const result = await this.taskService.update(id, dto);
@@ -325,12 +328,12 @@ export class TaskController {
 
   @Put(":id/glue")
   @ApiOperation({
-    summary: "更新GLUE脚本",
-    description: "更新任务的GLUE脚本源码，支持在线编辑执行逻辑。",
+    summary: "Update GLUE script",
+    description: "Update the GLUE script source code for online editing of execution logic.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiResponse({ status: 200, description: "脚本更新成功" })
-  @ApiResponse({ status: 404, description: "任务不存在" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiResponse({ status: 200, description: "Script updated" })
+  @ApiResponse({ status: 404, description: "Task not found" })
   @ApiBody({
     schema: {
       type: "object",
@@ -340,7 +343,7 @@ export class TaskController {
   async updateGlue(
     @Param("id") id: string,
     @Body() body: { source: string; language?: string },
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const result = await this.taskService.updateGlue(
@@ -361,15 +364,15 @@ export class TaskController {
 
   @Delete(":id")
   @ApiOperation({
-    summary: "删除任务",
-    description: "删除指定任务。正在执行中的任务会被强制终止。",
+    summary: "Delete task",
+    description: "Delete task. Running executions will be forcefully terminated.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiResponse({ status: 200, description: "删除成功" })
-  @ApiResponse({ status: 404, description: "任务不存在" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiResponse({ status: 200, description: "Deleted successfully" })
+  @ApiResponse({ status: 404, description: "Task not found" })
   async remove(
     @Param("id") id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const result = await this.taskService.remove(id);
@@ -386,13 +389,13 @@ export class TaskController {
 
   @Post(":id/trigger")
   @ApiOperation({
-    summary: "手动触发",
-    description: "手动触发任务执行。可以传递自定义参数覆盖任务默认参数。",
+    summary: "Manual trigger",
+    description: "Manually trigger task execution. Custom params can override task defaults.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
+  @ApiParam({ name: "id", description: "Task ID" })
   @ApiResponse({
     status: 200,
-    description: "触发成功",
+    description: "Trigger successful",
     schema: {
       example: {
         code: 200,
@@ -408,7 +411,7 @@ export class TaskController {
   async trigger(
     @Param("id") id: string,
     @Body() dto: TriggerTaskDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const result = await this.taskService.trigger(id, dto);
@@ -425,71 +428,115 @@ export class TaskController {
 
   @Get(":id/executions")
   @ApiOperation({
-    summary: "执行记录",
-    description: "获取任务的执行历史记录列表。",
+    summary: "Execution records",
+    description: "Get the execution history list for a task.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiQuery({ name: "page", required: false, description: "页码" })
-  @ApiQuery({ name: "limit", required: false, description: "每页数量" })
-  @ApiQuery({ name: "status", required: false, description: "执行状态过滤" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiQuery({ name: "page", required: false, description: "Page number" })
+  @ApiQuery({ name: "limit", required: false, description: "Page size" })
+  @ApiQuery({ name: "status", required: false, description: "Filter by execution status" })
   executions(@Param("id") id: string, @Query() p: PaginationDto) {
     return this.taskService.getExecutions(id, p);
   }
 
   @Get(":id/executions/:execId")
   @ApiOperation({
-    summary: "执行详情",
-    description: "获取单次执行的详细信息，包括执行时间、状态、输出结果等。",
+    summary: "Execution details",
+    description: "Get detailed info for a single execution including time, status, and output.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiParam({ name: "execId", description: "执行记录ID" })
-  @ApiResponse({ status: 404, description: "执行记录不存在" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiResponse({ status: 404, description: "Execution record not found" })
   execution(@Param("execId") execId: string) {
     return this.taskService.getExecution(execId);
   }
 
   @Get(":id/executions/:execId/logs")
   @ApiOperation({
-    summary: "执行日志",
-    description: "获取执行日志，支持按行分页加载，避免大日志占用过多内存。",
+    summary: "Execution logs",
+    description: "Get execution logs with line-based pagination to avoid memory overload.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiParam({ name: "execId", description: "执行记录ID" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
   @ApiQuery({
     name: "fromLine",
     required: false,
-    description: "起始行号，默认0",
+    description: "Start line number, default 0",
+  })
+  @ApiQuery({
+    name: "limit",
+    required: false,
+    description: "Lines per page, default 500, max 2000",
   })
   executionLogs(
     @Param("execId") execId: string,
     @Query("fromLine") fromLine?: string,
+    @Query("limit") limit?: string,
   ) {
     return this.taskService.getExecutionLogs(
       execId,
-      fromLine ? parseInt(fromLine, 10) : 0,
+      fromLine ? (parseInt(fromLine, 10) || 0) : 0,
+      limit ? Math.min(parseInt(limit, 10) || 500, 2000) : 500,
     );
+  }
+
+  @Get(":id/executions/:execId/logs/stream")
+  @ApiOperation({
+    summary: "Execution log SSE stream",
+    description: "Stream execution logs via Server-Sent Events. Sends [DONE] event on completion.",
+  })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
+  async streamLogs(
+    @Param("execId") execId: string,
+    @Req() req: Request,
+    @Res() res: Response,
+  ): Promise<void> {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no"); // disable nginx buffering
+    res.flushHeaders();
+
+    const ac = new AbortController();
+    req.on("close", () => ac.abort());
+
+    const send = (line: string) => {
+      res.write(`data: ${JSON.stringify(line)}\n\n`);
+    };
+    const done = () => {
+      res.write(`event: done\ndata: [DONE]\n\n`);
+      res.end();
+    };
+
+    try {
+      await this.taskService.streamExecutionLogs(execId, send, done, ac.signal);
+    } catch {
+      res.write(`event: error\ndata: stream error\n\n`);
+      res.end();
+    }
   }
 
   @Post(":id/rollback")
   @ApiOperation({
-    summary: "一键回滚",
-    description: "将任务回滚到指定的Git commit版本。仅适用于Git类型的任务。",
+    summary: "Git rollback",
+    description: "Rollback task to a specific Git commit. Only applies to Git-type tasks.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
+  @ApiParam({ name: "id", description: "Task ID" })
   @ApiBody({
-    description: "回滚参数",
+    description: "Rollback parameters",
     schema: {
       example: {
         gitCommit: "abc123",
-        message: "回滚到稳定版本",
+        message: "Rollback to stable version",
       },
     },
   })
-  @ApiResponse({ status: 400, description: "非Git类型任务不支持回滚" })
+  @ApiResponse({ status: 400, description: "Rollback not supported for non-Git tasks" })
   async rollback(
     @Param("id") id: string,
     @Body() dto: RollbackTaskDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const result = await this.taskService.rollback(id, dto);
@@ -507,17 +554,17 @@ export class TaskController {
 
   @Post(":id/versions/:versionId/rollback")
   @ApiOperation({
-    summary: "版本回滚",
-    description: "将任务配置回滚到指定的历史版本。",
+    summary: "Version rollback",
+    description: "Rollback task config to a specific historical version.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiParam({ name: "versionId", description: "版本ID" })
-  @ApiResponse({ status: 200, description: "回滚成功" })
-  @ApiResponse({ status: 404, description: "任务或版本不存在" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "versionId", description: "Version ID" })
+  @ApiResponse({ status: 200, description: "Rollback successful" })
+  @ApiResponse({ status: 404, description: "Task or version not found" })
   async rollbackToVersion(
     @Param("id") id: string,
     @Param("versionId") versionId: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const result = await this.taskService.rollbackToVersion(id, versionId);
@@ -534,22 +581,22 @@ export class TaskController {
   }
 
   @Get(":id/versions")
-  @ApiOperation({ summary: "版本列表", description: "获取任务的历史版本列表。" })
-  @ApiParam({ name: "id", description: "任务ID" })
+  @ApiOperation({ summary: "Version list", description: "Get task historical version list." })
+  @ApiParam({ name: "id", description: "Task ID" })
   getVersions(@Param("id") id: string) {
     return this.taskService.getVersions(id);
   }
 
   @Get(":id/versions/:versionId1/compare/:versionId2")
   @ApiOperation({
-    summary: "版本对比",
-    description: "比较两个版本的差异。",
+    summary: "Version diff",
+    description: "Compare differences between two versions.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiParam({ name: "versionId1", description: "版本ID 1" })
-  @ApiParam({ name: "versionId2", description: "版本ID 2" })
-  @ApiResponse({ status: 200, description: "版本差异" })
-  @ApiResponse({ status: 404, description: "任务或版本不存在" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "versionId1", description: "Version ID 1" })
+  @ApiParam({ name: "versionId2", description: "Version ID 2" })
+  @ApiResponse({ status: 200, description: "Version diff" })
+  @ApiResponse({ status: 404, description: "Task or version not found" })
   async compareVersions(
     @Param("id") id: string,
     @Param("versionId1") versionId1: string,
@@ -560,16 +607,16 @@ export class TaskController {
 
   @Post(":id/pause")
   @ApiOperation({
-    summary: "暂停任务",
-    description: "暂停任务的定时调度和触发。已提交的执行任务不受影响。",
+    summary: "Pause task",
+    description: "Pause task scheduled execution. In-progress executions are not affected.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiResponse({ status: 200, description: "暂停成功" })
-  @ApiResponse({ status: 400, description: "任务已处于暂停状态" })
-  @ApiResponse({ status: 404, description: "任务不存在" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiResponse({ status: 200, description: "Paused successfully" })
+  @ApiResponse({ status: 400, description: "Task is already paused" })
+  @ApiResponse({ status: 404, description: "Task not found" })
   async pause(
     @Param("id") id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const result = await this.taskService.pause(id);
@@ -586,16 +633,16 @@ export class TaskController {
 
   @Post(":id/resume")
   @ApiOperation({
-    summary: "恢复任务",
-    description: "恢复任务的定时调度和触发。",
+    summary: "Resume task",
+    description: "Resume task scheduled execution.",
   })
-  @ApiParam({ name: "id", description: "任务ID" })
-  @ApiResponse({ status: 200, description: "恢复成功" })
-  @ApiResponse({ status: 400, description: "任务已处于运行状态" })
-  @ApiResponse({ status: 404, description: "任务不存在" })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiResponse({ status: 200, description: "Resumed successfully" })
+  @ApiResponse({ status: 400, description: "Task is already running" })
+  @ApiResponse({ status: 404, description: "Task not found" })
   async resume(
     @Param("id") id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const result = await this.taskService.resume(id);
@@ -605,6 +652,33 @@ export class TaskController {
       action: "task.resume",
       resource: "task",
       resourceId: id,
+      ip: req.ip,
+    });
+    return result;
+  }
+
+  @Post(":id/executions/:execId/kill")
+  @ApiOperation({
+    summary: "Cancel execution",
+    description: "Force-cancel a running or pending execution record.",
+  })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiResponse({ status: 200, description: "Cancelled successfully" })
+  @ApiResponse({ status: 400, description: "Execution is not in a cancellable state" })
+  @ApiResponse({ status: 404, description: "Execution record not found" })
+  async killExecution(
+    @Param("execId") execId: string,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    const result = await this.taskService.killExecution(execId);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: "task.killExecution",
+      resource: "task_execution",
+      resourceId: execId,
       ip: req.ip,
     });
     return result;

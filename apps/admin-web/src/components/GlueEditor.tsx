@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Select, Button, Space, message, Typography } from 'antd';
 import { Editor } from '@monaco-editor/react';
 import { tasksApi } from '../api/tasks';
+import { getErrMsg } from '../utils/error';
 
 const { Text } = Typography;
 
@@ -94,8 +95,8 @@ echo '{"status": "ok", "message": "Task completed successfully"}'
       await tasksApi.updateGlue(taskId, source, language);
       message.success('Glue script saved');
       setDirty(false);
-    } catch (err: any) {
-      message.error(err?.response?.data?.message || 'Failed to save glue script');
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, 'Failed to save glue script'));
     } finally {
       setSaving(false);
     }

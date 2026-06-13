@@ -71,7 +71,7 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
     maxConcurrentTasks: config.maxConcurrentTasks,
     workerStats: taskWorkerManager.getStats(),
     adminApiReachable: reachable,
-    tokenValid: !!(process.env.EXECUTOR_SECRET || process.env.EXECUTOR_SHARED_TOKEN),
+    tokenValid: !!config.token,
     lastHeartbeat: lastHeartbeatTime,
     timestamp: new Date().toISOString(),
   });

@@ -1,10 +1,26 @@
 import { logger } from './logger';
 import { runTask } from './routes/execute';
 
+export interface TaskPayload {
+  id?: string | number;
+  runtime?: string;
+  entrypoint?: string;
+  timeout?: number;
+  requirements?: string[];
+  gitRepo?: string;
+  gitCommit?: string;
+  gitBranch?: string;
+  glueSource?: string;
+  glue_source?: string;
+  glueLanguage?: string;
+  glue_language?: string;
+  [key: string]: unknown;
+}
+
 interface TaskQueueItem {
   executionId: string;
-  task: any;
-  params: Record<string, any>;
+  task: TaskPayload;
+  params: Record<string, unknown>;
   onComplete?: () => void;
 }
 

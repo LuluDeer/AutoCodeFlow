@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, MoreThanOrEqual, LessThanOrEqual } from "typeorm";
+import { Repository, MoreThanOrEqual, Between } from "typeorm";
 import { Task } from "../task/entities/task.entity";
 import {
   TaskExecution,
@@ -21,10 +21,14 @@ export class MetricsService {
   ) {}
 
   async getSummary() {
-    const [totalTasks, totalExecutors, onlineExecutors] = await Promise.all([
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const [totalTasks, totalExecutors, onlineExecutors, todayRuns] = await Promise.all([
       this.taskRepo.count(),
       this.executorRepo.count(),
       this.executorRepo.count({ where: { status: ExecutorStatus.ONLINE } }),
+      this.execRepo.count({ where: { createdAt: MoreThanOrEqual(todayStart) } }),
     ]);
 
     const execStats = await this.execRepo
@@ -50,6 +54,7 @@ export class MetricsService {
 
     return {
       totalTasks,
+      todayRuns,
       totalExecutors,
       onlineExecutors,
       executions: { total, success, failed, running },
@@ -58,7 +63,7 @@ export class MetricsService {
     };
   }
 
-  /** 最近 N 天每天的执行次数（成功 vs 失败） */
+  /** Execution count per day for the last N days (success vs failed) */
   async getDailyTrend(days = 7) {
     const rows = await this.execRepo
       .createQueryBuilder("e")
@@ -72,7 +77,7 @@ export class MetricsService {
       .orderBy("DATE_TRUNC('day', e.createdAt)", "ASC")
       .getRawMany();
 
-    // 聚合成 { date, success, failed } 格式
+    // Aggregate into { date, success, failed } format
     const map = new Map<
       string,
       { date: string; success: number; failed: number }
@@ -89,7 +94,7 @@ export class MetricsService {
     return Array.from(map.values());
   }
 
-  /** 各执行器当前状态及负载 */
+  /** Current status and load for each executor */
   async getExecutorStats() {
     const executors = await this.executorRepo.find({
       order: { appName: "ASC" },
@@ -106,7 +111,7 @@ export class MetricsService {
     }));
   }
 
-  /** 最近失败的执行记录（top 10） */
+  /** Most recent failed execution records (top 10) */
   async getRecentFailures() {
     return this.execRepo.find({
       where: { status: ExecutionStatus.FAILED },
@@ -123,7 +128,7 @@ export class MetricsService {
     });
   }
 
-  /** 生成指定日期的执行报告 */
+  /** Generate execution report for a specific date */
   async generateReport(date: Date): Promise<ExecutionReport> {
     const startOfDay = new Date(date);
     startOfDay.setHours(0, 0, 0, 0);
@@ -162,25 +167,26 @@ export class MetricsService {
       failCount: statMap[ExecutionStatus.FAILED] ?? 0,
       timeoutCount: statMap[ExecutionStatus.TIMEOUT] ?? 0,
       cancelledCount: statMap[ExecutionStatus.CANCELLED] ?? 0,
-      avgDurationMs: parseFloat(durationStats?.avg ?? "0"),
-      maxDurationMs: parseFloat(durationStats?.max ?? "0"),
-      minDurationMs: parseFloat(durationStats?.min ?? "0"),
+      avgDurationMs: parseFloat(durationStats?.avg || "0"),
+      maxDurationMs: parseFloat(durationStats?.max || "0"),
+      minDurationMs: parseFloat(durationStats?.min || "0"),
     });
 
     return this.reportRepo.save(report);
   }
 
-  /** 获取指定日期范围的执行报告 */
+  /** Get execution reports for a date range */
   async getReports(startDate: Date, endDate: Date): Promise<ExecutionReport[]> {
+    // BUG-FIX: use Between so both bounds are applied; a plain spread would overwrite the first condition
     return this.reportRepo.find({
       where: {
-        triggerDay: MoreThanOrEqual(startDate),
+        triggerDay: Between(startDate, endDate),
       },
       order: { triggerDay: "ASC" },
     });
   }
 
-  /** 获取今日执行报告（如果不存在则生成） */
+  /** Get today's execution report (generate if not exists) */
   async getTodayReport(): Promise<ExecutionReport> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -194,7 +200,7 @@ export class MetricsService {
     return report;
   }
 
-  /** 获取最近 N 天的执行报告 */
+  /** Get execution reports for the last N days */
   async getRecentReports(days: number): Promise<ExecutionReport[]> {
     const endDate = new Date();
     endDate.setHours(0, 0, 0, 0);

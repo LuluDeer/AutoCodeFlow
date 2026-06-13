@@ -6,6 +6,7 @@ import {
   UpdateDateColumn,
   ManyToOne,
   JoinColumn,
+  Index,
 } from "typeorm";
 import { Application } from "./application.entity";
 
@@ -25,6 +26,9 @@ export enum RunMode {
 }
 
 @Entity("app_deployments")
+@Index(["applicationId"])
+@Index(["applicationId", "status"])
+@Index(["status"])
 export class AppDeployment {
   @PrimaryGeneratedColumn("uuid") id: string;
 

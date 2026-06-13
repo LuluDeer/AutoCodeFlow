@@ -7,6 +7,7 @@ import {
   Logger,
 } from "@nestjs/common";
 import { Request, Response } from "express";
+import { QueryFailedError } from "typeorm";
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -19,7 +20,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = "Internal server error";
-    let errors: any = null;
+    let errors: string[] | null = null;
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -27,16 +28,33 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
       if (typeof exceptionResponse === "string") {
         message = exceptionResponse;
-      } else if (typeof exceptionResponse === "object") {
-        const resp = exceptionResponse as any;
-        message = resp.message || exception.message;
-        if (Array.isArray(resp.message)) {
-          errors = resp.message;
+      } else if (typeof exceptionResponse === "object" && exceptionResponse !== null) {
+        const resp = exceptionResponse as Record<string, unknown>;
+        message = (typeof resp["message"] === "string" ? resp["message"] : null) || exception.message;
+        if (Array.isArray(resp["message"])) {
+          errors = resp["message"] as string[];
           message = "Validation failed";
         }
       }
+    } else if (exception instanceof QueryFailedError) {
+      // Handle TypeORM database constraint errors
+      const pgError = exception as QueryFailedError & { code?: string };
+      if (pgError.code === "23505") {
+        // Unique constraint violation
+        status = HttpStatus.CONFLICT;
+        message = "Resource already exists";
+      } else if (pgError.code === "23503") {
+        // Foreign key violation
+        status = HttpStatus.UNPROCESSABLE_ENTITY;
+        message = "Related resource not found";
+      } else {
+        this.logger.error(
+          `DB query failed [${pgError.code ?? 'unknown'}]: ${exception.message}`,
+          exception.stack,
+        );
+      }
     } else if (exception instanceof Error) {
-      message = exception.message;
+      // Do not leak internal error details to clients
       this.logger.error(
         `Unhandled exception: ${exception.message}`,
         exception.stack,
