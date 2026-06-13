@@ -75,6 +75,7 @@ async function sendHeartbeat() {
       memUsage,
       runningTaskCount: getRunningCount(),
     });
+    logger.info(`[${traceId}] Heartbeat succeeded`);
   } catch (err: unknown) {
     logger.warn(`Heartbeat failed: ${err instanceof Error ? err.message : String(err)}`);
   }

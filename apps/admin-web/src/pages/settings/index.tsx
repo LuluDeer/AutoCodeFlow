@@ -1,16 +1,17 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Card, Input, Button, Space, message, Typography, Tag, Alert,
   Switch, Modal, Tabs, Table, Form, Select, Tooltip, Popconfirm,
-  Spin,
+  Spin, Divider, Badge,
 } from 'antd';
 import {
   KeyOutlined, CopyOutlined, EyeOutlined, EyeInvisibleOutlined,
   PlusOutlined, EditOutlined, DeleteOutlined, HistoryOutlined,
-  ReloadOutlined,
+  ReloadOutlined, RobotOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
+import { aiApi, SaveAiConfigPayload } from '../../api/ai';
 import type { ColumnsType } from 'antd/es/table';
 
 const { Title, Text } = Typography;
@@ -301,6 +302,164 @@ function SystemConfigTab() {
   );
 }
 
+// ─── AI Config Tab ───────────────────────────────────────────────────────────
+function AiConfigTab() {
+  const [form] = Form.useForm();
+  const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const qc = useQueryClient();
+
+  const { data: cfg, isLoading } = useQuery({
+    queryKey: ['ai-config'],
+    queryFn: () => aiApi.getConfig(),
+  });
+
+  // Populate form once config data arrives
+  useEffect(() => {
+    if (cfg) {
+      form.setFieldsValue({
+        provider: cfg.provider ?? 'disabled',
+        openaiModel: cfg.openaiModel || 'gpt-4o-mini',
+        openaiBaseUrl: cfg.openaiBaseUrl || 'https://api.openai.com/v1',
+        ollamaHost: cfg.ollamaHost || 'http://localhost:11434',
+        ollamaModel: cfg.ollamaModel || 'llama3',
+      });
+    }
+  }, [cfg, form]);
+
+  const { mutateAsync: save, isPending: saving } = useMutation({
+    mutationFn: (vals: SaveAiConfigPayload) => aiApi.saveConfig(vals),
+    onSuccess: () => {
+      message.success('AI 配置已保存');
+      qc.invalidateQueries({ queryKey: ['ai-config'] });
+    },
+  });
+
+  const { mutateAsync: test, isPending: testing } = useMutation({
+    mutationFn: () => aiApi.testConfig(),
+    onSuccess: (res) => setTestResult(res),
+    onError: () => setTestResult({ ok: false, message: '请求失败，请检查配置' }),
+  });
+
+  const provider = Form.useWatch('provider', form);
+
+  const handleSave = async () => {
+    const vals = await form.validateFields();
+    await save(vals as SaveAiConfigPayload);
+  };
+
+  const providerBadge = () => {
+    if (!cfg) return null;
+    const p = cfg.provider;
+    if (p === 'disabled') return <Badge status="default" text="未启用" />;
+    if (p === 'openai') return <Badge status="processing" text="OpenAI" color="green" />;
+    if (p === 'ollama') return <Badge status="processing" text="Ollama" color="blue" />;
+    return null;
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <Text type="secondary">配置任务失败时的 AI 分析能力，支持 OpenAI 及兼容接口和本地 Ollama。</Text>
+        {providerBadge()}
+      </div>
+
+      {isLoading ? <Spin /> : (
+        <Form form={form} layout="vertical" initialValues={{ provider: 'disabled', openaiModel: 'gpt-4o-mini', openaiBaseUrl: 'https://api.openai.com/v1', ollamaHost: 'http://localhost:11434', ollamaModel: 'llama3' }}>
+          <Form.Item name="provider" label="AI 提供商" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'disabled', label: '禁用（不使用 AI 分析）' },
+                { value: 'openai', label: 'OpenAI / 兼容接口（如 DeepSeek、Qwen 等）' },
+                { value: 'ollama', label: 'Ollama（本地模型）' },
+              ]}
+            />
+          </Form.Item>
+
+          {provider === 'openai' && (
+            <>
+              <Divider orientation="left" plain style={{ fontSize: 12, color: '#888' }}>OpenAI 设置</Divider>
+              <Form.Item
+                name="openaiBaseUrl"
+                label="API Base URL"
+                tooltip="可替换为 DeepSeek、Qwen 等兼容 OpenAI 格式的接口地址"
+              >
+                <Input placeholder="https://api.openai.com/v1" />
+              </Form.Item>
+              <Form.Item
+                name="openaiApiKey"
+                label={
+                  <Space>
+                    API Key
+                    {cfg?.hasApiKey && <Tag color="green">已配置</Tag>}
+                  </Space>
+                }
+                tooltip="填写新值将覆盖已保存的 Key；留空则保持不变"
+              >
+                <Input.Password
+                  placeholder={cfg?.hasApiKey ? '已配置，留空则不修改' : '输入 API Key'}
+                  visibilityToggle={{ visible: apiKeyVisible, onVisibleChange: setApiKeyVisible }}
+                />
+              </Form.Item>
+              <Form.Item name="openaiModel" label="模型名称">
+                <Input placeholder="gpt-4o-mini" />
+              </Form.Item>
+            </>
+          )}
+
+          {provider === 'ollama' && (
+            <>
+              <Divider orientation="left" plain style={{ fontSize: 12, color: '#888' }}>Ollama 设置</Divider>
+              <Form.Item name="ollamaHost" label="Ollama Host">
+                <Input placeholder="http://localhost:11434" />
+              </Form.Item>
+              <Form.Item name="ollamaModel" label="模型名称">
+                <Input placeholder="llama3" />
+              </Form.Item>
+            </>
+          )}
+
+          <Form.Item style={{ marginTop: 8 }}>
+            <Space>
+              <Button type="primary" loading={saving} onClick={handleSave}>保存配置</Button>
+              {provider !== 'disabled' && (
+                <Button
+                  icon={<ThunderboltOutlined />}
+                  loading={testing}
+                  onClick={() => { setTestResult(null); test(); }}
+                >
+                  测试连通性
+                </Button>
+              )}
+            </Space>
+          </Form.Item>
+        </Form>
+      )}
+
+      {testResult && (
+        <Alert
+          type={testResult.ok ? 'success' : 'error'}
+          showIcon
+          message={testResult.ok ? 'AI 连接成功' : '连接失败'}
+          description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: 12 }}>{testResult.message}</pre>}
+          style={{ marginTop: 8 }}
+          closable
+          onClose={() => setTestResult(null)}
+        />
+      )}
+
+      {provider !== 'disabled' && (
+        <Alert
+          type="info"
+          showIcon
+          message="任务执行失败时，AI 会自动分析错误日志并给出修复建议，结果展示在执行详情页。"
+          style={{ marginTop: 16 }}
+        />
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function SettingsPage() {
   const tabs = [
@@ -308,6 +467,11 @@ export default function SettingsPage() {
       key: 'token',
       label: <Space><KeyOutlined />执行器 Token</Space>,
       children: <TokenSection />,
+    },
+    {
+      key: 'ai',
+      label: <Space><RobotOutlined />AI 配置</Space>,
+      children: <AiConfigTab />,
     },
     {
       key: 'config',

@@ -56,7 +56,7 @@ describe('getPendingCallbackCount', () => {
     cb.stopCallbackThread();
   });
 
-  it('returns0 for an empty queue', () => {
+  it('returns 0 for an empty queue', () => {
     expect(cb.getPendingCallbackCount()).toBe(0);
   });
 

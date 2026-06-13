@@ -65,7 +65,7 @@ describe("ExecutorService (__tests__)", () => {
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: makeRepo() },
         { provide: ConfigService, useValue: configService },
-        { provide: NotificationService, useValue: { notifyFailure: jest.fn(), notifyFailureWithConfig: jest.fn(), notifyExecutorOnline: jest.fn().mockResolvedValue(undefined), sendAll: jest.fn() } },
+        { provide: NotificationService, useValue: { notifyFailure: jest.fn(), notifyFailureWithConfig: jest.fn(), notifyExecutorOnline: jest.fn().mockResolvedValue(undefined), notifyExecutorOffline: jest.fn().mockResolvedValue(undefined), sendAll: jest.fn() } },
       ],
     }).compile();
     service = module.get(ExecutorService);
@@ -449,7 +449,9 @@ describe("ExecutorService (__tests__)", () => {
       configService.get
         .mockReturnValueOnce(30000)  // heartbeatInterval
         .mockReturnValueOnce(3);     // timeoutMultiplier
-      executorRepo.update.mockResolvedValue({ affected: 2 });
+      // find() must return stale executors so the early-return guard is skipped
+      executorRepo.find.mockResolvedValue([{ id: "exec-1", appName: "app", address: "http://host" }]);
+      executorRepo.update.mockResolvedValue({ affected: 1 });
       await service.markStaleOffline();
       expect(executorRepo.update).toHaveBeenCalledWith(
         expect.objectContaining({ status: ExecutorStatus.ONLINE }),

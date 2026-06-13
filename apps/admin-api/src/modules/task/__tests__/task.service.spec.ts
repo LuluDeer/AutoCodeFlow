@@ -12,6 +12,7 @@ import {
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import { TaskVersion } from "../entities/task-version.entity";
 import { SchedulerService } from "../../scheduler/scheduler.service";
+import { AiService } from "../../ai/ai.service";
 
 const makeRepo = (overrides: Record<string, jest.Mock> = {}) => ({
   create: jest.fn((d) => d),
@@ -59,6 +60,11 @@ describe("TaskService (__tests__)", () => {
       getStats: jest.fn().mockReturnValue({}),
     };
 
+    const aiService = {
+      analyzeFailure: jest.fn().mockResolvedValue(""),
+      chat: jest.fn().mockResolvedValue(""),
+    };
+
     const module = await Test.createTestingModule({
       providers: [
         TaskService,
@@ -72,6 +78,7 @@ describe("TaskService (__tests__)", () => {
         { provide: getQueueToken("task-queue"), useValue: taskQueue },
         { provide: DataSource, useValue: dataSource },
         { provide: SchedulerService, useValue: schedulerService },
+        { provide: AiService, useValue: aiService },
       ],
     }).compile();
 
@@ -120,6 +127,28 @@ describe("TaskService (__tests__)", () => {
       const result = await service.findAll({ page: 1, pageSize: 10 });
       expect(result).toHaveProperty("total", 2);
       expect(result.list).toHaveLength(2);
+    });
+
+    it("passes name ILike filter when name param is provided", async () => {
+      taskRepo.findAndCount.mockResolvedValue([[{ id: "1", name: "my-job" }], 1]);
+      await service.findAll({ page: 1, pageSize: 10, name: "job" } as any);
+      const callArgs = taskRepo.findAndCount.mock.calls[0][0];
+      expect(callArgs.where.name).toEqual(expect.objectContaining({ _value: "%job%" }));
+    });
+
+    it("passes runtime filter when runtime param is provided", async () => {
+      taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
+      await service.findAll({ page: 1, pageSize: 10, runtime: "python" } as any);
+      const callArgs = taskRepo.findAndCount.mock.calls[0][0];
+      expect(callArgs.where.runtime).toBe("python");
+    });
+
+    it("excludes DELETED tasks by default", async () => {
+      taskRepo.findAndCount.mockResolvedValue([[], 0]);
+      await service.findAll({ page: 1, pageSize: 10 });
+      const callArgs = taskRepo.findAndCount.mock.calls[0][0];
+      // where.status should be a Not() wrapper, not a plain string
+      expect(typeof callArgs.where.status).toBe("object");
     });
   });
 

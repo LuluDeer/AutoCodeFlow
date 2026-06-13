@@ -50,6 +50,13 @@ export class Application {
 
   @Column({ nullable: true }) packageUrl: string;
 
+  /**
+   * Optional HMAC-SHA256 secret for verifying release webhook signatures.
+   * When set, callers must include an X-Hub-Signature-256 header.
+   * Format: sha256=<hex-digest> (same convention as GitHub webhooks).
+   */
+  @Column({ nullable: true, select: false }) webhookSecret: string;
+
   @CreateDateColumn() createdAt: Date;
 
   @UpdateDateColumn() updatedAt: Date;

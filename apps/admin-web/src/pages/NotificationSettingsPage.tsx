@@ -206,6 +206,7 @@ export default function NotificationSettingsPage() {
                 <Checkbox value="slack">Slack</Checkbox>
                 <Checkbox value="dingtalk">钉钉</Checkbox>
                 <Checkbox value="wecom">企业微信</Checkbox>
+                <Checkbox value="webhook">Webhook</Checkbox>
               </Space>
             </Checkbox.Group>
           </Form.Item>

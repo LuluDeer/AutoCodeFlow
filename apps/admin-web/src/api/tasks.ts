@@ -96,16 +96,20 @@ export const tasksApi = {
     client.post(`/tasks/${id}/pause`) as Promise<{ success: boolean; message: string }>,
   resume: (id: string) =>
     client.post(`/tasks/${id}/resume`) as Promise<{ success: boolean; message: string }>,
-  batchTrigger: (taskIds: string[]) => client.post('/tasks-batch/trigger', { taskIds }),
-  batchPause: (taskIds: string[]) => client.post('/tasks-batch/pause', { taskIds }),
-  batchResume: (taskIds: string[]) => client.post('/tasks-batch/resume', { taskIds }),
-  batchDelete: (taskIds: string[]) => client.post('/tasks-batch/delete', { taskIds }),
+  batchTrigger: (taskIds: string[]) => client.post('/tasks/batch/trigger', { taskIds }),
+  batchPause: (taskIds: string[]) => client.post('/tasks/batch/pause', { taskIds }),
+  batchResume: (taskIds: string[]) => client.post('/tasks/batch/resume', { taskIds }),
+  batchDelete: (taskIds: string[]) => client.post('/tasks/batch/delete', { taskIds }),
+  stats: (id: string) =>
+    client.get(`/tasks/${id}/stats`) as Promise<{ recentExecutions: TaskExecution[]; successRate: number; avgDuration: number; totalRuns: number }>,
   updateGlue: (id: string, source: string, language?: string) =>
     client.put(`/tasks/${id}/glue`, { source, language }),
   allExecutions: (params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string }) =>
     client.get('/tasks/executions/all', { params }) as Promise<PageResult<TaskExecution>>,
   killExecution: (taskId: string, execId: string) =>
     client.post(`/tasks/${taskId}/executions/${execId}/kill`) as Promise<{ success: boolean; message: string }>,
+  analyzeExecution: (taskId: string, execId: string) =>
+    client.post(`/tasks/${taskId}/executions/${execId}/analyze`) as Promise<{ aiAnalysis: string }>,
   schedulerStats: () =>
     client.get('/tasks/scheduler/stats') as Promise<{ healthy: boolean; activeTimers: number; activeCronTasks: number; runningTaskCount: number; totalScheduledTasks: number; uptime: number }>,
 };

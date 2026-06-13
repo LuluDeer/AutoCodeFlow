@@ -290,12 +290,40 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   res.json({ status: 'accepted', executionId });
 });
 
+/** Write execution metadata to workDir/meta/{executionId}.json so the desktop can build history */
+function writeExecMeta(executionId: string, data: Record<string, unknown>): void {
+  try {
+    const metaDir = path.join(config.workDir, 'meta');
+    fs.mkdirSync(metaDir, { recursive: true });
+    const metaFile = path.join(metaDir, `${executionId}.json`);
+    const existing = fs.existsSync(metaFile)
+      ? JSON.parse(fs.readFileSync(metaFile, 'utf-8'))
+      : {};
+    fs.writeFileSync(metaFile, JSON.stringify({ ...existing, ...data }, null, 2), 'utf-8');
+  } catch (_) { /* best effort */ }
+}
+
 export async function runTask(task: any, params: Record<string, any>, executionId: string): Promise<void> {
   const { cmd, args, workDir, env, timeout } = task;
   const startTime = Date.now();
 
+  // Write start metadata
+  writeExecMeta(executionId, {
+    executionId,
+    taskId: String(task.id || ''),
+    taskName: String(task.name || task.id || executionId),
+    startTime,
+    status: 'running',
+  });
+
   try {
     const result = await runProcess(cmd, args, workDir, env, timeout, executionId);
+
+    writeExecMeta(executionId, {
+      status: 'success',
+      endTime: Date.now(),
+      exitCode: result.exitCode,
+    });
 
     pushCallback({
       executionId,
@@ -310,6 +338,13 @@ export async function runTask(task: any, params: Record<string, any>, executionI
     const message = err instanceof Error ? err.message : String(err);
     const logs: string | undefined = typeof processErr?.logs === 'string' ? processErr.logs : undefined;
     const exitCode: number | undefined = typeof processErr?.exitCode === 'number' ? processErr.exitCode : undefined;
+
+    writeExecMeta(executionId, {
+      status: 'failed',
+      endTime: Date.now(),
+      exitCode,
+      errorMessage: message,
+    });
 
     pushCallback({
       executionId,

@@ -22,6 +22,7 @@ import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TriggerTaskDto } from "./dto/trigger-task.dto";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
 import { SchedulerService } from "../scheduler/scheduler.service";
+import { AiService } from "../ai/ai.service";
 
 @Injectable()
 export class TaskService {
@@ -38,6 +39,7 @@ export class TaskService {
     private dataSource: DataSource,
     @Inject(forwardRef(() => SchedulerService))
     private schedulerService: SchedulerService,
+    private aiService: AiService,
   ) {}
 
   async create(dto: CreateTaskDto) {
@@ -265,6 +267,76 @@ export class TaskService {
     return paginate(list, total, p.page, p.pageSize);
   }
 
+  /**
+   * AI-powered schedule suggestion.
+   * Reads the last 50 executions and asks the LLM to recommend an optimal cron expression.
+   */
+  async suggestSchedule(taskId: string): Promise<{
+    taskId: string;
+    currentCron: string | null;
+    suggestedCron: string;
+    reasoning: string;
+  }> {
+    const task = await this.taskRepo.findOne({ where: { id: taskId } });
+    if (!task) throw new NotFoundException(`Task ${taskId} not found`);
+
+    const executions = await this.execRepo.find({
+      where: { taskId },
+      order: { createdAt: 'DESC' },
+      take: 50,
+    });
+
+    const successCount = executions.filter((e) => e.status === ExecutionStatus.SUCCESS).length;
+    const failCount = executions.filter((e) => e.status === ExecutionStatus.FAILED || e.status === ExecutionStatus.TIMEOUT).length;
+    const durations = executions.filter((e) => e.duration != null).map((e) => e.duration!);
+    const avgDuration = durations.length > 0 ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
+    const p95Duration = durations.length > 0 ? durations.sort((a, b) => a - b)[Math.floor(durations.length * 0.95)] : 0;
+
+    // Build time-of-day distribution for successes
+    const hourCounts: number[] = new Array(24).fill(0);
+    executions
+      .filter((e) => e.status === ExecutionStatus.SUCCESS)
+      .forEach((e) => {
+        const h = new Date(e.createdAt).getUTCHours();
+        hourCounts[h]++;
+      });
+    const bestHours = hourCounts
+      .map((c, h) => ({ h, c }))
+      .sort((a, b) => b.c - a.c)
+      .slice(0, 3)
+      .map(({ h }) => h);
+
+    const summaryLog = [
+      `Task: ${task.name} (${task.id})`,
+      `Current cron: ${task.cronExpression || 'none'}`,
+      `Total executions sampled: ${executions.length}`,
+      `Successes: ${successCount}, Failures/Timeouts: ${failCount}`,
+      `Avg duration: ${avgDuration}ms, P95 duration: ${p95Duration}ms`,
+      `Timeout setting: ${task.timeout || 'default'}ms`,
+      `Hours with most successes (UTC): ${bestHours.join(', ')}`,
+    ].join('\n');
+
+    const { suggestedCron, reasoning } = await this.aiService.suggestSchedule(
+      task.name,
+      task.cronExpression || null,
+      {
+        total: executions.length,
+        successes: successCount,
+        failures: failCount,
+        avgDurationMs: avgDuration,
+        p95DurationMs: p95Duration,
+        bestHoursUtc: bestHours,
+      },
+    );
+
+    return {
+      taskId: task.id,
+      currentCron: task.cronExpression || null,
+      suggestedCron,
+      reasoning,
+    };
+  }
+
   async getExecutionStats(taskId: string) {
     const recent = await this.execRepo.find({
       where: { taskId },
@@ -291,6 +363,22 @@ export class TaskService {
     const e = await this.execRepo.findOne({ where: { id } });
     if (!e) throw new NotFoundException("Execution not found");
     return e;
+  }
+
+  /**
+   * On-demand AI analysis for an execution.
+   * Fetches the task by name, runs analyzeFailure with the execution logs,
+   * persists the result, and returns the updated execution.
+   */
+  async analyzeExecution(execId: string): Promise<TaskExecution> {
+    const exec = await this.execRepo.findOne({ where: { id: execId } });
+    if (!exec) throw new NotFoundException("Execution not found");
+    // Use errorMessage + logs as analysis input; fall back gracefully when logs are empty
+    const logContent = [exec.errorMessage, exec.logs].filter(Boolean).join("\n") || "(no logs)";
+    const task = { name: exec.taskName, runtime: "unknown" };
+    exec.aiAnalysis = await this.aiService.analyzeFailure(task, logContent);
+    await this.execRepo.save(exec);
+    return exec;
   }
 
   async getExecutionLogs(execId: string, fromLine = 0, limit = 500) {

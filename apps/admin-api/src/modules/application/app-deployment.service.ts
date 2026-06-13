@@ -77,9 +77,26 @@ export class AppDeploymentService {
 
   /**
    * Create a new deployment: record it in DB then push deploy command to executor.
+   * Guards against duplicate in-flight deployments for the same application.
    */
   async deploy(applicationId: string, dto: CreateDeploymentDto): Promise<AppDeployment> {
     const app = await this.appService.findById(applicationId);
+
+    // Duplicate-deployment guard: reject if a PENDING or DEPLOYING record already exists
+    // for this application (regardless of executor). This prevents double-clicking the
+    // deploy button or concurrent webhook retries from spawning two real processes.
+    const inFlight = await this.repo.findOne({
+      where: [
+        { applicationId, status: DeploymentStatus.PENDING },
+        { applicationId, status: DeploymentStatus.DEPLOYING },
+      ],
+    });
+    if (inFlight) {
+      throw new BadRequestException(
+        `Application ${app.name} already has an in-progress deployment (id=${inFlight.id}, status=${inFlight.status}). ` +
+        `Wait for it to finish or cancel it first.`,
+      );
+    }
 
     // Auto-select the least-loaded executor when none is specified
     const executor = dto.executorId

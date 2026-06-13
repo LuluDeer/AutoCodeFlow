@@ -35,4 +35,6 @@ export class UpdateApplicationDto {
   @IsOptional() @IsObject() env?: Record<string, string>;
   @IsOptional() @IsString() entrypoint?: string;
   @IsOptional() @IsString() packageUrl?: string;
+  /** HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable. */
+  @IsOptional() @IsString() @MaxLength(256) webhookSecret?: string;
 }
