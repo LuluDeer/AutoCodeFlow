@@ -17,7 +17,10 @@ export class MetricsController {
 
   @Get("trend")
   getDailyTrend(@Query("days") days?: string) {
-    return this.svc.getDailyTrend(days ? parseInt(days, 10) : 7);
+    // Cap at 90 days to prevent full-table scans from unconstrained caller input
+    const parsed = days ? parseInt(days, 10) : 7;
+    const safeDays = Number.isNaN(parsed) ? 7 : Math.min(Math.max(parsed, 1), 90);
+    return this.svc.getDailyTrend(safeDays);
   }
 
   @Get("executors")

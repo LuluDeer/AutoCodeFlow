@@ -15,6 +15,7 @@ import { AiModule } from "../ai/ai.module";
 import { NotificationModule } from "../notification/notification.module";
 import { AuditModule } from "../audit/audit.module";
 import { SchedulerModule } from "../scheduler/scheduler.module";
+import { SystemConfigModule } from "../config/config.module";
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { SchedulerModule } from "../scheduler/scheduler.module";
     NotificationModule,
     AuditModule,
     forwardRef(() => SchedulerModule),
+    SystemConfigModule,
   ],
   controllers: [TaskController, TaskBatchController, ExecutionCallbackController],
   providers: [TaskService, TaskProcessor],

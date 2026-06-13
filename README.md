@@ -167,10 +167,13 @@ http://localhost:3105/api/docs
 
 | 文档 | 说明 |
 |------|------|
+| [快速上手](docs/quickstart.md) | 5 分钟跑起来，完成第一个定时任务，常见问题解答 |
 | [部署指南](docs/deployment.md) | 系统要求、环境变量、快速部署、运维命令、升级指南 |
+| [运维手册](docs/operations.md) | 日常运维、备份恢复、多执行器扩容、故障排查、安全加固 |
 | [开发指南](docs/development.md) | 本地启动、端口说明、迁移命令、测试命令、代码规范 |
 | [SDK 使用指南](docs/sdk-guide.md) | manifest 格式、注入变量、Python/Node SDK 示例 |
 | [API 参考](docs/api-reference.md) | 所有接口端点、认证说明、响应格式、错误码 |
+| [优化建议](docs/optimization-notes.md) | E2E 测试发现的 Bug、各组件优化建议、跨平台路线图 |
 
 ## 常用 Make 命令
 
@@ -182,8 +185,6 @@ make test          # 运行所有测试
 make migration     # 运行数据库迁移
 make logs          # 查看服务日志
 ```
-
-## 常见问题
 
 ## 数据库迁移
 

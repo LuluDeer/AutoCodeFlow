@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, UseGuards, Req } from "@nestjs/common";
+import { Controller, Logger, Post, Body, Get, UseGuards, Req } from "@nestjs/common";
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
 import { Request } from "express";
@@ -9,58 +9,62 @@ import { RefreshTokenDto } from "./dto/refresh-token.dto";
 import { Public } from "../../common/decorators/public.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
 
-@ApiTags("认证")
+@ApiTags("Auth")
 @Controller("auth")
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     private readonly authService: AuthService,
     private readonly auditService: AuditService,
   ) {}
 
-  // N16: tightened to 5 attempts per 60s
-  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  // N16: login rate limit — configurable via env LOGIN_THROTTLE_LIMIT (default 20 for dev, use 5 in prod)
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
   @Public()
   @Post("login")
   @ApiOperation({
-    summary: "用户登录",
+    summary: "User login",
     description:
-      "使用用户名和密码登录，返回 Access Token 和 Refresh Token。每分钟最多尝试5次。",
+      "Login with username and password, returns Access Token and Refresh Token. Max5 attempts per minute.",
   })
   @ApiResponse({
     status: 200,
-    description: "登录成功，返回 accessToken 和 refreshToken",
+    description: "Login successful, returns accessToken and refreshToken",
     schema: { example: { accessToken: "eyJ...", refreshToken: "eyJ..." } },
   })
-  @ApiResponse({ status: 401, description: "用户名或密码错误" })
-  @ApiResponse({ status: 429, description: "请求过于频繁，触发限流" })
+  @ApiResponse({ status: 401, description: "Invalid username or password" })
+  @ApiResponse({ status: 429, description: "Too many requests, rate limit exceeded" })
   async login(@Body() loginDto: LoginDto, @Req() req: Request) {
     const result = await this.authService.login(loginDto);
     await this.auditService
       .log({
-        userId: (result as any).user?.id,
+        userId: undefined,
         username: loginDto.username,
         action: "auth.login",
         resource: "auth",
         ip: req.ip,
       })
-      .catch(() => {});
+      .catch((err: unknown) => this.logger.warn(`audit log failed on login: ${err}`));
     return result;
   }
 
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Public()
   @Post("refresh")
   @ApiOperation({
-    summary: "刷新 Token",
+    summary: "Refresh token",
     description:
-      "使用 Refresh Token 换取新的 Access Token 和 Refresh Token（Token 轮换）。旧 Refresh Token 立即失效。",
+      "Use Refresh Token to obtain new Access Token and Refresh Token (token rotation). Old Refresh Token is immediately invalidated.",
   })
   @ApiResponse({
     status: 200,
-    description: "Token 刷新成功",
+    description: "Token refreshed successfully",
     schema: { example: { accessToken: "eyJ...", refreshToken: "eyJ..." } },
   })
-  @ApiResponse({ status: 401, description: "Refresh Token 无效或已过期" })
+  @ApiResponse({ status: 401, description: "Refresh Token is invalid or expired" })
   refreshToken(@Body() dto: RefreshTokenDto) {
     return this.authService.refreshToken(dto.refreshToken);
   }
@@ -70,17 +74,17 @@ export class AuthController {
   @Post("logout")
   @ApiBearerAuth("JWT")
   @ApiOperation({
-    summary: "登出（吊销所有 Refresh Token）",
+    summary: "Logout (revoke all Refresh Tokens)",
     description:
-      "登出当前用户，吊销该用户所有有效的 Refresh Token，防止 Token 被复用。",
+      "Logout current user and revoke all valid Refresh Tokens to prevent token reuse.",
   })
   @ApiResponse({
     status: 200,
-    description: "登出成功",
+    description: "Logout successful",
     schema: { example: { success: true } },
   })
-  @ApiResponse({ status: 401, description: "未认证" })
-  async logout(@CurrentUser() user: any, @Req() req: Request) {
+  @ApiResponse({ status: 401, description: "Unauthenticated" })
+  async logout(@CurrentUser() user: AuthUser, @Req() req: Request) {
     await this.authService.revokeAllForUser(user.id);
     await this.auditService
       .log({
@@ -90,7 +94,7 @@ export class AuthController {
         resource: "auth",
         ip: req.ip,
       })
-      .catch(() => {});
+      .catch((err: unknown) => this.logger.warn(`audit log failed on logout: ${err}`));
     return { success: true };
   }
 
@@ -98,16 +102,16 @@ export class AuthController {
   @Get("profile")
   @ApiBearerAuth("JWT")
   @ApiOperation({
-    summary: "获取当前用户信息",
-    description: "返回当前登录用户的基本信息，包括 ID、用户名和权限等。",
+    summary: "Get current user info",
+    description: "Return basic info of the current logged-in user including ID, username, and roles.",
   })
   @ApiResponse({
     status: 200,
-    description: "用户信息",
+    description: "User info",
     schema: { example: { id: 1, username: "admin", roles: ["admin"] } },
   })
-  @ApiResponse({ status: 401, description: "未认证" })
-  getProfile(@CurrentUser() user: any) {
+  @ApiResponse({ status: 401, description: "Unauthenticated" })
+  getProfile(@CurrentUser() user: AuthUser) {
     return user;
   }
 }

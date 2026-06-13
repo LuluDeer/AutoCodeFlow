@@ -3,6 +3,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bull";
 import { Queue } from "bull";
+import { ConfigService } from "@nestjs/config";
 import { Task } from "../task/entities/task.entity";
 import { Executor } from "../executor/entities/executor.entity";
 import {
@@ -21,10 +22,14 @@ export class HealthService {
     @InjectRepository(TaskExecution)
     private execRepo: Repository<TaskExecution>,
     @InjectQueue("task-queue") private taskQueue: Queue,
+    private readonly configService: ConfigService,
   ) {
+    const host = this.configService.get<string>("REDIS_HOST", "localhost");
+    const port = this.configService.get<number>("REDIS_PORT", 6379);
+    const password = this.configService.get<string>("REDIS_PASSWORD");
     this.redisClient = createClient({
-      url: `redis://${process.env.REDIS_HOST || "localhost"}:${process.env.REDIS_PORT || 6379}`,
-      password: process.env.REDIS_PASSWORD || undefined,
+      url: `redis://${host}:${port}`,
+      password: password || undefined,
     });
   }
 
@@ -35,8 +40,8 @@ export class HealthService {
     try {
       await this.taskRepo.query("SELECT 1");
       return { status: "healthy" };
-    } catch (error) {
-      return { status: "unhealthy", details: error.message };
+    } catch (error: unknown) {
+      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
     }
   }
 
@@ -50,8 +55,8 @@ export class HealthService {
       }
       await this.redisClient.ping();
       return { status: "healthy" };
-    } catch (error) {
-      return { status: "unhealthy", details: error.message };
+    } catch (error: unknown) {
+      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
     }
   }
 
@@ -78,8 +83,8 @@ export class HealthService {
           ? `High queue backlog: waiting=${waiting}, active=${active}, delayed=${delayed}, failed=${failed}`
           : undefined,
       };
-    } catch (error) {
-      return { status: "unhealthy", details: error.message };
+    } catch (error: unknown) {
+      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
     }
   }
 
@@ -156,8 +161,8 @@ export class HealthService {
         status: "healthy",
         details: `Scheduler is running, ${jobs.length} jobs in queue`,
       };
-    } catch (error) {
-      return { status: "unhealthy", details: error.message };
+    } catch (error: unknown) {
+      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
     }
   }
 

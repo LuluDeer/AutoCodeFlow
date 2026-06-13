@@ -69,8 +69,8 @@ export function deleteOldLogs(retentionDays: number): number {
         logger.debug(`Deleted old log directory: ${dateDir}`);
       }
     }
-  } catch (error: any) {
-    logger.error(`Error deleting old logs: ${error.message}`);
+  } catch (error: unknown) {
+    logger.error(`Error deleting old logs: ${error instanceof Error ? error.message : String(error)}`);
   }
   
   return deletedCount;

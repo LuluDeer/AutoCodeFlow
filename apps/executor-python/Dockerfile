@@ -1,9 +1,15 @@
-FROM python:3.12-slim
+# Build stage — install deps
+FROM python:3.12-slim AS builder
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
+# Runtime stage — lean image
+FROM python:3.12-slim
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy pre-installed packages from builder
+COPY --from=builder /install /usr/local
 
 COPY . .
 

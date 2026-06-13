@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   Inject,
@@ -24,6 +25,8 @@ import { SchedulerService } from "../scheduler/scheduler.service";
 
 @Injectable()
 export class TaskService {
+  private readonly logger = new Logger(TaskService.name);
+
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
     @InjectRepository(TaskExecution)
@@ -55,7 +58,7 @@ export class TaskService {
 
     for (const depId of dependencyIds) {
       if (depId === taskId) {
-        throw new Error(
+        throw new BadRequestException(
           `Circular dependency detected: task ${taskId} depends on itself`,
         );
       }
@@ -72,13 +75,13 @@ export class TaskService {
   ): Promise<void> {
     for (const depId of dependencyIds) {
       if (depId === taskId) {
-        throw new Error(
+        throw new BadRequestException(
           `Circular dependency detected: task ${taskId} has a cyclic dependency chain`,
         );
       }
 
       if (currentPath.has(depId)) {
-        throw new Error(
+        throw new BadRequestException(
           `Circular dependency detected: task ${taskId} -> ... -> ${depId} (cycle)`,
         );
       }
@@ -97,7 +100,8 @@ export class TaskService {
           depTask.dependencies &&
           Object.keys(depTask.dependencies).length > 0
         ) {
-          const childDependencies = Object.keys(depTask.dependencies);
+          // Use Object.values to get the actual dependency task IDs (not the key names)
+          const childDependencies = Object.values(depTask.dependencies);
           await this.detectCycle(
             taskId,
             childDependencies,
@@ -112,7 +116,7 @@ export class TaskService {
   }
 
   async findAll(p: PaginationDto) {
-    const where: any = { status: Not(TaskStatus.DELETED) };
+    const where: Record<string, unknown> = { status: Not(TaskStatus.DELETED) };
     if (p.status) where.status = p.status as TaskStatus;
     if (p.name) where.name = ILike(`%${p.name}%`);
     if (p.runtime) where.runtime = p.runtime;
@@ -136,7 +140,7 @@ export class TaskService {
   async update(id: string, dto: UpdateTaskDto) {
     const t = await this.findOne(id);
     const updated = await this.taskRepo.save(Object.assign(t, dto));
-    // 先停止旧调度，再按新状态决定是否重新注册，无需等待下一次 reload
+    // Stop old schedule, then re-register based on new status without waiting for reload
     this.schedulerService.stop(id);
     if (updated.status === TaskStatus.ACTIVE) {
       await this.schedulerService.scheduleOne(updated);
@@ -153,7 +157,7 @@ export class TaskService {
 
   async remove(id: string) {
     const t = await this.findOne(id);
-    // 立即停止调度，不等下次 reload
+    // Stop schedule immediately without waiting for reload
     this.schedulerService.stop(id);
     t.status = TaskStatus.DELETED;
     await this.taskRepo.save(t);
@@ -163,7 +167,7 @@ export class TaskService {
   async pause(id: string) {
     const t = await this.findOne(id);
     if (t.status === TaskStatus.PAUSED) {
-      throw new BadRequestException("任务已经是暂停状态");
+      throw new BadRequestException("Task is already paused");
     }
     this.schedulerService.stop(id);
     t.status = TaskStatus.PAUSED;
@@ -173,7 +177,7 @@ export class TaskService {
   async resume(id: string) {
     const t = await this.findOne(id);
     if (t.status !== TaskStatus.PAUSED) {
-      throw new BadRequestException("任务不是暂停状态，无法恢复");
+      throw new BadRequestException("Task is not paused and cannot be resumed");
     }
     t.status = TaskStatus.ACTIVE;
     await this.taskRepo.save(t);
@@ -199,7 +203,8 @@ export class TaskService {
       "execute",
       { executionId: exec.id },
       {
-        attempts: task.maxRetry ?? 1,
+        // Bull requires attempts >= 1; guard against maxRetry=0
+        attempts: Math.max(1, task.maxRetry ?? 1),
         backoff: task.maxRetry && task.maxRetry > 1
           ? { type: 'exponential', delay: 10_000 }
           : undefined,
@@ -247,8 +252,8 @@ export class TaskService {
     ]);
 
     const taskNameMap = new Map<string, string>();
-    rawList.raw.forEach((r: any) => {
-      if (r.e_taskId && r.task_name) {
+    rawList.raw.forEach((r: Record<string, unknown>) => {
+      if (typeof r.e_taskId === 'string' && typeof r.task_name === 'string') {
         taskNameMap.set(r.e_taskId, r.task_name);
       }
     });
@@ -288,7 +293,9 @@ export class TaskService {
     return e;
   }
 
-  async getExecutionLogs(execId: string, fromLine = 0) {
+  async getExecutionLogs(execId: string, fromLine = 0, limit = 500) {
+    // Cap limit to prevent accidental memory exhaustion
+    const safeLimit = Math.min(Math.max(1, limit), 2000);
     const exec = await this.execRepo.findOne({ where: { id: execId } });
     if (!exec) throw new NotFoundException("Execution not found");
     // N10: use typed logLineRepo instead of string-based getRepository
@@ -300,6 +307,7 @@ export class TaskService {
         .andWhere("l.lineNumber >= :from", { from: fromLine })
         .orderBy("l.lineNumber", "ASC")
         .select(["l.lineNumber", "l.content"])
+        .take(safeLimit)
         .getMany(),
       this.logLineRepo.count({ where: { executionId: execId } }),
     ]);
@@ -311,6 +319,67 @@ export class TaskService {
     };
   }
 
+  /**
+   * SSE log streaming: polls DB for new log lines while execution is running,
+   * then flushes remaining lines and sends [DONE] when execution finishes.
+   * Caller is responsible for writing SSE headers and closing the response.
+   */
+  async streamExecutionLogs(
+    execId: string,
+    send: (line: string) => void,
+    done: () => void,
+    signal: AbortSignal,
+  ): Promise<void> {
+    let nextLine = 0;
+    const POLL_INTERVAL = 1000; // ms
+    const MAX_RUNTIME = 30 * 60 * 1000; // 30 min safety cap
+    const start = Date.now();
+
+    const flush = async (): Promise<boolean> => {
+      // Returns true when execution is terminal and no more lines pending
+      const exec = await this.execRepo.findOne({ where: { id: execId } });
+      if (!exec) return true;
+
+      const lines = await this.logLineRepo
+        .createQueryBuilder("l")
+        .where("l.executionId = :id", { id: execId })
+        .andWhere("l.lineNumber >= :from", { from: nextLine })
+        .orderBy("l.lineNumber", "ASC")
+        .select(["l.lineNumber", "l.content"])
+        .getMany();
+
+      for (const row of lines) {
+        send(row.content);
+        nextLine = row.lineNumber + 1;
+      }
+
+      const terminal = [
+        ExecutionStatus.SUCCESS,
+        ExecutionStatus.FAILED,
+        ExecutionStatus.TIMEOUT,
+        "killed",
+        "cancelled",
+      ] as string[];
+      return terminal.includes(exec.status);
+    };
+
+    // Poll until done or aborted
+    while (!signal.aborted && Date.now() - start < MAX_RUNTIME) {
+      const finished = await flush();
+      if (finished) break;
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, POLL_INTERVAL);
+        signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+      });
+    }
+
+    // Final flush after terminal state
+    if (!signal.aborted) {
+      await flush();
+    }
+    done();
+  }
+
   async rollback(
     id: string,
     dto: { gitCommit: string; params?: Record<string, any> },
@@ -319,11 +388,11 @@ export class TaskService {
     const prevCommit = task.gitCommit;
 
     const exec = await this.dataSource.transaction(async (manager) => {
-      // 更新 task 的 gitCommit
+      // Update task gitCommit
       task.gitCommit = dto.gitCommit;
       await manager.save(Task, task);
 
-      // 创建执行记录
+      // Create execution record
       return manager.save(
         manager.create(TaskExecution, {
           taskId: task.id,
@@ -340,7 +409,8 @@ export class TaskService {
       "execute",
       { executionId: exec.id },
       {
-        attempts: task.maxRetry ?? 1,
+        // Bull requires attempts >= 1; guard against maxRetry=0
+        attempts: Math.max(1, task.maxRetry ?? 1),
         backoff: task.maxRetry && task.maxRetry > 1
           ? { type: 'exponential', delay: 10_000 }
           : undefined,
@@ -382,6 +452,15 @@ export class TaskService {
           continue;
         }
 
+        // Idempotency: skip if already in a terminal state
+        if (
+          execution.status === ExecutionStatus.SUCCESS ||
+          execution.status === ExecutionStatus.FAILED
+        ) {
+          results.push({ executionId: cb.executionId, success: true });
+          continue;
+        }
+
         execution.status =
           cb.status === "success"
             ? ExecutionStatus.SUCCESS
@@ -395,7 +474,8 @@ export class TaskService {
 
         if (cb.logs) {
           execution.logs = cb.logs;
-          // 同时保存到日志表（批量插入，避免 N 次串行写）
+          // Delete stale lines first (idempotent on retry), then bulk-insert new ones
+          await this.logLineRepo.delete({ executionId: cb.executionId });
           const logLines = cb.logs.split("\n");
           const entities = logLines.map((content, i) =>
             this.logLineRepo.create({
@@ -410,12 +490,26 @@ export class TaskService {
         }
 
         await this.execRepo.save(execution);
+
+        // Decrement executor runningTaskCount on task completion (success or failure).
+        // The counter was incremented at dispatch time; it must be decremented here
+        // so executors are not permanently counted as busy after each task.
+        // Uses GREATEST to guard against races / double-decrement.
+        if (execution.executorAddress) {
+          await this.dataSource
+            .createQueryBuilder()
+            .update('executors')
+            .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
+            .where('address = :addr', { addr: execution.executorAddress })
+            .execute();
+        }
+
         results.push({ executionId: cb.executionId, success: true });
-      } catch (error: any) {
+      } catch (error: unknown) {
         results.push({
           executionId: cb.executionId,
           success: false,
-          error: error.message,
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -441,7 +535,7 @@ export class TaskService {
     const versionNum = (maxResult?.maxNum ?? 0) + 1;
     const version = `v${versionNum}`;
 
-    const snapshot: Record<string, any> = {
+    const snapshot: Record<string, unknown> = {
       id: task.id,
       name: task.name,
       description: task.description,
@@ -512,7 +606,7 @@ export class TaskService {
     taskId: string,
     versionId1: string,
     versionId2: string,
-  ): Promise<Record<string, { old: any; new: any }>> {
+  ): Promise<Record<string, { old: unknown; new: unknown }>> {
     const v1 = await this.getVersion(taskId, versionId1);
     const v2 = await this.getVersion(taskId, versionId2);
 
@@ -520,7 +614,7 @@ export class TaskService {
       ...Object.keys(v1.snapshot),
       ...Object.keys(v2.snapshot),
     ]);
-    const diff: Record<string, { old: any; new: any }> = {};
+    const diff: Record<string, { old: unknown; new: unknown }> = {};
 
     for (const key of allKeys) {
       if (
@@ -541,8 +635,28 @@ export class TaskService {
     await this.versionRepo.delete(version.id);
   }
 
-  /** 获取调度器运行状态统计 */
+  /** Get scheduler running status statistics */
   getSchedulerStats() {
     return this.schedulerService.getStats();
+  }
+
+  /** Force-terminate a running execution */
+  async killExecution(execId: string): Promise<{ success: boolean; message: string }> {
+    const execution = await this.execRepo.findOne({ where: { id: execId } });
+    if (!execution) {
+      throw new NotFoundException(`Execution ${execId} not found`);
+    }
+    if (execution.status !== ExecutionStatus.RUNNING && execution.status !== ExecutionStatus.PENDING) {
+      throw new BadRequestException(`Execution is in '${execution.status}' status and cannot be terminated`);
+    }
+    execution.status = ExecutionStatus.KILLED;
+    execution.endTime = new Date();
+    if (execution.startTime) {
+      execution.duration = Date.now() - new Date(execution.startTime).getTime();
+    }
+    execution.errorMessage = 'Manually terminated by administrator';
+    await this.execRepo.save(execution);
+    this.logger.warn(`Execution ${execId} has been manually terminated`);
+    return { success: true, message: 'Execution marked as terminated' };
   }
 }

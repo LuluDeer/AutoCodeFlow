@@ -14,11 +14,12 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { SystemConfigService, UpsertConfig } from "./config.service";
 import { UpsertConfigDto } from "./dto/upsert-config.dto";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 
-@ApiTags("系统配置")
+@ApiTags("System Config")
 @ApiBearerAuth("JWT")
 @UseGuards(JwtAuthGuard)
 @Controller("config")
@@ -26,9 +27,9 @@ export class ConfigController {
   constructor(private readonly configService: SystemConfigService) {}
 
   @Get()
-  @ApiOperation({ summary: "获取所有配置项" })
+    @ApiOperation({ summary: "List all config entries" })
   async findAll(@Query("prefix") prefix?: string, @Query("tag") tag?: string) {
-    let configs: any[];
+    let configs: import('./entities/system-config.entity').SystemConfig[];
     if (prefix) {
       configs = await this.configService.getByPrefix(prefix);
     } else if (tag) {
@@ -39,86 +40,144 @@ export class ConfigController {
     return configs.map((c) => (c.isSecret ? { ...c, value: "***" } : c));
   }
 
-  @Get(":key")
-  @ApiOperation({ summary: "获取单个配置项" })
-  async findOne(@Param("key") key: string) {
-    const c = await this.configService.findOne(key);
-    return c.isSecret ? { ...c, value: "***" } : c;
-  }
-
-  @Put()
-  @ApiOperation({ summary: "新增或更新配置项" })
-  async upsert(
-    @Body() dto: UpsertConfigDto,
-    @CurrentUser() user: any,
-    @Req() req: Request,
-  ) {
-    return this.configService.upsert(dto, {
-      userId: user?.id,
-      username: user?.username,
-      ipAddress: req.ip,
-    });
-  }
-
-  @Post("batch")
-  @ApiOperation({ summary: "批量新增或更新配置项" })
-  async batchUpsert(
-    @Body() items: UpsertConfig[],
-    @CurrentUser() user: any,
-    @Req() req: Request,
-  ) {
-    return this.configService.batchUpsert(items, {
-      userId: user?.id,
-      username: user?.username,
-      ipAddress: req.ip,
-    });
-  }
-
-  @Delete(":key")
-  @ApiOperation({ summary: "删除配置项" })
-  async remove(
-    @Param("key") key: string,
-    @CurrentUser() user: any,
-    @Req() req: Request,
-  ) {
-    return this.configService.remove(key, {
-      userId: user?.id,
-      username: user?.username,
-      ipAddress: req.ip,
-    });
-  }
+  // NOTE: static routes ('history', 'history/:key', 'history/:id/rollback') must
+  // be declared BEFORE the dynamic ':key' route to avoid NestJS matching 'history'
+  // as the key parameter.
 
   @Get("history")
-  @ApiOperation({ summary: "获取配置历史记录" })
+  @ApiOperation({ summary: "Get config change history" })
   async getHistory(
     @Query("key") key?: string,
     @Query() pagination?: PaginationDto,
   ) {
     const page = pagination?.page ?? 1;
     const limit = pagination?.pageSize ?? 20;
-    return this.configService.getHistory(key, page, limit);
+    const result = await this.configService.getHistory(key, page, limit);
+    // Mask secret values in history records.
+    const secretKeys = await this.configService.getSecretKeys();
+    result.data = result.data.map((h) =>
+      secretKeys.has(h.configKey)
+        ? { ...h, oldValue: h.oldValue != null ? "***" : null, newValue: h.newValue != null ? "***" : null }
+        : h,
+    );
+    return result;
   }
 
   @Get("history/:key")
-  @ApiOperation({ summary: "获取指定配置项的历史记录" })
+  @ApiOperation({ summary: "Get history for a specific config key" })
   async getHistoryByKey(
     @Param("key") key: string,
     @Query() pagination?: PaginationDto,
   ) {
     const page = pagination?.page ?? 1;
     const limit = pagination?.pageSize ?? 20;
-    return this.configService.getHistory(key, page, limit);
+    const result = await this.configService.getHistory(key, page, limit);
+    // Check if this key is marked secret and mask values accordingly.
+    const secretKeys = await this.configService.getSecretKeys();
+    if (secretKeys.has(key)) {
+      result.data = result.data.map((h) => ({
+        ...h,
+        oldValue: h.oldValue != null ? "***" : null,
+        newValue: h.newValue != null ? "***" : null,
+      }));
+    }
+    return result;
   }
 
   @Post("history/:id/rollback")
-  @ApiOperation({ summary: "回滚到历史版本" })
+  @ApiOperation({ summary: "Rollback config to a historical version" })
   async rollback(
     @Param("id") id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     return this.configService.rollback(id, {
-      userId: user?.id,
+      userId: user?.id != null ? String(user.id) : undefined,
+      username: user?.username,
+      ipAddress: req.ip,
+    });
+  }
+
+  @Post("executor-shared-token/generate")
+  @ApiOperation({ summary: "Generate or rotate executor shared token" })
+  async generateExecutorSharedToken(
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    const { randomBytes } = await import("crypto");
+    const token = randomBytes(32).toString("hex");
+    await this.configService.upsert(
+      {
+        key: "executor.sharedToken",
+        value: token,
+        description: "Executor shared token (auto-generated by admin, sensitive)",
+        valueType: "string",
+        isSecret: true,
+      },
+      {
+        userId: user?.id != null ? String(user.id) : undefined,
+        username: user?.username,
+        ipAddress: req.ip,
+      },
+    );
+    return { token };
+  }
+
+  @Get("executor-shared-token")
+  @ApiOperation({ summary: "Get current executor shared token (plaintext, admin only)" })
+  async getExecutorSharedToken() {
+    try {
+      const cfg = await this.configService.findOne("executor.sharedToken");
+      return { token: cfg.value ?? null, hasToken: !!cfg.value };
+    } catch {
+      return { token: null, hasToken: false };
+    }
+  }
+
+  @Get(":key")
+  @ApiOperation({ summary: "Get a single config entry" })
+  async findOne(@Param("key") key: string) {
+    const c = await this.configService.findOne(key);
+    return c.isSecret ? { ...c, value: "***" } : c;
+  }
+
+  @Put()
+  @ApiOperation({ summary: "Create or update a config entry" })
+  async upsert(
+    @Body() dto: UpsertConfigDto,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.configService.upsert(dto, {
+      userId: user?.id != null ? String(user.id) : undefined,
+      username: user?.username,
+      ipAddress: req.ip,
+    });
+  }
+
+  @Post("batch")
+  @ApiOperation({ summary: "Batch create or update config entries" })
+  async batchUpsert(
+    @Body() items: UpsertConfig[],
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.configService.batchUpsert(items, {
+      userId: user?.id != null ? String(user.id) : undefined,
+      username: user?.username,
+      ipAddress: req.ip,
+    });
+  }
+
+  @Delete(":key")
+  @ApiOperation({ summary: "Delete a config entry" })
+  async remove(
+    @Param("key") key: string,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.configService.remove(key, {
+      userId: user?.id != null ? String(user.id) : undefined,
       username: user?.username,
       ipAddress: req.ip,
     });

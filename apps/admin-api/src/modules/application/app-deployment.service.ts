@@ -5,8 +5,10 @@ import {
   BadRequestException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { Repository, LessThan } from "typeorm";
 import axios from "axios";
+import { ConfigService } from "@nestjs/config";
+import { Cron } from "@nestjs/schedule";
 import {
   AppDeployment,
   DeploymentStatus,
@@ -25,12 +27,35 @@ export class AppDeploymentService {
     private readonly repo: Repository<AppDeployment>,
     private readonly appService: ApplicationService,
     private readonly executorService: ExecutorService,
+    private readonly configService: ConfigService,
   ) {}
 
-  async findAll(applicationId?: string): Promise<AppDeployment[]> {
-    const where: any = {};
+  /** Build auth headers for executor requests */
+  private getExecutorHeaders(): Record<string, string> {
+    const token = this.configService.get<string>("executor.sharedToken") ?? "";
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
+  async findAll(applicationId?: string, page = 1, limit = 20): Promise<{ data: AppDeployment[]; total: number }> {
+    const where: import("typeorm").FindOptionsWhere<AppDeployment> = {};
     if (applicationId) where.applicationId = applicationId;
-    return this.repo.find({ where, order: { createdAt: "DESC" }, relations: ["application"] });
+    const [data, total] = await this.repo.findAndCount({
+      where,
+      order: { createdAt: "DESC" },
+      relations: ["application"],
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+    return { data, total };
+  }
+
+  /** Internal: get all deployment records for an app without pagination */
+  async findAllByApp(applicationId: string): Promise<AppDeployment[]> {
+    return this.repo.find({
+      where: { applicationId },
+      order: { createdAt: "DESC" },
+      relations: ["application"],
+    });
   }
 
   async findById(id: string): Promise<AppDeployment> {
@@ -40,15 +65,26 @@ export class AppDeploymentService {
   }
 
   /**
+   * Find all RUNNING deployments for a given application.
+   * Used by webhook to trigger rolling upgrades.
+   */
+  async findRunningByApp(applicationId: string): Promise<AppDeployment[]> {
+    return this.repo.find({
+      where: { applicationId, status: DeploymentStatus.RUNNING },
+      order: { createdAt: "DESC" },
+    });
+  }
+
+  /**
    * Create a new deployment: record it in DB then push deploy command to executor.
    */
   async deploy(applicationId: string, dto: CreateDeploymentDto): Promise<AppDeployment> {
     const app = await this.appService.findById(applicationId);
-    const executor = await this.executorService.findOne(dto.executorId);
 
-    if (!app.gitRepo) {
-      throw new BadRequestException("Application has no gitRepo configured");
-    }
+    // Auto-select the least-loaded executor when none is specified
+    const executor = dto.executorId
+      ? await this.executorService.findOne(dto.executorId)
+      : await this.executorService.selectLeastLoaded();
 
     const deployment = this.repo.create({
       applicationId,
@@ -98,9 +134,10 @@ export class AppDeploymentService {
         deployment.executorAddress,
         `api/app-stop`,
       );
-      await axios.post(url, { deploymentId: deployment.id }, { timeout: 10_000 });
-    } catch (err: any) {
-      this.logger.warn(`Stop signal failed (executor may be offline): ${err.message}`);
+      await axios.post(url, { deploymentId: deployment.id }, { timeout: 10_000, headers: this.getExecutorHeaders() });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Stop signal failed (executor may be offline): ${msg}`);
     }
 
     deployment.status = DeploymentStatus.STOPPED;
@@ -118,12 +155,15 @@ export class AppDeploymentService {
       return;
     }
 
-    if (dto.status === "running") {
-      deployment.status = DeploymentStatus.RUNNING;
-    } else if (dto.status === "stopped") {
-      deployment.status = DeploymentStatus.STOPPED;
-    } else if (dto.status === "failed") {
-      deployment.status = DeploymentStatus.FAILED;
+    const statusMap: Record<string, DeploymentStatus> = {
+      running: DeploymentStatus.RUNNING,
+      stopped: DeploymentStatus.STOPPED,
+      failed: DeploymentStatus.FAILED,
+    };
+    if (dto.status && statusMap[dto.status]) {
+      deployment.status = statusMap[dto.status];
+    } else if (dto.status) {
+      this.logger.warn(`Heartbeat received unknown status "${dto.status}" for ${dto.deploymentId}`);
     }
 
     if (dto.pid !== undefined) deployment.pid = dto.pid;
@@ -139,7 +179,7 @@ export class AppDeploymentService {
 
   private async pushDeployToExecutor(
     deployment: AppDeployment,
-    app: any,
+    app: import("./entities/application.entity").Application,
     upgrade = false,
   ): Promise<void> {
     deployment.status = DeploymentStatus.DEPLOYING;
@@ -156,9 +196,10 @@ export class AppDeploymentService {
         deploymentId: deployment.id,
         applicationId: app.id,
         appName: app.name,
-        gitRepo: app.gitRepo,
+        gitRepo: app.gitRepo || null,
         gitBranch: app.gitBranch || "main",
         gitCommit: app.gitCommit || null,
+        packageUrl: (app as any).packageUrl || null,
         runtime: app.runtime,
         entrypoint: deployment.startCommand || app.entrypoint,
         runMode: deployment.runMode,
@@ -166,19 +207,36 @@ export class AppDeploymentService {
         upgrade,
       };
 
-      await axios.post(url, payload, { timeout: 30_000 });
+      await axios.post(url, payload, { timeout: 30_000, headers: this.getExecutorHeaders() });
 
       deployment.status = DeploymentStatus.DEPLOYING;
       deployment.statusMessage = "Deploy command sent to executor";
       deployment.deployedCommit = app.gitCommit || null;
       deployment.deployedVersion = app.version || null;
       deployment.deployedAt = new Date();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       deployment.status = DeploymentStatus.FAILED;
-      deployment.statusMessage = `Failed to reach executor: ${err.message}`;
-      this.logger.error(`Deploy push failed for ${deployment.id}: ${err.message}`);
+      deployment.statusMessage = `Failed to reach executor: ${msg}`;
+      this.logger.error(`Deploy push failed for ${deployment.id}: ${msg}`);
     }
 
     await this.repo.save(deployment);
+  }
+
+  /** Scan every 2 minutes for deployments stuck in 'deploying' > 10 minutes and mark them failed */
+  @Cron("0 */2 * * * *")
+  async detectStuckDeployments(): Promise<void> {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const stuck = await this.repo.find({
+      where: { status: DeploymentStatus.DEPLOYING, createdAt: LessThan(tenMinutesAgo) },
+    });
+    if (stuck.length === 0) return;
+    for (const d of stuck) {
+      d.status = DeploymentStatus.FAILED;
+      d.statusMessage = "[System] Deployment timed out after 10 minutes";
+      await this.repo.save(d);
+      this.logger.warn(`Stuck deployment marked FAILED: id=${d.id}, app=${d.applicationId}`);
+    }
   }
 }

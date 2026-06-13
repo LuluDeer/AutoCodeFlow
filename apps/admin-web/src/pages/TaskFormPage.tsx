@@ -1,202 +1,420 @@
-import { Form, Input, InputNumber, Select, Button, Card, Space, message, Typography, Collapse } from 'antd';
-import { ArrowLeftOutlined, InfoCircleOutlined, SettingOutlined, ClockCircleOutlined, ApartmentOutlined } from '@ant-design/icons';
-import { useNavigate, useParams } from 'react-router-dom';
-import { useRequest } from 'ahooks';
+import { useState, useEffect } from 'react';
+import {
+  Card, Form, Input, Select, Button, Steps, Space, Typography,
+  InputNumber, Radio, Alert, message, Divider, Tag, Spin,
+} from 'antd';
+import {
+  ThunderboltOutlined, ClockCircleOutlined, ArrowLeftOutlined,
+  InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined,
+} from '@ant-design/icons';
+import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
-import { useState } from 'react';
-import GlueEditor from '../components/GlueEditor';
-import CronHelper from '../components/CronHelper';
+import { applicationsApi } from '../api/applications';
+import { CronHelper } from '../components/CronHelper';
 
-const { Text } = Typography;
+const { Title, Text } = Typography;
+
+const TRIGGER_OPTIONS = [
+  { value: 'manual', label: '手动触发', desc: '只能通过界面或 API 手动触发' },
+  { value: 'cron', label: 'Cron 定时', desc: '使用 Cron 表达式设置复杂调度' },
+  { value: 'fixed_rate', label: '固定间隔', desc: '每隔固定时间自动执行一次' },
+];
+
+const RUNTIME_OPTIONS = [
+  { value: 'python', label: 'Python' },
+  { value: 'node', label: 'Node.js' },
+  { value: 'shell', label: 'Shell' },
+];
+
+// Executor dispatch modes exposed to the user
+const EXECUTOR_MODE_OPTIONS = [
+  {
+    value: 'auto',
+    label: '自动调度',
+    desc: '系统自动选择负载最低的在线执行器',
+    icon: <ClusterOutlined />,
+  },
+  {
+    value: 'group',
+    label: '按分组/标签',
+    desc: '限定在指定分组或标签的执行器中自动调度',
+    icon: <ApartmentOutlined />,
+  },
+  {
+    value: 'pinned',
+    label: '指定执行器',
+    desc: '固定到指定的执行器节点（appName匹配）',
+    icon: <PushpinOutlined />,
+  },
+  {
+    value: 'broadcast',
+    label: '广播（全部执行）',
+    desc: '所有在线执行器同时运行此任务',
+    icon: <RocketOutlined />,
+  },
+];
 
 export default function TaskFormPage() {
   const nav = useNavigate();
-  const { id } = useParams<{ id?: string }>();
-  const isEdit = !!id && id !== 'new';
+  const { id: editId } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const appId = searchParams.get('applicationId');
+  const isEdit = !!editId;
+
+  const [step, setStep] = useState(0);
   const [form] = Form.useForm();
+  const [triggerType, setTriggerType] = useState('manual');
+  const [executorMode, setExecutorMode] = useState<'auto' | 'group' | 'pinned' | 'broadcast'>('auto');
+  const [groups, setGroups] = useState<string[]>([]);
+  const [allTags, setAllTags] = useState<string[]>([]);
+  const [executors, setExecutors] = useState<{ id: string; appName: string; address: string }[]>([]);
+  const [apps, setApps] = useState<{ id: string; name: string }[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [loadingTask, setLoadingTask] = useState(isEdit);
+  const [showCronHelper, setShowCronHelper] = useState(false);
 
-  useRequest(() => tasksApi.get(id!), {
-    ready: isEdit,
-    onSuccess: (data) => {
-      // Convert dependencies object { taskId: taskName } back to array of IDs for the Select
-      const depIds = data.dependencies ? Object.keys(data.dependencies) : [];
-      form.setFieldsValue({ ...data, dependencyIds: depIds });
-    },
-  });
+  useEffect(() => {
+    executorsApi.getGroups().then(setGroups).catch(() => message.warning('获取执行器分组失败'));
+    executorsApi.getTags().then(setAllTags).catch(() => message.warning('获取标签失败'));
+    executorsApi.list().then((data) =>
+      setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string })))
+    ).catch(() => message.warning('获取执行器列表失败'));
+    applicationsApi.list().then((data) =>
+      setApps(data.map((a) => ({ id: a.id as string, name: a.name as string })))
+    ).catch(() => message.warning('获取应用列表失败'));
+    if (appId) form.setFieldValue('applicationId', appId);
+  }, [appId, form]);
 
-  const { data: groups } = useRequest(executorsApi.getGroups);
-  const { data: tags } = useRequest(executorsApi.getTags);
-  const { data: allTasks } = useRequest(() => tasksApi.list({ page: 1, pageSize: 100 }).then((r: any) => r?.list ?? []));
-  const [depSearch, setDepSearch] = useState('');
+  // Load existing task data when in edit mode
+  useEffect(() => {
+    if (!editId) return;
+    setLoadingTask(true);
+    tasksApi.get(editId)
+      .then((task) => {
+        // Determine executorMode from task fields
+        let mode: 'auto' | 'group' | 'pinned' | 'broadcast' = 'auto';
+        if (task.executeMode === 'broadcast') mode = 'broadcast';
+        else if (task.executorAppName) mode = 'pinned';
+        else if (task.executorGroup || (task.executorTags && task.executorTags.length > 0)) mode = 'group';
+        setExecutorMode(mode);
+        setTriggerType(task.triggerType || 'manual');
+        form.setFieldsValue({
+          name: task.name,
+          description: task.description,
+          runtime: task.runtime,
+          entrypoint: task.entrypoint,
+          applicationId: task.applicationId,
+          triggerType: task.triggerType || 'manual',
+          cronExpression: task.cronExpression,
+          fixedRate: task.fixedRate,
+          timeout: task.timeout ?? 300,
+          maxRetry: task.maxRetry ?? 3,
+          executorAppName: task.executorAppName,
+          executorGroup: task.executorGroup,
+          executorTags: task.executorTags,
+        });
+      })
+      .catch(() => message.error('加载任务失败'))
+      .finally(() => setLoadingTask(false));
+  }, [editId, form]);
 
-  const onFinish = async (values: Record<string, unknown>) => {
+  const handleStep0Next = async () => {
     try {
-      // Transform dependencyIds array into JSONB object before submitting
-      const depIds = values.dependencyIds as string[] | undefined;
-      const payload = {
-        ...values,
-        dependencies: transformDependencies(depIds ?? []),
-      };
-      delete payload.dependencyIds;
-      if (isEdit) await tasksApi.update(id!, payload);
-      else await tasksApi.create(payload);
-      message.success(isEdit ? '更新成功' : '创建成功');
-      nav('/tasks');
-    } catch (err) {
-      console.error('Task save failed:', err);
-      message.error('操作失败');
+      await form.validateFields(['name', 'runtime', 'entrypoint']);
+      setStep(1);
+    } catch (_err) {}
+  };
+
+  const handleSubmit = async () => {
+    try {
+      const values = await form.validateFields();
+      setSaving(true);
+      // Map UI executorMode → backend executeMode + executor selector fields
+      const payload = { ...values };
+      if (executorMode === 'broadcast') {
+        payload.executeMode = 'broadcast';
+        delete payload.executorAppName;
+        delete payload.executorGroup;
+        delete payload.executorTags;
+      } else if (executorMode === 'group') {
+        payload.executeMode = 'single';
+        delete payload.executorAppName;
+      } else if (executorMode === 'pinned') {
+        payload.executeMode = 'single';
+        // executorAppName already set from form values
+        delete payload.executorGroup;
+        delete payload.executorTags;
+      } else {
+        // auto
+        payload.executeMode = 'single';
+        delete payload.executorGroup;
+        delete payload.executorTags;
+        delete payload.executorAppName;
+      }
+      if (isEdit && editId) {
+        await tasksApi.update(editId, payload);
+        message.success('任务更新成功');
+        nav(`/tasks/${editId}`);
+      } else {
+        await tasksApi.create(payload);
+        message.success('任务创建成功');
+        nav('/tasks');
+      }
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      const msg = err instanceof Error ? err.message : (isEdit ? '更新失败' : '创建失败');
+      message.error(msg);
+    } finally {
+      setSaving(false);
     }
   };
 
-  // Convert dependency array to JSONB format: { taskId: taskName }
-  const transformDependencies = (depIds: string[]) => {
-    if (!depIds || depIds.length === 0) return null;
-    const deps: Record<string, string> = {};
-    const tasks: any[] = allTasks ?? [];
-    depIds.forEach((depId) => {
-      const found = tasks.find((t: any) => t.id === depId);
-      deps[depId] = found?.name ?? depId;
-    });
-    return deps;
-  };
+  if (loadingTask) {
+    return <div style={{ display: 'flex', justifyContent: 'center', marginTop: 100 }}><Spin size="large" tip="加载任务数据..." /></div>;
+  }
 
-  const collapseItems = [
-    {
-      key: 'basic',
-      label: (
-        <Space>
-          <SettingOutlined />
-          <Text strong>基础配置</Text>
-        </Space>
-      ),
-      children: (
-        <>
-          <Form.Item name="name" label="任务名" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="description" label="描述"><Input.TextArea rows={2} /></Form.Item>
-          <Form.Item name="runtime" label="运行时" rules={[{ required: true }]}>
-            <Select options={[{ value: 'python', label: 'Python' }, { value: 'node', label: 'Node.js' }, { value: 'shell', label: 'Shell' }]} />
-          </Form.Item>
-          <Form.Item name="entrypoint" label="入口文件" rules={[{ required: true }]}><Input placeholder="main.py" /></Form.Item>
-          <Form.Item name="maxRetry" label="最大重试次数"><InputNumber min={0} max={10} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="timeout" label="超时(秒)"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
-        </>
-      ),
-    },
-    {
-      key: 'schedule',
-      label: (
-        <Space>
-          <ClockCircleOutlined />
-          <Text strong>调度设置</Text>
-        </Space>
-      ),
-      children: (
-        <>
-          <Form.Item name="triggerType" label="触发方式" rules={[{ required: true }]}>
-            <Select options={[{ value: 'manual', label: '手动' }, { value: 'fixed_rate', label: '固定频率' }, { value: 'cron', label: 'Cron' }]} />
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(p, c) => p.triggerType !== c.triggerType}>
-            {({ getFieldValue }) => getFieldValue('triggerType') === 'fixed_rate' && (
-              <Form.Item name="fixedRate" label="固定频率(秒)"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
-            )}
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(p, c) => p.triggerType !== c.triggerType}>
-            {({ getFieldValue, setFieldValue }) => getFieldValue('triggerType') === 'cron' && (
+  return (
+    <div style={{ maxWidth: 680}}>
+      <Space style={{ marginBottom: 20 }}>
+        <Button icon={<ArrowLeftOutlined />} type="text" onClick={() => nav(-1)} />
+        <Title level={4} style={{ margin: 0 }}>{isEdit ? '编辑任务' : '创建任务'}</Title>
+      </Space>
+
+      <Steps
+        current={step}
+        style={{ marginBottom: 28 }}
+        items={[
+          { title: '基本配置', icon: <ThunderboltOutlined /> },
+          { title: '触发 & 执行器', icon: <ClockCircleOutlined /> },
+        ]}
+      />
+
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={{ triggerType:'manual', runtime: 'python', timeout: 300, maxRetry: 3 }}
+        onValuesChange={(changed) => {
+          if (changed.triggerType) setTriggerType(changed.triggerType);
+        }}
+      >
+        {/* Step 0:基本配置 */}
+        {step === 0 && (
+          <Card>
+            <Form.Item
+              name="name"
+              label="任务名称"
+              rules={[
+                { required: true, message: '请输入任务名称' },
+                { pattern: /^[a-zA-Z0-9_-]+$/, message: '只允许字母、数字、下划线、连字符' },
+              ]}
+              tooltip={{ title: isEdit ? '任务名称创建后不可更改' : '唯一标识，建议使用英文，如 daily-report', icon: <InfoCircleOutlined /> }}
+            >
+              <Input placeholder="daily-report" autoFocus disabled={isEdit} />
+            </Form.Item>
+
+            <Form.Item name="description" label="描述（可选）">
+              <Input placeholder="简单说明这个任务做什么" />
+            </Form.Item>
+
+            <Form.Item
+              name="runtime"
+              label="运行时"
+              rules={[{ required: true, message: '请选择运行时' }]}
+              tooltip={{ title: '执行器节点需安装对应运行时', icon: <InfoCircleOutlined /> }}
+            >
+              <Radio.Group optionType="button" buttonStyle="solid">
+                {RUNTIME_OPTIONS.map(o => (
+                  <Radio.Button key={o.value} value={o.value}>{o.label}</Radio.Button>
+                ))}
+              </Radio.Group>
+            </Form.Item>
+
+            <Form.Item
+              name="entrypoint"
+              label="入口文件"
+              rules={[{ required: true, message: '请输入入口文件路径' }]}
+              tooltip={{ title: '相对于仓库根目录的文件路径，如 tasks/main.py', icon: <InfoCircleOutlined /> }}
+            >
+              <Input placeholder="tasks/main.py" />
+            </Form.Item>
+
+            <Form.Item
+              name="applicationId"
+              label="关联应用（可选）"
+              tooltip={{ title: '关联后可继承应用的代码仓库和配置', icon: <InfoCircleOutlined /> }}
+            >
+              <Select
+                placeholder="选择应用（可不关联）"
+                allowClear
+                showSearch
+                options={apps.map(a => ({ value: a.id, label: a.name }))}
+                filterOption={(input, opt) =>
+                  (opt?.label as string)?.toLowerCase().includes(input.toLowerCase())
+                }
+              />
+            </Form.Item>
+
+            <Divider />
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button type="primary" onClick={handleStep0Next}>下一步：调度配置</Button>
+            </div>
+          </Card>
+        )}
+
+        {/* Step 1: 触发 & 执行器 */}
+        {step === 1 && (
+          <Card>
+            {/* Trigger section */}
+            <Form.Item name="triggerType" label="触发方式">
+              <Radio.Group>
+                <Space direction="vertical">
+                  {TRIGGER_OPTIONS.map(o => (
+                    <Radio key={o.value} value={o.value}>
+                      <Space>
+                        <span style={{ fontWeight: 500 }}>{o.label}</span>
+                        <Text type="secondary" style={{ fontSize: 12 }}>{o.desc}</Text>
+                      </Space>
+                    </Radio>
+                  ))}
+                </Space>
+              </Radio.Group>
+            </Form.Item>
+
+            {triggerType === 'cron' && (
               <Form.Item
                 name="cronExpression"
                 label="Cron 表达式"
-                tooltip={{ title: '标准5段Cron格式：分 时 日 月 周', icon: <InfoCircleOutlined /> }}
-                rules={[{ required: true, message: '请输入Cron表达式' }]}
+                rules={[{ required: true, message: '请输入 Cron 表达式' }]}
+                extra={
+                  <Button type="link" size="small" onClick={() => setShowCronHelper(true)}>
+                    不会写？点击使用 Cron 辅助工具
+                  </Button>
+                }
               >
-                <>
-                  <Input placeholder="0 * * * *" />
-                  <CronHelper onChange={(val) => setFieldValue('cronExpression', val)} />
-                </>
+                <Input placeholder="0 8 * * 1-5  (每周一至周五早8点)" style={{ fontFamily: 'monospace' }} />
               </Form.Item>
             )}
-          </Form.Item>
-        </>
-      ),
-    },
-    {
-      key: 'executor',
-      label: (
-        <Space>
-          <ApartmentOutlined />
-          <Text strong>执行器与依赖</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>可选</Text>
-        </Space>
-      ),
-      children: (
-        <>
-          <Form.Item name="executorAppName" label="指定执行器AppName"><Input placeholder="留空则自动匹配" /></Form.Item>
-          <Form.Item name="executorGroup" label="执行器分组">
-            <Select allowClear placeholder="选择分组" options={(groups ?? []).map(g => ({ value: g, label: g }))} />
-          </Form.Item>
-          <Form.Item name="executorTags" label="执行器标签">
-            <Select mode="multiple" allowClear placeholder="选择标签" options={(tags ?? []).map(t => ({ value: t, label: t }))} />
-          </Form.Item>
-          <Form.Item
-            name="dependencyIds"
-            label="依赖任务"
-            tooltip="选择此任务所依赖的前置任务。当所有依赖任务执行成功后，此任务将自动触发"
-          >
-            <Select
-              mode="multiple"
-              allowClear
-              placeholder="选择依赖任务"
-              showSearch
-              searchValue={depSearch}
-              onSearch={setDepSearch}
-              filterOption={(input, option) =>
-                (option?.label as string)?.toLowerCase().includes(input.toLowerCase())
-              }
-              options={allTasks
-                ?.filter((t: any) => t.id !== id)
-                .map((t: any) => ({ value: t.id, label: `${t.name} (${t.runtime})` }))}
-            />
-          </Form.Item>
-        </>
-      ),
-    },
-  ];
 
-  return (
-    <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/tasks')}>返回</Button>
-      </Space>
-      <Card title={isEdit ? '编辑任务' : '新建任务'} style={{ maxWidth: 800 }}>
-        <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ runtime: 'python', triggerType: 'manual', maxRetry: 3, timeout: 300 }}>
-          <Collapse
-            defaultActiveKey={['basic', 'schedule']}
-            ghost
-            items={collapseItems}
-            style={{ marginBottom: 16 }}
-          />
-          <Form.Item style={{ marginTop: 8 }}>
-            <Button type="primary" htmlType="submit">{isEdit ? '保存' : '创建'}</Button>
-          </Form.Item>
-        </Form>
-      </Card>
+            {triggerType === 'fixed_rate' && (
+              <Form.Item
+                name="fixedRate"
+                label="执行间隔"
+                rules={[{ required: true, message: '请设置间隔时间' }]}
+              >
+                <InputNumber
+                  min={60}
+                  step={60}
+                  style={{ width: 200 }}
+                  formatter={v => v ? `${Math.floor(Number(v) / 60)} 分钟` : ''}
+                  parser={v => Number(v?.replace('分钟', '')) * 60}
+                  placeholder="60（秒）"
+                />
+              </Form.Item>
+            )}
 
-      {isEdit ? (
-        <Card title="Glue 脚本编辑" style={{ marginTop: 24 }}>
-          <GlueEditor
-            taskId={id!}
-            initialSource={form.getFieldValue('glueSource')}
-            initialLanguage={form.getFieldValue('glueLanguage')}
-            taskRuntime={form.getFieldValue('runtime')}
-          />
-        </Card>
-      ) : (
-        <Card style={{ marginTop: 24, background: '#fafafa', borderStyle: 'dashed' }}>
-          <div style={{ textAlign: 'center', color: '#888', padding: '8px 0' }}>
-            💡 创建任务后，可在任务详情页编辑 Glue 脚本
-          </div>
-        </Card>
-      )}
+            <Divider style={{ margin: '16px 0' }} />
+
+            {/* Executor selection — card-style radio for clarity */}
+            <Form.Item label="执行器策略" required
+              tooltip={{ title: '控制任务如何分配到执行器节点', icon: <InfoCircleOutlined /> }}>
+              <Radio.Group
+                value={executorMode}
+                onChange={e => setExecutorMode(e.target.value)}
+                style={{ width: '100%' }}
+              >
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {EXECUTOR_MODE_OPTIONS.map(o => (
+                    <Radio
+                      key={o.value}
+                      value={o.value}
+                      style={{
+                        border: `1px solid ${executorMode === o.value ? '#1677ff' : '#d9d9d9'}`,
+                        borderRadius: 8,
+                        padding: '10px 14px',
+                        width: '100%',
+                        background: executorMode === o.value ? '#e6f4ff' : '#fff',
+                        transition: 'all 0.2s',
+                      }}
+                    >
+                      <Space>
+                        {o.icon}
+                        <span style={{ fontWeight: 500 }}>{o.label}</span>
+                        <Text type="secondary" style={{ fontSize: 12 }}>{o.desc}</Text>
+                      </Space>
+                    </Radio>
+                  ))}
+                </Space>
+              </Radio.Group>
+            </Form.Item>
+
+            {/* Pinned mode: select a specific executor by appName */}
+            {executorMode === 'pinned' && (
+              <Form.Item name="executorAppName" label="指定执行器" required
+                rules={[{ required: true, message: '请选择执行器' }]}
+                tooltip={{ title: '任务只会分配到该执行器节点', icon: <InfoCircleOutlined /> }}>
+                <Select
+                  placeholder="选择执行器节点"
+                  showSearch
+                  optionFilterProp="label"
+                  options={executors.map(e => ({
+                    value: e.appName,
+                    label: `${e.appName}  (${e.address})`,
+                  }))}
+                />
+              </Form.Item>
+            )}
+
+            {/* Group mode: show group + tags selectors */}
+            {executorMode === 'group' && (
+              <>
+                <Form.Item name="executorGroup" label="执行器分组"
+                  tooltip={{ title: '只有该分组内的执行器才会被选中', icon: <InfoCircleOutlined /> }}>
+                  <Select placeholder="选择分组（可选）" allowClear
+                    options={groups.map(g => ({ value: g, label: g }))} />
+                </Form.Item>
+                <Form.Item name="executorTags" label="执行器标签"
+                  tooltip={{ title: '执行器必须拥有所有选中标签才会被选中', icon: <InfoCircleOutlined /> }}>
+                  <Select
+                    mode="multiple"
+                    placeholder="选择标签（可选，多选表示AND关系）"
+                    allowClear
+                    options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
+                  />
+                </Form.Item>
+              </>
+            )}
+
+            <Divider style={{ margin: '16px 0' }} />
+
+            <Form.Item name="timeout" label={<>超时时间 <Text type="secondary" style={{ fontSize: 12 }}>（秒）</Text></>}>
+              <InputNumber min={10} max={86400} style={{ width: 160 }} placeholder="300" />
+            </Form.Item>
+
+            <Form.Item name="maxRetry" label={<>失败重试次数 <Text type="secondary" style={{ fontSize: 12 }}>（0 = 不重试）</Text></>}>
+              <InputNumber min={0} max={10} style={{ width: 120 }} />
+            </Form.Item>
+
+            <Divider />
+            <Space>
+              <Button onClick={() => setStep(0)}>上一步</Button>
+              <Button type="primary" onClick={handleSubmit} loading={saving}
+                icon={<ThunderboltOutlined />}>
+                {isEdit ? '保存更改' : '创建任务'}
+              </Button>
+            </Space>
+          </Card>
+        )}
+      </Form>
+
+      <CronHelper
+        open={showCronHelper}
+        onClose={() => setShowCronHelper(false)}
+        onSelect={(expr) => {
+          form.setFieldValue('cronExpression', expr);
+          setShowCronHelper(false);
+        }}
+      />
     </div>
   );
 }

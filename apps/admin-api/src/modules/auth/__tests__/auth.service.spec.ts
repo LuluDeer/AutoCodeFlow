@@ -107,6 +107,15 @@ describe("AuthService (__tests__)", () => {
       ).rejects.toThrow(UnauthorizedException);
     });
 
+    it("SEC-05: throws when account is disabled (isActive=false)", async () => {
+      const disabledUser = { ...mockUser, isActive: false };
+      usersService.findByUsername.mockResolvedValue(disabledUser as any);
+      jest.spyOn(bcrypt, "compare").mockResolvedValue(true as never);
+      await expect(
+        service.login({ username: "admin", password: "pass" }),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
     it("persists refresh token after successful login", async () => {
       usersService.findByUsername.mockResolvedValue(mockUser as any);
       jest.spyOn(bcrypt, "compare").mockResolvedValue(true as never);

@@ -1,292 +1,402 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Descriptions, Badge, Card, Table, Button, Space, Tag, Typography, message, Spin, Empty,
-  Row, Col, Collapse, Tooltip, Tabs,
+  Descriptions, Badge, Card, Table, Button, Space, Tag, Typography, message, Modal, Spin, Empty,
+  Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select,
 } from 'antd';
 import {
   ArrowLeftOutlined, SyncOutlined, ReloadOutlined, GithubOutlined,
-  CheckCircleOutlined, CloseCircleOutlined, EditOutlined, RocketOutlined,
+  SaveOutlined, HistoryOutlined,
+  RocketOutlined,
 } from '@ant-design/icons';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { applicationsApi, Application } from '../api/applications';
 import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
+import { getErrMsg, isFormValidationError } from '../utils/error';
 
 const { Title, Text } = Typography;
-const { Panel } = Collapse;
 
-const statusColors: Record<string, string> = {
-  active: 'green',
-  deploying: 'blue',
-  failed: 'red',
+const STATUS_COLORS: Record<string, string> = {
+  active: 'green', deploying: 'blue', failed: 'red',
+};
+const STATUS_LABELS: Record<string, string> = {
+  active: '正常', deploying: '部署中', failed: '失败',
 };
 
-const statusIcons: Record<string, React.ReactNode> = {
-  active: <CheckCircleOutlined />,
-  deploying: <SyncOutlined spin />,
-  failed: <CloseCircleOutlined />,
-};
+const RUNTIME_OPTIONS = [
+  { value: 'python', label: 'Python' },
+  { value: 'node', label: 'Node.js' },
+  { value: 'shell', label: 'Shell' },
+];
 
+const GIT_URL_RE = /^(https?:\/\/[\w.@:/~_-]+\.git|git@[\w.-]+:[\w./_-]+\.git)$/;
+
+// ─── Overview Tab ─────────────────────────────────────────────────────────────
+function OverviewTab({ app }: { app: Application }) {
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Card title="应用信息">
+        <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+          <Descriptions.Item label="版本"><Tag color="blue">{app.version}</Tag></Descriptions.Item>
+          <Descriptions.Item label="运行时"><Tag>{app.runtime}</Tag></Descriptions.Item>
+          <Descriptions.Item label="状态">
+            <Tag color={STATUS_COLORS[app.status] || 'default'}>{STATUS_LABELS[app.status] || app.status}</Tag>
+          </Descriptions.Item>
+          {app.description && (
+            <Descriptions.Item label="描述" span={3}>{app.description}</Descriptions.Item>
+          )}
+          {app.gitRepo && (
+            <Descriptions.Item label="Git 仓库" span={2}>
+              <Space>
+                <GithubOutlined />
+                <Text copyable={{ text: app.gitRepo }}>
+                  <a href={app.gitRepo.startsWith('http') ? app.gitRepo : '#'} target="_blank" rel="noopener noreferrer">
+                    {app.gitRepo}
+                  </a>
+                </Text>
+              </Space>
+            </Descriptions.Item>
+          )}
+          {app.gitBranch && <Descriptions.Item label="分支"><Tag>{app.gitBranch}</Tag></Descriptions.Item>}
+          {app.gitCommit && (
+            <Descriptions.Item label="Commit"><Text code>{app.gitCommit.slice(0, 8)}</Text></Descriptions.Item>
+          )}
+          {app.entrypoint && (
+            <Descriptions.Item label="入口文件"><Text code>{app.entrypoint}</Text></Descriptions.Item>
+          )}
+          <Descriptions.Item label="创建时间">
+            {app.createdAt ? new Date(app.createdAt).toLocaleString('zh-CN') : '-'}
+          </Descriptions.Item>
+          <Descriptions.Item label="更新时间">
+            {app.updatedAt ? new Date(app.updatedAt).toLocaleString('zh-CN') : '-'}
+          </Descriptions.Item>
+        </Descriptions>
+
+        {app.env && Object.keys(app.env).length > 0 && (
+          <Collapse ghost style={{ marginTop: 12 }}>
+            <Collapse.Panel header={`环境变量 (${Object.keys(app.env).length} 项)`} key="env">
+              <Descriptions bordered size="small" column={1}>
+                {Object.entries(app.env).map(([k, v]) => (
+                  <Descriptions.Item key={k} label={<Text code>{k}</Text>}>{v}</Descriptions.Item>
+                ))}
+              </Descriptions>
+            </Collapse.Panel>
+          </Collapse>
+        )}
+      </Card>
+
+      {app.manifest && (
+        <Card title="应用清单 (manifest.json)">
+          <Collapse ghost>
+            <Collapse.Panel header="查看详情" key="manifest">
+              <pre style={{
+                background: '#1e1e1e', color: '#d4d4d4', padding: 16,
+                borderRadius: 8, maxHeight: 300, overflow: 'auto', fontSize: 13,
+              }}>
+                {JSON.stringify(app.manifest, null, 2)}
+              </pre>
+            </Collapse.Panel>
+          </Collapse>
+        </Card>
+      )}
+    </Space>
+  );
+}
+
+// ─── Tasks Tab ─────────────────────────────────────────────────────────────────
+function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean; onSync: () => void }) {
+  const nav = useNavigate();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchTasks = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await tasksApi.list({ page: 1, pageSize: 100, applicationId: appId });
+      setTasks(res.items ?? []);
+    } catch (err: unknown) { message.error(getErrMsg(err, '加载任务列表失败')); } finally { setLoading(false); }
+  }, [appId]);
+
+  useEffect(() => { fetchTasks(); }, [fetchTasks]);
+
+  return (
+    <Card
+      bordered={false}
+      extra={
+        <Space>
+          <Tooltip title="重新解析 manifest.json 并注册任务">
+            <Button loading={syncing} icon={<SyncOutlined />} onClick={onSync} size="small">同步任务</Button>
+          </Tooltip>
+          <Button type="primary" size="small" onClick={() => nav(`/tasks/new?applicationId=${appId}`)}>新建任务</Button>
+          <Button icon={<ReloadOutlined />} size="small" onClick={fetchTasks}>刷新</Button>
+        </Space>
+      }
+    >
+      {tasks.length === 0 && !loading ? (
+        <Empty description="该应用暂无关联任务">
+          <Button type="primary" size="small" onClick={() => nav(`/tasks/new?applicationId=${appId}`)}>创建任务</Button>
+        </Empty>
+      ) : (
+        <Table<Task>
+          columns={[
+            {
+              title: '任务名',
+              dataIndex: 'name',
+              render: (n: string, r: Task) => <a onClick={() => nav(`/tasks/${r.id}`)}>{n}</a>,
+            },
+            {
+              title: '状态', dataIndex: 'status', width: 100,
+              render: (s: string) => (
+                <Badge status={s === 'active' ? 'success' : s === 'paused' ? 'warning' : 'default'}
+                  text={s === 'active' ? '运行中' : s === 'paused' ? '已暂停' : s} />
+              ),
+            },
+            {
+              title: '触发', key: 'trigger', width: 90,
+              render: (_: unknown, r: Task) => <Tag>{r.triggerType}</Tag>,
+            },
+            { title: '运行时', dataIndex: 'runtime', width: 80, render: (v: string) => v ? <Tag color="blue">{v}</Tag> : '-' },
+          ]}
+          dataSource={tasks}
+          rowKey="id" loading={loading} size="small" pagination={{ pageSize: 10 }}
+        />
+      )}
+    </Card>
+  );
+}
+
+// ─── Settings Tab ─────────────────────────────────────────────────────────────
+function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Application) => void }) {
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    form.setFieldsValue({
+      name: app.name, description: app.description, version: app.version,
+      runtime: app.runtime, gitRepo: app.gitRepo, gitBranch: app.gitBranch,
+      gitCommit: app.gitCommit, entrypoint: app.entrypoint,
+    });
+  }, [app, form]);
+
+  const handleSave = async () => {
+    try {
+      const values = await form.validateFields();
+      setSaving(true);
+      const updated = await applicationsApi.update(app.id, values);
+      message.success('已保存');
+      onUpdated(updated);
+    } catch (err: unknown) {
+      if (isFormValidationError(err)) return;
+      message.error('保存失败');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Card title="编辑应用" style={{ maxWidth: 620 }}>
+      <Form form={form} layout="vertical">
+        <Form.Item name="name" label="名称"
+          rules={[{ required: true }, { pattern: /^[a-zA-Z0-9_-]+$/, message: '只允许字母、数字、下划线、连字符' }]}>
+          <Input />
+        </Form.Item>
+        <Form.Item name="description" label="描述">
+          <Input.TextArea rows={2} />
+        </Form.Item>
+        <Space style={{ display: 'flex' }} size="middle">
+          <Form.Item name="version" label="版本" rules={[{ required: true, message: '请输入版本号' }]}>
+            <Input placeholder="1.0.0" style={{ width: 160 }} />
+          </Form.Item>
+          <Form.Item name="runtime" label="运行时" rules={[{ required: true }]}>
+            <Select options={RUNTIME_OPTIONS} style={{ width: 140 }} />
+          </Form.Item>
+        </Space>
+        <Form.Item name="gitRepo" label="Git 仓库"
+          rules={[{ pattern: GIT_URL_RE, message: '格式不正确，需以 .git 结尾' }]}>
+          <Input placeholder="https://github.com/user/repo.git" />
+        </Form.Item>
+        <Space style={{ display: 'flex' }} size="middle">
+          <Form.Item name="gitBranch" label="分支">
+            <Input placeholder="main" style={{ width: 180 }} />
+          </Form.Item>
+          <Form.Item name="gitCommit" label="Commit">
+            <Input placeholder="HEAD" style={{ width: 200 }} />
+          </Form.Item>
+        </Space>
+        <Form.Item name="entrypoint" label="入口文件">
+          <Input placeholder="src/tasks/index.js" />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving}>保存修改</Button>
+        </Form.Item>
+      </Form>
+    </Card>
+  );
+}
+
+// ─── Version History ─────────────────────────────────────────────────────────
+type VersionRecord = { deploymentId: string; version: string | null; commit: string | null; status: string; deployedAt: string | null; executorAddress: string; };
+
+function VersionHistoryTab({ appId }: { appId: string }) {
+  const [records, setRecords] = useState<VersionRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [rollingBack, setRollingBack] = useState<string | null>(null);
+
+  const fetchVersions = useCallback(async () => {
+    setLoading(true);
+    try { setRecords(await applicationsApi.getVersionHistory(appId)); }
+    catch (err: unknown) { message.error(getErrMsg(err, '加载版本历史失败')); } finally { setLoading(false); }
+  }, [appId]);
+
+  useEffect(() => { fetchVersions(); }, [fetchVersions]);
+
+  const handleRollback = async (deploymentId: string, version: string | null) => {
+    Modal.confirm({
+      title: '确认回滚',
+      content: `将回滚到版本 ${version ?? '未知'}，所有运行中的实例将同步升级，确定继续？`,
+      okText: '确认回滚',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setRollingBack(deploymentId);
+        try {
+          const res = await applicationsApi.rollback(appId, deploymentId);
+          message.success(`已回滚到 ${res.data?.rolledBackTo ?? version}，影响 ${res.data?.total ?? 0} 台实例`);
+          fetchVersions();
+        } catch (err: unknown) {
+          message.error(getErrMsg(err, '回滚失败，请重试'));
+        } finally {
+          setRollingBack(null);
+        }
+      },
+    });
+  };
+
+  return (
+    <Card bordered={false} extra={<Button icon={<ReloadOutlined />} size="small" onClick={fetchVersions}>刷新</Button>}>
+      <Table<VersionRecord>
+        rowKey="deploymentId"
+        columns={[
+          { title: '版本', dataIndex: 'version', width: 120, render: (v: string | null) => v ? <Tag color="blue">{v}</Tag> : <Tag>未知</Tag> },
+          { title: 'Commit', dataIndex: 'commit', width: 100, render: (v: string | null) => v ? <Text code>{v.slice(0, 8)}</Text> : '-' },
+          {
+            title: '状态', dataIndex: 'status', width: 90,
+            render: (v: string) => (
+              <Tag color={{ running: 'green', stopped: 'default', failed: 'red', deploying: 'blue' }[v] || 'default'}>{v}</Tag>
+            ),
+          },
+          { title: '执行器', dataIndex: 'executorAddress', ellipsis: true },
+          { title: '部署时间', dataIndex: 'deployedAt', width: 170, render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
+          {
+            title: '操作', width: 90, align: 'center' as const,
+            render: (_: unknown, record: VersionRecord) => (
+              <Button
+                size="small"
+                danger
+                loading={rollingBack === record.deploymentId}
+                onClick={() => handleRollback(record.deploymentId, record.version)}
+              >
+                回滚
+              </Button>
+            ),
+          },
+        ]}
+        dataSource={records}
+        loading={loading} size="small"
+        pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+        locale={{ emptyText: '暂无版本历史' }}
+      />
+    </Card>
+  );
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
 export default function ApplicationDetailPage() {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const [app, setApp] = useState<Application | null>(null);
-  const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+
+  const activeTab = searchParams.get('tab') || 'overview';
 
   const fetchApp = useCallback(async () => {
     if (!id) return;
     try {
       setLoading(true);
-      const data = await applicationsApi.get(id);
-      setApp(data);
-    } catch (err: any) {
-      message.error(err?.response?.data?.message || 'Failed to load application');
+      setApp(await applicationsApi.get(id));
+    } catch (err: unknown) {
+      message.error('加载失败');
       nav('/applications');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }, [id, nav]);
 
-  const fetchTasks = useCallback(async () => {
-    if (!id) return;
-    try {
-      const res = await tasksApi.list({ page: 1, pageSize: 100, applicationId: id });
-      setTasks((res as any)?.items || []);
-    } catch {
-      // Non-critical
-    }
-  }, [id]);
-
-  useEffect(() => { fetchApp(); fetchTasks(); }, [fetchApp, fetchTasks]);
+  useEffect(() => { fetchApp(); }, [fetchApp]);
 
   const handleSyncTasks = async () => {
     if (!id) return;
+    setSyncing(true);
     try {
-      setSyncing(true);
       const result = await applicationsApi.syncTasks(id);
-      message.success(`Synced ${result.registeredCount} tasks from manifest`);
-      fetchTasks();
-    } catch (err: any) {
-      message.error(err?.response?.data?.message || 'Failed to sync tasks');
-    } finally {
-      setSyncing(false);
-    }
+      message.success(`已同步 ${result.registeredCount} 个任务`);
+    } catch (err: unknown) { message.error(getErrMsg(err, '同步失败')); }
+    finally { setSyncing(false); }
   };
 
   if (loading) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
-  if (!app) return <Empty description="Application not found" />;
-
-  const taskColumns = [
-    {
-      title: 'Name',
-      dataIndex: 'name',
-      key: 'name',
-      render: (name: string, record: Task) => (
-        <a onClick={() => nav(`/tasks/${record.id}`)}>{name}</a>
-      ),
-    },
-    {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      width: 100,
-      render: (s: string) => (
-        <Badge
-          status={s === 'active' ? 'success' : s === 'paused' ? 'warning' : 'default'}
-          text={s}
-        />
-      ),
-    },
-    {
-      title: 'Trigger',
-      key: 'trigger',
-      width: 120,
-      render: (_: unknown, r: Task) => (
-        <Tag>{r.triggerType}</Tag>
-      ),
-    },
-    {
-      title: 'Runtime',
-      dataIndex: 'runtime',
-      key: 'runtime',
-      width: 100,
-    },
-    {
-      title: 'Entrypoint',
-      dataIndex: 'entrypoint',
-      key: 'entrypoint',
-      ellipsis: true,
-    },
-    {
-      title: 'Timeout(s)',
-      dataIndex: 'timeout',
-      key: 'timeout',
-      width: 100,
-    },
-    {
-      title: 'Max Retry',
-      dataIndex: 'maxRetry',
-      key: 'maxRetry',
-      width: 90,
-    },
-  ];
+  if (!app) return <Empty description="应用不存在" />;
 
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/applications')}>
-          Back to Applications
-        </Button>
-        <Button icon={<ReloadOutlined />} onClick={() => { fetchApp(); fetchTasks(); }}>
-          Refresh
-        </Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/applications')}>返回</Button>
+        <Button icon={<ReloadOutlined />} onClick={fetchApp}>刷新</Button>
       </Space>
 
-      {/* Application Info */}
-      <Card style={{ marginBottom: 16 }}>
-        <Row justify="space-between" align="middle">
-          <Col>
-            <Space>
-              {app.gitRepo && <GithubOutlined style={{ fontSize: 20 }} />}
-              <Title level={4} style={{ margin: 0 }}>{app.name}</Title>
-              <Tag color={statusColors[app.status] || 'default'} icon={statusIcons[app.status]}>
-                {app.status}
-              </Tag>
-            </Space>
-          </Col>
-          <Col>
-            <Space>
-              <Tooltip title="Re-parse manifest.json and register tasks">
-                <Button loading={syncing} icon={<SyncOutlined />} onClick={handleSyncTasks}>
-                  Sync Tasks
-                </Button>
-              </Tooltip>
-              <Button icon={<EditOutlined />} onClick={() => message.info('Edit functionality coming soon')}>
-                Edit
-              </Button>
-            </Space>
-          </Col>
-        </Row>
-
-        <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }} style={{ marginTop: 16 }}>
-          <Descriptions.Item label="ID">{app.id}</Descriptions.Item>
-          <Descriptions.Item label="Version">
+      <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
+        <Col>
+          <Space align="center">
+            {app.gitRepo && <GithubOutlined style={{ fontSize: 20 }} />}
+            <Title level={4} style={{ margin: 0 }}>{app.name}</Title>
+            <Tag color={STATUS_COLORS[app.status] || 'default'}>
+              {STATUS_LABELS[app.status] || app.status}
+            </Tag>
+            {app.gitBranch && <Tag>{app.gitBranch}</Tag>}
             <Tag color="blue">{app.version}</Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="Runtime">
-            <Tag>{app.runtime}</Tag>
-          </Descriptions.Item>
-          {app.description && (
-            <Descriptions.Item label="Description" span={3}>
-              {app.description}
-            </Descriptions.Item>
-          )}
-          {app.gitRepo && (
-            <Descriptions.Item label="Git Repo" span={2}>
-              <a href={app.gitRepo} target="_blank" rel="noopener noreferrer">
-                <GithubOutlined /> {app.gitRepo}
-              </a>
-            </Descriptions.Item>
-          )}
-          {app.gitBranch && (
-            <Descriptions.Item label="Branch">
-              <Tag>{app.gitBranch}</Tag>
-            </Descriptions.Item>
-          )}
-          {app.gitCommit && (
-            <Descriptions.Item label="Commit">
-              <Text code>{app.gitCommit.slice(0, 8)}</Text>
-            </Descriptions.Item>
-          )}
-          {app.entrypoint && (
-            <Descriptions.Item label="Entrypoint">
-              <Text code>{app.entrypoint}</Text>
-            </Descriptions.Item>
-          )}
-          <Descriptions.Item label="Created">
-            {app.createdAt ? new Date(app.createdAt).toLocaleString() : '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Updated">
-            {app.updatedAt ? new Date(app.updatedAt).toLocaleString() : '-'}
-          </Descriptions.Item>
-        </Descriptions>
+          </Space>
+        </Col>
+        <Col>
+          <Button type="primary" icon={<RocketOutlined />} onClick={() => setSearchParams({ tab: 'deployments' })}>
+            新建部署
+          </Button>
+        </Col>
+      </Row>
 
-        {/* Environment Variables */}
-        {app.env && Object.keys(app.env).length > 0 && (
-          <Collapse style={{ marginTop: 16 }} ghost>
-            <Panel header={`Environment Variables (${Object.keys(app.env).length})`} key="env">
-              <Descriptions bordered size="small" column={1}>
-                {Object.entries(app.env).map(([key, value]) => (
-                  <Descriptions.Item key={key} label={<Text code>{key}</Text>}>
-                    {value}
-                  </Descriptions.Item>
-                ))}
-              </Descriptions>
-            </Panel>
-          </Collapse>
-        )}
-      </Card>
-
-      {/* Manifest */}
-      {app.manifest && (
-        <Card title="Manifest" style={{ marginBottom: 16 }}>
-          <Collapse ghost>
-            <Panel header="manifest.json" key="manifest">
-              <pre style={{
-                background: '#f5f5f5',
-                padding: 16,
-                borderRadius: 8,
-                maxHeight: 300,
-                overflow: 'auto',
-                fontSize: 13,
-              }}>
-                {JSON.stringify(app.manifest, null, 2)}
-              </pre>
-            </Panel>
-          </Collapse>
-        </Card>
-      )}
-
-      {/* Tabs: Tasks & Deployments */}
       <Tabs
-        defaultActiveKey="tasks"
+        activeKey={activeTab}
+        onChange={(key) => setSearchParams({ tab: key })}
+        destroyInactiveTabPane={false}
         items={[
-          {
-            key: 'tasks',
-            label: <span>关联任务 ({tasks.length})</span>,
-            children: (
-              <Card
-                bordered={false}
-                extra={
-                  <Button
-                    type="primary"
-                    size="small"
-                    onClick={() => nav(`/tasks/new?applicationId=${app.id}`)}
-                  >
-                    新建任务
-                  </Button>
-                }
-              >
-                {tasks.length === 0 ? (
-                  <Empty description="该应用暂无关联任务" />
-                ) : (
-                  <Table<Task>
-                    columns={taskColumns}
-                    dataSource={tasks}
-                    rowKey="id"
-                    size="small"
-                    pagination={{ pageSize: 10 }}
-                  />
-                )}
-              </Card>
-            ),
-          },
+          { key: 'overview', label: '概览', children: <OverviewTab app={app} /> },
           {
             key: 'deployments',
-            label: <span><RocketOutlined /> 部署管理</span>,
+            label: <span><RocketOutlined /> 部署实例</span>,
             children: <AppDeploymentPage applicationId={app.id} />,
+          },
+          {
+            key: 'tasks',
+            label: '关联任务',
+            children: <TasksTab appId={app.id} syncing={syncing} onSync={handleSyncTasks} />,
+          },
+          {
+            key: 'versions',
+            label: <span><HistoryOutlined /> 版本历史</span>,
+            children: <VersionHistoryTab appId={app.id} />,
+          },
+          {
+            key: 'settings',
+            label: '设置',
+            children: <SettingsTab app={app} onUpdated={(updated) => setApp(updated)} />,
           },
         ]}
       />

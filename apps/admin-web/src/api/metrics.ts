@@ -2,6 +2,7 @@ import { client as apiClient } from './client';
 
 export interface MetricsSummary {
   totalTasks: number;
+  todayRuns?: number;
   totalExecutors: number;
   onlineExecutors: number;
   executions: { total: number; success: number; failed: number; running: number };

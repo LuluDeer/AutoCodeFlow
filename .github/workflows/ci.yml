@@ -7,12 +7,44 @@ on:
     branches: [ main ]
 
 jobs:
+  # ── Node.js services & packages ──────────────────────────
   admin-api-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: autoflow
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: autoflow_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: autoflow
+      DB_PASSWORD: test
+      DB_DATABASE: autoflow_test
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      JWT_SECRET: test-jwt-secret-32chars-long-here
+      JWT_REFRESH_SECRET: test-refresh-secret-32chars-long
+      EXECUTOR_SECRET: test-executor-secret
     steps:
       - uses: actions/checkout@v4
-      - name: Use Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
@@ -25,20 +57,136 @@ jobs:
         working-directory: apps/admin-api
       - run: npm test -- --coverage
         working-directory: apps/admin-api
+      - run: npm run test:e2e
+        working-directory: apps/admin-api
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: autoflow
+          DB_PASSWORD: test
+          DB_DATABASE: autoflow_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          JWT_SECRET: test-jwt-secret-32chars-long-here
+          JWT_REFRESH_SECRET: test-refresh-secret-32chars-long
+          EXECUTOR_SECRET: test-executor-secret
 
+  executor-node-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/executor-node/package-lock.json
+      - run: npm ci
+        working-directory: apps/executor-node
+      - run: npm run build
+        working-directory: apps/executor-node
+      - run: npm test
+        working-directory: apps/executor-node
+
+  autoflow-sdk-node-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: packages/autoflow-sdk-node/package-lock.json
+      - run: npm ci
+        working-directory: packages/autoflow-sdk-node
+      - run: npm test -- --coverage
+        working-directory: packages/autoflow-sdk-node
+
+  autocodeflow-node-sdk-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: packages/autocodeflow-node-sdk/package-lock.json
+      - run: npm ci
+        working-directory: packages/autocodeflow-node-sdk
+      - run: npm test -- --coverage
+        working-directory: packages/autocodeflow-node-sdk
+
+  admin-web-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/admin-web/package-lock.json
+      - run: npm ci
+        working-directory: apps/admin-web
+      - run: npm run build
+        working-directory: apps/admin-web
+        env:
+          VITE_API_URL: http://localhost:3105
+
+  # ── Python services & packages ────────────────────────────
   executor-python-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Use Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
           cache-dependency-path: apps/executor-python/requirements.txt
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt pytest pytest-cov httpx pytest-asyncio
         working-directory: apps/executor-python
-      - run: pip install pytest pytest-cov httpx
+      - run: pytest --tb=short
         working-directory: apps/executor-python
-      - run: pytest
-        working-directory: apps/executor-python
+
+  autoflow-sdk-python-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: packages/autoflow-sdk/pyproject.toml
+      - run: pip install -e '.[dev]'
+        working-directory: packages/autoflow-sdk
+      - run: pytest --tb=short
+        working-directory: packages/autoflow-sdk
+
+  python-packages-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [autocodeflow-http, autocodeflow-notify, autocodeflow-db, autocodeflow-ai]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pytest-asyncio httpx
+      - run: pip install -e . 2>/dev/null || pip install .
+        working-directory: packages/${{ matrix.package }}
+        continue-on-error: true
+      - run: pytest tests/ --tb=short
+        working-directory: packages/${{ matrix.package }}
+
+  registry-pypi-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: apps/registry-pypi/requirements.txt
+      - run: pip install -r requirements.txt pytest pytest-asyncio httpx
+        working-directory: apps/registry-pypi
+      - run: pytest tests/ --tb=short
+        working-directory: apps/registry-pypi

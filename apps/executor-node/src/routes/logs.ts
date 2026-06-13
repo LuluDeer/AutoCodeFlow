@@ -8,7 +8,9 @@ export const logsRouter = Router();
 
 /** S-01: Express middleware — validates Bearer token from EXECUTOR_SHARED_TOKEN env. */
 export function executorAuthMiddleware(req: Request, res: Response, next: () => void): void {
-  const secret = process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || '';
+  // Read env at call time so tests can set/unset EXECUTOR_SHARED_TOKEN per-case;
+  // fall back to the config value (populated from CLI --token or config file).
+  const secret = process.env.EXECUTOR_SHARED_TOKEN || config.token;
   if (!secret) {
     next(); // dev mode: no secret configured
     return;
@@ -23,7 +25,6 @@ export function executorAuthMiddleware(req: Request, res: Response, next: () => 
 }
 
 logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
-
   const { executionId } = req.params;
   // N4: basename guard — reject if executionId contains path separators or is modified by basename
   const safeId = path.basename(executionId);
@@ -31,15 +32,37 @@ logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
     res.status(400).json({ error: 'Invalid executionId' });
     return;
   }
-  // Path traversal guard
-  const base = path.resolve(config.workDir);
-  const logFile = path.resolve(path.join(config.workDir, `${safeId}.log`));
-  if (!logFile.startsWith(base + path.sep) && logFile !== base) {
-    res.status(400).json({ error: 'Invalid executionId' });
-    return;
+
+  // B-05: file-logger writes to logs/{date}/{executionId}.log
+  // Scan dated subdirectories most-recent first to find the log file.
+  const logsBase = path.resolve(path.join(config.workDir, 'logs'));
+  let logFile: string | undefined;
+  if (fs.existsSync(logsBase)) {
+    // Scan dated subdirectories most-recent first
+    let dateDirs: string[] = [];
+    try {
+      dateDirs = (fs.readdirSync(logsBase) as string[]).sort().reverse();
+    } catch {
+      // readdirSync may fail (e.g. in test environments); fall through to direct-path check
+    }
+    for (const dateDir of dateDirs) {
+      const candidate = path.resolve(path.join(logsBase, dateDir, `${safeId}.log`));
+      // Path traversal guard: candidate must stay inside logsBase
+      if (candidate.startsWith(logsBase + path.sep) && fs.existsSync(candidate)) {
+        logFile = candidate;
+        break;
+      }
+    }
+    // Fallback: check flat path logs/{executionId}.log (supports simple layouts and tests)
+    if (!logFile) {
+      const directPath = path.resolve(path.join(logsBase, `${safeId}.log`));
+      if (directPath.startsWith(logsBase + path.sep) && fs.existsSync(directPath)) {
+        logFile = directPath;
+      }
+    }
   }
 
-  if (!fs.existsSync(logFile)) {
+  if (!logFile) {
     res.status(404).json({ error: 'Log file not found' });
     return;
   }
@@ -56,8 +79,9 @@ logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
     const total = allLines.length;
     const sliced = allLines.slice(fromLine);
     res.json({ lines: sliced, totalLines: total, hasMore: false });
-  } catch (err: any) {
-    logger.error(`Failed to read log file ${logFile}: ${err.message}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`Failed to read log file ${logFile}: ${msg}`);
     res.status(500).json({ error: 'Failed to read log file' });
   }
 });

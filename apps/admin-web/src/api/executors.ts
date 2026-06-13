@@ -49,15 +49,35 @@ export interface ExecutorExecution {
   createdAt: string;
 }
 
+export interface SharedTokenResult {
+  token: string | null;
+  hasToken: boolean;
+}
+
 export const executorsApi = {
-  list: () => client.get<any, Executor[]>('/executors'),
-  get: (id: string) => client.get<any, Executor>(`/executors/${id}`),
-  update: (id: string, data: Partial<Executor>) => client.patch<any, Executor>(`/executors/${id}`, data),
-  getGroups: () => client.get<any, string[]>('/executors/groups'),
-  getTags: () => client.get<any, string[]>('/executors/tags'),
-  rotateToken: (id: string) => client.post<any, { token: string; expiresAt: string }>(`/executors/${id}/rotate-token`),
-  reloadConfig: (id: string, data: any) => client.post<any, any>(`/executors/${id}/reload-config`, data),
-  getExecutions: (id: string, params?: { page?: number; limit?: number }) =>
-    client.get<any, { total: number; items: ExecutorExecution[] }>(`/executors/${id}/executions`, { params }),
-  getMetrics: (id: string) => client.get<any, ExecutorMetrics>(`/executors/${id}/metrics`),
+  getSharedToken: () =>
+    client.get('/executors/shared-token') as Promise<SharedTokenResult>,
+  generateSharedToken: () =>
+    client.post('/executors/shared-token/generate') as Promise<{ token: string }>,
+  list: () => client.get('/executors') as Promise<Executor[]>,
+  get: (id: string) => client.get(`/executors/${id}`) as Promise<Executor>,
+  update: (id: string, data: Partial<Executor>) =>
+    client.patch(`/executors/${id}`, data) as Promise<Executor>,
+  getGroups: () => client.get('/executors/groups') as Promise<string[]>,
+  getTags: () => client.get('/executors/tags') as Promise<string[]>,
+  rotateToken: (id: string) =>
+    client.post(`/executors/${id}/rotate-token`) as Promise<{ token: string; expiresAt: string }>,
+  reloadConfig: (id: string, data: {
+    maxConcurrentTasks?: number;
+    taskTimeoutSeconds?: number;
+    heartbeatIntervalSeconds?: number;
+    adminApiUrl?: string;
+  }) =>
+    client.post(`/executors/${id}/reload-config`, data) as Promise<void>,
+  setOffline: (id: string) =>
+    client.post(`/executors/${id}/set-offline`) as Promise<Executor>,
+  getExecutions: (id: string, params?: { page?: number; pageSize?: number }) =>
+    client.get(`/executors/${id}/executions`, { params }) as Promise<{ total: number; items: ExecutorExecution[] }>,
+  getMetrics: (id: string) =>
+    client.get(`/executors/${id}/metrics`) as Promise<ExecutorMetrics>,
 };

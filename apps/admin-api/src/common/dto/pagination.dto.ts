@@ -18,17 +18,17 @@ export class PaginationDto {
   @Max(100)
   pageSize = 20;
 
-  @ApiPropertyOptional({ description: "按任务名称模糊搜索" })
+  @ApiPropertyOptional({ description: "Fuzzy search by task name" })
   @IsOptional()
   @IsString()
   name?: string;
 
-  @ApiPropertyOptional({ description: "按任务状态过滤" })
+  @ApiPropertyOptional({ description: "Filter by task status" })
   @IsOptional()
   @IsString()
   status?: string;
 
-  @ApiPropertyOptional({ description: "按运行时过滤 (python/node/shell)" })
+  @ApiPropertyOptional({ description: "Filter by runtime (python/node/shell)" })
   @IsOptional()
   @IsString()
   runtime?: string;

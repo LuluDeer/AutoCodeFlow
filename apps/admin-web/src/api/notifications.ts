@@ -9,11 +9,12 @@ export interface NotificationChannel {
 }
 
 export const notificationsApi = {
-  getChannels: () => client.get<any, NotificationChannel[]>('/notification/channels'),
+  getChannels: () =>
+    client.get('/notification/channels') as Promise<NotificationChannel[]>,
   updateChannel: (key: string, data: Partial<NotificationChannel>) =>
-    client.patch<any, NotificationChannel>(`/notification/channels/${key}`, data),
+    client.patch(`/notification/channels/${key}`, data) as Promise<NotificationChannel>,
   testChannel: (key: string, data: Record<string, string>) =>
-    client.post<any, { success: boolean; message: string }>(`/notification/channels/${key}/test`, data),
+    client.post(`/notification/channels/${key}/test`, data) as Promise<{ success: boolean; message: string }>,
   send: (data: { channels: string[]; title: string; content: string }) =>
-    client.post<any, { success: boolean; message: string }>('/notification/test', data),
+    client.post('/notification/test', data) as Promise<{ success: boolean; message: string }>,
 };

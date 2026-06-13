@@ -1,22 +1,33 @@
-import { Controller, Post, Body } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
+import { Controller, Post, Body, Headers, ParseArrayPipe } from "@nestjs/common";
+import { SkipThrottle } from "@nestjs/throttler";
+import { ApiTags, ApiOperation, ApiResponse, ApiBody } from "@nestjs/swagger";
+import { ConfigService } from "@nestjs/config";
 import { Public } from "../../common/decorators/public.decorator";
 import { TaskService } from "./task.service";
+import { SystemConfigService } from "../config/config.service";
+import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
+import { CallbackItemDto } from "./dto/execution-callback.dto";
 
-@ApiTags("执行回调")
+@SkipThrottle()
+@ApiTags("Execution Callback")
 @Controller("executions")
 export class ExecutionCallbackController {
-  constructor(private readonly taskService: TaskService) {}
+  constructor(
+    private readonly taskService: TaskService,
+    private readonly configService: ConfigService,
+    private readonly systemConfigService: SystemConfigService,
+  ) {}
 
   @Post("callback")
   @Public()
   @ApiOperation({
-    summary: "执行结果回调",
-    description: "执行器完成任务执行后调用此接口上报执行结果",
+    summary: "Execution result callback",
+    description:
+      "Called by executor after task completion to report results. Requires shared token authentication.",
   })
   @ApiResponse({
     status: 200,
-    description: "回调处理成功",
+    description: "Callback processed successfully",
     schema: {
       example: {
         results: [
@@ -30,17 +41,15 @@ export class ExecutionCallbackController {
       },
     },
   })
+  @ApiResponse({ status: 400, description: "Invalid request body" })
+  @ApiResponse({ status: 401, description: "Invalid shared token" })
+  @ApiBody({ type: [CallbackItemDto], description: "Array of execution callback items (max 100)" })
   async callback(
-    @Body()
-    callbacks: Array<{
-      executionId: string;
-      status: "success" | "failed";
-      exitCode?: number;
-      logs?: string;
-      errorMessage?: string;
-      durationMs?: number;
-    }>,
+    @Headers("authorization") auth: string | undefined,
+    @Body(new ParseArrayPipe({ items: CallbackItemDto, whitelist: true }))
+    callbacks: CallbackItemDto[],
   ) {
+    await verifyExecutorToken(auth, this.configService, this.systemConfigService);
     const results = await this.taskService.handleCallback(callbacks);
     return { results };
   }

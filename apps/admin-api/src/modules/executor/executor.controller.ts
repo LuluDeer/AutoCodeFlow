@@ -9,6 +9,9 @@ import {
   Param,
   Patch,
   Query,
+  Delete,
+  HttpCode,
+  HttpStatus,
 } from "@nestjs/common";
 import {
   ApiTags,
@@ -23,71 +26,43 @@ import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
 import { ExecutorService } from "./executor.service";
+import { SystemConfigService } from "../config/config.service";
 import axios from "axios";
 import { PaginationDto } from "../../common/dto/pagination.dto";
-import * as crypto from "crypto";
+import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 
-function verifyExecutorToken(
-  authHeader: string | undefined,
-  configService: ConfigService,
-): void {
-  const token = configService.get<string>("executor.sharedToken");
-  const nodeEnv = configService.get<string>("app.nodeEnv");
 
-  if (nodeEnv === "production" && !token) {
-    throw new UnauthorizedException(
-      "Executor authentication is required in production",
-    );
-  }
-
-  if (!token) return;
-
-  const provided = authHeader?.startsWith("Bearer ")
-    ? authHeader.slice(7)
-    : authHeader;
-  // timingSafeEqual requires equal-length buffers; mismatched lengths would throw,
-  // so we compare lengths first (not secret-leaking since length is observable anyway).
-  const providedBuf = Buffer.from(provided ?? '');
-  const tokenBuf = Buffer.from(token);
-  if (
-    !provided ||
-    providedBuf.length !== tokenBuf.length ||
-    !crypto.timingSafeEqual(providedBuf, tokenBuf)
-  ) {
-    throw new UnauthorizedException("Invalid executor token");
-  }
-}
-
-@ApiTags("执行器")
+@ApiTags("Executors")
 @Controller("executors")
 export class ExecutorController {
   constructor(
     private readonly svc: ExecutorService,
     private readonly configService: ConfigService,
+    private readonly systemConfigService: SystemConfigService,
   ) {}
 
   @Public()
   @Post("register")
   @ApiOperation({
-    summary: "执行器注册",
+    summary: "Register executor",
     description:
-      "执行器启动时调用此接口注册到管理后台。需要携带共享令牌进行认证。",
+      "Called when executor starts to register with admin. Requires shared token for auth.",
   })
   @ApiBody({
-    description: "注册信息",
+    description: "Registration info",
     schema: {
       example: {
         address: "192.168.1.100:3002",
         appName: "executor-node",
         groupName: "production",
         tags: ["nodejs", "prod"],
-        description: "生产环境 Node.js 执行器",
+        description: "Production Node.js executor",
       },
     },
   })
   @ApiResponse({
     status: 200,
-    description: "注册成功",
+    description: "Registered successfully",
     schema: {
       example: {
         code: 200,
@@ -101,20 +76,27 @@ export class ExecutorController {
       },
     },
   })
-  register(@Body() body: any, @Headers("authorization") auth: string) {
-    verifyExecutorToken(auth, this.configService);
-    return this.svc.register(body);
+  async register(
+    @Body() body: { appName: string; address: string; type?: string; version?: string; capabilities?: string[] },
+    @Headers("authorization") auth: string,
+  ) {
+    await verifyExecutorToken(auth, this.configService, this.systemConfigService);
+    const executor = await this.svc.register(body);
+    // Issue a fresh per-executor token on every registration so the executor
+    // can authenticate future heartbeats without the shared token.
+    const { token } = await this.svc.rotateToken(executor.id);
+    return { ...executor, perExecutorToken: token };
   }
 
   @Public()
   @Post("heartbeat")
   @ApiOperation({
-    summary: "心跳上报",
+    summary: "Heartbeat report",
     description:
-      "执行器定期调用此接口上报状态。包含 CPU 使用率、内存使用率和运行中任务数。",
+      "Executor calls this periodically to report status including CPU, memory, and running task count.",
   })
   @ApiBody({
-    description: "心跳数据",
+    description: "Heartbeat data",
     schema: {
       example: {
         address: "192.168.1.100:3002",
@@ -124,8 +106,8 @@ export class ExecutorController {
       },
     },
   })
-  @ApiResponse({ status: 200, description: "心跳更新成功" })
-  @ApiResponse({ status: 401, description: "无效的执行器令牌" })
+  @ApiResponse({ status: 200, description: "Heartbeat updated" })
+  @ApiResponse({ status: 401, description: "Invalid executor token" })
   async heartbeat(
     @Body()
     body: {
@@ -148,12 +130,12 @@ export class ExecutorController {
   @UseGuards(JwtAuthGuard)
   @Get()
   @ApiOperation({
-    summary: "执行器列表",
-    description: "获取所有执行器的列表，包含在线状态、分组、标签等信息。",
+    summary: "List executors",
+    description: "Get list of all executors including online status, group, and tags.",
   })
   @ApiResponse({
     status: 200,
-    description: "执行器列表",
+    description: "Executor list",
     schema: {
       example: {
         code: 200,
@@ -170,12 +152,12 @@ export class ExecutorController {
   @UseGuards(JwtAuthGuard)
   @Get("groups")
   @ApiOperation({
-    summary: "获取所有执行器分组",
-    description: "获取系统中所有执行器分组及其执行器数量统计。",
+    summary: "Get all executor groups",
+    description: "Get all executor groups and their executor count statistics.",
   })
   @ApiResponse({
     status: 200,
-    description: "分组列表",
+    description: "Group list",
     schema: {
       example: {
         code: 200,
@@ -195,12 +177,12 @@ export class ExecutorController {
   @UseGuards(JwtAuthGuard)
   @Get("tags")
   @ApiOperation({
-    summary: "获取所有执行器标签",
-    description: "获取系统中所有执行器使用的标签及其统计。",
+    summary: "Get all executor tags",
+    description: "Get all tags used by executors and their statistics.",
   })
   @ApiResponse({
     status: 200,
-    description: "标签列表",
+    description: "Tag list",
     schema: {
       example: {
         code: 200,
@@ -218,14 +200,40 @@ export class ExecutorController {
 
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
+  @Get("install-cmd")
+  @ApiOperation({
+    summary: "Get executor install command",
+    description: "Returns the shell command to install and start the executor on the target machine.",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Install command",
+    schema: {
+      example: {
+        code: 200,
+        message: "success",
+        data: {
+          cmd: "npx autoflow-executor --admin-url http://... --token ...",
+          token: "shared-token",
+          adminApiUrl: "http://localhost:3002",
+        },
+      },
+    },
+  })
+  getInstallCmd() {
+    return this.svc.getInstallCmd();
+  }
+
+  @ApiBearerAuth("JWT")
+  @UseGuards(JwtAuthGuard)
   @Get(":id")
   @ApiOperation({
-    summary: "获取单个执行器详情",
-    description: "获取指定执行器的详细信息，包括配置、状态、性能指标等。",
+    summary: "Get single executor details",
+    description: "Get detailed info for a specific executor including config, status, and performance metrics.",
   })
-  @ApiParam({ name: "id", description: "执行器ID" })
-  @ApiResponse({ status: 200, description: "执行器详情" })
-  @ApiResponse({ status: 404, description: "执行器不存在" })
+  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiResponse({ status: 200, description: "Executor details" })
+  @ApiResponse({ status: 404, description: "Executor not found" })
   findOne(@Param("id") id: string) {
     return this.svc.findOne(id);
   }
@@ -234,23 +242,23 @@ export class ExecutorController {
   @UseGuards(JwtAuthGuard)
   @Patch(":id")
   @ApiOperation({
-    summary: "更新执行器元数据",
-    description: "更新执行器的分组、标签、描述和最大并发任务数。",
+    summary: "Update executor metadata",
+    description: "Update executor group, tags, description, and max concurrent tasks.",
   })
-  @ApiParam({ name: "id", description: "执行器ID" })
-  @ApiResponse({ status: 200, description: "更新成功" })
+  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiResponse({ status: 200, description: "Updated successfully" })
   @ApiBody({
-    description: "更新参数",
+    description: "Update parameters",
     schema: {
       example: {
         groupName: "production",
         tags: ["nodejs", "prod"],
-        description: "生产环境执行器",
+        description: "Production executor",
         maxConcurrentTasks: 10,
       },
     },
   })
-  @ApiResponse({ status: 404, description: "执行器不存在" })
+  @ApiResponse({ status: 404, description: "Executor not found" })
   update(
     @Param("id") id: string,
     @Body()
@@ -268,13 +276,13 @@ export class ExecutorController {
   @UseGuards(JwtAuthGuard)
   @Post(":id/reload-config")
   @ApiOperation({
-    summary: "向执行器推送配置热更新",
+    summary: "Push config hot-update to executor",
     description:
-      "动态更新执行器的配置参数，无需重启执行器。执行器必须处于在线状态。",
+      "Dynamically update executor config without restart. Executor must be online.",
   })
-  @ApiParam({ name: "id", description: "执行器ID" })
+  @ApiParam({ name: "id", description: "Executor ID" })
   @ApiBody({
-    description: "配置参数",
+    description: "Config parameters",
     schema: {
       example: {
         maxConcurrentTasks: 10,
@@ -284,9 +292,9 @@ export class ExecutorController {
       },
     },
   })
-  @ApiResponse({ status: 200, description: "配置推送成功" })
-  @ApiResponse({ status: 400, description: "执行器离线" })
-  @ApiResponse({ status: 404, description: "执行器不存在" })
+  @ApiResponse({ status: 200, description: "Config pushed successfully" })
+  @ApiResponse({ status: 400, description: "Executor offline" })
+  @ApiResponse({ status: 404, description: "Executor not found" })
   async reloadConfig(
     @Param("id") id: string,
     @Body()
@@ -304,22 +312,27 @@ export class ExecutorController {
     const token = await this.svc.rotateToken(id);
     const headers = { Authorization: `Bearer ${token.token}` };
     const url = this.svc.getExecutorUrl(executor.address, "api/config/reload");
-    const resp = await axios.post(url, body, { headers, timeout: 10_000 });
-    return resp.data;
+    try {
+      const resp = await axios.post(url, body, { headers, timeout: 10_000 });
+      return resp.data;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new UnauthorizedException(`Failed to reach executor: ${msg}`);
+    }
   }
 
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Post(":id/rotate-token")
   @ApiOperation({
-    summary: "轮换执行器 Token",
+    summary: "Rotate executor token",
     description:
-      "生成新的执行器认证令牌。新令牌仅在此响应中显示一次，请妥善保存。",
+      "Generate a new executor auth token. The new token is shown only once in this response.",
   })
-  @ApiParam({ name: "id", description: "执行器ID" })
+  @ApiParam({ name: "id", description: "Executor ID" })
   @ApiResponse({
     status: 200,
-    description: "Token 轮换成功",
+    description: "Token rotated successfully",
     schema: {
       example: {
         code: 200,
@@ -338,12 +351,12 @@ export class ExecutorController {
   @Public()
   @Post("token")
   @ApiOperation({
-    summary: "获取动态 Token",
+    summary: "Get dynamic token",
     description:
-      "执行器调用此接口获取动态令牌。使用共享令牌进行初始认证，返回周期性过期的动态令牌。",
+      "Executor calls this to get a dynamic token. Uses shared token for initial auth, returns periodically expiring token.",
   })
   @ApiBody({
-    description: "获取Token参数",
+    description: "Get token parameters",
     schema: {
       example: {
         address: "192.168.1.100:3002",
@@ -353,15 +366,15 @@ export class ExecutorController {
   })
   @ApiResponse({
     status: 200,
-    description: "Token 获取成功",
+    description: "Token obtained successfully",
     schema: { example: { token: "dynamic-token-value", expiresAt: "2024-01-01T12:00:00Z" } },
   })
-  @ApiResponse({ status: 401, description: "无效的共享令牌" })
+  @ApiResponse({ status: 401, description: "Invalid shared token" })
   async getToken(
     @Body() body: { address: string; appName?: string },
     @Headers("authorization") auth: string,
   ) {
-    verifyExecutorToken(auth, this.configService);
+    await verifyExecutorToken(auth, this.configService, this.systemConfigService);
 
     const executor = await this.svc.register({
       address: body.address,
@@ -374,20 +387,20 @@ export class ExecutorController {
   @Public()
   @Post("offline")
   @ApiOperation({
-    summary: "执行器离线通知",
+    summary: "Executor offline notification",
     description:
-      "执行器优雅停机时调用此接口通知管理后台，标记执行器为离线状态。",
+      "Called during graceful executor shutdown to notify admin and mark executor as offline.",
   })
   @ApiBody({
-    description: "离线参数",
+    description: "Offline parameters",
     schema: {
       example: {
         address: "192.168.1.100:3002",
       },
     },
   })
-  @ApiResponse({ status: 200, description: "离线通知成功", schema: { example: { success: true } } })
-  @ApiResponse({ status: 401, description: "无效的执行器令牌" })
+  @ApiResponse({ status: 200, description: "Offline notification successful", schema: { example: { success: true } } })
+  @ApiResponse({ status: 401, description: "Invalid executor token" })
   async offline(
     @Body() body: { address: string },
     @Headers("authorization") auth: string,
@@ -404,15 +417,30 @@ export class ExecutorController {
 
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
+  @Delete(":id")
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: "Delete executor record",
+    description: "Admin: permanently delete an executor record by ID. Use when executor is offline and no longer needed.",
+  })
+  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiResponse({ status: 204, description: "Executor deleted" })
+  @ApiResponse({ status: 404, description: "Executor not found" })
+  async removeExecutor(@Param("id") id: string): Promise<void> {
+    return this.svc.removeById(id);
+  }
+
+  @ApiBearerAuth("JWT")
+  @UseGuards(JwtAuthGuard)
   @Get(":id/executions")
   @ApiOperation({
-    summary: "获取执行器的历史任务执行记录",
-    description: "获取指定执行器执行过的所有任务记录，支持分页。",
+    summary: "Get executor task execution history",
+    description: "Get all task execution records for a specific executor with pagination.",
   })
-  @ApiParam({ name: "id", description: "执行器ID" })
-  @ApiQuery({ name: "page", required: false, description: "页码" })
-  @ApiQuery({ name: "limit", required: false, description: "每页数量" })
-  @ApiResponse({ status: 200, description: "执行记录列表" })
+  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiQuery({ name: "page", required: false, description: "Page number" })
+  @ApiQuery({ name: "limit", required: false, description: "Page size" })
+  @ApiResponse({ status: 200, description: "Execution record list" })
   getExecutorExecutions(@Param("id") id: string, @Query() p: PaginationDto) {
     return this.svc.getExecutorExecutions(id, p);
   }
@@ -421,14 +449,14 @@ export class ExecutorController {
   @UseGuards(JwtAuthGuard)
   @Get(":id/metrics")
   @ApiOperation({
-    summary: "获取执行器的性能指标",
+    summary: "Get executor performance metrics",
     description:
-      "获取执行器最近7天的性能指标，包括总执行次数、成功率、平均执行时间等。",
+      "Get executor performance metrics for the last 7 days including total executions, success rate, and avg time.",
   })
-  @ApiParam({ name: "id", description: "执行器ID" })
+  @ApiParam({ name: "id", description: "Executor ID" })
   @ApiResponse({
     status: 200,
-    description: "性能指标",
+    description: "Performance metrics",
     schema: {
       example: {
         code: 200,

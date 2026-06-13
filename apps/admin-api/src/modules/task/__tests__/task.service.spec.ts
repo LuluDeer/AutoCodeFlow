@@ -337,12 +337,13 @@ describe("TaskService (__tests__)", () => {
         andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
         getMany: jest.fn().mockResolvedValue([
           { lineNumber: 0, content: "line0" },
           { lineNumber: 1, content: "line1" },
         ]),
         getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
-      });
+      } as any);
       logLineRepo.count.mockResolvedValue(5);
       const result = await service.getExecutionLogs("exec-1", 0);
       expect(result.lines).toEqual(["line0", "line1"]);
@@ -357,11 +358,12 @@ describe("TaskService (__tests__)", () => {
         andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
         getMany: jest.fn().mockResolvedValue([
           { lineNumber: 0, content: "only-line" },
         ]),
         getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
-      });
+      } as any);
       logLineRepo.count.mockResolvedValue(1);
       const result = await service.getExecutionLogs("exec-1", 0);
       expect(result.hasMore).toBe(false);
@@ -538,6 +540,103 @@ describe("TaskService (__tests__)", () => {
     it("delegates to schedulerService.getStats()", () => {
       schedulerService.getStats.mockReturnValue({ active: 3 });
       expect(service.getSchedulerStats()).toEqual({ active: 3 });
+    });
+  });
+
+  describe("killExecution", () => {
+    it("marks a RUNNING execution as KILLED and saves", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING, startTime: new Date(Date.now() - 5000) };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const result = await service.killExecution("e1");
+      expect(exec.status).toBe(ExecutionStatus.KILLED);
+      expect(exec).toHaveProperty("endTime");
+      expect(result.success).toBe(true);
+    });
+
+    it("marks a PENDING execution as KILLED", async () => {
+      const exec = { id: "e2", status: ExecutionStatus.PENDING };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const result = await service.killExecution("e2");
+      expect(exec.status).toBe(ExecutionStatus.KILLED);
+      expect(result.success).toBe(true);
+    });
+
+    it("throws NotFoundException when execution does not exist", async () => {
+      execRepo.findOne.mockResolvedValue(null);
+      await expect(service.killExecution("ghost")).rejects.toThrow(NotFoundException);
+    });
+
+    it("throws BadRequestException when execution is already in terminal state", async () => {
+      const exec = { id: "e3", status: ExecutionStatus.SUCCESS };
+      execRepo.findOne.mockResolvedValue(exec);
+      await expect(service.killExecution("e3")).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe("getExecutionStats", () => {
+    it("computes successRate and avgDuration from recent executions", async () => {
+      const executions = [
+        { status: ExecutionStatus.SUCCESS, duration: 200 },
+        { status: ExecutionStatus.SUCCESS, duration: 400 },
+        { status: ExecutionStatus.FAILED, duration: null },
+      ];
+      execRepo.find.mockResolvedValue(executions);
+      execRepo.count.mockResolvedValue(10);
+      const result = await service.getExecutionStats("t1");
+      expect(result.successRate).toBeCloseTo(66.7, 0);
+      expect(result.avgDuration).toBe(300);
+      expect(result.totalRuns).toBe(10);
+    });
+
+    it("returns zero successRate and avgDuration when no recent executions", async () => {
+      execRepo.find.mockResolvedValue([]);
+      execRepo.count.mockResolvedValue(0);
+      const result = await service.getExecutionStats("t1");
+      expect(result.successRate).toBe(0);
+      expect(result.avgDuration).toBe(0);
+    });
+  });
+
+  describe("getVersions", () => {
+    it("returns versions for a task ordered by createdAt DESC", async () => {
+      const versions = [{ id: "v2", taskId: "t1" }, { id: "v1", taskId: "t1" }];
+      versionRepo.find.mockResolvedValue(versions);
+      const result = await service.getVersions("t1");
+      expect(result).toEqual(versions);
+      expect(versionRepo.find).toHaveBeenCalledWith({
+        where: { taskId: "t1" },
+        order: { createdAt: "DESC" },
+      });
+    });
+  });
+
+  describe("getVersion", () => {
+    it("returns the version when found", async () => {
+      const version = { id: "v1", taskId: "t1" };
+      versionRepo.findOne.mockResolvedValue(version);
+      await expect(service.getVersion("t1", "v1")).resolves.toEqual(version);
+    });
+
+    it("throws NotFoundException when version is not found", async () => {
+      versionRepo.findOne.mockResolvedValue(null);
+      await expect(service.getVersion("t1", "missing")).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe("deleteVersion", () => {
+    it("deletes a version by id", async () => {
+      const version = { id: "v1", taskId: "t1" };
+      versionRepo.findOne.mockResolvedValue(version);
+      versionRepo.delete.mockResolvedValue({ affected: 1 });
+      await service.deleteVersion("t1", "v1");
+      expect(versionRepo.delete).toHaveBeenCalledWith("v1");
+    });
+
+    it("throws NotFoundException when version does not exist", async () => {
+      versionRepo.findOne.mockResolvedValue(null);
+      await expect(service.deleteVersion("t1", "ghost")).rejects.toThrow(NotFoundException);
     });
   });
 });

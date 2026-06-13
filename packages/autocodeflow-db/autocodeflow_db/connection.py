@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DatabaseConfig:
     """Database connection configuration."""
-    url: str = "postgresql://admin:password@localhost:5432/autocodeflow"
+    url: str = "postgresql://localhost:5432/autocodeflow"  # no default credentials; supply via DATABASE_URL env
     pool_size: int = 5
     pool_overflow: int = 10
     echo: bool = False

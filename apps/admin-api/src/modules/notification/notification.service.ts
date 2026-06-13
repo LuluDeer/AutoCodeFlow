@@ -187,8 +187,8 @@ export class NotificationService {
     }
 
     return this.sendAll({
-      title: `任务失败: ${taskName}`,
-      content: `执行ID: ${execId}\n错误: ${error}${aiAnalysis ? `\n\nAI分析:\n${aiAnalysis}` : ""}`,
+      title: `Task failed: ${taskName}`,
+      content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}`,
       level: "error",
     });
   }
@@ -205,8 +205,8 @@ export class NotificationService {
     }
 
     return this.sendAll({
-      title: `任务成功: ${taskName}`,
-      content: `执行ID: ${execId}\n耗时: ${durationMs}ms`,
+      title: `Task succeeded: ${taskName}`,
+      content: `Execution ID: ${execId}\nDuration: ${durationMs}ms`,
       level: "info",
     });
   }
@@ -223,8 +223,8 @@ export class NotificationService {
     }
 
     return this.sendAll({
-      title: `任务超时: ${taskName}`,
-      content: `执行ID: ${execId}\n超时时间: ${timeoutSec}秒`,
+      title: `Task timed out: ${taskName}`,
+      content: `Execution ID: ${execId}\nTimeout: ${timeoutSec}s`,
       level: "warning",
     });
   }
@@ -236,8 +236,8 @@ export class NotificationService {
     }
 
     return this.sendAll({
-      title: `执行器离线: ${executorName}`,
-      content: `地址: ${address}\n时间: ${new Date().toLocaleString()}`,
+      title: `Executor offline: ${executorName}`,
+      content: `Address: ${address}\nTime: ${new Date().toLocaleString()}`,
       level: "warning",
     });
   }
@@ -249,8 +249,8 @@ export class NotificationService {
     }
 
     return this.sendAll({
-      title: `执行器上线: ${executorName}`,
-      content: `地址: ${address}\n时间: ${new Date().toLocaleString()}`,
+      title: `Executor online: ${executorName}`,
+      content: `Address: ${address}\nTime: ${new Date().toLocaleString()}`,
       level: "info",
     });
   }
@@ -275,8 +275,8 @@ export class NotificationService {
       return this.notifyFailure(taskName, execId, error, aiAnalysis);
     }
     const payload: NotificationPayload = {
-      title: `任务失败: ${taskName}`,
-      content: `执行ID: ${execId}\n错误: ${error}${aiAnalysis ? `\n\nAI分析:\n${aiAnalysis}` : ""}${alarmEmail ? `\n收件人: ${alarmEmail}` : ""}`,
+      title: `Task failed: ${taskName}`,
+      content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}${alarmEmail ? `\nRecipient: ${alarmEmail}` : ""}`,
       level: "error",
     };
 
