@@ -73,7 +73,7 @@ docker compose logs -f admin-api
 
 ```bash
 # 启动基础设施（PostgreSQL + Redis）
-docker compose -f infra/docker-compose.yml up -d
+docker compose up -d postgres redis
 
 # 安装依赖
 pnpm install
@@ -159,7 +159,11 @@ http://localhost:3105/api/docs
 | 应用 | `/api/applications` | 应用分组管理 |
 | 执行记录 | `/api/executions` | 执行历史、日志查看 |
 | 执行器 | `/api/executors` | 执行器注册与状态 |
-| 通知配置 | `/api/notification-configs` | 通知渠道管理 |
+| 通知配置 | `/api/notification` | 通知渠道管理 |
+| 用户管理 | `/api/users` | 用户 CRUD、密码修改 |
+| 系统配置 | `/api/config` | 系统参数读写 |
+| 执行器包 | `/api/executor-packages` | 应用包上传与管理 |
+| 注册表 | `/api/registry` | 私有 npm/PyPI 仓库信息 |
 | 健康检查 | `/health` | 服务健康状态 |
 | 指标 | `/metrics` | Prometheus 格式指标 |
 
