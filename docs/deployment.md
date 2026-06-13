@@ -27,7 +27,7 @@
 | `REDIS_PORT` | `6379` | Redis 端口 |
 | `REDIS_PASSWORD` | `your_redis_password` | Redis 密码（生产环境必须设置） |
 | `ADMIN_API_PORT` | `3105` | Admin API 监听端口 |
-| `EXECUTOR_TOKEN_SECRET` | `change-me-executor-secret` | 执行器认证密钥 |
+| `EXECUTOR_SECRET` | `change-me-executor-secret` | 执行器认证密钥 |
 | `AI_API_KEY` | `sk-...` | AI 服务 API Key（可选） |
 | `AI_BASE_URL` | `https://api.openai.com/v1` | AI 服务端点（可选） |
 
@@ -77,7 +77,7 @@ docker compose ps
 | Executor Python | http://localhost:8001 | Python 执行器 |
 | Executor Node | http://localhost:8002 | Node.js 执行器 |
 
-默认管理员账号：`admin` / `Admin@123456`（首次登录后请立即修改密码）
+默认管理员账号：`admin` / 密码由环境变量 `INITIAL_ADMIN_PASSWORD` 决定（首次登录后请立即修改密码）
 
 ## 常用运维命令
 
@@ -194,9 +194,35 @@ curl http://localhost:3105/health
 
 ### 执行器无法注册
 
-- 确认 `EXECUTOR_TOKEN_SECRET` 与 admin-api 配置一致
+- 确认 `EXECUTOR_SECRET` 与 admin-api 配置一致
 - 检查执行器容器网络能否访问 admin-api：`docker compose exec executor-python curl http://admin-api:3105/health`
 - 查看执行器日志：`docker compose logs executor-python`
+- **关键**：`ADMIN_API_URL` 必须使用 Docker 服务名（`http://admin-api:3105`），不能用 `localhost`
+
+### 执行器注册后心跳失败（401 / 429）
+
+心跳接口出现 401 说明执行器 Token 失效，需要重新注册；出现 429 说明触发了限流：
+
+```bash
+# 查看执行器心跳日志
+docker compose logs executor-node | tail -50
+docker compose logs executor-python | tail -50
+
+# 强制重启执行器（重新注册）
+docker compose restart executor-node
+```
+
+### 部署任务卡在 deploying 状态
+
+极少情况下部署任务因网络抖动卡住，此时执行器状态不更新：
+
+```bash
+# 查看 admin-api 调度日志
+docker compose logs admin-api | grep -i 'deploy\|timeout' | tail -30
+
+# 重启 admin-api 触发超时检测与状态回收
+docker compose restart admin-api
+```
 
 ### 内存不足
 

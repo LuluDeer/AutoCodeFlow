@@ -1,4 +1,4 @@
-"""manifest.yaml 解析工具"""
+"""manifest.yaml parsing utility"""
 import logging
 from pathlib import Path
 from typing import Any
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_manifest(work_dir: Path) -> dict[str, Any]:
-    """从工作目录加载 manifest.yaml，不存在则返回空 dict。"""
+    """Load manifest.yaml from the working directory. Returns an empty dict if not found."""
     manifest_path = work_dir / 'manifest.yaml'
     if not manifest_path.exists():
         manifest_path = work_dir / 'manifest.yml'
@@ -34,9 +34,9 @@ def load_manifest(work_dir: Path) -> dict[str, Any]:
 
 
 def merge_task_with_manifest(task: dict, manifest: dict) -> dict:
-    """用 manifest 的值补充 task 中缺失的字段（task 优先）。"""
+    """Fill in missing task fields with manifest values (task fields take priority)."""
     merged = {**manifest, **task}
-    # requirements 合并（manifest 和 task 都可能有）
+    # Merge requirements (both manifest and task may have them)
     m_reqs = manifest.get('requirements', [])
     t_reqs = task.get('requirements', [])
     if m_reqs or t_reqs:

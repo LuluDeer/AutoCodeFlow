@@ -1,170 +1,261 @@
 import { useState } from 'react';
-import { Tabs, Card, Button, Descriptions, Tag, Typography, Space, message, Modal, Input, List, Popconfirm, Breadcrumb } from 'antd';
-import { PlayCircleOutlined, ArrowLeftOutlined, RollbackOutlined, PauseCircleOutlined, PlaySquareOutlined, EditOutlined } from '@ant-design/icons';
+import {
+  Card, Descriptions, Tag, Typography, Button, Space, Table, Badge, Tabs,
+  Spin, Empty, message, Popconfirm, Tooltip,
+} from 'antd';
+import {
+  ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
+  PlayCircleOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
+  EyeOutlined, ClockCircleOutlined, StopOutlined,
+} from '@ant-design/icons';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useRequest } from 'ahooks';
-import { useParams, useNavigate, Link } from 'react-router-dom';
-import { tasksApi } from '../api/tasks';
-import ExecutionCompare from '../components/ExecutionCompare';
+import { tasksApi, TaskExecution } from '../api/tasks';
+import { getErrMsg } from '../utils/error';
+
+const { Text } = Typography;
+
+const STATUS_COLOR: Record<string, string> = {
+  pending: 'default', running: 'processing', success: 'green',
+  failed: 'red', timeout: 'orange', killed: 'volcano', cancelled: 'default',
+};
+const STATUS_LABEL: Record<string, string> = {
+  pending: '等待中', running: '运行中', success: '成功',
+  failed: '失败', timeout: '超时', killed: '已终止', cancelled: '已取消',
+};
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
+}
+
+function formatRelative(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return '刚刚';
+  if (mins < 60) return `${mins}分钟前`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}小时前`;
+  return `${Math.floor(mins / 1440)}天前`;
+}
+
 
 export default function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
-  const { data: task, refresh: refreshTask } = useRequest(() => tasksApi.get(id!));
-  const { data: execs } = useRequest(() => tasksApi.executions(id!, { pageSize: 50 }));
+  const [execPage, setExecPage] = useState(1);
 
-  // Fetch dependency task details
-  // dependencies format: { taskId: taskName } — keys are UUIDs
-  const depIds = task?.dependencies ? Object.keys(task.dependencies) : [];
-  const { data: depTasks } = useRequest(
-    () => Promise.all(depIds.map((depId: string) => tasksApi.get(depId))),
-    { ready: depIds.length > 0 },
+  const { data: schedulerStats } = useRequest(
+    tasksApi.schedulerStats,
+    { pollingInterval: 30000 },
   );
 
-  const [rollbackModal, setRollbackModal] = useState(false);
-  const [rollbackCommit, setRollbackCommit] = useState('');
-  const [rollbackLoading, setRollbackLoading] = useState(false);
-  const [actionLoading, setActionLoading] = useState(false);
+  const { data: task, loading: taskLoading, refresh: refreshTask } = useRequest(
+    () => tasksApi.get(id!),
+    { ready: !!id, refreshDeps: [id] },
+  );
 
-  const trigger = async () => {
-    try { await tasksApi.trigger(id!); message.success('已触发'); } catch { message.error('触发失败'); }
-  };
+  const { data: execData, loading: execLoading, refresh: refreshExecs } = useRequest(
+    () => tasksApi.executions(id!, { page: execPage, pageSize: 20 }),
+    { ready: !!id, refreshDeps: [id, execPage] },
+  );
 
-  const doRollback = async () => {
-    if (!rollbackCommit.trim()) { message.warning('请输入目标 commit SHA'); return; }
-    setRollbackLoading(true);
+  const executions: TaskExecution[] = execData?.items ?? [];
+  const execTotal: number = execData?.total ?? 0;
+
+  const handleTrigger = async () => {
     try {
-      await tasksApi.rollback(id!, rollbackCommit.trim());
-      message.success(`已回滚到 ${rollbackCommit.slice(0, 8)} 并触发执行`);
-      setRollbackModal(false);
-      setRollbackCommit('');
-    } catch {
-      message.error('回滚失败');
-    } finally {
-      setRollbackLoading(false);
+      await tasksApi.trigger(id!);
+      message.success('已触发，稍后可在执行记录中查看');
+      setTimeout(refreshExecs, 1500);
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '触发失败'));
     }
   };
 
-  const pauseTask = async () => {
-    setActionLoading(true);
-    try {
-      const res = await tasksApi.pause(id!);
-      message.success(res.message);
-      refreshTask();
-    } catch { message.error('暂停失败'); }
-    finally { setActionLoading(false); }
+  const handlePause = async () => {
+    try { await tasksApi.pause(id!); message.success('已暂停'); refreshTask(); }
+    catch (err: unknown) { message.error(getErrMsg(err, '暂停失败')); }
   };
 
-  const resumeTask = async () => {
-    setActionLoading(true);
-    try {
-      const res = await tasksApi.resume(id!);
-      message.success(res.message);
-      refreshTask();
-    } catch { message.error('恢复失败'); }
-    finally { setActionLoading(false); }
+  const handleResume = async () => {
+    try { await tasksApi.resume(id!); message.success('已恢复'); refreshTask(); }
+    catch (err: unknown) { message.error(getErrMsg(err, '恢复失败')); }
   };
+
+  const handleDelete = async () => {
+    try { await tasksApi.delete(id!); message.success('已删除'); nav('/tasks'); }
+    catch (err: unknown) { message.error(getErrMsg(err, '删除失败')); }
+  };
+
+  const handleEdit = () => {
+    nav(`/tasks/${id}/edit`);
+  };
+
+  const handleKill = async (execId: string) => {
+    try {
+      await tasksApi.killExecution(id!, execId);
+      message.success('已终止');
+      refreshExecs();
+    } catch (err: unknown) { message.error(getErrMsg(err, '终止失败')); }
+  };
+
+  if (taskLoading && !task) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
+  if (!task) return <Empty description="任务不存在" />;
+
+  const execColumns = [
+    {
+      title: '状态', dataIndex: 'status', width: 90,
+      render: (s: string) => <Badge status={STATUS_COLOR[s] as 'success' | 'error' | 'warning' | 'processing' | 'default'} text={STATUS_LABEL[s] || s} />,
+    },
+    {
+      title: '触发', dataIndex: 'triggerType', width: 80,
+      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
+    },
+    {
+      title: '开始时间', dataIndex: 'startTime', width: 140,
+      render: (v: string) => v ? (
+        <Tooltip title={new Date(v).toLocaleString('zh-CN')}>
+          <Text style={{ fontSize: 12 }}>{formatRelative(v)}</Text>
+        </Tooltip>
+      ) : '-',
+    },
+    {
+      title: '耗时', dataIndex: 'duration', width: 80,
+      render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v)}</Text> : '-',
+    },
+    {
+      title: '错误', dataIndex: 'errorMessage', ellipsis: true,
+      render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-',
+    },
+    {
+      title: '', key: 'actions', width: 100,
+      render: (_: any, r: TaskExecution) => (
+        <Space size={2}>
+          {r.status === 'running' && (
+            <Tooltip title="终止">
+              <Button type="text" size="small" danger icon={<StopOutlined />}
+                onClick={() => handleKill(r.id)} />
+            </Tooltip>
+          )}
+          <Button type="link" size="small" icon={<EyeOutlined />}
+            onClick={() => nav(`/tasks/${id}/executions/${r.id}`)}>详情</Button>
+        </Space>
+      ),
+    },
+  ];
+
+  const isActive = task.status === 'active';
+  const isPaused = task.status === 'paused';
 
   return (
     <div>
-      <Breadcrumb
-        items={[
-          { title: <Link to="/dashboard">首页</Link> },
-          { title: <Link to="/tasks">任务管理</Link> },
-          { title: '任务详情' },
-        ]}
-        style={{ marginBottom: 16 }}
-      />
       <Space style={{ marginBottom: 16 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/tasks')}>返回</Button>
-        <Typography.Title level={4} style={{ margin: 0 }}>{task?.name}</Typography.Title>
-        <Button icon={<EditOutlined />} onClick={() => nav(`/tasks/${id}/edit`)}>编辑</Button>
-        <Button type="primary" icon={<PlayCircleOutlined />} onClick={trigger}>手动触发</Button>
-        {task?.gitRepo && (
-          <Button icon={<RollbackOutlined />} onClick={() => setRollbackModal(true)}>一键回滚</Button>
-        )}
-        {task?.status === 'active' ? (
-          <Popconfirm title="确定要暂停此任务吗？" onConfirm={pauseTask}>
-            <Button icon={<PauseCircleOutlined />} loading={actionLoading}>暂停</Button>
-          </Popconfirm>
-        ) : task?.status === 'paused' ? (
-          <Popconfirm title="确定要恢复此任务吗？" onConfirm={resumeTask}>
-            <Button icon={<PlaySquareOutlined />} loading={actionLoading}>恢复</Button>
-          </Popconfirm>
-        ) : null}
       </Space>
 
-      <Modal
-        title="一键回滚"
-        open={rollbackModal}
-        onOk={doRollback}
-        confirmLoading={rollbackLoading}
-        onCancel={() => { setRollbackModal(false); setRollbackCommit(''); }}
-        okText="确认回滚"
-        cancelText="取消"
-      >
-        <p>当前 commit：<code>{task?.gitCommit || '未设置'}</code></p>
-        <Input
-          placeholder="输入要回滚到的 commit SHA"
-          value={rollbackCommit}
-          onChange={e => setRollbackCommit(e.target.value)}
-        />
-      </Modal>
-
-      <Tabs defaultActiveKey="info">
-        <Tabs.TabPane tab="基本信息" key="info">
-          <Card>
-            <Descriptions column={2}>
-              <Descriptions.Item label="运行时">{task?.runtime}</Descriptions.Item>
-              <Descriptions.Item label="入口文件">{task?.entrypoint}</Descriptions.Item>
-              <Descriptions.Item label="触发方式">
-                {task?.triggerType === 'manual' ? '手动' : task?.triggerType === 'fixed_rate' ? '固定频率' : task?.triggerType === 'cron' ? 'Cron' : task?.triggerType}
-              </Descriptions.Item>
-              <Descriptions.Item label="固定频率">{task?.fixedRate ? `${task.fixedRate}s` : '-'}</Descriptions.Item>
-              <Descriptions.Item label="Cron">{task?.cronExpression || '-'}</Descriptions.Item>
-              <Descriptions.Item label="超时">{task?.timeout}s</Descriptions.Item>
-              <Descriptions.Item label="最大重试">{task?.maxRetry}</Descriptions.Item>
-              <Descriptions.Item label="状态">
-                <Tag color={task?.status === 'active' ? 'green' : task?.status === 'paused' ? 'orange' : task?.status === 'disabled' ? 'red' : 'default'}>
-                  {task?.status === 'active' ? '运行中' : task?.status === 'paused' ? '已暂停' : task?.status === 'disabled' ? '已禁用' : task?.status}
-                </Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="描述" span={2}>{task?.description || '-'}</Descriptions.Item>
-              <Descriptions.Item label="指定执行器">{task?.executorAppName || '-'}</Descriptions.Item>
-              <Descriptions.Item label="执行器分组">{task?.executorGroup || '-'}</Descriptions.Item>
-              <Descriptions.Item label="执行器标签">{task?.executorTags?.length ? task.executorTags.map((t: string) => <Tag key={t}>{t}</Tag>) : '-'}</Descriptions.Item>
-              {task?.gitRepo && (
-                <>
-                  <Descriptions.Item label="Git 仓库" span={2}>{task.gitRepo}</Descriptions.Item>
-                  <Descriptions.Item label="分支">{task.gitBranch || 'main'}</Descriptions.Item>
-                  <Descriptions.Item label="固定 Commit">{task.gitCommit || '跟踪最新'}</Descriptions.Item>
-                </>
-              )}
-            </Descriptions>
-          </Card>
-        </Tabs.TabPane>
-        <Tabs.TabPane tab="执行记录" key="executions">
-          <ExecutionCompare executions={execs?.list ?? []} />
-        </Tabs.TabPane>
-        <Tabs.TabPane tab="任务依赖" key="dependencies">
-          {depIds.length === 0 ? (
-            <Card><Typography.Text type="secondary">暂无依赖任务</Typography.Text></Card>
-          ) : (
-            <List
-              header={<Typography.Text>前置依赖任务（需全部执行成功后才会触发此任务）</Typography.Text>}
-              bordered
-              dataSource={depTasks ?? []}
-              renderItem={(dep: any) => (
-                <List.Item actions={[<a key="view" onClick={() => nav(`/tasks/${dep.id}`)}>查看</a>]}>
-                  <List.Item.Meta
-                    title={dep.name}
-                    description={`运行时: ${dep.runtime} | 入口: ${dep.entrypoint}`}
-                  />
-                </List.Item>
-              )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+        <div>
+          <Space align="center">
+            <Typography.Title level={4} style={{ margin: 0 }}>{task.name}</Typography.Title>
+            <Badge
+              status={isActive ? 'success' : isPaused ? 'warning' : 'default'}
+              text={isActive ? '运行中' : isPaused ? '已暂停' : task.status}
             />
+          </Space>
+          {task.description && <Text type="secondary">{task.description}</Text>}
+          {schedulerStats && (
+            <Space size={4} style={{ marginTop: 4 }}>
+              <Tag style={{ fontSize: 11 }}>活跃定时器 {schedulerStats.activeTimers}</Tag>
+              <Tag style={{ fontSize: 11 }}>Cron {schedulerStats.activeCronTasks}</Tag>
+              <Tag color="processing" style={{ fontSize: 11 }}>运行中 {schedulerStats.runningTaskCount}</Tag>
+            </Space>
           )}
-        </Tabs.TabPane>
-      </Tabs>
+        </div>
+        <Space>
+          <Button icon={<ThunderboltOutlined />} type="primary" onClick={handleTrigger}>立即触发</Button>
+          {isActive && <Button icon={<PauseCircleOutlined />} onClick={handlePause}>暂停</Button>}
+          {isPaused && <Button icon={<PlayCircleOutlined />} type="primary" onClick={handleResume}>恢复</Button>}
+          <Button icon={<EditOutlined />} onClick={handleEdit}>编辑</Button>
+          <Popconfirm title="确认删除此任务？" onConfirm={handleDelete} okText="删除" okButtonProps={{ danger: true }}>
+            <Button icon={<DeleteOutlined />} danger>删除</Button>
+          </Popconfirm>
+        </Space>
+      </div>
+
+      <Tabs
+        items={[
+          {
+            key: 'info',
+            label: '任务配置',
+            children: (
+              <Card>
+                <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+                  <Descriptions.Item label="运行时"><Tag>{task.runtime}</Tag></Descriptions.Item>
+                  <Descriptions.Item label="触发方式"><Tag>{task.triggerType}</Tag></Descriptions.Item>
+                  {task.cronExpression && (
+                    <Descriptions.Item label="Cron"><Text code>{task.cronExpression}</Text></Descriptions.Item>
+                  )}
+                  {task.fixedRate && (
+                    <Descriptions.Item label="间隔">
+                      {task.fixedRate >= 3600
+                        ? `${(task.fixedRate / 3600).toFixed(1).replace(/\.0$/, '')} 小时`
+                        : task.fixedRate >= 60
+                          ? `${(task.fixedRate / 60).toFixed(1).replace(/\.0$/, '')} 分钟`
+                          : `${task.fixedRate} 秒`}
+                    </Descriptions.Item>
+                  )}
+                  <Descriptions.Item label="入口文件">{task.entrypoint || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="超时">{task.timeout ? `${task.timeout} 秒` : '-'}</Descriptions.Item>
+                  <Descriptions.Item label="最大重试">{task.maxRetry ?? 0} 次</Descriptions.Item>
+                  <Descriptions.Item label="调度模式">
+                    {task.executeMode === 'broadcast' ? '广播（所有节点）' : task.executeMode === 'single' ? '单节点' : task.executeMode || '自动'}
+                  </Descriptions.Item>
+                  {task.executorAppName && (
+                    <Descriptions.Item label="指定执行器">{task.executorAppName}</Descriptions.Item>
+                  )}
+                  <Descriptions.Item label="执行器分组">{task.executorGroup || '任意'}</Descriptions.Item>
+                </Descriptions>
+              </Card>
+            ),
+          },
+          {
+            key: 'executions',
+            label: (
+              <span>
+                <ClockCircleOutlined /> 执行记录
+              </span>
+            ),
+            children: (
+              <Card
+                extra={
+                  <Space>
+                    <Button size="small" icon={<ReloadOutlined />} onClick={refreshExecs}>刷新</Button>
+                    <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={handleTrigger}>手动触发</Button>
+                  </Space>
+                }
+              >
+                <Table<TaskExecution>
+                  rowKey="id"
+                  columns={execColumns}
+                  dataSource={executions}
+                  loading={execLoading}
+                  size="small"
+                  pagination={{
+                    total: execTotal,
+                    pageSize: 20,
+                    current: execPage,
+                    onChange: setExecPage,
+                    showTotal: (t) => `共 ${t} 条`,
+                  }}
+                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行记录" /> }}
+                />
+              </Card>
+            ),
+          },
+        ]}
+      />
+
     </div>
   );
 }

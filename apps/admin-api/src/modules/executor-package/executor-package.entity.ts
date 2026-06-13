@@ -41,19 +41,19 @@ export class ExecutorPackage {
   @Column({ type: "varchar", length: 128, nullable: true })
   platform: string;
 
-  /** 磁盘上存储的文件名（含校验和前缀，唯一） */
+  /** Filename on disk (includes checksum prefix, unique) */
   @Column({ type: "varchar", length: 256, nullable: true })
   filename: string;
 
-  /** 文件在服务器上的绝对路径 */
+  /** Absolute file path on the server */
   @Column({ type: "varchar", length: 1024 })
   filePath: string;
 
-  /** 上传时的原始文件名 */
+  /** Original filename at upload time */
   @Column({ type: "varchar", length: 256, nullable: true })
   originalFilename: string;
 
-  /** 上传文件的 MIME 类型 */
+  /** MIME type of the uploaded file */
   @Column({ type: "varchar", length: 128, nullable: true })
   mimeType: string;
 
@@ -75,6 +75,16 @@ export class ExecutorPackage {
 
   @Column({ type: "varchar", length: 255, nullable: true })
   uploadedBy: string;
+
+  /** Push history (appended on each executor push-result callback) */
+  @Column({ type: "jsonb", default: [] })
+  pushHistory: Array<{
+    executorId: string;
+    status: 'downloaded' | 'failed';
+    version: string;
+    error?: string;
+    timestamp: string;
+  }>;
 
   @CreateDateColumn()
   createdAt: Date;

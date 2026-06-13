@@ -9,12 +9,9 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
-  Res,
-  StreamableFile,
   Logger,
-  BadRequestException,
   Query,
-  Headers,
+  BadRequestException,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import {
@@ -26,54 +23,57 @@ import {
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { ApplicationService } from "./application.service";
+import { AppDeploymentService } from "./app-deployment.service";
 import {
   CreateApplicationDto,
   UpdateApplicationDto,
 } from "./dto/application.dto";
-import { Response } from "express";
+import { AppReleaseWebhookDto } from "./dto/app-release-webhook.dto";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 
-@ApiTags("应用管理")
+@ApiTags("Application Management")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller("applications")
 export class ApplicationController {
-  constructor(private readonly svc: ApplicationService) {}
+  constructor(
+    private readonly svc: ApplicationService,
+    private readonly deploymentSvc: AppDeploymentService,
+  ) {}
 
   @Get()
-  @ApiOperation({ summary: "获取应用列表" })
+  @ApiOperation({ summary: "Get application list" })
   findAll() {
     return this.svc.findAll();
   }
 
   @Get(":id")
-  @ApiOperation({ summary: "获取应用详情" })
+  @ApiOperation({ summary: "Get application details" })
   findById(@Param("id") id: string) {
     return this.svc.findById(id);
   }
 
   @Post()
-  @ApiOperation({ summary: "创建应用" })
+  @ApiOperation({ summary: "Create application" })
   create(@Body() dto: CreateApplicationDto) {
     return this.svc.create(dto);
   }
 
   @Put(":id")
-  @ApiOperation({ summary: "更新应用" })
+  @ApiOperation({ summary: "Update application" })
   update(@Param("id") id: string, @Body() dto: UpdateApplicationDto) {
     return this.svc.update(id, dto);
   }
 
   @Delete(":id")
-  @ApiOperation({ summary: "删除应用" })
+  @ApiOperation({ summary: "Delete application" })
   remove(@Param("id") id: string) {
     return this.svc.remove(id);
   }
 
   @Post("upload")
-  @ApiOperation({ summary: "上传应用包（zip）" })
+  @ApiOperation({ summary: "Upload application package (zip)" })
   @ApiConsumes("multipart/form-data")
   @ApiBody({
     schema: {
@@ -92,119 +92,162 @@ export class ApplicationController {
     @Body("name") name: string,
     @Body("runtime") runtime: string,
   ) {
-    if (!file) throw new Error("No file uploaded");
-    if (!name) throw new Error("Application name is required");
+    if (!file) throw new BadRequestException("No file uploaded");
+    if (!name) throw new BadRequestException("Application name is required");
 
-    // Save uploaded zip to temp directory
-    const tmpDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "autocodeflow-upload-"),
-    );
-    const zipPath = path.join(tmpDir, file.originalname || "app.zip");
+    // Save uploaded zip to persistent uploads directory (served as static files)
+    const uploadsDir = path.join(process.cwd(), 'uploads', 'packages');
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filename = `${safeName}_${Date.now()}.zip`;
+    const zipPath = path.join(uploadsDir, filename);
     fs.writeFileSync(zipPath, file.buffer);
 
-    // Create application record
-    const app = await this.svc.create({
-      name,
-      version: "1.0.0",
-      runtime: runtime || "node",
-    });
+    // Build a URL that the executor can use to download the package
+    const apiBase = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3105}`;
+    const packageUrl = `${apiBase}/uploads/packages/${filename}`;
 
-    // Clean up temp files
-    try {
-      fs.rmSync(tmpDir, { recursive: true });
-    } catch (_) {}
-
+    // Upsert the application record: create if not exists, update packageUrl if exists.
+    // This makes upload idempotent and supports iterative releases.
+    const existing = await this.svc.findByName(name);
+    let app;
+    if (existing) {
+      app = await this.svc.update(existing.id, {
+        packageUrl,
+        ...(runtime ? { runtime } : {}),
+      });
+    } else {
+      app = await this.svc.create({
+        name,
+        packageUrl,
+        runtime: runtime || 'python',
+        version: '1.0.0',
+      });
+    }
     return app;
   }
 
   @Post("webhook")
-  @ApiOperation({ summary: "Git webhook for auto-deployment" })
-  async webhook(
-    @Body() payload: any,
-    @Headers("x-github-event") githubEvent?: string,
-    @Headers("x-gitlab-event") gitlabEvent?: string,
-    @Headers("x-gitee-event") giteeEvent?: string,
-  ) {
-    const logger = new Logger("GitWebhook");
-    let branch: string | undefined;
-    let commit: string | undefined;
-    let repoUrl: string | undefined;
+  @ApiOperation({
+    summary: "Version release webhook",
+    description:
+      "Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments.",
+  })
+  async webhook(@Body() dto: AppReleaseWebhookDto) {
+    const logger = new Logger("ReleaseWebhook");
 
-    // Parse webhook payload from different Git providers
-    if (githubEvent === "push" && payload?.ref) {
-      // GitHub push webhook
-      branch = payload.ref.replace("refs/heads/", "");
-      commit = payload.after || payload.head_commit?.id;
-      repoUrl = payload.repository?.clone_url || payload.repository?.ssh_url;
-      logger.log(
-        `GitHub webhook: ${repoUrl}@${branch} → ${commit?.slice(0, 8)}`,
-      );
-    } else if (gitlabEvent === "Push Hook") {
-      // GitLab push webhook
-      branch = (payload?.ref || "").replace("refs/heads/", "");
-      commit = payload?.checkout_sha || payload?.after;
-      repoUrl =
-        payload?.repository?.git_http_url || payload?.repository?.git_ssh_url;
-      logger.log(
-        `GitLab webhook: ${repoUrl}@${branch} → ${commit?.slice(0, 8)}`,
-      );
-    } else if (giteeEvent === "Push Hook") {
-      // Gitee push webhook
-      branch = (payload?.ref || "").replace("refs/heads/", "");
-      commit = payload?.after || payload?.head_commit?.id;
-      repoUrl =
-        payload?.repository?.git_http_url || payload?.repository?.ssh_url;
-      logger.log(
-        `Gitee webhook: ${repoUrl}@${branch} → ${commit?.slice(0, 8)}`,
-      );
-    } else {
-      throw new BadRequestException(
-        `Unsupported webhook event: ${githubEvent || gitlabEvent || giteeEvent || "unknown"}`,
-      );
-    }
-
-    if (!repoUrl || !branch) {
-      throw new BadRequestException(
-        "Missing repo URL or branch in webhook payload",
-      );
-    }
-
-    // Find the application by gitRepo
-    const apps = await this.svc.findAll();
-    const normalized = (url: string) =>
-      url
-        .toLowerCase()
-        .replace(/\.git$/, "")
-        .replace(/\/$/, "");
-    const targetApp = apps.find((a) => {
-      if (!a.gitRepo) return false;
-      return (
-        normalized(a.gitRepo) === normalized(repoUrl!) && a.gitBranch === branch
-      );
-    });
-
+    // Find application by name
+    const targetApp = await this.svc.findByName(dto.appName);
     if (!targetApp) {
-      logger.warn(`No matching application found for ${repoUrl}@${branch}`);
+      logger.warn(`Webhook: no application found with name "${dto.appName}"`);
       return { ok: true, message: "No matching application" };
     }
 
-    // Update gitCommit and trigger re-deployment
-    await this.svc.deployFromGit(
-      targetApp.id,
-      targetApp.gitRepo!,
-      branch,
-      commit,
+    // Update version / git metadata
+    const updatedApp = await this.svc.update(targetApp.id, {
+      version: dto.version,
+      ...(dto.gitCommit ? { gitCommit: dto.gitCommit } : {}),
+      ...(dto.gitBranch ? { gitBranch: dto.gitBranch } : {}),
+    });
+    logger.log(
+      `Release webhook: ${dto.appName} → v${dto.version} (commit=${dto.gitCommit?.slice(0, 8) ?? "n/a"})`,
     );
-    return { ok: true, applicationId: targetApp.id, branch, commit };
+
+    // Optionally trigger rolling upgrade on all RUNNING deployments
+    let triggeredDeployments = 0;
+    if (dto.triggerDeploy) {
+      const running = await this.deploymentSvc.findRunningByApp(targetApp.id);
+      await Promise.allSettled(
+        running.map((d) =>
+          this.deploymentSvc.upgrade(d.id).catch((err) =>
+            logger.error(`Upgrade failed for deployment ${d.id}: ${err.message}`),
+          ),
+        ),
+      );
+      triggeredDeployments = running.length;
+      logger.log(
+        `Triggered upgrade on ${triggeredDeployments} running deployment(s) for "${dto.appName}"`,
+      );
+    }
+
+    return { ok: true, updatedApp, triggeredDeployments };
+  }
+
+  @Get(":id/versions")
+  @ApiOperation({
+    summary: "Get application version history",
+    description: "Return all historical deployment records for the app including version, commit, and deployment time",
+  })
+  async getVersionHistory(@Param("id") id: string) {
+    // Verify app exists (throws 404 if not)
+    await this.svc.findById(id);
+    const deployments = await this.deploymentSvc.findAllByApp(id);
+    // Map to a concise version history shape
+    return deployments.map((d) => ({
+      deploymentId: d.id,
+      version: d.deployedVersion,
+      commit: d.deployedCommit,
+      status: d.status,
+      deployedAt: d.deployedAt,
+      executorAddress: d.executorAddress,
+    }));
+  }
+
+  @Post(":id/upgrade-all")
+  @ApiOperation({ summary: "Trigger all running instances to upgrade to latest version" })
+  async upgradeAll(@Param("id") id: string) {
+    await this.svc.findById(id);
+    const deployments = await this.deploymentSvc.findRunningByApp(id);
+    const results = await Promise.allSettled(
+      deployments.map((d) => this.deploymentSvc.upgrade(d.id)),
+    );
+    const succeeded = results.filter((r) => r.status === "fulfilled").length;
+    return { ok: true, total: deployments.length, succeeded, failed: deployments.length - succeeded };
   }
 
   @Post(":id/sync-tasks")
   @ApiOperation({
-    summary: "从 manifest.json 同步任务注册",
-    description: "解析应用的 manifest.json 并自动注册其中的任务定义",
+    summary: "Sync task registration from manifest.json",
+    description: "Parse app manifest.json and auto-register task definitions",
   })
   async syncTasks(@Param("id") id: string) {
     const count = await this.svc.syncTasksFromManifest(id);
     return { ok: true, registeredCount: count };
+  }
+
+  @Post(":id/rollback/:deploymentId")
+  @ApiOperation({
+    summary: "Rollback application to historical deployment version",
+    description: "Restore app version to a specific historical deployment and trigger all running instances to upgrade",
+  })
+  async rollback(
+    @Param("id") appId: string,
+    @Param("deploymentId") deploymentId: string,
+  ) {
+    await this.svc.findById(appId);
+    const deployments = await this.deploymentSvc.findAllByApp(appId);
+    const target = deployments.find((d) => d.id === deploymentId);
+    if (!target) {
+      throw new BadRequestException("The specified deployment does not belong to this application");
+    }
+    // Restore app version to target version
+    const updatedApp = await this.svc.update(appId, {
+      version: target.deployedVersion ?? undefined,
+      gitCommit: target.deployedCommit ?? undefined,
+    } as any);
+    // Trigger all running instances to upgrade
+    const running = await this.deploymentSvc.findRunningByApp(appId);
+    const results = await Promise.allSettled(
+      running.map((d) => this.deploymentSvc.upgrade(d.id)),
+    );
+    const succeeded = results.filter((r) => r.status === "fulfilled").length;
+    return {
+      ok: true,
+      rolledBackTo: target.deployedVersion,
+      total: running.length,
+      succeeded,
+      failed: running.length - succeeded,
+      updatedApp,
+    };
   }
 }

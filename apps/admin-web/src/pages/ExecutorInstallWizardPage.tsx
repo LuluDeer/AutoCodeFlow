@@ -14,7 +14,7 @@ import {
   Tooltip,
   Row,
   Col,
-  Modal,
+  Input,
 } from 'antd';
 import {
   DownloadOutlined,
@@ -26,6 +26,9 @@ import {
   ArrowLeftOutlined,
   SyncOutlined,
   CloseCircleOutlined,
+  EyeOutlined,
+  EyeInvisibleOutlined,
+  InfoCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -34,6 +37,7 @@ import {
   InstallTokenResult,
 } from '../api/executor-packages';
 import { executorsApi, Executor } from '../api/executors';
+import { getErrMsg } from '../utils/error';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -76,32 +80,65 @@ const CODE_BLOCK_STYLE: React.CSSProperties = {
   lineHeight: 1.6,
 };
 
+function CodeBlock({ code, label }: { code: string; label: string }) {
+  return (
+    <div style={CODE_BLOCK_STYLE}>
+      <span style={{ whiteSpace: 'pre-wrap' }}>{code}</span>
+      <Tooltip title="复制">
+        <Button
+          type="text"
+          size="small"
+          icon={<CopyOutlined />}
+          style={{ position: 'absolute', top: 6, right: 6, color: '#aaa' }}
+          onClick={() =>
+            navigator.clipboard
+              .writeText(code)
+              .then(() => message.success(`已复制 ${label}`))
+          }
+          aria-label={`复制 ${label}`}
+        />
+      </Tooltip>
+    </div>
+  );
+}
+
+function ReqRow({ label, note }: { label: string; note?: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
+      <InfoCircleOutlined style={{ color: '#1677ff', marginTop: 3 }} />
+      <div>
+        <Text>{label}</Text>
+        {note && <div><Text type="secondary" style={{ fontSize: 12 }}>{note}</Text></div>}
+      </div>
+    </div>
+  );
+}
+
 export default function ExecutorInstallWizardPage() {
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState(0);
 
-  // Step 0
   const [packages, setPackages] = useState<ExecutorPackage[]>([]);
   const [loadingPackages, setLoadingPackages] = useState(false);
   const [selectedType, setSelectedType] = useState<string | undefined>();
   const [selectedPlatform, setSelectedPlatform] = useState<string | undefined>();
-
-  // Step 1
   const [selectedPackage, setSelectedPackage] = useState<ExecutorPackage | null>(null);
   const [tokenResult, setTokenResult] = useState<InstallTokenResult | null>(null);
   const [generatingToken, setGeneratingToken] = useState(false);
-
-  // Step 2
+  const [sharedToken, setSharedToken] = useState<string | null>(null);
+  const [loadingSharedToken, setLoadingSharedToken] = useState(false);
+  const [sharedTokenVisible, setSharedTokenVisible] = useState(false);
   const [installScriptUrl, setInstallScriptUrl] = useState('');
 
-  // Step 3 — poll for executor online
-  const POLL_INTERVAL_MS = 3000;
-  const POLL_TIMEOUT_MS = 120000; // 2 minutes
+  const POLL_INTERVAL_MS = 5000;
+  const POLL_TIMEOUT_MS = 60000;
   const [polling, setPolling] = useState(false);
-  const [pollStartTime, setPollStartTime] = useState<number | null>(null);
+  const [_pollStartTime, setPollStartTime] = useState<number | null>(null);
   const [foundExecutor, setFoundExecutor] = useState<Executor | null>(null);
   const [pollTimedOut, setPollTimedOut] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     setLoadingPackages(true);
@@ -128,13 +165,22 @@ export default function ExecutorInstallWizardPage() {
         (!selectedPlatform || p.platform === selectedPlatform),
     ) ?? null;
 
-  const handleStep0Next = () => {
+  const handleStep1Next = () => {
     if (!matchedPackage) {
       message.warning('请先选择执行器类型和目标平台');
       return;
     }
     setSelectedPackage(matchedPackage);
-    setCurrentStep(1);
+    setLoadingSharedToken(true);
+    import('../api/config')
+      .then(({ configApi }) => configApi.getExecutorToken())
+      .then((r: any) => setSharedToken(r.token))
+      .catch(() => {
+        setSharedToken(null);
+        message.warning('获取共享 Token 失败，请手动生成');
+      })
+      .finally(() => setLoadingSharedToken(false));
+    setCurrentStep(2);
   };
 
   const handleGenerateToken = async () => {
@@ -147,9 +193,9 @@ export default function ExecutorInstallWizardPage() {
           executorPackagesApi.getInstallScriptUrl(selectedPackage.id, result.token),
         );
       }
-      setCurrentStep(2);
-    } catch {
-      message.error('生成安装凭证失败，请重试');
+      setCurrentStep(3);
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '生成安装凭证失败，请重试'));
     } finally {
       setGeneratingToken(false);
     }
@@ -160,20 +206,30 @@ export default function ExecutorInstallWizardPage() {
       clearTimeout(pollTimerRef.current);
       pollTimerRef.current = null;
     }
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
     setPolling(false);
   }, []);
 
   const startPolling = useCallback(
     (startTime: number) => {
+      stopPolling();
       setPolling(true);
       setPollTimedOut(false);
       setFoundExecutor(null);
+      setElapsedSeconds(0);
+
+      countdownRef.current = setInterval(() => {
+        setElapsedSeconds(Math.floor((Date.now() - startTime) / 1000));
+      }, 1000);
 
       const tick = async () => {
         const elapsed = Date.now() - startTime;
         if (elapsed >= POLL_TIMEOUT_MS) {
+          stopPolling();
           setPollTimedOut(true);
-          setPolling(false);
           return;
         }
         try {
@@ -184,12 +240,12 @@ export default function ExecutorInstallWizardPage() {
               new Date(e.lastHeartbeat).getTime() > startTime - 5000,
           );
           if (recent) {
+            stopPolling();
             setFoundExecutor(recent);
-            setPolling(false);
             return;
           }
         } catch {
-          // ignore errors, keep polling
+          // ignore
         }
         pollTimerRef.current = setTimeout(tick, POLL_INTERVAL_MS);
       };
@@ -199,13 +255,12 @@ export default function ExecutorInstallWizardPage() {
     [stopPolling],
   );
 
-  // Cleanup on unmount
   useEffect(() => () => stopPolling(), [stopPolling]);
 
-  const handleGoToStep3 = () => {
+  const handleGoToStep4 = () => {
     const now = Date.now();
     setPollStartTime(now);
-    setCurrentStep(3);
+    setCurrentStep(4);
     startPolling(now);
   };
 
@@ -220,14 +275,17 @@ export default function ExecutorInstallWizardPage() {
     setFoundExecutor(null);
     setPollTimedOut(false);
     setPollStartTime(null);
+    setElapsedSeconds(0);
   };
 
   const curlCmd = installScriptUrl ? `curl -fsSL "${installScriptUrl}" | bash` : '';
   const wgetCmd = installScriptUrl ? `wget -qO- "${installScriptUrl}" | bash` : '';
-
-  const copyText = (text: string, label: string) => {
-    navigator.clipboard.writeText(text).then(() => message.success(`已复制 ${label}`));
-  };
+  const adminApiUrl = window.location.origin;
+  const envVarBlock = [
+    `ADMIN_API_URL=${adminApiUrl}`,
+    `EXECUTOR_TOKEN=${sharedToken ?? '<your-executor-token>'}`,
+    `EXECUTOR_NAME=my-executor-1`,
+  ].join('\n');
 
   return (
     <div>
@@ -243,24 +301,59 @@ export default function ExecutorInstallWizardPage() {
 
       <Steps
         current={currentStep}
-        style={{ marginBottom: 32, maxWidth: 800 }}
+        style={{ marginBottom: 32, maxWidth: 900 }}
         items={[
-          { title: '选择安装包', icon: <DesktopOutlined /> },
+          { title: '系统要求', icon: <DesktopOutlined /> },
+          { title: '选择安装包', icon: <DownloadOutlined /> },
           { title: '生成安装凭证', icon: <KeyOutlined /> },
           { title: '执行安装', icon: <CodeOutlined /> },
           { title: '验证上线', icon: <CheckCircleOutlined /> },
         ]}
       />
 
-      {/* ── Step 0: 选择安装包 ── */}
+      {/* Step 0: 系统要求 */}
       {currentStep === 0 && (
+        <Card style={{ maxWidth: 720 }}>
+          <Title level={5} style={{ marginTop: 0 }}>系统要求</Title>
+          <Paragraph type="secondary">
+            在开始安装前，请确认目标服务器满足以下要求：
+          </Paragraph>
+
+          <div style={{ marginBottom: 20 }}>
+            <ReqRow label="Node.js 16+ 或 Python 3.8+" note="根据所选执行器类型" />
+            <ReqRow label="Git 2.0+" note="用于克隆仓库和版本管理" />
+            <ReqRow label="curl 或 wget" note="用于下载安装脚本" />
+            <ReqRow label="网络连接" note={`能访问本平台 API：${adminApiUrl}`} />
+            <ReqRow label="sudo 权限（可选）" note="某些系统级安装可能需要" />
+          </div>
+
+          <Alert
+            type="info"
+            showIcon
+            message="提示"
+            description="安装过程中会自动检测和配置环境，如遇问题请参考文档或联系管理员。"
+            style={{ marginBottom: 20 }}
+          />
+
+          <Divider />
+          <Space>
+            <Button onClick={() => navigate('/executors')}>取消</Button>
+            <Button type="primary" onClick={() => setCurrentStep(1)}>
+              下一步
+            </Button>
+          </Space>
+        </Card>
+      )}
+
+      {/* Step 1: 选择安装包 */}
+      {currentStep === 1 && (
         <Card style={{ maxWidth: 720 }}>
           <Title level={5} style={{ marginTop: 0 }}>选择执行器类型与目标平台</Title>
           <Paragraph type="secondary">
             根据目标服务器的操作系统和所需执行器类型，选择对应的安装包。
           </Paragraph>
 
-          <Spin spinning={loadingPackages}>
+<Spin spinning={loadingPackages}>
             <Row gutter={[16, 16]}>
               <Col xs={24} sm={12}>
                 <Text strong style={{ display: 'block', marginBottom: 6 }}>执行器类型</Text>
@@ -318,7 +411,7 @@ export default function ExecutorInstallWizardPage() {
                     <Text type="secondary">下载次数</Text>
                     <div><Text strong>{matchedPackage.downloadCount}</Text></div>
                   </Col>
-                  {matchedPackage.sha256 && (
+{matchedPackage.sha256 && (
                     <Col span={24}>
                       <Text type="secondary">SHA256</Text>
                       <div>
@@ -356,16 +449,16 @@ export default function ExecutorInstallWizardPage() {
 
           <Divider />
           <Space>
-            <Button onClick={() => navigate('/executors')}>取消</Button>
-            <Button type="primary" disabled={!matchedPackage} onClick={handleStep0Next}>
+            <Button onClick={() => setCurrentStep(0)}>上一步</Button>
+            <Button type="primary" disabled={!matchedPackage} onClick={handleStep1Next}>
               下一步
             </Button>
           </Space>
         </Card>
       )}
 
-      {/* ── Step 1: 生成安装凭证 ── */}
-      {currentStep === 1 && selectedPackage && (
+      {/* Step 2: 生成安装凭证 */}
+      {currentStep === 2 && selectedPackage && (
         <Card style={{ maxWidth: 720 }}>
           <Title level={5} style={{ marginTop: 0 }}>生成一次性安装凭证</Title>
           <Paragraph type="secondary">
@@ -397,9 +490,53 @@ export default function ExecutorInstallWizardPage() {
             style={{ marginBottom: 20 }}
           />
 
+          <Card
+            size="small"
+            style={{ background: '#fffbe6', border: '1px solid #ffe58f', marginBottom: 20 }}
+            title={<Space><KeyOutlined /><Text strong>执行器接入 Token（共享）</Text></Space>}
+          >
+            <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+              执行器启动时需携带此 Token 向调度中心注册。如尚未生成，请先在「系统设置」页面创建。
+            </Paragraph>
+{loadingSharedToken ? (
+              <Spin size="small" />
+            ) : sharedToken ? (
+              <Space>
+                <Input
+                  readOnly
+                  value={sharedTokenVisible ? sharedToken : '•'.repeat(Math.min(sharedToken.length, 64))}
+                  style={{ width: 420, fontFamily: 'monospace' }}
+                />
+                <Button
+                  size="small"
+                  icon={sharedTokenVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                  onClick={() => setSharedTokenVisible((v) => !v)}
+                />
+                {sharedTokenVisible && (
+                  <Button
+                    size="small"
+                    icon={<CopyOutlined />}
+                    onClick={() => {
+                      navigator.clipboard.writeText(sharedToken);
+                      message.success('已复制 Token');
+                    }}
+                  >
+                    复制
+                  </Button>
+                )}
+              </Space>
+            ) : (
+              <Alert
+                type="warning"
+                showIcon
+                message="尚未配置执行器共享 Token，请先前往「系统设置」页面生成 Token 后再安装执行器。"
+              />
+            )}
+          </Card>
+
           <Divider />
           <Space>
-            <Button onClick={() => setCurrentStep(0)}>上一步</Button>
+            <Button onClick={() => setCurrentStep(1)}>上一步</Button>
             <Button
               type="primary"
               icon={<KeyOutlined />}
@@ -412,8 +549,8 @@ export default function ExecutorInstallWizardPage() {
         </Card>
       )}
 
-      {/* ── Step 2: 执行安装 ── */}
-      {currentStep === 2 && tokenResult && selectedPackage && (
+      {/* Step 3: 执行安装 */}
+      {currentStep === 3 && tokenResult && selectedPackage && (
         <Card style={{ maxWidth: 720 }}>
           <Title level={5} style={{ marginTop: 0 }}>在目标服务器上执行安装</Title>
           <Paragraph type="secondary">
@@ -435,43 +572,25 @@ export default function ExecutorInstallWizardPage() {
           />
 
           <Space direction="vertical" style={{ width: '100%' }} size={20}>
-            {/* curl */}
             <div>
               <Space style={{ marginBottom: 8 }}>
                 <Text strong>使用 curl 安装</Text>
                 <Tag color="green">推荐</Tag>
               </Space>
-              <div style={CODE_BLOCK_STYLE}>
-                {curlCmd}
-                <Tooltip title="复制命令">
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<CopyOutlined />}
-                    style={{ position: 'absolute', top: 6, right: 6, color: '#aaa' }}
-                    onClick={() => copyText(curlCmd, 'curl 命令')}
-                    aria-label="复制 curl 安装命令"
-                  />
-                </Tooltip>
-              </div>
+              <CodeBlock code={curlCmd} label="curl 命令" />
             </div>
 
-            {/* wget */}
             <div>
               <Text strong style={{ display: 'block', marginBottom: 8 }}>使用 wget 安装</Text>
-              <div style={CODE_BLOCK_STYLE}>
-                {wgetCmd}
-                <Tooltip title="复制命令">
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<CopyOutlined />}
-                    style={{ position: 'absolute', top: 6, right: 6, color: '#aaa' }}
-                    onClick={() => copyText(wgetCmd, 'wget 命令')}
-                    aria-label="复制 wget 安装命令"
-                  />
-                </Tooltip>
-              </div>
+              <CodeBlock code={wgetCmd} label="wget 命令" />
+            </div>
+
+            <div>
+              <Text strong style={{ display: 'block', marginBottom: 8 }}>环境变量配置参考</Text>
+              <Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 13 }}>
+                安装脚本会自动配置以下环境变量。如需手动配置或调试，可参考：
+              </Paragraph>
+              <CodeBlock code={envVarBlock} label="环境变量" />
             </div>
 
             <Alert
@@ -482,70 +601,97 @@ export default function ExecutorInstallWizardPage() {
             />
           </Space>
 
-          <Divider />
+<Divider />
           <Space>
             <Button icon={<DownloadOutlined />} onClick={handleReset}>重新安装</Button>
-            <Button type="primary" onClick={handleGoToStep3}>下一步：等待执行器上线</Button>
+            <Button type="primary" onClick={handleGoToStep4}>下一步：等待执行器上线</Button>
           </Space>
         </Card>
       )}
 
-      {/* ── Step 3: 验证执行器上线 ── */}
-      {currentStep === 3 && (
+      {/* Step 4: 验证执行器上线 */}
+      {currentStep === 4 && (
         <Card style={{ maxWidth: 720 }}>
           <Title level={5} style={{ marginTop: 0 }}>等待执行器上线</Title>
           <Paragraph type="secondary">
-            系统正在自动检测目标服务器上的执行器是否已成功注册并上线，每 3 秒轮询一次，最长等待 2 分钟。
+            系统正在自动检测目标服务器上的执行器是否已成功注册并上线，每 5 秒轮询一次，最长等待 1 分钟。
           </Paragraph>
 
-          {/* 轮询中 */}
           {polling && !foundExecutor && !pollTimedOut && (
             <div style={{ textAlign: 'center', padding: '40px 0' }}>
               <Spin size="large" indicator={<SyncOutlined spin style={{ fontSize: 48, color: '#1677ff' }} />} />
               <div style={{ marginTop: 20, color: '#666', fontSize: 15 }}>正在等待执行器上线...</div>
-              {pollStartTime && (
-                <div style={{ marginTop: 8, color: '#aaa', fontSize: 13 }}>
-                  已等待约 {Math.floor((Date.now() - pollStartTime) / 1000)} 秒
-                </div>
-              )}
+              <div style={{ marginTop: 8, color: '#aaa', fontSize: 13 }}>
+                已等待 {elapsedSeconds} / 60 秒，每 5 秒检测一次
+              </div>
             </div>
           )}
 
-          {/* 已上线 */}
           {foundExecutor && (
-            <Alert
-              type="success"
-              showIcon
-              icon={<CheckCircleOutlined />}
-              message="执行器已成功上线！"
-              description={
-                <span>
-                  检测到执行器：<strong>{foundExecutor.appName}</strong>（{foundExecutor.address}）已注册上线，安装成功。
-                </span>
-              }
-              style={{ marginBottom: 20 }}
-            />
+            <>
+              <Alert
+                type="success"
+                showIcon
+                icon={<CheckCircleOutlined />}
+                message="执行器已成功上线！"
+                description={
+                  <span>
+                    检测到执行器：<strong>{foundExecutor.appName}</strong>（{foundExecutor.address}）已注册上线，安装成功。
+                  </span>
+                }
+                style={{ marginBottom: 20 }}
+              />
+<div style={{ textAlign: 'center', padding: '16px 0' }}>
+                <CheckCircleOutlined style={{ fontSize: 64, color: '#52c41a' }} />
+                <div style={{ marginTop: 12, fontSize: 18, fontWeight: 600, color: '#52c41a' }}>
+                  执行器已上线
+                </div>
+                <div style={{ marginTop: 4, color: '#888' }}>
+                  {foundExecutor.appName} · {foundExecutor.address}
+                </div>
+              </div>
+            </>
           )}
 
-          {/* 超时 */}
           {pollTimedOut && (
-            <Alert
-              type="warning"
-              showIcon
-              icon={<CloseCircleOutlined />}
-              message="等待超时"
-              description="2 分钟内未检测到执行器上线。请检查目标服务器上的安装日志，确认安装命令是否成功执行，或检查网络连通性。"
-              style={{ marginBottom: 20 }}
-            />
+            <>
+              <Alert
+                type="warning"
+                showIcon
+                icon={<CloseCircleOutlined />}
+                message="验证超时（60 秒）"
+                description="1 分钟内未检测到执行器上线，请参考以下排查步骤。"
+                style={{ marginBottom: 20 }}
+              />
+              <Card size="small" style={{ background: '#fffbe6', border: '1px solid #ffe58f' }}>
+                <Title level={5} style={{ marginTop: 0 }}>排查建议</Title>
+                <ul style={{ paddingLeft: 20, lineHeight: 2, margin: 0 }}>
+                  <li>确认安装命令已在目标服务器上执行完毕，且无报错</li>
+                  <li>检查目标服务器网络是否能访问本平台 API 地址</li>
+                  <li>安装脚本可能需要 <code>sudo</code> 权限，请以合适权限重试</li>
+                  <li>查看执行器进程日志排查启动失败原因</li>
+                  <li>确认执行器共享 Token 已正确配置</li>
+<li>确认安装凭证 Token 未过期（有效期 1 小时）</li>
+                </ul>
+              </Card>
+            </>
           )}
 
           <Divider />
           <Space>
             {!foundExecutor && (
-              <Button onClick={() => { stopPolling(); setCurrentStep(2); }}>返回上一步</Button>
+              <Button onClick={() => { stopPolling(); setCurrentStep(3); }}>返回上一步</Button>
             )}
             {pollTimedOut && (
-              <Button onClick={() => startPolling(Date.now())}>重新检测</Button>
+              <Button
+                onClick={() => {
+                  const now = Date.now();
+                  setPollStartTime(now);
+                  startPolling(now);
+                }}
+              >
+                重新检测
+              </Button>
             )}
             <Button
               type="primary"

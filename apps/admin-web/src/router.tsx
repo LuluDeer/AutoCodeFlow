@@ -1,14 +1,16 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
+import NotFoundPage from './pages/NotFoundPage';
 import MainLayout from './layouts/MainLayout';
 import LoginPage from './pages/LoginPage';
 import TaskListPage from './pages/TaskListPage';
 import TaskDetailPage from './pages/TaskDetailPage';
 import TaskFormPage from './pages/TaskFormPage';
 import ExecutionDetailPage from './pages/ExecutionDetailPage';
-import UserListPage from './pages/UserListPage';
+import UserManagementPage from './pages/UserManagementPage';
 import ExecutorListPage from './pages/ExecutorListPage';
 import ExecutorInstallWizardPage from './pages/ExecutorInstallWizardPage';
 import ExecutorDetailPage from './pages/ExecutorDetailPage';
+import ExecutorPackagesPage from './pages/ExecutorPackagesPage';
 import DashboardPage from './pages/DashboardPage';
 import RegistryPage from './pages/RegistryPage';
 import SettingsPage from './pages/settings/index';
@@ -33,7 +35,7 @@ export const router = createBrowserRouter([
     element: <PrivateRoute><MainLayout /></PrivateRoute>,
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
-      { path: '*', element: <Navigate to="/dashboard" replace /> },
+      { path: '*', element: <NotFoundPage /> },
       { path: 'dashboard', element: <DashboardPage /> },
       { path: 'tasks', element: <TaskListPage /> },
       { path: 'tasks/new', element: <TaskFormPage /> },
@@ -44,13 +46,14 @@ export const router = createBrowserRouter([
       { path: 'executors', element: <ExecutorListPage /> },
       { path: 'executors/install', element: <ExecutorInstallWizardPage /> },
       { path: 'executors/:id', element: <ExecutorDetailPage /> },
-      { path: 'users', element: <UserListPage /> },
+      { path: 'users', element: <UserManagementPage /> },
       { path: 'registry', element: <RegistryPage /> },
       { path: 'settings', element: <SettingsPage /> },
-      { path: 'notification', element: <NotificationSettingsPage /> },
+      { path: 'notifications', element: <NotificationSettingsPage /> },
       { path: 'audit', element: <AuditLogPage /> },
       { path: 'applications', element: <ApplicationListPage /> },
       { path: 'applications/:id', element: <ApplicationDetailPage /> },
+      { path: 'executor-packages', element: <ExecutorPackagesPage /> },
     ],
   },
 ]);

@@ -111,7 +111,6 @@ export default function AuditLogPage() {
       title: '时间',
       dataIndex: 'createdAt',
       width: 180,
-      sorter: true,
       render: (v: string) => new Date(v).toLocaleString('zh-CN'),
     },
   ];
@@ -169,7 +168,8 @@ export default function AuditLogPage() {
         rowKey="id"
         loading={isLoading}
         columns={columns}
-        dataSource={data?.data}
+        dataSource={data?.data ?? []}
+        locale={{ emptyText: '暂无审计记录' }}
         pagination={{
           current: page,
           pageSize: 20,
@@ -185,6 +185,7 @@ export default function AuditLogPage() {
         onCancel={() => setDetailModal({ open: false })}
         footer={null}
         width={600}
+        destroyOnHidden
       >
         <pre style={{ background: '#f5f5f5', padding: 16, borderRadius: 4, fontSize: 13, overflowX: 'auto' }}>
           {detailModal.data ? JSON.stringify(detailModal.data, null, 2) : ''}

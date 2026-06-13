@@ -71,8 +71,9 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
       message: `Updated ${updatedFields.length} field(s)`,
       updatedFields,
     } as ConfigReloadResponse);
-  } catch (err: any) {
-    logger.error(`Config reload failed: ${err.message}`);
-    res.status(500).json({ error: `Config reload failed: ${err.message}` });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`Config reload failed: ${msg}`);
+    res.status(500).json({ error: `Config reload failed: ${msg}` });
   }
 });

@@ -10,13 +10,13 @@ import { pushCallback } from '../callback';
 import { appendLog } from '../file-logger';
 import { taskWorkerManager } from '../task-worker';
 
-/** 将 git URL 转成安全缓存目录名 */
+/** Convert git URL to a safe cache directory name */
 function repoDirName(repoUrl: string): string {
   const base = repoUrl.replace(/\/$/, '').split('/').pop() ?? 'repo';
   return base.replace(/\.git$/, '').replace(/[^a-zA-Z0-9_.-]/g, '_');
 }
 
-/** Clone（带 bare 缓存）并 checkout 指定 ref 到 dest 目录 */
+/** Clone (with bare cache) and checkout the specified ref to dest directory */
 function gitCheckoutTo(repoUrl: string, ref: string, dest: string): void {
   const cacheDir = path.join(config.workDir, '.git_cache', repoDirName(repoUrl));
   if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
@@ -122,7 +122,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   // S6/Q11: restrict permissions so sibling tasks cannot read this directory
   try { fs.chmodSync(workDir, 0o700); } catch (_) { /* ignore on unsupported filesystems */ }
 
-  // --- Git 版本绑定：若任务指定了 gitRepo 则 clone/checkout 到工作目录 ---
+  // --- Git version binding: if task specifies gitRepo, clone/checkout to work dir ---
   const gitRepo = body.task.gitRepo;
   const gitCommit = body.task.gitCommit;
   const gitBranch = body.task.gitBranch ?? 'main';
@@ -146,7 +146,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     gitCheckoutTo(gitRepo, ref, workDir);
   }
 
-  // 加载 manifest.yaml 并与 task 合并（task 字段优先）
+  // Load manifest.yaml and merge with task (task fields take priority)
   const manifest = loadManifest(workDir);
   const task = mergeTaskWithManifest(body.task as Record<string, unknown>, manifest);
 
@@ -160,17 +160,18 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   let actualRuntime = runtime;
   let actualEntrypoint = entrypoint;
   let actualRequirements = requirements;
-  const glueSource = (task as any).glueSource || (task as any).glue_source;
-  const glueLanguage = (task as any).glueLanguage || (task as any).glue_language;
+  const glueSource = (task.glueSource as string | undefined) || (task.glue_source as string | undefined);
+  const glueLanguage = (task.glueLanguage as string | undefined) || (task.glue_language as string | undefined);
   if (glueSource) {
     let glueFile: string;
-    if (glueLanguage === 'javascript' || (!glueLanguage && runtime === 'node')) {
+    const glLower = glueLanguage ? glueLanguage.toLowerCase() : '';
+    if (glLower === 'javascript' || glLower === 'glue_node' || (!glueLanguage && runtime === 'node')) {
       glueFile = path.join(workDir, 'glue_script.js');
       actualRuntime = 'node';
-    } else if (glueLanguage === 'python' || (!glueLanguage && runtime === 'python')) {
+    } else if (glLower === 'python' || glLower === 'glue_python' || (!glueLanguage && runtime === 'python')) {
       glueFile = path.join(workDir, 'glue_script.py');
       actualRuntime = 'python';
-    } else if (glueLanguage === 'shell') {
+    } else if (glLower === 'shell' || glLower === 'glue_shell') {
       glueFile = path.join(workDir, 'glue_script.sh');
       actualRuntime = 'shell';
     } else {
@@ -189,7 +190,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     actualRequirements = [];  // Glue scripts use system runtime, no per-task deps
   }
 
-  // node runtime: 按需安装依赖到任务隔离目录
+  // node runtime: install dependencies on demand to task-isolated directory
   if (actualRuntime === 'node' && actualRequirements.length > 0) {
     const nodeModulesDir = path.join(config.workDir, '.node_modules', taskId);
     fs.mkdirSync(nodeModulesDir, { recursive: true });
@@ -292,10 +293,10 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
 export async function runTask(task: any, params: Record<string, any>, executionId: string): Promise<void> {
   const { cmd, args, workDir, env, timeout } = task;
   const startTime = Date.now();
-  
+
   try {
     const result = await runProcess(cmd, args, workDir, env, timeout, executionId);
-    
+
     pushCallback({
       executionId,
       status: 'success',
@@ -304,16 +305,20 @@ export async function runTask(task: any, params: Record<string, any>, executionI
       durationMs: Date.now() - startTime,
     });
   } catch (err: unknown) {
+    // Extract structured fields attached by the close handler; fall back for plain errors
+    const processErr = err as any;
     const message = err instanceof Error ? err.message : String(err);
-    
+    const logs: string | undefined = typeof processErr?.logs === 'string' ? processErr.logs : undefined;
+    const exitCode: number | undefined = typeof processErr?.exitCode === 'number' ? processErr.exitCode : undefined;
+
     pushCallback({
       executionId,
       status: 'failed',
+      exitCode,
+      logs,
       errorMessage: message,
       durationMs: Date.now() - startTime,
     });
-  } finally {
-    // No-op: counter is managed by the route handler
   }
 }
 
@@ -326,21 +331,25 @@ function runProcess(
   executionId?: string,
 ): Promise<{ success: boolean; logs: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args, { cwd, env, detached: true });
+    const proc = spawn(cmd, args, { cwd, env, detached: process.platform !== 'win32' });
     let logs = '';
+    // Guard against close firing after timeout has already rejected the promise
+    let settled = false;
 
-    proc.stdout.on('data', (d: Buffer) => { 
+    proc.stdout.on('data', (d: Buffer) => {
       const output = d.toString();
       logs += output;
       if (executionId) appendLog(executionId, output);
     });
-    proc.stderr.on('data', (d: Buffer) => { 
+    proc.stderr.on('data', (d: Buffer) => {
       const output = d.toString();
       logs += output;
       if (executionId) appendLog(executionId, output);
     });
 
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       // B-06: kill the entire process group so child processes spawned by the task are also terminated
       try {
         if (proc.pid !== undefined) {
@@ -351,22 +360,31 @@ function runProcess(
           }
         }
       } catch (_) {
-        proc.kill('SIGKILL');
+        try { proc.kill('SIGKILL'); } catch (_2) { /* already dead */ }
       }
       reject(new Error(`Task timeout after ${timeoutSec}s`));
     }, timeoutSec * 1000);
 
-    proc.on('close', (code: number) => {
+    proc.on('close', (code: number | null) => {
       clearTimeout(timer);
-      if (code !== 0) {
-        reject(new Error(`Process exited with code ${code}\n${logs}`));
+      if (settled) return;
+      settled = true;
+      const exitCode = code ?? 1;
+      if (exitCode !== 0) {
+        // Attach logs and exitCode as properties so callers can surface them independently
+        const err = new Error(`Process exited with code ${exitCode}`) as Error & { logs: string; exitCode: number };
+        (err as any).logs = logs;
+        (err as any).exitCode = exitCode;
+        reject(err);
       } else {
-        resolve({ success: true, logs, exitCode: code });
+        resolve({ success: true, logs, exitCode });
       }
     });
 
     proc.on('error', (err: Error) => {
       clearTimeout(timer);
+      if (settled) return;
+      settled = true;
       reject(err);
     });
   });

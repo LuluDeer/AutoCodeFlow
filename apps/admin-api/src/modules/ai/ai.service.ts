@@ -27,16 +27,16 @@ export class AiService {
     );
   }
 
-  async analyzeFailure(task: any, logs: string): Promise<string> {
+  async analyzeFailure(task: Pick<{ name: string; runtime: string }, 'name' | 'runtime'>, logs: string): Promise<string> {
     const provider = this.config.get<string>("ai.provider", "disabled");
     if (provider === "disabled") return "";
     const sanitized = this.sanitizeLogs(logs);
-    const prompt = `你是自动化任务分析助手。任务"${task.name}"(${task.runtime})执行失败，请分析原因并给出修复建议。\n\n错误日志:\n${sanitized}\n\n请用中文回答：\n**失败原因：** ...\n**修复建议：** ...`;
+    const prompt = `You are an automated task analysis assistant. Task "${task.name}" (runtime: ${task.runtime}) failed. Analyze the root cause and suggest a fix.\n\nError logs:\n${sanitized}\n\nRespond in this format:\n**Failure reason:** ...\n**Fix suggestion:** ...`;
     try {
       if (provider === "openai") return await this.callOpenAI(prompt);
       if (provider === "ollama") return await this.callOllama(prompt);
-    } catch (e) {
-      this.logger.warn(`AI error: ${e.message}`);
+    } catch (e: unknown) {
+      this.logger.warn(`AI error: ${e instanceof Error ? e.message : String(e)}`);
     }
     return "";
   }

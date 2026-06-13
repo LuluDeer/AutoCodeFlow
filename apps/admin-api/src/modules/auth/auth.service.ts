@@ -44,6 +44,11 @@ export class AuthService {
       throw new UnauthorizedException("Invalid credentials");
     }
 
+    // SEC-05: reject if account is disabled
+    if (!user.isActive) {
+      throw new UnauthorizedException("Account is disabled");
+    }
+
     // SEC-05: reject if account is currently locked
     if (user.lockedUntil && user.lockedUntil > new Date()) {
       const minutesLeft = Math.ceil(

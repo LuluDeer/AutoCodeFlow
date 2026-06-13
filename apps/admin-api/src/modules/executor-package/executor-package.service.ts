@@ -10,6 +10,8 @@ import { Repository, Like, FindOptionsWhere } from "typeorm";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import axios from "axios";
+import { ConfigService } from "@nestjs/config";
 import {
   ExecutorPackage,
   ExecutorPackageStatus,
@@ -20,7 +22,7 @@ import {
   QueryExecutorPackageDto,
 } from "./dto/executor-package.dto";
 
-/** 执行器包文件的上传目录（相对于进程工作目录） */
+/** Upload directory for executor package files (relative to process working directory) */
 const UPLOAD_DIR = path.join(process.cwd(), "uploads", "executor-packages");
 
 @Injectable()
@@ -30,15 +32,16 @@ export class ExecutorPackageService {
   constructor(
     @InjectRepository(ExecutorPackage)
     private readonly repo: Repository<ExecutorPackage>,
+    private readonly configService: ConfigService,
   ) {
-    // 启动时确保上传目录存在
+    // Ensure upload directory exists on startup
     if (!fs.existsSync(UPLOAD_DIR)) {
       fs.mkdirSync(UPLOAD_DIR, { recursive: true });
     }
   }
 
   /**
-   * 创建执行器包，同时将上传的文件保存到磁盘并记录 SHA-256 校验和。
+   * Create executor package, save uploaded file to disk and record SHA-256 checksum.
    */
   async create(
     createDto: CreateExecutorPackageDto,
@@ -49,7 +52,7 @@ export class ExecutorPackageService {
       throw new BadRequestException("Package file is required");
     }
 
-    // 检查同名/同版本/同类型是否已存在
+    // Check if same name/version/type already exists
     const existing = await this.repo.findOne({
       where: {
         name: createDto.name,
@@ -63,20 +66,20 @@ export class ExecutorPackageService {
       );
     }
 
-    // 计算 SHA-256 校验和
+    // Calculate SHA-256 checksum
     const checksum = crypto
       .createHash("sha256")
       .update(file.buffer)
       .digest("hex");
 
-    // 构造唯一文件名：<name>-<version>-<checksum前8位>.<ext>
+    // Construct unique filename: <name>-<version>-<first8checksum>.<ext>
     const ext = path.extname(file.originalname) || ".zip";
     const safeName = createDto.name.replace(/[^a-zA-Z0-9_-]/g, "_");
     const safeVersion = createDto.version.replace(/[^a-zA-Z0-9._-]/g, "_");
     const filename = `${safeName}-${safeVersion}-${checksum.slice(0, 8)}${ext}`;
     const filePath = path.join(UPLOAD_DIR, filename);
 
-    // 将文件写入磁盘
+    // Write file to disk
     fs.writeFileSync(filePath, file.buffer);
 
     const pkg = this.repo.create({
@@ -158,7 +161,7 @@ export class ExecutorPackageService {
   async remove(id: string): Promise<void> {
     const pkg = await this.findOne(id);
 
-    // 同步删除磁盘上的文件（尽力而为，不阻断 DB 删除）
+    // Sync-delete file from disk (best-effort, does not block DB deletion)
     if (pkg.filePath && fs.existsSync(pkg.filePath)) {
       try {
         fs.unlinkSync(pkg.filePath);
@@ -175,7 +178,7 @@ export class ExecutorPackageService {
   }
 
   /**
-   * 读取指定包的文件内容（用于下载接口）。
+   * Read file content for a given package (used by download endpoint).
    */
   async getFileBuffer(
     id: string,
@@ -191,10 +194,64 @@ export class ExecutorPackageService {
   }
 
   /**
-   * 返回上传目录的绝对路径（供静态文件服务使用）。
+   * Return absolute path of the upload directory (for static file serving).
    */
   getUploadDir(): string {
     return UPLOAD_DIR;
+  }
+
+  /**
+   * Push executor package to online executor nodes.
+   * Notify each executor node to pull the latest package from admin-api and update itself.
+   * When executorIds is empty, push to all online executors.
+   */
+  async pushToExecutors(
+    id: string,
+    executorIds?: string[],
+    executorRepo?: import('../executor/entities/executor.entity').Executor[],
+    sharedToken?: string,
+  ): Promise<{ executorId: string; address: string; success: boolean; error?: string }[]> {
+    const pkg = await this.findOne(id);
+
+    const targets = executorIds && executorIds.length > 0
+      ? (executorRepo ?? []).filter((e) => executorIds.includes(e.id))
+      : (executorRepo ?? []);
+
+    if (targets.length === 0) {
+      throw new Error('No target executors found for push');
+    }
+
+    const adminApiBaseUrl = this.configService.get<string>("ADMIN_API_BASE_URL", "");
+    const downloadUrl = `${adminApiBaseUrl}/api/executor-packages/${pkg.id}/download`;
+    const results = await Promise.allSettled(
+      targets.map(async (executor) => {
+        const url = executor.address.startsWith('http')
+          ? executor.address
+          : `http://${executor.address}`;
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (sharedToken) headers['Authorization'] = `Bearer ${sharedToken}`;
+        await axios.post(
+          `${url}/api/update-package`,
+          {
+            packageId: pkg.id,
+            name: pkg.name,
+            version: pkg.version,
+            type: pkg.type,
+            downloadUrl,
+            checksum: pkg.checksum,
+          },
+          { timeout: 30_000, headers },
+        );
+        this.logger.log(`Pushed package ${pkg.name}@${pkg.version} to executor ${executor.address}`);
+        return { executorId: executor.id, address: executor.address, success: true };
+      }),
+    );
+
+    return results.map((r, i) =>
+      r.status === 'fulfilled'
+        ? r.value
+        : { executorId: targets[i].id, address: targets[i].address, success: false, error: (r.reason as Error)?.message ?? String(r.reason) },
+    );
   }
 
   async deprecate(id: string): Promise<ExecutorPackage> {
@@ -206,7 +263,7 @@ export class ExecutorPackageService {
   }
 
   /**
-   * 查找指定类型（和可选平台）下最新的 ACTIVE 包（按创建时间倒序取第一条）。
+   * Find the latest ACTIVE package for the given type (and optional platform), ordered by creation time desc.
    */
   async findLatest(
     type: string,
@@ -221,5 +278,17 @@ export class ExecutorPackageService {
       qb.andWhere('pkg.platform = :platform', { platform });
     }
     return qb.getOne();
+  }
+
+  /**
+   * Generate one-time install token (random 32-byte hex, TTL 1 hour).
+   * Used by frontend install wizard to authorize script download without login.
+   */
+  generateInstallToken(executorId?: string): { token: string; expiresIn: number; expiresAt: string } {
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresIn = 3600; // seconds
+    const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+    this.logger.log(`Generated install token${executorId ? ` for executor ${executorId}` : ''}`);
+    return { token, expiresIn, expiresAt };
   }
 }

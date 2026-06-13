@@ -1,12 +1,21 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  Table, Button, Space, Tag, Modal, Form, Input, Select, Upload, message, Popconfirm, Typography, Input as AntInput,
+  Table, Button, Space, Tag, Modal, Form, Input, Select, Upload, message,
+  Popconfirm, Typography, Tooltip, Badge, Radio,
 } from 'antd';
-import { PlusOutlined, UploadOutlined, ReloadOutlined, GithubOutlined, SearchOutlined, FilterOutlined } from '@ant-design/icons';
-import { applicationsApi, Application } from '../api/applications';
+import {
+  PlusOutlined, UploadOutlined, ReloadOutlined, GithubOutlined,
+  SearchOutlined, FilterOutlined, EyeOutlined, RocketOutlined,
+  InfoCircleOutlined,
+} from '@ant-design/icons';
+import { applicationsApi, Application, deploymentsApi, AppDeployment } from '../api/applications';
+import { executorsApi } from '../api/executors';
 import { useNavigate } from 'react-router-dom';
+import { getErrMsg, isFormValidationError } from '../utils/error';
 
 const { Text } = Typography;
+
+const GIT_URL_RE = /^(https?:\/\/[\w.@:/~_-]+\.git|git@[\w.-]+:[\w./_-]+\.git)$/;
 
 const runtimeOptions = [
   { label: 'Node.js', value: 'node' },
@@ -26,9 +35,15 @@ const statusLabels: Record<string, string> = {
   failed: '失败',
 };
 
+interface AppWithStats extends Application {
+  runningCount: number;
+  totalDeployments: number;
+  lastDeployedAt: string | null;
+}
+
 export default function ApplicationListPage() {
   const nav = useNavigate();
-  const [apps, setApps] = useState<Application[]>([]);
+  const [apps, setApps] = useState<AppWithStats[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -38,14 +53,40 @@ export default function ApplicationListPage() {
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [runtimeFilter, setRuntimeFilter] = useState<string | undefined>();
+  const [quickDeployApp, setQuickDeployApp] = useState<string | null>(null);
+  const [quickDeployExecutors, setQuickDeployExecutors] = useState<{id: string; name: string; address: string; status: string}[]>([]);
+  const [quickDeployForm] = Form.useForm();
+  const [quickDeploying, setQuickDeploying] = useState(false);
 
   const fetchApps = useCallback(async () => {
     setLoading(true);
     try {
       const data = await applicationsApi.list();
-      setApps(data);
-    } catch (err: any) {
-      message.error(err?.response?.data?.message || 'Failed to load applications');
+
+      // Fetch all deployments in parallel per app to compute stats
+      const deploymentResults = await Promise.allSettled(
+        data.map((app) => deploymentsApi.list(app.id))
+      );
+
+      const enriched: AppWithStats[] = data.map((app, i) => {
+        const result = deploymentResults[i];
+        const deps: AppDeployment[] =
+          result.status === 'fulfilled' ? result.value : [];
+
+        const runningCount = deps.filter((d) => d.status === 'running').length;
+        const sorted = [...deps].sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        const lastDeployedAt =
+          sorted.length > 0 ? (sorted[0].deployedAt ?? sorted[0].createdAt) : null;
+
+        return { ...app, runningCount, totalDeployments: deps.length, lastDeployedAt };
+      });
+
+      setApps(enriched);
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '加载应用列表失败'));
     } finally {
       setLoading(false);
     }
@@ -82,10 +123,10 @@ export default function ApplicationListPage() {
   const handleDelete = async (id: string) => {
     try {
       await applicationsApi.delete(id);
-      message.success('Application deleted');
+      message.success('应用已删除');
       fetchApps();
-    } catch (err: any) {
-      message.error(err?.response?.data?.message || 'Failed to delete');
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '删除失败'));
     }
   };
 
@@ -94,16 +135,16 @@ export default function ApplicationListPage() {
       const values = await form.validateFields();
       if (editingApp) {
         await applicationsApi.update(editingApp.id, values);
-        message.success('Application updated');
+        message.success('应用已更新');
       } else {
         await applicationsApi.create(values);
-        message.success('Application created');
+        message.success('应用已创建');
       }
       setModalOpen(false);
       fetchApps();
-    } catch (err: any) {
-      if (err?.errorFields) return;
-      message.error(err?.response?.data?.message || 'Failed to save');
+    } catch (err: unknown) {
+      if (isFormValidationError(err)) return;
+      message.error(getErrMsg(err, '保存失败'));
     }
   };
 
@@ -117,75 +158,163 @@ export default function ApplicationListPage() {
         formData.append('file', values.file.fileList[0].originFileObj);
       }
       await applicationsApi.upload(formData);
-      message.success('Application uploaded');
+      message.success('应用上传成功');
       setUploadModalOpen(false);
       fetchApps();
-    } catch (err: any) {
-      if (err?.errorFields) return;
-      message.error(err?.response?.data?.message || 'Upload failed');
+    } catch (err: unknown) {
+      if (isFormValidationError(err)) return;
+      message.error(getErrMsg(err, '上传失败'));
+    }
+  };
+
+  const formatRelativeTime = (iso: string | null) => {
+    if (!iso) return '—';
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return '刚刚';
+    if (mins < 60) return `${mins} 分钟前`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours} 小时前`;
+    return `${Math.floor(hours / 24)} 天前`;
+  };
+
+  const openQuickDeploy = async (appId: string) => {
+    setQuickDeployApp(appId);
+    quickDeployForm.resetFields();
+    quickDeployForm.setFieldsValue({ runMode: 'once' });
+    try {
+      const res = await executorsApi.list();
+      setQuickDeployExecutors(res ?? []);
+    } catch (_err) {
+      setQuickDeployExecutors([]);
+      message.warning('获取执行器列表失败，请检查网络连接');
+    }
+  };
+
+  const handleQuickDeploy = async () => {
+    if (!quickDeployApp) return;
+    try {
+      const values = await quickDeployForm.validateFields();
+      setQuickDeploying(true);
+      await deploymentsApi.create({
+        applicationId: quickDeployApp,
+        executorId: values.executorId,
+        runMode: values.runMode,
+        cronExpression: values.runMode === 'cron' ? values.cronExpression : undefined,
+      });
+      message.success('部署已创建');
+      setQuickDeployApp(null);
+      fetchApps();
+    } catch (err: unknown) {
+      if (isFormValidationError(err)) return;
+      message.error(getErrMsg(err, '部署失败'));
+    } finally {
+      setQuickDeploying(false);
     }
   };
 
   const columns = [
     {
-      title: 'Name',
+      title: '名称',
       dataIndex: 'name',
       key: 'name',
-      sorter: (a: Application, b: Application) => a.name.localeCompare(b.name),
-      render: (name: string, record: Application) => (
-        <Space>
-          {record.gitRepo && <GithubOutlined />}
-          <a onClick={() => nav(`/applications/${record.id}`)}>
-            <Text strong>{name}</Text>
-          </a>
+      sorter: (a: AppWithStats, b: AppWithStats) => a.name.localeCompare(b.name),
+      render: (name: string, record: AppWithStats) => (
+        <Space direction="vertical" size={0}>
+          <Space>
+            {record.gitRepo && <GithubOutlined />}
+            <a onClick={() => nav(`/applications/${record.id}`)}>
+              <Text strong>{name}</Text>
+            </a>
+          </Space>
+          {record.gitBranch && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              分支: {record.gitBranch}
+            </Text>
+          )}
         </Space>
       ),
     },
     {
-      title: 'Version',
+      title: '版本',
       dataIndex: 'version',
       key: 'version',
-      width: 100,
+      width: 90,
       render: (v: string) => <Tag>{v}</Tag>,
     },
     {
-      title: 'Runtime',
+      title: '运行时',
       dataIndex: 'runtime',
       key: 'runtime',
-      width: 100,
+      width: 90,
       render: (v: string) => <Tag color="blue">{v}</Tag>,
     },
     {
-      title: 'Status',
+      title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 120,
+      width: 100,
       render: (s: string) => <Tag color={statusColors[s] || 'default'}>{statusLabels[s] || s}</Tag>,
     },
     {
-      title: 'Description',
-      dataIndex: 'description',
-      key: 'description',
-      ellipsis: true,
-      render: (v: string) => v || '-',
+      title: '运行实例',
+      key: 'deployStats',
+      width: 130,
+      render: (_: unknown, record: AppWithStats) => {
+        if (record.totalDeployments === 0) return <Text type="secondary">暂无部署</Text>;
+        return (
+          <Space>
+            <Badge status="processing" />
+            <Text>{record.runningCount} / {record.totalDeployments} 台运行中</Text>
+          </Space>
+        );
+      },
     },
     {
-      title: 'Created',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
-      width: 180,
-      sorter: (a: Application, b: Application) =>
-        new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime(),
-      render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-',
+      title: '最后部署',
+      key: 'lastDeployedAt',
+      width: 110,
+      render: (_: unknown, record: AppWithStats) => (
+        <Tooltip title={record.lastDeployedAt
+          ? new Date(record.lastDeployedAt).toLocaleString('zh-CN')
+          : '尚未部署'
+        }>
+          <Text type={record.lastDeployedAt ? undefined : 'secondary'}>
+            {formatRelativeTime(record.lastDeployedAt)}
+          </Text>
+        </Tooltip>
+      ),
     },
     {
-      title: 'Actions',
+      title: '操作',
       key: 'actions',
-      width: 160,
-      render: (_: unknown, record: Application) => (
+      width: 210,
+      render: (_: unknown, record: AppWithStats) => (
         <Space>
+          <Button
+            type="link"
+            size="small"
+            icon={<EyeOutlined />}
+            onClick={() => nav(`/applications/${record.id}`)}
+          >
+            详情
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<RocketOutlined />}
+            onClick={() => openQuickDeploy(record.id)}
+          >
+            新建部署
+          </Button>
           <Button type="link" size="small" onClick={() => handleEdit(record)}>编辑</Button>
-          <Popconfirm title="确认删除此应用？" onConfirm={() => handleDelete(record.id)}>
+          <Popconfirm
+            title="确认删除此应用？"
+            description="删除后无法恢复，请确认。"
+            onConfirm={() => handleDelete(record.id)}
+            okText="删除"
+            okButtonProps={{ danger: true }}
+          >
             <Button type="link" size="small" danger>删除</Button>
           </Popconfirm>
         </Space>
@@ -213,7 +342,7 @@ export default function ApplicationListPage() {
 
       {/* 搜索/筛选栏 */}
       <Space style={{ marginBottom: 16 }} wrap>
-        <AntInput
+        <Input
           placeholder="搜索应用名、描述"
           prefix={<SearchOutlined />}
           value={searchText}
@@ -272,35 +401,108 @@ export default function ApplicationListPage() {
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
         width={600}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
+          <Form.Item
+            name="name"
+            label="名称"
+            rules={[
+              { required: true, message: '请输入应用名称' },
+              { pattern: /^[a-zA-Z0-9_-]+$/, message: '只允许字母、数字、下划线和连字符' },
+            ]}
+            tooltip={{
+              title: '全局唯一标识符，建议使用英文，如 order-service。只允许字母、数字、下划线、连字符。',
+              icon: <InfoCircleOutlined />,
+            }}
+          >
             <Input placeholder="my-autocodeflow-app" />
           </Form.Item>
-          <Form.Item name="description" label="描述">
-            <Input.TextArea rows={2} placeholder="应用描述" />
+
+          <Form.Item
+            name="description"
+            label="描述"
+            tooltip={{
+              title: '简要说明该应用的用途，方便团队成员快速了解。',
+              icon: <InfoCircleOutlined />,
+            }}
+          >
+            <Input.TextArea rows={2} placeholder="例如：负责订单处理的后端服务" />
           </Form.Item>
+
           <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item name="version" label="版本" rules={[{ required: true }]}>
+            <Form.Item
+              name="version"
+              label="版本"
+              rules={[{ required: true, message: '请填写版本号' }]}
+              tooltip={{
+                title: '语义化版本号，如 1.0.0。通过 Webhook 触发时会自动更新此字段。',
+                icon: <InfoCircleOutlined />,
+              }}
+            >
               <Input placeholder="1.0.0" style={{ width: 160 }} />
             </Form.Item>
-            <Form.Item name="runtime" label="运行时" rules={[{ required: true }]}>
+            <Form.Item
+              name="runtime"
+              label="运行时"
+              rules={[{ required: true, message: '请选择运行时' }]}
+              tooltip={{
+                title: '应用代码所使用的运行环境。执行器节点需已安装对应运行时。',
+                icon: <InfoCircleOutlined />,
+              }}
+            >
               <Select options={runtimeOptions} style={{ width: 140 }} />
             </Form.Item>
           </Space>
-          <Form.Item name="gitRepo" label="Git 仓库">
+
+          <Form.Item
+            name="gitRepo"
+            label="Git 仓库地址"
+            rules={[
+              {
+                pattern: GIT_URL_RE,
+                message: '格式不正确，支持 HTTPS（https://github.com/org/repo.git）或 SSH（git@github.com:org/repo.git）',
+              },
+            ]}
+            tooltip={{
+              title: '支持 HTTPS 格式（https://github.com/org/repo.git）和 SSH 格式（git@github.com:org/repo.git）。执行器拉取代码时使用。',
+              icon: <InfoCircleOutlined />,
+            }}
+          >
             <Input placeholder="https://github.com/user/repo.git" />
           </Form.Item>
+
           <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item name="gitBranch" label="Git 分支">
+            <Form.Item
+              name="gitBranch"
+              label="Git 分支"
+              tooltip={{
+                title: '部署时默认拉取的分支，通常为 main 或 master。',
+                icon: <InfoCircleOutlined />,
+              }}
+            >
               <Input placeholder="main" style={{ width: 200 }} />
             </Form.Item>
-            <Form.Item name="gitCommit" label="Git Commit">
+            <Form.Item
+              name="gitCommit"
+              label="Git Commit"
+              tooltip={{
+                title: '锁定到特定 commit SHA，留空则使用分支最新提交。',
+                icon: <InfoCircleOutlined />,
+              }}
+            >
               <Input placeholder="HEAD" style={{ width: 200 }} />
             </Form.Item>
           </Space>
-          <Form.Item name="entrypoint" label="入口文件">
+
+          <Form.Item
+            name="entrypoint"
+            label="入口文件"
+            tooltip={{
+              title: '应用主入口路径，相对于仓库根目录，如 src/tasks/index.js。manifest.json 中可覆盖此配置。',
+              icon: <InfoCircleOutlined />,
+            }}
+          >
             <Input placeholder="src/tasks/index.js" />
           </Form.Item>
         </Form>
@@ -312,19 +514,80 @@ export default function ApplicationListPage() {
         open={uploadModalOpen}
         onOk={handleUpload}
         onCancel={() => setUploadModalOpen(false)}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={uploadForm} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
+          <Form.Item
+            name="name"
+            label="名称"
+            rules={[{ required: true, message: '请输入应用名称' }]}
+            tooltip={{
+              title: '应用的唯一名称，建议与 ZIP 内 manifest.json 中的 appName 保持一致。',
+              icon: <InfoCircleOutlined />,
+            }}
+          >
             <Input placeholder="my-app" />
           </Form.Item>
-          <Form.Item name="runtime" label="运行时" initialValue="node">
+          <Form.Item
+            name="runtime"
+            label="运行时"
+            initialValue="node"
+            tooltip={{
+              title: '应用运行时环境，需与代码所依赖的环境一致。',
+              icon: <InfoCircleOutlined />,
+            }}
+          >
             <Select options={runtimeOptions} />
           </Form.Item>
-          <Form.Item name="file" label="ZIP 文件" rules={[{ required: true, message: '请选择文件' }]} valuePropName="file">
+          <Form.Item
+            name="file"
+            label="ZIP 文件"
+            rules={[{ required: true, message: '请选择文件' }]}
+            valuePropName="file"
+            tooltip={{
+              title: '将应用代码及 manifest.json 打包为 ZIP 后上传，执行器会自动解压并部署。',
+              icon: <InfoCircleOutlined />,
+            }}
+          >
             <Upload maxCount={1} beforeUpload={() => false} accept=".zip">
               <Button icon={<UploadOutlined />}>选择 ZIP 文件</Button>
             </Upload>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="快速新建部署"
+        open={quickDeployApp !== null}
+        onOk={handleQuickDeploy}
+        onCancel={() => setQuickDeployApp(null)}
+        confirmLoading={quickDeploying}
+        okText="创建部署"
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <Form form={quickDeployForm} layout="vertical">
+          <Form.Item name="executorId" label="选择执行器" rules={[{ required: true, message: '请选择执行器' }]}>
+            <Select
+              placeholder="请选择执行器"
+              options={quickDeployExecutors.map(e => ({ value: e.id, label: `${e.appName} (${e.address})`, disabled: e.status !== 'online' }))}
+              notFoundContent="暂无可用执行器"
+            />
+          </Form.Item>
+          <Form.Item name="runMode" label="运行模式" rules={[{ required: true, message: '请选择运行模式' }]}>
+            <Radio.Group>
+              <Radio value="once">单次执行</Radio>
+              <Radio value="cron">定时执行</Radio>
+            </Radio.Group>
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.runMode !== cur.runMode}>
+            {({ getFieldValue }) =>
+              getFieldValue('runMode') === 'cron' ? (
+                <Form.Item name="cronExpression" label="Cron 表达式" rules={[{ required: true, message: '请输入 Cron 表达式' }]}>
+                  <Input placeholder="例如：0 0 * * *" />
+                </Form.Item>
+              ) : null
+            }
           </Form.Item>
         </Form>
       </Modal>

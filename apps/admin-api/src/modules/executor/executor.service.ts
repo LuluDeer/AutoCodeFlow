@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException, BadRequestException, ServiceUnavailableException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { randomBytes, timingSafeEqual } from "crypto";
 import * as bcrypt from "bcrypt";
@@ -50,6 +50,13 @@ export class ExecutorService {
     });
     const isFirstTime = !e;
     if (!e) e = this.repo.create(data as Partial<Executor>);
+    else{
+      // Update mutable fields on re-registration
+      if (data.type) e.type = data.type as any;
+      if (data.appName) e.appName = data.appName;
+      if (data.version) e.version = data.version;
+      if (data.capabilities) e.capabilities = data.capabilities;
+    }
     e.status = ExecutorStatus.ONLINE;
     e.lastHeartbeat = new Date();
     const saved = await this.repo.save(e);
@@ -136,6 +143,69 @@ export class ExecutorService {
     return Array.from(tagSet).sort();
   }
 
+  /**
+   * Select the least-loaded online executor.
+   * Filters to the given group/tags/runtime when provided.
+   * Throws if no eligible executor is available or all are at capacity.
+   */
+  async selectLeastLoaded(opts?: {
+    group?: string | null;
+    tags?: string[] | null;
+    runtime?: string | null;
+  }): Promise<Executor> {
+    const all = await this.repo.find({ where: { status: ExecutorStatus.ONLINE } });
+    if (all.length === 0) {
+      throw new ServiceUnavailableException('No online executors available');
+    }
+
+    let candidates = all;
+
+    if (opts?.group) {
+      candidates = candidates.filter((e) => e.groupName === opts.group);
+    }
+    if (opts?.tags && opts.tags.length > 0) {
+      candidates = candidates.filter((e) => {
+        if (!e.tags) return false;
+        return opts.tags!.every((tag) => e.tags!.includes(tag));
+      });
+    }
+    if (opts?.runtime) {
+      candidates = candidates.filter((e) =>
+        !e.capabilities || e.capabilities.length === 0
+          ? true
+          : e.capabilities.includes(opts.runtime!),
+      );
+    }
+
+    if (candidates.length === 0) {
+      throw new ServiceUnavailableException('No online executors match the requested group/tags/runtime');
+    }
+
+    // Weighted scoring: 50% task load ratio, 25% CPU, 25% memory.
+    // Executors at or above max capacity are excluded before scoring.
+    const scored = candidates
+      .filter((e) => {
+        const max = e.maxConcurrentTasks ?? Infinity;
+        return e.runningTaskCount < max;
+      })
+      .map((e) => {
+        const max = e.maxConcurrentTasks ?? 10;
+        const loadScore = e.runningTaskCount / max;
+        const cpuScore = (e.cpuUsage ?? 0) / 100;
+        const memScore = (e.memUsage ?? 0) / 100;
+        const score = loadScore * 0.5 + cpuScore * 0.25 + memScore * 0.25;
+        return { executor: e, score };
+      })
+      .sort((a, b) => a.score - b.score);
+
+    if (scored.length === 0) {
+      throw new ServiceUnavailableException(
+        'No available executor — all online executors are at maximum capacity',
+      );
+    }
+    return scored[0].executor;
+  }
+
   async dispatch(task: Task, execution: TaskExecution) {
     const all = await this.repo.find({
       where: { status: ExecutorStatus.ONLINE },
@@ -143,7 +213,7 @@ export class ExecutorService {
 
     let candidates = all;
 
-    // 1. 按 appName 精确匹配（用户手动指定）
+    // 1. Exact match by appName (manually specified by user)
     if (task.executorAppName) {
       candidates = all.filter((e) => e.appName === task.executorAppName);
       if (candidates.length === 0) {
@@ -152,15 +222,15 @@ export class ExecutorService {
         );
       }
     } else {
-      // 2. 按分组/标签/运行时过滤
+      // 2. Filter by group/tag/runtime
       let filtered = all;
 
-      // 2.1 按分组过滤
+      // 2.1 Filter by group
       if (task.executorGroup) {
         filtered = filtered.filter((e) => e.groupName === task.executorGroup);
       }
 
-      // 2.2 按标签过滤（任务需要的标签必须是执行器标签的子集）
+      // 2.2 Filter by tag (task required tags must be a subset of executor tags)
       if (task.executorTags && task.executorTags.length > 0) {
         filtered = filtered.filter((e) => {
           if (!e.tags) return false;
@@ -168,7 +238,7 @@ export class ExecutorService {
         });
       }
 
-      // 2.3 按 runtime/capabilities 过滤
+      // 2.3 Filter by runtime/capabilities
       if (task.runtime) {
         filtered = filtered.filter((e) =>
           !e.capabilities || e.capabilities.length === 0
@@ -182,15 +252,19 @@ export class ExecutorService {
       }
     }
 
-    // 3. 按负载（runningTaskCount）升序排列，依次尝试乐观锁抢占
-    const sorted = candidates.sort(
-      (a, b) => a.runningTaskCount - b.runningTaskCount,
-    );
+    // 3. Weighted scoring (load 50%+CPU 25%+mem 25%), try optimistic lock in order
+    const sorted = [...candidates].sort((a, b) => {
+      const maxA = a.maxConcurrentTasks ?? 10;
+      const maxB = b.maxConcurrentTasks ?? 10;
+      const scoreA = (a.runningTaskCount / maxA) * 0.5 + ((a.cpuUsage ?? 0) / 100) * 0.25 + ((a.memUsage ?? 0) / 100) * 0.25;
+      const scoreB = (b.runningTaskCount / maxB) * 0.5 + ((b.cpuUsage ?? 0) / 100) * 0.25 + ((b.memUsage ?? 0) / 100) * 0.25;
+      return scoreA - scoreB;
+    });
 
     let matched: Executor | null = null;
     for (const candidate of sorted) {
       const maxConcurrent = candidate.maxConcurrentTasks ?? Infinity;
-      // 乐观锁：仅当 runningTaskCount < maxConcurrentTasks 时才 increment
+      // Optimistic lock: only increment when runningTaskCount < maxConcurrentTasks
       const result = await this.repo
         .createQueryBuilder()
         .update(Executor)
@@ -220,14 +294,17 @@ export class ExecutorService {
     execution.executorAddress = matched.address;
 
     try {
+      const sharedToken = this.configService.get<string>("executor.sharedToken") ?? "";
+      const headers: Record<string, string> = {};
+      if (sharedToken) headers["Authorization"] = `Bearer ${sharedToken}`;
       const resp = await axios.post(
         this.getExecutorUrl(matched.address, "api/execute"),
         { executionId: execution.id, task, params: execution.params },
-        { timeout: ((task.timeout || 300) + 10) * 1000 },
+        { timeout: ((task.timeout || 300) + 10) * 1000, headers },
       );
       return resp.data;
     } catch (err: unknown) {
-      // 派发失败时回退计数，避免泄漏
+      // Rollback counter on dispatch failure to avoid leaks
       await this.repo
         .createQueryBuilder()
         .update(Executor)
@@ -285,6 +362,10 @@ export class ExecutorService {
     );
 
     // Fire all dispatches in parallel and collect results
+    const sharedToken = this.configService.get<string>("executor.sharedToken") ?? "";
+    const broadcastHeaders: Record<string, string> = {};
+    if (sharedToken) broadcastHeaders["Authorization"] = `Bearer ${sharedToken}`;
+
     const results = await Promise.allSettled(
       candidates.map(async (executor) => {
         const dispatchUrl = this.getExecutorUrl(
@@ -294,13 +375,13 @@ export class ExecutorService {
         const resp = await axios.post(
           dispatchUrl,
           { executionId: execution.id, task, params: execution.params },
-          { timeout: ((task.timeout || 300) + 10) * 1000 },
+          { timeout: ((task.timeout || 300) + 10) * 1000, headers: broadcastHeaders },
         );
         return { executor: executor.address, result: resp.data };
       }),
     );
 
-    const successes: any[] = [];
+    const successes: { executor: string; result: unknown }[] = [];
     const failures: string[] = [];
     results.forEach((r, i) => {
       if (r.status === "fulfilled") {
@@ -327,23 +408,37 @@ export class ExecutorService {
     return successes;
   }
 
-  /** 每 5 分钟扫描 RUNNING 超时且执行器已离线的 execution，防止僵尸任务 */
+  /** Scan every 5 min for RUNNING executions that timed out with offline executor to prevent zombie tasks */
   @Cron("0 */5 * * * *")
   async detectLostExecutions() {
-    // N12: use a broad threshold for initial query (max sane timeout 24h),
-    // then per-execution check uses actual task.timeout + 5min buffer
-    const broadThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    // N12: use a 5-min broad threshold so any task older than the minimum buffer
+    // is considered for per-execution checks (real timeout logic is applied per-row below).
+    // A 24-hour threshold was too large — tasks with short timeouts were left as zombie
+    // for up to 24h even when their executor went offline.
+    const broadThreshold = new Date(Date.now() - 5 * 60 * 1000);
     const lostExecs = await this.execRepo
       .createQueryBuilder("exec")
       .where("exec.status = :status", { status: ExecutionStatus.RUNNING })
       .andWhere("exec.startTime < :threshold", { threshold: broadThreshold })
       .getMany();
     if (lostExecs.length === 0) return;
+
+    // Batch-fetch tasks and executors to avoid N+1 queries
+    const taskIds = [...new Set(lostExecs.map((e) => e.taskId).filter(Boolean))] as string[];
+    const taskMap = new Map(
+      taskIds.length > 0
+        ? (await this.taskRepo.findBy({ id: In(taskIds) })).map((t) => [t.id, t])
+        : [],
+    );
+    const addresses = [...new Set(lostExecs.map((e) => e.executorAddress).filter(Boolean))] as string[];
+    const executorMap = new Map(
+      addresses.length > 0
+        ? (await this.repo.findBy({ address: In(addresses) })).map((ex) => [ex.address, ex])
+        : [],
+    );
+
     for (const exec of lostExecs) {
-      // N12: per-execution threshold based on actual task timeout
-      const task = exec.taskId
-        ? await this.taskRepo.findOne({ where: { id: exec.taskId } })
-        : null;
+      const task = exec.taskId ? taskMap.get(exec.taskId) ?? null : null;
       const taskTimeoutMs = task?.timeout ? task.timeout * 1000 : 5 * 60 * 1000;
       const perExecThreshold = new Date(
         Date.now() - (taskTimeoutMs + 5 * 60 * 1000),
@@ -353,17 +448,15 @@ export class ExecutorService {
         continue;
       }
       if (exec.executorAddress) {
-        const executor = await this.repo.findOne({
-          where: { address: exec.executorAddress },
-        });
+        const executor = executorMap.get(exec.executorAddress);
         if (executor && executor.status === ExecutorStatus.ONLINE) continue;
       }
       exec.status = ExecutionStatus.FAILED;
       exec.endTime = new Date();
-      exec.errorMessage = "[系统] 执行器离线或任务超时，调度中心主动标记为失败";
+      exec.errorMessage = "[System] Executor offline or task timed out, marked as failed by scheduler";
       exec.logs =
         (exec.logs || "") +
-        "\n[系统] 执行记录超时未收到回调，已强制标记为 FAILED";
+        "\n[System] Execution timed out without callback, forcefully marked as FAILED";
       await this.execRepo.save(exec);
       this.logger.warn(
         `Lost execution marked FAILED: execId=${exec.id}, taskId=${exec.taskId}`,
@@ -371,7 +464,7 @@ export class ExecutorService {
     }
   }
 
-  /** Q7: 每天凌晨 2 点清理旧执行记录（90天）和审计日志（180天），防止数据库无限膨胀 */
+  /** Q7: Daily at 2am, clean up old execution records (90d) and audit logs (180d) to prevent DB bloat */
   @Cron("0 0 2 * * *")
   async cleanupOldRecords(): Promise<void> {
     const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
@@ -385,10 +478,10 @@ export class ExecutorService {
     }
   }
 
-  /** 每 30s 自动扫描，将心跳超时的执行器标记为 OFFLINE */
+  /** Auto-scan every 30s, mark executors with expired heartbeat as OFFLINE */
   @Cron("*/30 * * * * *")
   async markStaleOffline() {
-    // 使用配置的心跳间隔和超时倍数计算超时时间
+    // Calculate timeout using configured heartbeat interval and timeout multiplier
     const heartbeatInterval =
       this.configService.get<number>("executor.heartbeatInterval") || 30000;
     const timeoutMultiplier =
@@ -396,6 +489,14 @@ export class ExecutorService {
       3;
     const timeoutMs = heartbeatInterval * timeoutMultiplier;
     const cutoff = new Date(Date.now() - timeoutMs);
+
+    // Query before update to capture names/addresses for offline notifications
+    const staleExecutors = await this.repo.find({
+      where: { status: ExecutorStatus.ONLINE, lastHeartbeat: LessThan(cutoff) },
+      select: ['id', 'appName', 'address'],
+    });
+
+    if (staleExecutors.length === 0) return;
 
     const result = await this.repo.update(
       { status: ExecutorStatus.ONLINE, lastHeartbeat: LessThan(cutoff) },
@@ -405,10 +506,20 @@ export class ExecutorService {
       this.logger.warn(
         `Marked ${result.affected} executor(s) as OFFLINE due to heartbeat timeout (${timeoutMs}ms)`,
       );
+      // Fire offline notifications — fire-and-forget, errors must not break the cron job
+      for (const exec of staleExecutors) {
+        this.notificationService
+          .notifyExecutorOffline(exec.appName, exec.address)
+          .catch((e: Error) =>
+            this.logger.error(
+              `Failed to send offline notification for ${exec.address}: ${e.message}`,
+            ),
+          );
+      }
     }
   }
 
-  /** 每小时执行，清理离线超过7天的执行器记录 */
+  /** Run hourly, clean up executor records offline for more than 7 days */
   @Cron("0 0 * * * *")
   async cleanupOfflineExecutors() {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -441,6 +552,14 @@ export class ExecutorService {
    * SEC-03: Validate a per-executor token.
    * Falls back to the legacy shared token for backward compatibility.
    */
+  /** Admin: manually remove an executor record by ID */
+  async removeById(id: string): Promise<void> {
+    const executor = await this.repo.findOne({ where: { id } });
+    if (!executor) throw new NotFoundException("Executor not found");
+    await this.repo.remove(executor);
+    this.logger.log(`Executor ${id} (${executor.address}) removed by admin`);
+  }
+
   async validateExecutorToken(id: string, presented: string): Promise<boolean> {
     const executor = await this.repo
       .createQueryBuilder("e")
@@ -452,7 +571,12 @@ export class ExecutorService {
       return bcrypt.compare(presented, executor.tokenHash);
     }
     const shared = this.configService.get<string>("executor.sharedToken") ?? "";
-    return shared.length > 0 && presented === shared;
+    if (shared.length === 0) return false;
+    // SEC-FIX: use timingSafeEqual to prevent timing attacks on shared token comparison
+    const sharedBuf = Buffer.from(shared, 'utf8');
+    const presentedBuf = Buffer.from(presented, 'utf8');
+    if (sharedBuf.length !== presentedBuf.length) return false;
+    return timingSafeEqual(sharedBuf, presentedBuf);
   }
 
   /**
@@ -482,6 +606,19 @@ export class ExecutorService {
     const presentedBuf = Buffer.from(presented, 'utf8');
     if (sharedBuf.length !== presentedBuf.length) return false;
     return timingSafeEqual(sharedBuf, presentedBuf);
+  }
+
+  /**
+   * Generate install command for executor-node.
+   * Returns a shell command the user can run on the target machine to install and start the executor.
+   * Values are read from the NestJS ConfigService (environment variables).
+   */
+  getInstallCmd(): { cmd: string; curlCmd: string; token: string; adminApiUrl: string } {
+    const adminApiUrl = this.configService.get<string>('ADMIN_API_URL') || '';
+    const sharedToken = this.configService.get<string>('executor.sharedToken') || '';
+    const cmd = `npx autoflow-executor --admin-url "${adminApiUrl}" --token "${sharedToken}"`;
+    const curlCmd = `curl -fsSL "${adminApiUrl}/executors/install.sh" | bash -s -- --admin-url "${adminApiUrl}" --token "${sharedToken}"`;
+    return { cmd, curlCmd, token: sharedToken, adminApiUrl };
   }
 
   /**
@@ -515,38 +652,29 @@ export class ExecutorService {
   /**
    * Get performance metrics for a specific executor.
    */
-  async getExecutorMetrics(id: string): Promise<any> {
+  async getExecutorMetrics(id: string): Promise<{
+    executor: { id: string; address: string; status: string };
+    sevenDayStats: { totalExecutions: number; successful: number; failed: number; successRate: number; averageDurationMs: number };
+    current: { runningTaskCount: number; cpuUsage: number | null; memUsage: number | null };
+}> {
     const executor = await this.findOne(id);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-    const totalExecutions = await this.execRepo.count({
-      where: {
-        executorAddress: executor.address,
-        createdAt: MoreThanOrEqual(sevenDaysAgo),
-      },
-    });
-    const successful = await this.execRepo.count({
-      where: {
-        executorAddress: executor.address,
-        status: ExecutionStatus.SUCCESS,
-        createdAt: MoreThanOrEqual(sevenDaysAgo),
-      },
-    });
-    const failed = await this.execRepo.count({
-      where: {
-        executorAddress: executor.address,
-        status: ExecutionStatus.FAILED,
-        createdAt: MoreThanOrEqual(sevenDaysAgo),
-      },
-    });
-
-    const avgDurationQuery = await this.execRepo
-      .createQueryBuilder("e")
-      .select("AVG(e.duration)", "avg")
-      .where("e.executorAddress = :address", { address: executor.address })
-      .andWhere("e.createdAt >= :date", { date: sevenDaysAgo })
-      .andWhere("e.duration IS NOT NULL")
+    // Merge 4 serial queries into 1 for performance
+    const statsQuery = await this.execRepo
+      .createQueryBuilder('e')
+      .select('COUNT(*)', 'total')
+      .addSelect(`SUM(CASE WHEN e.status = '${ExecutionStatus.SUCCESS}' THEN 1 ELSE 0 END)`, 'successful')
+      .addSelect(`SUM(CASE WHEN e.status = '${ExecutionStatus.FAILED}' THEN 1 ELSE 0 END)`, 'failed')
+      .addSelect('AVG(CASE WHEN e.duration IS NOT NULL THEN e.duration END)', 'avgDuration')
+      .where('e.executorAddress = :address', { address: executor.address })
+      .andWhere('e.createdAt >= :date', { date: sevenDaysAgo })
       .getRawOne();
+
+    const totalExecutions = parseInt(statsQuery?.total ?? '0', 10);
+    const successful = parseInt(statsQuery?.successful ?? '0', 10);
+    const failed = parseInt(statsQuery?.failed ?? '0', 10);
+    const avgDurationQuery = { avg: statsQuery?.avgDuration };
 
     return {
       executor: {
@@ -560,10 +688,10 @@ export class ExecutorService {
         failed,
         successRate:
           totalExecutions > 0
-            ? ((successful / totalExecutions) * 100).toFixed(2)
+            ? Math.round((successful / totalExecutions) * 10000) / 100
             : 0,
         averageDurationMs: avgDurationQuery?.avg
-          ? parseFloat(avgDurationQuery.avg).toFixed(2)
+          ? Math.round(parseFloat(avgDurationQuery.avg))
           : 0,
       },
       current: {

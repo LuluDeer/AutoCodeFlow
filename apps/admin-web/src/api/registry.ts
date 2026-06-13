@@ -20,48 +20,48 @@ export interface NpmPackage {
 
 // PyPI registry
 export const registryApi = {
-  // List all PyPI packages
+  // List all PyPI packages — proxied through admin-api to avoid CORS/auth issues
   listPypiPackages: async (): Promise<string[]> => {
-    const resp = await fetch(
-      (import.meta.env.VITE_PYPI_URL || 'http://localhost:8003') + '/simple/',
-    );
-    const html = await resp.text();
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    return Array.from(doc.querySelectorAll('a')).map(a => a.textContent ?? '').filter(Boolean);
+    try {
+      const resp = await client.get('/registry/pypi/packages') as { packages: string[] };
+      return resp.packages ?? [];
+    } catch {
+      return [];
+    }
   },
 
-  // Get files for a PyPI package
+  // Get files for a PyPI package (direct link; same origin in prod behind nginx)
   getPypiPackage: async (name: string): Promise<PypiFile[]> => {
-    const resp = await fetch(
-      (import.meta.env.VITE_PYPI_URL || 'http://localhost:8003') + `/simple/${name}/`,
-    );
-    const html = await resp.text();
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    return Array.from(doc.querySelectorAll('a')).map(a => {
-      const href = a.getAttribute('href') ?? '';
-      return {
-        url: href.split('#')[0],
-        sha256: href.includes('#sha256=') ? href.split('#sha256=')[1] : '',
-        filename: a.textContent ?? '',
-      };
-    }).filter(f => f.filename);
+    const pypiUrl = (import.meta.env.VITE_PYPI_URL as string | undefined) || 'http://localhost:8003';
+    try {
+      const resp = await fetch(`${pypiUrl}/simple/${name}/`);
+      const html = await resp.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      return Array.from(doc.querySelectorAll('a')).map(a => {
+        const href = a.getAttribute('href') ?? '';
+        return {
+          url: href.split('#')[0],
+          sha256: href.includes('#sha256=') ? href.split('#sha256=')[1] : '',
+          filename: a.textContent ?? '',
+        };
+      }).filter(f => f.filename);
+    } catch {
+      return [];
+    }
   },
 
-  // Upload PyPI package (admin API proxy)
+  // Upload PyPI package through admin-api proxy
   uploadPypiPackage: async (form: FormData): Promise<void> => {
     await client.post('/registry/pypi/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
 
-  // List npm packages from Verdaccio
+  // List npm packages — proxied through admin-api
   listNpmPackages: async (): Promise<NpmPackage[]> => {
     try {
-      const resp = await fetch(
-        (import.meta.env.VITE_NPM_URL || 'http://localhost:4873') + '/-/verdaccio/packages',
-      );
-      if (!resp.ok) return [];
-      return resp.json();
+      const resp = await client.get('/registry/npm/packages') as { packages: NpmPackage[] };
+      return resp.packages ?? [];
     } catch {
       return [];
     }

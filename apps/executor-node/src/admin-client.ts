@@ -37,8 +37,10 @@ export async function request<T = any>(
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
-  
+
   if (token) {
+    // Use X-Executor-Token for admin-api heartbeat/callback endpoints
+    headers['X-Executor-Token'] = token;
     headers['Authorization'] = `Bearer ${token}`;
   }
 

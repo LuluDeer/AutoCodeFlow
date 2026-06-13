@@ -1,4 +1,5 @@
 import { Injectable, Scope } from "@nestjs/common";
+import type { InternalAxiosRequestConfig } from "axios";
 import { AsyncLocalStorage } from "async_hooks";
 import { v4 as uuidv4 } from "uuid";
 
@@ -42,14 +43,9 @@ export class TraceService {
   /**
    * Attach traceId to axios request config.
    */
-  attachToAxiosConfig(config: any): any {
-    return {
-      ...config,
-      headers: {
-        ...config.headers,
-        "X-Trace-Id": this._traceId,
-      },
-    };
+  attachToAxiosConfig(config: InternalAxiosRequestConfig): InternalAxiosRequestConfig {
+    config.headers.set("X-Trace-Id", this._traceId);
+    return config;
   }
 
   /**

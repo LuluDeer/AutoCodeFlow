@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsEnum,
   IsInt,
+  IsEmail,
   IsObject,
   Min,
   Max,
@@ -80,7 +81,7 @@ export class CreateTaskDto {
   @IsEnum(MisfireStrategy)
   @IsOptional()
   misfireStrategy?: MisfireStrategy;
-  @ApiPropertyOptional() @IsString() @IsOptional() alarmEmail?: string;
+  @ApiPropertyOptional() @IsEmail() @IsOptional() alarmEmail?: string;
   @ApiPropertyOptional() @IsArray() @IsOptional() alarmChannels?: string[];
   @ApiPropertyOptional() @IsObject() @IsOptional() params?: Record<string, any>;
   @ApiPropertyOptional() @IsString() @IsOptional() executorAppName?: string;

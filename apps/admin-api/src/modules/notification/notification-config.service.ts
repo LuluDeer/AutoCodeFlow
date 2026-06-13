@@ -17,31 +17,31 @@ export class NotificationConfigService {
   private channelDefaults: NotificationChannel[] = [
     {
       key: "email",
-      name: "邮件",
+      name: "Email",
       enabled: false,
       config: {},
-      description: "通过 SMTP 发送邮件通知",
+      description: "Send notifications via SMTP email",
     },
     {
       key: "slack",
       name: "Slack",
       enabled: false,
       config: {},
-      description: "通过 Slack Webhook 发送通知",
+      description: "Send notifications via Slack Webhook",
     },
     {
       key: "dingtalk",
-      name: "钉钉",
+      name: "DingTalk",
       enabled: false,
       config: {},
-      description: "通过钉钉群机器人发送通知",
+      description: "Send notifications via DingTalk group bot",
     },
     {
       key: "wecom",
-      name: "企业微信",
+      name: "WeCom",
       enabled: false,
       config: {},
-      description: "通过企业微信群机器人发送通知",
+      description: "Send notifications via WeCom group bot",
     },
   ];
 
@@ -151,13 +151,13 @@ export class NotificationConfigService {
   ): Promise<{ success: boolean; message: string }> {
     try {
       await this.notificationService.sendAll({
-        title: "AutoFlow 测试通知",
-        content: `这是一条测试通知\n时间: ${new Date().toLocaleString()}`,
+        title: "AutoFlow Test Notification",
+        content: `This is a test notification\nTime: ${new Date().toLocaleString()}`,
         level: "info",
       });
-      return { success: true, message: "测试消息发送成功" };
-    } catch (err: any) {
-      return { success: false, message: err.message };
+      return { success: true, message: "Test message sent successfully" };
+    } catch (err: unknown) {
+      return { success: false, message: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -192,9 +192,9 @@ export class NotificationConfigService {
             break;
         }
       }
-      return { success: true, message: "测试通知已发送" };
-    } catch (err: any) {
-      return { success: false, message: err.message };
+      return { success: true, message: "Test notification sent" };
+    } catch (err: unknown) {
+      return { success: false, message: err instanceof Error ? err.message : String(err) };
     }
   }
 }

@@ -66,13 +66,13 @@ services:
     ports:
       - '3105:3105'
     environment:
-      NODE_ENV: production
-      DB_HOST: ${DB_HOST:-postgres}
+      NODE_ENV: ${NODE_ENV:-development}
+      DB_HOST: postgres
       DB_PORT: ${DB_PORT:-5432}
       DB_USERNAME: ${DB_USERNAME:-autoflow}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_DATABASE: ${DB_DATABASE:-autoflow}
-      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
       JWT_SECRET: ${JWT_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
@@ -82,13 +82,15 @@ services:
       AI_PROVIDER: ${AI_PROVIDER:-disabled}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       APP_PROTOCOL: ${APP_PROTOCOL:-http}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-Admin@123456}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-admin@autoflow.local}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:3105/health']
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3105/api/health/live']
       interval: 30s
       timeout: 10s
       retries: 3
@@ -117,7 +119,7 @@ services:
       VITE_API_URL_INTERNAL: ${VITE_API_URL_INTERNAL:-http://localhost:3105}
       VITE_API_URL_EXTERNAL: ${VITE_API_URL_EXTERNAL:-}
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost/health']
+      test: ['CMD', 'wget', '-qO-', 'http://localhost/health']
       interval: 30s
       timeout: 10s
       retries: 3
@@ -159,7 +161,7 @@ services:
       admin-api:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:8001/health']
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8001/health']
       interval: 30s
       timeout: 10s
       retries: 3
@@ -202,7 +204,7 @@ services:
       admin-api:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:8002/health']
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8002/health']
       interval: 30s
       timeout: 10s
       retries: 3

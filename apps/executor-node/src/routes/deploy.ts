@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execSync, spawn, ChildProcess } from 'child_process';
+import { spawnSync, spawn, ChildProcess } from 'child_process';
 import { config } from '../config';
 import { logger } from '../logger';
 import { post } from '../admin-client';
@@ -11,10 +11,12 @@ export const deployRouter = Router();
 interface DeployPayload {
   deploymentId: string;
   applicationId: string;
+  appId?: string; // alias for applicationId (backward compat)
   appName: string;
-  gitRepo: string;
+  gitRepo?: string | null;
   gitBranch: string;
-  gitCommit?: string;
+  gitCommit?: string | null;
+  packageUrl?: string | null;
   runtime: string;
   entrypoint?: string;
   runMode: 'once' | 'daemon' | 'scheduled';
@@ -47,24 +49,28 @@ function installDeps(
 ): void {
   const env = { ...process.env, ...envVars };
 
+  // SEC: spawnSync with array args — no shell, no injection
   if (runtime === 'node' || runtime === 'nodejs') {
     const pkgJson = path.join(deployDir, 'package.json');
     if (fs.existsSync(pkgJson)) {
       logger.info(`[deploy] Installing Node.js dependencies in ${deployDir}`);
       const npmArgs = ['install', '--production'];
       if (config.npmRegistryUrl) npmArgs.push(`--registry=${config.npmRegistryUrl}`);
-      execSync(`npm ${npmArgs.join(' ')}`, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000 });
+      const r = spawnSync('npm', npmArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000 });
+      if (r.status !== 0) throw new Error(r.stderr?.toString() || 'npm install failed');
     }
   } else if (runtime === 'python') {
     const reqFile = path.join(deployDir, 'requirements.txt');
     if (fs.existsSync(reqFile)) {
       logger.info(`[deploy] Creating Python venv and installing deps in ${deployDir}`);
       const venvDir = path.join(deployDir, '.venv');
-      execSync(`python3 -m venv ${venvDir}`, { cwd: deployDir, env, stdio: 'pipe', timeout: 60_000 });
+      const venvR = spawnSync('python3', ['-m', 'venv', venvDir], { cwd: deployDir, env, stdio: 'pipe', timeout: 60_000 });
+      if (venvR.status !== 0) throw new Error(venvR.stderr?.toString() || 'python3 -m venv failed');
       const pip = path.join(venvDir, 'bin', 'pip');
       const pipArgs = ['install', '-r', 'requirements.txt'];
       if (config.pythonRegistryUrl) pipArgs.push('-i', config.pythonRegistryUrl);
-      execSync(`${pip} ${pipArgs.join(' ')}`, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000 });
+      const pipR = spawnSync(pip, pipArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000 });
+      if (pipR.status !== 0) throw new Error(pipR.stderr?.toString() || 'pip install failed');
     }
   }
 }
@@ -134,17 +140,48 @@ function startApp(
   });
 }
 
+/** Download a file over HTTP/HTTPS to a local path */
+function downloadPackage(url: string, dest: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proto = url.startsWith('https') ? require('https') : require('http');
+    const file = fs.createWriteStream(dest);
+    const req = proto.get(url, (res: any) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        file.close();
+        fs.unlinkSync(dest);
+        downloadPackage(res.headers.location, dest).then(resolve).catch(reject);
+        return;
+      }
+      if (!res.statusCode || res.statusCode >= 400) {
+        reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+        return;
+      }
+      res.pipe(file);
+      file.on('finish', () => { file.close(); resolve(); });
+    });
+    req.on('error', (err: Error) => { fs.unlink(dest, () => {}); reject(err); });
+    req.setTimeout(120_000, () => { req.destroy(); reject(new Error('Download timed out')); });
+  });
+}
+
 /** Main deploy handler */
 deployRouter.post('/deploy', async (req: Request, res: Response) => {
   const payload = req.body as DeployPayload;
-  const { deploymentId, appName, gitRepo, gitBranch, gitCommit, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
+  const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
 
-  if (!deploymentId || !gitRepo) {
-    return res.status(400).json({ error: 'deploymentId and gitRepo are required' });
+  if (!deploymentId) {
+    return res.status(400).json({ error: 'deploymentId is required' });
+  }
+  if (!gitRepo && !packageUrl) {
+    return res.status(400).json({ error: 'Either gitRepo or packageUrl is required' });
   }
 
-  // Work directory for this deployment
-  const deployDir = path.join(config.workDir, 'apps', payload.applicationId, deploymentId);
+  // Work directory for this deployment (accept appId as alias for applicationId)
+  const appId = payload.applicationId || payload.appId;
+  if (!appId) {
+    return res.status(400).json({ error: 'applicationId is required' });
+  }
+  const deployDir = path.join(config.workDir, 'apps', appId, deploymentId);
 
   // Acknowledge immediately; deploy runs async
   res.json({ ok: true, deploymentId });
@@ -164,23 +201,40 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         fs.mkdirSync(deployDir, { recursive: true });
       }
 
-      const gitDir = path.join(deployDir, '.git');
-      if (!fs.existsSync(gitDir)) {
-        // Fresh clone
-        logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
-        execSync(
-          `git clone --depth 1 --branch ${gitBranch} ${gitRepo} .`,
-          { cwd: deployDir, stdio: 'pipe', timeout: 120_000 },
-        );
-      } else {
-        // Pull latest
-        logger.info(`[deploy] Pulling latest for ${deploymentId}`);
-        execSync('git fetch --depth 1 origin', { cwd: deployDir, stdio: 'pipe', timeout: 60_000 });
-        execSync(`git reset --hard origin/${gitBranch}`, { cwd: deployDir, stdio: 'pipe', timeout: 30_000 });
-      }
+      if (packageUrl) {
+        // Package-based deployment: download zip and extract
+        logger.info(`[deploy] Downloading package from ${packageUrl}`);
+        const zipPath = path.join(deployDir, '_package.zip');
+        await downloadPackage(packageUrl, zipPath);
+        logger.info(`[deploy] Extracting package for ${deploymentId}`);
+        const unzipR = spawnSync('unzip', ['-o', zipPath, '-d', deployDir], { stdio: 'pipe', timeout: 60_000 });
+        if (unzipR.status !== 0) throw new Error(unzipR.stderr?.toString() || 'unzip failed');
+        fs.unlinkSync(zipPath);
+        logger.info(`[deploy] Package extracted for ${deploymentId}`);
+      } else if (gitRepo) {
+        const gitDir = path.join(deployDir, '.git');
+        // SEC: all git commands use spawnSync with array args — no shell, no injection
+        if (!fs.existsSync(gitDir)) {
+          // Fresh clone
+          logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
+          const cloneR = spawnSync(
+            'git', ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, '.'],
+            { cwd: deployDir, stdio: 'pipe', timeout: 120_000 },
+          );
+          if (cloneR.status !== 0) throw new Error(cloneR.stderr?.toString() || 'git clone failed');
+        } else {
+          // Pull latest
+          logger.info(`[deploy] Pulling latest for ${deploymentId}`);
+          const fetchR = spawnSync('git', ['fetch', '--depth', '1', 'origin'], { cwd: deployDir, stdio: 'pipe', timeout: 60_000 });
+          if (fetchR.status !== 0) logger.warn(`git fetch warning: ${fetchR.stderr?.toString()}`);
+          const resetR = spawnSync('git', ['reset', '--hard', `origin/${gitBranch}`], { cwd: deployDir, stdio: 'pipe', timeout: 30_000 });
+          if (resetR.status !== 0) throw new Error(resetR.stderr?.toString() || 'git reset failed');
+        }
 
-      if (gitCommit) {
-        execSync(`git checkout ${gitCommit}`, { cwd: deployDir, stdio: 'pipe', timeout: 30_000 });
+        if (gitCommit) {
+          const coR = spawnSync('git', ['checkout', gitCommit], { cwd: deployDir, stdio: 'pipe', timeout: 30_000 });
+          if (coR.status !== 0) throw new Error(coR.stderr?.toString() || 'git checkout failed');
+        }
       }
 
       // Install dependencies
@@ -193,7 +247,11 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       }
 
       // Start app if runMode is daemon or once
-      const entry = entrypoint || 'main.py';
+      // Pick a sensible default entrypoint based on runtime when none was specified
+      const defaultEntry = (runtime === 'python') ? 'main.py'
+        : (runtime === 'node' || runtime === 'nodejs') ? 'index.js'
+        : 'main.sh';
+      const entry = entrypoint || defaultEntry;
       if (runMode === 'daemon' || runMode === 'once') {
         startApp(deploymentId, deployDir, runtime, entry, runMode, envVars);
       } else {

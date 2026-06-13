@@ -28,7 +28,7 @@
 POST /api/auth/login
 {
   "username": "admin",
-  "password": "Admin@123456"
+  "password": "<your_password>"
 }
 ```
 
@@ -58,6 +58,26 @@ POST /api/auth/login
 | DELETE | `/applications/:id` | 是 | 删除应用（级联删除关联任务） |
 | GET | `/applications/:id/tasks` | 是 | 获取应用下的所有任务 |
 | GET | `/applications/:id/stats` | 是 | 获取应用执行统计数据 |
+| POST | `/applications/webhook` | 是 | CI/CD 触发发版部署 |
+
+**Webhook 发版请求体：**
+
+> ⚠️ webhook 接口的请求体**只接受以下三个字段**，传入其他字段（如 `runtime`、`executorType`、`upgradeStrategy`）会返回 400。
+
+```json
+POST /api/applications/webhook
+{
+  "appName": "my-app",
+  "version": "1.2.0",
+  "triggerDeploy": true
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `appName` | string | 是 | 应用名称（需与已创建的应用名称完全匹配） |
+| `version` | string | 是 | 版本号（语义化版本，如 `1.2.0`） |
+| `triggerDeploy` | boolean | 否 | `true` 时立即触发部署，默认 `false` |
 
 **分页查询参数：**
 

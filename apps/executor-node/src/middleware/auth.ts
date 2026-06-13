@@ -4,11 +4,11 @@
  */
 import { Request, Response, NextFunction } from 'express';
 import axios from 'axios';
-import { timingSafeEqual } from 'crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { config } from '../config';
 
-// Static token for backward compatibility (falls back if dynamic token not available)
-const STATIC_TOKEN = process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || '';
+// Static token: env vars take priority, then CLI --token arg (via config)
+const STATIC_TOKEN = config.token;
 
 // Dynamic token storage (refreshed periodically)
 let dynamicToken: string | null = null;
@@ -37,7 +37,7 @@ async function fetchToken(): Promise<string | null> {
       `${getAdminApiUrl()}/api/executors/token`,
       {
         address: config.executorAddressPublic || config.executorAddress,
-        appName: process.env.APP_NAME || 'executor-node',
+        appName: config.appName,
       },
       { timeout: 10000, headers },
     );

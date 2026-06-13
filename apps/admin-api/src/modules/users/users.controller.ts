@@ -21,11 +21,14 @@ import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { RolesGuard } from "../../common/guards/roles.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { AuditService } from "../audit/audit.service";
 import { UserRole } from "./entities/user.entity";
 
-@ApiTags("用户")
+@ApiTags("Users")
 @ApiBearerAuth("JWT")
 @UseGuards(JwtAuthGuard)
 @Controller("users")
@@ -37,15 +40,14 @@ export class UsersController {
 
   // S11: only admins can create users
   @Post()
-  @ApiOperation({ summary: "创建用户" })
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: "Create user" })
   async create(
     @Body() dto: CreateUserDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    if (user?.role !== UserRole.ADMIN) {
-      throw new ForbiddenException("Only admins can create users");
-    }
     const result = await this.usersService.create(dto);
     await this.audit.log({
       userId: user?.id,
@@ -59,13 +61,13 @@ export class UsersController {
   }
 
   @Get()
-  @ApiOperation({ summary: "获取用户列表" })
+  @ApiOperation({ summary: "Get user list" })
   findAll(@Query() pagination: PaginationDto) {
     return this.usersService.findAll(pagination);
   }
 
   @Get(":id")
-  @ApiOperation({ summary: "获取用户详情" })
+  @ApiOperation({ summary: "Get user details" })
   findOne(@Param("id", ParseIntPipe) id: number) {
     return this.usersService.findById(id);
   }
@@ -73,11 +75,11 @@ export class UsersController {
   // S11+S12: admin can update any user; non-admin can only update their own profile
   // S12: when updating password, current password must be verified first
   @Patch(":id")
-  @ApiOperation({ summary: "更新用户" })
+  @ApiOperation({ summary: "Update user" })
   async update(
     @Param("id", ParseIntPipe) id: number,
     @Body() dto: UpdateUserDto,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
     const isAdmin = user?.role === UserRole.ADMIN;
@@ -85,9 +87,14 @@ export class UsersController {
       throw new ForbiddenException("You can only update your own account");
     }
 
+    // SEC: prevent privilege escalation — non-admins cannot change their own role
+    if (!isAdmin && dto.role !== undefined) {
+      throw new ForbiddenException("Only admins can change user roles");
+    }
+
     // S12: non-admins must supply currentPassword when changing their password
     if (dto.password && !isAdmin) {
-      const currentPassword: string | undefined = (dto as any).currentPassword;
+      const currentPassword: string | undefined = dto.currentPassword;
       if (!currentPassword) {
         throw new BadRequestException(
           "currentPassword is required when changing password",
@@ -118,15 +125,14 @@ export class UsersController {
 
   // S11: only admins can delete users
   @Delete(":id")
-  @ApiOperation({ summary: "删除用户" })
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: "Delete user" })
   async remove(
     @Param("id", ParseIntPipe) id: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    if (user?.role !== UserRole.ADMIN) {
-      throw new ForbiddenException("Only admins can delete users");
-    }
     const result = await this.usersService.remove(id);
     await this.audit.log({
       userId: user?.id,

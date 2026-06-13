@@ -209,6 +209,17 @@ export class SystemConfigService {
       .getMany();
   }
 
+  /** Returns the set of config keys that are marked isSecret=true. Used by the
+   *  controller to mask old/new values in history responses.
+   */
+  async getSecretKeys(): Promise<Set<string>> {
+    const secrets = await this.repo.find({
+      select: ['key'],
+      where: { isSecret: true },
+    });
+    return new Set(secrets.map((s) => s.key));
+  }
+
   async getByTag(tag: string): Promise<SystemConfig[]> {
     const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return this.repo

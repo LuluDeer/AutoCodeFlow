@@ -66,7 +66,7 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
         headers['X-Trace-Id'] = trace_id
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory().percent
-    await client.post(
+    response = await client.post(
         f'{_get_admin_api_url()}/api/executors/heartbeat',
         json={
             'address': settings.executor_address_public or settings.executor_address,
@@ -77,6 +77,7 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
         headers=headers,
         timeout=5,
     )
+    response.raise_for_status()
 
 
 async def heartbeat_task() -> None:

@@ -7,9 +7,10 @@ import { Executor } from "./entities/executor.entity";
 import { Task } from "../task/entities/task.entity";
 import { TaskExecution } from "../task/entities/task-execution.entity";
 import { NotificationModule } from "../notification/notification.module";
+import { SystemConfigModule } from "../config/config.module";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Executor, Task, TaskExecution]), NotificationModule],
+  imports: [TypeOrmModule.forFeature([Executor, Task, TaskExecution]), NotificationModule, SystemConfigModule],
   controllers: [ExecutorController, InstallCmdController],
   // ConfigService is global (ConfigModule.forRoot isGlobal:true) so no extra import needed
   providers: [ExecutorService],

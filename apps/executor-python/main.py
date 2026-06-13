@@ -65,13 +65,13 @@ async def wait_for_tasks(timeout_seconds: int = 30):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _heartbeat_task
-    # 启动时注册到 admin-api
+    # Register to admin-api on startup
     await register_executor()
-    # 启动心跳后台任务
+    # Start heartbeat background task
     _heartbeat_task = asyncio.create_task(heartbeat_task())
     logger.info(f'Executor started: {settings.app_name} @ {settings.executor_address}')
     yield
-    # 优雅停机：等待正在执行的任务完成
+    # Graceful shutdown: wait for running tasks to complete
     _heartbeat_task.cancel()
     if get_running_count() > 0:
         logger.info(f'Graceful shutdown: waiting for {get_running_count()} task(s) to finish...')

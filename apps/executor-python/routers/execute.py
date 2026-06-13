@@ -34,14 +34,14 @@ except ImportError:
 
 
 def _repo_dir_name(repo_url: str) -> str:
-    """将 git URL 转成安全缓存目录名（取最后一段，去掉 .git 后缀）"""
+    """Convert git URL to a safe cache directory name (last segment, strip .git suffix)"""
     name = repo_url.rstrip('/').split('/')[-1]
     name = re.sub(r'\.git$', '', name)
     return re.sub(r'[^a-zA-Z0-9_.-]', '_', name)
 
 
 def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
-    """Clone（带缓存）并 checkout 指定 ref 到 dest 目录。"""
+    """Clone (with cache) and checkout the specified ref to the dest directory."""
     cache_dir = Path(settings.work_dir) / '.git_cache' / _repo_dir_name(repo_url)
     if not cache_dir.exists():
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -51,7 +51,7 @@ def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
         subprocess.run(['git', '-C', str(cache_dir), 'fetch', '--all'],
                        check=True, timeout=60)
     dest.mkdir(parents=True, exist_ok=True)
-    # --work-tree 加 checkout 把指定 ref 的文件导出到 dest
+    # --work-tree + checkout exports files at the given ref to dest
     subprocess.run(
         ['git', f'--git-dir={cache_dir}', f'--work-tree={dest}',
          'checkout', ref, '--', '.'],
@@ -61,7 +61,7 @@ def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# uv 可执行路径（优先 PATH 中，Dockerfile 安装到 /root/.cargo/bin/uv）
+# uv executable path (prefer PATH; Dockerfile installs to /root/.cargo/bin/uv)
 UV_BIN = shutil.which('uv') or '/root/.local/bin/uv'
 
 # SEC-01: module-level whitelist so tests can import and verify it
@@ -89,7 +89,7 @@ async def execute(req: ExecuteRequest):
 
 
 async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
-    """用 uv 创建/复用虚拟环境并安装依赖，返回 python 可执行路径。"""
+    """Create/reuse a virtual environment with uv and install dependencies. Returns python executable path."""
     python_bin = venv_dir / 'bin' / 'python'
 
     if not venv_dir.exists():
@@ -126,7 +126,7 @@ async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
 
 
 async def run_task(req: ExecuteRequest) -> dict:
-    # 工作目录
+    # Working directory
     work_dir = Path(settings.work_dir) / req.executionId
     # S6/Q11: path traversal guard — executionId must not escape the base work_dir
     base = Path(settings.work_dir).resolve()
@@ -137,10 +137,10 @@ async def run_task(req: ExecuteRequest) -> dict:
     # S6/Q11: restrict permissions so sibling tasks cannot read this directory
     try:
         os.chmod(work_dir, stat.S_IRWXU)  # 0o700
-    except Exception:
-        pass
+    except Exception as chmod_err:
+        logger.warning("chmod work_dir failed (non-critical): %s", chmod_err)
 
-    # --- Git 版本绑定：若任务指定了 gitRepo 则 clone/checkout 到工作目录 ---
+    # --- Git version binding: if task specifies gitRepo, clone/checkout to work dir ---
     git_repo: str | None = req.task.get('gitRepo') or req.task.get('git_repo')
     git_commit: str | None = req.task.get('gitCommit') or req.task.get('git_commit')
     git_branch: str = req.task.get('gitBranch') or req.task.get('git_branch') or 'main'
@@ -161,7 +161,7 @@ async def run_task(req: ExecuteRequest) -> dict:
             None, git_checkout_to, git_repo, ref, work_dir
         )
 
-    # 加载 manifest.yaml 并与 task 合并（task 字段优先）
+    # Load manifest.yaml and merge with task (task fields take priority)
     manifest = load_manifest(work_dir)
     task = merge_task_with_manifest(req.task, manifest)
 
@@ -206,7 +206,7 @@ async def run_task(req: ExecuteRequest) -> dict:
 
     if runtime == 'python':
         if requirements:
-            # 每个任务 ID 对应一个持久化 venv，相同任务复用
+            # Each task ID maps to a persistent venv; same task reuses the same env
             venv_dir = Path(settings.work_dir) / '.venvs' / task_id
             python_bin = await ensure_venv(venv_dir, requirements)
             cmd = [str(python_bin), entrypoint]
@@ -277,4 +277,5 @@ async def run_task(req: ExecuteRequest) -> dict:
             proc.kill()
         raise HTTPException(status_code=408, detail=f'Task timeout after {timeout}s')
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.exception('Unexpected error during task execution')
+        raise HTTPException(status_code=500, detail='Internal execution error')

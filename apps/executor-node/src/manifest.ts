@@ -12,8 +12,8 @@ export interface Manifest {
 }
 
 /**
- * 从工作目录加载 manifest.yaml / manifest.yml。
- * 文件不存在或解析失败时返回空对象。
+ * Load manifest.yaml / manifest.yml from the working directory.
+ * Returns an empty object if the file does not exist or fails to parse.
  */
 export function loadManifest(workDir: string): Manifest {
   for (const name of ['manifest.yaml', 'manifest.yml']) {
@@ -33,8 +33,8 @@ export function loadManifest(workDir: string): Manifest {
 }
 
 /**
- * 用 manifest 的值补充 task 中缺失的字段（task 优先）。
- * requirements 列表做合并去重。
+ * Fill in missing task fields with manifest values (task fields take priority).
+ * Merge and deduplicate the requirements list.
  */
 export function mergeTaskWithManifest(
   task: Record<string, unknown>,

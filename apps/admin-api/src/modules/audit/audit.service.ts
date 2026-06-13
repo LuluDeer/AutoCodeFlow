@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan } from "typeorm";
 import { Cron } from "@nestjs/schedule";
@@ -17,6 +17,8 @@ export interface AuditLogPayload {
 
 @Injectable()
 export class AuditService {
+  private readonly logger = new Logger(AuditService.name);
+
   constructor(
     @InjectRepository(AuditLog)
     private readonly repo: Repository<AuditLog>,
@@ -30,7 +32,7 @@ export class AuditService {
     await this.repo.save(entry);
   }
 
-  /** Q7: 每天凌晨 2:05 清理 180 天前的审计日志 */
+  /** Q7: Daily at 2:05am, clean up audit logs older than 180 days */
   @Cron("0 5 2 * * *")
   async cleanupOldAuditLogs(): Promise<void> {
     const oneEightyDaysAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
@@ -39,8 +41,8 @@ export class AuditService {
     });
     if (result.affected && result.affected > 0) {
       // Log the cleanup itself — but don't create an audit log entry to avoid recursion
-      console.log(
-        `[AuditService] Q7 Cleanup: removed ${result.affected} audit logs older than 180 days`,
+      this.logger.log(
+        `Q7 Cleanup: removed ${result.affected} audit logs older than 180 days`,
       );
     }
   }

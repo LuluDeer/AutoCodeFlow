@@ -3,9 +3,12 @@ import {
   Column,
   PrimaryGeneratedColumn,
   CreateDateColumn,
+  Index,
 } from "typeorm";
 
 @Entity("config_history")
+@Index(["configKey"])
+@Index(["configKey", "createdAt"])
 export class ConfigHistory {
   @PrimaryGeneratedColumn()
   id: number;

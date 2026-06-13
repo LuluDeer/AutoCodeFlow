@@ -6,6 +6,7 @@ import {
   UpdateDateColumn,
   ManyToOne,
   JoinColumn,
+  Index,
 } from "typeorm";
 
 export enum TaskStatus {
@@ -46,6 +47,9 @@ export enum TaskRuntime {
 }
 
 @Entity("tasks")
+@Index(["status"])
+@Index(["applicationId"])
+@Index(["createdAt"])
 export class Task {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() name: string;
@@ -92,7 +96,7 @@ export class Task {
 
   @ManyToOne("Application", "tasks", { nullable: true, onDelete: "SET NULL" })
   @JoinColumn({ name: "applicationId" })
-  application: any;
+  application: { id: string; name: string; version: string } | null;
 
   /** Executor group to use for this task. */
   @Column({ nullable: true }) executorGroup: string | null;

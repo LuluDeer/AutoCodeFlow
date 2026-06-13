@@ -20,6 +20,7 @@ export enum ExecutionStatus {
 @Index(["taskId"])
 @Index(["status"])
 @Index(["taskId", "status"])
+@Index(["createdAt"])
 export class TaskExecution {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() taskId: string;

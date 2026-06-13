@@ -3,7 +3,7 @@ import { IsArray, IsUUID, ArrayMinSize } from "class-validator";
 
 export class BatchTaskIdsDto {
   @ApiProperty({
-    description: "任务ID列表",
+    description: "Task ID list",
     type: [String],
     example: ["uuid-1", "uuid-2"],
   })

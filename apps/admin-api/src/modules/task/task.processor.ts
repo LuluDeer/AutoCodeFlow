@@ -118,7 +118,7 @@ export class TaskProcessor {
     const exec = await this.execRepo.findOne({ where: { id: executionId } });
     if (!exec) return;
 
-    // 从数据库查询最新 task，避免使用队列中可能过期的序列化对象
+    // Fetch latest task from DB to avoid stale serialized object from queue
     const task = await this.taskRepo.findOne({ where: { id: exec.taskId } });
     if (!task) {
       this.logger.error(
@@ -135,8 +135,8 @@ export class TaskProcessor {
     await this.execRepo.save(exec);
 
     try {
-      // 广播模式：派发到所有在线执行器
-      // 单任务模式：派发到负载最低的一个执行器
+      // Broadcast mode: dispatch to all online executors
+      // Single mode: dispatch to the executor with lowest load
       const isBroadcast = task.executeMode === "broadcast";
       const rawResult = isBroadcast
         ? await this.executorService.dispatchBroadcast(task, exec)
@@ -157,34 +157,40 @@ export class TaskProcessor {
         ? undefined
         : (rawResult?.executorAddress ?? exec.executorAddress);
       await this.fetchAndStoreLogLines(exec, targetAddr);
-    } catch (err) {
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errStack = err instanceof Error ? (err.stack || err.message) : String(err);
       exec.status = ExecutionStatus.FAILED;
-      exec.errorMessage = err.message;
-      exec.logs = err.stack || err.message;
+      exec.errorMessage = errMsg;
+      exec.logs = errStack;
       try {
         exec.aiAnalysis = await this.aiService.analyzeFailure(task, exec.logs);
-      } catch {}
-      this.logger.error(`Task ${task.id} failed: ${err.message}`);
+      } catch (aiErr: unknown) {
+        const aiErrMsg = aiErr instanceof Error ? aiErr.message : String(aiErr);
+        this.logger.warn(`AI analysis failed for task ${task.id}: ${aiErrMsg}`);
+      }
+      this.logger.error(`Task ${task.id} failed: ${errMsg}`);
       try {
         await this.notificationService.notifyFailureWithConfig(
           task.name,
           exec.id,
-          err.message,
+          errMsg,
           exec.aiAnalysis,
           task.alarmEmail,
           task.alarmChannels,
         );
-      } catch (notifyErr) {
+      } catch (notifyErr: unknown) {
         // B-08: record notification failure to audit log so it is not silently discarded
+        const notifyErrMsg = notifyErr instanceof Error ? notifyErr.message : String(notifyErr);
         this.logger.error(
-          `Notification failed for execution ${exec.id}: ${notifyErr.message}`,
+          `Notification failed for execution ${exec.id}: ${notifyErrMsg}`,
         );
         try {
           await this.auditService.log({
             action: "NOTIFICATION_FAILED",
             resource: "task_execution",
             resourceId: exec.id,
-            detail: { task: task.name, error: notifyErr.message },
+            detail: { task: task.name, error: notifyErrMsg },
           });
         } catch {
           /* audit is best-effort */
@@ -278,14 +284,20 @@ export class TaskProcessor {
    */
   private async triggerDependentTasks(completedTaskId: string) {
     try {
-      // Find all tasks that have dependencies on the completed task
-      const dependentTasks = await this.taskRepo
+      // Find all tasks that have any dependencies set, then filter in-process.
+      // Using application-layer filtering avoids JSONB-specific SQL that breaks
+      // on non-PostgreSQL engines and is simpler to reason about.
+      const allTasksWithDeps = await this.taskRepo
         .createQueryBuilder("t")
-        .where(
-          "EXISTS (SELECT 1 FROM jsonb_each(t.dependencies) WHERE value = :taskId)",
-          { taskId: completedTaskId },
-        )
+        .where("t.dependencies IS NOT NULL")
         .getMany();
+
+      // Keep only tasks that list completedTaskId as one of their dependency values
+      const dependentTasks = allTasksWithDeps.filter(
+        (t) =>
+          t.dependencies &&
+          Object.values(t.dependencies).includes(completedTaskId),
+      );
 
       for (const task of dependentTasks) {
         // Check if all dependencies are satisfied

@@ -3,36 +3,38 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { RunMode } from "../entities/app-deployment.entity";
 
 export class CreateDeploymentDto {
-  @ApiProperty({ description: "执行器 ID" })
+  @ApiPropertyOptional({ description: "Executor ID (leave empty to auto-select the online executor with lowest load)" })
   @IsUUID()
-  executorId: string;
+  @IsOptional()
+  executorId?: string;
 
   @ApiPropertyOptional({ enum: RunMode, default: RunMode.DAEMON })
   @IsEnum(RunMode)
   @IsOptional()
   runMode?: RunMode;
 
-  @ApiPropertyOptional({ description: "环境变量覆盖" })
+  @ApiPropertyOptional({ description: "Environment variable overrides" })
   @IsObject()
   @IsOptional()
   env?: Record<string, string>;
 
-  @ApiPropertyOptional({ description: "启动命令覆盖（留空使用 manifest entrypoint）" })
+  @ApiPropertyOptional({ description: "Startup command override (leave empty to use manifest entrypoint)" })
   @IsString()
   @IsOptional()
   startCommand?: string;
 }
 
 export class DeploymentHeartbeatDto {
-  @ApiProperty({ description: "部署 ID" })
+  @ApiProperty({ description: "Deployment ID" })
   @IsUUID()
   deploymentId: string;
 
-  @ApiProperty({ description: "运行状态", enum: ["running", "stopped", "failed"] })
+  @ApiProperty({ description: "Runtime status", enum: ["running", "stopped", "failed"] })
   @IsString()
+  @IsEnum(["running", "stopped", "failed"], { message: "status must be one of: running, stopped, failed" })
   status: string;
 
-  @ApiPropertyOptional({ description: "进程 PID" })
+  @ApiPropertyOptional({ description: "Process PID" })
   @IsOptional()
   pid?: number;
 
