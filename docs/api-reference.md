@@ -153,12 +153,12 @@ POST /api/applications/webhook
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/notifications` | 是 | 查询通知配置列表 |
-| POST | `/notifications` | 是 | 创建通知配置（邮件/Webhook 等） |
-| GET | `/notifications/:id` | 是 | 获取通知配置详情 |
-| PUT | `/notifications/:id` | 是 | 更新通知配置 |
-| DELETE | `/notifications/:id` | 是 | 删除通知配置 |
-| POST | `/notifications/:id/test` | 是 | 发送测试通知 |
+| GET | `/notification` | 是 | 查询通知配置列表 |
+| POST | `/notification` | 是 | 创建通知配置（邮件/Webhook 等） |
+| GET | `/notification/:id` | 是 | 获取通知配置详情 |
+| PUT | `/notification/:id` | 是 | 更新通知配置 |
+| DELETE | `/notification/:id` | 是 | 删除通知配置 |
+| POST | `/notification/:id/test` | 是 | 发送测试通知 |
 
 ---
 
@@ -190,6 +190,58 @@ POST /api/applications/webhook
 | `resource` | string | 资源类型（task / executor / application 等） |
 | `startTime` | ISO8601 | 时间范围起点 |
 | `endTime` | ISO8601 | 时间范围终点 |
+
+---
+
+## Users — 用户管理
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/users` | 是（Admin） | 分页查询用户列表 |
+| POST | `/users` | 是（Admin） | 创建新用户 |
+| GET | `/users/:id` | 是 | 获取用户详情 |
+| PUT | `/users/:id` | 是 | 更新用户信息 |
+| DELETE | `/users/:id` | 是（Admin） | 删除用户 |
+| PUT | `/users/:id/password` | 是 | 修改指定用户密码 |
+
+---
+
+## Config — 系统配置
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/config` | 是 | 查询所有系统配置项 |
+| PUT | `/config/:key` | 是（Admin） | 更新指定配置项 |
+| GET | `/config/history` | 是 | 查询配置修改历史 |
+
+---
+
+## ExecutorPackages — 执行器包管理
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/executor-packages` | 是 | 查询执行器包列表 |
+| POST | `/executor-packages/upload` | 是 | 上传应用包（multipart/form-data） |
+| GET | `/executor-packages/:id` | 是 | 获取包详情 |
+| DELETE | `/executor-packages/:id` | 是 | 删除包 |
+
+**上传字段：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `file` | file | 是 | 包文件（zip / tar.gz） |
+| `appName` | string | 是 | 关联的应用名称 |
+| `version` | string | 是 | 版本号 |
+| `executorType` | string | 否 | `node` / `python`，默认 `python` |
+
+---
+
+## Registry — 私有仓库代理
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/registry/npm` | 否 | npm 私有仓库访问地址信息 |
+| GET | `/registry/pypi` | 否 | PyPI 私有仓库访问地址信息 |
 
 ---
 
