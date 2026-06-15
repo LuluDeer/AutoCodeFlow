@@ -107,6 +107,79 @@ describe("AuditService", () => {
     });
   });
 
+  describe("exportCsv", () => {
+    const makeExportQb = (rows: any[] = []) => ({
+      orderBy: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue(rows),
+    });
+
+    it("returns CSV header even when no rows", async () => {
+      const qb = makeExportQb([]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      const csv = await service.exportCsv({});
+      expect(csv).toContain("id,");
+      expect(csv).toContain("action");
+      expect(csv).toContain("username");
+    });
+
+    it("serializes a log row correctly", async () => {
+      const row = {
+        id: "abc",
+        userId: 1,
+        username: "admin",
+        action: "task.create",
+        resource: "task",
+        resourceId: "t-1",
+        ip: "127.0.0.1",
+        result: "success",
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      };
+      const qb = makeExportQb([row]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      const csv = await service.exportCsv({});
+      expect(csv).toContain("task.create");
+      expect(csv).toContain("admin");
+      expect(csv).toContain("2024-01-01");
+    });
+
+    it("escapes values containing commas", async () => {
+      const row = {
+        id: "1",
+        userId: 1,
+        username: "admin,evil",
+        action: "test",
+        resource: "task",
+        resourceId: "t-1",
+        ip: "127.0.0.1",
+        result: "success",
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      };
+      const qb = makeExportQb([row]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      const csv = await service.exportCsv({});
+      expect(csv).toContain('"admin,evil"');
+    });
+
+    it("caps export at 10000 rows via take()", async () => {
+      const qb = makeExportQb([]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      await service.exportCsv({});
+      expect(qb.take).toHaveBeenCalledWith(10_000);
+    });
+
+    it("applies action filter via andWhere", async () => {
+      const qb = makeExportQb([]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      await service.exportCsv({ action: "task.create" });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('action'),
+        expect.objectContaining({ action: expect.stringContaining('task.create') }),
+      );
+    });
+  });
+
   describe("log", () => {
     it("should save an audit log entry", async () => {
       await service.log({

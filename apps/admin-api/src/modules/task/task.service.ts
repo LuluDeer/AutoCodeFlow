@@ -215,9 +215,15 @@ export class TaskService {
     return exec;
   }
 
-  async getExecutions(taskId: string, p: PaginationDto) {
+  async getExecutions(
+    taskId: string,
+    p: PaginationDto & { status?: string },
+  ) {
+    const where: Record<string, unknown> = { taskId };
+    if (p.status) where['status'] = p.status;
+
     const [list, total] = await this.execRepo.findAndCount({
-      where: { taskId },
+      where,
       skip: (p.page - 1) * p.pageSize,
       take: p.pageSize,
       order: { createdAt: "DESC" },

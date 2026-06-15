@@ -260,6 +260,75 @@ describe('SchedulerService', () => {
     });
   });
 
+  describe('recoverStaleExecutions', () => {
+    it('should mark running execution as failed using default 1h threshold when task has no timeout', async () => {
+      const staleExec = {
+        id: 'exec-stale',
+        taskId: 'task-1',
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
+        task: makeTask({ id: 'task-1' }),
+        errorMessage: null,
+        endTime: null,
+      };
+      execRepo.find.mockResolvedValue([staleExec]);
+      execRepo.save.mockResolvedValue(staleExec);
+
+      await service.recoverStaleExecutions();
+
+      expect(execRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: ExecutionStatus.FAILED }),
+      );
+      expect(staleExec.errorMessage).toContain('recovered');
+    });
+
+    it('should respect task-level timeout when marking as timed out', async () => {
+      const staleExec = {
+        id: 'exec-timeout',
+        taskId: 'task-2',
+        status: ExecutionStatus.RUNNING,
+        // 10 minutes ago — beyond task timeout of 5 min
+        startTime: new Date(Date.now() - 10 * 60 * 1000),
+        task: makeTask({ id: 'task-2', timeout: 300 }), // 300s = 5 min
+        errorMessage: null,
+        endTime: null,
+      };
+      execRepo.find.mockResolvedValue([staleExec]);
+      execRepo.save.mockResolvedValue(staleExec);
+
+      await service.recoverStaleExecutions();
+
+      expect(execRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: ExecutionStatus.FAILED }),
+      );
+      expect(staleExec.errorMessage).toContain('timed out');
+    });
+
+    it('should NOT mark execution as stale when within task timeout', async () => {
+      const freshExec = {
+        id: 'exec-fresh',
+        taskId: 'task-3',
+        status: ExecutionStatus.RUNNING,
+        // 2 minutes ago — within task timeout of 10 min
+        startTime: new Date(Date.now() - 2 * 60 * 1000),
+        task: makeTask({ id: 'task-3', timeout: 600 }), // 600s = 10 min
+        errorMessage: null,
+        endTime: null,
+      };
+      execRepo.find.mockResolvedValue([freshExec]);
+
+      await service.recoverStaleExecutions();
+
+      expect(execRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('should do nothing when no running executions exist', async () => {
+      execRepo.find.mockResolvedValue([]);
+      await service.recoverStaleExecutions();
+      expect(execRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
   describe('scheduleOne', () => {
     it('should stop existing schedule and register new cron task', async () => {
       const task = makeTask({ triggerType: TaskTriggerType.CRON, cronExpression: '0 * * * *' });
