@@ -455,7 +455,10 @@ export class TaskController {
   @ApiQuery({ name: "page", required: false, description: "Page number" })
   @ApiQuery({ name: "limit", required: false, description: "Page size" })
   @ApiQuery({ name: "status", required: false, description: "Filter by execution status" })
-  executions(@Param("id") id: string, @Query() p: PaginationDto) {
+  executions(
+    @Param("id") id: string,
+    @Query() p: PaginationDto & { status?: string },
+  ) {
     return this.taskService.getExecutions(id, p);
   }
 

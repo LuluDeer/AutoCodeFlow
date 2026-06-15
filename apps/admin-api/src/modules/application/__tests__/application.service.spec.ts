@@ -108,4 +108,35 @@ describe("ApplicationService", () => {
       expect(appRepo.remove).toHaveBeenCalledWith(app);
     });
   });
+
+  describe("findByNameWithSecret", () => {
+    it("returns null when app does not exist", async () => {
+      // createQueryBuilder chain
+      const qb = {
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      (appRepo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      const result = await service.findByNameWithSecret("nonexistent");
+      expect(result).toBeNull();
+      expect(qb.addSelect).toHaveBeenCalledWith("app.webhookSecret");
+      expect(qb.where).toHaveBeenCalledWith("app.name = :name", { name: "nonexistent" });
+    });
+
+    it("returns app with webhookSecret loaded", async () => {
+      const appWithSecret = { id: "1", name: "my-app", webhookSecret: "s3cr3t" };
+      const qb = {
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(appWithSecret),
+      };
+      (appRepo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      const result = await service.findByNameWithSecret("my-app");
+      expect(result).toEqual(appWithSecret);
+      expect(result?.webhookSecret).toBe("s3cr3t");
+    });
+  });
 });
