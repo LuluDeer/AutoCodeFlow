@@ -22,10 +22,13 @@ import ExecutionsPage from './pages/ExecutionsPage';
 import { useAuthStore } from './store/auth';
 
 const PrivateRoute = ({ children }: { children: React.ReactNode }) => {
-  const token = useAuthStore((state) => state.token);
+  // token is not persisted (short-lived); use refreshToken to determine if the
+  // user has an active session. The axios interceptor will obtain a new access
+  // token on the first authenticated request.
+  const refreshToken = useAuthStore((state) => state.refreshToken);
   const hasHydrated = useAuthStore((state) => state._hasHydrated);
   if (!hasHydrated) return null;
-  return token ? <>{children}</> : <Navigate to="/login" replace />;
+  return refreshToken ? <>{children}</> : <Navigate to="/login" replace />;
 };
 
 export const router = createBrowserRouter([
