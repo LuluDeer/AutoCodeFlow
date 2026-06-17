@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autocodeflow-ai"
+version = "0.1.0"
+description = "AutoCodeFlow AI analysis helpers for task code"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0.0",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]

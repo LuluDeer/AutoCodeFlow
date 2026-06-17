@@ -1,0 +1,277 @@
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  Query,
+  ParseUUIDPipe,
+  Headers,
+  HttpCode,
+  HttpStatus,
+  UseGuards,
+  Res,
+  UseInterceptors,
+  UploadedFile,
+  Logger,
+} from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { memoryStorage } from "multer";
+import { Response } from "express";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { Public } from "../../common/decorators/public.decorator";
+import { SystemConfigService } from "../config/config.service";
+import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiParam,
+  ApiQuery,
+  ApiResponse,
+  ApiConsumes,
+  ApiBody,
+} from "@nestjs/swagger";
+import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { ExecutorPackageService } from "./executor-package.service";
+import { ExecutorService } from "../executor/executor.service";
+import { ConfigService } from "@nestjs/config";
+import {
+  CreateExecutorPackageDto,
+  UpdateExecutorPackageDto,
+  QueryExecutorPackageDto,
+} from "./dto/executor-package.dto";
+import { ExecutorPackage } from "./executor-package.entity";
+
+@ApiTags("Executor Package Management")
+@ApiBearerAuth("JWT")
+@UseGuards(JwtAuthGuard)
+@Controller("executor-packages")
+export class ExecutorPackageController {
+  private readonly logger = new Logger(ExecutorPackageController.name);
+
+  constructor(
+    private readonly svc: ExecutorPackageService,
+    private readonly executorService: ExecutorService,
+    private readonly configService: ConfigService,
+    private readonly systemConfigService: SystemConfigService,
+  ) {}
+
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
+    }),
+  )
+  @ApiOperation({ summary: "Upload executor package" })
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({
+    description: "Executor package file and metadata",
+    schema: {
+      type: "object",
+      required: ["name", "version", "file"],
+      properties: {
+        name: { type: "string", example: "python-runner" },
+        version: { type: "string", example: "1.0.0" },
+        type: { type: "string", example: "python" },
+        platform: { type: "string", example: "linux" },
+        description: { type: "string" },
+        file: { type: "string", format: "binary" },
+      },
+    },
+  })
+  @ApiResponse({ status: 201, description: "Created successfully" })
+  create(
+    @Body() createDto: CreateExecutorPackageDto,
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser('username') uploadedBy: string,
+  ): Promise<ExecutorPackage> {
+    return this.svc.create(createDto, file, uploadedBy);
+  }
+
+  @Get()
+  @ApiOperation({ summary: "Get executor package list" })
+  @ApiResponse({ status: 200, description: "Package list" })
+  findAll(
+    @Query() query: QueryExecutorPackageDto,
+  ): Promise<{ items: ExecutorPackage[]; total: number }> {
+    return this.svc.findAll(query);
+  }
+
+  @Get("latest")
+  @ApiOperation({ summary: "Get latest ACTIVE executor package by type" })
+  @ApiQuery({ name: "type", required: true, description: "Executor package type" })
+  @ApiQuery({ name: "platform", required: false, description: "Platform (optional)" })
+  @ApiResponse({ status: 200, description: "Latest package info" })
+  findLatest(
+    @Query("type") type: string,
+    @Query("platform") platform?: string,
+  ): Promise<ExecutorPackage | null> {
+    return this.svc.findLatest(type, platform);
+  }
+
+  @Post("install-token")
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: "Generate one-time install token" })
+  @ApiResponse({ status: 201, description: "Install token" })
+  generateInstallToken(
+    @Body("executorId") executorId?: string,
+  ): { token: string; expiresIn: number; expiresAt: string } {
+    return this.svc.generateInstallToken(executorId);
+  }
+
+  @Get(":id")
+  @ApiOperation({ summary: "Get executor package details" })
+  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiResponse({ status: 200, description: "Package details" })
+  @ApiResponse({ status: 404, description: "Package not found" })
+  findOne(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
+    return this.svc.findOne(id);
+  }
+
+  @Patch(":id")
+  @ApiOperation({ summary: "Update executor package info" })
+  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiResponse({ status: 200, description: "Updated successfully" })
+  @ApiResponse({ status: 404, description: "Package not found" })
+  update(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() updateDto: UpdateExecutorPackageDto,
+  ): Promise<ExecutorPackage> {
+    return this.svc.update(id, updateDto);
+  }
+
+  @Delete(":id")
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: "Delete executor package" })
+  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiResponse({ status: 204, description: "Deleted successfully" })
+  @ApiResponse({ status: 404, description: "Package not found" })
+  remove(@Param("id", ParseUUIDPipe) id: string): Promise<void> {
+    return this.svc.remove(id);
+  }
+
+  @Get(":id/download")
+  @ApiOperation({ summary: "Download executor package file" })
+  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiResponse({ status: 200, description: "File content" })
+  @ApiResponse({ status: 404, description: "Package or file not found" })
+  async download(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, pkg } = await this.svc.getFileBuffer(id);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${pkg.originalFilename ?? pkg.filename ?? `${pkg.name}-${pkg.version}`}"`,
+    );
+    res.setHeader("Content-Type", pkg.mimeType ?? "application/octet-stream");
+    res.setHeader("Content-Length", buffer.length);
+    res.end(buffer);
+  }
+
+  @Patch(":id/deprecate")
+  @ApiOperation({ summary: "Deprecate executor package" })
+  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiResponse({ status: 200, description: "Deprecated" })
+  deprecate(
+    @Param("id", ParseUUIDPipe) id: string,
+  ): Promise<ExecutorPackage> {
+    return this.svc.deprecate(id);
+  }
+
+  @Patch(":id/activate")
+  @ApiOperation({ summary: "Activate executor package" })
+  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiResponse({ status: 200, description: "Activated" })
+  activate(
+    @Param("id", ParseUUIDPipe) id: string,
+  ): Promise<ExecutorPackage> {
+    return this.svc.activate(id);
+  }
+
+  /**
+   * Callback endpoint called by executor-node after download to report result.
+   * This endpoint does not require JWT auth (executor-node has no user login),
+   * but requires shared token for machine-to-machine verification.
+   * Temporarily using @UseGuards(JwtAuthGuard) for consistency; can be changed to SharedTokenGuard later.
+   */
+  @Public()
+  @Post("push-result")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Executor package push result callback (called by executor-node)" })
+  @ApiBody({
+    schema: {
+      type: "object",
+      required: ["packageId", "executorId", "status"],
+      properties: {
+        packageId: { type: "string" },
+        executorId: { type: "string" },
+        status: { type: "string", enum: ["downloaded", "failed"] },
+        version: { type: "string" },
+        error: { type: "string" },
+      },
+    },
+  })
+  @ApiResponse({ status: 200, description: "Callback recorded" })
+  async pushResult(
+    @Headers("authorization") auth: string | undefined,
+    @Body("packageId") packageId: string,
+    @Body("executorId") executorId: string,
+    @Body("status") status: "downloaded" | "failed",
+    @Body("version") version?: string,
+    @Body("error") error?: string,
+  ): Promise<{ ok: boolean }> {
+    await verifyExecutorToken(auth, this.configService, this.systemConfigService);
+    this.logger.log(
+      `Push result: package=${packageId} executor=${executorId} status=${status}${
+        error ? ` error=${error}` : ""
+      }`,
+    );
+    // Persist push history to package.pushHistory
+    try {
+      const pkg = await this.svc.findOne(packageId);
+      const entry = {
+        executorId: executorId ?? 'unknown',
+        status,
+        version: version ?? pkg.version,
+        ...(error ? { error } : {}),
+        timestamp: new Date().toISOString(),
+      };
+      const history = Array.isArray(pkg.pushHistory) ? pkg.pushHistory : [];
+      // Keep only the most recent 100 records
+      const trimmed = [...history, entry].slice(-100);
+      await this.svc.update(packageId, { pushHistory: trimmed } as any);
+    } catch (e: unknown) {
+      this.logger.warn(`Failed to persist push history: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return { ok: true };
+  }
+
+  @Post(":id/push")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Push executor package to scheduler nodes" })
+  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiBody({
+    description: "Push targets (empty = push to all online executors)",
+    schema: {
+      type: "object",
+      properties: {
+        executorIds: { type: "array", items: { type: "string" }, description: "Target executor ID list, empty = all" },
+      },
+    },
+  })
+  @ApiResponse({ status: 200, description: "Push result" })
+  async push(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body("executorIds") executorIds?: string[],
+  ): Promise<{ executorId: string; address: string; success: boolean; error?: string }[]> {
+    const executors = await this.executorService.findAll();
+    const sharedToken = this.configService.get<string>("executor.sharedToken");
+    return this.svc.pushToExecutors(id, executorIds, executors, sharedToken);
+  }
+}
