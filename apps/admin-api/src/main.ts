@@ -2,6 +2,7 @@ import { NestFactory, Reflector } from "@nestjs/core";
 import { ClassSerializerInterceptor, Logger, ValidationPipe } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import helmet from "helmet";
+import express from "express";
 import { AppModule } from "./app.module";
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { ResponseInterceptor } from "./common/interceptors/response.interceptor";
@@ -40,8 +41,8 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // S-11: cap JSON body size to 1 MB to prevent oversized-payload DoS
-  app.use(require("express").json({ limit: "1mb" }));
-  app.use(require("express").urlencoded({ limit: "1mb", extended: true }));
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ limit: "1mb", extended: true }));
 
   // SEC-07: Set security-related HTTP headers via helmet
   app.use(

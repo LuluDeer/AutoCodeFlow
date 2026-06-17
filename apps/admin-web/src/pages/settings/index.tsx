@@ -378,7 +378,7 @@ function AiConfigTab() {
 
           {provider === 'openai' && (
             <>
-              <Divider orientation="left" plain style={{ fontSize: 12, color: '#888' }}>OpenAI 设置</Divider>
+              <Divider plain style={{ fontSize: 12, color: '#888' }}>OpenAI 设置</Divider>
               <Form.Item
                 name="openaiBaseUrl"
                 label="API Base URL"
@@ -409,7 +409,7 @@ function AiConfigTab() {
 
           {provider === 'ollama' && (
             <>
-              <Divider orientation="left" plain style={{ fontSize: 12, color: '#888' }}>Ollama 设置</Divider>
+              <Divider plain style={{ fontSize: 12, color: '#888' }}>Ollama 设置</Divider>
               <Form.Item name="ollamaHost" label="Ollama Host">
                 <Input placeholder="http://localhost:11434" />
               </Form.Item>

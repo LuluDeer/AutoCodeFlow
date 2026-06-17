@@ -10,7 +10,6 @@ import {
   UseInterceptors,
   UploadedFile,
   Logger,
-  Query,
   BadRequestException,
   UnauthorizedException,
   Headers,

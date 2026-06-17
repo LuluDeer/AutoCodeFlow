@@ -121,8 +121,6 @@ export default function TaskFormPage() {
           executorGroup: task.executorGroup,
           executorTags: task.executorTags,
           params: task.params ?? {},
-          alarmEmail: task.alarmEmail,
-          alarmChannels: task.alarmChannels,
         });
       })
       .catch(() => message.error('加载任务失败'))
@@ -330,7 +328,10 @@ export default function TaskFormPage() {
                   step={60}
                   style={{ width: 200 }}
                   formatter={v => v ? `${Math.floor(Number(v) / 60)} 分钟` : ''}
-                  parser={v => Number(v?.replace('分钟', '')) * 60}
+                  parser={v => {
+                    const result = v ? Number(v.replace('分钟', '')) * 60 : 60;
+                    return result as any;
+                  }}
                   placeholder="60（秒）"
                 />
               </Form.Item>
