@@ -1,9 +1,9 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ServiceUnavailableException } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { randomBytes, timingSafeEqual } from "crypto";
 import * as bcrypt from "bcrypt";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, LessThan, MoreThanOrEqual, In } from "typeorm";
+import { Repository, LessThan, In } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
 import { Executor, ExecutorStatus } from "./entities/executor.entity";
@@ -11,7 +11,7 @@ import {
   TaskExecution,
   ExecutionStatus,
 } from "../task/entities/task-execution.entity";
-import { Task, ExecuteMode } from "../task/entities/task.entity";
+import { Task } from "../task/entities/task.entity";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
 

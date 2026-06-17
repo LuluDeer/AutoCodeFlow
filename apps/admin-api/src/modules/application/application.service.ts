@@ -3,8 +3,6 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
-  Inject,
-  forwardRef,
   OnModuleInit,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";

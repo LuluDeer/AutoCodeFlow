@@ -350,7 +350,7 @@ function VersionHistoryTab({ appId }: { appId: string }) {
         setRollingBack(deploymentId);
         try {
           const res = await applicationsApi.rollback(appId, deploymentId);
-          message.success(`已回滚到 ${res.data?.rolledBackTo ?? version}，影响 ${res.data?.total ?? 0} 台实例`);
+          message.success(`已回滚到 ${res.rolledBackTo ?? version}，影响 ${res.total ?? 0} 台实例`);
           fetchVersions();
         } catch (err: unknown) {
           message.error(getErrMsg(err, '回滚失败，请重试'));

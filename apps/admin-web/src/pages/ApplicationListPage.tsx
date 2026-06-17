@@ -71,7 +71,7 @@ export default function ApplicationListPage() {
       const enriched: AppWithStats[] = data.map((app, i) => {
         const result = deploymentResults[i];
         const deps: AppDeployment[] =
-          result.status === 'fulfilled' ? result.value : [];
+          result.status === 'fulfilled' ? result.value.data : [];
 
         const runningCount = deps.filter((d) => d.status === 'running').length;
         const sorted = [...deps].sort(
@@ -184,7 +184,7 @@ export default function ApplicationListPage() {
     quickDeployForm.setFieldsValue({ runMode: 'once' });
     try {
       const res = await executorsApi.list();
-      setQuickDeployExecutors(res ?? []);
+      setQuickDeployExecutors(res.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })) ?? []);
     } catch (_err) {
       setQuickDeployExecutors([]);
       message.warning('获取执行器列表失败，请检查网络连接');
@@ -196,11 +196,10 @@ export default function ApplicationListPage() {
     try {
       const values = await quickDeployForm.validateFields();
       setQuickDeploying(true);
-      await deploymentsApi.create({
-        applicationId: quickDeployApp,
+      await deploymentsApi.deploy(quickDeployApp, {
         executorId: values.executorId,
         runMode: values.runMode,
-        cronExpression: values.runMode === 'cron' ? values.cronExpression : undefined,
+        startCommand: values.runMode === 'cron' ? values.cronExpression : undefined,
       });
       message.success('部署已创建');
       setQuickDeployApp(null);
@@ -570,7 +569,7 @@ export default function ApplicationListPage() {
           <Form.Item name="executorId" label="选择执行器" rules={[{ required: true, message: '请选择执行器' }]}>
             <Select
               placeholder="请选择执行器"
-              options={quickDeployExecutors.map(e => ({ value: e.id, label: `${e.appName} (${e.address})`, disabled: e.status !== 'online' }))}
+              options={quickDeployExecutors.map(e => ({ value: e.id, label: `${e.name} (${e.address})`, disabled: e.status !== 'online' }))}
               notFoundContent="暂无可用执行器"
             />
           </Form.Item>
