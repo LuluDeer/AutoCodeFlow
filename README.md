@@ -7,10 +7,14 @@ AutoCodeFlow 是一个分布式任务调度与执行平台，支持动态脚本�
 - **任务管理** — 创建、编辑、启停定时任务；支持 Cron 表达式调度
 - **Glue 脚本** — 在线编写 JavaScript / Python 胶水脚本，任务执行时动态下发给执行器
 - **多执行器** — 横向扩展；Node.js 与 Python 执行器自动注册、心跳保活
+- **桌面执行器** — Electron 桌面应用，常驻系统托盘，可在任意设备上安装运行
 - **私有包仓库** — 内置 npm (Verdaccio) 与 PyPI 私有仓库，任务可安装内部依赖
 - **应用分组** — 将任务归属到应用（Application），支持批量操作与权限隔离
 - **通知渠道** — 企业微信、钉钉、Slack Webhook、邮件（SMTP）
-- **AI 辅助** — 可选接入 OpenAI / Ollama，辅助编写脚本
+- **AI 辅助** — 可选接入 OpenAI / Ollama，辅助编写脚本与失败分析
+- **MCP 集成** — 提供 MCP Server，AI Agent 可直接管理任务与执行
+- **CLI 工具** — `acf` 命令行工具，支持任务/执行器/应用的脚本化管理
+- **SDK 生态** — Python / Node.js SDK，提供任务上下文、HTTP 客户端、日志等能力
 - **监控告警** — Prometheus 指标端点；健康检查接口
 - **审计日志** — 所有执行记录可追溯，支持执行详情对比
 
@@ -22,8 +26,12 @@ AutoCodeFlow 是一个分布式任务调度与执行平台，支持动态脚本�
 | admin-web | React · Vite · Ant Design |
 | executor-node | Node.js (Express) |
 | executor-python | Python (FastAPI) |
+| executor-desktop | Electron · React · Node.js |
 | registry-npm | Verdaccio |
 | registry-pypi | 自建 FastAPI PyPI 服务 |
+| acf-cli | TypeScript · Commander.js |
+| mcp-server | TypeScript · MCP SDK |
+| autoflow-sdk | Python (httpx) / Node.js (axios) |
 | 部署 | Docker Compose |
 
 ## 快速启动
@@ -64,6 +72,7 @@ docker compose logs -f admin-api
 | Prometheus 指标 | http://localhost:3105/metrics |
 | executor-node | http://localhost:8002/health |
 | executor-python | http://localhost:8001/health |
+| executor-desktop | 桌面应用托盘启动 |
 | npm registry | http://localhost:4873 |
 | PyPI registry | http://localhost:8003 |
 
@@ -104,14 +113,27 @@ AutoCodeFlow/
 │   ├── admin-web/          # React 管理前端
 │   ├── executor-node/      # Node.js 任务执行器
 │   ├── executor-python/    # Python 任务执行器
+│   ├── executor-desktop/   # Electron 桌面执行器
 │   ├── registry-npm/       # Verdaccio 私有 npm 仓库配置
 │   └── registry-pypi/      # 私有 PyPI 仓库服务
-├── infra/                  # 本地开发基础设施 docker-compose
-├── docs/                   # 设计文档
-├── scripts/                # 运维脚本
-├── docker-compose.yml      # 生产/staging 完整部署
-├── .env.example            # 环境变量模板
-└── Makefile                # 常用命令快捷方式
+├── packages/
+│   ├── acf-cli/               # 命令行工具 (acf)
+│   ├── mcp-server/            # MCP Server（AI Agent 集成）
+│   ├── autoflow-sdk/          # Python 任务 SDK
+│   ├── autoflow-sdk-node/     # Node.js 任务 SDK（轻量版）
+│   ├── autocodeflow-node-sdk/ # Node.js 任务 SDK（完整版）
+│   ├── autocodeflow-ai/       # AI 分析引擎
+│   ├── autocodeflow-db/       # 数据库连接工具
+│   ├── autocodeflow-http/     # HTTP 客户端工具
+│   └── autocodeflow-notify/   # 通知发送工具
+├── examples/
+│   └── desktop-automation/    # 桌面自动化（RPA）示例任务
+├── design-system/             # 设计系统规范（UI/UX）
+├── infra/                     # 本地开发基础设施 docker-compose
+├── docs/                      # 项目文档
+├── docker-compose.yml         # 生产/staging 完整部署
+├── .env.example               # 环境变量模板
+└── Makefile                   # 常用命令快捷方式
 ```
 
 ## 配置说明
@@ -141,6 +163,59 @@ AutoCodeFlow/
 openssl rand -hex 32   # JWT_SECRET / JWT_REFRESH_SECRET
 openssl rand -hex 16   # EXECUTOR_SECRET
 ```
+
+## 扩展组件
+
+### 桌面执行器 (executor-desktop)
+
+基于 Electron 的桌面执行器应用，可在 Windows / macOS / Linux 上安装运行。常驻系统托盘，支持开机自启，无需手动维护。
+
+详见 [executor-desktop/README.md](apps/executor-desktop/README.md)
+
+### CLI 工具 (acf)
+
+```bash
+# 安装
+cd packages/acf-cli && npm install && npm run build && npm link
+
+# 使用
+acf login --url http://localhost:3105 --username admin
+acf task list
+acf task trigger <taskId>
+acf executor list
+acf app list
+```
+
+### MCP Server
+
+让 Claude Desktop、Cursor 等 AI Agent 直接管理 AutoCodeFlow 任务与执行。暴露 12 个工具，支持任务 CRUD、手动触发、执行分析、调度建议等。
+
+详见 [packages/mcp-server/README.md](packages/mcp-server/README.md)
+
+### SDK 生态
+
+| 包名 | 语言 | 说明 |
+|------|------|------|
+| `autoflow-sdk` | Python | 任务上下文、HTTP 客户端、日志、结果上报 |
+| `autoflow-sdk-node` | Node.js | 轻量版任务 SDK |
+| `autocodeflow-node-sdk` | Node.js | 完整版任务 SDK（含更多工具） |
+| `autocodeflow-ai` | Python | AI 执行分析引擎 |
+| `autocodeflow-db` | Python | 数据库连接工具 |
+| `autocodeflow-http` | Python | HTTP 客户端封装 |
+| `autocodeflow-notify` | Python | 多通道通知发送 |
+
+详见 [SDK 使用指南](docs/sdk-guide.md)
+
+### 示例任务
+
+`examples/desktop-automation/` 提供桌面自动化（RPA 风格）示例任务：
+
+- 浏览器自动化（网页操作、截图）
+- 桌面 GUI 自动化（鼠标/键盘操作、图像识别）
+- 文件系统自动化（批量操作、目录同步）
+- 系统集成自动化（进程管理、系统监控）
+
+详见 [examples/desktop-automation/README.md](examples/desktop-automation/README.md)
 
 ## API 文档
 
