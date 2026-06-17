@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Layout, Menu, Avatar, Dropdown, Badge, Typography, Space, theme, Button, Breadcrumb } from 'antd';
+import { useState, useEffect } from 'react';
+import { Layout, Menu, Avatar, Dropdown, Badge, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
 import {
   DashboardOutlined,
   AppstoreOutlined,
@@ -15,6 +15,7 @@ import {
   AuditOutlined,
   DatabaseOutlined,
   HomeOutlined,
+  QuestionCircleOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
@@ -48,7 +49,14 @@ export default function MainLayout() {
   const location = useLocation();
   const { user, logout } = useAuthStore();
   const [collapsed, setCollapsed] = useState(false);
+  const [currentTime, setCurrentTime] = useState(new Date());
   const { token } = theme.useToken();
+
+  // 实时时钟
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const selectedKey = '/' + location.pathname.split('/')[1];
 
@@ -84,6 +92,17 @@ export default function MainLayout() {
 
   const userMenuItems = [
     {
+      key: 'info',
+      label: (
+        <div style={{ padding: '4px 0' }}>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{user?.username || '用户'}</div>
+          <div style={{ fontSize: 12, color: '#8c8c8c' }}>{user?.role === 'admin' ? '管理员' : '普通用户'}</div>
+        </div>
+      ),
+      disabled: true,
+    },
+    { type: 'divider' as const },
+    {
       key: 'profile',
       icon: <UserOutlined />,
       label: '个人信息',
@@ -103,6 +122,21 @@ export default function MainLayout() {
       nav('/login');
     }
   };
+
+  // 渲染带 tooltip 的菜单项（折叠时）
+  const menuItemsWithTooltip = collapsed
+    ? menuItems.map(item => ({
+        ...item,
+        label: <Tooltip placement="right" title={item.label}>{item.label}</Tooltip>,
+        children: item.children?.map(child => ({
+          ...child,
+          label: <Tooltip placement="right" title={child.label}>{child.label}</Tooltip>,
+        })),
+      }))
+    : menuItems;
+
+  const timeStr = currentTime.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const dateStr = currentTime.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -141,6 +175,7 @@ export default function MainLayout() {
               alignItems: 'center',
               justifyContent: 'center',
               flexShrink: 0,
+              boxShadow: '0 2px 8px rgba(22,119,255,0.3)',
             }}
           >
             <ThunderboltOutlined style={{ color: '#fff', fontSize: 14 }} />
@@ -159,10 +194,37 @@ export default function MainLayout() {
           mode="inline"
           selectedKeys={[selectedKey]}
           defaultOpenKeys={['system']}
-          items={menuItems}
+          items={menuItemsWithTooltip}
           onClick={({ key }) => nav(key)}
           style={{ border: 'none', marginTop: 8 }}
         />
+
+        {/* 侧边栏底部折叠按钮 */}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: 48,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: collapsed ? 'center' : 'flex-end',
+            padding: collapsed ? 0 : '0 16px',
+            borderTop: `1px solid ${token.colorBorderSecondary}`,
+            cursor: 'pointer',
+            transition: 'all 0.2s',
+          }}
+          onClick={() => setCollapsed(!collapsed)}
+        >
+          <Tooltip title={collapsed ? '展开菜单' : '收起菜单'} placement="right">
+            <Button
+              type="text"
+              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              style={{ fontSize: 15, color: token.colorTextSecondary }}
+            />
+          </Tooltip>
+        </div>
       </Sider>
 
       <Layout>
@@ -182,35 +244,55 @@ export default function MainLayout() {
           }}
         >
           <Space size={12}>
-            <Button
-              type="text"
-              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-              onClick={() => setCollapsed(!collapsed)}
-              style={{ fontSize: 16 }}
-            />
             {pathSegments.length > 1 && (
               <Breadcrumb items={breadcrumbItems} style={{ fontSize: 13 }} />
             )}
           </Space>
 
-          <Space size={8}>
-            <Badge count={0} dot>
-              <Button type="text" icon={<BellOutlined />} style={{ fontSize: 16 }} />
-            </Badge>
+          <Space size={4}>
+            {/* 时间显示 */}
+            <div style={{ textAlign: 'right', marginRight: 8, lineHeight: 1.3 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: token.colorText }}>{timeStr}</div>
+              <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{dateStr}</div>
+            </div>
 
+            {/* 帮助按钮 */}
+            <Tooltip title="帮助文档">
+              <Button type="text" icon={<QuestionCircleOutlined />} style={{ fontSize: 16, color: token.colorTextSecondary }} />
+            </Tooltip>
+
+            {/* 通知按钮 */}
+            <Tooltip title="通知">
+              <Badge count={0} dot>
+                <Button type="text" icon={<BellOutlined />} style={{ fontSize: 16 }} onClick={() => nav('/notifications')} />
+              </Badge>
+            </Tooltip>
+
+            {/* 用户头像下拉 */}
             <Dropdown
               menu={{ items: userMenuItems, onClick: handleUserMenu }}
               placement="bottomRight"
               trigger={['click']}
             >
-              <Space style={{ cursor: 'pointer', padding: '4px 8px', borderRadius: 8 }}>
+              <Space
+                style={{
+                  cursor: 'pointer',
+                  padding: '4px 8px',
+                  borderRadius: 8,
+                  transition: 'background 0.2s',
+                }}
+                className="user-dropdown-trigger"
+              >
                 <Avatar
                   size={30}
-                  style={{ background: 'linear-gradient(135deg, #1677ff, #7c3aed)', fontSize: 13 }}
+                  style={{ background: 'linear-gradient(135deg, #1677ff, #7c3aed)', fontSize: 13, flexShrink: 0 }}
                 >
                   {user?.username?.[0]?.toUpperCase() || 'U'}
                 </Avatar>
-                <Text style={{ fontSize: 13 }}>{user?.username || '用户'}</Text>
+                <div style={{ lineHeight: 1.3 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: token.colorText }}>{user?.username || '用户'}</div>
+                  <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{user?.role === 'admin' ? '管理员' : '普通用户'}</div>
+                </div>
               </Space>
             </Dropdown>
           </Space>

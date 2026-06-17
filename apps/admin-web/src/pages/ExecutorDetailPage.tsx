@@ -189,8 +189,8 @@ export default function ExecutorDetailPage() {
                 { title: '磁盘使用率', value: executor.diskUsage ?? 0, warn: 70, danger: 90 },
               ] as const).map(({ title, value, warn, danger }) => (
                 <Col span={8} key={title}>
-                  <Statistic title={title} value={value} suffix="%" valueStyle={{ color: usageColor(value, warn, danger) }} />
-                  <Progress percent={value} showInfo={false} strokeColor={usageColor(value, warn, danger)} style={{ marginTop: 8 }} />
+                  <Statistic title={title} value={value} suffix="%" precision={1} valueStyle={{ color: usageColor(value, warn, danger) }} />
+                  <Progress percent={Math.round(value)} showInfo={false} strokeColor={usageColor(value, warn, danger)} style={{ marginTop: 8 }} />
                 </Col>
               ))}
             </Row>

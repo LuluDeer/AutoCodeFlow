@@ -56,15 +56,44 @@ async function bootstrap() {
   // when the app runs behind a reverse proxy (nginx, load balancer, etc.)
   app.getHttpAdapter().getInstance().set("trust proxy", 1);
 
-  // S10: CORS — use explicit origin whitelist; '*' + credentials is rejected by browsers
+  // S10: CORS — auto-allow LAN/private origins; public origins require explicit whitelist.
+  // '*' + credentials is rejected by browsers so we use a callback instead.
   const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:5173")
     .split(",")
     .map((o) => o.trim())
     .filter(Boolean);
+
+  // Returns true when the origin's hostname is a private/LAN address.
+  // Covers: localhost, 127.x, 10.x, 192.168.x, 172.16-31.x
+  function isLanOrigin(origin: string): boolean {
+    try {
+      const { hostname } = new URL(origin);
+      return (
+        hostname === "localhost" ||
+        /^127\./.test(hostname) ||
+        /^10\./.test(hostname) ||
+        /^192\.168\./.test(hostname) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+      );
+    } catch {
+      return false;
+    }
+  }
+
   app.enableCors({
     origin: (origin, callback) => {
-      // Allow server-to-server calls (no Origin header) and whitelisted origins
-      if (!origin || allowedOrigins.includes(origin)) {
+      // Allow server-to-server calls (no Origin header)
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      // Auto-allow LAN / private-network origins — no config needed
+      if (isLanOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+      // Public origins must be explicitly whitelisted via CORS_ORIGINS
+      if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error(`Origin ${origin} not allowed by CORS`));
