@@ -241,7 +241,7 @@ export class TaskService {
   ) {
     const qb = this.execRepo
       .createQueryBuilder("e")
-      .leftJoin("task", "t", "t.id = e.taskId")
+      .leftJoin("tasks", "t", "t.id = e.taskId")
       .addSelect(["t.name AS task_name"])
       .orderBy("e.createdAt", "DESC")
       .skip((p.page - 1) * p.pageSize)

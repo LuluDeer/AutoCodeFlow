@@ -11,7 +11,9 @@ import {
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { applicationsApi, Application } from '../api/applications';
 import { aiApi, AppHealthReport } from '../api/ai';
-import { getErrMsg } from '../utils/error';
+import { tasksApi, Task } from '../api/tasks';
+import AppDeploymentPage from './AppDeploymentPage';
+import { getErrMsg, isFormValidationError } from '../utils/error';
 
 // ─── AI Analysis Tab ────────────────────────────────────────────────────────────
 function AiAnalysisTab({ appId }: { appId: string }) {
@@ -102,9 +104,6 @@ function AiAnalysisTab({ appId }: { appId: string }) {
     </Card>
   );
 }
-import { tasksApi, Task } from '../api/tasks';
-import AppDeploymentPage from './AppDeploymentPage';
-import { getErrMsg, isFormValidationError } from '../utils/error';
 
 const { Title, Text } = Typography;
 

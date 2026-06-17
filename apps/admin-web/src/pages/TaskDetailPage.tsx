@@ -139,6 +139,15 @@ export default function TaskDetailPage() {
       render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
     },
     {
+      title: '执行器', dataIndex: 'executorAddress', width: 140, ellipsis: true,
+      responsive: ['md'] as import('antd/es/_util/responsiveObserver').Breakpoint[],
+      render: (v: string) => v ? (
+        <Tooltip title={v}>
+          <Text style={{ fontSize: 11, fontFamily: 'monospace' }}>{v}</Text>
+        </Tooltip>
+      ) : <Text type="secondary">-</Text>,
+    },
+    {
       title: '开始时间', dataIndex: 'startTime', width: 140,
       render: (v: string) => v ? (
         <Tooltip title={new Date(v).toLocaleString('zh-CN')}>
@@ -212,8 +221,8 @@ export default function TaskDetailPage() {
 
       {/* Stats row */}
       {taskStats && (
-        <Row gutter={16} style={{ marginBottom: 16 }}>
-          <Col span={6}>
+        <Row gutter={[16, 12]} style={{ marginBottom: 16 }}>
+          <Col xs={12} sm={6}>
             <Card size="small">
               <Statistic
                 title="总执行次数"
@@ -222,18 +231,18 @@ export default function TaskDetailPage() {
               />
             </Card>
           </Col>
-          <Col span={6}>
+          <Col xs={12} sm={6}>
             <Card size="small">
               <Statistic
                 title="成功率"
                 value={((taskStats.successRate ?? 0) * 100).toFixed(1)}
                 suffix="%"
-                valueStyle={{ color: '#52c41a' }}
+                valueStyle={{ color: (taskStats.successRate ?? 0) >= 0.95 ? '#52c41a' : (taskStats.successRate ?? 0) >= 0.8 ? '#fa8c16' : '#ff4d4f' }}
                 prefix={<CheckCircleOutlined />}
               />
             </Card>
           </Col>
-          <Col span={6}>
+          <Col xs={12} sm={6}>
             <Card size="small">
               <Statistic
                 title="失败次数"
@@ -243,7 +252,7 @@ export default function TaskDetailPage() {
               />
             </Card>
           </Col>
-          <Col span={6}>
+          <Col xs={12} sm={6}>
             <Card size="small">
               <Statistic
                 title="平均耗时"

@@ -3,8 +3,11 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  ManyToOne,
+  JoinColumn,
   Index,
 } from "typeorm";
+import { Task } from "./task.entity";
 
 export enum ExecutionStatus {
   PENDING = "pending",
@@ -31,6 +34,10 @@ export class TaskExecution {
     default: ExecutionStatus.PENDING,
   })
   status: ExecutionStatus;
+
+  @ManyToOne("Task", "taskExecutions", { onDelete: "SET NULL", nullable: true })
+  @JoinColumn({ name: "taskId" })
+  task: Task | null;
   @Column({ nullable: true }) executorAddress: string;
   @Column({ type: "text", nullable: true }) logs: string;
   @Column({ type: "jsonb", nullable: true }) result: Record<string, any>;

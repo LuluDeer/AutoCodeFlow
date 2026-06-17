@@ -69,7 +69,7 @@ export interface PageResult<T> {
 }
 
 export const tasksApi = {
-  list: (params?: { page?: number; pageSize?: number; name?: string; status?: string; runtime?: string; applicationId?: string }) =>
+  list: (params?: { page?: number; pageSize?: number; name?: string; status?: string; triggerType?: string; runtime?: string; applicationId?: string }) =>
     client.get('/tasks', { params }) as Promise<PageResult<Task>>,
   get: (id: string) =>
     client.get(`/tasks/${id}`) as Promise<Task>,
@@ -104,7 +104,7 @@ export const tasksApi = {
     client.get(`/tasks/${id}/stats`) as Promise<{ recentExecutions: TaskExecution[]; successRate: number; avgDuration: number; totalRuns: number }>,
   updateGlue: (id: string, source: string, language?: string) =>
     client.put(`/tasks/${id}/glue`, { source, language }),
-  allExecutions: (params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string }) =>
+  allExecutions: (params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string }) =>
     client.get('/tasks/executions/all', { params }) as Promise<PageResult<TaskExecution>>,
   killExecution: (taskId: string, execId: string) =>
     client.post(`/tasks/${taskId}/executions/${execId}/kill`) as Promise<{ success: boolean; message: string }>,

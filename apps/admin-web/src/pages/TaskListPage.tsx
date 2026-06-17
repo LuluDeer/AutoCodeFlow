@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import {
   Table, Button, Tag, Space, Typography, message, Input, Select,
-  Badge, Popconfirm, Tooltip, Empty,
+  Badge, Popconfirm, Tooltip, Empty, Switch,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
-  PauseCircleOutlined, PlayCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
+  DeleteOutlined, EyeOutlined, EditOutlined,
   CheckSquareOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
@@ -42,7 +42,7 @@ export default function TaskListPage() {
   const [pageSize, setPageSize] = useState(20);
 
   const { data, loading, refresh } = useRequest(
-    () => tasksApi.list({ page, pageSize, name: search || undefined, status: statusFilter }),
+    () => tasksApi.list({ page, pageSize, name: search || undefined, status: statusFilter, triggerType: triggerFilter }),
     { pollingInterval: 30000, refreshDeps: [page, pageSize, search, statusFilter, triggerFilter] },
   );
 
@@ -133,7 +133,7 @@ export default function TaskListPage() {
       width: 160,
       render: (_: any, r: Task) => {
         if (r.triggerType === 'cron' && r.cronExpression) {
-          return<Text code style={{ fontSize: 12 }}>{r.cronExpression}</Text>;
+          return <Text code style={{ fontSize: 12 }}>{r.cronExpression}</Text>;
         }
         if (r.triggerType === 'fixed_rate' && r.fixedRate) {
           const secs = r.fixedRate;
@@ -147,15 +147,48 @@ export default function TaskListPage() {
       },
     },
     {
+      title: '下次执行',
+      key: 'nextRun',
+      width: 150,
+      render: (_: any, r: Task) => {
+        if (r.status !== 'active') return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+        if (r.triggerType === 'cron' && r.cronExpression) {
+          return (
+            <Tooltip title="下次 Cron 触发时间">
+              <Tag color="blue" style={{ fontSize: 11 }}>Cron 计划中</Tag>
+            </Tooltip>
+          );
+        }
+        if (r.triggerType === 'fixed_rate' && r.fixedRate) {
+          return <Tag color="geekblue" style={{ fontSize: 11 }}>定时运行中</Tag>;
+        }
+        return <Text type="secondary" style={{ fontSize: 12 }}>手动触发</Text>;
+      },
+    },
+    {
       title: '运行时',
       dataIndex: 'runtime',
       width: 80,
       render: (v: string) => v ? <Tag>{v}</Tag> : '-',
     },
     {
+      title: '启用',
+      key: 'toggle',
+      width: 70,
+      render: (_: any, r: Task) => (
+        <Switch
+          size="small"
+          checked={r.status === 'active'}
+          loading={false}
+          onChange={checked => checked ? handleResume(r.id) : handlePause(r.id)}
+          disabled={r.status === 'failed' || r.status === 'inactive'}
+        />
+      ),
+    },
+    {
       title: '操作',
       key: 'actions',
-      width: 200,
+      width: 160,
       render: (_: any, r: Task) => (
         <Space size={2}>
           <Tooltip title="查看详情">
@@ -164,25 +197,13 @@ export default function TaskListPage() {
           <Tooltip title="编辑">
             <Button type="text" size="small" icon={<EditOutlined />} onClick={() => nav(`/tasks/${r.id}/edit`)} />
           </Tooltip>
-          <Tooltip title="手动触发">
+          <Tooltip title="立即执行">
             <Button
               type="text" size="small" icon={<ThunderboltOutlined />}
               onClick={() => handleTrigger(r.id, r.name)}
               style={{ color: '#1677ff' }}
             />
           </Tooltip>
-          {r.status === 'active' && (
-            <Tooltip title="暂停">
-              <Button type="text" size="small" icon={<PauseCircleOutlined />}
-                onClick={() => handlePause(r.id)} style={{ color: '#fa8c16' }} />
-            </Tooltip>
-          )}
-          {r.status === 'paused' && (
-            <Tooltip title="恢复">
-              <Button type="text" size="small" icon={<PlayCircleOutlined />}
-                onClick={() => handleResume(r.id)} style={{ color: '#52c41a' }} />
-            </Tooltip>
-          )}
           <Popconfirm
             title="确认删除此任务？"
             onConfirm={() => handleDelete(r.id)}
@@ -262,8 +283,8 @@ export default function TaskListPage() {
           <CheckSquareOutlined style={{ color: '#1677ff' }} />
           <Text>已选 <strong>{selectedRowKeys.length}</strong> 项</Text>
           <Button size="small" icon={<ThunderboltOutlined />} onClick={handleBatchTrigger}>批量触发</Button>
-          <Button size="small" icon={<PauseCircleOutlined />} onClick={handleBatchPause}>批量暂停</Button>
-          <Button size="small" icon={<PlayCircleOutlined />} onClick={handleBatchResume}>批量恢复</Button>
+          <Button size="small" onClick={handleBatchPause}>批量暂停</Button>
+          <Button size="small" onClick={handleBatchResume}>批量恢复</Button>
           <Popconfirm title={`确认删除 ${selectedRowKeys.length} 个任务？`} onConfirm={handleBatchDelete} okText="删除" okButtonProps={{ danger: true }}>
             <Button size="small" danger icon={<DeleteOutlined />}>批量删除</Button>
           </Popconfirm>

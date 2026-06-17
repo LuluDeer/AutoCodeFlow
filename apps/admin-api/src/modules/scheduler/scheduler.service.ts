@@ -86,19 +86,29 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   async recoverStaleExecutions() {
     const runningExecs = await this.execRepo.find({
       where: { status: ExecutionStatus.RUNNING },
-      relations: ['task'],
     });
     if (!runningExecs.length) return;
 
     const now = Date.now();
     const DEFAULT_STALE_MS = 60 * 60 * 1000; // 1-hour fallback
     let recovered = 0;
+    
+    // Get all unique taskIds and fetch their timeouts
+    const taskIds = [...new Set(runningExecs.map(e => e.taskId))];
+    const tasks = await this.taskRepo.findByIds(taskIds);
+    const taskTimeouts = new Map<string, number>();
+    for (const t of tasks) {
+      if (t.timeout && t.timeout > 0) {
+        taskTimeouts.set(t.id, t.timeout);
+      }
+    }
+
     for (const exec of runningExecs) {
       const anchor = exec.startTime ?? exec.createdAt;
       if (!anchor) continue;
 
       // Prefer per-task timeout (seconds → ms); fall back to global default
-      const taskTimeoutSec = (exec as any).task?.timeout;
+      const taskTimeoutSec = taskTimeouts.get(exec.taskId);
       const staleMs =
         taskTimeoutSec && taskTimeoutSec > 0
           ? taskTimeoutSec * 1000

@@ -58,7 +58,10 @@ export default function ExecutorListPage() {
   const navigate = useNavigate();
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [groupFilter, setGroupFilter] = useState<string | undefined>();
   const [installCmdModal, setInstallCmdModal] = useState(false);
+
+  const { data: groups } = useRequest(executorsApi.getGroups, { cacheKey: 'executor-groups' });
   const [installCmd, setInstallCmd] = useState<{ cmd: string; curlCmd: string } | null>(null);
 
   const fetchInstallCmd = async () => {
@@ -84,10 +87,12 @@ export default function ExecutorListPage() {
       ex.appName.toLowerCase().includes(searchText.toLowerCase()) ||
       ex.address.toLowerCase().includes(searchText.toLowerCase()) ||
       (ex.groupName?.toLowerCase().includes(searchText.toLowerCase()) ?? false);
-    return matchSearch && (!statusFilter || ex.status === statusFilter);
-  }), [executors, searchText, statusFilter]);
+    return matchSearch &&
+      (!statusFilter || ex.status === statusFilter) &&
+      (!groupFilter || ex.groupName === groupFilter);
+  }), [executors, searchText, statusFilter, groupFilter]);
 
-  const hasFilters = !!(searchText || statusFilter);
+  const hasFilters = !!(searchText || statusFilter || groupFilter);
   const onlineCount = executors.filter(e => e.status === 'online').length;
 
   const columns = [
@@ -130,32 +135,30 @@ export default function ExecutorListPage() {
       ),
     },
     {
-      title: 'CPU / 内存',
+      title: 'CPU / 内存 / 磁盘',
       key: 'resources',
-      width: 140,
+      width: 160,
       responsive: ['lg'] as import('antd/es/_util/responsiveObserver').Breakpoint[],
       render: (_: unknown, r: Executor) => (
         <Space direction="vertical" size={2}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <Typography.Text style={{ fontSize: 11, width: 28 }}>CPU</Typography.Text>
-            <Progress
-              percent={r.cpuUsage ?? 0}
-              size="small" showInfo={false}
-              strokeColor={(r.cpuUsage ?? 0) > 80 ? '#ff4d4f' : (r.cpuUsage ?? 0) > 60 ? '#fa8c16' : '#52c41a'}
-              style={{ width: 56, margin: 0 }}
-            />
-            <Typography.Text style={{ fontSize: 11 }}>{(r.cpuUsage ?? 0).toFixed(0)}%</Typography.Text>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <Typography.Text style={{ fontSize: 11, width: 28 }}>内存</Typography.Text>
-            <Progress
-              percent={r.memUsage ?? 0}
-              size="small" showInfo={false}
-              strokeColor={(r.memUsage ?? 0) > 80 ? '#ff4d4f' : (r.memUsage ?? 0) > 60 ? '#fa8c16' : '#52c41a'}
-              style={{ width: 56, margin: 0 }}
-            />
-            <Typography.Text style={{ fontSize: 11 }}>{(r.memUsage ?? 0).toFixed(0)}%</Typography.Text>
-          </div>
+          {(['CPU', '内存', '磁盘'] as const).map((label) => {
+            const val = label === 'CPU' ? (r.cpuUsage ?? 0)
+              : label === '内存' ? (r.memUsage ?? 0)
+              : (r.diskUsage ?? 0);
+            if (label === '磁盘' && !r.diskUsage) return null;
+            return (
+              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Typography.Text style={{ fontSize: 11, width: 28 }}>{label}</Typography.Text>
+                <Progress
+                  percent={val}
+                  size="small" showInfo={false}
+                  strokeColor={val > 80 ? '#ff4d4f' : val > 60 ? '#fa8c16' : '#52c41a'}
+                  style={{ width: 56, margin: 0 }}
+                />
+                <Typography.Text style={{ fontSize: 11 }}>{val.toFixed(0)}%</Typography.Text>
+              </div>
+            );
+          })}
         </Space>
       ),
     },
@@ -249,8 +252,18 @@ export default function ExecutorListPage() {
             { value: 'busy', label: '忙碌' },
           ]}
         />
+        {(groups ?? []).length > 0 && (
+          <Select
+            placeholder="全部分组"
+            allowClear style={{ width: 130 }}
+            value={groupFilter}
+            onChange={(v) => setGroupFilter(v)}
+            suffixIcon={<FilterOutlined />}
+            options={(groups ?? []).map(g => ({ value: g, label: g }))}
+          />
+        )}
         {hasFilters && (
-          <Button size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); }}>清除筛选</Button>
+          <Button size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); setGroupFilter(undefined); }}>清除筛选</Button>
         )}
         {hasFilters && (
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>

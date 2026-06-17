@@ -8,10 +8,11 @@ dotenv.config();
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: '0.0.0.0',
     port: 5176,
     proxy: {
       '/api': {
-        target: (process.env.VITE_API_URL_INTERNAL || 'http://localhost:3002').replace(/\/api\/?$/, ''),
+        target: 'http://localhost:3105',
         changeOrigin: true,
       },
     },

@@ -1,24 +1,31 @@
-# 环境变量
+# 环境变量 - 保留示例文件，忽略实际配置
 .env
 .env.local
 .env.*.local
+!.env.example
 
-# Node.js
+# Node.js - 依赖和构建产物
 node_modules/
 dist/
+dist-electron/
 .npm
+build/
+.next/
 
-# Python
+# Python - 虚拟环境和编译产物
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
 *.egg
-build/
-.pytest_cache/
+.eggs/
+.coverage
+.mypy_cache/
+.tox/
+*.whl
 
-# 编辑器
+# 编辑器和IDE
 .idea/
 .vscode/
 *.swp
@@ -31,23 +38,25 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 logs/
+lerna-debug.log
 
-# 测试
+# 测试和覆盖率
 coverage/
 .nyc_output/
+.pytest_cache/
 
-# 构建产物
+# TypeScript 编译产物（仅自动生成的）
 *.tsbuildinfo
 *.js.map
-*.d.ts
 
 # 任务工作目录
 apps/executor-*/work/
 apps/executor-*/tasks/
-/tmp/
 
-# 缓存
+# 临时目录
+/tmp/
 .cache/
 .temp/
 
@@ -67,13 +76,10 @@ playwright-report/
 /playwright.e2e.config.js
 /playwright.e2e.config.cjs
 
-# 截图
+# 截图和图片
 *.png
 *.jpg
 *.jpeg
 
 # 上传目录
 apps/admin-api/uploads/
-
-# desktop 应用（未完成）
-apps/executor-desktop/

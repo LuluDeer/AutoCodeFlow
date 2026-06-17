@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import {
   Table, Typography, Badge, Button, Input, Select, Space,
-  Empty, Tooltip, Popconfirm, message,
+  Empty, Tooltip, Popconfirm, message, DatePicker,
 } from 'antd';
 import {
   SearchOutlined, FilterOutlined, ReloadOutlined, EyeOutlined, StopOutlined,
 } from '@ant-design/icons';
+import type { Dayjs } from 'dayjs';
 
 import { useRequest } from 'ahooks';
 import { useNavigate } from 'react-router-dom';
@@ -14,16 +15,17 @@ import type { TaskExecution } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
 
 const { Text } = Typography;
+const { RangePicker } = DatePicker;
 
 type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
-const STATUS_MAP: Record<string, { badge: BadgeStatus; label: string; color: string }> = {
-  pending: { badge: 'default', label: '等待中', color: 'default' },
-  running: { badge: 'processing', label: '运行中', color: 'processing' },
-  success: { badge: 'success', label: '成功', color: 'green' },
-  failed: { badge: 'error', label: '失败', color: 'red' },
-  timeout: { badge: 'warning', label: '超时', color: 'orange' },
-  killed: { badge: 'error', label: '已终止', color: 'volcano' },
-  cancelled: { badge: 'default', label: '已取消', color: 'default' },
+const STATUS_MAP: Record<string, { badge: BadgeStatus; label: string }> = {
+  pending:   { badge: 'default',    label: '等待中' },
+  running:   { badge: 'processing', label: '运行中' },
+  success:   { badge: 'success',    label: '成功'   },
+  failed:    { badge: 'error',      label: '失败'   },
+  timeout:   { badge: 'warning',    label: '超时'   },
+  killed:    { badge: 'error',      label: '已终止' },
+  cancelled: { badge: 'default',    label: '已取消' },
 };
 
 function formatDuration(ms: number): string {
@@ -47,6 +49,8 @@ export default function ExecutionsPage() {
   const [pageSize, setPageSize] = useState(20);
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [search, setSearch] = useState('');
+  const [executorFilter, setExecutorFilter] = useState('');
+  const [timeRange, setTimeRange] = useState<[Dayjs, Dayjs] | null>(null);
   const [killingId, setKillingId] = useState<string | null>(null);
 
   const handleKill = async (r: TaskExecution) => {
@@ -63,14 +67,31 @@ export default function ExecutionsPage() {
   };
 
   const { data, loading, refresh } = useRequest(
-    () => tasksApi.allExecutions({ page, pageSize, status: statusFilter, taskName: search || undefined }),
-    { refreshDeps: [page, pageSize, statusFilter, search], pollingInterval: 15000 },
+    () => tasksApi.allExecutions({
+      page,
+      pageSize,
+      status: statusFilter,
+      taskName: search || undefined,
+      executorAddress: executorFilter || undefined,
+      startTime: timeRange?.[0]?.toISOString(),
+      endTime: timeRange?.[1]?.toISOString(),
+    }),
+    { refreshDeps: [page, pageSize, statusFilter, search, executorFilter, timeRange], pollingInterval: 15000 },
   );
 
   const executions: TaskExecution[] = data?.items ?? [];
   const total: number = data?.total ?? 0;
 
-  // search is sent to server-side via refreshDeps so it filters across all pages
+  const hasFilters = !!(search || statusFilter || executorFilter || timeRange);
+
+  const clearFilters = () => {
+    setSearch('');
+    setStatusFilter(undefined);
+    setExecutorFilter('');
+    setTimeRange(null);
+    setPage(1);
+  };
+
   const columns = [
     {
       title: '任务',
@@ -84,15 +105,24 @@ export default function ExecutionsPage() {
       dataIndex: 'status',
       width: 90,
       render: (s: string) => {
-        const cfg = STATUS_MAP[s] || { badge: 'default', label: s, color: 'default' };
+        const cfg = STATUS_MAP[s] || { badge: 'default' as BadgeStatus, label: s };
         return <Badge status={cfg.badge} text={cfg.label} />;
       },
     },
     {
-      title: '触发',
+      title: '触发方式',
       dataIndex: 'triggerType',
-      width: 80,
+      width: 90,
       render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
+    },
+    {
+      title: '执行器',
+      dataIndex: 'executorAddress',
+      width: 160,
+      ellipsis: true,
+      render: (v: string) => v
+        ? <Tooltip title={v}><Text style={{ fontSize: 12 }}>{v}</Text></Tooltip>
+        : <Text type="secondary" style={{ fontSize: 12 }}>-</Text>,
     },
     {
       title: '开始时间',
@@ -160,12 +190,12 @@ export default function ExecutionsPage() {
 
       <Space style={{ marginBottom: 16 }} wrap>
         <Input
-          placeholder="搜索任务名、错误信息"
+          placeholder="搜索任务名"
           prefix={<SearchOutlined />}
           value={search}
           onChange={e => { setSearch(e.target.value); setPage(1); }}
           allowClear
-          style={{ width: 220 }}
+          style={{ width: 200 }}
         />
         <Select
           placeholder="全部状态"
@@ -175,14 +205,31 @@ export default function ExecutionsPage() {
           onChange={v => { setStatusFilter(v); setPage(1); }}
           suffixIcon={<FilterOutlined />}
           options={[
-            { value: 'running', label: '运行中' },
-            { value: 'success', label: '成功' },
-            { value: 'failed', label: '失败' },
-            { value: 'timeout', label: '超时' },
+            { value: 'running',   label: '运行中' },
+            { value: 'success',   label: '成功'   },
+            { value: 'failed',    label: '失败'   },
+            { value: 'timeout',   label: '超时'   },
+            { value: 'killed',    label: '已终止' },
+            { value: 'cancelled', label: '已取消' },
           ]}
         />
-        {statusFilter && (
-          <Button size="small" onClick={() => { setStatusFilter(undefined); setPage(1); }}>清除筛选</Button>
+        <Input
+          placeholder="执行器地址"
+          value={executorFilter}
+          onChange={e => { setExecutorFilter(e.target.value); setPage(1); }}
+          allowClear
+          style={{ width: 180 }}
+        />
+        <RangePicker
+          showTime
+          format="MM-DD HH:mm"
+          placeholder={['开始时间', '结束时间']}
+          value={timeRange}
+          onChange={val => { setTimeRange(val as [Dayjs, Dayjs] | null); setPage(1); }}
+          style={{ width: 320 }}
+        />
+        {hasFilters && (
+          <Button size="small" onClick={clearFilters}>清除筛选</Button>
         )}
       </Space>
 
