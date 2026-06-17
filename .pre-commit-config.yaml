@@ -1,0 +1,50 @@
+# AutoFlow pre-commit hooks
+# 安装: pip install pre-commit && pre-commit install
+# 手动运行所有文件: pre-commit run --all-files
+
+repos:
+  # 通用检查
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      - id: trailing-whitespace
+        name: 去除行尾空格
+      - id: end-of-file-fixer
+        name: 确保文件以换行符结尾
+      - id: check-yaml
+        name: YAML 语法检查
+      - id: check-json
+        name: JSON 语法检查
+      - id: check-added-large-files
+        name: 检查大文件
+        args: ['--maxkb=500']
+      - id: detect-private-key
+        name: 检测私钥泄露
+      - id: check-merge-conflict
+        name: 检查合并冲突标记
+
+  # Python 代码格式化和检查
+  - repo: https://github.com/psf/black
+    rev: 23.3.0
+    hooks:
+      - id: black
+        name: Python 代码格式化
+        files: ^apps/executor-python/
+        args: ['--line-length', '120']
+
+  # TypeScript / JavaScript
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.0.0
+    hooks:
+      - id: prettier
+        name: JS/TS 代码格式化
+        files: ^apps/(admin-api|admin-web|executor-node)/.*\.(ts|tsx|js|jsx|json|css)$
+        args: ['--print-width', '120', '--single-quote', '--trailing-comma', 'all']
+
+  # Shell 脚本检查
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.9.0.6
+    hooks:
+      - id: shellcheck
+        name: Shell 脚本静态分析
+        files: \.sh$

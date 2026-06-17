@@ -1,0 +1,85 @@
+# 环境变量 - 保留示例文件，忽略实际配置
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Node.js - 依赖和构建产物
+node_modules/
+dist/
+dist-electron/
+.npm
+build/
+.next/
+
+# Python - 虚拟环境和编译产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.egg
+.eggs/
+.coverage
+.mypy_cache/
+.tox/
+*.whl
+
+# 编辑器和IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+lerna-debug.log
+
+# 测试和覆盖率
+coverage/
+.nyc_output/
+.pytest_cache/
+
+# TypeScript 编译产物（仅自动生成的）
+*.tsbuildinfo
+*.js.map
+
+# 任务工作目录
+apps/executor-*/work/
+apps/executor-*/tasks/
+
+# 临时目录
+/tmp/
+.cache/
+.temp/
+
+# 工具运行时文件
+.codegraph/
+.env.isolated
+*.pid
+
+# E2E 测试临时文件
+test-results/
+playwright-report/
+.playwright-mcp/
+
+# 根目录临时测试脚本
+/e2e-full.spec.js
+/e2e-full.spec.cjs
+/playwright.e2e.config.js
+/playwright.e2e.config.cjs
+
+# 截图和图片
+*.png
+*.jpg
+*.jpeg
+
+# 上传目录
+apps/admin-api/uploads/

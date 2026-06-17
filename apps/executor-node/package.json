@@ -1,0 +1,44 @@
+{
+  "name": "executor-node",
+  "version": "1.0.0",
+  "description": "AutoCodeFlow Node.js Executor",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "ts-node-dev --respawn src/main.ts",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@types/uuid": "^10.0.0",
+    "axios": "1.9.0",
+    "dotenv": "^17.4.2",
+    "express": "4.21.2",
+    "js-yaml": "^4.1.0",
+    "uuid": "^14.0.0",
+    "winston": "3.17.0"
+  },
+  "devDependencies": {
+    "@types/express": "4.17.21",
+    "@types/jest": "29.5.14",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "22.15.21",
+    "@types/supertest": "6.0.3",
+    "jest": "29.7.0",
+    "supertest": "7.1.0",
+    "ts-jest": "29.3.4",
+    "ts-node": "10.9.2",
+    "ts-node-dev": "2.0.0",
+    "typescript": "5.8.3"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testRegex": ".*\\.spec\\.ts$",
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ]
+  }
+}
