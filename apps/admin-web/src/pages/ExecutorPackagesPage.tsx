@@ -68,7 +68,7 @@ export default function ExecutorPackagesPage() {
         type: typeFilter || undefined,
         status: statusFilter || undefined,
       });
-      setRows(res.items);
+      setRows(res.items.map(pkg => ({ ...pkg, status: pkg.isLatest ? 'active' : 'deprecated' })));
       setTotal(res.total);
     } catch (err: unknown) { message.error(getErrMsg(err, '加载失败')); } finally { setLoading(false); }
   }, [page, search, typeFilter, statusFilter]);
@@ -103,7 +103,7 @@ export default function ExecutorPackagesPage() {
     setSelectedExecutors([]);
     try {
       const list = await executorsApi.list();
-      setExecutors(list);
+      setExecutors(list.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })));
     } catch { setExecutors([]); } // executor list failure is non-critical, silently fall back to empty
   };
 

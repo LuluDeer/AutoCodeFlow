@@ -4,6 +4,12 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from scheduler import _send_heartbeat
 
 
+def create_mock_response(status_code: int = 200) -> httpx.Response:
+    """Create a mock httpx.Response with a request object."""
+    request = httpx.Request("POST", "http://test.com")
+    return httpx.Response(status_code, request=request)
+
+
 class TestHeartbeatRetry:
     """ERR-04: Test heartbeat retry mechanism with tenacity."""
 
@@ -14,7 +20,7 @@ class TestHeartbeatRetry:
         mock_client.post = AsyncMock(side_effect=[
             httpx.ConnectError("Connection refused"),
             httpx.ConnectError("Connection refused"),
-            httpx.Response(200),
+            create_mock_response(200),
         ])
         
         await _send_heartbeat(mock_client, "test-token")
@@ -28,7 +34,7 @@ class TestHeartbeatRetry:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(side_effect=[
             httpx.TimeoutException("Timed out"),
-            httpx.Response(200),
+            create_mock_response(200),
         ])
         
         await _send_heartbeat(mock_client, "test-token")
@@ -58,7 +64,7 @@ class TestHeartbeatRetry:
     async def test_heartbeat_success_on_first_attempt(self):
         """Test that heartbeat succeeds immediately when connection works."""
         mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=httpx.Response(200))
+        mock_client.post = AsyncMock(return_value=create_mock_response(200))
         
         await _send_heartbeat(mock_client, "test-token")
         
@@ -69,7 +75,7 @@ class TestHeartbeatRetry:
     async def test_heartbeat_without_token(self):
         """Test that heartbeat works without authentication token."""
         mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=httpx.Response(200))
+        mock_client.post = AsyncMock(return_value=create_mock_response(200))
         
         await _send_heartbeat(mock_client, "")
         

@@ -6,7 +6,7 @@ import {
 import type { BadgeProps } from 'antd';
 import {
   RocketOutlined, StopOutlined, ReloadOutlined, PlusOutlined,
-  ThunderboltOutlined, HistoryOutlined, UpCircleOutlined,
+  ThunderboltOutlined, UpCircleOutlined,
 } from '@ant-design/icons';
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
 import { executorsApi, Executor } from '../api/executors';
