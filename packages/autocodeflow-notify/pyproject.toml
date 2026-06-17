@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autocodeflow-notify"
+version = "0.1.0"
+description = "AutoCodeFlow notification utilities for task code"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]

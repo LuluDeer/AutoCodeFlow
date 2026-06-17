@@ -1,0 +1,280 @@
+# docker-compose.yml  —  完整部署（生产 / staging / CI）
+# 所有机密信息通过环境变量注入，请先复制 .env.example 为 .env 并填写。
+# 本地开发仅启动基础设施请改用 infra/docker-compose.yml。
+
+version: '3.9'
+
+networks:
+  # 内部网络，服务间通信
+  autoflow-internal:
+    internal: true
+  # 对外暴露网络
+  autoflow-public:
+
+services:
+  # ── Infrastructure ──────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-autoflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE:-autoflow}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-autoflow}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - autoflow-internal
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - autoflow-internal
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+
+  # ── Core Services ──────────────────────────────────────
+  admin-api:
+    build:
+      context: ./apps/admin-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: '1.0'
+    ports:
+      - '3105:3105'
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DB_HOST: postgres
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USERNAME: ${DB_USERNAME:-autoflow}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE: ${DB_DATABASE:-autoflow}
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      EXECUTOR_SECRET: ${EXECUTOR_SECRET}
+      ADMIN_WEB_ORIGIN: ${ADMIN_WEB_ORIGIN:-http://localhost}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:5173}
+      AI_PROVIDER: ${AI_PROVIDER:-disabled}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      APP_PROTOCOL: ${APP_PROTOCOL:-http}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-Admin@123456}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-admin@autoflow.local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3105/api/health/live']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  admin-web:
+    build:
+      context: ./apps/admin-web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - '80:80'
+    depends_on:
+      admin-api:
+        condition: service_healthy
+    environment:
+      REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:3105}
+      VITE_API_URL_INTERNAL: ${VITE_API_URL_INTERNAL:-http://localhost:3105}
+      VITE_API_URL_EXTERNAL: ${VITE_API_URL_EXTERNAL:-}
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  # ── Executors ──────────────────────────────────────
+  executor-python:
+    build:
+      context: ./apps/executor-python
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: '1.0'
+    ports:
+      - '8001:8001'
+    environment:
+      APP_NAME: executor-python-1
+      PORT: 8001
+      EXECUTOR_ADDRESS: executor-python:8001
+      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_PYTHON_PUBLIC_ADDRESS:-executor-python:8001}
+      ADMIN_API_URL: http://admin-api:3105
+      ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3105}
+      ADMIN_API_URL_EXTERNAL: ${ADMIN_API_URL_EXTERNAL:-}
+      EXECUTOR_SECRET: ${EXECUTOR_SECRET}
+      WORK_DIR: /data/tasks
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PYPI_REGISTRY_URL: ${PYPI_REGISTRY_URL:-http://registry-pypi:8003/simple/}
+    volumes:
+      - executor_python_data:/data/tasks
+    depends_on:
+      admin-api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:8001/health")']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  executor-node:
+    build:
+      context: ./apps/executor-node
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: '1.0'
+    ports:
+      - '8002:8002'
+    environment:
+      APP_NAME: executor-node-1
+      PORT: 8002
+      EXECUTOR_ADDRESS: executor-node:8002
+      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_NODE_PUBLIC_ADDRESS:-executor-node:8002}
+      ADMIN_API_URL: http://admin-api:3105
+      ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3105}
+      ADMIN_API_URL_EXTERNAL: ${ADMIN_API_URL_EXTERNAL:-}
+      EXECUTOR_SECRET: ${EXECUTOR_SECRET}
+      WORK_DIR: /data/tasks
+      MAX_CONCURRENT_TASKS: 10
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      NPM_REGISTRY_URL: ${NPM_REGISTRY_URL:-http://registry-npm:4873}
+      PYTHON_REGISTRY_URL: ${PYTHON_REGISTRY_URL:-http://registry-pypi:8003/simple/}
+    volumes:
+      - executor_node_data:/data/tasks
+    depends_on:
+      admin-api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8002/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  # ── Package Registry ──────────────────────────────────────
+  registry-pypi:
+    build:
+      context: ./apps/registry-pypi
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - '8003:8003'
+    environment:
+      REGISTRY_USER: ${REGISTRY_USER:-admin}
+      REGISTRY_PASS: ${REGISTRY_PASS}
+      PYPI_API_KEY: ${PYPI_API_KEY}
+      PACKAGES_DIR: /data/packages
+    volumes:
+      - pypi_data:/data/packages
+    healthcheck:
+      test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:8003/health")']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  registry-npm:
+    image: verdaccio/verdaccio:5
+    restart: unless-stopped
+    ports:
+      - '4873:4873'
+    volumes:
+      - npm_data:/verdaccio/storage
+      - ./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:4873/-/ping']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - autoflow-internal
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+volumes:
+  postgres_data:
+  redis_data:
+  pypi_data:
+  npm_data:
+  executor_python_data:
+  executor_node_data:

@@ -1,0 +1,188 @@
+"""Tests for the AutoFlow PyPI registry service."""
+import io
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+# Set default credentials before importing the app so the module uses them
+os.environ.setdefault("REGISTRY_USER", "testuser")
+os.environ.setdefault("REGISTRY_PASS", "testpass")
+
+
+@pytest.fixture()
+def tmp_packages_dir(tmp_path, monkeypatch):
+    """Override PACKAGES_DIR to an isolated temp directory per test."""
+    pkg_dir = tmp_path / "packages"
+    pkg_dir.mkdir()
+    monkeypatch.setenv("PACKAGES_DIR", str(pkg_dir))
+    monkeypatch.setenv("REGISTRY_USER", "testuser")
+    monkeypatch.setenv("REGISTRY_PASS", "testpass")
+    return pkg_dir
+
+
+@pytest.fixture()
+def client(tmp_packages_dir):
+    """Return a TestClient with a fresh packages directory."""
+    # Re-import app with patched env vars
+    import importlib
+    import sys
+    # Remove cached module so env vars take effect
+    sys.modules.pop("main", None)
+    import main as app_module
+    # Patch the packages dir on the already-loaded module
+    app_module.PACKAGES_DIR = tmp_packages_dir
+    app_module.REGISTRY_USER = "testuser"
+    app_module.REGISTRY_PASS = "testpass"
+    return TestClient(app_module.app)
+
+
+AUTH = ("testuser", "testpass")
+BAD_AUTH = ("bad", "creds")
+
+
+class TestHealth:
+    def test_health_returns_ok(self, client):
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_health_no_auth_required(self, client):
+        """Health endpoint must be publicly accessible."""
+        resp = client.get("/health")
+        assert resp.status_code == 200
+
+
+class TestAuth:
+    def test_simple_index_requires_auth(self, client):
+        resp = client.get("/simple/")
+        assert resp.status_code == 401
+
+    def test_package_index_requires_auth(self, client):
+        resp = client.get("/simple/my-pkg/")
+        assert resp.status_code in (401, 404)
+
+    def test_download_requires_auth(self, client):
+        resp = client.get("/packages/my-pkg/foo-1.0.whl")
+        assert resp.status_code in (401, 404)
+
+    def test_upload_requires_auth(self, client):
+        resp = client.post("/", data={"name": "pkg", "version": "1.0"},
+                           files={"content": ("pkg-1.0.whl", b"data", "application/octet-stream")})
+        assert resp.status_code == 401
+
+    def test_bad_credentials_rejected(self, client):
+        resp = client.get("/simple/", auth=BAD_AUTH)
+        assert resp.status_code == 401
+
+
+class TestSimpleIndex:
+    def test_empty_index(self, client):
+        resp = client.get("/simple/", auth=AUTH)
+        assert resp.status_code == 200
+        assert "Simple Index" in resp.text
+
+    def test_uploaded_package_appears_in_index(self, client):
+        client.post("/", auth=AUTH,
+                    data={"name": "mypackage", "version": "1.0.0"},
+                    files={"content": ("mypackage-1.0.0.whl", b"wheel content", "application/octet-stream")})
+        resp = client.get("/simple/", auth=AUTH)
+        assert "mypackage" in resp.text
+
+    def test_package_index_lists_files(self, client):
+        client.post("/", auth=AUTH,
+                    data={"name": "mypackage", "version": "1.0.0"},
+                    files={"content": ("mypackage-1.0.0.whl", b"wheel bytes", "application/octet-stream")})
+        resp = client.get("/simple/mypackage/", auth=AUTH)
+        assert resp.status_code == 200
+        assert "mypackage-1.0.0.whl" in resp.text
+        # sha256 fragment must be present
+        assert "sha256=" in resp.text
+
+    def test_missing_package_returns_404(self, client):
+        resp = client.get("/simple/nonexistent/", auth=AUTH)
+        assert resp.status_code == 404
+
+
+class TestUpload:
+    def test_upload_whl(self, client):
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "mypkg", "version": "0.1.0"},
+                           files={"content": ("mypkg-0.1.0-py3-none-any.whl",
+                                             b"fake wheel", "application/octet-stream")})
+        assert resp.status_code == 200
+        assert "mypkg-0.1.0-py3-none-any.whl" in resp.json()["message"]
+
+    def test_upload_tar_gz(self, client):
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "mypkg", "version": "0.1.0"},
+                           files={"content": ("mypkg-0.1.0.tar.gz",
+                                             b"fake sdist", "application/octet-stream")})
+        assert resp.status_code == 200
+
+    def test_upload_invalid_format_rejected(self, client):
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "mypkg", "version": "0.1.0"},
+                           files={"content": ("mypkg-0.1.0.exe",
+                                             b"malware", "application/octet-stream")})
+        assert resp.status_code == 400
+
+    def test_upload_alt_endpoint(self, client):
+        resp = client.post("/upload", auth=AUTH,
+                           data={"name": "mypkg", "version": "0.2.0"},
+                           files={"content": ("mypkg-0.2.0.whl",
+                                             b"wheel v2", "application/octet-stream")})
+        assert resp.status_code == 200
+
+    def test_name_normalised(self, client):
+        """PEP 503: My-Package and my_package should resolve to same dir."""
+        client.post("/", auth=AUTH,
+                    data={"name": "My_Package", "version": "1.0"},
+                    files={"content": ("My_Package-1.0.whl",
+                                      b"data", "application/octet-stream")})
+        # The normalised name should appear in /simple/
+        resp = client.get("/simple/", auth=AUTH)
+        assert "my-package" in resp.text
+
+    def test_path_traversal_in_filename_rejected(self, client):
+        """Filename with directory components must be stripped safely."""
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "mypkg", "version": "1.0"},
+                           files={"content": ("../evil-1.0.whl",
+                                             b"evil", "application/octet-stream")})
+        # Either accepted with stripped name or rejected — must NOT write outside packages dir
+        if resp.status_code == 200:
+            # File should be stored as evil-1.0.whl inside the package dir, not above
+            assert "../" not in resp.json().get("message", "")
+
+
+class TestDownload:
+    def test_download_uploaded_file(self, client):
+        content = b"real wheel bytes"
+        client.post("/", auth=AUTH,
+                    data={"name": "dl-pkg", "version": "1.0"},
+                    files={"content": ("dl-pkg-1.0.whl", content, "application/octet-stream")})
+        resp = client.get("/packages/dl-pkg/dl-pkg-1.0.whl", auth=AUTH)
+        assert resp.status_code == 200
+        assert resp.content == content
+
+    def test_download_missing_file_returns_404(self, client):
+        resp = client.get("/packages/nopackage/nofile-1.0.whl", auth=AUTH)
+        assert resp.status_code == 404
+
+
+class TestNormalize:
+    """Unit tests for the normalize() helper."""
+
+    def test_normalize_lowercases(self):
+        from main import normalize
+        assert normalize("MyPkg") == "mypkg"
+
+    def test_normalize_replaces_separators(self):
+        from main import normalize
+        assert normalize("my-pkg") == "my-pkg"
+        assert normalize("my_pkg") == "my-pkg"
+        assert normalize("my.pkg") == "my-pkg"
+        assert normalize("my---pkg") == "my-pkg"

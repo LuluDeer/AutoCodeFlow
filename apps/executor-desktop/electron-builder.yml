@@ -1,0 +1,61 @@
+appId: com.autocodeflow.executor-desktop
+productName: AutoCodeFlow Executor
+copyright: "Copyright 2024 AutoCodeFlow"
+
+directories:
+  buildResources: assets
+  output: dist-electron
+
+files:
+  - dist/main/**/*
+  - dist/preload/**/*
+  - dist/renderer/**/*
+  - "!**/*.ts"
+  - "!**/*.map"
+
+extraResources:
+  - from: resources/executor-node/
+    to: executor-node/
+    filter:
+      - "**/*"
+  - from: assets/
+    to: assets/
+    filter:
+      - "tray-*.png"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+  icon: assets/icon.ico
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  icon: assets/icon.icns
+  category: public.app-category.utilities
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  icon: assets/icon.png
+  category: Utility
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: false
+  createStartMenuShortcut: true
+  shortcutName: AutoCodeFlow Executor
+
+dmg:
+  window:
+    width: 540
+    height: 380
