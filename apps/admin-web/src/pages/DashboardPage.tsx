@@ -97,32 +97,32 @@ export default function DashboardPage() {
       <Spin spinning={summaryLoading}>
         <Row gutter={[16, 16]}>
           <Col xs={12} sm={6}>
-            <Card size="small" bordered={false} style={{ background: '#f0f9ff', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: '#f0f9ff', borderRadius: 10 }}>
               <Statistic
                 title={<Text style={{ fontSize: 13 }}>任务总数</Text>}
                 value={s?.totalTasks ?? '-'}
                 prefix={<RocketOutlined style={{ color: '#1677ff' }} />}
-                valueStyle={{ color: '#1677ff', fontSize: 28 }}
+                styles={{ content: { color: '#1677ff', fontSize: 28 } }}
               />
             </Card>
           </Col>
           <Col xs={12} sm={6}>
-            <Card size="small" bordered={false} style={{ background: '#f6ffed', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: '#f6ffed', borderRadius: 10 }}>
               <Statistic
                 title={<Text style={{ fontSize: 13 }}>今日执行</Text>}
                 value={s?.todayRuns ?? totalExec}
                 prefix={<ThunderboltOutlined style={{ color: '#52c41a' }} />}
-                valueStyle={{ color: '#52c41a', fontSize: 28 }}
+                styles={{ content: { color: '#52c41a', fontSize: 28 } }}
               />
             </Card>
           </Col>
           <Col xs={12} sm={6}>
-            <Card size="small" bordered={false} style={{ background: '#fff7e6', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: '#fff7e6', borderRadius: 10 }}>
               <Statistic
                 title={<Text style={{ fontSize: 13 }}>运行中</Text>}
                 value={runningCount}
                 prefix={<ClockCircleOutlined style={{ color: '#fa8c16' }} />}
-                valueStyle={{ color: runningCount > 0 ? '#fa8c16' : '#999', fontSize: 28 }}
+                styles={{ content: { color: runningCount > 0 ? '#fa8c16' : '#999', fontSize: 28 } }}
                 suffix={
                   runningCount > 0
                     ? <Badge status="processing" style={{ marginLeft: 6 }} />
@@ -132,12 +132,12 @@ export default function DashboardPage() {
             </Card>
           </Col>
           <Col xs={12} sm={6}>
-            <Card size="small" bordered={false} style={{ background: '#f9f0ff', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: '#f9f0ff', borderRadius: 10 }}>
               <Statistic
                 title={<Text style={{ fontSize: 13 }}>在线执行器</Text>}
                 value={`${s?.onlineExecutors ?? '-'} / ${s?.totalExecutors ?? '-'}`}
                 prefix={<ApiOutlined style={{ color: '#722ed1' }} />}
-                valueStyle={{ color: '#722ed1', fontSize: 28 }}
+                styles={{ content: { color: '#722ed1', fontSize: 28 } }}
               />
             </Card>
           </Col>
@@ -148,7 +148,7 @@ export default function DashboardPage() {
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12}>
           <Card
-            size="small" bordered={false}
+            size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>执行成功率</Text>}
             style={{ borderRadius: 10 }}
           >
@@ -175,7 +175,7 @@ export default function DashboardPage() {
         </Col>
         <Col xs={24} sm={12}>
           <Card
-            size="small" bordered={false}
+            size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>平均执行时长</Text>}
             style={{ borderRadius: 10 }}
           >
@@ -193,7 +193,7 @@ export default function DashboardPage() {
 
       {/* 趋势图 */}
       <Card
-        size="small" bordered={false}
+        size="small" variant="borderless"
         title={<Text strong style={{ fontSize: 14 }}>执行趋势</Text>}
         style={{ borderRadius: 10 }}
         extra={
@@ -238,7 +238,7 @@ export default function DashboardPage() {
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={12}>
           <Card
-            size="small" bordered={false}
+            size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>执行器负载 TOP 5</Text>}
             style={{ borderRadius: 10 }}
             extra={<a onClick={() => nav('/executors')} style={{ fontSize: 12 }}>全部</a>}
@@ -294,7 +294,7 @@ export default function DashboardPage() {
 
         <Col xs={24} lg={12}>
           <Card
-            size="small" bordered={false}
+            size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>最近失败</Text>}
             style={{ borderRadius: 10 }}
             extra={<a onClick={() => nav('/executions')} style={{ fontSize: 12 }}>全部记录</a>}
@@ -315,7 +315,7 @@ export default function DashboardPage() {
                       type="error"
                       showIcon={false}
                       style={{ padding: '6px 10px', borderRadius: 6 }}
-                      message={
+                      title={
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <a

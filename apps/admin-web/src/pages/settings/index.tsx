@@ -56,7 +56,7 @@ function TokenSection() {
       </Text>
 
       {hasToken ? (
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
           <Space>
             <Input
               readOnly
@@ -84,15 +84,15 @@ function TokenSection() {
           </Button>
           <Alert
             type="warning"
-            message="重新生成后，所有执行器需要更新 Token 才能继续工作"
+            title="重新生成后，所有执行器需要更新 Token 才能继续工作"
             showIcon
           />
         </Space>
       ) : (
-        <Space direction="vertical">
+        <Space orientation="vertical">
           <Alert
             type="info"
-            message="尚未生成执行器 Token，请先生成后再安装执行器"
+            title="尚未生成执行器 Token，请先生成后再安装执行器"
             showIcon
           />
           <Button type="primary" icon={<KeyOutlined />} loading={generating} onClick={handleGenerate}>
@@ -440,7 +440,7 @@ function AiConfigTab() {
         <Alert
           type={testResult.ok ? 'success' : 'error'}
           showIcon
-          message={testResult.ok ? 'AI 连接成功' : '连接失败'}
+          title={testResult.ok ? 'AI 连接成功' : '连接失败'}
           description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: 12 }}>{testResult.message}</pre>}
           style={{ marginTop: 8 }}
           closable
@@ -452,7 +452,7 @@ function AiConfigTab() {
         <Alert
           type="info"
           showIcon
-          message="任务执行失败时，AI 会自动分析错误日志并给出修复建议，结果展示在执行详情页。"
+          title="任务执行失败时，AI 会自动分析错误日志并给出修复建议，结果展示在执行详情页。"
           style={{ marginTop: 16 }}
         />
       )}

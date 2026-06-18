@@ -9,14 +9,38 @@ import {
   Headers,
   UnauthorizedException,
 } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
 import { AppDeploymentService } from "./app-deployment.service";
 import { ExecutorService } from "../executor/executor.service";
 import { ApiHeader } from "@nestjs/swagger";
 import { CreateDeploymentDto, DeploymentHeartbeatDto } from "./dto/app-deployment.dto";
-import { PaginationDto } from "../../common/dto/pagination.dto";
+import { IsOptional, IsUUID, IsInt, Min, Max } from "class-validator";
+import { Type } from "class-transformer";
+import { ApiPropertyOptional } from "@nestjs/swagger";
+
+class ListDeploymentsQueryDto {
+  @ApiPropertyOptional({ description: "Filter by application ID" })
+  @IsOptional()
+  @IsUUID()
+  applicationId?: string;
+
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ default: 20, maximum: 100 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number = 20;
+}
 
 @ApiTags("App Deployment")
 @ApiBearerAuth()
@@ -30,13 +54,8 @@ export class AppDeploymentController {
 
   @Get()
   @ApiOperation({ summary: "List deployments" })
-  findAll(
-    @Query("applicationId") applicationId?: string,
-    @Query() pagination?: PaginationDto,
-  ) {
-    const page = pagination?.page ?? 1;
-    const limit = pagination?.pageSize ?? 20;
-    return this.svc.findAll(applicationId, page, limit);
+  findAll(@Query() query: ListDeploymentsQueryDto) {
+    return this.svc.findAll(query.applicationId, query.page ?? 1, query.pageSize ?? 20);
   }
 
   @Get(":id")

@@ -142,7 +142,7 @@ export default function ExecutorPackagesPage() {
     {
       title: '包名', dataIndex: 'name',
       render: (n: string, r: PkgRow) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <Text strong>{n}</Text>
           {r.originalFilename && <Text type="secondary" style={{ fontSize: 12 }}>{r.originalFilename}</Text>}
         </Space>
@@ -237,7 +237,7 @@ export default function ExecutorPackagesPage() {
         footer={null} destroyOnHidden
       >
         <Form form={uploadForm} layout="vertical" onFinish={handleUpload} style={{ marginTop: 8 }}>
-          <Form.Item name="file" label="包文件" rules={[{ required: true, message: '请选择文件' }]}>
+          <Form.Item name="file" label="包文件" valuePropName="fileList" rules={[{ required: true, message: '请选择文件' }]}>
             <Upload beforeUpload={() => false} maxCount={1} accept=".zip,.tar.gz,.whl,.jar">
               <Button icon={<UploadOutlined />}>选择文件</Button>
             </Upload>
@@ -306,9 +306,9 @@ export default function ExecutorPackagesPage() {
         destroyOnHidden
       >
         {!pushResults ? (
-          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Space orientation="vertical" style={{ width: '100%' }} size="middle">
             <Alert
-              message="推送后，目标调度机将主动下载此包并完成自动更新。"
+              title="推送后，目标调度机将主动下载此包并完成自动更新。"
               type="info" showIcon
             />
             <Checkbox checked={pushAll} onChange={e => setPushAll(e.target.checked)}>
@@ -322,7 +322,7 @@ export default function ExecutorPackagesPage() {
                 {onlineExecutors.length === 0 ? (
                   <Text type="secondary">暂无在线调度机</Text>
                 ) : (
-                  <Space direction="vertical" size={4}>
+                  <Space orientation="vertical" size={4}>
                     {onlineExecutors.map(ex => (
                       <Checkbox
                         key={ex.id}
@@ -344,14 +344,14 @@ export default function ExecutorPackagesPage() {
             )}
           </Space>
         ) : (
-          <Space direction="vertical" style={{ width: '100%' }}>
+          <Space orientation="vertical" style={{ width: '100%' }}>
             <Text strong>推送结果：</Text>
             {pushResults.map((r, i) => (
               <Alert
                 key={i}
                 type={r.success ? 'success' : 'error'}
                 showIcon
-                message={
+                title={
                   <>
                     <Text strong>{r.address || '推送任务'}</Text>
                     {r.error && <Text type="danger"> — {r.error}</Text>}
