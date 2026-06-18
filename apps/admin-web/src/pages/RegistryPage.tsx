@@ -101,6 +101,7 @@ function PypiTab() {
             name="file"
             label="包文件 (.whl / .tar.gz)"
             rules={[{ required: true, message: '请选择文件' }]}
+            valuePropName="fileList"
           >
             <Upload
               beforeUpload={() => false}

@@ -120,7 +120,7 @@ export default function NotificationSettingsPage() {
           </Form.Item>
         ))}
         <Form.Item>
-          <Space direction="vertical" style={{ width: '100%' }}>
+          <Space orientation="vertical" style={{ width: '100%' }}>
             <Space>
               <Button type="primary" htmlType="submit" loading={updating}>保存</Button>
               <Button
@@ -140,7 +140,7 @@ export default function NotificationSettingsPage() {
                   ? <CheckCircleFilled style={{ color: '#52c41a' }} />
                   : <CloseCircleFilled style={{ color: '#ff4d4f' }} />}
                 showIcon
-                message={
+                title={
                   testResult.success
                     ? `${testResult.channel ?? activeTab} 测试消息发送成功`
                     : `测试失败：${testResult.message}`
@@ -177,7 +177,7 @@ export default function NotificationSettingsPage() {
             {renderConfigFields()}
           </>
         ) : (
-          <Alert message="此通知渠道已禁用，启用后可配置推送参数" type="info" showIcon />
+          <Alert title="此通知渠道已禁用，启用后可配置推送参数" type="info" showIcon />
         )}
       </div>
     ),
@@ -201,7 +201,7 @@ export default function NotificationSettingsPage() {
         >
           <Form.Item name="channels" label="选择渠道" rules={[{ required: true, message: '请选择至少一个渠道' }]}>
             <Checkbox.Group>
-              <Space direction="vertical">
+              <Space orientation="vertical">
                 <Checkbox value="email">邮件</Checkbox>
                 <Checkbox value="slack">Slack</Checkbox>
                 <Checkbox value="dingtalk">钉钉</Checkbox>
@@ -217,7 +217,7 @@ export default function NotificationSettingsPage() {
             <TextArea rows={3} placeholder="这是一条测试通知..." />
           </Form.Item>
           <Form.Item>
-            <Space direction="vertical" style={{ width: '100%' }}>
+            <Space orientation="vertical" style={{ width: '100%' }}>
               <Button type="primary" htmlType="submit" loading={sending}>发送测试通知</Button>
               {globalTestResult && (
                 <Alert
@@ -226,7 +226,7 @@ export default function NotificationSettingsPage() {
                     ? <CheckCircleFilled style={{ color: '#52c41a' }} />
                     : <CloseCircleFilled style={{ color: '#ff4d4f' }} />}
                   showIcon
-                  message={
+                  title={
                     globalTestResult.success
                       ? '测试通知已发送到所选渠道'
                       : `发送失败：${globalTestResult.message}`

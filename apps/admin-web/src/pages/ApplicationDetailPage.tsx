@@ -48,7 +48,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
         </Empty>
       )}
       {loading && <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="AI 分析中…" size="large" /></div>}
-      {error && <Alert type="error" message={error} showIcon />}
+      {error && <Alert type="error" title={error} showIcon />}
       {report && !loading && (
         <div>
           <Row gutter={16} style={{ marginBottom: 24 }}>
@@ -63,7 +63,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
                   title="成功率"
                   value={(report.successRate * 100).toFixed(1)}
                   suffix="%"
-                  valueStyle={{ color: report.successRate >= 0.9 ? '#3f8600' : report.successRate >= 0.7 ? '#d48806' : '#cf1322' }}
+                  styles={{ content: { color: report.successRate >= 0.9 ? '#3f8600' : report.successRate >= 0.7 ? '#d48806' : '#cf1322' } }}
                 />
               </Card>
             </Col>
@@ -80,7 +80,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
               style={{ marginBottom: 16 }}
             />
           )}
-          {report.failedTasks.length > 0 && (
+          {(report.failedTasks?.length ?? 0) > 0 && (
             <Card size="small" title="高失败率任务" style={{ marginBottom: 16 }}>
               {report.failedTasks.map(t => (
                 <div key={t.id} style={{ marginBottom: 4 }}>
@@ -125,7 +125,7 @@ const GIT_URL_RE = /^(https?:\/\/[\w.@:/~_-]+\.git|git@[\w.-]+:[\w./_-]+\.git)$/
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 function OverviewTab({ app }: { app: Application }) {
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <Card title="应用信息">
         <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
           <Descriptions.Item label="版本"><Tag color="blue">{app.version}</Tag></Descriptions.Item>
@@ -212,7 +212,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
 
   return (
     <Card
-      bordered={false}
+      variant="borderless"
       extra={
         <Space>
           <Tooltip title="重新解析 manifest.json 并注册任务">
@@ -324,7 +324,7 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
 }
 
 // ─── Version History ─────────────────────────────────────────────────────────
-type VersionRecord = { deploymentId: string; version: string | null; commit: string | null; status: string; deployedAt: string | null; executorAddress: string; };
+type VersionRecord = { deploymentId: string; version: string | null; commit: string | null; status: string; deployedAt: string | null; executorAddress: string; deployCount?: number; };
 
 function VersionHistoryTab({ appId }: { appId: string }) {
   const [records, setRecords] = useState<VersionRecord[]>([]);
@@ -362,11 +362,23 @@ function VersionHistoryTab({ appId }: { appId: string }) {
   };
 
   return (
-    <Card bordered={false} extra={<Button icon={<ReloadOutlined />} size="small" onClick={fetchVersions}>刷新</Button>}>
+    <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={fetchVersions}>刷新</Button>}>
       <Table<VersionRecord>
         rowKey="deploymentId"
         columns={[
-          { title: '版本', dataIndex: 'version', width: 120, render: (v: string | null) => v ? <Tag color="blue">{v}</Tag> : <Tag>未知</Tag> },
+          {
+            title: '版本', dataIndex: 'version', width: 140,
+            render: (v: string | null, r: VersionRecord) => (
+              <Space size={4}>
+                {v ? <Tag color="blue">{v}</Tag> : <Tag>未知</Tag>}
+                {(r.deployCount ?? 1) > 1 && (
+                  <Tooltip title={`该版本共部署 ${r.deployCount} 次`}>
+                    <Tag color="default" style={{ fontSize: 11 }}>{r.deployCount}次</Tag>
+                  </Tooltip>
+                )}
+              </Space>
+            ),
+          },
           { title: 'Commit', dataIndex: 'commit', width: 100, render: (v: string | null) => v ? <Text code>{v.slice(0, 8)}</Text> : '-' },
           {
             title: '状态', dataIndex: 'status', width: 90,
@@ -378,21 +390,31 @@ function VersionHistoryTab({ appId }: { appId: string }) {
           { title: '部署时间', dataIndex: 'deployedAt', width: 170, render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
           {
             title: '操作', width: 90, align: 'center' as const,
-            render: (_: unknown, record: VersionRecord) => (
-              <Button
-                size="small"
-                danger
-                loading={rollingBack === record.deploymentId}
-                onClick={() => handleRollback(record.deploymentId, record.version)}
-              >
-                回滚
-              </Button>
-            ),
+            render: (_: unknown, record: VersionRecord) => {
+              // Prefer the running deployment as current; fall back to the most recently deployed.
+              const currentId =
+                records.find(r => r.status === 'running')?.deploymentId ??
+                [...records]
+                  .filter(r => r.deployedAt)
+                  .sort((a, b) => new Date(b.deployedAt!).getTime() - new Date(a.deployedAt!).getTime())[0]?.deploymentId;
+              return currentId === record.deploymentId ? (
+                <Tag color="green">当前版本</Tag>
+              ) : (
+                <Button
+                  size="small"
+                  danger
+                  loading={rollingBack === record.deploymentId}
+                  onClick={() => handleRollback(record.deploymentId, record.version)}
+                >
+                  回滚
+                </Button>
+              );
+            },
           },
         ]}
         dataSource={records}
         loading={loading} size="small"
-        pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+        pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个版本` }}
         locale={{ emptyText: '暂无版本历史' }}
       />
     </Card>
@@ -466,7 +488,7 @@ export default function ApplicationDetailPage() {
       <Tabs
         activeKey={activeTab}
         onChange={(key) => setSearchParams({ tab: key })}
-        destroyInactiveTabPane={false}
+        destroyOnHidden={false}
         items={[
           { key: 'overview', label: '概览', children: <OverviewTab app={app} /> },
           {

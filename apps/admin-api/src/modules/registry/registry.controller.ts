@@ -15,7 +15,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import * as https from 'https';
 import * as http from 'http';
-import * as FormData from 'form-data';
+import FormData from 'form-data';
 
 @UseGuards(JwtAuthGuard)
 @Controller('registry')

@@ -330,7 +330,7 @@ export default function ExecutorInstallWizardPage() {
           <Alert
             type="info"
             showIcon
-            message="提示"
+            title="提示"
             description="安装过程中会自动检测和配置环境，如遇问题请参考文档或联系管理员。"
             style={{ marginBottom: 20 }}
           />
@@ -434,7 +434,7 @@ export default function ExecutorInstallWizardPage() {
             {!loadingPackages && packages.length === 0 && (
               <Alert
                 type="warning"
-                message="暂无可用安装包"
+                title="暂无可用安装包"
                 description="请先上传执行器安装包，再使用本向导。"
                 showIcon
                 style={{ marginTop: 16 }}
@@ -485,7 +485,7 @@ export default function ExecutorInstallWizardPage() {
           <Alert
             type="info"
             showIcon
-            message="安全提示"
+            title="安全提示"
             description="Token 有效期为 1 小时，且只能使用一次。请在目标服务器上立即执行安装命令，不要将 Token 泄露给他人。"
             style={{ marginBottom: 20 }}
           />
@@ -529,7 +529,7 @@ export default function ExecutorInstallWizardPage() {
               <Alert
                 type="warning"
                 showIcon
-                message="尚未配置执行器共享 Token，请先前往「系统设置」页面生成 Token 后再安装执行器。"
+                title="尚未配置执行器共享 Token，请先前往「系统设置」页面生成 Token 后再安装执行器。"
               />
             )}
           </Card>
@@ -561,7 +561,7 @@ export default function ExecutorInstallWizardPage() {
             type="success"
             showIcon
             icon={<CheckCircleOutlined />}
-            message="安装凭证已生成"
+            title="安装凭证已生成"
             description={
               <span>
                 Token 有效期：<Text strong>{Math.floor(tokenResult.expiresIn / 60)} 分钟</Text>，
@@ -571,7 +571,7 @@ export default function ExecutorInstallWizardPage() {
             style={{ marginBottom: 24 }}
           />
 
-          <Space direction="vertical" style={{ width: '100%' }} size={20}>
+          <Space orientation="vertical" style={{ width: '100%' }} size={20}>
             <div>
               <Space style={{ marginBottom: 8 }}>
                 <Text strong>使用 curl 安装</Text>
@@ -596,7 +596,7 @@ export default function ExecutorInstallWizardPage() {
             <Alert
               type="warning"
               showIcon
-              message="注意"
+              title="注意"
               description="安装脚本可能需要 sudo 权限。请确保目标服务器已安装 curl 或 wget，且网络可以访问本平台的 API 地址。"
             />
           </Space>
@@ -633,7 +633,7 @@ export default function ExecutorInstallWizardPage() {
                 type="success"
                 showIcon
                 icon={<CheckCircleOutlined />}
-                message="执行器已成功上线！"
+                title="执行器已成功上线！"
                 description={
                   <span>
                     检测到执行器：<strong>{foundExecutor.appName}</strong>（{foundExecutor.address}）已注册上线，安装成功。
@@ -659,7 +659,7 @@ export default function ExecutorInstallWizardPage() {
                 type="warning"
                 showIcon
                 icon={<CloseCircleOutlined />}
-                message="验证超时（60 秒）"
+                title="验证超时（60 秒）"
                 description="1 分钟内未检测到执行器上线，请参考以下排查步骤。"
                 style={{ marginBottom: 20 }}
               />

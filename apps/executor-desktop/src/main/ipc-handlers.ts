@@ -8,10 +8,22 @@ export function registerIpcHandlers(): void {
   // ── 配置 ──────────────────────────────────────────────
   ipcMain.handle('config:get', () => configStore.getAll());
 
-  ipcMain.handle('config:save', (_event, cfg) => {
+  ipcMain.handle('config:save', async (_event, cfg) => {
     configStore.save(cfg);
     log.info('Config saved via IPC');
     trayManager.rebuildMenu();
+    // 如果执行器正在运行，热重载配置（停止后用新配置重启）
+    if (executorProcess.isRunning()) {
+      try {
+        heartbeat.stop();
+        await executorProcess.stop();
+        await executorProcess.start(configStore.getAll());
+        heartbeat.start(configStore.get('executorPort'));
+        log.info('Executor reloaded with new config');
+      } catch (err: any) {
+        log.error('Failed to reload executor after config save:', err.message);
+      }
+    }
     return { ok: true };
   });
 
@@ -164,7 +176,59 @@ export function registerIpcHandlers(): void {
     return { ok: !err, error: err || undefined };
   });
 
-  // ── 网络工具 ──────────────────────────────────────────
+  // ── 已部署应用 ─────────────────────────────────────────
+  // 列出本地所有已部署的应用（workDir/apps/<appId>/<deploymentId>/）
+  ipcMain.handle('apps:list', () => {
+    const fs = require('fs') as typeof import('fs');
+    const pathMod = require('path');
+    const workDir = configStore.get('workDir') as string | undefined;
+    if (!workDir) return [];
+    const appsDir = pathMod.join(workDir, 'apps');
+    if (!fs.existsSync(appsDir)) return [];
+    const result: Array<{
+      appId: string;
+      deploymentId: string;
+      hasLog: boolean;
+      logPath: string;
+      deployDir: string;
+    }> = [];
+    try {
+      const appIds = fs.readdirSync(appsDir).filter((d: string) =>
+        fs.statSync(pathMod.join(appsDir, d)).isDirectory()
+      );
+      for (const appId of appIds) {
+        const appDir = pathMod.join(appsDir, appId);
+        const deploymentIds = fs.readdirSync(appDir).filter((d: string) =>
+          fs.statSync(pathMod.join(appDir, d)).isDirectory()
+        );
+        for (const deploymentId of deploymentIds) {
+          const deployDir = pathMod.join(appDir, deploymentId);
+          const logPath = pathMod.join(deployDir, 'app.log');
+          result.push({
+            appId,
+            deploymentId,
+            hasLog: fs.existsSync(logPath),
+            logPath,
+            deployDir,
+          });
+        }
+      }
+    } catch { /* ignore */ }
+    return result;
+  });
+
+  // 读取应用日志（支持分页，从 fromLine 开始）
+  ipcMain.handle('apps:log:read', (_event, logPath: string, fromLine: number = 0) => {
+    const fs = require('fs') as typeof import('fs');
+    if (!fs.existsSync(logPath)) return { lines: [], totalLines: 0 };
+    try {
+      const content = fs.readFileSync(logPath, 'utf-8');
+      const allLines = content.split('\n').filter((l: string) => l.length > 0);
+      return { lines: allLines.slice(fromLine), totalLines: allLines.length };
+    } catch { return { lines: [], totalLines: 0 }; }
+  });
+
+  // 网络工具 ──────────────────────────────────────────
   // 无边框窗口控制
   ipcMain.handle('window:minimize', (event) => {
     const win = require('electron').BrowserWindow.fromWebContents(event.sender);
@@ -222,10 +286,10 @@ function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: st
         },
         (res) => {
           res.resume();
-          if (res.statusCode !== undefined && res.statusCode < 500) {
+          if (res.statusCode === 200) {
             resolve({ ok: true, message: `连接成功 (HTTP ${res.statusCode})` });
           } else {
-            resolve({ ok: false, message: `服务器返回 HTTP ${res.statusCode}` });
+            resolve({ ok: false, message: `服务器返回 HTTP ${res.statusCode}，请检查地址是否正确` });
           }
         },
       );

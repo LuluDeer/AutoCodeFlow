@@ -208,7 +208,7 @@ export default function TaskFormPage() {
           { title: '基本配置', icon: <ThunderboltOutlined /> },
           { title: '触发 & 执行器', icon: <ClockCircleOutlined /> },
           { title: '参数配置', icon: <ApartmentOutlined /> },
-          { title: 'Glue 脚本', icon: <CodeOutlined />, description: '可选' },
+          { title: 'Glue 脚本', icon: <CodeOutlined />, content: '可选' },
         ]}
       />
 
@@ -289,7 +289,7 @@ export default function TaskFormPage() {
           <Card>
             <Form.Item name="triggerType" label="触发方式">
               <Radio.Group>
-                <Space direction="vertical">
+                <Space orientation="vertical">
                   {TRIGGER_OPTIONS.map(o => (
                     <Radio key={o.value} value={o.value}>
                       <Space>
@@ -346,7 +346,7 @@ export default function TaskFormPage() {
                 onChange={e => setExecutorMode(e.target.value)}
                 style={{ width: '100%' }}
               >
-                <Space direction="vertical" style={{ width: '100%' }}>
+                <Space orientation="vertical" style={{ width: '100%' }}>
                   {EXECUTOR_MODE_OPTIONS.map(o => (
                     <Radio
                       key={o.value}
@@ -430,7 +430,7 @@ export default function TaskFormPage() {
             <Alert
               type="info"
               showIcon
-              message="任务默认参数"
+              title="任务默认参数"
               description="以下参数会在每次执行时以环境变量 AUTOFLOW_<KEY> 的形式注入到任务中。触发时可传入同名参数覆盖默认值。"
               style={{ marginBottom: 20 }}
             />
@@ -461,7 +461,7 @@ export default function TaskFormPage() {
             <Alert
               type="success"
               showIcon
-              message="任务已创建成功！"
+              title="任务已创建成功！"
               description="你可以在下方编写 Glue 脚本（可选）。Glue 脚本是一段在执行器节点上直接运行的代码，无需关联代码仓库。"
               style={{ marginBottom: 20 }}
             />

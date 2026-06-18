@@ -21,6 +21,7 @@ import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TriggerTaskDto } from "./dto/trigger-task.dto";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
+import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { AiService } from "../ai/ai.service";
 
@@ -117,11 +118,12 @@ export class TaskService {
     }
   }
 
-  async findAll(p: PaginationDto) {
+  async findAll(p: ListTasksQueryDto) {
     const where: Record<string, unknown> = { status: Not(TaskStatus.DELETED) };
     if (p.status) where.status = p.status as TaskStatus;
     if (p.name) where.name = ILike(`%${p.name}%`);
     if (p.runtime) where.runtime = p.runtime;
+    if (p.applicationId) where.applicationId = p.applicationId;
     const [list, total] = await this.taskRepo.findAndCount({
       where,
       skip: (p.page - 1) * p.pageSize,

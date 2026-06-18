@@ -44002,8 +44002,12 @@ async function fetchToken() {
             return response.data.token;
         }
     }
-    catch (err) {
+    catch (_err) {
         // Fall back to static token if dynamic token fetch fails
+        // Log at warn level so token refresh failures are visible in diagnostics
+        const msg = _err instanceof Error ? _err.message : String(_err);
+        // eslint-disable-next-line no-console
+        console.warn(`[auth] fetchToken failed: ${msg}`);
     }
     return null;
 }
@@ -45195,6 +45199,18 @@ exports.updatePackageRouter.post('/update-package', async (req, res) => {
     const body = req.body;
     if (!body.packageId || !body.downloadUrl || !body.version) {
         res.status(400).json({ error: 'Missing required fields: packageId, downloadUrl, version' });
+        return;
+    }
+    // Only allow http(s) schemes to prevent SSRF via file://, ftp://, etc.
+    try {
+        const parsedUrl = new URL(body.downloadUrl);
+        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+            res.status(400).json({ error: `downloadUrl scheme not allowed: ${parsedUrl.protocol}. Only http and https are permitted.` });
+            return;
+        }
+    }
+    catch {
+        res.status(400).json({ error: 'downloadUrl is not a valid URL' });
         return;
     }
     if (updateInProgress) {

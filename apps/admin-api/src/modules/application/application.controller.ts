@@ -202,21 +202,51 @@ export class ApplicationController {
   @Get(":id/versions")
   @ApiOperation({
     summary: "Get application version history",
-    description: "Return all historical deployment records for the app including version, commit, and deployment time",
+    description: "Return version history grouped by version number. Each entry is the latest deployment record for that version.",
   })
   async getVersionHistory(@Param("id") id: string) {
     // Verify app exists (throws 404 if not)
     await this.svc.findById(id);
     const deployments = await this.deploymentSvc.findAllByApp(id);
-    // Map to a concise version history shape
-    return deployments.map((d) => ({
-      deploymentId: d.id,
-      version: d.deployedVersion,
-      commit: d.deployedCommit,
-      status: d.status,
-      deployedAt: d.deployedAt,
-      executorAddress: d.executorAddress,
-    }));
+
+    // Group by version: keep the latest deployment per version.
+    // Deployments are already sorted DESC by createdAt, so the first occurrence of
+    // each version key is the most recent one.
+    const seen = new Set<string>();
+    const versionHistory: Array<{
+      deploymentId: string;
+      version: string | null;
+      commit: string | null;
+      status: string;
+      deployedAt: Date | null;
+      executorAddress: string;
+      deployCount: number;
+    }> = [];
+
+    // Count how many times each version was deployed
+    const countMap = new Map<string, number>();
+    for (const d of deployments) {
+      const key = d.deployedVersion ?? '__unknown__';
+      countMap.set(key, (countMap.get(key) ?? 0) + 1);
+    }
+
+    for (const d of deployments) {
+      const key = d.deployedVersion ?? '__unknown__';
+      if (!seen.has(key)) {
+        seen.add(key);
+        versionHistory.push({
+          deploymentId: d.id,
+          version: d.deployedVersion,
+          commit: d.deployedCommit,
+          status: d.status,
+          deployedAt: d.deployedAt,
+          executorAddress: d.executorAddress,
+          deployCount: countMap.get(key) ?? 1,
+        });
+      }
+    }
+
+    return versionHistory;
   }
 
   @Post(":id/upgrade-all")

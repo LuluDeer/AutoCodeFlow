@@ -31,32 +31,40 @@ const PrivateRoute = ({ children }: { children: React.ReactNode }) => {
   return refreshToken ? <>{children}</> : <Navigate to="/login" replace />;
 };
 
-export const router = createBrowserRouter([
-  { path: '/login', element: <LoginPage /> },
+export const router = createBrowserRouter(
+  [
+    { path: '/login', element: <LoginPage /> },
+    {
+      path: '/',
+      element: <PrivateRoute><MainLayout /></PrivateRoute>,
+      children: [
+        { index: true, element: <Navigate to="/dashboard" replace /> },
+        { path: '*', element: <NotFoundPage /> },
+        { path: 'dashboard', element: <DashboardPage /> },
+        { path: 'tasks', element: <TaskListPage /> },
+        { path: 'tasks/new', element: <TaskFormPage /> },
+        { path: 'tasks/:id', element: <TaskDetailPage /> },
+        { path: 'tasks/:id/edit', element: <TaskFormPage /> },
+        { path: 'tasks/:taskId/executions/:execId', element: <ExecutionDetailPage /> },
+        { path: 'executions', element: <ExecutionsPage /> },
+        { path: 'executors', element: <ExecutorListPage /> },
+        { path: 'executors/install', element: <ExecutorInstallWizardPage /> },
+        { path: 'executors/:id', element: <ExecutorDetailPage /> },
+        { path: 'users', element: <UserManagementPage /> },
+        { path: 'registry', element: <RegistryPage /> },
+        { path: 'settings', element: <SettingsPage /> },
+        { path: 'notifications', element: <NotificationSettingsPage /> },
+        { path: 'audit', element: <AuditLogPage /> },
+        { path: 'applications', element: <ApplicationListPage /> },
+        { path: 'applications/:id', element: <ApplicationDetailPage /> },
+        { path: 'executor-packages', element: <ExecutorPackagesPage /> },
+      ],
+    },
+  ],
   {
-    path: '/',
-    element: <PrivateRoute><MainLayout /></PrivateRoute>,
-    children: [
-      { index: true, element: <Navigate to="/dashboard" replace /> },
-      { path: '*', element: <NotFoundPage /> },
-      { path: 'dashboard', element: <DashboardPage /> },
-      { path: 'tasks', element: <TaskListPage /> },
-      { path: 'tasks/new', element: <TaskFormPage /> },
-      { path: 'tasks/:id', element: <TaskDetailPage /> },
-      { path: 'tasks/:id/edit', element: <TaskFormPage /> },
-      { path: 'tasks/:taskId/executions/:execId', element: <ExecutionDetailPage /> },
-      { path: 'executions', element: <ExecutionsPage /> },
-      { path: 'executors', element: <ExecutorListPage /> },
-      { path: 'executors/install', element: <ExecutorInstallWizardPage /> },
-      { path: 'executors/:id', element: <ExecutorDetailPage /> },
-      { path: 'users', element: <UserManagementPage /> },
-      { path: 'registry', element: <RegistryPage /> },
-      { path: 'settings', element: <SettingsPage /> },
-      { path: 'notifications', element: <NotificationSettingsPage /> },
-      { path: 'audit', element: <AuditLogPage /> },
-      { path: 'applications', element: <ApplicationListPage /> },
-      { path: 'applications/:id', element: <ApplicationDetailPage /> },
-      { path: 'executor-packages', element: <ExecutorPackagesPage /> },
-    ],
-  },
-]);
+    future: {
+      v7_startTransition: true,
+      v7_relativeSplatPath: true,
+    },
+  }
+);

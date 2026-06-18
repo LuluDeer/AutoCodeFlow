@@ -38,9 +38,10 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'autoflow-auth',
       storage: createJSONStorage(() => localStorage),
-      // SEC: only persist refreshToken + user; access token is short-lived and
-      // will be re-acquired automatically by the axios interceptor on first use.
-      partialize: (state) => ({ refreshToken: state.refreshToken, user: state.user }),
+      // Persist token, refreshToken, and user so the first request after a page
+      // reload carries a valid Authorization header without needing a refresh round-trip.
+      // The access token is short-lived; the 401→refresh path still handles expiry.
+      partialize: (state) => ({ token: state.token, refreshToken: state.refreshToken, user: state.user }),
       onRehydrateStorage: () => (state) => {
         state?.setHasHydrated(true);
       },

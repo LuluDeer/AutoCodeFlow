@@ -33,6 +33,7 @@ import { TriggerTaskDto } from "./dto/trigger-task.dto";
 import { RollbackTaskDto } from "./dto/rollback-task.dto";
 import { BatchTaskIdsDto } from "./dto/batch-task.dto";
 import { PaginationDto } from "../../common/dto/pagination.dto";
+import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import { AuditService } from "../audit/audit.service";
 
 @ApiTags("Task Management")
@@ -113,7 +114,7 @@ export class TaskController {
       },
     },
   })
-  findAll(@Query() p: PaginationDto) {
+  findAll(@Query() p: ListTasksQueryDto) {
     return this.taskService.findAll(p);
   }
 
