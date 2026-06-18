@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import StatusWindow from './pages/StatusWindow';
 import ConfigPage from './pages/ConfigPage';
 import HistoryPage from './pages/HistoryPage';
+import AppsPage from './pages/AppsPage';
 
-type Tab = 'status' | 'config' | 'history';
+type Tab = 'status' | 'config' | 'history' | 'apps';
 
 export default function App() {
   // 根据 URL hash 判断是 wizard 还是主窗口
@@ -78,6 +79,13 @@ function MainWindow() {
           <span className="tab-icon">📋</span>
           历史
         </div>
+        <div
+          className={`tab${tab === 'apps' ? ' active' : ''}`}
+          onClick={() => setTab('apps')}
+        >
+          <span className="tab-icon">📦</span>
+          应用
+        </div>
       </div>
 
       {/* 内容区 — 所有页面常驻 DOM，用 display 控制显隐，避免切 tab 时重新挂载导致闪烁 */}
@@ -85,6 +93,7 @@ function MainWindow() {
         <div style={{ display: tab === 'status' ? 'contents' : 'none' }}><StatusWindow /></div>
         <div style={{ display: tab === 'config' ? 'contents' : 'none' }}><ConfigPage /></div>
         <div style={{ display: tab === 'history' ? 'contents' : 'none' }}><HistoryPage /></div>
+        <div style={{ display: tab === 'apps' ? 'contents' : 'none' }}><AppsPage /></div>
       </div>
     </div>
   );

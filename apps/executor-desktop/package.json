@@ -1,6 +1,7 @@
 {
   "name": "executor-desktop",
   "version": "1.0.0",
+  "author": "kirdeer",
   "description": "AutoCodeFlow Executor Desktop Client",
   "main": "dist/main/index.js",
   "scripts": {

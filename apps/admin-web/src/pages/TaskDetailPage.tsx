@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Card, Descriptions, Tag, Typography, Button, Space, Table, Badge, Tabs,
-  Spin, Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col,
+  Spin, Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
@@ -15,6 +15,7 @@ import { tasksApi, TaskExecution } from '../api/tasks';
 import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg } from '../utils/error';
 import GlueEditor from '../components/GlueEditor';
+import ParamsEditor from '../components/ParamsEditor';
 
 const { Text } = Typography;
 
@@ -50,6 +51,9 @@ export default function TaskDetailPage() {
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<ScheduleSuggestion | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [triggerModalOpen, setTriggerModalOpen] = useState(false);
+  const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
+  const [triggering, setTriggering] = useState(false);
 
   const handleAiSuggest = async () => {
     if (!id) return;
@@ -89,13 +93,31 @@ export default function TaskDetailPage() {
   const executions: TaskExecution[] = execData?.items ?? [];
   const execTotal: number = execData?.total ?? 0;
 
-  const handleTrigger = async () => {
+  const handleTrigger = () => {
+    // 预填默认参数，让用户可以按需覆盖
+    setTriggerParams(
+      Object.fromEntries(
+        Object.entries(task?.params ?? {}).map(([k, v]) => [k, String(v)])
+      )
+    );
+    setTriggerModalOpen(true);
+  };
+
+  const handleTriggerConfirm = async () => {
+    setTriggering(true);
     try {
-      await tasksApi.trigger(id!);
+      // 只传非空参数
+      const params = Object.fromEntries(
+        Object.entries(triggerParams).filter(([k]) => k.trim())
+      );
+      await tasksApi.trigger(id!, Object.keys(params).length > 0 ? params : undefined);
       message.success('已触发，稍后可在执行记录中查看');
+      setTriggerModalOpen(false);
       setTimeout(refreshExecs, 1500);
     } catch (err: unknown) {
       message.error(getErrMsg(err, '触发失败'));
+    } finally {
+      setTriggering(false);
     }
   };
 
@@ -237,7 +259,7 @@ export default function TaskDetailPage() {
                 title="成功率"
                 value={((taskStats.successRate ?? 0) * 100).toFixed(1)}
                 suffix="%"
-                valueStyle={{ color: (taskStats.successRate ?? 0) >= 0.95 ? '#52c41a' : (taskStats.successRate ?? 0) >= 0.8 ? '#fa8c16' : '#ff4d4f' }}
+                styles={{ content: { color: (taskStats.successRate ?? 0) >= 0.95 ? '#52c41a' : (taskStats.successRate ?? 0) >= 0.8 ? '#fa8c16' : '#ff4d4f' } }}
                 prefix={<CheckCircleOutlined />}
               />
             </Card>
@@ -247,7 +269,7 @@ export default function TaskDetailPage() {
               <Statistic
                 title="失败次数"
                 value={taskStats.totalRuns > 0 ? Math.round(taskStats.totalRuns * (1 - (taskStats.successRate ?? 0))) : 0}
-                valueStyle={taskStats.totalRuns > 0 && taskStats.successRate < 1 ? { color: '#ff4d4f' } : undefined}
+                styles={taskStats.totalRuns > 0 && taskStats.successRate < 1 ? { content: { color: '#ff4d4f' } } : undefined}
                 prefix={<CloseCircleOutlined />}
               />
             </Card>
@@ -298,6 +320,18 @@ export default function TaskDetailPage() {
                   )}
                   <Descriptions.Item label="执行器分组">{task.executorGroup || '任意'}</Descriptions.Item>
                 </Descriptions>
+                {task.params && Object.keys(task.params).length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <Typography.Text strong style={{ fontSize: 13 }}>默认参数</Typography.Text>
+                    <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {Object.entries(task.params).map(([k, v]) => (
+                        <Tag key={k} style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                          {k} = {String(v)}
+                        </Tag>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </Card>
             ),
           },
@@ -353,6 +387,35 @@ export default function TaskDetailPage() {
           },
         ]}
       />
+
+      {/* 触发弹窗 */}
+      <Modal
+        title={<Space><ThunderboltOutlined /> 立即触发任务</Space>}
+        open={triggerModalOpen}
+        onCancel={() => setTriggerModalOpen(false)}
+        onOk={handleTriggerConfirm}
+        okText="触发"
+        okButtonProps={{ loading: triggering, icon: <ThunderboltOutlined /> }}
+        cancelText="取消"
+        width={520}
+        destroyOnHidden
+      >
+        <Alert
+          type="info"
+          showIcon
+          title="运行时参数（可选）"
+          description="此处填写的参数会覆盖任务默认参数，以 AUTOFLOW_<KEY> 环境变量注入任务。留空则使用任务默认参数。"
+          style={{ marginBottom: 16 }}
+        />
+        <Form layout="vertical">
+          <Form.Item label="执行参数">
+            <ParamsEditor
+              value={triggerParams}
+              onChange={setTriggerParams}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       {/* AI 调度建议弹窗 */}
       <Modal

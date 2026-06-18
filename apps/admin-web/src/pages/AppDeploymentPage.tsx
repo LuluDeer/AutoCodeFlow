@@ -78,6 +78,14 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // Auto-poll while any deployment is in progress
+  useEffect(() => {
+    const inProgress = deployments.some(d => d.status === 'deploying' || d.status === 'upgrading' || d.status === 'pending');
+    if (!inProgress) return;
+    const timer = setInterval(() => { fetchAll(); }, 3000);
+    return () => clearInterval(timer);
+  }, [deployments, fetchAll]);
+
   const handleDeploy = async () => {
     try {
       const values = await deployForm.validateFields();
@@ -135,6 +143,14 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   };
 
   const onlineExecutors = executors.filter(e => e.status === 'online');
+  // Executors already occupied by an active deployment of this application
+  const occupiedExecutorIds = new Set(
+    deployments
+      .filter(d => d.status === 'deploying' || d.status === 'running' || d.status === 'upgrading' || d.status === 'pending')
+      .map(d => d.executorId)
+      .filter(Boolean) as string[]
+  );
+  const availableExecutors = onlineExecutors.filter(e => !occupiedExecutorIds.has(e.id));
 
   const openDeployModal = () => {
     deployForm.resetFields();
@@ -150,6 +166,9 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         <Space direction="vertical" size={0}>
           <Text strong style={{ fontSize: 13}}>{r.executorAddress || r.executorId}</Text>
           {r.deployedVersion && <Tag color="blue" style={{ fontSize: 11 }}>v{r.deployedVersion}</Tag>}
+          {r.statusMessage && (
+            <Text type="secondary" style={{ fontSize: 11 }}>{r.statusMessage}</Text>
+          )}
         </Space>
       ),
     },
@@ -274,7 +293,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       {onlineExecutors.length === 0 && (
         <Alert
           type="warning"
-          message="无可用执行器"
+          title="无可用执行器"
           description="需要至少一个在线执行器才能部署。请先安装并启动执行器。"
           action={<Button size="small" href="/executors/install">安装执行器</Button>}
           style={{ marginBottom: 16 }}
@@ -347,16 +366,16 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
               allowClear
               dropdownRender={(menu) => (
                 <>
-                  {onlineExecutors.length > 0 && (
+                  {availableExecutors.length > 0 && (
                     <div style={{ padding: '8px 12px', borderBottom: '1px solid #f0f0f0' }}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>在线执行器 ({onlineExecutors.length} 台)</Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>可用执行器 ({availableExecutors.length} 台，已过滤占用中)</Text>
                     </div>
                   )}
                   {menu}
                 </>
               )}
             >
-              {onlineExecutors.map(e => (
+              {availableExecutors.map(e => (
                 <Select.Option key={e.id} value={e.id}>
                   <ExecutorCard executor={e} />
                 </Select.Option>
@@ -365,14 +384,14 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
           </Form.Item>
         </Form>
 
-        {onlineExecutors.length > 0 && (
+        {availableExecutors.length > 0 && (
           <div style={{ background: '#f9fafb', borderRadius: 8, padding: 12}}>
-            <Text type="secondary" style={{ fontSize: 12}}>当前在线执行器概况</Text>
-            {onlineExecutors.slice(0, 4).map(e => (
+            <Text type="secondary" style={{ fontSize: 12}}>可用执行器概况（已过滤占用中）</Text>
+            {availableExecutors.slice(0, 4).map(e => (
               <ExecutorCard key={e.id} executor={e} />
             ))}
-            {onlineExecutors.length > 4 && (
-              <Text type="secondary" style={{ fontSize: 12 }}>...还有 {onlineExecutors.length - 4} 台</Text>
+            {availableExecutors.length > 4 && (
+              <Text type="secondary" style={{ fontSize: 12 }}>...还有 {availableExecutors.length - 4} 台</Text>
             )}
           </div>
         )}

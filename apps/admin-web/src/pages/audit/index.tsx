@@ -64,7 +64,7 @@ export default function AuditLogPage() {
       dataIndex: 'username',
       width: 120,
       render: (v: string, r: AuditLog) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <Typography.Text strong>{v}</Typography.Text>
           {r.ip && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.ip}</Typography.Text>}
         </Space>

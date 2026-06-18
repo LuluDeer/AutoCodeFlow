@@ -112,7 +112,7 @@ export default function ExecutionCompare({ executions }: ExecutionCompareProps) 
                 <Statistic
                   title="状态"
                   value={exec.status}
-                  valueStyle={{ color: exec.status === 'success' ? '#3f8600' : exec.status === 'failed' ? '#cf1322' : '#1890ff' }}
+                  styles={{ content: { color: exec.status === 'success' ? '#3f8600' : exec.status === 'failed' ? '#cf1322' : '#1890ff' } }}
                 />
                 <Statistic title="耗时" value={exec.duration ?? 0} suffix="ms" />
               </Card>

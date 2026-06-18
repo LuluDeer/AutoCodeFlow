@@ -194,6 +194,23 @@ export class AppDeploymentService {
   // Internal helpers
   // -----------------------------------------------------------------------
 
+  /**
+   * Validate that an executor address looks like "host:port" to prevent SSRF.
+   * Allows IPv4, IPv6 brackets, and hostnames.
+   */
+  private validateExecutorAddress(address: string): void {
+    // Must match host:port where port is numeric 1-65535
+    const re = /^(\[?[a-zA-Z0-9._:-]+\]?):([0-9]{1,5})$/;
+    const m = address.match(re);
+    if (!m) {
+      throw new BadRequestException(`Invalid executor address format: "${address}"`);
+    }
+    const port = parseInt(m[2], 10);
+    if (port < 1 || port > 65535) {
+      throw new BadRequestException(`Executor address port out of range: ${port}`);
+    }
+  }
+
   private async pushDeployToExecutor(
     deployment: AppDeployment,
     app: import("./entities/application.entity").Application,
@@ -203,41 +220,70 @@ export class AppDeploymentService {
     deployment.statusMessage = upgrade ? "Pulling latest commit..." : "Cloning repository...";
     await this.repo.save(deployment);
 
+    // SSRF guard: validate address format before making any outbound request
     try {
-      const url = this.executorService.getExecutorUrl(
-        deployment.executorAddress,
-        "api/deploy",
-      );
-
-      const payload = {
-        deploymentId: deployment.id,
-        applicationId: app.id,
-        appName: app.name,
-        gitRepo: app.gitRepo || null,
-        gitBranch: app.gitBranch || "main",
-        gitCommit: app.gitCommit || null,
-        packageUrl: (app as any).packageUrl || null,
-        runtime: app.runtime,
-        entrypoint: deployment.startCommand || app.entrypoint,
-        runMode: deployment.runMode,
-        env: { ...(app.env ?? {}), ...(deployment.env ?? {}) },
-        upgrade,
-      };
-
-      await axios.post(url, payload, { timeout: 30_000, headers: this.getExecutorHeaders() });
-
-      deployment.status = DeploymentStatus.DEPLOYING;
-      deployment.statusMessage = "Deploy command sent to executor";
-      deployment.deployedCommit = app.gitCommit || null;
-      deployment.deployedVersion = app.version || null;
-      deployment.deployedAt = new Date();
+      this.validateExecutorAddress(deployment.executorAddress);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       deployment.status = DeploymentStatus.FAILED;
-      deployment.statusMessage = `Failed to reach executor: ${msg}`;
-      this.logger.error(`Deploy push failed for ${deployment.id}: ${msg}`);
+      deployment.statusMessage = msg;
+      await this.repo.save(deployment);
+      return;
     }
 
+    const url = this.executorService.getExecutorUrl(
+      deployment.executorAddress,
+      "api/deploy",
+    );
+
+    const payload = {
+      deploymentId: deployment.id,
+      applicationId: app.id,
+      appName: app.name,
+      gitRepo: app.gitRepo || null,
+      gitBranch: app.gitBranch || "main",
+      gitCommit: app.gitCommit || null,
+      packageUrl: (app as any).packageUrl || null,
+      runtime: app.runtime,
+      entrypoint: deployment.startCommand || app.entrypoint,
+      runMode: deployment.runMode,
+      env: { ...(app.env ?? {}), ...(deployment.env ?? {}) },
+      upgrade,
+    };
+
+    // Retry up to 3 times with exponential back-off (1s, 2s, 4s)
+    const MAX_ATTEMPTS = 3;
+    let lastError: string | null = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        await axios.post(url, payload, {
+          timeout: 30_000,
+          headers: this.getExecutorHeaders(),
+        });
+        // Success
+        deployment.status = DeploymentStatus.DEPLOYING;
+        deployment.statusMessage = "Deploy command sent to executor";
+        deployment.deployedCommit = app.gitCommit || null;
+        deployment.deployedVersion = app.version || null;
+        deployment.deployedAt = new Date();
+        await this.repo.save(deployment);
+        return;
+      } catch (err: unknown) {
+        lastError = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Deploy push attempt ${attempt}/${MAX_ATTEMPTS} failed for ${deployment.id}: ${lastError}`,
+        );
+        if (attempt < MAX_ATTEMPTS) {
+          // Exponential back-off: 1000ms, 2000ms
+          await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
+        }
+      }
+    }
+
+    // All attempts exhausted
+    deployment.status = DeploymentStatus.FAILED;
+    deployment.statusMessage = `Failed to reach executor after ${MAX_ATTEMPTS} attempts: ${lastError}`;
+    this.logger.error(`Deploy push failed for ${deployment.id} after ${MAX_ATTEMPTS} attempts: ${lastError}`);
     await this.repo.save(deployment);
   }
 

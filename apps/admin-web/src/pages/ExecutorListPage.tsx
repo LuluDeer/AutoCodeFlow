@@ -101,7 +101,7 @@ export default function ExecutorListPage() {
       key: 'nameAddress',
       sorter: (a: Executor, b: Executor) => a.appName.localeCompare(b.appName),
       render: (_: unknown, r: Executor) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <Space>
             <DesktopOutlined style={{ color: r.status === 'online' ? '#52c41a' : '#d9d9d9' }} />
             <Typography.Text strong>{r.appName}</Typography.Text>
@@ -140,7 +140,7 @@ export default function ExecutorListPage() {
       width: 160,
       responsive: ['lg'] as import('antd/es/_util/responsiveObserver').Breakpoint[],
       render: (_: unknown, r: Executor) => (
-        <Space direction="vertical" size={2}>
+        <Space orientation="vertical" size={2}>
           {(['CPU', '内存', '磁盘'] as const).map((label) => {
             const val = label === 'CPU' ? (r.cpuUsage ?? 0)
               : label === '内存' ? (r.memUsage ?? 0)
@@ -212,7 +212,7 @@ export default function ExecutorListPage() {
         <Alert
           type="warning"
           showIcon
-          message="有执行器离线超过5分钟，请检查"
+          title="有执行器离线超过5分钟，请检查"
           style={{ marginBottom: 16 }}
           closable
         />
@@ -301,7 +301,7 @@ export default function ExecutorListPage() {
         width={640}
       >
         {installCmd && (
-          <Space direction="vertical" style={{ width: '100%' }} size={16}>
+          <Space orientation="vertical" style={{ width: '100%' }} size={16}>
             <div>
               <Typography.Text strong>本地安装（已有源码）</Typography.Text>
               <Typography.Paragraph

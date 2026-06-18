@@ -41,6 +41,19 @@ async function reportStatus(
   }
 }
 
+/** Resolve platform-aware Python / pip binary paths inside a venv */
+function venvBins(venvDir: string): { python: string; pip: string } {
+  const isWin = process.platform === 'win32';
+  return {
+    python: isWin
+      ? path.join(venvDir, 'Scripts', 'python.exe')
+      : path.join(venvDir, 'bin', 'python3'),
+    pip: isWin
+      ? path.join(venvDir, 'Scripts', 'pip.exe')
+      : path.join(venvDir, 'bin', 'pip'),
+  };
+}
+
 /** Install dependencies for the given deployment directory */
 function installDeps(
   deployDir: string,
@@ -48,15 +61,18 @@ function installDeps(
   envVars: Record<string, string>,
 ): void {
   const env = { ...process.env, ...envVars };
+  const isWin = process.platform === 'win32';
 
   // SEC: spawnSync with array args — no shell, no injection
   if (runtime === 'node' || runtime === 'nodejs') {
     const pkgJson = path.join(deployDir, 'package.json');
     if (fs.existsSync(pkgJson)) {
       logger.info(`[deploy] Installing Node.js dependencies in ${deployDir}`);
+      // On Windows, npm is a .cmd file and needs shell:true to resolve
+      const npmCmd = isWin ? 'npm.cmd' : 'npm';
       const npmArgs = ['install', '--production'];
       if (config.npmRegistryUrl) npmArgs.push(`--registry=${config.npmRegistryUrl}`);
-      const r = spawnSync('npm', npmArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000 });
+      const r = spawnSync(npmCmd, npmArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000, shell: isWin });
       if (r.status !== 0) throw new Error(r.stderr?.toString() || 'npm install failed');
     }
   } else if (runtime === 'python') {
@@ -64,12 +80,14 @@ function installDeps(
     if (fs.existsSync(reqFile)) {
       logger.info(`[deploy] Creating Python venv and installing deps in ${deployDir}`);
       const venvDir = path.join(deployDir, '.venv');
-      const venvR = spawnSync('python3', ['-m', 'venv', venvDir], { cwd: deployDir, env, stdio: 'pipe', timeout: 60_000 });
-      if (venvR.status !== 0) throw new Error(venvR.stderr?.toString() || 'python3 -m venv failed');
-      const pip = path.join(venvDir, 'bin', 'pip');
+      // Try 'python3' first (Linux/macOS), fall back to 'python' (Windows)
+      const pythonCmd = isWin ? 'python' : 'python3';
+      const venvR = spawnSync(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, stdio: 'pipe', timeout: 60_000 });
+      if (venvR.status !== 0) throw new Error(venvR.stderr?.toString() || `${pythonCmd} -m venv failed`);
+      const bins = venvBins(venvDir);
       const pipArgs = ['install', '-r', 'requirements.txt'];
       if (config.pythonRegistryUrl) pipArgs.push('-i', config.pythonRegistryUrl);
-      const pipR = spawnSync(pip, pipArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000 });
+      const pipR = spawnSync(bins.pip, pipArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000 });
       if (pipR.status !== 0) throw new Error(pipR.stderr?.toString() || 'pip install failed');
     }
   }
@@ -89,17 +107,26 @@ function startApp(
   let cmd: string;
   let args: string[];
 
+  const isWin = process.platform === 'win32';
+
   if (runtime === 'python') {
-    const pythonBin = path.join(deployDir, '.venv', 'bin', 'python3');
-    cmd = fs.existsSync(pythonBin) ? pythonBin : 'python3';
+    const bins = venvBins(path.join(deployDir, '.venv'));
+    // Use venv python if available, otherwise fall back to system python
+    const fallback = isWin ? 'python' : 'python3';
+    cmd = fs.existsSync(bins.python) ? bins.python : fallback;
     args = [entrypoint];
   } else if (runtime === 'node' || runtime === 'nodejs') {
     cmd = 'node';
     args = [entrypoint];
   } else {
-    // shell
-    cmd = 'sh';
-    args = ['-c', entrypoint];
+    // shell — use cmd.exe on Windows
+    if (isWin) {
+      cmd = 'cmd.exe';
+      args = ['/c', entrypoint];
+    } else {
+      cmd = 'sh';
+      args = ['-c', entrypoint];
+    }
   }
 
   logger.info(`[deploy] Starting app ${deploymentId}: ${cmd} ${args.join(' ')}`);
@@ -188,13 +215,23 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
 
   setImmediate(async () => {
     try {
-      // Stop existing process if upgrading
+      // Stop existing process if upgrading — wait for actual exit instead of fixed sleep
       if (upgrade && runningApps.has(deploymentId)) {
         const existing = runningApps.get(deploymentId)!;
-        existing.kill('SIGTERM');
+        await new Promise<void>((resolve) => {
+          const gracefulTimeout = setTimeout(() => {
+            logger.warn(`[deploy] Graceful stop timed out for ${deploymentId}, sending SIGKILL`);
+            existing.kill('SIGKILL');
+            resolve();
+          }, 10_000);
+          existing.once('exit', () => {
+            clearTimeout(gracefulTimeout);
+            resolve();
+          });
+          existing.kill('SIGTERM');
+        });
         runningApps.delete(deploymentId);
         logger.info(`[deploy] Stopped existing process for ${deploymentId}`);
-        await new Promise(r => setTimeout(r, 2000));
       }
 
       if (!fs.existsSync(deployDir)) {
@@ -207,10 +244,28 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         const zipPath = path.join(deployDir, '_package.zip');
         await downloadPackage(packageUrl, zipPath);
         logger.info(`[deploy] Extracting package for ${deploymentId}`);
-        const unzipR = spawnSync('unzip', ['-o', zipPath, '-d', deployDir], { stdio: 'pipe', timeout: 60_000 });
-        if (unzipR.status !== 0) throw new Error(unzipR.stderr?.toString() || 'unzip failed');
-        fs.unlinkSync(zipPath);
-        logger.info(`[deploy] Package extracted for ${deploymentId}`);
+        // Use platform-appropriate extraction:
+        //   Windows: PowerShell Expand-Archive (built-in since PS 5.0)
+        //   Linux/macOS: unzip
+        let unzipOk = false;
+        if (process.platform === 'win32') {
+          const psR = spawnSync(
+            'powershell.exe',
+            ['-NoProfile', '-Command',
+              `Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${deployDir}'`],
+            { stdio: 'pipe', timeout: 60_000 },
+          );
+          if (psR.status !== 0) throw new Error(psR.stderr?.toString() || 'Expand-Archive failed');
+          unzipOk = true;
+        } else {
+          const unzipR = spawnSync('unzip', ['-o', zipPath, '-d', deployDir], { stdio: 'pipe', timeout: 60_000 });
+          if (unzipR.status !== 0) throw new Error(unzipR.stderr?.toString() || 'unzip failed');
+          unzipOk = true;
+        }
+        if (unzipOk) {
+          fs.unlinkSync(zipPath);
+          logger.info(`[deploy] Package extracted for ${deploymentId}`);
+        }
       } else if (gitRepo) {
         const gitDir = path.join(deployDir, '.git');
         // SEC: all git commands use spawnSync with array args — no shell, no injection

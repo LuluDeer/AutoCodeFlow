@@ -223,7 +223,7 @@ export default function ExecutionDetailPage() {
       {data?.status === 'failed' && data.errorMessage && (
         <Alert
           type="error"
-          message="执行失败"
+          title="执行失败"
           description={data.errorMessage}
           style={{ marginBottom: 16 }}
           action={
