@@ -3,6 +3,7 @@ import express from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as childProcess from 'child_process';
+import { EventEmitter } from 'events';
 
 // Mock dependencies before importing the router
 jest.mock('fs');
@@ -40,7 +41,8 @@ jest.mock('../task-worker', () => ({
 }));
 jest.mock('child_process');
 
-import { executeRouter } from './execute';
+import { executeRouter, runTask } from './execute';
+import { pushCallback } from '../callback';
 import { executorAuthMiddleware } from './logs';
 
 // App without auth — used only for non-auth behaviour tests
@@ -175,5 +177,45 @@ describe('POST /api/execute', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('accepted');
     expect(res.body.executionId).toBe('exec-004');
+  });
+});
+
+describe('runTask callback logs', () => {
+  it('truncates large logs before pushing callback payload', async () => {
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      pid: number;
+      kill: jest.Mock;
+    };
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.pid = 12345;
+    proc.kill = jest.fn();
+    (mockCp.spawn as jest.Mock).mockReturnValue(proc);
+
+    const task = {
+      id: 'task-log-truncate',
+      name: 'Task with large logs',
+      cmd: 'node',
+      args: ['index.js'],
+      workDir: '/tmp/test-workdir',
+      env: {},
+      timeout: 60,
+    };
+
+    const promise = runTask(task, {}, 'exec-log-truncate');
+    proc.stdout.emit('data', Buffer.from('A'.repeat(7000)));
+    proc.stderr.emit('data', Buffer.from('B'.repeat(7000)));
+    proc.emit('close', 0);
+    await promise;
+
+    expect(pushCallback).toHaveBeenCalledTimes(1);
+    const payload = (pushCallback as jest.Mock).mock.calls[0][0];
+    expect(payload.status).toBe('success');
+    expect(payload.logs).toHaveLength(10_000);
+    expect(payload.logs.startsWith('A'.repeat(100))).toBe(true);
+    expect(payload.logs.endsWith('B'.repeat(100))).toBe(true);
+    expect(payload.logs).toContain('[logs truncated, original length 14000 chars]');
   });
 });

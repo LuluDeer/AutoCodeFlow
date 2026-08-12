@@ -303,6 +303,19 @@ function writeExecMeta(executionId: string, data: Record<string, unknown>): void
   } catch (_) { /* best effort */ }
 }
 
+const CALLBACK_LOG_MAX_LENGTH = 10_000;
+const CALLBACK_LOG_HEAD_LENGTH = 5_000;
+
+function truncateCallbackLogs(logs?: string): string | undefined {
+  if (typeof logs !== 'string' || logs.length <= CALLBACK_LOG_MAX_LENGTH) {
+    return logs;
+  }
+
+  const marker = `\n... [logs truncated, original length ${logs.length} chars] ...\n`;
+  const tailLength = Math.max(CALLBACK_LOG_MAX_LENGTH - CALLBACK_LOG_HEAD_LENGTH - marker.length, 0);
+  return `${logs.slice(0, CALLBACK_LOG_HEAD_LENGTH)}${marker}${tailLength > 0 ? logs.slice(-tailLength) : ''}`;
+}
+
 export async function runTask(task: any, params: Record<string, any>, executionId: string): Promise<void> {
   const { cmd, args, workDir, env, timeout } = task;
   const startTime = Date.now();
@@ -329,7 +342,7 @@ export async function runTask(task: any, params: Record<string, any>, executionI
       executionId,
       status: 'success',
       exitCode: result.exitCode,
-      logs: result.logs,
+      logs: truncateCallbackLogs(result.logs),
       durationMs: Date.now() - startTime,
     });
   } catch (err: unknown) {
@@ -350,7 +363,7 @@ export async function runTask(task: any, params: Record<string, any>, executionI
       executionId,
       status: 'failed',
       exitCode,
-      logs,
+      logs: truncateCallbackLogs(logs),
       errorMessage: message,
       durationMs: Date.now() - startTime,
     });
