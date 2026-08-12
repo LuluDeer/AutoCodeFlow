@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     admin_api_url_internal: str = ''
     admin_api_url_external: str = ''
     executor_shared_token: str = ''
+    executor_secret: str = ''
     work_dir: str = '/tmp/autocodeflow/tasks'
     max_concurrent_tasks: int = 10
     task_timeout_seconds: int = 300  # Default task timeout (5 minutes)
