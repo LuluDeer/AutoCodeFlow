@@ -47,6 +47,16 @@ describe('admin-client', () => {
     expect(() => initAdminClients(['', '   '])).toThrow('No admin URLs configured');
   });
 
+  it('normalizes configured /api admin URLs to service roots', () => {
+    initAdminClients([' http://admin-a:3105/api/ ', 'http://admin-b:3105/api']);
+
+    expect(getAllAdminUrls()).toEqual([
+      'http://admin-a:3105',
+      'http://admin-b:3105',
+    ]);
+    expect(getCurrentAdminUrl()).toBe('http://admin-a:3105');
+  });
+
   it('resets current admin URL when reinitialized after failover', () => {
     initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
     failover();
@@ -61,7 +71,7 @@ describe('admin-client', () => {
     const requestMock = jest.fn().mockResolvedValue({ data: { ok: true } });
     mockedAxios.create.mockReturnValue({ request: requestMock } as any);
     mockedGetCurrentToken.mockResolvedValue('secret-token');
-    initAdminClients(['http://admin-a:3105']);
+    initAdminClients(['http://admin-a:3105/api']);
 
     await post('/api/test', { hello: 'world' });
 

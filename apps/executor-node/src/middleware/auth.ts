@@ -6,6 +6,7 @@ import { Request, Response, NextFunction } from 'express';
 import axios from 'axios';
 import { timingSafeEqual } from 'node:crypto';
 import { config } from '../config';
+import { buildAdminApiUrl } from '../admin-api-url';
 
 // Static token: env vars take priority, then CLI --token arg (via config)
 const STATIC_TOKEN = config.token;
@@ -34,7 +35,7 @@ async function fetchToken(): Promise<string | null> {
     }
 
     const response = await axios.post(
-      `${getAdminApiUrl()}/api/executors/token`,
+      buildAdminApiUrl(getAdminApiUrl(), '/api/executors/token'),
       {
         address: config.executorAddressPublic || config.executorAddress,
         appName: config.appName,
