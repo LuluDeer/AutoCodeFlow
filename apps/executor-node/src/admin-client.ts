@@ -2,12 +2,13 @@ import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
 import { config } from './config';
 import { logger } from './logger';
 import { getCurrentToken } from './middleware/auth';
+import { normalizeAdminApiBaseUrl } from './admin-api-url';
 
 let adminUrls: string[] = [];
 let currentIndex = 0;
 
 export function initAdminClients(urls: string[]): void {
-  adminUrls = urls.map(url => url.trim()).filter(Boolean);
+  adminUrls = urls.map(normalizeAdminApiBaseUrl).filter(Boolean);
   currentIndex = 0;
   if (adminUrls.length === 0) {
     throw new Error('No admin URLs configured');
