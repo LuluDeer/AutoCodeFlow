@@ -23,6 +23,7 @@ class LogsResponse(BaseModel):
 def get_execution_logs(
     execution_id: str,
     fromLine: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=2000),
 ) -> LogsResponse:
     # Path traversal guard: reject IDs that contain '..' or path separators
     if '..' in execution_id or '/' in execution_id or '\\' in execution_id:
@@ -38,5 +39,5 @@ def get_execution_logs(
 
     all_lines = log_file.read_text(encoding='utf-8', errors='replace').splitlines()
     total = len(all_lines)
-    sliced = all_lines[fromLine:]
-    return LogsResponse(lines=sliced, totalLines=total, hasMore=False)
+    sliced = all_lines[fromLine:fromLine + limit]
+    return LogsResponse(lines=sliced, totalLines=total, hasMore=fromLine + len(sliced) < total)
