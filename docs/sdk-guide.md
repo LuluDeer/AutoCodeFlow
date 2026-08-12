@@ -2,31 +2,38 @@
 
 ## 概述
 
-AutoCodeFlow 支持 Python 和 Node.js 两种执行器。每个执行器通过 `manifest` 文件声明自身能力，并通过注入的环境变量获取执行上下文。
+AutoCodeFlow 支持 Python 和 Node.js 两种执行器。每个执行器通过 `manifest` 文件声明自身能力；任务脚本通过执行器注入的环境变量获取执行上下文和触发参数。
 
 ## 注入的环境变量
 
-执行器运行任务时，平台会自动注入以下环境变量供任务脚本使用：
+执行器运行任务时，只向子进程注入任务作用域变量，避免泄露执行器密钥：
 
 | 变量名 | 说明 | 示例值 |
 |--------|------|--------|
 | `TASK_ID` | 当前任务的唯一标识 | `task_abc123` |
+| `TASK_NAME` | 当前任务名称 | `fetch_data` |
 | `EXECUTION_ID` | 本次执行记录的唯一标识 | `exec_xyz789` |
-| `APP_NAME` | 所属应用名称 | `my-app` |
-| `ADMIN_API_URL` | Admin API 的访问地址 | `http://admin-api:3105` |
-| `TASK_TOKEN` | 用于回调 API 的临时认证令牌 | `eyJhbGci...` |
-| `TRACE_ID` | 全链路追踪 ID，用于日志关联 | `abc123def456` |
-| `TASK_PARAMS` | 任务参数（JSON 字符串） | `{"key": "value"}` |
+| `AUTOFLOW_<KEY>` | 触发参数，按参数名转大写后注入 | `AUTOFLOW_SOURCE_URL=https://api.example.com` |
+
+例如触发参数 `{ "source_url": "https://api.example.com", "limit": 100 }` 会注入为：
+
+```bash
+AUTOFLOW_SOURCE_URL=https://api.example.com
+AUTOFLOW_LIMIT=100
+```
 
 在脚本中读取示例：
 
 ```python
-import os, json
+import os
 
 task_id = os.environ["TASK_ID"]
 execution_id = os.environ["EXECUTION_ID"]
-params = json.loads(os.environ.get("TASK_PARAMS", "{}"))
+source_url = os.environ["AUTOFLOW_SOURCE_URL"]
+limit = int(os.environ.get("AUTOFLOW_LIMIT", "100"))
 ```
+
+> 执行结果回调由执行器进程统一处理。任务脚本不需要也不应持有平台回调 token 或 Admin API 地址。
 
 ## manifest.yaml 格式
 
@@ -116,9 +123,7 @@ tasks:
 
 ### 安装
 
-```bash
-pip install requests  # Python 执行器内置依赖，无需单独安装 SDK 包
-```
+Python 执行器会直接运行任务脚本；如果任务需要第三方依赖，请在 manifest 的 `requirements` 中声明，或在执行器镜像中预装。
 
 ### 基础任务脚本（tasks/fetch_data.py）
 
@@ -128,6 +133,7 @@ import json
 import requests
 from typing import Any
 
+
 def main() -> dict[str, Any]:
     """
     任务入口函数，平台调用此函数执行任务。
@@ -135,52 +141,32 @@ def main() -> dict[str, Any]:
     """
     # 读取平台注入的上下文
     task_id = os.environ["TASK_ID"]
+    task_name = os.environ.get("TASK_NAME", "")
     execution_id = os.environ["EXECUTION_ID"]
-    trace_id = os.environ["TRACE_ID"]
-    params = json.loads(os.environ.get("TASK_PARAMS", "{}"))
 
-    print(f"[{trace_id}] Starting task {task_id}, execution {execution_id}")
+    print(f"Starting task={task_id} name={task_name} execution={execution_id}")
 
-    # 从参数中获取配置
-    source_url = params["source_url"]
-    limit = params.get("limit", 100)
+    # 从 AUTOFLOW_ 参数中获取配置
+    source_url = os.environ["AUTOFLOW_SOURCE_URL"]
+    limit = int(os.environ.get("AUTOFLOW_LIMIT", "100"))
 
     # 执行业务逻辑
     response = requests.get(source_url, params={"limit": limit}, timeout=30)
     response.raise_for_status()
     data = response.json()
 
-    # 上报中间进度（可选）
-    _report_progress(execution_id, 50, "数据拉取完成，开始处理")
+    # 记录中间进度（可选）：stdout/stderr 会被执行器采集为执行日志
+    print("progress=50% 数据拉取完成，开始处理")
 
-    # 处理数据...
     processed = [{"id": item["id"], "value": item["value"]} for item in data]
 
-    print(f"[{trace_id}] Task completed, processed {len(processed)} records")
+    print(f"Task completed, processed {len(processed)} records")
 
-    # 返回执行结果
     return {
         "success": True,
         "count": len(processed),
-        "data": processed[:10],  # 结果摘要，避免过大
+        "data": processed[:10],
     }
-
-
-def _report_progress(execution_id: str, percent: int, message: str) -> None:
-    """向平台上报执行进度（可选）"""
-    admin_api_url = os.environ.get("ADMIN_API_URL", "")
-    task_token = os.environ.get("TASK_TOKEN", "")
-    if not admin_api_url or not task_token:
-        return
-    try:
-        requests.post(
-            f"{admin_api_url}/api/executions/{execution_id}/progress",
-            json={"percent": percent, "message": message},
-            headers={"Authorization": f"Bearer {task_token}"},
-            timeout=5,
-        )
-    except Exception:
-        pass  # 进度上报失败不影响任务主流程
 
 
 if __name__ == "__main__":
@@ -192,7 +178,6 @@ if __name__ == "__main__":
 
 ```python
 import os
-import json
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -200,24 +185,23 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> dict:
-    params = json.loads(os.environ.get("TASK_PARAMS", "{}"))
-
     try:
-        result = do_work(params)
+        result = do_work()
         return {"success": True, "result": result}
     except ValueError as e:
         logger.error("参数错误: %s", e)
-        # 抛出异常会被平台捕获，执行状态置为 FAILED
+        # 抛出异常会被执行器捕获并通过回调将执行状态置为 FAILED
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("任务执行异常")
         raise
 
 
-def do_work(params: dict) -> dict:
-    if "required_field" not in params:
+def do_work() -> dict:
+    required_field = os.environ.get("AUTOFLOW_REQUIRED_FIELD")
+    if not required_field:
         raise ValueError("缺少必填参数 required_field")
-    return {"processed": True}
+    return {"processed": True, "required_field": required_field}
 ```
 
 ## Node.js SDK 使用示例
@@ -234,19 +218,22 @@ const axios = require('axios');
 async function main() {
   // 读取平台注入的上下文
   const taskId = process.env.TASK_ID;
+  const taskName = process.env.TASK_NAME || '';
   const executionId = process.env.EXECUTION_ID;
-  const traceId = process.env.TRACE_ID;
-  const params = JSON.parse(process.env.TASK_PARAMS || '{}');
 
-  console.log(`[${traceId}] Starting task ${taskId}, execution ${executionId}`);
+  console.log(`Starting task=${taskId} name=${taskName} execution=${executionId}`);
 
-  const { channel, message, recipients } = params;
+  const channel = process.env.AUTOFLOW_CHANNEL;
+  const message = process.env.AUTOFLOW_MESSAGE;
+  const recipients = (process.env.AUTOFLOW_RECIPIENTS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 
-  if (!channel || !message || !recipients?.length) {
+  if (!channel || !message || !recipients.length) {
     throw new Error('缺少必填参数: channel, message, recipients');
   }
 
-  // 执行业务逻辑
   const results = await Promise.allSettled(
     recipients.map((recipient) => sendMessage(channel, recipient, message))
   );
@@ -254,7 +241,7 @@ async function main() {
   const succeeded = results.filter((r) => r.status === 'fulfilled').length;
   const failed = results.filter((r) => r.status === 'rejected').length;
 
-  console.log(`[${traceId}] Done: ${succeeded} succeeded, ${failed} failed`);
+  console.log(`progress=100% Done: ${succeeded} succeeded, ${failed} failed`);
 
   return {
     success: failed === 0,
@@ -265,7 +252,6 @@ async function main() {
 }
 
 async function sendMessage(channel, recipient, message) {
-  // 根据渠道分发
   switch (channel) {
     case 'webhook':
       await axios.post(recipient, { message }, { timeout: 10000 });
@@ -284,13 +270,6 @@ module.exports = main;
 ### 使用 TypeScript（tasks/processData.ts）
 
 ```typescript
-import axios from 'axios';
-
-interface TaskParams {
-  inputFile: string;
-  outputFormat?: 'json' | 'csv' | 'parquet';
-}
-
 interface TaskResult {
   success: boolean;
   outputFile: string;
@@ -298,13 +277,13 @@ interface TaskResult {
 }
 
 export default async function main(): Promise<TaskResult> {
-  const params: TaskParams = JSON.parse(process.env.TASK_PARAMS || '{}');
-  const adminApiUrl = process.env.ADMIN_API_URL;
-  const taskToken = process.env.TASK_TOKEN;
+  const inputFile = process.env.AUTOFLOW_INPUT_FILE;
+  const outputFormat = process.env.AUTOFLOW_OUTPUT_FORMAT || 'json';
 
-  const { inputFile, outputFormat = 'json' } = params;
+  if (!inputFile) {
+    throw new Error('缺少必填参数: input_file');
+  }
 
-  // 执行数据处理
   const outputFile = await processFile(inputFile, outputFormat);
 
   return {

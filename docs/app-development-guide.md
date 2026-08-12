@@ -49,8 +49,7 @@ docker compose ps   # 所有服务 healthy
 3. 脚本类型选 `JavaScript`，粘贴：
 
 ```javascript
-const params = JSON.parse(process.env.TASK_PARAMS || '{}');
-const name = params.name || 'World';
+const name = process.env.AUTOFLOW_NAME || 'World';
 console.log(`Hello, ${name}! 时间: ${new Date().toISOString()}`);
 return { success: true, greeting: `Hello, ${name}!` };
 ```
@@ -154,20 +153,16 @@ tasks:
 
 ## 平台注入的环境变量
 
-每次执行任务时，平台自动注入以下变量，脚本直接读取：
+每次执行任务时，执行器只向子进程注入任务作用域变量，避免泄露执行器密钥：
 
 | 变量名 | 说明 | 示例值 |
 |--------|------|--------|
 | `TASK_ID` | 任务唯一标识 | `task_abc123` |
+| `TASK_NAME` | 任务名称 | `daily_report` |
 | `EXECUTION_ID` | 本次执行记录 ID | `exec_xyz789` |
-| `APP_NAME` | 所属应用名称 | `my-app` |
-| `ADMIN_API_URL` | Admin API 地址 | `http://admin-api:3105` |
-| `TASK_TOKEN` | 回调用临时令牌 | `eyJhbGci...` |
-| `TRACE_ID` | 全链路追踪 ID | `abc123def456` |
-| `TASK_PARAMS` | 任务参数 JSON 字符串 | `{"key":"value"}` |
 | `AUTOFLOW_<KEY>` | 触发时传入的运行时参数 | `AUTOFLOW_DATE=2024-01-01` |
 
-> `TASK_PARAMS` 是任务配置的默认参数；触发时额外传入的参数以 `AUTOFLOW_` 前缀注入，同名时覆盖默认值。
+> 任务参数会以 `AUTOFLOW_` 前缀注入环境变量；例如触发参数 `{ "date": "2024-01-01" }` 会变成 `AUTOFLOW_DATE=2024-01-01`。执行结果回调由执行器进程统一处理，任务脚本不需要也不应持有平台回调 token。
 
 ---
 
@@ -192,15 +187,14 @@ def main() -> dict:
     """
     # 读取上下文
     task_id      = os.environ["TASK_ID"]
+    task_name    = os.environ.get("TASK_NAME", "")
     execution_id = os.environ["EXECUTION_ID"]
-    trace_id     = os.environ["TRACE_ID"]
-    params       = json.loads(os.environ.get("TASK_PARAMS", "{}"))
 
-    logger.info("[%s] task=%s execution=%s", trace_id, task_id, execution_id)
+    logger.info("task=%s name=%s execution=%s", task_id, task_name, execution_id)
 
-    # 读取参数（支持运行时覆盖：AUTOFLOW_DATE 覆盖 params["date"]）
-    date = os.environ.get("AUTOFLOW_DATE") or params.get("date", "today")
-    output_format = params.get("output_format", "json")
+    # 读取参数：触发参数以 AUTOFLOW_ 前缀注入
+    date = os.environ.get("AUTOFLOW_DATE", "today")
+    output_format = os.environ.get("AUTOFLOW_OUTPUT_FORMAT", "json")
 
     # ── 业务逻辑 ──────────────────────────────────
     result = do_work(date, output_format)
@@ -220,28 +214,18 @@ if __name__ == "__main__":
     print(json.dumps(main(), ensure_ascii=False))
 ```
 
-### Python 进度上报（可选）
+### Python 进度记录（可选）
+
+任务脚本的 stdout/stderr 会被执行器采集并写入执行日志。推荐用结构化日志记录进度，平台会在执行结束后保存日志：
 
 ```python
-import os
-import requests
+import logging
+
+logger = logging.getLogger(__name__)
 
 def report_progress(percent: int, message: str) -> None:
-    """向平台上报执行进度，失败不影响主流程。"""
-    url   = os.environ.get("ADMIN_API_URL", "")
-    token = os.environ.get("TASK_TOKEN", "")
-    eid   = os.environ.get("EXECUTION_ID", "")
-    if not url or not token:
-        return
-    try:
-        requests.post(
-            f"{url}/api/executions/{eid}/progress",
-            json={"percent": percent, "message": message},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=5,
-        )
-    except Exception:
-        pass
+    """记录任务进度；执行结果回调由执行器统一处理。"""
+    logger.info("progress=%s%% %s", percent, message)
 ```
 
 ### Node.js 任务模板
@@ -255,14 +239,13 @@ def report_progress(percent: int, message: str) -> None:
 async function main() {
   const taskId      = process.env.TASK_ID;
   const executionId = process.env.EXECUTION_ID;
-  const traceId     = process.env.TRACE_ID;
-  const params      = JSON.parse(process.env.TASK_PARAMS || '{}');
+  const taskName    = process.env.TASK_NAME || '';
 
-  console.log(`[${traceId}] task=${taskId} execution=${executionId}`);
+  console.log(`task=${taskId} name=${taskName} execution=${executionId}`);
 
-  // 运行时参数覆盖默认参数（AUTOFLOW_URL 覆盖 params.url）
-  const url     = process.env.AUTOFLOW_URL     || params.url;
-  const webhook = process.env.AUTOFLOW_WEBHOOK || params.webhook;
+  // 触发参数以 AUTOFLOW_ 前缀注入
+  const url     = process.env.AUTOFLOW_URL;
+  const webhook = process.env.AUTOFLOW_WEBHOOK;
 
   if (!url) throw new Error('缺少必填参数: url');
 
@@ -282,25 +265,12 @@ async function doWork(url, webhook) {
 module.exports = main;
 ```
 
-### Node.js 进度上报（可选）
+### Node.js 进度记录（可选）
 
 ```javascript
-const axios = require('axios');
-
-async function reportProgress(percent, message) {
-  const url   = process.env.ADMIN_API_URL;
-  const token = process.env.TASK_TOKEN;
-  const eid   = process.env.EXECUTION_ID;
-  if (!url || !token) return;
-  try {
-    await axios.post(
-      `${url}/api/executions/${eid}/progress`,
-      { percent, message },
-      { headers: { Authorization: `Bearer ${token}` }, timeout: 5000 }
-    );
-  } catch (_) {
-    // 进度上报失败不影响主流程
-  }
+function reportProgress(percent, message) {
+  // stdout/stderr 会被执行器采集为执行日志；执行结果回调由执行器统一处理。
+  console.log(`progress=${percent}% ${message}`);
 }
 ```
 
@@ -351,7 +321,7 @@ COPY . .
 2. 在 `docker-compose.yml` 加入你的执行器服务，挂载到 executor-python 同网络
 3. 设置环境变量：
    - `ADMIN_API_URL=http://admin-api:3105`
-   - `EXECUTOR_SECRET=<与平台一致>`
+   - `EXECUTOR_SHARED_TOKEN=<与平台一致>`
 
 ### 方式 C：在管理后台手动注册
 
@@ -385,19 +355,19 @@ COPY . .
 
 ### 默认参数 vs 运行时参数
 
-- **默认参数**：在任务配置页的「参数」栏填写，每次执行都用这组值（可被覆盖）
-- **运行时参数**：触发时在弹窗里填写，以 `AUTOFLOW_<KEY>` 注入，覆盖同名默认参数
+- **任务参数**：在任务配置页或触发弹窗里填写
+- **脚本读取**：执行器会将参数以 `AUTOFLOW_<KEY>` 注入环境变量
 
 脚本里推荐的读取方式：
 
 ```python
-# Python：优先读运行时参数，fallback 到默认参数
-date = os.environ.get("AUTOFLOW_DATE") or params.get("date", "today")
+# Python
+date = os.environ.get("AUTOFLOW_DATE", "today")
 ```
 
 ```javascript
 // Node.js
-const date = process.env.AUTOFLOW_DATE || params.date || 'today';
+const date = process.env.AUTOFLOW_DATE || 'today';
 ```
 
 ---
@@ -411,10 +381,9 @@ const date = process.env.AUTOFLOW_DATE || params.date || 'today';
 ```bash
 export TASK_ID=test-task
 export EXECUTION_ID=test-exec-001
-export TRACE_ID=trace-001
-export TASK_PARAMS='{"date":"2024-01-01","output_format":"json"}'
-export ADMIN_API_URL=http://localhost:3105
-export TASK_TOKEN=dev-token
+export TASK_NAME=daily_report
+export AUTOFLOW_DATE=2024-01-01
+export AUTOFLOW_OUTPUT_FORMAT=json
 
 python tasks/daily_report.py
 ```
@@ -424,8 +393,8 @@ python tasks/daily_report.py
 ```bash
 export TASK_ID=test-task
 export EXECUTION_ID=test-exec-001
-export TRACE_ID=trace-001
-export TASK_PARAMS='{"url":"https://example.com"}'
+export TASK_NAME=fetch_and_notify
+export AUTOFLOW_URL=https://example.com
 
 node -e "require('./tasks/taskA').then(r => console.log(r)).catch(console.error)"
 ```
@@ -437,7 +406,7 @@ node -e "require('./tasks/taskA').then(r => console.log(r)).catch(console.error)
 ## 发布上线 Checklist
 
 - [ ] 脚本在本地用模拟环境变量跑通
-- [ ] 参数读取逻辑：`AUTOFLOW_` 前缀覆盖 `TASK_PARAMS`，并有合理默认值
+- [ ] 参数读取逻辑：从 `AUTOFLOW_` 前缀变量读取，并有合理默认值
 - [ ] 超时时间合理（`timeout` 字段 ≥ 脚本实际最长耗时 × 1.5）
 - [ ] 所有外部请求都有 `timeout` 参数，不会无限阻塞
 - [ ] 异常都有明确的错误信息，便于排查
@@ -458,7 +427,7 @@ node -e "require('./tasks/taskA').then(r => console.log(r)).catch(console.error)
 | 脚本超时 | timeout 设置太小 | 调大 manifest 里的 `timeout` 字段，重启执行器 |
 | 运行时参数没生效 | 没读 `AUTOFLOW_` 前缀变量 | 脚本里加 `os.environ.get("AUTOFLOW_KEY")` 的读取逻辑 |
 | manifest 改了没生效 | 没重启执行器 | `docker compose restart executor-python` |
-| 进度条不更新 | `TASK_TOKEN` 或 `ADMIN_API_URL` 为空 | 检查环境变量注入，进度上报失败不影响执行结果 |
+| 执行日志为空 | 脚本没有输出 stdout/stderr | 增加 `print` / `console.log` / logger 输出，执行器会采集为日志 |
 
 ---
 
