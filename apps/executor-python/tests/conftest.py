@@ -16,7 +16,7 @@ def app():
     """Create the FastAPI application with the lifespan disabled for tests."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from routers import execute, health, logs
+    from routers import config as config_router, execute, health, logs
     from fastapi.middleware.cors import CORSMiddleware
 
     _app = FastAPI(title='Test Executor')
@@ -29,6 +29,7 @@ def app():
     _app.include_router(health.router)
     _app.include_router(execute.router, prefix='/api')
     _app.include_router(logs.router, prefix='/api')
+    _app.include_router(config_router.router, prefix='/api')
     return _app
 
 
