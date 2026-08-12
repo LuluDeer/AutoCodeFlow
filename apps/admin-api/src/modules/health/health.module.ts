@@ -1,6 +1,6 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
-import { BullModule } from "@nestjs/bull";
+import { BullModule } from "@nestjs/bullmq";
 import { ConfigModule } from "@nestjs/config";
 import { HealthController } from "./health.controller";
 import { HealthService } from "./health.service";

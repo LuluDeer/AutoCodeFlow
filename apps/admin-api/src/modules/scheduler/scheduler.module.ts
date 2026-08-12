@@ -1,6 +1,6 @@
 import { Module, forwardRef } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
-import { BullModule } from "@nestjs/bull";
+import { BullModule } from "@nestjs/bullmq";
 import { ScheduleModule } from "@nestjs/schedule";
 import { SchedulerService } from "./scheduler.service";
 import { Task } from "../task/entities/task.entity";

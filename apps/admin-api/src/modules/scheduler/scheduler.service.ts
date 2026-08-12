@@ -6,8 +6,8 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, In, Repository } from "typeorm";
-import { InjectQueue } from "@nestjs/bull";
-import { Queue } from "bull";
+import { InjectQueue } from "@nestjs/bullmq";
+import { Queue } from "bullmq";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import * as nodeCron from "node-cron";
 import {

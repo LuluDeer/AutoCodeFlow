@@ -1,10 +1,9 @@
-import { Process, Processor } from "@nestjs/bull";
+import { InjectQueue, Processor, WorkerHost } from "@nestjs/bullmq";
 import { Logger, Inject, forwardRef } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, In, DataSource } from "typeorm";
-import { InjectQueue } from "@nestjs/bull";
-import { Job, Queue } from "bull";
+import { Job, Queue } from "bullmq";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -18,7 +17,7 @@ import { AuditService } from "../audit/audit.service";
 import { TaskService } from "./task.service";
 
 @Processor("task-queue")
-export class TaskProcessor {
+export class TaskProcessor extends WorkerHost {
   private readonly logger = new Logger(TaskProcessor.name);
 
   constructor(
@@ -35,7 +34,9 @@ export class TaskProcessor {
     @Inject(forwardRef(() => TaskService)) private taskService: TaskService,
     @InjectQueue("task-queue") private taskQueue: Queue,
     private dataSource: DataSource,
-  ) {}
+  ) {
+    super();
+  }
 
   /**
    * Fetch log lines from executor's /api/logs/{executionId} endpoint and
@@ -112,7 +113,10 @@ export class TaskProcessor {
     }
   }
 
-  @Process("execute")
+  async process(job: Job<{ executionId: string }>) {
+    return this.handle(job);
+  }
+
   async handle(job: Job<{ executionId: string }>) {
     const { executionId } = job.data;
     const exec = await this.execRepo.findOne({ where: { id: executionId } });

@@ -2,7 +2,7 @@ import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { DataSource } from "typeorm";
-import { getQueueToken } from "@nestjs/bull";
+import { getQueueToken } from "@nestjs/bullmq";
 import { TaskProcessor } from "../task.processor";
 import {
   TaskExecution,
