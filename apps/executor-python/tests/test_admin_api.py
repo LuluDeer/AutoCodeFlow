@@ -18,6 +18,14 @@ def test_build_admin_api_url_keeps_existing_api_prefix(monkeypatch):
     assert build_admin_api_url('/executors/heartbeat') == 'http://admin.local/api/executors/heartbeat'
 
 
+def test_build_admin_api_url_accepts_api_prefixed_path(monkeypatch):
+    monkeypatch.setattr(settings, 'admin_api_url', 'http://admin.local/api/')
+    monkeypatch.setattr(settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(settings, 'admin_api_url_external', '')
+
+    assert build_admin_api_url('/api/health') == 'http://admin.local/api/health'
+
+
 def test_build_admin_api_url_normalizes_trailing_and_leading_slashes(monkeypatch):
     monkeypatch.setattr(settings, 'admin_api_url', 'http://admin.local/')
     monkeypatch.setattr(settings, 'admin_api_url_internal', '')
@@ -35,3 +43,14 @@ def test_admin_api_base_url_priority(monkeypatch):
 
     monkeypatch.setattr(settings, 'admin_api_url_external', '')
     assert get_admin_api_base_url() == 'http://admin.internal/api'
+
+    monkeypatch.setattr(settings, 'admin_api_url_internal', None)
+    assert get_admin_api_base_url() == 'http://admin.local'
+
+
+def test_admin_api_base_url_ignores_blank_priority_values(monkeypatch):
+    monkeypatch.setattr(settings, 'admin_api_url', ' http://admin.local/ ')
+    monkeypatch.setattr(settings, 'admin_api_url_internal', '   ')
+    monkeypatch.setattr(settings, 'admin_api_url_external', None)
+
+    assert get_admin_api_base_url() == 'http://admin.local'

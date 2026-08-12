@@ -31,6 +31,14 @@ class ConfigReloadRequest(BaseModel):
         default=None,
         validation_alias=AliasChoices('admin_api_url', 'adminApiUrl'),
     )
+    admin_api_url_internal: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices('admin_api_url_internal', 'adminApiUrlInternal'),
+    )
+    admin_api_url_external: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices('admin_api_url_external', 'adminApiUrlExternal'),
+    )
 
 
 class ConfigReloadResponse(BaseModel):
@@ -76,6 +84,16 @@ async def reload_config(req: ConfigReloadRequest) -> ConfigReloadResponse:
             settings.admin_api_url = req.admin_api_url
             updated_fields.append('admin_api_url')
             logger.info(f'Hot-reloaded admin_api_url={req.admin_api_url}')
+
+        if req.admin_api_url_internal is not None:
+            settings.admin_api_url_internal = req.admin_api_url_internal
+            updated_fields.append('admin_api_url_internal')
+            logger.info(f'Hot-reloaded admin_api_url_internal={req.admin_api_url_internal}')
+
+        if req.admin_api_url_external is not None:
+            settings.admin_api_url_external = req.admin_api_url_external
+            updated_fields.append('admin_api_url_external')
+            logger.info(f'Hot-reloaded admin_api_url_external={req.admin_api_url_external}')
         
         if not updated_fields:
             return ConfigReloadResponse(success=True, message='No fields to update', updated_fields=[])
