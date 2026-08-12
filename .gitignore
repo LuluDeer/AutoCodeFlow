@@ -62,6 +62,7 @@ apps/executor-*/tasks/
 
 # 工具运行时文件
 .codegraph/
+.zcode/
 .env.isolated
 *.pid
 
