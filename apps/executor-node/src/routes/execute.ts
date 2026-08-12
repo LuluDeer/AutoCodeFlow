@@ -65,9 +65,13 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     return;
   }
 
-  // Helper function to send error response and decrement capacity counter
-  const sendError = (status: number, error: string) => {
+  // Helper function to release capacity exactly once for synchronous rejection paths.
+  const releaseCapacity = () => {
     Atomics.sub(getRunningCountArray(), 0, 1);
+  };
+
+  const sendError = (status: number, error: string) => {
+    releaseCapacity();
     res.status(status).json({ error });
   };
 
@@ -143,7 +147,12 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
 
     const ref = gitCommit || gitBranch;
     logger.info(`Checking out ${gitRepo}@${ref} to ${workDir}`);
-    gitCheckoutTo(gitRepo, ref, workDir);
+    try {
+      gitCheckoutTo(gitRepo, ref, workDir);
+    } catch (err) {
+      sendError(500, err instanceof Error ? err.message : 'Git checkout failed');
+      return;
+    }
   }
 
   // Load manifest.yaml and merge with task (task fields take priority)
@@ -283,9 +292,15 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     executionId,
   };
 
-  taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId }, () => {
-    Atomics.sub(getRunningCountArray(), 0, 1);
-  });
+  try {
+    taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId }, () => {
+      releaseCapacity();
+    });
+  } catch (err) {
+    releaseCapacity();
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to enqueue task' });
+    return;
+  }
   
   res.json({ status: 'accepted', executionId });
 });
