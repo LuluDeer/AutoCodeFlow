@@ -140,11 +140,10 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 const server = app.listen(config.port, async () => {
   logger.info(`Executor started: ${config.appName} @ ${config.executorAddress}`);
   
-  // Initialize admin clients for HA support
-  const adminUrls = config.adminApiUrls.length > 0 
-    ? config.adminApiUrls 
-    : [config.adminApiUrl];
-  initAdminClients(adminUrls);
+  // Initialize admin clients for HA support.
+  // config.adminApiUrls already applies the URL priority:
+  // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
+  initAdminClients(config.adminApiUrls);
   
   await registerExecutor();
   heartbeatInterval = startHeartbeat();
