@@ -10,6 +10,7 @@ from tenacity import (
     retry_if_exception_type,
     before_sleep_log,
 )
+from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 import psutil
 from auth import get_current_token
@@ -37,12 +38,8 @@ def decrement_running() -> None:
 
 
 def _get_admin_api_url() -> str:
-    """Get the appropriate admin API URL for heartbeat."""
-    if settings.admin_api_url_external:
-        return settings.admin_api_url_external
-    if settings.admin_api_url_internal:
-        return settings.admin_api_url_internal
-    return settings.admin_api_url
+    """Get the appropriate Admin API base URL for heartbeat."""
+    return get_admin_api_base_url()
 
 
 def _heartbeat_retry_exhausted(retry_state):
@@ -67,7 +64,7 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory().percent
     response = await client.post(
-        f'{_get_admin_api_url()}/api/executors/heartbeat',
+        build_admin_api_url('/executors/heartbeat'),
         json={
             'address': settings.executor_address_public or settings.executor_address,
             'cpuUsage': cpu,
