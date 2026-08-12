@@ -7,6 +7,7 @@ import { post } from './admin-client';
 export interface CallbackRequest {
   executionId: string;
   status: 'success' | 'failed';
+  executorAddress?: string;
   exitCode?: number;
   logs?: string;
   errorMessage?: string;
@@ -24,13 +25,21 @@ function getCallbackDir(): string {
   return dir;
 }
 
+function withExecutorAddress(request: CallbackRequest): CallbackRequest {
+  return {
+    executorAddress: config.executorAddressPublic || config.executorAddress,
+    ...request,
+  };
+}
+
 export function pushCallback(request: CallbackRequest): void {
+  const callbackRequest = withExecutorAddress(request);
   const existingIndex = callbackQueue.findIndex(r => r.executionId === request.executionId);
   if (existingIndex !== -1) {
-    callbackQueue[existingIndex] = request;
+    callbackQueue[existingIndex] = callbackRequest;
     logger.debug(`Overwrote duplicate callback for execution ${request.executionId}`);
   } else {
-    callbackQueue.push(request);
+    callbackQueue.push(callbackRequest);
     logger.debug(`Pushed callback for execution ${request.executionId}`);
   }
 }
