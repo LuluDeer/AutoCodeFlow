@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { getQueueToken } from '@nestjs/bull';
+import { getQueueToken } from '@nestjs/bullmq';
 import { SchedulerService } from '../scheduler.service';
 import { Task, TaskStatus, TaskTriggerType, BlockStrategy, MisfireStrategy } from '../../task/entities/task.entity';
 import { TaskExecution, ExecutionStatus } from '../../task/entities/task-execution.entity';

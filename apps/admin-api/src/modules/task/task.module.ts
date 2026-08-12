@@ -1,6 +1,6 @@
 import { Module, forwardRef } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
-import { BullModule } from "@nestjs/bull";
+import { BullModule } from "@nestjs/bullmq";
 import { TaskController } from "./task.controller";
 import { TaskBatchController } from "./task-batch.controller";
 import { ExecutionCallbackController } from "./execution-callback.controller";

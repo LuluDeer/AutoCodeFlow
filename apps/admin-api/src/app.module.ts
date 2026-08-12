@@ -2,7 +2,7 @@ import { Module, NestModule, MiddlewareConsumer } from "@nestjs/common";
 import { TraceIdMiddleware } from "./common/middleware/trace-id.middleware";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
-import { BullModule } from "@nestjs/bull";
+import { BullModule } from "@nestjs/bullmq";
 import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
 import { APP_GUARD } from "@nestjs/core";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
@@ -125,7 +125,7 @@ import { RegistryModule } from "./modules/registry/registry.module";
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (cfg: ConfigService) => ({
-        redis: {
+        connection: {
           host: cfg.get("redis.host"),
           port: cfg.get<number>("redis.port"),
           password: cfg.get("redis.password"),
@@ -137,6 +137,7 @@ import { RegistryModule } from "./modules/registry/registry.module";
           family: 4, // IPv4
           // Connection pool settings for better performance
           maxRedirections: 3, // Maximum redirections for cluster mode
+          maxRetriesPerRequest: null,
           retryStrategy: (times: number) => {
             if (times > 10) {
               // Stop retrying after 10 attempts

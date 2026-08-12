@@ -1,8 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { InjectQueue } from "@nestjs/bull";
-import { Queue } from "bull";
+import { InjectQueue } from "@nestjs/bullmq";
+import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
 import { Task } from "../task/entities/task.entity";
 import { Executor } from "../executor/entities/executor.entity";
@@ -156,7 +156,7 @@ export class HealthService {
     details?: string;
   }> {
     try {
-      const jobs = await this.taskQueue.getJobs(["waiting", "active"]);
+      const jobs = await this.taskQueue.getJobs(["wait", "active"]);
       return {
         status: "healthy",
         details: `Scheduler is running, ${jobs.length} jobs in queue`,

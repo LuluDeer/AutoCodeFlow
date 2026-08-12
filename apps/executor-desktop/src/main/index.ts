@@ -26,7 +26,7 @@ app.on('second-instance', () => {
 });
 
 // 托盘应用不随最后一个窗口关闭而退出
-app.on('window-all-closed', (e: Event) => e.preventDefault());
+app.on('window-all-closed', () => undefined);
 
 // before-quit 是同步事件，Electron 不等 async 回调。
 // 用 preventDefault 阻止退出，待 executor-node 子进程真正结束后再 quit。
