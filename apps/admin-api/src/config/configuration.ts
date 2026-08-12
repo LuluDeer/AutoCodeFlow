@@ -109,6 +109,10 @@ if (process.env.NODE_ENV === "production") {
     "change-me-executor-shared-secret",
     "change-me-pypi-password",
     "change-me-pypi-api-key",
+    "change_me_to_a_random_secret_32chars",
+    "change_me_to_another_random_secret_32chars",
+    "change_me_to_a_random_token_16chars",
+    "change_me_immediately",
   ]);
 
   // Validate database password
