@@ -13,6 +13,11 @@ _last_heartbeat_time: str | None = None
 _admin_api_reachable: bool | None = None
 
 
+def _get_health_token() -> str:
+    """Return the executor auth token using the same precedence as auth.py."""
+    return os.environ.get('EXECUTOR_SHARED_TOKEN') or os.environ.get('EXECUTOR_SECRET') or ''
+
+
 def record_heartbeat(success: bool) -> None:
     """Called by the heartbeat task to update last heartbeat state."""
     global _last_heartbeat_time, _admin_api_reachable
@@ -36,7 +41,7 @@ async def health():
     """Liveness probe - returns resource metrics and connectivity state."""
     # Use cached reachability if available, otherwise probe on demand
     admin_ok = _admin_api_reachable if _admin_api_reachable is not None else await _check_admin_api()
-    token = os.environ.get('EXECUTOR_SECRET') or os.environ.get('EXECUTOR_SHARED_TOKEN') or ''
+    token = _get_health_token()
     return {
         'status': 'ok',
         'appName': settings.app_name,
