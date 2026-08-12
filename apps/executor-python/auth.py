@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 from fastapi import Header, HTTPException, status
 import httpx
+from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 
 def _get_static_token() -> str:
@@ -17,13 +18,8 @@ _token_refresh_interval = 30 * 60  # 30 minutes
 
 
 def _get_admin_api_url() -> str:
-    """Get the appropriate admin API URL based on configuration."""
-    # Priority: external URL if configured, then internal, then default
-    if settings.admin_api_url_external:
-        return settings.admin_api_url_external
-    if settings.admin_api_url_internal:
-        return settings.admin_api_url_internal
-    return settings.admin_api_url
+    """Get the appropriate Admin API base URL based on configuration."""
+    return get_admin_api_base_url()
 
 
 async def _fetch_token() -> str | None:
@@ -37,7 +33,7 @@ async def _fetch_token() -> str | None:
                 headers['Authorization'] = f'Bearer {static_token}'
             
             response = await client.post(
-                f'{_get_admin_api_url()}/api/executors/token',
+                build_admin_api_url('/executors/token'),
                 json={
                     'address': settings.executor_address_public or settings.executor_address,
                     'appName': settings.app_name,

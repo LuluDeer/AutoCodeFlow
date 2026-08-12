@@ -9,6 +9,7 @@ import signal
 import httpx
 
 from routers import execute, health, logs, config as config_router
+from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 from scheduler import heartbeat_task, get_running_count
 from auth import get_current_token
@@ -26,12 +27,8 @@ def is_shutting_down() -> bool:
 
 
 def _get_admin_api_url() -> str:
-    """Get the appropriate admin API URL."""
-    if settings.admin_api_url_external:
-        return settings.admin_api_url_external
-    if settings.admin_api_url_internal:
-        return settings.admin_api_url_internal
-    return settings.admin_api_url
+    """Get the appropriate Admin API base URL."""
+    return get_admin_api_base_url()
 
 
 async def notify_offline():
@@ -41,7 +38,7 @@ async def notify_offline():
         headers = {'Authorization': f'Bearer {token}'} if token else {}
         async with httpx.AsyncClient() as client:
             await client.post(
-                f'{_get_admin_api_url()}/api/executors/offline',
+                build_admin_api_url('/executors/offline'),
                 json={'address': settings.executor_address_public or settings.executor_address},
                 headers=headers,
                 timeout=5,
@@ -86,7 +83,7 @@ async def register_executor():
         headers = {'Authorization': f'Bearer {token}'} if token else {}
         async with httpx.AsyncClient() as client:
             await client.post(
-                f'{_get_admin_api_url()}/api/executors/register',
+                build_admin_api_url('/executors/register'),
                 json={
                     'appName': settings.app_name,
                     'address': settings.executor_address_public or settings.executor_address,

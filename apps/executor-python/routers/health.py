@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import psutil
 import httpx
 import os
+from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 
 router = APIRouter()
@@ -27,7 +28,7 @@ async def _check_admin_api():
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(
-                f'{settings.admin_api_url}/api/executors/heartbeat',
+                build_admin_api_url('/executors/heartbeat'),
                 headers=headers,
             )
             return resp.status_code == 200
@@ -63,7 +64,7 @@ async def readiness():
             detail={
                 'status': 'unready',
                 'reason': 'admin-api unreachable',
-                'adminApiUrl': settings.admin_api_url,
+                'adminApiUrl': get_admin_api_base_url(),
             },
         )
     return {

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Any, Optional
 import scheduler as sched
 from auth import verify_token
+from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 from manifest import load_manifest, merge_task_with_manifest
 try:
@@ -61,12 +62,8 @@ def _executor_callback_address() -> str:
 
 
 def _get_admin_api_url() -> str:
-    """Get the appropriate admin API URL for execution callbacks."""
-    if settings.admin_api_url_external:
-        return settings.admin_api_url_external
-    if settings.admin_api_url_internal:
-        return settings.admin_api_url_internal
-    return settings.admin_api_url
+    """Get the appropriate Admin API base URL for execution callbacks."""
+    return get_admin_api_base_url()
 
 
 def _get_callback_token() -> str:
@@ -133,7 +130,7 @@ async def _run_and_callback(req: ExecuteRequest):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(
-                    f"{admin_api_url.rstrip('/')}/executions/callback",
+                    build_admin_api_url('/executions/callback'),
                     json=[payload],
                     headers=headers,
                 )

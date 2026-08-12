@@ -26,7 +26,8 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
         await register_executor()
 
     mock_client.post.assert_awaited_once()
-    _, kwargs = mock_client.post.call_args
+    args, kwargs = mock_client.post.call_args
+    assert args[0] == 'http://admin.local/api/executors/register'
     assert kwargs['headers'] == {'Authorization': 'Bearer test-token'}
     assert kwargs['json'] == {
         'appName': 'py-executor',
