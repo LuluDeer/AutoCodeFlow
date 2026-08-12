@@ -316,6 +316,8 @@ export class ExecutorController {
       taskTimeoutSeconds?: number;
       heartbeatIntervalSeconds?: number;
       adminApiUrl?: string;
+      adminApiUrlInternal?: string;
+      adminApiUrlExternal?: string;
     },
   ) {
     const executor = await this.svc.findOne(id);

@@ -262,7 +262,9 @@ export default function ExecutorDetailPage() {
           <Form.Item name="maxConcurrentTasks" label="最大并发数"><InputNumber min={1} /></Form.Item>
           <Form.Item name="taskTimeoutSeconds" label="任务超时(秒)"><InputNumber min={1} /></Form.Item>
           <Form.Item name="heartbeatIntervalSeconds" label="心跳间隔(秒)"><InputNumber min={5} /></Form.Item>
-          <Form.Item name="adminApiUrl" label="Admin API地址"><Input /></Form.Item>
+          <Form.Item name="adminApiUrl" label="Admin API地址"><Input placeholder="默认 Admin API 地址" /></Form.Item>
+          <Form.Item name="adminApiUrlInternal" label="Admin API内部地址"><Input placeholder="执行器容器/内网访问地址" /></Form.Item>
+          <Form.Item name="adminApiUrlExternal" label="Admin API外部地址"><Input placeholder="执行器回调优先使用的公网地址" /></Form.Item>
         </Form>
       </Modal>
     </div>
