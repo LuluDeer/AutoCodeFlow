@@ -15,7 +15,7 @@ jest.mock('../config', () => ({
 }));
 jest.mock('../logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
 
-import { logsRouter, executorAuthMiddleware } from './logs';
+import { logsRouter, executorAuthMiddleware, getExecutorAuthToken } from './logs';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 
@@ -37,17 +37,35 @@ appWithAuth.use('/api', executorAuthMiddleware, logsRouter);
 beforeEach(() => {
   jest.clearAllMocks();
   delete process.env.EXECUTOR_SHARED_TOKEN;
+  delete process.env.EXECUTOR_SECRET;
   (mockFs.existsSync as jest.Mock).mockReturnValue(false);
 });
 
 afterEach(() => {
   delete process.env.EXECUTOR_SHARED_TOKEN;
+  delete process.env.EXECUTOR_SECRET;
 });
 
 // ---------------------------------------------------------------------------
 // executorAuthMiddleware unit tests
 // ---------------------------------------------------------------------------
 describe('executorAuthMiddleware', () => {
+  it('prefers EXECUTOR_SHARED_TOKEN over legacy EXECUTOR_SECRET', () => {
+    process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
+    process.env.EXECUTOR_SECRET = 'legacy-secret-token';
+
+    expect(getExecutorAuthToken()).toBe(TEST_TOKEN);
+
+    const req = { headers: { authorization: 'Bearer legacy-secret-token' } } as any;
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() } as any;
+    const next = jest.fn();
+
+    executorAuthMiddleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
   it('calls next() immediately when no secret is configured', () => {
     delete process.env.EXECUTOR_SHARED_TOKEN;
     const req = {} as any;

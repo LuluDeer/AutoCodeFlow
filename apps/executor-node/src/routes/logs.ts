@@ -7,10 +7,14 @@ import { logger } from '../logger';
 export const logsRouter = Router();
 
 /** S-01: Express middleware — validates Bearer token from EXECUTOR_SHARED_TOKEN env. */
+export function getExecutorAuthToken(): string {
+  return process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || config.token || '';
+}
+
 export function executorAuthMiddleware(req: Request, res: Response, next: () => void): void {
-  // Read env at call time so tests can set/unset EXECUTOR_SHARED_TOKEN per-case;
+  // Read env at call time so tests can set/unset tokens per-case;
   // fall back to the config value (populated from CLI --token or config file).
-  const secret = process.env.EXECUTOR_SHARED_TOKEN || config.token;
+  const secret = getExecutorAuthToken();
   if (!secret) {
     next(); // dev mode: no secret configured
     return;
