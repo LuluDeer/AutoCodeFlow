@@ -82,5 +82,5 @@ async function sendHeartbeat() {
 }
 
 export function startHeartbeat() {
-  return setInterval(sendHeartbeat, 30_000);
+  return setInterval(sendHeartbeat, config.heartbeatIntervalSeconds * 1000);
 }
