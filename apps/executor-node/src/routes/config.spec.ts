@@ -7,6 +7,7 @@ const mockConfig = {
   heartbeatIntervalSeconds: 30,
   adminApiUrl: 'http://old-admin:3105',
   adminApiUrlInternal: 'http://old-admin:3105',
+  adminApiUrlExternal: '',
   adminApiUrls: ['http://old-admin:3105'],
   token: 'test-token',
 };
@@ -37,7 +38,9 @@ describe('config reload route', () => {
     mockConfig.heartbeatIntervalSeconds = 30;
     mockConfig.adminApiUrl = 'http://old-admin:3105';
     mockConfig.adminApiUrlInternal = 'http://old-admin:3105';
+    mockConfig.adminApiUrlExternal = '';
     mockConfig.adminApiUrls = ['http://old-admin:3105'];
+    jest.clearAllMocks();
   });
 
   it('applies hot-reloaded runtime configuration values', async () => {
@@ -66,6 +69,50 @@ describe('config reload route', () => {
     expect(mockConfig.adminApiUrlInternal).toBe('http://new-admin:3105/api');
     expect(mockConfig.adminApiUrls).toEqual(['http://new-admin:3105/api']);
     expect(initAdminClients).toHaveBeenCalledWith(['http://new-admin:3105/api']);
+  });
+
+  it('applies admin API internal and external URL hot-reload fields', async () => {
+    const res = await authPost({
+      adminApiUrl: 'http://public-admin:3105/api',
+      adminApiUrlInternal: 'http://internal-admin:3105/api',
+      adminApiUrlExternal: 'https://admin.example.com/api',
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      success: true,
+      message: 'Updated 3 field(s)',
+      updatedFields: ['adminApiUrl', 'adminApiUrlInternal', 'adminApiUrlExternal'],
+    });
+    expect(mockConfig.adminApiUrl).toBe('http://public-admin:3105/api');
+    expect(mockConfig.adminApiUrlInternal).toBe('http://internal-admin:3105/api');
+    expect(mockConfig.adminApiUrlExternal).toBe('https://admin.example.com/api');
+    expect(mockConfig.adminApiUrls).toEqual(['http://internal-admin:3105/api']);
+    expect(initAdminClients).toHaveBeenCalledWith(['http://internal-admin:3105/api']);
+  });
+
+  it('uses explicit admin API URL list when provided', async () => {
+    const res = await authPost({
+      adminApiUrlInternal: 'http://internal-admin:3105/api',
+      adminApiUrls: ['http://first-admin:3105/api', '  ', 'http://second-admin:3105/api'],
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.updatedFields).toEqual(['adminApiUrlInternal', 'adminApiUrls']);
+    expect(mockConfig.adminApiUrlInternal).toBe('http://internal-admin:3105/api');
+    expect(mockConfig.adminApiUrls).toEqual(['http://first-admin:3105/api', 'http://second-admin:3105/api']);
+    expect(initAdminClients).toHaveBeenCalledWith(['http://first-admin:3105/api', 'http://second-admin:3105/api']);
+  });
+
+  it('falls back to internal admin API URL when no explicit URL list remains', async () => {
+    const res = await authPost({
+      adminApiUrlInternal: 'http://internal-admin:3105/api',
+      adminApiUrls: [],
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockConfig.adminApiUrls).toEqual(['http://internal-admin:3105/api']);
+    expect(initAdminClients).toHaveBeenCalledWith(['http://internal-admin:3105/api']);
   });
 
   it('rejects invalid hot-reload values without mutating config', async () => {
