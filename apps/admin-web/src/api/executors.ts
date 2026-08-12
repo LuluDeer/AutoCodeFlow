@@ -72,6 +72,8 @@ export const executorsApi = {
     taskTimeoutSeconds?: number;
     heartbeatIntervalSeconds?: number;
     adminApiUrl?: string;
+    adminApiUrlInternal?: string;
+    adminApiUrlExternal?: string;
   }) =>
     client.post(`/executors/${id}/reload-config`, data) as Promise<void>,
   setOffline: (id: string) =>
