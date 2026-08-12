@@ -6,6 +6,7 @@ import * as https from 'https';
 import { config } from '../config';
 import { runningCount } from '../scheduler';
 import { taskWorkerManager } from '../task-worker';
+import { getExecutorAuthToken } from './logs';
 
 // Track last successful heartbeat time
 let lastHeartbeatTime: string | null = null;
@@ -85,7 +86,7 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
     maxConcurrentTasks: config.maxConcurrentTasks,
     workerStats: taskWorkerManager.getStats(),
     adminApiReachable: reachable,
-    tokenValid: !!config.token,
+    tokenValid: !!getExecutorAuthToken(),
     lastHeartbeat: lastHeartbeatTime,
     timestamp: new Date().toISOString(),
   });

@@ -50,9 +50,14 @@ describe('health route admin API probing', () => {
     requestedPaths = [];
     mockConfig.adminApiUrl = 'http://admin-public:3105';
     mockConfig.adminApiUrlInternal = 'http://admin-internal:3105';
+    mockConfig.token = 'test-token';
+    delete process.env.EXECUTOR_SHARED_TOKEN;
+    delete process.env.EXECUTOR_SECRET;
   });
 
   afterEach(async () => {
+    delete process.env.EXECUTOR_SHARED_TOKEN;
+    delete process.env.EXECUTOR_SECRET;
     if (server) {
       await close(server);
       server = undefined;
@@ -90,6 +95,25 @@ describe('health route admin API probing', () => {
     await expect(checkAdminApi()).resolves.toBe(true);
 
     expect(requestedPaths).toEqual(['/api/health']);
+  });
+
+  it('reports tokenValid from runtime executor token env', async () => {
+    server = http.createServer((_req, res) => {
+      res.statusCode = 200;
+      res.end('ok');
+    });
+    const port = await listen(server);
+    mockConfig.adminApiUrlInternal = `http://127.0.0.1:${port}`;
+    mockConfig.token = '';
+    process.env.EXECUTOR_SECRET = 'legacy-token';
+
+    const app = express();
+    app.use('/', healthRouter);
+
+    const res = await request(app).get('/health');
+
+    expect(res.status).toBe(200);
+    expect(res.body.tokenValid).toBe(true);
   });
 
   it('reports adminApiReachable on GET /health', async () => {
