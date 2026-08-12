@@ -73,6 +73,14 @@ afterEach(() => {
   delete process.env.EXECUTOR_SHARED_TOKEN;
 });
 
+async function waitForUpdateToSettle(app: express.Express): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    const res = await request(app).get('/api/update-package/status');
+    if (res.body.inProgress === false) return;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/update-package — payload validation
 // ---------------------------------------------------------------------------
@@ -113,15 +121,17 @@ describe('POST /api/update-package — payload validation', () => {
     // We only care the status is not 400 at the validation stage.
     const res = await request(app)
       .post('/api/update-package')
-      .send({ packageId: 'pkg-002', downloadUrl: 'http://example.com/pkg.zip', version: '2.0.0' });
+      .send({ packageId: 'pkg-002', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '2.0.0' });
     expect(res.status).not.toBe(400);
+    await waitForUpdateToSettle(app);
   });
 
   it('accepts https: scheme in downloadUrl', async () => {
     const res = await request(app)
       .post('/api/update-package')
-      .send({ packageId: 'pkg-003', downloadUrl: 'https://example.com/pkg.zip', version: '3.0.0' });
+      .send({ packageId: 'pkg-003', downloadUrl: 'https://127.0.0.1:1/pkg.zip', version: '3.0.0' });
     expect(res.status).not.toBe(400);
+    await waitForUpdateToSettle(app);
   });
 });
 
