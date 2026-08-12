@@ -132,10 +132,9 @@ POST /api/applications/webhook
 | GET | `/executions/:id/logs` | 是 | 分页获取执行日志 |
 | POST | `/executions/:id/cancel` | 是 | 取消正在执行的任务 |
 | POST | `/executions/:id/retry` | 是 | 重试失败的任务 |
-| POST | `/executions/:id/progress` | 否* | 执行器上报执行进度 |
-| POST | `/executions/:id/complete` | 否* | 执行器上报执行完成 |
+| POST | `/executions/callback` | 否* | 执行器批量上报执行最终状态（成功/失败） |
 
-> *进度和完成上报接口使用 `TASK_TOKEN` 认证。
+> *执行器回调接口使用执行器 Token 认证，请携带 `Authorization: Bearer <executor_token>`。
 
 **执行记录查询参数：**
 

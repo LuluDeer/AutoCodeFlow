@@ -90,5 +90,5 @@ scripts/
 
 - **Windows**：不支持 SIGTERM 优雅退出，停止执行器时直接 SIGKILL
 - **macOS**：非签名 DMG 首次打开需右键选「打开」绕过 Gatekeeper
-- **token**：与 admin-api 的 `EXECUTOR_SHARED_TOKEN` 环境变量保持一致
+- **token**：与 admin-api 的 `EXECUTOR_SECRET` 环境变量保持一致（兼容旧版 `EXECUTOR_SHARED_TOKEN`）
 - **对外地址**：填本机可被 admin-api 访问的 IP:端口，不要填 `0.0.0.0`
