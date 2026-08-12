@@ -45,7 +45,7 @@ describe("TaskProcessor", () => {
   let execRepo: ReturnType<typeof makeRepo>;
   let taskRepo: ReturnType<typeof makeRepo>;
   let logLineRepo: ReturnType<typeof makeRepo>;
-  let executorService: jest.Mocked<Pick<ExecutorService, "dispatch">>;
+  let executorService: jest.Mocked<Pick<ExecutorService, "dispatch" | "dispatchBroadcast">>;
   let aiService: jest.Mocked<Pick<AiService, "analyzeFailure">>;
   let notificationService: jest.Mocked<
     Pick<NotificationService, "notifyFailureWithConfig">
@@ -73,7 +73,7 @@ describe("TaskProcessor", () => {
     execRepo = makeRepo({ findOne: jest.fn().mockResolvedValue({ ...exec }) });
     taskRepo = makeRepo({ findOne: jest.fn().mockResolvedValue(task) });
     logLineRepo = makeRepo();
-    executorService = { dispatch: jest.fn() };
+    executorService = { dispatch: jest.fn(), dispatchBroadcast: jest.fn() };
     aiService = { analyzeFailure: jest.fn().mockResolvedValue("analysis") };
     notificationService = {
       notifyFailureWithConfig: jest.fn().mockResolvedValue(undefined),
@@ -107,20 +107,18 @@ describe("TaskProcessor", () => {
     processor = module.get(TaskProcessor);
   });
 
-  it("marks execution SUCCESS when dispatch succeeds", async () => {
+  it("keeps execution RUNNING when dispatch is accepted", async () => {
     executorService.dispatch.mockResolvedValue({
-      success: true,
-      logs: "ok",
+      status: "accepted",
+      executionId: "exec-1",
       executorAddress: "127.0.0.1:3105",
     });
-    jest
-      .spyOn(processor as any, "fetchAndStoreLogLines")
-      .mockResolvedValue(undefined);
     await processor.handle({ data: { executionId: "exec-1" } } as any);
-    const saved = execRepo.save.mock.calls.map((c: any) => c[0]);
-    expect(saved.some((e: any) => e.status === ExecutionStatus.SUCCESS)).toBe(
-      true,
-    );
+    const queryRunner = dataSource.createQueryRunner.mock.results[0].value;
+    const finalSaved = queryRunner.manager.save.mock.calls.at(-1)[0];
+    expect(finalSaved.status).toBe(ExecutionStatus.RUNNING);
+    expect(finalSaved.endTime).toBeUndefined();
+    expect(finalSaved.result).toMatchObject({ status: "accepted" });
   });
 
   it("marks execution FAILED and rethrows when dispatch fails", async () => {

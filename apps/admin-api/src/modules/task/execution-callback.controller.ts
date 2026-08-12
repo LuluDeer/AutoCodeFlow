@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Headers, ParseArrayPipe } from "@nestjs/common";
+import { BadRequestException, Controller, Post, Body, Headers, ParseArrayPipe, UnauthorizedException } from "@nestjs/common";
 import { SkipThrottle } from "@nestjs/throttler";
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from "@nestjs/swagger";
 import { ConfigService } from "@nestjs/config";
@@ -7,6 +7,7 @@ import { TaskService } from "./task.service";
 import { SystemConfigService } from "../config/config.service";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import { CallbackItemDto } from "./dto/execution-callback.dto";
+import { ExecutorService } from "../executor/executor.service";
 
 @SkipThrottle()
 @ApiTags("Execution Callback")
@@ -16,6 +17,7 @@ export class ExecutionCallbackController {
     private readonly taskService: TaskService,
     private readonly configService: ConfigService,
     private readonly systemConfigService: SystemConfigService,
+    private readonly executorService: ExecutorService,
   ) {}
 
   @Post("callback")
@@ -49,7 +51,24 @@ export class ExecutionCallbackController {
     @Body(new ParseArrayPipe({ items: CallbackItemDto, whitelist: true }))
     callbacks: CallbackItemDto[],
   ) {
-    await verifyExecutorToken(auth, this.configService, this.systemConfigService);
+    if (callbacks.length > 100) {
+      throw new BadRequestException("Callback batch size cannot exceed 100");
+    }
+    const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
+    const executorAddresses = [
+      ...new Set(callbacks.map((item) => item.executorAddress).filter(Boolean)),
+    ] as string[];
+    if (executorAddresses.length === 1 && token) {
+      const isValid = await this.executorService.validateTokenByAddress(
+        executorAddresses[0],
+        token,
+      );
+      if (!isValid) {
+        throw new UnauthorizedException("Invalid executor token");
+      }
+    } else {
+      await verifyExecutorToken(auth, this.configService, this.systemConfigService);
+    }
     const results = await this.taskService.handleCallback(callbacks);
     return { results };
   }

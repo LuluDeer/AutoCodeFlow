@@ -5,6 +5,7 @@ import { ExecutionCallbackController } from "../execution-callback.controller";
 import { TaskService } from "../task.service";
 import { SystemConfigService } from "../../config/config.service";
 import { CallbackItemDto } from "../dto/execution-callback.dto";
+import { ExecutorService } from "../../executor/executor.service";
 
 const EXEC_UUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
 const VALID_TOKEN = "test-shared-secret";
@@ -22,6 +23,7 @@ describe("ExecutionCallbackController", () => {
   let taskService: { handleCallback: jest.Mock };
   let configService: { get: jest.Mock };
   let systemConfigService: { findOne: jest.Mock };
+  let executorService: { validateTokenByAddress: jest.Mock };
 
   beforeEach(async () => {
     taskService = { handleCallback: jest.fn().mockResolvedValue([{ executionId: EXEC_UUID, success: true }]) };
@@ -35,6 +37,9 @@ describe("ExecutionCallbackController", () => {
     systemConfigService = {
       findOne: jest.fn().mockRejectedValue(new Error("not found")),
     };
+    executorService = {
+      validateTokenByAddress: jest.fn().mockResolvedValue(true),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ExecutionCallbackController],
@@ -42,6 +47,7 @@ describe("ExecutionCallbackController", () => {
         { provide: TaskService, useValue: taskService },
         { provide: ConfigService, useValue: configService },
         { provide: SystemConfigService, useValue: systemConfigService },
+        { provide: ExecutorService, useValue: executorService },
       ],
     }).compile();
 
@@ -49,22 +55,59 @@ describe("ExecutionCallbackController", () => {
   });
 
   describe("POST /executions/callback — token verification", () => {
-    it("accepts valid Bearer token", async () => {
+    it("accepts valid Bearer shared token", async () => {
       const result = await controller.callback(
         `Bearer ${VALID_TOKEN}`,
         [makeCallbackItem()],
       );
       expect(result).toEqual({ results: [{ executionId: EXEC_UUID, success: true }] });
       expect(taskService.handleCallback).toHaveBeenCalledTimes(1);
+      expect(executorService.validateTokenByAddress).not.toHaveBeenCalled();
     });
 
-    it("accepts token without Bearer prefix", async () => {
+    it("accepts shared token without Bearer prefix", async () => {
       await expect(
         controller.callback(VALID_TOKEN, [makeCallbackItem()]),
       ).resolves.toBeDefined();
     });
 
-    it("rejects wrong token with 401", async () => {
+    it("accepts per-executor dynamic token when callback includes one executorAddress", async () => {
+      const item = makeCallbackItem({ executorAddress: "executor-python:8001" });
+
+      await expect(
+        controller.callback("Bearer dynamic-token", [item]),
+      ).resolves.toBeDefined();
+
+      expect(executorService.validateTokenByAddress).toHaveBeenCalledWith(
+        "executor-python:8001",
+        "dynamic-token",
+      );
+      expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+    });
+
+    it("rejects invalid per-executor dynamic token", async () => {
+      executorService.validateTokenByAddress.mockResolvedValue(false);
+      const item = makeCallbackItem({ executorAddress: "executor-python:8001" });
+
+      await expect(
+        controller.callback("Bearer bad-dynamic-token", [item]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(taskService.handleCallback).not.toHaveBeenCalled();
+    });
+
+    it("falls back to shared token when callback batch has multiple executor addresses", async () => {
+      await expect(
+        controller.callback(`Bearer ${VALID_TOKEN}`, [
+          makeCallbackItem({ executorAddress: "executor-a:8001" }),
+          makeCallbackItem({ executionId: "6b4adba5-a2f8-4fe7-bf4f-5277d0d7f2b7", executorAddress: "executor-b:8001" }),
+        ]),
+      ).resolves.toBeDefined();
+
+      expect(executorService.validateTokenByAddress).not.toHaveBeenCalled();
+    });
+
+    it("rejects wrong shared token with 401", async () => {
       await expect(
         controller.callback("Bearer wrong-token", [makeCallbackItem()]),
       ).rejects.toBeInstanceOf(UnauthorizedException);
@@ -83,7 +126,6 @@ describe("ExecutionCallbackController", () => {
         if (key === "executor.sharedToken") return "";
         return undefined;
       });
-      // No token configured in DB either (already set to throw)
       await expect(
         controller.callback(undefined, [makeCallbackItem()]),
       ).resolves.toBeDefined();
@@ -100,13 +142,12 @@ describe("ExecutionCallbackController", () => {
       ).rejects.toBeInstanceOf(UnauthorizedException);
     });
 
-    it("prefers DB token over env token", async () => {
+    it("prefers DB shared token over env token", async () => {
       const dbToken = "db-token-value";
       systemConfigService.findOne.mockResolvedValue({ value: dbToken });
       await expect(
         controller.callback(`Bearer ${dbToken}`, [makeCallbackItem()]),
       ).resolves.toBeDefined();
-      // Old env token should now be rejected
       await expect(
         controller.callback(`Bearer ${VALID_TOKEN}`, [makeCallbackItem()]),
       ).rejects.toBeInstanceOf(UnauthorizedException);
@@ -138,9 +179,13 @@ describe("ExecutionCallbackController", () => {
       expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
     });
 
-    it("passes durationMs and logs through", async () => {
-      const item = makeCallbackItem({ logs: "hello\nworld", durationMs: 4200 });
-      await controller.callback(`Bearer ${VALID_TOKEN}`, [item]);
+    it("passes durationMs, logs, and executorAddress through", async () => {
+      const item = makeCallbackItem({
+        logs: "hello\nworld",
+        durationMs: 4200,
+        executorAddress: "executor-python:8001",
+      });
+      await controller.callback("Bearer dynamic-token", [item]);
       expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
     });
   });

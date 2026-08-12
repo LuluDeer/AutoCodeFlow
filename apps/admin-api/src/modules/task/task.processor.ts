@@ -141,22 +141,16 @@ export class TaskProcessor {
       const rawResult = isBroadcast
         ? await this.executorService.dispatchBroadcast(task, exec)
         : await this.executorService.dispatch(task, exec);
-      exec.status = ExecutionStatus.SUCCESS;
+      // Dispatch success only means the executor accepted the task. The actual
+      // result is reported asynchronously via /executions/callback.
+      exec.status = ExecutionStatus.RUNNING;
       exec.result = isBroadcast
         ? {
             broadcast: true,
-            executorCount: rawResult.length,
-            results: rawResult,
+            acceptedExecutorCount: rawResult.length,
+            acceptedResults: rawResult,
           }
         : rawResult;
-      exec.logs = isBroadcast
-        ? JSON.stringify(rawResult)
-        : rawResult?.logs || "";
-      // Fetch and store structured log lines from executor
-      const targetAddr = isBroadcast
-        ? undefined
-        : (rawResult?.executorAddress ?? exec.executorAddress);
-      await this.fetchAndStoreLogLines(exec, targetAddr);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       const errStack = err instanceof Error ? (err.stack || err.message) : String(err);
@@ -199,11 +193,20 @@ export class TaskProcessor {
       // Q1: rethrow so BullMQ sees the job as failed and applies maxRetry attempts
       throw err;
     } finally {
-      exec.endTime = new Date();
-      // ERR-02: null guard to prevent NaN when startTime is not set
-      exec.duration = exec.startTime
-        ? exec.endTime.getTime() - exec.startTime.getTime()
-        : 0;
+      const isTerminal = [
+        ExecutionStatus.SUCCESS,
+        ExecutionStatus.FAILED,
+        ExecutionStatus.TIMEOUT,
+        ExecutionStatus.KILLED,
+        ExecutionStatus.CANCELLED,
+      ].includes(exec.status);
+      if (isTerminal) {
+        exec.endTime = new Date();
+        // ERR-02: null guard to prevent NaN when startTime is not set
+        exec.duration = exec.startTime
+          ? exec.endTime.getTime() - exec.startTime.getTime()
+          : 0;
+      }
 
       // BUG-02: Use transaction to ensure atomic state update
       // This prevents inconsistent state if database save fails
@@ -273,7 +276,7 @@ export class TaskProcessor {
       }
 
       // Trigger dependent tasks after successful execution
-      if (exec.status === ExecutionStatus.SUCCESS) {
+      if ((exec.status as ExecutionStatus) === ExecutionStatus.SUCCESS) {
         await this.triggerDependentTasks(exec.taskId);
       }
     }

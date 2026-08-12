@@ -77,7 +77,20 @@ export class ExecutorController {
     },
   })
   async register(
-    @Body() body: { appName: string; address: string; type?: string; version?: string; capabilities?: string[] },
+    @Body()
+    body: {
+      appName: string;
+      address: string;
+      type?: string;
+      version?: string;
+      capabilities?: string[];
+      runtime?: string[];
+      maxConcurrentTasks?: number;
+      maxConcurrent?: number;
+      groupName?: string | null;
+      tags?: string[] | null;
+      description?: string | null;
+    },
     @Headers("authorization") auth: string,
   ) {
     await verifyExecutorToken(auth, this.configService, this.systemConfigService);
