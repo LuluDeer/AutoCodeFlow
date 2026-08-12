@@ -40,7 +40,8 @@ describe("TaskService (__tests__)", () => {
   let logLineRepo: ReturnType<typeof makeRepo>;
   let versionRepo: ReturnType<typeof makeRepo>;
   let taskQueue: { add: jest.Mock };
-  let dataSource: { transaction: jest.Mock };
+  let dataSource: { transaction: jest.Mock; createQueryBuilder: jest.Mock };
+  let releaseSlotExecute: jest.Mock;
   let schedulerService: {
     stop: jest.Mock;
     scheduleOne: jest.Mock;
@@ -53,7 +54,16 @@ describe("TaskService (__tests__)", () => {
     logLineRepo = makeRepo();
     versionRepo = makeRepo();
     taskQueue = { add: jest.fn().mockResolvedValue({}) };
-    dataSource = { transaction: jest.fn() };
+    releaseSlotExecute = jest.fn().mockResolvedValue({ affected: 1 });
+    dataSource = {
+      transaction: jest.fn(),
+      createQueryBuilder: jest.fn(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: releaseSlotExecute,
+      })),
+    };
     schedulerService = {
       stop: jest.fn(),
       scheduleOne: jest.fn().mockResolvedValue(undefined),
@@ -495,6 +505,33 @@ describe("TaskService (__tests__)", () => {
       ]);
       expect(result[0].success).toBe(false);
       expect(result[0].error).toMatch(/not found/i);
+    });
+
+    it("rejects callback when executorAddress does not match the execution", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "executor-a:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "executor-b:8002",
+        },
+      ]);
+
+      expect(result[0]).toEqual({
+        executionId: "e1",
+        success: false,
+        error: "Executor address mismatch",
+      });
+      expect(exec.status).toBe(ExecutionStatus.RUNNING);
+      expect(execRepo.save).not.toHaveBeenCalled();
+      expect(releaseSlotExecute).not.toHaveBeenCalled();
     });
   });
 
