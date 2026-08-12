@@ -4,6 +4,7 @@ import { getQueueToken } from '@nestjs/bull';
 import { SchedulerService } from '../scheduler.service';
 import { Task, TaskStatus, TaskTriggerType, BlockStrategy, MisfireStrategy } from '../../task/entities/task.entity';
 import { TaskExecution, ExecutionStatus } from '../../task/entities/task-execution.entity';
+import { DataSource } from 'typeorm';
 import { RedisLockService } from '../../../common/services/redis-lock.service';
 
 const mockRepo = () => ({
@@ -11,6 +12,7 @@ const mockRepo = () => ({
   findOne: jest.fn(),
   save: jest.fn(),
   create: jest.fn(),
+  findBy: jest.fn(),
 });
 
 const mockQueue = () => ({
@@ -19,6 +21,15 @@ const mockQueue = () => ({
 
 const mockRedisLock = () => ({
   acquireLock: jest.fn(),
+});
+
+const mockDataSource = () => ({
+  createQueryBuilder: jest.fn(() => ({
+    update: jest.fn().mockReturnThis(),
+    set: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    execute: jest.fn().mockResolvedValue({ affected: 1 }),
+  })),
 });
 
 const makeTask = (overrides: Partial<Task> = {}): Task => ({
@@ -45,6 +56,7 @@ describe('SchedulerService', () => {
   let execRepo: ReturnType<typeof mockRepo>;
   let queue: ReturnType<typeof mockQueue>;
   let redisLockService: ReturnType<typeof mockRedisLock>;
+  let dataSource: ReturnType<typeof mockDataSource>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -54,6 +66,7 @@ describe('SchedulerService', () => {
         { provide: getRepositoryToken(TaskExecution), useFactory: mockRepo },
         { provide: getQueueToken('task-queue'), useFactory: mockQueue },
         { provide: RedisLockService, useFactory: mockRedisLock },
+        { provide: DataSource, useFactory: mockDataSource },
       ],
     }).compile();
 
@@ -62,6 +75,7 @@ describe('SchedulerService', () => {
     execRepo = module.get(getRepositoryToken(TaskExecution));
     queue = module.get(getQueueToken('task-queue'));
     redisLockService = module.get(RedisLockService);
+    dataSource = module.get(DataSource);
   });
 
   afterEach(() => {
@@ -179,12 +193,13 @@ describe('SchedulerService', () => {
       redisLockService.acquireLock.mockResolvedValue(lock);
       const task = makeTask({ blockStrategy: BlockStrategy.DISCARD });
       taskRepo.findOne.mockResolvedValue(task);
-      const runningExec = { id: 'running-1', status: ExecutionStatus.RUNNING } as TaskExecution;
+      const runningExec = { id: 'running-1', status: ExecutionStatus.RUNNING, executorAddress: 'host:3002' } as TaskExecution;
       execRepo.findOne.mockResolvedValue(runningExec);
 
       const result = await service.enqueue(task, 'cron');
       expect(result).toBeNull();
       expect(queue.add).not.toHaveBeenCalled();
+      expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
       expect(lock.release).toHaveBeenCalled();
     });
 
@@ -196,6 +211,7 @@ describe('SchedulerService', () => {
       const runningExec = {
         id: 'running-1',
         status: ExecutionStatus.RUNNING,
+        executorAddress: 'host:3002',
         errorMessage: null,
         endTime: null,
       } as unknown as TaskExecution;
@@ -207,6 +223,7 @@ describe('SchedulerService', () => {
 
       await service.enqueue(task, 'cron');
       expect(runningExec.status).toBe(ExecutionStatus.CANCELLED);
+      expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
       expect(queue.add).toHaveBeenCalled();
     });
   });
@@ -267,11 +284,12 @@ describe('SchedulerService', () => {
         taskId: 'task-1',
         status: ExecutionStatus.RUNNING,
         startTime: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
-        task: makeTask({ id: 'task-1' }),
+        executorAddress: 'host:3002',
         errorMessage: null,
         endTime: null,
       };
       execRepo.find.mockResolvedValue([staleExec]);
+      taskRepo.findBy.mockResolvedValue([]);
       execRepo.save.mockResolvedValue(staleExec);
 
       await service.recoverStaleExecutions();
@@ -280,6 +298,7 @@ describe('SchedulerService', () => {
         expect.objectContaining({ status: ExecutionStatus.FAILED }),
       );
       expect(staleExec.errorMessage).toContain('recovered');
+      expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
     });
 
     it('should respect task-level timeout when marking as timed out', async () => {
@@ -289,11 +308,12 @@ describe('SchedulerService', () => {
         status: ExecutionStatus.RUNNING,
         // 10 minutes ago — beyond task timeout of 5 min
         startTime: new Date(Date.now() - 10 * 60 * 1000),
-        task: makeTask({ id: 'task-2', timeout: 300 }), // 300s = 5 min
+        executorAddress: 'host:3002',
         errorMessage: null,
         endTime: null,
       };
       execRepo.find.mockResolvedValue([staleExec]);
+      taskRepo.findBy.mockResolvedValue([makeTask({ id: 'task-2', timeout: 300 })]);
       execRepo.save.mockResolvedValue(staleExec);
 
       await service.recoverStaleExecutions();
@@ -302,6 +322,7 @@ describe('SchedulerService', () => {
         expect.objectContaining({ status: ExecutionStatus.FAILED }),
       );
       expect(staleExec.errorMessage).toContain('timed out');
+      expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
     });
 
     it('should NOT mark execution as stale when within task timeout', async () => {
@@ -311,15 +332,17 @@ describe('SchedulerService', () => {
         status: ExecutionStatus.RUNNING,
         // 2 minutes ago — within task timeout of 10 min
         startTime: new Date(Date.now() - 2 * 60 * 1000),
-        task: makeTask({ id: 'task-3', timeout: 600 }), // 600s = 10 min
+        executorAddress: 'host:3002',
         errorMessage: null,
         endTime: null,
       };
       execRepo.find.mockResolvedValue([freshExec]);
+      taskRepo.findBy.mockResolvedValue([makeTask({ id: 'task-3', timeout: 600 })]);
 
       await service.recoverStaleExecutions();
 
       expect(execRepo.save).not.toHaveBeenCalled();
+      expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
     });
 
     it('should do nothing when no running executions exist', async () => {

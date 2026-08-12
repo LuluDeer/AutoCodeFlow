@@ -12,6 +12,7 @@ import axios from "axios";
 import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
 import { NotificationService } from "../../notification/notification.service";
+import { SystemConfigService } from "../../config/config.service";
 
 jest.mock("axios");
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -66,6 +67,7 @@ describe("ExecutorService (__tests__)", () => {
         { provide: getRepositoryToken(Task), useValue: makeRepo() },
         { provide: ConfigService, useValue: configService },
         { provide: NotificationService, useValue: { notifyFailure: jest.fn(), notifyFailureWithConfig: jest.fn(), notifyExecutorOnline: jest.fn().mockResolvedValue(undefined), notifyExecutorOffline: jest.fn().mockResolvedValue(undefined), sendAll: jest.fn() } },
+        { provide: SystemConfigService, useValue: { findOne: jest.fn().mockRejectedValue(new Error("not found")) } },
       ],
     }).compile();
     service = module.get(ExecutorService);
@@ -97,6 +99,56 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.findOne.mockResolvedValue(existing);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       await service.register({ appName: "e1", address: "127.0.0.1:3105" });
+      expect(existing.status).toBe(ExecutorStatus.ONLINE);
+    });
+
+    it("maps runtime and maxConcurrent aliases during registration", async () => {
+      executorRepo.findOne.mockResolvedValue(null);
+      executorRepo.create.mockImplementation((e: any) => e);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const result = await service.register({
+        appName: "python-executor",
+        address: "127.0.0.1:3106",
+        type: "python",
+        runtime: ["python", "shell"],
+        maxConcurrent: 4,
+      });
+
+      expect(result.capabilities).toEqual(["python", "shell"]);
+      expect(result.maxConcurrentTasks).toBe(4);
+      expect(result.status).toBe(ExecutorStatus.ONLINE);
+    });
+
+    it("updates mutable metadata and maxConcurrentTasks on re-register", async () => {
+      const existing: any = {
+        appName: "old",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.OFFLINE,
+        capabilities: ["shell"],
+        maxConcurrentTasks: 1,
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.register({
+        appName: "node-executor",
+        address: "127.0.0.1:3105",
+        type: "node",
+        capabilities: ["node", "shell"],
+        maxConcurrentTasks: 10,
+        groupName: "prod",
+        tags: ["nodejs"],
+        description: "Production executor",
+      });
+
+      expect(existing.appName).toBe("node-executor");
+      expect(existing.type).toBe("node");
+      expect(existing.capabilities).toEqual(["node", "shell"]);
+      expect(existing.maxConcurrentTasks).toBe(10);
+      expect(existing.groupName).toBe("prod");
+      expect(existing.tags).toEqual(["nodejs"]);
+      expect(existing.description).toBe("Production executor");
       expect(existing.status).toBe(ExecutorStatus.ONLINE);
     });
   });
@@ -260,7 +312,7 @@ describe("ExecutorService (__tests__)", () => {
     it("throws when no executor is available", async () => {
       executorRepo.find.mockResolvedValue([]);
       await expect(service.dispatch(task, execution)).rejects.toThrow(
-        "No available executor",
+        "No online executors match the requested group/tags/runtime",
       );
     });
 
@@ -314,7 +366,7 @@ describe("ExecutorService (__tests__)", () => {
     it("throws when no executors are available", async () => {
       executorRepo.find.mockResolvedValue([]);
       await expect(service.dispatchBroadcast(task, execution)).rejects.toThrow(
-        "No available executor",
+        "No online executors match the requested group/tags/runtime",
       );
     });
 

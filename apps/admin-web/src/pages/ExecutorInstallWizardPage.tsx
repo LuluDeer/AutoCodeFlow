@@ -283,7 +283,8 @@ export default function ExecutorInstallWizardPage() {
   const adminApiUrl = window.location.origin;
   const envVarBlock = [
     `ADMIN_API_URL=${adminApiUrl}`,
-    `EXECUTOR_TOKEN=${sharedToken ?? '<your-executor-token>'}`,
+    `EXECUTOR_SHARED_TOKEN=${sharedToken ?? '<your-executor-shared-token>'}`,
+    `EXECUTOR_ADDRESS_PUBLIC=<host-or-ip>:<port>`,
     `EXECUTOR_NAME=my-executor-1`,
   ].join('\n');
 
@@ -496,7 +497,7 @@ export default function ExecutorInstallWizardPage() {
             title={<Space><KeyOutlined /><Text strong>执行器接入 Token（共享）</Text></Space>}
           >
             <Paragraph type="secondary" style={{ marginBottom: 12 }}>
-              执行器启动时需携带此 Token 向调度中心注册。如尚未生成，请先在「系统设置」页面创建。
+              执行器启动时需通过 EXECUTOR_SHARED_TOKEN 携带此 Token 向调度中心注册，并用于任务回调鉴权；安装后可轮换为单执行器动态 Token。如尚未生成，请先在「系统设置」页面创建。
             </Paragraph>
 {loadingSharedToken ? (
               <Spin size="small" />
@@ -588,7 +589,7 @@ export default function ExecutorInstallWizardPage() {
             <div>
               <Text strong style={{ display: 'block', marginBottom: 8 }}>环境变量配置参考</Text>
               <Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 13 }}>
-                安装脚本会自动配置以下环境变量。如需手动配置或调试，可参考：
+                安装脚本会自动配置以下环境变量。如需手动配置或调试，请确保共享 Token 字段名使用 EXECUTOR_SHARED_TOKEN，并按部署网络填写可回调地址：
               </Paragraph>
               <CodeBlock code={envVarBlock} label="环境变量" />
             </div>
@@ -670,8 +671,9 @@ export default function ExecutorInstallWizardPage() {
                   <li>检查目标服务器网络是否能访问本平台 API 地址</li>
                   <li>安装脚本可能需要 <code>sudo</code> 权限，请以合适权限重试</li>
                   <li>查看执行器进程日志排查启动失败原因</li>
-                  <li>确认执行器共享 Token 已正确配置</li>
-<li>确认安装凭证 Token 未过期（有效期 1 小时）</li>
+                  <li>确认执行器共享 Token 已通过 <code>EXECUTOR_SHARED_TOKEN</code> 正确配置</li>
+                  <li>确认 <code>EXECUTOR_ADDRESS_PUBLIC</code> 或执行器地址能被调度中心用于回调鉴权</li>
+                  <li>确认安装凭证 Token 未过期（有效期 1 小时）</li>
                 </ul>
               </Card>
             </>

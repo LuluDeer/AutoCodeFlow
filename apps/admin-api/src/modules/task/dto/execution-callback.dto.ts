@@ -12,6 +12,11 @@ export class CallbackItemDto {
   @IsIn(['success', 'failed'])
   status: 'success' | 'failed';
 
+  @ApiPropertyOptional({ description: 'Executor address for per-executor token validation' })
+  @IsOptional()
+  @IsString()
+  executorAddress?: string;
+
   @ApiPropertyOptional({ description: 'Process exit code' })
   @IsOptional()
   @IsInt()
