@@ -43226,6 +43226,29 @@ module.exports = class Stream extends TransportStream {
 
 /***/ }),
 
+/***/ 2720:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.normalizeAdminApiBaseUrl = normalizeAdminApiBaseUrl;
+exports.buildAdminApiUrl = buildAdminApiUrl;
+function normalizeAdminApiBaseUrl(baseUrl) {
+    const trimmed = baseUrl.trim().replace(/\/+$/, '');
+    if (!trimmed)
+        return '';
+    return trimmed.endsWith('/api') ? trimmed.slice(0, -'/api'.length) : trimmed;
+}
+function buildAdminApiUrl(baseUrl, path) {
+    const normalizedBase = normalizeAdminApiBaseUrl(baseUrl);
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    return `${normalizedBase}${normalizedPath}`;
+}
+
+
+/***/ }),
+
 /***/ 6609:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -43247,10 +43270,12 @@ exports.del = del;
 const axios_1 = __importDefault(__nccwpck_require__(6178));
 const logger_1 = __nccwpck_require__(6888);
 const auth_1 = __nccwpck_require__(9473);
+const admin_api_url_1 = __nccwpck_require__(2720);
 let adminUrls = [];
 let currentIndex = 0;
 function initAdminClients(urls) {
-    adminUrls = urls.filter(url => url.trim());
+    adminUrls = urls.map(admin_api_url_1.normalizeAdminApiBaseUrl).filter(Boolean);
+    currentIndex = 0;
     if (adminUrls.length === 0) {
         throw new Error('No admin URLs configured');
     }
@@ -43376,14 +43401,21 @@ function getCallbackDir() {
     fs.mkdirSync(dir, { recursive: true });
     return dir;
 }
+function withExecutorAddress(request) {
+    return {
+        executorAddress: config_1.config.executorAddressPublic || config_1.config.executorAddress,
+        ...request,
+    };
+}
 function pushCallback(request) {
+    const callbackRequest = withExecutorAddress(request);
     const existingIndex = callbackQueue.findIndex(r => r.executionId === request.executionId);
     if (existingIndex !== -1) {
-        callbackQueue[existingIndex] = request;
+        callbackQueue[existingIndex] = callbackRequest;
         logger_1.logger.debug(`Overwrote duplicate callback for execution ${request.executionId}`);
     }
     else {
-        callbackQueue.push(request);
+        callbackQueue.push(callbackRequest);
         logger_1.logger.debug(`Pushed callback for execution ${request.executionId}`);
     }
 }
@@ -43495,6 +43527,12 @@ function getPendingCallbackCount() {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.config = void 0;
+const adminApiUrl = process.env.ADMIN_API_URL || 'http://admin-api:3105';
+const adminApiUrlInternal = process.env.ADMIN_API_URL_INTERNAL || adminApiUrl;
+const configuredAdminApiUrls = (process.env.ADMIN_API_URLS || '')
+    .split(',')
+    .map((url) => url.trim())
+    .filter(Boolean);
 exports.config = {
     appName: process.env.APP_NAME || 'executor-node-1',
     groupName: process.env.GROUP_NAME || process.env.EXECUTOR_GROUP || '',
@@ -43502,12 +43540,14 @@ exports.config = {
     executorAddress: process.env.EXECUTOR_ADDRESS || 'executor-node:8002',
     executorAddressPublic: process.env.EXECUTOR_ADDRESS_PUBLIC || process.env.EXECUTOR_ADDRESS || 'executor-node:8002',
     executorId: process.env.EXECUTOR_ID || '',
-    adminApiUrl: process.env.ADMIN_API_URL || 'http://admin-api:3105',
-    adminApiUrlInternal: process.env.ADMIN_API_URL_INTERNAL || process.env.ADMIN_API_URL || 'http://admin-api:3105',
+    adminApiUrl,
+    adminApiUrlInternal,
     adminApiUrlExternal: process.env.ADMIN_API_URL_EXTERNAL || '',
-    adminApiUrls: (process.env.ADMIN_API_URLS || '').split(',').filter(url => url.trim()),
+    adminApiUrls: configuredAdminApiUrls.length > 0 ? configuredAdminApiUrls : [adminApiUrlInternal],
     workDir: process.env.WORK_DIR || '/tmp/autocodeflow/tasks',
     maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_TASKS || '10', 10),
+    taskTimeoutSeconds: parseInt(process.env.TASK_TIMEOUT_SECONDS || '300', 10),
+    heartbeatIntervalSeconds: parseInt(process.env.HEARTBEAT_INTERVAL_SECONDS || '30', 10),
     logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
     npmRegistryUrl: process.env.NPM_REGISTRY_URL || '', // Private npm registry for task dependencies
     pythonRegistryUrl: process.env.PYTHON_REGISTRY_URL || '', // Private PyPI registry for task dependencies
@@ -43861,11 +43901,10 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 const server = app.listen(config_1.config.port, async () => {
     logger_1.logger.info(`Executor started: ${config_1.config.appName} @ ${config_1.config.executorAddress}`);
-    // Initialize admin clients for HA support
-    const adminUrls = config_1.config.adminApiUrls.length > 0
-        ? config_1.config.adminApiUrls
-        : [config_1.config.adminApiUrl];
-    (0, admin_client_1.initAdminClients)(adminUrls);
+    // Initialize admin clients for HA support.
+    // config.adminApiUrls already applies the URL priority:
+    // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
+    (0, admin_client_1.initAdminClients)(config_1.config.adminApiUrls);
     await registerExecutor();
     heartbeatInterval = (0, scheduler_1.startHeartbeat)();
     (0, callback_1.startCallbackThread)();
@@ -43972,6 +44011,7 @@ exports.getCurrentToken = getCurrentToken;
 const axios_1 = __importDefault(__nccwpck_require__(6178));
 const node_crypto_1 = __nccwpck_require__(7598);
 const config_1 = __nccwpck_require__(3650);
+const admin_api_url_1 = __nccwpck_require__(2720);
 // Static token: env vars take priority, then CLI --token arg (via config)
 const STATIC_TOKEN = config_1.config.token;
 // Dynamic token storage (refreshed periodically)
@@ -43994,7 +44034,7 @@ async function fetchToken() {
         if (STATIC_TOKEN) {
             headers['Authorization'] = `Bearer ${STATIC_TOKEN}`;
         }
-        const response = await axios_1.default.post(`${getAdminApiUrl()}/api/executors/token`, {
+        const response = await axios_1.default.post((0, admin_api_url_1.buildAdminApiUrl)(getAdminApiUrl(), '/api/executors/token'), {
             address: config_1.config.executorAddressPublic || config_1.config.executorAddress,
             appName: config_1.config.appName,
         }, { timeout: 10000, headers });
@@ -44078,9 +44118,23 @@ exports.configRouter = void 0;
  */
 const express_1 = __nccwpck_require__(925);
 const auth_1 = __nccwpck_require__(9473);
+const config_1 = __nccwpck_require__(3650);
+const admin_client_1 = __nccwpck_require__(6609);
 const logger_1 = __nccwpck_require__(6888);
 exports.configRouter = (0, express_1.Router)();
 exports.configRouter.use(auth_1.verifyToken);
+function rebuildAdminApiUrls(explicitUrls) {
+    const configuredUrls = (explicitUrls ?? [])
+        .map((url) => url.trim())
+        .filter(Boolean);
+    if (configuredUrls.length > 0)
+        return configuredUrls;
+    if (config_1.config.adminApiUrlInternal)
+        return [config_1.config.adminApiUrlInternal];
+    if (config_1.config.adminApiUrl)
+        return [config_1.config.adminApiUrl];
+    return [];
+}
 exports.configRouter.post('/config/reload', async (req, res) => {
     const body = req.body;
     const updatedFields = [];
@@ -44090,8 +44144,7 @@ exports.configRouter.post('/config/reload', async (req, res) => {
                 res.status(400).json({ error: 'maxConcurrentTasks must be >= 1' });
                 return;
             }
-            // Note: For now, this only tracks the config value locally.
-            // A full implementation would use this to limit task execution.
+            config_1.config.maxConcurrentTasks = body.maxConcurrentTasks;
             updatedFields.push('maxConcurrentTasks');
             logger_1.logger.info(`Hot-reloaded maxConcurrentTasks=${body.maxConcurrentTasks}`);
         }
@@ -44100,6 +44153,7 @@ exports.configRouter.post('/config/reload', async (req, res) => {
                 res.status(400).json({ error: 'taskTimeoutSeconds must be >= 1' });
                 return;
             }
+            config_1.config.taskTimeoutSeconds = body.taskTimeoutSeconds;
             updatedFields.push('taskTimeoutSeconds');
             logger_1.logger.info(`Hot-reloaded taskTimeoutSeconds=${body.taskTimeoutSeconds}`);
         }
@@ -44108,12 +44162,41 @@ exports.configRouter.post('/config/reload', async (req, res) => {
                 res.status(400).json({ error: 'heartbeatIntervalSeconds must be >= 5' });
                 return;
             }
+            config_1.config.heartbeatIntervalSeconds = body.heartbeatIntervalSeconds;
             updatedFields.push('heartbeatIntervalSeconds');
             logger_1.logger.info(`Hot-reloaded heartbeatIntervalSeconds=${body.heartbeatIntervalSeconds}`);
         }
+        let adminApiUrlsChanged = false;
+        let explicitAdminApiUrls;
         if (body.adminApiUrl !== undefined) {
+            config_1.config.adminApiUrl = body.adminApiUrl;
+            if (body.adminApiUrlInternal === undefined && body.adminApiUrls === undefined) {
+                config_1.config.adminApiUrlInternal = body.adminApiUrl;
+            }
             updatedFields.push('adminApiUrl');
+            adminApiUrlsChanged = true;
             logger_1.logger.info(`Hot-reloaded adminApiUrl=${body.adminApiUrl}`);
+        }
+        if (body.adminApiUrlInternal !== undefined) {
+            config_1.config.adminApiUrlInternal = body.adminApiUrlInternal;
+            updatedFields.push('adminApiUrlInternal');
+            adminApiUrlsChanged = true;
+            logger_1.logger.info(`Hot-reloaded adminApiUrlInternal=${body.adminApiUrlInternal}`);
+        }
+        if (body.adminApiUrlExternal !== undefined) {
+            config_1.config.adminApiUrlExternal = body.adminApiUrlExternal;
+            updatedFields.push('adminApiUrlExternal');
+            logger_1.logger.info(`Hot-reloaded adminApiUrlExternal=${body.adminApiUrlExternal}`);
+        }
+        if (body.adminApiUrls !== undefined) {
+            explicitAdminApiUrls = body.adminApiUrls;
+            updatedFields.push('adminApiUrls');
+            adminApiUrlsChanged = true;
+            logger_1.logger.info(`Hot-reloaded adminApiUrls=${body.adminApiUrls.join(',')}`);
+        }
+        if (adminApiUrlsChanged) {
+            config_1.config.adminApiUrls = rebuildAdminApiUrls(explicitAdminApiUrls);
+            (0, admin_client_1.initAdminClients)(config_1.config.adminApiUrls);
         }
         if (updatedFields.length === 0) {
             res.json({ success: true, message: 'No fields to update', updatedFields: [] });
@@ -44195,18 +44278,33 @@ async function reportStatus(deploymentId, status, pid, message) {
         logger_1.logger.warn(`Failed to report deployment status: ${err.message}`);
     }
 }
+/** Resolve platform-aware Python / pip binary paths inside a venv */
+function venvBins(venvDir) {
+    const isWin = process.platform === 'win32';
+    return {
+        python: isWin
+            ? path.join(venvDir, 'Scripts', 'python.exe')
+            : path.join(venvDir, 'bin', 'python3'),
+        pip: isWin
+            ? path.join(venvDir, 'Scripts', 'pip.exe')
+            : path.join(venvDir, 'bin', 'pip'),
+    };
+}
 /** Install dependencies for the given deployment directory */
 function installDeps(deployDir, runtime, envVars) {
     const env = { ...process.env, ...envVars };
+    const isWin = process.platform === 'win32';
     // SEC: spawnSync with array args — no shell, no injection
     if (runtime === 'node' || runtime === 'nodejs') {
         const pkgJson = path.join(deployDir, 'package.json');
         if (fs.existsSync(pkgJson)) {
             logger_1.logger.info(`[deploy] Installing Node.js dependencies in ${deployDir}`);
+            // On Windows, npm is a .cmd file and needs shell:true to resolve
+            const npmCmd = isWin ? 'npm.cmd' : 'npm';
             const npmArgs = ['install', '--production'];
             if (config_1.config.npmRegistryUrl)
                 npmArgs.push(`--registry=${config_1.config.npmRegistryUrl}`);
-            const r = (0, child_process_1.spawnSync)('npm', npmArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300000 });
+            const r = (0, child_process_1.spawnSync)(npmCmd, npmArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300000, shell: isWin });
             if (r.status !== 0)
                 throw new Error(r.stderr?.toString() || 'npm install failed');
         }
@@ -44216,14 +44314,16 @@ function installDeps(deployDir, runtime, envVars) {
         if (fs.existsSync(reqFile)) {
             logger_1.logger.info(`[deploy] Creating Python venv and installing deps in ${deployDir}`);
             const venvDir = path.join(deployDir, '.venv');
-            const venvR = (0, child_process_1.spawnSync)('python3', ['-m', 'venv', venvDir], { cwd: deployDir, env, stdio: 'pipe', timeout: 60000 });
+            // Try 'python3' first (Linux/macOS), fall back to 'python' (Windows)
+            const pythonCmd = isWin ? 'python' : 'python3';
+            const venvR = (0, child_process_1.spawnSync)(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, stdio: 'pipe', timeout: 60000 });
             if (venvR.status !== 0)
-                throw new Error(venvR.stderr?.toString() || 'python3 -m venv failed');
-            const pip = path.join(venvDir, 'bin', 'pip');
+                throw new Error(venvR.stderr?.toString() || `${pythonCmd} -m venv failed`);
+            const bins = venvBins(venvDir);
             const pipArgs = ['install', '-r', 'requirements.txt'];
             if (config_1.config.pythonRegistryUrl)
                 pipArgs.push('-i', config_1.config.pythonRegistryUrl);
-            const pipR = (0, child_process_1.spawnSync)(pip, pipArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300000 });
+            const pipR = (0, child_process_1.spawnSync)(bins.pip, pipArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300000 });
             if (pipR.status !== 0)
                 throw new Error(pipR.stderr?.toString() || 'pip install failed');
         }
@@ -44234,9 +44334,12 @@ function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars
     const env = { ...process.env, ...envVars };
     let cmd;
     let args;
+    const isWin = process.platform === 'win32';
     if (runtime === 'python') {
-        const pythonBin = path.join(deployDir, '.venv', 'bin', 'python3');
-        cmd = fs.existsSync(pythonBin) ? pythonBin : 'python3';
+        const bins = venvBins(path.join(deployDir, '.venv'));
+        // Use venv python if available, otherwise fall back to system python
+        const fallback = isWin ? 'python' : 'python3';
+        cmd = fs.existsSync(bins.python) ? bins.python : fallback;
         args = [entrypoint];
     }
     else if (runtime === 'node' || runtime === 'nodejs') {
@@ -44244,9 +44347,15 @@ function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars
         args = [entrypoint];
     }
     else {
-        // shell
-        cmd = 'sh';
-        args = ['-c', entrypoint];
+        // shell — use cmd.exe on Windows
+        if (isWin) {
+            cmd = 'cmd.exe';
+            args = ['/c', entrypoint];
+        }
+        else {
+            cmd = 'sh';
+            args = ['-c', entrypoint];
+        }
     }
     logger_1.logger.info(`[deploy] Starting app ${deploymentId}: ${cmd} ${args.join(' ')}`);
     const child = (0, child_process_1.spawn)(cmd, args, {
@@ -44323,13 +44432,23 @@ exports.deployRouter.post('/deploy', async (req, res) => {
     res.json({ ok: true, deploymentId });
     setImmediate(async () => {
         try {
-            // Stop existing process if upgrading
+            // Stop existing process if upgrading — wait for actual exit instead of fixed sleep
             if (upgrade && runningApps.has(deploymentId)) {
                 const existing = runningApps.get(deploymentId);
-                existing.kill('SIGTERM');
+                await new Promise((resolve) => {
+                    const gracefulTimeout = setTimeout(() => {
+                        logger_1.logger.warn(`[deploy] Graceful stop timed out for ${deploymentId}, sending SIGKILL`);
+                        existing.kill('SIGKILL');
+                        resolve();
+                    }, 10000);
+                    existing.once('exit', () => {
+                        clearTimeout(gracefulTimeout);
+                        resolve();
+                    });
+                    existing.kill('SIGTERM');
+                });
                 runningApps.delete(deploymentId);
                 logger_1.logger.info(`[deploy] Stopped existing process for ${deploymentId}`);
-                await new Promise(r => setTimeout(r, 2000));
             }
             if (!fs.existsSync(deployDir)) {
                 fs.mkdirSync(deployDir, { recursive: true });
@@ -44340,11 +44459,27 @@ exports.deployRouter.post('/deploy', async (req, res) => {
                 const zipPath = path.join(deployDir, '_package.zip');
                 await downloadPackage(packageUrl, zipPath);
                 logger_1.logger.info(`[deploy] Extracting package for ${deploymentId}`);
-                const unzipR = (0, child_process_1.spawnSync)('unzip', ['-o', zipPath, '-d', deployDir], { stdio: 'pipe', timeout: 60000 });
-                if (unzipR.status !== 0)
-                    throw new Error(unzipR.stderr?.toString() || 'unzip failed');
-                fs.unlinkSync(zipPath);
-                logger_1.logger.info(`[deploy] Package extracted for ${deploymentId}`);
+                // Use platform-appropriate extraction:
+                //   Windows: PowerShell Expand-Archive (built-in since PS 5.0)
+                //   Linux/macOS: unzip
+                let unzipOk = false;
+                if (process.platform === 'win32') {
+                    const psR = (0, child_process_1.spawnSync)('powershell.exe', ['-NoProfile', '-Command',
+                        `Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${deployDir}'`], { stdio: 'pipe', timeout: 60000 });
+                    if (psR.status !== 0)
+                        throw new Error(psR.stderr?.toString() || 'Expand-Archive failed');
+                    unzipOk = true;
+                }
+                else {
+                    const unzipR = (0, child_process_1.spawnSync)('unzip', ['-o', zipPath, '-d', deployDir], { stdio: 'pipe', timeout: 60000 });
+                    if (unzipR.status !== 0)
+                        throw new Error(unzipR.stderr?.toString() || 'unzip failed');
+                    unzipOk = true;
+                }
+                if (unzipOk) {
+                    fs.unlinkSync(zipPath);
+                    logger_1.logger.info(`[deploy] Package extracted for ${deploymentId}`);
+                }
             }
             else if (gitRepo) {
                 const gitDir = path.join(deployDir, '.git');
@@ -44508,9 +44643,12 @@ exports.executeRouter.post('/execute', async (req, res) => {
         res.status(429).json({ error: 'Executor is at capacity' });
         return;
     }
-    // Helper function to send error response and decrement capacity counter
-    const sendError = (status, error) => {
+    // Helper function to release capacity exactly once for synchronous rejection paths.
+    const releaseCapacity = () => {
         Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
+    };
+    const sendError = (status, error) => {
+        releaseCapacity();
         res.status(status).json({ error });
     };
     const body = req.body;
@@ -44580,14 +44718,20 @@ exports.executeRouter.post('/execute', async (req, res) => {
         }
         const ref = gitCommit || gitBranch;
         logger_1.logger.info(`Checking out ${gitRepo}@${ref} to ${workDir}`);
-        gitCheckoutTo(gitRepo, ref, workDir);
+        try {
+            gitCheckoutTo(gitRepo, ref, workDir);
+        }
+        catch (err) {
+            sendError(500, err instanceof Error ? err.message : 'Git checkout failed');
+            return;
+        }
     }
     // Load manifest.yaml and merge with task (task fields take priority)
     const manifest = (0, manifest_1.loadManifest)(workDir);
     const task = (0, manifest_1.mergeTaskWithManifest)(body.task, manifest);
     const runtime = task.runtime || 'node';
     const entrypoint = task.entrypoint || 'index.js';
-    const timeout = task.timeout || 300;
+    const timeout = task.timeout || config_1.config.taskTimeoutSeconds;
     const requirements = task.requirements || [];
     const taskId = String(task.id || executionId);
     // Glue script support: write inline source to a temp file and use it as entrypoint
@@ -44712,9 +44856,16 @@ exports.executeRouter.post('/execute', async (req, res) => {
         params,
         executionId,
     };
-    task_worker_1.taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId }, () => {
-        Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
-    });
+    try {
+        task_worker_1.taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId }, () => {
+            releaseCapacity();
+        });
+    }
+    catch (err) {
+        releaseCapacity();
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to enqueue task' });
+        return;
+    }
     res.json({ status: 'accepted', executionId });
 });
 /** Write execution metadata to workDir/meta/{executionId}.json so the desktop can build history */
@@ -44729,6 +44880,16 @@ function writeExecMeta(executionId, data) {
         fs.writeFileSync(metaFile, JSON.stringify({ ...existing, ...data }, null, 2), 'utf-8');
     }
     catch (_) { /* best effort */ }
+}
+const CALLBACK_LOG_MAX_LENGTH = 10000;
+const CALLBACK_LOG_HEAD_LENGTH = 5000;
+function truncateCallbackLogs(logs) {
+    if (typeof logs !== 'string' || logs.length <= CALLBACK_LOG_MAX_LENGTH) {
+        return logs;
+    }
+    const marker = `\n... [logs truncated, original length ${logs.length} chars] ...\n`;
+    const tailLength = Math.max(CALLBACK_LOG_MAX_LENGTH - CALLBACK_LOG_HEAD_LENGTH - marker.length, 0);
+    return `${logs.slice(0, CALLBACK_LOG_HEAD_LENGTH)}${marker}${tailLength > 0 ? logs.slice(-tailLength) : ''}`;
 }
 async function runTask(task, params, executionId) {
     const { cmd, args, workDir, env, timeout } = task;
@@ -44752,7 +44913,7 @@ async function runTask(task, params, executionId) {
             executionId,
             status: 'success',
             exitCode: result.exitCode,
-            logs: result.logs,
+            logs: truncateCallbackLogs(result.logs),
             durationMs: Date.now() - startTime,
         });
     }
@@ -44772,7 +44933,7 @@ async function runTask(task, params, executionId) {
             executionId,
             status: 'failed',
             exitCode,
-            logs,
+            logs: truncateCallbackLogs(logs),
             errorMessage: message,
             durationMs: Date.now() - startTime,
         });
@@ -44890,13 +45051,18 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.healthRouter = void 0;
 exports.recordHeartbeat = recordHeartbeat;
+exports.buildAdminHealthPath = buildAdminHealthPath;
+exports.buildAdminHealthRequestOptions = buildAdminHealthRequestOptions;
+exports.checkAdminApi = checkAdminApi;
 const express_1 = __nccwpck_require__(925);
 const os = __importStar(__nccwpck_require__(857));
 const fs = __importStar(__nccwpck_require__(9896));
 const http = __importStar(__nccwpck_require__(8611));
+const https = __importStar(__nccwpck_require__(5692));
 const config_1 = __nccwpck_require__(3650);
 const scheduler_1 = __nccwpck_require__(1415);
 const task_worker_1 = __nccwpck_require__(8404);
+const logs_1 = __nccwpck_require__(4926);
 // Track last successful heartbeat time
 let lastHeartbeatTime = null;
 let adminApiReachable = null;
@@ -44905,17 +45071,30 @@ function recordHeartbeat(success) {
         lastHeartbeatTime = new Date().toISOString();
     adminApiReachable = success;
 }
+function buildAdminHealthPath(adminUrl) {
+    const basePath = adminUrl.pathname.replace(/\/+$/, '');
+    if (!basePath || basePath === '/')
+        return '/api/health';
+    if (basePath.endsWith('/api'))
+        return `${basePath}/health`;
+    return `${basePath}/api/health`;
+}
+function buildAdminHealthRequestOptions(adminUrl) {
+    const isHttps = adminUrl.protocol === 'https:';
+    return {
+        hostname: adminUrl.hostname,
+        port: adminUrl.port || (isHttps ? 443 : 80),
+        path: buildAdminHealthPath(adminUrl),
+        method: 'GET',
+        timeout: 3000,
+    };
+}
 async function checkAdminApi() {
     return new Promise((resolve) => {
-        const adminUrl = new URL(config_1.config.adminApiUrl || 'http://localhost:3000');
-        const reqOptions = {
-            hostname: adminUrl.hostname,
-            port: adminUrl.port || 80,
-            path: '/api/health',
-            method: 'GET',
-            timeout: 3000,
-        };
-        const req = http.request(reqOptions, (res) => {
+        const adminUrl = new URL(config_1.config.adminApiUrlInternal || config_1.config.adminApiUrl || 'http://localhost:3000');
+        const reqOptions = buildAdminHealthRequestOptions(adminUrl);
+        const requestImpl = adminUrl.protocol === 'https:' ? https.request : http.request;
+        const req = requestImpl(reqOptions, (res) => {
             resolve(res.statusCode !== undefined && res.statusCode < 500);
         });
         req.on('error', () => resolve(false));
@@ -44956,7 +45135,7 @@ exports.healthRouter.get('/health', async (_req, res) => {
         maxConcurrentTasks: config_1.config.maxConcurrentTasks,
         workerStats: task_worker_1.taskWorkerManager.getStats(),
         adminApiReachable: reachable,
-        tokenValid: !!config_1.config.token,
+        tokenValid: !!(0, logs_1.getExecutorAuthToken)(),
         lastHeartbeat: lastHeartbeatTime,
         timestamp: new Date().toISOString(),
     });
@@ -45020,6 +45199,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.logsRouter = void 0;
+exports.getExecutorAuthToken = getExecutorAuthToken;
 exports.executorAuthMiddleware = executorAuthMiddleware;
 const express_1 = __nccwpck_require__(925);
 const fs = __importStar(__nccwpck_require__(9896));
@@ -45028,10 +45208,13 @@ const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
 exports.logsRouter = (0, express_1.Router)();
 /** S-01: Express middleware — validates Bearer token from EXECUTOR_SHARED_TOKEN env. */
+function getExecutorAuthToken() {
+    return process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || config_1.config.token || '';
+}
 function executorAuthMiddleware(req, res, next) {
-    // Read env at call time so tests can set/unset EXECUTOR_SHARED_TOKEN per-case;
+    // Read env at call time so tests can set/unset tokens per-case;
     // fall back to the config value (populated from CLI --token or config file).
-    const secret = process.env.EXECUTOR_SHARED_TOKEN || config_1.config.token;
+    const secret = getExecutorAuthToken();
     if (!secret) {
         next(); // dev mode: no secret configured
         return;
@@ -45394,7 +45577,7 @@ async function sendHeartbeat() {
     }
 }
 function startHeartbeat() {
-    return setInterval(sendHeartbeat, 30000);
+    return setInterval(sendHeartbeat, config_1.config.heartbeatIntervalSeconds * 1000);
 }
 
 
