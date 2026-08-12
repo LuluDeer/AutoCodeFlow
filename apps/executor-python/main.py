@@ -93,6 +93,7 @@ async def register_executor():
                     'type': 'python',
                     'version': '1.0.0',
                     'capabilities': ['python', 'shell'],
+                    'maxConcurrentTasks': settings.max_concurrent_tasks,
                 },
                 headers=headers,
                 timeout=10,
