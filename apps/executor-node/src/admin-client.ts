@@ -7,7 +7,8 @@ let adminUrls: string[] = [];
 let currentIndex = 0;
 
 export function initAdminClients(urls: string[]): void {
-  adminUrls = urls.filter(url => url.trim());
+  adminUrls = urls.map(url => url.trim()).filter(Boolean);
+  currentIndex = 0;
   if (adminUrls.length === 0) {
     throw new Error('No admin URLs configured');
   }
