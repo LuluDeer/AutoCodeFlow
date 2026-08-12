@@ -1,3 +1,10 @@
+const adminApiUrl = process.env.ADMIN_API_URL || 'http://admin-api:3105';
+const adminApiUrlInternal = process.env.ADMIN_API_URL_INTERNAL || adminApiUrl;
+const configuredAdminApiUrls = (process.env.ADMIN_API_URLS || '')
+  .split(',')
+  .map((url) => url.trim())
+  .filter(Boolean);
+
 export const config = {
   appName: process.env.APP_NAME || 'executor-node-1',
   groupName: process.env.GROUP_NAME || process.env.EXECUTOR_GROUP || '',
@@ -5,10 +12,10 @@ export const config = {
   executorAddress: process.env.EXECUTOR_ADDRESS || 'executor-node:8002',
   executorAddressPublic: process.env.EXECUTOR_ADDRESS_PUBLIC || process.env.EXECUTOR_ADDRESS || 'executor-node:8002',
   executorId: process.env.EXECUTOR_ID || '',
-  adminApiUrl: process.env.ADMIN_API_URL || 'http://admin-api:3105',
-  adminApiUrlInternal: process.env.ADMIN_API_URL_INTERNAL || process.env.ADMIN_API_URL || 'http://admin-api:3105',
+  adminApiUrl,
+  adminApiUrlInternal,
   adminApiUrlExternal: process.env.ADMIN_API_URL_EXTERNAL || '',
-  adminApiUrls: (process.env.ADMIN_API_URLS || '').split(',').filter(url => url.trim()),
+  adminApiUrls: configuredAdminApiUrls.length > 0 ? configuredAdminApiUrls : [adminApiUrlInternal],
   workDir: process.env.WORK_DIR || '/tmp/autocodeflow/tasks',
   maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_TASKS || '10', 10),
   logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
