@@ -21,14 +21,22 @@ export default defineConfig({
     outDir: 'dist',
     rollupOptions: {
       output: {
-        manualChunks: {
+        manualChunks(id: string) {
           // Split large vendor libraries into separate chunks
-          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-          'vendor-antd': ['antd', '@ant-design/icons', '@ant-design/cssinjs'],
-          'vendor-charts': ['recharts'],
-          'vendor-monaco': ['@monaco-editor/react', 'monaco-editor'],
-          'vendor-query': ['@tanstack/react-query', 'ahooks'],
-          'vendor-utils': ['axios', 'dayjs'],
+          const chunks: Array<[string, string[]]> = [
+            ['vendor-react', ['react', 'react-dom', 'react-router-dom']],
+            ['vendor-antd', ['antd', '@ant-design/icons', '@ant-design/cssinjs']],
+            ['vendor-charts', ['recharts']],
+            ['vendor-monaco', ['@monaco-editor/react', 'monaco-editor']],
+            ['vendor-query', ['@tanstack/react-query', 'ahooks']],
+            ['vendor-utils', ['axios', 'dayjs']],
+          ];
+
+          for (const [name, packages] of chunks) {
+            if (packages.some((pkg) => id.includes(`/node_modules/${pkg}/`))) {
+              return name;
+            }
+          }
         },
       },
     },
@@ -41,5 +49,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: [],
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    exclude: ['e2e/**', '**/e2e/**', '**/*.e2e.{ts,tsx,js,cjs}'],
   },
 } as any);
