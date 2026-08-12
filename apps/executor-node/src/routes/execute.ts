@@ -161,7 +161,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
 
   const runtime = (task.runtime as string) || 'node';
   const entrypoint = (task.entrypoint as string) || 'index.js';
-  const timeout = (task.timeout as number) || 300;
+  const timeout = (task.timeout as number) || config.taskTimeoutSeconds;
   const requirements: string[] = (task.requirements as string[]) || [];
   const taskId = String(task.id || executionId);
 

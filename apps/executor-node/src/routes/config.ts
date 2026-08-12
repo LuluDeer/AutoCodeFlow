@@ -4,6 +4,8 @@
  */
 import { Router, Request, Response } from 'express';
 import { verifyToken } from '../middleware/auth';
+import { config } from '../config';
+import { initAdminClients } from '../admin-client';
 import { logger } from '../logger';
 
 export const configRouter = Router();
@@ -32,8 +34,7 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
         res.status(400).json({ error: 'maxConcurrentTasks must be >= 1' });
         return;
       }
-      // Note: For now, this only tracks the config value locally.
-      // A full implementation would use this to limit task execution.
+      config.maxConcurrentTasks = body.maxConcurrentTasks;
       updatedFields.push('maxConcurrentTasks');
       logger.info(`Hot-reloaded maxConcurrentTasks=${body.maxConcurrentTasks}`);
     }
@@ -43,6 +44,7 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
         res.status(400).json({ error: 'taskTimeoutSeconds must be >= 1' });
         return;
       }
+      config.taskTimeoutSeconds = body.taskTimeoutSeconds;
       updatedFields.push('taskTimeoutSeconds');
       logger.info(`Hot-reloaded taskTimeoutSeconds=${body.taskTimeoutSeconds}`);
     }
@@ -52,11 +54,16 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
         res.status(400).json({ error: 'heartbeatIntervalSeconds must be >= 5' });
         return;
       }
+      config.heartbeatIntervalSeconds = body.heartbeatIntervalSeconds;
       updatedFields.push('heartbeatIntervalSeconds');
       logger.info(`Hot-reloaded heartbeatIntervalSeconds=${body.heartbeatIntervalSeconds}`);
     }
 
     if (body.adminApiUrl !== undefined) {
+      config.adminApiUrl = body.adminApiUrl;
+      config.adminApiUrlInternal = body.adminApiUrl;
+      config.adminApiUrls = [body.adminApiUrl];
+      initAdminClients(config.adminApiUrls);
       updatedFields.push('adminApiUrl');
       logger.info(`Hot-reloaded adminApiUrl=${body.adminApiUrl}`);
     }
