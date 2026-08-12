@@ -541,6 +541,7 @@ export class TaskService {
       logs?: string;
       errorMessage?: string;
       durationMs?: number;
+      executorAddress?: string;
     }>,
   ) {
     const results = [];
@@ -554,6 +555,19 @@ export class TaskService {
             executionId: cb.executionId,
             success: false,
             error: "Execution not found",
+          });
+          continue;
+        }
+
+        if (
+          execution.executorAddress &&
+          cb.executorAddress &&
+          execution.executorAddress !== cb.executorAddress
+        ) {
+          results.push({
+            executionId: cb.executionId,
+            success: false,
+            error: "Executor address mismatch",
           });
           continue;
         }
