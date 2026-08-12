@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as http from 'http';
+import * as https from 'https';
 import { config } from '../config';
 import { runningCount } from '../scheduler';
 import { taskWorkerManager } from '../task-worker';
@@ -15,17 +16,30 @@ export function recordHeartbeat(success: boolean): void {
   adminApiReachable = success;
 }
 
-async function checkAdminApi(): Promise<boolean> {
+export function buildAdminHealthPath(adminUrl: URL): string {
+  const basePath = adminUrl.pathname.replace(/\/+$/, '');
+  if (!basePath || basePath === '/') return '/api/health';
+  if (basePath.endsWith('/api')) return `${basePath}/health`;
+  return `${basePath}/api/health`;
+}
+
+export function buildAdminHealthRequestOptions(adminUrl: URL) {
+  const isHttps = adminUrl.protocol === 'https:';
+  return {
+    hostname: adminUrl.hostname,
+    port: adminUrl.port || (isHttps ? 443 : 80),
+    path: buildAdminHealthPath(adminUrl),
+    method: 'GET',
+    timeout: 3000,
+  };
+}
+
+export async function checkAdminApi(): Promise<boolean> {
   return new Promise((resolve) => {
-    const adminUrl = new URL(config.adminApiUrl || 'http://localhost:3000');
-    const reqOptions = {
-      hostname: adminUrl.hostname,
-      port: adminUrl.port || 80,
-      path: '/api/health',
-      method: 'GET',
-      timeout: 3000,
-    };
-    const req = http.request(reqOptions, (res) => {
+    const adminUrl = new URL(config.adminApiUrlInternal || config.adminApiUrl || 'http://localhost:3000');
+    const reqOptions = buildAdminHealthRequestOptions(adminUrl);
+    const requestImpl = adminUrl.protocol === 'https:' ? https.request : http.request;
+    const req = requestImpl(reqOptions, (res) => {
       resolve(res.statusCode !== undefined && res.statusCode < 500);
     });
     req.on('error', () => resolve(false));
