@@ -144,7 +144,10 @@ def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
     monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
     monkeypatch.setattr(execute_module.httpx, 'AsyncClient', FakeAsyncClient)
     monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local/api')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
     monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'dynamic-token')
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
     monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'public-executor:9000')
 
     req = ExecuteRequest(
@@ -164,6 +167,34 @@ def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
         'durationMs': 12,
         'executorAddress': 'public-executor:9000',
     }]
+
+
+def test_run_and_callback_uses_configured_admin_api_url_priority(monkeypatch):
+    """Callback should use external URL first, then internal, then base admin URL."""
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local/api')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', 'http://admin.internal/api')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', 'http://admin.external/api')
+    assert execute_module._get_admin_api_url() == 'http://admin.external/api'
+
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
+    assert execute_module._get_admin_api_url() == 'http://admin.internal/api'
+
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    assert execute_module._get_admin_api_url() == 'http://admin.local/api'
+
+
+def test_run_and_callback_token_accepts_executor_secret_fallback(monkeypatch):
+    """Callback auth should accept legacy EXECUTOR_SECRET when shared token is unset."""
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', 'legacy-secret')
+    assert execute_module._get_callback_token() == 'legacy-secret'
+
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'shared-token')
+    assert execute_module._get_callback_token() == 'shared-token'
 
 
 # ---------------------------------------------------------------------------
