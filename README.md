@@ -306,7 +306,7 @@ docker compose exec admin-api npm run migration:run
 
 **执行器无法连接 admin-api**
 
-检查 `EXECUTOR_SECRET` 是否与 admin-api 的 `EXECUTOR_SECRET` 一致，并确认 `ADMIN_API_URL` 指向正确的地址（Docker 内部使用服务名 `http://admin-api:3105`）。
+检查 `EXECUTOR_SHARED_TOKEN` 是否与 admin-api 配置一致，并确认 `ADMIN_API_URL` 指向正确的地址（Docker 内部使用服务名 `http://admin-api:3105`）。
 
 **数据库迁移失败**
 

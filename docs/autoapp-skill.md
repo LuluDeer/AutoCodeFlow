@@ -66,9 +66,8 @@ import os
 import json
 
 def main() -> dict:
-    # 读取参数
-    params = json.loads(os.environ.get("TASK_PARAMS", "{}"))
-    target = os.environ.get("AUTOFLOW_TARGET") or params.get("target", "prod")
+    # 读取参数：触发参数以 AUTOFLOW_ 前缀注入
+    target = os.environ.get("AUTOFLOW_TARGET", "prod")
 
     print(f"running: target={target}")
 
@@ -93,8 +92,8 @@ if __name__ == "__main__":
 
 ```javascript
 async function main() {
-  const params = JSON.parse(process.env.TASK_PARAMS || '{}');
-  const target = process.env.AUTOFLOW_TARGET || params.target || 'prod';
+  // 读取参数：触发参数以 AUTOFLOW_ 前缀注入
+  const target = process.env.AUTOFLOW_TARGET || 'prod';
 
   console.log(`running: target=${target}`);
 
@@ -116,14 +115,12 @@ module.exports = main;
 
 | 变量 | 说明 |
 |------|------|
-| `TASK_PARAMS` | 任务配置的默认参数（JSON 字符串） |
-| `AUTOFLOW_<KEY>` | 触发时传入的运行时参数，覆盖同名默认值 |
 | `TASK_ID` | 任务 ID |
+| `TASK_NAME` | 任务名称 |
 | `EXECUTION_ID` | 本次执行 ID |
-| `TASK_TOKEN` | 回调用临时 token |
-| `ADMIN_API_URL` | 平台 API 地址（容器内用） |
+| `AUTOFLOW_<KEY>` | 触发时传入的运行时参数 |
 
-参数读取优先级：`AUTOFLOW_*` > `TASK_PARAMS` > 代码里的默认值
+参数读取优先级：`AUTOFLOW_*` > 代码里的默认值。执行结果回调由执行器统一处理，任务脚本不需要持有平台 token。
 
 ---
 
