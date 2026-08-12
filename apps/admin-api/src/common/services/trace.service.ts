@@ -1,7 +1,7 @@
 import { Injectable, Scope } from "@nestjs/common";
 import type { InternalAxiosRequestConfig } from "axios";
 import { AsyncLocalStorage } from "async_hooks";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 
 /**
  * OPS-03: Trace service for managing request-scoped trace IDs.
@@ -15,7 +15,7 @@ export class TraceService {
 
   constructor() {
     // Try to get from async storage first
-    this._traceId = TraceService.storage.getStore() || uuidv4();
+    this._traceId = TraceService.storage.getStore() || randomUUID();
   }
 
   get traceId(): string {
