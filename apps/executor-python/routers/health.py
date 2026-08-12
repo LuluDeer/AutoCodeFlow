@@ -23,15 +23,10 @@ def record_heartbeat(success: bool) -> None:
 
 async def _check_admin_api():
     """OPS-02: Check connectivity to admin-api for readiness probe."""
-    token = os.environ.get('EXECUTOR_SECRET') or os.environ.get('EXECUTOR_SHARED_TOKEN') or ''
-    headers = {'Authorization': f'Bearer {token}'} if token else {}
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(
-                build_admin_api_url('/executors/heartbeat'),
-                headers=headers,
-            )
-            return resp.status_code == 200
+            resp = await client.get(build_admin_api_url('/health'))
+            return resp.status_code < 500
     except Exception:
         return False
 
