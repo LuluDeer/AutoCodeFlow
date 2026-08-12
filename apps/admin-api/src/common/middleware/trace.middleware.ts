@@ -1,6 +1,6 @@
 import { Injectable, NestMiddleware, Logger } from "@nestjs/common";
+import { randomUUID } from "crypto";
 import { Request, Response, NextFunction } from "express";
-import { v4 as uuidv4 } from "uuid";
 
 /**
  * OPS-03: Cross-service request tracing middleware.
@@ -13,7 +13,7 @@ export class TraceMiddleware implements NestMiddleware {
 
   use(req: Request, res: Response, next: NextFunction) {
     // Extract existing traceId or generate a new one
-    const traceId = (req.headers["x-trace-id"] as string) || uuidv4();
+    const traceId = (req.headers["x-trace-id"] as string) || randomUUID();
 
     // Attach traceId to request object for use in services/controllers
     req.traceId = traceId;

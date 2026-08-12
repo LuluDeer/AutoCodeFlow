@@ -45,6 +45,7 @@ export class CreateTaskDto {
   @ApiPropertyOptional({
     description: "Upstream task dependency map: { taskId: taskName }",
     type: "object",
+    additionalProperties: { type: "string" },
     example: { "uuid-of-task-a": "task-a-name" },
   })
   @IsObject()
