@@ -3,7 +3,7 @@ Configuration hot-reload endpoint.
 Allows admin-api to push configuration updates without executor restart.
 """
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from auth import verify_token
 from config import settings
 import logging
@@ -15,10 +15,22 @@ router = APIRouter()
 
 class ConfigReloadRequest(BaseModel):
     """Configuration hot-reload request body."""
-    max_concurrent_tasks: int | None = None
-    task_timeout_seconds: int | None = None
-    heartbeat_interval_seconds: int | None = None
-    admin_api_url: str | None = None
+    max_concurrent_tasks: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices('max_concurrent_tasks', 'maxConcurrentTasks'),
+    )
+    task_timeout_seconds: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices('task_timeout_seconds', 'taskTimeoutSeconds'),
+    )
+    heartbeat_interval_seconds: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices('heartbeat_interval_seconds', 'heartbeatIntervalSeconds'),
+    )
+    admin_api_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices('admin_api_url', 'adminApiUrl'),
+    )
 
 
 class ConfigReloadResponse(BaseModel):
