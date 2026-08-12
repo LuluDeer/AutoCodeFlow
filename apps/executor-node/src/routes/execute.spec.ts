@@ -44,6 +44,7 @@ jest.mock('child_process');
 import { executeRouter, runTask } from './execute';
 import { pushCallback } from '../callback';
 import { executorAuthMiddleware } from './logs';
+import { taskWorkerManager } from '../task-worker';
 
 // App without auth — used only for non-auth behaviour tests
 const appNoAuth = express();
@@ -61,6 +62,7 @@ const mockCp = childProcess as jest.Mocked<typeof childProcess>;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  Atomics.store(_runningCountArr, 0, 0);
   delete process.env.EXECUTOR_SHARED_TOKEN;
   (mockFs.existsSync as jest.Mock).mockReturnValue(false);
   (mockFs.mkdirSync as jest.Mock).mockReturnValue(undefined);
@@ -167,6 +169,34 @@ describe('POST /api/execute', () => {
     });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Invalid npm package name/);
+  });
+
+  it('releases capacity when git checkout fails synchronously', async () => {
+    (mockCp.spawnSync as jest.Mock).mockReturnValue({ status: 1, stderr: Buffer.from('clone failed') });
+
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-git-fail',
+      task: { runtime: 'node', gitRepo: 'https://example.com/repo.git' },
+    });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/git clone failed/);
+    expect(Atomics.load(_runningCountArr, 0)).toBe(0);
+  });
+
+  it('releases capacity when task worker enqueue throws synchronously', async () => {
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(() => {
+      throw new Error('enqueue failed');
+    });
+
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-worker-fail',
+      task: { runtime: 'node', entrypoint: 'index.js' },
+    });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('enqueue failed');
+    expect(Atomics.load(_runningCountArr, 0)).toBe(0);
   });
 
   it('runs node task and returns accepted', async () => {
