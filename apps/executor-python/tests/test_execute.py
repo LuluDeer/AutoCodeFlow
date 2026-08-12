@@ -143,7 +143,7 @@ def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
 
     monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
     monkeypatch.setattr(execute_module.httpx, 'AsyncClient', FakeAsyncClient)
-    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local/api')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
     monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
     monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
     monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'dynamic-token')
