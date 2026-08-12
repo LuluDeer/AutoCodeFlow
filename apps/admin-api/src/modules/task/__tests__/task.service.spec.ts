@@ -1,7 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { DataSource } from "typeorm";
-import { getQueueToken } from "@nestjs/bull";
+import { getQueueToken } from "@nestjs/bullmq";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { TaskService } from "../task.service";
 import { Task, TaskStatus } from "../entities/task.entity";
