@@ -523,6 +523,16 @@ export class TaskService {
     };
   }
 
+  private async releaseExecutorSlot(address?: string | null): Promise<void> {
+    if (!address) return;
+    await this.dataSource
+      .createQueryBuilder()
+      .update('executors')
+      .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
+      .where('address = :addr', { addr: address })
+      .execute();
+  }
+
   async handleCallback(
     callbacks: Array<{
       executionId: string;
@@ -549,10 +559,14 @@ export class TaskService {
         }
 
         // Idempotency: skip if already in a terminal state
-        if (
-          execution.status === ExecutionStatus.SUCCESS ||
-          execution.status === ExecutionStatus.FAILED
-        ) {
+        const terminalStatuses = [
+          ExecutionStatus.SUCCESS,
+          ExecutionStatus.FAILED,
+          ExecutionStatus.TIMEOUT,
+          ExecutionStatus.KILLED,
+          ExecutionStatus.CANCELLED,
+        ];
+        if (terminalStatuses.includes(execution.status)) {
           results.push({ executionId: cb.executionId, success: true });
           continue;
         }
@@ -590,15 +604,7 @@ export class TaskService {
         // Decrement executor runningTaskCount on task completion (success or failure).
         // The counter was incremented at dispatch time; it must be decremented here
         // so executors are not permanently counted as busy after each task.
-        // Uses GREATEST to guard against races / double-decrement.
-        if (execution.executorAddress) {
-          await this.dataSource
-            .createQueryBuilder()
-            .update('executors')
-            .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
-            .where('address = :addr', { addr: execution.executorAddress })
-            .execute();
-        }
+        await this.releaseExecutorSlot(execution.executorAddress);
 
         results.push({ executionId: cb.executionId, success: true });
       } catch (error: unknown) {
@@ -752,6 +758,7 @@ export class TaskService {
     }
     execution.errorMessage = 'Manually terminated by administrator';
     await this.execRepo.save(execution);
+    await this.releaseExecutorSlot(execution.executorAddress);
     this.logger.warn(`Execution ${execId} has been manually terminated`);
     return { success: true, message: 'Execution marked as terminated' };
   }

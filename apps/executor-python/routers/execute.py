@@ -6,19 +6,13 @@ import stat
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Any, Optional
 import scheduler as sched
 from auth import verify_token
-
-# SEC-01: env vars allowed to pass through to child processes — never expose executor secrets
-_ENV_WHITELIST: frozenset = frozenset({
-    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
-    'PYTHONPATH', 'PYTHONHASHSEED', 'VIRTUAL_ENV',
-    'NODE_PATH', 'TMPDIR', 'TEMP', 'TMP',
-    'USER', 'LOGNAME', 'SHELL',
-})
 from config import settings
 from manifest import load_manifest, merge_task_with_manifest
 try:
@@ -61,6 +55,11 @@ def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
+def _executor_callback_address() -> str:
+    return settings.executor_address_public or settings.executor_address or f'127.0.0.1:{settings.port}'
+
+
 # uv executable path (prefer PATH; Dockerfile installs to /root/.cargo/bin/uv)
 UV_BIN = shutil.which('uv') or '/root/.local/bin/uv'
 
@@ -81,11 +80,49 @@ async def execute(req: ExecuteRequest):
         raise HTTPException(status_code=429, detail='Executor is at capacity')
 
     sched.increment_running()
+    asyncio.create_task(_run_and_callback(req))
+    return {
+        'status': 'accepted',
+        'executionId': req.executionId,
+        'executorAddress': _executor_callback_address(),
+    }
+
+
+async def _run_and_callback(req: ExecuteRequest):
     try:
         result = await run_task(req)
-        return result
+        payload = {
+            'executionId': req.executionId,
+            'status': 'success' if result.get('success') else 'failed',
+            'exitCode': result.get('exitCode'),
+            'logs': result.get('logs'),
+            'errorMessage': result.get('errorMessage'),
+            'durationMs': result.get('durationMs'),
+            'executorAddress': _executor_callback_address(),
+        }
+    except Exception as exc:
+        payload = {
+            'executionId': req.executionId,
+            'status': 'failed',
+            'errorMessage': str(exc),
+            'executorAddress': _executor_callback_address(),
+        }
     finally:
         sched.decrement_running()
+
+    if settings.admin_api_url:
+        headers = {}
+        if settings.executor_shared_token:
+            headers['Authorization'] = f'Bearer {settings.executor_shared_token}'
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"{settings.admin_api_url.rstrip('/')}/executions/callback",
+                    json=[payload],
+                    headers=headers,
+                )
+        except Exception as exc:
+            logger.warning('Failed to send execution callback: %s', exc)
 
 
 async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
@@ -126,6 +163,7 @@ async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
 
 
 async def run_task(req: ExecuteRequest) -> dict:
+    started_at = time.monotonic()
     # Working directory
     work_dir = Path(settings.work_dir) / req.executionId
     # S6/Q11: path traversal guard — executionId must not escape the base work_dir
@@ -223,7 +261,13 @@ async def run_task(req: ExecuteRequest) -> dict:
         else:
             cmd = ['bash', '-c', f'cd "{work_dir}" && exec "{entrypoint}"']
     else:
-        raise HTTPException(status_code=400, detail=f'Unsupported runtime: {runtime}')
+        return {
+            'success': False,
+            'logs': '',
+            'exitCode': None,
+            'errorMessage': f'Unsupported runtime: {runtime}',
+            'durationMs': int((time.monotonic() - started_at) * 1000),
+        }
 
     logger.info(f'Running task {task.get("name")} [{req.executionId}]: {cmd}')
 
@@ -264,10 +308,17 @@ async def run_task(req: ExecuteRequest) -> dict:
         else:
             logs = logs_full
 
+        duration_ms = int((time.monotonic() - started_at) * 1000)
         if proc.returncode != 0:
-            raise RuntimeError(f'Process exited with code {proc.returncode}\n{logs}')
+            return {
+                'success': False,
+                'logs': logs,
+                'exitCode': proc.returncode,
+                'errorMessage': f'Process exited with code {proc.returncode}',
+                'durationMs': duration_ms,
+            }
 
-        return {'success': True, 'logs': logs, 'exitCode': proc.returncode}
+        return {'success': True, 'logs': logs, 'exitCode': proc.returncode, 'durationMs': duration_ms}
     except asyncio.TimeoutError:
         # B-06: kill the entire process group so child processes spawned by the task are also terminated
         try:
@@ -275,7 +326,29 @@ async def run_task(req: ExecuteRequest) -> dict:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, OSError):
             proc.kill()
-        raise HTTPException(status_code=408, detail=f'Task timeout after {timeout}s')
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        return {
+            'success': False,
+            'logs': ''.join(log_chunks) if 'log_chunks' in locals() else '',
+            'exitCode': None,
+            'errorMessage': f'Task timeout after {timeout}s',
+            'durationMs': duration_ms,
+        }
+    except HTTPException as e:
+        logging.exception('HTTP error during task execution')
+        return {
+            'success': False,
+            'logs': '',
+            'exitCode': None,
+            'errorMessage': str(e.detail),
+            'durationMs': int((time.monotonic() - started_at) * 1000),
+        }
     except Exception as e:
         logging.exception('Unexpected error during task execution')
-        raise HTTPException(status_code=500, detail='Internal execution error')
+        return {
+            'success': False,
+            'logs': '',
+            'exitCode': None,
+            'errorMessage': str(e),
+            'durationMs': int((time.monotonic() - started_at) * 1000),
+        }

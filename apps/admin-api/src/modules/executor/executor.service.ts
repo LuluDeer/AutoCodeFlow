@@ -14,6 +14,7 @@ import {
 import { Task } from "../task/entities/task.entity";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
+import { SystemConfigService } from "../config/config.service";
 
 @Injectable()
 export class ExecutorService {
@@ -27,6 +28,7 @@ export class ExecutorService {
     @InjectRepository(Task) private taskRepo: Repository<Task>,
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
+    private readonly systemConfigService: SystemConfigService,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
   }
@@ -38,25 +40,55 @@ export class ExecutorService {
     return `${this.protocol}://${address}/${path}`;
   }
 
+  private async getSharedToken(): Promise<string> {
+    try {
+      const cfg = await this.systemConfigService.findOne("executor.sharedToken");
+      if (cfg?.value) return cfg.value;
+    } catch {
+      // DB token is optional; fall back to environment/config-file value.
+    }
+    return this.configService.get<string>("executor.sharedToken") ?? "";
+  }
+
+  private async releaseExecutorSlot(address?: string | null): Promise<void> {
+    if (!address) return;
+    await this.repo
+      .createQueryBuilder()
+      .update(Executor)
+      .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
+      .where("address = :address", { address })
+      .execute();
+  }
+
   async register(data: {
     appName: string;
     address: string;
     type?: string;
     version?: string;
     capabilities?: string[];
+    runtime?: string[];
+    maxConcurrentTasks?: number;
+    maxConcurrent?: number;
+    groupName?: string | null;
+    tags?: string[] | null;
+    description?: string | null;
   }) {
     let e: Executor | null = await this.repo.findOne({
       where: { address: data.address },
     });
     const isFirstTime = !e;
+    const capabilities = data.capabilities ?? data.runtime;
+    const maxConcurrentTasks = data.maxConcurrentTasks ?? data.maxConcurrent;
     if (!e) e = this.repo.create(data as Partial<Executor>);
-    else{
-      // Update mutable fields on re-registration
-      if (data.type) e.type = data.type as any;
-      if (data.appName) e.appName = data.appName;
-      if (data.version) e.version = data.version;
-      if (data.capabilities) e.capabilities = data.capabilities;
-    }
+    // Update mutable fields on registration/re-registration
+    if (data.type) e.type = data.type as any;
+    if (data.appName) e.appName = data.appName;
+    if (data.version) e.version = data.version;
+    if (capabilities) e.capabilities = capabilities;
+    if (maxConcurrentTasks !== undefined) e.maxConcurrentTasks = maxConcurrentTasks;
+    if (data.groupName !== undefined) e.groupName = data.groupName;
+    if (data.tags !== undefined) e.tags = data.tags;
+    if (data.description !== undefined) e.description = data.description;
     e.status = ExecutorStatus.ONLINE;
     e.lastHeartbeat = new Date();
     const saved = await this.repo.save(e);
@@ -247,9 +279,10 @@ export class ExecutorService {
         );
       }
 
-      if (filtered.length > 0) {
-        candidates = filtered;
+      if (filtered.length === 0) {
+        throw new Error("No online executors match the requested group/tags/runtime");
       }
+      candidates = filtered;
     }
 
     // 3. Weighted scoring (load 50%+CPU 25%+mem 25%), try optimistic lock in order
@@ -294,7 +327,7 @@ export class ExecutorService {
     execution.executorAddress = matched.address;
 
     try {
-      const sharedToken = this.configService.get<string>("executor.sharedToken") ?? "";
+      const sharedToken = await this.getSharedToken();
       const headers: Record<string, string> = {};
       if (sharedToken) headers["Authorization"] = `Bearer ${sharedToken}`;
       const resp = await axios.post(
@@ -350,7 +383,10 @@ export class ExecutorService {
             : e.capabilities.includes(task.runtime),
         );
       }
-      if (filtered.length > 0) candidates = filtered;
+      if (filtered.length === 0) {
+        throw new Error("No online executors match the requested group/tags/runtime");
+      }
+      candidates = filtered;
     }
 
     if (candidates.length === 0) {
@@ -362,7 +398,7 @@ export class ExecutorService {
     );
 
     // Fire all dispatches in parallel and collect results
-    const sharedToken = this.configService.get<string>("executor.sharedToken") ?? "";
+    const sharedToken = await this.getSharedToken();
     const broadcastHeaders: Record<string, string> = {};
     if (sharedToken) broadcastHeaders["Authorization"] = `Bearer ${sharedToken}`;
 
@@ -458,6 +494,7 @@ export class ExecutorService {
         (exec.logs || "") +
         "\n[System] Execution timed out without callback, forcefully marked as FAILED";
       await this.execRepo.save(exec);
+      await this.releaseExecutorSlot(exec.executorAddress);
       this.logger.warn(
         `Lost execution marked FAILED: execId=${exec.id}, taskId=${exec.taskId}`,
       );
@@ -570,7 +607,7 @@ export class ExecutorService {
     if (executor.tokenHash) {
       return bcrypt.compare(presented, executor.tokenHash);
     }
-    const shared = this.configService.get<string>("executor.sharedToken") ?? "";
+    const shared = await this.getSharedToken();
     if (shared.length === 0) return false;
     // SEC-FIX: use timingSafeEqual to prevent timing attacks on shared token comparison
     const sharedBuf = Buffer.from(shared, 'utf8');
@@ -600,7 +637,7 @@ export class ExecutorService {
     }
 
     // Fall back to shared token — use timing-safe comparison to prevent timing attacks
-    const shared = this.configService.get<string>("executor.sharedToken") ?? "";
+    const shared = await this.getSharedToken();
     if (shared.length === 0) return false;
     const sharedBuf = Buffer.from(shared, 'utf8');
     const presentedBuf = Buffer.from(presented, 'utf8');

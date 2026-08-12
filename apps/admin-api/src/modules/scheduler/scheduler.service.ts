@@ -5,7 +5,7 @@ import {
   OnModuleDestroy,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { DataSource, In, Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bull";
 import { Queue } from "bull";
 import { Cron, CronExpression } from "@nestjs/schedule";
@@ -39,6 +39,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     private execRepo: Repository<TaskExecution>,
     @InjectQueue("task-queue") private queue: Queue,
     private redisLockService: RedisLockService,
+    private dataSource: DataSource,
   ) {}
 
   async onModuleInit() {
@@ -95,7 +96,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     
     // Get all unique taskIds and fetch their timeouts
     const taskIds = [...new Set(runningExecs.map(e => e.taskId))];
-    const tasks = await this.taskRepo.findByIds(taskIds);
+    const tasks = taskIds.length > 0
+      ? await this.taskRepo.findBy({ id: In(taskIds) })
+      : [];
     const taskTimeouts = new Map<string, number>();
     for (const t of tasks) {
       if (t.timeout && t.timeout > 0) {
@@ -122,6 +125,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             ? `Execution timed out after ${taskTimeoutSec}s`
             : 'Execution did not complete (recovered on node restart)';
         await this.execRepo.save(exec);
+        await this.releaseExecutorSlot(exec.executorAddress);
         recovered++;
         this.logger.warn(
           `REC-01: execution ${exec.id} (task=${exec.taskId}) timed out after ${staleMs / 1000}s`,
@@ -131,6 +135,16 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     if (recovered > 0) {
       this.logger.warn(`REC-01: recovered ${recovered} stale RUNNING execution(s)`);
     }
+  }
+
+  private async releaseExecutorSlot(address?: string | null): Promise<void> {
+    if (!address) return;
+    await this.dataSource
+      .createQueryBuilder()
+      .update('executors')
+      .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
+      .where('address = :addr', { addr: address })
+      .execute();
   }
 
   onModuleDestroy() {
@@ -268,6 +282,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           running.errorMessage = "Task was covered by new trigger";
           running.endTime = new Date();
           await this.execRepo.save(running);
+          await this.releaseExecutorSlot(running.executorAddress);
         }
       }
 
