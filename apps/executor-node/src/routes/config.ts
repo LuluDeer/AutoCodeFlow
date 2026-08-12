@@ -16,6 +16,20 @@ interface ConfigReloadRequest {
   taskTimeoutSeconds?: number;
   heartbeatIntervalSeconds?: number;
   adminApiUrl?: string;
+  adminApiUrlInternal?: string;
+  adminApiUrlExternal?: string;
+  adminApiUrls?: string[];
+}
+
+function rebuildAdminApiUrls(explicitUrls?: string[]): string[] {
+  const configuredUrls = (explicitUrls ?? [])
+    .map((url) => url.trim())
+    .filter(Boolean);
+
+  if (configuredUrls.length > 0) return configuredUrls;
+  if (config.adminApiUrlInternal) return [config.adminApiUrlInternal];
+  if (config.adminApiUrl) return [config.adminApiUrl];
+  return [];
 }
 
 interface ConfigReloadResponse {
@@ -59,13 +73,42 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
       logger.info(`Hot-reloaded heartbeatIntervalSeconds=${body.heartbeatIntervalSeconds}`);
     }
 
+    let adminApiUrlsChanged = false;
+    let explicitAdminApiUrls: string[] | undefined;
+
     if (body.adminApiUrl !== undefined) {
       config.adminApiUrl = body.adminApiUrl;
-      config.adminApiUrlInternal = body.adminApiUrl;
-      config.adminApiUrls = [body.adminApiUrl];
-      initAdminClients(config.adminApiUrls);
+      if (body.adminApiUrlInternal === undefined && body.adminApiUrls === undefined) {
+        config.adminApiUrlInternal = body.adminApiUrl;
+      }
       updatedFields.push('adminApiUrl');
+      adminApiUrlsChanged = true;
       logger.info(`Hot-reloaded adminApiUrl=${body.adminApiUrl}`);
+    }
+
+    if (body.adminApiUrlInternal !== undefined) {
+      config.adminApiUrlInternal = body.adminApiUrlInternal;
+      updatedFields.push('adminApiUrlInternal');
+      adminApiUrlsChanged = true;
+      logger.info(`Hot-reloaded adminApiUrlInternal=${body.adminApiUrlInternal}`);
+    }
+
+    if (body.adminApiUrlExternal !== undefined) {
+      config.adminApiUrlExternal = body.adminApiUrlExternal;
+      updatedFields.push('adminApiUrlExternal');
+      logger.info(`Hot-reloaded adminApiUrlExternal=${body.adminApiUrlExternal}`);
+    }
+
+    if (body.adminApiUrls !== undefined) {
+      explicitAdminApiUrls = body.adminApiUrls;
+      updatedFields.push('adminApiUrls');
+      adminApiUrlsChanged = true;
+      logger.info(`Hot-reloaded adminApiUrls=${body.adminApiUrls.join(',')}`);
+    }
+
+    if (adminApiUrlsChanged) {
+      config.adminApiUrls = rebuildAdminApiUrls(explicitAdminApiUrls);
+      initAdminClients(config.adminApiUrls);
     }
 
     if (updatedFields.length === 0) {
