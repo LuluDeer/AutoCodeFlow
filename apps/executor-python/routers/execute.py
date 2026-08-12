@@ -60,6 +60,20 @@ def _executor_callback_address() -> str:
     return settings.executor_address_public or settings.executor_address or f'127.0.0.1:{settings.port}'
 
 
+def _get_admin_api_url() -> str:
+    """Get the appropriate admin API URL for execution callbacks."""
+    if settings.admin_api_url_external:
+        return settings.admin_api_url_external
+    if settings.admin_api_url_internal:
+        return settings.admin_api_url_internal
+    return settings.admin_api_url
+
+
+def _get_callback_token() -> str:
+    """Return the shared token used to authenticate execution callbacks."""
+    return settings.executor_shared_token or settings.executor_secret
+
+
 # uv executable path (prefer PATH; Dockerfile installs to /root/.cargo/bin/uv)
 UV_BIN = shutil.which('uv') or '/root/.local/bin/uv'
 
@@ -110,14 +124,16 @@ async def _run_and_callback(req: ExecuteRequest):
     finally:
         sched.decrement_running()
 
-    if settings.admin_api_url:
+    admin_api_url = _get_admin_api_url()
+    if admin_api_url:
         headers = {}
-        if settings.executor_shared_token:
-            headers['Authorization'] = f'Bearer {settings.executor_shared_token}'
+        callback_token = _get_callback_token()
+        if callback_token:
+            headers['Authorization'] = f'Bearer {callback_token}'
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(
-                    f"{settings.admin_api_url.rstrip('/')}/executions/callback",
+                    f"{admin_api_url.rstrip('/')}/executions/callback",
                     json=[payload],
                     headers=headers,
                 )
