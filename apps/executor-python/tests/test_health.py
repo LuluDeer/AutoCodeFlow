@@ -17,6 +17,13 @@ def test_health_contains_status_field(client):
     assert 'status' in body
 
 
+def test_health_token_uses_shared_token_before_legacy_secret(monkeypatch):
+    monkeypatch.setenv('EXECUTOR_SHARED_TOKEN', 'shared-token')
+    monkeypatch.setenv('EXECUTOR_SECRET', 'legacy-secret')
+
+    assert health_module._get_health_token() == 'shared-token'
+
+
 @pytest.mark.asyncio
 async def test_check_admin_api_uses_public_health_endpoint(monkeypatch):
     monkeypatch.setattr(settings, 'admin_api_url', 'http://admin.local')
