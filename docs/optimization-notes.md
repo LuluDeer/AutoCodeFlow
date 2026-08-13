@@ -44,17 +44,17 @@ CI/CD 系统需要存储长期用户 token，生产环境存在凭证泄露风�
 
 **建议：** 支持专用的 Webhook Secret 签名验证（类似 GitHub `X-Hub-Signature-256`），或提供生成限权 API Key 的能力，与用户 JWT 解耦。
 
-### 2.4 任务缺少执行超时配置
+### 2.4 任务缺少执行超时配置（已支持）
 
 长时间运行的任务没有上限，会持续占用执行器，影响其他任务调度。
 
-**建议：** 任务配置增加 `timeoutSeconds` 字段。执行器执行时设置子进程超时，超时后 kill 并上报 `timeout` 状态。（sdk-guide 中已有 manifest 级别超时，但任务级别覆盖更灵活）
+**当前状态：** 任务 API 已兼容 `timeoutSeconds` 并映射到现有 `timeout` 存储；Node/Python 执行器均按任务级超时执行，Python SDK 同步支持 `timeout_seconds`/`timeoutSeconds`。
 
-### 2.5 Cron 任务缺少时区配置
+### 2.5 Cron 任务缺少时区配置（已支持）
 
 cron 默认使用服务器时区，跨时区团队会遇到调度时间错乱。
 
-**建议：** 任务配置增加 `timezone` 字段（如 `Asia/Shanghai`）。BullMQ 原生支持时区参数，可直接对接。
+**当前状态：** 任务实体、DTO、迁移、前端表单和调度器已支持 `timezone` 字段；Cron 注册时将 IANA 时区（如 `Asia/Shanghai`）传给 `node-cron`。
 
 ### 2.6 执行日志存主库有膨胀风险
 

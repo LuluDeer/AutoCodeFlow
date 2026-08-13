@@ -73,7 +73,10 @@ export class NotificationService {
     if (channels.includes(AlertChannel.WECOM))
       entries.push({ name: "wecom", promise: this.wecom.send(payload) });
     if (channels.includes(AlertChannel.WEBHOOK))
-      entries.push({ name: "webhook", promise: this.webhook.send(payload, webhookUrl) });
+      entries.push({
+        name: "webhook",
+        promise: this.webhook.send(payload, webhookUrl),
+      });
 
     const results = await Promise.allSettled(entries.map((e) => e.promise));
     const failures: string[] = [];

@@ -1,5 +1,18 @@
-import { Controller, Logger, Post, Body, Get, UseGuards, Req } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse } from "@nestjs/swagger";
+import {
+  Controller,
+  Logger,
+  Post,
+  Body,
+  Get,
+  UseGuards,
+  Req,
+} from "@nestjs/common";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiResponse,
+} from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
 import { Request } from "express";
 import { AuthService } from "./auth.service";
@@ -36,7 +49,10 @@ export class AuthController {
     schema: { example: { accessToken: "eyJ...", refreshToken: "eyJ..." } },
   })
   @ApiResponse({ status: 401, description: "Invalid username or password" })
-  @ApiResponse({ status: 429, description: "Too many requests, rate limit exceeded" })
+  @ApiResponse({
+    status: 429,
+    description: "Too many requests, rate limit exceeded",
+  })
   async login(@Body() loginDto: LoginDto, @Req() req: Request) {
     const result = await this.authService.login(loginDto);
     await this.auditService
@@ -47,7 +63,9 @@ export class AuthController {
         resource: "auth",
         ip: req.ip,
       })
-      .catch((err: unknown) => this.logger.warn(`audit log failed on login: ${err}`));
+      .catch((err: unknown) =>
+        this.logger.warn(`audit log failed on login: ${err}`),
+      );
     return result;
   }
 
@@ -64,7 +82,10 @@ export class AuthController {
     description: "Token refreshed successfully",
     schema: { example: { accessToken: "eyJ...", refreshToken: "eyJ..." } },
   })
-  @ApiResponse({ status: 401, description: "Refresh Token is invalid or expired" })
+  @ApiResponse({
+    status: 401,
+    description: "Refresh Token is invalid or expired",
+  })
   refreshToken(@Body() dto: RefreshTokenDto) {
     return this.authService.refreshToken(dto.refreshToken);
   }
@@ -94,7 +115,9 @@ export class AuthController {
         resource: "auth",
         ip: req.ip,
       })
-      .catch((err: unknown) => this.logger.warn(`audit log failed on logout: ${err}`));
+      .catch((err: unknown) =>
+        this.logger.warn(`audit log failed on logout: ${err}`),
+      );
     return { success: true };
   }
 
@@ -103,7 +126,8 @@ export class AuthController {
   @ApiBearerAuth("JWT")
   @ApiOperation({
     summary: "Get current user info",
-    description: "Return basic info of the current logged-in user including ID, username, and roles.",
+    description:
+      "Return basic info of the current logged-in user including ID, username, and roles.",
   })
   @ApiResponse({
     status: 200,

@@ -1,8 +1,13 @@
 import { NestFactory, Reflector } from "@nestjs/core";
-import { ClassSerializerInterceptor, Logger, ValidationPipe } from "@nestjs/common";
+import {
+  ClassSerializerInterceptor,
+  Logger,
+  ValidationPipe,
+} from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import helmet from "helmet";
 import * as express from "express";
+import * as path from "path";
 import { AppModule } from "./app.module";
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { ResponseInterceptor } from "./common/interceptors/response.interceptor";
@@ -48,7 +53,8 @@ async function bootstrap() {
   app.use(
     helmet({
       // Allow SSE connections and inline scripts needed for Swagger UI in dev
-      contentSecurityPolicy: process.env.NODE_ENV === "production" ? undefined : false,
+      contentSecurityPolicy:
+        process.env.NODE_ENV === "production" ? undefined : false,
       crossOriginEmbedderPolicy: false,
     }),
   );
@@ -107,8 +113,8 @@ async function bootstrap() {
   // OPS-03: Cross-service request tracing middleware is configured in AppModule
 
   // Serve uploaded packages as static files so executors can download them
-  const uploadsPath = require('path').join(process.cwd(), 'uploads');
-  app.use('/uploads', require('express').static(uploadsPath));
+  const uploadsPath = path.join(process.cwd(), "uploads");
+  app.use("/uploads", express.static(uploadsPath));
 
   // Global prefix
   app.setGlobalPrefix("api");
@@ -247,26 +253,26 @@ AutoFlow is a modern workflow automation platform providing task orchestration, 
   }
 
   const port = process.env.PORT || 3105;
-  const logger = new Logger('Bootstrap');
+  const logger = new Logger("Bootstrap");
   // OPS-05: graceful shutdown — lets K8s/docker stop drain in-flight requests before exit
   app.enableShutdownHooks();
   await app.listen(port);
   logger.log(`Application is running on: http://localhost:${port}`);
-  if (process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV !== "production") {
     logger.log(`Swagger docs: http://localhost:${port}/api/docs`);
   }
 }
 
 // OPS-06: ensure startup errors are logged and process exits non-zero so
 // container orchestration (K8s, Docker) can detect and restart the container.
-process.on('unhandledRejection', (reason: unknown) => {
+process.on("unhandledRejection", (reason: unknown) => {
   // NestJS catches most errors, but background tasks or event emitters can
   // still produce unhandled rejections. Log and exit so the container restarts.
-  console.error('[FATAL] Unhandled promise rejection:', reason);
+  console.error("[FATAL] Unhandled promise rejection:", reason);
   process.exit(1);
 });
 
 bootstrap().catch((err: unknown) => {
-  console.error('[FATAL] Bootstrap failed:', err);
+  console.error("[FATAL] Bootstrap failed:", err);
   process.exit(1);
 });

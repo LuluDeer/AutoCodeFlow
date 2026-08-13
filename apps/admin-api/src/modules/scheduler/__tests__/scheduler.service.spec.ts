@@ -3,8 +3,9 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { getQueueToken } from '@nestjs/bullmq';
 import { SchedulerService } from '../scheduler.service';
 import { Task, TaskStatus, TaskTriggerType, BlockStrategy, MisfireStrategy } from '../../task/entities/task.entity';
-import { TaskExecution, ExecutionStatus } from '../../task/entities/task-execution.entity';
+import { TaskExecution, ExecutionStatus, ExecutionFailureReason } from '../../task/entities/task-execution.entity';
 import { DataSource } from 'typeorm';
+import * as nodeCron from 'node-cron';
 import { RedisLockService } from '../../../common/services/redis-lock.service';
 
 const mockRepo = () => ({
@@ -240,6 +241,19 @@ describe('SchedulerService', () => {
       expect(stats.activeCronTasks).toBe(1);
     });
 
+    it('should pass timezone option when scheduling cron task on reload', async () => {
+      const scheduleSpy = jest.spyOn(nodeCron, 'schedule');
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: '0 * * * *',
+        timezone: 'Asia/Shanghai',
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      await service.reload();
+      expect(scheduleSpy).toHaveBeenCalledWith('0 * * * *', expect.any(Function), { timezone: 'Asia/Shanghai' });
+      scheduleSpy.mockRestore();
+    });
+
     it('should skip cron task with invalid expression', async () => {
       const task = makeTask({
         triggerType: TaskTriggerType.CRON,
@@ -249,6 +263,19 @@ describe('SchedulerService', () => {
       await service.reload();
       const stats = service.getStats();
       expect(stats.activeCronTasks).toBe(0);
+    });
+
+    it('should fall back to server timezone when task timezone is invalid', async () => {
+      const scheduleSpy = jest.spyOn(nodeCron, 'schedule');
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: '0 * * * *',
+        timezone: 'Not/AZone',
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      await service.reload();
+      expect(scheduleSpy).toHaveBeenCalledWith('0 * * * *', expect.any(Function), undefined);
+      scheduleSpy.mockRestore();
     });
 
     it('should schedule a fixed_rate task', async () => {
@@ -298,6 +325,7 @@ describe('SchedulerService', () => {
         expect.objectContaining({ status: ExecutionStatus.FAILED }),
       );
       expect(staleExec.errorMessage).toContain('recovered');
+      expect((staleExec as any).failureReason).toBe(ExecutionFailureReason.UNKNOWN);
       expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
     });
 
@@ -322,6 +350,7 @@ describe('SchedulerService', () => {
         expect.objectContaining({ status: ExecutionStatus.FAILED }),
       );
       expect(staleExec.errorMessage).toContain('timed out');
+      expect((staleExec as any).failureReason).toBe(ExecutionFailureReason.TIMEOUT);
       expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
     });
 
@@ -358,6 +387,14 @@ describe('SchedulerService', () => {
       await service.scheduleOne(task);
       const stats = service.getStats();
       expect(stats.activeCronTasks).toBe(1);
+    });
+
+    it('should pass timezone option when scheduleOne registers cron task', async () => {
+      const scheduleSpy = jest.spyOn(nodeCron, 'schedule');
+      const task = makeTask({ triggerType: TaskTriggerType.CRON, cronExpression: '0 * * * *', timezone: 'UTC' });
+      await service.scheduleOne(task);
+      expect(scheduleSpy).toHaveBeenCalledWith('0 * * * *', expect.any(Function), { timezone: 'UTC' });
+      scheduleSpy.mockRestore();
     });
 
     it('should stop existing schedule and register fixed_rate timer', async () => {

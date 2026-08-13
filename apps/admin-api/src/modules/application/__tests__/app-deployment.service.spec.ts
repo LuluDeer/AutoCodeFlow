@@ -4,6 +4,7 @@ import { NotFoundException, BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { AppDeploymentService } from "../app-deployment.service";
 import { AppDeployment, DeploymentStatus, RunMode } from "../entities/app-deployment.entity";
+import { ApplicationVersion } from "../entities/application-version.entity";
 import { ApplicationService } from "../application.service";
 import { ExecutorService } from "../../executor/executor.service";
 
@@ -44,12 +45,17 @@ const mockExecutor = {
 describe("AppDeploymentService", () => {
   let service: AppDeploymentService;
   let repo: ReturnType<typeof makeRepo>;
-  let appService: jest.Mocked<Pick<ApplicationService, "findById">>;
+  let versionRepo: ReturnType<typeof makeRepo>;
+  let appService: jest.Mocked<Pick<ApplicationService, "findById" | "update">>;
   let executorService: jest.Mocked<Pick<ExecutorService, "findOne" | "getExecutorUrl">>;
 
   beforeEach(async () => {
     repo = makeRepo();
-    appService = { findById: jest.fn().mockResolvedValue(mockApp) };
+    versionRepo = makeRepo();
+    appService = {
+      findById: jest.fn().mockResolvedValue(mockApp),
+      update: jest.fn((_: string, dto: any) => Promise.resolve({ ...mockApp, ...dto })),
+    };
     executorService = {
       findOne: jest.fn().mockResolvedValue(mockExecutor),
       getExecutorUrl: jest.fn((addr, path) => `${addr}/${path}`),
@@ -59,6 +65,7 @@ describe("AppDeploymentService", () => {
       providers: [
         AppDeploymentService,
         { provide: getRepositoryToken(AppDeployment), useValue: repo },
+        { provide: getRepositoryToken(ApplicationVersion), useValue: versionRepo },
         { provide: ApplicationService, useValue: appService },
         { provide: ExecutorService, useValue: executorService },
         { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
@@ -128,6 +135,250 @@ describe("AppDeploymentService", () => {
       await expect(
         service.deploy("app-1", { executorId: "exec-1", runMode: RunMode.DAEMON }),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe("version history", () => {
+    it("returns persisted application version snapshots when present", async () => {
+      const createdAt = new Date("2024-01-02T00:00:00Z");
+      versionRepo.find.mockResolvedValue([
+        {
+          id: "version-1",
+          applicationId: "app-1",
+          version: "1.0.0",
+          gitCommit: "abc123",
+          sourceDeploymentId: "deploy-1",
+          status: "released",
+          createdAt,
+          snapshot: { version: "1.0.0" },
+        },
+      ]);
+      repo.find.mockResolvedValue([
+        { id: "deploy-1", deployedVersion: "1.0.0" },
+        { id: "deploy-2", deployedVersion: "1.0.0" },
+      ]);
+
+      const result = await service.getVersionHistory("app-1");
+
+      expect(result).toEqual([
+        expect.objectContaining({
+          id: "version-1",
+          deploymentId: "deploy-1",
+          version: "1.0.0",
+          commit: "abc123",
+          deployCount: 2,
+          snapshot: { version: "1.0.0" },
+        }),
+      ]);
+    });
+
+    it("keeps legacy deployment versions when snapshots only cover newer releases", async () => {
+      versionRepo.find.mockResolvedValue([
+        {
+          id: "version-2",
+          applicationId: "app-1",
+          version: "2.0.0",
+          gitCommit: "def456",
+          sourceDeploymentId: "deploy-2",
+          status: "released",
+          createdAt: new Date("2024-01-02T00:00:00Z"),
+          snapshot: { version: "2.0.0" },
+        },
+      ]);
+      repo.find.mockResolvedValue([
+        {
+          id: "deploy-2",
+          deployedVersion: "2.0.0",
+          deployedCommit: "def456",
+          status: DeploymentStatus.RUNNING,
+          deployedAt: new Date("2024-01-02T00:00:00Z"),
+          executorAddress: "executor:3001",
+        },
+        {
+          id: "deploy-1",
+          deployedVersion: "1.0.0",
+          deployedCommit: "abc123",
+          status: DeploymentStatus.STOPPED,
+          deployedAt: new Date("2024-01-01T00:00:00Z"),
+          executorAddress: "executor:3001",
+        },
+      ]);
+
+      const result = await service.getVersionHistory("app-1");
+
+      expect(result.map((v) => v.version)).toEqual(["2.0.0", "1.0.0"]);
+      expect(result[1]).toEqual(expect.objectContaining({ deploymentId: "deploy-1", commit: "abc123" }));
+    });
+
+    it("falls back to grouped deployments when no snapshots exist", async () => {
+      versionRepo.find.mockResolvedValue([]);
+      repo.find.mockResolvedValue([
+        {
+          id: "deploy-2",
+          deployedVersion: "2.0.0",
+          deployedCommit: "def456",
+          status: DeploymentStatus.RUNNING,
+          deployedAt: new Date("2024-01-02T00:00:00Z"),
+          executorAddress: "executor:3001",
+        },
+        {
+          id: "deploy-1",
+          deployedVersion: "1.0.0",
+          deployedCommit: "abc123",
+          status: DeploymentStatus.STOPPED,
+          deployedAt: new Date("2024-01-01T00:00:00Z"),
+          executorAddress: "executor:3001",
+        },
+      ]);
+
+      const result = await service.getVersionHistory("app-1");
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toEqual(expect.objectContaining({ deploymentId: "deploy-2", version: "2.0.0" }));
+    });
+  });
+
+  describe("rollbackApplication", () => {
+    it("restores application fields from a version snapshot and upgrades running deployments", async () => {
+      versionRepo.findOne.mockResolvedValue({
+        id: "version-1",
+        applicationId: "app-1",
+        version: "1.0.0",
+        gitCommit: "abc123",
+        status: "released",
+        snapshot: {
+          version: "1.0.0",
+          runtime: "node",
+          gitBranch: "release",
+          packageUrl: "http://packages/app.zip",
+          env: { NODE_ENV: "production" },
+          entrypoint: "node app.js",
+          manifest: { tasks: [] },
+        },
+      });
+      repo.find.mockResolvedValue([{ id: "deploy-1", status: DeploymentStatus.RUNNING }]);
+      repo.findOne.mockResolvedValue({ id: "deploy-1", applicationId: "app-1", status: DeploymentStatus.RUNNING });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const result = await service.rollbackApplication("app-1", "version-1");
+
+      expect(appService.update).toHaveBeenCalledWith(
+        "app-1",
+        expect.objectContaining({
+          version: "1.0.0",
+          gitCommit: "abc123",
+          gitBranch: "release",
+          packageUrl: "http://packages/app.zip",
+          runtime: "node",
+        }),
+      );
+      expect(result).toEqual(expect.objectContaining({ ok: true, rolledBackTo: "1.0.0", total: 1, versionId: "version-1" }));
+    });
+
+    it("does not clear application fields when version snapshot omits them", async () => {
+      versionRepo.findOne.mockResolvedValue({
+        id: "version-1",
+        applicationId: "app-1",
+        version: "1.0.1",
+        gitCommit: null,
+        status: "released",
+        snapshot: { runtime: "node" },
+      });
+      repo.find.mockResolvedValue([]);
+
+      await service.rollbackApplication("app-1", "version-1");
+
+      expect(appService.update).toHaveBeenCalledWith("app-1", {
+        version: "1.0.1",
+        runtime: "node",
+      });
+    });
+
+    it("rejects a version snapshot from another application", async () => {
+      versionRepo.findOne.mockResolvedValue({
+        id: "version-1",
+        applicationId: "other-app",
+        version: "1.0.0",
+        status: "released",
+        snapshot: {},
+      });
+
+      await expect(service.rollbackApplication("app-1", "version-1")).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects rollback to an unreleased version snapshot", async () => {
+      versionRepo.findOne.mockResolvedValue({
+        id: "version-1",
+        applicationId: "app-1",
+        version: "1.0.0",
+        status: "deploying",
+        snapshot: {},
+      });
+
+      await expect(service.rollbackApplication("app-1", "version-1")).rejects.toThrow(BadRequestException);
+      expect(appService.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("version snapshots", () => {
+    it("saves a deploying application version snapshot after deploy command is accepted", async () => {
+      const deployment: any = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        executorAddress: "executor:3001",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.PENDING,
+        deployedAt: null,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      versionRepo.findOne.mockResolvedValue(null);
+      versionRepo.create.mockImplementation((e: any) => e);
+      versionRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      await (service as any).pushDeployToExecutor(deployment, mockApp);
+
+      expect(deployment.deployedVersion).toBe(mockApp.version);
+      expect(deployment.deployedCommit).toBe(mockApp.gitCommit);
+      expect(versionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          applicationId: mockApp.id,
+          version: mockApp.version,
+          gitCommit: mockApp.gitCommit,
+          sourceDeploymentId: deployment.id,
+          snapshot: expect.objectContaining({
+            id: mockApp.id,
+            version: mockApp.version,
+            gitCommit: mockApp.gitCommit,
+          }),
+        }),
+      );
+    });
+
+    it("does not save a version snapshot when deploy command fails", async () => {
+      jest.spyOn(global, "setTimeout").mockImplementation((cb: any) => {
+        cb();
+        return 0 as any;
+      });
+      const deployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        executorAddress: "executor:3001",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.PENDING,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      mockAxiosPost.mockRejectedValue(new Error("executor offline"));
+
+      await (service as any).pushDeployToExecutor(deployment, mockApp);
+
+      expect(deployment.status).toBe(DeploymentStatus.FAILED);
+      expect(versionRepo.save).not.toHaveBeenCalled();
+      jest.restoreAllMocks();
     });
   });
 

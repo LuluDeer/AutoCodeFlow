@@ -218,7 +218,7 @@ async def run_task(req: ExecuteRequest) -> dict:
 
     runtime = task.get('runtime', 'python')
     entrypoint = task.get('entrypoint', 'main.py')
-    timeout = task.get('timeout', 300)
+    timeout = task.get('timeoutSeconds') or task.get('timeout_seconds') or task.get('timeout') or settings.task_timeout_seconds
     requirements: list[str] = task.get('requirements', [])
     task_id = str(task.get('id', req.executionId))
 

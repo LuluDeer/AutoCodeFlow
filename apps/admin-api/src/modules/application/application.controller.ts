@@ -97,15 +97,18 @@ export class ApplicationController {
     if (!name) throw new BadRequestException("Application name is required");
 
     // Save uploaded zip to persistent uploads directory (served as static files)
-    const uploadsDir = path.join(process.cwd(), 'uploads', 'packages');
-    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const uploadsDir = path.join(process.cwd(), "uploads", "packages");
+    if (!fs.existsSync(uploadsDir))
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, "_");
     const filename = `${safeName}_${Date.now()}.zip`;
     const zipPath = path.join(uploadsDir, filename);
     fs.writeFileSync(zipPath, file.buffer);
 
     // Build a URL that the executor can use to download the package
-    const apiBase = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3105}`;
+    const apiBase =
+      process.env.API_BASE_URL ||
+      `http://localhost:${process.env.PORT || 3105}`;
     const packageUrl = `${apiBase}/uploads/packages/${filename}`;
 
     // Upsert the application record: create if not exists, update packageUrl if exists.
@@ -121,8 +124,8 @@ export class ApplicationController {
       app = await this.svc.create({
         name,
         packageUrl,
-        runtime: runtime || 'python',
-        version: '1.0.0',
+        runtime: runtime || "python",
+        version: "1.0.0",
       });
     }
     return app;
@@ -151,12 +154,20 @@ export class ApplicationController {
     // If the application has a webhookSecret, the X-Hub-Signature-256 header is required.
     if (targetApp.webhookSecret) {
       if (!signature) {
-        logger.warn(`Webhook: missing X-Hub-Signature-256 header for app "${dto.appName}"`);
-        throw new UnauthorizedException('X-Hub-Signature-256 header is required');
+        logger.warn(
+          `Webhook: missing X-Hub-Signature-256 header for app "${dto.appName}"`,
+        );
+        throw new UnauthorizedException(
+          "X-Hub-Signature-256 header is required",
+        );
       }
-      const { createHmac, timingSafeEqual } = await import('crypto');
+      const { createHmac, timingSafeEqual } = await import("crypto");
       const body = Buffer.from(JSON.stringify(dto));
-      const expected = 'sha256=' + createHmac('sha256', targetApp.webhookSecret).update(body).digest('hex');
+      const expected =
+        "sha256=" +
+        createHmac("sha256", targetApp.webhookSecret)
+          .update(body)
+          .digest("hex");
       const expectedBuf = Buffer.from(expected);
       const receivedBuf = Buffer.from(signature);
       // Constant-time comparison to prevent timing attacks
@@ -165,7 +176,7 @@ export class ApplicationController {
         timingSafeEqual(expectedBuf, receivedBuf);
       if (!valid) {
         logger.warn(`Webhook: invalid signature for app "${dto.appName}"`);
-        throw new UnauthorizedException('Invalid webhook signature');
+        throw new UnauthorizedException("Invalid webhook signature");
       }
     }
 
@@ -185,9 +196,13 @@ export class ApplicationController {
       const running = await this.deploymentSvc.findRunningByApp(targetApp.id);
       await Promise.allSettled(
         running.map((d) =>
-          this.deploymentSvc.upgrade(d.id).catch((err) =>
-            logger.error(`Upgrade failed for deployment ${d.id}: ${err.message}`),
-          ),
+          this.deploymentSvc
+            .upgrade(d.id)
+            .catch((err) =>
+              logger.error(
+                `Upgrade failed for deployment ${d.id}: ${err.message}`,
+              ),
+            ),
         ),
       );
       triggeredDeployments = running.length;
@@ -202,55 +217,18 @@ export class ApplicationController {
   @Get(":id/versions")
   @ApiOperation({
     summary: "Get application version history",
-    description: "Return version history grouped by version number. Each entry is the latest deployment record for that version.",
+    description:
+      "Return persisted application version snapshots, falling back to deployment records for legacy data.",
   })
   async getVersionHistory(@Param("id") id: string) {
-    // Verify app exists (throws 404 if not)
     await this.svc.findById(id);
-    const deployments = await this.deploymentSvc.findAllByApp(id);
-
-    // Group by version: keep the latest deployment per version.
-    // Deployments are already sorted DESC by createdAt, so the first occurrence of
-    // each version key is the most recent one.
-    const seen = new Set<string>();
-    const versionHistory: Array<{
-      deploymentId: string;
-      version: string | null;
-      commit: string | null;
-      status: string;
-      deployedAt: Date | null;
-      executorAddress: string;
-      deployCount: number;
-    }> = [];
-
-    // Count how many times each version was deployed
-    const countMap = new Map<string, number>();
-    for (const d of deployments) {
-      const key = d.deployedVersion ?? '__unknown__';
-      countMap.set(key, (countMap.get(key) ?? 0) + 1);
-    }
-
-    for (const d of deployments) {
-      const key = d.deployedVersion ?? '__unknown__';
-      if (!seen.has(key)) {
-        seen.add(key);
-        versionHistory.push({
-          deploymentId: d.id,
-          version: d.deployedVersion,
-          commit: d.deployedCommit,
-          status: d.status,
-          deployedAt: d.deployedAt,
-          executorAddress: d.executorAddress,
-          deployCount: countMap.get(key) ?? 1,
-        });
-      }
-    }
-
-    return versionHistory;
+    return this.deploymentSvc.getVersionHistory(id);
   }
 
   @Post(":id/upgrade-all")
-  @ApiOperation({ summary: "Trigger all running instances to upgrade to latest version" })
+  @ApiOperation({
+    summary: "Trigger all running instances to upgrade to latest version",
+  })
   async upgradeAll(@Param("id") id: string) {
     await this.svc.findById(id);
     const deployments = await this.deploymentSvc.findRunningByApp(id);
@@ -258,7 +236,12 @@ export class ApplicationController {
       deployments.map((d) => this.deploymentSvc.upgrade(d.id)),
     );
     const succeeded = results.filter((r) => r.status === "fulfilled").length;
-    return { ok: true, total: deployments.length, succeeded, failed: deployments.length - succeeded };
+    return {
+      ok: true,
+      total: deployments.length,
+      succeeded,
+      failed: deployments.length - succeeded,
+    };
   }
 
   @Post(":id/sync-tasks")
@@ -274,7 +257,8 @@ export class ApplicationController {
   @Post(":id/analyze")
   @ApiOperation({
     summary: "AI application health analysis",
-    description: "Aggregate execution stats across all tasks in this app and run AI health assessment",
+    description:
+      "Aggregate execution stats across all tasks in this app and run AI health assessment",
   })
   async analyzeHealth(@Param("id") id: string) {
     return this.svc.analyzeHealth(id);
@@ -282,37 +266,14 @@ export class ApplicationController {
 
   @Post(":id/rollback/:deploymentId")
   @ApiOperation({
-    summary: "Rollback application to historical deployment version",
-    description: "Restore app version to a specific historical deployment and trigger all running instances to upgrade",
+    summary: "Rollback application to historical version",
+    description:
+      "Restore app fields from a version snapshot or legacy deployment record, then trigger running instances to upgrade",
   })
   async rollback(
     @Param("id") appId: string,
     @Param("deploymentId") deploymentId: string,
   ) {
-    await this.svc.findById(appId);
-    const deployments = await this.deploymentSvc.findAllByApp(appId);
-    const target = deployments.find((d) => d.id === deploymentId);
-    if (!target) {
-      throw new BadRequestException("The specified deployment does not belong to this application");
-    }
-    // Restore app version to target version
-    const updatedApp = await this.svc.update(appId, {
-      version: target.deployedVersion ?? undefined,
-      gitCommit: target.deployedCommit ?? undefined,
-    } as any);
-    // Trigger all running instances to upgrade
-    const running = await this.deploymentSvc.findRunningByApp(appId);
-    const results = await Promise.allSettled(
-      running.map((d) => this.deploymentSvc.upgrade(d.id)),
-    );
-    const succeeded = results.filter((r) => r.status === "fulfilled").length;
-    return {
-      ok: true,
-      rolledBackTo: target.deployedVersion,
-      total: running.length,
-      succeeded,
-      failed: running.length - succeeded,
-      updatedApp,
-    };
+    return this.deploymentSvc.rollbackApplication(appId, deploymentId);
   }
 }

@@ -68,7 +68,12 @@ export class AiController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Save AI configuration to system config store" })
   async saveConfig(@Body() dto: SaveAiConfigDto) {
-    const items: Array<{ key: string; value: string; isSecret?: boolean; description?: string }> = [
+    const items: Array<{
+      key: string;
+      value: string;
+      isSecret?: boolean;
+      description?: string;
+    }> = [
       {
         key: "ai.provider",
         value: dto.provider,
@@ -114,14 +119,19 @@ export class AiController {
 
   @Post("test")
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Test current AI configuration with a sample prompt" })
+  @ApiOperation({
+    summary: "Test current AI configuration with a sample prompt",
+  })
   async testConfig() {
     const result = await this.aiService.analyzeFailure(
       { name: "test-task", runtime: "node" },
       "Error: Cannot find module 'express'\n    at Function.Module._resolveFilename (internal/modules/cjs/loader.js:880:15)",
     );
     if (!result) {
-      return { ok: false, message: "AI provider is disabled or returned empty response" };
+      return {
+        ok: false,
+        message: "AI provider is disabled or returned empty response",
+      };
     }
     return { ok: true, message: result };
   }

@@ -59,48 +59,51 @@ export class AuditService {
   }): Promise<string> {
     const { action, resource, userId } = options;
     const qb = this.repo
-      .createQueryBuilder('log')
-      .orderBy('log.createdAt', 'DESC');
+      .createQueryBuilder("log")
+      .orderBy("log.createdAt", "DESC");
 
     if (action) {
       const sanitizedAction = action.trim().slice(0, 100);
       if (!/^[a-zA-Z0-9_.\-\s]+$/.test(sanitizedAction)) {
-        throw new Error('Invalid action parameter');
+        throw new Error("Invalid action parameter");
       }
-      qb.andWhere('log.action ILIKE :action', { action: `%${sanitizedAction}%` });
+      qb.andWhere("log.action ILIKE :action", {
+        action: `%${sanitizedAction}%`,
+      });
     }
-    if (resource) qb.andWhere('log.resource = :resource', { resource });
-    if (userId) qb.andWhere('log.userId = :userId', { userId });
+    if (resource) qb.andWhere("log.resource = :resource", { resource });
+    if (userId) qb.andWhere("log.userId = :userId", { userId });
 
     // Cap export at 10 000 rows to avoid memory exhaustion
     const rows = await qb.take(10_000).getMany();
 
     const escape = (v: unknown) => {
-      if (v === null || v === undefined) return '';
+      if (v === null || v === undefined) return "";
       const s = String(v);
-      if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+      if (s.includes(",") || s.includes('"') || s.includes("\n")) {
         return `"${s.replace(/"/g, '""')}"`;
       }
       return s;
     };
 
-    const header = 'id,userId,username,action,resource,resourceId,result,ip,createdAt';
+    const header =
+      "id,userId,username,action,resource,resourceId,result,ip,createdAt";
     const lines = rows.map((r) =>
       [
         r.id,
-        r.userId ?? '',
-        r.username ?? '',
+        r.userId ?? "",
+        r.username ?? "",
         r.action,
-        r.resource ?? '',
-        r.resourceId ?? '',
-        r.result ?? '',
-        r.ip ?? '',
-        r.createdAt?.toISOString() ?? '',
+        r.resource ?? "",
+        r.resourceId ?? "",
+        r.result ?? "",
+        r.ip ?? "",
+        r.createdAt?.toISOString() ?? "",
       ]
         .map(escape)
-        .join(','),
+        .join(","),
     );
-    return [header, ...lines].join('\n');
+    return [header, ...lines].join("\n");
   }
 
   async findAll(options: {

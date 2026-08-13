@@ -35,6 +35,49 @@ limit = int(os.environ.get("AUTOFLOW_LIMIT", "100"))
 
 > 执行结果回调由执行器进程统一处理。任务脚本不需要也不应持有平台回调 token 或 Admin API 地址。
 
+## 任务级调度策略
+
+平台任务配置支持独立于 manifest 的运行策略，用于覆盖具体任务实例的调度、超时和重试行为：
+
+| 字段 | 单位/格式 | 说明 |
+|------|-----------|------|
+| `timeoutSeconds` | 秒 | 推荐字段，任务执行超过该时长后执行器终止进程并上报超时；旧字段 `timeout` 仍兼容 |
+| `timezone` | IANA 时区 | 仅 Cron 任务使用，例如 `Asia/Shanghai`、`UTC`；留空使用服务端默认时区 |
+| `maxRetry` | 次数 | 最大尝试次数，`1` 表示不重试 |
+| `retryDelay` | 秒 | 队列指数退避的起始延迟，`0` 表示不配置 backoff |
+
+Python SDK 同时支持 snake_case 与 API camelCase，并会归一化到 API 字段：
+
+```python
+from autoflow_sdk.models import TaskConfig
+
+config = TaskConfig(
+    name="weekday-report",
+    runtime="python",
+    entrypoint="tasks/report.py",
+    timeout_seconds=300,
+    timezone="Asia/Shanghai",
+    max_retry=3,
+    retry_delay=15,
+)
+
+assert config.timeout == 300
+assert config.timeoutSeconds == 300
+```
+
+Node/API payload 推荐使用 camelCase：
+
+```json
+{
+  "timeoutSeconds": 300,
+  "timezone": "Asia/Shanghai",
+  "maxRetry": 3,
+  "retryDelay": 15
+}
+```
+
+> 注意：SDK HTTP client 的 `timeout` / `timeoutMs` 表示请求超时；任务执行超时请使用 `timeoutSeconds`（或兼容旧字段 `timeout`）。manifest 中的 `timeout` 是任务模板默认值，平台任务配置可按实例覆盖。
+
 ## manifest.yaml 格式
 
 `manifest.yaml` 用于向平台声明执行器支持的任务类型和参数结构。

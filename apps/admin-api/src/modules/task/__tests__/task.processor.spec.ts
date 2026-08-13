@@ -7,6 +7,7 @@ import { TaskProcessor } from "../task.processor";
 import {
   TaskExecution,
   ExecutionStatus,
+  ExecutionFailureReason,
 } from "../entities/task-execution.entity";
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import { Task } from "../entities/task.entity";
@@ -127,9 +128,19 @@ describe("TaskProcessor", () => {
       processor.handle({ data: { executionId: "exec-1" } } as any),
     ).rejects.toThrow("exec failed");
     const saved = execRepo.save.mock.calls.map((c: any) => c[0]);
-    expect(saved.some((e: any) => e.status === ExecutionStatus.FAILED)).toBe(
-      true,
-    );
+    const failed = saved.find((e: any) => e.status === ExecutionStatus.FAILED);
+    expect(failed).toBeDefined();
+    expect(failed.failureReason).toBe(ExecutionFailureReason.UNKNOWN);
+  });
+
+  it("classifies dispatch failures before callback", async () => {
+    executorService.dispatch.mockRejectedValue(new Error("npm install failed: dependency unavailable"));
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.toThrow("npm install failed");
+    const saved = execRepo.save.mock.calls.map((c: any) => c[0]);
+    const failed = saved.find((e: any) => e.status === ExecutionStatus.FAILED);
+    expect(failed.failureReason).toBe(ExecutionFailureReason.PACKAGE_FETCH_FAILED);
   });
 
   it("returns early if execution not found", async () => {

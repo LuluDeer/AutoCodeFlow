@@ -58,6 +58,7 @@ export class Task {
   status: TaskStatus;
   @Column({ type: "enum", enum: TaskTriggerType }) triggerType: TaskTriggerType;
   @Column({ nullable: true }) cronExpression: string;
+  @Column({ nullable: true }) timezone: string;
   @Column({ nullable: true }) fixedRate: number;
   @Column({ type: "enum", enum: TaskRuntime, default: TaskRuntime.PYTHON })
   runtime: TaskRuntime;

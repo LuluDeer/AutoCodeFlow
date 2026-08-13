@@ -157,7 +157,10 @@ export class NotificationConfigService {
       });
       return { success: true, message: "Test message sent successfully" };
     } catch (err: unknown) {
-      return { success: false, message: err instanceof Error ? err.message : String(err) };
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 
@@ -194,7 +197,10 @@ export class NotificationConfigService {
       }
       return { success: true, message: "Test notification sent" };
     } catch (err: unknown) {
-      return { success: false, message: err instanceof Error ? err.message : String(err) };
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 }

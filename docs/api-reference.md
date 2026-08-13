@@ -104,6 +104,39 @@ POST /api/applications/webhook
 | POST | `/tasks/:id/disable` | 是 | 禁用任务（暂停调度） |
 | POST | `/tasks/batch-trigger` | 是 | 批量触发多个任务 |
 
+**创建/更新任务策略字段：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `triggerType` | string | 是 | `cron` / `fixed_rate` / `api` / `manual` |
+| `cronExpression` | string | 条件 | `triggerType=cron` 时使用的 5 字段 Cron 表达式 |
+| `timezone` | string | 否 | Cron 调度使用的 IANA 时区，例如 `Asia/Shanghai`；留空使用服务端默认时区 |
+| `fixedRate` | number | 条件 | `triggerType=fixed_rate` 时的执行间隔，单位秒 |
+| `timeoutSeconds` | number | 否 | 任务执行超时，单位秒；推荐使用该字段 |
+| `timeout` | number | 否 | 兼容旧字段，语义同 `timeoutSeconds` |
+| `maxRetry` | number | 否 | 最大尝试次数（BullMQ attempts），`1` 表示不重试；服务端会保证至少为 `1` |
+| `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff |
+| `retryableErrors` | string[] | 否 | 预留的可重试错误分类列表 |
+
+> 兼容说明：API 入参优先读取 `timeoutSeconds` 并落库到现有 `timeout` 字段；响应中可能同时包含历史字段 `timeout`。Python SDK 同时支持 snake_case（如 `timeout_seconds`、`retry_delay`、`max_retry`），Node/API wire format 推荐 camelCase。
+
+**创建 Cron 任务示例：**
+
+```json
+POST /api/tasks
+{
+  "name": "weekday-report",
+  "triggerType": "cron",
+  "cronExpression": "0 8 * * 1-5",
+  "timezone": "Asia/Shanghai",
+  "runtime": "python",
+  "entrypoint": "tasks/report.py",
+  "timeoutSeconds": 300,
+  "maxRetry": 3,
+  "retryDelay": 15
+}
+```
+
 ---
 
 ## Executors — 执行器管理

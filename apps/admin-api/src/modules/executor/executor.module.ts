@@ -10,7 +10,11 @@ import { NotificationModule } from "../notification/notification.module";
 import { SystemConfigModule } from "../config/config.module";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Executor, Task, TaskExecution]), NotificationModule, SystemConfigModule],
+  imports: [
+    TypeOrmModule.forFeature([Executor, Task, TaskExecution]),
+    NotificationModule,
+    SystemConfigModule,
+  ],
   controllers: [ExecutorController, InstallCmdController],
   // ConfigService is global (ConfigModule.forRoot isGlobal:true) so no extra import needed
   providers: [ExecutorService],

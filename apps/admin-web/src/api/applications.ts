@@ -45,12 +45,17 @@ export interface CreateDeploymentDto {
 }
 
 export interface VersionHistoryEntry {
-  deploymentId: string;
+  id?: string;
+  sourceDeploymentId?: string | null;
+  createdAt?: string;
+  snapshot?: unknown;
+  deployCount?: number;
+  deploymentId: string | null;
   version: string | null;
   commit: string | null;
   status: string;
   deployedAt: string | null;
-  executorAddress: string;
+  executorAddress: string | null;
 }
 
 export const applicationsApi = {
@@ -69,9 +74,9 @@ export const applicationsApi = {
     client.post<{ ok: boolean; total: number; succeeded: number; failed: number }>(`/applications/${id}/upgrade-all`),
   getVersionHistory: (id: string) =>
     client.get<VersionHistoryEntry[]>(`/applications/${id}/versions`),
-  rollback: (appId: string, deploymentId: string) =>
+  rollback: (appId: string, targetId: string) =>
     client.post<{ ok: boolean; rolledBackTo: string | null; total: number; succeeded: number; failed: number }>(
-      `/applications/${appId}/rollback/${deploymentId}`,
+      `/applications/${appId}/rollback/${targetId}`,
     ),
 };
 

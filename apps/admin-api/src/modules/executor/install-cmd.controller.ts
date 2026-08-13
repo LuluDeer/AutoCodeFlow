@@ -1,5 +1,10 @@
 import { Controller, Get, Query, UseGuards } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from "@nestjs/swagger";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiQuery,
+} from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { ConfigService } from "@nestjs/config";
 
@@ -13,22 +18,38 @@ export class InstallCmdController {
   @Get("install-cmd")
   @ApiOperation({
     summary: "Generate executor one-click install command",
-    description: "Returns a bash install command ready to run on the target machine",
+    description:
+      "Returns a bash install command ready to run on the target machine",
   })
-  @ApiQuery({ name: "name", required: false, description: "Executor name (defaults to hostname)" })
-  @ApiQuery({ name: "port", required: false, description: "Listen port (default 8002)" })
-  @ApiQuery({ name: "runtime", required: false, enum: ["node", "python", "universal"] })
+  @ApiQuery({
+    name: "name",
+    required: false,
+    description: "Executor name (defaults to hostname)",
+  })
+  @ApiQuery({
+    name: "port",
+    required: false,
+    description: "Listen port (default 8002)",
+  })
+  @ApiQuery({
+    name: "runtime",
+    required: false,
+    enum: ["node", "python", "universal"],
+  })
   getInstallCmd(
     @Query("name") name?: string,
     @Query("port") port?: string,
     @Query("runtime") runtime?: string,
   ): { cmd: string; curlCmd: string } {
-    const secret = this.configService.get<string>("executor.sharedToken") ||
-      this.configService.get<string>("executor.secret") || "";
+    const secret =
+      this.configService.get<string>("executor.sharedToken") ||
+      this.configService.get<string>("executor.secret") ||
+      "";
 
     // Determine the public URL of admin-api
     const corsOrigins = this.configService.get<string>("app.corsOrigins") || "";
-    const adminUrl = corsOrigins.split(",")[0]?.trim().replace(/\/$/, "") ||
+    const adminUrl =
+      corsOrigins.split(",")[0]?.trim().replace(/\/$/, "") ||
       `http://localhost:${this.configService.get<number>("app.port") || 3105}`;
 
     // Shell-quote values to prevent word-splitting / injection when the user

@@ -1,19 +1,36 @@
-import { IsString, IsOptional, IsObject, IsEnum, IsNotEmpty, MaxLength } from "class-validator";
+import {
+  IsString,
+  IsOptional,
+  IsObject,
+  IsEnum,
+  IsNotEmpty,
+  MaxLength,
+} from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { ApplicationStatus } from "../entities/application.entity";
 
 export class CreateApplicationDto {
   @ApiProperty({ description: "Unique application name", maxLength: 100 })
-  @IsString() @IsNotEmpty() @MaxLength(100) name: string;
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  name: string;
 
   @ApiPropertyOptional({ description: "Application description" })
-  @IsOptional() @IsString() @MaxLength(500) description?: string;
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string;
 
   @ApiProperty({ description: "Application version number", example: "1.0.0" })
-  @IsString() @IsNotEmpty() version: string;
+  @IsString()
+  @IsNotEmpty()
+  version: string;
 
   @ApiProperty({ description: "Runtime type", example: "node" })
-  @IsString() @IsNotEmpty() runtime: string;
+  @IsString()
+  @IsNotEmpty()
+  runtime: string;
   @IsOptional() @IsString() gitRepo?: string;
   @IsOptional() @IsString() gitBranch?: string;
   @IsOptional() @IsString() gitCommit?: string;

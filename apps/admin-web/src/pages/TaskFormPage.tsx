@@ -114,9 +114,11 @@ export default function TaskFormPage() {
           applicationId: task.applicationId,
           triggerType: task.triggerType || 'manual',
           cronExpression: task.cronExpression,
+          timezone: task.timezone,
           fixedRate: task.fixedRate,
-          timeout: task.timeout ?? 300,
+          timeout: task.timeoutSeconds ?? task.timeout ?? 300,
           maxRetry: task.maxRetry ?? 3,
+          retryDelay: task.retryDelay ?? 0,
           executorAppName: task.executorAppName,
           executorGroup: task.executorGroup,
           executorTags: task.executorTags,
@@ -131,7 +133,9 @@ export default function TaskFormPage() {
     try {
       await form.validateFields(['name', 'runtime', 'entrypoint']);
       setStep(1);
-    } catch (_err) {}
+    } catch {
+      return;
+    }
   };
 
   const handleStep1Next = async () => {
@@ -142,7 +146,9 @@ export default function TaskFormPage() {
       if (executorMode === 'pinned') fields.push('executorAppName');
       await form.validateFields(fields);
       setStep(2);
-    } catch (_err) {}
+    } catch {
+      return;
+    }
   };
 
   const handleSubmit = async () => {
@@ -215,7 +221,7 @@ export default function TaskFormPage() {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3 }}
+        initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3, retryDelay: 0 }}
         onValuesChange={(changed) => {
           if (changed.triggerType) setTriggerType(changed.triggerType);
         }}
@@ -317,21 +323,28 @@ export default function TaskFormPage() {
               </Form.Item>
             )}
 
+            {triggerType === 'cron' && (
+              <Form.Item
+                name="timezone"
+                label="时区"
+                tooltip={{ title: 'IANA 时区名称，例如 Asia/Shanghai；留空则使用服务端默认时区', icon: <InfoCircleOutlined /> }}
+              >
+                <Input placeholder="Asia/Shanghai" />
+              </Form.Item>
+            )}
+
             {triggerType === 'fixed_rate' && (
               <Form.Item
                 name="fixedRate"
                 label="执行间隔"
                 rules={[{ required: true, message: '请设置间隔时间' }]}
               >
-                <InputNumber
+                <InputNumber<number>
                   min={60}
                   step={60}
                   style={{ width: 200 }}
                   formatter={v => v ? `${Math.floor(Number(v) / 60)} 分钟` : ''}
-                  parser={v => {
-                    const result = v ? Number(v.replace('分钟', '')) * 60 : 60;
-                    return result as any;
-                  }}
+                  parser={v => v ? Number(v.replace('分钟', '')) * 60 : 60}
                   placeholder="60（秒）"
                 />
               </Form.Item>
@@ -412,8 +425,12 @@ export default function TaskFormPage() {
               <InputNumber min={10} max={86400} style={{ width: 160 }} placeholder="300" />
             </Form.Item>
 
-            <Form.Item name="maxRetry" label={<>失败重试次数 <Text type="secondary" style={{ fontSize: 12 }}>（0 = 不重试）</Text></>}>
-              <InputNumber min={0} max={10} style={{ width: 120 }} />
+            <Form.Item name="maxRetry" label={<>最大尝试次数 <Text type="secondary" style={{ fontSize: 12 }}>（1 = 不重试）</Text></>}>
+              <InputNumber min={1} max={10} style={{ width: 120 }} />
+            </Form.Item>
+
+            <Form.Item name="retryDelay" label={<>重试延迟 <Text type="secondary" style={{ fontSize: 12 }}>（秒，0 = 不延迟）</Text></>}>
+              <InputNumber min={0} max={3600} style={{ width: 160 }} />
             </Form.Item>
 
             <Divider />

@@ -7,6 +7,7 @@ import { Job, Queue } from "bullmq";
 import {
   TaskExecution,
   ExecutionStatus,
+  ExecutionFailureReason,
 } from "./entities/task-execution.entity";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { Task } from "./entities/task.entity";
@@ -130,6 +131,7 @@ export class TaskProcessor extends WorkerHost {
       );
       exec.status = ExecutionStatus.FAILED;
       exec.errorMessage = `Task ${exec.taskId} not found`;
+      exec.failureReason = ExecutionFailureReason.UNKNOWN;
       await this.execRepo.save(exec);
       return;
     }
@@ -157,9 +159,28 @@ export class TaskProcessor extends WorkerHost {
         : rawResult;
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      const errStack = err instanceof Error ? (err.stack || err.message) : String(err);
+      const errStack =
+        err instanceof Error ? err.stack || err.message : String(err);
       exec.status = ExecutionStatus.FAILED;
       exec.errorMessage = errMsg;
+      const failureText = `${errMsg}\n${errStack}`;
+      exec.failureReason = /timeout|timed out|etimedout|execution timed/i.test(
+        failureText,
+      )
+        ? ExecutionFailureReason.TIMEOUT
+        : /no available executor|executor.*(offline|unavailable)|econnrefused|enotfound|network error|socket hang up/i.test(
+              failureText,
+            )
+          ? ExecutionFailureReason.EXECUTOR_OFFLINE
+          : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency/i.test(
+                failureText,
+              )
+            ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
+            : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code/i.test(
+                  failureText,
+                )
+              ? ExecutionFailureReason.SCRIPT_ERROR
+              : ExecutionFailureReason.UNKNOWN;
       exec.logs = errStack;
       try {
         exec.aiAnalysis = await this.aiService.analyzeFailure(task, exec.logs);
@@ -179,7 +200,8 @@ export class TaskProcessor extends WorkerHost {
         );
       } catch (notifyErr: unknown) {
         // B-08: record notification failure to audit log so it is not silently discarded
-        const notifyErrMsg = notifyErr instanceof Error ? notifyErr.message : String(notifyErr);
+        const notifyErrMsg =
+          notifyErr instanceof Error ? notifyErr.message : String(notifyErr);
         this.logger.error(
           `Notification failed for execution ${exec.id}: ${notifyErrMsg}`,
         );
@@ -252,6 +274,7 @@ export class TaskProcessor extends WorkerHost {
                 currentExec.result = exec.result;
                 currentExec.logs = exec.logs;
                 currentExec.errorMessage = exec.errorMessage;
+                currentExec.failureReason = exec.failureReason;
                 currentExec.aiAnalysis = exec.aiAnalysis;
                 await repairRunner.manager.save(currentExec);
                 this.logger.log(

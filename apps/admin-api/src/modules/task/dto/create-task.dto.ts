@@ -33,9 +33,18 @@ export class CreateTaskDto {
   @IsOptional()
   @Matches(
     /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/,
-    { message: "cronExpression must be a valid cron expression (5 fields: min hour day month weekday)" },
+    {
+      message:
+        "cronExpression must be a valid cron expression (5 fields: min hour day month weekday)",
+    },
   )
   cronExpression?: string;
+  @ApiPropertyOptional({
+    description: "IANA timezone for cron schedules, e.g. Asia/Shanghai",
+  })
+  @IsString()
+  @IsOptional()
+  timezone?: string;
   @ApiPropertyOptional() @IsInt() @Min(1) @IsOptional() fixedRate?: number;
   @ApiPropertyOptional()
   @IsEnum(TaskRuntime)
@@ -56,7 +65,19 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() gitBranch?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() gitCommit?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() currentVersion?: string;
-  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() timeout?: number;
+  @ApiPropertyOptional({
+    description:
+      "Task execution timeout in seconds (legacy field; prefer timeoutSeconds)",
+  })
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  timeout?: number;
+  @ApiPropertyOptional({ description: "Task execution timeout in seconds" })
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  timeoutSeconds?: number;
   // TASK-02: cap retries to prevent runaway queue exhaustion
   @ApiPropertyOptional()
   @IsOptional()
