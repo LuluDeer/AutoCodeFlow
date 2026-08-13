@@ -22,7 +22,7 @@ dev: ## 启动完整开发环境（基础设施 + 所有服务）
 	cd apps/admin-api && npm run migration:run
 	@echo "==> 启动所有开发服务..."
 	@echo "  admin-api:       http://localhost:3105"
-	@echo "  admin-web:       http://localhost:5173"
+	@echo "  admin-web:       http://localhost:5176"
 	@echo "  executor-python: http://localhost:8001"
 	@echo "  executor-node:   http://localhost:8002"
 	@echo "  API Docs:        http://localhost:3105/api/docs"

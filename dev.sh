@@ -90,9 +90,9 @@ case "$CMD" in
     echo -e "${GREEN}==> 4/4 启动开发服务...${NC}"
     echo ""
     echo -e "  ${BLUE}服务地址:${NC}"
-    echo -e "    管理后台:      ${GREEN}http://localhost:5173${NC}"
-    echo -e "    API 服务:      ${GREEN}http://localhost:3001${NC}"
-    echo -e "    API 文档:      ${GREEN}http://localhost:3001/api/docs${NC}"
+    echo -e "    管理后台:      ${GREEN}http://localhost:5176${NC}"
+    echo -e "    API 服务:      ${GREEN}http://localhost:3105${NC}"
+    echo -e "    API 文档:      ${GREEN}http://localhost:3105/api/docs${NC}"
     echo -e "    Python 执行器: ${GREEN}http://localhost:8001${NC}"
     echo -e "    Node 执行器:   ${GREEN}http://localhost:8002${NC}"
     echo ""
@@ -135,7 +135,7 @@ case "$CMD" in
     docker-compose -f infra/docker-compose.yml ps 2>/dev/null || true
     echo ""
     echo -e "${BLUE}===== 健康检查 =====${NC}"
-    curl -s http://localhost:3001/health 2>/dev/null && echo "" || echo -e "${RED}admin-api 未运行${NC}"
+    curl -s http://localhost:3105/health 2>/dev/null && echo "" || echo -e "${RED}admin-api 未运行${NC}"
     curl -s http://localhost:8001/health 2>/dev/null && echo "" || echo -e "${RED}executor-python 未运行${NC}"
     curl -s http://localhost:8002/health 2>/dev/null && echo "" || echo -e "${RED}executor-node 未运行${NC}"
     ;;
