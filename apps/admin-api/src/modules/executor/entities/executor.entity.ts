@@ -36,6 +36,8 @@ export class Executor {
   @Column({ nullable: true }) version: string;
   @Column({ type: "simple-array", nullable: true }) capabilities: string[];
   @Column({ nullable: true }) lastHeartbeat: Date;
+  @Column({ nullable: true }) executorStartedAt: Date | null;
+  @Column({ nullable: true }) executorStartupId: string | null;
   @Column({ type: "int", default: 0 }) runningTaskCount: number;
   @Column({ type: "float", nullable: true }) cpuUsage: number;
   @Column({ type: "float", nullable: true }) memUsage: number;

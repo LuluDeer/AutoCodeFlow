@@ -11,6 +11,11 @@ def _get_static_token() -> str:
     """Read static token from env each call so test fixtures can override it."""
     return os.environ.get('EXECUTOR_SHARED_TOKEN') or os.environ.get('EXECUTOR_SECRET') or ''
 
+
+def get_static_token() -> str | None:
+    """Get the shared bootstrap token for initial executor registration."""
+    return _get_static_token() or None
+
 # Dynamic token storage (refreshed periodically)
 _dynamic_token = None
 _token_expires_at = None

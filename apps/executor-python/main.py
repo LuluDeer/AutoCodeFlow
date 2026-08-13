@@ -9,10 +9,10 @@ import signal
 import httpx
 
 from routers import execute, health, logs, config as config_router
-from admin_api import build_admin_api_url, get_admin_api_base_url
+from admin_api import build_admin_api_url, check_admin_api_connectivity, get_admin_api_base_url
 from config import settings
-from scheduler import heartbeat_task, get_running_count
-from auth import get_current_token
+from scheduler import heartbeat_task, get_running_count, executor_started_at, executor_startup_id
+from auth import get_current_token, get_static_token
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -62,6 +62,8 @@ async def wait_for_tasks(timeout_seconds: int = 30):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _heartbeat_task
+    # Check Admin API connectivity first so startup logs show clear diagnostics.
+    await check_admin_api_connectivity()
     # Register to admin-api on startup
     await register_executor()
     # Start heartbeat background task
@@ -91,6 +93,8 @@ async def register_executor():
                     'version': '1.0.0',
                     'capabilities': ['python', 'shell'],
                     'maxConcurrentTasks': settings.max_concurrent_tasks,
+                    'restartedAt': executor_started_at,
+                    'startupId': executor_startup_id,
                 },
                 headers=headers,
                 timeout=10,

@@ -601,6 +601,7 @@ export class AppDeploymentService {
       d.status = DeploymentStatus.FAILED;
       d.statusMessage = "[System] Deployment timed out after 10 minutes";
       await this.repo.save(d);
+      await this.markVersionSnapshotStatus(d, "failed");
       this.logger.warn(
         `Stuck deployment marked FAILED: id=${d.id}, app=${d.applicationId}`,
       );

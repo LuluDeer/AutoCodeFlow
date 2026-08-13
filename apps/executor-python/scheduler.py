@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 import httpx
 import threading
 from tenacity import (
@@ -16,6 +17,9 @@ import psutil
 from auth import get_current_token
 
 logger = logging.getLogger(__name__)
+
+executor_started_at = datetime.now(timezone.utc).isoformat()
+executor_startup_id = str(uuid.uuid4())
 
 # Global count of currently-running tasks with thread-safe operations
 running_count = 0
@@ -70,6 +74,8 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
             'cpuUsage': cpu,
             'memUsage': mem,
             'runningTaskCount': get_running_count(),
+            'restartedAt': executor_started_at,
+            'startupId': executor_startup_id,
         },
         headers=headers,
         timeout=5,

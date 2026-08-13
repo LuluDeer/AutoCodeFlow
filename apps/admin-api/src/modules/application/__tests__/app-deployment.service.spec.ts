@@ -415,6 +415,38 @@ describe("AppDeploymentService", () => {
     });
   });
 
+  describe("detectStuckDeployments", () => {
+    it("marks stuck deployments and their version snapshots as failed", async () => {
+      const stuckDeployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        statusMessage: null,
+        deployedVersion: "1.0.0",
+        deployedCommit: "abc123",
+      };
+      const versionSnapshot = {
+        id: "version-1",
+        applicationId: "app-1",
+        version: "1.0.0",
+        gitCommit: "abc123",
+        sourceDeploymentId: "deploy-1",
+        status: "deploying",
+      };
+      repo.find.mockResolvedValue([stuckDeployment]);
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      versionRepo.findOne.mockResolvedValue(versionSnapshot);
+      versionRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.detectStuckDeployments();
+
+      expect(stuckDeployment.status).toBe(DeploymentStatus.FAILED);
+      expect(stuckDeployment.statusMessage).toBe("[System] Deployment timed out after 10 minutes");
+      expect(versionSnapshot.status).toBe("failed");
+      expect(versionRepo.save).toHaveBeenCalledWith(versionSnapshot);
+    });
+  });
+
   describe("handleHeartbeat", () => {
     it("updates status and pid from heartbeat", async () => {
       const deployment = {

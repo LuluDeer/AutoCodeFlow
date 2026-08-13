@@ -24,6 +24,7 @@ export enum ExecutionFailureReason {
   SCRIPT_ERROR = "script_error",
   TIMEOUT = "timeout",
   EXECUTOR_OFFLINE = "executor_offline",
+  EXECUTOR_RESTART = "executor_restart",
   KILLED = "killed",
   UNKNOWN = "unknown",
 }

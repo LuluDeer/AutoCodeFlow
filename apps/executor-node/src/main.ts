@@ -15,10 +15,10 @@ import * as http from 'http';
 import { spawnSync } from 'child_process';
 import { config } from './config';
 import { logger } from './logger';
-import { getRunningCount, startHeartbeat } from './scheduler';
+import { executorStartedAt, executorStartupId, getRunningCount, startHeartbeat } from './scheduler';
 import { startCallbackThread, stopCallbackThread } from './callback';
 import { startLogCleanup, stopLogCleanup } from './file-logger';
-import { initAdminClients, post } from './admin-client';
+import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
 import { taskWorkerManager } from './task-worker';
 import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
@@ -60,7 +60,7 @@ function detectAvailableRuntimes(): string[] {
 async function registerExecutor() {
   const runtimes = detectAvailableRuntimes();
   try {
-    await post('/api/executors/register', {
+    await postWithStaticToken('/api/executors/register', {
       appName: config.appName,
       groupName: config.groupName || undefined,
       address: config.executorAddressPublic || config.executorAddress,
@@ -71,6 +71,8 @@ async function registerExecutor() {
       // Structured capability fields
       runtime: runtimes,
       maxConcurrent: config.maxConcurrentTasks,
+      restartedAt: executorStartedAt,
+      startupId: executorStartupId,
     });
     logger.info(`Registered to admin-api (runtimes: ${runtimes.join(', ')}, maxConcurrent: ${config.maxConcurrentTasks})`);
   } catch (err: any) {
@@ -144,7 +146,8 @@ const server = app.listen(config.port, async () => {
   // config.adminApiUrls already applies the URL priority:
   // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
   initAdminClients(config.adminApiUrls);
-  
+  await checkAdminApiConnectivity();
+
   await registerExecutor();
   heartbeatInterval = startHeartbeat();
   startCallbackThread();

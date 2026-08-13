@@ -20,23 +20,19 @@
 
 ## 二、admin-api 优化建议
 
-### 2.1 版本历史未实际记录（高优先级）
+### 2.1 版本历史记录（已支持）
 
-`GET /applications/:id/versions` 在多次 webhook 部署和热更新后仍返回空数组。版本快照没有在部署成功时写入。
+`GET /applications/:id/versions` 已支持读取持久化版本快照；部署命令被执行器接受后会写入 `application_versions`，执行器心跳变为 `running` 时标记为 `released`，部署失败或超时会标记为 `failed`。
 
-**影响：** 回滚功能不可用（依赖版本历史）。
+**当前状态：** 回滚功能可基于已发布版本快照恢复版本号、Git commit、包地址、运行时、入口、环境变量和 manifest；没有快照的历史部署仍通过部署记录兜底展示。
 
-**建议：** 在 `app-deployment.service.ts` 部署成功回调时，将版本号、包 URL、部署时间、触发方式写入版本记录表。
+### 2.2 执行失败原因分类（已支持）
 
-### 2.2 执行失败原因不细化
+执行记录已支持 `failureReason` 结构化字段，用于区分包拉取/依赖安装失败、脚本错误、执行超时、执行器离线、手动终止和未知原因。
 
-执行记录的 `failed` 状态无法区分根因：包拉取失败、脚本运行时报错、执行超时、执行器宕机。
+**当前状态：** admin-api 会在执行器回调、调度派发失败、任务超时和手动终止时写入失败分类；admin-web 执行详情页展示「失败分类」和定位提示，帮助用户快速判断下一步排查方向。
 
-**建议：** 执行记录增加 `failReason` 枚举字段：
-- `package_fetch_failed` — 应用包下载/解压失败
-- `script_error` — 脚本运行时异常（含 exit code 非 0）
-- `timeout` — 执行超时
-- `executor_offline` — 执行器在任务运行中下线
+**后续增强：** executor 侧可继续细化失败上报来源，例如将依赖安装失败、Git 拉取失败、运行时不支持、进程启动失败拆成更具体的分类，便于后续统计和告警。
 
 ### 2.3 Webhook 认证依赖用户 Bearer Token
 
@@ -66,17 +62,17 @@ cron 默认使用服务器时区，跨时区团队会遇到调度时间错乱。
 
 ## 三、executor 优化建议
 
-### 3.1 启动时做 ADMIN_API_URL 连通性自检
+### 3.1 启动时做 ADMIN_API_URL 连通性自检（已支持）
 
-executor 容器若 `ADMIN_API_URL` 配置错误（写成 `localhost:3105`），只在心跳失败时才暴露，排查成本高。
+executor 容器若 `ADMIN_API_URL` 配置错误（写成 `localhost:3105`），现在会在启动阶段主动暴露，降低排查成本。
 
-**建议：** executor 启动时主动探测 `ADMIN_API_URL/health`，不可达时打印明确警告并以指数退避重试，而非静默继续启动。
+**当前状态：** Node/Python executor 启动时会主动探测 Admin API `/api/health`，不可达时打印明确警告并按指数退避重试；多 Admin URL 场景下 Node executor 会选择首个可达地址，启动后心跳仍会继续后台重试。
 
-### 3.2 executor 重启后任务状态不一致
+### 3.2 executor 重启后任务状态不一致（已支持）
 
-executor 容器重启后，正在运行的任务可能永久卡在 `running`，不会自动失败也不会重试。
+executor 容器重启后，正在运行的任务现在会被主动收敛，不再永久卡在 `running`。
 
-**建议：** executor 启动时在注册/心跳请求中携带 `restartedAt` 时间戳。admin-api 检测到执行器重启后，将该执行器上所有 `running` 状态的任务置为 `failed`（reason: `executor_restart`），按任务重试配置自动重新调度。
+**当前状态：** Node/Python executor 启动注册与心跳会携带 `restartedAt` 与 `startupId`；admin-api 检测到同地址执行器启动标识变化后，会将该执行器上仍处于 `running` 的执行记录标记为 `failed`，并写入结构化失败原因 `executor_restart`，前端执行详情页会展示对应定位提示。
 
 ### 3.3 应用包解压路径无版本隔离
 
