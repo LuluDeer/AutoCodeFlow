@@ -30,6 +30,7 @@ const FAILURE_REASON_MAP: Record<string, { color: string; label: string; hint: s
   script_error: { color: 'red', label: '脚本错误', hint: '检查任务脚本异常、退出码和运行时日志。' },
   timeout: { color: 'orange', label: '执行超时', hint: '检查任务耗时并调整超时配置。' },
   executor_offline: { color: 'volcano', label: '执行器离线', hint: '检查执行器在线状态、地址和网络。' },
+  executor_restart: { color: 'volcano', label: '执行器重启', hint: '执行器重启导致运行中任务中断，检查执行器重启原因并按需重试。' },
   killed: { color: 'default', label: '手动终止', hint: '执行被管理员手动终止。' },
   unknown: { color: 'default', label: '未知原因', hint: '查看错误信息和执行日志定位根因。' },
 };

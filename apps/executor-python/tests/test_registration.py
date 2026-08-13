@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from config import settings
-from main import register_executor
+from main import register_executor, executor_started_at, executor_startup_id
 
 
 @pytest.mark.asyncio
@@ -21,7 +21,7 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
     mock_client.__aexit__.return_value = None
     mock_client.post = AsyncMock()
 
-    with patch('main.get_current_token', new=AsyncMock(return_value='test-token')), \
+    with patch('main.get_current_token', new_callable=AsyncMock, return_value='test-token'), \
          patch('main.httpx.AsyncClient', return_value=mock_client):
         await register_executor()
 
@@ -36,4 +36,6 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
         'version': '1.0.0',
         'capabilities': ['python', 'shell'],
         'maxConcurrentTasks': 7,
+        'restartedAt': executor_started_at,
+        'startupId': executor_startup_id,
     }

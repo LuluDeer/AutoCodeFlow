@@ -1,4 +1,5 @@
 import { Test } from "@nestjs/testing";
+import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { NotFoundException } from "@nestjs/common";
 import { ExecutorService } from "../executor.service";
@@ -6,6 +7,7 @@ import { Executor, ExecutorStatus } from "../entities/executor.entity";
 import { Task } from "../../task/entities/task.entity";
 import {
   TaskExecution,
+  ExecutionFailureReason,
   ExecutionStatus,
 } from "../../task/entities/task-execution.entity";
 import axios from "axios";
@@ -53,18 +55,23 @@ describe("ExecutorService (__tests__)", () => {
   let service: ExecutorService;
   let executorRepo: ReturnType<typeof makeRepo>;
   let execRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let taskQueue: { add: jest.Mock };
   let configService: jest.Mocked<Pick<ConfigService, "get">>;
 
   beforeEach(async () => {
     executorRepo = makeRepo();
     execRepo = makeRepo();
+    taskRepo = makeRepo();
+    taskQueue = { add: jest.fn().mockResolvedValue(undefined) };
     configService = { get: jest.fn().mockReturnValue("http") };
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
-        { provide: getRepositoryToken(Task), useValue: makeRepo() },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getQueueToken("task-queue"), useValue: taskQueue },
         { provide: ConfigService, useValue: configService },
         { provide: NotificationService, useValue: { notifyFailure: jest.fn(), notifyFailureWithConfig: jest.fn(), notifyExecutorOnline: jest.fn().mockResolvedValue(undefined), notifyExecutorOffline: jest.fn().mockResolvedValue(undefined), sendAll: jest.fn() } },
         { provide: SystemConfigService, useValue: { findOne: jest.fn().mockRejectedValue(new Error("not found")) } },
@@ -100,6 +107,210 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       await service.register({ appName: "e1", address: "127.0.0.1:3105" });
       expect(existing.status).toBe(ExecutorStatus.ONLINE);
+    });
+
+    it("marks running executions failed when an executor re-registers after restart", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+        executorStartedAt: new Date("2026-01-01T00:00:00.000Z"),
+      };
+      const runningExecution: any = {
+        id: "exec-1",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([runningExecution]);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        restartedAt: "2026-01-01T00:01:00.000Z",
+        startupId: "startup-new",
+      });
+
+      expect(runningExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(runningExecution.failureReason).toBe(
+        ExecutionFailureReason.EXECUTOR_RESTART,
+      );
+      expect(runningExecution.errorMessage).toContain("Executor restarted");
+      expect(execRepo.save).toHaveBeenCalledWith(runningExecution);
+      expect(taskQueue.add).not.toHaveBeenCalled();
+    });
+
+    it("schedules a retry for restart-failed executions when attempts remain", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+      };
+      const task = {
+        id: "task-1",
+        name: "Task 1",
+        params: { fromTask: true },
+        currentVersion: "v1",
+        maxRetry: 3,
+        retryDelay: 5,
+      };
+      const runningExecution: any = {
+        id: "exec-1",
+        taskId: task.id,
+        taskName: task.name,
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        params: { fromExecution: true },
+        triggerType: "manual",
+        taskVersion: "v1",
+        retryCount: 0,
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([runningExecution]);
+      taskRepo.findOne.mockResolvedValue(task);
+      execRepo.save.mockImplementation((e: any) =>
+        Promise.resolve(e.id ? e : { ...e, id: "retry-exec" }),
+      );
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        startupId: "startup-new",
+      });
+
+      expect(execRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: task.id,
+          taskName: task.name,
+          status: ExecutionStatus.PENDING,
+          params: runningExecution.params,
+          triggerType: runningExecution.triggerType,
+          taskVersion: runningExecution.taskVersion,
+          retryCount: 1,
+        }),
+      );
+      expect(taskQueue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "retry-exec" },
+        { attempts: 2, backoff: { type: "exponential", delay: 5_000 } },
+      );
+    });
+
+    it("recovers running executions predating startup when old executors lack startup baseline", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: null,
+        executorStartedAt: null,
+      };
+      const runningExecution: any = {
+        id: "exec-1",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-01T00:00:00.000Z"),
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([runningExecution]);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        restartedAt: "2026-01-01T00:01:00.000Z",
+        startupId: "startup-new",
+      });
+
+      expect(runningExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(runningExecution.failureReason).toBe(
+        ExecutionFailureReason.EXECUTOR_RESTART,
+      );
+      expect(existing.executorStartupId).toBe("startup-new");
+    });
+
+    it("does not fail newer running executions when initializing missing startup baseline", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: null,
+        executorStartedAt: null,
+      };
+      const runningExecution: any = {
+        id: "exec-1",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-01T00:02:00.000Z"),
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([runningExecution]);
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        restartedAt: "2026-01-01T00:01:00.000Z",
+        startupId: "startup-new",
+      });
+
+      expect(runningExecution.status).toBe(ExecutionStatus.RUNNING);
+      expect(execRepo.save).not.toHaveBeenCalledWith(runningExecution);
+      expect(existing.executorStartupId).toBe("startup-new");
+    });
+
+    it("does not abort restart recovery when retry enqueue fails", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+      };
+      const task = {
+        id: "task-1",
+        name: "Task 1",
+        params: {},
+        currentVersion: "v1",
+        maxRetry: 3,
+        retryDelay: 5,
+      };
+      const runningExecution: any = {
+        id: "exec-1",
+        taskId: task.id,
+        taskName: task.name,
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        retryCount: 0,
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([runningExecution]);
+      taskRepo.findOne.mockResolvedValue(task);
+      execRepo.save.mockImplementation((e: any) =>
+        Promise.resolve(e.id ? e : { ...e, id: "retry-exec" }),
+      );
+      taskQueue.add.mockRejectedValue(new Error("redis down"));
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        startupId: "startup-new",
+      });
+
+      expect(runningExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(execRepo.delete).toHaveBeenCalledWith("retry-exec");
+      expect(existing.executorStartupId).toBe("startup-new");
+      expect(executorRepo.save).toHaveBeenCalledWith(existing);
     });
 
     it("maps runtime and maxConcurrent aliases during registration", async () => {

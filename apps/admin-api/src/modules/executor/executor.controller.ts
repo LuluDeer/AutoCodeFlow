@@ -89,6 +89,8 @@ export class ExecutorController {
       groupName?: string | null;
       tags?: string[] | null;
       description?: string | null;
+      restartedAt?: string | null;
+      startupId?: string | null;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -131,6 +133,8 @@ export class ExecutorController {
       cpuUsage?: number;
       memUsage?: number;
       runningTaskCount?: number;
+      restartedAt?: string | null;
+      startupId?: string | null;
     },
     @Headers("authorization") auth: string,
   ) {

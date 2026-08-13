@@ -4,6 +4,7 @@ import {
   getAllAdminUrls,
   getCurrentAdminUrl,
   initAdminClients,
+  checkAdminApiConnectivity,
   post,
   request,
 } from './admin-client';
@@ -120,5 +121,28 @@ describe('admin-client', () => {
     await expect(request('get', '/api/health')).rejects.toThrow(
       'All 2 admin servers are unavailable',
     );
+  });
+
+  it('returns true and selects the reachable admin during startup self-check', async () => {
+    mockedAxios.get
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce({ data: { status: 'ok' } });
+    initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
+
+    const ok = await checkAdminApiConnectivity({ attempts: 1 });
+
+    expect(ok).toBe(true);
+    expect(mockedAxios.get).toHaveBeenNthCalledWith(1, 'http://admin-a:3105/api/health', { timeout: 5_000 });
+    expect(mockedAxios.get).toHaveBeenNthCalledWith(2, 'http://admin-b:3105/api/health', { timeout: 5_000 });
+    expect(getCurrentAdminUrl()).toBe('http://admin-b:3105');
+  });
+
+  it('returns false after startup self-check retries are exhausted', async () => {
+    mockedAxios.get.mockRejectedValue(new Error('down'));
+    initAdminClients(['http://admin-a:3105']);
+
+    const ok = await checkAdminApiConnectivity({ attempts: 1 });
+
+    expect(ok).toBe(false);
   });
 });
