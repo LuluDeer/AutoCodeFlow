@@ -153,7 +153,7 @@ start_services() {
     sleep 5
     
     # 启动 Web 服务
-    echo -e "${GREEN}启动 Admin Web (端口: 5173)...${NC}"
+    echo -e "${GREEN}启动 Admin Web (端口: 5176)...${NC}"
     cd "$WEB_DIR"
     npm run dev &
     WEB_PID=$!
@@ -162,7 +162,7 @@ start_services() {
     echo -e "\n${GREEN}==========================================${NC}"
     echo -e "${GREEN}所有服务已启动！${NC}"
     echo -e "${GREEN}==========================================${NC}"
-    echo -e "${YELLOW}Admin Web: http://localhost:5173${NC}"
+    echo -e "${YELLOW}Admin Web: http://localhost:5176${NC}"
     echo -e "${YELLOW}Admin API: http://localhost:3105${NC}"
     echo -e "${YELLOW}项目 Redis: localhost:$REDIS_PORT${NC}"
     echo -e "${GREEN}==========================================${NC}"

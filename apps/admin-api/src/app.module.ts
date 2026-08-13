@@ -62,7 +62,7 @@ import { RegistryModule } from "./modules/registry/registry.module";
         EXECUTOR_SHARED_TOKEN: Joi.string().min(16).optional(),
 
         // CORS
-        CORS_ORIGINS: Joi.string().default("http://localhost:5173"),
+        CORS_ORIGINS: Joi.string().default("http://localhost:5176"),
 
         // AI (optional)
         AI_PROVIDER: Joi.string()

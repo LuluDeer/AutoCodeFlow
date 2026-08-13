@@ -78,7 +78,7 @@ services:
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
       EXECUTOR_SECRET: ${EXECUTOR_SECRET}
       ADMIN_WEB_ORIGIN: ${ADMIN_WEB_ORIGIN:-http://localhost}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:5173}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:5176}
       AI_PROVIDER: ${AI_PROVIDER:-disabled}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       APP_PROTOCOL: ${APP_PROTOCOL:-http}

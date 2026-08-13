@@ -14,6 +14,7 @@ import { useRequest } from 'ahooks';
 import { tasksApi, TaskExecution } from '../api/tasks';
 import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg } from '../utils/error';
+import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 import GlueEditor from '../components/GlueEditor';
 import ParamsEditor from '../components/ParamsEditor';
 
@@ -27,22 +28,6 @@ const STATUS_LABEL: Record<string, string> = {
   pending: '等待中', running: '运行中', success: '成功',
   failed: '失败', timeout: '超时', killed: '已终止', cancelled: '已取消',
 };
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
-}
-
-function formatRelative(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return '刚刚';
-  if (mins < 60) return `${mins}分钟前`;
-  if (mins < 1440) return `${Math.floor(mins / 60)}小时前`;
-  return `${Math.floor(mins / 1440)}天前`;
-}
-
 
 export default function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -172,8 +157,8 @@ export default function TaskDetailPage() {
     {
       title: '开始时间', dataIndex: 'startTime', width: 140,
       render: (v: string) => v ? (
-        <Tooltip title={new Date(v).toLocaleString('zh-CN')}>
-          <Text style={{ fontSize: 12 }}>{formatRelative(v)}</Text>
+        <Tooltip title={formatDateTime(v)}>
+          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v)}</Text>
         </Tooltip>
       ) : '-',
     },
