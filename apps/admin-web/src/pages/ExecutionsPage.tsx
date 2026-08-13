@@ -13,6 +13,7 @@ import { useNavigate } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
+import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -27,21 +28,6 @@ const STATUS_MAP: Record<string, { badge: BadgeStatus; label: string }> = {
   killed:    { badge: 'error',      label: '已终止' },
   cancelled: { badge: 'default',    label: '已取消' },
 };
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
-}
-
-function formatRelative(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return '刚刚';
-  if (mins < 60) return `${mins}分钟前`;
-  if (mins < 1440) return `${Math.floor(mins / 60)}小时前`;
-  return new Date(iso).toLocaleDateString('zh-CN');
-}
 
 export default function ExecutionsPage() {
   const nav = useNavigate();
@@ -129,8 +115,8 @@ export default function ExecutionsPage() {
       dataIndex: 'startTime',
       width: 130,
       render: (v: string) => v ? (
-        <Tooltip title={new Date(v).toLocaleString('zh-CN')}>
-          <Text style={{ fontSize: 12 }}>{formatRelative(v)}</Text>
+        <Tooltip title={formatDateTime(v)}>
+          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v)}</Text>
         </Tooltip>
       ) : '-',
     },

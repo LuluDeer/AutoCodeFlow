@@ -15,7 +15,7 @@ test.describe('Navigation', () => {
     await page.waitForLoadState('networkidle');
     const url = page.url();
     // Should either be on login or dashboard
-    expect(url).toMatch(/localhost:5173/);
+    expect(url).toMatch(/localhost:5176/);
   });
 
   test('login page has title or heading', async ({ page }) => {

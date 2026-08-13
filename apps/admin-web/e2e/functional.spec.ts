@@ -1,7 +1,7 @@
 import { test, expect, Page, request } from '@playwright/test';
 
 const BASE_URL = 'http://localhost:5176';
-const API_URL = 'http://localhost:3002';
+const API_URL = 'http://localhost:3105';
 const ADMIN_USER = 'admin';
 const ADMIN_PASS = 'admin123';
 

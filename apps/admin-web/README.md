@@ -8,7 +8,7 @@ AutoCodeFlow 管理后台前端，基于 React + Vite + Ant Design 构建。
 cd apps/admin-web
 npm install
 cp .env.example .env   # 按需修改 API 地址
-npm run dev             # 启动开发服务器，默认 http://localhost:5173
+npm run dev             # 启动开发服务器，默认 http://localhost:5176
 ```
 
 ## 技术栈

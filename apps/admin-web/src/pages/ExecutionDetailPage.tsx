@@ -6,6 +6,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
 import { useAuthStore } from '../store/auth';
+import { formatDateTime, formatDuration } from '../utils/timeFormat';
 
 const { Text } = Typography;
 
@@ -32,12 +33,6 @@ const FAILURE_REASON_MAP: Record<string, { color: string; label: string; hint: s
   killed: { color: 'default', label: '手动终止', hint: '执行被管理员手动终止。' },
   unknown: { color: 'default', label: '未知原因', hint: '查看错误信息和执行日志定位根因。' },
 };
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms} ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)} 秒`;
-  return `${Math.floor(ms / 60000)} 分 ${Math.floor((ms % 60000) / 1000)} 秒`;
-}
 
 // Derive SSE URL using the same base as the axios client
 function getSseBase(): string {
@@ -220,10 +215,10 @@ export default function ExecutionDetailPage() {
           <Descriptions.Item label="任务版本">{data?.taskVersion || '-'}</Descriptions.Item>
           <Descriptions.Item label="重试次数">{data?.retryCount ?? 0}</Descriptions.Item>
           <Descriptions.Item label="开始时间">
-            {data?.startTime ? new Date(data.startTime).toLocaleString('zh-CN') : '-'}
+            {data?.startTime ? formatDateTime(data.startTime) : '-'}
           </Descriptions.Item>
           <Descriptions.Item label="结束时间">
-            {data?.endTime ? new Date(data.endTime).toLocaleString('zh-CN') : '-'}
+            {data?.endTime ? formatDateTime(data.endTime) : '-'}
           </Descriptions.Item>
           <Descriptions.Item label="耗时">
             {data?.duration != null ? formatDuration(data.duration) : '-'}

@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '0.0.0.0',
-    port: 5176,
+    port: Number(process.env.VITE_PORT || 5176),
     proxy: {
       '/api': {
         target: 'http://localhost:3105',
@@ -42,7 +42,7 @@ export default defineConfig({
     },
   },
   define: {
-    'process.env.VITE_API_URL_INTERNAL': JSON.stringify(process.env.VITE_API_URL_INTERNAL || 'http://localhost:3002'),
+    'process.env.VITE_API_URL_INTERNAL': JSON.stringify(process.env.VITE_API_URL_INTERNAL || 'http://localhost:3105'),
     'process.env.VITE_API_URL_EXTERNAL': JSON.stringify(process.env.VITE_API_URL_EXTERNAL || ''),
   },
   test: {

@@ -37,7 +37,7 @@ test.describe('Page rendering smoke tests', () => {
     );
     expect(fatal).toHaveLength(0);
     const url = page.url();
-    expect(url).toMatch(/localhost:5173/);
+    expect(url).toMatch(/localhost:5176/);
   });
 
   test('tasks page loads (may redirect to login)', async ({ page }) => {

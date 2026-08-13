@@ -65,7 +65,7 @@ async function bootstrap() {
 
   // S10: CORS — auto-allow LAN/private origins; public origins require explicit whitelist.
   // '*' + credentials is rejected by browsers so we use a callback instead.
-  const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:5173")
+  const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:5176")
     .split(",")
     .map((o) => o.trim())
     .filter(Boolean);

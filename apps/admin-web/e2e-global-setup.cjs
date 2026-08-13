@@ -2,7 +2,7 @@
 const { request } = require('@playwright/test');
 const fs = require('fs');
 
-const API = 'http://localhost:3002';
+const API = 'http://localhost:3105';
 const USER = 'admin';
 const PASS = 'admin123';
 const AUTH_FILE = '/tmp/e2e-auth.json';

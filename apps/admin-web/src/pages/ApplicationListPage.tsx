@@ -12,6 +12,7 @@ import { applicationsApi, Application, deploymentsApi, AppDeployment } from '../
 import { executorsApi } from '../api/executors';
 import { useNavigate } from 'react-router-dom';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 
 const { Text } = Typography;
 
@@ -164,17 +165,6 @@ export default function ApplicationListPage() {
     }
   };
 
-  const formatRelativeTime = (iso: string | null) => {
-    if (!iso) return '—';
-    const diff = Date.now() - new Date(iso).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return '刚刚';
-    if (mins < 60) return `${mins} 分钟前`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours} 小时前`;
-    return `${Math.floor(hours / 24)} 天前`;
-  };
-
   const openQuickDeploy = async (appId: string) => {
     setQuickDeployApp(appId);
     quickDeployForm.resetFields();
@@ -271,10 +261,7 @@ export default function ApplicationListPage() {
       key: 'lastDeployedAt',
       width: 110,
       render: (_: unknown, record: AppWithStats) => (
-        <Tooltip title={record.lastDeployedAt
-          ? new Date(record.lastDeployedAt).toLocaleString('zh-CN')
-          : '尚未部署'
-        }>
+        <Tooltip title={record.lastDeployedAt ? formatDateTime(record.lastDeployedAt) : '尚未部署'}>
           <Text type={record.lastDeployedAt ? undefined : 'secondary'}>
             {formatRelativeTime(record.lastDeployedAt)}
           </Text>

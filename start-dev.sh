@@ -89,7 +89,7 @@ cd ../../apps/admin-web && npm run dev &
 WEB_PID=$!
 
 echo -e "${GREEN}========== AutoFlow 开发环境启动完成 ==========${NC}"
-echo -e "${GREEN}管理后台: http://localhost:5173${NC}"
+echo -e "${GREEN}管理后台: http://localhost:5176${NC}"
 echo -e "${GREEN}API 服务: http://localhost:3105${NC}"
 echo -e "${GREEN}API 文档: http://localhost:3105/api/docs${NC}"
 

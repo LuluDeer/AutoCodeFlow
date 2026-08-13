@@ -107,7 +107,7 @@ app = FastAPI(
 )
 
 # S10: restrict CORS to explicit origin whitelist
-_cors_origins = [o.strip() for o in os.environ.get('CORS_ORIGINS', 'http://localhost:5173').split(',') if o.strip()]
+_cors_origins = [o.strip() for o in os.environ.get('CORS_ORIGINS', 'http://localhost:5176').split(',') if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,

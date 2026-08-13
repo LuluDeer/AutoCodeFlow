@@ -69,7 +69,7 @@ cd apps/executor-desktop && npm install && npm run build:executor && npm run dev
 | 服务 | 端口 | 说明 |
 |------|------|------|
 | admin-api | 3105 | NestJS REST API，含 Swagger 文档 |
-| admin-web | 80 (prod) / 5173 (dev) | React 管理后台 |
+| admin-web | 80 (prod) / 5176 (dev) | React 管理后台 |
 | executor-python | 8001 | FastAPI Python 执行器 |
 | executor-node | 8002 | Express Node.js 执行器 |
 | executor-desktop | 由用户配置 | Electron 桌面执行器 |

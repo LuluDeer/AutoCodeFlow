@@ -16,15 +16,9 @@ import {
 } from 'recharts';
 import { metricsApi } from '../api/metrics';
 import { tasksApi } from '../api/tasks';
+import { formatDuration } from '../utils/timeFormat';
 
 const { Text, Title } = Typography;
-
-function formatDuration(ms: number): string {
-  if (!ms) return '-';
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
-}
 
 export default function DashboardPage() {
   const nav = useNavigate();
@@ -181,7 +175,7 @@ export default function DashboardPage() {
           >
             <div style={{ textAlign: 'center', paddingTop: 8 }}>
               <Text style={{ fontSize: 32, fontWeight: 700, color: '#1677ff' }}>
-                {formatDuration(s?.avgDurationMs ?? 0)}
+                {formatDuration(s?.avgDurationMs)}
               </Text>
               <div style={{ marginTop: 8 }}>
                 <Text type="secondary" style={{ fontSize: 12 }}>基于近期全部执行记录</Text>
