@@ -24,6 +24,15 @@ const TRIGGER_LABEL: Record<string, string> = {
   dependency: '依赖触发', misfire: '补偿触发',
 };
 
+const FAILURE_REASON_MAP: Record<string, { color: string; label: string; hint: string }> = {
+  package_fetch_failed: { color: 'gold', label: '包拉取失败', hint: '检查代码仓库、依赖安装与网络连通性。' },
+  script_error: { color: 'red', label: '脚本错误', hint: '检查任务脚本异常、退出码和运行时日志。' },
+  timeout: { color: 'orange', label: '执行超时', hint: '检查任务耗时并调整超时配置。' },
+  executor_offline: { color: 'volcano', label: '执行器离线', hint: '检查执行器在线状态、地址和网络。' },
+  killed: { color: 'default', label: '手动终止', hint: '执行被管理员手动终止。' },
+  unknown: { color: 'default', label: '未知原因', hint: '查看错误信息和执行日志定位根因。' },
+};
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms} ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)} 秒`;
@@ -120,6 +129,13 @@ export default function ExecutionDetailPage() {
   }
 
   const status = STATUS_MAP[data?.status || ''] || { color: 'default', label: data?.status };
+  const failureReason = data?.failureReason
+    ? FAILURE_REASON_MAP[data.failureReason] || {
+        color: 'default',
+        label: data.failureReason,
+        hint: '未识别的失败分类，请查看错误信息和执行日志。',
+      }
+    : undefined;
 
   return (
     <div>
@@ -212,6 +228,14 @@ export default function ExecutionDetailPage() {
           <Descriptions.Item label="耗时">
             {data?.duration != null ? formatDuration(data.duration) : '-'}
           </Descriptions.Item>
+          {failureReason && (
+            <Descriptions.Item label="失败分类" span={3}>
+              <Space>
+                <Tag color={failureReason.color}>{failureReason.label}</Tag>
+                <Text type="secondary">{failureReason.hint}</Text>
+              </Space>
+            </Descriptions.Item>
+          )}
           {data?.errorMessage && (
             <Descriptions.Item label="错误信息" span={3}>
               <Text type="danger">{data.errorMessage}</Text>
@@ -220,16 +244,20 @@ export default function ExecutionDetailPage() {
         </Descriptions>
       </Card>
 
-      {data?.status === 'failed' && data.errorMessage && (
+      {['failed', 'timeout', 'killed'].includes(data?.status || '') && (data?.errorMessage || failureReason) && (
         <Alert
-          type="error"
-          title="执行失败"
-          description={data.errorMessage}
-          style={{ marginBottom: 16 }}
+          type={data?.status === 'timeout' ? 'warning' : 'error'}
+          title={failureReason ? `${status.label}：${failureReason.label}` : status.label}
+          description={failureReason
+            ? [failureReason.hint, data?.errorMessage].filter(Boolean).join('\n')
+            : data?.errorMessage}
+          style={{ marginBottom: 16, whiteSpace: 'pre-line' }}
           action={
-            <Button size="small" danger icon={<RedoOutlined />} onClick={handleRetry} loading={retrying}>
-              重新触发
-            </Button>
+            data?.status !== 'killed' ? (
+              <Button size="small" danger icon={<RedoOutlined />} onClick={handleRetry} loading={retrying}>
+                重新触发
+              </Button>
+            ) : undefined
           }
         />
       )}

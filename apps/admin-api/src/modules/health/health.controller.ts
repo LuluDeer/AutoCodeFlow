@@ -128,7 +128,8 @@ export class HealthController {
   @Get("metrics")
   @ApiOperation({
     summary: "System metrics",
-    description: "Get key system metrics including task count, executor count, queue size, etc.",
+    description:
+      "Get key system metrics including task count, executor count, queue size, etc.",
   })
   @ApiResponse({
     status: 200,

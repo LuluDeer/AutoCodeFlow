@@ -8,6 +8,7 @@ import { Task, TaskStatus } from "../entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
+  ExecutionFailureReason,
 } from "../entities/task-execution.entity";
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import { TaskVersion } from "../entities/task-version.entity";
@@ -105,6 +106,18 @@ describe("TaskService (__tests__)", () => {
       expect(result).toHaveProperty("id", "1");
     });
 
+    it("maps timeoutSeconds to legacy timeout on create", async () => {
+      const dto = { name: "test-task", timeoutSeconds: 120, timezone: "Asia/Shanghai" } as any;
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve({ id: "1", ...t }));
+      taskRepo.create.mockImplementation((t: any) => t);
+      await service.create(dto);
+      expect(taskRepo.create).toHaveBeenCalledWith({
+        name: "test-task",
+        timeout: 120,
+        timezone: "Asia/Shanghai",
+      });
+    });
+
     it("throws on circular self-dependency", async () => {
       const dto = {
         id: "task-a",
@@ -137,6 +150,7 @@ describe("TaskService (__tests__)", () => {
       const result = await service.findAll({ page: 1, pageSize: 10 });
       expect(result).toHaveProperty("total", 2);
       expect(result.list).toHaveLength(2);
+      expect(result.items).toBe(result.list);
     });
 
     it("passes name ILike filter when name param is provided", async () => {
@@ -183,6 +197,15 @@ describe("TaskService (__tests__)", () => {
       await service.update("1", {} as any);
       expect(schedulerService.stop).toHaveBeenCalledWith("1");
       expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
+    });
+
+    it("maps timeoutSeconds to timeout on update", async () => {
+      const task = { id: "1", name: "old", status: TaskStatus.ACTIVE, timeout: 30 };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      await service.update("1", { timeoutSeconds: 180 } as any);
+      expect(taskRepo.save).toHaveBeenCalledWith(expect.objectContaining({ timeout: 180 }));
+      expect(taskRepo.save.mock.calls[0][0]).not.toHaveProperty("timeoutSeconds");
     });
   });
 
@@ -260,6 +283,7 @@ describe("TaskService (__tests__)", () => {
         name: "test",
         params: {},
         maxRetry: 3,
+        retryDelay: 5,
         currentVersion: "v1",
         status: TaskStatus.ACTIVE,
       };
@@ -275,7 +299,7 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "exec-1" },
-        { attempts: 3, backoff: { type: 'exponential', delay: 10_000 } },
+        { attempts: 3, backoff: { type: 'exponential', delay: 5_000 } },
       );
       expect(result).toEqual(exec);
     });
@@ -284,11 +308,13 @@ describe("TaskService (__tests__)", () => {
       const task = {
         id: "1",
         name: "test",
-        params: { default: true },
-        maxRetry: 1,
+        params: {},
+        maxRetry: 3,
+        retryDelay: 15,
         currentVersion: "v1",
         status: TaskStatus.ACTIVE,
       };
+
       const exec = { id: "exec-2", status: ExecutionStatus.PENDING, params: { override: true } };
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
@@ -334,6 +360,7 @@ describe("TaskService (__tests__)", () => {
       const result = await service.getAllExecutions({ page: 1, pageSize: 10 });
       expect(result).toHaveProperty("total", 2);
       expect(result.list).toHaveLength(2);
+      expect(result.items).toBe(result.list);
     });
 
     it("applies status and taskId filters", async () => {
@@ -358,6 +385,36 @@ describe("TaskService (__tests__)", () => {
       // andWhere should have been called for status and taskId filters
       expect(qbMock.andWhere).toHaveBeenCalledWith(expect.stringContaining("status"), expect.objectContaining({ status: "success" }));
       expect(qbMock.andWhere).toHaveBeenCalledWith(expect.stringContaining("taskId"), expect.objectContaining({ taskId: "task-1" }));
+    });
+
+    it("applies taskName and executorAddress filters", async () => {
+      const qbMock = {
+        leftJoin: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getRawAndEntities: jest.fn().mockResolvedValue({ entities: [{ id: "e1", taskId: "task-1" }], raw: [] }),
+        getCount: jest.fn().mockResolvedValue(1),
+      };
+      execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
+
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 10,
+        taskName: "daily",
+        executorAddress: "10.0.0.1",
+      });
+
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("taskName"),
+        expect.objectContaining({ taskName: "%daily%" }),
+      );
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("executorAddress"),
+        expect.objectContaining({ executorAddress: "%10.0.0.1%" }),
+      );
     });
   });
 
@@ -417,6 +474,7 @@ describe("TaskService (__tests__)", () => {
         gitCommit: "old-sha",
         params: {},
         maxRetry: 2,
+        retryDelay: 7,
         status: TaskStatus.ACTIVE,
       };
       const exec = { id: "rb-exec", status: ExecutionStatus.PENDING };
@@ -435,7 +493,7 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "rb-exec" },
-        { attempts: 2, backoff: { type: 'exponential', delay: 10_000 } },
+        { attempts: 2, backoff: { type: 'exponential', delay: 7_000 } },
       );
     });
 
@@ -445,9 +503,11 @@ describe("TaskService (__tests__)", () => {
         name: "test",
         gitCommit: "old-sha",
         params: {},
-        maxRetry: 1,
+        maxRetry: 2,
+        retryDelay: 15,
         status: TaskStatus.ACTIVE,
       };
+
       const exec = { id: "rb-exec" };
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
@@ -484,7 +544,65 @@ describe("TaskService (__tests__)", () => {
       ]);
       expect(exec.status).toBe(ExecutionStatus.FAILED);
       expect((exec as any).errorMessage).toBe("OOM");
+      expect((exec as any).failureReason).toBe(ExecutionFailureReason.UNKNOWN);
       expect(result[0].success).toBe(true);
+    });
+
+    it("uses explicit callback failureReason when provided", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          errorMessage: "executor offline",
+          failureReason: ExecutionFailureReason.EXECUTOR_OFFLINE,
+        },
+      ]);
+      expect((exec as any).failureReason).toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
+    });
+
+    it("infers timeout callbacks as TIMEOUT status", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([
+        { executionId: "e1", status: "failed", errorMessage: "Execution timed out" },
+      ]);
+      expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
+      expect((exec as any).failureReason).toBe(ExecutionFailureReason.TIMEOUT);
+    });
+
+    it("infers package fetch failures from dependency logs", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([
+        { executionId: "e1", status: "failed", logs: "npm install failed: cannot find module" },
+      ]);
+      expect((exec as any).failureReason).toBe(ExecutionFailureReason.PACKAGE_FETCH_FAILED);
+    });
+
+    it("preserves existing error message when callback only includes logs", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "", errorMessage: "executor dispatch failed" };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([
+        { executionId: "e1", status: "failed", logs: "Traceback: runtime error" },
+      ]);
+      expect((exec as any).errorMessage).toBe("executor dispatch failed");
+      expect((exec as any).failureReason).toBe(ExecutionFailureReason.SCRIPT_ERROR);
+    });
+
+    it("infers script errors from non-zero exit code", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([
+        { executionId: "e1", status: "failed", exitCode: 1 },
+      ]);
+      expect((exec as any).failureReason).toBe(ExecutionFailureReason.SCRIPT_ERROR);
     });
 
     it("saves log lines when logs are provided", async () => {
@@ -616,6 +734,7 @@ describe("TaskService (__tests__)", () => {
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       const result = await service.killExecution("e1");
       expect(exec.status).toBe(ExecutionStatus.KILLED);
+      expect((exec as any).failureReason).toBe(ExecutionFailureReason.KILLED);
       expect(exec).toHaveProperty("endTime");
       expect(result.success).toBe(true);
     });

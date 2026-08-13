@@ -2,7 +2,10 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { IsString, IsOptional, Matches } from "class-validator";
 
 export class RollbackTaskDto {
-  @ApiProperty({ description: "git commit SHA to roll back to (4-40 lowercase hex characters)" })
+  @ApiProperty({
+    description:
+      "git commit SHA to roll back to (4-40 lowercase hex characters)",
+  })
   @IsString()
   @Matches(/^[0-9a-f]{4,40}$/, {
     message:

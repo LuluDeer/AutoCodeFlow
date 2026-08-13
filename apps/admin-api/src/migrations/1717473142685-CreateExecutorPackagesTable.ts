@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner, Table, TableIndex } from "typeorm";
 
-export class CreateExecutorPackagesTable1717473142685
-  implements MigrationInterface
-{
+export class CreateExecutorPackagesTable1717473142685 implements MigrationInterface {
   name = "CreateExecutorPackagesTable1717473142685";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

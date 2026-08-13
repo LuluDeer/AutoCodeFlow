@@ -20,6 +20,7 @@ import {
 import {
   TaskExecution,
   ExecutionStatus,
+  ExecutionFailureReason,
 } from "../task/entities/task-execution.entity";
 import { RedisLockService } from "../../common/services/redis-lock.service";
 
@@ -41,6 +42,23 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     private redisLockService: RedisLockService,
     private dataSource: DataSource,
   ) {}
+
+  private getCronOptions(task: Task): { timezone: string } | undefined {
+    const timezone = task.timezone?.trim();
+    if (!timezone) return undefined;
+
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(
+        new Date(),
+      );
+      return { timezone };
+    } catch {
+      this.logger.warn(
+        `Invalid timezone for task "${task.name}": ${timezone}; scheduling with server default timezone`,
+      );
+      return undefined;
+    }
+  }
 
   async onModuleInit() {
     await this.reload();
@@ -83,7 +101,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * - If the associated task has a timeout > 0, use that as the stale threshold.
    * - Otherwise fall back to a 1-hour global grace window.
    */
-  @Cron('0 */10 * * * *')
+  @Cron("0 */10 * * * *")
   async recoverStaleExecutions() {
     const runningExecs = await this.execRepo.find({
       where: { status: ExecutionStatus.RUNNING },
@@ -93,12 +111,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     const DEFAULT_STALE_MS = 60 * 60 * 1000; // 1-hour fallback
     let recovered = 0;
-    
+
     // Get all unique taskIds and fetch their timeouts
-    const taskIds = [...new Set(runningExecs.map(e => e.taskId))];
-    const tasks = taskIds.length > 0
-      ? await this.taskRepo.findBy({ id: In(taskIds) })
-      : [];
+    const taskIds = [...new Set(runningExecs.map((e) => e.taskId))];
+    const tasks =
+      taskIds.length > 0 ? await this.taskRepo.findBy({ id: In(taskIds) }) : [];
     const taskTimeouts = new Map<string, number>();
     for (const t of tasks) {
       if (t.timeout && t.timeout > 0) {
@@ -123,7 +140,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         exec.errorMessage =
           taskTimeoutSec && taskTimeoutSec > 0
             ? `Execution timed out after ${taskTimeoutSec}s`
-            : 'Execution did not complete (recovered on node restart)';
+            : "Execution did not complete (recovered on node restart)";
+        exec.failureReason =
+          taskTimeoutSec && taskTimeoutSec > 0
+            ? ExecutionFailureReason.TIMEOUT
+            : ExecutionFailureReason.UNKNOWN;
         await this.execRepo.save(exec);
         await this.releaseExecutorSlot(exec.executorAddress);
         recovered++;
@@ -133,7 +154,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       }
     }
     if (recovered > 0) {
-      this.logger.warn(`REC-01: recovered ${recovered} stale RUNNING execution(s)`);
+      this.logger.warn(
+        `REC-01: recovered ${recovered} stale RUNNING execution(s)`,
+      );
     }
   }
 
@@ -141,9 +164,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     if (!address) return;
     await this.dataSource
       .createQueryBuilder()
-      .update('executors')
+      .update("executors")
       .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
-      .where('address = :addr', { addr: address })
+      .where("address = :addr", { addr: address })
       .execute();
   }
 
@@ -218,12 +241,16 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         }
         // N8: re-fetch task at trigger time to avoid stale closure snapshot
         const taskId = t.id;
-        const cronTask = nodeCron.schedule(t.cronExpression, async () => {
-          const latest = await this.taskRepo.findOne({
-            where: { id: taskId, status: TaskStatus.ACTIVE },
-          });
-          if (latest) await this.enqueue(latest, "cron");
-        });
+        const cronTask = nodeCron.schedule(
+          t.cronExpression,
+          async () => {
+            const latest = await this.taskRepo.findOne({
+              where: { id: taskId, status: TaskStatus.ACTIVE },
+            });
+            if (latest) await this.enqueue(latest, "cron");
+          },
+          this.getCronOptions(t),
+        );
         this.cronTasks.set(t.id, cronTask);
         this.logger.log(
           `Scheduled cron task "${t.name}" with expression: ${t.cronExpression}`,
@@ -375,12 +402,16 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       }
       // N8: re-fetch task at trigger time to avoid stale closure snapshot
       const taskId = task.id;
-      const cronTask = nodeCron.schedule(task.cronExpression, async () => {
-        const latest = await this.taskRepo.findOne({
-          where: { id: taskId, status: TaskStatus.ACTIVE },
-        });
-        if (latest) await this.enqueue(latest, "cron");
-      });
+      const cronTask = nodeCron.schedule(
+        task.cronExpression,
+        async () => {
+          const latest = await this.taskRepo.findOne({
+            where: { id: taskId, status: TaskStatus.ACTIVE },
+          });
+          if (latest) await this.enqueue(latest, "cron");
+        },
+        this.getCronOptions(task),
+      );
       this.cronTasks.set(task.id, cronTask);
       this.logger.log(
         `Re-scheduled cron task "${task.name}" with expression: ${task.cronExpression}`,

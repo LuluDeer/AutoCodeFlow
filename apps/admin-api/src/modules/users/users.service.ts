@@ -32,22 +32,24 @@ export class UsersService implements OnModuleInit {
     if (count > 0) return;
 
     const password = process.env.INITIAL_ADMIN_PASSWORD;
-    const email = process.env.INITIAL_ADMIN_EMAIL ?? 'admin@autoflow.local';
+    const email = process.env.INITIAL_ADMIN_EMAIL ?? "admin@autoflow.local";
     if (!password) {
-      this.logger.warn('INITIAL_ADMIN_PASSWORD not set — skipping admin seed');
+      this.logger.warn("INITIAL_ADMIN_PASSWORD not set — skipping admin seed");
       return;
     }
 
     const hashed = await bcrypt.hash(password, 12);
     const admin = this.usersRepository.create({
-      username: 'admin',
+      username: "admin",
       email,
       password: hashed,
       role: UserRole.ADMIN,
       isActive: true,
     });
     await this.usersRepository.save(admin);
-    this.logger.log(`Initial admin user created (username: admin, email: ${email})`);
+    this.logger.log(
+      `Initial admin user created (username: admin, email: ${email})`,
+    );
   }
 
   /**
@@ -56,16 +58,20 @@ export class UsersService implements OnModuleInit {
    */
   private validatePasswordStrength(password: string): void {
     if (!password || password.length < 8) {
-      throw new BadRequestException('Password must be at least 8 characters');
+      throw new BadRequestException("Password must be at least 8 characters");
     }
     if (!/[A-Z]/.test(password)) {
-      throw new BadRequestException('Password must contain at least one uppercase letter');
+      throw new BadRequestException(
+        "Password must contain at least one uppercase letter",
+      );
     }
     if (!/[0-9]/.test(password)) {
-      throw new BadRequestException('Password must contain at least one digit');
+      throw new BadRequestException("Password must contain at least one digit");
     }
     if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
-      throw new BadRequestException('Password must contain at least one special character');
+      throw new BadRequestException(
+        "Password must contain at least one special character",
+      );
     }
   }
 

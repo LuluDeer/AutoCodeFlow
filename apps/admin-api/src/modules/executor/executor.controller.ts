@@ -31,7 +31,6 @@ import axios from "axios";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 
-
 @ApiTags("Executors")
 @Controller("executors")
 export class ExecutorController {
@@ -93,7 +92,11 @@ export class ExecutorController {
     },
     @Headers("authorization") auth: string,
   ) {
-    await verifyExecutorToken(auth, this.configService, this.systemConfigService);
+    await verifyExecutorToken(
+      auth,
+      this.configService,
+      this.systemConfigService,
+    );
     const executor = await this.svc.register(body);
     // Issue a fresh per-executor token on every registration so the executor
     // can authenticate future heartbeats without the shared token.
@@ -144,7 +147,8 @@ export class ExecutorController {
   @Get()
   @ApiOperation({
     summary: "List executors",
-    description: "Get list of all executors including online status, group, and tags.",
+    description:
+      "Get list of all executors including online status, group, and tags.",
   })
   @ApiResponse({
     status: 200,
@@ -216,7 +220,8 @@ export class ExecutorController {
   @Get("install-cmd")
   @ApiOperation({
     summary: "Get executor install command",
-    description: "Returns the shell command to install and start the executor on the target machine.",
+    description:
+      "Returns the shell command to install and start the executor on the target machine.",
   })
   @ApiResponse({
     status: 200,
@@ -242,7 +247,8 @@ export class ExecutorController {
   @Get(":id")
   @ApiOperation({
     summary: "Get single executor details",
-    description: "Get detailed info for a specific executor including config, status, and performance metrics.",
+    description:
+      "Get detailed info for a specific executor including config, status, and performance metrics.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
   @ApiResponse({ status: 200, description: "Executor details" })
@@ -256,7 +262,8 @@ export class ExecutorController {
   @Patch(":id")
   @ApiOperation({
     summary: "Update executor metadata",
-    description: "Update executor group, tags, description, and max concurrent tasks.",
+    description:
+      "Update executor group, tags, description, and max concurrent tasks.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
   @ApiResponse({ status: 200, description: "Updated successfully" })
@@ -382,14 +389,23 @@ export class ExecutorController {
   @ApiResponse({
     status: 200,
     description: "Token obtained successfully",
-    schema: { example: { token: "dynamic-token-value", expiresAt: "2024-01-01T12:00:00Z" } },
+    schema: {
+      example: {
+        token: "dynamic-token-value",
+        expiresAt: "2024-01-01T12:00:00Z",
+      },
+    },
   })
   @ApiResponse({ status: 401, description: "Invalid shared token" })
   async getToken(
     @Body() body: { address: string; appName?: string },
     @Headers("authorization") auth: string,
   ) {
-    await verifyExecutorToken(auth, this.configService, this.systemConfigService);
+    await verifyExecutorToken(
+      auth,
+      this.configService,
+      this.systemConfigService,
+    );
 
     const executor = await this.svc.register({
       address: body.address,
@@ -414,7 +430,11 @@ export class ExecutorController {
       },
     },
   })
-  @ApiResponse({ status: 200, description: "Offline notification successful", schema: { example: { success: true } } })
+  @ApiResponse({
+    status: 200,
+    description: "Offline notification successful",
+    schema: { example: { success: true } },
+  })
   @ApiResponse({ status: 401, description: "Invalid executor token" })
   async offline(
     @Body() body: { address: string },
@@ -436,7 +456,8 @@ export class ExecutorController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: "Delete executor record",
-    description: "Admin: permanently delete an executor record by ID. Use when executor is offline and no longer needed.",
+    description:
+      "Admin: permanently delete an executor record by ID. Use when executor is offline and no longer needed.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
   @ApiResponse({ status: 204, description: "Executor deleted" })
@@ -450,7 +471,8 @@ export class ExecutorController {
   @Get(":id/executions")
   @ApiOperation({
     summary: "Get executor task execution history",
-    description: "Get all task execution records for a specific executor with pagination.",
+    description:
+      "Get all task execution records for a specific executor with pagination.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
   @ApiQuery({ name: "page", required: false, description: "Page number" })

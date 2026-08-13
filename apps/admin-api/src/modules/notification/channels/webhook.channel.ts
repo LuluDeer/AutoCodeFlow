@@ -13,7 +13,8 @@ export class WebhookChannel extends BaseChannel {
   }
 
   async send(p: NotificationPayload, url?: string) {
-    const webhookUrl = url || this.config.get<string>("notification.webhookUrl");
+    const webhookUrl =
+      url || this.config.get<string>("notification.webhookUrl");
     if (!webhookUrl) return;
 
     const body = {
@@ -32,7 +33,9 @@ export class WebhookChannel extends BaseChannel {
       });
       this.logger.log(`[Webhook] sent: ${p.title} → ${webhookUrl}`);
     } catch (error) {
-      this.logger.error(`[Webhook] send failed after retries: ${error.message}`);
+      this.logger.error(
+        `[Webhook] send failed after retries: ${error.message}`,
+      );
     }
   }
 }

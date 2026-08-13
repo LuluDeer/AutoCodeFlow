@@ -41,7 +41,10 @@ export class HealthService {
       await this.taskRepo.query("SELECT 1");
       return { status: "healthy" };
     } catch (error: unknown) {
-      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
+      return {
+        status: "unhealthy",
+        details: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -56,7 +59,10 @@ export class HealthService {
       await this.redisClient.ping();
       return { status: "healthy" };
     } catch (error: unknown) {
-      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
+      return {
+        status: "unhealthy",
+        details: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -84,7 +90,10 @@ export class HealthService {
           : undefined,
       };
     } catch (error: unknown) {
-      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
+      return {
+        status: "unhealthy",
+        details: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -162,7 +171,10 @@ export class HealthService {
         details: `Scheduler is running, ${jobs.length} jobs in queue`,
       };
     } catch (error: unknown) {
-      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
+      return {
+        status: "unhealthy",
+        details: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
