@@ -30,7 +30,8 @@ export class ApplicationService implements OnModuleInit {
     private readonly aiService: AiService,
   ) {}
 
-  private _taskService: import('../task/task.service').TaskService | null = null;
+  private _taskService: import("../task/task.service").TaskService | null =
+    null;
 
   async onModuleInit() {
     // Lazy-resolve TaskService to avoid circular dependency with TaskModule
@@ -64,9 +65,9 @@ export class ApplicationService implements OnModuleInit {
    */
   async findByNameWithSecret(name: string): Promise<Application | null> {
     return this.repo
-      .createQueryBuilder('app')
-      .addSelect('app.webhookSecret')
-      .where('app.name = :name', { name })
+      .createQueryBuilder("app")
+      .addSelect("app.webhookSecret")
+      .where("app.name = :name", { name })
       .getOne();
   }
 
@@ -153,16 +154,33 @@ export class ApplicationService implements OnModuleInit {
     );
 
     const statsArray = statsResults
-      .map((r, i) => (r.status === 'fulfilled' ? { ...r.value, taskId: tasks[i].id, taskName: tasks[i].name } : null))
-      .filter(Boolean) as Array<{ taskId: string; taskName: string; successRate: number; avgDuration: number; totalRuns: number }>;
+      .map((r, i) =>
+        r.status === "fulfilled"
+          ? { ...r.value, taskId: tasks[i].id, taskName: tasks[i].name }
+          : null,
+      )
+      .filter(Boolean) as Array<{
+      taskId: string;
+      taskName: string;
+      successRate: number;
+      avgDuration: number;
+      totalRuns: number;
+    }>;
 
     const avgSuccessRate =
       statsArray.length > 0
-        ? Math.round(statsArray.reduce((sum, s) => sum + s.successRate, 0) / statsArray.length * 10) / 10
+        ? Math.round(
+            (statsArray.reduce((sum, s) => sum + s.successRate, 0) /
+              statsArray.length) *
+              10,
+          ) / 10
         : 100;
     const avgDuration =
       statsArray.length > 0
-        ? Math.round(statsArray.reduce((sum, s) => sum + s.avgDuration, 0) / statsArray.length)
+        ? Math.round(
+            statsArray.reduce((sum, s) => sum + s.avgDuration, 0) /
+              statsArray.length,
+          )
         : 0;
     const criticalTasks = statsArray
       .filter((s) => s.successRate < 50 && s.totalRuns > 3)
@@ -184,8 +202,14 @@ export class ApplicationService implements OnModuleInit {
     return {
       appId: app.id,
       appName: app.name,
-      analysis: analysis || 'AI analysis not available (AI provider not configured).',
-      stats: { totalTasks: tasks.length, avgSuccessRate, avgDuration, criticalTasks },
+      analysis:
+        analysis || "AI analysis not available (AI provider not configured).",
+      stats: {
+        totalTasks: tasks.length,
+        avgSuccessRate,
+        avgDuration,
+        criticalTasks,
+      },
     };
   }
 
@@ -217,17 +241,20 @@ export class ApplicationService implements OnModuleInit {
       this.logger.log(`Cloning ${gitRepo}@${gitBranch} into ${tmpDir}`);
       // SEC: spawnSync with array args — no shell expansion, no injection risk
       const cloneResult = spawnSync(
-        'git',
-        ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, tmpDir],
-        { timeout: 120_000, stdio: 'pipe' },
+        "git",
+        ["clone", "--depth", "1", "--branch", gitBranch, gitRepo, tmpDir],
+        { timeout: 120_000, stdio: "pipe" },
       );
       if (cloneResult.status !== 0) {
-        const errMsg = cloneResult.stderr?.toString('utf-8') || 'git clone failed';
+        const errMsg =
+          cloneResult.stderr?.toString("utf-8") || "git clone failed";
         throw new Error(errMsg);
       }
 
-      const revResult = spawnSync('git', ['-C', tmpDir, 'rev-parse', 'HEAD'], { encoding: 'utf-8' });
-      if (revResult.status !== 0) throw new Error('git rev-parse HEAD failed');
+      const revResult = spawnSync("git", ["-C", tmpDir, "rev-parse", "HEAD"], {
+        encoding: "utf-8",
+      });
+      if (revResult.status !== 0) throw new Error("git rev-parse HEAD failed");
       app.gitCommit = (revResult.stdout as string).trim();
 
       // Parse manifest.json and auto-register tasks
@@ -291,7 +318,8 @@ export class ApplicationService implements OnModuleInit {
       try {
         fs.rmSync(tmpDir, { recursive: true });
       } catch (cleanErr: unknown) {
-        const msg = cleanErr instanceof Error ? cleanErr.message : String(cleanErr);
+        const msg =
+          cleanErr instanceof Error ? cleanErr.message : String(cleanErr);
         this.logger.warn(`Failed to clean up temp dir ${tmpDir}: ${msg}`);
       }
     }
@@ -305,7 +333,12 @@ export class ApplicationService implements OnModuleInit {
     manifestPath?: string,
   ): Promise<number> {
     const app = await this.findById(appId);
-    let manifest: Record<string, any> & { tasks?: any[]; runtime?: string; entrypoint?: string; timeout?: number };
+    let manifest: Record<string, any> & {
+      tasks?: any[];
+      runtime?: string;
+      entrypoint?: string;
+      timeout?: number;
+    };
 
     if (manifestPath && fs.existsSync(manifestPath)) {
       manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));

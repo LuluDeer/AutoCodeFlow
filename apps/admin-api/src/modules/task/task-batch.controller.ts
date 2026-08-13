@@ -1,10 +1,4 @@
-import {
-  Controller,
-  Post,
-  Body,
-  UseGuards,
-  Req,
-} from "@nestjs/common";
+import { Controller, Post, Body, UseGuards, Req } from "@nestjs/common";
 import {
   ApiTags,
   ApiOperation,
@@ -37,7 +31,8 @@ export class TaskBatchController {
   @Post("trigger")
   @ApiOperation({
     summary: "Batch trigger tasks",
-    description: "Trigger multiple tasks. Partial failures do not affect other tasks.",
+    description:
+      "Trigger multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch trigger results" })
   @ApiBody({
@@ -70,7 +65,8 @@ export class TaskBatchController {
   @Post("pause")
   @ApiOperation({
     summary: "Batch pause tasks",
-    description: "Pause multiple tasks. Partial failures do not affect other tasks.",
+    description:
+      "Pause multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch pause results" })
   async batchPause(
@@ -80,9 +76,7 @@ export class TaskBatchController {
   ) {
     const results = await Promise.all(
       body.taskIds.map((id) =>
-        this.taskService
-          .pause(id)
-          .catch((err) => ({ id, error: err.message })),
+        this.taskService.pause(id).catch((err) => ({ id, error: err.message })),
       ),
     );
     await this.audit.log({
@@ -99,7 +93,8 @@ export class TaskBatchController {
   @Post("resume")
   @ApiOperation({
     summary: "Batch resume tasks",
-    description: "Resume multiple tasks. Partial failures do not affect other tasks.",
+    description:
+      "Resume multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch resume results" })
   async batchResume(
@@ -128,7 +123,8 @@ export class TaskBatchController {
   @Post("delete")
   @ApiOperation({
     summary: "Batch delete tasks",
-    description: "Delete multiple tasks. Partial failures do not affect other tasks.",
+    description:
+      "Delete multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch delete results" })
   async batchDelete(

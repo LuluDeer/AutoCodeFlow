@@ -1,5 +1,4 @@
 """Tests for autoflow_sdk.models Pydantic models."""
-import pytest
 from autoflow_sdk.models import TaskConfig, ExecuteRequest, ExecuteResult
 
 
@@ -8,6 +7,7 @@ class TestTaskConfig:
         tc = TaskConfig()
         assert tc.runtime == "python"
         assert tc.timeout == 300
+        assert tc.timeoutSeconds == 300
         assert tc.requirements == []
         assert tc.gitBranch == "main"
         assert tc.blockStrategy == "SERIAL"
@@ -18,6 +18,7 @@ class TestTaskConfig:
         assert tc.name == "my-task"
         assert tc.runtime == "node"
         assert tc.timeout == 60
+        assert tc.timeoutSeconds == 60
 
     def test_extra_fields_allowed(self):
         tc = TaskConfig(unknown_field="value")
@@ -26,6 +27,19 @@ class TestTaskConfig:
     def test_requirements_list(self):
         tc = TaskConfig(requirements=["requests", "pandas"])
         assert "requests" in tc.requirements
+
+    def test_timeout_seconds_alias_sets_legacy_timeout(self):
+        tc = TaskConfig(timeoutSeconds=60)
+        assert tc.timeout == 60
+        assert tc.timeoutSeconds == 60
+
+    def test_snake_case_policy_fields_are_normalized(self):
+        tc = TaskConfig(timeout_seconds=90, max_retry=4, retry_delay=15, timezone="Asia/Shanghai")
+        assert tc.timeout == 90
+        assert tc.timeoutSeconds == 90
+        assert tc.maxRetry == 4
+        assert tc.retryDelay == 15
+        assert tc.timezone == "Asia/Shanghai"
 
 
 class TestExecuteRequest:

@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { randomBytes, timingSafeEqual } from "crypto";
 import * as bcrypt from "bcrypt";
@@ -42,7 +47,9 @@ export class ExecutorService {
 
   private async getSharedToken(): Promise<string> {
     try {
-      const cfg = await this.systemConfigService.findOne("executor.sharedToken");
+      const cfg = await this.systemConfigService.findOne(
+        "executor.sharedToken",
+      );
       if (cfg?.value) return cfg.value;
     } catch {
       // DB token is optional; fall back to environment/config-file value.
@@ -85,7 +92,8 @@ export class ExecutorService {
     if (data.appName) e.appName = data.appName;
     if (data.version) e.version = data.version;
     if (capabilities) e.capabilities = capabilities;
-    if (maxConcurrentTasks !== undefined) e.maxConcurrentTasks = maxConcurrentTasks;
+    if (maxConcurrentTasks !== undefined)
+      e.maxConcurrentTasks = maxConcurrentTasks;
     if (data.groupName !== undefined) e.groupName = data.groupName;
     if (data.tags !== undefined) e.tags = data.tags;
     if (data.description !== undefined) e.description = data.description;
@@ -97,7 +105,9 @@ export class ExecutorService {
       this.notificationService
         .notifyExecutorOnline(data.appName, data.address)
         .catch((err) =>
-          this.logger.warn(`Failed to send executor online notification: ${err?.message}`),
+          this.logger.warn(
+            `Failed to send executor online notification: ${err?.message}`,
+          ),
         );
     }
     return saved;
@@ -185,9 +195,11 @@ export class ExecutorService {
     tags?: string[] | null;
     runtime?: string | null;
   }): Promise<Executor> {
-    const all = await this.repo.find({ where: { status: ExecutorStatus.ONLINE } });
+    const all = await this.repo.find({
+      where: { status: ExecutorStatus.ONLINE },
+    });
     if (all.length === 0) {
-      throw new ServiceUnavailableException('No online executors available');
+      throw new ServiceUnavailableException("No online executors available");
     }
 
     let candidates = all;
@@ -210,7 +222,9 @@ export class ExecutorService {
     }
 
     if (candidates.length === 0) {
-      throw new ServiceUnavailableException('No online executors match the requested group/tags/runtime');
+      throw new ServiceUnavailableException(
+        "No online executors match the requested group/tags/runtime",
+      );
     }
 
     // Weighted scoring: 50% task load ratio, 25% CPU, 25% memory.
@@ -232,7 +246,7 @@ export class ExecutorService {
 
     if (scored.length === 0) {
       throw new ServiceUnavailableException(
-        'No available executor — all online executors are at maximum capacity',
+        "No available executor — all online executors are at maximum capacity",
       );
     }
     return scored[0].executor;
@@ -280,7 +294,9 @@ export class ExecutorService {
       }
 
       if (filtered.length === 0) {
-        throw new Error("No online executors match the requested group/tags/runtime");
+        throw new Error(
+          "No online executors match the requested group/tags/runtime",
+        );
       }
       candidates = filtered;
     }
@@ -289,8 +305,14 @@ export class ExecutorService {
     const sorted = [...candidates].sort((a, b) => {
       const maxA = a.maxConcurrentTasks ?? 10;
       const maxB = b.maxConcurrentTasks ?? 10;
-      const scoreA = (a.runningTaskCount / maxA) * 0.5 + ((a.cpuUsage ?? 0) / 100) * 0.25 + ((a.memUsage ?? 0) / 100) * 0.25;
-      const scoreB = (b.runningTaskCount / maxB) * 0.5 + ((b.cpuUsage ?? 0) / 100) * 0.25 + ((b.memUsage ?? 0) / 100) * 0.25;
+      const scoreA =
+        (a.runningTaskCount / maxA) * 0.5 +
+        ((a.cpuUsage ?? 0) / 100) * 0.25 +
+        ((a.memUsage ?? 0) / 100) * 0.25;
+      const scoreB =
+        (b.runningTaskCount / maxB) * 0.5 +
+        ((b.cpuUsage ?? 0) / 100) * 0.25 +
+        ((b.memUsage ?? 0) / 100) * 0.25;
       return scoreA - scoreB;
     });
 
@@ -384,7 +406,9 @@ export class ExecutorService {
         );
       }
       if (filtered.length === 0) {
-        throw new Error("No online executors match the requested group/tags/runtime");
+        throw new Error(
+          "No online executors match the requested group/tags/runtime",
+        );
       }
       candidates = filtered;
     }
@@ -400,7 +424,8 @@ export class ExecutorService {
     // Fire all dispatches in parallel and collect results
     const sharedToken = await this.getSharedToken();
     const broadcastHeaders: Record<string, string> = {};
-    if (sharedToken) broadcastHeaders["Authorization"] = `Bearer ${sharedToken}`;
+    if (sharedToken)
+      broadcastHeaders["Authorization"] = `Bearer ${sharedToken}`;
 
     const results = await Promise.allSettled(
       candidates.map(async (executor) => {
@@ -411,7 +436,10 @@ export class ExecutorService {
         const resp = await axios.post(
           dispatchUrl,
           { executionId: execution.id, task, params: execution.params },
-          { timeout: ((task.timeout || 300) + 10) * 1000, headers: broadcastHeaders },
+          {
+            timeout: ((task.timeout || 300) + 10) * 1000,
+            headers: broadcastHeaders,
+          },
         );
         return { executor: executor.address, result: resp.data };
       }),
@@ -460,21 +488,31 @@ export class ExecutorService {
     if (lostExecs.length === 0) return;
 
     // Batch-fetch tasks and executors to avoid N+1 queries
-    const taskIds = [...new Set(lostExecs.map((e) => e.taskId).filter(Boolean))] as string[];
+    const taskIds = [
+      ...new Set(lostExecs.map((e) => e.taskId).filter(Boolean)),
+    ] as string[];
     const taskMap = new Map(
       taskIds.length > 0
-        ? (await this.taskRepo.findBy({ id: In(taskIds) })).map((t) => [t.id, t])
+        ? (await this.taskRepo.findBy({ id: In(taskIds) })).map((t) => [
+            t.id,
+            t,
+          ])
         : [],
     );
-    const addresses = [...new Set(lostExecs.map((e) => e.executorAddress).filter(Boolean))] as string[];
+    const addresses = [
+      ...new Set(lostExecs.map((e) => e.executorAddress).filter(Boolean)),
+    ] as string[];
     const executorMap = new Map(
       addresses.length > 0
-        ? (await this.repo.findBy({ address: In(addresses) })).map((ex) => [ex.address, ex])
+        ? (await this.repo.findBy({ address: In(addresses) })).map((ex) => [
+            ex.address,
+            ex,
+          ])
         : [],
     );
 
     for (const exec of lostExecs) {
-      const task = exec.taskId ? taskMap.get(exec.taskId) ?? null : null;
+      const task = exec.taskId ? (taskMap.get(exec.taskId) ?? null) : null;
       const taskTimeoutMs = task?.timeout ? task.timeout * 1000 : 5 * 60 * 1000;
       const perExecThreshold = new Date(
         Date.now() - (taskTimeoutMs + 5 * 60 * 1000),
@@ -489,7 +527,8 @@ export class ExecutorService {
       }
       exec.status = ExecutionStatus.FAILED;
       exec.endTime = new Date();
-      exec.errorMessage = "[System] Executor offline or task timed out, marked as failed by scheduler";
+      exec.errorMessage =
+        "[System] Executor offline or task timed out, marked as failed by scheduler";
       exec.logs =
         (exec.logs || "") +
         "\n[System] Execution timed out without callback, forcefully marked as FAILED";
@@ -530,7 +569,7 @@ export class ExecutorService {
     // Query before update to capture names/addresses for offline notifications
     const staleExecutors = await this.repo.find({
       where: { status: ExecutorStatus.ONLINE, lastHeartbeat: LessThan(cutoff) },
-      select: ['id', 'appName', 'address'],
+      select: ["id", "appName", "address"],
     });
 
     if (staleExecutors.length === 0) return;
@@ -610,8 +649,8 @@ export class ExecutorService {
     const shared = await this.getSharedToken();
     if (shared.length === 0) return false;
     // SEC-FIX: use timingSafeEqual to prevent timing attacks on shared token comparison
-    const sharedBuf = Buffer.from(shared, 'utf8');
-    const presentedBuf = Buffer.from(presented, 'utf8');
+    const sharedBuf = Buffer.from(shared, "utf8");
+    const presentedBuf = Buffer.from(presented, "utf8");
     if (sharedBuf.length !== presentedBuf.length) return false;
     return timingSafeEqual(sharedBuf, presentedBuf);
   }
@@ -639,8 +678,8 @@ export class ExecutorService {
     // Fall back to shared token — use timing-safe comparison to prevent timing attacks
     const shared = await this.getSharedToken();
     if (shared.length === 0) return false;
-    const sharedBuf = Buffer.from(shared, 'utf8');
-    const presentedBuf = Buffer.from(presented, 'utf8');
+    const sharedBuf = Buffer.from(shared, "utf8");
+    const presentedBuf = Buffer.from(presented, "utf8");
     if (sharedBuf.length !== presentedBuf.length) return false;
     return timingSafeEqual(sharedBuf, presentedBuf);
   }
@@ -650,9 +689,15 @@ export class ExecutorService {
    * Returns a shell command the user can run on the target machine to install and start the executor.
    * Values are read from the NestJS ConfigService (environment variables).
    */
-  getInstallCmd(): { cmd: string; curlCmd: string; token: string; adminApiUrl: string } {
-    const adminApiUrl = this.configService.get<string>('ADMIN_API_URL') || '';
-    const sharedToken = this.configService.get<string>('executor.sharedToken') || '';
+  getInstallCmd(): {
+    cmd: string;
+    curlCmd: string;
+    token: string;
+    adminApiUrl: string;
+  } {
+    const adminApiUrl = this.configService.get<string>("ADMIN_API_URL") || "";
+    const sharedToken =
+      this.configService.get<string>("executor.sharedToken") || "";
     const cmd = `npx autoflow-executor --admin-url "${adminApiUrl}" --token "${sharedToken}"`;
     const curlCmd = `curl -fsSL "${adminApiUrl}/executors/install.sh" | bash -s -- --admin-url "${adminApiUrl}" --token "${sharedToken}"`;
     return { cmd, curlCmd, token: sharedToken, adminApiUrl };
@@ -691,26 +736,45 @@ export class ExecutorService {
    */
   async getExecutorMetrics(id: string): Promise<{
     executor: { id: string; address: string; status: string };
-    sevenDayStats: { totalExecutions: number; successful: number; failed: number; successRate: number; averageDurationMs: number };
-    current: { runningTaskCount: number; cpuUsage: number | null; memUsage: number | null };
-}> {
+    sevenDayStats: {
+      totalExecutions: number;
+      successful: number;
+      failed: number;
+      successRate: number;
+      averageDurationMs: number;
+    };
+    current: {
+      runningTaskCount: number;
+      cpuUsage: number | null;
+      memUsage: number | null;
+    };
+  }> {
     const executor = await this.findOne(id);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     // Merge 4 serial queries into 1 for performance
     const statsQuery = await this.execRepo
-      .createQueryBuilder('e')
-      .select('COUNT(*)', 'total')
-      .addSelect(`SUM(CASE WHEN e.status = '${ExecutionStatus.SUCCESS}' THEN 1 ELSE 0 END)`, 'successful')
-      .addSelect(`SUM(CASE WHEN e.status = '${ExecutionStatus.FAILED}' THEN 1 ELSE 0 END)`, 'failed')
-      .addSelect('AVG(CASE WHEN e.duration IS NOT NULL THEN e.duration END)', 'avgDuration')
-      .where('e.executorAddress = :address', { address: executor.address })
-      .andWhere('e.createdAt >= :date', { date: sevenDaysAgo })
+      .createQueryBuilder("e")
+      .select("COUNT(*)", "total")
+      .addSelect(
+        `SUM(CASE WHEN e.status = '${ExecutionStatus.SUCCESS}' THEN 1 ELSE 0 END)`,
+        "successful",
+      )
+      .addSelect(
+        `SUM(CASE WHEN e.status = '${ExecutionStatus.FAILED}' THEN 1 ELSE 0 END)`,
+        "failed",
+      )
+      .addSelect(
+        "AVG(CASE WHEN e.duration IS NOT NULL THEN e.duration END)",
+        "avgDuration",
+      )
+      .where("e.executorAddress = :address", { address: executor.address })
+      .andWhere("e.createdAt >= :date", { date: sevenDaysAgo })
       .getRawOne();
 
-    const totalExecutions = parseInt(statsQuery?.total ?? '0', 10);
-    const successful = parseInt(statsQuery?.successful ?? '0', 10);
-    const failed = parseInt(statsQuery?.failed ?? '0', 10);
+    const totalExecutions = parseInt(statsQuery?.total ?? "0", 10);
+    const successful = parseInt(statsQuery?.successful ?? "0", 10);
+    const failed = parseInt(statsQuery?.failed ?? "0", 10);
     const avgDurationQuery = { avg: statsQuery?.avgDuration };
 
     return {

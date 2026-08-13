@@ -19,6 +19,15 @@ export enum ExecutionStatus {
   CANCELLED = "cancelled",
 }
 
+export enum ExecutionFailureReason {
+  PACKAGE_FETCH_FAILED = "package_fetch_failed",
+  SCRIPT_ERROR = "script_error",
+  TIMEOUT = "timeout",
+  EXECUTOR_OFFLINE = "executor_offline",
+  KILLED = "killed",
+  UNKNOWN = "unknown",
+}
+
 @Entity("task_executions")
 @Index(["taskId"])
 @Index(["status"])
@@ -47,6 +56,8 @@ export class TaskExecution {
   @Column({ nullable: true }) duration: number;
   @Column({ type: "int", default: 0 }) retryCount: number;
   @Column({ nullable: true }) errorMessage: string;
+  @Column({ type: "varchar", nullable: true })
+  failureReason: ExecutionFailureReason | null;
   @Column({ type: "text", nullable: true }) aiAnalysis: string;
   @Column({ nullable: true }) triggerType: string;
   @Column({ nullable: true }) taskVersion: string;

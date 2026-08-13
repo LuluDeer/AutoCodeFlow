@@ -6,6 +6,7 @@ import { TaskService } from "../task.service";
 import { SystemConfigService } from "../../config/config.service";
 import { CallbackItemDto } from "../dto/execution-callback.dto";
 import { ExecutorService } from "../../executor/executor.service";
+import { ExecutionFailureReason } from "../entities/task-execution.entity";
 
 const EXEC_UUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
 const VALID_TOKEN = "test-shared-secret";
@@ -174,6 +175,7 @@ describe("ExecutionCallbackController", () => {
         status: "failed",
         errorMessage: "OOM",
         exitCode: 137,
+        failureReason: ExecutionFailureReason.SCRIPT_ERROR,
       });
       await controller.callback(`Bearer ${VALID_TOKEN}`, [item]);
       expect(taskService.handleCallback).toHaveBeenCalledWith([item]);

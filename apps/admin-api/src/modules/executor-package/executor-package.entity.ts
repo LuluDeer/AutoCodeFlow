@@ -80,7 +80,7 @@ export class ExecutorPackage {
   @Column({ type: "jsonb", default: [] })
   pushHistory: Array<{
     executorId: string;
-    status: 'downloaded' | 'failed';
+    status: "downloaded" | "failed";
     version: string;
     error?: string;
     timestamp: string;

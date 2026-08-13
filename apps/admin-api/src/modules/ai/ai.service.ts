@@ -96,13 +96,24 @@ export class AiService {
     try {
       const raw = await this.callProvider(prompt);
       // strip optional markdown code fences before parsing
-      const jsonStr = raw.replace(/^```[\s\S]*?\n/, "").replace(/\n?```$/, "").trim();
-      const parsed = JSON.parse(jsonStr) as { suggestedCron: string; reasoning: string };
+      const jsonStr = raw
+        .replace(/^```[\s\S]*?\n/, "")
+        .replace(/\n?```$/, "")
+        .trim();
+      const parsed = JSON.parse(jsonStr) as {
+        suggestedCron: string;
+        reasoning: string;
+      };
       if (parsed.suggestedCron && parsed.reasoning) return parsed;
     } catch (e: unknown) {
-      this.logger.warn(`suggestSchedule parse error: ${e instanceof Error ? e.message : String(e)}`);
+      this.logger.warn(
+        `suggestSchedule parse error: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
-    return { suggestedCron: currentCron || "0 * * * *", reasoning: "AI returned unparseable response." };
+    return {
+      suggestedCron: currentCron || "0 * * * *",
+      reasoning: "AI returned unparseable response.",
+    };
   }
 
   /**
@@ -115,13 +126,21 @@ export class AiService {
       avgSuccessRate: number;
       avgDurationMs: number;
       criticalTasks: string[];
-      perTask: Array<{ name: string; successRate: number; avgDuration: number; totalRuns: number }>;
+      perTask: Array<{
+        name: string;
+        successRate: number;
+        avgDuration: number;
+        totalRuns: number;
+      }>;
     },
   ): Promise<string> {
     const provider = await this.getAiConfig("provider", "disabled");
     if (provider === "disabled") return "";
     const perTaskLines = stats.perTask
-      .map((t) => `  - ${t.name}: successRate=${t.successRate}%, avgDuration=${t.avgDuration}ms, runs=${t.totalRuns}`)
+      .map(
+        (t) =>
+          `  - ${t.name}: successRate=${t.successRate}%, avgDuration=${t.avgDuration}ms, runs=${t.totalRuns}`,
+      )
       .join("\n");
     const prompt = [
       `You are an operations analyst. Assess the health of the following application and provide actionable recommendations.`,
@@ -151,7 +170,9 @@ export class AiService {
       if (provider === "openai") return await this.callOpenAI(prompt);
       if (provider === "ollama") return await this.callOllama(prompt);
     } catch (e: unknown) {
-      this.logger.warn(`AI error: ${e instanceof Error ? e.message : String(e)}`);
+      this.logger.warn(
+        `AI error: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
     return "";
   }
@@ -179,10 +200,7 @@ export class AiService {
   }
 
   private async callOllama(prompt: string) {
-    const host = await this.getAiConfig(
-      "ollamaHost",
-      "http://localhost:11434",
-    );
+    const host = await this.getAiConfig("ollamaHost", "http://localhost:11434");
     const model = await this.getAiConfig("ollamaModel", "llama3");
     const r = await axios.post(
       `${host}/api/generate`,

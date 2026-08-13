@@ -9,7 +9,7 @@ import {
   RocketOutlined, RobotOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { applicationsApi, Application } from '../api/applications';
+import { applicationsApi, Application, VersionHistoryEntry } from '../api/applications';
 import { aiApi, AppHealthReport } from '../api/ai';
 import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
@@ -324,22 +324,24 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
 }
 
 // ─── Version History ─────────────────────────────────────────────────────────
-type VersionRecord = { deploymentId: string; version: string | null; commit: string | null; status: string; deployedAt: string | null; executorAddress: string; deployCount?: number; };
+type VersionRecord = VersionHistoryEntry;
 
-function VersionHistoryTab({ appId }: { appId: string }) {
+function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload: () => Promise<void> }) {
   const [records, setRecords] = useState<VersionRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [rollingBack, setRollingBack] = useState<string | null>(null);
 
+  const getVersionKey = (record: VersionRecord) => record.id ?? record.deploymentId ?? `${record.version ?? 'unknown'}-${record.commit ?? 'none'}-${record.createdAt ?? record.deployedAt ?? 'unknown'}`;
+
   const fetchVersions = useCallback(async () => {
     setLoading(true);
-    try { setRecords(await applicationsApi.getVersionHistory(appId)); }
+    try { setRecords(await applicationsApi.getVersionHistory(app.id)); }
     catch (err: unknown) { message.error(getErrMsg(err, '加载版本历史失败')); } finally { setLoading(false); }
-  }, [appId]);
+  }, [app.id]);
 
   useEffect(() => { fetchVersions(); }, [fetchVersions]);
 
-  const handleRollback = async (deploymentId: string, version: string | null) => {
+  const handleRollback = async (targetId: string, version: string | null) => {
     Modal.confirm({
       title: '确认回滚',
       content: `将回滚到版本 ${version ?? '未知'}，所有运行中的实例将同步升级，确定继续？`,
@@ -347,11 +349,11 @@ function VersionHistoryTab({ appId }: { appId: string }) {
       okType: 'danger',
       cancelText: '取消',
       onOk: async () => {
-        setRollingBack(deploymentId);
+        setRollingBack(targetId);
         try {
-          const res = await applicationsApi.rollback(appId, deploymentId);
+          const res = await applicationsApi.rollback(app.id, targetId);
           message.success(`已回滚到 ${res.rolledBackTo ?? version}，影响 ${res.total ?? 0} 台实例`);
-          fetchVersions();
+          await Promise.all([fetchVersions(), onAppReload()]);
         } catch (err: unknown) {
           message.error(getErrMsg(err, '回滚失败，请重试'));
         } finally {
@@ -364,7 +366,7 @@ function VersionHistoryTab({ appId }: { appId: string }) {
   return (
     <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={fetchVersions}>刷新</Button>}>
       <Table<VersionRecord>
-        rowKey="deploymentId"
+        rowKey={(record) => getVersionKey(record)}
         columns={[
           {
             title: '版本', dataIndex: 'version', width: 140,
@@ -383,31 +385,39 @@ function VersionHistoryTab({ appId }: { appId: string }) {
           {
             title: '状态', dataIndex: 'status', width: 90,
             render: (v: string) => (
-              <Tag color={{ running: 'green', stopped: 'default', failed: 'red', deploying: 'blue' }[v] || 'default'}>{v}</Tag>
+              <Tag color={{ released: 'green', running: 'green', stopped: 'default', failed: 'red', deploying: 'blue' }[v] || 'default'}>{v}</Tag>
             ),
           },
           { title: '执行器', dataIndex: 'executorAddress', ellipsis: true },
-          { title: '部署时间', dataIndex: 'deployedAt', width: 170, render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
+          {
+            title: '部署时间', dataIndex: 'deployedAt', width: 170,
+            render: (_: string | null, r: VersionRecord) => {
+              const deployedAt = r.createdAt ?? r.deployedAt;
+              return deployedAt ? new Date(deployedAt).toLocaleString('zh-CN') : '-';
+            },
+          },
           {
             title: '操作', width: 90, align: 'center' as const,
             render: (_: unknown, record: VersionRecord) => {
-              // Prefer the running deployment as current; fall back to the most recently deployed.
-              const currentId =
-                records.find(r => r.status === 'running')?.deploymentId ??
-                [...records]
-                  .filter(r => r.deployedAt)
-                  .sort((a, b) => new Date(b.deployedAt!).getTime() - new Date(a.deployedAt!).getTime())[0]?.deploymentId;
-              return currentId === record.deploymentId ? (
-                <Tag color="green">当前版本</Tag>
-              ) : (
-                <Button
-                  size="small"
-                  danger
-                  loading={rollingBack === record.deploymentId}
-                  onClick={() => handleRollback(record.deploymentId, record.version)}
-                >
-                  回滚
-                </Button>
+              const currentRecord =
+                records.find(r => r.version === app.version && (!app.gitCommit || !r.commit || r.commit === app.gitCommit)) ??
+                records.find(r => r.version === app.version);
+              const key = getVersionKey(record);
+              const isCurrent = currentRecord && getVersionKey(currentRecord) === key;
+              const rollbackDisabled = !!record.id && record.status !== 'released';
+              if (isCurrent) return <Tag color="green">当前版本</Tag>;
+              return (
+                <Tooltip title={rollbackDisabled ? '仅已发布版本可回滚' : undefined}>
+                  <Button
+                    size="small"
+                    danger
+                    disabled={rollbackDisabled}
+                    loading={rollingBack === key}
+                    onClick={() => handleRollback(key, record.version)}
+                  >
+                    回滚
+                  </Button>
+                </Tooltip>
               );
             },
           },
@@ -438,7 +448,7 @@ export default function ApplicationDetailPage() {
     try {
       setLoading(true);
       setApp(await applicationsApi.get(id));
-    } catch (err: unknown) {
+    } catch {
       message.error('加载失败');
       nav('/applications');
     } finally { setLoading(false); }
@@ -504,7 +514,7 @@ export default function ApplicationDetailPage() {
           {
             key: 'versions',
             label: <span><HistoryOutlined /> 版本历史</span>,
-            children: <VersionHistoryTab appId={app.id} />,
+            children: <VersionHistoryTab app={app} onAppReload={fetchApp} />,
           },
           {
             key: 'settings',

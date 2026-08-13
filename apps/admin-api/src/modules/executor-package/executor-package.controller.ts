@@ -88,7 +88,7 @@ export class ExecutorPackageController {
   create(
     @Body() createDto: CreateExecutorPackageDto,
     @UploadedFile() file: Express.Multer.File,
-    @CurrentUser('username') uploadedBy: string,
+    @CurrentUser("username") uploadedBy: string,
   ): Promise<ExecutorPackage> {
     return this.svc.create(createDto, file, uploadedBy);
   }
@@ -104,8 +104,16 @@ export class ExecutorPackageController {
 
   @Get("latest")
   @ApiOperation({ summary: "Get latest ACTIVE executor package by type" })
-  @ApiQuery({ name: "type", required: true, description: "Executor package type" })
-  @ApiQuery({ name: "platform", required: false, description: "Platform (optional)" })
+  @ApiQuery({
+    name: "type",
+    required: true,
+    description: "Executor package type",
+  })
+  @ApiQuery({
+    name: "platform",
+    required: false,
+    description: "Platform (optional)",
+  })
   @ApiResponse({ status: 200, description: "Latest package info" })
   findLatest(
     @Query("type") type: string,
@@ -118,9 +126,11 @@ export class ExecutorPackageController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: "Generate one-time install token" })
   @ApiResponse({ status: 201, description: "Install token" })
-  generateInstallToken(
-    @Body("executorId") executorId?: string,
-  ): { token: string; expiresIn: number; expiresAt: string } {
+  generateInstallToken(@Body("executorId") executorId?: string): {
+    token: string;
+    expiresIn: number;
+    expiresAt: string;
+  } {
     return this.svc.generateInstallToken(executorId);
   }
 
@@ -178,9 +188,7 @@ export class ExecutorPackageController {
   @ApiOperation({ summary: "Deprecate executor package" })
   @ApiParam({ name: "id", description: "Package ID" })
   @ApiResponse({ status: 200, description: "Deprecated" })
-  deprecate(
-    @Param("id", ParseUUIDPipe) id: string,
-  ): Promise<ExecutorPackage> {
+  deprecate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
     return this.svc.deprecate(id);
   }
 
@@ -188,9 +196,7 @@ export class ExecutorPackageController {
   @ApiOperation({ summary: "Activate executor package" })
   @ApiParam({ name: "id", description: "Package ID" })
   @ApiResponse({ status: 200, description: "Activated" })
-  activate(
-    @Param("id", ParseUUIDPipe) id: string,
-  ): Promise<ExecutorPackage> {
+  activate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
     return this.svc.activate(id);
   }
 
@@ -203,7 +209,9 @@ export class ExecutorPackageController {
   @Public()
   @Post("push-result")
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Executor package push result callback (called by executor-node)" })
+  @ApiOperation({
+    summary: "Executor package push result callback (called by executor-node)",
+  })
   @ApiBody({
     schema: {
       type: "object",
@@ -226,7 +234,11 @@ export class ExecutorPackageController {
     @Body("version") version?: string,
     @Body("error") error?: string,
   ): Promise<{ ok: boolean }> {
-    await verifyExecutorToken(auth, this.configService, this.systemConfigService);
+    await verifyExecutorToken(
+      auth,
+      this.configService,
+      this.systemConfigService,
+    );
     this.logger.log(
       `Push result: package=${packageId} executor=${executorId} status=${status}${
         error ? ` error=${error}` : ""
@@ -236,7 +248,7 @@ export class ExecutorPackageController {
     try {
       const pkg = await this.svc.findOne(packageId);
       const entry = {
-        executorId: executorId ?? 'unknown',
+        executorId: executorId ?? "unknown",
         status,
         version: version ?? pkg.version,
         ...(error ? { error } : {}),
@@ -247,7 +259,9 @@ export class ExecutorPackageController {
       const trimmed = [...history, entry].slice(-100);
       await this.svc.update(packageId, { pushHistory: trimmed } as any);
     } catch (e: unknown) {
-      this.logger.warn(`Failed to persist push history: ${e instanceof Error ? e.message : String(e)}`);
+      this.logger.warn(
+        `Failed to persist push history: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
     return { ok: true };
   }
@@ -261,7 +275,11 @@ export class ExecutorPackageController {
     schema: {
       type: "object",
       properties: {
-        executorIds: { type: "array", items: { type: "string" }, description: "Target executor ID list, empty = all" },
+        executorIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Target executor ID list, empty = all",
+        },
       },
     },
   })
@@ -269,7 +287,9 @@ export class ExecutorPackageController {
   async push(
     @Param("id", ParseUUIDPipe) id: string,
     @Body("executorIds") executorIds?: string[],
-  ): Promise<{ executorId: string; address: string; success: boolean; error?: string }[]> {
+  ): Promise<
+    { executorId: string; address: string; success: boolean; error?: string }[]
+  > {
     const executors = await this.executorService.findAll();
     const sharedToken = this.configService.get<string>("executor.sharedToken");
     return this.svc.pushToExecutors(id, executorIds, executors, sharedToken);

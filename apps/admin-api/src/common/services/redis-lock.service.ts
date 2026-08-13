@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Redis from "ioredis";
 import { randomBytes } from "crypto";
@@ -17,7 +22,7 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
       password: this.configService.get("redis.password"),
       retryStrategy: (times) => Math.min(times * 100, 3000),
     });
-    this.client.on('error', (err: Error) => {
+    this.client.on("error", (err: Error) => {
       // Prevent unhandled rejection — ioredis auto-reconnects on connection errors
       this.logger.error(`Redis connection error: ${err.message}`);
     });

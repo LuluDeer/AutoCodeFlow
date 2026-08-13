@@ -24,12 +24,15 @@ export class MetricsService {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    const [totalTasks, totalExecutors, onlineExecutors, todayRuns] = await Promise.all([
-      this.taskRepo.count(),
-      this.executorRepo.count(),
-      this.executorRepo.count({ where: { status: ExecutorStatus.ONLINE } }),
-      this.execRepo.count({ where: { createdAt: MoreThanOrEqual(todayStart) } }),
-    ]);
+    const [totalTasks, totalExecutors, onlineExecutors, todayRuns] =
+      await Promise.all([
+        this.taskRepo.count(),
+        this.executorRepo.count(),
+        this.executorRepo.count({ where: { status: ExecutorStatus.ONLINE } }),
+        this.execRepo.count({
+          where: { createdAt: MoreThanOrEqual(todayStart) },
+        }),
+      ]);
 
     const execStats = await this.execRepo
       .createQueryBuilder("e")

@@ -43,7 +43,9 @@ export class TraceService {
   /**
    * Attach traceId to axios request config.
    */
-  attachToAxiosConfig(config: InternalAxiosRequestConfig): InternalAxiosRequestConfig {
+  attachToAxiosConfig(
+    config: InternalAxiosRequestConfig,
+  ): InternalAxiosRequestConfig {
     config.headers.set("X-Trace-Id", this._traceId);
     return config;
   }

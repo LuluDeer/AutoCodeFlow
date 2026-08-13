@@ -10,9 +10,12 @@ export interface Task {
   triggerType: string;
   fixedRate?: number;
   cronExpression?: string;
+  timezone?: string | null;
   params?: Record<string, string | number | boolean>;
   maxRetry: number;
+  retryDelay?: number;
   timeout: number;
+  timeoutSeconds?: number;
   applicationId?: string | null;
   executeMode?: string | null;
   executorAppName?: string | null;
@@ -40,6 +43,7 @@ export interface TaskExecution {
   duration?: number;
   logs?: string;
   errorMessage?: string;
+  failureReason?: string | null;
   aiAnalysis?: string;
   retryCount?: number;
   taskVersion?: string | null;
@@ -78,13 +82,13 @@ export const tasksApi = {
   update: (id: string, data: Partial<Task>) =>
     client.patch(`/tasks/${id}`, data) as Promise<Task>,
   delete: (id: string) => client.delete(`/tasks/${id}`),
-  trigger: (id: string, params?: Record<string, any>) =>
+  trigger: (id: string, params?: Record<string, unknown>) =>
     client.post(`/tasks/${id}/trigger`, { params }),
   executions: (id: string, p?: { page?: number; pageSize?: number }) =>
     client.get(`/tasks/${id}/executions`, { params: p }) as Promise<PageResult<TaskExecution>>,
   execution: (taskId: string, execId: string) =>
     client.get(`/tasks/${taskId}/executions/${execId}`) as Promise<TaskExecution>,
-  rollback: (id: string, gitCommit: string, params?: Record<string, any>) =>
+  rollback: (id: string, gitCommit: string, params?: Record<string, unknown>) =>
     client.post(`/tasks/${id}/rollback`, { gitCommit, params }),
   rollbackToVersion: (taskId: string, versionId: string) =>
     client.post(`/tasks/${taskId}/versions/${versionId}/rollback`) as Promise<Task>,

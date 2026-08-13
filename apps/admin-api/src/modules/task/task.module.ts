@@ -33,7 +33,11 @@ import { SystemConfigModule } from "../config/config.module";
     forwardRef(() => SchedulerModule),
     SystemConfigModule,
   ],
-  controllers: [TaskController, TaskBatchController, ExecutionCallbackController],
+  controllers: [
+    TaskController,
+    TaskBatchController,
+    ExecutionCallbackController,
+  ],
   providers: [TaskService, TaskProcessor],
   exports: [TaskService],
 })

@@ -150,7 +150,7 @@ export default function ExecutionsPage() {
       title: '',
       key: 'action',
       width: 100,
-      render: (_: any, r: TaskExecution) => (
+      render: (_: unknown, r: TaskExecution) => (
         <Space size={4}>
           <Button
             type="link" size="small" icon={<EyeOutlined />}

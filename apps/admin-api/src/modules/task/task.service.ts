@@ -14,6 +14,7 @@ import { Task, TaskStatus } from "./entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
+  ExecutionFailureReason,
 } from "./entities/task-execution.entity";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
@@ -28,6 +29,55 @@ import { AiService } from "../ai/ai.service";
 @Injectable()
 export class TaskService {
   private readonly logger = new Logger(TaskService.name);
+
+  private normalizeTaskDto<T extends CreateTaskDto | UpdateTaskDto>(dto: T): T {
+    const normalized = { ...dto } as T & {
+      timeout?: number;
+      timeoutSeconds?: number;
+    };
+    if (normalized.timeoutSeconds !== undefined) {
+      normalized.timeout = normalized.timeoutSeconds;
+      delete normalized.timeoutSeconds;
+    }
+    return normalized as T;
+  }
+
+  private inferFailureReason(
+    errorMessage?: string | null,
+    logs?: string | null,
+    exitCode?: number,
+  ): ExecutionFailureReason {
+    const text = [errorMessage, logs].filter(Boolean).join("\n").toLowerCase();
+
+    if (/timeout|timed out|etimedout|execution timed/.test(text)) {
+      return ExecutionFailureReason.TIMEOUT;
+    }
+    if (
+      /executor.*(offline|unavailable)|no available executor|econnrefused|enotfound|network error|socket hang up/.test(
+        text,
+      )
+    ) {
+      return ExecutionFailureReason.EXECUTOR_OFFLINE;
+    }
+    if (
+      /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|module not found|cannot find module/.test(
+        text,
+      )
+    ) {
+      return ExecutionFailureReason.PACKAGE_FETCH_FAILED;
+    }
+    if (typeof exitCode === "number" && exitCode !== 0) {
+      return ExecutionFailureReason.SCRIPT_ERROR;
+    }
+    if (
+      /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code/.test(
+        text,
+      )
+    ) {
+      return ExecutionFailureReason.SCRIPT_ERROR;
+    }
+    return ExecutionFailureReason.UNKNOWN;
+  }
 
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
@@ -47,7 +97,8 @@ export class TaskService {
     if (dto.dependencies && Object.keys(dto.dependencies).length > 0) {
       await this.checkCircularDependency(dto.id, dto.dependencies);
     }
-    return this.taskRepo.save(this.taskRepo.create(dto));
+    const normalized = this.normalizeTaskDto(dto);
+    return this.taskRepo.save(this.taskRepo.create(normalized));
   }
 
   private async checkCircularDependency(
@@ -143,7 +194,9 @@ export class TaskService {
 
   async update(id: string, dto: UpdateTaskDto) {
     const t = await this.findOne(id);
-    const updated = await this.taskRepo.save(Object.assign(t, dto));
+    const updated = await this.taskRepo.save(
+      Object.assign(t, this.normalizeTaskDto(dto)),
+    );
     // Stop old schedule, then re-register based on new status without waiting for reload
     this.schedulerService.stop(id);
     if (updated.status === TaskStatus.ACTIVE) {
@@ -209,20 +262,18 @@ export class TaskService {
       {
         // Bull requires attempts >= 1; guard against maxRetry=0
         attempts: Math.max(1, task.maxRetry ?? 1),
-        backoff: task.maxRetry && task.maxRetry > 1
-          ? { type: 'exponential', delay: 10_000 }
-          : undefined,
+        backoff:
+          task.retryDelay > 0
+            ? { type: "exponential", delay: task.retryDelay * 1000 }
+            : undefined,
       },
     );
     return exec;
   }
 
-  async getExecutions(
-    taskId: string,
-    p: PaginationDto & { status?: string },
-  ) {
+  async getExecutions(taskId: string, p: PaginationDto & { status?: string }) {
     const where: Record<string, unknown> = { taskId };
-    if (p.status) where['status'] = p.status;
+    if (p.status) where["status"] = p.status;
 
     const [list, total] = await this.execRepo.findAndCount({
       where,
@@ -237,6 +288,8 @@ export class TaskService {
     p: PaginationDto & {
       status?: string;
       taskId?: string;
+      taskName?: string;
+      executorAddress?: string;
       startTime?: string;
       endTime?: string;
     },
@@ -251,6 +304,14 @@ export class TaskService {
 
     if (p.status) qb.andWhere("e.status = :status", { status: p.status });
     if (p.taskId) qb.andWhere("e.taskId = :taskId", { taskId: p.taskId });
+    if (p.taskName)
+      qb.andWhere("(e.taskName ILIKE :taskName OR t.name ILIKE :taskName)", {
+        taskName: `%${p.taskName}%`,
+      });
+    if (p.executorAddress)
+      qb.andWhere("e.executorAddress ILIKE :executorAddress", {
+        executorAddress: `%${p.executorAddress}%`,
+      });
     if (p.startTime)
       qb.andWhere("e.createdAt >= :startTime", { startTime: p.startTime });
     if (p.endTime)
@@ -263,7 +324,7 @@ export class TaskService {
 
     const taskNameMap = new Map<string, string>();
     rawList.raw.forEach((r: Record<string, unknown>) => {
-      if (typeof r.e_taskId === 'string' && typeof r.task_name === 'string') {
+      if (typeof r.e_taskId === "string" && typeof r.task_name === "string") {
         taskNameMap.set(r.e_taskId, r.task_name);
       }
     });
@@ -290,15 +351,29 @@ export class TaskService {
 
     const executions = await this.execRepo.find({
       where: { taskId },
-      order: { createdAt: 'DESC' },
+      order: { createdAt: "DESC" },
       take: 50,
     });
 
-    const successCount = executions.filter((e) => e.status === ExecutionStatus.SUCCESS).length;
-    const failCount = executions.filter((e) => e.status === ExecutionStatus.FAILED || e.status === ExecutionStatus.TIMEOUT).length;
-    const durations = executions.filter((e) => e.duration != null).map((e) => e.duration!);
-    const avgDuration = durations.length > 0 ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
-    const p95Duration = durations.length > 0 ? durations.sort((a, b) => a - b)[Math.floor(durations.length * 0.95)] : 0;
+    const successCount = executions.filter(
+      (e) => e.status === ExecutionStatus.SUCCESS,
+    ).length;
+    const failCount = executions.filter(
+      (e) =>
+        e.status === ExecutionStatus.FAILED ||
+        e.status === ExecutionStatus.TIMEOUT,
+    ).length;
+    const durations = executions
+      .filter((e) => e.duration != null)
+      .map((e) => e.duration!);
+    const avgDuration =
+      durations.length > 0
+        ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
+        : 0;
+    const p95Duration =
+      durations.length > 0
+        ? durations.sort((a, b) => a - b)[Math.floor(durations.length * 0.95)]
+        : 0;
 
     // Build time-of-day distribution for successes
     const hourCounts: number[] = new Array(24).fill(0);
@@ -316,13 +391,14 @@ export class TaskService {
 
     const summaryLog = [
       `Task: ${task.name} (${task.id})`,
-      `Current cron: ${task.cronExpression || 'none'}`,
+      `Current cron: ${task.cronExpression || "none"}`,
       `Total executions sampled: ${executions.length}`,
       `Successes: ${successCount}, Failures/Timeouts: ${failCount}`,
       `Avg duration: ${avgDuration}ms, P95 duration: ${p95Duration}ms`,
-      `Timeout setting: ${task.timeout || 'default'}ms`,
-      `Hours with most successes (UTC): ${bestHours.join(', ')}`,
-    ].join('\n');
+      `Timeout setting: ${task.timeout || "default"}ms`,
+      `Hours with most successes (UTC): ${bestHours.join(", ")}`,
+    ].join("\n");
+    this.logger.debug(`Schedule optimization sample:\n${summaryLog}`);
 
     const { suggestedCron, reasoning } = await this.aiService.suggestSchedule(
       task.name,
@@ -352,7 +428,9 @@ export class TaskService {
       take: 20,
     });
     const total = await this.execRepo.count({ where: { taskId } });
-    const succeeded = recent.filter((e) => e.status === ExecutionStatus.SUCCESS).length;
+    const succeeded = recent.filter(
+      (e) => e.status === ExecutionStatus.SUCCESS,
+    ).length;
     const successRate =
       recent.length > 0
         ? Math.round((succeeded / recent.length) * 1000) / 10
@@ -364,7 +442,12 @@ export class TaskService {
       durations.length > 0
         ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
         : 0;
-    return { recentExecutions: recent, successRate, avgDuration, totalRuns: total };
+    return {
+      recentExecutions: recent,
+      successRate,
+      avgDuration,
+      totalRuns: total,
+    };
   }
 
   async getExecution(id: string) {
@@ -382,7 +465,8 @@ export class TaskService {
     const exec = await this.execRepo.findOne({ where: { id: execId } });
     if (!exec) throw new NotFoundException("Execution not found");
     // Use errorMessage + logs as analysis input; fall back gracefully when logs are empty
-    const logContent = [exec.errorMessage, exec.logs].filter(Boolean).join("\n") || "(no logs)";
+    const logContent =
+      [exec.errorMessage, exec.logs].filter(Boolean).join("\n") || "(no logs)";
     const task = { name: exec.taskName, runtime: "unknown" };
     exec.aiAnalysis = await this.aiService.analyzeFailure(task, logContent);
     await this.execRepo.save(exec);
@@ -465,7 +549,14 @@ export class TaskService {
       if (finished) break;
       await new Promise<void>((resolve) => {
         const t = setTimeout(resolve, POLL_INTERVAL);
-        signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(t);
+            resolve();
+          },
+          { once: true },
+        );
       });
     }
 
@@ -507,9 +598,10 @@ export class TaskService {
       {
         // Bull requires attempts >= 1; guard against maxRetry=0
         attempts: Math.max(1, task.maxRetry ?? 1),
-        backoff: task.maxRetry && task.maxRetry > 1
-          ? { type: 'exponential', delay: 10_000 }
-          : undefined,
+        backoff:
+          task.retryDelay > 0
+            ? { type: "exponential", delay: task.retryDelay * 1000 }
+            : undefined,
       },
     );
     // N11: re-schedule so active cron/fixed-rate tasks pick up the new commit immediately
@@ -527,9 +619,9 @@ export class TaskService {
     if (!address) return;
     await this.dataSource
       .createQueryBuilder()
-      .update('executors')
+      .update("executors")
       .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
-      .where('address = :addr', { addr: address })
+      .where("address = :addr", { addr: address })
       .execute();
   }
 
@@ -540,6 +632,7 @@ export class TaskService {
       exitCode?: number;
       logs?: string;
       errorMessage?: string;
+      failureReason?: ExecutionFailureReason;
       durationMs?: number;
       executorAddress?: string;
     }>,
@@ -585,16 +678,24 @@ export class TaskService {
           continue;
         }
 
-        execution.status =
-          cb.status === "success"
-            ? ExecutionStatus.SUCCESS
-            : ExecutionStatus.FAILED;
+        if (cb.status === "success") {
+          execution.status = ExecutionStatus.SUCCESS;
+          execution.failureReason = null;
+        } else {
+          const failureReason =
+            cb.failureReason ??
+            this.inferFailureReason(cb.errorMessage, cb.logs, cb.exitCode);
+          execution.status =
+            failureReason === ExecutionFailureReason.TIMEOUT
+              ? ExecutionStatus.TIMEOUT
+              : ExecutionStatus.FAILED;
+          execution.failureReason = failureReason;
+          if (cb.errorMessage !== undefined) {
+            execution.errorMessage = cb.errorMessage;
+          }
+        }
         execution.endTime = new Date();
         execution.duration = cb.durationMs;
-
-        if (cb.status === "failed") {
-          execution.errorMessage = cb.errorMessage;
-        }
 
         if (cb.logs) {
           execution.logs = cb.logs;
@@ -644,9 +745,9 @@ export class TaskService {
 
     // Use MAX(version number) + 1 to avoid race condition from COUNT-based numbering
     const maxResult = await this.versionRepo
-      .createQueryBuilder('v')
-      .select('MAX(CAST(SUBSTR(v.version, 2) AS INTEGER))', 'maxNum')
-      .where('v.taskId = :taskId', { taskId })
+      .createQueryBuilder("v")
+      .select("MAX(CAST(SUBSTR(v.version, 2) AS INTEGER))", "maxNum")
+      .where("v.taskId = :taskId", { taskId })
       .getRawOne();
     const versionNum = (maxResult?.maxNum ?? 0) + 1;
     const version = `v${versionNum}`;
@@ -664,6 +765,7 @@ export class TaskService {
       retryableErrors: task.retryableErrors,
       triggerType: task.triggerType,
       cronExpression: task.cronExpression,
+      timezone: task.timezone,
       fixedRate: task.fixedRate,
       blockStrategy: task.blockStrategy,
       misfireStrategy: task.misfireStrategy,
@@ -757,23 +859,31 @@ export class TaskService {
   }
 
   /** Force-terminate a running execution */
-  async killExecution(execId: string): Promise<{ success: boolean; message: string }> {
+  async killExecution(
+    execId: string,
+  ): Promise<{ success: boolean; message: string }> {
     const execution = await this.execRepo.findOne({ where: { id: execId } });
     if (!execution) {
       throw new NotFoundException(`Execution ${execId} not found`);
     }
-    if (execution.status !== ExecutionStatus.RUNNING && execution.status !== ExecutionStatus.PENDING) {
-      throw new BadRequestException(`Execution is in '${execution.status}' status and cannot be terminated`);
+    if (
+      execution.status !== ExecutionStatus.RUNNING &&
+      execution.status !== ExecutionStatus.PENDING
+    ) {
+      throw new BadRequestException(
+        `Execution is in '${execution.status}' status and cannot be terminated`,
+      );
     }
     execution.status = ExecutionStatus.KILLED;
     execution.endTime = new Date();
     if (execution.startTime) {
       execution.duration = Date.now() - new Date(execution.startTime).getTime();
     }
-    execution.errorMessage = 'Manually terminated by administrator';
+    execution.errorMessage = "Manually terminated by administrator";
+    execution.failureReason = ExecutionFailureReason.KILLED;
     await this.execRepo.save(execution);
     await this.releaseExecutorSlot(execution.executorAddress);
     this.logger.warn(`Execution ${execId} has been manually terminated`);
-    return { success: true, message: 'Execution marked as terminated' };
+    return { success: true, message: "Execution marked as terminated" };
   }
 }

@@ -1,4 +1,12 @@
-import { BadRequestException, Controller, Post, Body, Headers, ParseArrayPipe, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  Controller,
+  Post,
+  Body,
+  Headers,
+  ParseArrayPipe,
+  UnauthorizedException,
+} from "@nestjs/common";
 import { SkipThrottle } from "@nestjs/throttler";
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from "@nestjs/swagger";
 import { ConfigService } from "@nestjs/config";
@@ -45,7 +53,10 @@ export class ExecutionCallbackController {
   })
   @ApiResponse({ status: 400, description: "Invalid request body" })
   @ApiResponse({ status: 401, description: "Invalid shared token" })
-  @ApiBody({ type: [CallbackItemDto], description: "Array of execution callback items (max 100)" })
+  @ApiBody({
+    type: [CallbackItemDto],
+    description: "Array of execution callback items (max 100)",
+  })
   async callback(
     @Headers("authorization") auth: string | undefined,
     @Body(new ParseArrayPipe({ items: CallbackItemDto, whitelist: true }))
@@ -67,7 +78,11 @@ export class ExecutionCallbackController {
         throw new UnauthorizedException("Invalid executor token");
       }
     } else {
-      await verifyExecutorToken(auth, this.configService, this.systemConfigService);
+      await verifyExecutorToken(
+        auth,
+        this.configService,
+        this.systemConfigService,
+      );
     }
     const results = await this.taskService.handleCallback(callbacks);
     return { results };
