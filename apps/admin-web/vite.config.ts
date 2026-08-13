@@ -25,7 +25,8 @@ export default defineConfig({
           // Split large vendor libraries into separate chunks
           const chunks: Array<[string, string[]]> = [
             ['vendor-react', ['react', 'react-dom', 'react-router-dom']],
-            ['vendor-antd', ['antd', '@ant-design/icons', '@ant-design/cssinjs']],
+            // Keep route-heavy UI libraries out of forced vendor chunks so lazy pages
+            // can share only the pieces they actually import.
             ['vendor-charts', ['recharts']],
             ['vendor-monaco', ['@monaco-editor/react', 'monaco-editor']],
             ['vendor-query', ['@tanstack/react-query', 'ahooks']],

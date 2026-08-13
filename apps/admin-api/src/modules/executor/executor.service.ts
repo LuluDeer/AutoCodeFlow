@@ -5,6 +5,8 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { InjectQueue } from "@nestjs/bullmq";
+import type { Queue } from "bullmq";
 import { randomBytes, timingSafeEqual } from "crypto";
 import * as bcrypt from "bcrypt";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -14,6 +16,7 @@ import axios from "axios";
 import { Executor, ExecutorStatus } from "./entities/executor.entity";
 import {
   TaskExecution,
+  ExecutionFailureReason,
   ExecutionStatus,
 } from "../task/entities/task-execution.entity";
 import { Task } from "../task/entities/task.entity";
@@ -31,6 +34,7 @@ export class ExecutorService {
     @InjectRepository(TaskExecution)
     private execRepo: Repository<TaskExecution>,
     @InjectRepository(Task) private taskRepo: Repository<Task>,
+    @InjectQueue("task-queue") private taskQueue: Queue,
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
     private readonly systemConfigService: SystemConfigService,
@@ -67,6 +71,123 @@ export class ExecutorService {
       .execute();
   }
 
+  private parseExecutorStartedAt(value?: string | Date | null): Date | null {
+    if (!value) return null;
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  private hasExecutorRestarted(
+    executor: Executor,
+    incomingStartedAt: Date | null,
+    incomingStartupId: string | null,
+  ): boolean {
+    if (
+      incomingStartupId &&
+      executor.executorStartupId &&
+      incomingStartupId !== executor.executorStartupId
+    ) {
+      return true;
+    }
+    if (
+      incomingStartedAt &&
+      executor.executorStartedAt &&
+      incomingStartedAt.getTime() > executor.executorStartedAt.getTime()
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  private async scheduleRetryAfterRestart(
+    task: Task,
+    execution: TaskExecution,
+  ): Promise<void> {
+    const maxAttempts = Math.max(1, task.maxRetry ?? 1);
+    const nextRetryCount = (execution.retryCount ?? 0) + 1;
+    if (nextRetryCount >= maxAttempts) return;
+
+    const retryExecution = this.execRepo.create({
+      taskId: task.id,
+      taskName: task.name,
+      status: ExecutionStatus.PENDING,
+      params: execution.params ?? task.params,
+      triggerType: execution.triggerType ?? "executor_restart",
+      taskVersion: execution.taskVersion ?? task.currentVersion,
+      retryCount: nextRetryCount,
+    });
+    const saved = await this.execRepo.save(retryExecution);
+    try {
+      await this.taskQueue.add(
+        "execute",
+        { executionId: saved.id },
+        {
+          attempts: Math.max(1, maxAttempts - nextRetryCount),
+          backoff:
+            task.retryDelay > 0
+              ? { type: "exponential", delay: task.retryDelay * 1000 }
+              : undefined,
+        },
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await this.execRepo.delete(saved.id).catch((deleteErr) => {
+        const deleteMessage =
+          deleteErr instanceof Error ? deleteErr.message : String(deleteErr);
+        this.logger.warn(
+          `Failed to delete unscheduled retry execution ${saved.id}: ${deleteMessage}`,
+        );
+      });
+      this.logger.warn(
+        `Failed to enqueue restart retry for execution ${execution.id}: ${message}`,
+      );
+    }
+  }
+
+  private shouldFailAfterRestart(
+    execution: TaskExecution,
+    onlyStartedBefore?: Date | null,
+  ): boolean {
+    if (!onlyStartedBefore) return true;
+    if (!execution.startTime) return true;
+    return execution.startTime.getTime() < onlyStartedBefore.getTime();
+  }
+
+  private async failRunningExecutionsAfterRestart(
+    executorAddress: string,
+    onlyStartedBefore?: Date | null,
+  ): Promise<number> {
+    const runningExecutions = await this.execRepo.find({
+      where: {
+        executorAddress,
+        status: ExecutionStatus.RUNNING,
+      },
+    });
+    const executionsToFail = runningExecutions.filter((execution) =>
+      this.shouldFailAfterRestart(execution, onlyStartedBefore),
+    );
+    for (const execution of executionsToFail) {
+      const task = execution.taskId
+        ? await this.taskRepo.findOne({ where: { id: execution.taskId } })
+        : null;
+      execution.status = ExecutionStatus.FAILED;
+      execution.endTime = new Date();
+      execution.failureReason = ExecutionFailureReason.EXECUTOR_RESTART;
+      execution.errorMessage =
+        "[System] Executor restarted before reporting completion";
+      execution.logs = `${execution.logs || ""}\n[System] Executor restarted; execution marked as FAILED`;
+      await this.execRepo.save(execution);
+      await this.releaseExecutorSlot(execution.executorAddress);
+      if (task) await this.scheduleRetryAfterRestart(task, execution);
+    }
+    if (executionsToFail.length > 0) {
+      this.logger.warn(
+        `Marked ${executionsToFail.length} running execution(s) as FAILED after executor restart: ${executorAddress}`,
+      );
+    }
+    return executionsToFail.length;
+  }
+
   async register(data: {
     appName: string;
     address: string;
@@ -79,6 +200,8 @@ export class ExecutorService {
     groupName?: string | null;
     tags?: string[] | null;
     description?: string | null;
+    restartedAt?: string | Date | null;
+    startupId?: string | null;
   }) {
     let e: Executor | null = await this.repo.findOne({
       where: { address: data.address },
@@ -86,6 +209,15 @@ export class ExecutorService {
     const isFirstTime = !e;
     const capabilities = data.capabilities ?? data.runtime;
     const maxConcurrentTasks = data.maxConcurrentTasks ?? data.maxConcurrent;
+    const incomingStartedAt = this.parseExecutorStartedAt(data.restartedAt);
+    const incomingStartupId = data.startupId?.trim() || null;
+    const hasStartupBaseline = Boolean(e?.executorStartupId || e?.executorStartedAt);
+    const didRestart = e
+      ? this.hasExecutorRestarted(e, incomingStartedAt, incomingStartupId)
+      : false;
+    const shouldRecoverMissingBaseline = Boolean(
+      e && !didRestart && !hasStartupBaseline && incomingStartedAt,
+    );
     if (!e) e = this.repo.create(data as Partial<Executor>);
     // Update mutable fields on registration/re-registration
     if (data.type) e.type = data.type as any;
@@ -97,6 +229,13 @@ export class ExecutorService {
     if (data.groupName !== undefined) e.groupName = data.groupName;
     if (data.tags !== undefined) e.tags = data.tags;
     if (data.description !== undefined) e.description = data.description;
+    if (didRestart) {
+      await this.failRunningExecutionsAfterRestart(data.address);
+    } else if (shouldRecoverMissingBaseline) {
+      await this.failRunningExecutionsAfterRestart(data.address, incomingStartedAt);
+    }
+    if (incomingStartedAt) e.executorStartedAt = incomingStartedAt;
+    if (incomingStartupId) e.executorStartupId = incomingStartupId;
     e.status = ExecutorStatus.ONLINE;
     e.lastHeartbeat = new Date();
     const saved = await this.repo.save(e);
@@ -123,15 +262,37 @@ export class ExecutorService {
       runningTaskCount?: number;
       totalTaskCount?: number;
       failedTaskCount?: number;
+      restartedAt?: string | Date | null;
+      startupId?: string | null;
     },
   ) {
     const e = await this.repo.findOne({ where: { address } });
     if (!e) throw new NotFoundException("Executor not found");
-    Object.assign(e, metrics, {
+    const incomingStartedAt = this.parseExecutorStartedAt(metrics.restartedAt);
+    const incomingStartupId = metrics.startupId?.trim() || null;
+    const hasStartupBaseline = Boolean(e.executorStartupId || e.executorStartedAt);
+    const didRestart = this.hasExecutorRestarted(
+      e,
+      incomingStartedAt,
+      incomingStartupId,
+    );
+    const shouldRecoverMissingBaseline = Boolean(
+      !didRestart && !hasStartupBaseline && incomingStartedAt,
+    );
+    const { restartedAt, startupId, ...metricValues } = metrics;
+    if (didRestart) {
+      await this.failRunningExecutionsAfterRestart(address);
+    } else if (shouldRecoverMissingBaseline) {
+      await this.failRunningExecutionsAfterRestart(address, incomingStartedAt);
+    }
+    Object.assign(e, metricValues, {
       status: ExecutorStatus.ONLINE,
       lastHeartbeat: new Date(),
     });
-    return this.repo.save(e);
+    if (incomingStartedAt) e.executorStartedAt = incomingStartedAt;
+    if (incomingStartupId) e.executorStartupId = incomingStartupId;
+    const saved = await this.repo.save(e);
+    return saved;
   }
 
   findAll() {

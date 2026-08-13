@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
+import { BullModule } from "@nestjs/bullmq";
 import { ExecutorController } from "./executor.controller";
 import { ExecutorService } from "./executor.service";
 import { InstallCmdController } from "./install-cmd.controller";
@@ -12,6 +13,7 @@ import { SystemConfigModule } from "../config/config.module";
 @Module({
   imports: [
     TypeOrmModule.forFeature([Executor, Task, TaskExecution]),
+    BullModule.registerQueue({ name: "task-queue" }),
     NotificationModule,
     SystemConfigModule,
   ],

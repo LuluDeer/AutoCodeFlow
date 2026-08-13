@@ -191,6 +191,22 @@ function downloadPackage(url: string, dest: string): Promise<void> {
   });
 }
 
+function isSafePathSegment(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
+
+function validatePackageUrl(packageUrl: string): string | null {
+  try {
+    const parsed = new URL(packageUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return `packageUrl scheme not allowed: ${parsed.protocol}. Only http and https are permitted.`;
+    }
+    return null;
+  } catch {
+    return 'packageUrl is not a valid URL';
+  }
+}
+
 /** Main deploy handler */
 deployRouter.post('/deploy', async (req: Request, res: Response) => {
   const payload = req.body as DeployPayload;
@@ -199,14 +215,26 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
   if (!deploymentId) {
     return res.status(400).json({ error: 'deploymentId is required' });
   }
+  if (!isSafePathSegment(deploymentId)) {
+    return res.status(400).json({ error: 'deploymentId contains unsupported characters' });
+  }
   if (!gitRepo && !packageUrl) {
     return res.status(400).json({ error: 'Either gitRepo or packageUrl is required' });
+  }
+  if (packageUrl) {
+    const packageUrlError = validatePackageUrl(packageUrl);
+    if (packageUrlError) {
+      return res.status(400).json({ error: packageUrlError });
+    }
   }
 
   // Work directory for this deployment (accept appId as alias for applicationId)
   const appId = payload.applicationId || payload.appId;
   if (!appId) {
     return res.status(400).json({ error: 'applicationId is required' });
+  }
+  if (!isSafePathSegment(appId)) {
+    return res.status(400).json({ error: 'applicationId contains unsupported characters' });
   }
   const deployDir = path.join(config.workDir, 'apps', appId, deploymentId);
 
@@ -251,8 +279,13 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         if (process.platform === 'win32') {
           const psR = spawnSync(
             'powershell.exe',
-            ['-NoProfile', '-Command',
-              `Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${deployDir}'`],
+            [
+              '-NoProfile',
+              '-Command',
+              'Expand-Archive -Force -LiteralPath $args[0] -DestinationPath $args[1]',
+              zipPath,
+              deployDir,
+            ],
             { stdio: 'pipe', timeout: 60_000 },
           );
           if (psR.status !== 0) throw new Error(psR.stderr?.toString() || 'Expand-Archive failed');

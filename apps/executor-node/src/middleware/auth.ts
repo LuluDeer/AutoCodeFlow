@@ -11,6 +11,10 @@ import { buildAdminApiUrl } from '../admin-api-url';
 // Static token: env vars take priority, then CLI --token arg (via config)
 const STATIC_TOKEN = config.token;
 
+export function getStaticToken(): string | null {
+  return STATIC_TOKEN || null;
+}
+
 // Dynamic token storage (refreshed periodically)
 let dynamicToken: string | null = null;
 let tokenExpiresAt: Date | null = null;

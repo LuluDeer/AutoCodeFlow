@@ -1,7 +1,7 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
 import { config } from './config';
 import { logger } from './logger';
-import { getCurrentToken } from './middleware/auth';
+import { getCurrentToken, getStaticToken } from './middleware/auth';
 import { normalizeAdminApiBaseUrl } from './admin-api-url';
 
 let adminUrls: string[] = [];
@@ -29,13 +29,65 @@ export function failover(): void {
   logger.warn(`Failed over to admin server: ${adminUrls[currentIndex]}`);
 }
 
+export interface AdminApiConnectivityCheckOptions {
+  attempts?: number;
+  initialDelayMs?: number;
+  timeoutMs?: number;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function checkAdminApiConnectivity(
+  options: AdminApiConnectivityCheckOptions = {},
+): Promise<boolean> {
+  const attempts = options.attempts ?? 3;
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  let delayMs = options.initialDelayMs ?? 1_000;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    for (let i = 0; i < adminUrls.length; i++) {
+      const url = adminUrls[i];
+      try {
+        await axios.get(`${url}/api/health`, { timeout: timeoutMs });
+        currentIndex = i;
+        logger.info(`Admin API connectivity check succeeded: ${url}`);
+        return true;
+      } catch (error: unknown) {
+        logger.warn(
+          `Admin API connectivity check failed for ${url} (attempt ${attempt}/${attempts}): ${getErrorMessage(error)}`,
+        );
+      }
+    }
+
+    if (attempt < attempts) {
+      logger.warn(`Admin API is not reachable yet; retrying in ${delayMs}ms`);
+      await sleep(delayMs);
+      delayMs *= 2;
+    }
+  }
+
+  logger.warn(
+    'Admin API connectivity check failed after startup retries; executor will continue and heartbeat will retry in the background.',
+  );
+  return false;
+}
+
+type TokenMode = 'current' | 'static';
+
 export async function request<T = any>(
   method: 'get' | 'post' | 'put' | 'delete',
   path: string,
   data?: Record<string, any>,
   retryCount: number = adminUrls.length,
+  tokenMode: TokenMode = 'current',
 ): Promise<AxiosResponse<T>> {
-  const token = await getCurrentToken();
+  const token = tokenMode === 'static' ? getStaticToken() : await getCurrentToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -82,6 +134,10 @@ export async function get<T = any>(path: string): Promise<AxiosResponse<T>> {
 
 export async function post<T = any>(path: string, data?: Record<string, any>): Promise<AxiosResponse<T>> {
   return request('post', path, data);
+}
+
+export async function postWithStaticToken<T = any>(path: string, data?: Record<string, any>): Promise<AxiosResponse<T>> {
+  return request('post', path, data, adminUrls.length, 'static');
 }
 
 export async function put<T = any>(path: string, data?: Record<string, any>): Promise<AxiosResponse<T>> {

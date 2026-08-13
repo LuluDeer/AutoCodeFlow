@@ -10,6 +10,9 @@ import { post } from './admin-client';
 const sharedBuffer = new SharedArrayBuffer(4);
 const runningCountArray = new Int32Array(sharedBuffer);
 
+export const executorStartedAt = new Date().toISOString();
+export const executorStartupId = randomUUID();
+
 export function getRunningCount(): number {
   return Atomics.load(runningCountArray, 0);
 }
@@ -74,6 +77,8 @@ async function sendHeartbeat() {
       cpuUsage,
       memUsage,
       runningTaskCount: getRunningCount(),
+      restartedAt: executorStartedAt,
+      startupId: executorStartupId,
     });
     logger.info(`[${traceId}] Heartbeat succeeded`);
   } catch (err: unknown) {
