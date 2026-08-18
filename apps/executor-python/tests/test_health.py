@@ -1,17 +1,22 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
 from config import settings
 from routers import health as health_module
 
 
-def test_health_returns_200(client):
+def test_health_returns_200(client, monkeypatch):
+    monkeypatch.setattr(health_module, '_check_admin_api', AsyncMock(return_value=True))
+
     response = client.get('/health')
     assert response.status_code == 200
 
 
-def test_health_contains_status_field(client):
+def test_health_contains_status_field(client, monkeypatch):
+    monkeypatch.setattr(health_module, '_check_admin_api', AsyncMock(return_value=True))
+
     response = client.get('/health')
     body = response.json()
     assert 'status' in body
@@ -54,16 +59,18 @@ async def test_check_admin_api_uses_public_health_endpoint(monkeypatch):
     assert calls == [('http://admin.local/api/health', {})]
 
 
-def test_readiness_failure_reports_normalized_admin_url(client, monkeypatch):
+@pytest.mark.asyncio
+async def test_readiness_failure_reports_normalized_admin_url(monkeypatch):
     monkeypatch.setattr(settings, 'admin_api_url', 'http://admin.local/api/')
     monkeypatch.setattr(settings, 'admin_api_url_internal', '')
     monkeypatch.setattr(settings, 'admin_api_url_external', '')
     monkeypatch.setattr(health_module, '_check_admin_api', AsyncMock(return_value=False))
 
-    response = client.get('/health/readiness')
+    with pytest.raises(HTTPException) as exc:
+        await health_module.readiness()
 
-    assert response.status_code == 503
-    assert response.json()['detail'] == {
+    assert exc.value.status_code == 503
+    assert exc.value.detail == {
         'status': 'unready',
         'reason': 'admin-api unreachable',
         'adminApiUrl': 'http://admin.local/api',

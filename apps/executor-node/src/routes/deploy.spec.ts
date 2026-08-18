@@ -18,7 +18,12 @@ jest.mock('../admin-client', () => ({
   post: jest.fn().mockResolvedValue({ data: {} }),
 }));
 
-import { deployRouter } from './deploy';
+import {
+  buildDeploymentPaths,
+  deployRouter,
+  shouldReportProcessExit,
+  suppressNextRestartExitReport,
+} from './deploy';
 
 const app = express();
 app.use(express.json());
@@ -88,5 +93,41 @@ describe('POST /api/deploy validation', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true, deploymentId: 'deploy-1' });
+  });
+});
+
+describe('restart exit reporting', () => {
+  it('suppresses only the next exit report for an in-place restart', () => {
+    suppressNextRestartExitReport('deploy-1');
+
+    expect(shouldReportProcessExit('deploy-1')).toBe(false);
+    expect(shouldReportProcessExit('deploy-1')).toBe(true);
+    expect(shouldReportProcessExit('deploy-2')).toBe(true);
+  });
+});
+
+describe('versioned deployment paths', () => {
+  it('builds immutable release paths and a current pointer', () => {
+    const paths = buildDeploymentPaths('/tmp/work', 'app-1', 'deploy-1', '1.2.0');
+
+    expect(paths.appRoot).toBe('/tmp/work/apps/app-1');
+    expect(paths.releaseKey).toBe('1.2.0-deploy-1');
+    expect(paths.finalReleaseDir).toBe('/tmp/work/apps/app-1/releases/1.2.0-deploy-1');
+    expect(paths.extractDir).toBe('/tmp/work/apps/app-1/tmp/1.2.0-deploy-1-extracting');
+    expect(paths.currentLink).toBe('/tmp/work/apps/app-1/current');
+  });
+
+  it('keeps same-version redeploys isolated by deployment id', () => {
+    const first = buildDeploymentPaths('/tmp/work', 'app-1', 'deploy-1', '1.2.0');
+    const second = buildDeploymentPaths('/tmp/work', 'app-1', 'deploy-2', '1.2.0');
+
+    expect(first.finalReleaseDir).not.toBe(second.finalReleaseDir);
+  });
+
+  it('sanitizes version text before using it in a path', () => {
+    const paths = buildDeploymentPaths('/tmp/work', 'app-1', 'deploy-1', '../v1+build');
+
+    expect(paths.releaseKey).toBe('v1-build-deploy-1');
+    expect(paths.finalReleaseDir).toBe('/tmp/work/apps/app-1/releases/v1-build-deploy-1');
   });
 });

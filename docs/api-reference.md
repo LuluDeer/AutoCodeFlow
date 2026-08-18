@@ -58,14 +58,23 @@ POST /api/auth/login
 | DELETE | `/applications/:id` | 是 | 删除应用（级联删除关联任务） |
 | GET | `/applications/:id/tasks` | 是 | 获取应用下的所有任务 |
 | GET | `/applications/:id/stats` | 是 | 获取应用执行统计数据 |
-| POST | `/applications/webhook` | 是 | CI/CD 触发发版部署 |
+| POST | `/applications/webhook` | 否（签名） | CI/CD 触发发版部署；目标应用必须配置 `webhookSecret` 并使用 HMAC 签名 |
 
 **Webhook 发版请求体：**
 
-> ⚠️ webhook 接口的请求体**只接受以下三个字段**，传入其他字段（如 `runtime`、`executorType`、`upgradeStrategy`）会返回 400。
+> ⚠️ webhook 接口的请求体**只接受以下字段**，传入其他字段（如 `runtime`、`executorType`、`upgradeStrategy`）会返回 400。
+>
+> 该接口对 CI/CD 调用方公开，不需要用户 Bearer JWT。目标应用必须配置 `webhookSecret`，请求必须携带：
+>
+> - `X-AutoCodeFlow-Timestamp`: 当前 Unix 毫秒时间戳，允许 5 分钟窗口。
+> - `X-Hub-Signature-256`: `sha256=<hex>`，其中 `<hex>` 为 `HMAC_SHA256(webhookSecret, "${timestamp}.${rawBody}")`。
 
-```json
+```http
 POST /api/applications/webhook
+X-AutoCodeFlow-Timestamp: 1700000000000
+X-Hub-Signature-256: sha256=<hex>
+Content-Type: application/json
+
 {
   "appName": "my-app",
   "version": "1.2.0",

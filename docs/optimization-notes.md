@@ -34,11 +34,13 @@
 
 **后续增强：** executor 侧可继续细化失败上报来源，例如将依赖安装失败、Git 拉取失败、运行时不支持、进程启动失败拆成更具体的分类，便于后续统计和告警。
 
-### 2.3 Webhook 认证依赖用户 Bearer Token
+### 2.3 Webhook 认证依赖用户 Bearer Token（已支持签名）
 
-CI/CD 系统需要存储长期用户 token，生产环境存在凭证泄露风险。
+CI/CD 系统不再需要存储长期用户 token。`POST /applications/webhook` 已标记为 Public 路由，但匹配到的应用必须配置 `webhookSecret`，调用方必须携带 `X-AutoCodeFlow-Timestamp` 和 `X-Hub-Signature-256`。
 
-**建议：** 支持专用的 Webhook Secret 签名验证（类似 GitHub `X-Hub-Signature-256`），或提供生成限权 API Key 的能力，与用户 JWT 解耦。
+**当前状态：** admin-api 使用原始请求体做 HMAC-SHA256 校验，签名载荷为 `${timestamp}.${rawBody}`，时间戳允许 5 分钟窗口以降低重放风险；未配置 `webhookSecret`、缺失签名、签名错误或时间戳过期都会返回 401。
+
+**后续增强：** 如需更细粒度授权，可继续设计限权 API Key（按应用绑定、作用域、过期/吊销、审计记录），但当前 CI/CD 发版路径已与用户 JWT 解耦。
 
 ### 2.4 任务缺少执行超时配置（已支持）
 
@@ -74,11 +76,11 @@ executor 容器重启后，正在运行的任务现在会被主动收敛，不�
 
 **当前状态：** Node/Python executor 启动注册与心跳会携带 `restartedAt` 与 `startupId`；admin-api 检测到同地址执行器启动标识变化后，会将该执行器上仍处于 `running` 的执行记录标记为 `failed`，并写入结构化失败原因 `executor_restart`，前端执行详情页会展示对应定位提示。
 
-### 3.3 应用包解压路径无版本隔离
+### 3.3 应用包解压路径无版本隔离（已支持）
 
-executor 将应用包解压到固定路径，热更新时直接覆盖。若新版本启动失败，旧版本已被覆盖，无法快速回退。
+executor 部署应用包时会按版本与部署 ID 写入不可变 release 目录，不再直接覆盖旧版本目录。
 
-**建议：** 解压到 `<workDir>/<appName>/<version>/` 路径，热更新时原子切换软链接指向新版本目录；失败时切回旧版本链接，实现秒级回退。
+**当前状态：** Node executor 会将应用发布到 `<workDir>/apps/<applicationId>/releases/<version>-<deploymentId>/`，先在同一应用的 `tmp/` 目录完成下载、解压、依赖安装与环境文件写入，再原子切换 `current` 指针；若切换后启动失败，会尝试恢复到上一个 `current` 目标。admin-api 下发部署命令时会携带应用版本，重复部署同一版本也会通过 deploymentId 保持物理目录隔离。
 
 ### 3.4 多平台支持现状
 

@@ -397,6 +397,100 @@ describe("ExecutorService (__tests__)", () => {
         service.heartbeat("unknown:9999", {}),
       ).rejects.toThrow(NotFoundException);
     });
+
+    it("recovers running executions predating heartbeat startup when executor lacks startup baseline", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: null,
+        executorStartedAt: null,
+      };
+      const oldExecution: any = {
+        id: "exec-old",
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-01T00:00:00.000Z"),
+        logs: "old",
+      };
+      const newExecution: any = {
+        id: "exec-new",
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-01T00:02:00.000Z"),
+        logs: "new",
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([oldExecution, newExecution]);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.heartbeat(executor.address, {
+        restartedAt: "2026-01-01T00:01:00.000Z",
+        startupId: "startup-new",
+      });
+
+      expect(oldExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(oldExecution.failureReason).toBe(
+        ExecutionFailureReason.EXECUTOR_RESTART,
+      );
+      expect(newExecution.status).toBe(ExecutionStatus.RUNNING);
+      expect(execRepo.save).toHaveBeenCalledWith(oldExecution);
+      expect(execRepo.save).not.toHaveBeenCalledWith(newExecution);
+      expect(executor.executorStartupId).toBe("startup-new");
+    });
+
+    it("continues heartbeat restart recovery when one retry enqueue fails", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+      };
+      const task = {
+        id: "task-1",
+        name: "Task 1",
+        params: {},
+        currentVersion: "v1",
+        maxRetry: 3,
+        retryDelay: 0,
+      };
+      const firstExecution: any = {
+        id: "exec-1",
+        taskId: task.id,
+        taskName: task.name,
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        retryCount: 0,
+        logs: "first",
+      };
+      const secondExecution: any = {
+        id: "exec-2",
+        taskId: task.id,
+        taskName: task.name,
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        retryCount: 0,
+        logs: "second",
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([firstExecution, secondExecution]);
+      taskRepo.findOne.mockResolvedValue(task);
+      execRepo.save.mockImplementation((e: any) =>
+        Promise.resolve(e.id ? e : { ...e, id: `retry-${execRepo.save.mock.calls.length}` }),
+      );
+      taskQueue.add
+        .mockRejectedValueOnce(new Error("redis down"))
+        .mockResolvedValueOnce(undefined);
+
+      await service.heartbeat(executor.address, { startupId: "startup-new" });
+
+      expect(firstExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(secondExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(execRepo.delete).toHaveBeenCalledWith("retry-2");
+      expect(taskQueue.add).toHaveBeenCalledTimes(2);
+      expect(executor.executorStartupId).toBe("startup-new");
+      expect(executorRepo.save).toHaveBeenCalledWith(executor);
+    });
   });
 
   describe("findAll", () => {
