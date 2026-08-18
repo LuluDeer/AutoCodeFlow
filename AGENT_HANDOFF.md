@@ -9,8 +9,9 @@
 ## 状态快照
 
 - 最新提交：见 `git log -1`
-- 测试基线（全绿）：admin-api 399/399 (jest)、executor-node 76/76 (jest)、executor-python 44/44 (pytest)、admin-api tsc --noEmit 通过
+- 测试基线（全绿）：admin-api 403/403 (jest)、executor-node 76/76 (jest)、executor-python 44/44 (pytest)、admin-api tsc --noEmit 通过
 - 工作区：干净（除本文件）
+- 近期完成：LOG-01 回调日志截断治理——handleCallback 检测两种截断标记（node `[logs truncated, ...]` / python `[truncated, total ...]`）时自动分页拉取 executor `/api/logs` 全量日志入库（兼容 node 端点无 limit 与 python 端点 limit≤2000），回填失败降级存截断版不阻断回调；同时清理 task.processor 中无调用点的死代码 fetchAndStoreLogLines
 
 ## 会话恢复速查
 
