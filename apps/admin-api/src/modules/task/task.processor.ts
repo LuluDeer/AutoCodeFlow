@@ -39,80 +39,9 @@ export class TaskProcessor extends WorkerHost {
     super();
   }
 
-  /**
-   * Fetch log lines from executor's /api/logs/{executionId} endpoint and
-   * persist them as ExecutionLogLine rows for structured querying.
-   */
-  private async fetchAndStoreLogLines(
-    exec: TaskExecution,
-    executorAddress: string,
-  ): Promise<void> {
-    if (!executorAddress) return;
-    try {
-      // N9: use ConfigService instead of direct process.env access
-      const token =
-        this.configService.get<string>("executor.sharedToken") ?? "";
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const { default: axios } = await import("axios");
-      const url = this.executorService.getExecutorUrl(
-        executorAddress,
-        `api/logs/${exec.id}`,
-      );
-      const resp = await axios.get(url, { headers, timeout: 15000 });
-      const lines: string[] = resp.data?.lines ?? [];
-      if (lines.length === 0) return;
-      // Delete stale lines first (idempotent on retry)
-      await this.logLineRepo.delete({ executionId: exec.id });
-      const entities = lines.map((content, idx) =>
-        this.logLineRepo.create({
-          executionId: exec.id,
-          lineNumber: idx,
-          content,
-        }),
-      );
-
-      // PERF-02: Adaptive batch size based on entity count
-      // Start with 500, increase for small batches, decrease for large batches
-      let chunkSize = 500;
-      if (entities.length < 100) {
-        chunkSize = entities.length; // Small batch: insert all at once
-      } else if (entities.length > 10000) {
-        chunkSize = 200; // Large batch: smaller chunks to avoid memory issues
-      } else if (entities.length > 5000) {
-        chunkSize = 300; // Medium-large batch
-      }
-
-      // Measure insertion time and adjust chunk size dynamically
-      const startTime = Date.now();
-      for (let i = 0; i < entities.length; i += chunkSize) {
-        const chunk = entities.slice(i, i + chunkSize);
-        const chunkStart = Date.now();
-        await this.logLineRepo.save(chunk);
-        const chunkDuration = Date.now() - chunkStart;
-
-        // If this chunk took too long, reduce chunk size for next iteration
-        if (chunkDuration > 1000 && chunkSize > 100) {
-          chunkSize = Math.max(100, Math.floor(chunkSize * 0.8));
-          this.logger.debug(
-            `Reduced chunk size to ${chunkSize} due to slow insertion (${chunkDuration}ms)`,
-          );
-        }
-        // If chunk was very fast, try increasing chunk size
-        else if (chunkDuration < 100 && chunkSize < 1000) {
-          chunkSize = Math.min(1000, Math.floor(chunkSize * 1.2));
-        }
-      }
-
-      const totalDuration = Date.now() - startTime;
-      this.logger.log(
-        `Stored ${entities.length} log lines for execution ${exec.id} in ${totalDuration}ms (final chunk size: ${chunkSize})`,
-      );
-    } catch (err: unknown) {
-      // Non-fatal: log but do not fail the execution record
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Failed to fetch log lines for ${exec.id}: ${message}`);
-    }
-  }
+  // LOG-01: structured log-line persistence now lives in TaskService
+  // (storeLogLines / backfillFullLogsFromExecutor), invoked from
+  // handleCallback so it runs for every completed execution.
 
   async process(job: Job<{ executionId: string }>) {
     return this.handle(job);
