@@ -10,6 +10,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, ILike, Not, Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
+import { ConfigService } from "@nestjs/config";
 import { Task, TaskStatus } from "./entities/task.entity";
 import {
   TaskExecution,
@@ -25,6 +26,15 @@ import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
 import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { AiService } from "../ai/ai.service";
+import { ExecutorService } from "../executor/executor.service";
+
+/**
+ * Detects truncation markers inserted by executors when callback logs exceed
+ * the payload limit.
+ * Node:   "... [logs truncated, original length N chars] ..."
+ * Python: "...[truncated, total N chars]..."
+ */
+const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
 
 @Injectable()
 export class TaskService {
@@ -91,6 +101,8 @@ export class TaskService {
     @Inject(forwardRef(() => SchedulerService))
     private schedulerService: SchedulerService,
     private aiService: AiService,
+    private configService: ConfigService,
+    private executorService: ExecutorService,
   ) {}
 
   async create(dto: CreateTaskDto) {
@@ -625,6 +637,88 @@ export class TaskService {
       .execute();
   }
 
+  /** Delete stale lines then bulk-insert in chunks (idempotent on retry). */
+  private async storeLogLines(
+    executionId: string,
+    logs: string | string[],
+  ): Promise<void> {
+    await this.logLineRepo.delete({ executionId });
+    const lines = typeof logs === "string" ? logs.split("\n") : logs;
+    const entities = lines.map((content, i) =>
+      this.logLineRepo.create({ executionId, lineNumber: i, content }),
+    );
+    const CHUNK = 500;
+    for (let i = 0; i < entities.length; i += CHUNK) {
+      await this.logLineRepo.save(entities.slice(i, i + CHUNK));
+    }
+  }
+
+  /**
+   * Fetch full logs from the executor (backed by its local log files) via
+   * GET /api/logs/{executionId} and persist them as ExecutionLogLine rows.
+   * Returns true on success; any failure is non-fatal (returns false).
+   */
+  private async backfillFullLogsFromExecutor(
+    execution: TaskExecution,
+    executorAddress: string,
+  ): Promise<boolean> {
+    if (!executorAddress) return false;
+    try {
+      const token =
+        this.configService.get<string>("executor.sharedToken") ?? "";
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const { default: axios } = await import("axios");
+      const url = this.executorService.getExecutorUrl(
+        executorAddress,
+        `api/logs/${execution.id}`,
+      );
+      // Page through the executor's log endpoint. Node executors return all
+      // remaining lines in one shot (they ignore `limit`); Python executors
+      // cap each response at `limit` (max 2000) and report totalLines/hasMore.
+      const PAGE_LIMIT = 2000;
+      const MAX_PAGES = 200; // hard cap: 400k-line backfill ceiling
+      const lines: string[] = [];
+      let fromLine = 0;
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const resp = await axios.get(url, {
+          headers,
+          timeout: 10_000,
+          params: { fromLine, limit: PAGE_LIMIT },
+        });
+        const chunk: string[] = Array.isArray(resp.data?.lines)
+          ? resp.data.lines.filter(
+              (l: unknown) => typeof l === "string",
+            )
+          : [];
+        if (chunk.length === 0) break;
+        // Batch pushes stay below the engine's spread-argument limit; a Node
+        // executor may return the entire log in a single chunk.
+        for (let i = 0; i < chunk.length; i += 10_000) {
+          lines.push(...chunk.slice(i, i + 10_000));
+        }
+        fromLine += chunk.length;
+        const total: unknown = resp.data?.totalLines;
+        if (typeof total !== "number" || total <= 0 || fromLine >= total) {
+          break;
+        }
+      }
+      if (lines.length === 0) return false;
+      // Pass the array directly — avoids a join+split round-trip of what
+      // can be a multi-megabyte string.
+      await this.storeLogLines(execution.id, lines);
+      this.logger.log(
+        `Backfilled ${lines.length} full log lines for execution ${execution.id}`,
+      );
+      return true;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Failed to backfill full logs for execution ${execution.id} from ${executorAddress}: ${message} — keeping truncated callback logs`,
+      );
+      return false;
+    }
+  }
+
   async handleCallback(
     callbacks: Array<{
       executionId: string;
@@ -696,22 +790,8 @@ export class TaskService {
         }
         execution.endTime = new Date();
         execution.duration = cb.durationMs;
-
         if (cb.logs) {
           execution.logs = cb.logs;
-          // Delete stale lines first (idempotent on retry), then bulk-insert new ones
-          await this.logLineRepo.delete({ executionId: cb.executionId });
-          const logLines = cb.logs.split("\n");
-          const entities = logLines.map((content, i) =>
-            this.logLineRepo.create({
-              executionId: cb.executionId,
-              lineNumber: i,
-              content,
-            }),
-          );
-          if (entities.length > 0) {
-            await this.logLineRepo.save(entities);
-          }
         }
 
         await this.execRepo.save(execution);
@@ -720,6 +800,23 @@ export class TaskService {
         // The counter was incremented at dispatch time; it must be decremented here
         // so executors are not permanently counted as busy after each task.
         await this.releaseExecutorSlot(execution.executorAddress);
+
+        // LOG-01: persist structured log lines for pagination/SSE. When the
+        // executor truncated the callback payload, pull the full logs from the
+        // executor's /api/logs endpoint instead; on failure fall back to the
+        // truncated lines so the log viewer keeps working.
+        if (cb.logs) {
+          let stored = false;
+          if (LOG_TRUNCATION_MARKER.test(cb.logs)) {
+            stored = await this.backfillFullLogsFromExecutor(
+              execution,
+              execution.executorAddress || cb.executorAddress,
+            );
+          }
+          if (!stored) {
+            await this.storeLogLines(cb.executionId, cb.logs);
+          }
+        }
 
         results.push({ executionId: cb.executionId, success: true });
       } catch (error: unknown) {

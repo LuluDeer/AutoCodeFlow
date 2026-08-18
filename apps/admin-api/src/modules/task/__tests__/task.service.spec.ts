@@ -14,6 +14,10 @@ import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import { TaskVersion } from "../entities/task-version.entity";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { AiService } from "../../ai/ai.service";
+import { ConfigService } from "@nestjs/config";
+import { ExecutorService } from "../../executor/executor.service";
+
+jest.mock("axios");
 
 const makeRepo = (overrides: Record<string, jest.Mock> = {}) => ({
   create: jest.fn((d) => d),
@@ -90,6 +94,20 @@ describe("TaskService (__tests__)", () => {
         { provide: DataSource, useValue: dataSource },
         { provide: SchedulerService, useValue: schedulerService },
         { provide: AiService, useValue: aiService },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        {
+          provide: ExecutorService,
+          useValue: {
+            getExecutorUrl: jest
+              .fn()
+              .mockImplementation(
+                (_addr: string, p: string) => `http://executor:3001/${p}`,
+              ),
+          },
+        },
       ],
     }).compile();
 
@@ -614,6 +632,131 @@ describe("TaskService (__tests__)", () => {
         { executionId: "e1", status: "success", logs: "line0\nline1" },
       ]);
       expect(logLineRepo.save).toHaveBeenCalledTimes(1);
+    });
+
+    it("backfills full logs from executor when node-style truncation marker is present", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      (axios.get as jest.Mock).mockResolvedValue({
+        data: { lines: ["full-0", "full-1", "full-2"] },
+      });
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          logs: "head\n... [logs truncated, original length 50000 chars] ...\ntail",
+        },
+      ]);
+      expect(axios.get).toHaveBeenCalledWith(
+        "http://executor:3001/api/logs/e1",
+        expect.objectContaining({
+          headers: {},
+          params: { fromLine: 0, limit: 2000 },
+        }),
+      );
+      expect(logLineRepo.delete).toHaveBeenCalledWith({ executionId: "e1" });
+      expect(logLineRepo.create).toHaveBeenCalledWith({
+        executionId: "e1",
+        lineNumber: 1,
+        content: "full-1",
+      });
+    });
+
+    it("falls back to truncated logs when backfill fails (python-style marker)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      (axios.get as jest.Mock).mockRejectedValue(new Error("ECONNREFUSED"));
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          logs: "head\n...[truncated, total 50000 chars]...\ntail",
+        },
+      ]);
+      expect(logLineRepo.create).toHaveBeenCalledWith({
+        executionId: "e1",
+        lineNumber: 0,
+        content: "head",
+      });
+    });
+
+    it("paginates backfill when executor caps page size (python-style)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      (axios.get as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { lines: ["l0", "l1"], totalLines: 5, hasMore: true },
+        })
+        .mockResolvedValueOnce({
+          data: { lines: ["l2", "l3", "l4"], totalLines: 5, hasMore: false },
+        });
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          logs: "...[truncated, total 50000 chars]...",
+        },
+      ]);
+      expect(axios.get).toHaveBeenCalledTimes(2);
+      expect((axios.get as jest.Mock).mock.calls[0][1].params).toEqual({
+        fromLine: 0,
+        limit: 2000,
+      });
+      expect((axios.get as jest.Mock).mock.calls[1][1].params).toEqual({
+        fromLine: 2,
+        limit: 2000,
+      });
+      expect(logLineRepo.create).toHaveBeenCalledWith({
+        executionId: "e1",
+        lineNumber: 4,
+        content: "l4",
+      });
+    });
+
+    it("does not call the executor for logs without truncation marker", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      await service.handleCallback([
+        { executionId: "e1", status: "success", logs: "line0\nline1" },
+      ]);
+      expect(axios.get).not.toHaveBeenCalled();
+      expect(logLineRepo.create).toHaveBeenCalledWith({
+        executionId: "e1",
+        lineNumber: 0,
+        content: "line0",
+      });
     });
 
     it("records error for unknown executionId without throwing", async () => {
