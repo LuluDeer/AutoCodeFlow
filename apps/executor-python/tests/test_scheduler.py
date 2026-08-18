@@ -1,7 +1,9 @@
+import asyncio
+
 import pytest
 import httpx
 from unittest.mock import AsyncMock, patch, MagicMock
-from scheduler import _send_heartbeat
+from scheduler import _send_heartbeat, heartbeat_task
 
 
 def create_mock_response(status_code: int = 200) -> httpx.Response:
@@ -22,9 +24,9 @@ class TestHeartbeatRetry:
             httpx.ConnectError("Connection refused"),
             create_mock_response(200),
         ])
-        
+
         await _send_heartbeat(mock_client, "test-token")
-        
+
         # Should have retried 3 times (initial + 2 retries)
         assert mock_client.post.call_count == 3
 
@@ -36,9 +38,9 @@ class TestHeartbeatRetry:
             httpx.TimeoutException("Timed out"),
             create_mock_response(200),
         ])
-        
+
         await _send_heartbeat(mock_client, "test-token")
-        
+
         # Should have retried twice
         assert mock_client.post.call_count == 2
 
@@ -65,9 +67,9 @@ class TestHeartbeatRetry:
         """Test that heartbeat succeeds immediately when connection works."""
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=create_mock_response(200))
-        
+
         await _send_heartbeat(mock_client, "test-token")
-        
+
         # Should have been called only once
         assert mock_client.post.call_count == 1
 
@@ -76,10 +78,22 @@ class TestHeartbeatRetry:
         """Test that heartbeat works without authentication token."""
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=create_mock_response(200))
-        
+
         await _send_heartbeat(mock_client, "")
-        
+
         # Verify headers don't include Authorization
         call_args = mock_client.post.call_args
         headers = call_args.kwargs.get('headers', {})
         assert 'Authorization' not in headers
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_task_uses_configured_interval(self, monkeypatch):
+        """Test that heartbeat loop sleeps for the configured interval."""
+        monkeypatch.setattr('scheduler.settings.heartbeat_interval_seconds', 7)
+        sleep_mock = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with patch('scheduler.asyncio.sleep', sleep_mock):
+            with pytest.raises(asyncio.CancelledError):
+                await heartbeat_task()
+
+        sleep_mock.assert_awaited_once_with(7)

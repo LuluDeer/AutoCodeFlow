@@ -17,6 +17,7 @@ interface DeployPayload {
   gitBranch: string;
   gitCommit?: string | null;
   packageUrl?: string | null;
+  version?: string | null;
   runtime: string;
   entrypoint?: string;
   runMode: 'once' | 'daemon' | 'scheduled';
@@ -26,6 +27,17 @@ interface DeployPayload {
 
 /** Map of deploymentId -> running child process (daemon mode) */
 const runningApps = new Map<string, ChildProcess>();
+
+/** Deployments whose next process exit is part of an intentional in-place restart. */
+const restartExitReportsToSuppress = new Set<string>();
+
+export function suppressNextRestartExitReport(deploymentId: string): void {
+  restartExitReportsToSuppress.add(deploymentId);
+}
+
+export function shouldReportProcessExit(deploymentId: string): boolean {
+  return !restartExitReportsToSuppress.delete(deploymentId);
+}
 
 /** Report app status back to admin-api */
 async function reportStatus(
@@ -151,6 +163,10 @@ function startApp(
 
   child.on('exit', (code) => {
     runningApps.delete(deploymentId);
+    if (!shouldReportProcessExit(deploymentId)) {
+      logger.info(`[deploy] Suppressed exit report for restarted app ${deploymentId}`);
+      return;
+    }
     if (code === 0) {
       logger.info(`[deploy] App ${deploymentId} exited cleanly`);
       reportStatus(deploymentId, 'stopped', undefined, `Exited with code ${code}`);
@@ -207,10 +223,117 @@ function validatePackageUrl(packageUrl: string): string | null {
   }
 }
 
+function normalizeReleasePart(value: string | null | undefined, fallback: string): string {
+  const normalized = (value || fallback)
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 80);
+  return normalized || fallback;
+}
+
+interface DeploymentPaths {
+  appRoot: string;
+  releasesDir: string;
+  tmpDir: string;
+  currentLink: string;
+  releaseKey: string;
+  finalReleaseDir: string;
+  extractDir: string;
+}
+
+export function buildDeploymentPaths(
+  workDir: string,
+  appId: string,
+  deploymentId: string,
+  version?: string | null,
+): DeploymentPaths {
+  if (!isSafePathSegment(appId)) {
+    throw new Error('applicationId contains unsupported characters');
+  }
+  if (!isSafePathSegment(deploymentId)) {
+    throw new Error('deploymentId contains unsupported characters');
+  }
+
+  const versionPart = normalizeReleasePart(version, 'version');
+  const releaseKey = `${versionPart}-${deploymentId}`;
+  const appRoot = path.join(workDir, 'apps', appId);
+  const releasesDir = path.join(appRoot, 'releases');
+  const tmpDir = path.join(appRoot, 'tmp');
+
+  return {
+    appRoot,
+    releasesDir,
+    tmpDir,
+    currentLink: path.join(appRoot, 'current'),
+    releaseKey,
+    finalReleaseDir: path.join(releasesDir, releaseKey),
+    extractDir: path.join(tmpDir, `${releaseKey}-extracting`),
+  };
+}
+
+function readCurrentTarget(currentLink: string): string | null {
+  try {
+    if (fs.existsSync(currentLink) && fs.lstatSync(currentLink).isSymbolicLink()) {
+      return fs.readlinkSync(currentLink);
+    }
+  } catch (err: any) {
+    logger.warn(`[deploy] Failed to read current release link: ${err.message}`);
+  }
+  return null;
+}
+
+function removePathIfExists(target: string): void {
+  if (fs.existsSync(target)) {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+}
+
+function switchCurrentRelease(currentLink: string, targetDir: string): void {
+  const tmpLink = `${currentLink}.next-${process.pid}-${Date.now()}`;
+  removePathIfExists(tmpLink);
+  fs.symlinkSync(targetDir, tmpLink, process.platform === 'win32' ? 'junction' : 'dir');
+  try {
+    fs.renameSync(tmpLink, currentLink);
+  } catch (err: any) {
+    if (err?.code !== 'EEXIST') throw err;
+    fs.unlinkSync(currentLink);
+    fs.renameSync(tmpLink, currentLink);
+  }
+}
+
+function restoreCurrentRelease(currentLink: string, previousTarget: string | null): void {
+  try {
+    if (previousTarget) {
+      switchCurrentRelease(currentLink, previousTarget);
+    } else if (fs.existsSync(currentLink)) {
+      fs.unlinkSync(currentLink);
+    }
+  } catch (err: any) {
+    logger.warn(`[deploy] Failed to restore previous current release: ${err.message}`);
+  }
+}
+
+function assertSafeZipEntries(zipPath: string): void {
+  if (process.platform === 'win32') return;
+
+  const listR = spawnSync('unzip', ['-Z1', zipPath], { stdio: 'pipe', timeout: 30_000 });
+  if (listR.status !== 0) {
+    throw new Error(listR.stderr?.toString() || 'unzip listing failed');
+  }
+
+  const entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
+  for (const entry of entries) {
+    const parts = entry.split(/[\\/]+/).filter(Boolean);
+    if (path.isAbsolute(entry) || parts.includes('..')) {
+      throw new Error(`Unsafe zip entry path: ${entry}`);
+    }
+  }
+}
+
 /** Main deploy handler */
 deployRouter.post('/deploy', async (req: Request, res: Response) => {
   const payload = req.body as DeployPayload;
-  const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
+  const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, version, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
 
   if (!deploymentId) {
     return res.status(400).json({ error: 'deploymentId is required' });
@@ -236,16 +359,19 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
   if (!isSafePathSegment(appId)) {
     return res.status(400).json({ error: 'applicationId contains unsupported characters' });
   }
-  const deployDir = path.join(config.workDir, 'apps', appId, deploymentId);
+  const paths = buildDeploymentPaths(config.workDir, appId, deploymentId, version);
 
   // Acknowledge immediately; deploy runs async
   res.json({ ok: true, deploymentId });
 
   setImmediate(async () => {
+    const previousCurrentTarget = readCurrentTarget(paths.currentLink);
+    let switchedCurrent = false;
     try {
       // Stop existing process if upgrading — wait for actual exit instead of fixed sleep
       if (upgrade && runningApps.has(deploymentId)) {
         const existing = runningApps.get(deploymentId)!;
+        suppressNextRestartExitReport(deploymentId);
         await new Promise<void>((resolve) => {
           const gracefulTimeout = setTimeout(() => {
             logger.warn(`[deploy] Graceful stop timed out for ${deploymentId}, sending SIGKILL`);
@@ -262,15 +388,17 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         logger.info(`[deploy] Stopped existing process for ${deploymentId}`);
       }
 
-      if (!fs.existsSync(deployDir)) {
-        fs.mkdirSync(deployDir, { recursive: true });
-      }
+      fs.mkdirSync(paths.releasesDir, { recursive: true });
+      fs.mkdirSync(paths.tmpDir, { recursive: true });
+      removePathIfExists(paths.extractDir);
+      fs.mkdirSync(paths.extractDir, { recursive: true });
 
       if (packageUrl) {
-        // Package-based deployment: download zip and extract
+        // Package-based deployment: download zip and extract into a temporary release dir.
         logger.info(`[deploy] Downloading package from ${packageUrl}`);
-        const zipPath = path.join(deployDir, '_package.zip');
+        const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
         await downloadPackage(packageUrl, zipPath);
+        assertSafeZipEntries(zipPath);
         logger.info(`[deploy] Extracting package for ${deploymentId}`);
         // Use platform-appropriate extraction:
         //   Windows: PowerShell Expand-Archive (built-in since PS 5.0)
@@ -284,14 +412,14 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
               '-Command',
               'Expand-Archive -Force -LiteralPath $args[0] -DestinationPath $args[1]',
               zipPath,
-              deployDir,
+              paths.extractDir,
             ],
             { stdio: 'pipe', timeout: 60_000 },
           );
           if (psR.status !== 0) throw new Error(psR.stderr?.toString() || 'Expand-Archive failed');
           unzipOk = true;
         } else {
-          const unzipR = spawnSync('unzip', ['-o', zipPath, '-d', deployDir], { stdio: 'pipe', timeout: 60_000 });
+          const unzipR = spawnSync('unzip', ['-o', zipPath, '-d', paths.extractDir], { stdio: 'pipe', timeout: 60_000 });
           if (unzipR.status !== 0) throw new Error(unzipR.stderr?.toString() || 'unzip failed');
           unzipOk = true;
         }
@@ -300,39 +428,34 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
           logger.info(`[deploy] Package extracted for ${deploymentId}`);
         }
       } else if (gitRepo) {
-        const gitDir = path.join(deployDir, '.git');
         // SEC: all git commands use spawnSync with array args — no shell, no injection
-        if (!fs.existsSync(gitDir)) {
-          // Fresh clone
-          logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
-          const cloneR = spawnSync(
-            'git', ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, '.'],
-            { cwd: deployDir, stdio: 'pipe', timeout: 120_000 },
-          );
-          if (cloneR.status !== 0) throw new Error(cloneR.stderr?.toString() || 'git clone failed');
-        } else {
-          // Pull latest
-          logger.info(`[deploy] Pulling latest for ${deploymentId}`);
-          const fetchR = spawnSync('git', ['fetch', '--depth', '1', 'origin'], { cwd: deployDir, stdio: 'pipe', timeout: 60_000 });
-          if (fetchR.status !== 0) logger.warn(`git fetch warning: ${fetchR.stderr?.toString()}`);
-          const resetR = spawnSync('git', ['reset', '--hard', `origin/${gitBranch}`], { cwd: deployDir, stdio: 'pipe', timeout: 30_000 });
-          if (resetR.status !== 0) throw new Error(resetR.stderr?.toString() || 'git reset failed');
-        }
+        logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
+        const cloneR = spawnSync(
+          'git', ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, '.'],
+          { cwd: paths.extractDir, stdio: 'pipe', timeout: 120_000 },
+        );
+        if (cloneR.status !== 0) throw new Error(cloneR.stderr?.toString() || 'git clone failed');
 
         if (gitCommit) {
-          const coR = spawnSync('git', ['checkout', gitCommit], { cwd: deployDir, stdio: 'pipe', timeout: 30_000 });
+          const coR = spawnSync('git', ['checkout', gitCommit], { cwd: paths.extractDir, stdio: 'pipe', timeout: 30_000 });
           if (coR.status !== 0) throw new Error(coR.stderr?.toString() || 'git checkout failed');
         }
       }
 
-      // Install dependencies
-      installDeps(deployDir, runtime, envVars);
+      // Install dependencies before publishing the release.
+      installDeps(paths.extractDir, runtime, envVars);
 
-      // Write .env file for the app
+      // Write .env file for the app before publishing the release.
       if (Object.keys(envVars).length > 0) {
         const envContent = Object.entries(envVars).map(([k, v]) => `${k}=${v}`).join('\n');
-        fs.writeFileSync(path.join(deployDir, '.env'), envContent, 'utf-8');
+        fs.writeFileSync(path.join(paths.extractDir, '.env'), envContent, 'utf-8');
       }
+
+      removePathIfExists(paths.finalReleaseDir);
+      fs.renameSync(paths.extractDir, paths.finalReleaseDir);
+      switchCurrentRelease(paths.currentLink, paths.finalReleaseDir);
+      switchedCurrent = true;
+      logger.info(`[deploy] Current release for ${appName} now points to ${paths.releaseKey}`);
 
       // Start app if runMode is daemon or once
       // Pick a sensible default entrypoint based on runtime when none was specified
@@ -341,12 +464,16 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         : 'main.sh';
       const entry = entrypoint || defaultEntry;
       if (runMode === 'daemon' || runMode === 'once') {
-        startApp(deploymentId, deployDir, runtime, entry, runMode, envVars);
+        startApp(deploymentId, paths.finalReleaseDir, runtime, entry, runMode, envVars);
       } else {
         // scheduled mode: just deploy, tasks are triggered via normal task dispatch
         await reportStatus(deploymentId, 'running', undefined, 'Deployed in scheduled mode');
       }
     } catch (err: any) {
+      if (switchedCurrent) {
+        restoreCurrentRelease(paths.currentLink, previousCurrentTarget);
+      }
+      removePathIfExists(paths.extractDir);
       logger.error(`[deploy] Deployment ${deploymentId} failed: ${err.message}`);
       await reportStatus(deploymentId, 'failed', undefined, err.message);
     }

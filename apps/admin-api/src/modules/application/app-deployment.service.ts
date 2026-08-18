@@ -398,6 +398,7 @@ export class AppDeploymentService {
       gitBranch: app.gitBranch || "main",
       gitCommit: app.gitCommit || null,
       packageUrl: (app as any).packageUrl || null,
+      version: app.version || null,
       runtime: app.runtime,
       entrypoint: deployment.startCommand || app.entrypoint,
       runMode: deployment.runMode,

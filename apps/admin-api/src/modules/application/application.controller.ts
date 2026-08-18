@@ -13,6 +13,7 @@ import {
   BadRequestException,
   UnauthorizedException,
   Headers,
+  Req,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import {
@@ -23,6 +24,7 @@ import {
   ApiBody,
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { Public } from "../../common/decorators/public.decorator";
 import { ApplicationService } from "./application.service";
 import { AppDeploymentService } from "./app-deployment.service";
 import {
@@ -32,6 +34,8 @@ import {
 import { AppReleaseWebhookDto } from "./dto/app-release-webhook.dto";
 import * as fs from "fs";
 import * as path from "path";
+import { createHmac, timingSafeEqual } from "crypto";
+import type { Request } from "express";
 
 @ApiTags("Application Management")
 @ApiBearerAuth()
@@ -131,15 +135,18 @@ export class ApplicationController {
     return app;
   }
 
+  @Public()
   @Post("webhook")
   @ApiOperation({
     summary: "Version release webhook",
     description:
-      "Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments. If the application has a webhookSecret configured, the caller must include a valid X-Hub-Signature-256 header (sha256=<hex>).",
+      "Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments. This route is public for CI/CD callers, and matching applications must have webhookSecret configured. Callers must include X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers. The signature is HMAC-SHA256 over `${timestamp}.${rawBody}`.",
   })
   async webhook(
     @Body() dto: AppReleaseWebhookDto,
     @Headers("x-hub-signature-256") signature?: string,
+    @Headers("x-autocodeflow-timestamp") timestamp?: string,
+    @Req() req?: Request & { rawBody?: Buffer },
   ) {
     const logger = new Logger("ReleaseWebhook");
 
@@ -151,33 +158,62 @@ export class ApplicationController {
     }
 
     // HMAC-SHA256 signature verification (same convention as GitHub webhooks)
-    // If the application has a webhookSecret, the X-Hub-Signature-256 header is required.
-    if (targetApp.webhookSecret) {
-      if (!signature) {
-        logger.warn(
-          `Webhook: missing X-Hub-Signature-256 header for app "${dto.appName}"`,
-        );
-        throw new UnauthorizedException(
-          "X-Hub-Signature-256 header is required",
-        );
-      }
-      const { createHmac, timingSafeEqual } = await import("crypto");
-      const body = Buffer.from(JSON.stringify(dto));
-      const expected =
-        "sha256=" +
-        createHmac("sha256", targetApp.webhookSecret)
-          .update(body)
-          .digest("hex");
-      const expectedBuf = Buffer.from(expected);
-      const receivedBuf = Buffer.from(signature);
-      // Constant-time comparison to prevent timing attacks
-      const valid =
-        expectedBuf.length === receivedBuf.length &&
-        timingSafeEqual(expectedBuf, receivedBuf);
-      if (!valid) {
-        logger.warn(`Webhook: invalid signature for app "${dto.appName}"`);
-        throw new UnauthorizedException("Invalid webhook signature");
-      }
+    // This route is public for CI/CD systems, so every matching application must
+    // have a webhookSecret and callers must sign the raw body with a timestamp.
+    if (!targetApp.webhookSecret) {
+      logger.warn(
+        `Webhook: app "${dto.appName}" has no webhookSecret configured`,
+      );
+      throw new UnauthorizedException(
+        "Application webhookSecret is required for release webhooks",
+      );
+    }
+    if (!signature) {
+      logger.warn(
+        `Webhook: missing X-Hub-Signature-256 header for app "${dto.appName}"`,
+      );
+      throw new UnauthorizedException(
+        "X-Hub-Signature-256 header is required",
+      );
+    }
+    if (!timestamp) {
+      logger.warn(
+        `Webhook: missing X-AutoCodeFlow-Timestamp header for app "${dto.appName}"`,
+      );
+      throw new UnauthorizedException(
+        "X-AutoCodeFlow-Timestamp header is required",
+      );
+    }
+    const timestampMs = Number(timestamp);
+    const now = Date.now();
+    if (
+      !Number.isFinite(timestampMs) ||
+      Math.abs(now - timestampMs) > 5 * 60 * 1000
+    ) {
+      logger.warn(`Webhook: stale timestamp for app "${dto.appName}"`);
+      throw new UnauthorizedException("Webhook timestamp is stale");
+    }
+    const body = req?.rawBody;
+    if (!body) {
+      logger.warn(`Webhook: raw request body is unavailable for app "${dto.appName}"`);
+      throw new UnauthorizedException(
+        "Raw request body is required for webhook signature verification",
+      );
+    }
+    const expected =
+      "sha256=" +
+      createHmac("sha256", targetApp.webhookSecret)
+        .update(Buffer.concat([Buffer.from(`${timestamp}.`), body]))
+        .digest("hex");
+    const expectedBuf = Buffer.from(expected);
+    const receivedBuf = Buffer.from(signature);
+    // Constant-time comparison to prevent timing attacks
+    const valid =
+      expectedBuf.length === receivedBuf.length &&
+      timingSafeEqual(expectedBuf, receivedBuf);
+    if (!valid) {
+      logger.warn(`Webhook: invalid signature for app "${dto.appName}"`);
+      throw new UnauthorizedException("Invalid webhook signature");
     }
 
     // Update version / git metadata
