@@ -86,7 +86,7 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
 async def heartbeat_task() -> None:
     while True:
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(settings.heartbeat_interval_seconds)
             # SEC-03: use dynamic token with auto-refresh
             token = await get_current_token()
             # OPS-03: generate trace ID for heartbeat
