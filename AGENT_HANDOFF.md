@@ -42,8 +42,8 @@ cd apps/admin-web && npm run build && npx vitest run   # E2E 需先起环境
 | 1 | 版本历史与发布快照 | ✅ 已完成（含回滚） |
 | 2 | 执行失败原因分类 | ✅ 已完成（executor 侧可再细化） |
 | 3 | Webhook / API 认证模型 | ✅ 已完成（rawBody+时间戳 HMAC，Public 路由强制 secret） |
-| 4 | 任务超时 / 时区 / 重试 | ✅ 超时+时区已完成；⬜ 重试策略生效验证未覆盖 |
-| 5 | 执行器重启恢复 + 负载感知 | ✅ 重启恢复完成；⬜ 负载感知调度未做 |
+| 4 | 任务超时 / 时区 / 重试 | ✅ 已完成（2026-08-18 验证：trigger/rollback/scheduled 三入队路径均带 attempts+指数退避，processor 失败 rethrow 使 BullMQ 重试生效，均有单测） |
+| 5 | 执行器重启恢复 + 负载感知 | ✅ 已完成（心跳携带 runningTaskCount，dispatch 按 loadScore=runningTaskCount/max 选最低负载 + 乐观锁防超发，广播模式不占计数，callback 释放槽位，均有单测） |
 | 6 | 应用包版本隔离 | ✅ 已完成（不可变 release 目录 + current 软链 + 回退） |
 | 7 | 心跳 / 注册稳定化 | ✅ 已完成（连通性自检、退避重试） |
 | 8 | Admin Web 与 E2E | ✅ E2E 35/35（Linux x86_64）；平台矩阵未覆盖 |
@@ -54,16 +54,14 @@ cd apps/admin-web && npm run build && npx vitest run   # E2E 需先起环境
 
 ## 下一步建议（按优先级）
 
-1. **负载感知调度**（4.1）：executor 心跳携带 `runningTaskCount`，admin-api 调度时同类型中选负载最低者。
-   切入：`apps/admin-api/src/modules/executor/executor.service.ts`、心跳 DTO/entity、`apps/executor-node/src/routes/health.ts`、`apps/executor-python/routers/health.py`、scheduler 选择逻辑 + 单测。
-2. **任务重试策略生效验证**：补 admin-api 单测/E2E 验证 retry 配置真实生效。
-3. **日志外置存储**：日志写 MinIO，主库只存引用（见 optimization-notes 2.6）。
-4. **CLI/MCP 能力对齐梳理**：对照 api-reference 列缺口清单。
+1. **日志外置存储**：日志写 MinIO，主库只存引用（见 optimization-notes 2.6）。
+2. **CLI/MCP 能力对齐梳理**：对照 api-reference 列缺口清单。
+3. **多执行器负载均衡实测**：单测已覆盖 loadScore 选择与乐观锁，但缺多实例真机验证（心跳节奏、计数漂移恢复）。
 
 ## 未覆盖验证项
 
 - macOS / Windows / ARM64 部署
 - 通知渠道（企业微信/钉钉/邮件）实测
 - 私有 npm/PyPI 仓库集成
-- 多执行器负载均衡行为
+- 多执行器负载均衡行为（选择逻辑已有单测，缺多实例实测）
 - 大规模并发压测
