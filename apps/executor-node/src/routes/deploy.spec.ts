@@ -1,6 +1,8 @@
 import request from 'supertest';
 import express from 'express';
 import * as fs from 'fs';
+import * as http from 'http';
+import type { AddressInfo } from 'net';
 
 jest.mock('fs');
 jest.mock('child_process');
@@ -9,6 +11,7 @@ jest.mock('../config', () => ({
     workDir: '/tmp/test-workdir',
     npmRegistryUrl: '',
     pythonRegistryUrl: '',
+    token: 'test-shared-token',
   },
 }));
 jest.mock('../logger', () => ({
@@ -21,6 +24,7 @@ jest.mock('../admin-client', () => ({
 import {
   buildDeploymentPaths,
   deployRouter,
+  downloadPackage,
   shouldReportProcessExit,
   suppressNextRestartExitReport,
 } from './deploy';
@@ -129,5 +133,81 @@ describe('versioned deployment paths', () => {
 
     expect(paths.releaseKey).toBe('v1-build-deploy-1');
     expect(paths.finalReleaseDir).toBe('/tmp/work/apps/app-1/releases/v1-build-deploy-1');
+  });
+});
+
+describe('downloadPackage authentication', () => {
+  const actualFs = jest.requireActual('fs') as typeof fs;
+
+  function listen(server: http.Server): Promise<number> {
+    return new Promise((resolve) =>
+      server.listen(0, '127.0.0.1', () => {
+        resolve((server.address() as AddressInfo).port);
+      }),
+    );
+  }
+
+  it('sends the executor shared token as Bearer and strips it on cross-host redirect', async () => {
+    const authHeaders: Array<string | undefined> = [];
+    const serverB = http.createServer((req, res) => {
+      authHeaders.push(req.headers.authorization);
+      res.writeHead(200);
+      res.end('payload');
+    });
+    const portB = await listen(serverB);
+    const serverA = http.createServer((req, res) => {
+      authHeaders.push(req.headers.authorization);
+      // 127.0.0.1 → localhost 视为跨主机重定向
+      res.writeHead(302, { location: `http://localhost:${portB}/pkg.zip` });
+      res.end();
+    });
+    const portA = await listen(serverA);
+
+    (mockFs.createWriteStream as jest.Mock).mockImplementation((p: string) =>
+      actualFs.createWriteStream(p),
+    );
+    const dest = `/tmp/acf-download-test-${Date.now()}.bin`;
+    try {
+      await downloadPackage(`http://127.0.0.1:${portA}/pkg.zip`, dest);
+      expect(authHeaders).toEqual(['Bearer test-shared-token', undefined]);
+      expect(actualFs.readFileSync(dest, 'utf8')).toBe('payload');
+    } finally {
+      serverA.close();
+      serverB.close();
+      try {
+        actualFs.unlinkSync(dest);
+      } catch {
+        /* already removed */
+      }
+    }
+  });
+
+  it('omits the Authorization header when no token is configured', async () => {
+    const { config } = require('../config') as { config: { token?: string } };
+    const saved = config.token;
+    config.token = '';
+    let seenAuth: string | undefined = 'unset';
+    const server = http.createServer((req, res) => {
+      seenAuth = req.headers.authorization;
+      res.writeHead(200);
+      res.end('ok');
+    });
+    const port = await listen(server);
+    (mockFs.createWriteStream as jest.Mock).mockImplementation((p: string) =>
+      actualFs.createWriteStream(p),
+    );
+    const dest = `/tmp/acf-download-test-notoken-${Date.now()}.bin`;
+    try {
+      await downloadPackage(`http://127.0.0.1:${port}/pkg.zip`, dest);
+      expect(seenAuth).toBeUndefined();
+    } finally {
+      config.token = saved;
+      server.close();
+      try {
+        actualFs.unlinkSync(dest);
+      } catch {
+        /* already removed */
+      }
+    }
   });
 });
