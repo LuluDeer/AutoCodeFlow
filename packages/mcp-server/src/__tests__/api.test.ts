@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock('node-fetch', () => ({ default: fetchMock }));
 
-import { apiRequest, unwrap, apiGet, apiPost, apiPut, apiDelete } from '../api';
+import { apiRequest, unwrap, apiGet, apiPost, apiPut, apiDelete, REQUEST_TIMEOUT_MS } from '../api';
 
 function jsonResponse(ok: boolean, body: unknown, status = ok ? 200 : 500) {
   return {
@@ -76,7 +76,90 @@ describe('apiRequest', () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(false, { statusCode: 401, message: 'Unauthorized' }, 401),
     );
-    await expect(apiRequest('GET', '/audit')).rejects.toThrow(/API GET \/audit → 401/);
+    // N12: the envelope message is extracted instead of dumping raw JSON.
+    await expect(apiRequest('GET', '/audit')).rejects.toThrow(/Unauthorized \(401\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// N12: timeout control + envelope error message extraction
+// ---------------------------------------------------------------------------
+describe('apiRequest timeout (N12)', () => {
+  it('passes an AbortSignal with the default 30s budget', async () => {
+    await apiRequest('GET', '/tasks');
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeDefined();
+    expect(REQUEST_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it('rejects with a friendly timeout error when the request exceeds the budget', async () => {
+    fetchMock.mockImplementationOnce(
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_res, rej) => {
+          init.signal.addEventListener('abort', () => {
+            const err = new Error('This operation was aborted');
+            err.name = 'AbortError';
+            rej(err);
+          });
+        }),
+    );
+    // 注入极短超时，避免测试真等 30s
+    await expect(apiRequest('GET', '/slow', undefined, 30)).rejects.toThrow(
+      /timed out after 30ms/,
+    );
+  });
+
+  it('rethrows non-timeout network errors unchanged', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    await expect(apiRequest('GET', '/x')).rejects.toThrow('ECONNREFUSED');
+  });
+});
+
+describe('apiRequest error extraction (N12)', () => {
+  it('401: surfaces the envelope message and the token hint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(false, { code: 401, message: 'jwt expired', data: null }, 401),
+    );
+    await expect(apiRequest('GET', '/tasks')).rejects.toThrow(
+      /Unauthorized \(401\): jwt expired.*AUTOCODEFLOW_API_TOKEN/,
+    );
+  });
+
+  it('403: mentions the ADMIN role requirement', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(false, { code: 403, message: 'Forbidden', data: null }, 403),
+    );
+    await expect(apiRequest('POST', '/executors/e1/install')).rejects.toThrow(
+      /Forbidden \(403\): Forbidden.*ADMIN/,
+    );
+  });
+
+  it('400: joins class-validator message arrays', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(false, { statusCode: 400, message: ['name should not be empty', 'runtime must be a string'] }, 400),
+    );
+    await expect(apiRequest('POST', '/tasks')).rejects.toThrow(
+      /API error \(400\): name should not be empty; runtime must be a string/,
+    );
+  });
+
+  it('falls back to the raw text when the body is not JSON', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      json: async () => {
+        throw new Error('not json');
+      },
+      text: async () => 'Bad Gateway from nginx',
+    });
+    await expect(apiRequest('GET', '/tasks')).rejects.toThrow(
+      /API GET \/tasks → 502: Bad Gateway from nginx/,
+    );
+  });
+
+  it('falls back to raw text when JSON parses but carries no message', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(false, { timestamp: '2026-01-01', path: '/tasks' }, 500));
+    await expect(apiRequest('GET', '/tasks')).rejects.toThrow(/API GET \/tasks → 500/);
   });
 });
 

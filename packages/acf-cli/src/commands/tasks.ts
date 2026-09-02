@@ -31,7 +31,7 @@ interface PaginatedTasks {
 
 function statusColor(s: string): string {
   if (s === 'success') return chalk.green(s);
-  if (s === 'failed' || s === 'timeout') return chalk.red(s);
+  if (s === 'failed' || s === 'timeout' || s === 'killed') return chalk.red(s);
   if (s === 'running') return chalk.cyan(s);
   if (s === 'active') return chalk.green(s);
   if (s === 'paused') return chalk.yellow(s);
@@ -125,8 +125,9 @@ export function tasksCommand(): Command {
     .action(async (id, opts) => {
       const spinner = ora('Fetching executions…').start();
       try {
+        // 后端 PaginationDto 只认 page/pageSize——不发送 `limit`，
+        // 否则开启 forbidNonWhitelisted 后必然 400（N7/N10）。
         const data = await get<{ list: Execution[]; total: number }>(`/tasks/${id}/executions`, {
-          limit: opts.limit,
           pageSize: opts.limit,
           page: 1,
         });
@@ -472,7 +473,9 @@ async function pollExecution(execId: string): Promise<void> {
     await sleep(INTERVAL);
     try {
       const exec = await get<Execution>(`/tasks/executions/${execId}`);
-      if (['success', 'failed', 'timeout', 'cancelled'].includes(exec.status)) {
+      // killed 是后端 ExecutionStatus 的合法终态（acf task kill / Web 端），
+      // 遗漏会让 --wait 在被 kill 后空转到 MAX_WAIT 并误报超时（N10）。
+      if (['success', 'failed', 'timeout', 'cancelled', 'killed'].includes(exec.status)) {
         if (exec.status === 'success') {
           spinner.succeed(`Execution ${exec.status} in ${exec.duration ?? '?'}ms`);
         } else {
