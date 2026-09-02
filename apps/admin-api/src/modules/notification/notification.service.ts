@@ -1,10 +1,21 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from "@nestjs/common";
 import { WecomChannel } from "./channels/wecom.channel";
 import { DingtalkChannel } from "./channels/dingtalk.channel";
 import { EmailChannel } from "./channels/email.channel";
 import { SlackChannel } from "./channels/slack.channel";
 import { WebhookChannel } from "./channels/webhook.channel";
 import { NotificationPayload } from "./channels/base.channel";
+
+/** NOTIF-003: 静默规则数量上限，防止通过 API 无限添加导致内存缓慢泄漏。 */
+export const MAX_ALERT_SILENCES = 1000;
+/** NOTIF-003: 过期静默规则的定时清理间隔。 */
+const SILENCE_CLEANUP_INTERVAL_MS = 60_000;
 
 export enum AlertLevel {
   INFO = "info",
@@ -32,9 +43,14 @@ export interface AlertSilence {
 }
 
 @Injectable()
-export class NotificationService {
+export class NotificationService implements OnModuleInit, OnModuleDestroy {
   private logger = new Logger(NotificationService.name);
+  // NOTIF-003: 静默规则是内存态（Map），重启即失效。
+  // 这是有意的可接受降级：通知静默是短时操作（通常几分钟到几小时），
+  // 引入 Redis/DB 持久化会为低频功能增加额外依赖与多实例一致性复杂度；
+  // 静默丢失的最坏后果只是重复收到告警，不影响业务正确性。
   private silences: Map<string, AlertSilence> = new Map();
+  private silenceCleanupTimer?: NodeJS.Timeout;
 
   constructor(
     private wecom: WecomChannel,
@@ -44,18 +60,68 @@ export class NotificationService {
     private webhook: WebhookChannel,
   ) {}
 
+  /**
+   * NOTIF-002: 构建 sendAll 日志用的脱敏摘要。
+   * 只保留内容长度与前 80 字符，并剥离 token/密钥样式字符串
+   * （思路同 ai 模块 sanitizeLogs：env 赋值、Bearer token、长 hex/base64），
+   * 避免任务日志片段、错误堆栈或 AI 分析中的敏感数据进入日志。
+   */
+  private buildContentDigest(content: string | undefined): string {
+    const len = content?.length ?? 0;
+    if (len === 0) return "[0 chars]";
+    const sanitized = (content ?? "")
+      // env var assignments: KEY=value
+      .replace(/([A-Z_]{3,}\s*=\s*)[^\s\n]+/g, "$1[REDACTED]")
+      // Bearer / token headers
+      .replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, "$1[REDACTED]")
+      // long hex strings (>=32 chars — likely keys/tokens)
+      .replace(/[0-9a-fA-F]{32,}/g, "[REDACTED_HEX]")
+      // long base64-like strings (>=40 chars)
+      .replace(/[A-Za-z0-9+/]{40,}={0,2}/g, "[REDACTED_B64]");
+    const truncated =
+      sanitized.length > 80 ? `${sanitized.slice(0, 80)}...` : sanitized;
+    // 换行折叠成空格，防止长堆栈把日志行拆碎
+    return `[${len} chars] ${truncated.replace(/\s+/g, " ")}`;
+  }
+
+  /**
+   * NOTIF-003: 启动时开启过期静默规则的定时清理。
+   * timer.unref() 保证清理定时器不会阻止 Node 进程正常退出。
+   */
+  onModuleInit() {
+    this.silenceCleanupTimer = setInterval(() => {
+      try {
+        this.cleanExpiredSilences();
+      } catch (e) {
+        this.logger.warn(
+          `silence cleanup failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }, SILENCE_CLEANUP_INTERVAL_MS);
+    this.silenceCleanupTimer.unref();
+  }
+
+  onModuleDestroy() {
+    if (this.silenceCleanupTimer) {
+      clearInterval(this.silenceCleanupTimer);
+      this.silenceCleanupTimer = undefined;
+    }
+  }
+
   async sendAll(payload: NotificationPayload) {
-    this.logger.log(
-      `[sendAll] title=${payload.title} level=${payload.level} content=${payload.content}`,
-    );
-    // Fan out to all channels; individual failures are caught inside sendToChannels
-    await this.sendToChannels(payload, [
+    // NOTIF-002: 日志只记渠道类型 + 内容长度 + 前 80 字符脱敏摘要，不记原文
+    const channels: AlertChannel[] = [
       AlertChannel.EMAIL,
       AlertChannel.SLACK,
       AlertChannel.DINGTALK,
       AlertChannel.WECOM,
       AlertChannel.WEBHOOK,
-    ]);
+    ];
+    this.logger.log(
+      `[sendAll] channels=${channels.join(",")} title=${payload.title} level=${payload.level} content=${this.buildContentDigest(payload.content)}`,
+    );
+    // Fan out to all channels; individual failures are caught inside sendToChannels
+    await this.sendToChannels(payload, channels);
   }
 
   async sendToChannels(
@@ -121,6 +187,15 @@ export class NotificationService {
   }
 
   addSilence(silence: Omit<AlertSilence, "id" | "createdAt">): string {
+    // NOTIF-003: size 上限——超限拒绝新增（4xx 语义），防止 API 被滥用造成内存泄漏
+    if (this.silences.size >= MAX_ALERT_SILENCES) {
+      this.logger.warn(
+        `addSilence rejected: silence count reached limit ${MAX_ALERT_SILENCES}`,
+      );
+      throw new BadRequestException(
+        `Too many alert silences (max ${MAX_ALERT_SILENCES}). Remove expired ones first.`,
+      );
+    }
     const id = `silence-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const newSilence: AlertSilence = {
       ...silence,

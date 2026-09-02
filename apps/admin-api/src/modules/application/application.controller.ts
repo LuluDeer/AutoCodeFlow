@@ -12,6 +12,7 @@ import {
   Logger,
   BadRequestException,
   UnauthorizedException,
+  InternalServerErrorException,
   Headers,
   Req,
 } from "@nestjs/common";
@@ -30,6 +31,7 @@ import { AppDeploymentService } from "./app-deployment.service";
 import {
   CreateApplicationDto,
   UpdateApplicationDto,
+  UploadApplicationDto,
 } from "./dto/application.dto";
 import { AppReleaseWebhookDto } from "./dto/app-release-webhook.dto";
 import * as fs from "fs";
@@ -42,6 +44,15 @@ import type { Request } from "express";
 @UseGuards(JwtAuthGuard)
 @Controller("applications")
 export class ApplicationController {
+  private readonly logger = new Logger(ApplicationController.name);
+
+  // APP-001: 该端点公开给 CI/CD 调用，属于未认证攻击面。所有鉴权失败路径
+  // （应用不存在 / webhookSecret 未配置 / 签名缺失或无效 / 时间戳过期 /
+  // raw body 缺失）必须返回完全相同的 401 响应——任何响应差异（状态码或
+  // 错误消息）都会成为枚举应用名的判定依据。具体失败原因只写入服务端日志。
+  private static readonly WEBHOOK_AUTH_FAILURE_MESSAGE =
+    "Webhook authentication failed";
+
   constructor(
     private readonly svc: ApplicationService,
     private readonly deploymentSvc: AppDeploymentService,
@@ -96,10 +107,12 @@ export class ApplicationController {
   )
   async upload(
     @UploadedFile() file: Express.Multer.File,
-    @Body("name") name: string,
-    @Body("runtime") runtime: string,
+    @Body() body: UploadApplicationDto,
   ) {
     if (!file) throw new BadRequestException("No file uploaded");
+    // ARCH-003: name/runtime 经全局 ValidationPipe（whitelist + MaxLength）校验，
+    // 不再用裸 @Body("name") 字符串绕过验证管道
+    const { name, runtime } = body;
     if (!name) throw new BadRequestException("Application name is required");
 
     // P1: upload validation — extension whitelist plus ZIP magic number, so
@@ -129,9 +142,21 @@ export class ApplicationController {
     fs.writeFileSync(zipPath, file.buffer);
 
     // Build a URL that the executor can use to download the package
-    const apiBase =
-      process.env.API_BASE_URL ||
-      `http://localhost:${process.env.PORT || 3105}`;
+    // APP-002: packageUrl 会被 executor 节点拉取。旧实现缺 API_BASE_URL 时静默
+    // 回退 `http://localhost:PORT`，生成的 URL 在其它机器上不可达，问题被推迟到
+    // 部署阶段才暴露。这里选择 fail-fast（使用时记 error 并抛 500）而非从请求
+    // Host 推导：上传请求的 Host 可能是 CI 容器的 localhost 或反向代理地址，
+    // 静默推导同样会存下不可达的 URL，只是把失败换个地方隐藏；显式报错能在
+    // 上传这一步就把配置缺失暴露给调用方。
+    const apiBase = process.env.API_BASE_URL;
+    if (!apiBase) {
+      this.logger.error(
+        "API_BASE_URL is not configured — cannot build a package download URL reachable by executors. Set API_BASE_URL to the externally reachable base URL of this API and retry.",
+      );
+      throw new InternalServerErrorException(
+        "API_BASE_URL is not configured; cannot build a package download URL",
+      );
+    }
     const packageUrl = `${apiBase}/uploads/packages/${filename}`;
 
     // Upsert the application record: create if not exists, update packageUrl if exists.
@@ -170,10 +195,14 @@ export class ApplicationController {
     const logger = new Logger("ReleaseWebhook");
 
     // Find application by name (include webhookSecret for HMAC validation)
+    // APP-001: 无论后续哪一步失败，对外只暴露同一个 401 消息，
+    // 使"应用不存在"与"secret/签名错误"不可区分，防止应用名枚举。
     const targetApp = await this.svc.findByNameWithSecret(dto.appName);
     if (!targetApp) {
       logger.warn(`Webhook: no application found with name "${dto.appName}"`);
-      return { ok: true, message: "No matching application" };
+      throw new UnauthorizedException(
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
+      );
     }
 
     // HMAC-SHA256 signature verification (same convention as GitHub webhooks)
@@ -184,7 +213,7 @@ export class ApplicationController {
         `Webhook: app "${dto.appName}" has no webhookSecret configured`,
       );
       throw new UnauthorizedException(
-        "Application webhookSecret is required for release webhooks",
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
       );
     }
     if (!signature) {
@@ -192,7 +221,7 @@ export class ApplicationController {
         `Webhook: missing X-Hub-Signature-256 header for app "${dto.appName}"`,
       );
       throw new UnauthorizedException(
-        "X-Hub-Signature-256 header is required",
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
       );
     }
     if (!timestamp) {
@@ -200,7 +229,7 @@ export class ApplicationController {
         `Webhook: missing X-AutoCodeFlow-Timestamp header for app "${dto.appName}"`,
       );
       throw new UnauthorizedException(
-        "X-AutoCodeFlow-Timestamp header is required",
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
       );
     }
     const timestampMs = Number(timestamp);
@@ -210,13 +239,15 @@ export class ApplicationController {
       Math.abs(now - timestampMs) > 5 * 60 * 1000
     ) {
       logger.warn(`Webhook: stale timestamp for app "${dto.appName}"`);
-      throw new UnauthorizedException("Webhook timestamp is stale");
+      throw new UnauthorizedException(
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
+      );
     }
     const body = req?.rawBody;
     if (!body) {
       logger.warn(`Webhook: raw request body is unavailable for app "${dto.appName}"`);
       throw new UnauthorizedException(
-        "Raw request body is required for webhook signature verification",
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
       );
     }
     const expected =
@@ -232,7 +263,9 @@ export class ApplicationController {
       timingSafeEqual(expectedBuf, receivedBuf);
     if (!valid) {
       logger.warn(`Webhook: invalid signature for app "${dto.appName}"`);
-      throw new UnauthorizedException("Invalid webhook signature");
+      throw new UnauthorizedException(
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
+      );
     }
 
     // Update version / git metadata

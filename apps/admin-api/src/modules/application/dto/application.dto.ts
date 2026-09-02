@@ -55,3 +55,22 @@ export class UpdateApplicationDto {
   /** HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable. */
   @IsOptional() @IsString() @MaxLength(256) webhookSecret?: string;
 }
+
+/**
+ * ARCH-003: multipart upload fields go through the global ValidationPipe
+ * (whitelist + forbidNonWhitelisted) instead of bare @Body("name") strings,
+ * so overlong/malformed fields are rejected with 400 before touching disk.
+ */
+export class UploadApplicationDto {
+  @ApiProperty({ description: "Application name", maxLength: 100 })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  name: string;
+
+  @ApiPropertyOptional({ description: "Runtime type", example: "node", maxLength: 50 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  runtime?: string;
+}

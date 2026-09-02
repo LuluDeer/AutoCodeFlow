@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AiService } from '../ai.service';
 import { SystemConfigService } from '../../config/config.service';
@@ -150,6 +151,8 @@ describe('AiService', () => {
       });
       expect(result.suggestedCron).toBe('0 * * * *');
       expect(result.reasoning).toContain('not configured');
+      // AI-002: 未配置 provider 也属于回退，显式携带 fallback 标记
+      expect(result.fallback).toBe(true);
     });
 
     it('should parse valid JSON response from provider', async () => {
@@ -166,6 +169,8 @@ describe('AiService', () => {
       });
       expect(result.suggestedCron).toBe('0 2 * * *');
       expect(result.reasoning).toBe('Best hours are 2-3 UTC');
+      // AI-002: 真正的 AI 建议不携带 fallback 标记
+      expect(result.fallback).toBeUndefined();
     });
 
     it('should fall back to current cron when AI returns invalid JSON', async () => {
@@ -177,11 +182,37 @@ describe('AiService', () => {
       mockedAxios.post = jest.fn().mockResolvedValue({
         data: { choices: [{ message: { content: 'not valid json at all' } }] },
       });
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
       const result = await service.suggestSchedule('my-task', '*/5 * * * *', {
         total: 5, successes: 3, failures: 2, avgDurationMs: 200, p95DurationMs: 400, bestHoursUtc: [],
       });
       expect(result.suggestedCron).toBe('*/5 * * * *');
       expect(result.reasoning).toContain('unparseable');
+      // AI-002: 回退结果显式携带 fallback 标记，且记录了 warn 日志
+      expect(result.fallback).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('suggestSchedule'));
+      warnSpy.mockRestore();
+    });
+
+    it('should fall back with warn when JSON is valid but missing required fields (AI-002)', async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === 'ai.provider') return 'openai';
+        if (key === 'ai.openaiApiKey') return 'test-key';
+        return defaultVal;
+      });
+      mockedAxios.post = jest.fn().mockResolvedValue({
+        data: { choices: [{ message: { content: '{"cron":"0 2 * * *"}' } }] },
+      });
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      const result = await service.suggestSchedule('my-task', '*/10 * * * *', {
+        total: 5, successes: 3, failures: 2, avgDurationMs: 200, p95DurationMs: 400, bestHoursUtc: [],
+      });
+      expect(result.suggestedCron).toBe('*/10 * * * *');
+      expect(result.fallback).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('missing required fields'),
+      );
+      warnSpy.mockRestore();
     });
   });
 
