@@ -171,8 +171,16 @@ describe('POST /api/execute', () => {
     expect(res.body.error).toMatch(/Invalid npm package name/);
   });
 
-  it('releases capacity when git checkout fails synchronously', async () => {
-    (mockCp.spawnSync as jest.Mock).mockReturnValue({ status: 1, stderr: Buffer.from('clone failed') });
+  it('releases capacity when git checkout fails', async () => {
+    // gitCheckoutTo is async now (spawn, not spawnSync): simulate a clone
+    // that writes 'clone failed' to stderr and exits with code 1.
+    const failingSpawn = {
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn((event: string, cb: Function) => { if (event === 'data') cb(Buffer.from('clone failed')); }) },
+      on: jest.fn((event: string, cb: Function) => { if (event === 'close') cb(1); }),
+      kill: jest.fn(),
+    };
+    (mockCp.spawn as jest.Mock).mockReturnValue(failingSpawn);
 
     const res = await request(appNoAuth).post('/api/execute').send({
       executionId: 'exec-git-fail',

@@ -1,5 +1,6 @@
 import { logger } from './logger';
 import { runTask } from './routes/execute';
+import { pushCallback } from './callback';
 
 export interface TaskPayload {
   id?: string | number;
@@ -88,7 +89,18 @@ class TaskWorker {
 
   stop(): void {
     this.stopped = true;
-    logger.info(`Task ${this.taskId}: Worker stopped`);
+    // Fail queued items instead of dropping them silently — admin-api marks
+    // the executions failed and capacity slots are released.
+    const queued = this.state.queue.splice(0);
+    for (const item of queued) {
+      pushCallback({
+        executionId: item.executionId,
+        status: 'failed',
+        errorMessage: 'Executor is shutting down before this execution started',
+      });
+      item.onComplete?.();
+    }
+    logger.info(`Task ${this.taskId}: Worker stopped (${queued.length} queued item(s) failed)`);
   }
 
   getRunningCount(): number {

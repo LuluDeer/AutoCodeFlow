@@ -128,6 +128,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
 
+  // Stop accepting new requests
+  server.close();
+
   // Send offline notification
   await notifyOffline();
 
@@ -140,16 +143,23 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 const server = app.listen(config.port, async () => {
-  logger.info(`Executor started: ${config.appName} @ ${config.executorAddress}`);
-  
-  // Initialize admin clients for HA support.
-  // config.adminApiUrls already applies the URL priority:
-  // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
-  initAdminClients(config.adminApiUrls);
-  await checkAdminApiConnectivity();
+  try {
+    logger.info(`Executor started: ${config.appName} @ ${config.executorAddress}`);
 
-  await registerExecutor();
-  heartbeatInterval = startHeartbeat();
-  startCallbackThread();
-  startLogCleanup(config.logRetentionDays || 7);
+    // Initialize admin clients for HA support.
+    // config.adminApiUrls already applies the URL priority:
+    // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
+    initAdminClients(config.adminApiUrls);
+    await checkAdminApiConnectivity();
+
+    await registerExecutor();
+    heartbeatInterval = startHeartbeat();
+    startCallbackThread();
+    startLogCleanup(config.logRetentionDays || 7);
+  } catch (err: unknown) {
+    // An async callback rejection here would be unhandled — exit loudly
+    // instead so the supervisor restarts the executor.
+    logger.error(`Startup failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 });
