@@ -839,23 +839,114 @@ export class TaskService {
   }
 
   /**
+   * R4-P0: check and trigger tasks that depend on the completed task.
+   * Invoked from handleCallback on the unique SUCCESS-transition winner path
+   * (moved from TaskProcessor, where the exec.status === SUCCESS condition
+   * could never be true). Best-effort: failures are logged, never propagated
+   * to the callback result — the execution itself is already terminal.
+   */
+  private async triggerDependentTasks(completedTaskId: string) {
+    try {
+      // Find all tasks that have any dependencies set, then filter in-process.
+      // Using application-layer filtering avoids JSONB-specific SQL that breaks
+      // on non-PostgreSQL engines and is simpler to reason about.
+      const allTasksWithDeps = await this.taskRepo
+        .createQueryBuilder("t")
+        .where("t.dependencies IS NOT NULL")
+        .getMany();
+
+      // Keep only tasks that list completedTaskId as one of their dependency values
+      const dependentTasks = allTasksWithDeps.filter(
+        (t) =>
+          t.dependencies &&
+          Object.values(t.dependencies).includes(completedTaskId),
+      );
+
+      for (const task of dependentTasks) {
+        // Check if all dependencies are satisfied
+        const canTrigger = await this.checkDependencies(task);
+        if (canTrigger) {
+          this.logger.log(
+            `All dependencies satisfied for task ${task.id}, triggering`,
+          );
+          await this.trigger(task.id, {});
+        }
+      }
+    } catch (err) {
+      this.logger.error(
+        `Failed to trigger dependent tasks: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Check if all dependencies of a task have completed successfully.
+   */
+  private async checkDependencies(task: Task): Promise<boolean> {
+    if (!task.dependencies || Object.keys(task.dependencies).length === 0) {
+      return true;
+    }
+
+    const dependencyIds = Object.values(task.dependencies);
+    if (dependencyIds.length === 0) return true;
+
+    const recentExecutions = await this.execRepo.find({
+      where: { taskId: In(dependencyIds as string[]) },
+      order: { createdAt: "DESC" },
+    });
+
+    // Group by taskId and get the most recent execution for each
+    const latestByTask = new Map<string, TaskExecution>();
+    for (const exec of recentExecutions) {
+      if (!latestByTask.has(exec.taskId)) {
+        latestByTask.set(exec.taskId, exec);
+      }
+    }
+
+    // Check if all dependencies have successful executions
+    for (const depId of dependencyIds) {
+      const latestExec = latestByTask.get(depId as string);
+      if (!latestExec || latestExec.status !== ExecutionStatus.SUCCESS) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
    * Persist detailed execution logs (idempotent on retry).
-   * DB driver: delete stale lines then bulk-insert in chunks.
+   * DB driver: delete stale lines then bulk-insert in chunks (replace), or
+   * plain bulk-insert when `append` is set (multi-page backfill pages 2+).
    * S3 driver (LOG_STORAGE_DRIVER=s3, optimization-notes 2.6): one gzip
    * object per execution; the DB keeps only the object reference, and any
    * upload failure falls back to DB rows so the log viewer keeps working.
+   * R4-P1: append=true extends the existing store instead of replacing it —
+   * backfill calls this once per page and a replace per page would leave
+   * only the last page behind for any log longer than one page.
    */
   private async storeLogLines(
     executionId: string,
     logs: string | string[],
     startLineNumber = 0,
+    opts: { append?: boolean } = {},
   ): Promise<void> {
     const lines = typeof logs === "string" ? logs.split("\n") : logs;
+    const append = opts.append === true;
     const s3 = this.resolveS3Storage();
     if (s3) {
       try {
-        const key = await s3.put(executionId, lines.join("\n"));
-        await this.logLineRepo.delete({ executionId });
+        let content = lines.join("\n");
+        if (append) {
+          const existing = await this.s3GetExistingLog(s3, executionId);
+          if (existing !== null && existing.length > 0) {
+            content = `${existing}\n${content}`;
+          }
+        }
+        const key = await s3.put(executionId, content);
+        if (!append) {
+          await this.logLineRepo.delete({ executionId });
+        }
         await this.execRepo.update(executionId, {
           logStorage: "s3",
           logObjectKey: key,
@@ -867,7 +958,9 @@ export class TaskService {
         );
       }
     }
-    await this.logLineRepo.delete({ executionId });
+    if (!append) {
+      await this.logLineRepo.delete({ executionId });
+    }
     const entities = lines.map((content, i) =>
       this.logLineRepo.create({
         executionId,
@@ -878,6 +971,22 @@ export class TaskService {
     const CHUNK = 500;
     for (let i = 0; i < entities.length; i += CHUNK) {
       await this.logLineRepo.save(entities.slice(i, i + CHUNK));
+    }
+  }
+
+  /**
+   * Fetch the current S3 log object for an execution, or null when it does
+   * not exist yet (first append page) / cannot be read. Used by the append
+   * path of storeLogLines to concatenate multi-page backfills.
+   */
+  private async s3GetExistingLog(
+    s3: S3LogStorage,
+    executionId: string,
+  ): Promise<string | null> {
+    try {
+      return await s3.get(s3.objectKey(executionId));
+    } catch {
+      return null;
     }
   }
 
@@ -930,9 +1039,14 @@ export class TaskService {
           : [];
         if (chunk.length === 0) break;
         // Persist each page as it arrives — never accumulate the entire log
-        // in memory. storeLogLines re-numbers lineNumber to start at the
-        // global offset so the DB row numbers reflect absolute positions.
-        await this.storeLogLines(execution.id, chunk, fromLine);
+        // in memory. R4-P1: page 0 replaces any stale rows; later pages must
+        // APPEND (storeLogLines' replace semantics would delete the previous
+        // pages, leaving only the final page for any log > PAGE_LIMIT lines).
+        // storeLogLines re-numbers lineNumber to start at the global offset
+        // so the DB row numbers reflect absolute positions.
+        await this.storeLogLines(execution.id, chunk, fromLine, {
+          append: page > 0,
+        });
         totalPersisted += chunk.length;
         fromLine += chunk.length;
         const total: unknown = resp.data?.totalLines;
@@ -1052,6 +1166,19 @@ export class TaskService {
         // Decrement executor runningTaskCount on task completion (success or
         // failure); exactly once thanks to the conditional update above.
         await this.releaseExecutorSlot(execution.executorAddress);
+
+        // R4-P0: dependency fan-out lives on the unique-winner path. The
+        // worker's in-memory status can only be RUNNING/FAILED/TIMEOUT when
+        // its finally block runs (SUCCESS is written exclusively by the
+        // conditional UPDATE above), so the previous trigger point in
+        // TaskProcessor.handle was dead code and dependency chains never
+        // fired. Firing here — after affected > 0 and only for
+        // status === SUCCESS — makes duplicate callbacks a no-op (they exit
+        // at the affected gate above) and keeps the TASK-004 conditional
+        // UPDATE semantics: exactly one caller observes the transition.
+        if (patch.status === ExecutionStatus.SUCCESS) {
+          await this.triggerDependentTasks(execution.taskId);
+        }
 
         // LOG-01: persist structured log lines for pagination/SSE. When the
         // executor truncated the callback payload, pull the full logs from the

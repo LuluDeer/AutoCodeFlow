@@ -31,6 +31,15 @@ export const SCHEDULER_LEADER_TTL_MS = 30_000;
 /** 非 Leader 重试竞选 / 降级重试间隔 */
 export const SCHEDULER_LEADER_RETRY_MS = 15_000;
 
+/**
+ * 终态保护门（TASK-004 / R4-P1）：所有把执行推进到终态的写路径都只允许命中
+ * 仍处于打开状态（pending/running）的行——并发回调已写入的终态绝不被覆盖。
+ */
+const OPEN_EXECUTION_STATUSES = [
+  ExecutionStatus.PENDING,
+  ExecutionStatus.RUNNING,
+];
+
 @Injectable()
 export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SchedulerService.name);
@@ -332,7 +341,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const OPEN_STATUSES = [ExecutionStatus.PENDING, ExecutionStatus.RUNNING];
+    const OPEN_STATUSES = OPEN_EXECUTION_STATUSES;
     const finishedAt = new Date();
     // TASK-004: 通过 RETURNING 收集真正被本批 UPDATE 命中的行——竞态中
     // 已被回调写成终态的行不会出现在受影响集合里，executor 槽位只对
@@ -500,9 +509,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     let lock: Lock | null = null;
     let claimedViaDb = false;
     try {
+      // R4-P0: renew:false — this lock is never released (see finally): its
+      // TTL IS the cross-instance dedup window. A renewing watchdog would
+      // keep it alive forever, so each scheduled task would only ever fire
+      // once per process lifetime.
       lock = await this.redisLockService.acquireLock(
         `task:trigger:${task.id}`,
         lockTTL,
+        { renew: false },
       );
     } catch (err: unknown) {
       // TASK-006 降级路径：Redis 不可用时改用 DB 条件 UPDATE 原子 claim 兜底
@@ -558,11 +572,50 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(
             `Task "${task.name}" is RUNNING (blockStrategy=COVER_EARLY), cancelling running execution ${running.id}`,
           );
-          running.status = ExecutionStatus.CANCELLED;
-          running.errorMessage = "Task was covered by new trigger";
-          running.endTime = new Date();
-          await this.execRepo.save(running);
-          await this.releaseExecutorSlot(running.executorAddress);
+          // R4-P1: the previous blind save() could overwrite a SUCCESS that
+          // a concurrent callback had already committed (and double-release
+          // the executor slot, oversubscribing capacity). Use the same
+          // TASK-004 pattern as recoverStaleExecutions: a conditional UPDATE
+          // guarded by the open-status gate, with RETURNING rows deciding
+          // which slots to release.
+          const result = await this.execRepo
+            .createQueryBuilder()
+            .update(TaskExecution)
+            .set({
+              status: ExecutionStatus.CANCELLED,
+              errorMessage: "Task was covered by new trigger",
+              endTime: new Date(),
+            })
+            .where('"id" = :id AND "status" IN (:...open)', {
+              id: running.id,
+              open: OPEN_EXECUTION_STATUSES,
+            })
+            .returning(["id", "executorAddress"])
+            .execute();
+          const coveredRows = (result.raw ?? []) as Array<{
+            id: string;
+            executorAddress: string | null;
+          }>;
+          if (coveredRows.length === 0 && result.affected) {
+            // Driver reported the hit without RETURNING rows: fall back to
+            // the snapshot address. Safe — affected=1 means this UPDATE made
+            // the transition, so no concurrent callback released it already.
+            coveredRows.push({
+              id: running.id,
+              executorAddress: running.executorAddress,
+            });
+          }
+          if (coveredRows.length === 0) {
+            this.logger.warn(
+              `COVER_EARLY: execution ${running.id} already reached a terminal state (concurrent callback/kill), not covered`,
+            );
+          }
+          for (const row of coveredRows) {
+            await this.releaseExecutorSlot(row.executorAddress);
+            this.logger.warn(
+              `COVER_EARLY: execution ${row.id} cancelled by new trigger`,
+            );
+          }
         }
       }
 
