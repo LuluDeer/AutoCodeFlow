@@ -11,7 +11,8 @@ import { Application } from "./application.entity";
 
 @Entity("application_versions")
 @Index(["applicationId"])
-@Index(["applicationId", "version"])
+// DB-004: (applicationId, version) 唯一索引，防止并发创建时同一应用出现重复版本号
+@Index(["applicationId", "version"], { unique: true })
 @Index(["createdAt"])
 @Index(["sourceDeploymentId"])
 export class ApplicationVersion {
