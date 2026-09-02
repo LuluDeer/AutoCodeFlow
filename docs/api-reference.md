@@ -298,6 +298,7 @@ Content-Type: application/json
 | GET | `/metrics/trend?days=` | 是 | 每日执行趋势（`days` 默认 7，上限 90） |
 | GET | `/metrics/executors` | 是 | 执行器负载和状态统计 |
 | GET | `/metrics/failures` | 是 | 最近失败执行列表 |
+| GET | `/metrics/scheduler` | 是 | 调度器可观测性（第五轮新增）：tick 计数/耗时、trigger claimed/skipped/failed、依赖扇出 claim、BullMQ 队列深度、isLeader 与 pid/hostname（多实例区分）；进程内计数，重启归零 |
 
 > 注意：`/metrics/*` 均需要 JWT。免认证的系统指标请使用 `GET /health/metrics`（见 Health 章节）。
 
@@ -307,8 +308,8 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/audit` | 是 | 分页查询审计日志 |
-| GET | `/audit/export` | 是 | 导出审计日志为 CSV（最多 10000 行，支持相同过滤条件） |
+| GET | `/audit` | 是（Admin） | 分页查询审计日志（支持 action/resource/userId/username/startTime/endTime 筛选） |
+| GET | `/audit/export` | 是（Admin） | 导出审计日志为 CSV（最多 10000 行，支持相同过滤条件） |
 
 **审计日志查询参数：**
 
@@ -357,7 +358,6 @@ Content-Type: application/json
 | GET | `/executor-packages` | 是（Admin） | 查询执行器包列表 |
 | POST | `/executor-packages` | 是（Admin） | 上传执行器包（multipart/form-data，返回 201） |
 | GET | `/executor-packages/latest` | 是（Admin） | 获取最新执行器包（须带 `type` 查询参数，返回单对象或 null） |
-| POST | `/executor-packages/install-token` | 是（Admin） | 生成执行器安装 Token |
 | GET | `/executor-packages/:id` | 是（Admin） | 获取包详情 |
 | GET | `/executor-packages/:id/download` | 是（Admin） | 下载包文件（仅支持 Authorization 头，浏览器直链会 401） |
 | POST | `/executor-packages/:id/push` | 是（Admin） | 将包推送到执行器安装 |
