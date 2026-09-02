@@ -14,6 +14,7 @@ const mockRepo = () => ({
   save: jest.fn(),
   create: jest.fn(),
   findBy: jest.fn(),
+  update: jest.fn().mockResolvedValue({ affected: 1 }),
 });
 
 const mockQueue = () => ({
@@ -167,7 +168,9 @@ describe('SchedulerService', () => {
       const task = makeTask();
       const result = await service.enqueue(task, 'manual');
       expect(result).toBeNull();
-      expect(lock.release).toHaveBeenCalled();
+      // P1: the dedup lock is deliberately NOT released — its TTL is the
+      // dedup window across instances.
+      expect(lock.release).not.toHaveBeenCalled();
     });
 
     it('should enqueue task and return execution when all checks pass', async () => {
@@ -186,7 +189,8 @@ describe('SchedulerService', () => {
         { executionId: 'exec-1', task },
         expect.any(Object),
       );
-      expect(lock.release).toHaveBeenCalled();
+      // P1: not released on success either — TTL-based dedup, see enqueue.
+      expect(lock.release).not.toHaveBeenCalled();
     });
 
     it('should skip and return null when blockStrategy=DISCARD and task is running', async () => {
@@ -201,7 +205,8 @@ describe('SchedulerService', () => {
       expect(result).toBeNull();
       expect(queue.add).not.toHaveBeenCalled();
       expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
-      expect(lock.release).toHaveBeenCalled();
+      // P1: not released on skip — TTL-based dedup, see enqueue.
+      expect(lock.release).not.toHaveBeenCalled();
     });
 
     it('should cancel running execution when blockStrategy=COVER_EARLY', async () => {
@@ -301,6 +306,17 @@ describe('SchedulerService', () => {
       taskRepo.find.mockResolvedValue([]);
       await service.reload();
       expect(service.getStats().activeCronTasks).toBe(0);
+    });
+
+    it('should not register the same task twice when reload and scheduleOne overlap', async () => {
+      const task = makeTask({ triggerType: TaskTriggerType.CRON, cronExpression: '0 * * * *' });
+      taskRepo.find.mockResolvedValue([task]);
+
+      const reloadPromise = service.reload();
+      const schedulePromise = service.scheduleOne(task);
+      await Promise.all([reloadPromise, schedulePromise]);
+
+      expect(service.getStats().activeCronTasks).toBe(1);
     });
   });
 
