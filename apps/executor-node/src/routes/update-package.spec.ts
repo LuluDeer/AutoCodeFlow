@@ -3,6 +3,8 @@ import express from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as childProcess from 'child_process';
+import * as http from 'http';
+import type { AddressInfo } from 'net';
 
 // Mock everything before importing the router
 jest.mock('fs');
@@ -12,6 +14,8 @@ jest.mock('../config', () => ({
     workDir: '/tmp/test-workdir',
     appName: 'test-executor',
     executorAddress: 'localhost:8002',
+    executorId: '',
+    token: 'test-shared-token',
   },
 }));
 jest.mock('../logger', () => ({
@@ -124,6 +128,23 @@ describe('POST /api/update-package — payload validation', () => {
     expect(res.status).toBe(400);
   });
 
+  it('returns 400 for a packageId with path separators (traversal guard)', async () => {
+    const res = await request(app)
+      .post('/api/update-package')
+      .send({ packageId: '../escape', downloadUrl: 'http://example.com/pkg.zip', version: '1.0.0', checksum: 'f'.repeat(64) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/packageId/);
+    expect(mockFs.writeFileSync).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a packageId with unsafe characters (spaces, slashes)', async () => {
+    const res = await request(app)
+      .post('/api/update-package')
+      .send({ packageId: 'pkg 001/evil', downloadUrl: 'http://example.com/pkg.zip', version: '1.0.0', checksum: 'f'.repeat(64) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/packageId/);
+  });
+
   it('accepts http: scheme in downloadUrl', async () => {
     // Route accepts the URL; async download will start but is mocked out.
     // We only care the status is not 400 at the validation stage.
@@ -178,4 +199,138 @@ describe('POST /api/update-package — authentication', () => {
     expect(res.status).not.toBe(401);
     expect(res.status).toBe(400); // blocked by URL scheme check, not auth
   });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/update-package — download behaviour (Bearer token, watchdog)
+// ---------------------------------------------------------------------------
+describe('POST /api/update-package — download behaviour', () => {
+  const actualFs = jest.requireActual('fs') as typeof fs;
+  const actualHttp = jest.requireActual('http') as typeof import('http');
+  const actualCrypto = jest.requireActual('crypto') as typeof import('crypto');
+  const { post } = jest.requireMock('../admin-client') as { post: jest.Mock };
+
+  const app = makeApp();
+
+  beforeEach(() => {
+    // Restore real createWriteStream/readFile existence checks so the shared
+    // downloader can actually stream a response from a local test server.
+    (mockFs.createWriteStream as jest.Mock).mockImplementation((p: string) =>
+      actualFs.createWriteStream(p),
+    );
+    (mockFs.createReadStream as unknown as jest.Mock).mockImplementation((p: string) =>
+      actualFs.createReadStream(p),
+    );
+    (mockFs.existsSync as jest.Mock).mockImplementation((p: string) => actualFs.existsSync(p));
+    (mockFs.mkdirSync as jest.Mock).mockImplementation(((dir: string) => {
+      actualFs.mkdirSync(dir, { recursive: true });
+      return undefined;
+    }) as never);
+    (mockFs.unlinkSync as jest.Mock).mockImplementation(((p: string) => {
+      try { actualFs.unlinkSync(p); } catch { /* already gone */ }
+      return undefined;
+    }) as never);
+  });
+
+  function listen(server: http.Server): Promise<number> {
+    return new Promise((resolve) =>
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address() as AddressInfo;
+        resolve(address.port);
+      }),
+    );
+  }
+
+  it('downloads with the executor Bearer token, verifies checksum and reports downloaded', async () => {
+    const seen: Array<string | undefined> = [];
+    const payload = 'fake-executor-package-body';
+    const checksum = actualCrypto.createHash('sha256').update(payload).digest('hex');
+    const server = actualHttp.createServer((req, res) => {
+      seen.push(req.headers.authorization);
+      res.writeHead(200);
+      res.end(payload);
+    });
+    const port = await listen(server);
+    const tmpDir = actualFs.mkdtempSync(path.join(require('os').tmpdir(), 'acf-up-'));
+
+    // Redirect process.cwd() so .pkg-updates lands in the temp dir
+    const realCwd = process.cwd();
+    const spyCwd = jest.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    try {
+      post.mockResolvedValue({ data: {} });
+      const res = await request(app)
+        .post('/api/update-package')
+        .send({
+          packageId: 'pkg-download-test',
+          name: 'executor',
+          version: '9.9.9',
+          downloadUrl: `http://127.0.0.1:${port}/executor.zip`,
+          checksum,
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.accepted).toBe(true);
+
+      // Wait until the flow settles
+      for (let i = 0; i < 100; i++) {
+        const status = await request(app).get('/api/update-package/status');
+        if (status.body.inProgress === false && seen.length > 0 && post.mock.calls.length > 0) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      expect(seen).toEqual(['Bearer test-shared-token']);
+      const pushed = post.mock.calls.find((c: unknown[]) => c[0] === '/api/executor-packages/push-result');
+      expect(pushed).toBeDefined();
+      expect((pushed as unknown[])[1]).toEqual(
+        expect.objectContaining({ packageId: 'pkg-download-test', status: 'downloaded' }),
+      );
+      // The downloaded file is kept for the deployment pipeline
+      expect(actualFs.existsSync(path.join(tmpDir, '.pkg-updates', 'pkg-download-test.zip'))).toBe(true);
+    } finally {
+      spyCwd.mockRestore();
+      server.close();
+      actualFs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('releases updateInProgress when the download fails (no permanent 409)', async () => {
+    const server = actualHttp.createServer((_req, res) => {
+      res.writeHead(500);
+      res.end('broken');
+    });
+    const port = await listen(server);
+    const tmpDir = actualFs.mkdtempSync(path.join(require('os').tmpdir(), 'acf-up-fail-'));
+    const spyCwd = jest.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    try {
+      const res = await request(app)
+        .post('/api/update-package')
+        .send({
+          packageId: 'pkg-fail-test',
+          name: 'executor',
+          version: '9.9.8',
+          downloadUrl: `http://127.0.0.1:${port}/executor.zip`,
+          checksum: 'a'.repeat(64),
+        });
+      expect(res.status).toBe(200);
+
+      await waitForUpdateToSettle(app);
+
+      const status = await request(app).get('/api/update-package/status');
+      expect(status.body.inProgress).toBe(false);
+      // A subsequent update must not be rejected with 409
+      const retry = await request(app)
+        .post('/api/update-package')
+        .send({
+          packageId: 'pkg-fail-test-2',
+          name: 'executor',
+          version: '9.9.8',
+          downloadUrl: `http://127.0.0.1:${port}/executor.zip`,
+          checksum: 'a'.repeat(64),
+        });
+      expect(retry.status).not.toBe(409);
+    } finally {
+      spyCwd.mockRestore();
+      server.close();
+      actualFs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
