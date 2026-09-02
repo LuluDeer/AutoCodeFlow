@@ -237,6 +237,78 @@ describe('acf task list (P2 contract fix)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// task executions / trigger --wait (N10)
+// ---------------------------------------------------------------------------
+describe('acf task executions (N10)', () => {
+  it('只发送 PaginationDto 白名单参数（pageSize/page），不再发送后端不识别的 limit', async () => {
+    mockedGet.mockResolvedValueOnce({ list: [], total: 0 });
+    await run(tasksCommand(), 'task executions t1');
+    expect(mockedGet).toHaveBeenCalledWith('/tasks/t1/executions', {
+      pageSize: '10',
+      page: 1,
+    });
+    const params = mockedGet.mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(params).not.toHaveProperty('limit');
+  });
+});
+
+describe('acf task trigger --wait (N10)', () => {
+  // run() 内部有动态 import('commander')，其微任务链需在 fake timers 下逐步
+  // 让出真实事件循环才能结算，随后轮询的 setTimeout 才会挂上。故用小步推进
+  // 直到 pending 落定，避免“一次性大步推进错过定时器注册”的竞态。
+  async function drain(pending: Promise<unknown>, maxMs = 20_000): Promise<void> {
+    let settled = false;
+    pending.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    for (let t = 0; t < maxMs && !settled; t += 100) {
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    await pending;
+  }
+
+  it('killed 是终态：轮询立即返回，不再空转到 MAX_WAIT', async () => {
+    vi.useFakeTimers();
+    try {
+      mockedPost.mockResolvedValueOnce({ id: 'x1', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      mockedGet.mockResolvedValue({ id: 'x1', status: 'killed', createdAt: '2026-01-01T00:00:00Z' });
+      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
+      expect(mockedGet).toHaveBeenCalledTimes(1);
+      expect(mockedGet).toHaveBeenCalledWith('/tasks/executions/x1');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('success 终态同样立即返回（回归护栏）', async () => {
+    vi.useFakeTimers();
+    try {
+      mockedPost.mockResolvedValueOnce({ id: 'x2', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      mockedGet.mockResolvedValue({ id: 'x2', status: 'success', duration: 123, createdAt: '2026-01-01T00:00:00Z' });
+      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
+      expect(mockedGet).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('running→killed：非终态时继续轮询，命中 killed 后退出', async () => {
+    vi.useFakeTimers();
+    try {
+      mockedPost.mockResolvedValueOnce({ id: 'x3', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      mockedGet
+        .mockResolvedValueOnce({ id: 'x3', status: 'running', createdAt: '2026-01-01T00:00:00Z' })
+        .mockResolvedValueOnce({ id: 'x3', status: 'killed', createdAt: '2026-01-01T00:00:00Z' });
+      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
+      expect(mockedGet).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // executor get
 // ---------------------------------------------------------------------------
 describe('acf executor get', () => {
