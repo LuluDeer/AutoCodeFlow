@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import * as readline from 'readline';
-import { post } from '../client';
+import { post, formatApiError } from '../client';
 import { setApiUrl, setToken, showConfig } from '../config';
 import { resetClient } from '../client';
 import chalk from 'chalk';
@@ -38,8 +38,7 @@ export function loginCommand(): Command {
         console.log(chalk.green('✔ Logged in successfully'));
         showConfig();
       } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error(chalk.red('✗ Login failed:'), msg);
+        console.error(chalk.red('✗ Login failed:'), formatApiError(e));
         process.exit(1);
       }
     });

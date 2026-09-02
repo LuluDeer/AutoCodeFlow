@@ -2,16 +2,27 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get } from '../client';
+import { get, formatApiError } from '../client';
 
+// Field names aligned with the Executor entity
+// (apps/admin-api/src/modules/executor/entities/executor.entity.ts)
 interface Executor {
   id: string;
-  name: string;
+  appName: string;
+  address: string;
   status: string;
-  hostname?: string;
+  type?: string;
+  executorVersion?: string;
+  groupName?: string | null;
+  tags?: string[] | null;
+  description?: string | null;
+  runningTaskCount?: number;
+  maxConcurrentTasks?: number | null;
+  cpuUsage?: number | null;
+  memUsage?: number | null;
+  totalTaskCount?: number;
+  failedTaskCount?: number;
   lastHeartbeat?: string;
-  runtime?: string[];
-  currentLoad?: number;
 }
 
 function statusColor(s: string): string {
@@ -28,6 +39,10 @@ function heartbeatAge(ts?: string): string {
   return chalk.red(`${Math.round(diff / 60000)}m ago`);
 }
 
+function pct(v?: number | null): string {
+  return v === null || v === undefined ? '-' : `${v}%`;
+}
+
 export function executorsCommand(): Command {
   const cmd = new Command('executor').description('View registered executors');
 
@@ -40,24 +55,57 @@ export function executorsCommand(): Command {
         spinner.stop();
         const executors: Executor[] = Array.isArray(data) ? data : (data.list ?? []);
         const table = new Table({
-          head: ['ID', 'Name', 'Status', 'Hostname', 'Last Heartbeat', 'Load'],
-          colWidths: [14, 20, 10, 20, 18, 8],
+          head: ['ID', 'App Name', 'Status', 'Address', 'Last Heartbeat', 'CPU', 'Running'],
+          colWidths: [14, 20, 10, 22, 18, 8, 9],
           style: { head: ['cyan'] },
         });
         for (const e of executors) {
           table.push([
             e.id.slice(0, 12),
-            e.name ?? '-',
+            e.appName ?? '-',
             statusColor(e.status),
-            e.hostname ?? '-',
+            e.address ?? '-',
             heartbeatAge(e.lastHeartbeat),
-            e.currentLoad !== undefined ? `${e.currentLoad}` : '-',
+            pct(e.cpuUsage),
+            e.runningTaskCount !== undefined ? `${e.runningTaskCount}` : '-',
           ]);
         }
         console.log(table.toString());
       } catch (e: unknown) {
         spinner.fail('Failed');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf executor get <id>
+  cmd.command('get <id>')
+    .description('Show details of a single executor (config, status, metrics)')
+    .action(async (id) => {
+      const spinner = ora('Fetching executor…').start();
+      try {
+        const e = await get<Executor>(`/executors/${id}`);
+        spinner.stop();
+        console.log(chalk.bold('Executor Details'));
+        console.log('  ID                :', e.id);
+        console.log('  App Name          :', e.appName ?? '-');
+        console.log('  Address           :', e.address ?? '-');
+        console.log('  Status            :', statusColor(e.status));
+        console.log('  Type              :', e.type ?? '-');
+        console.log('  Version           :', e.executorVersion ?? '-');
+        console.log('  Group             :', e.groupName ?? '-');
+        console.log('  Tags              :', e.tags?.length ? e.tags.join(', ') : '-');
+        console.log('  Description       :', e.description ?? '-');
+        console.log('  Running Tasks     :', e.runningTaskCount ?? 0);
+        console.log('  Max Concurrent    :', e.maxConcurrentTasks ?? '-');
+        console.log('  Total Tasks       :', e.totalTaskCount ?? 0);
+        console.log('  Failed Tasks      :', e.failedTaskCount ?? 0);
+        console.log('  CPU               :', pct(e.cpuUsage));
+        console.log('  Memory            :', pct(e.memUsage));
+        console.log('  Last Heartbeat    :', e.lastHeartbeat ? `${new Date(e.lastHeartbeat).toLocaleString()} (${heartbeatAge(e.lastHeartbeat)})` : '-');
+      } catch (e: unknown) {
+        spinner.fail('Failed');
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });

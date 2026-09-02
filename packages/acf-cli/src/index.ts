@@ -6,11 +6,14 @@
  *   acf login
  *   acf task list
  *   acf task trigger <id> --wait
+ *   acf task versions <id> | compare <id> <v1> <v2> | rollback <id> --version <vid>
  *   acf task analyze <taskId> <execId>
  *   acf task suggest-schedule <id>
- *   acf app list
+ *   acf app list | create | update <id> | delete <id>
  *   acf app analyze <id>
- *   acf executor list
+ *   acf deploy upgrade <deploymentId> | stop <deploymentId>
+ *   acf executor list | get <id>
+ *   acf audit list
  *   acf config show
  */
 import { Command } from 'commander';
@@ -19,6 +22,8 @@ import { loginCommand } from './commands/login';
 import { tasksCommand } from './commands/tasks';
 import { appsCommand } from './commands/apps';
 import { executorsCommand } from './commands/executors';
+import { deployCommand } from './commands/deploy';
+import { auditCommand } from './commands/audit';
 import { showConfig, setApiUrl, setToken } from './config';
 
 const program = new Command();
@@ -44,6 +49,8 @@ program.addCommand(loginCommand());
 program.addCommand(tasksCommand());
 program.addCommand(appsCommand());
 program.addCommand(executorsCommand());
+program.addCommand(deployCommand());
+program.addCommand(auditCommand());
 
 // acf config show / set
 const configCmd = new Command('config').description('View or update CLI configuration');
