@@ -22,6 +22,14 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   save: jest.fn((e) => Promise.resolve(e)),
   create: jest.fn((d) => d),
   delete: jest.fn().mockResolvedValue(undefined),
+  update: jest.fn().mockResolvedValue({ affected: 1 }),
+  createQueryBuilder: jest.fn(() => ({
+    update: jest.fn().mockReturnThis(),
+    set: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    execute: jest.fn().mockResolvedValue({ affected: 1 }),
+  })),
   ...overrides,
 });
 
@@ -37,6 +45,13 @@ const makeDataSource = () => ({
     manager: {
       save: jest.fn((e) => Promise.resolve(e)),
       findOne: jest.fn().mockResolvedValue(null),
+      createQueryBuilder: jest.fn(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      })),
     },
   })),
 });
@@ -115,11 +130,17 @@ describe("TaskProcessor", () => {
       executorAddress: "127.0.0.1:3105",
     });
     await processor.handle({ data: { executionId: "exec-1" } } as any);
+    // The finally block persists worker-owned fields via a conditional QB
+    // update inside a transaction — assert on that patch, not manager.save.
     const queryRunner = dataSource.createQueryRunner.mock.results[0].value;
-    const finalSaved = queryRunner.manager.save.mock.calls.at(-1)[0];
-    expect(finalSaved.status).toBe(ExecutionStatus.RUNNING);
-    expect(finalSaved.endTime).toBeUndefined();
-    expect(finalSaved.result).toMatchObject({ status: "accepted" });
+    const qb = (queryRunner.manager.createQueryBuilder as jest.Mock).mock
+      .results[0].value;
+    expect(queryRunner.commitTransaction).toHaveBeenCalled();
+    const patch = qb.set.mock.calls[0][0];
+    expect(patch.status).toBe(ExecutionStatus.RUNNING);
+    expect(patch.endTime).toBeUndefined();
+    const live = await execRepo.findOne.mock.results[0].value;
+    expect(live.result).toMatchObject({ status: "accepted" });
   });
 
   it("marks execution FAILED and rethrows when dispatch fails", async () => {
@@ -127,10 +148,11 @@ describe("TaskProcessor", () => {
     await expect(
       processor.handle({ data: { executionId: "exec-1" } } as any),
     ).rejects.toThrow("exec failed");
-    const saved = execRepo.save.mock.calls.map((c: any) => c[0]);
-    const failed = saved.find((e: any) => e.status === ExecutionStatus.FAILED);
-    expect(failed).toBeDefined();
-    expect(failed.failureReason).toBe(ExecutionFailureReason.UNKNOWN);
+    // Failure state is mutated on the loaded execution and persisted by the
+    // conditional update in finally — not via execRepo.save.
+    const live = await execRepo.findOne.mock.results[0].value;
+    expect(live.status).toBe(ExecutionStatus.FAILED);
+    expect(live.failureReason).toBe(ExecutionFailureReason.UNKNOWN);
   });
 
   it("classifies dispatch failures before callback", async () => {
@@ -138,9 +160,11 @@ describe("TaskProcessor", () => {
     await expect(
       processor.handle({ data: { executionId: "exec-1" } } as any),
     ).rejects.toThrow("npm install failed");
-    const saved = execRepo.save.mock.calls.map((c: any) => c[0]);
-    const failed = saved.find((e: any) => e.status === ExecutionStatus.FAILED);
-    expect(failed.failureReason).toBe(ExecutionFailureReason.PACKAGE_FETCH_FAILED);
+    const live = await execRepo.findOne.mock.results[0].value;
+    expect(live.status).toBe(ExecutionStatus.FAILED);
+    expect(live.failureReason).toBe(
+      ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+    );
   });
 
   it("returns early if execution not found", async () => {
@@ -162,9 +186,19 @@ describe("TaskProcessor", () => {
     const originalError = new Error("dispatch failed");
     executorService.dispatch.mockRejectedValue(originalError);
 
-    // Make the queryRunner manager.save throw to simulate DB failure in finally
+    // Make the transactional conditional update throw to simulate DB failure
+    // in finally. The repair runner shares this mock; its manager.findOne
+    // returns null so repair is a no-op and the original error must surface.
     const qr = dataSource.createQueryRunner();
-    qr.manager.save.mockRejectedValue(new Error("database connection failed"));
+    (qr.manager.createQueryBuilder as jest.Mock).mockImplementation(() => ({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest
+        .fn()
+        .mockRejectedValue(new Error("database connection failed")),
+    }));
     dataSource.createQueryRunner.mockReturnValue(qr);
 
     // The original dispatch error should still be thrown
