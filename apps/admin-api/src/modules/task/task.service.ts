@@ -3,12 +3,13 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   ServiceUnavailableException,
   Inject,
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, ILike, In, Not, Repository } from "typeorm";
+import { DataSource, ILike, In, Not, QueryFailedError, Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
@@ -17,6 +18,7 @@ import type { Readable } from "node:stream";
 import {
   Task,
   TaskStatus,
+  ExecuteMode,
   normalizeTaskPriority,
 } from "./entities/task.entity";
 import {
@@ -72,6 +74,18 @@ export const DEPENDENCY_TRIGGER_CLAIM_WINDOW_MS = 10_000;
 const SSE_MAX_STREAMS_PER_EXECUTION_DEFAULT = 4;
 const SSE_MAX_STREAMS_GLOBAL_DEFAULT = 64;
 
+/**
+ * R6: PG 唯一约束/主键冲突（SQLSTATE 23505 unique_violation）。客户端自带
+ * 已存在的 id 时 insert 撞主键，驱动抛 QueryFailedError——若不拦截会经全局
+ * 过滤器裸 500。识别后统一转 409 ConflictException。
+ */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    err instanceof QueryFailedError &&
+    (err as QueryFailedError & { code?: string }).code === "23505"
+  );
+}
+
 @Injectable()
 export class TaskService {
   private readonly logger = new Logger(TaskService.name);
@@ -87,6 +101,16 @@ export class TaskService {
     if (normalized.timeoutSeconds !== undefined) {
       normalized.timeout = normalized.timeoutSeconds;
       delete normalized.timeoutSeconds;
+    }
+    // R6: pinning 与 broadcast 语义互斥——broadcast = "所有在线执行器"，
+    // pinning = "仅此一个"，同时给出无法调和，写入边界直接拒绝。
+    if (
+      normalized.executorId &&
+      normalized.executeMode === ExecuteMode.BROADCAST
+    ) {
+      throw new BadRequestException(
+        "executorId (pinned executor) is mutually exclusive with executeMode=broadcast",
+      );
     }
     return normalized as T;
   }
@@ -149,7 +173,32 @@ export class TaskService {
       await this.checkCircularDependency(dto.id, dto.dependencies);
     }
     const normalized = this.normalizeTaskDto(dto);
-    return this.taskRepo.save(this.taskRepo.create(normalized));
+    // R6: 客户端自带 id 时先查重——软删除行对普通 findOne 不可见但同样
+    // 占用主键，必须 withDeleted；预检查之外，save 处仍兜底捕获 23505
+    //（覆盖并发创建的 TOCTOU 窗口），两者都返回 409 而非裸 500。
+    if (normalized.id) {
+      const existing = await this.taskRepo.findOne({
+        where: { id: normalized.id },
+        withDeleted: true,
+      });
+      if (existing) {
+        throw new ConflictException(
+          `Task with id "${normalized.id}" already exists`,
+        );
+      }
+    }
+    try {
+      return await this.taskRepo.save(this.taskRepo.create(normalized));
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        throw new ConflictException(
+          normalized.id
+            ? `Task with id "${normalized.id}" already exists`
+            : "Task conflicts with an existing record",
+        );
+      }
+      throw err;
+    }
   }
 
   private async checkCircularDependency(
