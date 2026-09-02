@@ -130,8 +130,22 @@ function startApp(
   } else if (runtime === 'node' || runtime === 'nodejs') {
     cmd = 'node';
     args = [entrypoint];
-  } else {
-    // shell — use cmd.exe on Windows
+  } else if (runtime === 'shell' || runtime === 'bash' || runtime === 'sh') {
+    // Critical (executor-node audit 2026-09): shell runtime executes the
+    // user-supplied entrypoint verbatim through `sh -c` / `cmd.exe /c`,
+    // which is a direct arbitrary-command execution surface. Restrict to a
+    // safe character set so attackers cannot smuggle `;`, `&&`, backticks,
+    // `$()` expansions or path escapes into the shell.
+    const SAFE = /^[A-Za-z0-9._\/ :\\-]+$/;
+    if (!SAFE.test(entrypoint)) {
+      throw new Error(
+        `Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]`,
+      );
+    }
+    // Belt-and-suspenders: the spawn() call below already uses array args
+    // (not `shell: true`), but we still pre-validate to fail fast and to
+    // leave an audit trail. cmd.exe /c <safe> and sh -c <safe> here run
+    // exactly one command line, with no metacharacter expansion possible.
     if (isWin) {
       cmd = 'cmd.exe';
       args = ['/c', entrypoint];
@@ -139,6 +153,10 @@ function startApp(
       cmd = 'sh';
       args = ['-c', entrypoint];
     }
+  } else {
+    throw new Error(
+      `Unsupported runtime "${runtime}"; expected python | node | shell`,
+    );
   }
 
   logger.info(`[deploy] Starting app ${deploymentId}: ${cmd} ${args.join(' ')}`);
