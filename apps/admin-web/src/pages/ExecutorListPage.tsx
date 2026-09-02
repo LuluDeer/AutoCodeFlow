@@ -11,6 +11,7 @@ import { useRequest } from 'ahooks';
 import { useNavigate } from 'react-router-dom';
 import { executorsApi, Executor } from '../api/executors';
 import { client } from '../api/client';
+import { useAuthStore } from '../store/auth';
 
 function heartbeatLabel(lastHeartbeat: string): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
@@ -56,6 +57,9 @@ export default function ExecutorListPage() {
   });
 
   const navigate = useNavigate();
+  const user = useAuthStore((s) => s.user);
+  // R5 RBAC：install-cmd / executor-shared-token 为 ADMIN-only，普通用户隐藏入口
+  const isAdmin = user?.role === 'admin';
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [groupFilter, setGroupFilter] = useState<string | undefined>();
@@ -225,10 +229,12 @@ export default function ExecutorListPage() {
           </Typography.Text>
         </div>
         <Space>
-          <Button onClick={() => navigate('/executors/install')}>安装向导</Button>
-          <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
-            快速添加
-          </Button>
+          {isAdmin && <Button onClick={() => navigate('/executors/install')}>安装向导</Button>}
+          {isAdmin && (
+            <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
+              快速添加
+            </Button>
+          )}
         </Space>
       </div>
 
@@ -287,7 +293,9 @@ export default function ExecutorListPage() {
             </Empty>
           ) : (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行器">
-              <Button type="primary" onClick={() => navigate('/executors/install')}>安装第一个执行器</Button>
+              {isAdmin && (
+                <Button type="primary" onClick={() => navigate('/executors/install')}>安装第一个执行器</Button>
+              )}
             </Empty>
           ),
         }}

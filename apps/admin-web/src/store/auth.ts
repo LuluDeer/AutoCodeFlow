@@ -8,6 +8,14 @@ export interface AuthUser {
   role?: string;
 }
 
+/**
+ * R5 角色门控：ADMIN-only 路由/操作统一以此判断。
+ * role 值来自后端 GET /auth/profile 返回的 AuthUser.role（'admin' | 'user'）；
+ * role 缺失（旧 localStorage 数据、profile 尚未拉取）时按非 ADMIN 处理。
+ */
+export const isAdminUser = (user: AuthUser | null | undefined): boolean =>
+  user?.role === 'admin';
+
 interface AuthState {
   token: string | null;
   refreshToken: string | null;

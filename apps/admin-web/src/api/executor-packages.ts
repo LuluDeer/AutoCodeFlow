@@ -15,12 +15,6 @@ export interface ExecutorPackage {
   updatedAt: string;
 }
 
-export interface InstallTokenResult {
-  token: string;
-  expiresIn: number;
-  expiresAt: string;
-}
-
 /**
  * 执行器一键安装命令（GET /executors/install-cmd 返回）。
  * R4-D P1-3：后端已移除引用不存在 install.sh 的 curlCmd 字段，只保留 cmd。
@@ -69,10 +63,6 @@ export const executorPackagesApi = {
   /** 获取单个安装包详情 */
   get: (id: string) =>
     client.get(`/executor-packages/${id}`) as Promise<ExecutorPackage>,
-
-  /** 生成一次性安装 Token（注意：后端目前无消费该 Token 的 install-script 路由） */
-  generateInstallToken: (executorId?: string) =>
-    client.post('/executor-packages/install-token', { executorId }) as Promise<InstallTokenResult>,
 
   /** 推送包到执行器节点（留空 executorIds = 推送所有在线执行器） */
   push: (id: string, executorIds?: string[]) =>

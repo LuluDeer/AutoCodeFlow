@@ -130,17 +130,10 @@ export class ExecutorPackageController {
     return this.svc.findLatest(type, platform);
   }
 
-  @Post("install-token")
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: "Generate one-time install token" })
-  @ApiResponse({ status: 201, description: "Install token" })
-  generateInstallToken(@Body("executorId") executorId?: string): {
-    token: string;
-    expiresIn: number;
-    expiresAt: string;
-  } {
-    return this.svc.generateInstallToken(executorId);
-  }
+  // R5: POST /executor-packages/install-token removed — it generated an
+  // opaque token with no consumer anywhere in the repo (the install wizard
+  // uses GET /executors/install-cmd since R4). It will return together with
+  // a real install.sh flow, if ever implemented.
 
   @Get(":id")
   @ApiOperation({ summary: "Get executor package details" })

@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
-import { useAuthStore } from '../store/auth';
+import { useAuthStore, isAdminUser } from '../store/auth';
 
 // Reset zustand store state between tests so they don't bleed into each other.
 // Zustand persists to localStorage — clear it before each test.
@@ -177,5 +177,18 @@ describe('useAuthStore — combined flow', () => {
       result.current.setUser({ id: 99, username: 'test99' });
     });
     expect(result.current.token).toBe('token-abc'); // token not affected
+  });
+});
+
+describe('isAdminUser (R5 RBAC)', () => {
+  it('returns true only when role is admin', () => {
+    expect(isAdminUser({ id: 1, username: 'a', role: 'admin' })).toBe(true);
+    expect(isAdminUser({ id: 2, username: 'b', role: 'user' })).toBe(false);
+  });
+
+  it('treats missing role or missing user as non-admin (deny by default)', () => {
+    expect(isAdminUser({ id: 3, username: 'c' })).toBe(false);
+    expect(isAdminUser(null)).toBe(false);
+    expect(isAdminUser(undefined)).toBe(false);
   });
 });

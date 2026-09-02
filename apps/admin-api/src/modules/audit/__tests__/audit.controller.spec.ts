@@ -1,6 +1,9 @@
+import 'reflect-metadata';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AuditController } from '../audit.controller';
 import { AuditService } from '../audit.service';
+import { ROLES_KEY } from '../../../common/decorators/roles.decorator';
+import { UserRole } from '../../users/entities/user.entity';
 
 const mockAuditService = () => ({
   findAll: jest.fn(),
@@ -22,6 +25,26 @@ describe('AuditController', () => {
   });
 
   afterEach(() => jest.clearAllMocks());
+
+  // R5: audit endpoints carry sensitive operational data — the global
+  // RolesGuard enforces ADMIN via this route metadata.
+  describe('RBAC metadata', () => {
+    it('findAll is restricted to ADMIN', () => {
+      const roles = Reflect.getMetadata(
+        ROLES_KEY,
+        AuditController.prototype.findAll,
+      );
+      expect(roles).toEqual([UserRole.ADMIN]);
+    });
+
+    it('exportCsv is restricted to ADMIN', () => {
+      const roles = Reflect.getMetadata(
+        ROLES_KEY,
+        AuditController.prototype.exportCsv,
+      );
+      expect(roles).toEqual([UserRole.ADMIN]);
+    });
+  });
 
   describe('findAll', () => {
     it('returns paginated audit logs', async () => {
