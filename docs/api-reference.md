@@ -213,6 +213,7 @@ Content-Type: application/json
 | `maxRetry` | number | 否 | 最大尝试次数（BullMQ attempts），0–10；服务端会保证至少为 `1` |
 | `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff |
 | `retryableErrors` | string[] | 否 | 预留的可重试错误分类列表 |
+| `executorId` | string (UUID) | 否 | 任务级 executor pinning（第六轮）：设置后调度**仅**派给该执行器，绕过 group/tags/runtime 过滤，但仍受其并发槽位上限约束；该执行器离线/不存在时执行直接置 FAILED（failureReason 分别为 `executor_offline` / `unknown`）。与 `executeMode=broadcast` 互斥，同时提供返回 400 |
 
 > 兼容说明：API 入参优先读取 `timeoutSeconds` 并落库到现有 `timeout` 字段；响应中可能同时包含历史字段 `timeout`。Python SDK 同时支持 snake_case（如 `timeout_seconds`、`retry_delay`、`max_retry`），Node/API wire format 推荐 camelCase。
 
@@ -250,7 +251,8 @@ Content-Type: application/json
 | GET | `/executors` | 是 | 查询执行器列表（含在线状态） |
 | GET | `/executors/groups` | 是 | 执行器分组列表 |
 | GET | `/executors/tags` | 是 | 执行器标签列表 |
-| GET | `/executors/install-cmd` | 是 | 生成执行器一键安装命令（返回 `{ cmd, token, adminApiUrl }`；第四轮起已移除引用不存在 install.sh 的 `curlCmd` 字段） |
+| GET | `/executors/install-cmd` | 是 | 生成执行器一键安装命令（返回 `{ cmd, token, adminApiUrl }`；第六轮起 `cmd` 为 `curl -fsSL <API_BASE_URL>/api/executors/install.sh | bash -s -- --api-url ... --secret ...` 形式，脚本由后端承载） |
+| GET | `/executors/install.sh` | 否 | 一键安装脚本本体（`text/plain; charset=utf-8`，`@Public`：脚本不含密钥，secret 由用户 `bash -s --` 参数传入；与仓库根 `scripts/install.sh` 互为同步拷贝） |
 | GET | `/executors/:id` | 是 | 获取执行器详情 |
 | PATCH | `/executors/:id` | 是 | 更新执行器配置 |
 | POST | `/executors/:id/reload-config` | 是 | 手动下发配置重载（manifest 同步） |
