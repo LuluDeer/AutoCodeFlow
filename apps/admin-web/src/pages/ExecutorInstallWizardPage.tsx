@@ -31,12 +31,8 @@ import {
   InfoCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import {
-  executorPackagesApi,
-  ExecutorPackage,
-  InstallTokenResult,
-} from '../api/executor-packages';
-import { executorsApi, Executor } from '../api/executors';
+import { executorPackagesApi, ExecutorPackage } from '../api/executor-packages';
+import { executorsApi, Executor, InstallCmdResult } from '../api/executors';
 import { getErrMsg } from '../utils/error';
 
 const { Title, Text, Paragraph } = Typography;
@@ -123,12 +119,11 @@ export default function ExecutorInstallWizardPage() {
   const [selectedType, setSelectedType] = useState<string | undefined>();
   const [selectedPlatform, setSelectedPlatform] = useState<string | undefined>();
   const [selectedPackage, setSelectedPackage] = useState<ExecutorPackage | null>(null);
-  const [tokenResult, setTokenResult] = useState<InstallTokenResult | null>(null);
-  const [generatingToken, setGeneratingToken] = useState(false);
+  const [installCmd, setInstallCmd] = useState<InstallCmdResult | null>(null);
+  const [generatingCmd, setGeneratingCmd] = useState(false);
   const [sharedToken, setSharedToken] = useState<string | null>(null);
   const [loadingSharedToken, setLoadingSharedToken] = useState(false);
   const [sharedTokenVisible, setSharedTokenVisible] = useState(false);
-  const [installScriptUrl, setInstallScriptUrl] = useState('');
 
   const POLL_INTERVAL_MS = 5000;
   const POLL_TIMEOUT_MS = 60000;
@@ -143,7 +138,7 @@ export default function ExecutorInstallWizardPage() {
     setLoadingPackages(true);
     executorPackagesApi
       .listLatest()
-      .then((data) => setPackages(Array.isArray(data) ? data : []))
+      .then((data) => setPackages(data))
       .catch(() => message.error('加载安装包列表失败，请检查 admin-api 服务'))
       .finally(() => setLoadingPackages(false));
   }, []);
@@ -182,21 +177,19 @@ export default function ExecutorInstallWizardPage() {
     setCurrentStep(2);
   };
 
-  const handleGenerateToken = async () => {
-    setGeneratingToken(true);
+  const handleGenerateInstallCmd = async () => {
+    setGeneratingCmd(true);
     try {
-      const result = await executorPackagesApi.generateInstallToken();
-      setTokenResult(result);
-      if (selectedPackage) {
-        setInstallScriptUrl(
-          executorPackagesApi.getInstallScriptUrl(selectedPackage.id, result.token),
-        );
-      }
+      // 采纳后端已实现的文档化流程：GET /executors/install-cmd（npx 一键启动命令）。
+      // 原 /executor-packages/:id/install-script 路由后端不存在（404），
+      // install-token 生成的 token 目前也没有任何后端消费方。
+      const result = await executorsApi.getInstallCmd();
+      setInstallCmd(result);
       setCurrentStep(3);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '生成安装凭证失败，请重试'));
+      message.error(getErrMsg(err, '获取安装命令失败，请重试'));
     } finally {
-      setGeneratingToken(false);
+      setGeneratingCmd(false);
     }
   };
 
@@ -268,15 +261,12 @@ export default function ExecutorInstallWizardPage() {
     setSelectedType(undefined);
     setSelectedPlatform(undefined);
     setSelectedPackage(null);
-    setTokenResult(null);
-    setInstallScriptUrl('');
+    setInstallCmd(null);
     setFoundExecutor(null);
     setPollTimedOut(false);
     setElapsedSeconds(0);
   };
 
-  const curlCmd = installScriptUrl ? `curl -fsSL "${installScriptUrl}" | bash` : '';
-  const wgetCmd = installScriptUrl ? `wget -qO- "${installScriptUrl}" | bash` : '';
   const adminApiUrl = window.location.origin;
   const envVarBlock = [
     `ADMIN_API_URL=${adminApiUrl}`,
@@ -303,7 +293,7 @@ export default function ExecutorInstallWizardPage() {
         items={[
           { title: '系统要求', icon: <DesktopOutlined /> },
           { title: '选择安装包', icon: <DownloadOutlined /> },
-          { title: '生成安装凭证', icon: <KeyOutlined /> },
+          { title: '获取安装命令', icon: <KeyOutlined /> },
           { title: '执行安装', icon: <CodeOutlined /> },
           { title: '验证上线', icon: <CheckCircleOutlined /> },
         ]}
@@ -320,7 +310,7 @@ export default function ExecutorInstallWizardPage() {
           <div style={{ marginBottom: 20 }}>
             <ReqRow label="Node.js 16+ 或 Python 3.8+" note="根据所选执行器类型" />
             <ReqRow label="Git 2.0+" note="用于克隆仓库和版本管理" />
-            <ReqRow label="curl 或 wget" note="用于下载安装脚本" />
+            <ReqRow label="npx（随 Node.js 提供）" note="用于执行一键安装命令" />
             <ReqRow label="网络连接" note={`能访问本平台 API：${adminApiUrl}`} />
             <ReqRow label="sudo 权限（可选）" note="某些系统级安装可能需要" />
           </div>
@@ -455,12 +445,12 @@ export default function ExecutorInstallWizardPage() {
         </Card>
       )}
 
-      {/* Step 2: 生成安装凭证 */}
+      {/* Step 2: 获取安装命令 */}
       {currentStep === 2 && selectedPackage && (
         <Card style={{ maxWidth: 720 }}>
-          <Title level={5} style={{ marginTop: 0 }}>生成一次性安装凭证</Title>
+          <Title level={5} style={{ marginTop: 0 }}>获取安装命令</Title>
           <Paragraph type="secondary">
-            系统将生成一个有时效的一次性 Token，仅用于本次安装，使用后自动失效。
+            平台将基于执行器共享 Token 生成官方安装命令，复制到目标服务器执行即可完成安装。
           </Paragraph>
 
           <Card size="small" style={{ background: '#fafafa', marginBottom: 20 }}>
@@ -484,7 +474,7 @@ export default function ExecutorInstallWizardPage() {
             type="info"
             showIcon
             title="安全提示"
-            description="Token 有效期为 1 小时，且只能使用一次。请在目标服务器上立即执行安装命令，不要将 Token 泄露给他人。"
+            description="安装命令中包含执行器共享 Token，仅限在受信任的目标服务器上执行，请勿泄露给他人。"
             style={{ marginBottom: 20 }}
           />
 
@@ -538,17 +528,17 @@ export default function ExecutorInstallWizardPage() {
             <Button
               type="primary"
               icon={<KeyOutlined />}
-              loading={generatingToken}
-              onClick={handleGenerateToken}
+              loading={generatingCmd}
+              onClick={handleGenerateInstallCmd}
             >
-              生成安装凭证
+              获取安装命令
             </Button>
           </Space>
         </Card>
       )}
 
       {/* Step 3: 执行安装 */}
-      {currentStep === 3 && tokenResult && selectedPackage && (
+      {currentStep === 3 && installCmd && (
         <Card style={{ maxWidth: 720 }}>
           <Title level={5} style={{ marginTop: 0 }}>在目标服务器上执行安装</Title>
           <Paragraph type="secondary">
@@ -559,34 +549,24 @@ export default function ExecutorInstallWizardPage() {
             type="success"
             showIcon
             icon={<CheckCircleOutlined />}
-            title="安装凭证已生成"
-            description={
-              <span>
-                Token 有效期：<Text strong>{Math.floor(tokenResult.expiresIn / 60)} 分钟</Text>，
-                过期时间：<Text strong>{new Date(tokenResult.expiresAt).toLocaleString('zh-CN')}</Text>
-              </span>
-            }
+            title="安装命令已生成"
+            description="命令中已包含调度中心地址与执行器共享 Token，请注意保密，不要泄露给他人。"
             style={{ marginBottom: 24 }}
           />
 
           <Space orientation="vertical" style={{ width: '100%' }} size={20}>
             <div>
               <Space style={{ marginBottom: 8 }}>
-                <Text strong>使用 curl 安装</Text>
+                <Text strong>一键安装命令</Text>
                 <Tag color="green">推荐</Tag>
               </Space>
-              <CodeBlock code={curlCmd} label="curl 命令" />
-            </div>
-
-            <div>
-              <Text strong style={{ display: 'block', marginBottom: 8 }}>使用 wget 安装</Text>
-              <CodeBlock code={wgetCmd} label="wget 命令" />
+              <CodeBlock code={installCmd.cmd} label="安装命令" />
             </div>
 
             <div>
               <Text strong style={{ display: 'block', marginBottom: 8 }}>环境变量配置参考</Text>
               <Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 13 }}>
-                安装脚本会自动配置以下环境变量。如需手动配置或调试，请确保共享 Token 字段名使用 EXECUTOR_SHARED_TOKEN，并按部署网络填写可回调地址：
+                安装命令会自动配置以下环境变量。如需手动配置或调试，请确保共享 Token 字段名使用 EXECUTOR_SHARED_TOKEN，并按部署网络填写可回调地址：
               </Paragraph>
               <CodeBlock code={envVarBlock} label="环境变量" />
             </div>
@@ -595,7 +575,7 @@ export default function ExecutorInstallWizardPage() {
               type="warning"
               showIcon
               title="注意"
-              description="安装脚本可能需要 sudo 权限。请确保目标服务器已安装 curl 或 wget，且网络可以访问本平台的 API 地址。"
+              description="请确保目标服务器已安装 Node.js 16+（npx 可用），且网络可以访问本平台的 API 地址。"
             />
           </Space>
 
@@ -670,7 +650,7 @@ export default function ExecutorInstallWizardPage() {
                   <li>查看执行器进程日志排查启动失败原因</li>
                   <li>确认执行器共享 Token 已通过 <code>EXECUTOR_SHARED_TOKEN</code> 正确配置</li>
                   <li>确认 <code>EXECUTOR_ADDRESS_PUBLIC</code> 或执行器地址能被调度中心用于回调鉴权</li>
-                  <li>确认安装凭证 Token 未过期（有效期 1 小时）</li>
+                  <li>确认一键安装命令完整复制执行、无报错（命令包含共享 Token，请勿泄露）</li>
                 </ul>
               </Card>
             </>

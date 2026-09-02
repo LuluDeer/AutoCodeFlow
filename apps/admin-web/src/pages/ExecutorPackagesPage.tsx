@@ -10,7 +10,7 @@ import {
 } from '@ant-design/icons';
 import {
   listPackages, uploadPackage, deletePackage, pushPackage,
-  deprecatePackage, activatePackage, downloadPackageUrl,
+  deprecatePackage, activatePackage, downloadPackage,
 } from '../api/executor-packages';
 import { executorsApi } from '../api/executors';
 import { getErrMsg } from '../utils/error';
@@ -58,6 +58,7 @@ export default function ExecutorPackagesPage() {
   const [selectedExecutors, setSelectedExecutors] = useState<string[]>([]);
   const [pushing, setPushing] = useState(false);
   const [pushResults, setPushResults] = useState<PushResult[] | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -136,6 +137,19 @@ export default function ExecutorPackagesPage() {
     } catch (err: unknown) { message.error(getErrMsg(err, '操作失败')); }
   };
 
+  // download 路由在 JwtAuthGuard 后，<a href> 无法携带 Authorization（会 401），
+  // 改为带 JWT 的 axios blob 请求下载
+  const handleDownload = async (pkg: PkgRow) => {
+    setDownloadingId(pkg.id);
+    try {
+      await downloadPackage(pkg.id, pkg.originalFilename ?? `${pkg.name}-${pkg.version}`);
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '下载失败'));
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
   const onlineExecutors = executors.filter(e => e.status === 'online');
 
   const columns: ColumnsType<PkgRow> = [
@@ -170,7 +184,7 @@ export default function ExecutorPackagesPage() {
         <Space size="small">
           <Tooltip title="下载">
             <Button size="small" icon={<CloudDownloadOutlined />}
-              href={downloadPackageUrl(row.id)} download />
+              loading={downloadingId === row.id} onClick={() => handleDownload(row)} />
           </Tooltip>
           <Tooltip title="推送到调度机">
             <Button size="small" icon={<SendOutlined />} type="primary"

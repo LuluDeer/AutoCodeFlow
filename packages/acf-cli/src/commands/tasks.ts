@@ -100,13 +100,12 @@ export function tasksCommand(): Command {
   cmd.command('trigger <id>')
     .description('Manually trigger a task and wait for completion')
     .option('--wait', 'Poll until execution finishes', false)
-    .option('--executor <executorId>', 'Pin to a specific executor')
+    // NOTE: no --executor option — TriggerTaskDto only accepts `params`
+    // (executor pinning is not supported by the backend; see roadmap).
     .action(async (id, opts) => {
       const spinner = ora('Triggering task…').start();
       try {
-        const exec = await post<Execution>(`/tasks/${id}/trigger`, {
-          executorId: opts.executor,
-        });
+        const exec = await post<Execution>(`/tasks/${id}/trigger`);
         spinner.succeed(`Execution started: ${exec.id}`);
         if (opts.wait) {
           await pollExecution(exec.id);
