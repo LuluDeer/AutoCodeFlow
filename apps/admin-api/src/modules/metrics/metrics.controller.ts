@@ -34,4 +34,10 @@ export class MetricsController {
   getRecentFailures() {
     return this.svc.getRecentFailures();
   }
+
+  /** R4-§5.5: 调度可观测性（tick / trigger 计数器 + BullMQ 队列深度） */
+  @Get("scheduler")
+  getSchedulerMetrics() {
+    return this.svc.getSchedulerMetrics();
+  }
 }

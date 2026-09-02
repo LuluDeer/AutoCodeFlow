@@ -8,6 +8,7 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { TaskService } from "../task.service";
+import { MAX_DEPENDENCY_EXECUTION_SCAN } from "../task.service";
 import { Task, TaskStatus } from "../entities/task.entity";
 import {
   TaskExecution,
@@ -99,7 +100,20 @@ describe("TaskService (__tests__)", () => {
     taskQueue = { add: jest.fn().mockResolvedValue({}) };
     releaseSlotExecute = jest.fn().mockResolvedValue({ affected: 1 });
     dataSource = {
-      transaction: jest.fn(),
+      // R4-P2: storeLogLines now runs delete+insert inside ONE DB transaction.
+      // Default the mock executes the callback with a manager delegating to
+      // the logLineRepo mocks so existing per-call assertions keep working;
+      // tests that need rollback semantics override transaction entirely.
+      transaction: jest.fn(async (fn: any) =>
+        fn({
+          delete: jest.fn(async (_target: unknown, criteria: unknown) =>
+            logLineRepo.delete(criteria as any),
+          ),
+          save: jest.fn(async (_target: unknown, rows: unknown) =>
+            logLineRepo.save(rows as any),
+          ),
+        }),
+      ),
       createQueryBuilder: jest.fn(() => ({
         update: jest.fn().mockReturnThis(),
         set: jest.fn().mockReturnThis(),
@@ -1136,18 +1150,35 @@ describe("TaskService (__tests__)", () => {
 
     describe("dependency fan-out (R4-P0: moved from TaskProcessor to handleCallback)", () => {
       // makeRepo's QB mock: getMany defaults to []. taskRepo.dependencies QB
-      // drives triggerDependentTasks; execRepo.find drives checkDependencies;
+      // drives triggerDependentTasks' scan AND claimDependencyTrigger's
+      // conditional UPDATE; execRepo.find drives checkDependencies;
       // execRepo.createQueryBuilder drives handleCallback's own UPDATE.
       // Also wires the manual-trigger path (this.trigger) used by fan-out.
       const setupDownstream = (
         downstreamTask: Record<string, unknown> | null,
         depExecutions: Array<Record<string, unknown>>,
+        claimAffected: number[] = [1],
       ) => {
+        // One QB mock serves both the dependencies scan (getMany) and the
+        // claim (update/set/where/execute). claimAffected is consumed in
+        // order: e.g. [1, 0] models "first concurrent fan-out wins, second
+        // loses the short-window DB claim".
+        let claimCalls = 0;
         const depQb = {
           where: jest.fn().mockReturnThis(),
           getMany: jest.fn().mockResolvedValue(
             downstreamTask ? [downstreamTask] : [],
           ),
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockImplementation(async () => {
+            const affected =
+              claimCalls < claimAffected.length
+                ? claimAffected[claimCalls]
+                : claimAffected[claimAffected.length - 1] ?? 0;
+            claimCalls += 1;
+            return { affected };
+          }),
         };
         taskRepo.createQueryBuilder.mockImplementation(() => depQb as any);
         execRepo.find.mockResolvedValue(depExecutions as any);
@@ -1164,6 +1195,7 @@ describe("TaskService (__tests__)", () => {
             }),
           );
         }
+        return depQb;
       };
 
       it("triggers a dependent task when a SUCCESS callback lands and all deps are satisfied", async () => {
@@ -1185,6 +1217,112 @@ describe("TaskService (__tests__)", () => {
           { executionId: expect.any(String) },
           expect.objectContaining({ attempts: expect.any(Number) }),
         );
+      });
+
+      it("R4-P3: claims the downstream via a short-window conditional UPDATE on lastTriggerTime before triggering", async () => {
+        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        const depQb = setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        taskQueue.add.mockResolvedValue({});
+
+        await service.handleCallback([{ executionId: "e-dep", status: "success" }]);
+
+        // The claim ran a conditional UPDATE guarded by the dedup window.
+        expect(depQb.update).toHaveBeenCalled();
+        expect(depQb.set).toHaveBeenCalledWith(
+          expect.objectContaining({ lastTriggerTime: expect.any(Date) }),
+        );
+        expect(depQb.where).toHaveBeenCalledWith(
+          expect.stringContaining('"lastTriggerTime"'),
+          expect.objectContaining({ windowStart: expect.any(Date) }),
+        );
+        expect(taskQueue.add).toHaveBeenCalledTimes(1);
+      });
+
+      it("R4-P3: two concurrent SUCCESS callbacks for two upstreams trigger the downstream exactly once", async () => {
+        const downstream = { id: "t-downstream", dependencies: { a: "t-up-a", b: "t-up-b" } };
+        execRepo.findOne
+          .mockResolvedValueOnce({ id: "e-a", status: ExecutionStatus.RUNNING, taskId: "t-up-a", logs: "" })
+          .mockResolvedValueOnce({ id: "e-b", status: ExecutionStatus.RUNNING, taskId: "t-up-b", logs: "" });
+        // Both fan-outs pass checkDependencies (both upstreams SUCCESS) — the
+        // short-window DB claim then serializes them: first wins, second loses.
+        setupDownstream(
+          downstream,
+          [
+            { taskId: "t-up-a", status: ExecutionStatus.SUCCESS },
+            { taskId: "t-up-b", status: ExecutionStatus.SUCCESS },
+          ],
+          [1, 0],
+        );
+
+        await Promise.all([
+          service.handleCallback([{ executionId: "e-a", status: "success" }]),
+          service.handleCallback([{ executionId: "e-b", status: "success" }]),
+        ]);
+
+        // Exactly ONE downstream execution enqueued across both fan-outs.
+        expect(taskQueue.add).toHaveBeenCalledTimes(1);
+        expect(taskQueue.add).toHaveBeenCalledWith(
+          "execute",
+          { executionId: "down-exec-1" },
+          expect.objectContaining({ attempts: expect.any(Number) }),
+        );
+      });
+
+      it("R4-P3: a fan-out that loses the claim skips the downstream trigger without enqueueing", async () => {
+        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+          [0],
+        );
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("R4-P3: checkDependencies caps the history scan with take and falls back per-dependency when truncated", async () => {
+        const downstream = { id: "t-downstream", dependencies: { up: "t-upstream" } };
+        // Main scan returns empty (simulating truncation pushing the latest
+        // execution out of the capped window); the per-dependency fallback
+        // findOne must rescue the SUCCESS row so the trigger still fires.
+        setupDownstream(downstream, []);
+        execRepo.findOne
+          .mockResolvedValueOnce({ id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" })
+          .mockResolvedValueOnce({ taskId: "t-upstream", status: ExecutionStatus.SUCCESS });
+        taskQueue.add.mockResolvedValue({});
+
+        await service.handleCallback([{ executionId: "e-dep", status: "success" }]);
+
+        expect(execRepo.find).toHaveBeenCalledWith(
+          expect.objectContaining({
+            order: { createdAt: "DESC" },
+            take: MAX_DEPENDENCY_EXECUTION_SCAN,
+          }),
+        );
+        expect(taskQueue.add).toHaveBeenCalledTimes(1);
+      });
+
+      it("R4-P3: fallback keeps unmet-dep semantics when the truncated dependency is not satisfied", async () => {
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [],
+        );
+        execRepo.findOne
+          .mockResolvedValueOnce({ id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" })
+          .mockResolvedValueOnce({ taskId: "t-upstream", status: ExecutionStatus.FAILED });
+
+        await service.handleCallback([{ executionId: "e-dep", status: "success" }]);
+
+        expect(taskQueue.add).not.toHaveBeenCalled();
       });
 
       it("does not trigger the downstream task when its other dependencies are not yet satisfied", async () => {
@@ -1252,6 +1390,122 @@ describe("TaskService (__tests__)", () => {
         ]);
 
         expect(result[0].success).toBe(true);
+      });
+
+      it("fan-out claim failure inside trigger does not fail the callback (best-effort)", async () => {
+        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        // Downstream trigger creates the execution, then enqueue fails —
+        // trigger() compensates and throws; the callback must stay success.
+        taskQueue.add.mockRejectedValue(new Error("redis down"));
+        execRepo.update = jest.fn().mockResolvedValue({ affected: 1 });
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+      });
+    });
+
+    describe("storeLogLines transactionality (R4-P2)", () => {
+      const callbackWithLogs = (logs: string) => [
+        { executionId: "e1", status: "success" as const, logs },
+      ];
+
+      it("wraps delete + chunked inserts in ONE DB transaction (replace mode)", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        logLineRepo.save.mockResolvedValue({});
+        await service.handleCallback(callbackWithLogs("l0\nl1\nl2"));
+
+        expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+        // The delete runs through the transaction manager, not the repo.
+        expect(logLineRepo.delete).toHaveBeenCalledWith({ executionId: "e1" });
+      });
+
+      it("rolls back on a mid-insert failure so the pre-existing rows survive", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        // Emulate DB transaction semantics: writes are staged and become
+        // visible only at commit; a mid-insert failure aborts the callback
+        // so the delete inside the transaction is rolled back too.
+        const committed = ["old-0", "old-1"]; // pre-existing rows
+        dataSource.transaction.mockImplementation(async (fn: any) => {
+          const staged: string[] = [];
+          let cleared = false;
+          const manager = {
+            delete: jest.fn(async () => {
+              cleared = true;
+            }),
+            save: jest.fn(async (_t: unknown, rows: any[]) => {
+              if (rows.some((r) => r.content === "boom")) {
+                throw new Error("insert failed: connection reset");
+              }
+              staged.push(...rows.map((r) => r.content));
+            }),
+          };
+          await fn(manager);
+          // commit point — only reached when nothing threw
+          if (cleared) committed.length = 0;
+          committed.push(...staged);
+        });
+
+        const result = await service.handleCallback(
+          callbackWithLogs("new-0\nboom\nnew-2"),
+        );
+
+        expect(result[0].success).toBe(false);
+        expect(result[0].error).toMatch(/connection reset/);
+        // Rollback: the pre-existing rows are untouched — the in-transaction
+        // delete never became visible.
+        expect(committed).toEqual(["old-0", "old-1"]);
+      });
+
+      it("append mode (backfill page 2+) skips the delete but still commits atomically", async () => {
+        const exec = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: "exec-1:8002",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        const axios = (await import("axios")).default;
+        (axios.get as jest.Mock).mockClear();
+        (axios.get as jest.Mock)
+          .mockResolvedValueOnce({
+            data: { lines: ["p0-a", "p0-b"], totalLines: 4, hasMore: true },
+          })
+          .mockResolvedValueOnce({
+            data: { lines: ["p1-a", "p1-b"], totalLines: 4, hasMore: false },
+          });
+        logLineRepo.save.mockResolvedValue({});
+
+        await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "success",
+            executorAddress: "exec-1:8002",
+            logs: "...[truncated, total 50000 chars]...",
+          },
+        ]);
+
+        // Two transactional stores (page 0 replace + page 1 append).
+        expect(dataSource.transaction).toHaveBeenCalledTimes(2);
+        // Replace delete only inside the first transaction.
+        expect(logLineRepo.delete).toHaveBeenCalledTimes(1);
+        // All four lines persisted across the two transactions.
+        const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
+        expect(created).toEqual([
+          { executionId: "e1", lineNumber: 0, content: "p0-a" },
+          { executionId: "e1", lineNumber: 1, content: "p0-b" },
+          { executionId: "e1", lineNumber: 2, content: "p1-a" },
+          { executionId: "e1", lineNumber: 3, content: "p1-b" },
+        ]);
       });
     });
 

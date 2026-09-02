@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { MetricsService } from '../metrics.service';
+import { SchedulerService } from '../../scheduler/scheduler.service';
 import { Task } from '../../task/entities/task.entity';
 import { TaskExecution, ExecutionStatus } from '../../task/entities/task-execution.entity';
 import { Executor, ExecutorStatus } from '../../executor/entities/executor.entity';
@@ -33,6 +34,10 @@ describe('MetricsService', () => {
   let execRepo: ReturnType<typeof mockRepo>;
   let executorRepo: ReturnType<typeof mockRepo>;
   let reportRepo: ReturnType<typeof mockRepo>;
+  let schedulerService: {
+    getSchedulerMetrics: jest.Mock;
+    getStats: jest.Mock;
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -42,6 +47,13 @@ describe('MetricsService', () => {
         { provide: getRepositoryToken(TaskExecution), useFactory: mockRepo },
         { provide: getRepositoryToken(Executor), useFactory: mockRepo },
         { provide: getRepositoryToken(ExecutionReport), useFactory: mockRepo },
+        {
+          provide: SchedulerService,
+          useValue: {
+            getSchedulerMetrics: jest.fn(),
+            getStats: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -50,6 +62,7 @@ describe('MetricsService', () => {
     execRepo = module.get(getRepositoryToken(TaskExecution));
     executorRepo = module.get(getRepositoryToken(Executor));
     reportRepo = module.get(getRepositoryToken(ExecutionReport));
+    schedulerService = module.get(SchedulerService);
   });
 
   describe('getSummary', () => {
@@ -221,6 +234,72 @@ describe('MetricsService', () => {
       reportRepo.find.mockResolvedValue(reports);
       const result = await service.getRecentReports(7);
       expect(result).toEqual(reports);
+    });
+  });
+
+  describe('getSchedulerMetrics (R4-§5.5 observability)', () => {
+    it('aggregates scheduler counters, derived rates, queue depth and runtime stats', async () => {
+      schedulerService.getSchedulerMetrics.mockResolvedValue({
+        counters: {
+          ticks: 5,
+          tickDurationMsTotal: 120,
+          lastTickDurationMs: 20,
+          lastTickAt: '2026-09-02T00:00:00.000Z',
+          triggersClaimed: 3,
+          triggersSkippedLockHeld: 1,
+          triggersSkippedDbClaim: 0,
+          triggersSkippedInactive: 0,
+          triggersSkippedBlockStrategy: 2,
+          triggersFailed: 1,
+          dependencyTriggersClaimed: 2,
+          dependencyTriggersSkipped: 1,
+          startedAt: '2026-09-01T00:00:00.000Z',
+        },
+        derived: {
+          avgTickDurationMs: 24,
+          tickRatePerSec: 0.016,
+          triggerClaimRatePerSec: 0.01,
+        },
+        queue: { waiting: 2, active: 1, delayed: 4, failed: 0, completed: 10 },
+      });
+      schedulerService.getStats.mockReturnValue({
+        healthy: true,
+        isLeader: true,
+        activeTimers: 2,
+        activeCronTasks: 1,
+      });
+
+      const result = await service.getSchedulerMetrics();
+
+      expect(result.counters.triggersClaimed).toBe(3);
+      expect(result.counters.ticks).toBe(5);
+      expect(result.counters.dependencyTriggersClaimed).toBe(2);
+      expect(result.derived.avgTickDurationMs).toBe(24);
+      expect(result.queue).toEqual({
+        waiting: 2,
+        active: 1,
+        delayed: 4,
+        failed: 0,
+        completed: 10,
+      });
+      expect(result.scheduler.isLeader).toBe(true);
+      expect(result.scheduler.activeTimers).toBe(2);
+      expect(result.instance.pid).toBe(process.pid);
+      expect(schedulerService.getSchedulerMetrics).toHaveBeenCalledTimes(1);
+    });
+
+    it('exposes the raw service without mutating the scheduler payload', async () => {
+      schedulerService.getSchedulerMetrics.mockResolvedValue({
+        counters: { ticks: 1 },
+        derived: {},
+        queue: { waiting: null, active: null, delayed: null },
+      });
+      schedulerService.getStats.mockReturnValue({ isLeader: false });
+
+      const result = await service.getSchedulerMetrics();
+
+      expect(result.counters).toEqual({ ticks: 1 });
+      expect(result.scheduler).toEqual({ isLeader: false });
     });
   });
 });
