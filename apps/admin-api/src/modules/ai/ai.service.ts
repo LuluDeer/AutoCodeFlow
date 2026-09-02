@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import { SystemConfigService } from "../config/config.service";
+import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
 
 @Injectable()
 export class AiService {
@@ -184,6 +185,10 @@ export class AiService {
       "openaiBaseUrl",
       "https://api.openai.com/v1",
     );
+    // AI-001: refuse SSRF (private/loopback/link-local/cloud-metadata) for
+    // admin-configured AI base URLs. The check is the same as the webhook
+    // channel — both stem from config-driven outbound HTTP.
+    await assertSafeHttpUrl(baseUrl);
     const r = await axios.post(
       `${baseUrl}/chat/completions`,
       {
@@ -201,6 +206,8 @@ export class AiService {
 
   private async callOllama(prompt: string) {
     const host = await this.getAiConfig("ollamaHost", "http://localhost:11434");
+    // AI-001: SSRF guard for self-hosted Ollama.
+    await assertSafeHttpUrl(host);
     const model = await this.getAiConfig("ollamaModel", "llama3");
     const r = await axios.post(
       `${host}/api/generate`,
