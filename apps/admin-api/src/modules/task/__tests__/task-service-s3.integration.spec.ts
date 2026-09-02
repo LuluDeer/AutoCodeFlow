@@ -45,6 +45,10 @@ jest.mock("minio", () => ({
   Client: jest.fn(() => minioClient),
 }));
 
+// The log-backfill path dynamically imports axios to page logs from the
+// executor; mock it so no network is attempted.
+jest.mock("axios");
+
 const makeRepo = () => {
   const repo: Record<string, jest.Mock> = {
     create: jest.fn((d) => d),
@@ -297,6 +301,53 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
     expect(result.totalLines).toBe(2);
     expect(result.hasMore).toBe(false);
     expect(minioClient.getObject).toHaveBeenCalledTimes(1);
+  });
+
+  it("R4-P1: multi-page backfill with S3 driver concatenates pages into one growing object", async () => {
+    const exec = {
+      id: "e-s3-multi",
+      status: ExecutionStatus.RUNNING,
+      executorAddress: "exec-1:8002",
+      logs: "",
+    };
+    execRepo.findOne.mockResolvedValue(exec);
+    const axios = (await import("axios")).default as any;
+    axios.get
+      // Page 0: object does not exist yet
+      .mockResolvedValueOnce({
+        data: { lines: ["m0", "m1"], totalLines: 4, hasMore: true },
+      })
+      .mockResolvedValueOnce({
+        data: { lines: ["m2", "m3"], totalLines: 4, hasMore: false },
+      });
+    // The append path reads back the page-0 object before uploading page 1.
+    minioClient.getObject.mockImplementationOnce(() =>
+      Promise.resolve(
+        Readable.from([gzipSync(Buffer.from("m0\nm1", "utf-8"))]),
+      ),
+    );
+
+    await service.handleCallback([
+      {
+        executionId: "e-s3-multi",
+        status: "success",
+        executorAddress: "exec-1:8002",
+        logs: "...[truncated, total 50000 chars]...",
+      },
+    ]);
+
+    // Two uploads; the second must contain pages 0+1 concatenated.
+    expect(minioClient.putObject).toHaveBeenCalledTimes(2);
+    const firstBody = minioClient.putObject.mock.calls[0][2] as Buffer;
+    const secondBody = minioClient.putObject.mock.calls[1][2] as Buffer;
+    expect(gunzipSync(firstBody).toString("utf-8")).toBe("m0\nm1");
+    expect(gunzipSync(secondBody).toString("utf-8")).toBe("m0\nm1\nm2\nm3");
+    // Page 0 replaced; pages 1+ must not clear anything mid-backfill.
+    expect(logLineRepo.delete).toHaveBeenCalledTimes(1);
+    expect(execRepo.update).toHaveBeenLastCalledWith("e-s3-multi", {
+      logStorage: "s3",
+      logObjectKey: "execution-logs/e-s3-multi.log.gz",
+    });
   });
 
   it("db driver: callback writes DB rows and never touches S3", async () => {
