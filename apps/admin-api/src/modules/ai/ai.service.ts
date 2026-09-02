@@ -74,12 +74,14 @@ export class AiService {
       p95DurationMs: number;
       bestHoursUtc: number[];
     },
-  ): Promise<{ suggestedCron: string; reasoning: string }> {
+  ): Promise<{ suggestedCron: string; reasoning: string; fallback?: boolean }> {
     const provider = await this.getAiConfig("provider", "disabled");
     if (provider === "disabled") {
       return {
         suggestedCron: currentCron || "0 * * * *",
         reasoning: "AI provider not configured.",
+        // AI-002: 显式标记这是回退结果而非 AI 建议
+        fallback: true,
       };
     }
     const prompt = [
@@ -106,7 +108,13 @@ export class AiService {
         reasoning: string;
       };
       if (parsed.suggestedCron && parsed.reasoning) return parsed;
+      // AI-002: JSON 合法但字段缺失——同样视为解析失败并记 warn
+      this.logger.warn(
+        `suggestSchedule: AI response missing required fields (suggestedCron/reasoning)`,
+      );
     } catch (e: unknown) {
+      // AI-002: 解析失败不再静默降级——记 warn 日志并在响应中携带
+      // fallback 标记，让调用方/前端能区分"AI 建议"与"回退到当前值"。
       this.logger.warn(
         `suggestSchedule parse error: ${e instanceof Error ? e.message : String(e)}`,
       );
@@ -114,6 +122,7 @@ export class AiService {
     return {
       suggestedCron: currentCron || "0 * * * *",
       reasoning: "AI returned unparseable response.",
+      fallback: true,
     };
   }
 

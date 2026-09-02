@@ -1,6 +1,7 @@
 import { Test } from "@nestjs/testing";
-import { Logger } from "@nestjs/common";
+import { BadRequestException, Logger } from "@nestjs/common";
 import { NotificationService } from "../notification.service";
+import { MAX_ALERT_SILENCES } from "../notification.service";
 import { WecomChannel } from "../channels/wecom.channel";
 import { DingtalkChannel } from "../channels/dingtalk.channel";
 import { EmailChannel } from "../channels/email.channel";
@@ -118,6 +119,148 @@ describe("NotificationService", () => {
       await service.sendToChannels(payload, ["webhook" as any], "https://hook.example.com");
       expect(webhook.send).toHaveBeenCalledWith(payload, "https://hook.example.com");
       expect(email.send).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("sendAll — NOTIF-002 log redaction", () => {
+    let logSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      logSpy = jest.spyOn(Logger.prototype, "log").mockImplementation(() => {});
+      webhook.send.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      logSpy.mockRestore();
+    });
+
+    it("should NOT log raw content — only length plus redacted 80-char digest", async () => {
+      const secret = "API_SECRET_KEY=super-secret-value-123456";
+      const token =
+        "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig-part";
+      const hexToken = "deadbeefcafebabe0123456789abcdefdeadbeefcafebabe0123456789abcdef";
+      const padding = "additional operation context message to push the content well past the 80 char digest window";
+      await service.sendAll({
+        title: "Task failed: t",
+        content: `Error: ${secret}\n${token}\nkey=${hexToken}\n${padding}`,
+        level: "error",
+      });
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("[sendAll]"));
+      const logged = logSpy.mock.calls
+        .map((c) => String(c[0]))
+        .join("\n");
+      // 原文敏感片段不得进入日志
+      expect(logged).not.toContain("super-secret-value-123456");
+      expect(logged).not.toContain("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9");
+      expect(logged).not.toContain(hexToken);
+      // 记录了内容长度
+      expect(logged).toContain("chars]");
+      // 摘要截断到 80 字符以内并带省略号
+      expect(logged).toMatch(/.{0,80}\.\.\./);
+    });
+
+    it("should log channel fan-out types in the digest line", async () => {
+      await service.sendAll({
+        title: "t",
+        content: "hello world",
+        level: "info",
+      });
+      const logged = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      // fan-out 目标渠道类型可见（sendAll 固定发这 5 个渠道）
+      for (const channel of ["email", "slack", "dingtalk", "wecom", "webhook"]) {
+        expect(logged).toContain(channel);
+      }
+    });
+
+    it("should redact env-style secrets inside the digest prefix", async () => {
+      const password = "DB_PASSWORD=hunter2verysecret";
+      await service.sendAll({
+        title: "t",
+        // secret 放在前 80 字符内，确保脱敏逻辑作用在摘要里
+        content: `${password} and some padding text to reach length`,
+        level: "warning",
+      });
+      const logged = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).not.toContain("hunter2verysecret");
+      expect(logged).toContain("DB_PASSWORD=[REDACTED]");
+    });
+  });
+
+  describe("AlertSilence — NOTIF-003", () => {
+    beforeEach(() => {
+      // compile() 不会触发生命周期钩子，手动启动与生产一致的清理定时器
+      service.onModuleInit();
+    });
+
+    afterEach(() => {
+      service.onModuleDestroy();
+    });
+
+    it("should reject new silences when the map reaches its size limit", () => {
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      for (let i = 0; i < MAX_ALERT_SILENCES; i++) {
+        service.addSilence({ durationMinutes: 10 });
+      }
+      expect(service.getSilences()).toHaveLength(MAX_ALERT_SILENCES);
+
+      expect(() => service.addSilence({ durationMinutes: 10 })).toThrow(
+        BadRequestException,
+      );
+      // 超限后 Map 不再增长
+      expect(service.getSilences()).toHaveLength(MAX_ALERT_SILENCES);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("reached limit"),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("should allow adding again after entries are removed (cap is not permanent)", () => {
+      jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+      for (let i = 0; i < MAX_ALERT_SILENCES; i++) {
+        service.addSilence({ durationMinutes: 10 });
+      }
+      expect(() => service.addSilence({ durationMinutes: 10 })).toThrow(
+        BadRequestException,
+      );
+      service
+        .getSilences()
+        .forEach((s) => service.removeSilence(s.id!));
+      const id = service.addSilence({ durationMinutes: 10 });
+      expect(id).toBeDefined();
+      jest.restoreAllMocks();
+    });
+
+    it("cleanExpiredSilences should remove only expired entries", () => {
+      service.addSilence({ durationMinutes: 10 }); // 活跃
+      // endTime 直接落在过去（durationMinutes<=0 不会生成 endTime）
+      const expiredId = service.addSilence({
+        durationMinutes: 0,
+        endTime: new Date(Date.now() - 1000),
+      } as any);
+      const removed = service.cleanExpiredSilences();
+      expect(removed).toBe(1);
+      expect(service.getSilences().map((s) => s.id)).not.toContain(expiredId);
+      expect(service.getSilences()).toHaveLength(1);
+    });
+
+    it("onModuleDestroy should clear the cleanup interval", () => {
+      const clearSpy = jest.spyOn(global, "clearInterval");
+      const timer = (service as any).silenceCleanupTimer;
+      expect(timer).toBeDefined();
+      service.onModuleDestroy();
+      expect(clearSpy).toHaveBeenCalledWith(timer);
+      expect((service as any).silenceCleanupTimer).toBeUndefined();
+      clearSpy.mockRestore();
+    });
+
+    it("cleanup interval created in onModuleInit should be unref'ed so it never keeps the process alive", () => {
+      const timer = (service as any).silenceCleanupTimer as NodeJS.Timeout;
+      expect(typeof timer.unref).toBe("function");
+      // unref 后 hasRef() 为 false：定时器不会阻止进程退出
+      expect(timer.hasRef()).toBe(false);
     });
   });
 });
