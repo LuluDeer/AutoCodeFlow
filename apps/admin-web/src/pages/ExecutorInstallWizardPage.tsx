@@ -133,7 +133,6 @@ export default function ExecutorInstallWizardPage() {
   const POLL_INTERVAL_MS = 5000;
   const POLL_TIMEOUT_MS = 60000;
   const [polling, setPolling] = useState(false);
-  const [_pollStartTime, setPollStartTime] = useState<number | null>(null);
   const [foundExecutor, setFoundExecutor] = useState<Executor | null>(null);
   const [pollTimedOut, setPollTimedOut] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -174,7 +173,7 @@ export default function ExecutorInstallWizardPage() {
     setLoadingSharedToken(true);
     import('../api/config')
       .then(({ configApi }) => configApi.getExecutorToken())
-      .then((r: any) => setSharedToken(r.token))
+      .then((r) => setSharedToken(r.token))
       .catch(() => {
         setSharedToken(null);
         message.warning('获取共享 Token 失败，请手动生成');
@@ -259,7 +258,6 @@ export default function ExecutorInstallWizardPage() {
 
   const handleGoToStep4 = () => {
     const now = Date.now();
-    setPollStartTime(now);
     setCurrentStep(4);
     startPolling(now);
   };
@@ -274,7 +272,6 @@ export default function ExecutorInstallWizardPage() {
     setInstallScriptUrl('');
     setFoundExecutor(null);
     setPollTimedOut(false);
-    setPollStartTime(null);
     setElapsedSeconds(0);
   };
 
@@ -688,7 +685,6 @@ export default function ExecutorInstallWizardPage() {
               <Button
                 onClick={() => {
                   const now = Date.now();
-                  setPollStartTime(now);
                   startPolling(now);
                 }}
               >

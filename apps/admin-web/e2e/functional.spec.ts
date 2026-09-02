@@ -1,4 +1,4 @@
-import { test, expect, Page, request } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
 
 const BASE_URL = 'http://localhost:5176';
 const API_URL = 'http://localhost:3105';
@@ -166,7 +166,9 @@ test.describe('AutoCodeFlow 功能测试', () => {
         status = resp.status();
         checkedPath = path;
         if (status < 500) break;
-      } catch (e) {}
+      } catch {
+        // Probe failure is non-fatal: try the next endpoint until one responds.
+      }
     }
     console.log('API 检查结果:', { status, path: checkedPath });
     // 401 未授权或 200 都代表 API 在线

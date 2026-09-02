@@ -49,7 +49,16 @@ export default function DashboardPage() {
     { pollingInterval: 30000 },
   );
 
-  const s = summary as any;
+  interface DashboardSummary {
+    successRate?: number;
+    avgDurationMs?: number;
+    todayRuns?: number;
+    totalTasks?: number;
+    onlineExecutors?: number;
+    totalExecutors?: number;
+    executions?: { total?: number; running?: number; success?: number; failed?: number };
+  }
+  const s = summary as unknown as DashboardSummary | undefined;
   const successRate = s?.successRate ?? 0;
   const totalExec = s?.executions?.total ?? 0;
   const runningCount = s?.executions?.running ?? 0;
@@ -249,7 +258,7 @@ export default function DashboardPage() {
                     title: '地址',
                     dataIndex: 'address',
                     ellipsis: true,
-                    render: (v: string, r: any) => (
+                    render: (v: string, r: { id: string }) => (
                       <a onClick={() => nav(`/executors/${r.id}`)} style={{ fontSize: 12 }}>{v}</a>
                     ),
                   },

@@ -1,14 +1,5 @@
 import { test, expect } from '@playwright/test';
 
-// Helper: inject a fake auth token so protected routes load
-async function fakeLogin(page: any) {
-  await page.goto('/login');
-  await page.evaluate(() => {
-    localStorage.setItem('access_token', 'fake-token-for-nav-test');
-    localStorage.setItem('user', JSON.stringify({ id: 1, username: 'admin', role: 'admin' }));
-  });
-}
-
 test.describe('Navigation', () => {
   test('root redirects to login when not authenticated', async ({ page }) => {
     await page.goto('/');
