@@ -576,56 +576,84 @@ export class ExecutorService {
   }
 
   async dispatch(task: Task, execution: TaskExecution) {
-    const all = await this.repo.find({
-      where: { status: ExecutorStatus.ONLINE },
-      // Bound the candidate pool for the weighted-score selection below.
-      // Score-and-pick-first needs only the top candidates, so a generous cap
-      // is enough. See selectLeastLoaded() for the matching rationale.
-      take: 500,
-    });
+    let candidates: Executor[];
 
-    let candidates = all;
-
-    // 1. Exact match by appName (manually specified by user)
-    if (task.executorAppName) {
-      candidates = all.filter((e) => e.appName === task.executorAppName);
-      if (candidates.length === 0) {
+    if (task.executorId) {
+      // R6: executor pinning — dispatch targets ONLY the pinned executor,
+      // bypassing the fleet query and appName/group/tags/runtime filters.
+      // The optimistic-lock slot increment below is still applied, so the
+      // executor's maxConcurrentTasks cap and runningTaskCount bookkeeping
+      // are respected; a pinned executor at capacity fails the dispatch
+      // (no fallback to another executor — that is the point of pinning).
+      const pinned = await this.repo.findOne({
+        where: { id: task.executorId },
+      });
+      if (!pinned) {
+        // No matching failureReason enum for "pinned target deleted/missing"
+        // (EXECUTOR_OFFLINE would be a lie — it never registered here), so
+        // the worker's message classifier leaves it UNKNOWN by design.
+        throw new Error(`Pinned executor ${task.executorId} not found`);
+      }
+      if (pinned.status !== ExecutorStatus.ONLINE) {
+        // Message shape matches the worker's EXECUTOR_OFFLINE classifier
+        // (task.processor.ts: /executor.*(offline|unavailable)/).
         throw new Error(
-          `No available executor with appName "${task.executorAppName}"`,
+          `Pinned executor "${pinned.appName}" (${pinned.id}) is offline`,
         );
       }
+      candidates = [pinned];
     } else {
-      // 2. Filter by group/tag/runtime
-      let filtered = all;
+      const all = await this.repo.find({
+        where: { status: ExecutorStatus.ONLINE },
+        // Bound the candidate pool for the weighted-score selection below.
+        // Score-and-pick-first needs only the top candidates, so a generous cap
+        // is enough. See selectLeastLoaded() for the matching rationale.
+        take: 500,
+      });
 
-      // 2.1 Filter by group
-      if (task.executorGroup) {
-        filtered = filtered.filter((e) => e.groupName === task.executorGroup);
-      }
+      candidates = all;
 
-      // 2.2 Filter by tag (task required tags must be a subset of executor tags)
-      if (task.executorTags && task.executorTags.length > 0) {
-        filtered = filtered.filter((e) => {
-          if (!e.tags) return false;
-          return task.executorTags!.every((tag) => e.tags!.includes(tag));
-        });
-      }
+      // 1. Exact match by appName (manually specified by user)
+      if (task.executorAppName) {
+        candidates = all.filter((e) => e.appName === task.executorAppName);
+        if (candidates.length === 0) {
+          throw new Error(
+            `No available executor with appName "${task.executorAppName}"`,
+          );
+        }
+      } else {
+        // 2. Filter by group/tag/runtime
+        let filtered = all;
 
-      // 2.3 Filter by runtime/capabilities
-      if (task.runtime) {
-        filtered = filtered.filter((e) =>
-          !e.capabilities || e.capabilities.length === 0
-            ? true
-            : e.capabilities.includes(task.runtime),
-        );
-      }
+        // 2.1 Filter by group
+        if (task.executorGroup) {
+          filtered = filtered.filter((e) => e.groupName === task.executorGroup);
+        }
 
-      if (filtered.length === 0) {
-        throw new Error(
-          "No online executors match the requested group/tags/runtime",
-        );
+        // 2.2 Filter by tag (task required tags must be a subset of executor tags)
+        if (task.executorTags && task.executorTags.length > 0) {
+          filtered = filtered.filter((e) => {
+            if (!e.tags) return false;
+            return task.executorTags!.every((tag) => e.tags!.includes(tag));
+          });
+        }
+
+        // 2.3 Filter by runtime/capabilities
+        if (task.runtime) {
+          filtered = filtered.filter((e) =>
+            !e.capabilities || e.capabilities.length === 0
+              ? true
+              : e.capabilities.includes(task.runtime),
+          );
+        }
+
+        if (filtered.length === 0) {
+          throw new Error(
+            "No online executors match the requested group/tags/runtime",
+          );
+        }
+        candidates = filtered;
       }
-      candidates = filtered;
     }
 
     // 3. Weighted scoring (load 50%+CPU 25%+mem 25%), try optimistic lock in order
@@ -1089,9 +1117,13 @@ export class ExecutorService {
     // Shell-quote values to prevent word-splitting / injection when the user
     // copies the generated command into a shell (merged from install-cmd.controller).
     const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
-    const cmd = `npx autoflow-executor --admin-url ${q(adminApiUrl)} --token ${q(sharedToken)}`;
-    // R4-D P1-3: 原 curlCmd 引用的 /executors/install.sh 后端从未提供，
-    // 复制执行必 404，已删除该字段（前端同步只展示 cmd）。
+    // R4-D P1-3 闭环：后端现已承载 GET /api/executors/install.sh
+    // （install-script.content.ts，@Public 纯文本），安装命令从旧的
+    // `npx autoflow-executor` 形式切回 curl|bash 形式。--api-url 传
+    // ADMIN_API_URL 原值（不含 /api 前缀，与 executor .env 语义一致），
+    // --secret 传共享 token；两者继续经 q() 转义防注入。
+    const scriptUrl = `${adminApiUrl.replace(/\/+$/, "")}/api/executors/install.sh`;
+    const cmd = `curl -fsSL ${q(scriptUrl)} | bash -s -- --api-url ${q(adminApiUrl)} --secret ${q(sharedToken)}`;
     return { cmd, token: sharedToken, adminApiUrl };
   }
 

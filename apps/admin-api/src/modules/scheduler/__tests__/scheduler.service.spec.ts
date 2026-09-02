@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { getQueueToken } from '@nestjs/bullmq';
-import { SchedulerService } from '../scheduler.service';
+import { SchedulerService, computeTriggerDedupTtlMs, TRIGGER_DEDUP_MIN_TTL_MS, TRIGGER_DEDUP_JITTER_BUFFER_MS } from '../scheduler.service';
 import { SchedulerMetricsService } from '../scheduler-metrics.service';
 import { Task, TaskStatus, TaskTriggerType, BlockStrategy, MisfireStrategy, TaskPriority } from '../../task/entities/task.entity';
 import { TaskExecution, ExecutionStatus, ExecutionFailureReason } from '../../task/entities/task-execution.entity';
@@ -1138,7 +1138,7 @@ describe('SchedulerService', () => {
       execRepo.save.mockResolvedValue(exec);
     };
 
-    it('fixed_rate 15s task: TTL equals the 15s period, NOT max(timeout, period)', async () => {
+    it('fixed_rate 15s task: TTL is the period minus the jitter buffer, NOT max(timeout, period)', async () => {
       await makeLeader();
       const task = makeTask({
         triggerType: TaskTriggerType.FIXED_RATE,
@@ -1149,7 +1149,7 @@ describe('SchedulerService', () => {
       redisLockService.acquireLock.mockResolvedValueOnce({
         key: `task:trigger:${task.id}`,
         lockId: 'l1',
-        ttlMs: 15_000,
+        ttlMs: 14_500,
         released: false,
         release: jest.fn().mockResolvedValue(true),
       });
@@ -1158,7 +1158,7 @@ describe('SchedulerService', () => {
 
       expect(redisLockService.acquireLock).toHaveBeenCalledWith(
         `task:trigger:${task.id}`,
-        15_000,
+        14_500,
         { renew: false },
       );
       expect(queue.add).toHaveBeenCalled();
@@ -1175,7 +1175,7 @@ describe('SchedulerService', () => {
       redisLockService.acquireLock.mockResolvedValueOnce({
         key: `task:trigger:${task.id}`,
         lockId: 'l1',
-        ttlMs: 15_000,
+        ttlMs: 14_500,
         released: false,
         release: jest.fn().mockResolvedValue(true),
       });
@@ -1185,9 +1185,11 @@ describe('SchedulerService', () => {
       const ttl = redisLockService.acquireLock.mock.calls.find(
         (c: unknown[]) => c[0] === `task:trigger:${task.id}`,
       )![1] as number;
-      // Old behaviour: max(300s, 15s) = 300s. New: the 15s period itself.
-      expect(ttl).toBe(15_000);
-      expect(ttl).toBeLessThan(300_000);
+      // Old behaviour: max(300s, 15s) = 300s. Round-5 residual: exactly 15s
+      // left a δ-phase-lag window that skipped the next tick (15s/30s mix).
+      // Now: period - jitter buffer.
+      expect(ttl).toBe(14_500);
+      expect(ttl).toBeLessThan(15_000);
     });
 
     it('cron task: TTL falls back to the 1s lower bound', async () => {
@@ -1251,12 +1253,55 @@ describe('SchedulerService', () => {
       const claimArgs = claimQb.where.mock.calls[0][1] as {
         windowStart: Date;
       };
-      // claim window = lockTTL = 15s → windowStart ≈ now - 15s
+      // claim window = lockTTL = 15s - 500ms buffer → windowStart ≈ now - 14.5s
       const delta = Date.now() - claimArgs.windowStart.getTime();
       expect(delta).toBeGreaterThanOrEqual(14_000);
-      expect(delta).toBeLessThanOrEqual(16_500);
+      expect(delta).toBeLessThanOrEqual(15_000);
       expect(queue.add).toHaveBeenCalled();
     });
+  });
+
+  describe('N6 residual: computeTriggerDedupTtlMs period-minus-buffer (round5v2 §2.3)', () => {
+    it('fixed_rate 15s → period - 500ms jitter buffer = 14500ms', () => {
+      expect(
+        computeTriggerDedupTtlMs(
+          makeTask({ triggerType: TaskTriggerType.FIXED_RATE, fixedRate: 15 }),
+        ),
+      ).toBe(14_500);
+    });
+
+    it('fixed_rate 60s → 59500ms', () => {
+      expect(
+        computeTriggerDedupTtlMs(
+          makeTask({ triggerType: TaskTriggerType.FIXED_RATE, fixedRate: 60 }),
+        ),
+      ).toBe(59_500);
+    });
+
+    it('fixed_rate 1s: buffer would dip below the floor → MIN_TTL applies', () => {
+      const ttl = computeTriggerDedupTtlMs(
+        makeTask({ triggerType: TaskTriggerType.FIXED_RATE, fixedRate: 1 }),
+      );
+      expect(ttl).toBe(TRIGGER_DEDUP_MIN_TTL_MS);
+      expect(TRIGGER_DEDUP_JITTER_BUFFER_MS).toBeGreaterThan(0);
+    });
+
+    it('cron → MIN_TTL lower bound', () => {
+      expect(
+        computeTriggerDedupTtlMs(
+          makeTask({ triggerType: TaskTriggerType.CRON, cronExpression: '0 * * * *' }),
+        ),
+      ).toBe(TRIGGER_DEDUP_MIN_TTL_MS);
+    });
+
+    it.each([TaskTriggerType.API, TaskTriggerType.MANUAL])(
+      '%s trigger → conservative 5s window',
+      (triggerType) => {
+        expect(
+          computeTriggerDedupTtlMs(makeTask({ triggerType })),
+        ).toBe(5_000);
+      },
+    );
   });
 
   describe('scheduleOne', () => {
