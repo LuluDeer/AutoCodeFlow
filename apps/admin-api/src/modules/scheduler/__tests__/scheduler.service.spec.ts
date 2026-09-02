@@ -3,7 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { getQueueToken } from '@nestjs/bullmq';
 import { SchedulerService } from '../scheduler.service';
 import { SchedulerMetricsService } from '../scheduler-metrics.service';
-import { Task, TaskStatus, TaskTriggerType, BlockStrategy, MisfireStrategy } from '../../task/entities/task.entity';
+import { Task, TaskStatus, TaskTriggerType, BlockStrategy, MisfireStrategy, TaskPriority } from '../../task/entities/task.entity';
 import { TaskExecution, ExecutionStatus, ExecutionFailureReason } from '../../task/entities/task-execution.entity';
 import { DataSource } from 'typeorm';
 import * as nodeCron from 'node-cron';
@@ -57,7 +57,7 @@ const makeTask = (overrides: Partial<Task> = {}): Task => ({
   misfireStrategy: MisfireStrategy.IGNORE,
   maxRetry: 3,
   retryDelay: 5,
-  priority: 0,
+  priority: 2,
   params: {},
   currentVersion: 1,
   lastTriggerTime: null,
@@ -714,6 +714,7 @@ describe('SchedulerService', () => {
       execRepo.find
         .mockResolvedValueOnce([staleExec]) // RUNNING scan
         .mockResolvedValueOnce([]); // PENDING scan
+      taskRepo.find.mockResolvedValue([]); // N5 cutoff probe: no timed tasks
       taskRepo.findBy.mockResolvedValue([]);
       // 事务管理器：UPDATE ... RETURNING 命中该行
       dataSource.transaction.mockImplementation(async (fn: any) =>
@@ -741,7 +742,7 @@ describe('SchedulerService', () => {
         id: 'exec-timeout',
         taskId: 'task-2',
         status: ExecutionStatus.RUNNING,
-        startTime: new Date(Date.now() - 10 * 60 * 1000), // 10 min ago
+        startTime: new Date(Date.now() - 20 * 60 * 1000), // 20 min ago (N5: threshold = max(2×300s, 60s) = 10 min)
         executorAddress: 'host:3002',
         errorMessage: null,
         endTime: null,
@@ -749,6 +750,8 @@ describe('SchedulerService', () => {
       execRepo.find
         .mockResolvedValueOnce([staleExec])
         .mockResolvedValueOnce([]);
+      // N5: the ACTIVE-task cutoff probe must not disturb the RUNNING scan.
+      taskRepo.find.mockResolvedValue([]);
       taskRepo.findBy.mockResolvedValue([makeTask({ id: 'task-2', timeout: 300 })]);
       const updateQb = makeUpdateQb({
         affected: 1,
@@ -787,6 +790,7 @@ describe('SchedulerService', () => {
       execRepo.find
         .mockResolvedValueOnce([freshExec])
         .mockResolvedValueOnce([]);
+      taskRepo.find.mockResolvedValue([makeTask({ id: 'task-3', timeout: 600 })]);
       taskRepo.findBy.mockResolvedValue([makeTask({ id: 'task-3', timeout: 600 })]);
 
       await service.recoverStaleExecutions();
@@ -807,6 +811,7 @@ describe('SchedulerService', () => {
       execRepo.find
         .mockResolvedValueOnce([]) // RUNNING scan empty
         .mockResolvedValueOnce([stalePending]);
+      taskRepo.find.mockResolvedValue([]); // N5 cutoff probe
       const pendingQb = makeUpdateQb({ affected: 1, raw: [{ id: 'exec-pending' }] });
       execRepo.createQueryBuilder.mockReturnValue(pendingQb);
 
@@ -824,8 +829,106 @@ describe('SchedulerService', () => {
     it('does nothing when no running executions exist', async () => {
       await makeLeader();
       execRepo.find.mockResolvedValue([]);
+      taskRepo.find.mockResolvedValue([]); // N5 cutoff probe
       await service.recoverStaleExecutions();
       expect(execRepo.save).not.toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('N5: scans with a cutoff of max(2×taskTimeout, 60s) for short-timeout tasks', async () => {
+      await makeLeader();
+      execRepo.find
+        .mockResolvedValueOnce([]) // RUNNING scan
+        .mockResolvedValueOnce([]); // PENDING sweep
+      // timeout=10s → per-task threshold max(20s, 60s) = 60s
+      taskRepo.find.mockResolvedValue([makeTask({ id: 'task-1', timeout: 10 })]);
+
+      const before = Date.now();
+      await service.recoverStaleExecutions();
+
+      const runningScan = execRepo.find.mock.calls[0][0] as {
+        where: { startTime: { value: Date; type: string } };
+      };
+      const cutoff = runningScan.where.startTime.value.getTime();
+      // cutoff ≈ now - 60s (definitely NOT now - 1h)
+      expect(runningScan.where.startTime.type).toBe('lessThan');
+      expect(cutoff).toBeGreaterThan(before - 61_000);
+      expect(cutoff).toBeLessThanOrEqual(before - 59_000);
+    });
+
+    it('N5: keeps the 1h fallback window when no task has a timeout', async () => {
+      await makeLeader();
+      execRepo.find
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]);
+      taskRepo.find.mockResolvedValue([
+        makeTask({ id: 'task-1', timeout: 0 }),
+        makeTask({ id: 'task-2', timeout: 0 }),
+      ]);
+
+      const before = Date.now();
+      await service.recoverStaleExecutions();
+
+      const runningScan = execRepo.find.mock.calls[0][0] as {
+        where: { startTime: { value: Date } };
+      };
+      const cutoff = runningScan.where.startTime.value.getTime();
+      expect(cutoff).toBeLessThanOrEqual(before - 59 * 60 * 1000);
+      expect(cutoff).toBeGreaterThan(before - 61 * 60 * 1000);
+    });
+
+    it('N5: per-row recovery threshold honours max(2×taskTimeout, 60s)', async () => {
+      await makeLeader();
+      // timeout=10s → threshold 60s. A 2-minute-old RUNNING row must be swept.
+      const staleExec = {
+        id: 'exec-short',
+        taskId: 'task-1',
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 2 * 60 * 1000),
+        executorAddress: 'host:3002',
+      };
+      execRepo.find
+        .mockResolvedValueOnce([staleExec])
+        .mockResolvedValueOnce([]);
+      taskRepo.find.mockResolvedValue([makeTask({ id: 'task-1', timeout: 10 })]);
+      taskRepo.findBy.mockResolvedValue([makeTask({ id: 'task-1', timeout: 10 })]);
+      const updateQb = makeUpdateQb({
+        affected: 1,
+        raw: [{ id: 'exec-short', executorAddress: 'host:3002' }],
+      });
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({ createQueryBuilder: () => updateQb }),
+      );
+
+      await service.recoverStaleExecutions();
+
+      expect(updateQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: ExecutionStatus.FAILED,
+          failureReason: ExecutionFailureReason.TIMEOUT,
+        }),
+      );
+    });
+
+    it('N5: a row within max(2×taskTimeout, 60s) is left alone (short-timeout grace)', async () => {
+      await makeLeader();
+      // timeout=60s → threshold 120s. A 1-minute-old row is inside the grace
+      // window even though it already exceeds the bare task timeout.
+      const runningExec = {
+        id: 'exec-grace',
+        taskId: 'task-1',
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 60 * 1000),
+        executorAddress: 'host:3002',
+      };
+      execRepo.find
+        .mockResolvedValueOnce([runningExec])
+        .mockResolvedValueOnce([]);
+      taskRepo.find.mockResolvedValue([makeTask({ id: 'task-1', timeout: 60 })]);
+      taskRepo.findBy.mockResolvedValue([makeTask({ id: 'task-1', timeout: 60 })]);
+
+      await service.recoverStaleExecutions();
+
       expect(dataSource.transaction).not.toHaveBeenCalled();
     });
   });
@@ -961,6 +1064,198 @@ describe('SchedulerService', () => {
         failed: 0,
         completed: 0,
       });
+    });
+  });
+
+  describe('N2: enqueue priority normalization (PG string enum → BullMQ integer)', () => {
+    /**
+     * N2: tasks.priority lives in a PG string enum ('low'/'normal'/'high'/
+     * 'critical'); TypeORM hydrates it as a string. Passing the raw label to
+     * BullMQ's priority option makes every scheduled enqueue fail with
+     * "Priority should not be float" (80/80 in round-5 e2e). The enqueue
+     * boundary must always hand BullMQ a number.
+     */
+    const setupHappyPath = (task: Task) => {
+      const lock = { release: jest.fn().mockResolvedValue(true) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = { id: 'exec-1', status: ExecutionStatus.PENDING } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+      execRepo.findOne.mockResolvedValue(null); // no RUNNING row for DISCARD etc.
+      return exec;
+    };
+
+    it.each([
+      ['normal (hydrated PG label, the real-world failing shape)', 'normal', TaskPriority.NORMAL],
+      ['lowercase high label', 'high', TaskPriority.HIGH],
+      ['UPPERCASE label', 'CRITICAL', TaskPriority.CRITICAL],
+      ['mixed case label', 'Low', TaskPriority.LOW],
+      ['numeric 1', 1, TaskPriority.LOW],
+      ['numeric 4', 4, TaskPriority.CRITICAL],
+      ['integer string "3"', '3', TaskPriority.HIGH],
+      ['undefined → NORMAL fallback', undefined, TaskPriority.NORMAL],
+      ['null → NORMAL fallback', null, TaskPriority.NORMAL],
+      ['unknown garbage → NORMAL fallback', 'urgent', TaskPriority.NORMAL],
+      ['boolean → NORMAL fallback', true, TaskPriority.NORMAL],
+    ])('priority %s is enqueued as a number', async (
+      _name: string,
+      raw: unknown,
+      expected: TaskPriority,
+    ) => {
+      await makeLeader();
+      const task = makeTask({ priority: raw as unknown as TaskPriority });
+      setupHappyPath(task);
+
+      await service.enqueue(task, 'cron');
+
+      expect(queue.add).toHaveBeenCalledWith(
+        'execute',
+        { executionId: 'exec-1', task },
+        expect.objectContaining({ priority: expected }),
+      );
+      expect(typeof queue.add.mock.calls[0][2].priority).toBe('number');
+    });
+
+    it('never forwards a raw string priority to BullMQ even for NaN-ish values', async () => {
+      await makeLeader();
+      const task = makeTask({ priority: 'whatever' as unknown as TaskPriority });
+      setupHappyPath(task);
+
+      await service.enqueue(task, 'fixed_rate');
+
+      const opts = queue.add.mock.calls[0][2];
+      expect(opts.priority).toBe(TaskPriority.NORMAL);
+      expect(Number.isInteger(opts.priority)).toBe(true);
+    });
+  });
+
+  describe('N6: trigger dedup lock TTL derived from the trigger period', () => {
+    const setupHappyPath = (task: Task) => {
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = { id: 'exec-1', status: ExecutionStatus.PENDING } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+    };
+
+    it('fixed_rate 15s task: TTL equals the 15s period, NOT max(timeout, period)', async () => {
+      await makeLeader();
+      const task = makeTask({
+        triggerType: TaskTriggerType.FIXED_RATE,
+        fixedRate: 15,
+        timeout: 300,
+      });
+      setupHappyPath(task);
+      redisLockService.acquireLock.mockResolvedValueOnce({
+        key: `task:trigger:${task.id}`,
+        lockId: 'l1',
+        ttlMs: 15_000,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+
+      await service.enqueue(task, 'fixed_rate');
+
+      expect(redisLockService.acquireLock).toHaveBeenCalledWith(
+        `task:trigger:${task.id}`,
+        15_000,
+        { renew: false },
+      );
+      expect(queue.add).toHaveBeenCalled();
+    });
+
+    it('short-period task with default timeout is no longer suppressed to the timeout (regression)', async () => {
+      await makeLeader();
+      const task = makeTask({
+        triggerType: TaskTriggerType.FIXED_RATE,
+        fixedRate: 15,
+        timeout: 0, // makeTask default timeout=0 already; be explicit
+      });
+      setupHappyPath(task);
+      redisLockService.acquireLock.mockResolvedValueOnce({
+        key: `task:trigger:${task.id}`,
+        lockId: 'l1',
+        ttlMs: 15_000,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+
+      await service.enqueue(task, 'fixed_rate');
+
+      const ttl = redisLockService.acquireLock.mock.calls.find(
+        (c: unknown[]) => c[0] === `task:trigger:${task.id}`,
+      )![1] as number;
+      // Old behaviour: max(300s, 15s) = 300s. New: the 15s period itself.
+      expect(ttl).toBe(15_000);
+      expect(ttl).toBeLessThan(300_000);
+    });
+
+    it('cron task: TTL falls back to the 1s lower bound', async () => {
+      await makeLeader();
+      const task = makeTask({ timeout: 300 });
+      setupHappyPath(task);
+      redisLockService.acquireLock.mockResolvedValueOnce({
+        key: `task:trigger:${task.id}`,
+        lockId: 'l1',
+        ttlMs: 1_000,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+
+      await service.enqueue(task, 'cron');
+
+      expect(redisLockService.acquireLock).toHaveBeenCalledWith(
+        `task:trigger:${task.id}`,
+        1_000,
+        { renew: false },
+      );
+    });
+
+    it('api/manual triggers keep the conservative 5s window', async () => {
+      await makeLeader();
+      const task = makeTask({ triggerType: TaskTriggerType.API, timeout: 300 });
+      setupHappyPath(task);
+      redisLockService.acquireLock.mockResolvedValueOnce({
+        key: `task:trigger:${task.id}`,
+        lockId: 'l1',
+        ttlMs: 5_000,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+
+      await service.enqueue(task, 'manual');
+
+      expect(redisLockService.acquireLock).toHaveBeenCalledWith(
+        `task:trigger:${task.id}`,
+        5_000,
+        { renew: false },
+      );
+    });
+
+    it('DB claim window mirrors the new TTL (fixed_rate → the period)', async () => {
+      await makeLeader();
+      const task = makeTask({
+        triggerType: TaskTriggerType.FIXED_RATE,
+        fixedRate: 15,
+        timeout: 300,
+      });
+      setupHappyPath(task);
+      redisLockService.acquireLock.mockRejectedValue(new Error('redis down'));
+      taskRepo.createQueryBuilder.mockReturnValue(
+        makeUpdateQb({ affected: 1 }),
+      );
+
+      await service.enqueue(task, 'fixed_rate');
+
+      const claimQb = taskRepo.createQueryBuilder.mock.results[0].value;
+      const claimArgs = claimQb.where.mock.calls[0][1] as {
+        windowStart: Date;
+      };
+      // claim window = lockTTL = 15s → windowStart ≈ now - 15s
+      const delta = Date.now() - claimArgs.windowStart.getTime();
+      expect(delta).toBeGreaterThanOrEqual(14_000);
+      expect(delta).toBeLessThanOrEqual(16_500);
+      expect(queue.add).toHaveBeenCalled();
     });
   });
 

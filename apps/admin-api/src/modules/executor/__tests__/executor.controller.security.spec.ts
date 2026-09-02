@@ -26,6 +26,10 @@ jest.mock("../../../common/utils/verify-executor-token.util", () => ({
 describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment guards", () => {
   const makeSvc = (overrides: Record<string, jest.Mock> = {}) => ({
     register: jest.fn(async (data) => ({ id: "new-id", ...data })),
+    registerExecutor: jest.fn(async (data) => ({
+      executor: { id: "new-id", ...data },
+      perExecutorToken: "fresh-token",
+    })),
     heartbeat: jest.fn(async (address, metrics) => ({ address, metrics })),
     validateTokenByAddress: jest.fn().mockResolvedValue(true),
     rotateToken: jest.fn().mockResolvedValue({ token: "fresh-token" }),
@@ -119,7 +123,9 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         } as any,
         "Bearer shared-token",
       );
-      expect(svc.register).toHaveBeenCalledWith(
+      // N4: register + token issuance now goes through the idempotent
+      // registerExecutor service method; the whitelist contract is unchanged.
+      expect(svc.registerExecutor).toHaveBeenCalledWith(
         expect.not.objectContaining({
           id: expect.anything(),
           tokenHash: expect.anything(),
@@ -128,7 +134,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           createdAt: expect.anything(),
         }),
       );
-      const forwarded = svc.register.mock.calls[0][0];
+      const forwarded = svc.registerExecutor.mock.calls[0][0];
       expect(forwarded).toMatchObject({
         appName: "executor-node",
         address: "10.0.0.9:3002",
@@ -150,6 +156,36 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           "version",
         ].sort(),
       );
+    });
+
+    it("N4: returns perExecutorToken=null on idempotent re-register, token on rotate paths", async () => {
+      const svc = makeSvc({
+        registerExecutor: jest
+          .fn()
+          .mockResolvedValueOnce({
+            executor: { id: "e1", address: "10.0.0.9:3002" },
+            perExecutorToken: "first-issued-token",
+          })
+          .mockResolvedValueOnce({
+            executor: { id: "e1", address: "10.0.0.9:3002" },
+            perExecutorToken: null,
+          }),
+      });
+      const controller = new ExecutorController(
+        svc as any,
+        makeConfig(),
+        {} as any,
+      );
+      const body = { appName: "executor-node", address: "10.0.0.9:3002", startupId: "s-1" } as any;
+
+      const first = await controller.register(body, "Bearer shared-token");
+      expect(first).toMatchObject({ perExecutorToken: "first-issued-token" });
+
+      const second = await controller.register(body, "Bearer shared-token");
+      expect(second).toMatchObject({ perExecutorToken: null });
+      // rotateToken is never called from register anymore — the service owns
+      // the rotation decision.
+      expect(svc.rotateToken).not.toHaveBeenCalled();
     });
   });
 

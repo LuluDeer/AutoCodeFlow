@@ -14,7 +14,11 @@ import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
 import { createInterface } from "node:readline";
 import type { Readable } from "node:stream";
-import { Task, TaskStatus } from "./entities/task.entity";
+import {
+  Task,
+  TaskStatus,
+  normalizeTaskPriority,
+} from "./entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -330,6 +334,10 @@ export class TaskService {
             task.retryDelay > 0
               ? { type: "exponential", delay: task.retryDelay * 1000 }
               : undefined,
+          // N2: unify with scheduler.enqueue — always pass a normalized numeric
+          // priority (DB stores the PG string enum; a raw label must never
+          // reach BullMQ, which rejects non-integer priorities).
+          priority: normalizeTaskPriority(task.priority),
         },
       );
     } catch (err: unknown) {
@@ -820,6 +828,8 @@ export class TaskService {
             task.retryDelay > 0
               ? { type: "exponential", delay: task.retryDelay * 1000 }
               : undefined,
+          // N2: normalized numeric priority (see trigger()).
+          priority: normalizeTaskPriority(task.priority),
         },
       );
     } catch (err: unknown) {

@@ -9,7 +9,7 @@ import {
 } from "@nestjs/common";
 import { TaskService } from "../task.service";
 import { MAX_DEPENDENCY_EXECUTION_SCAN } from "../task.service";
-import { Task, TaskStatus } from "../entities/task.entity";
+import { Task, TaskStatus, normalizeTaskPriority } from "../entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -382,7 +382,8 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "exec-1" },
-        { attempts: 3, backoff: { type: 'exponential', delay: 5_000 } },
+        // N2: enqueue options now always carry a normalized numeric priority
+        { attempts: 3, backoff: { type: 'exponential', delay: 5_000 }, priority: 2 },
       );
       expect(result).toEqual(exec);
     });
@@ -397,7 +398,6 @@ describe("TaskService (__tests__)", () => {
         currentVersion: "v1",
         status: TaskStatus.ACTIVE,
       };
-
       const exec = { id: "exec-2", status: ExecutionStatus.PENDING, params: { override: true } };
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
@@ -408,6 +408,67 @@ describe("TaskService (__tests__)", () => {
       );
       await service.trigger("1", { params: { override: true } });
       expect(taskQueue.add).toHaveBeenCalled();
+    });
+
+    it("N2: normalizes a hydrated PG string priority before queue.add", async () => {
+      // Real-world shape from round-5 e2e: TypeORM hydrates the PG enum as
+      // the string label 'normal'; BullMQ rejects non-integer priorities.
+      const task = {
+        id: "1",
+        name: "test",
+        params: {},
+        maxRetry: 3,
+        retryDelay: 5,
+        priority: "normal",
+        currentVersion: "v1",
+        status: TaskStatus.ACTIVE,
+      };
+      const exec = { id: "exec-1", status: ExecutionStatus.PENDING };
+      taskRepo.findOne.mockResolvedValue(task);
+      dataSource.transaction.mockImplementation((fn: any) =>
+        fn({
+          create: jest.fn().mockReturnValue(exec),
+          save: jest.fn().mockResolvedValue(exec),
+        }),
+      );
+
+      await service.trigger("1", {});
+
+      expect(taskQueue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "exec-1" },
+        expect.objectContaining({ priority: 2 }),
+      );
+      expect(
+        typeof (taskQueue.add.mock.calls[0][2] as { priority: number }).priority,
+      ).toBe("number");
+    });
+  });
+
+  describe("normalizeTaskPriority (N2)", () => {
+    it("maps PG string labels case-insensitively to the numeric enum", () => {
+      expect(normalizeTaskPriority("low")).toBe(1);
+      expect(normalizeTaskPriority("normal")).toBe(2);
+      expect(normalizeTaskPriority("NORMAL")).toBe(2);
+      expect(normalizeTaskPriority("High")).toBe(3);
+      expect(normalizeTaskPriority("critical")).toBe(4);
+    });
+
+    it("maps numeric and integer-string shapes to the numeric enum", () => {
+      expect(normalizeTaskPriority(1)).toBe(1);
+      expect(normalizeTaskPriority(4)).toBe(4);
+      expect(normalizeTaskPriority("3")).toBe(3);
+    });
+
+    it("falls back to NORMAL(2) for unknown/missing/invalid values", () => {
+      expect(normalizeTaskPriority(undefined)).toBe(2);
+      expect(normalizeTaskPriority(null)).toBe(2);
+      expect(normalizeTaskPriority(0)).toBe(2);
+      expect(normalizeTaskPriority(99)).toBe(2);
+      expect(normalizeTaskPriority("urgent")).toBe(2);
+      expect(normalizeTaskPriority("")).toBe(2);
+      expect(normalizeTaskPriority(true)).toBe(2);
+      expect(Number.isInteger(normalizeTaskPriority("bogus"))).toBe(true);
     });
   });
 
@@ -800,7 +861,7 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "rb-exec" },
-        { attempts: 2, backoff: { type: 'exponential', delay: 7_000 } },
+        { attempts: 2, backoff: { type: 'exponential', delay: 7_000 }, priority: 2 },
       );
     });
 

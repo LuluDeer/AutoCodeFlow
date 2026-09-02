@@ -7,6 +7,11 @@ jest.mock('ioredis', () => {
     eval: jest.fn(),
     quit: jest.fn(),
     on: jest.fn(),
+    // N3: readyClient inspects status and subscribes via once/off while
+    // waiting for the connection to become ready.
+    status: 'ready',
+    once: jest.fn(),
+    off: jest.fn(),
   };
   const RedisMock = jest.fn().mockImplementation(() => instance);
   (RedisMock as any).mockInstance = instance;
@@ -14,10 +19,10 @@ jest.mock('ioredis', () => {
 });
 
 import { ConfigService } from '@nestjs/config';
-import { RedisLockService } from '../redis-lock.service';
+import { RedisLockService, REDIS_READY_WAIT_MS } from '../redis-lock.service';
 
 const { default: RedisMock } = jest.requireMock('ioredis') as {
-  default: jest.Mock & { mockInstance: Record<string, jest.Mock> };
+  default: jest.Mock & { mockInstance: Record<string, jest.Mock> & { status: string } };
 };
 const m = RedisMock.mockInstance;
 
@@ -37,6 +42,7 @@ describe('RedisLockService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     m.quit.mockResolvedValue('OK');
+    m.status = 'ready';
     service = new RedisLockService(makeConfig());
     await service.onModuleInit();
   });
@@ -124,8 +130,10 @@ expect(lock).toBeNull();
       const lock = await service.acquireLock('lease-lock', 9_000);
       expect(m.eval).not.toHaveBeenCalled();
 
-      // renewMs = max(1000, 9000/3) = 3000 — first renewal fires at t+3000
-      jest.advanceTimersByTime(3_000);
+      // renewMs = max(1000, 9000/3) = 3000 — first renewal fires at t+3000.
+      // extendLock resolves through the (async) readyClient fast-path, so the
+      // eval lands one microtask after the interval callback.
+      await jest.advanceTimersByTimeAsync(3_000);
       expect(m.eval).toHaveBeenCalledTimes(1);
       expect(m.eval).toHaveBeenCalledWith(
         expect.any(String),
@@ -136,16 +144,16 @@ expect(lock).toBeNull();
       );
 
       // Still renewing at t+9000 (three cycles)
-      jest.advanceTimersByTime(6_000);
+      await jest.advanceTimersByTimeAsync(6_000);
       expect(m.eval).toHaveBeenCalledTimes(3);
 
       // t+12000: the watchdog keeps the lease alive indefinitely
-      jest.advanceTimersByTime(3_000);
+      await jest.advanceTimersByTimeAsync(3_000);
       expect(m.eval).toHaveBeenCalledTimes(4);
 
       // release() stops the watchdog (final eval = the release DEL)
       await lock!.release();
-      jest.advanceTimersByTime(30_000);
+      await jest.advanceTimersByTimeAsync(30_000);
       expect(m.eval).toHaveBeenCalledTimes(5);
     });
 
@@ -155,11 +163,11 @@ expect(lock).toBeNull();
       m.eval.mockResolvedValue(1);
 
       const lock = await service.acquireLock('lease-release', 9_000);
-      jest.advanceTimersByTime(3_000);
+      await jest.advanceTimersByTimeAsync(3_000);
       expect(m.eval).toHaveBeenCalledTimes(1);
 
       await lock!.release();
-      jest.advanceTimersByTime(30_000);
+      await jest.advanceTimersByTimeAsync(30_000);
       // Only the release Lua eval + the one renewal — no further renewals.
       expect(m.eval).toHaveBeenCalledTimes(2);
     });
@@ -203,6 +211,107 @@ expect(lock).toBeNull();
     it('calls quit() on the Redis client', async () => {
       await service.onModuleDestroy();
       expect(m.quit).toHaveBeenCalled();
+    });
+
+    it('N3: is a no-op-safe on quit when the client was never created (lazy ensureClient)', async () => {
+      const fresh = new RedisLockService(makeConfig());
+      await expect(fresh.onModuleDestroy()).resolves.not.toThrow();
+      expect(m.quit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('N3: startup-order race — readyClient wait', () => {
+    afterEach(() => {
+      // The wait tests install per-test `once` implementations; restore the
+      // default no-op so later suites are unaffected.
+      m.status = 'ready';
+      m.once.mockReset();
+    });
+    // N3 regression: a consumer's onModuleInit (scheduler leader election)
+    // can run before RedisLockService.onModuleInit; acquireLock used to hit
+    // an undefined client and throw, degrading the scheduler to a fail-open
+    // "fake leader" for a full retry cycle (~15s).
+    it('creates the client on first acquireLock even when onModuleInit never ran', async () => {
+      // beforeEach already created one client for `service`; count from scratch.
+      RedisMock.mockClear();
+      const lazy = new RedisLockService(makeConfig());
+      m.set.mockResolvedValue('OK');
+
+      const lock = await lazy.acquireLock('lazy-key', 5_000);
+
+      expect(RedisMock).toHaveBeenCalledTimes(1);
+      expect(lock).not.toBeNull();
+      expect(lock!.key).toBe('lazy-key');
+      await lazy.onModuleDestroy();
+    });
+
+    it('does not create a second client when onModuleInit already ran', async () => {
+      RedisMock.mockClear();
+      m.set.mockResolvedValue('OK');
+      await service.acquireLock('dup-key', 5_000);
+      expect(RedisMock).not.toHaveBeenCalled();
+    });
+
+    it('acquires immediately when the client is already ready', async () => {
+      m.set.mockResolvedValue('OK');
+      await service.acquireLock('ready-key', 5_000);
+      expect(m.set).toHaveBeenCalled();
+    });
+
+    it('waits for ready and succeeds when the ready event fires in time', async () => {
+      m.status = 'connecting';
+      m.set.mockResolvedValue('OK');
+      m.once.mockImplementation((event: string, cb: () => void) => {
+        if (event === 'ready') setTimeout(cb, 10);
+        return m;
+      });
+
+      const pending = service.acquireLock('wait-key', 5_000);
+      await expect(pending).resolves.not.toBeNull();
+      expect(m.set).toHaveBeenCalled();
+      // Listeners must be cleaned up after the wait resolves.
+      expect(m.off).toHaveBeenCalledWith('ready', expect.any(Function));
+      expect(m.off).toHaveBeenCalledWith('error', expect.any(Function));
+    });
+
+    it('throws within the bounded window when Redis never becomes ready (fail-open preserved)', async () => {
+      jest.useFakeTimers();
+      m.status = 'connecting';
+      // Register listeners but never fire them — Redis stays unreachable.
+      m.once.mockImplementation(() => m);
+      try {
+        const pending = service.acquireLock('never-key', 5_000);
+        const assertion = expect(pending).rejects.toThrow(
+          /not ready after \d+ms/,
+        );
+        // Exhaust the REDIS_READY_WAIT_MS window without a real timer wait.
+        await jest.advanceTimersByTimeAsync(REDIS_READY_WAIT_MS + 1);
+        await assertion;
+        expect(m.set).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('throws immediately when the client status is end (closed connection)', async () => {
+      m.status = 'end';
+      await expect(service.acquireLock('closed-key', 5_000)).rejects.toThrow(
+        /status=end/,
+      );
+      expect(m.set).not.toHaveBeenCalled();
+    });
+
+    it('rejects as soon as a connection error fires while waiting', async () => {
+      m.status = 'connecting';
+      m.once.mockImplementation((event: string, cb: (e?: Error) => void) => {
+        if (event === 'error') setTimeout(() => cb(new Error('ECONNREFUSED')), 10);
+        return m;
+      });
+
+      await expect(service.acquireLock('err-key', 5_000)).rejects.toThrow(
+        /ECONNREFUSED/,
+      );
+      expect(m.set).not.toHaveBeenCalled();
     });
   });
 });

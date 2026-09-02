@@ -119,11 +119,16 @@ export class ExecutorController {
       restartedAt: body.restartedAt,
       startupId: body.startupId,
     };
-    const executor = await this.svc.register(payload);
-    // Issue a fresh per-executor token on every registration so the executor
-    // can authenticate future heartbeats without the shared token.
-    const { token } = await this.svc.rotateToken(executor.id);
-    return { ...executor, perExecutorToken: token };
+    // N4: register + token issuance is idempotent per (address, startupId) —
+    // a duplicate register from the SAME process life (same startupId, no
+    // restart) returns perExecutorToken=null instead of rotating, so residual
+    // processes retrying register every 30s can no longer invalidate the live
+    // executor's token. Rotation still happens on first registration, on a
+    // genuine restart, and for legacy executors that report no startupId.
+    const { executor, perExecutorToken } = await this.svc.registerExecutor(
+      payload,
+    );
+    return { ...executor, perExecutorToken };
   }
 
   @Public()

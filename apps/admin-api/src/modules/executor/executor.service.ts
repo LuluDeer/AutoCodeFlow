@@ -303,6 +303,67 @@ export class ExecutorService {
     return this.repo.save(e);
   }
 
+  /**
+   * N4: register + per-executor token issuance in one step, idempotent per
+   * (address, startupId). The previous flow rotated the token on EVERY
+   * register call — under shared-token auth any duplicate register (e.g. a
+   * residual executor process retrying every 30s) invalidated the live
+   * executor's per-executor token, producing a rotation storm that made the
+   * per-executor token mechanism useless. Rotation now happens only when:
+   * - the address has no per-executor token yet (first issuance), or
+   * - the registration is NOT provably from the same process life (missing
+   *   startupId, a changed startupId, or a newer restartedAt — i.e. a
+   *   restart), which includes legacy executors that never report startupId.
+   * A same-process re-register returns perExecutorToken=null: the executor
+   * keeps the token it already holds (heartbeats still fall back to the
+   * shared token if it was lost). Explicit rotation endpoints are unchanged.
+   */
+  async registerExecutor(data: {
+    appName: string;
+    address: string;
+    type?: string;
+    version?: string;
+    capabilities?: string[];
+    runtime?: string[];
+    maxConcurrentTasks?: number;
+    maxConcurrent?: number;
+    groupName?: string | null;
+    tags?: string[] | null;
+    description?: string | null;
+    restartedAt?: string | Date | null;
+    startupId?: string | null;
+  }): Promise<{ executor: Executor; perExecutorToken: string | null }> {
+    // Capture the pre-register row: register() overwrites executorStartupId
+    // and the row's tokenHash is select:false, so read it explicitly here.
+    const prior = await this.repo
+      .createQueryBuilder("e")
+      .addSelect("e.tokenHash")
+      .where("e.address = :address", { address: data.address })
+      .getOne();
+    const executor = await this.register(data);
+    const incomingStartedAt = this.parseExecutorStartedAt(data.restartedAt);
+    const incomingStartupId = data.startupId?.trim() || null;
+    const didRestart = prior
+      ? this.hasExecutorRestarted(prior, incomingStartedAt, incomingStartupId)
+      : false;
+    const sameProcess =
+      !didRestart &&
+      Boolean(prior?.tokenHash) &&
+      Boolean(incomingStartupId) &&
+      prior?.executorStartupId === incomingStartupId;
+
+    const perExecutorToken =
+      prior?.tokenHash && sameProcess
+        ? null
+        : (await this.rotateToken(executor.id)).token;
+    if (perExecutorToken === null) {
+      this.logger.debug(
+        `Idempotent re-register for executor ${executor.id} (${data.address}); keeping existing per-executor token`,
+      );
+    }
+    return { executor, perExecutorToken };
+  }
+
   async heartbeat(
     address: string,
     metrics: {
