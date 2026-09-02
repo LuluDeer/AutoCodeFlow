@@ -159,7 +159,7 @@ export default function ExecutorDetailPage() {
             <Badge status={isOnline ? 'success' : 'default'} text={executor.status} />
           </Descriptions.Item>
           <Descriptions.Item label="类型">{executor.type || '-'}</Descriptions.Item>
-          <Descriptions.Item label="版本">{executor.version || '-'}</Descriptions.Item>
+          <Descriptions.Item label="版本">{executor.executorVersion || '-'}</Descriptions.Item>
           <Descriptions.Item label="分组">{executor.groupName || '-'}</Descriptions.Item>
           <Descriptions.Item label="标签">{executor.tags?.join(', ') || '-'}</Descriptions.Item>
           <Descriptions.Item label="最大并发">{executor.maxConcurrentTasks ?? '无限制'}</Descriptions.Item>
