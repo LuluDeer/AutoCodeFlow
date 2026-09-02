@@ -127,12 +127,44 @@ describe('WebhookChannel', () => {
     const channel = new WebhookChannel(
       makeConfig({ 'notification.webhookUrl': 'https://config-url.com' }),
     );
-    await channel.send(payload, 'https://override-url.com');
+    await channel.send(payload, 'https://example.com/override');
     expect(mockedAxios.post).toHaveBeenCalledWith(
-      'https://override-url.com',
+      'https://example.com/override',
       expect.any(Object),
       expect.any(Object),
     );
+  });
+
+  it('NOTIF-001: refuses loopback URL and skips silently', async () => {
+    const channel = new WebhookChannel(
+      makeConfig({ 'notification.webhookUrl': 'http://127.0.0.1:9000' }),
+    );
+    await expect(channel.send(payload)).resolves.toBeUndefined();
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it('NOTIF-001: refuses AWS metadata URL', async () => {
+    const channel = new WebhookChannel(
+      makeConfig({ 'notification.webhookUrl': 'http://169.254.169.254/latest' }),
+    );
+    await expect(channel.send(payload)).resolves.toBeUndefined();
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it('NOTIF-001: refuses private RFC1918 URL', async () => {
+    const channel = new WebhookChannel(
+      makeConfig({ 'notification.webhookUrl': 'http://10.0.0.5/admin' }),
+    );
+    await expect(channel.send(payload)).resolves.toBeUndefined();
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it('NOTIF-001: refuses non-http(s) schemes', async () => {
+    const channel = new WebhookChannel(
+      makeConfig({ 'notification.webhookUrl': 'file:///etc/passwd' }),
+    );
+    await expect(channel.send(payload)).resolves.toBeUndefined();
+    expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 
   it('includes level=info as default when level not provided', async () => {
