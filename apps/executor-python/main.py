@@ -12,7 +12,7 @@ from routers import execute, health, logs, config as config_router
 from admin_api import build_admin_api_url, check_admin_api_connectivity, get_admin_api_base_url
 from config import settings
 from scheduler import heartbeat_task, get_running_count, executor_started_at, executor_startup_id
-from auth import get_current_token, get_static_token
+from auth import get_current_token, get_static_token, require_token_enabled
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -64,6 +64,16 @@ async def lifespan(app: FastAPI):
     global _heartbeat_task
     # Check Admin API connectivity first so startup logs show clear diagnostics.
     await check_admin_api_connectivity()
+    # R4-C P2: warn loudly when the executor would run in dev-mode (no token).
+    # With REQUIRE_TOKEN=true the auth dependency instead refuses /api/*.
+    if not get_static_token():
+        if require_token_enabled():
+            logger.warning('REQUIRE_TOKEN=true but no executor token is configured — /api/* requests will be refused')
+        else:
+            logger.warning(
+                'No executor token configured — /api/* is open to unauthenticated callers (dev mode). '
+                'Set EXECUTOR_SHARED_TOKEN or set REQUIRE_TOKEN=true to refuse.'
+            )
     # Register to admin-api on startup
     await register_executor()
     # Start heartbeat background task
