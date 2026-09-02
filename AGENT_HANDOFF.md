@@ -10,22 +10,23 @@
 
 - 最新提交：见 `git log -1`
 - 测试基线（全绿）：
-  - admin-api **432/432** (jest, 32 suites) — 含新增 SSRF / atomic UPDATE / 流式 S3 单测
-  - executor-node **77/77** (jest)
+  - admin-api **518/518** (jest, 37 suites) — 第三轮 review 修复 +86 测试
+  - executor-node **79/79** (jest)
   - executor-python **44/44** (pytest)
   - admin-api / executor-node / acf-cli / mcp-server `tsc --noEmit` 全部通过
   - admin-web `npm run build` ✓ / lint 0 errors
-- 本轮新增（与上一轮一起提交，6 个 commit 落地）：
-  - **SSRF 防护层**：新增 `common/utils/safe-http.util.ts`（RFC1918 / loopback / 169.254 metadata / IPv6 fc00::/fe80::/ff00:: 全黑名单 + DNS 解析比对）；应用到 webhook channel 与 OpenAI/Ollama
-  - **shell entrypoint RCE 修复**：executor-node deploy.ts shell runtime 增加字符白名单 `[A-Za-z0-9._/ :\\-]+`，堵任意命令执行
-  - **认证加固**：jwt.strategy SEC-001、auth.service SEC-002/003、users M-1/M-3/M-4/H-3、login.dto L-1
-  - **执行回调**：TASK-001 严格 per-address 校验（不再共享 token 降级）
-  - **性能 / OOM**：
-    - S3LogStorage.getStream + MAX_LOG_BYTES 100MB 硬限；getExecutionLogs 流式分页
-    - backfillFullLogsFromExecutor 加 64MB maxContentLength + 边下边写
-    - storeLogLines 新增 startLineNumber 参数，多页 backfill 行号连续
-  - **Redis 锁 watchdog**：extendLock Lua + setInterval(ttlMs/3) 续期 + commandTimeout 3000
-  - **scheduler stale 扫描**：recoverStaleExecutions 限定 `startTime < LessThan(1h ago)` 避免每次全表扫描
+- 本轮（2026-09-02 第三轮，4 并行 stream + 集成 + 文档验收，7 个 commit）：
+  - `8bb3790` **调度器多实例（P0）**：Leader Election（`scheduler:leader` 锁 TTL 30s、TTL/2 续约校验、Redis 挂时 fail-open）+ `claimTaskTrigger` 条件 UPDATE 原子领取；recoverStaleExecutions 分批；TASK-007 依赖深度上限 64；TASK-008 SSE 并发上限（per-execution 4 / global 64，超限 503）；DB-001 task 软删除；DB-003 N+1 收敛
+  - `7851ebd` **通知/AI/Webhook**：NOTIF-002 摘要脱敏截断；NOTIF-003 silences 上限 1000 + 定时清理；AI-002 `fallback` 标记（task 层响应已透传）；APP-001 webhook 失败统一 401；APP-002 缺 API_BASE_URL fail-fast；ARCH-003 上传走 `UploadApplicationDto`
+  - `723efbf` **架构（ARCH-001..008）**：CORS 白名单 `CORS_ALLOWED_ORIGINS`；**/uploads 强制鉴权**（JWT 或 executor 共享 token）；全局限流 60/min；`REDIS_TLS`；`DB_SYNCHRONIZE` 显式；swagger 生产关闭；unhandledRejection 优雅退出；死代码 4 处删除
+  - `b1fbbef` **数据库（DB-002/004/005/006/007）**：日志保留清理服务（`LOG_RETENTION_DAYS`=30，每日 03:30 分批 DELETE）；application_version 唯一索引；迁移 2685→2694 重命名（幂等）；username varchar(128)；system_config.value 显式 text；migrations.spec 时间戳唯一性守卫
+  - `eadedca` **executor-node**：包下载携带 `Authorization: Bearer <共享token>`，跨主机重定向剥离 token
+  - `295e3b1` **文档验收阶段发现的 2 个代码 bug 修复**：configuration.ts 补注册 `sse` 配置节（此前 `SSE_MAX_STREAMS_*` env 覆盖是死代码，task.service.ts 读不到）+ CreateExecutorPackageDto 删除必填 `filePath`/`fileSize`（服务端从上传文件推导，真实 multipart 请求被全局 ValidationPipe 400 拒绝）
+  - 新增环境变量：`CORS_ALLOWED_ORIGINS`、`THROTTLE_LIMIT`/`THROTTLE_TTL`、`REDIS_TLS`/`REDIS_TLS_REJECT_UNAUTHORIZED`、`DB_SYNCHRONIZE`、`LOG_RETENTION_DAYS`、`SSE_MAX_STREAMS_PER_EXECUTION`/`SSE_MAX_STREAMS_GLOBAL`（自 `295e3b1` 起真正生效）；`API_BASE_URL` 上传包时必需
+- ⚠️ 部署注意事项：
+  - **/uploads 鉴权是破坏性变更**：executor-node 必须升级到含 `eadedca` 的版本，否则下载应用包 401
+  - DB-005 重命名迁移会在已有环境重跑一次（幂等 up/down，安全）；DB-002 唯一索引迁移重写 application_version 表，建议维护窗口执行
+  - SSE 并发计数为进程内：多实例实际上限 = 实例数 × 64；trigger 锁 TTL 未改（Leader 化后重复触发风险已大幅降低）
 - 工作区：干净
 
 ## 会话恢复速查
@@ -75,6 +76,8 @@ cd packages/mcp-server && npx tsc --noEmit
 2. **多执行器负载均衡实测**：单测覆盖 loadScore 选择与并发锁，但缺多实例真机验证——跑 2 个 executor + 高并发任务，看 runningTaskCount 是否均衡增长、callback 释放槽位是否正确。
 3. **CLI/MCP P1 补全**：applications CRUD、deploy upgrade/stop、task versions/rollback/compare、executors 详情、audit 列表（subagent 已列缺口清单）。
 4. **桌面执行器跨平台**：macOS Apple Silicon / WSL2 矩阵验证。
+5. **调度器 Leader Election 真机验证**：起 2 个 admin-api 实例 + 同一 Postgres/Redis，配置密集 cron 任务，确认无重复触发、Leader 切换（kill Leader）后 ≤30s 接管。
+6. **可观测性收尾**（REVIEW_MASTER §5.5）：调度 tick histogram / claimed-skipped-failed counter / 队列深度 gauge 接入 MetricsService；review docs 中 39 项此轮后基本清零，剩余为观测性与真机验证类。
 
 ## 未覆盖验证项
 

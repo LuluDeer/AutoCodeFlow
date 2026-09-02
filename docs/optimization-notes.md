@@ -146,3 +146,63 @@ executor 部署应用包时会按版本与部署 ID 写入不可变 release 目�
 - ⬜ 多执行器负载均衡行为
 - ⬜ 任务重试配置生效验证
 - ⬜ 大规模并发任务压测
+
+---
+
+## 六、第三轮审查修复完成清单（2026-09-02）
+
+> 本轮为代码审查驱动的修复（对应 `docs/PROGRESS-round3-2026-09-02.md`），按 Stream A–D 并行落地，
+> 全量回归：admin-api **518/518（37 suites）+ tsc ✓**，executor-node **79/79 + tsc ✓**。
+> 分组提交：`8bb3790`（A）/ `7851ebd`（B）/ `723efbf`（C）/ `b1fbbef`（D）/ `eadedca`（executor-node）。
+
+### 6.1 调度器与任务执行（Stream A）
+
+| 条目 | 状态 | 修复说明 |
+|------|:----:|----------|
+| Leader Election | ✅ | 调度器多实例 Leader Election：Redis 锁 key `scheduler:leader`（实际 Redis key `lock:scheduler:leader`），TTL 30s，watchdog 每 10s（TTL/3）续期，另设 15s（TTL/2）校验定时器；续期失败自动 demote，锁服务不可用时 fail-open 降级为 leader（不停调度），配合条件 claim 兜底防重复触发 |
+| TASK-006 | ✅ | 定时触发原子领取：`claimTaskTrigger` 条件 UPDATE（`WHERE status=... AND nextRunAt<=now`），多实例下同一触发只会被领取一次，与 Leader Election 形成双保险 |
+| TASK-003 | ✅ | reload 与 scheduleOne 竞态收敛：跨进程路径全部经过 leader / claim 保护 |
+| TASK-004 | ✅ | `recoverStaleExecutions` 由逐条 save 改为分批条件 UPDATE（`RETURNING` 批量取回，保留逐行终态保护语义） |
+| TASK-007 | ✅ | 任务依赖环检测增加深度上限 64（`MAX_DEPENDENCY_DEPTH`），超长依赖链直接抛 400，消除串行 N+1 DoS 向量 |
+| TASK-008 | ✅ | SSE 日志流两级并发上限：单 execution 4 个 / 全局 64 个连接，超限在写出响应头前返回 503；槽位幂等释放（正常结束 / abort / 异常 / 兜底双保险）。注：配置键 `sse.maxStreamsPerExecution` / `sse.maxStreamsGlobal` 尚未在 configuration.ts 注册，当前实际生效的只有默认值 4/64 |
+
+### 6.2 数据库（Stream D）
+
+| 条目 | 状态 | 修复说明 |
+|------|:----:|----------|
+| DB-001 | ✅ | task 软删除：`@DeleteDateColumn` + 迁移 `1717473142700`（TIMESTAMP 与既有列一致），TypeORM find 自动排除已删除行 |
+| DB-002 | ✅ | 执行日志保留期清理服务：`LOG_RETENTION_DAYS`（默认 30 天），每日 03:30 cron 分批删除（每批 ≤5000 行）防长事务，timer `unref()`；非法配置回退默认值并告警 |
+| DB-003 | ✅ | `getAllExecutions` N+1 收敛为 getManyAndCount + PK-IN 批量查询 |
+| DB-004 | ✅ | ApplicationVersion 增加 `(applicationId, version)` 唯一索引 + 迁移 |
+| DB-005 | ✅ | 重复迁移时间戳 1717473142685 重命名（→2694，含类名），顺序语义不变，幂等 up/down；并补充迁移时间戳唯一性守卫测试 |
+| DB-006 | ✅ | username 增加 `@Length(3,128)` + varchar(128) 迁移 |
+| DB-007 | ✅ | system_config.value 明确 varchar 长度 + 迁移 |
+
+### 6.3 通知 / AI / 部署（Stream B）
+
+| 条目 | 状态 | 修复说明 |
+|------|:----:|----------|
+| NOTIF-002 | ✅ | `sendAll` 日志不再记录通知原文，只记渠道类型 + 内容长度 + 净化后截断摘要（80 字符，脱敏） |
+| NOTIF-003 | ✅ | silences 内存 Map 增加 1000 条上限 + 60s 定期清理过期条目（interval `unref()`）；重启丢失作为可接受降级已在注释注明 |
+| AI-002 | ✅ | `suggestSchedule` AI 失败/解析异常不再静默：服务端记 warn 日志，响应携带 `fallback: true` 标记（`suggestedCron` 回退当前值），调用方可区分 AI 建议与回退值 |
+| APP-001 | ✅ | webhook 所有鉴权失败路径（应用不存在 / 未配置 secret / 签名缺失或错误 / 时间戳过期 / raw body 缺失）统一返回相同的 401 `"Webhook authentication failed"`，不再区分原因（防应用名枚举），具体原因仅记服务端日志 |
+| APP-002 | ✅ | 应用包上传不再静默回退 `http://localhost:PORT`：`API_BASE_URL` 缺失时 fail-fast 返回 500 并提示配置，避免存下 executor 不可达的 `packageUrl` |
+
+### 6.4 架构与基础设施（Stream C）⚠️ 含部署破坏性变更
+
+| 条目 | 状态 | 修复说明 |
+|------|:----:|----------|
+| ARCH-001 | ✅ | CORS 改为显式白名单：`CORS_ALLOWED_ORIGINS`（逗号分隔，兼容旧 `CORS_ORIGINS` 回退）；移除私有/LAN 网段自动放行；生产必填且禁止 localhost/127.0.0.1（fail-fast），开发环境未配置时仅放行 `http://localhost:*` / `http://127.0.0.1:*` |
+| ARCH-002 | ✅ | `/uploads` 静态文件增加鉴权中间件：管理台用户 JWT（同 jwt.secret、要求 `type=access`）或 executor 共享 token 二选一；公开前缀白名单 `PUBLIC_UPLOAD_PREFIXES` 当前为空（fail closed）。**破坏性变更：旧版本 executor-node 下载应用包会收到 401，必须同步升级** |
+| ARCH-003 | ✅ | multipart 上传绕过校验修复：`POST /applications/upload` 改用 `UploadApplicationDto`（`name` 必填 ≤100、`runtime` 可选 ≤50）经全局 ValidationPipe（whitelist + forbidNonWhitelisted），非法字段返回 400 |
+| ARCH-004 | ✅ | 全局限流默认由 100/min 收紧为 60/min，可用 `THROTTLE_LIMIT` / `THROTTLE_TTL` 覆盖；登录等敏感路由保留独立更严格限流 |
+| ARCH-005 | ✅ | Redis TLS 支持：`REDIS_TLS=true` 时 ioredis/BullMQ 连接启用 TLS；`REDIS_TLS_REJECT_UNAUTHORIZED`（默认 true）仅自签证书调试时关闭 |
+| ARCH-006 | ✅ | schema 同步改为显式 `DB_SYNCHRONIZE` 开关（默认 false，不再依赖 NODE_ENV 推断）；生产环境设 true 直接 fail-fast，变更一律走 migrations |
+| ARCH-007 | ✅ | 生产环境跳过 OpenAPI 文档构建并关闭 Swagger UI，server URL 不再泄露 |
+| ARCH-008 | ✅ | `unhandledRejection` / `uncaughtException` 不再直接 exit(1)：先 log 再走优雅关闭（drain 在途请求、关 DB 池、flush Bull），10s 超时兜底强制 exit(1) 保证编排器可重启容器 |
+
+### 6.5 集成收尾（负责人修复）
+
+- ✅ executor-node 下载应用包携带 `Authorization: Bearer <共享token>`，跨主机重定向时剥离凭证避免 token 外泄
+- ✅ suggestSchedule 的 `fallback` 标记在 controller 层透传
+- ✅ 删除无引用死代码 4 处（含 `error-codes.ts`——`docs/api-reference.md` 旧的「业务错误码 1001/1002…」表已随之失效，本次文档同步一并修正为 HTTP 状态码语义）
