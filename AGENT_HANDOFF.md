@@ -10,14 +10,23 @@
 
 - 最新提交：见 `git log -1`
 - 测试基线（全绿）：
-  - admin-api **424/424** (jest, 32 suites)
+  - admin-api **432/432** (jest, 32 suites) — 含新增 SSRF / atomic UPDATE / 流式 S3 单测
   - executor-node **77/77** (jest)
   - executor-python **44/44** (pytest)
   - admin-api / executor-node / acf-cli / mcp-server `tsc --noEmit` 全部通过
-  - admin-web `npm run build` ✓
-- 本轮落地（未提交）：LOG-11 S3 日志驱动、CLI/MCP P0 补全、admin-web lint 归零、executor.service bounded find
-- admin-web lint: **0 errors**（5 个 react-refresh / exhaustive-deps warning 保留）
-- 工作区：脏（按主题拆 commit 待执行）
+  - admin-web `npm run build` ✓ / lint 0 errors
+- 本轮新增（与上一轮一起提交，6 个 commit 落地）：
+  - **SSRF 防护层**：新增 `common/utils/safe-http.util.ts`（RFC1918 / loopback / 169.254 metadata / IPv6 fc00::/fe80::/ff00:: 全黑名单 + DNS 解析比对）；应用到 webhook channel 与 OpenAI/Ollama
+  - **shell entrypoint RCE 修复**：executor-node deploy.ts shell runtime 增加字符白名单 `[A-Za-z0-9._/ :\\-]+`，堵任意命令执行
+  - **认证加固**：jwt.strategy SEC-001、auth.service SEC-002/003、users M-1/M-3/M-4/H-3、login.dto L-1
+  - **执行回调**：TASK-001 严格 per-address 校验（不再共享 token 降级）
+  - **性能 / OOM**：
+    - S3LogStorage.getStream + MAX_LOG_BYTES 100MB 硬限；getExecutionLogs 流式分页
+    - backfillFullLogsFromExecutor 加 64MB maxContentLength + 边下边写
+    - storeLogLines 新增 startLineNumber 参数，多页 backfill 行号连续
+  - **Redis 锁 watchdog**：extendLock Lua + setInterval(ttlMs/3) 续期 + commandTimeout 3000
+  - **scheduler stale 扫描**：recoverStaleExecutions 限定 `startTime < LessThan(1h ago)` 避免每次全表扫描
+- 工作区：干净
 
 ## 会话恢复速查
 
