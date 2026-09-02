@@ -6,6 +6,7 @@ import { BullModule } from "@nestjs/bullmq";
 import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
 import { APP_GUARD } from "@nestjs/core";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
+import { RolesGuard } from "./common/guards/roles.guard";
 import * as Joi from "joi";
 import configuration from "./config/configuration";
 import { AuthModule } from "./modules/auth/auth.module";
@@ -82,6 +83,20 @@ import { RegistryModule } from "./modules/registry/registry.module";
         // ARCH-004: global rate-limit overrides (defaults in configuration.ts)
         THROTTLE_LIMIT: Joi.number().integer().min(1).default(60),
         THROTTLE_TTL: Joi.number().integer().min(1000).default(60000),
+
+        // F-6: opt-in — set true ONLY behind a trusted reverse proxy that
+        // overwrites X-Forwarded-For. Default false keeps req.ip equal to the
+        // socket address so the throttler tracker cannot be spoofed via XFF.
+        TRUST_PROXY: Joi.string().valid("true", "false").default("false"),
+
+        // F-3: executor-target SSRF policy. Default false blocks loopback /
+        // link-local / metadata targets for executor-bound outbound calls while
+        // still allowing private LAN ranges (docker-compose internal network,
+        // 10.x / 172.16-31.x / 192.168.x) required by the standard topology.
+        // true additionally allows loopback (same-host dev deployments).
+        EXECUTOR_ALLOW_PRIVATE_NETWORK: Joi.string()
+          .valid("true", "false")
+          .default("false"),
 
         // SSE log-stream concurrency caps (per-process, defaults in configuration.ts)
         SSE_MAX_STREAMS_PER_EXECUTION: Joi.number()
@@ -223,6 +238,11 @@ import { RegistryModule } from "./modules/registry/registry.module";
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     // A-03: apply JwtAuthGuard globally — use @Public() decorator to opt-out
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    // R4 F-1: apply RolesGuard globally (after JwtAuthGuard so req.user is
+    // populated). Routes without @Roles metadata stay available to any
+    // authenticated user; @Public() routes carry no @Roles metadata and are
+    // therefore unaffected. Enforcement is opt-in per route via @Roles(...).
+    { provide: APP_GUARD, useClass: RolesGuard },
   ],
 })
 export class AppModule implements NestModule {

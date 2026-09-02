@@ -83,6 +83,23 @@ describe("AuthService (__tests__)", () => {
       ).rejects.toThrow(UnauthorizedException);
     });
 
+    it("F-4: runs bcrypt.compare against a dummy hash when user does not exist (timing equalization)", async () => {
+      const compareSpy = jest
+        .spyOn(bcrypt, "compare")
+        .mockResolvedValue(false as never);
+      compareSpy.mockClear(); // other tests in this file share the same spy
+      usersService.findByUsername.mockResolvedValue(null);
+      await expect(
+        service.login({ username: "nobody", password: "x" }),
+      ).rejects.toThrow(UnauthorizedException);
+      // The compare must still happen (not short-circuited by user == null),
+      // against the module's pre-computed dummy hash so the unknown-user path
+      // costs the same bcrypt CPU time as the wrong-password path.
+      expect(compareSpy).toHaveBeenCalledTimes(1);
+      expect(compareSpy).toHaveBeenCalledWith("x", expect.stringMatching(/^\$2[aby]\$12\$/));
+      expect(usersService.recordLoginFailure).not.toHaveBeenCalled();
+    });
+
     it("throws UnauthorizedException on wrong password and increments failure counter", async () => {
       usersService.findByUsername.mockResolvedValue(mockUser as any);
       jest.spyOn(bcrypt, "compare").mockResolvedValue(false as never);

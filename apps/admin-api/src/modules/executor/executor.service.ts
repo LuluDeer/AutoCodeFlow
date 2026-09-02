@@ -7,7 +7,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
-import { randomBytes, timingSafeEqual } from "crypto";
+import { randomBytes, timingSafeEqual, createHash } from "crypto";
 import * as bcrypt from "bcrypt";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan, In } from "typeorm";
@@ -23,11 +23,23 @@ import { Task } from "../task/entities/task.entity";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
 import { SystemConfigService } from "../config/config.service";
+import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 
 @Injectable()
 export class ExecutorService {
   private readonly logger = new Logger(ExecutorService.name);
   private readonly protocol: string;
+
+  // F-5: short-lived in-process cache of SUCCESSFUL per-address token
+  // validations. Each validation otherwise runs bcrypt (cost 12, ~100-300ms
+  // of pure CPU), which made unauthenticated executor endpoints (callback,
+  // heartbeat) a CPU-DoS vector. Only positive results are cached (bounded by
+  // the fleet size), keyed by sha256(address|token) so raw tokens never sit in
+  // memory. Trade-off: after a token rotation the previous token stays valid
+  // for at most TOKEN_CACHE_TTL_MS.
+  private static readonly TOKEN_CACHE_TTL_MS = 60_000;
+  private static readonly TOKEN_CACHE_MAX = 1000;
+  private readonly tokenValidationCache = new Map<string, number>();
 
   constructor(
     @InjectRepository(Executor) private repo: Repository<Executor>,
@@ -230,12 +242,42 @@ export class ExecutorService {
       e && !didRestart && !hasStartupBaseline && incomingStartedAt,
     );
     if (!e) {
-      // Don't pass TypeORM's optimistic-lock `version` (number) as a column
-      // value when creating — it must start undefined so TypeORM initializes it.
-      const { version: _optimisticLock, ...createData } = data;
-      e = this.repo.create(createData as Partial<Executor>);
+      // F-7: create the entity from an explicit field whitelist — never pass
+      // caller-controlled data through repo.create(). A raw spread would let
+      // a client supply `id` (hijacking an existing row via save()'s
+      // update-on-pk semantics), `tokenHash` (auth backdoor), `status`,
+      // `runningTaskCount` (scheduling manipulation) or the optimistic-lock
+      // `version`. Server-owned columns are only ever written by
+      // rotateToken()/the service itself.
+      e = this.repo.create({
+        appName: data.appName,
+        address: data.address,
+        type: data.type as any,
+        executorVersion: data.version,
+        capabilities: capabilities,
+        maxConcurrentTasks: maxConcurrentTasks,
+        groupName: data.groupName,
+        tags: data.tags,
+        description: data.description,
+        executorStartedAt: incomingStartedAt ?? undefined,
+        executorStartupId: incomingStartupId ?? undefined,
+        status: ExecutorStatus.ONLINE,
+        lastHeartbeat: new Date(),
+      } as Partial<Executor>);
+      const saved = await this.repo.save(e);
+      // E-03: send notification on first registration
+      if (isFirstTime) {
+        this.notificationService
+          .notifyExecutorOnline(data.appName, data.address)
+          .catch((err) =>
+            this.logger.warn(
+              `Failed to send executor online notification: ${err?.message}`,
+            ),
+          );
+      }
+      return saved;
     }
-    // Update mutable fields on registration/re-registration
+    // Update mutable fields on re-registration (whitelisted per-field only)
     if (data.type) e.type = data.type as any;
     if (data.appName) e.appName = data.appName;
     if (data.version) e.executorVersion = data.version;
@@ -258,18 +300,7 @@ export class ExecutorService {
     if (incomingStartupId) e.executorStartupId = incomingStartupId;
     e.status = ExecutorStatus.ONLINE;
     e.lastHeartbeat = new Date();
-    const saved = await this.repo.save(e);
-    // E-03: send notification on first registration
-    if (isFirstTime) {
-      this.notificationService
-        .notifyExecutorOnline(data.appName, data.address)
-        .catch((err) =>
-          this.logger.warn(
-            `Failed to send executor online notification: ${err?.message}`,
-          ),
-        );
-    }
-    return saved;
+    return this.repo.save(e);
   }
 
   async heartbeat(
@@ -299,19 +330,46 @@ export class ExecutorService {
     const shouldRecoverMissingBaseline = Boolean(
       !didRestart && !hasStartupBaseline && incomingStartedAt,
     );
-    const { restartedAt, startupId, ...metricValues } = metrics;
+    const { restartedAt: _r, startupId: _s, ...metricValues } = metrics;
     if (didRestart) {
       await this.failRunningExecutionsAfterRestart(address);
     } else if (shouldRecoverMissingBaseline) {
       await this.failRunningExecutionsAfterRestart(address, incomingStartedAt);
     }
-    
+
     // R-P0-006: Use save() without version check for heartbeat to avoid frequent conflicts
     // Heartbeat updates are mostly metrics and don't need strict concurrency control
-    Object.assign(e, metricValues, {
-      status: ExecutorStatus.ONLINE,
-      lastHeartbeat: new Date(),
-    });
+    //
+    // F-2: assign metrics EXPLICITLY — never spread untrusted request fields
+    // onto the entity. A spread would let a caller overwrite server-owned
+    // columns such as tokenHash (persistent auth backdoor surviving shared-
+    // token rotation), the optimistic-lock version, maxConcurrentTasks or
+    // executorStartupId. Only the known metric columns below are writable via
+    // heartbeat.
+    const metricsWhitelist: Array<
+      | "cpuUsage"
+      | "memUsage"
+      | "diskUsage"
+      | "networkLatency"
+      | "runningTaskCount"
+      | "totalTaskCount"
+      | "failedTaskCount"
+    > = [
+      "cpuUsage",
+      "memUsage",
+      "diskUsage",
+      "networkLatency",
+      "runningTaskCount",
+      "totalTaskCount",
+      "failedTaskCount",
+    ];
+    for (const key of metricsWhitelist) {
+      if (metricValues[key] !== undefined) {
+        (e as any)[key] = metricValues[key];
+      }
+    }
+    e.status = ExecutorStatus.ONLINE;
+    e.lastHeartbeat = new Date();
     if (incomingStartedAt) e.executorStartedAt = incomingStartedAt;
     if (incomingStartupId) e.executorStartupId = incomingStartupId;
     const saved = await this.repo.save(e);
@@ -332,6 +390,9 @@ export class ExecutorService {
 
   /**
    * Update executor metadata (group, tags, description, maxConcurrentTasks).
+   * F-2 family: assign only the four allowed fields — the controller has
+   * already whitelisted, but the service stays self-contained so any other
+   * caller cannot smuggle entity columns (tokenHash, version, ...) through.
    */
   async update(
     id: string,
@@ -343,7 +404,11 @@ export class ExecutorService {
     },
   ): Promise<Executor> {
     const executor = await this.findOne(id);
-    Object.assign(executor, data);
+    if (data.groupName !== undefined) executor.groupName = data.groupName;
+    if (data.tags !== undefined) executor.tags = data.tags;
+    if (data.description !== undefined) executor.description = data.description;
+    if (data.maxConcurrentTasks !== undefined)
+      executor.maxConcurrentTasks = data.maxConcurrentTasks;
     return this.repo.save(executor);
   }
 
@@ -557,11 +622,16 @@ export class ExecutorService {
     execution.executorAddress = matched.address;
 
     try {
+      // F-3: SSRF guard — the address is executor-controlled (register/heartbeat),
+      // so block metadata/loopback/link-local targets before sending the
+      // authenticated request. A blocked address rolls back the slot below.
+      const url = this.getExecutorUrl(matched.address, "api/execute");
+      await assertSafeExecutorUrl(url);
       const sharedToken = await this.getSharedToken();
       const headers: Record<string, string> = {};
       if (sharedToken) headers["Authorization"] = `Bearer ${sharedToken}`;
       const resp = await axios.post(
-        this.getExecutorUrl(matched.address, "api/execute"),
+        url,
         { executionId: execution.id, task, params: execution.params },
         { timeout: ((task.timeout || 300) + 10) * 1000, headers },
       );
@@ -645,6 +715,9 @@ export class ExecutorService {
           executor.address,
           "api/execute",
         );
+        // F-3: SSRF guard per target — a poisoned address (metadata/loopback)
+        // fails its own dispatch without affecting the rest of the broadcast.
+        await assertSafeExecutorUrl(dispatchUrl);
         const resp = await axios.post(
           dispatchUrl,
           { executionId: execution.id, task, params: execution.params },
@@ -875,6 +948,21 @@ export class ExecutorService {
     address: string,
     presented: string,
   ): Promise<boolean> {
+    // F-5: positive-result cache — a repeated (address, token) pair within the
+    // TTL skips the bcrypt compare entirely. Negative results are never cached
+    // (a legitimate executor rotating its token must immediately succeed).
+    const cacheKey = createHash("sha256")
+      .update(`${address}|${presented}`)
+      .digest("hex");
+    const cachedAt = this.tokenValidationCache.get(cacheKey);
+    const now = Date.now();
+    if (
+      cachedAt !== undefined &&
+      now - cachedAt < ExecutorService.TOKEN_CACHE_TTL_MS
+    ) {
+      return true;
+    }
+
     // First try to validate against per-executor token
     const executor = await this.repo
       .createQueryBuilder("e")
@@ -884,7 +972,10 @@ export class ExecutorService {
 
     if (executor && executor.tokenHash) {
       const isValid = await bcrypt.compare(presented, executor.tokenHash);
-      if (isValid) return true;
+      if (isValid) {
+        this.rememberTokenValidation(cacheKey, now);
+        return true;
+      }
     }
 
     // Fall back to shared token — use timing-safe comparison to prevent timing attacks
@@ -893,7 +984,28 @@ export class ExecutorService {
     const sharedBuf = Buffer.from(shared, "utf8");
     const presentedBuf = Buffer.from(presented, "utf8");
     if (sharedBuf.length !== presentedBuf.length) return false;
-    return timingSafeEqual(sharedBuf, presentedBuf);
+    const sharedOk = timingSafeEqual(sharedBuf, presentedBuf);
+    if (sharedOk) {
+      this.rememberTokenValidation(cacheKey, now);
+    }
+    return sharedOk;
+  }
+
+  /** F-5: store a successful validation, evicting expired/oldest entries. */
+  private rememberTokenValidation(cacheKey: string, now: number): void {
+    if (this.tokenValidationCache.size >= ExecutorService.TOKEN_CACHE_MAX) {
+      for (const [k, t] of this.tokenValidationCache) {
+        if (now - t >= ExecutorService.TOKEN_CACHE_TTL_MS) {
+          this.tokenValidationCache.delete(k);
+        }
+      }
+      while (this.tokenValidationCache.size >= ExecutorService.TOKEN_CACHE_MAX) {
+        const oldest = this.tokenValidationCache.keys().next().value;
+        if (oldest === undefined) break;
+        this.tokenValidationCache.delete(oldest);
+      }
+    }
+    this.tokenValidationCache.set(cacheKey, now);
   }
 
   /**
@@ -907,7 +1019,6 @@ export class ExecutorService {
    */
   getInstallCmd(): {
     cmd: string;
-    curlCmd: string;
     token: string;
     adminApiUrl: string;
   } {
@@ -918,8 +1029,9 @@ export class ExecutorService {
     // copies the generated command into a shell (merged from install-cmd.controller).
     const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
     const cmd = `npx autoflow-executor --admin-url ${q(adminApiUrl)} --token ${q(sharedToken)}`;
-    const curlCmd = `curl -fsSL ${q(`${adminApiUrl}/executors/install.sh`)} | bash -s -- --admin-url ${q(adminApiUrl)} --token ${q(sharedToken)}`;
-    return { cmd, curlCmd, token: sharedToken, adminApiUrl };
+    // R4-D P1-3: 原 curlCmd 引用的 /executors/install.sh 后端从未提供，
+    // 复制执行必 404，已删除该字段（前端同步只展示 cmd）。
+    return { cmd, token: sharedToken, adminApiUrl };
   }
 
   /**

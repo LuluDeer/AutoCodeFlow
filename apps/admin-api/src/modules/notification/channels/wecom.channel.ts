@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import { BaseChannel, NotificationPayload } from "./base.channel";
+import { assertSafeHttpUrl } from "../../../common/utils/safe-http.util";
 
 @Injectable()
 export class WecomChannel extends BaseChannel {
@@ -15,6 +16,16 @@ export class WecomChannel extends BaseChannel {
   async send(p: NotificationPayload) {
     const url = this.config.get<string>("notification.wecomWebhook");
     if (!url) return;
+
+    // F-3: SSRF chokepoint (NOTIF-001), fail-open like WebhookChannel.
+    try {
+      await assertSafeHttpUrl(url);
+    } catch (err: unknown) {
+      this.logger.warn(
+        `[Wecom] SSRF-blocked URL ${url}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
 
     try {
       await this.withRetry(async () => {

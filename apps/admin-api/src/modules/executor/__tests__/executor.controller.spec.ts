@@ -5,6 +5,14 @@ import { ExecutorController } from "../executor.controller";
 import { ExecutorStatus, ExecutorType } from "../entities/executor.entity";
 
 jest.mock("axios");
+// F-3: reload-config now consults the SSRF layer before posting; stub it here
+// (this spec covers URL forwarding, not SSRF policy — see the security spec).
+jest.mock("../../../common/utils/safe-http.util", () => ({
+  ...jest.requireActual("../../../common/utils/safe-http.util"),
+  assertSafeExecutorUrl: jest
+    .fn()
+    .mockResolvedValue(new URL("http://fixture:8001/")),
+}));
 
 describe("ExecutorController", () => {
   const mockedAxios = axios as jest.Mocked<typeof axios>;

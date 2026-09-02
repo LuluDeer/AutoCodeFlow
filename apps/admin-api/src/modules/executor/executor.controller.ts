@@ -30,6 +30,7 @@ import { SystemConfigService } from "../config/config.service";
 import axios from "axios";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
+import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 
 @ApiTags("Executors")
 @Controller("executors")
@@ -99,7 +100,26 @@ export class ExecutorController {
       this.configService,
       this.systemConfigService,
     );
-    const executor = await this.svc.register(body);
+    // F-7: build the payload explicitly — the inline type above is compile-time
+    // only, so a raw `body` would carry client-supplied `id` / `tokenHash` /
+    // `status` / `runningTaskCount` / optimistic-lock `version` straight into
+    // repo.create() and let a caller hijack or overwrite arbitrary columns.
+    const payload = {
+      appName: body.appName,
+      address: body.address,
+      type: body.type,
+      version: body.version,
+      capabilities: body.capabilities,
+      runtime: body.runtime,
+      maxConcurrentTasks: body.maxConcurrentTasks,
+      maxConcurrent: body.maxConcurrent,
+      groupName: body.groupName,
+      tags: body.tags,
+      description: body.description,
+      restartedAt: body.restartedAt,
+      startupId: body.startupId,
+    };
+    const executor = await this.svc.register(payload);
     // Issue a fresh per-executor token on every registration so the executor
     // can authenticate future heartbeats without the shared token.
     const { token } = await this.svc.rotateToken(executor.id);
@@ -132,7 +152,11 @@ export class ExecutorController {
       address: string;
       cpuUsage?: number;
       memUsage?: number;
+      diskUsage?: number;
+      networkLatency?: number;
       runningTaskCount?: number;
+      totalTaskCount?: number;
+      failedTaskCount?: number;
       restartedAt?: string | null;
       startupId?: string | null;
     },
@@ -143,7 +167,23 @@ export class ExecutorController {
     if (!isValid) {
       throw new UnauthorizedException("Invalid executor token");
     }
-    return this.svc.heartbeat(body.address, body);
+    // F-2: forward only the whitelisted metric fields. A raw `body` would let
+    // an authenticated executor overwrite server-owned columns such as
+    // tokenHash (persistent auth backdoor surviving shared-token rotation),
+    // runningTaskCount (scheduling manipulation) or the optimistic-lock
+    // version. The service applies a second whitelist of its own.
+    const metrics = {
+      cpuUsage: body.cpuUsage,
+      memUsage: body.memUsage,
+      diskUsage: body.diskUsage,
+      networkLatency: body.networkLatency,
+      runningTaskCount: body.runningTaskCount,
+      totalTaskCount: body.totalTaskCount,
+      failedTaskCount: body.failedTaskCount,
+      restartedAt: body.restartedAt,
+      startupId: body.startupId,
+    };
+    return this.svc.heartbeat(body.address, metrics);
   }
 
   @ApiBearerAuth("JWT")
@@ -293,7 +333,15 @@ export class ExecutorController {
       maxConcurrentTasks?: number | null;
     },
   ) {
-    return this.svc.update(id, body);
+    // F-2 family: pick only the metadata fields — the inline type does not
+    // strip extra runtime properties, and service.update must never receive
+    // arbitrary entity columns (tokenHash, version, status, ...) from the wire.
+    return this.svc.update(id, {
+      groupName: body.groupName,
+      tags: body.tags,
+      description: body.description,
+      maxConcurrentTasks: body.maxConcurrentTasks,
+    });
   }
 
   @ApiBearerAuth("JWT")
@@ -338,12 +386,18 @@ export class ExecutorController {
     const token = await this.svc.rotateToken(id);
     const headers = { Authorization: `Bearer ${token.token}` };
     const url = this.svc.getExecutorUrl(executor.address, "api/config/reload");
+    // F-3: SSRF guard — never send the freshly rotated (per-executor) token to
+    // a metadata/loopback/link-local target. Note the rotateToken() call above
+    // invalidates the previous token, so a blocked address still costs the
+    // executor one re-login; that is preferable to exfiltrating the token.
+    await assertSafeExecutorUrl(url);
     try {
       const resp = await axios.post(url, body, { headers, timeout: 10_000 });
       return resp.data;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new UnauthorizedException(`Failed to reach executor: ${msg}`);
+    } catch {
+      // F-8: fixed message — do not echo axios err.message (leaks internal
+      // topology / provides a blind SSRF oracle via connect-error text).
+      throw new UnauthorizedException("Failed to reach executor");
     }
   }
 

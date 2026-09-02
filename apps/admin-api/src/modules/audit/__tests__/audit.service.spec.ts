@@ -86,6 +86,61 @@ describe("AuditService", () => {
       );
     });
 
+    // R4 P1-2: username / startTime / endTime filters (audit page search bar)
+    it("applies username fuzzy filter", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ username: "admin" });
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        "log.username ILIKE :username",
+        { username: "%admin%" },
+      );
+    });
+
+    it("applies startTime/endTime range filter", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      const start = "2026-01-01T00:00:00.000Z";
+      const end = "2026-01-31T23:59:59.000Z";
+      await service.findAll({ startTime: start, endTime: end });
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        "log.createdAt >= :startTime",
+        { startTime: new Date(start) },
+      );
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        "log.createdAt <= :endTime",
+        { endTime: new Date(end) },
+      );
+    });
+
+    it("does not add username/time filters when absent", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({});
+      expect(qbMock.andWhere).not.toHaveBeenCalled();
+    });
+
     it("rejects invalid action characters", async () => {
       await expect(service.findAll({ action: "inject'xss" })).rejects.toThrow(
         'Invalid action parameter',

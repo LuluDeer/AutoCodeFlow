@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import { BaseChannel, NotificationPayload } from "./base.channel";
+import { assertSafeHttpUrl } from "../../../common/utils/safe-http.util";
 
 @Injectable()
 export class DingtalkChannel extends BaseChannel {
@@ -15,6 +16,18 @@ export class DingtalkChannel extends BaseChannel {
   async send(p: NotificationPayload) {
     const url = this.config.get<string>("notification.dingtalkWebhook");
     if (!url) return;
+
+    // F-3: the webhook URL is operator/user-configured — apply the same SSRF
+    // chokepoint as WebhookChannel (NOTIF-001). Fail-open: skip the send
+    // instead of raising, matching the WebhookChannel behavior.
+    try {
+      await assertSafeHttpUrl(url);
+    } catch (err: unknown) {
+      this.logger.warn(
+        `[Dingtalk] SSRF-blocked URL ${url}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
 
     try {
       await this.withRetry(async () => {

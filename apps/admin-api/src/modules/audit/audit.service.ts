@@ -55,6 +55,9 @@ export class AuditService {
   async exportCsv(options: {
     action?: string;
     resource?: string;
+    username?: string;
+    startTime?: string;
+    endTime?: string;
     userId?: number;
   }): Promise<string> {
     const { action, resource, userId } = options;
@@ -73,6 +76,7 @@ export class AuditService {
     }
     if (resource) qb.andWhere("log.resource = :resource", { resource });
     if (userId) qb.andWhere("log.userId = :userId", { userId });
+    this.applyExtraFilters(qb, options);
 
     // Cap export at 10 000 rows; select raw columns only to avoid loading
     // entities and the heavy jsonb `detail` column into memory
@@ -123,6 +127,9 @@ export class AuditService {
     pageSize?: number;
     action?: string;
     resource?: string;
+    username?: string;
+    startTime?: string;
+    endTime?: string;
     userId?: number;
   }): Promise<{ data: AuditLog[]; total: number }> {
     const { page = 1, pageSize = 20, action, resource, userId } = options;
@@ -147,6 +154,7 @@ export class AuditService {
 
     if (resource) qb.andWhere("log.resource = :resource", { resource });
     if (userId) qb.andWhere("log.userId = :userId", { userId });
+    this.applyExtraFilters(qb, options);
     // Q12: cap pageSize to prevent full-table scans regardless of caller input
     const safePageSize = Math.min(pageSize, 100);
     const [data, total] = await qb
@@ -154,5 +162,31 @@ export class AuditService {
       .take(safePageSize)
       .getManyAndCount();
     return { data, total };
+  }
+
+  /**
+   * R4 P1-2: shared username / time-range filters, used by both findAll and
+   * exportCsv so the CSV export honours the same filter set as the list page.
+   * All values are bound as query parameters (no string interpolation).
+   */
+  private applyExtraFilters(
+    qb: import("typeorm").SelectQueryBuilder<AuditLog>,
+    options: { username?: string; startTime?: string; endTime?: string },
+  ): void {
+    if (options.username) {
+      qb.andWhere("log.username ILIKE :username", {
+        username: `%${options.username}%`,
+      });
+    }
+    if (options.startTime) {
+      qb.andWhere("log.createdAt >= :startTime", {
+        startTime: new Date(options.startTime),
+      });
+    }
+    if (options.endTime) {
+      qb.andWhere("log.createdAt <= :endTime", {
+        endTime: new Date(options.endTime),
+      });
+    }
   }
 }
