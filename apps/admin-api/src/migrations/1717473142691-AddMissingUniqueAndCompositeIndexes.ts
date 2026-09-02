@@ -43,9 +43,23 @@ export class AddMissingUniqueAndCompositeIndexes1717473142691
       WHERE "status" = 'running'
     `);
 
+    // app_deployments 建表迁移缺失（实体 app-deployment.entity.ts 无对应
+    // CREATE TABLE，见 1788274394055-CreateAppDeploymentsTable 补偿迁移）。
+    // 此处按表存在性守卫：表不存在时跳过（全新库由补偿迁移建表并补建本索引），
+    // 表已存在的存量库正常建索引，避免 `relation "app_deployments" does not exist`。
     await queryRunner.query(`
-      CREATE INDEX IF NOT EXISTS "idx_app_deployments_executor_address_status"
-      ON "app_deployments" ("executorAddress", "status")
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.tables
+          WHERE table_schema = current_schema()
+            AND table_name = 'app_deployments'
+        ) THEN
+          CREATE INDEX IF NOT EXISTS "idx_app_deployments_executor_address_status"
+          ON "app_deployments" ("executorAddress", "status");
+        END IF;
+      END
+      $$;
     `);
   }
 
