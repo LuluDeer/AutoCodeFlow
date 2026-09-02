@@ -65,24 +65,51 @@ export class ExecutionCallbackController {
     if (callbacks.length > 100) {
       throw new BadRequestException("Callback batch size cannot exceed 100");
     }
+    if (callbacks.length === 0) {
+      throw new BadRequestException("Callback batch is empty");
+    }
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const executorAddresses = [
-      ...new Set(callbacks.map((item) => item.executorAddress).filter(Boolean)),
-    ] as string[];
-    if (executorAddresses.length === 1 && token) {
+    if (!token) {
+      throw new UnauthorizedException("Missing executor token");
+    }
+
+    // TASK-001: per-item per-address token check — a single shared token
+    // must NOT be allowed to confirm callbacks for executions belonging
+    // to multiple executors, since that would bypass per-executor auth.
+    // Each item carries its own executorAddress; we verify the bearer
+    // token against the executor's stored hash and additionally ensure
+    // every claimed executorAddress actually matches an execution row
+    // (the service layer enforces the latter with executionAddress guards).
+    const seenAddresses = new Set<string>();
+    for (const item of callbacks) {
+      const addr = item.executorAddress?.trim();
+      if (!addr) {
+        throw new UnauthorizedException(
+          "executorAddress is required on every callback item",
+        );
+      }
+      if (seenAddresses.has(addr)) continue;
+      seenAddresses.add(addr);
       const isValid = await this.executorService.validateTokenByAddress(
-        executorAddresses[0],
+        addr,
         token,
       );
       if (!isValid) {
-        throw new UnauthorizedException("Invalid executor token");
+        // Fall back to the shared/legacy token sources only when there is
+        // exactly ONE unique executor in the batch. Multi-executor batches
+        // can never use a shared token.
+        if (seenAddresses.size === 1) {
+          await verifyExecutorToken(
+            auth,
+            this.configService,
+            this.systemConfigService,
+          );
+        } else {
+          throw new UnauthorizedException(
+            `Invalid executor token for address ${addr}`,
+          );
+        }
       }
-    } else {
-      await verifyExecutorToken(
-        auth,
-        this.configService,
-        this.systemConfigService,
-      );
     }
     const results = await this.taskService.handleCallback(callbacks);
     return { results };
