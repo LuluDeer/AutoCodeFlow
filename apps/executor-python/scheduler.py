@@ -65,7 +65,7 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
     # OPS-03: propagate trace ID for cross-service tracing
     if trace_id:
         headers['X-Trace-Id'] = trace_id
-    cpu = psutil.cpu_percent(interval=1)
+    cpu = await asyncio.to_thread(psutil.cpu_percent, 1)
     mem = psutil.virtual_memory().percent
     response = await client.post(
         build_admin_api_url('/executors/heartbeat'),
