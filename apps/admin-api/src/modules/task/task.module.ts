@@ -10,6 +10,7 @@ import { Task } from "./entities/task.entity";
 import { TaskExecution } from "./entities/task-execution.entity";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
+import { LogRetentionCleanupService } from "./log-retention/log-retention-cleanup.service"; // Stream D/DB-002
 import { ExecutorModule } from "../executor/executor.module";
 import { AiModule } from "../ai/ai.module";
 import { NotificationModule } from "../notification/notification.module";
@@ -38,7 +39,7 @@ import { SystemConfigModule } from "../config/config.module";
     TaskBatchController,
     ExecutionCallbackController,
   ],
-  providers: [TaskService, TaskProcessor],
+  providers: [TaskService, TaskProcessor, LogRetentionCleanupService],
   exports: [TaskService],
 })
 export class TaskModule {}
