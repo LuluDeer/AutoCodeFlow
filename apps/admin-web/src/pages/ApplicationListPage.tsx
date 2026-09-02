@@ -132,6 +132,9 @@ export default function ApplicationListPage() {
     try {
       const values = await form.validateFields();
       if (editingApp) {
+        // name 为不可变标识：UpdateApplicationDto 未声明 name 字段，
+        // 带上会被全局 ValidationPipe（forbidNonWhitelisted）以 400 拒绝
+        delete (values as { name?: string }).name;
         await applicationsApi.update(editingApp.id, values);
         message.success('应用已更新');
       } else {
@@ -403,11 +406,11 @@ export default function ApplicationListPage() {
               { pattern: /^[a-zA-Z0-9_-]+$/, message: '只允许字母、数字、下划线和连字符' },
             ]}
             tooltip={{
-              title: '全局唯一标识符，建议使用英文，如 order-service。只允许字母、数字、下划线、连字符。',
+              title: '全局唯一标识符，建议使用英文，如 order-service。只允许字母、数字、下划线、连字符。创建后不可修改。',
               icon: <InfoCircleOutlined />,
             }}
           >
-            <Input placeholder="my-autocodeflow-app" />
+            <Input placeholder="my-autocodeflow-app" disabled={!!editingApp} />
           </Form.Item>
 
           <Form.Item

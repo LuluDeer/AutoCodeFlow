@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Descriptions, Badge, Card, Table, Button, Space, Tag, Typography, message, Modal, Spin, Empty,
-  Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select, Progress, Statistic, Alert,
+  Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select, Statistic, Alert,
 } from 'antd';
 import {
   ArrowLeftOutlined, SyncOutlined, ReloadOutlined, GithubOutlined,
@@ -54,47 +54,40 @@ function AiAnalysisTab({ appId }: { appId: string }) {
           <Row gutter={16} style={{ marginBottom: 24 }}>
             <Col span={8}>
               <Card size="small">
-                <Statistic title="关联任务数" value={report.taskCount} />
+                <Statistic title="关联任务数" value={report.stats.totalTasks} />
               </Card>
             </Col>
             <Col span={8}>
               <Card size="small">
                 <Statistic
-                  title="成功率"
-                  value={(report.successRate * 100).toFixed(1)}
+                  title="平均成功率"
+                  value={report.stats.avgSuccessRate}
                   suffix="%"
-                  styles={{ content: { color: report.successRate >= 0.9 ? '#3f8600' : report.successRate >= 0.7 ? '#d48806' : '#cf1322' } }}
+                  styles={{ content: { color: report.stats.avgSuccessRate >= 90 ? '#3f8600' : report.stats.avgSuccessRate >= 70 ? '#d48806' : '#cf1322' } }}
                 />
               </Card>
             </Col>
             <Col span={8}>
               <Card size="small">
-                <Statistic title="平均耗时" value={report.avgDuration ? `${(report.avgDuration / 1000).toFixed(1)}s` : '-'} />
+                <Statistic title="平均耗时" value={report.stats.avgDuration ? `${(report.stats.avgDuration / 1000).toFixed(1)}s` : '-'} />
               </Card>
             </Col>
           </Row>
-          {report.successRate < 1 && (
-            <Progress
-              percent={Math.round(report.successRate * 100)}
-              strokeColor={report.successRate >= 0.9 ? '#52c41a' : report.successRate >= 0.7 ? '#faad14' : '#ff4d4f'}
-              style={{ marginBottom: 16 }}
-            />
-          )}
-          {(report.failedTasks?.length ?? 0) > 0 && (
+          {(report.stats.criticalTasks?.length ?? 0) > 0 && (
             <Card size="small" title="高失败率任务" style={{ marginBottom: 16 }}>
-              {report.failedTasks.map(t => (
-                <div key={t.id} style={{ marginBottom: 4 }}>
-                  <Tag color="red">{(t.failureRate * 100).toFixed(1)}%</Tag>
-                  <span>{t.name}</span>
+              {report.stats.criticalTasks.map((name) => (
+                <div key={name} style={{ marginBottom: 4 }}>
+                  <Tag color="red">低成功率</Tag>
+                  <span>{name}</span>
                 </div>
               ))}
             </Card>
           )}
-          {report.aiAnalysis && (
+          {report.analysis && (
             <Alert
               type="info"
               message="AI 分析结论"
-              description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{report.aiAnalysis}</pre>}
+              description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{report.analysis}</pre>}
               showIcon
               icon={<RobotOutlined />}
             />
@@ -263,7 +256,7 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
 
   useEffect(() => {
     form.setFieldsValue({
-      name: app.name, description: app.description, version: app.version,
+      description: app.description, version: app.version,
       runtime: app.runtime, gitRepo: app.gitRepo, gitBranch: app.gitBranch,
       gitCommit: app.gitCommit, entrypoint: app.entrypoint,
     });
@@ -273,6 +266,9 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
     try {
       const values = await form.validateFields();
       setSaving(true);
+      // name 为不可变标识：UpdateApplicationDto 未声明 name 字段，
+      // 带上会被全局 ValidationPipe（forbidNonWhitelisted）以 400 拒绝
+      delete (values as { name?: string }).name;
       const updated = await applicationsApi.update(app.id, values);
       message.success('已保存');
       onUpdated(updated);
@@ -285,9 +281,9 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
   return (
     <Card title="编辑应用" style={{ maxWidth: 620 }}>
       <Form form={form} layout="vertical">
-        <Form.Item name="name" label="名称"
-          rules={[{ required: true }, { pattern: /^[a-zA-Z0-9_-]+$/, message: '只允许字母、数字、下划线、连字符' }]}>
-          <Input />
+        {/* name 为不可变标识（UpdateApplicationDto 不接受 name），只读展示 */}
+        <Form.Item label="名称" tooltip="应用名称为全局唯一标识，创建后不可修改">
+          <Input value={app.name} disabled />
         </Form.Item>
         <Form.Item name="description" label="描述">
           <Input.TextArea rows={2} />

@@ -117,12 +117,12 @@ server.tool(
       .record(z.unknown())
       .optional()
       .describe('Optional runtime parameters to pass to the task'),
-    executorId: z.string().optional().describe('Pin to a specific executor (optional)'),
+    // NOTE: no executorId parameter — TriggerTaskDto only accepts `params`
+    // (executor pinning is not supported by the backend; see roadmap).
   },
-  async ({ taskId, params, executorId }) => {
+  async ({ taskId, params }) => {
     const data = await apiRequest<unknown>('POST', `/tasks/${taskId}/trigger`, {
       ...(params ? { params } : {}),
-      ...(executorId ? { executorId } : {}),
     });
     return {
       content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],

@@ -62,11 +62,11 @@ export default function ExecutorListPage() {
   const [installCmdModal, setInstallCmdModal] = useState(false);
 
   const { data: groups } = useRequest(executorsApi.getGroups, { cacheKey: 'executor-groups' });
-  const [installCmd, setInstallCmd] = useState<{ cmd: string; curlCmd: string } | null>(null);
+  const [installCmd, setInstallCmd] = useState<{ cmd: string } | null>(null);
 
   const fetchInstallCmd = async () => {
     try {
-      const res = await client.get<{ cmd: string; curlCmd: string }>('/executors/install-cmd');
+      const res = await client.get<{ cmd: string }>('/executors/install-cmd');
       setInstallCmd(res);
       setInstallCmdModal(true);
     } catch {
@@ -303,21 +303,12 @@ export default function ExecutorListPage() {
         {installCmd && (
           <Space orientation="vertical" style={{ width: '100%' }} size={16}>
             <div>
-              <Typography.Text strong>本地安装（已有源码）</Typography.Text>
+              <Typography.Text strong>安装并启动执行器</Typography.Text>
               <Typography.Paragraph
                 code copyable={{ text: installCmd.cmd }}
                 style={{ marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 6 }}
               >
                 {installCmd.cmd}
-              </Typography.Paragraph>
-            </div>
-            <div>
-              <Typography.Text strong>远程一键安装（curl）</Typography.Text>
-              <Typography.Paragraph
-                code copyable={{ text: installCmd.curlCmd }}
-                style={{ marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 6, wordBreak: 'break-all' }}
-              >
-                {installCmd.curlCmd}
               </Typography.Paragraph>
             </div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
