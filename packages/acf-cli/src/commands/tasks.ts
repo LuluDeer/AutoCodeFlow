@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, post, patch, del } from '../client';
+import { get, post, patch, del, formatApiError } from '../client';
 
 interface Task {
   id: string;
@@ -44,18 +44,19 @@ export function tasksCommand(): Command {
   // acf task list
   cmd.command('list')
     .description('List all tasks')
-    .option('-s, --status <status>', 'Filter by status (active|paused|disabled)')
-    .option('-k, --keyword <keyword>', 'Search by name')
+    .option('-s, --status <status>', 'Filter by status (active|paused)')
+    .option('-k, --keyword <keyword>', 'Search by name (sent as the `name` query param)')
     .option('-p, --page <n>', 'Page number', '1')
     .option('-n, --page-size <n>', 'Items per page', '20')
     .action(async (opts) => {
       const spinner = ora('Fetching tasks…').start();
       try {
+        // ListTasksQueryDto has `name` (no `keyword`)
         const data = await get<PaginatedTasks>('/tasks', {
           page: opts.page,
           pageSize: opts.pageSize,
           status: opts.status,
-          keyword: opts.keyword,
+          name: opts.keyword,
         });
         spinner.stop();
         const table = new Table({
@@ -70,7 +71,7 @@ export function tasksCommand(): Command {
         console.log(chalk.gray(`Total: ${data.total}  page ${data.page}/${Math.ceil(data.total / data.pageSize)}`));
       } catch (e: unknown) {
         spinner.fail('Failed to list tasks');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -91,7 +92,7 @@ export function tasksCommand(): Command {
         console.log('  Cron    :', t.cronExpression ?? '-');
       } catch (e: unknown) {
         spinner.fail('Failed');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -112,7 +113,7 @@ export function tasksCommand(): Command {
         }
       } catch (e: unknown) {
         spinner.fail('Failed to trigger');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -146,7 +147,7 @@ export function tasksCommand(): Command {
         console.log(table.toString());
       } catch (e: unknown) {
         spinner.fail('Failed');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -190,7 +191,7 @@ export function tasksCommand(): Command {
         }
       } catch (e: unknown) {
         spinner.fail('Failed to fetch logs');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -207,7 +208,7 @@ export function tasksCommand(): Command {
         console.log(result.aiAnalysis || 'No analysis available (AI not configured).');
       } catch (e: unknown) {
         spinner.fail('Analysis failed');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -229,7 +230,7 @@ export function tasksCommand(): Command {
         console.log(result.reasoning);
       } catch (e: unknown) {
         spinner.fail('Failed');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -248,7 +249,92 @@ export function tasksCommand(): Command {
         console.log(`  Total runs   : ${s.totalRuns}`);
       } catch (e: unknown) {
         spinner.fail('Failed');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf task versions <id>
+  cmd.command('versions <id>')
+    .description('List historical versions of a task')
+    .action(async (id) => {
+      const spinner = ora('Fetching task versions…').start();
+      try {
+        const versions = await get<Array<{ id: string; version: string; gitCommit?: string; createdBy?: string; description?: string; createdAt: string }>>(
+          `/tasks/${id}/versions`,
+        );
+        spinner.stop();
+        const table = new Table({
+          head: ['Version', 'Commit', 'Created By', 'Created', 'Description'],
+          colWidths: [12, 14, 16, 25, 30],
+          style: { head: ['cyan'] },
+        });
+        for (const v of versions) {
+          table.push([
+            v.version,
+            v.gitCommit?.slice(0, 12) ?? '-',
+            v.createdBy ?? '-',
+            new Date(v.createdAt).toLocaleString(),
+            v.description ?? '-',
+          ]);
+        }
+        console.log(table.toString());
+      } catch (e: unknown) {
+        spinner.fail('Failed to list versions');
+        console.error(chalk.red(formatApiError(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf task rollback <id>
+  cmd.command('rollback <id>')
+    .description('Roll a task back to a specific historical version snapshot')
+    .requiredOption('--version <versionId>', 'Version ID to roll back to (see: acf task versions <id>)')
+    .action(async (id, opts) => {
+      const spinner = ora('Rolling back task…').start();
+      try {
+        const t = await post<Task>(`/tasks/${id}/versions/${opts.version}/rollback`);
+        spinner.succeed(`Task rolled back: ${t.id}`);
+        console.log(chalk.gray(`  name: ${t.name}  status: ${statusColor(t.status)}`));
+      } catch (e: unknown) {
+        spinner.fail('Failed to roll back');
+        console.error(chalk.red(formatApiError(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf task compare <id> <versionId1> <versionId2>
+  cmd.command('compare <id> <versionId1> <versionId2>')
+    .description('Diff two task versions (shows fields whose values differ)')
+    .action(async (id, versionId1, versionId2) => {
+      const spinner = ora('Comparing versions…').start();
+      try {
+        const diff = await get<Record<string, { old: unknown; new: unknown }>>(
+          `/tasks/${id}/versions/${versionId1}/compare/${versionId2}`,
+        );
+        spinner.stop();
+        const keys = Object.keys(diff ?? {});
+        if (keys.length === 0) {
+          console.log(chalk.green('No differences between the two versions.'));
+          return;
+        }
+        const table = new Table({
+          head: ['Field', 'Version 1', 'Version 2'],
+          colWidths: [24, 38, 38],
+          style: { head: ['cyan'] },
+          wordWrap: true,
+        });
+        for (const k of keys) {
+          table.push([
+            k,
+            JSON.stringify(diff[k].old) ?? '-',
+            JSON.stringify(diff[k].new) ?? '-',
+          ]);
+        }
+        console.log(table.toString());
+      } catch (e: unknown) {
+        spinner.fail('Failed to compare versions');
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -271,7 +357,7 @@ export function tasksCommand(): Command {
         console.log(chalk.gray(`  name: ${t.name}  status: ${statusColor(t.status)}`));
       } catch (e: unknown) {
         spinner.fail('Failed to create task');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -294,7 +380,7 @@ export function tasksCommand(): Command {
         console.log(chalk.gray(`  name: ${t.name}  status: ${statusColor(t.status)}`));
       } catch (e: unknown) {
         spinner.fail('Failed to update task');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -320,7 +406,7 @@ export function tasksCommand(): Command {
         spinner.succeed(`Task ${id} deleted`);
       } catch (e: unknown) {
         spinner.fail('Failed to delete task');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -336,7 +422,7 @@ export function tasksCommand(): Command {
         console.log(chalk.gray(`  status: ${statusColor(t.status)}`));
       } catch (e: unknown) {
         spinner.fail('Failed to pause task');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -352,7 +438,7 @@ export function tasksCommand(): Command {
         console.log(chalk.gray(`  status: ${statusColor(t.status)}`));
       } catch (e: unknown) {
         spinner.fail('Failed to resume task');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
@@ -369,7 +455,7 @@ export function tasksCommand(): Command {
         spinner.succeed(r.message || 'Execution cancelled');
       } catch (e: unknown) {
         spinner.fail('Failed to cancel execution');
-        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        console.error(chalk.red(formatApiError(e)));
         process.exit(1);
       }
     });
