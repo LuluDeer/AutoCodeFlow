@@ -73,6 +73,12 @@ logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
 
   // Clamp negatives — slice(-1) would silently return just the last line.
   const fromLine = Math.max(0, parseInt(String(req.query.fromLine ?? '0'), 10) || 0);
+  // LOG-01 admin backfill pages with limit=2000 and relies on hasMore to
+  // advance; returning the entire tail at once used to blow up both ends'
+  // memory on large logs. Clamp to the admin-side page size.
+  const MAX_LIMIT = 2000;
+  const requestedLimit = parseInt(String(req.query.limit ?? '500'), 10) || 500;
+  const limit = Math.min(Math.max(requestedLimit, 1), MAX_LIMIT);
 
   try {
     const raw = fs.readFileSync(logFile, 'utf-8');
@@ -82,8 +88,9 @@ logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
       allLines.pop();
     }
     const total = allLines.length;
-    const sliced = allLines.slice(fromLine);
-    res.json({ lines: sliced, totalLines: total, hasMore: false });
+    const sliced = allLines.slice(fromLine, fromLine + limit);
+    const hasMore = fromLine + sliced.length < total;
+    res.json({ lines: sliced, totalLines: total, hasMore });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Failed to read log file ${logFile}: ${msg}`);
