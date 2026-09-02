@@ -24,6 +24,15 @@ export default () => ({
     ttl: parseInt(process.env.THROTTLE_TTL || "60000", 10),
     limit: parseInt(process.env.THROTTLE_LIMIT || "60", 10),
   },
+  // SSE 日志流并发上限（进程内计数）：单 execution / 全局。
+  // task.service.ts 读取本配置节；此前 sse 节从未注册，env 覆盖是死代码，现补齐。
+  sse: {
+    maxStreamsPerExecution: parseInt(
+      process.env.SSE_MAX_STREAMS_PER_EXECUTION || "4",
+      10,
+    ),
+    maxStreamsGlobal: parseInt(process.env.SSE_MAX_STREAMS_GLOBAL || "64", 10),
+  },
   jwt: {
     // S4: fail-fast on weak/missing secrets — throw at startup rather than silently using defaults
     secret: (() => {
