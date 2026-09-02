@@ -313,6 +313,47 @@ export class TaskController {
     return this.taskService.getAllExecutions(p);
   }
 
+  // ---- Compat aliases (by execution ID only) — used by acf-cli & mcp-server ----
+  @Get("executions/:execId/logs")
+  @ApiOperation({
+    summary: "Execution logs (by execution ID)",
+    description:
+      "Compat alias of GET /tasks/:id/executions/:execId/logs — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.",
+  })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiQuery({
+    name: "fromLine",
+    required: false,
+    description: "Start line number, default 0",
+  })
+  @ApiQuery({
+    name: "limit",
+    required: false,
+    description: "Lines per page, default 500, max 2000",
+  })
+  executionLogsByExecId(
+    @Param("execId") execId: string,
+    @Query("fromLine") fromLine?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.taskService.getExecutionLogs(
+      execId,
+      fromLine ? parseInt(fromLine, 10) || 0 : 0,
+      limit ? Math.min(parseInt(limit, 10) || 500, 2000) : 500,
+    );
+  }
+
+  @Get("executions/:execId")
+  @ApiOperation({
+    summary: "Execution details (by execution ID)",
+    description:
+      "Compat alias of GET /tasks/:id/executions/:execId — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.",
+  })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
+  executionByExecId(@Param("execId") execId: string) {
+    return this.taskService.getExecution(execId);
+  }
+
   @Get("scheduler/stats")
   @ApiOperation({ summary: "Scheduler status" })
   async schedulerStats() {

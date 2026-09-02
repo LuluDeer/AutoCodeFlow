@@ -121,7 +121,7 @@ describe("ExecutionCallbackController", () => {
       ).rejects.toBeInstanceOf(UnauthorizedException);
     });
 
-    it("passes when no token configured in non-production", async () => {
+    it("rejects when no token configured in non-production (fail closed)", async () => {
       configService.get.mockImplementation((key: string) => {
         if (key === "app.nodeEnv") return "development";
         if (key === "executor.sharedToken") return "";
@@ -129,7 +129,8 @@ describe("ExecutionCallbackController", () => {
       });
       await expect(
         controller.callback(undefined, [makeCallbackItem()]),
-      ).resolves.toBeDefined();
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(taskService.handleCallback).not.toHaveBeenCalled();
     });
 
     it("throws in production when no token configured", async () => {
