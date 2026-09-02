@@ -9,8 +9,9 @@
 - 需要认证的接口须在请求头携带：`Authorization: Bearer <access_token>`
 - Access Token 通过登录接口获取，有效期默认 15 分钟（`JWT_EXPIRES_IN`）
 - Token 过期后使用 Refresh Token 接口刷新，无需重新登录
-- 全局限流默认 60 次/分钟（`THROTTLE_LIMIT` / `THROTTLE_TTL`），超限返回 429；登录、刷新接口有更严格的独立限流
+- 全局限流默认 60 次/分钟（`THROTTLE_LIMIT` / `THROTTLE_TTL`），超限返回 429；登录、刷新接口有更严格的独立限流；executor callback 端点限流 60 次/分钟（第四轮起不再豁免）
 - 每个响应都携带 `X-Trace-Id` 响应头，排查问题时提供给运维
+- **RBAC（第四轮起全局生效）**：标注「Admin」的端点要求 JWT `role=ADMIN`，普通用户返回 403。收紧范围：`/config` 全部写端点与共享 token 读写/回滚、`/executor-packages` 全部端点（`push-result` 机器回调仍走 executor token）。executor 的 heartbeat/register 等机器端点仍走 per-address token，不受用户角色影响
 
 ## 静态资源鉴权（/uploads）⚠️ 破坏性变更
 
@@ -44,7 +45,7 @@
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| POST | `/auth/login` | 否 | 用户名密码登录，返回 access_token 和 refresh_token（独立限流，默认 20 次/分钟） |
+| POST | `/auth/login` | 否 | 用户名密码登录，返回 `accessToken` 与 `refreshToken`（camelCase；独立限流，默认 20 次/分钟） |
 | POST | `/auth/refresh` | 否 | 使用 refresh_token 刷新 access_token（限流 10 次/分钟） |
 | POST | `/auth/logout` | 是 | 登出，使当前 refresh_token 失效 |
 | GET | `/auth/profile` | 是 | 获取当前登录用户信息 |
@@ -234,6 +235,7 @@ Content-Type: application/json
 - 响应为 `text/event-stream`，日志行以 `data:` 事件下发，结束时发送 `event: done` + `[DONE]`
 - 两级并发上限：**单 execution 最多 4 个并发连接，全局最多 64 个**；超限在写出任何 SSE 响应头之前直接返回 **503**（不会产生半开的流）
 - 客户端断开（连接 close）即释放槽位
+- EventSource 无法携带请求头：**仅本日志流路径**支持 query 参数 `?access_token=<JWT>` 认证（第四轮起；type=access 强制，refresh token 不可用；其它路径的 query token 一律拒绝）
 
 ---
 
@@ -248,7 +250,7 @@ Content-Type: application/json
 | GET | `/executors` | 是 | 查询执行器列表（含在线状态） |
 | GET | `/executors/groups` | 是 | 执行器分组列表 |
 | GET | `/executors/tags` | 是 | 执行器标签列表 |
-| GET | `/executors/install-cmd` | 是 | 生成执行器一键安装命令 |
+| GET | `/executors/install-cmd` | 是 | 生成执行器一键安装命令（返回 `{ cmd, token, adminApiUrl }`；第四轮起已移除引用不存在 install.sh 的 `curlCmd` 字段） |
 | GET | `/executors/:id` | 是 | 获取执行器详情 |
 | PATCH | `/executors/:id` | 是 | 更新执行器配置 |
 | POST | `/executors/:id/reload-config` | 是 | 手动下发配置重载（manifest 同步） |
@@ -338,12 +340,12 @@ Content-Type: application/json
 | GET | `/config` | 是 | 查询所有系统配置项 |
 | GET | `/config/history` | 是 | 查询配置修改历史 |
 | GET | `/config/history/:key` | 是 | 查询指定 key 的修改历史 |
-| POST | `/config/history/:id/rollback` | 是 | 回滚到指定历史版本 |
-| POST | `/config/executor-shared-token/generate` | 是 | 生成新的执行器共享 Token |
-| GET | `/config/executor-shared-token` | 是 | 查看当前执行器共享 Token（明文） |
+| POST | `/config/history/:id/rollback` | 是（Admin） | 回滚到指定历史版本 |
+| POST | `/config/executor-shared-token/generate` | 是（Admin） | 生成新的执行器共享 Token |
+| GET | `/config/executor-shared-token` | 是（Admin） | 查看当前执行器共享 Token（明文）——第四轮起普通用户 403 |
 | GET | `/config/:key` | 是 | 查询单个配置项（secret 类字段打码） |
-| PUT | `/config` | 是 | 创建/更新单个配置项（upsert） |
-| POST | `/config/batch` | 是 | 批量创建/更新配置项 |
+| PUT | `/config` | 是（Admin） | 创建/更新单个配置项（upsert） |
+| POST | `/config/batch` | 是（Admin） | 批量创建/更新配置项 |
 | DELETE | `/config/:key` | 是 | 删除指定配置项 |
 
 ---
@@ -352,15 +354,15 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/executor-packages` | 是 | 查询执行器包列表 |
-| POST | `/executor-packages` | 是 | 上传执行器包（multipart/form-data，返回 201） |
-| GET | `/executor-packages/latest` | 是 | 获取最新执行器包 |
-| POST | `/executor-packages/install-token` | 是 | 生成执行器安装 Token |
-| GET | `/executor-packages/:id` | 是 | 获取包详情 |
-| GET | `/executor-packages/:id/download` | 是 | 下载包文件 |
-| POST | `/executor-packages/:id/push` | 是 | 将包推送到执行器安装 |
+| GET | `/executor-packages` | 是（Admin） | 查询执行器包列表 |
+| POST | `/executor-packages` | 是（Admin） | 上传执行器包（multipart/form-data，返回 201） |
+| GET | `/executor-packages/latest` | 是（Admin） | 获取最新执行器包（须带 `type` 查询参数，返回单对象或 null） |
+| POST | `/executor-packages/install-token` | 是（Admin） | 生成执行器安装 Token |
+| GET | `/executor-packages/:id` | 是（Admin） | 获取包详情 |
+| GET | `/executor-packages/:id/download` | 是（Admin） | 下载包文件（仅支持 Authorization 头，浏览器直链会 401） |
+| POST | `/executor-packages/:id/push` | 是（Admin） | 将包推送到执行器安装 |
 | POST | `/executor-packages/push-result` | 否* | 执行器回推安装结果 |
-| DELETE | `/executor-packages/:id` | 是 | 删除包 |
+| DELETE | `/executor-packages/:id` | 是（Admin） | 删除包 |
 
 **上传字段（multipart/form-data）：**
 
@@ -395,7 +397,7 @@ Content-Type: application/json
 
 ---
 
-## 环境变量（第三轮审查新增/收紧项）
+## 环境变量（第三/四轮审查新增/收紧项）
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -407,6 +409,10 @@ Content-Type: application/json
 | `DB_SYNCHRONIZE` | `false` | 显式 schema 同步开关（不再依赖 NODE_ENV 推断）；**生产环境设为 `true` 直接启动失败**，schema 变更一律走 migrations |
 | `LOG_RETENTION_DAYS` | `30` | `execution_log_lines` 日志行保留天数，每日 03:30 分批（≤5000 行/批）清理过期日志 |
 | `API_BASE_URL` | 无 | 对外可达的 API 基地址；**上传应用包时必需**——`POST /applications/upload` 用它生成 executor 可下载的 `packageUrl`，缺失时返回 500 |
+| `SSE_MAX_STREAMS_PER_EXECUTION` | `4` | 单 execution SSE 并发上限（进程内计数，多实例部署实际上限=实例数×该值） |
+| `SSE_MAX_STREAMS_GLOBAL` | `64` | 全局 SSE 并发上限（同上，进程内） |
+| `TRUST_PROXY` | `false` | **第四轮起默认关闭**。Express `trust proxy` 仅在 `true` 时启用——nginx/负载均衡后的部署**必须设为 `true`**，否则限流键与审计 IP 全部记为代理地址 |
+| `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | executor 出站 SSRF 校验（dispatch/broadcast/reload-config/package push）：默认放行私网段（10/8、172.16/12、192.168/16、IPv6 ULA）但**拒绝 loopback**；admin-api 与 executor 同机（127.0.0.1）部署时必须设为 `true`。云元数据段（169.254.169.254 等）任何取值下都拒绝 |
 
 > 其余环境变量（`JWT_*`、`DB_*`、`EXECUTOR_SECRET`、`AI_*`、`LOG_STORAGE_*` 等）见 `apps/admin-api/src/app.module.ts` 的 Joi 校验 schema 与 `src/config/configuration.ts`。
 
