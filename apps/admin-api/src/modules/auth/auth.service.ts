@@ -29,6 +29,18 @@ export class AuthService {
   async login(loginDto: LoginDto) {
     const user = await this.usersService.findByUsername(loginDto.username);
 
+    // SEC-003: check the lockout state BEFORE running bcrypt — if the account
+    // is currently locked, fail fast without paying the bcrypt CPU cost and
+    // without leaking whether the username exists.
+    if (user && user.lockedUntil && user.lockedUntil > new Date()) {
+      const minutesLeft = Math.ceil(
+        (user.lockedUntil.getTime() - Date.now()) / 60_000,
+      );
+      throw new UnauthorizedException(
+        `Account locked. Try again in ${minutesLeft} minute(s).`,
+      );
+    }
+
     // SEC-05: always run the full check path to avoid username-enumeration timing leaks
     const passwordOk =
       user != null && (await bcrypt.compare(loginDto.password, user.password));
@@ -47,16 +59,6 @@ export class AuthService {
     // SEC-05: reject if account is disabled
     if (!user.isActive) {
       throw new UnauthorizedException("Account is disabled");
-    }
-
-    // SEC-05: reject if account is currently locked
-    if (user.lockedUntil && user.lockedUntil > new Date()) {
-      const minutesLeft = Math.ceil(
-        (user.lockedUntil.getTime() - Date.now()) / 60_000,
-      );
-      throw new UnauthorizedException(
-        `Account locked. Try again in ${minutesLeft} minute(s).`,
-      );
     }
 
     // SEC-05: successful login — reset failure counter
@@ -78,18 +80,21 @@ export class AuthService {
       throw new UnauthorizedException("Invalid token type");
     }
 
-    // SEC-02: check the token has not been revoked
-    if (payload.jti) {
-      const record = await this.refreshTokenRepo.findOne({
-        where: { jti: payload.jti },
-      });
-      if (!record || record.revoked) {
-        throw new UnauthorizedException("Refresh token has been revoked");
-      }
-      // SEC-02: Token Rotation — immediately revoke the consumed token
-      record.revoked = true;
-      await this.refreshTokenRepo.save(record);
+    // SEC-002: a refresh token without jti is either an old-format token or a
+    // hand-crafted token; both must be rejected — never silently skip the
+    // revocation check (that would bypass token-rotation protection).
+    if (!payload.jti) {
+      throw new UnauthorizedException("Refresh token missing jti claim");
     }
+    const record = await this.refreshTokenRepo.findOne({
+      where: { jti: payload.jti },
+    });
+    if (!record || record.revoked) {
+      throw new UnauthorizedException("Refresh token has been revoked");
+    }
+    // SEC-02: Token Rotation — immediately revoke the consumed token
+    record.revoked = true;
+    await this.refreshTokenRepo.save(record);
 
     const user = await this.usersService.findById(payload.sub);
     if (!user || !user.isActive) throw new UnauthorizedException();

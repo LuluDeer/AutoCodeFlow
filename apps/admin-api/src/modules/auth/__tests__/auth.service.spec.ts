@@ -125,16 +125,34 @@ describe("AuthService (__tests__)", () => {
   });
 
   describe("refreshToken", () => {
-    it("returns new tokens for a valid refresh token without jti", async () => {
+    it("returns new tokens for a valid refresh token with jti", async () => {
+      // SEC-002: a refresh token must carry jti — without it the revocation
+      // check would be skipped, bypassing token-rotation protection.
       jwtService.verify.mockReturnValue({
         sub: 1,
         username: "admin",
         type: "refresh",
+        jti: "valid-jti-uuid",
+      } as any);
+      refreshTokenRepo.findOne.mockResolvedValue({
+        jti: "valid-jti-uuid",
+        revoked: false,
       } as any);
       usersService.findById.mockResolvedValue(mockUser as any);
       const result = await service.refreshToken("valid-token");
       expect(result).toHaveProperty("accessToken");
       expect(result).toHaveProperty("refreshToken");
+    });
+
+    it("rejects refresh token without jti (SEC-002)", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+      } as any);
+      await expect(service.refreshToken("old-token")).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
 
     it('throws if token type is not "refresh"', async () => {

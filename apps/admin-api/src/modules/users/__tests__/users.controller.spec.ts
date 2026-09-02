@@ -11,9 +11,12 @@ const mockUsersService = () => ({
   create: jest.fn(),
   findAll: jest.fn(),
   findById: jest.fn(),
+  findByIdOrNull: jest.fn(),
   findByIdRaw: jest.fn(),
   update: jest.fn(),
   remove: jest.fn(),
+  recordLoginFailure: jest.fn(),
+  resetLoginFailure: jest.fn(),
 });
 
 const mockAuditService = () => ({
@@ -71,10 +74,28 @@ describe('UsersController', () => {
   });
 
   describe('findOne', () => {
-    it('should return user by id', () => {
-      usersSvc.findById.mockResolvedValue({ id: 5 });
-      controller.findOne(5);
-      expect(usersSvc.findById).toHaveBeenCalledWith(5);
+    it('admin can fetch any user by id', async () => {
+      usersSvc.findByIdOrNull.mockResolvedValue({ id: 5 } as any);
+      await controller.findOne(5, adminUser);
+      expect(usersSvc.findByIdOrNull).toHaveBeenCalledWith(5);
+    });
+    it('non-admin can fetch their own profile', async () => {
+      usersSvc.findByIdOrNull.mockResolvedValue({ id: 1 } as any);
+      const self = { id: 1, role: 'viewer' };
+      await controller.findOne(1, self as any);
+      expect(usersSvc.findByIdOrNull).toHaveBeenCalledWith(1);
+    });
+    it('non-admin cannot fetch another user', async () => {
+      const self = { id: 1, role: 'viewer' };
+      await expect(
+        controller.findOne(5, self as any),
+      ).rejects.toThrow();
+    });
+    it('returns ForbiddenException when user is missing (H-3)', async () => {
+      usersSvc.findByIdOrNull.mockResolvedValue(null);
+      await expect(
+        controller.findOne(5, adminUser),
+      ).rejects.toThrow();
     });
   });
 
