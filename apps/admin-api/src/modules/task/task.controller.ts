@@ -600,28 +600,45 @@ export class TaskController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no"); // disable nginx buffering
-    res.flushHeaders();
-
-    const ac = new AbortController();
-    req.on("close", () => ac.abort());
-
-    const send = (line: string) => {
-      res.write(`data: ${JSON.stringify(line)}\n\n`);
-    };
-    const done = () => {
-      res.write(`event: done\ndata: [DONE]\n\n`);
-      res.end();
-    };
+    // TASK-008: 在写出任何 SSE 响应头之前先占用并发槽位——超限时抛出的
+    // ServiceUnavailableException 会被全局异常过滤器渲染为真正的 503，
+    // 而不是半开的 SSE 流。
+    const releaseSlot = this.taskService.acquireSseSlot(execId);
 
     try {
-      await this.taskService.streamExecutionLogs(execId, send, done, ac.signal);
-    } catch {
-      res.write(`event: error\ndata: stream error\n\n`);
-      res.end();
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no"); // disable nginx buffering
+      res.flushHeaders();
+
+      const ac = new AbortController();
+      req.on("close", () => ac.abort());
+
+      const send = (line: string) => {
+        res.write(`data: ${JSON.stringify(line)}\n\n`);
+      };
+      const done = () => {
+        res.write(`event: done\ndata: [DONE]\n\n`);
+        res.end();
+      };
+
+      try {
+        await this.taskService.streamExecutionLogs(
+          execId,
+          send,
+          done,
+          ac.signal,
+          releaseSlot,
+        );
+      } catch {
+        res.write(`event: error\ndata: stream error\n\n`);
+        res.end();
+      }
+    } finally {
+      // TASK-008: 双保险释放——streamExecutionLogs 内部 finally 已释放，
+      // 此处兜底防泄漏（release 幂等）。
+      releaseSlot();
     }
   }
 

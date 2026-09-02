@@ -2,7 +2,11 @@ import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { DataSource } from "typeorm";
 import { getQueueToken } from "@nestjs/bullmq";
-import { BadRequestException, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from "@nestjs/common";
 import { TaskService } from "../task.service";
 import { Task, TaskStatus } from "../entities/task.entity";
 import {
@@ -28,6 +32,7 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
     find: jest.fn().mockResolvedValue([]),
     count: jest.fn().mockResolvedValue(0),
     delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    softDelete: jest.fn().mockResolvedValue({ affected: 1 }),
   };
   repo.createQueryBuilder = jest.fn(() => {
     let patch: Record<string, unknown> | null = null;
@@ -325,6 +330,19 @@ describe("TaskService (__tests__)", () => {
       expect(schedulerService.stop).toHaveBeenCalledWith("1");
       expect(result).toEqual({ deleted: true });
     });
+
+    it("writes the TypeORM soft-delete column on removal (DB-001)", async () => {
+      const task = { id: "1", status: TaskStatus.ACTIVE };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockResolvedValue({ ...task, status: TaskStatus.DELETED });
+      await service.remove("1");
+      // status='deleted'（业务标记）与 deletedAt（@DeleteDateColumn）并存：
+      // raw query 依赖 status，TypeORM find 依赖 deletedAt
+      expect(taskRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: TaskStatus.DELETED }),
+      );
+      expect(taskRepo.softDelete).toHaveBeenCalledWith("1");
+    });
   });
 
   describe("trigger", () => {
@@ -396,7 +414,10 @@ describe("TaskService (__tests__)", () => {
 
   describe("getAllExecutions", () => {
     it("returns paginated executions without filters", async () => {
-      const execs = [{ id: "e1", taskId: "t1" }, { id: "e2", taskId: "t1" }];
+      const execs = [
+        { id: "e1", taskId: "t1", taskName: "Task One" },
+        { id: "e2", taskId: "t1", taskName: "Task One" },
+      ];
       const qbMock = {
         leftJoin: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
@@ -404,14 +425,51 @@ describe("TaskService (__tests__)", () => {
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
-        getRawAndEntities: jest.fn().mockResolvedValue({ entities: execs, raw: [] }),
-        getCount: jest.fn().mockResolvedValue(2),
+        getManyAndCount: jest.fn().mockResolvedValue([execs, 2]),
+        getRawAndEntities: jest.fn(),
+        getCount: jest.fn(),
       };
       execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
       const result = await service.getAllExecutions({ page: 1, pageSize: 10 });
       expect(result).toHaveProperty("total", 2);
       expect(result.list).toHaveLength(2);
       expect(result.items).toBe(result.list);
+      // DB-003: 页查询只执行一次 getManyAndCount（不再 getRawAndEntities/getCount 双份开销）
+      expect(qbMock.getManyAndCount).toHaveBeenCalledTimes(1);
+      expect(qbMock.getRawAndEntities).not.toHaveBeenCalled();
+      expect(qbMock.getCount).not.toHaveBeenCalled();
+      // 行已有 taskName 时无 join、无回填查询
+      expect(qbMock.leftJoin).not.toHaveBeenCalled();
+      expect(taskRepo.find).not.toHaveBeenCalled();
+    });
+
+    it("backfills missing taskName with one batched query (DB-003)", async () => {
+      const execs = [
+        { id: "e1", taskId: "t1", taskName: null },
+        { id: "e2", taskId: "t1", taskName: null },
+        { id: "e3", taskId: "t2", taskName: "inline-name" },
+      ];
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([execs, 3]),
+      };
+      execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
+      taskRepo.find.mockResolvedValue([{ id: "t1", name: "Task One" }]);
+      const result = await service.getAllExecutions({ page: 1, pageSize: 10 });
+      // 一次批量 IN 查询补齐缺失的 taskName
+      expect(taskRepo.find).toHaveBeenCalledTimes(1);
+      const findArgs = taskRepo.find.mock.calls[0][0];
+      expect(findArgs.select).toEqual(["id", "name"]);
+      expect(findArgs.where.id).toEqual(
+        expect.objectContaining({ _value: ["t1"] }),
+      );
+      expect(result.list[0].taskName).toBe("Task One");
+      expect(result.list[1].taskName).toBe("Task One");
+      // 行自身已有 taskName 的不做回填覆盖
+      expect(result.list[2].taskName).toBe("inline-name");
     });
 
     it("applies status and taskId filters", async () => {
@@ -422,8 +480,7 @@ describe("TaskService (__tests__)", () => {
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
-        getRawAndEntities: jest.fn().mockResolvedValue({ entities: [{ id: "e1", taskId: "task-1" }], raw: [] }),
-        getCount: jest.fn().mockResolvedValue(1),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
       };
       execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
       const result = await service.getAllExecutions({
@@ -432,13 +489,13 @@ describe("TaskService (__tests__)", () => {
         status: "success",
         taskId: "task-1",
       });
-      expect(result.total).toBe(1);
+      expect(result.total).toBe(0);
       // andWhere should have been called for status and taskId filters
       expect(qbMock.andWhere).toHaveBeenCalledWith(expect.stringContaining("status"), expect.objectContaining({ status: "success" }));
       expect(qbMock.andWhere).toHaveBeenCalledWith(expect.stringContaining("taskId"), expect.objectContaining({ taskId: "task-1" }));
     });
 
-    it("applies taskName and executorAddress filters", async () => {
+    it("applies taskName and executorAddress filters (taskName keeps the join for matching)", async () => {
       const qbMock = {
         leftJoin: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
@@ -446,10 +503,10 @@ describe("TaskService (__tests__)", () => {
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
-        getRawAndEntities: jest.fn().mockResolvedValue({ entities: [{ id: "e1", taskId: "task-1" }], raw: [] }),
-        getCount: jest.fn().mockResolvedValue(1),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
       };
       execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
+      taskRepo.find.mockResolvedValue([]);
 
       await service.getAllExecutions({
         page: 1,
@@ -466,6 +523,191 @@ describe("TaskService (__tests__)", () => {
         expect.stringContaining("executorAddress"),
         expect.objectContaining({ executorAddress: "%10.0.0.1%" }),
       );
+      // 仅 taskName 过滤需要 join tasks 表
+      expect(qbMock.leftJoin).toHaveBeenCalledWith(
+        "tasks",
+        "t",
+        "t.id = e.taskId",
+      );
+    });
+  });
+
+  describe("checkCircularDependency depth limit (TASK-007)", () => {
+    /** 构造一条长依赖链：task-i 依赖 task-(i+1)，由 taskRepo.findOne 提供 */
+    const setupDeepChain = (depth: number) => {
+      taskRepo.findOne.mockImplementation(({ where }: any) => {
+        const id = where?.id as string;
+        if (!id?.startsWith("task-")) return Promise.resolve(null);
+        const n = parseInt(id.slice(5), 10);
+        if (Number.isNaN(n)) return Promise.resolve(null);
+        return Promise.resolve({
+          id,
+          dependencies:
+            n < depth ? { dep: `task-${n + 1}` } : {},
+        });
+      });
+    };
+
+    it("accepts a dependency chain within the depth limit", async () => {
+      // 链长 63 < 64，不应抛错（模拟 60 层足够验证，避免无谓的findOne次数）
+      setupDeepChain(60);
+      const dto = {
+        id: "task-0",
+        name: "deep-but-ok",
+        dependencies: { dep: "task-1" },
+      } as any;
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      taskRepo.create.mockImplementation((t: any) => t);
+      await expect(service.create(dto)).resolves.toBeDefined();
+    });
+
+    it("rejects an over-deep dependency chain with 'dependency chain too deep'", async () => {
+      // 链长 200 >> 64：必须在有限深度截断，防止 N+1 DoS
+      setupDeepChain(200);
+      const dto = {
+        id: "task-0",
+        name: "too-deep",
+        dependencies: { dep: "task-1" },
+      } as any;
+      await expect(service.create(dto)).rejects.toThrow(
+        "dependency chain too deep",
+      );
+      // 截断生效：数据库查询次数远小于链长（深度上限 64 + 自检若干）
+      expect(taskRepo.findOne.mock.calls.length).toBeLessThan(120);
+    });
+
+    it("rejects a wide dependency fan-out exceeding the visited-node cap", async () => {
+      // 扇出 100 个互不相同的直接依赖：visited 集合超限即拒绝
+      taskRepo.findOne.mockResolvedValue({ id: "x", dependencies: {} });
+      const dependencies: Record<string, string> = {};
+      for (let i = 0; i < 100; i++) dependencies[`k${i}`] = `dep-task-${i}`;
+      const dto = { id: "task-0", name: "too-wide", dependencies } as any;
+      await expect(service.create(dto)).rejects.toThrow(
+        "dependency chain too deep",
+      );
+    });
+
+    it("still detects a genuine cycle quickly", async () => {
+      taskRepo.findOne.mockImplementation(({ where }: any) => {
+        const id = where?.id as string;
+        // a -> b -> c -> b（环）
+        if (id === "task-b")
+          return Promise.resolve({ id, dependencies: { dep: "task-c" } });
+        if (id === "task-c")
+          return Promise.resolve({ id, dependencies: { dep: "task-b" } });
+        return Promise.resolve(null);
+      });
+      const dto = {
+        id: "task-a",
+        name: "cycle",
+        dependencies: { dep: "task-b" },
+      } as any;
+      await expect(service.create(dto)).rejects.toThrow("Circular dependency");
+    });
+  });
+
+  describe("SSE log stream concurrency limits (TASK-008)", () => {
+    const flushableExec = { id: "exec-1", status: ExecutionStatus.SUCCESS };
+
+    it("allows up to the per-execution limit and rejects the (N+1)th with 503", async () => {
+      execRepo.findOne.mockResolvedValue(flushableExec);
+
+      const releases = [
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+      ];
+      // 默认单 execution 上限 4：第 5 个必须被拒绝
+      expect(() => service.acquireSseSlot("exec-1")).toThrow(
+        ServiceUnavailableException,
+      );
+
+      // 释放后可再次占用
+      releases[0]();
+      const again = service.acquireSseSlot("exec-1");
+      expect(typeof again).toBe("function");
+      releases.slice(1).forEach((r) => r());
+      again();
+    });
+
+    it("rejects streams beyond the global limit with 503", async () => {
+      execRepo.findOne.mockResolvedValue(flushableExec);
+      const releases: Array<() => void> = [];
+      // 全局上限默认 64：占满 64 个不同 execution 的连接
+      for (let i = 0; i < 64; i++) {
+        releases.push(service.acquireSseSlot(`exec-${i}`));
+      }
+      expect(() => service.acquireSseSlot("exec-x")).toThrow(
+        ServiceUnavailableException,
+      );
+      // 释放一个后可再占用
+      releases[0]();
+      const r = service.acquireSseSlot("exec-x");
+      r();
+      releases.slice(1).forEach((rel) => rel());
+    });
+
+    it("releases the slot when the stream ends normally", async () => {
+      execRepo.findOne.mockResolvedValue(flushableExec);
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+      await service.streamExecutionLogs(
+        "exec-1",
+        send,
+        done,
+        controller.signal,
+      );
+      expect(done).toHaveBeenCalled();
+      // 终态 flush 后计数应已归零：可再次满额占用
+      const releases = [
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+      ];
+      releases.forEach((r) => r());
+      expect(() => service.acquireSseSlot("exec-1")).not.toThrow();
+    });
+
+    it("releases the slot when the stream aborts mid-poll", async () => {
+      execRepo.findOne.mockResolvedValue({
+        id: "exec-1",
+        status: ExecutionStatus.RUNNING,
+      });
+      logLineRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      } as any);
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+      const promise = service.streamExecutionLogs(
+        "exec-1",
+        send,
+        done,
+        controller.signal,
+      );
+      controller.abort();
+      await promise;
+      expect(done).toHaveBeenCalled();
+      expect(() => service.acquireSseSlot("exec-1")).not.toThrow();
+    });
+
+    it("releases the slot when the stream throws", async () => {
+      execRepo.findOne.mockRejectedValue(new Error("db down"));
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+      // flush() 内 findOne 抛错 → streamExecutionLogs 向上抛，但 finally 必须释放
+      await expect(
+        service.streamExecutionLogs("exec-1", send, done, controller.signal),
+      ).rejects.toThrow("db down");
+      expect(() => service.acquireSseSlot("exec-1")).not.toThrow();
     });
   });
 

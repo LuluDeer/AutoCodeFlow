@@ -4,6 +4,7 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
+  DeleteDateColumn,
   ManyToOne,
   JoinColumn,
   Index,
@@ -115,4 +116,14 @@ export class Task {
 
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;
+
+  /**
+   * DB-001: TypeORM 软删除列。与 status='deleted' 逻辑删除并存：
+   * - Repository find/findOne 自动排除已设置 deletedAt 的行（框架层过滤）；
+   * - status='deleted' 继续保留作为业务语义标记（现有查询依赖 Not(DELETED)）。
+   * - 原生 SQL / QueryBuilder（无 withDeleted 处理）不会自动排除，需自行过滤。
+   */
+  @DeleteDateColumn({ nullable: true })
+  @Index("idx_tasks_deleted_at")
+  deletedAt: Date | null;
 }

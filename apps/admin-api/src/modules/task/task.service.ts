@@ -3,11 +3,12 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ServiceUnavailableException,
   Inject,
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, ILike, Not, Repository } from "typeorm";
+import { DataSource, ILike, In, Not, Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
@@ -38,6 +39,17 @@ import { S3LogStorage } from "./log-storage/s3-log-storage";
  * Python: "...[truncated, total N chars]..."
  */
 const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
+
+/**
+ * TASK-007: 依赖环检测的深度/访问节点上限。数据库中若存在超长依赖链
+ * （例如 100 层），无上限的逐层递归会触发串行 N+1 查询，构成 DoS 向量；
+ * 超过上限直接抛 BadRequestException("dependency chain too deep")。
+ */
+export const MAX_DEPENDENCY_DEPTH = 64;
+
+/** TASK-008: SSE 日志流并发上限默认值（可用环境变量覆盖）。 */
+const SSE_MAX_STREAMS_PER_EXECUTION_DEFAULT = 4;
+const SSE_MAX_STREAMS_GLOBAL_DEFAULT = 64;
 
 @Injectable()
 export class TaskService {
@@ -144,7 +156,13 @@ export class TaskService {
     dependencyIds: string[],
     visited: Set<string>,
     currentPath: Set<string>,
+    depth = 0,
   ): Promise<void> {
+    // TASK-007: 递归深度上限——防止深层依赖链的串行 N+1 查询 DoS。
+    if (depth > MAX_DEPENDENCY_DEPTH) {
+      throw new BadRequestException("dependency chain too deep");
+    }
+
     for (const depId of dependencyIds) {
       if (depId === taskId) {
         throw new BadRequestException(
@@ -160,6 +178,12 @@ export class TaskService {
 
       if (visited.has(depId)) {
         continue;
+      }
+
+      // TASK-007: 已访问节点集合上限——超宽扇出的依赖图同样拒绝，
+      // 上限保证单次校验的数据库查询次数有硬性边界。
+      if (visited.size > MAX_DEPENDENCY_DEPTH) {
+        throw new BadRequestException("dependency chain too deep");
       }
 
       visited.add(depId);
@@ -179,6 +203,7 @@ export class TaskService {
             childDependencies,
             visited,
             currentPath,
+            depth + 1,
           );
         }
       } finally {
@@ -236,6 +261,9 @@ export class TaskService {
     this.schedulerService.stop(id);
     t.status = TaskStatus.DELETED;
     await this.taskRepo.save(t);
+    // DB-001: 同步写入 TypeORM 软删除列，此后 Repository find/findOne
+    // 自动排除该行；status='deleted' 保留以兼容 raw query 消费方。
+    await this.taskRepo.softDelete(id);
     return { deleted: true };
   }
 
@@ -326,20 +354,27 @@ export class TaskService {
       endTime?: string;
     },
   ) {
+    // DB-003: 原 getRawAndEntities + getCount 会产生 3 条 SQL（raw 页查询、
+    // entities 页查询、count），executions 被全表扫描两次。改为：
+    // 1) getManyAndCount：页查询 + count 共 2 条（仅 executions 扫描）；
+    // 2) 任务名回填只对缺 taskName 的行做一次 PK IN 批量查询（join 仅在
+    //    taskName 过滤时保留用于匹配 t.name）。
     const qb = this.execRepo
       .createQueryBuilder("e")
-      .leftJoin("tasks", "t", "t.id = e.taskId")
-      .addSelect(["t.name AS task_name"])
       .orderBy("e.createdAt", "DESC")
       .skip((p.page - 1) * p.pageSize)
       .take(p.pageSize);
 
     if (p.status) qb.andWhere("e.status = :status", { status: p.status });
     if (p.taskId) qb.andWhere("e.taskId = :taskId", { taskId: p.taskId });
-    if (p.taskName)
+    if (p.taskName) {
+      // taskName 过滤：命中执行行自身的 taskName，或命中 tasks 表名称
+      //（保留 join 仅用于此过滤场景）
+      qb.leftJoin("tasks", "t", "t.id = e.taskId");
       qb.andWhere("(e.taskName ILIKE :taskName OR t.name ILIKE :taskName)", {
         taskName: `%${p.taskName}%`,
       });
+    }
     if (p.executorAddress)
       qb.andWhere("e.executorAddress ILIKE :executorAddress", {
         executorAddress: `%${p.executorAddress}%`,
@@ -349,23 +384,30 @@ export class TaskService {
     if (p.endTime)
       qb.andWhere("e.createdAt <= :endTime", { endTime: p.endTime });
 
-    const [rawList, total] = await Promise.all([
-      qb.getRawAndEntities(),
-      qb.getCount(),
-    ]);
+    const [list, total] = await qb.getManyAndCount();
 
+    // 一次性批量补齐缺失的 taskName（替代原 leftJoin + raw Map 组装）
+    const missingIds = [
+      ...new Set(
+        list
+          .filter((e) => !e.taskName && e.taskId)
+          .map((e) => e.taskId as string),
+      ),
+    ];
     const taskNameMap = new Map<string, string>();
-    rawList.raw.forEach((r: Record<string, unknown>) => {
-      if (typeof r.e_taskId === "string" && typeof r.task_name === "string") {
-        taskNameMap.set(r.e_taskId, r.task_name);
-      }
-    });
+    if (missingIds.length > 0) {
+      const tasks = await this.taskRepo.find({
+        where: { id: In(missingIds) },
+        select: ["id", "name"],
+      });
+      for (const t of tasks) taskNameMap.set(t.id, t.name);
+    }
 
-    const list = rawList.entities.map((e) => ({
+    const items = list.map((e) => ({
       ...e,
       taskName: e.taskName || taskNameMap.get(e.taskId) || null,
     }));
-    return paginate(list, total, p.page, p.pageSize);
+    return paginate(items, total, p.page, p.pageSize);
   }
 
   /**
@@ -377,6 +419,7 @@ export class TaskService {
     currentCron: string | null;
     suggestedCron: string;
     reasoning: string;
+    fallback?: boolean;
   }> {
     const task = await this.taskRepo.findOne({ where: { id: taskId } });
     if (!task) throw new NotFoundException(`Task ${taskId} not found`);
@@ -432,24 +475,27 @@ export class TaskService {
     ].join("\n");
     this.logger.debug(`Schedule optimization sample:\n${summaryLog}`);
 
-    const { suggestedCron, reasoning } = await this.aiService.suggestSchedule(
-      task.name,
-      task.cronExpression || null,
-      {
-        total: executions.length,
-        successes: successCount,
-        failures: failCount,
-        avgDurationMs: avgDuration,
-        p95DurationMs: p95Duration,
-        bestHoursUtc: bestHours,
-      },
-    );
+    const { suggestedCron, reasoning, fallback } =
+      await this.aiService.suggestSchedule(
+        task.name,
+        task.cronExpression || null,
+        {
+          total: executions.length,
+          successes: successCount,
+          failures: failCount,
+          avgDurationMs: avgDuration,
+          p95DurationMs: p95Duration,
+          bestHoursUtc: bestHours,
+        },
+      );
 
     return {
       taskId: task.id,
       currentCron: task.cronExpression || null,
       suggestedCron,
       reasoning,
+      // AI-002: 透传 fallback 标记，调用方可区分「AI 建议」与「回退到当前值」
+      fallback,
     };
   }
 
@@ -549,16 +595,83 @@ export class TaskService {
   }
 
   /**
+   * TASK-008: SSE 日志流并发上限注册表。
+   * 每个连接在开始轮询前必须持有槽位；连接结束（正常完成 / abort / 异常）
+   * 时释放。两级限制防止大量客户端同时轮询把数据库打垮：
+   * - 单 execution 最多 SSE_MAX_STREAMS_PER_EXECUTION 个连接；
+   * - 全局最多 SSE_MAX_STREAMS_GLOBAL 个连接。
+   */
+  private sseStreamsPerExecution = new Map<string, number>();
+  private sseStreamsGlobal = 0;
+
+  private static readonly SSE_MAX_PER_EXECUTION_DEFAULT = 4;
+  private static readonly SSE_MAX_GLOBAL_DEFAULT = 64;
+
+  private get sseMaxPerExecution(): number {
+    const raw = this.configService.get<number | string>(
+      "sse.maxStreamsPerExecution",
+    );
+    const n = typeof raw === "string" ? parseInt(raw, 10) : raw;
+    return Number.isFinite(n) && n > 0
+      ? n
+      : TaskService.SSE_MAX_PER_EXECUTION_DEFAULT;
+  }
+
+  private get sseMaxGlobal(): number {
+    const raw = this.configService.get<number | string>("sse.maxStreamsGlobal");
+    const n = typeof raw === "string" ? parseInt(raw, 10) : raw;
+    return Number.isFinite(n) && n > 0 ? n : TaskService.SSE_MAX_GLOBAL_DEFAULT;
+  }
+
+  /** 尝试为 execId 占用一个 SSE 流槽位；超限抛 ServiceUnavailableException。 */
+  acquireSseSlot(execId: string): () => void {
+    const perExec = this.sseMaxPerExecution;
+    const global = this.sseMaxGlobal;
+    const currentForExec = this.sseStreamsPerExecution.get(execId) ?? 0;
+
+    if (currentForExec >= perExec) {
+      throw new ServiceUnavailableException(
+        `Too many concurrent log streams for execution ${execId} (max ${perExec})`,
+      );
+    }
+    if (this.sseStreamsGlobal >= global) {
+      throw new ServiceUnavailableException(
+        `Too many concurrent log streams server-wide (max ${global})`,
+      );
+    }
+
+    this.sseStreamsPerExecution.set(execId, currentForExec + 1);
+    this.sseStreamsGlobal++;
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const n = (this.sseStreamsPerExecution.get(execId) ?? 1) - 1;
+      if (n <= 0) this.sseStreamsPerExecution.delete(execId);
+      else this.sseStreamsPerExecution.set(execId, n);
+      this.sseStreamsGlobal = Math.max(0, this.sseStreamsGlobal - 1);
+    };
+  }
+
+  /**
    * SSE log streaming: polls DB for new log lines while execution is running,
    * then flushes remaining lines and sends [DONE] when execution finishes.
    * Caller is responsible for writing SSE headers and closing the response.
+   *
+   * TASK-008: 受 acquireSseSlot 两级并发上限保护；无论正常结束、abort
+   * 还是抛异常，finally 都会释放槽位。
    */
   async streamExecutionLogs(
     execId: string,
     send: (line: string) => void,
     done: () => void,
     signal: AbortSignal,
+    preAcquiredSlot?: () => void,
   ): Promise<void> {
+    // TASK-008: 控制器通常会在写出 SSE 响应头之前预先占用槽位
+    // （preAcquiredSlot），以便超限时能返回真正的 503；未传入时在此补占。
+    const releaseSlot = preAcquiredSlot ?? this.acquireSseSlot(execId);
     let nextLine = 0;
     let s3FetchFailed = false;
     const POLL_INTERVAL = 1000; // ms
@@ -626,27 +739,32 @@ export class TaskService {
     };
 
     // Poll until done or aborted
-    while (!signal.aborted && Date.now() - start < MAX_RUNTIME) {
-      const finished = await flush();
-      if (finished) break;
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, POLL_INTERVAL);
-        signal.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(t);
-            resolve();
-          },
-          { once: true },
-        );
-      });
-    }
+    try {
+      while (!signal.aborted && Date.now() - start < MAX_RUNTIME) {
+        const finished = await flush();
+        if (finished) break;
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, POLL_INTERVAL);
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(t);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+      }
 
-    // Final flush after terminal state
-    if (!signal.aborted) {
-      await flush();
+      // Final flush after terminal state
+      if (!signal.aborted) {
+        await flush();
+      }
+      done();
+    } finally {
+      // TASK-008: 连接关闭/异常时必须归还槽位，否则计数泄漏会逐渐耗尽上限
+      releaseSlot();
     }
-    done();
   }
 
   async rollback(
