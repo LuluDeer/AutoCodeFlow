@@ -1,6 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ExecutionContext } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { NotificationConfigController } from '../notification-config.controller';
 import { NotificationConfigService } from '../notification-config.service';
+import { RolesGuard } from '../../../common/guards/roles.guard';
+import { ROLES_KEY } from '../../../common/decorators/roles.decorator';
+import { UserRole } from '../../users/entities/user.entity';
 
 const mockConfigService = () => ({
   getAllChannels: jest.fn(),
@@ -91,6 +96,45 @@ describe('NotificationConfigController', () => {
       expect(svc.sendTest).toHaveBeenCalledWith(
         expect.objectContaining({ channels: ['slack', 'email', 'wecom'] }),
       );
+    });
+  });
+
+  // N11: channel configs carry SMTP credentials — the global RolesGuard must
+  // reject plain users (403) on the channels read/write surface.
+  describe('RBAC — channels endpoints are ADMIN-only (N11)', () => {
+    const guard = new RolesGuard(new Reflector());
+    const ctxWith = (handler: Function, role: UserRole): ExecutionContext =>
+      ({
+        getHandler: () => handler,
+        getClass: () => NotificationConfigController,
+        switchToHttp: () => ({ getRequest: () => ({ user: { role } }) }),
+      }) as unknown as ExecutionContext;
+
+    it('getChannels/updateChannel declare @Roles(ADMIN) metadata', () => {
+      expect(
+        Reflect.getMetadata(ROLES_KEY, NotificationConfigController.prototype.getChannels),
+      ).toEqual([UserRole.ADMIN]);
+      expect(
+        Reflect.getMetadata(ROLES_KEY, NotificationConfigController.prototype.updateChannel),
+      ).toEqual([UserRole.ADMIN]);
+    });
+
+    it('plain user is denied (RolesGuard → 403)', () => {
+      expect(
+        guard.canActivate(ctxWith(NotificationConfigController.prototype.getChannels, UserRole.USER)),
+      ).toBe(false);
+      expect(
+        guard.canActivate(ctxWith(NotificationConfigController.prototype.updateChannel, UserRole.USER)),
+      ).toBe(false);
+    });
+
+    it('admin passes (200 path)', () => {
+      expect(
+        guard.canActivate(ctxWith(NotificationConfigController.prototype.getChannels, UserRole.ADMIN)),
+      ).toBe(true);
+      expect(
+        guard.canActivate(ctxWith(NotificationConfigController.prototype.updateChannel, UserRole.ADMIN)),
+      ).toBe(true);
     });
   });
 });

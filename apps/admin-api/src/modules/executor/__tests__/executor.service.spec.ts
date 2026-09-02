@@ -813,6 +813,90 @@ describe("ExecutorService (__tests__)", () => {
       const postCall = mockedAxios.post.mock.calls[0][0] as string;
       expect(postCall).toContain(rightGroup.address);
     });
+
+    // R6: executor pinning — task.executorId set ⇒ ONLY that executor.
+    describe("pinned executor (task.executorId)", () => {
+      const pinned = {
+        id: "e-pin",
+        appName: "pinned-node",
+        address: "pinned-host:3002",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        version: 1,
+      };
+
+      it("dispatches only to the pinned executor, bypassing group/tags filters", async () => {
+        executorRepo.findOne.mockResolvedValue(pinned);
+        // Fleet query must NOT be consulted at all when pinned.
+        mockedAxios.post.mockResolvedValue({ data: { accepted: true } });
+        const taskPinned = {
+          ...task,
+          executorId: "e-pin",
+          executorGroup: "group-that-matches-nothing",
+        } as unknown as Task;
+        const result = await service.dispatch(taskPinned, execution);
+        expect(result.accepted).toBe(true);
+        expect(executorRepo.find).not.toHaveBeenCalled();
+        expect(executorRepo.findOne).toHaveBeenCalledWith({
+          where: { id: "e-pin" },
+        });
+        expect(mockedAxios.post.mock.calls[0][0]).toContain(pinned.address);
+        expect(execution.executorAddress).toBe(pinned.address);
+      });
+
+      it("offline pinned executor fails fast with an EXECUTOR_OFFLINE-classifiable message (no fleet fallback)", async () => {
+        executorRepo.findOne.mockResolvedValue({
+          ...pinned,
+          status: ExecutorStatus.OFFLINE,
+        });
+        executorRepo.find.mockResolvedValue([executor]);
+        await expect(
+          service.dispatch(
+            { ...task, executorId: "e-pin" } as unknown as Task,
+            execution,
+          ),
+        ).rejects.toThrow(/Pinned executor .* is offline/);
+        // No fallback: fleet never queried, nothing dispatched.
+        expect(executorRepo.find).not.toHaveBeenCalled();
+        expect(mockedAxios.post).not.toHaveBeenCalled();
+      });
+
+      it("missing pinned executor fails with not-found (no fleet fallback)", async () => {
+        executorRepo.findOne.mockResolvedValue(null);
+        executorRepo.find.mockResolvedValue([executor]);
+        await expect(
+          service.dispatch(
+            { ...task, executorId: "gone" } as unknown as Task,
+            execution,
+          ),
+        ).rejects.toThrow(/Pinned executor gone not found/);
+        expect(executorRepo.find).not.toHaveBeenCalled();
+        expect(mockedAxios.post).not.toHaveBeenCalled();
+      });
+
+      it("respects the pinned executor slot cap (optimistic increment still applied)", async () => {
+        executorRepo.findOne.mockResolvedValue({
+          ...pinned,
+          maxConcurrentTasks: 1,
+          runningTaskCount: 1,
+        });
+        // Simulate the capacity-guarded UPDATE losing the race (affected=0).
+        executorRepo.createQueryBuilder.mockReturnValue({
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: 0 }),
+        } as any);
+        await expect(
+          service.dispatch(
+            { ...task, executorId: "e-pin" } as unknown as Task,
+            execution,
+          ),
+        ).rejects.toThrow(/No available executor/);
+        expect(mockedAxios.post).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe("dispatchBroadcast", () => {
@@ -1015,6 +1099,32 @@ describe("ExecutorService (__tests__)", () => {
       await expect(service.setOfflineById("missing")).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe("getInstallCmd", () => {
+    it("returns curl|bash command pointing at the backend-served install.sh route", () => {
+      // Trailing slash on ADMIN_API_URL must be normalized away from the
+      // script URL; --api-url keeps the raw value (executor .env semantics).
+      (configService.get as jest.Mock)
+        .mockReturnValueOnce("http://admin.example.com:3105/") // ADMIN_API_URL
+        .mockReturnValueOnce("sh'ell-token"); // executor.sharedToken
+      const result = service.getInstallCmd();
+      expect(result.cmd).toContain(
+        "curl -fsSL 'http://admin.example.com:3105/api/executors/install.sh'",
+      );
+      expect(result.cmd).toContain(
+        "| bash -s -- --api-url 'http://admin.example.com:3105/'",
+      );
+      // Shell-quoting guard: single quotes in the token are escaped, not passed raw.
+      expect(result.cmd).toContain("--secret 'sh'\\''ell-token'");
+      expect(result.token).toBe("sh'ell-token");
+      expect(result.adminApiUrl).toBe("http://admin.example.com:3105/");
+    });
+
+    it("no longer emits the legacy npx autoflow-executor command", () => {
+      const result = service.getInstallCmd();
+      expect(result.cmd).not.toContain("npx autoflow-executor");
     });
   });
 });

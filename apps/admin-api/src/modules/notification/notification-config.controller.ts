@@ -9,6 +9,8 @@ import {
 } from "@nestjs/common";
 import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { UserRole } from "../users/entities/user.entity";
 import { NotificationConfigService } from "./notification-config.service";
 
 @ApiTags("Notification Config")
@@ -18,13 +20,18 @@ import { NotificationConfigService } from "./notification-config.service";
 export class NotificationConfigController {
   constructor(private readonly configService: NotificationConfigService) {}
 
+  // N11: channel configs carry SMTP credentials (password field) and webhook
+  // URLs — infrastructure config, admin only. The global RolesGuard reads the
+  // metadata; no extra @UseGuards entry is needed (same pattern as audit).
   @Get("channels")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get all notification channel configs" })
   getChannels() {
     return this.configService.getAllChannels();
   }
 
   @Patch("channels/:key")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Update notification channel config" })
   updateChannel(
     @Param("key") key: string,
