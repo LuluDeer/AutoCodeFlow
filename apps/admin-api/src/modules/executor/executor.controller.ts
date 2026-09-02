@@ -456,6 +456,21 @@ export class ExecutorController {
 
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
+  @Post(":id/set-offline")
+  @ApiOperation({
+    summary: "Mark executor offline",
+    description:
+      "Admin: mark a specific executor as offline by ID (does not interrupt running tasks; use for stale records after crash).",
+  })
+  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiResponse({ status: 200, description: "Updated executor entity" })
+  @ApiResponse({ status: 404, description: "Executor not found" })
+  setOffline(@Param("id") id: string) {
+    return this.svc.setOfflineById(id);
+  }
+
+  @ApiBearerAuth("JWT")
+  @UseGuards(JwtAuthGuard)
   @Delete(":id")
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({

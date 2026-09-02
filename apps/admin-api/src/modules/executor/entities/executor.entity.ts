@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   Index,
+  VersionColumn,
 } from "typeorm";
 
 export enum ExecutorStatus {
@@ -21,6 +22,7 @@ export enum ExecutorType {
 @Index(["status"])
 @Index(["groupName"])
 @Index(["lastHeartbeat"])
+@Index("uq_executors_address", ["address"], { unique: true })
 export class Executor {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() appName: string;
@@ -33,7 +35,7 @@ export class Executor {
   status: ExecutorStatus;
   @Column({ type: "enum", enum: ExecutorType, default: ExecutorType.PYTHON })
   type: ExecutorType;
-  @Column({ nullable: true }) version: string;
+  @Column({ nullable: true }) executorVersion: string;
   @Column({ type: "simple-array", nullable: true }) capabilities: string[];
   @Column({ nullable: true }) lastHeartbeat: Date;
   @Column({ nullable: true }) executorStartedAt: Date | null;
@@ -67,4 +69,7 @@ export class Executor {
 
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;
+
+  /** R-P0-006: Optimistic lock version for preventing dispatch race conditions */
+  @VersionColumn() version: number;
 }
