@@ -271,3 +271,26 @@ admin-api **669/669（47 suites）** · executor-node **119/119**（5 连跑稳�
 ### 8.4 方法论沉淀
 
 **mock 一切不等于能跑**：五轮排查中 admin-api 单测从 432→669 全绿，但 BullMQ 参数校验、PG enum 读回形态、迁移链全新库执行序这三类问题只有真机能暴露。后续任何调度/队列/迁移改动，验收标准应包含 compose 冒烟（下一步建议 #2 的 CI 方案已含）。
+
+---
+
+## 九、第六轮：遗留清零 + CI 落地 + install.sh 闭环 + audit 修复（2026-09-03）
+
+> 方法：侦察 → A/B/C/D 四路并行（N6+DTO / CI / install.sh+pinning / 只读 audit）→ audit triage（N7-N16 共 9 项）→ F1/F2/F3 三路修复 → V 真机验证 6/6 PASS。报告：`docs/PROGRESS-round6-2026-09-03.md`、`docs/VERIFY-round6-e2e.md`。
+
+### 9.1 本轮要点
+
+- ✅ N6 残留抖动：去重锁 TTL = 周期−500ms（acquire 相位滞后 δ 是根因）——真机 15s 任务 gap 均值 15.000s 零抖动（修复前 15/30 混合）
+- ✅ 任务 API：id UUID 校验（400/409）+ executor pinning（迁移 25 + dispatch pinned 分支，真机三语义 PASS）
+- ✅ install.sh 全链：后端承载路由 + install-cmd curl|bash + N15 注入校验 + 双副本漂移守卫
+- ✅ audit N7-N15：N7 查询白名单旁路（TS 交叉类型→design:paramtypes=Object，显式 DTO 修复）、N8 SSE 30s 掐断（@SkipTimeout 装饰器）、N9 worker Map 泄漏（5min 惰性回收）、N10-N13（CLI killed 终态/mcp-server 超时文案/RBAC+脱敏/admin-web 类型）
+- ✅ CI：ci.yml 重写 12 jobs（develop 触发 + e2e 真机修绿 37/37 + 迁移链双轮幂等 job）
+- ⚠️ RBAC 姿态决策：GET /executors 保持登录可见不收紧 ADMIN（任务 CRUD 对普通用户开放 + executions 侧本就暴露 executorAddress，锁列表只打断 TaskFormPage 且挡不住侧信道）；notification/ai config 收紧 ADMIN + 密码脱敏（前端读面 403 待第七轮跟进）
+
+### 9.2 基线
+
+admin-api **730/730（51 suites）** · executor-node **125/125** · executor-python **86/86** · admin-web **19** · acf-cli **45** · mcp-server **48** · 全端 tsc ✓。
+
+### 9.3 方法论沉淀
+
+**类型系统在装饰器边界的静默失效**：TS 交叉类型作 NestJS @Query() 参数时 emitDecoratorMetadata 退化为 Object，ValidationPipe 白名单整个旁路——tsc 全绿不等于校验生效。审计手段：对 design:paramtypes 做元数据断言并固化进测试（execution-query.dto.spec）。同族问题：类型断言与后端实际返回不符（N13 admin-web pause/resume）属于"编译通过的谎言"，修复时应补编译期守卫测试。

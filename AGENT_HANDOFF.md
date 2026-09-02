@@ -3,19 +3,20 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - 测试基线（全绿）：
-  - admin-api **669/669** (jest, 47 suites) — 第五轮真机缺陷修复 +64 测试
-  - executor-node **119/119** (jest, 5 连跑稳定)
-  - executor-python **86/86** (pytest)
-  - admin-web vitest **15/15** / acf-cli vitest **41/41** / mcp-server vitest **40/40**
+  - admin-api **730/730** (jest, 51 suites) — 第六轮 N6/N7-N13/pinning/install.sh 修复
+  - executor-node **125/125** (jest, +6 idle 回收测试)
+  - executor-python **86/86** (pytest，持平)
+  - admin-web vitest **19/19** / acf-cli vitest **45/45** / mcp-server vitest **48/48**
   - admin-api / executor-node / acf-cli / mcp-server `tsc --noEmit` 全部通过
   - admin-web `npm run build` ✓ / lint 0 errors（5 warnings 基线）
+- 本轮（2026-09-03 第六轮，A/B/C/D 四路并行 → audit triage → F1/F2/F3 三路修复 → V 真机验证 6/6 PASS；详见 `docs/PROGRESS-round6-2026-09-03.md`、`docs/VERIFY-round6-e2e.md`）：
 - 本轮（2026-09-02 第三轮，4 并行 stream + 集成 + 文档验收，7 个 commit）：
   - `8bb3790` **调度器多实例（P0）**：Leader Election（`scheduler:leader` 锁 TTL 30s、TTL/2 续约校验、Redis 挂时 fail-open）+ `claimTaskTrigger` 条件 UPDATE 原子领取；recoverStaleExecutions 分批；TASK-007 依赖深度上限 64；TASK-008 SSE 并发上限（per-execution 4 / global 64，超限 503）；DB-001 task 软删除；DB-003 N+1 收敛
   - `7851ebd` **通知/AI/Webhook**：NOTIF-002 摘要脱敏截断；NOTIF-003 silences 上限 1000 + 定时清理；AI-002 `fallback` 标记（task 层响应已透传）；APP-001 webhook 失败统一 401；APP-002 缺 API_BASE_URL fail-fast；ARCH-003 上传走 `UploadApplicationDto`
@@ -39,6 +40,17 @@
   - `2642293` **真机发现 N2(P0) 修复**：PG enum 列运行时返回字符串 label（'normal'），原样传 BullMQ 致**所有调度入队 100% 失败**（单测全 mock queue 故从未暴露）——normalizeTaskPriority 入队边界归一化；N3 readyClient 消 ~15s 假 Leader；N4 register 幂等（同 address+startupId 不再轮换 token）；N5 stale cutoff 动态化；N6 去重锁 TTL 按触发周期（修 15s 任务被压成 300s）
   - `d2be430` **真机发现 N1(P1) 修复**：全新 DB 迁移链 3 处断裂（app_deployments 无建表、version 列撞名、rename 时序）幂等化 + CreateAppDeploymentsTable 补偿迁移 + migrations.spec describe 守卫（修 typeorm CLI 崩）；docker postgres 空库 24/24 + 存量续跑数据无损双验证
   - V 真机验证（`b2be111`）：Leader Election 双实例 80 execution 无重复、kill 后 35s 接管；LOG-11 S3 对象闭环；负载均衡精确 2+2——**三项全通过**；V2 复验 N2/N6/N3/N1 修复全部生效（96/96 success）
+- 本轮（2026-09-03 第六轮，详见 `docs/PROGRESS-round6-2026-09-03.md`、`docs/VERIFY-round6-e2e.md`）：
+  - **N6 残留抖动修复**：fixed_rate 去重锁 TTL 改 `周期−500ms`（`TRIGGER_DEDUP_JITTER_BUFFER_MS`，claim 窗口同源）——真机复验 15s 任务 11 个 gap 全部 14.999–15.001s、零 30s 级 gap（修复前 15/30 混合）
+  - **任务 API 契约**：CreateTaskDto.id UUID 校验（字符串 400/重复 409 含软删预检与 23505 兜底）；**executor pinning**（tasks.executorId 新列迁移 25 + dispatch pinned 分支：在线只派目标/离线 executor_offline/不存在 unknown；与 broadcast 互斥）——真机三语义 PASS
+  - **install.sh 闭环**：`install-script.content.ts` 单一事实源 + `GET /executors/install.sh`（@Public text/plain）+ install-cmd 重建 curl|bash + N15 参数注入校验（六种注入 exit 1 零落盘）+ 逐字节漂移守卫
+  - **audit N7-N15 修复**：N7 executions 两端点交叉类型白名单失效→显式 DTO（CLI 同步删 limit）；N8 SSE 30s 掐断→`@SkipTimeout()`；N9 executor-node worker Map 泄漏→5min 惰性回收；N10 CLI --wait 漏 killed；N11 通知/AI config 收紧 ADMIN + 密码脱敏（GET /executors 复核后**不**收紧，理由见 controller 注释）；N12 mcp-server 30s 超时+错误文案；N13 admin-web pause/resume 类型修正
+  - **CI 流水线**（`.github/workflows/ci.yml` 重写 12 jobs）：develop/main 双分支触发 + acf-cli/mcp-server/admin-web lint 补齐 + admin-api e2e（真机修绿 37/37，含 migrations.spec e2e worker 崩溃修复）+ 迁移链双轮幂等 job；admin-api lint（存量 154 errors）与 coverage 阈值两个 step 注释保留待清偿
+- ⚠️ 第六轮部署注意：
+  - **GET /notification/channels、/ai/config 已收紧 ADMIN**：admin-web 的 NotificationSettingsPage/settings 普通用户读面将 403，前后端需同批发布（第七轮补前端门控/降级 UI）
+  - acf-cli 需随轮重新分发（executions 请求移除 limit + killed 终态）
+  - mcp-server 需随轮重新分发（30s 超时 + 错误文案）
+  - 迁移 25（tasks.executorId）为幂等 ADD COLUMN，例行窗口执行即可
 - ⚠️ 部署注意事项：
   - **/uploads 鉴权是破坏性变更**：executor-node 必须升级到含 `eadedca` 的版本，否则下载应用包 401
   - **第四轮 RBAC 是行为变更**：普通用户访问 config 写端点/executor-packages 全部改判 403；前端未做角色门控（可见但操作 403），admin-web 需与 admin-api 同批发布（SSE `?access_token=`、编辑不发 name、下载带 auth 均依赖新后端）
@@ -91,14 +103,14 @@ cd packages/mcp-server && npx tsc --noEmit
 
 ## 下一步建议（按优先级）
 
-> 第四轮 11 项中 10 项已在第五轮完成（含首次真机验证三项全通过）。以下为第五轮后剩余：
+> 第五轮交接 6 项中 4 项已在第六轮完成（N6/CI/install.sh+pinning 均含真机验证）。以下为第六轮后剩余：
 
-1. **N6 残留节奏抖动**：fixed_rate 去重锁 TTL=周期存在亚秒竞态，实测 15s/30s 抖动（V2 记录）——建议 TTL=周期×0.9 或收紧 DB claim 双保险窗口；顺带评估 `POST /api/tasks` 字符串 id 报 500（CreateTaskDto 缺 uuid 校验）。
-2. **CI 流水线**：测试基建已确定性化（J 修复后 5 连跑全绿 + TZ 交叉），可上 CI 了——建议 GitHub Actions：五端 jest/pytest/vitest + tsc + lint + 迁移链空库/存量双轮验证（W2 的 docker postgres 脚本可直接搬）。
-3. **桌面执行器跨平台**：macOS Apple Silicon / WSL2 矩阵验证；executor-node 崩溃后跨重启进程 sweep 需与 desktop 生命周期协同（第四轮 G2 遗留）。
-4. **install.sh 一键安装**：实现静态脚本 + install-script 路由（第五轮已删孤儿 install-token 端点，未来随 install.sh 一并重建）；任务级 executor pinning（TriggerTaskDto 扩展）。
-5. **可观测性升级**：当前为进程内计数 + JSON 端点（`GET /metrics/scheduler`），如需接 Prometheus 抓 prom-client（评估依赖体积）或 OTel。
-6. **通知渠道真机**：企业微信/钉钉/邮件实测（SSRF 收紧后外发 URL 需白名单验证）；私有 npm/PyPI 仓库集成。
+1. **通知渠道真机**（企业微信/钉钉/邮件；SSRF 收紧后外发 URL 交互验证，docker mock receiver 可行）+ 私有 npm/PyPI 仓库集成。
+2. **CI 首次真跑**（push develop 触发验证）+ N16：`npm audit --registry=https://registry.npmjs.org` 显式源兜底 CVE 观测（本机 npmmirror 源 audit 不可用）。
+3. **admin-web 消费面跟进**：notification/ai config 页普通用户读面 403 的 RequireAdmin 门控或降级 UI；顺带清偿 admin-api lint 存量 154 errors（CI lint step 已注释保留恢复条件）与 coverage 阈值回补。
+4. **prom-client/OTel 评估**：当前进程内计数 + JSON `GET /metrics/scheduler` 已够用；如需 Prometheus 抓取再评估依赖体积。
+5. **桌面执行器跨平台矩阵**（macOS Apple Silicon / WSL2，需真机）；install-cmd 裸机未配置 ADMIN_API_URL 时的降级提示（第六轮 V 遗留观察）。
+6. SDK 统一与示例（路线图 #10 未系统梳理）。
 
 ## 未覆盖验证项
 
