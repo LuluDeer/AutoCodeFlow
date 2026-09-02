@@ -91,7 +91,9 @@ export class ApplicationController {
       required: ["file", "name"],
     },
   })
-  @UseInterceptors(FileInterceptor("file"))
+  @UseInterceptors(
+    FileInterceptor("file", { limits: { fileSize: 200 * 1024 * 1024 } }),
+  )
   async upload(
     @UploadedFile() file: Express.Multer.File,
     @Body("name") name: string,
@@ -99,6 +101,23 @@ export class ApplicationController {
   ) {
     if (!file) throw new BadRequestException("No file uploaded");
     if (!name) throw new BadRequestException("Application name is required");
+
+    // P1: upload validation — extension whitelist plus ZIP magic number, so
+    // arbitrary content cannot be stored and served as a trusted .zip.
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (ext !== ".zip") {
+      throw new BadRequestException(
+        "Application package must be a .zip file",
+      );
+    }
+    const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+    if (
+      !file.buffer ||
+      file.buffer.length < 4 ||
+      !file.buffer.subarray(0, 4).equals(ZIP_MAGIC)
+    ) {
+      throw new BadRequestException("File is not a valid ZIP archive");
+    }
 
     // Save uploaded zip to persistent uploads directory (served as static files)
     const uploadsDir = path.join(process.cwd(), "uploads", "packages");

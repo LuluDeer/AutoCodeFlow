@@ -72,11 +72,33 @@ export class ExecutorPackageService {
       .update(file.buffer)
       .digest("hex");
 
+    // P1: upload validation — extension whitelist plus magic-number check
+    // (zip family starts with PK, gzip with 1f 8b), rejecting arbitrary
+    // content stored under a trusted extension.
+    const lowerName = (file.originalname || "").toLowerCase();
+    const effectiveExt = lowerName.endsWith(".tar.gz")
+      ? ".tar.gz"
+      : path.extname(lowerName) || "";
+    const ALLOWED_EXTS = new Set([".zip", ".whl", ".tar.gz", ".tgz"]);
+    if (!ALLOWED_EXTS.has(effectiveExt)) {
+      throw new BadRequestException(
+        `Unsupported package extension "${effectiveExt || "(none)"}". Allowed: .zip, .whl, .tar.gz, .tgz`,
+      );
+    }
+    const head = file.buffer.subarray(0, 2);
+    const isArchive =
+      (head[0] === 0x50 && head[1] === 0x4b) ||
+      (head[0] === 0x1f && head[1] === 0x8b);
+    if (!isArchive) {
+      throw new BadRequestException(
+        "Package content is not a zip/wheel/gzip archive",
+      );
+    }
+
     // Construct unique filename: <name>-<version>-<first8checksum>.<ext>
-    const ext = path.extname(file.originalname) || ".zip";
     const safeName = createDto.name.replace(/[^a-zA-Z0-9_-]/g, "_");
     const safeVersion = createDto.version.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const filename = `${safeName}-${safeVersion}-${checksum.slice(0, 8)}${ext}`;
+    const filename = `${safeName}-${safeVersion}-${checksum.slice(0, 8)}${effectiveExt}`;
     const filePath = path.join(UPLOAD_DIR, filename);
 
     // Write file to disk

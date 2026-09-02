@@ -74,8 +74,20 @@ export class AuditService {
     if (resource) qb.andWhere("log.resource = :resource", { resource });
     if (userId) qb.andWhere("log.userId = :userId", { userId });
 
-    // Cap export at 10 000 rows to avoid memory exhaustion
-    const rows = await qb.take(10_000).getMany();
+    // Cap export at 10 000 rows; select raw columns only to avoid loading
+    // entities and the heavy jsonb `detail` column into memory
+    const rows = await qb
+      .select("log.id", "id")
+      .addSelect("log.userId", "userId")
+      .addSelect("log.username", "username")
+      .addSelect("log.action", "action")
+      .addSelect("log.resource", "resource")
+      .addSelect("log.resourceId", "resourceId")
+      .addSelect("log.result", "result")
+      .addSelect("log.ip", "ip")
+      .addSelect("log.createdAt", "createdAt")
+      .limit(10_000)
+      .getRawMany();
 
     const escape = (v: unknown) => {
       if (v === null || v === undefined) return "";
