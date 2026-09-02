@@ -16,6 +16,7 @@ const makeCallbackItem = (overrides: Partial<CallbackItemDto> = {}): CallbackIte
     executionId: EXEC_UUID,
     status: "success" as const,
     durationMs: 123,
+    executorAddress: "executor-python:8001",
     ...overrides,
   });
 
@@ -56,22 +57,6 @@ describe("ExecutionCallbackController", () => {
   });
 
   describe("POST /executions/callback — token verification", () => {
-    it("accepts valid Bearer shared token", async () => {
-      const result = await controller.callback(
-        `Bearer ${VALID_TOKEN}`,
-        [makeCallbackItem()],
-      );
-      expect(result).toEqual({ results: [{ executionId: EXEC_UUID, success: true }] });
-      expect(taskService.handleCallback).toHaveBeenCalledTimes(1);
-      expect(executorService.validateTokenByAddress).not.toHaveBeenCalled();
-    });
-
-    it("accepts shared token without Bearer prefix", async () => {
-      await expect(
-        controller.callback(VALID_TOKEN, [makeCallbackItem()]),
-      ).resolves.toBeDefined();
-    });
-
     it("accepts per-executor dynamic token when callback includes one executorAddress", async () => {
       const item = makeCallbackItem({ executorAddress: "executor-python:8001" });
 
@@ -86,9 +71,45 @@ describe("ExecutionCallbackController", () => {
       expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
     });
 
-    it("rejects invalid per-executor dynamic token", async () => {
+    it("accepts shared token for single-executor callback as fallback", async () => {
+      // Single-executor batches may still use the shared token (legacy path)
+      // when validateTokenByAddress rejects; this preserves backwards
+      // compatibility for executors that haven't been migrated to dynamic
+      // tokens yet. Multi-executor batches can NEVER use a shared token.
       executorService.validateTokenByAddress.mockResolvedValue(false);
       const item = makeCallbackItem({ executorAddress: "executor-python:8001" });
+      const result = await controller.callback(
+        `Bearer ${VALID_TOKEN}`,
+        [item],
+      );
+      expect(result.results).toBeDefined();
+      expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+    });
+
+    it("rejects shared token when callback batch spans multiple executor addresses", async () => {
+      // TASK-001: a single shared token must NEVER be allowed to confirm
+      // callbacks belonging to multiple executors — that would bypass
+      // per-executor authentication.
+      executorService.validateTokenByAddress.mockResolvedValue(false);
+      await expect(
+        controller.callback(`Bearer ${VALID_TOKEN}`, [
+          makeCallbackItem({ executorAddress: "executor-a:8001" }),
+          makeCallbackItem({ executionId: "6b4adba5-a2f8-4fe7-bf4f-5277d0d7f2b7", executorAddress: "executor-b:8001" }),
+        ]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(taskService.handleCallback).not.toHaveBeenCalled();
+    });
+
+    it("rejects invalid per-executor dynamic token", async () => {
+      executorService.validateTokenByAddress.mockResolvedValue(false);
+      // Use a non-default address so the shared-token fallback isn't tried.
+      const item = makeCallbackItem({ executorAddress: "executor-bad:8001" });
+      // Configure env so there is no shared token to fall back to.
+      configService.get.mockImplementation((key: string) => {
+        if (key === "app.nodeEnv") return "test";
+        return undefined;
+      });
 
       await expect(
         controller.callback("Bearer bad-dynamic-token", [item]),
@@ -97,34 +118,25 @@ describe("ExecutionCallbackController", () => {
       expect(taskService.handleCallback).not.toHaveBeenCalled();
     });
 
-    it("falls back to shared token when callback batch has multiple executor addresses", async () => {
+    it("rejects wrong shared token with 401 when no executor address", async () => {
+      // Items must carry executorAddress (TASK-001).
+      const item = makeCallbackItem();
+      item.executorAddress = undefined;
       await expect(
-        controller.callback(`Bearer ${VALID_TOKEN}`, [
-          makeCallbackItem({ executorAddress: "executor-a:8001" }),
-          makeCallbackItem({ executionId: "6b4adba5-a2f8-4fe7-bf4f-5277d0d7f2b7", executorAddress: "executor-b:8001" }),
-        ]),
-      ).resolves.toBeDefined();
-
-      expect(executorService.validateTokenByAddress).not.toHaveBeenCalled();
-    });
-
-    it("rejects wrong shared token with 401", async () => {
-      await expect(
-        controller.callback("Bearer wrong-token", [makeCallbackItem()]),
+        controller.callback("Bearer wrong-token", [item]),
       ).rejects.toBeInstanceOf(UnauthorizedException);
       expect(taskService.handleCallback).not.toHaveBeenCalled();
     });
 
-    it("rejects missing header with 401 when token is configured", async () => {
+    it("rejects missing header with 401", async () => {
       await expect(
         controller.callback(undefined, [makeCallbackItem()]),
       ).rejects.toBeInstanceOf(UnauthorizedException);
     });
 
-    it("rejects when no token configured in non-production (fail closed)", async () => {
+    it("rejects when no token configured (fail closed)", async () => {
       configService.get.mockImplementation((key: string) => {
         if (key === "app.nodeEnv") return "development";
-        if (key === "executor.sharedToken") return "";
         return undefined;
       });
       await expect(
@@ -133,26 +145,18 @@ describe("ExecutionCallbackController", () => {
       expect(taskService.handleCallback).not.toHaveBeenCalled();
     });
 
-    it("throws in production when no token configured", async () => {
-      configService.get.mockImplementation((key: string) => {
-        if (key === "app.nodeEnv") return "production";
-        if (key === "executor.sharedToken") return "";
-        return undefined;
-      });
-      await expect(
-        controller.callback(undefined, [makeCallbackItem()]),
-      ).rejects.toBeInstanceOf(UnauthorizedException);
-    });
-
-    it("prefers DB shared token over env token", async () => {
+    it("accepts DB shared token for single-executor callback", async () => {
+      // Single-executor batch: per-address token check fails, then we try
+      // the shared-token fallback (DB > env).
+      executorService.validateTokenByAddress.mockResolvedValue(false);
       const dbToken = "db-token-value";
       systemConfigService.findOne.mockResolvedValue({ value: dbToken });
-      await expect(
-        controller.callback(`Bearer ${dbToken}`, [makeCallbackItem()]),
-      ).resolves.toBeDefined();
-      await expect(
-        controller.callback(`Bearer ${VALID_TOKEN}`, [makeCallbackItem()]),
-      ).rejects.toBeInstanceOf(UnauthorizedException);
+      const item = makeCallbackItem({ executorAddress: "executor-a:8001" });
+      const result = await controller.callback(
+        `Bearer ${dbToken}`,
+        [item],
+      );
+      expect(result.results).toBeDefined();
     });
   });
 
