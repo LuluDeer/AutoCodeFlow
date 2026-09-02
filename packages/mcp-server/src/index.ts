@@ -47,7 +47,17 @@ async function apiRequest<T>(
     const text = await res.text();
     throw new Error(`API ${method} ${path} → ${res.status}: ${text}`);
   }
-  return res.json() as Promise<T>;
+  // admin-api applies a global ResponseInterceptor that wraps every
+  // successful response in `{ code, message, data }`. Strip the envelope so
+  // tool consumers can keep returning the actual payload as-is.
+  const raw = (await res.json()) as unknown;
+  if (raw && typeof raw === 'object' && 'data' in (raw as Record<string, unknown>)) {
+    const envelope = raw as { code?: unknown; message?: unknown; data?: unknown };
+    if ('code' in envelope || 'message' in envelope) {
+      return (envelope.data ?? (null as unknown)) as T;
+    }
+  }
+  return raw as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +219,52 @@ server.tool(
   },
 );
 
+// ---- get_application ------------------------------------------------------
+server.tool(
+  'get_application',
+  'Get full details of a registered application by ID, including version, git repo info, and runtime config.',
+  {
+    applicationId: z.string().describe('Application ID'),
+  },
+  async ({ applicationId }) => {
+    const data = await apiRequest<unknown>('GET', `/applications/${applicationId}`);
+    return {
+      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+    };
+  },
+);
+
+// ---- deploy_application --------------------------------------------------
+server.tool(
+  'deploy_application',
+  'Deploy an application to an executor. Leave executorId empty to auto-select the online executor with lowest load. Optionally override run mode, env vars, and start command.',
+  {
+    applicationId: z.string().describe('Application ID'),
+    executorId: z
+      .string()
+      .optional()
+      .describe('Target executor ID (optional — auto-selects the lowest-load online executor)'),
+    runMode: z.string().optional().describe('Run mode override (see RunMode enum, e.g. daemon)'),
+    env: z.record(z.string()).optional().describe('Environment variable overrides'),
+    startCommand: z.string().optional().describe('Startup command override'),
+  },
+  async ({ applicationId, executorId, runMode, env, startCommand }) => {
+    const body = Object.fromEntries(
+      Object.entries({ executorId, runMode, env, startCommand }).filter(
+        ([, v]) => v !== undefined,
+      ),
+    );
+    const data = await apiRequest<unknown>(
+      'POST',
+      `/app-deployments/applications/${applicationId}/deploy`,
+      body,
+    );
+    return {
+      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+    };
+  },
+);
+
 // ---- analyze_application --------------------------------------------------
 server.tool(
   'analyze_application',
@@ -263,6 +319,77 @@ server.tool(
       'GET',
       `/tasks/executions/${executionId}/logs?${params}`,
     );
+    return {
+      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+    };
+  },
+);
+
+// ---- kill_execution ------------------------------------------------------
+server.tool(
+  'kill_execution',
+  'Force-cancel a running or pending execution by ID. Requires task ID because the underlying route is task-scoped.',
+  {
+    taskId: z.string().describe('Task ID that owns the execution'),
+    executionId: z.string().describe('Execution ID to cancel'),
+  },
+  async ({ taskId, executionId }) => {
+    const data = await apiRequest<unknown>(
+      'POST',
+      `/tasks/${taskId}/executions/${executionId}/kill`,
+    );
+    return {
+      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+    };
+  },
+);
+
+// ---- list_deployments ----------------------------------------------------
+server.tool(
+  'list_deployments',
+  'List application deployments with optional filtering by application ID and pagination.',
+  {
+    applicationId: z.string().optional().describe('Filter by application ID'),
+    page: z.number().int().min(1).default(1).describe('Page number (default 1)'),
+    pageSize: z.number().int().min(1).max(100).default(20).describe('Items per page (default 20)'),
+  },
+  async ({ applicationId, page, pageSize }) => {
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      ...(applicationId ? { applicationId } : {}),
+    });
+    const data = await apiRequest<unknown>('GET', `/app-deployments?${params}`);
+    return {
+      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+    };
+  },
+);
+
+// ---- pause_task -----------------------------------------------------------
+server.tool(
+  'pause_task',
+  'Pause a task — stops scheduled triggers. In-progress executions are not affected.',
+  {
+    taskId: z.string().describe('Task ID to pause'),
+  },
+  async ({ taskId }) => {
+    const data = await apiRequest<unknown>('POST', `/tasks/${taskId}/pause`);
+    return {
+      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+    };
+  },
+);
+
+// ---- resume_task ----------------------------------------------------------
+server.tool(
+  'resume_task',
+  'Resume a previously paused task.',
+  {
+    taskId: z.string().describe('Task ID to resume'),
+  },
+  async ({ taskId }) => {
+    const data = await apiRequest<unknown>('POST', `/tasks/${taskId}/resume`);
     return {
       content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
     };
