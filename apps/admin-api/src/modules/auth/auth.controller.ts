@@ -35,7 +35,12 @@ export class AuthController {
   ) {}
 
   // N16: login rate limit — configurable via env LOGIN_THROTTLE_LIMIT (default 20 for dev, use 5 in prod)
-  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  @Throttle({
+    default: {
+      ttl: 60_000,
+      limit: Number(process.env.LOGIN_THROTTLE_LIMIT) || 20,
+    },
+  })
   @Public()
   @Post("login")
   @ApiOperation({
