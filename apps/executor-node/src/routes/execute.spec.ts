@@ -13,6 +13,7 @@ jest.mock('../config', () => ({
     maxConcurrentTasks: 10,
     appName: 'test-executor',
     executorAddress: 'localhost:8002',
+    taskTimeoutSeconds: 300,
   },
 }));
 jest.mock('../logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
@@ -41,7 +42,7 @@ jest.mock('../task-worker', () => ({
 }));
 jest.mock('child_process');
 
-import { executeRouter, runTask } from './execute';
+import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, BoundedLogBuffer } from './execute';
 import { pushCallback } from '../callback';
 import { executorAuthMiddleware } from './logs';
 import { taskWorkerManager } from '../task-worker';
@@ -255,5 +256,220 @@ describe('runTask callback logs', () => {
     expect(payload.logs.startsWith('A'.repeat(100))).toBe(true);
     expect(payload.logs.endsWith('B'.repeat(100))).toBe(true);
     expect(payload.logs).toContain('[logs truncated, original length 14000 chars]');
+  });
+
+  it('caps in-memory log accumulation for very chatty tasks', async () => {
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      pid: number;
+      kill: jest.Mock;
+    };
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.pid = 12346;
+    proc.kill = jest.fn();
+    (mockCp.spawn as jest.Mock).mockReturnValue(proc);
+
+    const task = {
+      id: 'task-log-cap',
+      name: 'Chatty task',
+      cmd: 'node',
+      args: ['index.js'],
+      workDir: '/tmp/test-workdir',
+      env: {},
+      timeout: 60,
+    };
+
+    const promise = runTask(task, {}, 'exec-log-cap');
+    proc.stdout.emit('data', Buffer.from('x'.repeat(3_000_000)));
+    proc.stdout.emit('data', Buffer.from('y'.repeat(3_000_000)));
+    proc.emit('close', 0);
+    await promise;
+
+    const payload = (pushCallback as jest.Mock).mock.calls[0][0];
+    // truncateCallbackLogs caps the payload at 10k, but its "original length"
+    // reflects the in-memory buffer: without the BoundedLogBuffer it would be
+    // 6,000,000 chars.
+    const original = Number(/original length (\d+) chars/.exec(payload.logs)![1]);
+    expect(original).toBeLessThan(1_200_000);
+    expect(payload.logs).toHaveLength(10_000);
+  });
+});
+
+describe('BoundedLogBuffer', () => {
+  it('keeps head and tail while dropping the middle once over the cap', () => {
+    const buf = new BoundedLogBuffer();
+    buf.append('a'.repeat(600_000));
+    buf.append('b'.repeat(600_000));
+    buf.append('c'.repeat(600_000));
+
+    const s = buf.toString();
+    expect(s.length).toBeLessThan(1_100_000);
+    expect(s.startsWith('aaaa')).toBe(true);
+    expect(s.endsWith('cccc')).toBe(true);
+    expect(s).toContain('truncated in memory');
+  });
+
+  it('returns the exact content when under the cap', () => {
+    const buf = new BoundedLogBuffer();
+    buf.append('hello ');
+    buf.append('world');
+    expect(buf.toString()).toBe('hello world');
+  });
+});
+
+describe('killRunningTaskProcesses', () => {
+  it('kills the detached task process group (POSIX) for running tasks', async () => {
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      pid: number;
+      kill: jest.Mock;
+    };
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.pid = 4242;
+    proc.kill = jest.fn();
+    (mockCp.spawn as jest.Mock).mockReturnValue(proc);
+
+    const promise = runTask(
+      { id: 'task-kill', name: 'k', cmd: 'node', args: ['x.js'], workDir: '/tmp/test-workdir', env: {}, timeout: 60 },
+      {},
+      'exec-kill',
+    );
+
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const killed = killRunningTaskProcesses();
+      expect(killed).toBe(1);
+      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL');
+    } finally {
+      killSpy.mockRestore();
+    }
+
+    proc.emit('close', 0);
+    await promise;
+
+    // Registry cleaned up — a second sweep has nothing to kill.
+    expect(killRunningTaskProcesses()).toBe(0);
+  });
+});
+
+describe('task hardening', () => {
+  it('injects NODE_PATH pointing at the shared .node_modules dir and leaks no secrets', async () => {
+    process.env.EXECUTOR_SHARED_TOKEN = 'top-secret';
+    process.env.EXECUTOR_SECRET = 'legacy-secret';
+    process.env.SOME_TASK_ENV = 'leak-me';
+    const okSpawn = {
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn((event: string, cb: Function) => { if (event === 'close') cb(0); }),
+      kill: jest.fn(),
+    };
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn);
+
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-nodepath',
+      task: { id: 'taskA', runtime: 'node', entrypoint: 'index.js', requirements: ['left-pad'] },
+    });
+    expect(res.status).toBe(200);
+
+    const taskArg = (taskWorkerManager.execute as jest.Mock).mock.calls.at(-1)[2];
+    expect(taskArg.env.NODE_PATH).toBe(
+      path.join('/tmp/test-workdir', '.node_modules', 'taskA', 'node_modules'),
+    );
+    expect(taskArg.env.EXECUTOR_SHARED_TOKEN).toBeUndefined();
+    expect(taskArg.env.EXECUTOR_SECRET).toBeUndefined();
+    expect(taskArg.env.SOME_TASK_ENV).toBeUndefined();
+    expect(taskArg.env.PATH).toBeDefined();
+    delete process.env.SOME_TASK_ENV;
+  });
+
+  it('rejects option-like git refs', async () => {
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-ref',
+      task: { runtime: 'node', gitRepo: 'https://example.com/repo.git', gitBranch: '-b' },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid git ref/);
+  });
+
+  it('rejects out-of-bounds task timeouts', async () => {
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-timeout-neg',
+      task: { runtime: 'node', entrypoint: 'index.js', timeout: 0.5 },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid task timeout/);
+
+    const res2 = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-timeout-huge',
+      task: { runtime: 'node', entrypoint: 'index.js', timeout: 90_000 },
+    });
+    expect(res2.status).toBe(400);
+  });
+
+  it('rejects entrypoints that escape the task work directory', async () => {
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-entry-escape',
+      task: { runtime: 'shell', entrypoint: '../../etc/evil.sh' },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/entrypoint escapes/);
+
+    const res2 = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-entry-escape-node',
+      task: { runtime: 'node', entrypoint: '../sibling.js' },
+    });
+    expect(res2.status).toBe(400);
+    expect(res2.body.error).toMatch(/entrypoint escapes/);
+  });
+});
+
+describe('git cache serialization', () => {
+  it('serializes concurrent checkouts of the same repo (no overlapping clones)', async () => {
+    const events: string[] = [];
+    const pendingCloses: Array<() => void> = [];
+    let active = 0;
+    let maxActive = 0;
+    (mockCp.spawn as jest.Mock).mockImplementation(() => {
+      events.push('spawn');
+      active++;
+      maxActive = Math.max(maxActive, active);
+      return {
+        stdout: { on: jest.fn() },
+        stderr: { on: jest.fn() },
+        on: jest.fn((event: string, cb: Function) => {
+          if (event === 'close') {
+            pendingCloses.push(() => {
+              active--;
+              events.push('close');
+              cb(0);
+            });
+          }
+        }),
+        kill: jest.fn(),
+      };
+    });
+
+    const p1 = gitCheckoutTo('https://example.com/repo.git', 'main', '/tmp/test-workdir/exec-e1');
+    await new Promise(r => setTimeout(r, 0));
+    const p2 = gitCheckoutTo('https://example.com/repo.git', 'main', '/tmp/test-workdir/exec-e2');
+    await new Promise(r => setTimeout(r, 0));
+
+    // The second checkout is queued behind the first — only one spawn so far.
+    expect(events.filter(e => e === 'spawn').length).toBe(1);
+
+    // Drain all commands (each is clone/checkout closing with code 0).
+    for (let i = 0; i < 20 && pendingCloses.length; i++) {
+      pendingCloses.shift()!();
+      await new Promise(r => setTimeout(r, 0));
+    }
+    await Promise.all([p1, p2]);
+
+    expect(maxActive).toBe(1);
+    // Two checkouts × (clone + checkout) = 4 spawns, none overlapping.
+    expect(events.filter(e => e === 'spawn').length).toBe(4);
   });
 });

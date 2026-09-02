@@ -8,11 +8,11 @@ import { Router, Request, Response } from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import * as https from 'https';
-import * as http from 'http';
 import { logger } from '../logger';
 import { post } from '../admin-client';
 import { config } from '../config';
+import { downloadFile } from '../lib/download';
+import { isSafePathSegment } from '../safe-path';
 
 export const updatePackageRouter = Router();
 
@@ -25,46 +25,23 @@ interface UpdatePackagePayload {
   checksum: string; // SHA-256 hex
 }
 
-/** Download file to local path, return actual bytes written */
-function downloadFile(url: string, dest: string, maxRedirects = 5): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    const fail = (err: Error) => {
-      file?.destroy?.();
-      fs.unlink(dest, () => {});
-      reject(err);
-    };
-    const proto = url.startsWith('https') ? https : http;
-    const req = proto.get(url, (res) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // bounded redirect follow
-        file.close();
-        fs.promises.unlink(dest).catch(() => {});
-        if (maxRedirects <= 0) {
-          reject(new Error('Download failed: too many redirects'));
-          return;
-        }
-        downloadFile(res.headers.location, dest, maxRedirects - 1).then(resolve).catch(reject);
-        return;
-      }
-      if (!res.statusCode || res.statusCode >= 400) {
-        fail(new Error(`Download failed with status ${res.statusCode}`));
-        return;
-      }
-      let bytes = 0;
-      res.on('data', (chunk: Buffer) => { bytes += chunk.length; });
-      res.pipe(file);
-      file.on('finish', () => { file.close(); resolve(bytes); });
-    });
-    req.on('error', fail);
-    req.setTimeout(120_000, () => { req.destroy(); fail(new Error('Download timed out')); });
-  });
-}
+/** Overall download budget — an absolute deadline, so a slow-drip server
+ *  cannot hold updateInProgress forever (it used to get stuck permanently). */
+const DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
+const DOWNLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+/** Belt-and-suspenders watchdog: force-release updateInProgress if the
+ *  download+verify flow somehow never settles. */
+const UPDATE_WATCHDOG_MS = 15 * 60_000;
 
-/** Calculate file SHA-256 */
-function fileChecksum(filePath: string): string {
-  const buf = fs.readFileSync(filePath);
-  return crypto.createHash('sha256').update(buf).digest('hex');
+/** Calculate file SHA-256 (streamed — package files can be large) */
+function fileChecksum(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk: string | Buffer) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
 }
 
 let updateInProgress = false;
@@ -74,6 +51,12 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
 
   if (!body.packageId || !body.downloadUrl || !body.version) {
     res.status(400).json({ error: 'Missing required fields: packageId, downloadUrl, version' });
+    return;
+  }
+  // The temp filename is derived from packageId — an unvalidated value with
+  // '/' or '..' could write the download outside .pkg-updates.
+  if (!isSafePathSegment(body.packageId)) {
+    res.status(400).json({ error: 'packageId contains unsupported characters' });
     return;
   }
   // An unverified package update is an unacceptable risk — admin-api always
@@ -114,14 +97,28 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
     const ext = body.downloadUrl.includes('.tar') ? '.tar.gz' : '.zip';
     const tmpFile = path.join(tmpDir, `${body.packageId}${ext}`);
 
+    // Force-release the in-progress flag even if the flow deadlocks below —
+    // otherwise every future package push is rejected with 409 until restart.
+    const watchdog = setTimeout(() => {
+      if (updateInProgress) {
+        updateInProgress = false;
+        logger.error(`[update-package] Watchdog fired after ${UPDATE_WATCHDOG_MS}ms — force-releasing updateInProgress`);
+      }
+    }, UPDATE_WATCHDOG_MS);
+    watchdog.unref?.();
+
     try {
-      // 1. Download
+      // 1. Download (shared downloader: Bearer token + absolute deadline + size cap)
       logger.info(`[update-package] Downloading to ${tmpFile}`);
-      await downloadFile(body.downloadUrl, tmpFile);
+      const bytes = await downloadFile(body.downloadUrl, tmpFile, {
+        sendAuth: true,
+        timeoutMs: DOWNLOAD_TIMEOUT_MS,
+        maxBytes: DOWNLOAD_MAX_BYTES,
+      });
 
       // 2. Verify checksum if provided
       if (body.checksum) {
-        const actual = fileChecksum(tmpFile);
+        const actual = await fileChecksum(tmpFile);
         if (actual !== body.checksum) {
           throw new Error(`Checksum mismatch: expected ${body.checksum}, got ${actual}`);
         }
@@ -136,7 +133,7 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
         version: body.version,
       }).catch((e) => logger.warn(`[update-package] Failed to report push result: ${e.message}`));
 
-      logger.info(`[update-package] Package ${body.name}@${body.version} downloaded successfully to ${tmpFile}`);
+      logger.info(`[update-package] Package ${body.name}@${body.version} downloaded successfully to ${tmpFile} (${bytes} bytes)`);
       logger.info(`[update-package] Package is available at ${tmpFile} — apply it manually or via your deployment pipeline.`);
 
     } catch (err: unknown) {
@@ -152,6 +149,7 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
         error: msg,
       }).catch(() => {});
     } finally {
+      clearTimeout(watchdog);
       updateInProgress = false;
     }
   });

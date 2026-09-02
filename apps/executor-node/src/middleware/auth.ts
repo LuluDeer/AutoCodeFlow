@@ -98,8 +98,14 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
     validTokens.push(STATIC_TOKEN);
   }
 
-  // If no tokens configured at all, allow all requests (dev mode)
+  // If no tokens configured at all, allow all requests (dev mode) — unless
+  // REQUIRE_TOKEN=true, where fail-closed wins over dev convenience: an
+  // unauthenticated /api/execute is arbitrary code execution on this host.
   if (validTokens.length === 0) {
+    if (process.env.REQUIRE_TOKEN === 'true') {
+      res.status(503).json({ error: 'Executor has no token configured (REQUIRE_TOKEN=true)' });
+      return;
+    }
     next();
     return;
   }

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { spawn } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -10,6 +10,8 @@ import { loadManifest, mergeTaskWithManifest } from '../manifest';
 import { pushCallback } from '../callback';
 import { appendLog } from '../file-logger';
 import { taskWorkerManager } from '../task-worker';
+import { runCommand, killProcessTree } from '../run-command';
+import { buildChildEnv } from '../env-whitelist';
 
 /** Convert git URL to a safe cache directory name */
 function repoDirName(repoUrl: string): string {
@@ -26,32 +28,45 @@ function redactUrl(u: string): string {
   return u.replace(/\/\/[^/@]+@/, '//***@');
 }
 
-/** Promise-wrapped spawn: git/npm must not use spawnSync on the request path
- *  — a synchronous 120–300s wait stalls heartbeats, /health and every API. */
-function runCommand(
-  cmd: string,
-  args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number; shell?: boolean } = {},
-): Promise<{ status: number | null; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderr = '';
-    const timer = opts.timeout
-      ? setTimeout(() => {
-          try { child.kill('SIGKILL'); } catch (_) { /* already dead */ }
-        }, opts.timeout)
-      : null;
-    // Drain stdout so a chatty child never stalls on a full pipe buffer.
-    child.stdout?.on('data', () => {});
-    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
-    child.on('error', (err) => {
-      if (timer) clearTimeout(timer);
-      resolve({ status: null, stderr: `${stderr}${err.message}` });
-    });
-    child.on('close', (code) => {
-      if (timer) clearTimeout(timer);
-      resolve({ status: code, stderr });
-    });
+const gitCacheQueues = new Map<string, Promise<unknown>>();
+
+/** Serialize first-time clones per repo — concurrent executions of the same
+ *  repo would race `git clone --bare` into the same cache directory and the
+ *  losing side fails the whole execution (npm installs already queue via
+ *  queueTaskInstall; git had no equivalent). */
+function queueGitCheckout<T>(cacheKey: string, job: () => Promise<T>): Promise<T> {
+  const prev = gitCacheQueues.get(cacheKey) ?? Promise.resolve();
+  const run = prev.then(job, job);
+  const tail = run.then(() => undefined, () => undefined);
+  gitCacheQueues.set(cacheKey, tail);
+  tail.finally(() => {
+    if (gitCacheQueues.get(cacheKey) === tail) gitCacheQueues.delete(cacheKey);
+  });
+  return run;
+}
+
+/** Clone (with bare cache) and checkout the specified ref to dest directory */
+export async function gitCheckoutTo(repoUrl: string, ref: string, dest: string): Promise<void> {
+  const cacheDir = path.join(config.workDir, '.git_cache', repoDirName(repoUrl));
+  await queueGitCheckout(cacheDir, async () => {
+    if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const r = await runCommand('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120_000 });
+      if (r.status !== 0) throw new Error(`git clone failed: ${r.stderr.trim()}`);
+    } else {
+      const r = await runCommand('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60_000 });
+      if (r.status !== 0) {
+        // Continuing with a stale cache made tasks silently run old code.
+        throw new Error(`git fetch failed: ${r.stderr.trim()}`);
+      }
+    }
+    fs.mkdirSync(dest, { recursive: true });
+    const r = await runCommand(
+      'git',
+      [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'],
+      { timeout: 30_000 },
+    );
+    if (r.status !== 0) throw new Error(`git checkout failed: ${r.stderr.trim()}`);
   });
 }
 
@@ -68,29 +83,6 @@ function queueTaskInstall<T>(taskId: string, job: () => Promise<T>): Promise<T> 
     if (taskInstallQueues.get(taskId) === tail) taskInstallQueues.delete(taskId);
   });
   return run;
-}
-
-/** Clone (with bare cache) and checkout the specified ref to dest directory */
-async function gitCheckoutTo(repoUrl: string, ref: string, dest: string): Promise<void> {
-  const cacheDir = path.join(config.workDir, '.git_cache', repoDirName(repoUrl));
-  if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
-    fs.mkdirSync(cacheDir, { recursive: true });
-    const r = await runCommand('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120_000 });
-    if (r.status !== 0) throw new Error(`git clone failed: ${r.stderr.trim()}`);
-  } else {
-    const r = await runCommand('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60_000 });
-    if (r.status !== 0) {
-      // Continuing with a stale cache made tasks silently run old code.
-      throw new Error(`git fetch failed: ${r.stderr.trim()}`);
-    }
-  }
-  fs.mkdirSync(dest, { recursive: true });
-  const r = await runCommand(
-    'git',
-    [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'],
-    { timeout: 30_000 },
-  );
-  if (r.status !== 0) throw new Error(`git checkout failed: ${r.stderr.trim()}`);
 }
 
 export const executeRouter = Router();
@@ -207,6 +199,13 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     }
 
     const ref = gitCommit || gitBranch;
+    // git checkout uses array args (no shell injection), but an option-like
+    // ref (`-b`, `--orphan`) would still be parsed as a flag by git — same
+    // guard deploy.ts applies to its checkout path.
+    if (/^-/.test(ref)) {
+      sendError(400, `Invalid git ref: ${ref}`);
+      return;
+    }
     logger.info(`Checking out ${redactUrl(gitRepo)}@${ref} to ${workDir}`);
     try {
       await gitCheckoutTo(gitRepo, ref, workDir);
@@ -223,6 +222,12 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   const runtime = (task.runtime as string) || 'node';
   const entrypoint = (task.entrypoint as string) || 'index.js';
   const timeout = (task.timeout as number) || config.taskTimeoutSeconds;
+  // Bounded timeout: a negative value fires setTimeout immediately (instant
+  // task kill) and an unbounded one arms a near-permanent timer.
+  if (!Number.isFinite(timeout) || timeout < 1 || timeout > 86_400) {
+    sendError(400, `Invalid task timeout: ${timeout} (expected 1..86400 seconds)`);
+    return;
+  }
   const requirements: string[] = (task.requirements as string[]) || [];
   const taskId = String(task.id || executionId);
 
@@ -261,8 +266,10 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   }
 
   // node runtime: install dependencies on demand to task-isolated directory
+  let sharedNodeModulesDir: string | null = null;
   if (actualRuntime === 'node' && actualRequirements.length > 0) {
     const nodeModulesDir = path.join(config.workDir, '.node_modules', taskId);
+    sharedNodeModulesDir = nodeModulesDir;
     fs.mkdirSync(nodeModulesDir, { recursive: true });
     const pkgJson = path.join(nodeModulesDir, 'package.json');
     if (!fs.existsSync(pkgJson)) {
@@ -303,16 +310,16 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   }
 
   // SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
-  const ENV_WHITELIST = new Set([
-    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
-    'NODE_PATH', 'npm_config_cache', 'npm_config_prefix',
-    'TMPDIR', 'TEMP', 'TMP',
-    'USER', 'LOGNAME', 'SHELL',
-    'SYSTEMROOT', 'WINDIR', // Windows compat
-  ]);
-  const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (ENV_WHITELIST.has(k)) env[k] = v;
+  const env: NodeJS.ProcessEnv = buildChildEnv();
+  // Requirements were installed to .node_modules/<taskId>/node_modules via npm
+  // --prefix; Node's resolution chain never reaches a dot-prefixed sibling
+  // directory, so point NODE_PATH at it or every require() fails with
+  // MODULE_NOT_FOUND (verified reproduction — see review round 4).
+  if (sharedNodeModulesDir) {
+    const taskNodeModules = path.join(sharedNodeModulesDir, 'node_modules');
+    env['NODE_PATH'] = env['NODE_PATH']
+      ? `${taskNodeModules}${path.delimiter}${env['NODE_PATH']}`
+      : taskNodeModules;
   }
   // inject task-scoped context
   env['EXECUTION_ID'] = executionId;
@@ -346,6 +353,17 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     }
   } else {
     sendError(400, `Unsupported runtime: ${actualRuntime}`);
+    return;
+  }
+
+  // Hardening: the entrypoint is resolved against the work dir by every
+  // runtime (cwd=workDir), so a relative path with `..` could execute a
+  // script anywhere on the host. Glue scripts use absolute paths that are
+  // already inside the work dir and pass this guard unchanged.
+  const entryAbs = path.resolve(workDir, actualEntrypoint);
+  const workDirAbs = path.resolve(workDir);
+  if (entryAbs !== workDirAbs && !entryAbs.startsWith(workDirAbs + path.sep)) {
+    sendError(400, 'entrypoint escapes the task work directory');
     return;
   }
 
@@ -400,6 +418,9 @@ function writeExecMeta(executionId: string, data: Record<string, unknown>): void
 
 const CALLBACK_LOG_MAX_LENGTH = 10_000;
 const CALLBACK_LOG_HEAD_LENGTH = 5_000;
+// admin CallbackItemDto caps errorMessage at 4096 — a longer value makes the
+// DTO validation reject the WHOLE batch (now ≤100 items), so clamp it here.
+const CALLBACK_ERROR_MESSAGE_MAX_LENGTH = 4000;
 
 function truncateCallbackLogs(logs?: string): string | undefined {
   if (typeof logs !== 'string' || logs.length <= CALLBACK_LOG_MAX_LENGTH) {
@@ -409,6 +430,80 @@ function truncateCallbackLogs(logs?: string): string | undefined {
   const marker = `\n... [logs truncated, original length ${logs.length} chars] ...\n`;
   const tailLength = Math.max(CALLBACK_LOG_MAX_LENGTH - CALLBACK_LOG_HEAD_LENGTH - marker.length, 0);
   return `${logs.slice(0, CALLBACK_LOG_HEAD_LENGTH)}${marker}${tailLength > 0 ? logs.slice(-tailLength) : ''}`;
+}
+
+function truncateCallbackErrorMessage(message?: string): string | undefined {
+  if (typeof message !== 'string' || message.length <= CALLBACK_ERROR_MESSAGE_MAX_LENGTH) {
+    return message;
+  }
+  return `${message.slice(0, CALLBACK_ERROR_MESSAGE_MAX_LENGTH)}... [error message truncated]`;
+}
+
+const LOG_HEAD_LIMIT = 500_000;
+const LOG_TAIL_LIMIT = 500_000;
+
+/** Bounded in-memory log accumulator: keeps the first and last ~500KB of
+ *  output. Without a cap a single `while(true) console.log(...)` task grows
+ *  the string unbounded and OOMs the whole executor (all concurrent tasks
+ *  die with it). The full output is already on disk for LOG-01 backfill. */
+export class BoundedLogBuffer {
+  private head = '';
+  private tail = '';
+  private truncated = false;
+  private total = 0;
+
+  append(chunk: string): void {
+    this.total += chunk.length;
+    if (this.head.length < LOG_HEAD_LIMIT) {
+      const space = LOG_HEAD_LIMIT - this.head.length;
+      this.head += chunk.slice(0, space);
+      const rest = chunk.slice(space);
+      if (rest) this.pushTail(rest);
+    } else {
+      this.pushTail(chunk);
+    }
+  }
+
+  private pushTail(chunk: string): void {
+    this.tail += chunk;
+    if (this.tail.length > LOG_TAIL_LIMIT) {
+      this.tail = this.tail.slice(this.tail.length - LOG_TAIL_LIMIT);
+      this.truncated = true;
+    }
+  }
+
+  toString(): string {
+    if (this.tail.length === 0) return this.head;
+    if (!this.truncated) return this.head + this.tail;
+    const marker = `\n... [log output truncated in memory, ${this.total} chars total, full output on disk] ...\n`;
+    return `${this.head}${marker}${this.tail}`;
+  }
+}
+
+/** Live task child processes keyed by executionId — lets graceful shutdown
+ *  kill detached process groups instead of orphaning them on exit. */
+const runningTaskProcesses = new Map<string, ChildProcess>();
+
+/** Kill every running task's process group (POSIX) / process (win32).
+ *  Called when the executor's graceful-shutdown grace period expires so
+ *  detached children don't outlive the executor as unmanaged orphans. */
+export function killRunningTaskProcesses(signal: NodeJS.Signals = 'SIGKILL'): number {
+  let killed = 0;
+  for (const [key, proc] of runningTaskProcesses) {
+    runningTaskProcesses.delete(key);
+    if (!proc.pid) continue;
+    try {
+      if (process.platform !== 'win32') {
+        process.kill(-proc.pid, signal);
+      } else {
+        proc.kill(signal);
+      }
+      killed++;
+    } catch (_) {
+      /* already dead */
+    }
+  }
+  return killed;
 }
 
 export async function runTask(task: any, params: Record<string, any>, executionId: string): Promise<void> {
@@ -459,7 +554,7 @@ export async function runTask(task: any, params: Record<string, any>, executionI
       status: 'failed',
       exitCode,
       logs: truncateCallbackLogs(logs),
-      errorMessage: message,
+      errorMessage: truncateCallbackErrorMessage(message),
       durationMs: Date.now() - startTime,
     });
   }
@@ -475,62 +570,66 @@ function runProcess(
 ): Promise<{ success: boolean; logs: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args, { cwd, env, detached: process.platform !== 'win32' });
-    let logs = '';
+    // Bounded accumulator — an unbounded `logs += output` OOMs the executor
+    // on chatty tasks (memory peaks before the 10k callback truncation).
+    const logBuffer = new BoundedLogBuffer();
     // Guard against close firing after timeout has already rejected the promise
     let settled = false;
 
+    if (proc.pid !== undefined) {
+      runningTaskProcesses.set(executionId ?? `pid-${proc.pid}`, proc);
+    }
+
     proc.stdout.on('data', (d: Buffer) => {
       const output = d.toString();
-      logs += output;
+      logBuffer.append(output);
       if (executionId) appendLog(executionId, output);
     });
     proc.stderr.on('data', (d: Buffer) => {
       const output = d.toString();
-      logs += output;
+      logBuffer.append(output);
       if (executionId) appendLog(executionId, output);
     });
+
+    const unregister = () => {
+      if (proc.pid !== undefined) {
+        runningTaskProcesses.delete(executionId ?? `pid-${proc.pid}`);
+      }
+    };
 
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       // B-06: kill the entire process group so child processes spawned by the task are also terminated
-      try {
-        if (proc.pid !== undefined) {
-          if (process.platform !== 'win32') {
-            process.kill(-proc.pid, 'SIGKILL');
-          } else {
-            proc.kill('SIGKILL');
-          }
-        }
-      } catch (_) {
-        try { proc.kill('SIGKILL'); } catch (_2) { /* already dead */ }
-      }
+      killProcessTree(proc, 'SIGKILL');
       // Attach collected logs like the close path does — otherwise the
       // failure callback carries no logs and the admin-side full-log
       // backfill (LOG-01) never triggers.
       const timeoutErr = new Error(`Task timeout after ${timeoutSec}s`) as Error & { logs: string };
-      timeoutErr.logs = logs;
+      timeoutErr.logs = logBuffer.toString();
       reject(timeoutErr);
     }, timeoutSec * 1000);
 
     proc.on('close', (code: number | null) => {
       clearTimeout(timer);
+      unregister();
       if (settled) return;
       settled = true;
       const exitCode = code ?? 1;
       if (exitCode !== 0) {
         // Attach logs and exitCode as properties so callers can surface them independently
         const err = new Error(`Process exited with code ${exitCode}`) as Error & { logs: string; exitCode: number };
-        (err as any).logs = logs;
+        (err as any).logs = logBuffer.toString();
         (err as any).exitCode = exitCode;
         reject(err);
       } else {
-        resolve({ success: true, logs, exitCode });
+        resolve({ success: true, logs: logBuffer.toString(), exitCode });
       }
     });
 
     proc.on('error', (err: Error) => {
       clearTimeout(timer);
+      unregister();
       if (settled) return;
       settled = true;
       reject(err);

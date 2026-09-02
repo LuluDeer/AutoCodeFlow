@@ -1,10 +1,14 @@
 import { Router, Request, Response } from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawn, spawnSync, ChildProcess } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import { config } from '../config';
 import { logger } from '../logger';
 import { post } from '../admin-client';
+import { runCommand, killProcessTree } from '../run-command';
+import { buildChildEnv } from '../env-whitelist';
+import { downloadFile } from '../lib/download';
+import { isSafePathSegment } from '../safe-path';
 
 export const deployRouter = Router();
 
@@ -66,16 +70,21 @@ function venvBins(venvDir: string): { python: string; pip: string } {
   };
 }
 
-/** Install dependencies for the given deployment directory */
-function installDeps(
+/** Install dependencies for the given deployment directory. Async — the
+ *  previous spawnSync calls froze the event loop for up to 5 minutes
+ *  (npm/pip installs), stopping heartbeats, /health and every API. */
+async function installDeps(
   deployDir: string,
   runtime: string,
   envVars: Record<string, string>,
-): void {
-  const env = { ...process.env, ...envVars };
+): Promise<void> {
+  // SEC: whitelist env only — the previous `{ ...process.env, ...envVars }`
+  // leaked EXECUTOR_SHARED_TOKEN/EXECUTOR_SECRET into user-controlled app
+  // install processes, letting deployed code impersonate this executor
+  // against admin-api (heartbeats, execution callbacks).
+  const env = buildChildEnv(envVars);
   const isWin = process.platform === 'win32';
 
-  // SEC: spawnSync with array args — no shell, no injection
   if (runtime === 'node' || runtime === 'nodejs') {
     const pkgJson = path.join(deployDir, 'package.json');
     if (fs.existsSync(pkgJson)) {
@@ -84,7 +93,7 @@ function installDeps(
       const npmCmd = isWin ? 'npm.cmd' : 'npm';
       const npmArgs = ['install', '--production'];
       if (config.npmRegistryUrl) npmArgs.push(`--registry=${config.npmRegistryUrl}`);
-      const r = spawnSync(npmCmd, npmArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000, shell: isWin });
+      const r = await runCommand(npmCmd, npmArgs, { cwd: deployDir, env, timeout: 300_000, shell: isWin });
       if (r.status !== 0) throw new Error(r.stderr?.toString() || 'npm install failed');
     }
   } else if (runtime === 'python') {
@@ -94,12 +103,12 @@ function installDeps(
       const venvDir = path.join(deployDir, '.venv');
       // Try 'python3' first (Linux/macOS), fall back to 'python' (Windows)
       const pythonCmd = isWin ? 'python' : 'python3';
-      const venvR = spawnSync(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, stdio: 'pipe', timeout: 60_000 });
+      const venvR = await runCommand(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, timeout: 60_000 });
       if (venvR.status !== 0) throw new Error(venvR.stderr?.toString() || `${pythonCmd} -m venv failed`);
       const bins = venvBins(venvDir);
       const pipArgs = ['install', '-r', 'requirements.txt'];
       if (config.pythonRegistryUrl) pipArgs.push('-i', config.pythonRegistryUrl);
-      const pipR = spawnSync(bins.pip, pipArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000 });
+      const pipR = await runCommand(bins.pip, pipArgs, { cwd: deployDir, env, timeout: 300_000 });
       if (pipR.status !== 0) throw new Error(pipR.stderr?.toString() || 'pip install failed');
     }
   }
@@ -114,7 +123,10 @@ function startApp(
   runMode: string,
   envVars: Record<string, string>,
 ): void {
-  const env = { ...process.env, ...envVars };
+  // SEC: whitelist env only — same trust boundary as task execution. The app
+  // and its children get the task/env whitelist plus its own envVars, never
+  // the executor's secrets (EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET).
+  const env = buildChildEnv(envVars);
 
   let cmd: string;
   let args: string[];
@@ -164,7 +176,10 @@ function startApp(
   const child = spawn(cmd, args, {
     cwd: deployDir,
     env,
-    detached: false,
+    // Detached on POSIX so the app leads its own process group — app-stop /
+    // upgrade can then kill the whole tree (the app may spawn its own
+    // children; a parent-only kill would orphan them).
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -218,84 +233,12 @@ function redactUrl(u: string): string {
   return u.replace(/\/\/[^/@]+@/, '//***@');
 }
 
-/** Promise-wrapped spawn — deploy runs inside setImmediate, but spawnSync
- *  still froze the whole process (heartbeats, /health, all APIs) for the
- *  duration of git/npm/pip/unzip work. */
-function runCommand(
-  cmd: string,
-  args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number; shell?: boolean } = {},
-): Promise<{ status: number | null; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderr = '';
-    const timer = opts.timeout
-      ? setTimeout(() => {
-          try { child.kill('SIGKILL'); } catch (_) { /* already dead */ }
-        }, opts.timeout)
-      : null;
-    child.stdout?.on('data', () => {});
-    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
-    child.on('error', (err) => {
-      if (timer) clearTimeout(timer);
-      resolve({ status: null, stderr: `${stderr}${err.message}` });
-    });
-    child.on('close', (code) => {
-      if (timer) clearTimeout(timer);
-      resolve({ status: code, stderr });
-    });
-  });
-}
-
-/** Download a file over HTTP/HTTPS to a local path */
+/** Download a package over HTTP/HTTPS to a local path. Delegates to the
+ *  shared downloader (Bearer token + cross-host redirect stripping + absolute
+ *  download deadline + size cap) so deploy and update-package behave
+ *  identically — update-package previously had a second, token-less copy. */
 export function downloadPackage(url: string, dest: string, maxRedirects = 5, sendAuth = true): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proto = url.startsWith('https') ? require('https') : require('http');
-    const file = fs.createWriteStream(dest);
-    const fail = (err: Error) => {
-      file?.destroy?.();
-      fs.unlink(dest, () => {});
-      reject(err);
-    };
-    // admin-api /uploads 现已强制鉴权（upload-auth.middleware）：携带 executor
-    // 共享 token 作为 Bearer 凭证。跨主机重定向时不再携带，防止 token 泄露到第三方域。
-    const headers: Record<string, string> = {};
-    if (sendAuth && config.token) {
-      headers['Authorization'] = `Bearer ${config.token}`;
-    }
-    const req = proto.get(url, { headers }, (res: any) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        file?.close?.();
-        fs.unlink(dest, () => {});
-        if (maxRedirects <= 0) {
-          reject(new Error('Download failed: too many redirects'));
-          return;
-        }
-        let nextUrl: URL;
-        try {
-          nextUrl = new URL(res.headers.location, url);
-        } catch {
-          reject(new Error('Download failed: invalid redirect location'));
-          return;
-        }
-        const nextSendAuth = sendAuth && nextUrl.hostname === new URL(url).hostname;
-        downloadPackage(nextUrl.href, dest, maxRedirects - 1, nextSendAuth).then(resolve).catch(reject);
-        return;
-      }
-      if (!res.statusCode || res.statusCode >= 400) {
-        fail(new Error(`Download failed: HTTP ${res.statusCode}`));
-        return;
-      }
-      res.pipe(file);
-      file.on('finish', () => { file.close(); resolve(); });
-    });
-    req.on('error', fail);
-    req.setTimeout(120_000, () => { req.destroy(); fail(new Error('Download timed out')); });
-  });
-}
-
-function isSafePathSegment(value: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+  return downloadFile(url, dest, { maxRedirects, sendAuth }).then(() => undefined);
 }
 
 function validatePackageUrl(packageUrl: string): string | null {
@@ -400,10 +343,10 @@ function restoreCurrentRelease(currentLink: string, previousTarget: string | nul
   }
 }
 
-function assertSafeZipEntries(zipPath: string): void {
+async function assertSafeZipEntries(zipPath: string): Promise<void> {
   if (process.platform === 'win32') return;
 
-  const listR = spawnSync('unzip', ['-Z1', zipPath], { stdio: 'pipe', timeout: 30_000 });
+  const listR = await runCommand('unzip', ['-Z1', zipPath], { timeout: 30_000 });
   if (listR.status !== 0) {
     throw new Error(listR.stderr?.toString() || 'unzip listing failed');
   }
@@ -481,14 +424,14 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         await new Promise<void>((resolve) => {
           const gracefulTimeout = setTimeout(() => {
             logger.warn(`[deploy] Graceful stop timed out for ${deploymentId}, sending SIGKILL`);
-            existing.kill('SIGKILL');
+            killProcessTree(existing, 'SIGKILL');
             resolve();
           }, 10_000);
           existing.once('exit', () => {
             clearTimeout(gracefulTimeout);
             resolve();
           });
-          existing.kill('SIGTERM');
+          killProcessTree(existing, 'SIGTERM');
         });
         runningApps.delete(deploymentId);
         logger.info(`[deploy] Stopped existing process for ${deploymentId}`);
@@ -504,14 +447,15 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
         const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
         await downloadPackage(packageUrl, zipPath);
-        assertSafeZipEntries(zipPath);
+        await assertSafeZipEntries(zipPath);
         logger.info(`[deploy] Extracting package for ${deploymentId}`);
-        // Use platform-appropriate extraction:
+        // Use platform-appropriate extraction (async — spawnSync here froze
+        // the event loop for up to 60s per archive):
         //   Windows: PowerShell Expand-Archive (built-in since PS 5.0)
         //   Linux/macOS: unzip
         let unzipOk = false;
         if (process.platform === 'win32') {
-          const psR = spawnSync(
+          const psR = await runCommand(
             'powershell.exe',
             [
               '-NoProfile',
@@ -520,12 +464,12 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
               zipPath,
               paths.extractDir,
             ],
-            { stdio: 'pipe', timeout: 60_000 },
+            { timeout: 60_000 },
           );
           if (psR.status !== 0) throw new Error(psR.stderr?.toString() || 'Expand-Archive failed');
           unzipOk = true;
         } else {
-          const unzipR = spawnSync('unzip', ['-o', zipPath, '-d', paths.extractDir], { stdio: 'pipe', timeout: 60_000 });
+          const unzipR = await runCommand('unzip', ['-o', zipPath, '-d', paths.extractDir], { timeout: 60_000 });
           if (unzipR.status !== 0) throw new Error(unzipR.stderr?.toString() || 'unzip failed');
           unzipOk = true;
         }
@@ -534,22 +478,22 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
           logger.info(`[deploy] Package extracted for ${deploymentId}`);
         }
       } else if (gitRepo) {
-        // SEC: all git commands use spawnSync with array args — no shell, no injection
+        // SEC: all git commands use array args via async spawn — no shell, no injection
         logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
-        const cloneR = spawnSync(
+        const cloneR = await runCommand(
           'git', ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, '.'],
-          { cwd: paths.extractDir, stdio: 'pipe', timeout: 120_000 },
+          { cwd: paths.extractDir, timeout: 120_000 },
         );
         if (cloneR.status !== 0) throw new Error(cloneR.stderr?.toString() || 'git clone failed');
 
         if (gitCommit) {
-          const coR = spawnSync('git', ['checkout', gitCommit], { cwd: paths.extractDir, stdio: 'pipe', timeout: 30_000 });
+          const coR = await runCommand('git', ['checkout', gitCommit], { cwd: paths.extractDir, timeout: 30_000 });
           if (coR.status !== 0) throw new Error(coR.stderr?.toString() || 'git checkout failed');
         }
       }
 
       // Install dependencies before publishing the release.
-      installDeps(paths.extractDir, runtime, envVars);
+      await installDeps(paths.extractDir, runtime, envVars);
 
       // Write .env file for the app before publishing the release.
       if (Object.keys(envVars).length > 0) {
@@ -591,11 +535,13 @@ deployRouter.post('/app-stop', (req: Request, res: Response) => {
   const { deploymentId } = req.body;
   const child = runningApps.get(deploymentId);
   if (child) {
-    child.kill('SIGTERM');
+    // Apps are spawned detached (process-group leaders) — kill the whole
+    // tree so daemons that spawned their own children don't escape.
+    killProcessTree(child, 'SIGTERM');
     // Escalate to SIGKILL when the process ignores SIGTERM (mirroring the
     // upgrade path) — otherwise daemons keep running unmanaged.
     const killTimer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch (_) { /* already dead */ }
+      killProcessTree(child, 'SIGKILL');
     }, 10_000);
     child.once('exit', () => clearTimeout(killTimer));
     runningApps.delete(deploymentId);

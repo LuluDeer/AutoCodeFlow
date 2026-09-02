@@ -17,9 +17,16 @@ import { config } from './config';
 import { logger } from './logger';
 import { executorStartedAt, executorStartupId, getRunningCount, startHeartbeat } from './scheduler';
 import { startCallbackThread, stopCallbackThread } from './callback';
-import { startLogCleanup, stopLogCleanup } from './file-logger';
+import {
+  startLogCleanup,
+  stopLogCleanup,
+  startWorkDirCleanup,
+  stopWorkDirCleanup,
+  flushLogs,
+} from './file-logger';
 import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
 import { taskWorkerManager } from './task-worker';
+import { killRunningTaskProcesses } from './routes/execute';
 import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
 import { configRouter } from './routes/config';
@@ -110,8 +117,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
   // Stop callback thread
   stopCallbackThread();
 
-  // Stop log cleanup thread
+  // Stop log cleanup thread + buffered log writer
   stopLogCleanup();
+  stopWorkDirCleanup();
 
   // Stop all task workers
   taskWorkerManager.stopAll();
@@ -121,7 +129,14 @@ async function gracefulShutdown(signal: string): Promise<void> {
   const startTime = Date.now();
   while (getRunningCount() > 0) {
     if (Date.now() - startTime > maxWait) {
-      logger.warn(`Grace period expired, ${getRunningCount()} task(s) still running, forcing shutdown`);
+      // Grace expired: kill the detached task process groups, otherwise they
+      // outlive the executor as unmanaged orphans (callbacks are already
+      // stopped, so their results could never be reported anyway).
+      const killed = killRunningTaskProcesses();
+      logger.warn(
+        `Grace period expired, ${getRunningCount()} task(s) still running, forcing shutdown` +
+          (killed > 0 ? ` — killed ${killed} task process group(s)` : ''),
+      );
       break;
     }
     logger.info(`Waiting for ${getRunningCount()} task(s) to complete...`);
@@ -130,6 +145,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
   // Stop accepting new requests
   server.close();
+
+  // Flush any buffered task logs to disk before exiting
+  try {
+    await flushLogs();
+  } catch (_) { /* best effort — we are shutting down */ }
 
   // Send offline notification
   await notifyOffline();
@@ -156,6 +176,18 @@ const server = app.listen(config.port, async () => {
     heartbeatInterval = startHeartbeat();
     startCallbackThread();
     startLogCleanup(config.logRetentionDays || 7);
+    // Disk reclamation for task workdirs / git caches / downloaded packages /
+    // dead-letter callbacks — same retention policy as the logs (7 days).
+    startWorkDirCleanup(config.logRetentionDays || 7);
+
+    // Fail loudly on a misconfiguration that would silently open an
+    // unauthenticated /api/execute endpoint (dev mode passthrough).
+    if (!config.token) {
+      logger.warn(
+        'No EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET configured — /api/* accepts UNAUTHENTICATED requests. ' +
+          'Set REQUIRE_TOKEN=true to refuse unauthenticated task submissions instead.',
+      );
+    }
   } catch (err: unknown) {
     // An async callback rejection here would be unhandled — exit loudly
     // instead so the supervisor restarts the executor.

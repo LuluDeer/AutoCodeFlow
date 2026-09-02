@@ -2,6 +2,8 @@ import request from 'supertest';
 import express from 'express';
 import * as fs from 'fs';
 import * as http from 'http';
+import * as childProcess from 'child_process';
+import { EventEmitter } from 'events';
 import type { AddressInfo } from 'net';
 
 jest.mock('fs');
@@ -28,12 +30,14 @@ import {
   shouldReportProcessExit,
   suppressNextRestartExitReport,
 } from './deploy';
+import { buildChildEnv } from '../env-whitelist';
 
 const app = express();
 app.use(express.json());
 app.use('/api', deployRouter);
 
 const mockFs = fs as jest.Mocked<typeof fs>;
+const mockCp = childProcess as jest.Mocked<typeof childProcess>;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -208,6 +212,164 @@ describe('downloadPackage authentication', () => {
       } catch {
         /* already removed */
       }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Async deploy pipeline (P2: spawnSync froze the event loop) + env whitelist
+// ---------------------------------------------------------------------------
+describe('POST /api/deploy — async pipeline', () => {
+  const basePayload = {
+    deploymentId: 'deploy-async',
+    applicationId: 'app-1',
+    appName: 'Demo App',
+    gitRepo: 'https://example.com/repo.git',
+    gitBranch: 'main',
+    runtime: 'node',
+    runMode: 'scheduled',
+  };
+
+  function okChild(onClose?: (code: number) => void) {
+    const events = new EventEmitter();
+    const child = {
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn((event: string, cb: Function) => {
+        if (event === 'close') setImmediate(() => cb(0));
+        if (event === 'exit' && onClose) setImmediate(() => onClose(0));
+        if (event === 'exit' && !onClose) events.once(event, (code: number) => cb(code));
+        if (event === 'error') events.once(event, (err: Error) => cb(err));
+      }),
+      once: jest.fn((event: string, cb: Function) => {
+        events.once(event, (...args: unknown[]) => (cb as (a: unknown) => void)(args[0]));
+      }),
+      kill: jest.fn(),
+      emit: (event: string, ...args: unknown[]) => events.emit(event, ...args),
+    };
+    return child;
+  }
+
+  async function waitFor(predicate: () => boolean, tries = 200): Promise<void> {
+    for (let i = 0; i < tries && !predicate(); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(predicate()).toBe(true);
+  }
+
+  it('completes a git deployment fully asynchronously (no spawnSync anywhere)', async () => {
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+    const res = await request(app).post('/api/deploy').send(basePayload);
+    expect(res.status).toBe(200);
+
+    const { post } = require('../admin-client') as { post: jest.Mock };
+    await waitFor(() =>
+      post.mock.calls.some(
+        (c: unknown[]) => c[0] === '/api/app-deployments/heartbeat' && (c[1] as any).status === 'running',
+      ),
+    );
+    expect(mockCp.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it('startApp env contains only whitelisted vars plus app envVars (no executor secrets)', async () => {
+    process.env.EXECUTOR_SHARED_TOKEN = 'top-secret';
+    process.env.EXECUTOR_SECRET = 'legacy-secret';
+    process.env.NOT_WHITELISTED = 'leak-me';
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockFs.createWriteStream as jest.Mock).mockReturnValue({
+      on: jest.fn(),
+      end: jest.fn(),
+      write: jest.fn(),
+    });
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+
+    try {
+      const res = await request(app)
+        .post('/api/deploy')
+        .send({ ...basePayload, runMode: 'daemon', env: { APP_MODE: 'prod' } });
+      expect(res.status).toBe(200);
+
+      await waitFor(() =>
+        (mockCp.spawn as jest.Mock).mock.calls.some(
+          (c: unknown[]) => (c[1] as string[]).includes('index.js'),
+        ),
+      );
+      const startCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+        (c: unknown[]) => (c[1] as string[]).includes('index.js'),
+      );
+      const [cmd, args, opts] = startCall as [string, string[], Record<string, unknown>];
+      expect(cmd).toBe('node');
+      expect(args).toEqual(['index.js']);
+      const env = opts.env as Record<string, string | undefined>;
+      expect(env.EXECUTOR_SHARED_TOKEN).toBeUndefined();
+      expect(env.EXECUTOR_SECRET).toBeUndefined();
+      expect(env.NOT_WHITELISTED).toBeUndefined();
+      expect(env.APP_MODE).toBe('prod');
+      expect(env.PATH).toBeDefined();
+      // detached so app-stop can kill the whole process group
+      expect(opts.detached).toBe(process.platform !== 'win32');
+    } finally {
+      delete process.env.EXECUTOR_SHARED_TOKEN;
+      delete process.env.EXECUTOR_SECRET;
+      delete process.env.NOT_WHITELISTED;
+    }
+  });
+
+  it('npm install subprocess env is whitelisted too (no executor secrets)', async () => {
+    process.env.EXECUTOR_SHARED_TOKEN = 'top-secret';
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+
+    try {
+      const res = await request(app)
+        .post('/api/deploy')
+        .send({ ...basePayload, env: { APP_MODE: 'prod' } });
+      expect(res.status).toBe(200);
+
+      await waitFor(() =>
+        (mockCp.spawn as jest.Mock).mock.calls.some(
+          (c: unknown[]) => (c[0] as string) === 'npm',
+        ),
+      );
+      const npmCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+        (c: unknown[]) => (c[0] as string) === 'npm',
+      );
+      const env = (npmCall as [string, string[], { env: Record<string, string | undefined> }])[2].env;
+      expect(env.EXECUTOR_SHARED_TOKEN).toBeUndefined();
+      expect(env.APP_MODE).toBe('prod');
+      expect(env.PATH).toBeDefined();
+    } finally {
+      delete process.env.EXECUTOR_SHARED_TOKEN;
+    }
+  });
+
+  it('app-stop kills the app process group (POSIX)', async () => {
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockFs.createWriteStream as jest.Mock).mockReturnValue({
+      on: jest.fn(),
+      end: jest.fn(),
+      write: jest.fn(),
+    });
+    const child = okChild();
+    (child as unknown as { pid: number }).pid = 5555;
+    (mockCp.spawn as jest.Mock).mockImplementation(() => child);
+
+    try {
+      const res = await request(app)
+        .post('/api/deploy')
+        .send({ ...basePayload, runMode: 'daemon' });
+      expect(res.status).toBe(200);
+      await waitFor(() => (mockCp.spawn as jest.Mock).mock.calls.some((c) => (c[1] as string[]).includes('index.js')));
+
+      const stopRes = await request(app).post('/api/app-stop').send({ deploymentId: 'deploy-async' });
+      expect(stopRes.status).toBe(200);
+      expect(killSpy).toHaveBeenCalledWith(-5555, 'SIGTERM');
+
+      // unblock pending timers by simulating exit
+      child.emit('exit', 0);
+    } finally {
+      killSpy.mockRestore();
     }
   });
 });
