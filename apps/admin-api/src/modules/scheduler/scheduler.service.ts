@@ -5,7 +5,7 @@ import {
   OnModuleDestroy,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, In, Repository } from "typeorm";
+import { DataSource, In, LessThan, Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { Cron, CronExpression } from "@nestjs/schedule";
@@ -105,12 +105,20 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    */
   @Cron("0 */10 * * * *")
   async recoverStaleExecutions() {
-    const runningExecs = await this.execRepo.find({
-      where: { status: ExecutionStatus.RUNNING },
-    });
-
+    // Medium-1.2: scan only RUNNING rows whose startTime is older than the
+    // 1-hour default grace window — the rest are presumed healthy and should
+    // not be materialized into memory. The per-task timeout refinement below
+    // may still rescue individual rows older than that, but we cap the
+    // initial find() to keep the cron cheap even with millions of rows.
     const now = Date.now();
     const DEFAULT_STALE_MS = 60 * 60 * 1000; // 1-hour fallback
+    const initialCutoff = new Date(now - DEFAULT_STALE_MS);
+    const runningExecs = await this.execRepo.find({
+      where: {
+        status: ExecutionStatus.RUNNING,
+        startTime: LessThan(initialCutoff),
+      },
+    });
     let recovered = 0;
 
     // Get all unique taskIds and fetch their timeouts
