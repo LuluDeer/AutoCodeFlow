@@ -20,10 +20,32 @@ const migrationFiles = (): { file: string; stamp: string }[] =>
 // TypeORM 以 glob `migrations/*{.ts,.js}` 加载迁移（data-source.ts /
 // app.module.ts），本 spec 文件也会被 require。在非 jest 环境（如
 // `npm run migration:run` 的 ts-node CLI）describe/it 未定义，顶层注册
-// 用例会直接 ReferenceError 并中断迁移。故仅在 jest 环境注册用例；
+// 用例会直接 ReferenceError 并中断迁移。
+// 另外，e2e worker（jest --config test/jest-e2e.json）在 beforeAll 中
+// bootstrap AppModule 时同样会 require 本文件——此时 describe/it 已定义，
+// 但 jest 处于运行期，注册用例会抛 "Cannot add a test after tests have
+// started running" 并使整个 e2e suite 失败。因此仅当"本文件正是当前
+// 正在执行的测试文件"（即 unit runner 收集用例）时才注册。
 // 测试断言逻辑本身不受影响。
 /* eslint-disable @typescript-eslint/no-undef */
-if (typeof describe === "function" && typeof it === "function") {
+const isCurrentTestFile = (): boolean => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = (globalThis as any).expect?.getState?.();
+    return (
+      typeof state?.testPath === "string" &&
+      path.resolve(state.testPath) === path.resolve(__filename)
+    );
+  } catch {
+    return false;
+  }
+};
+
+if (
+  typeof describe === "function" &&
+  typeof it === "function" &&
+  isCurrentTestFile()
+) {
   describe("migrations（DB-005 回归防护）", () => {
     it("不存在重复 timestamp", () => {
       const files = migrationFiles();
@@ -79,6 +101,22 @@ if (typeof describe === "function" && typeof it === "function") {
         expect(typeof instance.up).toBe("function");
         expect(typeof instance.down).toBe("function");
       }
+    });
+
+    it("R6: tasks.executorId pinning 迁移存在且可被 TypeORM 解析", () => {
+      const m = migrationFiles().find((f) =>
+        /-AddTaskExecutorId\.ts$/.test(f.file),
+      );
+      expect(m).toBeDefined();
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mod = require(path.join(MIGRATIONS_DIR, m!.file));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const proto = Object.values(mod)[0] as any;
+      const instance = new proto();
+      expect(instance.name).toBe(proto.name);
+      expect(proto.name.endsWith(m!.stamp)).toBe(true);
+      expect(typeof instance.up).toBe("function");
+      expect(typeof instance.down).toBe("function");
     });
   });
 }
