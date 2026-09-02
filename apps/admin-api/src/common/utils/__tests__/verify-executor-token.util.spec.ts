@@ -19,16 +19,18 @@ const makeSystemConfig = (dbToken: string | null) => ({
 
 describe("verifyExecutorToken", () => {
   describe("when no token is configured", () => {
-    it("passes silently in development", async () => {
+    it("throws in development even without auth header (fail closed)", async () => {
       const cfg = makeConfigService("development", "");
       const sys = makeSystemConfig(null);
-      await expect(verifyExecutorToken(undefined, cfg as any, sys as any)).resolves.toBeUndefined();
+      await expect(verifyExecutorToken(undefined, cfg as any, sys as any))
+        .rejects.toBeInstanceOf(UnauthorizedException);
     });
 
-    it("passes silently in test", async () => {
+    it("throws in test even with a token in header (fail closed)", async () => {
       const cfg = makeConfigService("test", "");
       const sys = makeSystemConfig(null);
-      await expect(verifyExecutorToken("any-token", cfg as any, sys as any)).resolves.toBeUndefined();
+      await expect(verifyExecutorToken("any-token", cfg as any, sys as any))
+        .rejects.toBeInstanceOf(UnauthorizedException);
     });
 
     it("throws in production even without auth header", async () => {

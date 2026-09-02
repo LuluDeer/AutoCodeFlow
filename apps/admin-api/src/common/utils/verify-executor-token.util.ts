@@ -10,15 +10,13 @@ import { SystemConfigService } from "../../modules/config/config.service";
  *    system-config API so it can be rotated without restarting the server.
  * 2. Falls back to the environment/config-file value (executor.sharedToken from
  *    ConfigService) for backward compatibility.
- * If neither is configured the check passes in non-production environments.
+ * If neither is configured, the request is rejected in every environment (fail closed).
  */
 export async function verifyExecutorToken(
   authHeader: string | undefined,
   configService: ConfigService,
   systemConfigService: SystemConfigService,
 ): Promise<void> {
-  const nodeEnv = configService.get<string>("app.nodeEnv");
-
   // 1. Try DB-stored token first
   let dbToken: string | null = null;
   try {
@@ -31,13 +29,11 @@ export async function verifyExecutorToken(
   const envToken = configService.get<string>("executor.sharedToken") ?? "";
   const effectiveToken = dbToken ?? (envToken.length > 0 ? envToken : null);
 
-  if (nodeEnv === "production" && !effectiveToken) {
+  if (!effectiveToken) {
     throw new UnauthorizedException(
-      "Executor authentication is required in production",
+      "Executor shared token is not configured; refusing unauthenticated executor access",
     );
   }
-
-  if (!effectiveToken) return;
 
   const provided = authHeader?.startsWith("Bearer ")
     ? authHeader.slice(7)
