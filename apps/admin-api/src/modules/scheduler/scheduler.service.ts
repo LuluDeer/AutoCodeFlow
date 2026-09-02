@@ -33,6 +33,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private cronTasks = new Map<string, nodeCron.ScheduledTask>();
   // B-04: Track whether a fixed_rate task is currently executing to prevent re-entry
   private runningTasks = new Map<string, boolean>();
+  // Prevent reload() and scheduleOne() from registering the same task concurrently.
+  private schedulingTasks = new Set<string>();
 
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
@@ -106,7 +108,6 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     const runningExecs = await this.execRepo.find({
       where: { status: ExecutionStatus.RUNNING },
     });
-    if (!runningExecs.length) return;
 
     const now = Date.now();
     const DEFAULT_STALE_MS = 60 * 60 * 1000; // 1-hour fallback
@@ -153,9 +154,34 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         );
       }
     }
+    // P1: sweep PENDING executions never picked up by a worker (queue lost
+    // the job / Redis flushed) — after a grace window mark them FAILED.
+    const stalePending = await this.execRepo.find({
+      where: { status: ExecutionStatus.PENDING },
+    });
+    const PENDING_GRACE_MS = 10 * 60 * 1000;
+    for (const exec of stalePending) {
+      if (
+        exec.createdAt &&
+        now - exec.createdAt.getTime() > PENDING_GRACE_MS
+      ) {
+        await this.execRepo.update(exec.id, {
+          status: ExecutionStatus.FAILED,
+          endTime: new Date(),
+          errorMessage:
+            "Execution was never dispatched by the queue (recovered by stale sweep)",
+          failureReason: ExecutionFailureReason.UNKNOWN,
+        });
+        recovered++;
+        this.logger.warn(
+          `REC-01: pending execution ${exec.id} (task=${exec.taskId}) never dispatched, marked FAILED`,
+        );
+      }
+    }
+
     if (recovered > 0) {
       this.logger.warn(
-        `REC-01: recovered ${recovered} stale RUNNING execution(s)`,
+        `REC-01: recovered ${recovered} stale execution(s)`,
       );
     }
   }
@@ -197,77 +223,25 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       if (!activeIds.has(id)) this.runningTasks.delete(id);
     }
 
-    for (const t of tasks) {
-      if (
-        t.triggerType === TaskTriggerType.FIXED_RATE &&
-        t.fixedRate &&
-        !this.timers.has(t.id)
-      ) {
-        const taskId = t.id;
-        const timer = setInterval(async () => {
-          // B-04: Skip if previous execution is still running to prevent re-entry
-          if (this.runningTasks.get(taskId)) {
-            this.logger.warn(
-              `Fixed_rate task "${t.name}" still running, skipping trigger`,
-            );
-            return;
-          }
-          this.runningTasks.set(taskId, true);
-          try {
-            const latest = await this.taskRepo.findOne({
-              where: { id: taskId, status: TaskStatus.ACTIVE },
-            });
-            if (latest) await this.enqueue(latest, "fixed_rate");
-          } finally {
-            this.runningTasks.delete(taskId);
-          }
-        }, t.fixedRate * 1000);
-        this.timers.set(t.id, timer);
-        this.logger.log(
-          `Scheduled fixed_rate task "${t.name}" every ${t.fixedRate}s`,
-        );
-      }
-
-      if (
-        t.triggerType === TaskTriggerType.CRON &&
-        t.cronExpression &&
-        !this.cronTasks.has(t.id)
-      ) {
-        if (!nodeCron.validate(t.cronExpression)) {
-          this.logger.warn(
-            `Invalid cron expression for task "${t.name}": ${t.cronExpression}`,
-          );
-          continue;
-        }
-        // N8: re-fetch task at trigger time to avoid stale closure snapshot
-        const taskId = t.id;
-        const cronTask = nodeCron.schedule(
-          t.cronExpression,
-          async () => {
-            const latest = await this.taskRepo.findOne({
-              where: { id: taskId, status: TaskStatus.ACTIVE },
-            });
-            if (latest) await this.enqueue(latest, "cron");
-          },
-          this.getCronOptions(t),
-        );
-        this.cronTasks.set(t.id, cronTask);
-        this.logger.log(
-          `Scheduled cron task "${t.name}" with expression: ${t.cronExpression}`,
-        );
-      }
+    for (const task of tasks) {
+      if (this.timers.has(task.id) || this.cronTasks.has(task.id)) continue;
+      await this.scheduleOne(task);
     }
   }
 
   async enqueue(task: Task, triggerType: string) {
+    // R-P0-007: Dynamically calculate lock TTL based on task timeout
+    // Use max(task.timeout * 1000, minIntervalMs) to prevent premature lock release
     const minIntervalMs =
       task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate
         ? task.fixedRate * 1000
         : 5_000;
+    const taskTimeoutMs = (task.timeout || 300) * 1000;
+    const lockTTL = Math.max(taskTimeoutMs, minIntervalMs);
 
     const lock = await this.redisLockService.acquireLock(
       `task:trigger:${task.id}`,
-      minIntervalMs,
+      lockTTL,
     );
     if (!lock) {
       this.logger.debug(
@@ -335,14 +309,37 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             : undefined,
         priority: task.priority,
       };
-      await this.queue.add(
-        "execute",
-        { executionId: exec.id, task },
-        queueOptions,
-      );
+      try {
+        await this.queue.add(
+          "execute",
+          { executionId: exec.id, task },
+          queueOptions,
+        );
+      } catch (err: unknown) {
+        // P1: compensate the committed PENDING row so it cannot hang forever
+        const message = err instanceof Error ? err.message : String(err);
+        await this.execRepo.update(exec.id, {
+          status: ExecutionStatus.FAILED,
+          endTime: new Date(),
+          errorMessage: `Failed to enqueue execution: ${message}`,
+          failureReason: ExecutionFailureReason.UNKNOWN,
+        });
+        this.logger.error(
+          `Failed to enqueue execution ${exec.id}: ${message}`,
+        );
+        return null;
+      }
+      // P1: record the trigger time so checkMisfires() has data to work
+      // with (this column was previously never written, leaving misfire
+      // compensation dead code).
+      await this.taskRepo.update(task.id, {
+        lastTriggerTime: new Date(),
+      });
       return exec;
     } finally {
-      await lock.release();
+      // P1: deliberately do NOT release the dedup lock — its TTL is the
+      // dedup window across instances. Releasing it milliseconds after
+      // acquisition made it useless against clock skew between instances.
     }
   }
 
@@ -365,9 +362,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
   /** Register scheduling for a single task; call after TaskService update to avoid waiting for the next reload */
   async scheduleOne(task: Task) {
-    this.stop(task.id);
+    if (this.schedulingTasks.has(task.id)) return;
+    this.schedulingTasks.add(task.id);
+    try {
+      this.stop(task.id);
 
-    if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
+      if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
       const taskId = task.id;
       const timer = setInterval(async () => {
         // B-04: Prevent re-entry
@@ -413,9 +413,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         this.getCronOptions(task),
       );
       this.cronTasks.set(task.id, cronTask);
-      this.logger.log(
-        `Re-scheduled cron task "${task.name}" with expression: ${task.cronExpression}`,
-      );
+        this.logger.log(
+          `Re-scheduled cron task "${task.name}" with expression: ${task.cronExpression}`,
+        );
+      }
+    } finally {
+      this.schedulingTasks.delete(task.id);
     }
   }
 
