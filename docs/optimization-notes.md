@@ -54,11 +54,13 @@ cron 默认使用服务器时区，跨时区团队会遇到调度时间错乱。
 
 **当前状态：** 任务实体、DTO、迁移、前端表单和调度器已支持 `timezone` 字段；Cron 注册时将 IANA 时区（如 `Asia/Shanghai`）传给 `node-cron`。
 
-### 2.6 执行日志存主库有膨胀风险
+### 2.6 执行日志存主库有膨胀风险（已落地，可选开启）
 
 大量日志行写入 PostgreSQL 的 `execution_log_lines` 表，长期运行后会导致主库膨胀，`VACUUM` 压力大，也不支持实时流式读取。
 
 **建议：** 考虑将日志流写入 MinIO 对象存储（已有基础设施），数据库只存日志文件的引用路径（bucket + key），API 返回时流式读取，支持大日志场景。
+
+**当前状态：** 已实现可选的 S3 日志驱动（`LOG_STORAGE_DRIVER=s3`）：`S3LogStorage`（`src/modules/task/log-storage/`）将每次执行的完整日志作为单个 gzip 对象上传 MinIO（自动建桶），`task_executions` 新增 `logStorage`/`logObjectKey` 列只存引用；`getExecutionLogs` 分页与 SSE `streamExecutionLogs` 均支持 s3 读取（终态后一次性下发），上传/读取失败自动回退 DB 行存储。docker-compose 提供 `minio` profile 服务（`--profile minio`），迁移 `1717473142690-AddExecutionLogStorage`。默认仍为 `db` 驱动，行为不变。
 
 ---
 

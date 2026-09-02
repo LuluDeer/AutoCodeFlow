@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, post } from '../client';
+import { get, post, patch, del } from '../client';
 
 interface Task {
   id: string;
@@ -125,8 +125,8 @@ export function tasksCommand(): Command {
     .action(async (id, opts) => {
       const spinner = ora('Fetching executions…').start();
       try {
-        const data = await get<{ list: Execution[]; total: number }>('/tasks/executions/list', {
-          taskId: id,
+        const data = await get<{ list: Execution[]; total: number }>(`/tasks/${id}/executions`, {
+          limit: opts.limit,
           pageSize: opts.limit,
           page: 1,
         });
@@ -147,6 +147,50 @@ export function tasksCommand(): Command {
         console.log(table.toString());
       } catch (e: unknown) {
         spinner.fail('Failed');
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf task logs <execId>
+  cmd.command('logs <execId>')
+    .description('Fetch execution logs (line-paginated)')
+    .option('-f, --from-line <n>', 'Start line (0-based)', '0')
+    .option('-n, --limit <n>', 'Max lines to fetch (max 2000)', '200')
+    .option('--tail <n>', 'Show last N lines (overrides --from-line)')
+    .action(async (execId, opts) => {
+      const spinner = ora('Fetching logs…').start();
+      try {
+        if (opts.tail) {
+          const tail = Math.max(1, parseInt(opts.tail, 10) || 50);
+          const head = await get<{ totalLines: number }>(`/tasks/executions/${execId}/logs`, {
+            fromLine: 0,
+            limit: 1,
+          });
+          const from = Math.max(0, head.totalLines - tail);
+          const data = await get<{ lines: string[]; totalLines: number }>(
+            `/tasks/executions/${execId}/logs`,
+            { fromLine: from, limit: tail },
+          );
+          spinner.stop();
+          for (const l of data.lines ?? []) console.log(l);
+          console.log(chalk.gray(`\n(${data.lines?.length ?? 0}/${data.totalLines} lines — last ${tail})`));
+        } else {
+          const fromLine = parseInt(opts.fromLine, 10) || 0;
+          const data = await get<{ lines: string[]; totalLines: number; hasMore: boolean }>(
+            `/tasks/executions/${execId}/logs`,
+            { fromLine, limit: opts.limit },
+          );
+          spinner.stop();
+          for (const l of data.lines ?? []) console.log(l);
+          if (data.hasMore) {
+            console.log(chalk.gray(`\n… hasMore — next: acf task logs ${execId} --from-line ${fromLine + (data.lines?.length ?? 0)}`));
+          } else {
+            console.log(chalk.gray(`\n(${data.totalLines} lines total)`));
+          }
+        }
+      } catch (e: unknown) {
+        spinner.fail('Failed to fetch logs');
         console.error(chalk.red(e instanceof Error ? e.message : String(e)));
         process.exit(1);
       }
@@ -205,6 +249,127 @@ export function tasksCommand(): Command {
         console.log(`  Total runs   : ${s.totalRuns}`);
       } catch (e: unknown) {
         spinner.fail('Failed');
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf task create
+  cmd.command('create')
+    .description('Create a new task (JSON payload via --json or --file)')
+    .requiredOption('--json <body>', 'Task body as JSON string')
+    .option('--file <path>', 'Read task body from a JSON file (overrides --json)')
+    .action(async (opts) => {
+      const spinner = ora('Creating task…').start();
+      try {
+        const fs = await import('fs/promises');
+        const raw = opts.file
+          ? await fs.readFile(opts.file, 'utf-8')
+          : opts.json;
+        const body = JSON.parse(raw);
+        const t = await post<Task>('/tasks', body);
+        spinner.succeed(`Task created: ${t.id}`);
+        console.log(chalk.gray(`  name: ${t.name}  status: ${statusColor(t.status)}`));
+      } catch (e: unknown) {
+        spinner.fail('Failed to create task');
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf task update <id>
+  cmd.command('update <id>')
+    .description('Update a task (JSON payload via --json or --file)')
+    .requiredOption('--json <body>', 'Task patch body as JSON string')
+    .option('--file <path>', 'Read task patch body from a JSON file (overrides --json)')
+    .action(async (id, opts) => {
+      const spinner = ora('Updating task…').start();
+      try {
+        const fs = await import('fs/promises');
+        const raw = opts.file
+          ? await fs.readFile(opts.file, 'utf-8')
+          : opts.json;
+        const body = JSON.parse(raw);
+        const t = await patch<Task>(`/tasks/${id}`, body);
+        spinner.succeed(`Task updated: ${t.id}`);
+        console.log(chalk.gray(`  name: ${t.name}  status: ${statusColor(t.status)}`));
+      } catch (e: unknown) {
+        spinner.fail('Failed to update task');
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf task delete <id>
+  cmd.command('delete <id>')
+    .description('Delete a task (force-terminates running executions)')
+    .option('-y, --yes', 'Skip confirmation prompt', false)
+    .action(async (id, opts) => {
+      if (!opts.yes) {
+        const readline = await import('readline/promises');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await rl.question(`Delete task ${id}? Running executions will be force-terminated. [y/N] `);
+        rl.close();
+        if (!/^y(es)?$/i.test(answer)) {
+          console.log(chalk.yellow('Aborted.'));
+          return;
+        }
+      }
+      const spinner = ora('Deleting task…').start();
+      try {
+        await del(`/tasks/${id}`);
+        spinner.succeed(`Task ${id} deleted`);
+      } catch (e: unknown) {
+        spinner.fail('Failed to delete task');
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf task pause <id>
+  cmd.command('pause <id>')
+    .description('Pause task scheduled execution')
+    .action(async (id) => {
+      const spinner = ora('Pausing task…').start();
+      try {
+        const t = await post<Task>(`/tasks/${id}/pause`);
+        spinner.succeed(`Task ${id} paused`);
+        console.log(chalk.gray(`  status: ${statusColor(t.status)}`));
+      } catch (e: unknown) {
+        spinner.fail('Failed to pause task');
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf task resume <id>
+  cmd.command('resume <id>')
+    .description('Resume task scheduled execution')
+    .action(async (id) => {
+      const spinner = ora('Resuming task…').start();
+      try {
+        const t = await post<Task>(`/tasks/${id}/resume`);
+        spinner.succeed(`Task ${id} resumed`);
+        console.log(chalk.gray(`  status: ${statusColor(t.status)}`));
+      } catch (e: unknown) {
+        spinner.fail('Failed to resume task');
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf task kill <taskId> <execId>
+  cmd.command('kill <taskId> <execId>')
+    .description('Force-cancel a running or pending execution')
+    .action(async (taskId, execId) => {
+      const spinner = ora('Cancelling execution…').start();
+      try {
+        const r = await post<{ success: boolean; message: string }>(
+          `/tasks/${taskId}/executions/${execId}/kill`,
+        );
+        spinner.succeed(r.message || 'Execution cancelled');
+      } catch (e: unknown) {
+        spinner.fail('Failed to cancel execution');
         console.error(chalk.red(e instanceof Error ? e.message : String(e)));
         process.exit(1);
       }

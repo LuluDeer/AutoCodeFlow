@@ -13,6 +13,14 @@ interface Application {
   description?: string;
 }
 
+interface Deployment {
+  id: string;
+  applicationId: string;
+  executorId?: string;
+  status: string;
+  runMode?: string;
+}
+
 function statusColor(s: string): string {
   if (s === 'running') return chalk.green(s);
   if (s === 'stopped') return chalk.gray(s);
@@ -109,21 +117,94 @@ export function appsCommand(): Command {
 
   // acf app deploy <id>
   cmd.command('deploy <id>')
-    .description('Trigger a deployment for an application')
-    .requiredOption('--repo <gitRepo>', 'Git repository URL')
-    .option('--branch <branch>', 'Git branch', 'main')
-    .option('--commit <sha>', 'Git commit SHA')
+    .description('Deploy an application to an executor (auto-selects the lowest-load online executor when --executor is omitted)')
+    .option('-e, --executor <executorId>', 'Pin to a specific executor')
+    .option('-m, --run-mode <mode>', 'Run mode: once | daemon | scheduled', 'daemon')
+    .option('--env <json>', 'Env var overrides as JSON, e.g. \'{"KEY":"value"}\'')
+    .option('--start-command <cmd>', 'Startup command override (defaults to manifest entrypoint)')
     .action(async (id, opts) => {
       const spinner = ora('Triggering deployment…').start();
       try {
-        await post(`/applications/${id}/deploy`, {
-          gitRepo: opts.repo,
-          gitBranch: opts.branch,
-          gitCommit: opts.commit,
-        });
+        const body: Record<string, unknown> = { runMode: opts.runMode };
+        if (opts.executor) body.executorId = opts.executor;
+        if (opts.env) body.env = JSON.parse(opts.env);
+        if (opts.startCommand) body.startCommand = opts.startCommand;
+        const dep = await post<{ id?: string; status?: string; executorId?: string }>(
+          `/app-deployments/applications/${id}/deploy`,
+          body,
+        );
         spinner.succeed('Deployment triggered');
+        console.log(chalk.gray(`  deployment: ${dep?.id ?? '-'}  status: ${dep?.status ?? '-'}  executor: ${dep?.executorId ?? 'auto'}`));
       } catch (e: unknown) {
         spinner.fail('Deployment failed');
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf app deployments [appId]
+  cmd.command('deployments [appId]')
+    .description('List deployments (optionally filtered by application)')
+    .option('-p, --page <n>', 'Page number', '1')
+    .option('-n, --page-size <n>', 'Page size', '20')
+    .action(async (appId, opts) => {
+      const spinner = ora('Fetching deployments…').start();
+      try {
+        const data = await get<{ list?: Deployment[]; total?: number }>('/app-deployments', {
+          ...(appId ? { applicationId: appId } : {}),
+          page: opts.page,
+          pageSize: opts.pageSize,
+        });
+        spinner.stop();
+        const list: Deployment[] = Array.isArray(data) ? data : (data.list ?? []);
+        const table = new Table({
+          head: ['Deployment', 'App', 'Executor', 'Status', 'RunMode'],
+          colWidths: [14, 14, 14, 12, 11],
+          style: { head: ['cyan'] },
+        });
+        for (const d of list) {
+          table.push([
+            d.id.slice(0, 12),
+            d.applicationId?.slice(0, 12) ?? '-',
+            d.executorId?.slice(0, 12) ?? '-',
+            statusColor(d.status),
+            d.runMode ?? '-',
+          ]);
+        }
+        console.log(table.toString());
+      } catch (e: unknown) {
+        spinner.fail('Failed to list deployments');
+        console.error(chalk.red(e instanceof Error ? e.message : String(e)));
+        process.exit(1);
+      }
+    });
+
+  // acf app versions <id>
+  cmd.command('versions <id>')
+    .description('Show application version history')
+    .action(async (id) => {
+      const spinner = ora('Fetching version history…').start();
+      try {
+        const versions = await get<
+          Array<{ id: string; version: string; gitCommit?: string; createdAt: string; changeNote?: string }>
+        >(`/applications/${id}/versions`);
+        spinner.stop();
+        const table = new Table({
+          head: ['Version', 'Commit', 'Created', 'Note'],
+          colWidths: [12, 14, 25, 30],
+          style: { head: ['cyan'] },
+        });
+        for (const v of versions) {
+          table.push([
+            v.version,
+            v.gitCommit?.slice(0, 12) ?? '-',
+            new Date(v.createdAt).toLocaleString(),
+            v.changeNote ?? '-',
+          ]);
+        }
+        console.log(table.toString());
+      } catch (e: unknown) {
+        spinner.fail('Failed to list versions');
         console.error(chalk.red(e instanceof Error ? e.message : String(e)));
         process.exit(1);
       }
