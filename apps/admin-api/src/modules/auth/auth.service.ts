@@ -11,6 +11,16 @@ import { LoginDto } from "./dto/login.dto";
 import { JwtPayload } from "./strategies/jwt.strategy";
 import { RefreshToken } from "./entities/refresh-token.entity";
 
+/**
+ * F-4: bcrypt hash of a throw-away password, pre-computed offline (cost 12).
+ * When the username does not exist we compare against this dummy hash so the
+ * "user not found" path burns the same bcrypt CPU cost as the "wrong password"
+ * path — otherwise response-time differences allow username enumeration
+ * (SEC-05 intent; the previous `&&` short-circuit did not achieve it).
+ */
+const DUMMY_BCRYPT_HASH =
+  "$2b$12$S9kPReHdJ9LbTYcwPzpe1eTNr.OfUdkFFoDqc6MiS0X7nFO76DFii";
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -41,9 +51,13 @@ export class AuthService {
       );
     }
 
-    // SEC-05: always run the full check path to avoid username-enumeration timing leaks
-    const passwordOk =
-      user != null && (await bcrypt.compare(loginDto.password, user.password));
+    // F-4: always run the full bcrypt compare — for an unknown user compare
+    // against a pre-computed dummy hash so both paths take the same time and
+    // usernames cannot be enumerated via response timing.
+    const passwordOk = await bcrypt.compare(
+      loginDto.password,
+      user != null ? user.password : DUMMY_BCRYPT_HASH,
+    );
 
     if (!user || !passwordOk) {
       // SEC-05: increment failure counter and lock if threshold reached

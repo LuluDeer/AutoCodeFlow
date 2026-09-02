@@ -7,7 +7,7 @@ import {
   ParseArrayPipe,
   UnauthorizedException,
 } from "@nestjs/common";
-import { SkipThrottle } from "@nestjs/throttler";
+import { Throttle } from "@nestjs/throttler";
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from "@nestjs/swagger";
 import { ConfigService } from "@nestjs/config";
 import { Public } from "../../common/decorators/public.decorator";
@@ -17,7 +17,15 @@ import { verifyExecutorToken } from "../../common/utils/verify-executor-token.ut
 import { CallbackItemDto } from "./dto/execution-callback.dto";
 import { ExecutorService } from "../executor/executor.service";
 
-@SkipThrottle()
+/**
+ * F-5: this controller used to be fully @SkipThrottle()'d — an unauthenticated
+ * caller who knew (or guessed) a registered executor address could force
+ * bcrypt compares + 55 MB JSON parsing with zero rate limiting. Restore a
+ * RELAXED limit instead (heartbeats/callbacks legitimately arrive at ~2/min
+ * per executor; 60/min gives 30x headroom) so abuse is still bounded.
+ */
+const CALLBACK_THROTTLE = { default: { limit: 60, ttl: 60_000 } };
+
 @ApiTags("Execution Callback")
 @Controller("executions")
 export class ExecutionCallbackController {
@@ -30,6 +38,8 @@ export class ExecutionCallbackController {
 
   @Post("callback")
   @Public()
+  // F-5: relaxed-but-finite rate limit (see CALLBACK_THROTTLE above).
+  @Throttle(CALLBACK_THROTTLE)
   @ApiOperation({
     summary: "Execution result callback",
     description:

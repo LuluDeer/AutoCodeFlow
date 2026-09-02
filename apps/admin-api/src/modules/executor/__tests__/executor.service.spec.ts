@@ -17,6 +17,15 @@ import { NotificationService } from "../../notification/notification.service";
 import { SystemConfigService } from "../../config/config.service";
 
 jest.mock("axios");
+// F-3: dispatch now consults the SSRF layer before every outbound POST. These
+// specs exercise selection/rollback logic with fixture addresses (127.0.0.1,
+// host1:3002) — stub the guard so they don't perform real DNS lookups.
+jest.mock("../../../common/utils/safe-http.util", () => ({
+  ...jest.requireActual("../../../common/utils/safe-http.util"),
+  assertSafeExecutorUrl: jest
+    .fn()
+    .mockResolvedValue(new URL("http://fixture:3002/")),
+}));
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
