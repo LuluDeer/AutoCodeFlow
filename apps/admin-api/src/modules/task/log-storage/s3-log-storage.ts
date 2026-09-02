@@ -1,4 +1,5 @@
-import { gzipSync, gunzipSync } from "node:zlib";
+import { gzipSync, createGunzip } from "node:zlib";
+import { Readable, Transform } from "node:stream";
 import { Logger } from "@nestjs/common";
 import { Client } from "minio";
 import type { ConfigService } from "@nestjs/config";
@@ -12,6 +13,12 @@ export interface S3LogStorageOptions {
   useSSL: boolean;
   region?: string;
 }
+
+/** Hard cap on the gunzipped payload we are willing to materialize in memory.
+ *  Protects admin-api from OOM if an executor writes a runaway log; ~100 MB
+ *  is well above the callback log cap (512 KB compressed) and supports
+ *  long-running task tails. */
+export const MAX_LOG_BYTES = 100 * 1024 * 1024;
 
 /**
  * Stores execution logs as gzipped objects in MinIO/S3 (opt-in via
@@ -83,12 +90,57 @@ export class S3LogStorage {
     return key;
   }
 
-  /** Download and gunzip the full log text. */
+  /**
+   * Download the gunzipped log text as a `Readable` of Buffer chunks so the
+   * caller can page through lines without ever holding the whole thing in
+   * memory. Throws if the decompressed payload exceeds MAX_LOG_BYTES.
+   */
+  async getStream(key: string): Promise<Readable> {
+    const raw = await this.client.getObject(this.bucket, key);
+    const gunzip = createGunzip();
+    const cap = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        // Running tally lives on the Transform's internal state via `bytes`.
+        // `this` here is the Transform instance.
+        const t = this as unknown as { bytes?: number };
+        t.bytes = (t.bytes ?? 0) + chunk.length;
+        if (t.bytes > MAX_LOG_BYTES) {
+          cb(
+            new Error(
+              `Log object ${key} exceeds MAX_LOG_BYTES (${MAX_LOG_BYTES}); refusing to materialize`,
+            ),
+          );
+          return;
+        }
+        cb(null, chunk);
+      },
+    });
+    // Manual plumbing (rather than stream.pipeline()) so we can return the
+    // downstream readable to the caller. Errors propagate through the standard
+    // Node stream error path so for-await consumers will see the rejection.
+    raw.pipe(gunzip).pipe(cap);
+    raw.on("error", (e) => cap.destroy(e));
+    gunzip.on("error", (e) => cap.destroy(e));
+    return cap;
+  }
+
+  /** Backwards-compatible full-materialize helper — still used by tests and
+   *  by the LOG-11 streaming SSE flush path. Throws on over-cap. */
   async get(key: string): Promise<string> {
-    const stream = await this.client.getObject(this.bucket, key);
+    const stream = await this.getStream(key);
     const chunks: Buffer[] = [];
-    for await (const chunk of stream) chunks.push(chunk as Buffer);
-    return gunzipSync(Buffer.concat(chunks)).toString("utf-8");
+    let bytes = 0;
+    for await (const chunk of stream) {
+      const buf = chunk as Buffer;
+      bytes += buf.length;
+      if (bytes > MAX_LOG_BYTES) {
+        throw new Error(
+          `Log object ${key} exceeds MAX_LOG_BYTES (${MAX_LOG_BYTES})`,
+        );
+      }
+      chunks.push(buf);
+    }
+    return Buffer.concat(chunks).toString("utf-8");
   }
 
   async remove(key: string): Promise<void> {

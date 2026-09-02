@@ -11,6 +11,8 @@ import { DataSource, ILike, Not, Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
+import { createInterface } from "node:readline";
+import type { Readable } from "node:stream";
 import { Task, TaskStatus } from "./entities/task.entity";
 import {
   TaskExecution,
@@ -508,21 +510,16 @@ export class TaskService {
     const safeLimit = Math.min(Math.max(1, limit), 2000);
     const exec = await this.execRepo.findOne({ where: { id: execId } });
     if (!exec) throw new NotFoundException("Execution not found");
-    // LOG-02: executions stored via the s3 driver page through the gunzipped
-    // object in memory; DB rows are the fallback (and the db-driver path).
+    // LOG-02 + High-6.1: S3-stored logs are streamed line-by-line so we never
+    // hold the full decompressed payload in memory; DB rows remain the
+    // fallback (and the db-driver path).
     if (exec.logStorage === "s3" && exec.logObjectKey) {
       try {
         const s3 = this.resolveS3Storage();
         if (s3) {
-          const all = await s3
-            .get(exec.logObjectKey)
-            .then((t) => (t.length ? t.split("\n") : []));
-          const lines = all.slice(fromLine, fromLine + safeLimit);
-          return {
-            lines,
-            totalLines: all.length,
-            hasMore: fromLine + lines.length < all.length,
-          };
+          const stream = await s3.getStream(exec.logObjectKey);
+          const result = await paginateLogStream(stream, fromLine, safeLimit);
+          return result;
         }
       } catch (err: unknown) {
         this.logger.warn(
@@ -733,6 +730,7 @@ export class TaskService {
   private async storeLogLines(
     executionId: string,
     logs: string | string[],
+    startLineNumber = 0,
   ): Promise<void> {
     const lines = typeof logs === "string" ? logs.split("\n") : logs;
     const s3 = this.resolveS3Storage();
@@ -753,7 +751,11 @@ export class TaskService {
     }
     await this.logLineRepo.delete({ executionId });
     const entities = lines.map((content, i) =>
-      this.logLineRepo.create({ executionId, lineNumber: i, content }),
+      this.logLineRepo.create({
+        executionId,
+        lineNumber: startLineNumber + i,
+        content,
+      }),
     );
     const CHUNK = 500;
     for (let i = 0; i < entities.length; i += CHUNK) {
@@ -770,7 +772,7 @@ export class TaskService {
     return this.s3LogStorage;
   }
 
-  /**
+/**
    * Fetch full logs from the executor (backed by its local log files) via
    * GET /api/logs/{executionId} and persist them as ExecutionLogLine rows.
    * Returns true on success; any failure is non-fatal (returns false).
@@ -789,40 +791,40 @@ export class TaskService {
         executorAddress,
         `api/logs/${execution.id}`,
       );
-      // Page through the executor's log endpoint. Node executors return all
-      // remaining lines in one shot (they ignore `limit`); Python executors
-      // cap each response at `limit` (max 2000) and report totalLines/hasMore.
+      // High-6.3: hard cap on what a single executor response may carry
+      // (Node executor previously could return the entire log in one chunk —
+      // we now refuse anything above 64 MB to protect admin-api memory).
+      const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
       const PAGE_LIMIT = 2000;
-      const MAX_PAGES = 200; // hard cap: 400k-line backfill ceiling
-      const lines: string[] = [];
+      const MAX_PAGES = 200; // 400k-line backfill ceiling
       let fromLine = 0;
+      let totalPersisted = 0;
       for (let page = 0; page < MAX_PAGES; page++) {
         const resp = await axios.get(url, {
           headers,
           timeout: 10_000,
+          maxContentLength: MAX_DOWNLOAD_BYTES,
+          maxBodyLength: MAX_DOWNLOAD_BYTES,
           params: { fromLine, limit: PAGE_LIMIT },
         });
         const chunk: string[] = Array.isArray(resp.data?.lines)
           ? resp.data.lines.filter((l: unknown) => typeof l === "string")
           : [];
         if (chunk.length === 0) break;
-        // Batch pushes stay below the engine's spread-argument limit; a Node
-        // executor may return the entire log in a single chunk.
-        for (let i = 0; i < chunk.length; i += 10_000) {
-          lines.push(...chunk.slice(i, i + 10_000));
-        }
+        // Persist each page as it arrives — never accumulate the entire log
+        // in memory. storeLogLines re-numbers lineNumber to start at the
+        // global offset so the DB row numbers reflect absolute positions.
+        await this.storeLogLines(execution.id, chunk, fromLine);
+        totalPersisted += chunk.length;
         fromLine += chunk.length;
         const total: unknown = resp.data?.totalLines;
         if (typeof total !== "number" || total <= 0 || fromLine >= total) {
           break;
         }
       }
-      if (lines.length === 0) return false;
-      // Pass the array directly — avoids a join+split round-trip of what
-      // can be a multi-megabyte string.
-      await this.storeLogLines(execution.id, lines);
+      if (totalPersisted === 0) return false;
       this.logger.log(
-        `Backfilled ${lines.length} full log lines for execution ${execution.id}`,
+        `Backfilled ${totalPersisted} full log lines for execution ${execution.id}`,
       );
       return true;
     } catch (err: unknown) {
@@ -1129,4 +1131,30 @@ export class TaskService {
     this.logger.warn(`Execution ${execId} has been manually terminated`);
     return { success: true, message: "Execution marked as terminated" };
   }
+}
+
+/**
+ * Stream a UTF-8 text log line by line, returning the page [fromLine,
+ * fromLine+limit). The full document is read once but no full string or
+ * full line-array is ever materialized — only the slice the caller asked
+ * for plus the running total. Lines themselves are short-lived; the total
+ * count is exposed as `totalLines` so the caller can paginate further.
+ */
+async function paginateLogStream(
+  stream: Readable,
+  fromLine: number,
+  limit: number,
+): Promise<{ lines: string[]; totalLines: number; hasMore: boolean }> {
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  const out: string[] = [];
+  let idx = 0;
+  for await (const line of rl) {
+    if (idx >= fromLine && out.length < limit) out.push(line);
+    idx++;
+  }
+  return {
+    lines: out,
+    totalLines: idx,
+    hasMore: fromLine + out.length < idx,
+  };
 }
