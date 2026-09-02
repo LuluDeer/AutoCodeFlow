@@ -48,10 +48,20 @@ function staleThresholdMs(timeoutSec: number): number {
 
 /**
  * N6: 跨实例触发去重锁 TTL 的下限（毫秒）。去重窗口语义是"同一触发周期内
- * 至多一次触发"，取 1s 下限仅为抵御亚秒级重复回调，正常 fixedRate/interval
- * 均 >= 1s，不会实际生效。
+ * 至多一次触发"，取 1s 下限用于抵御亚秒级重复回调；fixed_rate 在减去
+ * 抖动缓冲后（如 fixedRate=1s → 500ms）也以此下限兜底。
  */
 export const TRIGGER_DEDUP_MIN_TTL_MS = 1_000;
+
+/**
+ * N6 残留（round5v2 §2.3）：fixed_rate 去重窗口的相位滞后缓冲（毫秒）。
+ * 定时器 tick 在 t 时刻回调，enqueue 内 acquireLock 要到 t+δ 才真正拿到锁
+ * （δ = tick→锁获取的异步滞后，几十 ms 量级），锁在 t+δ+TTL 过期。若
+ * TTL 恰等于周期 P，下一 tick（t+P）落入锁剩余的 δ 窗口被 NX 拒绝 → 该
+ * 周期被跳过，实测表现为 15s/30s 混合节奏。TTL 取 P - 缓冲，保证锁在
+ * 下一 tick 前必定过期。
+ */
+export const TRIGGER_DEDUP_JITTER_BUFFER_MS = 500;
 
 /**
  * N5: stale 扫描的固定兜底窗口——timeout=0（不限时）任务的最短回收延迟。
@@ -62,16 +72,24 @@ export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
  * N6: 计算触发去重锁的 TTL。去重窗口必须由"触发周期"决定而非任务超时：
  * 旧实现 lockTTL=max(taskTimeout, interval) 使短周期任务（如 15s）在默认
  * timeout=300s 下被压制成 300s 才触发一次。现在：
- * - fixed_rate：取触发周期 fixedRate（一个周期至多触发一次即为语义本身）
- * - cron：没有更细的周期信息，取 1s 下限（仅防同秒重复触发；DB claim 与
- *   Leader 化兜底跨窗口去重）
+ * - fixed_rate：周期 - 抖动缓冲（TTL 恰等于周期时，tick→acquireLock 的相位
+ *   滞后会让下一 tick 落入锁剩余窗口被 NX 拒绝，实测 15s/30s 混合节奏，
+ *   见 TRIGGER_DEDUP_JITTER_BUFFER_MS），并不低于 MIN_TTL 下限
+ * - cron：没有更细的周期信息，取 1s 下限（仅防同秒重复触发）
  * - 其他（api/manual）：5s 保守窗口
- * Leader Election + enqueue 内 DB 条件 claim（claimTaskTrigger，其窗口与
- * 本 TTL 同步）双保险下，缩短窗口不会引入重复触发。
+ * 窗口略短于周期不引入重复触发：定时器只在 Leader 上注册（scheduleOne 有
+ * isLeader 门），同一任务在一个周期内本就只有 Leader 的一次 tick；Redis 锁
+ * 与 claimTaskTrigger 只是 Leader 竞态过渡期（旧 Leader 残余定时器与新
+ * Leader 并存）的双保险。claimTaskTrigger 的 lockTtlMs 与本 TTL 在 enqueue
+ * 顶部同源计算，Redis 锁窗口与 DB claim 窗口自动保持一致。
+ * 导出仅供单元测试，视为模块内部函数。
  */
-function computeTriggerDedupTtlMs(task: Task): number {
+export function computeTriggerDedupTtlMs(task: Task): number {
   if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
-    return Math.max(task.fixedRate * 1000, TRIGGER_DEDUP_MIN_TTL_MS);
+    return Math.max(
+      task.fixedRate * 1000 - TRIGGER_DEDUP_JITTER_BUFFER_MS,
+      TRIGGER_DEDUP_MIN_TTL_MS,
+    );
   }
   if (task.triggerType === TaskTriggerType.CRON) {
     return TRIGGER_DEDUP_MIN_TTL_MS;

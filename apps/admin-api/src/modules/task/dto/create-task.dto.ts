@@ -10,6 +10,7 @@ import {
   Min,
   Max,
   IsArray,
+  IsUUID,
   Matches,
 } from "class-validator";
 import {
@@ -23,7 +24,9 @@ import {
 } from "../entities/task.entity";
 
 export class CreateTaskDto {
-  @ApiPropertyOptional() @IsString() @IsOptional() id?: string;
+  // R6: id 是 UUID 主键——客户端自带任意字符串会在插入时触发 PG 22P02/23505
+  // 类 500，校验必须在 DTO 边界完成（非法 id → 400）。
+  @ApiPropertyOptional() @IsUUID("4") @IsOptional() id?: string;
   @ApiProperty() @IsString() @IsNotEmpty() name: string;
   @ApiPropertyOptional() @IsString() @IsOptional() description?: string;
   @ApiPropertyOptional() @IsEnum(TaskStatus) @IsOptional() status?: TaskStatus;
@@ -109,6 +112,13 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() executorAppName?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() executorGroup?: string;
   @ApiPropertyOptional() @IsArray() @IsOptional() executorTags?: string[];
+  @ApiPropertyOptional({
+    description:
+      "Pin the task to a specific executor: dispatch targets ONLY this executor (bypasses group/tags filtering); fails fast if it is offline. Mutually exclusive with executeMode=broadcast.",
+  })
+  @IsUUID()
+  @IsOptional()
+  executorId?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() glueSource?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() glueLanguage?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() applicationId?: string;

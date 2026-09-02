@@ -147,6 +147,16 @@ export class Task {
     | string[]
     | null;
 
+  /**
+   * Pinned executor: when set, dispatch targets ONLY this executor,
+   * bypassing group/tags/runtime filtering. If it is offline or missing the
+   * execution fails immediately (no fallback to the fleet). Plain column
+   * without FK relation on purpose — executor rows are hard-deletable
+   * (DELETE /executors/:id) and a pin must not block or cascade that.
+   * Mutually exclusive with executeMode=broadcast (enforced in TaskService).
+   */
+  @Column({ nullable: true }) executorId: string | null;
+
   /** Glue script: source code editable in the admin UI (XXL-JOB GLUE mode). */
   @Column({ type: "text", nullable: true }) glueSource: string | null;
 
