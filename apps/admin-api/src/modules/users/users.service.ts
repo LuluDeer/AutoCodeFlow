@@ -109,6 +109,18 @@ export class UsersService implements OnModuleInit {
     return user;
   }
 
+  /**
+   * H-3: callers that need to differentiate between "missing user" and
+   * "denied access" should use this — a 404 would leak that the user
+   * previously existed. Auth flow paths keep using findById() so they can
+   * still produce a clean UnauthorizedException for invalid tokens.
+   */
+  async findByIdOrNull(
+    id: number,
+  ): Promise<import("./entities/user.entity").User | null> {
+    return this.usersRepository.findOne({ where: { id } });
+  }
+
   // S12: expose raw user (including hashed password) for current-password verification
   async findByIdRaw(
     id: number,
@@ -137,27 +149,58 @@ export class UsersService implements OnModuleInit {
   }
 
   /**
-   * SEC-05: Increment loginFailCount; lock the account when threshold is reached.
+   * M-3 + SEC-05: increment loginFailCount atomically and lock the account
+   * when the threshold is reached. The previous read-modify-write lost
+   * updates under concurrent failed logins (two near-simultaneous wrong
+   * passwords could each see `loginFailCount = 3` and both decide to NOT
+   * lock, letting an attacker bypass lockout).
+   *
+   * Uses two atomic UPDATEs:
+   *   1. unconditional `loginFailCount = loginFailCount + 1`
+   *   2. if the resulting count crosses the threshold, set lockedUntil.
+   * `lockedUntil` is reset only if currently past or null (idempotent).
    */
   async recordLoginFailure(
     userId: number,
     opts: { maxFail: number; lockMinutes: number },
   ): Promise<void> {
-    const user = await this.usersRepository.findOne({ where: { id: userId } });
-    if (!user) return;
-    user.loginFailCount += 1;
-    if (user.loginFailCount >= opts.maxFail) {
-      user.lockedUntil = new Date(Date.now() + opts.lockMinutes * 60_000);
-    }
-    await this.usersRepository.save(user);
+    // Step 1: increment. RETURNING * gives us the post-update count without
+    // a second SELECT roundtrip and without an explicit transaction.
+    const incremented = await this.usersRepository
+      .createQueryBuilder()
+      .update()
+      .set({ loginFailCount: () => '"loginFailCount" + 1' })
+      .where("id = :id", { id: userId })
+      .returning(["loginFailCount"])
+      .execute();
+    const row = (incremented.raw?.[0] ?? incremented.generatedMaps?.[0]) as
+      | { loginFailCount?: number }
+      | undefined;
+    const next = row?.loginFailCount ?? 0;
+    if (next < opts.maxFail) return;
+
+    // Step 2: set lockedUntil. Use IS NULL OR < now() so we don't extend an
+    // already-active lockout window (the original implement could reset
+    // the timer on every retry inside the lockout window).
+    const until = new Date(Date.now() + opts.lockMinutes * 60_000);
+    await this.usersRepository
+      .createQueryBuilder()
+      .update()
+      .set({ lockedUntil: until })
+      .where("id = :id", { id: userId })
+      .andWhere(
+        "(lockedUntil IS NULL OR lockedUntil < :now)",
+        { now: new Date() },
+      )
+      .execute();
   }
 
   /** SEC-05: Reset failure counter and lock on successful login. */
   async resetLoginFailure(userId: number): Promise<void> {
-    // Use null explicitly so TypeORM issues SET lockedUntil = NULL in SQL
+    // Use null explicitly so TypeORM issues SET lockedUntil = NULL in SQL.
     await this.usersRepository.update(userId, {
       loginFailCount: 0,
-      lockedUntil: null as any,
+      lockedUntil: null,
     });
   }
 }
