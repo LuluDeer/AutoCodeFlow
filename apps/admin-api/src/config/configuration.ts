@@ -1,3 +1,5 @@
+import { parseAllowedOrigins } from "../common/utils/cors-origin.util";
+
 export default () => ({
   app: {
     port: parseInt(process.env.PORT, 10) || 3105,
@@ -11,6 +13,16 @@ export default () => ({
     password: process.env.DB_PASSWORD || "",
     database: process.env.DB_DATABASE || "autocodeflow",
     poolSize: parseInt(process.env.DB_POOL_SIZE || "20", 10),
+    // ARCH-006: synchronize 不再依赖 NODE_ENV 推断，改为显式 DB_SYNCHRONIZE 开关
+    // （Joi 默认 "false"）；生产环境强制 false 并 warn，见文件尾的 fail-fast 校验块。
+    synchronize:
+      process.env.DB_SYNCHRONIZE === "true" &&
+      process.env.NODE_ENV !== "production",
+  },
+  // ARCH-004: 全局限流默认收紧为 60 次/分钟（原 100），可用环境变量覆盖
+  throttle: {
+    ttl: parseInt(process.env.THROTTLE_TTL || "60000", 10),
+    limit: parseInt(process.env.THROTTLE_LIMIT || "60", 10),
   },
   jwt: {
     // S4: fail-fast on weak/missing secrets — throw at startup rather than silently using defaults
@@ -44,6 +56,18 @@ export default () => ({
     host: process.env.REDIS_HOST || "localhost",
     port: parseInt(process.env.REDIS_PORT, 10) || 6379,
     password: process.env.REDIS_PASSWORD || undefined,
+    // ARCH-005: REDIS_TLS=true 时 ioredis/BullMQ 走 TLS 传输加密；
+    // REDIS_TLS_REJECT_UNAUTHORIZED=false 仅建议在自签证书调试时使用（默认校验证书）。
+    tls: process.env.REDIS_TLS === "true",
+    tlsRejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== "false",
+  },
+  // ARCH-001: CORS 显式白名单 —— 优先 CORS_ALLOWED_ORIGINS，兼容旧的 CORS_ORIGINS。
+  // 为空时仅开发环境默认放行 http://localhost:* / http://127.0.0.1:*（见 main.ts）；
+  // 私有/LAN 网段不再被自动放行，内网部署需显式配置。
+  cors: {
+    allowedOrigins: parseAllowedOrigins(
+      process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS,
+    ),
   },
   ai: {
     provider: process.env.AI_PROVIDER || "disabled", // disabled | openai | ollama
@@ -159,15 +183,27 @@ if (process.env.NODE_ENV === "production") {
     );
   }
 
-  // Validate CORS origins
-  const corsOrigins = process.env.CORS_ORIGINS ?? "";
-  if (
-    !corsOrigins ||
-    corsOrigins.includes("localhost") ||
-    corsOrigins.includes("127.0.0.1")
-  ) {
+  // ARCH-001: production 必须配置显式 CORS 白名单。优先 CORS_ALLOWED_ORIGINS；
+  // 未设置新变量时回退校验旧的 CORS_ORIGINS（保持向后兼容）。
+  const corsAllowed = parseAllowedOrigins(
+    process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS,
+  );
+  if (corsAllowed.length === 0) {
     throw new Error(
-      "[AutoFlow] CORS_ORIGINS must be set to production domains (no localhost) in production",
+      "[AutoFlow] CORS_ALLOWED_ORIGINS must be set to explicit production origins in production",
+    );
+  }
+  if (corsAllowed.some((o) => o.includes("localhost") || o.includes("127.0.0.1"))) {
+    throw new Error(
+      "[AutoFlow] CORS_ALLOWED_ORIGINS must not contain localhost/127.0.0.1 in production",
+    );
+  }
+
+  // ARCH-006: production 显式请求 DB_SYNCHRONIZE=true 时 fail-fast，
+  // 防止不受控的 schema 修改；synchronize 一律走 migrations。
+  if (process.env.DB_SYNCHRONIZE === "true") {
+    throw new Error(
+      "[AutoFlow] DB_SYNCHRONIZE=true is forbidden in production — use migrations instead",
     );
   }
 

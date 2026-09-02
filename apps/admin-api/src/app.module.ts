@@ -46,11 +46,21 @@ import { RegistryModule } from "./modules/registry/registry.module";
         DB_USERNAME: Joi.string().default("postgres"),
         DB_PASSWORD: Joi.string().min(1).required(),
         DB_DATABASE: Joi.string().default("autocodeflow"),
+        // ARCH-006: explicit schema-synchronize switch (default false).
+        // In production a value of "true" fails fast in configuration.ts.
+        DB_SYNCHRONIZE: Joi.string()
+          .valid("true", "false")
+          .default("false"),
 
         // Redis
         REDIS_HOST: Joi.string().hostname().default("localhost"),
         REDIS_PORT: Joi.number().port().default(6379),
         REDIS_PASSWORD: Joi.string().allow("").optional(),
+        // ARCH-005: enable TLS transport for ioredis/BullMQ connections
+        REDIS_TLS: Joi.string().valid("true", "false").default("false"),
+        REDIS_TLS_REJECT_UNAUTHORIZED: Joi.string()
+          .valid("true", "false")
+          .default("true"),
 
         // JWT
         JWT_SECRET: Joi.string().min(32).required(),
@@ -61,8 +71,17 @@ import { RegistryModule } from "./modules/registry/registry.module";
         EXECUTOR_SECRET: Joi.string().min(16).required(),
         EXECUTOR_SHARED_TOKEN: Joi.string().min(16).optional(),
 
-        // CORS
-        CORS_ORIGINS: Joi.string().default("http://localhost:5176"),
+        // CORS — ARCH-001: explicit origin whitelist (comma separated).
+        // Empty in development = only http://localhost:* / http://127.0.0.1:*
+        // are allowed at runtime; production requires an explicit whitelist
+        // (fail-fast enforced in configuration.ts).
+        CORS_ALLOWED_ORIGINS: Joi.string().allow("").optional(),
+        // Legacy variable kept as fallback for CORS_ALLOWED_ORIGINS
+        CORS_ORIGINS: Joi.string().allow("").optional(),
+
+        // ARCH-004: global rate-limit overrides (defaults in configuration.ts)
+        THROTTLE_LIMIT: Joi.number().integer().min(1).default(60),
+        THROTTLE_TTL: Joi.number().integer().min(1000).default(60000),
 
         // AI (optional)
         AI_PROVIDER: Joi.string()
@@ -94,8 +113,20 @@ import { RegistryModule } from "./modules/registry/registry.module";
       },
     }),
 
-    ThrottlerModule.forRoot({
-      throttlers: [{ ttl: 60_000, limit: 100 }],
+    // ARCH-004: global rate limit — tightened default (60 req/min, was 100)
+    // and overridable via THROTTLE_LIMIT / THROTTLE_TTL. Sensitive routes keep
+    // their own stricter @Throttle (e.g. auth login via LOGIN_THROTTLE_LIMIT).
+    ThrottlerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (cfg: ConfigService) => ({
+        throttlers: [
+          {
+            ttl: cfg.get<number>("throttle.ttl"),
+            limit: cfg.get<number>("throttle.limit"),
+          },
+        ],
+      }),
     }),
 
     TypeOrmModule.forRootAsync({
@@ -110,7 +141,10 @@ import { RegistryModule } from "./modules/registry/registry.module";
         entities: [__dirname + "/**/*.entity{.ts,.js}"],
         migrations: [__dirname + "/migrations/*{.ts,.js}"],
         migrationsRun: cfg.get("app.nodeEnv") !== "development",
-        synchronize: cfg.get("app.nodeEnv") === "development",
+        // ARCH-006: explicit DB_SYNCHRONIZE switch (default false) instead of
+        // inferring from NODE_ENV; production additionally forces/fails-fast
+        // false in configuration.ts regardless of the env value.
+        synchronize: cfg.get<boolean>("database.synchronize"),
         logging: cfg.get("app.nodeEnv") === "development",
         // PERF-04: PostgreSQL connection pool — default 10 is insufficient under concurrent load
         extra: {
@@ -129,6 +163,17 @@ import { RegistryModule } from "./modules/registry/registry.module";
           host: cfg.get("redis.host"),
           port: cfg.get<number>("redis.port"),
           password: cfg.get("redis.password"),
+          // ARCH-005: REDIS_TLS=true → all ioredis/BullMQ connections use TLS.
+          // Certificate verification follows REDIS_TLS_REJECT_UNAUTHORIZED
+          // (default true; set false only for self-signed-cert environments).
+          ...(cfg.get("redis.tls") === true
+            ? {
+                tls: {
+                  rejectUnauthorized:
+                    cfg.get("redis.tlsRejectUnauthorized") !== false,
+                },
+              }
+            : {}),
           // PERF-03: Redis connection pool optimization
           enableOfflineQueue: true, // Queue commands when offline
           connectTimeout: 10000, // 10 seconds connection timeout

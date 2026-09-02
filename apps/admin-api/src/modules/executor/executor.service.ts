@@ -900,6 +900,10 @@ export class ExecutorService {
    * Generate install command for executor-node.
    * Returns a shell command the user can run on the target machine to install and start the executor.
    * Values are read from the NestJS ConfigService (environment variables).
+   *
+   * Note: this is the single handler for GET /executors/install-cmd. The former
+   * install-cmd.controller.ts duplicated this route (unreachable — ExecutorController
+   * registers first) and was removed; its shell-quoting protection was merged here.
    */
   getInstallCmd(): {
     cmd: string;
@@ -910,8 +914,11 @@ export class ExecutorService {
     const adminApiUrl = this.configService.get<string>("ADMIN_API_URL") || "";
     const sharedToken =
       this.configService.get<string>("executor.sharedToken") || "";
-    const cmd = `npx autoflow-executor --admin-url "${adminApiUrl}" --token "${sharedToken}"`;
-    const curlCmd = `curl -fsSL "${adminApiUrl}/executors/install.sh" | bash -s -- --admin-url "${adminApiUrl}" --token "${sharedToken}"`;
+    // Shell-quote values to prevent word-splitting / injection when the user
+    // copies the generated command into a shell (merged from install-cmd.controller).
+    const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+    const cmd = `npx autoflow-executor --admin-url ${q(adminApiUrl)} --token ${q(sharedToken)}`;
+    const curlCmd = `curl -fsSL ${q(`${adminApiUrl}/executors/install.sh`)} | bash -s -- --admin-url ${q(adminApiUrl)} --token ${q(sharedToken)}`;
     return { cmd, curlCmd, token: sharedToken, adminApiUrl };
   }
 
