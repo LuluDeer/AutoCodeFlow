@@ -45,6 +45,19 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule);
 
+  // P2: the execution callback batch legitimately exceeds the 1 MB global
+  // cap (100 items × up to 512 KB of logs each) — parse that route with a
+  // dedicated larger limit first; body-parser skips already-parsed bodies.
+  app.use(
+    "/api/executions/callback",
+    express.json({
+      limit: "55mb",
+      verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
+        req.rawBody = Buffer.from(buf);
+      },
+    }),
+  );
+
   // S-11: cap JSON body size to 1 MB to prevent oversized-payload DoS
   app.use(
     express.json({
