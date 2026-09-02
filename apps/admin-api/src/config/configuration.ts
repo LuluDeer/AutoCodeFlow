@@ -76,6 +76,18 @@ export default () => ({
       return t;
     })(),
   },
+  logStorage: {
+    // 'db' keeps log lines in execution_log_lines (default);
+    // 's3' stores one gzip object per execution (MinIO/S3) and only the
+    // object reference in the DB — see optimization-notes 2.6.
+    driver: process.env.LOG_STORAGE_DRIVER || "db",
+    bucket: process.env.LOG_STORAGE_BUCKET || "autoflow-logs",
+    endpoint: process.env.LOG_STORAGE_ENDPOINT || "",
+    accessKey: process.env.LOG_STORAGE_ACCESS_KEY || "",
+    secretKey: process.env.LOG_STORAGE_SECRET_KEY || "",
+    useSSL: process.env.LOG_STORAGE_USE_SSL === "true",
+    region: process.env.LOG_STORAGE_REGION || "",
+  },
   notification: {
     wecomWebhook: process.env.WECOM_WEBHOOK || "",
     dingtalkWebhook: process.env.DINGTALK_WEBHOOK || "",
