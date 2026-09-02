@@ -8,7 +8,9 @@ test('真实登录流程 - 不注入token', async ({ page }) => {
   page.on('response', async (response) => {
     if (response.url().includes('/api/')) {
       let body = '';
-      try { body = await response.text(); } catch {}
+      try { body = await response.text(); } catch {
+        // Body read may fail (e.g. aborted requests); fall back to status-only logging.
+      }
       networkLogs.push(`${response.status()} ${response.url().split('/api/')[1]} → ${body.substring(0, 400)}`);
     }
   });

@@ -38,7 +38,7 @@ export default function TaskListPage() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [triggerFilter, setTriggerFilter] = useState<string | undefined>();
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
-  const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string; defaultParams?: Record<string, any> } | null>(null);
+  const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string; defaultParams?: Record<string, unknown> } | null>(null);
   const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
   const [triggering, setTriggering] = useState(false);
 
@@ -77,7 +77,7 @@ export default function TaskListPage() {
     catch (err: unknown) { message.error(getErrMsg(err, '批量删除失败')); }
   };
 
-  const handleTrigger = (id: string, name: string, defaultParams?: Record<string, any>) => {
+  const handleTrigger = (id: string, name: string, defaultParams?: Record<string, unknown>) => {
     setTriggerParams(
       Object.fromEntries(Object.entries(defaultParams ?? {}).map(([k, v]) => [k, String(v)]))
     );
@@ -122,7 +122,7 @@ export default function TaskListPage() {
       title: '任务名称',
       key: 'name',
       sorter: (a: Task, b: Task) => a.name.localeCompare(b.name),
-      render: (_: any, r: Task) => (
+      render: (_: unknown, r: Task) => (
         <Space orientation="vertical" size={0}>
           <a onClick={() => nav(`/tasks/${r.id}`)} style={{ fontWeight: 500 }}>{r.name}</a>
           {r.description && <Text type="secondary" style={{ fontSize: 12 }}>{r.description}</Text>}
@@ -150,7 +150,7 @@ export default function TaskListPage() {
       title: '调度',
       key: 'schedule',
       width: 160,
-      render: (_: any, r: Task) => {
+      render: (_: unknown, r: Task) => {
         if (r.triggerType === 'cron' && r.cronExpression) {
           return <Text code style={{ fontSize: 12 }}>{r.cronExpression}</Text>;
         }
@@ -169,7 +169,7 @@ export default function TaskListPage() {
       title: '下次执行',
       key: 'nextRun',
       width: 150,
-      render: (_: any, r: Task) => {
+      render: (_: unknown, r: Task) => {
         if (r.status !== 'active') return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
         if (r.triggerType === 'cron' && r.cronExpression) {
           return (
@@ -194,7 +194,7 @@ export default function TaskListPage() {
       title: '启用',
       key: 'toggle',
       width: 70,
-      render: (_: any, r: Task) => (
+      render: (_: unknown, r: Task) => (
         <Switch
           size="small"
           checked={r.status === 'active'}
@@ -208,7 +208,7 @@ export default function TaskListPage() {
       title: '操作',
       key: 'actions',
       width: 160,
-      render: (_: any, r: Task) => (
+      render: (_: unknown, r: Task) => (
         <Space size={2}>
           <Tooltip title="查看详情">
             <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => nav(`/tasks/${r.id}`)} />

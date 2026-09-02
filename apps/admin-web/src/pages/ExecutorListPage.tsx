@@ -69,7 +69,7 @@ export default function ExecutorListPage() {
       const res = await client.get<{ cmd: string; curlCmd: string }>('/executors/install-cmd');
       setInstallCmd(res);
       setInstallCmdModal(true);
-    } catch (_err) {
+    } catch {
       Modal.error({ title: '获取安装命令失败', content: '请检查 admin-api 服务是否正常运行' });
     }
   };
