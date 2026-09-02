@@ -54,6 +54,13 @@ export interface SharedTokenResult {
   hasToken: boolean;
 }
 
+/** GET /executors/install-cmd 返回的执行器一键安装命令信息 */
+export interface InstallCmdResult {
+  cmd: string;
+  token: string;
+  adminApiUrl: string;
+}
+
 export const executorsApi = {
   getSharedToken: () =>
     client.get('/config/executor-shared-token') as Promise<SharedTokenResult>,
@@ -82,4 +89,7 @@ export const executorsApi = {
     client.get(`/executors/${id}/executions`, { params }) as Promise<{ total: number; items: ExecutorExecution[] }>,
   getMetrics: (id: string) =>
     client.get(`/executors/${id}/metrics`) as Promise<ExecutorMetrics>,
+  /** 获取执行器一键安装命令（含共享 Token，安装向导与执行器列表共用） */
+  getInstallCmd: () =>
+    client.get('/executors/install-cmd') as Promise<InstallCmdResult>,
 };

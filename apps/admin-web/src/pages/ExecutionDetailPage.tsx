@@ -63,7 +63,8 @@ export default function ExecutionDetailPage() {
     if (data?.status !== 'running' && data?.status !== 'pending') return;
     const base = getSseBase().replace(/\/$/, '');
     const url = `${base}/tasks/${taskId}/executions/${execId}/logs/stream`;
-    const es = new EventSource(url + (token ? `?token=${encodeURIComponent(token)}` : ''));
+    // EventSource 无法设置请求头；后端仅对日志流路由支持 access_token 查询参数鉴权
+    const es = new EventSource(url + (token ? `?access_token=${encodeURIComponent(token)}` : ''));
     setStreaming(true);
     setStreamLines([]);
     es.onmessage = (e) => {
