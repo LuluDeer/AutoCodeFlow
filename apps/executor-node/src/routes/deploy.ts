@@ -248,7 +248,7 @@ function runCommand(
 }
 
 /** Download a file over HTTP/HTTPS to a local path */
-function downloadPackage(url: string, dest: string, maxRedirects = 5): Promise<void> {
+export function downloadPackage(url: string, dest: string, maxRedirects = 5, sendAuth = true): Promise<void> {
   return new Promise((resolve, reject) => {
     const proto = url.startsWith('https') ? require('https') : require('http');
     const file = fs.createWriteStream(dest);
@@ -257,15 +257,29 @@ function downloadPackage(url: string, dest: string, maxRedirects = 5): Promise<v
       fs.unlink(dest, () => {});
       reject(err);
     };
-    const req = proto.get(url, (res: any) => {
+    // admin-api /uploads 现已强制鉴权（upload-auth.middleware）：携带 executor
+    // 共享 token 作为 Bearer 凭证。跨主机重定向时不再携带，防止 token 泄露到第三方域。
+    const headers: Record<string, string> = {};
+    if (sendAuth && config.token) {
+      headers['Authorization'] = `Bearer ${config.token}`;
+    }
+    const req = proto.get(url, { headers }, (res: any) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         file?.close?.();
-        fs.unlinkSync(dest);
+        fs.unlink(dest, () => {});
         if (maxRedirects <= 0) {
           reject(new Error('Download failed: too many redirects'));
           return;
         }
-        downloadPackage(res.headers.location, dest, maxRedirects - 1).then(resolve).catch(reject);
+        let nextUrl: URL;
+        try {
+          nextUrl = new URL(res.headers.location, url);
+        } catch {
+          reject(new Error('Download failed: invalid redirect location'));
+          return;
+        }
+        const nextSendAuth = sendAuth && nextUrl.hostname === new URL(url).hostname;
+        downloadPackage(nextUrl.href, dest, maxRedirects - 1, nextSendAuth).then(resolve).catch(reject);
         return;
       }
       if (!res.statusCode || res.statusCode >= 400) {
