@@ -32,8 +32,12 @@ import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TriggerTaskDto } from "./dto/trigger-task.dto";
 import { RollbackTaskDto } from "./dto/rollback-task.dto";
 import { BatchTaskIdsDto } from "./dto/batch-task.dto";
-import { PaginationDto } from "../../common/dto/pagination.dto";
 import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
+import {
+  AllExecutionsQueryDto,
+  TaskExecutionsQueryDto,
+} from "./dto/execution-query.dto";
+import { SkipTimeout } from "../../common/decorators/skip-timeout.decorator";
 import { AuditService } from "../audit/audit.service";
 
 @ApiTags("Task Management")
@@ -299,17 +303,7 @@ export class TaskController {
   @ApiQuery({ name: "executorAddress", required: false })
   @ApiQuery({ name: "startTime", required: false })
   @ApiQuery({ name: "endTime", required: false })
-  allExecutions(
-    @Query()
-    p: PaginationDto & {
-      status?: string;
-      taskId?: string;
-      taskName?: string;
-      executorAddress?: string;
-      startTime?: string;
-      endTime?: string;
-    },
-  ) {
+  allExecutions(@Query() p: AllExecutionsQueryDto) {
     return this.taskService.getAllExecutions(p);
   }
 
@@ -539,7 +533,7 @@ export class TaskController {
   })
   executions(
     @Param("id") id: string,
-    @Query() p: PaginationDto & { status?: string },
+    @Query() p: TaskExecutionsQueryDto,
   ) {
     return this.taskService.getExecutions(id, p);
   }
@@ -595,6 +589,13 @@ export class TaskController {
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
+  // N8: SSE 流的挂起时长等于任务剩余运行时长，必须豁免全局 30s 请求超时，
+  // 否则 timeout() 会以 TimeoutError 掐断长任务日志流，且 HttpExceptionFilter
+  // 会对已写出 SSE 头的响应再 status(408).json() 产出非法混合响应。
+  // 同时本处理器走 @Res() library mode（Nest 不再接管返回值/不序列化），
+  // 全局 ResponseInterceptor 的 envelope map 因此不会写入流——新增 SSE 类
+  // 路由若改为 @Sse()/return Observable 则会破坏流，必须保持 @Res() 直写。
+  @SkipTimeout()
   async streamLogs(
     @Param("execId") execId: string,
     @Req() req: Request,

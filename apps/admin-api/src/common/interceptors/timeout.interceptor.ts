@@ -8,15 +8,11 @@ import {
 import { Reflector } from "@nestjs/core";
 import { Observable, throwError, TimeoutError } from "rxjs";
 import { catchError, timeout } from "rxjs/operators";
-
-// Metadata key to bypass the global request timeout. The SkipTimeout decorator
-// (formerly common/decorators/skip-timeout.decorator.ts) was removed as dead
-// code — no controller ever applied @SkipTimeout(). The key is kept here so
-// long-running routes can still opt out via SetMetadata(SKIP_TIMEOUT_KEY, true).
-const SKIP_TIMEOUT_KEY = "skipTimeout";
+import { SKIP_TIMEOUT_KEY } from "../decorators/skip-timeout.decorator";
 
 // OPS-07: Global request timeout — returns 408 instead of hanging forever.
 // Default 30 s; override per-deploy via REQUEST_TIMEOUT_MS env var.
+// Long-running routes (SSE / log streaming) opt out via @SkipTimeout().
 const REQUEST_TIMEOUT_MS = parseInt(
   process.env.REQUEST_TIMEOUT_MS ?? "30000",
   10,

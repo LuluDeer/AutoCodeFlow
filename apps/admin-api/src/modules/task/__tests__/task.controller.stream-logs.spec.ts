@@ -1,5 +1,6 @@
 import { ServiceUnavailableException } from "@nestjs/common";
 import { TaskController } from "../task.controller";
+import { SKIP_TIMEOUT_KEY } from "../../../common/decorators/skip-timeout.decorator";
 
 /**
  * TASK-008: SSE 日志流并发上限的控制器行为。
@@ -83,5 +84,18 @@ describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
     );
     expect(res.end).toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * N8: streamLogs 必须豁免全局 TimeoutInterceptor——本 spec 的 req/res 是
+ * mock、不经过全局拦截器链，因此这里固化元数据本身（拦截器侧的直通行为
+ * 见 common/interceptors/timeout.interceptor.spec.ts）。
+ */
+describe("TaskController.streamLogs — timeout exemption (N8)", () => {
+  it("carries SKIP_TIMEOUT metadata so the global 30s timeout cannot cut the SSE stream", () => {
+    expect(
+      Reflect.getMetadata(SKIP_TIMEOUT_KEY, TaskController.prototype.streamLogs),
+    ).toBe(true);
   });
 });
