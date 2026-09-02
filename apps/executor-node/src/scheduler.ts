@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { config } from './config';
 import { logger } from './logger';
 import { post } from './admin-client';
+import { recordHeartbeat } from './heartbeat-state';
 
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
 // SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
@@ -81,8 +82,10 @@ async function sendHeartbeat() {
       startupId: executorStartupId,
     });
     logger.info(`[${traceId}] Heartbeat succeeded`);
+    recordHeartbeat(true);
   } catch (err: unknown) {
     logger.warn(`Heartbeat failed: ${err instanceof Error ? err.message : String(err)}`);
+    recordHeartbeat(false);
   }
 }
 

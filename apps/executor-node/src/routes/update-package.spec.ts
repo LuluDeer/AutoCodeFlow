@@ -104,15 +104,23 @@ describe('POST /api/update-package — payload validation', () => {
   it('returns 400 for non-http(s) downloadUrl (file: scheme)', async () => {
     const res = await request(app)
       .post('/api/update-package')
-      .send({ packageId: 'pkg-001', downloadUrl: 'file:///etc/passwd', version: '1.0.0' });
+      .send({ packageId: 'pkg-001', downloadUrl: 'file:///etc/passwd', version: '1.0.0', checksum: 'a'.repeat(64) });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/scheme|not allowed|invalid|http/i);
+  });
+
+  it('returns 400 when checksum is missing', async () => {
+    const res = await request(app)
+      .post('/api/update-package')
+      .send({ packageId: 'pkg-001', downloadUrl: 'http://example.com/pkg.zip', version: '1.0.0' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/checksum/i);
   });
 
   it('returns 400 for ftp: scheme in downloadUrl', async () => {
     const res = await request(app)
       .post('/api/update-package')
-      .send({ packageId: 'pkg-001', downloadUrl: 'ftp://example.com/pkg.zip', version: '1.0.0' });
+      .send({ packageId: 'pkg-001', downloadUrl: 'ftp://example.com/pkg.zip', version: '1.0.0', checksum: 'e'.repeat(64) });
     expect(res.status).toBe(400);
   });
 
@@ -121,7 +129,7 @@ describe('POST /api/update-package — payload validation', () => {
     // We only care the status is not 400 at the validation stage.
     const res = await request(app)
       .post('/api/update-package')
-      .send({ packageId: 'pkg-002', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '2.0.0' });
+      .send({ packageId: 'pkg-002', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '2.0.0', checksum: 'b'.repeat(64) });
     expect(res.status).not.toBe(400);
     await waitForUpdateToSettle(app);
   });
@@ -129,7 +137,7 @@ describe('POST /api/update-package — payload validation', () => {
   it('accepts https: scheme in downloadUrl', async () => {
     const res = await request(app)
       .post('/api/update-package')
-      .send({ packageId: 'pkg-003', downloadUrl: 'https://127.0.0.1:1/pkg.zip', version: '3.0.0' });
+      .send({ packageId: 'pkg-003', downloadUrl: 'https://127.0.0.1:1/pkg.zip', version: '3.0.0', checksum: 'c'.repeat(64) });
     expect(res.status).not.toBe(400);
     await waitForUpdateToSettle(app);
   });
@@ -166,7 +174,7 @@ describe('POST /api/update-package — authentication', () => {
     const res = await request(app)
       .post('/api/update-package')
       .set('Authorization', `Bearer ${TEST_TOKEN}`)
-      .send({ packageId: 'pkg-001', downloadUrl: 'file:///etc/passwd' }); // blocked by url validation
+      .send({ packageId: 'pkg-001', downloadUrl: 'file:///etc/passwd', checksum: 'd'.repeat(64) }); // blocked by url validation
     expect(res.status).not.toBe(401);
     expect(res.status).toBe(400); // blocked by URL scheme check, not auth
   });

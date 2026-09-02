@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { spawn, spawnSync } from 'child_process';
+import { spawn } from 'child_process';
+import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import { config } from '../config';
@@ -13,27 +14,83 @@ import { taskWorkerManager } from '../task-worker';
 /** Convert git URL to a safe cache directory name */
 function repoDirName(repoUrl: string): string {
   const base = repoUrl.replace(/\/$/, '').split('/').pop() ?? 'repo';
-  return base.replace(/\.git$/, '').replace(/[^a-zA-Z0-9_.-]/g, '_');
+  const cleaned = base.replace(/\.git$/, '').replace(/[^a-zA-Z0-9_.-]/g, '_');
+  // Salt with a URL hash — sanitization alone maps distinct repos like
+  // a/b and a_b onto the same cache directory (cross-repo contamination).
+  const hash = crypto.createHash('sha256').update(repoUrl).digest('hex').slice(0, 12);
+  return `${cleaned}-${hash}`;
+}
+
+/** Strip embedded credentials (user:token@) before a URL reaches the logs. */
+function redactUrl(u: string): string {
+  return u.replace(/\/\/[^/@]+@/, '//***@');
+}
+
+/** Promise-wrapped spawn: git/npm must not use spawnSync on the request path
+ *  — a synchronous 120–300s wait stalls heartbeats, /health and every API. */
+function runCommand(
+  cmd: string,
+  args: string[],
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number; shell?: boolean } = {},
+): Promise<{ status: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    const timer = opts.timeout
+      ? setTimeout(() => {
+          try { child.kill('SIGKILL'); } catch (_) { /* already dead */ }
+        }, opts.timeout)
+      : null;
+    // Drain stdout so a chatty child never stalls on a full pipe buffer.
+    child.stdout?.on('data', () => {});
+    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    child.on('error', (err) => {
+      if (timer) clearTimeout(timer);
+      resolve({ status: null, stderr: `${stderr}${err.message}` });
+    });
+    child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
+      resolve({ status: code, stderr });
+    });
+  });
+}
+
+const taskInstallQueues = new Map<string, Promise<unknown>>();
+
+/** Serialize dependency installs per task id — concurrent requests for the
+ *  same task would race on the shared .node_modules/<taskId> directory. */
+function queueTaskInstall<T>(taskId: string, job: () => Promise<T>): Promise<T> {
+  const prev = taskInstallQueues.get(taskId) ?? Promise.resolve();
+  const run = prev.then(job, job);
+  const tail = run.then(() => undefined, () => undefined);
+  taskInstallQueues.set(taskId, tail);
+  tail.finally(() => {
+    if (taskInstallQueues.get(taskId) === tail) taskInstallQueues.delete(taskId);
+  });
+  return run;
 }
 
 /** Clone (with bare cache) and checkout the specified ref to dest directory */
-function gitCheckoutTo(repoUrl: string, ref: string, dest: string): void {
+async function gitCheckoutTo(repoUrl: string, ref: string, dest: string): Promise<void> {
   const cacheDir = path.join(config.workDir, '.git_cache', repoDirName(repoUrl));
   if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
     fs.mkdirSync(cacheDir, { recursive: true });
-    const r = spawnSync('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120_000 });
-    if (r.status !== 0) throw new Error(`git clone failed: ${r.stderr?.toString()}`);
+    const r = await runCommand('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120_000 });
+    if (r.status !== 0) throw new Error(`git clone failed: ${r.stderr.trim()}`);
   } else {
-    const r = spawnSync('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60_000 });
-    if (r.status !== 0) logger.warn(`git fetch warning: ${r.stderr?.toString()}`);
+    const r = await runCommand('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60_000 });
+    if (r.status !== 0) {
+      // Continuing with a stale cache made tasks silently run old code.
+      throw new Error(`git fetch failed: ${r.stderr.trim()}`);
+    }
   }
   fs.mkdirSync(dest, { recursive: true });
-  const r = spawnSync(
+  const r = await runCommand(
     'git',
     [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'],
     { timeout: 30_000 },
   );
-  if (r.status !== 0) throw new Error(`git checkout failed: ${r.stderr?.toString()}`);
+  if (r.status !== 0) throw new Error(`git checkout failed: ${r.stderr.trim()}`);
 }
 
 export const executeRouter = Router();
@@ -75,6 +132,10 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     res.status(status).json({ error });
   };
 
+  // Set once the task is queued — after that the worker's onComplete owns
+  // the capacity slot and the outer catch must not double-release it.
+  let handedOff = false;
+  try {
   const body = req.body as ExecuteRequest;
   const { executionId, params } = body;
 
@@ -146,9 +207,9 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     }
 
     const ref = gitCommit || gitBranch;
-    logger.info(`Checking out ${gitRepo}@${ref} to ${workDir}`);
+    logger.info(`Checking out ${redactUrl(gitRepo)}@${ref} to ${workDir}`);
     try {
-      gitCheckoutTo(gitRepo, ref, workDir);
+      await gitCheckoutTo(gitRepo, ref, workDir);
     } catch (err) {
       sendError(500, err instanceof Error ? err.message : 'Git checkout failed');
       return;
@@ -224,15 +285,18 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
         ? `@autocodeflow:registry=${config.npmRegistryUrl}\n`
         : `registry=${config.npmRegistryUrl}\n`;
       fs.writeFileSync(npmrc, registryConfig);
-      logger.info(`Using npm registry: ${config.npmRegistryUrl} for task ${taskId}`);
+      logger.info(`Using npm registry: ${redactUrl(config.npmRegistryUrl)} for task ${taskId}`);
     }
-    const installResult = spawnSync(
-      'npm',
-      ['install', '--prefix', nodeModulesDir, ...actualRequirements],
-      { stdio: 'pipe', timeout: 300_000 },
+    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const installResult = await queueTaskInstall(taskId, () =>
+      runCommand(
+        npmCmd,
+        ['install', '--prefix', nodeModulesDir, ...actualRequirements],
+        { timeout: 300_000, shell: process.platform === 'win32' },
+      ),
     );
     if (installResult.status !== 0) {
-      const errMsg = installResult.stderr?.toString() || 'npm install failed';
+      const errMsg = installResult.stderr.trim() || 'npm install failed';
       sendError(500, `Dependency installation failed: ${errMsg}`);
       return;
     }
@@ -276,7 +340,9 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
       args = ['/c', actualEntrypoint];
     } else {
       cmd = 'bash';
-      args = ['-c', `cd "${workDir}" && exec "${actualEntrypoint}"`];
+      // spawn already runs with cwd=workDir — passing the entrypoint
+      // directly avoids quote-breakout through string concatenation.
+      args = [actualEntrypoint];
     }
   } else {
     sendError(400, `Unsupported runtime: ${actualRuntime}`);
@@ -296,13 +362,27 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId }, () => {
       releaseCapacity();
     });
+    handedOff = true;
   } catch (err) {
     releaseCapacity();
     res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to enqueue task' });
     return;
   }
-  
+
   res.json({ status: 'accepted', executionId });
+  } catch (err) {
+    // Express 4 does not await async handlers: a synchronous throw below the
+    // capacity reservation (mkdirSync, writeFileSync, manifest parse, …)
+    // would hang the request forever and leak the reserved slot.
+    if (handedOff) {
+      // The worker's onComplete owns the capacity slot from here on.
+      logger.error(`Post-enqueue error: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (!res.headersSent) {
+      sendError(500, err instanceof Error ? err.message : 'Internal executor error');
+    }
+  }
 });
 
 /** Write execution metadata to workDir/meta/{executionId}.json so the desktop can build history */
@@ -425,7 +505,12 @@ function runProcess(
       } catch (_) {
         try { proc.kill('SIGKILL'); } catch (_2) { /* already dead */ }
       }
-      reject(new Error(`Task timeout after ${timeoutSec}s`));
+      // Attach collected logs like the close path does — otherwise the
+      // failure callback carries no logs and the admin-side full-log
+      // backfill (LOG-01) never triggers.
+      const timeoutErr = new Error(`Task timeout after ${timeoutSec}s`) as Error & { logs: string };
+      timeoutErr.logs = logs;
+      reject(timeoutErr);
     }, timeoutSec * 1000);
 
     proc.on('close', (code: number | null) => {

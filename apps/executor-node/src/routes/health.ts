@@ -7,15 +7,14 @@ import { config } from '../config';
 import { runningCount } from '../scheduler';
 import { taskWorkerManager } from '../task-worker';
 import { getExecutorAuthToken } from './logs';
+import {
+  getHeartbeatState,
+  recordHeartbeat,
+  setAdminApiReachable,
+} from '../heartbeat-state';
 
-// Track last successful heartbeat time
-let lastHeartbeatTime: string | null = null;
-let adminApiReachable: boolean | null = null;
-
-export function recordHeartbeat(success: boolean): void {
-  if (success) lastHeartbeatTime = new Date().toISOString();
-  adminApiReachable = success;
-}
+// Re-exported for existing importers; the state lives in heartbeat-state.
+export { recordHeartbeat };
 
 export function buildAdminHealthPath(adminUrl: URL): string {
   const basePath = adminUrl.pathname.replace(/\/+$/, '');
@@ -71,7 +70,7 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
 
   // Check admin-api connectivity and update cached state
   const reachable = await checkAdminApi();
-  adminApiReachable = reachable;
+  setAdminApiReachable(reachable);
 
   const isHealthy = cpuUsage < 80 && memUsage < 80 && (diskUsage < 90 || diskUsage < 0);
 
@@ -87,7 +86,7 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
     workerStats: taskWorkerManager.getStats(),
     adminApiReachable: reachable,
     tokenValid: !!getExecutorAuthToken(),
-    lastHeartbeat: lastHeartbeatTime,
+    lastHeartbeat: getHeartbeatState().lastHeartbeatTime,
     timestamp: new Date().toISOString(),
   });
 });

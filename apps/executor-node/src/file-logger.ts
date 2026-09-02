@@ -60,14 +60,16 @@ export function deleteOldLogs(retentionDays: number): number {
   try {
     const dateDirs = fs.readdirSync(logsDir);
     for (const dateDir of dateDirs) {
-      const dirPath = path.join(logsDir, dateDir);
-      const stat = fs.statSync(dirPath);
-      
-      if (stat.isDirectory() && stat.birthtime.getTime() < cutoff) {
-        fs.rmdirSync(dirPath, { recursive: true });
-        deletedCount++;
-        logger.debug(`Deleted old log directory: ${dateDir}`);
-      }
+      // Directory names are YYYY-MM-DD (see formatDate) — stat.birthtime is
+      // unreliable on Linux (often falls back to mtime/epoch), so derive the
+      // age from the directory name instead.
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateDir);
+      if (!m) continue;
+      const dirTime = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
+      if (Number.isNaN(dirTime) || dirTime >= cutoff) continue;
+      fs.rmSync(path.join(logsDir, dateDir), { recursive: true, force: true });
+      deletedCount++;
+      logger.debug(`Deleted old log directory: ${dateDir}`);
     }
   } catch (error: unknown) {
     logger.error(`Error deleting old logs: ${error instanceof Error ? error.message : String(error)}`);

@@ -15,7 +15,9 @@ export interface CallbackRequest {
 }
 
 const callbackQueue: CallbackRequest[] = [];
-let callbackThread: NodeJS.Timeout | null = null;
+// Real re-entry sentinel — the previous callbackThread variable was never
+// assigned, so repeated startCallbackThread() calls spawned parallel loops.
+let loopStarted = false;
 let stopped = false;
 
 // Lazily computed so that config.workDir is resolved at call time, not at module load
@@ -130,7 +132,8 @@ async function processCallbacks(): Promise<void> {
 }
 
 export function startCallbackThread(): void {
-  if (callbackThread) return;
+  if (loopStarted) return;
+  loopStarted = true;
   stopped = false;
   logger.info('Starting callback thread');
   processCallbacks();

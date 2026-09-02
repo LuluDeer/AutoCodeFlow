@@ -19,6 +19,8 @@ export function getStaticToken(): string | null {
 let dynamicToken: string | null = null;
 let tokenExpiresAt: Date | null = null;
 const TOKEN_REFRESH_INTERVAL = 30 * 60 * 1000; // 30 minutes
+let tokenFetchFailedAt: number | null = null;
+const TOKEN_FETCH_BACKOFF_MS = 30_000;
 
 function getAdminApiUrl(): string {
   if (config.adminApiUrlExternal) {
@@ -62,12 +64,23 @@ async function fetchToken(): Promise<string | null> {
 
 async function refreshTokenIfNeeded(): Promise<void> {
   const now = new Date();
+  // Back off after a failed fetch — without this every request hangs for
+  // the 10s fetch timeout while admin-api is unreachable.
+  if (
+    tokenFetchFailedAt !== null &&
+    now.getTime() - tokenFetchFailedAt < TOKEN_FETCH_BACKOFF_MS
+  ) {
+    return;
+  }
   // Refresh if no token, expired, or within 5 minutes of expiration
   if (tokenExpiresAt === null || now >= new Date(tokenExpiresAt.getTime() - 5 * 60 * 1000)) {
     const newToken = await fetchToken();
     if (newToken) {
       dynamicToken = newToken;
       tokenExpiresAt = new Date(now.getTime() + TOKEN_REFRESH_INTERVAL);
+      tokenFetchFailedAt = null;
+    } else {
+      tokenFetchFailedAt = now.getTime();
     }
   }
 }

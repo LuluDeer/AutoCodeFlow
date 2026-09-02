@@ -71,7 +71,8 @@ logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
     return;
   }
 
-  const fromLine = parseInt(String(req.query.fromLine ?? '0'), 10) || 0;
+  // Clamp negatives — slice(-1) would silently return just the last line.
+  const fromLine = Math.max(0, parseInt(String(req.query.fromLine ?? '0'), 10) || 0);
 
   try {
     const raw = fs.readFileSync(logFile, 'utf-8');
