@@ -29,6 +29,10 @@ export enum RunMode {
 @Index(["applicationId"])
 @Index(["applicationId", "status"])
 @Index(["status"])
+@Index("idx_app_deployments_executor_address_status", [
+  "executorAddress",
+  "status",
+])
 export class AppDeployment {
   @PrimaryGeneratedColumn("uuid") id: string;
 

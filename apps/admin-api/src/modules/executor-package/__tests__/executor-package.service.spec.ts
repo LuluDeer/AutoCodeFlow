@@ -23,7 +23,12 @@ describe('ExecutorPackageService', () => {
   let repo: jest.Mocked<Repository<ExecutorPackage>>;
 
   const mockFile: Express.Multer.File = {
-    buffer: Buffer.from('fake-zip-content'),
+    // P1: buffer must start with the zip magic bytes (PK\x03\x04) to pass
+    // the upload content validation.
+    buffer: Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from('fake-zip-content'),
+    ]),
     originalname: 'executor-v1.0.0.zip',
     mimetype: 'application/zip',
     size: 1024,

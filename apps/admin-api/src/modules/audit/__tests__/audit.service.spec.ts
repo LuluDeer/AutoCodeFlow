@@ -111,8 +111,10 @@ describe("AuditService", () => {
     const makeExportQb = (rows: any[] = []) => ({
       orderBy: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
-      take: jest.fn().mockReturnThis(),
-      getMany: jest.fn().mockResolvedValue(rows),
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue(rows),
     });
 
     it("returns CSV header even when no rows", async () => {
@@ -162,11 +164,11 @@ describe("AuditService", () => {
       expect(csv).toContain('"admin,evil"');
     });
 
-    it("caps export at 10000 rows via take()", async () => {
+    it("caps export at 10000 rows via limit()", async () => {
       const qb = makeExportQb([]);
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
       await service.exportCsv({});
-      expect(qb.take).toHaveBeenCalledWith(10_000);
+      expect(qb.limit).toHaveBeenCalledWith(10_000);
     });
 
     it("applies action filter via andWhere", async () => {
