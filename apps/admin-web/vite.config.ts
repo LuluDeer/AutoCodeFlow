@@ -53,4 +53,4 @@ export default defineConfig({
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['e2e/**', '**/e2e/**', '**/*.e2e.{ts,tsx,js,cjs}'],
   },
-} as any);
+} as Parameters<typeof defineConfig>[0]);

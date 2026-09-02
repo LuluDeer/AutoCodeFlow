@@ -22,6 +22,7 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findOne: jest.fn(),
   find: jest.fn().mockResolvedValue([]),
+  findBy: jest.fn().mockResolvedValue([]),
   create: jest.fn((d) => d),
   save: jest.fn((e) => Promise.resolve(e)),
   update: jest.fn().mockResolvedValue({ affected: 1 }),
@@ -174,7 +175,7 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.findOne.mockResolvedValue(existing);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       execRepo.find.mockResolvedValue([runningExecution]);
-      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.findBy.mockResolvedValue([task]);
       execRepo.save.mockImplementation((e: any) =>
         Promise.resolve(e.id ? e : { ...e, id: "retry-exec" }),
       );
@@ -295,7 +296,7 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.findOne.mockResolvedValue(existing);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       execRepo.find.mockResolvedValue([runningExecution]);
-      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.findBy.mockResolvedValue([task]);
       execRepo.save.mockImplementation((e: any) =>
         Promise.resolve(e.id ? e : { ...e, id: "retry-exec" }),
       );
@@ -474,7 +475,7 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.findOne.mockResolvedValue(executor);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       execRepo.find.mockResolvedValue([firstExecution, secondExecution]);
-      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.findBy.mockResolvedValue([task]);
       execRepo.save.mockImplementation((e: any) =>
         Promise.resolve(e.id ? e : { ...e, id: `retry-${execRepo.save.mock.calls.length}` }),
       );
@@ -813,6 +814,31 @@ describe("ExecutorService (__tests__)", () => {
       expect(executorRepo.update).toHaveBeenCalledWith(
         expect.objectContaining({ status: ExecutorStatus.ONLINE }),
         { status: ExecutorStatus.OFFLINE },
+      );
+    });
+  });
+
+  describe("setOfflineById", () => {
+    it("sets status OFFLINE and refreshes heartbeat", async () => {
+      const executor: any = {
+        id: "exec-9",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      const saved = await service.setOfflineById("exec-9");
+      expect(executorRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "exec-9" },
+      });
+      expect(executorRepo.save).toHaveBeenCalledWith(executor);
+      expect(saved.status).toBe(ExecutorStatus.OFFLINE);
+      expect(saved.lastHeartbeat).toBeInstanceOf(Date);
+    });
+
+    it("throws NotFoundException when executor does not exist", async () => {
+      executorRepo.findOne.mockResolvedValue(null);
+      await expect(service.setOfflineById("missing")).rejects.toThrow(
+        NotFoundException,
       );
     });
   });

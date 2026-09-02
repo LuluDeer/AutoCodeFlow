@@ -162,7 +162,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     {
       title: '执行器',
       key: 'executor',
-      render: (_: any, r: AppDeployment) => (
+      render: (_: unknown, r: AppDeployment) => (
         <Space direction="vertical" size={0}>
           <Text strong style={{ fontSize: 13}}>{r.executorAddress || r.executorId}</Text>
           {r.deployedVersion && <Tag color="blue" style={{ fontSize: 11 }}>v{r.deployedVersion}</Tag>}
@@ -215,7 +215,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     {
       title: '操作',
       width: 160,
-      render: (_: any, r: AppDeployment) => (
+      render: (_: unknown, r: AppDeployment) => (
         <Space size={4}>
           {r.status === 'running' && (
             <Button

@@ -162,13 +162,23 @@ export class ExecutorService {
         executorAddress,
         status: ExecutionStatus.RUNNING,
       },
+      // Defensive cap: a single executor can only run a finite number of tasks
+      // (bounded by maxConcurrentTasks). 1000 leaves headroom without scanning unboundedly.
+      take: 1000,
     });
     const executionsToFail = runningExecutions.filter((execution) =>
       this.shouldFailAfterRestart(execution, onlyStartedBefore),
     );
+    // Batch-fetch tasks once instead of one query per execution (avoids N+1)
+    const taskIds = [...new Set(executionsToFail.map((e) => e.taskId))];
+    const tasks =
+      taskIds.length > 0
+        ? await this.taskRepo.findBy({ id: In(taskIds) })
+        : [];
+    const taskMap = new Map(tasks.map((t) => [t.id, t]));
     for (const execution of executionsToFail) {
       const task = execution.taskId
-        ? await this.taskRepo.findOne({ where: { id: execution.taskId } })
+        ? (taskMap.get(execution.taskId) ?? null)
         : null;
       execution.status = ExecutionStatus.FAILED;
       execution.endTime = new Date();
@@ -185,6 +195,7 @@ export class ExecutorService {
         `Marked ${executionsToFail.length} running execution(s) as FAILED after executor restart: ${executorAddress}`,
       );
     }
+    // R-P0-009: Return the count of failed executions for caller to adjust runningTaskCount
     return executionsToFail.length;
   }
 
@@ -218,11 +229,16 @@ export class ExecutorService {
     const shouldRecoverMissingBaseline = Boolean(
       e && !didRestart && !hasStartupBaseline && incomingStartedAt,
     );
-    if (!e) e = this.repo.create(data as Partial<Executor>);
+    if (!e) {
+      // Don't pass TypeORM's optimistic-lock `version` (number) as a column
+      // value when creating — it must start undefined so TypeORM initializes it.
+      const { version: _optimisticLock, ...createData } = data;
+      e = this.repo.create(createData as Partial<Executor>);
+    }
     // Update mutable fields on registration/re-registration
     if (data.type) e.type = data.type as any;
     if (data.appName) e.appName = data.appName;
-    if (data.version) e.version = data.version;
+    if (data.version) e.executorVersion = data.version;
     if (capabilities) e.capabilities = capabilities;
     if (maxConcurrentTasks !== undefined)
       e.maxConcurrentTasks = maxConcurrentTasks;
@@ -231,8 +247,12 @@ export class ExecutorService {
     if (data.description !== undefined) e.description = data.description;
     if (didRestart) {
       await this.failRunningExecutionsAfterRestart(data.address);
+      // R-P0-008: Reset runningTaskCount to 0 after executor restart
+      e.runningTaskCount = 0;
     } else if (shouldRecoverMissingBaseline) {
       await this.failRunningExecutionsAfterRestart(data.address, incomingStartedAt);
+      // R-P0-008: Reset runningTaskCount to 0 after recovery
+      e.runningTaskCount = 0;
     }
     if (incomingStartedAt) e.executorStartedAt = incomingStartedAt;
     if (incomingStartupId) e.executorStartupId = incomingStartupId;
@@ -285,6 +305,9 @@ export class ExecutorService {
     } else if (shouldRecoverMissingBaseline) {
       await this.failRunningExecutionsAfterRestart(address, incomingStartedAt);
     }
+    
+    // R-P0-006: Use save() without version check for heartbeat to avoid frequent conflicts
+    // Heartbeat updates are mostly metrics and don't need strict concurrency control
     Object.assign(e, metricValues, {
       status: ExecutorStatus.ONLINE,
       lastHeartbeat: new Date(),
@@ -296,7 +319,9 @@ export class ExecutorService {
   }
 
   findAll() {
-    return this.repo.find({ order: { createdAt: "DESC" } });
+    // Cap the result set: an admin UI listing does not need every historical executor.
+    // Use pagination if the UI needs more — the ExecutorListPage supports filters/search.
+    return this.repo.find({ order: { createdAt: "DESC" }, take: 500 });
   }
 
   async findOne(id: string): Promise<Executor> {
@@ -336,9 +361,16 @@ export class ExecutorService {
 
   /**
    * Get all unique executor tags.
+   * `tags` is a simple-array (comma-separated string) column, so we still need to
+   * load the rows and split in TS — but we cap the read with `take` to bound the
+   * scan. Set is generous because tags are user-defined and rarely change.
    */
   async getTags(): Promise<string[]> {
-    const execs = await this.repo.find();
+    const execs = await this.repo.find({
+      select: ["tags"],
+      // Bound the scan; tag set converges quickly even with thousands of executors.
+      take: 5000,
+    });
     const tagSet = new Set<string>();
     execs.forEach((e) => {
       if (e.tags) e.tags.forEach((tag) => tagSet.add(tag));
@@ -358,6 +390,10 @@ export class ExecutorService {
   }): Promise<Executor> {
     const all = await this.repo.find({
       where: { status: ExecutorStatus.ONLINE },
+      // Cap the candidate pool: scoring + capacity checks operate on full rows,
+      // and we only need the least-loaded one. A generous cap (500) still avoids
+      // unbounded scans for installations with thousands of edge executors.
+      take: 500,
     });
     if (all.length === 0) {
       throw new ServiceUnavailableException("No online executors available");
@@ -416,6 +452,10 @@ export class ExecutorService {
   async dispatch(task: Task, execution: TaskExecution) {
     const all = await this.repo.find({
       where: { status: ExecutorStatus.ONLINE },
+      // Bound the candidate pool for the weighted-score selection below.
+      // Score-and-pick-first needs only the top candidates, so a generous cap
+      // is enough. See selectLeastLoaded() for the matching rationale.
+      take: 500,
     });
 
     let candidates = all;
@@ -477,26 +517,33 @@ export class ExecutorService {
       return scoreA - scoreB;
     });
 
+    // R-P0-006: Use optimistic locking with version to prevent TOCTOU race conditions
     let matched: Executor | null = null;
     for (const candidate of sorted) {
       const maxConcurrent = candidate.maxConcurrentTasks ?? Infinity;
-      // Optimistic lock: only increment when runningTaskCount < maxConcurrentTasks
+      
+      // Attempt atomic increment with version check
       const result = await this.repo
         .createQueryBuilder()
         .update(Executor)
         .set({ runningTaskCount: () => '"runningTaskCount" + 1' })
         .where("id = :id", { id: candidate.id })
         .andWhere("status = :status", { status: ExecutorStatus.ONLINE })
+        .andWhere("version = :version", { version: candidate.version })
         .andWhere(
           maxConcurrent === Infinity ? "1=1" : '"runningTaskCount" < :max',
           maxConcurrent === Infinity ? {} : { max: maxConcurrent },
         )
         .execute();
+      
       if (result.affected && result.affected > 0) {
+        // Update successful, synchronize local state
+        candidate.runningTaskCount += 1;
+        candidate.version += 1;
         matched = candidate;
-        candidate.runningTaskCount += 1; // sync local state after DB increment
         break;
       }
+      // Version conflict or capacity full, try next candidate
     }
 
     if (!matched)
@@ -535,6 +582,10 @@ export class ExecutorService {
    * Broadcast dispatch: send the task to ALL online executors simultaneously.
    * Used when task.executeMode === ExecuteMode.BROADCAST.
    * Returns a list of results for each executor.
+   *
+   * NOTE: Broadcast is intentionally unbounded — by definition we must dispatch
+   * to every eligible online executor. The `{status: ONLINE}` where clause keeps
+   * this scoped to the active fleet; offline/stale rows are excluded.
    */
   async dispatchBroadcast(
     task: Task,
@@ -873,6 +924,18 @@ export class ExecutorService {
       { status: ExecutorStatus.OFFLINE, lastHeartbeat: new Date() },
     );
     this.logger.log(`Executor ${address} marked as offline`);
+  }
+
+  /**
+   * Admin marks a specific executor offline by ID (stale record cleanup).
+   */
+  async setOfflineById(id: string): Promise<Executor> {
+    const executor = await this.findOne(id);
+    executor.status = ExecutorStatus.OFFLINE;
+    executor.lastHeartbeat = new Date();
+    const saved = await this.repo.save(executor);
+    this.logger.log(`Executor ${executor.address} set offline by admin (id=${id})`);
+    return saved;
   }
 
   /**

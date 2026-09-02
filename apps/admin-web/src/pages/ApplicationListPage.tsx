@@ -172,7 +172,7 @@ export default function ApplicationListPage() {
     try {
       const res = await executorsApi.list();
       setQuickDeployExecutors(res.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })) ?? []);
-    } catch (_err) {
+    } catch {
       setQuickDeployExecutors([]);
       message.warning('获取执行器列表失败，请检查网络连接');
     }

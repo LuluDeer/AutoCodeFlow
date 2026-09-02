@@ -172,7 +172,7 @@ export default function TaskDetailPage() {
     },
     {
       title: '', key: 'actions', width: 100,
-      render: (_: any, r: TaskExecution) => (
+      render: (_: unknown, r: TaskExecution) => (
         <Space size={2}>
           {r.status === 'running' && (
             <Tooltip title="终止">
