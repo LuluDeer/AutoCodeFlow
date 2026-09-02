@@ -23,14 +23,48 @@ function loadCallbackModule(callbackDir: string): CallbackModule {
   return require('./callback') as CallbackModule;
 }
 
+// Captured at module scope, before jest.useFakeTimers() replaces the globals —
+// used only for fail-fast guards so a wedged fake-timer sweep surfaces as a
+// clear assertion instead of hanging until jest's opaque test timeout.
+const realSetTimeout = setTimeout.bind(globalThis);
+const realClearTimeout = clearTimeout.bind(globalThis);
+
+function withRealTimeGuard<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const guard = realSetTimeout(
+      () => reject(new Error(`${label} exceeded ${ms}ms of real time`)),
+      ms,
+    );
+    if (typeof (guard as { unref?: () => void }).unref === 'function') {
+      (guard as { unref: () => void }).unref();
+    }
+    promise.then(
+      (value) => {
+        realClearTimeout(guard);
+        resolve(value);
+      },
+      (error) => {
+        realClearTimeout(guard);
+        reject(error);
+      },
+    );
+  });
+}
+
 // The background loop sleeps 1s between iterations; advancing fake timers
-// once triggers one full drain/retry sweep.
+// once triggers one full drain/retry sweep. Extra microtask hops around the
+// timer advance give the mocked post() promise chains room to settle before
+// the sweep returns, keeping the count/number of sweeps machine-independent.
 async function sweep(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await jest.runOnlyPendingTimersAsync();
-  await Promise.resolve();
-  await Promise.resolve();
+  await withRealTimeGuard(
+    (async () => {
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      await jest.runOnlyPendingTimersAsync();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    })(),
+    2_000,
+    'fake-timer sweep',
+  );
 }
 
 describe('callback persistence — batch sharding and dead-letter', () => {
@@ -70,7 +104,12 @@ describe('callback persistence — batch sharding and dead-letter', () => {
       cb.pushCallback({ executionId: `exec-${i}`, status: 'success' });
     }
     cb.startCallbackThread();
-    await sweep();
+    // Poll instead of assuming the whole drain lands inside one sweep: each
+    // sweep advances one timer generation, and on any machine the two POSTs
+    // happen within a handful of sweeps (success ⇒ no backoff timers).
+    for (let i = 0; i < 40 && post.mock.calls.length < 2; i++) {
+      await sweep();
+    }
 
     expect(post).toHaveBeenCalledTimes(2);
     const firstBatch = post.mock.calls[0][1] as CallbackRequest[];
@@ -81,7 +120,7 @@ describe('callback persistence — batch sharding and dead-letter', () => {
     expect(cb.getPendingCallbackCount()).toBe(0);
     expect(liveCallbackFiles()).toHaveLength(0);
     expect(deadLetterFiles()).toHaveLength(0);
-  });
+  }, 15_000);
 
   it('persists each failed chunk as its own file within the 100-item admin limit', async () => {
     post.mockResolvedValue({ status: 500 });
@@ -128,9 +167,7 @@ describe('callback persistence — batch sharding and dead-letter', () => {
 
     // Once dead-lettered the file is no longer re-sent every second.
     const callsAfterDead = post.mock.calls.length;
-    await sweep();
-    await sweep();
-    await sweep();
+    for (let i = 0; i < 3; i++) await sweep();
     expect(post.mock.calls.length).toBe(callsAfterDead);
 
     const items = JSON.parse(
@@ -138,7 +175,7 @@ describe('callback persistence — batch sharding and dead-letter', () => {
     );
     expect(items[0].executionId).toBe('exec-poison');
     expect(liveCallbackFiles()).toHaveLength(0);
-  });
+  }, 15_000);
 
   it('records retries in the .meta counter and cleans both files when a retry succeeds', async () => {
     post.mockResolvedValue({ status: 500 });

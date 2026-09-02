@@ -18,11 +18,30 @@ function loadModule(workDir: string): FileLoggerModule {
   return require('./file-logger') as FileLoggerModule;
 }
 
+// Freeze time at local noon: getLogFilePath derives the date directory from
+// wall-clock time, so a real midnight (or a TZ where local date != UTC date)
+// between appendLog and the expected-path computation would point the
+// assertion at a different directory. Fixed fake timers make both sides use
+// the same instant deterministically in any timezone.
+const FIXED_NOW = new Date(2026, 5, 15, 12, 0, 0);
+
+/** Mirror file-logger's LOCAL-date formatting (getFullYear/getMonth/getDate).
+ *  The previous spec code used toISOString (UTC), which diverges from the
+ *  production path for hours every day in non-UTC timezones. */
+function expectedLogPath(baseDir: string, executionId: string): string {
+  const d = new Date();
+  const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate(),
+  ).padStart(2, '0')}`;
+  return path.join(baseDir, 'logs', dateStr, `${executionId}.log`);
+}
+
 describe('appendLog (buffered async writer)', () => {
   let dir: string;
   let fl: FileLoggerModule;
 
   beforeEach(() => {
+    jest.useFakeTimers({ now: FIXED_NOW });
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-fl-'));
     fl = loadModule(dir);
   });
@@ -31,6 +50,7 @@ describe('appendLog (buffered async writer)', () => {
     fl.stopLogCleanup();
     fl.stopWorkDirCleanup();
     fl.stopLogWriter();
+    jest.useRealTimers();
   });
 
   it('buffers appendLog and flushes to disk via flushLogs without blocking', async () => {
@@ -38,7 +58,7 @@ describe('appendLog (buffered async writer)', () => {
     fl.appendLog('exec-1', 'line two');
 
     // Not yet on disk (buffered)…
-    const logPath = path.join(dir, 'logs', new Date().toISOString().slice(0, 10), 'exec-1.log');
+    const logPath = expectedLogPath(dir, 'exec-1');
     expect(fs.existsSync(logPath)).toBe(false);
 
     await fl.flushLogs();
@@ -53,7 +73,7 @@ describe('appendLog (buffered async writer)', () => {
     fl.appendLog('exec-burst', big);
     await fl.flushLogs();
 
-    const logPath = path.join(dir, 'logs', new Date().toISOString().slice(0, 10), 'exec-burst.log');
+    const logPath = expectedLogPath(dir, 'exec-burst');
     const content = fs.readFileSync(logPath, 'utf-8');
     expect(content.length).toBeLessThanOrEqual(8 * 1024 * 1024 + 1);
     // The buffer keeps the newest content (trailing newline included).
@@ -63,7 +83,7 @@ describe('appendLog (buffered async writer)', () => {
 
   it('keeps appendLogSync as an immediate-write path', () => {
     fl.appendLogSync('exec-sync', 'immediate');
-    const logPath = path.join(dir, 'logs', new Date().toISOString().slice(0, 10), 'exec-sync.log');
+    const logPath = expectedLogPath(dir, 'exec-sync');
     expect(fs.readFileSync(logPath, 'utf-8')).toBe('immediate\n');
   });
 });
@@ -126,19 +146,21 @@ describe('cleanupWorkDir (disk reclamation)', () => {
   });
 
   it('keeps only the newest .pkg-updates package files among expired ones', () => {
-    const base = path.join(process.cwd(), '.pkg-updates');
-    fs.mkdirSync(base, { recursive: true });
-    const files = ['pkg-a.zip', 'pkg-b.zip', 'pkg-c.zip', 'pkg-d.zip'];
+    // cleanupWorkDir reads process.cwd() at call time — redirect it into the
+    // per-test temp dir so the suite never touches (or races with leftovers
+    // from previous runs in) the repository's real .pkg-updates directory.
+    const spyCwd = jest.spyOn(process, 'cwd').mockReturnValue(dir);
+    const base = path.join(dir, '.pkg-updates');
     try {
+      fs.mkdirSync(base, { recursive: true });
+      const files = ['pkg-a.zip', 'pkg-b.zip', 'pkg-c.zip', 'pkg-d.zip'];
       const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
-      const now = Date.now();
       files.forEach((name, i) => {
         const p = path.join(base, name);
         fs.writeFileSync(p, 'data');
         // a oldest (10 days + minutes), d newest (10 days) — all past TTL
         const t = new Date(oldDate.getTime() - (files.length - i) * 60_000);
         fs.utimesSync(p, t, t);
-        void now;
       });
 
       const result = fl.cleanupWorkDir(7);
@@ -147,9 +169,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
       expect(fs.existsSync(path.join(base, 'pkg-c.zip'))).toBe(true);
       expect(fs.existsSync(path.join(base, 'pkg-a.zip'))).toBe(false);
     } finally {
-      for (const name of files) {
-        try { fs.unlinkSync(path.join(base, name)); } catch { /* already gone */ }
-      }
+      spyCwd.mockRestore();
     }
   });
 

@@ -10,11 +10,28 @@ jest.mock('../config', () => ({
 
 import { downloadFile } from './download';
 
-function listen(server: http.Server): Promise<number> {
-  return new Promise((resolve) =>
-    server.listen(0, '127.0.0.1', () => {
+function listen(server: http.Server, host: string = '127.0.0.1'): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, host, () => {
       resolve((server.address() as AddressInfo).port);
-    }),
+    });
+  });
+}
+
+/** Destroy client sockets, close idle keep-alive connections and await the
+ *  close event so no server handle lingers into the next test. */
+async function closeServer(server: http.Server, sockets?: Set<import('net').Socket>): Promise<void> {
+  if (sockets) {
+    for (const socket of sockets) socket.destroy();
+  }
+  server.closeAllConnections?.();
+  await new Promise<void>((resolve, reject) =>
+    server.close((err) =>
+      err && (err as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING'
+        ? reject(err)
+        : resolve(),
+    ),
   );
 }
 
@@ -38,24 +55,28 @@ describe('downloadFile (shared Bearer downloader)', () => {
       expect(bytes).toBe(7);
       expect(fs.readFileSync(dest, 'utf8')).toBe('payload');
     } finally {
-      server.close();
+      await closeServer(server);
     }
   });
 
   it('keeps the token for same-host redirects and strips it on cross-host redirects', async () => {
     const seen: Array<string | undefined> = [];
+    // Bound on 0.0.0.0 so both loopback literals below (127.0.0.1 and 127.0.0.2)
+    // reach it: the whole 127/8 range routes to loopback on Linux/macOS/Windows,
+    // so the redirect hops involve no DNS at all (a "localhost" target could
+    // resolve to ::1 and hit nothing on IPv6-preferring CI machines).
     const serverB = http.createServer((req, res) => {
       seen.push(req.headers.authorization);
       res.writeHead(200);
       res.end('final');
     });
-    const portB = await listen(serverB);
+    const portB = await listen(serverB, '0.0.0.0');
     // same-host target for the first hop (hostname 127.0.0.1 -> 127.0.0.1)
     const serverA = http.createServer((req, res) => {
       seen.push(req.headers.authorization);
       const target = req.url?.startsWith('/same')
         ? `http://127.0.0.1:${portB}/final`
-        : `http://localhost:${portB}/final`;
+        : `http://127.0.0.2:${portB}/final`;
       res.writeHead(302, { location: target });
       res.end();
     });
@@ -69,11 +90,11 @@ describe('downloadFile (shared Bearer downloader)', () => {
 
       seen.length = 0;
       await downloadFile(`http://127.0.0.1:${portA}/cross`, dest2);
-      // 127.0.0.1 → localhost is a cross-host redirect: token stripped
+      // 127.0.0.1 → 127.0.0.2 is a cross-host redirect: token stripped
       expect(seen).toEqual(['Bearer test-shared-token', undefined]);
     } finally {
-      serverA.close();
-      serverB.close();
+      await closeServer(serverA);
+      await closeServer(serverB);
     }
   });
 
@@ -97,9 +118,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
         downloadFile(`http://127.0.0.1:${port}/slow.zip`, dest, { timeoutMs: 400 }),
       ).rejects.toThrow(/timed out/i);
     } finally {
-      for (const socket of sockets) socket.destroy();
-      server.close();
-      server.closeAllConnections?.();
+      await closeServer(server, sockets);
     }
   }, 10_000);
 
@@ -117,7 +136,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
       // the partial download must not linger
       expect(fs.existsSync(dest)).toBe(false);
     } finally {
-      server.close();
+      await closeServer(server);
     }
   }, 10_000);
 
@@ -134,7 +153,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
       );
       expect(fs.existsSync(dest)).toBe(false);
     } finally {
-      server.close();
+      await closeServer(server);
     }
   }, 10_000);
 });

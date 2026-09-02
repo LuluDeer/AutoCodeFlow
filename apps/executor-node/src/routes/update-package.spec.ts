@@ -1,6 +1,7 @@
 import request from 'supertest';
 import express from 'express';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as childProcess from 'child_process';
 import * as http from 'http';
@@ -78,11 +79,17 @@ afterEach(() => {
 });
 
 async function waitForUpdateToSettle(app: express.Express): Promise<void> {
-  for (let i = 0; i < 20; i++) {
+  // 25ms granularity over ~3s of sleeps: plenty of headroom for slow CI
+  // machines (the flows under test are local+mocked and settle in ~ms), while
+  // the explicit final assert turns a never-settling flow into a named test
+  // failure instead of silently leaking an in-progress flag into the next test.
+  for (let i = 0; i < 120; i++) {
     const res = await request(app).get('/api/update-package/status');
     if (res.body.inProgress === false) return;
     await new Promise(resolve => setTimeout(resolve, 25));
   }
+  const res = await request(app).get('/api/update-package/status');
+  expect(res.body.inProgress).toBe(false);
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +97,20 @@ async function waitForUpdateToSettle(app: express.Express): Promise<void> {
 // ---------------------------------------------------------------------------
 describe('POST /api/update-package — payload validation', () => {
   const app = makeApp();
+  let spyCwd: jest.SpyInstance;
+
+  beforeEach(() => {
+    // The accepted-URL tests kick off a real async download against an
+    // unreachable port. Redirect process.cwd() so the route's temp
+    // .pkg-updates writes land outside the repository (previously the real
+    // repo dir kept a stray .pkg-updates directory after every run, and a
+    // slow createWriteStream could race with later tests' fs cleanup).
+    spyCwd = jest.spyOn(process, 'cwd').mockReturnValue(path.join(os.tmpdir(), 'acf-up-validation'));
+  });
+
+  afterEach(() => {
+    spyCwd.mockRestore();
+  });
 
   it('returns 400 when packageId is missing', async () => {
     const res = await request(app)
@@ -271,11 +292,16 @@ describe('POST /api/update-package — download behaviour', () => {
       expect(res.body.accepted).toBe(true);
 
       // Wait until the flow settles
-      for (let i = 0; i < 100; i++) {
+      for (let i = 0; i < 200; i++) {
         const status = await request(app).get('/api/update-package/status');
         if (status.body.inProgress === false && seen.length > 0 && post.mock.calls.length > 0) break;
         await new Promise((r) => setTimeout(r, 25));
       }
+
+      // Explicit settle assert — an exhausted early-exit loop must not skip
+      // the assertions below with the flow still running.
+      const settled = await request(app).get('/api/update-package/status');
+      expect(settled.body.inProgress).toBe(false);
 
       expect(seen).toEqual(['Bearer test-shared-token']);
       const pushed = post.mock.calls.find((c: unknown[]) => c[0] === '/api/executor-packages/push-result');
