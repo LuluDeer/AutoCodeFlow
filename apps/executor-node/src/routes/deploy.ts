@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawnSync, spawn, ChildProcess } from 'child_process';
+import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { config } from '../config';
 import { logger } from '../logger';
 import { post } from '../admin-client';
@@ -155,8 +155,20 @@ function startApp(
   // Stream logs to file
   const logFile = path.join(deployDir, 'app.log');
   const logStream = fs.createWriteStream(logFile, { flags: 'a' });
-  child.stdout?.pipe(logStream);
-  child.stderr?.pipe(logStream);
+  logStream.on('error', (err) => {
+    logger.warn(`[deploy] Failed to write app log for ${deploymentId}: ${err.message}`);
+  });
+  // end:false on both sources — with the default end:true the first stream
+  // to finish would end the file while the other still writes
+  // (write-after-end crash).
+  let openLogSources = 2;
+  const closeLogStream = () => {
+    if (--openLogSources <= 0) logStream.end();
+  };
+  child.stdout?.pipe(logStream, { end: false });
+  child.stderr?.pipe(logStream, { end: false });
+  child.stdout?.on('close', closeLogStream);
+  child.stderr?.on('close', closeLogStream);
 
   // Report started
   reportStatus(deploymentId, 'running', child.pid);
@@ -183,27 +195,70 @@ function startApp(
   });
 }
 
+/** Strip embedded credentials (user:token@) before a URL reaches the logs. */
+function redactUrl(u: string): string {
+  return u.replace(/\/\/[^/@]+@/, '//***@');
+}
+
+/** Promise-wrapped spawn — deploy runs inside setImmediate, but spawnSync
+ *  still froze the whole process (heartbeats, /health, all APIs) for the
+ *  duration of git/npm/pip/unzip work. */
+function runCommand(
+  cmd: string,
+  args: string[],
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number; shell?: boolean } = {},
+): Promise<{ status: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    const timer = opts.timeout
+      ? setTimeout(() => {
+          try { child.kill('SIGKILL'); } catch (_) { /* already dead */ }
+        }, opts.timeout)
+      : null;
+    child.stdout?.on('data', () => {});
+    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    child.on('error', (err) => {
+      if (timer) clearTimeout(timer);
+      resolve({ status: null, stderr: `${stderr}${err.message}` });
+    });
+    child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
+      resolve({ status: code, stderr });
+    });
+  });
+}
+
 /** Download a file over HTTP/HTTPS to a local path */
-function downloadPackage(url: string, dest: string): Promise<void> {
+function downloadPackage(url: string, dest: string, maxRedirects = 5): Promise<void> {
   return new Promise((resolve, reject) => {
     const proto = url.startsWith('https') ? require('https') : require('http');
     const file = fs.createWriteStream(dest);
+    const fail = (err: Error) => {
+      file?.destroy?.();
+      fs.unlink(dest, () => {});
+      reject(err);
+    };
     const req = proto.get(url, (res: any) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        file.close();
+        file?.close?.();
         fs.unlinkSync(dest);
-        downloadPackage(res.headers.location, dest).then(resolve).catch(reject);
+        if (maxRedirects <= 0) {
+          reject(new Error('Download failed: too many redirects'));
+          return;
+        }
+        downloadPackage(res.headers.location, dest, maxRedirects - 1).then(resolve).catch(reject);
         return;
       }
       if (!res.statusCode || res.statusCode >= 400) {
-        reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+        fail(new Error(`Download failed: HTTP ${res.statusCode}`));
         return;
       }
       res.pipe(file);
       file.on('finish', () => { file.close(); resolve(); });
     });
-    req.on('error', (err: Error) => { fs.unlink(dest, () => {}); reject(err); });
-    req.setTimeout(120_000, () => { req.destroy(); reject(new Error('Download timed out')); });
+    req.on('error', fail);
+    req.setTimeout(120_000, () => { req.destroy(); fail(new Error('Download timed out')); });
   });
 }
 
@@ -344,6 +399,25 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
   if (!gitRepo && !packageUrl) {
     return res.status(400).json({ error: 'Either gitRepo or packageUrl is required' });
   }
+  // P0: git argument injection guard — option-like or malformed values would
+  // be parsed as flags by git (e.g. --upload-pack=…) instead of ref/URL.
+  if (gitRepo) {
+    if (/^-/.test(gitRepo) || !/^(https?:\/\/|git@|ssh:\/\/)/i.test(gitRepo)) {
+      return res.status(400).json({ error: `Invalid gitRepo URL: ${gitRepo}` });
+    }
+    const branch = gitBranch || 'main';
+    if (
+      /^-/.test(branch) ||
+      /[\s^~:?*[\]\\]/.test(branch) ||
+      branch.includes('..') ||
+      branch.startsWith('/')
+    ) {
+      return res.status(400).json({ error: `Invalid gitBranch: ${branch}` });
+    }
+    if (gitCommit && !/^[0-9a-fA-F]{7,40}$/.test(gitCommit)) {
+      return res.status(400).json({ error: `Invalid gitCommit: ${gitCommit}` });
+    }
+  }
   if (packageUrl) {
     const packageUrlError = validatePackageUrl(packageUrl);
     if (packageUrlError) {
@@ -395,7 +469,7 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
 
       if (packageUrl) {
         // Package-based deployment: download zip and extract into a temporary release dir.
-        logger.info(`[deploy] Downloading package from ${packageUrl}`);
+        logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
         const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
         await downloadPackage(packageUrl, zipPath);
         assertSafeZipEntries(zipPath);
@@ -448,7 +522,7 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       // Write .env file for the app before publishing the release.
       if (Object.keys(envVars).length > 0) {
         const envContent = Object.entries(envVars).map(([k, v]) => `${k}=${v}`).join('\n');
-        fs.writeFileSync(path.join(paths.extractDir, '.env'), envContent, 'utf-8');
+        fs.writeFileSync(path.join(paths.extractDir, '.env'), envContent, { encoding: 'utf-8', mode: 0o600 });
       }
 
       removePathIfExists(paths.finalReleaseDir);
@@ -486,6 +560,12 @@ deployRouter.post('/app-stop', (req: Request, res: Response) => {
   const child = runningApps.get(deploymentId);
   if (child) {
     child.kill('SIGTERM');
+    // Escalate to SIGKILL when the process ignores SIGTERM (mirroring the
+    // upgrade path) — otherwise daemons keep running unmanaged.
+    const killTimer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch (_) { /* already dead */ }
+    }, 10_000);
+    child.once('exit', () => clearTimeout(killTimer));
     runningApps.delete(deploymentId);
     logger.info(`[deploy] Stopped app ${deploymentId}`);
   }

@@ -26,20 +26,29 @@ interface UpdatePackagePayload {
 }
 
 /** Download file to local path, return actual bytes written */
-function downloadFile(url: string, dest: string): Promise<number> {
+function downloadFile(url: string, dest: string, maxRedirects = 5): Promise<number> {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
+    const fail = (err: Error) => {
+      file?.destroy?.();
+      fs.unlink(dest, () => {});
+      reject(err);
+    };
     const proto = url.startsWith('https') ? https : http;
     const req = proto.get(url, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // simple redirect follow
+        // bounded redirect follow
         file.close();
-        fs.unlinkSync(dest);
-        downloadFile(res.headers.location, dest).then(resolve).catch(reject);
+        fs.promises.unlink(dest).catch(() => {});
+        if (maxRedirects <= 0) {
+          reject(new Error('Download failed: too many redirects'));
+          return;
+        }
+        downloadFile(res.headers.location, dest, maxRedirects - 1).then(resolve).catch(reject);
         return;
       }
       if (!res.statusCode || res.statusCode >= 400) {
-        reject(new Error(`Download failed with status ${res.statusCode}`));
+        fail(new Error(`Download failed with status ${res.statusCode}`));
         return;
       }
       let bytes = 0;
@@ -47,8 +56,8 @@ function downloadFile(url: string, dest: string): Promise<number> {
       res.pipe(file);
       file.on('finish', () => { file.close(); resolve(bytes); });
     });
-    req.on('error', (err) => { fs.unlink(dest, () => {}); reject(err); });
-    req.setTimeout(120_000, () => { req.destroy(); reject(new Error('Download timed out')); });
+    req.on('error', fail);
+    req.setTimeout(120_000, () => { req.destroy(); fail(new Error('Download timed out')); });
   });
 }
 
@@ -65,6 +74,12 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
 
   if (!body.packageId || !body.downloadUrl || !body.version) {
     res.status(400).json({ error: 'Missing required fields: packageId, downloadUrl, version' });
+    return;
+  }
+  // An unverified package update is an unacceptable risk — admin-api always
+  // sends the SHA-256, so a missing checksum means a malformed request.
+  if (!body.checksum) {
+    res.status(400).json({ error: 'checksum is required for package updates' });
     return;
   }
 
