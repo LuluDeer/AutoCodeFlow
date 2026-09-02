@@ -12,7 +12,9 @@ import {
   Delete,
   HttpCode,
   HttpStatus,
+  Res,
 } from "@nestjs/common";
+import { Response } from "express";
 import {
   ApiTags,
   ApiOperation,
@@ -25,7 +27,10 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { UserRole } from "../users/entities/user.entity";
 import { ExecutorService } from "./executor.service";
+import { INSTALL_SCRIPT } from "./install-script.content";
 import { SystemConfigService } from "../config/config.service";
 import axios from "axios";
 import { PaginationDto } from "../../common/dto/pagination.dto";
@@ -194,6 +199,10 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Get()
+  // N11 复核后不对列表做 ADMIN 收紧：任务 CRUD 对普通用户开放，且 executions
+  // 列表/过滤（executorAddress）本就向所有登录用户暴露执行器地址——单独锁住
+  // 列表既挡不住信息（可经 executions 侧信道获得）又会打断 TaskFormPage 的
+  // 执行器下拉。凭证类面（notification/ai config）仍为 ADMIN。
   @ApiOperation({
     summary: "List executors",
     description:
@@ -280,7 +289,7 @@ export class ExecutorController {
         code: 200,
         message: "success",
         data: {
-          cmd: "npx autoflow-executor --admin-url http://... --token ...",
+          cmd: "curl -fsSL 'http://localhost:3002/api/executors/install.sh' | bash -s -- --api-url 'http://localhost:3002' --secret 'shared-token'",
           token: "shared-token",
           adminApiUrl: "http://localhost:3002",
         },
@@ -289,6 +298,31 @@ export class ExecutorController {
   })
   getInstallCmd() {
     return this.svc.getInstallCmd();
+  }
+
+  /**
+   * 以 text/plain 下发一键安装脚本（install.sh 的单一事实源见
+   * install-script.content.ts，与仓库根 scripts/install.sh 互为拷贝）。
+   * 脚本本体不含任何密钥（secret 由用户 curl|bash 时经 -- 参数传入），故
+   * @Public() + 空 @Roles() 即可——空 @Roles() 同时防御未来给本控制器加
+   * 类级 @Roles 时把该公开下载路由一并锁死。
+   * 注意：必须走 @Res()（library mode，同 executor-package :id/download）——
+   * 全局 ResponseInterceptor 会把返回值包成 {code,message,data} JSON，
+   * 直接 return 字符串会破坏 curl|bash 的纯文本语义。
+   * 路由声明顺序：必须位于 @Get(":id") 之前，否则被参数路由吞掉。
+   */
+  @Public()
+  @Roles()
+  @Get("install.sh")
+  @ApiOperation({
+    summary: "Download executor install script",
+    description:
+      "Returns the one-click installer as plain text (curl -fsSL <url>/api/executors/install.sh | bash -s -- --api-url ... --secret ...). Not sensitive: the shared secret is supplied by the caller as a bash argument.",
+  })
+  @ApiResponse({ status: 200, description: "Shell script (text/plain)" })
+  getInstallScript(@Res() res: Response): void {
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.end(INSTALL_SCRIPT);
   }
 
   @ApiBearerAuth("JWT")
