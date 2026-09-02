@@ -27,6 +27,45 @@ export enum TaskPriority {
   HIGH = 3,
   CRITICAL = 4,
 }
+
+/**
+ * N2: `tasks.priority` 在 DB 中是 PG 字符串枚举 `task_priority_enum`（labels:
+ * low/normal/high/critical），而 TS `TaskPriority` 是数字枚举（1-4）。TypeORM
+ * 从 PG enum 列读回的运行时值是字符串 label（如 'normal'——仅当 label 恰好
+ * 能 parseInt 成枚举中的数字时才会转成数字，见 PostgresDriver
+ * prepareHydratedValue）。BullMQ 的 priority 选项要求整数，字符串会被 lua
+ * 校验拒绝（"Priority should not be float"），导致所有调度触发入队 100% 失败。
+ *
+ * 本函数在入队边界把任意运行时形态健壮地归一化为 TaskPriority 数字：
+ * - 合法数字（1-4）原样返回；整数字符串（'1'..'4'）转数字后返回
+ * - label 大小写不敏感（'normal' / 'NORMAL' / 'High'）映射到对应数字
+ * - 未知 / 缺失 / 非法值一律回退 NORMAL(2)——绝不把字符串传给 BullMQ
+ */
+export function normalizeTaskPriority(value: unknown): TaskPriority {
+  const validNumbers = Object.values(TaskPriority).filter(
+    (v): v is number => typeof v === "number",
+  );
+  if (typeof value === "number" && validNumbers.includes(value)) {
+    return value as TaskPriority;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed !== "") {
+      const numeric = Number(trimmed);
+      if (Number.isInteger(numeric) && validNumbers.includes(numeric)) {
+        return numeric as TaskPriority;
+      }
+      // TS 数字枚举运行时会带 '1'..'4' 反向映射键，过滤后仅保留 label 键
+      const label = (Object.keys(TaskPriority) as string[])
+        .filter((k) => Number.isNaN(Number(k)))
+        .find((k) => k.toLowerCase() === trimmed.toLowerCase());
+      if (label) {
+        return TaskPriority[label as keyof typeof TaskPriority];
+      }
+    }
+  }
+  return TaskPriority.NORMAL;
+}
 export enum ExecuteMode {
   SINGLE = "single",
   BROADCAST = "broadcast",
