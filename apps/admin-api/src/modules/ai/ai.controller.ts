@@ -9,6 +9,8 @@ import {
 } from "@nestjs/common";
 import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { UserRole } from "../users/entities/user.entity";
 import { AiService } from "./ai.service";
 import { SystemConfigService } from "../config/config.service";
 import { IsString, IsIn, IsOptional } from "class-validator";
@@ -49,7 +51,12 @@ export class AiController {
     private readonly systemConfig: SystemConfigService,
   ) {}
 
+  // N11: AI config exposes internal baseUrl/host topology on read, and a
+  // write lets the caller redirect outbound calls (API key would be sent as
+  // Bearer to an attacker-chosen public host) — admin only. The global
+  // RolesGuard reads this metadata; no extra @UseGuards entry is needed.
   @Get("config")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get current AI configuration" })
   async getConfig() {
     const effective = await this.aiService.getEffectiveConfig();
@@ -65,6 +72,7 @@ export class AiController {
   }
 
   @Post("config")
+  @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Save AI configuration to system config store" })
   async saveConfig(@Body() dto: SaveAiConfigDto) {

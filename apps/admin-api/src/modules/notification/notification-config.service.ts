@@ -120,12 +120,31 @@ export class NotificationConfigService {
   }
 
   getAllChannels(): NotificationChannel[] {
-    return Array.from(this.channelConfigs.values());
+    return Array.from(this.channelConfigs.values()).map((c) =>
+      this.maskChannel(c),
+    );
   }
 
   getChannel(key: string): NotificationChannel | undefined {
-    return this.channelConfigs.get(key);
+    const channel = this.channelConfigs.get(key);
+    return channel ? this.maskChannel(channel) : undefined;
   }
+
+  /**
+   * N11: 读面对 password/secret/token 类字段脱敏为 '***'（对应 config 模块
+   * 按 isSecret 标记脱敏的做法——渠道 config 是内存对象、无逐键元数据，
+   * 故按字段名判定）。返回副本，绝不改动存储中的真实值。
+   */
+  private maskChannel(channel: NotificationChannel): NotificationChannel {
+    const config: Record<string, string> = {};
+    for (const [k, v] of Object.entries(channel.config)) {
+      config[k] =
+        NotificationConfigService.SECRET_FIELD_RE.test(k) && v ? "***" : v;
+    }
+    return { ...channel, config };
+  }
+
+  private static readonly SECRET_FIELD_RE = /pass|secret|token/i;
 
   updateChannel(
     key: string,
@@ -140,10 +159,19 @@ export class NotificationConfigService {
       channel.enabled = data.enabled;
     }
     if (data.config) {
-      channel.config = { ...channel.config, ...data.config };
+      const merged = { ...channel.config };
+      for (const [k, v] of Object.entries(data.config)) {
+        // 读面把 secret 字段回显为 '***'；admin-web 表单会原样提交。
+        // 哨兵值不得覆盖存储中的真实机密。
+        if (v === "***" && NotificationConfigService.SECRET_FIELD_RE.test(k)) {
+          continue;
+        }
+        merged[k] = v;
+      }
+      channel.config = merged;
     }
 
-    return channel;
+    return this.maskChannel(channel);
   }
 
   async testChannel(

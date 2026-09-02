@@ -144,4 +144,67 @@ describe('NotificationConfigService', () => {
       expect(result.message).toContain('webhook error');
     });
   });
+
+  // N11: the read surface must never leak SMTP credentials — password-type
+  // config fields are masked to '***', and the sentinel must not overwrite
+  // the stored secret when admin-web echoes it back through PATCH.
+  describe('secret masking (N11)', () => {
+    const buildService = async () => {
+      const env: Record<string, unknown> = {
+        'notification.email.enabled': true,
+        'notification.email.host': 'smtp.example.com',
+        'notification.email.user': 'bot@example.com',
+        'notification.email.password': 's3cret-smtp',
+        'notification.slack.enabled': true,
+        'notification.slack.webhookUrl': 'https://hooks.slack.com/services/T/B/X',
+      };
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          NotificationConfigService,
+          {
+            provide: ConfigService,
+            useValue: { get: jest.fn((key: string) => env[key]) },
+          },
+          { provide: NotificationService, useValue: { sendAll: jest.fn() } },
+        ],
+      }).compile();
+      return module.get(NotificationConfigService);
+    };
+
+    it('getAllChannels masks email password but keeps non-secret fields', async () => {
+      const svc = await buildService();
+      const email = svc.getAllChannels().find((c) => c.key === 'email')!;
+      expect(email.config.password).toBe('***');
+      expect(email.config.host).toBe('smtp.example.com');
+      // slack webhookUrl is not a password-class field — left intact
+      const slack = svc.getAllChannels().find((c) => c.key === 'slack')!;
+      expect(slack.config.webhookUrl).toBe('https://hooks.slack.com/services/T/B/X');
+    });
+
+    it('getChannel and updateChannel responses are masked too', async () => {
+      const svc = await buildService();
+      expect(svc.getChannel('email')!.config.password).toBe('***');
+      const updated = svc.updateChannel('email', {
+        config: { password: 'new-secret', host: 'smtp2.example.com' },
+      });
+      expect(updated.config.password).toBe('***');
+      expect(updated.config.host).toBe('smtp2.example.com');
+    });
+
+    it('a "***" round-trip from the client does not overwrite the stored secret', async () => {
+      const svc = await buildService();
+      svc.updateChannel('email', {
+        config: { password: '***', host: 'smtp.example.com' },
+      });
+      const stored = (svc as any).channelConfigs.get('email').config;
+      expect(stored.password).toBe('s3cret-smtp');
+    });
+
+    it('a real new password is persisted', async () => {
+      const svc = await buildService();
+      svc.updateChannel('email', { config: { password: 'rotated' } });
+      const stored = (svc as any).channelConfigs.get('email').config;
+      expect(stored.password).toBe('rotated');
+    });
+  });
 });
