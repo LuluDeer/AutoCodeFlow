@@ -70,9 +70,11 @@ describe('AiService', () => {
     });
 
     it('should call Ollama and return response when provider is ollama', async () => {
+      // AI-001: SSRF guard rejects loopback/private hosts; use a public
+      // IP literal so the test exercises the full analyzeFailure path.
       configService.get.mockImplementation((key: string, defaultVal?: any) => {
         if (key === 'ai.provider') return 'ollama';
-        if (key === 'ai.ollamaHost') return 'http://localhost:11434';
+        if (key === 'ai.ollamaHost') return 'http://93.184.216.34:11434';
         if (key === 'ai.ollamaModel') return 'llama3';
         return defaultVal;
       });
@@ -87,7 +89,7 @@ describe('AiService', () => {
       );
       expect(result).toBe('Ollama analysis');
       expect(mockedAxios.post).toHaveBeenCalledWith(
-        'http://localhost:11434/api/generate',
+        'http://93.184.216.34:11434/api/generate',
         expect.objectContaining({ model: 'llama3', stream: false }),
         expect.objectContaining({ timeout: 60_000 }),
       );
@@ -107,6 +109,36 @@ describe('AiService', () => {
         'error log',
       );
       expect(result).toBe('');
+    });
+  });
+
+  describe('SSRF guard (AI-001)', () => {
+    it('refuses loopback Ollama host', async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === 'ai.provider') return 'ollama';
+        if (key === 'ai.ollamaHost') return 'http://127.0.0.1:11434';
+        return defaultVal;
+      });
+      const result = await service.analyzeFailure(
+        { name: 't', runtime: 'python' },
+        'err',
+      );
+      expect(result).toBe('');
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it('refuses AWS metadata URL', async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === 'ai.provider') return 'ollama';
+        if (key === 'ai.ollamaHost') return 'http://169.254.169.254/';
+        return defaultVal;
+      });
+      const result = await service.analyzeFailure(
+        { name: 't', runtime: 'python' },
+        'err',
+      );
+      expect(result).toBe('');
+      expect(mockedAxios.post).not.toHaveBeenCalled();
     });
   });
 
