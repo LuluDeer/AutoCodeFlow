@@ -68,6 +68,17 @@ async def _refresh_token_if_needed() -> None:
             _token_expires_at = now + timedelta(seconds=_token_refresh_interval)
 
 
+def require_token_enabled() -> bool:
+    """R4-C P2: REQUIRE_TOKEN=true makes an unconfigured token fail closed
+    (503) instead of the dev-mode allow-all. Read from the environment at call
+    time (same pattern as _get_static_token) so the live value is honored;
+    falls back to the config-file default."""
+    value = os.environ.get('REQUIRE_TOKEN', '').strip().lower()
+    if value:
+        return value in ('1', 'true', 'yes', 'on')
+    return bool(getattr(settings, 'require_token', False))
+
+
 async def verify_token(authorization: str = Header(default='')) -> None:
     """Dependency: validate Bearer token from dynamic token or fallback to static."""
     # Try to refresh token if needed (failure is non-fatal — fall back to static token)
@@ -86,6 +97,18 @@ async def verify_token(authorization: str = Header(default='')) -> None:
     
     # If no tokens configured at all, allow all requests (dev mode)
     if not valid_tokens:
+        # R4-C P2: dev-mode allow-all means the executor accepts arbitrary
+        # code execution from anyone who can reach the port. When
+        # REQUIRE_TOKEN=true is set, fail closed instead.
+        if require_token_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='No executor token is configured and REQUIRE_TOKEN=true; refusing unauthenticated execution',
+            )
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            'No executor token configured — dev mode is allowing unauthenticated requests'
+        )
         return
     
     scheme, _, token = authorization.partition(' ')

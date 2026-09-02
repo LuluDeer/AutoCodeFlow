@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 import httpx
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 from scheduler import _send_heartbeat, heartbeat_task
 
@@ -97,3 +98,21 @@ class TestHeartbeatRetry:
                 await heartbeat_task()
 
         sleep_mock.assert_awaited_once_with(7)
+
+
+class TestHeartbeatCpuSampling:
+    """R4-C P3: cpu_percent(interval=1) blocked the event loop for a full
+    second on every heartbeat; sampling now runs in a worker thread."""
+
+    @pytest.mark.asyncio
+    async def test_cpu_sampling_executed_with_interval_via_thread(self):
+        with patch('scheduler.psutil.cpu_percent', return_value=42.0) as cpu_mock, \
+             patch('scheduler.psutil.virtual_memory') as mem_mock:
+            mem_mock.return_value = SimpleNamespace(percent=10.0)
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=create_mock_response(200))
+
+            await _send_heartbeat(mock_client, "test-token")
+
+        # positional interval=1 — dispatched through asyncio.to_thread
+        assert cpu_mock.call_args.args == (1,)

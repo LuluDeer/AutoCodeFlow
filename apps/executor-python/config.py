@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     task_timeout_seconds: int = 300  # Default task timeout (5 minutes)
     heartbeat_interval_seconds: int = 30  # Heartbeat interval
     pypi_registry_url: str = ''  # Private PyPI registry URL for task dependencies
+    # R4-C P2: when true, an executor without a configured token refuses
+    # /api/* requests (503) instead of the dev-mode allow-all behavior.
+    require_token: bool = False
 
 
 settings = Settings()
