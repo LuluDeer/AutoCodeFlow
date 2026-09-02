@@ -13,10 +13,14 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { RolesGuard } from "../../common/guards/roles.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
+import { UserRole } from "../users/entities/user.entity";
 import { SystemConfigService, UpsertConfig } from "./config.service";
 import { UpsertConfigDto } from "./dto/upsert-config.dto";
+import { ConfigHistoryQueryDto } from "./dto/config-history-query.dto";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 
 @ApiTags("System Config")
@@ -46,13 +50,10 @@ export class ConfigController {
 
   @Get("history")
   @ApiOperation({ summary: "Get config change history" })
-  async getHistory(
-    @Query("key") key?: string,
-    @Query() pagination?: PaginationDto,
-  ) {
-    const page = pagination?.page ?? 1;
-    const limit = pagination?.pageSize ?? 20;
-    const result = await this.configService.getHistory(key, page, limit);
+  async getHistory(@Query() query?: ConfigHistoryQueryDto) {
+    const page = query?.page ?? 1;
+    const limit = query?.pageSize ?? 20;
+    const result = await this.configService.getHistory(query?.key, page, limit);
     // Mask secret values in history records.
     const secretKeys = await this.configService.getSecretKeys();
     result.data = result.data.map((h) =>
@@ -89,6 +90,8 @@ export class ConfigController {
   }
 
   @Post("history/:id/rollback")
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Rollback config to a historical version" })
   async rollback(
     @Param("id") id: number,
@@ -103,6 +106,8 @@ export class ConfigController {
   }
 
   @Post("executor-shared-token/generate")
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Generate or rotate executor shared token" })
   async generateExecutorSharedToken(
     @CurrentUser() user: AuthUser,
@@ -128,7 +133,10 @@ export class ConfigController {
     return { token };
   }
 
+  // R4 F-1: returns the executor shared token in plaintext — admin only.
   @Get("executor-shared-token")
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Get current executor shared token (plaintext, admin only)",
   })
@@ -149,6 +157,8 @@ export class ConfigController {
   }
 
   @Put()
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create or update a config entry" })
   async upsert(
     @Body() dto: UpsertConfigDto,
@@ -163,6 +173,8 @@ export class ConfigController {
   }
 
   @Post("batch")
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Batch create or update config entries" })
   async batchUpsert(
     @Body() items: UpsertConfig[],
@@ -177,6 +189,8 @@ export class ConfigController {
   }
 
   @Delete(":key")
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Delete a config entry" })
   async remove(
     @Param("key") key: string,

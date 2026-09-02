@@ -35,6 +35,8 @@ import {
   ApiBody,
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { RolesGuard } from "../../common/guards/roles.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
 import { ExecutorPackageService } from "./executor-package.service";
 import { ExecutorService } from "../executor/executor.service";
 import { ConfigService } from "@nestjs/config";
@@ -44,10 +46,16 @@ import {
   QueryExecutorPackageDto,
 } from "./dto/executor-package.dto";
 import { ExecutorPackage } from "./executor-package.entity";
+import { UserRole } from "../users/entities/user.entity";
 
 @ApiTags("Executor Package Management")
 @ApiBearerAuth("JWT")
-@UseGuards(JwtAuthGuard)
+// R4 F-1: package management (upload/push/delete/activate) is admin-only.
+// Class-level RolesGuard enforces ADMIN for every route; the @Public()
+// push-result callback below opts out of JwtAuthGuard (machine token auth)
+// and, carrying no @Roles metadata, is also skipped by RolesGuard.
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.ADMIN)
 @Controller("executor-packages")
 export class ExecutorPackageController {
   private readonly logger = new Logger(ExecutorPackageController.name);
@@ -205,8 +213,17 @@ export class ExecutorPackageController {
    * This endpoint does not require JWT auth (executor-node has no user login),
    * but requires shared token for machine-to-machine verification.
    * Temporarily using @UseGuards(JwtAuthGuard) for consistency; can be changed to SharedTokenGuard later.
+   *
+   * R4 F-1: @Public() bypasses JwtAuthGuard. The class-level @Roles(ADMIN)
+   * would otherwise be inherited by the global RolesGuard and reject the
+   * machine caller (no req.user), so this route carries an empty @Roles()
+   * override — the executor shared token verified below remains the only
+   * gate (machine-to-machine semantics kept).
    */
   @Public()
+  // Empty @Roles() resets the class-level ADMIN requirement for this
+  // machine-to-machine callback; access is gated by the shared token check.
+  @Roles()
   @Post("push-result")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({

@@ -81,3 +81,109 @@ function isBlockedAddress(addr: string): boolean {
   if (lower.startsWith("ff")) return true;
   return false;
 }
+
+/**
+ * How risky a resolved IP is as an OUTBOUND TARGET for executor-bound traffic.
+ *
+ * Executors legitimately live on private networks (docker-compose puts them on
+ * the `autoflow-internal` bridge — 172.16/12 — and LAN installs register
+ * 10.x/192.168.x addresses), so the blanket RFC1918 deny list used for
+ * webhook/AI targets cannot be applied to executor addresses by default.
+ * The categories below let the executor policy always block the truly
+ * dangerous ranges (link-local/cloud metadata, unspecified, multicast) while
+ * keeping private-LAN targets reachable.
+ */
+type AddressRisk = "public" | "private-lan" | "loopback" | "link-local" | "reserved";
+
+function classifyAddressRisk(addr: string): AddressRisk | null {
+  if (!isIP(addr)) return null;
+  const v = addr.split(".").map(Number);
+  if (v.length === 4) {
+    if (v[0] === 127) return "loopback"; // 127.0.0.0/8
+    if (v[0] === 169 && v[1] === 254) return "link-local"; // incl. AWS/GCP metadata 169.254.169.254
+    if (v[0] === 0) return "reserved"; // this-network / unspecified
+    if (v[0] >= 224) return "reserved"; // multicast / reserved
+    if (v[0] === 10) return "private-lan"; // 10.0.0.0/8
+    if (v[0] === 172 && v[1] >= 16 && v[1] <= 31) return "private-lan"; // 172.16/12
+    if (v[0] === 192 && v[1] === 168) return "private-lan"; // 192.168/16
+    return "public";
+  }
+  const lower = addr.toLowerCase();
+  if (lower === "::1") return "loopback";
+  if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) {
+    return "link-local"; // fe80::/10
+  }
+  if (lower === "::" || lower.startsWith("ff")) return "reserved"; // unspecified / multicast
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return "private-lan"; // fc00::/7 unique local
+  return "public";
+}
+
+/**
+ * F-3: SSRF guard for outbound requests whose target is an EXECUTOR address
+ * (registered via /api/executors/register or carried in deployment rows).
+ *
+ * Policy (differs from assertSafeHttpUrl on purpose):
+ *  - ALWAYS blocked: link-local / cloud-metadata (169.254.169.254 is the
+ *    classic credential-exfiltration target), unspecified (0.0.0.0, ::),
+ *    multicast/reserved, and any non-http(s) protocol.
+ *  - Loopback (127.0.0.1, ::1) is blocked unless EXECUTOR_ALLOW_PRIVATE_NETWORK=true
+ *    (same-host dev deployments where the executor runs next to admin-api).
+ *  - Private LAN ranges (10/8, 172.16/12, 192.168/16, IPv6 ULA) are ALLOWED by
+ *    default: the documented deployment topology runs admin-api and executors
+ *    on the same internal network, so the webhook/AI blanket RFC1918 block
+ *    would break every standard install. Set EXECUTOR_ALLOW_PRIVATE_NETWORK=true
+ *    only for same-host/dev setups that additionally need loopback reachability.
+ *
+ * Throws BadRequestException when the target must not be contacted.
+ */
+export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new BadRequestException(`Invalid executor URL: ${rawUrl}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new BadRequestException(
+      `Executor URL must use http(s); got '${url.protocol}'`,
+    );
+  }
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (!host) throw new BadRequestException("Executor URL missing hostname");
+  // Credentials in the URL would end up in logs/error reports — reject them.
+  if (url.username || url.password) {
+    throw new BadRequestException("Executor URL must not embed credentials");
+  }
+
+  const allowPrivateNetwork =
+    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK === "true";
+
+  const check = (addr: string) => {
+    const risk = classifyAddressRisk(addr);
+    if (risk === "public" || risk === "private-lan") return;
+    if (risk === "loopback" && allowPrivateNetwork) return;
+    throw new BadRequestException(
+      `Executor address ${host} resolves to ${addr} (${risk}) — outbound request refused`,
+    );
+  };
+
+  if (isIP(host)) {
+    check(host);
+    return url;
+  }
+  let addrs: { address: string }[];
+  try {
+    addrs = await lookup(host, { all: true });
+  } catch (err) {
+    throw new BadRequestException(
+      `Failed to resolve executor host ${host}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (addrs.length === 0) {
+    throw new BadRequestException(`Executor host ${host} did not resolve`);
+  }
+  for (const a of addrs) {
+    check(a.address);
+  }
+  return url;
+}

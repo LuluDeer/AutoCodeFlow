@@ -12,6 +12,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
+import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 import {
   ExecutorPackage,
   ExecutorPackageStatus,
@@ -256,6 +257,9 @@ export class ExecutorPackageService {
         const url = executor.address.startsWith("http")
           ? executor.address
           : `http://${executor.address}`;
+        // F-3: push 出站与 dispatch 同策略过 SSRF 校验——被投毒的 address
+        // （元数据/回环段）单独失败，不影响其余目标。
+        await assertSafeExecutorUrl(url);
         const headers: Record<string, string> = {
           "Content-Type": "application/json",
         };

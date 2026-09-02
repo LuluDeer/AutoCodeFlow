@@ -2,13 +2,12 @@ import { Controller, Get, Query, Res, UseGuards } from "@nestjs/common";
 import {
   ApiTags,
   ApiBearerAuth,
-  ApiQuery,
   ApiOperation,
 } from "@nestjs/swagger";
 import { Response } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { AuditService } from "./audit.service";
-import { PaginationDto } from "../../common/dto/pagination.dto";
+import { AuditQueryDto } from "./dto/audit-query.dto";
 
 @ApiTags("audit")
 @ApiBearerAuth("JWT")
@@ -17,25 +16,22 @@ import { PaginationDto } from "../../common/dto/pagination.dto";
 export class AuditController {
   constructor(private readonly svc: AuditService) {}
 
+  // R4 P1-2: filters (action/resource/username/startTime/endTime) are declared
+  // on AuditQueryDto; the previous split of @Query() PaginationDto + separate
+  // @Query("...") params made every filtered request fail the
+  // forbidNonWhitelisted check with 400.
   @Get()
   @ApiOperation({ summary: "Query audit logs with pagination" })
-  @ApiQuery({ name: "page", required: false })
-  @ApiQuery({ name: "pageSize", required: false })
-  @ApiQuery({ name: "action", required: false })
-  @ApiQuery({ name: "resource", required: false })
-  @ApiQuery({ name: "userId", required: false, type: Number })
-  findAll(
-    @Query() pagination: PaginationDto,
-    @Query("action") action?: string,
-    @Query("resource") resource?: string,
-    @Query("userId") userId?: number,
-  ) {
+  findAll(@Query() query: AuditQueryDto) {
     return this.svc.findAll({
-      page: pagination.page,
-      pageSize: pagination.pageSize,
-      action,
-      resource,
-      userId: userId ? Number(userId) : undefined,
+      page: query.page,
+      pageSize: query.pageSize,
+      action: query.action,
+      resource: query.resource,
+      username: query.username,
+      startTime: query.startTime,
+      endTime: query.endTime,
+      userId: query.userId,
     });
   }
 
@@ -45,19 +41,14 @@ export class AuditController {
     description:
       "Returns a CSV file attachment. Supports the same filters as the list endpoint.",
   })
-  @ApiQuery({ name: "action", required: false })
-  @ApiQuery({ name: "resource", required: false })
-  @ApiQuery({ name: "userId", required: false, type: Number })
-  async exportCsv(
-    @Query("action") action?: string,
-    @Query("resource") resource?: string,
-    @Query("userId") userId?: number,
-    @Res() res?: Response,
-  ) {
+  async exportCsv(@Query() query: AuditQueryDto, @Res() res?: Response) {
     const csv = await this.svc.exportCsv({
-      action,
-      resource,
-      userId: userId ? Number(userId) : undefined,
+      action: query.action,
+      resource: query.resource,
+      username: query.username,
+      startTime: query.startTime,
+      endTime: query.endTime,
+      userId: query.userId,
     });
     res!.setHeader("Content-Type", "text/csv; charset=utf-8");
     res!.setHeader(

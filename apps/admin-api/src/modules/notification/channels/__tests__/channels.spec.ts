@@ -12,6 +12,7 @@ import { DingtalkChannel } from '../dingtalk.channel';
 import { WecomChannel } from '../wecom.channel';
 import { WebhookChannel } from '../webhook.channel';
 import { EmailChannel } from '../email.channel';
+import { SlackChannel } from '../slack.channel';
 
 function makeConfig(values: Record<string, any>): ConfigService {
   return { get: (key: string) => values[key] } as unknown as ConfigService;
@@ -185,6 +186,61 @@ describe('WebhookChannel', () => {
       makeConfig({ 'notification.webhookUrl': 'https://example.com/notify' }),
     );
     await expect(channel.send(payload)).resolves.toBeUndefined();
+  });
+});
+
+// ────────────────────────────────────────────────────────────
+// F-3: dingtalk/wecom/slack channels share the SSRF chokepoint
+// ────────────────────────────────────────────────────────────
+describe('F-3: SSRF guard on env-configured notification channels', () => {
+  const payload = { title: 'F3', content: 'body' } as any;
+
+  beforeEach(() => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+  });
+
+  it('DingtalkChannel: refuses metadata URL and skips silently', async () => {
+    const channel = new DingtalkChannel(
+      makeConfig({ 'notification.dingtalkWebhook': 'http://169.254.169.254/hook' }),
+    );
+    await expect(channel.send(payload)).resolves.toBeUndefined();
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it('DingtalkChannel: refuses loopback URL and skips silently', async () => {
+    const channel = new DingtalkChannel(
+      makeConfig({ 'notification.dingtalkWebhook': 'http://127.0.0.1:9000/hook' }),
+    );
+    await channel.send(payload);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it('WecomChannel: refuses private RFC1918 URL and skips silently', async () => {
+    const channel = new WecomChannel(
+      makeConfig({ 'notification.wecomWebhook': 'http://10.0.0.5/hook' }),
+    );
+    await expect(channel.send(payload)).resolves.toBeUndefined();
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it('SlackChannel: refuses metadata URL and skips silently', async () => {
+    const channel = new SlackChannel(
+      makeConfig({ 'notification.slackWebhook': 'http://169.254.169.254/latest' }),
+    );
+    await expect(channel.send(payload)).resolves.toBeUndefined();
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it('still delivers to a public webhook URL', async () => {
+    const channel = new DingtalkChannel(
+      makeConfig({ 'notification.dingtalkWebhook': 'https://oapi.dingtalk.com/robot/send?access_token=xxx' }),
+    );
+    await channel.send(payload);
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      'https://oapi.dingtalk.com/robot/send?access_token=xxx',
+      expect.anything(),
+      expect.anything(),
+    );
   });
 });
 

@@ -115,9 +115,15 @@ async function bootstrap() {
     }),
   );
 
-  // Trust proxy — required for req.ip to reflect the real client IP
-  // when the app runs behind a reverse proxy (nginx, load balancer, etc.)
-  app.getHttpAdapter().getInstance().set("trust proxy", 1);
+  // F-6: trust proxy is OPT-IN. Unconditional `trust proxy = 1` made req.ip
+  // (throttler tracker, audit IP) follow the client-supplied X-Forwarded-For
+  // chain when admin-api is reached directly, letting an attacker rotate the
+  // rate-limit key per request. Enable TRUST_PROXY=true only when a trusted
+  // reverse proxy (nginx / load balancer) actually fronts this instance and
+  // overwrites XFF.
+  if (process.env.TRUST_PROXY === "true") {
+    app.getHttpAdapter().getInstance().set("trust proxy", 1);
+  }
 
   // S10 / ARCH-001: CORS — explicit whitelist only via CORS_ALLOWED_ORIGINS
   // (falls back to legacy CORS_ORIGINS). The old isLanOrigin() auto-allow for

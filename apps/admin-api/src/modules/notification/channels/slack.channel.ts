@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import { BaseChannel, NotificationPayload } from "./base.channel";
+import { assertSafeHttpUrl } from "../../../common/utils/safe-http.util";
 
 @Injectable()
 export class SlackChannel extends BaseChannel {
@@ -15,6 +16,16 @@ export class SlackChannel extends BaseChannel {
   async send(p: NotificationPayload) {
     const webhook = this.config.get<string>("notification.slackWebhook");
     if (!webhook) return;
+
+    // F-3: SSRF chokepoint (NOTIF-001), fail-open like WebhookChannel.
+    try {
+      await assertSafeHttpUrl(webhook);
+    } catch (err: unknown) {
+      this.logger.warn(
+        `[Slack] SSRF-blocked URL ${webhook}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
 
     try {
       await this.withRetry(async () => {
