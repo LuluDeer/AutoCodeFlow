@@ -24,8 +24,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload) {
-    // Reject tokens that don't carry the 'access' type marker (S2)
-    if (payload.type && payload.type !== "access") {
+    // SEC-001: require the 'access' type marker — tokens that omit `type`
+    // are old-format or attacker-crafted and must be rejected.
+    if (payload.type !== "access") {
       throw new UnauthorizedException("Invalid token type");
     }
     const user = await this.usersService.findById(payload.sub);

@@ -55,7 +55,7 @@ import { RegistryModule } from "./modules/registry/registry.module";
         // JWT
         JWT_SECRET: Joi.string().min(32).required(),
         JWT_REFRESH_SECRET: Joi.string().min(32).required(),
-        JWT_EXPIRES_IN: Joi.string().default("7d"),
+        JWT_EXPIRES_IN: Joi.string().default("15m"),
 
         // Executor
         EXECUTOR_SECRET: Joi.string().min(16).required(),
