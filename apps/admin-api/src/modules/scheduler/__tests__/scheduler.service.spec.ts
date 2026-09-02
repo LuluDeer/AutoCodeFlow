@@ -336,6 +336,19 @@ describe('SchedulerService', () => {
       await service.enqueue(task, 'manual');
       expect(taskRepo.createQueryBuilder).not.toHaveBeenCalled();
       expect(queue.add).toHaveBeenCalled();
+      // R4-P0: the trigger dedup lock must NOT be renewed by a watchdog —
+      // it is never released and its TTL is the dedup window, so renewal
+      // would permanently suppress every later trigger of the task.
+      expect(redisLockService.acquireLock).toHaveBeenCalledWith(
+        `task:trigger:${task.id}`,
+        expect.any(Number),
+        { renew: false },
+      );
+      // ...while the leader lease keeps the default (renewing) behaviour.
+      expect(redisLockService.acquireLock).toHaveBeenCalledWith(
+        'scheduler:leader',
+        expect.any(Number),
+      );
     });
   });
 
@@ -499,15 +512,64 @@ describe('SchedulerService', () => {
         endTime: null,
       } as unknown as TaskExecution;
       execRepo.findOne.mockResolvedValue(runningExec);
-      execRepo.save.mockResolvedValue(runningExec);
       const newExec = { id: 'exec-2' } as TaskExecution;
       execRepo.create.mockReturnValue(newExec);
-      execRepo.save.mockResolvedValueOnce(runningExec).mockResolvedValueOnce(newExec);
+      execRepo.save.mockResolvedValue(newExec);
+      // R4-P1: the cover transition is a conditional UPDATE ... RETURNING
+      execRepo.createQueryBuilder.mockReturnValue(
+        makeUpdateQb({
+          affected: 1,
+          raw: [{ id: 'running-1', executorAddress: 'host:3002' }],
+        }),
+      );
 
       await service.enqueue(task, 'cron');
-      expect(runningExec.status).toBe(ExecutionStatus.CANCELLED);
+      const coverQb = execRepo.createQueryBuilder.mock.results[0].value;
+      expect(coverQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: ExecutionStatus.CANCELLED }),
+      );
+      expect(coverQb.where).toHaveBeenCalledWith(
+        expect.stringContaining('"status" IN (:...open)'),
+        expect.objectContaining({
+          open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+        }),
+      );
+      expect(coverQb.returning).toHaveBeenCalledWith(['id', 'executorAddress']);
+      // No blind entity save anymore; slot released exactly once via RETURNING.
+      expect(execRepo.save).not.toHaveBeenCalledWith(runningExec);
       expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
       expect(queue.add).toHaveBeenCalled();
+    });
+
+    it('COVER_EARLY must not cover an execution whose callback already finished it (R4-P1)', async () => {
+      await makeLeader();
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      const task = makeTask({ blockStrategy: BlockStrategy.COVER_EARLY });
+      taskRepo.findOne.mockResolvedValue(task);
+      const runningExec = {
+        id: 'running-1',
+        status: ExecutionStatus.RUNNING,
+        executorAddress: 'host:3002',
+        errorMessage: null,
+        endTime: null,
+      } as unknown as TaskExecution;
+      execRepo.findOne.mockResolvedValue(runningExec);
+      const newExec = { id: 'exec-2' } as TaskExecution;
+      execRepo.create.mockReturnValue(newExec);
+      execRepo.save.mockResolvedValue(newExec);
+      // Concurrent callback already moved the row to SUCCESS: the guarded
+      // UPDATE hits nothing (affected=0, no RETURNING rows).
+      execRepo.createQueryBuilder.mockReturnValue(
+        makeUpdateQb({ affected: 0, raw: [] }),
+      );
+
+      await service.enqueue(task, 'cron');
+
+      // No slot release — the callback path already released it exactly once.
+      expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
+      expect(queue.add).toHaveBeenCalled();
+      expect(execRepo.save).not.toHaveBeenCalledWith(runningExec);
     });
   });
 

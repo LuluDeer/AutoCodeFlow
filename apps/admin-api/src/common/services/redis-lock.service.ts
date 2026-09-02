@@ -35,7 +35,18 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
     await this.client.quit();
   }
 
-  async acquireLock(key: string, ttlMs: number): Promise<Lock | null> {
+  async acquireLock(
+    key: string,
+    ttlMs: number,
+    opts: AcquireLockOptions = {},
+  ): Promise<Lock | null> {
+    // R4-P0: the High-5.1 watchdog is correct for lease-style locks (leader
+    // election, dispatch windows) but fatal for "TTL IS the dedup window"
+    // locks such as task:trigger:* — those are deliberately never released,
+    // so an auto-renewing watchdog would keep them alive forever and mute
+    // every subsequent scheduled trigger. Default stays true so existing
+    // lease callers keep their behaviour.
+    const renew = opts.renew !== false;
     const lockId = randomBytes(16).toString("hex");
     const result = await (this.client as any).set(
       `lock:${key}`,
@@ -50,20 +61,7 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
       // business work (dispatch, callback ingest) does not lose the lock when
       // its TTL elapses. The watchdog is the only path that knows the lockId,
       // so a foreign release race is impossible.
-      let stopped = false;
-      const renewMs = Math.max(1000, Math.floor(ttlMs / 3));
-      const watchdog = setInterval(() => {
-        if (stopped) return;
-        this.extendLock(key, lockId, ttlMs).catch((err: unknown) => {
-          this.logger.warn(
-            `Lock watchdog for ${key} failed to renew: ${err instanceof Error ? err.message : String(err)}`,
-          );
-          stopped = true;
-          clearInterval(watchdog);
-        });
-      }, renewMs);
-      // Unref so a stuck watchdog does not block process exit.
-      watchdog.unref();
+      const watchdog = renew ? this.startWatchdog(key, lockId, ttlMs) : null;
 
       const lock: Lock = {
         key,
@@ -72,8 +70,7 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
         released: false,
         release: async () => {
           if (lock.released) return false;
-          stopped = true;
-          clearInterval(watchdog);
+          watchdog?.stop();
           const ok = await this.releaseLock(key, lockId);
           if (ok) lock.released = true;
           return ok;
@@ -83,6 +80,38 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
     }
 
     return null;
+  }
+
+  /**
+   * High-5.1 watchdog: renew the lock every ttlMs/3 (min 1s) until stopped
+   * or renewal fails. Returns a handle so non-renewing locks (or release())
+   * can stop it.
+   */
+  private startWatchdog(
+    key: string,
+    lockId: string,
+    ttlMs: number,
+  ): { stop: () => void } {
+    let stopped = false;
+    const renewMs = Math.max(1000, Math.floor(ttlMs / 3));
+    const watchdog = setInterval(() => {
+      if (stopped) return;
+      this.extendLock(key, lockId, ttlMs).catch((err: unknown) => {
+        this.logger.warn(
+          `Lock watchdog for ${key} failed to renew: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        stopped = true;
+        clearInterval(watchdog);
+      });
+    }, renewMs);
+    // Unref so a stuck watchdog does not block process exit.
+    watchdog.unref();
+    return {
+      stop: () => {
+        stopped = true;
+        clearInterval(watchdog);
+      },
+    };
   }
 
   async extendLock(
@@ -140,6 +169,17 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
     }
     return null;
   }
+}
+
+export interface AcquireLockOptions {
+  /**
+   * High-5.1 watchdog renewal (default true): renews the lock every ttl/3
+   * until release(). Set to false for locks whose TTL itself is the semantic
+   * window (e.g. the scheduler's task:trigger dedup lock, which is never
+   * released) — renewing those would make them immortal and permanently
+   * suppress every later trigger.
+   */
+  renew?: boolean;
 }
 
 export interface Lock {

@@ -111,6 +111,94 @@ expect(lock).toBeNull();
     });
   });
 
+  describe('watchdog renewal (High-5.1 + R4-P0 renew flag)', () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('renews a default lock at ttl/3 while not released (leader-lease behaviour)', async () => {
+      jest.useFakeTimers();
+      m.set.mockResolvedValue('OK');
+      m.eval.mockResolvedValue(1); // extendLock succeeds
+
+      const lock = await service.acquireLock('lease-lock', 9_000);
+      expect(m.eval).not.toHaveBeenCalled();
+
+      // renewMs = max(1000, 9000/3) = 3000 — first renewal fires at t+3000
+      jest.advanceTimersByTime(3_000);
+      expect(m.eval).toHaveBeenCalledTimes(1);
+      expect(m.eval).toHaveBeenCalledWith(
+        expect.any(String),
+        1,
+        'lock:lease-lock',
+        expect.any(String),
+        9_000,
+      );
+
+      // Still renewing at t+9000 (three cycles)
+      jest.advanceTimersByTime(6_000);
+      expect(m.eval).toHaveBeenCalledTimes(3);
+
+      // t+12000: the watchdog keeps the lease alive indefinitely
+      jest.advanceTimersByTime(3_000);
+      expect(m.eval).toHaveBeenCalledTimes(4);
+
+      // release() stops the watchdog (final eval = the release DEL)
+      await lock!.release();
+      jest.advanceTimersByTime(30_000);
+      expect(m.eval).toHaveBeenCalledTimes(5);
+    });
+
+    it('stops renewing after release()', async () => {
+      jest.useFakeTimers();
+      m.set.mockResolvedValue('OK');
+      m.eval.mockResolvedValue(1);
+
+      const lock = await service.acquireLock('lease-release', 9_000);
+      jest.advanceTimersByTime(3_000);
+      expect(m.eval).toHaveBeenCalledTimes(1);
+
+      await lock!.release();
+      jest.advanceTimersByTime(30_000);
+      // Only the release Lua eval + the one renewal — no further renewals.
+      expect(m.eval).toHaveBeenCalledTimes(2);
+    });
+
+    it('R4-P0: renew:false never starts the watchdog — the lock expires naturally (trigger-dedup behaviour)', async () => {
+      jest.useFakeTimers();
+      m.set.mockResolvedValue('OK');
+      m.eval.mockResolvedValue(1);
+
+      const lock = await service.acquireLock('task:trigger:t1', 30_000, {
+        renew: false,
+      });
+      expect(lock).not.toBeNull();
+
+      // Far beyond ttl/3 cycles — no renewal eval ever fired.
+      jest.advanceTimersByTime(120_000);
+      // eval would only be called by an explicit release; release() must also
+      // still work (compare-and-delete), but no periodic renewal happened.
+      const ok = await lock!.release();
+      expect(ok).toBe(true);
+      expect(m.eval).toHaveBeenCalledTimes(1); // the release DEL only
+    });
+
+    it('R4-P0: a failed release on a renew:false lock does not renew either', async () => {
+      jest.useFakeTimers();
+      m.set.mockResolvedValue('OK');
+      // extendLock/releaseLock Lua returns 0 (lock lost / not ours)
+      m.eval.mockResolvedValue(0);
+
+      const lock = await service.acquireLock('task:trigger:t2', 30_000, {
+        renew: false,
+      });
+      jest.advanceTimersByTime(120_000);
+      const ok = await lock!.release();
+      expect(ok).toBe(false);
+      expect(m.eval).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('onModuleDestroy', () => {
     it('calls quit() on the Redis client', async () => {
       await service.onModuleDestroy();

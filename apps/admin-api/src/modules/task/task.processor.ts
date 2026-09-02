@@ -2,7 +2,7 @@ import { InjectQueue, Processor, WorkerHost } from "@nestjs/bullmq";
 import { Logger, Inject, forwardRef } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, In, DataSource } from "typeorm";
+import { Repository, DataSource } from "typeorm";
 import { Job, Queue, UnrecoverableError } from "bullmq";
 import {
   TaskExecution,
@@ -317,80 +317,12 @@ export class TaskProcessor extends WorkerHost {
         await queryRunner.release();
       }
 
-      // Trigger dependent tasks after successful execution
-      if ((exec.status as ExecutionStatus) === ExecutionStatus.SUCCESS) {
-        await this.triggerDependentTasks(exec.taskId);
-      }
+      // R4-P0: dependency fan-out moved to TaskService.handleCallback — the
+      // worker's in-memory exec.status is only ever RUNNING/FAILED/TIMEOUT
+      // here (SUCCESS is written exclusively by the callback's conditional
+      // UPDATE), so the former `exec.status === SUCCESS` trigger in this
+      // finally block was dead code and dependency chains never fired.
     }
-  }
-
-  /**
-   * Check and trigger tasks that depend on the completed task.
-   */
-  private async triggerDependentTasks(completedTaskId: string) {
-    try {
-      // Find all tasks that have any dependencies set, then filter in-process.
-      // Using application-layer filtering avoids JSONB-specific SQL that breaks
-      // on non-PostgreSQL engines and is simpler to reason about.
-      const allTasksWithDeps = await this.taskRepo
-        .createQueryBuilder("t")
-        .where("t.dependencies IS NOT NULL")
-        .getMany();
-
-      // Keep only tasks that list completedTaskId as one of their dependency values
-      const dependentTasks = allTasksWithDeps.filter(
-        (t) =>
-          t.dependencies &&
-          Object.values(t.dependencies).includes(completedTaskId),
-      );
-
-      for (const task of dependentTasks) {
-        // Check if all dependencies are satisfied
-        const canTrigger = await this.checkDependencies(task);
-        if (canTrigger) {
-          this.logger.log(
-            `All dependencies satisfied for task ${task.id}, triggering`,
-          );
-          await this.taskService.trigger(task.id, {});
-        }
-      }
-    } catch (err) {
-      this.logger.error(`Failed to trigger dependent tasks: ${err.message}`);
-    }
-  }
-
-  /**
-   * Check if all dependencies of a task have completed successfully.
-   */
-  private async checkDependencies(task: Task): Promise<boolean> {
-    if (!task.dependencies || Object.keys(task.dependencies).length === 0) {
-      return true;
-    }
-
-    const dependencyIds = Object.values(task.dependencies);
-    if (dependencyIds.length === 0) return true;
-
-    const recentExecutions = await this.execRepo.find({
-      where: { taskId: In(dependencyIds as string[]) },
-      order: { createdAt: "DESC" },
-    });
-
-    // Group by taskId and get the most recent execution for each
-    const latestByTask = new Map<string, TaskExecution>();
-    for (const exec of recentExecutions) {
-      if (!latestByTask.has(exec.taskId)) {
-        latestByTask.set(exec.taskId, exec);
-      }
-    }
-
-    // Check if all dependencies have successful executions
-    for (const depId of dependencyIds) {
-      const latestExec = latestByTask.get(depId as string);
-      if (!latestExec || latestExec.status !== ExecutionStatus.SUCCESS) {
-        return false;
-      }
-    }
-
-    return true;
   }
 }
+

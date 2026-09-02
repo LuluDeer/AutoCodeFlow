@@ -1015,6 +1015,89 @@ describe("TaskService (__tests__)", () => {
       });
     });
 
+    it("R4-P1: multi-page backfill appends — every page survives, delete runs once (page 0 only)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      // Three pages of 2 lines each (executor caps page size below PAGE_LIMIT)
+      (axios.get as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { lines: ["p0-a", "p0-b"], totalLines: 6, hasMore: true },
+        })
+        .mockResolvedValueOnce({
+          data: { lines: ["p1-a", "p1-b"], totalLines: 6, hasMore: true },
+        })
+        .mockResolvedValueOnce({
+          data: { lines: ["p2-a", "p2-b"], totalLines: 6, hasMore: false },
+        });
+
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "exec-1:8002",
+          logs: "...[truncated, total 50000 chars]...",
+        },
+      ]);
+
+      expect(axios.get).toHaveBeenCalledTimes(3);
+      // Replace semantics only on the FIRST page; pages 1-2 must not delete
+      // the rows persisted by earlier pages.
+      expect(logLineRepo.delete).toHaveBeenCalledTimes(1);
+      expect(logLineRepo.delete).toHaveBeenCalledWith({ executionId: "e1" });
+      // All 6 lines persisted exactly once, with absolute line numbers.
+      const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
+      expect(created).toEqual([
+        { executionId: "e1", lineNumber: 0, content: "p0-a" },
+        { executionId: "e1", lineNumber: 1, content: "p0-b" },
+        { executionId: "e1", lineNumber: 2, content: "p1-a" },
+        { executionId: "e1", lineNumber: 3, content: "p1-b" },
+        { executionId: "e1", lineNumber: 4, content: "p2-a" },
+        { executionId: "e1", lineNumber: 5, content: "p2-b" },
+      ]);
+      expect(logLineRepo.save).toHaveBeenCalledTimes(3);
+    });
+
+    it("R4-P1: single-page backfill keeps replace semantics (stale rows cleared)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      (axios.get as jest.Mock).mockResolvedValue({
+        data: { lines: ["only-0", "only-1"], totalLines: 2 },
+      });
+
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "exec-1:8002",
+          logs: "...[truncated, total 50000 chars]...",
+        },
+      ]);
+
+      expect(axios.get).toHaveBeenCalledTimes(1);
+      expect(logLineRepo.delete).toHaveBeenCalledTimes(1);
+      const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
+      expect(created).toEqual([
+        { executionId: "e1", lineNumber: 0, content: "only-0" },
+        { executionId: "e1", lineNumber: 1, content: "only-1" },
+      ]);
+    });
+
     it("does not call the executor for logs without truncation marker", async () => {
       const exec = {
         id: "e1",
@@ -1049,6 +1132,127 @@ describe("TaskService (__tests__)", () => {
       ]);
       expect(result[0].success).toBe(false);
       expect(result[0].error).toMatch(/not found/i);
+    });
+
+    describe("dependency fan-out (R4-P0: moved from TaskProcessor to handleCallback)", () => {
+      // makeRepo's QB mock: getMany defaults to []. taskRepo.dependencies QB
+      // drives triggerDependentTasks; execRepo.find drives checkDependencies;
+      // execRepo.createQueryBuilder drives handleCallback's own UPDATE.
+      // Also wires the manual-trigger path (this.trigger) used by fan-out.
+      const setupDownstream = (
+        downstreamTask: Record<string, unknown> | null,
+        depExecutions: Array<Record<string, unknown>>,
+      ) => {
+        const depQb = {
+          where: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockResolvedValue(
+            downstreamTask ? [downstreamTask] : [],
+          ),
+        };
+        taskRepo.createQueryBuilder.mockImplementation(() => depQb as any);
+        execRepo.find.mockResolvedValue(depExecutions as any);
+        if (downstreamTask) {
+          taskRepo.findOne.mockResolvedValue(downstreamTask as any);
+          dataSource.transaction.mockImplementation((fn: any) =>
+            fn({
+              create: jest
+                .fn()
+                .mockReturnValue({ id: "down-exec-1", status: "pending" }),
+              save: jest
+                .fn()
+                .mockResolvedValue({ id: "down-exec-1", status: "pending" }),
+            }),
+          );
+        }
+      };
+
+      it("triggers a dependent task when a SUCCESS callback lands and all deps are satisfied", async () => {
+        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        taskQueue.add.mockResolvedValue({});
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        expect(taskQueue.add).toHaveBeenCalledWith(
+          "execute",
+          { executionId: expect.any(String) },
+          expect.objectContaining({ attempts: expect.any(Number) }),
+        );
+      });
+
+      it("does not trigger the downstream task when its other dependencies are not yet satisfied", async () => {
+        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream", other: "t-other" } },
+          // latest execution of t-other FAILED → deps unmet
+          [
+            { taskId: "t-upstream", status: ExecutionStatus.SUCCESS },
+            { taskId: "t-other", status: ExecutionStatus.FAILED },
+          ],
+        );
+
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("does not trigger dependents on a FAILED callback", async () => {
+        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.FAILED }],
+        );
+
+        await service.handleCallback([
+          { executionId: "e-dep", status: "failed" },
+        ]);
+
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("is idempotent: a duplicate (already terminal) success callback must not re-trigger dependents", async () => {
+        const exec = { id: "e-dep", status: ExecutionStatus.SUCCESS, taskId: "t-upstream", logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        // makeRepo QB returns affected=0 for already-terminal rows, which is
+        // the production duplicate-callback path: no slot release, no fan-out.
+        expect(result[0].success).toBe(true);
+        expect(releaseSlotExecute).not.toHaveBeenCalled();
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("fan-out errors do not fail the callback result (best-effort)", async () => {
+        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.createQueryBuilder.mockImplementation(() => {
+          throw new Error("dependency scan exploded");
+        });
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+      });
     });
 
     it("rejects callback when executorAddress does not match the execution", async () => {
