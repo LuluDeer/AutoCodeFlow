@@ -16,6 +16,7 @@ import {
   TaskTriggerType,
   BlockStrategy,
   MisfireStrategy,
+  normalizeTaskPriority,
 } from "../task/entities/task.entity";
 import {
   TaskExecution,
@@ -35,6 +36,48 @@ export const SCHEDULER_LEADER_LOCK_KEY = "scheduler:leader";
 export const SCHEDULER_LEADER_TTL_MS = 30_000;
 /** 非 Leader 重试竞选 / 降级重试间隔 */
 export const SCHEDULER_LEADER_RETRY_MS = 15_000;
+
+/**
+ * N5: 单个任务的 stale 回收阈值：max(2 × taskTimeout, 60s)。executor /
+ * processor 负责硬超时，stale 扫描只负责抢救 dispatch/callback 丢失的行，
+ * 因此保守地等待两个超时周期（下限 60s）后才置 FAILED。
+ */
+function staleThresholdMs(timeoutSec: number): number {
+  return Math.max(timeoutSec * 2, 60) * 1000;
+}
+
+/**
+ * N6: 跨实例触发去重锁 TTL 的下限（毫秒）。去重窗口语义是"同一触发周期内
+ * 至多一次触发"，取 1s 下限仅为抵御亚秒级重复回调，正常 fixedRate/interval
+ * 均 >= 1s，不会实际生效。
+ */
+export const TRIGGER_DEDUP_MIN_TTL_MS = 1_000;
+
+/**
+ * N5: stale 扫描的固定兜底窗口——timeout=0（不限时）任务的最短回收延迟。
+ */
+export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
+
+/**
+ * N6: 计算触发去重锁的 TTL。去重窗口必须由"触发周期"决定而非任务超时：
+ * 旧实现 lockTTL=max(taskTimeout, interval) 使短周期任务（如 15s）在默认
+ * timeout=300s 下被压制成 300s 才触发一次。现在：
+ * - fixed_rate：取触发周期 fixedRate（一个周期至多触发一次即为语义本身）
+ * - cron：没有更细的周期信息，取 1s 下限（仅防同秒重复触发；DB claim 与
+ *   Leader 化兜底跨窗口去重）
+ * - 其他（api/manual）：5s 保守窗口
+ * Leader Election + enqueue 内 DB 条件 claim（claimTaskTrigger，其窗口与
+ * 本 TTL 同步）双保险下，缩短窗口不会引入重复触发。
+ */
+function computeTriggerDedupTtlMs(task: Task): number {
+  if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
+    return Math.max(task.fixedRate * 1000, TRIGGER_DEDUP_MIN_TTL_MS);
+  }
+  if (task.triggerType === TaskTriggerType.CRON) {
+    return TRIGGER_DEDUP_MIN_TTL_MS;
+  }
+  return 5_000;
+}
 
 /**
  * 终态保护门（TASK-004 / R4-P1）：所有把执行推进到终态的写路径都只允许命中
@@ -293,13 +336,23 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     // Medium-1.2: scan only RUNNING rows whose startTime is older than the
-    // 1-hour default grace window — the rest are presumed healthy and should
-    // not be materialized into memory. The per-task timeout refinement below
-    // may still rescue individual rows older than that, but we cap the
-    // initial find() to keep the cron cheap even with millions of rows.
+    // initial cutoff — the rest are presumed healthy and should not be
+    // materialized into memory. The per-task timeout refinement below may
+    // still rescue individual rows older than that, but we cap the initial
+    // find() to keep the cron cheap even with millions of rows.
+    //
+    // N5: the cutoff is now tied to task timeouts instead of a fixed 1h —
+    // a stuck execution for a short-timeout task (e.g. 10s) must not wait up
+    // to 1h before being recovered. Per-task stale threshold =
+    // max(2 × taskTimeout, 60s): the executor/processor own the hard timeout,
+    // so the sweep deliberately waits out two timeout periods (60s floor) and
+    // only rescues rows whose dispatch/callback was lost. The scan cutoff is
+    // the smallest such threshold (bounded by the 1h fallback used for
+    // timeout=0 tasks), so short-timeout tasks are swept promptly while the
+    // scan stays cheap.
     const now = Date.now();
-    const DEFAULT_STALE_MS = 60 * 60 * 1000; // 1-hour fallback
-    const initialCutoff = new Date(now - DEFAULT_STALE_MS);
+    const DEFAULT_STALE_MS = STALE_SCAN_FALLBACK_MS; // 1-hour fallback
+    const initialCutoff = new Date(now - (await this.staleScanWindowMs()));
     const runningExecs = await this.execRepo.find({
       where: {
         status: ExecutionStatus.RUNNING,
@@ -329,11 +382,13 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       const anchor = exec.startTime ?? exec.createdAt;
       if (!anchor) continue;
 
-      // Prefer per-task timeout (seconds → ms); fall back to global default
+      // Prefer per-task timeout (seconds → ms); fall back to global default.
+      // N5: use max(2 × taskTimeout, 60s) — matching the scan cutoff formula —
+      // so the sweep never races the processor's own hard-timeout kill.
       const taskTimeoutSec = taskTimeouts.get(exec.taskId);
       const staleMs =
         taskTimeoutSec && taskTimeoutSec > 0
-          ? taskTimeoutSec * 1000
+          ? staleThresholdMs(taskTimeoutSec)
           : DEFAULT_STALE_MS;
 
       if (now - anchor.getTime() > staleMs) {
@@ -469,6 +524,28 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       .execute();
   }
 
+  /**
+   * N5: stale 扫描的初始窗口 = min(所有 active 任务中最短的
+   * max(2×timeout, 60s) 阈值, 1h 兜底)。timeout=0（不限时）任务不参与收缩，
+   * 仍由 1h 兜底覆盖；没有任何短 timeout 任务时窗口保持 1h，扫描开销不变。
+   * 轻量查询仅取 id/timeout 两列。
+   */
+  private async staleScanWindowMs(): Promise<number> {
+    const tasks = await this.taskRepo.find({
+      where: { status: TaskStatus.ACTIVE },
+      select: ["id", "timeout"],
+    });
+    let shortestMs = Number.POSITIVE_INFINITY;
+    for (const t of tasks ?? []) {
+      if (t.timeout && t.timeout > 0) {
+        shortestMs = Math.min(shortestMs, staleThresholdMs(t.timeout));
+      }
+    }
+    if (!Number.isFinite(shortestMs)) return STALE_SCAN_FALLBACK_MS;
+    // 上限仍为 1h 兜底：超长 timeout 任务的行会被扫描到但被逐行阈值过滤
+    return Math.min(shortestMs, STALE_SCAN_FALLBACK_MS);
+  }
+
   /** Re-scan active tasks every minute and register any unscheduled tasks */
   @Cron(CronExpression.EVERY_MINUTE)
   async reload() {
@@ -514,14 +591,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   async enqueue(task: Task, triggerType: string) {
-    // R-P0-007: Dynamically calculate lock TTL based on task timeout
-    // Use max(task.timeout * 1000, minIntervalMs) to prevent premature lock release
-    const minIntervalMs =
-      task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate
-        ? task.fixedRate * 1000
-        : 5_000;
-    const taskTimeoutMs = (task.timeout || 300) * 1000;
-    const lockTTL = Math.max(taskTimeoutMs, minIntervalMs);
+    // N6: the dedup window is derived from the trigger period, NOT the task
+    // timeout (the old max(timeout, interval) TTL silently suppressed
+    // short-period tasks down to the task timeout). See computeTriggerDedupTtlMs.
+    const lockTTL = computeTriggerDedupTtlMs(task);
 
     let lock: Lock | null = null;
     let claimedViaDb = false;
@@ -660,7 +733,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
                 delay: task.retryDelay * 1000,
               }
             : undefined,
-        priority: task.priority,
+        // N2: DB 里 priority 是 PG 字符串枚举，TypeORM 读回 'normal' 等
+        // label——原样传给 BullMQ 会被 lua 校验拒绝（"Priority should not
+        // be float"），导致所有调度触发入队失败。入队边界强制归一化为数字。
+        priority: normalizeTaskPriority(task.priority),
       };
       try {
         await this.queue.add(

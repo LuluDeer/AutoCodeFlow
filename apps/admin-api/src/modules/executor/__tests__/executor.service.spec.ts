@@ -69,6 +69,35 @@ describe("ExecutorService (__tests__)", () => {
   let taskQueue: { add: jest.Mock };
   let configService: jest.Mocked<Pick<ConfigService, "get">>;
 
+  /** N4: build a service instance wired to a specific executor repo mock. */
+  const makeServiceWithRepo = async (repo: ReturnType<typeof makeRepo>) => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: repo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getQueueToken("task-queue"), useValue: taskQueue },
+        { provide: ConfigService, useValue: configService },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn(),
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: { findOne: jest.fn().mockRejectedValue(new Error("not found")) },
+        },
+      ],
+    }).compile();
+    return module.get(ExecutorService);
+  };
+
   beforeEach(async () => {
     executorRepo = makeRepo();
     execRepo = makeRepo();
@@ -371,6 +400,143 @@ describe("ExecutorService (__tests__)", () => {
       expect(existing.tags).toEqual(["nodejs"]);
       expect(existing.description).toBe("Production executor");
       expect(existing.status).toBe(ExecutorStatus.ONLINE);
+    });
+  });
+
+  describe("registerExecutor — N4 idempotent token issuance", () => {
+    const makeQbRepo = (prior: any) =>
+      makeRepo({
+        createQueryBuilder: jest.fn(() => ({
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(prior),
+        })),
+      });
+
+    it("issues a token on first registration (no prior row)", async () => {
+      const repo = makeQbRepo(null);
+      const saved = {
+        id: "e1",
+        appName: "node",
+        address: "10.0.0.9:3002",
+        status: ExecutorStatus.ONLINE,
+      };
+      repo.findOne.mockResolvedValue(saved);
+      repo.save.mockImplementation((e: any) => Promise.resolve({ ...e, id: "e1" }));
+      const svc = await makeServiceWithRepo(repo);
+      jest
+        .spyOn(svc, "rotateToken")
+        .mockResolvedValue({ token: "issued-token" });
+
+      const { executor, perExecutorToken } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+        startupId: "startup-1",
+      });
+
+      expect(executor.id).toBe("e1");
+      expect(perExecutorToken).toBe("issued-token");
+    });
+
+    it("returns perExecutorToken=null for a duplicate register with the same address+startupId (rotation storm fix)", async () => {
+      const prior = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        executorStartupId: "startup-1",
+        executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+        tokenHash: "$2b$12$existinghash",
+      };
+      const repo = makeQbRepo(prior);
+      repo.findOne.mockResolvedValue({ ...prior, status: ExecutorStatus.ONLINE });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const svc = await makeServiceWithRepo(repo);
+      const rotateSpy = jest.spyOn(svc, "rotateToken");
+
+      const { perExecutorToken } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+        startupId: "startup-1",
+      });
+
+      expect(perExecutorToken).toBeNull();
+      expect(rotateSpy).not.toHaveBeenCalled();
+    });
+
+    it("rotates when the startupId changed (genuine restart)", async () => {
+      const prior = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        executorStartupId: "startup-1",
+        executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+        tokenHash: "$2b$12$existinghash",
+      };
+      const repo = makeQbRepo(prior);
+      repo.findOne.mockResolvedValue({ ...prior });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const svc = await makeServiceWithRepo(repo);
+      const rotateSpy = jest
+        .spyOn(svc, "rotateToken")
+        .mockResolvedValue({ token: "new-token" });
+
+      const { perExecutorToken } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+        startupId: "startup-2",
+      });
+
+      expect(perExecutorToken).toBe("new-token");
+      expect(rotateSpy).toHaveBeenCalledWith("e1");
+    });
+
+    it("rotates when no startupId is reported (legacy executor)", async () => {
+      const prior = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        executorStartupId: "startup-1",
+        executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+        tokenHash: "$2b$12$existinghash",
+      };
+      const repo = makeQbRepo(prior);
+      repo.findOne.mockResolvedValue({ ...prior });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const svc = await makeServiceWithRepo(repo);
+      const rotateSpy = jest
+        .spyOn(svc, "rotateToken")
+        .mockResolvedValue({ token: "legacy-token" });
+
+      const { perExecutorToken } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+      });
+
+      expect(perExecutorToken).toBe("legacy-token");
+      expect(rotateSpy).toHaveBeenCalled();
+    });
+
+    it("rotates when the address has no per-executor token yet", async () => {
+      const prior = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        executorStartupId: "startup-1",
+        executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+        tokenHash: null,
+      };
+      const repo = makeQbRepo(prior);
+      repo.findOne.mockResolvedValue({ ...prior });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const svc = await makeServiceWithRepo(repo);
+      const rotateSpy = jest
+        .spyOn(svc, "rotateToken")
+        .mockResolvedValue({ token: "first-token" });
+
+      const { perExecutorToken } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+        startupId: "startup-1",
+      });
+
+      expect(perExecutorToken).toBe("first-token");
+      expect(rotateSpy).toHaveBeenCalled();
     });
   });
 
