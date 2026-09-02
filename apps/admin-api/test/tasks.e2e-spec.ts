@@ -61,13 +61,15 @@ describe("Tasks (e2e)", () => {
     });
 
     it("should create a task and return 201", async () => {
+      // Field names must match CreateTaskDto (triggerType/cronExpression);
+      // the global ValidationPipe uses forbidNonWhitelisted, so legacy
+      // `type`/`schedule`/`executorAddress` keys would be rejected with 400.
       const payload = {
         name: "e2e-test-task",
         description: "Created by e2e tests",
-        type: "cron",
-        schedule: "0 * * * *",
+        triggerType: "cron",
+        cronExpression: "0 * * * *",
         runtime: "shell",
-        executorAddress: "",
       };
 
       const res = await request(app.getHttpServer())
