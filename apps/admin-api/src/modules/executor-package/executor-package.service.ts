@@ -324,22 +324,4 @@ export class ExecutorPackageService {
     }
     return qb.getOne();
   }
-
-  /**
-   * Generate one-time install token (random 32-byte hex, TTL 1 hour).
-   * Used by frontend install wizard to authorize script download without login.
-   */
-  generateInstallToken(executorId?: string): {
-    token: string;
-    expiresIn: number;
-    expiresAt: string;
-  } {
-    const token = crypto.randomBytes(32).toString("hex");
-    const expiresIn = 3600; // seconds
-    const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
-    this.logger.log(
-      `Generated install token${executorId ? ` for executor ${executorId}` : ""}`,
-    );
-    return { token, expiresIn, expiresAt };
-  }
 }

@@ -12,18 +12,34 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
+import { useAuthStore, isAdminUser } from '../../store/auth';
 import type { ColumnsType } from 'antd/es/table';
 
 const { Title, Text } = Typography;
+
+/**
+ * R5 RBAC（按第四轮收紧矩阵）：
+ * - 执行器共享 Token 读/生成、系统配置写（增删改）、回滚 → 后端 @Roles(ADMIN)；
+ *   普通用户不可见或按钮禁用（不做无谓的 403 请求）。
+ * - config 列表/详情、变更历史、AI 配置读写 → 登录即可，所有用户可用。
+ */
+function useIsAdmin() {
+  const user = useAuthStore((s) => s.user);
+  return isAdminUser(user);
+}
 
 // ─── Token Section ───────────────────────────────────────────────────────────
 function TokenSection() {
   const [tokenVisible, setTokenVisible] = useState(false);
   const qc = useQueryClient();
+  const isAdmin = useIsAdmin();
 
+  // R4 收紧矩阵：共享 Token 的读与生成为 ADMIN-only。
+  // 非管理员不发起查询（GET 会 403），hooks 仍按固定顺序调用。
   const { data: tokenResult, isLoading } = useQuery({
     queryKey: ['executor-token'],
     queryFn: () => configApi.getExecutorToken(),
+    enabled: isAdmin,
   });
 
   const { mutateAsync: generate, isPending: generating } = useMutation({
@@ -43,6 +59,19 @@ function TokenSection() {
       },
     });
   };
+
+  if (!isAdmin) {
+    return (
+      <Card title={<Space><KeyOutlined /> 执行器共享 Token</Space>} style={{ marginBottom: 16 }}>
+        <Alert
+          type="info"
+          title="仅管理员可查看和生成执行器共享 Token"
+          description="如需管理执行器共享 Token，请联系管理员。"
+          showIcon
+        />
+      </Card>
+    );
+  }
 
   if (isLoading) return <Spin />;
 
@@ -79,7 +108,7 @@ function TokenSection() {
               </Button>
             )}
           </Space>
-          <Button danger loading={generating} onClick={handleGenerate}>
+          <Button danger loading={generating} onClick={handleGenerate} disabled={!isAdmin}>
             重新生成 Token
           </Button>
           <Alert
@@ -95,9 +124,17 @@ function TokenSection() {
             title="尚未生成执行器 Token，请先生成后再安装执行器"
             showIcon
           />
-          <Button type="primary" icon={<KeyOutlined />} loading={generating} onClick={handleGenerate}>
-            生成共享 Token
-          </Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可生成共享 Token'}>
+            <Button
+              type="primary"
+              icon={<KeyOutlined />}
+              loading={generating}
+              onClick={handleGenerate}
+              disabled={!isAdmin}
+            >
+              生成共享 Token
+            </Button>
+          </Tooltip>
         </Space>
       )}
     </Card>
@@ -176,6 +213,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
     queryKey: ['config-history', configKey],
     queryFn: () => configApi.getHistory({ key: configKey, pageSize: 50 }),
   });
+  const isAdmin = useIsAdmin();
 
   const qc = useQueryClient();
   const { mutateAsync: rollback, isPending: rolling } = useMutation({
@@ -195,8 +233,10 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
     { title: '新值', dataIndex: 'newValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '', width: 80,
       render: (_: unknown, row: ConfigHistory) => (
-        <Popconfirm title="确认回滚到此版本？" onConfirm={() => rollback(row.id)} okText="回滚">
-          <Button size="small" loading={rolling}>回滚</Button>
+        <Popconfirm title="确认回滚到此版本？" onConfirm={() => rollback(row.id)} okText="回滚" disabled={!isAdmin}>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可回滚'}>
+            <Button size="small" loading={rolling} disabled={!isAdmin}>回滚</Button>
+          </Tooltip>
         </Popconfirm>
       ) },
   ];
@@ -221,6 +261,7 @@ function SystemConfigTab() {
   const [editTarget, setEditTarget] = useState<SystemConfig | null | 'new'>();
   const [historyKey, setHistoryKey] = useState<string | null>(null);
   const qc = useQueryClient();
+  const isAdmin = useIsAdmin();
 
   const { data: configs, isLoading, refetch } = useQuery({
     queryKey: ['system-configs'],
@@ -251,15 +292,15 @@ function SystemConfigTab() {
     { title: '', width: 120,
       render: (_: unknown, row: SystemConfig) => (
         <Space size={4}>
-          <Tooltip title="编辑">
-            <Button size="small" icon={<EditOutlined />} onClick={() => setEditTarget(row)} />
+          <Tooltip title={isAdmin ? '编辑' : '仅管理员可编辑配置'}>
+            <Button size="small" icon={<EditOutlined />} onClick={() => setEditTarget(row)} disabled={!isAdmin} />
           </Tooltip>
           <Tooltip title="变更历史">
             <Button size="small" icon={<HistoryOutlined />} onClick={() => setHistoryKey(row.key)} />
           </Tooltip>
-          <Popconfirm title="确认删除此配置？" onConfirm={() => remove(row.key)} okText="删除" okButtonProps={{ danger: true }}>
-            <Tooltip title="删除">
-              <Button size="small" danger icon={<DeleteOutlined />} />
+          <Popconfirm title="确认删除此配置？" onConfirm={() => remove(row.key)} okText="删除" okButtonProps={{ danger: true }} disabled={!isAdmin}>
+            <Tooltip title={isAdmin ? '删除' : '仅管理员可删除配置'}>
+              <Button size="small" danger icon={<DeleteOutlined />} disabled={!isAdmin} />
             </Tooltip>
           </Popconfirm>
         </Space>
@@ -274,7 +315,11 @@ function SystemConfigTab() {
         <Text type="secondary">管理系统运行时配置项，支持热更新。敏感值（密钥等）显示为 ••••••</Text>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditTarget('new')}>新增配置</Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可新增配置'}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditTarget('new')} disabled={!isAdmin}>
+              新增配置
+            </Button>
+          </Tooltip>
         </Space>
       </div>
       <Table
@@ -462,12 +507,13 @@ function AiConfigTab() {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function SettingsPage() {
+  const isAdmin = useIsAdmin();
+
   const tabs = [
-    {
-      key: 'token',
-      label: <Space><KeyOutlined />执行器 Token</Space>,
-      children: <TokenSection />,
-    },
+    // R4 收紧矩阵：共享 Token 读/生成 ADMIN-only，非管理员直接不渲染该 Tab
+    ...(isAdmin
+      ? [{ key: 'token', label: <Space><KeyOutlined />执行器 Token</Space>, children: <TokenSection /> }]
+      : []),
     {
       key: 'ai',
       label: <Space><RobotOutlined />AI 配置</Space>,
@@ -485,6 +531,14 @@ export default function SettingsPage() {
       <div style={{ marginBottom: 24 }}>
         <Title level={4} style={{ margin: 0 }}>系统设置</Title>
         <Text type="secondary">配置调度中心的核心参数与运行时选项</Text>
+        {!isAdmin && (
+          <Alert
+            type="info"
+            showIcon
+            title="您以普通用户身份查看，写操作（配置修改、Token 生成、回滚）仅管理员可用"
+            style={{ marginTop: 12 }}
+          />
+        )}
       </div>
       <Tabs items={tabs} />
     </div>
