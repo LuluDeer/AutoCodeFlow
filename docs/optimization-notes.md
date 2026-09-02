@@ -206,3 +206,40 @@ executor 部署应用包时会按版本与部署 ID 写入不可变 release 目�
 - ✅ executor-node 下载应用包携带 `Authorization: Bearer <共享token>`，跨主机重定向时剥离凭证避免 token 外泄
 - ✅ suggestSchedule 的 `fallback` 标记在 controller 层透传
 - ✅ 删除无引用死代码 4 处（含 `error-codes.ts`——`docs/api-reference.md` 旧的「业务错误码 1001/1002…」表已随之失效，本次文档同步一并修正为 HTTP 状态码语义）
+
+## 七、第四轮全新对抗性排查完成清单（2026-09-02）
+
+> 方法：4 路只读 audit（安全/并发/执行器/契约）→ 负责人逐条核实（5 P0 + 关键 P1 全部坐实）→ 7 路 fix agent 按不重叠文件所有权并行修复 → 集成 seam + 全量回归。findings 全文见 `docs/review_round4_*.md`，过程追踪见 `docs/PROGRESS-round4-2026-09-02.md`。
+
+### 7.1 调度与任务链（`d2613d6`）
+
+- ✅ P0 触发去重锁被 watchdog 无限续期 → 每个定时任务一个进程生命周期只触发一次（`acquireLock` 新增 `renew` 选项，trigger 锁 `renew:false` 恢复 TTL 自然过期语义）
+- ✅ P0 依赖任务链死代码（worker 路径永不写 SUCCESS）→ `triggerDependentTasks` 迁入 `handleCallback` 条件 UPDATE 赢家路径，幂等扇出
+- ✅ P1 多页日志回填丢页 → `storeLogLines` append 语义（首页 replace 后续追加，S3 读回拼接）
+- ✅ P1 COVER_EARLY 盲写 → 条件 UPDATE + RETURNING（对齐 TASK-004 模式）
+
+### 7.2 安全（`b0aa67f`）
+
+- ✅ P1 RBAC 全局生效：RolesGuard 注册 APP_GUARD；config 写端点/共享 token 明文读取/executor-package 全部 @Roles(ADMIN)；@Public 机器端点空 @Roles() 覆盖
+- ✅ P1 heartbeat/register 列注入：controller 白名单构造 + service 逐字段赋值（原 Object.assign 可覆写 tokenHash 成轮换不可吊销的持久后门）
+- ✅ P2 SSRF 覆盖：`assertSafeExecutorUrl`（恒拒元数据/未指定段，默认放行私网段，`EXECUTOR_ALLOW_PRIVATE_NETWORK` 放 loopback）接入 dispatch/broadcast/reload-config/pushToExecutors + dingtalk/wecom/slack 渠道
+- ✅ P2 登录枚举时序拉平（dummy bcrypt compare）；callback 端点移除 SkipThrottle 改 60/min + token 校验 60s 正向缓存；trust proxy 改显式开关
+- ✅ P1 SSE query token：仅 `/logs/stream` 路径接受 `?access_token=`（type=access 强制）
+- ✅ P1 config/history 与 audit 筛选 QueryDto（修 forbidNonWhitelisted 恒 400）
+
+### 7.3 执行器运行时（`f792e10` python / `f0f61e5` node）
+
+- ✅ P0 python shell entrypoint 命令注入（字符白名单 + 位置参数，对齐 node 6062bee）
+- ✅ P1 callback >100 批次被硬拒 + 毒文件无限重发 → ≤100 分片 + .meta 重试计数 + dead-letter 终态
+- ✅ P1 部署子进程 env 白名单（EXECUTOR_SHARED_TOKEN 不再透传给被管应用）
+- ✅ P1 node 任务 requirements 不可解析（NODE_PATH）；P1 stdout/stderr 无上限（BoundedLogBuffer / 10MB+64MB 截断）；P1 磁盘无回收（TTL sweep + 6h 定时）
+- ✅ P2 update-package 缺 Bearer/慢滴卡死（共享下载器 + watchdog + 路径穿越校验）；deploy.ts spawnSync→async；进程组 kill 防孤儿；/api/logs 分页修正；git 缓存盐与串行队列
+
+### 7.4 跨端契约（`75c8d2b`）
+
+- ✅ P0 CLI 登录字段名错（access_token→accessToken，此前 CLI 全命令 401）；P0 应用编辑恒 400（不再提交 name）
+- ✅ P1 安装向导 404（走 install-cmd，后端删坏 curlCmd）、latest 包列表、下载带 auth、AI 分析字段、SSE 参数名、trigger executorId 移除
+
+### 7.5 基线
+
+admin-api **605/605（45 suites）** · executor-node **119/119** · executor-python **86/86** · 三端 tsc ✓ · admin-web lint 0 errors。
