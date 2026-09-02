@@ -20,6 +20,9 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
       host: this.configService.get("redis.host"),
       port: this.configService.get<number>("redis.port"),
       password: this.configService.get("redis.password"),
+      // P2: bound every Redis call to fail fast instead of hanging on a
+      // partitioned network. Without this, the lock watchdog can wedge.
+      commandTimeout: 3000,
       retryStrategy: (times) => Math.min(times * 100, 3000),
     });
     this.client.on("error", (err: Error) => {
@@ -43,6 +46,25 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
     );
 
     if (result === "OK") {
+      // High-5.1: spin up a watchdog that renews the lock at ttlMs/3 so long
+      // business work (dispatch, callback ingest) does not lose the lock when
+      // its TTL elapses. The watchdog is the only path that knows the lockId,
+      // so a foreign release race is impossible.
+      let stopped = false;
+      const renewMs = Math.max(1000, Math.floor(ttlMs / 3));
+      const watchdog = setInterval(() => {
+        if (stopped) return;
+        this.extendLock(key, lockId, ttlMs).catch((err: unknown) => {
+          this.logger.warn(
+            `Lock watchdog for ${key} failed to renew: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          stopped = true;
+          clearInterval(watchdog);
+        });
+      }, renewMs);
+      // Unref so a stuck watchdog does not block process exit.
+      watchdog.unref();
+
       const lock: Lock = {
         key,
         lockId,
@@ -50,6 +72,8 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
         released: false,
         release: async () => {
           if (lock.released) return false;
+          stopped = true;
+          clearInterval(watchdog);
           const ok = await this.releaseLock(key, lockId);
           if (ok) lock.released = true;
           return ok;
@@ -59,6 +83,31 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
     }
 
     return null;
+  }
+
+  async extendLock(
+    key: string,
+    lockId: string,
+    ttlMs: number,
+  ): Promise<boolean> {
+    // Only renew if the lock still belongs to us — protects against a slow
+    // watchdog that fires after the lock already expired and was re-acquired
+    // by another instance.
+    const script = `
+      if redis.call("GET", KEYS[1]) == ARGV[1] then
+        return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+      else
+        return 0
+      end
+    `;
+    const result = await this.client.eval(
+      script,
+      1,
+      `lock:${key}`,
+      lockId,
+      ttlMs,
+    );
+    return result === 1;
   }
 
   async releaseLock(key: string, lockId: string): Promise<boolean> {
