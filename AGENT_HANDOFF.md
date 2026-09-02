@@ -1,17 +1,23 @@
 # AutoCodeFlow Agent Handoff
 
-> 本文件是跨会话交接文档：每个会话结束前更新「状态快照」，新会话从这里恢复。
-> 上一个版本曾被误删（3c272c9），本版为重建精简版，状态以代码与 docs/optimization-notes.md 为准。
+> 跨会话交接文档：新会话从这里恢复。
+> 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-08-18
+更新时间：2026-09-02
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
-- 测试基线（全绿）：admin-api 403/403 (jest)、executor-node 76/76 (jest)、executor-python 44/44 (pytest)、admin-api tsc --noEmit 通过
-- 工作区：干净（除本文件）
-- 近期完成：LOG-01 回调日志截断治理——handleCallback 检测两种截断标记（node `[logs truncated, ...]` / python `[truncated, total ...]`）时自动分页拉取 executor `/api/logs` 全量日志入库（兼容 node 端点无 limit 与 python 端点 limit≤2000），回填失败降级存截断版不阻断回调；同时清理 task.processor 中无调用点的死代码 fetchAndStoreLogLines
+- 测试基线（全绿）：
+  - admin-api **424/424** (jest, 32 suites)
+  - executor-node **77/77** (jest)
+  - executor-python **44/44** (pytest)
+  - admin-api / executor-node / acf-cli / mcp-server `tsc --noEmit` 全部通过
+  - admin-web `npm run build` ✓
+- 本轮落地（未提交）：LOG-11 S3 日志驱动、CLI/MCP P0 补全、admin-web lint 归零、executor.service bounded find
+- admin-web lint: **0 errors**（5 个 react-refresh / exhaustive-deps warning 保留）
+- 工作区：脏（按主题拆 commit 待执行）
 
 ## 会话恢复速查
 
@@ -20,11 +26,14 @@
 cd apps/admin-api && npx jest && npx tsc --noEmit -p tsconfig.json
 cd apps/executor-node && npx jest
 cd apps/executor-python && python3 -m pytest -q
-cd apps/admin-web && npm run build && npx vitest run   # E2E 需先起环境
+cd apps/admin-web && npm run lint && npm run build
+cd packages/acf-cli && npx tsc --noEmit
+cd packages/mcp-server && npx tsc --noEmit
 ```
 
 注意：
 - `apps/executor-desktop/resources/executor-node/index.js` 是生成物，源码改 `apps/executor-node/src` 后走打包流程更新。
+- admin-api 全局 `ResponseInterceptor` 把成功响应包成 `{ code, message, data }`，admin-web 在 `src/api/client.ts` 的 axios interceptor 自动拆包；CLI 与 MCP 已在 `packages/acf-cli/src/client.ts` 与 `packages/mcp-server/src/index.ts` 加上对称拆包逻辑（2026-09-02）。
 - 文档可能比代码旧，以代码+测试交叉校验。
 
 ## 开发准则
@@ -36,33 +45,50 @@ cd apps/admin-web && npm run build && npx vitest run   # E2E 需先起环境
 
 ## 长期路线图状态
 
-原始 12 方向（d770032）进展：
-
 | # | 方向 | 状态 |
 |---|------|------|
 | 1 | 版本历史与发布快照 | ✅ 已完成（含回滚） |
 | 2 | 执行失败原因分类 | ✅ 已完成（executor 侧可再细化） |
 | 3 | Webhook / API 认证模型 | ✅ 已完成（rawBody+时间戳 HMAC，Public 路由强制 secret） |
-| 4 | 任务超时 / 时区 / 重试 | ✅ 已完成（2026-08-18 验证：trigger/rollback/scheduled 三入队路径均带 attempts+指数退避，processor 失败 rethrow 使 BullMQ 重试生效，均有单测） |
+| 4 | 任务超时 / 时区 / 重试 | ✅ 已完成（trigger/rollback/scheduled 三入队路径均带 attempts+指数退避，processor 失败 rethrow 使 BullMQ 重试生效，均有单测） |
 | 5 | 执行器重启恢复 + 负载感知 | ✅ 已完成（心跳携带 runningTaskCount，dispatch 按 loadScore=runningTaskCount/max 选最低负载 + 乐观锁防超发，广播模式不占计数，callback 释放槽位，均有单测） |
 | 6 | 应用包版本隔离 | ✅ 已完成（不可变 release 目录 + current 软链 + 回退） |
 | 7 | 心跳 / 注册稳定化 | ✅ 已完成（连通性自检、退避重试） |
 | 8 | Admin Web 与 E2E | ✅ E2E 35/35（Linux x86_64）；平台矩阵未覆盖 |
-| 9 | CLI 与 MCP 能力对齐 | ⬜ 未验证对齐度 |
+| 9 | CLI 与 MCP 能力对齐 | ✅ 已完成本轮 P0（CLI: task CRUD/pause/resume/kill/logs/executions、app deploy/deployments/versions；MCP: get_application/deploy_application/kill_execution/pause_task/resume_task/list_deployments + 已有 list/get/analyze 套件）。ResponseInterceptor 拆包已在 CLI/MCP 两侧 client 解决 |
 | 10 | SDK 统一与示例 | ⬜ 未系统梳理 |
-| 11 | 日志外置存储（MinIO） | ⬜ 未做（当前写主库 execution_log_lines） |
+| 11 | 日志外置存储（MinIO/S3） | ✅ 已完成（`LOG_STORAGE_DRIVER=s3` 可选驱动；callback 写入时优先 S3 失败回退 DB；读取时按 `exec.logStorage` 分流；集成测试 6/6） |
 | 12 | 桌面执行器跨平台 | ⬜ 未验证 |
 
 ## 下一步建议（按优先级）
 
-1. **日志外置存储**：日志写 MinIO，主库只存引用（见 optimization-notes 2.6）。
-2. **CLI/MCP 能力对齐梳理**：对照 api-reference 列缺口清单。
-3. **多执行器负载均衡实测**：单测已覆盖 loadScore 选择与乐观锁，但缺多实例真机验证（心跳节奏、计数漂移恢复）。
+1. **端到端真机验证 LOG-11**：起 `docker compose --profile minio up -d minio admin-api`，触发一次任务执行，用 `mc` 验证 `autoflow-logs/execution-logs/<id>.log.gz` 存在，再调 `getExecutionLogs` 确认读到内容（见 LOG-11 subagent 报告的命令清单）。
+2. **多执行器负载均衡实测**：单测覆盖 loadScore 选择与并发锁，但缺多实例真机验证——跑 2 个 executor + 高并发任务，看 runningTaskCount 是否均衡增长、callback 释放槽位是否正确。
+3. **CLI/MCP P1 补全**：applications CRUD、deploy upgrade/stop、task versions/rollback/compare、executors 详情、audit 列表（subagent 已列缺口清单）。
+4. **桌面执行器跨平台**：macOS Apple Silicon / WSL2 矩阵验证。
 
 ## 未覆盖验证项
 
 - macOS / Windows / ARM64 部署
 - 通知渠道（企业微信/钉钉/邮件）实测
 - 私有 npm/PyPI 仓库集成
-- 多执行器负载均衡行为（选择逻辑已有单测，缺多实例实测）
+- 多执行器负载均衡（逻辑已单测，多实例实测待办）
 - 大规模并发压测
+- LOG-11 S3 真机 E2E（mock 集成测试已 6/6）
+
+## 本轮变更要点（参考）
+
+- **admin-api**：
+  - `task.controller.ts` 新增 `GET /tasks/executions/:execId` 与 `GET /tasks/executions/:execId/logs`（compat alias，供 CLI/MCP 直接按 execId 查询）。
+  - `task.service.ts` `getExecutionLogs` / `streamExecutionLogs` 增加 S3 分流；`storeLogLines` callback 路径优先 S3 上传 + 失败回退 DB；新增 enqueue 失败时把 PENDING 行标 FAILED（防 Redis 挂时悬挂）。
+  - `executor.entity.ts` 把 executor 上报字段 `version` 重命名为 `executorVersion`，新增 TypeORM `@VersionColumn() version: number`（乐观锁）；`address` 加唯一索引 `uq_executors_address`。
+  - `executor.service.ts` `selectLeastLoaded` / `dispatch` / `getTags` / `findAll` 加 `take` 上限；broadcast 路径保留全量（注释说明）。
+  - `scheduler.service.ts` 新增「PENDING 超时回收」（10 分钟 grace 后置 FAILED）+ `schedulingTasks` Set 防 reload 与 scheduleOne 同 task 并发注册。
+  - `main.ts` `POST /api/executions/callback` 路由单独配 55mb JSON limit（兼容批量回调），其它路由仍 1mb cap。
+  - `verify-executor-token.util.ts` fail-closed timingSafeEqual（与 executor-node 端符号对齐）。
+  - `task-execution.entity.ts` 新增 `logStorage` / `logObjectKey` 列；迁移 `1717473142690-AddExecutionLogStorage.ts`。
+- **executor-node**：deploy/execute/health/logs 路径加固；connectivity 重试；file-logger 截断 marker 与 admin-api LOG-01 检测对齐。
+- **admin-web**：`Executor.version → executorVersion`、`auth /me → /profile`、executor shared-token 路由迁移、`any` → `unknown`、未用 imports 删、空 catch 加注释、`_pollStartTime` state 移除；lint 0 errors。
+- **acf-cli**：HTTP client 自动拆 ResponseInterceptor envelope；`task create/update/delete/pause/resume/kill/logs`、`app deploy/deployments/versions`、`task executions` 全部走正确路径与字段名。
+- **mcp-server**：同 HTTP 拆包；新增 `kill_execution` / `pause_task` / `resume_task` / `list_deployments`；已有 `get_application` / `deploy_application` / `get_execution_logs` 配套。
+- **docker-compose.yml**：minio profile（端口 9000/9001，volume，healthcheck）+ admin-api 注入 7 项 `LOG_STORAGE_*` 默认值。

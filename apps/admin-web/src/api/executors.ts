@@ -6,7 +6,7 @@ export interface Executor {
   address: string;
   status: string;
   type?: string;
-  version?: string;
+  executorVersion?: string;
   cpuUsage: number;
   memUsage: number;
   diskUsage?: number;
@@ -56,9 +56,9 @@ export interface SharedTokenResult {
 
 export const executorsApi = {
   getSharedToken: () =>
-    client.get('/executors/shared-token') as Promise<SharedTokenResult>,
+    client.get('/config/executor-shared-token') as Promise<SharedTokenResult>,
   generateSharedToken: () =>
-    client.post('/executors/shared-token/generate') as Promise<{ token: string }>,
+    client.post('/config/executor-shared-token/generate') as Promise<{ token: string }>,
   list: () => client.get('/executors') as Promise<Executor[]>,
   get: (id: string) => client.get(`/executors/${id}`) as Promise<Executor>,
   update: (id: string, data: Partial<Executor>) =>
