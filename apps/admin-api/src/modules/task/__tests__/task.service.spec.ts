@@ -1,9 +1,10 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { DataSource } from "typeorm";
+import { DataSource, QueryFailedError } from "typeorm";
 import { getQueueToken } from "@nestjs/bullmq";
 import {
   BadRequestException,
+  ConflictException,
   NotFoundException,
   ServiceUnavailableException,
 } from "@nestjs/common";
@@ -195,6 +196,111 @@ describe("TaskService (__tests__)", () => {
         dependencies: { dep1: "task-a" },
       } as any;
       await expect(service.create(dto)).rejects.toThrow("Circular dependency");
+    });
+
+    // R6: 客户端自带已存在 id 时返回 409，而非 PG 主键冲突裸 500
+    describe("create with client-supplied id (R6)", () => {
+      const UUID = "550e8400-e29b-41d4-a716-446655440000";
+
+      it("throws ConflictException when the id already exists (pre-check)", async () => {
+        taskRepo.findOne.mockResolvedValue({ id: UUID, name: "existing" });
+        await expect(
+          service.create({ id: UUID, name: "t", triggerType: "api" } as any),
+        ).rejects.toThrow(ConflictException);
+        expect(taskRepo.save).not.toHaveBeenCalled();
+      });
+
+      it("pre-check looks up including soft-deleted rows (PK still taken)", async () => {
+        taskRepo.findOne.mockResolvedValue(null);
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+        await service.create({ id: UUID, name: "t", triggerType: "api" } as any);
+        expect(taskRepo.findOne).toHaveBeenCalledWith({
+          where: { id: UUID },
+          withDeleted: true,
+        });
+      });
+
+      it("maps a PG 23505 unique violation from save to ConflictException (TOCTOU)", async () => {
+        taskRepo.findOne.mockResolvedValue(null);
+        const driverErr = Object.assign(new Error("duplicate key value"), {
+          code: "23505",
+        });
+        taskRepo.save.mockRejectedValue(
+          new QueryFailedError("INSERT INTO tasks ...", [], driverErr),
+        );
+        await expect(
+          service.create({ id: UUID, name: "t", triggerType: "api" } as any),
+        ).rejects.toThrow(ConflictException);
+      });
+
+      it("re-throws non-23505 driver errors unchanged", async () => {
+        taskRepo.findOne.mockResolvedValue(null);
+        const driverErr = Object.assign(new Error("invalid input syntax"), {
+          code: "22P02",
+        });
+        taskRepo.save.mockRejectedValue(
+          new QueryFailedError("INSERT INTO tasks ...", [], driverErr),
+        );
+        await expect(
+          service.create({ id: UUID, name: "t", triggerType: "api" } as any),
+        ).rejects.toThrow(QueryFailedError);
+      });
+
+      it("creates normally when the id is free", async () => {
+        taskRepo.findOne.mockResolvedValue(null);
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+        const result: any = await service.create({
+          id: UUID,
+          name: "t",
+          triggerType: "api",
+        } as any);
+        expect(result.id).toBe(UUID);
+        expect(taskRepo.save).toHaveBeenCalled();
+      });
+    });
+  });
+
+  // R6: executor pinning 与 broadcast 互斥——写入边界（create/update 共用
+  // normalizeTaskDto）直接 400，不允许产生"既固定又广播"的歧义任务。
+  describe("executorId / broadcast mutual exclusion (R6)", () => {
+    const PIN_UUID = "550e8400-e29b-41d4-a716-446655440000";
+
+    it("rejects create with executorId + executeMode=broadcast", async () => {
+      await expect(
+        service.create({
+          name: "t",
+          triggerType: "api",
+          executorId: PIN_UUID,
+          executeMode: "broadcast",
+        } as any),
+      ).rejects.toThrow(BadRequestException);
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("rejects update with executorId + executeMode=broadcast", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+      });
+      await expect(
+        service.update("1", {
+          executorId: PIN_UUID,
+          executeMode: "broadcast",
+        } as any),
+      ).rejects.toThrow(BadRequestException);
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("accepts executorId with executeMode=single", async () => {
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      const result: any = await service.create({
+        name: "t",
+        triggerType: "api",
+        executorId: PIN_UUID,
+        executeMode: "single",
+      } as any);
+      expect(result.executorId).toBe(PIN_UUID);
     });
   });
 
@@ -627,7 +733,9 @@ describe("TaskService (__tests__)", () => {
       // 链长 63 < 64，不应抛错（模拟 60 层足够验证，避免无谓的findOne次数）
       setupDeepChain(60);
       const dto = {
-        id: "task-0",
+        // R6 后 create 会先按 id 查重（withDeleted），链 mock 只对
+        // "task-*" 返回行——用 UUID 形态的新任务 id 表示"主键未被占用"
+        id: "550e8400-e29b-41d4-a716-446655440000",
         name: "deep-but-ok",
         dependencies: { dep: "task-1" },
       } as any;
