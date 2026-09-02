@@ -19,24 +19,57 @@ import { ExecutorService } from "../../executor/executor.service";
 
 jest.mock("axios");
 
-const makeRepo = (overrides: Record<string, jest.Mock> = {}) => ({
-  create: jest.fn((d) => d),
-  save: jest.fn((e) => Promise.resolve(e)),
-  findOne: jest.fn(),
-  findAndCount: jest.fn().mockResolvedValue([[], 0]),
-  find: jest.fn().mockResolvedValue([]),
-  count: jest.fn().mockResolvedValue(0),
-  delete: jest.fn().mockResolvedValue({ affected: 1 }),
-  createQueryBuilder: jest.fn(() => ({
-    where: jest.fn().mockReturnThis(),
-    andWhere: jest.fn().mockReturnThis(),
-    orderBy: jest.fn().mockReturnThis(),
-    select: jest.fn().mockReturnThis(),
-    getMany: jest.fn().mockResolvedValue([]),
-    getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
-  })),
-  ...overrides,
-});
+const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
+  const repo: Record<string, jest.Mock> = {
+    create: jest.fn((d) => d),
+    save: jest.fn((e) => Promise.resolve(e)),
+    findOne: jest.fn(),
+    findAndCount: jest.fn().mockResolvedValue([[], 0]),
+    find: jest.fn().mockResolvedValue([]),
+    count: jest.fn().mockResolvedValue(0),
+    delete: jest.fn().mockResolvedValue({ affected: 1 }),
+  };
+  repo.createQueryBuilder = jest.fn(() => {
+    let patch: Record<string, unknown> | null = null;
+    // Snapshot the most recent findOne result at QB creation time so the
+    // conditional update only sees the entity this QB is targeting — not
+    // whatever findOne call happens to be last across the test.
+    const target = repo.findOne.mock.results.length
+      ? repo.findOne.mock.results[repo.findOne.mock.results.length - 1].value
+      : null;
+    const qb: Record<string, jest.Mock> = {
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([]),
+      getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn((p: Record<string, unknown>) => {
+        patch = p;
+        return qb;
+      }),
+      // Mimic a conditional UPDATE: apply the patch onto the snapshot entity
+      // captured above so tests can assert on it, and report affected=0 when
+      // the entity was not found or already terminal. Mirrors the production
+      // `killExecution` / `handleCallback` semantic where the UPDATE is
+      // guarded by `status IN (PENDING, RUNNING)`.
+      execute: jest.fn().mockImplementation(async () => {
+        const entity = await target;
+        if (!entity) return { affected: 0 };
+        const status = (entity as { status?: string }).status;
+        const TERMINAL = ["success", "failed", "timeout", "cancelled", "killed"];
+        if (status && TERMINAL.includes(status)) {
+          return { affected: 0 };
+        }
+        if (patch) Object.assign(entity, patch);
+        return { affected: 1 };
+      }),
+    };
+    return qb;
+  });
+  return { ...repo, ...overrides };
+};
 
 describe("TaskService (__tests__)", () => {
   let service: TaskService;
@@ -652,6 +685,7 @@ describe("TaskService (__tests__)", () => {
         {
           executionId: "e1",
           status: "success",
+          executorAddress: "exec-1:8002",
           logs: "head\n... [logs truncated, original length 50000 chars] ...\ntail",
         },
       ]);
@@ -686,6 +720,7 @@ describe("TaskService (__tests__)", () => {
         {
           executionId: "e1",
           status: "failed",
+          executorAddress: "exec-1:8002",
           logs: "head\n...[truncated, total 50000 chars]...\ntail",
         },
       ]);
@@ -718,6 +753,7 @@ describe("TaskService (__tests__)", () => {
         {
           executionId: "e1",
           status: "success",
+          executorAddress: "exec-1:8002",
           logs: "...[truncated, total 50000 chars]...",
         },
       ]);
@@ -749,7 +785,12 @@ describe("TaskService (__tests__)", () => {
       const axios = (await import("axios")).default;
       (axios.get as jest.Mock).mockClear();
       await service.handleCallback([
-        { executionId: "e1", status: "success", logs: "line0\nline1" },
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "exec-1:8002",
+          logs: "line0\nline1",
+        },
       ]);
       expect(axios.get).not.toHaveBeenCalled();
       expect(logLineRepo.create).toHaveBeenCalledWith({

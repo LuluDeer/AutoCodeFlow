@@ -27,6 +27,7 @@ import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { AiService } from "../ai/ai.service";
 import { ExecutorService } from "../executor/executor.service";
+import { S3LogStorage } from "./log-storage/s3-log-storage";
 
 /**
  * Detects truncation markers inserted by executors when callback logs exceed
@@ -39,6 +40,9 @@ const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
 @Injectable()
 export class TaskService {
   private readonly logger = new Logger(TaskService.name);
+  /** Lazily-initialized optional S3/MinIO log backend (LOG_STORAGE_DRIVER=s3). */
+  private s3LogStorage: S3LogStorage | null = null;
+  private s3StorageResolved = false;
 
   private normalizeTaskDto<T extends CreateTaskDto | UpdateTaskDto>(dto: T): T {
     const normalized = { ...dto } as T & {
@@ -268,18 +272,32 @@ export class TaskService {
         }),
       );
     });
-    await this.taskQueue.add(
-      "execute",
-      { executionId: exec.id },
-      {
-        // Bull requires attempts >= 1; guard against maxRetry=0
-        attempts: Math.max(1, task.maxRetry ?? 1),
-        backoff:
-          task.retryDelay > 0
-            ? { type: "exponential", delay: task.retryDelay * 1000 }
-            : undefined,
-      },
-    );
+    try {
+      await this.taskQueue.add(
+        "execute",
+        { executionId: exec.id },
+        {
+          // Bull requires attempts >= 1; guard against maxRetry=0
+          attempts: Math.max(1, task.maxRetry ?? 1),
+          backoff:
+            task.retryDelay > 0
+              ? { type: "exponential", delay: task.retryDelay * 1000 }
+              : undefined,
+        },
+      );
+    } catch (err: unknown) {
+      // P1: the PENDING row is already committed — without compensation it
+      // would hang forever when Redis/the queue is down.
+      const message = err instanceof Error ? err.message : String(err);
+      await this.execRepo.update(exec.id, {
+        status: ExecutionStatus.FAILED,
+        endTime: new Date(),
+        errorMessage: `Failed to enqueue execution: ${message}`,
+        failureReason: ExecutionFailureReason.UNKNOWN,
+      });
+      this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
+      throw new Error(`Failed to enqueue execution: ${message}`);
+    }
     return exec;
   }
 
@@ -490,6 +508,28 @@ export class TaskService {
     const safeLimit = Math.min(Math.max(1, limit), 2000);
     const exec = await this.execRepo.findOne({ where: { id: execId } });
     if (!exec) throw new NotFoundException("Execution not found");
+    // LOG-02: executions stored via the s3 driver page through the gunzipped
+    // object in memory; DB rows are the fallback (and the db-driver path).
+    if (exec.logStorage === "s3" && exec.logObjectKey) {
+      try {
+        const s3 = this.resolveS3Storage();
+        if (s3) {
+          const all = await s3
+            .get(exec.logObjectKey)
+            .then((t) => (t.length ? t.split("\n") : []));
+          const lines = all.slice(fromLine, fromLine + safeLimit);
+          return {
+            lines,
+            totalLines: all.length,
+            hasMore: fromLine + lines.length < all.length,
+          };
+        }
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Failed to read S3 logs for execution ${execId} (${err instanceof Error ? err.message : String(err)}) — falling back to DB log lines`,
+        );
+      }
+    }
     // N10: use typed logLineRepo instead of string-based getRepository
     // CODE-01: fetch true total in parallel so pagination metadata is accurate
     const [lines, totalLines] = await Promise.all([
@@ -523,14 +563,47 @@ export class TaskService {
     signal: AbortSignal,
   ): Promise<void> {
     let nextLine = 0;
+    let s3FetchFailed = false;
     const POLL_INTERVAL = 1000; // ms
     const MAX_RUNTIME = 30 * 60 * 1000; // 30 min safety cap
     const start = Date.now();
+    const TERMINAL_STATUSES = [
+      ExecutionStatus.SUCCESS,
+      ExecutionStatus.FAILED,
+      ExecutionStatus.TIMEOUT,
+      "killed",
+      "cancelled",
+    ] as string[];
 
     const flush = async (): Promise<boolean> => {
       // Returns true when execution is terminal and no more lines pending
       const exec = await this.execRepo.findOne({ where: { id: execId } });
       if (!exec) return true;
+
+      // LOG-02: S3 objects are uploaded once at callback time, so their lines
+      // become readable only after the execution reaches a terminal state;
+      // stream whatever has not been sent yet, then stop.
+      if (exec.logStorage === "s3" && exec.logObjectKey) {
+        const terminal = TERMINAL_STATUSES.includes(exec.status);
+        if (terminal && !s3FetchFailed) {
+          try {
+            const s3 = this.resolveS3Storage();
+            if (s3) {
+              const all = (await s3.get(exec.logObjectKey)).split("\n");
+              for (const line of all.slice(nextLine)) {
+                send(line);
+              }
+              nextLine = all.length;
+            }
+          } catch (err: unknown) {
+            s3FetchFailed = true;
+            this.logger.warn(
+              `Failed to stream S3 logs for execution ${execId} (${err instanceof Error ? err.message : String(err)}) — stopping S3 streaming`,
+            );
+          }
+        }
+        return terminal;
+      }
 
       const lines = await this.logLineRepo
         .createQueryBuilder("l")
@@ -604,18 +677,31 @@ export class TaskService {
       );
     });
 
-    await this.taskQueue.add(
-      "execute",
-      { executionId: exec.id },
-      {
-        // Bull requires attempts >= 1; guard against maxRetry=0
-        attempts: Math.max(1, task.maxRetry ?? 1),
-        backoff:
-          task.retryDelay > 0
-            ? { type: "exponential", delay: task.retryDelay * 1000 }
-            : undefined,
-      },
-    );
+    try {
+      await this.taskQueue.add(
+        "execute",
+        { executionId: exec.id },
+        {
+          // Bull requires attempts >= 1; guard against maxRetry=0
+          attempts: Math.max(1, task.maxRetry ?? 1),
+          backoff:
+            task.retryDelay > 0
+              ? { type: "exponential", delay: task.retryDelay * 1000 }
+              : undefined,
+        },
+      );
+    } catch (err: unknown) {
+      // P1: compensate the committed PENDING row so it cannot hang forever
+      const message = err instanceof Error ? err.message : String(err);
+      await this.execRepo.update(exec.id, {
+        status: ExecutionStatus.FAILED,
+        endTime: new Date(),
+        errorMessage: `Failed to enqueue execution: ${message}`,
+        failureReason: ExecutionFailureReason.UNKNOWN,
+      });
+      this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
+      throw new Error(`Failed to enqueue execution: ${message}`);
+    }
     // N11: re-schedule so active cron/fixed-rate tasks pick up the new commit immediately
     if (task.status === TaskStatus.ACTIVE) {
       await this.schedulerService.scheduleOne(task);
@@ -637,13 +723,35 @@ export class TaskService {
       .execute();
   }
 
-  /** Delete stale lines then bulk-insert in chunks (idempotent on retry). */
+  /**
+   * Persist detailed execution logs (idempotent on retry).
+   * DB driver: delete stale lines then bulk-insert in chunks.
+   * S3 driver (LOG_STORAGE_DRIVER=s3, optimization-notes 2.6): one gzip
+   * object per execution; the DB keeps only the object reference, and any
+   * upload failure falls back to DB rows so the log viewer keeps working.
+   */
   private async storeLogLines(
     executionId: string,
     logs: string | string[],
   ): Promise<void> {
-    await this.logLineRepo.delete({ executionId });
     const lines = typeof logs === "string" ? logs.split("\n") : logs;
+    const s3 = this.resolveS3Storage();
+    if (s3) {
+      try {
+        const key = await s3.put(executionId, lines.join("\n"));
+        await this.logLineRepo.delete({ executionId });
+        await this.execRepo.update(executionId, {
+          logStorage: "s3",
+          logObjectKey: key,
+        });
+        return;
+      } catch (err: unknown) {
+        this.logger.warn(
+          `S3 log upload failed for execution ${executionId} (${err instanceof Error ? err.message : String(err)}) — falling back to DB log lines`,
+        );
+      }
+    }
+    await this.logLineRepo.delete({ executionId });
     const entities = lines.map((content, i) =>
       this.logLineRepo.create({ executionId, lineNumber: i, content }),
     );
@@ -651,6 +759,15 @@ export class TaskService {
     for (let i = 0; i < entities.length; i += CHUNK) {
       await this.logLineRepo.save(entities.slice(i, i + CHUNK));
     }
+  }
+
+  /** Lazily resolve the optional S3 log backend from config. */
+  private resolveS3Storage(): S3LogStorage | null {
+    if (!this.s3StorageResolved) {
+      this.s3LogStorage = S3LogStorage.fromConfig(this.configService);
+      this.s3StorageResolved = true;
+    }
+    return this.s3LogStorage;
   }
 
   /**
@@ -686,9 +803,7 @@ export class TaskService {
           params: { fromLine, limit: PAGE_LIMIT },
         });
         const chunk: string[] = Array.isArray(resp.data?.lines)
-          ? resp.data.lines.filter(
-              (l: unknown) => typeof l === "string",
-            )
+          ? resp.data.lines.filter((l: unknown) => typeof l === "string")
           : [];
         if (chunk.length === 0) break;
         // Batch pushes stay below the engine's spread-argument limit; a Node
@@ -746,59 +861,76 @@ export class TaskService {
           continue;
         }
 
+        // P1: once an execution has been dispatched to a specific executor,
+        // callbacks must come from that address — a missing or different
+        // address is rejected (both executor runtimes always send it).
         if (
           execution.executorAddress &&
-          cb.executorAddress &&
-          execution.executorAddress !== cb.executorAddress
+          cb.executorAddress !== execution.executorAddress
         ) {
           results.push({
             executionId: cb.executionId,
             success: false,
-            error: "Executor address mismatch",
+            error: cb.executorAddress
+              ? "Executor address mismatch"
+              : "executorAddress is required for this execution",
           });
           continue;
         }
 
-        // Idempotency: skip if already in a terminal state
-        const terminalStatuses = [
-          ExecutionStatus.SUCCESS,
-          ExecutionStatus.FAILED,
-          ExecutionStatus.TIMEOUT,
-          ExecutionStatus.KILLED,
-          ExecutionStatus.CANCELLED,
-        ];
-        if (terminalStatuses.includes(execution.status)) {
-          results.push({ executionId: cb.executionId, success: true });
-          continue;
-        }
-
+        // P1: atomic terminal transition — the update only lands while the
+        // execution is still pending/running, making duplicate callbacks and
+        // races with the worker's finally-save harmless. Slot release and log
+        // persistence below run exactly once, only for the winner.
+        const finishedAt = new Date();
+        const patch: Partial<TaskExecution> = {
+          endTime: finishedAt,
+          duration:
+            cb.durationMs ??
+            (execution.startTime
+              ? finishedAt.getTime() - new Date(execution.startTime).getTime()
+              : 0),
+        };
         if (cb.status === "success") {
-          execution.status = ExecutionStatus.SUCCESS;
-          execution.failureReason = null;
+          patch.status = ExecutionStatus.SUCCESS;
+          patch.failureReason = null;
         } else {
           const failureReason =
             cb.failureReason ??
             this.inferFailureReason(cb.errorMessage, cb.logs, cb.exitCode);
-          execution.status =
+          patch.status =
             failureReason === ExecutionFailureReason.TIMEOUT
               ? ExecutionStatus.TIMEOUT
               : ExecutionStatus.FAILED;
-          execution.failureReason = failureReason;
+          patch.failureReason = failureReason;
           if (cb.errorMessage !== undefined) {
-            execution.errorMessage = cb.errorMessage;
+            patch.errorMessage = cb.errorMessage;
           }
         }
-        execution.endTime = new Date();
-        execution.duration = cb.durationMs;
         if (cb.logs) {
-          execution.logs = cb.logs;
+          patch.logs = cb.logs;
         }
 
-        await this.execRepo.save(execution);
+        // R-P0-007: Exclude KILLED status to prevent callback from overwriting user-initiated kill
+        const updated = await this.execRepo
+          .createQueryBuilder()
+          .update(TaskExecution)
+          .set(patch)
+          .where("id = :id", { id: cb.executionId })
+          .andWhere("status IN (:...open)", {
+            open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+          })
+          .execute();
 
-        // Decrement executor runningTaskCount on task completion (success or failure).
-        // The counter was incremented at dispatch time; it must be decremented here
-        // so executors are not permanently counted as busy after each task.
+        if (!updated.affected) {
+          // Already terminal (duplicate callback): report success without
+          // releasing the slot again — the first writer already did.
+          results.push({ executionId: cb.executionId, success: true });
+          continue;
+        }
+
+        // Decrement executor runningTaskCount on task completion (success or
+        // failure); exactly once thanks to the conditional update above.
         await this.releaseExecutorSlot(execution.executorAddress);
 
         // LOG-01: persist structured log lines for pagination/SSE. When the
@@ -963,22 +1095,36 @@ export class TaskService {
     if (!execution) {
       throw new NotFoundException(`Execution ${execId} not found`);
     }
-    if (
-      execution.status !== ExecutionStatus.RUNNING &&
-      execution.status !== ExecutionStatus.PENDING
-    ) {
+
+    // R-P0-007: Use conditional update instead of save() to prevent race conditions
+    // Only allow killing PENDING or RUNNING executions
+    const now = new Date();
+    const duration = execution.startTime
+      ? Date.now() - new Date(execution.startTime).getTime()
+      : null;
+
+    const result = await this.execRepo
+      .createQueryBuilder()
+      .update(TaskExecution)
+      .set({
+        status: ExecutionStatus.KILLED,
+        endTime: now,
+        duration: duration,
+        errorMessage: "Manually terminated by administrator",
+        failureReason: ExecutionFailureReason.KILLED,
+      })
+      .where("id = :id", { id: execId })
+      .andWhere("status IN (:...open)", {
+        open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+      })
+      .execute();
+
+    if (!result.affected || result.affected === 0) {
       throw new BadRequestException(
-        `Execution is in '${execution.status}' status and cannot be terminated`,
+        `Execution is in '${execution.status}' status (terminal state) and cannot be terminated`,
       );
     }
-    execution.status = ExecutionStatus.KILLED;
-    execution.endTime = new Date();
-    if (execution.startTime) {
-      execution.duration = Date.now() - new Date(execution.startTime).getTime();
-    }
-    execution.errorMessage = "Manually terminated by administrator";
-    execution.failureReason = ExecutionFailureReason.KILLED;
-    await this.execRepo.save(execution);
+
     await this.releaseExecutorSlot(execution.executorAddress);
     this.logger.warn(`Execution ${execId} has been manually terminated`);
     return { success: true, message: "Execution marked as terminated" };

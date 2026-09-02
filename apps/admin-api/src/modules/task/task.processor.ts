@@ -3,7 +3,7 @@ import { Logger, Inject, forwardRef } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, In, DataSource } from "typeorm";
-import { Job, Queue } from "bullmq";
+import { Job, Queue, UnrecoverableError } from "bullmq";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -61,13 +61,37 @@ export class TaskProcessor extends WorkerHost {
       exec.status = ExecutionStatus.FAILED;
       exec.errorMessage = `Task ${exec.taskId} not found`;
       exec.failureReason = ExecutionFailureReason.UNKNOWN;
+      exec.endTime = new Date();
+      exec.duration = 0;
       await this.execRepo.save(exec);
       return;
     }
 
+    // P0: claim the execution atomically. A KILLED/CANCELLED execution (e.g.
+    // killed while still queued) must never be revived by a worker; FAILED is
+    // still claimable because BullMQ retries run through here again.
+    const startTime = new Date();
+    const claimed = await this.execRepo
+      .createQueryBuilder()
+      .update(TaskExecution)
+      .set({ status: ExecutionStatus.RUNNING, startTime })
+      .where("id = :id", { id: executionId })
+      .andWhere("status IN (:...claimable)", {
+        claimable: [
+          ExecutionStatus.PENDING,
+          ExecutionStatus.RUNNING,
+          ExecutionStatus.FAILED,
+        ],
+      })
+      .execute();
+    if (!claimed.affected) {
+      this.logger.warn(
+        `Execution ${executionId} reached a terminal state before dispatch, skipping`,
+      );
+      return;
+    }
     exec.status = ExecutionStatus.RUNNING;
-    exec.startTime = new Date();
-    await this.execRepo.save(exec);
+    exec.startTime = startTime;
 
     try {
       // Broadcast mode: dispatch to all online executors
@@ -76,6 +100,14 @@ export class TaskProcessor extends WorkerHost {
       const rawResult = isBroadcast
         ? await this.executorService.dispatchBroadcast(task, exec)
         : await this.executorService.dispatch(task, exec);
+      // Persist the dispatch target immediately so the callback path can
+      // verify the reporting executor and release its slot, even if this
+      // worker's final save loses the race with a fast callback.
+      if (!isBroadcast && exec.executorAddress) {
+        await this.execRepo.update(exec.id, {
+          executorAddress: exec.executorAddress,
+        });
+      }
       // Dispatch success only means the executor accepted the task. The actual
       // result is reported asynchronously via /executions/callback.
       exec.status = ExecutionStatus.RUNNING;
@@ -90,7 +122,6 @@ export class TaskProcessor extends WorkerHost {
       const errMsg = err instanceof Error ? err.message : String(err);
       const errStack =
         err instanceof Error ? err.stack || err.message : String(err);
-      exec.status = ExecutionStatus.FAILED;
       exec.errorMessage = errMsg;
       const failureText = `${errMsg}\n${errStack}`;
       exec.failureReason = /timeout|timed out|etimedout|execution timed/i.test(
@@ -110,42 +141,67 @@ export class TaskProcessor extends WorkerHost {
                 )
               ? ExecutionFailureReason.SCRIPT_ERROR
               : ExecutionFailureReason.UNKNOWN;
+      // P2: align with the callback path — a TIMEOUT reason must produce
+      // TIMEOUT status, not FAILED.
+      exec.status =
+        exec.failureReason === ExecutionFailureReason.TIMEOUT
+          ? ExecutionStatus.TIMEOUT
+          : ExecutionStatus.FAILED;
       exec.logs = errStack;
-      try {
-        exec.aiAnalysis = await this.aiService.analyzeFailure(task, exec.logs);
-      } catch (aiErr: unknown) {
-        const aiErrMsg = aiErr instanceof Error ? aiErr.message : String(aiErr);
-        this.logger.warn(`AI analysis failed for task ${task.id}: ${aiErrMsg}`);
-      }
-      this.logger.error(`Task ${task.id} failed: ${errMsg}`);
-      try {
-        await this.notificationService.notifyFailureWithConfig(
-          task.name,
-          exec.id,
-          errMsg,
-          exec.aiAnalysis,
-          task.alarmEmail,
-          task.alarmChannels,
-        );
-      } catch (notifyErr: unknown) {
-        // B-08: record notification failure to audit log so it is not silently discarded
-        const notifyErrMsg =
-          notifyErr instanceof Error ? notifyErr.message : String(notifyErr);
-        this.logger.error(
-          `Notification failed for execution ${exec.id}: ${notifyErrMsg}`,
-        );
+      // P2: AI analysis and failure notifications fire only on the final
+      // attempt — otherwise every retry spams alarms.
+      const isLastAttempt =
+        (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
+      if (isLastAttempt) {
         try {
-          await this.auditService.log({
-            action: "NOTIFICATION_FAILED",
-            resource: "task_execution",
-            resourceId: exec.id,
-            detail: { task: task.name, error: notifyErrMsg },
-          });
-        } catch {
-          /* audit is best-effort */
+          exec.aiAnalysis = await this.aiService.analyzeFailure(
+            task,
+            exec.logs,
+          );
+        } catch (aiErr: unknown) {
+          const aiErrMsg =
+            aiErr instanceof Error ? aiErr.message : String(aiErr);
+          this.logger.warn(
+            `AI analysis failed for task ${task.id}: ${aiErrMsg}`,
+          );
         }
       }
-      // Q1: rethrow so BullMQ sees the job as failed and applies maxRetry attempts
+      this.logger.error(`Task ${task.id} failed: ${errMsg}`);
+      if (isLastAttempt) {
+        try {
+          await this.notificationService.notifyFailureWithConfig(
+            task.name,
+            exec.id,
+            errMsg,
+            exec.aiAnalysis,
+            task.alarmEmail,
+            task.alarmChannels,
+          );
+        } catch (notifyErr: unknown) {
+          // B-08: record notification failure to audit log so it is not silently discarded
+          const notifyErrMsg =
+            notifyErr instanceof Error ? notifyErr.message : String(notifyErr);
+          this.logger.error(
+            `Notification failed for execution ${exec.id}: ${notifyErrMsg}`,
+          );
+          try {
+            await this.auditService.log({
+              action: "NOTIFICATION_FAILED",
+              resource: "task_execution",
+              resourceId: exec.id,
+              detail: { task: task.name, error: notifyErrMsg },
+            });
+          } catch {
+            /* audit is best-effort */
+          }
+        }
+      }
+      // Q1: rethrow so BullMQ retries apply — except dispatch timeouts: the
+      // executor may still be running the task, so a retry would dispatch the
+      // same executionId to a second executor (double dispatch).
+      if (exec.failureReason === ExecutionFailureReason.TIMEOUT) {
+        throw new UnrecoverableError(errMsg);
+      }
       throw err;
     } finally {
       const isTerminal = [
@@ -170,7 +226,37 @@ export class TaskProcessor extends WorkerHost {
       await queryRunner.startTransaction();
 
       try {
-        await queryRunner.manager.save(exec);
+        // P0: persist only worker-owned fields via a conditional update — a
+        // concurrent callback or kill may have already written a terminal
+        // state, which the worker must never overwrite.
+        const ownedPatch: Partial<TaskExecution> = {
+          status: exec.status,
+          ...(exec.executorAddress !== undefined
+            ? { executorAddress: exec.executorAddress }
+            : {}),
+          ...(exec.result !== undefined ? { result: exec.result } : {}),
+          ...(exec.logs !== undefined ? { logs: exec.logs } : {}),
+          ...(exec.errorMessage !== undefined
+            ? { errorMessage: exec.errorMessage }
+            : {}),
+          ...(exec.failureReason !== undefined
+            ? { failureReason: exec.failureReason }
+            : {}),
+          ...(exec.aiAnalysis !== undefined
+            ? { aiAnalysis: exec.aiAnalysis }
+            : {}),
+          ...(exec.endTime ? { endTime: exec.endTime } : {}),
+          ...(exec.duration !== undefined ? { duration: exec.duration } : {}),
+        };
+        await queryRunner.manager
+          .createQueryBuilder()
+          .update(TaskExecution)
+          .set(ownedPatch)
+          .where("id = :id", { id: exec.id })
+          .andWhere("status IN (:...writable)", {
+            writable: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+          })
+          .execute();
         await queryRunner.commitTransaction();
         this.logger.debug(
           `Successfully saved execution ${exec.id} final state in transaction`,
