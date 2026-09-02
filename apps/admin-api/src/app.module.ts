@@ -83,6 +83,13 @@ import { RegistryModule } from "./modules/registry/registry.module";
         THROTTLE_LIMIT: Joi.number().integer().min(1).default(60),
         THROTTLE_TTL: Joi.number().integer().min(1000).default(60000),
 
+        // SSE log-stream concurrency caps (per-process, defaults in configuration.ts)
+        SSE_MAX_STREAMS_PER_EXECUTION: Joi.number()
+          .integer()
+          .min(1)
+          .default(4),
+        SSE_MAX_STREAMS_GLOBAL: Joi.number().integer().min(1).default(64),
+
         // AI (optional)
         AI_PROVIDER: Joi.string()
           .valid("disabled", "openai", "ollama")
