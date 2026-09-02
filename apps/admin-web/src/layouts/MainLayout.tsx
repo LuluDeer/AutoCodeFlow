@@ -19,11 +19,13 @@ import {
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
+import { authApi } from '../api/auth';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
 
-const menuItems = [
+// 菜单全量定义；渲染时按角色过滤（R5 RBAC）
+const allMenuItems = [
   { key: '/dashboard', icon: <DashboardOutlined />, label: '控制台' },
   { key: '/applications', icon: <AppstoreOutlined />, label: '应用管理' },
   { key: '/tasks', icon: <ThunderboltOutlined />, label: '任务调度' },
@@ -44,19 +46,45 @@ const menuItems = [
   },
 ];
 
+// ADMIN-only 菜单入口：普通用户不渲染（后端对应接口均 @Roles(ADMIN)）
+const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users']);
+
 export default function MainLayout() {
   const nav = useNavigate();
   const location = useLocation();
-  const { user, logout } = useAuthStore();
+  const { user, logout, setUser } = useAuthStore();
+  const isAdmin = user?.role === 'admin';
   const [collapsed, setCollapsed] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const { token } = theme.useToken();
+
+  // R5: 登录响应只含 token，role 需从 GET /auth/profile 补齐。
+  // 覆盖两种场景：刚登录（store 里 user 为空）+ 旧 localStorage 会话（user 无 role）。
+  useEffect(() => {
+    if (!user?.role) {
+      authApi
+        .me()
+        .then((me) => setUser(me))
+        .catch(() => undefined);
+    }
+  }, [user?.role, setUser, user]);
 
   // 实时时钟
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // 按角色过滤菜单：ADMIN-only 项对普通用户隐藏
+  const menuItems = isAdmin
+    ? allMenuItems
+    : allMenuItems
+        .map((item) =>
+          item.children
+            ? { ...item, children: item.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key)) }
+            : item,
+        )
+        .filter((item) => !ADMIN_ONLY_MENU_KEYS.has(item.key));
 
   const selectedKey = '/' + location.pathname.split('/')[1];
 

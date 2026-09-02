@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import type { ReactNode } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout';
+import RequireAdmin from './components/RequireAdmin';
 import { useAuthStore } from './store/auth';
 
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
@@ -59,16 +60,17 @@ export const router = createBrowserRouter(
         { path: 'tasks/:taskId/executions/:execId', element: withSuspense(<ExecutionDetailPage />) },
         { path: 'executions', element: withSuspense(<ExecutionsPage />) },
         { path: 'executors', element: withSuspense(<ExecutorListPage />) },
-        { path: 'executors/install', element: withSuspense(<ExecutorInstallWizardPage />) },
+        // R5 RBAC: 安装向导依赖 ADMIN-only 的 install-cmd / executor-shared-token
+        { path: 'executors/install', element: <RequireAdmin>{withSuspense(<ExecutorInstallWizardPage />)}</RequireAdmin> },
         { path: 'executors/:id', element: withSuspense(<ExecutorDetailPage />) },
-        { path: 'users', element: withSuspense(<UserManagementPage />) },
+        { path: 'users', element: <RequireAdmin>{withSuspense(<UserManagementPage />)}</RequireAdmin> },
         { path: 'registry', element: withSuspense(<RegistryPage />) },
         { path: 'settings', element: withSuspense(<SettingsPage />) },
         { path: 'notifications', element: withSuspense(<NotificationSettingsPage />) },
-        { path: 'audit', element: withSuspense(<AuditLogPage />) },
+        { path: 'audit', element: <RequireAdmin>{withSuspense(<AuditLogPage />)}</RequireAdmin> },
         { path: 'applications', element: withSuspense(<ApplicationListPage />) },
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },
-        { path: 'executor-packages', element: withSuspense(<ExecutorPackagesPage />) },
+        { path: 'executor-packages', element: <RequireAdmin>{withSuspense(<ExecutorPackagesPage />)}</RequireAdmin> },
       ],
     },
   ],

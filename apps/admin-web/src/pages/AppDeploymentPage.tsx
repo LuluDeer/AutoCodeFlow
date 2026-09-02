@@ -11,6 +11,7 @@ import {
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
 import { executorsApi, Executor } from '../api/executors';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+import { useAuthStore } from '../store/auth';
 
 const { Text } = Typography;
 
@@ -58,6 +59,8 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [upgradingAll, setUpgradingAll] = useState(false);
   const [deployForm] = Form.useForm();
   const [runMode, setRunMode] = useState<'once' | 'daemon' | 'scheduled'>('once');
+  // R5 RBAC：安装向导为 ADMIN-only，普通用户隐藏入口
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -295,7 +298,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
           type="warning"
           title="无可用执行器"
           description="需要至少一个在线执行器才能部署。请先安装并启动执行器。"
-          action={<Button size="small" href="/executors/install">安装执行器</Button>}
+          action={isAdmin ? <Button size="small" href="/executors/install">安装执行器</Button> : undefined}
           style={{ marginBottom: 16 }}
         />
       )}

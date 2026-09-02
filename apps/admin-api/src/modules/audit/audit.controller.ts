@@ -1,11 +1,9 @@
 import { Controller, Get, Query, Res, UseGuards } from "@nestjs/common";
-import {
-  ApiTags,
-  ApiBearerAuth,
-  ApiOperation,
-} from "@nestjs/swagger";
+import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
 import { Response } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { UserRole } from "../users/entities/user.entity";
 import { AuditService } from "./audit.service";
 import { AuditQueryDto } from "./dto/audit-query.dto";
 
@@ -20,8 +18,13 @@ export class AuditController {
   // on AuditQueryDto; the previous split of @Query() PaginationDto + separate
   // @Query("...") params made every filtered request fail the
   // forbidNonWhitelisted check with 400.
+  //
+  // R5: audit logs contain sensitive operational data (usernames, IPs,
+  // resource identifiers) — both list and export are ADMIN-only. The global
+  // RolesGuard reads this metadata; no extra @UseGuards entry is needed.
   @Get()
-  @ApiOperation({ summary: "Query audit logs with pagination" })
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: "Query audit logs with pagination (admin only)" })
   findAll(@Query() query: AuditQueryDto) {
     return this.svc.findAll({
       page: query.page,
@@ -36,8 +39,9 @@ export class AuditController {
   }
 
   @Get("export")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Export audit logs as CSV (max 10 000 rows)",
+    summary: "Export audit logs as CSV (max 10 000 rows, admin only)",
     description:
       "Returns a CSV file attachment. Supports the same filters as the list endpoint.",
   })

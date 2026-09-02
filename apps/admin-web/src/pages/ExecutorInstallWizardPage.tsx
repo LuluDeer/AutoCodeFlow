@@ -181,8 +181,8 @@ export default function ExecutorInstallWizardPage() {
     setGeneratingCmd(true);
     try {
       // 采纳后端已实现的文档化流程：GET /executors/install-cmd（npx 一键启动命令）。
-      // 原 /executor-packages/:id/install-script 路由后端不存在（404），
-      // install-token 生成的 token 目前也没有任何后端消费方。
+      // 原 /executor-packages/:id/install-script 路由后端不存在（404）；
+      // R5 已删除无消费方的 POST /executor-packages/install-token 端点。
       const result = await executorsApi.getInstallCmd();
       setInstallCmd(result);
       setCurrentStep(3);
