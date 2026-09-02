@@ -25,10 +25,21 @@
 
 | Agent | 状态 |
 |-------|------|
-| I 并发收尾+可观测性 | ⏳ |
-| J flake 加固 | ⏳ |
-| K RBAC 收尾+清理 | ⏳ |
-| L CLI/MCP 补全 | ⏳ |
-| V 真机验证 | ⏳ |
-| 负责人集成回归 + commit | ⬜ |
-| 文档同步 + memory | ⬜ |
+| I 并发收尾+可观测性 | ✅ `0a7ebcb`：依赖扇出 10s DB claim + take 兜底；storeLogLines 事务；SchedulerMetricsService + GET /metrics/scheduler（零新依赖）；+25 测试 |
+| J flake 加固 | ✅ `1864597`：元凶坐实——file-logger spec 用 UTC 日期而生产按本地时区，超前时区机器每天 8 小时确定性失败；4 spec 确定性化，5 连跑 119/119 + 5 种 TZ 交叉 |
+| K RBAC 收尾+清理 | ✅ `51469d6`：audit 两端点 ADMIN；删孤儿 install-token；admin-web 角色门控（role 唯一来源 /auth/profile，MainLayout 补齐 + RequireAdmin + 菜单隐藏 + settings 写禁用） |
+| L CLI/MCP 补全 | ✅ `9e8f2ae`：10 组命令/tool（applications CRUD、deploy upgrade/stop、task versions/rollback/compare、executor get、audit list）+ 5 个既有契约 bug 顺带修 + vitest 基建（CLI 41 + MCP 40） |
+| V 真机验证 | ✅ `b2be111`：Leader Election 双实例 80 execution 无重复无丢失、kill Leader 35s 接管；LOG-11 S3 对象+读取闭环；负载均衡精确 2+2。**新发现 N1-N6**（N2 P0 调度入队 100% 失败、N1 P1 全新 DB 迁移链断裂） |
+| W1 调度缺陷修复 | ✅ `2642293`：N2 normalizeTaskPriority 入队边界归一化（PG enum 运行时字符串根因，无需迁移）+ N3 readyClient 消假 Leader + N4 register 幂等 + N5 动态 cutoff + N6 去重 TTL 按周期；+40 测试 |
+| W2 迁移链修复 | ✅ `d2be430`：2691/2693/1788 幂等化 + CreateAppDeploymentsTable 补偿迁移 + migrations.spec describe 守卫（第 4 断点）；docker postgres 空库 24/24 + 存量续跑数据无损 |
+| V2 真机复验 | ✅ `docs/VERIFY-round5v2-n2.md`：N2 首轮 80/80 FAILED → 96/96 success；N6 隔离实证 300s 12 触发（旧 ~3）；N3 同秒 acquired 零降级告警；N1 compose 全新 volume 24/24 |
+
+最终基线：admin-api **669/669（47 suites）** · executor-node **119/119**（5 连跑稳定）· executor-python **86/86** · admin-web vitest 15 + lint 0 errors · acf-cli 41 / mcp-server 40 · 三端 tsc ✓
+
+## 遗留（写入 AGENT_HANDOFF）
+
+- N6 残留：fixed_rate TTL=周期的亚秒竞态致 15s/30s 节奏抖动（V2 如实记录，建议 TTL=周期×0.9 或双保险窗口收紧）
+- `POST /api/tasks` 传字符串 id 报 500（DTO 缺 uuid 校验，V2 附带发现）
+- 首轮报告勘误：DB 默认 timeout=0（非 300s）；cron 5 字段 `*/30` 为每 30 分钟
+- 桌面执行器跨平台矩阵、通知渠道真机、私有仓库集成（未覆盖验证项不变）
+- prom-client/OTel 正式指标导出（当前为进程内计数 + JSON 端点）

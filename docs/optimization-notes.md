@@ -243,3 +243,31 @@ executor 部署应用包时会按版本与部署 ID 写入不可变 release 目�
 ### 7.5 基线
 
 admin-api **605/605（45 suites）** · executor-node **119/119** · executor-python **86/86** · 三端 tsc ✓ · admin-web lint 0 errors。
+
+## 八、第五轮收尾 + 首次真机验证（2026-09-02）
+
+> 方法：4 代码流（I 并发收尾+可观测性 / J flake 加固 / K RBAC 收尾+前端门控 / L CLI-MCP 补全）+ V 真机验证（docker compose 双实例/三实例拓扑）→ 真机新发现 N1-N6 → W1/W2 修复 → V2 真机复验闭环。报告：`docs/VERIFY-round5-e2e.md`、`docs/VERIFY-round5v2-n2.md`。
+
+### 8.1 代码流（`0a7ebcb` `1864597` `51469d6` `9e8f2ae`）
+
+- ✅ 依赖扇出 10s DB claim（双上游并发只触发一次下游）+ checkDependencies take 兜底；storeLogLines DB 路径事务化
+- ✅ 可观测性：SchedulerMetricsService（tick/claimed/skipped×4/failed/依赖扇出计数）+ BullMQ 队列深度 + `GET /metrics/scheduler`（零新依赖）
+- ✅ flake 元凶：file-logger spec UTC/本地日期错位（超前时区机器每天 8 小时确定性失败）；4 spec 确定性化 + 5 TZ 交叉验证
+- ✅ audit 收紧 ADMIN；孤儿 install-token 端点删除；admin-web 角色门控（role 来源 /auth/profile，RequireAdmin + 菜单隐藏 + settings 写禁用）
+- ✅ CLI/MCP P1 补全 10 组命令/tool + 5 个既有契约 bug 顺带修 + vitest 基建（41+40 测试）
+
+### 8.2 真机验证首战价值：抓到单测永远抓不到的 P0（`2642293` `d2be430`）
+
+- ✅ Leader Election 双实例 80 execution 无重复无丢失、kill Leader 35s 接管（d2613d6 触发锁修复真机回归通过）
+- ✅ LOG-11 S3 对象存在 + 内容一致 + API 读取闭环；负载均衡精确 2+2 无超卖
+- ❌→✅ N2(P0)：PG enum 列运行时返回字符串 label，原样传 BullMQ 致**所有调度入队 100% 失败**——单测全 mock queue 从未暴露。normalizeTaskPriority 入队边界归一化，V2 复验 96/96 success
+- ❌→✅ N1(P1)：全新 DB 迁移链 3 处断裂（app_deployments 无建表/version 撞名/rename 时序）+ typeorm CLI 命中 spec 崩溃——幂等化 + 补偿迁移，空库 24/24 + 存量续跑数据无损双验证
+- ✅ N3 假 Leader 竞态、N4 register 轮换风暴、N5 stale cutoff、N6 去重 TTL 压制短周期任务——全部修复并真机复验（N6 隔离实证 300s 12 触发 vs 旧 ~3）
+
+### 8.3 基线
+
+admin-api **669/669（47 suites）** · executor-node **119/119**（5 连跑稳定）· executor-python **86/86** · admin-web vitest 15 + lint 0 errors · acf-cli 41 / mcp-server 40 · 三端 tsc ✓。
+
+### 8.4 方法论沉淀
+
+**mock 一切不等于能跑**：五轮排查中 admin-api 单测从 432→669 全绿，但 BullMQ 参数校验、PG enum 读回形态、迁移链全新库执行序这三类问题只有真机能暴露。后续任何调度/队列/迁移改动，验收标准应包含 compose 冒烟（下一步建议 #2 的 CI 方案已含）。

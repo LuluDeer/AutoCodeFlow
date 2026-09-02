@@ -10,9 +10,10 @@
 
 - 最新提交：见 `git log -1`
 - 测试基线（全绿）：
-  - admin-api **605/605** (jest, 45 suites) — 第四轮安全/调度修复 +87 测试
-  - executor-node **119/119** (jest) — 第四轮 +40
-  - executor-python **86/86** (pytest) — 第四轮 +42
+  - admin-api **669/669** (jest, 47 suites) — 第五轮真机缺陷修复 +64 测试
+  - executor-node **119/119** (jest, 5 连跑稳定)
+  - executor-python **86/86** (pytest)
+  - admin-web vitest **15/15** / acf-cli vitest **41/41** / mcp-server vitest **40/40**
   - admin-api / executor-node / acf-cli / mcp-server `tsc --noEmit` 全部通过
   - admin-web `npm run build` ✓ / lint 0 errors（5 warnings 基线）
 - 本轮（2026-09-02 第三轮，4 并行 stream + 集成 + 文档验收，7 个 commit）：
@@ -30,6 +31,14 @@
   - `f0f61e5` **executor-node 5P1+8 项**：callback ≤100 分片 + dead-letter 毒文件终态；部署子进程 env 白名单（共享 token 不再透传给被管应用）；NODE_PATH 修 requirements 不可解析；BoundedLogBuffer；TTL 磁盘回收；共享下载器（Bearer+deadline+防穿越）；spawnSync→async；进程组 kill
   - `75c8d2b` **客户端契约 2P0+7P1**：CLI login accessToken（原字段名错致 CLI 全 401）；应用编辑不发 name；安装向导走 install-cmd（后端删坏 curlCmd）；包下载带 auth fetch；AI 分析字段对齐；SSE 参数名；trigger executorId 移除
   - 新增环境变量：`TRUST_PROXY`（默认 false——**nginx 后部署必须设 true**，否则限流键/审计 IP 全变代理 IP）、`EXECUTOR_ALLOW_PRIVATE_NETWORK`（默认 false：executor 出站放行私网段但拒 loopback/元数据；**同机 127.0.0.1 executor 部署必须设 true**）
+- 本轮（2026-09-02 第五轮，收尾 + **首次真机验证**：4 代码流 + V/W1/W2/V2，7 个代码 commit；详见 `docs/PROGRESS-round5-2026-09-02.md`、`docs/VERIFY-round5-e2e.md`、`docs/VERIFY-round5v2-n2.md`）：
+  - `0a7ebcb` 依赖扇出 10s DB claim（双上游并发只触发一次）+ checkDependencies take 兜底；storeLogLines DB 路径事务化；**可观测性**：SchedulerMetricsService（tick/claimed/skipped/failed 进程内计数）+ BullMQ 队列深度 + `GET /metrics/scheduler`（零新依赖）
+  - `1864597` executor-node flake 元凶坐实：file-logger spec 用 UTC 日期而生产按本地时区（超前时区机器每天 8 小时确定性失败）；4 spec 确定性化，5 连跑全绿 + 5 种 TZ 交叉
+  - `51469d6` audit 两端点收紧 ADMIN；删除孤儿 install-token 端点；admin-web 角色门控（role 唯一来源 `GET /auth/profile`——登录响应无 user 字段；RequireAdmin 路由守卫 + 菜单隐藏 + settings 写禁用）
+  - `9e8f2ae` CLI/MCP P1 补全（applications CRUD、deploy upgrade/stop、task versions/rollback/compare、executor get、audit list）+ 5 个既有契约 bug 顺带修 + 两包 vitest 基建
+  - `2642293` **真机发现 N2(P0) 修复**：PG enum 列运行时返回字符串 label（'normal'），原样传 BullMQ 致**所有调度入队 100% 失败**（单测全 mock queue 故从未暴露）——normalizeTaskPriority 入队边界归一化；N3 readyClient 消 ~15s 假 Leader；N4 register 幂等（同 address+startupId 不再轮换 token）；N5 stale cutoff 动态化；N6 去重锁 TTL 按触发周期（修 15s 任务被压成 300s）
+  - `d2be430` **真机发现 N1(P1) 修复**：全新 DB 迁移链 3 处断裂（app_deployments 无建表、version 列撞名、rename 时序）幂等化 + CreateAppDeploymentsTable 补偿迁移 + migrations.spec describe 守卫（修 typeorm CLI 崩）；docker postgres 空库 24/24 + 存量续跑数据无损双验证
+  - V 真机验证（`b2be111`）：Leader Election 双实例 80 execution 无重复、kill 后 35s 接管；LOG-11 S3 对象闭环；负载均衡精确 2+2——**三项全通过**；V2 复验 N2/N6/N3/N1 修复全部生效（96/96 success）
 - ⚠️ 部署注意事项：
   - **/uploads 鉴权是破坏性变更**：executor-node 必须升级到含 `eadedca` 的版本，否则下载应用包 401
   - **第四轮 RBAC 是行为变更**：普通用户访问 config 写端点/executor-packages 全部改判 403；前端未做角色门控（可见但操作 403），admin-web 需与 admin-api 同批发布（SSE `?access_token=`、编辑不发 name、下载带 auth 均依赖新后端）
@@ -82,26 +91,24 @@ cd packages/mcp-server && npx tsc --noEmit
 
 ## 下一步建议（按优先级）
 
-1. **RBAC 后续决策**：audit 端点是否 ADMIN-only（安全报告 F-1 建议收紧，涉及产品权限模型）；admin-web 加角色路由门控（普通用户当前可见 settings/packages/audit 页但操作 403）。
-2. **依赖扇出双触发窗口**：两上游几乎同时成功时 checkDependencies 可双判满足致下游双触发，建议短窗 DB claim（复用 claimTaskTrigger 思路）；checkDependencies find 补 take。
-3. **storeLogLines 事务包裹**：多行写 + append 中途失败的旧行清空风险（与第三轮同级遗留）。
-4. **install-token 孤儿能力处置**：实现 install.sh 静态脚本 + install-script 路由，或删除端点；executor-node 崩溃后跨重启进程 sweep 需与 desktop 生命周期协同。
-5. **端到端真机验证 LOG-11**：起 `docker compose --profile minio up -d minio admin-api`，触发一次任务执行，用 `mc` 验证 `autoflow-logs/execution-logs/<id>.log.gz` 存在，再调 `getExecutionLogs` 确认读到内容（见 LOG-11 subagent 报告的命令清单）。
-6. **多执行器负载均衡实测**：单测覆盖 loadScore 选择与并发锁，但缺多实例真机验证——跑 2 个 executor + 高并发任务，看 runningTaskCount 是否均衡增长、callback 释放槽位是否正确。
-7. **调度器 Leader Election 真机验证**：起 2 个 admin-api 实例 + 同一 Postgres/Redis，配置密集 cron 任务，确认无重复触发、Leader 切换（kill Leader）后 ≤30s 接管。注意第四轮 `d2613d6` 修了触发锁续期死锁——真机验证时重点确认 cron 任务按周期重复触发（此前一个进程生命周期只触发一次）。
-8. **CLI/MCP P1 补全**：applications CRUD、deploy upgrade/stop、task versions/rollback/compare、executors 详情、audit 列表；任务级 executor pinning（TriggerTaskDto 扩展，本轮已从 CLI/MCP 移除参数）。
-9. **可观测性收尾**（REVIEW_MASTER §5.5）：调度 tick histogram / claimed-skipped-failed counter / 队列深度 gauge 接入 MetricsService。
-10. **桌面执行器跨平台**：macOS Apple Silicon / WSL2 矩阵验证。
-11. **executor-node flake 观察**：全量首跑曾 1 例时序失败（后续 4 连跑全绿，疑 file-logger 200ms flush 或 lib/download 本地服务器用例），CI 化前先定位加固。
+> 第四轮 11 项中 10 项已在第五轮完成（含首次真机验证三项全通过）。以下为第五轮后剩余：
+
+1. **N6 残留节奏抖动**：fixed_rate 去重锁 TTL=周期存在亚秒竞态，实测 15s/30s 抖动（V2 记录）——建议 TTL=周期×0.9 或收紧 DB claim 双保险窗口；顺带评估 `POST /api/tasks` 字符串 id 报 500（CreateTaskDto 缺 uuid 校验）。
+2. **CI 流水线**：测试基建已确定性化（J 修复后 5 连跑全绿 + TZ 交叉），可上 CI 了——建议 GitHub Actions：五端 jest/pytest/vitest + tsc + lint + 迁移链空库/存量双轮验证（W2 的 docker postgres 脚本可直接搬）。
+3. **桌面执行器跨平台**：macOS Apple Silicon / WSL2 矩阵验证；executor-node 崩溃后跨重启进程 sweep 需与 desktop 生命周期协同（第四轮 G2 遗留）。
+4. **install.sh 一键安装**：实现静态脚本 + install-script 路由（第五轮已删孤儿 install-token 端点，未来随 install.sh 一并重建）；任务级 executor pinning（TriggerTaskDto 扩展）。
+5. **可观测性升级**：当前为进程内计数 + JSON 端点（`GET /metrics/scheduler`），如需接 Prometheus 抓 prom-client（评估依赖体积）或 OTel。
+6. **通知渠道真机**：企业微信/钉钉/邮件实测（SSRF 收紧后外发 URL 需白名单验证）；私有 npm/PyPI 仓库集成。
 
 ## 未覆盖验证项
 
 - macOS / Windows / ARM64 部署
 - 通知渠道（企业微信/钉钉/邮件）实测
 - 私有 npm/PyPI 仓库集成
-- 多执行器负载均衡（逻辑已单测，多实例实测待办）
 - 大规模并发压测
-- LOG-11 S3 真机 E2E（mock 集成测试已 6/6）
+- ~~多执行器负载均衡~~ ✅ 第五轮真机通过（双 executor 4 并发精确 2+2、无超卖）
+- ~~LOG-11 S3 真机 E2E~~ ✅ 第五轮真机通过（minio 对象 + gunzip 内容一致 + API 读取闭环）
+- ~~Leader Election 双实例~~ ✅ 第五轮真机通过（80 execution 无重复、kill 后 35s 接管；V2 复验修复后 96/96 success）
 
 ## 本轮变更要点（参考）
 
