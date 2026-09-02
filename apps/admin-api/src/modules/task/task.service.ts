@@ -47,6 +47,23 @@ const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
  */
 export const MAX_DEPENDENCY_DEPTH = 64;
 
+/**
+ * R4-P3: checkDependencies 单次扫描的执行行数上限。原实现无 take，
+ * 会把依赖任务的全量历史拉进内存；加上限后内存有界。
+ * 权衡：DESC 排序下"每个依赖的最新一次执行"几乎总落在最近 N 行内；
+ * 极端场景（某个高频依赖把其余依赖的最新行挤出窗口）由下方的按依赖
+ * 定向兜底查询（findLatestExecutionPerDependency）补齐，判定语义不变。
+ */
+export const MAX_DEPENDENCY_EXECUTION_SCAN = 500;
+
+/**
+ * R4-P3: 依赖扇出短窗 DB claim 的窗口（毫秒）。只需覆盖"两个上游回调
+ * 并发完成、双方 checkDependencies 都判满足"的竞态窗口；10s 足够，
+ * 同时把对 tasks.lastTriggerTime 共享语义的影响压到最小（见
+ * claimDependencyTrigger 的权衡注释）。
+ */
+export const DEPENDENCY_TRIGGER_CLAIM_WINDOW_MS = 10_000;
+
 /** TASK-008: SSE 日志流并发上限默认值（可用环境变量覆盖）。 */
 const SSE_MAX_STREAMS_PER_EXECUTION_DEFAULT = 4;
 const SSE_MAX_STREAMS_GLOBAL_DEFAULT = 64;
@@ -844,6 +861,10 @@ export class TaskService {
    * (moved from TaskProcessor, where the exec.status === SUCCESS condition
    * could never be true). Best-effort: failures are logged, never propagated
    * to the callback result — the execution itself is already terminal.
+   *
+   * R4-P3: 下游触发前先做短窗 DB claim——两个上游依赖几乎同时成功时，
+   * 两个回调的 checkDependencies 都可能读到"全部依赖已满足"的快照并各自
+   * 触发下游；条件 UPDATE 的行级锁串行化保证只有一个赢家真正 trigger。
    */
   private async triggerDependentTasks(completedTaskId: string) {
     try {
@@ -865,12 +886,20 @@ export class TaskService {
       for (const task of dependentTasks) {
         // Check if all dependencies are satisfied
         const canTrigger = await this.checkDependencies(task);
-        if (canTrigger) {
+        if (!canTrigger) continue;
+
+        // R4-P3: short-window DB claim — exactly one concurrent fan-out wins.
+        const claimed = await this.claimDependencyTrigger(task.id);
+        if (!claimed) {
           this.logger.log(
-            `All dependencies satisfied for task ${task.id}, triggering`,
+            `Dependency trigger for task ${task.id} claimed by a concurrent fan-out within the dedup window, skip`,
           );
-          await this.trigger(task.id, {});
+          continue;
         }
+        this.logger.log(
+          `All dependencies satisfied for task ${task.id}, triggering`,
+        );
+        await this.trigger(task.id, {});
       }
     } catch (err) {
       this.logger.error(
@@ -880,7 +909,43 @@ export class TaskService {
   }
 
   /**
+   * R4-P3: 依赖扇出的短窗 DB claim（参考 scheduler.service claimTaskTrigger
+   * 的条件 UPDATE 思路）：仅当 tasks.lastTriggerTime 在去重窗口之外（或为
+   * NULL）时才允许本调用推进它并获得触发权；affected=0 表示窗口内已有
+   * 并发赢家（另一个 fan-out、或紧邻的一次调度触发），本次跳过。
+   *
+   * 权衡（选 lastTriggerTime 而非新增列的最小侵入方案）：
+   * - 免去新列 + 迁移；复用 scheduler 已在写的列。
+   * - 副作用 1：调度成功触发也会写 lastTriggerTime（scheduler.enqueue），
+   *   因此"依赖满足"前的 DEPENDENCY_TRIGGER_CLAIM_WINDOW_MS 内若有调度
+   *   触发，本次依赖触发会被吸收（视作合并去重）。窗口只有 10s，且语义
+   *   上等价于"下游刚跑过就不重复跑"，可接受。
+   * - 副作用 2：依赖触发会推进 lastTriggerTime，使 checkMisfires 的缺口
+   *   从最近一次依赖触发起算——方向安全（更不容易误报 misfire）。
+   * - 不加 status 门：与既有行为一致（PAUSED 下游当前也会被依赖触发），
+   *   本方法只负责去重，不改变可触发性。
+   */
+  private async claimDependencyTrigger(taskId: string): Promise<boolean> {
+    const windowStart = new Date(
+      Date.now() - DEPENDENCY_TRIGGER_CLAIM_WINDOW_MS,
+    );
+    const result = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ lastTriggerTime: new Date() })
+      .where(
+        '"id" = :id AND ("lastTriggerTime" IS NULL OR "lastTriggerTime" < :windowStart)',
+        { id: taskId, windowStart },
+      )
+      .execute();
+    return (result?.affected ?? 0) > 0;
+  }
+
+  /**
    * Check if all dependencies of a task have completed successfully.
+   * R4-P3: 主查询补 take 上限（MAX_DEPENDENCY_EXECUTION_SCAN）避免把依赖
+   * 任务的全量历史拉进内存；若某依赖的最新执行被截断挤出窗口，用按依赖
+   * 的定向查询（隐式 LIMIT 1）兜底，保证判定不被截断破坏。
    */
   private async checkDependencies(task: Task): Promise<boolean> {
     if (!task.dependencies || Object.keys(task.dependencies).length === 0) {
@@ -893,6 +958,7 @@ export class TaskService {
     const recentExecutions = await this.execRepo.find({
       where: { taskId: In(dependencyIds as string[]) },
       order: { createdAt: "DESC" },
+      take: MAX_DEPENDENCY_EXECUTION_SCAN,
     });
 
     // Group by taskId and get the most recent execution for each
@@ -905,7 +971,18 @@ export class TaskService {
 
     // Check if all dependencies have successful executions
     for (const depId of dependencyIds) {
-      const latestExec = latestByTask.get(depId as string);
+      let latestExec = latestByTask.get(depId as string);
+      if (!latestExec) {
+        // take 截断兜底：该依赖有历史但未落在本窗口内（或从未运行过），
+        // 定向补查一次；仍为空则视作依赖未满足（保持原语义）。
+        latestExec = await this.execRepo.findOne({
+          where: { taskId: depId as string },
+          order: { createdAt: "DESC" },
+        });
+        if (latestExec) {
+          latestByTask.set(depId as string, latestExec);
+        }
+      }
       if (!latestExec || latestExec.status !== ExecutionStatus.SUCCESS) {
         return false;
       }
@@ -918,9 +995,20 @@ export class TaskService {
    * Persist detailed execution logs (idempotent on retry).
    * DB driver: delete stale lines then bulk-insert in chunks (replace), or
    * plain bulk-insert when `append` is set (multi-page backfill pages 2+).
+   * R4-P2: the delete + chunked inserts run inside ONE transaction, for both
+   * append and replace modes — previously a mid-insert failure (connection
+   * blip, constraint violation) left the execution with its old rows already
+   * deleted and only a partial page persisted. Any failure now rolls the
+   * whole call back, so the pre-call rows survive untouched.
    * S3 driver (LOG_STORAGE_DRIVER=s3, optimization-notes 2.6): one gzip
    * object per execution; the DB keeps only the object reference, and any
    * upload failure falls back to DB rows so the log viewer keeps working.
+   * NOTE (kept as-is by design): the S3 path spans two stores (object
+   * storage + Postgres rows/pointer) and cannot share one transaction —
+   * cross-storage consistency is out of scope here. The failure window is
+   * bounded and benign: S3-put-then-DB-delete means the exec row already
+   * points at the fresh object (viewers read S3, stale DB rows are inert);
+   * the reverse order would risk a dangling pointer, hence delete-after-put.
    * R4-P1: append=true extends the existing store instead of replacing it —
    * backfill calls this once per page and a replace per page would leave
    * only the last page behind for any log longer than one page.
@@ -958,9 +1046,9 @@ export class TaskService {
         );
       }
     }
-    if (!append) {
-      await this.logLineRepo.delete({ executionId });
-    }
+    // R4-P2: single transaction — the replace-delete and every chunk insert
+    // either all land or none do (append mode skips the delete but still
+    // needs the chunk inserts to be atomic against mid-flight failures).
     const entities = lines.map((content, i) =>
       this.logLineRepo.create({
         executionId,
@@ -969,9 +1057,14 @@ export class TaskService {
       }),
     );
     const CHUNK = 500;
-    for (let i = 0; i < entities.length; i += CHUNK) {
-      await this.logLineRepo.save(entities.slice(i, i + CHUNK));
-    }
+    await this.dataSource.transaction(async (manager) => {
+      if (!append) {
+        await manager.delete(ExecutionLogLine, { executionId });
+      }
+      for (let i = 0; i < entities.length; i += CHUNK) {
+        await manager.save(ExecutionLogLine, entities.slice(i, i + CHUNK));
+      }
+    });
   }
 
   /**

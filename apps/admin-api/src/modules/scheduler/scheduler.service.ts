@@ -23,6 +23,11 @@ import {
   ExecutionFailureReason,
 } from "../task/entities/task-execution.entity";
 import { RedisLockService, Lock } from "../../common/services/redis-lock.service";
+import {
+  SchedulerMetricsService,
+  SchedulerMetricsSnapshot,
+  SchedulerMetricsDerived,
+} from "./scheduler-metrics.service";
 
 /** TASK-006: Leader Election 锁 key（RedisLockService 会加 lock: 前缀） */
 export const SCHEDULER_LEADER_LOCK_KEY = "scheduler:leader";
@@ -65,6 +70,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     @InjectQueue("task-queue") private queue: Queue,
     private redisLockService: RedisLockService,
     private dataSource: DataSource,
+    private schedulerMetrics: SchedulerMetricsService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -471,6 +477,17 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       this.logger.debug("reload skipped: not the scheduler leader");
       return;
     }
+    // R4-§5.5: tick 计数 + 耗时（含本 tick 的全部扫描/注册工作）
+    const tickStart = Date.now();
+    try {
+      await this.reloadActiveTasks();
+    } finally {
+      this.schedulerMetrics.recordTick(Date.now() - tickStart);
+    }
+  }
+
+  /** reload 的实际扫描体（抽出以便 tick 计时只包住扫描工作本身） */
+  private async reloadActiveTasks(): Promise<void> {
     const tasks = await this.taskRepo.find({
       where: { status: TaskStatus.ACTIVE },
     });
@@ -527,6 +544,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         this.logger.debug(
           `Task "${task.name}" trigger claimed by another instance (db claim, redis=${message}), skip`,
         );
+        this.schedulerMetrics.recordTriggerSkippedDbClaim();
         return null;
       }
       claimedViaDb = true;
@@ -538,6 +556,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       this.logger.debug(
         `Task "${task.name}" recently triggered by another instance, skip`,
       );
+      this.schedulerMetrics.recordTriggerSkippedLockHeld();
       return null;
     }
 
@@ -549,6 +568,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       });
       if (!taskRecord) {
         this.logger.debug(`Task "${task.name}" is no longer active, skip`);
+        this.schedulerMetrics.recordTriggerSkippedInactive();
         return null;
       }
 
@@ -560,6 +580,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(
             `Task "${task.name}" is RUNNING (blockStrategy=DISCARD), skip trigger`,
           );
+          this.schedulerMetrics.recordTriggerSkippedBlockStrategy();
           return null;
         }
       }
@@ -659,6 +680,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(
           `Failed to enqueue execution ${exec.id}: ${message}`,
         );
+        // R4-§5.5: 已创建 PENDING 行但入队失败（含补偿路径）计为触发失败
+        this.schedulerMetrics.recordTriggerFailed();
         return null;
       }
       // P1: record the trigger time so checkMisfires() has data to work
@@ -667,6 +690,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       await this.taskRepo.update(task.id, {
         lastTriggerTime: new Date(),
       });
+      // R4-§5.5: 触发成功（claim 赢家且执行已入队）
+      this.schedulerMetrics.recordTriggerClaimed();
       return exec;
     } finally {
       // P1: deliberately do NOT release the dedup lock — its TTL is the
@@ -801,6 +826,64 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       runningTaskCount: this.runningTasks.size,
       totalScheduledTasks: this.timers.size + this.cronTasks.size,
       uptime: process.uptime(),
+    };
+  }
+
+  /**
+   * R4-§5.5: BullMQ 队列深度（waiting / active / delayed / failed / completed）。
+   * getJobCounts 由 Redis 侧聚合，无需扫描队列；失败时返回 null 字段值，
+   * 让调用方（metrics 端点）显式区分"Redis 不可用"与"队列为空"。
+   */
+  async getQueueDepth(): Promise<{
+    waiting: number | null;
+    active: number | null;
+    delayed: number | null;
+    failed: number | null;
+    completed: number | null;
+  }> {
+    try {
+      const counts = await this.queue.getJobCounts(
+        "waiting",
+        "active",
+        "delayed",
+        "failed",
+        "completed",
+      );
+      return {
+        waiting: counts.waiting ?? 0,
+        active: counts.active ?? 0,
+        delayed: counts.delayed ?? 0,
+        failed: counts.failed ?? 0,
+        completed: counts.completed ?? 0,
+      };
+    } catch (err: unknown) {
+      this.logger.debug(
+        `Queue depth unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        waiting: null,
+        active: null,
+        delayed: null,
+        failed: null,
+        completed: null,
+      };
+    }
+  }
+
+  /** R4-§5.5: 调度可观测性快照（tick / trigger 计数 + 队列深度） */
+  async getSchedulerMetrics(): Promise<{
+    counters: SchedulerMetricsSnapshot;
+    derived: SchedulerMetricsDerived;
+    queue: Awaited<ReturnType<SchedulerService["getQueueDepth"]>>;
+  }> {
+    const [counters, queue] = await Promise.all([
+      Promise.resolve(this.schedulerMetrics.snapshot),
+      this.getQueueDepth(),
+    ]);
+    return {
+      counters,
+      derived: this.schedulerMetrics.derived,
+      queue,
     };
   }
 }

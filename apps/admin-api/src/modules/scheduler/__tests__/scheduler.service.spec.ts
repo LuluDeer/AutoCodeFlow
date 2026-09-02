@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { getQueueToken } from '@nestjs/bullmq';
 import { SchedulerService } from '../scheduler.service';
+import { SchedulerMetricsService } from '../scheduler-metrics.service';
 import { Task, TaskStatus, TaskTriggerType, BlockStrategy, MisfireStrategy } from '../../task/entities/task.entity';
 import { TaskExecution, ExecutionStatus, ExecutionFailureReason } from '../../task/entities/task-execution.entity';
 import { DataSource } from 'typeorm';
@@ -20,6 +21,13 @@ const mockRepo = () => ({
 
 const mockQueue = () => ({
   add: jest.fn().mockResolvedValue({ id: 'job-1' }),
+  getJobCounts: jest.fn().mockResolvedValue({
+    waiting: 0,
+    active: 0,
+    delayed: 0,
+    failed: 0,
+    completed: 0,
+  }),
 });
 
 const mockRedisLock = () => ({
@@ -76,6 +84,7 @@ describe('SchedulerService', () => {
   let queue: ReturnType<typeof mockQueue>;
   let redisLockService: ReturnType<typeof mockRedisLock>;
   let dataSource: ReturnType<typeof mockDataSource>;
+  let metrics: SchedulerMetricsService;
 
   const makeLeader = async () => {
     redisLockService.acquireLock.mockResolvedValueOnce({
@@ -93,6 +102,7 @@ describe('SchedulerService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SchedulerService,
+        SchedulerMetricsService,
         { provide: getRepositoryToken(Task), useFactory: mockRepo },
         { provide: getRepositoryToken(TaskExecution), useFactory: mockRepo },
         { provide: getQueueToken('task-queue'), useFactory: mockQueue },
@@ -107,6 +117,7 @@ describe('SchedulerService', () => {
     queue = module.get(getQueueToken('task-queue'));
     redisLockService = module.get(RedisLockService);
     dataSource = module.get(DataSource);
+    metrics = module.get(SchedulerMetricsService);
   });
 
   afterEach(() => {
@@ -216,6 +227,7 @@ describe('SchedulerService', () => {
       const moduleB: TestingModule = await Test.createTestingModule({
         providers: [
           SchedulerService,
+          SchedulerMetricsService,
           { provide: getRepositoryToken(Task), useFactory: mockRepo },
           { provide: getRepositoryToken(TaskExecution), useFactory: mockRepo },
           { provide: getQueueToken('task-queue'), useFactory: mockQueue },
@@ -815,6 +827,140 @@ describe('SchedulerService', () => {
       await service.recoverStaleExecutions();
       expect(execRepo.save).not.toHaveBeenCalled();
       expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('scheduler observability (R4-§5.5)', () => {
+    it('recordTick counts ticks and accumulates duration via reload', async () => {
+      await makeLeader();
+      taskRepo.find.mockResolvedValue([]);
+
+      const before = metrics.snapshot;
+      expect(before.ticks).toBe(0);
+
+      await service.reload();
+      await service.reload();
+
+      const snap = metrics.snapshot;
+      expect(snap.ticks).toBe(2);
+      expect(snap.tickDurationMsTotal).toBeGreaterThanOrEqual(0);
+      expect(snap.lastTickDurationMs).toBeGreaterThanOrEqual(0);
+      expect(snap.lastTickAt).not.toBeNull();
+    });
+
+    it('enqueue claims, skips and failures are counted on the right counters', async () => {
+      await makeLeader();
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+
+      // 1) success → triggersClaimed
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      const task = makeTask();
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = { id: 'exec-1', status: ExecutionStatus.PENDING } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+      await service.enqueue(task, 'cron');
+      expect(metrics.snapshot.triggersClaimed).toBe(1);
+
+      // 2) redis lock held → triggersSkippedLockHeld
+      redisLockService.acquireLock.mockResolvedValue(null);
+      await service.enqueue(task, 'cron');
+      expect(metrics.snapshot.triggersSkippedLockHeld).toBe(1);
+
+      // 3) task no longer active → triggersSkippedInactive
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      taskRepo.findOne.mockResolvedValue(null);
+      await service.enqueue(task, 'cron');
+      expect(metrics.snapshot.triggersSkippedInactive).toBe(1);
+
+      // 4) DISCARD with a running execution → triggersSkippedBlockStrategy
+      const discardTask = makeTask({ blockStrategy: BlockStrategy.DISCARD });
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      taskRepo.findOne.mockResolvedValue(discardTask);
+      execRepo.findOne.mockResolvedValue({ id: 'r1', status: ExecutionStatus.RUNNING });
+      await service.enqueue(discardTask, 'cron');
+      expect(metrics.snapshot.triggersSkippedBlockStrategy).toBe(1);
+
+      // 5) DB claim path losing → triggersSkippedDbClaim
+      redisLockService.acquireLock.mockRejectedValue(new Error('redis down'));
+      taskRepo.createQueryBuilder.mockReturnValue(
+        makeUpdateQb({ affected: 0 }),
+      );
+      await service.enqueue(discardTask, 'cron');
+      expect(metrics.snapshot.triggersSkippedDbClaim).toBe(1);
+
+      // 6) queue.add throws → triggersFailed (with PENDING compensation)
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      taskRepo.findOne.mockResolvedValue(task);
+      execRepo.findOne.mockResolvedValue(null);
+      queue.add.mockRejectedValueOnce(new Error('broker down'));
+      execRepo.update.mockResolvedValue({ affected: 1 });
+      await service.enqueue(task, 'cron');
+      expect(metrics.snapshot.triggersFailed).toBe(1);
+
+      // 7) success again → claimed counts up to 2
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      taskRepo.findOne.mockResolvedValue(task);
+      queue.add.mockResolvedValue({ id: 'job-2' });
+      await service.enqueue(task, 'cron');
+      expect(metrics.snapshot.triggersClaimed).toBe(2);
+    });
+
+    it('getQueueDepth returns BullMQ job counts', async () => {
+      queue.getJobCounts.mockResolvedValue({
+        waiting: 3,
+        active: 2,
+        delayed: 1,
+        failed: 4,
+        completed: 100,
+      });
+      const depth = await service.getQueueDepth();
+      expect(depth).toEqual({
+        waiting: 3,
+        active: 2,
+        delayed: 1,
+        failed: 4,
+        completed: 100,
+      });
+      expect(queue.getJobCounts).toHaveBeenCalledWith(
+        'waiting',
+        'active',
+        'delayed',
+        'failed',
+        'completed',
+      );
+    });
+
+    it('getQueueDepth returns nulls instead of throwing when Redis is down', async () => {
+      queue.getJobCounts.mockRejectedValue(new Error('redis down'));
+      const depth = await service.getQueueDepth();
+      expect(depth).toEqual({
+        waiting: null,
+        active: null,
+        delayed: null,
+        failed: null,
+        completed: null,
+      });
+    });
+
+    it('getSchedulerMetrics aggregates counters, derived rates and queue depth', async () => {
+      await makeLeader();
+      taskRepo.find.mockResolvedValue([]);
+      await service.reload();
+
+      const snap = await service.getSchedulerMetrics();
+      expect(snap.counters.ticks).toBe(1);
+      expect(snap.counters.startedAt).toEqual(expect.any(String));
+      expect(snap.derived.avgTickDurationMs).toBeGreaterThanOrEqual(0);
+      expect(snap.derived.tickRatePerSec).toBeGreaterThanOrEqual(0);
+      expect(snap.derived.triggerClaimRatePerSec).toBeGreaterThanOrEqual(0);
+      expect(snap.queue).toEqual({
+        waiting: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+      });
     });
   });
 

@@ -141,7 +141,19 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
         {
           provide: DataSource,
           useValue: {
-            transaction: jest.fn(),
+            // R4-P2: DB-path log persistence runs delete+insert inside one
+            // transaction; delegate the transaction manager to the repo mocks
+            // so per-call assertions keep working.
+            transaction: jest.fn(async (fn: any) =>
+              fn({
+                delete: jest.fn(async (_t: unknown, criteria: unknown) =>
+                  logLineRepo.delete(criteria as any),
+                ),
+                save: jest.fn(async (_t: unknown, rows: unknown) =>
+                  logLineRepo.save(rows as any),
+                ),
+              }),
+            ),
             createQueryBuilder: jest.fn(() => ({
               update: jest.fn().mockReturnThis(),
               set: jest.fn().mockReturnThis(),
