@@ -252,7 +252,8 @@ Content-Type: application/json
 | GET | `/executors/groups` | 是 | 执行器分组列表 |
 | GET | `/executors/tags` | 是 | 执行器标签列表 |
 | GET | `/executors/install-cmd` | 是 | 生成执行器一键安装命令（返回 `{ cmd, token, adminApiUrl }`；第六轮起 `cmd` 为 `curl -fsSL <API_BASE_URL>/api/executors/install.sh | bash -s -- --api-url ... --secret ...` 形式，脚本由后端承载；第七轮起服务端 `ADMIN_API_URL` 未配置时返回 **503**，不再生成裸机不可用的相对路径命令） |
-| GET | `/executors/install.sh` | 否 | 一键安装脚本本体（`text/plain; charset=utf-8`，`@Public`：脚本不含密钥，secret 由用户 `bash -s --` 参数传入；与仓库根 `scripts/install.sh` 互为同步拷贝。第七轮 N24 起脚本不再声称从后端远程下载 `executor-node.tar.gz`（该静态资源从未存在）：仅支持在项目 checkout 内运行复制安装，否则明确报错 `executor-node artifact not bundled in this script...` 并 exit 1；裸机部署需先经 `POST /api/executor-packages` 等通道获取构件） |
+| GET | `/executors/install.sh` | 否 | 一键安装脚本本体（`text/plain; charset=utf-8`，`@Public`：脚本不含密钥，secret 由用户 `bash -s --` 参数传入；与仓库根 `scripts/install.sh` 互为同步拷贝。第八轮 N24 根治：脚本恢复远程下载分支，从下方 artifact 端点拉取 `executor-node.tar.gz` 解压安装，下载失败回退项目 checkout 本地复制；支持 `--install-dir` 覆盖安装目录） |
+| GET | `/executors/artifact/executor-node.tar.gz` | 否* | 执行器安装 artifact（`application/gzip`；`@Public` + 执行器共享 token 鉴权：`Authorization: Bearer <token>` 或 `?token=<token>`，未配置 token 时 fail-closed 401）。产物由仓库根 `scripts/bundle-executor-artifact.sh` 生成（dist + package.json + 生产 node_modules），放置于 `EXECUTOR_ARTIFACT_DIR`（默认 admin-api 进程 `<cwd>/artifacts`）；未生成时返回 404 |
 | GET | `/executors/:id` | 是 | 获取执行器详情 |
 | PATCH | `/executors/:id` | 是 | 更新执行器配置 |
 | POST | `/executors/:id/reload-config` | 是 | 手动下发配置重载（manifest 同步） |
@@ -276,6 +277,8 @@ Content-Type: application/json
 | POST | `/executions/callback` | 否* | 执行器批量上报执行最终状态（成功/失败） |
 
 > *回调接口使用执行器 Token 认证，请携带 `Authorization: Bearer <executor_token>`（该路由豁免全局限流）。请求体为数组（**最多 100 条**，超出返回 400），每条必须携带 `executorAddress`；服务端按地址逐个校验执行器 Token——**多执行器批次不允许使用共享 token 兜底**。
+>
+> **N23：per-execution 回调 token（任务代码安全回调）**。除执行器 Token 外，本端点还接受执行器为单次执行签发的一次性 HMAC token：`Authorization: Bearer v1.<executionId>.<expiresAtUnixSec>.<hmacHex>`，由 executor-node 以 `AUTOFLOW_CALLBACK_TOKEN` 注入任务子进程（签名密钥 = `EXECUTION_CALLBACK_SECRET`，缺省回落执行器共享 token；`key = HMAC-SHA256(secret, "autocodeflow:execution-callback:v1")`，`hmacHex = HMAC-SHA256(key, "v1.<executionId>.<expiresAtUnixSec>")`）。校验规则（全部 fail-closed）：签名与 TTL 有效、**批次内每条 item 的 `executionId` 必须与 token 绑定的一致**、每条仍须携带 `executorAddress`（服务层再与执行记录的执行器地址比对）。token 过期即失效，不能伪造为共享 token，也不授权其他执行。共享 token / per-address token 路径完全保留（向后兼容旧执行器）。
 >
 > 取消/终止执行请使用 `POST /tasks/:id/executions/:execId/kill`（见 Tasks 章节）。
 
