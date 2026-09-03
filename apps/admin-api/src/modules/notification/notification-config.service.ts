@@ -1,6 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NotificationService } from "./notification.service";
+import { ChannelConfigStore } from "./channel-config.store";
+import { ChannelDeliveryStatus } from "./channels/base.channel";
 
 export interface NotificationChannel {
   key: string;
@@ -45,7 +47,9 @@ export class NotificationConfigService {
     },
   ];
 
-  // In-memory config (in production, persist to database)
+  // In-memory channel registry (enabled flag + config). V1: the RAW config
+  // values are mirrored into ChannelConfigStore — the single source the
+  // channels read at send time (config first, env fallback).
   private channelConfigs: Map<string, NotificationChannel> = new Map(
     this.channelDefaults.map((c) => [c.key, { ...c }]),
   );
@@ -53,8 +57,15 @@ export class NotificationConfigService {
   constructor(
     private configService: ConfigService,
     private notificationService: NotificationService,
+    private store: ChannelConfigStore,
   ) {
     this.loadFromEnv();
+  }
+
+  /** V1: publish the raw (unmasked) config of a channel to the send path. */
+  private syncStore(key: string) {
+    const channel = this.channelConfigs.get(key);
+    if (channel) this.store.set(key, channel.config);
   }
 
   private loadFromEnv() {
@@ -117,6 +128,13 @@ export class NotificationConfigService {
           this.configService.get<string>("notification.wecom.webhookUrl") || "",
       };
     }
+
+    // V1: env-loaded configs seed the store too, so the send path has one
+    // consistent source of truth (saved config first, env fallback inside the
+    // channels). Empty values fall through to the env defaults unchanged.
+    for (const key of this.channelConfigs.keys()) {
+      this.syncStore(key);
+    }
   }
 
   getAllChannels(): NotificationChannel[] {
@@ -152,7 +170,14 @@ export class NotificationConfigService {
   ): NotificationChannel {
     const channel = this.channelConfigs.get(key);
     if (!channel) {
-      throw new Error(`Unknown notification channel: ${key}`);
+      // V4 (round-7): unknown channel keys used to escape as a bare Error →
+      // HTTP 500. The key set is a fixed enum (email/slack/dingtalk/wecom —
+      // webhook is per-request only and intentionally absent), so this is a
+      // client input error: 400 with the valid keys listed.
+      const validKeys = Array.from(this.channelConfigs.keys()).join(", ");
+      throw new BadRequestException(
+        `Unknown notification channel: ${key}. Valid channels: ${validKeys}`,
+      );
     }
 
     if (data.enabled !== undefined) {
@@ -169,13 +194,16 @@ export class NotificationConfigService {
         merged[k] = v;
       }
       channel.config = merged;
+      // V1: publish the merged RAW config so send()/sendTest() actually use
+      // what the admin surface saved (read path stays masked).
+      this.syncStore(key);
     }
 
     return this.maskChannel(channel);
   }
 
   async testChannel(
-    config: Record<string, string>,
+    _config: Record<string, string>,
   ): Promise<{ success: boolean; message: string }> {
     try {
       await this.notificationService.sendAll({
@@ -196,11 +224,20 @@ export class NotificationConfigService {
     channels: string[];
     title: string;
     content: string;
-  }): Promise<{ success: boolean; message: string }> {
+  }): Promise<{
+    success: boolean;
+    message: string;
+    results?: Record<string, ChannelDeliveryStatus>;
+  }> {
     const { channels, title, content } = data;
     const payload = { title, content, level: "info" as const };
 
     try {
+      // V2 (round-7): channels no longer throw on SSRF blocks / transport
+      // errors — they return a status. Collect it per channel and reflect it
+      // in success/message so the admin "test" button can't report OK for a
+      // blocked or failed delivery.
+      const results: Record<string, ChannelDeliveryStatus> = {};
       for (const channel of channels) {
         const config = this.channelConfigs.get(channel);
         if (!config?.enabled) {
@@ -208,22 +245,48 @@ export class NotificationConfigService {
           continue;
         }
 
+        let status: ChannelDeliveryStatus | undefined;
         switch (channel) {
           case "email":
-            await this.notificationService["email"].send(payload);
+            status = (await this.notificationService["email"].send(payload)) as
+              | ChannelDeliveryStatus
+              | undefined;
             break;
           case "slack":
-            await this.notificationService["slack"].send(payload);
+            status = (await this.notificationService["slack"].send(payload)) as
+              | ChannelDeliveryStatus
+              | undefined;
             break;
           case "dingtalk":
-            await this.notificationService["dingtalk"].send(payload);
+            status = (await this.notificationService["dingtalk"].send(
+              payload,
+            )) as ChannelDeliveryStatus | undefined;
             break;
           case "wecom":
-            await this.notificationService["wecom"].send(payload);
+            status = (await this.notificationService["wecom"].send(payload)) as
+              | ChannelDeliveryStatus
+              | undefined;
             break;
         }
+        results[channel] = status ?? "sent";
       }
-      return { success: true, message: "Test notification sent" };
+
+      const bad = Object.entries(results).filter(
+        ([, s]) => s === "blocked" || s === "failed",
+      );
+      if (bad.length > 0) {
+        const detail = bad.map(([c, s]) => `${c}=${s}`).join(", ");
+        return {
+          success: false,
+          message: `Test notification not delivered: ${detail}`,
+          results,
+        };
+      }
+      return {
+        success: true,
+        message: "Test notification sent",
+        results,
+      };
     } catch (err: unknown) {
       return {
         success: false,
