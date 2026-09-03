@@ -1,5 +1,13 @@
 import { useState, useEffect } from 'react';
 import {
+  ExecutorMode,
+  deriveExecutorMode,
+  buildExecutorPayload,
+} from './executor-mode';
+
+export { deriveExecutorMode, buildExecutorPayload };
+export type { ExecutorMode };
+import {
   Card, Form, Input, Select, Button, Steps, Space, Typography,
   InputNumber, Radio, Alert, message, Divider, Tag, Spin,
 } from 'antd';
@@ -48,7 +56,7 @@ const EXECUTOR_MODE_OPTIONS = [
   {
     value: 'pinned',
     label: '指定执行器',
-    desc: '固定到指定的执行器节点（appName匹配）',
+    desc: '固定到指定的执行器节点（按节点 ID 绑定）',
     icon: <PushpinOutlined />,
   },
   {
@@ -72,7 +80,7 @@ export default function TaskFormPage() {
   const [executorMode, setExecutorMode] = useState<'auto' | 'group' | 'pinned' | 'broadcast'>('auto');
   const [groups, setGroups] = useState<string[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
-  const [executors, setExecutors] = useState<{ id: string; appName: string; address: string }[]>([]);
+  const [executors, setExecutors] = useState<{ id: string; appName: string; address: string; status: string }[]>([]);
   const [apps, setApps] = useState<{ id: string; name: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [loadingTask, setLoadingTask] = useState(isEdit);
@@ -85,7 +93,7 @@ export default function TaskFormPage() {
     executorsApi.getGroups().then(setGroups).catch(() => message.warning('获取执行器分组失败'));
     executorsApi.getTags().then(setAllTags).catch(() => message.warning('获取标签失败'));
     executorsApi.list().then((data) =>
-      setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string })))
+      setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string, status: e.status as string })))
     ).catch(() => message.warning('获取执行器列表失败'));
     applicationsApi.list().then((data) =>
       setApps(data.map((a) => ({ id: a.id as string, name: a.name as string })))
@@ -99,10 +107,7 @@ export default function TaskFormPage() {
     setLoadingTask(true);
     tasksApi.get(editId)
       .then((task) => {
-        let mode: 'auto' | 'group' | 'pinned' | 'broadcast' = 'auto';
-        if (task.executeMode === 'broadcast') mode = 'broadcast';
-        else if (task.executorAppName) mode = 'pinned';
-        else if (task.executorGroup || (task.executorTags && task.executorTags.length > 0)) mode = 'group';
+        const mode = deriveExecutorMode(task);
         setExecutorMode(mode);
         setTriggerType(task.triggerType || 'manual');
         setSavedRuntime(task.runtime || 'python');
@@ -119,7 +124,7 @@ export default function TaskFormPage() {
           timeout: task.timeoutSeconds ?? task.timeout ?? 300,
           maxRetry: task.maxRetry ?? 3,
           retryDelay: task.retryDelay ?? 0,
-          executorAppName: task.executorAppName,
+          executorId: task.executorId ?? undefined,
           executorGroup: task.executorGroup,
           executorTags: task.executorTags,
           params: task.params ?? {},
@@ -143,7 +148,7 @@ export default function TaskFormPage() {
       const fields = ['triggerType'];
       if (triggerType === 'cron') fields.push('cronExpression');
       if (triggerType === 'fixed_rate') fields.push('fixedRate');
-      if (executorMode === 'pinned') fields.push('executorAppName');
+      if (executorMode === 'pinned') fields.push('executorId');
       await form.validateFields(fields);
       setStep(2);
     } catch {
@@ -155,25 +160,7 @@ export default function TaskFormPage() {
     try {
       const values = await form.validateFields();
       setSaving(true);
-      const payload = { ...values };
-      if (executorMode === 'broadcast') {
-        payload.executeMode = 'broadcast';
-        delete payload.executorAppName;
-        delete payload.executorGroup;
-        delete payload.executorTags;
-      } else if (executorMode === 'group') {
-        payload.executeMode = 'single';
-        delete payload.executorAppName;
-      } else if (executorMode === 'pinned') {
-        payload.executeMode = 'single';
-        delete payload.executorGroup;
-        delete payload.executorTags;
-      } else {
-        payload.executeMode = 'single';
-        delete payload.executorGroup;
-        delete payload.executorTags;
-        delete payload.executorAppName;
-      }
+      const payload = buildExecutorPayload(values, executorMode);
       if (isEdit && editId) {
         await tasksApi.update(editId, payload);
         message.success('任务更新成功');
@@ -181,7 +168,9 @@ export default function TaskFormPage() {
       } else {
         const created = await tasksApi.create(payload);
         message.success('任务创建成功，可在下方编辑 Glue 脚本（可选）');
-        setSavedRuntime(payload.runtime || 'python');
+        setSavedRuntime(
+          typeof payload.runtime === 'string' ? payload.runtime : 'python',
+        );
         setCreatedTaskId(created.id);
         setStep(3);
       }
@@ -385,16 +374,16 @@ export default function TaskFormPage() {
             </Form.Item>
 
             {executorMode === 'pinned' && (
-              <Form.Item name="executorAppName" label="指定执行器" required
+              <Form.Item name="executorId" label="指定执行器" required
                 rules={[{ required: true, message: '请选择执行器' }]}
-                tooltip={{ title: '任务只会分配到该执行器节点', icon: <InfoCircleOutlined /> }}>
+                tooltip={{ title: '任务只会派发到该执行器（按节点 ID 固定）；离线时执行将直接失败，不回退到其他节点', icon: <InfoCircleOutlined /> }}>
                 <Select
                   placeholder="选择执行器节点"
                   showSearch
                   optionFilterProp="label"
                   options={executors.map(e => ({
-                    value: e.appName,
-                    label: `${e.appName}  (${e.address})`,
+                    value: e.id,
+                    label: `${e.appName}  (${e.address})${e.status === 'online' ? '' : ' [离线]'}`,
                   }))}
                 />
               </Form.Item>
