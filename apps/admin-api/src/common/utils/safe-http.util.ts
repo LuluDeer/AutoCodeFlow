@@ -3,6 +3,111 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
 /**
+ * Parse an IPv6 literal into its eight 16-bit groups. Handles `::`
+ * compression and a trailing embedded IPv4 dotted quad (e.g. the last
+ * group of `::ffff:127.0.0.1`). Returns null for anything that is not a
+ * well-formed IPv6 address (zone ids, stray characters, wrong group
+ * counts, ...).
+ */
+function parseIpv6Groups(addr: string): number[] | null {
+  const lower = addr.toLowerCase();
+  if (!/^[0-9a-f:.]+$/.test(lower)) return null;
+  const dc = lower.indexOf("::");
+  if (dc !== -1 && lower.indexOf("::", dc + 1) !== -1) return null;
+  const headPart = dc === -1 ? lower : lower.slice(0, dc);
+  const tailPart = dc === -1 ? null : lower.slice(dc + 2);
+  const headSegs = headPart === "" ? [] : headPart.split(":");
+  const tailSegs = tailPart === null || tailPart === "" ? [] : tailPart.split(":");
+
+  const head: number[] = [];
+  const tail: number[] = [];
+  const pushSeg = (
+    seg: string,
+    out: number[],
+    isFinalSegment: boolean,
+  ): boolean => {
+    if (seg.includes(".")) {
+      // An embedded IPv4 quad is only legal as the very last group pair.
+      if (!isFinalSegment || !/^\d{1,3}(\.\d{1,3}){3}$/.test(seg)) return false;
+      const octets = seg.split(".").map(Number);
+      if (octets.some((n) => n > 255)) return false;
+      out.push((octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]);
+      return true;
+    }
+    if (!/^[0-9a-f]{1,4}$/.test(seg)) return false;
+    out.push(parseInt(seg, 16));
+    return true;
+  };
+  for (let i = 0; i < headSegs.length; i++) {
+    const isFinal = tailSegs.length === 0 && i === headSegs.length - 1;
+    if (!pushSeg(headSegs[i], head, isFinal)) return null;
+  }
+  for (let i = 0; i < tailSegs.length; i++) {
+    if (!pushSeg(tailSegs[i], tail, i === tailSegs.length - 1)) return null;
+  }
+  if (dc === -1) {
+    return head.length === 8 ? head : null;
+  }
+  if (head.length + tail.length > 7) return null;
+  return [
+    ...head,
+    ...new Array(8 - head.length - tail.length).fill(0),
+    ...tail,
+  ];
+}
+
+/**
+ * N25: canonicalize an IP literal for danger-range classification.
+ *
+ * `isBlockedAddress` / `classifyAddressRisk` used to run
+ * `addr.split(".").map(Number)` on every address, which silently produced
+ * NaN for IPv4-mapped IPv6 literals (`::ffff:169.254.169.254`, and the
+ * hex form `::ffff:a9fe:a9fe` that WHATWG URL normalization produces for
+ * `[::ffff:169.254.169.254]`) — every IPv4 rule missed and the address
+ * fell through to the IPv6 branch and was classified "public". A poisoned
+ * executor address could therefore point admin-api at the cloud metadata
+ * endpoint / loopback / CGNAT through the back door.
+ *
+ * This helper rewrites such literals back to the embedded dotted-quad IPv4
+ * so the existing IPv4 rules apply unchanged:
+ *  - `::ffff:0:0/96` (IPv4-mapped, dotted or hex textual form) → embedded IPv4;
+ *  - `::/96` (deprecated IPv4-compatible, e.g. `::127.0.0.1` / `::7f00:1`)
+ *    → embedded IPv4, EXCEPT `::` and `::1` which stay IPv6 so the
+ *    loopback/unspecified handling (and the EXECUTOR_ALLOW_PRIVATE_NETWORK
+ *    gate on `::1`) is preserved.
+ * Pure IPv6 addresses, IPv4 addresses and non-IP strings are returned
+ * untouched. Exported so both classifiers — and tests — share one entry
+ * point.
+ */
+export function normalizeIpForClassification(addr: string): string {
+  if (isIP(addr) !== 6) return addr;
+  const groups = parseIpv6Groups(addr);
+  if (!groups) return addr;
+  const highZeros =
+    groups[0] === 0 &&
+    groups[1] === 0 &&
+    groups[2] === 0 &&
+    groups[3] === 0 &&
+    groups[4] === 0;
+  const isMapped = highZeros && groups[5] === 0xffff; // ::ffff:0:0/96
+  // ::/96 IPv4-compatible: only rewrite when a real IPv4 is embedded —
+  // groups[6] non-zero (hex form like ::7f00:1) or a dotted quad in the
+  // text (::127.0.0.1). `::` and `::1` keep their IPv6 semantics.
+  const isCompat =
+    highZeros &&
+    groups[5] === 0 &&
+    (groups[6] !== 0 || addr.includes("."));
+  if (!isMapped && !isCompat) return addr;
+  const v4 = ((groups[6] << 16) | groups[7]) >>> 0;
+  return [
+    (v4 >>> 24) & 255,
+    (v4 >>> 16) & 255,
+    (v4 >>> 8) & 255,
+    v4 & 255,
+  ].join(".");
+}
+
+/**
  * Reject hosts that resolve to private / loopback / link-local / cloud-metadata
  * addresses. Returns the canonical URL when safe; throws BadRequest otherwise.
  *
@@ -30,7 +135,7 @@ export async function assertSafeHttpUrl(rawUrl: string): Promise<URL> {
   if (isIP(host)) {
     if (isBlockedAddress(host)) {
       throw new BadRequestException(
-        `URL host ${host} is on the deny list (private/loopback/link-local)`,
+        `URL host ${host} is on the deny list (private/loopback/link-local/benchmark/CGNAT)`,
       );
     }
     return url;
@@ -59,6 +164,10 @@ export async function assertSafeHttpUrl(rawUrl: string): Promise<URL> {
 
 function isBlockedAddress(addr: string): boolean {
   if (!isIP(addr)) return false;
+  // N25: fold IPv4-mapped / IPv4-compatible IPv6 literals back to their
+  // embedded IPv4 so the deny list below actually sees 127.0.0.1 for
+  // ::ffff:127.0.0.1 (and the hex form ::ffff:7f00:1) instead of NaN.
+  addr = normalizeIpForClassification(addr);
   const v = addr.split(".").map(Number);
   if (v.length === 4) {
     // IPv4 ranges
@@ -79,7 +188,9 @@ function isBlockedAddress(addr: string): boolean {
     return false;
   }
   // IPv6: block loopback ::1, fc00::/7 (unique local), fe80::/10 (link-local),
-  // ::/128, ff00::/8 (multicast). Allow IPv6 ULA only when ALLOW_IPV6_ULA=true.
+  // ::/128, ff00::/8 (multicast). IPv6 ULA is blocked unconditionally — this
+  // guard protects webhook/AI targets, where no legitimate use case exists
+  // (N32: the previously referenced ALLOW_IPV6_ULA switch never existed).
   const lower = addr.toLowerCase();
   if (lower === "::1") return true;
   if (lower === "::") return true;
@@ -116,6 +227,9 @@ type AddressRisk =
 
 function classifyAddressRisk(addr: string): AddressRisk | null {
   if (!isIP(addr)) return null;
+  // N25: same IPv4-mapped/compatible normalization as isBlockedAddress —
+  // ::ffff:169.254.169.254 must classify as link-local, not "public".
+  addr = normalizeIpForClassification(addr);
   const v = addr.split(".").map(Number);
   if (v.length === 4) {
     if (v[0] === 127) return "loopback"; // 127.0.0.0/8
