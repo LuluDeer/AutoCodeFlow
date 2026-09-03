@@ -1,6 +1,7 @@
 """Tests for autoflow_sdk.context.TaskContext."""
 import os
 import pytest
+from autoflow_sdk.callback import CallbackClient, CallbackDisabledError
 from autoflow_sdk.context import TaskContext
 
 
@@ -120,3 +121,106 @@ class TestToDict:
         ctx = TaskContext(task_id="t", execution_id="e", task_name="T")
         d = ctx.to_dict()
         assert "_logger" not in d
+
+    def test_to_dict_never_leaks_callback_token(self):
+        """The one-shot callback credential must not ride into serialized params."""
+        ctx = TaskContext(
+            task_id="t", execution_id="e", task_name="T",
+            callback_token="v1.secret", admin_api_url="http://admin", executor_address="a:1",
+        )
+        d = ctx.to_dict()
+        assert "callback_token" not in str(d)
+        assert "v1.secret" not in str(d)
+
+
+class TestFromEnvCallbackCredentials:
+    """R9 (round-9): the three callback credential vars are exposed as
+    dedicated fields and EXCLUDED from params."""
+
+    def test_credentials_read_into_fields(self, monkeypatch):
+        monkeypatch.setenv("AUTOFLOW_CALLBACK_TOKEN", "v1.exec.expsig")
+        monkeypatch.setenv("AUTOFLOW_ADMIN_API_URL", "http://admin:3105")
+        monkeypatch.setenv("AUTOFLOW_EXECUTOR_ADDRESS", "executor-py:8001")
+        ctx = TaskContext.from_env()
+        assert ctx.callback_token == "v1.exec.expsig"
+        assert ctx.admin_api_url == "http://admin:3105"
+        assert ctx.executor_address == "executor-py:8001"
+
+    def test_credentials_excluded_from_params(self, monkeypatch):
+        monkeypatch.setenv("AUTOFLOW_CALLBACK_TOKEN", "v1.exec.expsig")
+        monkeypatch.setenv("AUTOFLOW_ADMIN_API_URL", "http://admin:3105")
+        monkeypatch.setenv("AUTOFLOW_EXECUTOR_ADDRESS", "executor-py:8001")
+        monkeypatch.setenv("AUTOFLOW_DATE", "2026-09-03")
+        ctx = TaskContext.from_env()
+        assert ctx.params == {"date": "2026-09-03"}
+        for key in ("callback_token", "admin_api_url", "executor_address"):
+            assert key not in ctx.params
+
+    def test_partial_credentials_still_excluded(self, monkeypatch):
+        monkeypatch.setenv("AUTOFLOW_CALLBACK_TOKEN", "v1.only")
+        monkeypatch.delenv("AUTOFLOW_ADMIN_API_URL", raising=False)
+        monkeypatch.delenv("AUTOFLOW_EXECUTOR_ADDRESS", raising=False)
+        ctx = TaskContext.from_env()
+        assert ctx.callback_token == "v1.only"
+        assert ctx.admin_api_url is None
+        assert ctx.executor_address is None
+        assert "callback_token" not in ctx.params
+
+    def test_absent_credentials_leave_fields_none(self, monkeypatch):
+        for key in ("AUTOFLOW_CALLBACK_TOKEN", "AUTOFLOW_ADMIN_API_URL", "AUTOFLOW_EXECUTOR_ADDRESS"):
+            monkeypatch.delenv(key, raising=False)
+        ctx = TaskContext.from_env()
+        assert ctx.callback_token is None
+        assert ctx.admin_api_url is None
+        assert ctx.executor_address is None
+        assert ctx.callback.enabled is False
+
+
+class TestCallbackProperty:
+    def _ctx(self):
+        return TaskContext(
+            task_id="t", execution_id="exec-1", task_name="T",
+            callback_token="v1.tok", admin_api_url="http://admin:3105",
+            executor_address="exec:8001",
+        )
+
+    def test_callback_is_lazy_singleton(self):
+        ctx = self._ctx()
+        client = ctx.callback
+        assert isinstance(client, CallbackClient)
+        assert client.enabled is True
+        assert ctx.callback is client
+
+    def test_callback_client_bound_to_execution(self):
+        ctx = self._ctx()
+        assert ctx.callback.execution_id == "exec-1"
+        assert ctx.callback.executor_address == "exec:8001"
+
+    def test_report_success_delegates_to_client(self):
+        ctx = TaskContext(task_id="t", execution_id="e", task_name="T")
+        calls = []
+
+        class Fake:
+            def report_success(self, summary=None, duration_ms=None):
+                calls.append(("success", summary, duration_ms))
+                return {"ok": True}
+
+            def report_failure(self, error, summary=None, duration_ms=None, failure_reason="script_error"):
+                calls.append(("failure", str(error), summary, failure_reason))
+                return {"ok": True}
+
+        ctx._callback_client = Fake()
+        assert ctx.report_success(summary="done", duration_ms=5) == {"ok": True}
+        assert ctx.report_failure(RuntimeError("boom"), failure_reason="timeout") == {"ok": True}
+        assert calls == [
+            ("success", "done", 5),
+            ("failure", "boom", None, "timeout"),
+        ]
+
+    def test_report_raises_when_disabled(self):
+        ctx = TaskContext(task_id="t", execution_id="e", task_name="T")
+        with pytest.raises(CallbackDisabledError) as exc:
+            ctx.report_success()
+        assert "AUTOFLOW_CALLBACK_TOKEN" in str(exc.value)
+        with pytest.raises(CallbackDisabledError):
+            ctx.report_failure("boom")

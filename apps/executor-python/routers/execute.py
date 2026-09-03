@@ -17,6 +17,7 @@ import scheduler as sched
 from auth import verify_token
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
+from execution_callback_token import CALLBACK_TOKEN_GRACE_SECONDS, create_execution_callback_token
 from manifest import load_manifest, merge_task_with_manifest
 try:
     from autocodeflow_sdk.models import ExecuteRequest
@@ -488,6 +489,27 @@ async def run_task(req: ExecuteRequest) -> dict:
     if req.params:
         for k, v in req.params.items():
             env[f'AUTOFLOW_{k.upper()}'] = str(v)
+
+    # N33 (round-9, parity with executor-node execute.ts N23/N27): per-execution
+    # callback credentials — injected AFTER the params loop so user params can
+    # never override them. AUTOFLOW_CALLBACK_TOKEN is an HMAC bound to this
+    # executionId with a short TTL (task timeout + grace), letting task code
+    # call POST /api/executions/callback without ever seeing the shared token
+    # (SEC-01 whitelist untouched — this is the explicit extra-env channel).
+    # AUTOFLOW_ADMIN_API_URL / AUTOFLOW_EXECUTOR_ADDRESS are non-secret routing
+    # info, the same values this executor itself uses for its own callbacks —
+    # without them the autoflow-sdk ctx.callback stays disabled on python.
+    callback_token = create_execution_callback_token(
+        req.executionId, timeout + CALLBACK_TOKEN_GRACE_SECONDS
+    )
+    if callback_token:
+        env['AUTOFLOW_CALLBACK_TOKEN'] = callback_token
+    admin_api_url = _get_admin_api_url()
+    if admin_api_url:
+        env['AUTOFLOW_ADMIN_API_URL'] = admin_api_url
+    registered_address = _executor_callback_address()
+    if registered_address:
+        env['AUTOFLOW_EXECUTOR_ADDRESS'] = registered_address
 
     if runtime == 'python':
         if requirements:

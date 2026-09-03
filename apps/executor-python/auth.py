@@ -1,11 +1,17 @@
 """SEC-03: Executor token management with expiration and rotation support."""
 import hmac
+import logging
 import os
 from datetime import datetime, timedelta
+from typing import Any, Optional
+
 from fastapi import Header, HTTPException, status
 import httpx
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
+from startup_identity import executor_startup_id
+
+logger = logging.getLogger(__name__)
 
 def _get_static_token() -> str:
     """Read static token from env each call so test fixtures can override it."""
@@ -21,13 +27,62 @@ _dynamic_token = None
 _token_expires_at = None
 _token_refresh_interval = 30 * 60  # 30 minutes
 
+# R9 (round-9, W3 parity with executor-node admin-envelope.ts): the
+# executor's CURRENT stored tokenHash, as echoed by admin-api on register,
+# POST /token and heartbeat responses. Keeping it in sync with the admin
+# side is the N26 invariant for per-execution callback tokens (the HMAC
+# source secret must equal whatever the admin will verify against). This
+# round only stores + debug-logs it; a future executor-python callback-token
+# signer (N23 parity) will consume it via get_executor_token_hash().
+_executor_token_hash: Optional[str] = None
+
+
+def _unwrap_envelope(payload: Any) -> Any:
+    """R9: strip admin-api's global ``{code, message, data}`` response
+    envelope (see apps/admin-api/src/common/interceptors/response.interceptor.ts).
+
+    Mirrors executor-node's ``unwrapAdminResponseData`` and acf-cli's
+    ``unwrap()``: when the payload carries the envelope markers (a ``data``
+    key plus ``code``/``message``), return the inner ``data``; bare
+    (non-enveloped) payloads — older admins, direct service calls, unit-test
+    fixtures — are returned unchanged so callers can read fields from either
+    shape.
+    """
+    if (
+        isinstance(payload, dict)
+        and 'data' in payload
+        and ('code' in payload or 'message' in payload)
+    ):
+        return payload.get('data')
+    return payload
+
+
+def get_executor_token_hash() -> Optional[str]:
+    """Return the tokenHash most recently adopted from an admin-api response."""
+    return _executor_token_hash
+
+
+def adopt_executor_token_hash(raw: Any) -> None:
+    """Adopt ``tokenHash`` from an admin-api response payload.
+
+    Accepts both the enveloped ``{code,message,data:{tokenHash}}`` and the
+    bare ``{tokenHash}`` shape. No-op when the field is absent, empty, or
+    not a string; logs at debug level when the value actually changes.
+    """
+    global _executor_token_hash
+    payload = _unwrap_envelope(raw)
+    token_hash = payload.get('tokenHash') if isinstance(payload, dict) else None
+    if isinstance(token_hash, str) and token_hash and token_hash != _executor_token_hash:
+        _executor_token_hash = token_hash
+        logger.debug('Adopted executor tokenHash from admin-api response')
+
 
 def _get_admin_api_url() -> str:
     """Get the appropriate Admin API base URL based on configuration."""
     return get_admin_api_base_url()
 
 
-async def _fetch_token() -> str | None:
+async def _fetch_token() -> Optional[str]:
     """Fetch a fresh token from admin-api."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -36,22 +91,41 @@ async def _fetch_token() -> str | None:
             static_token = _get_static_token()
             if static_token:
                 headers['Authorization'] = f'Bearer {static_token}'
-            
+
             response = await client.post(
                 build_admin_api_url('/executors/token'),
                 json={
                     'address': settings.executor_address_public or settings.executor_address,
                     'appName': settings.app_name,
+                    # R9 (round-9, W2 parity with executor-node): the
+                    # process-life identity lets admin-api make this endpoint
+                    # idempotent — a same-startupId re-fetch returns the
+                    # CURRENT token instead of rotating (N4 register
+                    # semantics). Without it the admin falls back to the
+                    # legacy 60s rotation window.
+                    'startupId': executor_startup_id,
                 },
                 headers=headers,
             )
-            if response.status_code == 200:
-                data = response.json()
-                return data.get('token')
+            # R9: the token endpoint is a Nest POST — it answers 201, not 200.
+            # The old `== 200` check silently dropped every success.
+            if 200 <= response.status_code < 300:
+                # R9 (root fix): admin-api's global ResponseInterceptor wraps
+                # the payload in {code,message,data}; reading `token` off the
+                # raw body yielded None forever, so the dynamic token never
+                # worked and every caller fell back to the static token.
+                payload = _unwrap_envelope(response.json())
+                token = payload.get('token') if isinstance(payload, dict) else None
+                if not (isinstance(token, str) and token):
+                    logger.warning('_fetch_token: admin response carried no token')
+                    return None
+                # R9 (W3): adopt the tokenHash that matches this token so the
+                # callback-token HMAC key stays in sync with admin-api.
+                adopt_executor_token_hash(response.json())
+                return token
     except Exception as e:
         # Fall back to static token if dynamic token fetch fails
-        import logging as _logging
-        _logging.getLogger(__name__).warning("Dynamic token fetch failed (will use static): %s", e)
+        logger.warning("Dynamic token fetch failed (will use static): %s", e)
     return None
 
 
