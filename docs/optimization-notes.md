@@ -294,3 +294,29 @@ admin-api **730/730（51 suites）** · executor-node **125/125** · executor-py
 ### 9.3 方法论沉淀
 
 **类型系统在装饰器边界的静默失效**：TS 交叉类型作 NestJS @Query() 参数时 emitDecoratorMetadata 退化为 Object，ValidationPipe 白名单整个旁路——tsc 全绿不等于校验生效。审计手段：对 design:paramtypes 做元数据断言并固化进测试（execution-query.dto.spec）。同族问题：类型断言与后端实际返回不符（N13 admin-web pause/resume）属于"编译通过的谎言"，修复时应补编译期守卫测试。
+
+---
+
+## 十、第七轮：依赖/质量清零 + prometheus + 通知真机闭环 + N17-N24（2026-09-03）
+
+> 方法：A/B/C/D 四路并行 → audit triage → E1/E2 修复 → V 真机 5/5 → W 真机新发现修复 → V2 复验。报告：`docs/PROGRESS-round7-2026-09-03.md`、`docs/VERIFY-round7-e2e.md`、`docs/VERIFY-round7v2-fixes.md`。
+
+### 10.1 本轮要点
+
+- ✅ 依赖清偿：四端 audit 官方源修复（executor-node qs overrides 非 force）；admin-api eslint 163→0/0；coverageThreshold 地板化恢复 CI coverage；CI 新增 npm-audit job
+- ✅ prom-client 15.1.3 `GET /api/metrics`（快照 reset+inc 模式零热路径侵入）；install-cmd 503 降级
+- ✅ admin-web /notifications 门控 + AI Tab 降级；组件测试基建建立
+- ✅ N17 pinning PATCH 互斥绕过（合并态兜底）；N18/N21 registry-pypi 哈希 sidecar + 上传防重；N19-N24 全消
+- ✅ 通知真机闭环：五渠道外发 + SMTP 会话；V 抓到 V1-V5（config 解耦/SSRF fail-open/deny 缺段/500/死引用）→ W 修复 → V2 复验
+
+### 10.2 基线
+
+admin-api **774/774（52 suites）+ eslint 0/0** · executor-node **125** · executor-python **86** · admin-web **33** · acf-cli **48** · mcp-server **52** · registry-pypi **30** · node-sdk **32** · notify **7**。
+
+### 10.3 方法论沉淀
+
+**配置面与生效面解耦是隐性缺陷温床**：通知渠道 PATCH 保存 config 后外发仍读 env（V1）——管理界面让用户以为生效的设置实际无效，单测全绿因为 mock 了 config 层。修复原则：写路径与读路径必须共享同一事实源（ChannelConfigStore），且脱敏层只能作用于读面（GET 响应），绝不渗透到发送路径。
+
+**真机借道取证要转为守卫收紧**：V 首轮为取证借 198.18.0.1（TUN 接口）绕过 SSRF 守卫——这个"绕过路径"本身就是发现（V3），当轮即把该段与 100.64/10 收进 deny 列表。真机验证中所有"为通过验证而做的临时放行"都应回看为安全缺口候选。
+
+**PATCH 语义校验必须看合并态**：互斥/组合类约束（如 N17 pinning×broadcast）只在 DTO 层校验会漏掉 PATCH 部分更新——校验点应在 Object.assign 之后、save 之前，对最终实体态判定。create 全字段同传时该洞不可见，只有 PATCH 路径暴露。

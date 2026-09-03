@@ -3,19 +3,19 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-03
+更新时间：2026-09-03（第七轮）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - 测试基线（全绿）：
-  - admin-api **730/730** (jest, 51 suites) — 第六轮 N6/N7-N13/pinning/install.sh 修复
-  - executor-node **125/125** (jest, +6 idle 回收测试)
-  - executor-python **86/86** (pytest，持平)
-  - admin-web vitest **19/19** / acf-cli vitest **45/45** / mcp-server vitest **48/48**
-  - admin-api / executor-node / acf-cli / mcp-server `tsc --noEmit` 全部通过
-  - admin-web `npm run build` ✓ / lint 0 errors（5 warnings 基线）
+  - admin-api **774/774** (jest, 52 suites) + eslint **0 errors/0 warnings** + coverage 阈值落地（68/58/56/69 地板）
+  - executor-node **125/125** · executor-python **86/86**
+  - admin-web vitest **33/33**（组件测试基建已建立）· acf-cli **48** · mcp-server **52**
+  - registry-pypi **30** · autocodeflow-node-sdk **32** · autocodeflow-notify **7**
+  - 全端 tsc ✓ · admin-web build ✓
+- 本轮（2026-09-03 第七轮，A/B/C/D 四路 → E1/E2 修复 → V 真机 5/5 → W 真机发现修复 → V2 复验；详见 `docs/PROGRESS-round7-2026-09-03.md`、`docs/VERIFY-round7-e2e.md`、`docs/VERIFY-round7v2-fixes.md`）：
 - 本轮（2026-09-03 第六轮，A/B/C/D 四路并行 → audit triage → F1/F2/F3 三路修复 → V 真机验证 6/6 PASS；详见 `docs/PROGRESS-round6-2026-09-03.md`、`docs/VERIFY-round6-e2e.md`）：
 - 本轮（2026-09-02 第三轮，4 并行 stream + 集成 + 文档验收，7 个 commit）：
   - `8bb3790` **调度器多实例（P0）**：Leader Election（`scheduler:leader` 锁 TTL 30s、TTL/2 续约校验、Redis 挂时 fail-open）+ `claimTaskTrigger` 条件 UPDATE 原子领取；recoverStaleExecutions 分批；TASK-007 依赖深度上限 64；TASK-008 SSE 并发上限（per-execution 4 / global 64，超限 503）；DB-001 task 软删除；DB-003 N+1 收敛
@@ -51,6 +51,18 @@
   - acf-cli 需随轮重新分发（executions 请求移除 limit + killed 终态）
   - mcp-server 需随轮重新分发（30s 超时 + 错误文案）
   - 迁移 25（tasks.executorId）为幂等 ADD COLUMN，例行窗口执行即可
+- 本轮（2026-09-03 第七轮，详见 `docs/PROGRESS-round7-2026-09-03.md`、`docs/VERIFY-round7-e2e.md`、`docs/VERIFY-round7v2-fixes.md`）：
+  - **依赖/质量清偿**：四端 npm audit 官方源清偿（browserslist HIGH 等全消，executor-node qs 经 overrides 升级，admin-api 残留 3 moderate 属 minio 链上游未修）+ CI `npm-audit` job（--audit-level=high）；admin-api eslint **163→0/0**（tsconfig.eslint.json 修解析错误根因 + no-unused-vars 下划线约定固化）；coverageThreshold 地板化（68/58/56/69）恢复 CI coverage
+  - **可观测性**：prom-client 15.1.3 落地 `GET /api/metrics`（8 条 autoflow_scheduler_* series + 进程默认指标，JwtAuthGuard 姿态同 /metrics/scheduler，`METRICS_PROMETHEUS_ENABLED` 开关）——真机 counters 单调增长验证
+  - **RBAC 收尾**：admin-web /notifications RequireAdmin + settings AI Tab 非 admin 降级（组件测试先例建立）
+  - **audit N17-N24 修复**：N17 pinning 互斥 PATCH 绕过（合并态兜底校验，真机复验）；N18/N21 registry-pypi 哈希 sidecar + 上传防重（流式 1MiB + 同哈希幂等/异哈希 409）；N19 TaskFormPage 消费 executorId（executor-mode.ts 纯函数层）；N20 MCP update_task + CLI --executor；N22 新端点 POST /api/notification/send；N23 node-sdk fromEnv required 收敛（回调凭证可选 disabled client）；N24 install.sh 删假 URL 分支
+  - **真机验证闭环**：V 五渠道外发全通（含 SMTP 会话）+ prom 端点 + N17 互斥；抓到 V1-V5（config 与外发解耦/SSRF fail-open 无反馈/deny 缺 198.18 与 100.64 段/未知 key 500/死 env 引用）→ W 全修 → V2 真机复验通过
+- ⚠️ 第七轮部署注意：
+  - **POST /api/notification/send 新端点**（登录态可发通知）与 **/api/metrics**（JWT）新增，若前端有 WAF/网关需放行
+  - **通知外发 config-first**：PATCH 渠道配置现在真实生效（此前仅 env 生效）——存量环境若 env 与已保存 config 不一致，行为会变
+  - **SSRF deny 扩大**：198.18.0.0/15、100.64.0.0/10 段通知外发/executor 出站均被拒（TUN/CGNAT 环境 executor 部署注意）
+  - install.sh 不再尝试远程下载 artifact（明确失败语义），目标机安装需 executor-packages 通道或项目 checkout
+  - acf-cli/mcp-server 需随轮重新分发（--executor 选项 / update_task 工具）
 - ⚠️ 部署注意事项：
   - **/uploads 鉴权是破坏性变更**：executor-node 必须升级到含 `eadedca` 的版本，否则下载应用包 401
   - **第四轮 RBAC 是行为变更**：普通用户访问 config 写端点/executor-packages 全部改判 403；前端未做角色门控（可见但操作 403），admin-web 需与 admin-api 同批发布（SSE `?access_token=`、编辑不发 name、下载带 auth 均依赖新后端）
@@ -103,14 +115,14 @@ cd packages/mcp-server && npx tsc --noEmit
 
 ## 下一步建议（按优先级）
 
-> 第五轮交接 6 项中 4 项已在第六轮完成（N6/CI/install.sh+pinning 均含真机验证）。以下为第六轮后剩余：
+> 第六轮交接 6 项中 5 项已在第七轮完成（仅跨平台矩阵需真机硬件）。以下为第七轮后剩余：
 
-1. **通知渠道真机**（企业微信/钉钉/邮件；SSRF 收紧后外发 URL 交互验证，docker mock receiver 可行）+ 私有 npm/PyPI 仓库集成。
-2. **CI 首次真跑**（push develop 触发验证）+ N16：`npm audit --registry=https://registry.npmjs.org` 显式源兜底 CVE 观测（本机 npmmirror 源 audit 不可用）。
-3. **admin-web 消费面跟进**：notification/ai config 页普通用户读面 403 的 RequireAdmin 门控或降级 UI；顺带清偿 admin-api lint 存量 154 errors（CI lint step 已注释保留恢复条件）与 coverage 阈值回补。
-4. **prom-client/OTel 评估**：当前进程内计数 + JSON `GET /metrics/scheduler` 已够用；如需 Prometheus 抓取再评估依赖体积。
-5. **桌面执行器跨平台矩阵**（macOS Apple Silicon / WSL2，需真机）；install-cmd 裸机未配置 ADMIN_API_URL 时的降级提示（第六轮 V 遗留观察）。
-6. SDK 统一与示例（路线图 #10 未系统梳理）。
+1. **CI push 真跑**：13 个 job 本机等价验证全绿，push develop 触发 Actions 后修首次运行的环境差异即可。
+2. **SDK 回调通道统一**（N23 根因）：执行器 per-execution 一次性回调 token 设计（executor 注入 → 任务 SDK → admin-api 验证），是任务内 SDK 回调能力的正道；顺带评估 autoflow-sdk-node getExecutionStatus 的 GET /executions/:id 缺失。
+3. **install.sh artifact 通道**：把"明确失败"升级为真 artifact 下发（复用 executor-packages 上传通道）。
+4. **registry-npm 落地**：与 registry-pypi 自研实现对称化（或文档化 verdaccio 部署）。
+5. **admin-web Playwright E2E**（组件测试先例已建立）；桌面跨平台矩阵（需真机）。
+6. 通知 config-first 后的 sendTest/定时外发缓存一致性再审；minio 链 3 moderate 等 minio 上游发版后升级。
 
 ## 未覆盖验证项
 

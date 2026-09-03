@@ -213,7 +213,7 @@ Content-Type: application/json
 | `maxRetry` | number | 否 | 最大尝试次数（BullMQ attempts），0–10；服务端会保证至少为 `1` |
 | `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff |
 | `retryableErrors` | string[] | 否 | 预留的可重试错误分类列表 |
-| `executorId` | string (UUID) | 否 | 任务级 executor pinning（第六轮）：设置后调度**仅**派给该执行器，绕过 group/tags/runtime 过滤，但仍受其并发槽位上限约束；该执行器离线/不存在时执行直接置 FAILED（failureReason 分别为 `executor_offline` / `unknown`）。与 `executeMode=broadcast` 互斥，同时提供返回 400 |
+| `executorId` | string (UUID) | 否 | 任务级 executor pinning（第六轮）：设置后调度**仅**派给该执行器，绕过 group/tags/runtime 过滤，但仍受其并发槽位上限约束；该执行器离线/不存在时执行直接置 FAILED（failureReason 分别为 `executor_offline` / `unknown`）。与 `executeMode=broadcast` 互斥，同时提供返回 400。`PATCH /tasks/:id` 按**合并后的任务态**校验该互斥（第七轮 N17）：为 broadcast 任务补 `executorId`、或将已 pin 任务改为 `broadcast` 同样返回 400；显式传 `executorId: null` 可清除 pinning |
 
 > 兼容说明：API 入参优先读取 `timeoutSeconds` 并落库到现有 `timeout` 字段；响应中可能同时包含历史字段 `timeout`。Python SDK 同时支持 snake_case（如 `timeout_seconds`、`retry_delay`、`max_retry`），Node/API wire format 推荐 camelCase。
 
@@ -251,8 +251,8 @@ Content-Type: application/json
 | GET | `/executors` | 是 | 查询执行器列表（含在线状态） |
 | GET | `/executors/groups` | 是 | 执行器分组列表 |
 | GET | `/executors/tags` | 是 | 执行器标签列表 |
-| GET | `/executors/install-cmd` | 是 | 生成执行器一键安装命令（返回 `{ cmd, token, adminApiUrl }`；第六轮起 `cmd` 为 `curl -fsSL <API_BASE_URL>/api/executors/install.sh | bash -s -- --api-url ... --secret ...` 形式，脚本由后端承载） |
-| GET | `/executors/install.sh` | 否 | 一键安装脚本本体（`text/plain; charset=utf-8`，`@Public`：脚本不含密钥，secret 由用户 `bash -s --` 参数传入；与仓库根 `scripts/install.sh` 互为同步拷贝） |
+| GET | `/executors/install-cmd` | 是 | 生成执行器一键安装命令（返回 `{ cmd, token, adminApiUrl }`；第六轮起 `cmd` 为 `curl -fsSL <API_BASE_URL>/api/executors/install.sh | bash -s -- --api-url ... --secret ...` 形式，脚本由后端承载；第七轮起服务端 `ADMIN_API_URL` 未配置时返回 **503**，不再生成裸机不可用的相对路径命令） |
+| GET | `/executors/install.sh` | 否 | 一键安装脚本本体（`text/plain; charset=utf-8`，`@Public`：脚本不含密钥，secret 由用户 `bash -s --` 参数传入；与仓库根 `scripts/install.sh` 互为同步拷贝。第七轮 N24 起脚本不再声称从后端远程下载 `executor-node.tar.gz`（该静态资源从未存在）：仅支持在项目 checkout 内运行复制安装，否则明确报错 `executor-node artifact not bundled in this script...` 并 exit 1；裸机部署需先经 `POST /api/executor-packages` 等通道获取构件） |
 | GET | `/executors/:id` | 是 | 获取执行器详情 |
 | PATCH | `/executors/:id` | 是 | 更新执行器配置 |
 | POST | `/executors/:id/reload-config` | 是 | 手动下发配置重载（manifest 同步） |
@@ -296,13 +296,14 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
+| GET | `/metrics` | 是 | **Prometheus 抓取端点**（第七轮新增，prom-client）：text exposition format（Content-Type 由 registry 提供）。series：`autoflow_scheduler_ticks_total`、`autoflow_scheduler_tick_duration_ms_total`、`autoflow_scheduler_last_tick_duration_ms`、`autoflow_scheduler_triggers_total{result=claimed\|failed}`、`autoflow_scheduler_triggers_skipped_total{reason=lock_held\|db_claim\|inactive\|block_strategy}`、`autoflow_scheduler_dependency_triggers_total{result=claimed\|skipped}`、`autoflow_queue_depth{state=waiting\|active\|delayed\|failed\|completed}`、`autoflow_queue_up`（Redis 不可读时置 0、队列深度全部置 0），以及进程默认指标（CPU/内存/GC，`METRICS_PROMETHEUS_DEFAULT_METRICS_ENABLED=false` 可关）。env 开关 `METRICS_PROMETHEUS_ENABLED`（默认 `true`；`false` 时本端点返回 404，用于多实例下避免重复抓取或安全收紧场景）。计数为进程内快照映射，多实例部署按 target 各自抓取 |
 | GET | `/metrics/summary` | 是 | 系统概览统计 |
 | GET | `/metrics/trend?days=` | 是 | 每日执行趋势（`days` 默认 7，上限 90） |
 | GET | `/metrics/executors` | 是 | 执行器负载和状态统计 |
 | GET | `/metrics/failures` | 是 | 最近失败执行列表 |
 | GET | `/metrics/scheduler` | 是 | 调度器可观测性（第五轮新增）：tick 计数/耗时、trigger claimed/skipped/failed、依赖扇出 claim、BullMQ 队列深度、isLeader 与 pid/hostname（多实例区分）；进程内计数，重启归零 |
 
-> 注意：`/metrics/*` 均需要 JWT。免认证的系统指标请使用 `GET /health/metrics`（见 Health 章节）。
+> 注意：`/metrics` 与 `/metrics/*` 均需要 JWT（Prometheus 抓取方需配置 bearer token）。免认证的系统指标请使用 `GET /health/metrics`（见 Health 章节）。
 
 ---
 
