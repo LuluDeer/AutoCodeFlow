@@ -3,7 +3,7 @@ import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ExecutorService } from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
-import { TaskExecution, ExecutionStatus } from "../../task/entities/task-execution.entity";
+import { TaskExecution } from "../../task/entities/task-execution.entity";
 import { Task } from "../../task/entities/task.entity";
 import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
@@ -227,11 +227,14 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
 
     it("refuses to POST to a metadata address and rolls back the slot", async () => {
       const { assertSafeExecutorUrl } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         require("../../../common/utils/safe-http.util") as {
-        assertSafeExecutorUrl: jest.Mock;
-      };
+          assertSafeExecutorUrl: jest.Mock;
+        };
       assertSafeExecutorUrl.mockRejectedValueOnce(
-        new Error("Executor address 169.254.169.254 resolves to 169.254.169.254 (link-local) — outbound request refused"),
+        new Error(
+          "Executor address 169.254.169.254 resolves to 169.254.169.254 (link-local) — outbound request refused",
+        ),
       );
       const executor = {
         id: "e1",
@@ -241,6 +244,7 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         capabilities: [],
       };
       executorRepo.find.mockResolvedValue([executor]);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const axios = require("axios");
       await expect(service.dispatch(task, execution)).rejects.toThrow(
         /link-local/,
@@ -256,9 +260,10 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
 
     it("POSTs to a private LAN address by default (internal-network topology)", async () => {
       const { assertSafeExecutorUrl } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         require("../../../common/utils/safe-http.util") as {
-        assertSafeExecutorUrl: jest.Mock;
-      };
+          assertSafeExecutorUrl: jest.Mock;
+        };
       assertSafeExecutorUrl.mockResolvedValue(
         new URL("http://10.0.0.9:3002/api/execute"),
       );
@@ -270,6 +275,7 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         capabilities: [],
       };
       executorRepo.find.mockResolvedValue([executor]);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const axios = require("axios");
       axios.post.mockResolvedValue({ data: { success: true } });
       const result = await service.dispatch(task, execution);
@@ -294,8 +300,12 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
     it("caches a successful validation and skips the second bcrypt compare", async () => {
       await hashReady();
       const spy = jest.spyOn(bcrypt, "compare");
-      expect(await service.validateTokenByAddress("host:3002", rawToken)).toBe(true);
-      expect(await service.validateTokenByAddress("host:3002", rawToken)).toBe(true);
+      expect(await service.validateTokenByAddress("host:3002", rawToken)).toBe(
+        true,
+      );
+      expect(await service.validateTokenByAddress("host:3002", rawToken)).toBe(
+        true,
+      );
       expect(spy).toHaveBeenCalledTimes(1);
       spy.mockRestore();
     });
@@ -304,8 +314,12 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
       await hashReady();
       const spy = jest.spyOn(bcrypt, "compare");
       configService.get.mockReturnValue(""); // no shared token fallback
-      expect(await service.validateTokenByAddress("host:3002", "wrong")).toBe(false);
-      expect(await service.validateTokenByAddress("host:3002", "wrong")).toBe(false);
+      expect(await service.validateTokenByAddress("host:3002", "wrong")).toBe(
+        false,
+      );
+      expect(await service.validateTokenByAddress("host:3002", "wrong")).toBe(
+        false,
+      );
       expect(spy).toHaveBeenCalledTimes(2);
       spy.mockRestore();
     });

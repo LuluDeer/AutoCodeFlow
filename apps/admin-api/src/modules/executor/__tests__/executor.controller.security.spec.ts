@@ -36,7 +36,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
     ...overrides,
   });
 
-  const makeConfig = (): ConfigService => ({ get: () => undefined } as any);
+  const makeConfig = (): ConfigService => ({ get: () => undefined }) as any;
 
   afterEach(() => {
     jest.clearAllMocks();
@@ -176,7 +176,11 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         makeConfig(),
         {} as any,
       );
-      const body = { appName: "executor-node", address: "10.0.0.9:3002", startupId: "s-1" } as any;
+      const body = {
+        appName: "executor-node",
+        address: "10.0.0.9:3002",
+        startupId: "s-1",
+      } as any;
 
       const first = await controller.register(body, "Bearer shared-token");
       expect(first).toMatchObject({ perExecutorToken: "first-issued-token" });
@@ -219,9 +223,10 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
   describe("reload-config SSRF + error hardening (F-3 / F-8)", () => {
     it("rejects reload-config targeting a metadata address before sending the rotated token", async () => {
       const { assertSafeExecutorUrl } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         require("../../../common/utils/safe-http.util") as {
-        assertSafeExecutorUrl: jest.Mock;
-      };
+          assertSafeExecutorUrl: jest.Mock;
+        };
       assertSafeExecutorUrl.mockRejectedValueOnce(
         new UnauthorizedException("blocked"),
       );
@@ -242,6 +247,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         makeConfig(),
         {} as any,
       );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const axios = require("axios");
       await expect(
         controller.reloadConfig("executor-1", {}),
@@ -267,6 +273,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         makeConfig(),
         {} as any,
       );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const axios = require("axios");
       axios.post.mockRejectedValueOnce(
         new Error("connect ECONNREFUSED 10.0.0.9:8000"),
@@ -274,9 +281,9 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
       await expect(controller.reloadConfig("executor-1", {})).rejects.toThrow(
         "Failed to reach executor",
       );
-      await expect(controller.reloadConfig("executor-1", {})).rejects.not.toThrow(
-        /ECONNREFUSED/,
-      );
+      await expect(
+        controller.reloadConfig("executor-1", {}),
+      ).rejects.not.toThrow(/ECONNREFUSED/);
     });
   });
 });
