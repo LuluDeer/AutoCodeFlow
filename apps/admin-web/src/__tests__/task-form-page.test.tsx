@@ -23,9 +23,12 @@ vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
 }));
 vi.mock('../api/applications', () => ({ applicationsApi: { list: vi.fn() } }));
+// 路由参数可切换：默认编辑态（id='task-1'）；创建态用例置为 {}。
+// mock 工厂在测试执行期才调用 useParams，届时变量已初始化。
+let mockRouteParams: { id?: string } = { id: 'task-1' };
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
-  useParams: () => ({ id: 'task-1' }),
+  useParams: () => mockRouteParams,
   useSearchParams: () => [new URLSearchParams('')],
 }));
 
@@ -54,6 +57,7 @@ if (!window.matchMedia) {
 const PIN_UUID = '550e8400-e29b-41d4-a716-446655440000';
 
 beforeEach(() => {
+  mockRouteParams = { id: 'task-1' };
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([
     { id: PIN_UUID, appName: 'node-a', address: '10.0.0.1:3001', status: 'online' },
   ] as never);
@@ -87,8 +91,8 @@ describe('deriveExecutorMode（加载态 mode 映射，N19）', () => {
   });
 });
 
-describe('buildExecutorPayload（提交 payload，N19）', () => {
-  it('pinned：保留 executorId、清空 legacy executorAppName', () => {
+describe('buildExecutorPayload（提交 payload，N19 + R8/N28）', () => {
+  it('pinned：保留 executorId、显式 null 清空 legacy executorAppName/group/tags', () => {
     const payload = buildExecutorPayload(
       { name: 't', executorId: PIN_UUID, executorAppName: 'node-a', executorGroup: 'g', executorTags: ['x'] },
       'pinned',
@@ -96,21 +100,48 @@ describe('buildExecutorPayload（提交 payload，N19）', () => {
     expect(payload.executorId).toBe(PIN_UUID);
     expect(payload.executeMode).toBe('single');
     expect(payload.executorAppName).toBeNull();
-    expect('executorGroup' in payload).toBe(false);
-    expect('executorTags' in payload).toBe(false);
+    // N28：清理必须是显式 null（PATCH 缺省 = 后端保留旧值），不能是 delete/缺键
+    expect(payload.executorGroup).toBeNull();
+    expect(payload.executorTags).toBeNull();
   });
 
-  it('auto：显式清除 executorId（避免 PATCH 保留旧 pin）', () => {
-    const payload = buildExecutorPayload({ name: 't', executorId: PIN_UUID }, 'auto');
+  it('auto：executorId 与 legacy 三字段全部显式 null（避免 PATCH 保留旧值）', () => {
+    const payload = buildExecutorPayload(
+      { name: 't', executorId: PIN_UUID, executorAppName: 'node-a', executorGroup: 'g', executorTags: ['x'] },
+      'auto',
+    );
     expect(payload.executorId).toBeNull();
     expect(payload.executeMode).toBe('single');
-    expect('executorAppName' in payload).toBe(false);
+    expect(payload.executorAppName).toBeNull();
+    expect(payload.executorGroup).toBeNull();
+    expect(payload.executorTags).toBeNull();
   });
 
-  it('broadcast：executorId 置 null 且 executeMode=broadcast', () => {
-    const payload = buildExecutorPayload({ name: 't', executorId: PIN_UUID }, 'broadcast');
+  it('group：清 executorId/executorAppName；本模式 group/tags 被清空（undefined）时也置 null', () => {
+    const payload = buildExecutorPayload(
+      { name: 't', executorAppName: 'node-a', executorGroup: undefined, executorTags: undefined },
+      'group',
+    );
+    expect(payload.executorId).toBeNull();
+    expect(payload.executorAppName).toBeNull();
+    expect(payload.executorGroup).toBeNull();
+    expect(payload.executorTags).toBeNull();
+    // 用户实际选定的 group/tags 原样保留
+    const kept = buildExecutorPayload({ name: 't', executorGroup: 'g1', executorTags: ['a'] }, 'group');
+    expect(kept.executorGroup).toBe('g1');
+    expect(kept.executorTags).toEqual(['a']);
+  });
+
+  it('broadcast：executorId 置 null、executeMode=broadcast、legacy 三字段显式 null', () => {
+    const payload = buildExecutorPayload(
+      { name: 't', executorId: PIN_UUID, executorAppName: 'node-a', executorGroup: 'g' },
+      'broadcast',
+    );
     expect(payload.executorId).toBeNull();
     expect(payload.executeMode).toBe('broadcast');
+    expect(payload.executorAppName).toBeNull();
+    expect(payload.executorGroup).toBeNull();
+    expect(payload.executorTags).toBeNull();
   });
 
   it('不修改入参对象（纯函数）', () => {
@@ -118,6 +149,46 @@ describe('buildExecutorPayload（提交 payload，N19）', () => {
     buildExecutorPayload(values, 'auto');
     expect(values.executorId).toBe(PIN_UUID);
     expect(values.executorGroup).toBe('g');
+  });
+});
+
+describe('TaskFormPage 创建流程跨步骤提交 payload 完整性（P0 回归）', () => {
+  it('step 0 填写的 name/runtime/entrypoint 在 step 2 提交时仍存在于 POST payload', async () => {
+    // E2E 实证（e2e-full.spec.js 用例 25）：分步渲染卸载 step 0/1 的
+    // Form.Item 后，validateFields() 只返回当前挂载字段 → POST 缺 name → 400。
+    // 修复后 handleSubmit 用 getFieldsValue(true) 取全量 store 值。
+    mockRouteParams = {}; // 创建态：无 :id
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+
+    render(<TaskFormPage />);
+
+    // step 0：填写核心必填（runtime 由 initialValues 默认 python）。
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'my-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /下一步：调度配置/ }));
+
+    // step 1：默认 manual 触发 + auto 调度，直接前进。
+    fireEvent.click(await screen.findByRole('button', { name: /下一步：参数配置/ }));
+
+    // step 2：提交创建。
+    fireEvent.click(await screen.findByRole('button', { name: /创建任务/ }));
+
+    await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
+    // P0 回归点：已卸载步骤的字段必须仍在 payload 中。
+    expect(payload.name).toBe('my-task');
+    expect(payload.runtime).toBe('python');
+    expect(payload.entrypoint).toBe('tasks/main.py');
+    expect(payload.triggerType).toBe('manual');
+    // N28：auto 模式下 legacy 三字段 + executorId 显式 null（非缺键）。
+    expect(payload.executorId).toBeNull();
+    expect(payload.executorAppName).toBeNull();
+    expect(payload.executorGroup).toBeNull();
+    expect(payload.executorTags).toBeNull();
+    expect(payload.executeMode).toBe('single');
   });
 });
 
