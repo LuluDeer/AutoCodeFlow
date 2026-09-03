@@ -68,7 +68,8 @@ export default () => ({
     // ARCH-005: REDIS_TLS=true 时 ioredis/BullMQ 走 TLS 传输加密；
     // REDIS_TLS_REJECT_UNAUTHORIZED=false 仅建议在自签证书调试时使用（默认校验证书）。
     tls: process.env.REDIS_TLS === "true",
-    tlsRejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== "false",
+    tlsRejectUnauthorized:
+      process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== "false",
   },
   // ARCH-001: CORS 显式白名单 —— 优先 CORS_ALLOWED_ORIGINS，兼容旧的 CORS_ORIGINS。
   // 为空时仅开发环境默认放行 http://localhost:* / http://127.0.0.1:*（见 main.ts）；
@@ -120,6 +121,16 @@ export default () => ({
     secretKey: process.env.LOG_STORAGE_SECRET_KEY || "",
     useSSL: process.env.LOG_STORAGE_USE_SSL === "true",
     region: process.env.LOG_STORAGE_REGION || "",
+  },
+  // R7: Prometheus 抓取端点（GET /api/metrics）开关。
+  // enabled=false → 端点 404（多实例下避免重复抓取或安全收紧场景）；
+  // defaultMetricsEnabled 控制是否挂载进程默认指标（CPU/内存/GC）。
+  metrics: {
+    prometheus: {
+      enabled: process.env.METRICS_PROMETHEUS_ENABLED !== "false",
+      defaultMetricsEnabled:
+        process.env.METRICS_PROMETHEUS_DEFAULT_METRICS_ENABLED !== "false",
+    },
   },
   notification: {
     wecomWebhook: process.env.WECOM_WEBHOOK || "",
@@ -202,7 +213,9 @@ if (process.env.NODE_ENV === "production") {
       "[AutoFlow] CORS_ALLOWED_ORIGINS must be set to explicit production origins in production",
     );
   }
-  if (corsAllowed.some((o) => o.includes("localhost") || o.includes("127.0.0.1"))) {
+  if (
+    corsAllowed.some((o) => o.includes("localhost") || o.includes("127.0.0.1"))
+  ) {
     throw new Error(
       "[AutoFlow] CORS_ALLOWED_ORIGINS must not contain localhost/127.0.0.1 in production",
     );
