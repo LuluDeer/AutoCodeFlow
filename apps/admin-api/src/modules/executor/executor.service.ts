@@ -41,6 +41,45 @@ export class ExecutorService {
   private static readonly TOKEN_CACHE_MAX = 1000;
   private readonly tokenValidationCache = new Map<string, number>();
 
+  // N26 (round-8): short-lived positive cache of per-address tokenHash
+  // lookups, used as the per-executor HMAC candidate when verifying
+  // `v1.` execution-callback tokens. Same 60s TTL / positive-only pattern
+  // as tokenValidationCache above: misses are never cached (a freshly
+  // registered executor must be usable immediately), and rotateToken()
+  // evicts the address so a rotation is picked up without waiting for the
+  // TTL. Trade-off mirrors F-5: a rotated-away hash stays a valid HMAC
+  // candidate for at most TOKEN_CACHE_TTL_MS.
+  private readonly callbackSecretCache = new Map<
+    string,
+    { hash: string; cachedAt: number }
+  >();
+
+  // R9 (round-8 P1 closure, W2): idempotency state for POST /executors/token.
+  // The endpoint used to rotateToken() on EVERY call, so any client that
+  // re-fetched on a loop (executor-node's envelope-parse bug made every fetch
+  // "fail" and retry every 30s; executor-python still re-fetches per request)
+  // put the stored tokenHash on a rotation cycle that broke the N26
+  // per-execution callback-token invariant (docs/VERIFY-round8-e2e.md §1.5).
+  // issueToken() now returns the CURRENT token while the caller proves it is
+  // the same process life (same startupId — N4 register semantics), and only
+  // rotates on a new/changed startupId, on a legacy (startupId-less) fetch
+  // outside the short reuse window, or when the cached plaintext no longer
+  // verifies against the stored hash (e.g. an admin-UI rotation).
+  //
+  // Plaintext-token constraint: rotateToken() persists only a bcrypt hash, so
+  // the raw token cannot be recovered from the DB. Reuse therefore needs the
+  // plaintext kept in-process (issuedTokenCache below) — bounded by fleet
+  // size, evicted on rotation/removal, and never readable by anyone who
+  // doesn't already pass verifyExecutorToken (shared token) for that address.
+  // An admin-api restart simply cold-starts the cache: the next /token call
+  // rotates once (harmless — the executor adopts the new hash from the same
+  // response, see executor-node admin-envelope.ts).
+  private static readonly TOKEN_ISSUE_REUSE_WINDOW_MS = 60_000;
+  private readonly issuedTokenCache = new Map<
+    string,
+    { token: string; startupId: string | null; issuedAt: number }
+  >();
+
   constructor(
     @InjectRepository(Executor) private repo: Repository<Executor>,
     @InjectRepository(TaskExecution)
@@ -999,8 +1038,91 @@ export class ExecutorService {
     const rawToken = randomBytes(32).toString("hex");
     executor.tokenHash = await bcrypt.hash(rawToken, 12);
     await this.repo.save(executor);
+    // N26: a rotation invalidates the per-address callback-secret cache so
+    // the new hash is visible immediately (and the stale one stops being
+    // offered as an HMAC candidate). R9 (round-8 P1 closure): the executor
+    // now picks the new hash up on its next /token fetch or heartbeat (both
+    // responses carry tokenHash — see issueToken() and the heartbeat
+    // controller), not only at register; until that pickup per-execution
+    // callback tokens signed with the old hash fail verification —
+    // documented constraint in docs/sdk-guide.md.
+    this.callbackSecretCache.delete(executor.address);
     this.logger.log(`Rotated token for executor ${id} (${executor.address})`);
     return { token: rawToken };
+  }
+
+  /**
+   * R9 (round-8 P1 closure, W2): idempotent token issuance for
+   * POST /executors/token — the same (address, startupId) re-fetch returns
+   * the CURRENT token instead of rotating. Rotation still happens when:
+   * - the address has no issued token in this process yet (first issuance,
+   *   or the admin-api restarted and lost the in-memory plaintext cache),
+   * - the request carries a DIFFERENT startupId (a restarted executor —
+   *   N4 register semantics), or
+   * - a legacy request without startupId arrives outside the short reuse
+   *   window (can't prove same process life; the window bounds any
+   *   poll-on-loop client to at most one rotation per window), or
+   * - the cached plaintext no longer verifies against the stored tokenHash
+   *   (an admin-UI rotate-token invalidated it).
+   *
+   * Returns the raw token (shown once per rotation — reuse hands it back
+   * only to the authenticated executor that already holds it) plus the
+   * CURRENT stored tokenHash, so the executor can keep its N26 callback
+   * HMAC secret in sync with whatever this response authorized.
+   */
+  async issueToken(data: {
+    address: string;
+    appName: string;
+    startupId?: string | null;
+  }): Promise<{ token: string; tokenHash: string | null }> {
+    // Keep the existing register-on-token semantics (creates the row for
+    // unknown addresses, refreshes ONLINE/lastHeartbeat). Deliberately NOT
+    // forwarding startupId/restartedAt here: restart detection via /token
+    // would let a stale residual process fail live executions — that stays
+    // the register/heartbeat endpoints' job.
+    const executor = await this.register({
+      address: data.address,
+      appName: data.appName,
+    });
+    const incomingStartupId = data.startupId?.trim() || null;
+    const now = Date.now();
+    const cached = this.issuedTokenCache.get(data.address);
+    if (cached) {
+      const sameProcess =
+        incomingStartupId !== null && cached.startupId === incomingStartupId;
+      const legacyInWindow =
+        incomingStartupId === null &&
+        cached.startupId === null &&
+        now - cached.issuedAt < ExecutorService.TOKEN_ISSUE_REUSE_WINDOW_MS;
+      if (sameProcess || legacyInWindow) {
+        // Verify the cached plaintext is STILL the token behind the stored
+        // hash before handing it out again (an admin-UI rotation must not
+        // be resurrected by this endpoint).
+        const stored = await this.repo
+          .createQueryBuilder("e")
+          .addSelect("e.tokenHash")
+          .where("e.address = :address", { address: data.address })
+          .getOne();
+        if (
+          stored?.tokenHash &&
+          (await bcrypt.compare(cached.token, stored.tokenHash))
+        ) {
+          this.logger.debug(
+            `Idempotent token reuse for executor ${data.address} (${incomingStartupId !== null ? "same startupId" : "legacy fetch in reuse window"}); no rotation`,
+          );
+          return { token: cached.token, tokenHash: stored.tokenHash };
+        }
+      }
+    }
+    const { token } = await this.rotateToken(executor.id);
+    // rotateToken() evicted the N26 cache, so this reads the FRESH hash.
+    const tokenHash = await this.getCallbackSecretByAddress(data.address);
+    this.issuedTokenCache.set(data.address, {
+      token,
+      startupId: incomingStartupId,
+      issuedAt: now,
+    });
+    return { token, tokenHash };
   }
 
   /**
@@ -1012,6 +1134,9 @@ export class ExecutorService {
     const executor = await this.repo.findOne({ where: { id } });
     if (!executor) throw new NotFoundException("Executor not found");
     await this.repo.remove(executor);
+    // R9: drop the idempotent-issuance plaintext cache entry with the row —
+    // a re-registered address must get a fresh token, never the removed one.
+    this.issuedTokenCache.delete(executor.address);
     this.logger.log(`Executor ${id} (${executor.address}) removed by admin`);
   }
 
@@ -1083,6 +1208,40 @@ export class ExecutorService {
       this.rememberTokenValidation(cacheKey, now);
     }
     return sharedOk;
+  }
+
+  /**
+   * N26 (round-8): the per-executor callback secret candidate.
+   *
+   * Returns the executor row's bcrypt `tokenHash` string for `address`
+   * (or null when the executor is unknown / has no token). The hash is
+   * used as an HMAC *key material* by the per-execution callback token
+   * verification fallback (execution-callback.controller) — the raw
+   * per-executor token never leaves the executor side and the hash itself
+   * is not a preimage leak (bcrypt is one-way; the registrant already
+   * holds the raw token, so returning the hash grants nothing new).
+   *
+   * Positive results are cached for TOKEN_CACHE_TTL_MS (same pattern as
+   * validateTokenByAddress); rotateToken() evicts the entry.
+   */
+  async getCallbackSecretByAddress(address: string): Promise<string | null> {
+    const now = Date.now();
+    const cached = this.callbackSecretCache.get(address);
+    if (cached && now - cached.cachedAt < ExecutorService.TOKEN_CACHE_TTL_MS) {
+      return cached.hash;
+    }
+    const executor = await this.repo
+      .createQueryBuilder("e")
+      .addSelect("e.tokenHash")
+      .where("e.address = :address", { address })
+      .getOne();
+    const hash = executor?.tokenHash ?? null;
+    if (hash) {
+      this.callbackSecretCache.set(address, { hash, cachedAt: now });
+    } else {
+      this.callbackSecretCache.delete(address);
+    }
+    return hash;
   }
 
   /** F-5: store a successful validation, evicting expired/oldest entries. */
