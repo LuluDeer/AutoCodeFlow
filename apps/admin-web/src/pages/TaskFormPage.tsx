@@ -156,10 +156,42 @@ export default function TaskFormPage() {
     }
   };
 
+  // P0 (R8): 分步渲染会卸载 step 0/1 的 Form.Item，而 validateFields() 只
+  // 校验并返回**当前挂载**的字段——step 2 提交时 name/runtime/entrypoint 等
+  // 全部丢失（POST payload 缺 name → 400，创建流程完全不可用）。antd Form
+  // 默认 preserve=true，卸载字段的值仍留在 store 里，因此提交改用
+  // getFieldsValue(true) 取全量值；核心必填字段因表单项已卸载、规则不再参与
+  // validateFields，这里做最终手动兜底校验，缺失时回退到对应步骤并报错。
   const handleSubmit = async () => {
     try {
-      const values = await form.validateFields();
-      setSaving(true);
+      // 当前挂载步骤（step 2：params/alarm 等）的正常校验。
+      await form.validateFields();
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error(err instanceof Error ? err.message : '表单校验失败');
+      return;
+    }
+    const values = form.getFieldsValue(true);
+    const missing: { label: string; step: number }[] = [];
+    if (!values.name) missing.push({ label: '任务名称', step: 0 });
+    if (!values.runtime) missing.push({ label: '运行时', step: 0 });
+    if (!values.entrypoint) missing.push({ label: '入口文件', step: 0 });
+    if (values.triggerType === 'cron' && !values.cronExpression) {
+      missing.push({ label: 'Cron 表达式', step: 1 });
+    }
+    if (values.triggerType === 'fixed_rate' && !values.fixedRate) {
+      missing.push({ label: '执行间隔', step: 1 });
+    }
+    if (executorMode === 'pinned' && !values.executorId) {
+      missing.push({ label: '指定执行器', step: 1 });
+    }
+    if (missing.length > 0) {
+      message.error(`必填项缺失：${missing.map((m) => m.label).join('、')}，请补全后重试`);
+      setStep(missing[0].step);
+      return;
+    }
+    setSaving(true);
+    try {
       const payload = buildExecutorPayload(values, executorMode);
       if (isEdit && editId) {
         await tasksApi.update(editId, payload);
@@ -175,7 +207,6 @@ export default function TaskFormPage() {
         setStep(3);
       }
     } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'errorFields' in err) return;
       const msg = err instanceof Error ? err.message : (isEdit ? '更新失败' : '创建失败');
       message.error(msg);
     } finally {
