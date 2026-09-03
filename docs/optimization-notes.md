@@ -320,3 +320,29 @@ admin-api **774/774（52 suites）+ eslint 0/0** · executor-node **125** · exe
 **真机借道取证要转为守卫收紧**：V 首轮为取证借 198.18.0.1（TUN 接口）绕过 SSRF 守卫——这个"绕过路径"本身就是发现（V3），当轮即把该段与 100.64/10 收进 deny 列表。真机验证中所有"为通过验证而做的临时放行"都应回看为安全缺口候选。
 
 **PATCH 语义校验必须看合并态**：互斥/组合类约束（如 N17 pinning×broadcast）只在 DTO 层校验会漏掉 PATCH 部分更新——校验点应在 Object.assign 之后、save 之前，对最终实体态判定。create 全字段同传时该洞不可见，只有 PATCH 路径暴露。
+
+---
+
+## 十一、第八轮：回调 token 三端落地 + artifact 通道 + E2E 25/25 + P0/P1 双闭环（2026-09-03）
+
+> 方法：A/B/C/D 四路并行 → audit+E2E triage → W1/W2 修复 → V 真机 5/5 → W P1 击穿修复 → 收尾。报告：`docs/PROGRESS-round8-2026-09-03.md`、`docs/VERIFY-round8-e2e.md`。
+
+### 11.1 本轮要点
+
+- ✅ per-execution 回调 token（N23 根治）：域分离 HMAC、SEC-01 白名单不破、v1. 前缀 fail-closed、双端测试向量防漂移；N26 bcrypt 矛盾以 tokenHash 字符串为双端 HMAC key 解决
+- ✅ install.sh artifact 真通道 + ci-local.sh（push 无凭证期验收通道）+ registry-npm healthcheck 修复
+- ✅ Playwright E2E 25/25：抓到 P0（分步表单 validateFields 只回挂载字段 → 创建 UI 不可用）→ getFieldsValue(true) 转正守卫
+- ✅ N25 `::ffff:` SSRF 绕过归一修复；N28 显式 null；N29 test 面真实 results；N30 os.link 防重；N31 render 串行化
+- ✅ V 抓到 P1 稳态击穿：fetchToken 不拆信封 + 201 误判 200 → token 旋转风暴 → 三层修复（拆信封/issueToken 幂等/tokenHash 三点采纳）
+
+### 11.2 基线
+
+admin-api **840/840（53 suites）+ eslint 0/0** · executor-node **150/150** · Playwright **25/25** · executor-python **86** · admin-web **35** · acf-cli **48** · mcp-server **52** · registry-pypi **33** · node-sdk **43** · notify **7**。
+
+### 11.3 方法论沉淀
+
+**信封层是所有客户端的隐形契约**：admin-api 全局 ResponseInterceptor 的 {code,message,data} 包装已在 acf-cli、mcp-server、executor-node 三处造成同类 bug（前者 round4 修过，后两者本轮/上轮暴露）。修复模式固化：任何新客户端第一件事是拆信封 util（unwrapAdminResponseData），并对状态码用 2xx 区间而非 ===200（Nest POST 默认 201）。
+
+**稳态循环是幂等性破坏的放大器**：fetchToken 失败→重试→旋转→其他依赖方（HMAC 密钥）失效→更多失败——单点 bug 经循环放大为系统不可用（9 分钟 14 次旋转）。防御：写路径幂等化（issueToken 按 startupId 稳态永不旋转）+ 依赖方跟随机制（tokenHash 三点采纳）双管齐下，只修其一在下一个依赖出现时复发。
+
+**分步表单的校验 API 陷阱**：antd Form validateFields 只校验/返回当前挂载的 Form.Item——跨步骤提交必须 getFieldsValue(true)（preserve store 全量）+ 自行兜底必填。此类缺陷 vitest 组件测试难覆盖（难模拟真实分步挂载），E2E 是唯一可靠防线。

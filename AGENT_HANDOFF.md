@@ -3,19 +3,19 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-03（第七轮）
-当前分支：`develop`
+更新时间：2026-09-03（第八轮）
+当前分支：`develop`（本地领先 origin/develop 65+ commits，**push 无凭证**——CI 真跑待用户解决）
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - 测试基线（全绿）：
-  - admin-api **774/774** (jest, 52 suites) + eslint **0 errors/0 warnings** + coverage 阈值落地（68/58/56/69 地板）
-  - executor-node **125/125** · executor-python **86/86**
-  - admin-web vitest **33/33**（组件测试基建已建立）· acf-cli **48** · mcp-server **52**
-  - registry-pypi **30** · autocodeflow-node-sdk **32** · autocodeflow-notify **7**
-  - 全端 tsc ✓ · admin-web build ✓
-- 本轮（2026-09-03 第七轮，A/B/C/D 四路 → E1/E2 修复 → V 真机 5/5 → W 真机发现修复 → V2 复验；详见 `docs/PROGRESS-round7-2026-09-03.md`、`docs/VERIFY-round7-e2e.md`、`docs/VERIFY-round7v2-fixes.md`）：
+  - admin-api **840/840** (jest, 53 suites) + eslint **0/0** + coverage 地板（68/58/56/69）
+  - executor-node **150/150** · executor-python **86/86**
+  - admin-web vitest **35/35** · Playwright E2E **25/25**（含 R8 P0 转正守卫）
+  - acf-cli **48** · mcp-server **52** · registry-pypi **33** · autocodeflow-node-sdk **43** · autocodeflow-notify **7**
+  - 全端 tsc ✓ · admin-web build ✓ · `scripts/ci-local.sh` 本机等价 11 job 全绿
+- 本轮（2026-09-03 第八轮，A/B/C/D 四路 → W1/W2 修复 → V 真机 5/5 → W P1 击穿修复；详见 `docs/PROGRESS-round8-2026-09-03.md`、`docs/VERIFY-round8-e2e.md`）：
 - 本轮（2026-09-03 第六轮，A/B/C/D 四路并行 → audit triage → F1/F2/F3 三路修复 → V 真机验证 6/6 PASS；详见 `docs/PROGRESS-round6-2026-09-03.md`、`docs/VERIFY-round6-e2e.md`）：
 - 本轮（2026-09-02 第三轮，4 并行 stream + 集成 + 文档验收，7 个 commit）：
   - `8bb3790` **调度器多实例（P0）**：Leader Election（`scheduler:leader` 锁 TTL 30s、TTL/2 续约校验、Redis 挂时 fail-open）+ `claimTaskTrigger` 条件 UPDATE 原子领取；recoverStaleExecutions 分批；TASK-007 依赖深度上限 64；TASK-008 SSE 并发上限（per-execution 4 / global 64，超限 503）；DB-001 task 软删除；DB-003 N+1 收敛
@@ -63,6 +63,17 @@
   - **SSRF deny 扩大**：198.18.0.0/15、100.64.0.0/10 段通知外发/executor 出站均被拒（TUN/CGNAT 环境 executor 部署注意）
   - install.sh 不再尝试远程下载 artifact（明确失败语义），目标机安装需 executor-packages 通道或项目 checkout
   - acf-cli/mcp-server 需随轮重新分发（--executor 选项 / update_task 工具）
+- 本轮（2026-09-03 第八轮，详见 `docs/PROGRESS-round8-2026-09-03.md`、`docs/VERIFY-round8-e2e.md`）：
+  - **per-execution 回调 token（N23 根治）**：`v1.<execId>.<exp>.<hmac>` 域分离 HMAC（key=HMAC(secret,固定域)），TTL=timeout+900s；executor-node 注入 AUTOFLOW_CALLBACK_TOKEN/AUTOFLOW_ADMIN_API_URL/AUTOFLOW_EXECUTOR_ADDRESS（extra 通道，SEC-01 白名单不动）；admin `v1.` 分支验证（候选 secret + per-executor tokenHash 回退 + executionId 逐 item 绑定，fail-closed）；node-sdk fromEnv 自动启用；双端 spec 钉死同一测试向量防算法漂移
+  - **install.sh artifact 通道**：`GET /executors/artifact/executor-node.tar.gz`（共享 token fail-closed）+ bundle 脚本——真机从 artifact 装出执行器注册 online；`scripts/ci-local.sh` 13 job 本机等价（push 无凭证期间验收通道）；registry-npm verdaccio healthcheck 修复（localhost→127.0.0.1 恒 unhealthy bug）+ 加固 + README
+  - **Playwright E2E 25/25**：新增 9 例（角色门控/AI Tab 降级零请求/四模式/executorId 残留服务端复核）；**抓到 P0**——TaskFormPage 分步渲染 validateFields 只回当前挂载字段，创建 UI 完全不可用 → getFieldsValue(true)+分步兜底，fixme 转正
+  - **audit N25-N32**：N25(P1) `::ffff:` IPv4-mapped IPv6 绕过 SSRF 分类 → normalizeIpForClassification 归一（含 ::/96 与完整 IPv6 危险段）；N26 回调 token 密钥缺口（tokenHash 是 bcrypt → 改双端以 tokenHash 字符串为 HMAC key，register 回传+采纳+60s 缓存验签）；N27 SDK 自动补 executorAddress；N28 admin-web 模式清理 delete→显式 null；N29 通知 test 面真实 results；N30 registry-pypi 并发上传 os.link 原子防重；N31 /api/metrics 并发 render 串行化
+  - **真机 P1 击穿修复（V 抓到）**：executor-node fetchToken 不拆信封 + Nest POST 201 误判 200 → token 恒 undefined → 心跳每 30s 旋转 token（9 分钟 14 次）→ 回调 token 稳态必 401。三层修复：fetchToken 拆信封/2xx 区间；admin issueToken 幂等（startupId 稳态永不轮换+内存缓存明文+legacy 60s 窗）；心跳响应回传 tokenHash 三点采纳
+- ⚠️ 第八轮部署注意：
+  - **回调 token 依赖共享 secret 同源**：EXECUTION_CALLBACK_SECRET 可选（缺省回落共享 token）；admin UI 手动旋转 token 后长运行执行器需 register/token/心跳对齐（三点已自动化，sdk-guide 有约束说明）
+  - `POST /executors/token` 语义变化：幂等签发（不再每次旋转）——依赖旋转行为的消费方（若有）需复查
+  - **executor-python 疑似同款信封 bug**（W 未在授权范围，admin 幂等已兜底）——第九轮排查
+  - install.sh 现支持 artifact 下载（EXECUTOR_ARTIFACT_DIR，默认 <cwd>/artifacts，需先跑 bundle 脚本）
 - ⚠️ 部署注意事项：
   - **/uploads 鉴权是破坏性变更**：executor-node 必须升级到含 `eadedca` 的版本，否则下载应用包 401
   - **第四轮 RBAC 是行为变更**：普通用户访问 config 写端点/executor-packages 全部改判 403；前端未做角色门控（可见但操作 403），admin-web 需与 admin-api 同批发布（SSE `?access_token=`、编辑不发 name、下载带 auth 均依赖新后端）
@@ -115,14 +126,13 @@ cd packages/mcp-server && npx tsc --noEmit
 
 ## 下一步建议（按优先级）
 
-> 第六轮交接 6 项中 5 项已在第七轮完成（仅跨平台矩阵需真机硬件）。以下为第七轮后剩余：
+> 第七轮交接 6 项中 5 项已在第八轮完成（CI 真跑阻塞于 push 凭证）。以下为第八轮后剩余：
 
-1. **CI push 真跑**：13 个 job 本机等价验证全绿，push develop 触发 Actions 后修首次运行的环境差异即可。
-2. **SDK 回调通道统一**（N23 根因）：执行器 per-execution 一次性回调 token 设计（executor 注入 → 任务 SDK → admin-api 验证），是任务内 SDK 回调能力的正道；顺带评估 autoflow-sdk-node getExecutionStatus 的 GET /executions/:id 缺失。
-3. **install.sh artifact 通道**：把"明确失败"升级为真 artifact 下发（复用 executor-packages 上传通道）。
-4. **registry-npm 落地**：与 registry-pypi 自研实现对称化（或文档化 verdaccio 部署）。
-5. **admin-web Playwright E2E**（组件测试先例已建立）；桌面跨平台矩阵（需真机）。
-6. 通知 config-first 后的 sendTest/定时外发缓存一致性再审；minio 链 3 moderate 等 minio 上游发版后升级。
+1. **CI push 真跑**：阻塞于 GitHub 凭证（本地领先 65+ commits）——用户侧解决后 push，`scripts/ci-local.sh` 已提供本机等价验收。
+2. **executor-python 信封 bug 排查**：admin 侧响应均为 {code,message,data} 信封，python 执行器的 token/心跳解析若假定裸响应则有同款缺陷（admin issueToken 幂等已兜底旋转风暴，但功能面需对齐）。
+3. **回调 token 观测与轮换通知**：401 分类指标进 prometheus；admin UI 手动旋转 token 后的执行器密钥对齐广播。
+4. admin-web pinned 部署链路 UI 闭环深化（Playwright 铺开）；桌面跨平台矩阵（需真机）。
+5. minio 链 3 moderate 等上游发版；N32 遗留的 webhook 配置面（PATCH 不支持 webhook 渠道）评估是否补全。
 
 ## 未覆盖验证项
 
