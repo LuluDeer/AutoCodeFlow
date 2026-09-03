@@ -193,7 +193,20 @@ async def upload_package(
                 out.write(chunk)
         sha = h.hexdigest()
 
-        if dest.exists():
+        # N30 (R8): atomic check-and-set via os.link replaces the old
+        # dest.exists() pre-check + os.replace, which raced: two concurrent
+        # uploads (multi-worker/multi-process deployments) could both pass
+        # the pre-check and the later os.replace silently clobbered the
+        # earlier artifact — the N21 409 guard only covered sequential
+        # re-uploads. os.link creates the destination atomically and raises
+        # FileExistsError if it already exists, so exactly one writer wins;
+        # the loser compares hashes: same sha256 -> idempotent 200, different
+        # -> 409. (POSIX hard link; tmp lives in the same directory, hence
+        # the same filesystem. Deployment target is Linux — Windows clients
+        # without hard-link support are not a concern here.)
+        try:
+            os.link(tmp, dest)
+        except FileExistsError:
             existing = artifact_sha256(dest)
             if existing == sha:
                 # Idempotent re-upload (twine retry / CI double-run): same
@@ -206,7 +219,6 @@ async def upload_package(
                         f"sha256 ({existing} != {sha}); overwriting published "
                         f"packages is not allowed"))
 
-        os.replace(tmp, dest)  # atomic publish within the same filesystem
         sidecar_path(dest).write_text(sha)
     finally:
         tmp.unlink(missing_ok=True)  # no-op after a successful rename
