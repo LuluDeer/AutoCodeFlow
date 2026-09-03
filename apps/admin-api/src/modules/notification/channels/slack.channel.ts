@@ -1,30 +1,43 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
-import { BaseChannel, NotificationPayload } from "./base.channel";
+import {
+  BaseChannel,
+  ChannelDeliveryStatus,
+  NotificationPayload,
+} from "./base.channel";
 import { assertSafeHttpUrl } from "../../../common/utils/safe-http.util";
+import { ChannelConfigStore } from "../channel-config.store";
 
 @Injectable()
 export class SlackChannel extends BaseChannel {
   name = "slack";
   private logger = new Logger(SlackChannel.name);
 
-  constructor(private config: ConfigService) {
+  constructor(
+    private config: ConfigService,
+    private store: ChannelConfigStore,
+  ) {
     super();
   }
 
-  async send(p: NotificationPayload) {
-    const webhook = this.config.get<string>("notification.slackWebhook");
-    if (!webhook) return;
+  async send(p: NotificationPayload): Promise<ChannelDeliveryStatus> {
+    // V1 (round-7): saved channel config first, env (SLACK_WEBHOOK) as
+    // fallback default only.
+    const webhook =
+      this.store.get("slack")?.webhookUrl ||
+      this.config.get<string>("notification.slackWebhook");
+    if (!webhook) return "skipped";
 
     // F-3: SSRF chokepoint (NOTIF-001), fail-open like WebhookChannel.
+    // V2: report the block instead of swallowing it silently.
     try {
       await assertSafeHttpUrl(webhook);
     } catch (err: unknown) {
       this.logger.warn(
         `[Slack] SSRF-blocked URL ${webhook}: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return;
+      return "blocked";
     }
 
     try {
@@ -45,8 +58,10 @@ export class SlackChannel extends BaseChannel {
         );
       });
       this.logger.log(`[Slack] sent: ${p.title}`);
+      return "sent";
     } catch (error) {
       this.logger.error(`[Slack] send failed after retries: ${error.message}`);
+      return "failed";
     }
   }
 }

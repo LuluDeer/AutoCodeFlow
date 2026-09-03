@@ -10,7 +10,10 @@ import { DingtalkChannel } from "./channels/dingtalk.channel";
 import { EmailChannel } from "./channels/email.channel";
 import { SlackChannel } from "./channels/slack.channel";
 import { WebhookChannel } from "./channels/webhook.channel";
-import { NotificationPayload } from "./channels/base.channel";
+import {
+  ChannelDeliveryStatus,
+  NotificationPayload,
+} from "./channels/base.channel";
 
 /** NOTIF-003: 静默规则数量上限，防止通过 API 无限添加导致内存缓慢泄漏。 */
 export const MAX_ALERT_SILENCES = 1000;
@@ -41,6 +44,15 @@ export interface AlertSilence {
   endTime?: Date;
   createdAt?: Date;
 }
+
+/**
+ * V2 (round-7): per-channel delivery outcomes of one fan-out. The HTTP status
+ * stays 2xx even when individual channels fail or are SSRF-blocked (a failed
+ * notification must never 500 a task callback), but the response body now
+ * tells the caller exactly what happened on each channel instead of hiding it
+ * in server logs.
+ */
+export type ChannelDeliveryResults = Record<string, ChannelDeliveryStatus>;
 
 @Injectable()
 export class NotificationService implements OnModuleInit, OnModuleDestroy {
@@ -108,7 +120,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async sendAll(payload: NotificationPayload) {
+  async sendAll(payload: NotificationPayload): Promise<ChannelDeliveryResults> {
     // NOTIF-002: 日志只记渠道类型 + 内容长度 + 前 80 字符脱敏摘要，不记原文
     const channels: AlertChannel[] = [
       AlertChannel.EMAIL,
@@ -121,15 +133,18 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       `[sendAll] channels=${channels.join(",")} title=${payload.title} level=${payload.level} content=${this.buildContentDigest(payload.content)}`,
     );
     // Fan out to all channels; individual failures are caught inside sendToChannels
-    await this.sendToChannels(payload, channels);
+    return this.sendToChannels(payload, channels);
   }
 
   async sendToChannels(
     payload: NotificationPayload,
     channels: AlertChannel[],
     webhookUrl?: string,
-  ) {
-    const entries: Array<{ name: string; promise: Promise<any> }> = [];
+  ): Promise<ChannelDeliveryResults> {
+    const entries: Array<{
+      name: string;
+      promise: Promise<ChannelDeliveryStatus | void>;
+    }> = [];
     if (channels.includes(AlertChannel.EMAIL))
       entries.push({ name: "email", promise: this.email.send(payload) });
     if (channels.includes(AlertChannel.SLACK))
@@ -145,18 +160,32 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       });
 
     const results = await Promise.allSettled(entries.map((e) => e.promise));
+    // V2 (round-7): surface the per-channel outcome to the caller. Rejected
+    // promises stay "failed"; fulfilled ones carry the channel's own status
+    // (mocked/legacy channels returning undefined count as "sent").
+    const delivery: ChannelDeliveryResults = {};
     const failures: string[] = [];
     results.forEach((result, i) => {
+      const name = entries[i].name;
       if (result.status === "rejected") {
         const msg =
           result.reason instanceof Error
             ? result.reason.message
             : String(result.reason);
         this.logger.error(
-          `${entries[i].name} notification failed: ${msg}`,
+          `${name} notification failed: ${msg}`,
           result.reason instanceof Error ? result.reason.stack : undefined,
         );
-        failures.push(`${entries[i].name}: ${msg}`);
+        failures.push(`${name}: ${msg}`);
+        delivery[name] = "failed";
+      } else {
+        const status = (result.value ?? "sent") as ChannelDeliveryStatus;
+        delivery[name] = status;
+        if (status === "blocked") {
+          this.logger.warn(
+            `${name} notification blocked by SSRF guard — see channel log for the URL`,
+          );
+        }
       }
     });
 
@@ -165,6 +194,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         `Notification failed on channel(s): ${failures.join("; ")} — continuing without interrupting main flow`,
       );
     }
+    return delivery;
   }
 
   isSilenced(taskId?: string, level?: AlertLevel): boolean {
@@ -375,8 +405,22 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
   /**
    * Send a one-off outbound webhook notification to a specific URL.
    * Useful for per-task webhook callbacks configured by the user.
+   *
+   * V2 (round-7): unlike the fan-out paths (which stay fail-open so a broken
+   * alarm never interrupts task flows), this direct-call path must make an
+   * SSRF block visible to its caller — the URL was supplied explicitly in
+   * the request, so a rejection is an input error: BadRequestException (400).
    */
-  async sendWebhook(payload: NotificationPayload, url: string) {
-    return this.webhook.send(payload, url);
+  async sendWebhook(
+    payload: NotificationPayload,
+    url: string,
+  ): Promise<ChannelDeliveryStatus> {
+    const status = await this.webhook.send(payload, url);
+    if (status === "blocked") {
+      throw new BadRequestException(
+        `Webhook URL rejected by SSRF policy (private/loopback/link-local/benchmark/CGNAT targets are not allowed): ${url}`,
+      );
+    }
+    return status;
   }
 }

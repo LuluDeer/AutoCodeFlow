@@ -68,6 +68,13 @@ function isBlockedAddress(addr: string): boolean {
     if (v[0] === 192 && v[1] === 168) return true; // 192.168/16
     if (v[0] === 169 && v[1] === 254) return true; // link-local incl. AWS metadata 169.254.169.254
     if (v[0] === 0) return true;
+    // V3 (round-7): RFC 2544 benchmarking range — commonly occupied by TUN
+    // interfaces (e.g. proxy/VPN clients), so it behaves like a local
+    // listener and must not slip past the notification/AI SSRF guard.
+    if (v[0] === 198 && (v[1] === 18 || v[1] === 19)) return true; // 198.18.0.0/15
+    // V3 (round-7): RFC 6598 CGNAT range — used by Tailscale/carrier NAT to
+    // reach private hosts; same deny semantics as loopback/RFC1918.
+    if (v[0] === 100 && v[1] >= 64 && v[1] <= 127) return true; // 100.64.0.0/10
     if (v[0] >= 224) return true; // multicast / reserved
     return false;
   }
@@ -77,7 +84,13 @@ function isBlockedAddress(addr: string): boolean {
   if (lower === "::1") return true;
   if (lower === "::") return true;
   if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
-  if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) return true;
+  if (
+    lower.startsWith("fe8") ||
+    lower.startsWith("fe9") ||
+    lower.startsWith("fea") ||
+    lower.startsWith("feb")
+  )
+    return true;
   if (lower.startsWith("ff")) return true;
   return false;
 }
@@ -93,7 +106,13 @@ function isBlockedAddress(addr: string): boolean {
  * dangerous ranges (link-local/cloud metadata, unspecified, multicast) while
  * keeping private-LAN targets reachable.
  */
-type AddressRisk = "public" | "private-lan" | "loopback" | "link-local" | "reserved";
+type AddressRisk =
+  | "public"
+  | "private-lan"
+  | "loopback"
+  | "link-local"
+  | "restricted"
+  | "reserved";
 
 function classifyAddressRisk(addr: string): AddressRisk | null {
   if (!isIP(addr)) return null;
@@ -103,6 +122,12 @@ function classifyAddressRisk(addr: string): AddressRisk | null {
     if (v[0] === 169 && v[1] === 254) return "link-local"; // incl. AWS/GCP metadata 169.254.169.254
     if (v[0] === 0) return "reserved"; // this-network / unspecified
     if (v[0] >= 224) return "reserved"; // multicast / reserved
+    // V3 (round-7): benchmarking (RFC 2544) and CGNAT (RFC 6598) are blocked
+    // for webhook/AI targets outright; for executor traffic they follow the
+    // same gated semantics as loopback — refused by default, allowed only
+    // with EXECUTOR_ALLOW_PRIVATE_NETWORK=true (Tailscale-style overlays).
+    if (v[0] === 198 && (v[1] === 18 || v[1] === 19)) return "restricted"; // 198.18.0.0/15
+    if (v[0] === 100 && v[1] >= 64 && v[1] <= 127) return "restricted"; // 100.64.0.0/10
     if (v[0] === 10) return "private-lan"; // 10.0.0.0/8
     if (v[0] === 172 && v[1] >= 16 && v[1] <= 31) return "private-lan"; // 172.16/12
     if (v[0] === 192 && v[1] === 168) return "private-lan"; // 192.168/16
@@ -110,7 +135,12 @@ function classifyAddressRisk(addr: string): AddressRisk | null {
   }
   const lower = addr.toLowerCase();
   if (lower === "::1") return "loopback";
-  if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) {
+  if (
+    lower.startsWith("fe8") ||
+    lower.startsWith("fe9") ||
+    lower.startsWith("fea") ||
+    lower.startsWith("feb")
+  ) {
     return "link-local"; // fe80::/10
   }
   if (lower === "::" || lower.startsWith("ff")) return "reserved"; // unspecified / multicast
@@ -128,6 +158,10 @@ function classifyAddressRisk(addr: string): AddressRisk | null {
  *    multicast/reserved, and any non-http(s) protocol.
  *  - Loopback (127.0.0.1, ::1) is blocked unless EXECUTOR_ALLOW_PRIVATE_NETWORK=true
  *    (same-host dev deployments where the executor runs next to admin-api).
+ *  - Restricted ranges — 198.18.0.0/15 (RFC 2544 benchmarking, commonly taken by
+ *    TUN interfaces) and 100.64.0.0/10 (RFC 6598 CGNAT, Tailscale overlays) —
+ *    follow the loopback rule (V3): blocked by default, allowed only with
+ *    EXECUTOR_ALLOW_PRIVATE_NETWORK=true. assertSafeHttpUrl blocks them outright.
  *  - Private LAN ranges (10/8, 172.16/12, 192.168/16, IPv6 ULA) are ALLOWED by
  *    default: the documented deployment topology runs admin-api and executors
  *    on the same internal network, so the webhook/AI blanket RFC1918 block
@@ -161,7 +195,10 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
   const check = (addr: string) => {
     const risk = classifyAddressRisk(addr);
     if (risk === "public" || risk === "private-lan") return;
-    if (risk === "loopback" && allowPrivateNetwork) return;
+    // V3 (round-7): "restricted" (benchmark/CGNAT) follows the loopback rule —
+    // refused by default, reachable only under EXECUTOR_ALLOW_PRIVATE_NETWORK.
+    if ((risk === "loopback" || risk === "restricted") && allowPrivateNetwork)
+      return;
     throw new BadRequestException(
       `Executor address ${host} resolves to ${addr} (${risk}) — outbound request refused`,
     );
