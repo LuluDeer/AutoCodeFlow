@@ -19,6 +19,13 @@ export interface LogEntry {
 
 /**
  * Environment variables injected into every task execution context.
+ *
+ * N23: executor-node (SEC-01 env whitelist) only injects the task-scoped
+ * trio EXECUTION_ID / TASK_ID / TASK_NAME — Admin API credentials are
+ * deliberately NOT forwarded to task subprocesses, so `adminApiUrl` and
+ * `executorToken` are optional here. When they are absent the Admin API
+ * callback surface (`HttpClient`) is explicitly disabled rather than an
+ * error at construction time.
  */
 export interface TaskEnv {
   /** Unique identifier for this task execution */
@@ -27,10 +34,10 @@ export interface TaskEnv {
   taskId: string;
   /** Display name of the task */
   taskName: string;
-  /** Base URL of the Admin API (e.g. http://admin-api:3000) */
-  adminApiUrl: string;
-  /** Bearer token authorising requests to the Admin API */
-  executorToken: string;
+  /** Base URL of the Admin API (e.g. http://admin-api:3000). Optional: not injected by the executor. */
+  adminApiUrl?: string;
+  /** Bearer token authorising requests to the Admin API. Optional: not injected by the executor. */
+  executorToken?: string;
   /** Optional distributed trace identifier */
   traceId?: string;
 }

@@ -11,6 +11,7 @@ from pathlib import Path
 import hashlib
 import os
 import re
+import tempfile
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -68,6 +69,52 @@ def pkg_dir(name: str) -> Path:
     return d
 
 
+# N18: sha256 sidecar helpers.
+# Hashes are computed once at upload time and stored in a `<filename>.sha256`
+# sidecar next to the artifact, so the per-package index page never has to
+# read whole wheels into memory on every pip request.
+HASH_CHUNK_SIZE = 1024 * 1024
+SIDECAR_SUFFIX = ".sha256"
+UPLOAD_SUFFIX = ".upload"
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def sidecar_path(path: Path) -> Path:
+    return path.with_name(path.name + SIDECAR_SUFFIX)
+
+
+def is_meta_file(name: str) -> bool:
+    """Sidecar / in-flight upload files must never appear in the index."""
+    return name.endswith(SIDECAR_SUFFIX) or name.endswith(UPLOAD_SUFFIX)
+
+
+def hash_file_streamed(path: Path) -> str:
+    """sha256 of a file on disk, read in 1 MiB chunks (bounded memory)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(HASH_CHUNK_SIZE), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def artifact_sha256(path: Path) -> str:
+    """Read the hash from the sidecar; lazily compute + backfill if missing."""
+    sc = sidecar_path(path)
+    if sc.is_file():
+        try:
+            digest = sc.read_text().strip()
+            if _HEX64.fullmatch(digest):
+                return digest
+        except OSError:
+            pass
+    digest = hash_file_streamed(path)
+    try:
+        sc.write_text(digest)
+    except OSError:
+        pass
+    return digest
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "pypi-registry"}
@@ -90,10 +137,12 @@ def package_index(package_name: str, _user: str = Depends(verify_auth)):
     d = PACKAGES_DIR / normalize(package_name)
     if not d.exists():
         raise HTTPException(status_code=404, detail="Package not found")
-    files = list(d.glob("*"))
+    # N18: hashes come from upload-time sidecars (lazily backfilled for
+    # legacy files); no whole-file reads into memory per request.
+    files = [f for f in sorted(d.glob("*")) if f.is_file() and not is_meta_file(f.name)]
     links = ""
-    for f in sorted(files):
-        sha256 = hashlib.sha256(f.read_bytes()).hexdigest()
+    for f in files:
+        sha256 = artifact_sha256(f)
         links += f'<a href="/packages/{normalize(package_name)}/{f.name}#sha256={sha256}">{f.name}</a><br/>\n'
     return f"""<!DOCTYPE html><html><head><title>Links for {package_name}</title></head>
 <body><h1>Links for {package_name}</h1>\n{links}</body></html>"""
@@ -124,8 +173,43 @@ async def upload_package(
         raise HTTPException(status_code=400, detail="No filename")
     if not re.search(r'\.(whl|tar\.gz|zip|egg)$', filename, re.IGNORECASE):
         raise HTTPException(status_code=400, detail="Invalid package format. Only .whl, .tar.gz, .zip, .egg are allowed")
-    dest = pkg_dir(name) / filename
-    dest.write_bytes(await content.read())
+    d = pkg_dir(name)
+    dest = d / filename
+
+    # N21 + memory control: stream the upload to a unique temp file in the
+    # package directory while computing sha256 in the same 1 MiB-chunk pass,
+    # so peak memory stays O(chunk) instead of O(wheel size). The hash is
+    # computed once and reused for both the duplicate check and the sidecar.
+    fd, tmp_name = tempfile.mkstemp(dir=d, prefix=filename + ".", suffix=UPLOAD_SUFFIX)
+    tmp = Path(tmp_name)
+    try:
+        h = hashlib.sha256()
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = await content.read(HASH_CHUNK_SIZE)
+                if not chunk:
+                    break
+                h.update(chunk)
+                out.write(chunk)
+        sha = h.hexdigest()
+
+        if dest.exists():
+            existing = artifact_sha256(dest)
+            if existing == sha:
+                # Idempotent re-upload (twine retry / CI double-run): same
+                # bytes -> 200, original artifact untouched.
+                return {"message": f"Uploaded {filename} (unchanged)",
+                        "package": name, "version": version, "unchanged": True}
+            raise HTTPException(
+                status_code=409,
+                detail=(f"Artifact {filename} already exists with a different "
+                        f"sha256 ({existing} != {sha}); overwriting published "
+                        f"packages is not allowed"))
+
+        os.replace(tmp, dest)  # atomic publish within the same filesystem
+        sidecar_path(dest).write_text(sha)
+    finally:
+        tmp.unlink(missing_ok=True)  # no-op after a successful rename
     return {"message": f"Uploaded {filename}", "package": name, "version": version}
 
 
