@@ -7,6 +7,8 @@ import axios from 'axios';
 import { timingSafeEqual } from 'node:crypto';
 import { config } from '../config';
 import { buildAdminApiUrl } from '../admin-api-url';
+import { executorStartupId } from '../startup-identity';
+import { unwrapAdminResponseData, adoptExecutorTokenHash } from '../admin-envelope';
 
 // Static token: env vars take priority, then CLI --token arg (via config)
 const STATIC_TOKEN = config.token;
@@ -45,12 +47,38 @@ async function fetchToken(): Promise<string | null> {
       {
         address: config.executorAddressPublic || config.executorAddress,
         appName: config.appName,
+        // R9 (round-8 P1 W2): the process-life identity lets admin-api make
+        // this endpoint idempotent — a same-startupId re-fetch returns the
+        // CURRENT token instead of rotating (N4 register semantics).
+        startupId: executorStartupId,
       },
       { timeout: 10000, headers },
     );
 
-    if (response.status === 200) {
-      return response.data.token;
+    // R9: the token endpoint is a Nest POST — it answers 201, not 200. The
+    // old `=== 200` check silently dropped every successful response.
+    if (response.status >= 200 && response.status < 300) {
+      // R9 (round-8 P1 root fix): admin-api's global ResponseInterceptor wraps
+      // the payload in {code,message,data}. Reading response.data.token
+      // directly yielded undefined forever, so every getCurrentToken() call
+      // re-hit POST /token — which used to rotate on every call — putting the
+      // stored tokenHash on a ~30s rotation cycle and breaking the N26
+      // per-execution callback-token invariant (docs/VERIFY-round8-e2e.md §1.5).
+      const payload = unwrapAdminResponseData(response.data);
+      const token =
+        typeof payload?.token === 'string' && payload.token.length > 0
+          ? payload.token
+          : null;
+      if (!token) {
+        // eslint-disable-next-line no-console
+        console.warn('[auth] fetchToken: admin response carried no token');
+        return null;
+      }
+      // R9 (W3): adopt the tokenHash that matches this token so the HMAC
+      // source secret for per-execution callback tokens stays in sync with
+      // whatever admin-api currently stores (see admin-envelope.ts).
+      adoptExecutorTokenHash(response.data);
+      return token;
     }
   } catch (_err: unknown) {
     // Fall back to static token if dynamic token fetch fails

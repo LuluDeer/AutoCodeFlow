@@ -14,6 +14,9 @@ AutoCodeFlow 支持 Python 和 Node.js 两种执行器。每个执行器通过 `
 | `TASK_NAME` | 当前任务名称 | `fetch_data` |
 | `EXECUTION_ID` | 本次执行记录的唯一标识 | `exec_xyz789` |
 | `AUTOFLOW_<KEY>` | 触发参数，按参数名转大写后注入 | `AUTOFLOW_SOURCE_URL=https://api.example.com` |
+| `AUTOFLOW_ADMIN_API_URL` | Admin API 基地址（非机密路由信息，N23 起注入） | `AUTOFLOW_ADMIN_API_URL=http://admin-api:3105` |
+| `AUTOFLOW_CALLBACK_TOKEN` | 本次执行的一次性回调 token（`v1.` HMAC，绑定 executionId、随 TTL 过期，N23 起注入） | `AUTOFLOW_CALLBACK_TOKEN=v1.<uuid>.<exp>.<hmac>` |
+| `AUTOFLOW_EXECUTOR_ADDRESS` | 当前执行器注册地址（非机密路由信息，N27 起注入；SDK 经 `ctx.executorAddress` 暴露并自动填入回调请求） | `AUTOFLOW_EXECUTOR_ADDRESS=executor-node:8002` |
 
 例如触发参数 `{ "source_url": "https://api.example.com", "limit": 100 }` 会注入为：
 
@@ -33,7 +36,9 @@ source_url = os.environ["AUTOFLOW_SOURCE_URL"]
 limit = int(os.environ.get("AUTOFLOW_LIMIT", "100"))
 ```
 
-> 执行结果回调由执行器进程统一处理。任务脚本不需要也不应持有平台回调 token 或 Admin API 地址。
+> 执行结果回调仍由执行器进程统一处理，任务脚本无需自行上报。但自 N23 起，任务脚本可以**安全地主动回调 Admin API**（如 `POST /api/executions/callback` 上报中间进度、或使用 SDK 的 `ctx.http`）：执行器会注入仅绑定**本次执行**的一次性 token（`AUTOFLOW_CALLBACK_TOKEN`）、Admin API 地址（`AUTOFLOW_ADMIN_API_URL`）与执行器注册地址（`AUTOFLOW_EXECUTOR_ADDRESS`，N27）。该 token 由执行器侧密钥派生 HMAC 签名（优先 `EXECUTION_CALLBACK_SECRET`，其次注册时下发的 per-executor tokenHash，最后执行器共享 token，N26），只能用于本 `executionId` 的回调且随任务超时+15 分钟宽限过期；执行器共享 token 本身依旧绝不进入任务子进程（SEC-01）。旧版执行器不注入这些变量，任务脚本应通过 `ctx.http.enabled` 判断回调能力是否可用。
+>
+> **多节点部署约束（N26）**：若各执行器使用独立 `--secret` 安装，per-execution 回调 token 以注册时下发的 tokenHash 为签名密钥，Admin API 按地址回查同一值验签。管理员在后台**轮换执行器 token 后**，执行器需重新注册（重启或注册重试）才能拿到新密钥；窗口期内旧密钥签发的任务回调 token 会验签失败（401）。若两端都配置了相同的 `EXECUTION_CALLBACK_SECRET`，则始终优先使用该密钥，不受轮换影响。
 
 ## 任务级调度策略
 
@@ -341,6 +346,55 @@ async function processFile(input: string, format: string): Promise<string> {
   return `output.${format}`;
 }
 ```
+
+### 任务内回调 Admin API（N23，per-execution token）
+
+`@autoflow/sdk` 的 `TaskContext.fromEnv()` 会自动识别执行器注入的
+`AUTOFLOW_ADMIN_API_URL` + `AUTOFLOW_CALLBACK_TOKEN`，此时 `ctx.http` 直接可用；
+token 仅授权对**本次 executionId** 的回调，过期或越权会被 Admin API 拒绝（401）。
+
+```typescript
+import { TaskContext } from '@autoflow/sdk';
+
+export default async function main() {
+  const ctx = TaskContext.fromEnv();
+
+  if (!ctx.http.enabled) {
+    // 旧版执行器未注入回调凭证：跳过主动回调，结果仍由执行器统一上报
+    ctx.logger.warn('callback capability unavailable on this executor');
+    return { ok: true };
+  }
+
+  // 例：向平台回报一次执行结果回调。请求体每条必须携带本 execution 的
+  // executionId（服务端按 token 绑定的 executionId 校验）；executorAddress
+  // 由 ctx.http 自动用执行器注入的 AUTOFLOW_EXECUTOR_ADDRESS 补齐，
+  // 无需硬编码（N27）——手写时请用 ctx.executorAddress，地址随部署
+  // 变化，硬编码必然在重注册后 mismatch。
+  await ctx.http.post('/api/executions/callback', [
+    {
+      executionId: ctx.executionId,
+      status: 'success',
+      durationMs: 1234,
+    },
+  ]);
+
+  // 显式书写同样可行：
+  // await ctx.http.post('/api/executions/callback', [
+  //   {
+  //     executionId: ctx.executionId,
+  //     status: 'success',
+  //     executorAddress: ctx.executorAddress,
+  //     durationMs: 1234,
+  //   },
+  // ]);
+
+  return ctx.success('callback delivered');
+}
+```
+
+> 注意：per-execution token 只对 `POST /api/executions/callback` 的回调鉴权有意义，
+> 不能访问其他需要用户 JWT 的管理端点；也不要将其持久化或跨执行复用——它绑定
+> 单次 execution 且会过期，任何越权使用都会 fail-closed。
 
 ## 执行器注册流程
 

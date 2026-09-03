@@ -25,6 +25,7 @@ import {
   flushLogs,
 } from './file-logger';
 import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
+import { adoptExecutorTokenHash } from './admin-envelope';
 import { taskWorkerManager } from './task-worker';
 import { killRunningTaskProcesses } from './routes/execute';
 import { healthRouter } from './routes/health';
@@ -67,7 +68,7 @@ function detectAvailableRuntimes(): string[] {
 async function registerExecutor() {
   const runtimes = detectAvailableRuntimes();
   try {
-    await postWithStaticToken('/api/executors/register', {
+    const resp = await postWithStaticToken('/api/executors/register', {
       appName: config.appName,
       groupName: config.groupName || undefined,
       address: config.executorAddressPublic || config.executorAddress,
@@ -81,6 +82,14 @@ async function registerExecutor() {
       restartedAt: executorStartedAt,
       startupId: executorStartupId,
     });
+    // N26 (round-8): adopt the per-executor tokenHash returned at register
+    // time. It becomes the HMAC source secret for per-execution callback
+    // tokens (execution-callback-token.ts resolveCallbackSecret), so
+    // per-node `--secret` deployments verify on the admin side against the
+    // exact value stored there. The response may or may not be wrapped by
+    // the admin ResponseInterceptor ({code,message,data}) — unwrapAdminResponseData
+    // reads both shapes (R9: shared with middleware/auth.ts fetchToken).
+    adoptExecutorTokenHash(resp?.data);
     logger.info(`Registered to admin-api (runtimes: ${runtimes.join(', ')}, maxConcurrent: ${config.maxConcurrentTasks})`);
   } catch (err: any) {
     logger.warn(`Register failed (will retry via heartbeat): ${err.message}`);
