@@ -1,7 +1,4 @@
-import {
-  assertSafeHttpUrl,
-  assertSafeExecutorUrl,
-} from "../safe-http.util";
+import { assertSafeHttpUrl, assertSafeExecutorUrl } from "../safe-http.util";
 
 /**
  * F-3: executor-target SSRF policy.
@@ -17,7 +14,8 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
   const PRIVATE = process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
 
   afterEach(() => {
-    if (PRIVATE === undefined) delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+    if (PRIVATE === undefined)
+      delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
     else process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = PRIVATE;
   });
 
@@ -47,9 +45,9 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
     });
 
     it("blocks non-http(s) protocols", async () => {
-      await expect(
-        assertSafeExecutorUrl("file:///etc/passwd"),
-      ).rejects.toThrow(/http\(s\)/);
+      await expect(assertSafeExecutorUrl("file:///etc/passwd")).rejects.toThrow(
+        /http\(s\)/,
+      );
       await expect(
         assertSafeExecutorUrl("gopher://10.0.0.1:25/"),
       ).rejects.toThrow(/http\(s\)/);
@@ -90,6 +88,26 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
         assertSafeExecutorUrl("http://93.184.216.34:3002/api/execute"),
       ).resolves.toBeInstanceOf(URL);
     });
+
+    // V3 (round-7): benchmark (RFC 2544) and CGNAT (RFC 6598) ranges follow
+    // the loopback rule for executor traffic — refused by default.
+    it("blocks RFC 2544 benchmark 198.18.0.0/15 by default", async () => {
+      await expect(
+        assertSafeExecutorUrl("http://198.18.0.1:3002/api/execute"),
+      ).rejects.toThrow(/restricted/);
+      await expect(
+        assertSafeExecutorUrl("http://198.19.255.254:3002/api/execute"),
+      ).rejects.toThrow(/restricted/);
+    });
+
+    it("blocks CGNAT 100.64.0.0/10 by default", async () => {
+      await expect(
+        assertSafeExecutorUrl("http://100.64.0.5:3002/api/execute"),
+      ).rejects.toThrow(/restricted/);
+      await expect(
+        assertSafeExecutorUrl("http://100.127.255.254:3002/api/execute"),
+      ).rejects.toThrow(/restricted/);
+    });
   });
 
   describe("EXECUTOR_ALLOW_PRIVATE_NETWORK=true", () => {
@@ -104,9 +122,9 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
     });
 
     it("allows IPv6 loopback ::1", async () => {
-      await expect(assertSafeExecutorUrl("http://[::1]:8001/")).resolves.toBeInstanceOf(
-        URL,
-      );
+      await expect(
+        assertSafeExecutorUrl("http://[::1]:8001/"),
+      ).resolves.toBeInstanceOf(URL);
     });
 
     it("STILL blocks metadata / link-local even when private network allowed", async () => {
@@ -116,6 +134,52 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       await expect(
         assertSafeExecutorUrl("http://0.0.0.0:3002/"),
       ).rejects.toThrow();
+    });
+
+    it("allows benchmark/CGNAT ranges under the private-network flag (loopback-like semantics)", async () => {
+      await expect(
+        assertSafeExecutorUrl("http://198.18.0.1:3002/api/execute"),
+      ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertSafeExecutorUrl("http://100.64.0.5:3002/api/execute"),
+      ).resolves.toBeInstanceOf(URL);
+    });
+  });
+
+  // V3 (round-7): the notification/AI guard (assertSafeHttpUrl) blocks these
+  // ranges outright — no env flag relaxes it (verified in round-7 e2e §1.4).
+  describe("assertSafeHttpUrl — V3 deny-list additions", () => {
+    it("blocks RFC 2544 benchmark 198.18.0.0/15 (the round-7 TUN bypass)", async () => {
+      await expect(
+        assertSafeHttpUrl("http://198.18.0.1:9999/webhook"),
+      ).rejects.toThrow(/deny list/);
+      await expect(
+        assertSafeHttpUrl("http://198.19.0.1/webhook"),
+      ).rejects.toThrow(/deny list/);
+    });
+
+    it("blocks CGNAT 100.64.0.0/10 (Tailscale range)", async () => {
+      await expect(
+        assertSafeHttpUrl("http://100.64.0.1/webhook"),
+      ).rejects.toThrow(/deny list/);
+      await expect(
+        assertSafeHttpUrl("http://100.127.255.254/webhook"),
+      ).rejects.toThrow(/deny list/);
+    });
+
+    it("keeps adjacent public ranges reachable (no over-block)", async () => {
+      await expect(
+        assertSafeHttpUrl("http://198.17.0.1/webhook"),
+      ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertSafeHttpUrl("http://198.20.0.1/webhook"),
+      ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertSafeHttpUrl("http://100.128.0.1/webhook"),
+      ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertSafeHttpUrl("http://100.63.255.1/webhook"),
+      ).resolves.toBeInstanceOf(URL);
     });
   });
 
