@@ -16,9 +16,11 @@ import { SystemConfigService } from "../config/config.service";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import {
   EXECUTION_CALLBACK_TOKEN_PREFIX,
+  parseExecutionCallbackToken,
   verifyExecutionCallbackToken,
   ExecutionCallbackTokenClaims,
 } from "./execution-callback-token.util";
+import { ExecutionCallbackMetricsService } from "./execution-callback-metrics.service";
 import { CallbackItemDto } from "./dto/execution-callback.dto";
 import { ExecutorService } from "../executor/executor.service";
 
@@ -39,6 +41,8 @@ export class ExecutionCallbackController {
     private readonly configService: ConfigService,
     private readonly systemConfigService: SystemConfigService,
     private readonly executorService: ExecutorService,
+    // N32: 401 分类观测计数（进程内，Prometheus 经快照映射暴露）。
+    private readonly callbackMetrics: ExecutionCallbackMetricsService,
   ) {}
 
   @Post("callback")
@@ -86,6 +90,8 @@ export class ExecutionCallbackController {
     }
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
     if (!token) {
+      // N32: 完全没带 token —— 与"带了但校验失败"区分开。
+      this.callbackMetrics.recordAuthResult("missing_token");
       throw new UnauthorizedException("Missing executor token");
     }
 
@@ -98,6 +104,8 @@ export class ExecutionCallbackController {
     // shared-token path unchanged (backward compatibility).
     if (token.startsWith(EXECUTION_CALLBACK_TOKEN_PREFIX)) {
       await this.verifyPerExecutionCallbackToken(token, callbacks);
+      // N32: 认证通过即计 ok（业务层 per-item 结果不属于认证维度）。
+      this.callbackMetrics.recordAuthResult("ok");
       const results = await this.taskService.handleCallback(callbacks);
       return { results };
     }
@@ -113,6 +121,8 @@ export class ExecutionCallbackController {
     for (const item of callbacks) {
       const addr = item.executorAddress?.trim();
       if (!addr) {
+        // N32: legacy 路径缺 executorAddress —— 归为 bad_address。
+        this.callbackMetrics.recordAuthResult("bad_address");
         throw new UnauthorizedException(
           "executorAddress is required on every callback item",
         );
@@ -128,18 +138,27 @@ export class ExecutionCallbackController {
         // exactly ONE unique executor in the batch. Multi-executor batches
         // can never use a shared token.
         if (seenAddresses.size === 1) {
-          await verifyExecutorToken(
-            auth,
-            this.configService,
-            this.systemConfigService,
-          );
+          try {
+            await verifyExecutorToken(
+              auth,
+              this.configService,
+              this.systemConfigService,
+            );
+          } catch (err) {
+            // N32: per-address 校验失败且共享 token 兜底也失败。
+            this.callbackMetrics.recordAuthResult("legacy_shared_invalid");
+            throw err;
+          }
         } else {
+          this.callbackMetrics.recordAuthResult("legacy_shared_invalid");
           throw new UnauthorizedException(
             `Invalid executor token for address ${addr}`,
           );
         }
       }
     }
+    // N32: legacy 路径认证通过。
+    this.callbackMetrics.recordAuthResult("ok");
     const results = await this.taskService.handleCallback(callbacks);
     return { results };
   }
@@ -175,18 +194,43 @@ export class ExecutionCallbackController {
       claims = await this.verifyAgainstPerExecutorSecrets(token, callbacks);
     }
     if (!claims) {
+      // N32 分类取舍：token util 层是与 executor-node 签名端共享的纯函数
+      // （算法由测试向量双向钉死），刻意不注入 Nest service；expired 与
+      // bad-signature 的区分因此收回 controller，用结构重解析派生——
+      // parseExecutionCallbackToken 无 HMAC 重算，成本可忽略。畸形 `v1.`
+      // 串（解析失败）归入 v1_bad_signature。
+      this.callbackMetrics.recordAuthResult(
+        this.isV1TokenExpired(token) ? "v1_expired" : "v1_bad_signature",
+      );
       throw new UnauthorizedException(
         "Invalid or expired execution callback token",
       );
     }
     for (const item of callbacks) {
       if (item.executionId !== claims.executionId) {
+        this.callbackMetrics.recordAuthResult("v1_binding_mismatch");
         throw new UnauthorizedException(
           "Execution callback token is not valid for this execution",
         );
       }
     }
     return claims;
+  }
+
+  /**
+   * N32: structural expiry probe for the v1_expired vs v1_bad_signature
+   * split. Mirrors verifyExecutionCallbackToken's fail-closed ordering
+   * (expiry is checked before signatures, so an expired token classifies
+   * as expired even if its signature would also have failed). A token that
+   * cannot even be parsed is NOT expired — it is a bad signature.
+   */
+  private isV1TokenExpired(token: string): boolean {
+    const parsed = parseExecutionCallbackToken(token);
+    if (!parsed) return false;
+    const nowSec = Math.floor(Date.now() / 1000);
+    return (
+      !Number.isFinite(parsed.expiresAtSec) || parsed.expiresAtSec <= nowSec
+    );
   }
 
   /**
@@ -222,7 +266,9 @@ export class ExecutionCallbackController {
       this.configService.get<string>("executor.sharedToken"),
     ];
     try {
-      const cfg = await this.systemConfigService.findOne("executor.sharedToken");
+      const cfg = await this.systemConfigService.findOne(
+        "executor.sharedToken",
+      );
       // DB-rotated token slots in ahead of the env fallback.
       candidates.splice(1, 0, cfg?.value ?? null);
     } catch {

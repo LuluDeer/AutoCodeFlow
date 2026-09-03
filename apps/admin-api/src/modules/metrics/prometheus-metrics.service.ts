@@ -3,6 +3,10 @@ import { ConfigService } from "@nestjs/config";
 import { Counter, Gauge, Registry, collectDefaultMetrics } from "prom-client";
 import { SchedulerMetricsService } from "../scheduler/scheduler-metrics.service";
 import { SchedulerService } from "../scheduler/scheduler.service";
+import {
+  EXECUTION_CALLBACK_AUTH_RESULTS,
+  ExecutionCallbackMetricsService,
+} from "../task/execution-callback-metrics.service";
 
 /** BullMQ 队列深度状态维度（与 SchedulerService.getQueueDepth 的返回键一致） */
 const QUEUE_STATES = [
@@ -38,6 +42,7 @@ export class PrometheusMetricsService {
   private readonly dependencyTriggers: Counter;
   private readonly queueUp: Gauge;
   private readonly queueDepth: Gauge;
+  private readonly callbackAuth: Counter;
   private readonly _enabled: boolean;
   /** N31: 进行中的 render（并发抓取共享同一次重建，见 render 注释） */
   private renderInFlight: Promise<string> | null = null;
@@ -49,6 +54,8 @@ export class PrometheusMetricsService {
     // SchedulerService（getQueueDepth 的唯一入口），无模块环。
     @Inject(forwardRef(() => SchedulerService))
     private readonly schedulerService: SchedulerService,
+    // N32: callback 401 分类计数（TaskModule 提供并导出，进程内单例）。
+    private readonly callbackMetrics: ExecutionCallbackMetricsService,
   ) {
     this._enabled =
       configService.get<boolean>("metrics.prometheus.enabled") !== false;
@@ -103,6 +110,14 @@ export class PrometheusMetricsService {
       name: "autoflow_queue_depth",
       help: "BullMQ task queue job counts by state (0 when Redis is unavailable)",
       labelNames: ["state"] as const,
+      registers: [this.registry],
+    });
+    // N32 (round-9): execution callback 认证结果分类计数——per-execution
+    // `v1.` token 落地后，生产排障需要按 result 标签区分 401 原因。
+    this.callbackAuth = new Counter({
+      name: "autoflow_execution_callback_auth_total",
+      help: "Execution callback authentication outcomes by result (ok / failure category)",
+      labelNames: ["result"] as const,
       registers: [this.registry],
     });
   }
@@ -168,6 +183,15 @@ export class PrometheusMetricsService {
       { result: "skipped" },
       s.dependencyTriggersSkipped,
     );
+
+    // N32: callback 认证分类 series——同一 reset+inc 快照模式；七个 result
+    // 标签全部显式 inc（inc(0) 保留 0 值 series），抓取方无需处理 series
+    // 消失，rate() 自首次计数前即可计算。
+    const cb = this.callbackMetrics.snapshot;
+    this.callbackAuth.reset();
+    for (const result of EXECUTION_CALLBACK_AUTH_RESULTS) {
+      this.callbackAuth.inc({ result }, cb.auth[result]);
+    }
 
     const depth = await this.schedulerService.getQueueDepth();
     // getQueueDepth 在 Redis 不可用时返回全 null：以 autoflow_queue_up=0

@@ -4,6 +4,7 @@ import { ExecutionCallbackController } from "../execution-callback.controller";
 import { TaskService } from "../task.service";
 import { SystemConfigService } from "../../config/config.service";
 import { ExecutorService } from "../../executor/executor.service";
+import { ExecutionCallbackMetricsService } from "../execution-callback-metrics.service";
 
 /**
  * F-5: /api/executions/callback used to be fully @SkipThrottle()'d while its
@@ -30,6 +31,9 @@ describe("ExecutionCallbackController — F-5 rate limiting", () => {
           provide: ExecutorService,
           useValue: { validateTokenByAddress: jest.fn() },
         },
+        // N32: real in-memory counter instance (behaviour under test is the
+        // throttler metadata, not the counting).
+        ExecutionCallbackMetricsService,
       ],
     }).compile();
     controller = module.get<ExecutionCallbackController>(

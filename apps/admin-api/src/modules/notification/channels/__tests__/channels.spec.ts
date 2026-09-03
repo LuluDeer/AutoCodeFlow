@@ -195,9 +195,12 @@ describe("WebhookChannel", () => {
   // V1/V5: the target comes from the per-request url argument or the saved
   // channel config — the never-defined `notification.webhookUrl` env key is
   // gone (dead reference removed in round 7).
+  // N32 (round-9): "webhook" is now PATCH-able with config shape `{ url }`
+  // and the resolution is config-first (saved url wins, request argument is
+  // the fallback) — same order as every other channel since V1.
   it("uses saved channel config when no explicit URL passed", async () => {
     const channel = new WebhookChannel(
-      makeStore({ webhook: { webhookUrl: "https://example.com/notify" } }),
+      makeStore({ webhook: { url: "https://example.com/notify" } }),
     );
     await expect(channel.send(payload)).resolves.toBe("sent");
     expect(mockedAxios.post).toHaveBeenCalledWith(
@@ -209,10 +212,20 @@ describe("WebhookChannel", () => {
     );
   });
 
-  it("uses explicit URL argument over saved config", async () => {
+  it("prefers saved channel config url over the explicit URL argument (N32 config-first)", async () => {
     const channel = new WebhookChannel(
-      makeStore({ webhook: { webhookUrl: "https://config-url.com" } }),
+      makeStore({ webhook: { url: "https://config-url.com" } }),
     );
+    await channel.send(payload, "https://example.com/override");
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      "https://config-url.com",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it("falls back to the explicit URL argument when no config url is saved", async () => {
+    const channel = new WebhookChannel(makeStore({ webhook: { url: "" } }));
     await channel.send(payload, "https://example.com/override");
     expect(mockedAxios.post).toHaveBeenCalledWith(
       "https://example.com/override",
@@ -273,7 +286,7 @@ describe("WebhookChannel", () => {
 
   it("includes level=info as default when level not provided", async () => {
     const channel = new WebhookChannel(
-      makeStore({ webhook: { webhookUrl: "https://example.com/notify" } }),
+      makeStore({ webhook: { url: "https://example.com/notify" } }),
     );
     await channel.send({ title: "No level", content: "content" });
     expect(mockedAxios.post).toHaveBeenCalledWith(
@@ -286,7 +299,7 @@ describe("WebhookChannel", () => {
   it("logs error and returns 'failed' when post fails", async () => {
     mockedAxios.post = jest.fn().mockRejectedValue(new Error("timeout"));
     const channel = new WebhookChannel(
-      makeStore({ webhook: { webhookUrl: "https://example.com/notify" } }),
+      makeStore({ webhook: { url: "https://example.com/notify" } }),
     );
     await expect(channel.send(payload)).resolves.toBe("failed");
   });

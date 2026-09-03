@@ -17,7 +17,8 @@ function parseIpv6Groups(addr: string): number[] | null {
   const headPart = dc === -1 ? lower : lower.slice(0, dc);
   const tailPart = dc === -1 ? null : lower.slice(dc + 2);
   const headSegs = headPart === "" ? [] : headPart.split(":");
-  const tailSegs = tailPart === null || tailPart === "" ? [] : tailPart.split(":");
+  const tailSegs =
+    tailPart === null || tailPart === "" ? [] : tailPart.split(":");
 
   const head: number[] = [];
   const tail: number[] = [];
@@ -94,9 +95,7 @@ export function normalizeIpForClassification(addr: string): string {
   // groups[6] non-zero (hex form like ::7f00:1) or a dotted quad in the
   // text (::127.0.0.1). `::` and `::1` keep their IPv6 semantics.
   const isCompat =
-    highZeros &&
-    groups[5] === 0 &&
-    (groups[6] !== 0 || addr.includes("."));
+    highZeros && groups[5] === 0 && (groups[6] !== 0 || addr.includes("."));
   if (!isMapped && !isCompat) return addr;
   const v4 = ((groups[6] << 16) | groups[7]) >>> 0;
   return [

@@ -45,6 +45,19 @@ export class NotificationConfigService {
       config: {},
       description: "Send notifications via WeCom group bot",
     },
+    {
+      // N32 (round-9): webhook joins the PATCH-able enum (V2 §7.1 gap —
+      // the channel's store fallback was unreachable because "webhook"
+      // could never be saved). Config shape is `{ url }`; at send time the
+      // saved url wins and the per-request webhookUrl argument is the
+      // fallback (see WebhookChannel.send).
+      key: "webhook",
+      name: "Webhook",
+      enabled: false,
+      config: {},
+      description:
+        "Generic HTTP webhook (saved url takes precedence over the per-request webhookUrl)",
+    },
   ];
 
   // In-memory channel registry (enabled flag + config). V1: the RAW config
@@ -152,17 +165,55 @@ export class NotificationConfigService {
    * N11: 读面对 password/secret/token 类字段脱敏为 '***'（对应 config 模块
    * 按 isSecret 标记脱敏的做法——渠道 config 是内存对象、无逐键元数据，
    * 故按字段名判定）。返回副本，绝不改动存储中的真实值。
+   *
+   * N32 (round-9): 字段名规则看不到 URL 值内部——webhook 类 URL 常把凭据
+   * 放在 query（?access_token=...）。同一 SECRET_FIELD_RE 因此也套用到 URL
+   * query 参数名上：`...?access_token=abc` → `...?access_token=***`，
+   * 使 GET/PATCH 响应自然覆盖值内机密。store/渠道侧仍是原值（发送路径不受
+   * 影响）。
    */
   private maskChannel(channel: NotificationChannel): NotificationChannel {
     const config: Record<string, string> = {};
     for (const [k, v] of Object.entries(channel.config)) {
       config[k] =
-        NotificationConfigService.SECRET_FIELD_RE.test(k) && v ? "***" : v;
+        NotificationConfigService.SECRET_FIELD_RE.test(k) && v
+          ? "***"
+          : this.maskUrlSecrets(v);
     }
     return { ...channel, config };
   }
 
   private static readonly SECRET_FIELD_RE = /pass|secret|token/i;
+
+  /** `?param=VALUE` / `&param=VALUE` where the param name is secret-class. */
+  private static readonly URL_SECRET_QUERY_RE =
+    /([?&][^=&#]*(?:pass|secret|token)[^=&#]*=)[^&#]+/gi;
+
+  /** A read-surface echo: secret-class query param already masked. */
+  private static readonly MASKED_URL_QUERY_RE =
+    /[?&][^=&#]*(?:pass|secret|token)[^=&#]*=\*\*\*(&|#|$)/i;
+
+  private maskUrlSecrets(value: string): string {
+    return value.replace(
+      NotificationConfigService.URL_SECRET_QUERY_RE,
+      "$1***",
+    );
+  }
+
+  /**
+   * N11 sentinel + N32 masked-URL echo：读面回显的掩码值不得覆盖存储中的
+   * 真实机密——既包括 password 类字段的精确 '***'，也包括 URL 值内被掩码
+   * 的 secret 类 query 参数（`...?token=***`，admin-web 表单原样提交时）。
+   */
+  private isMaskedEcho(key: string, value: string): boolean {
+    if (
+      value === "***" &&
+      NotificationConfigService.SECRET_FIELD_RE.test(key)
+    ) {
+      return true;
+    }
+    return NotificationConfigService.MASKED_URL_QUERY_RE.test(value);
+  }
 
   updateChannel(
     key: string,
@@ -171,9 +222,9 @@ export class NotificationConfigService {
     const channel = this.channelConfigs.get(key);
     if (!channel) {
       // V4 (round-7): unknown channel keys used to escape as a bare Error →
-      // HTTP 500. The key set is a fixed enum (email/slack/dingtalk/wecom —
-      // webhook is per-request only and intentionally absent), so this is a
-      // client input error: 400 with the valid keys listed.
+      // HTTP 500. The key set is a fixed enum (email/slack/dingtalk/wecom/
+      // webhook — webhook joined in N32, round-9), so this is a client input
+      // error: 400 with the valid keys listed.
       const validKeys = Array.from(this.channelConfigs.keys()).join(", ");
       throw new BadRequestException(
         `Unknown notification channel: ${key}. Valid channels: ${validKeys}`,
@@ -186,9 +237,9 @@ export class NotificationConfigService {
     if (data.config) {
       const merged = { ...channel.config };
       for (const [k, v] of Object.entries(data.config)) {
-        // 读面把 secret 字段回显为 '***'；admin-web 表单会原样提交。
-        // 哨兵值不得覆盖存储中的真实机密。
-        if (v === "***" && NotificationConfigService.SECRET_FIELD_RE.test(k)) {
+        // 读面把 secret 字段回显为 '***'（含 URL query 内的掩码）；
+        // admin-web 表单会原样提交。哨兵值不得覆盖存储中的真实机密。
+        if (this.isMaskedEcho(k, v)) {
           continue;
         }
         merged[k] = v;
@@ -236,10 +287,7 @@ export class NotificationConfigService {
     if (hasOverride) {
       const merged = { ...(saved ?? {}) };
       for (const [k, v] of Object.entries(config!)) {
-        if (
-          v === "***" &&
-          NotificationConfigService.SECRET_FIELD_RE.test(k)
-        ) {
+        if (this.isMaskedEcho(k, v)) {
           continue;
         }
         merged[k] = v;
@@ -334,6 +382,14 @@ export class NotificationConfigService {
             status = (await this.notificationService["wecom"].send(payload)) as
               | ChannelDeliveryStatus
               | undefined;
+            break;
+          // N32: webhook joined the configurable enum — without this case a
+          // requested+enabled webhook test would silently report "sent" for
+          // zero delivery attempts (the N29 "fake OK" class).
+          case "webhook":
+            status = (await this.notificationService["webhook"].send(
+              payload,
+            )) as ChannelDeliveryStatus | undefined;
             break;
         }
         results[channel] = status ?? "sent";

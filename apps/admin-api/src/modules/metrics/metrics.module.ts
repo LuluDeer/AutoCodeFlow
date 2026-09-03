@@ -9,6 +9,7 @@ import { MetricsService } from "./metrics.service";
 import { PrometheusMetricsService } from "./prometheus-metrics.service";
 import { MetricsController } from "./metrics.controller";
 import { SchedulerModule } from "../scheduler/scheduler.module";
+import { TaskModule } from "../task/task.module";
 
 /**
  * BullModule.registerQueue 与 task/scheduler 模块同名注册（BullMQ 允许
@@ -16,12 +17,16 @@ import { SchedulerModule } from "../scheduler/scheduler.module";
  * SchedulerModule（forwardRef）提供 SchedulerService：进程内调度计数器
  * 与 getSchedulerMetrics/getQueueDepth 的唯一事实来源；无模块环
  * （无任何模块反向依赖 MetricsModule）。
+ * N32: TaskModule 提供 ExecutionCallbackMetricsService（callback 401 分类
+ * 计数的唯一实例，controller 埋点 → 本模块 Prometheus 快照映射）。
+ * TaskModule 及其依赖链均不引用 MetricsModule，普通 import 无环。
  */
 @Module({
   imports: [
     TypeOrmModule.forFeature([Task, TaskExecution, Executor, ExecutionReport]),
     BullModule.registerQueue({ name: "task-queue" }),
     forwardRef(() => SchedulerModule),
+    TaskModule,
   ],
   providers: [MetricsService, PrometheusMetricsService],
   controllers: [MetricsController],

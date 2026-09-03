@@ -4,6 +4,7 @@ import { BullModule } from "@nestjs/bullmq";
 import { TaskController } from "./task.controller";
 import { TaskBatchController } from "./task-batch.controller";
 import { ExecutionCallbackController } from "./execution-callback.controller";
+import { ExecutionCallbackMetricsService } from "./execution-callback-metrics.service";
 import { TaskService } from "./task.service";
 import { TaskProcessor } from "./task.processor";
 import { Task } from "./entities/task.entity";
@@ -39,7 +40,14 @@ import { SystemConfigModule } from "../config/config.module";
     TaskBatchController,
     ExecutionCallbackController,
   ],
-  providers: [TaskService, TaskProcessor, LogRetentionCleanupService],
-  exports: [TaskService],
+  providers: [
+    TaskService,
+    TaskProcessor,
+    LogRetentionCleanupService,
+    // N32: callback 401 分类计数（controller 埋点，MetricsModule 的
+    // Prometheus 抓取端读取快照——单一实例经 exports 共享）。
+    ExecutionCallbackMetricsService,
+  ],
+  exports: [TaskService, ExecutionCallbackMetricsService],
 })
 export class TaskModule {}
