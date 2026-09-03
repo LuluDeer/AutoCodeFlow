@@ -163,6 +163,16 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
     expect(second.match(/autoflow_scheduler_ticks_total \d+/g)).toHaveLength(1);
   });
 
+  it("serializes concurrent renders so counters never regress (N31)", async () => {
+    const svc = makeService();
+    schedulerMetrics.recordTick(5);
+    // 两个 render 并发发起：共享同一次 in-flight 重建（而不是交错 reset），
+    // 两次输出必须相等且与串行语义一致。
+    const [a, b] = await Promise.all([svc.render(), svc.render()]);
+    expect(a).toBe(b);
+    expect(a).toContain("autoflow_scheduler_ticks_total 1");
+  });
+
   it("collects process default metrics unless disabled by config", async () => {
     const withDefaults = makeService();
     expect(await withDefaults.render()).toContain(

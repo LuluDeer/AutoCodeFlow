@@ -13,6 +13,7 @@ describe("NotificationConfigService", () => {
   beforeEach(async () => {
     notificationService = {
       sendAll: jest.fn(),
+      sendToChannels: jest.fn().mockResolvedValue({}),
     };
     store = new ChannelConfigStore();
 
@@ -137,34 +138,146 @@ describe("NotificationConfigService", () => {
     });
   });
 
-  describe("testChannel", () => {
-    it("should return success when sendAll resolves", async () => {
-      (notificationService.sendAll as jest.Mock).mockResolvedValue(undefined);
-      const result = await service.testChannel({});
-      expect(result.success).toBe(true);
-      expect(result.message).toBe("Test message sent successfully");
+  // R8 (N29): testChannel must test the REQUESTED channel only, honor the
+  // optional unsaved config override, and report the real per-channel result
+  // instead of an unconditional success:true.
+  describe("testChannel (N29)", () => {
+    it("should throw BadRequestException for unknown channel key", async () => {
+      await expect(service.testChannel("telegram", {})).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(service.testChannel("telegram", {})).rejects.toThrow(
+        /Unknown notification channel: telegram/,
+      );
     });
 
-    it("should return failure when sendAll rejects", async () => {
-      (notificationService.sendAll as jest.Mock).mockRejectedValue(
+    it("returns success only when the channel reports 'sent', with results", async () => {
+      (notificationService.sendToChannels as jest.Mock).mockResolvedValue({
+        slack: "sent",
+      });
+      const result = await service.testChannel("slack", {});
+      expect(result.success).toBe(true);
+      expect(result.results).toEqual({ slack: "sent" });
+      // only the requested channel is exercised (no full sendAll fan-out)
+      expect(notificationService.sendToChannels).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "AutoFlow Test Notification" }),
+        ["slack"],
+      );
+      expect(notificationService.sendAll).not.toHaveBeenCalled();
+    });
+
+    it("SSRF-blocked channel is reported as failure, not fake OK", async () => {
+      (notificationService.sendToChannels as jest.Mock).mockResolvedValue({
+        slack: "blocked",
+      });
+      const result = await service.testChannel("slack", {});
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("blocked");
+      expect(result.results).toEqual({ slack: "blocked" });
+    });
+
+    it("failed channel is reported as failure", async () => {
+      (notificationService.sendToChannels as jest.Mock).mockResolvedValue({
+        wecom: "failed",
+      });
+      const result = await service.testChannel("wecom", {});
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("failed");
+      expect(result.results).toEqual({ wecom: "failed" });
+    });
+
+    it("unconfigured channel (skipped) is reported as failure", async () => {
+      (notificationService.sendToChannels as jest.Mock).mockResolvedValue({
+        email: "skipped",
+      });
+      const result = await service.testChannel("email", {});
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("not configured");
+    });
+
+    it("sendToChannels throwing still degrades to success:false", async () => {
+      (notificationService.sendToChannels as jest.Mock).mockRejectedValue(
         new Error("SMTP connection failed"),
       );
-      const result = await service.testChannel({});
+      const result = await service.testChannel("email", {});
       expect(result.success).toBe(false);
       expect(result.message).toContain("SMTP connection failed");
+    });
+
+    it("optional config override is visible to the send path and restored afterwards", async () => {
+      const sendToChannels = notificationService.sendToChannels as jest.Mock;
+      let storeDuringSend: Record<string, string> | undefined;
+      sendToChannels.mockImplementation(
+        async (_p: unknown, channels: string[]) => {
+          if (channels[0] === "slack") storeDuringSend = store.get("slack");
+          return { slack: "sent" };
+        },
+      );
+      const result = await service.testChannel("slack", {
+        webhookUrl: "https://unsaved.example.com/hook",
+      });
+      expect(result.success).toBe(true);
+      expect(storeDuringSend).toEqual({
+        webhookUrl: "https://unsaved.example.com/hook",
+      });
+      // restored: the override did not persist (store holds the pre-test
+      // snapshot — the empty default seeded by loadFromEnv)
+      expect(store.get("slack")).toEqual({});
+    });
+
+    it("override restores the previously saved config, and '***' keeps the stored secret", async () => {
+      service.updateChannel("email", {
+        config: { host: "smtp.saved.com", password: "real-secret" },
+      });
+      const sendToChannels = notificationService.sendToChannels as jest.Mock;
+      let storeDuringSend: Record<string, string> | undefined;
+      sendToChannels.mockImplementation(
+        async (_p: unknown, channels: string[]) => {
+          if (channels[0] === "email") storeDuringSend = store.get("email");
+          return { email: "sent" };
+        },
+      );
+      await service.testChannel("email", {
+        host: "smtp.unsaved.com",
+        password: "***",
+      });
+      // masked echo must not clobber the real secret during the test send
+      expect(storeDuringSend).toEqual({
+        host: "smtp.unsaved.com",
+        password: "real-secret",
+      });
+      // saved config fully restored afterwards
+      expect(store.get("email")).toEqual({
+        host: "smtp.saved.com",
+        password: "real-secret",
+      });
     });
   });
 
   describe("sendTest", () => {
-    it("should skip disabled channels and succeed", async () => {
+    // R8 (N29): all requested channels disabled → zero delivery attempts.
+    // An empty fan-out must NOT report success ("fake OK" class bug).
+    it("should fail with an explicit message when all requested channels are disabled", async () => {
       // all channels disabled by default
       const result = await service.sendTest({
         channels: ["email", "slack"],
         title: "Test",
         content: "hello",
       });
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("No enabled channels");
+      expect(result.results).toEqual({});
       // notificationService methods not called since channels disabled
+    });
+
+    it("should fail when the requested channel list is empty", async () => {
+      const result = await service.sendTest({
+        channels: [],
+        title: "Test",
+        content: "hello",
+      });
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("No enabled channels");
     });
 
     it("should call the correct channel method when enabled", async () => {

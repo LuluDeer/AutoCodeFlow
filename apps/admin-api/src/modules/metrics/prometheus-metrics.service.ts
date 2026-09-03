@@ -39,6 +39,8 @@ export class PrometheusMetricsService {
   private readonly queueUp: Gauge;
   private readonly queueDepth: Gauge;
   private readonly _enabled: boolean;
+  /** N31: 进行中的 render（并发抓取共享同一次重建，见 render 注释） */
+  private renderInFlight: Promise<string> | null = null;
 
   constructor(
     configService: ConfigService,
@@ -117,6 +119,20 @@ export class PrometheusMetricsService {
 
   /** 同步进程内快照 → Registry，并渲染 text exposition format */
   async render(): Promise<string> {
+    // N31: render 是"reset + 按绝对值重建"的复合写——并发交错（A reset 后
+    // 被 B reset，A 再按旧快照 inc）会让 Registry 短暂呈现计数回退，违反
+    // counter 单调不变量。快照本身单调，串行化 render 即可保证输出序列
+    // 单调；互斥只覆盖本服务，不影响调度热路径。
+    if (this.renderInFlight) {
+      return this.renderInFlight;
+    }
+    this.renderInFlight = this.doRender().finally(() => {
+      this.renderInFlight = null;
+    });
+    return this.renderInFlight;
+  }
+
+  private async doRender(): Promise<string> {
     const s = this.schedulerMetrics.snapshot;
 
     // reset 后按快照绝对值重建 series：inc(0) 也会保留 0 值 series，

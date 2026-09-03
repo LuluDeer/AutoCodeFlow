@@ -33,4 +33,12 @@ export class ChannelConfigStore {
   set(key: string, config: Record<string, string>): void {
     this.configs.set(key, { ...config });
   }
+
+  /**
+   * R8 (N29): drop a stored snapshot — used by testChannel to restore the
+   * pre-override state after a temporary unsaved-config test send.
+   */
+  delete(key: string): void {
+    this.configs.delete(key);
+  }
 }

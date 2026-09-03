@@ -302,3 +302,93 @@ class TestUploadDedup:
                            data={"name": "dup-pkg", "version": "1.0.0"},
                            files={"content": ("dup-pkg-1.0.0.whl", b"changed", "application/octet-stream")})
         assert resp.status_code == 409
+
+
+class TestConcurrentUpload:
+    """N30 (R8): concurrent same-name uploads are first-write-wins via
+    os.link's atomic create — the old exists()-precheck + os.replace had a
+    TOCTOU window where two racing writers both passed the check and the
+    later replace silently clobbered the earlier artifact."""
+
+    @staticmethod
+    def _upload(client, payload, name="race-pkg", filename="race-pkg-1.0.0.whl"):
+        return client.post("/", auth=AUTH,
+                           data={"name": name, "version": "1.0.0"},
+                           files={"content": (filename, payload, "application/octet-stream")})
+
+    def test_concurrent_different_content_exactly_one_wins(self, client, tmp_packages_dir):
+        """Two threads upload different bytes under the same filename:
+        exactly one 200 + one 409, and the surviving artifact is whole
+        (never a torn or silently-overwritten mix)."""
+        import hashlib
+        import threading
+
+        a, b = b"content-alpha-payload", b"content-beta-payload"
+        barrier = threading.Barrier(2)
+        results = {}
+
+        def worker(key, payload):
+            barrier.wait()
+            results[key] = self._upload(client, payload).status_code
+
+        t1 = threading.Thread(target=worker, args=("a", a))
+        t2 = threading.Thread(target=worker, args=("b", b))
+        t1.start()
+        t2.start()
+        t1.join(timeout=30)
+        t2.join(timeout=30)
+
+        assert sorted(results.values()) == [200, 409]
+        winner = a if results["a"] == 200 else b
+        artifact = tmp_packages_dir / "race-pkg" / "race-pkg-1.0.0.whl"
+        assert artifact.read_bytes() == winner
+        sidecar = artifact.with_name(artifact.name + ".sha256")
+        assert sidecar.read_text().strip() == hashlib.sha256(winner).hexdigest()
+        # no temp upload files left behind by the loser
+        leftovers = [f.name for f in (tmp_packages_dir / "race-pkg").iterdir()
+                     if f.name.endswith(".upload")]
+        assert leftovers == []
+
+    def test_concurrent_same_content_both_succeed(self, client, tmp_packages_dir):
+        """Identical bytes racing are idempotent: winner 200, loser sees the
+        same sha256 and also gets 200 (unchanged)."""
+        import threading
+
+        payload = b"identical wheel bytes"
+        barrier = threading.Barrier(2)
+        results = {}
+
+        def worker(key):
+            barrier.wait()
+            results[key] = self._upload(client, payload).status_code
+
+        threads = [threading.Thread(target=worker, args=(k,)) for k in ("a", "b")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert results == {"a": 200, "b": 200}
+        artifact = tmp_packages_dir / "race-pkg" / "race-pkg-1.0.0.whl"
+        assert artifact.read_bytes() == payload
+
+    def test_stale_precheck_cannot_bypass_the_guard(self, client, tmp_packages_dir, monkeypatch):
+        """Deterministic TOCTOU regression: force Path.exists() to lie
+        (simulating the racing writer that passed the pre-check before the
+        winner published). The old code trusted the pre-check and silently
+        overwrote via os.replace; the os.link path must still return 409 and
+        leave the published artifact untouched."""
+        import hashlib
+
+        original = b"published-original"
+        assert self._upload(client, original).status_code == 200
+
+        monkeypatch.setattr(Path, "exists", lambda self: False)
+        resp = self._upload(client, b"evil-replacement")
+        assert resp.status_code == 409
+        assert "sha256" in resp.json()["detail"]
+
+        artifact = tmp_packages_dir / "race-pkg" / "race-pkg-1.0.0.whl"
+        assert artifact.read_bytes() == original
+        assert artifact.with_name(artifact.name + ".sha256").read_text().strip() == \
+            hashlib.sha256(original).hexdigest()

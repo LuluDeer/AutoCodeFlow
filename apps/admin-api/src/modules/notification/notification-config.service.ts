@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { NotificationService } from "./notification.service";
+import { NotificationService, AlertChannel } from "./notification.service";
 import { ChannelConfigStore } from "./channel-config.store";
 import { ChannelDeliveryStatus } from "./channels/base.channel";
 
@@ -202,21 +202,89 @@ export class NotificationConfigService {
     return this.maskChannel(channel);
   }
 
+  /**
+   * R8 (N29): the per-channel "test" button used to fire a full sendAll fan-
+   * out, ignore the caller-supplied config AND the returned
+   * ChannelDeliveryResults, and unconditionally report success — an SSRF-
+   * blocked or failed channel still showed OK (the exact "fake OK" V2 set out
+   * to eliminate). Now it tests only the requested channel, honors an
+   * optional unsaved config override (temporarily published to the store the
+   * send path reads, restored afterwards), and reports the real per-channel
+   * outcome: success only when the delivery status is `sent`.
+   */
   async testChannel(
-    _config: Record<string, string>,
-  ): Promise<{ success: boolean; message: string }> {
+    key: string,
+    config?: Record<string, string>,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    results?: Record<string, ChannelDeliveryStatus>;
+  }> {
+    const channel = this.channelConfigs.get(key);
+    if (!channel) {
+      const validKeys = Array.from(this.channelConfigs.keys()).join(", ");
+      throw new BadRequestException(
+        `Unknown notification channel: ${key}. Valid channels: ${validKeys}`,
+      );
+    }
+
+    // Optional config override (admin form values not saved yet). Merge over
+    // the saved raw config; the '***' masked echo must not clobber the real
+    // secret (same sentinel rule as updateChannel).
+    const saved = this.store.get(key);
+    const hasOverride = !!config && Object.keys(config).length > 0;
+    if (hasOverride) {
+      const merged = { ...(saved ?? {}) };
+      for (const [k, v] of Object.entries(config!)) {
+        if (
+          v === "***" &&
+          NotificationConfigService.SECRET_FIELD_RE.test(k)
+        ) {
+          continue;
+        }
+        merged[k] = v;
+      }
+      this.store.set(key, merged);
+    }
+
     try {
-      await this.notificationService.sendAll({
-        title: "AutoFlow Test Notification",
-        content: `This is a test notification\nTime: ${new Date().toLocaleString()}`,
-        level: "info",
-      });
-      return { success: true, message: "Test message sent successfully" };
+      const results = await this.notificationService.sendToChannels(
+        {
+          title: "AutoFlow Test Notification",
+          content: `This is a test notification\nTime: ${new Date().toLocaleString()}`,
+          level: "info",
+        },
+        [key as AlertChannel],
+      );
+      const status = results[key] ?? "skipped";
+      if (status === "sent") {
+        return {
+          success: true,
+          message: `Test message sent via ${key}`,
+          results,
+        };
+      }
+      const reason =
+        status === "skipped"
+          ? "channel not configured (no webhook URL / credentials resolved)"
+          : `delivery ${status}`;
+      return {
+        success: false,
+        message: `Test notification not delivered via ${key}: ${reason}`,
+        results,
+      };
     } catch (err: unknown) {
       return {
         success: false,
         message: err instanceof Error ? err.message : String(err),
       };
+    } finally {
+      // Restore the store to its pre-test state — a test send must never
+      // persist unsaved config into the live send path.
+      if (hasOverride) {
+        if (saved) this.store.set(key, saved);
+        else this.store.delete(key);
+      }
     }
   }
 
@@ -269,6 +337,17 @@ export class NotificationConfigService {
             break;
         }
         results[channel] = status ?? "sent";
+      }
+
+      // R8 (N29): every requested channel was disabled/unknown → zero delivery
+      // attempts. Reporting success:true for an empty fan-out is the same
+      // "fake OK" as the blocked branch — fail explicitly instead.
+      if (Object.keys(results).length === 0) {
+        return {
+          success: false,
+          message: `No enabled channels to test (requested: ${channels.join(", ") || "none"}). Enable a channel first.`,
+          results,
+        };
       }
 
       const bad = Object.entries(results).filter(
