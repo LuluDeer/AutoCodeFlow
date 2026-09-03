@@ -54,7 +54,10 @@ describe("ApplicationController webhook", () => {
 
   it("marks webhook public so CI does not need a user JWT", () => {
     expect(
-      Reflect.getMetadata(IS_PUBLIC_KEY, ApplicationController.prototype.webhook),
+      Reflect.getMetadata(
+        IS_PUBLIC_KEY,
+        ApplicationController.prototype.webhook,
+      ),
     ).toBe(true);
   });
 
@@ -98,7 +101,9 @@ describe("ApplicationController webhook", () => {
         { appName: "my-app", version: "1.2.0" },
         "sha256=ignored",
         String(fixedNow),
-        { rawBody: Buffer.from('{"appName":"my-app","version":"1.2.0"}') } as any,
+        {
+          rawBody: Buffer.from('{"appName":"my-app","version":"1.2.0"}'),
+        } as any,
       ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
@@ -111,9 +116,14 @@ describe("ApplicationController webhook", () => {
     });
 
     await expect(
-      controller.webhook({ appName: "my-app", version: "1.2.0" }, undefined, String(fixedNow), {
-        rawBody: Buffer.from('{"appName":"my-app","version":"1.2.0"}'),
-      } as any),
+      controller.webhook(
+        { appName: "my-app", version: "1.2.0" },
+        undefined,
+        String(fixedNow),
+        {
+          rawBody: Buffer.from('{"appName":"my-app","version":"1.2.0"}'),
+        } as any,
+      ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
@@ -145,7 +155,12 @@ describe("ApplicationController webhook", () => {
     });
 
     await expect(
-      controller.webhook(dto, sign("secret", timestamp, rawBody), timestamp, {} as any),
+      controller.webhook(
+        dto,
+        sign("secret", timestamp, rawBody),
+        timestamp,
+        {} as any,
+      ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
@@ -177,7 +192,9 @@ describe("ApplicationController webhook", () => {
         { appName: "no-such-app", version: "1.0.0" } as any,
         "sha256=" + "0".repeat(64),
         String(fixedNow),
-        { rawBody: Buffer.from('{"appName":"no-such-app","version":"1.0.0"}') } as any,
+        {
+          rawBody: Buffer.from('{"appName":"no-such-app","version":"1.0.0"}'),
+        } as any,
       )
       .catch((e) => e);
 
@@ -345,9 +362,7 @@ describe("ApplicationController upload — APP-002", () => {
     controller = new ApplicationController(svc as any, {} as any);
     // 不真实写盘
     jest.spyOn(fs, "existsSync").mockReturnValue(true);
-    jest
-      .spyOn(fs, "mkdirSync")
-      .mockImplementation((() => undefined) as any);
+    jest.spyOn(fs, "mkdirSync").mockImplementation((() => undefined) as any);
     jest
       .spyOn(fs, "writeFileSync")
       .mockImplementation((() => undefined) as any);
@@ -377,9 +392,7 @@ describe("ApplicationController upload — APP-002", () => {
 
   it("builds packageUrl from API_BASE_URL and never from localhost", async () => {
     process.env.API_BASE_URL = "https://api.example.com";
-    jest
-      .spyOn(Logger.prototype, "error")
-      .mockImplementation(() => {});
+    jest.spyOn(Logger.prototype, "error").mockImplementation(() => {});
 
     const app = await controller.upload(...uploadArgs());
     expect(app.packageUrl).toMatch(

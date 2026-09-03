@@ -5,10 +5,7 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
 import { Task, TaskStatus } from "../task/entities/task.entity";
-import {
-  Executor,
-  ExecutorStatus,
-} from "../executor/entities/executor.entity";
+import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import {
   TaskExecution,
   ExecutionStatus,

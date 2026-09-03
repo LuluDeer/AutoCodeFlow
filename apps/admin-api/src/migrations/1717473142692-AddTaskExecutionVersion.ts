@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
 
-export class AddTaskExecutionVersion1717473142692
-  implements MigrationInterface
-{
+export class AddTaskExecutionVersion1717473142692 implements MigrationInterface {
   name = "AddTaskExecutionVersion1717473142692";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

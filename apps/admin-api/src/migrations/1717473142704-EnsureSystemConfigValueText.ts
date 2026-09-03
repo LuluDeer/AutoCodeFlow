@@ -14,9 +14,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 本迁移为声明式收敛：初始建表时即 TEXT，正常库无需变更；仅当手工改过
  * 列类型（如 varchar）时才修复回 TEXT。
  */
-export class EnsureSystemConfigValueText1717473142704
-  implements MigrationInterface
-{
+export class EnsureSystemConfigValueText1717473142704 implements MigrationInterface {
   name = "EnsureSystemConfigValueText1717473142704";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
@@ -37,7 +35,7 @@ export class EnsureSystemConfigValueText1717473142704
     `);
   }
 
-  public async down(queryRunner: QueryRunner): Promise<void> {
+  public async down(_queryRunner: QueryRunner): Promise<void> {
     // 无法还原为"未声明的 TEXT"状态；保持 TEXT 即可，无需操作。
   }
 }

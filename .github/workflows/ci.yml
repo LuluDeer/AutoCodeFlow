@@ -63,14 +63,11 @@ jobs:
         working-directory: apps/admin-api
       - run: npm run typecheck
         working-directory: apps/admin-api
-      # 暂不启用：`npm run lint`（eslint --fix）当前必红——src 内 8 处
-      # @typescript-eslint/no-unused-vars 不可自动修复（另有 94 处 prettier
-      # 违规可 --fix 消化）。属源码问题，修复后恢复本 step。
-      # - run: npm run lint
-      #   working-directory: apps/admin-api
-      # 注：不加 --coverage——package.json 的 coverageThreshold（lines 80%）
-      # 当前未达标（实测 lines 67.66% / functions 55.05%），达标后恢复。
-      - run: npm test
+      - run: npm run lint
+        working-directory: apps/admin-api
+      # coverageThreshold 已按第七轮实测水位取地板（stmts 68 / branch 58 /
+      # funcs 56 / lines 69），防倒退用；覆盖率抬升后应同步上调。
+      - run: npm test -- --coverage
         working-directory: apps/admin-api
       # e2e 前置：全新库跑完整迁移链建表（NODE_ENV 非显式 production 时
       # migrationsRun=false，app 不自动跑迁移）
@@ -127,6 +124,30 @@ jobs:
             || { echo "::error::second migration:run was not a no-op"; exit 1; }
       - run: npm run typecheck
         working-directory: apps/admin-api
+
+  # ── 依赖安全审计：prod 依赖链 high 及以上红灯，moderate 容忍 ──────
+  # 第七轮清偿后残留：admin-api 的 minio→query-string→decode-uri-component
+  # 链 3 处 moderate（上游修复需 minio 大版本变更，暂容忍）；其余三端清零。
+  # npm audit 仅需 lockfile 解析依赖树，无需 npm ci。
+  npm-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - apps/admin-api
+          - apps/executor-node
+          - packages/acf-cli
+          - packages/mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - run: npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=high
+        working-directory: ${{ matrix.project }}
 
   executor-node-test:
     runs-on: ubuntu-latest

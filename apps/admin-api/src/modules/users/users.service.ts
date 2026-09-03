@@ -188,10 +188,9 @@ export class UsersService implements OnModuleInit {
       .update()
       .set({ lockedUntil: until })
       .where("id = :id", { id: userId })
-      .andWhere(
-        "(lockedUntil IS NULL OR lockedUntil < :now)",
-        { now: new Date() },
-      )
+      .andWhere("(lockedUntil IS NULL OR lockedUntil < :now)", {
+        now: new Date(),
+      })
       .execute();
   }
 
