@@ -21,7 +21,9 @@ const { Title, Text } = Typography;
  * R5 RBAC（按第四轮收紧矩阵）：
  * - 执行器共享 Token 读/生成、系统配置写（增删改）、回滚 → 后端 @Roles(ADMIN)；
  *   普通用户不可见或按钮禁用（不做无谓的 403 请求）。
- * - config 列表/详情、变更历史、AI 配置读写 → 登录即可，所有用户可用。
+ * - config 列表/详情、变更历史 → 登录即可，所有用户可用。
+ * R6 更新：AI 配置读写（GET/POST /ai/config）收紧为 ADMIN-only，
+ * AiConfigTab 对非管理员降级为只读提示，不发起会 403 的查询。
  */
 function useIsAdmin() {
   const user = useAuthStore((s) => s.user);
@@ -353,10 +355,14 @@ function AiConfigTab() {
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const qc = useQueryClient();
+  const isAdmin = useIsAdmin();
 
+  // R6 收紧矩阵：GET /ai/config 为 ADMIN-only。
+  // 非管理员不发起查询（GET 会 403），hooks 仍按固定顺序调用（同 TokenSection 模式）。
   const { data: cfg, isLoading } = useQuery({
     queryKey: ['ai-config'],
     queryFn: () => aiApi.getConfig(),
+    enabled: isAdmin,
   });
 
   // Populate form once config data arrives
@@ -401,6 +407,18 @@ function AiConfigTab() {
     if (p === 'ollama') return <Badge status="processing" text="Ollama" color="blue" />;
     return null;
   };
+
+  // R6：非管理员降级为只读提示（读写端点均 ADMIN-only，隐藏表单而非报错）
+  if (!isAdmin) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        title="仅管理员可查看和配置 AI 分析"
+        description="AI 配置的读取与保存为管理员专用接口。如需开启或调整任务失败 AI 分析能力，请联系管理员。"
+      />
+    );
+  }
 
   return (
     <div>
@@ -535,7 +553,7 @@ export default function SettingsPage() {
           <Alert
             type="info"
             showIcon
-            title="您以普通用户身份查看，写操作（配置修改、Token 生成、回滚）仅管理员可用"
+            title="您以普通用户身份查看，写操作（配置修改、回滚）与 AI 配置仅管理员可用"
             style={{ marginTop: 12 }}
           />
         )}

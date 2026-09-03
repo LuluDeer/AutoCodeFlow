@@ -19,6 +19,9 @@ export interface Task {
   applicationId?: string | null;
   executeMode?: string | null;
   executorAppName?: string | null;
+  // R6/R7: 任务级 executor pinning——非空时 dispatch 只派给该执行器（uuid），
+  // 与 executeMode=broadcast 互斥。admin-web 表单需感知并回写该字段（N19）。
+  executorId?: string | null;
   executorGroup?: string | null;
   executorTags?: string[] | null;
   dependencies?: Record<string, string> | null;
