@@ -531,10 +531,7 @@ export class TaskController {
     required: false,
     description: "Filter by execution status",
   })
-  executions(
-    @Param("id") id: string,
-    @Query() p: TaskExecutionsQueryDto,
-  ) {
+  executions(@Param("id") id: string, @Query() p: TaskExecutionsQueryDto) {
     return this.taskService.getExecutions(id, p);
   }
 

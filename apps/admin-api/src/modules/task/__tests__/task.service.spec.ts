@@ -10,7 +10,11 @@ import {
 } from "@nestjs/common";
 import { TaskService } from "../task.service";
 import { MAX_DEPENDENCY_EXECUTION_SCAN } from "../task.service";
-import { Task, TaskStatus, normalizeTaskPriority } from "../entities/task.entity";
+import {
+  Task,
+  TaskStatus,
+  normalizeTaskPriority,
+} from "../entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -65,7 +69,13 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
         const entity = await target;
         if (!entity) return { affected: 0 };
         const status = (entity as { status?: string }).status;
-        const TERMINAL = ["success", "failed", "timeout", "cancelled", "killed"];
+        const TERMINAL = [
+          "success",
+          "failed",
+          "timeout",
+          "cancelled",
+          "killed",
+        ];
         if (status && TERMINAL.includes(status)) {
           return { affected: 0 };
         }
@@ -178,8 +188,14 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("maps timeoutSeconds to legacy timeout on create", async () => {
-      const dto = { name: "test-task", timeoutSeconds: 120, timezone: "Asia/Shanghai" } as any;
-      taskRepo.save.mockImplementation((t: any) => Promise.resolve({ id: "1", ...t }));
+      const dto = {
+        name: "test-task",
+        timeoutSeconds: 120,
+        timezone: "Asia/Shanghai",
+      } as any;
+      taskRepo.save.mockImplementation((t: any) =>
+        Promise.resolve({ id: "1", ...t }),
+      );
       taskRepo.create.mockImplementation((t: any) => t);
       await service.create(dto);
       expect(taskRepo.create).toHaveBeenCalledWith({
@@ -213,7 +229,11 @@ describe("TaskService (__tests__)", () => {
       it("pre-check looks up including soft-deleted rows (PK still taken)", async () => {
         taskRepo.findOne.mockResolvedValue(null);
         taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
-        await service.create({ id: UUID, name: "t", triggerType: "api" } as any);
+        await service.create({
+          id: UUID,
+          name: "t",
+          triggerType: "api",
+        } as any);
         expect(taskRepo.findOne).toHaveBeenCalledWith({
           where: { id: UUID },
           withDeleted: true,
@@ -292,6 +312,59 @@ describe("TaskService (__tests__)", () => {
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
+    // R7 (N17): PATCH 合并路径的两条绕过——请求体只带一个键时，互斥的另一半
+    // 来自已有实体，normalizeTaskDto 看不到，必须在合并后的实体态兜底。
+    it("rejects PATCH adding executorId onto a broadcast task (merged-state)", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        executeMode: "broadcast",
+      });
+      await expect(
+        service.update("1", { executorId: PIN_UUID } as any),
+      ).rejects.toThrow(BadRequestException);
+      // 消息与 create 路径一致，避免前端/调用方按文案分支时出现两套。
+      await expect(
+        service.update("1", { executorId: PIN_UUID } as any),
+      ).rejects.toThrow(/mutually exclusive/);
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("rejects PATCH switching a pinned task to broadcast (merged-state)", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        executorId: PIN_UUID,
+        executeMode: "single",
+      });
+      await expect(
+        service.update("1", { executeMode: "broadcast" } as any),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.update("1", { executeMode: "broadcast" } as any),
+      ).rejects.toThrow(/mutually exclusive/);
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("accepts PATCH clearing executorId on a broadcast task", async () => {
+      // 回归：合并后 executorId 被显式清空（null）时不得误报，broadcast 合法。
+      taskRepo.findOne.mockResolvedValue({
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        executorId: PIN_UUID,
+        executeMode: "broadcast",
+      });
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      const result: any = await service.update("1", {
+        executorId: null,
+      } as any);
+      expect(result.executorId).toBeNull();
+      expect(taskRepo.save).toHaveBeenCalled();
+    });
+
     it("accepts executorId with executeMode=single", async () => {
       taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
       const result: any = await service.create({
@@ -330,15 +403,24 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("passes name ILike filter when name param is provided", async () => {
-      taskRepo.findAndCount.mockResolvedValue([[{ id: "1", name: "my-job" }], 1]);
+      taskRepo.findAndCount.mockResolvedValue([
+        [{ id: "1", name: "my-job" }],
+        1,
+      ]);
       await service.findAll({ page: 1, pageSize: 10, name: "job" } as any);
       const callArgs = taskRepo.findAndCount.mock.calls[0][0];
-      expect(callArgs.where.name).toEqual(expect.objectContaining({ _value: "%job%" }));
+      expect(callArgs.where.name).toEqual(
+        expect.objectContaining({ _value: "%job%" }),
+      );
     });
 
     it("passes runtime filter when runtime param is provided", async () => {
       taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
-      await service.findAll({ page: 1, pageSize: 10, runtime: "python" } as any);
+      await service.findAll({
+        page: 1,
+        pageSize: 10,
+        runtime: "python",
+      } as any);
       const callArgs = taskRepo.findAndCount.mock.calls[0][0];
       expect(callArgs.where.runtime).toBe("python");
     });
@@ -376,12 +458,21 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("maps timeoutSeconds to timeout on update", async () => {
-      const task = { id: "1", name: "old", status: TaskStatus.ACTIVE, timeout: 30 };
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.ACTIVE,
+        timeout: 30,
+      };
       taskRepo.findOne.mockResolvedValue(task);
       taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
       await service.update("1", { timeoutSeconds: 180 } as any);
-      expect(taskRepo.save).toHaveBeenCalledWith(expect.objectContaining({ timeout: 180 }));
-      expect(taskRepo.save.mock.calls[0][0]).not.toHaveProperty("timeoutSeconds");
+      expect(taskRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ timeout: 180 }),
+      );
+      expect(taskRepo.save.mock.calls[0][0]).not.toHaveProperty(
+        "timeoutSeconds",
+      );
     });
   });
 
@@ -489,7 +580,11 @@ describe("TaskService (__tests__)", () => {
         "execute",
         { executionId: "exec-1" },
         // N2: enqueue options now always carry a normalized numeric priority
-        { attempts: 3, backoff: { type: 'exponential', delay: 5_000 }, priority: 2 },
+        {
+          attempts: 3,
+          backoff: { type: "exponential", delay: 5_000 },
+          priority: 2,
+        },
       );
       expect(result).toEqual(exec);
     });
@@ -504,7 +599,11 @@ describe("TaskService (__tests__)", () => {
         currentVersion: "v1",
         status: TaskStatus.ACTIVE,
       };
-      const exec = { id: "exec-2", status: ExecutionStatus.PENDING, params: { override: true } };
+      const exec = {
+        id: "exec-2",
+        status: ExecutionStatus.PENDING,
+        params: { override: true },
+      };
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
@@ -546,7 +645,8 @@ describe("TaskService (__tests__)", () => {
         expect.objectContaining({ priority: 2 }),
       );
       expect(
-        typeof (taskQueue.add.mock.calls[0][2] as { priority: number }).priority,
+        typeof (taskQueue.add.mock.calls[0][2] as { priority: number })
+          .priority,
       ).toBe("number");
     });
   });
@@ -672,8 +772,14 @@ describe("TaskService (__tests__)", () => {
       });
       expect(result.total).toBe(0);
       // andWhere should have been called for status and taskId filters
-      expect(qbMock.andWhere).toHaveBeenCalledWith(expect.stringContaining("status"), expect.objectContaining({ status: "success" }));
-      expect(qbMock.andWhere).toHaveBeenCalledWith(expect.stringContaining("taskId"), expect.objectContaining({ taskId: "task-1" }));
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("status"),
+        expect.objectContaining({ status: "success" }),
+      );
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("taskId"),
+        expect.objectContaining({ taskId: "task-1" }),
+      );
     });
 
     it("applies taskName and executorAddress filters (taskName keeps the join for matching)", async () => {
@@ -723,8 +829,7 @@ describe("TaskService (__tests__)", () => {
         if (Number.isNaN(n)) return Promise.resolve(null);
         return Promise.resolve({
           id,
-          dependencies:
-            n < depth ? { dep: `task-${n + 1}` } : {},
+          dependencies: n < depth ? { dep: `task-${n + 1}` } : {},
         });
       });
     };
@@ -931,9 +1036,9 @@ describe("TaskService (__tests__)", () => {
         orderBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([
-          { lineNumber: 0, content: "only-line" },
-        ]),
+        getMany: jest
+          .fn()
+          .mockResolvedValue([{ lineNumber: 0, content: "only-line" }]),
         getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
       } as any);
       logLineRepo.count.mockResolvedValue(1);
@@ -957,9 +1062,10 @@ describe("TaskService (__tests__)", () => {
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          save: jest.fn()
-            .mockResolvedValueOnce(task)   // first save: update task.gitCommit
-            .mockResolvedValueOnce(exec),  // second save: persist execution
+          save: jest
+            .fn()
+            .mockResolvedValueOnce(task) // first save: update task.gitCommit
+            .mockResolvedValueOnce(exec), // second save: persist execution
           create: jest.fn().mockReturnValue(exec),
         }),
       );
@@ -969,7 +1075,11 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "rb-exec" },
-        { attempts: 2, backoff: { type: 'exponential', delay: 7_000 }, priority: 2 },
+        {
+          attempts: 2,
+          backoff: { type: "exponential", delay: 7_000 },
+          priority: 2,
+        },
       );
     });
 
@@ -988,7 +1098,8 @@ describe("TaskService (__tests__)", () => {
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          save: jest.fn()
+          save: jest
+            .fn()
             .mockResolvedValueOnce(task)
             .mockResolvedValueOnce(exec),
           create: jest.fn().mockReturnValue(exec),
@@ -1036,7 +1147,9 @@ describe("TaskService (__tests__)", () => {
           failureReason: ExecutionFailureReason.EXECUTOR_OFFLINE,
         },
       ]);
-      expect((exec as any).failureReason).toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
+      expect((exec as any).failureReason).toBe(
+        ExecutionFailureReason.EXECUTOR_OFFLINE,
+      );
     });
 
     it("infers timeout callbacks as TIMEOUT status", async () => {
@@ -1044,7 +1157,11 @@ describe("TaskService (__tests__)", () => {
       execRepo.findOne.mockResolvedValue(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       await service.handleCallback([
-        { executionId: "e1", status: "failed", errorMessage: "Execution timed out" },
+        {
+          executionId: "e1",
+          status: "failed",
+          errorMessage: "Execution timed out",
+        },
       ]);
       expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
       expect((exec as any).failureReason).toBe(ExecutionFailureReason.TIMEOUT);
@@ -1055,20 +1172,37 @@ describe("TaskService (__tests__)", () => {
       execRepo.findOne.mockResolvedValue(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       await service.handleCallback([
-        { executionId: "e1", status: "failed", logs: "npm install failed: cannot find module" },
+        {
+          executionId: "e1",
+          status: "failed",
+          logs: "npm install failed: cannot find module",
+        },
       ]);
-      expect((exec as any).failureReason).toBe(ExecutionFailureReason.PACKAGE_FETCH_FAILED);
+      expect((exec as any).failureReason).toBe(
+        ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+      );
     });
 
     it("preserves existing error message when callback only includes logs", async () => {
-      const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "", errorMessage: "executor dispatch failed" };
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        logs: "",
+        errorMessage: "executor dispatch failed",
+      };
       execRepo.findOne.mockResolvedValue(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       await service.handleCallback([
-        { executionId: "e1", status: "failed", logs: "Traceback: runtime error" },
+        {
+          executionId: "e1",
+          status: "failed",
+          logs: "Traceback: runtime error",
+        },
       ]);
       expect((exec as any).errorMessage).toBe("executor dispatch failed");
-      expect((exec as any).failureReason).toBe(ExecutionFailureReason.SCRIPT_ERROR);
+      expect((exec as any).failureReason).toBe(
+        ExecutionFailureReason.SCRIPT_ERROR,
+      );
     });
 
     it("infers script errors from non-zero exit code", async () => {
@@ -1078,7 +1212,9 @@ describe("TaskService (__tests__)", () => {
       await service.handleCallback([
         { executionId: "e1", status: "failed", exitCode: 1 },
       ]);
-      expect((exec as any).failureReason).toBe(ExecutionFailureReason.SCRIPT_ERROR);
+      expect((exec as any).failureReason).toBe(
+        ExecutionFailureReason.SCRIPT_ERROR,
+      );
     });
 
     it("saves log lines when logs are provided", async () => {
@@ -1335,16 +1471,16 @@ describe("TaskService (__tests__)", () => {
         let claimCalls = 0;
         const depQb = {
           where: jest.fn().mockReturnThis(),
-          getMany: jest.fn().mockResolvedValue(
-            downstreamTask ? [downstreamTask] : [],
-          ),
+          getMany: jest
+            .fn()
+            .mockResolvedValue(downstreamTask ? [downstreamTask] : []),
           update: jest.fn().mockReturnThis(),
           set: jest.fn().mockReturnThis(),
           execute: jest.fn().mockImplementation(async () => {
             const affected =
               claimCalls < claimAffected.length
                 ? claimAffected[claimCalls]
-                : claimAffected[claimAffected.length - 1] ?? 0;
+                : (claimAffected[claimAffected.length - 1] ?? 0);
             claimCalls += 1;
             return { affected };
           }),
@@ -1368,7 +1504,12 @@ describe("TaskService (__tests__)", () => {
       };
 
       it("triggers a dependent task when a SUCCESS callback lands and all deps are satisfied", async () => {
-        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
         execRepo.findOne.mockResolvedValue(exec);
         setupDownstream(
           { id: "t-downstream", dependencies: { up: "t-upstream" } },
@@ -1389,7 +1530,12 @@ describe("TaskService (__tests__)", () => {
       });
 
       it("R4-P3: claims the downstream via a short-window conditional UPDATE on lastTriggerTime before triggering", async () => {
-        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
         execRepo.findOne.mockResolvedValue(exec);
         const depQb = setupDownstream(
           { id: "t-downstream", dependencies: { up: "t-upstream" } },
@@ -1397,7 +1543,9 @@ describe("TaskService (__tests__)", () => {
         );
         taskQueue.add.mockResolvedValue({});
 
-        await service.handleCallback([{ executionId: "e-dep", status: "success" }]);
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
 
         // The claim ran a conditional UPDATE guarded by the dedup window.
         expect(depQb.update).toHaveBeenCalled();
@@ -1412,10 +1560,23 @@ describe("TaskService (__tests__)", () => {
       });
 
       it("R4-P3: two concurrent SUCCESS callbacks for two upstreams trigger the downstream exactly once", async () => {
-        const downstream = { id: "t-downstream", dependencies: { a: "t-up-a", b: "t-up-b" } };
+        const downstream = {
+          id: "t-downstream",
+          dependencies: { a: "t-up-a", b: "t-up-b" },
+        };
         execRepo.findOne
-          .mockResolvedValueOnce({ id: "e-a", status: ExecutionStatus.RUNNING, taskId: "t-up-a", logs: "" })
-          .mockResolvedValueOnce({ id: "e-b", status: ExecutionStatus.RUNNING, taskId: "t-up-b", logs: "" });
+          .mockResolvedValueOnce({
+            id: "e-a",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-up-a",
+            logs: "",
+          })
+          .mockResolvedValueOnce({
+            id: "e-b",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-up-b",
+            logs: "",
+          });
         // Both fan-outs pass checkDependencies (both upstreams SUCCESS) — the
         // short-window DB claim then serializes them: first wins, second loses.
         setupDownstream(
@@ -1442,7 +1603,12 @@ describe("TaskService (__tests__)", () => {
       });
 
       it("R4-P3: a fan-out that loses the claim skips the downstream trigger without enqueueing", async () => {
-        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
         execRepo.findOne.mockResolvedValue(exec);
         setupDownstream(
           { id: "t-downstream", dependencies: { up: "t-upstream" } },
@@ -1459,17 +1625,30 @@ describe("TaskService (__tests__)", () => {
       });
 
       it("R4-P3: checkDependencies caps the history scan with take and falls back per-dependency when truncated", async () => {
-        const downstream = { id: "t-downstream", dependencies: { up: "t-upstream" } };
+        const downstream = {
+          id: "t-downstream",
+          dependencies: { up: "t-upstream" },
+        };
         // Main scan returns empty (simulating truncation pushing the latest
         // execution out of the capped window); the per-dependency fallback
         // findOne must rescue the SUCCESS row so the trigger still fires.
         setupDownstream(downstream, []);
         execRepo.findOne
-          .mockResolvedValueOnce({ id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" })
-          .mockResolvedValueOnce({ taskId: "t-upstream", status: ExecutionStatus.SUCCESS });
+          .mockResolvedValueOnce({
+            id: "e-dep",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-upstream",
+            logs: "",
+          })
+          .mockResolvedValueOnce({
+            taskId: "t-upstream",
+            status: ExecutionStatus.SUCCESS,
+          });
         taskQueue.add.mockResolvedValue({});
 
-        await service.handleCallback([{ executionId: "e-dep", status: "success" }]);
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
 
         expect(execRepo.find).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -1486,19 +1665,37 @@ describe("TaskService (__tests__)", () => {
           [],
         );
         execRepo.findOne
-          .mockResolvedValueOnce({ id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" })
-          .mockResolvedValueOnce({ taskId: "t-upstream", status: ExecutionStatus.FAILED });
+          .mockResolvedValueOnce({
+            id: "e-dep",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-upstream",
+            logs: "",
+          })
+          .mockResolvedValueOnce({
+            taskId: "t-upstream",
+            status: ExecutionStatus.FAILED,
+          });
 
-        await service.handleCallback([{ executionId: "e-dep", status: "success" }]);
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
 
         expect(taskQueue.add).not.toHaveBeenCalled();
       });
 
       it("does not trigger the downstream task when its other dependencies are not yet satisfied", async () => {
-        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
         execRepo.findOne.mockResolvedValue(exec);
         setupDownstream(
-          { id: "t-downstream", dependencies: { up: "t-upstream", other: "t-other" } },
+          {
+            id: "t-downstream",
+            dependencies: { up: "t-upstream", other: "t-other" },
+          },
           // latest execution of t-other FAILED → deps unmet
           [
             { taskId: "t-upstream", status: ExecutionStatus.SUCCESS },
@@ -1514,7 +1711,12 @@ describe("TaskService (__tests__)", () => {
       });
 
       it("does not trigger dependents on a FAILED callback", async () => {
-        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
         execRepo.findOne.mockResolvedValue(exec);
         setupDownstream(
           { id: "t-downstream", dependencies: { up: "t-upstream" } },
@@ -1529,7 +1731,12 @@ describe("TaskService (__tests__)", () => {
       });
 
       it("is idempotent: a duplicate (already terminal) success callback must not re-trigger dependents", async () => {
-        const exec = { id: "e-dep", status: ExecutionStatus.SUCCESS, taskId: "t-upstream", logs: "" };
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.SUCCESS,
+          taskId: "t-upstream",
+          logs: "",
+        };
         execRepo.findOne.mockResolvedValue(exec);
         setupDownstream(
           { id: "t-downstream", dependencies: { up: "t-upstream" } },
@@ -1548,7 +1755,12 @@ describe("TaskService (__tests__)", () => {
       });
 
       it("fan-out errors do not fail the callback result (best-effort)", async () => {
-        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
         execRepo.findOne.mockResolvedValue(exec);
         taskRepo.createQueryBuilder.mockImplementation(() => {
           throw new Error("dependency scan exploded");
@@ -1562,7 +1774,12 @@ describe("TaskService (__tests__)", () => {
       });
 
       it("fan-out claim failure inside trigger does not fail the callback (best-effort)", async () => {
-        const exec = { id: "e-dep", status: ExecutionStatus.RUNNING, taskId: "t-upstream", logs: "" };
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
         execRepo.findOne.mockResolvedValue(exec);
         setupDownstream(
           { id: "t-downstream", dependencies: { up: "t-upstream" } },
@@ -1711,7 +1928,9 @@ describe("TaskService (__tests__)", () => {
       const task = { id: "t1", name: "task", gitCommit: "sha1" };
       taskRepo.findOne.mockResolvedValue(task);
       versionRepo.find.mockResolvedValue([]);
-      versionRepo.save.mockImplementation((v: any) => Promise.resolve({ id: "v1", ...v }));
+      versionRepo.save.mockImplementation((v: any) =>
+        Promise.resolve({ id: "v1", ...v }),
+      );
       const result = await service.saveVersion("t1", "user", "initial");
       expect(result.version).toBe("v1");
       expect(versionRepo.create).toHaveBeenCalled();
@@ -1719,7 +1938,9 @@ describe("TaskService (__tests__)", () => {
 
     it("throws NotFoundException when task not found", async () => {
       taskRepo.findOne.mockResolvedValue(null);
-      await expect(service.saveVersion("missing")).rejects.toThrow(NotFoundException);
+      await expect(service.saveVersion("missing")).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -1742,19 +1963,27 @@ describe("TaskService (__tests__)", () => {
 
     it("throws NotFoundException when version not found", async () => {
       versionRepo.findOne.mockResolvedValue(null);
-      await expect(service.rollbackToVersion("t1", "missing-v")).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.rollbackToVersion("t1", "missing-v"),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
   describe("compareVersions", () => {
     it("returns diff for changed fields only", async () => {
-      const v1 = { id: "v1", taskId: "t1", version: "v1", snapshot: { name: "old", timeout: 30 } };
-      const v2 = { id: "v2", taskId: "t1", version: "v2", snapshot: { name: "new", timeout: 30 } };
-      versionRepo.findOne
-        .mockResolvedValueOnce(v1)
-        .mockResolvedValueOnce(v2);
+      const v1 = {
+        id: "v1",
+        taskId: "t1",
+        version: "v1",
+        snapshot: { name: "old", timeout: 30 },
+      };
+      const v2 = {
+        id: "v2",
+        taskId: "t1",
+        version: "v2",
+        snapshot: { name: "new", timeout: 30 },
+      };
+      versionRepo.findOne.mockResolvedValueOnce(v1).mockResolvedValueOnce(v2);
       const diff = await service.compareVersions("t1", "v1", "v2");
       expect(diff).toHaveProperty("name");
       expect(diff.name).toEqual({ old: "old", new: "new" });
@@ -1764,10 +1993,13 @@ describe("TaskService (__tests__)", () => {
     it("returns empty diff when snapshots are identical", async () => {
       const snap = { name: "same", timeout: 60 };
       const v1 = { id: "v1", taskId: "t1", version: "v1", snapshot: snap };
-      const v2 = { id: "v2", taskId: "t1", version: "v2", snapshot: { ...snap } };
-      versionRepo.findOne
-        .mockResolvedValueOnce(v1)
-        .mockResolvedValueOnce(v2);
+      const v2 = {
+        id: "v2",
+        taskId: "t1",
+        version: "v2",
+        snapshot: { ...snap },
+      };
+      versionRepo.findOne.mockResolvedValueOnce(v1).mockResolvedValueOnce(v2);
       const diff = await service.compareVersions("t1", "v1", "v2");
       expect(Object.keys(diff)).toHaveLength(0);
     });
@@ -1782,7 +2014,11 @@ describe("TaskService (__tests__)", () => {
 
   describe("killExecution", () => {
     it("marks a RUNNING execution as KILLED and saves", async () => {
-      const exec = { id: "e1", status: ExecutionStatus.RUNNING, startTime: new Date(Date.now() - 5000) };
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 5000),
+      };
       execRepo.findOne.mockResolvedValue(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       const result = await service.killExecution("e1");
@@ -1803,13 +2039,17 @@ describe("TaskService (__tests__)", () => {
 
     it("throws NotFoundException when execution does not exist", async () => {
       execRepo.findOne.mockResolvedValue(null);
-      await expect(service.killExecution("ghost")).rejects.toThrow(NotFoundException);
+      await expect(service.killExecution("ghost")).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it("throws BadRequestException when execution is already in terminal state", async () => {
       const exec = { id: "e3", status: ExecutionStatus.SUCCESS };
       execRepo.findOne.mockResolvedValue(exec);
-      await expect(service.killExecution("e3")).rejects.toThrow(BadRequestException);
+      await expect(service.killExecution("e3")).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
@@ -1839,7 +2079,10 @@ describe("TaskService (__tests__)", () => {
 
   describe("getVersions", () => {
     it("returns versions for a task ordered by createdAt DESC", async () => {
-      const versions = [{ id: "v2", taskId: "t1" }, { id: "v1", taskId: "t1" }];
+      const versions = [
+        { id: "v2", taskId: "t1" },
+        { id: "v1", taskId: "t1" },
+      ];
       versionRepo.find.mockResolvedValue(versions);
       const result = await service.getVersions("t1");
       expect(result).toEqual(versions);
@@ -1859,7 +2102,9 @@ describe("TaskService (__tests__)", () => {
 
     it("throws NotFoundException when version is not found", async () => {
       versionRepo.findOne.mockResolvedValue(null);
-      await expect(service.getVersion("t1", "missing")).rejects.toThrow(NotFoundException);
+      await expect(service.getVersion("t1", "missing")).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -1874,7 +2119,9 @@ describe("TaskService (__tests__)", () => {
 
     it("throws NotFoundException when version does not exist", async () => {
       versionRepo.findOne.mockResolvedValue(null);
-      await expect(service.deleteVersion("t1", "ghost")).rejects.toThrow(NotFoundException);
+      await expect(service.deleteVersion("t1", "ghost")).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });
