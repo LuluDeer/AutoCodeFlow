@@ -561,6 +561,160 @@ describe("ExecutorService (__tests__)", () => {
     });
   });
 
+  // R9 (round-8 P1 closure, W2): POST /executors/token used to rotateToken()
+  // on EVERY call, so any re-fetching client put the stored tokenHash on a
+  // ~30s rotation cycle that broke the N26 per-execution callback-token
+  // invariant (docs/VERIFY-round8-e2e.md §1.5). issueToken() is idempotent
+  // per (address, startupId) — same-process re-fetches return the CURRENT
+  // token; rotation only happens on first issuance, a changed startupId, a
+  // legacy fetch outside the reuse window, or when the cached plaintext no
+  // longer verifies against the stored hash.
+  describe("issueToken — R9 idempotent token issuance", () => {
+    // rotateToken() hardcodes bcrypt cost 12 (~300ms); pin cost 4 here so the
+    // reuse/rotation matrix stays fast without changing compare semantics.
+    const realHash = bcrypt.hash;
+    beforeEach(() => {
+      jest
+        .spyOn(bcrypt, "hash")
+        .mockImplementation(((s: string | Buffer, _rounds: number) =>
+          realHash(s, 4)) as any);
+    });
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    const makeIssueFixture = async () => {
+      const row: any = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        appName: "node",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        executorStartupId: null,
+        executorStartedAt: null,
+        tokenHash: null,
+      };
+      const repo = makeRepo({
+        findOne: jest.fn().mockResolvedValue(row),
+        save: jest.fn((e: any) => Promise.resolve(e)),
+      });
+      // tokenHash is select:false — the service reads it via QueryBuilder.
+      // Return the SAME row object so rotations are visible to the reuse
+      // verification below.
+      repo.createQueryBuilder = jest.fn(() => ({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(row),
+      })) as any;
+      const svc = await makeServiceWithRepo(repo);
+      return { svc, row };
+    };
+
+    it("first issuance rotates and returns the raw token plus the stored tokenHash", async () => {
+      const { svc, row } = await makeIssueFixture();
+      const r = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      expect(r.token).toMatch(/^[0-9a-f]{64}$/);
+      expect(r.tokenHash).toBe(row.tokenHash);
+      // The returned hash must be the hash of the returned token — this is
+      // the pair the executor adopts as its N26 callback HMAC secret.
+      await expect(bcrypt.compare(r.token, r.tokenHash)).resolves.toBe(true);
+    });
+
+    it("same startupId re-fetch returns the SAME token without rotating (rotation-storm fix)", async () => {
+      const { svc, row } = await makeIssueFixture();
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      const hashAfterFirst = row.tokenHash;
+      const rotateSpy = jest.spyOn(svc, "rotateToken");
+
+      const second = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+
+      expect(second.token).toBe(first.token);
+      expect(second.tokenHash).toBe(hashAfterFirst);
+      expect(rotateSpy).not.toHaveBeenCalled();
+    });
+
+    it("a changed startupId (genuine executor restart) rotates again", async () => {
+      const { svc, row } = await makeIssueFixture();
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      const second = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-2",
+      });
+      expect(second.token).not.toBe(first.token);
+      expect(row.tokenHash).not.toBe(first.tokenHash);
+      await expect(bcrypt.compare(second.token, row.tokenHash)).resolves.toBe(
+        true,
+      );
+    });
+
+    it("legacy fetch without startupId reuses inside the window and rotates after it", async () => {
+      const { svc } = await makeIssueFixture();
+      const base = Date.now();
+      let now = base;
+      jest.spyOn(Date, "now").mockImplementation(() => now);
+
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+      });
+      // Still within TOKEN_ISSUE_REUSE_WINDOW_MS (60s) → same token.
+      now = base + 30_000;
+      const second = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+      });
+      expect(second.token).toBe(first.token);
+
+      // Outside the window: identity can't be proven → rotate.
+      now = base + 61_000;
+      const third = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+      });
+      expect(third.token).not.toBe(first.token);
+    });
+
+    it("does not resurrect a token invalidated by an admin-side rotation", async () => {
+      const { svc, row } = await makeIssueFixture();
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      // Simulate the admin UI's POST :id/rotate-token replacing the hash:
+      // the cached plaintext no longer verifies against the stored hash.
+      row.tokenHash = await realHash("externally-rotated-token", 4);
+
+      const second = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+
+      expect(second.token).not.toBe(first.token);
+      await expect(bcrypt.compare(second.token, row.tokenHash)).resolves.toBe(
+        true,
+      );
+    });
+  });
+
   describe("heartbeat", () => {
     it("updates lastHeartbeat and metrics on heartbeat", async () => {
       const executor = {
@@ -1041,6 +1195,54 @@ describe("ExecutorService (__tests__)", () => {
       configService.get.mockReturnValue("");
       const result = await service.validateTokenByAddress("host:3002", "wrong");
       expect(result).toBe(false);
+    });
+  });
+
+  // N26 (round-8): per-address tokenHash lookup backing the per-executor
+  // callback-token HMAC fallback.
+  describe("getCallbackSecretByAddress", () => {
+    it("returns the stored tokenHash and caches positive results", async () => {
+      const qb = executorRepo.createQueryBuilder();
+      qb.getOne.mockResolvedValue({
+        address: "host:3002",
+        tokenHash: "$2b$12$hash",
+      });
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      await expect(service.getCallbackSecretByAddress("host:3002")).resolves.toBe(
+        "$2b$12$hash",
+      );
+      await expect(service.getCallbackSecretByAddress("host:3002")).resolves.toBe(
+        "$2b$12$hash",
+      );
+      expect(qb.getOne).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns null for unknown addresses and does not cache the miss", async () => {
+      const qb = executorRepo.createQueryBuilder();
+      qb.getOne.mockResolvedValue(null);
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      await expect(service.getCallbackSecretByAddress("ghost:1")).resolves.toBeNull();
+      await expect(service.getCallbackSecretByAddress("ghost:1")).resolves.toBeNull();
+      expect(qb.getOne).toHaveBeenCalledTimes(2);
+    });
+
+    it("rotateToken evicts the cached hash so the new value is read immediately", async () => {
+      const qb = executorRepo.createQueryBuilder();
+      qb.getOne.mockResolvedValue({
+        address: "127.0.0.1",
+        tokenHash: "$2b$12$old",
+      });
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      await service.getCallbackSecretByAddress("127.0.0.1");
+      expect(qb.getOne).toHaveBeenCalledTimes(1);
+
+      const executor = { id: "e1", address: "127.0.0.1", tokenHash: null };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.rotateToken("e1");
+
+      await service.getCallbackSecretByAddress("127.0.0.1");
+      expect(qb.getOne).toHaveBeenCalledTimes(2);
     });
   });
 
