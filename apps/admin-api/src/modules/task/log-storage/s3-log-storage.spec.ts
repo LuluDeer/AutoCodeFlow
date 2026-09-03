@@ -47,7 +47,10 @@ describe("S3LogStorage", () => {
     ).toBeNull();
     expect(
       S3LogStorage.fromConfig(
-        makeConfig({ "logStorage.driver": "db", "logStorage.endpoint": "minio:9000" }),
+        makeConfig({
+          "logStorage.driver": "db",
+          "logStorage.endpoint": "minio:9000",
+        }),
       ),
     ).toBeNull();
   });
@@ -72,7 +75,8 @@ describe("S3LogStorage", () => {
     expect(key).toBe("execution-logs/exec-1.log.gz");
     expect(minioClient.bucketExists).toHaveBeenCalledWith("autoflow-logs");
     expect(minioClient.makeBucket).not.toHaveBeenCalled();
-    const [bucket, objKey, body, size, meta] = minioClient.putObject.mock.calls[0];
+    const [bucket, objKey, body, size, meta] =
+      minioClient.putObject.mock.calls[0];
     expect(bucket).toBe("autoflow-logs");
     expect(objKey).toBe(key);
     expect(gunzipSync(body).toString("utf-8")).toBe("hello\nworld");
@@ -94,7 +98,9 @@ describe("S3LogStorage", () => {
       .mockResolvedValueOnce(true);
     const s = storage();
     await expect(s.put("exec-1", "a")).rejects.toThrow("down");
-    await expect(s.put("exec-2", "b")).resolves.toBe("execution-logs/exec-2.log.gz");
+    await expect(s.put("exec-2", "b")).resolves.toBe(
+      "execution-logs/exec-2.log.gz",
+    );
   });
 
   it("get() gunzips the stored object", async () => {

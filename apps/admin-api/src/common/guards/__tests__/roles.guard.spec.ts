@@ -37,8 +37,8 @@ class ClassRolesFixture {
 }
 
 const makeContext = (
-  handler: Function,
-  cls: Function,
+  handler: (...args: unknown[]) => unknown,
+  cls: unknown,
   user: unknown,
 ): ExecutionContext =>
   ({

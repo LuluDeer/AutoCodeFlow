@@ -96,7 +96,10 @@ describe("AuthService (__tests__)", () => {
       // against the module's pre-computed dummy hash so the unknown-user path
       // costs the same bcrypt CPU time as the wrong-password path.
       expect(compareSpy).toHaveBeenCalledTimes(1);
-      expect(compareSpy).toHaveBeenCalledWith("x", expect.stringMatching(/^\$2[aby]\$12\$/));
+      expect(compareSpy).toHaveBeenCalledWith(
+        "x",
+        expect.stringMatching(/^\$2[aby]\$12\$/),
+      );
       expect(usersService.recordLoginFailure).not.toHaveBeenCalled();
     });
 

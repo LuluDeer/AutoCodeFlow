@@ -42,9 +42,7 @@ describe("ExecutionCallbackController — F-5 rate limiting", () => {
       ExecutionCallbackController.prototype,
       "callback",
     )?.value;
-    expect(
-      Reflect.getMetadata(SKIP_KEY, handler as object),
-    ).toBeUndefined();
+    expect(Reflect.getMetadata(SKIP_KEY, handler as object)).toBeUndefined();
   });
 
   it("applies a finite per-minute limit to the callback route", () => {

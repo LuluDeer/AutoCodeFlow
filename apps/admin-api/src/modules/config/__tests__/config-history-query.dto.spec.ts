@@ -23,7 +23,10 @@ describe("ConfigHistoryQueryDto", () => {
   }
 
   it("accepts key + pagination (settings-page history drawer shape)", async () => {
-    const result = await validate({ key: "executor.sharedToken", pageSize: "50" });
+    const result = await validate({
+      key: "executor.sharedToken",
+      pageSize: "50",
+    });
     expect(result.key).toBe("executor.sharedToken");
     expect(result.page).toBe(1);
     expect(result.pageSize).toBe(50);

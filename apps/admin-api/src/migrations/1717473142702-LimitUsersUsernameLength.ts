@@ -15,9 +15,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * 幂等说明：DO 块中已按 information_schema 判断当前长度，无需重复执行。
  */
-export class LimitUsersUsernameLength1717473142702
-  implements MigrationInterface
-{
+export class LimitUsersUsernameLength1717473142702 implements MigrationInterface {
   name = "LimitUsersUsernameLength1717473142702";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

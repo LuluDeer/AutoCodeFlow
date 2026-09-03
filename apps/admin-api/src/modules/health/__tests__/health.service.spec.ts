@@ -4,7 +4,7 @@ import { ConfigService } from "@nestjs/config";
 import { HealthService } from "../health.service";
 import { Task } from "../../task/entities/task.entity";
 import { Executor } from "../../executor/entities/executor.entity";
-import { TaskExecution, ExecutionStatus } from "../../task/entities/task-execution.entity";
+import { TaskExecution } from "../../task/entities/task-execution.entity";
 
 // Mock the redis createClient so HealthService constructor doesn't open a real connection
 jest.mock("redis", () => ({
@@ -51,7 +51,10 @@ describe("HealthService", () => {
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: "BullQueue_task-queue", useValue: taskQueue },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(undefined) },
+        },
       ],
     }).compile();
 
@@ -104,18 +107,14 @@ describe("HealthService", () => {
 
     it("returns unhealthy when all executors are offline", async () => {
       // count(where) counts online; count() with no args is the total
-      executorRepo.count.mockImplementation((opts?: unknown) =>
-        opts ? 0 : 2,
-      );
+      executorRepo.count.mockImplementation((opts?: unknown) => (opts ? 0 : 2));
       const result = await service.checkExecutors();
       expect(result.status).toBe("unhealthy");
       expect(result.onlineCount).toBe(0);
     });
 
     it("returns healthy when majority of executors are online", async () => {
-      executorRepo.count.mockImplementation((opts?: unknown) =>
-        opts ? 2 : 3,
-      );
+      executorRepo.count.mockImplementation((opts?: unknown) => (opts ? 2 : 3));
       const result = await service.checkExecutors();
       expect(result.status).toBe("healthy");
       expect(result.onlineCount).toBe(2);
@@ -123,9 +122,7 @@ describe("HealthService", () => {
     });
 
     it("returns degraded when fewer than 50% of executors are online", async () => {
-      executorRepo.count.mockImplementation((opts?: unknown) =>
-        opts ? 1 : 3,
-      );
+      executorRepo.count.mockImplementation((opts?: unknown) => (opts ? 1 : 3));
       const result = await service.checkExecutors();
       expect(result.status).toBe("degraded");
     });
@@ -134,9 +131,7 @@ describe("HealthService", () => {
   describe("checkTasks", () => {
     it("returns task counts correctly", async () => {
       // count(where) counts active tasks; count() with no args is the total
-      taskRepo.count.mockImplementation((opts?: unknown) =>
-        opts ? 2 : 3,
-      );
+      taskRepo.count.mockImplementation((opts?: unknown) => (opts ? 2 : 3));
       execRepo.count.mockResolvedValue(1);
 
       const result = await service.checkTasks();

@@ -68,7 +68,11 @@ export class UploadApplicationDto {
   @MaxLength(100)
   name: string;
 
-  @ApiPropertyOptional({ description: "Runtime type", example: "node", maxLength: 50 })
+  @ApiPropertyOptional({
+    description: "Runtime type",
+    example: "node",
+    maxLength: 50,
+  })
   @IsOptional()
   @IsString()
   @MaxLength(50)

@@ -131,7 +131,9 @@ export class CreateExecutorPackagesTable1717473142694 implements MigrationInterf
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     // 幂等：IF EXISTS 防止重复回滚报错；enum 类型由 createTable 创建，此处不回删（与原实现一致）
-    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_executor_packages_type"`);
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "IDX_executor_packages_type"`,
+    );
     await queryRunner.query(
       `DROP INDEX IF EXISTS "IDX_executor_packages_status"`,
     );

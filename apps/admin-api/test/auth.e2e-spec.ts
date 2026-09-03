@@ -85,9 +85,7 @@ describe("Auth (e2e)", () => {
   // --------------------------------------------------------------- profile
   describe("GET /auth/profile", () => {
     it("should return 401 when no token is provided", async () => {
-      await request(app.getHttpServer())
-        .get("/auth/profile")
-        .expect(401);
+      await request(app.getHttpServer()).get("/auth/profile").expect(401);
     });
 
     it("should return user profile when a valid token is provided", async () => {
@@ -118,9 +116,7 @@ describe("Auth (e2e)", () => {
   // --------------------------------------------------------------- logout
   describe("POST /auth/logout", () => {
     it("should return 401 when no token is provided", async () => {
-      await request(app.getHttpServer())
-        .post("/auth/logout")
-        .expect(401);
+      await request(app.getHttpServer()).post("/auth/logout").expect(401);
     });
 
     it("should revoke tokens and return success", async () => {

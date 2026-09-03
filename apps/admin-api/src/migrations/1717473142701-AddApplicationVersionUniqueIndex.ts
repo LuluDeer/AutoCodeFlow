@@ -23,9 +23,7 @@ import { MigrationInterface, QueryRunner, TableIndex } from "typeorm";
  *     AND a."id" <> b."id"
  *     AND a."createdAt" < b."createdAt";
  */
-export class AddApplicationVersionUniqueIndex1717473142701
-  implements MigrationInterface
-{
+export class AddApplicationVersionUniqueIndex1717473142701 implements MigrationInterface {
   name = "AddApplicationVersionUniqueIndex1717473142701";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
