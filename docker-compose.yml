@@ -302,7 +302,9 @@ services:
       - npm_data:/verdaccio/storage
       - ./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:4873/-/ping']
+      # R8 冒烟发现：verdaccio 5 监听 0.0.0.0（仅 IPv4），容器内 localhost
+      # 优先解析 ::1 → healthcheck 恒 connection refused/unhealthy。用 127.0.0.1。
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:4873/-/ping']
       interval: 30s
       timeout: 10s
       retries: 3

@@ -33,6 +33,9 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
     heartbeat: jest.fn(async (address, metrics) => ({ address, metrics })),
     validateTokenByAddress: jest.fn().mockResolvedValue(true),
     rotateToken: jest.fn().mockResolvedValue({ token: "fresh-token" }),
+    // N26 (round-8): register response now carries the stored tokenHash so
+    // the executor can adopt it as its per-execution callback signing secret.
+    getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
     ...overrides,
   });
 
@@ -184,6 +187,13 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
 
       const first = await controller.register(body, "Bearer shared-token");
       expect(first).toMatchObject({ perExecutorToken: "first-issued-token" });
+      // N26 (round-8): the register response also carries the stored
+      // tokenHash — the executor adopts it as its per-execution callback
+      // HMAC signing secret (main.ts registerExecutor).
+      expect(first).toMatchObject({ tokenHash: "$2b$12$hash" });
+      expect(svc.getCallbackSecretByAddress).toHaveBeenCalledWith(
+        "10.0.0.9:3002",
+      );
 
       const second = await controller.register(body, "Bearer shared-token");
       expect(second).toMatchObject({ perExecutorToken: null });
