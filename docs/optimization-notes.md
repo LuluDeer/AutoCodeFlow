@@ -346,3 +346,29 @@ admin-api **840/840（53 suites）+ eslint 0/0** · executor-node **150/150** ·
 **稳态循环是幂等性破坏的放大器**：fetchToken 失败→重试→旋转→其他依赖方（HMAC 密钥）失效→更多失败——单点 bug 经循环放大为系统不可用（9 分钟 14 次旋转）。防御：写路径幂等化（issueToken 按 startupId 稳态永不旋转）+ 依赖方跟随机制（tokenHash 三点采纳）双管齐下，只修其一在下一个依赖出现时复发。
 
 **分步表单的校验 API 陷阱**：antd Form validateFields 只校验/返回当前挂载的 Form.Item——跨步骤提交必须 getFieldsValue(true)（preserve store 全量）+ 自行兜底必填。此类缺陷 vitest 组件测试难覆盖（难模拟真实分步挂载），E2E 是唯一可靠防线。
+
+---
+
+## 十二、第九轮：python 侧对齐 + 401 观测 + pinned 全链 E2E（2026-09-03）
+
+> 方法：A/B/C/D 四路并行 → V 真机 5/5 + audit N33-N36 → W 收尾修复。报告：`docs/PROGRESS-round9-2026-09-03.md`、`docs/VERIFY-round9-e2e.md`。
+
+### 12.1 本轮要点
+
+- ✅ executor-python token 链三缺口修复（201 误判/未拆信封/缺 startupId）——动态 token 首次真正生效，真机 /token 幂等复用兑现
+- ✅ autoflow-sdk 回调能力（node-sdk 对等）+ executor-python 回调三变量注入（HMAC 移植，三方同测试向量逐字节一致）
+- ✅ 回调 401 七分类观测 series；webhook 配置面补全（config-first + query 脱敏）
+- ✅ Playwright 29/29（pinned 全链 4 例：在线/离线/不存在/全 UI 闭环）
+- ✅ P1（V 抓到）：python register 用动态 token 打 bootstrap 端点 401 → 静态 token 修复；N34-N36
+
+### 12.2 基线
+
+admin-api **861/861 + eslint 0/0** · executor-node **150** · executor-python **115** · autoflow-sdk **90** · admin-web **35** · Playwright **29** · acf-cli **48** · mcp-server **52** · registry-pypi **33** · node-sdk **43** · notify **7**。
+
+### 12.3 方法论沉淀
+
+**修复揭开被掩盖的 bug 是常态而非意外**：python register 401 在 token 链修好前不可能暴露（fetch 恒失败→恒用静态 token→恰好"对"）。真实缺陷链被上游缺陷掩盖时，上游一修下游就塌——所以修复后必须在真机把整条依赖链重跑一遍（本轮 V 在修复后立即发现 register 401），单点回归不够。
+
+**跨语言算法移植必须三方钉测试向量**：HMAC token 算法 TS→python 移植，admin-api/executor-node/executor-python 三方用同一测试向量（secret+execId+exp→同一 token 字符串）互相钉死。任何一端单方面改算法（哪怕改注释里的域分隔符）都会三方同红，漂移在 CI/本地即可拦截，不会到生产才炸。
+
+**观测埋点跟随验证走**：401 七分类不是先设计后埋点，而是真机验证时"每类 401 都要能区分"直接转化 为 series 分类——验证脚本里的每个断言场景对应一个可观测类别，观测体系与验证体系同构，生产排障时看到的每个异常形态都有现成指标。
