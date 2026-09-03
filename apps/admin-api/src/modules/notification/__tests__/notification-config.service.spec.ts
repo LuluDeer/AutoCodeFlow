@@ -38,14 +38,16 @@ describe("NotificationConfigService", () => {
   });
 
   describe("getAllChannels", () => {
-    it("should return all 4 default channels", () => {
+    it("should return all 5 default channels", () => {
       const channels = service.getAllChannels();
-      expect(channels).toHaveLength(4);
+      expect(channels).toHaveLength(5);
       const keys = channels.map((c) => c.key);
       expect(keys).toContain("email");
       expect(keys).toContain("slack");
       expect(keys).toContain("dingtalk");
       expect(keys).toContain("wecom");
+      // N32 (round-9): webhook joined the PATCH-able enum (V2 §7.1 gap).
+      expect(keys).toContain("webhook");
     });
 
     it("should have all channels disabled by default", () => {
@@ -90,24 +92,30 @@ describe("NotificationConfigService", () => {
       expect(() =>
         service.updateChannel("telegram", { enabled: true }),
       ).toThrow(/Unknown notification channel: telegram/);
-      // 消息列出合法 key；webhook 是逐请求渠道，不在可配置枚举内
+      // 消息列出合法 key；N32 起 webhook 也是可配置渠道
       try {
         service.updateChannel("telegram", { enabled: true });
       } catch (e: unknown) {
         const msg = (e as Error).message;
-        for (const key of ["email", "slack", "dingtalk", "wecom"]) {
+        for (const key of ["email", "slack", "dingtalk", "wecom", "webhook"]) {
           expect(msg).toContain(key);
         }
-        expect(msg).not.toContain("webhook");
       }
     });
 
-    it("PATCH /channels/webhook (the V4 repro) is a 400, not a 500", () => {
-      expect(() =>
-        service.updateChannel("webhook", {
-          config: { webhookUrl: "https://example.com/hook" },
-        }),
-      ).toThrow(BadRequestException);
+    // N32 (round-9): the V4 repro — PATCH /channels/webhook — is now a
+    // supported 200 path (config shape { url }), not a 400.
+    it("PATCH /channels/webhook is accepted and publishes { url } to the store", () => {
+      const updated = service.updateChannel("webhook", {
+        enabled: true,
+        config: { url: "https://example.com/hook" },
+      });
+      expect(updated.key).toBe("webhook");
+      expect(updated.enabled).toBe(true);
+      expect(updated.config.url).toBe("https://example.com/hook");
+      expect(store.get("webhook")).toEqual({
+        url: "https://example.com/hook",
+      });
     });
 
     // V1 (round-7): saved config is published to the ChannelConfigStore that
@@ -411,6 +419,81 @@ describe("NotificationConfigService", () => {
       svc.updateChannel("email", { config: { password: "rotated" } });
       const stored = (svc as any).channelConfigs.get("email").config;
       expect(stored.password).toBe("rotated");
+    });
+  });
+
+  // N32 (round-9): webhook 渠道的 URL 常把凭据放在 query（?access_token=…）。
+  // N11 的 SECRET_FIELD_RE 因此也套用到 URL query 参数名上——读面（GET/
+  // PATCH 响应）掩码，store 与发送路径保持原值，掩码回显不得覆盖真实值。
+  describe("URL query secret masking (N32)", () => {
+    const TOKEN_URL =
+      "https://hooks.example.com/notify?access_token=s3cr3t-value&format=json";
+
+    it("masks secret-class query params in url values on the read surface", () => {
+      service.updateChannel("webhook", {
+        config: { url: TOKEN_URL },
+      });
+      const read = service.getChannel("webhook")!.config.url;
+      expect(read).toBe(
+        "https://hooks.example.com/notify?access_token=***&format=json",
+      );
+      expect(read).not.toContain("s3cr3t-value");
+      // PATCH 响应同样脱敏
+      expect(service.updateChannel("webhook", { config: {} }).config.url).toBe(
+        read,
+      );
+    });
+
+    it("keeps the raw url in the store consumed by the send path", () => {
+      service.updateChannel("webhook", { config: { url: TOKEN_URL } });
+      expect(store.get("webhook")).toEqual({ url: TOKEN_URL });
+    });
+
+    it('a masked "?…=***" round-trip does not overwrite the stored url', () => {
+      service.updateChannel("webhook", { config: { url: TOKEN_URL } });
+      service.updateChannel("webhook", {
+        config: {
+          url: "https://hooks.example.com/notify?access_token=***&format=json",
+        },
+      });
+      expect(store.get("webhook")).toEqual({ url: TOKEN_URL });
+    });
+
+    it("a genuinely new url (no masked echo) replaces the stored one", () => {
+      service.updateChannel("webhook", { config: { url: TOKEN_URL } });
+      service.updateChannel("webhook", {
+        config: { url: "https://hooks.example.com/other?token=new-value" },
+      });
+      expect(store.get("webhook")).toEqual({
+        url: "https://hooks.example.com/other?token=new-value",
+      });
+      expect(service.getChannel("webhook")!.config.url).toBe(
+        "https://hooks.example.com/other?token=***",
+      );
+    });
+
+    it("non-secret query params (e.g. ?key=…) are left intact", () => {
+      service.updateChannel("webhook", {
+        config: { url: "https://example.com/hook?key=plain&x=1" },
+      });
+      expect(service.getChannel("webhook")!.config.url).toBe(
+        "https://example.com/hook?key=plain&x=1",
+      );
+    });
+
+    it("covers dingtalk webhookUrl values carrying access_token too", () => {
+      service.updateChannel("dingtalk", {
+        config: {
+          webhookUrl: "https://oapi.dingtalk.com/robot/send?access_token=abc",
+        },
+      });
+      expect(service.getChannel("dingtalk")!.config.webhookUrl).toBe(
+        "https://oapi.dingtalk.com/robot/send?access_token=***",
+      );
+      // 字段名规则不变：password 类仍整体掩码
+      expect(store.get("dingtalk")).toEqual({
+        webhookUrl: "https://oapi.dingtalk.com/robot/send?access_token=abc",
+      });
     });
   });
 });
