@@ -1,13 +1,13 @@
 import axios from "axios";
-import { ExecutionContext, UnauthorizedException } from "@nestjs/common";
-import { Reflector } from "@nestjs/core";
+import { UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ExecutorController } from "../executor.controller";
 import { ExecutorStatus, ExecutorType } from "../entities/executor.entity";
-import { INSTALL_SCRIPT, repoInstallScriptOrNull } from "../install-script.content";
-import { RolesGuard } from "../../../common/guards/roles.guard";
+import {
+  INSTALL_SCRIPT,
+  repoInstallScriptOrNull,
+} from "../install-script.content";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
-import { UserRole } from "../../users/entities/user.entity";
 
 jest.mock("axios");
 // F-3: reload-config now consults the SSRF layer before posting; stub it here
@@ -35,7 +35,9 @@ describe("ExecutorController", () => {
         type: ExecutorType.PYTHON,
       }),
       rotateToken: jest.fn().mockResolvedValue({ token: "rotated-token" }),
-      getExecutorUrl: jest.fn().mockReturnValue("http://executor.local:8001/api/config/reload"),
+      getExecutorUrl: jest
+        .fn()
+        .mockReturnValue("http://executor.local:8001/api/config/reload"),
     };
     const controller = new ExecutorController(
       svc as any,
@@ -53,10 +55,15 @@ describe("ExecutorController", () => {
       adminApiUrlExternal: "https://admin.example.com/api",
     };
 
-    await expect(controller.reloadConfig("executor-1", body)).resolves.toEqual({ success: true });
+    await expect(controller.reloadConfig("executor-1", body)).resolves.toEqual({
+      success: true,
+    });
     expect(svc.findOne).toHaveBeenCalledWith("executor-1");
     expect(svc.rotateToken).toHaveBeenCalledWith("executor-1");
-    expect(svc.getExecutorUrl).toHaveBeenCalledWith("executor.local:8001", "api/config/reload");
+    expect(svc.getExecutorUrl).toHaveBeenCalledWith(
+      "executor.local:8001",
+      "api/config/reload",
+    );
     expect(mockedAxios.post).toHaveBeenCalledWith(
       "http://executor.local:8001/api/config/reload",
       body,
@@ -83,7 +90,9 @@ describe("ExecutorController", () => {
       {} as any,
     );
 
-    await expect(controller.reloadConfig("executor-1", {})).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      controller.reloadConfig("executor-1", {}),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(svc.rotateToken).not.toHaveBeenCalled();
     expect(mockedAxios.post).not.toHaveBeenCalled();
   });
