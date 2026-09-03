@@ -58,10 +58,17 @@ export class NotificationConfigController {
     return this.configService.updateChannel(key, body);
   }
 
+  /**
+   * R8 (N29): the channel key is now honored (it used to be dropped — the
+   * endpoint fanned out to ALL channels regardless), the optional body is
+   * treated as an unsaved config override for the tested channel, and the
+   * response reflects the real per-channel delivery result instead of an
+   * unconditional success:true.
+   */
   @Post("channels/:key/test")
   @ApiOperation({ summary: "Test notification channel" })
-  testChannel(@Body() body: Record<string, string>) {
-    return this.configService.testChannel(body);
+  testChannel(@Param("key") key: string, @Body() body: Record<string, string>) {
+    return this.configService.testChannel(key, body);
   }
 
   @Post("test")

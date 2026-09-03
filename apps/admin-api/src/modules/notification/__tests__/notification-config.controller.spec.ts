@@ -86,27 +86,32 @@ describe("NotificationConfigController", () => {
   });
 
   describe("testChannel", () => {
-    it("delegates to configService.testChannel", async () => {
+    // R8 (N29): the :key route param must reach the service (it used to be
+    // dropped, so the endpoint tested ALL channels regardless of the key).
+    it("delegates to configService.testChannel with the channel key and body", async () => {
       const response = {
         success: true,
-        message: "Test message sent successfully",
+        message: "Test message sent via slack",
+        results: { slack: "sent" },
       };
       svc.testChannel.mockResolvedValue(response);
       const body = { webhookUrl: "https://hooks.example.com" };
 
-      const result = await controller.testChannel(body);
+      const result = await controller.testChannel("slack", body);
 
-      expect(svc.testChannel).toHaveBeenCalledWith(body);
+      expect(svc.testChannel).toHaveBeenCalledWith("slack", body);
       expect(result).toEqual(response);
     });
 
-    it("returns failure response when service returns failure", async () => {
+    it("returns failure response (with results) when the channel is blocked", async () => {
       svc.testChannel.mockResolvedValue({
         success: false,
-        message: "SMTP error",
+        message: "Test notification not delivered via slack: delivery blocked",
+        results: { slack: "blocked" },
       });
-      const result = await controller.testChannel({});
+      const result = await controller.testChannel("slack", {});
       expect(result.success).toBe(false);
+      expect(result.results).toEqual({ slack: "blocked" });
     });
   });
 
@@ -132,6 +137,24 @@ describe("NotificationConfigController", () => {
       expect(svc.sendTest).toHaveBeenCalledWith(
         expect.objectContaining({ channels: ["slack", "email", "wecom"] }),
       );
+    });
+
+    // R8 (N29): all requested channels disabled → the service's explicit
+    // failure must reach the client instead of a fake success.
+    it("passes through the no-enabled-channels failure", async () => {
+      svc.sendTest.mockResolvedValue({
+        success: false,
+        message:
+          "No enabled channels to test (requested: email). Enable a channel first.",
+        results: {},
+      });
+      const result = await controller.sendTest({
+        channels: ["email"],
+        title: "T",
+        content: "C",
+      });
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("No enabled channels");
     });
   });
 
