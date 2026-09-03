@@ -13,8 +13,11 @@ import {
   HttpCode,
   HttpStatus,
   Res,
+  NotFoundException,
 } from "@nestjs/common";
 import { Response } from "express";
+import { existsSync, readFileSync } from "fs";
+import { join, resolve } from "path";
 import {
   ApiTags,
   ApiOperation,
@@ -131,7 +134,17 @@ export class ExecutorController {
     // genuine restart, and for legacy executors that report no startupId.
     const { executor, perExecutorToken } =
       await this.svc.registerExecutor(payload);
-    return { ...executor, perExecutorToken };
+    // N26 (round-8): return the stored tokenHash alongside the registration.
+    // The executor uses it as the HMAC source secret for per-execution
+    // callback tokens (AUTOFLOW_CALLBACK_TOKEN), which lets admin-api verify
+    // those tokens statelessly against the same value it already holds.
+    // This grants nothing new to the caller: it authenticated with the raw
+    // per-executor/shared token, from which the hash is derived, and the
+    // bcrypt hash is not a preimage leak.
+    const tokenHash = await this.svc.getCallbackSecretByAddress(
+      executor.address,
+    );
+    return { ...executor, perExecutorToken, tokenHash };
   }
 
   @Public()
@@ -191,7 +204,15 @@ export class ExecutorController {
       restartedAt: body.restartedAt,
       startupId: body.startupId,
     };
-    return this.svc.heartbeat(body.address, metrics);
+    const saved = await this.svc.heartbeat(body.address, metrics);
+    // R9 (round-8 P1 closure, W3): echo the CURRENT stored tokenHash with
+    // every heartbeat (same posture as register, which already returns it —
+    // the caller proved possession of a valid per-executor/shared token).
+    // executor-node adopts it in scheduler.sendHeartbeat so the N26
+    // per-execution callback HMAC secret follows admin-side rotations
+    // (admin-UI rotate-token, register-time issuance) without a re-register.
+    const tokenHash = await this.svc.getCallbackSecretByAddress(body.address);
+    return { ...saved, tokenHash };
   }
 
   @ApiBearerAuth("JWT")
@@ -326,6 +347,70 @@ export class ExecutorController {
   getInstallScript(@Res() res: Response): void {
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.end(INSTALL_SCRIPT);
+  }
+
+  /**
+   * R8（N24 根治）：执行器安装 artifact 通道。install.sh 的远程下载分支指向
+   * 本端点——真实承载 executor-node.tar.gz（dist + package.json + 生产
+   * node_modules，由仓库根 scripts/bundle-executor-artifact.sh 生成），
+   * 从 EXECUTOR_ARTIFACT_DIR（默认 <cwd>/artifacts）读取固定文件名，
+   * 裸机 curl|bash 安装不再依赖项目 checkout。
+   * 鉴权姿态：@Public() + 共享 token（Bearer 头优先，?token= 兜底），与
+   * register/getToken 同一 verifyExecutorToken（未配置共享 token 时 fail
+   * closed）。空 @Roles() 防御未来类级 @Roles 把公开安装路由一并锁死。
+   * 路由声明顺序：必须位于 @Get(":id") 之前，否则被参数路由吞掉。
+   */
+  @Public()
+  @Roles()
+  @Get("artifact/executor-node.tar.gz")
+  @ApiOperation({
+    summary: "Download executor-node install artifact (tar.gz)",
+    description:
+      "Serves the executor-node install bundle (dist + production node_modules) used by install.sh's remote channel. Requires the executor shared token (Authorization: Bearer <token> or ?token=<token>). Returns 404 until an operator generates the artifact via scripts/bundle-executor-artifact.sh into EXECUTOR_ARTIFACT_DIR.",
+  })
+  @ApiQuery({
+    name: "token",
+    required: false,
+    description:
+      "Executor shared token (alternative to the Authorization Bearer header)",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "tar.gz artifact (application/gzip)",
+  })
+  @ApiResponse({ status: 401, description: "Missing / invalid shared token" })
+  @ApiResponse({
+    status: 404,
+    description: "Artifact not generated / not found",
+  })
+  async getExecutorArtifact(
+    @Headers("authorization") auth: string | undefined,
+    @Query("token") token: string | undefined,
+    @Res() res: Response,
+  ): Promise<void> {
+    await verifyExecutorToken(
+      auth ?? (token ? `Bearer ${token}` : undefined),
+      this.configService,
+      this.systemConfigService,
+    );
+    const artifactDir =
+      this.configService.get<string>("EXECUTOR_ARTIFACT_DIR") ||
+      resolve(process.cwd(), "artifacts");
+    // 文件名固定，无用户可控成分——不存在路径穿越面。
+    const file = join(artifactDir, "executor-node.tar.gz");
+    if (!existsSync(file)) {
+      throw new NotFoundException(
+        "executor-node.tar.gz not found; run scripts/bundle-executor-artifact.sh and place the artifact under EXECUTOR_ARTIFACT_DIR (default <cwd>/artifacts)",
+      );
+    }
+    const buffer = readFileSync(file);
+    res.setHeader("Content-Type", "application/gzip");
+    res.setHeader(
+      "Content-Disposition",
+      'attachment; filename="executor-node.tar.gz"',
+    );
+    res.setHeader("Content-Length", String(buffer.length));
+    res.end(buffer);
   }
 
   @ApiBearerAuth("JWT")
@@ -475,7 +560,7 @@ export class ExecutorController {
   @ApiOperation({
     summary: "Get dynamic token",
     description:
-      "Executor calls this to get a dynamic token. Uses shared token for initial auth, returns periodically expiring token.",
+      "Executor calls this to get a dynamic token. Uses shared token for initial auth. R9 (round-8 P1): idempotent per (address, startupId) — a same-process re-fetch returns the CURRENT token instead of rotating; rotation happens on first issuance, a new startupId (restart), a legacy startupId-less fetch outside the short reuse window, or when the previously issued token no longer matches the stored hash.",
   })
   @ApiBody({
     description: "Get token parameters",
@@ -483,22 +568,24 @@ export class ExecutorController {
       example: {
         address: "192.168.1.100:3002",
         appName: "executor-node",
+        startupId: "uuid-of-this-executor-process-life",
       },
     },
   })
   @ApiResponse({
-    status: 200,
-    description: "Token obtained successfully",
+    status: 201,
+    description: "Token obtained (or reused) successfully",
     schema: {
       example: {
         token: "dynamic-token-value",
-        expiresAt: "2024-01-01T12:00:00Z",
+        tokenHash: "$2b$12$bcrypt-hash-of-the-token",
       },
     },
   })
   @ApiResponse({ status: 401, description: "Invalid shared token" })
   async getToken(
-    @Body() body: { address: string; appName?: string },
+    @Body()
+    body: { address: string; appName?: string; startupId?: string | null },
     @Headers("authorization") auth: string,
   ) {
     await verifyExecutorToken(
@@ -507,12 +594,15 @@ export class ExecutorController {
       this.systemConfigService,
     );
 
-    const executor = await this.svc.register({
+    // R9 (round-8 P1 closure, W2): issueToken() replaces the old
+    // register()+rotateToken() pair that rotated on EVERY call — the root of
+    // the ~30s tokenHash rotation cycle that broke the N26 per-execution
+    // callback-token invariant (docs/VERIFY-round8-e2e.md §1.5).
+    return this.svc.issueToken({
       address: body.address,
       appName: body.appName || "executor",
+      startupId: body.startupId,
     });
-
-    return this.svc.rotateToken(executor.id);
   }
 
   @Public()

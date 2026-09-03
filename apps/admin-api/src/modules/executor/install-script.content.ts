@@ -33,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --port)      PORT="$2";            shift 2 ;;
     --runtime)   RUNTIME="$2";         shift 2 ;;
     --work-dir)  WORK_DIR="$2";        shift 2 ;;
+    --install-dir) INSTALL_DIR="$2";  shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -56,6 +57,9 @@ if [[ ! "$APP_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
 fi
 if [[ ! "$WORK_DIR" =~ ^/[A-Za-z0-9._/-]*$ ]]; then
   die "--work-dir 必须是只含字母、数字、点、下划线、连字符与斜杠的绝对路径"
+fi
+if [[ ! "$INSTALL_DIR" =~ ^/[A-Za-z0-9._/-]*$ ]]; then
+  die "--install-dir 必须是只含字母、数字、点、下划线、连字符与斜杠的绝对路径"
 fi
 case "$RUNTIME" in
   node|python|universal) ;;
@@ -123,24 +127,40 @@ mkdir -p "$INSTALL_DIR" "$WORK_DIR"
 
 # ── 安装执行器代码 ────────────────────────────────────────────────────────────
 echo "[3/6] 安装执行器..."
-# N24: 旧版此处从 \${ADMIN_API_URL}/static/executor-node.tar.gz 下载，但后端
-# 从未承载该静态资源（永远 404 落入本地兜底，形成假承诺）。已删除远程下载
-# 分支：本脚本只在项目 checkout 内可用；裸机安装需先经 executor-packages
-# API 获取构件。
-SCRIPT_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-EXECUTOR_SRC="$(dirname "$SCRIPT_DIR")/apps/executor-node"
-if [[ -d "$EXECUTOR_SRC" ]]; then
-  echo "      从项目目录复制（本地安装）..."
-  cp -r "$EXECUTOR_SRC/"* "$INSTALL_DIR/"
+# R8（N24 根治）：真 artifact 通道。后端承载
+# GET /api/executors/artifact/executor-node.tar.gz（@Public + 共享 token，
+# Bearer 头或 ?token= 均可），产物由 scripts/bundle-executor-artifact.sh 生成
+# （dist + package.json + 生产 node_modules），放入 admin-api 的
+# EXECUTOR_ARTIFACT_DIR（默认 <cwd>/artifacts）。裸机 curl|bash 不再依赖
+# 项目 checkout；下载失败时回退到本地 checkout 副本（开发场景）。
+ARTIFACT_URL="\${ADMIN_API_URL%/}/api/executors/artifact/executor-node.tar.gz"
+TMP_PKG="$(mktemp /tmp/acf-executor-artifact.XXXXXX)"
+trap 'rm -f "$TMP_PKG"' EXIT
+if curl -fsSL --connect-timeout 10 --retry 2 \\
+     -H "Authorization: Bearer \${EXECUTOR_SECRET}" \\
+     "$ARTIFACT_URL" -o "$TMP_PKG" \\
+   && tar -tzf "$TMP_PKG" >/dev/null 2>&1; then
+  echo "      从 Admin API 下载执行器 artifact..."
+  tar -xzf "$TMP_PKG" -C "$INSTALL_DIR"
 else
-  echo "      executor-node artifact not bundled in this script; obtain the artifact via executor-packages API or run from a project checkout"
-  exit 1
+  echo "      artifact 下载失败，回退本地 checkout..."
+  SCRIPT_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+  EXECUTOR_SRC="$(dirname "$SCRIPT_DIR")/apps/executor-node"
+  if [[ -d "$EXECUTOR_SRC" ]]; then
+    echo "      从项目目录复制（本地安装）..."
+    cp -r "$EXECUTOR_SRC/"* "$INSTALL_DIR/"
+  else
+    die "无法从 \${ARTIFACT_URL} 下载 artifact（确认 admin-api 已启动，且 EXECUTOR_ARTIFACT_DIR 下有 scripts/bundle-executor-artifact.sh 生成的 executor-node.tar.gz），且本脚本不在项目 checkout 内、无本地副本可回退"
+  fi
 fi
+rm -f "$TMP_PKG"
 
 # ── 安装 npm 依赖 ──────────────────────────────────────────────────────────────
 echo "[4/6] 安装 npm 依赖..."
 cd "$INSTALL_DIR"
-if [[ -f package.json ]]; then
+if [[ -d node_modules ]]; then
+  echo "      artifact 已含生产依赖，跳过 npm install"
+elif [[ -f package.json ]]; then
   npm install --production --silent
 fi
 
