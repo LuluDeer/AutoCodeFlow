@@ -61,13 +61,56 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .record(z.unknown())
         .optional()
         .describe('Optional runtime parameters to pass to the task'),
-      // NOTE: no executorId parameter — TriggerTaskDto only accepts `params`
-      // (executor pinning is not supported by the backend; see roadmap).
+      // NOTE: no executorId parameter here — TriggerTaskDto only accepts
+      // `params`, and the backend's global ValidationPipe runs with
+      // forbidNonWhitelisted, so a per-trigger pin would be rejected with 400.
+      // Executor pinning IS supported by the backend, but as a task-level
+      // field (tasks.executorId, set via create/update — see the update_task
+      // tool), not a per-run override.
     },
     async ({ taskId, params }) => {
       const data = await call<unknown>('POST', `/tasks/${taskId}/trigger`, {
         ...(params ? { params } : {}),
       });
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- update_task ---------------------------------------------------------
+  server.tool(
+    'update_task',
+    'Update an existing task via PATCH (only the fields you pass are changed). Supports executor pinning: set executorId to pin the task to one executor (fails fast if it is offline), or pass executorId: null to clear the pin. executorId is mutually exclusive with executeMode="broadcast" — the backend rejects that combination with 400.',
+    {
+      taskId: z.string().describe('Task ID to update'),
+      name: z.string().optional().describe('New task name'),
+      description: z.string().optional().describe('New task description'),
+      status: z.string().optional().describe('Task status: active | paused'),
+      triggerType: z.string().optional().describe('Trigger type: cron | fixed_rate | api | manual'),
+      cronExpression: z.string().optional().describe('Cron expression (5 fields) for cron triggers'),
+      timezone: z.string().optional().describe('IANA timezone for cron schedules, e.g. Asia/Shanghai'),
+      fixedRate: z.number().int().min(1).optional().describe('Fixed interval in seconds for fixed_rate triggers'),
+      runtime: z.string().optional().describe('Runtime type, e.g. node | python | shell'),
+      entrypoint: z.string().optional().describe('Entry point file path relative to the repo root'),
+      timeoutSeconds: z.number().int().min(0).optional().describe('Execution timeout in seconds'),
+      maxRetry: z.number().int().min(0).max(10).optional().describe('Max retry attempts (0-10)'),
+      executeMode: z.string().optional().describe('Dispatch mode: single | broadcast. broadcast fans out to all online executors and cannot be combined with executorId.'),
+      executorId: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Pin the task to this executor ID (uuid). Pass null to remove an existing pin. Mutually exclusive with executeMode=broadcast.'),
+      executorGroup: z.string().optional().describe('Restrict auto-dispatch to executors in this group'),
+      executorTags: z.array(z.string()).optional().describe('Restrict auto-dispatch to executors carrying all these tags'),
+      params: z.record(z.unknown()).optional().describe('Default runtime parameters'),
+      applicationId: z.string().optional().describe('Associated application ID'),
+    },
+    async ({ taskId, ...fields }) => {
+      // Drop undefined fields so PATCH only touches what the caller supplied;
+      // keep explicit nulls (e.g. executorId: null) so a pin can be cleared.
+      const body = Object.fromEntries(
+        Object.entries(fields).filter(([, v]) => v !== undefined),
+      );
+      const data = await call<unknown>('PATCH', `/tasks/${taskId}`, body);
       return JSON_CONTENT(data);
     },
   );

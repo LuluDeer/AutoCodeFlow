@@ -54,7 +54,7 @@ describe('tool registry surface', () => {
   it('registers the full P1-aligned capability face', () => {
     const expected = [
       // tasks
-      'list_tasks', 'get_task', 'trigger_task', 'list_task_versions', 'rollback_task_version',
+      'list_tasks', 'get_task', 'trigger_task', 'update_task', 'list_task_versions', 'rollback_task_version',
       'compare_task_versions', 'list_executions', 'get_execution', 'analyze_execution',
       'get_execution_stats', 'suggest_schedule', 'get_execution_logs', 'kill_execution',
       'pause_task', 'resume_task',
@@ -119,6 +119,37 @@ describe('get_task / trigger_task', () => {
   it('trigger_task omits the body when params is absent', async () => {
     await tools.get('trigger_task')!.handler({ taskId: 't1' });
     expect(call).toHaveBeenCalledWith('POST', '/tasks/t1/trigger', {});
+  });
+});
+
+// R7 (N20): MCP 之前无任何设置 pinning 的路径；update_task 经 PATCH 透传
+// executorId，补齐能力并纠正"后端不支持 pinning"的过时注释。
+describe('update_task', () => {
+  it('declares an executorId param (unlike trigger_task)', () => {
+    expect(tools.get('update_task')!.schema).toHaveProperty('executorId');
+  });
+
+  it('PATCHes /tasks/:id with executorId to pin a task', async () => {
+    await tools.get('update_task')!.handler({
+      taskId: 't1',
+      executorId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+    expect(call).toHaveBeenCalledWith('PATCH', '/tasks/t1', {
+      executorId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+  });
+
+  it('keeps an explicit executorId:null so the pin can be cleared', async () => {
+    await tools.get('update_task')!.handler({ taskId: 't1', executorId: null });
+    expect(call).toHaveBeenCalledWith('PATCH', '/tasks/t1', { executorId: null });
+  });
+
+  it('drops undefined fields so PATCH only touches what was supplied', async () => {
+    await tools.get('update_task')!.handler({ taskId: 't1', name: 'renamed' });
+    const [, , body] = call.mock.calls[0];
+    expect(body).toEqual({ name: 'renamed' });
+    expect('executorId' in (body as object)).toBe(false);
+    expect('executeMode' in (body as object)).toBe(false);
   });
 });
 

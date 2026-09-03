@@ -101,8 +101,11 @@ export function tasksCommand(): Command {
   cmd.command('trigger <id>')
     .description('Manually trigger a task and wait for completion')
     .option('--wait', 'Poll until execution finishes', false)
-    // NOTE: no --executor option — TriggerTaskDto only accepts `params`
-    // (executor pinning is not supported by the backend; see roadmap).
+    // NOTE: no --executor option here — TriggerTaskDto only accepts `params`
+    // and the backend ValidationPipe runs with forbidNonWhitelisted, so a
+    // per-trigger pin would be rejected with 400. Executor pinning IS
+    // supported by the backend as a task-level field (tasks.executorId) — set
+    // it via `acf task create/update --executor <id>`, not per run.
     .action(async (id, opts) => {
       const spinner = ora('Triggering task…').start();
       try {
@@ -345,6 +348,7 @@ export function tasksCommand(): Command {
     .description('Create a new task (JSON payload via --json or --file)')
     .requiredOption('--json <body>', 'Task body as JSON string')
     .option('--file <path>', 'Read task body from a JSON file (overrides --json)')
+    .option('--executor <id>', 'Pin the task to a specific executor ID (uuid); mutually exclusive with executeMode=broadcast')
     .action(async (opts) => {
       const spinner = ora('Creating task…').start();
       try {
@@ -353,6 +357,8 @@ export function tasksCommand(): Command {
           ? await fs.readFile(opts.file, 'utf-8')
           : opts.json;
         const body = JSON.parse(raw);
+        // R7 (N20): 显式 --executor 覆盖/补写 body.executorId（pinning）。
+        if (opts.executor) body.executorId = opts.executor;
         const t = await post<Task>('/tasks', body);
         spinner.succeed(`Task created: ${t.id}`);
         console.log(chalk.gray(`  name: ${t.name}  status: ${statusColor(t.status)}`));
@@ -368,6 +374,7 @@ export function tasksCommand(): Command {
     .description('Update a task (JSON payload via --json or --file)')
     .requiredOption('--json <body>', 'Task patch body as JSON string')
     .option('--file <path>', 'Read task patch body from a JSON file (overrides --json)')
+    .option('--executor <id>', 'Pin the task to a specific executor ID (uuid); pass --json {"executorId":null} to clear. Mutually exclusive with executeMode=broadcast')
     .action(async (id, opts) => {
       const spinner = ora('Updating task…').start();
       try {
@@ -376,6 +383,8 @@ export function tasksCommand(): Command {
           ? await fs.readFile(opts.file, 'utf-8')
           : opts.json;
         const body = JSON.parse(raw);
+        // R7 (N20): 显式 --executor 覆盖/补写 body.executorId（pinning）。
+        if (opts.executor) body.executorId = opts.executor;
         const t = await patch<Task>(`/tasks/${id}`, body);
         spinner.succeed(`Task updated: ${t.id}`);
         console.log(chalk.gray(`  name: ${t.name}  status: ${statusColor(t.status)}`));
