@@ -9,7 +9,14 @@ import {
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, ILike, In, Not, QueryFailedError, Repository } from "typeorm";
+import {
+  DataSource,
+  ILike,
+  In,
+  Not,
+  QueryFailedError,
+  Repository,
+} from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
@@ -70,10 +77,6 @@ export const MAX_DEPENDENCY_EXECUTION_SCAN = 500;
  */
 export const DEPENDENCY_TRIGGER_CLAIM_WINDOW_MS = 10_000;
 
-/** TASK-008: SSE 日志流并发上限默认值（可用环境变量覆盖）。 */
-const SSE_MAX_STREAMS_PER_EXECUTION_DEFAULT = 4;
-const SSE_MAX_STREAMS_GLOBAL_DEFAULT = 64;
-
 /**
  * R6: PG 唯一约束/主键冲突（SQLSTATE 23505 unique_violation）。客户端自带
  * 已存在的 id 时 insert 撞主键，驱动抛 QueryFailedError——若不拦截会经全局
@@ -93,6 +96,22 @@ export class TaskService {
   private s3LogStorage: S3LogStorage | null = null;
   private s3StorageResolved = false;
 
+  /**
+   * R7 (N17): pinning 与 broadcast 语义互斥——broadcast = "所有在线执行器"，
+   * pinning = "仅此一个"，同时成立无法调和。抽成独立断言，供 create（请求体
+   * 两键齐全）与 update（合并后的实体态）复用，保证消息一致。
+   */
+  private assertPinBroadcastExclusive(
+    executorId?: string | null,
+    executeMode?: ExecuteMode,
+  ): void {
+    if (executorId && executeMode === ExecuteMode.BROADCAST) {
+      throw new BadRequestException(
+        "executorId (pinned executor) is mutually exclusive with executeMode=broadcast",
+      );
+    }
+  }
+
   private normalizeTaskDto<T extends CreateTaskDto | UpdateTaskDto>(dto: T): T {
     const normalized = { ...dto } as T & {
       timeout?: number;
@@ -102,16 +121,12 @@ export class TaskService {
       normalized.timeout = normalized.timeoutSeconds;
       delete normalized.timeoutSeconds;
     }
-    // R6: pinning 与 broadcast 语义互斥——broadcast = "所有在线执行器"，
-    // pinning = "仅此一个"，同时给出无法调和，写入边界直接拒绝。
-    if (
-      normalized.executorId &&
-      normalized.executeMode === ExecuteMode.BROADCAST
-    ) {
-      throw new BadRequestException(
-        "executorId (pinned executor) is mutually exclusive with executeMode=broadcast",
-      );
-    }
+    // R6: 请求体自身两键齐全时直接拒绝（create 路径覆盖此洞）。update 的
+    // PATCH 合并路径由 assertPinBroadcastExclusive 在合并后实体态兜底（N17）。
+    this.assertPinBroadcastExclusive(
+      normalized.executorId,
+      normalized.executeMode,
+    );
     return normalized as T;
   }
 
@@ -307,15 +322,20 @@ export class TaskService {
 
   async update(id: string, dto: UpdateTaskDto) {
     const t = await this.findOne(id);
-    const updated = await this.taskRepo.save(
-      Object.assign(t, this.normalizeTaskDto(dto)),
-    );
+    const updated = Object.assign(t, this.normalizeTaskDto(dto));
+    // R7 (N17): PATCH 合并路径的互斥校验必须看合并后的实体态——请求体只带
+    // executorId（已有任务 executeMode=broadcast）或只带 executeMode=broadcast
+    // （已有任务已 pin）时，normalizeTaskDto 看不到另一半，会漏判产生
+    // "broadcast+已 pin" 非法状态（dispatchBroadcast 不读 executorId，pinning
+    // 被静默丢弃）。save 前兜底，消息与 create 路径一致。
+    this.assertPinBroadcastExclusive(updated.executorId, updated.executeMode);
+    const saved = await this.taskRepo.save(updated);
     // Stop old schedule, then re-register based on new status without waiting for reload
     this.schedulerService.stop(id);
-    if (updated.status === TaskStatus.ACTIVE) {
-      await this.schedulerService.scheduleOne(updated);
+    if (saved.status === TaskStatus.ACTIVE) {
+      await this.schedulerService.scheduleOne(saved);
     }
-    return updated;
+    return saved;
   }
 
   async updateGlue(id: string, source: string, language?: string) {
@@ -1151,7 +1171,7 @@ export class TaskService {
     return this.s3LogStorage;
   }
 
-/**
+  /**
    * Fetch full logs from the executor (backed by its local log files) via
    * GET /api/logs/{executionId} and persist them as ExecutionLogLine rows.
    * Returns true on success; any failure is non-fatal (returns false).
