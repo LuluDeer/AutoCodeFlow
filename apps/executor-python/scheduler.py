@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
 import httpx
 import threading
 from tenacity import (
@@ -14,12 +13,14 @@ from tenacity import (
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 import psutil
-from auth import get_current_token
+from auth import get_current_token, adopt_executor_token_hash
 
 logger = logging.getLogger(__name__)
 
-executor_started_at = datetime.now(timezone.utc).isoformat()
-executor_startup_id = str(uuid.uuid4())
+# R9 (round-9): the process-life identity now lives in startup_identity.py
+# (auth.py needs it for POST /token and cannot import scheduler.py — cycle).
+# Re-exported here so existing importers (main.py, tests) keep working.
+from startup_identity import executor_started_at, executor_startup_id  # noqa: F401
 
 # Global count of currently-running tasks with thread-safe operations
 running_count = 0
@@ -81,6 +82,15 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
         timeout=5,
     )
     response.raise_for_status()
+    # R9 (round-9, W3 parity with executor-node scheduler.ts): admin
+    # heartbeats echo the executor's current stored tokenHash
+    # ({code,message,data:{tokenHash}} envelope) — adopt it so the
+    # per-execution callback-token HMAC key follows admin-side rotations
+    # instead of going stale (picked up within heartbeatIntervalSeconds).
+    try:
+        adopt_executor_token_hash(response.json())
+    except Exception:  # pragma: no cover - non-JSON / empty admin bodies
+        pass
 
 
 async def heartbeat_task() -> None:

@@ -116,3 +116,37 @@ class TestHeartbeatCpuSampling:
 
         # positional interval=1 — dispatched through asyncio.to_thread
         assert cpu_mock.call_args.args == (1,)
+
+
+class TestHeartbeatTokenHashAdoption:
+    """R9 (round-9, W3): heartbeat responses echo the stored tokenHash
+    ({code,message,data:{tokenHash}}) — the executor must adopt it so the
+    per-execution callback-token HMAC key follows admin-side rotations."""
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_adopts_token_hash_from_envelope(self, monkeypatch):
+        import auth as auth_module
+        monkeypatch.setattr(auth_module, '_executor_token_hash', None)
+        response = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok', 'data': {'tokenHash': 'hb-hash'}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=response)
+
+        await _send_heartbeat(mock_client, 'test-token')
+
+        assert auth_module.get_executor_token_hash() == 'hb-hash'
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_without_tokenhash_leaves_state(self, monkeypatch):
+        import auth as auth_module
+        monkeypatch.setattr(auth_module, '_executor_token_hash', 'keep-me')
+        mock_client = AsyncMock()
+        # Bare 200 response with no JSON body at all (as create_mock_response)
+        mock_client.post = AsyncMock(return_value=create_mock_response(200))
+
+        await _send_heartbeat(mock_client, 'test-token')
+
+        assert auth_module.get_executor_token_hash() == 'keep-me'

@@ -12,7 +12,7 @@ from routers import execute, health, logs, config as config_router
 from admin_api import build_admin_api_url, check_admin_api_connectivity, get_admin_api_base_url
 from config import settings
 from scheduler import heartbeat_task, get_running_count, executor_started_at, executor_startup_id
-from auth import get_current_token, get_static_token, require_token_enabled
+from auth import get_current_token, get_static_token, require_token_enabled, adopt_executor_token_hash
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -91,10 +91,19 @@ async def lifespan(app: FastAPI):
 
 async def register_executor():
     try:
-        token = await get_current_token()
+        # R9-fix (P1, VERIFY-round9-e2e §1.4): admin's POST /executors/register
+        # authenticates with verifyExecutorToken, which only accepts the shared
+        # bootstrap token. get_current_token() prefers the dynamic per-executor
+        # token — once R9 fixed _fetch_token, that dynamic token started winning
+        # the race to register and the call was rejected with 401, silently
+        # dropping the rich metadata (capabilities/maxConcurrentTasks/
+        # executorVersion) the scheduler filters on. Register therefore carries
+        # the static bootstrap token (parity with executor-node's
+        # postWithStaticToken); heartbeats keep using the dynamic token.
+        token = get_static_token()
         headers = {'Authorization': f'Bearer {token}'} if token else {}
         async with httpx.AsyncClient() as client:
-            await client.post(
+            response = await client.post(
                 build_admin_api_url('/executors/register'),
                 json={
                     'appName': settings.app_name,
@@ -109,6 +118,23 @@ async def register_executor():
                 headers=headers,
                 timeout=10,
             )
+            # R9-fix: the old code logged "Registered" even on 4xx — check the
+            # status and surface rejections (with a body summary) as errors.
+            if not 200 <= response.status_code < 300:
+                body_summary = (response.text or '')[:200]
+                logger.error(
+                    'Register rejected by admin-api: HTTP %s %s (will retry via heartbeat)',
+                    response.status_code,
+                    body_summary,
+                )
+                return
+            # R9 (round-9, W3 parity with executor-node main.ts): the
+            # register response carries the stored tokenHash (N26) — adopt
+            # it as the per-execution callback-token HMAC source secret.
+            try:
+                adopt_executor_token_hash(response.json())
+            except Exception:  # pragma: no cover - non-JSON admin bodies
+                pass
             logger.info('Registered to admin-api')
     except Exception as e:
         logger.warning(f'Register failed (will retry via heartbeat): {e}')

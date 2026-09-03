@@ -252,6 +252,66 @@ def do_work() -> dict:
     return {"processed": True, "required_field": required_field}
 ```
 
+### 任务内回调 Admin API（Python SDK，N23 per-execution token）
+
+`autoflow_sdk` 的 `TaskContext.from_env()` 会自动识别执行器注入的
+`AUTOFLOW_ADMIN_API_URL` + `AUTOFLOW_CALLBACK_TOKEN` + `AUTOFLOW_EXECUTOR_ADDRESS`
+三个变量，将它们暴露为 `ctx.admin_api_url` / `ctx.callback_token` /
+`ctx.executor_address` 专用字段（**不会**混入 `ctx.params`，避免任务参数被
+凭证与路由信息污染），并提供 `ctx.callback` 回调客户端与
+`ctx.report_success()` / `ctx.report_failure()` 便捷方法。
+
+回调凭证齐备时 `ctx.callback.enabled` 为 `True`；旧版执行器（或未注入凭证的
+手动运行环境）下客户端处于 disabled 状态，任何上报调用都会抛出
+`CallbackDisabledError` 并指明缺失的变量——任务脚本应先用
+`ctx.callback.enabled` 判断，再决定是否主动回调。
+
+```python
+from autoflow_sdk import TaskContext, CallbackDisabledError
+
+
+def main() -> dict:
+    ctx = TaskContext.from_env()
+
+    if not ctx.callback.enabled:
+        # 旧版执行器未注入回调凭证：跳过主动回调，结果仍由执行器统一上报
+        ctx.log.warning("callback capability unavailable on this executor")
+        return {"ok": True}
+
+    try:
+        rows = do_work()
+        # 例：向平台回报一次成功回调（POST /api/executions/callback）。
+        # executionId / executorAddress 由 SDK 自动补齐；summary 写入 logs 字段。
+        ctx.report_success(summary=f"{rows} rows written", duration_ms=1234)
+        return {"ok": True, "rows": rows}
+    except Exception as e:
+        # 失败上报：error 映射为 errorMessage（截断至 4 KB），
+        # failure_reason 取 admin-api 的 ExecutionFailureReason 枚举
+        # （默认 script_error，可选 timeout / killed / unknown 等）。
+        ctx.report_failure(e, failure_reason="script_error")
+        raise
+
+
+if __name__ == "__main__":
+    main()
+```
+
+回调请求体与 Node SDK 完全一致，遵循 `CallbackItemDto` 字段
+（`executionId` / `status: success|failed` / `executorAddress` / `logs` /
+`errorMessage` / `failureReason` / `durationMs`）。需要更细粒度控制（如批量
+上报或自定义字段）时，可直接使用底层客户端：
+
+```python
+ctx.callback.report([
+    {"status": "success", "durationMs": 800},
+])  # executionId / executorAddress 自动补齐，显式书写的值不会被覆盖
+```
+
+> 注意：per-execution token 只对 `POST /api/executions/callback` 的回调鉴权
+> 有意义，不能访问其他需要用户 JWT 的管理端点；它绑定单次 execution 且随任务
+> 超时+15 分钟宽限过期，任何越权或过期使用都会被 Admin API 拒绝（401，
+> fail-closed）。执行器共享 token 本身绝不进入任务子进程（SEC-01）。
+
 ## Node.js SDK 使用示例
 
 ### 基础任务脚本（tasks/sendNotification.js）

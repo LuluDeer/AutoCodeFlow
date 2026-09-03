@@ -1000,3 +1000,116 @@ def test_node_runtime_with_requirements_logs_warning(tmp_path, monkeypatch, capl
         result = asyncio.run(run_task(req))
     assert result['success'] is False
     assert 'runtime=node ignores requirements' in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# N33 (round-9): per-execution callback env injection (executor-node parity)
+# ---------------------------------------------------------------------------
+
+class _FakeLineStream:
+    def __init__(self, lines):
+        self._lines = lines
+
+    def __aiter__(self):
+        async def _gen():
+            for line in self._lines:
+                yield line
+        return _gen()
+
+
+class _FakeTaskProc:
+    def __init__(self):
+        self.returncode = 0
+        self.stdout = _FakeLineStream([b'ok\n'])
+        self.pid = 4242
+
+    async def wait(self):
+        return 0
+
+
+def _run_task_capture_env(tmp_path, monkeypatch, *, params=None, exec_id='exec-cbenv', shared_token='test-secret-vector'):
+    """Run run_task with a mocked spawn and return the child env dict."""
+    import auth as auth_module
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_address', 'localhost:8001')
+    monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'pub:9000')
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', shared_token)
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
+    monkeypatch.delenv('EXECUTION_CALLBACK_SECRET', raising=False)
+    monkeypatch.setattr(auth_module, '_executor_token_hash', None)
+
+    captured = {}
+
+    async def fake_spawn(*args, **kwargs):
+        captured['env'] = dict(kwargs.get('env') or {})
+        return _FakeTaskProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_spawn)
+
+    req = ExecuteRequest(
+        executionId=exec_id,
+        task={'name': 'cb', 'runtime': 'python', 'entrypoint': 'main.py', 'timeoutSeconds': 30},
+        params=params,
+    )
+    result = asyncio.run(run_task(req))
+    assert result['success'] is True
+    return captured['env']
+
+
+def test_run_task_injects_callback_env_triple(tmp_path, monkeypatch):
+    """N33: task children get AUTOFLOW_CALLBACK_TOKEN (v1 HMAC bound to the
+    executionId, TTL = timeout + 900s grace) plus the admin URL and the
+    registered executor address — the three vars autoflow-sdk ctx.callback
+    needs; previously python executors left ctx.callback permanently disabled."""
+    import time
+    from execution_callback_token import _compute_signature
+
+    env = _run_task_capture_env(tmp_path, monkeypatch)
+
+    token = env['AUTOFLOW_CALLBACK_TOKEN']
+    parts = token.split('.')
+    assert parts[0] == 'v1'
+    assert parts[1] == 'exec-cbenv'
+    now = int(time.time())
+    assert now + 30 + 900 - 5 <= int(parts[2]) <= now + 30 + 900 + 5
+    assert parts[3] == _compute_signature('test-secret-vector', '.'.join(parts[:3]))
+
+    assert env['AUTOFLOW_ADMIN_API_URL'] == 'http://admin.local'
+    assert env['AUTOFLOW_EXECUTOR_ADDRESS'] == 'pub:9000'
+
+
+def test_run_task_callback_env_not_overridable_by_params(tmp_path, monkeypatch):
+    """Injection happens after the params loop — user params can never
+    shadow the callback credentials (node N23 parity)."""
+    env = _run_task_capture_env(tmp_path, monkeypatch, params={
+        'callback_token': 'evil',
+        'admin_api_url': 'http://evil.local',
+        'executor_address': 'evil:1',
+    })
+    assert env['AUTOFLOW_CALLBACK_TOKEN'].startswith('v1.exec-cbenv.')
+    assert env['AUTOFLOW_ADMIN_API_URL'] == 'http://admin.local'
+    assert env['AUTOFLOW_EXECUTOR_ADDRESS'] == 'pub:9000'
+
+
+def test_run_task_omits_callback_token_without_secret(tmp_path, monkeypatch):
+    """Dev executor with no token configured: AUTOFLOW_CALLBACK_TOKEN is
+    simply omitted (SDK stays disabled) instead of minting a bogus token;
+    the non-secret routing vars are still injected."""
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
+    monkeypatch.delenv('EXECUTOR_SHARED_TOKEN', raising=False)
+    monkeypatch.delenv('EXECUTOR_SECRET', raising=False)
+
+    env = _run_task_capture_env(
+        tmp_path, monkeypatch, exec_id='exec-nosecret', shared_token=''
+    )
+    assert 'AUTOFLOW_CALLBACK_TOKEN' not in env
+    assert env['AUTOFLOW_ADMIN_API_URL'] == 'http://admin.local'
+    assert env['AUTOFLOW_EXECUTOR_ADDRESS'] == 'pub:9000'
