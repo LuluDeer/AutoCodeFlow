@@ -18,6 +18,10 @@ export const ENV_WHITELIST = new Set([
 const SECRET_ENV_DENYLIST = new Set([
   'EXECUTOR_SHARED_TOKEN',
   'EXECUTOR_SECRET',
+  // N23: HMAC source secret for per-execution callback tokens. The child
+  // only ever receives the derived, execution-bound, expiring token
+  // (AUTOFLOW_CALLBACK_TOKEN, injected explicitly in execute.ts).
+  'EXECUTION_CALLBACK_SECRET',
 ]);
 
 /** Build a sanitized environment from process.env: whitelist only, secrets

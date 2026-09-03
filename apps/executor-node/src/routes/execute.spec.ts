@@ -14,6 +14,11 @@ jest.mock('../config', () => ({
     appName: 'test-executor',
     executorAddress: 'localhost:8002',
     taskTimeoutSeconds: 300,
+    // N23: per-execution callback token inputs (mirrors real config shape)
+    token: 'test-shared-secret',
+    executionCallbackSecret: '',
+    adminApiUrl: 'http://admin-api:3105',
+    adminApiUrlInternal: 'http://admin-api:3105',
   },
 }));
 jest.mock('../logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
@@ -471,5 +476,125 @@ describe('git cache serialization', () => {
     expect(maxActive).toBe(1);
     // Two checkouts × (clone + checkout) = 4 spawns, none overlapping.
     expect(events.filter(e => e === 'spawn').length).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// N23: per-execution callback token injection
+// ---------------------------------------------------------------------------
+describe('POST /api/execute — per-execution callback token (N23)', () => {
+  // The '../config' mock above is a stable object; mutate per-test and restore.
+  const cfg = require('../config').config as {
+    token: string;
+    executionCallbackSecret: string;
+  };
+
+  const okSpawn = {
+    stdout: { on: jest.fn() },
+    stderr: { on: jest.fn() },
+    on: jest.fn((event: string, cb: Function) => {
+      if (event === 'close') cb(0);
+    }),
+    kill: jest.fn(),
+  };
+
+  let savedToken: string;
+  let savedCallbackSecret: string;
+
+  beforeEach(() => {
+    savedToken = cfg.token;
+    savedCallbackSecret = cfg.executionCallbackSecret;
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn);
+  });
+
+  afterEach(() => {
+    cfg.token = savedToken;
+    cfg.executionCallbackSecret = savedCallbackSecret;
+  });
+
+  async function postExecute(executionId: string, params?: Record<string, unknown>) {
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId,
+      task: { id: 'cbtask', runtime: 'node', entrypoint: 'index.js' },
+      params,
+    });
+    expect(res.status).toBe(200);
+    const taskArg = (taskWorkerManager.execute as jest.Mock).mock.calls.at(-1)[2];
+    return taskArg.env as Record<string, string | undefined>;
+  }
+
+  it('injects a v1 callback token bound to the execution plus the admin API URL', async () => {
+    const env = await postExecute('exec-cbtoken-1');
+    const token = env.AUTOFLOW_CALLBACK_TOKEN;
+    expect(token).toBeDefined();
+    const parts = token!.split('.');
+    expect(parts[0]).toBe('v1');
+    expect(parts[1]).toBe('exec-cbtoken-1');
+    const exp = Number(parts[2]);
+    const now = Math.floor(Date.now() / 1000);
+    // default timeout 300s + 900s grace (±60s slack for test execution)
+    expect(exp).toBeGreaterThan(now + 1100);
+    expect(exp).toBeLessThan(now + 1300);
+    expect(parts[3]).toMatch(/^[0-9a-f]{64}$/);
+    expect(env.AUTOFLOW_ADMIN_API_URL).toBe('http://admin-api:3105');
+  });
+
+  it('never leaks the shared token or the callback HMAC secret into the child env', async () => {
+    process.env.EXECUTOR_SHARED_TOKEN = 'top-secret-shared';
+    process.env.EXECUTION_CALLBACK_SECRET = 'dedicated-secret';
+    cfg.executionCallbackSecret = 'dedicated-secret';
+    const env = await postExecute('exec-cbtoken-2');
+    expect(env.AUTOFLOW_CALLBACK_TOKEN).toBeDefined();
+    expect(env.EXECUTOR_SHARED_TOKEN).toBeUndefined();
+    expect(env.EXECUTION_CALLBACK_SECRET).toBeUndefined();
+    // The token must not BE the shared token or contain it.
+    expect(env.AUTOFLOW_CALLBACK_TOKEN).not.toContain('top-secret-shared');
+    expect(env.AUTOFLOW_CALLBACK_TOKEN).not.toContain('dedicated-secret');
+    delete process.env.EXECUTOR_SHARED_TOKEN;
+    delete process.env.EXECUTION_CALLBACK_SECRET;
+  });
+
+  it('user params cannot override the callback token or admin URL', async () => {
+    const env = await postExecute('exec-cbtoken-3', {
+      callback_token: 'evil-token',
+      admin_api_url: 'http://evil:1234',
+    });
+    expect(env.AUTOFLOW_CALLBACK_TOKEN).toMatch(/^v1\.exec-cbtoken-3\./);
+    expect(env.AUTOFLOW_ADMIN_API_URL).toBe('http://admin-api:3105');
+  });
+
+  it('omits the token when no executor secret is configured (dev mode, SDK stays disabled)', async () => {
+    cfg.token = '';
+    cfg.executionCallbackSecret = '';
+    const env = await postExecute('exec-cbtoken-4');
+    expect(env.AUTOFLOW_CALLBACK_TOKEN).toBeUndefined();
+    expect(env.AUTOFLOW_ADMIN_API_URL).toBe('http://admin-api:3105');
+  });
+
+  // N27: the per-execution callback path requires executorAddress on every
+  // item — executor-node injects its own registered address so task code
+  // never has to hardcode it.
+  it('injects AUTOFLOW_EXECUTOR_ADDRESS, preferring the public address (same value as registration)', async () => {
+    const addrCfg = require('../config').config as {
+      executorAddress: string;
+      executorAddressPublic?: string;
+    };
+    const envDefault = await postExecute('exec-addr-1');
+    expect(envDefault.AUTOFLOW_EXECUTOR_ADDRESS).toBe('localhost:8002');
+
+    addrCfg.executorAddressPublic = 'public.host:9000';
+    try {
+      const envPublic = await postExecute('exec-addr-2');
+      expect(envPublic.AUTOFLOW_EXECUTOR_ADDRESS).toBe('public.host:9000');
+    } finally {
+      delete addrCfg.executorAddressPublic;
+    }
+  });
+
+  it('user params cannot override AUTOFLOW_EXECUTOR_ADDRESS', async () => {
+    const env = await postExecute('exec-addr-3', {
+      executor_address: 'evil:1234',
+    });
+    expect(env.AUTOFLOW_EXECUTOR_ADDRESS).toBe('localhost:8002');
   });
 });
