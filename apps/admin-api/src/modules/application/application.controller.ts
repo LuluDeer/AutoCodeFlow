@@ -119,9 +119,7 @@ export class ApplicationController {
     // arbitrary content cannot be stored and served as a trusted .zip.
     const ext = path.extname(file.originalname || "").toLowerCase();
     if (ext !== ".zip") {
-      throw new BadRequestException(
-        "Application package must be a .zip file",
-      );
+      throw new BadRequestException("Application package must be a .zip file");
     }
     const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
     if (
@@ -245,7 +243,9 @@ export class ApplicationController {
     }
     const body = req?.rawBody;
     if (!body) {
-      logger.warn(`Webhook: raw request body is unavailable for app "${dto.appName}"`);
+      logger.warn(
+        `Webhook: raw request body is unavailable for app "${dto.appName}"`,
+      );
       throw new UnauthorizedException(
         ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
       );

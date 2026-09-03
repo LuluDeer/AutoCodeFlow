@@ -12,9 +12,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * task_versions(taskId, version) was already created by migration
  * 1717473142684; system_configs.key is UNIQUE since InitialSchema.
  */
-export class AddMissingUniqueAndCompositeIndexes1717473142691
-  implements MigrationInterface
-{
+export class AddMissingUniqueAndCompositeIndexes1717473142691 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     // Remove duplicate executor rows (keep the most recently updated one per
     // address) before enforcing uniqueness. executorAddress columns elsewhere

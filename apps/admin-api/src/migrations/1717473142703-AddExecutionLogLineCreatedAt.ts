@@ -15,9 +15,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * - PG 对带易失默认值（now()）的 ADD COLUMN 需要整表重写并持有
  *   ACCESS EXCLUSIVE 锁，大表请在维护窗口执行。
  */
-export class AddExecutionLogLineCreatedAt1717473142703
-  implements MigrationInterface
-{
+export class AddExecutionLogLineCreatedAt1717473142703 implements MigrationInterface {
   name = "AddExecutionLogLineCreatedAt1717473142703";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

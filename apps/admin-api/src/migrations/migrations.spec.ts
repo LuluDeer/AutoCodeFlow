@@ -27,7 +27,6 @@ const migrationFiles = (): { file: string; stamp: string }[] =>
 // started running" 并使整个 e2e suite 失败。因此仅当"本文件正是当前
 // 正在执行的测试文件"（即 unit runner 收集用例）时才注册。
 // 测试断言逻辑本身不受影响。
-/* eslint-disable @typescript-eslint/no-undef */
 const isCurrentTestFile = (): boolean => {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -51,15 +50,13 @@ if (
       const files = migrationFiles();
       expect(files.length).toBeGreaterThan(0);
       const stamps = files.map((f) => f.stamp);
-      const duplicates = stamps.filter(
-        (s, i) => stamps.indexOf(s) !== i,
-      );
+      const duplicates = stamps.filter((s, i) => stamps.indexOf(s) !== i);
       expect(duplicates).toEqual([]);
     });
 
     it("每个迁移类名后缀 timestamp 与文件名一致", () => {
       for (const { file, stamp } of migrationFiles()) {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         const mod = require(path.join(MIGRATIONS_DIR, file));
         const classes = Object.values(mod).filter(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -92,7 +89,7 @@ if (
       );
       expect(streamD).toHaveLength(4);
       for (const { file } of streamD) {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         const mod = require(path.join(MIGRATIONS_DIR, file));
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const proto = Object.values(mod)[0] as any;
@@ -108,7 +105,7 @@ if (
         /-AddTaskExecutorId\.ts$/.test(f.file),
       );
       expect(m).toBeDefined();
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(path.join(MIGRATIONS_DIR, m!.file));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const proto = Object.values(mod)[0] as any;

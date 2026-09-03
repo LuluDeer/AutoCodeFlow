@@ -11,7 +11,9 @@ import { ExecutionFailureReason } from "../entities/task-execution.entity";
 const EXEC_UUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
 const VALID_TOKEN = "test-shared-secret";
 
-const makeCallbackItem = (overrides: Partial<CallbackItemDto> = {}): CallbackItemDto =>
+const makeCallbackItem = (
+  overrides: Partial<CallbackItemDto> = {},
+): CallbackItemDto =>
   Object.assign(new CallbackItemDto(), {
     executionId: EXEC_UUID,
     status: "success" as const,
@@ -28,7 +30,11 @@ describe("ExecutionCallbackController", () => {
   let executorService: { validateTokenByAddress: jest.Mock };
 
   beforeEach(async () => {
-    taskService = { handleCallback: jest.fn().mockResolvedValue([{ executionId: EXEC_UUID, success: true }]) };
+    taskService = {
+      handleCallback: jest
+        .fn()
+        .mockResolvedValue([{ executionId: EXEC_UUID, success: true }]),
+    };
     configService = {
       get: jest.fn((key: string) => {
         if (key === "app.nodeEnv") return "test";
@@ -53,12 +59,16 @@ describe("ExecutionCallbackController", () => {
       ],
     }).compile();
 
-    controller = module.get<ExecutionCallbackController>(ExecutionCallbackController);
+    controller = module.get<ExecutionCallbackController>(
+      ExecutionCallbackController,
+    );
   });
 
   describe("POST /executions/callback — token verification", () => {
     it("accepts per-executor dynamic token when callback includes one executorAddress", async () => {
-      const item = makeCallbackItem({ executorAddress: "executor-python:8001" });
+      const item = makeCallbackItem({
+        executorAddress: "executor-python:8001",
+      });
 
       await expect(
         controller.callback("Bearer dynamic-token", [item]),
@@ -77,11 +87,10 @@ describe("ExecutionCallbackController", () => {
       // compatibility for executors that haven't been migrated to dynamic
       // tokens yet. Multi-executor batches can NEVER use a shared token.
       executorService.validateTokenByAddress.mockResolvedValue(false);
-      const item = makeCallbackItem({ executorAddress: "executor-python:8001" });
-      const result = await controller.callback(
-        `Bearer ${VALID_TOKEN}`,
-        [item],
-      );
+      const item = makeCallbackItem({
+        executorAddress: "executor-python:8001",
+      });
+      const result = await controller.callback(`Bearer ${VALID_TOKEN}`, [item]);
       expect(result.results).toBeDefined();
       expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
     });
@@ -94,7 +103,10 @@ describe("ExecutionCallbackController", () => {
       await expect(
         controller.callback(`Bearer ${VALID_TOKEN}`, [
           makeCallbackItem({ executorAddress: "executor-a:8001" }),
-          makeCallbackItem({ executionId: "6b4adba5-a2f8-4fe7-bf4f-5277d0d7f2b7", executorAddress: "executor-b:8001" }),
+          makeCallbackItem({
+            executionId: "6b4adba5-a2f8-4fe7-bf4f-5277d0d7f2b7",
+            executorAddress: "executor-b:8001",
+          }),
         ]),
       ).rejects.toBeInstanceOf(UnauthorizedException);
 
@@ -152,10 +164,7 @@ describe("ExecutionCallbackController", () => {
       const dbToken = "db-token-value";
       systemConfigService.findOne.mockResolvedValue({ value: dbToken });
       const item = makeCallbackItem({ executorAddress: "executor-a:8001" });
-      const result = await controller.callback(
-        `Bearer ${dbToken}`,
-        [item],
-      );
+      const result = await controller.callback(`Bearer ${dbToken}`, [item]);
       expect(result.results).toBeDefined();
     });
   });
@@ -167,15 +176,17 @@ describe("ExecutionCallbackController", () => {
         { executionId: "another-id", success: false, error: "not found" },
       ];
       taskService.handleCallback.mockResolvedValue(expected);
-      const result = await controller.callback(
-        `Bearer ${VALID_TOKEN}`,
-        [makeCallbackItem(), makeCallbackItem({ executionId: "another-id" })],
-      );
+      const result = await controller.callback(`Bearer ${VALID_TOKEN}`, [
+        makeCallbackItem(),
+        makeCallbackItem({ executionId: "another-id" }),
+      ]);
       expect(result.results).toEqual(expected);
     });
 
     it("forwards failed status callbacks", async () => {
-      taskService.handleCallback.mockResolvedValue([{ executionId: EXEC_UUID, success: true }]);
+      taskService.handleCallback.mockResolvedValue([
+        { executionId: EXEC_UUID, success: true },
+      ]);
       const item = makeCallbackItem({
         status: "failed",
         errorMessage: "OOM",

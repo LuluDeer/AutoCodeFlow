@@ -127,7 +127,11 @@ export class CreateAppDeploymentsTable1788274394055 implements MigrationInterfac
       `ALTER TABLE "app_deployments" DROP CONSTRAINT IF EXISTS "FK_app_deployments_applicationId"`,
     );
     await queryRunner.query(`DROP TABLE IF EXISTS "app_deployments"`);
-    await queryRunner.query(`DROP TYPE IF EXISTS "app_deployments_run_mode_enum"`);
-    await queryRunner.query(`DROP TYPE IF EXISTS "app_deployments_status_enum"`);
+    await queryRunner.query(
+      `DROP TYPE IF EXISTS "app_deployments_run_mode_enum"`,
+    );
+    await queryRunner.query(
+      `DROP TYPE IF EXISTS "app_deployments_status_enum"`,
+    );
   }
 }

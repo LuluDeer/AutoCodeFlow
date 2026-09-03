@@ -23,7 +23,10 @@ import {
   ExecutionStatus,
   ExecutionFailureReason,
 } from "../task/entities/task-execution.entity";
-import { RedisLockService, Lock } from "../../common/services/redis-lock.service";
+import {
+  RedisLockService,
+  Lock,
+} from "../../common/services/redis-lock.service";
 import {
   SchedulerMetricsService,
   SchedulerMetricsSnapshot,
@@ -266,7 +269,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     // 与新 Leader 产生竞争（enqueue 有 Redis 锁 + DB claim 双保险，但能免则免）
     for (const id of [...this.timers.keys()]) this.stop(id);
     for (const id of [...this.cronTasks.keys()]) this.stop(id);
-    this.logger.warn(`Scheduler leadership lost (${reason}) — local schedules stopped, will re-contend later`);
+    this.logger.warn(
+      `Scheduler leadership lost (${reason}) — local schedules stopped, will re-contend later`,
+    );
     this.scheduleLeaderRetry();
   }
 
@@ -475,9 +480,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
       for (const row of recoveredRows) {
         await this.releaseExecutorSlot(row.executorAddress);
-        this.logger.warn(
-          `REC-01: execution ${row.id} recovered as FAILED`,
-        );
+        this.logger.warn(`REC-01: execution ${row.id} recovered as FAILED`);
       }
     }
 
@@ -491,8 +494,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     const stalePendingIds = stalePending
       .filter(
         (exec) =>
-          exec.createdAt &&
-          now - exec.createdAt.getTime() > PENDING_GRACE_MS,
+          exec.createdAt && now - exec.createdAt.getTime() > PENDING_GRACE_MS,
       )
       .map((exec) => exec.id);
     let recoveredPending = 0;
@@ -771,9 +773,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           errorMessage: `Failed to enqueue execution: ${message}`,
           failureReason: ExecutionFailureReason.UNKNOWN,
         });
-        this.logger.error(
-          `Failed to enqueue execution ${exec.id}: ${message}`,
-        );
+        this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
         // R4-§5.5: 已创建 PENDING 行但入队失败（含补偿路径）计为触发失败
         this.schedulerMetrics.recordTriggerFailed();
         return null;
@@ -856,51 +856,51 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       this.stop(task.id);
 
       if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
-      const taskId = task.id;
-      const timer = setInterval(async () => {
-        // B-04: Prevent re-entry
-        if (this.runningTasks.get(taskId)) {
+        const taskId = task.id;
+        const timer = setInterval(async () => {
+          // B-04: Prevent re-entry
+          if (this.runningTasks.get(taskId)) {
+            this.logger.warn(
+              `Fixed_rate task "${task.name}" still running, skipping trigger`,
+            );
+            return;
+          }
+          this.runningTasks.set(taskId, true);
+          try {
+            const latest = await this.taskRepo.findOne({
+              where: { id: taskId, status: TaskStatus.ACTIVE },
+            });
+            if (latest) await this.enqueue(latest, "fixed_rate");
+          } finally {
+            this.runningTasks.delete(taskId);
+          }
+        }, task.fixedRate * 1000);
+        this.timers.set(task.id, timer);
+        this.logger.log(
+          `Re-scheduled fixed_rate task "${task.name}" every ${task.fixedRate}s`,
+        );
+      }
+
+      if (task.triggerType === TaskTriggerType.CRON && task.cronExpression) {
+        if (!nodeCron.validate(task.cronExpression)) {
           this.logger.warn(
-            `Fixed_rate task "${task.name}" still running, skipping trigger`,
+            `Invalid cron expression for task "${task.name}": ${task.cronExpression}`,
           );
           return;
         }
-        this.runningTasks.set(taskId, true);
-        try {
-          const latest = await this.taskRepo.findOne({
-            where: { id: taskId, status: TaskStatus.ACTIVE },
-          });
-          if (latest) await this.enqueue(latest, "fixed_rate");
-        } finally {
-          this.runningTasks.delete(taskId);
-        }
-      }, task.fixedRate * 1000);
-      this.timers.set(task.id, timer);
-      this.logger.log(
-        `Re-scheduled fixed_rate task "${task.name}" every ${task.fixedRate}s`,
-      );
-    }
-
-    if (task.triggerType === TaskTriggerType.CRON && task.cronExpression) {
-      if (!nodeCron.validate(task.cronExpression)) {
-        this.logger.warn(
-          `Invalid cron expression for task "${task.name}": ${task.cronExpression}`,
+        // N8: re-fetch task at trigger time to avoid stale closure snapshot
+        const taskId = task.id;
+        const cronTask = nodeCron.schedule(
+          task.cronExpression,
+          async () => {
+            const latest = await this.taskRepo.findOne({
+              where: { id: taskId, status: TaskStatus.ACTIVE },
+            });
+            if (latest) await this.enqueue(latest, "cron");
+          },
+          this.getCronOptions(task),
         );
-        return;
-      }
-      // N8: re-fetch task at trigger time to avoid stale closure snapshot
-      const taskId = task.id;
-      const cronTask = nodeCron.schedule(
-        task.cronExpression,
-        async () => {
-          const latest = await this.taskRepo.findOne({
-            where: { id: taskId, status: TaskStatus.ACTIVE },
-          });
-          if (latest) await this.enqueue(latest, "cron");
-        },
-        this.getCronOptions(task),
-      );
-      this.cronTasks.set(task.id, cronTask);
+        this.cronTasks.set(task.id, cronTask);
         this.logger.log(
           `Re-scheduled cron task "${task.name}" with expression: ${task.cronExpression}`,
         );

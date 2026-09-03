@@ -1,4 +1,7 @@
-import { createUploadAuthMiddleware, isPublicUploadPath } from "./upload-auth.middleware";
+import {
+  createUploadAuthMiddleware,
+  isPublicUploadPath,
+} from "./upload-auth.middleware";
 import * as jwt from "jsonwebtoken";
 
 const SECRET = "test-secret-key-at-least-32-characters!";
@@ -28,11 +31,19 @@ const makeRes = () => {
   return res;
 };
 
-const makeReq = (opts: { path?: string; authorization?: string; method?: string; originalUrl?: string } = {}) =>
+const makeReq = (
+  opts: {
+    path?: string;
+    authorization?: string;
+    method?: string;
+    originalUrl?: string;
+  } = {},
+) =>
   ({
     method: opts.method ?? "GET",
     path: opts.path ?? "/packages/app_123.zip",
-    originalUrl: opts.originalUrl ?? `/uploads${opts.path ?? "/packages/app_123.zip"}`,
+    originalUrl:
+      opts.originalUrl ?? `/uploads${opts.path ?? "/packages/app_123.zip"}`,
     headers: opts.authorization
       ? { authorization: opts.authorization }
       : ({} as Record<string, string>),
@@ -48,7 +59,9 @@ describe("upload-auth.middleware (ARCH-002)", () => {
 
     it("does not match other prefixes or look-alike names", () => {
       expect(isPublicUploadPath("/packages/file.zip", ["public"])).toBe(false);
-      expect(isPublicUploadPath("/publicized/file.zip", ["public"])).toBe(false);
+      expect(isPublicUploadPath("/publicized/file.zip", ["public"])).toBe(
+        false,
+      );
     });
 
     it("is empty by default (fail closed — no anonymous uploads path)", () => {
@@ -58,18 +71,28 @@ describe("upload-auth.middleware (ARCH-002)", () => {
 
   describe("createUploadAuthMiddleware", () => {
     it("allows requests with a valid access JWT", async () => {
-      const token = jwt.sign({ sub: 1, username: "admin", type: "access" }, SECRET, {
-        expiresIn: "5m",
-      });
-      const mw = createUploadAuthMiddleware(...(Object.values(makeDeps()) as [any, any]));
+      const token = jwt.sign(
+        { sub: 1, username: "admin", type: "access" },
+        SECRET,
+        {
+          expiresIn: "5m",
+        },
+      );
+      const mw = createUploadAuthMiddleware(
+        ...(Object.values(makeDeps()) as [any, any]),
+      );
       const next = jest.fn();
       await mw(makeReq({ authorization: `Bearer ${token}` }), makeRes(), next);
       expect(next).toHaveBeenCalledTimes(1);
     });
 
     it("rejects JWTs without the access type marker (SEC-001 parity)", async () => {
-      const token = jwt.sign({ sub: 1, username: "admin" }, SECRET, { expiresIn: "5m" });
-      const mw = createUploadAuthMiddleware(...(Object.values(makeDeps()) as [any, any]));
+      const token = jwt.sign({ sub: 1, username: "admin" }, SECRET, {
+        expiresIn: "5m",
+      });
+      const mw = createUploadAuthMiddleware(
+        ...(Object.values(makeDeps()) as [any, any]),
+      );
       const next = jest.fn();
       const res = makeRes();
       await mw(makeReq({ authorization: `Bearer ${token}` }), res, next);
@@ -78,8 +101,12 @@ describe("upload-auth.middleware (ARCH-002)", () => {
     });
 
     it("rejects expired or tampered JWTs without falling through to 500", async () => {
-      const token = jwt.sign({ sub: 1, type: "access" }, SECRET, { expiresIn: "-10s" });
-      const mw = createUploadAuthMiddleware(...(Object.values(makeDeps()) as [any, any]));
+      const token = jwt.sign({ sub: 1, type: "access" }, SECRET, {
+        expiresIn: "-10s",
+      });
+      const mw = createUploadAuthMiddleware(
+        ...(Object.values(makeDeps()) as [any, any]),
+      );
       const next = jest.fn();
       const res = makeRes();
       await mw(makeReq({ authorization: `Bearer ${token}` }), res, next);
@@ -88,14 +115,22 @@ describe("upload-auth.middleware (ARCH-002)", () => {
     });
 
     it("allows requests with the executor shared token", async () => {
-      const mw = createUploadAuthMiddleware(...(Object.values(makeDeps()) as [any, any]));
+      const mw = createUploadAuthMiddleware(
+        ...(Object.values(makeDeps()) as [any, any]),
+      );
       const next = jest.fn();
-      await mw(makeReq({ authorization: "Bearer executor-shared-token" }), makeRes(), next);
+      await mw(
+        makeReq({ authorization: "Bearer executor-shared-token" }),
+        makeRes(),
+        next,
+      );
       expect(next).toHaveBeenCalledTimes(1);
     });
 
     it("rejects missing/invalid credentials with 401", async () => {
-      const mw = createUploadAuthMiddleware(...(Object.values(makeDeps()) as [any, any]));
+      const mw = createUploadAuthMiddleware(
+        ...(Object.values(makeDeps()) as [any, any]),
+      );
       const next = jest.fn();
       const res = makeRes();
       await mw(makeReq(), res, next);

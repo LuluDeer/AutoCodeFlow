@@ -1,7 +1,4 @@
-import {
-  isOriginAllowed,
-  parseAllowedOrigins,
-} from "./cors-origin.util";
+import { isOriginAllowed, parseAllowedOrigins } from "./cors-origin.util";
 
 describe("cors-origin.util (ARCH-001)", () => {
   describe("parseAllowedOrigins", () => {
@@ -22,18 +19,22 @@ describe("cors-origin.util (ARCH-001)", () => {
     const prodOrigins = ["https://admin.example.com"];
 
     it("allows origins explicitly present in the whitelist", () => {
-      expect(isOriginAllowed("https://admin.example.com", prodOrigins, false)).toBe(
-        true,
-      );
+      expect(
+        isOriginAllowed("https://admin.example.com", prodOrigins, false),
+      ).toBe(true);
     });
 
     it("rejects origins not in the whitelist regardless of environment", () => {
-      expect(isOriginAllowed("https://evil.example.com", prodOrigins, false)).toBe(
-        false,
-      );
-      expect(isOriginAllowed("https://admin.example.com.evil.com", prodOrigins, false)).toBe(
-        false,
-      );
+      expect(
+        isOriginAllowed("https://evil.example.com", prodOrigins, false),
+      ).toBe(false);
+      expect(
+        isOriginAllowed(
+          "https://admin.example.com.evil.com",
+          prodOrigins,
+          false,
+        ),
+      ).toBe(false);
     });
 
     it("no longer auto-allows private/LAN network origins (ARCH-001 regression)", () => {
@@ -75,7 +76,11 @@ describe("cors-origin.util (ARCH-001)", () => {
     it("explicit configuration takes precedence over the development default", () => {
       // 显式白名单非空时，localhost 之外的来源不再被默认放行
       expect(
-        isOriginAllowed("http://localhost:9999", ["https://a.example.com"], true),
+        isOriginAllowed(
+          "http://localhost:9999",
+          ["https://a.example.com"],
+          true,
+        ),
       ).toBe(false);
       // 白名单里显式包含 LAN origin 时按白名单放行
       expect(

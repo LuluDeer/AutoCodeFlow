@@ -135,7 +135,9 @@ describe("LogRetentionCleanupService", () => {
       const [sql, params] = qb.where.mock.calls[0];
       expect(String(sql)).toContain(":cutoff");
       expect(params).toEqual({
-        cutoff: new Date(now.getTime() - DEFAULT_LOG_RETENTION_DAYS * 86_400_000),
+        cutoff: new Date(
+          now.getTime() - DEFAULT_LOG_RETENTION_DAYS * 86_400_000,
+        ),
         batchSize: LOG_RETENTION_BATCH_SIZE,
       });
     });

@@ -95,7 +95,10 @@ describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
 describe("TaskController.streamLogs — timeout exemption (N8)", () => {
   it("carries SKIP_TIMEOUT metadata so the global 30s timeout cannot cut the SSE stream", () => {
     expect(
-      Reflect.getMetadata(SKIP_TIMEOUT_KEY, TaskController.prototype.streamLogs),
+      Reflect.getMetadata(
+        SKIP_TIMEOUT_KEY,
+        TaskController.prototype.streamLogs,
+      ),
     ).toBe(true);
   });
 });

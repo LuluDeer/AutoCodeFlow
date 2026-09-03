@@ -61,7 +61,9 @@ describe("TaskProcessor", () => {
   let execRepo: ReturnType<typeof makeRepo>;
   let taskRepo: ReturnType<typeof makeRepo>;
   let logLineRepo: ReturnType<typeof makeRepo>;
-  let executorService: jest.Mocked<Pick<ExecutorService, "dispatch" | "dispatchBroadcast">>;
+  let executorService: jest.Mocked<
+    Pick<ExecutorService, "dispatch" | "dispatchBroadcast">
+  >;
   let aiService: jest.Mocked<Pick<AiService, "analyzeFailure">>;
   let notificationService: jest.Mocked<
     Pick<NotificationService, "notifyFailureWithConfig">
@@ -156,7 +158,9 @@ describe("TaskProcessor", () => {
   });
 
   it("classifies dispatch failures before callback", async () => {
-    executorService.dispatch.mockRejectedValue(new Error("npm install failed: dependency unavailable"));
+    executorService.dispatch.mockRejectedValue(
+      new Error("npm install failed: dependency unavailable"),
+    );
     await expect(
       processor.handle({ data: { executionId: "exec-1" } } as any),
     ).rejects.toThrow("npm install failed");

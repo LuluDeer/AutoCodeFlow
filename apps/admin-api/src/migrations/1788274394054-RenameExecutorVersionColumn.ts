@@ -14,8 +14,8 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *   状态下补做 rename（守卫式幂等），对已收敛的库是无操作。
  */
 export class RenameExecutorVersionColumn1788274394054 implements MigrationInterface {
-    public async up(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.query(`
+  public async up(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`
           DO $$
           BEGIN
             IF EXISTS (
@@ -35,12 +35,12 @@ export class RenameExecutorVersionColumn1788274394054 implements MigrationInterf
           END
           $$;
         `);
-    }
+  }
 
-    public async down(queryRunner: QueryRunner): Promise<void> {
-        // 守卫：仅当 executorVersion 存在且 version 不存在时回滚 rename，
-        // 避免与 1717473142693 新增的 INTEGER version 撞名报错。
-        await queryRunner.query(`
+  public async down(queryRunner: QueryRunner): Promise<void> {
+    // 守卫：仅当 executorVersion 存在且 version 不存在时回滚 rename，
+    // 避免与 1717473142693 新增的 INTEGER version 撞名报错。
+    await queryRunner.query(`
           DO $$
           BEGIN
             IF EXISTS (
@@ -59,5 +59,5 @@ export class RenameExecutorVersionColumn1788274394054 implements MigrationInterf
           END
           $$;
         `);
-    }
+  }
 }

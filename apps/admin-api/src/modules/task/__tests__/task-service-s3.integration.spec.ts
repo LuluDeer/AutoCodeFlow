@@ -83,7 +83,13 @@ const makeRepo = () => {
         const entity = await target;
         if (!entity) return { affected: 0 };
         const status = (entity as { status?: string }).status;
-        const TERMINAL = ["success", "failed", "timeout", "cancelled", "killed"];
+        const TERMINAL = [
+          "success",
+          "failed",
+          "timeout",
+          "cancelled",
+          "killed",
+        ];
         if (status && TERMINAL.includes(status)) {
           return { affected: 0 };
         }
@@ -135,9 +141,15 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
         TaskService,
         { provide: getRepositoryToken(Task), useValue: taskRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
-        { provide: getRepositoryToken(ExecutionLogLine), useValue: logLineRepo },
+        {
+          provide: getRepositoryToken(ExecutionLogLine),
+          useValue: logLineRepo,
+        },
         { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
-        { provide: getQueueToken("task-queue"), useValue: { add: jest.fn().mockResolvedValue({}) } },
+        {
+          provide: getQueueToken("task-queue"),
+          useValue: { add: jest.fn().mockResolvedValue({}) },
+        },
         {
           provide: DataSource,
           useValue: {
@@ -164,9 +176,16 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
         },
         {
           provide: SchedulerService,
-          useValue: { stop: jest.fn(), scheduleOne: jest.fn(), getStats: jest.fn() },
+          useValue: {
+            stop: jest.fn(),
+            scheduleOne: jest.fn(),
+            getStats: jest.fn(),
+          },
         },
-        { provide: AiService, useValue: { analyzeFailure: jest.fn(), chat: jest.fn() } },
+        {
+          provide: AiService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
         { provide: ConfigService, useValue: { get: configGet } },
         {
           provide: ExecutorService,
@@ -215,7 +234,9 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
     const exec = { id: "e-fb", status: ExecutionStatus.RUNNING, logs: "" };
     execRepo.findOne.mockResolvedValue(exec);
     minioClient.putObject.mockRejectedValueOnce(
-      Object.assign(new Error("ECONNREFUSED 10.0.0.5:9000"), { code: "ECONNREFUSED" }),
+      Object.assign(new Error("ECONNREFUSED 10.0.0.5:9000"), {
+        code: "ECONNREFUSED",
+      }),
     );
 
     const result = await service.handleCallback([
@@ -249,7 +270,9 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
   });
 
   it("getExecutionLogs reads from S3, gunzips, paginates correctly", async () => {
-    const payload = Array.from({ length: 10 }, (_, i) => `line-${i}`).join("\n");
+    const payload = Array.from({ length: 10 }, (_, i) => `line-${i}`).join(
+      "\n",
+    );
     const gz = gzipSync(Buffer.from(payload, "utf-8"));
     // Each call must yield a fresh Readable — a stream consumed on the first
     // call would be empty on the second.
@@ -285,7 +308,9 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
   });
 
   it("getExecutionLogs falls back to DB rows when S3 get throws", async () => {
-    minioClient.getObject.mockRejectedValueOnce(new Error("NoSuchKey: missing"));
+    minioClient.getObject.mockRejectedValueOnce(
+      new Error("NoSuchKey: missing"),
+    );
     const exec = {
       id: "e-missing",
       status: ExecutionStatus.SUCCESS,
@@ -416,7 +441,7 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
 
     // Only ONE Client constructor call across both paths — proof that the
     // lazy resolver cached its instance.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Client } = require("minio");
     expect(Client).toHaveBeenCalledTimes(1);
   });

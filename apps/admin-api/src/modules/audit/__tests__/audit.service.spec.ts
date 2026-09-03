@@ -62,10 +62,10 @@ describe("AuditService", () => {
       };
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
 
-      await service.findAll({ action: 'auth.login' });
+      await service.findAll({ action: "auth.login" });
       expect(qbMock.andWhere).toHaveBeenCalledWith(
-        expect.stringContaining('action'),
-        expect.objectContaining({ action: expect.stringContaining('auth') }),
+        expect.stringContaining("action"),
+        expect.objectContaining({ action: expect.stringContaining("auth") }),
       );
     });
 
@@ -80,10 +80,9 @@ describe("AuditService", () => {
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
 
       await service.findAll({ userId: 42 });
-      expect(qbMock.andWhere).toHaveBeenCalledWith(
-        'log.userId = :userId',
-        { userId: 42 },
-      );
+      expect(qbMock.andWhere).toHaveBeenCalledWith("log.userId = :userId", {
+        userId: 42,
+      });
     });
 
     // R4 P1-2: username / startTime / endTime filters (audit page search bar)
@@ -143,7 +142,7 @@ describe("AuditService", () => {
 
     it("rejects invalid action characters", async () => {
       await expect(service.findAll({ action: "inject'xss" })).rejects.toThrow(
-        'Invalid action parameter',
+        "Invalid action parameter",
       );
     });
 
@@ -231,8 +230,10 @@ describe("AuditService", () => {
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
       await service.exportCsv({ action: "task.create" });
       expect(qb.andWhere).toHaveBeenCalledWith(
-        expect.stringContaining('action'),
-        expect.objectContaining({ action: expect.stringContaining('task.create') }),
+        expect.stringContaining("action"),
+        expect.objectContaining({
+          action: expect.stringContaining("task.create"),
+        }),
       );
     });
   });

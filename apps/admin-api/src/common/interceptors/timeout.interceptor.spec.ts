@@ -24,7 +24,7 @@ function loadInterceptor(): new (reflector: Reflector) => {
 } {
   let ctor: any;
   jest.isolateModules(() => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     ctor = require("../interceptors/timeout.interceptor").TimeoutInterceptor;
   });
   return ctor;
@@ -37,21 +37,23 @@ class FixtureController {
   normal() {}
 }
 
-const makeCtx = (handler: Function): ExecutionContext =>
+const makeCtx = (handler: (...args: unknown[]) => unknown): ExecutionContext =>
   ({
     getHandler: () => handler,
     getClass: () => FixtureController,
   }) as unknown as ExecutionContext;
 
-const slowSource = (ms: number, value: unknown) =>
-  timer(ms).pipe(mapTo(value));
+const slowSource = (ms: number, value: unknown) => timer(ms).pipe(mapTo(value));
 
 describe("TimeoutInterceptor — SKIP_TIMEOUT bypass", () => {
   const reflector = new Reflector();
 
   it("@SkipTimeout() writes the SKIP_TIMEOUT_KEY metadata on the handler", () => {
     expect(
-      Reflect.getMetadata(SKIP_TIMEOUT_KEY, FixtureController.prototype.exempted),
+      Reflect.getMetadata(
+        SKIP_TIMEOUT_KEY,
+        FixtureController.prototype.exempted,
+      ),
     ).toBe(true);
     expect(
       Reflect.getMetadata(SKIP_TIMEOUT_KEY, FixtureController.prototype.normal),

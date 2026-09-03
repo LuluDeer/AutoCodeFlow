@@ -3,7 +3,11 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { NotFoundException, BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { AppDeploymentService } from "../app-deployment.service";
-import { AppDeployment, DeploymentStatus, RunMode } from "../entities/app-deployment.entity";
+import {
+  AppDeployment,
+  DeploymentStatus,
+  RunMode,
+} from "../entities/app-deployment.entity";
 import { ApplicationVersion } from "../entities/application-version.entity";
 import { ApplicationService } from "../application.service";
 import { ExecutorService } from "../../executor/executor.service";
@@ -47,14 +51,18 @@ describe("AppDeploymentService", () => {
   let repo: ReturnType<typeof makeRepo>;
   let versionRepo: ReturnType<typeof makeRepo>;
   let appService: jest.Mocked<Pick<ApplicationService, "findById" | "update">>;
-  let executorService: jest.Mocked<Pick<ExecutorService, "findOne" | "getExecutorUrl">>;
+  let executorService: jest.Mocked<
+    Pick<ExecutorService, "findOne" | "getExecutorUrl">
+  >;
 
   beforeEach(async () => {
     repo = makeRepo();
     versionRepo = makeRepo();
     appService = {
       findById: jest.fn().mockResolvedValue(mockApp),
-      update: jest.fn((_: string, dto: any) => Promise.resolve({ ...mockApp, ...dto })),
+      update: jest.fn((_: string, dto: any) =>
+        Promise.resolve({ ...mockApp, ...dto }),
+      ),
     };
     executorService = {
       findOne: jest.fn().mockResolvedValue(mockExecutor),
@@ -65,10 +73,16 @@ describe("AppDeploymentService", () => {
       providers: [
         AppDeploymentService,
         { provide: getRepositoryToken(AppDeployment), useValue: repo },
-        { provide: getRepositoryToken(ApplicationVersion), useValue: versionRepo },
+        {
+          provide: getRepositoryToken(ApplicationVersion),
+          useValue: versionRepo,
+        },
         { provide: ApplicationService, useValue: appService },
         { provide: ExecutorService, useValue: executorService },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(undefined) },
+        },
       ],
     }).compile();
 
@@ -116,7 +130,11 @@ describe("AppDeploymentService", () => {
 
   describe("deploy", () => {
     it("creates deployment record and returns it", async () => {
-      const saved = { id: "deploy-1", status: DeploymentStatus.PENDING, executorAddress: mockExecutor.address };
+      const saved = {
+        id: "deploy-1",
+        status: DeploymentStatus.PENDING,
+        executorAddress: mockExecutor.address,
+      };
       repo.create.mockReturnValue(saved);
       repo.save.mockResolvedValue(saved);
 
@@ -131,9 +149,15 @@ describe("AppDeploymentService", () => {
     });
 
     it("throws BadRequestException when app already has an in-flight deployment", async () => {
-      repo.findOne.mockResolvedValue({ id: "deploy-existing", status: "deploying" });
+      repo.findOne.mockResolvedValue({
+        id: "deploy-existing",
+        status: "deploying",
+      });
       await expect(
-        service.deploy("app-1", { executorId: "exec-1", runMode: RunMode.DAEMON }),
+        service.deploy("app-1", {
+          executorId: "exec-1",
+          runMode: RunMode.DAEMON,
+        }),
       ).rejects.toThrow(BadRequestException);
     });
   });
@@ -207,7 +231,9 @@ describe("AppDeploymentService", () => {
       const result = await service.getVersionHistory("app-1");
 
       expect(result.map((v) => v.version)).toEqual(["2.0.0", "1.0.0"]);
-      expect(result[1]).toEqual(expect.objectContaining({ deploymentId: "deploy-1", commit: "abc123" }));
+      expect(result[1]).toEqual(
+        expect.objectContaining({ deploymentId: "deploy-1", commit: "abc123" }),
+      );
     });
 
     it("falls back to grouped deployments when no snapshots exist", async () => {
@@ -234,7 +260,9 @@ describe("AppDeploymentService", () => {
       const result = await service.getVersionHistory("app-1");
 
       expect(result).toHaveLength(2);
-      expect(result[0]).toEqual(expect.objectContaining({ deploymentId: "deploy-2", version: "2.0.0" }));
+      expect(result[0]).toEqual(
+        expect.objectContaining({ deploymentId: "deploy-2", version: "2.0.0" }),
+      );
     });
   });
 
@@ -256,8 +284,14 @@ describe("AppDeploymentService", () => {
           manifest: { tasks: [] },
         },
       });
-      repo.find.mockResolvedValue([{ id: "deploy-1", status: DeploymentStatus.RUNNING }]);
-      repo.findOne.mockResolvedValue({ id: "deploy-1", applicationId: "app-1", status: DeploymentStatus.RUNNING });
+      repo.find.mockResolvedValue([
+        { id: "deploy-1", status: DeploymentStatus.RUNNING },
+      ]);
+      repo.findOne.mockResolvedValue({
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+      });
       repo.save.mockImplementation((e: any) => Promise.resolve(e));
 
       const result = await service.rollbackApplication("app-1", "version-1");
@@ -272,7 +306,14 @@ describe("AppDeploymentService", () => {
           runtime: "node",
         }),
       );
-      expect(result).toEqual(expect.objectContaining({ ok: true, rolledBackTo: "1.0.0", total: 1, versionId: "version-1" }));
+      expect(result).toEqual(
+        expect.objectContaining({
+          ok: true,
+          rolledBackTo: "1.0.0",
+          total: 1,
+          versionId: "version-1",
+        }),
+      );
     });
 
     it("does not clear application fields when version snapshot omits them", async () => {
@@ -303,7 +344,9 @@ describe("AppDeploymentService", () => {
         snapshot: {},
       });
 
-      await expect(service.rollbackApplication("app-1", "version-1")).rejects.toThrow(BadRequestException);
+      await expect(
+        service.rollbackApplication("app-1", "version-1"),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it("rejects rollback to an unreleased version snapshot", async () => {
@@ -315,7 +358,9 @@ describe("AppDeploymentService", () => {
         snapshot: {},
       });
 
-      await expect(service.rollbackApplication("app-1", "version-1")).rejects.toThrow(BadRequestException);
+      await expect(
+        service.rollbackApplication("app-1", "version-1"),
+      ).rejects.toThrow(BadRequestException);
       expect(appService.update).not.toHaveBeenCalled();
     });
   });
@@ -391,7 +436,11 @@ describe("AppDeploymentService", () => {
         pid: 1234,
       };
       repo.findOne.mockResolvedValue(deployment);
-      repo.save.mockResolvedValue({ ...deployment, status: DeploymentStatus.STOPPED, pid: null });
+      repo.save.mockResolvedValue({
+        ...deployment,
+        status: DeploymentStatus.STOPPED,
+        pid: null,
+      });
       mockAxiosPost.mockResolvedValue({ data: {} });
 
       const result = await service.stop("deploy-1");
@@ -407,7 +456,11 @@ describe("AppDeploymentService", () => {
         pid: 1234,
       };
       repo.findOne.mockResolvedValue(deployment);
-      repo.save.mockResolvedValue({ ...deployment, status: DeploymentStatus.STOPPED, pid: null });
+      repo.save.mockResolvedValue({
+        ...deployment,
+        status: DeploymentStatus.STOPPED,
+        pid: null,
+      });
       mockAxiosPost.mockRejectedValue(new Error("executor offline"));
 
       const result = await service.stop("deploy-1");
@@ -441,7 +494,9 @@ describe("AppDeploymentService", () => {
       await service.detectStuckDeployments();
 
       expect(stuckDeployment.status).toBe(DeploymentStatus.FAILED);
-      expect(stuckDeployment.statusMessage).toBe("[System] Deployment timed out after 10 minutes");
+      expect(stuckDeployment.statusMessage).toBe(
+        "[System] Deployment timed out after 10 minutes",
+      );
       expect(versionSnapshot.status).toBe("failed");
       expect(versionRepo.save).toHaveBeenCalledWith(versionSnapshot);
     });
@@ -491,7 +546,10 @@ describe("AppDeploymentService", () => {
       repo.findOne.mockResolvedValue(deployment);
       repo.save.mockResolvedValue(deployment);
 
-      await service.handleHeartbeat({ deploymentId: "deploy-1", status: "weird-status" });
+      await service.handleHeartbeat({
+        deploymentId: "deploy-1",
+        status: "weird-status",
+      });
       // status should remain unchanged
       expect(deployment.status).toBe(DeploymentStatus.RUNNING);
     });

@@ -24,7 +24,10 @@ export class AuditQueryDto extends PaginationDto {
   @IsString()
   resource?: string;
 
-  @ApiPropertyOptional({ description: "Filter by operator user id", type: Number })
+  @ApiPropertyOptional({
+    description: "Filter by operator user id",
+    type: Number,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()

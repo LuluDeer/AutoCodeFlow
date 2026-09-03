@@ -66,9 +66,7 @@ describe("Executors (e2e)", () => {
   // -------------------------------------------------------------- GET /executors
   describe("GET /executors", () => {
     it("should return 401 when no token is provided", async () => {
-      await request(app.getHttpServer())
-        .get("/executors")
-        .expect(401);
+      await request(app.getHttpServer()).get("/executors").expect(401);
     });
 
     it("should return executor list with valid JWT token", async () => {
@@ -86,9 +84,7 @@ describe("Executors (e2e)", () => {
   // --------------------------------------------------------- GET /executors/groups
   describe("GET /executors/groups", () => {
     it("should return 401 without token", async () => {
-      await request(app.getHttpServer())
-        .get("/executors/groups")
-        .expect(401);
+      await request(app.getHttpServer()).get("/executors/groups").expect(401);
     });
 
     it("should return groups list with valid token", async () => {
@@ -105,9 +101,7 @@ describe("Executors (e2e)", () => {
   // ---------------------------------------------------------- GET /executors/:id
   describe("GET /executors/:id", () => {
     it("should return 401 without token", async () => {
-      await request(app.getHttpServer())
-        .get("/executors/some-id")
-        .expect(401);
+      await request(app.getHttpServer()).get("/executors/some-id").expect(401);
     });
 
     it("should return executor detail for existing executor", async () => {
