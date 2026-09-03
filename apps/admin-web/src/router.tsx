@@ -66,7 +66,9 @@ export const router = createBrowserRouter(
         { path: 'users', element: <RequireAdmin>{withSuspense(<UserManagementPage />)}</RequireAdmin> },
         { path: 'registry', element: withSuspense(<RegistryPage />) },
         { path: 'settings', element: withSuspense(<SettingsPage />) },
-        { path: 'notifications', element: withSuspense(<NotificationSettingsPage />) },
+        // R6 RBAC: 通知渠道配置（GET/PATCH /notification/channels）收紧为 ADMIN-only，
+        // 页面整体为渠道配置表单，路由级门控（同 /audit 模式）
+        { path: 'notifications', element: <RequireAdmin>{withSuspense(<NotificationSettingsPage />)}</RequireAdmin> },
         { path: 'audit', element: <RequireAdmin>{withSuspense(<AuditLogPage />)}</RequireAdmin> },
         { path: 'applications', element: withSuspense(<ApplicationListPage />) },
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },

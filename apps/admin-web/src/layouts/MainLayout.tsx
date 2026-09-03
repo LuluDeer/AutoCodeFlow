@@ -47,7 +47,8 @@ const allMenuItems = [
 ];
 
 // ADMIN-only 菜单入口：普通用户不渲染（后端对应接口均 @Roles(ADMIN)）
-const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users']);
+// R6：/notifications 收紧——GET/PATCH /notification/channels 为 ADMIN-only
+const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications']);
 
 export default function MainLayout() {
   const nav = useNavigate();
@@ -289,12 +290,15 @@ export default function MainLayout() {
               <Button type="text" icon={<QuestionCircleOutlined />} style={{ fontSize: 16, color: token.colorTextSecondary }} />
             </Tooltip>
 
-            {/* 通知按钮 */}
-            <Tooltip title="通知">
-              <Badge count={0} dot>
-                <Button type="text" icon={<BellOutlined />} style={{ fontSize: 16 }} onClick={() => nav('/notifications')} />
-              </Badge>
-            </Tooltip>
+            {/* 通知按钮：R6 起 /notifications 为 ADMIN-only（路由门控），
+                对普通用户隐藏该快捷入口，避免点击后落入 403 页 */}
+            {isAdmin && (
+              <Tooltip title="通知">
+                <Badge count={0} dot>
+                  <Button type="text" icon={<BellOutlined />} style={{ fontSize: 16 }} onClick={() => nav('/notifications')} />
+                </Badge>
+              </Tooltip>
+            )}
 
             {/* 用户头像下拉 */}
             <Dropdown

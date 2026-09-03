@@ -5,7 +5,8 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 
 /**
  * R5 RBAC 路由门控：包裹 ADMIN-only 路由（/executor-packages、/executors/install、
- * /audit、/users），普通用户直接访问 URL 时渲染 403 提示页而非报错/白屏。
+ * /audit、/users；R6 起新增 /notifications——通知渠道配置 GET/PATCH 收紧为 ADMIN），
+ * 普通用户直接访问 URL 时渲染 403 提示页而非报错/白屏。
  *
  * role 来源：GET /auth/profile（登录响应只含 token，不含用户信息）。
  * role 尚未拉取到时显示加载态——MainLayout 的 profile 同步会补齐；
