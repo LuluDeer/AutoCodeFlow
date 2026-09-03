@@ -29,6 +29,12 @@
 #      则先执行 CI 等价的 pip install 步骤。
 #   4. e2e/migration 的 PG/Redis：CI 用 services（5432/6379），本地用一次性
 #      docker 容器 + 高位端口（默认 15432/16379），跑完即删，不碰本机 dev 库。
+#   5. admin-web vitest：仅本地跑——CI 的 admin-web-build job 只有 lint+build
+#      两步，没有 test step（vitest 是 R8 本地追加的加强门禁，非 CI 等价项）。
+#   6. python-packages job：依赖本机全局 pip 环境（四包矩阵直接 import 已装
+#      依赖），不像 CI 那样在 job 内独立建 venv/pip install。
+#   7. Python 版本未 pin：CI 矩阵固定 3.12，本地用 PATH 上的 python3（可能
+#      更高版本）；版本差异导致的测试行为漂移由 CI 真跑兜底。
 #
 # 用法:
 #   bash scripts/ci-local.sh                    # 全量（含 e2e 与 audit）
@@ -50,7 +56,7 @@ for arg in "$@"; do
     --skip-e2e)   SKIP_E2E=1 ;;
     --skip-audit) SKIP_AUDIT=1 ;;
     --py-deps)    PY_DEPS=1 ;;
-    -h|--help)    sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知参数: $arg（支持 --skip-e2e --skip-audit --py-deps）"; exit 2 ;;
   esac
 done
