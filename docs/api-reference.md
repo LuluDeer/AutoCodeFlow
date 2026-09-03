@@ -253,7 +253,7 @@ Content-Type: application/json
 | GET | `/executors/tags` | 是 | 执行器标签列表 |
 | GET | `/executors/install-cmd` | 是 | 生成执行器一键安装命令（返回 `{ cmd, token, adminApiUrl }`；第六轮起 `cmd` 为 `curl -fsSL <API_BASE_URL>/api/executors/install.sh | bash -s -- --api-url ... --secret ...` 形式，脚本由后端承载；第七轮起服务端 `ADMIN_API_URL` 未配置时返回 **503**，不再生成裸机不可用的相对路径命令） |
 | GET | `/executors/install.sh` | 否 | 一键安装脚本本体（`text/plain; charset=utf-8`，`@Public`：脚本不含密钥，secret 由用户 `bash -s --` 参数传入；与仓库根 `scripts/install.sh` 互为同步拷贝。第八轮 N24 根治：脚本恢复远程下载分支，从下方 artifact 端点拉取 `executor-node.tar.gz` 解压安装，下载失败回退项目 checkout 本地复制；支持 `--install-dir` 覆盖安装目录） |
-| GET | `/executors/artifact/executor-node.tar.gz` | 否* | 执行器安装 artifact（`application/gzip`；`@Public` + 执行器共享 token 鉴权：`Authorization: Bearer <token>` 或 `?token=<token>`，未配置 token 时 fail-closed 401）。产物由仓库根 `scripts/bundle-executor-artifact.sh` 生成（dist + package.json + 生产 node_modules），放置于 `EXECUTOR_ARTIFACT_DIR`（默认 admin-api 进程 `<cwd>/artifacts`）；未生成时返回 404 |
+| GET | `/executors/artifact/executor-node.tar.gz` | 否* | 执行器安装 artifact（`application/gzip`；`@Public` + 执行器共享 token 鉴权：`Authorization: Bearer <token>` 或 `?token=<token>`，未配置 token 时 fail-closed 401）。产物由仓库根 `scripts/bundle-executor-artifact.sh` 生成（dist + package.json + 生产 node_modules），放置于 `EXECUTOR_ARTIFACT_DIR`（默认 admin-api 进程 `<cwd>/artifacts`）；未生成时返回 404。**query 传 token 形态仅用于无法自定义 Header 的场景（如浏览器直下 `<a href>`），共享 secret 会进入反向代理与访问日志，优先使用 `Authorization: Bearer`** |
 | GET | `/executors/:id` | 是 | 获取执行器详情 |
 | PATCH | `/executors/:id` | 是 | 更新执行器配置 |
 | POST | `/executors/:id/reload-config` | 是 | 手动下发配置重载（manifest 同步） |
@@ -288,8 +288,8 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/notification/channels` | 是 | 查询所有通知渠道配置（内置渠道：email / slack / dingtalk / wecom / webhook） |
-| PATCH | `/notification/channels/:key` | 是 | 更新指定渠道配置（body: `enabled?`、`config?`） |
+| GET | `/notification/channels` | 是 | 查询所有通知渠道配置（内置渠道：email / slack / dingtalk / wecom / webhook）。读面对 password/secret/token 类字段脱敏为 `***`（N11）；URL 值内 query 参数名命中同类规则的（如 `?access_token=...`）其值也脱敏（N32，第九轮） |
+| PATCH | `/notification/channels/:key` | 是 | 更新指定渠道配置（body: `enabled?`、`config?`）。合法 key：email / slack / dingtalk / wecom / webhook（N32 起 webhook 可配置，config 形状 `{ url: string }`；未知 key 返回 400）。发送时 webhook 渠道 config-first：优先已保存的 `url`，回退逐请求 `webhookUrl` 参数；掩码回显（`***` / `?…=***`）不会覆盖存储中的真实值 |
 | POST | `/notification/channels/:key/test` | 是 | 向指定渠道发送测试消息 |
 | POST | `/notification/test` | 是 | 向多个渠道发送测试通知（body: `{ channels: string[], title, content }`） |
 
@@ -299,7 +299,7 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/metrics` | 是 | **Prometheus 抓取端点**（第七轮新增，prom-client）：text exposition format（Content-Type 由 registry 提供）。series：`autoflow_scheduler_ticks_total`、`autoflow_scheduler_tick_duration_ms_total`、`autoflow_scheduler_last_tick_duration_ms`、`autoflow_scheduler_triggers_total{result=claimed\|failed}`、`autoflow_scheduler_triggers_skipped_total{reason=lock_held\|db_claim\|inactive\|block_strategy}`、`autoflow_scheduler_dependency_triggers_total{result=claimed\|skipped}`、`autoflow_queue_depth{state=waiting\|active\|delayed\|failed\|completed}`、`autoflow_queue_up`（Redis 不可读时置 0、队列深度全部置 0），以及进程默认指标（CPU/内存/GC，`METRICS_PROMETHEUS_DEFAULT_METRICS_ENABLED=false` 可关）。env 开关 `METRICS_PROMETHEUS_ENABLED`（默认 `true`；`false` 时本端点返回 404，用于多实例下避免重复抓取或安全收紧场景）。计数为进程内快照映射，多实例部署按 target 各自抓取 |
+| GET | `/metrics` | 是 | **Prometheus 抓取端点**（第七轮新增，prom-client）：text exposition format（Content-Type 由 registry 提供）。series：`autoflow_scheduler_ticks_total`、`autoflow_scheduler_tick_duration_ms_total`、`autoflow_scheduler_last_tick_duration_ms`、`autoflow_scheduler_triggers_total{result=claimed\|failed}`、`autoflow_scheduler_triggers_skipped_total{reason=lock_held\|db_claim\|inactive\|block_strategy}`、`autoflow_scheduler_dependency_triggers_total{result=claimed\|skipped}`、`autoflow_queue_depth{state=waiting\|active\|delayed\|failed\|completed}`、`autoflow_queue_up`（Redis 不可读时置 0、队列深度全部置 0）、`autoflow_execution_callback_auth_total{result=ok\|v1_expired\|v1_binding_mismatch\|v1_bad_signature\|legacy_shared_invalid\|missing_token\|bad_address}`（第九轮 N32 新增：`POST /executions/callback` 认证结果分类计数，per-execution `v1.` token 落地后的 401 排障观测；七个 result series 恒在、未计数时为 0），以及进程默认指标（CPU/内存/GC，`METRICS_PROMETHEUS_DEFAULT_METRICS_ENABLED=false` 可关）。env 开关 `METRICS_PROMETHEUS_ENABLED`（默认 `true`；`false` 时本端点返回 404，用于多实例下避免重复抓取或安全收紧场景）。计数为进程内快照映射，多实例部署按 target 各自抓取 |
 | GET | `/metrics/summary` | 是 | 系统概览统计 |
 | GET | `/metrics/trend?days=` | 是 | 每日执行趋势（`days` 默认 7，上限 90） |
 | GET | `/metrics/executors` | 是 | 执行器负载和状态统计 |

@@ -713,6 +713,66 @@ describe("ExecutorService (__tests__)", () => {
         true,
       );
     });
+
+    it("bounds issuedTokenCache — evicts expired then oldest entries past the cap (N34)", async () => {
+      const { svc } = await makeIssueFixture();
+      const cache = (svc as any).issuedTokenCache as Map<
+        string,
+        { token: string; startupId: string | null; issuedAt: number }
+      >;
+      const MAX = (ExecutorService as any).TOKEN_ISSUE_CACHE_MAX as number;
+      const now = Date.now();
+      // Fill to the cap with fresh entries (none expired, so the only way
+      // the new insert fits is the oldest-first eviction branch).
+      for (let i = 0; i < MAX; i++) {
+        cache.set(`addr-${i}`, {
+          token: `t${i}`,
+          startupId: "s",
+          issuedAt: now,
+        });
+      }
+
+      await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+
+      expect(cache.size).toBeLessThanOrEqual(MAX);
+      expect(cache.has("addr-0")).toBe(false); // oldest — evicted
+      expect(cache.has("addr-1")).toBe(true); // rest kept
+      expect(cache.has(`addr-${MAX - 1}`)).toBe(true);
+      expect(cache.has("10.0.0.9:3002")).toBe(true);
+    });
+
+    it("treats a plaintext cache entry past the TTL as stale and rotates (N34)", async () => {
+      const { svc } = await makeIssueFixture();
+      const TTL = (ExecutorService as any).TOKEN_ISSUE_CACHE_TTL_MS as number;
+      const base = Date.now();
+      let now = base;
+      jest.spyOn(Date, "now").mockImplementation(() => now);
+
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      // Same startupId but past the TTL: fail-safe like a cold cache.
+      now = base + TTL + 1;
+      const second = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      expect(second.token).not.toBe(first.token);
+      // The fresh entry is now within the TTL — a third fetch reuses again.
+      const third = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      expect(third.token).toBe(second.token);
+    });
   });
 
   describe("heartbeat", () => {
@@ -1208,12 +1268,12 @@ describe("ExecutorService (__tests__)", () => {
         tokenHash: "$2b$12$hash",
       });
       executorRepo.createQueryBuilder.mockReturnValue(qb);
-      await expect(service.getCallbackSecretByAddress("host:3002")).resolves.toBe(
-        "$2b$12$hash",
-      );
-      await expect(service.getCallbackSecretByAddress("host:3002")).resolves.toBe(
-        "$2b$12$hash",
-      );
+      await expect(
+        service.getCallbackSecretByAddress("host:3002"),
+      ).resolves.toBe("$2b$12$hash");
+      await expect(
+        service.getCallbackSecretByAddress("host:3002"),
+      ).resolves.toBe("$2b$12$hash");
       expect(qb.getOne).toHaveBeenCalledTimes(1);
     });
 
@@ -1221,8 +1281,12 @@ describe("ExecutorService (__tests__)", () => {
       const qb = executorRepo.createQueryBuilder();
       qb.getOne.mockResolvedValue(null);
       executorRepo.createQueryBuilder.mockReturnValue(qb);
-      await expect(service.getCallbackSecretByAddress("ghost:1")).resolves.toBeNull();
-      await expect(service.getCallbackSecretByAddress("ghost:1")).resolves.toBeNull();
+      await expect(
+        service.getCallbackSecretByAddress("ghost:1"),
+      ).resolves.toBeNull();
+      await expect(
+        service.getCallbackSecretByAddress("ghost:1"),
+      ).resolves.toBeNull();
       expect(qb.getOne).toHaveBeenCalledTimes(2);
     });
 

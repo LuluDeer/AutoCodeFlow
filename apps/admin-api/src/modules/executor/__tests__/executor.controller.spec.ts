@@ -326,7 +326,10 @@ describe("ExecutorController", () => {
         appName: "executor-node",
         startupId: "startup-1",
       });
-      expect(result).toEqual({ token: "issued-token", tokenHash: "$2b$04$hash" });
+      expect(result).toEqual({
+        token: "issued-token",
+        tokenHash: "$2b$04$hash",
+      });
       // The old per-call rotation path must be gone from this endpoint.
       expect(svc.rotateToken).not.toHaveBeenCalled();
       expect(svc.register).not.toHaveBeenCalled();
@@ -336,7 +339,10 @@ describe("ExecutorController", () => {
       const svc = makeSvc();
       const controller = makeController(svc);
 
-      await controller.getToken({ address: "10.0.0.9:3002" }, "Bearer shared-secret");
+      await controller.getToken(
+        { address: "10.0.0.9:3002" },
+        "Bearer shared-secret",
+      );
 
       expect(svc.issueToken).toHaveBeenCalledWith({
         address: "10.0.0.9:3002",
