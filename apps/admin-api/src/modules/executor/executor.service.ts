@@ -75,6 +75,17 @@ export class ExecutorService {
   // rotates once (harmless — the executor adopts the new hash from the same
   // response, see executor-node admin-envelope.ts).
   private static readonly TOKEN_ISSUE_REUSE_WINDOW_MS = 60_000;
+  // N34 (round-9): defensive bounds for the plaintext issuance cache, same
+  // MAX+TTL pattern as tokenValidationCache (F-5). Without them, a caller
+  // holding the shared token could grow the Map unbounded by hitting
+  // POST /executors/token with fresh addresses. The TTL is deliberately NOT
+  // the 60s TOKEN_CACHE_TTL_MS: idempotent same-startupId reuse must survive
+  // the executors' ~30min token-refresh cycle (docs/VERIFY-round9-e2e.md §1.3
+  // observed reuse at 25.5min). An executor living past the TTL just rotates
+  // once on its next fetch — the same harmless cold-start behavior as an
+  // admin-api restart.
+  private static readonly TOKEN_ISSUE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+  private static readonly TOKEN_ISSUE_CACHE_MAX = 1000;
   private readonly issuedTokenCache = new Map<
     string,
     { token: string; startupId: string | null; issuedAt: number }
@@ -1087,7 +1098,12 @@ export class ExecutorService {
     const incomingStartupId = data.startupId?.trim() || null;
     const now = Date.now();
     const cached = this.issuedTokenCache.get(data.address);
-    if (cached) {
+    // N34: an entry past the TTL is treated as stale (rotate fresh) even if
+    // the startupId still matches — same fail-safe as a cold cache.
+    if (
+      cached &&
+      now - cached.issuedAt < ExecutorService.TOKEN_ISSUE_CACHE_TTL_MS
+    ) {
       const sameProcess =
         incomingStartupId !== null && cached.startupId === incomingStartupId;
       const legacyInWindow =
@@ -1117,7 +1133,7 @@ export class ExecutorService {
     const { token } = await this.rotateToken(executor.id);
     // rotateToken() evicted the N26 cache, so this reads the FRESH hash.
     const tokenHash = await this.getCallbackSecretByAddress(data.address);
-    this.issuedTokenCache.set(data.address, {
+    this.rememberIssuedToken(data.address, {
       token,
       startupId: incomingStartupId,
       issuedAt: now,
@@ -1261,6 +1277,34 @@ export class ExecutorService {
       }
     }
     this.tokenValidationCache.set(cacheKey, now);
+  }
+
+  /**
+   * N34 (round-9): store an issued plaintext token, evicting expired/oldest
+   * entries — same bounded-growth defense as rememberTokenValidation (F-5).
+   */
+  private rememberIssuedToken(
+    address: string,
+    entry: { token: string; startupId: string | null; issuedAt: number },
+  ): void {
+    if (this.issuedTokenCache.size >= ExecutorService.TOKEN_ISSUE_CACHE_MAX) {
+      for (const [k, v] of this.issuedTokenCache) {
+        if (
+          entry.issuedAt - v.issuedAt >=
+          ExecutorService.TOKEN_ISSUE_CACHE_TTL_MS
+        ) {
+          this.issuedTokenCache.delete(k);
+        }
+      }
+      while (
+        this.issuedTokenCache.size >= ExecutorService.TOKEN_ISSUE_CACHE_MAX
+      ) {
+        const oldest = this.issuedTokenCache.keys().next().value;
+        if (oldest === undefined) break;
+        this.issuedTokenCache.delete(oldest);
+      }
+    }
+    this.issuedTokenCache.set(address, entry);
   }
 
   /**
