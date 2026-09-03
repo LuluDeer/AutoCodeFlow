@@ -3,16 +3,16 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-03（第八轮）
+更新时间：2026-09-03（第九轮）
 当前分支：`develop`（本地领先 origin/develop 65+ commits，**push 无凭证**——CI 真跑待用户解决）
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - 测试基线（全绿）：
-  - admin-api **840/840** (jest, 53 suites) + eslint **0/0** + coverage 地板（68/58/56/69）
-  - executor-node **150/150** · executor-python **86/86**
-  - admin-web vitest **35/35** · Playwright E2E **25/25**（含 R8 P0 转正守卫）
+  - admin-api **861/861** (jest, 53 suites) + eslint **0/0** + coverage 地板（68/58/56/69）
+  - executor-node **150/150** · executor-python **115/115** · autoflow-sdk **90/90**
+  - admin-web vitest **35/35** · Playwright E2E **29/29**（pinned 全链 4 例）
   - acf-cli **48** · mcp-server **52** · registry-pypi **33** · autocodeflow-node-sdk **43** · autocodeflow-notify **7**
   - 全端 tsc ✓ · admin-web build ✓ · `scripts/ci-local.sh` 本机等价 11 job 全绿
 - 本轮（2026-09-03 第八轮，A/B/C/D 四路 → W1/W2 修复 → V 真机 5/5 → W P1 击穿修复；详见 `docs/PROGRESS-round8-2026-09-03.md`、`docs/VERIFY-round8-e2e.md`）：
@@ -69,10 +69,21 @@
   - **Playwright E2E 25/25**：新增 9 例（角色门控/AI Tab 降级零请求/四模式/executorId 残留服务端复核）；**抓到 P0**——TaskFormPage 分步渲染 validateFields 只回当前挂载字段，创建 UI 完全不可用 → getFieldsValue(true)+分步兜底，fixme 转正
   - **audit N25-N32**：N25(P1) `::ffff:` IPv4-mapped IPv6 绕过 SSRF 分类 → normalizeIpForClassification 归一（含 ::/96 与完整 IPv6 危险段）；N26 回调 token 密钥缺口（tokenHash 是 bcrypt → 改双端以 tokenHash 字符串为 HMAC key，register 回传+采纳+60s 缓存验签）；N27 SDK 自动补 executorAddress；N28 admin-web 模式清理 delete→显式 null；N29 通知 test 面真实 results；N30 registry-pypi 并发上传 os.link 原子防重；N31 /api/metrics 并发 render 串行化
   - **真机 P1 击穿修复（V 抓到）**：executor-node fetchToken 不拆信封 + Nest POST 201 误判 200 → token 恒 undefined → 心跳每 30s 旋转 token（9 分钟 14 次）→ 回调 token 稳态必 401。三层修复：fetchToken 拆信封/2xx 区间；admin issueToken 幂等（startupId 稳态永不轮换+内存缓存明文+legacy 60s 窗）；心跳响应回传 tokenHash 三点采纳
+- 本轮（2026-09-03 第九轮，A/B/C/D 四路 → V 真机 5/5 + audit N33-N36 → W 收尾修复；详见 `docs/PROGRESS-round9-2026-09-03.md`、`docs/VERIFY-round9-e2e.md`）：
+  - **python 侧 token 链对齐**：executor-python `_fetch_token` 三缺口（201 误判/未拆信封/缺 startupId）修复——动态 token 首次真正生效；register/heartbeat 采纳 tokenHash（三点不变量补齐）
+  - **autoflow-sdk 回调能力**（node-sdk 对等）：from_env 读三变量（排除出 params）+ CallbackClient（enabled/disabled_reason）+ report_success/failure；executor-python 注入回调三变量（HMAC 移植，与 admin/node 三方同测试向量逐字节一致）
+  - **回调 401 分类观测**：`autoflow_execution_callback_auth_total{result}` 七分类 series（controller 埋点 util 保持纯函数）
+  - **webhook 配置面补全**（V2 遗留）：PATCH channels/webhook 合法 + config-first + URL query 脱敏 + 掩码回显守卫
+  - **Playwright 29/29**：pinned 部署全链 4 例（在线/离线/不存在/全 UI 闭环）
+  - **P1 修复（V 抓到）**：python register 用动态 token 打 bootstrap 端点 401（R9 修复揭开）→ 改静态 token + 状态码检查；**N33-N36**：issuedTokenCache 有界化（1000/24h）、artifact query token 风险标注、ci-local 差异声明
+- ⚠️ 第九轮部署注意：
+  - autoflow-sdk 新回调 API（report_success/failure）——python 任务代码升级 SDK 后即可用回调
+  - webhook 渠道现在可 PATCH 配置且 config-first（保存 url 优先于逐请求参数）——行为对依赖旧"参数优先"语义的消费方是变更
+  - executor-python 需随轮重新部署（token 链修复 + 回调注入）
 - ⚠️ 第八轮部署注意：
   - **回调 token 依赖共享 secret 同源**：EXECUTION_CALLBACK_SECRET 可选（缺省回落共享 token）；admin UI 手动旋转 token 后长运行执行器需 register/token/心跳对齐（三点已自动化，sdk-guide 有约束说明）
   - `POST /executors/token` 语义变化：幂等签发（不再每次旋转）——依赖旋转行为的消费方（若有）需复查
-  - **executor-python 疑似同款信封 bug**（W 未在授权范围，admin 幂等已兜底）——第九轮排查
+  - ~~executor-python 疑似同款信封 bug~~ ✅ 第九轮已修复（信封拆包+2xx+startupId+tokenHash 采纳+回调注入全链对齐）
   - install.sh 现支持 artifact 下载（EXECUTOR_ARTIFACT_DIR，默认 <cwd>/artifacts，需先跑 bundle 脚本）
 - ⚠️ 部署注意事项：
   - **/uploads 鉴权是破坏性变更**：executor-node 必须升级到含 `eadedca` 的版本，否则下载应用包 401
@@ -126,13 +137,13 @@ cd packages/mcp-server && npx tsc --noEmit
 
 ## 下一步建议（按优先级）
 
-> 第七轮交接 6 项中 5 项已在第八轮完成（CI 真跑阻塞于 push 凭证）。以下为第八轮后剩余：
+> 第八轮交接 6 项中 5 项已在第九轮完成（CI push 仍阻塞于凭证；python 侧 token/SDK 面已全部对齐）。以下为第九轮后剩余：
 
-1. **CI push 真跑**：阻塞于 GitHub 凭证（本地领先 65+ commits）——用户侧解决后 push，`scripts/ci-local.sh` 已提供本机等价验收。
-2. **executor-python 信封 bug 排查**：admin 侧响应均为 {code,message,data} 信封，python 执行器的 token/心跳解析若假定裸响应则有同款缺陷（admin issueToken 幂等已兜底旋转风暴，但功能面需对齐）。
-3. **回调 token 观测与轮换通知**：401 分类指标进 prometheus；admin UI 手动旋转 token 后的执行器密钥对齐广播。
-4. admin-web pinned 部署链路 UI 闭环深化（Playwright 铺开）；桌面跨平台矩阵（需真机）。
-5. minio 链 3 moderate 等上游发版；N32 遗留的 webhook 配置面（PATCH 不支持 webhook 渠道）评估是否补全。
+1. **CI push 真跑**：阻塞于 GitHub 凭证（本地领先 80+ commits）——用户侧解决后 push，`scripts/ci-local.sh` 十端等价全绿持续兜底。
+2. **回调 token 生产观测深化**：七分类指标已落地，可补 Grafana 面板 JSON/告警规则示例。
+3. **admin UI 手动旋转 token 的即时对齐**：三点采纳+幂等签发已闭环自动化，剩余评估"旋转时主动通知在线执行器"的即时性方案。
+4. **SDK 统一与示例**（路线图 #10 收尾）：node/python 双 SDK 回调已对齐，梳理统一 README/示例矩阵与 npm/PyPI 发布管道。
+5. 跨平台矩阵（需真机）；minio 链 3 moderate 等上游发版。
 
 ## 未覆盖验证项
 
