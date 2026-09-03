@@ -62,7 +62,7 @@ vi.mock('../config', () => ({
   showConfig: vi.fn(),
 }));
 
-import { get, post, put, del } from '../client';
+import { get, post, put, patch, del } from '../client';
 import { appsCommand } from '../commands/apps';
 import { tasksCommand } from '../commands/tasks';
 import { executorsCommand } from '../commands/executors';
@@ -73,6 +73,7 @@ import { loginCommand } from '../commands/login';
 const mockedGet = vi.mocked(get);
 const mockedPost = vi.mocked(post);
 const mockedPut = vi.mocked(put);
+const mockedPatch = vi.mocked(patch);
 const mockedDel = vi.mocked(del);
 
 async function run(cmd: { parseAsync?: unknown }, args: string): Promise<void> {
@@ -232,6 +233,45 @@ describe('acf task list (P2 contract fix)', () => {
       pageSize: '20',
       status: undefined,
       name: 'foo',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task create/update --executor (R7 N20: CLI pinning capability)
+// ---------------------------------------------------------------------------
+describe('acf task create --executor (N20)', () => {
+  it('maps --executor to body.executorId', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 't1', name: 'demo', status: 'paused' });
+    await run(
+      tasksCommand(),
+      'task create --json {"name":"demo","triggerType":"api"} --executor 550e8400-e29b-41d4-a716-446655440000',
+    );
+    expect(mockedPost).toHaveBeenCalledWith('/tasks', {
+      name: 'demo',
+      triggerType: 'api',
+      executorId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+  });
+
+  it('leaves the body untouched when --executor is absent', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 't1', name: 'demo', status: 'paused' });
+    await run(tasksCommand(), 'task create --json {"name":"demo","triggerType":"api"}');
+    const body = mockedPost.mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('executorId');
+  });
+});
+
+describe('acf task update --executor (N20)', () => {
+  it('maps --executor to the PATCH body.executorId', async () => {
+    mockedPatch.mockResolvedValueOnce({ id: 't1', name: 'demo', status: 'active' });
+    await run(
+      tasksCommand(),
+      'task update t1 --json {"description":"d"} --executor 550e8400-e29b-41d4-a716-446655440000',
+    );
+    expect(mockedPatch).toHaveBeenCalledWith('/tasks/t1', {
+      description: 'd',
+      executorId: '550e8400-e29b-41d4-a716-446655440000',
     });
   });
 });
