@@ -8,6 +8,7 @@ import { CallbackItemDto } from "../dto/execution-callback.dto";
 import { ExecutorService } from "../../executor/executor.service";
 import { ExecutionFailureReason } from "../entities/task-execution.entity";
 import { signExecutionCallbackToken } from "../execution-callback-token.util";
+import { ExecutionCallbackMetricsService } from "../execution-callback-metrics.service";
 
 const EXEC_UUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
 const VALID_TOKEN = "test-shared-secret";
@@ -32,6 +33,9 @@ describe("ExecutionCallbackController", () => {
     validateTokenByAddress: jest.Mock;
     getCallbackSecretByAddress: jest.Mock;
   };
+  // N32: real in-memory counter service — the auth-metric tests below read
+  // its snapshot to assert the classification of each failure branch.
+  let callbackMetrics: ExecutionCallbackMetricsService;
 
   beforeEach(async () => {
     taskService = {
@@ -62,12 +66,14 @@ describe("ExecutionCallbackController", () => {
         { provide: ConfigService, useValue: configService },
         { provide: SystemConfigService, useValue: systemConfigService },
         { provide: ExecutorService, useValue: executorService },
+        ExecutionCallbackMetricsService,
       ],
     }).compile();
 
     controller = module.get<ExecutionCallbackController>(
       ExecutionCallbackController,
     );
+    callbackMetrics = module.get(ExecutionCallbackMetricsService);
   });
 
   describe("POST /executions/callback — token verification", () => {
@@ -342,7 +348,9 @@ describe("ExecutionCallbackController", () => {
       it("does not consult per-executor secrets when a global candidate verifies", async () => {
         const token = sign(EXEC_UUID, nowSec() + 60); // global VALID_TOKEN
         await controller.callback(`Bearer ${token}`, [makeCallbackItem()]);
-        expect(executorService.getCallbackSecretByAddress).not.toHaveBeenCalled();
+        expect(
+          executorService.getCallbackSecretByAddress,
+        ).not.toHaveBeenCalled();
       });
 
       it("interleaved: global secret configured but token signed per-executor still verifies", async () => {
@@ -360,7 +368,8 @@ describe("ExecutionCallbackController", () => {
 
       it("multi-address batch: tries each unique address once, accepts on first match", async () => {
         executorService.getCallbackSecretByAddress.mockImplementation(
-          async (addr: string) => (addr === "executor-b:8001" ? EXECUTOR_HASH : null),
+          async (addr: string) =>
+            addr === "executor-b:8001" ? EXECUTOR_HASH : null,
         );
         const token = sign(EXEC_UUID, nowSec() + 60, EXECUTOR_HASH);
         await expect(
@@ -408,6 +417,122 @@ describe("ExecutionCallbackController", () => {
         ).rejects.toBeInstanceOf(UnauthorizedException);
         expect(taskService.handleCallback).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  // N32 (round-9, 交接 #3): 401 分类观测——每个失败分支必须落入
+  // ExecutionCallbackMetricsService 对应分类计数，成功路径计 ok。
+  describe("POST /executions/callback — auth metrics (N32)", () => {
+    const nowSec = () => Math.floor(Date.now() / 1000);
+    const authCounts = () => callbackMetrics.snapshot.auth;
+
+    it("counts result=ok on the per-execution token success path", async () => {
+      const token = signExecutionCallbackToken(
+        VALID_TOKEN,
+        EXEC_UUID,
+        nowSec() + 60,
+      );
+      await controller.callback(`Bearer ${token}`, [makeCallbackItem()]);
+      expect(authCounts().ok).toBe(1);
+      expect(authCounts().v1_bad_signature).toBe(0);
+    });
+
+    it("counts result=ok on the legacy per-address success path", async () => {
+      await controller.callback("Bearer dynamic-token", [makeCallbackItem()]);
+      expect(authCounts().ok).toBe(1);
+    });
+
+    it("counts missing_token when no bearer token is present", async () => {
+      await expect(
+        controller.callback(undefined, [makeCallbackItem()]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authCounts().missing_token).toBe(1);
+    });
+
+    it("counts bad_address when a legacy item lacks executorAddress", async () => {
+      const item = makeCallbackItem();
+      item.executorAddress = undefined;
+      await expect(
+        controller.callback(`Bearer ${VALID_TOKEN}`, [item]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authCounts().bad_address).toBe(1);
+    });
+
+    it("counts v1_expired for an expired per-execution token", async () => {
+      const token = signExecutionCallbackToken(
+        VALID_TOKEN,
+        EXEC_UUID,
+        nowSec() - 1,
+      );
+      await expect(
+        controller.callback(`Bearer ${token}`, [makeCallbackItem()]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authCounts().v1_expired).toBe(1);
+      expect(authCounts().v1_bad_signature).toBe(0);
+    });
+
+    it("counts v1_binding_mismatch when a batch item escapes the bound executionId", async () => {
+      const token = signExecutionCallbackToken(
+        VALID_TOKEN,
+        EXEC_UUID,
+        nowSec() + 60,
+      );
+      await expect(
+        controller.callback(`Bearer ${token}`, [
+          makeCallbackItem({
+            executionId: "6b4adba5-a2f8-4fe7-bf4f-5277d0d7f2b7",
+          }),
+        ]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authCounts().v1_binding_mismatch).toBe(1);
+    });
+
+    it("counts v1_bad_signature for a token signed with the wrong secret", async () => {
+      const token = signExecutionCallbackToken(
+        "attacker-secret",
+        EXEC_UUID,
+        nowSec() + 60,
+      );
+      await expect(
+        controller.callback(`Bearer ${token}`, [makeCallbackItem()]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authCounts().v1_bad_signature).toBe(1);
+    });
+
+    it("counts v1_bad_signature for a malformed v1 token (not expired)", async () => {
+      await expect(
+        controller.callback("Bearer v1.garbage", [makeCallbackItem()]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authCounts().v1_bad_signature).toBe(1);
+      expect(authCounts().v1_expired).toBe(0);
+    });
+
+    it("counts legacy_shared_invalid when a multi-executor batch uses one token", async () => {
+      executorService.validateTokenByAddress.mockResolvedValue(false);
+      await expect(
+        controller.callback(`Bearer ${VALID_TOKEN}`, [
+          makeCallbackItem({ executorAddress: "executor-a:8001" }),
+          makeCallbackItem({
+            executionId: "6b4adba5-a2f8-4fe7-bf4f-5277d0d7f2b7",
+            executorAddress: "executor-b:8001",
+          }),
+        ]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authCounts().legacy_shared_invalid).toBe(1);
+    });
+
+    it("counts legacy_shared_invalid when the single-executor shared fallback also fails", async () => {
+      executorService.validateTokenByAddress.mockResolvedValue(false);
+      configService.get.mockImplementation((key: string) => {
+        if (key === "app.nodeEnv") return "test";
+        return undefined;
+      });
+      await expect(
+        controller.callback("Bearer wrong-shared-token", [
+          makeCallbackItem({ executorAddress: "executor-a:8001" }),
+        ]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(authCounts().legacy_shared_invalid).toBe(1);
     });
   });
 });

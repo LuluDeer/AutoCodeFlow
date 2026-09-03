@@ -225,7 +225,9 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
 
   describe("normalizeIpForClassification", () => {
     it("extracts the embedded IPv4 from ::ffff:0:0/96 literals (dotted and hex forms)", () => {
-      expect(normalizeIpForClassification("::ffff:127.0.0.1")).toBe("127.0.0.1");
+      expect(normalizeIpForClassification("::ffff:127.0.0.1")).toBe(
+        "127.0.0.1",
+      );
       expect(normalizeIpForClassification("::ffff:7f00:1")).toBe("127.0.0.1");
       expect(normalizeIpForClassification("::ffff:169.254.169.254")).toBe(
         "169.254.169.254",
@@ -350,7 +352,9 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
     });
 
     it("still allows a hostname resolving to a mapped PUBLIC address", async () => {
-      mockedLookup.mockResolvedValue([{ address: "::ffff:8.8.8.8", family: 6 }]);
+      mockedLookup.mockResolvedValue([
+        { address: "::ffff:8.8.8.8", family: 6 },
+      ]);
       await expect(
         assertSafeHttpUrl("http://ok.example.com/webhook"),
       ).resolves.toBeInstanceOf(URL);

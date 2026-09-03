@@ -3,6 +3,7 @@ import { register as globalRegister } from "prom-client";
 import { PrometheusMetricsService } from "../prometheus-metrics.service";
 import { SchedulerMetricsService } from "../../scheduler/scheduler-metrics.service";
 import { SchedulerService } from "../../scheduler/scheduler.service";
+import { ExecutionCallbackMetricsService } from "../../task/execution-callback-metrics.service";
 
 /**
  * R7: prom-client exposition 端点测试。
@@ -11,6 +12,7 @@ import { SchedulerService } from "../../scheduler/scheduler.service";
  */
 describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
   let schedulerMetrics: SchedulerMetricsService;
+  let callbackMetrics: ExecutionCallbackMetricsService;
   let schedulerService: { getQueueDepth: jest.Mock };
 
   const QUEUE_EMPTY = {
@@ -40,6 +42,7 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
       }),
     };
     schedulerMetrics = new SchedulerMetricsService();
+    callbackMetrics = new ExecutionCallbackMetricsService();
     schedulerService = {
       getQueueDepth: jest.fn().mockResolvedValue({ ...QUEUE_EMPTY }),
     };
@@ -47,6 +50,7 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
       config as unknown as ConfigService,
       schedulerMetrics,
       schedulerService as unknown as SchedulerService,
+      callbackMetrics,
     );
   };
 
@@ -110,6 +114,76 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
     expect(text).toContain(
       'autoflow_scheduler_triggers_skipped_total{reason="block_strategy"} 1',
     );
+  });
+
+  // N32 (round-9): callback 401 分类观测 series——对齐既有 reset+inc 快照模式。
+  it("maps callback auth outcomes to autoflow_execution_callback_auth_total (N32)", async () => {
+    const svc = makeService();
+    callbackMetrics.recordAuthResult("ok");
+    callbackMetrics.recordAuthResult("ok");
+    callbackMetrics.recordAuthResult("v1_expired");
+    callbackMetrics.recordAuthResult("v1_binding_mismatch");
+    callbackMetrics.recordAuthResult("v1_bad_signature");
+    callbackMetrics.recordAuthResult("legacy_shared_invalid");
+    callbackMetrics.recordAuthResult("missing_token");
+    callbackMetrics.recordAuthResult("bad_address");
+
+    const text = await svc.render();
+
+    expect(text).toContain(
+      "# TYPE autoflow_execution_callback_auth_total counter",
+    );
+    expect(text).toContain(
+      'autoflow_execution_callback_auth_total{result="ok"} 2',
+    );
+    expect(text).toContain(
+      'autoflow_execution_callback_auth_total{result="v1_expired"} 1',
+    );
+    expect(text).toContain(
+      'autoflow_execution_callback_auth_total{result="v1_binding_mismatch"} 1',
+    );
+    expect(text).toContain(
+      'autoflow_execution_callback_auth_total{result="v1_bad_signature"} 1',
+    );
+    expect(text).toContain(
+      'autoflow_execution_callback_auth_total{result="legacy_shared_invalid"} 1',
+    );
+    expect(text).toContain(
+      'autoflow_execution_callback_auth_total{result="missing_token"} 1',
+    );
+    expect(text).toContain(
+      'autoflow_execution_callback_auth_total{result="bad_address"} 1',
+    );
+  });
+
+  it("keeps all seven callback auth result series present (0 baseline) and monotonic across scrapes (N32)", async () => {
+    const svc = makeService();
+    const first = await svc.render();
+    for (const result of [
+      "ok",
+      "v1_expired",
+      "v1_binding_mismatch",
+      "v1_bad_signature",
+      "legacy_shared_invalid",
+      "missing_token",
+      "bad_address",
+    ]) {
+      expect(first).toContain(
+        `autoflow_execution_callback_auth_total{result="${result}"} 0`,
+      );
+    }
+
+    callbackMetrics.recordAuthResult("v1_expired");
+    const second = await svc.render();
+    expect(second).toContain(
+      'autoflow_execution_callback_auth_total{result="v1_expired"} 1',
+    );
+    // 同一实例重复抓取不产生残留的双 series
+    expect(
+      second.match(
+        /autoflow_execution_callback_auth_total\{result="v1_expired"\} \d+/g,
+      ),
+    ).toHaveLength(1);
   });
 
   it("exposes queue depth gauges and autoflow_queue_up=1 when Redis is readable", async () => {

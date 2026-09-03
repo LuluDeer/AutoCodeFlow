@@ -15,11 +15,14 @@ export class WebhookChannel extends BaseChannel {
 
   async send(p: NotificationPayload, url?: string) {
     // V5 (round-7): the old env fallback read `notification.webhookUrl`, a
-    // key configuration.ts never defined — dead code, removed. Design intent
-    // for this channel: the target comes from the per-request url argument
-    // (/send webhookUrl, task alarmWebhook, sendWebhook) or, V1, from a
-    // saved channel config; there is no global env default.
-    const webhookUrl = url || this.store.get("webhook")?.webhookUrl;
+    // key configuration.ts never defined — dead code, removed.
+    // N32 (round-9): "webhook" joined the PATCH-able channel enum with
+    // config shape `{ url }`, so the store branch V2 §7.1 flagged as
+    // unreachable is now live. Resolution matches every other channel's
+    // V1 config-first rule: the SAVED channel url wins; the per-request
+    // url argument (/send body.webhookUrl, task alarmWebhook, sendWebhook)
+    // is the fallback. Signature unchanged.
+    const webhookUrl = this.store.get("webhook")?.url || url;
     if (!webhookUrl) return "skipped";
 
     // NOTIF-001: reject SSRF (private / loopback / link-local / cloud-metadata)
