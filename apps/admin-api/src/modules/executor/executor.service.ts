@@ -184,9 +184,7 @@ export class ExecutorService {
     // Batch-fetch tasks once instead of one query per execution (avoids N+1)
     const taskIds = [...new Set(executionsToFail.map((e) => e.taskId))];
     const tasks =
-      taskIds.length > 0
-        ? await this.taskRepo.findBy({ id: In(taskIds) })
-        : [];
+      taskIds.length > 0 ? await this.taskRepo.findBy({ id: In(taskIds) }) : [];
     const taskMap = new Map(tasks.map((t) => [t.id, t]));
     for (const execution of executionsToFail) {
       const task = execution.taskId
@@ -234,7 +232,9 @@ export class ExecutorService {
     const maxConcurrentTasks = data.maxConcurrentTasks ?? data.maxConcurrent;
     const incomingStartedAt = this.parseExecutorStartedAt(data.restartedAt);
     const incomingStartupId = data.startupId?.trim() || null;
-    const hasStartupBaseline = Boolean(e?.executorStartupId || e?.executorStartedAt);
+    const hasStartupBaseline = Boolean(
+      e?.executorStartupId || e?.executorStartedAt,
+    );
     const didRestart = e
       ? this.hasExecutorRestarted(e, incomingStartedAt, incomingStartupId)
       : false;
@@ -292,7 +292,10 @@ export class ExecutorService {
       // R-P0-008: Reset runningTaskCount to 0 after executor restart
       e.runningTaskCount = 0;
     } else if (shouldRecoverMissingBaseline) {
-      await this.failRunningExecutionsAfterRestart(data.address, incomingStartedAt);
+      await this.failRunningExecutionsAfterRestart(
+        data.address,
+        incomingStartedAt,
+      );
       // R-P0-008: Reset runningTaskCount to 0 after recovery
       e.runningTaskCount = 0;
     }
@@ -382,7 +385,9 @@ export class ExecutorService {
     if (!e) throw new NotFoundException("Executor not found");
     const incomingStartedAt = this.parseExecutorStartedAt(metrics.restartedAt);
     const incomingStartupId = metrics.startupId?.trim() || null;
-    const hasStartupBaseline = Boolean(e.executorStartupId || e.executorStartedAt);
+    const hasStartupBaseline = Boolean(
+      e.executorStartupId || e.executorStartedAt,
+    );
     const didRestart = this.hasExecutorRestarted(
       e,
       incomingStartedAt,
@@ -675,7 +680,7 @@ export class ExecutorService {
     let matched: Executor | null = null;
     for (const candidate of sorted) {
       const maxConcurrent = candidate.maxConcurrentTasks ?? Infinity;
-      
+
       // Attempt atomic increment with version check
       const result = await this.repo
         .createQueryBuilder()
@@ -689,7 +694,7 @@ export class ExecutorService {
           maxConcurrent === Infinity ? {} : { max: maxConcurrent },
         )
         .execute();
-      
+
       if (result.affected && result.affected > 0) {
         // Update successful, synchronize local state
         candidate.runningTaskCount += 1;
@@ -1088,7 +1093,9 @@ export class ExecutorService {
           this.tokenValidationCache.delete(k);
         }
       }
-      while (this.tokenValidationCache.size >= ExecutorService.TOKEN_CACHE_MAX) {
+      while (
+        this.tokenValidationCache.size >= ExecutorService.TOKEN_CACHE_MAX
+      ) {
         const oldest = this.tokenValidationCache.keys().next().value;
         if (oldest === undefined) break;
         this.tokenValidationCache.delete(oldest);
@@ -1112,6 +1119,14 @@ export class ExecutorService {
     adminApiUrl: string;
   } {
     const adminApiUrl = this.configService.get<string>("ADMIN_API_URL") || "";
+    // R7 真机遗留观察①：ADMIN_API_URL 缺失时旧实现会生成
+    // `curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''`
+    // ——相对路径 + 空 api-url 的裸机不可用命令。宁可 503 也不返回废命令。
+    if (!adminApiUrl) {
+      throw new ServiceUnavailableException(
+        "ADMIN_API_URL is not configured; cannot generate install command",
+      );
+    }
     const sharedToken =
       this.configService.get<string>("executor.sharedToken") || "";
     // Shell-quote values to prevent word-splitting / injection when the user
@@ -1146,7 +1161,9 @@ export class ExecutorService {
     executor.status = ExecutorStatus.OFFLINE;
     executor.lastHeartbeat = new Date();
     const saved = await this.repo.save(executor);
-    this.logger.log(`Executor ${executor.address} set offline by admin (id=${id})`);
+    this.logger.log(
+      `Executor ${executor.address} set offline by admin (id=${id})`,
+    );
     return saved;
   }
 

@@ -28,7 +28,6 @@ import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
 import { Roles } from "../../common/decorators/roles.decorator";
-import { UserRole } from "../users/entities/user.entity";
 import { ExecutorService } from "./executor.service";
 import { INSTALL_SCRIPT } from "./install-script.content";
 import { SystemConfigService } from "../config/config.service";
@@ -130,9 +129,8 @@ export class ExecutorController {
     // processes retrying register every 30s can no longer invalidate the live
     // executor's token. Rotation still happens on first registration, on a
     // genuine restart, and for legacy executors that report no startupId.
-    const { executor, perExecutorToken } = await this.svc.registerExecutor(
-      payload,
-    );
+    const { executor, perExecutorToken } =
+      await this.svc.registerExecutor(payload);
     return { ...executor, perExecutorToken };
   }
 
@@ -295,6 +293,11 @@ export class ExecutorController {
         },
       },
     },
+  })
+  @ApiResponse({
+    status: 503,
+    description:
+      "ADMIN_API_URL is not configured on the server — no usable install command can be generated",
   })
   getInstallCmd() {
     return this.svc.getInstallCmd();

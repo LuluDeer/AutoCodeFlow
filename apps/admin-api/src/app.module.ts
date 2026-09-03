@@ -49,9 +49,7 @@ import { RegistryModule } from "./modules/registry/registry.module";
         DB_DATABASE: Joi.string().default("autocodeflow"),
         // ARCH-006: explicit schema-synchronize switch (default false).
         // In production a value of "true" fails fast in configuration.ts.
-        DB_SYNCHRONIZE: Joi.string()
-          .valid("true", "false")
-          .default("false"),
+        DB_SYNCHRONIZE: Joi.string().valid("true", "false").default("false"),
 
         // Redis
         REDIS_HOST: Joi.string().hostname().default("localhost"),
@@ -99,10 +97,7 @@ import { RegistryModule } from "./modules/registry/registry.module";
           .default("false"),
 
         // SSE log-stream concurrency caps (per-process, defaults in configuration.ts)
-        SSE_MAX_STREAMS_PER_EXECUTION: Joi.number()
-          .integer()
-          .min(1)
-          .default(4),
+        SSE_MAX_STREAMS_PER_EXECUTION: Joi.number().integer().min(1).default(4),
         SSE_MAX_STREAMS_GLOBAL: Joi.number().integer().min(1).default(64),
 
         // AI (optional)
@@ -127,6 +122,15 @@ import { RegistryModule } from "./modules/registry/registry.module";
         WECOM_WEBHOOK: Joi.string().uri().allow("").optional(),
         DINGTALK_WEBHOOK: Joi.string().uri().allow("").optional(),
         SLACK_WEBHOOK: Joi.string().uri().allow("").optional(),
+
+        // R7: Prometheus exposition endpoint (GET /api/metrics) switches.
+        // Defaults true; semantics in configuration.ts (metrics.prometheus).
+        METRICS_PROMETHEUS_ENABLED: Joi.string()
+          .valid("true", "false")
+          .default("true"),
+        METRICS_PROMETHEUS_DEFAULT_METRICS_ENABLED: Joi.string()
+          .valid("true", "false")
+          .default("true"),
       }),
       // Only validate in production and test environments
       validationOptions: {

@@ -6,6 +6,7 @@ import { TaskExecution } from "../task/entities/task-execution.entity";
 import { Executor } from "../executor/entities/executor.entity";
 import { ExecutionReport } from "./entities/execution-report.entity";
 import { MetricsService } from "./metrics.service";
+import { PrometheusMetricsService } from "./prometheus-metrics.service";
 import { MetricsController } from "./metrics.controller";
 import { SchedulerModule } from "../scheduler/scheduler.module";
 
@@ -22,8 +23,8 @@ import { SchedulerModule } from "../scheduler/scheduler.module";
     BullModule.registerQueue({ name: "task-queue" }),
     forwardRef(() => SchedulerModule),
   ],
-  providers: [MetricsService],
+  providers: [MetricsService, PrometheusMetricsService],
   controllers: [MetricsController],
-  exports: [MetricsService],
+  exports: [MetricsService, PrometheusMetricsService],
 })
 export class MetricsModule {}

@@ -1,7 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { NotFoundException } from "@nestjs/common";
+import { NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { ExecutorService } from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
 import { Task } from "../../task/entities/task.entity";
@@ -91,7 +91,9 @@ describe("ExecutorService (__tests__)", () => {
         },
         {
           provide: SystemConfigService,
-          useValue: { findOne: jest.fn().mockRejectedValue(new Error("not found")) },
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
         },
       ],
     }).compile();
@@ -112,8 +114,22 @@ describe("ExecutorService (__tests__)", () => {
         { provide: getRepositoryToken(Task), useValue: taskRepo },
         { provide: getQueueToken("task-queue"), useValue: taskQueue },
         { provide: ConfigService, useValue: configService },
-        { provide: NotificationService, useValue: { notifyFailure: jest.fn(), notifyFailureWithConfig: jest.fn(), notifyExecutorOnline: jest.fn().mockResolvedValue(undefined), notifyExecutorOffline: jest.fn().mockResolvedValue(undefined), sendAll: jest.fn() } },
-        { provide: SystemConfigService, useValue: { findOne: jest.fn().mockRejectedValue(new Error("not found")) } },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn(),
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
       ],
     }).compile();
     service = module.get(ExecutorService);
@@ -422,7 +438,9 @@ describe("ExecutorService (__tests__)", () => {
         status: ExecutorStatus.ONLINE,
       };
       repo.findOne.mockResolvedValue(saved);
-      repo.save.mockImplementation((e: any) => Promise.resolve({ ...e, id: "e1" }));
+      repo.save.mockImplementation((e: any) =>
+        Promise.resolve({ ...e, id: "e1" }),
+      );
       const svc = await makeServiceWithRepo(repo);
       jest
         .spyOn(svc, "rotateToken")
@@ -447,7 +465,10 @@ describe("ExecutorService (__tests__)", () => {
         tokenHash: "$2b$12$existinghash",
       };
       const repo = makeQbRepo(prior);
-      repo.findOne.mockResolvedValue({ ...prior, status: ExecutorStatus.ONLINE });
+      repo.findOne.mockResolvedValue({
+        ...prior,
+        status: ExecutorStatus.ONLINE,
+      });
       repo.save.mockImplementation((e: any) => Promise.resolve(e));
       const svc = await makeServiceWithRepo(repo);
       const rotateSpy = jest.spyOn(svc, "rotateToken");
@@ -569,9 +590,9 @@ describe("ExecutorService (__tests__)", () => {
 
     it("throws NotFoundException when executor address not found", async () => {
       executorRepo.findOne.mockResolvedValue(null);
-      await expect(
-        service.heartbeat("unknown:9999", {}),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.heartbeat("unknown:9999", {})).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it("recovers running executions predating heartbeat startup when executor lacks startup baseline", async () => {
@@ -652,7 +673,9 @@ describe("ExecutorService (__tests__)", () => {
       execRepo.find.mockResolvedValue([firstExecution, secondExecution]);
       taskRepo.findBy.mockResolvedValue([task]);
       execRepo.save.mockImplementation((e: any) =>
-        Promise.resolve(e.id ? e : { ...e, id: `retry-${execRepo.save.mock.calls.length}` }),
+        Promise.resolve(
+          e.id ? e : { ...e, id: `retry-${execRepo.save.mock.calls.length}` },
+        ),
       );
       taskQueue.add
         .mockRejectedValueOnce(new Error("redis down"))
@@ -728,7 +751,10 @@ describe("ExecutorService (__tests__)", () => {
 
     it("filters out null groupNames", async () => {
       const qb = executorRepo.createQueryBuilder();
-      qb.getRawMany.mockResolvedValue([{ groupName: null }, { groupName: "prod" }]);
+      qb.getRawMany.mockResolvedValue([
+        { groupName: null },
+        { groupName: "prod" },
+      ]);
       executorRepo.createQueryBuilder.mockReturnValue(qb);
       const result = await service.getGroups();
       expect(result).toEqual(["prod"]);
@@ -804,7 +830,10 @@ describe("ExecutorService (__tests__)", () => {
     });
 
     it("filters by executorGroup when specified", async () => {
-      const taskWithGroup = { ...task, executorGroup: "production" } as unknown as Task;
+      const taskWithGroup = {
+        ...task,
+        executorGroup: "production",
+      } as unknown as Task;
       const wrongGroup = { ...executor, id: "e2", groupName: "staging" };
       const rightGroup = { ...executor, id: "e3", groupName: "production" };
       executorRepo.find.mockResolvedValue([wrongGroup, rightGroup]);
@@ -986,7 +1015,10 @@ describe("ExecutorService (__tests__)", () => {
       const qb = executorRepo.createQueryBuilder();
       qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: hash });
       executorRepo.createQueryBuilder.mockReturnValue(qb);
-      const result = await service.validateTokenByAddress("host:3002", rawToken);
+      const result = await service.validateTokenByAddress(
+        "host:3002",
+        rawToken,
+      );
       expect(result).toBe(true);
     });
 
@@ -995,7 +1027,10 @@ describe("ExecutorService (__tests__)", () => {
       qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: null });
       executorRepo.createQueryBuilder.mockReturnValue(qb);
       configService.get.mockReturnValue("shared-secret");
-      const result = await service.validateTokenByAddress("host:3002", "shared-secret");
+      const result = await service.validateTokenByAddress(
+        "host:3002",
+        "shared-secret",
+      );
       expect(result).toBe(true);
     });
 
@@ -1042,7 +1077,12 @@ describe("ExecutorService (__tests__)", () => {
       };
       executorRepo.findOne.mockResolvedValue(executor);
       const qb = execRepo.createQueryBuilder();
-      qb.getRawOne.mockResolvedValue({ total: '100', successful: '95', failed: '5', avgDuration: '1200' });
+      qb.getRawOne.mockResolvedValue({
+        total: "100",
+        successful: "95",
+        failed: "5",
+        avgDuration: "1200",
+      });
       execRepo.createQueryBuilder.mockReturnValue(qb);
       const result = await service.getExecutorMetrics("e1");
       expect(result.sevenDayStats.totalExecutions).toBe(100);
@@ -1064,10 +1104,12 @@ describe("ExecutorService (__tests__)", () => {
   describe("markStaleOffline", () => {
     it("marks heartbeat-timeout executors as OFFLINE", async () => {
       configService.get
-        .mockReturnValueOnce(30000)  // heartbeatInterval
-        .mockReturnValueOnce(3);     // timeoutMultiplier
+        .mockReturnValueOnce(30000) // heartbeatInterval
+        .mockReturnValueOnce(3); // timeoutMultiplier
       // find() must return stale executors so the early-return guard is skipped
-      executorRepo.find.mockResolvedValue([{ id: "exec-1", appName: "app", address: "http://host" }]);
+      executorRepo.find.mockResolvedValue([
+        { id: "exec-1", appName: "app", address: "http://host" },
+      ]);
       executorRepo.update.mockResolvedValue({ affected: 1 });
       await service.markStaleOffline();
       expect(executorRepo.update).toHaveBeenCalledWith(
@@ -1125,6 +1167,20 @@ describe("ExecutorService (__tests__)", () => {
     it("no longer emits the legacy npx autoflow-executor command", () => {
       const result = service.getInstallCmd();
       expect(result.cmd).not.toContain("npx autoflow-executor");
+    });
+
+    // R7 真机遗留观察①：此前 ADMIN_API_URL 未配置时会生成
+    // "curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''"
+    // 这种裸机不可用的命令，现改为显式 503。
+    it("throws ServiceUnavailableException when ADMIN_API_URL is not configured", () => {
+      (configService.get as jest.Mock).mockReturnValueOnce(undefined);
+      expect(() => service.getInstallCmd()).toThrow(
+        ServiceUnavailableException,
+      );
+      (configService.get as jest.Mock).mockReturnValueOnce("");
+      expect(() => service.getInstallCmd()).toThrow(
+        /ADMIN_API_URL is not configured/,
+      );
     });
   });
 });
