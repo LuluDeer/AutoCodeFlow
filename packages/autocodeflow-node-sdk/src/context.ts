@@ -11,10 +11,17 @@ import { TaskLogger } from './logger';
  * - convenience `success()` / `failure()` result builders
  */
 export class TaskContext {
-  /** Structured logger whose entries are included in the final result. */
+  /**
+   * Structured logger whose entries are included in the final result. */
   readonly logger: TaskLogger;
 
-  /** HTTP client pre-configured for the Admin API. */
+  /**
+   * HTTP client for the Admin API. N23: the executor intentionally does
+   * not inject ADMIN_API_URL / EXECUTOR_TOKEN into task subprocesses
+   * (SEC-01), so on a real executor this client is *disabled* — calling
+   * any request method throws a clear error instead of silently failing.
+   * Check `ctx.http.enabled` before using it.
+   */
   readonly http: HttpClient;
 
   /** The resolved environment for this execution. */
@@ -31,24 +38,25 @@ export class TaskContext {
   /**
    * Build a `TaskContext` from `process.env`.
    *
-   * Expected variables:
+   * Required (injected by executor-node):
    * - `EXECUTION_ID`
    * - `TASK_ID`
    * - `TASK_NAME`
+   *
+   * Optional (NOT injected by the executor — SEC-01 keeps Admin API
+   * credentials out of task subprocesses; supply them only when the
+   * process really has them):
    * - `ADMIN_API_URL`
    * - `EXECUTOR_TOKEN`
-   * - `TRACE_ID` (optional)
+   * - `TRACE_ID`
+   *
+   * When the optional credentials are absent, construction still succeeds
+   * and `this.http` is an explicitly disabled `HttpClient` (N23).
    *
    * @throws {Error} if any required variable is missing.
    */
   static fromEnv(): TaskContext {
-    const required = [
-      'EXECUTION_ID',
-      'TASK_ID',
-      'TASK_NAME',
-      'ADMIN_API_URL',
-      'EXECUTOR_TOKEN',
-    ] as const;
+    const required = ['EXECUTION_ID', 'TASK_ID', 'TASK_NAME'] as const;
 
     for (const key of required) {
       if (!process.env[key]) {
@@ -62,8 +70,8 @@ export class TaskContext {
       executionId: process.env['EXECUTION_ID']!,
       taskId: process.env['TASK_ID']!,
       taskName: process.env['TASK_NAME']!,
-      adminApiUrl: process.env['ADMIN_API_URL']!,
-      executorToken: process.env['EXECUTOR_TOKEN']!,
+      adminApiUrl: process.env['ADMIN_API_URL'],
+      executorToken: process.env['EXECUTOR_TOKEN'],
       traceId: process.env['TRACE_ID'],
     };
 

@@ -121,4 +121,44 @@ describe('HttpClient', () => {
       expect(result).toEqual({ deleted: true });
     });
   });
+
+  // N23: clients built without Admin API credentials are explicitly disabled.
+  describe('disabled client (N23)', () => {
+    it('forAdminApi without credentials is disabled and creates no axios instance', () => {
+      const client = HttpClient.forAdminApi({
+        executionId: 'e',
+        taskId: 't',
+        taskName: 'n',
+      });
+      expect(client.enabled).toBe(false);
+      expect(client.disabledReason).toMatch(/ADMIN_API_URL/);
+      expect(mockedAxios.create).not.toHaveBeenCalled();
+    });
+
+    it('every request method rejects with a clear error when disabled', async () => {
+      const client = HttpClient.forAdminApi({
+        executionId: 'e',
+        taskId: 't',
+        taskName: 'n',
+        adminApiUrl: BASE_URL, // token missing
+      });
+      expect(client.enabled).toBe(false);
+      await expect(client.get('/x')).rejects.toThrow(/HttpClient is disabled/);
+      await expect(client.post('/x', {})).rejects.toThrow(/HttpClient is disabled/);
+      await expect(client.put('/x', {})).rejects.toThrow(/HttpClient is disabled/);
+      await expect(client.delete('/x')).rejects.toThrow(/HttpClient is disabled/);
+    });
+
+    it('forAdminApi with full credentials is enabled', () => {
+      const client = HttpClient.forAdminApi({
+        executionId: 'e',
+        taskId: 't',
+        taskName: 'n',
+        adminApiUrl: BASE_URL,
+        executorToken: TOKEN,
+      });
+      expect(client.enabled).toBe(true);
+      expect(mockedAxios.create).toHaveBeenCalledWith({ baseURL: BASE_URL });
+    });
+  });
 });

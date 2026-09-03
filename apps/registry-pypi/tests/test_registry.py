@@ -186,3 +186,119 @@ class TestNormalize:
         assert normalize("my_pkg") == "my-pkg"
         assert normalize("my.pkg") == "my-pkg"
         assert normalize("my---pkg") == "my-pkg"
+
+
+class TestHashSidecar:
+    """N18: index-page sha256 anchors come from upload-time sidecars."""
+
+    def test_upload_writes_sidecar(self, client, tmp_packages_dir):
+        import hashlib
+        payload = b"sidecar wheel bytes"
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "sc-pkg", "version": "1.0.0"},
+                           files={"content": ("sc-pkg-1.0.0.whl", payload, "application/octet-stream")})
+        assert resp.status_code == 200
+        sidecar = tmp_packages_dir / "sc-pkg" / "sc-pkg-1.0.0.whl.sha256"
+        assert sidecar.is_file()
+        assert sidecar.read_text().strip() == hashlib.sha256(payload).hexdigest()
+
+    def test_index_anchor_matches_sidecar(self, client, tmp_packages_dir):
+        import hashlib
+        payload = b"anchor bytes"
+        client.post("/", auth=AUTH,
+                    data={"name": "sc-pkg", "version": "1.0.0"},
+                    files={"content": ("sc-pkg-1.0.0.whl", payload, "application/octet-stream")})
+        resp = client.get("/simple/sc-pkg/", auth=AUTH)
+        assert resp.status_code == 200
+        assert f"#sha256={hashlib.sha256(payload).hexdigest()}" in resp.text
+
+    def test_index_reads_sidecar_not_file(self, client, tmp_packages_dir):
+        """Out-of-band file mutation must not change the advertised hash:
+        proof the index serves the sidecar value, never re-hashes the file."""
+        import hashlib
+        payload = b"original bytes"
+        client.post("/", auth=AUTH,
+                    data={"name": "sc-pkg", "version": "1.0.0"},
+                    files={"content": ("sc-pkg-1.0.0.whl", payload, "application/octet-stream")})
+        artifact = tmp_packages_dir / "sc-pkg" / "sc-pkg-1.0.0.whl"
+        artifact.write_bytes(b"tampered out-of-band")
+        resp = client.get("/simple/sc-pkg/", auth=AUTH)
+        assert f"#sha256={hashlib.sha256(payload).hexdigest()}" in resp.text
+        assert f"#sha256={hashlib.sha256(b'tampered out-of-band').hexdigest()}" not in resp.text
+
+    def test_sidecar_not_listed_in_index(self, client):
+        client.post("/", auth=AUTH,
+                    data={"name": "sc-pkg", "version": "1.0.0"},
+                    files={"content": ("sc-pkg-1.0.0.whl", b"x", "application/octet-stream")})
+        resp = client.get("/simple/sc-pkg/", auth=AUTH)
+        assert ".sha256" not in resp.text.replace("#sha256=", "")
+        assert "sc-pkg-1.0.0.whl.sha256" not in resp.text
+
+    def test_missing_sidecar_backfilled_lazily(self, client, tmp_packages_dir):
+        """Legacy artifacts without a sidecar still get a correct hash, and
+        the sidecar is written on first index access."""
+        import hashlib
+        pkg = tmp_packages_dir / "legacy"
+        pkg.mkdir(parents=True)
+        payload = b"legacy wheel content"
+        (pkg / "legacy-1.0.0.whl").write_bytes(payload)
+        assert not (pkg / "legacy-1.0.0.whl.sha256").exists()
+
+        resp = client.get("/simple/legacy/", auth=AUTH)
+        assert resp.status_code == 200
+        assert f"#sha256={hashlib.sha256(payload).hexdigest()}" in resp.text
+        sidecar = pkg / "legacy-1.0.0.whl.sha256"
+        assert sidecar.is_file()
+        assert sidecar.read_text().strip() == hashlib.sha256(payload).hexdigest()
+
+
+class TestUploadDedup:
+    """N21: duplicate (name, filename) uploads are hash-checked, never silently overwritten."""
+
+    def test_reupload_same_content_is_idempotent_200(self, client, tmp_packages_dir):
+        payload = b"retry me"
+        for _ in range(2):
+            resp = client.post("/", auth=AUTH,
+                               data={"name": "dup-pkg", "version": "1.0.0"},
+                               files={"content": ("dup-pkg-1.0.0.whl", payload, "application/octet-stream")})
+            assert resp.status_code == 200
+        artifact = tmp_packages_dir / "dup-pkg" / "dup-pkg-1.0.0.whl"
+        assert artifact.read_bytes() == payload
+
+    def test_reupload_different_content_rejected_409(self, client, tmp_packages_dir):
+        original = b"published artifact"
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "dup-pkg", "version": "1.0.0"},
+                           files={"content": ("dup-pkg-1.0.0.whl", original, "application/octet-stream")})
+        assert resp.status_code == 200
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "dup-pkg", "version": "1.0.0"},
+                           files={"content": ("dup-pkg-1.0.0.whl", b"evil replacement", "application/octet-stream")})
+        assert resp.status_code == 409
+        assert "sha256" in resp.json()["detail"]
+        # Original artifact and its sidecar must be untouched
+        artifact = tmp_packages_dir / "dup-pkg" / "dup-pkg-1.0.0.whl"
+        assert artifact.read_bytes() == original
+        assert artifact.with_name(artifact.name + ".sha256").read_text().strip() == \
+            __import__("hashlib").sha256(original).hexdigest()
+
+    def test_failed_reupload_leaves_no_temp_files(self, client, tmp_packages_dir):
+        client.post("/", auth=AUTH,
+                    data={"name": "dup-pkg", "version": "1.0.0"},
+                    files={"content": ("dup-pkg-1.0.0.whl", b"v1", "application/octet-stream")})
+        client.post("/", auth=AUTH,
+                    data={"name": "dup-pkg", "version": "1.0.0"},
+                    files={"content": ("dup-pkg-1.0.0.whl", b"v2", "application/octet-stream")})
+        leftovers = [f.name for f in (tmp_packages_dir / "dup-pkg").iterdir()
+                     if f.name.endswith(".upload")]
+        assert leftovers == []
+
+    def test_alt_endpoint_shares_dedup(self, client):
+        resp = client.post("/upload", auth=AUTH,
+                           data={"name": "dup-pkg", "version": "1.0.0"},
+                           files={"content": ("dup-pkg-1.0.0.whl", b"same", "application/octet-stream")})
+        assert resp.status_code == 200
+        resp = client.post("/upload", auth=AUTH,
+                           data={"name": "dup-pkg", "version": "1.0.0"},
+                           files={"content": ("dup-pkg-1.0.0.whl", b"changed", "application/octet-stream")})
+        assert resp.status_code == 409

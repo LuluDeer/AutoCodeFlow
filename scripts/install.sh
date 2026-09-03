@@ -113,25 +113,20 @@ echo "      git: $(git --version)"
 echo "[2/6] 创建安装目录..."
 mkdir -p "$INSTALL_DIR" "$WORK_DIR"
 
-# ── 下载执行器代码 ─────────────────────────────────────────────────────────────
-echo "[3/6] 下载执行器..."
-# 优先从 admin-api 静态资源下载，fallback 到 git clone
-EXECUTOR_PKG_URL="${ADMIN_API_URL}/static/executor-node.tar.gz"
-if curl -fsSL --max-time 30 "$EXECUTOR_PKG_URL" -o /tmp/executor-node.tar.gz 2>/dev/null; then
-  echo "      从 admin-api 下载安装包..."
-  tar -xzf /tmp/executor-node.tar.gz -C "$INSTALL_DIR" --strip-components=1
-  rm /tmp/executor-node.tar.gz
+# ── 安装执行器代码 ────────────────────────────────────────────────────────────
+echo "[3/6] 安装执行器..."
+# N24: 旧版此处从 ${ADMIN_API_URL}/static/executor-node.tar.gz 下载，但后端
+# 从未承载该静态资源（永远 404 落入本地兜底，形成假承诺）。已删除远程下载
+# 分支：本脚本只在项目 checkout 内可用；裸机安装需先经 executor-packages
+# API 获取构件。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXECUTOR_SRC="$(dirname "$SCRIPT_DIR")/apps/executor-node"
+if [[ -d "$EXECUTOR_SRC" ]]; then
+  echo "      从项目目录复制（本地安装）..."
+  cp -r "$EXECUTOR_SRC/"* "$INSTALL_DIR/"
 else
-  echo "      安装包不可用，从项目目录复制（本地安装）..."
-  # 本地开发环境：从当前目录查找
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  EXECUTOR_SRC="$(dirname "$SCRIPT_DIR")/apps/executor-node"
-  if [[ -d "$EXECUTOR_SRC" ]]; then
-    cp -r "$EXECUTOR_SRC/"* "$INSTALL_DIR/"
-  else
-    echo "      无法找到执行器源码，请检查路径"
-    exit 1
-  fi
+  echo "      executor-node artifact not bundled in this script; obtain the artifact via executor-packages API or run from a project checkout"
+  exit 1
 fi
 
 # ── 安装 npm 依赖 ──────────────────────────────────────────────────────────────
