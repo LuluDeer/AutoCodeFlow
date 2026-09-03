@@ -12,6 +12,10 @@ import { appendLog } from '../file-logger';
 import { taskWorkerManager } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
+import {
+  createExecutionCallbackToken,
+  CALLBACK_TOKEN_GRACE_SECONDS,
+} from '../execution-callback-token';
 
 /** Convert git URL to a safe cache directory name */
 function repoDirName(repoUrl: string): string {
@@ -330,6 +334,35 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     for (const [k, v] of Object.entries(params)) {
       env[`AUTOFLOW_${k.toUpperCase()}`] = String(v);
     }
+  }
+
+  // N23: per-execution callback credentials — injected AFTER the params loop
+  // so user params can never override them. The token is an HMAC bound to
+  // this executionId with a short TTL (task timeout + grace), derived from
+  // the executor shared secret; it lets task code call
+  // POST /api/executions/callback without ever seeing the shared token
+  // (SEC-01 whitelist untouched — this is the explicit extra channel).
+  // AUTOFLOW_ADMIN_API_URL is non-secret routing info, same value the
+  // executor itself uses to reach admin-api.
+  const callbackToken = createExecutionCallbackToken(
+    executionId,
+    timeout + CALLBACK_TOKEN_GRACE_SECONDS,
+  );
+  if (callbackToken) {
+    env['AUTOFLOW_CALLBACK_TOKEN'] = callbackToken;
+  }
+  const adminApiUrl = config.adminApiUrlInternal || config.adminApiUrl;
+  if (adminApiUrl) {
+    env['AUTOFLOW_ADMIN_API_URL'] = adminApiUrl;
+  }
+  // N27: the address this executor registered itself with (same value
+  // main.ts sends to /api/executors/register). Non-secret routing info —
+  // the per-execution callback path requires every callback item to carry
+  // executorAddress, and task code cannot know it any other way. Injected
+  // after the params loop so user params can never override it.
+  const registeredAddress = config.executorAddressPublic || config.executorAddress;
+  if (registeredAddress) {
+    env['AUTOFLOW_EXECUTOR_ADDRESS'] = registeredAddress;
   }
 
   let cmd: string;

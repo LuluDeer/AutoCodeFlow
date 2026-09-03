@@ -24,4 +24,14 @@ export const config = {
   npmRegistryUrl: process.env.NPM_REGISTRY_URL || '',  // Private npm registry for task dependencies
   pythonRegistryUrl: process.env.PYTHON_REGISTRY_URL || '',  // Private PyPI registry for task dependencies
   token: process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || (() => { const i = process.argv.indexOf('--token'); return i !== -1 ? process.argv[i + 1] || '' : ''; })(),
+  // N23: dedicated HMAC secret for per-execution callback tokens; when unset
+  // the shared token above is used as the HMAC source secret (admin-api
+  // resolves the same fallback). Never forwarded to child env via the
+  // whitelist — only the derived per-execution token is injected (execute.ts).
+  executionCallbackSecret: process.env.EXECUTION_CALLBACK_SECRET || '',
+  // N26 (round-8): the per-executor tokenHash admin-api returned at register
+  // time (see main.ts registerExecutor). Mutable runtime state, not env —
+  // used as the HMAC source secret when EXECUTION_CALLBACK_SECRET is unset,
+  // so per-node `--secret` deployments can verify task-side callbacks.
+  executorTokenHash: '',
 };

@@ -110,6 +110,13 @@ export default () => ({
       return t;
     })(),
   },
+  // N23: dedicated secret for per-execution callback tokens (HMAC key
+  // material). Optional: falls back to the executor shared token when
+  // unset — executor-node derives the same key from its own env, so both
+  // sides must agree on whichever source is active.
+  executionCallback: {
+    secret: process.env.EXECUTION_CALLBACK_SECRET || "",
+  },
   logStorage: {
     // 'db' keeps log lines in execution_log_lines (default);
     // 's3' stores one gzip object per execution (MinIO/S3) and only the

@@ -7,10 +7,19 @@ import { TaskEnv } from './types';
  * - automatically sets `X-Trace-Id` when a trace ID is available
  * - exposes typed `get / post / put / delete` helpers
  *
- * N23: the executor does not inject Admin API credentials into task
- * subprocesses (SEC-01). A client built without `baseURL`/`token` is
- * therefore *disabled*: construction succeeds, but any request method
- * throws a clear error explaining that callback capability is unavailable.
+ * N23: since the per-execution callback token landed, executor-node injects
+ * `AUTOFLOW_ADMIN_API_URL` + `AUTOFLOW_CALLBACK_TOKEN` into task
+ * subprocesses, so a client built via `TaskContext.fromEnv()` is normally
+ * *enabled* — but the token only authorizes callbacks for its own
+ * executionId and expires with the task. A client built without
+ * `baseURL`/`token` (old executor versions, dev executor without a secret)
+ * stays *disabled*: construction succeeds, but any request method throws a
+ * clear error explaining that callback capability is unavailable.
+ *
+ * N27: executor-node additionally injects `AUTOFLOW_EXECUTOR_ADDRESS` (the
+ * address it registered with). `post()` to `/api/executions/callback`
+ * auto-fills `executorAddress` on items that omit it, so task code never
+ * has to hardcode an address that changes with redeployment.
  */
 export class HttpClient {
   private readonly client?: AxiosInstance;
@@ -25,14 +34,23 @@ export class HttpClient {
     baseURL?: string,
     private readonly token?: string,
     private readonly traceId?: string,
+    /**
+     * N27: the executor address to stamp on callback items. Injected by
+     * executor-node as `AUTOFLOW_EXECUTOR_ADDRESS`; the per-execution
+     * callback path (`v1.` token) requires `executorAddress` on every
+     * item, and task code has no other reliable source for it.
+     */
+    private readonly executorAddress?: string,
   ) {
     this.enabled = Boolean(baseURL && token);
     if (!this.enabled) {
       this.disabledReason =
         'HttpClient is disabled: Admin API credentials are missing ' +
-        '(ADMIN_API_URL / EXECUTOR_TOKEN are not injected into task ' +
-        'subprocesses by the executor — see SEC-01). Provide them ' +
-        'explicitly via TaskContext.create() if callbacks are required.';
+        '(AUTOFLOW_ADMIN_API_URL / AUTOFLOW_CALLBACK_TOKEN — or the legacy ' +
+        'ADMIN_API_URL / EXECUTOR_TOKEN — were not present in the ' +
+        'environment; older executors never inject them, see SEC-01/N23). ' +
+        'Provide them explicitly via TaskContext.create() if callbacks ' +
+        'are required.';
       return;
     }
     this.client = axios.create({ baseURL });
@@ -56,10 +74,40 @@ export class HttpClient {
    * credentials are absent (see N23).
    */
   static forAdminApi(env: TaskEnv): HttpClient {
-    return new HttpClient(env.adminApiUrl, env.executorToken, env.traceId);
+    return new HttpClient(
+      env.adminApiUrl,
+      env.executorToken,
+      env.traceId,
+      env.executorAddress,
+    );
   }
 
   // ------------------------------------------------------------------ methods
+
+  /**
+   * N27: the Admin API's per-execution callback path requires
+   * `executorAddress` on every item. When this client knows the executor
+   * address (injected `AUTOFLOW_EXECUTOR_ADDRESS`), items that omit it are
+   * stamped with it automatically; explicitly provided values are never
+   * overwritten. Requests to other endpoints pass through untouched.
+   */
+  private withExecutorAddress(url: string, data?: unknown): unknown {
+    if (!this.executorAddress || !/\/executions\/callback\/?$/.test(url)) {
+      return data;
+    }
+    if (!Array.isArray(data)) return data;
+    return data.map((item) => {
+      if (
+        item &&
+        typeof item === 'object' &&
+        !Array.isArray(item) &&
+        !(item as { executorAddress?: unknown }).executorAddress
+      ) {
+        return { ...(item as object), executorAddress: this.executorAddress };
+      }
+      return item;
+    });
+  }
 
   /** Throws a descriptive error when the client lacks Admin API credentials. */
   private requireEnabled(): AxiosInstance {
@@ -84,7 +132,7 @@ export class HttpClient {
   ): Promise<T> {
     const response: AxiosResponse<T> = await this.requireEnabled().post<T>(
       url,
-      data,
+      this.withExecutorAddress(url, data),
       config,
     );
     return response.data;

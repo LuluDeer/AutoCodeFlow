@@ -16,11 +16,16 @@ export class TaskContext {
   readonly logger: TaskLogger;
 
   /**
-   * HTTP client for the Admin API. N23: the executor intentionally does
-   * not inject ADMIN_API_URL / EXECUTOR_TOKEN into task subprocesses
-   * (SEC-01), so on a real executor this client is *disabled* — calling
-   * any request method throws a clear error instead of silently failing.
-   * Check `ctx.http.enabled` before using it.
+   * HTTP client for the Admin API.
+   *
+   * N23: on a real executor the task subprocess receives a per-execution
+   * one-shot callback credential (`AUTOFLOW_CALLBACK_TOKEN`, an HMAC token
+   * bound to this executionId with a short TTL) plus the non-secret
+   * `AUTOFLOW_ADMIN_API_URL`, so `ctx.http` is ENABLED out of the box and
+   * may only call back for this execution. The executor shared token is
+   * deliberately never injected (SEC-01). On older executors (or when no
+   * secret is configured) the credentials are absent and the client is
+   * *disabled* — check `ctx.http.enabled` before using it.
    */
   readonly http: HttpClient;
 
@@ -43,15 +48,23 @@ export class TaskContext {
    * - `TASK_ID`
    * - `TASK_NAME`
    *
-   * Optional (NOT injected by the executor — SEC-01 keeps Admin API
-   * credentials out of task subprocesses; supply them only when the
-   * process really has them):
+   * Callback credentials (injected by executor-node since N23):
+   * - `AUTOFLOW_ADMIN_API_URL` — Admin API base URL (non-secret routing info)
+   * - `AUTOFLOW_CALLBACK_TOKEN` — per-execution one-shot `v1.` HMAC token,
+   *   valid only for this executionId and until its TTL expires
+   * - `AUTOFLOW_EXECUTOR_ADDRESS` — (since N27) the address this executor
+   *   registered with; required on every callback item and auto-filled by
+   *   `ctx.http` on `/api/executions/callback` requests
+   *
+   * Legacy / manual overrides (take precedence when set, e.g. tests or
+   * self-hosted setups that provide a full shared token):
    * - `ADMIN_API_URL`
    * - `EXECUTOR_TOKEN`
    * - `TRACE_ID`
    *
-   * When the optional credentials are absent, construction still succeeds
-   * and `this.http` is an explicitly disabled `HttpClient` (N23).
+   * When no credentials are present at all (old executor versions, dev
+   * executor without a configured secret), construction still succeeds and
+   * `this.http` is an explicitly disabled `HttpClient` (N23).
    *
    * @throws {Error} if any required variable is missing.
    */
@@ -70,8 +83,13 @@ export class TaskContext {
       executionId: process.env['EXECUTION_ID']!,
       taskId: process.env['TASK_ID']!,
       taskName: process.env['TASK_NAME']!,
-      adminApiUrl: process.env['ADMIN_API_URL'],
-      executorToken: process.env['EXECUTOR_TOKEN'],
+      // Legacy explicit vars win over the executor-injected AUTOFLOW_* pair.
+      adminApiUrl:
+        process.env['ADMIN_API_URL'] || process.env['AUTOFLOW_ADMIN_API_URL'],
+      executorToken:
+        process.env['EXECUTOR_TOKEN'] || process.env['AUTOFLOW_CALLBACK_TOKEN'],
+      // N27: non-secret routing info injected by executor-node.
+      executorAddress: process.env['AUTOFLOW_EXECUTOR_ADDRESS'],
       traceId: process.env['TRACE_ID'],
     };
 
@@ -133,5 +151,15 @@ export class TaskContext {
   /** Shorthand for `this.env.taskName`. */
   get taskName(): string {
     return this.env.taskName;
+  }
+
+  /**
+   * Shorthand for `this.env.executorAddress` — the address of the executor
+   * running this task (N27, injected as `AUTOFLOW_EXECUTOR_ADDRESS`).
+   * `undefined` on older executors; `ctx.http` only auto-fills callback
+   * items when it is present.
+   */
+  get executorAddress(): string | undefined {
+    return this.env.executorAddress;
   }
 }
