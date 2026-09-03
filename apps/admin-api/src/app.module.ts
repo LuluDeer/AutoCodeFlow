@@ -69,6 +69,9 @@ import { RegistryModule } from "./modules/registry/registry.module";
         // Executor
         EXECUTOR_SECRET: Joi.string().min(16).required(),
         EXECUTOR_SHARED_TOKEN: Joi.string().min(16).optional(),
+        // N23: optional dedicated HMAC secret for per-execution callback
+        // tokens; falls back to the executor shared token when unset.
+        EXECUTION_CALLBACK_SECRET: Joi.string().min(16).optional(),
 
         // CORS — ARCH-001: explicit origin whitelist (comma separated).
         // Empty in development = only http://localhost:* / http://127.0.0.1:*

@@ -14,6 +14,11 @@ import { Public } from "../../common/decorators/public.decorator";
 import { TaskService } from "./task.service";
 import { SystemConfigService } from "../config/config.service";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
+import {
+  EXECUTION_CALLBACK_TOKEN_PREFIX,
+  verifyExecutionCallbackToken,
+  ExecutionCallbackTokenClaims,
+} from "./execution-callback-token.util";
 import { CallbackItemDto } from "./dto/execution-callback.dto";
 import { ExecutorService } from "../executor/executor.service";
 
@@ -43,7 +48,8 @@ export class ExecutionCallbackController {
   @ApiOperation({
     summary: "Execution result callback",
     description:
-      "Called by executor after task completion to report results. Requires shared token authentication.",
+      "Called by executor (or task code holding a per-execution AUTOFLOW_CALLBACK_TOKEN) after task completion to report results. " +
+      "Accepts either the executor shared/per-address token or a per-execution `v1.` HMAC token bound to the batch's executionId (N23).",
   })
   @ApiResponse({
     status: 200,
@@ -81,6 +87,19 @@ export class ExecutionCallbackController {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
     if (!token) {
       throw new UnauthorizedException("Missing executor token");
+    }
+
+    // N23: per-execution callback token — minted by executor-node (HMAC
+    // over executionId + expiry, keyed by the executor shared secret) and
+    // injected into task subprocesses as AUTOFLOW_CALLBACK_TOKEN. It is a
+    // one-shot authorization for EXACTLY one executionId, so task code can
+    // call back without ever holding the shared token (SEC-01 preserved).
+    // Any other bearer string keeps flowing down the legacy per-address /
+    // shared-token path unchanged (backward compatibility).
+    if (token.startsWith(EXECUTION_CALLBACK_TOKEN_PREFIX)) {
+      await this.verifyPerExecutionCallbackToken(token, callbacks);
+      const results = await this.taskService.handleCallback(callbacks);
+      return { results };
     }
 
     // TASK-001: per-item per-address token check — a single shared token
@@ -123,5 +142,92 @@ export class ExecutionCallbackController {
     }
     const results = await this.taskService.handleCallback(callbacks);
     return { results };
+  }
+
+  /**
+   * N23: validate a `v1.` per-execution callback token.
+   *
+   * Rules (all fail-closed with 401):
+   * - signature + TTL must verify against one of the candidate secrets
+   *   (EXECUTION_CALLBACK_SECRET → DB executor.sharedToken → env
+   *   executor.sharedToken, mirroring verifyExecutorToken's sources);
+   * - N26 (round-8): when every fleet-global candidate fails, fall back to
+   *   the PER-EXECUTOR credential — for each unique executorAddress in the
+   *   batch, the executor's stored tokenHash (the same value the executor
+   *   received at register time and uses as its HMAC source secret) is
+   *   tried as the key. Lookups ride ExecutorService's 60s positive cache,
+   *   mirroring the per-address token-validation pattern;
+   * - every callback item's executionId must equal the executionId the
+   *   token is bound to — a token authorizes its own execution only;
+   * - N27 (round-8): items no longer need to carry executorAddress — the
+   *   token is already execution-bound and the service layer
+   *   (task.service.handleCallback) still compares any provided address
+   *   against the execution row, so requiring it here only broke task code
+   *   that cannot know the address.
+   */
+  private async verifyPerExecutionCallbackToken(
+    token: string,
+    callbacks: CallbackItemDto[],
+  ): Promise<ExecutionCallbackTokenClaims> {
+    const secrets = await this.resolveCallbackSecrets();
+    let claims = verifyExecutionCallbackToken(token, secrets);
+    if (!claims) {
+      claims = await this.verifyAgainstPerExecutorSecrets(token, callbacks);
+    }
+    if (!claims) {
+      throw new UnauthorizedException(
+        "Invalid or expired execution callback token",
+      );
+    }
+    for (const item of callbacks) {
+      if (item.executionId !== claims.executionId) {
+        throw new UnauthorizedException(
+          "Execution callback token is not valid for this execution",
+        );
+      }
+    }
+    return claims;
+  }
+
+  /**
+   * N26: per-executor HMAC fallback. A node installed with its own
+   * `--secret` signs AUTOFLOW_CALLBACK_TOKEN with the credential it
+   * received at register time (the stored tokenHash), which is not one of
+   * the fleet-global candidates. Try each unique batch address' tokenHash
+   * as the key; first structural match wins. Unknown addresses / missing
+   * hashes are skipped (fail-closed overall).
+   */
+  private async verifyAgainstPerExecutorSecrets(
+    token: string,
+    callbacks: CallbackItemDto[],
+  ): Promise<ExecutionCallbackTokenClaims | null> {
+    const seen = new Set<string>();
+    for (const item of callbacks) {
+      const addr = item.executorAddress?.trim();
+      if (!addr || seen.has(addr)) continue;
+      seen.add(addr);
+      const secret =
+        await this.executorService.getCallbackSecretByAddress(addr);
+      if (!secret) continue;
+      const claims = verifyExecutionCallbackToken(token, [secret]);
+      if (claims) return claims;
+    }
+    return null;
+  }
+
+  /** Candidate HMAC secrets, most-specific first; empty entries dropped. */
+  private async resolveCallbackSecrets(): Promise<string[]> {
+    const candidates: (string | undefined | null)[] = [
+      this.configService.get<string>("executionCallback.secret"),
+      this.configService.get<string>("executor.sharedToken"),
+    ];
+    try {
+      const cfg = await this.systemConfigService.findOne("executor.sharedToken");
+      // DB-rotated token slots in ahead of the env fallback.
+      candidates.splice(1, 0, cfg?.value ?? null);
+    } catch {
+      // key not found in DB — env candidates remain
+    }
+    return candidates.filter((s): s is string => Boolean(s));
   }
 }

@@ -7,6 +7,7 @@ import { SystemConfigService } from "../../config/config.service";
 import { CallbackItemDto } from "../dto/execution-callback.dto";
 import { ExecutorService } from "../../executor/executor.service";
 import { ExecutionFailureReason } from "../entities/task-execution.entity";
+import { signExecutionCallbackToken } from "../execution-callback-token.util";
 
 const EXEC_UUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
 const VALID_TOKEN = "test-shared-secret";
@@ -27,7 +28,10 @@ describe("ExecutionCallbackController", () => {
   let taskService: { handleCallback: jest.Mock };
   let configService: { get: jest.Mock };
   let systemConfigService: { findOne: jest.Mock };
-  let executorService: { validateTokenByAddress: jest.Mock };
+  let executorService: {
+    validateTokenByAddress: jest.Mock;
+    getCallbackSecretByAddress: jest.Mock;
+  };
 
   beforeEach(async () => {
     taskService = {
@@ -47,6 +51,8 @@ describe("ExecutionCallbackController", () => {
     };
     executorService = {
       validateTokenByAddress: jest.fn().mockResolvedValue(true),
+      // N26: per-executor tokenHash candidate — default "unknown address".
+      getCallbackSecretByAddress: jest.fn().mockResolvedValue(null),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -205,6 +211,203 @@ describe("ExecutionCallbackController", () => {
       });
       await controller.callback("Bearer dynamic-token", [item]);
       expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+    });
+  });
+
+  // N23: per-execution callback tokens (AUTOFLOW_CALLBACK_TOKEN injected by
+  // executor-node) — HMAC `v1.` tokens bound to a single executionId.
+  describe("POST /executions/callback — per-execution token (N23)", () => {
+    const nowSec = () => Math.floor(Date.now() / 1000);
+    const sign = (execId: string, exp: number, secret = VALID_TOKEN) =>
+      signExecutionCallbackToken(secret, execId, exp);
+
+    it("accepts a valid token bound to the batch's executionId", async () => {
+      const token = sign(EXEC_UUID, nowSec() + 60);
+      const item = makeCallbackItem();
+      const result = await controller.callback(`Bearer ${token}`, [item]);
+      expect(result.results).toBeDefined();
+      expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+      // Per-execution tokens bypass the per-address shared-token dance.
+      expect(executorService.validateTokenByAddress).not.toHaveBeenCalled();
+    });
+
+    it("accepts a token derived from the dedicated EXECUTION_CALLBACK_SECRET", async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === "app.nodeEnv") return "test";
+        if (key === "executionCallback.secret") return "dedicated-hmac-secret";
+        if (key === "executor.sharedToken") return VALID_TOKEN;
+        return undefined;
+      });
+      const token = sign(EXEC_UUID, nowSec() + 60, "dedicated-hmac-secret");
+      await expect(
+        controller.callback(`Bearer ${token}`, [makeCallbackItem()]),
+      ).resolves.toBeDefined();
+    });
+
+    it("rejects a token whose executionId does not match a batch item", async () => {
+      const token = sign("11111111-1111-4111-8111-111111111111", nowSec() + 60);
+      await expect(
+        controller.callback(`Bearer ${token}`, [makeCallbackItem()]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(taskService.handleCallback).not.toHaveBeenCalled();
+    });
+
+    it("rejects a batch mixing the bound execution with a foreign one", async () => {
+      const token = sign(EXEC_UUID, nowSec() + 60);
+      await expect(
+        controller.callback(`Bearer ${token}`, [
+          makeCallbackItem(),
+          makeCallbackItem({
+            executionId: "6b4adba5-a2f8-4fe7-bf4f-5277d0d7f2b7",
+          }),
+        ]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(taskService.handleCallback).not.toHaveBeenCalled();
+    });
+
+    it("rejects an expired token", async () => {
+      const token = sign(EXEC_UUID, nowSec() - 1);
+      await expect(
+        controller.callback(`Bearer ${token}`, [makeCallbackItem()]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(taskService.handleCallback).not.toHaveBeenCalled();
+    });
+
+    it("rejects a forged token (signed with the wrong secret)", async () => {
+      const token = sign(EXEC_UUID, nowSec() + 60, "attacker-secret");
+      await expect(
+        controller.callback(`Bearer ${token}`, [makeCallbackItem()]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(taskService.handleCallback).not.toHaveBeenCalled();
+    });
+
+    it("rejects a validly-signed token when no secret is configured (fail closed)", async () => {
+      const token = sign(EXEC_UUID, nowSec() + 60, "some-secret");
+      configService.get.mockImplementation((key: string) => {
+        if (key === "app.nodeEnv") return "test";
+        return undefined;
+      });
+      await expect(
+        controller.callback(`Bearer ${token}`, [makeCallbackItem()]),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(taskService.handleCallback).not.toHaveBeenCalled();
+    });
+
+    // N27 (round-8, 方案2): the per-execution branch no longer requires
+    // executorAddress — the token is execution-bound and handleCallback
+    // still compares any provided address against the execution row.
+    it("accepts items without executorAddress (N27: no longer mandatory on the token path)", async () => {
+      const token = sign(EXEC_UUID, nowSec() + 60);
+      const item = makeCallbackItem();
+      item.executorAddress = undefined;
+      const result = await controller.callback(`Bearer ${token}`, [item]);
+      expect(result.results).toBeDefined();
+      expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+    });
+
+    it("legacy shared-token path is untouched for non-v1 tokens", async () => {
+      // Regression guard: a plain bearer string keeps flowing through the
+      // per-address check + shared-token fallback exactly as before.
+      const item = makeCallbackItem();
+      await controller.callback(`Bearer ${VALID_TOKEN}`, [item]);
+      expect(executorService.validateTokenByAddress).toHaveBeenCalled();
+      expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+    });
+
+    // N26 (round-8, 方案A): when every fleet-global candidate fails, the
+    // per-executor tokenHash (adopted by the executor at register time)
+    // is tried as the HMAC key, per unique batch address.
+    describe("per-executor tokenHash fallback (N26)", () => {
+      const EXECUTOR_HASH = "$2b$12$perexecutorhashvalue";
+
+      it("accepts a token signed with the per-executor tokenHash when global candidates miss", async () => {
+        // No fleet-global secret configured at all.
+        configService.get.mockImplementation((key: string) => {
+          if (key === "app.nodeEnv") return "test";
+          return undefined;
+        });
+        executorService.getCallbackSecretByAddress.mockResolvedValue(
+          EXECUTOR_HASH,
+        );
+        const token = sign(EXEC_UUID, nowSec() + 60, EXECUTOR_HASH);
+        const item = makeCallbackItem();
+        const result = await controller.callback(`Bearer ${token}`, [item]);
+        expect(result.results).toBeDefined();
+        expect(executorService.getCallbackSecretByAddress).toHaveBeenCalledWith(
+          "executor-python:8001",
+        );
+        expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+      });
+
+      it("does not consult per-executor secrets when a global candidate verifies", async () => {
+        const token = sign(EXEC_UUID, nowSec() + 60); // global VALID_TOKEN
+        await controller.callback(`Bearer ${token}`, [makeCallbackItem()]);
+        expect(executorService.getCallbackSecretByAddress).not.toHaveBeenCalled();
+      });
+
+      it("interleaved: global secret configured but token signed per-executor still verifies", async () => {
+        // Global shared token IS configured (VALID_TOKEN) but the node
+        // signed with its own hash — global candidates must fail over to
+        // the per-executor one.
+        executorService.getCallbackSecretByAddress.mockResolvedValue(
+          EXECUTOR_HASH,
+        );
+        const token = sign(EXEC_UUID, nowSec() + 60, EXECUTOR_HASH);
+        await expect(
+          controller.callback(`Bearer ${token}`, [makeCallbackItem()]),
+        ).resolves.toBeDefined();
+      });
+
+      it("multi-address batch: tries each unique address once, accepts on first match", async () => {
+        executorService.getCallbackSecretByAddress.mockImplementation(
+          async (addr: string) => (addr === "executor-b:8001" ? EXECUTOR_HASH : null),
+        );
+        const token = sign(EXEC_UUID, nowSec() + 60, EXECUTOR_HASH);
+        await expect(
+          controller.callback(`Bearer ${token}`, [
+            makeCallbackItem({ executorAddress: "executor-a:8001" }),
+            makeCallbackItem({ executorAddress: "executor-a:8001" }),
+            makeCallbackItem({ executorAddress: "executor-b:8001" }),
+          ]),
+        ).resolves.toBeDefined();
+        expect(
+          executorService.getCallbackSecretByAddress.mock.calls.map(
+            (c) => c[0],
+          ),
+        ).toEqual(["executor-a:8001", "executor-b:8001"]);
+      });
+
+      it("rejects when the per-executor lookup yields no secret (fail closed)", async () => {
+        configService.get.mockImplementation((key: string) => {
+          if (key === "app.nodeEnv") return "test";
+          return undefined;
+        });
+        executorService.getCallbackSecretByAddress.mockResolvedValue(null);
+        const token = sign(EXEC_UUID, nowSec() + 60, EXECUTOR_HASH);
+        await expect(
+          controller.callback(`Bearer ${token}`, [makeCallbackItem()]),
+        ).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(taskService.handleCallback).not.toHaveBeenCalled();
+      });
+
+      it("per-executor fallback still enforces the executionId binding", async () => {
+        configService.get.mockImplementation((key: string) => {
+          if (key === "app.nodeEnv") return "test";
+          return undefined;
+        });
+        executorService.getCallbackSecretByAddress.mockResolvedValue(
+          EXECUTOR_HASH,
+        );
+        const token = sign(
+          "11111111-1111-4111-8111-111111111111",
+          nowSec() + 60,
+          EXECUTOR_HASH,
+        );
+        await expect(
+          controller.callback(`Bearer ${token}`, [makeCallbackItem()]),
+        ).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(taskService.handleCallback).not.toHaveBeenCalled();
+      });
     });
   });
 });
