@@ -132,6 +132,31 @@ class TestToDict:
         assert "callback_token" not in str(d)
         assert "v1.secret" not in str(d)
 
+    def test_repr_never_leaks_callback_token(self):
+        """N40 (round-10): print(ctx) / f-string debug logging must not carry
+        the one-shot callback credential (or the routing fields) into the
+        executor-captured stdout → admin execution logs chain — same threat
+        surface as to_dict, pinned with repr=False on the three fields."""
+        ctx = TaskContext(
+            task_id="t", execution_id="e", task_name="T",
+            callback_token="v1.secret", admin_api_url="http://admin", executor_address="a:1",
+        )
+        r = repr(ctx)
+        assert "v1.secret" not in r
+        assert "callback_token" not in r
+        assert "http://admin" not in r
+        assert "a:1" not in r
+        # non-sensitive identity fields stay visible for debugging
+        assert "task_id='t'" in r
+        assert "execution_id='e'" in r
+        # print()/str() share __repr__
+        assert "v1.secret" not in str(ctx)
+        # the fields themselves remain fully functional
+        assert ctx.callback_token == "v1.secret"
+        assert ctx.admin_api_url == "http://admin"
+        assert ctx.executor_address == "a:1"
+        assert ctx.callback.enabled is True
+
 
 class TestFromEnvCallbackCredentials:
     """R9 (round-9): the three callback credential vars are exposed as
