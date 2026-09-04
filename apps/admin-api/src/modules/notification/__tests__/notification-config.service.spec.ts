@@ -496,4 +496,94 @@ describe("NotificationConfigService", () => {
       });
     });
   });
+
+  // N37 (round-10): the enabled flag travels with the config into the store
+  // the send path reads — a disabled channel's saved url must not silently
+  // reroute /notification/send traffic (WebhookChannel gates on isEnabled).
+  describe("enabled propagation to the send path (N37)", () => {
+    it("PATCH { enabled } alone publishes the flag to the store", () => {
+      service.updateChannel("webhook", {
+        config: { url: "https://example.com/hook" },
+      });
+      // config-only PATCH keeps the (default) disabled state visible
+      expect(store.isEnabled("webhook")).toBe(false);
+      service.updateChannel("webhook", { enabled: true });
+      expect(store.isEnabled("webhook")).toBe(true);
+      service.updateChannel("webhook", { enabled: false });
+      expect(store.isEnabled("webhook")).toBe(false);
+      // the saved config itself is untouched by enabled-only PATCHes
+      expect(store.get("webhook")).toEqual({
+        url: "https://example.com/hook",
+      });
+    });
+
+    it("PATCH { enabled, config } publishes both in one sync", () => {
+      service.updateChannel("webhook", {
+        enabled: true,
+        config: { url: "https://example.com/hook" },
+      });
+      expect(store.isEnabled("webhook")).toBe(true);
+      expect(store.get("webhook")).toEqual({
+        url: "https://example.com/hook",
+      });
+    });
+
+    it("testChannel pins the disabled channel as enabled for the test send, then restores", async () => {
+      service.updateChannel("webhook", {
+        config: { url: "https://saved.example.com/hook" },
+      });
+      expect(store.isEnabled("webhook")).toBe(false);
+      const sendToChannels = notificationService.sendToChannels as jest.Mock;
+      let enabledDuringSend: boolean | undefined;
+      let urlDuringSend: string | undefined;
+      sendToChannels.mockImplementation(
+        async (_p: unknown, channels: string[]) => {
+          if (channels[0] === "webhook") {
+            enabledDuringSend = store.isEnabled("webhook");
+            urlDuringSend = store.get("webhook")?.url;
+          }
+          return { webhook: "sent" };
+        },
+      );
+      const result = await service.testChannel("webhook", {});
+      expect(result.success).toBe(true);
+      // the test button validates config BEFORE enabling — pinned live
+      expect(enabledDuringSend).toBe(true);
+      expect(urlDuringSend).toBe("https://saved.example.com/hook");
+      // restored: the disabled state (and saved config) are back
+      expect(store.isEnabled("webhook")).toBe(false);
+      expect(store.get("webhook")).toEqual({
+        url: "https://saved.example.com/hook",
+      });
+    });
+
+    it("testChannel override is published enabled and restores the prior pair", async () => {
+      service.updateChannel("webhook", {
+        enabled: true,
+        config: { url: "https://saved.example.com/hook" },
+      });
+      const sendToChannels = notificationService.sendToChannels as jest.Mock;
+      sendToChannels.mockImplementation(
+        async (_p: unknown, channels: string[]) => {
+          if (channels[0] === "webhook") {
+            expect(store.isEnabled("webhook")).toBe(true);
+            expect(store.get("webhook")).toEqual({
+              url: "https://unsaved.example.com/hook",
+            });
+          }
+          return { webhook: "sent" };
+        },
+      );
+      const result = await service.testChannel("webhook", {
+        url: "https://unsaved.example.com/hook",
+      });
+      expect(result.success).toBe(true);
+      expect(sendToChannels).toHaveBeenCalled();
+      // restore puts back the saved config AND the enabled=true flag
+      expect(store.isEnabled("webhook")).toBe(true);
+      expect(store.get("webhook")).toEqual({
+        url: "https://saved.example.com/hook",
+      });
+    });
+  });
 });

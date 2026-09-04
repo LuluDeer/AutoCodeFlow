@@ -195,9 +195,9 @@ describe("WebhookChannel", () => {
   // V1/V5: the target comes from the per-request url argument or the saved
   // channel config — the never-defined `notification.webhookUrl` env key is
   // gone (dead reference removed in round 7).
-  // N32 (round-9): "webhook" is now PATCH-able with config shape `{ url }`
-  // and the resolution is config-first (saved url wins, request argument is
-  // the fallback) — same order as every other channel since V1.
+  // N32 (round-9) made "webhook" PATCH-able with config shape `{ url }`;
+  // N37 (round-10) fixes the resolution chain: explicit request argument >
+  // saved AND enabled channel config > env fallback (none for webhook).
   it("uses saved channel config when no explicit URL passed", async () => {
     const channel = new WebhookChannel(
       makeStore({ webhook: { url: "https://example.com/notify" } }),
@@ -212,13 +212,38 @@ describe("WebhookChannel", () => {
     );
   });
 
-  it("prefers saved channel config url over the explicit URL argument (N32 config-first)", async () => {
+  // N37 (round-10): updates the round-9 "prefers saved channel config url
+  // over the explicit URL argument (N32 config-first)" case — an explicit
+  // per-request url must never be silently rerouted to the saved config.
+  it("prefers the explicit URL argument over the saved channel config (N37)", async () => {
     const channel = new WebhookChannel(
       makeStore({ webhook: { url: "https://config-url.com" } }),
     );
     await channel.send(payload, "https://example.com/override");
     expect(mockedAxios.post).toHaveBeenCalledWith(
-      "https://config-url.com",
+      "https://example.com/override",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  // N37: a DISABLED channel's saved url must not take effect either — the
+  // send falls back to the explicit argument (here) / nothing (below).
+  it("ignores the saved config url when the channel is disabled (N37)", async () => {
+    const store = new ChannelConfigStore();
+    store.set("webhook", { url: "https://config-url.com" }, false);
+    const channel = new WebhookChannel(store);
+    await expect(channel.send(payload)).resolves.toBe("skipped");
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the explicit URL argument when the channel is disabled (N37)", async () => {
+    const store = new ChannelConfigStore();
+    store.set("webhook", { url: "https://config-url.com" }, false);
+    const channel = new WebhookChannel(store);
+    await channel.send(payload, "https://example.com/override");
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      "https://example.com/override",
       expect.any(Object),
       expect.any(Object),
     );
