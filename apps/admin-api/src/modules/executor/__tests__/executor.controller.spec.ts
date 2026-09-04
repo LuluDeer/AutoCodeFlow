@@ -35,10 +35,18 @@ describe("ExecutorController", () => {
       findOne: jest.fn().mockResolvedValue({
         id: "executor-1",
         address: "executor.local:8001",
+        appName: "executor-node",
+        executorStartupId: "startup-1",
         status: ExecutorStatus.ONLINE,
         type: ExecutorType.PYTHON,
       }),
-      rotateToken: jest.fn().mockResolvedValue({ token: "rotated-token" }),
+      // R11: reload-config reuses the executor's CURRENT token via the
+      // idempotent issueToken() — never rotateToken() (a fresh secret the
+      // executor has never seen would 401 the inbound push).
+      issueToken: jest
+        .fn()
+        .mockResolvedValue({ token: "issued-token", tokenHash: "hash-1" }),
+      rotateToken: jest.fn(),
       getExecutorUrl: jest
         .fn()
         .mockReturnValue("http://executor.local:8001/api/config/reload"),
@@ -63,7 +71,12 @@ describe("ExecutorController", () => {
       success: true,
     });
     expect(svc.findOne).toHaveBeenCalledWith("executor-1");
-    expect(svc.rotateToken).toHaveBeenCalledWith("executor-1");
+    expect(svc.issueToken).toHaveBeenCalledWith({
+      address: "executor.local:8001",
+      appName: "executor-node",
+      startupId: "startup-1",
+    });
+    expect(svc.rotateToken).not.toHaveBeenCalled();
     expect(svc.getExecutorUrl).toHaveBeenCalledWith(
       "executor.local:8001",
       "api/config/reload",
@@ -72,10 +85,119 @@ describe("ExecutorController", () => {
       "http://executor.local:8001/api/config/reload",
       body,
       {
-        headers: { Authorization: "Bearer rotated-token" },
+        headers: { Authorization: "Bearer issued-token" },
         timeout: 10_000,
       },
     );
+  });
+
+  // R11: legacy rows (no executorStartupId) / cold issuance cache can make
+  // issueToken() rotate for real, so the first push still 401s. The handler
+  // re-issues and retries EXACTLY ONCE.
+  it("re-issues the token and retries once when the push is rejected 401", async () => {
+    const svc = {
+      findOne: jest.fn().mockResolvedValue({
+        id: "executor-1",
+        address: "executor.local:8001",
+        appName: "executor-node",
+        executorStartupId: null, // legacy row
+        status: ExecutorStatus.ONLINE,
+      }),
+      issueToken: jest
+        .fn()
+        .mockResolvedValueOnce({ token: "first-token", tokenHash: "h1" })
+        .mockResolvedValueOnce({ token: "second-token", tokenHash: "h2" }),
+      getExecutorUrl: jest
+        .fn()
+        .mockReturnValue("http://executor.local:8001/api/config/reload"),
+    };
+    const controller = new ExecutorController(
+      svc as any,
+      {} as ConfigService,
+      {} as any,
+    );
+    const unauthorized = Object.assign(new Error("Request failed"), {
+      response: { status: 401, data: { error: "Invalid or missing executor token" } },
+    });
+    mockedAxios.post
+      .mockRejectedValueOnce(unauthorized)
+      .mockResolvedValueOnce({ data: { success: true } });
+
+    await expect(controller.reloadConfig("executor-1", {})).resolves.toEqual({
+      success: true,
+    });
+    expect(svc.issueToken).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.post).toHaveBeenLastCalledWith(
+      "http://executor.local:8001/api/config/reload",
+      {},
+      {
+        headers: { Authorization: "Bearer second-token" },
+        timeout: 10_000,
+      },
+    );
+  });
+
+  it("throws the fixed error when the 401 retry also fails (no error echo, no third attempt)", async () => {
+    const svc = {
+      findOne: jest.fn().mockResolvedValue({
+        id: "executor-1",
+        address: "executor.local:8001",
+        appName: "executor-node",
+        executorStartupId: null,
+        status: ExecutorStatus.ONLINE,
+      }),
+      issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
+      getExecutorUrl: jest
+        .fn()
+        .mockReturnValue("http://executor.local:8001/api/config/reload"),
+    };
+    const controller = new ExecutorController(
+      svc as any,
+      {} as ConfigService,
+      {} as any,
+    );
+    const unauthorized = Object.assign(new Error("Request failed"), {
+      response: { status: 401, data: { error: "Invalid or missing executor token" } },
+    });
+    mockedAxios.post.mockRejectedValue(unauthorized);
+
+    await expect(
+      controller.reloadConfig("executor-1", {}),
+    ).rejects.toThrow("Failed to reach executor");
+    // exactly one auth retry: two posts, two issuances — never a third
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    expect(svc.issueToken).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry on non-401 failures (connect/timeout stay single-shot)", async () => {
+    const svc = {
+      findOne: jest.fn().mockResolvedValue({
+        id: "executor-1",
+        address: "executor.local:8001",
+        appName: "executor-node",
+        executorStartupId: "startup-1",
+        status: ExecutorStatus.ONLINE,
+      }),
+      issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
+      getExecutorUrl: jest
+        .fn()
+        .mockReturnValue("http://executor.local:8001/api/config/reload"),
+    };
+    const controller = new ExecutorController(
+      svc as any,
+      {} as ConfigService,
+      {} as any,
+    );
+    mockedAxios.post.mockRejectedValue(
+      new Error("connect ECONNREFUSED 10.0.0.9:8001"),
+    );
+
+    await expect(
+      controller.reloadConfig("executor-1", {}),
+    ).rejects.toThrow("Failed to reach executor");
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    expect(svc.issueToken).toHaveBeenCalledTimes(1);
   });
 
   it("rejects config reload for offline executor", async () => {
@@ -85,6 +207,7 @@ describe("ExecutorController", () => {
         address: "executor.local:8001",
         status: ExecutorStatus.OFFLINE,
       }),
+      issueToken: jest.fn(),
       rotateToken: jest.fn(),
       getExecutorUrl: jest.fn(),
     };
@@ -97,6 +220,7 @@ describe("ExecutorController", () => {
     await expect(
       controller.reloadConfig("executor-1", {}),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(svc.issueToken).not.toHaveBeenCalled();
     expect(svc.rotateToken).not.toHaveBeenCalled();
     expect(mockedAxios.post).not.toHaveBeenCalled();
   });

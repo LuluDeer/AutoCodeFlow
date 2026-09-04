@@ -201,3 +201,81 @@ async def get_current_token() -> str | None:
     """Get the current valid token (for outgoing requests to admin-api)."""
     await _refresh_token_if_needed()
     return _dynamic_token or _get_static_token() or None
+
+
+async def force_token_refresh() -> Optional[str]:
+    """R11 (round-11, port of executor-node R10 gap #3 ``forceTokenRefresh``):
+    force an immediate token re-fetch, bypassing the 30-minute refresh
+    schedule.
+
+    Used by :func:`request_with_self_heal` when an outbound admin-api request
+    comes back 401: the stored per-executor token was rotated out from under
+    this process (e.g. the admin-UI rotate-token button), and the only way to
+    converge is to re-hit POST /token — which is authenticated with the STATIC
+    (shared bootstrap) token and whose response ``_fetch_token`` already uses
+    to adopt the matching tokenHash (R9/W3). So one call here heals BOTH the
+    bearer credential and the N26 per-execution callback HMAC secret.
+
+    Unlike executor-node there is no fetch-failure backoff to preserve: this
+    module's ``_refresh_token_if_needed`` only sets ``_token_expires_at`` on a
+    *successful* fetch, so a failed fetch leaves the schedule untouched and the
+    next call retries — and ``request_with_self_heal`` only reaches here after
+    admin-api actually answered (a 401 verdict, not a connect failure), so the
+    re-fetch is against a reachable admin. Returns the current dynamic token
+    (``None`` when the fetch failed, in which case the caller must NOT retry).
+    """
+    global _token_expires_at
+    _token_expires_at = None
+    await _refresh_token_if_needed()
+    return _dynamic_token
+
+
+async def request_with_self_heal(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    token: Optional[str] = None,
+    headers: Optional[dict] = None,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Outbound admin-api request with R11 stale-credential self-heal.
+
+    Sends ``method url`` with ``token`` as the Bearer credential (merged into
+    ``headers``). If admin-api answers 401 — an auth verdict meaning our
+    per-executor token was rotated out from under us — force an immediate
+    re-fetch (:func:`force_token_refresh`) and retry the request EXACTLY ONCE,
+    and only when the refreshed token actually differs from the one just sent.
+    The raw 401 response is returned to the caller (no ``raise_for_status``
+    here) so persistent failures propagate through the caller's own error
+    handling.
+
+    Storm guards (same posture as executor-node ``admin-client.request``):
+    exactly one auth retry per request (a second 401 propagates);
+    ``force_token_refresh`` returns ``None`` while admin is unreachable so no
+    retry is issued; and admin-api's ``issueToken`` is idempotent per
+    (address, startupId), so concurrent 401s converge on the SAME token
+    instead of rotating.
+
+    Static/bootstrap paths (register, POST /token itself) must NOT use this
+    helper — a 401 there means the shared token is wrong and refreshing the
+    dynamic token cannot fix it (parity with node's ``tokenMode === 'static'``
+    requests, which skip the heal).
+    """
+    base_headers = dict(headers or {})
+    if token:
+        base_headers['Authorization'] = f'Bearer {token}'
+
+    request = getattr(client, method.lower())
+    response = await request(url, headers=base_headers, **kwargs)
+    if response.status_code != 401:
+        return response
+
+    fresh = await force_token_refresh()
+    if not fresh or fresh == token:
+        # No usable heal (admin unreachable / token unchanged) — do not retry.
+        return response
+
+    retry_headers = dict(base_headers)
+    retry_headers['Authorization'] = f'Bearer {fresh}'
+    return await request(url, headers=retry_headers, **kwargs)

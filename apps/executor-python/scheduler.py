@@ -13,7 +13,7 @@ from tenacity import (
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 import psutil
-from auth import get_current_token, adopt_executor_token_hash
+from auth import get_current_token, adopt_executor_token_hash, request_with_self_heal
 
 logger = logging.getLogger(__name__)
 
@@ -61,15 +61,29 @@ def _heartbeat_retry_exhausted(retry_state):
     retry_error_callback=_heartbeat_retry_exhausted,
 )
 async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str = None) -> None:
-    """ERR-04: single heartbeat attempt — tenacity retries this on transient failures."""
-    headers = {'Authorization': f'Bearer {token}'} if token else {}
+    """ERR-04: single heartbeat attempt — tenacity retries this on transient failures.
+
+    R11 (round-11, port of executor-node R10 gap #3): the request goes through
+    ``request_with_self_heal`` so a 401 (admin rotated our per-executor token
+    out from under us, e.g. the admin-UI rotate-token button) triggers ONE
+    immediate re-fetch + retry instead of waiting for the 30-minute scheduled
+    refresh — during which the heartbeat would keep 401ing and the executor
+    get marked OFFLINE after 3 missed intervals. The heal is bounded to one
+    auth retry per attempt (a persistent 401 still falls through to
+    ``raise_for_status`` below and the tenacity loop), and admin-api's
+    issueToken is idempotent per (address, startupId), so concurrent 401s
+    converge on the same token instead of rotating.
+    """
     # OPS-03: propagate trace ID for cross-service tracing
-    if trace_id:
-        headers['X-Trace-Id'] = trace_id
+    headers = {'X-Trace-Id': trace_id} if trace_id else {}
     cpu = await asyncio.to_thread(psutil.cpu_percent, 1)
     mem = psutil.virtual_memory().percent
-    response = await client.post(
+    response = await request_with_self_heal(
+        client,
+        'post',
         build_admin_api_url('/executors/heartbeat'),
+        token=token,
+        headers=headers,
         json={
             'address': settings.executor_address_public or settings.executor_address,
             'cpuUsage': cpu,
@@ -78,7 +92,6 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
             'restartedAt': executor_started_at,
             'startupId': executor_startup_id,
         },
-        headers=headers,
         timeout=5,
     )
     response.raise_for_status()
