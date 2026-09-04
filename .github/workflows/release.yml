@@ -66,7 +66,7 @@ jobs:
                   return re.search(pattern, f.read(), re.M).group(1)
 
           checks = {
-              "@autoflow/sdk (packages/autocodeflow-node-sdk/package.json)":
+              "@autocodeflow/sdk (packages/autocodeflow-node-sdk/package.json)":
                   pkg_json_version("packages/autocodeflow-node-sdk/package.json"),
               "autocodeflow-mcp-server (packages/mcp-server/package.json)":
                   pkg_json_version("packages/mcp-server/package.json"),
@@ -97,7 +97,7 @@ jobs:
   # （npm → Access Tokens → Generate New Token）。setup-node 的
   # registry-url + NODE_AUTH_TOKEN 会自动写入 ~/.npmrc：
   #   //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
-  # 包侧无需 .npmrc：@autoflow/sdk 已在 package.json 配
+  # 包侧无需 .npmrc：@autocodeflow/sdk 已在 package.json 配
   # publishConfig.access=public（scoped 包默认 private，必须显式 public）。
   # 若发内网 Verdaccio（apps/registry-npm），把 registry-url 换成私有地址
   # 并改用 verdaccio 用户 token。
@@ -119,7 +119,7 @@ jobs:
       matrix:
         include:
           - dir: packages/autocodeflow-node-sdk
-            pkg: '@autoflow/sdk'
+            pkg: '@autocodeflow/sdk'
           - dir: packages/mcp-server
             pkg: 'autocodeflow-mcp-server'
     steps:

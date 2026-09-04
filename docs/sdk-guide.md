@@ -6,10 +6,10 @@
 同一 per-execution token 鉴权链（N23/N26/N27）、同一 enabled/disabled
 fail-closed 语义。能力对照如下：
 
-| 能力 | Node.js `@autoflow/sdk` | Python `autoflow-sdk` |
+| 能力 | Node.js `@autocodeflow/sdk` | Python `autoflow-sdk` |
 |------|------------------------|----------------------|
 | 包目录 | `packages/autocodeflow-node-sdk` | `packages/autoflow-sdk` |
-| 安装 | `npm install @autoflow/sdk` | `pip install autoflow-sdk` |
+| 安装 | `npm install @autocodeflow/sdk` | `pip install autoflow-sdk` |
 | 运行时 | Node ≥ 18（executor-node 注入 env） | Python ≥ 3.9（executor-python 注入 env） |
 | 执行上下文 | `TaskContext.fromEnv()`（缺 `EXECUTION_ID`/`TASK_ID`/`TASK_NAME` 抛错）；`TaskContext.create(env)` 显式构造 | `TaskContext.from_env()`（缺失变量回落 `"unknown"`）；`AUTOFLOW_*` 归入 `ctx.params`，凭证三件套除外 |
 | HTTP 客户端 | `ctx.http` / `new HttpClient(baseURL, token, traceId?, executorAddress?)`（axios；`enabled`/`disabledReason`） | `autoflow_sdk.HttpClient` / `AsyncHttpClient`（httpx，通用请求）+ `ctx.callback`（`CallbackClient`，回调专用） |
@@ -22,7 +22,7 @@ fail-closed 语义。能力对照如下：
 
 ### 版本与发布流程
 
-三包（`@autoflow/sdk`、`autoflow-sdk`、`autocodeflow-mcp-server`）走
+三包（`@autocodeflow/sdk`、`autoflow-sdk`、`autocodeflow-mcp-server`）走
 **lockstep** 单版本线（当前 `1.0.0`）。发布只由 push tag `vX.Y.Z` 触发
 [.github/workflows/release.yml](../.github/workflows/release.yml)：
 
@@ -446,12 +446,12 @@ async function processFile(input: string, format: string): Promise<string> {
 
 ### 任务内回调 Admin API（N23，per-execution token）
 
-`@autoflow/sdk` 的 `TaskContext.fromEnv()` 会自动识别执行器注入的
+`@autocodeflow/sdk` 的 `TaskContext.fromEnv()` 会自动识别执行器注入的
 `AUTOFLOW_ADMIN_API_URL` + `AUTOFLOW_CALLBACK_TOKEN`，此时 `ctx.http` 直接可用；
 token 仅授权对**本次 executionId** 的回调，过期或越权会被 Admin API 拒绝（401）。
 
 ```typescript
-import { TaskContext } from '@autoflow/sdk';
+import { TaskContext } from '@autocodeflow/sdk';
 
 export default async function main() {
   const ctx = TaskContext.fromEnv();
