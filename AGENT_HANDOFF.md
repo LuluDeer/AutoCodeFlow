@@ -150,7 +150,7 @@ cd packages/mcp-server && npx tsc --noEmit
 
 1. ~~CI push 真跑~~ ✅ 2026-09-04 闭环：gh 凭证到位后三轮修复（node 24 + autoflow-sdk-node lock 官方源重生成 + python jobs respx/python -m + audit 重试），**13 jobs 全绿**；剩余 release 首发演练（打 tag 前需配 NPM_TOKEN/PYPI_API_TOKEN secrets 与 Environments(release) 审批人）。
 2. ~~autoflow-sdk-node 旧重复包清理~~ ✅ 2026-09-04 第十一轮已删除（@autocodeflow/sdk 0.1.0 旧 Node 重复包，全仓无消费方；npm 名现由 packages/autocodeflow-node-sdk@1.0.0 发布，无冲突；git 历史保留，未另建归档分支）。
-3. **executor-python 401 自愈对齐**（移植 node 侧 forceTokenRefresh 语义，消 30min 窗口）；顺带修 reload-config 既有缺陷（用新 token 推配置而执行器只认旧 token → 必然 401）。
+3. ~~executor-python 401 自愈对齐 + reload-config 必然 401~~ ✅ 第十一轮已完成（request_with_self_heal + issueToken 幂等复用，真机实证）。遗留 N51 文档化事实：admin-api 重启后（签发缓存冷）任一执行器的首次 reload-config 会报错一次（rotate-on-push 固有，执行器一个心跳内自对齐后重试即成功）。
 4. 跨平台矩阵（需真机）；minio 链 3 moderate 等上游发版。
 
 ## 未覆盖验证项

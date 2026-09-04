@@ -535,17 +535,22 @@ export class ExecutorController {
    * invalidated (the F-3 "rotate before the SSRF guard" cost note below is
    * obsolete for the normal path).
    *
-   * Legacy edge: a row without executorStartupId (or a cold admin-api
-   * issuance cache after a restart) cannot prove same-process life, so
-   * issueToken() may fall through to a real rotation and the push still 401s
-   * once. The catch below re-issues and retries the push EXACTLY ONCE (same
-   * storm posture as R10's outbound heal: one auth retry per request;
-   * admin-api's issueToken is idempotent per (address, startupId), so
-   * concurrent pushes converge on the same token instead of rotating). If
-   * the retry still fails we surface the original fixed error — the executor
-   * converges on its own schedule (node: one-request 401 self-heal; python:
-   * ≤30min refresh / restart). Trade-off accepted: a legacy executor may
-   * need one reload-config attempt after admin-api restarts.
+   * Cold-cache/legacy edge (N51): a row without executorStartupId, or a
+   * cold admin-api issuance cache after a restart, cannot prove same-process
+   * life, so issueToken() falls through to a real rotation and the push
+   * still 401s once — this applies to ANY executor after an admin-api
+   * restart (its held plaintext predates the restart), not just legacy
+   * rows. The catch below re-issues and retries the push EXACTLY ONCE
+   * (same storm posture as R10's outbound heal: one auth retry per
+   * request). NOTE (N50): the retry cannot rescue the rotation case —
+   * issueToken is an unlocked check-then-act, so the retry's re-issue
+   * deterministically reuses the same just-rotated token the executor has
+   * not adopted yet; it only rescues transient non-auth blips. Real
+   * convergence is executor-side: outbound 401 self-heal re-aligns within
+   * one heartbeat (node: one request; python: request_with_self_heal since
+   * R11), after which the next push succeeds. If the retry still fails we
+   * surface the original fixed error. Trade-off accepted: the first
+   * reload-config attempt after an admin-api restart reports one failure.
    */
   async reloadConfig(
     @Param("id") id: string,

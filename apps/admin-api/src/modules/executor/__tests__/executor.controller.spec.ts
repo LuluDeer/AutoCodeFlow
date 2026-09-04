@@ -117,7 +117,10 @@ describe("ExecutorController", () => {
       {} as any,
     );
     const unauthorized = Object.assign(new Error("Request failed"), {
-      response: { status: 401, data: { error: "Invalid or missing executor token" } },
+      response: {
+        status: 401,
+        data: { error: "Invalid or missing executor token" },
+      },
     });
     mockedAxios.post
       .mockRejectedValueOnce(unauthorized)
@@ -158,13 +161,16 @@ describe("ExecutorController", () => {
       {} as any,
     );
     const unauthorized = Object.assign(new Error("Request failed"), {
-      response: { status: 401, data: { error: "Invalid or missing executor token" } },
+      response: {
+        status: 401,
+        data: { error: "Invalid or missing executor token" },
+      },
     });
     mockedAxios.post.mockRejectedValue(unauthorized);
 
-    await expect(
-      controller.reloadConfig("executor-1", {}),
-    ).rejects.toThrow("Failed to reach executor");
+    await expect(controller.reloadConfig("executor-1", {})).rejects.toThrow(
+      "Failed to reach executor",
+    );
     // exactly one auth retry: two posts, two issuances — never a third
     expect(mockedAxios.post).toHaveBeenCalledTimes(2);
     expect(svc.issueToken).toHaveBeenCalledTimes(2);
@@ -193,9 +199,9 @@ describe("ExecutorController", () => {
       new Error("connect ECONNREFUSED 10.0.0.9:8001"),
     );
 
-    await expect(
-      controller.reloadConfig("executor-1", {}),
-    ).rejects.toThrow("Failed to reach executor");
+    await expect(controller.reloadConfig("executor-1", {})).rejects.toThrow(
+      "Failed to reach executor",
+    );
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     expect(svc.issueToken).toHaveBeenCalledTimes(1);
   });
