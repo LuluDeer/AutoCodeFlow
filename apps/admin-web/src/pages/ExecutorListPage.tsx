@@ -78,7 +78,8 @@ export default function ExecutorListPage() {
     }
   };
 
-  const executors: Executor[] = data ?? [];
+  // 稳定引用：data 未变时 executors 身份不变，避免下游 useMemo 每渲染失效
+  const executors: Executor[] = useMemo(() => data ?? [], [data]);
 
   const hasLongOffline = useMemo(() => executors.some((e) => {
     if (e.status !== 'offline') return false;

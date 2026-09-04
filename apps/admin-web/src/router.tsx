@@ -3,7 +3,8 @@ import type { ReactNode } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout';
 import RequireAdmin from './components/RequireAdmin';
-import { useAuthStore } from './store/auth';
+import PrivateRoute from './components/PrivateRoute';
+import PageFallback from './components/PageFallback';
 
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
@@ -25,23 +26,9 @@ const ApplicationListPage = lazy(() => import('./pages/ApplicationListPage'));
 const ApplicationDetailPage = lazy(() => import('./pages/ApplicationDetailPage'));
 const ExecutionsPage = lazy(() => import('./pages/ExecutionsPage'));
 
-function PageFallback() {
-  return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>;
-}
-
 const withSuspense = (children: ReactNode) => (
   <Suspense fallback={<PageFallback />}>{children}</Suspense>
 );
-
-const PrivateRoute = ({ children }: { children: ReactNode }) => {
-  // token is not persisted (short-lived); use refreshToken to determine if the
-  // user has an active session. The axios interceptor will obtain a new access
-  // token on the first authenticated request.
-  const refreshToken = useAuthStore((state) => state.refreshToken);
-  const hasHydrated = useAuthStore((state) => state._hasHydrated);
-  if (!hasHydrated) return null;
-  return refreshToken ? <>{children}</> : <Navigate to="/login" replace />;
-};
 
 export const router = createBrowserRouter(
   [

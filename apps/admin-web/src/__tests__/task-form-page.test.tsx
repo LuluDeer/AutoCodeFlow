@@ -9,10 +9,11 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
-import TaskFormPage, {
+import TaskFormPage from '../pages/TaskFormPage';
+import {
   deriveExecutorMode,
   buildExecutorPayload,
-} from '../pages/TaskFormPage';
+} from '../pages/executor-mode';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
