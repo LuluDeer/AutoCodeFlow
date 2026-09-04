@@ -320,6 +320,13 @@ AutoFlow is a modern workflow automation platform providing task orchestration, 
   const logger = new Logger("Bootstrap");
   // OPS-05: graceful shutdown — lets K8s/docker stop drain in-flight requests before exit
   app.enableShutdownHooks();
+  // R-08 (windows-findings): on Windows taskkill cannot deliver SIGTERM to a
+  // console app; Ctrl+Break surfaces as SIGBREAK. Route it through the same
+  // shutdown hooks so a manually stopped Windows admin-api drains cleanly.
+  // No-op on POSIX (the event never fires there).
+  process.on("SIGBREAK", () => {
+    void app.close();
+  });
   await app.listen(port);
   logger.log(`Application is running on: http://localhost:${port}`);
   if (process.env.NODE_ENV !== "production") {

@@ -421,23 +421,20 @@ def test_shell_glue_script_executes(tmp_path, monkeypatch):
     """Glue shell scripts use an absolute entrypoint inside work_dir — they
     must keep working under the whitelist + positional-args scheme.
 
-    W-05/R-09: the POSIX bash glue is inherently unrunnable via `cmd.exe /c`,
-    so on Windows we supply a platform-native `.bat` glue body; the runtime
-    dispatch path under test (absolute in-workdir entrypoint, env whitelist)
-    is exercised identically on both platforms."""
-    if sys.platform == 'win32':
-        pytest.skip(
-            'R-09: glue shell scripts ship as bash; only the .sh path is '
-            'under test here and cmd.exe cannot run it. The platform-native '
-            'shell dispatch is covered by test_shell_task_runs_normal_entrypoint.'
-        )
+    W-05/R-09/W-11: on win32 the executor now writes `glue_script.cmd` and
+    runs it via cmd.exe, so the test feeds platform-native source and stays
+    live on both OSes (previously it was POSIX-only and skipped on Windows)."""
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    _, source = _shell_glue(
+        ('glue_script.cmd', '@echo off\necho glue-ok\n'),
+        ('glue_script.sh', '#!/bin/bash\necho glue-ok\n'),
+    )
     req = ExecuteRequest(
         executionId='exec-glue',
-        task={'name': 'glue', 'glueSource': '#!/bin/bash\necho glue-ok\n', 'glueLanguage': 'shell'},
+        task={'name': 'glue', 'glueSource': source, 'glueLanguage': 'shell'},
     )
     result = asyncio.run(run_task(req))
     assert result['success'] is True

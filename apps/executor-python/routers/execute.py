@@ -496,8 +496,14 @@ async def run_task(req: ExecuteRequest) -> dict:
         elif glue_language == 'javascript' or (not glue_language and runtime == 'node'):
             glue_file = work_dir / 'glue_script.js'
             glue_runtime = 'node'
-        elif glue_language == 'shell':
-            glue_file = work_dir / 'glue_script.sh'
+        elif glue_language == 'shell' or (not glue_language and runtime == 'shell'):
+            # W-11 (windows-findings): parity with executor-node — accept a
+            # missing glueLanguage (fall back to task.runtime) so shell glue
+            # doesn't 400, and on win32 write `.cmd` so `cmd.exe /c` actually
+            # runs it (a `.sh` file neither runs as batch nor exits cleanly —
+            # it hangs and holds the task slot).
+            ext = 'cmd' if sys.platform == 'win32' else 'sh'
+            glue_file = work_dir / f'glue_script.{ext}'
             glue_runtime = 'shell'
         else:
             raise HTTPException(status_code=400, detail=f'Unsupported glue language: {glue_language}')

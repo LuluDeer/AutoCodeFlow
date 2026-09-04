@@ -5,6 +5,19 @@
 # 或本地运行: bash install.sh --api-url http://... --secret ...
 set -euo pipefail
 
+# ── 平台探测（R-02 / windows-findings W-01：本脚本仅支持 Linux）──────────────
+# 依赖 systemd 与 POSIX 路径；Windows 原生 / Git-Bash / macOS 均不可用，
+# 直接失败并给出手动部署指引，避免跑到 systemctl 一步才炸。
+case "$(uname -s)" in
+  Linux*) ;;
+  *)
+    echo "错误：一键安装脚本仅支持 Linux（检测到: $(uname -s)）。" >&2
+    echo "Windows 部署请按 docs/deployment.md 的「Windows 手动部署」章节：" >&2
+    echo "  1) 安装 Node.js 24.x；2) 配置 .env（ADMIN_API_URL / EXECUTOR_SHARED_TOKEN / WORK_DIR）；" >&2
+    echo "  3) node dist/main.js 启动，并用「任务计划程序」替代 systemd。" >&2
+    exit 1 ;;
+esac
+
 # ── 默认值 ──────────────────────────────────────────────────────────────────
 ADMIN_API_URL=""
 EXECUTOR_SECRET=""
