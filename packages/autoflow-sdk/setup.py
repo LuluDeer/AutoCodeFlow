@@ -1,17 +1,8 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
-setup(
-    name="autocodeflow-sdk",
-    version="0.1.0",
-    description="AutoCodeFlow Python SDK — base utilities for task execution",
-    packages=find_packages(exclude=["tests*"]),
-    python_requires=">=3.9",
-    install_requires=[
-        "httpx>=0.24.0",
-        "pyyaml>=6.0",
-    ],
-    classifiers=[
-        "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
-    ],
-)
+# 元数据（name/version/dependencies/...）统一维护在 pyproject.toml，
+# 此处不再重复声明，避免与 pyproject 漂移（历史 bug：本文件曾写
+# name="autocodeflow-sdk"，与 pyproject 的 "autoflow-sdk" 不一致）。
+# 发布版本由 .github/workflows/release.yml 的版本一致性守卫校验，
+# 必须与 git tag（vX.Y.Z）一致。
+setup()

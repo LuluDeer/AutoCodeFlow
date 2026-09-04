@@ -1,11 +1,20 @@
 {
   "name": "@autoflow/sdk",
   "version": "1.0.0",
+  "description": "AutoCodeFlow Node.js/TypeScript SDK — TaskContext, structured logging and Admin API callback client for task executors",
+  "license": "MIT",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --dts",
+    "prepublishOnly": "npm run build",
     "test": "jest"
   },
   "devDependencies": {
