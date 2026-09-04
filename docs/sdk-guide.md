@@ -18,7 +18,7 @@ fail-closed 语义。能力对照如下：
 | 日志 | `ctx.logger`（`TaskLogger`，结构化，随 `ctx.success()/failure()` 附带进 `TaskResult.logs`） | `ctx.log`（`get_logger(task_name)`，stdout/stderr 由执行器采集） |
 | README | [packages/autocodeflow-node-sdk/README.md](../packages/autocodeflow-node-sdk/README.md) | [packages/autoflow-sdk/README.md](../packages/autoflow-sdk/README.md) |
 | 发布渠道 | npm（scoped 公开包，`publishConfig.access=public`） | PyPI（`pyproject.toml` 为元数据单一来源） |
-| 发布 job | `release.yml → publish-npm`（node 20，secret `NPM_TOKEN`） | `release.yml → publish-pypi`（python 3.12，secret `PYPI_API_TOKEN`） |
+| 发布 job | `release.yml → publish-npm`（node 24，secret `NPM_TOKEN`） | `release.yml → publish-pypi`（python 3.12，secret `PYPI_API_TOKEN`） |
 
 ### 版本与发布流程
 
@@ -30,10 +30,19 @@ fail-closed 语义。能力对照如下：
    `__init__.py` 的 version 完全一致，不一致即 fail（无 `workflow_dispatch`，
    杜绝手动误触发真发布）；
 2. `publish-npm` / `publish-pypi` 并行发布（各自先跑 `--dry-run` /
-   `python -m build` 结构校验）。
+   `python -m build` 结构校验），并经 GitHub
+   `environment: release` 人工审批闸门。
+
+**幂等与恢复**：版本号一经发布即不可复用——同版本重发 npm 必报
+EP409、PyPI 必回 400（File already exists），发布链无覆盖逻辑。发布
+部分失败后的标准恢复路径是修复后 `gh run rerun <run-id> --failed`
+（只重跑失败的 publish job，已成功的 job 与 version-guard 不重跑，
+审批门需重新 Approve）；仅当需要更换 tag 指向的内容时才删 tag 重打，
+且已发布成功的一侧必须 bump 版本换新 tag（详见 release.yml 头注释）。
 
 > `acf-cli` 暂不发布：npm 上 `acf-cli` 名称已被第三方占用，需先改名
-> （如 `@autoflow/cli`）再加入发布矩阵。本地演练（不真发布）：
+> （如 `@autocodeflow/cli`——勿用 `@autoflow/*`，该 org 已被抢注）再
+> 加入发布矩阵。本地演练（不真发布）：
 > `npm publish --access public --dry-run`（node 包）、
 > `python -m build --wheel`（python 包，产物 `dist/` 已 gitignore）。
 

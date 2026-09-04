@@ -183,16 +183,21 @@ docker compose up -d --scale executor-node=3
 #### 方法三：独立服务器部署执行器
 
 ```bash
-# 在目标服务器上
-curl -fsSL http://your-admin-api-host:3105/install/executor-node | bash
-
-# 或手动配置
-export ADMIN_API_URL=http://your-admin-api-host:3105
-export EXECUTOR_SECRET=your-executor-secret
-export EXECUTOR_PORT=8002
-npm install -g @autoflow/executor-node
-autoflow-executor start
+# 在目标服务器上一键安装（脚本由 Admin API 承载，@Public、不含密钥；
+# 登录管理后台「执行器 → 安装执行器」或调用
+# GET /api/executors/install-cmd 可生成含地址与 token 的完整命令，
+# 见 docs/api-reference.md）
+curl -fsSL http://your-admin-api-host:3105/api/executors/install.sh \
+  | bash -s -- --api-url http://your-admin-api-host:3105 --secret your-executor-secret
 ```
+
+> 注意：executor-node **不经 npm 分发**——`@autoflow/executor-node` 从未
+> 发布，且 `@autoflow` org 已被第三方抢注，切勿照抄 `npm install -g` 该
+> 名称（当前 404，将来若被抢注者发布同名包即成供应链投毒面）。真实通道
+> 是安装脚本从 Admin API 拉取 artifact tarball
+> （`GET /api/executors/artifact/executor-node.tar.gz`，产物由
+> `scripts/bundle-executor-artifact.sh` 生成：dist + 生产 node_modules），
+> 下载失败时回退项目 checkout 本地复制（开发场景）。
 
 ### 执行器负载均衡策略
 

@@ -112,10 +112,12 @@ const tasks = await http.get('/api/tasks');
 - 发布管道：[.github/workflows/release.yml](../../.github/workflows/release.yml)。
   push tag `vX.Y.Z` 触发：版本一致性守卫（tag 必须等于本包
   `package.json` version，不一致直接 fail）→ `publish-npm` job
-  （node 20，`npm ci && npm run build && npm publish`）。
-- 凭证：GitHub secret `NPM_TOKEN`（npmjs Automation token），经
+  （node 24，`npm ci && npm run build && npm publish --dry-run &&
+  npm publish`），发布前经 GitHub `environment: release` 人工审批闸门。
+- 凭证与 scope：GitHub secret `NPM_TOKEN`（npmjs Automation token），经
   `setup-node` 的 `registry-url` + `NODE_AUTH_TOKEN` 写入 `~/.npmrc`；
-  scoped 包公开可见由 `publishConfig.access = "public"` 保证。
+  包发布在 `@autocodeflow` scope 下，公开可见由
+  `publishConfig.access = "public"` 保证（scoped 包默认 private）。
 - 本地演练（不真发布）：
 
   ```bash
