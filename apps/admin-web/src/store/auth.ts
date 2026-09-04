@@ -8,6 +8,14 @@ export interface AuthUser {
   role?: string;
 }
 
+/**
+ * R5 角色门控：ADMIN-only 路由/操作统一以此判断。
+ * role 值来自后端 GET /auth/profile 返回的 AuthUser.role（'admin' | 'user'）；
+ * role 缺失（旧 localStorage 数据、profile 尚未拉取）时按非 ADMIN 处理。
+ */
+export const isAdminUser = (user: AuthUser | null | undefined): boolean =>
+  user?.role === 'admin';
+
 interface AuthState {
   token: string | null;
   refreshToken: string | null;
@@ -38,9 +46,10 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'autoflow-auth',
       storage: createJSONStorage(() => localStorage),
-      // SEC: only persist refreshToken + user; access token is short-lived and
-      // will be re-acquired automatically by the axios interceptor on first use.
-      partialize: (state) => ({ refreshToken: state.refreshToken, user: state.user }),
+      // Persist token, refreshToken, and user so the first request after a page
+      // reload carries a valid Authorization header without needing a refresh round-trip.
+      // The access token is short-lived; the 401→refresh path still handles expiry.
+      partialize: (state) => ({ token: state.token, refreshToken: state.refreshToken, user: state.user }),
       onRehydrateStorage: () => (state) => {
         state?.setHasHydrated(true);
       },

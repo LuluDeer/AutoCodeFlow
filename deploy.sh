@@ -114,10 +114,10 @@ docker-compose ps
 
 # 检查健康状态
 echo -e "${YELLOW}检查健康状态...${NC}"
-if curl -s http://localhost:3001/health | grep -q "healthy"; then
+if curl -s http://localhost:3105/health | grep -q "healthy"; then
     echo -e "${GREEN}✅ 所有服务启动成功！${NC}"
     echo -e "${GREEN}管理后台: http://localhost${NC}"
-    echo -e "${GREEN}API 文档: http://localhost:3001/api/docs${NC}"
+    echo -e "${GREEN}API 文档: http://localhost:3105/api/docs${NC}"
 else
     echo -e "${RED}❌ 服务启动失败，请检查日志${NC}"
     docker-compose logs admin-api

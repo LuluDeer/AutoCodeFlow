@@ -58,7 +58,7 @@ describe("UsersService", () => {
         service.create({
           username: "test",
           email: "test@example.com",
-                    password: "StrongPass1!",
+          password: "StrongPass1!",
         }),
       ).rejects.toThrow("already exists");
     });

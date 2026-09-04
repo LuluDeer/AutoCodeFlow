@@ -1,5 +1,9 @@
 import { useState, useEffect } from 'react';
 import {
+  deriveExecutorMode,
+  buildExecutorPayload,
+} from './executor-mode';
+import {
   Card, Form, Input, Select, Button, Steps, Space, Typography,
   InputNumber, Radio, Alert, message, Divider, Tag, Spin,
 } from 'antd';
@@ -48,7 +52,7 @@ const EXECUTOR_MODE_OPTIONS = [
   {
     value: 'pinned',
     label: '指定执行器',
-    desc: '固定到指定的执行器节点（appName匹配）',
+    desc: '固定到指定的执行器节点（按节点 ID 绑定）',
     icon: <PushpinOutlined />,
   },
   {
@@ -72,7 +76,7 @@ export default function TaskFormPage() {
   const [executorMode, setExecutorMode] = useState<'auto' | 'group' | 'pinned' | 'broadcast'>('auto');
   const [groups, setGroups] = useState<string[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
-  const [executors, setExecutors] = useState<{ id: string; appName: string; address: string }[]>([]);
+  const [executors, setExecutors] = useState<{ id: string; appName: string; address: string; status: string }[]>([]);
   const [apps, setApps] = useState<{ id: string; name: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [loadingTask, setLoadingTask] = useState(isEdit);
@@ -85,7 +89,7 @@ export default function TaskFormPage() {
     executorsApi.getGroups().then(setGroups).catch(() => message.warning('获取执行器分组失败'));
     executorsApi.getTags().then(setAllTags).catch(() => message.warning('获取标签失败'));
     executorsApi.list().then((data) =>
-      setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string })))
+      setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string, status: e.status as string })))
     ).catch(() => message.warning('获取执行器列表失败'));
     applicationsApi.list().then((data) =>
       setApps(data.map((a) => ({ id: a.id as string, name: a.name as string })))
@@ -99,10 +103,7 @@ export default function TaskFormPage() {
     setLoadingTask(true);
     tasksApi.get(editId)
       .then((task) => {
-        let mode: 'auto' | 'group' | 'pinned' | 'broadcast' = 'auto';
-        if (task.executeMode === 'broadcast') mode = 'broadcast';
-        else if (task.executorAppName) mode = 'pinned';
-        else if (task.executorGroup || (task.executorTags && task.executorTags.length > 0)) mode = 'group';
+        const mode = deriveExecutorMode(task);
         setExecutorMode(mode);
         setTriggerType(task.triggerType || 'manual');
         setSavedRuntime(task.runtime || 'python');
@@ -114,15 +115,15 @@ export default function TaskFormPage() {
           applicationId: task.applicationId,
           triggerType: task.triggerType || 'manual',
           cronExpression: task.cronExpression,
+          timezone: task.timezone,
           fixedRate: task.fixedRate,
-          timeout: task.timeout ?? 300,
+          timeout: task.timeoutSeconds ?? task.timeout ?? 300,
           maxRetry: task.maxRetry ?? 3,
-          executorAppName: task.executorAppName,
+          retryDelay: task.retryDelay ?? 0,
+          executorId: task.executorId ?? undefined,
           executorGroup: task.executorGroup,
           executorTags: task.executorTags,
           params: task.params ?? {},
-          alarmEmail: task.alarmEmail,
-          alarmChannels: task.alarmChannels,
         });
       })
       .catch(() => message.error('加载任务失败'))
@@ -133,7 +134,9 @@ export default function TaskFormPage() {
     try {
       await form.validateFields(['name', 'runtime', 'entrypoint']);
       setStep(1);
-    } catch (_err) {}
+    } catch {
+      return;
+    }
   };
 
   const handleStep1Next = async () => {
@@ -141,35 +144,51 @@ export default function TaskFormPage() {
       const fields = ['triggerType'];
       if (triggerType === 'cron') fields.push('cronExpression');
       if (triggerType === 'fixed_rate') fields.push('fixedRate');
-      if (executorMode === 'pinned') fields.push('executorAppName');
+      if (executorMode === 'pinned') fields.push('executorId');
       await form.validateFields(fields);
       setStep(2);
-    } catch (_err) {}
+    } catch {
+      return;
+    }
   };
 
+  // P0 (R8): 分步渲染会卸载 step 0/1 的 Form.Item，而 validateFields() 只
+  // 校验并返回**当前挂载**的字段——step 2 提交时 name/runtime/entrypoint 等
+  // 全部丢失（POST payload 缺 name → 400，创建流程完全不可用）。antd Form
+  // 默认 preserve=true，卸载字段的值仍留在 store 里，因此提交改用
+  // getFieldsValue(true) 取全量值；核心必填字段因表单项已卸载、规则不再参与
+  // validateFields，这里做最终手动兜底校验，缺失时回退到对应步骤并报错。
   const handleSubmit = async () => {
     try {
-      const values = await form.validateFields();
-      setSaving(true);
-      const payload = { ...values };
-      if (executorMode === 'broadcast') {
-        payload.executeMode = 'broadcast';
-        delete payload.executorAppName;
-        delete payload.executorGroup;
-        delete payload.executorTags;
-      } else if (executorMode === 'group') {
-        payload.executeMode = 'single';
-        delete payload.executorAppName;
-      } else if (executorMode === 'pinned') {
-        payload.executeMode = 'single';
-        delete payload.executorGroup;
-        delete payload.executorTags;
-      } else {
-        payload.executeMode = 'single';
-        delete payload.executorGroup;
-        delete payload.executorTags;
-        delete payload.executorAppName;
-      }
+      // 当前挂载步骤（step 2：params/alarm 等）的正常校验。
+      await form.validateFields();
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error(err instanceof Error ? err.message : '表单校验失败');
+      return;
+    }
+    const values = form.getFieldsValue(true);
+    const missing: { label: string; step: number }[] = [];
+    if (!values.name) missing.push({ label: '任务名称', step: 0 });
+    if (!values.runtime) missing.push({ label: '运行时', step: 0 });
+    if (!values.entrypoint) missing.push({ label: '入口文件', step: 0 });
+    if (values.triggerType === 'cron' && !values.cronExpression) {
+      missing.push({ label: 'Cron 表达式', step: 1 });
+    }
+    if (values.triggerType === 'fixed_rate' && !values.fixedRate) {
+      missing.push({ label: '执行间隔', step: 1 });
+    }
+    if (executorMode === 'pinned' && !values.executorId) {
+      missing.push({ label: '指定执行器', step: 1 });
+    }
+    if (missing.length > 0) {
+      message.error(`必填项缺失：${missing.map((m) => m.label).join('、')}，请补全后重试`);
+      setStep(missing[0].step);
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = buildExecutorPayload(values, executorMode);
       if (isEdit && editId) {
         await tasksApi.update(editId, payload);
         message.success('任务更新成功');
@@ -177,12 +196,13 @@ export default function TaskFormPage() {
       } else {
         const created = await tasksApi.create(payload);
         message.success('任务创建成功，可在下方编辑 Glue 脚本（可选）');
-        setSavedRuntime(payload.runtime || 'python');
+        setSavedRuntime(
+          typeof payload.runtime === 'string' ? payload.runtime : 'python',
+        );
         setCreatedTaskId(created.id);
         setStep(3);
       }
     } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'errorFields' in err) return;
       const msg = err instanceof Error ? err.message : (isEdit ? '更新失败' : '创建失败');
       message.error(msg);
     } finally {
@@ -210,14 +230,14 @@ export default function TaskFormPage() {
           { title: '基本配置', icon: <ThunderboltOutlined /> },
           { title: '触发 & 执行器', icon: <ClockCircleOutlined /> },
           { title: '参数配置', icon: <ApartmentOutlined /> },
-          { title: 'Glue 脚本', icon: <CodeOutlined />, description: '可选' },
+          { title: 'Glue 脚本', icon: <CodeOutlined />, content: '可选' },
         ]}
       />
 
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3 }}
+        initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3, retryDelay: 0 }}
         onValuesChange={(changed) => {
           if (changed.triggerType) setTriggerType(changed.triggerType);
         }}
@@ -291,7 +311,7 @@ export default function TaskFormPage() {
           <Card>
             <Form.Item name="triggerType" label="触发方式">
               <Radio.Group>
-                <Space direction="vertical">
+                <Space orientation="vertical">
                   {TRIGGER_OPTIONS.map(o => (
                     <Radio key={o.value} value={o.value}>
                       <Space>
@@ -319,18 +339,28 @@ export default function TaskFormPage() {
               </Form.Item>
             )}
 
+            {triggerType === 'cron' && (
+              <Form.Item
+                name="timezone"
+                label="时区"
+                tooltip={{ title: 'IANA 时区名称，例如 Asia/Shanghai；留空则使用服务端默认时区', icon: <InfoCircleOutlined /> }}
+              >
+                <Input placeholder="Asia/Shanghai" />
+              </Form.Item>
+            )}
+
             {triggerType === 'fixed_rate' && (
               <Form.Item
                 name="fixedRate"
                 label="执行间隔"
                 rules={[{ required: true, message: '请设置间隔时间' }]}
               >
-                <InputNumber
+                <InputNumber<number>
                   min={60}
                   step={60}
                   style={{ width: 200 }}
                   formatter={v => v ? `${Math.floor(Number(v) / 60)} 分钟` : ''}
-                  parser={v => Number(v?.replace('分钟', '')) * 60}
+                  parser={v => v ? Number(v.replace('分钟', '')) * 60 : 60}
                   placeholder="60（秒）"
                 />
               </Form.Item>
@@ -345,7 +375,7 @@ export default function TaskFormPage() {
                 onChange={e => setExecutorMode(e.target.value)}
                 style={{ width: '100%' }}
               >
-                <Space direction="vertical" style={{ width: '100%' }}>
+                <Space orientation="vertical" style={{ width: '100%' }}>
                   {EXECUTOR_MODE_OPTIONS.map(o => (
                     <Radio
                       key={o.value}
@@ -371,16 +401,16 @@ export default function TaskFormPage() {
             </Form.Item>
 
             {executorMode === 'pinned' && (
-              <Form.Item name="executorAppName" label="指定执行器" required
+              <Form.Item name="executorId" label="指定执行器" required
                 rules={[{ required: true, message: '请选择执行器' }]}
-                tooltip={{ title: '任务只会分配到该执行器节点', icon: <InfoCircleOutlined /> }}>
+                tooltip={{ title: '任务只会派发到该执行器（按节点 ID 固定）；离线时执行将直接失败，不回退到其他节点', icon: <InfoCircleOutlined /> }}>
                 <Select
                   placeholder="选择执行器节点"
                   showSearch
                   optionFilterProp="label"
                   options={executors.map(e => ({
-                    value: e.appName,
-                    label: `${e.appName}  (${e.address})`,
+                    value: e.id,
+                    label: `${e.appName}  (${e.address})${e.status === 'online' ? '' : ' [离线]'}`,
                   }))}
                 />
               </Form.Item>
@@ -411,8 +441,12 @@ export default function TaskFormPage() {
               <InputNumber min={10} max={86400} style={{ width: 160 }} placeholder="300" />
             </Form.Item>
 
-            <Form.Item name="maxRetry" label={<>失败重试次数 <Text type="secondary" style={{ fontSize: 12 }}>（0 = 不重试）</Text></>}>
-              <InputNumber min={0} max={10} style={{ width: 120 }} />
+            <Form.Item name="maxRetry" label={<>最大尝试次数 <Text type="secondary" style={{ fontSize: 12 }}>（1 = 不重试）</Text></>}>
+              <InputNumber min={1} max={10} style={{ width: 120 }} />
+            </Form.Item>
+
+            <Form.Item name="retryDelay" label={<>重试延迟 <Text type="secondary" style={{ fontSize: 12 }}>（秒，0 = 不延迟）</Text></>}>
+              <InputNumber min={0} max={3600} style={{ width: 160 }} />
             </Form.Item>
 
             <Divider />
@@ -429,7 +463,7 @@ export default function TaskFormPage() {
             <Alert
               type="info"
               showIcon
-              message="任务默认参数"
+              title="任务默认参数"
               description="以下参数会在每次执行时以环境变量 AUTOFLOW_<KEY> 的形式注入到任务中。触发时可传入同名参数覆盖默认值。"
               style={{ marginBottom: 20 }}
             />
@@ -460,7 +494,7 @@ export default function TaskFormPage() {
             <Alert
               type="success"
               showIcon
-              message="任务已创建成功！"
+              title="任务已创建成功！"
               description="你可以在下方编写 Glue 脚本（可选）。Glue 脚本是一段在执行器节点上直接运行的代码，无需关联代码仓库。"
               style={{ marginBottom: 20 }}
             />

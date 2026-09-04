@@ -6,14 +6,23 @@ import { Request, Response, NextFunction } from 'express';
 import axios from 'axios';
 import { timingSafeEqual } from 'node:crypto';
 import { config } from '../config';
+import { buildAdminApiUrl } from '../admin-api-url';
+import { executorStartupId } from '../startup-identity';
+import { unwrapAdminResponseData, adoptExecutorTokenHash } from '../admin-envelope';
 
 // Static token: env vars take priority, then CLI --token arg (via config)
 const STATIC_TOKEN = config.token;
+
+export function getStaticToken(): string | null {
+  return STATIC_TOKEN || null;
+}
 
 // Dynamic token storage (refreshed periodically)
 let dynamicToken: string | null = null;
 let tokenExpiresAt: Date | null = null;
 const TOKEN_REFRESH_INTERVAL = 30 * 60 * 1000; // 30 minutes
+let tokenFetchFailedAt: number | null = null;
+const TOKEN_FETCH_BACKOFF_MS = 30_000;
 
 function getAdminApiUrl(): string {
   if (config.adminApiUrlExternal) {
@@ -34,16 +43,42 @@ async function fetchToken(): Promise<string | null> {
     }
 
     const response = await axios.post(
-      `${getAdminApiUrl()}/api/executors/token`,
+      buildAdminApiUrl(getAdminApiUrl(), '/api/executors/token'),
       {
         address: config.executorAddressPublic || config.executorAddress,
         appName: config.appName,
+        // R9 (round-8 P1 W2): the process-life identity lets admin-api make
+        // this endpoint idempotent — a same-startupId re-fetch returns the
+        // CURRENT token instead of rotating (N4 register semantics).
+        startupId: executorStartupId,
       },
       { timeout: 10000, headers },
     );
 
-    if (response.status === 200) {
-      return response.data.token;
+    // R9: the token endpoint is a Nest POST — it answers 201, not 200. The
+    // old `=== 200` check silently dropped every successful response.
+    if (response.status >= 200 && response.status < 300) {
+      // R9 (round-8 P1 root fix): admin-api's global ResponseInterceptor wraps
+      // the payload in {code,message,data}. Reading response.data.token
+      // directly yielded undefined forever, so every getCurrentToken() call
+      // re-hit POST /token — which used to rotate on every call — putting the
+      // stored tokenHash on a ~30s rotation cycle and breaking the N26
+      // per-execution callback-token invariant (docs/VERIFY-round8-e2e.md §1.5).
+      const payload = unwrapAdminResponseData(response.data);
+      const token =
+        typeof payload?.token === 'string' && payload.token.length > 0
+          ? payload.token
+          : null;
+      if (!token) {
+        // eslint-disable-next-line no-console
+        console.warn('[auth] fetchToken: admin response carried no token');
+        return null;
+      }
+      // R9 (W3): adopt the tokenHash that matches this token so the HMAC
+      // source secret for per-execution callback tokens stays in sync with
+      // whatever admin-api currently stores (see admin-envelope.ts).
+      adoptExecutorTokenHash(response.data);
+      return token;
     }
   } catch (_err: unknown) {
     // Fall back to static token if dynamic token fetch fails
@@ -57,12 +92,23 @@ async function fetchToken(): Promise<string | null> {
 
 async function refreshTokenIfNeeded(): Promise<void> {
   const now = new Date();
+  // Back off after a failed fetch — without this every request hangs for
+  // the 10s fetch timeout while admin-api is unreachable.
+  if (
+    tokenFetchFailedAt !== null &&
+    now.getTime() - tokenFetchFailedAt < TOKEN_FETCH_BACKOFF_MS
+  ) {
+    return;
+  }
   // Refresh if no token, expired, or within 5 minutes of expiration
   if (tokenExpiresAt === null || now >= new Date(tokenExpiresAt.getTime() - 5 * 60 * 1000)) {
     const newToken = await fetchToken();
     if (newToken) {
       dynamicToken = newToken;
       tokenExpiresAt = new Date(now.getTime() + TOKEN_REFRESH_INTERVAL);
+      tokenFetchFailedAt = null;
+    } else {
+      tokenFetchFailedAt = now.getTime();
     }
   }
 }
@@ -80,8 +126,14 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
     validTokens.push(STATIC_TOKEN);
   }
 
-  // If no tokens configured at all, allow all requests (dev mode)
+  // If no tokens configured at all, allow all requests (dev mode) — unless
+  // REQUIRE_TOKEN=true, where fail-closed wins over dev convenience: an
+  // unauthenticated /api/execute is arbitrary code execution on this host.
   if (validTokens.length === 0) {
+    if (process.env.REQUIRE_TOKEN === 'true') {
+      res.status(503).json({ error: 'Executor has no token configured (REQUIRE_TOKEN=true)' });
+      return;
+    }
     next();
     return;
   }
@@ -111,4 +163,27 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
 export async function getCurrentToken(): Promise<string | null> {
   await refreshTokenIfNeeded();
   return dynamicToken || STATIC_TOKEN;
+}
+
+/**
+ * R10 (round-10 gap #3): force an immediate token re-fetch, bypassing the
+ * 30-minute refresh schedule. Used by admin-client when an outbound request
+ * comes back 401: the stored per-executor token was rotated out from under
+ * this process (e.g. an admin-UI rotate-token), and the only way to converge
+ * is to re-hit POST /token — which is authenticated with the STATIC token
+ * (shared bootstrap) and whose response fetchToken already uses to adopt the
+ * matching tokenHash (R9/W3). So one call here heals BOTH the bearer
+ * credential and the N26 per-execution callback HMAC secret.
+ *
+ * Storm guards: the TOKEN_FETCH_BACKOFF_MS from the last FAILED fetch still
+ * applies (admin unreachable / wrong shared token → this degrades to a no-op
+ * returning the current token, and the caller must not retry), and
+ * admin-api's issueToken is idempotent per (address, startupId), so several
+ * concurrent 401s re-fetching at once all converge on the SAME token instead
+ * of rotating.
+ */
+export async function forceTokenRefresh(): Promise<string | null> {
+  tokenExpiresAt = null;
+  await refreshTokenIfNeeded();
+  return dynamicToken;
 }

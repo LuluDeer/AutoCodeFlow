@@ -10,11 +10,17 @@ from tenacity import (
     retry_if_exception_type,
     before_sleep_log,
 )
+from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 import psutil
-from auth import get_current_token
+from auth import get_current_token, adopt_executor_token_hash, request_with_self_heal
 
 logger = logging.getLogger(__name__)
+
+# R9 (round-9): the process-life identity now lives in startup_identity.py
+# (auth.py needs it for POST /token and cannot import scheduler.py — cycle).
+# Re-exported here so existing importers (main.py, tests) keep working.
+from startup_identity import executor_started_at, executor_startup_id  # noqa: F401
 
 # Global count of currently-running tasks with thread-safe operations
 running_count = 0
@@ -37,12 +43,8 @@ def decrement_running() -> None:
 
 
 def _get_admin_api_url() -> str:
-    """Get the appropriate admin API URL for heartbeat."""
-    if settings.admin_api_url_external:
-        return settings.admin_api_url_external
-    if settings.admin_api_url_internal:
-        return settings.admin_api_url_internal
-    return settings.admin_api_url
+    """Get the appropriate Admin API base URL for heartbeat."""
+    return get_admin_api_base_url()
 
 
 def _heartbeat_retry_exhausted(retry_state):
@@ -59,31 +61,55 @@ def _heartbeat_retry_exhausted(retry_state):
     retry_error_callback=_heartbeat_retry_exhausted,
 )
 async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str = None) -> None:
-    """ERR-04: single heartbeat attempt — tenacity retries this on transient failures."""
-    headers = {'Authorization': f'Bearer {token}'} if token else {}
+    """ERR-04: single heartbeat attempt — tenacity retries this on transient failures.
+
+    R11 (round-11, port of executor-node R10 gap #3): the request goes through
+    ``request_with_self_heal`` so a 401 (admin rotated our per-executor token
+    out from under us, e.g. the admin-UI rotate-token button) triggers ONE
+    immediate re-fetch + retry instead of waiting for the 30-minute scheduled
+    refresh — during which the heartbeat would keep 401ing and the executor
+    get marked OFFLINE after 3 missed intervals. The heal is bounded to one
+    auth retry per attempt (a persistent 401 still falls through to
+    ``raise_for_status`` below and the tenacity loop), and admin-api's
+    issueToken is idempotent per (address, startupId), so concurrent 401s
+    converge on the same token instead of rotating.
+    """
     # OPS-03: propagate trace ID for cross-service tracing
-    if trace_id:
-        headers['X-Trace-Id'] = trace_id
-    cpu = psutil.cpu_percent(interval=1)
+    headers = {'X-Trace-Id': trace_id} if trace_id else {}
+    cpu = await asyncio.to_thread(psutil.cpu_percent, 1)
     mem = psutil.virtual_memory().percent
-    response = await client.post(
-        f'{_get_admin_api_url()}/api/executors/heartbeat',
+    response = await request_with_self_heal(
+        client,
+        'post',
+        build_admin_api_url('/executors/heartbeat'),
+        token=token,
+        headers=headers,
         json={
             'address': settings.executor_address_public or settings.executor_address,
             'cpuUsage': cpu,
             'memUsage': mem,
             'runningTaskCount': get_running_count(),
+            'restartedAt': executor_started_at,
+            'startupId': executor_startup_id,
         },
-        headers=headers,
         timeout=5,
     )
     response.raise_for_status()
+    # R9 (round-9, W3 parity with executor-node scheduler.ts): admin
+    # heartbeats echo the executor's current stored tokenHash
+    # ({code,message,data:{tokenHash}} envelope) — adopt it so the
+    # per-execution callback-token HMAC key follows admin-side rotations
+    # instead of going stale (picked up within heartbeatIntervalSeconds).
+    try:
+        adopt_executor_token_hash(response.json())
+    except Exception:  # pragma: no cover - non-JSON / empty admin bodies
+        pass
 
 
 async def heartbeat_task() -> None:
     while True:
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(settings.heartbeat_interval_seconds)
             # SEC-03: use dynamic token with auto-refresh
             token = await get_current_token()
             # OPS-03: generate trace ID for heartbeat

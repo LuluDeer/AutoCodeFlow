@@ -4,7 +4,7 @@ const { test, expect, request: pwRequest } = require('@playwright/test');
 const fs = require('fs');
 
 const BASE = 'http://localhost:5176';
-const API  = 'http://localhost:3002';
+const API  = 'http://localhost:3105';
 const USER = 'admin';
 const PASS = 'admin123';
 const AUTH_FILE = '/tmp/e2e-auth.json';
@@ -582,7 +582,7 @@ test('15. AI 配置检查 & Swagger API 文档', async ({ page }) => {
   }
 
   // Swagger API 文档
-  await page.goto('http://localhost:3002/api/docs');
+  await page.goto('http://localhost:3105/api/docs');
   await page.waitForLoadState('networkidle').catch(() => {});
   const swaggerText = await page.locator('body').innerText();
   console.log('  Swagger 文档:', swaggerText.slice(0, 200).replace(/\n/g, ' | '));
@@ -591,7 +591,7 @@ test('15. AI 配置检查 & Swagger API 文档', async ({ page }) => {
 
 // ── 16. Prometheus 指标验证 ──────────────────────────────────────────────────
 test('16. Prometheus 指标端点', async ({ page }) => {
-  await page.goto('http://localhost:3002/metrics');
+  await page.goto('http://localhost:3105/metrics');
   await page.waitForLoadState('networkidle').catch(() => {});
   const text = await page.locator('body').innerText();
   const hasMetrics = text.includes('# HELP') || text.includes('nodejs_') || text.includes('http_');

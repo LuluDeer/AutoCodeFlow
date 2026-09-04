@@ -1,12 +1,20 @@
 # Verdaccio 私有 npm 仓库配置
+# 部署与使用说明见 apps/registry-npm/README.md（compose 服务: registry-npm）
 storage: /verdaccio/storage
 auth:
   htpasswd:
-    file: /verdaccio/conf/htpasswd
+    # R8: 指向 storage 卷内路径——compose 只把本 config.yaml 以单文件 ro 挂载
+    # 进 /verdaccio/conf，若 htpasswd 留在 conf 下，用户凭证会随容器重建丢失；
+    # /verdaccio/storage 是持久卷 npm_data，凭证得以留存。
+    file: /verdaccio/storage/htpasswd
+    # 自助注册上限（verdaccio：-1 禁止自助注册、0 不限制）。保持 100 与
+    # 既有部署兼容；纯内网收紧场景可改 -1，改后用户需运维离线写入 htpasswd。
     max_users: 100
 uplinks:
   npmjs:
     url: https://registry.npmjs.org/
+# R8: 上传体积上限（默认 100MB 对内部包够用，显式声明防误改）
+max_body_size: 100mb
 security:
   api:
     jwt:
@@ -32,5 +40,9 @@ packages:
 web:
   title: AutoFlow npm Registry
   darkMode: true
+  # R8: 纯内网/无浏览器场景可置 false 关闭 Web UI（API 与 npm 协议不受影响）
+  enabled: true
+# 容器内监听 0.0.0.0 是 compose 端口映射的前提；对外暴露面在 compose
+# （ports: 4873）与防火墙层收敛，详见 README 的部署加固说明。
 listen: 0.0.0.0:4873
 log: { type: stdout, format: pretty, level: http }

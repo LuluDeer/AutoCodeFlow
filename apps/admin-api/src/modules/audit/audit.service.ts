@@ -55,52 +55,71 @@ export class AuditService {
   async exportCsv(options: {
     action?: string;
     resource?: string;
+    username?: string;
+    startTime?: string;
+    endTime?: string;
     userId?: number;
   }): Promise<string> {
     const { action, resource, userId } = options;
     const qb = this.repo
-      .createQueryBuilder('log')
-      .orderBy('log.createdAt', 'DESC');
+      .createQueryBuilder("log")
+      .orderBy("log.createdAt", "DESC");
 
     if (action) {
       const sanitizedAction = action.trim().slice(0, 100);
       if (!/^[a-zA-Z0-9_.\-\s]+$/.test(sanitizedAction)) {
-        throw new Error('Invalid action parameter');
+        throw new Error("Invalid action parameter");
       }
-      qb.andWhere('log.action ILIKE :action', { action: `%${sanitizedAction}%` });
+      qb.andWhere("log.action ILIKE :action", {
+        action: `%${sanitizedAction}%`,
+      });
     }
-    if (resource) qb.andWhere('log.resource = :resource', { resource });
-    if (userId) qb.andWhere('log.userId = :userId', { userId });
+    if (resource) qb.andWhere("log.resource = :resource", { resource });
+    if (userId) qb.andWhere("log.userId = :userId", { userId });
+    this.applyExtraFilters(qb, options);
 
-    // Cap export at 10 000 rows to avoid memory exhaustion
-    const rows = await qb.take(10_000).getMany();
+    // Cap export at 10 000 rows; select raw columns only to avoid loading
+    // entities and the heavy jsonb `detail` column into memory
+    const rows = await qb
+      .select("log.id", "id")
+      .addSelect("log.userId", "userId")
+      .addSelect("log.username", "username")
+      .addSelect("log.action", "action")
+      .addSelect("log.resource", "resource")
+      .addSelect("log.resourceId", "resourceId")
+      .addSelect("log.result", "result")
+      .addSelect("log.ip", "ip")
+      .addSelect("log.createdAt", "createdAt")
+      .limit(10_000)
+      .getRawMany();
 
     const escape = (v: unknown) => {
-      if (v === null || v === undefined) return '';
+      if (v === null || v === undefined) return "";
       const s = String(v);
-      if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+      if (s.includes(",") || s.includes('"') || s.includes("\n")) {
         return `"${s.replace(/"/g, '""')}"`;
       }
       return s;
     };
 
-    const header = 'id,userId,username,action,resource,resourceId,result,ip,createdAt';
+    const header =
+      "id,userId,username,action,resource,resourceId,result,ip,createdAt";
     const lines = rows.map((r) =>
       [
         r.id,
-        r.userId ?? '',
-        r.username ?? '',
+        r.userId ?? "",
+        r.username ?? "",
         r.action,
-        r.resource ?? '',
-        r.resourceId ?? '',
-        r.result ?? '',
-        r.ip ?? '',
-        r.createdAt?.toISOString() ?? '',
+        r.resource ?? "",
+        r.resourceId ?? "",
+        r.result ?? "",
+        r.ip ?? "",
+        r.createdAt?.toISOString() ?? "",
       ]
         .map(escape)
-        .join(','),
+        .join(","),
     );
-    return [header, ...lines].join('\n');
+    return [header, ...lines].join("\n");
   }
 
   async findAll(options: {
@@ -108,6 +127,9 @@ export class AuditService {
     pageSize?: number;
     action?: string;
     resource?: string;
+    username?: string;
+    startTime?: string;
+    endTime?: string;
     userId?: number;
   }): Promise<{ data: AuditLog[]; total: number }> {
     const { page = 1, pageSize = 20, action, resource, userId } = options;
@@ -132,6 +154,7 @@ export class AuditService {
 
     if (resource) qb.andWhere("log.resource = :resource", { resource });
     if (userId) qb.andWhere("log.userId = :userId", { userId });
+    this.applyExtraFilters(qb, options);
     // Q12: cap pageSize to prevent full-table scans regardless of caller input
     const safePageSize = Math.min(pageSize, 100);
     const [data, total] = await qb
@@ -139,5 +162,31 @@ export class AuditService {
       .take(safePageSize)
       .getManyAndCount();
     return { data, total };
+  }
+
+  /**
+   * R4 P1-2: shared username / time-range filters, used by both findAll and
+   * exportCsv so the CSV export honours the same filter set as the list page.
+   * All values are bound as query parameters (no string interpolation).
+   */
+  private applyExtraFilters(
+    qb: import("typeorm").SelectQueryBuilder<AuditLog>,
+    options: { username?: string; startTime?: string; endTime?: string },
+  ): void {
+    if (options.username) {
+      qb.andWhere("log.username ILIKE :username", {
+        username: `%${options.username}%`,
+      });
+    }
+    if (options.startTime) {
+      qb.andWhere("log.createdAt >= :startTime", {
+        startTime: new Date(options.startTime),
+      });
+    }
+    if (options.endTime) {
+      qb.andWhere("log.createdAt <= :endTime", {
+        endTime: new Date(options.endTime),
+      });
+    }
   }
 }

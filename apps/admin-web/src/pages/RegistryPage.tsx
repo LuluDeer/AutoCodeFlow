@@ -20,8 +20,8 @@ function PypiTab() {
 
   const { data: packages = [], loading, refresh } = useRequest(registryApi.listPypiPackages);
 
-  const handleUpload = async (values: { name: string; version: string; file: any }) => {
-    const fileObj: File = values.file?.fileList?.[0]?.originFileObj;
+  const handleUpload = async (values: { name: string; version: string; file: { fileList?: { originFileObj?: File }[] } }) => {
+    const fileObj: File | undefined = values.file?.fileList?.[0]?.originFileObj;
     if (!fileObj) { message.error('请选择文件'); return; }
     setUploading(true);
     try {
@@ -101,6 +101,7 @@ function PypiTab() {
             name="file"
             label="包文件 (.whl / .tar.gz)"
             rules={[{ required: true, message: '请选择文件' }]}
+            valuePropName="fileList"
           >
             <Upload
               beforeUpload={() => false}

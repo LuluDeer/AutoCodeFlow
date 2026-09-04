@@ -2,8 +2,8 @@
 // 覆盖：登录、应用管理、任务调度、执行日志、运行机管理、并发状态、中断任务、仓库、通知、审计
 const { test, expect } = require('@playwright/test');
 
-const BASE = 'http://localhost:5173';
-const API  = 'http://localhost:3002';
+const BASE = 'http://localhost:5176';
+const API  = 'http://localhost:3105';
 const USER = 'admin';
 const PASS = 'admin123';
 
@@ -131,7 +131,7 @@ test('4. 手动触发任务 & 查看执行', async ({ page }) => {
 
   // 先通过 API 获取任务列表
   const token = await page.evaluate(async () => {
-    const r = await fetch('http://localhost:3002/api/auth/login', {
+    const r = await fetch('http://localhost:3105/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'admin123' }),
@@ -141,7 +141,7 @@ test('4. 手动触发任务 & 查看执行', async ({ page }) => {
   });
 
   const tasks = await page.evaluate(async (tok) => {
-    const r = await fetch('http://localhost:3002/api/tasks?page=1&pageSize=5', {
+    const r = await fetch('http://localhost:3105/api/tasks?page=1&pageSize=5', {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.json();
@@ -172,7 +172,7 @@ test('4. 手动触发任务 & 查看执行', async ({ page }) => {
       if (tasks?.data?.items?.length > 0) {
         const taskId = tasks.data.items[0].id;
         const trigResp = await page.evaluate(async ({ id, tok }) => {
-          const r = await fetch(`http://localhost:3002/api/tasks/${id}/trigger`, {
+          const r = await fetch(`http://localhost:3105/api/tasks/${id}/trigger`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
           });
@@ -217,14 +217,14 @@ test('5. 执行日志 — 列表与详情', async ({ page }) => {
     console.log('  ⚠ 暂无执行记录');
     // 通过 API 查验
     const token = await page.evaluate(async () => {
-      const r = await fetch('http://localhost:3002/api/auth/login', {
+      const r = await fetch('http://localhost:3105/api/auth/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: 'admin', password: 'admin123' }),
       });
       return (await r.json()).data?.accessToken;
     });
     const execs = await page.evaluate(async (tok) => {
-      const r = await fetch('http://localhost:3002/api/task-executions?page=1&pageSize=5', {
+      const r = await fetch('http://localhost:3105/api/task-executions?page=1&pageSize=5', {
         headers: { Authorization: `Bearer ${tok}` },
       });
       return r.json();
@@ -304,14 +304,14 @@ test('8. 应用部署管理', async ({ page }) => {
   await login(page);
   // 获取应用列表
   const token = await page.evaluate(async () => {
-    const r = await fetch('http://localhost:3002/api/auth/login', {
+    const r = await fetch('http://localhost:3105/api/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'admin123' }),
     });
     return (await r.json()).data?.accessToken;
   });
   const apps = await page.evaluate(async (tok) => {
-    const r = await fetch('http://localhost:3002/api/applications?page=1&pageSize=5', {
+    const r = await fetch('http://localhost:3105/api/applications?page=1&pageSize=5', {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.json();
@@ -337,7 +337,7 @@ test('8. 应用部署管理', async ({ page }) => {
 // ── 9. 并发调度：同时触发多个任务，查看状态 ─────────────────────────────────
 test('9. 并发调度状态查询', async ({ page }) => {
   const token = await page.evaluate(async () => {
-    const r = await fetch('http://localhost:3002/api/auth/login', {
+    const r = await fetch('http://localhost:3105/api/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'admin123' }),
     });
@@ -346,7 +346,7 @@ test('9. 并发调度状态查询', async ({ page }) => {
 
   // 获取任务列表
   const tasks = await page.evaluate(async (tok) => {
-    const r = await fetch('http://localhost:3002/api/tasks?page=1&pageSize=10', {
+    const r = await fetch('http://localhost:3105/api/tasks?page=1&pageSize=10', {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.json();
@@ -359,7 +359,7 @@ test('9. 并发调度状态查询', async ({ page }) => {
   const toTrigger = taskItems.slice(0, 3);
   const triggerResults = await page.evaluate(async ({ items, tok }) => {
     return Promise.all(items.map(t =>
-      fetch(`http://localhost:3002/api/tasks/${t.id}/trigger`, {
+      fetch(`http://localhost:3105/api/tasks/${t.id}/trigger`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
       }).then(r => r.json()).then(d => ({ id: t.id, name: t.name, result: d }))
@@ -373,7 +373,7 @@ test('9. 并发调度状态查询', async ({ page }) => {
   // 等待片刻后查看执行状态
   await page.waitForTimeout(3000);
   const execStatus = await page.evaluate(async (tok) => {
-    const r = await fetch('http://localhost:3002/api/task-executions?page=1&pageSize=10', {
+    const r = await fetch('http://localhost:3105/api/task-executions?page=1&pageSize=10', {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.json();
@@ -399,7 +399,7 @@ test('9. 并发调度状态查询', async ({ page }) => {
 // ── 10. 中断正在运行的任务 ───────────────────────────────────────────────────
 test('10. 中断/终止运行中的任务', async ({ page }) => {
   const token = await page.evaluate(async () => {
-    const r = await fetch('http://localhost:3002/api/auth/login', {
+    const r = await fetch('http://localhost:3105/api/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'admin123' }),
     });
@@ -408,7 +408,7 @@ test('10. 中断/终止运行中的任务', async ({ page }) => {
 
   // 查询运行中的执行
   const execStatus = await page.evaluate(async (tok) => {
-    const r = await fetch('http://localhost:3002/api/task-executions?status=running&page=1&pageSize=5', {
+    const r = await fetch('http://localhost:3105/api/task-executions?status=running&page=1&pageSize=5', {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.json();
@@ -421,7 +421,7 @@ test('10. 中断/终止运行中的任务', async ({ page }) => {
     const execId = runningItems[0].id;
     //尝试终止 API
     const killResp = await page.evaluate(async ({ id, tok }) => {
-      const r = await fetch(`http://localhost:3002/api/task-executions/${id}/cancel`, {
+      const r = await fetch(`http://localhost:3105/api/task-executions/${id}/cancel`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
       });
@@ -479,14 +479,14 @@ test('11. 任务启停控制', async ({ page }) => {
 
   // API 层面验证调度器状态
   const token = await page.evaluate(async () => {
-    const r = await fetch('http://localhost:3002/api/auth/login', {
+    const r = await fetch('http://localhost:3105/api/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'admin123' }),
     });
     return (await r.json()).data?.accessToken;
   });
   const schedulerStatus = await page.evaluate(async (tok) => {
-    const r = await fetch('http://localhost:3002/api/scheduler/status', {
+    const r = await fetch('http://localhost:3105/api/scheduler/status', {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.ok ? r.json() : { status: r.status };
@@ -543,14 +543,14 @@ test('14. 审计日志', async ({ page }) => {
   if (!found) {
     console.log('  ⚠ 审计日志页面路径未知，通过 API 查询');
     const token = await page.evaluate(async () => {
-      const r = await fetch('http://localhost:3002/api/auth/login', {
+      const r = await fetch('http://localhost:3105/api/auth/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: 'admin', password: 'admin123' }),
       });
       return (await r.json()).data?.accessToken;
     });
     const audit = await page.evaluate(async (tok) => {
-      const r = await fetch('http://localhost:3002/api/audit-logs?page=1&pageSize=5', {
+      const r = await fetch('http://localhost:3105/api/audit-logs?page=1&pageSize=5', {
         headers: { Authorization: `Bearer ${tok}` },
       });
       return r.ok ? r.json() : { status: r.status };
@@ -577,7 +577,7 @@ test('15. AI 配置检查 & Swagger API 文档', async ({ page }) => {
   }
 
   // Swagger API 文档
-  await page.goto('http://localhost:3002/api/docs');
+  await page.goto('http://localhost:3105/api/docs');
   await page.waitForLoadState('networkidle');
   const swaggerText = await page.locator('body').innerText();
   console.log('  Swagger 文档:', swaggerText.slice(0, 200).replace(/\n/g, ' | '));
@@ -586,7 +586,7 @@ test('15. AI 配置检查 & Swagger API 文档', async ({ page }) => {
 
 // ── 16. Prometheus 指标验证 ──────────────────────────────────────────────────
 test('16. Prometheus 指标端点', async ({ page }) => {
-  await page.goto('http://localhost:3002/metrics');
+  await page.goto('http://localhost:3105/metrics');
   await page.waitForLoadState('networkidle').catch(() => {});
   const text = await page.locator('body').innerText();
   const hasMetrics = text.includes('# HELP') || text.includes('nodejs_') || text.includes('http_');

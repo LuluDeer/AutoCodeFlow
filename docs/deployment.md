@@ -79,6 +79,41 @@ docker compose ps
 
 默认管理员账号：`admin` / 密码由环境变量 `INITIAL_ADMIN_PASSWORD` 决定（首次登录后请立即修改密码）
 
+## 裸机执行器安装（artifact 通道，第八轮 N24 根治）
+
+compose 栈之外的目标机（裸机/虚机）可用一键脚本安装 executor-node，安装
+代码经 admin-api 承载的 **真 artifact 通道** 下发（不再要求目标机有项目
+checkout）：
+
+1. **生成 artifact**（在有仓库 checkout 的构建机上）：
+
+```bash
+bash scripts/bundle-executor-artifact.sh
+# 产物: <repo>/artifacts/executor-node.tar.gz（dist + package.json + 生产 node_modules）
+```
+
+2. **放到 admin-api 可读位置**（`EXECUTOR_ARTIFACT_DIR`，默认进程 `<cwd>/artifacts`）：
+
+```bash
+# 裸机 admin-api（cwd=apps/admin-api）：脚本默认输出改指或直接拷贝
+cp artifacts/executor-node.tar.gz apps/admin-api/artifacts/
+# docker 部署：compose 为 admin-api 增加卷 + 环境变量，例如
+#   volumes: - ./artifacts:/app/artifacts:ro
+#   environment: EXECUTOR_ARTIFACT_DIR=/app/artifacts
+```
+
+3. **目标机安装**（管理后台「执行器 → 安装命令」即 `GET /api/executors/install-cmd` 生成同款命令）：
+
+```bash
+curl -fsSL 'http://<admin>:3105/api/executors/install.sh' \
+  | bash -s -- --api-url 'http://<admin>:3105' --secret '<EXECUTOR_SECRET>'
+```
+
+鉴权姿态：artifact 端点 `@Public` + 执行器共享 token（Bearer 头，`?token=`
+兜底），token 即 `--secret` 传入值，未配置时 fail-closed 401；artifact 未
+生成时 404。脚本在下载失败时回退本地 checkout 复制（开发场景），两者皆无
+则明确报错退出。可选参数：`--name --port --runtime --work-dir --install-dir`。
+
 ## 常用运维命令
 
 ### 查看日志

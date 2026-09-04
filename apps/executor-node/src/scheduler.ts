@@ -3,12 +3,21 @@ import { randomUUID } from 'crypto';
 import { config } from './config';
 import { logger } from './logger';
 import { post } from './admin-client';
+import { recordHeartbeat } from './heartbeat-state';
+import { executorStartedAt, executorStartupId } from './startup-identity';
+import { adoptExecutorTokenHash } from './admin-envelope';
 
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
 // SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
 // we use a simple lock-free approach with Atomics for consistency
 const sharedBuffer = new SharedArrayBuffer(4);
 const runningCountArray = new Int32Array(sharedBuffer);
+
+// R9: the process-life identity moved to startup-identity.ts (so
+// middleware/auth.ts can send startupId in the token request without a
+// scheduler <-> admin-client <-> auth import cycle). Re-exported here for
+// existing importers (main.ts, specs).
+export { executorStartedAt, executorStartupId };
 
 export function getRunningCount(): number {
   return Atomics.load(runningCountArray, 0);
@@ -69,18 +78,27 @@ async function sendHeartbeat() {
     const traceId = randomUUID();
 
     logger.info(`[${traceId}] Sending heartbeat`);
-    await post('/api/executors/heartbeat', {
+    const resp = await post('/api/executors/heartbeat', {
       address: config.executorAddressPublic || config.executorAddress,
       cpuUsage,
       memUsage,
       runningTaskCount: getRunningCount(),
+      restartedAt: executorStartedAt,
+      startupId: executorStartupId,
     });
+    // R9 (round-8 P1 W3): the heartbeat response echoes admin's current
+    // stored tokenHash (same adoption as register/POST /token), so the
+    // per-execution callback HMAC secret stays in sync with admin-side
+    // rotations without waiting for a re-register.
+    adoptExecutorTokenHash(resp?.data);
     logger.info(`[${traceId}] Heartbeat succeeded`);
+    recordHeartbeat(true);
   } catch (err: unknown) {
     logger.warn(`Heartbeat failed: ${err instanceof Error ? err.message : String(err)}`);
+    recordHeartbeat(false);
   }
 }
 
 export function startHeartbeat() {
-  return setInterval(sendHeartbeat, 30_000);
+  return setInterval(sendHeartbeat, config.heartbeatIntervalSeconds * 1000);
 }

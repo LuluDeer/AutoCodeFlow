@@ -42,6 +42,7 @@ export function paginate<T>(
 ) {
   return {
     list,
+    items: list,
     total,
     page,
     pageSize,

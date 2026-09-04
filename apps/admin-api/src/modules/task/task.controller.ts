@@ -32,7 +32,12 @@ import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TriggerTaskDto } from "./dto/trigger-task.dto";
 import { RollbackTaskDto } from "./dto/rollback-task.dto";
 import { BatchTaskIdsDto } from "./dto/batch-task.dto";
-import { PaginationDto } from "../../common/dto/pagination.dto";
+import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
+import {
+  AllExecutionsQueryDto,
+  TaskExecutionsQueryDto,
+} from "./dto/execution-query.dto";
+import { SkipTimeout } from "../../common/decorators/skip-timeout.decorator";
 import { AuditService } from "../audit/audit.service";
 
 @ApiTags("Task Management")
@@ -90,13 +95,34 @@ export class TaskController {
   @Get()
   @ApiOperation({
     summary: "List tasks",
-    description: "Get task list with pagination and search support. Filter by status.",
+    description:
+      "Get task list with pagination and search support. Filter by status.",
   })
-  @ApiQuery({ name: "page", required: false, description: "Page number, default 1" })
-  @ApiQuery({ name: "pageSize", required: false, description: "Page size, default 20" })
-  @ApiQuery({ name: "status", required: false, description: "Filter by status (active/paused/inactive)" })
-  @ApiQuery({ name: "name", required: false, description: "Fuzzy search by task name" })
-  @ApiQuery({ name: "runtime", required: false, description: "Filter by runtime (python/node/shell)" })
+  @ApiQuery({
+    name: "page",
+    required: false,
+    description: "Page number, default 1",
+  })
+  @ApiQuery({
+    name: "pageSize",
+    required: false,
+    description: "Page size, default 20",
+  })
+  @ApiQuery({
+    name: "status",
+    required: false,
+    description: "Filter by status (active/paused/inactive)",
+  })
+  @ApiQuery({
+    name: "name",
+    required: false,
+    description: "Fuzzy search by task name",
+  })
+  @ApiQuery({
+    name: "runtime",
+    required: false,
+    description: "Filter by runtime (python/node/shell)",
+  })
   @ApiResponse({
     status: 200,
     description: "Task list",
@@ -113,14 +139,15 @@ export class TaskController {
       },
     },
   })
-  findAll(@Query() p: PaginationDto) {
+  findAll(@Query() p: ListTasksQueryDto) {
     return this.taskService.findAll(p);
   }
 
   @Post("batch/trigger")
   @ApiOperation({
     summary: "Batch trigger tasks",
-    description: "Trigger multiple tasks. Partial failures do not affect other tasks.",
+    description:
+      "Trigger multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch trigger results" })
   @ApiBody({
@@ -157,7 +184,8 @@ export class TaskController {
   @Post("batch/pause")
   @ApiOperation({
     summary: "Batch pause tasks",
-    description: "Pause multiple tasks. Partial failures do not affect other tasks.",
+    description:
+      "Pause multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch pause results" })
   @ApiBody({
@@ -192,7 +220,8 @@ export class TaskController {
   @Post("batch/resume")
   @ApiOperation({
     summary: "Batch resume tasks",
-    description: "Resume multiple tasks. Partial failures do not affect other tasks.",
+    description:
+      "Resume multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch resume results" })
   @ApiBody({
@@ -229,7 +258,8 @@ export class TaskController {
   @Post("batch/delete")
   @ApiOperation({
     summary: "Batch delete tasks",
-    description: "Delete multiple tasks. Partial failures do not affect other tasks.",
+    description:
+      "Delete multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch delete results" })
   @ApiBody({
@@ -269,18 +299,53 @@ export class TaskController {
   @ApiQuery({ name: "pageSize", required: false })
   @ApiQuery({ name: "status", required: false })
   @ApiQuery({ name: "taskId", required: false })
+  @ApiQuery({ name: "taskName", required: false })
+  @ApiQuery({ name: "executorAddress", required: false })
   @ApiQuery({ name: "startTime", required: false })
   @ApiQuery({ name: "endTime", required: false })
-  allExecutions(
-    @Query()
-    p: PaginationDto & {
-      status?: string;
-      taskId?: string;
-      startTime?: string;
-      endTime?: string;
-    },
-  ) {
+  allExecutions(@Query() p: AllExecutionsQueryDto) {
     return this.taskService.getAllExecutions(p);
+  }
+
+  // ---- Compat aliases (by execution ID only) — used by acf-cli & mcp-server ----
+  @Get("executions/:execId/logs")
+  @ApiOperation({
+    summary: "Execution logs (by execution ID)",
+    description:
+      "Compat alias of GET /tasks/:id/executions/:execId/logs — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.",
+  })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiQuery({
+    name: "fromLine",
+    required: false,
+    description: "Start line number, default 0",
+  })
+  @ApiQuery({
+    name: "limit",
+    required: false,
+    description: "Lines per page, default 500, max 2000",
+  })
+  executionLogsByExecId(
+    @Param("execId") execId: string,
+    @Query("fromLine") fromLine?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.taskService.getExecutionLogs(
+      execId,
+      fromLine ? parseInt(fromLine, 10) || 0 : 0,
+      limit ? Math.min(parseInt(limit, 10) || 500, 2000) : 500,
+    );
+  }
+
+  @Get("executions/:execId")
+  @ApiOperation({
+    summary: "Execution details (by execution ID)",
+    description:
+      "Compat alias of GET /tasks/:id/executions/:execId — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.",
+  })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
+  executionByExecId(@Param("execId") execId: string) {
+    return this.taskService.getExecution(execId);
   }
 
   @Get("scheduler/stats")
@@ -292,7 +357,8 @@ export class TaskController {
   @Get(":id/stats")
   @ApiOperation({
     summary: "Task execution stats",
-    description: "Get execution statistics for a task: success rate, average duration, and last 20 executions.",
+    description:
+      "Get execution statistics for a task: success rate, average duration, and last 20 executions.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   getStats(@Param("id") id: string) {
@@ -302,7 +368,8 @@ export class TaskController {
   @Post(":id/suggest-schedule")
   @ApiOperation({
     summary: "AI schedule suggestion",
-    description: "Analyze execution history and return an AI-recommended cron expression with reasoning",
+    description:
+      "Analyze execution history and return an AI-recommended cron expression with reasoning",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   async suggestSchedule(@Param("id") id: string) {
@@ -312,7 +379,8 @@ export class TaskController {
   @Get(":id")
   @ApiOperation({
     summary: "Task details",
-    description: "Get detailed info for a single task including config, status, and execution stats.",
+    description:
+      "Get detailed info for a single task including config, status, and execution stats.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiResponse({ status: 404, description: "Task not found" })
@@ -323,7 +391,8 @@ export class TaskController {
   @Patch(":id")
   @ApiOperation({
     summary: "Update task",
-    description: "Update task configuration. Note: running tasks are not immediately affected.",
+    description:
+      "Update task configuration. Note: running tasks are not immediately affected.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiResponse({ status: 200, description: "Updated successfully" })
@@ -349,7 +418,8 @@ export class TaskController {
   @Put(":id/glue")
   @ApiOperation({
     summary: "Update GLUE script",
-    description: "Update the GLUE script source code for online editing of execution logic.",
+    description:
+      "Update the GLUE script source code for online editing of execution logic.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiResponse({ status: 200, description: "Script updated" })
@@ -385,7 +455,8 @@ export class TaskController {
   @Delete(":id")
   @ApiOperation({
     summary: "Delete task",
-    description: "Delete task. Running executions will be forcefully terminated.",
+    description:
+      "Delete task. Running executions will be forcefully terminated.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiResponse({ status: 200, description: "Deleted successfully" })
@@ -410,7 +481,8 @@ export class TaskController {
   @Post(":id/trigger")
   @ApiOperation({
     summary: "Manual trigger",
-    description: "Manually trigger task execution. Custom params can override task defaults.",
+    description:
+      "Manually trigger task execution. Custom params can override task defaults.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiResponse({
@@ -454,18 +526,20 @@ export class TaskController {
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiQuery({ name: "page", required: false, description: "Page number" })
   @ApiQuery({ name: "limit", required: false, description: "Page size" })
-  @ApiQuery({ name: "status", required: false, description: "Filter by execution status" })
-  executions(
-    @Param("id") id: string,
-    @Query() p: PaginationDto & { status?: string },
-  ) {
+  @ApiQuery({
+    name: "status",
+    required: false,
+    description: "Filter by execution status",
+  })
+  executions(@Param("id") id: string, @Query() p: TaskExecutionsQueryDto) {
     return this.taskService.getExecutions(id, p);
   }
 
   @Get(":id/executions/:execId")
   @ApiOperation({
     summary: "Execution details",
-    description: "Get detailed info for a single execution including time, status, and output.",
+    description:
+      "Get detailed info for a single execution including time, status, and output.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
@@ -477,7 +551,8 @@ export class TaskController {
   @Get(":id/executions/:execId/logs")
   @ApiOperation({
     summary: "Execution logs",
-    description: "Get execution logs with line-based pagination to avoid memory overload.",
+    description:
+      "Get execution logs with line-based pagination to avoid memory overload.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
@@ -498,7 +573,7 @@ export class TaskController {
   ) {
     return this.taskService.getExecutionLogs(
       execId,
-      fromLine ? (parseInt(fromLine, 10) || 0) : 0,
+      fromLine ? parseInt(fromLine, 10) || 0 : 0,
       limit ? Math.min(parseInt(limit, 10) || 500, 2000) : 500,
     );
   }
@@ -506,44 +581,70 @@ export class TaskController {
   @Get(":id/executions/:execId/logs/stream")
   @ApiOperation({
     summary: "Execution log SSE stream",
-    description: "Stream execution logs via Server-Sent Events. Sends [DONE] event on completion.",
+    description:
+      "Stream execution logs via Server-Sent Events. Sends [DONE] event on completion.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
+  // N8: SSE 流的挂起时长等于任务剩余运行时长，必须豁免全局 30s 请求超时，
+  // 否则 timeout() 会以 TimeoutError 掐断长任务日志流，且 HttpExceptionFilter
+  // 会对已写出 SSE 头的响应再 status(408).json() 产出非法混合响应。
+  // 同时本处理器走 @Res() library mode（Nest 不再接管返回值/不序列化），
+  // 全局 ResponseInterceptor 的 envelope map 因此不会写入流——新增 SSE 类
+  // 路由若改为 @Sse()/return Observable 则会破坏流，必须保持 @Res() 直写。
+  @SkipTimeout()
   async streamLogs(
     @Param("execId") execId: string,
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no"); // disable nginx buffering
-    res.flushHeaders();
-
-    const ac = new AbortController();
-    req.on("close", () => ac.abort());
-
-    const send = (line: string) => {
-      res.write(`data: ${JSON.stringify(line)}\n\n`);
-    };
-    const done = () => {
-      res.write(`event: done\ndata: [DONE]\n\n`);
-      res.end();
-    };
+    // TASK-008: 在写出任何 SSE 响应头之前先占用并发槽位——超限时抛出的
+    // ServiceUnavailableException 会被全局异常过滤器渲染为真正的 503，
+    // 而不是半开的 SSE 流。
+    const releaseSlot = this.taskService.acquireSseSlot(execId);
 
     try {
-      await this.taskService.streamExecutionLogs(execId, send, done, ac.signal);
-    } catch {
-      res.write(`event: error\ndata: stream error\n\n`);
-      res.end();
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no"); // disable nginx buffering
+      res.flushHeaders();
+
+      const ac = new AbortController();
+      req.on("close", () => ac.abort());
+
+      const send = (line: string) => {
+        res.write(`data: ${JSON.stringify(line)}\n\n`);
+      };
+      const done = () => {
+        res.write(`event: done\ndata: [DONE]\n\n`);
+        res.end();
+      };
+
+      try {
+        await this.taskService.streamExecutionLogs(
+          execId,
+          send,
+          done,
+          ac.signal,
+          releaseSlot,
+        );
+      } catch {
+        res.write(`event: error\ndata: stream error\n\n`);
+        res.end();
+      }
+    } finally {
+      // TASK-008: 双保险释放——streamExecutionLogs 内部 finally 已释放，
+      // 此处兜底防泄漏（release 幂等）。
+      releaseSlot();
     }
   }
 
   @Post(":id/rollback")
   @ApiOperation({
     summary: "Git rollback",
-    description: "Rollback task to a specific Git commit. Only applies to Git-type tasks.",
+    description:
+      "Rollback task to a specific Git commit. Only applies to Git-type tasks.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiBody({
@@ -555,7 +656,10 @@ export class TaskController {
       },
     },
   })
-  @ApiResponse({ status: 400, description: "Rollback not supported for non-Git tasks" })
+  @ApiResponse({
+    status: 400,
+    description: "Rollback not supported for non-Git tasks",
+  })
   async rollback(
     @Param("id") id: string,
     @Body() dto: RollbackTaskDto,
@@ -604,7 +708,10 @@ export class TaskController {
   }
 
   @Get(":id/versions")
-  @ApiOperation({ summary: "Version list", description: "Get task historical version list." })
+  @ApiOperation({
+    summary: "Version list",
+    description: "Get task historical version list.",
+  })
   @ApiParam({ name: "id", description: "Task ID" })
   getVersions(@Param("id") id: string) {
     return this.taskService.getVersions(id);
@@ -631,7 +738,8 @@ export class TaskController {
   @Post(":id/pause")
   @ApiOperation({
     summary: "Pause task",
-    description: "Pause task scheduled execution. In-progress executions are not affected.",
+    description:
+      "Pause task scheduled execution. In-progress executions are not affected.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiResponse({ status: 200, description: "Paused successfully" })
@@ -683,7 +791,8 @@ export class TaskController {
   @Post(":id/executions/:execId/analyze")
   @ApiOperation({
     summary: "AI analyze execution",
-    description: "Trigger on-demand AI analysis for an execution. Stores result in DB and returns it.",
+    description:
+      "Trigger on-demand AI analysis for an execution. Stores result in DB and returns it.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
@@ -713,7 +822,10 @@ export class TaskController {
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
   @ApiResponse({ status: 200, description: "Cancelled successfully" })
-  @ApiResponse({ status: 400, description: "Execution is not in a cancellable state" })
+  @ApiResponse({
+    status: 400,
+    description: "Execution is not in a cancellable state",
+  })
   @ApiResponse({ status: 404, description: "Execution record not found" })
   async killExecution(
     @Param("execId") execId: string,
@@ -731,5 +843,4 @@ export class TaskController {
     });
     return result;
   }
-
 }

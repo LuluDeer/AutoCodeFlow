@@ -100,6 +100,69 @@ describe('HttpClient', () => {
       expect(mockInstance.post).toHaveBeenCalledWith('/items', { name: 'test' }, undefined);
       expect(result).toEqual({ id: 'new-1' });
     });
+
+    // N27: callback items must carry executorAddress — the client stamps
+    // the injected executor address onto items that omit it.
+    describe('executorAddress auto-fill (N27)', () => {
+      const ADDR = 'executor-node:8002';
+
+      it('fills executorAddress on callback items that omit it', async () => {
+        mockInstance.post.mockResolvedValue({ data: { results: [] } });
+        const client = new HttpClient(BASE_URL, TOKEN, undefined, ADDR);
+        await client.post('/api/executions/callback', [
+          { executionId: 'e1', status: 'success' },
+          { executionId: 'e2', status: 'failed', executorAddress: 'other:9' },
+        ]);
+        expect(mockInstance.post).toHaveBeenCalledWith(
+          '/api/executions/callback',
+          [
+            { executionId: 'e1', status: 'success', executorAddress: ADDR },
+            { executionId: 'e2', status: 'failed', executorAddress: 'other:9' },
+          ],
+          undefined,
+        );
+      });
+
+      it('leaves non-callback posts untouched', async () => {
+        mockInstance.post.mockResolvedValue({ data: {} });
+        const client = new HttpClient(BASE_URL, TOKEN, undefined, ADDR);
+        await client.post('/items', { name: 'x' });
+        expect(mockInstance.post).toHaveBeenCalledWith(
+          '/items',
+          { name: 'x' },
+          undefined,
+        );
+      });
+
+      it('passes the payload through unchanged when no address is known', async () => {
+        mockInstance.post.mockResolvedValue({ data: {} });
+        const client = new HttpClient(BASE_URL, TOKEN);
+        await client.post('/api/executions/callback', [{ executionId: 'e1' }]);
+        expect(mockInstance.post).toHaveBeenCalledWith(
+          '/api/executions/callback',
+          [{ executionId: 'e1' }],
+          undefined,
+        );
+      });
+
+      it('forAdminApi wires env.executorAddress into the client', async () => {
+        mockInstance.post.mockResolvedValue({ data: {} });
+        const client = HttpClient.forAdminApi({
+          executionId: 'e',
+          taskId: 't',
+          taskName: 'n',
+          adminApiUrl: BASE_URL,
+          executorToken: TOKEN,
+          executorAddress: ADDR,
+        });
+        await client.post('/api/executions/callback', [{ executionId: 'e' }]);
+        expect(mockInstance.post).toHaveBeenCalledWith(
+          '/api/executions/callback',
+          [{ executionId: 'e', executorAddress: ADDR }],
+          undefined,
+        );
+      });
+    });
   });
 
   describe('put()', () => {
@@ -119,6 +182,46 @@ describe('HttpClient', () => {
       const result = await client.delete('/items/1');
       expect(mockInstance.delete).toHaveBeenCalledWith('/items/1', undefined);
       expect(result).toEqual({ deleted: true });
+    });
+  });
+
+  // N23: clients built without Admin API credentials are explicitly disabled.
+  describe('disabled client (N23)', () => {
+    it('forAdminApi without credentials is disabled and creates no axios instance', () => {
+      const client = HttpClient.forAdminApi({
+        executionId: 'e',
+        taskId: 't',
+        taskName: 'n',
+      });
+      expect(client.enabled).toBe(false);
+      expect(client.disabledReason).toMatch(/ADMIN_API_URL/);
+      expect(mockedAxios.create).not.toHaveBeenCalled();
+    });
+
+    it('every request method rejects with a clear error when disabled', async () => {
+      const client = HttpClient.forAdminApi({
+        executionId: 'e',
+        taskId: 't',
+        taskName: 'n',
+        adminApiUrl: BASE_URL, // token missing
+      });
+      expect(client.enabled).toBe(false);
+      await expect(client.get('/x')).rejects.toThrow(/HttpClient is disabled/);
+      await expect(client.post('/x', {})).rejects.toThrow(/HttpClient is disabled/);
+      await expect(client.put('/x', {})).rejects.toThrow(/HttpClient is disabled/);
+      await expect(client.delete('/x')).rejects.toThrow(/HttpClient is disabled/);
+    });
+
+    it('forAdminApi with full credentials is enabled', () => {
+      const client = HttpClient.forAdminApi({
+        executionId: 'e',
+        taskId: 't',
+        taskName: 'n',
+        adminApiUrl: BASE_URL,
+        executorToken: TOKEN,
+      });
+      expect(client.enabled).toBe(true);
+      expect(mockedAxios.create).toHaveBeenCalledWith({ baseURL: BASE_URL });
     });
   });
 });

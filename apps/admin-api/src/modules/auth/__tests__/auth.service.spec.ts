@@ -83,6 +83,26 @@ describe("AuthService (__tests__)", () => {
       ).rejects.toThrow(UnauthorizedException);
     });
 
+    it("F-4: runs bcrypt.compare against a dummy hash when user does not exist (timing equalization)", async () => {
+      const compareSpy = jest
+        .spyOn(bcrypt, "compare")
+        .mockResolvedValue(false as never);
+      compareSpy.mockClear(); // other tests in this file share the same spy
+      usersService.findByUsername.mockResolvedValue(null);
+      await expect(
+        service.login({ username: "nobody", password: "x" }),
+      ).rejects.toThrow(UnauthorizedException);
+      // The compare must still happen (not short-circuited by user == null),
+      // against the module's pre-computed dummy hash so the unknown-user path
+      // costs the same bcrypt CPU time as the wrong-password path.
+      expect(compareSpy).toHaveBeenCalledTimes(1);
+      expect(compareSpy).toHaveBeenCalledWith(
+        "x",
+        expect.stringMatching(/^\$2[aby]\$12\$/),
+      );
+      expect(usersService.recordLoginFailure).not.toHaveBeenCalled();
+    });
+
     it("throws UnauthorizedException on wrong password and increments failure counter", async () => {
       usersService.findByUsername.mockResolvedValue(mockUser as any);
       jest.spyOn(bcrypt, "compare").mockResolvedValue(false as never);
@@ -125,16 +145,34 @@ describe("AuthService (__tests__)", () => {
   });
 
   describe("refreshToken", () => {
-    it("returns new tokens for a valid refresh token without jti", async () => {
+    it("returns new tokens for a valid refresh token with jti", async () => {
+      // SEC-002: a refresh token must carry jti — without it the revocation
+      // check would be skipped, bypassing token-rotation protection.
       jwtService.verify.mockReturnValue({
         sub: 1,
         username: "admin",
         type: "refresh",
+        jti: "valid-jti-uuid",
+      } as any);
+      refreshTokenRepo.findOne.mockResolvedValue({
+        jti: "valid-jti-uuid",
+        revoked: false,
       } as any);
       usersService.findById.mockResolvedValue(mockUser as any);
       const result = await service.refreshToken("valid-token");
       expect(result).toHaveProperty("accessToken");
       expect(result).toHaveProperty("refreshToken");
+    });
+
+    it("rejects refresh token without jti (SEC-002)", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+      } as any);
+      await expect(service.refreshToken("old-token")).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
 
     it('throws if token type is not "refresh"', async () => {

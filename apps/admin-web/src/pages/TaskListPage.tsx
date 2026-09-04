@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Table, Button, Tag, Space, Typography, message, Input, Select,
-  Badge, Popconfirm, Tooltip, Empty, Switch,
+  Badge, Popconfirm, Tooltip, Empty, Switch, Modal, Form, Alert,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
@@ -12,6 +12,7 @@ import { useRequest } from 'ahooks';
 import { useNavigate } from 'react-router-dom';
 import { tasksApi, Task } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
+import ParamsEditor from '../components/ParamsEditor';
 
 const { Text } = Typography;
 
@@ -37,6 +38,9 @@ export default function TaskListPage() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [triggerFilter, setTriggerFilter] = useState<string | undefined>();
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
+  const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string; defaultParams?: Record<string, unknown> } | null>(null);
+  const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
+  const [triggering, setTriggering] = useState(false);
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -73,13 +77,28 @@ export default function TaskListPage() {
     catch (err: unknown) { message.error(getErrMsg(err, '批量删除失败')); }
   };
 
-  const handleTrigger = async (id: string, name: string) => {
+  const handleTrigger = (id: string, name: string, defaultParams?: Record<string, unknown>) => {
+    setTriggerParams(
+      Object.fromEntries(Object.entries(defaultParams ?? {}).map(([k, v]) => [k, String(v)]))
+    );
+    setTriggerTarget({ id, name, defaultParams });
+  };
+
+  const handleTriggerConfirm = async () => {
+    if (!triggerTarget) return;
+    setTriggering(true);
     try {
-      await tasksApi.trigger(id);
-      message.success(`已触发: ${name}`);
+      const params = Object.fromEntries(
+        Object.entries(triggerParams).filter(([k]) => k.trim())
+      );
+      await tasksApi.trigger(triggerTarget.id, Object.keys(params).length > 0 ? params : undefined);
+      message.success(`已触发: ${triggerTarget.name}`);
+      setTriggerTarget(null);
       setTimeout(refresh, 1000);
     } catch (err: unknown) {
       message.error(getErrMsg(err, '触发失败'));
+    } finally {
+      setTriggering(false);
     }
   };
 
@@ -103,8 +122,8 @@ export default function TaskListPage() {
       title: '任务名称',
       key: 'name',
       sorter: (a: Task, b: Task) => a.name.localeCompare(b.name),
-      render: (_: any, r: Task) => (
-        <Space direction="vertical" size={0}>
+      render: (_: unknown, r: Task) => (
+        <Space orientation="vertical" size={0}>
           <a onClick={() => nav(`/tasks/${r.id}`)} style={{ fontWeight: 500 }}>{r.name}</a>
           {r.description && <Text type="secondary" style={{ fontSize: 12 }}>{r.description}</Text>}
         </Space>
@@ -131,7 +150,7 @@ export default function TaskListPage() {
       title: '调度',
       key: 'schedule',
       width: 160,
-      render: (_: any, r: Task) => {
+      render: (_: unknown, r: Task) => {
         if (r.triggerType === 'cron' && r.cronExpression) {
           return <Text code style={{ fontSize: 12 }}>{r.cronExpression}</Text>;
         }
@@ -150,7 +169,7 @@ export default function TaskListPage() {
       title: '下次执行',
       key: 'nextRun',
       width: 150,
-      render: (_: any, r: Task) => {
+      render: (_: unknown, r: Task) => {
         if (r.status !== 'active') return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
         if (r.triggerType === 'cron' && r.cronExpression) {
           return (
@@ -175,7 +194,7 @@ export default function TaskListPage() {
       title: '启用',
       key: 'toggle',
       width: 70,
-      render: (_: any, r: Task) => (
+      render: (_: unknown, r: Task) => (
         <Switch
           size="small"
           checked={r.status === 'active'}
@@ -189,7 +208,7 @@ export default function TaskListPage() {
       title: '操作',
       key: 'actions',
       width: 160,
-      render: (_: any, r: Task) => (
+      render: (_: unknown, r: Task) => (
         <Space size={2}>
           <Tooltip title="查看详情">
             <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => nav(`/tasks/${r.id}`)} />
@@ -200,7 +219,7 @@ export default function TaskListPage() {
           <Tooltip title="立即执行">
             <Button
               type="text" size="small" icon={<ThunderboltOutlined />}
-              onClick={() => handleTrigger(r.id, r.name)}
+              onClick={() => handleTrigger(r.id, r.name, r.params)}
               style={{ color: '#1677ff' }}
             />
           </Tooltip>
@@ -291,6 +310,34 @@ export default function TaskListPage() {
           <Button size="small" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
         </div>
       )}
+
+      <Modal
+        title={<Space><ThunderboltOutlined /> 立即触发：{triggerTarget?.name}</Space>}
+        open={!!triggerTarget}
+        onCancel={() => setTriggerTarget(null)}
+        onOk={handleTriggerConfirm}
+        okText="触发"
+        okButtonProps={{ loading: triggering, icon: <ThunderboltOutlined /> }}
+        cancelText="取消"
+        width={520}
+        destroyOnHidden
+      >
+        <Alert
+          type="info"
+          showIcon
+          title="运行时参数（可选）"
+          description="此处填写的参数会覆盖任务默认参数，以 AUTOFLOW_<KEY> 环境变量注入任务。留空则使用任务默认参数。"
+          style={{ marginBottom: 16 }}
+        />
+        <Form layout="vertical">
+          <Form.Item label="执行参数">
+            <ParamsEditor
+              value={triggerParams}
+              onChange={setTriggerParams}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Table
         rowKey="id"

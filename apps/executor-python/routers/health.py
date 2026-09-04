@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import psutil
 import httpx
 import os
+from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 
 router = APIRouter()
@@ -10,6 +11,11 @@ router = APIRouter()
 # Module-level state updated by heartbeat task
 _last_heartbeat_time: str | None = None
 _admin_api_reachable: bool | None = None
+
+
+def _get_health_token() -> str:
+    """Return the executor auth token using the same precedence as auth.py."""
+    return os.environ.get('EXECUTOR_SHARED_TOKEN') or os.environ.get('EXECUTOR_SECRET') or ''
 
 
 def record_heartbeat(success: bool) -> None:
@@ -22,15 +28,10 @@ def record_heartbeat(success: bool) -> None:
 
 async def _check_admin_api():
     """OPS-02: Check connectivity to admin-api for readiness probe."""
-    token = os.environ.get('EXECUTOR_SECRET') or os.environ.get('EXECUTOR_SHARED_TOKEN') or ''
-    headers = {'Authorization': f'Bearer {token}'} if token else {}
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(
-                f'{settings.admin_api_url}/api/executors/heartbeat',
-                headers=headers,
-            )
-            return resp.status_code == 200
+            resp = await client.get(build_admin_api_url('/health'))
+            return resp.status_code < 500
     except Exception:
         return False
 
@@ -40,7 +41,7 @@ async def health():
     """Liveness probe - returns resource metrics and connectivity state."""
     # Use cached reachability if available, otherwise probe on demand
     admin_ok = _admin_api_reachable if _admin_api_reachable is not None else await _check_admin_api()
-    token = os.environ.get('EXECUTOR_SECRET') or os.environ.get('EXECUTOR_SHARED_TOKEN') or ''
+    token = _get_health_token()
     return {
         'status': 'ok',
         'appName': settings.app_name,
@@ -63,7 +64,7 @@ async def readiness():
             detail={
                 'status': 'unready',
                 'reason': 'admin-api unreachable',
-                'adminApiUrl': settings.admin_api_url,
+                'adminApiUrl': get_admin_api_base_url(),
             },
         )
     return {

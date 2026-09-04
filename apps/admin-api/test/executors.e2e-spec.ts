@@ -18,7 +18,17 @@ describe("Executors (e2e)", () => {
 
   // --------------------------------------------------------- POST /executors/register
   describe("POST /executors/register", () => {
+    // verifyExecutorToken() accepts the DB key "executor.sharedToken" if set,
+    // otherwise the env value executor.sharedToken = EXECUTOR_SECRET ||
+    // EXECUTOR_SHARED_TOKEN. With no token configured the endpoint refuses
+    // ALL registrations (401), so these tests are env-dependent.
+    const sharedToken =
+      process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || "";
+
     it("should register an executor and return executor data", async () => {
+      if (!sharedToken) {
+        return; // no token configured → register always 401, skip
+      }
       const payload = {
         address: `127.0.0.1:${30000 + Math.floor(Math.random() * 10000)}`,
         appName: "e2e-test-executor",
@@ -27,9 +37,9 @@ describe("Executors (e2e)", () => {
         description: "Executor registered by e2e tests",
       };
 
-      // No shared token required in non-production / when EXECUTOR_SHARED_TOKEN is not set
       const res = await request(app.getHttpServer())
         .post("/executors/register")
+        .set("Authorization", `Bearer ${sharedToken}`)
         .send(payload)
         .expect(201);
 
@@ -41,7 +51,6 @@ describe("Executors (e2e)", () => {
 
     it("should return 401 when executor shared token is required but missing", async () => {
       // This test is environment-dependent — skip if no shared token is configured
-      const sharedToken = process.env.EXECUTOR_SHARED_TOKEN;
       if (!sharedToken) {
         return;
       }
@@ -57,9 +66,7 @@ describe("Executors (e2e)", () => {
   // -------------------------------------------------------------- GET /executors
   describe("GET /executors", () => {
     it("should return 401 when no token is provided", async () => {
-      await request(app.getHttpServer())
-        .get("/executors")
-        .expect(401);
+      await request(app.getHttpServer()).get("/executors").expect(401);
     });
 
     it("should return executor list with valid JWT token", async () => {
@@ -77,9 +84,7 @@ describe("Executors (e2e)", () => {
   // --------------------------------------------------------- GET /executors/groups
   describe("GET /executors/groups", () => {
     it("should return 401 without token", async () => {
-      await request(app.getHttpServer())
-        .get("/executors/groups")
-        .expect(401);
+      await request(app.getHttpServer()).get("/executors/groups").expect(401);
     });
 
     it("should return groups list with valid token", async () => {
@@ -96,9 +101,7 @@ describe("Executors (e2e)", () => {
   // ---------------------------------------------------------- GET /executors/:id
   describe("GET /executors/:id", () => {
     it("should return 401 without token", async () => {
-      await request(app.getHttpServer())
-        .get("/executors/some-id")
-        .expect(401);
+      await request(app.getHttpServer()).get("/executors/some-id").expect(401);
     });
 
     it("should return executor detail for existing executor", async () => {
