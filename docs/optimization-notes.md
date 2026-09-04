@@ -372,3 +372,28 @@ admin-api **861/861 + eslint 0/0** · executor-node **150** · executor-python *
 **跨语言算法移植必须三方钉测试向量**：HMAC token 算法 TS→python 移植，admin-api/executor-node/executor-python 三方用同一测试向量（secret+execId+exp→同一 token 字符串）互相钉死。任何一端单方面改算法（哪怕改注释里的域分隔符）都会三方同红，漂移在 CI/本地即可拦截，不会到生产才炸。
 
 **观测埋点跟随验证走**：401 七分类不是先设计后埋点，而是真机验证时"每类 401 都要能区分"直接转化 为 series 分类——验证脚本里的每个断言场景对应一个可观测类别，观测体系与验证体系同构，生产排障时看到的每个异常形态都有现成指标。
+
+---
+
+## 十三、第十轮：观测面板 + 发布管道 + 旋转窗口收敛（2026-09-04）
+
+> 方法：A/B/C/D 四路并行 → W 收尾 N37-N42。报告：`docs/PROGRESS-round10-2026-09-04.md`。
+
+### 13.1 本轮要点
+
+- ✅ docs/observability/：Grafana 11 panels + 6 条告警（series 与源码逐字核对零偏差，不可推导处如实标注）
+- ✅ release.yml（version-guard + npm/PyPI + environment 审批门）+ 双 SDK README 矩阵；修掉 pydantic 未声明依赖的发布级 bug
+- ✅ 旋转 token 窗口评估实为最坏 30min（60s 缓存掷硬币 + 离线级联）→ executor-node 401 自愈 + rotateToken 播种缓存，收敛到一次往返
+- ✅ N37-N42 全消（webhook 优先级链/文档补漏/python 判据/repr 泄漏/release 审批门）
+
+### 13.2 基线
+
+admin-api **870/870 + eslint 0/0** · executor-node **158** · executor-python **115** · autoflow-sdk **91** · admin-web **35** · Playwright **29** · 其余同前。
+
+### 13.3 方法论沉淀
+
+**"幂等复用窗口"要按最坏路径评估**：tokenHash 对齐窗口交接假设"≤一个心跳（30s）"，实测是掷硬币——正向缓存命中则 30s，错过则持续 401 到 30min 定时刷新，且伴随 90s 判离线级联。有缓存的系统，最坏路径永远是"缓存恰好失效+刷新周期最长"，评估时必须画出状态机而不是取均值。
+
+**配置覆盖优先级要写进契约并测试钉死**：webhook URL 的三层来源（显式参数/保存 config/env）在三轮演进中顺序翻过两次（显式→config-first→显式优先），每次翻转都有消费方被静默改道。教训：多来源配置的优先级必须在端点文档明示 + 每层优先级各有独立测试，翻转时旧断言被迫明确更新而不是默默通过。
+
+**发布级 bug 的形态是"本地全绿、发布即崩"**：pydantic 未声明依赖——开发环境装过全局包所以 import 永远成功，wheel 装到干净机器第一行就崩。防御：npm pack --dry-run / python -m build 的产物在干净 venv 里 import 一遍（本轮 B 流已建立该演练模式）。

@@ -3,15 +3,15 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-03（第九轮）
+更新时间：2026-09-04（第十轮）
 当前分支：`develop`（本地领先 origin/develop 65+ commits，**push 无凭证**——CI 真跑待用户解决）
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - 测试基线（全绿）：
-  - admin-api **861/861** (jest, 53 suites) + eslint **0/0** + coverage 地板（68/58/56/69）
-  - executor-node **150/150** · executor-python **115/115** · autoflow-sdk **90/90**
+  - admin-api **870/870** (jest, 53 suites) + eslint **0/0** + coverage 地板（68/58/56/69）
+  - executor-node **158/158** · executor-python **115/115** · autoflow-sdk **91/91**
   - admin-web vitest **35/35** · Playwright E2E **29/29**（pinned 全链 4 例）
   - acf-cli **48** · mcp-server **52** · registry-pypi **33** · autocodeflow-node-sdk **43** · autocodeflow-notify **7**
   - 全端 tsc ✓ · admin-web build ✓ · `scripts/ci-local.sh` 本机等价 11 job 全绿
@@ -76,6 +76,15 @@
   - **webhook 配置面补全**（V2 遗留）：PATCH channels/webhook 合法 + config-first + URL query 脱敏 + 掩码回显守卫
   - **Playwright 29/29**：pinned 部署全链 4 例（在线/离线/不存在/全 UI 闭环）
   - **P1 修复（V 抓到）**：python register 用动态 token 打 bootstrap 端点 401（R9 修复揭开）→ 改静态 token + 状态码检查；**N33-N36**：issuedTokenCache 有界化（1000/24h）、artifact query token 风险标注、ci-local 差异声明
+- 本轮（2026-09-04 第十轮，A/B/C/D 四路 → W 收尾 N37-N42；详见 `docs/PROGRESS-round10-2026-09-04.md`）：
+  - **可观测性**：docs/observability/（Grafana dashboard 11 panels + 6 条告警规则 + README 抓取配置/指标字典，series 与源码逐字核对零偏差）
+  - **SDK 发布管道**（路线图 #10 收尾）：release.yml（tag 触发 + version-guard 四处版本一致性 + npm/PyPI 发布 + environment: release 审批门）；双 SDK README + sdk-guide 矩阵；修掉 autoflow-sdk 未声明 pydantic 依赖的发布级 bug
+  - **旋转 token 即时对齐**：窗口评估实为最坏 30min（60s 缓存掷硬币 + 离线级联）→ executor-node 401 自愈（forceTokenRefresh + 单次重试，窗口收敛到一次往返）+ admin rotateToken 播种 issuedTokenCache（UI 展示的 token 即执行器采纳的 token，零二次轮换）
+  - **audit N37-N42 全消**：webhook 优先级链修正（显式参数 > 已保存且启用 config > env，ChannelConfigStore 增 enabled 跟踪）；api-reference 补 /notification/send 行与 rotate-token 双端区分；sdk-guide python 判据 ctx.http→ctx.callback.enabled（原文档照写即 AttributeError）；TaskContext 敏感字段 repr=False；release 审批门
+- ⚠️ 第十轮部署注意：
+  - **webhook URL 语义翻转**：显式请求参数现在优先于已保存渠道 config（且 disabled 渠道 config 不再生效）——依赖第九轮"config-first 覆盖一切"行为的消费方需复查
+  - release.yml 首用前需配置 NPM_TOKEN / PYPI_API_TOKEN secrets 与 GitHub Environments（release）审批人
+  - executor-node 需随轮重新部署（401 自愈）
 - ⚠️ 第九轮部署注意：
   - autoflow-sdk 新回调 API（report_success/failure）——python 任务代码升级 SDK 后即可用回调
   - webhook 渠道现在可 PATCH 配置且 config-first（保存 url 优先于逐请求参数）——行为对依赖旧"参数优先"语义的消费方是变更
@@ -137,13 +146,12 @@ cd packages/mcp-server && npx tsc --noEmit
 
 ## 下一步建议（按优先级）
 
-> 第八轮交接 6 项中 5 项已在第九轮完成（CI push 仍阻塞于凭证；python 侧 token/SDK 面已全部对齐）。以下为第九轮后剩余：
+> 第九轮交接 6 项中 5 项已在第十轮完成。以下为第十轮后剩余：
 
-1. **CI push 真跑**：阻塞于 GitHub 凭证（本地领先 80+ commits）——用户侧解决后 push，`scripts/ci-local.sh` 十端等价全绿持续兜底。
-2. **回调 token 生产观测深化**：七分类指标已落地，可补 Grafana 面板 JSON/告警规则示例。
-3. **admin UI 手动旋转 token 的即时对齐**：三点采纳+幂等签发已闭环自动化，剩余评估"旋转时主动通知在线执行器"的即时性方案。
-4. **SDK 统一与示例**（路线图 #10 收尾）：node/python 双 SDK 回调已对齐，梳理统一 README/示例矩阵与 npm/PyPI 发布管道。
-5. 跨平台矩阵（需真机）；minio 链 3 moderate 等上游发版。
+1. **CI push 真跑 + release 首发演练**：仍阻塞于 GitHub 凭证（本地领先 95+ commits）——用户解决后 push develop 盯 Actions 首跑，再打 v1.0.0 tag 演练 release.yml。
+2. **autoflow-sdk-node 旧重复包清理**（@autocodeflow/sdk 0.1.0 与 autoflow-sdk 1.0.0 重复，无消费方——评估删除或归档）。
+3. **executor-python 401 自愈对齐**（移植 node 侧 forceTokenRefresh 语义，消 30min 窗口）；顺带修 reload-config 既有缺陷（用新 token 推配置而执行器只认旧 token → 必然 401）。
+4. 跨平台矩阵（需真机）；minio 链 3 moderate 等上游发版。
 
 ## 未覆盖验证项
 
