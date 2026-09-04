@@ -1,6 +1,6 @@
 {
   "name": "@autocodeflow/sdk",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AutoCodeFlow Node.js/TypeScript SDK — TaskContext, structured logging and Admin API callback client for task executors",
   "license": "MIT",
   "main": "dist/index.js",
