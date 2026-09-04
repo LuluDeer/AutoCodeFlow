@@ -303,3 +303,60 @@ jobs:
         working-directory: apps/registry-pypi
       - run: python -m pytest tests/ --tb=short
         working-directory: apps/registry-pypi
+
+  # ── Windows 兼容基线（R15-3.5 / windows-findings）──────────────
+  # R13 全轮在 Windows 复跑并逐条平台化断言后固化的绿灯集合：
+  # executor-node jest 158、acf-cli vitest 48、mcp-server vitest 61、
+  # admin-web lint+build。只跑无需 PG/Redis 的单元/构建步骤（admin-api
+  # 单测与 executor-python 依赖服务，仍由上方 ubuntu job 覆盖）。
+  # 这些用例正是本轮修复的对象（POSIX 假设、taskkill 树杀、SIGBREAK、
+  # glue .cmd、行尾守卫），此 job 防止兼容修复在后续迭代中回退。
+  windows-node-tests:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - apps/executor-node
+          - packages/acf-cli
+          - packages/mcp-server
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - run: npm ci
+        working-directory: ${{ matrix.project }}
+      # executor-node 无独立 typecheck，build 即 tsc；acf-cli/mcp-server 有 typecheck
+      - name: Build / typecheck
+        working-directory: ${{ matrix.project }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.project }}" = "apps/executor-node" ]; then
+            npm run build
+          else
+            npm run typecheck
+          fi
+      - name: Unit tests (jest / vitest)
+        working-directory: ${{ matrix.project }}
+        run: npm test
+
+  windows-admin-web:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/admin-web/package-lock.json
+      - run: npm ci
+        working-directory: apps/admin-web
+      - run: npm run lint
+        working-directory: apps/admin-web
+      - run: npm run build
+        working-directory: apps/admin-web
+        env:
+          VITE_API_URL: http://localhost:3105
