@@ -37,41 +37,47 @@
 
 ## R13：Windows 环境基线（安装 + 五端单测跑通）
 
+> **状态：2026-09-05 全部完成，结果见 `docs/windows-findings.md`。** 关键：R-01 实锤（W-01，已补 `.gitattributes`+renormalize）；三包/单测首轮暴露 2 枚生产阻断（W-02 setsid、W-04 路径守卫绕过）+ 5 类测试 POSIX 假设，已全部修复并复跑全绿。
+
 目标：仓库在 Windows 上"能装、能测"。全部通过后打勾。
 
-- [ ] 1.1 clone（记录 `git config core.autocrlf` 实际值）+ 确认 `git status` 干净（若大量文件标 modified 即 CRLF 生效，改 config 后重新 clone）
-- [ ] 1.2 admin-api：`npm ci`（官方源）→ `npx tsc --noEmit` → `npx jest`（**预期 873/873**；需可连 PG/Redis——docker 或 WSL2，env 同 `.env.example`）→ `npx eslint` 0/0
-- [ ] 1.3 executor-node：`npm ci` → `npm run build` → `npx jest`（**预期 158/158**）
-- [ ] 1.4 executor-python：venv + `pip install -r requirements.txt` → `python -m pytest -q`（**预期 125**）
-- [ ] 1.5 admin-web：`npm ci` → `npx vitest run`（35）→ `npm run lint`（0/0）→ `npm run build`
-- [ ] 1.6 acf-cli：`npx vitest run`（48）+ `npx tsc --noEmit`
-- [ ] 1.7 mcp-server：`npx vitest run`（61）+ `node dist/index.js --help` / `--version` 正常输出（R-11 编码观察）
-- [ ] 1.8 发布包消费：临时目录 `npm install @autocodeflow/sdk autocodeflow-mcp-server` + `pip install autoflow-sdk`（Windows 装的是含 platform 轮子的真实用户路径）
-- [ ] 1.9 registry-pypi：`pip install -r requirements.txt` → `python -m pytest tests/ -q`（33）
-- [ ] 1.10 三包/单测在 Windows 的失败项**全部记录**（哪怕预期内失败）——这是 R14 修复输入
+- [x] 1.1 clone（`core.autocrlf=true`）+ `git status` 干净——但 R-01 实锤：autocrlf 下 status 干净不代表无污染，install.sh 检出为 CRLF（W-01）
+- [x] 1.2 admin-api：`npm ci`（npmmirror 镜像）→ tsc 0 err → jest **873/873**（修 W-01 后全绿，唯一失败本是 CRLF 字节守卫）→ eslint **0/0**（此前 37078 全是 prettier `␍`，W-01）
+- [x] 1.3 executor-node：`npm ci` → build → jest **158/158**（首轮 153，5 失败均测试 POSIX 假设，已平台化，生产代码本就有 win 分支）
+- [x] 1.4 executor-python：`uv venv --python 3.12` → pytest **125/125**（首轮 113，12 失败=2 生产阻断 W-02/W-04 + 测试假设 W-05；glue shell 用例改双平台实跑后 0 skip）
+- [x] 1.5 admin-web：vitest **35/35** → lint 0/0 → build ✓（首跑 34/35 一例 flaky，复跑 35，见 W-06）
+- [x] 1.6 acf-cli：vitest **48/48** + tsc ✓
+- [x] 1.7 mcp-server：vitest **61/61** + `--help`/`--version` 正常（帮助全 ASCII 无乱码，R-11 不成立；W-07 token 告警移出 import 副作用已修）
+- [x] 1.8 发布包消费：npm 两包（bin 可跑+require 可导入）+ `pip install autoflow-sdk`（3.12 venv 导入正常）全 ✓
+- [x] 1.9 registry-pypi：pytest **33/33** ✓
+- [x] 1.10 失败项全部记录 → findings W-01~W-09（+修复期新增 W-10~W-15）
 
 ## R14：Windows 功能冒烟（真链路）
 
 前置：PG+Redis 起来（Docker Desktop 或 WSL2），admin-api `npm run start:prod`、executor-node `node dist/main.js`（**手动启动替代 systemd**——R-02 预期）。
 
-- [ ] 2.1 executor-node 注册上线（共享 token 对齐）→ GET /api/executors 显示 online
-- [ ] 2.2 手动任务全链：创建 glue node 任务 → trigger → 执行 success → 日志回读（R-09：shell 任务预期失败，node/python 任务预期成功——分别取证）
-- [ ] 2.3 固定节奏任务 15s × 2 分钟（R11 基线：gap 均值 15.000s ±0.5s，Windows setInterval 精度可能略差，验收放宽到 ±1s，超了记录）
-- [ ] 2.4 任务超时 kill：建 timeout=10s 的死循环任务 → 观察执行被杀 + **孙进程是否残留**（R-03 重点：任务管理器/`tasklist` 对照）+ 槽位释放
-- [ ] 2.5 401 自愈：admin 界面轮换 token → 30s 内（一个心跳）出站请求自动对齐（node 侧）；reload-config 推送成功（R11 修复的 Windows 复验）
-- [ ] 2.6 日志/磁盘回收：产生日志 → TTL/清理路径不因 EBUSY 报错（R-07）
-- [ ] 2.7 中文+空格路径：WORK_DIR 设 `C:\测试 目录\af` 重跑 2.2（R-06）
-- [ ] 2.8 Playwright：`npx playwright install chromium` 后 `e2e-full.spec.js` 29 例（admin-web dev + admin-api + executor-node 全栈）——预期通过数如实记录（Windows 首跑，无基线）
-- [ ] 2.9 优雅退出：Ctrl+C / taskkill /auto 后确认无孤儿进程、无锁残留（R-08）
+> **状态：2026-09-05 全部完成。** R-03/R-06/R-07/R-08 是真风险且已实测处置——见 findings「R14 结果」表与 W-11~W-15。
+
+- [x] 2.1 executor-node 注册上线 → `Registered (runtimes: shell,node,python)`，GET /api/executors → online ✓
+- [x] 2.2 手动任务全链：node/python/shell/batch 四类全 success（R-09 shell 已改平台原生 `.cmd`，不再必失败，见 W-11）
+- [x] 2.3 固定节奏 15s×2min：9/9 success，gap 15.007s ±0.02s（远优于 ±1s）✓
+- [x] 2.4 超时 kill：timeout=10s 死循环 → `Task timeout after 10s`，**4 个孙进程 killpg→taskkill 树杀后计数=0 无残留**（P-7/R-03 实证），槽位释放 ✓
+- [x] 2.5 401 自愈 + reload-config：轮换后 `Idempotent token reuse`（无 401 风暴）、新任务全链 success、reload-config 推送 `{updatedFields:[taskTimeoutSeconds]}` ✓（R11 Windows 复验）
+- [x] 2.6 日志/磁盘回收：活进程持句柄时跨进程 `deleteOldLogs` 成功，无 EBUSY（R-07）✓
+- [x] 2.7 中文+空格路径：`C:/测试 目录/af` 下三类任务全 success（R-06）✓
+- [x] 2.8 Playwright：**任务书 29 例为 Linux 未跟踪文件，Windows 无基线（W-12）**；跑仓内 16 例版 → 首跑 15/16（W-13 测试路径 bug）→ 修复后 **16/16**
+- [x] 2.9 优雅退出：**taskkill /F 绕过优雅链致孙进程泄漏**（R-08 实证）→ 补 SIGBREAK + windowsHide 修复（P-9/P-10），复测 `Received SIGBREAK→树杀收割→shutdown complete` exit 0x0 ✓
 
 ## R15：Windows 兼容修复批（消化 R13/R14 findings）
 
-- [ ] 3.1 R13/R14 findings 逐项修复（Linux 侧主导，Windows 复验）
-- [ ] 3.2 `.gitattributes` 补齐（`*.sh text eol=lf`、`* text=auto`）——治 R-01
-- [ ] 3.3 install.sh 加平台探测：非 Linux 直接给明确指引（指向 Windows 手动路线），避免误导
-- [ ] 3.4 env 白名单按 Windows 实测补缺（R-04）
-- [ ] 3.5 Windows CI job（`runs-on: windows-latest` 跑 executor-node + acf-cli/mcp-server/admin-web 的 vitest/jest——把 Windows 基线固化进 CI）
-- [ ] 3.6 文档：docs/deployment.md 补 Windows 部署章节（以实测为准写）
+> **状态：2026-09-05 完成 3.1~3.6**（本轮 Windows 侧直接改码，Linux 复验清单见 findings 末）。
+
+- [x] 3.1 findings 逐项修复（W-01~W-15，含 5 枚生产缺陷 P-1~P-11）
+- [x] 3.2 `.gitattributes` 补齐（`* text=auto eol=lf` + `*.sh/*.py eol=lf` + 二进制标记）——治 R-01
+- [x] 3.3 install.sh 加平台探测（非 Linux 明确报错 + 手动路线指引），与后端 `install-script.content.ts` 副本字节同步、守卫测试通过
+- [x] 3.4 env 白名单实测：R-04 系统变量（SYSTEMROOT 等）已满足，`sys.executable` 在净化 env 下可起（python 隔离测试覆盖）；无新增缺口
+- [x] 3.5 Windows CI job：`.github/workflows/ci.yml` 新增 `windows-node-tests`（executor-node/acf-cli/mcp-server）+ `windows-admin-web`，固化本轮绿灯
+- [x] 3.6 docs/deployment.md 补 Windows 部署章节（手动路线 + SIGBREAK/taskkill 服务化要点 + shell 语义 + 中文路径）
 
 ## R16：executor-desktop Windows 打包（路线图 #12 收口）
 

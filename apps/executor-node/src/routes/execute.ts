@@ -250,8 +250,14 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     } else if (glLower === 'python' || glLower === 'glue_python' || (!glueLanguage && runtime === 'python')) {
       glueFile = path.join(workDir, 'glue_script.py');
       actualRuntime = 'python';
-    } else if (glLower === 'shell' || glLower === 'glue_shell') {
-      glueFile = path.join(workDir, 'glue_script.sh');
+    } else if (glLower === 'shell' || glLower === 'glue_shell' || (!glueLanguage && runtime === 'shell')) {
+      // W-11 (windows-findings): parity bug — node/python branches accept a
+      // missing glueLanguage (fall back to task.runtime), shell did not and
+      // 400'd `Unsupported glue language: ` for shell glue created without
+      // the explicit field. Also on win32 the file MUST end in .cmd:
+      // `cmd.exe /c <path>.sh` neither runs the batch nor exits cleanly —
+      // it hangs (observed holding a task slot until timeout).
+      glueFile = path.join(workDir, process.platform === 'win32' ? 'glue_script.cmd' : 'glue_script.sh');
       actualRuntime = 'shell';
     } else {
       sendError(400, `Unsupported glue language: ${glueLanguage}`);
@@ -601,7 +607,19 @@ function runProcess(
   executionId?: string,
 ): Promise<{ success: boolean; logs: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args, { cwd, env, detached: process.platform !== 'win32' });
+    // W-14 (windows-findings R-08/2.9): on win32 the child must NOT share the
+    // executor's console — a console Ctrl+C/CTRL_BREAK event is delivered to
+    // every attached process, hard-killing running tasks instantly (0xC000013A)
+    // and bypassing gracefulShutdown's drain + killRunningTaskProcesses tree
+    // kill entirely, which orphaned the tasks' own detached grandchildren.
+    // windowsHide gives the child its own hidden console (CREATE_NO_WINDOW);
+    // reaping stays with the executor (timeout taskkill /T /F, P-7).
+    const proc = spawn(cmd, args, {
+      cwd,
+      env,
+      detached: process.platform !== 'win32',
+      windowsHide: true,
+    });
     // Bounded accumulator — an unbounded `logs += output` OOMs the executor
     // on chatty tasks (memory peaks before the 10k callback truncation).
     const logBuffer = new BoundedLogBuffer();

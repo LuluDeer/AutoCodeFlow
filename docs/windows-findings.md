@@ -103,6 +103,46 @@
 - 现象：`cmd.exe /c` 的中文报错字节为 GBK（0xb2 等），两侧 executor 均以 UTF-8+`errors='replace'` 解码 → 不崩但非 ASCII 输出会乱码。生产任务多为 node/python（自报 UTF-8），影响面小。
 - 处置：记录为体验项；如需彻底解决应 win32 下按 `GetOEMCP`/chcp 探测解码，或任务脚本统一要求 UTF-8——留待产品决策，不在本轮强行改。
 
+### R14 结果（真链路冒烟，2026-09-05）
+
+| 用例 | 结果 | 证据 |
+|---|---|---|
+| 2.1 executor-node 手动启动+注册 | ✅ | `Registered to admin-api (runtimes: shell,node,python)`；GET /api/executors → `online` |
+| 2.2 手动任务全链 | ✅ | node/python **glue**（无 glueLanguage）/shell/batch 四类全 success，日志回读正常；shell 修复见 W-11 |
+| 2.3 固定节奏 15s×2min | ✅ 超预期 | 9 次全 success，gap 均值 15.007s，min 14.994 / max 15.016（验收 ±1s，实测 ±0.02s） |
+| 2.4 超时 kill + 孙进程 | ✅ | timeout=10s 死循环任务：`Task timeout after 10s`；4 个 detached 孙进程 `setTimeout(600000)` 计数 kill 后=0（**P-7 taskkill /T /F 树杀实证**）；槽位释放（re-trigger 成功） |
+| 2.5 401 自愈 + reload-config | ✅ | rotate-token 后下一心跳即 `Idempotent token reuse (same startupId)`（N4/N50 冷缓存语义，无 401 风暴）；轮换后新任务全链 success；`POST /executors/:id/reload-config` → `{success:true, updatedFields:[taskTimeoutSeconds]}` |
+| 2.6 日志/磁盘回收 | ✅ | 执行器**活进程持有句柄**时跨进程 `deleteOldLogs(0)` 成功删除当日目录，无 EBUSY（`fs.rmSync(force)` OK） |
+| 2.7 中文+空格 WORK_DIR | ✅ | `WORK_DIR=C:/测试 目录/af` 下 node/python/batch 三类任务全 success + 日志回读 |
+| 2.8 Playwright e2e | ✅ 16/16 | **W-12**：任务书所指 29 例为 Linux 侧**未跟踪**根级文件，Windows 无该基线；跑仓内 `e2e-full.spec.cjs` 16 例（首跑 15/16 → 修 W-13 后 16/16，1.5min） |
+| 2.9 优雅退出 | ✅（经 W-14/15 修复后） | 详见 W-14/15 |
+
+### W-12：⚠️ e2e 29 例基线为 Linux 侧未跟踪文件，Windows/CI 不可复现（流程债）
+- 轮次与用例：R14-2.8
+- 现象：R9-R11 验证报告使用的根级 `e2e-full.spec.js`（29 例）+ `playwright.e2e.config.js` 是 C-agent 未跟踪产物（VERIFY-round9/11 明文记录），仓库只跟踪 `apps/admin-web/e2e-full.spec.cjs/.js`（16 例版）。Windows 新 clone 即无 29 例基线。
+- 严重级：流程债（测试资产未入库）。
+- 建议：把 29 例版纳入仓库（或在其原始机器提交），否则 R15-3.5 Windows CI 只能固化 16 例基线。
+
+### W-13：🧪 16 例版 test#16「Prometheus 指标端点」断言路径错误（跨平台测试 bug，已修）
+- 原实现 `page.goto('http://localhost:3105/metrics')`——实际端点是 **`/api/metrics` 且带 JwtAuthGuard**（metrics.controller.ts R7）。旧路径 404，任何平台都拿不到指标。
+- 修复：.cjs/.js 两副本同步改为带 globalSetup token 的请求式断言（200 + `# HELP`/`autoflow_` 前缀）。复跑 16/16。
+- 另记：`.cjs`/`.js` 双副本并存易发散（.js 因 type:module 不可被 .cjs 配置加载），长期应删一留一。
+
+### W-14：🔴 Windows 下任务进程与执行器共享控制台——Ctrl+C/Break 直杀任务、绕过优雅收割链（已修 P-9）
+- 轮次与用例：R14-2.9（风险点 R-08/R-03）
+- 取证：执行器带运行中任务收 CTRL_BREAK：gracefulShutdown 正常进入（W-15 修复后日志链完整），但任务的 `node.exe` 直接子进程**先于**执行器被控制台事件杀死（`exit 0xC000013A`，close 事件令 runningCount 归零），其自己 spawn 的 detached 孙进程树因此逃过 `killRunningTaskProcesses` 全部泄漏（实测 4 孙存活）。
+- 根因：`runProcess` spawn 时 win32 分支 `detached:false` → 子进程继承执行器控制台，控制台 Ctrl 事件广播给所有附加进程。Linux 无此问题（detached:true 独立进程组）。
+- 修复（P-9）：任务 spawn 加 `windowsHide:true`（CREATE_NO_WINDOW，独立隐藏控制台）→ Ctrl 事件不再波及任务，收割权交还 gracefulShutdown 链。
+
+### W-15：🔴 executor-node/executor-python/admin-api 未注册 SIGBREAK——Windows 唯一可达的优雅退出信号被忽略（已修 P-10）
+- 取证：未修前 CTRL_BREAK 使进程**立即**以 0xC000013A 退出，零条 graceful 日志。
+- 平台语义（R-08 结论）：`taskkill`（无 /F）对控制台程序**完全无效**（"只能强行终止"）；`taskkill /F` = TerminateProcess，不跑任何 handler。Windows 上可达的优雅信号只有控制台事件：Ctrl+C→SIGINT（前台有效）、Ctrl+Break→**SIGBREAK**（对后台/新进程组唯一可用）。Node 需显式 `process.on('SIGBREAK')`。
+- 修复（P-10）：executor-node `main.ts` 注册 SIGBREAK→gracefulShutdown（复验：`Received SIGBREAK → Waiting → offline → shutdown complete`，exit 0x0）；admin-api `main.ts` SIGBREAK→app.close()；executor-python `main.py` getattr 守卫注册 SIGBREAK。
+- 部署文档要点（R15-3.6 落笔）：Windows 服务化必须用 NSSM/任务计划程序「停止任务」（转发 Ctrl+C）而非 `taskkill /F`，否则运行中任务树必泄漏。
+
+### 测试环境污染记录（非 bug）
+- pytest 复用同名 tmp 目录（`pytest-of-<user>/pytest-N`）+ `git_checkout_to` 的 salted `.git_cache` 以 src 绝对路径哈希命名——当上一次运行被强杀留下半成品 cache 目录时，后续运行会确定性 `clone rc=128`（本轮曾复现 1 例，清空 temp 后 4/4 过）。Linux CI 每次 fresh /tmp 不受影响；建议（低优先）：`git_checkout_to` 的 clone 失败清理路径已有 rmtree，但 `cache_dir.exists()` 为真而目录非有效 bare repo 时无自愈——留作后续加固项。
+
 ---
 
 ## 修复落地（R15 前置，Windows 侧主导，同日完成）
@@ -120,6 +160,9 @@
 | P-6 | W-09a：`_build_shell_cmd` win32 分支归一化 POSIX 风格入口（剥 `./`、`/`→`\`）——实测 `cmd.exe /c ./hello.bat` 报「'.' 不是内部或外部命令」 | `routers/execute.py` | 测试期实测发现 |
 | P-7 | R-03 增强：`killProcessTree` win32 分支从「仅杀父进程（文档化限制）」升级为 `taskkill /T /F` 树杀，`killRunningTaskProcesses` 委托给它，与 python 侧语义对齐 | `executor-node/src/run-command.ts`、`routes/execute.ts` | 消除孙进程残留风险（R14-2.4 将实测验证） |
 | P-8 | W-07：mcp-server token WARNING 从 api.ts 模块副作用移入 `main()`——`--help`/`--version` 输出恢复干净 | `packages/mcp-server/src/{api,index}.ts` | 61/61 vitest 通过 |
+| P-9 | W-14：任务 spawn 加 `windowsHide:true`——win32 控制台 Ctrl 事件不再直接杀死任务进程、绕过优雅收割链 | `executor-node/src/routes/execute.ts runProcess` | 2.9 实测修复链完整 |
+| P-10 | W-15：三端注册 SIGBREAK（executor-node 优雅链 / admin-api app.close / executor-python 守卫式）——Windows 后台部署唯一可达的优雅退出信号 | `executor-node/src/main.ts`、`admin-api/src/main.ts`、`executor-python/main.py` | 实测 `Received SIGBREAK→shutdown complete` rc=0x0 |
+| P-11 | W-11：shell glue 缺 glueLanguage fallback（400）+ win32 glue 文件名 `.cmd` 化（`.sh` 经 cmd.exe 挂死）| executor-node/executor-python | 2.2 shell 两类转绿；python glue 用例从 skip 恢复双平台实跑 |
 
 ### 测试平台化修复
 - executor-node（W-03）：POSIX kill 两例 → 平台分支断言（win32 验 taskkill spawn + proc.kill）；`versioned deployment paths` 两例 → `path.join` 构造期望；npm 白名单例 → 按平台找 `npm.cmd`/`npm`。**158/158 全绿（连跑 3 次稳定）**。

@@ -182,5 +182,10 @@ if __name__ == '__main__':
     
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, partial(handle_signal, sig))
+    # R-08 (windows-findings): SIGBREAK is Windows-only (Ctrl+Break); POSIX has
+    # no such attribute, so register it only where it exists.
+    _sigbreak = getattr(signal, 'SIGBREAK', None)
+    if _sigbreak is not None:
+        signal.signal(_sigbreak, partial(handle_signal, _sigbreak))
     
     uvicorn.run('main:app', host='0.0.0.0', port=settings.port, reload=False)

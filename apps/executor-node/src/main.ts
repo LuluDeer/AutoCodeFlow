@@ -180,6 +180,13 @@ async function gracefulShutdown(signal: string): Promise<void> {
 // Register signal handlers
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+// R-08 (windows-findings 2.9): Node maps the Windows CTRL_BREAK_EVENT console
+// signal to SIGBREAK. Without this handler, Ctrl+Break (the only signal a
+// detached/background executor can receive, since taskkill cannot deliver
+// SIGTERM to console apps) killed the process immediately (exit 0xC000013A)
+// — running task processes were orphaned instead of being reaped by
+// gracefulShutdown's killRunningTaskProcesses. No-op on POSIX.
+process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));
 
 const server = app.listen(config.port, async () => {
   try {
