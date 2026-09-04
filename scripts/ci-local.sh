@@ -12,7 +12,6 @@
 #   executor-node-test    → job_executor_node
 #   acf-cli-test          → job_acf_cli
 #   mcp-server-test       → job_mcp_server
-#   autoflow-sdk-node-test        → job_autoflow_sdk_node
 #   autocodeflow-node-sdk-test    → job_autocodeflow_node_sdk
 #   admin-web-build       → job_admin_web（CI 只有 lint+build；本脚本按 R8 要求
 #                           追加 vitest——admin-web 的 test 脚本即 vitest run）
@@ -201,11 +200,7 @@ job_mcp_server() {
   ( cd packages/mcp-server && npm test )
 }
 
-# ── CI job: autoflow-sdk-node-test / autocodeflow-node-sdk-test ────────────
-job_autoflow_sdk_node() {
-  npm_ci_if_needed packages/autoflow-sdk-node
-  ( cd packages/autoflow-sdk-node && npm test -- --coverage )
-}
+# ── CI job: autocodeflow-node-sdk-test ──────────────────────────────────────
 job_autocodeflow_node_sdk() {
   npm_ci_if_needed packages/autocodeflow-node-sdk
   ( cd packages/autocodeflow-node-sdk && npm test -- --coverage )
@@ -263,7 +258,6 @@ fi
 run_job "executor-node"        job_executor_node
 run_job "acf-cli"              job_acf_cli
 run_job "mcp-server"           job_mcp_server
-run_job "autoflow-sdk-node"    job_autoflow_sdk_node
 run_job "autocodeflow-node-sdk" job_autocodeflow_node_sdk
 run_job "admin-web"            job_admin_web
 run_job "executor-python"      job_executor_python
