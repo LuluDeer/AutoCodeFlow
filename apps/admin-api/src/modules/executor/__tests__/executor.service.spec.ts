@@ -714,6 +714,46 @@ describe("ExecutorService (__tests__)", () => {
       );
     });
 
+    // R10 (round-10 gap #3): the full manual-rotation convergence loop.
+    // Admin clicks "rotate token" in the UI (direct rotateToken call — the
+    // only path that does not hand the new token to the executor in-band);
+    // executor-node's 401 self-heal then re-hits POST /token with the SAME
+    // startupId. Because rotateToken seeds issuedTokenCache, that fetch
+    // returns exactly the UI-shown token (no second rotation) plus its
+    // hash, so bearer and N26 callback HMAC secret converge in one
+    // round-trip.
+    it("an admin-UI rotation is adopted by the executor's next same-startupId fetch without a second rotation", async () => {
+      const { svc, row } = await makeIssueFixture();
+      row.executorStartupId = "startup-1";
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      expect(first.token).not.toBeNull();
+
+      // Admin-UI POST :id/rotate-token.
+      const uiRotation = await svc.rotateToken("e1");
+      const hashAfterUiRotation = row.tokenHash;
+      expect(uiRotation.token).not.toBe(first.token);
+      const rotateSpy = jest.spyOn(svc, "rotateToken");
+
+      // Executor self-heal: POST /token, same process life.
+      const healed = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+
+      expect(healed.token).toBe(uiRotation.token);
+      expect(healed.tokenHash).toBe(hashAfterUiRotation);
+      await expect(
+        bcrypt.compare(healed.token, healed.tokenHash),
+      ).resolves.toBe(true);
+      // No silent second rotation — the UI-shown token stays live.
+      expect(rotateSpy).not.toHaveBeenCalled();
+    });
+
     it("bounds issuedTokenCache — evicts expired then oldest entries past the cap (N34)", async () => {
       const { svc } = await makeIssueFixture();
       const cache = (svc as any).issuedTokenCache as Map<
@@ -1219,6 +1259,53 @@ describe("ExecutorService (__tests__)", () => {
       await expect(service.rotateToken("missing")).rejects.toThrow(
         NotFoundException,
       );
+    });
+
+    // R10 (round-10 gap #3): seed the idempotent-issuance cache with the
+    // fresh plaintext under the executor's CURRENT startupId, so the
+    // executor-node 401 self-heal (POST /token, same startupId) adopts
+    // EXACTLY the token the admin UI just showed instead of rotating a
+    // second time and killing it.
+    it("seeds issuedTokenCache with the new plaintext under the current startupId", async () => {
+      const executor = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        tokenHash: null,
+        executorStartupId: "startup-1",
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const result = await service.rotateToken("e1");
+
+      const cache = (service as any).issuedTokenCache as Map<
+        string,
+        { token: string; startupId: string | null }
+      >;
+      expect(cache.get("10.0.0.9:3002")).toMatchObject({
+        token: result.token,
+        startupId: "startup-1",
+      });
+    });
+
+    it("seeds issuedTokenCache with a null startupId for legacy executors (no same-startupId reuse)", async () => {
+      const executor = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        tokenHash: null,
+        executorStartupId: null,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const result = await service.rotateToken("e1");
+
+      const cache = (service as any).issuedTokenCache as Map<
+        string,
+        { token: string; startupId: string | null }
+      >;
+      expect(cache.get("10.0.0.9:3002")).toMatchObject({
+        token: result.token,
+        startupId: null,
+      });
     });
   });
 

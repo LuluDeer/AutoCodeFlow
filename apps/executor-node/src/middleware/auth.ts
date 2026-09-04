@@ -164,3 +164,26 @@ export async function getCurrentToken(): Promise<string | null> {
   await refreshTokenIfNeeded();
   return dynamicToken || STATIC_TOKEN;
 }
+
+/**
+ * R10 (round-10 gap #3): force an immediate token re-fetch, bypassing the
+ * 30-minute refresh schedule. Used by admin-client when an outbound request
+ * comes back 401: the stored per-executor token was rotated out from under
+ * this process (e.g. an admin-UI rotate-token), and the only way to converge
+ * is to re-hit POST /token — which is authenticated with the STATIC token
+ * (shared bootstrap) and whose response fetchToken already uses to adopt the
+ * matching tokenHash (R9/W3). So one call here heals BOTH the bearer
+ * credential and the N26 per-execution callback HMAC secret.
+ *
+ * Storm guards: the TOKEN_FETCH_BACKOFF_MS from the last FAILED fetch still
+ * applies (admin unreachable / wrong shared token → this degrades to a no-op
+ * returning the current token, and the caller must not retry), and
+ * admin-api's issueToken is idempotent per (address, startupId), so several
+ * concurrent 401s re-fetching at once all converge on the SAME token instead
+ * of rotating.
+ */
+export async function forceTokenRefresh(): Promise<string | null> {
+  tokenExpiresAt = null;
+  await refreshTokenIfNeeded();
+  return dynamicToken;
+}

@@ -1056,8 +1056,25 @@ export class ExecutorService {
     // responses carry tokenHash — see issueToken() and the heartbeat
     // controller), not only at register; until that pickup per-execution
     // callback tokens signed with the old hash fail verification —
-    // documented constraint in docs/sdk-guide.md.
+    // documented constraint in docs/sdk-guide.md. R10 (round-10 gap #3):
+    // executor-node self-heals a stale bearer within one request round-trip
+    // (401 → forceTokenRefresh → POST /token → adopt token+hash → retry),
+    // so a manual rotation converges in ≤ one heartbeat interval.
     this.callbackSecretCache.delete(executor.address);
+    // R10: seed the idempotent-issuance cache with the fresh plaintext under
+    // the executor's CURRENT startupId. Without this, the self-healing
+    // POST /token (same startupId) would find the cache still holding the
+    // pre-rotation plaintext, fail its bcrypt re-verification and rotate a
+    // SECOND time — killing the very token this response just showed the
+    // admin UI within seconds. With it, the same-startupId re-fetch returns
+    // exactly this token (issueToken's possession re-verification still
+    // guards against resurrecting a later rotated-away plaintext), making
+    // "rotate in the UI" mean "the online executor adopts THIS token".
+    this.rememberIssuedToken(executor.address, {
+      token: rawToken,
+      startupId: executor.executorStartupId ?? null,
+      issuedAt: Date.now(),
+    });
     this.logger.log(`Rotated token for executor ${id} (${executor.address})`);
     return { token: rawToken };
   }
@@ -1281,13 +1298,20 @@ export class ExecutorService {
 
   /**
    * N34 (round-9): store an issued plaintext token, evicting expired/oldest
-   * entries — same bounded-growth defense as rememberTokenValidation (F-5).
+   * entries past the cap — same bounded-growth defense as
+   * rememberTokenValidation (F-5). An OVERWRITE of an existing address skips
+   * eviction entirely (the map does not grow): R10's rotateToken seeding and
+   * issueToken's startupId refinement both write the same key, and the
+   * second write must not evict an unrelated executor's entry.
    */
   private rememberIssuedToken(
     address: string,
     entry: { token: string; startupId: string | null; issuedAt: number },
   ): void {
-    if (this.issuedTokenCache.size >= ExecutorService.TOKEN_ISSUE_CACHE_MAX) {
+    if (
+      !this.issuedTokenCache.has(address) &&
+      this.issuedTokenCache.size >= ExecutorService.TOKEN_ISSUE_CACHE_MAX
+    ) {
       for (const [k, v] of this.issuedTokenCache) {
         if (
           entry.issuedAt - v.issuedAt >=

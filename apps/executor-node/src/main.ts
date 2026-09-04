@@ -92,7 +92,15 @@ async function registerExecutor() {
     adoptExecutorTokenHash(resp?.data);
     logger.info(`Registered to admin-api (runtimes: ${runtimes.join(', ')}, maxConcurrent: ${config.maxConcurrentTasks})`);
   } catch (err: any) {
-    logger.warn(`Register failed (will retry via heartbeat): ${err.message}`);
+    // N41 (round-10): the old "(will retry via heartbeat)" wording was
+    // false — heartbeat never registers (unknown address → 404). The only
+    // self-heal is the register-on-token side effect of
+    // POST /executors/token in the token-refresh path, which rebuilds the
+    // row WITHOUT the rich metadata above (type/capabilities/maxConcurrent/
+    // version); full metadata returns only on process restart.
+    logger.warn(
+      `Register failed (no auto re-register; /token fallback rebuilds the row without rich metadata): ${err.message}`,
+    );
   }
 }
 

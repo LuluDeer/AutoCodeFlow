@@ -142,6 +142,79 @@ describe('auth token fetch', () => {
   });
 });
 
+// R10 (round-10 gap #3): forceTokenRefresh is the hook admin-client uses when
+// an outbound request 401s — i.e. admin rotated our per-executor token out
+// from under us (admin-UI rotate-token). It must bypass the 30-minute
+// schedule but keep the fetch-failure backoff (storm guard).
+describe('forceTokenRefresh — R10 stale-credential self-heal', () => {
+  async function freshAuth() {
+    jest.resetModules();
+    const axiosDefault = ((await import('axios')) as any).default;
+    const { getCurrentToken, forceTokenRefresh } = await import('./auth');
+    const { config } = await import('../config');
+    return {
+      post: axiosDefault.post as jest.Mock,
+      getCurrentToken,
+      forceTokenRefresh,
+      config: config as Record<string, any>,
+    };
+  }
+
+  it('re-fetches immediately even while the cached token is still fresh, adopting token+hash', async () => {
+    const { post, getCurrentToken, forceTokenRefresh, config } = await freshAuth();
+    post
+      .mockResolvedValueOnce({
+        status: 201,
+        data: { code: 201, message: 'success', data: { token: 'token-A', tokenHash: 'hash-A' } },
+      })
+      .mockResolvedValueOnce({
+        status: 201,
+        data: { code: 201, message: 'success', data: { token: 'token-B', tokenHash: 'hash-B' } },
+      });
+
+    await expect(getCurrentToken()).resolves.toBe('token-A');
+    // A plain getCurrentToken would sit on the 30-minute schedule; the 401
+    // self-heal must not wait for it.
+    await expect(forceTokenRefresh()).resolves.toBe('token-B');
+    expect(post).toHaveBeenCalledTimes(2);
+    // The N26 callback HMAC secret follows the new token in the same call.
+    expect(config.executorTokenHash).toBe('hash-B');
+  });
+
+  it('degrades to a no-op while the fetch-failure backoff is active', async () => {
+    const { post, getCurrentToken, forceTokenRefresh } = await freshAuth();
+    post.mockRejectedValueOnce(new Error('admin unreachable'));
+    // No dynamic token and STATIC_TOKEN is '' → getCurrentToken falls
+    // through to the empty static token (dev-mode passthrough).
+    await expect(getCurrentToken()).resolves.toBeFalsy();
+
+    // Even though the next fetch WOULD succeed, the 30s backoff after a
+    // failed fetch must short-circuit — concurrent 401s cannot spin.
+    post.mockResolvedValueOnce({
+      status: 201,
+      data: { code: 201, message: 'success', data: { token: 'late-token' } },
+    });
+    await expect(forceTokenRefresh()).resolves.toBeNull();
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the unchanged token when admin answers idempotently (caller must skip the retry)', async () => {
+    const { post, getCurrentToken, forceTokenRefresh } = await freshAuth();
+    post.mockResolvedValue({
+      status: 201,
+      data: { code: 201, message: 'success', data: { token: 'same-token' } },
+    });
+
+    await expect(getCurrentToken()).resolves.toBe('same-token');
+    // R9 idempotent issueToken: a re-fetch can legitimately return the SAME
+    // token (e.g. the 401 came from a different cause). forceTokenRefresh
+    // hands it back unchanged — admin-client compares against the failed
+    // token and skips a pointless retry in that case.
+    await expect(forceTokenRefresh()).resolves.toBe('same-token');
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('verifyToken — REQUIRE_TOKEN fail-closed mode', () => {
   beforeEach(() => {
     jest.clearAllMocks();
