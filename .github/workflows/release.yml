@@ -30,7 +30,7 @@ jobs:
     outputs:
       version: ${{ steps.guard.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Version guard (tag == package versions)
         id: guard
@@ -123,11 +123,13 @@ jobs:
           - dir: packages/mcp-server
             pkg: 'autocodeflow-mcp-server'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          # node 20 已入弃用周期；且 lockfile 由 npm 11 生成，node 20 自带
+          # npm 10 解析有差异（f3a2d88 教训），与 CI 对齐 node 24
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
@@ -169,9 +171,9 @@ jobs:
     # 配置的锚点（pypi.org 登记时可指定 environment 名称），届时保留。
     environment: release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
