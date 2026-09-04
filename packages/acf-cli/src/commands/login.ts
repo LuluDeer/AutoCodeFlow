@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import * as readline from 'readline';
-import { post } from '../client';
+import { post, formatApiError } from '../client';
 import { setApiUrl, setToken, showConfig } from '../config';
 import { resetClient } from '../client';
 import chalk from 'chalk';
@@ -25,17 +25,20 @@ export function loginCommand(): Command {
         const username = opts.user || await prompt('Username: ');
         const password = opts.password || await prompt('Password: ');
 
-        const data = await post<{ access_token: string }>('/auth/login', {
+        // admin-api auth.service.generateTokens returns camelCase { accessToken, refreshToken }
+        const data = await post<{ accessToken: string; refreshToken?: string }>('/auth/login', {
           username: username.trim(),
           password,
         });
 
-        setToken(data.access_token);
+        if (!data.accessToken) {
+          throw new Error('Login response missing accessToken (unexpected auth payload)');
+        }
+        setToken(data.accessToken);
         console.log(chalk.green('✔ Logged in successfully'));
         showConfig();
       } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error(chalk.red('✗ Login failed:'), msg);
+        console.error(chalk.red('✗ Login failed:'), formatApiError(e));
         process.exit(1);
       }
     });

@@ -7,6 +7,7 @@ import { post } from './admin-client';
 export interface CallbackRequest {
   executionId: string;
   status: 'success' | 'failed';
+  executorAddress?: string;
   exitCode?: number;
   logs?: string;
   errorMessage?: string;
@@ -14,8 +15,18 @@ export interface CallbackRequest {
 }
 
 const callbackQueue: CallbackRequest[] = [];
-let callbackThread: NodeJS.Timeout | null = null;
+// Real re-entry sentinel — the previous callbackThread variable was never
+// assigned, so repeated startCallbackThread() calls spawned parallel loops.
+let loopStarted = false;
 let stopped = false;
+
+/** admin-api hard-rejects batches over 100 items (BadRequestException), so
+ *  every send and every persisted file must respect this chunk size. */
+const CALLBACK_BATCH_SIZE = 100;
+
+/** A persisted callback file gets this many retry rounds before it is moved
+ *  to the dead-letter directory and stops being re-sent every second. */
+const CALLBACK_FILE_MAX_RETRIES = 5;
 
 // Lazily computed so that config.workDir is resolved at call time, not at module load
 function getCallbackDir(): string {
@@ -24,13 +35,27 @@ function getCallbackDir(): string {
   return dir;
 }
 
+function getDeadLetterDir(): string {
+  const dir = path.join(getCallbackDir(), 'dead-letter');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function withExecutorAddress(request: CallbackRequest): CallbackRequest {
+  return {
+    executorAddress: config.executorAddressPublic || config.executorAddress,
+    ...request,
+  };
+}
+
 export function pushCallback(request: CallbackRequest): void {
+  const callbackRequest = withExecutorAddress(request);
   const existingIndex = callbackQueue.findIndex(r => r.executionId === request.executionId);
   if (existingIndex !== -1) {
-    callbackQueue[existingIndex] = request;
+    callbackQueue[existingIndex] = callbackRequest;
     logger.debug(`Overwrote duplicate callback for execution ${request.executionId}`);
   } else {
-    callbackQueue.push(request);
+    callbackQueue.push(callbackRequest);
     logger.debug(`Pushed callback for execution ${request.executionId}`);
   }
 }
@@ -49,16 +74,71 @@ async function doCallback(requests: CallbackRequest[]): Promise<boolean> {
   }
 }
 
+/** Persist failed callbacks in admin-acceptable chunks. A companion
+ *  `<file>.meta` records the retry round so the re-send loop can give up
+ *  after CALLBACK_FILE_MAX_RETRIES instead of retrying forever. */
 function persistFailedCallbacks(requests: CallbackRequest[]): void {
   const timestamp = Date.now();
-  const filename = path.join(getCallbackDir(), `callback-${timestamp}.json`);
   try {
-    fs.writeFileSync(filename, JSON.stringify(requests, null, 2));
-    logger.info(`Persisted ${requests.length} failed callbacks to ${filename}`);
+    const chunks: CallbackRequest[][] = [];
+    for (let i = 0; i < requests.length; i += CALLBACK_BATCH_SIZE) {
+      chunks.push(requests.slice(i, i + CALLBACK_BATCH_SIZE));
+    }
+    chunks.forEach((chunk, index) => {
+      const suffix = chunks.length > 1 ? `-${index}` : '';
+      const filename = path.join(getCallbackDir(), `callback-${timestamp}${suffix}.json`);
+      fs.writeFileSync(filename, JSON.stringify(chunk, null, 2));
+      fs.writeFileSync(`${filename}.meta`, JSON.stringify({ retries: 0, persistedAt: timestamp }), 'utf-8');
+      logger.info(`Persisted ${chunk.length} failed callbacks to ${filename}`);
+    });
   } catch (error: unknown) {
     logger.error(`Failed to persist callbacks: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+
+/** Move a permanently-failed callback file to the dead-letter directory so
+ *  the retry loop stops resending it every second (network + log churn) but
+ *  the payloads remain on disk for manual inspection/replay. */
+function deadLetterCallbackFile(filepath: string, reason: string): void {
+  try {
+    const target = path.join(getDeadLetterDir(), path.basename(filepath));
+    fs.renameSync(filepath, target);
+    logger.warn(
+      `Callback file ${path.basename(filepath)} moved to dead-letter after ${reason}; manual replay required`,
+    );
+  } catch (error: unknown) {
+    // Last resort: at least stop retrying it.
+    try { fs.unlinkSync(filepath); } catch (_) { /* already gone */ }
+    logger.error(
+      `Failed to move callback file ${filepath} to dead-letter: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    fs.unlinkSync(`${filepath}.meta`);
+  } catch (_) { /* meta may not exist */ }
+}
+
+function readRetryCount(filepath: string): number {
+  try {
+    const raw = fs.readFileSync(`${filepath}.meta`, 'utf-8');
+    const meta = JSON.parse(raw) as { retries?: number };
+    return typeof meta.retries === 'number' && meta.retries >= 0 ? meta.retries : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeRetryCount(filepath: string, retries: number): void {
+  try {
+    fs.writeFileSync(`${filepath}.meta`, JSON.stringify({ retries, updatedAt: Date.now() }), 'utf-8');
+  } catch (error: unknown) {
+    logger.warn(`Failed to update retry counter for ${filepath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** Dead-letter files still inside the live callbacks dir from an older
+ *  layout would be retried forever — keep a hard stop as belt-and-suspenders. */
+const CALLBACK_FILE_MAX_SIZE_BYTES = 64 * 1024 * 1024;
 
 async function retryFailedCallbacks(): Promise<void> {
   try {
@@ -69,15 +149,39 @@ async function retryFailedCallbacks(): Promise<void> {
 
       const filepath = path.join(callbackDir, file);
       try {
+        const retries = readRetryCount(filepath);
+        if (retries >= CALLBACK_FILE_MAX_RETRIES) {
+          deadLetterCallbackFile(filepath, `${retries} failed retry rounds`);
+          continue;
+        }
+        if (fs.statSync(filepath).size > CALLBACK_FILE_MAX_SIZE_BYTES) {
+          deadLetterCallbackFile(filepath, 'oversized payload');
+          continue;
+        }
+
         const content = fs.readFileSync(filepath, 'utf-8');
         const requests = JSON.parse(content) as CallbackRequest[];
-        
+
         const success = await doCallback(requests);
         if (success) {
           fs.unlinkSync(filepath);
+          try { fs.unlinkSync(`${filepath}.meta`); } catch (_) { /* meta may not exist */ }
           logger.info(`Retried and removed ${filepath}`);
+        } else {
+          const next = retries + 1;
+          if (next >= CALLBACK_FILE_MAX_RETRIES) {
+            deadLetterCallbackFile(filepath, `${next} failed retry rounds`);
+          } else {
+            writeRetryCount(filepath, next);
+          }
         }
       } catch (error: unknown) {
+        // Corrupt/unparseable poison files would never succeed — dead-letter
+        // them instead of burning a re-send every second forever.
+        if (error instanceof SyntaxError) {
+          deadLetterCallbackFile(filepath, 'corrupt payload');
+          continue;
+        }
         logger.warn(`Failed to retry callback file ${file}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -89,17 +193,27 @@ async function retryFailedCallbacks(): Promise<void> {
 async function processCallbacksWithBackoff(requests: CallbackRequest[]): Promise<void> {
   const MAX_RETRIES = 5;
   const BASE_DELAY_MS = 1000;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    const success = await doCallback(requests);
-    if (success) return;
-    logger.warn(`Callback attempt ${attempt + 1}/${MAX_RETRIES} failed`);
-    if (attempt < MAX_RETRIES - 1) {
-      const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-      await new Promise(resolve => setTimeout(resolve, delay));
+  // admin-api rejects batches > 100 outright — a batch larger than that would
+  // fail all 5 attempts and then poison the persisted file forever.
+  const failed: CallbackRequest[] = [];
+  for (let i = 0; i < requests.length; i += CALLBACK_BATCH_SIZE) {
+    const chunk = requests.slice(i, i + CALLBACK_BATCH_SIZE);
+    let delivered = false;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      delivered = await doCallback(chunk);
+      if (delivered) break;
+      logger.warn(`Callback attempt ${attempt + 1}/${MAX_RETRIES} failed for ${chunk.length} item(s)`);
+      if (attempt < MAX_RETRIES - 1) {
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
+    if (!delivered) failed.push(...chunk);
   }
-  logger.error(`Callback failed after ${MAX_RETRIES} attempts, persisting to disk`);
-  persistFailedCallbacks(requests);
+  if (failed.length > 0) {
+    logger.error(`Callback failed after ${MAX_RETRIES} attempts, persisting ${failed.length} item(s) to disk`);
+    persistFailedCallbacks(failed);
+  }
 }
 
 async function processCallbacks(): Promise<void> {
@@ -121,7 +235,8 @@ async function processCallbacks(): Promise<void> {
 }
 
 export function startCallbackThread(): void {
-  if (callbackThread) return;
+  if (loopStarted) return;
+  loopStarted = true;
   stopped = false;
   logger.info('Starting callback thread');
   processCallbacks();

@@ -16,7 +16,7 @@ export interface AuditLog {
   username: string;
   ip?: string;
   result: 'success' | 'failure';
-  detail?: Record<string, any>;
+  detail?: Record<string, unknown>;
   createdAt: string;
 }
 
@@ -27,7 +27,7 @@ export default function AuditLogPage() {
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState({ action: '', resource: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
   const [pending, setPending] = useState({ action: '', resource: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
-  const [detailModal, setDetailModal] = useState<{ open: boolean; data?: Record<string, any> }>({ open: false });
+  const [detailModal, setDetailModal] = useState<{ open: boolean; data?: Record<string, unknown> }>({ open: false });
 
   const { data, isLoading } = useQuery({
     queryKey: ['audit', page, filters],
@@ -64,7 +64,7 @@ export default function AuditLogPage() {
       dataIndex: 'username',
       width: 120,
       render: (v: string, r: AuditLog) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <Typography.Text strong>{v}</Typography.Text>
           {r.ip && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.ip}</Typography.Text>}
         </Space>
@@ -96,7 +96,7 @@ export default function AuditLogPage() {
       title: '详情',
       dataIndex: 'detail',
       width: 80,
-      render: (v: Record<string, any>) => v && Object.keys(v).length > 0 ? (
+      render: (v: Record<string, unknown>) => v && Object.keys(v).length > 0 ? (
         <Button
           type="link"
           size="small"

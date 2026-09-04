@@ -4,15 +4,19 @@ import {
   ExecutionContext,
   CallHandler,
   RequestTimeoutException,
-} from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { Observable, throwError, TimeoutError } from 'rxjs';
-import { catchError, timeout } from 'rxjs/operators';
-import { SKIP_TIMEOUT_KEY } from '../decorators/skip-timeout.decorator';
+} from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
+import { Observable, throwError, TimeoutError } from "rxjs";
+import { catchError, timeout } from "rxjs/operators";
+import { SKIP_TIMEOUT_KEY } from "../decorators/skip-timeout.decorator";
 
 // OPS-07: Global request timeout — returns 408 instead of hanging forever.
 // Default 30 s; override per-deploy via REQUEST_TIMEOUT_MS env var.
-const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS ?? '30000', 10);
+// Long-running routes (SSE / log streaming) opt out via @SkipTimeout().
+const REQUEST_TIMEOUT_MS = parseInt(
+  process.env.REQUEST_TIMEOUT_MS ?? "30000",
+  10,
+);
 
 @Injectable()
 export class TimeoutInterceptor implements NestInterceptor {
@@ -31,7 +35,7 @@ export class TimeoutInterceptor implements NestInterceptor {
       timeout(REQUEST_TIMEOUT_MS),
       catchError((err) =>
         err instanceof TimeoutError
-          ? throwError(() => new RequestTimeoutException('Request timed out'))
+          ? throwError(() => new RequestTimeoutException("Request timed out"))
           : throwError(() => err),
       ),
     );

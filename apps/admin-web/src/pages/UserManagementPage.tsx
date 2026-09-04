@@ -24,7 +24,7 @@ import {
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, type User, type CreateUserDto, type UpdateUserDto } from '../api/users';
-import { getErrMsg, isFormValidationError } from '../utils/error';
+import { getErrMsg } from '../utils/error';
 
 const { Title } = Typography;
 const { Option } = Select;

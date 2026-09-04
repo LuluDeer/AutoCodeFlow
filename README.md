@@ -31,7 +31,8 @@ AutoCodeFlow 是一个分布式任务调度与执行平台，支持动态脚本�
 | registry-pypi | 自建 FastAPI PyPI 服务 |
 | acf-cli | TypeScript · Commander.js |
 | mcp-server | TypeScript · MCP SDK |
-| autoflow-sdk | Python (httpx) / Node.js (axios) |
+| autoflow-sdk | Python (httpx) |
+| @autocodeflow/sdk | Node.js (axios)，独立 npm 包（已发布） |
 | 部署 | Docker Compose |
 
 ## 快速启动
@@ -120,8 +121,7 @@ AutoCodeFlow/
 │   ├── acf-cli/               # 命令行工具 (acf)
 │   ├── mcp-server/            # MCP Server（AI Agent 集成）
 │   ├── autoflow-sdk/          # Python 任务 SDK
-│   ├── autoflow-sdk-node/     # Node.js 任务 SDK（轻量版）
-│   ├── autocodeflow-node-sdk/ # Node.js 任务 SDK（完整版）
+│   ├── autocodeflow-node-sdk/ # Node.js 任务 SDK
 │   ├── autocodeflow-ai/       # AI 分析引擎
 │   ├── autocodeflow-db/       # 数据库连接工具
 │   ├── autocodeflow-http/     # HTTP 客户端工具
@@ -197,7 +197,6 @@ acf app list
 | 包名 | 语言 | 说明 |
 |------|------|------|
 | `autoflow-sdk` | Python | 任务上下文、HTTP 客户端、日志、结果上报 |
-| `autoflow-sdk-node` | Node.js | 轻量版任务 SDK |
 | `autocodeflow-node-sdk` | Node.js | 完整版任务 SDK（含更多工具） |
 | `autocodeflow-ai` | Python | AI 执行分析引擎 |
 | `autocodeflow-db` | Python | 数据库连接工具 |
@@ -306,7 +305,7 @@ docker compose exec admin-api npm run migration:run
 
 **执行器无法连接 admin-api**
 
-检查 `EXECUTOR_SECRET` 是否与 admin-api 的 `EXECUTOR_SECRET` 一致，并确认 `ADMIN_API_URL` 指向正确的地址（Docker 内部使用服务名 `http://admin-api:3105`）。
+检查 `EXECUTOR_SHARED_TOKEN` 是否与 admin-api 配置一致，并确认 `ADMIN_API_URL` 指向正确的地址（Docker 内部使用服务名 `http://admin-api:3105`）。
 
 **数据库迁移失败**
 
@@ -325,4 +324,4 @@ docker compose exec admin-api pnpm run migration:run
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 LuluDeer

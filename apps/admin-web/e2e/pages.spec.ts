@@ -1,16 +1,5 @@
 import { test, expect } from '@playwright/test';
 
-// Set localStorage token before each protected-page test
-async function setAuthStorage(page: any) {
-  await page.context().addInitScript(() => {
-    window.localStorage.setItem('access_token', 'fake-token');
-    window.localStorage.setItem(
-      'user',
-      JSON.stringify({ id: 1, username: 'admin', role: 'admin' })
-    );
-  });
-}
-
 test.describe('Page rendering smoke tests', () => {
   test('login page loads without crash', async ({ page }) => {
     const errors: string[] = [];
@@ -37,7 +26,7 @@ test.describe('Page rendering smoke tests', () => {
     );
     expect(fatal).toHaveLength(0);
     const url = page.url();
-    expect(url).toMatch(/localhost:5173/);
+    expect(url).toMatch(/localhost:5176/);
   });
 
   test('tasks page loads (may redirect to login)', async ({ page }) => {

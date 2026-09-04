@@ -18,7 +18,9 @@ describe("Tasks (e2e)", () => {
       await request(app.getHttpServer())
         .delete(`/tasks/${createdTaskId}`)
         .set("Authorization", `Bearer ${accessToken}`)
-        .catch(() => {/* ignore */});
+        .catch(() => {
+          /* ignore */
+        });
     }
     await app.close();
   });
@@ -26,9 +28,7 @@ describe("Tasks (e2e)", () => {
   // ------------------------------------------------------------------ GET /tasks
   describe("GET /tasks", () => {
     it("should return 401 when no token is provided", async () => {
-      await request(app.getHttpServer())
-        .get("/tasks")
-        .expect(401);
+      await request(app.getHttpServer()).get("/tasks").expect(401);
     });
 
     it("should return task list with valid token", async () => {
@@ -61,13 +61,15 @@ describe("Tasks (e2e)", () => {
     });
 
     it("should create a task and return 201", async () => {
+      // Field names must match CreateTaskDto (triggerType/cronExpression);
+      // the global ValidationPipe uses forbidNonWhitelisted, so legacy
+      // `type`/`schedule`/`executorAddress` keys would be rejected with 400.
       const payload = {
         name: "e2e-test-task",
         description: "Created by e2e tests",
-        type: "cron",
-        schedule: "0 * * * *",
+        triggerType: "cron",
+        cronExpression: "0 * * * *",
         runtime: "shell",
-        executorAddress: "",
       };
 
       const res = await request(app.getHttpServer())
@@ -94,9 +96,7 @@ describe("Tasks (e2e)", () => {
   // --------------------------------------------------------------- GET /tasks/:id
   describe("GET /tasks/:id", () => {
     it("should return 401 without token", async () => {
-      await request(app.getHttpServer())
-        .get("/tasks/some-id")
-        .expect(401);
+      await request(app.getHttpServer()).get("/tasks/some-id").expect(401);
     });
 
     it("should return task detail for existing task", async () => {
@@ -145,9 +145,7 @@ describe("Tasks (e2e)", () => {
   // ------------------------------------------------------------ DELETE /tasks/:id
   describe("DELETE /tasks/:id", () => {
     it("should return 401 without token", async () => {
-      await request(app.getHttpServer())
-        .delete("/tasks/some-id")
-        .expect(401);
+      await request(app.getHttpServer()).delete("/tasks/some-id").expect(401);
     });
 
     it("should delete a task successfully", async () => {

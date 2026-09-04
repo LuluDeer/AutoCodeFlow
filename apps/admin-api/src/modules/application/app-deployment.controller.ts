@@ -15,8 +15,35 @@ import { Public } from "../../common/decorators/public.decorator";
 import { AppDeploymentService } from "./app-deployment.service";
 import { ExecutorService } from "../executor/executor.service";
 import { ApiHeader } from "@nestjs/swagger";
-import { CreateDeploymentDto, DeploymentHeartbeatDto } from "./dto/app-deployment.dto";
-import { PaginationDto } from "../../common/dto/pagination.dto";
+import {
+  CreateDeploymentDto,
+  DeploymentHeartbeatDto,
+} from "./dto/app-deployment.dto";
+import { IsOptional, IsUUID, IsInt, Min, Max } from "class-validator";
+import { Type } from "class-transformer";
+import { ApiPropertyOptional } from "@nestjs/swagger";
+
+class ListDeploymentsQueryDto {
+  @ApiPropertyOptional({ description: "Filter by application ID" })
+  @IsOptional()
+  @IsUUID()
+  applicationId?: string;
+
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ default: 20, maximum: 100 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number = 20;
+}
 
 @ApiTags("App Deployment")
 @ApiBearerAuth()
@@ -30,13 +57,12 @@ export class AppDeploymentController {
 
   @Get()
   @ApiOperation({ summary: "List deployments" })
-  findAll(
-    @Query("applicationId") applicationId?: string,
-    @Query() pagination?: PaginationDto,
-  ) {
-    const page = pagination?.page ?? 1;
-    const limit = pagination?.pageSize ?? 20;
-    return this.svc.findAll(applicationId, page, limit);
+  findAll(@Query() query: ListDeploymentsQueryDto) {
+    return this.svc.findAll(
+      query.applicationId,
+      query.page ?? 1,
+      query.pageSize ?? 20,
+    );
   }
 
   @Get(":id")
@@ -47,10 +73,7 @@ export class AppDeploymentController {
 
   @Post("applications/:appId/deploy")
   @ApiOperation({ summary: "Assign application to executor" })
-  deploy(
-    @Param("appId") appId: string,
-    @Body() dto: CreateDeploymentDto,
-  ) {
+  deploy(@Param("appId") appId: string, @Body() dto: CreateDeploymentDto) {
     return this.svc.deploy(appId, dto);
   }
 
@@ -73,8 +96,14 @@ export class AppDeploymentController {
    */
   @Public()
   @Post("heartbeat")
-  @ApiOperation({ summary: "Executor reports app runtime status (requires X-Executor-Token)" })
-  @ApiHeader({ name: "x-executor-token", required: true, description: "Executor token (per-executor or shared)" })
+  @ApiOperation({
+    summary: "Executor reports app runtime status (requires X-Executor-Token)",
+  })
+  @ApiHeader({
+    name: "x-executor-token",
+    required: true,
+    description: "Executor token (per-executor or shared)",
+  })
   async heartbeat(
     @Body() dto: DeploymentHeartbeatDto,
     @Headers("x-executor-token") token: string | undefined,
@@ -86,9 +115,14 @@ export class AppDeploymentController {
     const deployment = await this.svc.findById(dto.deploymentId);
     const executorId = deployment?.executorId;
     if (!executorId) {
-      throw new UnauthorizedException("Cannot verify token: deployment has no associated executor");
+      throw new UnauthorizedException(
+        "Cannot verify token: deployment has no associated executor",
+      );
     }
-    const valid = await this.executorService.validateExecutorToken(executorId, token);
+    const valid = await this.executorService.validateExecutorToken(
+      executorId,
+      token,
+    );
     if (!valid) {
       throw new UnauthorizedException("Invalid executor token");
     }

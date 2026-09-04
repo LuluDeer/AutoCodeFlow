@@ -3,7 +3,9 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
-// Polyfill globalThis.crypto for Node.js < 19 (used by uuid and other dependencies)
+// Polyfill globalThis.crypto for Node.js < 19 (defensive: task scripts and
+// third-party dependencies may use the Web Crypto global; executor code
+// itself uses node:crypto randomUUID directly)
 if (!globalThis.crypto) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const nodeCrypto = require('crypto');
@@ -15,11 +17,19 @@ import * as http from 'http';
 import { spawnSync } from 'child_process';
 import { config } from './config';
 import { logger } from './logger';
-import { getRunningCount, startHeartbeat } from './scheduler';
+import { executorStartedAt, executorStartupId, getRunningCount, startHeartbeat } from './scheduler';
 import { startCallbackThread, stopCallbackThread } from './callback';
-import { startLogCleanup, stopLogCleanup } from './file-logger';
-import { initAdminClients, post } from './admin-client';
+import {
+  startLogCleanup,
+  stopLogCleanup,
+  startWorkDirCleanup,
+  stopWorkDirCleanup,
+  flushLogs,
+} from './file-logger';
+import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
+import { adoptExecutorTokenHash } from './admin-envelope';
 import { taskWorkerManager } from './task-worker';
+import { killRunningTaskProcesses } from './routes/execute';
 import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
 import { configRouter } from './routes/config';
@@ -60,7 +70,7 @@ function detectAvailableRuntimes(): string[] {
 async function registerExecutor() {
   const runtimes = detectAvailableRuntimes();
   try {
-    await post('/api/executors/register', {
+    const resp = await postWithStaticToken('/api/executors/register', {
       appName: config.appName,
       groupName: config.groupName || undefined,
       address: config.executorAddressPublic || config.executorAddress,
@@ -71,10 +81,28 @@ async function registerExecutor() {
       // Structured capability fields
       runtime: runtimes,
       maxConcurrent: config.maxConcurrentTasks,
+      restartedAt: executorStartedAt,
+      startupId: executorStartupId,
     });
+    // N26 (round-8): adopt the per-executor tokenHash returned at register
+    // time. It becomes the HMAC source secret for per-execution callback
+    // tokens (execution-callback-token.ts resolveCallbackSecret), so
+    // per-node `--secret` deployments verify on the admin side against the
+    // exact value stored there. The response may or may not be wrapped by
+    // the admin ResponseInterceptor ({code,message,data}) — unwrapAdminResponseData
+    // reads both shapes (R9: shared with middleware/auth.ts fetchToken).
+    adoptExecutorTokenHash(resp?.data);
     logger.info(`Registered to admin-api (runtimes: ${runtimes.join(', ')}, maxConcurrent: ${config.maxConcurrentTasks})`);
   } catch (err: any) {
-    logger.warn(`Register failed (will retry via heartbeat): ${err.message}`);
+    // N41 (round-10): the old "(will retry via heartbeat)" wording was
+    // false — heartbeat never registers (unknown address → 404). The only
+    // self-heal is the register-on-token side effect of
+    // POST /executors/token in the token-refresh path, which rebuilds the
+    // row WITHOUT the rich metadata above (type/capabilities/maxConcurrent/
+    // version); full metadata returns only on process restart.
+    logger.warn(
+      `Register failed (no auto re-register; /token fallback rebuilds the row without rich metadata): ${err.message}`,
+    );
   }
 }
 
@@ -108,8 +136,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
   // Stop callback thread
   stopCallbackThread();
 
-  // Stop log cleanup thread
+  // Stop log cleanup thread + buffered log writer
   stopLogCleanup();
+  stopWorkDirCleanup();
 
   // Stop all task workers
   taskWorkerManager.stopAll();
@@ -119,12 +148,27 @@ async function gracefulShutdown(signal: string): Promise<void> {
   const startTime = Date.now();
   while (getRunningCount() > 0) {
     if (Date.now() - startTime > maxWait) {
-      logger.warn(`Grace period expired, ${getRunningCount()} task(s) still running, forcing shutdown`);
+      // Grace expired: kill the detached task process groups, otherwise they
+      // outlive the executor as unmanaged orphans (callbacks are already
+      // stopped, so their results could never be reported anyway).
+      const killed = killRunningTaskProcesses();
+      logger.warn(
+        `Grace period expired, ${getRunningCount()} task(s) still running, forcing shutdown` +
+          (killed > 0 ? ` — killed ${killed} task process group(s)` : ''),
+      );
       break;
     }
     logger.info(`Waiting for ${getRunningCount()} task(s) to complete...`);
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
+
+  // Stop accepting new requests
+  server.close();
+
+  // Flush any buffered task logs to disk before exiting
+  try {
+    await flushLogs();
+  } catch (_) { /* best effort — we are shutting down */ }
 
   // Send offline notification
   await notifyOffline();
@@ -138,16 +182,35 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 const server = app.listen(config.port, async () => {
-  logger.info(`Executor started: ${config.appName} @ ${config.executorAddress}`);
-  
-  // Initialize admin clients for HA support
-  const adminUrls = config.adminApiUrls.length > 0 
-    ? config.adminApiUrls 
-    : [config.adminApiUrl];
-  initAdminClients(adminUrls);
-  
-  await registerExecutor();
-  heartbeatInterval = startHeartbeat();
-  startCallbackThread();
-  startLogCleanup(config.logRetentionDays || 7);
+  try {
+    logger.info(`Executor started: ${config.appName} @ ${config.executorAddress}`);
+
+    // Initialize admin clients for HA support.
+    // config.adminApiUrls already applies the URL priority:
+    // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
+    initAdminClients(config.adminApiUrls);
+    await checkAdminApiConnectivity();
+
+    await registerExecutor();
+    heartbeatInterval = startHeartbeat();
+    startCallbackThread();
+    startLogCleanup(config.logRetentionDays || 7);
+    // Disk reclamation for task workdirs / git caches / downloaded packages /
+    // dead-letter callbacks — same retention policy as the logs (7 days).
+    startWorkDirCleanup(config.logRetentionDays || 7);
+
+    // Fail loudly on a misconfiguration that would silently open an
+    // unauthenticated /api/execute endpoint (dev mode passthrough).
+    if (!config.token) {
+      logger.warn(
+        'No EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET configured — /api/* accepts UNAUTHENTICATED requests. ' +
+          'Set REQUIRE_TOKEN=true to refuse unauthenticated task submissions instead.',
+      );
+    }
+  } catch (err: unknown) {
+    // An async callback rejection here would be unhandled — exit loudly
+    // instead so the supervisor restarts the executor.
+    logger.error(`Startup failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 });

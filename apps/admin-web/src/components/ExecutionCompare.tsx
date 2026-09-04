@@ -53,7 +53,7 @@ export default function ExecutionCompare({ executions }: ExecutionCompareProps) 
         return {
           title: <Text copyable={{ text: id }}>{exec?.startTime ? new Date(exec.startTime).toLocaleString() : id.slice(0, 8)}</Text>,
           key: id,
-          render: (_: any, record: { metric: string; key: string }) => {
+          render: (_: unknown, record: { metric: string; key: string }) => {
             const val = exec?.[record.key as keyof TaskExecution];
             if (record.key === 'status') {
               const color = val === 'success' ? 'green' : val === 'failed' ? 'red' : 'default';
@@ -112,7 +112,7 @@ export default function ExecutionCompare({ executions }: ExecutionCompareProps) 
                 <Statistic
                   title="状态"
                   value={exec.status}
-                  valueStyle={{ color: exec.status === 'success' ? '#3f8600' : exec.status === 'failed' ? '#cf1322' : '#1890ff' }}
+                  styles={{ content: { color: exec.status === 'success' ? '#3f8600' : exec.status === 'failed' ? '#cf1322' : '#1890ff' } }}
                 />
                 <Statistic title="耗时" value={exec.duration ?? 0} suffix="ms" />
               </Card>

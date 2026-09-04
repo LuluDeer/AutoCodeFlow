@@ -1,37 +1,92 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { DataSource } from "typeorm";
-import { getQueueToken } from "@nestjs/bull";
-import { BadRequestException, NotFoundException } from "@nestjs/common";
+import { DataSource, QueryFailedError } from "typeorm";
+import { getQueueToken } from "@nestjs/bullmq";
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from "@nestjs/common";
 import { TaskService } from "../task.service";
-import { Task, TaskStatus } from "../entities/task.entity";
+import { MAX_DEPENDENCY_EXECUTION_SCAN } from "../task.service";
+import {
+  Task,
+  TaskStatus,
+  normalizeTaskPriority,
+} from "../entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
+  ExecutionFailureReason,
 } from "../entities/task-execution.entity";
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import { TaskVersion } from "../entities/task-version.entity";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { AiService } from "../../ai/ai.service";
+import { ConfigService } from "@nestjs/config";
+import { ExecutorService } from "../../executor/executor.service";
 
-const makeRepo = (overrides: Record<string, jest.Mock> = {}) => ({
-  create: jest.fn((d) => d),
-  save: jest.fn((e) => Promise.resolve(e)),
-  findOne: jest.fn(),
-  findAndCount: jest.fn().mockResolvedValue([[], 0]),
-  find: jest.fn().mockResolvedValue([]),
-  count: jest.fn().mockResolvedValue(0),
-  delete: jest.fn().mockResolvedValue({ affected: 1 }),
-  createQueryBuilder: jest.fn(() => ({
-    where: jest.fn().mockReturnThis(),
-    andWhere: jest.fn().mockReturnThis(),
-    orderBy: jest.fn().mockReturnThis(),
-    select: jest.fn().mockReturnThis(),
-    getMany: jest.fn().mockResolvedValue([]),
-    getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
-  })),
-  ...overrides,
-});
+jest.mock("axios");
+
+const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
+  const repo: Record<string, jest.Mock> = {
+    create: jest.fn((d) => d),
+    save: jest.fn((e) => Promise.resolve(e)),
+    findOne: jest.fn(),
+    findAndCount: jest.fn().mockResolvedValue([[], 0]),
+    find: jest.fn().mockResolvedValue([]),
+    count: jest.fn().mockResolvedValue(0),
+    delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    softDelete: jest.fn().mockResolvedValue({ affected: 1 }),
+  };
+  repo.createQueryBuilder = jest.fn(() => {
+    let patch: Record<string, unknown> | null = null;
+    // Snapshot the most recent findOne result at QB creation time so the
+    // conditional update only sees the entity this QB is targeting — not
+    // whatever findOne call happens to be last across the test.
+    const target = repo.findOne.mock.results.length
+      ? repo.findOne.mock.results[repo.findOne.mock.results.length - 1].value
+      : null;
+    const qb: Record<string, jest.Mock> = {
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([]),
+      getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn((p: Record<string, unknown>) => {
+        patch = p;
+        return qb;
+      }),
+      // Mimic a conditional UPDATE: apply the patch onto the snapshot entity
+      // captured above so tests can assert on it, and report affected=0 when
+      // the entity was not found or already terminal. Mirrors the production
+      // `killExecution` / `handleCallback` semantic where the UPDATE is
+      // guarded by `status IN (PENDING, RUNNING)`.
+      execute: jest.fn().mockImplementation(async () => {
+        const entity = await target;
+        if (!entity) return { affected: 0 };
+        const status = (entity as { status?: string }).status;
+        const TERMINAL = [
+          "success",
+          "failed",
+          "timeout",
+          "cancelled",
+          "killed",
+        ];
+        if (status && TERMINAL.includes(status)) {
+          return { affected: 0 };
+        }
+        if (patch) Object.assign(entity, patch);
+        return { affected: 1 };
+      }),
+    };
+    return qb;
+  });
+  return { ...repo, ...overrides };
+};
 
 describe("TaskService (__tests__)", () => {
   let service: TaskService;
@@ -40,7 +95,8 @@ describe("TaskService (__tests__)", () => {
   let logLineRepo: ReturnType<typeof makeRepo>;
   let versionRepo: ReturnType<typeof makeRepo>;
   let taskQueue: { add: jest.Mock };
-  let dataSource: { transaction: jest.Mock };
+  let dataSource: { transaction: jest.Mock; createQueryBuilder: jest.Mock };
+  let releaseSlotExecute: jest.Mock;
   let schedulerService: {
     stop: jest.Mock;
     scheduleOne: jest.Mock;
@@ -53,7 +109,29 @@ describe("TaskService (__tests__)", () => {
     logLineRepo = makeRepo();
     versionRepo = makeRepo();
     taskQueue = { add: jest.fn().mockResolvedValue({}) };
-    dataSource = { transaction: jest.fn() };
+    releaseSlotExecute = jest.fn().mockResolvedValue({ affected: 1 });
+    dataSource = {
+      // R4-P2: storeLogLines now runs delete+insert inside ONE DB transaction.
+      // Default the mock executes the callback with a manager delegating to
+      // the logLineRepo mocks so existing per-call assertions keep working;
+      // tests that need rollback semantics override transaction entirely.
+      transaction: jest.fn(async (fn: any) =>
+        fn({
+          delete: jest.fn(async (_target: unknown, criteria: unknown) =>
+            logLineRepo.delete(criteria as any),
+          ),
+          save: jest.fn(async (_target: unknown, rows: unknown) =>
+            logLineRepo.save(rows as any),
+          ),
+        }),
+      ),
+      createQueryBuilder: jest.fn(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: releaseSlotExecute,
+      })),
+    };
     schedulerService = {
       stop: jest.fn(),
       scheduleOne: jest.fn().mockResolvedValue(undefined),
@@ -79,6 +157,20 @@ describe("TaskService (__tests__)", () => {
         { provide: DataSource, useValue: dataSource },
         { provide: SchedulerService, useValue: schedulerService },
         { provide: AiService, useValue: aiService },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        {
+          provide: ExecutorService,
+          useValue: {
+            getExecutorUrl: jest
+              .fn()
+              .mockImplementation(
+                (_addr: string, p: string) => `http://executor:3001/${p}`,
+              ),
+          },
+        },
       ],
     }).compile();
 
@@ -95,6 +187,24 @@ describe("TaskService (__tests__)", () => {
       expect(result).toHaveProperty("id", "1");
     });
 
+    it("maps timeoutSeconds to legacy timeout on create", async () => {
+      const dto = {
+        name: "test-task",
+        timeoutSeconds: 120,
+        timezone: "Asia/Shanghai",
+      } as any;
+      taskRepo.save.mockImplementation((t: any) =>
+        Promise.resolve({ id: "1", ...t }),
+      );
+      taskRepo.create.mockImplementation((t: any) => t);
+      await service.create(dto);
+      expect(taskRepo.create).toHaveBeenCalledWith({
+        name: "test-task",
+        timeout: 120,
+        timezone: "Asia/Shanghai",
+      });
+    });
+
     it("throws on circular self-dependency", async () => {
       const dto = {
         id: "task-a",
@@ -102,6 +212,168 @@ describe("TaskService (__tests__)", () => {
         dependencies: { dep1: "task-a" },
       } as any;
       await expect(service.create(dto)).rejects.toThrow("Circular dependency");
+    });
+
+    // R6: 客户端自带已存在 id 时返回 409，而非 PG 主键冲突裸 500
+    describe("create with client-supplied id (R6)", () => {
+      const UUID = "550e8400-e29b-41d4-a716-446655440000";
+
+      it("throws ConflictException when the id already exists (pre-check)", async () => {
+        taskRepo.findOne.mockResolvedValue({ id: UUID, name: "existing" });
+        await expect(
+          service.create({ id: UUID, name: "t", triggerType: "api" } as any),
+        ).rejects.toThrow(ConflictException);
+        expect(taskRepo.save).not.toHaveBeenCalled();
+      });
+
+      it("pre-check looks up including soft-deleted rows (PK still taken)", async () => {
+        taskRepo.findOne.mockResolvedValue(null);
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+        await service.create({
+          id: UUID,
+          name: "t",
+          triggerType: "api",
+        } as any);
+        expect(taskRepo.findOne).toHaveBeenCalledWith({
+          where: { id: UUID },
+          withDeleted: true,
+        });
+      });
+
+      it("maps a PG 23505 unique violation from save to ConflictException (TOCTOU)", async () => {
+        taskRepo.findOne.mockResolvedValue(null);
+        const driverErr = Object.assign(new Error("duplicate key value"), {
+          code: "23505",
+        });
+        taskRepo.save.mockRejectedValue(
+          new QueryFailedError("INSERT INTO tasks ...", [], driverErr),
+        );
+        await expect(
+          service.create({ id: UUID, name: "t", triggerType: "api" } as any),
+        ).rejects.toThrow(ConflictException);
+      });
+
+      it("re-throws non-23505 driver errors unchanged", async () => {
+        taskRepo.findOne.mockResolvedValue(null);
+        const driverErr = Object.assign(new Error("invalid input syntax"), {
+          code: "22P02",
+        });
+        taskRepo.save.mockRejectedValue(
+          new QueryFailedError("INSERT INTO tasks ...", [], driverErr),
+        );
+        await expect(
+          service.create({ id: UUID, name: "t", triggerType: "api" } as any),
+        ).rejects.toThrow(QueryFailedError);
+      });
+
+      it("creates normally when the id is free", async () => {
+        taskRepo.findOne.mockResolvedValue(null);
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+        const result: any = await service.create({
+          id: UUID,
+          name: "t",
+          triggerType: "api",
+        } as any);
+        expect(result.id).toBe(UUID);
+        expect(taskRepo.save).toHaveBeenCalled();
+      });
+    });
+  });
+
+  // R6: executor pinning 与 broadcast 互斥——写入边界（create/update 共用
+  // normalizeTaskDto）直接 400，不允许产生"既固定又广播"的歧义任务。
+  describe("executorId / broadcast mutual exclusion (R6)", () => {
+    const PIN_UUID = "550e8400-e29b-41d4-a716-446655440000";
+
+    it("rejects create with executorId + executeMode=broadcast", async () => {
+      await expect(
+        service.create({
+          name: "t",
+          triggerType: "api",
+          executorId: PIN_UUID,
+          executeMode: "broadcast",
+        } as any),
+      ).rejects.toThrow(BadRequestException);
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("rejects update with executorId + executeMode=broadcast", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+      });
+      await expect(
+        service.update("1", {
+          executorId: PIN_UUID,
+          executeMode: "broadcast",
+        } as any),
+      ).rejects.toThrow(BadRequestException);
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    // R7 (N17): PATCH 合并路径的两条绕过——请求体只带一个键时，互斥的另一半
+    // 来自已有实体，normalizeTaskDto 看不到，必须在合并后的实体态兜底。
+    it("rejects PATCH adding executorId onto a broadcast task (merged-state)", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        executeMode: "broadcast",
+      });
+      await expect(
+        service.update("1", { executorId: PIN_UUID } as any),
+      ).rejects.toThrow(BadRequestException);
+      // 消息与 create 路径一致，避免前端/调用方按文案分支时出现两套。
+      await expect(
+        service.update("1", { executorId: PIN_UUID } as any),
+      ).rejects.toThrow(/mutually exclusive/);
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("rejects PATCH switching a pinned task to broadcast (merged-state)", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        executorId: PIN_UUID,
+        executeMode: "single",
+      });
+      await expect(
+        service.update("1", { executeMode: "broadcast" } as any),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.update("1", { executeMode: "broadcast" } as any),
+      ).rejects.toThrow(/mutually exclusive/);
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("accepts PATCH clearing executorId on a broadcast task", async () => {
+      // 回归：合并后 executorId 被显式清空（null）时不得误报，broadcast 合法。
+      taskRepo.findOne.mockResolvedValue({
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        executorId: PIN_UUID,
+        executeMode: "broadcast",
+      });
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      const result: any = await service.update("1", {
+        executorId: null,
+      } as any);
+      expect(result.executorId).toBeNull();
+      expect(taskRepo.save).toHaveBeenCalled();
+    });
+
+    it("accepts executorId with executeMode=single", async () => {
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      const result: any = await service.create({
+        name: "t",
+        triggerType: "api",
+        executorId: PIN_UUID,
+        executeMode: "single",
+      } as any);
+      expect(result.executorId).toBe(PIN_UUID);
     });
   });
 
@@ -127,18 +399,28 @@ describe("TaskService (__tests__)", () => {
       const result = await service.findAll({ page: 1, pageSize: 10 });
       expect(result).toHaveProperty("total", 2);
       expect(result.list).toHaveLength(2);
+      expect(result.items).toBe(result.list);
     });
 
     it("passes name ILike filter when name param is provided", async () => {
-      taskRepo.findAndCount.mockResolvedValue([[{ id: "1", name: "my-job" }], 1]);
+      taskRepo.findAndCount.mockResolvedValue([
+        [{ id: "1", name: "my-job" }],
+        1,
+      ]);
       await service.findAll({ page: 1, pageSize: 10, name: "job" } as any);
       const callArgs = taskRepo.findAndCount.mock.calls[0][0];
-      expect(callArgs.where.name).toEqual(expect.objectContaining({ _value: "%job%" }));
+      expect(callArgs.where.name).toEqual(
+        expect.objectContaining({ _value: "%job%" }),
+      );
     });
 
     it("passes runtime filter when runtime param is provided", async () => {
       taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
-      await service.findAll({ page: 1, pageSize: 10, runtime: "python" } as any);
+      await service.findAll({
+        page: 1,
+        pageSize: 10,
+        runtime: "python",
+      } as any);
       const callArgs = taskRepo.findAndCount.mock.calls[0][0];
       expect(callArgs.where.runtime).toBe("python");
     });
@@ -173,6 +455,24 @@ describe("TaskService (__tests__)", () => {
       await service.update("1", {} as any);
       expect(schedulerService.stop).toHaveBeenCalledWith("1");
       expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
+    });
+
+    it("maps timeoutSeconds to timeout on update", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.ACTIVE,
+        timeout: 30,
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      await service.update("1", { timeoutSeconds: 180 } as any);
+      expect(taskRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ timeout: 180 }),
+      );
+      expect(taskRepo.save.mock.calls[0][0]).not.toHaveProperty(
+        "timeoutSeconds",
+      );
     });
   });
 
@@ -241,6 +541,19 @@ describe("TaskService (__tests__)", () => {
       expect(schedulerService.stop).toHaveBeenCalledWith("1");
       expect(result).toEqual({ deleted: true });
     });
+
+    it("writes the TypeORM soft-delete column on removal (DB-001)", async () => {
+      const task = { id: "1", status: TaskStatus.ACTIVE };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockResolvedValue({ ...task, status: TaskStatus.DELETED });
+      await service.remove("1");
+      // status='deleted'（业务标记）与 deletedAt（@DeleteDateColumn）并存：
+      // raw query 依赖 status，TypeORM find 依赖 deletedAt
+      expect(taskRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: TaskStatus.DELETED }),
+      );
+      expect(taskRepo.softDelete).toHaveBeenCalledWith("1");
+    });
   });
 
   describe("trigger", () => {
@@ -250,6 +563,7 @@ describe("TaskService (__tests__)", () => {
         name: "test",
         params: {},
         maxRetry: 3,
+        retryDelay: 5,
         currentVersion: "v1",
         status: TaskStatus.ACTIVE,
       };
@@ -265,7 +579,12 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "exec-1" },
-        { attempts: 3, backoff: { type: 'exponential', delay: 10_000 } },
+        // N2: enqueue options now always carry a normalized numeric priority
+        {
+          attempts: 3,
+          backoff: { type: "exponential", delay: 5_000 },
+          priority: 2,
+        },
       );
       expect(result).toEqual(exec);
     });
@@ -274,12 +593,17 @@ describe("TaskService (__tests__)", () => {
       const task = {
         id: "1",
         name: "test",
-        params: { default: true },
-        maxRetry: 1,
+        params: {},
+        maxRetry: 3,
+        retryDelay: 15,
         currentVersion: "v1",
         status: TaskStatus.ACTIVE,
       };
-      const exec = { id: "exec-2", status: ExecutionStatus.PENDING, params: { override: true } };
+      const exec = {
+        id: "exec-2",
+        status: ExecutionStatus.PENDING,
+        params: { override: true },
+      };
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
@@ -289,6 +613,68 @@ describe("TaskService (__tests__)", () => {
       );
       await service.trigger("1", { params: { override: true } });
       expect(taskQueue.add).toHaveBeenCalled();
+    });
+
+    it("N2: normalizes a hydrated PG string priority before queue.add", async () => {
+      // Real-world shape from round-5 e2e: TypeORM hydrates the PG enum as
+      // the string label 'normal'; BullMQ rejects non-integer priorities.
+      const task = {
+        id: "1",
+        name: "test",
+        params: {},
+        maxRetry: 3,
+        retryDelay: 5,
+        priority: "normal",
+        currentVersion: "v1",
+        status: TaskStatus.ACTIVE,
+      };
+      const exec = { id: "exec-1", status: ExecutionStatus.PENDING };
+      taskRepo.findOne.mockResolvedValue(task);
+      dataSource.transaction.mockImplementation((fn: any) =>
+        fn({
+          create: jest.fn().mockReturnValue(exec),
+          save: jest.fn().mockResolvedValue(exec),
+        }),
+      );
+
+      await service.trigger("1", {});
+
+      expect(taskQueue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "exec-1" },
+        expect.objectContaining({ priority: 2 }),
+      );
+      expect(
+        typeof (taskQueue.add.mock.calls[0][2] as { priority: number })
+          .priority,
+      ).toBe("number");
+    });
+  });
+
+  describe("normalizeTaskPriority (N2)", () => {
+    it("maps PG string labels case-insensitively to the numeric enum", () => {
+      expect(normalizeTaskPriority("low")).toBe(1);
+      expect(normalizeTaskPriority("normal")).toBe(2);
+      expect(normalizeTaskPriority("NORMAL")).toBe(2);
+      expect(normalizeTaskPriority("High")).toBe(3);
+      expect(normalizeTaskPriority("critical")).toBe(4);
+    });
+
+    it("maps numeric and integer-string shapes to the numeric enum", () => {
+      expect(normalizeTaskPriority(1)).toBe(1);
+      expect(normalizeTaskPriority(4)).toBe(4);
+      expect(normalizeTaskPriority("3")).toBe(3);
+    });
+
+    it("falls back to NORMAL(2) for unknown/missing/invalid values", () => {
+      expect(normalizeTaskPriority(undefined)).toBe(2);
+      expect(normalizeTaskPriority(null)).toBe(2);
+      expect(normalizeTaskPriority(0)).toBe(2);
+      expect(normalizeTaskPriority(99)).toBe(2);
+      expect(normalizeTaskPriority("urgent")).toBe(2);
+      expect(normalizeTaskPriority("")).toBe(2);
+      expect(normalizeTaskPriority(true)).toBe(2);
+      expect(Number.isInteger(normalizeTaskPriority("bogus"))).toBe(true);
     });
   });
 
@@ -309,7 +695,10 @@ describe("TaskService (__tests__)", () => {
 
   describe("getAllExecutions", () => {
     it("returns paginated executions without filters", async () => {
-      const execs = [{ id: "e1", taskId: "t1" }, { id: "e2", taskId: "t1" }];
+      const execs = [
+        { id: "e1", taskId: "t1", taskName: "Task One" },
+        { id: "e2", taskId: "t1", taskName: "Task One" },
+      ];
       const qbMock = {
         leftJoin: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
@@ -317,13 +706,51 @@ describe("TaskService (__tests__)", () => {
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
-        getRawAndEntities: jest.fn().mockResolvedValue({ entities: execs, raw: [] }),
-        getCount: jest.fn().mockResolvedValue(2),
+        getManyAndCount: jest.fn().mockResolvedValue([execs, 2]),
+        getRawAndEntities: jest.fn(),
+        getCount: jest.fn(),
       };
       execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
       const result = await service.getAllExecutions({ page: 1, pageSize: 10 });
       expect(result).toHaveProperty("total", 2);
       expect(result.list).toHaveLength(2);
+      expect(result.items).toBe(result.list);
+      // DB-003: 页查询只执行一次 getManyAndCount（不再 getRawAndEntities/getCount 双份开销）
+      expect(qbMock.getManyAndCount).toHaveBeenCalledTimes(1);
+      expect(qbMock.getRawAndEntities).not.toHaveBeenCalled();
+      expect(qbMock.getCount).not.toHaveBeenCalled();
+      // 行已有 taskName 时无 join、无回填查询
+      expect(qbMock.leftJoin).not.toHaveBeenCalled();
+      expect(taskRepo.find).not.toHaveBeenCalled();
+    });
+
+    it("backfills missing taskName with one batched query (DB-003)", async () => {
+      const execs = [
+        { id: "e1", taskId: "t1", taskName: null },
+        { id: "e2", taskId: "t1", taskName: null },
+        { id: "e3", taskId: "t2", taskName: "inline-name" },
+      ];
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([execs, 3]),
+      };
+      execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
+      taskRepo.find.mockResolvedValue([{ id: "t1", name: "Task One" }]);
+      const result = await service.getAllExecutions({ page: 1, pageSize: 10 });
+      // 一次批量 IN 查询补齐缺失的 taskName
+      expect(taskRepo.find).toHaveBeenCalledTimes(1);
+      const findArgs = taskRepo.find.mock.calls[0][0];
+      expect(findArgs.select).toEqual(["id", "name"]);
+      expect(findArgs.where.id).toEqual(
+        expect.objectContaining({ _value: ["t1"] }),
+      );
+      expect(result.list[0].taskName).toBe("Task One");
+      expect(result.list[1].taskName).toBe("Task One");
+      // 行自身已有 taskName 的不做回填覆盖
+      expect(result.list[2].taskName).toBe("inline-name");
     });
 
     it("applies status and taskId filters", async () => {
@@ -334,8 +761,7 @@ describe("TaskService (__tests__)", () => {
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
-        getRawAndEntities: jest.fn().mockResolvedValue({ entities: [{ id: "e1", taskId: "task-1" }], raw: [] }),
-        getCount: jest.fn().mockResolvedValue(1),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
       };
       execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
       const result = await service.getAllExecutions({
@@ -344,10 +770,232 @@ describe("TaskService (__tests__)", () => {
         status: "success",
         taskId: "task-1",
       });
-      expect(result.total).toBe(1);
+      expect(result.total).toBe(0);
       // andWhere should have been called for status and taskId filters
-      expect(qbMock.andWhere).toHaveBeenCalledWith(expect.stringContaining("status"), expect.objectContaining({ status: "success" }));
-      expect(qbMock.andWhere).toHaveBeenCalledWith(expect.stringContaining("taskId"), expect.objectContaining({ taskId: "task-1" }));
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("status"),
+        expect.objectContaining({ status: "success" }),
+      );
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("taskId"),
+        expect.objectContaining({ taskId: "task-1" }),
+      );
+    });
+
+    it("applies taskName and executorAddress filters (taskName keeps the join for matching)", async () => {
+      const qbMock = {
+        leftJoin: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
+      taskRepo.find.mockResolvedValue([]);
+
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 10,
+        taskName: "daily",
+        executorAddress: "10.0.0.1",
+      });
+
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("taskName"),
+        expect.objectContaining({ taskName: "%daily%" }),
+      );
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("executorAddress"),
+        expect.objectContaining({ executorAddress: "%10.0.0.1%" }),
+      );
+      // 仅 taskName 过滤需要 join tasks 表
+      expect(qbMock.leftJoin).toHaveBeenCalledWith(
+        "tasks",
+        "t",
+        "t.id = e.taskId",
+      );
+    });
+  });
+
+  describe("checkCircularDependency depth limit (TASK-007)", () => {
+    /** 构造一条长依赖链：task-i 依赖 task-(i+1)，由 taskRepo.findOne 提供 */
+    const setupDeepChain = (depth: number) => {
+      taskRepo.findOne.mockImplementation(({ where }: any) => {
+        const id = where?.id as string;
+        if (!id?.startsWith("task-")) return Promise.resolve(null);
+        const n = parseInt(id.slice(5), 10);
+        if (Number.isNaN(n)) return Promise.resolve(null);
+        return Promise.resolve({
+          id,
+          dependencies: n < depth ? { dep: `task-${n + 1}` } : {},
+        });
+      });
+    };
+
+    it("accepts a dependency chain within the depth limit", async () => {
+      // 链长 63 < 64，不应抛错（模拟 60 层足够验证，避免无谓的findOne次数）
+      setupDeepChain(60);
+      const dto = {
+        // R6 后 create 会先按 id 查重（withDeleted），链 mock 只对
+        // "task-*" 返回行——用 UUID 形态的新任务 id 表示"主键未被占用"
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        name: "deep-but-ok",
+        dependencies: { dep: "task-1" },
+      } as any;
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      taskRepo.create.mockImplementation((t: any) => t);
+      await expect(service.create(dto)).resolves.toBeDefined();
+    });
+
+    it("rejects an over-deep dependency chain with 'dependency chain too deep'", async () => {
+      // 链长 200 >> 64：必须在有限深度截断，防止 N+1 DoS
+      setupDeepChain(200);
+      const dto = {
+        id: "task-0",
+        name: "too-deep",
+        dependencies: { dep: "task-1" },
+      } as any;
+      await expect(service.create(dto)).rejects.toThrow(
+        "dependency chain too deep",
+      );
+      // 截断生效：数据库查询次数远小于链长（深度上限 64 + 自检若干）
+      expect(taskRepo.findOne.mock.calls.length).toBeLessThan(120);
+    });
+
+    it("rejects a wide dependency fan-out exceeding the visited-node cap", async () => {
+      // 扇出 100 个互不相同的直接依赖：visited 集合超限即拒绝
+      taskRepo.findOne.mockResolvedValue({ id: "x", dependencies: {} });
+      const dependencies: Record<string, string> = {};
+      for (let i = 0; i < 100; i++) dependencies[`k${i}`] = `dep-task-${i}`;
+      const dto = { id: "task-0", name: "too-wide", dependencies } as any;
+      await expect(service.create(dto)).rejects.toThrow(
+        "dependency chain too deep",
+      );
+    });
+
+    it("still detects a genuine cycle quickly", async () => {
+      taskRepo.findOne.mockImplementation(({ where }: any) => {
+        const id = where?.id as string;
+        // a -> b -> c -> b（环）
+        if (id === "task-b")
+          return Promise.resolve({ id, dependencies: { dep: "task-c" } });
+        if (id === "task-c")
+          return Promise.resolve({ id, dependencies: { dep: "task-b" } });
+        return Promise.resolve(null);
+      });
+      const dto = {
+        id: "task-a",
+        name: "cycle",
+        dependencies: { dep: "task-b" },
+      } as any;
+      await expect(service.create(dto)).rejects.toThrow("Circular dependency");
+    });
+  });
+
+  describe("SSE log stream concurrency limits (TASK-008)", () => {
+    const flushableExec = { id: "exec-1", status: ExecutionStatus.SUCCESS };
+
+    it("allows up to the per-execution limit and rejects the (N+1)th with 503", async () => {
+      execRepo.findOne.mockResolvedValue(flushableExec);
+
+      const releases = [
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+      ];
+      // 默认单 execution 上限 4：第 5 个必须被拒绝
+      expect(() => service.acquireSseSlot("exec-1")).toThrow(
+        ServiceUnavailableException,
+      );
+
+      // 释放后可再次占用
+      releases[0]();
+      const again = service.acquireSseSlot("exec-1");
+      expect(typeof again).toBe("function");
+      releases.slice(1).forEach((r) => r());
+      again();
+    });
+
+    it("rejects streams beyond the global limit with 503", async () => {
+      execRepo.findOne.mockResolvedValue(flushableExec);
+      const releases: Array<() => void> = [];
+      // 全局上限默认 64：占满 64 个不同 execution 的连接
+      for (let i = 0; i < 64; i++) {
+        releases.push(service.acquireSseSlot(`exec-${i}`));
+      }
+      expect(() => service.acquireSseSlot("exec-x")).toThrow(
+        ServiceUnavailableException,
+      );
+      // 释放一个后可再占用
+      releases[0]();
+      const r = service.acquireSseSlot("exec-x");
+      r();
+      releases.slice(1).forEach((rel) => rel());
+    });
+
+    it("releases the slot when the stream ends normally", async () => {
+      execRepo.findOne.mockResolvedValue(flushableExec);
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+      await service.streamExecutionLogs(
+        "exec-1",
+        send,
+        done,
+        controller.signal,
+      );
+      expect(done).toHaveBeenCalled();
+      // 终态 flush 后计数应已归零：可再次满额占用
+      const releases = [
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+        service.acquireSseSlot("exec-1"),
+      ];
+      releases.forEach((r) => r());
+      expect(() => service.acquireSseSlot("exec-1")).not.toThrow();
+    });
+
+    it("releases the slot when the stream aborts mid-poll", async () => {
+      execRepo.findOne.mockResolvedValue({
+        id: "exec-1",
+        status: ExecutionStatus.RUNNING,
+      });
+      logLineRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      } as any);
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+      const promise = service.streamExecutionLogs(
+        "exec-1",
+        send,
+        done,
+        controller.signal,
+      );
+      controller.abort();
+      await promise;
+      expect(done).toHaveBeenCalled();
+      expect(() => service.acquireSseSlot("exec-1")).not.toThrow();
+    });
+
+    it("releases the slot when the stream throws", async () => {
+      execRepo.findOne.mockRejectedValue(new Error("db down"));
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+      // flush() 内 findOne 抛错 → streamExecutionLogs 向上抛，但 finally 必须释放
+      await expect(
+        service.streamExecutionLogs("exec-1", send, done, controller.signal),
+      ).rejects.toThrow("db down");
+      expect(() => service.acquireSseSlot("exec-1")).not.toThrow();
     });
   });
 
@@ -388,9 +1036,9 @@ describe("TaskService (__tests__)", () => {
         orderBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([
-          { lineNumber: 0, content: "only-line" },
-        ]),
+        getMany: jest
+          .fn()
+          .mockResolvedValue([{ lineNumber: 0, content: "only-line" }]),
         getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
       } as any);
       logLineRepo.count.mockResolvedValue(1);
@@ -407,15 +1055,17 @@ describe("TaskService (__tests__)", () => {
         gitCommit: "old-sha",
         params: {},
         maxRetry: 2,
+        retryDelay: 7,
         status: TaskStatus.ACTIVE,
       };
       const exec = { id: "rb-exec", status: ExecutionStatus.PENDING };
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          save: jest.fn()
-            .mockResolvedValueOnce(task)   // first save: update task.gitCommit
-            .mockResolvedValueOnce(exec),  // second save: persist execution
+          save: jest
+            .fn()
+            .mockResolvedValueOnce(task) // first save: update task.gitCommit
+            .mockResolvedValueOnce(exec), // second save: persist execution
           create: jest.fn().mockReturnValue(exec),
         }),
       );
@@ -425,7 +1075,11 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "rb-exec" },
-        { attempts: 2, backoff: { type: 'exponential', delay: 10_000 } },
+        {
+          attempts: 2,
+          backoff: { type: "exponential", delay: 7_000 },
+          priority: 2,
+        },
       );
     });
 
@@ -435,14 +1089,17 @@ describe("TaskService (__tests__)", () => {
         name: "test",
         gitCommit: "old-sha",
         params: {},
-        maxRetry: 1,
+        maxRetry: 2,
+        retryDelay: 15,
         status: TaskStatus.ACTIVE,
       };
+
       const exec = { id: "rb-exec" };
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          save: jest.fn()
+          save: jest
+            .fn()
             .mockResolvedValueOnce(task)
             .mockResolvedValueOnce(exec),
           create: jest.fn().mockReturnValue(exec),
@@ -474,7 +1131,90 @@ describe("TaskService (__tests__)", () => {
       ]);
       expect(exec.status).toBe(ExecutionStatus.FAILED);
       expect((exec as any).errorMessage).toBe("OOM");
+      expect((exec as any).failureReason).toBe(ExecutionFailureReason.UNKNOWN);
       expect(result[0].success).toBe(true);
+    });
+
+    it("uses explicit callback failureReason when provided", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          errorMessage: "executor offline",
+          failureReason: ExecutionFailureReason.EXECUTOR_OFFLINE,
+        },
+      ]);
+      expect((exec as any).failureReason).toBe(
+        ExecutionFailureReason.EXECUTOR_OFFLINE,
+      );
+    });
+
+    it("infers timeout callbacks as TIMEOUT status", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          errorMessage: "Execution timed out",
+        },
+      ]);
+      expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
+      expect((exec as any).failureReason).toBe(ExecutionFailureReason.TIMEOUT);
+    });
+
+    it("infers package fetch failures from dependency logs", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          logs: "npm install failed: cannot find module",
+        },
+      ]);
+      expect((exec as any).failureReason).toBe(
+        ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+      );
+    });
+
+    it("preserves existing error message when callback only includes logs", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        logs: "",
+        errorMessage: "executor dispatch failed",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          logs: "Traceback: runtime error",
+        },
+      ]);
+      expect((exec as any).errorMessage).toBe("executor dispatch failed");
+      expect((exec as any).failureReason).toBe(
+        ExecutionFailureReason.SCRIPT_ERROR,
+      );
+    });
+
+    it("infers script errors from non-zero exit code", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([
+        { executionId: "e1", status: "failed", exitCode: 1 },
+      ]);
+      expect((exec as any).failureReason).toBe(
+        ExecutionFailureReason.SCRIPT_ERROR,
+      );
     });
 
     it("saves log lines when logs are provided", async () => {
@@ -488,6 +1228,222 @@ describe("TaskService (__tests__)", () => {
       expect(logLineRepo.save).toHaveBeenCalledTimes(1);
     });
 
+    it("backfills full logs from executor when node-style truncation marker is present", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      (axios.get as jest.Mock).mockResolvedValue({
+        data: { lines: ["full-0", "full-1", "full-2"] },
+      });
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "exec-1:8002",
+          logs: "head\n... [logs truncated, original length 50000 chars] ...\ntail",
+        },
+      ]);
+      expect(axios.get).toHaveBeenCalledWith(
+        "http://executor:3001/api/logs/e1",
+        expect.objectContaining({
+          headers: {},
+          params: { fromLine: 0, limit: 2000 },
+        }),
+      );
+      expect(logLineRepo.delete).toHaveBeenCalledWith({ executionId: "e1" });
+      expect(logLineRepo.create).toHaveBeenCalledWith({
+        executionId: "e1",
+        lineNumber: 1,
+        content: "full-1",
+      });
+    });
+
+    it("falls back to truncated logs when backfill fails (python-style marker)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      (axios.get as jest.Mock).mockRejectedValue(new Error("ECONNREFUSED"));
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          executorAddress: "exec-1:8002",
+          logs: "head\n...[truncated, total 50000 chars]...\ntail",
+        },
+      ]);
+      expect(logLineRepo.create).toHaveBeenCalledWith({
+        executionId: "e1",
+        lineNumber: 0,
+        content: "head",
+      });
+    });
+
+    it("paginates backfill when executor caps page size (python-style)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      (axios.get as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { lines: ["l0", "l1"], totalLines: 5, hasMore: true },
+        })
+        .mockResolvedValueOnce({
+          data: { lines: ["l2", "l3", "l4"], totalLines: 5, hasMore: false },
+        });
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "exec-1:8002",
+          logs: "...[truncated, total 50000 chars]...",
+        },
+      ]);
+      expect(axios.get).toHaveBeenCalledTimes(2);
+      expect((axios.get as jest.Mock).mock.calls[0][1].params).toEqual({
+        fromLine: 0,
+        limit: 2000,
+      });
+      expect((axios.get as jest.Mock).mock.calls[1][1].params).toEqual({
+        fromLine: 2,
+        limit: 2000,
+      });
+      expect(logLineRepo.create).toHaveBeenCalledWith({
+        executionId: "e1",
+        lineNumber: 4,
+        content: "l4",
+      });
+    });
+
+    it("R4-P1: multi-page backfill appends — every page survives, delete runs once (page 0 only)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      // Three pages of 2 lines each (executor caps page size below PAGE_LIMIT)
+      (axios.get as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { lines: ["p0-a", "p0-b"], totalLines: 6, hasMore: true },
+        })
+        .mockResolvedValueOnce({
+          data: { lines: ["p1-a", "p1-b"], totalLines: 6, hasMore: true },
+        })
+        .mockResolvedValueOnce({
+          data: { lines: ["p2-a", "p2-b"], totalLines: 6, hasMore: false },
+        });
+
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "exec-1:8002",
+          logs: "...[truncated, total 50000 chars]...",
+        },
+      ]);
+
+      expect(axios.get).toHaveBeenCalledTimes(3);
+      // Replace semantics only on the FIRST page; pages 1-2 must not delete
+      // the rows persisted by earlier pages.
+      expect(logLineRepo.delete).toHaveBeenCalledTimes(1);
+      expect(logLineRepo.delete).toHaveBeenCalledWith({ executionId: "e1" });
+      // All 6 lines persisted exactly once, with absolute line numbers.
+      const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
+      expect(created).toEqual([
+        { executionId: "e1", lineNumber: 0, content: "p0-a" },
+        { executionId: "e1", lineNumber: 1, content: "p0-b" },
+        { executionId: "e1", lineNumber: 2, content: "p1-a" },
+        { executionId: "e1", lineNumber: 3, content: "p1-b" },
+        { executionId: "e1", lineNumber: 4, content: "p2-a" },
+        { executionId: "e1", lineNumber: 5, content: "p2-b" },
+      ]);
+      expect(logLineRepo.save).toHaveBeenCalledTimes(3);
+    });
+
+    it("R4-P1: single-page backfill keeps replace semantics (stale rows cleared)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      (axios.get as jest.Mock).mockResolvedValue({
+        data: { lines: ["only-0", "only-1"], totalLines: 2 },
+      });
+
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "exec-1:8002",
+          logs: "...[truncated, total 50000 chars]...",
+        },
+      ]);
+
+      expect(axios.get).toHaveBeenCalledTimes(1);
+      expect(logLineRepo.delete).toHaveBeenCalledTimes(1);
+      const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
+      expect(created).toEqual([
+        { executionId: "e1", lineNumber: 0, content: "only-0" },
+        { executionId: "e1", lineNumber: 1, content: "only-1" },
+      ]);
+    });
+
+    it("does not call the executor for logs without truncation marker", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "exec-1:8002",
+          logs: "line0\nline1",
+        },
+      ]);
+      expect(axios.get).not.toHaveBeenCalled();
+      expect(logLineRepo.create).toHaveBeenCalledWith({
+        executionId: "e1",
+        lineNumber: 0,
+        content: "line0",
+      });
+    });
+
     it("records error for unknown executionId without throwing", async () => {
       execRepo.findOne.mockResolvedValue(null);
       const result = await service.handleCallback([
@@ -496,6 +1452,475 @@ describe("TaskService (__tests__)", () => {
       expect(result[0].success).toBe(false);
       expect(result[0].error).toMatch(/not found/i);
     });
+
+    describe("dependency fan-out (R4-P0: moved from TaskProcessor to handleCallback)", () => {
+      // makeRepo's QB mock: getMany defaults to []. taskRepo.dependencies QB
+      // drives triggerDependentTasks' scan AND claimDependencyTrigger's
+      // conditional UPDATE; execRepo.find drives checkDependencies;
+      // execRepo.createQueryBuilder drives handleCallback's own UPDATE.
+      // Also wires the manual-trigger path (this.trigger) used by fan-out.
+      const setupDownstream = (
+        downstreamTask: Record<string, unknown> | null,
+        depExecutions: Array<Record<string, unknown>>,
+        claimAffected: number[] = [1],
+      ) => {
+        // One QB mock serves both the dependencies scan (getMany) and the
+        // claim (update/set/where/execute). claimAffected is consumed in
+        // order: e.g. [1, 0] models "first concurrent fan-out wins, second
+        // loses the short-window DB claim".
+        let claimCalls = 0;
+        const depQb = {
+          where: jest.fn().mockReturnThis(),
+          getMany: jest
+            .fn()
+            .mockResolvedValue(downstreamTask ? [downstreamTask] : []),
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockImplementation(async () => {
+            const affected =
+              claimCalls < claimAffected.length
+                ? claimAffected[claimCalls]
+                : (claimAffected[claimAffected.length - 1] ?? 0);
+            claimCalls += 1;
+            return { affected };
+          }),
+        };
+        taskRepo.createQueryBuilder.mockImplementation(() => depQb as any);
+        execRepo.find.mockResolvedValue(depExecutions as any);
+        if (downstreamTask) {
+          taskRepo.findOne.mockResolvedValue(downstreamTask as any);
+          dataSource.transaction.mockImplementation((fn: any) =>
+            fn({
+              create: jest
+                .fn()
+                .mockReturnValue({ id: "down-exec-1", status: "pending" }),
+              save: jest
+                .fn()
+                .mockResolvedValue({ id: "down-exec-1", status: "pending" }),
+            }),
+          );
+        }
+        return depQb;
+      };
+
+      it("triggers a dependent task when a SUCCESS callback lands and all deps are satisfied", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        taskQueue.add.mockResolvedValue({});
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        expect(taskQueue.add).toHaveBeenCalledWith(
+          "execute",
+          { executionId: expect.any(String) },
+          expect.objectContaining({ attempts: expect.any(Number) }),
+        );
+      });
+
+      it("R4-P3: claims the downstream via a short-window conditional UPDATE on lastTriggerTime before triggering", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        const depQb = setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        taskQueue.add.mockResolvedValue({});
+
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        // The claim ran a conditional UPDATE guarded by the dedup window.
+        expect(depQb.update).toHaveBeenCalled();
+        expect(depQb.set).toHaveBeenCalledWith(
+          expect.objectContaining({ lastTriggerTime: expect.any(Date) }),
+        );
+        expect(depQb.where).toHaveBeenCalledWith(
+          expect.stringContaining('"lastTriggerTime"'),
+          expect.objectContaining({ windowStart: expect.any(Date) }),
+        );
+        expect(taskQueue.add).toHaveBeenCalledTimes(1);
+      });
+
+      it("R4-P3: two concurrent SUCCESS callbacks for two upstreams trigger the downstream exactly once", async () => {
+        const downstream = {
+          id: "t-downstream",
+          dependencies: { a: "t-up-a", b: "t-up-b" },
+        };
+        execRepo.findOne
+          .mockResolvedValueOnce({
+            id: "e-a",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-up-a",
+            logs: "",
+          })
+          .mockResolvedValueOnce({
+            id: "e-b",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-up-b",
+            logs: "",
+          });
+        // Both fan-outs pass checkDependencies (both upstreams SUCCESS) — the
+        // short-window DB claim then serializes them: first wins, second loses.
+        setupDownstream(
+          downstream,
+          [
+            { taskId: "t-up-a", status: ExecutionStatus.SUCCESS },
+            { taskId: "t-up-b", status: ExecutionStatus.SUCCESS },
+          ],
+          [1, 0],
+        );
+
+        await Promise.all([
+          service.handleCallback([{ executionId: "e-a", status: "success" }]),
+          service.handleCallback([{ executionId: "e-b", status: "success" }]),
+        ]);
+
+        // Exactly ONE downstream execution enqueued across both fan-outs.
+        expect(taskQueue.add).toHaveBeenCalledTimes(1);
+        expect(taskQueue.add).toHaveBeenCalledWith(
+          "execute",
+          { executionId: "down-exec-1" },
+          expect.objectContaining({ attempts: expect.any(Number) }),
+        );
+      });
+
+      it("R4-P3: a fan-out that loses the claim skips the downstream trigger without enqueueing", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+          [0],
+        );
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("R4-P3: checkDependencies caps the history scan with take and falls back per-dependency when truncated", async () => {
+        const downstream = {
+          id: "t-downstream",
+          dependencies: { up: "t-upstream" },
+        };
+        // Main scan returns empty (simulating truncation pushing the latest
+        // execution out of the capped window); the per-dependency fallback
+        // findOne must rescue the SUCCESS row so the trigger still fires.
+        setupDownstream(downstream, []);
+        execRepo.findOne
+          .mockResolvedValueOnce({
+            id: "e-dep",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-upstream",
+            logs: "",
+          })
+          .mockResolvedValueOnce({
+            taskId: "t-upstream",
+            status: ExecutionStatus.SUCCESS,
+          });
+        taskQueue.add.mockResolvedValue({});
+
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(execRepo.find).toHaveBeenCalledWith(
+          expect.objectContaining({
+            order: { createdAt: "DESC" },
+            take: MAX_DEPENDENCY_EXECUTION_SCAN,
+          }),
+        );
+        expect(taskQueue.add).toHaveBeenCalledTimes(1);
+      });
+
+      it("R4-P3: fallback keeps unmet-dep semantics when the truncated dependency is not satisfied", async () => {
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [],
+        );
+        execRepo.findOne
+          .mockResolvedValueOnce({
+            id: "e-dep",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-upstream",
+            logs: "",
+          })
+          .mockResolvedValueOnce({
+            taskId: "t-upstream",
+            status: ExecutionStatus.FAILED,
+          });
+
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("does not trigger the downstream task when its other dependencies are not yet satisfied", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          {
+            id: "t-downstream",
+            dependencies: { up: "t-upstream", other: "t-other" },
+          },
+          // latest execution of t-other FAILED → deps unmet
+          [
+            { taskId: "t-upstream", status: ExecutionStatus.SUCCESS },
+            { taskId: "t-other", status: ExecutionStatus.FAILED },
+          ],
+        );
+
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("does not trigger dependents on a FAILED callback", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.FAILED }],
+        );
+
+        await service.handleCallback([
+          { executionId: "e-dep", status: "failed" },
+        ]);
+
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("is idempotent: a duplicate (already terminal) success callback must not re-trigger dependents", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.SUCCESS,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        // makeRepo QB returns affected=0 for already-terminal rows, which is
+        // the production duplicate-callback path: no slot release, no fan-out.
+        expect(result[0].success).toBe(true);
+        expect(releaseSlotExecute).not.toHaveBeenCalled();
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("fan-out errors do not fail the callback result (best-effort)", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.createQueryBuilder.mockImplementation(() => {
+          throw new Error("dependency scan exploded");
+        });
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+      });
+
+      it("fan-out claim failure inside trigger does not fail the callback (best-effort)", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        // Downstream trigger creates the execution, then enqueue fails —
+        // trigger() compensates and throws; the callback must stay success.
+        taskQueue.add.mockRejectedValue(new Error("redis down"));
+        execRepo.update = jest.fn().mockResolvedValue({ affected: 1 });
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+      });
+    });
+
+    describe("storeLogLines transactionality (R4-P2)", () => {
+      const callbackWithLogs = (logs: string) => [
+        { executionId: "e1", status: "success" as const, logs },
+      ];
+
+      it("wraps delete + chunked inserts in ONE DB transaction (replace mode)", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        logLineRepo.save.mockResolvedValue({});
+        await service.handleCallback(callbackWithLogs("l0\nl1\nl2"));
+
+        expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+        // The delete runs through the transaction manager, not the repo.
+        expect(logLineRepo.delete).toHaveBeenCalledWith({ executionId: "e1" });
+      });
+
+      it("rolls back on a mid-insert failure so the pre-existing rows survive", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        // Emulate DB transaction semantics: writes are staged and become
+        // visible only at commit; a mid-insert failure aborts the callback
+        // so the delete inside the transaction is rolled back too.
+        const committed = ["old-0", "old-1"]; // pre-existing rows
+        dataSource.transaction.mockImplementation(async (fn: any) => {
+          const staged: string[] = [];
+          let cleared = false;
+          const manager = {
+            delete: jest.fn(async () => {
+              cleared = true;
+            }),
+            save: jest.fn(async (_t: unknown, rows: any[]) => {
+              if (rows.some((r) => r.content === "boom")) {
+                throw new Error("insert failed: connection reset");
+              }
+              staged.push(...rows.map((r) => r.content));
+            }),
+          };
+          await fn(manager);
+          // commit point — only reached when nothing threw
+          if (cleared) committed.length = 0;
+          committed.push(...staged);
+        });
+
+        const result = await service.handleCallback(
+          callbackWithLogs("new-0\nboom\nnew-2"),
+        );
+
+        expect(result[0].success).toBe(false);
+        expect(result[0].error).toMatch(/connection reset/);
+        // Rollback: the pre-existing rows are untouched — the in-transaction
+        // delete never became visible.
+        expect(committed).toEqual(["old-0", "old-1"]);
+      });
+
+      it("append mode (backfill page 2+) skips the delete but still commits atomically", async () => {
+        const exec = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: "exec-1:8002",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        const axios = (await import("axios")).default;
+        (axios.get as jest.Mock).mockClear();
+        (axios.get as jest.Mock)
+          .mockResolvedValueOnce({
+            data: { lines: ["p0-a", "p0-b"], totalLines: 4, hasMore: true },
+          })
+          .mockResolvedValueOnce({
+            data: { lines: ["p1-a", "p1-b"], totalLines: 4, hasMore: false },
+          });
+        logLineRepo.save.mockResolvedValue({});
+
+        await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "success",
+            executorAddress: "exec-1:8002",
+            logs: "...[truncated, total 50000 chars]...",
+          },
+        ]);
+
+        // Two transactional stores (page 0 replace + page 1 append).
+        expect(dataSource.transaction).toHaveBeenCalledTimes(2);
+        // Replace delete only inside the first transaction.
+        expect(logLineRepo.delete).toHaveBeenCalledTimes(1);
+        // All four lines persisted across the two transactions.
+        const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
+        expect(created).toEqual([
+          { executionId: "e1", lineNumber: 0, content: "p0-a" },
+          { executionId: "e1", lineNumber: 1, content: "p0-b" },
+          { executionId: "e1", lineNumber: 2, content: "p1-a" },
+          { executionId: "e1", lineNumber: 3, content: "p1-b" },
+        ]);
+      });
+    });
+
+    it("rejects callback when executorAddress does not match the execution", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "executor-a:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "executor-b:8002",
+        },
+      ]);
+
+      expect(result[0]).toEqual({
+        executionId: "e1",
+        success: false,
+        error: "Executor address mismatch",
+      });
+      expect(exec.status).toBe(ExecutionStatus.RUNNING);
+      expect(execRepo.save).not.toHaveBeenCalled();
+      expect(releaseSlotExecute).not.toHaveBeenCalled();
+    });
   });
 
   describe("saveVersion", () => {
@@ -503,7 +1928,9 @@ describe("TaskService (__tests__)", () => {
       const task = { id: "t1", name: "task", gitCommit: "sha1" };
       taskRepo.findOne.mockResolvedValue(task);
       versionRepo.find.mockResolvedValue([]);
-      versionRepo.save.mockImplementation((v: any) => Promise.resolve({ id: "v1", ...v }));
+      versionRepo.save.mockImplementation((v: any) =>
+        Promise.resolve({ id: "v1", ...v }),
+      );
       const result = await service.saveVersion("t1", "user", "initial");
       expect(result.version).toBe("v1");
       expect(versionRepo.create).toHaveBeenCalled();
@@ -511,7 +1938,9 @@ describe("TaskService (__tests__)", () => {
 
     it("throws NotFoundException when task not found", async () => {
       taskRepo.findOne.mockResolvedValue(null);
-      await expect(service.saveVersion("missing")).rejects.toThrow(NotFoundException);
+      await expect(service.saveVersion("missing")).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -534,19 +1963,27 @@ describe("TaskService (__tests__)", () => {
 
     it("throws NotFoundException when version not found", async () => {
       versionRepo.findOne.mockResolvedValue(null);
-      await expect(service.rollbackToVersion("t1", "missing-v")).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.rollbackToVersion("t1", "missing-v"),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
   describe("compareVersions", () => {
     it("returns diff for changed fields only", async () => {
-      const v1 = { id: "v1", taskId: "t1", version: "v1", snapshot: { name: "old", timeout: 30 } };
-      const v2 = { id: "v2", taskId: "t1", version: "v2", snapshot: { name: "new", timeout: 30 } };
-      versionRepo.findOne
-        .mockResolvedValueOnce(v1)
-        .mockResolvedValueOnce(v2);
+      const v1 = {
+        id: "v1",
+        taskId: "t1",
+        version: "v1",
+        snapshot: { name: "old", timeout: 30 },
+      };
+      const v2 = {
+        id: "v2",
+        taskId: "t1",
+        version: "v2",
+        snapshot: { name: "new", timeout: 30 },
+      };
+      versionRepo.findOne.mockResolvedValueOnce(v1).mockResolvedValueOnce(v2);
       const diff = await service.compareVersions("t1", "v1", "v2");
       expect(diff).toHaveProperty("name");
       expect(diff.name).toEqual({ old: "old", new: "new" });
@@ -556,10 +1993,13 @@ describe("TaskService (__tests__)", () => {
     it("returns empty diff when snapshots are identical", async () => {
       const snap = { name: "same", timeout: 60 };
       const v1 = { id: "v1", taskId: "t1", version: "v1", snapshot: snap };
-      const v2 = { id: "v2", taskId: "t1", version: "v2", snapshot: { ...snap } };
-      versionRepo.findOne
-        .mockResolvedValueOnce(v1)
-        .mockResolvedValueOnce(v2);
+      const v2 = {
+        id: "v2",
+        taskId: "t1",
+        version: "v2",
+        snapshot: { ...snap },
+      };
+      versionRepo.findOne.mockResolvedValueOnce(v1).mockResolvedValueOnce(v2);
       const diff = await service.compareVersions("t1", "v1", "v2");
       expect(Object.keys(diff)).toHaveLength(0);
     });
@@ -574,11 +2014,16 @@ describe("TaskService (__tests__)", () => {
 
   describe("killExecution", () => {
     it("marks a RUNNING execution as KILLED and saves", async () => {
-      const exec = { id: "e1", status: ExecutionStatus.RUNNING, startTime: new Date(Date.now() - 5000) };
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 5000),
+      };
       execRepo.findOne.mockResolvedValue(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       const result = await service.killExecution("e1");
       expect(exec.status).toBe(ExecutionStatus.KILLED);
+      expect((exec as any).failureReason).toBe(ExecutionFailureReason.KILLED);
       expect(exec).toHaveProperty("endTime");
       expect(result.success).toBe(true);
     });
@@ -594,13 +2039,17 @@ describe("TaskService (__tests__)", () => {
 
     it("throws NotFoundException when execution does not exist", async () => {
       execRepo.findOne.mockResolvedValue(null);
-      await expect(service.killExecution("ghost")).rejects.toThrow(NotFoundException);
+      await expect(service.killExecution("ghost")).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it("throws BadRequestException when execution is already in terminal state", async () => {
       const exec = { id: "e3", status: ExecutionStatus.SUCCESS };
       execRepo.findOne.mockResolvedValue(exec);
-      await expect(service.killExecution("e3")).rejects.toThrow(BadRequestException);
+      await expect(service.killExecution("e3")).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
@@ -630,7 +2079,10 @@ describe("TaskService (__tests__)", () => {
 
   describe("getVersions", () => {
     it("returns versions for a task ordered by createdAt DESC", async () => {
-      const versions = [{ id: "v2", taskId: "t1" }, { id: "v1", taskId: "t1" }];
+      const versions = [
+        { id: "v2", taskId: "t1" },
+        { id: "v1", taskId: "t1" },
+      ];
       versionRepo.find.mockResolvedValue(versions);
       const result = await service.getVersions("t1");
       expect(result).toEqual(versions);
@@ -650,7 +2102,9 @@ describe("TaskService (__tests__)", () => {
 
     it("throws NotFoundException when version is not found", async () => {
       versionRepo.findOne.mockResolvedValue(null);
-      await expect(service.getVersion("t1", "missing")).rejects.toThrow(NotFoundException);
+      await expect(service.getVersion("t1", "missing")).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -665,7 +2119,9 @@ describe("TaskService (__tests__)", () => {
 
     it("throws NotFoundException when version does not exist", async () => {
       versionRepo.findOne.mockResolvedValue(null);
-      await expect(service.deleteVersion("t1", "ghost")).rejects.toThrow(NotFoundException);
+      await expect(service.deleteVersion("t1", "ghost")).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

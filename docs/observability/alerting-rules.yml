@@ -1,0 +1,170 @@
+# AutoCodeFlow — Prometheus 告警规则（第十轮观测）
+#
+# 适用对象：apps/admin-api GET /api/metrics（Prometheus text exposition）。
+# series 名与 label 已与源码逐字核对（见 docs/observability/README.md 附录 A）。
+#
+# 挂载方式（prometheus.yml）：
+#   rule_files:
+#     - /etc/prometheus/rules/autoflow-alerting.yml
+#
+# 注：本机无 promtool，未跑 `promtool check rules`；语法按 Prometheus rule
+# 文件惯例编写（groups[].rules[]，UPPER_SNAKE alert 名）。
+#
+# 多实例说明：计数为 per-process（每实例各自暴露），rate 类表达式按
+# instance 维度评估、聚合类按 job 维度评估；job label 由 Prometheus 抓取
+# 配置注入（见 README 的 scrape_config 示例，job_name: autoflow-admin-api）。
+
+groups:
+  - name: autoflow-scheduler
+    rules:
+      # 调度器停摆：queue_up==0（Redis 不可读，队列计数拿不到）或
+      # ticks rate 5 分钟为 0（调度循环不再产生 tick）。
+      # 调优思路：
+      # - ticks 正常速率 ≈ 1/扫描间隔（如 15s 间隔 → ~0.067/s）。若扫描
+      #   间隔被调大，请同步放宽 `rate(...[5m]) == 0` 的回看窗口。
+      # - 进程重启瞬间 counter 归零，rate() 能处理 reset 不会误判；但抓取
+      #   中断（target down）会让表达式无样本而非 0——target 失联由下方
+      #   AUTOFLOW_METRICS_TARGET_DOWN 兜底。
+      # - queue_up==0 单独出现更可能是 Redis 故障而非调度器死亡，两个条件
+      #   合并为一条 critical 便于值班第一时间区分（看 description 哪支触发）。
+      - alert: AUTOFLOW_SCHEDULER_DOWN
+        expr: |
+          (autoflow_queue_up == 0)
+          or
+          (rate(autoflow_scheduler_ticks_total[5m]) == 0)
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "调度器停摆：{{ $labels.instance }}"
+          description: >-
+            持续 5 分钟满足：autoflow_queue_up == 0（Redis 不可读，BullMQ
+            队列计数失败）或 rate(autoflow_scheduler_ticks_total[5m]) == 0
+            （本进程未再执行调度扫描 tick）。检查 admin-api 进程存活、
+            Redis 连通性、调度循环异常日志；恢复前 cron/依赖触发均会积压。
+          runbook: "docs/observability/README.md#autoflow_scheduler_down"
+
+      # 兜底：抓取目标失联（series 消失 ≠ 值为 0，上面的 ==0 表达式在无样本
+      # 时不触发，必须用 absent 补位）。
+      - alert: AUTOFLOW_METRICS_TARGET_DOWN
+        expr: absent(autoflow_queue_up)
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "admin-api metrics 抓取目标全部失联"
+          description: >-
+            所有 autoflow-admin-api target 均已 5 分钟未上报
+            autoflow_queue_up series。可能：进程挂死、/api/metrics 被
+            METRICS_PROMETHEUS_ENABLED=false 关闭、JWT bearer 过期导致
+            抓取 401（见 README 抓取配置的 token 过期坑）。
+          runbook: "docs/observability/README.md#抓取鉴权坑bearer-jwt"
+
+      # 队列积压：waiting 深度持续超阈值。
+      # 调优思路：
+      # - 100 是保守起点：正常水位取决于 cron 密度 × 执行时长。先观察
+      #   dashboard「Queue depth by state」两周基线，取 p99 的 2~3 倍。
+      # - waiting 高但 active 也高 = 执行器容量不足（考虑 ExecutorOffline
+      #   方向排查）；waiting 高而 active≈0 = 消费端停摆，更危险，可另加
+      #   `autoflow_queue_depth{state="waiting"} > 50 unless autoflow_queue_depth{state="active"} > 0`。
+      # - Redis 不可读时 queue_depth 被源码置 0（不会误触发本告警），
+      #   该场景由 AUTOFLOW_SCHEDULER_DOWN 覆盖。
+      - alert: AUTOFLOW_QUEUE_BACKLOG
+        expr: autoflow_queue_depth{state="waiting"} > 100
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "任务队列积压：{{ $labels.instance }} waiting > 100"
+          description: >-
+            BullMQ waiting 深度 {{ $value }} 持续 10 分钟超过 100。核对执行器
+            在线数与消费速率（dashboard「Queue depth by state」active 曲线、
+            GET /api/metrics/executors JSON）。
+          runbook: "docs/observability/README.md#autoflow_queue_backlog"
+
+  - name: autoflow-callback-auth
+    rules:
+      # —— 宽松级：v1_expired ——
+      # token 过期可能只是「任务超时后迟到的合法回调」（执行端持有已过期的
+      # per-execution token 重试），属预期长尾，阈值宽松、warning 即可。
+      # 调优思路：0.05/s ≈ 3 次/分钟。若 fleet 大、超时任务占比高，按
+      # expired/ok 比例改写成比率表达式，例如：
+      #   rate(...{result="v1_expired"}[15m])
+      #     > 0.1 * rate(...{result="ok"}[15m])
+      - alert: AUTOFLOW_CALLBACK_AUTH_EXPIRED_ELEVATED
+        expr: |
+          sum by (job) (rate(autoflow_execution_callback_auth_total{result="v1_expired"}[5m])) > 0.05
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "回调 token 过期占比升高（{{ $labels.job }}）"
+          description: >-
+            v1_expired 速率 {{ $value }}/s 持续 15 分钟 > 0.05。多为任务超时
+            后执行端迟到的回调（合法但无效）；若伴随执行超时告警，核对
+            token TTL 与任务最长运行时间配置是否匹配。
+          runbook: "docs/observability/README.md#autoflow_callback_auth_expired_elevated"
+
+      # —— 严格级：签名/共享 token 类 ——
+      # v1_bad_signature 与 legacy_shared_invalid 在正常运行下应几乎为 0：
+      # 出现即意味着 secret 漂移（fleet 全局 / per-executor secret 不一致）
+      # 或外部探测/伪造尝试，阈值严格、critical。
+      # 调优思路：0.01/s ≈ 0.6 次/分钟；若担心偶发单点毛刺漏报，可把 for
+      # 降为 2m 并配合 dashboard「异常分类绝对值」面板人工确认台阶。
+      - alert: AUTOFLOW_CALLBACK_AUTH_SIGNATURE_CRITICAL
+        expr: |
+          sum by (job) (rate(autoflow_execution_callback_auth_total{result=~"v1_bad_signature|legacy_shared_invalid"}[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          team: security
+        annotations:
+          summary: "回调签名校验异常（疑似 secret 漂移或伪造）"
+          description: >-
+            v1_bad_signature / legacy_shared_invalid 速率 {{ $value }}/s 持续
+            5 分钟 > 0.01（应≈0）。立即核对：① executor 与 admin-api 的
+            fleet/per-executor secret 是否轮换不同步；② 回调来源 IP 是否
+            异常（安全事件可能）；③ legacy 共享 token 客户端是否未迁移完。
+          runbook: "docs/observability/README.md#autoflow_callback_auth_signature_critical"
+
+      # —— 中间级：绑定/缺 token/缺地址 ——
+      # v1_binding_mismatch（token 与 executionId 绑定不符）、missing_token、
+      # bad_address 多为集成配置错误（复用 token、漏 header），非攻击信号，
+      # 但持续出现说明有客户端用错凭证，warning 提示排查。
+      - alert: AUTOFLOW_CALLBACK_AUTH_MISUSE
+        expr: |
+          sum by (job) (rate(autoflow_execution_callback_auth_total{result=~"v1_binding_mismatch|missing_token|bad_address"}[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "回调凭证使用异常（{{ $labels.job }}）"
+          description: >-
+            v1_binding_mismatch / missing_token / bad_address 合计速率
+            {{ $value }}/s 持续 10 分钟 > 0.1。常见原因：执行端复用其他
+            execution 的 token、未带 Authorization 头、legacy 回调缺
+            executorAddress。按 result 分解见 dashboard 饼图/表格面板。
+          runbook: "docs/observability/README.md#autoflow_callback_auth_misuse"
+
+  # # —— ExecutorOffline（暂不启用）——
+  # # 核对结论：admin-api 的 Prometheus 端点【没有】执行器在线/心跳 series
+  # # （全库 grep `autoflow_` 仅命中 metrics 模块；执行器状态存于 DB
+  # # Executor.status/lastHeartbeat，由 heartbeat() 更新，仅通过 JSON 端点
+  # # GET /api/metrics/executors 与 GET /health/metrics 暴露，非 Prometheus
+  # # 格式）。因此无法在本文件用 PromQL 表达该告警。
+  # # 建议：执行器离线检测走现有 notification 渠道
+  # # （apps/admin-api/src/modules/notification，如 Slack channel——服务端
+  # # 已有基于 DB 状态的离线判定路径），或未来在 executor 模块补一个
+  # # autoflow_executor_online gauge 后再启用如下规则：
+  # - alert: AUTOFLOW_EXECUTOR_OFFLINE
+  #   expr: sum(autoflow_executor_online) < <期望最小在线数>
+  #   for: 5m
+  #   labels:
+  #     severity: warning
+  #   annotations:
+  #     summary: "执行器离线数量超阈值"

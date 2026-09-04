@@ -1,10 +1,14 @@
 import { Router, Request, Response } from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawnSync, spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import { config } from '../config';
 import { logger } from '../logger';
 import { post } from '../admin-client';
+import { runCommand, killProcessTree } from '../run-command';
+import { buildChildEnv } from '../env-whitelist';
+import { downloadFile } from '../lib/download';
+import { isSafePathSegment } from '../safe-path';
 
 export const deployRouter = Router();
 
@@ -17,6 +21,7 @@ interface DeployPayload {
   gitBranch: string;
   gitCommit?: string | null;
   packageUrl?: string | null;
+  version?: string | null;
   runtime: string;
   entrypoint?: string;
   runMode: 'once' | 'daemon' | 'scheduled';
@@ -26,6 +31,17 @@ interface DeployPayload {
 
 /** Map of deploymentId -> running child process (daemon mode) */
 const runningApps = new Map<string, ChildProcess>();
+
+/** Deployments whose next process exit is part of an intentional in-place restart. */
+const restartExitReportsToSuppress = new Set<string>();
+
+export function suppressNextRestartExitReport(deploymentId: string): void {
+  restartExitReportsToSuppress.add(deploymentId);
+}
+
+export function shouldReportProcessExit(deploymentId: string): boolean {
+  return !restartExitReportsToSuppress.delete(deploymentId);
+}
 
 /** Report app status back to admin-api */
 async function reportStatus(
@@ -41,22 +57,43 @@ async function reportStatus(
   }
 }
 
-/** Install dependencies for the given deployment directory */
-function installDeps(
+/** Resolve platform-aware Python / pip binary paths inside a venv */
+function venvBins(venvDir: string): { python: string; pip: string } {
+  const isWin = process.platform === 'win32';
+  return {
+    python: isWin
+      ? path.join(venvDir, 'Scripts', 'python.exe')
+      : path.join(venvDir, 'bin', 'python3'),
+    pip: isWin
+      ? path.join(venvDir, 'Scripts', 'pip.exe')
+      : path.join(venvDir, 'bin', 'pip'),
+  };
+}
+
+/** Install dependencies for the given deployment directory. Async — the
+ *  previous spawnSync calls froze the event loop for up to 5 minutes
+ *  (npm/pip installs), stopping heartbeats, /health and every API. */
+async function installDeps(
   deployDir: string,
   runtime: string,
   envVars: Record<string, string>,
-): void {
-  const env = { ...process.env, ...envVars };
+): Promise<void> {
+  // SEC: whitelist env only — the previous `{ ...process.env, ...envVars }`
+  // leaked EXECUTOR_SHARED_TOKEN/EXECUTOR_SECRET into user-controlled app
+  // install processes, letting deployed code impersonate this executor
+  // against admin-api (heartbeats, execution callbacks).
+  const env = buildChildEnv(envVars);
+  const isWin = process.platform === 'win32';
 
-  // SEC: spawnSync with array args — no shell, no injection
   if (runtime === 'node' || runtime === 'nodejs') {
     const pkgJson = path.join(deployDir, 'package.json');
     if (fs.existsSync(pkgJson)) {
       logger.info(`[deploy] Installing Node.js dependencies in ${deployDir}`);
+      // On Windows, npm is a .cmd file and needs shell:true to resolve
+      const npmCmd = isWin ? 'npm.cmd' : 'npm';
       const npmArgs = ['install', '--production'];
       if (config.npmRegistryUrl) npmArgs.push(`--registry=${config.npmRegistryUrl}`);
-      const r = spawnSync('npm', npmArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000 });
+      const r = await runCommand(npmCmd, npmArgs, { cwd: deployDir, env, timeout: 300_000, shell: isWin });
       if (r.status !== 0) throw new Error(r.stderr?.toString() || 'npm install failed');
     }
   } else if (runtime === 'python') {
@@ -64,12 +101,14 @@ function installDeps(
     if (fs.existsSync(reqFile)) {
       logger.info(`[deploy] Creating Python venv and installing deps in ${deployDir}`);
       const venvDir = path.join(deployDir, '.venv');
-      const venvR = spawnSync('python3', ['-m', 'venv', venvDir], { cwd: deployDir, env, stdio: 'pipe', timeout: 60_000 });
-      if (venvR.status !== 0) throw new Error(venvR.stderr?.toString() || 'python3 -m venv failed');
-      const pip = path.join(venvDir, 'bin', 'pip');
+      // Try 'python3' first (Linux/macOS), fall back to 'python' (Windows)
+      const pythonCmd = isWin ? 'python' : 'python3';
+      const venvR = await runCommand(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, timeout: 60_000 });
+      if (venvR.status !== 0) throw new Error(venvR.stderr?.toString() || `${pythonCmd} -m venv failed`);
+      const bins = venvBins(venvDir);
       const pipArgs = ['install', '-r', 'requirements.txt'];
       if (config.pythonRegistryUrl) pipArgs.push('-i', config.pythonRegistryUrl);
-      const pipR = spawnSync(pip, pipArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300_000 });
+      const pipR = await runCommand(bins.pip, pipArgs, { cwd: deployDir, env, timeout: 300_000 });
       if (pipR.status !== 0) throw new Error(pipR.stderr?.toString() || 'pip install failed');
     }
   }
@@ -84,22 +123,52 @@ function startApp(
   runMode: string,
   envVars: Record<string, string>,
 ): void {
-  const env = { ...process.env, ...envVars };
+  // SEC: whitelist env only — same trust boundary as task execution. The app
+  // and its children get the task/env whitelist plus its own envVars, never
+  // the executor's secrets (EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET).
+  const env = buildChildEnv(envVars);
 
   let cmd: string;
   let args: string[];
 
+  const isWin = process.platform === 'win32';
+
   if (runtime === 'python') {
-    const pythonBin = path.join(deployDir, '.venv', 'bin', 'python3');
-    cmd = fs.existsSync(pythonBin) ? pythonBin : 'python3';
+    const bins = venvBins(path.join(deployDir, '.venv'));
+    // Use venv python if available, otherwise fall back to system python
+    const fallback = isWin ? 'python' : 'python3';
+    cmd = fs.existsSync(bins.python) ? bins.python : fallback;
     args = [entrypoint];
   } else if (runtime === 'node' || runtime === 'nodejs') {
     cmd = 'node';
     args = [entrypoint];
+  } else if (runtime === 'shell' || runtime === 'bash' || runtime === 'sh') {
+    // Critical (executor-node audit 2026-09): shell runtime executes the
+    // user-supplied entrypoint verbatim through `sh -c` / `cmd.exe /c`,
+    // which is a direct arbitrary-command execution surface. Restrict to a
+    // safe character set so attackers cannot smuggle `;`, `&&`, backticks,
+    // `$()` expansions or path escapes into the shell.
+    const SAFE = /^[A-Za-z0-9._\/ :\\-]+$/;
+    if (!SAFE.test(entrypoint)) {
+      throw new Error(
+        `Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]`,
+      );
+    }
+    // Belt-and-suspenders: the spawn() call below already uses array args
+    // (not `shell: true`), but we still pre-validate to fail fast and to
+    // leave an audit trail. cmd.exe /c <safe> and sh -c <safe> here run
+    // exactly one command line, with no metacharacter expansion possible.
+    if (isWin) {
+      cmd = 'cmd.exe';
+      args = ['/c', entrypoint];
+    } else {
+      cmd = 'sh';
+      args = ['-c', entrypoint];
+    }
   } else {
-    // shell
-    cmd = 'sh';
-    args = ['-c', entrypoint];
+    throw new Error(
+      `Unsupported runtime "${runtime}"; expected python | node | shell`,
+    );
   }
 
   logger.info(`[deploy] Starting app ${deploymentId}: ${cmd} ${args.join(' ')}`);
@@ -107,7 +176,10 @@ function startApp(
   const child = spawn(cmd, args, {
     cwd: deployDir,
     env,
-    detached: false,
+    // Detached on POSIX so the app leads its own process group — app-stop /
+    // upgrade can then kill the whole tree (the app may spawn its own
+    // children; a parent-only kill would orphan them).
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -116,14 +188,30 @@ function startApp(
   // Stream logs to file
   const logFile = path.join(deployDir, 'app.log');
   const logStream = fs.createWriteStream(logFile, { flags: 'a' });
-  child.stdout?.pipe(logStream);
-  child.stderr?.pipe(logStream);
+  logStream.on('error', (err) => {
+    logger.warn(`[deploy] Failed to write app log for ${deploymentId}: ${err.message}`);
+  });
+  // end:false on both sources — with the default end:true the first stream
+  // to finish would end the file while the other still writes
+  // (write-after-end crash).
+  let openLogSources = 2;
+  const closeLogStream = () => {
+    if (--openLogSources <= 0) logStream.end();
+  };
+  child.stdout?.pipe(logStream, { end: false });
+  child.stderr?.pipe(logStream, { end: false });
+  child.stdout?.on('close', closeLogStream);
+  child.stderr?.on('close', closeLogStream);
 
   // Report started
   reportStatus(deploymentId, 'running', child.pid);
 
   child.on('exit', (code) => {
     runningApps.delete(deploymentId);
+    if (!shouldReportProcessExit(deploymentId)) {
+      logger.info(`[deploy] Suppressed exit report for restarted app ${deploymentId}`);
+      return;
+    }
     if (code === 0) {
       logger.info(`[deploy] App ${deploymentId} exited cleanly`);
       reportStatus(deploymentId, 'stopped', undefined, `Exited with code ${code}`);
@@ -140,40 +228,176 @@ function startApp(
   });
 }
 
-/** Download a file over HTTP/HTTPS to a local path */
-function downloadPackage(url: string, dest: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proto = url.startsWith('https') ? require('https') : require('http');
-    const file = fs.createWriteStream(dest);
-    const req = proto.get(url, (res: any) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        file.close();
-        fs.unlinkSync(dest);
-        downloadPackage(res.headers.location, dest).then(resolve).catch(reject);
-        return;
-      }
-      if (!res.statusCode || res.statusCode >= 400) {
-        reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-        return;
-      }
-      res.pipe(file);
-      file.on('finish', () => { file.close(); resolve(); });
-    });
-    req.on('error', (err: Error) => { fs.unlink(dest, () => {}); reject(err); });
-    req.setTimeout(120_000, () => { req.destroy(); reject(new Error('Download timed out')); });
-  });
+/** Strip embedded credentials (user:token@) before a URL reaches the logs. */
+function redactUrl(u: string): string {
+  return u.replace(/\/\/[^/@]+@/, '//***@');
+}
+
+/** Download a package over HTTP/HTTPS to a local path. Delegates to the
+ *  shared downloader (Bearer token + cross-host redirect stripping + absolute
+ *  download deadline + size cap) so deploy and update-package behave
+ *  identically — update-package previously had a second, token-less copy. */
+export function downloadPackage(url: string, dest: string, maxRedirects = 5, sendAuth = true): Promise<void> {
+  return downloadFile(url, dest, { maxRedirects, sendAuth }).then(() => undefined);
+}
+
+function validatePackageUrl(packageUrl: string): string | null {
+  try {
+    const parsed = new URL(packageUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return `packageUrl scheme not allowed: ${parsed.protocol}. Only http and https are permitted.`;
+    }
+    return null;
+  } catch {
+    return 'packageUrl is not a valid URL';
+  }
+}
+
+function normalizeReleasePart(value: string | null | undefined, fallback: string): string {
+  const normalized = (value || fallback)
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 80);
+  return normalized || fallback;
+}
+
+interface DeploymentPaths {
+  appRoot: string;
+  releasesDir: string;
+  tmpDir: string;
+  currentLink: string;
+  releaseKey: string;
+  finalReleaseDir: string;
+  extractDir: string;
+}
+
+export function buildDeploymentPaths(
+  workDir: string,
+  appId: string,
+  deploymentId: string,
+  version?: string | null,
+): DeploymentPaths {
+  if (!isSafePathSegment(appId)) {
+    throw new Error('applicationId contains unsupported characters');
+  }
+  if (!isSafePathSegment(deploymentId)) {
+    throw new Error('deploymentId contains unsupported characters');
+  }
+
+  const versionPart = normalizeReleasePart(version, 'version');
+  const releaseKey = `${versionPart}-${deploymentId}`;
+  const appRoot = path.join(workDir, 'apps', appId);
+  const releasesDir = path.join(appRoot, 'releases');
+  const tmpDir = path.join(appRoot, 'tmp');
+
+  return {
+    appRoot,
+    releasesDir,
+    tmpDir,
+    currentLink: path.join(appRoot, 'current'),
+    releaseKey,
+    finalReleaseDir: path.join(releasesDir, releaseKey),
+    extractDir: path.join(tmpDir, `${releaseKey}-extracting`),
+  };
+}
+
+function readCurrentTarget(currentLink: string): string | null {
+  try {
+    if (fs.existsSync(currentLink) && fs.lstatSync(currentLink).isSymbolicLink()) {
+      return fs.readlinkSync(currentLink);
+    }
+  } catch (err: any) {
+    logger.warn(`[deploy] Failed to read current release link: ${err.message}`);
+  }
+  return null;
+}
+
+function removePathIfExists(target: string): void {
+  if (fs.existsSync(target)) {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+}
+
+function switchCurrentRelease(currentLink: string, targetDir: string): void {
+  const tmpLink = `${currentLink}.next-${process.pid}-${Date.now()}`;
+  removePathIfExists(tmpLink);
+  fs.symlinkSync(targetDir, tmpLink, process.platform === 'win32' ? 'junction' : 'dir');
+  try {
+    fs.renameSync(tmpLink, currentLink);
+  } catch (err: any) {
+    if (err?.code !== 'EEXIST') throw err;
+    fs.unlinkSync(currentLink);
+    fs.renameSync(tmpLink, currentLink);
+  }
+}
+
+function restoreCurrentRelease(currentLink: string, previousTarget: string | null): void {
+  try {
+    if (previousTarget) {
+      switchCurrentRelease(currentLink, previousTarget);
+    } else if (fs.existsSync(currentLink)) {
+      fs.unlinkSync(currentLink);
+    }
+  } catch (err: any) {
+    logger.warn(`[deploy] Failed to restore previous current release: ${err.message}`);
+  }
+}
+
+async function assertSafeZipEntries(zipPath: string): Promise<void> {
+  if (process.platform === 'win32') return;
+
+  const listR = await runCommand('unzip', ['-Z1', zipPath], { timeout: 30_000 });
+  if (listR.status !== 0) {
+    throw new Error(listR.stderr?.toString() || 'unzip listing failed');
+  }
+
+  const entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
+  for (const entry of entries) {
+    const parts = entry.split(/[\\/]+/).filter(Boolean);
+    if (path.isAbsolute(entry) || parts.includes('..')) {
+      throw new Error(`Unsafe zip entry path: ${entry}`);
+    }
+  }
 }
 
 /** Main deploy handler */
 deployRouter.post('/deploy', async (req: Request, res: Response) => {
   const payload = req.body as DeployPayload;
-  const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
+  const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, version, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
 
   if (!deploymentId) {
     return res.status(400).json({ error: 'deploymentId is required' });
   }
+  if (!isSafePathSegment(deploymentId)) {
+    return res.status(400).json({ error: 'deploymentId contains unsupported characters' });
+  }
   if (!gitRepo && !packageUrl) {
     return res.status(400).json({ error: 'Either gitRepo or packageUrl is required' });
+  }
+  // P0: git argument injection guard — option-like or malformed values would
+  // be parsed as flags by git (e.g. --upload-pack=…) instead of ref/URL.
+  if (gitRepo) {
+    if (/^-/.test(gitRepo) || !/^(https?:\/\/|git@|ssh:\/\/)/i.test(gitRepo)) {
+      return res.status(400).json({ error: `Invalid gitRepo URL: ${gitRepo}` });
+    }
+    const branch = gitBranch || 'main';
+    if (
+      /^-/.test(branch) ||
+      /[\s^~:?*[\]\\]/.test(branch) ||
+      branch.includes('..') ||
+      branch.startsWith('/')
+    ) {
+      return res.status(400).json({ error: `Invalid gitBranch: ${branch}` });
+    }
+    if (gitCommit && !/^[0-9a-fA-F]{7,40}$/.test(gitCommit)) {
+      return res.status(400).json({ error: `Invalid gitCommit: ${gitCommit}` });
+    }
+  }
+  if (packageUrl) {
+    const packageUrlError = validatePackageUrl(packageUrl);
+    if (packageUrlError) {
+      return res.status(400).json({ error: packageUrlError });
+    }
   }
 
   // Work directory for this deployment (accept appId as alias for applicationId)
@@ -181,70 +405,107 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
   if (!appId) {
     return res.status(400).json({ error: 'applicationId is required' });
   }
-  const deployDir = path.join(config.workDir, 'apps', appId, deploymentId);
+  if (!isSafePathSegment(appId)) {
+    return res.status(400).json({ error: 'applicationId contains unsupported characters' });
+  }
+  const paths = buildDeploymentPaths(config.workDir, appId, deploymentId, version);
 
   // Acknowledge immediately; deploy runs async
   res.json({ ok: true, deploymentId });
 
   setImmediate(async () => {
+    const previousCurrentTarget = readCurrentTarget(paths.currentLink);
+    let switchedCurrent = false;
     try {
-      // Stop existing process if upgrading
+      // Stop existing process if upgrading — wait for actual exit instead of fixed sleep
       if (upgrade && runningApps.has(deploymentId)) {
         const existing = runningApps.get(deploymentId)!;
-        existing.kill('SIGTERM');
+        suppressNextRestartExitReport(deploymentId);
+        await new Promise<void>((resolve) => {
+          const gracefulTimeout = setTimeout(() => {
+            logger.warn(`[deploy] Graceful stop timed out for ${deploymentId}, sending SIGKILL`);
+            killProcessTree(existing, 'SIGKILL');
+            resolve();
+          }, 10_000);
+          existing.once('exit', () => {
+            clearTimeout(gracefulTimeout);
+            resolve();
+          });
+          killProcessTree(existing, 'SIGTERM');
+        });
         runningApps.delete(deploymentId);
         logger.info(`[deploy] Stopped existing process for ${deploymentId}`);
-        await new Promise(r => setTimeout(r, 2000));
       }
 
-      if (!fs.existsSync(deployDir)) {
-        fs.mkdirSync(deployDir, { recursive: true });
-      }
+      fs.mkdirSync(paths.releasesDir, { recursive: true });
+      fs.mkdirSync(paths.tmpDir, { recursive: true });
+      removePathIfExists(paths.extractDir);
+      fs.mkdirSync(paths.extractDir, { recursive: true });
 
       if (packageUrl) {
-        // Package-based deployment: download zip and extract
-        logger.info(`[deploy] Downloading package from ${packageUrl}`);
-        const zipPath = path.join(deployDir, '_package.zip');
+        // Package-based deployment: download zip and extract into a temporary release dir.
+        logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
+        const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
         await downloadPackage(packageUrl, zipPath);
+        await assertSafeZipEntries(zipPath);
         logger.info(`[deploy] Extracting package for ${deploymentId}`);
-        const unzipR = spawnSync('unzip', ['-o', zipPath, '-d', deployDir], { stdio: 'pipe', timeout: 60_000 });
-        if (unzipR.status !== 0) throw new Error(unzipR.stderr?.toString() || 'unzip failed');
-        fs.unlinkSync(zipPath);
-        logger.info(`[deploy] Package extracted for ${deploymentId}`);
-      } else if (gitRepo) {
-        const gitDir = path.join(deployDir, '.git');
-        // SEC: all git commands use spawnSync with array args — no shell, no injection
-        if (!fs.existsSync(gitDir)) {
-          // Fresh clone
-          logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
-          const cloneR = spawnSync(
-            'git', ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, '.'],
-            { cwd: deployDir, stdio: 'pipe', timeout: 120_000 },
+        // Use platform-appropriate extraction (async — spawnSync here froze
+        // the event loop for up to 60s per archive):
+        //   Windows: PowerShell Expand-Archive (built-in since PS 5.0)
+        //   Linux/macOS: unzip
+        let unzipOk = false;
+        if (process.platform === 'win32') {
+          const psR = await runCommand(
+            'powershell.exe',
+            [
+              '-NoProfile',
+              '-Command',
+              'Expand-Archive -Force -LiteralPath $args[0] -DestinationPath $args[1]',
+              zipPath,
+              paths.extractDir,
+            ],
+            { timeout: 60_000 },
           );
-          if (cloneR.status !== 0) throw new Error(cloneR.stderr?.toString() || 'git clone failed');
+          if (psR.status !== 0) throw new Error(psR.stderr?.toString() || 'Expand-Archive failed');
+          unzipOk = true;
         } else {
-          // Pull latest
-          logger.info(`[deploy] Pulling latest for ${deploymentId}`);
-          const fetchR = spawnSync('git', ['fetch', '--depth', '1', 'origin'], { cwd: deployDir, stdio: 'pipe', timeout: 60_000 });
-          if (fetchR.status !== 0) logger.warn(`git fetch warning: ${fetchR.stderr?.toString()}`);
-          const resetR = spawnSync('git', ['reset', '--hard', `origin/${gitBranch}`], { cwd: deployDir, stdio: 'pipe', timeout: 30_000 });
-          if (resetR.status !== 0) throw new Error(resetR.stderr?.toString() || 'git reset failed');
+          const unzipR = await runCommand('unzip', ['-o', zipPath, '-d', paths.extractDir], { timeout: 60_000 });
+          if (unzipR.status !== 0) throw new Error(unzipR.stderr?.toString() || 'unzip failed');
+          unzipOk = true;
         }
+        if (unzipOk) {
+          fs.unlinkSync(zipPath);
+          logger.info(`[deploy] Package extracted for ${deploymentId}`);
+        }
+      } else if (gitRepo) {
+        // SEC: all git commands use array args via async spawn — no shell, no injection
+        logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
+        const cloneR = await runCommand(
+          'git', ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, '.'],
+          { cwd: paths.extractDir, timeout: 120_000 },
+        );
+        if (cloneR.status !== 0) throw new Error(cloneR.stderr?.toString() || 'git clone failed');
 
         if (gitCommit) {
-          const coR = spawnSync('git', ['checkout', gitCommit], { cwd: deployDir, stdio: 'pipe', timeout: 30_000 });
+          const coR = await runCommand('git', ['checkout', gitCommit], { cwd: paths.extractDir, timeout: 30_000 });
           if (coR.status !== 0) throw new Error(coR.stderr?.toString() || 'git checkout failed');
         }
       }
 
-      // Install dependencies
-      installDeps(deployDir, runtime, envVars);
+      // Install dependencies before publishing the release.
+      await installDeps(paths.extractDir, runtime, envVars);
 
-      // Write .env file for the app
+      // Write .env file for the app before publishing the release.
       if (Object.keys(envVars).length > 0) {
         const envContent = Object.entries(envVars).map(([k, v]) => `${k}=${v}`).join('\n');
-        fs.writeFileSync(path.join(deployDir, '.env'), envContent, 'utf-8');
+        fs.writeFileSync(path.join(paths.extractDir, '.env'), envContent, { encoding: 'utf-8', mode: 0o600 });
       }
+
+      removePathIfExists(paths.finalReleaseDir);
+      fs.renameSync(paths.extractDir, paths.finalReleaseDir);
+      switchCurrentRelease(paths.currentLink, paths.finalReleaseDir);
+      switchedCurrent = true;
+      logger.info(`[deploy] Current release for ${appName} now points to ${paths.releaseKey}`);
 
       // Start app if runMode is daemon or once
       // Pick a sensible default entrypoint based on runtime when none was specified
@@ -253,12 +514,16 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         : 'main.sh';
       const entry = entrypoint || defaultEntry;
       if (runMode === 'daemon' || runMode === 'once') {
-        startApp(deploymentId, deployDir, runtime, entry, runMode, envVars);
+        startApp(deploymentId, paths.finalReleaseDir, runtime, entry, runMode, envVars);
       } else {
         // scheduled mode: just deploy, tasks are triggered via normal task dispatch
         await reportStatus(deploymentId, 'running', undefined, 'Deployed in scheduled mode');
       }
     } catch (err: any) {
+      if (switchedCurrent) {
+        restoreCurrentRelease(paths.currentLink, previousCurrentTarget);
+      }
+      removePathIfExists(paths.extractDir);
       logger.error(`[deploy] Deployment ${deploymentId} failed: ${err.message}`);
       await reportStatus(deploymentId, 'failed', undefined, err.message);
     }
@@ -270,7 +535,15 @@ deployRouter.post('/app-stop', (req: Request, res: Response) => {
   const { deploymentId } = req.body;
   const child = runningApps.get(deploymentId);
   if (child) {
-    child.kill('SIGTERM');
+    // Apps are spawned detached (process-group leaders) — kill the whole
+    // tree so daemons that spawned their own children don't escape.
+    killProcessTree(child, 'SIGTERM');
+    // Escalate to SIGKILL when the process ignores SIGTERM (mirroring the
+    // upgrade path) — otherwise daemons keep running unmanaged.
+    const killTimer = setTimeout(() => {
+      killProcessTree(child, 'SIGKILL');
+    }, 10_000);
+    child.once('exit', () => clearTimeout(killTimer));
     runningApps.delete(deploymentId);
     logger.info(`[deploy] Stopped app ${deploymentId}`);
   }

@@ -18,7 +18,7 @@ const ALARM_CHANNEL_OPTIONS = [
  */
 export default function AlarmConfig() {
   return (
-    <Space direction="vertical" style={{ width: '100%' }} size={0}>
+    <Space orientation="vertical" style={{ width: '100%' }} size={0}>
       <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
         任务失败时自动发送告警通知。未配置则使用系统全局通知设置。
       </Text>

@@ -71,6 +71,9 @@ export class ExecutorProcess {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    // Start health-polling as primary online/offline signal
+    this.startHealthPoll(config.executorPort);
+
     this.proc.stdout?.on('data', (chunk: Buffer) => {
       const line = chunk.toString();
       log.info(`[executor] ${line.trim()}`);
@@ -90,6 +93,7 @@ export class ExecutorProcess {
     this.proc.on('exit', (code, signal) => {
       log.info(`Executor exited: code=${code} signal=${signal}`);
       this.proc = null;
+      this.stopHealthPoll();
       if (!this.stopping) {
         this.notifyStatus('offline');
       } else {
@@ -100,6 +104,7 @@ export class ExecutorProcess {
     this.proc.on('error', (err) => {
       log.error(`Failed to start executor: ${err.message}`);
       this.proc = null;
+      this.stopHealthPoll();
       this.notifyStatus('offline');
     });
   }
@@ -135,24 +140,72 @@ export class ExecutorProcess {
     return this.proc !== null && this.proc.exitCode === null;
   }
 
+  private healthPollTimer: ReturnType<typeof setInterval> | null = null;
+
   /**
-   * 解析 executor-node 的日志文本，推断 admin 注册/心跳状态。
-   * 进程存活不等于与 admin 连通，需要用日志来区分 online / offline。
+   * Start polling executor-node's /health/live endpoint to determine
+   * online/offline status. More reliable than log string matching.
+   */
+  private startHealthPoll(port: number): void {
+    this.stopHealthPoll();
+    // Poll every 8 seconds; first check after 3s to allow executor to start
+    let firstCheck = true;
+    const check = async () => {
+      try {
+        const http = require('http') as typeof import('http');
+        await new Promise<void>((resolve, reject) => {
+          const req = http.get(
+            { hostname: '127.0.0.1', port, path: '/health/live', timeout: 3000 },
+            (res) => {
+              res.resume();
+              res.statusCode && res.statusCode < 400 ? resolve() : reject(new Error(`HTTP ${res.statusCode}`));
+            },
+          );
+          req.on('error', reject);
+          req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+        });
+        if (this.currentStatus !== 'online') {
+          this.notifyStatus('online');
+        }
+      } catch {
+        // Only flip to offline if we were previously online/pending — ignore during initial startup grace
+        if (!firstCheck && (this.currentStatus === 'online' || this.currentStatus === 'pending')) {
+          this.notifyStatus('offline');
+        }
+      }
+      firstCheck = false;
+    };
+    // First check after 3s to allow the executor to bind its port
+    setTimeout(check, 3000);
+    this.healthPollTimer = setInterval(check, 8000);
+  }
+
+  private stopHealthPoll(): void {
+    if (this.healthPollTimer) {
+      clearInterval(this.healthPollTimer);
+      this.healthPollTimer = null;
+    }
+  }
+
+  /**
+   * @deprecated Log-text inference is kept as a secondary signal only.
+   * The primary status signal is now the HTTP health poll above.
+   * This handles the edge case where the health endpoint responds OK
+   * but admin registration is still failing (process alive ≠ admin connected).
    */
   private inferStatusFromLog(line: string): void {
-    // 注册成功或心跳成功 → online
+    // Registration/heartbeat success confirms admin connectivity beyond just liveness
     if (line.includes('Registered to admin-api') || line.includes('Heartbeat succeeded')) {
       if (this.currentStatus !== 'online') {
         this.notifyStatus('online');
       }
       return;
     }
-    // 注册失败或心跳失败 → offline（进程还在，但 admin 不可达）
+    // Registration/heartbeat failure: process alive but admin unreachable
     if (line.includes('Register failed') || line.includes('Heartbeat failed')) {
       if (this.currentStatus === 'online' || this.currentStatus === 'pending') {
         this.notifyStatus('offline');
       }
-      return;
     }
   }
 

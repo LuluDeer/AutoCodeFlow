@@ -12,6 +12,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
+import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 import {
   ExecutorPackage,
   ExecutorPackageStatus,
@@ -72,11 +73,33 @@ export class ExecutorPackageService {
       .update(file.buffer)
       .digest("hex");
 
+    // P1: upload validation — extension whitelist plus magic-number check
+    // (zip family starts with PK, gzip with 1f 8b), rejecting arbitrary
+    // content stored under a trusted extension.
+    const lowerName = (file.originalname || "").toLowerCase();
+    const effectiveExt = lowerName.endsWith(".tar.gz")
+      ? ".tar.gz"
+      : path.extname(lowerName) || "";
+    const ALLOWED_EXTS = new Set([".zip", ".whl", ".tar.gz", ".tgz"]);
+    if (!ALLOWED_EXTS.has(effectiveExt)) {
+      throw new BadRequestException(
+        `Unsupported package extension "${effectiveExt || "(none)"}". Allowed: .zip, .whl, .tar.gz, .tgz`,
+      );
+    }
+    const head = file.buffer.subarray(0, 2);
+    const isArchive =
+      (head[0] === 0x50 && head[1] === 0x4b) ||
+      (head[0] === 0x1f && head[1] === 0x8b);
+    if (!isArchive) {
+      throw new BadRequestException(
+        "Package content is not a zip/wheel/gzip archive",
+      );
+    }
+
     // Construct unique filename: <name>-<version>-<first8checksum>.<ext>
-    const ext = path.extname(file.originalname) || ".zip";
     const safeName = createDto.name.replace(/[^a-zA-Z0-9_-]/g, "_");
     const safeVersion = createDto.version.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const filename = `${safeName}-${safeVersion}-${checksum.slice(0, 8)}${ext}`;
+    const filename = `${safeName}-${safeVersion}-${checksum.slice(0, 8)}${effectiveExt}`;
     const filePath = path.join(UPLOAD_DIR, filename);
 
     // Write file to disk
@@ -208,28 +231,39 @@ export class ExecutorPackageService {
   async pushToExecutors(
     id: string,
     executorIds?: string[],
-    executorRepo?: import('../executor/entities/executor.entity').Executor[],
+    executorRepo?: import("../executor/entities/executor.entity").Executor[],
     sharedToken?: string,
-  ): Promise<{ executorId: string; address: string; success: boolean; error?: string }[]> {
+  ): Promise<
+    { executorId: string; address: string; success: boolean; error?: string }[]
+  > {
     const pkg = await this.findOne(id);
 
-    const targets = executorIds && executorIds.length > 0
-      ? (executorRepo ?? []).filter((e) => executorIds.includes(e.id))
-      : (executorRepo ?? []);
+    const targets =
+      executorIds && executorIds.length > 0
+        ? (executorRepo ?? []).filter((e) => executorIds.includes(e.id))
+        : (executorRepo ?? []);
 
     if (targets.length === 0) {
-      throw new Error('No target executors found for push');
+      throw new Error("No target executors found for push");
     }
 
-    const adminApiBaseUrl = this.configService.get<string>("ADMIN_API_BASE_URL", "");
+    const adminApiBaseUrl = this.configService.get<string>(
+      "ADMIN_API_BASE_URL",
+      "",
+    );
     const downloadUrl = `${adminApiBaseUrl}/api/executor-packages/${pkg.id}/download`;
     const results = await Promise.allSettled(
       targets.map(async (executor) => {
-        const url = executor.address.startsWith('http')
+        const url = executor.address.startsWith("http")
           ? executor.address
           : `http://${executor.address}`;
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (sharedToken) headers['Authorization'] = `Bearer ${sharedToken}`;
+        // F-3: push 出站与 dispatch 同策略过 SSRF 校验——被投毒的 address
+        // （元数据/回环段）单独失败，不影响其余目标。
+        await assertSafeExecutorUrl(url);
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (sharedToken) headers["Authorization"] = `Bearer ${sharedToken}`;
         await axios.post(
           `${url}/api/update-package`,
           {
@@ -242,15 +276,26 @@ export class ExecutorPackageService {
           },
           { timeout: 30_000, headers },
         );
-        this.logger.log(`Pushed package ${pkg.name}@${pkg.version} to executor ${executor.address}`);
-        return { executorId: executor.id, address: executor.address, success: true };
+        this.logger.log(
+          `Pushed package ${pkg.name}@${pkg.version} to executor ${executor.address}`,
+        );
+        return {
+          executorId: executor.id,
+          address: executor.address,
+          success: true,
+        };
       }),
     );
 
     return results.map((r, i) =>
-      r.status === 'fulfilled'
+      r.status === "fulfilled"
         ? r.value
-        : { executorId: targets[i].id, address: targets[i].address, success: false, error: (r.reason as Error)?.message ?? String(r.reason) },
+        : {
+            executorId: targets[i].id,
+            address: targets[i].address,
+            success: false,
+            error: (r.reason as Error)?.message ?? String(r.reason),
+          },
     );
   }
 
@@ -270,25 +315,13 @@ export class ExecutorPackageService {
     platform?: string,
   ): Promise<ExecutorPackage | null> {
     const qb = this.repo
-      .createQueryBuilder('pkg')
-      .where('pkg.status = :status', { status: ExecutorPackageStatus.ACTIVE })
-      .andWhere('pkg.type = :type', { type })
-      .orderBy('pkg.createdAt', 'DESC');
+      .createQueryBuilder("pkg")
+      .where("pkg.status = :status", { status: ExecutorPackageStatus.ACTIVE })
+      .andWhere("pkg.type = :type", { type })
+      .orderBy("pkg.createdAt", "DESC");
     if (platform) {
-      qb.andWhere('pkg.platform = :platform', { platform });
+      qb.andWhere("pkg.platform = :platform", { platform });
     }
     return qb.getOne();
-  }
-
-  /**
-   * Generate one-time install token (random 32-byte hex, TTL 1 hour).
-   * Used by frontend install wizard to authorize script download without login.
-   */
-  generateInstallToken(executorId?: string): { token: string; expiresIn: number; expiresAt: string } {
-    const token = crypto.randomBytes(32).toString('hex');
-    const expiresIn = 3600; // seconds
-    const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
-    this.logger.log(`Generated install token${executorId ? ` for executor ${executorId}` : ''}`);
-    return { token, expiresIn, expiresAt };
   }
 }

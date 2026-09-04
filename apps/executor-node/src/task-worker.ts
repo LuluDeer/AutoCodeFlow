@@ -1,5 +1,6 @@
 import { logger } from './logger';
 import { runTask } from './routes/execute';
+import { pushCallback } from './callback';
 
 export interface TaskPayload {
   id?: string | number;
@@ -36,8 +37,9 @@ class TaskWorker {
   private stopped: boolean;
   private maxConcurrent: number;
   private runningCount: number;
+  private onIdle?: () => void;
 
-  constructor(taskId: string, maxConcurrent: number = 1) {
+  constructor(taskId: string, maxConcurrent: number = 1, onIdle?: () => void) {
     this.taskId = taskId;
     this.maxConcurrent = maxConcurrent;
     this.state = {
@@ -47,6 +49,7 @@ class TaskWorker {
     };
     this.stopped = false;
     this.runningCount = 0;
+    this.onIdle = onIdle;
   }
 
   enqueue(executionId: string, task: any, params: Record<string, any>, onComplete?: () => void): void {
@@ -65,6 +68,12 @@ class TaskWorker {
       this.runningCount++;
       this.executeItem(item).finally(() => {
         this.runningCount--;
+        // runningCount 在 process 的 finally 中递减（executeItem 的 finally
+        // 早于该递减执行），空闲判定必须挂在这里：无运行中且无排队时通知
+        // Manager 安排延迟回收，防止 workers Map 按 taskId 只增不减（N9）。
+        if (this.runningCount === 0 && this.state.queue.length === 0) {
+          this.onIdle?.();
+        }
         setImmediate(() => this.process());
       });
     }
@@ -88,7 +97,18 @@ class TaskWorker {
 
   stop(): void {
     this.stopped = true;
-    logger.info(`Task ${this.taskId}: Worker stopped`);
+    // Fail queued items instead of dropping them silently — admin-api marks
+    // the executions failed and capacity slots are released.
+    const queued = this.state.queue.splice(0);
+    for (const item of queued) {
+      pushCallback({
+        executionId: item.executionId,
+        status: 'failed',
+        errorMessage: 'Executor is shutting down before this execution started',
+      });
+      item.onComplete?.();
+    }
+    logger.info(`Task ${this.taskId}: Worker stopped (${queued.length} queued item(s) failed)`);
   }
 
   getRunningCount(): number {
@@ -100,8 +120,12 @@ class TaskWorker {
   }
 }
 
+/** worker 空闲多久后被回收（N9）。导出以便测试与运维核对。 */
+export const IDLE_RECYCLE_MS = 5 * 60_000;
+
 class TaskWorkerManager {
   private workers = new Map<string, TaskWorker>();
+  private idleTimers = new Map<string, NodeJS.Timeout>();
   private maxConcurrentPerTask: number;
 
   constructor(maxConcurrentPerTask: number = 1) {
@@ -109,9 +133,11 @@ class TaskWorkerManager {
   }
 
   getWorker(taskId: string): TaskWorker {
+    // 任何对 worker 的再次命中都视为活动，取消待执行的空闲回收
+    this.cancelIdleRecycle(taskId);
     let worker = this.workers.get(taskId);
     if (!worker) {
-      worker = new TaskWorker(taskId, this.maxConcurrentPerTask);
+      worker = new TaskWorker(taskId, this.maxConcurrentPerTask, () => this.scheduleIdleRecycle(taskId));
       this.workers.set(taskId, worker);
       logger.info(`Created worker for task ${taskId}`);
     }
@@ -123,7 +149,32 @@ class TaskWorkerManager {
     worker.enqueue(executionId, task, params, onComplete);
   }
 
+  private scheduleIdleRecycle(taskId: string): void {
+    this.cancelIdleRecycle(taskId);
+    const timer = setTimeout(() => {
+      this.idleTimers.delete(taskId);
+      const worker = this.workers.get(taskId);
+      // 双保险：回收只作用于真正空闲的 worker，绝不触碰运行中/排队的执行
+      if (worker && worker.getRunningCount() === 0 && worker.getQueueSize() === 0) {
+        logger.info(`Recycling idle worker for task ${taskId}`);
+        this.stopWorker(taskId);
+      }
+    }, IDLE_RECYCLE_MS);
+    // 空闲回收定时器不应阻止进程退出
+    timer.unref();
+    this.idleTimers.set(taskId, timer);
+  }
+
+  private cancelIdleRecycle(taskId: string): void {
+    const timer = this.idleTimers.get(taskId);
+    if (timer) {
+      clearTimeout(timer);
+      this.idleTimers.delete(taskId);
+    }
+  }
+
   stopWorker(taskId: string): void {
+    this.cancelIdleRecycle(taskId);
     const worker = this.workers.get(taskId);
     if (worker) {
       worker.stop();
@@ -132,6 +183,10 @@ class TaskWorkerManager {
   }
 
   stopAll(): void {
+    for (const timer of this.idleTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.idleTimers.clear();
     for (const [taskId, worker] of this.workers) {
       worker.stop();
     }

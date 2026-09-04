@@ -33,16 +33,9 @@ export class CreateExecutorPackageDto {
   @MaxLength(128)
   platform?: string;
 
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(1024)
-  filePath: string;
-
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  fileSize: number;
-
+  // filePath / fileSize 由服务端从上传文件推导（executor-package.service.create），
+  // 不属于 multipart 表单字段；此前必填声明会让真实上传请求被全局
+  // ValidationPipe（forbidNonWhitelisted）以 400 拒绝。
   @IsOptional()
   @IsString()
   @MaxLength(64)

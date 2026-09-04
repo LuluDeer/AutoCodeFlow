@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { forwardRef, Inject, Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, MoreThanOrEqual, Between } from "typeorm";
 import { Task } from "../task/entities/task.entity";
@@ -8,6 +8,7 @@ import {
 } from "../task/entities/task-execution.entity";
 import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import { ExecutionReport } from "./entities/execution-report.entity";
+import { SchedulerService } from "../scheduler/scheduler.service";
 
 @Injectable()
 export class MetricsService {
@@ -18,18 +19,26 @@ export class MetricsService {
     @InjectRepository(Executor) private executorRepo: Repository<Executor>,
     @InjectRepository(ExecutionReport)
     private reportRepo: Repository<ExecutionReport>,
+    // R4-§5.5: 调度计数器/队列深度由 SchedulerService 进程内维护，
+    // MetricsModule 引入 SchedulerModule 读取（无模块环：无任何模块
+    // 反向依赖 MetricsModule）。
+    @Inject(forwardRef(() => SchedulerService))
+    private schedulerService: SchedulerService,
   ) {}
 
   async getSummary() {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    const [totalTasks, totalExecutors, onlineExecutors, todayRuns] = await Promise.all([
-      this.taskRepo.count(),
-      this.executorRepo.count(),
-      this.executorRepo.count({ where: { status: ExecutorStatus.ONLINE } }),
-      this.execRepo.count({ where: { createdAt: MoreThanOrEqual(todayStart) } }),
-    ]);
+    const [totalTasks, totalExecutors, onlineExecutors, todayRuns] =
+      await Promise.all([
+        this.taskRepo.count(),
+        this.executorRepo.count(),
+        this.executorRepo.count({ where: { status: ExecutorStatus.ONLINE } }),
+        this.execRepo.count({
+          where: { createdAt: MoreThanOrEqual(todayStart) },
+        }),
+      ]);
 
     const execStats = await this.execRepo
       .createQueryBuilder("e")
@@ -209,5 +218,24 @@ export class MetricsService {
     startDate.setHours(0, 0, 0, 0);
 
     return this.getReports(startDate, endDate);
+  }
+
+  /**
+   * R4-§5.5 可观测性：调度健康快照。
+   * 聚合 SchedulerService 的进程内计数器（tick 次数/耗时、trigger
+   * claimed/skipped/failed、依赖扇出计数）与 BullMQ 队列深度
+   * （waiting/active/delayed）。零新依赖：不引入 prom-client
+   * （package.json 中不存在），由抓取方按 instance 聚合。
+   */
+  async getSchedulerMetrics() {
+    const metrics = await this.schedulerService.getSchedulerMetrics();
+    return {
+      ...metrics,
+      scheduler: this.schedulerService.getStats(),
+      instance: {
+        pid: process.pid,
+        hostname: process.env.HOSTNAME ?? "",
+      },
+    };
   }
 }
