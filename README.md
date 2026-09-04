@@ -31,7 +31,8 @@ AutoCodeFlow 是一个分布式任务调度与执行平台，支持动态脚本�
 | registry-pypi | 自建 FastAPI PyPI 服务 |
 | acf-cli | TypeScript · Commander.js |
 | mcp-server | TypeScript · MCP SDK |
-| autoflow-sdk | Python (httpx) / Node.js (axios) |
+| autoflow-sdk | Python (httpx) |
+| @autocodeflow/sdk | Node.js (axios)，独立 npm 包（已发布） |
 | 部署 | Docker Compose |
 
 ## 快速启动
@@ -323,4 +324,4 @@ docker compose exec admin-api pnpm run migration:run
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 LuluDeer
