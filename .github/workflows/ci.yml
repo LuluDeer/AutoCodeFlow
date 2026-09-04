@@ -146,8 +146,21 @@ jobs:
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: ${{ matrix.project }}/package-lock.json
-      - run: npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=high
+      # npm registry 的 audit endpoint 偶发 503/瞬时不可用（非真实漏洞），
+      # 退避重试三次；真实 HIGH+ 漏洞在重试后仍会稳定红灯。
+      - name: npm audit (with retry)
         working-directory: ${{ matrix.project }}
+        run: |
+          status=0
+          for attempt in 1 2 3; do
+            if npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=high; then
+              exit 0
+            fi
+            status=$?
+            echo "audit attempt $attempt failed (exit $status), backing off..."
+            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 30)); fi
+          done
+          exit $status
 
   executor-node-test:
     runs-on: ubuntu-latest
