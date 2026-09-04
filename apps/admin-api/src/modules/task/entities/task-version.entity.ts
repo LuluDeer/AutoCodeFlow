@@ -3,9 +3,11 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  Index,
 } from "typeorm";
 
 @Entity("task_versions")
+@Index("idx_task_versions_taskId_version", ["taskId", "version"])
 export class TaskVersion {
   @PrimaryGeneratedColumn("uuid")
   id: string;

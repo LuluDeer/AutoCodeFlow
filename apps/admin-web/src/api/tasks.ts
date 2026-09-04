@@ -10,12 +10,18 @@ export interface Task {
   triggerType: string;
   fixedRate?: number;
   cronExpression?: string;
+  timezone?: string | null;
   params?: Record<string, string | number | boolean>;
   maxRetry: number;
+  retryDelay?: number;
   timeout: number;
+  timeoutSeconds?: number;
   applicationId?: string | null;
   executeMode?: string | null;
   executorAppName?: string | null;
+  // R6/R7: 任务级 executor pinning——非空时 dispatch 只派给该执行器（uuid），
+  // 与 executeMode=broadcast 互斥。admin-web 表单需感知并回写该字段（N19）。
+  executorId?: string | null;
   executorGroup?: string | null;
   executorTags?: string[] | null;
   dependencies?: Record<string, string> | null;
@@ -28,11 +34,22 @@ export interface Task {
   updatedAt: string;
 }
 
+// 与后端 ExecutionStatus 枚举对齐（apps/admin-api/src/modules/task/entities/task-execution.entity.ts），
+// 含 'killed' 手动终止终态。
+export type TaskExecutionStatus =
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'timeout'
+  | 'killed'
+  | 'cancelled';
+
 export interface TaskExecution {
   id: string;
   taskId: string;
   taskName: string;
-  status: string;
+  status: TaskExecutionStatus;
   triggerType: string;
   executorAddress?: string | null;
   startTime?: string;
@@ -40,6 +57,7 @@ export interface TaskExecution {
   duration?: number;
   logs?: string;
   errorMessage?: string;
+  failureReason?: string | null;
   aiAnalysis?: string;
   retryCount?: number;
   taskVersion?: string | null;
@@ -78,13 +96,13 @@ export const tasksApi = {
   update: (id: string, data: Partial<Task>) =>
     client.patch(`/tasks/${id}`, data) as Promise<Task>,
   delete: (id: string) => client.delete(`/tasks/${id}`),
-  trigger: (id: string, params?: Record<string, any>) =>
+  trigger: (id: string, params?: Record<string, unknown>) =>
     client.post(`/tasks/${id}/trigger`, { params }),
   executions: (id: string, p?: { page?: number; pageSize?: number }) =>
     client.get(`/tasks/${id}/executions`, { params: p }) as Promise<PageResult<TaskExecution>>,
   execution: (taskId: string, execId: string) =>
     client.get(`/tasks/${taskId}/executions/${execId}`) as Promise<TaskExecution>,
-  rollback: (id: string, gitCommit: string, params?: Record<string, any>) =>
+  rollback: (id: string, gitCommit: string, params?: Record<string, unknown>) =>
     client.post(`/tasks/${id}/rollback`, { gitCommit, params }),
   rollbackToVersion: (taskId: string, versionId: string) =>
     client.post(`/tasks/${taskId}/versions/${versionId}/rollback`) as Promise<Task>,
@@ -92,10 +110,11 @@ export const tasksApi = {
     client.get(`/tasks/${taskId}/versions/${versionId1}/compare/${versionId2}`) as Promise<VersionDiff>,
   versions: (id: string) =>
     client.get(`/tasks/${id}/versions`) as Promise<TaskVersion[]>,
+  // 后端 pause/resume 返回保存后的 Task 实体（task.service.ts），并非 {success,message} 包装
   pause: (id: string) =>
-    client.post(`/tasks/${id}/pause`) as Promise<{ success: boolean; message: string }>,
+    client.post(`/tasks/${id}/pause`) as Promise<Task>,
   resume: (id: string) =>
-    client.post(`/tasks/${id}/resume`) as Promise<{ success: boolean; message: string }>,
+    client.post(`/tasks/${id}/resume`) as Promise<Task>,
   batchTrigger: (taskIds: string[]) => client.post('/tasks/batch/trigger', { taskIds }),
   batchPause: (taskIds: string[]) => client.post('/tasks/batch/pause', { taskIds }),
   batchResume: (taskIds: string[]) => client.post('/tasks/batch/resume', { taskIds }),

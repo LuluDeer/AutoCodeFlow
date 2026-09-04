@@ -57,7 +57,7 @@ export function CronHelper({ open, onClose, onSelect }: CronHelperProps) {
       </div>
       {selected && !custom && (
         <Alert type="info" style={{ marginTop: 12 }}
-          message={
+          title={
             <Space>
               <Text code>{selected}</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
@@ -82,7 +82,7 @@ export function CronHelper({ open, onClose, onSelect }: CronHelperProps) {
       </div>
       {current && (
         <Alert type="success" style={{ marginTop: 12 }}
-          message={<span>将使用：<Text code>{current}</Text></span>}
+          title={<span>将使用：<Text code>{current}</Text></span>}
         />
       )}
     </Modal>

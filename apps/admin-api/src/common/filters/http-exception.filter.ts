@@ -28,9 +28,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
       if (typeof exceptionResponse === "string") {
         message = exceptionResponse;
-      } else if (typeof exceptionResponse === "object" && exceptionResponse !== null) {
+      } else if (
+        typeof exceptionResponse === "object" &&
+        exceptionResponse !== null
+      ) {
         const resp = exceptionResponse as Record<string, unknown>;
-        message = (typeof resp["message"] === "string" ? resp["message"] : null) || exception.message;
+        message =
+          (typeof resp["message"] === "string" ? resp["message"] : null) ||
+          exception.message;
         if (Array.isArray(resp["message"])) {
           errors = resp["message"] as string[];
           message = "Validation failed";
@@ -49,7 +54,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         message = "Related resource not found";
       } else {
         this.logger.error(
-          `DB query failed [${pgError.code ?? 'unknown'}]: ${exception.message}`,
+          `DB query failed [${pgError.code ?? "unknown"}]: ${exception.message}`,
           exception.stack,
         );
       }

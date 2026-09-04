@@ -19,11 +19,12 @@
     "antd": "^6.4.3",
     "axios": "^1.17.0",
     "dotenv": "^17.4.2",
+    "monaco-editor": "^0.53.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-error-boundary": "^6.1.2",
-    "react-router-dom": "^6.30.4",
-    "recharts": "^2.12.7",
+    "react-router-dom": "^7.18.2",
+    "recharts": "^3.8.1",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -34,7 +35,7 @@
     "@types/node": "^25.9.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.3",
+    "@vitejs/plugin-react": "^6.0.5",
     "@vitest/ui": "^4.1.8",
     "eslint": "^9.13.0",
     "eslint-plugin-react-hooks": "^5.0.0",
@@ -43,7 +44,7 @@
     "jsdom": "^29.1.1",
     "typescript": "~5.6.2",
     "typescript-eslint": "^8.11.0",
-    "vite": "^5.4.10",
+    "vite": "^8.2.1",
     "vitest": "^4.1.8"
   }
 }

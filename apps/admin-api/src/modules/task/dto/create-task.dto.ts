@@ -10,6 +10,7 @@ import {
   Min,
   Max,
   IsArray,
+  IsUUID,
   Matches,
 } from "class-validator";
 import {
@@ -23,7 +24,9 @@ import {
 } from "../entities/task.entity";
 
 export class CreateTaskDto {
-  @ApiPropertyOptional() @IsString() @IsOptional() id?: string;
+  // R6: id 是 UUID 主键——客户端自带任意字符串会在插入时触发 PG 22P02/23505
+  // 类 500，校验必须在 DTO 边界完成（非法 id → 400）。
+  @ApiPropertyOptional() @IsUUID("4") @IsOptional() id?: string;
   @ApiProperty() @IsString() @IsNotEmpty() name: string;
   @ApiPropertyOptional() @IsString() @IsOptional() description?: string;
   @ApiPropertyOptional() @IsEnum(TaskStatus) @IsOptional() status?: TaskStatus;
@@ -33,9 +36,18 @@ export class CreateTaskDto {
   @IsOptional()
   @Matches(
     /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/,
-    { message: "cronExpression must be a valid cron expression (5 fields: min hour day month weekday)" },
+    {
+      message:
+        "cronExpression must be a valid cron expression (5 fields: min hour day month weekday)",
+    },
   )
   cronExpression?: string;
+  @ApiPropertyOptional({
+    description: "IANA timezone for cron schedules, e.g. Asia/Shanghai",
+  })
+  @IsString()
+  @IsOptional()
+  timezone?: string;
   @ApiPropertyOptional() @IsInt() @Min(1) @IsOptional() fixedRate?: number;
   @ApiPropertyOptional()
   @IsEnum(TaskRuntime)
@@ -45,6 +57,7 @@ export class CreateTaskDto {
   @ApiPropertyOptional({
     description: "Upstream task dependency map: { taskId: taskName }",
     type: "object",
+    additionalProperties: { type: "string" },
     example: { "uuid-of-task-a": "task-a-name" },
   })
   @IsObject()
@@ -55,7 +68,19 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() gitBranch?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() gitCommit?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() currentVersion?: string;
-  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() timeout?: number;
+  @ApiPropertyOptional({
+    description:
+      "Task execution timeout in seconds (legacy field; prefer timeoutSeconds)",
+  })
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  timeout?: number;
+  @ApiPropertyOptional({ description: "Task execution timeout in seconds" })
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  timeoutSeconds?: number;
   // TASK-02: cap retries to prevent runaway queue exhaustion
   @ApiPropertyOptional()
   @IsOptional()
@@ -87,6 +112,13 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() executorAppName?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() executorGroup?: string;
   @ApiPropertyOptional() @IsArray() @IsOptional() executorTags?: string[];
+  @ApiPropertyOptional({
+    description:
+      "Pin the task to a specific executor: dispatch targets ONLY this executor (bypasses group/tags filtering); fails fast if it is offline. Mutually exclusive with executeMode=broadcast.",
+  })
+  @IsUUID()
+  @IsOptional()
+  executorId?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() glueSource?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() glueLanguage?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() applicationId?: string;

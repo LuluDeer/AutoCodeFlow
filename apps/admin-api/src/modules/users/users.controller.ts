@@ -61,15 +61,32 @@ export class UsersController {
   }
 
   @Get()
+  // M-4: only admins may enumerate user accounts (and their lockedUntil /
+  // loginFailCount state). Otherwise any authenticated user could harvest
+  // the directory and lockout schedule.
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get user list" })
   findAll(@Query() pagination: PaginationDto) {
     return this.usersService.findAll(pagination);
   }
 
   @Get(":id")
+  // Same protection for single-user lookup: non-admins can only fetch their
+  // own profile; admins can fetch anyone. The service helper returns null
+  // for missing users so callers never leak existence via 404 (H-3).
   @ApiOperation({ summary: "Get user details" })
-  findOne(@Param("id", ParseIntPipe) id: number) {
-    return this.usersService.findById(id);
+  async findOne(
+    @Param("id", ParseIntPipe) id: number,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const isAdmin = user?.role === UserRole.ADMIN;
+    if (!isAdmin && user?.id !== id) {
+      throw new ForbiddenException("You can only view your own account");
+    }
+    const found = await this.usersService.findByIdOrNull(id);
+    if (!found) throw new ForbiddenException("User not found");
+    return found;
   }
 
   // S11+S12: admin can update any user; non-admin can only update their own profile

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 注意：本脚本与 apps/admin-api/src/modules/executor/install-script.content.ts 互为拷贝（后端经 GET /api/executors/install.sh 下发该副本），修改时请同步两处。
 # AutoCodeFlow Executor 一键安装脚本
 # 用法: curl -fsSL https://<admin>/install.sh | bash -s -- --api-url http://admin:3105 --secret mysecret
 # 或本地运行: bash install.sh --api-url http://... --secret ...
@@ -24,6 +25,7 @@ while [[ $# -gt 0 ]]; do
     --port)      PORT="$2";            shift 2 ;;
     --runtime)   RUNTIME="$2";         shift 2 ;;
     --work-dir)  WORK_DIR="$2";        shift 2 ;;
+    --install-dir) INSTALL_DIR="$2";  shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -33,6 +35,28 @@ if [[ -z "$ADMIN_API_URL" || -z "$EXECUTOR_SECRET" ]]; then
   echo "示例: bash install.sh --api-url http://192.168.1.100:3105 --secret your-secret"
   exit 1
 fi
+
+# ── 参数校验 ──────────────────────────────────────────────────────────────────
+# 这些值会写入 .env（systemd EnvironmentFile）与 systemd unit，含换行/引号等字符
+# 可向其中注入伪造键值对（如改写 EXECUTOR_SECRET），故在任何写操作前做白名单校验。
+die() { echo "错误：$1"; exit 1; }
+
+if [[ ! "$PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
+  die "--port 必须是 1-65535 的整数（收到: $PORT）"
+fi
+if [[ ! "$APP_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  die "--name 只允许字母、数字、点、下划线、连字符（不允许空白/斜杠/引号等字符）"
+fi
+if [[ ! "$WORK_DIR" =~ ^/[A-Za-z0-9._/-]*$ ]]; then
+  die "--work-dir 必须是只含字母、数字、点、下划线、连字符与斜杠的绝对路径"
+fi
+if [[ ! "$INSTALL_DIR" =~ ^/[A-Za-z0-9._/-]*$ ]]; then
+  die "--install-dir 必须是只含字母、数字、点、下划线、连字符与斜杠的绝对路径"
+fi
+case "$RUNTIME" in
+  node|python|universal) ;;
+  *) die "--runtime 只支持 node | python | universal（收到: $RUNTIME）" ;;
+esac
 
 echo "=== AutoCodeFlow 执行器安装 ==="
 echo "Admin API : $ADMIN_API_URL"
@@ -93,31 +117,42 @@ echo "      git: $(git --version)"
 echo "[2/6] 创建安装目录..."
 mkdir -p "$INSTALL_DIR" "$WORK_DIR"
 
-# ── 下载执行器代码 ─────────────────────────────────────────────────────────────
-echo "[3/6] 下载执行器..."
-# 优先从 admin-api 静态资源下载，fallback 到 git clone
-EXECUTOR_PKG_URL="${ADMIN_API_URL}/static/executor-node.tar.gz"
-if curl -fsSL --max-time 30 "$EXECUTOR_PKG_URL" -o /tmp/executor-node.tar.gz 2>/dev/null; then
-  echo "      从 admin-api 下载安装包..."
-  tar -xzf /tmp/executor-node.tar.gz -C "$INSTALL_DIR" --strip-components=1
-  rm /tmp/executor-node.tar.gz
+# ── 安装执行器代码 ────────────────────────────────────────────────────────────
+echo "[3/6] 安装执行器..."
+# R8（N24 根治）：真 artifact 通道。后端承载
+# GET /api/executors/artifact/executor-node.tar.gz（@Public + 共享 token，
+# Bearer 头或 ?token= 均可），产物由 scripts/bundle-executor-artifact.sh 生成
+# （dist + package.json + 生产 node_modules），放入 admin-api 的
+# EXECUTOR_ARTIFACT_DIR（默认 <cwd>/artifacts）。裸机 curl|bash 不再依赖
+# 项目 checkout；下载失败时回退到本地 checkout 副本（开发场景）。
+ARTIFACT_URL="${ADMIN_API_URL%/}/api/executors/artifact/executor-node.tar.gz"
+TMP_PKG="$(mktemp /tmp/acf-executor-artifact.XXXXXX)"
+trap 'rm -f "$TMP_PKG"' EXIT
+if curl -fsSL --connect-timeout 10 --retry 2 \
+     -H "Authorization: Bearer ${EXECUTOR_SECRET}" \
+     "$ARTIFACT_URL" -o "$TMP_PKG" \
+   && tar -tzf "$TMP_PKG" >/dev/null 2>&1; then
+  echo "      从 Admin API 下载执行器 artifact..."
+  tar -xzf "$TMP_PKG" -C "$INSTALL_DIR"
 else
-  echo "      安装包不可用，从项目目录复制（本地安装）..."
-  # 本地开发环境：从当前目录查找
+  echo "      artifact 下载失败，回退本地 checkout..."
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   EXECUTOR_SRC="$(dirname "$SCRIPT_DIR")/apps/executor-node"
   if [[ -d "$EXECUTOR_SRC" ]]; then
+    echo "      从项目目录复制（本地安装）..."
     cp -r "$EXECUTOR_SRC/"* "$INSTALL_DIR/"
   else
-    echo "      无法找到执行器源码，请检查路径"
-    exit 1
+    die "无法从 ${ARTIFACT_URL} 下载 artifact（确认 admin-api 已启动，且 EXECUTOR_ARTIFACT_DIR 下有 scripts/bundle-executor-artifact.sh 生成的 executor-node.tar.gz），且本脚本不在项目 checkout 内、无本地副本可回退"
   fi
 fi
+rm -f "$TMP_PKG"
 
 # ── 安装 npm 依赖 ──────────────────────────────────────────────────────────────
 echo "[4/6] 安装 npm 依赖..."
 cd "$INSTALL_DIR"
-if [[ -f package.json ]]; then
+if [[ -d node_modules ]]; then
+  echo "      artifact 已含生产依赖，跳过 npm install"
+elif [[ -f package.json ]]; then
   npm install --production --silent
 fi
 

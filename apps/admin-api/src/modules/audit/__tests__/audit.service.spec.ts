@@ -62,10 +62,10 @@ describe("AuditService", () => {
       };
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
 
-      await service.findAll({ action: 'auth.login' });
+      await service.findAll({ action: "auth.login" });
       expect(qbMock.andWhere).toHaveBeenCalledWith(
-        expect.stringContaining('action'),
-        expect.objectContaining({ action: expect.stringContaining('auth') }),
+        expect.stringContaining("action"),
+        expect.objectContaining({ action: expect.stringContaining("auth") }),
       );
     });
 
@@ -80,15 +80,69 @@ describe("AuditService", () => {
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
 
       await service.findAll({ userId: 42 });
+      expect(qbMock.andWhere).toHaveBeenCalledWith("log.userId = :userId", {
+        userId: 42,
+      });
+    });
+
+    // R4 P1-2: username / startTime / endTime filters (audit page search bar)
+    it("applies username fuzzy filter", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ username: "admin" });
       expect(qbMock.andWhere).toHaveBeenCalledWith(
-        'log.userId = :userId',
-        { userId: 42 },
+        "log.username ILIKE :username",
+        { username: "%admin%" },
       );
+    });
+
+    it("applies startTime/endTime range filter", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      const start = "2026-01-01T00:00:00.000Z";
+      const end = "2026-01-31T23:59:59.000Z";
+      await service.findAll({ startTime: start, endTime: end });
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        "log.createdAt >= :startTime",
+        { startTime: new Date(start) },
+      );
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        "log.createdAt <= :endTime",
+        { endTime: new Date(end) },
+      );
+    });
+
+    it("does not add username/time filters when absent", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({});
+      expect(qbMock.andWhere).not.toHaveBeenCalled();
     });
 
     it("rejects invalid action characters", async () => {
       await expect(service.findAll({ action: "inject'xss" })).rejects.toThrow(
-        'Invalid action parameter',
+        "Invalid action parameter",
       );
     });
 
@@ -111,8 +165,10 @@ describe("AuditService", () => {
     const makeExportQb = (rows: any[] = []) => ({
       orderBy: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
-      take: jest.fn().mockReturnThis(),
-      getMany: jest.fn().mockResolvedValue(rows),
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue(rows),
     });
 
     it("returns CSV header even when no rows", async () => {
@@ -162,11 +218,11 @@ describe("AuditService", () => {
       expect(csv).toContain('"admin,evil"');
     });
 
-    it("caps export at 10000 rows via take()", async () => {
+    it("caps export at 10000 rows via limit()", async () => {
       const qb = makeExportQb([]);
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
       await service.exportCsv({});
-      expect(qb.take).toHaveBeenCalledWith(10_000);
+      expect(qb.limit).toHaveBeenCalledWith(10_000);
     });
 
     it("applies action filter via andWhere", async () => {
@@ -174,8 +230,10 @@ describe("AuditService", () => {
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
       await service.exportCsv({ action: "task.create" });
       expect(qb.andWhere).toHaveBeenCalledWith(
-        expect.stringContaining('action'),
-        expect.objectContaining({ action: expect.stringContaining('task.create') }),
+        expect.stringContaining("action"),
+        expect.objectContaining({
+          action: expect.stringContaining("task.create"),
+        }),
       );
     });
   });

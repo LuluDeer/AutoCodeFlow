@@ -11,6 +11,16 @@ import { LoginDto } from "./dto/login.dto";
 import { JwtPayload } from "./strategies/jwt.strategy";
 import { RefreshToken } from "./entities/refresh-token.entity";
 
+/**
+ * F-4: bcrypt hash of a throw-away password, pre-computed offline (cost 12).
+ * When the username does not exist we compare against this dummy hash so the
+ * "user not found" path burns the same bcrypt CPU cost as the "wrong password"
+ * path — otherwise response-time differences allow username enumeration
+ * (SEC-05 intent; the previous `&&` short-circuit did not achieve it).
+ */
+const DUMMY_BCRYPT_HASH =
+  "$2b$12$S9kPReHdJ9LbTYcwPzpe1eTNr.OfUdkFFoDqc6MiS0X7nFO76DFii";
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -29,9 +39,25 @@ export class AuthService {
   async login(loginDto: LoginDto) {
     const user = await this.usersService.findByUsername(loginDto.username);
 
-    // SEC-05: always run the full check path to avoid username-enumeration timing leaks
-    const passwordOk =
-      user != null && (await bcrypt.compare(loginDto.password, user.password));
+    // SEC-003: check the lockout state BEFORE running bcrypt — if the account
+    // is currently locked, fail fast without paying the bcrypt CPU cost and
+    // without leaking whether the username exists.
+    if (user && user.lockedUntil && user.lockedUntil > new Date()) {
+      const minutesLeft = Math.ceil(
+        (user.lockedUntil.getTime() - Date.now()) / 60_000,
+      );
+      throw new UnauthorizedException(
+        `Account locked. Try again in ${minutesLeft} minute(s).`,
+      );
+    }
+
+    // F-4: always run the full bcrypt compare — for an unknown user compare
+    // against a pre-computed dummy hash so both paths take the same time and
+    // usernames cannot be enumerated via response timing.
+    const passwordOk = await bcrypt.compare(
+      loginDto.password,
+      user != null ? user.password : DUMMY_BCRYPT_HASH,
+    );
 
     if (!user || !passwordOk) {
       // SEC-05: increment failure counter and lock if threshold reached
@@ -47,16 +73,6 @@ export class AuthService {
     // SEC-05: reject if account is disabled
     if (!user.isActive) {
       throw new UnauthorizedException("Account is disabled");
-    }
-
-    // SEC-05: reject if account is currently locked
-    if (user.lockedUntil && user.lockedUntil > new Date()) {
-      const minutesLeft = Math.ceil(
-        (user.lockedUntil.getTime() - Date.now()) / 60_000,
-      );
-      throw new UnauthorizedException(
-        `Account locked. Try again in ${minutesLeft} minute(s).`,
-      );
     }
 
     // SEC-05: successful login — reset failure counter
@@ -78,18 +94,21 @@ export class AuthService {
       throw new UnauthorizedException("Invalid token type");
     }
 
-    // SEC-02: check the token has not been revoked
-    if (payload.jti) {
-      const record = await this.refreshTokenRepo.findOne({
-        where: { jti: payload.jti },
-      });
-      if (!record || record.revoked) {
-        throw new UnauthorizedException("Refresh token has been revoked");
-      }
-      // SEC-02: Token Rotation — immediately revoke the consumed token
-      record.revoked = true;
-      await this.refreshTokenRepo.save(record);
+    // SEC-002: a refresh token without jti is either an old-format token or a
+    // hand-crafted token; both must be rejected — never silently skip the
+    // revocation check (that would bypass token-rotation protection).
+    if (!payload.jti) {
+      throw new UnauthorizedException("Refresh token missing jti claim");
     }
+    const record = await this.refreshTokenRepo.findOne({
+      where: { jti: payload.jti },
+    });
+    if (!record || record.revoked) {
+      throw new UnauthorizedException("Refresh token has been revoked");
+    }
+    // SEC-02: Token Rotation — immediately revoke the consumed token
+    record.revoked = true;
+    await this.refreshTokenRepo.save(record);
 
     const user = await this.usersService.findById(payload.sub);
     if (!user || !user.isActive) throw new UnauthorizedException();
@@ -113,7 +132,7 @@ export class AuthService {
 
     const accessToken = this.jwtService.sign(
       { ...base, type: "access" },
-      { expiresIn: this.configService.get<string>("jwt.expiresIn") },
+      { expiresIn: this.configService.get<string>("jwt.expiresIn") as any },
     );
 
     const refreshToken = this.jwtService.sign(

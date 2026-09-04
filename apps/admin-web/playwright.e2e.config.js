@@ -3,7 +3,7 @@ module.exports = {
   testMatch: '**/e2e-full.spec.js',
   timeout: 60000,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: 'http://localhost:5176',
     headless: true,
     screenshot: 'only-on-failure',
     video: 'off',

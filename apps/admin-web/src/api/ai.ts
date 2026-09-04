@@ -18,12 +18,23 @@ export interface SaveAiConfigPayload {
   ollamaModel?: string;
 }
 
+/**
+ * 与后端 application.service.analyzeHealth 返回结构对齐：
+ * { appId, appName, analysis, stats: { totalTasks, avgSuccessRate, avgDuration, criticalTasks } }
+ */
 export interface AppHealthReport {
-  taskCount: number;
-  successRate: number;
-  avgDuration: number;
-  failedTasks: Array<{ id: string; name: string; failureRate: number }>;
-  aiAnalysis: string;
+  appId: string;
+  appName: string;
+  analysis: string;
+  stats: {
+    totalTasks: number;
+    /** 百分制（0-100），来自任务 stats.successRate */
+    avgSuccessRate: number;
+    /** 毫秒 */
+    avgDuration: number;
+    /** 成功率低于 50% 且运行超过 3 次的任务名 */
+    criticalTasks: string[];
+  };
 }
 
 export interface ScheduleSuggestion {

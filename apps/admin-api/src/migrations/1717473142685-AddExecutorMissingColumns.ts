@@ -60,15 +60,35 @@ export class AddExecutorMissingColumns1717473142685 implements MigrationInterfac
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`ALTER TABLE "executors" DROP COLUMN IF EXISTS "description"`);
-    await queryRunner.query(`ALTER TABLE "executors" DROP COLUMN IF EXISTS "tags"`);
-    await queryRunner.query(`ALTER TABLE "executors" DROP COLUMN IF EXISTS "groupName"`);
-    await queryRunner.query(`ALTER TABLE "executors" DROP COLUMN IF EXISTS "tokenHash"`);
-    await queryRunner.query(`ALTER TABLE "executors" DROP COLUMN IF EXISTS "maxConcurrentTasks"`);
-    await queryRunner.query(`ALTER TABLE "executors" DROP COLUMN IF EXISTS "failedTaskCount"`);
-    await queryRunner.query(`ALTER TABLE "executors" DROP COLUMN IF EXISTS "totalTaskCount"`);
-    await queryRunner.query(`ALTER TABLE "executors" DROP COLUMN IF EXISTS "networkLatency"`);
-    await queryRunner.query(`ALTER TABLE "executors" DROP COLUMN IF EXISTS "diskUsage"`);
-    await queryRunner.query(`ALTER TABLE "executors" DROP COLUMN IF EXISTS "runningTaskCount"`);
+    await queryRunner.query(
+      `ALTER TABLE "executors" DROP COLUMN IF EXISTS "description"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "executors" DROP COLUMN IF EXISTS "tags"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "executors" DROP COLUMN IF EXISTS "groupName"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "executors" DROP COLUMN IF EXISTS "tokenHash"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "executors" DROP COLUMN IF EXISTS "maxConcurrentTasks"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "executors" DROP COLUMN IF EXISTS "failedTaskCount"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "executors" DROP COLUMN IF EXISTS "totalTaskCount"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "executors" DROP COLUMN IF EXISTS "networkLatency"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "executors" DROP COLUMN IF EXISTS "diskUsage"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "executors" DROP COLUMN IF EXISTS "runningTaskCount"`,
+    );
   }
 }

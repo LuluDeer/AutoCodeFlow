@@ -12,43 +12,14 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
-import fetch from 'node-fetch';
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-const API_URL = process.env.AUTOCODEFLOW_API_URL || 'http://localhost:3105';
-const API_TOKEN = process.env.AUTOCODEFLOW_API_TOKEN || '';
-
-if (!API_TOKEN) {
-  process.stderr.write(
-    '[autocodeflow-mcp] WARNING: AUTOCODEFLOW_API_TOKEN is not set.\n',
-  );
-}
-
-// ---------------------------------------------------------------------------
-// HTTP helper
-// ---------------------------------------------------------------------------
-async function apiRequest<T>(
-  method: string,
-  path: string,
-  body?: unknown,
-): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${API_TOKEN}`,
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${method} ${path} → ${res.status}: ${text}`);
-  }
-  return res.json() as Promise<T>;
-}
+import { apiRequest, API_URL } from './api';
+import {
+  registerTaskTools,
+  registerApplicationTools,
+  registerDeploymentTools,
+  registerExecutorTools,
+  registerAuditTools,
+} from './tools';
 
 // ---------------------------------------------------------------------------
 // Server
@@ -58,229 +29,64 @@ const server = new McpServer({
   version: '1.0.0',
 });
 
-// ---- list_tasks -----------------------------------------------------------
-server.tool(
-  'list_tasks',
-  'List all tasks defined in AutoCodeFlow. Returns id, name, status, cron, and last execution info.',
-  {
-    page: z.number().int().min(1).default(1).describe('Page number (default 1)'),
-    pageSize: z.number().int().min(1).max(100).default(20).describe('Items per page (default 20)'),
-    status: z.string().optional().describe('Filter by task status: active | paused | disabled'),
-    keyword: z.string().optional().describe('Search by task name or description'),
-  },
-  async ({ page, pageSize, status, keyword }) => {
-    const params = new URLSearchParams({
-      page: String(page),
-      pageSize: String(pageSize),
-      ...(status ? { status } : {}),
-      ...(keyword ? { keyword } : {}),
-    });
-    const data = await apiRequest<unknown>('GET', `/tasks?${params}`);
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
+registerTaskTools(server, apiRequest);
+registerApplicationTools(server, apiRequest);
+registerDeploymentTools(server, apiRequest);
+registerExecutorTools(server, apiRequest);
+registerAuditTools(server, apiRequest);
 
-// ---- get_task -------------------------------------------------------------
-server.tool(
-  'get_task',
-  'Get full details of a specific task by its ID, including script source, cron, timeout, and dependencies.',
-  {
-    taskId: z.string().describe('Task ID'),
-  },
-  async ({ taskId }) => {
-    const data = await apiRequest<unknown>('GET', `/tasks/${taskId}`);
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
+// ---------------------------------------------------------------------------
+// CLI — argument handling for the bin entry (autocodeflow-mcp)
+// ---------------------------------------------------------------------------
+/** Server version, kept in sync with package.json (asserted by cli.test.ts). */
+export const VERSION = '1.0.1';
 
-// ---- trigger_task ---------------------------------------------------------
-server.tool(
-  'trigger_task',
-  'Manually trigger a task to run immediately. Returns the execution ID that can be polled with get_execution.',
-  {
-    taskId: z.string().describe('Task ID to trigger'),
-    params: z
-      .record(z.unknown())
-      .optional()
-      .describe('Optional runtime parameters to pass to the task'),
-    executorId: z.string().optional().describe('Pin to a specific executor (optional)'),
-  },
-  async ({ taskId, params, executorId }) => {
-    const data = await apiRequest<unknown>('POST', `/tasks/${taskId}/trigger`, {
-      ...(params ? { params } : {}),
-      ...(executorId ? { executorId } : {}),
-    });
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
+export interface CliDecision {
+  /** 'run' starts the stdio MCP server; 'exit' prints `output` and exits. */
+  action: 'run' | 'exit';
+  /** Text to write to stdout when action === 'exit' (help / version). */
+  output: string;
+  /** Process exit code when action === 'exit'. */
+  exitCode: number;
+}
 
-// ---- list_executions ------------------------------------------------------
-server.tool(
-  'list_executions',
-  'List recent task executions. Optionally filter by taskId and status.',
-  {
-    taskId: z.string().optional().describe('Filter by task ID'),
-    status: z
-      .string()
-      .optional()
-      .describe('Filter by status: pending | running | success | failed | timeout | cancelled'),
-    page: z.number().int().min(1).default(1),
-    pageSize: z.number().int().min(1).max(50).default(10),
-  },
-  async ({ taskId, status, page, pageSize }) => {
-    const params = new URLSearchParams({
-      page: String(page),
-      pageSize: String(pageSize),
-      ...(taskId ? { taskId } : {}),
-      ...(status ? { status } : {}),
-    });
-    const data = await apiRequest<unknown>('GET', `/tasks/executions/all?${params}`);
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
+/**
+ * Pure argv → decision mapping (no I/O, no process.exit) so it can be
+ * unit-tested. Unknown / absent arguments keep the historical behaviour:
+ * the server starts regardless of what it is passed.
+ */
+export function parseCliArgs(argv: string[]): CliDecision {
+  const first = argv[0];
+  if (first === '--help' || first === '-h') {
+    return { action: 'exit', exitCode: 0, output: helpText() };
+  }
+  if (first === '--version' || first === '-v') {
+    return { action: 'exit', exitCode: 0, output: `${VERSION}\n` };
+  }
+  return { action: 'run', output: '', exitCode: 0 };
+}
 
-// ---- get_execution --------------------------------------------------------
-server.tool(
-  'get_execution',
-  'Get the details and logs of a specific execution by ID. Includes status, duration, output, logs, and AI analysis if available.',
-  {
-    executionId: z.string().describe('Execution ID'),
-  },
-  async ({ executionId }) => {
-    const data = await apiRequest<unknown>('GET', `/tasks/executions/${executionId}`);
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
-
-// ---- analyze_execution ----------------------------------------------------
-server.tool(
-  'analyze_execution',
-  'Trigger AI analysis on a failed execution. Returns the AI-generated root cause and fix suggestion.',
-  {
-    taskId: z.string().describe('Task ID'),
-    executionId: z.string().describe('Execution ID (must be a failed/timeout execution)'),
-  },
-  async ({ taskId, executionId }) => {
-    const data = await apiRequest<unknown>(
-      'POST',
-      `/tasks/${taskId}/executions/${executionId}/analyze`,
-    );
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
-
-// ---- get_execution_stats --------------------------------------------------
-server.tool(
-  'get_execution_stats',
-  'Get execution statistics for a task: success rate, average duration, and last 20 executions.',
-  {
-    taskId: z.string().describe('Task ID'),
-  },
-  async ({ taskId }) => {
-    const data = await apiRequest<unknown>('GET', `/tasks/${taskId}/stats`);
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
-
-// ---- list_applications ----------------------------------------------------
-server.tool(
-  'list_applications',
-  'List all registered applications in AutoCodeFlow.',
-  {},
-  async () => {
-    const data = await apiRequest<unknown>('GET', '/applications');
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
-
-// ---- analyze_application --------------------------------------------------
-server.tool(
-  'analyze_application',
-  'Run AI health analysis on an application. Aggregates recent execution stats across all tasks and returns LLM-generated health assessment and recommendations.',
-  {
-    applicationId: z.string().describe('Application ID'),
-  },
-  async ({ applicationId }) => {
-    const data = await apiRequest<unknown>(
-      'POST',
-      `/applications/${applicationId}/analyze`,
-    );
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
-
-// ---- suggest_schedule -----------------------------------------------------
-server.tool(
-  'suggest_schedule',
-  'Ask AI to suggest an optimal cron schedule for a task based on its execution history (success rate, avg duration, failure patterns).',
-  {
-    taskId: z.string().describe('Task ID'),
-  },
-  async ({ taskId }) => {
-    const data = await apiRequest<unknown>(
-      'POST',
-      `/tasks/${taskId}/suggest-schedule`,
-    );
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
-
-// ---- get_execution_logs --------------------------------------------------
-server.tool(
-  'get_execution_logs',
-  'Fetch paginated execution logs for a given execution ID. Use fromLine + limit to page through large outputs.',
-  {
-    executionId: z.string().describe('Execution ID'),
-    fromLine: z.number().int().min(0).default(0).describe('Start line (0-based, default 0)'),
-    limit: z.number().int().min(1).max(2000).default(500).describe('Lines to return (max 2000, default 500)'),
-  },
-  async ({ executionId, fromLine, limit }) => {
-    const params = new URLSearchParams({
-      fromLine: String(fromLine),
-      limit: String(limit),
-    });
-    const data = await apiRequest<unknown>(
-      'GET',
-      `/tasks/executions/${executionId}/logs?${params}`,
-    );
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
-
-// ---- list_executors -------------------------------------------------------
-server.tool(
-  'list_executors',
-  'List all registered executors and their status (online/offline, last heartbeat, current load).',
-  {},
-  async () => {
-    const data = await apiRequest<unknown>('GET', '/executors');
-    return {
-      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    };
-  },
-);
+function helpText(): string {
+  return [
+    'autocodeflow-mcp — AutoCodeFlow MCP server (Model Context Protocol)',
+    '',
+    `Version: ${VERSION}`,
+    '',
+    'Runs as an MCP server over stdio (JSON-RPC on stdin/stdout). Start it',
+    'without arguments and register it as an MCP server in your agent client',
+    '(Claude Desktop, Cursor, ...) instead of invoking it manually.',
+    '',
+    'Usage:',
+    '  autocodeflow-mcp            Start the MCP server (stdio)',
+    '  autocodeflow-mcp --help     Show this help and exit',
+    '  autocodeflow-mcp --version  Show version and exit',
+    '',
+    'Environment variables:',
+    '  AUTOCODEFLOW_API_URL     Admin API base URL (default: http://localhost:3105)',
+    '  AUTOCODEFLOW_API_TOKEN   JWT bearer token for the Admin API (required)',
+    '',
+  ].join('\n');
+}
 
 // ---------------------------------------------------------------------------
 // Start
@@ -293,7 +99,29 @@ async function main() {
   );
 }
 
-main().catch((err) => {
-  process.stderr.write(`[autocodeflow-mcp] Fatal: ${err.message}\n`);
-  process.exit(1);
-});
+/**
+ * Bin entry: resolve CLI args first (--help / --version exit 0 before any
+ * server work), otherwise start the stdio server as before.
+ */
+export function runCli(argv: string[]): void {
+  const decision = parseCliArgs(argv);
+  if (decision.action === 'exit') {
+    process.stdout.write(decision.output);
+    process.exit(decision.exitCode);
+  }
+  main().catch((err) => {
+    process.stderr.write(`[autocodeflow-mcp] Fatal: ${err.message}\n`);
+    process.exit(1);
+  });
+}
+
+// Auto-run only when executed directly (node dist/index.js / ts-node);
+// skipped under vitest so the module can be imported for unit tests.
+if (
+  !process.env.VITEST &&
+  typeof require !== 'undefined' &&
+  typeof module !== 'undefined' &&
+  require.main === module
+) {
+  runCli(process.argv.slice(2));
+}

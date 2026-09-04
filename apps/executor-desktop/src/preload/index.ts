@@ -35,6 +35,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listLogFiles: () => ipcRenderer.invoke('log:list-files'),
   openLogFile: (filePath: string) => ipcRenderer.invoke('log:open-file', filePath),
 
+  // 已部署应用
+  listApps: () => ipcRenderer.invoke('apps:list'),
+  readAppLog: (logPath: string, fromLine?: number) =>
+    ipcRenderer.invoke('apps:log:read', logPath, fromLine ?? 0),
+
   // 日志流（主进程 → 渲染进程，单向推送）
   onLogLine: (cb: (line: string) => void) => {
     const handler = (_: Electron.IpcRendererEvent, line: string) => cb(line);

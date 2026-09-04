@@ -69,7 +69,7 @@ cd apps/executor-desktop && npm install && npm run build:executor && npm run dev
 | 服务 | 端口 | 说明 |
 |------|------|------|
 | admin-api | 3105 | NestJS REST API，含 Swagger 文档 |
-| admin-web | 80 (prod) / 5173 (dev) | React 管理后台 |
+| admin-web | 80 (prod) / 5176 (dev) | React 管理后台 |
 | executor-python | 8001 | FastAPI Python 执行器 |
 | executor-node | 8002 | Express Node.js 执行器 |
 | executor-desktop | 由用户配置 | Electron 桌面执行器 |
@@ -127,7 +127,6 @@ npm test
 
 # SDK 测试
 cd packages/autoflow-sdk && pytest
-cd packages/autoflow-sdk-node && npm test
 cd packages/autocodeflow-node-sdk && npm test
 ```
 
@@ -213,10 +212,10 @@ pip install -e ".[dev]"
 pytest
 ```
 
-#### Node.js SDK (autoflow-sdk-node / autocodeflow-node-sdk)
+#### Node.js SDK (autocodeflow-node-sdk)
 
 ```bash
-cd packages/autoflow-sdk-node
+cd packages/autocodeflow-node-sdk
 npm install
 npm test
 npm run build
@@ -285,7 +284,6 @@ AutoCodeFlow/
 │   ├── acf-cli/               # 命令行工具
 │   ├── mcp-server/            # MCP Server
 │   ├── autoflow-sdk/          # Python 任务 SDK
-│   ├── autoflow-sdk-node/     # Node.js 任务 SDK
 │   ├── autocodeflow-node-sdk/ # Node.js 完整 SDK
 │   ├── autocodeflow-ai/       # AI 分析引擎
 │   ├── autocodeflow-db/       # 数据库连接工具

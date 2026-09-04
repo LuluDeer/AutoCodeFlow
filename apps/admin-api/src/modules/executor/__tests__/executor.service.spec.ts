@@ -1,24 +1,37 @@
 import { Test } from "@nestjs/testing";
+import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { NotFoundException } from "@nestjs/common";
+import { NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { ExecutorService } from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
 import { Task } from "../../task/entities/task.entity";
 import {
   TaskExecution,
+  ExecutionFailureReason,
   ExecutionStatus,
 } from "../../task/entities/task-execution.entity";
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
 import { NotificationService } from "../../notification/notification.service";
+import { SystemConfigService } from "../../config/config.service";
 
 jest.mock("axios");
+// F-3: dispatch now consults the SSRF layer before every outbound POST. These
+// specs exercise selection/rollback logic with fixture addresses (127.0.0.1,
+// host1:3002) — stub the guard so they don't perform real DNS lookups.
+jest.mock("../../../common/utils/safe-http.util", () => ({
+  ...jest.requireActual("../../../common/utils/safe-http.util"),
+  assertSafeExecutorUrl: jest
+    .fn()
+    .mockResolvedValue(new URL("http://fixture:3002/")),
+}));
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findOne: jest.fn(),
   find: jest.fn().mockResolvedValue([]),
+  findBy: jest.fn().mockResolvedValue([]),
   create: jest.fn((d) => d),
   save: jest.fn((e) => Promise.resolve(e)),
   update: jest.fn().mockResolvedValue({ affected: 1 }),
@@ -52,20 +65,71 @@ describe("ExecutorService (__tests__)", () => {
   let service: ExecutorService;
   let executorRepo: ReturnType<typeof makeRepo>;
   let execRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let taskQueue: { add: jest.Mock };
   let configService: jest.Mocked<Pick<ConfigService, "get">>;
+
+  /** N4: build a service instance wired to a specific executor repo mock. */
+  const makeServiceWithRepo = async (repo: ReturnType<typeof makeRepo>) => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: repo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getQueueToken("task-queue"), useValue: taskQueue },
+        { provide: ConfigService, useValue: configService },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn(),
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
+      ],
+    }).compile();
+    return module.get(ExecutorService);
+  };
 
   beforeEach(async () => {
     executorRepo = makeRepo();
     execRepo = makeRepo();
+    taskRepo = makeRepo();
+    taskQueue = { add: jest.fn().mockResolvedValue(undefined) };
     configService = { get: jest.fn().mockReturnValue("http") };
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
-        { provide: getRepositoryToken(Task), useValue: makeRepo() },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getQueueToken("task-queue"), useValue: taskQueue },
         { provide: ConfigService, useValue: configService },
-        { provide: NotificationService, useValue: { notifyFailure: jest.fn(), notifyFailureWithConfig: jest.fn(), notifyExecutorOnline: jest.fn().mockResolvedValue(undefined), notifyExecutorOffline: jest.fn().mockResolvedValue(undefined), sendAll: jest.fn() } },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn(),
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
       ],
     }).compile();
     service = module.get(ExecutorService);
@@ -99,6 +163,656 @@ describe("ExecutorService (__tests__)", () => {
       await service.register({ appName: "e1", address: "127.0.0.1:3105" });
       expect(existing.status).toBe(ExecutorStatus.ONLINE);
     });
+
+    it("marks running executions failed when an executor re-registers after restart", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+        executorStartedAt: new Date("2026-01-01T00:00:00.000Z"),
+      };
+      const runningExecution: any = {
+        id: "exec-1",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([runningExecution]);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        restartedAt: "2026-01-01T00:01:00.000Z",
+        startupId: "startup-new",
+      });
+
+      expect(runningExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(runningExecution.failureReason).toBe(
+        ExecutionFailureReason.EXECUTOR_RESTART,
+      );
+      expect(runningExecution.errorMessage).toContain("Executor restarted");
+      expect(execRepo.save).toHaveBeenCalledWith(runningExecution);
+      expect(taskQueue.add).not.toHaveBeenCalled();
+    });
+
+    it("schedules a retry for restart-failed executions when attempts remain", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+      };
+      const task = {
+        id: "task-1",
+        name: "Task 1",
+        params: { fromTask: true },
+        currentVersion: "v1",
+        maxRetry: 3,
+        retryDelay: 5,
+      };
+      const runningExecution: any = {
+        id: "exec-1",
+        taskId: task.id,
+        taskName: task.name,
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        params: { fromExecution: true },
+        triggerType: "manual",
+        taskVersion: "v1",
+        retryCount: 0,
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([runningExecution]);
+      taskRepo.findBy.mockResolvedValue([task]);
+      execRepo.save.mockImplementation((e: any) =>
+        Promise.resolve(e.id ? e : { ...e, id: "retry-exec" }),
+      );
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        startupId: "startup-new",
+      });
+
+      expect(execRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: task.id,
+          taskName: task.name,
+          status: ExecutionStatus.PENDING,
+          params: runningExecution.params,
+          triggerType: runningExecution.triggerType,
+          taskVersion: runningExecution.taskVersion,
+          retryCount: 1,
+        }),
+      );
+      expect(taskQueue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "retry-exec" },
+        { attempts: 2, backoff: { type: "exponential", delay: 5_000 } },
+      );
+    });
+
+    it("recovers running executions predating startup when old executors lack startup baseline", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: null,
+        executorStartedAt: null,
+      };
+      const runningExecution: any = {
+        id: "exec-1",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-01T00:00:00.000Z"),
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([runningExecution]);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        restartedAt: "2026-01-01T00:01:00.000Z",
+        startupId: "startup-new",
+      });
+
+      expect(runningExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(runningExecution.failureReason).toBe(
+        ExecutionFailureReason.EXECUTOR_RESTART,
+      );
+      expect(existing.executorStartupId).toBe("startup-new");
+    });
+
+    it("does not fail newer running executions when initializing missing startup baseline", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: null,
+        executorStartedAt: null,
+      };
+      const runningExecution: any = {
+        id: "exec-1",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-01T00:02:00.000Z"),
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([runningExecution]);
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        restartedAt: "2026-01-01T00:01:00.000Z",
+        startupId: "startup-new",
+      });
+
+      expect(runningExecution.status).toBe(ExecutionStatus.RUNNING);
+      expect(execRepo.save).not.toHaveBeenCalledWith(runningExecution);
+      expect(existing.executorStartupId).toBe("startup-new");
+    });
+
+    it("does not abort restart recovery when retry enqueue fails", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+      };
+      const task = {
+        id: "task-1",
+        name: "Task 1",
+        params: {},
+        currentVersion: "v1",
+        maxRetry: 3,
+        retryDelay: 5,
+      };
+      const runningExecution: any = {
+        id: "exec-1",
+        taskId: task.id,
+        taskName: task.name,
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        retryCount: 0,
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([runningExecution]);
+      taskRepo.findBy.mockResolvedValue([task]);
+      execRepo.save.mockImplementation((e: any) =>
+        Promise.resolve(e.id ? e : { ...e, id: "retry-exec" }),
+      );
+      taskQueue.add.mockRejectedValue(new Error("redis down"));
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        startupId: "startup-new",
+      });
+
+      expect(runningExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(execRepo.delete).toHaveBeenCalledWith("retry-exec");
+      expect(existing.executorStartupId).toBe("startup-new");
+      expect(executorRepo.save).toHaveBeenCalledWith(existing);
+    });
+
+    it("maps runtime and maxConcurrent aliases during registration", async () => {
+      executorRepo.findOne.mockResolvedValue(null);
+      executorRepo.create.mockImplementation((e: any) => e);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const result = await service.register({
+        appName: "python-executor",
+        address: "127.0.0.1:3106",
+        type: "python",
+        runtime: ["python", "shell"],
+        maxConcurrent: 4,
+      });
+
+      expect(result.capabilities).toEqual(["python", "shell"]);
+      expect(result.maxConcurrentTasks).toBe(4);
+      expect(result.status).toBe(ExecutorStatus.ONLINE);
+    });
+
+    it("updates mutable metadata and maxConcurrentTasks on re-register", async () => {
+      const existing: any = {
+        appName: "old",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.OFFLINE,
+        capabilities: ["shell"],
+        maxConcurrentTasks: 1,
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.register({
+        appName: "node-executor",
+        address: "127.0.0.1:3105",
+        type: "node",
+        capabilities: ["node", "shell"],
+        maxConcurrentTasks: 10,
+        groupName: "prod",
+        tags: ["nodejs"],
+        description: "Production executor",
+      });
+
+      expect(existing.appName).toBe("node-executor");
+      expect(existing.type).toBe("node");
+      expect(existing.capabilities).toEqual(["node", "shell"]);
+      expect(existing.maxConcurrentTasks).toBe(10);
+      expect(existing.groupName).toBe("prod");
+      expect(existing.tags).toEqual(["nodejs"]);
+      expect(existing.description).toBe("Production executor");
+      expect(existing.status).toBe(ExecutorStatus.ONLINE);
+    });
+  });
+
+  describe("registerExecutor — N4 idempotent token issuance", () => {
+    const makeQbRepo = (prior: any) =>
+      makeRepo({
+        createQueryBuilder: jest.fn(() => ({
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(prior),
+        })),
+      });
+
+    it("issues a token on first registration (no prior row)", async () => {
+      const repo = makeQbRepo(null);
+      const saved = {
+        id: "e1",
+        appName: "node",
+        address: "10.0.0.9:3002",
+        status: ExecutorStatus.ONLINE,
+      };
+      repo.findOne.mockResolvedValue(saved);
+      repo.save.mockImplementation((e: any) =>
+        Promise.resolve({ ...e, id: "e1" }),
+      );
+      const svc = await makeServiceWithRepo(repo);
+      jest
+        .spyOn(svc, "rotateToken")
+        .mockResolvedValue({ token: "issued-token" });
+
+      const { executor, perExecutorToken } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+        startupId: "startup-1",
+      });
+
+      expect(executor.id).toBe("e1");
+      expect(perExecutorToken).toBe("issued-token");
+    });
+
+    it("returns perExecutorToken=null for a duplicate register with the same address+startupId (rotation storm fix)", async () => {
+      const prior = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        executorStartupId: "startup-1",
+        executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+        tokenHash: "$2b$12$existinghash",
+      };
+      const repo = makeQbRepo(prior);
+      repo.findOne.mockResolvedValue({
+        ...prior,
+        status: ExecutorStatus.ONLINE,
+      });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const svc = await makeServiceWithRepo(repo);
+      const rotateSpy = jest.spyOn(svc, "rotateToken");
+
+      const { perExecutorToken } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+        startupId: "startup-1",
+      });
+
+      expect(perExecutorToken).toBeNull();
+      expect(rotateSpy).not.toHaveBeenCalled();
+    });
+
+    it("rotates when the startupId changed (genuine restart)", async () => {
+      const prior = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        executorStartupId: "startup-1",
+        executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+        tokenHash: "$2b$12$existinghash",
+      };
+      const repo = makeQbRepo(prior);
+      repo.findOne.mockResolvedValue({ ...prior });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const svc = await makeServiceWithRepo(repo);
+      const rotateSpy = jest
+        .spyOn(svc, "rotateToken")
+        .mockResolvedValue({ token: "new-token" });
+
+      const { perExecutorToken } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+        startupId: "startup-2",
+      });
+
+      expect(perExecutorToken).toBe("new-token");
+      expect(rotateSpy).toHaveBeenCalledWith("e1");
+    });
+
+    it("rotates when no startupId is reported (legacy executor)", async () => {
+      const prior = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        executorStartupId: "startup-1",
+        executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+        tokenHash: "$2b$12$existinghash",
+      };
+      const repo = makeQbRepo(prior);
+      repo.findOne.mockResolvedValue({ ...prior });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const svc = await makeServiceWithRepo(repo);
+      const rotateSpy = jest
+        .spyOn(svc, "rotateToken")
+        .mockResolvedValue({ token: "legacy-token" });
+
+      const { perExecutorToken } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+      });
+
+      expect(perExecutorToken).toBe("legacy-token");
+      expect(rotateSpy).toHaveBeenCalled();
+    });
+
+    it("rotates when the address has no per-executor token yet", async () => {
+      const prior = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        executorStartupId: "startup-1",
+        executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+        tokenHash: null,
+      };
+      const repo = makeQbRepo(prior);
+      repo.findOne.mockResolvedValue({ ...prior });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const svc = await makeServiceWithRepo(repo);
+      const rotateSpy = jest
+        .spyOn(svc, "rotateToken")
+        .mockResolvedValue({ token: "first-token" });
+
+      const { perExecutorToken } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+        startupId: "startup-1",
+      });
+
+      expect(perExecutorToken).toBe("first-token");
+      expect(rotateSpy).toHaveBeenCalled();
+    });
+  });
+
+  // R9 (round-8 P1 closure, W2): POST /executors/token used to rotateToken()
+  // on EVERY call, so any re-fetching client put the stored tokenHash on a
+  // ~30s rotation cycle that broke the N26 per-execution callback-token
+  // invariant (docs/VERIFY-round8-e2e.md §1.5). issueToken() is idempotent
+  // per (address, startupId) — same-process re-fetches return the CURRENT
+  // token; rotation only happens on first issuance, a changed startupId, a
+  // legacy fetch outside the reuse window, or when the cached plaintext no
+  // longer verifies against the stored hash.
+  describe("issueToken — R9 idempotent token issuance", () => {
+    // rotateToken() hardcodes bcrypt cost 12 (~300ms); pin cost 4 here so the
+    // reuse/rotation matrix stays fast without changing compare semantics.
+    const realHash = bcrypt.hash;
+    beforeEach(() => {
+      jest
+        .spyOn(bcrypt, "hash")
+        .mockImplementation(((s: string | Buffer, _rounds: number) =>
+          realHash(s, 4)) as any);
+    });
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    const makeIssueFixture = async () => {
+      const row: any = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        appName: "node",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        executorStartupId: null,
+        executorStartedAt: null,
+        tokenHash: null,
+      };
+      const repo = makeRepo({
+        findOne: jest.fn().mockResolvedValue(row),
+        save: jest.fn((e: any) => Promise.resolve(e)),
+      });
+      // tokenHash is select:false — the service reads it via QueryBuilder.
+      // Return the SAME row object so rotations are visible to the reuse
+      // verification below.
+      repo.createQueryBuilder = jest.fn(() => ({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(row),
+      })) as any;
+      const svc = await makeServiceWithRepo(repo);
+      return { svc, row };
+    };
+
+    it("first issuance rotates and returns the raw token plus the stored tokenHash", async () => {
+      const { svc, row } = await makeIssueFixture();
+      const r = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      expect(r.token).toMatch(/^[0-9a-f]{64}$/);
+      expect(r.tokenHash).toBe(row.tokenHash);
+      // The returned hash must be the hash of the returned token — this is
+      // the pair the executor adopts as its N26 callback HMAC secret.
+      await expect(bcrypt.compare(r.token, r.tokenHash)).resolves.toBe(true);
+    });
+
+    it("same startupId re-fetch returns the SAME token without rotating (rotation-storm fix)", async () => {
+      const { svc, row } = await makeIssueFixture();
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      const hashAfterFirst = row.tokenHash;
+      const rotateSpy = jest.spyOn(svc, "rotateToken");
+
+      const second = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+
+      expect(second.token).toBe(first.token);
+      expect(second.tokenHash).toBe(hashAfterFirst);
+      expect(rotateSpy).not.toHaveBeenCalled();
+    });
+
+    it("a changed startupId (genuine executor restart) rotates again", async () => {
+      const { svc, row } = await makeIssueFixture();
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      const second = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-2",
+      });
+      expect(second.token).not.toBe(first.token);
+      expect(row.tokenHash).not.toBe(first.tokenHash);
+      await expect(bcrypt.compare(second.token, row.tokenHash)).resolves.toBe(
+        true,
+      );
+    });
+
+    it("legacy fetch without startupId reuses inside the window and rotates after it", async () => {
+      const { svc } = await makeIssueFixture();
+      const base = Date.now();
+      let now = base;
+      jest.spyOn(Date, "now").mockImplementation(() => now);
+
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+      });
+      // Still within TOKEN_ISSUE_REUSE_WINDOW_MS (60s) → same token.
+      now = base + 30_000;
+      const second = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+      });
+      expect(second.token).toBe(first.token);
+
+      // Outside the window: identity can't be proven → rotate.
+      now = base + 61_000;
+      const third = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+      });
+      expect(third.token).not.toBe(first.token);
+    });
+
+    it("does not resurrect a token invalidated by an admin-side rotation", async () => {
+      const { svc, row } = await makeIssueFixture();
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      // Simulate the admin UI's POST :id/rotate-token replacing the hash:
+      // the cached plaintext no longer verifies against the stored hash.
+      row.tokenHash = await realHash("externally-rotated-token", 4);
+
+      const second = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+
+      expect(second.token).not.toBe(first.token);
+      await expect(bcrypt.compare(second.token, row.tokenHash)).resolves.toBe(
+        true,
+      );
+    });
+
+    // R10 (round-10 gap #3): the full manual-rotation convergence loop.
+    // Admin clicks "rotate token" in the UI (direct rotateToken call — the
+    // only path that does not hand the new token to the executor in-band);
+    // executor-node's 401 self-heal then re-hits POST /token with the SAME
+    // startupId. Because rotateToken seeds issuedTokenCache, that fetch
+    // returns exactly the UI-shown token (no second rotation) plus its
+    // hash, so bearer and N26 callback HMAC secret converge in one
+    // round-trip.
+    it("an admin-UI rotation is adopted by the executor's next same-startupId fetch without a second rotation", async () => {
+      const { svc, row } = await makeIssueFixture();
+      row.executorStartupId = "startup-1";
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      expect(first.token).not.toBeNull();
+
+      // Admin-UI POST :id/rotate-token.
+      const uiRotation = await svc.rotateToken("e1");
+      const hashAfterUiRotation = row.tokenHash;
+      expect(uiRotation.token).not.toBe(first.token);
+      const rotateSpy = jest.spyOn(svc, "rotateToken");
+
+      // Executor self-heal: POST /token, same process life.
+      const healed = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+
+      expect(healed.token).toBe(uiRotation.token);
+      expect(healed.tokenHash).toBe(hashAfterUiRotation);
+      await expect(
+        bcrypt.compare(healed.token, healed.tokenHash),
+      ).resolves.toBe(true);
+      // No silent second rotation — the UI-shown token stays live.
+      expect(rotateSpy).not.toHaveBeenCalled();
+    });
+
+    it("bounds issuedTokenCache — evicts expired then oldest entries past the cap (N34)", async () => {
+      const { svc } = await makeIssueFixture();
+      const cache = (svc as any).issuedTokenCache as Map<
+        string,
+        { token: string; startupId: string | null; issuedAt: number }
+      >;
+      const MAX = (ExecutorService as any).TOKEN_ISSUE_CACHE_MAX as number;
+      const now = Date.now();
+      // Fill to the cap with fresh entries (none expired, so the only way
+      // the new insert fits is the oldest-first eviction branch).
+      for (let i = 0; i < MAX; i++) {
+        cache.set(`addr-${i}`, {
+          token: `t${i}`,
+          startupId: "s",
+          issuedAt: now,
+        });
+      }
+
+      await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+
+      expect(cache.size).toBeLessThanOrEqual(MAX);
+      expect(cache.has("addr-0")).toBe(false); // oldest — evicted
+      expect(cache.has("addr-1")).toBe(true); // rest kept
+      expect(cache.has(`addr-${MAX - 1}`)).toBe(true);
+      expect(cache.has("10.0.0.9:3002")).toBe(true);
+    });
+
+    it("treats a plaintext cache entry past the TTL as stale and rotates (N34)", async () => {
+      const { svc } = await makeIssueFixture();
+      const TTL = (ExecutorService as any).TOKEN_ISSUE_CACHE_TTL_MS as number;
+      const base = Date.now();
+      let now = base;
+      jest.spyOn(Date, "now").mockImplementation(() => now);
+
+      const first = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      // Same startupId but past the TTL: fail-safe like a cold cache.
+      now = base + TTL + 1;
+      const second = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      expect(second.token).not.toBe(first.token);
+      // The fresh entry is now within the TTL — a third fetch reuses again.
+      const third = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+      });
+      expect(third.token).toBe(second.token);
+    });
   });
 
   describe("heartbeat", () => {
@@ -130,9 +844,105 @@ describe("ExecutorService (__tests__)", () => {
 
     it("throws NotFoundException when executor address not found", async () => {
       executorRepo.findOne.mockResolvedValue(null);
-      await expect(
-        service.heartbeat("unknown:9999", {}),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.heartbeat("unknown:9999", {})).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it("recovers running executions predating heartbeat startup when executor lacks startup baseline", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: null,
+        executorStartedAt: null,
+      };
+      const oldExecution: any = {
+        id: "exec-old",
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-01T00:00:00.000Z"),
+        logs: "old",
+      };
+      const newExecution: any = {
+        id: "exec-new",
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-01T00:02:00.000Z"),
+        logs: "new",
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([oldExecution, newExecution]);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.heartbeat(executor.address, {
+        restartedAt: "2026-01-01T00:01:00.000Z",
+        startupId: "startup-new",
+      });
+
+      expect(oldExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(oldExecution.failureReason).toBe(
+        ExecutionFailureReason.EXECUTOR_RESTART,
+      );
+      expect(newExecution.status).toBe(ExecutionStatus.RUNNING);
+      expect(execRepo.save).toHaveBeenCalledWith(oldExecution);
+      expect(execRepo.save).not.toHaveBeenCalledWith(newExecution);
+      expect(executor.executorStartupId).toBe("startup-new");
+    });
+
+    it("continues heartbeat restart recovery when one retry enqueue fails", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+      };
+      const task = {
+        id: "task-1",
+        name: "Task 1",
+        params: {},
+        currentVersion: "v1",
+        maxRetry: 3,
+        retryDelay: 0,
+      };
+      const firstExecution: any = {
+        id: "exec-1",
+        taskId: task.id,
+        taskName: task.name,
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        retryCount: 0,
+        logs: "first",
+      };
+      const secondExecution: any = {
+        id: "exec-2",
+        taskId: task.id,
+        taskName: task.name,
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        retryCount: 0,
+        logs: "second",
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([firstExecution, secondExecution]);
+      taskRepo.findBy.mockResolvedValue([task]);
+      execRepo.save.mockImplementation((e: any) =>
+        Promise.resolve(
+          e.id ? e : { ...e, id: `retry-${execRepo.save.mock.calls.length}` },
+        ),
+      );
+      taskQueue.add
+        .mockRejectedValueOnce(new Error("redis down"))
+        .mockResolvedValueOnce(undefined);
+
+      await service.heartbeat(executor.address, { startupId: "startup-new" });
+
+      expect(firstExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(secondExecution.status).toBe(ExecutionStatus.FAILED);
+      expect(execRepo.delete).toHaveBeenCalledWith("retry-2");
+      expect(taskQueue.add).toHaveBeenCalledTimes(2);
+      expect(executor.executorStartupId).toBe("startup-new");
+      expect(executorRepo.save).toHaveBeenCalledWith(executor);
     });
   });
 
@@ -195,7 +1005,10 @@ describe("ExecutorService (__tests__)", () => {
 
     it("filters out null groupNames", async () => {
       const qb = executorRepo.createQueryBuilder();
-      qb.getRawMany.mockResolvedValue([{ groupName: null }, { groupName: "prod" }]);
+      qb.getRawMany.mockResolvedValue([
+        { groupName: null },
+        { groupName: "prod" },
+      ]);
       executorRepo.createQueryBuilder.mockReturnValue(qb);
       const result = await service.getGroups();
       expect(result).toEqual(["prod"]);
@@ -260,7 +1073,7 @@ describe("ExecutorService (__tests__)", () => {
     it("throws when no executor is available", async () => {
       executorRepo.find.mockResolvedValue([]);
       await expect(service.dispatch(task, execution)).rejects.toThrow(
-        "No available executor",
+        "No online executors match the requested group/tags/runtime",
       );
     });
 
@@ -271,7 +1084,10 @@ describe("ExecutorService (__tests__)", () => {
     });
 
     it("filters by executorGroup when specified", async () => {
-      const taskWithGroup = { ...task, executorGroup: "production" } as unknown as Task;
+      const taskWithGroup = {
+        ...task,
+        executorGroup: "production",
+      } as unknown as Task;
       const wrongGroup = { ...executor, id: "e2", groupName: "staging" };
       const rightGroup = { ...executor, id: "e3", groupName: "production" };
       executorRepo.find.mockResolvedValue([wrongGroup, rightGroup]);
@@ -279,6 +1095,90 @@ describe("ExecutorService (__tests__)", () => {
       await service.dispatch(taskWithGroup, execution);
       const postCall = mockedAxios.post.mock.calls[0][0] as string;
       expect(postCall).toContain(rightGroup.address);
+    });
+
+    // R6: executor pinning — task.executorId set ⇒ ONLY that executor.
+    describe("pinned executor (task.executorId)", () => {
+      const pinned = {
+        id: "e-pin",
+        appName: "pinned-node",
+        address: "pinned-host:3002",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        version: 1,
+      };
+
+      it("dispatches only to the pinned executor, bypassing group/tags filters", async () => {
+        executorRepo.findOne.mockResolvedValue(pinned);
+        // Fleet query must NOT be consulted at all when pinned.
+        mockedAxios.post.mockResolvedValue({ data: { accepted: true } });
+        const taskPinned = {
+          ...task,
+          executorId: "e-pin",
+          executorGroup: "group-that-matches-nothing",
+        } as unknown as Task;
+        const result = await service.dispatch(taskPinned, execution);
+        expect(result.accepted).toBe(true);
+        expect(executorRepo.find).not.toHaveBeenCalled();
+        expect(executorRepo.findOne).toHaveBeenCalledWith({
+          where: { id: "e-pin" },
+        });
+        expect(mockedAxios.post.mock.calls[0][0]).toContain(pinned.address);
+        expect(execution.executorAddress).toBe(pinned.address);
+      });
+
+      it("offline pinned executor fails fast with an EXECUTOR_OFFLINE-classifiable message (no fleet fallback)", async () => {
+        executorRepo.findOne.mockResolvedValue({
+          ...pinned,
+          status: ExecutorStatus.OFFLINE,
+        });
+        executorRepo.find.mockResolvedValue([executor]);
+        await expect(
+          service.dispatch(
+            { ...task, executorId: "e-pin" } as unknown as Task,
+            execution,
+          ),
+        ).rejects.toThrow(/Pinned executor .* is offline/);
+        // No fallback: fleet never queried, nothing dispatched.
+        expect(executorRepo.find).not.toHaveBeenCalled();
+        expect(mockedAxios.post).not.toHaveBeenCalled();
+      });
+
+      it("missing pinned executor fails with not-found (no fleet fallback)", async () => {
+        executorRepo.findOne.mockResolvedValue(null);
+        executorRepo.find.mockResolvedValue([executor]);
+        await expect(
+          service.dispatch(
+            { ...task, executorId: "gone" } as unknown as Task,
+            execution,
+          ),
+        ).rejects.toThrow(/Pinned executor gone not found/);
+        expect(executorRepo.find).not.toHaveBeenCalled();
+        expect(mockedAxios.post).not.toHaveBeenCalled();
+      });
+
+      it("respects the pinned executor slot cap (optimistic increment still applied)", async () => {
+        executorRepo.findOne.mockResolvedValue({
+          ...pinned,
+          maxConcurrentTasks: 1,
+          runningTaskCount: 1,
+        });
+        // Simulate the capacity-guarded UPDATE losing the race (affected=0).
+        executorRepo.createQueryBuilder.mockReturnValue({
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: 0 }),
+        } as any);
+        await expect(
+          service.dispatch(
+            { ...task, executorId: "e-pin" } as unknown as Task,
+            execution,
+          ),
+        ).rejects.toThrow(/No available executor/);
+        expect(mockedAxios.post).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -314,7 +1214,7 @@ describe("ExecutorService (__tests__)", () => {
     it("throws when no executors are available", async () => {
       executorRepo.find.mockResolvedValue([]);
       await expect(service.dispatchBroadcast(task, execution)).rejects.toThrow(
-        "No available executor",
+        "No online executors match the requested group/tags/runtime",
       );
     });
 
@@ -360,6 +1260,53 @@ describe("ExecutorService (__tests__)", () => {
         NotFoundException,
       );
     });
+
+    // R10 (round-10 gap #3): seed the idempotent-issuance cache with the
+    // fresh plaintext under the executor's CURRENT startupId, so the
+    // executor-node 401 self-heal (POST /token, same startupId) adopts
+    // EXACTLY the token the admin UI just showed instead of rotating a
+    // second time and killing it.
+    it("seeds issuedTokenCache with the new plaintext under the current startupId", async () => {
+      const executor = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        tokenHash: null,
+        executorStartupId: "startup-1",
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const result = await service.rotateToken("e1");
+
+      const cache = (service as any).issuedTokenCache as Map<
+        string,
+        { token: string; startupId: string | null }
+      >;
+      expect(cache.get("10.0.0.9:3002")).toMatchObject({
+        token: result.token,
+        startupId: "startup-1",
+      });
+    });
+
+    it("seeds issuedTokenCache with a null startupId for legacy executors (no same-startupId reuse)", async () => {
+      const executor = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        tokenHash: null,
+        executorStartupId: null,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const result = await service.rotateToken("e1");
+
+      const cache = (service as any).issuedTokenCache as Map<
+        string,
+        { token: string; startupId: string | null }
+      >;
+      expect(cache.get("10.0.0.9:3002")).toMatchObject({
+        token: result.token,
+        startupId: null,
+      });
+    });
   });
 
   describe("validateTokenByAddress", () => {
@@ -369,7 +1316,10 @@ describe("ExecutorService (__tests__)", () => {
       const qb = executorRepo.createQueryBuilder();
       qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: hash });
       executorRepo.createQueryBuilder.mockReturnValue(qb);
-      const result = await service.validateTokenByAddress("host:3002", rawToken);
+      const result = await service.validateTokenByAddress(
+        "host:3002",
+        rawToken,
+      );
       expect(result).toBe(true);
     });
 
@@ -378,7 +1328,10 @@ describe("ExecutorService (__tests__)", () => {
       qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: null });
       executorRepo.createQueryBuilder.mockReturnValue(qb);
       configService.get.mockReturnValue("shared-secret");
-      const result = await service.validateTokenByAddress("host:3002", "shared-secret");
+      const result = await service.validateTokenByAddress(
+        "host:3002",
+        "shared-secret",
+      );
       expect(result).toBe(true);
     });
 
@@ -389,6 +1342,58 @@ describe("ExecutorService (__tests__)", () => {
       configService.get.mockReturnValue("");
       const result = await service.validateTokenByAddress("host:3002", "wrong");
       expect(result).toBe(false);
+    });
+  });
+
+  // N26 (round-8): per-address tokenHash lookup backing the per-executor
+  // callback-token HMAC fallback.
+  describe("getCallbackSecretByAddress", () => {
+    it("returns the stored tokenHash and caches positive results", async () => {
+      const qb = executorRepo.createQueryBuilder();
+      qb.getOne.mockResolvedValue({
+        address: "host:3002",
+        tokenHash: "$2b$12$hash",
+      });
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      await expect(
+        service.getCallbackSecretByAddress("host:3002"),
+      ).resolves.toBe("$2b$12$hash");
+      await expect(
+        service.getCallbackSecretByAddress("host:3002"),
+      ).resolves.toBe("$2b$12$hash");
+      expect(qb.getOne).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns null for unknown addresses and does not cache the miss", async () => {
+      const qb = executorRepo.createQueryBuilder();
+      qb.getOne.mockResolvedValue(null);
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      await expect(
+        service.getCallbackSecretByAddress("ghost:1"),
+      ).resolves.toBeNull();
+      await expect(
+        service.getCallbackSecretByAddress("ghost:1"),
+      ).resolves.toBeNull();
+      expect(qb.getOne).toHaveBeenCalledTimes(2);
+    });
+
+    it("rotateToken evicts the cached hash so the new value is read immediately", async () => {
+      const qb = executorRepo.createQueryBuilder();
+      qb.getOne.mockResolvedValue({
+        address: "127.0.0.1",
+        tokenHash: "$2b$12$old",
+      });
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      await service.getCallbackSecretByAddress("127.0.0.1");
+      expect(qb.getOne).toHaveBeenCalledTimes(1);
+
+      const executor = { id: "e1", address: "127.0.0.1", tokenHash: null };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.rotateToken("e1");
+
+      await service.getCallbackSecretByAddress("127.0.0.1");
+      expect(qb.getOne).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -425,7 +1430,12 @@ describe("ExecutorService (__tests__)", () => {
       };
       executorRepo.findOne.mockResolvedValue(executor);
       const qb = execRepo.createQueryBuilder();
-      qb.getRawOne.mockResolvedValue({ total: '100', successful: '95', failed: '5', avgDuration: '1200' });
+      qb.getRawOne.mockResolvedValue({
+        total: "100",
+        successful: "95",
+        failed: "5",
+        avgDuration: "1200",
+      });
       execRepo.createQueryBuilder.mockReturnValue(qb);
       const result = await service.getExecutorMetrics("e1");
       expect(result.sevenDayStats.totalExecutions).toBe(100);
@@ -447,15 +1457,82 @@ describe("ExecutorService (__tests__)", () => {
   describe("markStaleOffline", () => {
     it("marks heartbeat-timeout executors as OFFLINE", async () => {
       configService.get
-        .mockReturnValueOnce(30000)  // heartbeatInterval
-        .mockReturnValueOnce(3);     // timeoutMultiplier
+        .mockReturnValueOnce(30000) // heartbeatInterval
+        .mockReturnValueOnce(3); // timeoutMultiplier
       // find() must return stale executors so the early-return guard is skipped
-      executorRepo.find.mockResolvedValue([{ id: "exec-1", appName: "app", address: "http://host" }]);
+      executorRepo.find.mockResolvedValue([
+        { id: "exec-1", appName: "app", address: "http://host" },
+      ]);
       executorRepo.update.mockResolvedValue({ affected: 1 });
       await service.markStaleOffline();
       expect(executorRepo.update).toHaveBeenCalledWith(
         expect.objectContaining({ status: ExecutorStatus.ONLINE }),
         { status: ExecutorStatus.OFFLINE },
+      );
+    });
+  });
+
+  describe("setOfflineById", () => {
+    it("sets status OFFLINE and refreshes heartbeat", async () => {
+      const executor: any = {
+        id: "exec-9",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      const saved = await service.setOfflineById("exec-9");
+      expect(executorRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "exec-9" },
+      });
+      expect(executorRepo.save).toHaveBeenCalledWith(executor);
+      expect(saved.status).toBe(ExecutorStatus.OFFLINE);
+      expect(saved.lastHeartbeat).toBeInstanceOf(Date);
+    });
+
+    it("throws NotFoundException when executor does not exist", async () => {
+      executorRepo.findOne.mockResolvedValue(null);
+      await expect(service.setOfflineById("missing")).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe("getInstallCmd", () => {
+    it("returns curl|bash command pointing at the backend-served install.sh route", () => {
+      // Trailing slash on ADMIN_API_URL must be normalized away from the
+      // script URL; --api-url keeps the raw value (executor .env semantics).
+      (configService.get as jest.Mock)
+        .mockReturnValueOnce("http://admin.example.com:3105/") // ADMIN_API_URL
+        .mockReturnValueOnce("sh'ell-token"); // executor.sharedToken
+      const result = service.getInstallCmd();
+      expect(result.cmd).toContain(
+        "curl -fsSL 'http://admin.example.com:3105/api/executors/install.sh'",
+      );
+      expect(result.cmd).toContain(
+        "| bash -s -- --api-url 'http://admin.example.com:3105/'",
+      );
+      // Shell-quoting guard: single quotes in the token are escaped, not passed raw.
+      expect(result.cmd).toContain("--secret 'sh'\\''ell-token'");
+      expect(result.token).toBe("sh'ell-token");
+      expect(result.adminApiUrl).toBe("http://admin.example.com:3105/");
+    });
+
+    it("no longer emits the legacy npx autoflow-executor command", () => {
+      const result = service.getInstallCmd();
+      expect(result.cmd).not.toContain("npx autoflow-executor");
+    });
+
+    // R7 真机遗留观察①：此前 ADMIN_API_URL 未配置时会生成
+    // "curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''"
+    // 这种裸机不可用的命令，现改为显式 503。
+    it("throws ServiceUnavailableException when ADMIN_API_URL is not configured", () => {
+      (configService.get as jest.Mock).mockReturnValueOnce(undefined);
+      expect(() => service.getInstallCmd()).toThrow(
+        ServiceUnavailableException,
+      );
+      (configService.get as jest.Mock).mockReturnValueOnce("");
+      expect(() => service.getInstallCmd()).toThrow(
+        /ADMIN_API_URL is not configured/,
       );
     });
   });

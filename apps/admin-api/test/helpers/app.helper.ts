@@ -1,5 +1,6 @@
 import { INestApplication, ValidationPipe } from "@nestjs/common";
 import { Test, TestingModule } from "@nestjs/testing";
+import * as express from "express";
 import * as request from "supertest";
 import { AppModule } from "../../src/app.module";
 
@@ -14,6 +15,15 @@ export async function createTestApp(): Promise<INestApplication> {
   }).compile();
 
   const app = moduleFixture.createNestApplication();
+
+  app.use(
+    express.json({
+      limit: "1mb",
+      verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
+        req.rawBody = Buffer.from(buf);
+      },
+    }),
+  );
 
   app.useGlobalPipes(
     new ValidationPipe({

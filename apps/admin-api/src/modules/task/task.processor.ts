@@ -1,13 +1,13 @@
-import { Process, Processor } from "@nestjs/bull";
+import { InjectQueue, Processor, WorkerHost } from "@nestjs/bullmq";
 import { Logger, Inject, forwardRef } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, In, DataSource } from "typeorm";
-import { InjectQueue } from "@nestjs/bull";
-import { Job, Queue } from "bull";
+import { Repository, DataSource } from "typeorm";
+import { Job, Queue, UnrecoverableError } from "bullmq";
 import {
   TaskExecution,
   ExecutionStatus,
+  ExecutionFailureReason,
 } from "./entities/task-execution.entity";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { Task } from "./entities/task.entity";
@@ -18,7 +18,7 @@ import { AuditService } from "../audit/audit.service";
 import { TaskService } from "./task.service";
 
 @Processor("task-queue")
-export class TaskProcessor {
+export class TaskProcessor extends WorkerHost {
   private readonly logger = new Logger(TaskProcessor.name);
 
   constructor(
@@ -35,84 +35,18 @@ export class TaskProcessor {
     @Inject(forwardRef(() => TaskService)) private taskService: TaskService,
     @InjectQueue("task-queue") private taskQueue: Queue,
     private dataSource: DataSource,
-  ) {}
-
-  /**
-   * Fetch log lines from executor's /api/logs/{executionId} endpoint and
-   * persist them as ExecutionLogLine rows for structured querying.
-   */
-  private async fetchAndStoreLogLines(
-    exec: TaskExecution,
-    executorAddress: string,
-  ): Promise<void> {
-    if (!executorAddress) return;
-    try {
-      // N9: use ConfigService instead of direct process.env access
-      const token =
-        this.configService.get<string>("executor.sharedToken") ?? "";
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const { default: axios } = await import("axios");
-      const url = this.executorService.getExecutorUrl(
-        executorAddress,
-        `api/logs/${exec.id}`,
-      );
-      const resp = await axios.get(url, { headers, timeout: 15000 });
-      const lines: string[] = resp.data?.lines ?? [];
-      if (lines.length === 0) return;
-      // Delete stale lines first (idempotent on retry)
-      await this.logLineRepo.delete({ executionId: exec.id });
-      const entities = lines.map((content, idx) =>
-        this.logLineRepo.create({
-          executionId: exec.id,
-          lineNumber: idx,
-          content,
-        }),
-      );
-
-      // PERF-02: Adaptive batch size based on entity count
-      // Start with 500, increase for small batches, decrease for large batches
-      let chunkSize = 500;
-      if (entities.length < 100) {
-        chunkSize = entities.length; // Small batch: insert all at once
-      } else if (entities.length > 10000) {
-        chunkSize = 200; // Large batch: smaller chunks to avoid memory issues
-      } else if (entities.length > 5000) {
-        chunkSize = 300; // Medium-large batch
-      }
-
-      // Measure insertion time and adjust chunk size dynamically
-      const startTime = Date.now();
-      for (let i = 0; i < entities.length; i += chunkSize) {
-        const chunk = entities.slice(i, i + chunkSize);
-        const chunkStart = Date.now();
-        await this.logLineRepo.save(chunk);
-        const chunkDuration = Date.now() - chunkStart;
-
-        // If this chunk took too long, reduce chunk size for next iteration
-        if (chunkDuration > 1000 && chunkSize > 100) {
-          chunkSize = Math.max(100, Math.floor(chunkSize * 0.8));
-          this.logger.debug(
-            `Reduced chunk size to ${chunkSize} due to slow insertion (${chunkDuration}ms)`,
-          );
-        }
-        // If chunk was very fast, try increasing chunk size
-        else if (chunkDuration < 100 && chunkSize < 1000) {
-          chunkSize = Math.min(1000, Math.floor(chunkSize * 1.2));
-        }
-      }
-
-      const totalDuration = Date.now() - startTime;
-      this.logger.log(
-        `Stored ${entities.length} log lines for execution ${exec.id} in ${totalDuration}ms (final chunk size: ${chunkSize})`,
-      );
-    } catch (err: unknown) {
-      // Non-fatal: log but do not fail the execution record
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Failed to fetch log lines for ${exec.id}: ${message}`);
-    }
+  ) {
+    super();
   }
 
-  @Process("execute")
+  // LOG-01: structured log-line persistence now lives in TaskService
+  // (storeLogLines / backfillFullLogsFromExecutor), invoked from
+  // handleCallback so it runs for every completed execution.
+
+  async process(job: Job<{ executionId: string }>) {
+    return this.handle(job);
+  }
+
   async handle(job: Job<{ executionId: string }>) {
     const { executionId } = job.data;
     const exec = await this.execRepo.findOne({ where: { id: executionId } });
@@ -126,13 +60,38 @@ export class TaskProcessor {
       );
       exec.status = ExecutionStatus.FAILED;
       exec.errorMessage = `Task ${exec.taskId} not found`;
+      exec.failureReason = ExecutionFailureReason.UNKNOWN;
+      exec.endTime = new Date();
+      exec.duration = 0;
       await this.execRepo.save(exec);
       return;
     }
 
+    // P0: claim the execution atomically. A KILLED/CANCELLED execution (e.g.
+    // killed while still queued) must never be revived by a worker; FAILED is
+    // still claimable because BullMQ retries run through here again.
+    const startTime = new Date();
+    const claimed = await this.execRepo
+      .createQueryBuilder()
+      .update(TaskExecution)
+      .set({ status: ExecutionStatus.RUNNING, startTime })
+      .where("id = :id", { id: executionId })
+      .andWhere("status IN (:...claimable)", {
+        claimable: [
+          ExecutionStatus.PENDING,
+          ExecutionStatus.RUNNING,
+          ExecutionStatus.FAILED,
+        ],
+      })
+      .execute();
+    if (!claimed.affected) {
+      this.logger.warn(
+        `Execution ${executionId} reached a terminal state before dispatch, skipping`,
+      );
+      return;
+    }
     exec.status = ExecutionStatus.RUNNING;
-    exec.startTime = new Date();
-    await this.execRepo.save(exec);
+    exec.startTime = startTime;
 
     try {
       // Broadcast mode: dispatch to all online executors
@@ -141,69 +100,124 @@ export class TaskProcessor {
       const rawResult = isBroadcast
         ? await this.executorService.dispatchBroadcast(task, exec)
         : await this.executorService.dispatch(task, exec);
-      exec.status = ExecutionStatus.SUCCESS;
+      // Persist the dispatch target immediately so the callback path can
+      // verify the reporting executor and release its slot, even if this
+      // worker's final save loses the race with a fast callback.
+      if (!isBroadcast && exec.executorAddress) {
+        await this.execRepo.update(exec.id, {
+          executorAddress: exec.executorAddress,
+        });
+      }
+      // Dispatch success only means the executor accepted the task. The actual
+      // result is reported asynchronously via /executions/callback.
+      exec.status = ExecutionStatus.RUNNING;
       exec.result = isBroadcast
         ? {
             broadcast: true,
-            executorCount: rawResult.length,
-            results: rawResult,
+            acceptedExecutorCount: rawResult.length,
+            acceptedResults: rawResult,
           }
         : rawResult;
-      exec.logs = isBroadcast
-        ? JSON.stringify(rawResult)
-        : rawResult?.logs || "";
-      // Fetch and store structured log lines from executor
-      const targetAddr = isBroadcast
-        ? undefined
-        : (rawResult?.executorAddress ?? exec.executorAddress);
-      await this.fetchAndStoreLogLines(exec, targetAddr);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      const errStack = err instanceof Error ? (err.stack || err.message) : String(err);
-      exec.status = ExecutionStatus.FAILED;
+      const errStack =
+        err instanceof Error ? err.stack || err.message : String(err);
       exec.errorMessage = errMsg;
+      const failureText = `${errMsg}\n${errStack}`;
+      exec.failureReason = /timeout|timed out|etimedout|execution timed/i.test(
+        failureText,
+      )
+        ? ExecutionFailureReason.TIMEOUT
+        : /no available executor|executor.*(offline|unavailable)|econnrefused|enotfound|network error|socket hang up/i.test(
+              failureText,
+            )
+          ? ExecutionFailureReason.EXECUTOR_OFFLINE
+          : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency/i.test(
+                failureText,
+              )
+            ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
+            : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code/i.test(
+                  failureText,
+                )
+              ? ExecutionFailureReason.SCRIPT_ERROR
+              : ExecutionFailureReason.UNKNOWN;
+      // P2: align with the callback path — a TIMEOUT reason must produce
+      // TIMEOUT status, not FAILED.
+      exec.status =
+        exec.failureReason === ExecutionFailureReason.TIMEOUT
+          ? ExecutionStatus.TIMEOUT
+          : ExecutionStatus.FAILED;
       exec.logs = errStack;
-      try {
-        exec.aiAnalysis = await this.aiService.analyzeFailure(task, exec.logs);
-      } catch (aiErr: unknown) {
-        const aiErrMsg = aiErr instanceof Error ? aiErr.message : String(aiErr);
-        this.logger.warn(`AI analysis failed for task ${task.id}: ${aiErrMsg}`);
-      }
-      this.logger.error(`Task ${task.id} failed: ${errMsg}`);
-      try {
-        await this.notificationService.notifyFailureWithConfig(
-          task.name,
-          exec.id,
-          errMsg,
-          exec.aiAnalysis,
-          task.alarmEmail,
-          task.alarmChannels,
-        );
-      } catch (notifyErr: unknown) {
-        // B-08: record notification failure to audit log so it is not silently discarded
-        const notifyErrMsg = notifyErr instanceof Error ? notifyErr.message : String(notifyErr);
-        this.logger.error(
-          `Notification failed for execution ${exec.id}: ${notifyErrMsg}`,
-        );
+      // P2: AI analysis and failure notifications fire only on the final
+      // attempt — otherwise every retry spams alarms.
+      const isLastAttempt =
+        (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
+      if (isLastAttempt) {
         try {
-          await this.auditService.log({
-            action: "NOTIFICATION_FAILED",
-            resource: "task_execution",
-            resourceId: exec.id,
-            detail: { task: task.name, error: notifyErrMsg },
-          });
-        } catch {
-          /* audit is best-effort */
+          exec.aiAnalysis = await this.aiService.analyzeFailure(
+            task,
+            exec.logs,
+          );
+        } catch (aiErr: unknown) {
+          const aiErrMsg =
+            aiErr instanceof Error ? aiErr.message : String(aiErr);
+          this.logger.warn(
+            `AI analysis failed for task ${task.id}: ${aiErrMsg}`,
+          );
         }
       }
-      // Q1: rethrow so BullMQ sees the job as failed and applies maxRetry attempts
+      this.logger.error(`Task ${task.id} failed: ${errMsg}`);
+      if (isLastAttempt) {
+        try {
+          await this.notificationService.notifyFailureWithConfig(
+            task.name,
+            exec.id,
+            errMsg,
+            exec.aiAnalysis,
+            task.alarmEmail,
+            task.alarmChannels,
+          );
+        } catch (notifyErr: unknown) {
+          // B-08: record notification failure to audit log so it is not silently discarded
+          const notifyErrMsg =
+            notifyErr instanceof Error ? notifyErr.message : String(notifyErr);
+          this.logger.error(
+            `Notification failed for execution ${exec.id}: ${notifyErrMsg}`,
+          );
+          try {
+            await this.auditService.log({
+              action: "NOTIFICATION_FAILED",
+              resource: "task_execution",
+              resourceId: exec.id,
+              detail: { task: task.name, error: notifyErrMsg },
+            });
+          } catch {
+            /* audit is best-effort */
+          }
+        }
+      }
+      // Q1: rethrow so BullMQ retries apply — except dispatch timeouts: the
+      // executor may still be running the task, so a retry would dispatch the
+      // same executionId to a second executor (double dispatch).
+      if (exec.failureReason === ExecutionFailureReason.TIMEOUT) {
+        throw new UnrecoverableError(errMsg);
+      }
       throw err;
     } finally {
-      exec.endTime = new Date();
-      // ERR-02: null guard to prevent NaN when startTime is not set
-      exec.duration = exec.startTime
-        ? exec.endTime.getTime() - exec.startTime.getTime()
-        : 0;
+      const isTerminal = [
+        ExecutionStatus.SUCCESS,
+        ExecutionStatus.FAILED,
+        ExecutionStatus.TIMEOUT,
+        ExecutionStatus.KILLED,
+        ExecutionStatus.CANCELLED,
+      ].includes(exec.status);
+      if (isTerminal) {
+        exec.endTime = new Date();
+        // ERR-02: null guard to prevent NaN when startTime is not set
+        exec.duration = exec.startTime
+          ? exec.endTime.getTime() - exec.startTime.getTime()
+          : 0;
+      }
 
       // BUG-02: Use transaction to ensure atomic state update
       // This prevents inconsistent state if database save fails
@@ -212,7 +226,37 @@ export class TaskProcessor {
       await queryRunner.startTransaction();
 
       try {
-        await queryRunner.manager.save(exec);
+        // P0: persist only worker-owned fields via a conditional update — a
+        // concurrent callback or kill may have already written a terminal
+        // state, which the worker must never overwrite.
+        const ownedPatch: Partial<TaskExecution> = {
+          status: exec.status,
+          ...(exec.executorAddress !== undefined
+            ? { executorAddress: exec.executorAddress }
+            : {}),
+          ...(exec.result !== undefined ? { result: exec.result } : {}),
+          ...(exec.logs !== undefined ? { logs: exec.logs } : {}),
+          ...(exec.errorMessage !== undefined
+            ? { errorMessage: exec.errorMessage }
+            : {}),
+          ...(exec.failureReason !== undefined
+            ? { failureReason: exec.failureReason }
+            : {}),
+          ...(exec.aiAnalysis !== undefined
+            ? { aiAnalysis: exec.aiAnalysis }
+            : {}),
+          ...(exec.endTime ? { endTime: exec.endTime } : {}),
+          ...(exec.duration !== undefined ? { duration: exec.duration } : {}),
+        };
+        await queryRunner.manager
+          .createQueryBuilder()
+          .update(TaskExecution)
+          .set(ownedPatch)
+          .where("id = :id", { id: exec.id })
+          .andWhere("status IN (:...writable)", {
+            writable: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+          })
+          .execute();
         await queryRunner.commitTransaction();
         this.logger.debug(
           `Successfully saved execution ${exec.id} final state in transaction`,
@@ -245,6 +289,7 @@ export class TaskProcessor {
                 currentExec.result = exec.result;
                 currentExec.logs = exec.logs;
                 currentExec.errorMessage = exec.errorMessage;
+                currentExec.failureReason = exec.failureReason;
                 currentExec.aiAnalysis = exec.aiAnalysis;
                 await repairRunner.manager.save(currentExec);
                 this.logger.log(
@@ -272,80 +317,11 @@ export class TaskProcessor {
         await queryRunner.release();
       }
 
-      // Trigger dependent tasks after successful execution
-      if (exec.status === ExecutionStatus.SUCCESS) {
-        await this.triggerDependentTasks(exec.taskId);
-      }
+      // R4-P0: dependency fan-out moved to TaskService.handleCallback — the
+      // worker's in-memory exec.status is only ever RUNNING/FAILED/TIMEOUT
+      // here (SUCCESS is written exclusively by the callback's conditional
+      // UPDATE), so the former `exec.status === SUCCESS` trigger in this
+      // finally block was dead code and dependency chains never fired.
     }
-  }
-
-  /**
-   * Check and trigger tasks that depend on the completed task.
-   */
-  private async triggerDependentTasks(completedTaskId: string) {
-    try {
-      // Find all tasks that have any dependencies set, then filter in-process.
-      // Using application-layer filtering avoids JSONB-specific SQL that breaks
-      // on non-PostgreSQL engines and is simpler to reason about.
-      const allTasksWithDeps = await this.taskRepo
-        .createQueryBuilder("t")
-        .where("t.dependencies IS NOT NULL")
-        .getMany();
-
-      // Keep only tasks that list completedTaskId as one of their dependency values
-      const dependentTasks = allTasksWithDeps.filter(
-        (t) =>
-          t.dependencies &&
-          Object.values(t.dependencies).includes(completedTaskId),
-      );
-
-      for (const task of dependentTasks) {
-        // Check if all dependencies are satisfied
-        const canTrigger = await this.checkDependencies(task);
-        if (canTrigger) {
-          this.logger.log(
-            `All dependencies satisfied for task ${task.id}, triggering`,
-          );
-          await this.taskService.trigger(task.id, {});
-        }
-      }
-    } catch (err) {
-      this.logger.error(`Failed to trigger dependent tasks: ${err.message}`);
-    }
-  }
-
-  /**
-   * Check if all dependencies of a task have completed successfully.
-   */
-  private async checkDependencies(task: Task): Promise<boolean> {
-    if (!task.dependencies || Object.keys(task.dependencies).length === 0) {
-      return true;
-    }
-
-    const dependencyIds = Object.values(task.dependencies);
-    if (dependencyIds.length === 0) return true;
-
-    const recentExecutions = await this.execRepo.find({
-      where: { taskId: In(dependencyIds as string[]) },
-      order: { createdAt: "DESC" },
-    });
-
-    // Group by taskId and get the most recent execution for each
-    const latestByTask = new Map<string, TaskExecution>();
-    for (const exec of recentExecutions) {
-      if (!latestByTask.has(exec.taskId)) {
-        latestByTask.set(exec.taskId, exec);
-      }
-    }
-
-    // Check if all dependencies have successful executions
-    for (const depId of dependencyIds) {
-      const latestExec = latestByTask.get(depId as string);
-      if (!latestExec || latestExec.status !== ExecutionStatus.SUCCESS) {
-        return false;
-      }
-    }
-
-    return true;
   }
 }

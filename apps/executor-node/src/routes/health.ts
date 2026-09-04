@@ -2,30 +2,44 @@ import { Router, Request, Response } from 'express';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as http from 'http';
+import * as https from 'https';
 import { config } from '../config';
 import { runningCount } from '../scheduler';
 import { taskWorkerManager } from '../task-worker';
+import { getExecutorAuthToken } from './logs';
+import {
+  getHeartbeatState,
+  recordHeartbeat,
+  setAdminApiReachable,
+} from '../heartbeat-state';
 
-// Track last successful heartbeat time
-let lastHeartbeatTime: string | null = null;
-let adminApiReachable: boolean | null = null;
+// Re-exported for existing importers; the state lives in heartbeat-state.
+export { recordHeartbeat };
 
-export function recordHeartbeat(success: boolean): void {
-  if (success) lastHeartbeatTime = new Date().toISOString();
-  adminApiReachable = success;
+export function buildAdminHealthPath(adminUrl: URL): string {
+  const basePath = adminUrl.pathname.replace(/\/+$/, '');
+  if (!basePath || basePath === '/') return '/api/health';
+  if (basePath.endsWith('/api')) return `${basePath}/health`;
+  return `${basePath}/api/health`;
 }
 
-async function checkAdminApi(): Promise<boolean> {
+export function buildAdminHealthRequestOptions(adminUrl: URL) {
+  const isHttps = adminUrl.protocol === 'https:';
+  return {
+    hostname: adminUrl.hostname,
+    port: adminUrl.port || (isHttps ? 443 : 80),
+    path: buildAdminHealthPath(adminUrl),
+    method: 'GET',
+    timeout: 3000,
+  };
+}
+
+export async function checkAdminApi(): Promise<boolean> {
   return new Promise((resolve) => {
-    const adminUrl = new URL(config.adminApiUrl || 'http://localhost:3000');
-    const reqOptions = {
-      hostname: adminUrl.hostname,
-      port: adminUrl.port || 80,
-      path: '/api/health',
-      method: 'GET',
-      timeout: 3000,
-    };
-    const req = http.request(reqOptions, (res) => {
+    const adminUrl = new URL(config.adminApiUrlInternal || config.adminApiUrl || 'http://localhost:3000');
+    const reqOptions = buildAdminHealthRequestOptions(adminUrl);
+    const requestImpl = adminUrl.protocol === 'https:' ? https.request : http.request;
+    const req = requestImpl(reqOptions, (res) => {
       resolve(res.statusCode !== undefined && res.statusCode < 500);
     });
     req.on('error', () => resolve(false));
@@ -56,7 +70,7 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
 
   // Check admin-api connectivity and update cached state
   const reachable = await checkAdminApi();
-  adminApiReachable = reachable;
+  setAdminApiReachable(reachable);
 
   const isHealthy = cpuUsage < 80 && memUsage < 80 && (diskUsage < 90 || diskUsage < 0);
 
@@ -71,8 +85,8 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
     maxConcurrentTasks: config.maxConcurrentTasks,
     workerStats: taskWorkerManager.getStats(),
     adminApiReachable: reachable,
-    tokenValid: !!config.token,
-    lastHeartbeat: lastHeartbeatTime,
+    tokenValid: !!getExecutorAuthToken(),
+    lastHeartbeat: getHeartbeatState().lastHeartbeatTime,
     timestamp: new Date().toISOString(),
   });
 });

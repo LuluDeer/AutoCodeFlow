@@ -11,6 +11,7 @@ import { useRequest } from 'ahooks';
 import { useNavigate } from 'react-router-dom';
 import { executorsApi, Executor } from '../api/executors';
 import { client } from '../api/client';
+import { useAuthStore } from '../store/auth';
 
 function heartbeatLabel(lastHeartbeat: string): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
@@ -56,25 +57,29 @@ export default function ExecutorListPage() {
   });
 
   const navigate = useNavigate();
+  const user = useAuthStore((s) => s.user);
+  // R5 RBAC：install-cmd / executor-shared-token 为 ADMIN-only，普通用户隐藏入口
+  const isAdmin = user?.role === 'admin';
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [groupFilter, setGroupFilter] = useState<string | undefined>();
   const [installCmdModal, setInstallCmdModal] = useState(false);
 
   const { data: groups } = useRequest(executorsApi.getGroups, { cacheKey: 'executor-groups' });
-  const [installCmd, setInstallCmd] = useState<{ cmd: string; curlCmd: string } | null>(null);
+  const [installCmd, setInstallCmd] = useState<{ cmd: string } | null>(null);
 
   const fetchInstallCmd = async () => {
     try {
-      const res = await client.get<{ cmd: string; curlCmd: string }>('/executors/install-cmd');
+      const res = await client.get<{ cmd: string }>('/executors/install-cmd');
       setInstallCmd(res);
       setInstallCmdModal(true);
-    } catch (_err) {
+    } catch {
       Modal.error({ title: '获取安装命令失败', content: '请检查 admin-api 服务是否正常运行' });
     }
   };
 
-  const executors: Executor[] = data ?? [];
+  // 稳定引用：data 未变时 executors 身份不变，避免下游 useMemo 每渲染失效
+  const executors: Executor[] = useMemo(() => data ?? [], [data]);
 
   const hasLongOffline = useMemo(() => executors.some((e) => {
     if (e.status !== 'offline') return false;
@@ -101,7 +106,7 @@ export default function ExecutorListPage() {
       key: 'nameAddress',
       sorter: (a: Executor, b: Executor) => a.appName.localeCompare(b.appName),
       render: (_: unknown, r: Executor) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <Space>
             <DesktopOutlined style={{ color: r.status === 'online' ? '#52c41a' : '#d9d9d9' }} />
             <Typography.Text strong>{r.appName}</Typography.Text>
@@ -140,7 +145,7 @@ export default function ExecutorListPage() {
       width: 160,
       responsive: ['lg'] as import('antd/es/_util/responsiveObserver').Breakpoint[],
       render: (_: unknown, r: Executor) => (
-        <Space direction="vertical" size={2}>
+        <Space orientation="vertical" size={2}>
           {(['CPU', '内存', '磁盘'] as const).map((label) => {
             const val = label === 'CPU' ? (r.cpuUsage ?? 0)
               : label === '内存' ? (r.memUsage ?? 0)
@@ -212,7 +217,7 @@ export default function ExecutorListPage() {
         <Alert
           type="warning"
           showIcon
-          message="有执行器离线超过5分钟，请检查"
+          title="有执行器离线超过5分钟，请检查"
           style={{ marginBottom: 16 }}
           closable
         />
@@ -225,10 +230,12 @@ export default function ExecutorListPage() {
           </Typography.Text>
         </div>
         <Space>
-          <Button onClick={() => navigate('/executors/install')}>安装向导</Button>
-          <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
-            快速添加
-          </Button>
+          {isAdmin && <Button onClick={() => navigate('/executors/install')}>安装向导</Button>}
+          {isAdmin && (
+            <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
+              快速添加
+            </Button>
+          )}
         </Space>
       </div>
 
@@ -287,7 +294,9 @@ export default function ExecutorListPage() {
             </Empty>
           ) : (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行器">
-              <Button type="primary" onClick={() => navigate('/executors/install')}>安装第一个执行器</Button>
+              {isAdmin && (
+                <Button type="primary" onClick={() => navigate('/executors/install')}>安装第一个执行器</Button>
+              )}
             </Empty>
           ),
         }}
@@ -301,23 +310,14 @@ export default function ExecutorListPage() {
         width={640}
       >
         {installCmd && (
-          <Space direction="vertical" style={{ width: '100%' }} size={16}>
+          <Space orientation="vertical" style={{ width: '100%' }} size={16}>
             <div>
-              <Typography.Text strong>本地安装（已有源码）</Typography.Text>
+              <Typography.Text strong>安装并启动执行器</Typography.Text>
               <Typography.Paragraph
                 code copyable={{ text: installCmd.cmd }}
                 style={{ marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 6 }}
               >
                 {installCmd.cmd}
-              </Typography.Paragraph>
-            </div>
-            <div>
-              <Typography.Text strong>远程一键安装（curl）</Typography.Text>
-              <Typography.Paragraph
-                code copyable={{ text: installCmd.curlCmd }}
-                style={{ marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 6, wordBreak: 'break-all' }}
-              >
-                {installCmd.curlCmd}
               </Typography.Paragraph>
             </div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>

@@ -211,7 +211,7 @@ export default function ConfigPage() {
 
         {/* 底部保存栏 */}
         <div className="cfg-footer">
-          {saved && <div className="saved-toast">✓ 已保存，重启执行器后生效</div>}
+          {saved && <div className="saved-toast">✓ 已保存，配置已生效</div>}
           <button className="btn btn-primary btn-lg" onClick={save} disabled={saving}>
             {saving ? '保存中...' : '保存配置'}
           </button>

@@ -159,7 +159,7 @@ export default function ExecutorDetailPage() {
             <Badge status={isOnline ? 'success' : 'default'} text={executor.status} />
           </Descriptions.Item>
           <Descriptions.Item label="类型">{executor.type || '-'}</Descriptions.Item>
-          <Descriptions.Item label="版本">{executor.version || '-'}</Descriptions.Item>
+          <Descriptions.Item label="版本">{executor.executorVersion || '-'}</Descriptions.Item>
           <Descriptions.Item label="分组">{executor.groupName || '-'}</Descriptions.Item>
           <Descriptions.Item label="标签">{executor.tags?.join(', ') || '-'}</Descriptions.Item>
           <Descriptions.Item label="最大并发">{executor.maxConcurrentTasks ?? '无限制'}</Descriptions.Item>
@@ -189,7 +189,7 @@ export default function ExecutorDetailPage() {
                 { title: '磁盘使用率', value: executor.diskUsage ?? 0, warn: 70, danger: 90 },
               ] as const).map(({ title, value, warn, danger }) => (
                 <Col span={8} key={title}>
-                  <Statistic title={title} value={value} suffix="%" precision={1} valueStyle={{ color: usageColor(value, warn, danger) }} />
+                  <Statistic title={title} value={value} suffix="%" precision={1} styles={{ content: { color: usageColor(value, warn, danger) } }} />
                   <Progress percent={Math.round(value)} showInfo={false} strokeColor={usageColor(value, warn, danger)} style={{ marginTop: 8 }} />
                 </Col>
               ))}
@@ -202,7 +202,7 @@ export default function ExecutorDetailPage() {
               <Row gutter={16}>
                 <Col span={8}><Statistic title="总执行次数" value={metrics.sevenDayStats.totalExecutions} /></Col>
                 <Col span={8}>
-                  <Statistic title="成功率" value={Number.isFinite(+metrics.sevenDayStats.successRate) ? +metrics.sevenDayStats.successRate : 0} suffix="%" valueStyle={{ color: '#3f8600' }} precision={1} />
+                  <Statistic title="成功率" value={Number.isFinite(+metrics.sevenDayStats.successRate) ? +metrics.sevenDayStats.successRate : 0} suffix="%" styles={{ content: { color: '#3f8600' } }} precision={1} />
                   <Text type="secondary" style={{ fontSize: 12 }}>成功 {metrics.sevenDayStats.successful} / 失败 {metrics.sevenDayStats.failed}</Text>
                 </Col>
                 <Col span={8}><Statistic title="平均耗时" value={Number.isFinite(+metrics.sevenDayStats.averageDurationMs) ? +metrics.sevenDayStats.averageDurationMs : 0} suffix="ms" precision={0} /></Col>
@@ -227,7 +227,7 @@ export default function ExecutorDetailPage() {
           <Card><Statistic title="总执行任务数" value={executor.totalTaskCount ?? 0} /></Card>
         </Col>
         <Col span={8}>
-          <Card><Statistic title="失败任务数" value={executor.failedTaskCount ?? 0} valueStyle={{ color: '#cf1322' }} /></Card>
+          <Card><Statistic title="失败任务数" value={executor.failedTaskCount ?? 0} styles={{ content: { color: '#cf1322' } }} /></Card>
         </Col>
       </Row>
 
@@ -262,7 +262,9 @@ export default function ExecutorDetailPage() {
           <Form.Item name="maxConcurrentTasks" label="最大并发数"><InputNumber min={1} /></Form.Item>
           <Form.Item name="taskTimeoutSeconds" label="任务超时(秒)"><InputNumber min={1} /></Form.Item>
           <Form.Item name="heartbeatIntervalSeconds" label="心跳间隔(秒)"><InputNumber min={5} /></Form.Item>
-          <Form.Item name="adminApiUrl" label="Admin API地址"><Input /></Form.Item>
+          <Form.Item name="adminApiUrl" label="Admin API地址"><Input placeholder="默认 Admin API 地址" /></Form.Item>
+          <Form.Item name="adminApiUrlInternal" label="Admin API内部地址"><Input placeholder="执行器容器/内网访问地址" /></Form.Item>
+          <Form.Item name="adminApiUrlExternal" label="Admin API外部地址"><Input placeholder="执行器回调优先使用的公网地址" /></Form.Item>
         </Form>
       </Modal>
     </div>

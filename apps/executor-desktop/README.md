@@ -40,6 +40,12 @@ npm run dist:linux  # Linux .AppImage
 5. 托盘图标绿色 = 在线，红色 = 离线
 6. 右键托盘可启动/停止执行器、打开配置、设置开机自启
 
+## 执行器源码边界
+
+- `apps/executor-node/src` 是 executor-node 的唯一源码入口。
+- `resources/executor-node/index.js` 是通过 `npm run build:executor` 生成的 ncc 单文件包，不要手工编辑。
+- 修改执行器能力时，先改 `apps/executor-node/src/**`，再重新运行 `npm run build:executor` 同步桌面端资源。
+
 ## 目录结构
 
 ```
@@ -84,5 +90,5 @@ scripts/
 
 - **Windows**：不支持 SIGTERM 优雅退出，停止执行器时直接 SIGKILL
 - **macOS**：非签名 DMG 首次打开需右键选「打开」绕过 Gatekeeper
-- **token**：与 admin-api 的 `EXECUTOR_SHARED_TOKEN` 环境变量保持一致
+- **token**：与 admin-api 的 `EXECUTOR_SECRET` 环境变量保持一致（兼容旧版 `EXECUTOR_SHARED_TOKEN`）
 - **对外地址**：填本机可被 admin-api 访问的 IP:端口，不要填 `0.0.0.0`

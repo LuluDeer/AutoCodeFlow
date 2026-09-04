@@ -12,6 +12,7 @@ import { applicationsApi, Application, deploymentsApi, AppDeployment } from '../
 import { executorsApi } from '../api/executors';
 import { useNavigate } from 'react-router-dom';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 
 const { Text } = Typography;
 
@@ -71,7 +72,7 @@ export default function ApplicationListPage() {
       const enriched: AppWithStats[] = data.map((app, i) => {
         const result = deploymentResults[i];
         const deps: AppDeployment[] =
-          result.status === 'fulfilled' ? result.value : [];
+          result.status === 'fulfilled' ? result.value.data : [];
 
         const runningCount = deps.filter((d) => d.status === 'running').length;
         const sorted = [...deps].sort(
@@ -109,14 +110,11 @@ export default function ApplicationListPage() {
 
   const handleCreate = () => {
     setEditingApp(null);
-    form.resetFields();
-    form.setFieldsValue({ runtime: 'node', version: '1.0.0' });
     setModalOpen(true);
   };
 
   const handleEdit = (app: Application) => {
     setEditingApp(app);
-    form.setFieldsValue(app);
     setModalOpen(true);
   };
 
@@ -134,6 +132,9 @@ export default function ApplicationListPage() {
     try {
       const values = await form.validateFields();
       if (editingApp) {
+        // name 为不可变标识：UpdateApplicationDto 未声明 name 字段，
+        // 带上会被全局 ValidationPipe（forbidNonWhitelisted）以 400 拒绝
+        delete (values as { name?: string }).name;
         await applicationsApi.update(editingApp.id, values);
         message.success('应用已更新');
       } else {
@@ -167,25 +168,14 @@ export default function ApplicationListPage() {
     }
   };
 
-  const formatRelativeTime = (iso: string | null) => {
-    if (!iso) return '—';
-    const diff = Date.now() - new Date(iso).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return '刚刚';
-    if (mins < 60) return `${mins} 分钟前`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours} 小时前`;
-    return `${Math.floor(hours / 24)} 天前`;
-  };
-
   const openQuickDeploy = async (appId: string) => {
     setQuickDeployApp(appId);
     quickDeployForm.resetFields();
     quickDeployForm.setFieldsValue({ runMode: 'once' });
     try {
       const res = await executorsApi.list();
-      setQuickDeployExecutors(res ?? []);
-    } catch (_err) {
+      setQuickDeployExecutors(res.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })) ?? []);
+    } catch {
       setQuickDeployExecutors([]);
       message.warning('获取执行器列表失败，请检查网络连接');
     }
@@ -196,18 +186,17 @@ export default function ApplicationListPage() {
     try {
       const values = await quickDeployForm.validateFields();
       setQuickDeploying(true);
-      await deploymentsApi.create({
-        applicationId: quickDeployApp,
-        executorId: values.executorId,
+      await deploymentsApi.deploy(quickDeployApp, {
+        executorId: values.executorId || undefined,
         runMode: values.runMode,
-        cronExpression: values.runMode === 'cron' ? values.cronExpression : undefined,
+        startCommand: values.runMode === 'daemon' ? values.startCommand : undefined,
       });
       message.success('部署已创建');
       setQuickDeployApp(null);
       fetchApps();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, '部署失败'));
+      message.error(getErrMsg(err, '部署失败：请确认有在线执行器可用'));
     } finally {
       setQuickDeploying(false);
     }
@@ -220,7 +209,7 @@ export default function ApplicationListPage() {
       key: 'name',
       sorter: (a: AppWithStats, b: AppWithStats) => a.name.localeCompare(b.name),
       render: (name: string, record: AppWithStats) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <Space>
             {record.gitRepo && <GithubOutlined />}
             <a onClick={() => nav(`/applications/${record.id}`)}>
@@ -275,10 +264,7 @@ export default function ApplicationListPage() {
       key: 'lastDeployedAt',
       width: 110,
       render: (_: unknown, record: AppWithStats) => (
-        <Tooltip title={record.lastDeployedAt
-          ? new Date(record.lastDeployedAt).toLocaleString('zh-CN')
-          : '尚未部署'
-        }>
+        <Tooltip title={record.lastDeployedAt ? formatDateTime(record.lastDeployedAt) : '尚未部署'}>
           <Text type={record.lastDeployedAt ? undefined : 'secondary'}>
             {formatRelativeTime(record.lastDeployedAt)}
           </Text>
@@ -331,7 +317,6 @@ export default function ApplicationListPage() {
             创建应用
           </Button>
           <Button icon={<UploadOutlined />} onClick={() => {
-            uploadForm.resetFields();
             setUploadModalOpen(true);
           }}>
             上传 ZIP
@@ -400,8 +385,17 @@ export default function ApplicationListPage() {
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
+        afterOpenChange={(open) => {
+          if (open) {
+            if (editingApp) {
+              form.setFieldsValue(editingApp);
+            } else {
+              form.resetFields();
+              form.setFieldsValue({ runtime: 'node', version: '1.0.0' });
+            }
+          }
+        }}
         width={600}
-        destroyOnHidden
       >
         <Form form={form} layout="vertical">
           <Form.Item
@@ -412,11 +406,11 @@ export default function ApplicationListPage() {
               { pattern: /^[a-zA-Z0-9_-]+$/, message: '只允许字母、数字、下划线和连字符' },
             ]}
             tooltip={{
-              title: '全局唯一标识符，建议使用英文，如 order-service。只允许字母、数字、下划线、连字符。',
+              title: '全局唯一标识符，建议使用英文，如 order-service。只允许字母、数字、下划线、连字符。创建后不可修改。',
               icon: <InfoCircleOutlined />,
             }}
           >
-            <Input placeholder="my-autocodeflow-app" />
+            <Input placeholder="my-autocodeflow-app" disabled={!!editingApp} />
           </Form.Item>
 
           <Form.Item
@@ -514,6 +508,7 @@ export default function ApplicationListPage() {
         open={uploadModalOpen}
         onOk={handleUpload}
         onCancel={() => setUploadModalOpen(false)}
+        afterOpenChange={(open) => { if (open) uploadForm.resetFields(); }}
         destroyOnHidden
       >
         <Form form={uploadForm} layout="vertical">
@@ -543,7 +538,7 @@ export default function ApplicationListPage() {
             name="file"
             label="ZIP 文件"
             rules={[{ required: true, message: '请选择文件' }]}
-            valuePropName="file"
+            valuePropName="fileList"
             tooltip={{
               title: '将应用代码及 manifest.json 打包为 ZIP 后上传，执行器会自动解压并部署。',
               icon: <InfoCircleOutlined />,
@@ -567,24 +562,26 @@ export default function ApplicationListPage() {
         destroyOnHidden
       >
         <Form form={quickDeployForm} layout="vertical">
-          <Form.Item name="executorId" label="选择执行器" rules={[{ required: true, message: '请选择执行器' }]}>
+          <Form.Item name="executorId" label="选择执行器">
             <Select
-              placeholder="请选择执行器"
-              options={quickDeployExecutors.map(e => ({ value: e.id, label: `${e.appName} (${e.address})`, disabled: e.status !== 'online' }))}
+              placeholder="自动选择最空闲的执行器（推荐）"
+              allowClear
+              options={quickDeployExecutors.map(e => ({ value: e.id, label: `${e.name} (${e.address})`, disabled: e.status !== 'online' }))}
               notFoundContent="暂无可用执行器"
             />
           </Form.Item>
-          <Form.Item name="runMode" label="运行模式" rules={[{ required: true, message: '请选择运行模式' }]}>
+          <Form.Item name="runMode" label="运行模式" initialValue="once" rules={[{ required: true, message: '请选择运行模式' }]}>
             <Radio.Group>
               <Radio value="once">单次执行</Radio>
-              <Radio value="cron">定时执行</Radio>
+              <Radio value="daemon">常驻进程</Radio>
+              <Radio value="scheduled">定时任务</Radio>
             </Radio.Group>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.runMode !== cur.runMode}>
             {({ getFieldValue }) =>
-              getFieldValue('runMode') === 'cron' ? (
-                <Form.Item name="cronExpression" label="Cron 表达式" rules={[{ required: true, message: '请输入 Cron 表达式' }]}>
-                  <Input placeholder="例如：0 0 * * *" />
+              getFieldValue('runMode') === 'daemon' ? (
+                <Form.Item name="startCommand" label="启动命令" tooltip="常驻进程的启动命令，如 node dist/server.js">
+                  <Input placeholder="node dist/server.js" />
                 </Form.Item>
               ) : null
             }

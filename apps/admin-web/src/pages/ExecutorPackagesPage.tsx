@@ -10,7 +10,7 @@ import {
 } from '@ant-design/icons';
 import {
   listPackages, uploadPackage, deletePackage, pushPackage,
-  deprecatePackage, activatePackage, downloadPackageUrl,
+  deprecatePackage, activatePackage, downloadPackage,
 } from '../api/executor-packages';
 import { executorsApi } from '../api/executors';
 import { getErrMsg } from '../utils/error';
@@ -58,6 +58,7 @@ export default function ExecutorPackagesPage() {
   const [selectedExecutors, setSelectedExecutors] = useState<string[]>([]);
   const [pushing, setPushing] = useState(false);
   const [pushResults, setPushResults] = useState<PushResult[] | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -68,7 +69,7 @@ export default function ExecutorPackagesPage() {
         type: typeFilter || undefined,
         status: statusFilter || undefined,
       });
-      setRows(res.items);
+      setRows(res.items.map(pkg => ({ ...pkg, status: pkg.isLatest ? 'active' : 'deprecated' })));
       setTotal(res.total);
     } catch (err: unknown) { message.error(getErrMsg(err, '加载失败')); } finally { setLoading(false); }
   }, [page, search, typeFilter, statusFilter]);
@@ -103,7 +104,7 @@ export default function ExecutorPackagesPage() {
     setSelectedExecutors([]);
     try {
       const list = await executorsApi.list();
-      setExecutors(list);
+      setExecutors(list.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })));
     } catch { setExecutors([]); } // executor list failure is non-critical, silently fall back to empty
   };
 
@@ -136,13 +137,26 @@ export default function ExecutorPackagesPage() {
     } catch (err: unknown) { message.error(getErrMsg(err, '操作失败')); }
   };
 
+  // download 路由在 JwtAuthGuard 后，<a href> 无法携带 Authorization（会 401），
+  // 改为带 JWT 的 axios blob 请求下载
+  const handleDownload = async (pkg: PkgRow) => {
+    setDownloadingId(pkg.id);
+    try {
+      await downloadPackage(pkg.id, pkg.originalFilename ?? `${pkg.name}-${pkg.version}`);
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '下载失败'));
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
   const onlineExecutors = executors.filter(e => e.status === 'online');
 
   const columns: ColumnsType<PkgRow> = [
     {
       title: '包名', dataIndex: 'name',
       render: (n: string, r: PkgRow) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <Text strong>{n}</Text>
           {r.originalFilename && <Text type="secondary" style={{ fontSize: 12 }}>{r.originalFilename}</Text>}
         </Space>
@@ -170,7 +184,7 @@ export default function ExecutorPackagesPage() {
         <Space size="small">
           <Tooltip title="下载">
             <Button size="small" icon={<CloudDownloadOutlined />}
-              href={downloadPackageUrl(row.id)} download />
+              loading={downloadingId === row.id} onClick={() => handleDownload(row)} />
           </Tooltip>
           <Tooltip title="推送到调度机">
             <Button size="small" icon={<SendOutlined />} type="primary"
@@ -237,7 +251,7 @@ export default function ExecutorPackagesPage() {
         footer={null} destroyOnHidden
       >
         <Form form={uploadForm} layout="vertical" onFinish={handleUpload} style={{ marginTop: 8 }}>
-          <Form.Item name="file" label="包文件" rules={[{ required: true, message: '请选择文件' }]}>
+          <Form.Item name="file" label="包文件" valuePropName="fileList" rules={[{ required: true, message: '请选择文件' }]}>
             <Upload beforeUpload={() => false} maxCount={1} accept=".zip,.tar.gz,.whl,.jar">
               <Button icon={<UploadOutlined />}>选择文件</Button>
             </Upload>
@@ -306,9 +320,9 @@ export default function ExecutorPackagesPage() {
         destroyOnHidden
       >
         {!pushResults ? (
-          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Space orientation="vertical" style={{ width: '100%' }} size="middle">
             <Alert
-              message="推送后，目标调度机将主动下载此包并完成自动更新。"
+              title="推送后，目标调度机将主动下载此包并完成自动更新。"
               type="info" showIcon
             />
             <Checkbox checked={pushAll} onChange={e => setPushAll(e.target.checked)}>
@@ -322,7 +336,7 @@ export default function ExecutorPackagesPage() {
                 {onlineExecutors.length === 0 ? (
                   <Text type="secondary">暂无在线调度机</Text>
                 ) : (
-                  <Space direction="vertical" size={4}>
+                  <Space orientation="vertical" size={4}>
                     {onlineExecutors.map(ex => (
                       <Checkbox
                         key={ex.id}
@@ -344,14 +358,14 @@ export default function ExecutorPackagesPage() {
             )}
           </Space>
         ) : (
-          <Space direction="vertical" style={{ width: '100%' }}>
+          <Space orientation="vertical" style={{ width: '100%' }}>
             <Text strong>推送结果：</Text>
             {pushResults.map((r, i) => (
               <Alert
                 key={i}
                 type={r.success ? 'success' : 'error'}
                 showIcon
-                message={
+                title={
                   <>
                     <Text strong>{r.address || '推送任务'}</Text>
                     {r.error && <Text type="danger"> — {r.error}</Text>}

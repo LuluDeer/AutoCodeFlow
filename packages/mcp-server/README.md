@@ -8,6 +8,7 @@ MCP (Model Context Protocol) server for AutoCodeFlow. Lets AI agents like Claude
 |------|-------------|
 | `list_tasks` | List all tasks with optional filtering |
 | `get_task` | Get full task details |
+| `update_task` | Update a task via PATCH, including executor pinning (`executorId`) |
 | `trigger_task` | Manually run a task, returns execution ID |
 | `list_executions` | Recent executions, filterable by task/status |
 | `get_execution` | Full execution details including logs and AI analysis |

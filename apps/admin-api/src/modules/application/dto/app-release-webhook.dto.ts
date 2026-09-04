@@ -21,7 +21,8 @@ export class AppReleaseWebhookDto {
   gitBranch?: string;
 
   @ApiPropertyOptional({
-    description: "Whether to trigger rolling upgrade on all RUNNING deployments",
+    description:
+      "Whether to trigger rolling upgrade on all RUNNING deployments",
     default: false,
   })
   @IsBoolean()

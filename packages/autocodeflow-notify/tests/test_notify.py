@@ -20,7 +20,7 @@ class TestNotifyClient:
 
     @pytest.mark.asyncio
     async def test_notify_success(self, respx_mock):
-        route = respx_mock.post("http://localhost:3105/api/notifications/send").mock(
+        route = respx_mock.post("http://localhost:3105/api/notification/send").mock(
             return_value=httpx.Response(200, json={"ok": True})
         )
         client = NotifyClient(admin_api_url="http://localhost:3105")
@@ -34,7 +34,7 @@ class TestNotifyClient:
 
     @pytest.mark.asyncio
     async def test_notify_with_channels(self, respx_mock):
-        route = respx_mock.post("http://localhost:3105/api/notifications/send").mock(
+        route = respx_mock.post("http://localhost:3105/api/notification/send").mock(
             return_value=httpx.Response(200, json={})
         )
         client = NotifyClient(admin_api_url="http://localhost:3105")
@@ -51,7 +51,7 @@ class TestNotifyClient:
     @pytest.mark.asyncio
     async def test_notify_failure_does_not_raise(self, respx_mock):
         """Network errors should be caught and logged, not raised."""
-        respx_mock.post("http://localhost:3105/api/notifications/send").mock(
+        respx_mock.post("http://localhost:3105/api/notification/send").mock(
             side_effect=httpx.ConnectError("refused")
         )
         client = NotifyClient(admin_api_url="http://localhost:3105")
@@ -60,7 +60,7 @@ class TestNotifyClient:
 
     @pytest.mark.asyncio
     async def test_notify_failure_sends_error_level(self, respx_mock):
-        route = respx_mock.post("http://localhost:3105/api/notifications/send").mock(
+        route = respx_mock.post("http://localhost:3105/api/notification/send").mock(
             return_value=httpx.Response(200, json={})
         )
         client = NotifyClient(admin_api_url="http://localhost:3105")
@@ -72,7 +72,7 @@ class TestNotifyClient:
 
     @pytest.mark.asyncio
     async def test_notify_success_sends_info_level(self, respx_mock):
-        route = respx_mock.post("http://localhost:3105/api/notifications/send").mock(
+        route = respx_mock.post("http://localhost:3105/api/notification/send").mock(
             return_value=httpx.Response(200, json={})
         )
         client = NotifyClient(admin_api_url="http://localhost:3105")
@@ -84,7 +84,7 @@ class TestNotifyClient:
 
     @pytest.mark.asyncio
     async def test_auth_token_header(self, respx_mock):
-        route = respx_mock.post("http://localhost:3105/api/notifications/send").mock(
+        route = respx_mock.post("http://localhost:3105/api/notification/send").mock(
             return_value=httpx.Response(200, json={})
         )
         client = NotifyClient(admin_api_url="http://localhost:3105", auth_token="tok-123")

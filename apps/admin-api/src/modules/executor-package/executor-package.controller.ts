@@ -35,6 +35,8 @@ import {
   ApiBody,
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { RolesGuard } from "../../common/guards/roles.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
 import { ExecutorPackageService } from "./executor-package.service";
 import { ExecutorService } from "../executor/executor.service";
 import { ConfigService } from "@nestjs/config";
@@ -44,10 +46,16 @@ import {
   QueryExecutorPackageDto,
 } from "./dto/executor-package.dto";
 import { ExecutorPackage } from "./executor-package.entity";
+import { UserRole } from "../users/entities/user.entity";
 
 @ApiTags("Executor Package Management")
 @ApiBearerAuth("JWT")
-@UseGuards(JwtAuthGuard)
+// R4 F-1: package management (upload/push/delete/activate) is admin-only.
+// Class-level RolesGuard enforces ADMIN for every route; the @Public()
+// push-result callback below opts out of JwtAuthGuard (machine token auth)
+// and, carrying no @Roles metadata, is also skipped by RolesGuard.
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.ADMIN)
 @Controller("executor-packages")
 export class ExecutorPackageController {
   private readonly logger = new Logger(ExecutorPackageController.name);
@@ -88,7 +96,7 @@ export class ExecutorPackageController {
   create(
     @Body() createDto: CreateExecutorPackageDto,
     @UploadedFile() file: Express.Multer.File,
-    @CurrentUser('username') uploadedBy: string,
+    @CurrentUser("username") uploadedBy: string,
   ): Promise<ExecutorPackage> {
     return this.svc.create(createDto, file, uploadedBy);
   }
@@ -104,8 +112,16 @@ export class ExecutorPackageController {
 
   @Get("latest")
   @ApiOperation({ summary: "Get latest ACTIVE executor package by type" })
-  @ApiQuery({ name: "type", required: true, description: "Executor package type" })
-  @ApiQuery({ name: "platform", required: false, description: "Platform (optional)" })
+  @ApiQuery({
+    name: "type",
+    required: true,
+    description: "Executor package type",
+  })
+  @ApiQuery({
+    name: "platform",
+    required: false,
+    description: "Platform (optional)",
+  })
   @ApiResponse({ status: 200, description: "Latest package info" })
   findLatest(
     @Query("type") type: string,
@@ -114,15 +130,10 @@ export class ExecutorPackageController {
     return this.svc.findLatest(type, platform);
   }
 
-  @Post("install-token")
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: "Generate one-time install token" })
-  @ApiResponse({ status: 201, description: "Install token" })
-  generateInstallToken(
-    @Body("executorId") executorId?: string,
-  ): { token: string; expiresIn: number; expiresAt: string } {
-    return this.svc.generateInstallToken(executorId);
-  }
+  // R5: POST /executor-packages/install-token removed — it generated an
+  // opaque token with no consumer anywhere in the repo (the install wizard
+  // uses GET /executors/install-cmd since R4). It will return together with
+  // a real install.sh flow, if ever implemented.
 
   @Get(":id")
   @ApiOperation({ summary: "Get executor package details" })
@@ -178,9 +189,7 @@ export class ExecutorPackageController {
   @ApiOperation({ summary: "Deprecate executor package" })
   @ApiParam({ name: "id", description: "Package ID" })
   @ApiResponse({ status: 200, description: "Deprecated" })
-  deprecate(
-    @Param("id", ParseUUIDPipe) id: string,
-  ): Promise<ExecutorPackage> {
+  deprecate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
     return this.svc.deprecate(id);
   }
 
@@ -188,9 +197,7 @@ export class ExecutorPackageController {
   @ApiOperation({ summary: "Activate executor package" })
   @ApiParam({ name: "id", description: "Package ID" })
   @ApiResponse({ status: 200, description: "Activated" })
-  activate(
-    @Param("id", ParseUUIDPipe) id: string,
-  ): Promise<ExecutorPackage> {
+  activate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
     return this.svc.activate(id);
   }
 
@@ -199,11 +206,22 @@ export class ExecutorPackageController {
    * This endpoint does not require JWT auth (executor-node has no user login),
    * but requires shared token for machine-to-machine verification.
    * Temporarily using @UseGuards(JwtAuthGuard) for consistency; can be changed to SharedTokenGuard later.
+   *
+   * R4 F-1: @Public() bypasses JwtAuthGuard. The class-level @Roles(ADMIN)
+   * would otherwise be inherited by the global RolesGuard and reject the
+   * machine caller (no req.user), so this route carries an empty @Roles()
+   * override — the executor shared token verified below remains the only
+   * gate (machine-to-machine semantics kept).
    */
   @Public()
+  // Empty @Roles() resets the class-level ADMIN requirement for this
+  // machine-to-machine callback; access is gated by the shared token check.
+  @Roles()
   @Post("push-result")
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Executor package push result callback (called by executor-node)" })
+  @ApiOperation({
+    summary: "Executor package push result callback (called by executor-node)",
+  })
   @ApiBody({
     schema: {
       type: "object",
@@ -226,7 +244,11 @@ export class ExecutorPackageController {
     @Body("version") version?: string,
     @Body("error") error?: string,
   ): Promise<{ ok: boolean }> {
-    await verifyExecutorToken(auth, this.configService, this.systemConfigService);
+    await verifyExecutorToken(
+      auth,
+      this.configService,
+      this.systemConfigService,
+    );
     this.logger.log(
       `Push result: package=${packageId} executor=${executorId} status=${status}${
         error ? ` error=${error}` : ""
@@ -236,7 +258,7 @@ export class ExecutorPackageController {
     try {
       const pkg = await this.svc.findOne(packageId);
       const entry = {
-        executorId: executorId ?? 'unknown',
+        executorId: executorId ?? "unknown",
         status,
         version: version ?? pkg.version,
         ...(error ? { error } : {}),
@@ -247,7 +269,9 @@ export class ExecutorPackageController {
       const trimmed = [...history, entry].slice(-100);
       await this.svc.update(packageId, { pushHistory: trimmed } as any);
     } catch (e: unknown) {
-      this.logger.warn(`Failed to persist push history: ${e instanceof Error ? e.message : String(e)}`);
+      this.logger.warn(
+        `Failed to persist push history: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
     return { ok: true };
   }
@@ -261,7 +285,11 @@ export class ExecutorPackageController {
     schema: {
       type: "object",
       properties: {
-        executorIds: { type: "array", items: { type: "string" }, description: "Target executor ID list, empty = all" },
+        executorIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Target executor ID list, empty = all",
+        },
       },
     },
   })
@@ -269,7 +297,9 @@ export class ExecutorPackageController {
   async push(
     @Param("id", ParseUUIDPipe) id: string,
     @Body("executorIds") executorIds?: string[],
-  ): Promise<{ executorId: string; address: string; success: boolean; error?: string }[]> {
+  ): Promise<
+    { executorId: string; address: string; success: boolean; error?: string }[]
+  > {
     const executors = await this.executorService.findAll();
     const sharedToken = this.configService.get<string>("executor.sharedToken");
     return this.svc.pushToExecutors(id, executorIds, executors, sharedToken);

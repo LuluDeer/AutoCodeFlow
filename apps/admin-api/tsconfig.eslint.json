@@ -1,0 +1,7 @@
+{
+  // 仅供 ESLint 类型感知解析使用：覆盖 tsconfig.json 的 exclude，
+  // 让 spec/e2e 测试文件纳入 parserOptions.project，构建与运行不受影响。
+  "extends": "./tsconfig.json",
+  "include": ["src", "apps", "libs", "test"],
+  "exclude": ["node_modules", "dist"]
+}

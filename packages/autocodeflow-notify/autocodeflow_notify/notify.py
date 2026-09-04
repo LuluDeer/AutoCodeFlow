@@ -66,8 +66,10 @@ class NotifyClient:
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
+                # N22: admin-api route is singular `/api/notification/send`
+                # (NotificationConfigController @Controller("notification")).
                 await client.post(
-                    f"{self._base}/api/notifications/send",
+                    f"{self._base}/api/notification/send",
                     json=payload,
                     headers=self._headers(),
                 )

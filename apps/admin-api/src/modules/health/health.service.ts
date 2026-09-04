@@ -1,11 +1,11 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { InjectQueue } from "@nestjs/bull";
-import { Queue } from "bull";
+import { InjectQueue } from "@nestjs/bullmq";
+import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
-import { Task } from "../task/entities/task.entity";
-import { Executor } from "../executor/entities/executor.entity";
+import { Task, TaskStatus } from "../task/entities/task.entity";
+import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -41,7 +41,10 @@ export class HealthService {
       await this.taskRepo.query("SELECT 1");
       return { status: "healthy" };
     } catch (error: unknown) {
-      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
+      return {
+        status: "unhealthy",
+        details: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -56,7 +59,10 @@ export class HealthService {
       await this.redisClient.ping();
       return { status: "healthy" };
     } catch (error: unknown) {
-      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
+      return {
+        status: "unhealthy",
+        details: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -84,7 +90,10 @@ export class HealthService {
           : undefined,
       };
     } catch (error: unknown) {
-      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
+      return {
+        status: "unhealthy",
+        details: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -94,9 +103,10 @@ export class HealthService {
     totalCount: number;
     details?: string;
   }> {
-    const executors = await this.executorRepo.find();
-    const onlineCount = executors.filter((e) => e.status === "online").length;
-    const totalCount = executors.length;
+    const [onlineCount, totalCount] = await Promise.all([
+      this.executorRepo.count({ where: { status: ExecutorStatus.ONLINE } }),
+      this.executorRepo.count(),
+    ]);
 
     if (totalCount === 0) {
       return {
@@ -135,13 +145,11 @@ export class HealthService {
     totalCount: number;
     runningCount: number;
   }> {
-    const [tasks, runningCount] = await Promise.all([
-      this.taskRepo.find(),
+    const [activeCount, totalCount, runningCount] = await Promise.all([
+      this.taskRepo.count({ where: { status: TaskStatus.ACTIVE } }),
+      this.taskRepo.count(),
       this.execRepo.count({ where: { status: ExecutionStatus.RUNNING } }),
     ]);
-
-    const activeCount = tasks.filter((t) => t.status === "active").length;
-    const totalCount = tasks.length;
 
     return {
       status: "healthy",
@@ -156,13 +164,16 @@ export class HealthService {
     details?: string;
   }> {
     try {
-      const jobs = await this.taskQueue.getJobs(["waiting", "active"]);
+      const jobs = await this.taskQueue.getJobs(["wait", "active"]);
       return {
         status: "healthy",
         details: `Scheduler is running, ${jobs.length} jobs in queue`,
       };
     } catch (error: unknown) {
-      return { status: "unhealthy", details: error instanceof Error ? error.message : String(error) };
+      return {
+        status: "unhealthy",
+        details: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 

@@ -1,0 +1,198 @@
+name: Release
+
+# ── 触发与保护 ──────────────────────────────────────────────────────────
+# 仅 push tag `vX.Y.Z[-pre]` 触发真发布（lockstep：node-sdk / mcp-server /
+# python-sdk 共用同一版本号）。发布流程：
+#   1) 同步 bump 三处版本（见下方守卫清单）并提交 develop/main；
+#   2) git tag v<version> && git push origin v<version>。
+# 故意不配 workflow_dispatch：避免手动误触发真发布；本地演练请用
+#   `npm publish --dry-run` / `npm pack --dry-run` / `python -m build`，
+#   取证方法见 docs/sdk-guide.md「SDK 矩阵」小节。
+# N42 (round-10)：两个 publish job 挂 `environment: release` 审批闸门
+#   （GitHub 侧配置 Settings → Environments → Required reviewers，详见
+#   job 注释）；version-guard 只保证版本 lockstep，不防未授权 tag。
+# N44 (round-11)：幂等与恢复语义——版本号一经发布即不可复用：
+#   同版本重发 npm 必报 EP409（cannot publish over previously published
+#   version）、PyPI 必回 400（File already exists，未配 skip-existing）。
+#   两个 publish job 均无覆盖逻辑，失败干净、不产生部分写入，但整 run
+#   重跑（Re-run jobs / 删 tag 后同版本重打）对已发布成功的一侧必红。
+#   标准恢复路径：修复后 `gh run rerun <run-id> --failed`——只重跑失败的
+#   publish job（version-guard 等已成功 job 不重跑；environment 审批门
+#   需重新 Approve）。仅当需要更换 tag 指向的内容时才删 tag 重打，且
+#   已发布成功的一侧必须 bump 版本换新 tag，否则该侧红是幂等保护、
+#   不是回归。恢复纪律同步见 docs/sdk-guide.md「版本与发布流程」。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── 版本一致性守卫：tag 必须等于每个待发布包的 version，否则 fail ──
+  version-guard:
+    runs-on: ubuntu-latest
+    # N44 (round-11)：原 outputs.version 无任何下游消费（两个 publish job
+    # 仅 needs 依赖本 job 的通过/失败），死输出已删除。
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version guard (tag == package versions)
+        id: guard
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |-
+          python3 - "$RELEASE_TAG" <<'PY'
+          import json, re, sys
+
+          tag = sys.argv[1]
+          m = re.fullmatch(r"v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)", tag)
+          if not m:
+              print(f"::error::tag {tag!r} 不是合法发布 tag（期望 vX.Y.Z[-pre]）")
+              sys.exit(1)
+          want = m.group(1)
+
+          def pkg_json_version(path):
+              with open(path, encoding="utf-8") as f:
+                  return json.load(f)["version"]
+
+          def pyproject_version(path):
+              try:
+                  import tomllib
+                  with open(path, "rb") as f:
+                      return tomllib.load(f)["project"]["version"]
+              except ModuleNotFoundError:  # python < 3.11 兜底
+                  text = open(path, encoding="utf-8").read()
+                  sec = text.split("[project]", 1)[1]
+                  return re.search(r'^version\s*=\s*"([^"]+)"', sec, re.M).group(1)
+
+          def regex_version(path, pattern):
+              with open(path, encoding="utf-8") as f:
+                  return re.search(pattern, f.read(), re.M).group(1)
+
+          checks = {
+              "@autocodeflow/sdk (packages/autocodeflow-node-sdk/package.json)":
+                  pkg_json_version("packages/autocodeflow-node-sdk/package.json"),
+              "autocodeflow-mcp-server (packages/mcp-server/package.json)":
+                  pkg_json_version("packages/mcp-server/package.json"),
+              "autoflow-sdk (packages/autoflow-sdk/pyproject.toml)":
+                  pyproject_version("packages/autoflow-sdk/pyproject.toml"),
+              "autoflow_sdk.__version__ (packages/autoflow-sdk/autoflow_sdk/__init__.py)":
+                  regex_version("packages/autoflow-sdk/autoflow_sdk/__init__.py",
+                                r'^__version__\s*=\s*"([^"]+)"'),
+          }
+
+          bad = {k: v for k, v in checks.items() if v != want}
+          for k, v in checks.items():
+              print(f"{'OK ' if v == want else 'BAD'}  {k}: {v}  (tag wants {want})")
+          if bad:
+              print("::error::版本一致性守卫失败，拒绝发布："
+                    + "; ".join(f"{k}={v}" for k, v in bad.items()))
+              sys.exit(1)
+
+          print(f"version guard passed: {want}")
+          PY
+
+  # ── npm 发布 ─────────────────────────────────────────────────────────
+  # secrets.NPM_TOKEN：npmjs.com 的 Automation/Access token
+  # （npm → Access Tokens → Generate New Token）。setup-node 的
+  # registry-url + NODE_AUTH_TOKEN 会自动写入 ~/.npmrc：
+  #   //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
+  # 包侧无需 .npmrc：@autocodeflow/sdk 已在 package.json 配
+  # publishConfig.access=public（scoped 包默认 private，必须显式 public）。
+  # 若发内网 Verdaccio（apps/registry-npm），把 registry-url 换成私有地址
+  # 并改用 verdaccio 用户 token。
+  # 注：acf-cli 暂不纳入——npmjs 上 `acf-cli` 名称已被第三方占用
+  # （npm view acf-cli → 1.0.1），直接 publish 必然 403；如需发布请先
+  # 改名（如 @autocodeflow/cli——勿用 @autoflow/*，该 org 已被抢注，见
+  # f0f8b96 改名理由）再加入矩阵。
+  publish-npm:
+    needs: version-guard
+    runs-on: ubuntu-latest
+    # N42 (round-10): tag push 本身即发布动作，version-guard 之外再加一道
+    # 人工审批闸门。`environment: release` 需在 GitHub 侧配置：
+    #   仓库 Settings → Environments → New environment（名必须为 `release`）
+    #   → Environment protection rules → Required reviewers（指定 1+ 审批人）。
+    # 配置后，两个 publish job 会停在 "waiting" 直至审批通过；未配置该
+    # environment 时 GitHub 隐式放行（不报错），故启用 workflow 前必须先建。
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dir: packages/autocodeflow-node-sdk
+            pkg: '@autocodeflow/sdk'
+          - dir: packages/mcp-server
+            pkg: 'autocodeflow-mcp-server'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # node 20 已入弃用周期；且 lockfile 由 npm 11 生成，node 20 自带
+          # npm 10 解析有差异（f3a2d88 教训），与 CI 对齐 node 24
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.dir }}
+        run: npm ci
+
+      - name: Build
+        working-directory: ${{ matrix.dir }}
+        run: npm run build
+
+      - name: Publish (dry-run 结构校验)
+        working-directory: ${{ matrix.dir }}
+        run: npm publish --access public --dry-run
+
+      - name: Publish
+        working-directory: ${{ matrix.dir }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+  # ── PyPI 发布 ────────────────────────────────────────────────────────
+  # secrets.PYPI_API_TOKEN：pypi.org 的 API token（Account → API tokens，
+  # 或 per-project token，scope 到 autoflow-sdk）。
+  # 更优路径是 PyPI Trusted Publishing（OIDC，免长期 token）：删除下方
+  # password 行、给本 job 加 `permissions: id-token: write`，并在 pypi.org
+  # 上把本仓库 owner/repo/workflow 文件名登记为发布配置——token 不再存在，
+  # 也就无泄露面。当前仍用 PYPI_API_TOKEN 的原因：Trusted Publishing 要求
+  # 包已在 PyPI 存在同名项目且尚未被任何 release 占用（首次发布即锁定
+  # 名称），且需在 PyPI 网页侧完成一次性登记；本仓库 CI 凭证尚未启用
+  # （round9 遗留），先用 API token 打通链路，正式首发时迁移 TP。
+  # 内网发布：加 `repository-url: https://<registry-pypi-host>/...` 并把
+  # token 换成私有 registry 凭证（apps/registry-pypi）。
+  publish-pypi:
+    needs: version-guard
+    runs-on: ubuntu-latest
+    # N42 (round-10): 与 publish-npm 同一道人工审批闸门（配置路径见该 job
+    # 注释：Settings → Environments → `release` → Required reviewers）。
+    # 注意：若迁移 Trusted Publishing，environment 同时是 PyPI 侧 OIDC
+    # 配置的锚点（pypi.org 登记时可指定 environment 名称），届时保留。
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install build backend
+        run: python -m pip install --upgrade pip build
+
+      - name: Build sdist + wheel
+        working-directory: packages/autoflow-sdk
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/autoflow-sdk/dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}

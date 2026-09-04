@@ -6,7 +6,7 @@ export interface Executor {
   address: string;
   status: string;
   type?: string;
-  version?: string;
+  executorVersion?: string;
   cpuUsage: number;
   memUsage: number;
   diskUsage?: number;
@@ -54,11 +54,18 @@ export interface SharedTokenResult {
   hasToken: boolean;
 }
 
+/** GET /executors/install-cmd 返回的执行器一键安装命令信息 */
+export interface InstallCmdResult {
+  cmd: string;
+  token: string;
+  adminApiUrl: string;
+}
+
 export const executorsApi = {
   getSharedToken: () =>
-    client.get('/executors/shared-token') as Promise<SharedTokenResult>,
+    client.get('/config/executor-shared-token') as Promise<SharedTokenResult>,
   generateSharedToken: () =>
-    client.post('/executors/shared-token/generate') as Promise<{ token: string }>,
+    client.post('/config/executor-shared-token/generate') as Promise<{ token: string }>,
   list: () => client.get('/executors') as Promise<Executor[]>,
   get: (id: string) => client.get(`/executors/${id}`) as Promise<Executor>,
   update: (id: string, data: Partial<Executor>) =>
@@ -72,6 +79,8 @@ export const executorsApi = {
     taskTimeoutSeconds?: number;
     heartbeatIntervalSeconds?: number;
     adminApiUrl?: string;
+    adminApiUrlInternal?: string;
+    adminApiUrlExternal?: string;
   }) =>
     client.post(`/executors/${id}/reload-config`, data) as Promise<void>,
   setOffline: (id: string) =>
@@ -80,4 +89,7 @@ export const executorsApi = {
     client.get(`/executors/${id}/executions`, { params }) as Promise<{ total: number; items: ExecutorExecution[] }>,
   getMetrics: (id: string) =>
     client.get(`/executors/${id}/metrics`) as Promise<ExecutorMetrics>,
+  /** 获取执行器一键安装命令（含共享 Token，安装向导与执行器列表共用） */
+  getInstallCmd: () =>
+    client.get('/executors/install-cmd') as Promise<InstallCmdResult>,
 };

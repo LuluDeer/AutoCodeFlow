@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from "typeorm";
+import { Length } from "class-validator";
 import { Exclude } from "class-transformer";
 
 export enum UserRole {
@@ -17,7 +18,9 @@ export class User {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ unique: true })
+  // DB-006: 显式长度约束，避免默认 varchar(255) 影响唯一索引效率
+  @Column({ unique: true, length: 128 })
+  @Length(3, 128)
   username: string;
 
   @Column({ unique: true })

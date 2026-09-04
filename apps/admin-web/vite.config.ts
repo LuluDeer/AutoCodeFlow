@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '0.0.0.0',
-    port: 5176,
+    port: Number(process.env.VITE_PORT || 5176),
     proxy: {
       '/api': {
         target: 'http://localhost:3105',
@@ -21,25 +21,36 @@ export default defineConfig({
     outDir: 'dist',
     rollupOptions: {
       output: {
-        manualChunks: {
+        manualChunks(id: string) {
           // Split large vendor libraries into separate chunks
-          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-          'vendor-antd': ['antd', '@ant-design/icons', '@ant-design/cssinjs'],
-          'vendor-charts': ['recharts'],
-          'vendor-monaco': ['@monaco-editor/react', 'monaco-editor'],
-          'vendor-query': ['@tanstack/react-query', 'ahooks'],
-          'vendor-utils': ['axios', 'dayjs'],
+          const chunks: Array<[string, string[]]> = [
+            ['vendor-react', ['react', 'react-dom', 'react-router-dom']],
+            // Keep route-heavy UI libraries out of forced vendor chunks so lazy pages
+            // can share only the pieces they actually import.
+            ['vendor-charts', ['recharts']],
+            ['vendor-monaco', ['@monaco-editor/react', 'monaco-editor']],
+            ['vendor-query', ['@tanstack/react-query', 'ahooks']],
+            ['vendor-utils', ['axios', 'dayjs']],
+          ];
+
+          for (const [name, packages] of chunks) {
+            if (packages.some((pkg) => id.includes(`/node_modules/${pkg}/`))) {
+              return name;
+            }
+          }
         },
       },
     },
   },
   define: {
-    'process.env.VITE_API_URL_INTERNAL': JSON.stringify(process.env.VITE_API_URL_INTERNAL || 'http://localhost:3002'),
+    'process.env.VITE_API_URL_INTERNAL': JSON.stringify(process.env.VITE_API_URL_INTERNAL || 'http://localhost:3105'),
     'process.env.VITE_API_URL_EXTERNAL': JSON.stringify(process.env.VITE_API_URL_EXTERNAL || ''),
   },
   test: {
     environment: 'jsdom',
     globals: true,
     setupFiles: [],
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    exclude: ['e2e/**', '**/e2e/**', '**/*.e2e.{ts,tsx,js,cjs}'],
   },
-} as any);
+} as Parameters<typeof defineConfig>[0]);

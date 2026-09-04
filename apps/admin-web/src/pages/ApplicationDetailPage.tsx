@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Descriptions, Badge, Card, Table, Button, Space, Tag, Typography, message, Modal, Spin, Empty,
-  Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select, Progress, Statistic, Alert,
+  Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select, Statistic, Alert,
 } from 'antd';
 import {
   ArrowLeftOutlined, SyncOutlined, ReloadOutlined, GithubOutlined,
@@ -9,7 +9,7 @@ import {
   RocketOutlined, RobotOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { applicationsApi, Application } from '../api/applications';
+import { applicationsApi, Application, VersionHistoryEntry } from '../api/applications';
 import { aiApi, AppHealthReport } from '../api/ai';
 import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
@@ -48,53 +48,46 @@ function AiAnalysisTab({ appId }: { appId: string }) {
         </Empty>
       )}
       {loading && <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="AI 分析中…" size="large" /></div>}
-      {error && <Alert type="error" message={error} showIcon />}
+      {error && <Alert type="error" title={error} showIcon />}
       {report && !loading && (
         <div>
           <Row gutter={16} style={{ marginBottom: 24 }}>
             <Col span={8}>
               <Card size="small">
-                <Statistic title="关联任务数" value={report.taskCount} />
+                <Statistic title="关联任务数" value={report.stats.totalTasks} />
               </Card>
             </Col>
             <Col span={8}>
               <Card size="small">
                 <Statistic
-                  title="成功率"
-                  value={(report.successRate * 100).toFixed(1)}
+                  title="平均成功率"
+                  value={report.stats.avgSuccessRate}
                   suffix="%"
-                  valueStyle={{ color: report.successRate >= 0.9 ? '#3f8600' : report.successRate >= 0.7 ? '#d48806' : '#cf1322' }}
+                  styles={{ content: { color: report.stats.avgSuccessRate >= 90 ? '#3f8600' : report.stats.avgSuccessRate >= 70 ? '#d48806' : '#cf1322' } }}
                 />
               </Card>
             </Col>
             <Col span={8}>
               <Card size="small">
-                <Statistic title="平均耗时" value={report.avgDuration ? `${(report.avgDuration / 1000).toFixed(1)}s` : '-'} />
+                <Statistic title="平均耗时" value={report.stats.avgDuration ? `${(report.stats.avgDuration / 1000).toFixed(1)}s` : '-'} />
               </Card>
             </Col>
           </Row>
-          {report.successRate < 1 && (
-            <Progress
-              percent={Math.round(report.successRate * 100)}
-              strokeColor={report.successRate >= 0.9 ? '#52c41a' : report.successRate >= 0.7 ? '#faad14' : '#ff4d4f'}
-              style={{ marginBottom: 16 }}
-            />
-          )}
-          {report.failedTasks.length > 0 && (
+          {(report.stats.criticalTasks?.length ?? 0) > 0 && (
             <Card size="small" title="高失败率任务" style={{ marginBottom: 16 }}>
-              {report.failedTasks.map(t => (
-                <div key={t.id} style={{ marginBottom: 4 }}>
-                  <Tag color="red">{(t.failureRate * 100).toFixed(1)}%</Tag>
-                  <span>{t.name}</span>
+              {report.stats.criticalTasks.map((name) => (
+                <div key={name} style={{ marginBottom: 4 }}>
+                  <Tag color="red">低成功率</Tag>
+                  <span>{name}</span>
                 </div>
               ))}
             </Card>
           )}
-          {report.aiAnalysis && (
+          {report.analysis && (
             <Alert
               type="info"
               message="AI 分析结论"
-              description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{report.aiAnalysis}</pre>}
+              description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{report.analysis}</pre>}
               showIcon
               icon={<RobotOutlined />}
             />
@@ -125,7 +118,7 @@ const GIT_URL_RE = /^(https?:\/\/[\w.@:/~_-]+\.git|git@[\w.-]+:[\w./_-]+\.git)$/
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 function OverviewTab({ app }: { app: Application }) {
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <Card title="应用信息">
         <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
           <Descriptions.Item label="版本"><Tag color="blue">{app.version}</Tag></Descriptions.Item>
@@ -212,7 +205,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
 
   return (
     <Card
-      bordered={false}
+      variant="borderless"
       extra={
         <Space>
           <Tooltip title="重新解析 manifest.json 并注册任务">
@@ -263,7 +256,7 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
 
   useEffect(() => {
     form.setFieldsValue({
-      name: app.name, description: app.description, version: app.version,
+      description: app.description, version: app.version,
       runtime: app.runtime, gitRepo: app.gitRepo, gitBranch: app.gitBranch,
       gitCommit: app.gitCommit, entrypoint: app.entrypoint,
     });
@@ -273,6 +266,9 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
     try {
       const values = await form.validateFields();
       setSaving(true);
+      // name 为不可变标识：UpdateApplicationDto 未声明 name 字段，
+      // 带上会被全局 ValidationPipe（forbidNonWhitelisted）以 400 拒绝
+      delete (values as { name?: string }).name;
       const updated = await applicationsApi.update(app.id, values);
       message.success('已保存');
       onUpdated(updated);
@@ -285,9 +281,9 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
   return (
     <Card title="编辑应用" style={{ maxWidth: 620 }}>
       <Form form={form} layout="vertical">
-        <Form.Item name="name" label="名称"
-          rules={[{ required: true }, { pattern: /^[a-zA-Z0-9_-]+$/, message: '只允许字母、数字、下划线、连字符' }]}>
-          <Input />
+        {/* name 为不可变标识（UpdateApplicationDto 不接受 name），只读展示 */}
+        <Form.Item label="名称" tooltip="应用名称为全局唯一标识，创建后不可修改">
+          <Input value={app.name} disabled />
         </Form.Item>
         <Form.Item name="description" label="描述">
           <Input.TextArea rows={2} />
@@ -324,22 +320,24 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
 }
 
 // ─── Version History ─────────────────────────────────────────────────────────
-type VersionRecord = { deploymentId: string; version: string | null; commit: string | null; status: string; deployedAt: string | null; executorAddress: string; };
+type VersionRecord = VersionHistoryEntry;
 
-function VersionHistoryTab({ appId }: { appId: string }) {
+function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload: () => Promise<void> }) {
   const [records, setRecords] = useState<VersionRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [rollingBack, setRollingBack] = useState<string | null>(null);
 
+  const getVersionKey = (record: VersionRecord) => record.id ?? record.deploymentId ?? `${record.version ?? 'unknown'}-${record.commit ?? 'none'}-${record.createdAt ?? record.deployedAt ?? 'unknown'}`;
+
   const fetchVersions = useCallback(async () => {
     setLoading(true);
-    try { setRecords(await applicationsApi.getVersionHistory(appId)); }
+    try { setRecords(await applicationsApi.getVersionHistory(app.id)); }
     catch (err: unknown) { message.error(getErrMsg(err, '加载版本历史失败')); } finally { setLoading(false); }
-  }, [appId]);
+  }, [app.id]);
 
   useEffect(() => { fetchVersions(); }, [fetchVersions]);
 
-  const handleRollback = async (deploymentId: string, version: string | null) => {
+  const handleRollback = async (targetId: string, version: string | null) => {
     Modal.confirm({
       title: '确认回滚',
       content: `将回滚到版本 ${version ?? '未知'}，所有运行中的实例将同步升级，确定继续？`,
@@ -347,11 +345,11 @@ function VersionHistoryTab({ appId }: { appId: string }) {
       okType: 'danger',
       cancelText: '取消',
       onOk: async () => {
-        setRollingBack(deploymentId);
+        setRollingBack(targetId);
         try {
-          const res = await applicationsApi.rollback(appId, deploymentId);
-          message.success(`已回滚到 ${res.data?.rolledBackTo ?? version}，影响 ${res.data?.total ?? 0} 台实例`);
-          fetchVersions();
+          const res = await applicationsApi.rollback(app.id, targetId);
+          message.success(`已回滚到 ${res.rolledBackTo ?? version}，影响 ${res.total ?? 0} 台实例`);
+          await Promise.all([fetchVersions(), onAppReload()]);
         } catch (err: unknown) {
           message.error(getErrMsg(err, '回滚失败，请重试'));
         } finally {
@@ -362,37 +360,67 @@ function VersionHistoryTab({ appId }: { appId: string }) {
   };
 
   return (
-    <Card bordered={false} extra={<Button icon={<ReloadOutlined />} size="small" onClick={fetchVersions}>刷新</Button>}>
+    <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={fetchVersions}>刷新</Button>}>
       <Table<VersionRecord>
-        rowKey="deploymentId"
+        rowKey={(record) => getVersionKey(record)}
         columns={[
-          { title: '版本', dataIndex: 'version', width: 120, render: (v: string | null) => v ? <Tag color="blue">{v}</Tag> : <Tag>未知</Tag> },
+          {
+            title: '版本', dataIndex: 'version', width: 140,
+            render: (v: string | null, r: VersionRecord) => (
+              <Space size={4}>
+                {v ? <Tag color="blue">{v}</Tag> : <Tag>未知</Tag>}
+                {(r.deployCount ?? 1) > 1 && (
+                  <Tooltip title={`该版本共部署 ${r.deployCount} 次`}>
+                    <Tag color="default" style={{ fontSize: 11 }}>{r.deployCount}次</Tag>
+                  </Tooltip>
+                )}
+              </Space>
+            ),
+          },
           { title: 'Commit', dataIndex: 'commit', width: 100, render: (v: string | null) => v ? <Text code>{v.slice(0, 8)}</Text> : '-' },
           {
             title: '状态', dataIndex: 'status', width: 90,
             render: (v: string) => (
-              <Tag color={{ running: 'green', stopped: 'default', failed: 'red', deploying: 'blue' }[v] || 'default'}>{v}</Tag>
+              <Tag color={{ released: 'green', running: 'green', stopped: 'default', failed: 'red', deploying: 'blue' }[v] || 'default'}>{v}</Tag>
             ),
           },
           { title: '执行器', dataIndex: 'executorAddress', ellipsis: true },
-          { title: '部署时间', dataIndex: 'deployedAt', width: 170, render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
+          {
+            title: '部署时间', dataIndex: 'deployedAt', width: 170,
+            render: (_: string | null, r: VersionRecord) => {
+              const deployedAt = r.createdAt ?? r.deployedAt;
+              return deployedAt ? new Date(deployedAt).toLocaleString('zh-CN') : '-';
+            },
+          },
           {
             title: '操作', width: 90, align: 'center' as const,
-            render: (_: unknown, record: VersionRecord) => (
-              <Button
-                size="small"
-                danger
-                loading={rollingBack === record.deploymentId}
-                onClick={() => handleRollback(record.deploymentId, record.version)}
-              >
-                回滚
-              </Button>
-            ),
+            render: (_: unknown, record: VersionRecord) => {
+              const currentRecord =
+                records.find(r => r.version === app.version && (!app.gitCommit || !r.commit || r.commit === app.gitCommit)) ??
+                records.find(r => r.version === app.version);
+              const key = getVersionKey(record);
+              const isCurrent = currentRecord && getVersionKey(currentRecord) === key;
+              const rollbackDisabled = !!record.id && record.status !== 'released';
+              if (isCurrent) return <Tag color="green">当前版本</Tag>;
+              return (
+                <Tooltip title={rollbackDisabled ? '仅已发布版本可回滚' : undefined}>
+                  <Button
+                    size="small"
+                    danger
+                    disabled={rollbackDisabled}
+                    loading={rollingBack === key}
+                    onClick={() => handleRollback(key, record.version)}
+                  >
+                    回滚
+                  </Button>
+                </Tooltip>
+              );
+            },
           },
         ]}
         dataSource={records}
         loading={loading} size="small"
-        pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+        pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个版本` }}
         locale={{ emptyText: '暂无版本历史' }}
       />
     </Card>
@@ -416,7 +444,7 @@ export default function ApplicationDetailPage() {
     try {
       setLoading(true);
       setApp(await applicationsApi.get(id));
-    } catch (err: unknown) {
+    } catch {
       message.error('加载失败');
       nav('/applications');
     } finally { setLoading(false); }
@@ -466,7 +494,7 @@ export default function ApplicationDetailPage() {
       <Tabs
         activeKey={activeTab}
         onChange={(key) => setSearchParams({ tab: key })}
-        destroyInactiveTabPane={false}
+        destroyOnHidden={false}
         items={[
           { key: 'overview', label: '概览', children: <OverviewTab app={app} /> },
           {
@@ -482,7 +510,7 @@ export default function ApplicationDetailPage() {
           {
             key: 'versions',
             label: <span><HistoryOutlined /> 版本历史</span>,
-            children: <VersionHistoryTab appId={app.id} />,
+            children: <VersionHistoryTab app={app} onAppReload={fetchApp} />,
           },
           {
             key: 'settings',

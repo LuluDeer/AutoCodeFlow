@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import { SystemConfigService } from "../config/config.service";
+import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
 
 @Injectable()
 export class AiService {
@@ -73,12 +74,14 @@ export class AiService {
       p95DurationMs: number;
       bestHoursUtc: number[];
     },
-  ): Promise<{ suggestedCron: string; reasoning: string }> {
+  ): Promise<{ suggestedCron: string; reasoning: string; fallback?: boolean }> {
     const provider = await this.getAiConfig("provider", "disabled");
     if (provider === "disabled") {
       return {
         suggestedCron: currentCron || "0 * * * *",
         reasoning: "AI provider not configured.",
+        // AI-002: 显式标记这是回退结果而非 AI 建议
+        fallback: true,
       };
     }
     const prompt = [
@@ -96,13 +99,31 @@ export class AiService {
     try {
       const raw = await this.callProvider(prompt);
       // strip optional markdown code fences before parsing
-      const jsonStr = raw.replace(/^```[\s\S]*?\n/, "").replace(/\n?```$/, "").trim();
-      const parsed = JSON.parse(jsonStr) as { suggestedCron: string; reasoning: string };
+      const jsonStr = raw
+        .replace(/^```[\s\S]*?\n/, "")
+        .replace(/\n?```$/, "")
+        .trim();
+      const parsed = JSON.parse(jsonStr) as {
+        suggestedCron: string;
+        reasoning: string;
+      };
       if (parsed.suggestedCron && parsed.reasoning) return parsed;
+      // AI-002: JSON 合法但字段缺失——同样视为解析失败并记 warn
+      this.logger.warn(
+        `suggestSchedule: AI response missing required fields (suggestedCron/reasoning)`,
+      );
     } catch (e: unknown) {
-      this.logger.warn(`suggestSchedule parse error: ${e instanceof Error ? e.message : String(e)}`);
+      // AI-002: 解析失败不再静默降级——记 warn 日志并在响应中携带
+      // fallback 标记，让调用方/前端能区分"AI 建议"与"回退到当前值"。
+      this.logger.warn(
+        `suggestSchedule parse error: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
-    return { suggestedCron: currentCron || "0 * * * *", reasoning: "AI returned unparseable response." };
+    return {
+      suggestedCron: currentCron || "0 * * * *",
+      reasoning: "AI returned unparseable response.",
+      fallback: true,
+    };
   }
 
   /**
@@ -115,13 +136,21 @@ export class AiService {
       avgSuccessRate: number;
       avgDurationMs: number;
       criticalTasks: string[];
-      perTask: Array<{ name: string; successRate: number; avgDuration: number; totalRuns: number }>;
+      perTask: Array<{
+        name: string;
+        successRate: number;
+        avgDuration: number;
+        totalRuns: number;
+      }>;
     },
   ): Promise<string> {
     const provider = await this.getAiConfig("provider", "disabled");
     if (provider === "disabled") return "";
     const perTaskLines = stats.perTask
-      .map((t) => `  - ${t.name}: successRate=${t.successRate}%, avgDuration=${t.avgDuration}ms, runs=${t.totalRuns}`)
+      .map(
+        (t) =>
+          `  - ${t.name}: successRate=${t.successRate}%, avgDuration=${t.avgDuration}ms, runs=${t.totalRuns}`,
+      )
       .join("\n");
     const prompt = [
       `You are an operations analyst. Assess the health of the following application and provide actionable recommendations.`,
@@ -151,7 +180,9 @@ export class AiService {
       if (provider === "openai") return await this.callOpenAI(prompt);
       if (provider === "ollama") return await this.callOllama(prompt);
     } catch (e: unknown) {
-      this.logger.warn(`AI error: ${e instanceof Error ? e.message : String(e)}`);
+      this.logger.warn(
+        `AI error: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
     return "";
   }
@@ -163,6 +194,10 @@ export class AiService {
       "openaiBaseUrl",
       "https://api.openai.com/v1",
     );
+    // AI-001: refuse SSRF (private/loopback/link-local/cloud-metadata) for
+    // admin-configured AI base URLs. The check is the same as the webhook
+    // channel — both stem from config-driven outbound HTTP.
+    await assertSafeHttpUrl(baseUrl);
     const r = await axios.post(
       `${baseUrl}/chat/completions`,
       {
@@ -179,10 +214,9 @@ export class AiService {
   }
 
   private async callOllama(prompt: string) {
-    const host = await this.getAiConfig(
-      "ollamaHost",
-      "http://localhost:11434",
-    );
+    const host = await this.getAiConfig("ollamaHost", "http://localhost:11434");
+    // AI-001: SSRF guard for self-hosted Ollama.
+    await assertSafeHttpUrl(host);
     const model = await this.getAiConfig("ollamaModel", "llama3");
     const r = await axios.post(
       `${host}/api/generate`,

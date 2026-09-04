@@ -10,10 +10,11 @@ import {
   UseInterceptors,
   UploadedFile,
   Logger,
-  Query,
   BadRequestException,
   UnauthorizedException,
+  InternalServerErrorException,
   Headers,
+  Req,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import {
@@ -24,21 +25,34 @@ import {
   ApiBody,
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { Public } from "../../common/decorators/public.decorator";
 import { ApplicationService } from "./application.service";
 import { AppDeploymentService } from "./app-deployment.service";
 import {
   CreateApplicationDto,
   UpdateApplicationDto,
+  UploadApplicationDto,
 } from "./dto/application.dto";
 import { AppReleaseWebhookDto } from "./dto/app-release-webhook.dto";
 import * as fs from "fs";
 import * as path from "path";
+import { createHmac, timingSafeEqual } from "crypto";
+import type { Request } from "express";
 
 @ApiTags("Application Management")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller("applications")
 export class ApplicationController {
+  private readonly logger = new Logger(ApplicationController.name);
+
+  // APP-001: 该端点公开给 CI/CD 调用，属于未认证攻击面。所有鉴权失败路径
+  // （应用不存在 / webhookSecret 未配置 / 签名缺失或无效 / 时间戳过期 /
+  // raw body 缺失）必须返回完全相同的 401 响应——任何响应差异（状态码或
+  // 错误消息）都会成为枚举应用名的判定依据。具体失败原因只写入服务端日志。
+  private static readonly WEBHOOK_AUTH_FAILURE_MESSAGE =
+    "Webhook authentication failed";
+
   constructor(
     private readonly svc: ApplicationService,
     private readonly deploymentSvc: AppDeploymentService,
@@ -88,25 +102,59 @@ export class ApplicationController {
       required: ["file", "name"],
     },
   })
-  @UseInterceptors(FileInterceptor("file"))
+  @UseInterceptors(
+    FileInterceptor("file", { limits: { fileSize: 200 * 1024 * 1024 } }),
+  )
   async upload(
     @UploadedFile() file: Express.Multer.File,
-    @Body("name") name: string,
-    @Body("runtime") runtime: string,
+    @Body() body: UploadApplicationDto,
   ) {
     if (!file) throw new BadRequestException("No file uploaded");
+    // ARCH-003: name/runtime 经全局 ValidationPipe（whitelist + MaxLength）校验，
+    // 不再用裸 @Body("name") 字符串绕过验证管道
+    const { name, runtime } = body;
     if (!name) throw new BadRequestException("Application name is required");
 
+    // P1: upload validation — extension whitelist plus ZIP magic number, so
+    // arbitrary content cannot be stored and served as a trusted .zip.
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (ext !== ".zip") {
+      throw new BadRequestException("Application package must be a .zip file");
+    }
+    const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+    if (
+      !file.buffer ||
+      file.buffer.length < 4 ||
+      !file.buffer.subarray(0, 4).equals(ZIP_MAGIC)
+    ) {
+      throw new BadRequestException("File is not a valid ZIP archive");
+    }
+
     // Save uploaded zip to persistent uploads directory (served as static files)
-    const uploadsDir = path.join(process.cwd(), 'uploads', 'packages');
-    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const uploadsDir = path.join(process.cwd(), "uploads", "packages");
+    if (!fs.existsSync(uploadsDir))
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, "_");
     const filename = `${safeName}_${Date.now()}.zip`;
     const zipPath = path.join(uploadsDir, filename);
     fs.writeFileSync(zipPath, file.buffer);
 
     // Build a URL that the executor can use to download the package
-    const apiBase = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3105}`;
+    // APP-002: packageUrl 会被 executor 节点拉取。旧实现缺 API_BASE_URL 时静默
+    // 回退 `http://localhost:PORT`，生成的 URL 在其它机器上不可达，问题被推迟到
+    // 部署阶段才暴露。这里选择 fail-fast（使用时记 error 并抛 500）而非从请求
+    // Host 推导：上传请求的 Host 可能是 CI 容器的 localhost 或反向代理地址，
+    // 静默推导同样会存下不可达的 URL，只是把失败换个地方隐藏；显式报错能在
+    // 上传这一步就把配置缺失暴露给调用方。
+    const apiBase = process.env.API_BASE_URL;
+    if (!apiBase) {
+      this.logger.error(
+        "API_BASE_URL is not configured — cannot build a package download URL reachable by executors. Set API_BASE_URL to the externally reachable base URL of this API and retry.",
+      );
+      throw new InternalServerErrorException(
+        "API_BASE_URL is not configured; cannot build a package download URL",
+      );
+    }
     const packageUrl = `${apiBase}/uploads/packages/${filename}`;
 
     // Upsert the application record: create if not exists, update packageUrl if exists.
@@ -122,52 +170,102 @@ export class ApplicationController {
       app = await this.svc.create({
         name,
         packageUrl,
-        runtime: runtime || 'python',
-        version: '1.0.0',
+        runtime: runtime || "python",
+        version: "1.0.0",
       });
     }
     return app;
   }
 
+  @Public()
   @Post("webhook")
   @ApiOperation({
     summary: "Version release webhook",
     description:
-      "Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments. If the application has a webhookSecret configured, the caller must include a valid X-Hub-Signature-256 header (sha256=<hex>).",
+      "Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments. This route is public for CI/CD callers, and matching applications must have webhookSecret configured. Callers must include X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers. The signature is HMAC-SHA256 over `${timestamp}.${rawBody}`.",
   })
   async webhook(
     @Body() dto: AppReleaseWebhookDto,
     @Headers("x-hub-signature-256") signature?: string,
+    @Headers("x-autocodeflow-timestamp") timestamp?: string,
+    @Req() req?: Request & { rawBody?: Buffer },
   ) {
     const logger = new Logger("ReleaseWebhook");
 
     // Find application by name (include webhookSecret for HMAC validation)
+    // APP-001: 无论后续哪一步失败，对外只暴露同一个 401 消息，
+    // 使"应用不存在"与"secret/签名错误"不可区分，防止应用名枚举。
     const targetApp = await this.svc.findByNameWithSecret(dto.appName);
     if (!targetApp) {
       logger.warn(`Webhook: no application found with name "${dto.appName}"`);
-      return { ok: true, message: "No matching application" };
+      throw new UnauthorizedException(
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
+      );
     }
 
     // HMAC-SHA256 signature verification (same convention as GitHub webhooks)
-    // If the application has a webhookSecret, the X-Hub-Signature-256 header is required.
-    if (targetApp.webhookSecret) {
-      if (!signature) {
-        logger.warn(`Webhook: missing X-Hub-Signature-256 header for app "${dto.appName}"`);
-        throw new UnauthorizedException('X-Hub-Signature-256 header is required');
-      }
-      const { createHmac, timingSafeEqual } = await import('crypto');
-      const body = Buffer.from(JSON.stringify(dto));
-      const expected = 'sha256=' + createHmac('sha256', targetApp.webhookSecret).update(body).digest('hex');
-      const expectedBuf = Buffer.from(expected);
-      const receivedBuf = Buffer.from(signature);
-      // Constant-time comparison to prevent timing attacks
-      const valid =
-        expectedBuf.length === receivedBuf.length &&
-        timingSafeEqual(expectedBuf, receivedBuf);
-      if (!valid) {
-        logger.warn(`Webhook: invalid signature for app "${dto.appName}"`);
-        throw new UnauthorizedException('Invalid webhook signature');
-      }
+    // This route is public for CI/CD systems, so every matching application must
+    // have a webhookSecret and callers must sign the raw body with a timestamp.
+    if (!targetApp.webhookSecret) {
+      logger.warn(
+        `Webhook: app "${dto.appName}" has no webhookSecret configured`,
+      );
+      throw new UnauthorizedException(
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
+      );
+    }
+    if (!signature) {
+      logger.warn(
+        `Webhook: missing X-Hub-Signature-256 header for app "${dto.appName}"`,
+      );
+      throw new UnauthorizedException(
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
+      );
+    }
+    if (!timestamp) {
+      logger.warn(
+        `Webhook: missing X-AutoCodeFlow-Timestamp header for app "${dto.appName}"`,
+      );
+      throw new UnauthorizedException(
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
+      );
+    }
+    const timestampMs = Number(timestamp);
+    const now = Date.now();
+    if (
+      !Number.isFinite(timestampMs) ||
+      Math.abs(now - timestampMs) > 5 * 60 * 1000
+    ) {
+      logger.warn(`Webhook: stale timestamp for app "${dto.appName}"`);
+      throw new UnauthorizedException(
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
+      );
+    }
+    const body = req?.rawBody;
+    if (!body) {
+      logger.warn(
+        `Webhook: raw request body is unavailable for app "${dto.appName}"`,
+      );
+      throw new UnauthorizedException(
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
+      );
+    }
+    const expected =
+      "sha256=" +
+      createHmac("sha256", targetApp.webhookSecret)
+        .update(Buffer.concat([Buffer.from(`${timestamp}.`), body]))
+        .digest("hex");
+    const expectedBuf = Buffer.from(expected);
+    const receivedBuf = Buffer.from(signature);
+    // Constant-time comparison to prevent timing attacks
+    const valid =
+      expectedBuf.length === receivedBuf.length &&
+      timingSafeEqual(expectedBuf, receivedBuf);
+    if (!valid) {
+      logger.warn(`Webhook: invalid signature for app "${dto.appName}"`);
+      throw new UnauthorizedException(
+        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
+      );
     }
 
     // Update version / git metadata
@@ -186,9 +284,13 @@ export class ApplicationController {
       const running = await this.deploymentSvc.findRunningByApp(targetApp.id);
       await Promise.allSettled(
         running.map((d) =>
-          this.deploymentSvc.upgrade(d.id).catch((err) =>
-            logger.error(`Upgrade failed for deployment ${d.id}: ${err.message}`),
-          ),
+          this.deploymentSvc
+            .upgrade(d.id)
+            .catch((err) =>
+              logger.error(
+                `Upgrade failed for deployment ${d.id}: ${err.message}`,
+              ),
+            ),
         ),
       );
       triggeredDeployments = running.length;
@@ -203,25 +305,18 @@ export class ApplicationController {
   @Get(":id/versions")
   @ApiOperation({
     summary: "Get application version history",
-    description: "Return all historical deployment records for the app including version, commit, and deployment time",
+    description:
+      "Return persisted application version snapshots, falling back to deployment records for legacy data.",
   })
   async getVersionHistory(@Param("id") id: string) {
-    // Verify app exists (throws 404 if not)
     await this.svc.findById(id);
-    const deployments = await this.deploymentSvc.findAllByApp(id);
-    // Map to a concise version history shape
-    return deployments.map((d) => ({
-      deploymentId: d.id,
-      version: d.deployedVersion,
-      commit: d.deployedCommit,
-      status: d.status,
-      deployedAt: d.deployedAt,
-      executorAddress: d.executorAddress,
-    }));
+    return this.deploymentSvc.getVersionHistory(id);
   }
 
   @Post(":id/upgrade-all")
-  @ApiOperation({ summary: "Trigger all running instances to upgrade to latest version" })
+  @ApiOperation({
+    summary: "Trigger all running instances to upgrade to latest version",
+  })
   async upgradeAll(@Param("id") id: string) {
     await this.svc.findById(id);
     const deployments = await this.deploymentSvc.findRunningByApp(id);
@@ -229,7 +324,12 @@ export class ApplicationController {
       deployments.map((d) => this.deploymentSvc.upgrade(d.id)),
     );
     const succeeded = results.filter((r) => r.status === "fulfilled").length;
-    return { ok: true, total: deployments.length, succeeded, failed: deployments.length - succeeded };
+    return {
+      ok: true,
+      total: deployments.length,
+      succeeded,
+      failed: deployments.length - succeeded,
+    };
   }
 
   @Post(":id/sync-tasks")
@@ -245,7 +345,8 @@ export class ApplicationController {
   @Post(":id/analyze")
   @ApiOperation({
     summary: "AI application health analysis",
-    description: "Aggregate execution stats across all tasks in this app and run AI health assessment",
+    description:
+      "Aggregate execution stats across all tasks in this app and run AI health assessment",
   })
   async analyzeHealth(@Param("id") id: string) {
     return this.svc.analyzeHealth(id);
@@ -253,37 +354,14 @@ export class ApplicationController {
 
   @Post(":id/rollback/:deploymentId")
   @ApiOperation({
-    summary: "Rollback application to historical deployment version",
-    description: "Restore app version to a specific historical deployment and trigger all running instances to upgrade",
+    summary: "Rollback application to historical version",
+    description:
+      "Restore app fields from a version snapshot or legacy deployment record, then trigger running instances to upgrade",
   })
   async rollback(
     @Param("id") appId: string,
     @Param("deploymentId") deploymentId: string,
   ) {
-    await this.svc.findById(appId);
-    const deployments = await this.deploymentSvc.findAllByApp(appId);
-    const target = deployments.find((d) => d.id === deploymentId);
-    if (!target) {
-      throw new BadRequestException("The specified deployment does not belong to this application");
-    }
-    // Restore app version to target version
-    const updatedApp = await this.svc.update(appId, {
-      version: target.deployedVersion ?? undefined,
-      gitCommit: target.deployedCommit ?? undefined,
-    } as any);
-    // Trigger all running instances to upgrade
-    const running = await this.deploymentSvc.findRunningByApp(appId);
-    const results = await Promise.allSettled(
-      running.map((d) => this.deploymentSvc.upgrade(d.id)),
-    );
-    const succeeded = results.filter((r) => r.status === "fulfilled").length;
-    return {
-      ok: true,
-      rolledBackTo: target.deployedVersion,
-      total: running.length,
-      succeeded,
-      failed: running.length - succeeded,
-      updatedApp,
-    };
+    return this.deploymentSvc.rollbackApplication(appId, deploymentId);
   }
 }

@@ -1,6 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { NotificationService } from "./notification.service";
+import { NotificationService, AlertChannel } from "./notification.service";
+import { ChannelConfigStore } from "./channel-config.store";
+import { ChannelDeliveryStatus } from "./channels/base.channel";
 
 export interface NotificationChannel {
   key: string;
@@ -43,9 +45,23 @@ export class NotificationConfigService {
       config: {},
       description: "Send notifications via WeCom group bot",
     },
+    {
+      // N32 (round-9): webhook joined the configurable enum. Config shape is
+      // `{ url }`; at send time the resolution is (N37, round-10): explicit
+      // per-request webhookUrl first, then the saved url — but only while
+      // the channel is enabled (see WebhookChannel.send).
+      key: "webhook",
+      name: "Webhook",
+      enabled: false,
+      config: {},
+      description:
+        "Generic HTTP webhook (per-request webhookUrl takes precedence; saved url applies only while the channel is enabled)",
+    },
   ];
 
-  // In-memory config (in production, persist to database)
+  // In-memory channel registry (enabled flag + config). V1: the RAW config
+  // values are mirrored into ChannelConfigStore — the single source the
+  // channels read at send time (config first, env fallback).
   private channelConfigs: Map<string, NotificationChannel> = new Map(
     this.channelDefaults.map((c) => [c.key, { ...c }]),
   );
@@ -53,8 +69,20 @@ export class NotificationConfigService {
   constructor(
     private configService: ConfigService,
     private notificationService: NotificationService,
+    private store: ChannelConfigStore,
   ) {
     this.loadFromEnv();
+  }
+
+  /**
+   * V1: publish the raw (unmasked) config of a channel to the send path.
+   * N37 (round-10): the enabled flag travels with it — the webhook channel
+   * only honors a saved url while the channel is enabled, so the store must
+   * see enable/disable transitions too (updateChannel syncs on either).
+   */
+  private syncStore(key: string) {
+    const channel = this.channelConfigs.get(key);
+    if (channel) this.store.set(key, channel.config, channel.enabled);
   }
 
   private loadFromEnv() {
@@ -117,14 +145,78 @@ export class NotificationConfigService {
           this.configService.get<string>("notification.wecom.webhookUrl") || "",
       };
     }
+
+    // V1: env-loaded configs seed the store too, so the send path has one
+    // consistent source of truth (saved config first, env fallback inside the
+    // channels). Empty values fall through to the env defaults unchanged.
+    for (const key of this.channelConfigs.keys()) {
+      this.syncStore(key);
+    }
   }
 
   getAllChannels(): NotificationChannel[] {
-    return Array.from(this.channelConfigs.values());
+    return Array.from(this.channelConfigs.values()).map((c) =>
+      this.maskChannel(c),
+    );
   }
 
   getChannel(key: string): NotificationChannel | undefined {
-    return this.channelConfigs.get(key);
+    const channel = this.channelConfigs.get(key);
+    return channel ? this.maskChannel(channel) : undefined;
+  }
+
+  /**
+   * N11: 读面对 password/secret/token 类字段脱敏为 '***'（对应 config 模块
+   * 按 isSecret 标记脱敏的做法——渠道 config 是内存对象、无逐键元数据，
+   * 故按字段名判定）。返回副本，绝不改动存储中的真实值。
+   *
+   * N32 (round-9): 字段名规则看不到 URL 值内部——webhook 类 URL 常把凭据
+   * 放在 query（?access_token=...）。同一 SECRET_FIELD_RE 因此也套用到 URL
+   * query 参数名上：`...?access_token=abc` → `...?access_token=***`，
+   * 使 GET/PATCH 响应自然覆盖值内机密。store/渠道侧仍是原值（发送路径不受
+   * 影响）。
+   */
+  private maskChannel(channel: NotificationChannel): NotificationChannel {
+    const config: Record<string, string> = {};
+    for (const [k, v] of Object.entries(channel.config)) {
+      config[k] =
+        NotificationConfigService.SECRET_FIELD_RE.test(k) && v
+          ? "***"
+          : this.maskUrlSecrets(v);
+    }
+    return { ...channel, config };
+  }
+
+  private static readonly SECRET_FIELD_RE = /pass|secret|token/i;
+
+  /** `?param=VALUE` / `&param=VALUE` where the param name is secret-class. */
+  private static readonly URL_SECRET_QUERY_RE =
+    /([?&][^=&#]*(?:pass|secret|token)[^=&#]*=)[^&#]+/gi;
+
+  /** A read-surface echo: secret-class query param already masked. */
+  private static readonly MASKED_URL_QUERY_RE =
+    /[?&][^=&#]*(?:pass|secret|token)[^=&#]*=\*\*\*(&|#|$)/i;
+
+  private maskUrlSecrets(value: string): string {
+    return value.replace(
+      NotificationConfigService.URL_SECRET_QUERY_RE,
+      "$1***",
+    );
+  }
+
+  /**
+   * N11 sentinel + N32 masked-URL echo：读面回显的掩码值不得覆盖存储中的
+   * 真实机密——既包括 password 类字段的精确 '***'，也包括 URL 值内被掩码
+   * 的 secret 类 query 参数（`...?token=***`，admin-web 表单原样提交时）。
+   */
+  private isMaskedEcho(key: string, value: string): boolean {
+    if (
+      value === "***" &&
+      NotificationConfigService.SECRET_FIELD_RE.test(key)
+    ) {
+      return true;
+    }
+    return NotificationConfigService.MASKED_URL_QUERY_RE.test(value);
   }
 
   updateChannel(
@@ -133,31 +225,130 @@ export class NotificationConfigService {
   ): NotificationChannel {
     const channel = this.channelConfigs.get(key);
     if (!channel) {
-      throw new Error(`Unknown notification channel: ${key}`);
+      // V4 (round-7): unknown channel keys used to escape as a bare Error →
+      // HTTP 500. The key set is a fixed enum (email/slack/dingtalk/wecom/
+      // webhook — webhook joined in N32, round-9), so this is a client input
+      // error: 400 with the valid keys listed.
+      const validKeys = Array.from(this.channelConfigs.keys()).join(", ");
+      throw new BadRequestException(
+        `Unknown notification channel: ${key}. Valid channels: ${validKeys}`,
+      );
     }
 
     if (data.enabled !== undefined) {
       channel.enabled = data.enabled;
+      // N37 (round-10): an enabled-only PATCH must reach the send path too —
+      // the webhook channel gates the saved url on this flag.
+      this.syncStore(key);
     }
     if (data.config) {
-      channel.config = { ...channel.config, ...data.config };
+      const merged = { ...channel.config };
+      for (const [k, v] of Object.entries(data.config)) {
+        // 读面把 secret 字段回显为 '***'（含 URL query 内的掩码）；
+        // admin-web 表单会原样提交。哨兵值不得覆盖存储中的真实机密。
+        if (this.isMaskedEcho(k, v)) {
+          continue;
+        }
+        merged[k] = v;
+      }
+      channel.config = merged;
+      // V1: publish the merged RAW config so send()/sendTest() actually use
+      // what the admin surface saved (read path stays masked).
+      this.syncStore(key);
     }
 
-    return channel;
+    return this.maskChannel(channel);
   }
 
+  /**
+   * R8 (N29): the per-channel "test" button used to fire a full sendAll fan-
+   * out, ignore the caller-supplied config AND the returned
+   * ChannelDeliveryResults, and unconditionally report success — an SSRF-
+   * blocked or failed channel still showed OK (the exact "fake OK" V2 set out
+   * to eliminate). Now it tests only the requested channel, honors an
+   * optional unsaved config override (temporarily published to the store the
+   * send path reads, restored afterwards), and reports the real per-channel
+   * outcome: success only when the delivery status is `sent`.
+   */
   async testChannel(
-    config: Record<string, string>,
-  ): Promise<{ success: boolean; message: string }> {
+    key: string,
+    config?: Record<string, string>,
+  ): Promise<{
+    success: boolean;
+    message: string;
+    results?: Record<string, ChannelDeliveryStatus>;
+  }> {
+    const channel = this.channelConfigs.get(key);
+    if (!channel) {
+      const validKeys = Array.from(this.channelConfigs.keys()).join(", ");
+      throw new BadRequestException(
+        `Unknown notification channel: ${key}. Valid channels: ${validKeys}`,
+      );
+    }
+
+    // Optional config override (admin form values not saved yet). Merge over
+    // the saved raw config; the '***' masked echo must not clobber the real
+    // secret (same sentinel rule as updateChannel).
+    const saved = this.store.get(key);
+    const savedEnabled = this.store.isEnabled(key);
+    const hasOverride = !!config && Object.keys(config).length > 0;
+    // N37 (round-10): the test send is an explicit admin action meant to
+    // validate a channel's config BEFORE it is enabled, so the effective
+    // config (saved or merged) is published as enabled for the duration of
+    // the test only — the webhook channel gates its saved url on the flag.
+    // The pre-test (config, enabled) pair is restored in the finally below.
+    if (hasOverride) {
+      const merged = { ...(saved ?? {}) };
+      for (const [k, v] of Object.entries(config!)) {
+        if (this.isMaskedEcho(k, v)) {
+          continue;
+        }
+        merged[k] = v;
+      }
+      this.store.set(key, merged, true);
+    } else if (!savedEnabled) {
+      this.store.set(key, saved ?? {}, true);
+    }
+
     try {
-      await this.notificationService.sendAll({
-        title: "AutoFlow Test Notification",
-        content: `This is a test notification\nTime: ${new Date().toLocaleString()}`,
-        level: "info",
-      });
-      return { success: true, message: "Test message sent successfully" };
+      const results = await this.notificationService.sendToChannels(
+        {
+          title: "AutoFlow Test Notification",
+          content: `This is a test notification\nTime: ${new Date().toLocaleString()}`,
+          level: "info",
+        },
+        [key as AlertChannel],
+      );
+      const status = results[key] ?? "skipped";
+      if (status === "sent") {
+        return {
+          success: true,
+          message: `Test message sent via ${key}`,
+          results,
+        };
+      }
+      const reason =
+        status === "skipped"
+          ? "channel not configured (no webhook URL / credentials resolved)"
+          : `delivery ${status}`;
+      return {
+        success: false,
+        message: `Test notification not delivered via ${key}: ${reason}`,
+        results,
+      };
     } catch (err: unknown) {
-      return { success: false, message: err instanceof Error ? err.message : String(err) };
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      // Restore the store to its pre-test state — a test send must never
+      // persist unsaved config (or the test-time enabled pin) into the live
+      // send path.
+      if (hasOverride || !savedEnabled) {
+        if (saved) this.store.set(key, saved, savedEnabled);
+        else this.store.delete(key);
+      }
     }
   }
 
@@ -165,11 +356,20 @@ export class NotificationConfigService {
     channels: string[];
     title: string;
     content: string;
-  }): Promise<{ success: boolean; message: string }> {
+  }): Promise<{
+    success: boolean;
+    message: string;
+    results?: Record<string, ChannelDeliveryStatus>;
+  }> {
     const { channels, title, content } = data;
     const payload = { title, content, level: "info" as const };
 
     try {
+      // V2 (round-7): channels no longer throw on SSRF blocks / transport
+      // errors — they return a status. Collect it per channel and reflect it
+      // in success/message so the admin "test" button can't report OK for a
+      // blocked or failed delivery.
+      const results: Record<string, ChannelDeliveryStatus> = {};
       for (const channel of channels) {
         const config = this.channelConfigs.get(channel);
         if (!config?.enabled) {
@@ -177,24 +377,69 @@ export class NotificationConfigService {
           continue;
         }
 
+        let status: ChannelDeliveryStatus | undefined;
         switch (channel) {
           case "email":
-            await this.notificationService["email"].send(payload);
+            status = (await this.notificationService["email"].send(payload)) as
+              ChannelDeliveryStatus | undefined;
             break;
           case "slack":
-            await this.notificationService["slack"].send(payload);
+            status = (await this.notificationService["slack"].send(payload)) as
+              ChannelDeliveryStatus | undefined;
             break;
           case "dingtalk":
-            await this.notificationService["dingtalk"].send(payload);
+            status = (await this.notificationService["dingtalk"].send(
+              payload,
+            )) as ChannelDeliveryStatus | undefined;
             break;
           case "wecom":
-            await this.notificationService["wecom"].send(payload);
+            status = (await this.notificationService["wecom"].send(payload)) as
+              ChannelDeliveryStatus | undefined;
+            break;
+          // N32: webhook joined the configurable enum — without this case a
+          // requested+enabled webhook test would silently report "sent" for
+          // zero delivery attempts (the N29 "fake OK" class).
+          case "webhook":
+            status = (await this.notificationService["webhook"].send(
+              payload,
+            )) as ChannelDeliveryStatus | undefined;
             break;
         }
+        results[channel] = status ?? "sent";
       }
-      return { success: true, message: "Test notification sent" };
+
+      // R8 (N29): every requested channel was disabled/unknown → zero delivery
+      // attempts. Reporting success:true for an empty fan-out is the same
+      // "fake OK" as the blocked branch — fail explicitly instead.
+      if (Object.keys(results).length === 0) {
+        return {
+          success: false,
+          message: `No enabled channels to test (requested: ${channels.join(", ") || "none"}). Enable a channel first.`,
+          results,
+        };
+      }
+
+      const bad = Object.entries(results).filter(
+        ([, s]) => s === "blocked" || s === "failed",
+      );
+      if (bad.length > 0) {
+        const detail = bad.map(([c, s]) => `${c}=${s}`).join(", ");
+        return {
+          success: false,
+          message: `Test notification not delivered: ${detail}`,
+          results,
+        };
+      }
+      return {
+        success: true,
+        message: "Test notification sent",
+        results,
+      };
     } catch (err: unknown) {
-      return { success: false, message: err instanceof Error ? err.message : String(err) };
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 }

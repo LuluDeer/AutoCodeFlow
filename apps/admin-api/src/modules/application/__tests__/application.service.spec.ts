@@ -26,7 +26,12 @@ describe("ApplicationService", () => {
         ApplicationService,
         { provide: getRepositoryToken(Application), useValue: appRepo },
         { provide: ModuleRef, useValue: { get: jest.fn() } },
-        { provide: AiService, useValue: { analyzeAppHealth: jest.fn().mockResolvedValue({ aiAnalysis: '' }) } },
+        {
+          provide: AiService,
+          useValue: {
+            analyzeAppHealth: jest.fn().mockResolvedValue({ aiAnalysis: "" }),
+          },
+        },
       ],
     }).compile();
     service = module.get(ApplicationService);
@@ -122,11 +127,17 @@ describe("ApplicationService", () => {
       const result = await service.findByNameWithSecret("nonexistent");
       expect(result).toBeNull();
       expect(qb.addSelect).toHaveBeenCalledWith("app.webhookSecret");
-      expect(qb.where).toHaveBeenCalledWith("app.name = :name", { name: "nonexistent" });
+      expect(qb.where).toHaveBeenCalledWith("app.name = :name", {
+        name: "nonexistent",
+      });
     });
 
     it("returns app with webhookSecret loaded", async () => {
-      const appWithSecret = { id: "1", name: "my-app", webhookSecret: "s3cr3t" };
+      const appWithSecret = {
+        id: "1",
+        name: "my-app",
+        webhookSecret: "s3cr3t",
+      };
       const qb = {
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),

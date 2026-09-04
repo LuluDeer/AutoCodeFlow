@@ -7,10 +7,14 @@ import { logger } from '../logger';
 export const logsRouter = Router();
 
 /** S-01: Express middleware — validates Bearer token from EXECUTOR_SHARED_TOKEN env. */
+export function getExecutorAuthToken(): string {
+  return process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || config.token || '';
+}
+
 export function executorAuthMiddleware(req: Request, res: Response, next: () => void): void {
-  // Read env at call time so tests can set/unset EXECUTOR_SHARED_TOKEN per-case;
+  // Read env at call time so tests can set/unset tokens per-case;
   // fall back to the config value (populated from CLI --token or config file).
-  const secret = process.env.EXECUTOR_SHARED_TOKEN || config.token;
+  const secret = getExecutorAuthToken();
   if (!secret) {
     next(); // dev mode: no secret configured
     return;
@@ -67,7 +71,14 @@ logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
     return;
   }
 
-  const fromLine = parseInt(String(req.query.fromLine ?? '0'), 10) || 0;
+  // Clamp negatives — slice(-1) would silently return just the last line.
+  const fromLine = Math.max(0, parseInt(String(req.query.fromLine ?? '0'), 10) || 0);
+  // LOG-01 admin backfill pages with limit=2000 and relies on hasMore to
+  // advance; returning the entire tail at once used to blow up both ends'
+  // memory on large logs. Clamp to the admin-side page size.
+  const MAX_LIMIT = 2000;
+  const requestedLimit = parseInt(String(req.query.limit ?? '500'), 10) || 500;
+  const limit = Math.min(Math.max(requestedLimit, 1), MAX_LIMIT);
 
   try {
     const raw = fs.readFileSync(logFile, 'utf-8');
@@ -77,8 +88,9 @@ logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
       allLines.pop();
     }
     const total = allLines.length;
-    const sliced = allLines.slice(fromLine);
-    res.json({ lines: sliced, totalLines: total, hasMore: false });
+    const sliced = allLines.slice(fromLine, fromLine + limit);
+    const hasMore = fromLine + sliced.length < total;
+    res.json({ lines: sliced, totalLines: total, hasMore });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Failed to read log file ${logFile}: ${msg}`);

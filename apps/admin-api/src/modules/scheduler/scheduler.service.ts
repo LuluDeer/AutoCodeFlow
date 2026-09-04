@@ -5,9 +5,9 @@ import {
   OnModuleDestroy,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
-import { InjectQueue } from "@nestjs/bull";
-import { Queue } from "bull";
+import { DataSource, In, LessThan, Repository } from "typeorm";
+import { InjectQueue } from "@nestjs/bullmq";
+import { Queue } from "bullmq";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import * as nodeCron from "node-cron";
 import {
@@ -16,12 +16,98 @@ import {
   TaskTriggerType,
   BlockStrategy,
   MisfireStrategy,
+  normalizeTaskPriority,
 } from "../task/entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
+  ExecutionFailureReason,
 } from "../task/entities/task-execution.entity";
-import { RedisLockService } from "../../common/services/redis-lock.service";
+import {
+  RedisLockService,
+  Lock,
+} from "../../common/services/redis-lock.service";
+import {
+  SchedulerMetricsService,
+  SchedulerMetricsSnapshot,
+  SchedulerMetricsDerived,
+} from "./scheduler-metrics.service";
+
+/** TASK-006: Leader Election 锁 key（RedisLockService 会加 lock: 前缀） */
+export const SCHEDULER_LEADER_LOCK_KEY = "scheduler:leader";
+/** Leader 锁 TTL；RedisLockService 内置 watchdog 以 TTL/3 周期续期 */
+export const SCHEDULER_LEADER_TTL_MS = 30_000;
+/** 非 Leader 重试竞选 / 降级重试间隔 */
+export const SCHEDULER_LEADER_RETRY_MS = 15_000;
+
+/**
+ * N5: 单个任务的 stale 回收阈值：max(2 × taskTimeout, 60s)。executor /
+ * processor 负责硬超时，stale 扫描只负责抢救 dispatch/callback 丢失的行，
+ * 因此保守地等待两个超时周期（下限 60s）后才置 FAILED。
+ */
+function staleThresholdMs(timeoutSec: number): number {
+  return Math.max(timeoutSec * 2, 60) * 1000;
+}
+
+/**
+ * N6: 跨实例触发去重锁 TTL 的下限（毫秒）。去重窗口语义是"同一触发周期内
+ * 至多一次触发"，取 1s 下限用于抵御亚秒级重复回调；fixed_rate 在减去
+ * 抖动缓冲后（如 fixedRate=1s → 500ms）也以此下限兜底。
+ */
+export const TRIGGER_DEDUP_MIN_TTL_MS = 1_000;
+
+/**
+ * N6 残留（round5v2 §2.3）：fixed_rate 去重窗口的相位滞后缓冲（毫秒）。
+ * 定时器 tick 在 t 时刻回调，enqueue 内 acquireLock 要到 t+δ 才真正拿到锁
+ * （δ = tick→锁获取的异步滞后，几十 ms 量级），锁在 t+δ+TTL 过期。若
+ * TTL 恰等于周期 P，下一 tick（t+P）落入锁剩余的 δ 窗口被 NX 拒绝 → 该
+ * 周期被跳过，实测表现为 15s/30s 混合节奏。TTL 取 P - 缓冲，保证锁在
+ * 下一 tick 前必定过期。
+ */
+export const TRIGGER_DEDUP_JITTER_BUFFER_MS = 500;
+
+/**
+ * N5: stale 扫描的固定兜底窗口——timeout=0（不限时）任务的最短回收延迟。
+ */
+export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
+
+/**
+ * N6: 计算触发去重锁的 TTL。去重窗口必须由"触发周期"决定而非任务超时：
+ * 旧实现 lockTTL=max(taskTimeout, interval) 使短周期任务（如 15s）在默认
+ * timeout=300s 下被压制成 300s 才触发一次。现在：
+ * - fixed_rate：周期 - 抖动缓冲（TTL 恰等于周期时，tick→acquireLock 的相位
+ *   滞后会让下一 tick 落入锁剩余窗口被 NX 拒绝，实测 15s/30s 混合节奏，
+ *   见 TRIGGER_DEDUP_JITTER_BUFFER_MS），并不低于 MIN_TTL 下限
+ * - cron：没有更细的周期信息，取 1s 下限（仅防同秒重复触发）
+ * - 其他（api/manual）：5s 保守窗口
+ * 窗口略短于周期不引入重复触发：定时器只在 Leader 上注册（scheduleOne 有
+ * isLeader 门），同一任务在一个周期内本就只有 Leader 的一次 tick；Redis 锁
+ * 与 claimTaskTrigger 只是 Leader 竞态过渡期（旧 Leader 残余定时器与新
+ * Leader 并存）的双保险。claimTaskTrigger 的 lockTtlMs 与本 TTL 在 enqueue
+ * 顶部同源计算，Redis 锁窗口与 DB claim 窗口自动保持一致。
+ * 导出仅供单元测试，视为模块内部函数。
+ */
+export function computeTriggerDedupTtlMs(task: Task): number {
+  if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
+    return Math.max(
+      task.fixedRate * 1000 - TRIGGER_DEDUP_JITTER_BUFFER_MS,
+      TRIGGER_DEDUP_MIN_TTL_MS,
+    );
+  }
+  if (task.triggerType === TaskTriggerType.CRON) {
+    return TRIGGER_DEDUP_MIN_TTL_MS;
+  }
+  return 5_000;
+}
+
+/**
+ * 终态保护门（TASK-004 / R4-P1）：所有把执行推进到终态的写路径都只允许命中
+ * 仍处于打开状态（pending/running）的行——并发回调已写入的终态绝不被覆盖。
+ */
+const OPEN_EXECUTION_STATUSES = [
+  ExecutionStatus.PENDING,
+  ExecutionStatus.RUNNING,
+];
 
 @Injectable()
 export class SchedulerService implements OnModuleInit, OnModuleDestroy {
@@ -32,6 +118,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private cronTasks = new Map<string, nodeCron.ScheduledTask>();
   // B-04: Track whether a fixed_rate task is currently executing to prevent re-entry
   private runningTasks = new Map<string, boolean>();
+  // Prevent reload() and scheduleOne() from registering the same task concurrently.
+  private schedulingTasks = new Set<string>();
+
+  // TASK-006: Leader Election 状态
+  private leaderLock: Lock | null = null;
+  private isLeader = false;
+  private leaderRetryTimer: NodeJS.Timeout | null = null;
+  private leaderVerifyTimer: NodeJS.Timeout | null = null;
 
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
@@ -39,16 +133,189 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     private execRepo: Repository<TaskExecution>,
     @InjectQueue("task-queue") private queue: Queue,
     private redisLockService: RedisLockService,
+    private dataSource: DataSource,
+    private schedulerMetrics: SchedulerMetricsService,
   ) {}
 
+  // ---------------------------------------------------------------------------
+  // TASK-006: Leader Election
+  //
+  // 多实例部署时，扫描型 tick（reload / checkMisfires / recoverStaleExecutions）
+  // 只允许 Leader 执行，避免每个实例都注册一遍定时器并重复触发任务。
+  //
+  // - 锁 key: "scheduler:leader"（实际 Redis key 为 lock:scheduler:leader）
+  // - TTL: 30s；RedisLockService.acquireLock 内置 watchdog 以 TTL/3（10s）续期，
+  //   本服务另设 TTL/2（15s）的校验定时器，用 extendLock 探测锁是否仍归本实例，
+  //   失败即 demote 并清空本地调度，由其他实例在重试周期内接管。
+  // - 降级：Redis 完全不可用（acquireLock 抛错）时按 Leader 运行（fail-open），
+  //   保持与单实例部署一致的行为——调度不会因 Redis 故障而整体停摆；
+  //   跨实例去重退化为 enqueue() 内的 DB 条件 UPDATE claim 兜底。
+  // - BullMQ worker（TaskProcessor）消费路径与 Leader 无关，不受影响。
+  // ---------------------------------------------------------------------------
+
   async onModuleInit() {
+    await this.initLeaderElection();
     await this.reload();
     await this.checkMisfires();
     await this.recoverStaleExecutions();
   }
 
+  /** TASK-006: 启动 Leader 竞选；结果落在 isLeader 上，供扫描型 tick 判断 */
+  async initLeaderElection(): Promise<void> {
+    await this.tryAcquireLeadership();
+  }
+
+  private async tryAcquireLeadership(): Promise<void> {
+    try {
+      const lock = await this.redisLockService.acquireLock(
+        SCHEDULER_LEADER_LOCK_KEY,
+        SCHEDULER_LEADER_TTL_MS,
+      );
+      if (lock) {
+        const wasLeader = this.isLeader;
+        this.leaderLock = lock;
+        this.isLeader = true;
+        this.startLeaderVerification();
+        if (!wasLeader) {
+          this.logger.log(
+            "Scheduler leadership acquired — this node is now the leader",
+          );
+        }
+        return;
+      }
+      // 锁被其他实例持有
+      if (this.isLeader && !this.leaderLock) {
+        // 降级（fail-open）期间其他实例已真正拿到锁——让位，避免双 Leader
+        this.demote("another instance acquired the leader lock");
+      } else if (!this.isLeader) {
+        this.logger.debug(
+          "Scheduler leader lock held by another instance; staying follower",
+        );
+      }
+    } catch (err: unknown) {
+      // 降级（fail-open）：Redis 不可用时按 Leader 运行，避免调度整体停摆；
+      // 重复触发风险由 enqueue() 的 DB 条件 claim 兜底（见 claimTaskTrigger）。
+      const message = err instanceof Error ? err.message : String(err);
+      if (!this.isLeader) {
+        this.isLeader = true;
+        this.leaderLock = null;
+        this.logger.warn(
+          `Leader election unavailable (${message}); degrading to leader so scheduling is not stopped`,
+        );
+      }
+    }
+    this.scheduleLeaderRetry();
+  }
+
+  /** Leader 周期性校验租约：锁已易主/丢失则 demote，本地调度交由新 Leader 重建 */
+  private startLeaderVerification(): void {
+    this.stopLeaderVerification();
+    if (!this.leaderLock) return;
+    this.leaderVerifyTimer = setInterval(() => {
+      void this.verifyLeadership();
+    }, SCHEDULER_LEADER_TTL_MS / 2);
+    this.leaderVerifyTimer.unref();
+  }
+
+  /**
+   * 用 extendLock 探测 Leader 租约是否仍归本实例（同一 lockId 才会续期成功）。
+   * Redis 抖动时保留租约（RedisLockService 内部 watchdog 会继续续期），
+   * 下一个校验周期再判定，避免单次网络抖动造成无谓的 Leader 切换。
+   */
+  private async verifyLeadership(): Promise<void> {
+    const lock = this.leaderLock;
+    if (!lock || lock.released) return;
+    try {
+      const ok = await this.redisLockService.extendLock(
+        SCHEDULER_LEADER_LOCK_KEY,
+        lock.lockId,
+        SCHEDULER_LEADER_TTL_MS,
+      );
+      if (!ok) this.demote("leader lease expired");
+    } catch (err: unknown) {
+      this.logger.debug(
+        `Leader lease check failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private stopLeaderVerification(): void {
+    if (this.leaderVerifyTimer) {
+      clearInterval(this.leaderVerifyTimer);
+      this.leaderVerifyTimer = null;
+    }
+  }
+
+  private scheduleLeaderRetry(): void {
+    if (this.leaderRetryTimer) return;
+    this.leaderRetryTimer = setTimeout(() => {
+      this.leaderRetryTimer = null;
+      // 降级 Leader 也周期性重试：Redis 恢复后补拿真实锁，或让位于新 Leader
+      void this.tryAcquireLeadership();
+    }, SCHEDULER_LEADER_RETRY_MS);
+    this.leaderRetryTimer.unref();
+  }
+
+  /** 交出 Leader 身份：停本地全部调度，非 Leader 只保留竞选重试 */
+  private demote(reason: string): void {
+    this.isLeader = false;
+    this.stopLeaderVerification();
+    const lock = this.leaderLock;
+    this.leaderLock = null;
+    if (lock) {
+      lock.release().catch(() => undefined);
+    }
+    // 已注册的定时器/ Cron 必须清空，否则 demote 后本节点仍会触发 enqueue，
+    // 与新 Leader 产生竞争（enqueue 有 Redis 锁 + DB claim 双保险，但能免则免）
+    for (const id of [...this.timers.keys()]) this.stop(id);
+    for (const id of [...this.cronTasks.keys()]) this.stop(id);
+    this.logger.warn(
+      `Scheduler leadership lost (${reason}) — local schedules stopped, will re-contend later`,
+    );
+    this.scheduleLeaderRetry();
+  }
+
+  private getCronOptions(task: Task): { timezone: string } | undefined {
+    const timezone = task.timezone?.trim();
+    if (!timezone) return undefined;
+
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(
+        new Date(),
+      );
+      return { timezone };
+    } catch {
+      this.logger.warn(
+        `Invalid timezone for task "${task.name}": ${timezone}; scheduling with server default timezone`,
+      );
+      return undefined;
+    }
+  }
+
+  async onModuleDestroy() {
+    this.timers.forEach((t) => clearInterval(t));
+    this.cronTasks.forEach((t) => t.stop());
+    // TASK-006: 停止竞选/续期定时器并主动释放 Leader 锁，加快 failover
+    if (this.leaderRetryTimer) {
+      clearTimeout(this.leaderRetryTimer);
+      this.leaderRetryTimer = null;
+    }
+    this.stopLeaderVerification();
+    const lock = this.leaderLock;
+    this.leaderLock = null;
+    this.isLeader = false;
+    if (lock) {
+      lock.release().catch(() => undefined);
+    }
+  }
+
   /** Detect misfires on startup and compensate according to policy */
   async checkMisfires() {
+    // TASK-006: 扫描型 tick 仅 Leader 执行
+    if (!this.isLeader) {
+      this.logger.debug("checkMisfires skipped: not the scheduler leader");
+      return;
+    }
     const tasks = await this.taskRepo.find({
       where: { status: TaskStatus.ACTIVE },
     });
@@ -82,20 +349,44 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * - If the associated task has a timeout > 0, use that as the stale threshold.
    * - Otherwise fall back to a 1-hour global grace window.
    */
-  @Cron('0 */10 * * * *')
+  @Cron("0 */10 * * * *")
   async recoverStaleExecutions() {
-    const runningExecs = await this.execRepo.find({
-      where: { status: ExecutionStatus.RUNNING },
-    });
-    if (!runningExecs.length) return;
-
+    // TASK-006: 扫描型 tick 仅 Leader 执行
+    if (!this.isLeader) {
+      this.logger.debug(
+        "recoverStaleExecutions skipped: not the scheduler leader",
+      );
+      return;
+    }
+    // Medium-1.2: scan only RUNNING rows whose startTime is older than the
+    // initial cutoff — the rest are presumed healthy and should not be
+    // materialized into memory. The per-task timeout refinement below may
+    // still rescue individual rows older than that, but we cap the initial
+    // find() to keep the cron cheap even with millions of rows.
+    //
+    // N5: the cutoff is now tied to task timeouts instead of a fixed 1h —
+    // a stuck execution for a short-timeout task (e.g. 10s) must not wait up
+    // to 1h before being recovered. Per-task stale threshold =
+    // max(2 × taskTimeout, 60s): the executor/processor own the hard timeout,
+    // so the sweep deliberately waits out two timeout periods (60s floor) and
+    // only rescues rows whose dispatch/callback was lost. The scan cutoff is
+    // the smallest such threshold (bounded by the 1h fallback used for
+    // timeout=0 tasks), so short-timeout tasks are swept promptly while the
+    // scan stays cheap.
     const now = Date.now();
-    const DEFAULT_STALE_MS = 60 * 60 * 1000; // 1-hour fallback
-    let recovered = 0;
-    
+    const DEFAULT_STALE_MS = STALE_SCAN_FALLBACK_MS; // 1-hour fallback
+    const initialCutoff = new Date(now - (await this.staleScanWindowMs()));
+    const runningExecs = await this.execRepo.find({
+      where: {
+        status: ExecutionStatus.RUNNING,
+        startTime: LessThan(initialCutoff),
+      },
+    });
+
     // Get all unique taskIds and fetch their timeouts
-    const taskIds = [...new Set(runningExecs.map(e => e.taskId))];
-    const tasks = await this.taskRepo.findByIds(taskIds);
+    const taskIds = [...new Set(runningExecs.map((e) => e.taskId))];
+    const tasks =
+      taskIds.length > 0 ? await this.taskRepo.findBy({ id: In(taskIds) }) : [];
     const taskTimeouts = new Map<string, number>();
     for (const t of tasks) {
       if (t.timeout && t.timeout > 0) {
@@ -103,44 +394,197 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    // TASK-004: 在内存中按"超时类型"分组，随后用单事务内的条件批量 UPDATE
+    // 一次性恢复（替代原先逐行 save 的 N 条独立 UPDATE）。
+    // 终态保护：UPDATE 仅命中 status IN (pending, running) 的行，与
+    // handleCallback / killExecution 的保护语义一致——已进入终态的行
+    // （如并发回调刚写入 SUCCESS）绝不会被置为 FAILED。
+    const timedOut = new Map<number, TaskExecution[]>(); // taskTimeoutSec -> execs
+    const recovered: TaskExecution[] = [];
     for (const exec of runningExecs) {
       const anchor = exec.startTime ?? exec.createdAt;
       if (!anchor) continue;
 
-      // Prefer per-task timeout (seconds → ms); fall back to global default
+      // Prefer per-task timeout (seconds → ms); fall back to global default.
+      // N5: use max(2 × taskTimeout, 60s) — matching the scan cutoff formula —
+      // so the sweep never races the processor's own hard-timeout kill.
       const taskTimeoutSec = taskTimeouts.get(exec.taskId);
       const staleMs =
         taskTimeoutSec && taskTimeoutSec > 0
-          ? taskTimeoutSec * 1000
+          ? staleThresholdMs(taskTimeoutSec)
           : DEFAULT_STALE_MS;
 
       if (now - anchor.getTime() > staleMs) {
-        exec.status = ExecutionStatus.FAILED;
-        exec.endTime = new Date();
-        exec.errorMessage =
-          taskTimeoutSec && taskTimeoutSec > 0
-            ? `Execution timed out after ${taskTimeoutSec}s`
-            : 'Execution did not complete (recovered on node restart)';
-        await this.execRepo.save(exec);
-        recovered++;
+        if (taskTimeoutSec && taskTimeoutSec > 0) {
+          const bucket = timedOut.get(taskTimeoutSec) ?? [];
+          bucket.push(exec);
+          timedOut.set(taskTimeoutSec, bucket);
+        } else {
+          recovered.push(exec);
+        }
+      }
+    }
+
+    const OPEN_STATUSES = OPEN_EXECUTION_STATUSES;
+    const finishedAt = new Date();
+    // TASK-004: 通过 RETURNING 收集真正被本批 UPDATE 命中的行——竞态中
+    // 已被回调写成终态的行不会出现在受影响集合里，executor 槽位只对
+    // 确实被恢复的行释放（避免与回调路径重复释放）。
+    const recoveredRows: Array<{
+      id: string;
+      executorAddress: string | null;
+    }> = [];
+
+    if (timedOut.size > 0 || recovered.length > 0) {
+      // 单事务：部分失败整体回滚，恢复动作要么全部生效要么全部不变
+      await this.dataSource.transaction(async (manager) => {
+        const runUpdate = async (
+          execs: TaskExecution[],
+          patch: Record<string, unknown>,
+        ): Promise<void> => {
+          if (execs.length === 0) return;
+          const result = await manager
+            .createQueryBuilder()
+            .update(TaskExecution)
+            .set(patch)
+            .where('"id" IN (:...ids) AND "status" IN (:...open)', {
+              ids: execs.map((e) => e.id),
+              open: OPEN_STATUSES,
+            })
+            .returning(["id", "executorAddress"])
+            .execute();
+          for (const row of (result.raw ?? []) as Array<{
+            id: string;
+            executorAddress: string | null;
+          }>) {
+            recoveredRows.push(row);
+          }
+        };
+
+        for (const [timeoutSec, execs] of timedOut) {
+          await runUpdate(execs, {
+            status: ExecutionStatus.FAILED,
+            endTime: finishedAt,
+            errorMessage: `Execution timed out after ${timeoutSec}s`,
+            failureReason: ExecutionFailureReason.TIMEOUT,
+          });
+        }
+        await runUpdate(recovered, {
+          status: ExecutionStatus.FAILED,
+          endTime: finishedAt,
+          errorMessage:
+            "Execution did not complete (recovered on node restart)",
+          failureReason: ExecutionFailureReason.UNKNOWN,
+        });
+      });
+
+      for (const row of recoveredRows) {
+        await this.releaseExecutorSlot(row.executorAddress);
+        this.logger.warn(`REC-01: execution ${row.id} recovered as FAILED`);
+      }
+    }
+
+    // P1: sweep PENDING executions never picked up by a worker (queue lost
+    // the job / Redis flushed) — after a grace window mark them FAILED.
+    // TASK-004: 同样改为单条条件批量 UPDATE（终态保护：仅 PENDING 可被清理）。
+    const stalePending = await this.execRepo.find({
+      where: { status: ExecutionStatus.PENDING },
+    });
+    const PENDING_GRACE_MS = 10 * 60 * 1000;
+    const stalePendingIds = stalePending
+      .filter(
+        (exec) =>
+          exec.createdAt && now - exec.createdAt.getTime() > PENDING_GRACE_MS,
+      )
+      .map((exec) => exec.id);
+    let recoveredPending = 0;
+    if (stalePendingIds.length > 0) {
+      const result = await this.execRepo
+        .createQueryBuilder()
+        .update(TaskExecution)
+        .set({
+          status: ExecutionStatus.FAILED,
+          endTime: finishedAt,
+          errorMessage:
+            "Execution was never dispatched by the queue (recovered by stale sweep)",
+          failureReason: ExecutionFailureReason.UNKNOWN,
+        })
+        .where('"id" IN (:...ids) AND "status" = :status', {
+          ids: stalePendingIds,
+          status: ExecutionStatus.PENDING,
+        })
+        .returning(["id"])
+        .execute();
+      recoveredPending = ((result.raw ?? []) as unknown[]).length;
+      if (recoveredPending === 0 && result.affected) {
+        recoveredPending = result.affected;
+      }
+      if (recoveredPending > 0) {
         this.logger.warn(
-          `REC-01: execution ${exec.id} (task=${exec.taskId}) timed out after ${staleMs / 1000}s`,
+          `REC-01: ${recoveredPending} pending execution(s) never dispatched, marked FAILED`,
         );
       }
     }
-    if (recovered > 0) {
-      this.logger.warn(`REC-01: recovered ${recovered} stale RUNNING execution(s)`);
+
+    const totalRecovered = recoveredRows.length + recoveredPending;
+    if (totalRecovered > 0) {
+      this.logger.warn(
+        `REC-01: recovered ${totalRecovered} stale execution(s)`,
+      );
     }
   }
 
-  onModuleDestroy() {
-    this.timers.forEach((t) => clearInterval(t));
-    this.cronTasks.forEach((t) => t.stop());
+  private async releaseExecutorSlot(address?: string | null): Promise<void> {
+    if (!address) return;
+    await this.dataSource
+      .createQueryBuilder()
+      .update("executors")
+      .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
+      .where("address = :addr", { addr: address })
+      .execute();
+  }
+
+  /**
+   * N5: stale 扫描的初始窗口 = min(所有 active 任务中最短的
+   * max(2×timeout, 60s) 阈值, 1h 兜底)。timeout=0（不限时）任务不参与收缩，
+   * 仍由 1h 兜底覆盖；没有任何短 timeout 任务时窗口保持 1h，扫描开销不变。
+   * 轻量查询仅取 id/timeout 两列。
+   */
+  private async staleScanWindowMs(): Promise<number> {
+    const tasks = await this.taskRepo.find({
+      where: { status: TaskStatus.ACTIVE },
+      select: ["id", "timeout"],
+    });
+    let shortestMs = Number.POSITIVE_INFINITY;
+    for (const t of tasks ?? []) {
+      if (t.timeout && t.timeout > 0) {
+        shortestMs = Math.min(shortestMs, staleThresholdMs(t.timeout));
+      }
+    }
+    if (!Number.isFinite(shortestMs)) return STALE_SCAN_FALLBACK_MS;
+    // 上限仍为 1h 兜底：超长 timeout 任务的行会被扫描到但被逐行阈值过滤
+    return Math.min(shortestMs, STALE_SCAN_FALLBACK_MS);
   }
 
   /** Re-scan active tasks every minute and register any unscheduled tasks */
   @Cron(CronExpression.EVERY_MINUTE)
   async reload() {
+    // TASK-006: 扫描型 tick 仅 Leader 执行（非 Leader 节点不注册任何定时器）
+    if (!this.isLeader) {
+      this.logger.debug("reload skipped: not the scheduler leader");
+      return;
+    }
+    // R4-§5.5: tick 计数 + 耗时（含本 tick 的全部扫描/注册工作）
+    const tickStart = Date.now();
+    try {
+      await this.reloadActiveTasks();
+    } finally {
+      this.schedulerMetrics.recordTick(Date.now() - tickStart);
+    }
+  }
+
+  /** reload 的实际扫描体（抽出以便 tick 计时只包住扫描工作本身） */
+  private async reloadActiveTasks(): Promise<void> {
     const tasks = await this.taskRepo.find({
       where: { status: TaskStatus.ACTIVE },
     });
@@ -160,87 +604,64 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       if (!activeIds.has(id)) this.runningTasks.delete(id);
     }
 
-    for (const t of tasks) {
-      if (
-        t.triggerType === TaskTriggerType.FIXED_RATE &&
-        t.fixedRate &&
-        !this.timers.has(t.id)
-      ) {
-        const taskId = t.id;
-        const timer = setInterval(async () => {
-          // B-04: Skip if previous execution is still running to prevent re-entry
-          if (this.runningTasks.get(taskId)) {
-            this.logger.warn(
-              `Fixed_rate task "${t.name}" still running, skipping trigger`,
-            );
-            return;
-          }
-          this.runningTasks.set(taskId, true);
-          try {
-            const latest = await this.taskRepo.findOne({
-              where: { id: taskId, status: TaskStatus.ACTIVE },
-            });
-            if (latest) await this.enqueue(latest, "fixed_rate");
-          } finally {
-            this.runningTasks.delete(taskId);
-          }
-        }, t.fixedRate * 1000);
-        this.timers.set(t.id, timer);
-        this.logger.log(
-          `Scheduled fixed_rate task "${t.name}" every ${t.fixedRate}s`,
-        );
-      }
-
-      if (
-        t.triggerType === TaskTriggerType.CRON &&
-        t.cronExpression &&
-        !this.cronTasks.has(t.id)
-      ) {
-        if (!nodeCron.validate(t.cronExpression)) {
-          this.logger.warn(
-            `Invalid cron expression for task "${t.name}": ${t.cronExpression}`,
-          );
-          continue;
-        }
-        // N8: re-fetch task at trigger time to avoid stale closure snapshot
-        const taskId = t.id;
-        const cronTask = nodeCron.schedule(t.cronExpression, async () => {
-          const latest = await this.taskRepo.findOne({
-            where: { id: taskId, status: TaskStatus.ACTIVE },
-          });
-          if (latest) await this.enqueue(latest, "cron");
-        });
-        this.cronTasks.set(t.id, cronTask);
-        this.logger.log(
-          `Scheduled cron task "${t.name}" with expression: ${t.cronExpression}`,
-        );
-      }
+    for (const task of tasks) {
+      if (this.timers.has(task.id) || this.cronTasks.has(task.id)) continue;
+      await this.scheduleOne(task);
     }
   }
 
   async enqueue(task: Task, triggerType: string) {
-    const minIntervalMs =
-      task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate
-        ? task.fixedRate * 1000
-        : 5_000;
+    // N6: the dedup window is derived from the trigger period, NOT the task
+    // timeout (the old max(timeout, interval) TTL silently suppressed
+    // short-period tasks down to the task timeout). See computeTriggerDedupTtlMs.
+    const lockTTL = computeTriggerDedupTtlMs(task);
 
-    const lock = await this.redisLockService.acquireLock(
-      `task:trigger:${task.id}`,
-      minIntervalMs,
-    );
-    if (!lock) {
+    let lock: Lock | null = null;
+    let claimedViaDb = false;
+    try {
+      // R4-P0: renew:false — this lock is never released (see finally): its
+      // TTL IS the cross-instance dedup window. A renewing watchdog would
+      // keep it alive forever, so each scheduled task would only ever fire
+      // once per process lifetime.
+      lock = await this.redisLockService.acquireLock(
+        `task:trigger:${task.id}`,
+        lockTTL,
+        { renew: false },
+      );
+    } catch (err: unknown) {
+      // TASK-006 降级路径：Redis 不可用时改用 DB 条件 UPDATE 原子 claim 兜底
+      // （Leader Election + claim 双保险的第二道）。claim 失败即跳过。
+      const claimed = await this.claimTaskTrigger(task, lockTTL);
+      if (!claimed) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.debug(
+          `Task "${task.name}" trigger claimed by another instance (db claim, redis=${message}), skip`,
+        );
+        this.schedulerMetrics.recordTriggerSkippedDbClaim();
+        return null;
+      }
+      claimedViaDb = true;
+      this.logger.warn(
+        `Redis trigger lock unavailable for "${task.name}"; proceeding with DB claim`,
+      );
+    }
+    if (!lock && !claimedViaDb) {
       this.logger.debug(
         `Task "${task.name}" recently triggered by another instance, skip`,
       );
+      this.schedulerMetrics.recordTriggerSkippedLockHeld();
       return null;
     }
 
     try {
+      // N8: re-fetch task state to avoid acting on a stale trigger snapshot
+      // (a paused/deleted task must not be enqueued).
       const taskRecord = await this.taskRepo.findOne({
         where: { id: task.id, status: TaskStatus.ACTIVE },
       });
       if (!taskRecord) {
         this.logger.debug(`Task "${task.name}" is no longer active, skip`);
+        this.schedulerMetrics.recordTriggerSkippedInactive();
         return null;
       }
 
@@ -252,6 +673,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(
             `Task "${task.name}" is RUNNING (blockStrategy=DISCARD), skip trigger`,
           );
+          this.schedulerMetrics.recordTriggerSkippedBlockStrategy();
           return null;
         }
       }
@@ -264,10 +686,50 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(
             `Task "${task.name}" is RUNNING (blockStrategy=COVER_EARLY), cancelling running execution ${running.id}`,
           );
-          running.status = ExecutionStatus.CANCELLED;
-          running.errorMessage = "Task was covered by new trigger";
-          running.endTime = new Date();
-          await this.execRepo.save(running);
+          // R4-P1: the previous blind save() could overwrite a SUCCESS that
+          // a concurrent callback had already committed (and double-release
+          // the executor slot, oversubscribing capacity). Use the same
+          // TASK-004 pattern as recoverStaleExecutions: a conditional UPDATE
+          // guarded by the open-status gate, with RETURNING rows deciding
+          // which slots to release.
+          const result = await this.execRepo
+            .createQueryBuilder()
+            .update(TaskExecution)
+            .set({
+              status: ExecutionStatus.CANCELLED,
+              errorMessage: "Task was covered by new trigger",
+              endTime: new Date(),
+            })
+            .where('"id" = :id AND "status" IN (:...open)', {
+              id: running.id,
+              open: OPEN_EXECUTION_STATUSES,
+            })
+            .returning(["id", "executorAddress"])
+            .execute();
+          const coveredRows = (result.raw ?? []) as Array<{
+            id: string;
+            executorAddress: string | null;
+          }>;
+          if (coveredRows.length === 0 && result.affected) {
+            // Driver reported the hit without RETURNING rows: fall back to
+            // the snapshot address. Safe — affected=1 means this UPDATE made
+            // the transition, so no concurrent callback released it already.
+            coveredRows.push({
+              id: running.id,
+              executorAddress: running.executorAddress,
+            });
+          }
+          if (coveredRows.length === 0) {
+            this.logger.warn(
+              `COVER_EARLY: execution ${running.id} already reached a terminal state (concurrent callback/kill), not covered`,
+            );
+          }
+          for (const row of coveredRows) {
+            await this.releaseExecutorSlot(row.executorAddress);
+            this.logger.warn(
+              `COVER_EARLY: execution ${row.id} cancelled by new trigger`,
+            );
+          }
         }
       }
 
@@ -291,17 +753,73 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
                 delay: task.retryDelay * 1000,
               }
             : undefined,
-        priority: task.priority,
+        // N2: DB 里 priority 是 PG 字符串枚举，TypeORM 读回 'normal' 等
+        // label——原样传给 BullMQ 会被 lua 校验拒绝（"Priority should not
+        // be float"），导致所有调度触发入队失败。入队边界强制归一化为数字。
+        priority: normalizeTaskPriority(task.priority),
       };
-      await this.queue.add(
-        "execute",
-        { executionId: exec.id, task },
-        queueOptions,
-      );
+      try {
+        await this.queue.add(
+          "execute",
+          { executionId: exec.id, task },
+          queueOptions,
+        );
+      } catch (err: unknown) {
+        // P1: compensate the committed PENDING row so it cannot hang forever
+        const message = err instanceof Error ? err.message : String(err);
+        await this.execRepo.update(exec.id, {
+          status: ExecutionStatus.FAILED,
+          endTime: new Date(),
+          errorMessage: `Failed to enqueue execution: ${message}`,
+          failureReason: ExecutionFailureReason.UNKNOWN,
+        });
+        this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
+        // R4-§5.5: 已创建 PENDING 行但入队失败（含补偿路径）计为触发失败
+        this.schedulerMetrics.recordTriggerFailed();
+        return null;
+      }
+      // P1: record the trigger time so checkMisfires() has data to work
+      // with (this column was previously never written, leaving misfire
+      // compensation dead code).
+      await this.taskRepo.update(task.id, {
+        lastTriggerTime: new Date(),
+      });
+      // R4-§5.5: 触发成功（claim 赢家且执行已入队）
+      this.schedulerMetrics.recordTriggerClaimed();
       return exec;
     } finally {
-      await lock.release();
+      // P1: deliberately do NOT release the dedup lock — its TTL is the
+      // dedup window across instances. Releasing it milliseconds after
+      // acquisition made it useless against clock skew between instances.
     }
+  }
+
+  /**
+   * TASK-006: DB 层原子触发 claim——Redis 触发锁不可用（抛错）时的兜底。
+   * 条件 UPDATE：仅当任务仍为 ACTIVE 且上一触发窗口（与 Redis 锁 TTL 同窗）
+   * 之外未被领取过时，本实例才能推进 lastTriggerTime 并获得触发权；
+   * affected=0 表示另一实例（或旧 Leader 残余定时器）已领取，跳过本次触发。
+   * 与 Redis 锁的"不释放、靠 TTL 去重"语义保持一致。
+   */
+  private async claimTaskTrigger(
+    task: Task,
+    lockTtlMs: number,
+  ): Promise<boolean> {
+    const windowStart = new Date(Date.now() - lockTtlMs);
+    const result = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ lastTriggerTime: new Date() })
+      .where(
+        '"id" = :id AND "status" = :status AND ("lastTriggerTime" IS NULL OR "lastTriggerTime" < :windowStart)',
+        {
+          id: task.id,
+          status: TaskStatus.ACTIVE,
+          windowStart,
+        },
+      )
+      .execute();
+    return (result?.affected ?? 0) > 0;
   }
 
   /** Stop and remove all schedules for the given task */
@@ -323,53 +841,72 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
   /** Register scheduling for a single task; call after TaskService update to avoid waiting for the next reload */
   async scheduleOne(task: Task) {
-    this.stop(task.id);
+    // TASK-003/TASK-006: 注册路径统一在 Leader 保护下执行。非 Leader 节点
+    // 不注册定时器（改动由 Leader 的分钟级 reload 收编）；跨进程重复注册
+    // 由 enqueue 的 Redis 锁 + DB claim 兜底。
+    if (!this.isLeader) {
+      this.logger.debug(
+        `scheduleOne("${task.name}") skipped: not the scheduler leader`,
+      );
+      return;
+    }
+    if (this.schedulingTasks.has(task.id)) return;
+    this.schedulingTasks.add(task.id);
+    try {
+      this.stop(task.id);
 
-    if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
-      const taskId = task.id;
-      const timer = setInterval(async () => {
-        // B-04: Prevent re-entry
-        if (this.runningTasks.get(taskId)) {
+      if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
+        const taskId = task.id;
+        const timer = setInterval(async () => {
+          // B-04: Prevent re-entry
+          if (this.runningTasks.get(taskId)) {
+            this.logger.warn(
+              `Fixed_rate task "${task.name}" still running, skipping trigger`,
+            );
+            return;
+          }
+          this.runningTasks.set(taskId, true);
+          try {
+            const latest = await this.taskRepo.findOne({
+              where: { id: taskId, status: TaskStatus.ACTIVE },
+            });
+            if (latest) await this.enqueue(latest, "fixed_rate");
+          } finally {
+            this.runningTasks.delete(taskId);
+          }
+        }, task.fixedRate * 1000);
+        this.timers.set(task.id, timer);
+        this.logger.log(
+          `Re-scheduled fixed_rate task "${task.name}" every ${task.fixedRate}s`,
+        );
+      }
+
+      if (task.triggerType === TaskTriggerType.CRON && task.cronExpression) {
+        if (!nodeCron.validate(task.cronExpression)) {
           this.logger.warn(
-            `Fixed_rate task "${task.name}" still running, skipping trigger`,
+            `Invalid cron expression for task "${task.name}": ${task.cronExpression}`,
           );
           return;
         }
-        this.runningTasks.set(taskId, true);
-        try {
-          const latest = await this.taskRepo.findOne({
-            where: { id: taskId, status: TaskStatus.ACTIVE },
-          });
-          if (latest) await this.enqueue(latest, "fixed_rate");
-        } finally {
-          this.runningTasks.delete(taskId);
-        }
-      }, task.fixedRate * 1000);
-      this.timers.set(task.id, timer);
-      this.logger.log(
-        `Re-scheduled fixed_rate task "${task.name}" every ${task.fixedRate}s`,
-      );
-    }
-
-    if (task.triggerType === TaskTriggerType.CRON && task.cronExpression) {
-      if (!nodeCron.validate(task.cronExpression)) {
-        this.logger.warn(
-          `Invalid cron expression for task "${task.name}": ${task.cronExpression}`,
+        // N8: re-fetch task at trigger time to avoid stale closure snapshot
+        const taskId = task.id;
+        const cronTask = nodeCron.schedule(
+          task.cronExpression,
+          async () => {
+            const latest = await this.taskRepo.findOne({
+              where: { id: taskId, status: TaskStatus.ACTIVE },
+            });
+            if (latest) await this.enqueue(latest, "cron");
+          },
+          this.getCronOptions(task),
         );
-        return;
+        this.cronTasks.set(task.id, cronTask);
+        this.logger.log(
+          `Re-scheduled cron task "${task.name}" with expression: ${task.cronExpression}`,
+        );
       }
-      // N8: re-fetch task at trigger time to avoid stale closure snapshot
-      const taskId = task.id;
-      const cronTask = nodeCron.schedule(task.cronExpression, async () => {
-        const latest = await this.taskRepo.findOne({
-          where: { id: taskId, status: TaskStatus.ACTIVE },
-        });
-        if (latest) await this.enqueue(latest, "cron");
-      });
-      this.cronTasks.set(task.id, cronTask);
-      this.logger.log(
-        `Re-scheduled cron task "${task.name}" with expression: ${task.cronExpression}`,
-      );
+    } finally {
+      this.schedulingTasks.delete(task.id);
     }
   }
 
@@ -377,11 +914,70 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   getStats() {
     return {
       healthy: true, // Scheduler is considered healthy if it's not crashed
+      isLeader: this.isLeader,
       activeTimers: this.timers.size,
       activeCronTasks: this.cronTasks.size,
       runningTaskCount: this.runningTasks.size,
       totalScheduledTasks: this.timers.size + this.cronTasks.size,
       uptime: process.uptime(),
+    };
+  }
+
+  /**
+   * R4-§5.5: BullMQ 队列深度（waiting / active / delayed / failed / completed）。
+   * getJobCounts 由 Redis 侧聚合，无需扫描队列；失败时返回 null 字段值，
+   * 让调用方（metrics 端点）显式区分"Redis 不可用"与"队列为空"。
+   */
+  async getQueueDepth(): Promise<{
+    waiting: number | null;
+    active: number | null;
+    delayed: number | null;
+    failed: number | null;
+    completed: number | null;
+  }> {
+    try {
+      const counts = await this.queue.getJobCounts(
+        "waiting",
+        "active",
+        "delayed",
+        "failed",
+        "completed",
+      );
+      return {
+        waiting: counts.waiting ?? 0,
+        active: counts.active ?? 0,
+        delayed: counts.delayed ?? 0,
+        failed: counts.failed ?? 0,
+        completed: counts.completed ?? 0,
+      };
+    } catch (err: unknown) {
+      this.logger.debug(
+        `Queue depth unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        waiting: null,
+        active: null,
+        delayed: null,
+        failed: null,
+        completed: null,
+      };
+    }
+  }
+
+  /** R4-§5.5: 调度可观测性快照（tick / trigger 计数 + 队列深度） */
+  async getSchedulerMetrics(): Promise<{
+    counters: SchedulerMetricsSnapshot;
+    derived: SchedulerMetricsDerived;
+    queue: Awaited<ReturnType<SchedulerService["getQueueDepth"]>>;
+  }> {
+    const [counters, queue] = await Promise.all([
+      Promise.resolve(this.schedulerMetrics.snapshot),
+      this.getQueueDepth(),
+    ]);
+    return {
+      counters,
+      derived: this.schedulerMetrics.derived,
+      queue,
     };
   }
 }

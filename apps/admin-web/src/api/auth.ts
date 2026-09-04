@@ -6,5 +6,5 @@ export const authApi = {
     client.post('/auth/login', data) as Promise<{ accessToken: string; refreshToken: string; user: AuthUser }>,
   refresh: (refreshToken: string) =>
     client.post('/auth/refresh', { refreshToken }) as Promise<{ accessToken: string }>,
-  me: () => client.get('/auth/me') as Promise<AuthUser>,
+  me: () => client.get('/auth/profile') as Promise<AuthUser>,
 };

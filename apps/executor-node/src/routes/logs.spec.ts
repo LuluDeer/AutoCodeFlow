@@ -15,7 +15,7 @@ jest.mock('../config', () => ({
 }));
 jest.mock('../logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
 
-import { logsRouter, executorAuthMiddleware } from './logs';
+import { logsRouter, executorAuthMiddleware, getExecutorAuthToken } from './logs';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 
@@ -37,17 +37,35 @@ appWithAuth.use('/api', executorAuthMiddleware, logsRouter);
 beforeEach(() => {
   jest.clearAllMocks();
   delete process.env.EXECUTOR_SHARED_TOKEN;
+  delete process.env.EXECUTOR_SECRET;
   (mockFs.existsSync as jest.Mock).mockReturnValue(false);
 });
 
 afterEach(() => {
   delete process.env.EXECUTOR_SHARED_TOKEN;
+  delete process.env.EXECUTOR_SECRET;
 });
 
 // ---------------------------------------------------------------------------
 // executorAuthMiddleware unit tests
 // ---------------------------------------------------------------------------
 describe('executorAuthMiddleware', () => {
+  it('prefers EXECUTOR_SHARED_TOKEN over legacy EXECUTOR_SECRET', () => {
+    process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
+    process.env.EXECUTOR_SECRET = 'legacy-secret-token';
+
+    expect(getExecutorAuthToken()).toBe(TEST_TOKEN);
+
+    const req = { headers: { authorization: 'Bearer legacy-secret-token' } } as any;
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() } as any;
+    const next = jest.fn();
+
+    executorAuthMiddleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
   it('calls next() immediately when no secret is configured', () => {
     delete process.env.EXECUTOR_SHARED_TOKEN;
     const req = {} as any;
@@ -150,6 +168,43 @@ describe('GET /api/logs/:executionId', () => {
     expect(res.status).toBe(200);
     expect(res.body.lines).toEqual(['c', 'd']);
     expect(res.body.totalLines).toBe(4);
+  });
+
+  it('honors the limit parameter and reports hasMore for further pages', async () => {
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockFs.readFileSync as jest.Mock).mockReturnValue('a\nb\nc\nd\n');
+
+    const res = await request(appNoAuth).get('/api/logs/exec-limit?limit=2');
+    expect(res.status).toBe(200);
+    expect(res.body.lines).toEqual(['a', 'b']);
+    expect(res.body.totalLines).toBe(4);
+    expect(res.body.hasMore).toBe(true);
+
+    // Last page has no more lines
+    const last = await request(appNoAuth).get('/api/logs/exec-limit?fromLine=2&limit=2');
+    expect(last.body.lines).toEqual(['c', 'd']);
+    expect(last.body.hasMore).toBe(false);
+  });
+
+  it('falls back to the default limit for invalid limit input', async () => {
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockFs.readFileSync as jest.Mock).mockReturnValue('a\nb\nc\n');
+
+    const res = await request(appNoAuth).get('/api/logs/exec-badlimit?limit=abc');
+    expect(res.status).toBe(200);
+    expect(res.body.lines).toEqual(['a', 'b', 'c']);
+    expect(res.body.hasMore).toBe(false);
+  });
+
+  it('clamps huge limit values to the admin backfill page size', async () => {
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockFs.readFileSync as jest.Mock).mockReturnValue(Array.from({ length: 2100 }, (_, i) => `line${i}`).join('\n') + '\n');
+
+    const res = await request(appNoAuth).get('/api/logs/exec-huge?limit=99999');
+    expect(res.status).toBe(200);
+    expect(res.body.lines).toHaveLength(2000);
+    expect(res.body.totalLines).toBe(2100);
+    expect(res.body.hasMore).toBe(true);
   });
 
   it('returns 200 with empty lines array when fromLine exceeds total', async () => {
