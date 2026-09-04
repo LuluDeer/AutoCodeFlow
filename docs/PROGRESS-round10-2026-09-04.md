@@ -49,3 +49,14 @@ admin-api **870/870（53 suites）**（+9）· executor-node **158**（+8）· e
 3. **executor-python 401 自愈对齐**（C 流遗留：python 侧仍 30min 窗口，可移植 forceTokenRefresh 语义）。
 4. `reload-config` 既有缺陷（C 流发现：controller 用新 token 推配置而执行器只认旧 token → 必然 401）。
 5. 跨平台矩阵（需真机）；minio 链 3 moderate 等上游。
+
+---
+
+## 补记：v1.0.0 首发闭环（2026-09-04）
+
+release.yml 全链演练成功，三包正式上线（run 33851030463，含一次审批门 waiting + 一次 token 更换后 re-run --failed）：
+
+- **npm**：[`@autocodeflow/sdk@1.0.0`](https://www.npmjs.com/package/@autocodeflow/sdk)、[`autocodeflow-mcp-server@1.0.0`](https://www.npmjs.com/package/autocodeflow-mcp-server)
+- **PyPI**：[`autoflow-sdk@1.0.0`](https://pypi.org/project/autoflow-sdk/)（wheel + sdist）
+
+过程决策与踩坑：①`@autoflow` org 名被第三方抢注 → 包名定稿 `@autocodeflow/sdk`（org 与仓库同名，commit `f0f8b96`，删旧 tag 重打）；②npm 2FA 403 → 换 Classic Automation token 后 `gh run rerun --failed` 成功；③environment 审批门两次实测生效。下次发布：改四处版本 → 打 tag → Approve → 全绿即发布。
