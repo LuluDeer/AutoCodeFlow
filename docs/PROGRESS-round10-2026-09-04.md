@@ -31,11 +31,20 @@ executor-node 158（+8）、admin-api 864（+3 at C 时点）。
 
 admin-api **870/870（53 suites）**（+9）· executor-node **158**（+8）· executor-python **115** · autoflow-sdk **91**（+1）· admin-web **35** · Playwright **29** · acf-cli **48** · mcp-server **52** · registry-pypi **33** · node-sdk **43** · notify **7** · 全端 tsc/lint/build ✓。
 
-## 3. 阻塞与第十一轮建议
+## 3. CI 首跑修复闭环（2026-09-04，gh 凭证到位后）
 
-**阻塞（唯一）**：GitHub push 凭证——本地 develop 领先 origin 95+ commits，release.yml/ci.yml 等 10 轮成果均待推送验证。等用户提供 PAT（repo 权限）或自推。
+用户配置 gh 凭证并同步 GitHub 后首轮 CI 6 个 job 失败，全部为环境差异（本机 npmmirror 源/node 24 与 CI node 20/干净环境的差异）。三轮修复全绿：
 
-1. **CI push 真跑 + release 首发演练**（凭证到位后）：push develop 盯 Actions 首跑修环境差异 → 打 v1.0.0 tag 演练 release.yml dry-run 链路。
+1. **node 20→24**（npm 10 对 npm 11 生成 lock 的解析差异 → 3 个 npm ci 失败）
+2. **autoflow-sdk-node lock 官方源重新生成**（npmmirror 混合源 lock 与 npmjs 依赖树不一致：@emnapi/core@1.11.3 missing；官方源 npm ci 干净 venv 验证 + 43/43 测试回归）
+3. **python jobs**：python-packages 补 respx、`pytest` → `python -m pytest`（cwd 进 sys.path，修 registry-pypi "No module named main"）——干净 venv 逐一模拟验证
+4. **npm-audit job 退避重试**（registry audit endpoint 偶发 503 非真实漏洞，三次退避后真实 HIGH+ 仍红灯）
+
+最终：**CI 13 jobs / 19 实例全绿**（run 33834427947），develop 与 origin 同步，路线图"CI push 真跑"正式闭环。
+
+## 4. 阻塞与第十一轮建议
+
+1. **release 首发演练**：打 v1.0.0 tag 走 release.yml（需先配置 NPM_TOKEN/PYPI_API_TOKEN secrets 与 Environments(release) 审批人）。
 2. **`packages/autoflow-sdk-node` 旧重复包清理**（B 流盘点发现：@autocodeflow/sdk 0.1.0 与 autoflow-sdk 1.0.0 重复，无消费方——评估删除或归档）。
 3. **executor-python 401 自愈对齐**（C 流遗留：python 侧仍 30min 窗口，可移植 forceTokenRefresh 语义）。
 4. `reload-config` 既有缺陷（C 流发现：controller 用新 token 推配置而执行器只认旧 token → 必然 401）。
