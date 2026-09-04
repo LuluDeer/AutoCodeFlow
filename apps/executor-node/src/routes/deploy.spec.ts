@@ -2,6 +2,7 @@ import request from 'supertest';
 import express from 'express';
 import * as fs from 'fs';
 import * as http from 'http';
+import * as path from 'path';
 import * as childProcess from 'child_process';
 import { EventEmitter } from 'events';
 import type { AddressInfo } from 'net';
@@ -116,13 +117,15 @@ describe('restart exit reporting', () => {
 
 describe('versioned deployment paths', () => {
   it('builds immutable release paths and a current pointer', () => {
+    // W-03: production uses path.join, so assert with path.join too — the old
+    // hardcoded '/tmp/work/apps/...' forward-slash strings only held on POSIX.
     const paths = buildDeploymentPaths('/tmp/work', 'app-1', 'deploy-1', '1.2.0');
 
-    expect(paths.appRoot).toBe('/tmp/work/apps/app-1');
+    expect(paths.appRoot).toBe(path.join('/tmp/work', 'apps', 'app-1'));
     expect(paths.releaseKey).toBe('1.2.0-deploy-1');
-    expect(paths.finalReleaseDir).toBe('/tmp/work/apps/app-1/releases/1.2.0-deploy-1');
-    expect(paths.extractDir).toBe('/tmp/work/apps/app-1/tmp/1.2.0-deploy-1-extracting');
-    expect(paths.currentLink).toBe('/tmp/work/apps/app-1/current');
+    expect(paths.finalReleaseDir).toBe(path.join('/tmp/work', 'apps', 'app-1', 'releases', '1.2.0-deploy-1'));
+    expect(paths.extractDir).toBe(path.join('/tmp/work', 'apps', 'app-1', 'tmp', '1.2.0-deploy-1-extracting'));
+    expect(paths.currentLink).toBe(path.join('/tmp/work', 'apps', 'app-1', 'current'));
   });
 
   it('keeps same-version redeploys isolated by deployment id', () => {
@@ -136,7 +139,7 @@ describe('versioned deployment paths', () => {
     const paths = buildDeploymentPaths('/tmp/work', 'app-1', 'deploy-1', '../v1+build');
 
     expect(paths.releaseKey).toBe('v1-build-deploy-1');
-    expect(paths.finalReleaseDir).toBe('/tmp/work/apps/app-1/releases/v1-build-deploy-1');
+    expect(paths.finalReleaseDir).toBe(path.join('/tmp/work', 'apps', 'app-1', 'releases', 'v1-build-deploy-1'));
   });
 });
 
@@ -320,6 +323,10 @@ describe('POST /api/deploy — async pipeline', () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
     (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
 
+    // W-03: production spawns npm.cmd with shell:true on win32 (deploy.ts:92-96)
+    // — the test must look for the platform's command name.
+    const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
     try {
       const res = await request(app)
         .post('/api/deploy')
@@ -328,11 +335,11 @@ describe('POST /api/deploy — async pipeline', () => {
 
       await waitFor(() =>
         (mockCp.spawn as jest.Mock).mock.calls.some(
-          (c: unknown[]) => (c[0] as string) === 'npm',
+          (c: unknown[]) => (c[0] as string) === npmBin,
         ),
       );
       const npmCall = (mockCp.spawn as jest.Mock).mock.calls.find(
-        (c: unknown[]) => (c[0] as string) === 'npm',
+        (c: unknown[]) => (c[0] as string) === npmBin,
       );
       const env = (npmCall as [string, string[], { env: Record<string, string | undefined> }])[2].env;
       expect(env.EXECUTOR_SHARED_TOKEN).toBeUndefined();
@@ -343,7 +350,7 @@ describe('POST /api/deploy — async pipeline', () => {
     }
   });
 
-  it('app-stop kills the app process group (POSIX)', async () => {
+  it('app-stop kills the app process group (POSIX) / process tree via taskkill (win32)', async () => {
     const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
     (mockFs.createWriteStream as jest.Mock).mockReturnValue({
@@ -364,7 +371,17 @@ describe('POST /api/deploy — async pipeline', () => {
 
       const stopRes = await request(app).post('/api/app-stop').send({ deploymentId: 'deploy-async' });
       expect(stopRes.status).toBe(200);
-      expect(killSpy).toHaveBeenCalledWith(-5555, 'SIGTERM');
+      if (process.platform !== 'win32') {
+        expect(killSpy).toHaveBeenCalledWith(-5555, 'SIGTERM');
+      } else {
+        // W-03 (windows-findings): no negative-pid group kill on win32 —
+        // killProcessTree tree-kills via taskkill /T /F.
+        expect(mockCp.spawn).toHaveBeenCalledWith(
+          'taskkill',
+          ['/T', '/F', '/PID', '5555'],
+          expect.objectContaining({ stdio: 'ignore' }),
+        );
+      }
 
       // unblock pending timers by simulating exit
       child.emit('exit', 0);

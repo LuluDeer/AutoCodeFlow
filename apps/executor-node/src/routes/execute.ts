@@ -526,11 +526,10 @@ export function killRunningTaskProcesses(signal: NodeJS.Signals = 'SIGKILL'): nu
     runningTaskProcesses.delete(key);
     if (!proc.pid) continue;
     try {
-      if (process.platform !== 'win32') {
-        process.kill(-proc.pid, signal);
-      } else {
-        proc.kill(signal);
-      }
+      // W-03: delegate to killProcessTree for parity — on win32 it uses
+      // taskkill /T /F so a timed-out task's grandchildren are reaped too,
+      // matching the POSIX negative-pid group kill.
+      killProcessTree(proc, signal);
       killed++;
     } catch (_) {
       /* already dead */
