@@ -3,7 +3,9 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
-// Polyfill globalThis.crypto for Node.js < 19 (used by uuid and other dependencies)
+// Polyfill globalThis.crypto for Node.js < 19 (defensive: task scripts and
+// third-party dependencies may use the Web Crypto global; executor code
+// itself uses node:crypto randomUUID directly)
 if (!globalThis.crypto) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const nodeCrypto = require('crypto');
