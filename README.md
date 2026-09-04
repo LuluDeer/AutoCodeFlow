@@ -120,8 +120,7 @@ AutoCodeFlow/
 │   ├── acf-cli/               # 命令行工具 (acf)
 │   ├── mcp-server/            # MCP Server（AI Agent 集成）
 │   ├── autoflow-sdk/          # Python 任务 SDK
-│   ├── autoflow-sdk-node/     # Node.js 任务 SDK（轻量版）
-│   ├── autocodeflow-node-sdk/ # Node.js 任务 SDK（完整版）
+│   ├── autocodeflow-node-sdk/ # Node.js 任务 SDK
 │   ├── autocodeflow-ai/       # AI 分析引擎
 │   ├── autocodeflow-db/       # 数据库连接工具
 │   ├── autocodeflow-http/     # HTTP 客户端工具
@@ -197,7 +196,6 @@ acf app list
 | 包名 | 语言 | 说明 |
 |------|------|------|
 | `autoflow-sdk` | Python | 任务上下文、HTTP 客户端、日志、结果上报 |
-| `autoflow-sdk-node` | Node.js | 轻量版任务 SDK |
 | `autocodeflow-node-sdk` | Node.js | 完整版任务 SDK（含更多工具） |
 | `autocodeflow-ai` | Python | AI 执行分析引擎 |
 | `autocodeflow-db` | Python | 数据库连接工具 |

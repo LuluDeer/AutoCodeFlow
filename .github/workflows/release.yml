@@ -11,6 +11,16 @@ name: Release
 # N42 (round-10)：两个 publish job 挂 `environment: release` 审批闸门
 #   （GitHub 侧配置 Settings → Environments → Required reviewers，详见
 #   job 注释）；version-guard 只保证版本 lockstep，不防未授权 tag。
+# N44 (round-11)：幂等与恢复语义——版本号一经发布即不可复用：
+#   同版本重发 npm 必报 EP409（cannot publish over previously published
+#   version）、PyPI 必回 400（File already exists，未配 skip-existing）。
+#   两个 publish job 均无覆盖逻辑，失败干净、不产生部分写入，但整 run
+#   重跑（Re-run jobs / 删 tag 后同版本重打）对已发布成功的一侧必红。
+#   标准恢复路径：修复后 `gh run rerun <run-id> --failed`——只重跑失败的
+#   publish job（version-guard 等已成功 job 不重跑；environment 审批门
+#   需重新 Approve）。仅当需要更换 tag 指向的内容时才删 tag 重打，且
+#   已发布成功的一侧必须 bump 版本换新 tag，否则该侧红是幂等保护、
+#   不是回归。恢复纪律同步见 docs/sdk-guide.md「版本与发布流程」。
 on:
   push:
     tags:
@@ -27,10 +37,10 @@ jobs:
   # ── 版本一致性守卫：tag 必须等于每个待发布包的 version，否则 fail ──
   version-guard:
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.guard.outputs.version }}
+    # N44 (round-11)：原 outputs.version 无任何下游消费（两个 publish job
+    # 仅 needs 依赖本 job 的通过/失败），死输出已删除。
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Version guard (tag == package versions)
         id: guard
@@ -38,7 +48,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |-
           python3 - "$RELEASE_TAG" <<'PY'
-          import json, os, re, sys
+          import json, re, sys
 
           tag = sys.argv[1]
           m = re.fullmatch(r"v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)", tag)
@@ -85,10 +95,6 @@ jobs:
                     + "; ".join(f"{k}={v}" for k, v in bad.items()))
               sys.exit(1)
 
-          out = os.environ.get("GITHUB_OUTPUT")
-          if out:
-              with open(out, "a", encoding="utf-8") as f:
-                  f.write(f"version={want}\n")
           print(f"version guard passed: {want}")
           PY
 
@@ -103,7 +109,8 @@ jobs:
   # 并改用 verdaccio 用户 token。
   # 注：acf-cli 暂不纳入——npmjs 上 `acf-cli` 名称已被第三方占用
   # （npm view acf-cli → 1.0.1），直接 publish 必然 403；如需发布请先
-  # 改名（如 @autoflow/cli）再加入矩阵。
+  # 改名（如 @autocodeflow/cli——勿用 @autoflow/*，该 org 已被抢注，见
+  # f0f8b96 改名理由）再加入矩阵。
   publish-npm:
     needs: version-guard
     runs-on: ubuntu-latest
@@ -123,9 +130,9 @@ jobs:
           - dir: packages/mcp-server
             pkg: 'autocodeflow-mcp-server'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           # node 20 已入弃用周期；且 lockfile 由 npm 11 生成，node 20 自带
           # npm 10 解析有差异（f3a2d88 教训），与 CI 对齐 node 24
@@ -171,9 +178,9 @@ jobs:
     # 配置的锚点（pypi.org 登记时可指定 environment 名称），届时保留。
     environment: release
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
