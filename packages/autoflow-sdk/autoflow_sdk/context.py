@@ -32,9 +32,14 @@ class TaskContext:
     # older executors never inject them, in which case `ctx.callback` (and
     # the `ctx.report_success` / `ctx.report_failure` shorthands) stay
     # disabled and raise a descriptive error when used.
-    callback_token: Optional[str] = None
-    admin_api_url: Optional[str] = None
-    executor_address: Optional[str] = None
+    # N40 (round-10): repr=False — the dataclass __repr__ is a leak surface
+    # the same as to_dict (N27): a task's `print(ctx)` / f-string debug log
+    # would otherwise carry the one-shot HMAC token into the executor's
+    # captured stdout → admin DB (execution logs), where any JWT user who
+    # can read the execution could replay it within its TTL window.
+    callback_token: Optional[str] = field(default=None, repr=False)
+    admin_api_url: Optional[str] = field(default=None, repr=False)
+    executor_address: Optional[str] = field(default=None, repr=False)
 
     # Runtime helpers — populated lazily
     _logger: Optional[Any] = field(default=None, repr=False)
