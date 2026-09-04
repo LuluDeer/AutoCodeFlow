@@ -39,6 +39,17 @@ function tempDest(): string {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acf-dl-')), 'pkg.bin');
 }
 
+/** downloadFile's partial-file cleanup is asynchronous (fs.unlink after
+ *  stream destroy), so the rejection can surface before the unlink lands —
+ *  wait for the file to actually disappear instead of racing the event loop. */
+async function expectFileGone(dest: string): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (fs.existsSync(dest) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  expect(fs.existsSync(dest)).toBe(false);
+}
+
 describe('downloadFile (shared Bearer downloader)', () => {
   it('sends the executor shared token as Bearer on the first request', async () => {
     const seen: Array<string | undefined> = [];
@@ -134,7 +145,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
         downloadFile(`http://127.0.0.1:${port}/big.zip`, dest, { maxBytes: 100 }),
       ).rejects.toThrow(/size limit/i);
       // the partial download must not linger
-      expect(fs.existsSync(dest)).toBe(false);
+      await expectFileGone(dest);
     } finally {
       await closeServer(server);
     }
@@ -151,7 +162,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
       await expect(downloadFile(`http://127.0.0.1:${port}/missing.zip`, dest)).rejects.toThrow(
         /status 404/,
       );
-      expect(fs.existsSync(dest)).toBe(false);
+      await expectFileGone(dest);
     } finally {
       await closeServer(server);
     }
