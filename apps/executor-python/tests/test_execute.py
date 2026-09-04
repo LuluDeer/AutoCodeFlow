@@ -10,6 +10,7 @@ background-task references, uv hardening and P3 validators.
 import asyncio
 import re
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import httpx
@@ -258,7 +259,10 @@ def test_child_process_env_isolation(tmp_path):
     for var in sensitive_vars:
         assert var not in _ENV_WHITELIST, f"Sensitive variable {var} should NOT be in whitelist"
 
-    subprocess.run(['python3', str(test_script)], cwd=str(tmp_path), env=env, check=True)
+    # W-05: `python3` does not exist on Windows (Store stub) — use the
+    # interpreter running the test. Also exercises R-04: python.exe must
+    # launch under the *whitelisted* env alone.
+    subprocess.run([sys.executable, str(test_script)], cwd=str(tmp_path), env=env, check=True)
 
     env_keys = set(out_file.read_text().strip().split('\n'))
 
@@ -290,7 +294,7 @@ def test_task_params_injected_as_env_vars(tmp_path):
     for k, v in params.items():
         env[f'AUTOFLOW_{k.upper()}'] = str(v)
 
-    subprocess.run(['python3', str(test_script)], cwd=str(tmp_path), env=env, check=True)
+    subprocess.run([sys.executable, str(test_script)], cwd=str(tmp_path), env=env, check=True)  # W-05
 
     result = json.loads(out_file.read_text())
 
@@ -371,7 +375,25 @@ def test_build_shell_cmd_uses_positional_params(tmp_path):
     the `bash -c` string."""
     from routers.execute import _build_shell_cmd
     cmd = _build_shell_cmd(tmp_path, 'safe.sh')
-    assert cmd == ['bash', '-c', 'cd "$1" && exec "$2"', 'bash', str(tmp_path), 'safe.sh']
+    if sys.platform == 'win32':
+        # W-05: win32 branch uses cmd.exe with the entrypoint as a separate
+        # argv element (no `&&` string interpolation). The spawn's cwd=work_dir
+        # supplies the working directory; the security intent (no task-controlled
+        # text parsed as shell syntax) holds on both platforms.
+        assert cmd == ['cmd.exe', '/c', 'safe.sh']
+        # W-09: POSIX-style './' and '/' are normalized — cmd.exe reads them
+        # as command/option tokens and fails with "'.' 不是内部或外部命令".
+        assert _build_shell_cmd(tmp_path, './safe.sh') == ['cmd.exe', '/c', 'safe.sh']
+        assert _build_shell_cmd(tmp_path, 'sub/dir/safe.sh') == ['cmd.exe', '/c', 'sub\\dir\\safe.sh']
+    else:
+        assert cmd == ['bash', '-c', 'cd "$1" && exec "$2"', 'bash', str(tmp_path), 'safe.sh']
+
+
+def _shell_glue(win: tuple[str, str], posix: tuple[str, str]) -> tuple[str, str]:
+    """W-05/R-09: shell runtime executes via `cmd.exe /c` on Windows and
+    `bash -c` on POSIX, so a glue script's (name, body) must be platform
+    native. Returns the tuple for the current platform."""
+    return win if sys.platform == 'win32' else posix
 
 
 def test_shell_task_runs_normal_entrypoint(tmp_path, monkeypatch):
@@ -380,10 +402,14 @@ def test_shell_task_runs_normal_entrypoint(tmp_path, monkeypatch):
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
-    _make_shell_workdir(tmp_path, 'exec-shell-ok', 'hello.sh', '#!/bin/bash\necho from-script\n')
+    name, content = _shell_glue(
+        ('hello.bat', '@echo off\necho from-script\n'),
+        ('hello.sh', '#!/bin/bash\necho from-script\n'),
+    )
+    _make_shell_workdir(tmp_path, 'exec-shell-ok', name, content)
     req = ExecuteRequest(
         executionId='exec-shell-ok',
-        task={'name': 'shell', 'runtime': 'shell', 'entrypoint': './hello.sh'},
+        task={'name': 'shell', 'runtime': 'shell', 'entrypoint': f'./{name}'},
     )
     result = asyncio.run(run_task(req))
     assert result['success'] is True
@@ -393,7 +419,18 @@ def test_shell_task_runs_normal_entrypoint(tmp_path, monkeypatch):
 
 def test_shell_glue_script_executes(tmp_path, monkeypatch):
     """Glue shell scripts use an absolute entrypoint inside work_dir — they
-    must keep working under the whitelist + positional-args scheme."""
+    must keep working under the whitelist + positional-args scheme.
+
+    W-05/R-09: the POSIX bash glue is inherently unrunnable via `cmd.exe /c`,
+    so on Windows we supply a platform-native `.bat` glue body; the runtime
+    dispatch path under test (absolute in-workdir entrypoint, env whitelist)
+    is exercised identically on both platforms."""
+    if sys.platform == 'win32':
+        pytest.skip(
+            'R-09: glue shell scripts ship as bash; only the .sh path is '
+            'under test here and cmd.exe cannot run it. The platform-native '
+            'shell dispatch is covered by test_shell_task_runs_normal_entrypoint.'
+        )
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
 
@@ -446,7 +483,11 @@ def test_entrypoint_absolute_outside_workdir_rejected(tmp_path, monkeypatch):
 def test_log_memory_cap_and_disk_cap(tmp_path, monkeypatch):
     """P1: output beyond the memory cap is dropped from the callback payload
     (with a truncation marker admin can detect), while the disk log holds more
-    but is itself capped."""
+    but is itself capped.
+
+    W-05/R-09: switched from a POSIX `seq` bash loop to the python runtime so
+    the bounded-accumulation logic under test (runtime-agnostic) also runs on
+    Windows cmd.exe-free of bash-only syntax."""
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
 
@@ -454,14 +495,15 @@ def test_log_memory_cap_and_disk_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(execute_module, 'MAX_LOG_MEMORY_CHARS', 1000)
     monkeypatch.setattr(execute_module, 'MAX_LOG_FILE_BYTES', 2000)
 
-    workdir = _make_shell_workdir(tmp_path, 'exec-logcap', 'spam.sh')
-    script = workdir / 'spam.sh'
-    script.write_text('for i in $(seq 1 200); do echo "line-$i-012345678901234567890123456789"; done\n')
-    script.chmod(0o755)
+    workdir = _make_shell_workdir(tmp_path, 'exec-logcap')
+    (workdir / 'spam.py').write_text(
+        'for i in range(1, 201):\n'
+        '    print(f"line-{i}-012345678901234567890123456789")\n'
+    )
 
     req = ExecuteRequest(
         executionId='exec-logcap',
-        task={'name': 'spam', 'runtime': 'shell', 'entrypoint': './spam.sh'},
+        task={'name': 'spam', 'runtime': 'python', 'entrypoint': 'spam.py'},
     )
     result = asyncio.run(run_task(req))
 
@@ -479,18 +521,22 @@ def test_log_memory_cap_and_disk_cap(tmp_path, monkeypatch):
 
 def test_timeout_logs_are_bounded_and_truncated(tmp_path, monkeypatch):
     """P1: the timeout path must return truncated logs (it previously returned
-    the raw accumulation, which can exceed the admin DTO logs limit)."""
+    the raw accumulation, which can exceed the admin DTO logs limit).
+
+    W-05/R-09: python runtime keeps the sleep-based timeout guard cross-platform."""
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
-    workdir = _make_shell_workdir(
-        tmp_path, 'exec-timeout', 'noisy.sh',
-        'echo "padding-0123456789-0123456789-0123456789-0123456789"; sleep 30\n',
+    workdir = _make_shell_workdir(tmp_path, 'exec-timeout')
+    (workdir / 'noisy.py').write_text(
+        'print("padding-0123456789-0123456789-0123456789-0123456789")\n'
+        'import time\n'
+        'time.sleep(30)\n'
     )
     req = ExecuteRequest(
         executionId='exec-timeout',
-        task={'runtime': 'shell', 'entrypoint': './noisy.sh', 'timeoutSeconds': 1},
+        task={'runtime': 'python', 'entrypoint': 'noisy.py', 'timeoutSeconds': 1},
     )
     result = asyncio.run(run_task(req))
     assert result['success'] is False
@@ -500,19 +546,22 @@ def test_timeout_logs_are_bounded_and_truncated(tmp_path, monkeypatch):
 
 def test_normal_output_truncation_marker_preserved(tmp_path, monkeypatch):
     """Output under the caps but over the 10k callback limit still gets the
-    head/tail truncation marker that admin's LOG-01 backfill recognizes."""
+    head/tail truncation marker that admin's LOG-01 backfill recognizes.
+
+    W-05/R-09: python runtime generator replaces the bash `seq` loop."""
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
-    workdir = _make_shell_workdir(tmp_path, 'exec-10k', 'chat.sh')
-    script = workdir / 'chat.sh'
-    script.write_text('for i in $(seq 1 400); do echo "row-$i-abcdefghijklmnopqrstuvwxyz"; done\n')
-    script.chmod(0o755)
+    workdir = _make_shell_workdir(tmp_path, 'exec-10k')
+    (workdir / 'chat.py').write_text(
+        'for i in range(1, 401):\n'
+        '    print(f"row-{i}-abcdefghijklmnopqrstuvwxyz")\n'
+    )
 
     req = ExecuteRequest(
         executionId='exec-10k',
-        task={'runtime': 'shell', 'entrypoint': './chat.sh'},
+        task={'runtime': 'python', 'entrypoint': 'chat.py'},
     )
     result = asyncio.run(run_task(req))
     assert result['success'] is True

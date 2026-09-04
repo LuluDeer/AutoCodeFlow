@@ -1,0 +1,6 @@
+# 开发依赖（跑测试用，生产部署不需要）——W-08：
+# 此前 Linux 侧靠手动装，requirements.txt 不含 pytest，
+# 全新环境（尤其 Windows）按 README 装完无法执行测试。
+-r requirements.txt
+pytest>=8
+pytest-asyncio>=0.24
