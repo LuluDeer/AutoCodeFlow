@@ -81,9 +81,11 @@
 
 ## R16：executor-desktop Windows 打包（路线图 #12 收口）
 
-- [ ] 4.1 `apps/executor-desktop` Windows 打包流程（electron-builder/ncc 链）——最大未知面（R-13）
-- [ ] 4.2 打包产物冒烟：托盘/生命周期/内置 executor-node 在 Windows 启动
-- [ ] 4.3 与 R14 手动路线的行为差异记录
+> **状态：2026-09-05 完成。** 全链首跑即通（见 findings R16 表）；新发现 W-16（assets 图标未入库，体验）/W-17（win32 stop 语义失效，已修 P-12）/W-18（prebuilt bundle 跟踪漂移，记录）。
+
+- [x] 4.1 Windows 打包流程跑通：`build:executor`（ncc）→ `build:main` → `build:renderer` → `electron-builder --win nsis --x64` 产出 100.6MB NSIS 安装包（R-13 最大未知面收口）
+- [x] 4.2 产物冒烟：win-unpacked exe 启动（App ready/Tray initialized/Wizard opened）；内置 ncc executor 独立注册 online + 真实任务 success（ncc 打包未破坏运行时）；托盘因 assets 缺失显示空白（W-16）
+- [x] 4.3 差异记录：停止链 win32 已修（P-12/W-17）；GUI 会话依赖 → 服务化部署仍以 deployment.md Windows 手动路线为主；配置由 electron-store 向导承载非 .env（差异细节见 findings R16 表）
 
 ## 问题回传模板（写到 docs/windows-findings.md，每项一条）
 

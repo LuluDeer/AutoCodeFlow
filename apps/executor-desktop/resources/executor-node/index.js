@@ -6751,7 +6751,7 @@ function loadParser (parserName) {
  * @private
  */
 
-var createError = __nccwpck_require__(3891)
+var createError = __nccwpck_require__(8901)
 var destroy = __nccwpck_require__(503)
 var getBody = __nccwpck_require__(6410)
 var iconv = __nccwpck_require__(7899)
@@ -6967,7 +6967,7 @@ function dump (req, callback) {
 
 var bytes = __nccwpck_require__(9402)
 var contentType = __nccwpck_require__(5887)
-var createError = __nccwpck_require__(3891)
+var createError = __nccwpck_require__(8901)
 var debug = __nccwpck_require__(1479)('body-parser:json')
 var read = __nccwpck_require__(9641)
 var typeis = __nccwpck_require__(7042)
@@ -7468,7 +7468,7 @@ function typeChecker (type) {
 
 var bytes = __nccwpck_require__(9402)
 var contentType = __nccwpck_require__(5887)
-var createError = __nccwpck_require__(3891)
+var createError = __nccwpck_require__(8901)
 var debug = __nccwpck_require__(1479)('body-parser:urlencoded')
 var deprecate = __nccwpck_require__(5548)('body-parser')
 var read = __nccwpck_require__(9641)
@@ -7754,458 +7754,6 @@ function typeChecker (type) {
   return function checkType (req) {
     return Boolean(typeis(req, type))
   }
-}
-
-
-/***/ }),
-
-/***/ 3891:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-/*!
- * http-errors
- * Copyright(c) 2014 Jonathan Ong
- * Copyright(c) 2016 Douglas Christopher Wilson
- * MIT Licensed
- */
-
-
-
-/**
- * Module dependencies.
- * @private
- */
-
-var deprecate = __nccwpck_require__(5548)('http-errors')
-var setPrototypeOf = __nccwpck_require__(9904)
-var statuses = __nccwpck_require__(9667)
-var inherits = __nccwpck_require__(9715)
-var toIdentifier = __nccwpck_require__(5461)
-
-/**
- * Module exports.
- * @public
- */
-
-module.exports = createError
-module.exports.HttpError = createHttpErrorConstructor()
-module.exports.isHttpError = createIsHttpErrorFunction(module.exports.HttpError)
-
-// Populate exports for all constructors
-populateConstructorExports(module.exports, statuses.codes, module.exports.HttpError)
-
-/**
- * Get the code class of a status code.
- * @private
- */
-
-function codeClass (status) {
-  return Number(String(status).charAt(0) + '00')
-}
-
-/**
- * Create a new HTTP Error.
- *
- * @returns {Error}
- * @public
- */
-
-function createError () {
-  // so much arity going on ~_~
-  var err
-  var msg
-  var status = 500
-  var props = {}
-  for (var i = 0; i < arguments.length; i++) {
-    var arg = arguments[i]
-    var type = typeof arg
-    if (type === 'object' && arg instanceof Error) {
-      err = arg
-      status = err.status || err.statusCode || status
-    } else if (type === 'number' && i === 0) {
-      status = arg
-    } else if (type === 'string') {
-      msg = arg
-    } else if (type === 'object') {
-      props = arg
-    } else {
-      throw new TypeError('argument #' + (i + 1) + ' unsupported type ' + type)
-    }
-  }
-
-  if (typeof status === 'number' && (status < 400 || status >= 600)) {
-    deprecate('non-error status code; use only 4xx or 5xx status codes')
-  }
-
-  if (typeof status !== 'number' ||
-    (!statuses.message[status] && (status < 400 || status >= 600))) {
-    status = 500
-  }
-
-  // constructor
-  var HttpError = createError[status] || createError[codeClass(status)]
-
-  if (!err) {
-    // create error
-    err = HttpError
-      ? new HttpError(msg)
-      : new Error(msg || statuses.message[status])
-    Error.captureStackTrace(err, createError)
-  }
-
-  if (!HttpError || !(err instanceof HttpError) || err.status !== status) {
-    // add properties to generic error
-    err.expose = status < 500
-    err.status = err.statusCode = status
-  }
-
-  for (var key in props) {
-    if (key !== 'status' && key !== 'statusCode') {
-      err[key] = props[key]
-    }
-  }
-
-  return err
-}
-
-/**
- * Create HTTP error abstract base class.
- * @private
- */
-
-function createHttpErrorConstructor () {
-  function HttpError () {
-    throw new TypeError('cannot construct abstract class')
-  }
-
-  inherits(HttpError, Error)
-
-  return HttpError
-}
-
-/**
- * Create a constructor for a client error.
- * @private
- */
-
-function createClientErrorConstructor (HttpError, name, code) {
-  var className = toClassName(name)
-
-  function ClientError (message) {
-    // create the error object
-    var msg = message != null ? message : statuses.message[code]
-    var err = new Error(msg)
-
-    // capture a stack trace to the construction point
-    Error.captureStackTrace(err, ClientError)
-
-    // adjust the [[Prototype]]
-    setPrototypeOf(err, ClientError.prototype)
-
-    // redefine the error message
-    Object.defineProperty(err, 'message', {
-      enumerable: true,
-      configurable: true,
-      value: msg,
-      writable: true
-    })
-
-    // redefine the error name
-    Object.defineProperty(err, 'name', {
-      enumerable: false,
-      configurable: true,
-      value: className,
-      writable: true
-    })
-
-    return err
-  }
-
-  inherits(ClientError, HttpError)
-  nameFunc(ClientError, className)
-
-  ClientError.prototype.status = code
-  ClientError.prototype.statusCode = code
-  ClientError.prototype.expose = true
-
-  return ClientError
-}
-
-/**
- * Create function to test is a value is a HttpError.
- * @private
- */
-
-function createIsHttpErrorFunction (HttpError) {
-  return function isHttpError (val) {
-    if (!val || typeof val !== 'object') {
-      return false
-    }
-
-    if (val instanceof HttpError) {
-      return true
-    }
-
-    return val instanceof Error &&
-      typeof val.expose === 'boolean' &&
-      typeof val.statusCode === 'number' && val.status === val.statusCode
-  }
-}
-
-/**
- * Create a constructor for a server error.
- * @private
- */
-
-function createServerErrorConstructor (HttpError, name, code) {
-  var className = toClassName(name)
-
-  function ServerError (message) {
-    // create the error object
-    var msg = message != null ? message : statuses.message[code]
-    var err = new Error(msg)
-
-    // capture a stack trace to the construction point
-    Error.captureStackTrace(err, ServerError)
-
-    // adjust the [[Prototype]]
-    setPrototypeOf(err, ServerError.prototype)
-
-    // redefine the error message
-    Object.defineProperty(err, 'message', {
-      enumerable: true,
-      configurable: true,
-      value: msg,
-      writable: true
-    })
-
-    // redefine the error name
-    Object.defineProperty(err, 'name', {
-      enumerable: false,
-      configurable: true,
-      value: className,
-      writable: true
-    })
-
-    return err
-  }
-
-  inherits(ServerError, HttpError)
-  nameFunc(ServerError, className)
-
-  ServerError.prototype.status = code
-  ServerError.prototype.statusCode = code
-  ServerError.prototype.expose = false
-
-  return ServerError
-}
-
-/**
- * Set the name of a function, if possible.
- * @private
- */
-
-function nameFunc (func, name) {
-  var desc = Object.getOwnPropertyDescriptor(func, 'name')
-
-  if (desc && desc.configurable) {
-    desc.value = name
-    Object.defineProperty(func, 'name', desc)
-  }
-}
-
-/**
- * Populate the exports object with constructors for every error class.
- * @private
- */
-
-function populateConstructorExports (exports, codes, HttpError) {
-  codes.forEach(function forEachCode (code) {
-    var CodeError
-    var name = toIdentifier(statuses.message[code])
-
-    switch (codeClass(code)) {
-      case 400:
-        CodeError = createClientErrorConstructor(HttpError, name, code)
-        break
-      case 500:
-        CodeError = createServerErrorConstructor(HttpError, name, code)
-        break
-    }
-
-    if (CodeError) {
-      // export the constructor
-      exports[code] = CodeError
-      exports[name] = CodeError
-    }
-  })
-}
-
-/**
- * Get a class name from a name identifier.
- *
- * @param {string} name
- * @returns {string}
- * @private
- */
-
-function toClassName (name) {
-  return name.slice(-5) === 'Error' ? name : name + 'Error'
-}
-
-
-/***/ }),
-
-/***/ 9667:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-/*!
- * statuses
- * Copyright(c) 2014 Jonathan Ong
- * Copyright(c) 2016 Douglas Christopher Wilson
- * MIT Licensed
- */
-
-
-
-/**
- * Module dependencies.
- * @private
- */
-
-var codes = __nccwpck_require__(9828)
-
-/**
- * Module exports.
- * @public
- */
-
-module.exports = status
-
-// status code to message map
-status.message = codes
-
-// status message (lower-case) to code map
-status.code = createMessageToStatusCodeMap(codes)
-
-// array of status codes
-status.codes = createStatusCodeList(codes)
-
-// status codes for redirects
-status.redirect = {
-  300: true,
-  301: true,
-  302: true,
-  303: true,
-  305: true,
-  307: true,
-  308: true
-}
-
-// status codes for empty bodies
-status.empty = {
-  204: true,
-  205: true,
-  304: true
-}
-
-// status codes for when you should retry the request
-status.retry = {
-  502: true,
-  503: true,
-  504: true
-}
-
-/**
- * Create a map of message to status code.
- * @private
- */
-
-function createMessageToStatusCodeMap (codes) {
-  var map = {}
-
-  Object.keys(codes).forEach(function forEachCode (code) {
-    var message = codes[code]
-    var status = Number(code)
-
-    // populate map
-    map[message.toLowerCase()] = status
-  })
-
-  return map
-}
-
-/**
- * Create a list of all status codes.
- * @private
- */
-
-function createStatusCodeList (codes) {
-  return Object.keys(codes).map(function mapCode (code) {
-    return Number(code)
-  })
-}
-
-/**
- * Get the status code for given message.
- * @private
- */
-
-function getStatusCode (message) {
-  var msg = message.toLowerCase()
-
-  if (!Object.prototype.hasOwnProperty.call(status.code, msg)) {
-    throw new Error('invalid status message: "' + message + '"')
-  }
-
-  return status.code[msg]
-}
-
-/**
- * Get the status message for given code.
- * @private
- */
-
-function getStatusMessage (code) {
-  if (!Object.prototype.hasOwnProperty.call(status.message, code)) {
-    throw new Error('invalid status code: ' + code)
-  }
-
-  return status.message[code]
-}
-
-/**
- * Get the status code.
- *
- * Given a number, this will throw if it is not a known status
- * code, otherwise the code will be returned. Given a string,
- * the string will be parsed for a number and return the code
- * if valid, otherwise will lookup the code assuming this is
- * the status message.
- *
- * @param {string|number} code
- * @returns {number}
- * @public
- */
-
-function status (code) {
-  if (typeof code === 'number') {
-    return getStatusMessage(code)
-  }
-
-  if (typeof code !== 'string') {
-    throw new TypeError('code must be a number or string')
-  }
-
-  // '403'
-  var n = parseInt(code, 10)
-  if (!isNaN(n)) {
-    return getStatusMessage(n)
-  }
-
-  return getStatusCode(code)
 }
 
 
@@ -9420,14 +8968,14 @@ var crypto = __nccwpck_require__(6982);
  * Sign the given `val` with `secret`.
  *
  * @param {String} val
- * @param {String} secret
+ * @param {String|NodeJS.ArrayBufferView|crypto.KeyObject} secret
  * @return {String}
  * @api private
  */
 
 exports.sign = function(val, secret){
-  if ('string' != typeof val) throw new TypeError("Cookie value must be provided as a string.");
-  if ('string' != typeof secret) throw new TypeError("Secret string must be provided.");
+  if ('string' !== typeof val) throw new TypeError("Cookie value must be provided as a string.");
+  if (null == secret) throw new TypeError("Secret key must be provided.");
   return val + '.' + crypto
     .createHmac('sha256', secret)
     .update(val)
@@ -9440,14 +8988,14 @@ exports.sign = function(val, secret){
  * returning `false` if the signature is invalid.
  *
  * @param {String} val
- * @param {String} secret
+ * @param {String|NodeJS.ArrayBufferView|crypto.KeyObject} secret
  * @return {String|Boolean}
  * @api private
  */
 
 exports.unsign = function(val, secret){
-  if ('string' != typeof val) throw new TypeError("Signed cookie string must be provided.");
-  if ('string' != typeof secret) throw new TypeError("Secret string must be provided.");
+  if ('string' !== typeof val) throw new TypeError("Signed cookie string must be provided.");
+  if (null == secret) throw new TypeError("Secret key must be provided.");
   var str = val.slice(0, val.lastIndexOf('.'))
     , mac = exports.sign(str, secret);
   
@@ -9492,6 +9040,7 @@ exports.serialize = serialize;
  */
 
 var __toString = Object.prototype.toString
+var __hasOwnProperty = Object.prototype.hasOwnProperty
 
 /**
  * RegExp to match cookie-name in RFC 6265 sec 4.1.1
@@ -9601,7 +9150,7 @@ function parse(str, opt) {
     var key = str.slice(keyStartIdx, keyEndIdx);
 
     // only assign once
-    if (!obj.hasOwnProperty(key)) {
+    if (!__hasOwnProperty.call(obj, key)) {
       var valStartIdx = startIndex(str, eqIdx + 1, endIdx);
       var valEndIdx = endIndex(str, endIdx, valStartIdx);
 
@@ -20002,13 +19551,14 @@ function populateConstructorExports (exports, codes, HttpError) {
 
 /**
  * Get a class name from a name identifier.
+ *
+ * @param {string} name
+ * @returns {string}
  * @private
  */
 
 function toClassName (name) {
-  return name.substr(-5) !== 'Error'
-    ? name + 'Error'
-    : name
+  return name.slice(-5) === 'Error' ? name : name + 'Error'
 }
 
 
@@ -26333,19 +25883,28 @@ function captureSegment (state, start, end, checkJson) {
   }
 }
 
+function chargeMergeWork (state) {
+  state.totalMergeKeys++
+
+  if (state.maxTotalMergeKeys !== -1 && state.totalMergeKeys > state.maxTotalMergeKeys) {
+    throwError(state, 'merge keys exceeded maxTotalMergeKeys (' + state.maxTotalMergeKeys + ')')
+  }
+}
+
 function mergeMappings (state, destination, source, overridableKeys) {
   if (!common.isObject(source)) {
     throwError(state, 'cannot merge mappings; the provided source object is unacceptable')
   }
+
+  // Count the source mapping itself to bound sequences of empty mappings.
+  chargeMergeWork(state)
 
   const sourceKeys = Object.keys(source)
 
   for (let index = 0, quantity = sourceKeys.length; index < quantity; index += 1) {
     const key = sourceKeys[index]
 
-    if (state.maxTotalMergeKeys !== -1 && ++state.totalMergeKeys > state.maxTotalMergeKeys) {
-      throwError(state, 'merge keys exceeded maxTotalMergeKeys (' + state.maxTotalMergeKeys + ')')
-    }
+    chargeMergeWork(state)
 
     if (!_hasOwnProperty.call(destination, key)) {
       setProperty(destination, key, source[key])
@@ -26388,6 +25947,10 @@ function storeMappingPair (state, _result, overridableKeys, keyTag, keyNode, val
 
   if (keyTag === 'tag:yaml.org,2002:merge') {
     if (Array.isArray(valueNode)) {
+      if (valueNode.length > 100) {
+        throwError(state, 'abnormal merge sequence size')
+      }
+
       for (let index = 0, quantity = valueNode.length; index < quantity; index += 1) {
         mergeMappings(state, _result, valueNode[index], overridableKeys)
       }
@@ -33882,9 +33445,9 @@ var interpretNumericEntities = function (str) {
     });
 };
 
-var parseArrayValue = function (val, options, currentArrayLength, isFlatArrayValue) {
+var parseArrayValue = function (val, options, currentArrayLength) {
     if (val && typeof val === 'string' && options.comma && val.indexOf(',') > -1) {
-        if (isFlatArrayValue && options.throwOnLimitExceeded) {
+        if (options.throwOnLimitExceeded) {
             var commaCount = 0;
             var commaIndex = val.indexOf(',');
             while (commaIndex > -1) {
@@ -33971,8 +33534,7 @@ var parseValues = function parseQueryStringValues(str, options) {
                     parseArrayValue(
                         part.slice(pos + 1),
                         options,
-                        isArray(obj[key]) ? obj[key].length : 0,
-                        part.indexOf('[]=') === -1
+                        isArray(obj[key]) ? obj[key].length : 0
                     ),
                     function (encodedVal) {
                         return options.decoder(encodedVal, defaults.decoder, charset, 'value');
@@ -34304,6 +33866,7 @@ var defaults = {
     charsetSentinel: false,
     commaRoundTrip: false,
     delimiter: '&',
+    depth: Infinity,
     encode: true,
     encodeDotInKeys: false,
     encoder: utils.encode,
@@ -34348,9 +33911,15 @@ var stringify = function stringify(
     formatter,
     encodeValuesOnly,
     charset,
-    sideChannel
+    sideChannel,
+    depth,
+    currentDepth
 ) {
     var obj = object;
+
+    if (currentDepth > depth) {
+        throw new RangeError('Input depth exceeded depth option of ' + depth);
+    }
 
     var tmpSc = sideChannel;
     var step = 0;
@@ -34371,9 +33940,9 @@ var stringify = function stringify(
         }
     }
 
-    if (typeof filter === 'function') {
-        obj = filter(prefix, obj);
-    } else if (obj instanceof Date) {
+    obj = typeof filter === 'function' ? filter(prefix, obj) : obj;
+
+    if (obj instanceof Date) {
         obj = serializeDate(obj);
     } else if (generateArrayPrefix === 'comma' && isArray(obj)) {
         obj = utils.maybeMap(obj, function (value) {
@@ -34426,7 +33995,7 @@ var stringify = function stringify(
 
     var adjustedPrefix = commaRoundTrip && isArray(obj) && obj.length === 1 ? encodedPrefix + '[]' : encodedPrefix;
 
-    if (allowEmptyArrays && isArray(obj) && obj.length === 0) {
+    if (allowEmptyArrays && isArray(obj) && obj.length === 0 && Object.keys(obj).length === 0) {
         return adjustedPrefix + '[]';
     }
 
@@ -34466,7 +34035,9 @@ var stringify = function stringify(
             formatter,
             encodeValuesOnly,
             charset,
-            valueSideChannel
+            valueSideChannel,
+            depth,
+            currentDepth + 1
         ));
     }
 
@@ -34533,6 +34104,7 @@ var normalizeStringifyOptions = function normalizeStringifyOptions(opts) {
         charsetSentinel: typeof opts.charsetSentinel === 'boolean' ? opts.charsetSentinel : defaults.charsetSentinel,
         commaRoundTrip: !!opts.commaRoundTrip,
         delimiter: typeof opts.delimiter === 'undefined' ? defaults.delimiter : opts.delimiter,
+        depth: typeof opts.depth === 'number' ? opts.depth : defaults.depth,
         encode: typeof opts.encode === 'boolean' ? opts.encode : defaults.encode,
         encodeDotInKeys: typeof opts.encodeDotInKeys === 'boolean' ? opts.encodeDotInKeys : defaults.encodeDotInKeys,
         encoder: typeof opts.encoder === 'function' ? opts.encoder : defaults.encoder,
@@ -34592,9 +34164,12 @@ module.exports = function (object, opts) {
         if (options.skipNulls && value === null) {
             continue;
         }
+
+        var encodedKey = options.encodeDotInKeys ? String(key).replace(/\./g, '%2E') : String(key);
+
         pushToArray(keys, stringify(
             value,
-            key,
+            encodedKey,
             generateArrayPrefix,
             commaRoundTrip,
             options.allowEmptyArrays,
@@ -34610,7 +34185,9 @@ module.exports = function (object, opts) {
             options.formatter,
             options.encodeValuesOnly,
             options.charset,
-            sideChannel
+            sideChannel,
+            options.depth,
+            0
         ));
     }
 
@@ -34968,7 +34545,7 @@ var isBuffer = function isBuffer(obj) {
         return false;
     }
 
-    return !!(obj.constructor && obj.constructor.isBuffer && obj.constructor.isBuffer(obj));
+    return !!(obj.constructor && typeof obj.constructor.isBuffer === 'function' && obj.constructor.isBuffer(obj));
 };
 
 var combine = function combine(a, b, arrayLimit, plainObjects, throwOnLimitExceeded) {
@@ -34977,8 +34554,15 @@ var combine = function combine(a, b, arrayLimit, plainObjects, throwOnLimitExcee
         if (throwOnLimitExceeded) {
             throw new RangeError('Array limit exceeded. Only ' + arrayLimit + ' element' + (arrayLimit === 1 ? '' : 's') + ' allowed in an array.');
         }
-        var newIndex = getMaxIndex(a) + 1;
-        a[newIndex] = b;
+        // spread `b` one level, matching the `[].concat(a, b)` used below, so a
+        // collection appended to an already-overflowed object is flattened
+        // rather than nested under a single index
+        var bValues = isArray(b) ? b : [b];
+        var newIndex = getMaxIndex(a);
+        for (var i = 0; i < bValues.length; ++i) {
+            newIndex += 1;
+            a[newIndex] = bValues[i];
+        }
         setMaxIndex(a, newIndex);
         return a;
     }
@@ -35212,7 +34796,7 @@ function sortByRangeStart (a, b) {
 
 var asyncHooks = tryRequireAsyncHooks()
 var bytes = __nccwpck_require__(9402)
-var createError = __nccwpck_require__(6566)
+var createError = __nccwpck_require__(8901)
 var iconv = __nccwpck_require__(7899)
 var unpipe = __nccwpck_require__(7920)
 
@@ -35531,458 +35115,6 @@ function wrap (fn) {
 
   // return bound function
   return res.runInAsyncScope.bind(res, fn, null)
-}
-
-
-/***/ }),
-
-/***/ 6566:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-/*!
- * http-errors
- * Copyright(c) 2014 Jonathan Ong
- * Copyright(c) 2016 Douglas Christopher Wilson
- * MIT Licensed
- */
-
-
-
-/**
- * Module dependencies.
- * @private
- */
-
-var deprecate = __nccwpck_require__(5548)('http-errors')
-var setPrototypeOf = __nccwpck_require__(9904)
-var statuses = __nccwpck_require__(4236)
-var inherits = __nccwpck_require__(9715)
-var toIdentifier = __nccwpck_require__(5461)
-
-/**
- * Module exports.
- * @public
- */
-
-module.exports = createError
-module.exports.HttpError = createHttpErrorConstructor()
-module.exports.isHttpError = createIsHttpErrorFunction(module.exports.HttpError)
-
-// Populate exports for all constructors
-populateConstructorExports(module.exports, statuses.codes, module.exports.HttpError)
-
-/**
- * Get the code class of a status code.
- * @private
- */
-
-function codeClass (status) {
-  return Number(String(status).charAt(0) + '00')
-}
-
-/**
- * Create a new HTTP Error.
- *
- * @returns {Error}
- * @public
- */
-
-function createError () {
-  // so much arity going on ~_~
-  var err
-  var msg
-  var status = 500
-  var props = {}
-  for (var i = 0; i < arguments.length; i++) {
-    var arg = arguments[i]
-    var type = typeof arg
-    if (type === 'object' && arg instanceof Error) {
-      err = arg
-      status = err.status || err.statusCode || status
-    } else if (type === 'number' && i === 0) {
-      status = arg
-    } else if (type === 'string') {
-      msg = arg
-    } else if (type === 'object') {
-      props = arg
-    } else {
-      throw new TypeError('argument #' + (i + 1) + ' unsupported type ' + type)
-    }
-  }
-
-  if (typeof status === 'number' && (status < 400 || status >= 600)) {
-    deprecate('non-error status code; use only 4xx or 5xx status codes')
-  }
-
-  if (typeof status !== 'number' ||
-    (!statuses.message[status] && (status < 400 || status >= 600))) {
-    status = 500
-  }
-
-  // constructor
-  var HttpError = createError[status] || createError[codeClass(status)]
-
-  if (!err) {
-    // create error
-    err = HttpError
-      ? new HttpError(msg)
-      : new Error(msg || statuses.message[status])
-    Error.captureStackTrace(err, createError)
-  }
-
-  if (!HttpError || !(err instanceof HttpError) || err.status !== status) {
-    // add properties to generic error
-    err.expose = status < 500
-    err.status = err.statusCode = status
-  }
-
-  for (var key in props) {
-    if (key !== 'status' && key !== 'statusCode') {
-      err[key] = props[key]
-    }
-  }
-
-  return err
-}
-
-/**
- * Create HTTP error abstract base class.
- * @private
- */
-
-function createHttpErrorConstructor () {
-  function HttpError () {
-    throw new TypeError('cannot construct abstract class')
-  }
-
-  inherits(HttpError, Error)
-
-  return HttpError
-}
-
-/**
- * Create a constructor for a client error.
- * @private
- */
-
-function createClientErrorConstructor (HttpError, name, code) {
-  var className = toClassName(name)
-
-  function ClientError (message) {
-    // create the error object
-    var msg = message != null ? message : statuses.message[code]
-    var err = new Error(msg)
-
-    // capture a stack trace to the construction point
-    Error.captureStackTrace(err, ClientError)
-
-    // adjust the [[Prototype]]
-    setPrototypeOf(err, ClientError.prototype)
-
-    // redefine the error message
-    Object.defineProperty(err, 'message', {
-      enumerable: true,
-      configurable: true,
-      value: msg,
-      writable: true
-    })
-
-    // redefine the error name
-    Object.defineProperty(err, 'name', {
-      enumerable: false,
-      configurable: true,
-      value: className,
-      writable: true
-    })
-
-    return err
-  }
-
-  inherits(ClientError, HttpError)
-  nameFunc(ClientError, className)
-
-  ClientError.prototype.status = code
-  ClientError.prototype.statusCode = code
-  ClientError.prototype.expose = true
-
-  return ClientError
-}
-
-/**
- * Create function to test is a value is a HttpError.
- * @private
- */
-
-function createIsHttpErrorFunction (HttpError) {
-  return function isHttpError (val) {
-    if (!val || typeof val !== 'object') {
-      return false
-    }
-
-    if (val instanceof HttpError) {
-      return true
-    }
-
-    return val instanceof Error &&
-      typeof val.expose === 'boolean' &&
-      typeof val.statusCode === 'number' && val.status === val.statusCode
-  }
-}
-
-/**
- * Create a constructor for a server error.
- * @private
- */
-
-function createServerErrorConstructor (HttpError, name, code) {
-  var className = toClassName(name)
-
-  function ServerError (message) {
-    // create the error object
-    var msg = message != null ? message : statuses.message[code]
-    var err = new Error(msg)
-
-    // capture a stack trace to the construction point
-    Error.captureStackTrace(err, ServerError)
-
-    // adjust the [[Prototype]]
-    setPrototypeOf(err, ServerError.prototype)
-
-    // redefine the error message
-    Object.defineProperty(err, 'message', {
-      enumerable: true,
-      configurable: true,
-      value: msg,
-      writable: true
-    })
-
-    // redefine the error name
-    Object.defineProperty(err, 'name', {
-      enumerable: false,
-      configurable: true,
-      value: className,
-      writable: true
-    })
-
-    return err
-  }
-
-  inherits(ServerError, HttpError)
-  nameFunc(ServerError, className)
-
-  ServerError.prototype.status = code
-  ServerError.prototype.statusCode = code
-  ServerError.prototype.expose = false
-
-  return ServerError
-}
-
-/**
- * Set the name of a function, if possible.
- * @private
- */
-
-function nameFunc (func, name) {
-  var desc = Object.getOwnPropertyDescriptor(func, 'name')
-
-  if (desc && desc.configurable) {
-    desc.value = name
-    Object.defineProperty(func, 'name', desc)
-  }
-}
-
-/**
- * Populate the exports object with constructors for every error class.
- * @private
- */
-
-function populateConstructorExports (exports, codes, HttpError) {
-  codes.forEach(function forEachCode (code) {
-    var CodeError
-    var name = toIdentifier(statuses.message[code])
-
-    switch (codeClass(code)) {
-      case 400:
-        CodeError = createClientErrorConstructor(HttpError, name, code)
-        break
-      case 500:
-        CodeError = createServerErrorConstructor(HttpError, name, code)
-        break
-    }
-
-    if (CodeError) {
-      // export the constructor
-      exports[code] = CodeError
-      exports[name] = CodeError
-    }
-  })
-}
-
-/**
- * Get a class name from a name identifier.
- *
- * @param {string} name
- * @returns {string}
- * @private
- */
-
-function toClassName (name) {
-  return name.slice(-5) === 'Error' ? name : name + 'Error'
-}
-
-
-/***/ }),
-
-/***/ 4236:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-/*!
- * statuses
- * Copyright(c) 2014 Jonathan Ong
- * Copyright(c) 2016 Douglas Christopher Wilson
- * MIT Licensed
- */
-
-
-
-/**
- * Module dependencies.
- * @private
- */
-
-var codes = __nccwpck_require__(6723)
-
-/**
- * Module exports.
- * @public
- */
-
-module.exports = status
-
-// status code to message map
-status.message = codes
-
-// status message (lower-case) to code map
-status.code = createMessageToStatusCodeMap(codes)
-
-// array of status codes
-status.codes = createStatusCodeList(codes)
-
-// status codes for redirects
-status.redirect = {
-  300: true,
-  301: true,
-  302: true,
-  303: true,
-  305: true,
-  307: true,
-  308: true
-}
-
-// status codes for empty bodies
-status.empty = {
-  204: true,
-  205: true,
-  304: true
-}
-
-// status codes for when you should retry the request
-status.retry = {
-  502: true,
-  503: true,
-  504: true
-}
-
-/**
- * Create a map of message to status code.
- * @private
- */
-
-function createMessageToStatusCodeMap (codes) {
-  var map = {}
-
-  Object.keys(codes).forEach(function forEachCode (code) {
-    var message = codes[code]
-    var status = Number(code)
-
-    // populate map
-    map[message.toLowerCase()] = status
-  })
-
-  return map
-}
-
-/**
- * Create a list of all status codes.
- * @private
- */
-
-function createStatusCodeList (codes) {
-  return Object.keys(codes).map(function mapCode (code) {
-    return Number(code)
-  })
-}
-
-/**
- * Get the status code for given message.
- * @private
- */
-
-function getStatusCode (message) {
-  var msg = message.toLowerCase()
-
-  if (!Object.prototype.hasOwnProperty.call(status.code, msg)) {
-    throw new Error('invalid status message: "' + message + '"')
-  }
-
-  return status.code[msg]
-}
-
-/**
- * Get the status message for given code.
- * @private
- */
-
-function getStatusMessage (code) {
-  if (!Object.prototype.hasOwnProperty.call(status.message, code)) {
-    throw new Error('invalid status code: ' + code)
-  }
-
-  return status.message[code]
-}
-
-/**
- * Get the status code.
- *
- * Given a number, this will throw if it is not a known status
- * code, otherwise the code will be returned. Given a string,
- * the string will be parsed for a number and return the code
- * if valid, otherwise will lookup the code assuming this is
- * the status message.
- *
- * @param {string|number} code
- * @returns {number}
- * @public
- */
-
-function status (code) {
-  if (typeof code === 'number') {
-    return getStatusMessage(code)
-  }
-
-  if (typeof code !== 'string') {
-    throw new TypeError('code must be a number or string')
-  }
-
-  // '403'
-  var n = parseInt(code, 10)
-  if (!isNaN(n)) {
-    return getStatusMessage(n)
-  }
-
-  return getStatusCode(code)
 }
 
 
@@ -39766,7 +38898,7 @@ var createError = __nccwpck_require__(8901)
 var debug = __nccwpck_require__(1479)('send')
 var deprecate = __nccwpck_require__(5548)('send')
 var destroy = __nccwpck_require__(503)
-var encodeUrl = __nccwpck_require__(4400)
+var encodeUrl = __nccwpck_require__(102)
 var escapeHtml = __nccwpck_require__(218)
 var etag = __nccwpck_require__(4582)
 var fresh = __nccwpck_require__(9013)
@@ -40889,74 +40021,6 @@ function setHeaders (res, headers) {
     var key = keys[i]
     res.setHeader(key, headers[key])
   }
-}
-
-
-/***/ }),
-
-/***/ 4400:
-/***/ ((module) => {
-
-"use strict";
-/*!
- * encodeurl
- * Copyright(c) 2016 Douglas Christopher Wilson
- * MIT Licensed
- */
-
-
-
-/**
- * Module exports.
- * @public
- */
-
-module.exports = encodeUrl
-
-/**
- * RegExp to match non-URL code points, *after* encoding (i.e. not including "%")
- * and including invalid escape sequences.
- * @private
- */
-
-var ENCODE_CHARS_REGEXP = /(?:[^\x21\x25\x26-\x3B\x3D\x3F-\x5B\x5D\x5F\x61-\x7A\x7E]|%(?:[^0-9A-Fa-f]|[0-9A-Fa-f][^0-9A-Fa-f]|$))+/g
-
-/**
- * RegExp to match unmatched surrogate pair.
- * @private
- */
-
-var UNMATCHED_SURROGATE_PAIR_REGEXP = /(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF]([^\uDC00-\uDFFF]|$)/g
-
-/**
- * String to replace unmatched surrogate pair with.
- * @private
- */
-
-var UNMATCHED_SURROGATE_PAIR_REPLACE = '$1\uFFFD$2'
-
-/**
- * Encode a URL to a percent-encoded form, excluding already-encoded sequences.
- *
- * This function will take an already-encoded URL and encode all the non-URL
- * code points. This function will not encode the "%" character unless it is
- * not part of a valid sequence (`%20` will be left as-is, but `%foo` will
- * be encoded as `%25foo`).
- *
- * This encode is meant to be "safe" and does not throw errors. It will try as
- * hard as it can to properly encode the given URL, including replacing any raw,
- * unpaired surrogate pairs with the Unicode replacement character prior to
- * encoding.
- *
- * @param {string} url
- * @return {string}
- * @public
- */
-
-function encodeUrl (url) {
-  return String(url)
-    .replace(UNMATCHED_SURROGATE_PAIR_REGEXP, UNMATCHED_SURROGATE_PAIR_REPLACE)
-    .replace(ENCODE_CHARS_REGEXP, encodeURI)
 }
 
 
@@ -44560,6 +43624,7 @@ class Logger extends Transform {
           if (info instanceof Error) {
             infoClone.stack = info.stack;
             infoClone.message = info.message;
+            infoClone.cause = info.cause;
           }
 
           logger.write(infoClone);
@@ -44645,6 +43710,28 @@ class Logger extends Transform {
     if (rejectionHandlers) {
       this.rejections.handle(rejectionHandlers);
     }
+  }
+
+  /* eslint-disable valid-jsdoc */
+  /**
+   * Helper method to get the highest logging level associated with a logger
+   *
+   * @returns { number | null } - The highest configured logging level, null
+   * for invalid configuration
+   */
+  getHighestLogLevel() {
+    // This can be null, if this.level has an invalid value
+    const configuredLevelValue = getLevelValue(this.levels, this.level);
+
+    // If there are no transports, return the level configured at the logger level
+    if (!this.transports || this.transports.length === 0) {
+      return configuredLevelValue;
+    }
+
+    return this.transports.reduce((max, transport) => {
+      const levelValue = getLevelValue(this.levels, transport.level);
+      return levelValue !== null && levelValue > max ? levelValue : max;
+    }, configuredLevelValue);
   }
 
   isLevelEnabled(level) {
@@ -45231,7 +44318,7 @@ class Profiler {
 
     return this.logger.write(info);
   }
-};
+}
 
 module.exports = Profiler;
 
@@ -45935,6 +45022,38 @@ module.exports = class File extends TransportStream {
         setImmediate(() => this._stream.end());
       }
     }
+  }
+
+  /**
+   * Called by Node.js Writable stream before emitting 'finish'.
+   * Ensures all buffered data is flushed to the underlying file stream
+   * before the transport signals completion.
+   * @param {Function} callback - Callback to signal completion.
+   * @private
+   */
+  _final(callback) {
+    // If still opening, wait for the file to be opened first
+    if (this._opening) {
+      this.once('open', () => this._final(callback));
+      return;
+    }
+
+    // End the PassThrough stream
+    this._stream.end();
+
+    // No destination stream, call callback immediately
+    if (!this._dest) {
+      return callback();
+    }
+
+    // Destination is already finished
+    if (this._dest.writableFinished) {
+      return callback();
+    }
+
+    // Wait for destination stream to finish writing
+    this._dest.once('finish', callback);
+    this._dest.once('error', callback);
   }
 
   /**
@@ -47034,9 +46153,11 @@ exports.initAdminClients = initAdminClients;
 exports.getCurrentAdminUrl = getCurrentAdminUrl;
 exports.getAllAdminUrls = getAllAdminUrls;
 exports.failover = failover;
+exports.checkAdminApiConnectivity = checkAdminApiConnectivity;
 exports.request = request;
 exports.get = get;
 exports.post = post;
+exports.postWithStaticToken = postWithStaticToken;
 exports.put = put;
 exports.del = del;
 const axios_1 = __importDefault(__nccwpck_require__(6178));
@@ -47063,8 +46184,39 @@ function failover() {
     currentIndex = (currentIndex + 1) % adminUrls.length;
     logger_1.logger.warn(`Failed over to admin server: ${adminUrls[currentIndex]}`);
 }
-async function request(method, path, data, retryCount = adminUrls.length) {
-    const token = await (0, auth_1.getCurrentToken)();
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+function getErrorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+async function checkAdminApiConnectivity(options = {}) {
+    const attempts = options.attempts ?? 3;
+    const timeoutMs = options.timeoutMs ?? 5000;
+    let delayMs = options.initialDelayMs ?? 1000;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        for (let i = 0; i < adminUrls.length; i++) {
+            const url = adminUrls[i];
+            try {
+                await axios_1.default.get(`${url}/api/health`, { timeout: timeoutMs });
+                currentIndex = i;
+                logger_1.logger.info(`Admin API connectivity check succeeded: ${url}`);
+                return true;
+            }
+            catch (error) {
+                logger_1.logger.warn(`Admin API connectivity check failed for ${url} (attempt ${attempt}/${attempts}): ${getErrorMessage(error)}`);
+            }
+        }
+        if (attempt < attempts) {
+            logger_1.logger.warn(`Admin API is not reachable yet; retrying in ${delayMs}ms`);
+            await sleep(delayMs);
+            delayMs *= 2;
+        }
+    }
+    logger_1.logger.warn('Admin API connectivity check failed after startup retries; executor will continue and heartbeat will retry in the background.');
+    return false;
+}
+function buildAuthHeaders(token) {
     const headers = {
         'Content-Type': 'application/json',
     };
@@ -47073,6 +46225,15 @@ async function request(method, path, data, retryCount = adminUrls.length) {
         headers['X-Executor-Token'] = token;
         headers['Authorization'] = `Bearer ${token}`;
     }
+    return headers;
+}
+/** True when the error is an HTTP 401 ANSWER from admin-api (as opposed to a
+ *  connect/timeout failure). Only meaningful for errors thrown by performRequest. */
+function isUnauthorized(error) {
+    return error?.response?.status === 401;
+}
+async function performRequest(token, method, path, data, retryCount = adminUrls.length) {
+    const headers = buildAuthHeaders(token);
     for (let i = 0; i < retryCount; i++) {
         try {
             const client = axios_1.default.create({
@@ -47088,6 +46249,12 @@ async function request(method, path, data, retryCount = adminUrls.length) {
             return response;
         }
         catch (error) {
+            // R10 (round-10 gap #3): a 401 is an auth verdict, not a connectivity
+            // failure — every admin replica reads the same DB, so failing over
+            // cannot turn it valid. Surface it to request()'s re-auth handling
+            // instead of burning the failover retries (and the 500ms sleeps) on it.
+            if (isUnauthorized(error))
+                throw error;
             logger_1.logger.warn(`Request to admin ${adminUrls[currentIndex]} failed: ${error.message}`);
             if (i < retryCount - 1) {
                 failover();
@@ -47100,17 +46267,110 @@ async function request(method, path, data, retryCount = adminUrls.length) {
     }
     throw new Error('Request failed after all retries');
 }
+async function request(method, path, data, retryCount = adminUrls.length, tokenMode = 'current') {
+    const token = tokenMode === 'static' ? (0, auth_1.getStaticToken)() : await (0, auth_1.getCurrentToken)();
+    try {
+        return await performRequest(token, method, path, data, retryCount);
+    }
+    catch (error) {
+        // R10 (round-10 gap #3): stale-credential self-heal. A 401 on a
+        // dynamic-token request means admin-api rotated our per-executor token
+        // out from under us — the direct path is the admin-UI "rotate token"
+        // button (POST /executors/:id/rotate-token), after which our bearer AND
+        // our adopted tokenHash (the N26 per-execution callback HMAC secret) are
+        // both stale. Without this heal the heartbeat keeps 401ing until the
+        // 30-minute scheduled refresh, the executor gets marked OFFLINE after
+        // 3 missed intervals, and task callbacks 401 the whole time.
+        //
+        // forceTokenRefresh() re-hits POST /token with the STATIC token and, via
+        // fetchToken's envelope handling, adopts BOTH the fresh token and the
+        // matching tokenHash in one round-trip — then we retry the original
+        // request once. Storm guards: exactly one auth retry per request (a
+        // second 401 propagates), forceTokenRefresh degrades to a no-op while
+        // the 30s fetch-failure backoff is active, and admin-api's issueToken is
+        // idempotent per (address, startupId) so concurrent 401s converge on the
+        // same token instead of rotating.
+        if (tokenMode === 'current' && isUnauthorized(error)) {
+            const fresh = await (0, auth_1.forceTokenRefresh)();
+            if (fresh && fresh !== token) {
+                return performRequest(fresh, method, path, data, retryCount);
+            }
+        }
+        throw error;
+    }
+}
 async function get(path) {
     return request('get', path);
 }
 async function post(path, data) {
     return request('post', path, data);
 }
+async function postWithStaticToken(path, data) {
+    return request('post', path, data, adminUrls.length, 'static');
+}
 async function put(path, data) {
     return request('put', path, data);
 }
 async function del(path) {
     return request('delete', path);
+}
+
+
+/***/ }),
+
+/***/ 4138:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.unwrapAdminResponseData = unwrapAdminResponseData;
+exports.adoptExecutorTokenHash = adoptExecutorTokenHash;
+/**
+ * R9 (round-8 P1 closure): admin-api response-envelope helpers.
+ *
+ * The admin-api applies a global ResponseInterceptor that wraps every
+ * successful response in `{ code, message, data }` (see
+ * apps/admin-api/src/common/interceptors/response.interceptor.ts). The
+ * executor's own HTTP helpers must strip that envelope before reading
+ * fields — the same `unwrap()` pattern already used by acf-cli
+ * (packages/acf-cli/src/client.ts) and mcp-server
+ * (packages/mcp-server/src/api.ts). Reading `response.data.token` directly
+ * yields `undefined` on every enveloped response: that bug made
+ * middleware/auth.ts fetch a fresh token every 30s, and because the token
+ * endpoint rotated on every call it put the DB tokenHash on a ~30s rotation
+ * cycle that broke the N26 per-execution callback-token invariant
+ * (docs/VERIFY-round8-e2e.md §1.5).
+ */
+const config_1 = __nccwpck_require__(3650);
+/**
+ * Unwrap the `{ code, message, data }` envelope added by the admin-api
+ * ResponseInterceptor. Bare (non-enveloped) payloads — older admins, direct
+ * service calls, unit-test fixtures — are returned as-is, so callers can
+ * read `token`/`tokenHash` from either shape.
+ */
+function unwrapAdminResponseData(raw) {
+    if (raw && typeof raw === 'object' && 'data' in raw) {
+        const envelope = raw;
+        if ('code' in envelope || 'message' in envelope) {
+            return (envelope.data ?? null);
+        }
+    }
+    return raw;
+}
+/**
+ * N26/W3 adoption: if an admin-api response (register, POST /token, or
+ * heartbeat) carries the executor's current stored `tokenHash`, refresh
+ * `config.executorTokenHash` so the per-execution callback-token HMAC key
+ * follows admin-side rotations instead of going stale. Accepts both the
+ * enveloped and the bare response shape. No-op when the field is absent.
+ */
+function adoptExecutorTokenHash(raw) {
+    const payload = unwrapAdminResponseData(raw);
+    const tokenHash = payload?.tokenHash;
+    if (typeof tokenHash === 'string' && tokenHash) {
+        config_1.config.executorTokenHash = tokenHash;
+    }
 }
 
 
@@ -47165,11 +46425,24 @@ const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
 const admin_client_1 = __nccwpck_require__(6609);
 const callbackQueue = [];
-let callbackThread = null;
+// Real re-entry sentinel — the previous callbackThread variable was never
+// assigned, so repeated startCallbackThread() calls spawned parallel loops.
+let loopStarted = false;
 let stopped = false;
+/** admin-api hard-rejects batches over 100 items (BadRequestException), so
+ *  every send and every persisted file must respect this chunk size. */
+const CALLBACK_BATCH_SIZE = 100;
+/** A persisted callback file gets this many retry rounds before it is moved
+ *  to the dead-letter directory and stops being re-sent every second. */
+const CALLBACK_FILE_MAX_RETRIES = 5;
 // Lazily computed so that config.workDir is resolved at call time, not at module load
 function getCallbackDir() {
     const dir = path.join(config_1.config.workDir, 'callbacks');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+}
+function getDeadLetterDir() {
+    const dir = path.join(getCallbackDir(), 'dead-letter');
     fs.mkdirSync(dir, { recursive: true });
     return dir;
 }
@@ -47205,17 +46478,71 @@ async function doCallback(requests) {
         return false;
     }
 }
+/** Persist failed callbacks in admin-acceptable chunks. A companion
+ *  `<file>.meta` records the retry round so the re-send loop can give up
+ *  after CALLBACK_FILE_MAX_RETRIES instead of retrying forever. */
 function persistFailedCallbacks(requests) {
     const timestamp = Date.now();
-    const filename = path.join(getCallbackDir(), `callback-${timestamp}.json`);
     try {
-        fs.writeFileSync(filename, JSON.stringify(requests, null, 2));
-        logger_1.logger.info(`Persisted ${requests.length} failed callbacks to ${filename}`);
+        const chunks = [];
+        for (let i = 0; i < requests.length; i += CALLBACK_BATCH_SIZE) {
+            chunks.push(requests.slice(i, i + CALLBACK_BATCH_SIZE));
+        }
+        chunks.forEach((chunk, index) => {
+            const suffix = chunks.length > 1 ? `-${index}` : '';
+            const filename = path.join(getCallbackDir(), `callback-${timestamp}${suffix}.json`);
+            fs.writeFileSync(filename, JSON.stringify(chunk, null, 2));
+            fs.writeFileSync(`${filename}.meta`, JSON.stringify({ retries: 0, persistedAt: timestamp }), 'utf-8');
+            logger_1.logger.info(`Persisted ${chunk.length} failed callbacks to ${filename}`);
+        });
     }
     catch (error) {
         logger_1.logger.error(`Failed to persist callbacks: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+/** Move a permanently-failed callback file to the dead-letter directory so
+ *  the retry loop stops resending it every second (network + log churn) but
+ *  the payloads remain on disk for manual inspection/replay. */
+function deadLetterCallbackFile(filepath, reason) {
+    try {
+        const target = path.join(getDeadLetterDir(), path.basename(filepath));
+        fs.renameSync(filepath, target);
+        logger_1.logger.warn(`Callback file ${path.basename(filepath)} moved to dead-letter after ${reason}; manual replay required`);
+    }
+    catch (error) {
+        // Last resort: at least stop retrying it.
+        try {
+            fs.unlinkSync(filepath);
+        }
+        catch (_) { /* already gone */ }
+        logger_1.logger.error(`Failed to move callback file ${filepath} to dead-letter: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+        fs.unlinkSync(`${filepath}.meta`);
+    }
+    catch (_) { /* meta may not exist */ }
+}
+function readRetryCount(filepath) {
+    try {
+        const raw = fs.readFileSync(`${filepath}.meta`, 'utf-8');
+        const meta = JSON.parse(raw);
+        return typeof meta.retries === 'number' && meta.retries >= 0 ? meta.retries : 0;
+    }
+    catch {
+        return 0;
+    }
+}
+function writeRetryCount(filepath, retries) {
+    try {
+        fs.writeFileSync(`${filepath}.meta`, JSON.stringify({ retries, updatedAt: Date.now() }), 'utf-8');
+    }
+    catch (error) {
+        logger_1.logger.warn(`Failed to update retry counter for ${filepath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+/** Dead-letter files still inside the live callbacks dir from an older
+ *  layout would be retried forever — keep a hard stop as belt-and-suspenders. */
+const CALLBACK_FILE_MAX_SIZE_BYTES = 64 * 1024 * 1024;
 async function retryFailedCallbacks() {
     try {
         const callbackDir = getCallbackDir();
@@ -47225,15 +46552,43 @@ async function retryFailedCallbacks() {
                 continue;
             const filepath = path.join(callbackDir, file);
             try {
+                const retries = readRetryCount(filepath);
+                if (retries >= CALLBACK_FILE_MAX_RETRIES) {
+                    deadLetterCallbackFile(filepath, `${retries} failed retry rounds`);
+                    continue;
+                }
+                if (fs.statSync(filepath).size > CALLBACK_FILE_MAX_SIZE_BYTES) {
+                    deadLetterCallbackFile(filepath, 'oversized payload');
+                    continue;
+                }
                 const content = fs.readFileSync(filepath, 'utf-8');
                 const requests = JSON.parse(content);
                 const success = await doCallback(requests);
                 if (success) {
                     fs.unlinkSync(filepath);
+                    try {
+                        fs.unlinkSync(`${filepath}.meta`);
+                    }
+                    catch (_) { /* meta may not exist */ }
                     logger_1.logger.info(`Retried and removed ${filepath}`);
+                }
+                else {
+                    const next = retries + 1;
+                    if (next >= CALLBACK_FILE_MAX_RETRIES) {
+                        deadLetterCallbackFile(filepath, `${next} failed retry rounds`);
+                    }
+                    else {
+                        writeRetryCount(filepath, next);
+                    }
                 }
             }
             catch (error) {
+                // Corrupt/unparseable poison files would never succeed — dead-letter
+                // them instead of burning a re-send every second forever.
+                if (error instanceof SyntaxError) {
+                    deadLetterCallbackFile(filepath, 'corrupt payload');
+                    continue;
+                }
                 logger_1.logger.warn(`Failed to retry callback file ${file}: ${error instanceof Error ? error.message : String(error)}`);
             }
         }
@@ -47245,18 +46600,29 @@ async function retryFailedCallbacks() {
 async function processCallbacksWithBackoff(requests) {
     const MAX_RETRIES = 5;
     const BASE_DELAY_MS = 1000;
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        const success = await doCallback(requests);
-        if (success)
-            return;
-        logger_1.logger.warn(`Callback attempt ${attempt + 1}/${MAX_RETRIES} failed`);
-        if (attempt < MAX_RETRIES - 1) {
-            const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-            await new Promise(resolve => setTimeout(resolve, delay));
+    // admin-api rejects batches > 100 outright — a batch larger than that would
+    // fail all 5 attempts and then poison the persisted file forever.
+    const failed = [];
+    for (let i = 0; i < requests.length; i += CALLBACK_BATCH_SIZE) {
+        const chunk = requests.slice(i, i + CALLBACK_BATCH_SIZE);
+        let delivered = false;
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            delivered = await doCallback(chunk);
+            if (delivered)
+                break;
+            logger_1.logger.warn(`Callback attempt ${attempt + 1}/${MAX_RETRIES} failed for ${chunk.length} item(s)`);
+            if (attempt < MAX_RETRIES - 1) {
+                const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
         }
+        if (!delivered)
+            failed.push(...chunk);
     }
-    logger_1.logger.error(`Callback failed after ${MAX_RETRIES} attempts, persisting to disk`);
-    persistFailedCallbacks(requests);
+    if (failed.length > 0) {
+        logger_1.logger.error(`Callback failed after ${MAX_RETRIES} attempts, persisting ${failed.length} item(s) to disk`);
+        persistFailedCallbacks(failed);
+    }
 }
 async function processCallbacks() {
     while (!stopped) {
@@ -47275,8 +46641,9 @@ async function processCallbacks() {
     }
 }
 function startCallbackThread() {
-    if (callbackThread)
+    if (loopStarted)
         return;
+    loopStarted = true;
     stopped = false;
     logger_1.logger.info('Starting callback thread');
     processCallbacks();
@@ -47324,7 +46691,207 @@ exports.config = {
     npmRegistryUrl: process.env.NPM_REGISTRY_URL || '', // Private npm registry for task dependencies
     pythonRegistryUrl: process.env.PYTHON_REGISTRY_URL || '', // Private PyPI registry for task dependencies
     token: process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || (() => { const i = process.argv.indexOf('--token'); return i !== -1 ? process.argv[i + 1] || '' : ''; })(),
+    // N23: dedicated HMAC secret for per-execution callback tokens; when unset
+    // the shared token above is used as the HMAC source secret (admin-api
+    // resolves the same fallback). Never forwarded to child env via the
+    // whitelist — only the derived per-execution token is injected (execute.ts).
+    executionCallbackSecret: process.env.EXECUTION_CALLBACK_SECRET || '',
+    // N26 (round-8): the per-executor tokenHash admin-api returned at register
+    // time (see main.ts registerExecutor). Mutable runtime state, not env —
+    // used as the HMAC source secret when EXECUTION_CALLBACK_SECRET is unset,
+    // so per-node `--secret` deployments can verify task-side callbacks.
+    executorTokenHash: '',
 };
+
+
+/***/ }),
+
+/***/ 5809:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/** SEC-01: child-process environment whitelist shared by the task execution
+ *  and deployment paths. Only these variables are forwarded to spawned
+ *  processes — executor secrets (EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET and
+ *  every other process.env entry) must never leak into user-controlled code.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ENV_WHITELIST = void 0;
+exports.buildChildEnv = buildChildEnv;
+exports.ENV_WHITELIST = new Set([
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'NODE_PATH', 'npm_config_cache', 'npm_config_prefix',
+    'TMPDIR', 'TEMP', 'TMP',
+    'USER', 'LOGNAME', 'SHELL',
+    'SYSTEMROOT', 'WINDIR', // Windows compat
+    'COMSPEC', 'PATHEXT', // Windows compat
+]);
+/** Names that must never be forwarded even if someone adds them to the
+ *  whitelist later — defense in depth against secret leakage. */
+const SECRET_ENV_DENYLIST = new Set([
+    'EXECUTOR_SHARED_TOKEN',
+    'EXECUTOR_SECRET',
+    // N23: HMAC source secret for per-execution callback tokens. The child
+    // only ever receives the derived, execution-bound, expiring token
+    // (AUTOFLOW_CALLBACK_TOKEN, injected explicitly in execute.ts).
+    'EXECUTION_CALLBACK_SECRET',
+]);
+/** Build a sanitized environment from process.env: whitelist only, secrets
+ *  always stripped. Additional task/deployment-provided variables are merged
+ *  on top (they are explicit, caller-controlled values). */
+function buildChildEnv(extra = {}) {
+    const env = {};
+    for (const [k, v] of Object.entries(process.env)) {
+        if (v === undefined)
+            continue;
+        if (SECRET_ENV_DENYLIST.has(k))
+            continue;
+        if (exports.ENV_WHITELIST.has(k))
+            env[k] = v;
+    }
+    for (const [k, v] of Object.entries(extra)) {
+        if (v === undefined)
+            continue;
+        if (SECRET_ENV_DENYLIST.has(k.toUpperCase()))
+            continue;
+        env[k] = v;
+    }
+    return env;
+}
+
+
+/***/ }),
+
+/***/ 4730:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CALLBACK_TOKEN_GRACE_SECONDS = exports.EXECUTION_CALLBACK_TOKEN_PREFIX = void 0;
+exports.resolveCallbackSecret = resolveCallbackSecret;
+exports.signExecutionCallbackToken = signExecutionCallbackToken;
+exports.createExecutionCallbackToken = createExecutionCallbackToken;
+/**
+ * N23: per-execution one-shot callback tokens (executor-node side).
+ *
+ * Task code spawned by this executor must be able to call back into the
+ * Admin API (POST /api/executions/callback) WITHOUT ever seeing the
+ * executor shared token — SEC-01 keeps EXECUTOR_SHARED_TOKEN /
+ * EXECUTOR_SECRET out of child environments. Instead, the executor mints a
+ * short-lived HMAC token bound to a single executionId and injects it as
+ * `AUTOFLOW_CALLBACK_TOKEN` via the explicit extra-env channel in
+ * execute.ts (never via the process.env whitelist).
+ *
+ * Token format (must stay byte-for-byte compatible with admin-api's
+ * apps/admin-api/src/modules/task/execution-callback-token.util.ts —
+ * pinned by an identical test vector in both suites):
+ *
+ *   v1.<executionId>.<expiresAtUnixSec>.<hmacHex>
+ *
+ *   key      = HMAC-SHA256(secret, "autocodeflow:execution-callback:v1")
+ *   hmacHex  = HMAC-SHA256(key, "v1.<executionId>.<expiresAtUnixSec>")
+ *
+ * `secret` resolution order (N26, round-8):
+ *   1. EXECUTION_CALLBACK_SECRET — fleet-wide dedicated HMAC secret;
+ *   2. the per-executor tokenHash admin-api returned at register time
+ *      (config.executorTokenHash, adopted in main.ts) — lets nodes
+ *      installed with their own `--secret` mint tokens the admin can
+ *      verify against the exact hash it stores;
+ *   3. the executor shared token (config.token) — legacy fallback for
+ *      admins that only know the shared secret.
+ * The domain-separation step means the raw shared token is never used
+ * directly as an HMAC key, and a per-execution token can never be forged
+ * into a shared token.
+ *
+ * INVARIANT: the signing secret must equal admin-api's current stored
+ * tokenHash. R9 (round-8 P1 closure) keeps the two in sync: the executor
+ * adopts the admin-returned tokenHash at register, on every POST /token
+ * fetch (middleware/auth.ts fetchToken) and on every heartbeat
+ * (scheduler.sendHeartbeat) — see admin-envelope.ts adoptExecutorTokenHash.
+ * R10 (round-10 gap #3) closes the manual-rotation window: an admin-UI
+ * rotate-token makes our bearer stale, so the next outbound admin request
+ * (heartbeat / callback, ≤ one heartbeat interval) 401s and triggers the
+ * admin-client stale-credential self-heal — an immediate forceTokenRefresh
+ * (POST /token, which adopts the new tokenHash) plus a single retry. The
+ * hash therefore follows admin-side rotations within one request round-trip
+ * instead of waiting for the 30-minute scheduled refresh; tokens minted
+ * between the rotation and that heal still fail verification — documented
+ * in docs/sdk-guide.md.
+ */
+const crypto = __importStar(__nccwpck_require__(6982));
+const config_1 = __nccwpck_require__(3650);
+const DOMAIN_SEPARATOR = 'autocodeflow:execution-callback:v1';
+exports.EXECUTION_CALLBACK_TOKEN_PREFIX = 'v1.';
+/** Extra lifetime beyond the task timeout so a task finishing right at the
+ *  deadline can still deliver its final callback. */
+exports.CALLBACK_TOKEN_GRACE_SECONDS = 900;
+/** Secret used to derive per-execution callback tokens: dedicated env
+ *  first, then the per-executor tokenHash received at register time
+ *  (N26), then the executor shared token the node already holds. */
+function resolveCallbackSecret() {
+    const cfg = config_1.config;
+    return cfg.executionCallbackSecret || cfg.executorTokenHash || cfg.token || '';
+}
+function computeSignature(secret, payload) {
+    const key = crypto
+        .createHmac('sha256', secret)
+        .update(DOMAIN_SEPARATOR)
+        .digest();
+    return crypto.createHmac('sha256', key).update(payload).digest('hex');
+}
+/** Sign a token for (executionId, expiresAtSec) with an explicit secret. */
+function signExecutionCallbackToken(secret, executionId, expiresAtSec) {
+    const payload = `${exports.EXECUTION_CALLBACK_TOKEN_PREFIX}${executionId}.${expiresAtSec}`;
+    return `${payload}.${computeSignature(secret, payload)}`;
+}
+/**
+ * Mint a per-execution callback token valid for `ttlSeconds`.
+ * Returns null when no secret is configured (dev executors without a
+ * token) — callers then simply omit AUTOFLOW_CALLBACK_TOKEN and the SDK
+ * stays in its disabled state, exactly as before N23.
+ */
+function createExecutionCallbackToken(executionId, ttlSeconds, secret = resolveCallbackSecret()) {
+    if (!secret || !executionId)
+        return null;
+    const ttl = Math.max(1, Math.floor(ttlSeconds));
+    const expiresAtSec = Math.floor(Date.now() / 1000) + ttl;
+    return signExecutionCallbackToken(secret, executionId, expiresAtSec);
+}
 
 
 /***/ }),
@@ -47369,12 +46936,18 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getLogFilePath = getLogFilePath;
+exports.flushLogs = flushLogs;
+exports.stopLogWriter = stopLogWriter;
 exports.appendLog = appendLog;
+exports.appendLogSync = appendLogSync;
 exports.readLog = readLog;
 exports.clearLog = clearLog;
 exports.deleteOldLogs = deleteOldLogs;
 exports.startLogCleanup = startLogCleanup;
 exports.stopLogCleanup = stopLogCleanup;
+exports.cleanupWorkDir = cleanupWorkDir;
+exports.startWorkDirCleanup = startWorkDirCleanup;
+exports.stopWorkDirCleanup = stopWorkDirCleanup;
 exports.getLogStats = getLogStats;
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
@@ -47394,7 +46967,64 @@ function getLogFilePath(executionId, date) {
     fs.mkdirSync(dateDir, { recursive: true });
     return path.join(dateDir, `${executionId}.log`);
 }
+// --- Buffered async log writer -------------------------------------------------
+// appendFileSync per stdout chunk blocked the event loop (heartbeats, /health)
+// under high-output tasks. Writes now buffer in memory and flush to disk every
+// FLUSH_INTERVAL_MS via fs.promises (libuv threadpool), keeping the event loop
+// free; an explicit flush covers shutdown, read-back and tests.
+const FLUSH_INTERVAL_MS = 200;
+const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+const pendingWrites = new Map();
+let flushTimer = null;
+let flushing = Promise.resolve();
+function scheduleFlush() {
+    if (flushTimer)
+        return;
+    flushTimer = setInterval(() => {
+        void flushLogs();
+    }, FLUSH_INTERVAL_MS);
+    flushTimer.unref?.();
+}
+async function flushLogs() {
+    const run = flushing.then(async () => {
+        while (pendingWrites.size > 0) {
+            const batch = [...pendingWrites.entries()];
+            pendingWrites.clear();
+            for (const [filePath, content] of batch) {
+                try {
+                    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+                    await fs.promises.appendFile(filePath, content);
+                }
+                catch (error) {
+                    logger_1.logger.error(`Failed to append log ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+                }
+            }
+        }
+    });
+    flushing = run;
+    await run;
+}
+function stopLogWriter() {
+    if (flushTimer) {
+        clearInterval(flushTimer);
+        flushTimer = null;
+    }
+}
 function appendLog(executionId, content) {
+    const filePath = getLogFilePath(executionId);
+    const pending = pendingWrites.get(filePath) ?? '';
+    let combined = `${pending}${content}\n`;
+    // Drop the oldest buffered content if a pathological chunk burst outgrows
+    // the buffer — memory safety wins over log completeness.
+    if (combined.length > MAX_BUFFERED_BYTES) {
+        combined = combined.slice(combined.length - MAX_BUFFERED_BYTES);
+    }
+    pendingWrites.set(filePath, combined);
+    scheduleFlush();
+}
+/** Backwards-compatible synchronous append used by callers that must see the
+ *  content on disk immediately (tests, read-back helpers). */
+function appendLogSync(executionId, content) {
     const filePath = getLogFilePath(executionId);
     fs.appendFileSync(filePath, content + '\n');
 }
@@ -47425,13 +47055,18 @@ function deleteOldLogs(retentionDays) {
     try {
         const dateDirs = fs.readdirSync(logsDir);
         for (const dateDir of dateDirs) {
-            const dirPath = path.join(logsDir, dateDir);
-            const stat = fs.statSync(dirPath);
-            if (stat.isDirectory() && stat.birthtime.getTime() < cutoff) {
-                fs.rmdirSync(dirPath, { recursive: true });
-                deletedCount++;
-                logger_1.logger.debug(`Deleted old log directory: ${dateDir}`);
-            }
+            // Directory names are YYYY-MM-DD (see formatDate) — stat.birthtime is
+            // unreliable on Linux (often falls back to mtime/epoch), so derive the
+            // age from the directory name instead.
+            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateDir);
+            if (!m)
+                continue;
+            const dirTime = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
+            if (Number.isNaN(dirTime) || dirTime >= cutoff)
+                continue;
+            fs.rmSync(path.join(logsDir, dateDir), { recursive: true, force: true });
+            deletedCount++;
+            logger_1.logger.debug(`Deleted old log directory: ${dateDir}`);
         }
     }
     catch (error) {
@@ -47460,6 +47095,132 @@ function stopLogCleanup() {
         cleanupInterval = null;
         logger_1.logger.info('Stopped log cleanup thread');
     }
+    stopLogWriter();
+}
+// --- Workdir disk cleanup -------------------------------------------------------
+// Task workdirs, git caches and downloaded packages previously accumulated
+// forever — a long-running executor slowly filled the disk until every
+// npm/git/uv operation failed. Strategy (aligned with the 7-day log policy):
+//   - task workdirs older than CLEANUP_TTL_DAYS are removed
+//   - .git_cache / .node_modules entries not touched within TTL are removed
+//   - .pkg-updates keeps only the newest MAX_PKG_UPDATES package files
+//   - callbacks/dead-letter keeps only the newest MAX_DEAD_LETTER_FILES files
+const CLEANUP_TTL_DAYS = Math.max(1, config_1.config.logRetentionDays || 7);
+const CLEANUP_SWEEP_INTERVAL_HOURS = 6;
+const PROTECTED_WORKDIR_NAMES = new Set([
+    'logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps',
+]);
+function removePath(target) {
+    try {
+        fs.rmSync(target, { recursive: true, force: true });
+        return true;
+    }
+    catch (error) {
+        logger_1.logger.warn(`Disk cleanup failed for ${target}: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+    }
+}
+function removeOlderThan(dir, cutoffMs, options = {}) {
+    let deleted = 0;
+    let entries;
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    }
+    catch {
+        return 0;
+    }
+    // newest (largest mtime) first so "keep newest N" retention is deterministic
+    const withMtime = [];
+    for (const entry of entries) {
+        if (options.directoryNames && entry.isDirectory() && !options.directoryNames.test(entry.name))
+            continue;
+        try {
+            const stat = fs.statSync(path.join(dir, entry.name));
+            withMtime.push({ name: entry.name, isDir: entry.isDirectory(), mtime: stat.mtimeMs });
+        }
+        catch {
+            /* raced with a concurrent delete — skip */
+        }
+    }
+    withMtime.sort((a, b) => b.mtime - a.mtime);
+    withMtime.forEach((item, index) => {
+        if (item.mtime >= cutoffMs)
+            return;
+        if (options.keepNewest !== undefined && index < options.keepNewest)
+            return;
+        if (removePath(path.join(dir, item.name)))
+            deleted++;
+    });
+    return deleted;
+}
+/** Remove expired task workdirs, stale caches, old packages and dead-letter
+ *  overflow. Safe to run at startup and on an interval. */
+function cleanupWorkDir(ttlDays = CLEANUP_TTL_DAYS) {
+    const cutoff = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
+    let workDirs = 0;
+    let caches = 0;
+    let packages = 0;
+    let deadLetters = 0;
+    try {
+        // 1. Task workdirs: any top-level entry that is not infrastructure.
+        const baseEntries = fs.readdirSync(config_1.config.workDir, { withFileTypes: true });
+        for (const entry of baseEntries) {
+            if (PROTECTED_WORKDIR_NAMES.has(entry.name))
+                continue;
+            const full = path.join(config_1.config.workDir, entry.name);
+            try {
+                const stat = fs.statSync(full);
+                if (stat.mtimeMs < cutoff) {
+                    if (removePath(full))
+                        workDirs++;
+                }
+            }
+            catch { /* raced — skip */ }
+        }
+        // 2. Shared caches (.git_cache, .node_modules): drop entries unused past TTL.
+        for (const cacheDirName of ['.git_cache', '.node_modules']) {
+            caches += removeOlderThan(path.join(config_1.config.workDir, cacheDirName), cutoff);
+        }
+        // 3. Downloaded packages: keep only the newest few regardless of age.
+        packages = removeOlderThan(path.join(process.cwd(), '.pkg-updates'), cutoff, {
+            keepNewest: MAX_PKG_UPDATES,
+        });
+        // 4. Dead-letter callbacks: keep only the newest few for manual replay.
+        deadLetters = removeOlderThan(path.join(config_1.config.workDir, 'callbacks', 'dead-letter'), cutoff, {
+            keepNewest: MAX_DEAD_LETTER_FILES,
+        });
+    }
+    catch (error) {
+        logger_1.logger.error(`Workdir cleanup error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return { workDirs, caches, packages, deadLetters };
+}
+const MAX_PKG_UPDATES = 3;
+const MAX_DEAD_LETTER_FILES = 50;
+/** Separate interval from the log-retention sweep so the two cleanups can be
+ *  stopped/started independently. */
+let workdirCleanupInterval = null;
+/** Run cleanup at startup and every CLEANUP_SWEEP_INTERVAL_HOURS. Shares the
+ *  cadence/retention policy with the log cleanup (same TTL, logRetentionDays). */
+function startWorkDirCleanup(ttlDays = CLEANUP_TTL_DAYS) {
+    const sweep = () => {
+        const r = cleanupWorkDir(ttlDays);
+        const total = r.workDirs + r.caches + r.packages + r.deadLetters;
+        if (total > 0) {
+            logger_1.logger.info(`Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s)`);
+        }
+    };
+    sweep();
+    if (workdirCleanupInterval)
+        clearInterval(workdirCleanupInterval);
+    workdirCleanupInterval = setInterval(sweep, CLEANUP_SWEEP_INTERVAL_HOURS * 60 * 60 * 1000);
+    workdirCleanupInterval.unref?.();
+}
+function stopWorkDirCleanup() {
+    if (workdirCleanupInterval) {
+        clearInterval(workdirCleanupInterval);
+        workdirCleanupInterval = null;
+    }
 }
 function getLogStats() {
     let totalSize = 0;
@@ -47485,6 +47246,185 @@ function getLogStats() {
         // Ignore if logs directory doesn't exist
     }
     return { totalSize, fileCount };
+}
+
+
+/***/ }),
+
+/***/ 3974:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.recordHeartbeat = recordHeartbeat;
+exports.setAdminApiReachable = setAdminApiReachable;
+exports.getHeartbeatState = getHeartbeatState;
+/**
+ * Heartbeat reachability state shared between the scheduler (writer via
+ * recordHeartbeat) and the /health endpoint (reader). Kept in its own module
+ * so scheduler.ts does not import the route tree, which would pull task
+ * execution and its config-dependent initializers into every scheduler
+ * import (and create a scheduler <-> health import cycle).
+ */
+let lastHeartbeatTime = null;
+let adminApiReachable = null;
+function recordHeartbeat(success) {
+    if (success)
+        lastHeartbeatTime = new Date().toISOString();
+    adminApiReachable = success;
+}
+function setAdminApiReachable(reachable) {
+    adminApiReachable = reachable;
+}
+function getHeartbeatState() {
+    return { lastHeartbeatTime, adminApiReachable };
+}
+
+
+/***/ }),
+
+/***/ 7848:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/** Bearer-authenticated download shared by the deploy and update-package
+ *  paths. Carries the executor shared token to the first host, strips it on
+ *  cross-host redirects (token must not leak to third-party domains), enforces
+ *  an overall deadline (a slow-drip server cannot stall the caller forever)
+ *  and a max size cap (a huge file cannot fill the disk). */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.downloadFile = downloadFile;
+const fs = __importStar(__nccwpck_require__(9896));
+const config_1 = __nccwpck_require__(3650);
+const DEFAULT_TIMEOUT_MS = 120000;
+const DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
+function downloadFile(url, dest, options = {}) {
+    const { maxRedirects = 5, sendAuth = true, timeoutMs = DEFAULT_TIMEOUT_MS, maxBytes = DEFAULT_MAX_BYTES, } = options;
+    return new Promise((resolve, reject) => {
+        // Overall deadline: req.setTimeout is a socket-idle timeout and a
+        // slow-drip server resets it forever, so run an absolute timer too.
+        const deadline = setTimeout(() => {
+            fail(new Error('Download timed out'));
+        }, timeoutMs);
+        let settled = false;
+        const proto = url.startsWith('https') ? __nccwpck_require__(5692) : __nccwpck_require__(8611);
+        const file = fs.createWriteStream(dest);
+        const cleanup = () => {
+            clearTimeout(deadline);
+        };
+        const fail = (err) => {
+            if (settled)
+                return;
+            settled = true;
+            cleanup();
+            file?.destroy?.();
+            fs.unlink(dest, () => { });
+            reject(err);
+        };
+        const headers = {};
+        if (sendAuth && config_1.config.token) {
+            headers['Authorization'] = `Bearer ${config_1.config.token}`;
+        }
+        let req;
+        try {
+            req = proto.get(url, { headers }, (res) => {
+                if (settled) {
+                    res.resume();
+                    return;
+                }
+                if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    cleanup();
+                    file.close();
+                    fs.unlink(dest, () => { });
+                    settled = true; // resolution continues in the recursive call below
+                    if (maxRedirects <= 0) {
+                        reject(new Error('Download failed: too many redirects'));
+                        return;
+                    }
+                    let nextUrl;
+                    try {
+                        nextUrl = new URL(res.headers.location, url);
+                    }
+                    catch {
+                        reject(new Error('Download failed: invalid redirect location'));
+                        return;
+                    }
+                    const nextSendAuth = sendAuth && nextUrl.hostname === new URL(url).hostname;
+                    downloadFile(nextUrl.href, dest, { maxRedirects: maxRedirects - 1, sendAuth: nextSendAuth, timeoutMs, maxBytes })
+                        .then(resolve, reject);
+                    return;
+                }
+                if (!res.statusCode || res.statusCode >= 400) {
+                    fail(new Error(`Download failed with status ${res.statusCode}`));
+                    return;
+                }
+                let bytes = 0;
+                res.on('data', (chunk) => {
+                    bytes += chunk.length;
+                    if (bytes > maxBytes) {
+                        req.destroy();
+                        fail(new Error(`Download exceeded size limit (${maxBytes} bytes)`));
+                    }
+                });
+                res.pipe(file);
+                file.on('finish', () => {
+                    if (settled)
+                        return;
+                    settled = true;
+                    cleanup();
+                    file.close();
+                    resolve(bytes);
+                });
+                file.on('error', fail);
+            });
+        }
+        catch (err) {
+            fail(err instanceof Error ? err : new Error(String(err)));
+            return;
+        }
+        req.on('error', fail);
+        // Socket-idle timeout keeps a fully-stalled connection from waiting out
+        // the whole deadline before failing.
+        req.setTimeout(timeoutMs, () => {
+            req.destroy();
+            fail(new Error('Download timed out'));
+        });
+    });
 }
 
 
@@ -47555,7 +47495,9 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const dotenv = __importStar(__nccwpck_require__(6472));
 const path = __importStar(__nccwpck_require__(6928));
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
-// Polyfill globalThis.crypto for Node.js < 19 (used by uuid and other dependencies)
+// Polyfill globalThis.crypto for Node.js < 19 (defensive: task scripts and
+// third-party dependencies may use the Web Crypto global; executor code
+// itself uses node:crypto randomUUID directly)
 if (!globalThis.crypto) {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const nodeCrypto = __nccwpck_require__(6982);
@@ -47569,9 +47511,11 @@ const scheduler_1 = __nccwpck_require__(1415);
 const callback_1 = __nccwpck_require__(4915);
 const file_logger_1 = __nccwpck_require__(4723);
 const admin_client_1 = __nccwpck_require__(6609);
+const admin_envelope_1 = __nccwpck_require__(4138);
 const task_worker_1 = __nccwpck_require__(8404);
-const health_1 = __nccwpck_require__(6067);
 const execute_1 = __nccwpck_require__(8690);
+const health_1 = __nccwpck_require__(6067);
+const execute_2 = __nccwpck_require__(8690);
 const config_2 = __nccwpck_require__(4080);
 const logs_1 = __nccwpck_require__(4926);
 const deploy_1 = __nccwpck_require__(3462);
@@ -47580,7 +47524,7 @@ const auth_1 = __nccwpck_require__(9473);
 const app = (0, express_1.default)();
 app.use(express_1.default.json());
 app.use('/', health_1.healthRouter);
-app.use('/api', auth_1.verifyToken, execute_1.executeRouter);
+app.use('/api', auth_1.verifyToken, execute_2.executeRouter);
 app.use('/api', auth_1.verifyToken, logs_1.logsRouter);
 app.use('/api', auth_1.verifyToken, deploy_1.deployRouter);
 app.use('/api', auth_1.verifyToken, update_package_1.updatePackageRouter);
@@ -47604,7 +47548,7 @@ function detectAvailableRuntimes() {
 async function registerExecutor() {
     const runtimes = detectAvailableRuntimes();
     try {
-        await (0, admin_client_1.post)('/api/executors/register', {
+        const resp = await (0, admin_client_1.postWithStaticToken)('/api/executors/register', {
             appName: config_1.config.appName,
             groupName: config_1.config.groupName || undefined,
             address: config_1.config.executorAddressPublic || config_1.config.executorAddress,
@@ -47615,11 +47559,27 @@ async function registerExecutor() {
             // Structured capability fields
             runtime: runtimes,
             maxConcurrent: config_1.config.maxConcurrentTasks,
+            restartedAt: scheduler_1.executorStartedAt,
+            startupId: scheduler_1.executorStartupId,
         });
+        // N26 (round-8): adopt the per-executor tokenHash returned at register
+        // time. It becomes the HMAC source secret for per-execution callback
+        // tokens (execution-callback-token.ts resolveCallbackSecret), so
+        // per-node `--secret` deployments verify on the admin side against the
+        // exact value stored there. The response may or may not be wrapped by
+        // the admin ResponseInterceptor ({code,message,data}) — unwrapAdminResponseData
+        // reads both shapes (R9: shared with middleware/auth.ts fetchToken).
+        (0, admin_envelope_1.adoptExecutorTokenHash)(resp?.data);
         logger_1.logger.info(`Registered to admin-api (runtimes: ${runtimes.join(', ')}, maxConcurrent: ${config_1.config.maxConcurrentTasks})`);
     }
     catch (err) {
-        logger_1.logger.warn(`Register failed (will retry via heartbeat): ${err.message}`);
+        // N41 (round-10): the old "(will retry via heartbeat)" wording was
+        // false — heartbeat never registers (unknown address → 404). The only
+        // self-heal is the register-on-token side effect of
+        // POST /executors/token in the token-refresh path, which rebuilds the
+        // row WITHOUT the rich metadata above (type/capabilities/maxConcurrent/
+        // version); full metadata returns only on process restart.
+        logger_1.logger.warn(`Register failed (no auto re-register; /token fallback rebuilds the row without rich metadata): ${err.message}`);
     }
 }
 async function notifyOffline() {
@@ -47648,8 +47608,9 @@ async function gracefulShutdown(signal) {
     }
     // Stop callback thread
     (0, callback_1.stopCallbackThread)();
-    // Stop log cleanup thread
+    // Stop log cleanup thread + buffered log writer
     (0, file_logger_1.stopLogCleanup)();
+    (0, file_logger_1.stopWorkDirCleanup)();
     // Stop all task workers
     task_worker_1.taskWorkerManager.stopAll();
     // Wait for running tasks (max 30 seconds)
@@ -47657,12 +47618,24 @@ async function gracefulShutdown(signal) {
     const startTime = Date.now();
     while ((0, scheduler_1.getRunningCount)() > 0) {
         if (Date.now() - startTime > maxWait) {
-            logger_1.logger.warn(`Grace period expired, ${(0, scheduler_1.getRunningCount)()} task(s) still running, forcing shutdown`);
+            // Grace expired: kill the detached task process groups, otherwise they
+            // outlive the executor as unmanaged orphans (callbacks are already
+            // stopped, so their results could never be reported anyway).
+            const killed = (0, execute_1.killRunningTaskProcesses)();
+            logger_1.logger.warn(`Grace period expired, ${(0, scheduler_1.getRunningCount)()} task(s) still running, forcing shutdown` +
+                (killed > 0 ? ` — killed ${killed} task process group(s)` : ''));
             break;
         }
         logger_1.logger.info(`Waiting for ${(0, scheduler_1.getRunningCount)()} task(s) to complete...`);
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
+    // Stop accepting new requests
+    server.close();
+    // Flush any buffered task logs to disk before exiting
+    try {
+        await (0, file_logger_1.flushLogs)();
+    }
+    catch (_) { /* best effort — we are shutting down */ }
     // Send offline notification
     await notifyOffline();
     logger_1.logger.info('Executor shutdown complete');
@@ -47671,16 +47644,41 @@ async function gracefulShutdown(signal) {
 // Register signal handlers
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+// R-08 (windows-findings 2.9): Node maps the Windows CTRL_BREAK_EVENT console
+// signal to SIGBREAK. Without this handler, Ctrl+Break (the only signal a
+// detached/background executor can receive, since taskkill cannot deliver
+// SIGTERM to console apps) killed the process immediately (exit 0xC000013A)
+// — running task processes were orphaned instead of being reaped by
+// gracefulShutdown's killRunningTaskProcesses. No-op on POSIX.
+process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));
 const server = app.listen(config_1.config.port, async () => {
-    logger_1.logger.info(`Executor started: ${config_1.config.appName} @ ${config_1.config.executorAddress}`);
-    // Initialize admin clients for HA support.
-    // config.adminApiUrls already applies the URL priority:
-    // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
-    (0, admin_client_1.initAdminClients)(config_1.config.adminApiUrls);
-    await registerExecutor();
-    heartbeatInterval = (0, scheduler_1.startHeartbeat)();
-    (0, callback_1.startCallbackThread)();
-    (0, file_logger_1.startLogCleanup)(config_1.config.logRetentionDays || 7);
+    try {
+        logger_1.logger.info(`Executor started: ${config_1.config.appName} @ ${config_1.config.executorAddress}`);
+        // Initialize admin clients for HA support.
+        // config.adminApiUrls already applies the URL priority:
+        // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
+        (0, admin_client_1.initAdminClients)(config_1.config.adminApiUrls);
+        await (0, admin_client_1.checkAdminApiConnectivity)();
+        await registerExecutor();
+        heartbeatInterval = (0, scheduler_1.startHeartbeat)();
+        (0, callback_1.startCallbackThread)();
+        (0, file_logger_1.startLogCleanup)(config_1.config.logRetentionDays || 7);
+        // Disk reclamation for task workdirs / git caches / downloaded packages /
+        // dead-letter callbacks — same retention policy as the logs (7 days).
+        (0, file_logger_1.startWorkDirCleanup)(config_1.config.logRetentionDays || 7);
+        // Fail loudly on a misconfiguration that would silently open an
+        // unauthenticated /api/execute endpoint (dev mode passthrough).
+        if (!config_1.config.token) {
+            logger_1.logger.warn('No EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET configured — /api/* accepts UNAUTHENTICATED requests. ' +
+                'Set REQUIRE_TOKEN=true to refuse unauthenticated task submissions instead.');
+        }
+    }
+    catch (err) {
+        // An async callback rejection here would be unhandled — exit loudly
+        // instead so the supervisor restarts the executor.
+        logger_1.logger.error(`Startup failed: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+    }
 });
 
 
@@ -47778,18 +47776,27 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getStaticToken = getStaticToken;
 exports.verifyToken = verifyToken;
 exports.getCurrentToken = getCurrentToken;
+exports.forceTokenRefresh = forceTokenRefresh;
 const axios_1 = __importDefault(__nccwpck_require__(6178));
 const node_crypto_1 = __nccwpck_require__(7598);
 const config_1 = __nccwpck_require__(3650);
 const admin_api_url_1 = __nccwpck_require__(2720);
+const startup_identity_1 = __nccwpck_require__(1566);
+const admin_envelope_1 = __nccwpck_require__(4138);
 // Static token: env vars take priority, then CLI --token arg (via config)
 const STATIC_TOKEN = config_1.config.token;
+function getStaticToken() {
+    return STATIC_TOKEN || null;
+}
 // Dynamic token storage (refreshed periodically)
 let dynamicToken = null;
 let tokenExpiresAt = null;
 const TOKEN_REFRESH_INTERVAL = 30 * 60 * 1000; // 30 minutes
+let tokenFetchFailedAt = null;
+const TOKEN_FETCH_BACKOFF_MS = 30000;
 function getAdminApiUrl() {
     if (config_1.config.adminApiUrlExternal) {
         return config_1.config.adminApiUrlExternal;
@@ -47809,9 +47816,34 @@ async function fetchToken() {
         const response = await axios_1.default.post((0, admin_api_url_1.buildAdminApiUrl)(getAdminApiUrl(), '/api/executors/token'), {
             address: config_1.config.executorAddressPublic || config_1.config.executorAddress,
             appName: config_1.config.appName,
+            // R9 (round-8 P1 W2): the process-life identity lets admin-api make
+            // this endpoint idempotent — a same-startupId re-fetch returns the
+            // CURRENT token instead of rotating (N4 register semantics).
+            startupId: startup_identity_1.executorStartupId,
         }, { timeout: 10000, headers });
-        if (response.status === 200) {
-            return response.data.token;
+        // R9: the token endpoint is a Nest POST — it answers 201, not 200. The
+        // old `=== 200` check silently dropped every successful response.
+        if (response.status >= 200 && response.status < 300) {
+            // R9 (round-8 P1 root fix): admin-api's global ResponseInterceptor wraps
+            // the payload in {code,message,data}. Reading response.data.token
+            // directly yielded undefined forever, so every getCurrentToken() call
+            // re-hit POST /token — which used to rotate on every call — putting the
+            // stored tokenHash on a ~30s rotation cycle and breaking the N26
+            // per-execution callback-token invariant (docs/VERIFY-round8-e2e.md §1.5).
+            const payload = (0, admin_envelope_1.unwrapAdminResponseData)(response.data);
+            const token = typeof payload?.token === 'string' && payload.token.length > 0
+                ? payload.token
+                : null;
+            if (!token) {
+                // eslint-disable-next-line no-console
+                console.warn('[auth] fetchToken: admin response carried no token');
+                return null;
+            }
+            // R9 (W3): adopt the tokenHash that matches this token so the HMAC
+            // source secret for per-execution callback tokens stays in sync with
+            // whatever admin-api currently stores (see admin-envelope.ts).
+            (0, admin_envelope_1.adoptExecutorTokenHash)(response.data);
+            return token;
         }
     }
     catch (_err) {
@@ -47825,12 +47857,22 @@ async function fetchToken() {
 }
 async function refreshTokenIfNeeded() {
     const now = new Date();
+    // Back off after a failed fetch — without this every request hangs for
+    // the 10s fetch timeout while admin-api is unreachable.
+    if (tokenFetchFailedAt !== null &&
+        now.getTime() - tokenFetchFailedAt < TOKEN_FETCH_BACKOFF_MS) {
+        return;
+    }
     // Refresh if no token, expired, or within 5 minutes of expiration
     if (tokenExpiresAt === null || now >= new Date(tokenExpiresAt.getTime() - 5 * 60 * 1000)) {
         const newToken = await fetchToken();
         if (newToken) {
             dynamicToken = newToken;
             tokenExpiresAt = new Date(now.getTime() + TOKEN_REFRESH_INTERVAL);
+            tokenFetchFailedAt = null;
+        }
+        else {
+            tokenFetchFailedAt = now.getTime();
         }
     }
 }
@@ -47845,8 +47887,14 @@ async function verifyToken(req, res, next) {
     if (STATIC_TOKEN) {
         validTokens.push(STATIC_TOKEN);
     }
-    // If no tokens configured at all, allow all requests (dev mode)
+    // If no tokens configured at all, allow all requests (dev mode) — unless
+    // REQUIRE_TOKEN=true, where fail-closed wins over dev convenience: an
+    // unauthenticated /api/execute is arbitrary code execution on this host.
     if (validTokens.length === 0) {
+        if (process.env.REQUIRE_TOKEN === 'true') {
+            res.status(503).json({ error: 'Executor has no token configured (REQUIRE_TOKEN=true)' });
+            return;
+        }
         next();
         return;
     }
@@ -47872,6 +47920,28 @@ async function verifyToken(req, res, next) {
 async function getCurrentToken() {
     await refreshTokenIfNeeded();
     return dynamicToken || STATIC_TOKEN;
+}
+/**
+ * R10 (round-10 gap #3): force an immediate token re-fetch, bypassing the
+ * 30-minute refresh schedule. Used by admin-client when an outbound request
+ * comes back 401: the stored per-executor token was rotated out from under
+ * this process (e.g. an admin-UI rotate-token), and the only way to converge
+ * is to re-hit POST /token — which is authenticated with the STATIC token
+ * (shared bootstrap) and whose response fetchToken already uses to adopt the
+ * matching tokenHash (R9/W3). So one call here heals BOTH the bearer
+ * credential and the N26 per-execution callback HMAC secret.
+ *
+ * Storm guards: the TOKEN_FETCH_BACKOFF_MS from the last FAILED fetch still
+ * applies (admin unreachable / wrong shared token → this degrades to a no-op
+ * returning the current token, and the caller must not retry), and
+ * admin-api's issueToken is idempotent per (address, startupId), so several
+ * concurrent 401s re-fetching at once all converge on the SAME token instead
+ * of rotating.
+ */
+async function forceTokenRefresh() {
+    tokenExpiresAt = null;
+    await refreshTokenIfNeeded();
+    return dynamicToken;
 }
 
 
@@ -48030,6 +48100,10 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runningApps = exports.deployRouter = void 0;
+exports.suppressNextRestartExitReport = suppressNextRestartExitReport;
+exports.shouldReportProcessExit = shouldReportProcessExit;
+exports.downloadPackage = downloadPackage;
+exports.buildDeploymentPaths = buildDeploymentPaths;
 const express_1 = __nccwpck_require__(925);
 const path = __importStar(__nccwpck_require__(6928));
 const fs = __importStar(__nccwpck_require__(9896));
@@ -48037,10 +48111,22 @@ const child_process_1 = __nccwpck_require__(5317);
 const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
 const admin_client_1 = __nccwpck_require__(6609);
+const run_command_1 = __nccwpck_require__(3879);
+const env_whitelist_1 = __nccwpck_require__(5809);
+const download_1 = __nccwpck_require__(7848);
+const safe_path_1 = __nccwpck_require__(1733);
 exports.deployRouter = (0, express_1.Router)();
 /** Map of deploymentId -> running child process (daemon mode) */
 const runningApps = new Map();
 exports.runningApps = runningApps;
+/** Deployments whose next process exit is part of an intentional in-place restart. */
+const restartExitReportsToSuppress = new Set();
+function suppressNextRestartExitReport(deploymentId) {
+    restartExitReportsToSuppress.add(deploymentId);
+}
+function shouldReportProcessExit(deploymentId) {
+    return !restartExitReportsToSuppress.delete(deploymentId);
+}
 /** Report app status back to admin-api */
 async function reportStatus(deploymentId, status, pid, message) {
     try {
@@ -48062,11 +48148,16 @@ function venvBins(venvDir) {
             : path.join(venvDir, 'bin', 'pip'),
     };
 }
-/** Install dependencies for the given deployment directory */
-function installDeps(deployDir, runtime, envVars) {
-    const env = { ...process.env, ...envVars };
+/** Install dependencies for the given deployment directory. Async — the
+ *  previous spawnSync calls froze the event loop for up to 5 minutes
+ *  (npm/pip installs), stopping heartbeats, /health and every API. */
+async function installDeps(deployDir, runtime, envVars) {
+    // SEC: whitelist env only — the previous `{ ...process.env, ...envVars }`
+    // leaked EXECUTOR_SHARED_TOKEN/EXECUTOR_SECRET into user-controlled app
+    // install processes, letting deployed code impersonate this executor
+    // against admin-api (heartbeats, execution callbacks).
+    const env = (0, env_whitelist_1.buildChildEnv)(envVars);
     const isWin = process.platform === 'win32';
-    // SEC: spawnSync with array args — no shell, no injection
     if (runtime === 'node' || runtime === 'nodejs') {
         const pkgJson = path.join(deployDir, 'package.json');
         if (fs.existsSync(pkgJson)) {
@@ -48076,7 +48167,7 @@ function installDeps(deployDir, runtime, envVars) {
             const npmArgs = ['install', '--production'];
             if (config_1.config.npmRegistryUrl)
                 npmArgs.push(`--registry=${config_1.config.npmRegistryUrl}`);
-            const r = (0, child_process_1.spawnSync)(npmCmd, npmArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300000, shell: isWin });
+            const r = await (0, run_command_1.runCommand)(npmCmd, npmArgs, { cwd: deployDir, env, timeout: 300000, shell: isWin });
             if (r.status !== 0)
                 throw new Error(r.stderr?.toString() || 'npm install failed');
         }
@@ -48088,14 +48179,14 @@ function installDeps(deployDir, runtime, envVars) {
             const venvDir = path.join(deployDir, '.venv');
             // Try 'python3' first (Linux/macOS), fall back to 'python' (Windows)
             const pythonCmd = isWin ? 'python' : 'python3';
-            const venvR = (0, child_process_1.spawnSync)(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, stdio: 'pipe', timeout: 60000 });
+            const venvR = await (0, run_command_1.runCommand)(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, timeout: 60000 });
             if (venvR.status !== 0)
                 throw new Error(venvR.stderr?.toString() || `${pythonCmd} -m venv failed`);
             const bins = venvBins(venvDir);
             const pipArgs = ['install', '-r', 'requirements.txt'];
             if (config_1.config.pythonRegistryUrl)
                 pipArgs.push('-i', config_1.config.pythonRegistryUrl);
-            const pipR = (0, child_process_1.spawnSync)(bins.pip, pipArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300000 });
+            const pipR = await (0, run_command_1.runCommand)(bins.pip, pipArgs, { cwd: deployDir, env, timeout: 300000 });
             if (pipR.status !== 0)
                 throw new Error(pipR.stderr?.toString() || 'pip install failed');
         }
@@ -48103,7 +48194,10 @@ function installDeps(deployDir, runtime, envVars) {
 }
 /** Start the application process */
 function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars) {
-    const env = { ...process.env, ...envVars };
+    // SEC: whitelist env only — same trust boundary as task execution. The app
+    // and its children get the task/env whitelist plus its own envVars, never
+    // the executor's secrets (EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET).
+    const env = (0, env_whitelist_1.buildChildEnv)(envVars);
     let cmd;
     let args;
     const isWin = process.platform === 'win32';
@@ -48118,8 +48212,20 @@ function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars
         cmd = 'node';
         args = [entrypoint];
     }
-    else {
-        // shell — use cmd.exe on Windows
+    else if (runtime === 'shell' || runtime === 'bash' || runtime === 'sh') {
+        // Critical (executor-node audit 2026-09): shell runtime executes the
+        // user-supplied entrypoint verbatim through `sh -c` / `cmd.exe /c`,
+        // which is a direct arbitrary-command execution surface. Restrict to a
+        // safe character set so attackers cannot smuggle `;`, `&&`, backticks,
+        // `$()` expansions or path escapes into the shell.
+        const SAFE = /^[A-Za-z0-9._\/ :\\-]+$/;
+        if (!SAFE.test(entrypoint)) {
+            throw new Error(`Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]`);
+        }
+        // Belt-and-suspenders: the spawn() call below already uses array args
+        // (not `shell: true`), but we still pre-validate to fail fast and to
+        // leave an audit trail. cmd.exe /c <safe> and sh -c <safe> here run
+        // exactly one command line, with no metacharacter expansion possible.
         if (isWin) {
             cmd = 'cmd.exe';
             args = ['/c', entrypoint];
@@ -48129,23 +48235,46 @@ function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars
             args = ['-c', entrypoint];
         }
     }
+    else {
+        throw new Error(`Unsupported runtime "${runtime}"; expected python | node | shell`);
+    }
     logger_1.logger.info(`[deploy] Starting app ${deploymentId}: ${cmd} ${args.join(' ')}`);
     const child = (0, child_process_1.spawn)(cmd, args, {
         cwd: deployDir,
         env,
-        detached: false,
+        // Detached on POSIX so the app leads its own process group — app-stop /
+        // upgrade can then kill the whole tree (the app may spawn its own
+        // children; a parent-only kill would orphan them).
+        detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
     });
     runningApps.set(deploymentId, child);
     // Stream logs to file
     const logFile = path.join(deployDir, 'app.log');
     const logStream = fs.createWriteStream(logFile, { flags: 'a' });
-    child.stdout?.pipe(logStream);
-    child.stderr?.pipe(logStream);
+    logStream.on('error', (err) => {
+        logger_1.logger.warn(`[deploy] Failed to write app log for ${deploymentId}: ${err.message}`);
+    });
+    // end:false on both sources — with the default end:true the first stream
+    // to finish would end the file while the other still writes
+    // (write-after-end crash).
+    let openLogSources = 2;
+    const closeLogStream = () => {
+        if (--openLogSources <= 0)
+            logStream.end();
+    };
+    child.stdout?.pipe(logStream, { end: false });
+    child.stderr?.pipe(logStream, { end: false });
+    child.stdout?.on('close', closeLogStream);
+    child.stderr?.on('close', closeLogStream);
     // Report started
     reportStatus(deploymentId, 'running', child.pid);
     child.on('exit', (code) => {
         runningApps.delete(deploymentId);
+        if (!shouldReportProcessExit(deploymentId)) {
+            logger_1.logger.info(`[deploy] Suppressed exit report for restarted app ${deploymentId}`);
+            return;
+        }
         if (code === 0) {
             logger_1.logger.info(`[deploy] App ${deploymentId} exited cleanly`);
             reportStatus(deploymentId, 'stopped', undefined, `Exited with code ${code}`);
@@ -48161,89 +48290,216 @@ function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars
         reportStatus(deploymentId, 'failed', undefined, err.message);
     });
 }
-/** Download a file over HTTP/HTTPS to a local path */
-function downloadPackage(url, dest) {
-    return new Promise((resolve, reject) => {
-        const proto = url.startsWith('https') ? __nccwpck_require__(5692) : __nccwpck_require__(8611);
-        const file = fs.createWriteStream(dest);
-        const req = proto.get(url, (res) => {
-            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                file.close();
-                fs.unlinkSync(dest);
-                downloadPackage(res.headers.location, dest).then(resolve).catch(reject);
-                return;
-            }
-            if (!res.statusCode || res.statusCode >= 400) {
-                reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-                return;
-            }
-            res.pipe(file);
-            file.on('finish', () => { file.close(); resolve(); });
-        });
-        req.on('error', (err) => { fs.unlink(dest, () => { }); reject(err); });
-        req.setTimeout(120000, () => { req.destroy(); reject(new Error('Download timed out')); });
-    });
+/** Strip embedded credentials (user:token@) before a URL reaches the logs. */
+function redactUrl(u) {
+    return u.replace(/\/\/[^/@]+@/, '//***@');
+}
+/** Download a package over HTTP/HTTPS to a local path. Delegates to the
+ *  shared downloader (Bearer token + cross-host redirect stripping + absolute
+ *  download deadline + size cap) so deploy and update-package behave
+ *  identically — update-package previously had a second, token-less copy. */
+function downloadPackage(url, dest, maxRedirects = 5, sendAuth = true) {
+    return (0, download_1.downloadFile)(url, dest, { maxRedirects, sendAuth }).then(() => undefined);
+}
+function validatePackageUrl(packageUrl) {
+    try {
+        const parsed = new URL(packageUrl);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return `packageUrl scheme not allowed: ${parsed.protocol}. Only http and https are permitted.`;
+        }
+        return null;
+    }
+    catch {
+        return 'packageUrl is not a valid URL';
+    }
+}
+function normalizeReleasePart(value, fallback) {
+    const normalized = (value || fallback)
+        .replace(/[^A-Za-z0-9._-]+/g, '-')
+        .replace(/^[._-]+|[._-]+$/g, '')
+        .slice(0, 80);
+    return normalized || fallback;
+}
+function buildDeploymentPaths(workDir, appId, deploymentId, version) {
+    if (!(0, safe_path_1.isSafePathSegment)(appId)) {
+        throw new Error('applicationId contains unsupported characters');
+    }
+    if (!(0, safe_path_1.isSafePathSegment)(deploymentId)) {
+        throw new Error('deploymentId contains unsupported characters');
+    }
+    const versionPart = normalizeReleasePart(version, 'version');
+    const releaseKey = `${versionPart}-${deploymentId}`;
+    const appRoot = path.join(workDir, 'apps', appId);
+    const releasesDir = path.join(appRoot, 'releases');
+    const tmpDir = path.join(appRoot, 'tmp');
+    return {
+        appRoot,
+        releasesDir,
+        tmpDir,
+        currentLink: path.join(appRoot, 'current'),
+        releaseKey,
+        finalReleaseDir: path.join(releasesDir, releaseKey),
+        extractDir: path.join(tmpDir, `${releaseKey}-extracting`),
+    };
+}
+function readCurrentTarget(currentLink) {
+    try {
+        if (fs.existsSync(currentLink) && fs.lstatSync(currentLink).isSymbolicLink()) {
+            return fs.readlinkSync(currentLink);
+        }
+    }
+    catch (err) {
+        logger_1.logger.warn(`[deploy] Failed to read current release link: ${err.message}`);
+    }
+    return null;
+}
+function removePathIfExists(target) {
+    if (fs.existsSync(target)) {
+        fs.rmSync(target, { recursive: true, force: true });
+    }
+}
+function switchCurrentRelease(currentLink, targetDir) {
+    const tmpLink = `${currentLink}.next-${process.pid}-${Date.now()}`;
+    removePathIfExists(tmpLink);
+    fs.symlinkSync(targetDir, tmpLink, process.platform === 'win32' ? 'junction' : 'dir');
+    try {
+        fs.renameSync(tmpLink, currentLink);
+    }
+    catch (err) {
+        if (err?.code !== 'EEXIST')
+            throw err;
+        fs.unlinkSync(currentLink);
+        fs.renameSync(tmpLink, currentLink);
+    }
+}
+function restoreCurrentRelease(currentLink, previousTarget) {
+    try {
+        if (previousTarget) {
+            switchCurrentRelease(currentLink, previousTarget);
+        }
+        else if (fs.existsSync(currentLink)) {
+            fs.unlinkSync(currentLink);
+        }
+    }
+    catch (err) {
+        logger_1.logger.warn(`[deploy] Failed to restore previous current release: ${err.message}`);
+    }
+}
+async function assertSafeZipEntries(zipPath) {
+    if (process.platform === 'win32')
+        return;
+    const listR = await (0, run_command_1.runCommand)('unzip', ['-Z1', zipPath], { timeout: 30000 });
+    if (listR.status !== 0) {
+        throw new Error(listR.stderr?.toString() || 'unzip listing failed');
+    }
+    const entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
+    for (const entry of entries) {
+        const parts = entry.split(/[\\/]+/).filter(Boolean);
+        if (path.isAbsolute(entry) || parts.includes('..')) {
+            throw new Error(`Unsafe zip entry path: ${entry}`);
+        }
+    }
 }
 /** Main deploy handler */
 exports.deployRouter.post('/deploy', async (req, res) => {
     const payload = req.body;
-    const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
+    const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, version, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
     if (!deploymentId) {
         return res.status(400).json({ error: 'deploymentId is required' });
     }
+    if (!(0, safe_path_1.isSafePathSegment)(deploymentId)) {
+        return res.status(400).json({ error: 'deploymentId contains unsupported characters' });
+    }
     if (!gitRepo && !packageUrl) {
         return res.status(400).json({ error: 'Either gitRepo or packageUrl is required' });
+    }
+    // P0: git argument injection guard — option-like or malformed values would
+    // be parsed as flags by git (e.g. --upload-pack=…) instead of ref/URL.
+    if (gitRepo) {
+        if (/^-/.test(gitRepo) || !/^(https?:\/\/|git@|ssh:\/\/)/i.test(gitRepo)) {
+            return res.status(400).json({ error: `Invalid gitRepo URL: ${gitRepo}` });
+        }
+        const branch = gitBranch || 'main';
+        if (/^-/.test(branch) ||
+            /[\s^~:?*[\]\\]/.test(branch) ||
+            branch.includes('..') ||
+            branch.startsWith('/')) {
+            return res.status(400).json({ error: `Invalid gitBranch: ${branch}` });
+        }
+        if (gitCommit && !/^[0-9a-fA-F]{7,40}$/.test(gitCommit)) {
+            return res.status(400).json({ error: `Invalid gitCommit: ${gitCommit}` });
+        }
+    }
+    if (packageUrl) {
+        const packageUrlError = validatePackageUrl(packageUrl);
+        if (packageUrlError) {
+            return res.status(400).json({ error: packageUrlError });
+        }
     }
     // Work directory for this deployment (accept appId as alias for applicationId)
     const appId = payload.applicationId || payload.appId;
     if (!appId) {
         return res.status(400).json({ error: 'applicationId is required' });
     }
-    const deployDir = path.join(config_1.config.workDir, 'apps', appId, deploymentId);
+    if (!(0, safe_path_1.isSafePathSegment)(appId)) {
+        return res.status(400).json({ error: 'applicationId contains unsupported characters' });
+    }
+    const paths = buildDeploymentPaths(config_1.config.workDir, appId, deploymentId, version);
     // Acknowledge immediately; deploy runs async
     res.json({ ok: true, deploymentId });
     setImmediate(async () => {
+        const previousCurrentTarget = readCurrentTarget(paths.currentLink);
+        let switchedCurrent = false;
         try {
             // Stop existing process if upgrading — wait for actual exit instead of fixed sleep
             if (upgrade && runningApps.has(deploymentId)) {
                 const existing = runningApps.get(deploymentId);
+                suppressNextRestartExitReport(deploymentId);
                 await new Promise((resolve) => {
                     const gracefulTimeout = setTimeout(() => {
                         logger_1.logger.warn(`[deploy] Graceful stop timed out for ${deploymentId}, sending SIGKILL`);
-                        existing.kill('SIGKILL');
+                        (0, run_command_1.killProcessTree)(existing, 'SIGKILL');
                         resolve();
                     }, 10000);
                     existing.once('exit', () => {
                         clearTimeout(gracefulTimeout);
                         resolve();
                     });
-                    existing.kill('SIGTERM');
+                    (0, run_command_1.killProcessTree)(existing, 'SIGTERM');
                 });
                 runningApps.delete(deploymentId);
                 logger_1.logger.info(`[deploy] Stopped existing process for ${deploymentId}`);
             }
-            if (!fs.existsSync(deployDir)) {
-                fs.mkdirSync(deployDir, { recursive: true });
-            }
+            fs.mkdirSync(paths.releasesDir, { recursive: true });
+            fs.mkdirSync(paths.tmpDir, { recursive: true });
+            removePathIfExists(paths.extractDir);
+            fs.mkdirSync(paths.extractDir, { recursive: true });
             if (packageUrl) {
-                // Package-based deployment: download zip and extract
-                logger_1.logger.info(`[deploy] Downloading package from ${packageUrl}`);
-                const zipPath = path.join(deployDir, '_package.zip');
+                // Package-based deployment: download zip and extract into a temporary release dir.
+                logger_1.logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
+                const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
                 await downloadPackage(packageUrl, zipPath);
+                await assertSafeZipEntries(zipPath);
                 logger_1.logger.info(`[deploy] Extracting package for ${deploymentId}`);
-                // Use platform-appropriate extraction:
+                // Use platform-appropriate extraction (async — spawnSync here froze
+                // the event loop for up to 60s per archive):
                 //   Windows: PowerShell Expand-Archive (built-in since PS 5.0)
                 //   Linux/macOS: unzip
                 let unzipOk = false;
                 if (process.platform === 'win32') {
-                    const psR = (0, child_process_1.spawnSync)('powershell.exe', ['-NoProfile', '-Command',
-                        `Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${deployDir}'`], { stdio: 'pipe', timeout: 60000 });
+                    const psR = await (0, run_command_1.runCommand)('powershell.exe', [
+                        '-NoProfile',
+                        '-Command',
+                        'Expand-Archive -Force -LiteralPath $args[0] -DestinationPath $args[1]',
+                        zipPath,
+                        paths.extractDir,
+                    ], { timeout: 60000 });
                     if (psR.status !== 0)
                         throw new Error(psR.stderr?.toString() || 'Expand-Archive failed');
                     unzipOk = true;
                 }
                 else {
-                    const unzipR = (0, child_process_1.spawnSync)('unzip', ['-o', zipPath, '-d', deployDir], { stdio: 'pipe', timeout: 60000 });
+                    const unzipR = await (0, run_command_1.runCommand)('unzip', ['-o', zipPath, '-d', paths.extractDir], { timeout: 60000 });
                     if (unzipR.status !== 0)
                         throw new Error(unzipR.stderr?.toString() || 'unzip failed');
                     unzipOk = true;
@@ -48254,38 +48510,29 @@ exports.deployRouter.post('/deploy', async (req, res) => {
                 }
             }
             else if (gitRepo) {
-                const gitDir = path.join(deployDir, '.git');
-                // SEC: all git commands use spawnSync with array args — no shell, no injection
-                if (!fs.existsSync(gitDir)) {
-                    // Fresh clone
-                    logger_1.logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
-                    const cloneR = (0, child_process_1.spawnSync)('git', ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, '.'], { cwd: deployDir, stdio: 'pipe', timeout: 120000 });
-                    if (cloneR.status !== 0)
-                        throw new Error(cloneR.stderr?.toString() || 'git clone failed');
-                }
-                else {
-                    // Pull latest
-                    logger_1.logger.info(`[deploy] Pulling latest for ${deploymentId}`);
-                    const fetchR = (0, child_process_1.spawnSync)('git', ['fetch', '--depth', '1', 'origin'], { cwd: deployDir, stdio: 'pipe', timeout: 60000 });
-                    if (fetchR.status !== 0)
-                        logger_1.logger.warn(`git fetch warning: ${fetchR.stderr?.toString()}`);
-                    const resetR = (0, child_process_1.spawnSync)('git', ['reset', '--hard', `origin/${gitBranch}`], { cwd: deployDir, stdio: 'pipe', timeout: 30000 });
-                    if (resetR.status !== 0)
-                        throw new Error(resetR.stderr?.toString() || 'git reset failed');
-                }
+                // SEC: all git commands use array args via async spawn — no shell, no injection
+                logger_1.logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
+                const cloneR = await (0, run_command_1.runCommand)('git', ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, '.'], { cwd: paths.extractDir, timeout: 120000 });
+                if (cloneR.status !== 0)
+                    throw new Error(cloneR.stderr?.toString() || 'git clone failed');
                 if (gitCommit) {
-                    const coR = (0, child_process_1.spawnSync)('git', ['checkout', gitCommit], { cwd: deployDir, stdio: 'pipe', timeout: 30000 });
+                    const coR = await (0, run_command_1.runCommand)('git', ['checkout', gitCommit], { cwd: paths.extractDir, timeout: 30000 });
                     if (coR.status !== 0)
                         throw new Error(coR.stderr?.toString() || 'git checkout failed');
                 }
             }
-            // Install dependencies
-            installDeps(deployDir, runtime, envVars);
-            // Write .env file for the app
+            // Install dependencies before publishing the release.
+            await installDeps(paths.extractDir, runtime, envVars);
+            // Write .env file for the app before publishing the release.
             if (Object.keys(envVars).length > 0) {
                 const envContent = Object.entries(envVars).map(([k, v]) => `${k}=${v}`).join('\n');
-                fs.writeFileSync(path.join(deployDir, '.env'), envContent, 'utf-8');
+                fs.writeFileSync(path.join(paths.extractDir, '.env'), envContent, { encoding: 'utf-8', mode: 0o600 });
             }
+            removePathIfExists(paths.finalReleaseDir);
+            fs.renameSync(paths.extractDir, paths.finalReleaseDir);
+            switchCurrentRelease(paths.currentLink, paths.finalReleaseDir);
+            switchedCurrent = true;
+            logger_1.logger.info(`[deploy] Current release for ${appName} now points to ${paths.releaseKey}`);
             // Start app if runMode is daemon or once
             // Pick a sensible default entrypoint based on runtime when none was specified
             const defaultEntry = (runtime === 'python') ? 'main.py'
@@ -48293,7 +48540,7 @@ exports.deployRouter.post('/deploy', async (req, res) => {
                     : 'main.sh';
             const entry = entrypoint || defaultEntry;
             if (runMode === 'daemon' || runMode === 'once') {
-                startApp(deploymentId, deployDir, runtime, entry, runMode, envVars);
+                startApp(deploymentId, paths.finalReleaseDir, runtime, entry, runMode, envVars);
             }
             else {
                 // scheduled mode: just deploy, tasks are triggered via normal task dispatch
@@ -48301,6 +48548,10 @@ exports.deployRouter.post('/deploy', async (req, res) => {
             }
         }
         catch (err) {
+            if (switchedCurrent) {
+                restoreCurrentRelease(paths.currentLink, previousCurrentTarget);
+            }
+            removePathIfExists(paths.extractDir);
             logger_1.logger.error(`[deploy] Deployment ${deploymentId} failed: ${err.message}`);
             await reportStatus(deploymentId, 'failed', undefined, err.message);
         }
@@ -48311,7 +48562,15 @@ exports.deployRouter.post('/app-stop', (req, res) => {
     const { deploymentId } = req.body;
     const child = runningApps.get(deploymentId);
     if (child) {
-        child.kill('SIGTERM');
+        // Apps are spawned detached (process-group leaders) — kill the whole
+        // tree so daemons that spawned their own children don't escape.
+        (0, run_command_1.killProcessTree)(child, 'SIGTERM');
+        // Escalate to SIGKILL when the process ignores SIGTERM (mirroring the
+        // upgrade path) — otherwise daemons keep running unmanaged.
+        const killTimer = setTimeout(() => {
+            (0, run_command_1.killProcessTree)(child, 'SIGKILL');
+        }, 10000);
+        child.once('exit', () => clearTimeout(killTimer));
         runningApps.delete(deploymentId);
         logger_1.logger.info(`[deploy] Stopped app ${deploymentId}`);
     }
@@ -48368,10 +48627,13 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.executeRouter = void 0;
+exports.BoundedLogBuffer = exports.executeRouter = void 0;
+exports.gitCheckoutTo = gitCheckoutTo;
+exports.killRunningTaskProcesses = killRunningTaskProcesses;
 exports.runTask = runTask;
 const express_1 = __nccwpck_require__(925);
 const child_process_1 = __nccwpck_require__(5317);
+const crypto = __importStar(__nccwpck_require__(6982));
 const path = __importStar(__nccwpck_require__(6928));
 const fs = __importStar(__nccwpck_require__(9896));
 const config_1 = __nccwpck_require__(3650);
@@ -48381,29 +48643,74 @@ const manifest_1 = __nccwpck_require__(5537);
 const callback_1 = __nccwpck_require__(4915);
 const file_logger_1 = __nccwpck_require__(4723);
 const task_worker_1 = __nccwpck_require__(8404);
+const run_command_1 = __nccwpck_require__(3879);
+const env_whitelist_1 = __nccwpck_require__(5809);
+const execution_callback_token_1 = __nccwpck_require__(4730);
 /** Convert git URL to a safe cache directory name */
 function repoDirName(repoUrl) {
     const base = repoUrl.replace(/\/$/, '').split('/').pop() ?? 'repo';
-    return base.replace(/\.git$/, '').replace(/[^a-zA-Z0-9_.-]/g, '_');
+    const cleaned = base.replace(/\.git$/, '').replace(/[^a-zA-Z0-9_.-]/g, '_');
+    // Salt with a URL hash — sanitization alone maps distinct repos like
+    // a/b and a_b onto the same cache directory (cross-repo contamination).
+    const hash = crypto.createHash('sha256').update(repoUrl).digest('hex').slice(0, 12);
+    return `${cleaned}-${hash}`;
+}
+/** Strip embedded credentials (user:token@) before a URL reaches the logs. */
+function redactUrl(u) {
+    return u.replace(/\/\/[^/@]+@/, '//***@');
+}
+const gitCacheQueues = new Map();
+/** Serialize first-time clones per repo — concurrent executions of the same
+ *  repo would race `git clone --bare` into the same cache directory and the
+ *  losing side fails the whole execution (npm installs already queue via
+ *  queueTaskInstall; git had no equivalent). */
+function queueGitCheckout(cacheKey, job) {
+    const prev = gitCacheQueues.get(cacheKey) ?? Promise.resolve();
+    const run = prev.then(job, job);
+    const tail = run.then(() => undefined, () => undefined);
+    gitCacheQueues.set(cacheKey, tail);
+    tail.finally(() => {
+        if (gitCacheQueues.get(cacheKey) === tail)
+            gitCacheQueues.delete(cacheKey);
+    });
+    return run;
 }
 /** Clone (with bare cache) and checkout the specified ref to dest directory */
-function gitCheckoutTo(repoUrl, ref, dest) {
+async function gitCheckoutTo(repoUrl, ref, dest) {
     const cacheDir = path.join(config_1.config.workDir, '.git_cache', repoDirName(repoUrl));
-    if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
-        fs.mkdirSync(cacheDir, { recursive: true });
-        const r = (0, child_process_1.spawnSync)('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120000 });
+    await queueGitCheckout(cacheDir, async () => {
+        if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
+            fs.mkdirSync(cacheDir, { recursive: true });
+            const r = await (0, run_command_1.runCommand)('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120000 });
+            if (r.status !== 0)
+                throw new Error(`git clone failed: ${r.stderr.trim()}`);
+        }
+        else {
+            const r = await (0, run_command_1.runCommand)('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60000 });
+            if (r.status !== 0) {
+                // Continuing with a stale cache made tasks silently run old code.
+                throw new Error(`git fetch failed: ${r.stderr.trim()}`);
+            }
+        }
+        fs.mkdirSync(dest, { recursive: true });
+        const r = await (0, run_command_1.runCommand)('git', [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'], { timeout: 30000 });
         if (r.status !== 0)
-            throw new Error(`git clone failed: ${r.stderr?.toString()}`);
-    }
-    else {
-        const r = (0, child_process_1.spawnSync)('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60000 });
-        if (r.status !== 0)
-            logger_1.logger.warn(`git fetch warning: ${r.stderr?.toString()}`);
-    }
-    fs.mkdirSync(dest, { recursive: true });
-    const r = (0, child_process_1.spawnSync)('git', [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'], { timeout: 30000 });
-    if (r.status !== 0)
-        throw new Error(`git checkout failed: ${r.stderr?.toString()}`);
+            throw new Error(`git checkout failed: ${r.stderr.trim()}`);
+    });
+}
+const taskInstallQueues = new Map();
+/** Serialize dependency installs per task id — concurrent requests for the
+ *  same task would race on the shared .node_modules/<taskId> directory. */
+function queueTaskInstall(taskId, job) {
+    const prev = taskInstallQueues.get(taskId) ?? Promise.resolve();
+    const run = prev.then(job, job);
+    const tail = run.then(() => undefined, () => undefined);
+    taskInstallQueues.set(taskId, tail);
+    tail.finally(() => {
+        if (taskInstallQueues.get(taskId) === tail)
+            taskInstallQueues.delete(taskId);
+    });
+    return run;
 }
 exports.executeRouter = (0, express_1.Router)();
 exports.executeRouter.post('/execute', async (req, res) => {
@@ -48423,222 +48730,299 @@ exports.executeRouter.post('/execute', async (req, res) => {
         releaseCapacity();
         res.status(status).json({ error });
     };
-    const body = req.body;
-    const { executionId, params } = body;
-    if (!executionId || !body.task) {
-        sendError(400, 'executionId and task are required');
-        return;
-    }
-    const workDir = path.join(config_1.config.workDir, executionId);
-    // S6/Q11: path traversal guard — ensure workDir stays within configured base
-    const resolvedWorkDir = path.resolve(workDir);
-    const resolvedBase = path.resolve(config_1.config.workDir);
-    if (!resolvedWorkDir.startsWith(resolvedBase + path.sep) && resolvedWorkDir !== resolvedBase) {
-        sendError(400, 'Invalid executionId: path traversal detected');
-        return;
-    }
-    // SEC-04: Check for symbolic link attacks
+    // Set once the task is queued — after that the worker's onComplete owns
+    // the capacity slot and the outer catch must not double-release it.
+    let handedOff = false;
     try {
-        // Check if the base directory exists and is not a symlink
-        const baseStats = fs.lstatSync(resolvedBase);
-        if (baseStats.isSymbolicLink()) {
-            sendError(400, 'Base work directory cannot be a symbolic link');
+        const body = req.body;
+        const { executionId, params } = body;
+        if (!executionId || !body.task) {
+            sendError(400, 'executionId and task are required');
             return;
         }
-        // If workDir already exists, check if it's a symlink
-        if (fs.existsSync(resolvedWorkDir)) {
-            const workDirStats = fs.lstatSync(resolvedWorkDir);
-            if (workDirStats.isSymbolicLink()) {
-                sendError(400, 'Work directory cannot be a symbolic link');
-                return;
-            }
-            // Check the real path to prevent symlink escape
-            const realWorkDir = fs.realpathSync(resolvedWorkDir);
-            const realBase = fs.realpathSync(resolvedBase);
-            if (!realWorkDir.startsWith(realBase + path.sep) && realWorkDir !== realBase) {
-                sendError(400, 'Symbolic link escape detected');
-                return;
-            }
-        }
-    }
-    catch (err) {
-        sendError(400, `Path validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
-        return;
-    }
-    fs.mkdirSync(workDir, { recursive: true });
-    // S6/Q11: restrict permissions so sibling tasks cannot read this directory
-    try {
-        fs.chmodSync(workDir, 0o700);
-    }
-    catch (_) { /* ignore on unsupported filesystems */ }
-    // --- Git version binding: if task specifies gitRepo, clone/checkout to work dir ---
-    const gitRepo = body.task.gitRepo;
-    const gitCommit = body.task.gitCommit;
-    const gitBranch = body.task.gitBranch ?? 'main';
-    if (gitRepo) {
-        // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
-        const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
-        if (!allowedGitPattern.test(gitRepo)) {
-            sendError(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
+        const workDir = path.join(config_1.config.workDir, executionId);
+        // S6/Q11: path traversal guard — ensure workDir stays within configured base
+        const resolvedWorkDir = path.resolve(workDir);
+        const resolvedBase = path.resolve(config_1.config.workDir);
+        if (!resolvedWorkDir.startsWith(resolvedBase + path.sep) && resolvedWorkDir !== resolvedBase) {
+            sendError(400, 'Invalid executionId: path traversal detected');
             return;
         }
-        // S7: SSRF guard — block private IP addresses and localhost
-        const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
-        if (privateIpPattern.test(gitRepo)) {
-            sendError(400, `gitRepo URL contains restricted address: ${gitRepo}`);
-            return;
-        }
-        const ref = gitCommit || gitBranch;
-        logger_1.logger.info(`Checking out ${gitRepo}@${ref} to ${workDir}`);
+        // SEC-04: Check for symbolic link attacks
         try {
-            gitCheckoutTo(gitRepo, ref, workDir);
+            // Check if the base directory exists and is not a symlink
+            const baseStats = fs.lstatSync(resolvedBase);
+            if (baseStats.isSymbolicLink()) {
+                sendError(400, 'Base work directory cannot be a symbolic link');
+                return;
+            }
+            // If workDir already exists, check if it's a symlink
+            if (fs.existsSync(resolvedWorkDir)) {
+                const workDirStats = fs.lstatSync(resolvedWorkDir);
+                if (workDirStats.isSymbolicLink()) {
+                    sendError(400, 'Work directory cannot be a symbolic link');
+                    return;
+                }
+                // Check the real path to prevent symlink escape
+                const realWorkDir = fs.realpathSync(resolvedWorkDir);
+                const realBase = fs.realpathSync(resolvedBase);
+                if (!realWorkDir.startsWith(realBase + path.sep) && realWorkDir !== realBase) {
+                    sendError(400, 'Symbolic link escape detected');
+                    return;
+                }
+            }
         }
         catch (err) {
-            sendError(500, err instanceof Error ? err.message : 'Git checkout failed');
+            sendError(400, `Path validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
             return;
         }
-    }
-    // Load manifest.yaml and merge with task (task fields take priority)
-    const manifest = (0, manifest_1.loadManifest)(workDir);
-    const task = (0, manifest_1.mergeTaskWithManifest)(body.task, manifest);
-    const runtime = task.runtime || 'node';
-    const entrypoint = task.entrypoint || 'index.js';
-    const timeout = task.timeout || config_1.config.taskTimeoutSeconds;
-    const requirements = task.requirements || [];
-    const taskId = String(task.id || executionId);
-    // Glue script support: write inline source to a temp file and use it as entrypoint
-    let actualRuntime = runtime;
-    let actualEntrypoint = entrypoint;
-    let actualRequirements = requirements;
-    const glueSource = task.glueSource || task.glue_source;
-    const glueLanguage = task.glueLanguage || task.glue_language;
-    if (glueSource) {
-        let glueFile;
-        const glLower = glueLanguage ? glueLanguage.toLowerCase() : '';
-        if (glLower === 'javascript' || glLower === 'glue_node' || (!glueLanguage && runtime === 'node')) {
-            glueFile = path.join(workDir, 'glue_script.js');
-            actualRuntime = 'node';
+        fs.mkdirSync(workDir, { recursive: true });
+        // S6/Q11: restrict permissions so sibling tasks cannot read this directory
+        try {
+            fs.chmodSync(workDir, 0o700);
         }
-        else if (glLower === 'python' || glLower === 'glue_python' || (!glueLanguage && runtime === 'python')) {
-            glueFile = path.join(workDir, 'glue_script.py');
-            actualRuntime = 'python';
-        }
-        else if (glLower === 'shell' || glLower === 'glue_shell') {
-            glueFile = path.join(workDir, 'glue_script.sh');
-            actualRuntime = 'shell';
-        }
-        else {
-            sendError(400, `Unsupported glue language: ${glueLanguage}`);
-            return;
-        }
-        if (typeof glueSource !== 'string') {
-            sendError(400, 'glueSource must be a string');
-            return;
-        }
-        fs.writeFileSync(glueFile, glueSource, 'utf-8');
-        fs.chmodSync(glueFile, 0o755);
-        logger_1.logger.info(`Glue script written to ${glueFile} (${glueSource.length} bytes)`);
-        actualEntrypoint = actualRuntime === 'shell' ? glueFile : path.basename(glueFile);
-        actualRequirements = []; // Glue scripts use system runtime, no per-task deps
-    }
-    // node runtime: install dependencies on demand to task-isolated directory
-    if (actualRuntime === 'node' && actualRequirements.length > 0) {
-        const nodeModulesDir = path.join(config_1.config.workDir, '.node_modules', taskId);
-        fs.mkdirSync(nodeModulesDir, { recursive: true });
-        const pkgJson = path.join(nodeModulesDir, 'package.json');
-        if (!fs.existsSync(pkgJson)) {
-            fs.writeFileSync(pkgJson, JSON.stringify({ name: `task-${taskId}`, version: '1.0.0' }));
-        }
-        // S16: validate each package name against npm naming rules before shell expansion
-        const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
-        for (const pkg of actualRequirements) {
-            if (!npmNameRe.test(pkg)) {
-                sendError(400, `Invalid npm package name: ${pkg}`);
+        catch (_) { /* ignore on unsupported filesystems */ }
+        // --- Git version binding: if task specifies gitRepo, clone/checkout to work dir ---
+        const gitRepo = body.task.gitRepo;
+        const gitCommit = body.task.gitCommit;
+        const gitBranch = body.task.gitBranch ?? 'main';
+        if (gitRepo) {
+            // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
+            const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
+            if (!allowedGitPattern.test(gitRepo)) {
+                sendError(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
+                return;
+            }
+            // S7: SSRF guard — block private IP addresses and localhost
+            const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
+            if (privateIpPattern.test(gitRepo)) {
+                sendError(400, `gitRepo URL contains restricted address: ${gitRepo}`);
+                return;
+            }
+            const ref = gitCommit || gitBranch;
+            // git checkout uses array args (no shell injection), but an option-like
+            // ref (`-b`, `--orphan`) would still be parsed as a flag by git — same
+            // guard deploy.ts applies to its checkout path.
+            if (/^-/.test(ref)) {
+                sendError(400, `Invalid git ref: ${ref}`);
+                return;
+            }
+            logger_1.logger.info(`Checking out ${redactUrl(gitRepo)}@${ref} to ${workDir}`);
+            try {
+                await gitCheckoutTo(gitRepo, ref, workDir);
+            }
+            catch (err) {
+                sendError(500, err instanceof Error ? err.message : 'Git checkout failed');
                 return;
             }
         }
-        logger_1.logger.info(`Installing ${actualRequirements.length} packages for task ${taskId}`);
-        // Generate .npmrc to use private registry for @autocodeflow scoped packages
-        if (config_1.config.npmRegistryUrl) {
-            const npmrc = path.join(nodeModulesDir, '.npmrc');
-            const hasAutoflowPackage = actualRequirements.some(pkg => pkg.startsWith('@autocodeflow/'));
-            const registryConfig = hasAutoflowPackage
-                ? `@autocodeflow:registry=${config_1.config.npmRegistryUrl}\n`
-                : `registry=${config_1.config.npmRegistryUrl}\n`;
-            fs.writeFileSync(npmrc, registryConfig);
-            logger_1.logger.info(`Using npm registry: ${config_1.config.npmRegistryUrl} for task ${taskId}`);
-        }
-        const installResult = (0, child_process_1.spawnSync)('npm', ['install', '--prefix', nodeModulesDir, ...actualRequirements], { stdio: 'pipe', timeout: 300000 });
-        if (installResult.status !== 0) {
-            const errMsg = installResult.stderr?.toString() || 'npm install failed';
-            sendError(500, `Dependency installation failed: ${errMsg}`);
+        // Load manifest.yaml and merge with task (task fields take priority)
+        const manifest = (0, manifest_1.loadManifest)(workDir);
+        const task = (0, manifest_1.mergeTaskWithManifest)(body.task, manifest);
+        const runtime = task.runtime || 'node';
+        const entrypoint = task.entrypoint || 'index.js';
+        const timeout = task.timeout || config_1.config.taskTimeoutSeconds;
+        // Bounded timeout: a negative value fires setTimeout immediately (instant
+        // task kill) and an unbounded one arms a near-permanent timer.
+        if (!Number.isFinite(timeout) || timeout < 1 || timeout > 86400) {
+            sendError(400, `Invalid task timeout: ${timeout} (expected 1..86400 seconds)`);
             return;
         }
-    }
-    // SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
-    const ENV_WHITELIST = new Set([
-        'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
-        'NODE_PATH', 'npm_config_cache', 'npm_config_prefix',
-        'TMPDIR', 'TEMP', 'TMP',
-        'USER', 'LOGNAME', 'SHELL',
-        'SYSTEMROOT', 'WINDIR', // Windows compat
-    ]);
-    const env = {};
-    for (const [k, v] of Object.entries(process.env)) {
-        if (ENV_WHITELIST.has(k))
-            env[k] = v;
-    }
-    // inject task-scoped context
-    env['EXECUTION_ID'] = executionId;
-    env['TASK_ID'] = String(task.id || '');
-    env['TASK_NAME'] = String(task.name || '');
-    if (params) {
-        for (const [k, v] of Object.entries(params)) {
-            env[`AUTOFLOW_${k.toUpperCase()}`] = String(v);
+        const requirements = task.requirements || [];
+        const taskId = String(task.id || executionId);
+        // Glue script support: write inline source to a temp file and use it as entrypoint
+        let actualRuntime = runtime;
+        let actualEntrypoint = entrypoint;
+        let actualRequirements = requirements;
+        const glueSource = task.glueSource || task.glue_source;
+        const glueLanguage = task.glueLanguage || task.glue_language;
+        if (glueSource) {
+            let glueFile;
+            const glLower = glueLanguage ? glueLanguage.toLowerCase() : '';
+            if (glLower === 'javascript' || glLower === 'glue_node' || (!glueLanguage && runtime === 'node')) {
+                glueFile = path.join(workDir, 'glue_script.js');
+                actualRuntime = 'node';
+            }
+            else if (glLower === 'python' || glLower === 'glue_python' || (!glueLanguage && runtime === 'python')) {
+                glueFile = path.join(workDir, 'glue_script.py');
+                actualRuntime = 'python';
+            }
+            else if (glLower === 'shell' || glLower === 'glue_shell' || (!glueLanguage && runtime === 'shell')) {
+                // W-11 (windows-findings): parity bug — node/python branches accept a
+                // missing glueLanguage (fall back to task.runtime), shell did not and
+                // 400'd `Unsupported glue language: ` for shell glue created without
+                // the explicit field. Also on win32 the file MUST end in .cmd:
+                // `cmd.exe /c <path>.sh` neither runs the batch nor exits cleanly —
+                // it hangs (observed holding a task slot until timeout).
+                glueFile = path.join(workDir, process.platform === 'win32' ? 'glue_script.cmd' : 'glue_script.sh');
+                actualRuntime = 'shell';
+            }
+            else {
+                sendError(400, `Unsupported glue language: ${glueLanguage}`);
+                return;
+            }
+            if (typeof glueSource !== 'string') {
+                sendError(400, 'glueSource must be a string');
+                return;
+            }
+            fs.writeFileSync(glueFile, glueSource, 'utf-8');
+            fs.chmodSync(glueFile, 0o755);
+            logger_1.logger.info(`Glue script written to ${glueFile} (${glueSource.length} bytes)`);
+            actualEntrypoint = actualRuntime === 'shell' ? glueFile : path.basename(glueFile);
+            actualRequirements = []; // Glue scripts use system runtime, no per-task deps
         }
-    }
-    let cmd;
-    let args;
-    if (actualRuntime === 'node') {
-        cmd = process.platform === 'win32' ? 'node.exe' : 'node';
-        args = [actualEntrypoint];
-    }
-    else if (actualRuntime === 'python') {
-        cmd = process.platform === 'win32' ? 'python.exe' : 'python3';
-        args = [actualEntrypoint];
-    }
-    else if (actualRuntime === 'shell') {
-        if (process.platform === 'win32') {
-            cmd = 'cmd.exe';
-            args = ['/c', actualEntrypoint];
+        // node runtime: install dependencies on demand to task-isolated directory
+        let sharedNodeModulesDir = null;
+        if (actualRuntime === 'node' && actualRequirements.length > 0) {
+            const nodeModulesDir = path.join(config_1.config.workDir, '.node_modules', taskId);
+            sharedNodeModulesDir = nodeModulesDir;
+            fs.mkdirSync(nodeModulesDir, { recursive: true });
+            const pkgJson = path.join(nodeModulesDir, 'package.json');
+            if (!fs.existsSync(pkgJson)) {
+                fs.writeFileSync(pkgJson, JSON.stringify({ name: `task-${taskId}`, version: '1.0.0' }));
+            }
+            // S16: validate each package name against npm naming rules before shell expansion
+            const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
+            for (const pkg of actualRequirements) {
+                if (!npmNameRe.test(pkg)) {
+                    sendError(400, `Invalid npm package name: ${pkg}`);
+                    return;
+                }
+            }
+            logger_1.logger.info(`Installing ${actualRequirements.length} packages for task ${taskId}`);
+            // Generate .npmrc to use private registry for @autocodeflow scoped packages
+            if (config_1.config.npmRegistryUrl) {
+                const npmrc = path.join(nodeModulesDir, '.npmrc');
+                const hasAutoflowPackage = actualRequirements.some(pkg => pkg.startsWith('@autocodeflow/'));
+                const registryConfig = hasAutoflowPackage
+                    ? `@autocodeflow:registry=${config_1.config.npmRegistryUrl}\n`
+                    : `registry=${config_1.config.npmRegistryUrl}\n`;
+                fs.writeFileSync(npmrc, registryConfig);
+                logger_1.logger.info(`Using npm registry: ${redactUrl(config_1.config.npmRegistryUrl)} for task ${taskId}`);
+            }
+            const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+            const installResult = await queueTaskInstall(taskId, () => (0, run_command_1.runCommand)(npmCmd, ['install', '--prefix', nodeModulesDir, ...actualRequirements], { timeout: 300000, shell: process.platform === 'win32' }));
+            if (installResult.status !== 0) {
+                const errMsg = installResult.stderr.trim() || 'npm install failed';
+                sendError(500, `Dependency installation failed: ${errMsg}`);
+                return;
+            }
+        }
+        // SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
+        const env = (0, env_whitelist_1.buildChildEnv)();
+        // Requirements were installed to .node_modules/<taskId>/node_modules via npm
+        // --prefix; Node's resolution chain never reaches a dot-prefixed sibling
+        // directory, so point NODE_PATH at it or every require() fails with
+        // MODULE_NOT_FOUND (verified reproduction — see review round 4).
+        if (sharedNodeModulesDir) {
+            const taskNodeModules = path.join(sharedNodeModulesDir, 'node_modules');
+            env['NODE_PATH'] = env['NODE_PATH']
+                ? `${taskNodeModules}${path.delimiter}${env['NODE_PATH']}`
+                : taskNodeModules;
+        }
+        // inject task-scoped context
+        env['EXECUTION_ID'] = executionId;
+        env['TASK_ID'] = String(task.id || '');
+        env['TASK_NAME'] = String(task.name || '');
+        if (params) {
+            for (const [k, v] of Object.entries(params)) {
+                env[`AUTOFLOW_${k.toUpperCase()}`] = String(v);
+            }
+        }
+        // N23: per-execution callback credentials — injected AFTER the params loop
+        // so user params can never override them. The token is an HMAC bound to
+        // this executionId with a short TTL (task timeout + grace), derived from
+        // the executor shared secret; it lets task code call
+        // POST /api/executions/callback without ever seeing the shared token
+        // (SEC-01 whitelist untouched — this is the explicit extra channel).
+        // AUTOFLOW_ADMIN_API_URL is non-secret routing info, same value the
+        // executor itself uses to reach admin-api.
+        const callbackToken = (0, execution_callback_token_1.createExecutionCallbackToken)(executionId, timeout + execution_callback_token_1.CALLBACK_TOKEN_GRACE_SECONDS);
+        if (callbackToken) {
+            env['AUTOFLOW_CALLBACK_TOKEN'] = callbackToken;
+        }
+        const adminApiUrl = config_1.config.adminApiUrlInternal || config_1.config.adminApiUrl;
+        if (adminApiUrl) {
+            env['AUTOFLOW_ADMIN_API_URL'] = adminApiUrl;
+        }
+        // N27: the address this executor registered itself with (same value
+        // main.ts sends to /api/executors/register). Non-secret routing info —
+        // the per-execution callback path requires every callback item to carry
+        // executorAddress, and task code cannot know it any other way. Injected
+        // after the params loop so user params can never override it.
+        const registeredAddress = config_1.config.executorAddressPublic || config_1.config.executorAddress;
+        if (registeredAddress) {
+            env['AUTOFLOW_EXECUTOR_ADDRESS'] = registeredAddress;
+        }
+        let cmd;
+        let args;
+        if (actualRuntime === 'node') {
+            cmd = process.platform === 'win32' ? 'node.exe' : 'node';
+            args = [actualEntrypoint];
+        }
+        else if (actualRuntime === 'python') {
+            cmd = process.platform === 'win32' ? 'python.exe' : 'python3';
+            args = [actualEntrypoint];
+        }
+        else if (actualRuntime === 'shell') {
+            if (process.platform === 'win32') {
+                cmd = 'cmd.exe';
+                args = ['/c', actualEntrypoint];
+            }
+            else {
+                cmd = 'bash';
+                // spawn already runs with cwd=workDir — passing the entrypoint
+                // directly avoids quote-breakout through string concatenation.
+                args = [actualEntrypoint];
+            }
         }
         else {
-            cmd = 'bash';
-            args = ['-c', `cd "${workDir}" && exec "${actualEntrypoint}"`];
+            sendError(400, `Unsupported runtime: ${actualRuntime}`);
+            return;
         }
-    }
-    else {
-        sendError(400, `Unsupported runtime: ${actualRuntime}`);
-        return;
-    }
-    logger_1.logger.info(`Running task ${String(task.name)} [${executionId}]: ${cmd} ${args.join(' ')}`);
-    const taskInfo = {
-        taskId,
-        task: { ...task, runtime: actualRuntime, entrypoint: actualEntrypoint, timeout, workDir, env, cmd, args },
-        params,
-        executionId,
-    };
-    try {
-        task_worker_1.taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId }, () => {
+        // Hardening: the entrypoint is resolved against the work dir by every
+        // runtime (cwd=workDir), so a relative path with `..` could execute a
+        // script anywhere on the host. Glue scripts use absolute paths that are
+        // already inside the work dir and pass this guard unchanged.
+        const entryAbs = path.resolve(workDir, actualEntrypoint);
+        const workDirAbs = path.resolve(workDir);
+        if (entryAbs !== workDirAbs && !entryAbs.startsWith(workDirAbs + path.sep)) {
+            sendError(400, 'entrypoint escapes the task work directory');
+            return;
+        }
+        logger_1.logger.info(`Running task ${String(task.name)} [${executionId}]: ${cmd} ${args.join(' ')}`);
+        const taskInfo = {
+            taskId,
+            task: { ...task, runtime: actualRuntime, entrypoint: actualEntrypoint, timeout, workDir, env, cmd, args },
+            params,
+            executionId,
+        };
+        try {
+            task_worker_1.taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId }, () => {
+                releaseCapacity();
+            });
+            handedOff = true;
+        }
+        catch (err) {
             releaseCapacity();
-        });
+            res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to enqueue task' });
+            return;
+        }
+        res.json({ status: 'accepted', executionId });
     }
     catch (err) {
-        releaseCapacity();
-        res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to enqueue task' });
-        return;
+        // Express 4 does not await async handlers: a synchronous throw below the
+        // capacity reservation (mkdirSync, writeFileSync, manifest parse, …)
+        // would hang the request forever and leak the reserved slot.
+        if (handedOff) {
+            // The worker's onComplete owns the capacity slot from here on.
+            logger_1.logger.error(`Post-enqueue error: ${err instanceof Error ? err.message : String(err)}`);
+            return;
+        }
+        if (!res.headersSent) {
+            sendError(500, err instanceof Error ? err.message : 'Internal executor error');
+        }
     }
-    res.json({ status: 'accepted', executionId });
 });
 /** Write execution metadata to workDir/meta/{executionId}.json so the desktop can build history */
 function writeExecMeta(executionId, data) {
@@ -48655,6 +49039,9 @@ function writeExecMeta(executionId, data) {
 }
 const CALLBACK_LOG_MAX_LENGTH = 10000;
 const CALLBACK_LOG_HEAD_LENGTH = 5000;
+// admin CallbackItemDto caps errorMessage at 4096 — a longer value makes the
+// DTO validation reject the WHOLE batch (now ≤100 items), so clamp it here.
+const CALLBACK_ERROR_MESSAGE_MAX_LENGTH = 4000;
 function truncateCallbackLogs(logs) {
     if (typeof logs !== 'string' || logs.length <= CALLBACK_LOG_MAX_LENGTH) {
         return logs;
@@ -48662,6 +49049,80 @@ function truncateCallbackLogs(logs) {
     const marker = `\n... [logs truncated, original length ${logs.length} chars] ...\n`;
     const tailLength = Math.max(CALLBACK_LOG_MAX_LENGTH - CALLBACK_LOG_HEAD_LENGTH - marker.length, 0);
     return `${logs.slice(0, CALLBACK_LOG_HEAD_LENGTH)}${marker}${tailLength > 0 ? logs.slice(-tailLength) : ''}`;
+}
+function truncateCallbackErrorMessage(message) {
+    if (typeof message !== 'string' || message.length <= CALLBACK_ERROR_MESSAGE_MAX_LENGTH) {
+        return message;
+    }
+    return `${message.slice(0, CALLBACK_ERROR_MESSAGE_MAX_LENGTH)}... [error message truncated]`;
+}
+const LOG_HEAD_LIMIT = 500000;
+const LOG_TAIL_LIMIT = 500000;
+/** Bounded in-memory log accumulator: keeps the first and last ~500KB of
+ *  output. Without a cap a single `while(true) console.log(...)` task grows
+ *  the string unbounded and OOMs the whole executor (all concurrent tasks
+ *  die with it). The full output is already on disk for LOG-01 backfill. */
+class BoundedLogBuffer {
+    constructor() {
+        this.head = '';
+        this.tail = '';
+        this.truncated = false;
+        this.total = 0;
+    }
+    append(chunk) {
+        this.total += chunk.length;
+        if (this.head.length < LOG_HEAD_LIMIT) {
+            const space = LOG_HEAD_LIMIT - this.head.length;
+            this.head += chunk.slice(0, space);
+            const rest = chunk.slice(space);
+            if (rest)
+                this.pushTail(rest);
+        }
+        else {
+            this.pushTail(chunk);
+        }
+    }
+    pushTail(chunk) {
+        this.tail += chunk;
+        if (this.tail.length > LOG_TAIL_LIMIT) {
+            this.tail = this.tail.slice(this.tail.length - LOG_TAIL_LIMIT);
+            this.truncated = true;
+        }
+    }
+    toString() {
+        if (this.tail.length === 0)
+            return this.head;
+        if (!this.truncated)
+            return this.head + this.tail;
+        const marker = `\n... [log output truncated in memory, ${this.total} chars total, full output on disk] ...\n`;
+        return `${this.head}${marker}${this.tail}`;
+    }
+}
+exports.BoundedLogBuffer = BoundedLogBuffer;
+/** Live task child processes keyed by executionId — lets graceful shutdown
+ *  kill detached process groups instead of orphaning them on exit. */
+const runningTaskProcesses = new Map();
+/** Kill every running task's process group (POSIX) / process (win32).
+ *  Called when the executor's graceful-shutdown grace period expires so
+ *  detached children don't outlive the executor as unmanaged orphans. */
+function killRunningTaskProcesses(signal = 'SIGKILL') {
+    let killed = 0;
+    for (const [key, proc] of runningTaskProcesses) {
+        runningTaskProcesses.delete(key);
+        if (!proc.pid)
+            continue;
+        try {
+            // W-03: delegate to killProcessTree for parity — on win32 it uses
+            // taskkill /T /F so a timed-out task's grandchildren are reaped too,
+            // matching the POSIX negative-pid group kill.
+            (0, run_command_1.killProcessTree)(proc, signal);
+            killed++;
+        }
+        catch (_) {
+            /* already dead */
+        }
+    }
+    return killed;
 }
 async function runTask(task, params, executionId) {
     const { cmd, args, workDir, env, timeout } = task;
@@ -48706,54 +49167,67 @@ async function runTask(task, params, executionId) {
             status: 'failed',
             exitCode,
             logs: truncateCallbackLogs(logs),
-            errorMessage: message,
+            errorMessage: truncateCallbackErrorMessage(message),
             durationMs: Date.now() - startTime,
         });
     }
 }
 function runProcess(cmd, args, cwd, env, timeoutSec, executionId) {
     return new Promise((resolve, reject) => {
-        const proc = (0, child_process_1.spawn)(cmd, args, { cwd, env, detached: process.platform !== 'win32' });
-        let logs = '';
+        // W-14 (windows-findings R-08/2.9): on win32 the child must NOT share the
+        // executor's console — a console Ctrl+C/CTRL_BREAK event is delivered to
+        // every attached process, hard-killing running tasks instantly (0xC000013A)
+        // and bypassing gracefulShutdown's drain + killRunningTaskProcesses tree
+        // kill entirely, which orphaned the tasks' own detached grandchildren.
+        // windowsHide gives the child its own hidden console (CREATE_NO_WINDOW);
+        // reaping stays with the executor (timeout taskkill /T /F, P-7).
+        const proc = (0, child_process_1.spawn)(cmd, args, {
+            cwd,
+            env,
+            detached: process.platform !== 'win32',
+            windowsHide: true,
+        });
+        // Bounded accumulator — an unbounded `logs += output` OOMs the executor
+        // on chatty tasks (memory peaks before the 10k callback truncation).
+        const logBuffer = new BoundedLogBuffer();
         // Guard against close firing after timeout has already rejected the promise
         let settled = false;
+        if (proc.pid !== undefined) {
+            runningTaskProcesses.set(executionId ?? `pid-${proc.pid}`, proc);
+        }
         proc.stdout.on('data', (d) => {
             const output = d.toString();
-            logs += output;
+            logBuffer.append(output);
             if (executionId)
                 (0, file_logger_1.appendLog)(executionId, output);
         });
         proc.stderr.on('data', (d) => {
             const output = d.toString();
-            logs += output;
+            logBuffer.append(output);
             if (executionId)
                 (0, file_logger_1.appendLog)(executionId, output);
         });
+        const unregister = () => {
+            if (proc.pid !== undefined) {
+                runningTaskProcesses.delete(executionId ?? `pid-${proc.pid}`);
+            }
+        };
         const timer = setTimeout(() => {
             if (settled)
                 return;
             settled = true;
             // B-06: kill the entire process group so child processes spawned by the task are also terminated
-            try {
-                if (proc.pid !== undefined) {
-                    if (process.platform !== 'win32') {
-                        process.kill(-proc.pid, 'SIGKILL');
-                    }
-                    else {
-                        proc.kill('SIGKILL');
-                    }
-                }
-            }
-            catch (_) {
-                try {
-                    proc.kill('SIGKILL');
-                }
-                catch (_2) { /* already dead */ }
-            }
-            reject(new Error(`Task timeout after ${timeoutSec}s`));
+            (0, run_command_1.killProcessTree)(proc, 'SIGKILL');
+            // Attach collected logs like the close path does — otherwise the
+            // failure callback carries no logs and the admin-side full-log
+            // backfill (LOG-01) never triggers.
+            const timeoutErr = new Error(`Task timeout after ${timeoutSec}s`);
+            timeoutErr.logs = logBuffer.toString();
+            reject(timeoutErr);
         }, timeoutSec * 1000);
         proc.on('close', (code) => {
             clearTimeout(timer);
+            unregister();
             if (settled)
                 return;
             settled = true;
@@ -48761,16 +49235,17 @@ function runProcess(cmd, args, cwd, env, timeoutSec, executionId) {
             if (exitCode !== 0) {
                 // Attach logs and exitCode as properties so callers can surface them independently
                 const err = new Error(`Process exited with code ${exitCode}`);
-                err.logs = logs;
+                err.logs = logBuffer.toString();
                 err.exitCode = exitCode;
                 reject(err);
             }
             else {
-                resolve({ success: true, logs, exitCode });
+                resolve({ success: true, logs: logBuffer.toString(), exitCode });
             }
         });
         proc.on('error', (err) => {
             clearTimeout(timer);
+            unregister();
             if (settled)
                 return;
             settled = true;
@@ -48821,8 +49296,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.healthRouter = void 0;
-exports.recordHeartbeat = recordHeartbeat;
+exports.healthRouter = exports.recordHeartbeat = void 0;
 exports.buildAdminHealthPath = buildAdminHealthPath;
 exports.buildAdminHealthRequestOptions = buildAdminHealthRequestOptions;
 exports.checkAdminApi = checkAdminApi;
@@ -48835,14 +49309,8 @@ const config_1 = __nccwpck_require__(3650);
 const scheduler_1 = __nccwpck_require__(1415);
 const task_worker_1 = __nccwpck_require__(8404);
 const logs_1 = __nccwpck_require__(4926);
-// Track last successful heartbeat time
-let lastHeartbeatTime = null;
-let adminApiReachable = null;
-function recordHeartbeat(success) {
-    if (success)
-        lastHeartbeatTime = new Date().toISOString();
-    adminApiReachable = success;
-}
+const heartbeat_state_1 = __nccwpck_require__(3974);
+Object.defineProperty(exports, "recordHeartbeat", ({ enumerable: true, get: function () { return heartbeat_state_1.recordHeartbeat; } }));
 function buildAdminHealthPath(adminUrl) {
     const basePath = adminUrl.pathname.replace(/\/+$/, '');
     if (!basePath || basePath === '/')
@@ -48894,7 +49362,7 @@ exports.healthRouter.get('/health', async (_req, res) => {
     const diskUsage = await getDiskUsage();
     // Check admin-api connectivity and update cached state
     const reachable = await checkAdminApi();
-    adminApiReachable = reachable;
+    (0, heartbeat_state_1.setAdminApiReachable)(reachable);
     const isHealthy = cpuUsage < 80 && memUsage < 80 && (diskUsage < 90 || diskUsage < 0);
     res.json({
         status: isHealthy ? 'healthy' : 'degraded',
@@ -48908,7 +49376,7 @@ exports.healthRouter.get('/health', async (_req, res) => {
         workerStats: task_worker_1.taskWorkerManager.getStats(),
         adminApiReachable: reachable,
         tokenValid: !!(0, logs_1.getExecutorAuthToken)(),
-        lastHeartbeat: lastHeartbeatTime,
+        lastHeartbeat: (0, heartbeat_state_1.getHeartbeatState)().lastHeartbeatTime,
         timestamp: new Date().toISOString(),
     });
 });
@@ -49040,7 +49508,14 @@ exports.logsRouter.get('/logs/:executionId', (req, res) => {
         res.status(404).json({ error: 'Log file not found' });
         return;
     }
-    const fromLine = parseInt(String(req.query.fromLine ?? '0'), 10) || 0;
+    // Clamp negatives — slice(-1) would silently return just the last line.
+    const fromLine = Math.max(0, parseInt(String(req.query.fromLine ?? '0'), 10) || 0);
+    // LOG-01 admin backfill pages with limit=2000 and relies on hasMore to
+    // advance; returning the entire tail at once used to blow up both ends'
+    // memory on large logs. Clamp to the admin-side page size.
+    const MAX_LIMIT = 2000;
+    const requestedLimit = parseInt(String(req.query.limit ?? '500'), 10) || 500;
+    const limit = Math.min(Math.max(requestedLimit, 1), MAX_LIMIT);
     try {
         const raw = fs.readFileSync(logFile, 'utf-8');
         const allLines = raw.split('\n');
@@ -49049,8 +49524,9 @@ exports.logsRouter.get('/logs/:executionId', (req, res) => {
             allLines.pop();
         }
         const total = allLines.length;
-        const sliced = allLines.slice(fromLine);
-        res.json({ lines: sliced, totalLines: total, hasMore: false });
+        const sliced = allLines.slice(fromLine, fromLine + limit);
+        const hasMore = fromLine + sliced.length < total;
+        res.json({ lines: sliced, totalLines: total, hasMore });
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -49112,48 +49588,46 @@ const express_1 = __nccwpck_require__(925);
 const path = __importStar(__nccwpck_require__(6928));
 const fs = __importStar(__nccwpck_require__(9896));
 const crypto = __importStar(__nccwpck_require__(6982));
-const https = __importStar(__nccwpck_require__(5692));
-const http = __importStar(__nccwpck_require__(8611));
 const logger_1 = __nccwpck_require__(6888);
 const admin_client_1 = __nccwpck_require__(6609);
 const config_1 = __nccwpck_require__(3650);
+const download_1 = __nccwpck_require__(7848);
+const safe_path_1 = __nccwpck_require__(1733);
 exports.updatePackageRouter = (0, express_1.Router)();
-/** Download file to local path, return actual bytes written */
-function downloadFile(url, dest) {
-    return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(dest);
-        const proto = url.startsWith('https') ? https : http;
-        const req = proto.get(url, (res) => {
-            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                // simple redirect follow
-                file.close();
-                fs.unlinkSync(dest);
-                downloadFile(res.headers.location, dest).then(resolve).catch(reject);
-                return;
-            }
-            if (!res.statusCode || res.statusCode >= 400) {
-                reject(new Error(`Download failed with status ${res.statusCode}`));
-                return;
-            }
-            let bytes = 0;
-            res.on('data', (chunk) => { bytes += chunk.length; });
-            res.pipe(file);
-            file.on('finish', () => { file.close(); resolve(bytes); });
-        });
-        req.on('error', (err) => { fs.unlink(dest, () => { }); reject(err); });
-        req.setTimeout(120000, () => { req.destroy(); reject(new Error('Download timed out')); });
-    });
-}
-/** Calculate file SHA-256 */
+/** Overall download budget — an absolute deadline, so a slow-drip server
+ *  cannot hold updateInProgress forever (it used to get stuck permanently). */
+const DOWNLOAD_TIMEOUT_MS = 5 * 60000;
+const DOWNLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+/** Belt-and-suspenders watchdog: force-release updateInProgress if the
+ *  download+verify flow somehow never settles. */
+const UPDATE_WATCHDOG_MS = 15 * 60000;
+/** Calculate file SHA-256 (streamed — package files can be large) */
 function fileChecksum(filePath) {
-    const buf = fs.readFileSync(filePath);
-    return crypto.createHash('sha256').update(buf).digest('hex');
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256');
+        const stream = fs.createReadStream(filePath);
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.on('end', () => resolve(hash.digest('hex')));
+        stream.on('error', reject);
+    });
 }
 let updateInProgress = false;
 exports.updatePackageRouter.post('/update-package', async (req, res) => {
     const body = req.body;
     if (!body.packageId || !body.downloadUrl || !body.version) {
         res.status(400).json({ error: 'Missing required fields: packageId, downloadUrl, version' });
+        return;
+    }
+    // The temp filename is derived from packageId — an unvalidated value with
+    // '/' or '..' could write the download outside .pkg-updates.
+    if (!(0, safe_path_1.isSafePathSegment)(body.packageId)) {
+        res.status(400).json({ error: 'packageId contains unsupported characters' });
+        return;
+    }
+    // An unverified package update is an unacceptable risk — admin-api always
+    // sends the SHA-256, so a missing checksum means a malformed request.
+    if (!body.checksum) {
+        res.status(400).json({ error: 'checksum is required for package updates' });
         return;
     }
     // Only allow http(s) schemes to prevent SSRF via file://, ftp://, etc.
@@ -49183,13 +49657,26 @@ exports.updatePackageRouter.post('/update-package', async (req, res) => {
             fs.mkdirSync(tmpDir, { recursive: true });
         const ext = body.downloadUrl.includes('.tar') ? '.tar.gz' : '.zip';
         const tmpFile = path.join(tmpDir, `${body.packageId}${ext}`);
+        // Force-release the in-progress flag even if the flow deadlocks below —
+        // otherwise every future package push is rejected with 409 until restart.
+        const watchdog = setTimeout(() => {
+            if (updateInProgress) {
+                updateInProgress = false;
+                logger_1.logger.error(`[update-package] Watchdog fired after ${UPDATE_WATCHDOG_MS}ms — force-releasing updateInProgress`);
+            }
+        }, UPDATE_WATCHDOG_MS);
+        watchdog.unref?.();
         try {
-            // 1. Download
+            // 1. Download (shared downloader: Bearer token + absolute deadline + size cap)
             logger_1.logger.info(`[update-package] Downloading to ${tmpFile}`);
-            await downloadFile(body.downloadUrl, tmpFile);
+            const bytes = await (0, download_1.downloadFile)(body.downloadUrl, tmpFile, {
+                sendAuth: true,
+                timeoutMs: DOWNLOAD_TIMEOUT_MS,
+                maxBytes: DOWNLOAD_MAX_BYTES,
+            });
             // 2. Verify checksum if provided
             if (body.checksum) {
-                const actual = fileChecksum(tmpFile);
+                const actual = await fileChecksum(tmpFile);
                 if (actual !== body.checksum) {
                     throw new Error(`Checksum mismatch: expected ${body.checksum}, got ${actual}`);
                 }
@@ -49202,7 +49689,7 @@ exports.updatePackageRouter.post('/update-package', async (req, res) => {
                 status: 'downloaded',
                 version: body.version,
             }).catch((e) => logger_1.logger.warn(`[update-package] Failed to report push result: ${e.message}`));
-            logger_1.logger.info(`[update-package] Package ${body.name}@${body.version} downloaded successfully to ${tmpFile}`);
+            logger_1.logger.info(`[update-package] Package ${body.name}@${body.version} downloaded successfully to ${tmpFile} (${bytes} bytes)`);
             logger_1.logger.info(`[update-package] Package is available at ${tmpFile} — apply it manually or via your deployment pipeline.`);
         }
         catch (err) {
@@ -49219,6 +49706,7 @@ exports.updatePackageRouter.post('/update-package', async (req, res) => {
             }).catch(() => { });
         }
         finally {
+            clearTimeout(watchdog);
             updateInProgress = false;
         }
     });
@@ -49227,6 +49715,110 @@ exports.updatePackageRouter.post('/update-package', async (req, res) => {
 exports.updatePackageRouter.get('/update-package/status', (_req, res) => {
     res.json({ inProgress: updateInProgress });
 });
+
+
+/***/ }),
+
+/***/ 3879:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.killProcessTree = killProcessTree;
+exports.runCommand = runCommand;
+const child_process_1 = __nccwpck_require__(5317);
+/** Kill a child process and — on POSIX — its entire process group.
+ *  Children are spawned detached (group leaders), so the negative pid takes
+ *  down the whole tree instead of orphaning grandchildren. */
+function killProcessTree(child, signal = 'SIGKILL') {
+    if (child.pid === undefined)
+        return;
+    if (process.platform !== 'win32') {
+        try {
+            process.kill(-child.pid, signal);
+            return;
+        }
+        catch (_) {
+            /* process group may already be gone — fall through to the direct kill */
+        }
+        try {
+            child.kill(signal);
+        }
+        catch (_) { /* already dead */ }
+    }
+    else {
+        // W-02/parity with executor-python: Node's child.kill on Windows only
+        // terminates the direct child (grandchildren linger). taskkill /T /F walks
+        // the pid tree so a killed task cannot orphan its own spawns.
+        // /F is forced (no graceful path exists for console trees on Windows).
+        try {
+            (0, child_process_1.spawn)('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' });
+        }
+        catch (_) {
+            /* taskkill unavailable — fall back to direct kill only */
+        }
+        try {
+            child.kill(signal);
+        }
+        catch (_) { /* already dead */ }
+    }
+}
+/** Promise-wrapped spawn: git/npm/pip must never use spawnSync on the request
+ *  path — a synchronous 120–300s wait stalls heartbeats, /health and every API.
+ *  The child is detached on POSIX so timeouts can kill its whole group. */
+function runCommand(cmd, args, opts = {}) {
+    return new Promise((resolve) => {
+        const child = (0, child_process_1.spawn)(cmd, args, {
+            ...opts,
+            detached: process.platform !== 'win32',
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        // Cap captured output so a chatty child cannot balloon executor memory.
+        const CAP = 10 * 1024 * 1024;
+        let stdout = '';
+        let stderr = '';
+        const timer = opts.timeout
+            ? setTimeout(() => {
+                killProcessTree(child, 'SIGKILL');
+            }, opts.timeout)
+            : null;
+        child.stdout?.on('data', (d) => {
+            if (stdout.length < CAP)
+                stdout += d.toString();
+        });
+        child.stderr?.on('data', (d) => {
+            if (stderr.length < CAP)
+                stderr += d.toString();
+        });
+        child.on('error', (err) => {
+            if (timer)
+                clearTimeout(timer);
+            resolve({ status: null, stdout, stderr: `${stderr}${err.message}` });
+        });
+        child.on('close', (code) => {
+            if (timer)
+                clearTimeout(timer);
+            resolve({ status: code, stdout, stderr });
+        });
+    });
+}
+
+
+/***/ }),
+
+/***/ 1733:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.isSafePathSegment = isSafePathSegment;
+/** Path-segment guard shared by deploy and update-package: values used to
+ *  build file paths must never contain separators or traversal sequences. */
+function isSafePathSegment(value) {
+    return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
 
 
 /***/ }),
@@ -49270,7 +49862,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.runningCount = void 0;
+exports.runningCount = exports.executorStartupId = exports.executorStartedAt = void 0;
 exports.getRunningCount = getRunningCount;
 exports.getRunningCountArray = getRunningCountArray;
 exports.incrementRunning = incrementRunning;
@@ -49281,6 +49873,11 @@ const crypto_1 = __nccwpck_require__(6982);
 const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
 const admin_client_1 = __nccwpck_require__(6609);
+const heartbeat_state_1 = __nccwpck_require__(3974);
+const startup_identity_1 = __nccwpck_require__(1566);
+Object.defineProperty(exports, "executorStartedAt", ({ enumerable: true, get: function () { return startup_identity_1.executorStartedAt; } }));
+Object.defineProperty(exports, "executorStartupId", ({ enumerable: true, get: function () { return startup_identity_1.executorStartupId; } }));
+const admin_envelope_1 = __nccwpck_require__(4138);
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
 // SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
 // we use a simple lock-free approach with Atomics for consistency
@@ -49336,21 +49933,58 @@ async function sendHeartbeat() {
         // OPS-03: generate trace ID for heartbeat
         const traceId = (0, crypto_1.randomUUID)();
         logger_1.logger.info(`[${traceId}] Sending heartbeat`);
-        await (0, admin_client_1.post)('/api/executors/heartbeat', {
+        const resp = await (0, admin_client_1.post)('/api/executors/heartbeat', {
             address: config_1.config.executorAddressPublic || config_1.config.executorAddress,
             cpuUsage,
             memUsage,
             runningTaskCount: getRunningCount(),
+            restartedAt: startup_identity_1.executorStartedAt,
+            startupId: startup_identity_1.executorStartupId,
         });
+        // R9 (round-8 P1 W3): the heartbeat response echoes admin's current
+        // stored tokenHash (same adoption as register/POST /token), so the
+        // per-execution callback HMAC secret stays in sync with admin-side
+        // rotations without waiting for a re-register.
+        (0, admin_envelope_1.adoptExecutorTokenHash)(resp?.data);
         logger_1.logger.info(`[${traceId}] Heartbeat succeeded`);
+        (0, heartbeat_state_1.recordHeartbeat)(true);
     }
     catch (err) {
         logger_1.logger.warn(`Heartbeat failed: ${err instanceof Error ? err.message : String(err)}`);
+        (0, heartbeat_state_1.recordHeartbeat)(false);
     }
 }
 function startHeartbeat() {
     return setInterval(sendHeartbeat, config_1.config.heartbeatIntervalSeconds * 1000);
 }
+
+
+/***/ }),
+
+/***/ 1566:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.executorStartupId = exports.executorStartedAt = void 0;
+/**
+ * R9 (round-8 P1 closure): the executor's process-life identity.
+ *
+ * `startupId` is the idempotency key admin-api uses to tell "same process
+ * re-fetching its token" apart from "a restarted executor" (N4 register
+ * semantics, now extended to POST /api/executors/token). It lives in its own
+ * module because middleware/auth.ts needs it for the token request body, and
+ * importing it from scheduler.ts would create a cycle:
+ *   auth -> scheduler -> admin-client -> auth
+ * (the same reason heartbeat-state.ts exists — see its header comment).
+ *
+ * scheduler.ts re-exports both constants so existing importers (main.ts,
+ * specs) keep working unchanged.
+ */
+const crypto_1 = __nccwpck_require__(6982);
+exports.executorStartedAt = new Date().toISOString();
+exports.executorStartupId = (0, crypto_1.randomUUID)();
 
 
 /***/ }),
@@ -49361,11 +49995,12 @@ function startHeartbeat() {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TaskWorkerManager = exports.TaskWorker = exports.taskWorkerManager = void 0;
+exports.TaskWorkerManager = exports.TaskWorker = exports.taskWorkerManager = exports.IDLE_RECYCLE_MS = void 0;
 const logger_1 = __nccwpck_require__(6888);
 const execute_1 = __nccwpck_require__(8690);
+const callback_1 = __nccwpck_require__(4915);
 class TaskWorker {
-    constructor(taskId, maxConcurrent = 1) {
+    constructor(taskId, maxConcurrent = 1, onIdle) {
         this.taskId = taskId;
         this.maxConcurrent = maxConcurrent;
         this.state = {
@@ -49375,6 +50010,7 @@ class TaskWorker {
         };
         this.stopped = false;
         this.runningCount = 0;
+        this.onIdle = onIdle;
     }
     enqueue(executionId, task, params, onComplete) {
         this.state.queue.push({ executionId, task, params, onComplete });
@@ -49391,6 +50027,12 @@ class TaskWorker {
             this.runningCount++;
             this.executeItem(item).finally(() => {
                 this.runningCount--;
+                // runningCount 在 process 的 finally 中递减（executeItem 的 finally
+                // 早于该递减执行），空闲判定必须挂在这里：无运行中且无排队时通知
+                // Manager 安排延迟回收，防止 workers Map 按 taskId 只增不减（N9）。
+                if (this.runningCount === 0 && this.state.queue.length === 0) {
+                    this.onIdle?.();
+                }
                 setImmediate(() => this.process());
             });
         }
@@ -49411,7 +50053,18 @@ class TaskWorker {
     }
     stop() {
         this.stopped = true;
-        logger_1.logger.info(`Task ${this.taskId}: Worker stopped`);
+        // Fail queued items instead of dropping them silently — admin-api marks
+        // the executions failed and capacity slots are released.
+        const queued = this.state.queue.splice(0);
+        for (const item of queued) {
+            (0, callback_1.pushCallback)({
+                executionId: item.executionId,
+                status: 'failed',
+                errorMessage: 'Executor is shutting down before this execution started',
+            });
+            item.onComplete?.();
+        }
+        logger_1.logger.info(`Task ${this.taskId}: Worker stopped (${queued.length} queued item(s) failed)`);
     }
     getRunningCount() {
         return this.runningCount;
@@ -49421,15 +50074,20 @@ class TaskWorker {
     }
 }
 exports.TaskWorker = TaskWorker;
+/** worker 空闲多久后被回收（N9）。导出以便测试与运维核对。 */
+exports.IDLE_RECYCLE_MS = 5 * 60000;
 class TaskWorkerManager {
     constructor(maxConcurrentPerTask = 1) {
         this.workers = new Map();
+        this.idleTimers = new Map();
         this.maxConcurrentPerTask = maxConcurrentPerTask;
     }
     getWorker(taskId) {
+        // 任何对 worker 的再次命中都视为活动，取消待执行的空闲回收
+        this.cancelIdleRecycle(taskId);
         let worker = this.workers.get(taskId);
         if (!worker) {
-            worker = new TaskWorker(taskId, this.maxConcurrentPerTask);
+            worker = new TaskWorker(taskId, this.maxConcurrentPerTask, () => this.scheduleIdleRecycle(taskId));
             this.workers.set(taskId, worker);
             logger_1.logger.info(`Created worker for task ${taskId}`);
         }
@@ -49439,7 +50097,30 @@ class TaskWorkerManager {
         const worker = this.getWorker(taskId);
         worker.enqueue(executionId, task, params, onComplete);
     }
+    scheduleIdleRecycle(taskId) {
+        this.cancelIdleRecycle(taskId);
+        const timer = setTimeout(() => {
+            this.idleTimers.delete(taskId);
+            const worker = this.workers.get(taskId);
+            // 双保险：回收只作用于真正空闲的 worker，绝不触碰运行中/排队的执行
+            if (worker && worker.getRunningCount() === 0 && worker.getQueueSize() === 0) {
+                logger_1.logger.info(`Recycling idle worker for task ${taskId}`);
+                this.stopWorker(taskId);
+            }
+        }, exports.IDLE_RECYCLE_MS);
+        // 空闲回收定时器不应阻止进程退出
+        timer.unref();
+        this.idleTimers.set(taskId, timer);
+    }
+    cancelIdleRecycle(taskId) {
+        const timer = this.idleTimers.get(taskId);
+        if (timer) {
+            clearTimeout(timer);
+            this.idleTimers.delete(taskId);
+        }
+    }
     stopWorker(taskId) {
+        this.cancelIdleRecycle(taskId);
         const worker = this.workers.get(taskId);
         if (worker) {
             worker.stop();
@@ -49447,6 +50128,10 @@ class TaskWorkerManager {
         }
     }
     stopAll() {
+        for (const timer of this.idleTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.idleTimers.clear();
         for (const [taskId, worker] of this.workers) {
             worker.stop();
         }
@@ -49650,7 +50335,7 @@ module.exports = require("zlib");
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
-/*! Axios v1.19.0 Copyright (c) 2026 Matt Zabriskie and contributors */
+/*! Axios v1.20.0 Copyright (c) 2026 Matt Zabriskie and contributors */
 
 
 var FormData$1 = __nccwpck_require__(5327);
@@ -49697,13 +50382,57 @@ const {
 const hasOwnProperty = (({
   hasOwnProperty
 }) => (obj, prop) => hasOwnProperty.call(obj, prop))(Object.prototype);
+const isUnsafeObjectKey = prop => typeof prop === 'string' && (prop === '__proto__' || prop === 'constructor' || prop === 'prototype');
 
 /**
- * Walk the prototype chain (excluding the shared Object.prototype) looking for
- * an own `prop`. This distinguishes genuine own/inherited members — including
- * class accessors and template prototypes — from members injected via
- * Object.prototype pollution (e.g. `Object.prototype.username = '...'`), which
- * live on Object.prototype itself and are therefore never matched.
+ * Determine whether an inherited object must be treated as a shared-prototype
+ * boundary. Cross-realm Object.prototype objects cannot be distinguished
+ * reliably from application-created null-prototype objects because their
+ * properties are mutable, so all inherited terminal prototypes are excluded
+ * as a fail-closed boundary. A null-prototype source still keeps its own
+ * properties, as produced by mergeConfig and other safe materialization paths.
+ *
+ * @param {*} obj The object to inspect
+ * @param {*} prototype The object's prototype
+ * @param {boolean} source Whether obj is the original traversal source
+ *
+ * @returns {boolean} True when obj is a safe prototype traversal boundary
+ */
+const isPrototypeBoundary = (obj, prototype, source) => obj === Object.prototype || !source && prototype === null;
+
+/**
+ * Determine whether an object can retain its identity through code paths that
+ * add, replace, and remove config properties without bypassing unsafe-key
+ * filtering. Immutable objects, unsafe-key-bearing objects, and objects with
+ * accessor or restricted data properties must be materialized instead.
+ *
+ * @param {*} obj The object to inspect
+ *
+ * @returns {boolean} True when every own property is safe and fully mutable
+ */
+const isSafeAndFullyMutable = obj => {
+  if (!Object.isExtensible(obj)) {
+    return false;
+  }
+  const props = Object.getOwnPropertyNames(obj);
+  if (Object.getOwnPropertySymbols) {
+    props.push(...Object.getOwnPropertySymbols(obj));
+  }
+  return props.every(prop => {
+    if (isUnsafeObjectKey(prop)) {
+      return false;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(obj, prop);
+    return !!descriptor && descriptor.configurable && descriptor.writable === true;
+  });
+};
+
+/**
+ * Walk the prototype chain (excluding the source realm's Object.prototype)
+ * looking for an own `prop`. This distinguishes genuine own/inherited members
+ * — including class accessors and template prototypes — from members injected
+ * via Object.prototype pollution (e.g. `Object.prototype.username = '...'`),
+ * which live on Object.prototype itself and are therefore never matched.
  *
  * @param {*} thing The value whose chain to inspect
  * @param {string|symbol} prop The property key to look for
@@ -49713,15 +50442,19 @@ const hasOwnProperty = (({
 const hasOwnInPrototypeChain = (thing, prop) => {
   let obj = thing;
   const seen = [];
-  while (obj != null && obj !== Object.prototype) {
+  while (obj != null) {
     if (seen.indexOf(obj) !== -1) {
       return false;
     }
     seen.push(obj);
+    const prototype = getPrototypeOf(obj);
+    if (isPrototypeBoundary(obj, prototype, obj === thing)) {
+      return false;
+    }
     if (hasOwnProperty(obj, prop)) {
       return true;
     }
-    obj = getPrototypeOf(obj);
+    obj = prototype;
   }
   return false;
 };
@@ -49738,6 +50471,56 @@ const hasOwnInPrototypeChain = (thing, prop) => {
  * @returns {*} The resolved value, or undefined when unsafe/absent
  */
 const getSafeProp = (obj, prop) => obj != null && hasOwnInPrototypeChain(obj, prop) ? obj[prop] : undefined;
+
+/**
+ * Flatten an object and its application-defined prototype chain into a
+ * null-prototype object. Members inherited only from the source realm's
+ * Object.prototype are deliberately excluded, while class/template members
+ * below that boundary are preserved.
+ *
+ * @param {*} thing The value to flatten
+ *
+ * @returns {*} A null-prototype copy, or the original value when it is already
+ * structurally safe or is not an object
+ */
+const toSafeFlatObject = thing => {
+  if (thing == null || typeof thing !== 'object' && typeof thing !== 'function') {
+    return thing;
+  }
+  const sourcePrototype = getPrototypeOf(thing);
+  if (sourcePrototype === null && isSafeAndFullyMutable(thing)) {
+    return thing;
+  }
+  const result = Object.create(null);
+  const merged = Object.create(null);
+  const seen = [];
+  let current = thing;
+  while (current != null) {
+    if (seen.indexOf(current) !== -1) {
+      break;
+    }
+    seen.push(current);
+    const prototype = current === thing ? sourcePrototype : getPrototypeOf(current);
+    if (isPrototypeBoundary(current, prototype, current === thing)) {
+      break;
+    }
+    const props = Object.getOwnPropertyNames(current);
+    if (Object.getOwnPropertySymbols) {
+      props.push(...Object.getOwnPropertySymbols(current));
+    }
+    for (const prop of props) {
+      if (isUnsafeObjectKey(prop)) {
+        continue;
+      }
+      if (!hasOwnProperty(merged, prop)) {
+        result[prop] = thing[prop];
+        merged[prop] = true;
+      }
+    }
+    current = prototype;
+  }
+  return result;
+};
 const kindOf = (cache => thing => {
   const str = toString.call(thing);
   return cache[str] || (cache[str] = str.slice(8, -1).toLowerCase());
@@ -49861,9 +50644,9 @@ const isPlainObject = val => {
   }
   const prototype = getPrototypeOf(val);
   return (prototype === null || prototype === Object.prototype || getPrototypeOf(prototype) === null) &&
-  // Treat any genuine (non-Object.prototype-polluted) Symbol.toStringTag or
-  // Symbol.iterator as evidence the value is a tagged/iterable type rather
-  // than a plain object, while ignoring keys injected onto Object.prototype.
+  // Treat safe own/inherited Symbol.toStringTag or Symbol.iterator members as
+  // evidence the value is tagged/iterable, while ignoring members reachable
+  // only through shared or terminal prototype boundaries.
   !hasOwnInPrototypeChain(val, toStringTag) && !hasOwnInPrototypeChain(val, iterator);
 };
 
@@ -50611,6 +51394,7 @@ var utils$1 = {
   // an alias to avoid ESLint no-prototype-builtins detection
   hasOwnInPrototypeChain,
   getSafeProp,
+  toSafeFlatObject,
   reduceDescriptors,
   freezeMethods,
   toObjectSet,
@@ -50715,7 +51499,7 @@ function toByteStringHeaderObject(headers) {
   return byteStringHeaders;
 }
 
-const $internals = Symbol('internals');
+const $internals$1 = Symbol('internals');
 function normalizeHeader(header) {
   return header && String(header).trim().toLowerCase();
 }
@@ -51013,7 +51797,7 @@ class AxiosHeaders {
     return computed;
   }
   static accessor(header) {
-    const internals = this[$internals] = this[$internals] = {
+    const internals = this[$internals$1] = this[$internals$1] = {
       accessors: {}
     };
     const accessors = internals.accessors;
@@ -51328,23 +52112,17 @@ function toFormData(obj, formData, options) {
 
   // eslint-disable-next-line no-param-reassign
   formData = formData || new (FormData$1 || FormData)();
-
-  // eslint-disable-next-line no-param-reassign
-  options = utils$1.toFlatObject(options, {
-    metaTokens: true,
-    dots: false,
-    indexes: false
-  }, false, function defined(option, source) {
-    // eslint-disable-next-line no-eq-null,eqeqeq
-    return !utils$1.isUndefined(source[option]);
-  });
-  const metaTokens = options.metaTokens;
+  const option = (name, fallback) => {
+    const value = utils$1.getSafeProp(options, name);
+    return utils$1.isUndefined(value) ? fallback : value;
+  };
+  const metaTokens = option('metaTokens', true);
   // eslint-disable-next-line no-use-before-define
-  const visitor = options.visitor || defaultVisitor;
-  const dots = options.dots;
-  const indexes = options.indexes;
-  const _Blob = options.Blob || typeof Blob !== 'undefined' && Blob;
-  const maxDepth = options.maxDepth === undefined ? DEFAULT_FORM_DATA_MAX_DEPTH : options.maxDepth;
+  const visitor = option('visitor') || defaultVisitor;
+  const dots = option('dots', false);
+  const indexes = option('indexes', false);
+  const _Blob = option('Blob') || typeof Blob !== 'undefined' && Blob;
+  const maxDepth = option('maxDepth', DEFAULT_FORM_DATA_MAX_DEPTH);
   const useBlob = _Blob && utils$1.isSpecCompliantForm(formData);
   const stack = [];
   if (!utils$1.isFunction(visitor)) {
@@ -51557,9 +52335,51 @@ function buildURL(url, params, options) {
   return url;
 }
 
+const $internals = Symbol('internals');
+
+// `handlers` is public and may be replaced with a nullish value by user code;
+// `clear()` has always tolerated that. Treat it as an empty stack rather than
+// dereferencing it.
+function countHandlers(handlers) {
+  return handlers ? handlers.length : 0;
+}
+function trimHandlers(handlers) {
+  if (!handlers) {
+    return;
+  }
+  while (handlers.length && handlers[handlers.length - 1] === null) {
+    handlers.pop();
+  }
+}
+function syncHandlerEntries(manager, internals) {
+  const handlers = manager.handlers;
+  const length = countHandlers(handlers);
+  if (handlers !== internals.handlersRef) {
+    internals.handlersRef = handlers;
+    internals.handlerEntries.clear();
+  } else if (length !== internals.handlersLength) {
+    if (!length) {
+      internals.handlerEntries.clear();
+    } else {
+      internals.handlerEntries.forEach(function removeStaleEntry(entry, id) {
+        if (handlers[entry.index] !== entry.handler) {
+          internals.handlerEntries.delete(id);
+        }
+      });
+    }
+  }
+  internals.handlersLength = length;
+}
 class InterceptorManager {
   constructor() {
     this.handlers = [];
+    this[$internals] = {
+      handlersRef: this.handlers,
+      handlersLength: this.handlers.length,
+      handlerEntries: new Map(),
+      iterationDepth: 0,
+      nextId: 0
+    };
   }
 
   /**
@@ -51572,13 +52392,25 @@ class InterceptorManager {
    * @return {Number} An ID used to remove interceptor later
    */
   use(fulfilled, rejected, options) {
-    this.handlers.push({
+    const handler = {
       fulfilled,
       rejected,
       synchronous: options ? options.synchronous : false,
       runWhen: options ? options.runWhen : null
+    };
+    const internals = this[$internals];
+    if (this.handlers == null) {
+      this.handlers = [];
+    }
+    syncHandlerEntries(this, internals);
+    const id = internals.nextId++;
+    this.handlers.push(handler);
+    internals.handlerEntries.set(id, {
+      handler,
+      index: this.handlers.length - 1
     });
-    return this.handlers.length - 1;
+    internals.handlersLength = this.handlers.length;
+    return id;
   }
 
   /**
@@ -51589,8 +52421,23 @@ class InterceptorManager {
    * @returns {void}
    */
   eject(id) {
-    if (this.handlers[id]) {
-      this.handlers[id] = null;
+    const internals = this[$internals];
+    syncHandlerEntries(this, internals);
+    const entry = internals.handlerEntries.get(id);
+    if (entry) {
+      internals.handlerEntries.delete(id);
+
+      // Ignore IDs invalidated by clear or direct replacement of handlers.
+      if (this.handlers[entry.index] !== entry.handler) {
+        return;
+      }
+      this.handlers[entry.index] = null;
+
+      // Do not reuse an index while forEach is walking its length snapshot.
+      if (!internals.iterationDepth) {
+        trimHandlers(this.handlers);
+        internals.handlersLength = this.handlers.length;
+      }
     }
   }
 
@@ -51602,6 +52449,7 @@ class InterceptorManager {
   clear() {
     if (this.handlers) {
       this.handlers = [];
+      syncHandlerEntries(this, this[$internals]);
     }
   }
 
@@ -51616,11 +52464,22 @@ class InterceptorManager {
    * @returns {void}
    */
   forEach(fn) {
-    utils$1.forEach(this.handlers, function forEachHandler(h) {
-      if (h !== null) {
-        fn(h);
+    const internals = this[$internals];
+    syncHandlerEntries(this, internals);
+    internals.iterationDepth++;
+    try {
+      utils$1.forEach(this.handlers, function forEachHandler(h) {
+        if (h !== null) {
+          fn(h);
+        }
+      });
+    } finally {
+      if (! --internals.iterationDepth) {
+        syncHandlerEntries(this, internals);
+        trimHandlers(this.handlers);
+        internals.handlersLength = countHandlers(this.handlers);
       }
-    });
+    }
   }
 }
 
@@ -51828,6 +52687,8 @@ function formDataToJSON(formData) {
   return null;
 }
 
+const methodList = Object.freeze(['get', 'delete', 'head', 'options', 'post', 'put', 'patch', 'purge', 'link', 'unlink', 'query']);
+
 const own = (obj, key) => obj != null && utils$1.hasOwnProp(obj, key) ? obj[key] : undefined;
 
 /**
@@ -51944,7 +52805,7 @@ const defaults = {
     }
   }
 };
-utils$1.forEach(['delete', 'get', 'head', 'post', 'put', 'patch', 'query'], method => {
+utils$1.forEach(methodList, method => {
   defaults.headers[method] = {};
 });
 
@@ -52043,18 +52904,27 @@ function combineURLs(baseURL, relativeURL) {
   return baseURL.slice(0, end) + '/' + relativeURL.replace(/^\/+/, '');
 }
 
-const malformedHttpProtocol = /^https?:(?!\/\/)/i;
-const httpProtocolControlCharacters = /[\t\n\r]/g;
-function stripLeadingC0ControlOrSpace(url) {
-  let i = 0;
-  while (i < url.length && url.charCodeAt(i) <= 0x20) {
-    i++;
-  }
-  return url.slice(i);
-}
+const urlParserControlCharacters = /[\t\n\r]/g;
+
+/**
+ * Match WHATWG URL preprocessing before checking a URL's protocol.
+ *
+ * @param {string} url
+ *
+ * @returns {string}
+ */
 function normalizeURLForProtocolCheck(url) {
-  return stripLeadingC0ControlOrSpace(url).replace(httpProtocolControlCharacters, '');
+  if (typeof url !== 'string') {
+    return url;
+  }
+  let start = 0;
+  while (start < url.length && url.charCodeAt(start) <= 0x20) {
+    start++;
+  }
+  return url.slice(start).replace(urlParserControlCharacters, '');
 }
+
+const malformedHttpProtocol = /^https?:(?!\/\/)/i;
 
 // Redact the parts of a URL that can carry secrets before it is embedded in an
 // error message. AxiosError.toJSON() serializes `message` verbatim and errors
@@ -52207,7 +53077,7 @@ function getEnv(key) {
   return process.env[key.toLowerCase()] || process.env[key.toUpperCase()] || '';
 }
 
-const VERSION = "1.19.0";
+const VERSION = "1.20.0";
 
 function parseProtocol(url) {
   const match = /^([-+\w]{1,25}):(?:\/\/)?/.exec(url);
@@ -52216,7 +53086,7 @@ function parseProtocol(url) {
 
 // RFC 2397: data:[<mediatype>][;base64],<data>
 // mediatype = type/subtype followed by optional ;name=value parameters
-const DATA_URL_PATTERN = /^([^,;]+\/[^,;]+)?((?:;[^,;=]+=[^,;]+)*)(;base64)?,([\s\S]*)$/;
+const DATA_URL_PATTERN = /^([^,;/]+\/[^,;/]+)?((?:;[^,;=]+=[^,;]+)*)(;base64)?,([\s\S]*)$/;
 
 /**
  * Parse data uri to a Buffer or Blob
@@ -52529,7 +53399,7 @@ class Http2Sessions {
     this.sessions = Object.create(null);
   }
   getSession(authority, options) {
-    options = Object.assign({
+    options = Object.assign(Object.create(null), {
       sessionTimeout: 1000
     }, options);
     let authoritySessions = this.sessions[authority];
@@ -52596,6 +53466,7 @@ class Http2Sessions {
       };
     }
     session.once('close', removeSession);
+    session.once('error', removeSession);
     let entry = [session, options];
     authoritySessions ? authoritySessions.push(entry) : authoritySessions = this.sessions[authority] = [entry];
     return session;
@@ -52616,6 +53487,13 @@ const callbackify = (fn, reducer) => {
 };
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '0.0.0.0']);
+const trimTrailingDots = value => {
+  let end = value.length;
+  while (end && value.charCodeAt(end - 1) === 46) {
+    end--;
+  }
+  return end === value.length ? value : value.slice(0, end);
+};
 const isIPv4Loopback = host => {
   const parts = host.split('.');
   if (parts.length !== 4) return false;
@@ -52671,7 +53549,7 @@ const normalizeIPAddress = host => {
   if (h.charAt(0) === '[' && h.charAt(h.length - 1) === ']') {
     h = h.slice(1, -1);
   }
-  h = h.replace(/\.+$/, '');
+  h = trimTrailingDots(h);
 
   // Allowed characters for any IPv4 shape: digits, dot, 'x', 'X', hex digits.
   if (!/^[0-9.xXa-fA-F]+$/.test(h)) return host;
@@ -52826,6 +53704,40 @@ const unmapIPv4MappedIPv6 = host => {
   }
   return host;
 };
+const IPV4_OCTET_RE = /^(?:0|[1-9]\d{0,2})$/;
+const ipv4ToBytes = host => {
+  const parts = host.split('.');
+  return parts.length === 4 && parts.every(part => IPV4_OCTET_RE.test(part) && Number(part) <= 255) ? parts.map(Number) : null;
+};
+const IPV6_GROUP_RE = /^[0-9a-f]{1,4}$/i;
+const ipv6ToBytes = host => {
+  const halves = host.split('::');
+  if (halves.length > 2) {
+    return null;
+  }
+  const groups = halves[0] ? halves[0].split(':') : [];
+  if (halves.length === 2) {
+    const rear = halves[1] ? halves[1].split(':') : [];
+    const missing = 8 - groups.length - rear.length;
+    if (missing < 1) {
+      return null;
+    }
+    groups.push(...new Array(missing).fill('0'), ...rear);
+  }
+  if (groups.length !== 8 || groups.some(group => !IPV6_GROUP_RE.test(group))) {
+    return null;
+  }
+  return groups.flatMap(group => {
+    const value = Number.parseInt(group, 16);
+    return [value >> 8 & 0xff, value & 0xff];
+  });
+};
+const ipToBytes = host => {
+  if (typeof host !== 'string' || !host) {
+    return null;
+  }
+  return host.indexOf(':') !== -1 ? ipv6ToBytes(host) : ipv4ToBytes(host);
+};
 const normalizeNoProxyHost = hostname => {
   if (!hostname) {
     return hostname;
@@ -52833,7 +53745,7 @@ const normalizeNoProxyHost = hostname => {
   if (hostname.charAt(0) === '[' && hostname.charAt(hostname.length - 1) === ']') {
     hostname = hostname.slice(1, -1);
   }
-  const trimmed = hostname.replace(/\.+$/, '');
+  const trimmed = trimTrailingDots(hostname);
 
   // IPv4 shorthand/octal/hex → dotted-decimal; helper is a no-op for inputs
   // containing ':' (IPv6 and IPv4-mapped IPv6) so we fall through to unmap.
@@ -52842,6 +53754,92 @@ const normalizeNoProxyHost = hostname => {
     return ipv4;
   }
   return unmapIPv4MappedIPv6(trimmed);
+};
+const normalizeCidrBase = input => {
+  let base = input;
+  const startsBracket = base.charAt(0) === '[';
+  const endsBracket = base.charAt(base.length - 1) === ']';
+  const hasBracket = base.includes('[') || base.includes(']');
+  if (startsBracket || endsBracket) {
+    if (!startsBracket || !endsBracket) {
+      return null;
+    }
+    base = base.slice(1, -1);
+    if (base.indexOf(':') === -1 || base.includes('[') || base.includes(']')) {
+      return null;
+    }
+  } else if (hasBracket) {
+    return null;
+  }
+  if (!base || base.charAt(base.length - 1) === '.') {
+    return null;
+  }
+  const wasIPv6 = base.indexOf(':') !== -1;
+  if (wasIPv6) {
+    try {
+      base = new URL(`http://[${base}]/`).hostname.slice(1, -1);
+    } catch (_err) {
+      return null;
+    }
+  } else {
+    base = normalizeIPAddress(base);
+    if (!ipv4ToBytes(base)) {
+      return null;
+    }
+  }
+  return {
+    normalized: unmapIPv4MappedIPv6(base),
+    wasIPv6
+  };
+};
+const CIDR_ENTRY_RE = /^(.+)\/(0|[1-9]\d{0,2})$/;
+const parseCidrEntry = entry => {
+  if (entry.indexOf('/') === -1) {
+    return undefined;
+  }
+  const match = CIDR_ENTRY_RE.exec(entry);
+  if (!match) {
+    return null;
+  }
+  let prefix = Number(match[2]);
+  const parsedBase = normalizeCidrBase(match[1]);
+  if (!parsedBase) {
+    return null;
+  }
+  const {
+    normalized,
+    wasIPv6
+  } = parsedBase;
+  if (wasIPv6 && normalized.indexOf(':') === -1) {
+    if (prefix < 96) {
+      return null;
+    }
+    prefix -= 96;
+  }
+  const bytes = ipToBytes(normalized);
+  if (!bytes || prefix > bytes.length * 8) {
+    return null;
+  }
+  return {
+    bytes,
+    prefix
+  };
+};
+const isInSubnet = (addressBytes, networkBytes, prefix) => {
+  const fullBytes = prefix >> 3;
+  for (let i = 0; i < fullBytes; i++) {
+    if (addressBytes[i] !== networkBytes[i]) {
+      return false;
+    }
+  }
+  const remainingBits = prefix & 7;
+  if (remainingBits) {
+    const mask = 0xff << 8 - remainingBits & 0xff;
+    if ((addressBytes[fullBytes] & mask) !== (networkBytes[fullBytes] & mask)) {
+      return false;
+    }
+  }
+  return true;
 };
 function shouldBypassProxy(location) {
   let parsed;
@@ -52859,12 +53857,17 @@ function shouldBypassProxy(location) {
   }
   const port = Number.parseInt(parsed.port, 10) || DEFAULT_PORTS[parsed.protocol.split(':', 1)[0]] || 0;
   const hostname = normalizeNoProxyHost(parsed.hostname.toLowerCase());
+  const hostnameBytes = ipToBytes(hostname);
   return noProxy.split(/[\s,]+/).some(entry => {
     if (!entry) {
       return false;
     }
     if (entry === '*') {
       return true;
+    }
+    const cidr = parseCidrEntry(entry);
+    if (cidr !== undefined) {
+      return cidr !== null && !!hostnameBytes && hostnameBytes.length === cidr.bytes.length && isInSubnet(hostnameBytes, cidr.bytes, cidr.prefix);
     }
     let [entryHost, entryPort] = parseNoProxyEntry(entry);
     entryHost = normalizeNoProxyHost(entryHost);
@@ -52928,7 +53931,7 @@ function speedometer(samplesCount, min) {
  * Throttle decorator
  * @param {Function} fn
  * @param {Number} freq
- * @return {Function}
+ * @return {Array<Function>}
  */
 function throttle(fn, freq) {
   let timestamp = 0;
@@ -52960,14 +53963,15 @@ function throttle(fn, freq) {
     }
   };
   const flush = () => lastArgs && invoke(lastArgs);
-  return [throttled, flush];
+  const flushWith = (...args) => invoke(args);
+  return [throttled, flush, flushWith];
 }
 
 const progressEventReducer = (listener, isDownloadStream, freq = 3) => {
   let bytesNotified = 0;
   const _speedometer = speedometer(50, 250);
   return throttle(e => {
-    if (!e || typeof e.loaded !== 'number') {
+    if (!e || !utils$1.isNumber(e.loaded)) {
       return;
     }
     const rawLoaded = e.loaded;
@@ -53167,6 +54171,15 @@ const isHttps = /https:?/;
 const kAxiosSocketListener = Symbol('axios.http.socketListener');
 const kAxiosCurrentReq = Symbol('axios.http.currentReq');
 
+// A shared listener avoids retaining an adapter context for the lifetime of a
+// pooled socket. EventEmitter invokes listeners with `this` set to the emitter.
+function handleSocketError(err) {
+  const current = this[kAxiosCurrentReq];
+  if (current && !current.destroyed) {
+    current.destroy(err);
+  }
+}
+
 // Tags HttpsProxyAgent instances installed by setProxy() so the redirect path
 // can strip them without clobbering a user-supplied agent that happens to be
 // an HttpsProxyAgent.
@@ -53312,13 +54325,14 @@ function isSameOriginRedirect(redirectOptions, requestDetails) {
  * @param {http.ClientRequestArgs} options
  * @param {AxiosProxyConfig} configProxy configuration from Axios options object
  * @param {string} location
+ * @param {boolean} [allowEnvProxy=true] whether environment proxy configuration can be used
  *
- * @returns {http.ClientRequestArgs}
+ * @returns {boolean} whether a proxy applies to the selected transport
  */
-function setProxy(options, configProxy, location, isRedirect, configHttpsAgent, configHttpAgent) {
+function setProxy(options, configProxy, location, isRedirect, configHttpsAgent, configHttpAgent, allowEnvProxy = true) {
   let proxy = configProxy;
   const proxyEnvAgent = getProxyEnvAgent(options, configHttpAgent, configHttpsAgent);
-  if (!proxy && proxy !== false && !isNodeEnvProxyEnabled(proxyEnvAgent)) {
+  if (!proxy && proxy !== false && allowEnvProxy && !isNodeEnvProxyEnabled(proxyEnvAgent)) {
     const proxyUrl = getProxyForUrl(location);
     if (proxyUrl) {
       if (!shouldBypassProxy(location)) {
@@ -53453,8 +54467,9 @@ function setProxy(options, configProxy, location, isRedirect, configHttpsAgent, 
   options.beforeRedirects.proxy = function beforeRedirect(redirectOptions) {
     // Configure proxy for redirected request, passing the original config proxy to apply
     // the exact same logic as if the redirected request was performed by axios directly.
-    setProxy(redirectOptions, configProxy, redirectOptions.href, true, configHttpsAgent, configHttpAgent);
+    setProxy(redirectOptions, configProxy, redirectOptions.href, true, configHttpsAgent, configHttpAgent, allowEnvProxy);
   };
+  return Boolean(proxy || configProxy !== false && allowEnvProxy && isNodeEnvProxyEnabled(proxyEnvAgent));
 }
 const isHttpAdapterSupported = typeof process !== 'undefined' && utils$1.kindOf(process) === 'process';
 
@@ -53485,7 +54500,7 @@ const resolveFamily = ({
   family
 }) => {
   if (!utils$1.isString(address)) {
-    throw TypeError('address must be a string');
+    throw new AxiosError('address must be a string', AxiosError.ERR_BAD_OPTION_VALUE);
   }
   return {
     address,
@@ -53496,6 +54511,32 @@ const buildAddressEntry = (address, family) => resolveFamily(utils$1.isObject(ad
   address,
   family
 });
+const normalizedLookupCache = new WeakMap();
+const normalizeLookup = lookup => {
+  let normalized = normalizedLookupCache.get(lookup);
+  if (normalized) {
+    return normalized;
+  }
+  const callbackLookup = callbackify(lookup, value => utils$1.isArray(value) ? value : [value]);
+
+  // Support opt.all, which is required by current Node.js releases.
+  normalized = (hostname, opt, cb) => {
+    callbackLookup(hostname, opt, (err, arg0, arg1) => {
+      if (err) {
+        return cb(err);
+      }
+      let addresses;
+      try {
+        addresses = utils$1.isArray(arg0) ? arg0.map(addr => buildAddressEntry(addr)) : [buildAddressEntry(arg0, arg1)];
+      } catch (error) {
+        return cb(error);
+      }
+      opt.all ? cb(err, addresses) : cb(err, addresses[0].address, addresses[0].family);
+    });
+  };
+  normalizedLookupCache.set(lookup, normalized);
+  return normalized;
+};
 const http2Transport = {
   request(options, cb) {
     const authority = options.protocol + '//' + options.hostname + ':' + (options.port || (options.protocol === 'https:' ? 443 : 80));
@@ -53548,6 +54589,7 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
     let family = own('family');
     let httpVersion = own('httpVersion');
     if (httpVersion === undefined) httpVersion = 1;
+    const rawHttpVersion = httpVersion;
     let http2Options = own('http2Options');
     const httpAgent = own('httpAgent');
     const httpsAgent = own('httpsAgent');
@@ -53564,26 +54606,20 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
     let rejected = false;
     let req;
     let connectPhaseTimer;
-    httpVersion = +httpVersion;
+    try {
+      httpVersion = +httpVersion;
+    } catch (err) {
+      throw new AxiosError('Invalid protocol version: value is not a number', AxiosError.ERR_BAD_OPTION_VALUE, config);
+    }
     if (Number.isNaN(httpVersion)) {
-      throw TypeError(`Invalid protocol version: '${config.httpVersion}' is not a number`);
+      throw new AxiosError(`Invalid protocol version: '${rawHttpVersion}' is not a number`, AxiosError.ERR_BAD_OPTION_VALUE, config);
     }
     if (httpVersion !== 1 && httpVersion !== 2) {
-      throw TypeError(`Unsupported protocol version '${httpVersion}'`);
+      throw new AxiosError(`Unsupported protocol version '${httpVersion}'`, AxiosError.ERR_BAD_OPTION_VALUE, config);
     }
     const isHttp2 = httpVersion === 2;
     if (lookup) {
-      const _lookup = callbackify(lookup, value => utils$1.isArray(value) ? value : [value]);
-      // hotfix to support opt.all option which is required for node 20.x
-      lookup = (hostname, opt, cb) => {
-        _lookup(hostname, opt, (err, arg0, arg1) => {
-          if (err) {
-            return cb(err);
-          }
-          const addresses = utils$1.isArray(arg0) ? arg0.map(addr => buildAddressEntry(addr)) : [buildAddressEntry(arg0, arg1)];
-          opt.all ? cb(err, addresses) : cb(err, addresses[0].address, addresses[0].family);
-        });
-      };
+      lookup = normalizeLookup(lookup);
     }
     const abortEmitter = new events.EventEmitter();
     function abort(reason) {
@@ -53796,6 +54832,11 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
       }));
     }
     headers.set('Accept-Encoding', utils$1.hasOwnProp(transitional, 'advertiseZstdAcceptEncoding') && transitional.advertiseZstdAcceptEncoding === true ? ACCEPT_ENCODING_WITH_ZSTD : ACCEPT_ENCODING, false);
+    if (isHttp2 && lookup) {
+      http2Options = Object.assign(Object.create(null), http2Options, {
+        lookup
+      });
+    }
 
     // Null-prototype to block prototype pollution gadgets on properties read
     // directly by Node's http.request (e.g. insecureHTTPParser, lookup).
@@ -53812,11 +54853,13 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
       family,
       beforeRedirect: dispatchBeforeRedirect,
       beforeRedirects: Object.create(null),
-      http2Options
+      http2Options,
+      createConnection: undefined
     });
 
     // cacheable-lookup integration hotfix
     !utils$1.isUndefined(lookup) && (options.lookup = lookup);
+    let proxyApplied = false;
     if (socketPath) {
       if (typeof socketPath !== 'string') {
         return reject(new AxiosError('socketPath must be a string', AxiosError.ERR_BAD_OPTION_VALUE, config));
@@ -53834,7 +54877,11 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
     } else {
       options.hostname = parsed.hostname.startsWith('[') ? parsed.hostname.slice(1, -1) : parsed.hostname;
       options.port = parsed.port;
-      setProxy(options, configProxy, protocol + '//' + parsed.hostname + (parsed.port ? ':' + parsed.port : '') + options.path, false, httpsAgent, httpAgent);
+      proxyApplied = setProxy(options, configProxy, protocol + '//' + parsed.hostname + (parsed.port ? ':' + parsed.port : '') + options.path, false, httpsAgent, httpAgent,
+      // The HTTP/2 transport connects independently of HTTP/1 agents, so it
+      // cannot apply either axios-resolved or agent-local environment proxies.
+      // Explicit proxy config is still processed and rejected below.
+      !isHttp2);
     }
     let transport;
     let isNativeTransport = false;
@@ -53850,6 +54897,9 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
       options.agent = isHttpsRequest ? httpsAgent : httpAgent;
     }
     if (isHttp2) {
+      if (proxyApplied) {
+        return reject(new AxiosError('HTTP/2 requests with a proxy are not supported', AxiosError.ERR_NOT_SUPPORT, config));
+      }
       transport = http2Transport;
     } else {
       const configTransport = own('transport');
@@ -54097,18 +55147,10 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
         socket.setKeepAlive(true, 1000 * 60);
       }
 
-      // Install a single 'error' listener per socket (not per request) to avoid
-      // accumulating listeners on pooled keep-alive sockets that get reassigned
-      // to new requests before the previous request's 'close' fires (issue #10780).
-      // The listener is bound to the socket's currently-active request via a
-      // symbol, which is swapped as the socket is reassigned.
+      // Install one shared 'error' listener per socket. The symbol follows the
+      // currently-active request as pooled sockets are reassigned (issue #10780).
       if (!socket[kAxiosSocketListener]) {
-        socket.on('error', function handleSocketError(err) {
-          const current = socket[kAxiosCurrentReq];
-          if (current && !current.destroyed) {
-            current.destroy(err);
-          }
-        });
+        socket.on('error', handleSocketError);
         socket[kAxiosSocketListener] = true;
       }
       socket[kAxiosCurrentReq] = req;
@@ -54370,7 +55412,7 @@ function mergeConfig(config1, config2) {
     transformResponse: defaultToConfig2,
     paramsSerializer: defaultToConfig2,
     timeout: defaultToConfig2,
-    timeoutMessage: defaultToConfig2,
+    timeoutErrorMessage: defaultToConfig2,
     withCredentials: defaultToConfig2,
     withXSRFToken: defaultToConfig2,
     adapter: defaultToConfig2,
@@ -54452,11 +55494,12 @@ function resolveConfig(config) {
     }
   }
   if (utils$1.isFormData(data)) {
+    const getHeaders = utils$1.getSafeProp(data, 'getHeaders');
     if (platform.hasStandardBrowserEnv || platform.hasStandardBrowserWebWorkerEnv || utils$1.isReactNative(data)) {
       headers.setContentType(undefined); // browser/web worker/RN handles it
-    } else if (utils$1.isFunction(data.getHeaders)) {
+    } else if (utils$1.isFunction(getHeaders)) {
       // Node.js FormData (like form-data package)
-      setFormDataHeaders(headers, data.getHeaders(), own('formDataHeaderPolicy'));
+      setFormDataHeaders(headers, getHeaders.call(data), own('formDataHeaderPolicy'));
     }
   }
 
@@ -54496,7 +55539,7 @@ var xhrAdapter = isXHRAdapterSupported && function (config) {
     } = _config;
     let onCanceled;
     let uploadThrottled, downloadThrottled;
-    let flushUpload, flushDownload;
+    let flushUpload, flushDownload, flushDownloadWithEvent;
     function done() {
       flushUpload && flushUpload(); // flush events
       flushDownload && flushDownload(); // flush events
@@ -54509,10 +55552,50 @@ var xhrAdapter = isXHRAdapterSupported && function (config) {
 
     // Set the request timeout in MS
     request.timeout = _config.timeout;
-    function onloadend() {
+    function onloadend(event) {
       if (!request) {
         return;
       }
+
+      // Status 0 means no response was received, which onerror and onabort normally
+      // reject before this runs. Firefox 152 fires only readystatechange and loadend for
+      // navigation-canceled requests (https://bugzilla.mozilla.org/show_bug.cgi?id=1505389),
+      // leaving settle() to resolve them as an empty success. ECONNABORTED is the error
+      // onabort raised on Firefox 151. Reads over file:, which some environments report as
+      // status 0 on success, are excluded by the request URL's scheme after browser-style
+      // preprocessing, by the page origin's scheme for relative URLs (which inherit it), or
+      // by responseURL where implemented.
+      if (request.status === 0 && (parseProtocol(normalizeURLForProtocolCheck(_config.url)) || parseProtocol(platform.origin)) !== 'file' && !(request.responseURL && request.responseURL.startsWith('file:'))) {
+        reject(new AxiosError('Request aborted', AxiosError.ECONNABORTED, config, request));
+        done();
+
+        // Clean up request
+        request = null;
+        return;
+      }
+
+      // When loadend is still dispatching, flushing with it gives progress
+      // listeners a final delivery whose event has a live target. The legacy
+      // ready-state fallback has no event, so replay its pending progress.
+      // A throwing listener must not block settlement; rethrow asynchronously,
+      // matching how listener errors surface on the throttle timer path.
+      try {
+        if (event) {
+          flushDownloadWithEvent && flushDownloadWithEvent(event);
+        } else {
+          flushDownload && flushDownload();
+        }
+      } catch (err) {
+        setTimeout(() => {
+          throw err;
+        });
+      }
+
+      // A final progress callback can cancel the request synchronously.
+      if (!request) {
+        return;
+      }
+
       // Prepare the response
       const responseHeaders = AxiosHeaders.from('getAllResponseHeaders' in request && request.getAllResponseHeaders());
       const responseData = !responseType || responseType === 'text' || responseType === 'json' ? request.responseText : request.response;
@@ -54620,7 +55703,7 @@ var xhrAdapter = isXHRAdapterSupported && function (config) {
 
     // Handle progress if needed
     if (onDownloadProgress) {
-      [downloadThrottled, flushDownload] = progressEventReducer(onDownloadProgress, true);
+      [downloadThrottled, flushDownload, flushDownloadWithEvent] = progressEventReducer(onDownloadProgress, true);
       request.addEventListener('progress', downloadThrottled);
     }
 
@@ -54791,6 +55874,17 @@ const trackStream = (stream, chunkSize, onProgress, onFinish) => {
 };
 
 const DEFAULT_CHUNK_SIZE = 64 * 1024;
+const DEFAULT_REQUEST_OPTIONS = {
+  cache: 'default',
+  redirect: 'follow',
+  referrer: 'about:client',
+  referrerPolicy: '',
+  mode: 'cors',
+  integrity: '',
+  keepalive: false,
+  priority: 'auto',
+  window: null
+};
 const {
   isFunction
 } = utils$1;
@@ -54933,7 +56027,8 @@ const factory = env => {
       withCredentials = 'same-origin',
       fetchOptions,
       maxContentLength,
-      maxBodyLength
+      maxBodyLength,
+      maxRedirects
     } = resolveConfig(config);
     const hasMaxContentLength = utils$1.isNumber(maxContentLength) && maxContentLength > -1;
     const hasMaxBodyLength = utils$1.isNumber(maxBodyLength) && maxBodyLength > -1;
@@ -55064,17 +56159,46 @@ const factory = env => {
 
       // Set User-Agent header if not already set (fetch defaults to 'node' in Node.js)
       headers.set('User-Agent', 'axios/' + VERSION, false);
-      const resolvedOptions = {
-        ...fetchOptions,
+      const safeFetchOptions = fetchOptions == null ? fetchOptions : Object.assign(Object.create(null), fetchOptions);
+      if (safeFetchOptions) {
+        // These options are owned by Axios and are already reflected in the
+        // resolved Request passed to fetch.
+        delete safeFetchOptions.body;
+        delete safeFetchOptions.headers;
+        delete safeFetchOptions.method;
+        delete safeFetchOptions.signal;
+        delete safeFetchOptions.duplex;
+        delete safeFetchOptions.credentials;
+      }
+      const resolvedOptions = Object.assign(Object.create(null), safeFetchOptions, {
         signal: composedSignal,
         method: method.toUpperCase(),
         headers: toByteStringHeaderObject(headers.normalize()),
         body: data,
         duplex: 'half',
         credentials: isCredentialsSupported ? withCredentials : undefined
-      };
+      });
+      if (isRequestSupported) {
+        utils$1.forEach(DEFAULT_REQUEST_OPTIONS, (value, key) => {
+          if (resolvedOptions[key] === undefined) {
+            resolvedOptions[key] = value;
+          }
+        });
+        if (resolvedOptions.signal === undefined) {
+          resolvedOptions.signal = null;
+        }
+        if (resolvedOptions.body === undefined) {
+          resolvedOptions.body = null;
+        }
+      }
+      if (maxRedirects === 0) {
+        resolvedOptions.redirect = 'manual';
+        if (safeFetchOptions) {
+          safeFetchOptions.redirect = 'manual';
+        }
+      }
       request = isRequestSupported && new Request(url, resolvedOptions);
-      let response = await (isRequestSupported ? _fetch(request, fetchOptions) : _fetch(url, resolvedOptions));
+      let response = await (isRequestSupported ? _fetch(request, safeFetchOptions) : _fetch(url, resolvedOptions));
       const responseHeaders = AxiosHeaders.from(response.headers);
 
       // Cheap pre-check: if the server honestly declares a content-length that
@@ -55354,9 +56478,13 @@ function throwIfCancellationRequested(config) {
  *
  * @returns {Promise} The Promise to be fulfilled
  */
-function dispatchRequest(config) {
+function dispatchRequest(_config) {
+  // Interceptors may replace the merged config with an ordinary object. Flatten
+  // it at the dispatch boundary so shared prototype members cannot become
+  // request behavior, while preserving intentional template/class members.
+  const config = utils$1.toSafeFlatObject(_config);
   throwIfCancellationRequested(config);
-  config.headers = AxiosHeaders.from(config.headers);
+  config.headers = AxiosHeaders.from(utils$1.getSafeProp(config, 'headers'));
 
   // Transform request data
   config.data = transformData.call(config, config.transformRequest);
@@ -55512,18 +56640,17 @@ class Axios {
       return await this._request(configOrUrl, config);
     } catch (err) {
       if (err instanceof Error) {
-        let dummy = {};
-        Error.captureStackTrace ? Error.captureStackTrace(dummy) : dummy = new Error();
-
-        // slice off the Error: ... line
-        const stack = (() => {
-          if (!dummy.stack) {
-            return '';
-          }
-          const firstNewlineIndex = dummy.stack.indexOf('\n');
-          return firstNewlineIndex === -1 ? '' : dummy.stack.slice(firstNewlineIndex + 1);
-        })();
         try {
+          let dummy = {};
+          Error.captureStackTrace ? Error.captureStackTrace(dummy) : dummy = new Error();
+          const dummyStack = dummy.stack;
+          let stack = '';
+
+          // slice off the Error: ... line
+          if (typeof dummyStack === 'string') {
+            const firstNewlineIndex = dummyStack.indexOf('\n');
+            stack = firstNewlineIndex === -1 ? '' : dummyStack.slice(firstNewlineIndex + 1);
+          }
           if (!err.stack) {
             err.stack = stack;
             // match without the 2 top stack lines
@@ -55536,7 +56663,7 @@ class Axios {
             }
           }
         } catch (e) {
-          // ignore the case where "stack" is an un-writable property
+          // Ignore failures from custom stack hooks or un-writable stack properties.
         }
       }
       throw err;
@@ -55592,11 +56719,11 @@ class Axios {
     }, true);
 
     // Set config.method
-    config.method = (config.method || this.defaults.method || 'get').toLowerCase();
+    config.method = (utils$1.getSafeProp(config, 'method') || utils$1.getSafeProp(this.defaults, 'method') || 'get').toLowerCase();
 
     // Flatten headers
     let contextHeaders = headers && utils$1.merge(headers.common, headers[config.method]);
-    headers && utils$1.forEach(['delete', 'get', 'head', 'post', 'put', 'patch', 'query', 'common'], method => {
+    headers && utils$1.forEach(methodList.concat('common'), method => {
       delete headers[method];
     });
     config.headers = AxiosHeaders.concat(contextHeaders, headers);
@@ -55902,14 +57029,22 @@ const HttpStatusCode = {
   Gone: 410,
   LengthRequired: 411,
   PreconditionFailed: 412,
+  /**
+   * @deprecated Use `ContentTooLarge` instead.
+   */
   PayloadTooLarge: 413,
+  ContentTooLarge: 413,
   UriTooLong: 414,
   UnsupportedMediaType: 415,
   RangeNotSatisfiable: 416,
   ExpectationFailed: 417,
   ImATeapot: 418,
   MisdirectedRequest: 421,
+  /**
+   * @deprecated Use `UnprocessableContent` instead.
+   */
   UnprocessableEntity: 422,
+  UnprocessableContent: 422,
   Locked: 423,
   FailedDependency: 424,
   TooEarly: 425,
@@ -55938,7 +57073,9 @@ const HttpStatusCode = {
   InvalidSslCertificate: 526
 };
 Object.entries(HttpStatusCode).forEach(([key, value]) => {
-  HttpStatusCode[value] = key;
+  if (HttpStatusCode[value] === undefined) {
+    HttpStatusCode[value] = key;
+  }
 });
 
 /**
@@ -56007,14 +57144,6 @@ axios.default = axios;
 
 module.exports = axios;
 
-
-/***/ }),
-
-/***/ 9828:
-/***/ ((module) => {
-
-"use strict";
-module.exports = /*#__PURE__*/JSON.parse('{"100":"Continue","101":"Switching Protocols","102":"Processing","103":"Early Hints","200":"OK","201":"Created","202":"Accepted","203":"Non-Authoritative Information","204":"No Content","205":"Reset Content","206":"Partial Content","207":"Multi-Status","208":"Already Reported","226":"IM Used","300":"Multiple Choices","301":"Moved Permanently","302":"Found","303":"See Other","304":"Not Modified","305":"Use Proxy","307":"Temporary Redirect","308":"Permanent Redirect","400":"Bad Request","401":"Unauthorized","402":"Payment Required","403":"Forbidden","404":"Not Found","405":"Method Not Allowed","406":"Not Acceptable","407":"Proxy Authentication Required","408":"Request Timeout","409":"Conflict","410":"Gone","411":"Length Required","412":"Precondition Failed","413":"Payload Too Large","414":"URI Too Long","415":"Unsupported Media Type","416":"Range Not Satisfiable","417":"Expectation Failed","418":"I\'m a Teapot","421":"Misdirected Request","422":"Unprocessable Entity","423":"Locked","424":"Failed Dependency","425":"Too Early","426":"Upgrade Required","428":"Precondition Required","429":"Too Many Requests","431":"Request Header Fields Too Large","451":"Unavailable For Legal Reasons","500":"Internal Server Error","501":"Not Implemented","502":"Bad Gateway","503":"Service Unavailable","504":"Gateway Timeout","505":"HTTP Version Not Supported","506":"Variant Also Negotiates","507":"Insufficient Storage","508":"Loop Detected","509":"Bandwidth Limit Exceeded","510":"Not Extended","511":"Network Authentication Required"}');
 
 /***/ }),
 
@@ -56098,14 +57227,6 @@ module.exports = /*#__PURE__*/JSON.parse('{"application/andrew-inset":["ez"],"ap
 
 /***/ }),
 
-/***/ 6723:
-/***/ ((module) => {
-
-"use strict";
-module.exports = /*#__PURE__*/JSON.parse('{"100":"Continue","101":"Switching Protocols","102":"Processing","103":"Early Hints","200":"OK","201":"Created","202":"Accepted","203":"Non-Authoritative Information","204":"No Content","205":"Reset Content","206":"Partial Content","207":"Multi-Status","208":"Already Reported","226":"IM Used","300":"Multiple Choices","301":"Moved Permanently","302":"Found","303":"See Other","304":"Not Modified","305":"Use Proxy","307":"Temporary Redirect","308":"Permanent Redirect","400":"Bad Request","401":"Unauthorized","402":"Payment Required","403":"Forbidden","404":"Not Found","405":"Method Not Allowed","406":"Not Acceptable","407":"Proxy Authentication Required","408":"Request Timeout","409":"Conflict","410":"Gone","411":"Length Required","412":"Precondition Failed","413":"Payload Too Large","414":"URI Too Long","415":"Unsupported Media Type","416":"Range Not Satisfiable","417":"Expectation Failed","418":"I\'m a Teapot","421":"Misdirected Request","422":"Unprocessable Entity","423":"Locked","424":"Failed Dependency","425":"Too Early","426":"Upgrade Required","428":"Precondition Required","429":"Too Many Requests","431":"Request Header Fields Too Large","451":"Unavailable For Legal Reasons","500":"Internal Server Error","501":"Not Implemented","502":"Bad Gateway","503":"Service Unavailable","504":"Gateway Timeout","505":"HTTP Version Not Supported","506":"Variant Also Negotiates","507":"Insufficient Storage","508":"Loop Detected","509":"Bandwidth Limit Exceeded","510":"Not Extended","511":"Network Authentication Required"}');
-
-/***/ }),
-
 /***/ 7662:
 /***/ ((module) => {
 
@@ -56118,7 +57239,7 @@ module.exports = /*#__PURE__*/JSON.parse('{"100":"Continue","101":"Switching Pro
 /***/ ((module) => {
 
 "use strict";
-module.exports = {"version":"3.17.0"};
+module.exports = {"version":"3.19.0"};
 
 /***/ })
 
