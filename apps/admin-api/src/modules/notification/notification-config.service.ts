@@ -46,17 +46,16 @@ export class NotificationConfigService {
       description: "Send notifications via WeCom group bot",
     },
     {
-      // N32 (round-9): webhook joins the PATCH-able enum (V2 §7.1 gap —
-      // the channel's store fallback was unreachable because "webhook"
-      // could never be saved). Config shape is `{ url }`; at send time the
-      // saved url wins and the per-request webhookUrl argument is the
-      // fallback (see WebhookChannel.send).
+      // N32 (round-9): webhook joined the configurable enum. Config shape is
+      // `{ url }`; at send time the resolution is (N37, round-10): explicit
+      // per-request webhookUrl first, then the saved url — but only while
+      // the channel is enabled (see WebhookChannel.send).
       key: "webhook",
       name: "Webhook",
       enabled: false,
       config: {},
       description:
-        "Generic HTTP webhook (saved url takes precedence over the per-request webhookUrl)",
+        "Generic HTTP webhook (per-request webhookUrl takes precedence; saved url applies only while the channel is enabled)",
     },
   ];
 
@@ -75,10 +74,15 @@ export class NotificationConfigService {
     this.loadFromEnv();
   }
 
-  /** V1: publish the raw (unmasked) config of a channel to the send path. */
+  /**
+   * V1: publish the raw (unmasked) config of a channel to the send path.
+   * N37 (round-10): the enabled flag travels with it — the webhook channel
+   * only honors a saved url while the channel is enabled, so the store must
+   * see enable/disable transitions too (updateChannel syncs on either).
+   */
   private syncStore(key: string) {
     const channel = this.channelConfigs.get(key);
-    if (channel) this.store.set(key, channel.config);
+    if (channel) this.store.set(key, channel.config, channel.enabled);
   }
 
   private loadFromEnv() {
@@ -233,6 +237,9 @@ export class NotificationConfigService {
 
     if (data.enabled !== undefined) {
       channel.enabled = data.enabled;
+      // N37 (round-10): an enabled-only PATCH must reach the send path too —
+      // the webhook channel gates the saved url on this flag.
+      this.syncStore(key);
     }
     if (data.config) {
       const merged = { ...channel.config };
@@ -283,7 +290,13 @@ export class NotificationConfigService {
     // the saved raw config; the '***' masked echo must not clobber the real
     // secret (same sentinel rule as updateChannel).
     const saved = this.store.get(key);
+    const savedEnabled = this.store.isEnabled(key);
     const hasOverride = !!config && Object.keys(config).length > 0;
+    // N37 (round-10): the test send is an explicit admin action meant to
+    // validate a channel's config BEFORE it is enabled, so the effective
+    // config (saved or merged) is published as enabled for the duration of
+    // the test only — the webhook channel gates its saved url on the flag.
+    // The pre-test (config, enabled) pair is restored in the finally below.
     if (hasOverride) {
       const merged = { ...(saved ?? {}) };
       for (const [k, v] of Object.entries(config!)) {
@@ -292,7 +305,9 @@ export class NotificationConfigService {
         }
         merged[k] = v;
       }
-      this.store.set(key, merged);
+      this.store.set(key, merged, true);
+    } else if (!savedEnabled) {
+      this.store.set(key, saved ?? {}, true);
     }
 
     try {
@@ -328,9 +343,10 @@ export class NotificationConfigService {
       };
     } finally {
       // Restore the store to its pre-test state — a test send must never
-      // persist unsaved config into the live send path.
-      if (hasOverride) {
-        if (saved) this.store.set(key, saved);
+      // persist unsaved config (or the test-time enabled pin) into the live
+      // send path.
+      if (hasOverride || !savedEnabled) {
+        if (saved) this.store.set(key, saved, savedEnabled);
         else this.store.delete(key);
       }
     }

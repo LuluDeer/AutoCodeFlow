@@ -410,6 +410,12 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
    * alarm never interrupts task flows), this direct-call path must make an
    * SSRF block visible to its caller — the URL was supplied explicitly in
    * the request, so a rejection is an input error: BadRequestException (400).
+   *
+   * N37 (round-10): the explicit `url` is also the resolution winner inside
+   * WebhookChannel.send (explicit argument > saved enabled config > env),
+   * so the 400 below always reports the very URL the caller passed — the
+   * saved channel config can never reroute this path behind the caller's
+   * back (the round-9 store-first flip was the bug).
    */
   async sendWebhook(
     payload: NotificationPayload,

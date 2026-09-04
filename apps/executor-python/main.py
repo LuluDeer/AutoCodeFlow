@@ -120,10 +120,18 @@ async def register_executor():
             )
             # R9-fix: the old code logged "Registered" even on 4xx — check the
             # status and surface rejections (with a body summary) as errors.
+            # N41 (round-10): the old "(will retry via heartbeat)" wording was
+            # false — heartbeat never registers (unknown address → 404). The
+            # only self-heal is the register-on-token side effect of
+            # POST /executors/token in the heartbeat loop, which rebuilds the
+            # row WITHOUT the rich metadata above (type/capabilities/
+            # maxConcurrentTasks/version); full metadata returns only on
+            # process restart.
             if not 200 <= response.status_code < 300:
                 body_summary = (response.text or '')[:200]
                 logger.error(
-                    'Register rejected by admin-api: HTTP %s %s (will retry via heartbeat)',
+                    'Register rejected by admin-api: HTTP %s %s '
+                    '(no auto re-register; /token fallback would rebuild the row without rich metadata)',
                     response.status_code,
                     body_summary,
                 )
@@ -137,7 +145,10 @@ async def register_executor():
                 pass
             logger.info('Registered to admin-api')
     except Exception as e:
-        logger.warning(f'Register failed (will retry via heartbeat): {e}')
+        # N41 (round-10): no heartbeat re-register exists (heartbeat 404s for
+        # unknown addresses); see the rejection branch above for the real
+        # (lossy) self-heal path.
+        logger.warning(f'Register failed (no auto re-register; /token fallback rebuilds the row without rich metadata): {e}')
 
 
 app = FastAPI(
