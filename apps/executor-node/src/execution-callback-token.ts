@@ -35,10 +35,15 @@
  * adopts the admin-returned tokenHash at register, on every POST /token
  * fetch (middleware/auth.ts fetchToken) and on every heartbeat
  * (scheduler.sendHeartbeat) — see admin-envelope.ts adoptExecutorTokenHash.
- * A rotation performed directly in the admin UI is picked up by the
- * executor on its next heartbeat (≤ heartbeatIntervalSeconds); tokens
- * minted before that pickup fail verification — documented in
- * docs/sdk-guide.md.
+ * R10 (round-10 gap #3) closes the manual-rotation window: an admin-UI
+ * rotate-token makes our bearer stale, so the next outbound admin request
+ * (heartbeat / callback, ≤ one heartbeat interval) 401s and triggers the
+ * admin-client stale-credential self-heal — an immediate forceTokenRefresh
+ * (POST /token, which adopts the new tokenHash) plus a single retry. The
+ * hash therefore follows admin-side rotations within one request round-trip
+ * instead of waiting for the 30-minute scheduled refresh; tokens minted
+ * between the rotation and that heal still fail verification — documented
+ * in docs/sdk-guide.md.
  */
 import * as crypto from 'crypto';
 import { config } from './config';
