@@ -381,13 +381,11 @@ export class NotificationConfigService {
         switch (channel) {
           case "email":
             status = (await this.notificationService["email"].send(payload)) as
-              | ChannelDeliveryStatus
-              | undefined;
+              ChannelDeliveryStatus | undefined;
             break;
           case "slack":
             status = (await this.notificationService["slack"].send(payload)) as
-              | ChannelDeliveryStatus
-              | undefined;
+              ChannelDeliveryStatus | undefined;
             break;
           case "dingtalk":
             status = (await this.notificationService["dingtalk"].send(
@@ -396,8 +394,7 @@ export class NotificationConfigService {
             break;
           case "wecom":
             status = (await this.notificationService["wecom"].send(payload)) as
-              | ChannelDeliveryStatus
-              | undefined;
+              ChannelDeliveryStatus | undefined;
             break;
           // N32: webhook joined the configurable enum — without this case a
           // requested+enabled webhook test would silently report "sent" for

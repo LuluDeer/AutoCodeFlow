@@ -174,8 +174,7 @@ export class UsersService implements OnModuleInit {
       .returning(["loginFailCount"])
       .execute();
     const row = (incremented.raw?.[0] ?? incremented.generatedMaps?.[0]) as
-      | { loginFailCount?: number }
-      | undefined;
+      { loginFailCount?: number } | undefined;
     const next = row?.loginFailCount ?? 0;
     if (next < opts.maxFail) return;
 

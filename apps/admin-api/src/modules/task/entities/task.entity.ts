@@ -144,8 +144,7 @@ export class Task {
 
   /** Executor tags required for this task. */
   @Column({ type: "simple-array", nullable: true }) executorTags:
-    | string[]
-    | null;
+    string[] | null;
 
   /**
    * Pinned executor: when set, dispatch targets ONLY this executor,
