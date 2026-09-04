@@ -1,7 +1,7 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
 import { config } from './config';
 import { logger } from './logger';
-import { getCurrentToken, getStaticToken } from './middleware/auth';
+import { getCurrentToken, getStaticToken, forceTokenRefresh } from './middleware/auth';
 import { normalizeAdminApiBaseUrl } from './admin-api-url';
 
 let adminUrls: string[] = [];
@@ -80,14 +80,7 @@ export async function checkAdminApiConnectivity(
 
 type TokenMode = 'current' | 'static';
 
-export async function request<T = any>(
-  method: 'get' | 'post' | 'put' | 'delete',
-  path: string,
-  data?: Record<string, any>,
-  retryCount: number = adminUrls.length,
-  tokenMode: TokenMode = 'current',
-): Promise<AxiosResponse<T>> {
-  const token = tokenMode === 'static' ? getStaticToken() : await getCurrentToken();
+function buildAuthHeaders(token: string | null): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -97,6 +90,23 @@ export async function request<T = any>(
     headers['X-Executor-Token'] = token;
     headers['Authorization'] = `Bearer ${token}`;
   }
+  return headers;
+}
+
+/** True when the error is an HTTP 401 ANSWER from admin-api (as opposed to a
+ *  connect/timeout failure). Only meaningful for errors thrown by performRequest. */
+function isUnauthorized(error: unknown): boolean {
+  return (error as AxiosError | undefined)?.response?.status === 401;
+}
+
+async function performRequest<T = any>(
+  token: string | null,
+  method: 'get' | 'post' | 'put' | 'delete',
+  path: string,
+  data?: Record<string, any>,
+  retryCount: number = adminUrls.length,
+): Promise<AxiosResponse<T>> {
+  const headers = buildAuthHeaders(token);
 
   for (let i = 0; i < retryCount; i++) {
     try {
@@ -114,8 +124,14 @@ export async function request<T = any>(
 
       return response;
     } catch (error: any) {
+      // R10 (round-10 gap #3): a 401 is an auth verdict, not a connectivity
+      // failure — every admin replica reads the same DB, so failing over
+      // cannot turn it valid. Surface it to request()'s re-auth handling
+      // instead of burning the failover retries (and the 500ms sleeps) on it.
+      if (isUnauthorized(error)) throw error;
+
       logger.warn(`Request to admin ${adminUrls[currentIndex]} failed: ${error.message}`);
-      
+
       if (i < retryCount - 1) {
         failover();
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -126,6 +142,44 @@ export async function request<T = any>(
   }
 
   throw new Error('Request failed after all retries');
+}
+
+export async function request<T = any>(
+  method: 'get' | 'post' | 'put' | 'delete',
+  path: string,
+  data?: Record<string, any>,
+  retryCount: number = adminUrls.length,
+  tokenMode: TokenMode = 'current',
+): Promise<AxiosResponse<T>> {
+  const token = tokenMode === 'static' ? getStaticToken() : await getCurrentToken();
+  try {
+    return await performRequest<T>(token, method, path, data, retryCount);
+  } catch (error) {
+    // R10 (round-10 gap #3): stale-credential self-heal. A 401 on a
+    // dynamic-token request means admin-api rotated our per-executor token
+    // out from under us — the direct path is the admin-UI "rotate token"
+    // button (POST /executors/:id/rotate-token), after which our bearer AND
+    // our adopted tokenHash (the N26 per-execution callback HMAC secret) are
+    // both stale. Without this heal the heartbeat keeps 401ing until the
+    // 30-minute scheduled refresh, the executor gets marked OFFLINE after
+    // 3 missed intervals, and task callbacks 401 the whole time.
+    //
+    // forceTokenRefresh() re-hits POST /token with the STATIC token and, via
+    // fetchToken's envelope handling, adopts BOTH the fresh token and the
+    // matching tokenHash in one round-trip — then we retry the original
+    // request once. Storm guards: exactly one auth retry per request (a
+    // second 401 propagates), forceTokenRefresh degrades to a no-op while
+    // the 30s fetch-failure backoff is active, and admin-api's issueToken is
+    // idempotent per (address, startupId) so concurrent 401s converge on the
+    // same token instead of rotating.
+    if (tokenMode === 'current' && isUnauthorized(error)) {
+      const fresh = await forceTokenRefresh();
+      if (fresh && fresh !== token) {
+        return performRequest<T>(fresh, method, path, data, retryCount);
+      }
+    }
+    throw error;
+  }
 }
 
 export async function get<T = any>(path: string): Promise<AxiosResponse<T>> {
