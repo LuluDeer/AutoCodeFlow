@@ -84,7 +84,7 @@ limit = int(os.environ.get("AUTOFLOW_LIMIT", "100"))
 
 > 执行结果回调仍由执行器进程统一处理，任务脚本无需自行上报。但自 N23 起，任务脚本可以**安全地主动回调 Admin API**（如 `POST /api/executions/callback` 上报中间进度、或使用 SDK 的回调客户端——Node `ctx.http` / Python `ctx.callback`，见上方 SDK 矩阵）：执行器会注入仅绑定**本次执行**的一次性 token（`AUTOFLOW_CALLBACK_TOKEN`）、Admin API 地址（`AUTOFLOW_ADMIN_API_URL`）与执行器注册地址（`AUTOFLOW_EXECUTOR_ADDRESS`，N27）。该 token 由执行器侧密钥派生 HMAC 签名（优先 `EXECUTION_CALLBACK_SECRET`，其次注册时下发的 per-executor tokenHash，最后执行器共享 token，N26），只能用于本 `executionId` 的回调且随任务超时+15 分钟宽限过期；执行器共享 token 本身依旧绝不进入任务子进程（SEC-01）。旧版执行器不注入这些变量，任务脚本应通过能力探测判断回调是否可用——**分语言判据**（N39，第十轮修正：python `TaskContext` 没有 `ctx.http` 属性，照 Node 写法会直接 `AttributeError`）：Node 用 `ctx.http.enabled`（不可用时原因见 `ctx.http.disabledReason`）；Python 用 `ctx.callback.enabled`（见下方 Python 专节示例）。
 >
-> **多节点部署约束（N26）**：若各执行器使用独立 `--secret` 安装，per-execution 回调 token 以注册时下发的 tokenHash 为签名密钥，Admin API 按地址回查同一值验签。管理员在后台**轮换执行器 token 后**无需重启执行器：executor-node 在下一次出站请求收到 401 时即时以注册凭证重取并对齐新密钥（R10，默认 ≤30s）；executor-python 无 401 即时自愈，靠心跳循环收敛：心跳响应回显的新 tokenHash 即被采纳（回调签名密钥 ≤ 心跳间隔，默认 30s），执行器自身持有的旧动态 token 等调度刷新（默认 ≤30min）。窗口期内以旧密钥签发的任务回调 token 会验签失败（401）。若两端都配置了相同的 `EXECUTION_CALLBACK_SECRET`，则始终优先使用该密钥，不受轮换影响。
+> **多节点部署约束（N26）**：若各执行器使用独立 `--secret` 安装，per-execution 回调 token 以注册时下发的 tokenHash 为签名密钥，Admin API 按地址回查同一值验签。管理员在后台**轮换执行器 token 后**无需重启执行器：executor-node 在下一次出站请求收到 401 时即时以注册凭证重取并对齐新密钥（R10，默认 ≤30s）；executor-python 自 R11 起同样具备 401 即时自愈（`request_with_self_heal`：出站心跳 401 时立即重取并对齐新 Token 与 tokenHash，重试原心跳恰一次），两端收敛均 ≤ 一个心跳间隔（默认 30s）。窗口期内以旧密钥签发的任务回调 token 会验签失败（401）。若两端都配置了相同的 `EXECUTION_CALLBACK_SECRET`，则始终优先使用该密钥，不受轮换影响。
 
 ## 任务级调度策略
 
