@@ -118,6 +118,56 @@ class TestHeartbeatCpuSampling:
         assert cpu_mock.call_args.args == (1,)
 
 
+class TestHeartbeatSelfHeal:
+    """R11 (round-11, port of executor-node R10 gap #3): a 401 on the
+    heartbeat (admin rotated our per-executor token out from under us) must
+    trigger ONE force_token_refresh + retry within the same attempt instead of
+    waiting for the 30-minute scheduled refresh."""
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_401_heals_and_retries_once(self, monkeypatch):
+        import auth as auth_module
+        monkeypatch.setattr(
+            auth_module, 'force_token_refresh', AsyncMock(return_value='fresh-token')
+        )
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=[
+            create_mock_response(401),
+            create_mock_response(200),
+        ])
+        with patch('scheduler.psutil.cpu_percent', return_value=1.0), \
+             patch('scheduler.psutil.virtual_memory') as mem_mock:
+            mem_mock.return_value = SimpleNamespace(percent=2.0)
+            await _send_heartbeat(mock_client, 'stale-token')
+
+        # exactly one auth retry: first attempt stale, second the healed token
+        assert mock_client.post.call_count == 2
+        first = mock_client.post.call_args_list[0].kwargs['headers']
+        second = mock_client.post.call_args_list[1].kwargs['headers']
+        assert first['Authorization'] == 'Bearer stale-token'
+        assert second['Authorization'] == 'Bearer fresh-token'
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_401_unchanged_token_adds_no_auth_retry(self, monkeypatch):
+        # force_token_refresh yields the SAME token (admin unreachable /
+        # idempotent reuse) — the helper adds no retry, so the only posts are
+        # tenacity's own transient-failure attempts (3) on the persistent 401.
+        import auth as auth_module
+        monkeypatch.setattr(
+            auth_module, 'force_token_refresh', AsyncMock(return_value='same-token')
+        )
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=create_mock_response(401))
+        with patch('scheduler.psutil.cpu_percent', return_value=1.0), \
+             patch('scheduler.psutil.virtual_memory') as mem_mock, \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+            mem_mock.return_value = SimpleNamespace(percent=2.0)
+            # tenacity swallows the final HTTPStatusError via retry_error_callback
+            await _send_heartbeat(mock_client, 'same-token')
+
+        assert mock_client.post.call_count == 3
+
+
 class TestHeartbeatTokenHashAdoption:
     """R9 (round-9, W3): heartbeat responses echo the stored tokenHash
     ({code,message,data:{tokenHash}}) — the executor must adopt it so the

@@ -39,6 +39,30 @@ import { PaginationDto } from "../../common/dto/pagination.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 
+/**
+ * R11: true when the executor answered a reload-config push with an HTTP 401
+ * AUTH VERDICT (as opposed to a connect/timeout failure, which must not
+ * trigger the token re-issue retry). Both executor implementations answer
+ * 401 with `{ error: 'Invalid or missing executor token' }`; the status is
+ * checked first and the body text only as a fallback for proxies that strip
+ * the status.
+ */
+function isUnauthorizedPushError(err: unknown): boolean {
+  const response = (
+    err as { response?: { status?: number; data?: unknown } } | undefined
+  )?.response;
+  if (response?.status === 401) return true;
+  const data = response?.data;
+  if (data === undefined || data === null) return false;
+  let text: string;
+  try {
+    text = typeof data === "string" ? data : JSON.stringify(data);
+  } catch {
+    return false;
+  }
+  return /\b401\b|unauthorized|invalid or missing executor token/i.test(text);
+}
+
 @ApiTags("Executors")
 @Controller("executors")
 export class ExecutorController {
@@ -494,6 +518,35 @@ export class ExecutorController {
   @ApiResponse({ status: 200, description: "Config pushed successfully" })
   @ApiResponse({ status: 400, description: "Executor offline" })
   @ApiResponse({ status: 404, description: "Executor not found" })
+  /**
+   * R11 (round-11 P1): idempotent token REUSE, not rotation.
+   *
+   * The executor validates this INBOUND push against the token it currently
+   * holds (executor-node auth.ts / executor-python auth.py:
+   * validTokens = [dynamicToken, staticToken]). The old code called
+   * rotateToken() here, which minted a NEW secret the executor had never
+   * seen — verifyToken rejected it with 401 and the push always failed
+   * ("Failed to reach executor"). R10's 401 self-heal only covers the
+   * executor's OUTBOUND requests, not this inbound path.
+   *
+   * issueToken() (R8/R9 idempotent-issuance infra) returns the cached
+   * PLAINTEXT for a same-(address, startupId) caller — exactly the token the
+   * live executor holds — so verifyToken passes and NOTHING is rotated or
+   * invalidated (the F-3 "rotate before the SSRF guard" cost note below is
+   * obsolete for the normal path).
+   *
+   * Legacy edge: a row without executorStartupId (or a cold admin-api
+   * issuance cache after a restart) cannot prove same-process life, so
+   * issueToken() may fall through to a real rotation and the push still 401s
+   * once. The catch below re-issues and retries the push EXACTLY ONCE (same
+   * storm posture as R10's outbound heal: one auth retry per request;
+   * admin-api's issueToken is idempotent per (address, startupId), so
+   * concurrent pushes converge on the same token instead of rotating). If
+   * the retry still fails we surface the original fixed error — the executor
+   * converges on its own schedule (node: one-request 401 self-heal; python:
+   * ≤30min refresh / restart). Trade-off accepted: a legacy executor may
+   * need one reload-config attempt after admin-api restarts.
+   */
   async reloadConfig(
     @Param("id") id: string,
     @Body()
@@ -510,21 +563,48 @@ export class ExecutorController {
     if (executor.status !== "online") {
       throw new UnauthorizedException("Executor is offline");
     }
-    const token = await this.svc.rotateToken(id);
-    const headers = { Authorization: `Bearer ${token.token}` };
+    const issued = await this.svc.issueToken({
+      address: executor.address,
+      appName: executor.appName,
+      startupId: executor.executorStartupId ?? null,
+    });
     const url = this.svc.getExecutorUrl(executor.address, "api/config/reload");
-    // F-3: SSRF guard — never send the freshly rotated (per-executor) token to
-    // a metadata/loopback/link-local target. Note the rotateToken() call above
-    // invalidates the previous token, so a blocked address still costs the
-    // executor one re-login; that is preferable to exfiltrating the token.
+    // F-3: SSRF guard — never send the per-executor token to a
+    // metadata/loopback/link-local target. With idempotent reuse a blocked
+    // address normally costs the executor nothing (no rotation happened);
+    // only the legacy/cold-cache path above may have rotated once.
     await assertSafeExecutorUrl(url);
     try {
-      const resp = await axios.post(url, body, { headers, timeout: 10_000 });
+      const resp = await axios.post(url, body, {
+        headers: { Authorization: `Bearer ${issued.token}` },
+        timeout: 10_000,
+      });
       return resp.data;
-    } catch {
-      // F-8: fixed message — do not echo axios err.message (leaks internal
-      // topology / provides a blind SSRF oracle via connect-error text).
-      throw new UnauthorizedException("Failed to reach executor");
+    } catch (firstErr) {
+      if (!isUnauthorizedPushError(firstErr)) {
+        // F-8: fixed message — do not echo axios err.message (leaks internal
+        // topology / provides a blind SSRF oracle via connect-error text).
+        throw new UnauthorizedException("Failed to reach executor");
+      }
+      // 401 fallback (legacy rows / cold issuance cache): re-issue once and
+      // retry the push once. The second issueToken() may return the same
+      // cached plaintext (then the retry fails identically and we throw) or,
+      // if cache state moved, a token the executor can accept.
+      const retry = await this.svc.issueToken({
+        address: executor.address,
+        appName: executor.appName,
+        startupId: executor.executorStartupId ?? null,
+      });
+      try {
+        const resp = await axios.post(url, body, {
+          headers: { Authorization: `Bearer ${retry.token}` },
+          timeout: 10_000,
+        });
+        return resp.data;
+      } catch {
+        // F-8: same fixed message; the original 401 error is not echoed.
+        throw new UnauthorizedException("Failed to reach executor");
+      }
     }
   }
 

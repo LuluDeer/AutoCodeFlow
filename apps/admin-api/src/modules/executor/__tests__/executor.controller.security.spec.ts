@@ -33,6 +33,13 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
     heartbeat: jest.fn(async (address, metrics) => ({ address, metrics })),
     validateTokenByAddress: jest.fn().mockResolvedValue(true),
     rotateToken: jest.fn().mockResolvedValue({ token: "fresh-token" }),
+    // R11: reload-config obtains the push credential through the idempotent
+    // issueToken() (same-startupId reuse returns the executor's CURRENT
+    // token) instead of rotateToken() — a rotated secret the executor never
+    // saw would 401 the inbound push.
+    issueToken: jest
+      .fn()
+      .mockResolvedValue({ token: "issued-token", tokenHash: "$2b$12$hash" }),
     // N26 (round-8): register response now carries the stored tokenHash so
     // the executor can adopt it as its per-execution callback signing secret.
     getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
@@ -231,7 +238,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
   });
 
   describe("reload-config SSRF + error hardening (F-3 / F-8)", () => {
-    it("rejects reload-config targeting a metadata address before sending the rotated token", async () => {
+    it("rejects reload-config targeting a metadata address before sending the token", async () => {
       const { assertSafeExecutorUrl } =
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         require("../../../common/utils/safe-http.util") as {
@@ -244,10 +251,11 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         findOne: jest.fn().mockResolvedValue({
           id: "executor-1",
           address: "169.254.169.254:80",
+          appName: "executor-node",
+          executorStartupId: "startup-1",
           status: ExecutorStatus.ONLINE,
           type: ExecutorType.PYTHON,
         }),
-        rotateToken: jest.fn().mockResolvedValue({ token: "rotated-token" }),
         getExecutorUrl: jest
           .fn()
           .mockReturnValue("http://169.254.169.254:80/api/config/reload"),
@@ -262,7 +270,10 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
       await expect(
         controller.reloadConfig("executor-1", {}),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+      // F-3: the guard must reject before ANY push carries the credential —
+      // including the R11 401-retry push, which reuses the same guarded URL.
       expect(axios.post).not.toHaveBeenCalled();
+      expect(svc.rotateToken).not.toHaveBeenCalled();
     });
 
     it("does not echo the underlying axios error message (F-8)", async () => {
@@ -270,10 +281,11 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         findOne: jest.fn().mockResolvedValue({
           id: "executor-1",
           address: "10.0.0.9:8001",
+          appName: "executor-node",
+          executorStartupId: "startup-1",
           status: ExecutorStatus.ONLINE,
           type: ExecutorType.PYTHON,
         }),
-        rotateToken: jest.fn().mockResolvedValue({ token: "rotated-token" }),
         getExecutorUrl: jest
           .fn()
           .mockReturnValue("http://10.0.0.9:8001/api/config/reload"),

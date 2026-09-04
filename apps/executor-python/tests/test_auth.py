@@ -2,6 +2,7 @@ import asyncio
 
 import httpx
 import pytest
+from datetime import datetime, timedelta
 from fastapi import HTTPException
 from unittest.mock import AsyncMock
 
@@ -193,3 +194,141 @@ class TestFetchToken:
         mock_client.post = AsyncMock(side_effect=httpx.ConnectError('refused'))
         monkeypatch.setattr(auth_module.httpx, 'AsyncClient', lambda *a, **k: mock_client)
         assert asyncio.run(auth_module._fetch_token()) is None
+
+
+# ---------------------------------------------------------------------------
+# R11 (round-11, port of executor-node R10 gap #3): force_token_refresh +
+# request_with_self_heal — a 401 on an outbound dynamic-token request heals
+# the stale bearer within one round-trip instead of waiting for the 30-minute
+# scheduled refresh (during which the heartbeat would 401 and the executor be
+# marked OFFLINE).
+# ---------------------------------------------------------------------------
+
+
+def _resp(status_code: int) -> httpx.Response:
+    return httpx.Response(
+        status_code, request=httpx.Request('POST', 'http://admin.local/api/x')
+    )
+
+
+class TestForceTokenRefresh:
+    @pytest.mark.asyncio
+    async def test_clears_expiry_and_returns_refreshed_token(self, monkeypatch):
+        # A future expiry would normally suppress a refresh for ~30min; the
+        # forced path must bypass it and re-fetch.
+        monkeypatch.setattr(auth_module, '_token_expires_at', datetime.now() + timedelta(minutes=29))
+        monkeypatch.setattr(auth_module, '_dynamic_token', 'stale-token')
+        monkeypatch.setattr(auth_module, '_fetch_token', AsyncMock(return_value='fresh-token'))
+
+        result = await auth_module.force_token_refresh()
+
+        assert result == 'fresh-token'
+        assert auth_module._dynamic_token == 'fresh-token'
+        # expiry re-armed by the successful refresh
+        assert auth_module._token_expires_at is not None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_fetch_fails(self, monkeypatch):
+        monkeypatch.setattr(auth_module, '_token_expires_at', datetime.now() + timedelta(minutes=29))
+        monkeypatch.setattr(auth_module, '_dynamic_token', None)
+        monkeypatch.setattr(auth_module, '_fetch_token', AsyncMock(return_value=None))
+
+        assert await auth_module.force_token_refresh() is None
+
+
+class TestRequestWithSelfHeal:
+    @pytest.mark.asyncio
+    async def test_401_refreshes_and_retries_once_with_new_token(self, monkeypatch):
+        monkeypatch.setattr(
+            auth_module, 'force_token_refresh', AsyncMock(return_value='fresh-token')
+        )
+        client = AsyncMock()
+        client.post = AsyncMock(side_effect=[_resp(401), _resp(200)])
+
+        response = await auth_module.request_with_self_heal(
+            client, 'post', 'http://admin.local/api/executors/heartbeat',
+            token='stale-token', json={'a': 1},
+        )
+
+        assert response.status_code == 200
+        assert client.post.call_count == 2
+        # first attempt carried the stale bearer, retry the healed one
+        first_auth = client.post.call_args_list[0].kwargs['headers']['Authorization']
+        second_auth = client.post.call_args_list[1].kwargs['headers']['Authorization']
+        assert first_auth == 'Bearer stale-token'
+        assert second_auth == 'Bearer fresh-token'
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_token_unchanged(self, monkeypatch):
+        # Admin unreachable / idempotent reuse returns the SAME token we just
+        # sent — retrying would only re-401, so the helper must not.
+        monkeypatch.setattr(
+            auth_module, 'force_token_refresh', AsyncMock(return_value='same-token')
+        )
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=_resp(401))
+
+        response = await auth_module.request_with_self_heal(
+            client, 'post', 'http://admin.local/api/x', token='same-token',
+        )
+
+        assert response.status_code == 401
+        assert client.post.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_refresh_returns_none(self, monkeypatch):
+        monkeypatch.setattr(auth_module, 'force_token_refresh', AsyncMock(return_value=None))
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=_resp(401))
+
+        response = await auth_module.request_with_self_heal(
+            client, 'post', 'http://admin.local/api/x', token='stale',
+        )
+
+        assert response.status_code == 401
+        assert client.post.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_non_401_does_not_trigger_refresh(self, monkeypatch):
+        refresh = AsyncMock()
+        monkeypatch.setattr(auth_module, 'force_token_refresh', refresh)
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=_resp(500))
+
+        response = await auth_module.request_with_self_heal(
+            client, 'post', 'http://admin.local/api/x', token='t',
+        )
+
+        assert response.status_code == 500
+        assert client.post.call_count == 1
+        refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_success_passthrough_without_auth_header(self, monkeypatch):
+        refresh = AsyncMock()
+        monkeypatch.setattr(auth_module, 'force_token_refresh', refresh)
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=_resp(200))
+
+        response = await auth_module.request_with_self_heal(
+            client, 'post', 'http://admin.local/api/x', token=None,
+            headers={'X-Trace-Id': 'trace-1'},
+        )
+
+        assert response.status_code == 200
+        headers = client.post.call_args.kwargs['headers']
+        assert 'Authorization' not in headers
+        assert headers['X-Trace-Id'] == 'trace-1'
+        refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_static_bootstrap_path_never_self_heals(self, monkeypatch):
+        # _fetch_token (the register/token bootstrap, authenticated with the
+        # STATIC shared token) must NOT recurse into the heal: a 401 there
+        # means the shared token is wrong, which refreshing cannot fix.
+        refresh = AsyncMock()
+        monkeypatch.setattr(auth_module, 'force_token_refresh', refresh)
+        _patch_async_client(monkeypatch, _make_response(401, {'message': 'nope'}))
+
+        assert await auth_module._fetch_token() is None
+        refresh.assert_not_awaited()
