@@ -27,8 +27,15 @@ export function killProcessTree(child: ChildProcess, signal: NodeJS.Signals = 'S
     }
     try { child.kill(signal); } catch (_) { /* already dead */ }
   } else {
-    // Windows has no portable process-group kill via process.kill(-pid) —
-    // keep the parent-only kill (documented platform limitation).
+    // W-02/parity with executor-python: Node's child.kill on Windows only
+    // terminates the direct child (grandchildren linger). taskkill /T /F walks
+    // the pid tree so a killed task cannot orphan its own spawns.
+    // /F is forced (no graceful path exists for console trees on Windows).
+    try {
+      spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' });
+    } catch (_) {
+      /* taskkill unavailable — fall back to direct kill only */
+    }
     try { child.kill(signal); } catch (_) { /* already dead */ }
   }
 }

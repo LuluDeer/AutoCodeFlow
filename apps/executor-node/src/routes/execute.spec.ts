@@ -325,7 +325,7 @@ describe('BoundedLogBuffer', () => {
 });
 
 describe('killRunningTaskProcesses', () => {
-  it('kills the detached task process group (POSIX) for running tasks', async () => {
+  it('kills the detached task process group (POSIX) / process tree via taskkill (win32) for running tasks', async () => {
     const proc = new EventEmitter() as EventEmitter & {
       stdout: EventEmitter;
       stderr: EventEmitter;
@@ -348,7 +348,19 @@ describe('killRunningTaskProcesses', () => {
     try {
       const killed = killRunningTaskProcesses();
       expect(killed).toBe(1);
-      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL');
+      if (process.platform !== 'win32') {
+        expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL');
+      } else {
+        // W-03 (windows-findings): win32 has no negative-pid group kill —
+        // killProcessTree must taskkill the whole tree and direct-kill as
+        // belt-and-braces.
+        expect(mockCp.spawn).toHaveBeenCalledWith(
+          'taskkill',
+          ['/T', '/F', '/PID', '4242'],
+          expect.objectContaining({ stdio: 'ignore' }),
+        );
+        expect(proc.kill).toHaveBeenCalledWith('SIGKILL');
+      }
     } finally {
       killSpy.mockRestore();
     }

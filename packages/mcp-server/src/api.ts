@@ -10,11 +10,10 @@ import fetch from 'node-fetch';
 export const API_URL = process.env.AUTOCODEFLOW_API_URL || 'http://localhost:3105';
 export const API_TOKEN = process.env.AUTOCODEFLOW_API_TOKEN || '';
 
-if (!API_TOKEN) {
-  process.stderr.write(
-    '[autocodeflow-mcp] WARNING: AUTOCODEFLOW_API_TOKEN is not set.\n',
-  );
-}
+// W-07: the missing-token WARNING used to fire here at module-import time.
+// Because `--help`/`--version` import this module to reach the CLI parser,
+// those query-only paths printed the warning before clean output. The check
+// moved to main() (index.ts) — the only path that actually talks to Admin API.
 
 /**
  * 请求超时预算（N12）：admin-api 卡死时 MCP 工具不得无限挂起。

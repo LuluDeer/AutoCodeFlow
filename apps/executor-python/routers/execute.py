@@ -139,6 +139,23 @@ def _validate_shell_entrypoint(entrypoint: str) -> str:
     return entrypoint
 
 
+def _spawn_kwargs_for_platform() -> dict:
+    """W-02 (windows-findings): POSIX detaches each task into its own process
+    group via preexec_fn=os.setsid so the timeout kill can take the whole
+    tree down. Windows has no setsid/process groups and asyncio rejects
+    preexec_fn there outright — accessing os.setsid on win32 raised
+    AttributeError and every real task failed. The equivalent isolation is
+    CREATE_NEW_PROCESS_GROUP; tree kill on timeout uses taskkill /T /F.
+    """
+    if sys.platform == 'win32':
+        return {
+            'creationflags': (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            ),
+        }
+    return {'preexec_fn': os.setsid}
+
+
 def _build_shell_cmd(work_dir: Path, entrypoint: str) -> list[str]:
     """Build the shell-runtime command.
 
@@ -154,7 +171,13 @@ def _build_shell_cmd(work_dir: Path, entrypoint: str) -> list[str]:
     """
     _validate_shell_entrypoint(entrypoint)
     if sys.platform == 'win32':
-        return ['cmd.exe', '/c', entrypoint]
+        # W-09: cmd.exe treats a leading `./` as a command named `.` and reads
+        # `/` as an option delimiter — the POSIX-style `./script.sh` that
+        # admins commonly submit fails outright (`'.' 不是内部或外部命令`).
+        # Normalize to a backslash relative path; the spawn's cwd=work_dir
+        # resolves it.
+        ep = entrypoint[2:] if entrypoint.startswith('./') else entrypoint
+        return ['cmd.exe', '/c', ep.replace('/', '\\')]
     return ['bash', '-c', 'cd "$1" && exec "$2"', 'bash', str(work_dir), entrypoint]
 
 
@@ -199,7 +222,11 @@ def _ensure_entrypoint_in_workdir(entrypoint: str, work_dir: Path) -> None:
     absolute paths *inside* work_dir, so those remain allowed.
     """
     p = Path(entrypoint)
-    if p.is_absolute():
+    # W-04 (windows-findings): on win32 `/etc/passwd` and `\Windows\...` are
+    # NOT is_absolute() — ntpath requires a drive/UNC prefix — so the old
+    # check let rooted escapes through unchallenged. Any leading separator is
+    # treated as absolute on every platform (POSIX semantics unchanged).
+    if p.is_absolute() or entrypoint.startswith(('/', '\\')):
         try:
             p.relative_to(work_dir)
         except ValueError:
@@ -365,7 +392,13 @@ async def _run_uv(args: list[str], timeout_seconds: float) -> tuple[int | None, 
 
 async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
     """Create/reuse a virtual environment with uv and install dependencies. Returns python executable path."""
-    python_bin = venv_dir / 'bin' / 'python'
+    # W-02 follow-up (windows-findings): venv layout is platform-specific —
+    # win32 uses Scripts\python.exe, POSIX uses bin/python. The old hardcoded
+    # bin/python made every requirements-bearing task fail on Windows.
+    if sys.platform == 'win32':
+        python_bin = venv_dir / 'Scripts' / 'python.exe'
+    else:
+        python_bin = venv_dir / 'bin' / 'python'
 
     if not venv_dir.exists():
         logger.info(f'Creating venv with uv: {venv_dir}')
@@ -519,7 +552,12 @@ async def run_task(req: ExecuteRequest) -> dict:
             python_bin = await ensure_venv(venv_dir, requirements)
             cmd = [str(python_bin), entrypoint]
         else:
-            cmd = ['python3', entrypoint]
+            # W-02 follow-up (windows-findings): hardcoded `python3` is absent on
+            # Windows (Store stub returns 9009), so every non-venv python runtime
+            # and python glue task failed to launch there. sys.executable is the
+            # interpreter running this executor and exists on every platform; the
+            # task inherits the same stdlib the executor was validated against.
+            cmd = [sys.executable, entrypoint]
     elif runtime == 'node':
         node_exe = 'node.exe' if sys.platform == 'win32' else 'node'
         cmd = [node_exe, entrypoint]
@@ -552,7 +590,7 @@ async def run_task(req: ExecuteRequest) -> dict:
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(work_dir),
             env=env,
-            preexec_fn=os.setsid,  # Create a new process group for clean termination
+            **_spawn_kwargs_for_platform(),  # W-02: setsid on POSIX, process-group flag on win32
         )
         log_chunks: list[str] = []
         captured_chars = 0        # chars retained in memory for the callback payload
@@ -638,11 +676,30 @@ async def run_task(req: ExecuteRequest) -> dict:
         return {'success': True, 'logs': logs, 'exitCode': proc.returncode, 'durationMs': duration_ms}
     except asyncio.TimeoutError:
         # B-06: kill the entire process group so child processes spawned by the task are also terminated
-        try:
-            if proc.pid is not None:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            proc.kill()
+        # W-02: win32 has no process groups — taskkill /T /F walks the child
+        # tree instead (mirrors executor-node's TerminateProcess fallback).
+        if sys.platform == 'win32':
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    'taskkill', '/T', '/F', '/PID', str(proc.pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(killer.wait(), timeout=5)
+            except Exception:
+                pass
+            # The tree kill above usually reaps the child first; killing an
+            # already-closed transport raises ProcessLookupError on win32.
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+        else:
+            try:
+                if proc.pid is not None:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                proc.kill()
         try:
             # Reap the killed child so its transport is finalized on a live
             # loop (otherwise it lingers until GC after the loop closed).

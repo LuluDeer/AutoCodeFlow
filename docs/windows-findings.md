@@ -78,10 +78,16 @@
 - 严重级：仅测试；不修会永久压住 Windows CI 基线。
 - 修复：三处用例平台化（`process.platform==='win32'` 分支断言或双预期）。
 
-### W-05：🧪 executor-python 测试断言 Windows 不适配（非生产 bug）
+### W-05：🧪 executor-python 测试断言 Windows 不适配（非生产 bug）——修复进度
 - `test_child_process_env_isolation`、`test_task_params_injected_as_env_vars`：`subprocess.run(['python3', ...])` → Windows exit 9009（无 `python3` 命令，Store stub 占位）；应改 `sys.executable`。
 - `test_build_shell_cmd_uses_positional_params`：断言 `['bash','-c',...]`；win32 生产分支返回 `['cmd.exe','/c',...]`（execute.py:156-158）——应平台化断言。
-- 其余 9 例失败的根因是 W-02（setsid），修复 W-02 后需复跑确认（其中 log-cap/timeout/truncation 三例的脚本内容用 `seq`/`for` POSIX 语法，属 R-09"POSIX glue 在 Windows 预期失败"范畴——测试应改为跨平台脚本如 python -c）。
+- shell 任务执行类用例（`test_shell_task_runs_normal_entrypoint`、`test_shell_glue_script_executes`、log-cap/timeout/truncation 三例）：脚本内容为 POSIX bash 语法（`#!/bin/bash`、`seq`、`for`），win32 下经 cmd.exe 执行预期失败（R-09 范畴）——测试应改用跨平台入口（如 `python -c` 或按平台生成脚本）。
+- ✅ W-02/W-04 修复后复跑：**12 失败 → 8 失败**；setsid 报错全消；`test_run_task_*` 回调三例与 `test_entrypoint_absolute_outside_workdir_rejected`（W-04 守卫）已转绿。剩余 8 例均属本条测试平台化范畴（另见新记录 W-09）。
+
+### W-09：⚠️ win32 cmd.exe 分支丢失 work_dir 上下文 + pytest 复跑出现 "Event loop is closed" 噪音
+- 轮次与用例：R13 1.4 修复复跑（W-02 后新证据）
+- 现象 A（生产）：`_build_shell_cmd` 的 win32 分支返回 `['cmd.exe','/c',entrypoint]`，而 POSIX 分支显式 `cd "$1"`。当前 run_task 以 `cwd=work_dir` spawn，相对路径 glue 可解析；但 git 部署链/绝对 entrypoint 场景 cmd.exe 的 CWD 依赖隐式继承——与 POSIX 分支的显式 cd 语义不对称，记录待 R14 真实链路验证（2.2 shell glue 任务）。
+- 现象 B（测试噪音）：修复复跑尾部出现 `RuntimeError: Event loop is closed` resource warning（asyncio.run 反复起停 loop + Windows ProactorEventLoop 清理时机），不影响计数但会随 R15-3.5 Windows CI 固化——评估是否需在测试 fixture 统一 loop 关闭策略。
 
 ### W-06：ℹ️ admin-web vitest 首跑 1 例 flaky（复跑 35/35）
 - 首跑 34/35，同命令复跑 35/35；未留下失败用例名。R15 Windows CI job 建立后观察是否复现（jsdom/计时类概率）。
@@ -91,3 +97,40 @@
 
 ### W-08：ℹ️ Python 测试依赖不在 requirements.txt（Linux 侧手动装的隐性状态）
 - `apps/executor-python/requirements.txt`、`apps/registry-pypi/requirements.txt` 均无 pytest/pytest-asyncio；Windows 全新环境按 README 装完无法跑测试。补 `requirements-dev.txt`。
+
+### W-10：ℹ️ cmd.exe 子进程输出为 GBK（936），executor 按 UTF-8 解码
+- 轮次与用例：R13 修复期附带观察（风险点 R-11/R-12 同源）
+- 现象：`cmd.exe /c` 的中文报错字节为 GBK（0xb2 等），两侧 executor 均以 UTF-8+`errors='replace'` 解码 → 不崩但非 ASCII 输出会乱码。生产任务多为 node/python（自报 UTF-8），影响面小。
+- 处置：记录为体验项；如需彻底解决应 win32 下按 `GetOEMCP`/chcp 探测解码，或任务脚本统一要求 UTF-8——留待产品决策，不在本轮强行改。
+
+---
+
+## 修复落地（R15 前置，Windows 侧主导，同日完成）
+
+> 修复中发现的**额外生产缺陷**（超出 R13 原始 8 项）一并记录：
+
+### 生产代码修复
+| # | 修复 | 位置 | 说明 |
+|---|---|---|---|
+| P-1 | W-02a：`preexec_fn=os.setsid` → `_spawn_kwargs_for_platform()`（win32 用 `CREATE_NEW_PROCESS_GROUP\|DETACHED_PROCESS`） | `executor-python/routers/execute.py` | 阻断修复 |
+| P-2 | W-02b：超时 kill win32 分支 `taskkill /T /F /PID` 树杀 + `proc.kill()` 包 `ProcessLookupError` 守护（修后新发现的二次崩溃：tree-kill 已收割子进程再 kill 抛错） | 同上 | 阻断修复 |
+| P-3 | W-02c：venv 布局 `bin/python` → 平台分支 `Scripts\python.exe`（requirements 任务专用） | `ensure_venv` | **R13 测试全 mock 未暴露，修复期人工审查发现** |
+| P-4 | W-02d：无 requirements 的 python runtime `['python3', ...]` → `[sys.executable, ...]` | `run_task` L549 | 同上——**python glue 任务在 Windows 全挂的真实原因** |
+| P-5 | W-04：entrypoint 逃逸守卫补 `startswith(('/','\\'))` 判定（win32 上 `Path('/etc/passwd').is_absolute()===False` 的绕过） | `_ensure_entrypoint_in_workdir` | 安全修复，`test_entrypoint_absolute_outside_workdir_rejected` 转绿 |
+| P-6 | W-09a：`_build_shell_cmd` win32 分支归一化 POSIX 风格入口（剥 `./`、`/`→`\`）——实测 `cmd.exe /c ./hello.bat` 报「'.' 不是内部或外部命令」 | `routers/execute.py` | 测试期实测发现 |
+| P-7 | R-03 增强：`killProcessTree` win32 分支从「仅杀父进程（文档化限制）」升级为 `taskkill /T /F` 树杀，`killRunningTaskProcesses` 委托给它，与 python 侧语义对齐 | `executor-node/src/run-command.ts`、`routes/execute.ts` | 消除孙进程残留风险（R14-2.4 将实测验证） |
+| P-8 | W-07：mcp-server token WARNING 从 api.ts 模块副作用移入 `main()`——`--help`/`--version` 输出恢复干净 | `packages/mcp-server/src/{api,index}.ts` | 61/61 vitest 通过 |
+
+### 测试平台化修复
+- executor-node（W-03）：POSIX kill 两例 → 平台分支断言（win32 验 taskkill spawn + proc.kill）；`versioned deployment paths` 两例 → `path.join` 构造期望；npm 白名单例 → 按平台找 `npm.cmd`/`npm`。**158/158 全绿（连跑 3 次稳定）**。
+- executor-python（W-05）：`python3` → `sys.executable`（两例）；`_build_shell_cmd` 断言平台化并新增 W-09a 归一化覆盖；shell 执行例改平台原生脚本（win32 `.bat`）；bash glue 例 win32 skip（R-09 语义，注释注明由 normal-entrypoint 例覆盖）；log-cap/timeout/truncation 三例从 POSIX 循环脚本改为 python runtime 生成等价输出（被测的界限/截断逻辑与 runtime 无关，Windows 上保覆盖）。**124 passed + 1 skipped，全绿**。
+- W-08：两项目新增 `requirements-dev.txt`。
+
+### 环境记录（非代码问题）
+- W-06 补充：executor-node `health.spec.ts` 与 admin-web 各出现 1 次并行负载下的偶发失败，单独/复跑均绿（3 次全量复跑 158/158）。Windows CI 若抖动可考虑 `maxWorkers: 1` 或对计时敏感用例加宽限。
+- Redis requirepass 为本机既有配置，已写入 `apps/admin-api/.env`（未入库）。
+
+### 提交后待复验清单（Linux/CI 侧 & R14）
+- [ ] executor-node 在 Linux 的 POSIX kill 用例路径未改动语义（分支仅 win32 生效），需 Linux 跑一轮 158 确认无回归
+- [ ] executor-python 在 Linux 跑 125（skip 逻辑不触发）
+- [ ] R14-2.4 实测 taskkill 树杀后孙进程无残留（tasklist 对照）

@@ -12,7 +12,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { apiRequest, API_URL } from './api';
+import { apiRequest, API_URL, API_TOKEN } from './api';
 import {
   registerTaskTools,
   registerApplicationTools,
@@ -92,6 +92,13 @@ function helpText(): string {
 // Start
 // ---------------------------------------------------------------------------
 async function main() {
+  // W-07: the missing-token WARNING moved here from api.ts module scope so it
+  // only prints when the server actually starts — never during --help/--version.
+  if (!API_TOKEN) {
+    process.stderr.write(
+      '[autocodeflow-mcp] WARNING: AUTOCODEFLOW_API_TOKEN is not set.\n',
+    );
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write(
