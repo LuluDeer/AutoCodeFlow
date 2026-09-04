@@ -162,16 +162,35 @@
 | P-8 | W-07：mcp-server token WARNING 从 api.ts 模块副作用移入 `main()`——`--help`/`--version` 输出恢复干净 | `packages/mcp-server/src/{api,index}.ts` | 61/61 vitest 通过 |
 | P-9 | W-14：任务 spawn 加 `windowsHide:true`——win32 控制台 Ctrl 事件不再直接杀死任务进程、绕过优雅收割链 | `executor-node/src/routes/execute.ts runProcess` | 2.9 实测修复链完整 |
 | P-10 | W-15：三端注册 SIGBREAK（executor-node 优雅链 / admin-api app.close / executor-python 守卫式）——Windows 后台部署唯一可达的优雅退出信号 | `executor-node/src/main.ts`、`admin-api/src/main.ts`、`executor-python/main.py` | 实测 `Received SIGBREAK→shutdown complete` rc=0x0 |
-| P-11 | W-11：shell glue 缺 glueLanguage fallback（400）+ win32 glue 文件名 `.cmd` 化（`.sh` 经 cmd.exe 挂死）| executor-node/executor-python | 2.2 shell 两类转绿；python glue 用例从 skip 恢复双平台实跑 |
+| P-11 | W-11：shell glue 缺 glueLanguage fallback（400）+ win32 glue 文件名 `.cmd` 化（`.sh` 经 cmd.exe 挂死）| executor-node/executor-python | 2.2 shell 两类转绿；python glue 用例从 skip 恢复双平台实跑（**125/125，0 skip**） |
+| P-12 | W-17：executor-desktop `ExecutorProcess.stop()` win32 分支——`child.kill('SIGTERM')` 在 Windows 是 TerminateProcess（不跑执行器优雅链且漏杀任务子进程），改 `taskkill /T /F` 树杀；POSIX 保持 SIGTERM→8s→SIGKILL | `apps/executor-desktop/src/main/executor-process.ts` | desktop tsc ✓；before-quit 链路复用 stop() |
 
 ### 测试平台化修复
 - executor-node（W-03）：POSIX kill 两例 → 平台分支断言（win32 验 taskkill spawn + proc.kill）；`versioned deployment paths` 两例 → `path.join` 构造期望；npm 白名单例 → 按平台找 `npm.cmd`/`npm`。**158/158 全绿（连跑 3 次稳定）**。
-- executor-python（W-05）：`python3` → `sys.executable`（两例）；`_build_shell_cmd` 断言平台化并新增 W-09a 归一化覆盖；shell 执行例改平台原生脚本（win32 `.bat`）；bash glue 例 win32 skip（R-09 语义，注释注明由 normal-entrypoint 例覆盖）；log-cap/timeout/truncation 三例从 POSIX 循环脚本改为 python runtime 生成等价输出（被测的界限/截断逻辑与 runtime 无关，Windows 上保覆盖）。**124 passed + 1 skipped，全绿**。
+- executor-python（W-05，经 W-11 修复后最终形态）：`python3` → `sys.executable`（两例）；`_build_shell_cmd` 断言平台化并新增 W-09a 归一化覆盖；shell 执行例改平台原生脚本（win32 `.bat`/glue `.cmd`，**不再 skip**）；log-cap/timeout/truncation 三例从 POSIX 循环脚本改为 python runtime 生成等价输出。**125/125 全绿（0 skip）**。
 - W-08：两项目新增 `requirements-dev.txt`。
 
 ### 环境记录（非代码问题）
 - W-06 补充：executor-node `health.spec.ts` 与 admin-web 各出现 1 次并行负载下的偶发失败，单独/复跑均绿（3 次全量复跑 158/158）。Windows CI 若抖动可考虑 `maxWorkers: 1` 或对计时敏感用例加宽限。
 - Redis requirepass 为本机既有配置，已写入 `apps/admin-api/.env`（未入库）。
+
+## R16 executor-desktop Windows 打包结果（2026-09-05）
+
+| 用例 | 结果 | 证据 |
+|---|---|---|
+| 4.1 打包链 | ✅ **路线图 #12 收口** | `build:executor`（ncc，bash 链在 Git-Bash 下可用）→ `build:main`（tsc）→ `build:renderer`（vite）→ `electron-builder --win nsis --x64` **全链首跑即通**；产出 `AutoCodeFlow Executor Setup 1.0.0.exe`（100.6MB，NSIS 未签名，electron-builder 默认自签 elevate.exe） |
+| 4.2 产物冒烟 | ✅ | `win-unpacked\AutoCodeFlow Executor.exe` 启动后 4 进程存活、日志 `App ready → Tray initialized → Wizard window opened`，无崩溃；`resources/executor-node`（ncc 单文件 2MB）随包分发；**内置 executor 独立冒烟**：以 node 直跑 bundle → admin 注册 online → 真实任务 `ncc-bundle-exec-ok` success + 日志回读（ncc 未破坏 runtime 解析/env 注入/callback） |
+| 4.3 与手动路线差异 | 见 W-16/17 | 功能等价；差异：① 托盘/窗口交互需 GUI 会话（服务化部署仍以手动/计划任务路线为主）；② 停止链路 win32 语义不同（W-17 已修）；③ 配置由 electron-store/向导承载而非 .env |
+
+### W-16：⚠️ `assets/` 目录未入库——打包图标/托盘图标全缺失（跨平台）
+- electron-builder.yml 引用 `assets/`（buildResources、`tray-*.png`、`icon.ico`）但目录不存在于仓库；实测打包日志 `file source doesn't exist from=...assets`、`default Electron icon is used`；运行时 `Tray icon not found: ...tray-offline@2x.png`（有 fallback 不崩，托盘空白）。
+- 严重级：体验（功能不受影响）。建议：补一套 `assets/tray-{online,offline,pending}@2x.png` + 平台图标，或将 `assets/` 生成纳入构建步骤。
+
+### W-17：🔴 desktop 停止链路 win32 语义失效（已修，P-12）
+- `ExecutorProcess.stop()` 原依赖「executor-node 监听 SIGTERM 优雅退出」——Linux 成立；Windows 上 `child.kill('SIGTERM')`=TerminateProcess，执行器优雅链不执行、其任务子进程树整体遗留。修复后 win32 用 `taskkill /T /F` 树杀（POSIX 路径不变）。
+
+### W-18：ℹ️ 生成物 prebuilt bundle 被 git 跟踪（漂移风险）
+- `apps/executor-desktop/resources/executor-node/index.js` 在库中跟踪。本轮已用含全部修复的 executor-node 源码重打并提交；长期建议 gitignore + 构建时生成（本次 `npm run build:executor` 重新生成即刷新，注意别再提交旧版）。
 
 ### 提交后待复验清单（Linux/CI 侧 & R14）
 - [ ] executor-node 在 Linux 的 POSIX kill 用例路径未改动语义（分支仅 win32 生效），需 Linux 跑一轮 158 确认无回归

@@ -116,24 +116,49 @@ export class ExecutorProcess {
 
     return new Promise((resolve) => {
       const proc = this.proc!;
-      const timer = setTimeout(() => {
-        log.warn('Graceful shutdown timeout (8s), sending SIGKILL');
-        proc.kill('SIGKILL');
-        this.proc = null;
-        this.notifyStatus('stopped');
-        resolve();
-      }, 8_000);
-
-      proc.once('exit', () => {
+      const finish = () => {
         clearTimeout(timer);
         this.proc = null;
         this.notifyStatus('stopped');
         resolve();
-      });
+      };
+      const timer = setTimeout(() => {
+        log.warn('Graceful shutdown timeout (8s), force-killing');
+        this.forceKillTree(proc);
+        finish();
+      }, 8_000);
 
-      // executor-node 监听了 SIGTERM 优雅退出
-      proc.kill('SIGTERM');
+      proc.once('exit', finish);
+
+      // R-08 (windows-findings): on win32 child.kill('SIGTERM') is
+      // TerminateProcess — it does NOT run executor-node's graceful
+      // handler, and it leaves the task's own child processes running
+      // as orphans. Tree-kill with taskkill /T /F so the whole executor +
+      // its task tree is reaped. On POSIX, SIGTERM triggers the graceful
+      // chain (drain + group kill) as designed.
+      if (process.platform === 'win32') {
+        this.forceKillTree(proc);
+      } else {
+        proc.kill('SIGTERM');
+      }
     });
+  }
+
+  /** win32: kill the executor and every descendant process tree. */
+  private forceKillTree(proc: ChildProcess): void {
+    if (process.platform === 'win32' && proc.pid !== undefined) {
+      try {
+        spawn('taskkill', ['/T', '/F', '/PID', String(proc.pid)], { stdio: 'ignore' });
+      } catch (_) {
+        proc.kill('SIGKILL');
+      }
+    } else {
+      try {
+        proc.kill('SIGKILL');
+      } catch (_) {
+        /* already dead */
+      }
+    }
   }
 
   isRunning(): boolean {
