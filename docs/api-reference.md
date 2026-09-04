@@ -246,7 +246,7 @@ Content-Type: application/json
 |------|------|:--------:|------|
 | POST | `/executors/register` | 否* | 执行器注册（返回/绑定执行器专属 Token） |
 | POST | `/executors/heartbeat` | 否* | 执行器心跳上报（携带 `restartedAt`/`startupId` 用于重启收敛） |
-| POST | `/executors/token` | 否* | 执行器以注册凭证换取专属 Token |
+| POST | `/executors/token` | 否* | 执行器以注册凭证换取专属 Token。**副作用（register-on-token）**：若该 `address` 尚无执行器行（典型场景：compose 启动竞态下 register 失败——register 不会自动重试，heartbeat 对未知地址返回 404 也不建行），本端点会补建仅含 `address`/`appName` 的瘦行：`type`/`capabilities`/`maxConcurrentTasks`/`executorVersion` 等富元数据缺失（runtime 过滤对空 capabilities 全放行，故竞态窗口内该执行器可能被选中执行任意 runtime 任务），直到执行器进程重启重新 register 才补齐 |
 | POST | `/executors/offline` | 否* | 执行器主动下线 |
 | GET | `/executors` | 是 | 查询执行器列表（含在线状态） |
 | GET | `/executors/groups` | 是 | 执行器分组列表 |
@@ -257,7 +257,7 @@ Content-Type: application/json
 | GET | `/executors/:id` | 是 | 获取执行器详情 |
 | PATCH | `/executors/:id` | 是 | 更新执行器配置 |
 | POST | `/executors/:id/reload-config` | 是 | 手动下发配置重载（manifest 同步） |
-| POST | `/executors/:id/rotate-token` | 是 | 轮换执行器专属 Token |
+| POST | `/executors/:id/rotate-token` | 是 | 轮换执行器专属 Token（新 Token 仅在本响应展示一次）。**R10 起 executor-node 在线自动对齐，无需重启/重新注册**：手动轮换后，node 执行器下一次出站请求（心跳/回调，默认 ≤30s）收到 401 时立即以注册凭证重取 `POST /executors/token`，在同一往返内采纳新 Token 与匹配的 tokenHash（N26 回调 HMAC 密钥）并重试原请求一次（401 即时自愈为 node-only）；**executor-python 无 401 即时自愈**，收敛依赖心跳循环：心跳响应回显新 tokenHash 即被采纳（回调 HMAC 密钥 ≤ 心跳间隔，默认 30s），执行器自身持有的旧动态 token 则等调度刷新（默认 ≤30min，期间以共享 token 兜底心跳维持在线）。`rotateToken` 同步播种幂等签发缓存，故执行器采纳的正是本响应展示的 Token（不产生二次轮换）。窗口内以旧 tokenHash 签发的 `v1.` 回调 token 仍验签失败（401，`v1_bad_signature`）；两端配置相同 `EXECUTION_CALLBACK_SECRET` 的部署不受轮换影响 |
 | POST | `/executors/:id/set-offline` | 是 | 管理端强制将执行器置为离线 |
 | DELETE | `/executors/:id` | 是 | 删除执行器（返回 204） |
 | GET | `/executors/:id/executions` | 是 | 查询该执行器上的执行记录 |
@@ -278,7 +278,7 @@ Content-Type: application/json
 
 > *回调接口使用执行器 Token 认证，请携带 `Authorization: Bearer <executor_token>`（该路由豁免全局限流）。请求体为数组（**最多 100 条**，超出返回 400），每条必须携带 `executorAddress`；服务端按地址逐个校验执行器 Token——**多执行器批次不允许使用共享 token 兜底**。
 >
-> **N23：per-execution 回调 token（任务代码安全回调）**。除执行器 Token 外，本端点还接受执行器为单次执行签发的一次性 HMAC token：`Authorization: Bearer v1.<executionId>.<expiresAtUnixSec>.<hmacHex>`，由 executor-node 以 `AUTOFLOW_CALLBACK_TOKEN` 注入任务子进程（签名密钥 = `EXECUTION_CALLBACK_SECRET`，缺省回落执行器共享 token；`key = HMAC-SHA256(secret, "autocodeflow:execution-callback:v1")`，`hmacHex = HMAC-SHA256(key, "v1.<executionId>.<expiresAtUnixSec>")`）。校验规则（全部 fail-closed）：签名与 TTL 有效、**批次内每条 item 的 `executionId` 必须与 token 绑定的一致**、每条仍须携带 `executorAddress`（服务层再与执行记录的执行器地址比对）。token 过期即失效，不能伪造为共享 token，也不授权其他执行。共享 token / per-address token 路径完全保留（向后兼容旧执行器）。
+> **N23：per-execution 回调 token（任务代码安全回调）**。除执行器 Token 外，本端点还接受执行器为单次执行签发的一次性 HMAC token：`Authorization: Bearer v1.<executionId>.<expiresAtUnixSec>.<hmacHex>`，由 executor-node 以 `AUTOFLOW_CALLBACK_TOKEN` 注入任务子进程（签名密钥优先级 = `EXECUTION_CALLBACK_SECRET` → 注册/取 token/心跳响应采纳的 per-executor tokenHash（N26/R9；R10 起手动轮换后 ≤ 一次心跳内自动对齐）→ 执行器共享 token；`key = HMAC-SHA256(secret, "autocodeflow:execution-callback:v1")`，`hmacHex = HMAC-SHA256(key, "v1.<executionId>.<expiresAtUnixSec>")`）。校验规则（全部 fail-closed）：签名与 TTL 有效、**批次内每条 item 的 `executionId` 必须与 token 绑定的一致**、每条仍须携带 `executorAddress`（服务层再与执行记录的执行器地址比对）。token 过期即失效，不能伪造为共享 token，也不授权其他执行。共享 token / per-address token 路径完全保留（向后兼容旧执行器）。
 >
 > 取消/终止执行请使用 `POST /tasks/:id/executions/:execId/kill`（见 Tasks 章节）。
 
@@ -289,9 +289,10 @@ Content-Type: application/json
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | GET | `/notification/channels` | 是 | 查询所有通知渠道配置（内置渠道：email / slack / dingtalk / wecom / webhook）。读面对 password/secret/token 类字段脱敏为 `***`（N11）；URL 值内 query 参数名命中同类规则的（如 `?access_token=...`）其值也脱敏（N32，第九轮） |
-| PATCH | `/notification/channels/:key` | 是 | 更新指定渠道配置（body: `enabled?`、`config?`）。合法 key：email / slack / dingtalk / wecom / webhook（N32 起 webhook 可配置，config 形状 `{ url: string }`；未知 key 返回 400）。发送时 webhook 渠道 config-first：优先已保存的 `url`，回退逐请求 `webhookUrl` 参数；掩码回显（`***` / `?…=***`）不会覆盖存储中的真实值 |
+| PATCH | `/notification/channels/:key` | 是 | 更新指定渠道配置（body: `enabled?`、`config?`）。合法 key：email / slack / dingtalk / wecom / webhook（N32 起 webhook 可配置，config 形状 `{ url: string }`；未知 key 返回 400）。发送时 webhook 渠道 URL 优先级（N37，第十轮修正）：显式 `webhookUrl` 请求参数 > 已保存**且渠道 enabled** 的 `url` > env 回退（webhook 渠道无 env 项）——渠道 disabled 时已保存 url 不生效，不再静默改道显式参数；掩码回显（`***` / `?…=***`）不会覆盖存储中的真实值 |
 | POST | `/notification/channels/:key/test` | 是 | 向指定渠道发送测试消息 |
-| POST | `/notification/test` | 是 | 向多个渠道发送测试通知（body: `{ channels: string[], title, content }`） |
+| POST | `/notification/test` | 是 | 向多个渠道发送测试通知（body: `{ channels: string[], title, content }`）；全部请求渠道均 disabled → `success:false`（N29 空 results 报错，不再假 OK） |
+| POST | `/notification/send` | 是 | 任务代码主动上报通知（autocodeflow-notify SDK 唯一入口，N22；第七轮落地，本行第十轮 N38 补文档）。body: `{ content（必填）, title?, taskName?, level?(info|warning|error|critical，默认 info), channels?(email|slack|dingtalk|wecom|webhook 子集), webhookUrl?, taskId? }`；`title` 缺省为 `[LEVEL] taskName`；传 `webhookUrl` 而未列 `channels` 时自动追加 webhook 渠道；`channels` 为空则按 `sendAll` 全渠道扇出。webhook 目标解析遵循上行的 N37 优先级链（显式 `webhookUrl` 优先，已保存 url 仅在渠道 enabled 时生效）。响应恒为 2xx + `{ success: true, results: { <channel>: sent|blocked|failed|skipped } }`——单渠道失败或 SSRF 拦截绝不 5xx 任务回调，逐渠道真实结果以 `results` 为准（`blocked`=SSRF 拒绝；`skipped`=无可用 URL/凭证） |
 
 ---
 
