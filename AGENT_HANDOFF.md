@@ -3,8 +3,8 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-05（v1.0.1 发版合并 + Windows 测试计划）
-当前分支：`develop`（本地领先 origin/develop 65+ commits，**push 无凭证**——CI 真跑待用户解决）
+更新时间：2026-09-05（Windows 深度测试轮 R13-R16 全完成——双平台兼容基线固化，详见「状态快照」末条里程碑与 `docs/windows-findings.md`）
+当前分支：`develop`（本地领先 origin/develop 70+ commits，**push 无凭证**——CI 真跑待用户解决）
 
 ## 状态快照
 
@@ -77,6 +77,14 @@
   - **Playwright 29/29**：pinned 部署全链 4 例（在线/离线/不存在/全 UI 闭环）
   - **P1 修复（V 抓到）**：python register 用动态 token 打 bootstrap 端点 401（R9 修复揭开）→ 改静态 token + 状态码检查；**N33-N36**：issuedTokenCache 有界化（1000/24h）、artifact query token 风险标注、ci-local 差异声明
 - **里程碑（2026-09-05）**：**v1.0.1 三包发布完成**（npm `@autocodeflow/sdk` + `autocodeflow-mcp-server` 1.0.1、PyPI `autoflow-sdk` 1.0.1，双版本可回溯）；**develop→main 发版合并完成**（main 与 develop 树一致，两父 merge commit `bddac27`，main CI 全绿）；**Windows 深度测试任务书就绪**：`docs/WINDOWS-TESTING-PLAN.md`（R13 基线→R14 功能冒烟→R15 修复批→R16 desktop 打包，含 13 项已知平台风险点与问题回传模板——Win 机器拉取后按此推进）
+- **里程碑（2026-09-05 Windows 轮，R13-R16 全完成，Windows 侧接手主导）**：项目首个非 Linux 平台全验证（Win11 26200 / Node 24.17 / Python 3.12-uv / WSL2 mirrored 网络跑 PG16+Redis7）。findings **W-01~W-18**、生产修复 **P-1~P-12**（`docs/windows-findings.md`）：
+  - **5 枚生产级缺陷修复**：executor-python `os.setsid/killpg` 全任务崩（P-1/2）；venv `bin/python` 布局（P-3）；`['python3']` 硬编码致 python glue 全挂——两处均为单测全 mock 未暴露、人工审查发现（P-3/4）；entrypoint `/xxx` 逃逸守卫绕过（P-5，安全）；shell glue 缺 glueLanguage fallback + win32 `.cmd` 化（P-11）；控制台 Ctrl 事件波及任务/后台 SIGBREAK 缺失/desktop stop() SIGTERM 失效（P-9/10/12，R-08 全景收口）
+  - **R-01/R-03 治本**：`.gitattributes` 全仓 LF + renormalize（admin-api eslint 37078→0、install.sh 字节守卫转绿）；`killProcessTree` win32 升级为 `taskkill /T /F` 树杀（超时/取消/停止三链孙进程实测 0 残留）
+  - **双平台绿灯基线**：executor-node 158/158（3 连跑稳）、executor-python **125/125 零 skip**、admin-api 873/873 + eslint 0/0、acf-cli 48、mcp-server 61、registry-pypi 33、admin-web 35 + e2e **16/16**（16 例版；**W-12：任务书 29 例系 Linux 未跟踪文件，需入库**）
+  - **R14 真链路 9/9**：注册上线、四类任务全链、fixed_rate 15.007s±0.02s、超时树杀、token 轮换+reload-config、日志回收无 EBUSY、中文空格 WORK_DIR、优雅退出 SIGBREAK 链 rc=0x0
+  - **R16 路线图 #12 收口**：electron-builder NSIS 安装包 Windows 首产（100.6MB）；ncc 内置 executor 独立注册+真实任务验证；新发现 W-16 assets 图标未入库（体验）/W-18 prebuilt bundle 跟踪（漂移风险）
+  - **固化**：Windows CI job（executor-node/acf-cli/mcp-server + admin-web，`ci.yml`）；deployment.md 新增 Windows 章节（手动路线/taskkill 警告/shell 语义）；install.sh 平台探测；requirements-dev.txt ×2
+  - ⚠️ Linux 侧复验义务：本轮所有修复的 POSIX 分支均未改语义（平台分支/isWin 隔离），但需在 Linux 复跑 executor-node 158 + executor-python 125 + admin-api 873 确认零回归（Windows CI 首次上真机运行）；push 仍无凭证（本地 develop 领先 origin 70+）
 - 本轮（2026-09-04 第十轮，A/B/C/D 四路 → W 收尾 N37-N42；详见 `docs/PROGRESS-round10-2026-09-04.md`）：
   - **可观测性**：docs/observability/（Grafana dashboard 11 panels + 6 条告警规则 + README 抓取配置/指标字典，series 与源码逐字核对零偏差）
   - **SDK 发布管道**（路线图 #10 收尾）：release.yml（tag 触发 + version-guard 四处版本一致性 + npm/PyPI 发布 + environment: release 审批门）；双 SDK README + sdk-guide 矩阵；修掉 autoflow-sdk 未声明 pydantic 依赖的发布级 bug
