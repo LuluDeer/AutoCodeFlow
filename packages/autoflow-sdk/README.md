@@ -4,7 +4,7 @@ AutoCodeFlow 任务执行器（executor-python）侧的 Python SDK：提供任�
 （`TaskContext`）、日志（`ctx.log`）、Admin API 回调客户端
 （`CallbackClient` + `ctx.report_success()` / `ctx.report_failure()`）与
 通用 HTTP 客户端（`HttpClient` / `AsyncHttpClient`，基于 httpx）。回调契约
-与 Node.js SDK [`@autoflow/sdk`](../autocodeflow-node-sdk/README.md) 完全
+与 Node.js SDK [`@autocodeflow/sdk`](../autocodeflow-node-sdk/README.md) 完全
 对齐（第九轮），双端共用 `CallbackItemDto` 字段。平台侧完整说明见
 [docs/sdk-guide.md](../../docs/sdk-guide.md)。
 
@@ -110,7 +110,7 @@ async with AsyncHttpClient(base_url=...) as ahttp:
 
 ## 版本与发布
 
-- 版本策略：与 `@autoflow/sdk`（npm）、`autocodeflow-mcp-server` 走
+- 版本策略：与 `@autocodeflow/sdk`（npm）、`autocodeflow-mcp-server` 走
   **lockstep** 单版本线，当前 `1.0.0`。
 - 发布管道：[.github/workflows/release.yml](../../.github/workflows/release.yml)。
   push tag `vX.Y.Z` 触发：版本一致性守卫（tag 必须等于本包

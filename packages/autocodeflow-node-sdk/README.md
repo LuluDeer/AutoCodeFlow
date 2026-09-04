@@ -1,4 +1,4 @@
-# @autoflow/sdk — AutoCodeFlow Node.js SDK
+# @autocodeflow/sdk — AutoCodeFlow Node.js SDK
 
 AutoCodeFlow 任务执行器（executor-node）侧的 Node.js/TypeScript SDK：
 提供任务上下文（`TaskContext`）、结构化日志（`TaskLogger`）与 Admin API
@@ -10,7 +10,7 @@ AutoCodeFlow 任务执行器（executor-node）侧的 Node.js/TypeScript SDK：
 ## 安装
 
 ```bash
-npm install @autoflow/sdk
+npm install @autocodeflow/sdk
 ```
 
 包为 scoped 公开包（`publishConfig.access = "public"`），产物为 tsup 构建的
@@ -24,7 +24,7 @@ CJS + ESM + d.ts（`dist/`）。
 
 ```ts
 // tasks/sendReport.ts
-import { TaskContext } from '@autoflow/sdk';
+import { TaskContext } from '@autocodeflow/sdk';
 
 export default async function main() {
   const ctx = TaskContext.fromEnv();
@@ -75,7 +75,7 @@ try {
 不经 `TaskContext` 也可独立构造（如自托管/测试环境显式给凭证）：
 
 ```ts
-import { HttpClient } from '@autoflow/sdk';
+import { HttpClient } from '@autocodeflow/sdk';
 
 // new HttpClient(baseURL?, token?, traceId?, executorAddress?)
 const http = new HttpClient(process.env.ADMIN_API_URL, process.env.EXECUTOR_TOKEN);
