@@ -142,7 +142,7 @@
 - 部署文档要点（R15-3.6 落笔）：Windows 服务化必须用 NSSM/任务计划程序「停止任务」（转发 Ctrl+C）而非 `taskkill /F`，否则运行中任务树必泄漏。
 
 ### 测试环境污染记录（非 bug）
-- pytest 复用同名 tmp 目录（`pytest-of-<user>/pytest-N`）+ `git_checkout_to` 的 salted `.git_cache` 以 src 绝对路径哈希命名——当上一次运行被强杀留下半成品 cache 目录时，后续运行会确定性 `clone rc=128`（本轮曾复现 1 例，清空 temp 后 4/4 过）。Linux CI 每次 fresh /tmp 不受影响；建议（低优先）：`git_checkout_to` 的 clone 失败清理路径已有 rmtree，但 `cache_dir.exists()` 为真而目录非有效 bare repo 时无自愈——留作后续加固项。
+- pytest 复用同名 tmp 目录（`pytest-of-<user>/pytest-N`）+ `git_checkout_to` 的 salted `.git_cache` 以 src 绝对路径哈希命名——当上一次运行被强杀留下半成品 cache 目录时，后续运行会确定性 `clone rc=128`（本轮曾复现 1 例，清空 temp 后 4/4 过）。Linux CI 每次 fresh /tmp 不受影响；建议（低优先）：`git_checkout_to` 的 clone 失败清理路径已有 rmtree，但 `cache_dir.exists()` 为真而目录非有效 bare repo 时无自愈——留作后续加固项。✅ **已加固（W-23/P-17）**：探针+隔离+重克隆自愈落地后，此类残留会被自动隔离为 `-broken-<ts>` 并重新克隆（python 侧同名测试直接覆盖该场景，不再需要手工清 temp）。
 
 ---
 
@@ -170,6 +170,8 @@
 | P-15 | W-20a：python 侧 `_build_child_env()` 同语义（python os.environ 在 Windows 大写归一，混拼白名单项此前永不命中） | `executor-python/routers/execute.py` | 新双分支测试；python 127/127 |
 | P-16 | W-22：main.ts 预载 `.env` 后再动态引入 app.module——装饰器求值期读取的 env（LOGIN_THROTTLE_LIMIT）从死配置变真可配；同批 W-21 requirements 全栈接通（实体 jsonb+迁移/DTO 校验/normalize 防线/snapshot/admin-web 表单） | `admin-api/src/main.ts` + task 模块 + admin-web | 25 连登 0×429；29 例 e2e 纯 .env 跑 29/29；admin-api 884 零回归 |
 
+| P-17 | W-23：git clone 缓存脏目录自愈——node/python 两实现统一"探针（HEAD+`rev-parse --is-bare-repository`）→ 损坏则**改名隔离**（`-broken-<ts>`，避 Windows 句柄锁+留现场）→ 重克隆"；node 版补齐 clone 失败清理（原缺） | `executor-node/routes/execute.ts`、`executor-python/routers/execute.py` | node 163 / python 128（各 +1 自愈用例，python 用真实 git 验取证保留） |
+
 ### 测试平台化修复
 - executor-node（W-03）：POSIX kill 两例 → 平台分支断言（win32 验 taskkill spawn + proc.kill）；`versioned deployment paths` 两例 → `path.join` 构造期望；npm 白名单例 → 按平台找 `npm.cmd`/`npm`。**158/158 全绿（连跑 3 次稳定）**。
 - executor-python（W-05，经 W-11 修复后最终形态）：`python3` → `sys.executable`（两例）；`_build_shell_cmd` 断言平台化并新增 W-09a 归一化覆盖；shell 执行例改平台原生脚本（win32 `.bat`/glue `.cmd`，**不再 skip**）；log-cap/timeout/truncation 三例从 POSIX 循环脚本改为 python runtime 生成等价输出。**125/125 全绿（0 skip）**。
@@ -190,7 +192,13 @@
 ### W-16：✅ `assets/` 图标缺失（销账）——托盘 PNG 由并行会话入库（95363aa），应用图标 `icon.ico` 由本轮从 icon.png 生成
 - 原始问题：electron-builder.yml 引用 `assets/`（`icon.ico`/`tray-*.png`）但目录不存在 → 打包回退默认 Electron 图标、托盘空白（有 fallback 不崩）。
 - 关闭路径：① `95363aa`（Linux 侧）提交 icon.png(1024²) + tray 三态 @2x PNG，并修 .gitignore 全局 `*.png` 误伤的反白规则；② **本轮（Windows 侧）**发现 `win.icon: assets/icon.ico` 仍缺（构建日志继续报 default Electron icon）——用零依赖生成器把 icon.png 缩放 256² 后按 Vista PNG-in-ICO 格式封装为 `assets/icon.ico`（派生自既有设计源，非虚构素材），重打 NSIS **不再出现回退警告**，安装包内 `resources/assets/` 齐全。
-- 残留（非 Windows 面）：mac 构建仍需 `icon.icns`（同一 PNG 可派生）；建议长期把图标生成纳入构建脚本或双格式入库。
+- 残留（非 Windows 面）：~~mac 构建仍需 `icon.icns`~~ **已补**（本轮）：`icon.icns` 由同一 icon.png 派生（标准 icns 容器，ic07/08/09/10 = 128/256/512/1024 PNG entries，结构校验通过）。图标三格式（png/ico/icns）现均为 icon.png 的生成产物——长期建议把生成脚本入库（本轮为一次性生成），或由设计侧维护。
+
+### W-23：⚠️ git clone 缓存脏目录无自愈（Windows 强杀语义放大）——已修（P-17，双侧对称）
+- 轮次与用例：R13 待复验清单遗留项（Windows 侧自主推进）
+- 现象（修复前）：clone 中途被强杀（`taskkill /F`、OOM）留下半成品 `.git_cache/<salted>` 目录时——python 版判据 `cache_dir.exists()` 视其为有效缓存 → 后续每次 checkout 走 `fetch --all` 对残缺 repo 失败，**永久失败无自愈**；node 版判据 `exists(HEAD)` 略好（半成品多无 HEAD → 走 clone 分支），但 `git clone` 对"存在且非空"目录直接报错，同样**每次重试必炸**，且 node 版 clone 失败还不清理残留。R14 实证过 taskkill 是 Windows 常规停服手段（无 SIGTERM），该场景在 Windows 上远比 Linux 常见。
+- 修复（node/python 同一语义）：① 缓存有效性探针 = `HEAD` 存在 + `git rev-parse --is-bare-repository` 为 true（HEAD 前置检查兼防 rev-parse 上溯到外层无关仓库）；② 损坏时**改名隔离**为 `<dir>-broken-<ts>` 而非删除——保留取证状态，且 Windows 下刚被杀进程的文件句柄可能仍锁目录，rename 比 rmtree 更不易二次失败（rename 失败才兜底 rm）；③ 隔离后走正常重克隆；④ node 补 clone 失败清理（与 python 对齐）。真正的"部分完成但 fetch 可修复"的仓库（对象不全但结构完整）探针判有效，由 fetch 补全——符合既有设计。
+- 测试：node +1（mock 驱动：探针→隔离→clone→checkout 序列与 `-broken-` 后缀断言）；python +1（**真实 git**：伪造 HEAD+垃圾对象目录 → 自愈成功检出文件 + 断言 `-broken-` 隔离目录保留取证）。基线：node 163 / python 128。
 
 ### W-17：🔴 desktop 停止链路 win32 语义失效（已修，P-12）
 - `ExecutorProcess.stop()` 原依赖「executor-node 监听 SIGTERM 优雅退出」——Linux 成立；Windows 上 `child.kill('SIGTERM')`=TerminateProcess，执行器优雅链不执行、其任务子进程树整体遗留。修复后 win32 用 `taskkill /T /F` 树杀（POSIX 路径不变）。

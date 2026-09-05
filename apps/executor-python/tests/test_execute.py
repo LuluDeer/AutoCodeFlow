@@ -666,6 +666,45 @@ def test_git_checkout_to_failed_clone_cleans_partial_cache(tmp_path, monkeypatch
     assert not (tmp_path / '.git_cache' / execute_module._repo_dir_name(url)).exists()
 
 
+def test_git_checkout_to_heals_corrupt_cache_from_killed_clone(tmp_path, monkeypatch):
+    """W-23 (windows-findings): a process kill (taskkill /F) between the mkdir
+    and git finishing leaves a PARTIAL repo on disk that rmtree cleanup never
+    ran for. The old `cache_dir.exists()` check then took the fetch branch
+    forever — every later checkout of that task failed permanently. The probe
+    must detect the broken cache, quarantine it (rename, not delete), and
+    self-heal by re-cloning."""
+    from routers import execute as execute_module
+    from routers.execute import git_checkout_to, _repo_dir_name
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+
+    src = tmp_path / 'src'
+    src.mkdir()
+
+    def git(*args):
+        subprocess.run(['git', *args], cwd=str(src), check=True, capture_output=True)
+
+    git('init', '-q')
+    (src / 'hello.txt').write_text('healed')
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.')
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init')
+
+    # Simulate the post-kill residue: dir + HEAD + garbage, not a git repo.
+    cache_dir = tmp_path / '.git_cache' / _repo_dir_name(str(src))
+    cache_dir.mkdir(parents=True)
+    (cache_dir / 'HEAD').write_text('refrefs/heads/mainGARBAGE\n')
+    (cache_dir / 'objects').mkdir()
+
+    dest = tmp_path / 'dest'
+    git_checkout_to(str(src), 'HEAD', dest)  # must NOT take fetch path
+
+    assert (dest / 'hello.txt').read_text() == 'healed'
+    # healed cache is a valid bare repo now, and the broken one was quarantined
+    broken_dirs = [p for p in (tmp_path / '.git_cache').iterdir() if '-broken-' in p.name]
+    assert len(broken_dirs) == 1, 'broken cache must be renamed aside, not deleted'
+    assert (broken_dirs[0] / 'HEAD').read_text().startswith('ref')  # forensic state kept
+
+
 # ---------------------------------------------------------------------------
 # R4-C P2/P3: validators
 # ---------------------------------------------------------------------------
