@@ -139,8 +139,12 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error(`[update-package] Update failed: ${msg}`);
-      // Clean up partial download
-      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+      // Clean up partial download — 清理本身不得再抛（tmpFile 可能与外部清理
+      // 竞态：unlinkSync 的 ENOENT 在 setImmediate 异步回调里无人接住，会以
+      // unhandledRejection 归因到同 worker 的下一个无关测试）。
+      try {
+        if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+      } catch (_) { /* already gone */ }
 
       await post('/api/executor-packages/push-result', {
         packageId: body.packageId,

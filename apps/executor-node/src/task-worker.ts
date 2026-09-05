@@ -23,6 +23,21 @@ interface TaskQueueItem {
   task: TaskPayload;
   params: Record<string, unknown>;
   onComplete?: () => void;
+  /** execute.ts 后台流程提供的"到点再准备"回调：worker 轮到该执行时
+   *  （同一 taskId 串行）才执行 git checkout / 依赖安装等 prepare 阶段，
+   *  返回真正准备好的 task。缺省时 executeItem 直接 runTask（旧语义）。 */
+  runPrepared?: (assertNotCancelled: () => void) => Promise<{ task: any; params: Record<string, any> }>;
+  /** kill 端点已收尾（回调 + 槽位释放由其负责）：不得再执行、不得再触发 onComplete */
+  cancelled?: boolean;
+}
+
+/** prepare/执行期间被 kill 端点取消的内部信号——worker 捕获后静默返回，
+ *  收尾责任在发起取消的一方。 */
+export class ExecutionCancelledError extends Error {
+  constructor(executionId: string) {
+    super(`Execution ${executionId} was cancelled`);
+    this.name = 'ExecutionCancelledError';
+  }
 }
 
 interface WorkerState {
@@ -52,8 +67,14 @@ class TaskWorker {
     this.onIdle = onIdle;
   }
 
-  enqueue(executionId: string, task: any, params: Record<string, any>, onComplete?: () => void): void {
-    this.state.queue.push({ executionId, task, params, onComplete });
+  enqueue(
+    executionId: string,
+    task: any,
+    params: Record<string, any>,
+    onComplete?: () => void,
+    runPrepared?: TaskQueueItem['runPrepared'],
+  ): void {
+    this.state.queue.push({ executionId, task, params, onComplete, runPrepared });
     logger.debug(`Task ${this.taskId}: Enqueued execution ${executionId}, queue size: ${this.state.queue.length}`);
     this.process();
   }
@@ -80,19 +101,52 @@ class TaskWorker {
   }
 
   private async executeItem(item: TaskQueueItem): Promise<void> {
-    const { executionId, task, params, onComplete } = item;
+    const { executionId, params, onComplete } = item;
     
     try {
       logger.debug(`Task ${this.taskId}: Starting execution ${executionId}`);
+
+      // runPrepared 由 execute.ts 提供：prepare（git/依赖安装）在轮到本
+      // 执行时才跑，返回真正可运行的 task；未提供则沿用旧语义直接 runTask。
+      let task: any = item.task;
+      let runParams: Record<string, any> = params;
+      if (item.runPrepared) {
+        if (item.cancelled) {
+          throw new ExecutionCancelledError(executionId);
+        }
+        const prepared = await item.runPrepared(() => {
+          if (item.cancelled) throw new ExecutionCancelledError(executionId);
+        });
+        task = prepared.task;
+        runParams = prepared.params;
+      }
       
-      await runTask(task, params, executionId);
+      await runTask(task, runParams, executionId);
       
       logger.debug(`Task ${this.taskId}: Completed execution ${executionId}`);
     } catch (error: any) {
+      if (error instanceof ExecutionCancelledError || item.cancelled) {
+        // kill 取消：任务从未启动。失败回调由 kill 端点/runPrepared 取消分支
+        // 负责；容量释放走下面 finally 的 onComplete——entry.release() 幂等，
+        // 与 kill 端点的收尾并存也不会双释放。
+        logger.info(`Task ${this.taskId}: Execution ${executionId} cancelled by kill request`);
+        return;
+      }
       logger.error(`Task ${this.taskId}: Execution ${executionId} failed: ${error.message}`);
     } finally {
-      onComplete?.();
+      if (!item.cancelled) {
+        onComplete?.();
+      }
     }
+  }
+
+  /** 见 TaskWorkerManager.cancelExecution：仅处理未开始（仍在队列中）的执行。 */
+  cancelQueued(executionId: string): boolean {
+    const idx = this.state.queue.findIndex(i => i.executionId === executionId);
+    if (idx === -1) return false;
+    const [item] = this.state.queue.splice(idx, 1);
+    item.cancelled = true;
+    return true;
   }
 
   stop(): void {
@@ -144,9 +198,24 @@ class TaskWorkerManager {
     return worker;
   }
 
-  async execute(taskId: string, executionId: string, task: any, params: Record<string, any>, onComplete?: () => void): Promise<void> {
+  async execute(
+    taskId: string,
+    executionId: string,
+    task: any,
+    params: Record<string, any>,
+    onComplete?: () => void,
+    runPrepared?: (assertNotCancelled: () => void) => Promise<{ task: any; params: Record<string, any> }>,
+  ): Promise<void> {
     const worker = this.getWorker(taskId);
-    worker.enqueue(executionId, task, params, onComplete);
+    worker.enqueue(executionId, task, params, onComplete, runPrepared);
+  }
+
+  /** 把仍在排队的执行从 worker 队列中摘除并标记取消。true=执行尚未开始，
+   *  调用方（kill 端点）负责失败回调与容量释放；false=已在运行中（或不存在），
+   *  调用方改走"杀进程 + 等 worker 正常收尾"路径。 */
+  cancelExecution(taskId: string, executionId: string): boolean {
+    const worker = this.workers.get(taskId);
+    return worker ? worker.cancelQueued(executionId) : false;
   }
 
   private scheduleIdleRecycle(taskId: string): void {
