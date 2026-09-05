@@ -1046,21 +1046,36 @@ test('26. pinned 全链 — 详情页绑定可见、UI 触发、执行记录 exe
 // ── 27. pinned 离线语义 — 目标执行器 set-offline → trigger FAILED「Pinned executor ... is offline」UI 可读 ──
 test('27. pinned 离线语义 — 目标执行器离线 trigger FAILED，错误消息与失败分类 UI 可读', async ({ page, request }) => {
   const executor = await getFirstOnlineExecutor(request);
-  const seeded = await apiCreateTask(request, {
-    name: 'e2e-pin-off-' + Date.now().toString().slice(-6),
-    triggerType: 'manual',
-    runtime: 'node',
-    entrypoint: 'index.js',
-    executorId: executor.id,
-    glueSource: PIN_GLUE,
-    glueLanguage: 'javascript',
-    maxRetry: 0, // attempts=1：单次派发定局，避免心跳恢复 online 后重试翻盘
-  });
-  await apiSetExecutorOffline(request, executor.id);
-  console.log(`  ✓ API set-offline：${executor.appName}@${executor.address} → offline`);
-
-  await apiTriggerTask(request, seeded.id);
-  const exec = await apiWaitExecution(request, seeded.id, 30000);
+  // W-29 心跳竞态防御：set-offline 只是 DB 状态写，而活着的 executor-node 会按
+  // 30s 心跳把 status 无条件刷回 online（心跳即存活性权威——产品行为正确）。
+  // set-offline→dispatch 的窗口（~2s）撞上心跳 tick 时（概率 ~2/30≈6%），任务
+  // 会被成功派发（实测 ubuntu CI 偶发 "Expected failed Received success"）。
+  // 撞车时换新任务重试一次：第一次尝试已消耗数秒，下一跳心跳远在窗口之外，
+  // 二次撞车概率 ~0.4%，不再是 CI 红灯来源。
+  let attempt = 0;
+  const runOfflineScenario = async () => {
+    attempt += 1;
+    const seeded = await apiCreateTask(request, {
+      name: 'e2e-pin-off-' + Date.now().toString().slice(-6) + (attempt > 1 ? `-r${attempt}` : ''),
+      triggerType: 'manual',
+      runtime: 'node',
+      entrypoint: 'index.js',
+      executorId: executor.id,
+      glueSource: PIN_GLUE,
+      glueLanguage: 'javascript',
+      maxRetry: 0, // attempts=1：单次派发定局，避免心跳恢复 online 后重试翻盘
+    });
+    await apiSetExecutorOffline(request, executor.id);
+    console.log(`  ✓ API set-offline：${executor.appName}@${executor.address} → offline`);
+    await apiTriggerTask(request, seeded.id);
+    const exec = await apiWaitExecution(request, seeded.id, 30000);
+    return { seeded, exec };
+  };
+  let { seeded, exec } = await runOfflineScenario();
+  if (exec.status !== 'failed') {
+    console.log(`  ⚠ 心跳竞态：第一次尝试拿到 ${exec.status}，换新任务重试（W-29）`);
+    ({ seeded, exec } = await runOfflineScenario());
+  }
   expect(exec.status).toBe('failed');
   expect(exec.errorMessage, 'pinned 离线应报 "Pinned executor ... is offline"').toMatch(/Pinned executor .* is offline/);
   expect(exec.failureReason).toBe('executor_offline');
