@@ -1,7 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { BadRequestException, Logger } from "@nestjs/common";
 import { NotificationService } from "../notification.service";
-import { MAX_ALERT_SILENCES } from "../notification.service";
+import { AlertLevel, MAX_ALERT_SILENCES } from "../notification.service";
 import { WecomChannel } from "../channels/wecom.channel";
 import { DingtalkChannel } from "../channels/dingtalk.channel";
 import { EmailChannel } from "../channels/email.channel";
@@ -102,6 +102,69 @@ describe("NotificationService", () => {
       expect(wecom.send).toHaveBeenCalled();
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("[sendAll]"));
       logSpy.mockRestore();
+    });
+
+    // 改动2: notifyFailureWithConfig 补透传 taskId 给 isSilenced，使任务级静默
+    // 窗口对本路径生效（此前恒传 undefined，与 notifyFailure 行为不一致）。
+    it("passes taskId through to isSilenced when provided", async () => {
+      email.send.mockResolvedValue(undefined);
+      const spy = jest.spyOn(service, "isSilenced").mockReturnValue(false);
+
+      await service.notifyFailureWithConfig(
+        "task",
+        "exec-1",
+        "err",
+        "",
+        undefined,
+        ["email"],
+        undefined,
+        "task-1",
+      );
+
+      expect(spy).toHaveBeenCalledWith("task-1", AlertLevel.ERROR);
+      spy.mockRestore();
+    });
+
+    it("is silenced by a TASK-LEVEL silence when taskId is provided", async () => {
+      service.addSilence({
+        taskId: "task-1",
+        level: AlertLevel.ERROR,
+        durationMinutes: 10,
+      });
+      const fanout = jest.spyOn(service, "sendToChannels");
+
+      await service.notifyFailureWithConfig(
+        "task",
+        "exec-1",
+        "err",
+        "",
+        undefined,
+        ["email"],
+        undefined,
+        "task-1",
+      );
+
+      // 修复前 isSilenced(undefined,...) 不命中该任务级规则、会照常发送；
+      // 现在 taskId 命中静默 → 不发送。
+      expect(fanout).not.toHaveBeenCalled();
+      fanout.mockRestore();
+    });
+
+    it("does NOT pass a taskId to isSilenced when omitted (legacy behavior)", async () => {
+      email.send.mockResolvedValue(undefined);
+      const spy = jest.spyOn(service, "isSilenced").mockReturnValue(false);
+
+      await service.notifyFailureWithConfig(
+        "task",
+        "exec-1",
+        "err",
+        "",
+        undefined,
+        ["email"],
+      );
+
+      expect(spy).toHaveBeenCalledWith(undefined, AlertLevel.ERROR);
+      spy.mockRestore();
     });
   });
 
