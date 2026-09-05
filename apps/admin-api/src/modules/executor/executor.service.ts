@@ -1334,17 +1334,17 @@ export class ExecutorService {
   /**
    * Generate install command for executor-node.
    * Returns a shell command the user can run on the target machine to install and start the executor.
-   * Values are read from the NestJS ConfigService (environment variables).
+   * URL comes from ConfigService; the shared token uses DB-first resolution.
    *
    * Note: this is the single handler for GET /executors/install-cmd. The former
    * install-cmd.controller.ts duplicated this route (unreachable — ExecutorController
    * registers first) and was removed; its shell-quoting protection was merged here.
    */
-  getInstallCmd(): {
+  async getInstallCmd(): Promise<{
     cmd: string;
     token: string;
     adminApiUrl: string;
-  } {
+  }> {
     const adminApiUrl = this.configService.get<string>("ADMIN_API_URL") || "";
     // R7 真机遗留观察①：ADMIN_API_URL 缺失时旧实现会生成
     // `curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''`
@@ -1354,8 +1354,8 @@ export class ExecutorService {
         "ADMIN_API_URL is not configured; cannot generate install command",
       );
     }
-    const sharedToken =
-      this.configService.get<string>("executor.sharedToken") || "";
+    // DR-01: honor DB rotations rather than handing out a stale env credential.
+    const sharedToken = await this.getSharedToken();
     // Shell-quote values to prevent word-splitting / injection when the user
     // copies the generated command into a shell (merged from install-cmd.controller).
     const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;

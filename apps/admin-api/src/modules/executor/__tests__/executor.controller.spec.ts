@@ -1,6 +1,14 @@
 import axios from "axios";
 import { UnauthorizedException, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { INestApplication, ExecutionContext } from "@nestjs/common";
+import { Test } from "@nestjs/testing";
+import { APP_GUARD } from "@nestjs/core";
+import * as request from "supertest";
+import { ExecutorService } from "../executor.service";
+import { SystemConfigService } from "../../config/config.service";
+import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
+import { RolesGuard } from "../../../common/guards/roles.guard";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -397,6 +405,71 @@ describe("ExecutorController", () => {
   // N11 复核后 GET /executors 保持"仅登录"（不设 @Roles）：任务 CRUD 对普通
   // 用户开放且 executions 侧本就暴露 executorAddress，锁列表只会打断
   // TaskFormPage 下拉。这里固化"列表无角色限制 + 机器端点无角色限制"的姿态。
+  describe("install-cmd HTTP authorization DR-01", () => {
+    let app: INestApplication;
+    let svc: { getInstallCmd: jest.Mock };
+    const response = {
+      cmd: "curl -fsSL 'https://admin.example.com/api/executors/install.sh' | bash -s -- --api-url 'https://admin.example.com' --secret 'shared-token'",
+      token: "shared-token",
+      adminApiUrl: "https://admin.example.com",
+    };
+
+    beforeEach(async () => {
+      svc = { getInstallCmd: jest.fn().mockResolvedValue(response) };
+      // Mock only authentication; exercise the real global role guard and Nest HTTP errors.
+      const jwtGuard = {
+        canActivate(context: ExecutionContext) {
+          const req = context.switchToHttp().getRequest();
+          const role = req.headers["x-test-role"];
+          if (!role) throw new UnauthorizedException();
+          req.user = { role };
+          return true;
+        },
+      };
+      const module = await Test.createTestingModule({
+        controllers: [ExecutorController],
+        providers: [
+          { provide: ExecutorService, useValue: svc },
+          { provide: ConfigService, useValue: {} },
+          { provide: SystemConfigService, useValue: {} },
+          { provide: APP_GUARD, useValue: jwtGuard },
+          { provide: APP_GUARD, useClass: RolesGuard },
+        ],
+      }).overrideGuard(JwtAuthGuard).useValue(jwtGuard).compile();
+      app = module.createNestApplication();
+      await app.init();
+    });
+
+    afterEach(async () => { await app?.close(); });
+
+    it("returns 403 to a normal user without exposing credentials", async () => {
+      const res = await request(app.getHttpServer()).get("/executors/install-cmd")
+        .set("x-test-role", "user").expect(403);
+      expect(svc.getInstallCmd).not.toHaveBeenCalled();
+      expect(JSON.stringify(res.body)).not.toContain("shared-token");
+    });
+
+    it("returns 401 without authentication", async () => {
+      await request(app.getHttpServer()).get("/executors/install-cmd").expect(401);
+      expect(svc.getInstallCmd).not.toHaveBeenCalled();
+    });
+
+    it("returns the unchanged command/token/URL structure to an admin", async () => {
+      const res = await request(app.getHttpServer()).get("/executors/install-cmd")
+        .set("x-test-role", "admin").expect(200);
+      expect(res.body).toEqual(response);
+      expect(res.body.cmd).toContain("/api/executors/install.sh");
+      expect(res.body.cmd).toContain("--secret 'shared-token'");
+      expect(svc.getInstallCmd).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("RBAC — install command is ADMIN-only", () => {
+    it("declares ADMIN role metadata", () => {
+      expect(Reflect.getMetadata(ROLES_KEY, ExecutorController.prototype.getInstallCmd)).toEqual(["admin"]);
+    });
+  });
+
   describe("RBAC — GET /executors stays authenticated-only (N11 复核)", () => {
     it("findAll declares no role restriction", () => {
       expect(
