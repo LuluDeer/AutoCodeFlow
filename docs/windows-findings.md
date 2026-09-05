@@ -272,3 +272,12 @@
 - [x] executor-python 在 Linux 跑 127（win32 专属分支在 Linux 自然不触发）——ubuntu job ✓；windows 侧同名测试走 win32 分支 ✓
 - [x] R14-2.4 实测 taskkill 树杀后孙进程无残留（见 R14 表 2.4 行：kill 后 `setTimeout(600000)` 计数=0）
 - [x] W-20 修复经 Windows runner 真机二次确认（run 55abf07 windows 4 job 绿 → c00d065 全 22 job 绿）
+
+### W-27：✅ 29 例根级 e2e 接入 CI（原"待拍板"基建项，已落地）——2026-09-05 Linux 侧
+- 背景：W-12 入库 + W-22 修复后，29 例 e2e 已双平台手工可复现（Linux 1.6m / Windows 纯 .env 栈 2.4m），但 CI 只覆盖 admin-api jest 级 e2e，真浏览器全链（登录/节流/CORS/派发/回调/pinned 全链/RBAC）无门禁。Windows 侧建议接入并留给拍板，用户转 Linux 侧推进落地。
+- 落地形态：
+  - `scripts/e2e-full.sh` 自包含编排（**CI 与本地同一入口**）：空库建库（时间戳库名，drop+create 幂等）→ admin-api nest build + 空库全迁移链 → admin-api(:3105) → executor-node(:8002，/health + 注册 online 双等待) → admin-web vite(:5176) → 根级 spec 29 例。子进程全部 exec 化 + trap 清理，组件日志落 `/tmp/acf-e2e-logs.*`。
+  - `ci.yml` 新增 `e2e-full` job：PG16/Redis7 services + `SKIP_DOCKER=1` 复用同款 env（与 admin-api-test 节对齐）；失败上传日志/截图 artifact。CI 总 job 数 22 → **23**。
+  - 防抖清单（全部来自前轮教训，一条不落）：① 每次全新库——admin seed/任务/执行记录零残留，断言不漂移（W-12 种子残留债）；② `LOGIN_THROTTLE_LIMIT=10000` + `THROTTLE_LIMIT=10000`——29 例 ~40 次登录 + API 轮询，默认 20/60 必级联 429（W-22 同根）；③ `EXECUTION_CALLBACK_SECRET` 两端显式同值——消 fallback 语义漂移；④ `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`——派发目标 localhost:8002 是回环，safe-http SSRF 守卫默认阻断（round-9 VERIFY 同款配置）；⑤ `no_proxy` 导出——本机代理（http_proxy）会劫持 curl/浏览器对 localhost 的健康检查致 502（CI 无代理不受影响，本地复现必踩）。
+- 验证：本地 docker 模式 29/29（1.6m）+ SKIP_DOCKER 模拟 services 29/29（同 1.6m，CI 实际路径）；CI run 33962387214 **e2e-full job 29 passed (2.1m)，全 run 23/23 绿**（head 53db654）。
+- 教训：`bash xxx.sh | tail` 会把退出码掩盖成 tail 的 0——后台跑编排脚本不要套管道，用文件重定向 + 显式 echo EXIT。
