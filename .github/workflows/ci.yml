@@ -5,6 +5,9 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+  # W-28：windows-latest e2e 较重（PG 服务启动 + portable redis 下载 + 真实浏览器），
+  # 不在每次 develop push 跑，仅 PR / 手动触发，避免拖慢主干与引入 windows 侧偶发。
+  workflow_dispatch:
 
 # 同一分支的旧跑自动取消（group 含 ref，不同分支互不影响）
 concurrency:
@@ -462,5 +465,102 @@ jobs:
           path: |
             /tmp/acf-e2e-logs*/
             /tmp/e2e-*.png
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ── W-28：Windows 全栈 e2e（29 例）— PR / 手动触发 ──────────────
+  # ubuntu e2e 全绿的盲区恰是 Windows：本轮 W-22/W-26 都是 Windows runner
+  # 抓出 Linux 漏掉的 bug，但全栈 UI e2e 此前只在 ubuntu 跑。此 job 把同一份
+  # 根级 29 例 spec 在 windows-latest 上跑通，复用 scripts/e2e-full.sh
+  # （SKIP_DOCKER=1）——编排不重复，只是依赖服务改由 Windows 原生方式提供：
+  #   · PG：runner 预装 postgresql-x64-* 服务（Stopped，postgres/root，见 image 文档），
+  #     启动即可，E2E_WORK_DIR 指到 C:/tmp（win32 node 把 /tmp 解析到当前盘根）。
+  #   · Redis：镜像不含 → 下载 redis-windows portable zip（无服务版，前台起进程）。
+  # 门控 pull_request / workflow_dispatch：拖慢 + windows 服务/下载 flaky 面
+  # 不进每次 develop push（拍板选项 A）。
+  e2e-full-windows:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    env:
+      SKIP_DOCKER: '1'
+      E2E_DB_HOST: localhost
+      E2E_DB_PORT: '5432'          # 原生服务，非 docker 映射口
+      E2E_DB_USER: postgres
+      E2E_DB_PASS: root
+      E2E_DB_NAME: autoflow_e2e_ci_win
+      E2E_REDIS_HOST: localhost
+      E2E_REDIS_PORT: '16379'       # 与脚本默认一致
+      E2E_WORK_DIR: C:/tmp/acf-e2e-tasks
+      # 注意：LOG_DIR 不指 C:/tmp——它只被 bash 侧（mktemp/curl/tail）读写，
+      # 留在 MSYS /tmp 最稳（mktemp 对带盘符模板解析有坑）；node 需要的是
+      # WORK_DIR=C:/tmp。失败时日志由脚本内联 tail，不依赖 artifact 采集。
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/admin-api/package-lock.json
+            apps/admin-web/package-lock.json
+            apps/executor-node/package-lock.json
+      - run: npm ci
+        working-directory: apps/admin-api
+      - run: npm ci
+        working-directory: apps/executor-node
+      - run: npm ci
+        working-directory: apps/admin-web
+      - name: Install chromium
+        run: npx playwright install chromium
+        working-directory: apps/admin-web
+      - name: Start preinstalled PostgreSQL + portable Redis
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # (1) PG：镜像预装 postgresql-x64-* 服务（Stopped/Disabled），启之并等 5432
+          $pg = Get-Service -Name 'postgresql-x64-*' | Select-Object -First 1
+          if (-not $pg) { throw "PostgreSQL 服务未找到" }
+          Set-Service -Name $pg.Name -StartupType Automatic
+          Start-Service -Name $pg.Name
+          # e2e-full.sh 的 SKIP_DOCKER 分支依赖 psql 客户端 + C:/tmp 存在。
+          # PGBIN 理论上由镜像注入；缺失时从服务的二进制路径推导，双保险。
+          $pgbin = $env:PGBIN
+          if (-not $pgbin -or -not (Test-Path (Join-Path $pgbin 'psql.exe'))) {
+            $svcPath = (Get-CimInstance Win32_Service -Filter "Name='$($pg.Name)'").PathName
+            $pgbin = Split-Path ($svcPath -replace '^"','' -replace '"$','')
+          }
+          "$pgbin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          New-Item -ItemType Directory -Force -Path 'C:\tmp' | Out-Null
+          # (2) Redis：portable cygwin 构建（无需服务/管理员），起前台进程 --daemonize no
+          $rd = Join-Path $env:RUNNER_TEMP 'redis'
+          New-Item -ItemType Directory -Force -Path $rd | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP 'redis.zip'
+          Invoke-WebRequest `
+            -Uri 'https://github.com/redis-windows/redis-windows/releases/download/8.10.1/Redis-8.10.1-Windows-x64-cygwin.zip' `
+            -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $rd -Force
+          $redisServer = (Get-ChildItem -Path $rd -Recurse -Filter 'redis-server.exe' | Select-Object -First 1).FullName
+          Start-Process -FilePath $redisServer -ArgumentList '--port','16379','--save','' -WindowStyle Hidden
+          # (3) 等两个端口就绪（PG 服务 Running != 端口可连）
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) {
+            $pgOk = (Test-NetConnection -ComputerName localhost -Port 5432 -WarningAction SilentlyContinue).TcpTestSucceeded
+            $rdOk = (Test-NetConnection -ComputerName localhost -Port 16379 -WarningAction SilentlyContinue).TcpTestSucceeded
+            if ($pgOk -and $rdOk) { Write-Host "PG+Redis 就绪"; break }
+            Start-Sleep -Seconds 2
+          }
+          if (-not ($pgOk -and $rdOk)) { throw "PG/Redis 60s 内未就绪" }
+      - name: Run 29-case full-chain e2e (Windows)
+        shell: bash
+        run: bash scripts/e2e-full.sh
+      - name: Upload e2e logs & failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-windows-artifacts
+          path: |
+            C:/tmp/acf-e2e-tasks/
+            test-results/
+            apps/admin-web/test-results/
           if-no-files-found: ignore
           retention-days: 7
