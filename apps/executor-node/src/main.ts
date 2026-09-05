@@ -121,7 +121,7 @@ async function notifyOffline(): Promise<void> {
 let heartbeatInterval: NodeJS.Timeout | null = null;
 let isShuttingDown = false;
 
-async function gracefulShutdown(signal: string): Promise<void> {
+async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
@@ -174,7 +174,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   await notifyOffline();
 
   logger.info('Executor shutdown complete');
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 // Register signal handlers
@@ -187,6 +187,38 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // — running task processes were orphaned instead of being reaped by
 // gracefulShutdown's killRunningTaskProcesses. No-op on POSIX.
 process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));
+
+// W-25 (windows-findings): last-line-of-defence parity with admin-api's
+// OPS-06/ARCH-008. Before this, ANY unexpected async error killed the process
+// by default WITHOUT running gracefulShutdown — task process trees then
+// outlived the executor as unmanaged orphans (the exact failure mode W-24
+// just removed one instance of; this covers every future one). Route both
+// through the same drain + tree-kill chain, then exit(1) so a supervisor
+// restarts us. 45s cap = 30s task grace + slack; if it ever fires, the
+// hard exit still happens.
+function fatalShutdown(reason: string): void {
+  logger.error(`FATAL (unhandled): ${reason} — graceful shutdown with exit(1)`);
+  let done = false;
+  const hardExit = setTimeout(() => {
+    if (!done) {
+      logger.error('Graceful shutdown stalled after fatal error — hard exiting');
+      process.exit(1);
+    }
+  }, 45_000);
+  hardExit.unref();
+  gracefulShutdown(reason, 1)
+    .catch(() => undefined)
+    .finally(() => {
+      done = true;
+      process.exit(1);
+    });
+}
+process.on('unhandledRejection', (reason) => {
+  fatalShutdown(`unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`);
+});
+process.on('uncaughtException', (err) => {
+  fatalShutdown(`uncaughtException: ${err.stack ?? String(err)}`);
+});
 
 const server = app.listen(config.port, async () => {
   try {
