@@ -111,7 +111,13 @@ export class ExecutorService {
     return `${this.protocol}://${address}/${path}`;
   }
 
-  private async getSharedToken(): Promise<string> {
+  /**
+   * Resolve the executor shared credential for outbound requests (DB-first,
+   * env fallback). Every admin→executor call site must go through this
+   * resolver so a DB rotation propagates everywhere at once — a raw env read
+   * sends a stale credential the executor's DB-first verification rejects.
+   */
+  async getSharedToken(): Promise<string> {
     try {
       const cfg = await this.systemConfigService.findOne(
         "executor.sharedToken",

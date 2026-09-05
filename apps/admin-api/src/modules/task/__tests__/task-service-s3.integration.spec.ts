@@ -189,7 +189,11 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
         { provide: ConfigService, useValue: { get: configGet } },
         {
           provide: ExecutorService,
-          useValue: { getExecutorUrl: jest.fn((_a, p) => `http://ex/${p}`) },
+          useValue: {
+            getExecutorUrl: jest.fn((_a, p) => `http://ex/${p}`),
+            // 日志回填 token 现走 DB 优先的 getSharedToken
+            getSharedToken: jest.fn().mockResolvedValue(""),
+          },
         },
       ],
     }).compile();

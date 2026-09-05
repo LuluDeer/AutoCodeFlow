@@ -169,6 +169,8 @@ describe("TaskService (__tests__)", () => {
               .mockImplementation(
                 (_addr: string, p: string) => `http://executor:3001/${p}`,
               ),
+            // 日志回填 token 现走 DB 优先的 getSharedToken（与 dispatch/push 一致）
+            getSharedToken: jest.fn().mockResolvedValue(""),
           },
         },
       ],
@@ -509,6 +511,44 @@ describe("TaskService (__tests__)", () => {
         "timeoutSeconds",
       );
     });
+
+    it("persists DTO configuration fields, snapshots them, then reloads an active schedule", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.ACTIVE,
+        timeout: 30,
+        glueSource: "old-source",
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+      await service.update("1", {
+        name: "new",
+        timeoutSeconds: 180,
+        glueSource: "new-source",
+      } as any);
+
+      expect(taskRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "new",
+          timeout: 180,
+          glueSource: "new-source",
+        }),
+      );
+      expect(versionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "1",
+          snapshot: expect.objectContaining({
+            name: "new",
+            timeout: 180,
+            glueSource: "new-source",
+          }),
+        }),
+      );
+      expect(schedulerService.stop).toHaveBeenCalledWith("1");
+      expect(schedulerService.scheduleOne).toHaveBeenCalledWith(task);
+    });
   });
 
   describe("updateGlue", () => {
@@ -528,6 +568,44 @@ describe("TaskService (__tests__)", () => {
       taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
       await service.updateGlue("1", "new-source");
       expect(task.glueLanguage).toBe("js");
+    });
+
+    it("only changes GLUE fields, snapshots them, and does not reload scheduling", async () => {
+      const task = {
+        id: "1",
+        name: "unchanged",
+        status: TaskStatus.ACTIVE,
+        glueSource: "old",
+        glueLanguage: "js",
+        timeout: 30,
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+      await (service.updateGlue as any)("1", "new-source", "python", {
+        name: "ignored",
+        timeout: 180,
+      });
+
+      expect(task).toEqual(
+        expect.objectContaining({
+          name: "unchanged",
+          timeout: 30,
+          glueSource: "new-source",
+          glueLanguage: "python",
+        }),
+      );
+      expect(versionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "1",
+          snapshot: expect.objectContaining({
+            glueSource: "new-source",
+            glueLanguage: "python",
+          }),
+        }),
+      );
+      expect(schedulerService.stop).not.toHaveBeenCalled();
+      expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
     });
   });
 
@@ -725,6 +803,32 @@ describe("TaskService (__tests__)", () => {
       await expect(service.getExecution("missing")).rejects.toThrow(
         NotFoundException,
       );
+    });
+
+    it("constrains a task-scoped lookup by execution and task IDs", async () => {
+      const exec = {
+        id: "exec-1",
+        taskId: "task-1",
+        status: ExecutionStatus.SUCCESS,
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      await expect(service.getExecution("exec-1", "task-1")).resolves.toEqual(
+        exec,
+      );
+      expect(execRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "exec-1", taskId: "task-1" },
+      });
+    });
+
+    it("returns NotFoundException when an execution belongs to another task", async () => {
+      execRepo.findOne.mockResolvedValue(null);
+      await expect(service.getExecution("exec-1", "other-task")).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(execRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "exec-1", taskId: "other-task" },
+      });
     });
   });
 
@@ -1998,7 +2102,7 @@ describe("TaskService (__tests__)", () => {
   });
 
   describe("rollbackToVersion", () => {
-    it("applies version snapshot to task", async () => {
+    it("applies version snapshot to task and records the rollback result", async () => {
       const version = {
         id: "v1",
         taskId: "t1",
@@ -2012,6 +2116,12 @@ describe("TaskService (__tests__)", () => {
       const result = await service.rollbackToVersion("t1", "v1");
       expect(result.name).toBe("snapshot-name");
       expect(result.timeout).toBe(60);
+      expect(versionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "t1",
+          snapshot: expect.objectContaining({ name: "snapshot-name", timeout: 60 }),
+        }),
+      );
     });
 
     it("throws NotFoundException when version not found", async () => {
