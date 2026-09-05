@@ -173,7 +173,7 @@
 | P-17 | W-23：git clone 缓存脏目录自愈——node/python 两实现统一"探针（HEAD+`rev-parse --is-bare-repository`）→ 损坏则**改名隔离**（`-broken-<ts>`，避 Windows 句柄锁+留现场）→ 重克隆"；node 版补齐 clone 失败清理（原缺） | `executor-node/routes/execute.ts`、`executor-python/routers/execute.py` | node 163 / python 128（各 +1 自愈用例，python 用真实 git 验取证保留） |
 | P-18 | W-24：三处 spawn 站点（runProcess/runCommand/startApp）补 stdio socket error 守卫——spawn 失败不再崩整个执行器；ENOENT+超长 cwd 附 MAX_PATH 提示 | `executor-node/src/routes/execute.ts`、`run-command.ts`、`routes/deploy.ts` | W-24 回归用例 + 164/164；真实长路径复跑执行器存活（崩溃栈消失） |
 | P-19 | W-25：main.ts unhandledRejection/uncaughtException → fatalShutdown（gracefulShutdown 链 + exit(1) + 45s 硬退出保险）；gracefulShutdown 增 exitCode 参数 | `executor-node/src/main.ts` | tsc/164 绿；语义对齐 admin-api OPS-06 |
-| P-20 | W-26：download 部分文件清理改 unlinkSync+EBUSY 有界重试（不门控 promise）；redirect 分支 destroy() 替代 close()（防双跟随）+ res.resume() 排空 | `executor-node/src/lib/download.ts` | 6× 全量 164/164（此前每轮挂 1-2）；redirect 精确 2-hop 断言哨兵 |
+| P-20 | W-26：download 部分文件清理重构——`removePartialFile(file,dest,expectFile)`：立即尝试 + 流 `close` 事件 + ENOENT/EBUSY/EPERM 有界轮询（ENOENT≠已清理，文件可能晚于 unlink 出现），不门控 promise；redirect-continue 用 expectFile=false 防与递归下载抢删；redirect 分支 destroy() 替代 close()（防双跟随）+ res.resume() 排空 | `executor-node/src/lib/download.ts` | download.spec 9×5/5、全量 164/164；redirect 2-hop 断言哨兵；Linux 晚建竞态由 ubuntu CI 终审 |
 
 ### 测试平台化修复
 - executor-node（W-03）：POSIX kill 两例 → 平台分支断言（win32 验 taskkill spawn + proc.kill）；`versioned deployment paths` 两例 → `path.join` 构造期望；npm 白名单例 → 按平台找 `npm.cmd`/`npm`。**158/158 全绿（连跑 3 次稳定）**。
@@ -239,10 +239,12 @@
 
 ### W-26：⚠️ download 包"部分文件清理"在 Windows 必漏（fd 关闭竞态）+ redirect 用 close() 有双跟随时序陷阱——已修（P-20）
 - 暴露方式：W-25 后全量 jest 出现**确定性**的 `rejects HTTP error statuses and cleans the partial file` 失败（此前只在并行负载下偶发，被当成 W-06 类 flaky 记账）——追根因是生产缺陷而非测试抖动。
-- 根因 A（清理泄漏）：`fail()` 里 `file.destroy()` 后**立即** `fs.unlink`——Windows 上写流 fd 仍在异步关闭，unlink 吃 EBUSY/EPERM，而回调 `() => {}` 静默吞错 → **残件永久滞留 work_dir**（每次下载 404/超时都攒一个），测试轮询 2s 后必红。
-- 根因 B（我修复过程中捕获的次生陷阱，记录以警示）：曾把递归/拒绝**门控在 unlink 回调**上——deploy/update-package 套件 fs 为 jest 自动 mock（回调永不触发）→ 直接挂起；同时 redirect 分支 `close()` 会因 `res.pipe(file)` 仍挂着触发 data-after-end 'error' → 二次进入失败处理**双跟随重定向**（download.spec 用真实 fs，seen 断言精确捕获了第三次请求）。
-- 修复（最终形态）：`removePartialFile(dest)` = 同步 unlinkSync + EBUSY/EPERM 40ms×12 有界重试链，**尽力而为、不门控任何 promise**（mock 环境天然免疫）；redirect 分支改 `destroy()`（丢缓冲、释 fd、不写残件）+ `res.resume()` 排空 + 立即递归；fail 路径同样只改清理方式，拒绝时序不变。download.spec 无全局 fs mock → 重试链被真实 404 用例覆盖。
-- 验证：download/deploy/update-package 三套件 33/33；**连续 6 轮全量 164/164**（修复前每轮挂 1-2）；`keeps the token for same-host redirects`（seen 精确 2 元素）充当双跟随哨兵。
+- 根因（两处，第一版修复只解了 A，被 ubuntu CI 抓出 B 后二次修正）：
+  - **A（Windows）**：`fail()` 里 `file.destroy()` 后**立即** `fs.unlink`——写流 fd 还在异步关闭，unlink 吃 EBUSY/EPERM，而回调 `() => {}` 静默吞错 → **残件永久滞留 work_dir**（每次下载 404/超时/超限攒一个），404 清理用例负载下必红。
+  - **B（Linux，CI executor-node-test 首跑抓出）**：`createWriteStream` **懒开文件**——首写在事件循环里排队，byte-cap 用例在首个 data 回调即 fail()：`unlinkSync` 扑空 ENOENT 直接"自认干净"，随后挂起的 open/write **把文件建了回来** → 残件泄漏。原异步 `fs.unlink` 恰好因排队延后被掩盖，改 `unlinkSync` 后暴露。**教训：ENOENT ≠ 已清理，unlink 竞态要按"文件可能晚于 unlink 出现"建模。**
+- 最终形态（P-20，两次迭代收敛）：`removePartialFile(file, dest, expectFile)`——立即尝试 + 订阅流的 `close`（fd 释放、文件必然已显形）再试 + ENOENT/EBUSY/EPERM 40ms×10 有界轮询（`expectFile=true` 用于 fail 路径；**redirect-continue 路径 `expectFile=false`**：ENOENT 即停，绝不与紧随其后的递归下载在同一个 dest 上抢删除——那是"清理旧件"与"新件落地"两个生命周期，必须分开）。清理**不门控任何 promise**（deploy/update-package 套件的 mock fs 回调不触发，门控即挂起——第一版正是栽在这里）。
+- 副作用修复（一并记录，我重构过程中捕获）：redirect 分支 `close()` 会让仍挂着的 `res.pipe(file)` 触发 data-after-end 'error' → 二次进入错误处理**双跟随重定向**；改 `destroy()` + `res.resume()` 排空。`keeps the token for same-host redirects`（seen 精确 2 元素）自此成为双跟随哨兵。
+- 验证：download.spec 本地 9 连 5/5；全量 164/164；byte-cap 的 Linux 晚建竞态以 ubuntu CI 为最终裁决（本轮已推）。
 - ✅ **已接通（W-21，同日）**：admin-api 全栈补齐——Task 实体 jsonb 列（幂等迁移 AddTaskRequirements1788581485026）+ CreateTaskDto 结构校验（数组/非空元素/≤50，UpdateTaskDto 经 PartialType 继承）+ service normalize（trim + 拒 option 形 `-` 前缀，镜像执行器防线，坏 spec 创建即 400）+ **version snapshot 收录**（否则回滚丢依赖）+ dispatch 零改动（task 实体整体透传）；application manifest 路径此前经 `as any` 传入被静默丢弃，现已真实落库。admin-web：表单 `Select mode=tags` 输入（tokenSeparators 特意留空——pip spec 合法含逗号）、编辑回填、详情页展示、提交序列化 `applyRequirementsPayload`（空集显式 null——PATCH 缺省=保留旧值的 N28 教训）。测试：admin-api +11（884/884）、admin-web +5（40/40）。文档：sdk-guide 平台任务配置表新增 requirements 行。
 
 ### W-22：🔴 `.env` 对"装饰器求值期读取"的环境变量永不生效——login 节流（N16）名义可配实为死配置（已修）
