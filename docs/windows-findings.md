@@ -184,12 +184,13 @@
 | 用例 | 结果 | 证据 |
 |---|---|---|
 | 4.1 打包链 | ✅ **路线图 #12 收口** | `build:executor`（ncc，bash 链在 Git-Bash 下可用）→ `build:main`（tsc）→ `build:renderer`（vite）→ `electron-builder --win nsis --x64` **全链首跑即通**；产出 `AutoCodeFlow Executor Setup 1.0.0.exe`（100.6MB，NSIS 未签名，electron-builder 默认自签 elevate.exe） |
-| 4.2 产物冒烟 | ✅ | `win-unpacked\AutoCodeFlow Executor.exe` 启动后 4 进程存活、日志 `App ready → Tray initialized → Wizard window opened`，无崩溃；`resources/executor-node`（ncc 单文件 2MB）随包分发；**内置 executor 独立冒烟**：以 node 直跑 bundle → admin 注册 online → 真实任务 `ncc-bundle-exec-ok` success + 日志回读（ncc 未破坏 runtime 解析/env 注入/callback） |
+| 4.2 产物冒烟 | ✅✅ | **win-unpacked 直跑**：4 进程存活、`App ready → Tray initialized → Wizard window opened`；**NSIS 安装级**（本轮补）：`Setup.exe /S` 静默装→`%LOCALAPPDATA%\Programs` 布局含 `resources/executor-node`+`resources/assets`（三态托盘图标）→安装版 exe 启动 5 进程无异常→`Uninstall /S` 干净移除；**内置 executor 独立冒烟**：node 直跑 bundle → admin 注册 online → 真实任务 success + 日志回读 |
 | 4.3 与手动路线差异 | 见 W-16/17 | 功能等价；差异：① 托盘/窗口交互需 GUI 会话（服务化部署仍以手动/计划任务路线为主）；② 停止链路 win32 语义不同（W-17 已修）；③ 配置由 electron-store/向导承载而非 .env |
 
-### W-16：⚠️ `assets/` 目录未入库——打包图标/托盘图标全缺失（跨平台）
-- electron-builder.yml 引用 `assets/`（buildResources、`tray-*.png`、`icon.ico`）但目录不存在于仓库；实测打包日志 `file source doesn't exist from=...assets`、`default Electron icon is used`；运行时 `Tray icon not found: ...tray-offline@2x.png`（有 fallback 不崩，托盘空白）。
-- 严重级：体验（功能不受影响）。建议：补一套 `assets/tray-{online,offline,pending}@2x.png` + 平台图标，或将 `assets/` 生成纳入构建步骤。
+### W-16：✅ `assets/` 图标缺失（销账）——托盘 PNG 由并行会话入库（95363aa），应用图标 `icon.ico` 由本轮从 icon.png 生成
+- 原始问题：electron-builder.yml 引用 `assets/`（`icon.ico`/`tray-*.png`）但目录不存在 → 打包回退默认 Electron 图标、托盘空白（有 fallback 不崩）。
+- 关闭路径：① `95363aa`（Linux 侧）提交 icon.png(1024²) + tray 三态 @2x PNG，并修 .gitignore 全局 `*.png` 误伤的反白规则；② **本轮（Windows 侧）**发现 `win.icon: assets/icon.ico` 仍缺（构建日志继续报 default Electron icon）——用零依赖生成器把 icon.png 缩放 256² 后按 Vista PNG-in-ICO 格式封装为 `assets/icon.ico`（派生自既有设计源，非虚构素材），重打 NSIS **不再出现回退警告**，安装包内 `resources/assets/` 齐全。
+- 残留（非 Windows 面）：mac 构建仍需 `icon.icns`（同一 PNG 可派生）；建议长期把图标生成纳入构建脚本或双格式入库。
 
 ### W-17：🔴 desktop 停止链路 win32 语义失效（已修，P-12）
 - `ExecutorProcess.stop()` 原依赖「executor-node 监听 SIGTERM 优雅退出」——Linux 成立；Windows 上 `child.kill('SIGTERM')`=TerminateProcess，执行器优雅链不执行、其任务子进程树整体遗留。修复后 win32 用 `taskkill /T /F` 树杀（POSIX 路径不变）。
