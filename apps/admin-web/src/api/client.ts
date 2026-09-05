@@ -5,7 +5,7 @@ import { useAuthStore } from '../store/auth';
 const API_URL_INTERNAL = import.meta.env.VITE_API_URL_INTERNAL || '/api';
 const API_URL_EXTERNAL = import.meta.env.VITE_API_URL_EXTERNAL || '';
 
-function getApiBaseUrl(): string {
+export function getApiBaseUrl(): string {
   const useExternal = localStorage.getItem('autoflow_use_external_api') === 'true';
   if (useExternal && API_URL_EXTERNAL) {
     return API_URL_EXTERNAL;
@@ -79,6 +79,8 @@ async function tryRefreshToken(): Promise<string> {
     const accessToken: string = body.data?.accessToken ?? body.accessToken;
     const newRefresh: string | undefined = body.data?.refreshToken ?? body.refreshToken;
     if (!accessToken) throw new Error('Refresh response missing accessToken');
+    // Discard refresh results from a session that has logged out or changed.
+    if (useAuthStore.getState().refreshToken !== refreshToken) throw new Error('Auth session changed');
     setToken(accessToken);
     if (newRefresh) setRefreshToken(newRefresh);
     return accessToken;
