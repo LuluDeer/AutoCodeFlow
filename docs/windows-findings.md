@@ -164,6 +164,7 @@
 | P-10 | W-15：三端注册 SIGBREAK（executor-node 优雅链 / admin-api app.close / executor-python 守卫式）——Windows 后台部署唯一可达的优雅退出信号 | `executor-node/src/main.ts`、`admin-api/src/main.ts`、`executor-python/main.py` | 实测 `Received SIGBREAK→shutdown complete` rc=0x0 |
 | P-11 | W-11：shell glue 缺 glueLanguage fallback（400）+ win32 glue 文件名 `.cmd` 化（`.sh` 经 cmd.exe 挂死）| executor-node/executor-python | 2.2 shell 两类转绿；python glue 用例从 skip 恢复双平台实跑（**125/125，0 skip**） |
 | P-12 | W-17：executor-desktop `ExecutorProcess.stop()` win32 分支——`child.kill('SIGTERM')` 在 Windows 是 TerminateProcess（不跑执行器优雅链且漏杀任务子进程），改 `taskkill /T /F` 树杀；POSIX 保持 SIGTERM→8s→SIGKILL | `apps/executor-desktop/src/main/executor-process.ts` | desktop tsc ✓；before-quit 链路复用 stop() |
+| P-13 | W-19：两侧任务 env 白名单补齐 Windows 系统+home/identity 变量族（python 侧此前零 Windows 变量；node 侧缺 home 族），附双侧白名单安全测试 | `executor-node/src/env-whitelist.ts`、`executor-python/routers/execute.py` | node 161 / python 126；真链路 homedir/getuser 实证 |
 
 ### 测试平台化修复
 - executor-node（W-03）：POSIX kill 两例 → 平台分支断言（win32 验 taskkill spawn + proc.kill）；`versioned deployment paths` 两例 → `path.join` 构造期望；npm 白名单例 → 按平台找 `npm.cmd`/`npm`。**158/158 全绿（连跑 3 次稳定）**。
@@ -191,6 +192,19 @@
 
 ### W-18：ℹ️ 生成物 prebuilt bundle 被 git 跟踪（漂移风险）
 - `apps/executor-desktop/resources/executor-node/index.js` 在库中跟踪。本轮已用含全部修复的 executor-node 源码重打并提交；长期建议 gitignore + 构建时生成（本次 `npm run build:executor` 重新生成即刷新，注意别再提交旧版）。
+
+### W-19：⚠️ R-04 专项收口——两侧任务 env 白名单不对称，python 侧完全缺 Windows 变量族（已修+双端实证）
+- 轮次与用例：R15-3.4 深挖（原风险点 R-04「已含 SYSTEMROOT/WINDIR/COMSPEC/PATHEXT」仅对 executor-node 成立）
+- 现象：`executor-python/routers/execute.py` 的 `_ENV_WHITELIST` 无任何 Windows 变量；两侧都缺 home/identity 族（USERPROFILE/HOMEDRIVE/HOMEPATH/USERNAME/APPDATA/LOCALAPPDATA/ProgramData）。
+- 实测影响（净化 env 子进程）：`os.path.expanduser('~')` 返回字面 `~`、node `os.homedir()` 失效、`getpass.getuser()` 抛 `KeyError: USERNAME`、pip/npm/uv 缓存与 git 用户配置定位全部退化——**真实 Windows 服务/计划任务部署（无 HOME）下用户任务会踩雷**；本机测试因 Git-Bash 注入 HOME 恰好掩盖。
+- 修复：两侧白名单补齐同一 Windows 集合（与已放行的 USER/LOGNAME/HOME 同类，仅路径/身份，非机密；SECRET 三件套仍恒拒）。node 新增 `env-whitelist.spec.ts`（3 例：集合完整性/正向转发/ denylist 压制），python 新增 `test_env_whitelist_windows_parity_surface`。**基线更新：node 161、python 126。**
+- 真链路实证（修复+重启后）：node 任务 `homedir: C:\Users\12154 / USERNAME: 12154 / LOCALAPPDATA ✓`；python 任务 `home: C:\Users\12154 / user: 12154 ✓`。
+
+### R14 补充：executor-python Windows 真链路首次验证（6/6，2026-09-05）
+> R14 原计划只冒烟了 executor-node——本轮补上 python 执行器（uvicorn/ProactorEventLoop R-10 面）。
+- uvicorn 启动/注册/心跳/优雅下线：正常；端口 bind 失败时启动链的 graceful shutdown（offline 通知+退出码干净）被意外实证一次。
+- 任务电池（直连或经 admin pinned 分发）：① python glue success（P-4 真链路 + `AUTOFLOW_CALLBACK_TOKEN` 注入 True，N33 Windows 成立）；② shell batch glue success（W-11 .cmd）；③ requirements 任务直连 `/execute`：`uv venv` 真实建 venv + `Scripts\python.exe` 解析 + httpx 0.28.1 安装运行 success（**P-3 真链路**）。
+- ℹ️ 顺带发现（跨平台产品面，非 Windows）：admin-api 的 CreateTaskDto/dispatch 均不携带 `requirements`——executor 侧 venv 能力经 UI/API 正常链路不可达，只能由直连执行器或后续 manifest 特性触发。记作功能缺口，待产品决定是否接通。
 
 ### 提交后待复验清单（Linux/CI 侧 & R14）
 - [ ] executor-node 在 Linux 的 POSIX kill 用例路径未改动语义（分支仅 win32 生效），需 Linux 跑一轮 158 确认无回归

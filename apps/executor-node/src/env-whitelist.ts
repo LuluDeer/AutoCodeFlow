@@ -11,6 +11,14 @@ export const ENV_WHITELIST = new Set([
   'USER', 'LOGNAME', 'SHELL',
   'SYSTEMROOT', 'WINDIR', // Windows compat
   'COMSPEC', 'PATHEXT', // Windows compat
+  // R-04 (windows-findings): Windows home/identity vars. A detached Windows
+  // deployment (scheduled task / service) has no HOME — without USERPROFILE/
+  // HOMEDRIVE+HOMEPATH the child's os.homedir()/pathlib.Path.home() degrade
+  // to '~', breaking pip/npm caches, git config, and getpass.getuser()
+  // (KeyError: USERNAME). Same disclosure class as the already-forwarded
+  // USER/LOGNAME/HOME on POSIX — these are paths, not secrets.
+  'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME',
+  'APPDATA', 'LOCALAPPDATA', 'ProgramData',
 ]);
 
 /** Names that must never be forwarded even if someone adds them to the

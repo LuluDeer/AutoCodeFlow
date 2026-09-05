@@ -121,6 +121,15 @@ _ENV_WHITELIST = {
     'PYTHONPATH', 'PYTHONHASHSEED', 'VIRTUAL_ENV',
     'NODE_PATH', 'TMPDIR', 'TEMP', 'TMP',
     'USER', 'LOGNAME', 'SHELL',
+    # R-04 (windows-findings): parity with executor-node's ENV_WHITELIST —
+    # Windows system vars (node side already had them) plus home/identity
+    # vars. Without USERPROFILE/HOMEDRIVE/HOMEPATH the child's
+    # os.path.expanduser('~') returns the literal '~' (breaks pip/npm/git
+    # caches); without USERNAME getpass.getuser() raises KeyError. Paths, not
+    # secrets — same class as USER/LOGNAME/HOME on POSIX.
+    'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+    'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME',
+    'APPDATA', 'LOCALAPPDATA', 'ProgramData',
 }
 
 # R4-C P0 (parity with executor-node 6062bee deploy.ts SAFE charset): shell

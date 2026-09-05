@@ -238,6 +238,25 @@ def test_execute_at_capacity_returns_429(auth_client):
 # SEC-01: Environment variable isolation (security boundary)
 # ---------------------------------------------------------------------------
 
+def test_env_whitelist_windows_parity_surface():
+    """R-04 (windows-findings): the python executor's whitelist must expose the
+    same Windows system/home/identity surface as executor-node's — a missing
+    USERPROFILE makes expanduser('~') return the literal '~' inside user
+    tasks (breaks pip/npm/git caches), and a missing USERNAME raises
+    KeyError in getpass.getuser(). Host-independent set assertion."""
+    from routers.execute import _ENV_WHITELIST
+    win_vars = {
+        'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+        'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME',
+        'APPDATA', 'LOCALAPPDATA', 'ProgramData',
+    }
+    missing = win_vars - _ENV_WHITELIST
+    assert not missing, f'Windows vars missing from _ENV_WHITELIST: {missing}'
+    # and the classic secrets stay out
+    for secret in ('EXECUTOR_SHARED_TOKEN', 'EXECUTOR_SECRET', 'ADMIN_API_URL'):
+        assert secret not in _ENV_WHITELIST
+
+
 def test_child_process_env_isolation(tmp_path):
     """SEC-01: Child process should NOT have access to executor secrets like EXECUTOR_SHARED_TOKEN."""
     import subprocess
