@@ -168,6 +168,7 @@
 | P-13 | W-19：两侧任务 env 白名单补齐 Windows 系统+home/identity 变量族（python 侧此前零 Windows 变量；node 侧缺 home 族），附双侧白名单安全测试 | `executor-node/src/env-whitelist.ts`、`executor-python/routers/execute.py` | node 161 / python 126；真链路 homedir/getuser 实证 |
 | P-14 | W-20a：node `buildChildEnv` win32 大小写不敏感匹配 + 按规范键转发（POSIX 保持精确匹配） | `executor-node/src/env-whitelist.ts` | env-whitelist.spec 双分支测试；node 162/162 |
 | P-15 | W-20a：python 侧 `_build_child_env()` 同语义（python os.environ 在 Windows 大写归一，混拼白名单项此前永不命中） | `executor-python/routers/execute.py` | 新双分支测试；python 127/127 |
+| P-16 | W-22：main.ts 预载 `.env` 后再动态引入 app.module——装饰器求值期读取的 env（LOGIN_THROTTLE_LIMIT）从死配置变真可配；同批 W-21 requirements 全栈接通（实体 jsonb+迁移/DTO 校验/normalize 防线/snapshot/admin-web 表单） | `admin-api/src/main.ts` + task 模块 + admin-web | 25 连登 0×429；29 例 e2e 纯 .env 跑 29/29；admin-api 884 零回归 |
 
 ### 测试平台化修复
 - executor-node（W-03）：POSIX kill 两例 → 平台分支断言（win32 验 taskkill spawn + proc.kill）；`versioned deployment paths` 两例 → `path.join` 构造期望；npm 白名单例 → 按平台找 `npm.cmd`/`npm`。**158/158 全绿（连跑 3 次稳定）**。
@@ -209,6 +210,13 @@
 - 任务电池（直连或经 admin pinned 分发）：① python glue success（P-4 真链路 + `AUTOFLOW_CALLBACK_TOKEN` 注入 True，N33 Windows 成立）；② shell batch glue success（W-11 .cmd）；③ requirements 任务直连 `/execute`：`uv venv` 真实建 venv + `Scripts\python.exe` 解析 + httpx 0.28.1 安装运行 success（**P-3 真链路**）。
 - ℹ️ 顺带发现（跨平台产品面，非 Windows）：admin-api 的 CreateTaskDto/dispatch 均不携带 `requirements`——executor 侧 venv 能力经 UI/API 正常链路不可达，只能由直连执行器或后续 manifest 特性触发。记作功能缺口，待产品决定是否接通。
 - ✅ **已接通（W-21，同日）**：admin-api 全栈补齐——Task 实体 jsonb 列（幂等迁移 AddTaskRequirements1788581485026）+ CreateTaskDto 结构校验（数组/非空元素/≤50，UpdateTaskDto 经 PartialType 继承）+ service normalize（trim + 拒 option 形 `-` 前缀，镜像执行器防线，坏 spec 创建即 400）+ **version snapshot 收录**（否则回滚丢依赖）+ dispatch 零改动（task 实体整体透传）；application manifest 路径此前经 `as any` 传入被静默丢弃，现已真实落库。admin-web：表单 `Select mode=tags` 输入（tokenSeparators 特意留空——pip spec 合法含逗号）、编辑回填、详情页展示、提交序列化 `applyRequirementsPayload`（空集显式 null——PATCH 缺省=保留旧值的 N28 教训）。测试：admin-api +11（884/884）、admin-web +5（40/40）。文档：sdk-guide 平台任务配置表新增 requirements 行。
+
+### W-22：🔴 `.env` 对"装饰器求值期读取"的环境变量永不生效——login 节流（N16）名义可配实为死配置（已修）
+- 轮次与用例：W-12 入库后 Windows 首跑 29 例 e2e（16/29 → 定性）
+- 现象：批量从 ~case 17 起级联 429 `ThrottlerException: Too Many Requests`（`/api/auth/login`）；单独/小批跑全绿。`.env` 设 `LOGIN_THROTTLE_LIMIT=100000` **完全无效**，改 shell 环境变量注入才生效。
+- 根因：`auth.controller.ts` 的 `@Throttle({limit: Number(process.env.LOGIN_THROTTLE_LIMIT) || 20})` 在**类定义求值（import 图阶段）**读取，而 `.env` 由 `ConfigModule.forRoot` 在**生命周期**才灌入 `process.env`——晚于读取点。故经 `.env` 文件配置实为死配置；docker `-e`/compose `environment:`（真实进程环境）不受影响，这也是生产容器化从未暴露的原因。
+- 修复：`main.ts` 入口在引入 app.module 前 `dotenv.config()` 预载 `.env`，app.module 改动态 `await importAppModule()`——`.env` 与真实环境自此行为一致（25 连登 0×429 实证）。已扫描全仓：装饰器/import 期读 process.env 的仅此前一处。
+- 连带结论：29 例 e2e 纯 `.env` 配置下复跑 **29/29**（Windows，我提交的 main.ts 变更后）；非我 W-21 表单改动的回归（修复前前 16 例含任务向导全绿已证）。
 
 ### W-20：🔴 env 白名单/测试对 Windows 变量大小写与盘符假设失效——**由 Windows CI job 首跑抓出**（已修，双侧）
 - 轮次与用例：R15-3.5 固化后的首次真机 CI（run 33942184554，executor-node windows job 4 失败）

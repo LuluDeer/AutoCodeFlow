@@ -10,7 +10,16 @@ import { ConfigService } from "@nestjs/config";
 import helmet from "helmet";
 import * as express from "express";
 import * as path from "path";
-import { AppModule } from "./app.module";
+// W-22 (windows-findings): some values are read at DECORATOR-EVAL time —
+// notably auth.controller's @Throttle limit from process.env.LOGIN_THROTTLE_LIMIT
+// (N16 documents it as env-configurable) — which runs when app.module is first
+// imported, i.e. BEFORE ConfigModule's lifecycle applies the `.env` file.
+// Load the env file here, before app.module enters the graph, so `.env` and a
+// real process environment behave the same. (Import hoisting requires the
+// module import below to be dynamic.)
+import { config as loadEnvFile } from "dotenv";
+loadEnvFile({ path: path.resolve(__dirname, "..", ".env") });
+const importAppModule = async () => (await import("./app.module")).AppModule;
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { ResponseInterceptor } from "./common/interceptors/response.interceptor";
 import { TimeoutInterceptor } from "./common/interceptors/timeout.interceptor";
@@ -76,7 +85,10 @@ async function bootstrap() {
     }
   }
 
-  const app = await NestFactory.create(AppModule);
+  // W-22: dynamic require so app.module (and its controllers' @Throttle
+  // decorators reading process.env at class-definition time) evaluates AFTER
+  // loadEnvFile() above has populated process.env from `.env`.
+  const app = await NestFactory.create(await importAppModule());
   // OPS-06 / ARCH-008: expose the app instance to the fatal-signal handlers
   // below so they can trigger a graceful close instead of an abrupt exit.
   runningApp = app;
