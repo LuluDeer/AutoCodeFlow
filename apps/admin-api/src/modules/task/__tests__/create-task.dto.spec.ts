@@ -190,4 +190,75 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
       );
     });
   });
+
+  // TMO-02: the executor validates timeout ∈ 1..86400s (executor-node
+  // execute.ts). A larger value survives create/update, is dispatched, then 400s
+  // at the executor on EVERY attempt — so the bound must be enforced at the DTO
+  // too. timeout=0 means "no limit" and stays legal (executor substitutes its
+  // own default); timeoutSeconds normalizes to timeout in TaskService, so both
+  // fields carry the same @Max(86400). UpdateTaskDto inherits via PartialType.
+  describe("timeout upper bound (TMO-02)", () => {
+    it("accepts timeout=0 (unlimited still legal)", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        timeout: 0,
+      });
+      expect(result.timeout).toBe(0);
+    });
+
+    it("accepts a positive timeout within range", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        timeout: 3600,
+      });
+      expect(result.timeout).toBe(3600);
+    });
+
+    it("accepts timeout at the boundary (86400)", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        timeout: 86400,
+      });
+      expect(result.timeout).toBe(86400);
+    });
+
+    it("rejects a timeout over the executor cap (>86400) with 400", async () => {
+      await expect(
+        validateCreate({ name: "t1", triggerType: "api", timeout: 86401 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("still rejects a negative timeout", async () => {
+      await expect(
+        validateCreate({ name: "t1", triggerType: "api", timeout: -1 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("applies the same bound to timeoutSeconds (normalizes to timeout)", async () => {
+      const ok = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        timeoutSeconds: 86400,
+      });
+      expect(ok.timeoutSeconds).toBe(86400);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutSeconds: 999999,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("UpdateTaskDto inherits the timeout @Max validator", async () => {
+      await expect(validateUpdate({ timeout: 100000 })).rejects.toThrow(
+        BadRequestException,
+      );
+      const ok = await validateUpdate({ timeoutSeconds: 7200 });
+      expect(ok.timeoutSeconds).toBe(7200);
+    });
+  });
 });

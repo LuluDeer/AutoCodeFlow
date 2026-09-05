@@ -202,6 +202,29 @@ export class TaskProcessor extends WorkerHost {
       if (exec.failureReason === ExecutionFailureReason.TIMEOUT) {
         throw new UnrecoverableError(errMsg);
       }
+      // RETRY-01: honor `task.retryableErrors` — when the user configured a
+      // non-empty allow-list, only failures whose message (primary) or
+      // classified reason (secondary) match one of the entries are retried;
+      // anything else is converted to UnrecoverableError so BullMQ stops
+      // burning the full attempt budget on an error the user explicitly chose
+      // not to retry. null/undefined/[] keeps the legacy retry-everything
+      // behavior (backward compatible).
+      const retryableErrors = Array.isArray(task.retryableErrors)
+        ? task.retryableErrors.filter(
+            (p) => typeof p === "string" && p.trim() !== "",
+          )
+        : [];
+      if (retryableErrors.length > 0) {
+        const haystack = `${exec.errorMessage ?? ""}\n${exec.failureReason ?? ""}`.toLowerCase();
+        const matched = retryableErrors.some((p) =>
+          haystack.includes(p.trim().toLowerCase()),
+        );
+        if (!matched) {
+          throw new UnrecoverableError(
+            `${errMsg} (failure not in retryableErrors allow-list)`,
+          );
+        }
+      }
       throw err;
     } finally {
       const isTerminal = [
@@ -225,29 +248,29 @@ export class TaskProcessor extends WorkerHost {
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
+      // P0: persist only worker-owned fields via a conditional update — a
+      // concurrent callback or kill may have already written a terminal
+      // state, which the worker must never overwrite. Built once so the
+      // repair path below reuses the exact same guarded patch (REPAIR-01).
+      const ownedPatch: Partial<TaskExecution> = {
+        status: exec.status,
+        ...(exec.executorAddress !== undefined
+          ? { executorAddress: exec.executorAddress }
+          : {}),
+        ...(exec.result !== undefined ? { result: exec.result } : {}),
+        ...(exec.logs !== undefined ? { logs: exec.logs } : {}),
+        ...(exec.errorMessage !== undefined
+          ? { errorMessage: exec.errorMessage }
+          : {}),
+        ...(exec.failureReason !== undefined
+          ? { failureReason: exec.failureReason }
+          : {}),
+        ...(exec.aiAnalysis !== undefined ? { aiAnalysis: exec.aiAnalysis } : {}),
+        ...(exec.endTime ? { endTime: exec.endTime } : {}),
+        ...(exec.duration !== undefined ? { duration: exec.duration } : {}),
+      };
+
       try {
-        // P0: persist only worker-owned fields via a conditional update — a
-        // concurrent callback or kill may have already written a terminal
-        // state, which the worker must never overwrite.
-        const ownedPatch: Partial<TaskExecution> = {
-          status: exec.status,
-          ...(exec.executorAddress !== undefined
-            ? { executorAddress: exec.executorAddress }
-            : {}),
-          ...(exec.result !== undefined ? { result: exec.result } : {}),
-          ...(exec.logs !== undefined ? { logs: exec.logs } : {}),
-          ...(exec.errorMessage !== undefined
-            ? { errorMessage: exec.errorMessage }
-            : {}),
-          ...(exec.failureReason !== undefined
-            ? { failureReason: exec.failureReason }
-            : {}),
-          ...(exec.aiAnalysis !== undefined
-            ? { aiAnalysis: exec.aiAnalysis }
-            : {}),
-          ...(exec.endTime ? { endTime: exec.endTime } : {}),
-          ...(exec.duration !== undefined ? { duration: exec.duration } : {}),
-        };
         await queryRunner.manager
           .createQueryBuilder()
           .update(TaskExecution)
@@ -275,27 +298,27 @@ export class TaskProcessor extends WorkerHost {
           await repairRunner.startTransaction();
 
           try {
-            // Re-fetch the execution to get current state
-            const currentExec = await repairRunner.manager.findOne(
-              TaskExecution,
-              { where: { id: exec.id } },
-            );
-            if (currentExec) {
-              // Only update if the execution is still in RUNNING state
-              if (currentExec.status === ExecutionStatus.RUNNING) {
-                currentExec.status = exec.status;
-                currentExec.endTime = exec.endTime;
-                currentExec.duration = exec.duration;
-                currentExec.result = exec.result;
-                currentExec.logs = exec.logs;
-                currentExec.errorMessage = exec.errorMessage;
-                currentExec.failureReason = exec.failureReason;
-                currentExec.aiAnalysis = exec.aiAnalysis;
-                await repairRunner.manager.save(currentExec);
-                this.logger.log(
-                  `Repaired execution ${exec.id} state after transaction failure`,
-                );
-              }
+            // REPAIR-01: use the same conditional UPDATE as the primary write
+            // instead of findOne→check→save — the check/save pair had a TOCTOU
+            // window (a callback could flip the row to a terminal state between
+            // them) and save() ran through @VersionColumn optimistic locking,
+            // which threw an exception and got swallowed when it lost that
+            // race. The `status IN (pending, running)` guard plus an affected
+            // check makes the repair atomic and can never clobber a terminal
+            // state written concurrently.
+            const repaired = await repairRunner.manager
+              .createQueryBuilder()
+              .update(TaskExecution)
+              .set(ownedPatch)
+              .where("id = :id", { id: exec.id })
+              .andWhere("status IN (:...writable)", {
+                writable: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+              })
+              .execute();
+            if (repaired.affected) {
+              this.logger.log(
+                `Repaired execution ${exec.id} state after transaction failure`,
+              );
             }
             await repairRunner.commitTransaction();
           } catch (repairErr) {

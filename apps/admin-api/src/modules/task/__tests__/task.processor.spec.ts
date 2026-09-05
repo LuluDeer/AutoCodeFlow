@@ -3,6 +3,7 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { DataSource } from "typeorm";
 import { getQueueToken } from "@nestjs/bullmq";
+import { UnrecoverableError } from "bullmq";
 import { TaskProcessor } from "../task.processor";
 import {
   TaskExecution,
@@ -230,5 +231,165 @@ describe("TaskProcessor", () => {
     expect(saved.some((e: any) => e.status === ExecutionStatus.FAILED)).toBe(
       true,
     );
+  });
+
+  // RETRY-01: task.retryableErrors drives whether a dispatch failure reaches
+  // BullMQ retries or is classified UnrecoverableError (matching = a
+  // case-insensitive substring of errorMessage / failureReason).
+  it("retries (plain rethrow) when a non-timeout failure matches retryableErrors", async () => {
+    taskRepo.findOne.mockResolvedValue({
+      ...task,
+      retryableErrors: ["network error"],
+    });
+    executorService.dispatch.mockRejectedValue(
+      new Error("network error: socket hang up"),
+    );
+    // Must rethrow the ORIGINAL error (BullMQ retries), NOT an UnrecoverableError.
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.not.toBeInstanceOf(UnrecoverableError);
+  });
+
+  it("converts a non-matching failure to UnrecoverableError when retryableErrors is set", async () => {
+    taskRepo.findOne.mockResolvedValue({
+      ...task,
+      retryableErrors: ["network"],
+    });
+    executorService.dispatch.mockRejectedValue(new Error("script exploded"));
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.toThrow(UnrecoverableError);
+  });
+
+  it("matches retryableErrors case-insensitively (configured uppercase vs lowercase message)", async () => {
+    taskRepo.findOne.mockResolvedValue({
+      ...task,
+      retryableErrors: ["Network Error"],
+    });
+    executorService.dispatch.mockRejectedValue(
+      new Error("socket: network error on connect"),
+    );
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.not.toBeInstanceOf(UnrecoverableError);
+  });
+
+  it("matches retryableErrors against failureReason (secondary), not just the message", async () => {
+    taskRepo.findOne.mockResolvedValue({
+      ...task,
+      retryableErrors: ["package_fetch_failed"],
+    });
+    // "npm install" classifies the failure as PACKAGE_FETCH_FAILED, but the
+    // message text does NOT contain the token "package_fetch_failed" — only the
+    // secondary failureReason key can match, so a retry proves secondary match.
+    executorService.dispatch.mockRejectedValue(
+      new Error("npm install exploded in the venv"),
+    );
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.not.toBeInstanceOf(UnrecoverableError);
+  });
+
+  it("retryableErrors empty array keeps legacy retry-everything behavior", async () => {
+    taskRepo.findOne.mockResolvedValue({ ...task, retryableErrors: [] });
+    executorService.dispatch.mockRejectedValue(new Error("script exploded"));
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.not.toBeInstanceOf(UnrecoverableError);
+  });
+
+  it("retryableErrors null keeps legacy retry-everything behavior", async () => {
+    taskRepo.findOne.mockResolvedValue({ ...task, retryableErrors: null });
+    executorService.dispatch.mockRejectedValue(new Error("script exploded"));
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.not.toBeInstanceOf(UnrecoverableError);
+  });
+
+  it("TIMEOUT is never retried regardless of retryableErrors (double-dispatch guard)", async () => {
+    taskRepo.findOne.mockResolvedValue({
+      ...task,
+      retryableErrors: ["timeout"],
+    });
+    executorService.dispatch.mockRejectedValue(
+      new Error("execution timed out"),
+    );
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.toThrow(UnrecoverableError);
+  });
+
+  // REPAIR-01: when the primary conditional update throws (DB failure) and the
+  // repair branch runs, the repair must be a conditional UPDATE guarded by
+  // `status IN (pending, running)` — not findOne→save — so a concurrent callback
+  // that already wrote a terminal state is never overwritten.
+  it("repair uses a conditional UPDATE and never overwrites a terminal state written concurrently", async () => {
+    const repairLog = jest
+      .spyOn((processor as any).logger, "log")
+      .mockImplementation(() => undefined);
+    executorService.dispatch.mockRejectedValue(new Error("dispatch failed"));
+
+    // Fresh runner: primary QB write throws → rollback → repair path runs.
+    const makeRunner = () => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined),
+      manager: {
+        // Old code repaired via save(); the new atomic path must NOT.
+        save: jest.fn((e: any) => Promise.resolve(e)),
+        findOne: jest.fn().mockResolvedValue({
+          id: "exec-1",
+          // Concurrent callback flipped the row to a terminal state.
+          status: ExecutionStatus.SUCCESS,
+        }),
+        // No-op: primary throws to trigger repair; repair resolves with
+        // affected=0 (status guard matched no row).
+        createQueryBuilder: jest.fn(() => ({
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: 0 }),
+        })),
+      },
+    });
+    let n = 0;
+    dataSource.createQueryRunner.mockImplementation(() => {
+      const r = makeRunner();
+      if (n++ === 0) {
+        r.manager.createQueryBuilder = jest.fn(() => ({
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockRejectedValue(new Error("db down")),
+        }));
+      }
+      return r;
+    });
+
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.toThrow("dispatch failed");
+
+    const repairRunner = dataSource.createQueryRunner.mock.results[1].value;
+    // Repair wrote via a conditional UPDATE (status guard), not findOne→save.
+    expect(repairRunner.manager.findOne).not.toHaveBeenCalled();
+    expect(repairRunner.manager.save).not.toHaveBeenCalled();
+    const repairQB = (repairRunner.manager.createQueryBuilder as jest.Mock)
+      .mock.results[0].value;
+    expect(repairQB.update).toHaveBeenCalled();
+    const andWhereCalls = (repairQB.andWhere as jest.Mock).mock.calls.map(
+      (c: any) => String(c[0]),
+    );
+    expect(andWhereCalls.some((s: string) => s.includes("status IN"))).toBe(
+      true,
+    );
+    // affected=0 → nothing was clobbered, no "Repaired" log.
+    expect(
+      repairLog.mock.calls.some((c: any) => /Repaired/.test(String(c[0]))),
+    ).toBe(false);
   });
 });

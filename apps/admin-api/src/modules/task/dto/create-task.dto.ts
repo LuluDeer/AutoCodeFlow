@@ -90,15 +90,20 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() currentVersion?: string;
   @ApiPropertyOptional({
     description:
-      "Task execution timeout in seconds (legacy field; prefer timeoutSeconds)",
+      "Task execution timeout in seconds (legacy field; prefer timeoutSeconds). 0 = no limit; bounded to the executor's 1..86400 window (executor-node rejects larger values with 400 on every attempt).",
   })
   @IsInt()
   @Min(0)
+  @Max(86400)
   @IsOptional()
   timeout?: number;
-  @ApiPropertyOptional({ description: "Task execution timeout in seconds" })
+  @ApiPropertyOptional({
+    description:
+      "Task execution timeout in seconds. 0 = no limit; bounded to the executor's 1..86400 window (normalized to `timeout`, which executor-node rejects above 86400 with 400).",
+  })
   @IsInt()
   @Min(0)
+  @Max(86400)
   @IsOptional()
   timeoutSeconds?: number;
   // TASK-02: cap retries to prevent runaway queue exhaustion
