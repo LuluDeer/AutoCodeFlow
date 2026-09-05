@@ -125,6 +125,16 @@ export class Task {
   @Column({ type: "int", default: 0 }) timeout: number;
   @Column({ type: "int", default: 3 }) maxRetry: number;
   @Column({ type: "int", default: 0 }) retryDelay: number;
+  /**
+   * RETRY-01: whitelist of retryable failures, consumed by TaskProcessor's
+   * dispatch-failure handler. When non-empty, a failed execution is retried by
+   * BullMQ ONLY if one of these entries is a case-insensitive substring of the
+   * execution's errorMessage (primary) or its classified failureReason token
+   * (secondary); otherwise the failure is reclassified as UnrecoverableError
+   * and fails fast. null/empty array → retry every failure (legacy default).
+   * TIMEOUT is always non-retryable regardless of this list (double-dispatch
+   * guard in the processor).
+   */
   @Column({ type: "simple-array", nullable: true }) retryableErrors: string[];
   @Column({ type: "enum", enum: BlockStrategy, default: BlockStrategy.SERIAL })
   blockStrategy: BlockStrategy;
