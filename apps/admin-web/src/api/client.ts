@@ -118,10 +118,11 @@ client.interceptors.response.use(
       useAuthStore.getState().logout();
       window.location.href = '/login';
     }
-    // Retry once on transient failures (network error or 5xx)
+    // Retry only safe methods: a failed response may still have caused side effects.
     if (!originalRequest._retryCount) originalRequest._retryCount = 0;
     const status = err.response?.status;
-    if (originalRequest._retryCount < 1 && (!err.response || (status >= 500 && status < 600))) {
+    const isSafeMethod = ['get', 'head', 'options'].includes((originalRequest.method || 'get').toLowerCase());
+    if (isSafeMethod && originalRequest._retryCount < 1 && (!err.response || (status >= 500 && status < 600))) {
       originalRequest._retryCount++;
       await new Promise<void>(resolve => setTimeout(resolve, 1000));
       return _client(originalRequest);
