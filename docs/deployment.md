@@ -11,6 +11,14 @@
 | 磁盘 | 20 GB | 50 GB+ |
 | 操作系统 | Linux / macOS / Windows (WSL2) | Ubuntu 22.04 LTS |
 
+## 端口暴露面与生产边界
+
+默认 Compose 配置仅将基础设施和包 registry 的宿主端口绑定到本机回环地址：`infra/docker-compose.yml` 的 PostgreSQL `127.0.0.1:5432`、Redis `127.0.0.1:6379`，以及根目录 `docker-compose.yml` 的 PyPI registry `127.0.0.1:8003`、npm registry `127.0.0.1:4873`。应用、执行器和 registry 之间优先使用 Compose 内部网络和服务名，不依赖宿主端口映射；生产环境不要将这些端口直接绑定到 `0.0.0.0`。
+
+如确需远程管理或发布包，应使用受控的 Compose override 将端口绑定到指定管理网卡，或通过认证的反向代理暴露，并同步配置主机防火墙/云安全组和访问控制。外部客户端若必须连接数据库或 Redis，应明确评估其加密、认证和来源限制。CI 的服务容器和测试端口属于隔离测试环境，不代表生产暴露面。
+
+`.env.example` 中的密码和密钥均为开发占位值；生产部署必须覆盖数据库密码（包括 `POSTGRES_PASSWORD`/`DB_PASSWORD`）、`REDIS_PASSWORD`、`JWT_SECRET`、`EXECUTOR_SECRET`、registry 凭据和 `INITIAL_ADMIN_PASSWORD`，并通过密钥管理系统或受控环境变量注入。CI/e2e 中出现的测试凭据只用于自动化测试，不得复制到生产；本仓库未据此证明生产使用默认口令，生产防火墙和安全组仍需部署方核实。
+
 ## 必填环境变量
 
 复制 `.env.example` 为 `.env` 并按下表填写：
