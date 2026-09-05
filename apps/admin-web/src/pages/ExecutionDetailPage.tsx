@@ -1,4 +1,4 @@
-import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, Breadcrumb, message, Alert } from 'antd';
+import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, Breadcrumb, message, Alert, Popconfirm } from 'antd';
 import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { useRequest } from 'ahooks';
@@ -51,12 +51,15 @@ export default function ExecutionDetailPage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [streamLines, setStreamLines] = useState<string[] | null>(null);
   const [streaming, setStreaming] = useState(false);
+  const [streamDisconnected, setStreamDisconnected] = useState(false);
+  const [reconnectKey, setReconnectKey] = useState(0);
   const token = useAuthStore((s) => s.token);
 
   const { data, refresh, loading } = useRequest(
     () => tasksApi.execution(taskId!, execId!),
     { pollingInterval: undefined, refreshDeps: [execId] },
   );
+  const isLive = data?.status === 'running' || data?.status === 'pending';
 
   // SSE log streaming when running
   useEffect(() => {
@@ -66,6 +69,7 @@ export default function ExecutionDetailPage() {
     // EventSource 无法设置请求头；后端仅对日志流路由支持 access_token 查询参数鉴权
     const es = new EventSource(url + (token ? `?access_token=${encodeURIComponent(token)}` : ''));
     setStreaming(true);
+    setStreamDisconnected(false);
     setStreamLines([]);
     es.onmessage = (e) => {
       try {
@@ -76,19 +80,27 @@ export default function ExecutionDetailPage() {
     es.addEventListener('done', () => {
       es.close();
       setStreaming(false);
+      setStreamDisconnected(false);
       refresh(); // final status refresh
     });
-    es.addEventListener('error', () => {
+    const handleStreamError = () => {
       es.close();
       setStreaming(false);
-    });
-    es.onerror = () => {
-      es.close();
-      setStreaming(false);
+      // 执行仍未终态：标记断流，交由轮询兜底并提示用户
+      if (data?.status === 'running' || data?.status === 'pending') setStreamDisconnected(true);
     };
+    es.addEventListener('error', handleStreamError);
+    es.onerror = handleStreamError;
     return () => { es.close(); setStreaming(false); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.status, execId, taskId]);
+  }, [data?.status, execId, taskId, reconnectKey]);
+
+  // SSE 断流后的轮询兜底：仅对未终态执行刷新，到达终态后自动停止
+  useEffect(() => {
+    if (!streamDisconnected || !isLive) return;
+    const timer = setInterval(() => { refresh(); }, 8000);
+    return () => clearInterval(timer);
+  }, [streamDisconnected, isLive, refresh]);
 
   // 日志滚动到底部
   useEffect(() => {
@@ -151,20 +163,26 @@ export default function ExecutionDetailPage() {
           <Tag color={status.color} style={{ fontSize: 14, padding: '2px 10px' }}>
             {status.label}
           </Tag>
-          {data?.status === 'running' && (
+          {data?.status === 'running' && !streamDisconnected && (
             <Badge status="processing" text={<Text type="secondary">实时更新中</Text>} />
           )}
         </Space>
         <Space>
           {(data?.status === 'running' || data?.status === 'pending') && (
-            <Button
-              icon={<StopOutlined />}
-              danger
-              loading={killing}
-              onClick={handleKill}
+            <Popconfirm
+              title="确认终止此执行？"
+              description="终止后执行将中断且不可恢复。"
+              onConfirm={handleKill}
+              okText="终止" okButtonProps={{ danger: true }}
             >
-              终止执行
-            </Button>
+              <Button
+                icon={<StopOutlined />}
+                danger
+                loading={killing}
+              >
+                终止执行
+              </Button>
+            </Popconfirm>
           )}
           {data?.status === 'failed' && (
             <Button
@@ -200,6 +218,24 @@ export default function ExecutionDetailPage() {
           <Button icon={<SyncOutlined />} onClick={refresh} loading={loading}>刷新</Button>
         </Space>
       </div>
+
+      {streamDisconnected && isLive && (
+        <Alert
+          type="warning"
+          showIcon
+          title="实时日志流已断开，已切换为轮询刷新"
+          style={{ marginBottom: 16 }}
+          action={
+            <Button
+              size="small"
+              icon={<SyncOutlined />}
+              onClick={() => { setStreamDisconnected(false); setReconnectKey((k) => k + 1); refresh(); }}
+            >
+              重新连接
+            </Button>
+          }
+        />
+      )}
 
       <Card title="执行信息" style={{ marginBottom: 16 }}>
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">

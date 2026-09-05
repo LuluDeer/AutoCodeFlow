@@ -101,12 +101,22 @@ export default function ExecutorDetailPage() {
   const heartbeatText = executor.lastHeartbeat ? relativeTime(executor.lastHeartbeat) : '-';
   const heartbeatAbsolute = executor.lastHeartbeat ? new Date(executor.lastHeartbeat).toLocaleString() : '';
 
-  const STATUS_TEXT: Record<string, string> = { success: '成功', failed: '失败', running: '运行中', timeout: '超时', cancelled: '已取消' };
+  type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
+  const STATUS_MAP: Record<string, { badge: BadgeStatus; label: string }> = {
+    pending:   { badge: 'default',    label: '等待中' },
+    running:   { badge: 'processing', label: '运行中' },
+    success:   { badge: 'success',    label: '成功'   },
+    failed:    { badge: 'error',      label: '失败'   },
+    timeout:   { badge: 'warning',    label: '超时'   },
+    killed:    { badge: 'error',      label: '已终止' },
+    cancelled: { badge: 'default',    label: '已取消' },
+  };
   const execColumns = [
     { title: '任务ID', dataIndex: 'taskId', key: 'taskId', ellipsis: true },
-    { title: '状态', dataIndex: 'status', key: 'status', width: 90, render: (v: string) => (
-      <Badge status={v === 'success' ? 'success' : v === 'failed' ? 'error' : v === 'running' ? 'processing' : 'default'} text={STATUS_TEXT[v] ?? v} />
-    )},
+    { title: '状态', dataIndex: 'status', key: 'status', width: 90, render: (v: string) => {
+      const cfg = STATUS_MAP[v] || { badge: 'default' as BadgeStatus, label: v };
+      return <Badge status={cfg.badge} text={cfg.label} />;
+    }},
     { title: '开始时间', dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '-' },
     { title: '耗时', dataIndex: 'duration', key: 'duration', width: 90, render: (v: number) => v != null ? (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`) : '-' },
     { title: '错误', dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
@@ -147,7 +157,21 @@ export default function ExecutorDetailPage() {
               </Button>
             </Button.Group>
             <Tooltip title="轮换后旧Token 立即失效">
-              <Button danger loading={rotating} icon={<CopyOutlined />} onClick={rotateToken}>轮换 Token</Button>
+              <Button
+                danger
+                loading={rotating}
+                icon={<CopyOutlined />}
+                onClick={() => {
+                  Modal.confirm({
+                    title: '确认轮换 Token',
+                    content: '所有使用旧 Token 的执行器将立即失效并掉线，需要重新注册后才能恢复连接。确认继续？',
+                    okText: '确认轮换',
+                    okButtonProps: { danger: true },
+                    cancelText: '取消',
+                    onOk: rotateToken,
+                  });
+                }}
+              >轮换 Token</Button>
             </Tooltip>
           </Space>
         }

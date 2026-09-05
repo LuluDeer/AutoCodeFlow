@@ -41,6 +41,8 @@ export default function TaskListPage() {
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string; defaultParams?: Record<string, unknown> } | null>(null);
   const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
   const [triggering, setTriggering] = useState(false);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [batchLoading, setBatchLoading] = useState(false);
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -61,20 +63,32 @@ export default function TaskListPage() {
   };
 
   const handleBatchTrigger = async () => {
+    if (batchLoading) return;
+    setBatchLoading(true);
     try { await tasksApi.batchTrigger(selectedRowKeys); message.success(`已触发 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '批量触发失败')); }
+    finally { setBatchLoading(false); }
   };
   const handleBatchPause = async () => {
+    if (batchLoading) return;
+    setBatchLoading(true);
     try { await tasksApi.batchPause(selectedRowKeys); message.success(`已暂停 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '批量暂停失败')); }
+    finally { setBatchLoading(false); }
   };
   const handleBatchResume = async () => {
+    if (batchLoading) return;
+    setBatchLoading(true);
     try { await tasksApi.batchResume(selectedRowKeys); message.success(`已恢复 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '批量恢复失败')); }
+    finally { setBatchLoading(false); }
   };
   const handleBatchDelete = async () => {
+    if (batchLoading) return;
+    setBatchLoading(true);
     try { await tasksApi.batchDelete(selectedRowKeys); message.success(`已删除 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '批量删除失败')); }
+    finally { setBatchLoading(false); }
   };
 
   const handleTrigger = (id: string, name: string, defaultParams?: Record<string, unknown>) => {
@@ -103,13 +117,19 @@ export default function TaskListPage() {
   };
 
   const handlePause = async (id: string) => {
+    if (togglingId) return;
+    setTogglingId(id);
     try { await tasksApi.pause(id); message.success('已暂停'); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '暂停失败')); }
+    finally { setTogglingId(null); }
   };
 
   const handleResume = async (id: string) => {
+    if (togglingId) return;
+    setTogglingId(id);
     try { await tasksApi.resume(id); message.success('已恢复'); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '恢复失败')); }
+    finally { setTogglingId(null); }
   };
 
   const handleDelete = async (id: string) => {
@@ -198,9 +218,9 @@ export default function TaskListPage() {
         <Switch
           size="small"
           checked={r.status === 'active'}
-          loading={false}
+          loading={togglingId === r.id}
           onChange={checked => checked ? handleResume(r.id) : handlePause(r.id)}
-          disabled={r.status === 'failed' || r.status === 'inactive'}
+          disabled={r.status === 'failed' || r.status === 'inactive' || (!!togglingId && togglingId !== r.id)}
         />
       ),
     },
@@ -270,7 +290,6 @@ export default function TaskListPage() {
           options={[
             { value: 'active', label: '运行中' },
             { value: 'paused', label: '已暂停' },
-            { value: 'failed', label: '失败' },
           ]}
         />
         <Select
@@ -301,13 +320,13 @@ export default function TaskListPage() {
         <div style={{ background: '#e6f4ff', border: '1px solid #91caff', borderRadius: 6, padding: '8px 16px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <CheckSquareOutlined style={{ color: '#1677ff' }} />
           <Text>已选 <strong>{selectedRowKeys.length}</strong> 项</Text>
-          <Button size="small" icon={<ThunderboltOutlined />} onClick={handleBatchTrigger}>批量触发</Button>
-          <Button size="small" onClick={handleBatchPause}>批量暂停</Button>
-          <Button size="small" onClick={handleBatchResume}>批量恢复</Button>
+          <Button size="small" icon={<ThunderboltOutlined />} loading={batchLoading} disabled={batchLoading} onClick={handleBatchTrigger}>批量触发</Button>
+          <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchPause}>批量暂停</Button>
+          <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchResume}>批量恢复</Button>
           <Popconfirm title={`确认删除 ${selectedRowKeys.length} 个任务？`} onConfirm={handleBatchDelete} okText="删除" okButtonProps={{ danger: true }}>
-            <Button size="small" danger icon={<DeleteOutlined />}>批量删除</Button>
+            <Button size="small" danger icon={<DeleteOutlined />} loading={batchLoading} disabled={batchLoading}>批量删除</Button>
           </Popconfirm>
-          <Button size="small" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+          <Button size="small" disabled={batchLoading} onClick={() => setSelectedRowKeys([])}>取消选择</Button>
         </div>
       )}
 
