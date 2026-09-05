@@ -269,8 +269,10 @@ services:
       context: ./apps/registry-pypi
       dockerfile: Dockerfile
     restart: unless-stopped
+    # Host access is local-only by default; executors use the internal network.
+    # For deliberate external package publishing, override this mapping explicitly.
     ports:
-      - '8003:8003'
+      - '127.0.0.1:8003:8003'
     environment:
       REGISTRY_USER: ${REGISTRY_USER:-admin}
       REGISTRY_PASS: ${REGISTRY_PASS}
@@ -296,8 +298,10 @@ services:
   registry-npm:
     image: verdaccio/verdaccio:5
     restart: unless-stopped
+    # Host access is local-only by default; executors use the internal network.
+    # For deliberate external package publishing, override this mapping explicitly.
     ports:
-      - '4873:4873'
+      - '127.0.0.1:4873:4873'
     volumes:
       - npm_data:/verdaccio/storage
       - ./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro
