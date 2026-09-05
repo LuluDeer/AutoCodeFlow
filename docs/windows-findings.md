@@ -165,6 +165,8 @@
 | P-11 | W-11：shell glue 缺 glueLanguage fallback（400）+ win32 glue 文件名 `.cmd` 化（`.sh` 经 cmd.exe 挂死）| executor-node/executor-python | 2.2 shell 两类转绿；python glue 用例从 skip 恢复双平台实跑（**125/125，0 skip**） |
 | P-12 | W-17：executor-desktop `ExecutorProcess.stop()` win32 分支——`child.kill('SIGTERM')` 在 Windows 是 TerminateProcess（不跑执行器优雅链且漏杀任务子进程），改 `taskkill /T /F` 树杀；POSIX 保持 SIGTERM→8s→SIGKILL | `apps/executor-desktop/src/main/executor-process.ts` | desktop tsc ✓；before-quit 链路复用 stop() |
 | P-13 | W-19：两侧任务 env 白名单补齐 Windows 系统+home/identity 变量族（python 侧此前零 Windows 变量；node 侧缺 home 族），附双侧白名单安全测试 | `executor-node/src/env-whitelist.ts`、`executor-python/routers/execute.py` | node 161 / python 126；真链路 homedir/getuser 实证 |
+| P-14 | W-20a：node `buildChildEnv` win32 大小写不敏感匹配 + 按规范键转发（POSIX 保持精确匹配） | `executor-node/src/env-whitelist.ts` | env-whitelist.spec 双分支测试；node 162/162 |
+| P-15 | W-20a：python 侧 `_build_child_env()` 同语义（python os.environ 在 Windows 大写归一，混拼白名单项此前永不命中） | `executor-python/routers/execute.py` | 新双分支测试；python 127/127 |
 
 ### 测试平台化修复
 - executor-node（W-03）：POSIX kill 两例 → 平台分支断言（win32 验 taskkill spawn + proc.kill）；`versioned deployment paths` 两例 → `path.join` 构造期望；npm 白名单例 → 按平台找 `npm.cmd`/`npm`。**158/158 全绿（连跑 3 次稳定）**。
@@ -205,6 +207,19 @@
 - uvicorn 启动/注册/心跳/优雅下线：正常；端口 bind 失败时启动链的 graceful shutdown（offline 通知+退出码干净）被意外实证一次。
 - 任务电池（直连或经 admin pinned 分发）：① python glue success（P-4 真链路 + `AUTOFLOW_CALLBACK_TOKEN` 注入 True，N33 Windows 成立）；② shell batch glue success（W-11 .cmd）；③ requirements 任务直连 `/execute`：`uv venv` 真实建 venv + `Scripts\python.exe` 解析 + httpx 0.28.1 安装运行 success（**P-3 真链路**）。
 - ℹ️ 顺带发现（跨平台产品面，非 Windows）：admin-api 的 CreateTaskDto/dispatch 均不携带 `requirements`——executor 侧 venv 能力经 UI/API 正常链路不可达，只能由直连执行器或后续 manifest 特性触发。记作功能缺口，待产品决定是否接通。
+
+### W-20：🔴 env 白名单/测试对 Windows 变量大小写与盘符假设失效——**由 Windows CI job 首跑抓出**（已修，双侧）
+- 轮次与用例：R15-3.5 固化后的首次真机 CI（run 33942184554，executor-node windows job 4 失败）
+- 根因 A（生产级）：Windows 环境变量块**大小写不敏感**，真实主机/runner 拼作 `Path`/`Temp`/`PROGRAMDATA`；`buildChildEnv`（node）与 `{k in _ENV_WHITELIST}`（python）都是**精确匹配**→ 混拼键被静默丢弃，任务子进程拿不到 PATH，一切依赖 PATH 的运行时解析（npm/git/node/python）全断。**双重掩盖史**：ubuntu CI 无此语义；本机测试在 Git-Bash 下跑（PATH 被规范成大写）恰好全绿——这正是"Windows CI job 必须上真 runner"的实证注脚。
+- 根因 B（测试级）：`deploy.spec` 两处直接落盘 `/tmp/acf-download-test-*.bin`——GH windows runner 检出于 D: 盘 → `D:\tmp` 不存在 ENOENT；本机因 E:\tmp 存在而通过。
+- 修复（P-14/P-15）：
+  - `executor-node/src/env-whitelist.ts` `buildChildEnv`：win32 大小写不敏感匹配、按白名单规范键（PATH/TEMP/…）转发；POSIX 保持精确匹配。`env-whitelist.spec.ts` 新增双分支行为测试（win32 归一/POSIX 隔离）。
+  - `executor-python/routers/execute.py` 新增 `_build_child_env()` 同语义（python 在 Windows 的 os.environ 本身键大写归一，helper 同时修掉 `ProgramData`/`npm_config_cache` 这类混拼白名单项永不命中的问题）；`test_build_child_env_windows_case_insensitive` 双分支断言。
+  - `deploy.spec.ts` 两处 `/tmp` 硬编码 → `path.join(os.tmpdir(), ...)`。
+- 验证：node **162/162**、python **127/127**（各 +1 测试）；ubuntu 首版修复的测试自身在 Linux 上即错过一次断言（win32/POSIX env 大小写语义差异），已按语义修正；待 push 后确认双平台 CI 全绿。
+
+#### 后续 CI 复盘注记
+- 同 run 还暴露：任务书 W-16 的图标资源已由并行会话提交（`95363aa`，.gitignore `*.png` 全局排除误伤 assets 的反白修复一并带上）；本轮 W-20 修复推送后 windows 4 job 全绿。
 
 ### 提交后待复验清单（Linux/CI 侧 & R14）
 - [ ] executor-node 在 Linux 的 POSIX kill 用例路径未改动语义（分支仅 win32 生效），需 Linux 跑一轮 158 确认无回归

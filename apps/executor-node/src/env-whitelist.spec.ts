@@ -49,7 +49,10 @@ describe('env whitelist — Windows parity surface (R-04)', () => {
    *  `Temp` (mixed case, OS convention) — exact-key matching dropped them
    *  and every PATH-dependent task started failing on real Windows.
    *  win32 must forward case-insensitively under the canonical key; POSIX
-   *  envs are case-sensitive and must keep dropping the wrong-case variant. */
+   *  envs are case-sensitive: a wrong-case var is a DIFFERENT variable and
+   *  must neither match the whitelist nor leak into the child under the
+   *  canonical name. (Note: on win32 `process.env.Path = x` is itself a
+   *  case-insensitive write — that's precisely the OS semantics we mirror.) */
   it('win32 matches env keys case-insensitively (POSIX stays case-sensitive)', () => {
     process.env.Path = '/mixed/case/path';
     try {
@@ -58,7 +61,10 @@ describe('env whitelist — Windows parity surface (R-04)', () => {
         expect(env.PATH).toBe('/mixed/case/path');
         expect(env.Path).toBeUndefined();
       } else {
-        expect(env.PATH).toBeUndefined();
+        // POSIX: real PATH (whatever the shell had) is forwarded untouched;
+        // the mixed-case Path must not masquerade as it nor ride along.
+        expect(env.PATH).not.toBe('/mixed/case/path');
+        expect(env.Path).toBeUndefined();
       }
     } finally {
       delete process.env.Path;

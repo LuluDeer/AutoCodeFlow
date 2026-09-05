@@ -132,6 +132,22 @@ _ENV_WHITELIST = {
     'APPDATA', 'LOCALAPPDATA', 'ProgramData',
 }
 
+
+def _build_child_env() -> dict:
+    """SEC-01: whitelist-filtered copy of os.environ for the task child.
+    W-20 (windows CI): Windows environment blocks are case-insensitive and
+    OS/launchers spell keys their own way (`Path`, `TEMP`, `PROGRAMDATA`…).
+    An exact-key match silently dropped such vars on real Windows hosts —
+    e.g. no PATH reaching the child breaks every PATH-dependent task. On
+    win32 we therefore match case-insensitively and forward under a stable
+    upper-case key (child processes read them case-insensitively anyway).
+    POSIX envs are case-sensitive: exact matching preserved.
+    """
+    if sys.platform == 'win32':
+        wl_upper = {w.upper() for w in _ENV_WHITELIST}
+        return {k.upper(): v for k, v in os.environ.items() if k.upper() in wl_upper}
+    return {k: v for k, v in os.environ.items() if k in _ENV_WHITELIST}
+
 # R4-C P0 (parity with executor-node 6062bee deploy.ts SAFE charset): shell
 # runtime entrypoints come straight from task parameters. Any shell
 # metacharacter here is a command-injection vector, so restrict to a safe set
@@ -529,7 +545,7 @@ async def run_task(req: ExecuteRequest) -> dict:
     _ensure_entrypoint_in_workdir(entrypoint, work_dir)
 
     # SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
-    env = {k: v for k, v in os.environ.items() if k in _ENV_WHITELIST}
+    env = _build_child_env()
     # inject task-scoped context
     env['EXECUTION_ID'] = req.executionId
     env['TASK_ID'] = str(task.get('id', ''))
