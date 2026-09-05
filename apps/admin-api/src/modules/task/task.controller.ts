@@ -544,8 +544,8 @@ export class TaskController {
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
   @ApiResponse({ status: 404, description: "Execution record not found" })
-  execution(@Param("execId") execId: string) {
-    return this.taskService.getExecution(execId);
+  execution(@Param("id") id: string, @Param("execId") execId: string) {
+    return this.taskService.getExecution(execId, id);
   }
 
   @Get(":id/executions/:execId/logs")
@@ -566,11 +566,13 @@ export class TaskController {
     required: false,
     description: "Lines per page, default 500, max 2000",
   })
-  executionLogs(
+  async executionLogs(
+    @Param("id") id: string,
     @Param("execId") execId: string,
     @Query("fromLine") fromLine?: string,
     @Query("limit") limit?: string,
   ) {
+    await this.taskService.getExecution(execId, id);
     return this.taskService.getExecutionLogs(
       execId,
       fromLine ? parseInt(fromLine, 10) || 0 : 0,
@@ -594,10 +596,13 @@ export class TaskController {
   // 路由若改为 @Sse()/return Observable 则会破坏流，必须保持 @Res() 直写。
   @SkipTimeout()
   async streamLogs(
+    @Param("id") id: string,
     @Param("execId") execId: string,
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
+    // 任务作用域必须在写出 SSE 响应头前校验，避免跨任务 execution 流泄露。
+    await this.taskService.getExecution(execId, id);
     // TASK-008: 在写出任何 SSE 响应头之前先占用并发槽位——超限时抛出的
     // ServiceUnavailableException 会被全局异常过滤器渲染为真正的 503，
     // 而不是半开的 SSE 流。
@@ -798,10 +803,12 @@ export class TaskController {
   @ApiParam({ name: "execId", description: "Execution record ID" })
   @ApiResponse({ status: 200, description: "AI analysis result" })
   async analyzeExecution(
+    @Param("id") id: string,
     @Param("execId") execId: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
+    await this.taskService.getExecution(execId, id);
     const result = await this.taskService.analyzeExecution(execId);
     await this.audit.log({
       userId: user?.id,
@@ -828,10 +835,12 @@ export class TaskController {
   })
   @ApiResponse({ status: 404, description: "Execution record not found" })
   async killExecution(
+    @Param("id") id: string,
     @Param("execId") execId: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
+    await this.taskService.getExecution(execId, id);
     const result = await this.taskService.killExecution(execId);
     await this.audit.log({
       userId: user?.id,

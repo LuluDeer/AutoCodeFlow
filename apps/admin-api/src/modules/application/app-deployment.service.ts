@@ -37,9 +37,11 @@ export class AppDeploymentService {
     private readonly configService: ConfigService,
   ) {}
 
-  /** Build auth headers for executor requests */
-  private getExecutorHeaders(): Record<string, string> {
-    const token = this.configService.get<string>("executor.sharedToken") ?? "";
+  /** Build auth headers for executor requests. Must resolve through
+   *  ExecutorService.getSharedToken (DB-first) — a raw env read would send a
+   *  stale credential after DB rotation and be rejected by the executor. */
+  private async getExecutorHeaders(): Promise<Record<string, string>> {
+    const token = await this.executorService.getSharedToken();
     return token ? { Authorization: `Bearer ${token}` } : {};
   }
 
@@ -288,7 +290,7 @@ export class AppDeploymentService {
       await axios.post(
         url,
         { deploymentId: deployment.id },
-        { timeout: 10_000, headers: this.getExecutorHeaders() },
+        { timeout: 10_000, headers: await this.getExecutorHeaders() },
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -413,7 +415,7 @@ export class AppDeploymentService {
       try {
         await axios.post(url, payload, {
           timeout: 30_000,
-          headers: this.getExecutorHeaders(),
+          headers: await this.getExecutorHeaders(),
         });
         // Success
         deployment.status = DeploymentStatus.DEPLOYING;
