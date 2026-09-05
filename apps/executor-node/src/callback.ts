@@ -19,10 +19,36 @@ const callbackQueue: CallbackRequest[] = [];
 // assigned, so repeated startCallbackThread() calls spawned parallel loops.
 let loopStarted = false;
 let stopped = false;
+let callbackLoopPromise: Promise<void> | null = null;
+const CALLBACK_DRAIN_TIMEOUT_MS = 10_000;
+let stopPromise: Promise<void> | null = null;
+let drainExpired = false;
+const deadlineListeners = new Set<() => void>();
+
+// Remove listeners after each operation so normal operation does not retain
+// every completed POST until shutdown. Late network rejections remain handled.
+function untilDeadline<T>(operation: Promise<T>, fallback: T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const expire = () => resolve(fallback);
+    deadlineListeners.add(expire);
+    operation.then(resolve, reject).finally(() => deadlineListeners.delete(expire));
+    if (drainExpired) expire();
+  });
+}
+
+async function callbackDelay(ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await untilDeadline(new Promise<void>(resolve => { timer = setTimeout(resolve, ms); }), undefined);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** admin-api hard-rejects batches over 100 items (BadRequestException), so
  *  every send and every persisted file must respect this chunk size. */
 const CALLBACK_BATCH_SIZE = 100;
+let persistenceSequence = 0;
 
 /** A persisted callback file gets this many retry rounds before it is moved
  *  to the dead-letter directory and stops being re-sent every second. */
@@ -62,7 +88,8 @@ export function pushCallback(request: CallbackRequest): void {
 
 async function doCallback(requests: CallbackRequest[]): Promise<boolean> {
   try {
-    const response = await post('/api/executions/callback', requests);
+    const response = await untilDeadline(post('/api/executions/callback', requests), null);
+    if (!response) return false;
     if (response.status >= 200 && response.status < 300) {
       logger.debug(`Callback successful for ${requests.length} execution(s)`);
       return true;
@@ -79,6 +106,7 @@ async function doCallback(requests: CallbackRequest[]): Promise<boolean> {
  *  after CALLBACK_FILE_MAX_RETRIES instead of retrying forever. */
 function persistFailedCallbacks(requests: CallbackRequest[]): void {
   const timestamp = Date.now();
+  const sequence = persistenceSequence++;
   try {
     const chunks: CallbackRequest[][] = [];
     for (let i = 0; i < requests.length; i += CALLBACK_BATCH_SIZE) {
@@ -86,7 +114,7 @@ function persistFailedCallbacks(requests: CallbackRequest[]): void {
     }
     chunks.forEach((chunk, index) => {
       const suffix = chunks.length > 1 ? `-${index}` : '';
-      const filename = path.join(getCallbackDir(), `callback-${timestamp}${suffix}.json`);
+      const filename = path.join(getCallbackDir(), `callback-${timestamp}-${sequence}${suffix}.json`);
       fs.writeFileSync(filename, JSON.stringify(chunk, null, 2));
       fs.writeFileSync(`${filename}.meta`, JSON.stringify({ retries: 0, persistedAt: timestamp }), 'utf-8');
       logger.info(`Persisted ${chunk.length} failed callbacks to ${filename}`);
@@ -145,6 +173,7 @@ async function retryFailedCallbacks(): Promise<void> {
     const callbackDir = getCallbackDir();
     const files = fs.readdirSync(callbackDir);
     for (const file of files) {
+      if (stopped) break;
       if (!file.startsWith('callback-') || !file.endsWith('.json')) continue;
 
       const filepath = path.join(callbackDir, file);
@@ -163,6 +192,7 @@ async function retryFailedCallbacks(): Promise<void> {
         const requests = JSON.parse(content) as CallbackRequest[];
 
         const success = await doCallback(requests);
+        if (drainExpired) return; // Already durable; do not count an interrupted retry.
         if (success) {
           fs.unlinkSync(filepath);
           try { fs.unlinkSync(`${filepath}.meta`); } catch (_) { /* meta may not exist */ }
@@ -197,15 +227,20 @@ async function processCallbacksWithBackoff(requests: CallbackRequest[]): Promise
   // fail all 5 attempts and then poison the persisted file forever.
   const failed: CallbackRequest[] = [];
   for (let i = 0; i < requests.length; i += CALLBACK_BATCH_SIZE) {
+    if (drainExpired) {
+      failed.push(...requests.slice(i));
+      break;
+    }
     const chunk = requests.slice(i, i + CALLBACK_BATCH_SIZE);
     let delivered = false;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       delivered = await doCallback(chunk);
-      if (delivered) break;
+      if (delivered || drainExpired) break;
       logger.warn(`Callback attempt ${attempt + 1}/${MAX_RETRIES} failed for ${chunk.length} item(s)`);
       if (attempt < MAX_RETRIES - 1) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await callbackDelay(delay);
+        if (drainExpired) break;
       }
     }
     if (!delivered) failed.push(...chunk);
@@ -217,7 +252,7 @@ async function processCallbacksWithBackoff(requests: CallbackRequest[]): Promise
 }
 
 async function processCallbacks(): Promise<void> {
-  while (!stopped) {
+  while (!stopped || callbackQueue.length > 0) {
     try {
       if (callbackQueue.length > 0) {
         const requests = [...callbackQueue];
@@ -230,7 +265,8 @@ async function processCallbacks(): Promise<void> {
       logger.error(`Callback thread error: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    if (stopped && callbackQueue.length === 0) break;
+    if (!stopped) await callbackDelay(1000);
   }
 }
 
@@ -238,13 +274,32 @@ export function startCallbackThread(): void {
   if (loopStarted) return;
   loopStarted = true;
   stopped = false;
+  stopPromise = null;
+  drainExpired = false;
   logger.info('Starting callback thread');
-  processCallbacks();
+  callbackLoopPromise = processCallbacks().catch(error => {
+    logger.error(`Callback thread stopped unexpectedly: ${error instanceof Error ? error.message : String(error)}`);
+  });
 }
 
-export function stopCallbackThread(): void {
+export function stopCallbackThread(): Promise<void> {
+  if (stopPromise) return stopPromise;
+  if (!loopStarted || !callbackLoopPromise) return Promise.resolve();
   stopped = true;
-  logger.info('Stopping callback thread');
+  logger.info('Stopping callback thread and draining pending callbacks');
+  const timer = setTimeout(() => {
+    drainExpired = true;
+    for (const expire of deadlineListeners) expire();
+    deadlineListeners.clear();
+  }, CALLBACK_DRAIN_TIMEOUT_MS);
+  // The consumer owns in-flight payloads as well as the queue, so it must
+  // persist unconfirmed results before stop resolves, even after the deadline.
+  stopPromise = callbackLoopPromise.finally(() => {
+    clearTimeout(timer);
+    loopStarted = false;
+    callbackLoopPromise = null;
+  });
+  return stopPromise;
 }
 
 export function getPendingCallbackCount(): number {

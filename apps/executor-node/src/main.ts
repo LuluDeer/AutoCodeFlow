@@ -133,8 +133,8 @@ async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
     heartbeatInterval = null;
   }
 
-  // Stop callback thread
-  stopCallbackThread();
+  // Stop accepting new requests before task shutdown can enqueue final callbacks
+  server.close();
 
   // Stop log cleanup thread + buffered log writer
   stopLogCleanup();
@@ -149,8 +149,7 @@ async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
   while (getRunningCount() > 0) {
     if (Date.now() - startTime > maxWait) {
       // Grace expired: kill the detached task process groups, otherwise they
-      // outlive the executor as unmanaged orphans (callbacks are already
-      // stopped, so their results could never be reported anyway).
+      // outlive the executor as unmanaged orphans (callbacks from tasks killed below may not be reported; queued callbacks are drained normally).
       const killed = killRunningTaskProcesses();
       logger.warn(
         `Grace period expired, ${getRunningCount()} task(s) still running, forcing shutdown` +
@@ -162,8 +161,8 @@ async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
 
-  // Stop accepting new requests
-  server.close();
+  // Drain callbacks produced by stopped and completed workers before exiting
+  await stopCallbackThread();
 
   // Flush any buffered task logs to disk before exiting
   try {
