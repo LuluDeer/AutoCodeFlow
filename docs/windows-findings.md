@@ -206,8 +206,9 @@
 ### W-17：🔴 desktop 停止链路 win32 语义失效（已修，P-12）
 - `ExecutorProcess.stop()` 原依赖「executor-node 监听 SIGTERM 优雅退出」——Linux 成立；Windows 上 `child.kill('SIGTERM')`=TerminateProcess，执行器优雅链不执行、其任务子进程树整体遗留。修复后 win32 用 `taskkill /T /F` 树杀（POSIX 路径不变）。
 
-### W-18：ℹ️ 生成物 prebuilt bundle 被 git 跟踪（漂移风险）
-- `apps/executor-desktop/resources/executor-node/index.js` 在库中跟踪。本轮已用含全部修复的 executor-node 源码重打并提交；长期建议 gitignore + 构建时生成（本次 `npm run build:executor` 重新生成即刷新，注意别再提交旧版）。
+### W-18：ℹ️ 生成物 prebuilt bundle 被 git 跟踪（漂移风险）——已由 CI 守卫闭环
+- `apps/executor-desktop/resources/executor-node/index.js` 在库中跟踪（desktop `extraResources` 依赖其存在）。原建议 gitignore+构建生成，但会破坏"clone 即用"且 desktop 打包链需额外前置。
+- **最终方案（更优）**：`ci.yml` 新增 `desktop-bundle-drift` job——离线重打 bundle（与 `scripts/bundle-executor.sh` 同参数）+ `git diff --quiet`，产物与源码不同步即红。前提**已在 Windows 侧验证**：ncc 0.44.0 产物字节确定性（同源码+同参数含 `--source-map` 输出与已提交文件逐字节一致；禁网可跑、`npm ci --ignore-scripts` 免 electron 二进制下载、输出目录不影响产物、`.map` 残留被 ignore 覆盖不误报脏树）。人工重打纪律自此由机器把关。
 
 ### W-19：⚠️ R-04 专项收口——两侧任务 env 白名单不对称，python 侧完全缺 Windows 变量族（已修+双端实证）
 - 轮次与用例：R15-3.4 深挖（原风险点 R-04「已含 SYSTEMROOT/WINDIR/COMSPEC/PATHEXT」仅对 executor-node 成立）

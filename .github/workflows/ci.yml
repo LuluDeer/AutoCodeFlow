@@ -304,6 +304,42 @@ jobs:
       - run: python -m pytest tests/ --tb=short
         working-directory: apps/registry-pypi
 
+  # ── W-18 drift guard：desktop 跟踪的 ncc bundle 必须与 executor-node 源码同步 ──
+  # resources/executor-node/index.js 是入库产物（desktop extraResources 依赖其
+  # 存在），此前只靠人工"改完 executor-node 记得 build:executor 重打"——W-18
+  # 记的漂移债。本 job 离线重打一次并 git diff：Windows 侧已验证 ncc 产物字节
+  # 确定性（同源码+同参数含 --source-map，输出与已提交文件逐字节一致，禁网
+  # 可跑、输出目录不影响产物），diff 非空即红。npm ci --ignore-scripts 跳过
+  # electron 二进制下载，只取 @vercel/ncc。
+  desktop-bundle-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/executor-desktop/package-lock.json
+            apps/executor-node/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: apps/executor-desktop
+      - run: npm ci --ignore-scripts
+        working-directory: apps/executor-node
+      - name: Rebuild bundle (same command as scripts/bundle-executor.sh)
+        working-directory: apps/executor-node
+        run: |
+          ../executor-desktop/node_modules/.bin/ncc build src/main.ts \
+            -o ../executor-desktop/resources/executor-node --source-map --no-cache
+      - name: Drift guard — tracked bundle must match source
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          if ! git diff --quiet -- apps/executor-desktop/resources/executor-node/index.js apps/executor-desktop/resources/executor-node/sourcemap-register.js; then
+            echo "::error::apps/executor-desktop/resources/executor-node is stale — run 'npm run build:executor' in apps/executor-desktop and commit the regenerated bundle (W-18)."
+            git diff --stat -- apps/executor-desktop/resources/
+            exit 1
+          fi
+
   # ── Windows 兼容基线（R15-3.5 / windows-findings）──────────────
   # R13 全轮在 Windows 复跑并逐条平台化断言后固化的绿灯集合：
   # executor-node jest 158、acf-cli vitest 48、mcp-server vitest 61、
