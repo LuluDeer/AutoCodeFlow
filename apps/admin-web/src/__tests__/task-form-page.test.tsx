@@ -13,6 +13,7 @@ import TaskFormPage from '../pages/TaskFormPage';
 import {
   deriveExecutorMode,
   buildExecutorPayload,
+  applyRequirementsPayload,
 } from '../pages/executor-mode';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
@@ -218,5 +219,46 @@ describe('TaskFormPage 编辑态加载 executorId → pinned 选择器', () => {
     // pinned 模式才会渲染绑定 executorId 的选择器；executorId 命中列表项时
     // Select 展示选中项 label（appName + address），而非占位文案。
     expect(await screen.findByText(/node-a/)).toBeTruthy();
+  });
+});
+
+// W-21: requirements 提交序列化——trim/丢空 + 空集显式 null（PATCH 缺省=后端保留旧值，
+// 删除全部依赖必须发 null，复用 N28 教训）+ 字段未挂载（glue 任务）归一为 null。
+describe('applyRequirementsPayload（W-21）', () => {
+  it('逐条 trim 并丢弃空字符串项', () => {
+    const payload = applyRequirementsPayload({
+      requirements: ['  requests>=2.31  ', '', '  ', 'rich==13.7.1'],
+    });
+    expect(payload.requirements).toEqual(['requests>=2.31', 'rich==13.7.1']);
+  });
+
+  it('全部为空 → 显式 null（非缺省/[] 以外语义）', () => {
+    const payload = applyRequirementsPayload({
+      requirements: ['  ', ''],
+    });
+    expect(payload.requirements).toBeNull();
+  });
+
+  it('字段未挂载（glue 任务/undefined）→ 归一为 null', () => {
+    const payload = applyRequirementsPayload({ name: 't' });
+    expect(payload.requirements).toBeNull();
+  });
+
+  it('非字符串元素被丢弃（tags 模式理论不产出，防御性）', () => {
+    const payload = applyRequirementsPayload({
+      requirements: ['ok', 42, null],
+    });
+    expect(payload.requirements).toEqual(['ok']);
+  });
+
+  it('保留其它字段不变（仅接管 requirements）', () => {
+    const payload = applyRequirementsPayload({
+      name: 't',
+      executorId: 'e1',
+      requirements: ['flask'],
+    });
+    expect(payload.name).toBe('t');
+    expect(payload.executorId).toBe('e1');
+    expect(payload.requirements).toEqual(['flask']);
   });
 });

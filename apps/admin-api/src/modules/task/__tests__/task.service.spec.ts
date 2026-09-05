@@ -214,6 +214,41 @@ describe("TaskService (__tests__)", () => {
       await expect(service.create(dto)).rejects.toThrow("Circular dependency");
     });
 
+    // W-21: requirements normalization — trim specs, reject option-like and
+    // blank entries at create so they 400 instead of burning a queued exec.
+    describe("create requirements normalization (W-21)", () => {
+      it("trims each requirement spec", async () => {
+        taskRepo.create.mockImplementation((t: any) => t);
+        taskRepo.save.mockImplementation((t: any) =>
+          Promise.resolve({ id: "1", ...t }),
+        );
+        await service.create({
+          name: "t",
+          requirements: ["  requests>=2.31  ", " rich==13.7.1 "],
+        } as any);
+        expect(taskRepo.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            requirements: ["requests>=2.31", "rich==13.7.1"],
+          }),
+        );
+      });
+
+      it("rejects an option-like spec (leading dash)", async () => {
+        await expect(
+          service.create({
+            name: "t",
+            requirements: ["--index-url", "http://evil"],
+          } as any),
+        ).rejects.toThrow(/options are not allowed/);
+      });
+
+      it("rejects a blank requirement entry", async () => {
+        await expect(
+          service.create({ name: "t", requirements: ["  "] } as any),
+        ).rejects.toThrow(/non-empty/);
+      });
+    });
+
     // R6: 客户端自带已存在 id 时返回 409，而非 PG 主键冲突裸 500
     describe("create with client-supplied id (R6)", () => {
       const UUID = "550e8400-e29b-41d4-a716-446655440000";
@@ -1934,6 +1969,24 @@ describe("TaskService (__tests__)", () => {
       const result = await service.saveVersion("t1", "user", "initial");
       expect(result.version).toBe("v1");
       expect(versionRepo.create).toHaveBeenCalled();
+    });
+
+    // W-21: the snapshot must carry requirements, or a version rollback would
+    // silently drop the dependency set the rolled-back task needs.
+    it("snapshot includes requirements (W-21)", async () => {
+      const task = {
+        id: "t1",
+        name: "task",
+        requirements: ["requests>=2.31"],
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      versionRepo.find.mockResolvedValue([]);
+      versionRepo.save.mockImplementation((v: any) =>
+        Promise.resolve({ id: "v1", ...v }),
+      );
+      await service.saveVersion("t1", "user", "with-deps");
+      const arg = versionRepo.create.mock.calls[0][0];
+      expect(arg.snapshot.requirements).toEqual(["requests>=2.31"]);
     });
 
     it("throws NotFoundException when task not found", async () => {

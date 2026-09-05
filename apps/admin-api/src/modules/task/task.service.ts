@@ -121,6 +121,25 @@ export class TaskService {
       normalized.timeout = normalized.timeoutSeconds;
       delete normalized.timeoutSeconds;
     }
+    // W-21: requirements reach `uv pip install` / `npm install` as argv on
+    // the executor. Reject option-shaped specs (`--index-url http://evil`
+    // would hijack the package index) and blank entries here, mirroring the
+    // executors' own guards so a bad spec 400s at create instead of burning a
+    // queued execution. Trim normalizes harmless surrounding whitespace.
+    if (Array.isArray(normalized.requirements)) {
+      normalized.requirements = normalized.requirements.map((raw) => {
+        const spec = typeof raw === "string" ? raw.trim() : raw;
+        if (typeof spec !== "string" || spec.length === 0) {
+          throw new BadRequestException("Task requirement must be non-empty");
+        }
+        if (spec.startsWith("-")) {
+          throw new BadRequestException(
+            `Invalid task requirement (options are not allowed): ${spec}`,
+          );
+        }
+        return spec;
+      });
+    }
     // R6: 请求体自身两键齐全时直接拒绝（create 路径覆盖此洞）。update 的
     // PATCH 合并路径由 assertPinBroadcastExclusive 在合并后实体态兜底（N17）。
     this.assertPinBroadcastExclusive(
@@ -1406,6 +1425,9 @@ export class TaskService {
       description: task.description,
       runtime: task.runtime,
       entrypoint: task.entrypoint,
+      // W-21: requirements must ride the snapshot, or a version rollback
+      // would silently drop the dependency set the rolled-back task needs.
+      requirements: task.requirements,
       params: task.params,
       timeout: task.timeout,
       maxRetry: task.maxRetry,

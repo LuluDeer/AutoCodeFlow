@@ -108,6 +108,16 @@ export class Task {
     string
   >;
   @Column({ nullable: true }) entrypoint: string;
+  /**
+   * W-21 (windows-findings): dependency specs the executor installs before
+   * running the task — python runtime → `uv pip install` into a per-task venv
+   * (executor-python); node runtime → npm packages (executor-node). Consumed
+   * only by entrypoint (packaged) tasks; glue-script tasks clear it to [] in
+   * both executors (glue uses the system interpreter, no per-task deps).
+   * Carried verbatim on the dispatch payload (`{executionId, task, params}`),
+   * so no dispatch change is needed — the entity field reaches the executor.
+   */
+  @Column({ type: "jsonb", nullable: true }) requirements: string[] | null;
   @Column({ nullable: true }) gitRepo: string;
   @Column({ nullable: true }) gitBranch: string;
   @Column({ nullable: true }) gitCommit: string;

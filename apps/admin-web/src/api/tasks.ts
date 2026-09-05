@@ -6,6 +6,12 @@ export interface Task {
   description?: string;
   runtime: string;
   entrypoint: string;
+  /**
+   * W-21: 依赖声明（后端 tasks.requirements jsonb）。python runtime 任务由
+   * executor-python 装进 per-task uv venv；node runtime 由 executor-node 安装。
+   * 仅 entrypoint 任务有意义，glue 脚本任务在执行器侧被清零。
+   */
+  requirements?: string[] | null;
   status: string;
   triggerType: string;
   fixedRate?: number;

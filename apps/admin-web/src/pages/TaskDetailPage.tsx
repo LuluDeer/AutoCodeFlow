@@ -295,6 +295,13 @@ export default function TaskDetailPage() {
                     </Descriptions.Item>
                   )}
                   <Descriptions.Item label="入口文件">{task.entrypoint || '-'}</Descriptions.Item>
+                  {task.requirements && task.requirements.length > 0 && (
+                    <Descriptions.Item label="依赖包">
+                      <Space size={[4, 4]} wrap>
+                        {task.requirements.map((r) => <Tag key={r} color="blue">{r}</Tag>)}
+                      </Space>
+                    </Descriptions.Item>
+                  )}
                   <Descriptions.Item label="超时">{task.timeout ? `${task.timeout} 秒` : '-'}</Descriptions.Item>
                   <Descriptions.Item label="最大重试">{task.maxRetry ?? 0} 次</Descriptions.Item>
                   <Descriptions.Item label="调度模式">
