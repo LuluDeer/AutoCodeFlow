@@ -20,9 +20,10 @@ import ParamsEditor from '../components/ParamsEditor';
 
 const { Text } = Typography;
 
-const STATUS_COLOR: Record<string, string> = {
-  pending: 'default', running: 'processing', success: 'green',
-  failed: 'red', timeout: 'orange', killed: 'volcano', cancelled: 'default',
+type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
+const STATUS_COLOR: Record<string, BadgeStatus> = {
+  pending: 'default', running: 'processing', success: 'success',
+  failed: 'error', timeout: 'warning', killed: 'error', cancelled: 'default',
 };
 const STATUS_LABEL: Record<string, string> = {
   pending: '等待中', running: '运行中', success: '成功',
@@ -39,6 +40,8 @@ export default function TaskDetailPage() {
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
   const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
   const [triggering, setTriggering] = useState(false);
+  const [killingId, setKillingId] = useState<string | null>(null);
+  const [toggleLoading, setToggleLoading] = useState(false);
 
   const handleAiSuggest = async () => {
     if (!id) return;
@@ -107,13 +110,19 @@ export default function TaskDetailPage() {
   };
 
   const handlePause = async () => {
+    if (toggleLoading) return;
+    setToggleLoading(true);
     try { await tasksApi.pause(id!); message.success('已暂停'); refreshTask(); }
     catch (err: unknown) { message.error(getErrMsg(err, '暂停失败')); }
+    finally { setToggleLoading(false); }
   };
 
   const handleResume = async () => {
+    if (toggleLoading) return;
+    setToggleLoading(true);
     try { await tasksApi.resume(id!); message.success('已恢复'); refreshTask(); }
     catch (err: unknown) { message.error(getErrMsg(err, '恢复失败')); }
+    finally { setToggleLoading(false); }
   };
 
   const handleDelete = async () => {
@@ -126,11 +135,14 @@ export default function TaskDetailPage() {
   };
 
   const handleKill = async (execId: string) => {
+    if (killingId) return;
+    setKillingId(execId);
     try {
       await tasksApi.killExecution(id!, execId);
       message.success('已终止');
       refreshExecs();
     } catch (err: unknown) { message.error(getErrMsg(err, '终止失败')); }
+    finally { setKillingId(null); }
   };
 
   if (taskLoading && !task) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
@@ -139,7 +151,7 @@ export default function TaskDetailPage() {
   const execColumns = [
     {
       title: '状态', dataIndex: 'status', width: 90,
-      render: (s: string) => <Badge status={STATUS_COLOR[s] as 'success' | 'error' | 'warning' | 'processing' | 'default'} text={STATUS_LABEL[s] || s} />,
+      render: (s: string) => <Badge status={STATUS_COLOR[s] ?? 'default'} text={STATUS_LABEL[s] || s} />,
     },
     {
       title: '触发', dataIndex: 'triggerType', width: 80,
@@ -175,10 +187,17 @@ export default function TaskDetailPage() {
       render: (_: unknown, r: TaskExecution) => (
         <Space size={2}>
           {r.status === 'running' && (
-            <Tooltip title="终止">
-              <Button type="text" size="small" danger icon={<StopOutlined />}
-                onClick={() => handleKill(r.id)} />
-            </Tooltip>
+            <Popconfirm
+              title="确认终止此执行？"
+              description="终止后执行将中断且不可恢复。"
+              onConfirm={() => handleKill(r.id)}
+              okText="终止" okButtonProps={{ danger: true }}
+            >
+              <Tooltip title="终止">
+                <Button type="text" size="small" danger icon={<StopOutlined />}
+                  loading={killingId === r.id} />
+              </Tooltip>
+            </Popconfirm>
           )}
           <Button type="link" size="small" icon={<EyeOutlined />}
             onClick={() => nav(`/tasks/${id}/executions/${r.id}`)}>详情</Button>
@@ -216,8 +235,8 @@ export default function TaskDetailPage() {
         </div>
         <Space>
           <Button icon={<ThunderboltOutlined />} type="primary" onClick={handleTrigger}>立即触发</Button>
-          {isActive && <Button icon={<PauseCircleOutlined />} onClick={handlePause}>暂停</Button>}
-          {isPaused && <Button icon={<PlayCircleOutlined />} type="primary" onClick={handleResume}>恢复</Button>}
+          {isActive && <Button icon={<PauseCircleOutlined />} loading={toggleLoading} disabled={toggleLoading} onClick={handlePause}>暂停</Button>}
+          {isPaused && <Button icon={<PlayCircleOutlined />} type="primary" loading={toggleLoading} disabled={toggleLoading} onClick={handleResume}>恢复</Button>}
           <Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading}>AI 调度建议</Button>
           <Button icon={<EditOutlined />} onClick={handleEdit}>编辑</Button>
           <Popconfirm title="确认删除此任务？" onConfirm={handleDelete} okText="删除" okButtonProps={{ danger: true }}>
@@ -242,9 +261,9 @@ export default function TaskDetailPage() {
             <Card size="small">
               <Statistic
                 title="成功率"
-                value={((taskStats.successRate ?? 0) * 100).toFixed(1)}
+                value={(taskStats.successRate ?? 0).toFixed(1)}
                 suffix="%"
-                styles={{ content: { color: (taskStats.successRate ?? 0) >= 0.95 ? '#52c41a' : (taskStats.successRate ?? 0) >= 0.8 ? '#fa8c16' : '#ff4d4f' } }}
+                styles={{ content: { color: (taskStats.successRate ?? 0) >= 95 ? '#52c41a' : (taskStats.successRate ?? 0) >= 80 ? '#fa8c16' : '#ff4d4f' } }}
                 prefix={<CheckCircleOutlined />}
               />
             </Card>
@@ -253,8 +272,8 @@ export default function TaskDetailPage() {
             <Card size="small">
               <Statistic
                 title="失败次数"
-                value={taskStats.totalRuns > 0 ? Math.round(taskStats.totalRuns * (1 - (taskStats.successRate ?? 0))) : 0}
-                styles={taskStats.totalRuns > 0 && taskStats.successRate < 1 ? { content: { color: '#ff4d4f' } } : undefined}
+                value={taskStats.totalRuns > 0 ? Number((taskStats.totalRuns * (1 - (taskStats.successRate ?? 0) / 100)).toFixed(1)) : 0}
+                styles={taskStats.totalRuns > 0 && (taskStats.successRate ?? 0) < 100 ? { content: { color: '#ff4d4f' } } : undefined}
                 prefix={<CloseCircleOutlined />}
               />
             </Card>
