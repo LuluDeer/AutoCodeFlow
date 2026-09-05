@@ -117,11 +117,12 @@
 | 2.8 Playwright e2e | ✅ 16/16 | **W-12**：任务书所指 29 例为 Linux 侧**未跟踪**根级文件，Windows 无该基线；跑仓内 `e2e-full.spec.cjs` 16 例（首跑 15/16 → 修 W-13 后 16/16，1.5min） |
 | 2.9 优雅退出 | ✅（经 W-14/15 修复后） | 详见 W-14/15 |
 
-### W-12：⚠️ e2e 29 例基线为 Linux 侧未跟踪文件，Windows/CI 不可复现（流程债）
+### W-12：⚠️ e2e 29 例基线为 Linux 侧未跟踪文件，Windows/CI 不可复现（流程债，已修）
 - 轮次与用例：R14-2.8
 - 现象：R9-R11 验证报告使用的根级 `e2e-full.spec.js`（29 例）+ `playwright.e2e.config.js` 是 C-agent 未跟踪产物（VERIFY-round9/11 明文记录），仓库只跟踪 `apps/admin-web/e2e-full.spec.cjs/.js`（16 例版）。Windows 新 clone 即无 29 例基线。
 - 严重级：流程债（测试资产未入库）。
 - 建议：把 29 例版纳入仓库（或在其原始机器提交），否则 R15-3.5 Windows CI 只能固化 16 例基线。
+- 修复（Linux 原始机器）：根级 29 例版 + `playwright.e2e.config.js` 入库（`.gitignore` 撤销忽略）；test#16 移植 W-13 修复（`request` fixture + 鉴权 `GET /api/metrics`）。运行：`cd apps/admin-web && NODE_PATH=$(pwd)/node_modules npx playwright test --config=../../playwright.e2e.config.js`（前置 admin-api:3105 + admin-web:5176；`--list` 实测枚举 29/29）
 
 ### W-13：🧪 16 例版 test#16「Prometheus 指标端点」断言路径错误（跨平台测试 bug，已修）
 - 原实现 `page.goto('http://localhost:3105/metrics')`——实际端点是 **`/api/metrics` 且带 JwtAuthGuard**（metrics.controller.ts R7）。旧路径 404，任何平台都拿不到指标。
