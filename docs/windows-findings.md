@@ -221,7 +221,8 @@
 #### 后续 CI 复盘注记
 - 同 run 还暴露：任务书 W-16 的图标资源已由并行会话提交（`95363aa`，.gitignore `*.png` 全局排除误伤 assets 的反白修复一并带上）；本轮 W-20 修复推送后 windows 4 job 全绿。
 
-### 提交后待复验清单（Linux/CI 侧 & R14）
-- [ ] executor-node 在 Linux 的 POSIX kill 用例路径未改动语义（分支仅 win32 生效），需 Linux 跑一轮 158 确认无回归
-- [ ] executor-python 在 Linux 跑 125（skip 逻辑不触发）
-- [ ] R14-2.4 实测 taskkill 树杀后孙进程无残留（tasklist 对照）
+### 提交后待复验清单（Linux/CI 侧 & R14）——2026-09-05 CI run 33943007134 **22/22 全绿，全部闭环**
+- [x] executor-node 在 Linux 的 POSIX kill 用例路径未改动语义（分支仅 win32 生效）——ubuntu job 162/162 ✓
+- [x] executor-python 在 Linux 跑 127（win32 专属分支在 Linux 自然不触发）——ubuntu job ✓；windows 侧同名测试走 win32 分支 ✓
+- [x] R14-2.4 实测 taskkill 树杀后孙进程无残留（见 R14 表 2.4 行：kill 后 `setTimeout(600000)` 计数=0）
+- [x] W-20 修复经 Windows runner 真机二次确认（run 55abf07 windows 4 job 绿 → c00d065 全 22 job 绿）
