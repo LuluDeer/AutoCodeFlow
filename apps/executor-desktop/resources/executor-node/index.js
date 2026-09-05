@@ -47363,6 +47363,36 @@ const fs = __importStar(__nccwpck_require__(9896));
 const config_1 = __nccwpck_require__(3650);
 const DEFAULT_TIMEOUT_MS = 120000;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
+/**
+ * Remove a partially-written download, RETRYING asynchronously on Windows
+ * without gating the caller's promise on it.
+ *
+ * W-26 (windows-findings): `fs.unlink` fired right after `stream.destroy()`
+ * races the fd close on Windows — the file is still open, unlink fails
+ * EBUSY/EPERM, and the (previously error-swallowing) callback LEAKED the
+ * partial file forever (the 404-cleanup test flaked under load; the product
+ * impact is orphaned temp files filling the work dir on every failed package
+ * download). EBUSY/EPERM now trigger a short bounded retry chain. The retry
+ * deliberately does NOT gate resolve/reject: a caller awaiting cleanup would
+ * deadlock wherever fs is stubbed (unit mocks) — the TTL workdir sweep remains
+ * the backstop for a truly stuck file, and callers/tests can poll existence.
+ */
+function removePartialFile(dest, attemptsLeft = 12) {
+    try {
+        fs.unlinkSync(dest);
+        return;
+    }
+    catch (err) {
+        const code = err.code;
+        if (code === 'ENOENT')
+            return;
+        if ((code === 'EBUSY' || code === 'EPERM') && attemptsLeft > 0) {
+            setTimeout(() => removePartialFile(dest, attemptsLeft - 1), 40);
+            return;
+        }
+        // Anything else (EROFS, mocked-fs stubs throwing, …): best effort only.
+    }
+}
 function downloadFile(url, dest, options = {}) {
     const { maxRedirects = 5, sendAuth = true, timeoutMs = DEFAULT_TIMEOUT_MS, maxBytes = DEFAULT_MAX_BYTES, } = options;
     return new Promise((resolve, reject) => {
@@ -47383,7 +47413,10 @@ function downloadFile(url, dest, options = {}) {
             settled = true;
             cleanup();
             file?.destroy?.();
-            fs.unlink(dest, () => { });
+            // W-26: Windows fd-close race makes a single unlink fail EBUSY — the
+            // bounded retry chain inside removePartialFile guarantees eventual
+            // removal without gating the reject on it (see its doc comment).
+            removePartialFile(dest);
             reject(err);
         };
         const headers = {};
@@ -47399,10 +47432,11 @@ function downloadFile(url, dest, options = {}) {
                 }
                 if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                     cleanup();
-                    file.close();
-                    fs.unlink(dest, () => { });
+                    res.resume(); // drain the redirect body; nothing is piped to the (destroyed) file
                     settled = true; // resolution continues in the recursive call below
                     if (maxRedirects <= 0) {
+                        file.destroy();
+                        removePartialFile(dest);
                         reject(new Error('Download failed: too many redirects'));
                         return;
                     }
@@ -47411,10 +47445,20 @@ function downloadFile(url, dest, options = {}) {
                         nextUrl = new URL(res.headers.location, url);
                     }
                     catch {
+                        file.destroy();
+                        removePartialFile(dest);
                         reject(new Error('Download failed: invalid redirect location'));
                         return;
                     }
                     const nextSendAuth = sendAuth && nextUrl.hostname === new URL(url).hostname;
+                    // W-26: destroy (NOT close): res.pipe(file) is still attached at
+                    // this point and close() would emit data-after-end → an 'error' that
+                    // re-enters fail() and double-follows the redirect. destroy() drops
+                    // the buffered body and releases the fd; removePartialFile retries
+                    // the fd-close race. Recursion is NOT gated on the unlink (mocked-fs
+                    // unit tests must not deadlock).
+                    file.destroy();
+                    removePartialFile(dest);
                     downloadFile(nextUrl.href, dest, { maxRedirects: maxRedirects - 1, sendAuth: nextSendAuth, timeoutMs, maxBytes })
                         .then(resolve, reject);
                     return;
@@ -47626,7 +47670,7 @@ async function notifyOffline() {
 // Graceful shutdown
 let heartbeatInterval = null;
 let isShuttingDown = false;
-async function gracefulShutdown(signal) {
+async function gracefulShutdown(signal, exitCode = 0) {
     if (isShuttingDown)
         return;
     isShuttingDown = true;
@@ -47669,7 +47713,7 @@ async function gracefulShutdown(signal) {
     // Send offline notification
     await notifyOffline();
     logger_1.logger.info('Executor shutdown complete');
-    process.exit(0);
+    process.exit(exitCode);
 }
 // Register signal handlers
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
@@ -47681,6 +47725,37 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // — running task processes were orphaned instead of being reaped by
 // gracefulShutdown's killRunningTaskProcesses. No-op on POSIX.
 process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));
+// W-25 (windows-findings): last-line-of-defence parity with admin-api's
+// OPS-06/ARCH-008. Before this, ANY unexpected async error killed the process
+// by default WITHOUT running gracefulShutdown — task process trees then
+// outlived the executor as unmanaged orphans (the exact failure mode W-24
+// just removed one instance of; this covers every future one). Route both
+// through the same drain + tree-kill chain, then exit(1) so a supervisor
+// restarts us. 45s cap = 30s task grace + slack; if it ever fires, the
+// hard exit still happens.
+function fatalShutdown(reason) {
+    logger_1.logger.error(`FATAL (unhandled): ${reason} — graceful shutdown with exit(1)`);
+    let done = false;
+    const hardExit = setTimeout(() => {
+        if (!done) {
+            logger_1.logger.error('Graceful shutdown stalled after fatal error — hard exiting');
+            process.exit(1);
+        }
+    }, 45000);
+    hardExit.unref();
+    gracefulShutdown(reason, 1)
+        .catch(() => undefined)
+        .finally(() => {
+        done = true;
+        process.exit(1);
+    });
+}
+process.on('unhandledRejection', (reason) => {
+    fatalShutdown(`unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`);
+});
+process.on('uncaughtException', (err) => {
+    fatalShutdown(`uncaughtException: ${err.stack ?? String(err)}`);
+});
 const server = app.listen(config_1.config.port, async () => {
     try {
         logger_1.logger.info(`Executor started: ${config_1.config.appName} @ ${config_1.config.executorAddress}`);
