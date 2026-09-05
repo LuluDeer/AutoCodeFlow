@@ -282,3 +282,11 @@
   - 防抖清单（全部来自前轮教训，一条不落）：① 每次全新库——admin seed/任务/执行记录零残留，断言不漂移（W-12 种子残留债）；② `LOGIN_THROTTLE_LIMIT=10000` + `THROTTLE_LIMIT=10000`——29 例 ~40 次登录 + API 轮询，默认 20/60 必级联 429（W-22 同根）；③ `EXECUTION_CALLBACK_SECRET` 两端显式同值——消 fallback 语义漂移；④ `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`——派发目标 localhost:8002 是回环，safe-http SSRF 守卫默认阻断（round-9 VERIFY 同款配置）；⑤ `no_proxy` 导出——本机代理（http_proxy）会劫持 curl/浏览器对 localhost 的健康检查致 502（CI 无代理不受影响，本地复现必踩）。
 - 验证：本地 docker 模式 29/29（1.6m）+ SKIP_DOCKER 模拟 services 29/29（同 1.6m，CI 实际路径）；CI run 33962387214 **e2e-full job 29 passed (2.1m)，全 run 23/23 绿**（head 53db654）。
 - 教训：`bash xxx.sh | tail` 会把退出码掩盖成 tail 的 0——后台跑编排脚本不要套管道，用文件重定向 + 显式 echo EXIT。
+
+### W-28：✅ Windows 全栈 e2e 接入 CI（PR/手动门控）——2026-05 Windows 侧
+- 状态澄清（修正本人一处误判）：本人曾报"W-12 尚未推上来、远端无新提交"——错。`8ca8c8a`（W-12）早已在共享历史中，我随后所有 push 都在其之上快进；`git log develop..origin/develop` 为空是"无新东西要拉"而非"对方没推"，两者语义我当时混为一谈。用户/Linux 侧均已核实。
+- 动机：W-27 的 e2e 门禁只在 ubuntu——而本项目规律是 **Windows runner 专抓 Linux 漏网**（W-20/W-22/W-26 三连）。29 例全栈在 Windows CI 上跑通，才算"双平台 e2e 门禁"闭环。
+- 落地形态（用户拍板方案 A：**仅 PR / workflow_dispatch 触发**，不进 develop push——windows runner 慢且重，服务/下载引入新 flaky 面）：
+  - `scripts/e2e-full.sh` 参数化：`E2E_WORK_DIR`（Windows 必须指 `C:/tmp/...`，node 把 `/tmp` 解析到当前盘根）与 `E2E_LOG_ROOT`（默认留 MSYS /tmp——mktemp 对带盘符模板解析有坑，日志只有 bash 侧读写，node 不需要）。ubuntu job/本地默认值零变化。
+  - `ci.yml` 新增 `e2e-full-windows`：PG 用 runner 预装 `postgresql-x64-*` 服务（**postgres/root，Stopped 默认**，runner-images README 实锤），`Get-Service` 通配发现版本（14/17 两代镜像兼容）+ `PGBIN` 双保险入 PATH（脚本 SKIP_DOCKER 分支依赖 psql）；Redis 用 `redis-windows` portable zip（8.10.1 固定版本，无服务/管理员，`--save ''` 纯内存）；`Test-NetConnection` 双端口就绪等待（服务 Running ≠ 端口可连）；编排与 ubuntu job 同脚本同 env 面（SKIP_DOCKER=1 + E2E_* 对齐）。顶层 `on:` 增补 `workflow_dispatch`。
+  - 风险与回滚：job 带 `if:` 门控且不阻塞任何现有流；首跑在 PR/dispatch 上验证，若服务/下载抖动，可降级为 `continue-on-error` 观察期或仅保留手动触发。CI job 定义数 16→17（push 时实跑仍 24/24，windows e2e 只在 PR/手动加入）。

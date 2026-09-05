@@ -48,7 +48,13 @@ REDIS_PASS="${E2E_REDIS_PASS:-}"
 PORT_API=3105
 PORT_WEB=5176
 PORT_EXECUTOR=8002
-LOG_DIR="$(mktemp -d /tmp/acf-e2e-logs.XXXXXX)"
+# Executor 任务工作目录：默认 POSIX /tmp；Windows runner 传 E2E_WORK_DIR=
+# C:/tmp/... （node 在 win32 把 "/tmp" 解析为当前盘根，故须给绝对盘符路径）。
+EXEC_WORK_DIR="${E2E_WORK_DIR:-/tmp/acf-e2e-tasks}"
+# 日志根：ubuntu 默认 /tmp；Windows Git-Bash 的 /tmp≠MSYS 之外可见路径，
+# CI windows job 显式指到 C:/tmp 与 artifacts 采集路径对齐。
+LOG_ROOT="${E2E_LOG_ROOT:-/tmp}"
+LOG_DIR="$(mktemp -d "$LOG_ROOT"/acf-e2e-logs.XXXXXX)"
 
 PG_CONTAINER=acf-e2e-pg-$$
 REDIS_CONTAINER=acf-e2e-redis-$$
@@ -155,7 +161,7 @@ echo "══ [4/6] 启动 executor-node(:$PORT_EXECUTOR) ══"
     PORT=$PORT_EXECUTOR \
     EXECUTOR_ADDRESS=localhost:$PORT_EXECUTOR \
     ADMIN_API_URL=http://localhost:$PORT_API \
-    WORK_DIR=/tmp/acf-e2e-tasks \
+    WORK_DIR=$EXEC_WORK_DIR \
     node dist/main.js
 ) >"$LOG_DIR/executor-node.log" 2>&1 &
 PIDS+=($!)
@@ -164,7 +170,7 @@ echo "executor-node /health OK"
 
 # 注册 online 轮询：/health 只证明进程在，getFirstOnlineExecutor 要的是
 # admin-api 侧 status=online（注册+首跳心跳异步完成，30s 窗口兜底）
-mkdir -p /tmp/acf-e2e-tasks
+mkdir -p "$EXEC_WORK_DIR"
 REG_OK=0
 for _ in $(seq 1 30); do
   TOK=$(curl -sf -X POST "http://localhost:$PORT_API/api/auth/login" \
