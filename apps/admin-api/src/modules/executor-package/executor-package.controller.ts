@@ -20,10 +20,15 @@ import {
 import { FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
 import { Response } from "express";
+import * as jwt from "jsonwebtoken";
+import { UnauthorizedException } from "@nestjs/common";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { Public } from "../../common/decorators/public.decorator";
 import { SystemConfigService } from "../config/config.service";
-import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
+import {
+  getExecutorSharedToken,
+  verifyExecutorToken,
+} from "../../common/utils/verify-executor-token.util";
 import {
   ApiTags,
   ApiOperation,
@@ -166,15 +171,53 @@ export class ExecutorPackageController {
     return this.svc.remove(id);
   }
 
+  @Public()
+  // Reset inherited ADMIN roles: machine callers have no req.user.
+  // Access is gated by the shared token or access JWT checks below.
+  @Roles()
   @Get(":id/download")
-  @ApiOperation({ summary: "Download executor package file" })
+  @ApiOperation({
+    summary: "Download executor package file",
+    description:
+      "Accepts either a valid administrator access JWT or the executor shared token. JWT validation is stateless and does not query the user database, matching upload-auth middleware; access-token expiry provides revocation latency.",
+  })
   @ApiParam({ name: "id", description: "Package ID" })
   @ApiResponse({ status: 200, description: "File content" })
+  @ApiResponse({ status: 401, description: "Invalid access JWT or executor token" })
   @ApiResponse({ status: 404, description: "Package or file not found" })
   async download(
     @Param("id", ParseUUIDPipe) id: string,
     @Res() res: Response,
+    @Headers("authorization") authHeader?: string,
   ): Promise<void> {
+    let authorized = false;
+    try {
+      await verifyExecutorToken(authHeader, this.configService, this.systemConfigService);
+      authorized = true;
+    } catch {
+      // Fall back to the management access JWT.
+    }
+
+    // Mirror upload-auth.middleware: same secret and access type, no user DB
+    // lookup. Revocation relies on short access-token expiry (default 15m).
+    if (!authorized && authHeader?.startsWith("Bearer ")) {
+      try {
+        const payload = jwt.verify(
+          authHeader.slice("Bearer ".length),
+          this.configService.get<string>("jwt.secret"),
+          { ignoreExpiration: false },
+        ) as { type?: string } | string;
+        authorized = typeof payload === "object" && payload.type === "access";
+      } catch {
+        // Both credential channels failed.
+      }
+    }
+    if (!authorized) {
+      throw new UnauthorizedException(
+        "Unauthorized: package downloads require a valid access JWT or executor token",
+      );
+    }
+
     const { buffer, pkg } = await this.svc.getFileBuffer(id);
     res.setHeader(
       "Content-Disposition",
@@ -301,7 +344,10 @@ export class ExecutorPackageController {
     { executorId: string; address: string; success: boolean; error?: string }[]
   > {
     const executors = await this.executorService.findAll();
-    const sharedToken = this.configService.get<string>("executor.sharedToken");
+    const sharedToken = (await getExecutorSharedToken(
+      this.configService,
+      this.systemConfigService,
+    )) ?? undefined;
     return this.svc.pushToExecutors(id, executorIds, executors, sharedToken);
   }
 }
