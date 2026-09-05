@@ -208,6 +208,7 @@
 - uvicorn 启动/注册/心跳/优雅下线：正常；端口 bind 失败时启动链的 graceful shutdown（offline 通知+退出码干净）被意外实证一次。
 - 任务电池（直连或经 admin pinned 分发）：① python glue success（P-4 真链路 + `AUTOFLOW_CALLBACK_TOKEN` 注入 True，N33 Windows 成立）；② shell batch glue success（W-11 .cmd）；③ requirements 任务直连 `/execute`：`uv venv` 真实建 venv + `Scripts\python.exe` 解析 + httpx 0.28.1 安装运行 success（**P-3 真链路**）。
 - ℹ️ 顺带发现（跨平台产品面，非 Windows）：admin-api 的 CreateTaskDto/dispatch 均不携带 `requirements`——executor 侧 venv 能力经 UI/API 正常链路不可达，只能由直连执行器或后续 manifest 特性触发。记作功能缺口，待产品决定是否接通。
+- ✅ **已接通（W-21，同日）**：admin-api 全栈补齐——Task 实体 jsonb 列（幂等迁移 AddTaskRequirements1788581485026）+ CreateTaskDto 结构校验（数组/非空元素/≤50，UpdateTaskDto 经 PartialType 继承）+ service normalize（trim + 拒 option 形 `-` 前缀，镜像执行器防线，坏 spec 创建即 400）+ **version snapshot 收录**（否则回滚丢依赖）+ dispatch 零改动（task 实体整体透传）；application manifest 路径此前经 `as any` 传入被静默丢弃，现已真实落库。admin-web：表单 `Select mode=tags` 输入（tokenSeparators 特意留空——pip spec 合法含逗号）、编辑回填、详情页展示、提交序列化 `applyRequirementsPayload`（空集显式 null——PATCH 缺省=保留旧值的 N28 教训）。测试：admin-api +11（884/884）、admin-web +5（40/40）。文档：sdk-guide 平台任务配置表新增 requirements 行。
 
 ### W-20：🔴 env 白名单/测试对 Windows 变量大小写与盘符假设失效——**由 Windows CI job 首跑抓出**（已修，双侧）
 - 轮次与用例：R15-3.5 固化后的首次真机 CI（run 33942184554，executor-node windows job 4 失败）

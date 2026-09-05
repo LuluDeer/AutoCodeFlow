@@ -96,6 +96,7 @@ limit = int(os.environ.get("AUTOFLOW_LIMIT", "100"))
 | `timezone` | IANA 时区 | 仅 Cron 任务使用，例如 `Asia/Shanghai`、`UTC`；留空使用服务端默认时区 |
 | `maxRetry` | 次数 | 最大尝试次数，`1` 表示不重试 |
 | `retryDelay` | 秒 | 队列指数退避的起始延迟，`0` 表示不配置 backoff |
+| `requirements` | 字符串数组 | 任务级依赖声明（W-21）。python runtime → 执行器建 per-task venv 并 `uv pip install`（executor-python）；node runtime → 执行器安装 npm 包（executor-node）。仅 entrypoint（打包）任务生效，glue 脚本任务忽略。空数组/null 表示无额外依赖；拒绝以 `-` 开头的 option 形条目 |
 
 Python SDK 同时支持 snake_case 与 API camelCase，并会归一化到 API 字段：
 
