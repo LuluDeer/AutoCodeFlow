@@ -32,16 +32,42 @@ def test_wrong_token_returns_401(client):
     assert response.status_code == 401
 
 
-def test_correct_token_not_401(auth_client):
+def test_correct_token_not_401(auth_client, monkeypatch):
     """POST /api/execute with correct token should pass auth (may return other errors for bad payload)."""
-    response = auth_client.post(
-        '/api/execute',
-        json={
-            'executionId': 'test-exec-3',
-            'task': {'name': 'test'},
-        },
-        headers={'Authorization': 'Bearer testsecret'},
-    )
+    # A valid token means the endpoint ACCEPTS the request and spawns the real
+    # background execution task. Left running it spawns a subprocess and burns
+    # callback retries against the fake admin URL, and the TestClient loop
+    # teardown abandons it mid-flight — the orphaned subprocess transport then
+    # GCs as a flaky "RuntimeError: Event loop is closed" unraisable warning
+    # attributed to whichever test happens to be running. Stub create_task so
+    # the coroutine never runs (same pattern as
+    # test_execute_below_capacity_returns_accepted).
+    from routers import execute as execute_module
+    import scheduler as sched
+
+    class FakeTaskHandle:
+        def add_done_callback(self, cb):
+            pass
+
+    def fake_create_task(coro):
+        coro.close()
+        return FakeTaskHandle()
+
+    original_count = sched.running_count
+    monkeypatch.setattr(execute_module.asyncio, 'create_task', fake_create_task)
+    try:
+        response = auth_client.post(
+            '/api/execute',
+            json={
+                'executionId': 'test-exec-3',
+                'task': {'name': 'test'},
+            },
+            headers={'Authorization': 'Bearer testsecret'},
+        )
+    finally:
+        # The background task normally decrements this in its finally; with
+        # the coroutine closed it never runs.
+        sched.running_count = original_count
     assert response.status_code != 401
 
 
