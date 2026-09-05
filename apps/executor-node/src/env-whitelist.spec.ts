@@ -44,4 +44,24 @@ describe('env whitelist — Windows parity surface (R-04)', () => {
       delete process.env.EXECUTOR_SHARED_TOKEN;
     }
   });
+
+  /** W-20 (windows CI first run): GH windows runners spell these `Path`/
+   *  `Temp` (mixed case, OS convention) — exact-key matching dropped them
+   *  and every PATH-dependent task started failing on real Windows.
+   *  win32 must forward case-insensitively under the canonical key; POSIX
+   *  envs are case-sensitive and must keep dropping the wrong-case variant. */
+  it('win32 matches env keys case-insensitively (POSIX stays case-sensitive)', () => {
+    process.env.Path = '/mixed/case/path';
+    try {
+      const env = buildChildEnv();
+      if (process.platform === 'win32') {
+        expect(env.PATH).toBe('/mixed/case/path');
+        expect(env.Path).toBeUndefined();
+      } else {
+        expect(env.PATH).toBeUndefined();
+      }
+    } finally {
+      delete process.env.Path;
+    }
+  });
 });

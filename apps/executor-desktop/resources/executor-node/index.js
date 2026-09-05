@@ -46747,16 +46747,38 @@ const SECRET_ENV_DENYLIST = new Set([
 ]);
 /** Build a sanitized environment from process.env: whitelist only, secrets
  *  always stripped. Additional task/deployment-provided variables are merged
- *  on top (they are explicit, caller-controlled values). */
+ *  on top (they are explicit, caller-controlled values).
+ *
+ *  W-20 (windows CI, first windows-latest run): Windows environment blocks
+ *  are case-INsensitive and the OS/launchers spell these keys their own way
+ *  (`Path`, `Temp`, `ComSpec`, `APPDATA`…). An exact-key whitelist match
+ *  silently dropped them, so the child received no PATH under the canonical
+ *  name — every PATH-dependent task (npm/git/node resolution) broke on real
+ *  Windows hosts, and the CI run proved it where Git-Bash had masked it.
+ *  On win32 we therefore match case-insensitively and re-forward under the
+ *  whitelist's canonical (upper-case) spelling. POSIX envs are
+ *  case-sensitive — exact matching preserved there. */
 function buildChildEnv(extra = {}) {
+    const win32 = process.platform === 'win32';
+    const canonical = (k) => {
+        if (!win32)
+            return exports.ENV_WHITELIST.has(k) ? k : undefined;
+        const up = k.toUpperCase();
+        for (const w of exports.ENV_WHITELIST) {
+            if (w.toUpperCase() === up)
+                return w;
+        }
+        return undefined;
+    };
     const env = {};
     for (const [k, v] of Object.entries(process.env)) {
         if (v === undefined)
             continue;
-        if (SECRET_ENV_DENYLIST.has(k))
+        if (SECRET_ENV_DENYLIST.has(win32 ? k.toUpperCase() : k))
             continue;
-        if (exports.ENV_WHITELIST.has(k))
-            env[k] = v;
+        const key = canonical(k);
+        if (key !== undefined)
+            env[key] = v;
     }
     for (const [k, v] of Object.entries(extra)) {
         if (v === undefined)

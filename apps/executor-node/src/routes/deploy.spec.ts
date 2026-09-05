@@ -2,6 +2,7 @@ import request from 'supertest';
 import express from 'express';
 import * as fs from 'fs';
 import * as http from 'http';
+import * as os from 'os';
 import * as path from 'path';
 import * as childProcess from 'child_process';
 import { EventEmitter } from 'events';
@@ -173,7 +174,9 @@ describe('downloadPackage authentication', () => {
     (mockFs.createWriteStream as jest.Mock).mockImplementation((p: string) =>
       actualFs.createWriteStream(p),
     );
-    const dest = `/tmp/acf-download-test-${Date.now()}.bin`;
+    // W-20: '/tmp/...' resolves to <cwd drive>:\tmp on Windows (absent on the
+    // GH runner → ENOENT). os.tmpdir() is the portable temp location.
+    const dest = path.join(os.tmpdir(), `acf-download-test-${Date.now()}.bin`);
     try {
       await downloadPackage(`http://127.0.0.1:${portA}/pkg.zip`, dest);
       expect(authHeaders).toEqual(['Bearer test-shared-token', undefined]);
@@ -203,7 +206,7 @@ describe('downloadPackage authentication', () => {
     (mockFs.createWriteStream as jest.Mock).mockImplementation((p: string) =>
       actualFs.createWriteStream(p),
     );
-    const dest = `/tmp/acf-download-test-notoken-${Date.now()}.bin`;
+    const dest = path.join(os.tmpdir(), `acf-download-test-notoken-${Date.now()}.bin`); // W-20
     try {
       await downloadPackage(`http://127.0.0.1:${port}/pkg.zip`, dest);
       expect(seenAuth).toBeUndefined();
