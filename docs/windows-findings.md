@@ -292,3 +292,9 @@
   - 风险与回滚：job 带 `if:` 门控且不阻塞任何现有流；首跑在 PR/dispatch 上验证，若服务/下载抖动，可降级为 `continue-on-error` 观察期或仅保留手动触发。CI job 定义数 16→17（push 时实跑仍 24/24，windows e2e 只在 PR/手动加入）。
 - 首跑验证（2026-09-05，dispatch run 33967431348 @ c4e8c27）：**`e2e-full-windows` success，298s**（含 npm ci ×3 + PG 服务启动 + redis 下载；job 级 25/25）。门控反向同时得证：push run 33967415996 中该 job `skipped`。PG 服务发现（Get-Service 通配）、psql PATH 注入、redis-windows 8.10.1 portable、`C:/tmp` WORK_DIR（node win32 解析）全部一次通过，无需回滚。
 - ⚠️ 运维注记：workflow_dispatch 与 push run 共享 `CI-<ref>` concurrency group（cancel-in-progress）——**同分支手动触发会取消进行中的 push run**（本次即如此：dispatch 顶掉了同 SHA push run，覆盖无损失但 push run 呈 cancelled 非故障）。未来验证性 dispatch 请选 push 落定后触发，或接受该取消。
+
+### W-29：🧪 e2e 用例 27（pinned 离线语义）心跳竞态致 CI 偶发红——测试侧防御已修
+- 现象：push run 33967801836 `e2e-full`（ubuntu）首跑失败于用例 27：`expect(exec.status).toBe('failed')` 拿到 `'success'`；裸 rerun（attempt 2）即过——与产品无关的测试时序 flaky（W-27 资产，非 W-28 引入：改动仅文档+windows job）。
+- 根因：用例 `set-offline`（DB 写）→ trigger → 派发检查之间，活着的 executor-node 按 30s 心跳把 status **无条件刷回 online**（`executor.service.heartbeat` → `status=ONLINE`，这是正确的存活性权威语义，产品不动）。窗口 ~2s/30s ≈ 6% 概率撞上心跳 tick → 任务被成功派发。
+- 修复（测试侧，`e2e-full.spec.js` 用例 27）：场景封装为可重跑单元（**每次新建任务**避免多执行排序假设），首轮拿到非 `failed` 即重试一次并打日志；首轮已消耗数秒、下一跳心跳远在水面外，二次撞车概率 ~0.4%。maxRetry=0 的"单次派发定局"语义保留。
+- 顺带：同用例 UI 段的 `finally { apiWaitExecutorOnline }` 心跳恢复逻辑与此修复正交，未动。
