@@ -77,7 +77,7 @@
   - **Playwright 29/29**：pinned 部署全链 4 例（在线/离线/不存在/全 UI 闭环）
   - **P1 修复（V 抓到）**：python register 用动态 token 打 bootstrap 端点 401（R9 修复揭开）→ 改静态 token + 状态码检查；**N33-N36**：issuedTokenCache 有界化（1000/24h）、artifact query token 风险标注、ci-local 差异声明
 - **里程碑（2026-09-05）**：**v1.0.1 三包发布完成**（npm `@autocodeflow/sdk` + `autocodeflow-mcp-server` 1.0.1、PyPI `autoflow-sdk` 1.0.1，双版本可回溯）；**develop→main 发版合并完成**（main 与 develop 树一致，两父 merge commit `bddac27`，main CI 全绿）；**Windows 深度测试任务书就绪**：`docs/WINDOWS-TESTING-PLAN.md`（R13 基线→R14 功能冒烟→R15 修复批→R16 desktop 打包，含 13 项已知平台风险点与问题回传模板——Win 机器拉取后按此推进）
-- **里程碑（2026-09-05 Windows 轮，R13-R16 全完成，Windows 侧接手主导）**：项目首个非 Linux 平台全验证（Win11 26200 / Node 24.17 / Python 3.12-uv / WSL2 mirrored 网络跑 PG16+Redis7）。findings **W-01~W-20**、生产修复 **P-1~P-15**（`docs/windows-findings.md`）：
+- **里程碑（2026-09-05 Windows 轮，R13-R16 全完成，Windows 侧接手主导）**：项目首个非 Linux 平台全验证（Win11 26200 / Node 24.17 / Python 3.12-uv / WSL2 mirrored 网络跑 PG16+Redis7）。findings **W-01~W-22**、生产修复 **P-1~P-16**（`docs/windows-findings.md`）：
   - **5 枚生产级缺陷修复**：executor-python `os.setsid/killpg` 全任务崩（P-1/2）；venv `bin/python` 布局（P-3）；`['python3']` 硬编码致 python glue 全挂——两处均为单测全 mock 未暴露、人工审查发现（P-3/4）；entrypoint `/xxx` 逃逸守卫绕过（P-5，安全）；shell glue 缺 glueLanguage fallback + win32 `.cmd` 化（P-11）；控制台 Ctrl 事件波及任务/后台 SIGBREAK 缺失/desktop stop() SIGTERM 失效（P-9/10/12，R-08 全景收口）
   - **R-01/R-03 治本**：`.gitattributes` 全仓 LF + renormalize（admin-api eslint 37078→0、install.sh 字节守卫转绿）；`killProcessTree` win32 升级为 `taskkill /T /F` 树杀（超时/取消/停止三链孙进程实测 0 残留）
   - **双平台绿灯基线**：executor-node 162/162（3 连跑稳）、executor-python **127/127 零 skip**、admin-api 873/873 + eslint 0/0、acf-cli 48、mcp-server 61、registry-pypi 33、admin-web 35 + e2e **16/16**（16 例版；W-12 闭环：29 例全量版已由 Linux 侧入库根级 `e2e-full.spec.js` + `playwright.e2e.config.js`，test#16 同步 W-13 修复）
@@ -86,6 +86,8 @@
   - **R16 路线图 #12 收口**：electron-builder NSIS 安装包 Windows 首产（100.6MB）；ncc 内置 executor 独立注册+真实任务验证；新发现 W-16 assets 图标未入库（体验）/W-18 prebuilt bundle 跟踪（漂移风险）
   - **固化**：Windows CI job（executor-node/acf-cli/mcp-server + admin-web，`ci.yml`）；deployment.md 新增 Windows 章节（手动路线/taskkill 警告/shell 语义）；install.sh 平台探测；requirements-dev.txt ×2
   - ✅ Linux 复验义务已闭环（2026-09-05，凭证配好后推送）：CI run 33943007134 **22 job 全绿**（ubuntu 18：executor-node 162 / executor-python 127 / admin-api 873 等零回归；windows 4：executor-node/acf-cli/mcp-server/admin-web 固化基线）。Windows CI 首跑即抓出并修复 W-20（env 白名单 win32 大小写语义失效，P-14/15）——双平台 CI 交叉验证的直接收益
+  - **W-12 销账**（Linux 侧）：29 例根级 e2e 基线入库（`e2e-full.spec.js` + `playwright.e2e.config.js`）；Windows 首跑暴露登录节流级联 429 → 定位 **W-22/P-16**（`@Throttle` 装饰器求值期读 `process.env`，`.env` 文件对 `LOGIN_THROTTLE_LIMIT` 原为死配置，仅真实进程环境生效——容器部署从未暴露）→ main.ts 预载 `.env` + app.module 动态 import 修复；修复后 Windows 纯 `.env` 栈 **29/29** 全绿
+  - **W-21 requirements 端到端接通**（产品决策：接通）：admin-api 实体 jsonb 列（幂等迁移）+ DTO 结构校验 + normalize（trim/拒 option 形 `-` 前缀）+ version snapshot 收录 + dispatch 透传零改动（manifest `as any` 路径现真实落库）；admin-web 任务表单 Select tags（逗号不切分，pip spec 合法含逗号）+ 空集显式 null（N28 PATCH 语义）+ 详情页展示；sdk-guide 补字段行。基线刷新：**admin-api 884 · admin-web 40 · e2e 29/29**，CI run 33947112177 **22/22 全绿**
 - 本轮（2026-09-04 第十轮，A/B/C/D 四路 → W 收尾 N37-N42；详见 `docs/PROGRESS-round10-2026-09-04.md`）：
   - **可观测性**：docs/observability/（Grafana dashboard 11 panels + 6 条告警规则 + README 抓取配置/指标字典，series 与源码逐字核对零偏差）
   - **SDK 发布管道**（路线图 #10 收尾）：release.yml（tag 触发 + version-guard 四处版本一致性 + npm/PyPI 发布 + environment: release 审批门）；双 SDK README + sdk-guide 矩阵；修掉 autoflow-sdk 未声明 pydantic 依赖的发布级 bug
