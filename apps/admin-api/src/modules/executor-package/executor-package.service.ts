@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  ServiceUnavailableException,
   Logger,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -247,11 +248,30 @@ export class ExecutorPackageService {
       throw new Error("No target executors found for push");
     }
 
-    const adminApiBaseUrl = this.configService.get<string>(
-      "ADMIN_API_BASE_URL",
-      "",
-    );
-    const downloadUrl = `${adminApiBaseUrl}/api/executor-packages/${pkg.id}/download`;
+    const adminApiBaseUrl = this.configService.get<string>("ADMIN_API_URL")?.trim();
+    if (!adminApiBaseUrl) {
+      throw new ServiceUnavailableException(
+        "ADMIN_API_URL is not configured; cannot push executor package",
+      );
+    }
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(adminApiBaseUrl);
+      if (
+        !["http:", "https:"].includes(parsedUrl.protocol) ||
+        parsedUrl.search || parsedUrl.hash
+      ) {
+        throw new Error("Invalid base URL");
+      }
+    } catch {
+      throw new ServiceUnavailableException(
+        "ADMIN_API_URL must be an absolute HTTP(S) base URL without query or fragment",
+      );
+    }
+    // ADMIN_API_URL follows install-cmd semantics; tolerate an existing /api suffix.
+    const basePath = parsedUrl.pathname.replace(/\/+$/, "").replace(/(?:\/api)+$/, "");
+    parsedUrl.pathname = `${basePath}/api/executor-packages/${pkg.id}/download`;
+    const downloadUrl = parsedUrl.toString();
     const results = await Promise.allSettled(
       targets.map(async (executor) => {
         const url = executor.address.startsWith("http")

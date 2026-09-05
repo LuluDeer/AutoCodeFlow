@@ -13,6 +13,14 @@ import {
   ExecutorPackageStatus,
 } from "../executor-package.entity";
 import * as fs from "fs";
+import axios from "axios";
+import { ExecutorPackageController } from "../executor-package.controller";
+import { assertSafeExecutorUrl } from "../../../common/utils/safe-http.util";
+
+// The controller only needs findAll; avoid native dependencies under the fs mock.
+jest.mock("../../executor/executor.service", () => ({ ExecutorService: jest.fn() }));
+jest.mock("axios");
+jest.mock("../../../common/utils/safe-http.util");
 
 jest.mock("fs");
 const mockFs = fs as jest.Mocked<typeof fs>;
@@ -218,6 +226,110 @@ describe("ExecutorPackageService", () => {
       await expect(service.getFileBuffer("pkg-001")).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe("pushToExecutors", () => {
+    const targets = [{ id: "exec-001", address: "http://executor:8002" }] as any;
+    const config = { get: jest.fn() };
+    const systemConfig = { findOne: jest.fn() };
+    let controller: ExecutorPackageController;
+
+    beforeEach(() => {
+      repo.findOne.mockResolvedValue(mockPkg);
+      config.get.mockImplementation((key: string) =>
+        key === "ADMIN_API_URL" ? "http://host:3002/" : "env-token",
+      );
+      systemConfig.findOne.mockResolvedValue({ value: "db-token" });
+      jest.mocked(axios.post).mockResolvedValue({ data: {} });
+      jest.mocked(assertSafeExecutorUrl).mockResolvedValue(undefined);
+      service = new ExecutorPackageService(repo, config as any);
+      controller = new ExecutorPackageController(
+        service,
+        { findAll: jest.fn().mockResolvedValue(targets) } as any,
+        config as any,
+        systemConfig as any,
+      );
+    });
+
+    it.each([
+      "http://host:3002",
+      "http://host:3002/",
+      "http://host:3002///",
+      "http://host:3002/api/",
+      "http://host:3002/api/api/",
+    ])("normalizes %s and sends the DB token", async (baseUrl) => {
+      config.get.mockImplementation((key: string) =>
+        key === "ADMIN_API_URL" ? baseUrl : "env-token",
+      );
+      await expect(controller.push(mockPkg.id)).resolves.toEqual([
+        { executorId: "exec-001", address: targets[0].address, success: true },
+      ]);
+      expect(systemConfig.findOne).toHaveBeenCalledWith("executor.sharedToken");
+      expect(assertSafeExecutorUrl).toHaveBeenCalledWith(targets[0].address);
+      expect(axios.post).toHaveBeenCalledWith(
+        "http://executor:8002/api/update-package",
+        expect.objectContaining({
+          packageId: mockPkg.id,
+          downloadUrl: "http://host:3002/api/executor-packages/pkg-001/download",
+          checksum: mockPkg.checksum,
+        }),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: "Bearer db-token" }),
+        }),
+      );
+      expect(config.get).not.toHaveBeenCalledWith("ADMIN_API_BASE_URL", expect.anything());
+    });
+
+    it.each([undefined, "", "   "])("rejects missing configuration %p before sending", async (baseUrl) => {
+      config.get.mockReturnValue(baseUrl);
+      await expect(controller.push(mockPkg.id)).rejects.toMatchObject({
+        status: 503,
+        message: "ADMIN_API_URL is not configured; cannot push executor package",
+      });
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it.each(["/relative", "ftp://host", "http://host?query=1", "http://host#fragment"])(
+      "rejects invalid base URL %s before sending", async (baseUrl) => {
+        config.get.mockReturnValue(baseUrl);
+        await expect(controller.push(mockPkg.id)).rejects.toMatchObject({
+          status: 503,
+          message: expect.stringContaining("ADMIN_API_URL"),
+        });
+        expect(axios.post).not.toHaveBeenCalled();
+      },
+    );
+
+    it("falls back to env when the DB key is unavailable", async () => {
+      systemConfig.findOne.mockRejectedValue(new Error("not found"));
+      await controller.push(mockPkg.id);
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.any(String), expect.any(Object),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: "Bearer env-token" }),
+        }),
+      );
+    });
+
+    it("reads the rotated DB token on the next push", async () => {
+      await controller.push(mockPkg.id);
+      systemConfig.findOne.mockResolvedValue({ value: "rotated-token" });
+      await controller.push(mockPkg.id);
+      expect(axios.post).toHaveBeenLastCalledWith(
+        expect.any(String), expect.any(Object),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: "Bearer rotated-token" }),
+        }),
+      );
+    });
+
+    it("keeps SSRF rejection before the outbound request", async () => {
+      jest.mocked(assertSafeExecutorUrl).mockRejectedValue(new Error("Unsafe executor URL"));
+      await expect(controller.push(mockPkg.id)).resolves.toEqual([
+        expect.objectContaining({ success: false, error: "Unsafe executor URL" }),
+      ]);
+      expect(axios.post).not.toHaveBeenCalled();
     });
   });
 

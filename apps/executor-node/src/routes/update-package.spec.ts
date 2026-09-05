@@ -134,6 +134,15 @@ describe('POST /api/update-package — payload validation', () => {
     expect(res.body.error).toMatch(/scheme|not allowed|invalid|http/i);
   });
 
+  it('rejects a relative downloadUrl without starting an update', async () => {
+    const res = await request(app)
+      .post('/api/update-package')
+      .send({ packageId: 'pkg-001', downloadUrl: '/api/executor-packages/pkg-001/download', version: '1.0.0', checksum: 'a'.repeat(64) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('downloadUrl is not a valid URL');
+    expect((await request(app).get('/api/update-package/status')).body.inProgress).toBe(false);
+  });
+
   it('returns 400 when checksum is missing', async () => {
     const res = await request(app)
       .post('/api/update-package')
@@ -172,7 +181,8 @@ describe('POST /api/update-package — payload validation', () => {
     const res = await request(app)
       .post('/api/update-package')
       .send({ packageId: 'pkg-002', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '2.0.0', checksum: 'b'.repeat(64) });
-    expect(res.status).not.toBe(400);
+    expect(res.status).toBe(200);
+    expect(res.body.accepted).toBe(true);
     await waitForUpdateToSettle(app);
   });
 
@@ -180,7 +190,8 @@ describe('POST /api/update-package — payload validation', () => {
     const res = await request(app)
       .post('/api/update-package')
       .send({ packageId: 'pkg-003', downloadUrl: 'https://127.0.0.1:1/pkg.zip', version: '3.0.0', checksum: 'c'.repeat(64) });
-    expect(res.status).not.toBe(400);
+    expect(res.status).toBe(200);
+    expect(res.body.accepted).toBe(true);
     await waitForUpdateToSettle(app);
   });
 });
