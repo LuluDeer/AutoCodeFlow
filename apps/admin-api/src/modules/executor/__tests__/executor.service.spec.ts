@@ -1498,13 +1498,28 @@ describe("ExecutorService (__tests__)", () => {
   });
 
   describe("getInstallCmd", () => {
-    it("returns curl|bash command pointing at the backend-served install.sh route", () => {
+    it("uses the DB token instead of the env token", async () => {
+      configService.get.mockImplementation((key) =>
+        key === "ADMIN_API_URL" ? "https://admin.example.com" : "old-env-token",
+      );
+      const lookup = jest.spyOn((service as any).systemConfigService, "findOne")
+        .mockResolvedValue({ value: "rotated-db-token" });
+      const result = await service.getInstallCmd();
+      expect(lookup).toHaveBeenCalledWith("executor.sharedToken");
+      expect(result).toEqual({
+        cmd: "curl -fsSL 'https://admin.example.com/api/executors/install.sh' | bash -s -- --api-url 'https://admin.example.com' --secret 'rotated-db-token'",
+        token: "rotated-db-token",
+        adminApiUrl: "https://admin.example.com",
+      });
+    });
+
+    it("returns curl|bash command pointing at the backend-served install.sh route", async () => {
       // Trailing slash on ADMIN_API_URL must be normalized away from the
       // script URL; --api-url keeps the raw value (executor .env semantics).
       (configService.get as jest.Mock)
-        .mockReturnValueOnce("http://admin.example.com:3105/") // ADMIN_API_URL
-        .mockReturnValueOnce("sh'ell-token"); // executor.sharedToken
-      const result = service.getInstallCmd();
+        .mockReturnValueOnce("http://admin.example.com:3105/")
+        .mockReturnValueOnce("sh'ell-token");
+      const result = await service.getInstallCmd();
       expect(result.cmd).toContain(
         "curl -fsSL 'http://admin.example.com:3105/api/executors/install.sh'",
       );
@@ -1517,21 +1532,21 @@ describe("ExecutorService (__tests__)", () => {
       expect(result.adminApiUrl).toBe("http://admin.example.com:3105/");
     });
 
-    it("no longer emits the legacy npx autoflow-executor command", () => {
-      const result = service.getInstallCmd();
+    it("no longer emits the legacy npx autoflow-executor command", async () => {
+      const result = await service.getInstallCmd();
       expect(result.cmd).not.toContain("npx autoflow-executor");
     });
 
     // R7 真机遗留观察①：此前 ADMIN_API_URL 未配置时会生成
     // "curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''"
     // 这种裸机不可用的命令，现改为显式 503。
-    it("throws ServiceUnavailableException when ADMIN_API_URL is not configured", () => {
+    it("throws ServiceUnavailableException when ADMIN_API_URL is not configured", async () => {
       (configService.get as jest.Mock).mockReturnValueOnce(undefined);
-      expect(() => service.getInstallCmd()).toThrow(
+      await expect(service.getInstallCmd()).rejects.toThrow(
         ServiceUnavailableException,
       );
       (configService.get as jest.Mock).mockReturnValueOnce("");
-      expect(() => service.getInstallCmd()).toThrow(
+      await expect(service.getInstallCmd()).rejects.toThrow(
         /ADMIN_API_URL is not configured/,
       );
     });

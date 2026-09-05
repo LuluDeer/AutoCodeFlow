@@ -32,6 +32,7 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { ExecutorService } from "./executor.service";
+import { UserRole } from "../users/entities/user.entity";
 import { INSTALL_SCRIPT } from "./install-script.content";
 import { SystemConfigService } from "../config/config.service";
 import axios from "axios";
@@ -319,6 +320,8 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Get("install-cmd")
+  // DR-01: the command contains the shared machine credential, not just a URL.
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Get executor install command",
     description:
@@ -344,8 +347,8 @@ export class ExecutorController {
     description:
       "ADMIN_API_URL is not configured on the server — no usable install command can be generated",
   })
-  getInstallCmd() {
-    return this.svc.getInstallCmd();
+  async getInstallCmd() {
+    return await this.svc.getInstallCmd();
   }
 
   /**
