@@ -4,6 +4,19 @@ import { config } from './config';
 import { logger } from './logger';
 import { post } from './admin-client';
 
+/** Structured failure reason — values must stay aligned with admin-api's
+ *  ExecutionFailureReason enum (apps/admin-api/src/modules/task/entities/
+ *  task-execution.entity.ts); CallbackItemDto validates with @IsIn and a
+ *  rejected item fails the whole callback batch. */
+export type CallbackFailureReason =
+  | 'package_fetch_failed'
+  | 'script_error'
+  | 'timeout'
+  | 'executor_offline'
+  | 'executor_restart'
+  | 'killed'
+  | 'unknown';
+
 export interface CallbackRequest {
   executionId: string;
   status: 'success' | 'failed';
@@ -11,6 +24,7 @@ export interface CallbackRequest {
   exitCode?: number;
   logs?: string;
   errorMessage?: string;
+  failureReason?: CallbackFailureReason;
   durationMs?: number;
 }
 

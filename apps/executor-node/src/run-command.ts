@@ -5,6 +5,11 @@ export interface RunCommandOptions {
   env?: NodeJS.ProcessEnv;
   timeout?: number;
   shell?: boolean;
+  /** Abort signal: when fired the child's whole process tree is killed
+   *  immediately (the close handler then resolves with a non-zero status).
+   *  Used by the execution kill endpoint to break a prepare-phase
+   *  git/npm out of the 60–300s waits without a per-process hard kill. */
+  signal?: AbortSignal;
 }
 
 export interface RunCommandResult {
@@ -68,6 +73,20 @@ export function runCommand(
           killProcessTree(child, 'SIGKILL');
         }, opts.timeout)
       : null;
+    // Abort support (execution kill during prepare): killing the tree makes
+    // the child exit, the close handler below resolves — callers treat the
+    // non-zero status as the failure signal and re-check the abort flag.
+    const onAbort = () => {
+      killProcessTree(child, 'SIGKILL');
+    };
+    if (opts.signal) {
+      if (opts.signal.aborted) onAbort();
+      else opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
+    const clearWatchers = () => {
+      if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+    };
     child.stdout?.on('data', (d: Buffer) => {
       if (stdout.length < CAP) stdout += d.toString();
     });
@@ -75,11 +94,11 @@ export function runCommand(
       if (stderr.length < CAP) stderr += d.toString();
     });
     child.on('error', (err) => {
-      if (timer) clearTimeout(timer);
+      clearWatchers();
       resolve({ status: null, stdout, stderr: `${stderr}${err.message}` });
     });
     child.on('close', (code) => {
-      if (timer) clearTimeout(timer);
+      clearWatchers();
       resolve({ status: code, stdout, stderr });
     });
   });
