@@ -114,7 +114,7 @@
 | 2.5 401 自愈 + reload-config | ✅ | rotate-token 后下一心跳即 `Idempotent token reuse (same startupId)`（N4/N50 冷缓存语义，无 401 风暴）；轮换后新任务全链 success；`POST /executors/:id/reload-config` → `{success:true, updatedFields:[taskTimeoutSeconds]}` |
 | 2.6 日志/磁盘回收 | ✅ | 执行器**活进程持有句柄**时跨进程 `deleteOldLogs(0)` 成功删除当日目录，无 EBUSY（`fs.rmSync(force)` OK） |
 | 2.7 中文+空格 WORK_DIR | ✅ | `WORK_DIR=C:/测试 目录/af` 下 node/python/batch 三类任务全 success + 日志回读 |
-| 2.8 Playwright e2e | ✅ 16/16 | **W-12**：任务书所指 29 例为 Linux 侧**未跟踪**根级文件，Windows 无该基线；跑仓内 `e2e-full.spec.cjs` 16 例（首跑 15/16 → 修 W-13 后 16/16，1.5min） |
+| 2.8 Playwright e2e | ✅ 16/16 → **29/29** | **W-12**：任务书所指 29 例为 Linux 侧未跟踪根级文件（后由 Linux 侧提交入库）；先跑仓内 `e2e-full.spec.cjs` 16 例（首跑 15/16 → 修 W-13 后 16/16）；W-12 入库后 Windows 首跑 29 例遇登录节流级联 429 → 揪出 W-22/P-16 修复，纯 `.env` 栈 **29/29** 全绿（2.4min） |
 | 2.9 优雅退出 | ✅（经 W-14/15 修复后） | 详见 W-14/15 |
 
 ### W-12：⚠️ e2e 29 例基线为 Linux 侧未跟踪文件，Windows/CI 不可复现（流程债，已修）
