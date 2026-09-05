@@ -100,15 +100,15 @@ export class AuthService {
     if (!payload.jti) {
       throw new UnauthorizedException("Refresh token missing jti claim");
     }
-    const record = await this.refreshTokenRepo.findOne({
-      where: { jti: payload.jti },
-    });
-    if (!record || record.revoked) {
+    const result = await this.refreshTokenRepo.update(
+      { jti: payload.jti, revoked: false },
+      { revoked: true },
+    );
+    if (!result.affected) {
       throw new UnauthorizedException("Refresh token has been revoked");
     }
-    // SEC-02: Token Rotation — immediately revoke the consumed token
-    record.revoked = true;
-    await this.refreshTokenRepo.save(record);
+    // DR-07: consume once before issuing; deliberately fail closed if user
+    // validation or issuance fails, so the old token cannot be replayed.
 
     const user = await this.usersService.findById(payload.sub);
     if (!user || !user.isActive) throw new UnauthorizedException();
