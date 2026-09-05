@@ -71,10 +71,8 @@ test-results/
 playwright-report/
 .playwright-mcp/
 
-# 根目录临时测试脚本
-/e2e-full.spec.js
+# 根目录全量 e2e 基线（W-12 已入库：29 例版，test#16 已同步 W-13 修复）；.cjs 本地编译副本仍忽略
 /e2e-full.spec.cjs
-/playwright.e2e.config.js
 /playwright.e2e.config.cjs
 
 # 截图和图片
