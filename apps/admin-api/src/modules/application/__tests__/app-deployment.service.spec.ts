@@ -52,7 +52,7 @@ describe("AppDeploymentService", () => {
   let versionRepo: ReturnType<typeof makeRepo>;
   let appService: jest.Mocked<Pick<ApplicationService, "findById" | "update">>;
   let executorService: jest.Mocked<
-    Pick<ExecutorService, "findOne" | "getExecutorUrl">
+    Pick<ExecutorService, "findOne" | "getExecutorUrl" | "getSharedToken">
   >;
 
   beforeEach(async () => {
@@ -67,6 +67,8 @@ describe("AppDeploymentService", () => {
     executorService = {
       findOne: jest.fn().mockResolvedValue(mockExecutor),
       getExecutorUrl: jest.fn((addr, path) => `${addr}/${path}`),
+      // 部署指令鉴权头现走 DB 优先的 getSharedToken
+      getSharedToken: jest.fn().mockResolvedValue(""),
     };
 
     const module = await Test.createTestingModule({
