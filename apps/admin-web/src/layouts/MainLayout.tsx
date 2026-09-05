@@ -20,6 +20,7 @@ import {
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { authApi } from '../api/auth';
+import { logoutRemote } from '../api/logout';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -53,7 +54,7 @@ const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', 
 export default function MainLayout() {
   const nav = useNavigate();
   const location = useLocation();
-  const { user, logout, setUser } = useAuthStore();
+  const { user, setUser } = useAuthStore();
   const isAdmin = user?.role === 'admin';
   const [collapsed, setCollapsed] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -145,9 +146,9 @@ export default function MainLayout() {
     },
   ];
 
-  const handleUserMenu = ({ key }: { key: string }) => {
+  const handleUserMenu = async ({ key }: { key: string }) => {
     if (key === 'logout') {
-      logout();
+      await logoutRemote();
       nav('/login');
     }
   };
