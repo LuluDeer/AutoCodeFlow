@@ -94,6 +94,15 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
       removePartialFile(file, dest);
       reject(err);
     };
+    // The stream can already fail on OPEN (ENOENT: parent dir vanished under
+    // us, EACCES/EDQUOT…). The response-callback registration of this same
+    // handler below is too late for that early error — with no listener, the
+    // 'error' event escapes as an unhandled exception (observed: an
+    // update-package test whose temp dir was cleaned while a follow-up
+    // download's createWriteStream was still opening, crashing whatever test
+    // shared the worker next). fail() is settled-guarded, so the second
+    // registration stays harmless.
+    file.on('error', fail);
 
     const headers: Record<string, string> = {};
     if (sendAuth && config.token) {

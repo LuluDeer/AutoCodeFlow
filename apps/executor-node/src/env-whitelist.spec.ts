@@ -45,6 +45,21 @@ describe('env whitelist — Windows parity surface (R-04)', () => {
     }
   });
 
+  /** 改动3: NPM_REGISTRY_TOKEN 只供执行器写任务 .npmrc，绝不进入任务子进程
+   *  env——既不在白名单，也不得被额外参数以外的任何途径带出。 */
+  it('NPM_REGISTRY_TOKEN is never forwarded to task children', () => {
+    expect(ENV_WHITELIST.has('NPM_REGISTRY_TOKEN')).toBe(false);
+    process.env.NPM_REGISTRY_TOKEN = 'verdaccio-secret';
+    try {
+      const env = buildChildEnv();
+      expect(env.NPM_REGISTRY_TOKEN).toBeUndefined();
+      const win32Style = buildChildEnv({ npm_registry_token: 'x' } as Record<string, string>);
+      expect(win32Style.NPM_REGISTRY_TOKEN).toBeUndefined();
+    } finally {
+      delete process.env.NPM_REGISTRY_TOKEN;
+    }
+  });
+
   /** W-20 (windows CI first run): GH windows runners spell these `Path`/
    *  `Temp` (mixed case, OS convention) — exact-key matching dropped them
    *  and every PATH-dependent task started failing on real Windows.
