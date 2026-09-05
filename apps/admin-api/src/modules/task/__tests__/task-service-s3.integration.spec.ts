@@ -32,6 +32,8 @@ import { TaskVersion } from "../entities/task-version.entity";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { AiService } from "../../ai/ai.service";
 import { ExecutorService } from "../../executor/executor.service";
+import { NotificationService } from "../../notification/notification.service";
+import { AuditService } from "../../audit/audit.service";
 
 const minioClient = {
   bucketExists: jest.fn(),
@@ -70,6 +72,8 @@ const makeRepo = () => {
       andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
+      // handleCallback / killExecution 的终态 UPDATE 现携带 RETURNING。
+      returning: jest.fn().mockReturnThis(),
       take: jest.fn().mockReturnThis(),
       skip: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([]),
@@ -94,7 +98,18 @@ const makeRepo = () => {
           return { affected: 0 };
         }
         if (patch) Object.assign(entity, patch);
-        return { affected: 1 };
+        // 模拟 UPDATE ... RETURNING ["id","executorAddress"]。
+        return {
+          affected: 1,
+          raw: [
+            {
+              id: (entity as { id?: string }).id,
+              executorAddress:
+                (entity as { executorAddress?: string | null })
+                  .executorAddress ?? null,
+            },
+          ],
+        };
       }),
     };
     return qb;
@@ -195,6 +210,15 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
             getSharedToken: jest.fn().mockResolvedValue(""),
           },
         },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailureWithConfig: jest.fn().mockResolvedValue(undefined),
+            notifyFailure: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: AuditService, useValue: { log: jest.fn() } },
       ],
     }).compile();
 

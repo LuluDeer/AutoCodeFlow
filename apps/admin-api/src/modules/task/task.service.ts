@@ -43,6 +43,11 @@ import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { AiService } from "../ai/ai.service";
 import { ExecutorService } from "../executor/executor.service";
+import {
+  NotificationService,
+  AlertLevel,
+} from "../notification/notification.service";
+import { AuditService } from "../audit/audit.service";
 import { S3LogStorage } from "./log-storage/s3-log-storage";
 
 /**
@@ -200,6 +205,8 @@ export class TaskService {
     private aiService: AiService,
     private configService: ConfigService,
     private executorService: ExecutorService,
+    private notificationService: NotificationService,
+    private auditService: AuditService,
   ) {}
 
   async create(dto: CreateTaskDto) {
@@ -1269,6 +1276,132 @@ export class TaskService {
     }
   }
 
+  /**
+   * 改动1：执行器回调报出真实失败终态（FAILED/TIMEOUT）时发送告警通知。
+   *
+   * 复用 dispatch 失败路径（task.processor.ts）同款通知模式：配置来源为 Task
+   * 实体的 alarmEmail / alarmChannels，交由 notifyFailureWithConfig 解析渠道。
+   * 与 dispatch 失败通知保持一致——仅传 taskName/execId/error/aiAnalysis +
+   * 告警配置，taskId 一并透传以启用任务级静默窗口。
+   *
+   * fail-open：通知本身或其依赖（如 taskRepo）抛错都不得污染回调结果，
+   * 失败按 task.processor.ts 既有模式写审计（NOTIFICATION_FAILED），审计
+   * 自身 best-effort 再兜底。
+   */
+  private async notifyCallbackFailure(
+    execution: TaskExecution,
+    failureReason: ExecutionFailureReason | null | undefined,
+    cb: { errorMessage?: string; logs?: string },
+  ): Promise<void> {
+    const taskName = execution.taskName ?? execution.taskId;
+    // 通知内容摘要：failureReason + errorMessage（缺省回退到回调日志头），
+    // 控制在 500 字符内，避免把整段日志塞进告警。
+    const detail =
+      cb.errorMessage || (cb.logs ? cb.logs.split("\n")[0] : "") || "no detail";
+    const errorSummary =
+      `${failureReason ?? "UNKNOWN"}: ${detail}`.slice(0, 500);
+    try {
+      const task = execution.taskId
+        ? await this.taskRepo.findOne({ where: { id: execution.taskId } })
+        : null;
+      await this.notificationService.notifyFailureWithConfig(
+        taskName,
+        execution.id,
+        errorSummary,
+        execution.aiAnalysis ?? "",
+        task?.alarmEmail,
+        task?.alarmChannels,
+        undefined,
+        execution.taskId ?? undefined,
+      );
+    } catch (err: unknown) {
+      const notifyErrMsg = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Notification failed for callback of execution ${execution.id}: ${notifyErrMsg}`,
+      );
+      try {
+        await this.auditService.log({
+          action: "NOTIFICATION_FAILED",
+          resource: "task_execution",
+          resourceId: execution.id,
+          detail: { task: taskName, error: notifyErrMsg },
+        });
+      } catch {
+        /* audit is best-effort */
+      }
+    }
+  }
+
+  /**
+   * 改动3：重复回调日志补写闭环。
+   *
+   * 背景：winner 分支的日志持久化在终态 UPDATE 之后——若 storeLogLines 抛错，
+   * item 返回 success:false → 执行器重试整批 → 重试落入 affected=0 分支并在此
+   * 提前返回，跳过日志持久化 → 该执行日志永久丢失。
+   *
+   * 因此在 affected=0 分支：当回调带 logs 且该 execution 的 logStorage /
+   * logObjectKey 仍为空（说明上一次 winner 未成功写入日志）时，补做一次持久化
+   * 再返回。无需区分是否 winner——storeLogLines 的 replace 语义本身幂等；持久化
+   * 失败仅 logger.warn，不改变重复回调既有的 success:true 幂等语义。
+   */
+  private async persistCallbackLogsIfMissing(
+    execution: TaskExecution,
+    cb: {
+      executionId: string;
+      logs?: string;
+      executorAddress?: string;
+    },
+  ): Promise<void> {
+    const logStoreMissing = !execution.logStorage && !execution.logObjectKey;
+    if (!cb.logs || !logStoreMissing) return;
+    try {
+      let stored = false;
+      if (LOG_TRUNCATION_MARKER.test(cb.logs)) {
+        stored = await this.backfillFullLogsFromExecutor(
+          execution,
+          execution.executorAddress || cb.executorAddress || "",
+        );
+      }
+      if (!stored) {
+        await this.storeLogLines(cb.executionId, cb.logs);
+      }
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Failed to backfill missing logs for execution ${cb.executionId} on duplicate callback (${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+  }
+
+  /**
+   * 改动5：kill 命中后，best-effort 通知执行器真正终止进程。
+   *
+   * 地址来源为库中实际值（RETURNING 结果，快照作兜底）；拿不到地址则跳过。
+   * 任何失败（离线 / 超时 / 404 / 网络错）一律吞掉并 logger.warn，绝不影响
+   * kill 的结果返回——执行器侧 /kill 返回 200=已终止或已结束、404=不在运行，
+   * 均无需回传给管理员。动态 import axios，与 backfillFullLogsFromExecutor 同款风格。
+   */
+  private async notifyExecutorKill(
+    executionId: string,
+    executorAddress?: string | null,
+  ): Promise<void> {
+    if (!executorAddress) return;
+    try {
+      const token = await this.executorService.getSharedToken();
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const { default: axios } = await import("axios");
+      const url = this.executorService.getExecutorUrl(
+        executorAddress,
+        `api/executions/${executionId}/kill`,
+      );
+      await axios.post(url, {}, { headers, timeout: 3_000 });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Failed to notify executor ${executorAddress} to kill execution ${executionId}: ${message}`,
+      );
+    }
+  }
+
   async handleCallback(
     callbacks: Array<{
       executionId: string;
@@ -1347,6 +1480,11 @@ export class TaskService {
         }
 
         // R-P0-007: Exclude KILLED status to prevent callback from overwriting user-initiated kill
+        // 改动4: 携带 RETURNING——用库中实际 executorAddress 决定释放/回填目标。
+        // executorAddress 在 dispatch HTTP 返回后才落库（task.processor.ts），
+        // 秒级完成的执行其请求前快照 execution.executorAddress 仍为 null，用它
+        // 释放会 no-op 使 runningTaskCount 永久虚高；RETURNING 覆盖该落库窗口，
+        // 快照仅作 fallback（参照 scheduler.service 的 UPDATE ... RETURNING 模式）。
         const updated = await this.execRepo
           .createQueryBuilder()
           .update(TaskExecution)
@@ -1355,18 +1493,45 @@ export class TaskService {
           .andWhere("status IN (:...open)", {
             open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
           })
+          .returning(["id", "executorAddress"])
           .execute();
 
         if (!updated.affected) {
           // Already terminal (duplicate callback): report success without
           // releasing the slot again — the first writer already did.
+          // 改动3: 但若回调日志此前没落库（上一次 winner 在 storeLogLines 抛错、
+          // 整批重试回到此分支），仍补写日志后再返回，闭合"落库失败→日志永久丢失"。
+          const fresh = await this.execRepo.findOne({
+            where: { id: cb.executionId },
+          });
+          if (fresh) await this.persistCallbackLogsIfMissing(fresh, cb);
           results.push({ executionId: cb.executionId, success: true });
           continue;
         }
 
+        // winner 行（RETURNING 结果）为权威：地址/日志持久化都以此为准。
+        const winnerRow = Array.isArray((updated as { raw?: unknown }).raw)
+          ? ((updated as { raw?: Array<{ executorAddress?: string | null }> })
+              .raw?.[0] ?? null)
+          : null;
+        const winnerAddress =
+          winnerRow?.executorAddress ?? execution.executorAddress;
+
         // Decrement executor runningTaskCount on task completion (success or
         // failure); exactly once thanks to the conditional update above.
-        await this.releaseExecutorSlot(execution.executorAddress);
+        // 改动4: 优先用 RETURNING 的库中实际地址，快照兜底。
+        await this.releaseExecutorSlot(winnerAddress);
+
+        // 改动1: 真实执行失败（FAILED/TIMEOUT）告警。放在依赖 fan-out 与日志
+        // 持久化之前，确保即便后续步骤抛错被 catch 成 success:false（执行器随后
+        // 会重试整批），告警也已发出一次；重试路径在 affected=0 分支不再告警，
+        // 恰好保持"每个失败执行一次告警"，与终态条件 UPDATE 的 winner 语义一致。
+        if (
+          patch.status === ExecutionStatus.FAILED ||
+          patch.status === ExecutionStatus.TIMEOUT
+        ) {
+          await this.notifyCallbackFailure(execution, patch.failureReason, cb);
+        }
 
         // R4-P0: dependency fan-out lives on the unique-winner path. The
         // worker's in-memory status can only be RUNNING/FAILED/TIMEOUT when
@@ -1389,8 +1554,8 @@ export class TaskService {
           let stored = false;
           if (LOG_TRUNCATION_MARKER.test(cb.logs)) {
             stored = await this.backfillFullLogsFromExecutor(
-              execution,
-              execution.executorAddress || cb.executorAddress,
+              { ...execution, executorAddress: winnerAddress ?? null },
+              winnerAddress ?? "",
             );
           }
           if (!stored) {
@@ -1573,6 +1738,10 @@ export class TaskService {
       .andWhere("status IN (:...open)", {
         open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
       })
+      // 改动4: RETURNING 取库中实际 executorAddress——快照 execution.executorAddress
+      // 可能因 dispatch 尚未落库而为 null，用它决定释放/终止目标会 no-op（槽位虚高、
+      // 执行器继续空跑）。参照 scheduler.service 既有 UPDATE ... RETURNING 模式。
+      .returning(["id", "executorAddress"])
       .execute();
 
     if (!result.affected || result.affected === 0) {
@@ -1581,7 +1750,18 @@ export class TaskService {
       );
     }
 
-    await this.releaseExecutorSlot(execution.executorAddress);
+    // 改动4: 优先用 RETURNING 的库中实际地址，快照作 fallback。
+    const killedRow = Array.isArray((result as { raw?: unknown }).raw)
+      ? ((result as { raw?: Array<{ executorAddress?: string | null }> })
+          .raw?.[0] ?? null)
+      : null;
+    const executorAddress =
+      killedRow?.executorAddress ?? execution.executorAddress ?? null;
+
+    await this.releaseExecutorSlot(executorAddress);
+    // 改动5: 通知执行器真正终止进程（best-effort；地址为空则跳过，
+    // 任何失败都在 notifyExecutorKill 内被吞掉）。
+    await this.notifyExecutorKill(execId, executorAddress);
     this.logger.warn(`Execution ${execId} has been manually terminated`);
     return { success: true, message: "Execution marked as terminated" };
   }

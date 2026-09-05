@@ -381,17 +381,26 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     alarmEmail?: string,
     alarmChannels?: string[],
     webhookUrl?: string,
+    taskId?: string,
   ) {
     const taskChannels =
       (alarmChannels?.map((c) => c.toLowerCase()) as AlertChannel[]) || [];
 
-    if (this.isSilenced(undefined, AlertLevel.ERROR)) {
+    // 补传 taskId：修复原先 isSilenced(undefined,...) 使任务级静默窗口对本路径
+    // 失效的问题，与 notifyFailure 保持一致（taskId 缺省时行为不变）。
+    if (this.isSilenced(taskId, AlertLevel.ERROR)) {
       this.logger.debug(`Failure alert silenced for task ${taskName}`);
       return;
     }
 
     if (!alarmChannels || alarmChannels.length === 0) {
-      return this.notifyFailure(taskName, execId, error, aiAnalysis);
+      return this.notifyFailure(
+        taskName,
+        execId,
+        error,
+        aiAnalysis,
+        taskId,
+      );
     }
     const payload: NotificationPayload = {
       title: `Task failed: ${taskName}`,
