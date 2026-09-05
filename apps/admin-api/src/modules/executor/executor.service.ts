@@ -954,18 +954,31 @@ export class ExecutorService {
         const executor = executorMap.get(exec.executorAddress);
         if (executor && executor.status === ExecutorStatus.ONLINE) continue;
       }
-      exec.status = ExecutionStatus.FAILED;
-      exec.endTime = new Date();
-      exec.errorMessage =
-        "[System] Executor offline or task timed out, marked as failed by scheduler";
-      exec.logs =
-        (exec.logs || "") +
-        "\n[System] Execution timed out without callback, forcefully marked as FAILED";
-      await this.execRepo.save(exec);
-      await this.releaseExecutorSlot(exec.executorAddress);
-      this.logger.warn(
-        `Lost execution marked FAILED: execId=${exec.id}, taskId=${exec.taskId}`,
-      );
+      // DR-03: only the terminal-transition winner may release the slot;
+      // a callback or another scanner may have finished this stale candidate.
+      const result = await this.execRepo
+        .createQueryBuilder()
+        .update(TaskExecution)
+        .set({
+          status: ExecutionStatus.FAILED,
+          endTime: new Date(),
+          errorMessage:
+            "[System] Executor offline or task timed out, marked as failed by scheduler",
+          logs:
+            (exec.logs || "") +
+            "\n[System] Execution timed out without callback, forcefully marked as FAILED",
+        })
+        .where("id = :id AND status = :status", {
+          id: exec.id,
+          status: ExecutionStatus.RUNNING,
+        })
+        .execute();
+      if (result.affected && result.affected > 0) {
+        await this.releaseExecutorSlot(exec.executorAddress);
+        this.logger.warn(
+          `Lost execution marked FAILED: execId=${exec.id}, taskId=${exec.taskId}`,
+        );
+      }
     }
   }
 
