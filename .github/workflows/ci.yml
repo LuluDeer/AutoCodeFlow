@@ -360,3 +360,71 @@ jobs:
         working-directory: apps/admin-web
         env:
           VITE_API_URL: http://localhost:3105
+
+  # ── 根级 29 例 Playwright e2e（全链真环境）──────────────────
+  # admin-api(3105) + executor-node(8002 注册在线) + admin-web vite(5176)
+  # + 空库迁移链，跑根级 e2e-full.spec.js（登录/任务向导/pinned 全链/RBAC/
+  # 并发/中断/指标等 29 例）。编排收敛在 scripts/e2e-full.sh（CI 与本地
+  # 同一入口）；PG/Redis 由 services 提供后走 SKIP_DOCKER=1 分支复用。
+  # 防抖要点（详见脚本头注）：每次全新库消除种子残留、登录/全局节流放大
+  # 防级联 429（W-22 同根）、回调密钥两端显式同值、执行器注册 online 显式等待。
+  e2e-full:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: autoflow
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: autoflow_test
+        ports: ['15432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['16379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      SKIP_DOCKER: '1'
+      E2E_DB_PORT: '15432'
+      E2E_REDIS_PORT: '16379'
+      # 时间戳库名在 job 内唯一；显式指定便于失败后 service 容器取证
+      E2E_DB_NAME: autoflow_e2e_ci
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/admin-api/package-lock.json
+            apps/admin-web/package-lock.json
+            apps/executor-node/package-lock.json
+      - run: npm ci
+        working-directory: apps/admin-api
+      - run: npm ci
+        working-directory: apps/executor-node
+      - run: npm ci
+        working-directory: apps/admin-web
+      - name: Install chromium (+ system deps)
+        run: npx playwright install --with-deps chromium
+        working-directory: apps/admin-web
+      - name: Run 29-case full-chain e2e
+        run: bash scripts/e2e-full.sh
+      - name: Upload e2e logs & failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            /tmp/acf-e2e-logs*/
+            /tmp/e2e-*.png
+          if-no-files-found: ignore
+          retention-days: 7
