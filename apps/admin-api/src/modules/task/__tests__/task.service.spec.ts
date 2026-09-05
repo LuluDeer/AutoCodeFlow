@@ -5,6 +5,7 @@ import { getQueueToken } from "@nestjs/bullmq";
 import {
   BadRequestException,
   ConflictException,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from "@nestjs/common";
@@ -26,6 +27,8 @@ import { SchedulerService } from "../../scheduler/scheduler.service";
 import { AiService } from "../../ai/ai.service";
 import { ConfigService } from "@nestjs/config";
 import { ExecutorService } from "../../executor/executor.service";
+import { NotificationService } from "../../notification/notification.service";
+import { AuditService } from "../../audit/audit.service";
 
 jest.mock("axios");
 
@@ -53,6 +56,9 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
       andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
+      // handleCallback / killExecution 的终态 UPDATE 现携带 RETURNING，
+      // 需可链式；execute 下方回填 raw 以模拟 PG 的 RETURNING 行。
+      returning: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([]),
       getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
       update: jest.fn().mockReturnThis(),
@@ -80,7 +86,19 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
           return { affected: 0 };
         }
         if (patch) Object.assign(entity, patch);
-        return { affected: 1 };
+        // 模拟 UPDATE ... RETURNING ["id","executorAddress"]：回填被更新行的
+        // id / executorAddress（取自当前实体快照），供释放槽位/日志回填读取。
+        return {
+          affected: 1,
+          raw: [
+            {
+              id: (entity as { id?: string }).id,
+              executorAddress:
+                (entity as { executorAddress?: string | null })
+                  .executorAddress ?? null,
+            },
+          ],
+        };
       }),
     };
     return qb;
@@ -102,6 +120,12 @@ describe("TaskService (__tests__)", () => {
     scheduleOne: jest.Mock;
     getStats: jest.Mock;
   };
+  let notificationService: {
+    notifyFailureWithConfig: jest.Mock;
+    notifyFailure: jest.Mock;
+    sendAll: jest.Mock;
+  };
+  let auditService: { log: jest.Mock };
 
   beforeEach(async () => {
     taskRepo = makeRepo();
@@ -143,6 +167,13 @@ describe("TaskService (__tests__)", () => {
       chat: jest.fn().mockResolvedValue(""),
     };
 
+    notificationService = {
+      notifyFailureWithConfig: jest.fn().mockResolvedValue(undefined),
+      notifyFailure: jest.fn().mockResolvedValue(undefined),
+      sendAll: jest.fn().mockResolvedValue(undefined),
+    };
+    auditService = { log: jest.fn().mockResolvedValue(undefined) };
+
     const module = await Test.createTestingModule({
       providers: [
         TaskService,
@@ -173,6 +204,8 @@ describe("TaskService (__tests__)", () => {
             getSharedToken: jest.fn().mockResolvedValue(""),
           },
         },
+        { provide: NotificationService, useValue: notificationService },
+        { provide: AuditService, useValue: auditService },
       ],
     }).compile();
 
@@ -2060,6 +2093,209 @@ describe("TaskService (__tests__)", () => {
       expect(execRepo.save).not.toHaveBeenCalled();
       expect(releaseSlotExecute).not.toHaveBeenCalled();
     });
+
+    // 改动1: 执行器回调真实失败终态触发告警通知（复用 dispatch 失败通知模式）。
+    describe("failure-terminal notification (改动1)", () => {
+      it("notifies via notifyFailureWithConfig on a FAILED callback, passing task alarm config + taskId", async () => {
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "nightly-etl",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue({
+          id: "t1",
+          alarmEmail: "ops@example.com",
+          alarmChannels: ["email", "slack"],
+        });
+
+        const result = await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "failed",
+            errorMessage: "Traceback: divide by zero",
+          },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+          1,
+        );
+        const [name, id, error, ai, email, channels, wh, taskId] =
+          notificationService.notifyFailureWithConfig.mock.calls[0];
+        expect(name).toBe("nightly-etl");
+        expect(id).toBe("e1");
+        // 内容含 failureReason + errorMessage 摘要
+        expect(error).toMatch(/script_error/i);
+        expect(error).toMatch(/divide by zero/);
+        expect(ai).toBe("");
+        expect(email).toBe("ops@example.com");
+        expect(channels).toEqual(["email", "slack"]);
+        expect(wh).toBeUndefined();
+        expect(taskId).toBe("t1");
+      });
+
+      it("notifies on a TIMEOUT callback", async () => {
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue(null);
+
+        await service.handleCallback([
+          { executionId: "e1", status: "failed", errorMessage: "Execution timed out" },
+        ]);
+
+        expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
+        expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
+      });
+
+      it("does NOT notify on a SUCCESS callback", async () => {
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+
+        await service.handleCallback([{ executionId: "e1", status: "success" }]);
+
+        expect(notificationService.notifyFailureWithConfig).not.toHaveBeenCalled();
+      });
+
+      it("is fail-open: a throwing notification writes NOTIFICATION_FAILED audit and still returns success", async () => {
+        jest.spyOn(Logger.prototype, "error").mockImplementation(() => {});
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue(null);
+        notificationService.notifyFailureWithConfig.mockRejectedValue(
+          new Error("smtp down"),
+        );
+
+        const result = await service.handleCallback([
+          { executionId: "e1", status: "failed", errorMessage: "boom" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        expect(auditService.log).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: "NOTIFICATION_FAILED",
+            resource: "task_execution",
+            resourceId: "e1",
+          }),
+        );
+        jest.restoreAllMocks();
+      });
+    });
+
+    // 改动3: winner 日志落库失败后，重试回调补写日志的闭环。
+    it("persists logs on a retried callback when the first storeLogLines attempt failed (改动3)", async () => {
+      const makeExec = () => ({
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        logStorage: null,
+        logObjectKey: null,
+      });
+      const exec = makeExec();
+      execRepo.findOne.mockResolvedValue(exec);
+      // storeLogLines' DB write throws → winner catch returns success:false.
+      const realTx = dataSource.transaction;
+      dataSource.transaction.mockRejectedValueOnce(new Error("db blip"));
+
+      const first = await service.handleCallback([
+        { executionId: "e1", status: "success", logs: "l0\nl1" },
+      ]);
+      expect(first[0].success).toBe(false);
+
+      // Executor retries the whole batch: execution is already SUCCESS →
+      // affected=0 branch. The fresh re-read still shows logs unwritten, so the
+      // duplicate-callback path must persist them.
+      execRepo.findOne.mockImplementation(async () => makeExec());
+      dataSource.transaction = realTx;
+
+      const second = await service.handleCallback([
+        { executionId: "e1", status: "success", logs: "l0\nl1" },
+      ]);
+
+      expect(second[0].success).toBe(true);
+      expect(logLineRepo.create).toHaveBeenCalled();
+      expect(logLineRepo.save).toHaveBeenCalled();
+    });
+
+    it("does NOT re-persist logs on a duplicate callback once storage pointer exists (改动3 idempotent)", async () => {
+      const persisted = () => ({
+        id: "e1",
+        status: ExecutionStatus.SUCCESS,
+        logStorage: "db",
+        logObjectKey: null,
+      });
+      execRepo.findOne.mockResolvedValue(persisted());
+
+      const result = await service.handleCallback([
+        { executionId: "e1", status: "success", logs: "l0\nl1" },
+      ]);
+
+      expect(result[0].success).toBe(true);
+      expect(logLineRepo.save).not.toHaveBeenCalled();
+    });
+
+    // 改动4: 快照 executorAddress 为 null、库中实际有地址时仍按库值释放槽位。
+    it("releases the slot using the RETURNING executorAddress when the pre-callback snapshot is null (改动4)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: null,
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      // 模拟 dispatch 已把地址落库、但请求前快照尚未刷新：UPDATE ... RETURNING
+      // 返回库中实际地址。
+      execRepo.createQueryBuilder.mockReturnValue({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({
+          affected: 1,
+          raw: [{ id: "e1", executorAddress: "10.0.0.9:8002" }],
+        }),
+      } as any);
+
+      const whereArgs: Array<Record<string, unknown>> = [];
+      dataSource.createQueryBuilder.mockImplementation(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn((_sql: string, params: Record<string, unknown>) => {
+          whereArgs.push(params);
+          return {
+            execute: jest.fn().mockResolvedValue({ affected: 1 }),
+          };
+        }),
+      }) as any);
+
+      const result = await service.handleCallback([
+        { executionId: "e1", status: "success", durationMs: 100 },
+      ]);
+
+      expect(result[0].success).toBe(true);
+      // 快照为 null，本会 no-op；RETURNING 让释放落到库中实际地址。
+      expect(whereArgs).toEqual([{ addr: "10.0.0.9:8002" }]);
+    });
   });
 
   describe("saveVersion", () => {
@@ -2213,6 +2449,62 @@ describe("TaskService (__tests__)", () => {
       await expect(service.killExecution("e3")).rejects.toThrow(
         BadRequestException,
       );
+    });
+
+    // 改动5: kill 命中后通知执行器终止进程（best-effort）。
+    it("notifies the executor /kill endpoint after a successful kill (改动5)", async () => {
+      const axios = ((await import("axios")) as any).default;
+      (axios.post as jest.Mock).mockReset();
+      (axios.post as jest.Mock).mockResolvedValue({ data: { ok: true } });
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:8002",
+        startTime: new Date(Date.now() - 1000),
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.killExecution("e1");
+
+      expect(result.success).toBe(true);
+      expect(axios.post).toHaveBeenCalledWith(
+        "http://executor:3001/api/executions/e1/kill",
+        {},
+        expect.objectContaining({ timeout: 3000 }),
+      );
+    });
+
+    it("still returns success and releases the slot when the kill notification fails (改动5 fail-safe)", async () => {
+      jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+      const axios = ((await import("axios")) as any).default;
+      (axios.post as jest.Mock).mockReset();
+      (axios.post as jest.Mock).mockRejectedValue(new Error("ECONNREFUSED"));
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:8002",
+        startTime: new Date(Date.now() - 1000),
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.killExecution("e1");
+
+      expect(result.success).toBe(true);
+      // 地址已释放（DB 侧），通知失败不回滚。
+      expect(releaseSlotExecute).toHaveBeenCalled();
+      jest.restoreAllMocks();
+    });
+
+    it("skips the kill notification when the executor address is unavailable (改动5)", async () => {
+      const axios = ((await import("axios")) as any).default;
+      (axios.post as jest.Mock).mockReset();
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.killExecution("e1");
+
+      expect(result.success).toBe(true);
+      expect(axios.post).not.toHaveBeenCalled();
     });
   });
 
