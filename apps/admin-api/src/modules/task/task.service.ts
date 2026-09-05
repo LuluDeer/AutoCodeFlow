@@ -222,7 +222,9 @@ export class TaskService {
       }
     }
     try {
-      return await this.taskRepo.save(this.taskRepo.create(normalized));
+      const saved = await this.taskRepo.save(this.taskRepo.create(normalized));
+      await this.saveVersion(saved.id, undefined, undefined, saved);
+      return saved;
     } catch (err) {
       if (isUniqueViolation(err)) {
         throw new ConflictException(
@@ -349,6 +351,7 @@ export class TaskService {
     // 被静默丢弃）。save 前兜底，消息与 create 路径一致。
     this.assertPinBroadcastExclusive(updated.executorId, updated.executeMode);
     const saved = await this.taskRepo.save(updated);
+    await this.saveVersion(saved.id, undefined, undefined, saved);
     // Stop old schedule, then re-register based on new status without waiting for reload
     this.schedulerService.stop(id);
     if (saved.status === TaskStatus.ACTIVE) {
@@ -361,7 +364,9 @@ export class TaskService {
     const t = await this.findOne(id);
     t.glueSource = source;
     if (language) t.glueLanguage = language;
-    return this.taskRepo.save(t);
+    const saved = await this.taskRepo.save(t);
+    await this.saveVersion(saved.id, undefined, undefined, saved);
+    return saved;
   }
 
   async remove(id: string) {
@@ -641,8 +646,10 @@ export class TaskService {
     };
   }
 
-  async getExecution(id: string) {
-    const e = await this.execRepo.findOne({ where: { id } });
+  async getExecution(id: string, taskId?: string) {
+    const e = await this.execRepo.findOne({
+      where: taskId ? { id, taskId } : { id },
+    });
     if (!e) throw new NotFoundException("Execution not found");
     return e;
   }
@@ -932,6 +939,7 @@ export class TaskService {
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
       throw new Error(`Failed to enqueue execution: ${message}`);
     }
+    await this.saveVersion(task.id, undefined, undefined, task);
     // N11: re-schedule so active cron/fixed-rate tasks pick up the new commit immediately
     if (task.status === TaskStatus.ACTIVE) {
       await this.schedulerService.scheduleOne(task);
@@ -1201,8 +1209,10 @@ export class TaskService {
   ): Promise<boolean> {
     if (!executorAddress) return false;
     try {
-      const token =
-        this.configService.get<string>("executor.sharedToken") ?? "";
+      // DB-first via ExecutorService so rotation propagates to log backfill
+      // too — a raw env read would be rejected by the executor's own
+      // DB-first verification (same consistency rule as push/dispatch).
+      const token = await this.executorService.getSharedToken();
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const { default: axios } = await import("axios");
       const url = this.executorService.getExecutorUrl(
@@ -1404,8 +1414,9 @@ export class TaskService {
     taskId: string,
     createdBy?: string,
     description?: string,
+    taskSnapshot?: Task,
   ): Promise<TaskVersion> {
-    const task = await this.taskRepo.findOne({ where: { id: taskId } });
+    const task = taskSnapshot ?? (await this.taskRepo.findOne({ where: { id: taskId } }));
     if (!task) {
       throw new NotFoundException("Task not found");
     }
@@ -1445,6 +1456,8 @@ export class TaskService {
       gitRepo: task.gitRepo,
       gitBranch: task.gitBranch,
       gitCommit: task.gitCommit,
+      glueSource: task.glueSource,
+      glueLanguage: task.glueLanguage,
     };
 
     return this.versionRepo.save(
@@ -1487,7 +1500,9 @@ export class TaskService {
     Object.assign(task, version.snapshot);
     task.currentVersion = version.version;
 
-    return this.taskRepo.save(task);
+    const saved = await this.taskRepo.save(task);
+    await this.saveVersion(saved.id, undefined, undefined, saved);
+    return saved;
   }
 
   async compareVersions(
