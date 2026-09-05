@@ -85,7 +85,7 @@
   - **R-04 专项（W-19/P-13）**：任务 env 白名单两侧补齐 Windows 系统+home/identity 变量族（python 侧此前零 Windows 变量；Git-Bash 的 HOME 恰好掩盖了退化）；双侧白名单安全测试 + 真链路 homedir/getuser 实证
   - **R16 路线图 #12 收口**：electron-builder NSIS 安装包 Windows 首产（100.6MB）；ncc 内置 executor 独立注册+真实任务验证；新发现 W-16 assets 图标未入库（体验）/W-18 prebuilt bundle 跟踪（漂移风险）
   - **固化**：Windows CI job（executor-node/acf-cli/mcp-server + admin-web，`ci.yml`）；deployment.md 新增 Windows 章节（手动路线/taskkill 警告/shell 语义）；install.sh 平台探测；requirements-dev.txt ×2
-  - ⚠️ Linux 侧复验义务：本轮所有修复的 POSIX 分支均未改语义（平台分支/isWin 隔离），但需在 Linux 复跑 executor-node 158 + executor-python 125 + admin-api 873 确认零回归（Windows CI 首次上真机运行）；push 仍无凭证（本地 develop 领先 origin 70+）
+  - ✅ Linux 复验义务已闭环（2026-09-05，凭证配好后推送）：CI run 33943007134 **22 job 全绿**（ubuntu 18：executor-node 162 / executor-python 127 / admin-api 873 等零回归；windows 4：executor-node/acf-cli/mcp-server/admin-web 固化基线）。Windows CI 首跑即抓出并修复 W-20（env 白名单 win32 大小写语义失效，P-14/15）——双平台 CI 交叉验证的直接收益
 - 本轮（2026-09-04 第十轮，A/B/C/D 四路 → W 收尾 N37-N42；详见 `docs/PROGRESS-round10-2026-09-04.md`）：
   - **可观测性**：docs/observability/（Grafana dashboard 11 panels + 6 条告警规则 + README 抓取配置/指标字典，series 与源码逐字核对零偏差）
   - **SDK 发布管道**（路线图 #10 收尾）：release.yml（tag 触发 + version-guard 四处版本一致性 + npm/PyPI 发布 + environment: release 审批门）；双 SDK README + sdk-guide 矩阵；修掉 autoflow-sdk 未声明 pydantic 依赖的发布级 bug
