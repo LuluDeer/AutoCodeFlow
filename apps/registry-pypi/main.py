@@ -8,6 +8,8 @@
   - 基本认证（REGISTRY_USER / REGISTRY_PASS）
 """
 from pathlib import Path
+import base64
+import binascii
 import hashlib
 import os
 import re
@@ -16,7 +18,6 @@ import tempfile
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import secrets
 
 app = FastAPI(title="AutoFlow PyPI Registry", version="1.0.0")
@@ -29,7 +30,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-security = HTTPBasic()
 
 # Use PACKAGES_DIR env var; default to a local ./packages dir for dev convenience
 _default_packages_dir = Path(__file__).parent / "packages"
@@ -49,13 +49,29 @@ if REGISTRY_USER == "autoflow" and REGISTRY_PASS == "autoflow123":
     )
 
 
-def verify_auth(credentials: HTTPBasicCredentials = Depends(security)):
-    ok_user = secrets.compare_digest(credentials.username, REGISTRY_USER)
-    ok_pass = secrets.compare_digest(credentials.password, REGISTRY_PASS)
+def verify_auth(request: Request):
+    # Parse locally so malformed credentials always use the same response.
+    unauthorized = HTTPException(
+        status_code=401, detail="Unauthorized",
+        headers={"WWW-Authenticate": "Basic"})
+    header = request.headers.get("authorization")
+    if not header:
+        raise unauthorized
+    scheme, separator, encoded = header.partition(" ")
+    if not separator or scheme.lower() != "basic" or not encoded:
+        raise unauthorized
+    try:
+        decoded = base64.b64decode(encoded, validate=True).decode("ascii")
+    except (binascii.Error, UnicodeDecodeError):
+        raise unauthorized
+    username, separator, password = decoded.partition(":")
+    if not separator or not username or not password:
+        raise unauthorized
+    ok_user = secrets.compare_digest(username, REGISTRY_USER)
+    ok_pass = secrets.compare_digest(password, REGISTRY_PASS)
     if not (ok_user and ok_pass):
-        raise HTTPException(status_code=401, detail="Unauthorized",
-                            headers={"WWW-Authenticate": "Basic"})
-    return credentials.username
+        raise unauthorized
+    return username
 
 
 def normalize(name: str) -> str:

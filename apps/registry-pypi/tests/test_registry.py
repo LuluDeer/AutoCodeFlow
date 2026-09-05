@@ -76,6 +76,32 @@ class TestAuth:
     def test_bad_credentials_rejected(self, client):
         resp = client.get("/simple/", auth=BAD_AUTH)
         assert resp.status_code == 401
+        assert resp.json() == {"detail": "Unauthorized"}
+        assert resp.headers["www-authenticate"] == "Basic"
+
+    @pytest.mark.parametrize("authorization", [
+        None,
+        "Bearer test-token",
+        "Basic",
+        "Basic ",
+        "Basic !!!not-base64!!!",
+        "Basic dGVz!dHVzZXI6dGVzdHBhc3M=",
+        "Basic " + __import__("base64").b64encode(b"missing-colon").decode(),
+        "Basic " + __import__("base64").b64encode("tést:testpass".encode()).decode(),
+        "Basic " + __import__("base64").b64encode(b":testpass").decode(),
+        "Basic " + __import__("base64").b64encode(b"testuser:").decode(),
+    ])
+    def test_malformed_basic_auth_matches_bad_credentials(self, client, authorization):
+        headers = {} if authorization is None else {"Authorization": authorization}
+        malformed = client.get("/simple/", headers=headers)
+        bad_credentials = client.get("/simple/", auth=BAD_AUTH)
+        assert malformed.status_code == bad_credentials.status_code == 401
+        assert malformed.json() == bad_credentials.json() == {"detail": "Unauthorized"}
+        assert malformed.headers["www-authenticate"] == bad_credentials.headers["www-authenticate"] == "Basic"
+
+    def test_valid_basic_auth_still_succeeds(self, client):
+        resp = client.get("/simple/", auth=AUTH)
+        assert resp.status_code == 200
 
 
 class TestSimpleIndex:
