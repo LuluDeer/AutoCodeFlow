@@ -171,6 +171,7 @@
 | P-16 | W-22：main.ts 预载 `.env` 后再动态引入 app.module——装饰器求值期读取的 env（LOGIN_THROTTLE_LIMIT）从死配置变真可配；同批 W-21 requirements 全栈接通（实体 jsonb+迁移/DTO 校验/normalize 防线/snapshot/admin-web 表单） | `admin-api/src/main.ts` + task 模块 + admin-web | 25 连登 0×429；29 例 e2e 纯 .env 跑 29/29；admin-api 884 零回归 |
 
 | P-17 | W-23：git clone 缓存脏目录自愈——node/python 两实现统一"探针（HEAD+`rev-parse --is-bare-repository`）→ 损坏则**改名隔离**（`-broken-<ts>`，避 Windows 句柄锁+留现场）→ 重克隆"；node 版补齐 clone 失败清理（原缺） | `executor-node/routes/execute.ts`、`executor-python/routers/execute.py` | node 163 / python 128（各 +1 自愈用例，python 用真实 git 验取证保留） |
+| P-18 | W-24：三处 spawn 站点（runProcess/runCommand/startApp）补 stdio socket error 守卫——spawn 失败不再崩整个执行器；ENOENT+超长 cwd 附 MAX_PATH 提示 | `executor-node/src/routes/execute.ts`、`run-command.ts`、`routes/deploy.ts` | W-24 回归用例 + 164/164；真实长路径复跑执行器存活（崩溃栈消失） |
 
 ### 测试平台化修复
 - executor-node（W-03）：POSIX kill 两例 → 平台分支断言（win32 验 taskkill spawn + proc.kill）；`versioned deployment paths` 两例 → `path.join` 构造期望；npm 白名单例 → 按平台找 `npm.cmd`/`npm`。**158/158 全绿（连跑 3 次稳定）**。
@@ -218,6 +219,17 @@
 - uvicorn 启动/注册/心跳/优雅下线：正常；端口 bind 失败时启动链的 graceful shutdown（offline 通知+退出码干净）被意外实证一次。
 - 任务电池（直连或经 admin pinned 分发）：① python glue success（P-4 真链路 + `AUTOFLOW_CALLBACK_TOKEN` 注入 True，N33 Windows 成立）；② shell batch glue success（W-11 .cmd）；③ requirements 任务直连 `/execute`：`uv venv` 真实建 venv + `Scripts\python.exe` 解析 + httpx 0.28.1 安装运行 success（**P-3 真链路**）。
 - ℹ️ 顺带发现（跨平台产品面，非 Windows）：admin-api 的 CreateTaskDto/dispatch 均不携带 `requirements`——executor 侧 venv 能力经 UI/API 正常链路不可达，只能由直连执行器或后续 manifest 特性触发。记作功能缺口，待产品决定是否接通。
+
+### R-06 长路径结论（实测，2026-09-05）：node fs 能走长路径、CreateProcess 不能；衍生出 W-24
+- 现场：本机 `LongPathsEnabled=0`（注册表未开，Win11 25H2 实测默认也未开）。
+- 分层实测：`fs.mkdirSync`/`writeFileSync` 在 266/276 字符路径 **OK**（libuv 内部自动加 `\\?\` 前缀）；但 `spawn(cmd,args,{cwd:>260})` **失败**（CreateProcess 的 lpCurrentDirectory 无长路径支持，报 ENOENT/WinError 267）；python 进程连 listdir 长路径都看不到。
+- **结论**：executor 的 workdir/日志用长路径本身可行，**把长路径作为任务进程 cwd 不可行**（OS API 层限制，代码无绕过手段——`\\?\` 前缀对 CreateProcess cwd 同样无效）。运维要求：WORK_DIR + executionId 拼接后保持 <260 字符，或在主机启用 `LongPathsEnabled`（组策略/注册表，重启生效）；已写入 deployment.md Windows 章节。python 执行器实测同源（WinError 267 被 generic except 捕获，干净失败）。
+
+### W-24：🔴 spawn 失败经 stdio socket 未捕获 'error' 崩掉整个 executor-node 进程（任意 ENOENT 触发，长路径只是引子）——已修三站点+回归测试
+- 触发面（Linux/Windows 通用，Windows 更易踩）：任务可执行文件不在 PATH、cwd 不存在/超限、EACCES…任何 `child_process.spawn` 失败。
+- 机制：spawn 失败时 node 在 stdio **Socket** 对象上 emit 'error'（除 ChildProcess 的 error 事件外）。`runProcess`/`runCommand`/`deploy.startApp` 只挂了 `data`（或 `.pipe`）与 ChildProcess 级 `on('error')`——socket 上的 error 无监听 → uncaughtException → **整个执行器崩溃，连带所有在跑任务**。R-06 长路径实测中该签名（`read ENOTCONN` 栈）首次暴露。
+- 修复（P-18）：三处 spawn 站点统一补 `child.stdout?.on('error', noop)`/`stderr` 守卫（失败路由回 ChildProcess 'error' → 单任务失败）；runProcess 的 ENOENT 且 cwd>259 时错误信息追加 `MAX_PATH/LongPathsEnabled` 提示（把不可读的 ENOENT 变成可定位的运维线索）。
+- 验证：新回归用例（伪造 stdio socket error + 无监听即抛的 EventEmitter 语义，修复前必红）；全量 164/164；真实长路径复跑执行器存活（原崩溃栈消失）。executor-python 排查无同源问题（asyncio spawn 异常走 `await`，被 generic `except Exception` 捕获）。
 - ✅ **已接通（W-21，同日）**：admin-api 全栈补齐——Task 实体 jsonb 列（幂等迁移 AddTaskRequirements1788581485026）+ CreateTaskDto 结构校验（数组/非空元素/≤50，UpdateTaskDto 经 PartialType 继承）+ service normalize（trim + 拒 option 形 `-` 前缀，镜像执行器防线，坏 spec 创建即 400）+ **version snapshot 收录**（否则回滚丢依赖）+ dispatch 零改动（task 实体整体透传）；application manifest 路径此前经 `as any` 传入被静默丢弃，现已真实落库。admin-web：表单 `Select mode=tags` 输入（tokenSeparators 特意留空——pip spec 合法含逗号）、编辑回填、详情页展示、提交序列化 `applyRequirementsPayload`（空集显式 null——PATCH 缺省=保留旧值的 N28 教训）。测试：admin-api +11（884/884）、admin-web +5（40/40）。文档：sdk-guide 平台任务配置表新增 requirements 行。
 
 ### W-22：🔴 `.env` 对"装饰器求值期读取"的环境变量永不生效——login 节流（N16）名义可配实为死配置（已修）

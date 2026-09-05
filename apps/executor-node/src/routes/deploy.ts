@@ -182,6 +182,11 @@ function startApp(
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  // W-24: stdio socket 'error' guards — .pipe() does not swallow source
+  // errors, so a failed spawn (ENOENT: missing startCommand, long deploy
+  // path without LongPathsEnabled…) would otherwise crash the executor.
+  child.stdout?.on('error', () => { /* surfaced via child 'error' handler */ });
+  child.stderr?.on('error', () => { /* surfaced via child 'error' handler */ });
 
   runningApps.set(deploymentId, child);
 
