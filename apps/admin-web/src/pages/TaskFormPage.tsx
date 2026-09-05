@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   deriveExecutorMode,
   buildExecutorPayload,
+  applyRequirementsPayload,
 } from './executor-mode';
 import {
   Card, Form, Input, Select, Button, Steps, Space, Typography,
@@ -112,6 +113,7 @@ export default function TaskFormPage() {
           description: task.description,
           runtime: task.runtime,
           entrypoint: task.entrypoint,
+          requirements: task.requirements ?? [],
           applicationId: task.applicationId,
           triggerType: task.triggerType || 'manual',
           cronExpression: task.cronExpression,
@@ -188,7 +190,9 @@ export default function TaskFormPage() {
     }
     setSaving(true);
     try {
-      const payload = buildExecutorPayload(values, executorMode);
+      const payload = applyRequirementsPayload(
+        buildExecutorPayload(values, executorMode),
+      );
       if (isEdit && editId) {
         await tasksApi.update(editId, payload);
         message.success('任务更新成功');
@@ -281,6 +285,26 @@ export default function TaskFormPage() {
               tooltip={{ title: '相对于仓库根目录的文件路径，如 tasks/main.py', icon: <InfoCircleOutlined /> }}
             >
               <Input placeholder="tasks/main.py" />
+            </Form.Item>
+
+            {/* W-21: 依赖声明。python 任务由 executor-python 装进 per-task uv
+                venv，node 任务由 executor-node 安装；glue 脚本任务不生效。 */}
+            <Form.Item
+              name="requirements"
+              label="依赖包（可选）"
+              tooltip={{
+                title:
+                  '执行器运行前安装的依赖，回车逐条添加。python 运行时形如 requests>=2.31（per-task venv），node 运行时形如 left-pad@2.1.0；glue 脚本任务忽略此项',
+                icon: <InfoCircleOutlined />,
+              }}
+            >
+              <Select
+                mode="tags"
+                placeholder="requests>=2.31，回车添加"
+                open={false}
+                suffixIcon={null}
+                tokenSeparators={[]}
+              />
             </Form.Item>
 
             <Form.Item

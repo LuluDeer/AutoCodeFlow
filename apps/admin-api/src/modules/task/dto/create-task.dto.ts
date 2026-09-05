@@ -10,6 +10,7 @@ import {
   Min,
   Max,
   IsArray,
+  ArrayMaxSize,
   IsUUID,
   Matches,
 } from "class-validator";
@@ -54,6 +55,25 @@ export class CreateTaskDto {
   @IsOptional()
   runtime?: TaskRuntime;
   @ApiPropertyOptional() @IsString() @IsOptional() runtimeVersion?: string;
+  /**
+   * W-21: executor-side dependency specs. Structure validated at the DTO
+   * boundary (array of non-empty bounded strings, ≤50); semantic enforcement
+   * stays in the executors (python: option-like/blank specs rejected before
+   * uv; node: npm naming rules S16) — plus the service-level leading-'-'
+   * guard here mirrors their first check so bad specs 400 at create time
+   * instead of burning a queued execution.
+   */
+  @ApiPropertyOptional({
+    description:
+      'Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: ["requests>=2.31", "rich==13.7.1"]',
+    type: [String],
+  })
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  @IsOptional()
+  requirements?: string[];
   @ApiPropertyOptional({
     description: "Upstream task dependency map: { taskId: taskName }",
     type: "object",

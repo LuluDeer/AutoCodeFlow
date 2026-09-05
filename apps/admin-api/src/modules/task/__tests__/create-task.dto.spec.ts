@@ -113,4 +113,81 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
       expect(result.executorId).toBe(UUID_V4);
     });
   });
+
+  // W-21: requirements — the DTO boundary enforces STRUCTURE (array of
+  // non-empty strings, ≤50); the option-like-spec semantic guard lives in
+  // TaskService.normalizeTaskDto and the executors. UpdateTaskDto inherits
+  // every validator via PartialType.
+  describe("requirements validation (W-21)", () => {
+    it("accepts an array of pip/npm spec strings", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        requirements: [
+          "requests>=2.31",
+          "rich[markup]==13.7.1",
+          "django>=4,<5",
+        ],
+      });
+      expect(result.requirements).toEqual([
+        "requests>=2.31",
+        "rich[markup]==13.7.1",
+        "django>=4,<5",
+      ]);
+    });
+
+    it("stays optional", async () => {
+      const result = await validateCreate({ name: "t1", triggerType: "api" });
+      expect(result.requirements).toBeUndefined();
+    });
+
+    it("rejects a non-array value", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          requirements: "requests",
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects non-string elements", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          requirements: [123],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects empty-string elements", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          requirements: ["ok", ""],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects an over-cap array (>50)", async () => {
+      const many = Array.from({ length: 51 }, (_, i) => `pkg${i}`);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          requirements: many,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("UpdateTaskDto inherits the requirements validators", async () => {
+      const ok = await validateUpdate({ requirements: ["flask==3.0.0"] });
+      expect(ok.requirements).toEqual(["flask==3.0.0"]);
+      await expect(validateUpdate({ requirements: [42] })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
 });
