@@ -50,13 +50,43 @@ function queueGitCheckout<T>(cacheKey: string, job: () => Promise<T>): Promise<T
 }
 
 /** Clone (with bare cache) and checkout the specified ref to dest directory */
+/** W-23 (windows-findings, parity with executor-python): the clone cache was
+ *  probed by `exists(HEAD)` only — a directory left half-written by a killed
+ *  clone (taskkill /F mid-clone) then either failed `git clone` forever
+ *  ("destination exists") or, worse on the python side, was treated as warm
+ *  cache and failed `fetch` forever. Validate with git itself and quarantine
+ *  (rename, not delete — forensics + Windows may still see file locks) so the
+ *  next checkout self-heals by re-cloning. */
+async function isBareGitRepo(cacheDir: string): Promise<boolean> {
+  if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) return false;
+  const probe = await runCommand('git', ['-C', cacheDir, 'rev-parse', '--is-bare-repository'], { timeout: 15_000 });
+  return probe.status === 0 && probe.stdout.trim() === 'true';
+}
+
+function quarantineBrokenCache(cacheDir: string): void {
+  const broken = `${cacheDir}-broken-${Date.now()}`;
+  try {
+    fs.renameSync(cacheDir, broken);
+  } catch (err) {
+    logger.warn(`[git] could not quarantine cache dir ${cacheDir} (${err instanceof Error ? err.message : String(err)}); removing`);
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+}
+
 export async function gitCheckoutTo(repoUrl: string, ref: string, dest: string): Promise<void> {
   const cacheDir = path.join(config.workDir, '.git_cache', repoDirName(repoUrl));
   await queueGitCheckout(cacheDir, async () => {
+    if (fs.existsSync(cacheDir) && !(await isBareGitRepo(cacheDir))) {
+      logger.warn(`[git] cache ${cacheDir} is not a valid bare repo (killed clone?) — quarantining and re-cloning`);
+      quarantineBrokenCache(cacheDir);
+    }
     if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
       fs.mkdirSync(cacheDir, { recursive: true });
       const r = await runCommand('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120_000 });
-      if (r.status !== 0) throw new Error(`git clone failed: ${r.stderr.trim()}`);
+      if (r.status !== 0) {
+        fs.rmSync(cacheDir, { recursive: true, force: true });
+        throw new Error(`git clone failed: ${r.stderr.trim()}`);
+      }
     } else {
       const r = await runCommand('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60_000 });
       if (r.status !== 0) {

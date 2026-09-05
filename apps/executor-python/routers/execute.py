@@ -46,10 +46,43 @@ def _repo_dir_name(repo_url: str) -> str:
     return f'{name}-{salt}'
 
 
+def _is_bare_git_repo(cache_dir: Path) -> bool:
+    """W-23 (windows-findings): validity probe for the clone cache. A process
+    kill (taskkill /F, OOM) mid-clone leaves a partial directory behind; the
+    old `cache_dir.exists()` check then took the FETCH branch forever and every
+    later checkout of that task failed permanently. `HEAD` first (cheap, and
+    keeps `rev-parse` from walking up into an unrelated outer repo), then ask
+    git itself."""
+    if not (cache_dir / 'HEAD').exists():
+        return False
+    try:
+        r = subprocess.run(['git', '-C', str(cache_dir), 'rev-parse', '--is-bare-repository'],
+                           capture_output=True, text=True, timeout=10)
+        return r.returncode == 0 and r.stdout.strip() == 'true'
+    except Exception:
+        return False
+
+
+def _quarantine_broken_cache(cache_dir: Path) -> None:
+    """Move a corrupt cache aside instead of deleting it: keeps the forensic
+    state, and dodges Windows EBUSY on a directory a just-killed process may
+    still hold open (a failed rmtree would leave the permanent-failure state
+    we are trying to heal). The TTL log cleanup can sweep *.git_cache/*-broken
+    later; until then a stale partial clone costs only disk."""
+    broken = cache_dir.with_name(cache_dir.name + f'-broken-{int(time.time())}')
+    try:
+        cache_dir.rename(broken)
+    except OSError:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
 def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
     """Clone (with cache) and checkout the specified ref to the dest directory."""
     _validate_git_ref(ref)
     cache_dir = Path(settings.work_dir) / '.git_cache' / _repo_dir_name(repo_url)
+    if cache_dir.exists() and not _is_bare_git_repo(cache_dir):
+        logger.warning('git cache %s is not a valid bare repo (killed clone?) — quarantining and re-cloning', cache_dir)
+        _quarantine_broken_cache(cache_dir)
     if not cache_dir.exists():
         cache_dir.mkdir(parents=True, exist_ok=True)
         try:

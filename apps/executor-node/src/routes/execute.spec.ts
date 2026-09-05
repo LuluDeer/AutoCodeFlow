@@ -489,6 +489,46 @@ describe('git cache serialization', () => {
     // Two checkouts × (clone + checkout) = 4 spawns, none overlapping.
     expect(events.filter(e => e === 'spawn').length).toBe(4);
   });
+
+  // W-23 (windows-findings): a taskkill /F during a clone leaves a partial
+  // cache dir on disk (the rmtree cleanup never ran). The next checkout must
+  // detect it via the bare-repo probe, QUARANTINE it (rename — not delete, so
+  // a Windows file lock can't re-break the healing) and re-clone, instead of
+  // failing on `git clone` ("destination exists") forever.
+  it('quarantines a corrupt cache dir and self-heals by re-cloning (W-23)', async () => {
+    const spawned: Array<[string, string[]]> = [];
+    // Call order: rev-parse probe (corrupt → fail), clone (ok), checkout (ok).
+    const results = [1, 0, 0];
+    (mockCp.spawn as jest.Mock).mockImplementation((cmd: string, args: string[]) => {
+      spawned.push([cmd, args]);
+      const status = results.shift() ?? 0;
+      return {
+        stdout: { on: jest.fn() },
+        stderr: { on: jest.fn() },
+        on: jest.fn((event: string, cb: Function) => {
+          if (event === 'close') setImmediate(() => cb(status));
+        }),
+        kill: jest.fn(),
+      };
+    });
+    // Cache dir + HEAD present until the quarantine rename "moves" it aside.
+    let cacheAlive = true;
+    (mockFs.existsSync as jest.Mock).mockImplementation(
+      (p: string) => cacheAlive && String(p).includes('.git_cache'),
+    );
+    let quarantinedTo = '';
+    (mockFs.renameSync as jest.Mock).mockImplementation((from: string, to: string) => {
+      quarantinedTo = String(to);
+      cacheAlive = false;
+    });
+
+    await gitCheckoutTo('https://example.com/repo.git', 'main', '/tmp/test-workdir/exec-w23');
+
+    expect(spawned[0][1].join(' ')).toContain('--is-bare-repository');
+    expect(quarantinedTo).toMatch(/-broken-\d+$/);
+    expect(spawned[1][1][0]).toBe('clone');
+    expect(spawned[2][1]).toContain('checkout');
+  });
 });
 
 // ---------------------------------------------------------------------------
