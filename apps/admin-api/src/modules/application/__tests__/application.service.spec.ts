@@ -150,4 +150,62 @@ describe("ApplicationService", () => {
       expect(result?.webhookSecret).toBe("s3cr3t");
     });
   });
+
+  // W-21 (windows-findings): the manifest auto-registration path passed
+  // requirements through a `taskService.create({...} as any)` payload while
+  // the entity had no column — silently dropped. Now it persists, so pin the
+  // passthrough + the per-task error isolation against future refactors.
+  describe("syncTasksFromManifest (W-21 requirements passthrough)", () => {
+    it("forwards taskDef.requirements to TaskService.create", async () => {
+      appRepo.findOne.mockResolvedValue({
+        id: "app-1",
+        manifest: {
+          runtime: "python",
+          tasks: [
+            { id: "t1", name: "task-one", requirements: ["requests>=2.31"] },
+            { id: "t2", name: "task-two" },
+          ],
+        },
+      });
+      const created: Array<Record<string, unknown>> = [];
+      (service as any)._taskService = {
+        create: jest.fn(async (dto: Record<string, unknown>) => {
+          created.push(dto);
+          return { id: dto.id };
+        }),
+      };
+
+      const count = await service.syncTasksFromManifest("app-1");
+
+      expect(count).toBe(2);
+      expect(created[0].requirements).toEqual(["requests>=2.31"]);
+      expect(created[0].runtime).toBe("python"); // manifest-level default applied
+      expect(created[1].requirements).toBeUndefined();
+    });
+
+    it("an 'already exists' task does not abort the remaining registrations", async () => {
+      appRepo.findOne.mockResolvedValue({
+        id: "app-1",
+        manifest: {
+          runtime: "node",
+          tasks: [{ id: "dup" }, { id: "fresh", requirements: ["left-pad"] }],
+        },
+      });
+      const create = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Task with id "dup" already exists'))
+        .mockImplementationOnce(async (dto: Record<string, unknown>) => ({
+          id: dto.id,
+        }));
+      (service as any)._taskService = { create };
+
+      const count = await service.syncTasksFromManifest("app-1");
+
+      expect(count).toBe(1);
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(
+        (create.mock.calls[1][0] as Record<string, unknown>).requirements,
+      ).toEqual(["left-pad"]);
+    });
+  });
 });
