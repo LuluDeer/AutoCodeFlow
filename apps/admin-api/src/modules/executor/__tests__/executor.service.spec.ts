@@ -1444,6 +1444,81 @@ describe("ExecutorService (__tests__)", () => {
     });
   });
 
+  describe("detectLostExecutions DR-03", () => {
+    let qb: ReturnType<ReturnType<typeof makeRepo>["createQueryBuilder"]>;
+    let candidate: any;
+    let warn: jest.SpyInstance;
+
+    beforeEach(() => {
+      candidate = {
+        id: "lost-1", taskId: "task-1", executorAddress: "host:3002",
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 20 * 60_000), logs: "existing logs",
+      };
+      qb = execRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([candidate]);
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      taskRepo.findBy.mockResolvedValue([{ id: "task-1", timeout: 300 }]);
+      executorRepo.findBy.mockResolvedValue([
+        { address: "host:3002", status: ExecutorStatus.OFFLINE },
+      ]);
+      warn = jest.spyOn((service as any).logger, "warn").mockImplementation(() => {});
+    });
+
+    afterEach(() => warn.mockRestore());
+
+    it("conditionally marks FAILED and releases exactly one slot with a warning", async () => {
+      await service.detectLostExecutions();
+      expect(qb.update).toHaveBeenCalledWith(TaskExecution);
+      expect(qb.where).toHaveBeenCalledWith("id = :id AND status = :status", {
+        id: "lost-1", status: ExecutionStatus.RUNNING,
+      });
+      expect(qb.set).toHaveBeenCalledWith({
+        status: ExecutionStatus.FAILED,
+        endTime: expect.any(Date),
+        errorMessage: "[System] Executor offline or task timed out, marked as failed by scheduler",
+        logs: "existing logs\n[System] Execution timed out without callback, forcefully marked as FAILED",
+      });
+      expect(execRepo.save).not.toHaveBeenCalled();
+      expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
+      const release = executorRepo.createQueryBuilder.mock.results[0].value;
+      expect(release.where).toHaveBeenCalledWith("address = :address", { address: "host:3002" });
+      expect(release.execute).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith("Lost execution marked FAILED: execId=lost-1, taskId=task-1");
+    });
+
+    it.each([0, undefined])("does not release or warn when affected=%s", async (affected) => {
+      qb.execute.mockResolvedValue({ affected });
+      const snapshot = { ...candidate };
+      await service.detectLostExecutions();
+      expect(candidate).toEqual(snapshot);
+      expect(execRepo.save).not.toHaveBeenCalled();
+      expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("releases once across two scans of the same stale candidate", async () => {
+      qb.execute.mockResolvedValueOnce({ affected: 1 }).mockResolvedValueOnce({ affected: 0 });
+      await service.detectLostExecutions();
+      await service.detectLostExecutions();
+      expect(qb.execute).toHaveBeenCalledTimes(2);
+      expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["online", "within timeout"])("skips candidates %s", async (reason) => {
+      if (reason === "online") {
+        executorRepo.findBy.mockResolvedValue([{ address: "host:3002", status: ExecutorStatus.ONLINE }]);
+      } else {
+        candidate.startTime = new Date(Date.now() - 6 * 60_000);
+      }
+      await service.detectLostExecutions();
+      expect(qb.update).not.toHaveBeenCalled();
+      expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    });
+  });
+
   describe("cleanupOldRecords", () => {
     it("deletes executions older than 90 days", async () => {
       execRepo.delete.mockResolvedValue({ affected: 5 });
