@@ -100,5 +100,22 @@ async function sendHeartbeat() {
 }
 
 export function startHeartbeat() {
-  return setInterval(sendHeartbeat, config.heartbeatIntervalSeconds * 1000);
+  // Poll once per second so hot-reloaded intervals take effect without
+  // rebuilding the timer; main.ts can still stop it with clearInterval.
+  let lastHeartbeatAt = Date.now();
+  let heartbeatInFlight = false;
+  return setInterval(async () => {
+    const intervalMs = config.heartbeatIntervalSeconds * 1000;
+    if (heartbeatInFlight || Date.now() - lastHeartbeatAt < intervalMs) {
+      return;
+    }
+
+    lastHeartbeatAt = Date.now();
+    heartbeatInFlight = true;
+    try {
+      await sendHeartbeat();
+    } finally {
+      heartbeatInFlight = false;
+    }
+  }, 1000);
 }
