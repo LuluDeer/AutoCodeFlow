@@ -257,6 +257,21 @@ def test_env_whitelist_windows_parity_surface():
         assert secret not in _ENV_WHITELIST
 
 
+def test_build_child_env_windows_case_insensitive(monkeypatch):
+    """W-20 (parity with executor-node env-whitelist.spec): win32 env blocks
+    spell keys `Path`/`TEMP`/… case-insensitively; the child must receive
+    them under stable keys. POSIX envs keep exact semantics."""
+    from routers.execute import _build_child_env
+    monkeypatch.setenv('Path', '/mixed/case/path')
+    env = _build_child_env()
+    if sys.platform == 'win32':
+        assert env.get('PATH') == '/mixed/case/path'
+        assert 'Path' not in env
+    else:
+        assert env.get('PATH') != '/mixed/case/path'
+        assert 'Path' not in env
+
+
 def test_child_process_env_isolation(tmp_path):
     """SEC-01: Child process should NOT have access to executor secrets like EXECUTOR_SHARED_TOKEN."""
     import subprocess
