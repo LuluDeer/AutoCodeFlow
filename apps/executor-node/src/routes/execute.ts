@@ -650,6 +650,16 @@ function runProcess(
       detached: process.platform !== 'win32',
       windowsHide: true,
     });
+    // W-24 (windows-findings): when spawn fails on Windows (ENOENT — bad
+    // executable, unreadable/oversized cwd e.g. >260-char WORK_DIR without
+    // LongPathsEnabled), node fires 'error' on the half-open stdio SOCKETS in
+    // addition to the ChildProcess 'error' handler below. An unhandled socket
+    // error is an uncaughtException that KILLS THE WHOLE EXECUTOR (observed:
+    // one task crash took down every running task). No-op guards here route
+    // the failure into the proc-level handler; the task fails, the executor
+    // lives.
+    proc.stdout?.on('error', () => { /* surfaced via proc 'error' event */ });
+    proc.stderr?.on('error', () => { /* surfaced via proc 'error' event */ });
     // Bounded accumulator — an unbounded `logs += output` OOMs the executor
     // on chatty tasks (memory peaks before the 10k callback truncation).
     const logBuffer = new BoundedLogBuffer();
@@ -712,7 +722,18 @@ function runProcess(
       unregister();
       if (settled) return;
       settled = true;
-      reject(err);
+      // W-24: surface spawn failures (ENOENT on Windows from an unreachable
+      // cwd, incl. >260-char WORK_DIR without LongPathsEnabled) with a hint
+      // pointing at the most likely cause + the OS toggle, instead of a bare
+      // code.
+      const hint =
+        err && (err as NodeJS.ErrnoException).code === 'ENOENT' && cwd && cwd.length > 259
+          ? ' (cwd path exceeds Windows MAX_PATH (260) — enable LongPathsEnabled ' +
+            'or shorten WORK_DIR)'
+          : '';
+      (err as Error & { logs?: string; exitCode?: number }).logs = logBuffer.toString();
+      (err as Error & { exitCode?: number }).exitCode = -1;
+      reject(new Error(`${err.message}${hint}`));
     });
   });
 }

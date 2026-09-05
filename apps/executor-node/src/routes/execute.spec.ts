@@ -427,6 +427,52 @@ describe('task hardening', () => {
     expect(res2.status).toBe(400);
   });
 
+  // W-24 (windows-findings): on Windows a failing spawn (ENOENT — missing
+  // runtime executable, or cwd beyond MAX_PATH without LongPathsEnabled)
+  // fires 'error' on the stdio SOCKETS as well as on the ChildProcess.
+  // Unhandled socket errors become uncaughtException and kill the whole
+  // executor (all running tasks die with it). runProcess must guard both
+  // sockets so the failure stays scoped to the one task.
+  it('contains spawn failures: stdio socket errors do not crash the executor (W-24)', async () => {
+    const { EventEmitter } = require('events');
+    const proc: any = {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      pid: 4242,
+      kill: jest.fn(),
+      on: jest.fn(),
+    };
+    (mockCp.spawn as jest.Mock).mockReturnValue(proc);
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockFs.realpathSync as unknown as jest.Mock).mockImplementation((p: string) => p);
+    (mockFs.lstatSync as jest.Mock).mockImplementation(() => ({ isSymbolicLink: () => false }));
+
+    // Long workDir to also assert the MAX_PATH hint on ENOENT.
+    const longWorkDir = 'C:\\af-long\\' + 'segment-padding-xxxx'.repeat(13); // >260
+    const promise = runTask(
+      { id: 'w24', name: 'w24', cmd: 'node', args: ['x.js'], workDir: longWorkDir, env: {}, timeout: 30 },
+      {},
+      'exec-w24',
+    );
+    // runProcess has registered its listeners synchronously by now; the
+    // pre-fix code would throw here (EventEmitter 'error' with no listener).
+    proc.stdout.emit('error', Object.assign(new Error('read ENOTCONN'), { code: 'ENOTCONN' }));
+    // Now surface the ChildProcess-level ENOENT the way libuv does.
+    const errHandlers = (proc.on as jest.Mock).mock.calls.filter((c) => c[0] === 'error');
+    for (const [, cb] of errHandlers) {
+      cb(Object.assign(new Error('spawn node ENOENT'), { code: 'ENOENT' }));
+    }
+    await promise; // must resolve (failure is recorded, not thrown)
+
+    const { pushCallback } = require('../callback');
+    const failedCall = (pushCallback as jest.Mock).mock.calls
+      .map((c) => c[0])
+      .find((p: any) => p.status === 'failed' && /ENOENT/.test(p.errorMessage || ''));
+    expect(failedCall).toBeTruthy();
+    expect(failedCall.errorMessage).toMatch(/MAX_PATH/);
+    (mockFs.existsSync as jest.Mock).mockReturnValue(false);
+  });
+
   it('rejects entrypoints that escape the task work directory', async () => {
     const res = await request(appNoAuth).post('/api/execute').send({
       executionId: 'exec-entry-escape',
