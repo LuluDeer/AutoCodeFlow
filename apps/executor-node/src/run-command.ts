@@ -54,6 +54,11 @@ export function runCommand(
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    // W-24: guard the stdio sockets' 'error' event (see execute.ts runProcess).
+    // Without these, a failed spawn (ENOENT) emits an unhandled socket error
+    // that becomes an uncaughtException and kills the whole executor process.
+    child.stdout?.on('error', () => { /* surfaced via child 'error' handler */ });
+    child.stderr?.on('error', () => { /* surfaced via child 'error' handler */ });
     // Cap captured output so a chatty child cannot balloon executor memory.
     const CAP = 10 * 1024 * 1024;
     let stdout = '';

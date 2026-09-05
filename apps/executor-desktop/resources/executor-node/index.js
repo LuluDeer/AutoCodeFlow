@@ -48278,6 +48278,11 @@ function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars
         detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
     });
+    // W-24: stdio socket 'error' guards — .pipe() does not swallow source
+    // errors, so a failed spawn (ENOENT: missing startCommand, long deploy
+    // path without LongPathsEnabled…) would otherwise crash the executor.
+    child.stdout?.on('error', () => { });
+    child.stderr?.on('error', () => { });
     runningApps.set(deploymentId, child);
     // Stream logs to file
     const logFile = path.join(deployDir, 'app.log');
@@ -48706,14 +48711,43 @@ function queueGitCheckout(cacheKey, job) {
     return run;
 }
 /** Clone (with bare cache) and checkout the specified ref to dest directory */
+/** W-23 (windows-findings, parity with executor-python): the clone cache was
+ *  probed by `exists(HEAD)` only — a directory left half-written by a killed
+ *  clone (taskkill /F mid-clone) then either failed `git clone` forever
+ *  ("destination exists") or, worse on the python side, was treated as warm
+ *  cache and failed `fetch` forever. Validate with git itself and quarantine
+ *  (rename, not delete — forensics + Windows may still see file locks) so the
+ *  next checkout self-heals by re-cloning. */
+async function isBareGitRepo(cacheDir) {
+    if (!fs.existsSync(path.join(cacheDir, 'HEAD')))
+        return false;
+    const probe = await (0, run_command_1.runCommand)('git', ['-C', cacheDir, 'rev-parse', '--is-bare-repository'], { timeout: 15000 });
+    return probe.status === 0 && probe.stdout.trim() === 'true';
+}
+function quarantineBrokenCache(cacheDir) {
+    const broken = `${cacheDir}-broken-${Date.now()}`;
+    try {
+        fs.renameSync(cacheDir, broken);
+    }
+    catch (err) {
+        logger_1.logger.warn(`[git] could not quarantine cache dir ${cacheDir} (${err instanceof Error ? err.message : String(err)}); removing`);
+        fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+}
 async function gitCheckoutTo(repoUrl, ref, dest) {
     const cacheDir = path.join(config_1.config.workDir, '.git_cache', repoDirName(repoUrl));
     await queueGitCheckout(cacheDir, async () => {
+        if (fs.existsSync(cacheDir) && !(await isBareGitRepo(cacheDir))) {
+            logger_1.logger.warn(`[git] cache ${cacheDir} is not a valid bare repo (killed clone?) — quarantining and re-cloning`);
+            quarantineBrokenCache(cacheDir);
+        }
         if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
             fs.mkdirSync(cacheDir, { recursive: true });
             const r = await (0, run_command_1.runCommand)('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120000 });
-            if (r.status !== 0)
+            if (r.status !== 0) {
+                fs.rmSync(cacheDir, { recursive: true, force: true });
                 throw new Error(`git clone failed: ${r.stderr.trim()}`);
+            }
         }
         else {
             const r = await (0, run_command_1.runCommand)('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60000 });
@@ -49217,6 +49251,16 @@ function runProcess(cmd, args, cwd, env, timeoutSec, executionId) {
             detached: process.platform !== 'win32',
             windowsHide: true,
         });
+        // W-24 (windows-findings): when spawn fails on Windows (ENOENT — bad
+        // executable, unreadable/oversized cwd e.g. >260-char WORK_DIR without
+        // LongPathsEnabled), node fires 'error' on the half-open stdio SOCKETS in
+        // addition to the ChildProcess 'error' handler below. An unhandled socket
+        // error is an uncaughtException that KILLS THE WHOLE EXECUTOR (observed:
+        // one task crash took down every running task). No-op guards here route
+        // the failure into the proc-level handler; the task fails, the executor
+        // lives.
+        proc.stdout?.on('error', () => { });
+        proc.stderr?.on('error', () => { });
         // Bounded accumulator — an unbounded `logs += output` OOMs the executor
         // on chatty tasks (memory peaks before the 10k callback truncation).
         const logBuffer = new BoundedLogBuffer();
@@ -49279,7 +49323,17 @@ function runProcess(cmd, args, cwd, env, timeoutSec, executionId) {
             if (settled)
                 return;
             settled = true;
-            reject(err);
+            // W-24: surface spawn failures (ENOENT on Windows from an unreachable
+            // cwd, incl. >260-char WORK_DIR without LongPathsEnabled) with a hint
+            // pointing at the most likely cause + the OS toggle, instead of a bare
+            // code.
+            const hint = err && err.code === 'ENOENT' && cwd && cwd.length > 259
+                ? ' (cwd path exceeds Windows MAX_PATH (260) — enable LongPathsEnabled ' +
+                    'or shorten WORK_DIR)'
+                : '';
+            err.logs = logBuffer.toString();
+            err.exitCode = -1;
+            reject(new Error(`${err.message}${hint}`));
         });
     });
 }
@@ -49804,6 +49858,11 @@ function runCommand(cmd, args, opts = {}) {
             detached: process.platform !== 'win32',
             stdio: ['ignore', 'pipe', 'pipe'],
         });
+        // W-24: guard the stdio sockets' 'error' event (see execute.ts runProcess).
+        // Without these, a failed spawn (ENOENT) emits an unhandled socket error
+        // that becomes an uncaughtException and kills the whole executor process.
+        child.stdout?.on('error', () => { });
+        child.stderr?.on('error', () => { });
         // Cap captured output so a chatty child cannot balloon executor memory.
         const CAP = 10 * 1024 * 1024;
         let stdout = '';
