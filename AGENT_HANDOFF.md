@@ -3,8 +3,8 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-06（第十四轮：001-006 员工 SubAgent 编排——python 可靠性三件套+P2 重试兑现+安全收口 R1-R19+QA 闭环；详见「状态快照」末条）
-当前分支：`develop`（本地领先 origin/develop 80+ commits，**push 无凭证**——CI 真跑待用户解决）
+更新时间：2026-09-06（第十五轮：gh 推送打通 CI 真跑——CI 红灯清偿 + 部署链路加固 + 审计 S1-S16/QA 闭环；员工 001/002/005/006 四波编排）
+当前分支：`develop`
 
 ## 状态快照
 
@@ -77,6 +77,16 @@
   - **Playwright 29/29**：pinned 部署全链 4 例（在线/离线/不存在/全 UI 闭环）
   - **P1 修复（V 抓到）**：python register 用动态 token 打 bootstrap 端点 401（R9 修复揭开）→ 改静态 token + 状态码检查；**N33-N36**：issuedTokenCache 有界化（1000/24h）、artifact query token 风险标注、ci-local 差异声明
 - **里程碑（2026-09-05）**：**v1.0.1 三包发布完成**（npm `@autocodeflow/sdk` + `autocodeflow-mcp-server` 1.0.1、PyPI `autoflow-sdk` 1.0.1，双版本可回溯）；**develop→main 发版合并完成**（main 与 develop 树一致，两父 merge commit `bddac27`，main CI 全绿）；**Windows 深度测试任务书就绪**：`docs/WINDOWS-TESTING-PLAN.md`（R13 基线→R14 功能冒烟→R15 修复批→R16 desktop 打包，含 13 项已知平台风险点与问题回传模板——Win 机器拉取后按此推进）
+- 本轮（2026-09-06 第十五轮，gh 凭证打通后首度 CI 真跑；员工 001/002/005/006 四波编排 + 主控亲修；存在并行会话同期协作，e0c30ef/1734958 为其产物）：
+  - **CI 红灯清偿**：push 后首跑三红灯——e2e-full 根因为**实体↔迁移链漂移**（task_versions/config_history/execution_reports/executor_metrics_history 4 表 + applications.packageUrl/webhookSecret + executor_packages 4 列从未建过迁移，历史靠 DB_SYNCHRONIZE=true 掩盖，空库纯迁移链上任务创建直接 500——「mock 一切不等于能跑」第五轮教训再验证）；admin-api-test 败于 lint（spec 内 require()）；executor-node-test 败于 Linux 侧 kill 时序（assertion timing）。均已在 e0c30ef 修复，后续 run **24 job 全绿**（含 29 例 e2e）。
+  - **部署链路加固**（6ed5b21，admin-api 1098→1123）：R4 spawnSync→spawnAsync（clone 120s 不再冻结全进程）；R5 在途部署部分唯一索引+23505→409（upgrade 保持 UPGRADING 防多实例滚动升级互撞）；R6 卡死扫描 createdAt→updatedAt；R8 push/stop 接入 assertSafeExecutorUrl；R9 包上传 diskStorage+流式哈希+rename 落位+下载 pipeline（500MB 不再驻留内存）；R16/R18。
+  - **桌面 IPC 安全**（bbb93de）：path-domain.ts 路径域校验 util + selftest 基建（npm run test:main）；任意文件读/executionId 逃逸/任意程序启动三口子闭合；托盘 online 合并注册状态；https 探测修正；心跳句柄清理。
+  - **包契约**（634803f）：notify 非 2xx 可观测+返回 bool+webhook 通道；ai base_url 统一基址语义+围栏解析健壮化（notify 7→18、ai 10→25）。
+  - **006 审计 S1-S16**（第三/四波修复落地）：S1(高) admin-web nginx proxy_pass 尾斜杠剥离 /api 前缀——生产部署全部 API 404（dev 代理无 rewrite 故 e2e 从未暴露）；S2/S7 deploy.sh 健康路径+两份 nginx client_max_body_size；S3(数据破坏) system-config 掩码回写哨兵守卫；S4/S5 registry 上传超时+npm 服务账号凭证；S6 Windows zip 条目校验（PowerShell .NET 枚举+纯函数）；S8/S13/S15 audit CSV 注入/400 化/ParseIntPipe；S9 执行器端口回环+REQUIRE_TOKEN=true（连通性推演过）；S10/S11 pypi 上传 50MB 上限+.egg 收敛；S12/S14 clone 分支语义+死 import；S16 settings 历史列对齐。
+  - **006 QA 批次**（QA1-QA10 全消）：QA1 deploy.sh 断言字符串（S2 修复自身引入，闭环）；QA2 nginx 210m→510m（执行器包 500MB 上限对齐）；QA3 SSE 空闲 15s ': ping' 帧（nginx 60s 读超时下 S3 存储任务日志流必断）；QA4/QA5/QA6 部署守卫补 UPGRADING/PENDING 卡死清扫/快照 23505 容忍；QA7 form-data 显式依赖；QA8 spawnAsync CAP+进程组杀；QA9 上传孤儿清理；QA10 Content-Disposition 消毒。
+  - **流程注记**：并行会话与本会话同时操作同一工作树（e0c30ef/1734958 及 6ed5b21 内夹带 prettier 重排）——提交前必须 git pull --rebase + diff 盘点，员工报告与 git 实际状态要交叉核对。
+  - 测试基线刷新：admin-api **1170**（60 套件）+ lint 0/0 · executor-node **227** · registry-pypi **50** · notify **18** · ai **25** · admin-web **87** · executor-desktop selftest 过 · CI 24 job 全绿（run 34029687722 起）。
+  - 本轮遗留（下一轮候选）：executorAuthMiddleware 彻底移除（12 例测试迁移到 verifyToken）；admin-web api/config.ts ConfigHistory 类型同步；QA8 detached 对 Windows 信号行为的深度验证；nginx SSE 专 location（现靠 15s ping 保活）；大规模并发压测/真机矩阵（长期未覆盖项）。
 - 本轮（2026-09-06 第十四轮，员工 SubAgent 001/002/006 主力（003/004 触模型日限由 general-purpose 兜底）→ QA 审查 10 项 → 修复闭环）：
   - **executor-python 可靠性三件套**（153→197）：E2 回调失败落盘+后台重试环+dead-letter（token 永不落盘、重放现取动态 token 走自愈；停机 drain 10s）；E6 同任务串行锁（按 loop 分桶）+git cache per-repo 互斥；E8 磁盘 TTL 回收（workdir/.git_cache/.venvs/logs，TTL 7d/周期 6h/首跑延迟 600s env 可配，活跃目录保护 fail-safe）+dead-letter 目录 TTL 清扫+清理移入 to_thread；心跳恒报 deadLetterCount。
   - **admin-api P2**（1014→1098）：sweep 条件 UPDATE 赢家兑现重试预算（hasRetryBudget→kill best-effort→scheduleRetryAfterRecovery 入队，STALE_RECOVERY_RETRY_ENABLED 开关）；failureReason 新增 stale_recovered；deadLetterCount 实体列+幂等迁移+心跳采纳（0..100000）。
