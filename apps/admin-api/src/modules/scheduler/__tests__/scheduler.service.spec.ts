@@ -660,6 +660,54 @@ describe("SchedulerService", () => {
       expect(queue.add).toHaveBeenCalled();
       expect(execRepo.save).not.toHaveBeenCalledWith(runningExec);
     });
+
+    // FEAT-06: maintenance windows gate scheduled triggers before the dedup
+    // lock. Deterministic without fake timers: start "* * * * *" touches the
+    // current minute at any real clock; end "* * 31 2 *" (Feb 31) never fires.
+    it("should skip the trigger and count maintenance when inside a maintenance window (FEAT-06)", async () => {
+      await makeLeader();
+      const task = makeTask({
+        maintenanceWindows: [
+          {
+            start: "* * * * *",
+            end: "* * 31 2 *",
+            description: "release freeze",
+          },
+        ],
+      });
+      const lockCallsBefore = redisLockService.acquireLock.mock.calls.length;
+      const result = await service.enqueue(task, "cron");
+      expect(result).toBeNull();
+      expect(queue.add).not.toHaveBeenCalled();
+      // 检查在去重锁之前：不消耗本周期去重窗口
+      expect(redisLockService.acquireLock.mock.calls.length).toBe(
+        lockCallsBefore,
+      );
+      expect(metrics.snapshot.triggersSkippedMaintenance).toBe(1);
+      expect(execRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("should trigger normally when outside all maintenance windows (FEAT-06)", async () => {
+      await makeLeader();
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      const task = makeTask({
+        // start（2 月 31 日）永不触达 → 窗口视为未开启
+        maintenanceWindows: [{ start: "* * 31 2 *", end: "0 4 * * *" }],
+      });
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = {
+        id: "exec-1",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+
+      const result = await service.enqueue(task, "cron");
+      expect(result).toEqual(exec);
+      expect(queue.add).toHaveBeenCalled();
+      expect(metrics.snapshot.triggersSkippedMaintenance).toBe(0);
+    });
   });
 
   describe("reload", () => {
