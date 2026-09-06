@@ -92,12 +92,15 @@ function helpText(): string {
 // Start
 // ---------------------------------------------------------------------------
 async function main() {
-  // W-07: the missing-token WARNING moved here from api.ts module scope so it
-  // only prints when the server actually starts — never during --help/--version.
+  // W-07: the missing-token check lives here (not api.ts module scope) so
+  // --help/--version still work; since every tool call would 401 anyway, a
+  // missing token is now fatal instead of a warning the user finds at call time.
   if (!API_TOKEN) {
     process.stderr.write(
-      '[autocodeflow-mcp] WARNING: AUTOCODEFLOW_API_TOKEN is not set.\n',
+      '[autocodeflow-mcp] ERROR: AUTOCODEFLOW_API_TOKEN is not set — every tool call would be rejected with 401. ' +
+        'Get a token from the admin web (or POST /api/auth/login) and export it, then restart.\n',
     );
+    process.exit(1);
   }
   const transport = new StdioServerTransport();
   await server.connect(transport);
