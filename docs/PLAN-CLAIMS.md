@@ -58,7 +58,7 @@
 | OBS-02 | P1 | unclaimed | | | admin-api 新端点 + Alertmanager 配置 | | 告警路由到通知渠道（依赖 FEAT-11） |
 | OBS-03 | P1 | unclaimed | | | admin-api 日志行抽取 + admin-web 日志区 | | 日志结构化检索（级别列+过滤） |
 | OBS-04 | P1 | unclaimed | | | admin-api + admin-web | | execution_reports 消费 + 时间线 Tab |
-| OBS-05 | P1 | unclaimed | | | admin-api metrics | | 容量水位 Gauge 系列 |
+| OBS-05 | P1 | in_progress | session-B（员工 001 承接） | 2026-09-07 03:3x | admin-api metrics 模块 + docs/observability | | 容量水位 Gauge 四件套：PG 连接池/BullMQ 队列深度/SSE 槽位/executor 磁盘 + 阈值文档 |
 | ECO-01 | P1 | unclaimed | | | 双 SDK + examples | | SDK 统一矩阵 + 官方示例（路线图 #10 收口） |
 | ECO-02 | P1 | in_progress | main-A | 2026-09-07 | packages/acf-cli | | tail+lint 已落地（66/66）；--json 全命令覆盖为剩余子项，后续批次继续 |
 | ECO-03 | P1 | unclaimed | | | packages/mcp-server | | MCP 工具面扩容 4 工具 |
@@ -143,3 +143,5 @@
 - 2026-09-07 session-B：认领 SEC-04（001）/FEAT-04（005）→ in_progress。
 
 - 2026-09-07 session-B：批 B2 done=SEC-04/FEAT-04（SSRF 统一 deny 表+全文本形 IPv6 缺口修复；24h 资源趋势图）。基线：admin-api 1245/66 · admin-web 121/121。
+
+- 2026-09-07 session-B：认领 OBS-05（001）/FEAT-12（005）→ in_progress。
