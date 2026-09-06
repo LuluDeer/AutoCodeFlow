@@ -39,7 +39,7 @@
 | FEAT-01 | P1 | unclaimed | | | admin-api notification + admin-web settings | ⚠️ | 通知静默持久化；**避开 NotificationSettingsPage（并行会话在途）** |
 | FEAT-02 | P1 | done | main-A | 2026-09-07 | admin-web dag-layout.ts + TaskDependencyGraph.tsx + TaskDetailPage | 见批四 commit | 依赖 DAG 可视化：纯函数布局（10 测试）+ 零新依赖组件 + 详情页新 Tab |
 | FEAT-03 | P1 | done | main-A | 2026-09-07 | admin-web ExecutionsPage + ExecutionCompare | 0409000 | 孤儿组件复核=**零引用**；拆 ExecutionCompareModal + 列表多选一键对比（93/93 ✓） |
-| FEAT-04 | P2 | unclaimed | | | admin-web ExecutorDetailPage + api | | 执行器指标趋势图（依赖 executor_metrics_history 消费） |
+| FEAT-04 | P2 | in_progress | session-B（员工 005 承接） | 2026-09-07 02:4x | admin-api executor metrics history 端点 + admin-web ExecutorDetailPage 图表 | | 24h CPU/内存/并发折线（消费 executor_metrics_history，轻量方案） |
 | FEAT-05 | P2 | unclaimed | | | 双执行器 + admin-api uploads + admin-web | | 执行产物 artifacts 通道 |
 | FEAT-06 | P2 | unclaimed | | | admin-api scheduler + task 实体 | | 任务维护窗口 |
 | FEAT-07 | P2 | unclaimed | | | admin-api 新模块 event-subscriptions | | Webhook 出站事件 |
@@ -112,7 +112,7 @@
 | SEC-01 | P1 | unclaimed | | | 复审报告 v2 | | =BUG-12~16 汇总项，可拆半场认领 |
 | SEC-02 | P1 | unclaimed | | | task env 加密 | | 任务 secrets 加密落库 |
 | SEC-03 | P1 | unclaimed | | | users/auth 模块 + admin-web | | TOTP 两步验证 + 会话管理页 |
-| SEC-04 | P2 | unclaimed | | | admin-api url-guard 收敛 | | SSRF 守卫统一 util |
+| SEC-04 | P2 | in_progress | session-B（员工 001 承接） | 2026-09-07 02:4x | admin-api common/utils（safe-http 等）+ 各调用点 + spec | | SSRF 守卫统一：单一 url-guard util+统一 deny 常量+单测矩阵（::ffff:/198.18/100.64 回归），三套守卫收敛为单一事实源 |
 | SEC-05 | P2 | unclaimed | | | 上传链路 | | zip bomb 防护+扫描钩子 |
 | SEC-06 | P2 | unclaimed | | | CI + pre-commit | | 供应链（audit moderate+gitleaks） |
 | SEC-07 | P2 | unclaimed | | | Dockerfile + compose | | executor 容器 non-root 化 |
@@ -139,3 +139,5 @@
 - 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场+rbac.spec)、MainLayout.tsx、logout.test.tsx、AppDeploymentPage.tsx、ApplicationDetailPage.tsx、ApplicationListPage.tsx、NotificationSettingsPage.tsx(W1)、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 app-deployment-race.test.tsx（tsc 报错在途）——上述文件在清理前请勿认领触碰。
 
 - 2026-09-07 session-B：批 B1 done=BUG-01(dc82ac7)/FEAT-08(fd99579)；协作修复 CORE-01 e2e 回归（6912b4d 列级 transformer）；另代修 mcp-server BUG-14 测试两处（0241b5a，afterEach 导入+模块态隔离）与 e2e 选择器作用域（2a4070d）。CI 24 job 绿（run 34051398995）。基线：admin-api 1224/62 · admin-web 112/112 · mcp-server 69/69。
+
+- 2026-09-07 session-B：认领 SEC-04（001）/FEAT-04（005）→ in_progress。
