@@ -2,6 +2,7 @@ import request from 'supertest';
 import express from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Readable } from 'stream';
 
 // Mock dependencies before importing the router
 jest.mock('fs');
@@ -18,6 +19,14 @@ jest.mock('../logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), erro
 import { logsRouter, executorAuthMiddleware, getExecutorAuthToken } from './logs';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
+
+// LOG-02: the router streams via fs.createReadStream — feed it a real stream
+// built from the mock content instead of mocking readFileSync.
+function mockLogFile(content: string) {
+  (mockFs.createReadStream as jest.Mock).mockImplementation(() =>
+    Readable.from([content]),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Helper apps
@@ -151,7 +160,7 @@ describe('GET /api/logs/:executionId', () => {
 
   it('returns 200 with lines, totalLines and hasMore on success', async () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    (mockFs.readFileSync as jest.Mock).mockReturnValue('line1\nline2\nline3\n');
+    mockLogFile('line1\nline2\nline3\n');
 
     const res = await request(appNoAuth).get('/api/logs/exec-ok');
     expect(res.status).toBe(200);
@@ -162,7 +171,7 @@ describe('GET /api/logs/:executionId', () => {
 
   it('returns only lines from fromLine onwards', async () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    (mockFs.readFileSync as jest.Mock).mockReturnValue('a\nb\nc\nd\n');
+    mockLogFile('a\nb\nc\nd\n');
 
     const res = await request(appNoAuth).get('/api/logs/exec-from?fromLine=2');
     expect(res.status).toBe(200);
@@ -172,7 +181,7 @@ describe('GET /api/logs/:executionId', () => {
 
   it('honors the limit parameter and reports hasMore for further pages', async () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    (mockFs.readFileSync as jest.Mock).mockReturnValue('a\nb\nc\nd\n');
+    mockLogFile('a\nb\nc\nd\n');
 
     const res = await request(appNoAuth).get('/api/logs/exec-limit?limit=2');
     expect(res.status).toBe(200);
@@ -188,7 +197,7 @@ describe('GET /api/logs/:executionId', () => {
 
   it('falls back to the default limit for invalid limit input', async () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    (mockFs.readFileSync as jest.Mock).mockReturnValue('a\nb\nc\n');
+    mockLogFile('a\nb\nc\n');
 
     const res = await request(appNoAuth).get('/api/logs/exec-badlimit?limit=abc');
     expect(res.status).toBe(200);
@@ -198,7 +207,9 @@ describe('GET /api/logs/:executionId', () => {
 
   it('clamps huge limit values to the admin backfill page size', async () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    (mockFs.readFileSync as jest.Mock).mockReturnValue(Array.from({ length: 2100 }, (_, i) => `line${i}`).join('\n') + '\n');
+    mockLogFile(
+      Array.from({ length: 2100 }, (_, i) => `line${i}`).join('\n') + '\n',
+    );
 
     const res = await request(appNoAuth).get('/api/logs/exec-huge?limit=99999');
     expect(res.status).toBe(200);
@@ -209,7 +220,7 @@ describe('GET /api/logs/:executionId', () => {
 
   it('returns 200 with empty lines array when fromLine exceeds total', async () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    (mockFs.readFileSync as jest.Mock).mockReturnValue('only-one\n');
+    mockLogFile('only-one\n');
 
     const res = await request(appNoAuth).get('/api/logs/exec-overflow?fromLine=99');
     expect(res.status).toBe(200);
@@ -217,10 +228,25 @@ describe('GET /api/logs/:executionId', () => {
     expect(res.body.totalLines).toBe(1);
   });
 
-  it('returns 500 when readFileSync throws', async () => {
+  it('reassembles lines split across stream chunks (streaming path)', async () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    (mockFs.readFileSync as jest.Mock).mockImplementation(() => {
-      throw new Error('disk error');
+    (mockFs.createReadStream as jest.Mock).mockImplementation(() =>
+      Readable.from(['line1\nli', 'ne2\nline3\n']),
+    );
+
+    const res = await request(appNoAuth).get('/api/logs/exec-chunks?fromLine=1&limit=1');
+    expect(res.status).toBe(200);
+    expect(res.body.lines).toEqual(['line2']);
+    expect(res.body.totalLines).toBe(3);
+    expect(res.body.hasMore).toBe(true);
+  });
+
+  it('returns 500 when the log stream fails (open race / read error)', async () => {
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockFs.createReadStream as jest.Mock).mockImplementation(() => {
+      const failing = new Readable({ read() {} });
+      failing.destroy(new Error('stream boom'));
+      return failing;
     });
 
     const res = await request(appNoAuth).get('/api/logs/exec-error');
@@ -231,7 +257,7 @@ describe('GET /api/logs/:executionId', () => {
   it('auth middleware blocks request with wrong token for logs route', async () => {
     process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    (mockFs.readFileSync as jest.Mock).mockReturnValue('log line\n');
+    mockLogFile('log line\n');
 
     const res = await request(appWithAuth)
       .get('/api/logs/exec-authtest')
@@ -242,7 +268,7 @@ describe('GET /api/logs/:executionId', () => {
   it('auth middleware allows request with correct token for logs route', async () => {
     process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    (mockFs.readFileSync as jest.Mock).mockReturnValue('log line\n');
+    mockLogFile('log line\n');
 
     const res = await request(appWithAuth)
       .get('/api/logs/exec-authtest')

@@ -5,10 +5,14 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { config } from '../config';
 import { logger } from '../logger';
-import { getRunningCountArray } from '../scheduler';
+import {
+  getRunningCountArray,
+  registerRunningExecutionIdsProvider,
+  registerDeadLetterCountProvider,
+} from '../scheduler';
 import { loadManifest, mergeTaskWithManifest } from '../manifest';
 import { pushCallback, CallbackFailureReason } from '../callback';
-import { appendLog } from '../file-logger';
+import { appendLog, getDeadLetterCount } from '../file-logger';
 import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
@@ -287,6 +291,11 @@ export function executionExists(executionId: string): boolean {
 export function listActiveExecutionIds(): string[] {
   return [...liveExecutions.keys()];
 }
+
+// STALE-01: 心跳上报本机运行中的 executionId 与死信积压。scheduler 不能反向
+// import routes（会成环），故由数据属主在此注册 provider。
+registerRunningExecutionIdsProvider(listActiveExecutionIds);
+registerDeadLetterCountProvider(getDeadLetterCount);
 
 // ---------------------------------------------------------------------------
 // POST /execute — 只做参数校验 + 并发预检 + 登记，prepare/spawn 全部进入

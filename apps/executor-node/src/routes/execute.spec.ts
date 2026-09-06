@@ -41,6 +41,9 @@ jest.mock('../scheduler', () => ({
   runningCount: 0,
   getRunningCountArray: jest.fn(() => _runningCountArr),
   getRunningCount: jest.fn(() => 0),
+  // STALE-01 心跳 provider 注册（execute.ts 模块加载时调用）
+  registerRunningExecutionIdsProvider: jest.fn(),
+  registerDeadLetterCountProvider: jest.fn(),
 }));
 
 jest.mock('../manifest', () => ({

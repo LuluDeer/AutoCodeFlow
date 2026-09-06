@@ -150,14 +150,17 @@ services:
   # 启用: docker compose --profile minio up -d
   # 再将 admin-api 的 LOG_STORAGE_DRIVER 设为 s3，执行日志将以 gzip
   # 对象存放在此，主库 execution_log_lines 不再增长（优化笔记 2.6）
+  # 注意：admin 侧 log-retention 清理不覆盖外置对象——需配置 bucket lifecycle
+  # 使 execution-logs/ 前缀对象与 LOG_RETENTION_DAYS 同步过期，否则 minio_data
+  # 卷无限增长，操作步骤见 docs/operations.md「S3/MinIO 日志对象生命周期」。
   minio:
     image: minio/minio:latest
     profiles: ['minio']
     restart: unless-stopped
     command: server /data --console-address ':9001'
     ports:
-      - '9000:9000'
-      - '9001:9001'
+      - '127.0.0.1:9000:9000'
+      - '127.0.0.1:9001:9001'
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-autoflow}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
