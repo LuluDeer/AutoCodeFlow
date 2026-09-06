@@ -5,6 +5,7 @@ import {
   BadRequestException,
   ServiceUnavailableException,
   Logger,
+  OnModuleInit,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, Like, FindOptionsWhere } from "typeorm";
@@ -35,8 +36,14 @@ const UPLOAD_DIR = path.join(process.cwd(), "uploads", "executor-packages");
  */
 export const PACKAGE_UPLOAD_TMP_DIR = path.join(UPLOAD_DIR, "upload-tmp");
 
+/** QA9: multer temp files older than this are swept away at startup — a
+ *  crashed process (or a killed 500 MB upload) can leave them behind with no
+ *  request path ever cleaning them up. One hour is far above any legitimate
+ *  upload duration (the interceptor caps uploads at 500 MB / 60s timeouts). */
+const UPLOAD_TMP_STALE_MS = 60 * 60 * 1000;
+
 @Injectable()
-export class ExecutorPackageService {
+export class ExecutorPackageService implements OnModuleInit {
   private readonly logger = new Logger(ExecutorPackageService.name);
 
   constructor(
@@ -50,6 +57,41 @@ export class ExecutorPackageService {
     }
     if (!fs.existsSync(PACKAGE_UPLOAD_TMP_DIR)) {
       fs.mkdirSync(PACKAGE_UPLOAD_TMP_DIR, { recursive: true });
+    }
+  }
+
+  /** QA9: startup sweep — remove stale leftover files from the upload
+   *  staging directory (crash / killed-upload orphans). Best-effort: any
+   *  error is logged and must not block module bootstrap. */
+  async onModuleInit(): Promise<void> {
+    try {
+      const entries = await fs.promises.readdir(PACKAGE_UPLOAD_TMP_DIR);
+      const cutoff = Date.now() - UPLOAD_TMP_STALE_MS;
+      for (const entry of entries) {
+        const fullPath = path.join(PACKAGE_UPLOAD_TMP_DIR, entry);
+        try {
+          const st = await fs.promises.stat(fullPath);
+          if (st.isFile() && st.mtimeMs < cutoff) {
+            await fs.promises.unlink(fullPath);
+            this.logger.warn(
+              `Swept stale upload temp file (older than 1h): ${fullPath}`,
+            );
+          }
+        } catch (err: unknown) {
+          // per-entry best-effort — a concurrent remove must not abort the sweep
+          this.logger.warn(
+            `Failed to inspect temp file ${fullPath}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Failed to sweep ${PACKAGE_UPLOAD_TMP_DIR}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 
@@ -178,7 +220,22 @@ export class ExecutorPackageService {
         checksum,
         status: ExecutorPackageStatus.ACTIVE,
       });
-      const saved = await this.repo.save(pkg);
+      let saved: ExecutorPackage;
+      try {
+        saved = await this.repo.save(pkg);
+      } catch (err: unknown) {
+        // QA9: the file has already been moved into its final location when
+        // the DB write fails — unlink it so an on-disk orphan does not linger
+        // (invisible to any listing, and colliding with a future upload of
+        // the same checksum). Best-effort: the original save error is what
+        // the caller must see.
+        try {
+          await fs.promises.unlink(filePath);
+        } catch {
+          // best-effort
+        }
+        throw err;
+      }
       this.logger.log(
         `Created executor package: ${saved.name}@${saved.version} [${saved.id}], file=${filename}, size=${file.size}, checksum=${checksum}`,
       );

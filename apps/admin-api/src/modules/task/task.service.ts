@@ -799,6 +799,10 @@ export class TaskService {
     done: () => void,
     signal: AbortSignal,
     preAcquiredSlot?: () => void,
+    // QA3: raw-socket sink for SSE comment frames. The controller's `send`
+    // wraps content in `data:` frames; the idle heartbeat must bypass that
+    // wrapper so EventSource clients ignore the frame per the SSE spec.
+    ping?: () => void,
   ): Promise<void> {
     // TASK-008: 控制器通常会在写出 SSE 响应头之前预先占用槽位
     // （preAcquiredSlot），以便超限时能返回真正的 503；未传入时在此补占。
@@ -807,6 +811,16 @@ export class TaskService {
     let s3FetchFailed = false;
     const POLL_INTERVAL = 1000; // ms
     const MAX_RUNTIME = 30 * 60 * 1000; // 30 min safety cap
+    // QA3: nginx proxy_read_timeout（默认 60s）会掐断空闲的 SSE 流——S3 存储
+    // 的执行在到达终态前可能整分钟无任何新行。空闲超过 15s 时写一条注释帧
+    // （": ping\n\n"）：SSE 规范要求客户端忽略注释行，因此 admin-web 的
+    // EventSource 解析不受影响，但反向代理会把连接视为活跃。
+    const IDLE_PING_INTERVAL = 15_000; // ms
+    let lastWriteAt = Date.now();
+    const write = (line: string) => {
+      lastWriteAt = Date.now();
+      send(line);
+    };
     const start = Date.now();
     const TERMINAL_STATUSES = [
       ExecutionStatus.SUCCESS,
@@ -832,7 +846,7 @@ export class TaskService {
             if (s3) {
               const all = (await s3.get(exec.logObjectKey)).split("\n");
               for (const line of all.slice(nextLine)) {
-                send(line);
+                write(line);
               }
               nextLine = all.length;
             }
@@ -855,7 +869,7 @@ export class TaskService {
         .getMany();
 
       for (const row of lines) {
-        send(row.content);
+        write(row.content);
         nextLine = row.lineNumber + 1;
       }
 
@@ -874,6 +888,14 @@ export class TaskService {
       while (!signal.aborted && Date.now() - start < MAX_RUNTIME) {
         const finished = await flush();
         if (finished) break;
+        // QA3: idle heartbeat — checked inline in the polling loop instead of
+        // via a separate timer, so when the connection closes (signal aborts)
+        // the existing loop-exit path below tears the whole thing down with
+        // no extra handle left to clean up.
+        if (ping && Date.now() - lastWriteAt >= IDLE_PING_INTERVAL) {
+          ping();
+          lastWriteAt = Date.now();
+        }
         await new Promise<void>((resolve) => {
           const t = setTimeout(resolve, POLL_INTERVAL);
           signal.addEventListener(

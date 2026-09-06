@@ -131,6 +131,130 @@ describe("SystemConfigService", () => {
         service.upsert({ key: "k", value: '{"a":1}', valueType: "json" }),
       ).resolves.toBeDefined();
     });
+
+    // S3: a '***' masked echo on an isSecret item means "unchanged" — the
+    // stored secret must survive the admin-web edit round-trip instead of
+    // being clobbered with the mask (e.g. executor.sharedToken).
+    it("S3: keeps the stored value when an isSecret item is saved with the '***' sentinel", async () => {
+      repo.findOneBy.mockReset();
+      repo.findOneBy
+        .mockResolvedValueOnce({
+          key: "executor.sharedToken",
+          value: "real-secret",
+          isSecret: true,
+        } as SystemConfig)
+        .mockResolvedValueOnce({
+          key: "executor.sharedToken",
+          value: "real-secret",
+          isSecret: true,
+        } as SystemConfig);
+      repo.upsert.mockResolvedValue(undefined);
+
+      const result = await service.upsert({
+        key: "executor.sharedToken",
+        value: "***",
+        valueType: "string",
+        isSecret: true,
+      });
+
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: "executor.sharedToken",
+          value: "real-secret",
+        }),
+        expect.anything(),
+      );
+      // history must record the preserved value as newValue too
+      expect(historyRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          oldValue: "real-secret",
+          newValue: "real-secret",
+        }),
+      );
+      expect(result).toBeDefined();
+    });
+
+    it("S3: overwrites with the real new value when a secret is actually changed", async () => {
+      repo.findOneBy.mockReset();
+      repo.findOneBy
+        .mockResolvedValueOnce({
+          key: "executor.sharedToken",
+          value: "old-secret",
+          isSecret: true,
+        } as SystemConfig)
+        .mockResolvedValueOnce({
+          key: "executor.sharedToken",
+          value: "new-secret",
+          isSecret: true,
+        } as SystemConfig);
+      repo.upsert.mockResolvedValue(undefined);
+
+      await service.upsert({
+        key: "executor.sharedToken",
+        value: "new-secret",
+        valueType: "string",
+        isSecret: true,
+      });
+
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ value: "new-secret" }),
+        expect.anything(),
+      );
+    });
+
+    it("S3: a literal '***' on a non-secret item is stored as-is", async () => {
+      repo.findOneBy.mockReset();
+      repo.findOneBy.mockResolvedValue(null);
+      repo.upsert.mockResolvedValue(undefined);
+      historyRepo.create.mockImplementation((d) => d);
+      historyRepo.save.mockResolvedValue({});
+      repo.findOneBy.mockResolvedValueOnce(null).mockResolvedValueOnce({
+        key: "k",
+        value: "***",
+        isSecret: false,
+      } as SystemConfig);
+
+      await service.upsert({
+        key: "k",
+        value: "***",
+        valueType: "string",
+        isSecret: false,
+      });
+
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ value: "***" }),
+        expect.anything(),
+      );
+    });
+
+    it("S3: the preserved value still passes valueType validation (json secret survives an edit)", async () => {
+      repo.findOneBy.mockReset();
+      repo.findOneBy
+        .mockResolvedValueOnce({
+          key: "k",
+          value: '{"a":1}',
+          isSecret: true,
+        } as SystemConfig)
+        .mockResolvedValueOnce({
+          key: "k",
+          value: '{"a":1}',
+          isSecret: true,
+        } as SystemConfig);
+      repo.upsert.mockResolvedValue(undefined);
+
+      await expect(
+        service.upsert({
+          key: "k",
+          value: "***",
+          valueType: "json",
+          isSecret: true,
+        }),
+      ).resolves.toBeDefined();
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ value: '{"a":1}' }),
+        expect.anything(),
+      );
+    });
   });
 
   describe("remove", () => {

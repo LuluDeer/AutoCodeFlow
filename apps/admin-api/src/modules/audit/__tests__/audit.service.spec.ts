@@ -1,5 +1,6 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { BadRequestException } from "@nestjs/common";
 import { AuditService } from "../audit.service";
 import { AuditLog } from "../entities/audit-log.entity";
 
@@ -146,6 +147,13 @@ describe("AuditService", () => {
       );
     });
 
+    // S13: client-supplied filter values must map to 400, not a bare Error (500)
+    it("S13: findAll rejects an invalid action with BadRequestException", async () => {
+      await expect(
+        service.findAll({ action: "inject'xss" }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
     it("caps pageSize at 100", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
@@ -216,6 +224,86 @@ describe("AuditService", () => {
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
       const csv = await service.exportCsv({});
       expect(csv).toContain('"admin,evil"');
+    });
+
+    // S8: cells starting with = + - @ tab CR are interpreted as formulas by
+    // Excel/Sheets when the CSV is opened — each must be neutralized with a
+    // leading apostrophe.
+    it.each([
+      ["username", "=cmd()"],
+      ["action", "+task.create"],
+      ["resource", "@ATTACK"],
+      ["resourceId", "-task-1"],
+      ["result", "\tsuccess"],
+      ["ip", "\r127.0.0.1"],
+    ])(
+      "S8: neutralizes a %s cell starting with a formula character",
+      async (field, value) => {
+        const row = {
+          id: "1",
+          userId: 1,
+          username: "admin",
+          action: "task.create",
+          resource: "task",
+          resourceId: "t-1",
+          ip: "127.0.0.1",
+          result: "success",
+          createdAt: new Date("2024-01-01T00:00:00.000Z"),
+          [field]: value,
+        };
+        const qb = makeExportQb([row]);
+        (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+        const csv = await service.exportCsv({});
+        expect(csv).toContain(`'${value}`);
+        // the raw, un-prefixed payload must not appear at a cell start
+        expect(csv).not.toContain(`,${value}`);
+      },
+    );
+
+    it("S8: a combined formula payload is still RFC4180-quoted on top of the prefix", async () => {
+      const row = {
+        id: "1",
+        userId: 1,
+        username: "=cmd(),'x",
+        action: "test",
+        resource: "task",
+        resourceId: "t-1",
+        ip: "127.0.0.1",
+        result: "success",
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      };
+      const qb = makeExportQb([row]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      const csv = await service.exportCsv({});
+      expect(csv).toContain("\"'=cmd(),'x\"");
+    });
+
+    it("S8: leaves benign cells untouched", async () => {
+      const row = {
+        id: "1",
+        userId: 1,
+        username: "admin",
+        action: "task.create",
+        resource: "task",
+        resourceId: "t-1",
+        ip: "127.0.0.1",
+        result: "success",
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      };
+      const qb = makeExportQb([row]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      const csv = await service.exportCsv({});
+      expect(csv).toContain("admin");
+      expect(csv).toContain("task.create");
+    });
+
+    // S13: exportCsv shares the action filter validation with findAll
+    it("S13: exportCsv rejects an invalid action with BadRequestException", async () => {
+      const qb = makeExportQb([]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      await expect(
+        service.exportCsv({ action: "bad<script>" }),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it("caps export at 10000 rows via limit()", async () => {

@@ -1209,6 +1209,132 @@ describe("TaskService (__tests__)", () => {
     });
   });
 
+  // QA3: SSE idle keep-alive — nginx proxy_read_timeout (default 60s) reaps
+  // a stream that writes nothing for >60s (S3-backed executions stay silent
+  // until terminal). The service must emit an SSE comment frame when idle
+  // and must NOT emit one while data frames are still flowing.
+  describe("SSE idle heartbeat (QA3)", () => {
+    const runningExec = { id: "exec-1", status: ExecutionStatus.RUNNING };
+
+    const mockNoLines = () => {
+      logLineRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      } as any);
+    };
+
+    it("writes one ping after the idle interval, and stops once the connection closes", async () => {
+      execRepo.findOne.mockResolvedValue(runningExec);
+      mockNoLines();
+
+      // Simulate a long-idle window: the service reads lastWriteAt/start at
+      // loop entry (first reads = 0), then every later read reports 20s —
+      // past IDLE_PING_INTERVAL (15s).
+      const nowSpy = jest
+        .spyOn(Date, "now")
+        .mockReturnValueOnce(0) // lastWriteAt init
+        .mockReturnValueOnce(0) // start
+        .mockReturnValue(20_000); // loop + idle-check reads
+      const ping = jest.fn();
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+
+      const promise = service.streamExecutionLogs(
+        "exec-1",
+        send,
+        done,
+        controller.signal,
+        undefined,
+        ping,
+      );
+      // Let one loop iteration (flush → idle ping check → poll sleep) run,
+      // then close the connection so the loop exits on the next check.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      controller.abort();
+      await promise;
+
+      expect(ping).toHaveBeenCalledTimes(1);
+      // The ping resets the idle clock: while the loop kept running (still
+      // pre-abort) no second ping fires within the same window.
+      expect(ping).not.toHaveBeenCalledTimes(2);
+      // After the connection closed, the loop is gone — no further pings fire
+      // even though the mocked clock still reports a fully idle stream.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(ping).toHaveBeenCalledTimes(1);
+      // No data frame was ever sent for a line-less stream.
+      expect(send).not.toHaveBeenCalled();
+      expect(done).toHaveBeenCalled();
+      nowSpy.mockRestore();
+    });
+
+    it("does not write a ping when new lines keep flowing", async () => {
+      execRepo.findOne.mockResolvedValue(runningExec);
+      logLineRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getMany: jest
+          .fn()
+          .mockResolvedValue([{ lineNumber: 0, content: "line0" }]),
+      } as any);
+
+      // Every Date.now() call returns the same value: each write() refreshes
+      // lastWriteAt, so elapsed idle time never crosses the 15s threshold.
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(1_000_000);
+      const ping = jest.fn();
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+
+      const promise = service.streamExecutionLogs(
+        "exec-1",
+        send,
+        done,
+        controller.signal,
+        undefined,
+        ping,
+      );
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      controller.abort();
+      await promise;
+
+      expect(send).toHaveBeenCalled();
+      expect(ping).not.toHaveBeenCalled();
+      nowSpy.mockRestore();
+    });
+
+    it("never pings when no ping sink is provided (backward compatible)", async () => {
+      execRepo.findOne.mockResolvedValue(runningExec);
+      mockNoLines();
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(20_000);
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+
+      // No 6th argument — legacy callers (and existing specs) keep working.
+      const promise = service.streamExecutionLogs(
+        "exec-1",
+        send,
+        done,
+        controller.signal,
+      );
+      await new Promise((r) => setImmediate(r));
+      controller.abort();
+      await promise;
+
+      expect(send).not.toHaveBeenCalled();
+      expect(done).toHaveBeenCalled();
+      nowSpy.mockRestore();
+    });
+  });
+
   describe("getExecutionLogs", () => {
     it("throws NotFoundException when execution does not exist", async () => {
       execRepo.findOne.mockResolvedValue(null);

@@ -147,6 +147,20 @@ export default () => ({
         process.env.METRICS_PROMETHEUS_DEFAULT_METRICS_ENABLED !== "false",
     },
   },
+  // S5: optional Verdaccio service account used by the registry proxy
+  // (modules/registry) when listing npm packages. registry-npm requires
+  // authentication for every package pattern (`access: $authenticated`),
+  // so without these credentials the admin npm package list stays empty
+  // (anonymous 401 → []). A pre-issued token (NPM_REGISTRY_TOKEN) wins over
+  // user/password login. All three are optional: unset keeps the previous
+  // anonymous behavior.
+  registry: {
+    npm: {
+      token: process.env.NPM_REGISTRY_TOKEN || "",
+      user: process.env.NPM_REGISTRY_USER || "",
+      pass: process.env.NPM_REGISTRY_PASS || "",
+    },
+  },
   notification: {
     wecomWebhook: process.env.WECOM_WEBHOOK || "",
     dingtalkWebhook: process.env.DINGTALK_WEBHOOK || "",
