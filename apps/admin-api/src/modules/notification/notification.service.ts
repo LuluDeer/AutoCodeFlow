@@ -156,7 +156,9 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         restored++;
       }
       if (restored > 0) {
-        this.logger.log(`[silences] restored ${restored} persisted silence(s) from DB`);
+        this.logger.log(
+          `[silences] restored ${restored} persisted silence(s) from DB`,
+        );
       }
     } catch (e) {
       this.logger.warn(

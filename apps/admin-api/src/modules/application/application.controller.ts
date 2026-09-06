@@ -40,6 +40,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Request } from "express";
+import { ConfigService } from "@nestjs/config";
 
 @ApiTags("Application Management")
 @ApiBearerAuth()
@@ -58,6 +59,9 @@ export class ApplicationController {
   constructor(
     private readonly svc: ApplicationService,
     private readonly deploymentSvc: AppDeploymentService,
+    // ARCH-27: API_BASE_URL 经 ConfigService 读取（configuration.ts
+    // app.apiBaseUrl + Joi 注册），取代直读 process.env。
+    private readonly configService: ConfigService,
   ) {}
 
   @Get()
@@ -154,7 +158,8 @@ export class ApplicationController {
     // R9b: the API_BASE_URL check runs BEFORE anything is written to disk —
     // the old order (write file → check) leaked an orphan zip on every
     // misconfigured upload.
-    const apiBase = process.env.API_BASE_URL;
+    // ARCH-27: 经 ConfigService 读 app.apiBaseUrl（原直读 process.env）。
+    const apiBase = this.configService.get<string>("app.apiBaseUrl");
     if (!apiBase) {
       this.logger.error(
         "API_BASE_URL is not configured — cannot build a package download URL reachable by executors. Set API_BASE_URL to the externally reachable base URL of this API and retry.",

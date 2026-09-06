@@ -27,6 +27,11 @@ import { WebhookChannel } from "./channels/webhook.channel";
     SlackChannel,
     WebhookChannel,
   ],
-  exports: [NotificationService, NotificationConfigService, ChannelConfigStore, NotificationSilenceService],
+  exports: [
+    NotificationService,
+    NotificationConfigService,
+    ChannelConfigStore,
+    NotificationSilenceService,
+  ],
 })
 export class NotificationModule {}

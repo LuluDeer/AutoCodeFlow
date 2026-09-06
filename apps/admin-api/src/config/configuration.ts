@@ -1,10 +1,43 @@
 import { parseAllowedOrigins } from "../common/utils/cors-origin.util";
 
+/**
+ * 配置读取规约（ARCH-27 配置中心收口）
+ *
+ * 1. 新增配置必须先在 app.module.ts 的 ConfigModule validationSchema（Joi）
+ *    注册，再在本文件映射为配置对象；运行时消费方一律注入 ConfigService 并
+ *    以 `configService.get("section.key")` 读取。
+ * 2. 禁止在业务代码中直读 process.env —— .eslintrc.js 的
+ *    no-restricted-properties 规则已封禁，违规会导致 lint 失败。
+ * 3. 直读豁免清单（维护位置：.eslintrc.js overrides，每处带理由注释）：
+ *    - 本文件（configuration.ts）：唯一合法的 env → 配置映射层（ConfigModule load）；
+ *    - src/config/env.ts（getEnvVar）：模块求值期/无 DI 场景的唯一收口 util，
+ *      背景是 W-22 前科 —— 装饰器参数求值早于 ConfigModule 生命周期，
+ *      main.ts 已在 import app.module 前预载 .env（见 main.ts 头部注释）；
+ *    - src/main.ts：bootstrap 预载段（W-22 修复现场，先于 DI 存在）；
+ *    - 测试/spec 文件（spec 与 test 目录）：fixture 需直接操纵 env。
+ * 4. Joi 未注册但本文件读取的 env 属于审计缺口，发现即补注册
+ *    （ARCH-27 已补：LOGIN_THROTTLE_LIMIT、REQUEST_TIMEOUT_MS、
+ *    INITIAL_ADMIN_PASSWORD/EMAIL、LOG_RETENTION_DAYS、API_BASE_URL、
+ *    APP_PROTOCOL、DB_POOL_SIZE、EXECUTOR_HEARTBEAT_*、LOG_STORAGE_*）。
+ */
 export default () => ({
   app: {
     port: parseInt(process.env.PORT, 10) || 3105,
     nodeEnv: process.env.NODE_ENV || "development",
     protocol: process.env.APP_PROTOCOL || "http",
+    // ARCH-27: 全局请求超时（REQUEST_TIMEOUT_MS）—— 此前由
+    // timeout.interceptor 在模块求值期直读 process.env（W-22 风险模式），
+    // 现注册后由拦截器经 ConfigService 读取，默认 30s。
+    requestTimeoutMs: parseInt(process.env.REQUEST_TIMEOUT_MS || "30000", 10),
+    // ARCH-27: 对外可达的基础 URL —— application.controller 生成 executor
+    // 可拉取的 packageUrl 时 fail-fast 校验所需，此前未注册（审计缺口）。
+    apiBaseUrl: process.env.API_BASE_URL || "",
+    // ARCH-27: TRUST_PROXY 在此登记注册（Joi 已有 schema）。main.ts 仍在
+    // bootstrap 期直读（豁免，见 main.ts 头部），注册用于文档化与后续收口。
+    trustProxy: process.env.TRUST_PROXY === "true",
+    // ARCH-27: OS/容器注入的进程标识（非部署配置，无需 Joi 注册；
+    // metrics.instance.hostname 展示用，此前 metrics.service 直读 process.env）。
+    hostname: process.env.HOSTNAME ?? "",
   },
   database: {
     host: process.env.DB_HOST || "localhost",
@@ -23,6 +56,9 @@ export default () => ({
   throttle: {
     ttl: parseInt(process.env.THROTTLE_TTL || "60000", 10),
     limit: parseInt(process.env.THROTTLE_LIMIT || "60", 10),
+    // N16 / ARCH-27: 登录路由限流（@Throttle 装饰器求值期约束见
+    // auth.controller.ts 头部注释与 W-22 记录）。默认 20。
+    loginLimit: parseInt(process.env.LOGIN_THROTTLE_LIMIT || "20", 10),
   },
   // SSE 日志流并发上限（进程内计数）：单 execution / 全局。
   // task.service.ts 读取本配置节；此前 sse 节从未注册，env 覆盖是死代码，现补齐。
@@ -91,6 +127,10 @@ export default () => ({
       parseInt(process.env.EXECUTOR_HEARTBEAT_INTERVAL, 10) || 30000,
     heartbeatTimeoutMultiplier:
       parseInt(process.env.EXECUTOR_HEARTBEAT_TIMEOUT_MULTIPLIER, 10) || 3,
+    // ARCH-27: SSRF 豁免开关在此统一注册 —— 运行时消费方
+    // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
+    // 不再直读 process.env。
+    allowPrivateNetwork: process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK === "true",
     // S-04: shared token executors must present; empty only allowed in dev (with warning)
     sharedToken: (() => {
       // SEC-04: read EXECUTOR_SECRET (matches docker-compose.yml injection key)
@@ -175,6 +215,19 @@ export default () => ({
       to: process.env.EMAIL_TO || "",
     },
   },
+  // ARCH-27: 初次部署 admin 种子账号（users.service onModuleInit）。
+  // 此前 users.service 直读 process.env（未注册，审计缺口）；现注册后经
+  // ConfigService 读取。INITIAL_ADMIN_PASSWORD 仅弱值告警（见文件尾）。
+  initialAdmin: {
+    password: process.env.INITIAL_ADMIN_PASSWORD || "",
+    email: process.env.INITIAL_ADMIN_EMAIL || "admin@autoflow.local",
+  },
+  // ARCH-27: 执行日志保留天数（log-retention-cleanup.service，每日 cron
+  // 分批清理 execution_log_lines）。此前该服务直读 process.env 且未注册
+  // （审计缺口）；非法值回退逻辑保留在服务内（Joi 注册允许任意字符串）。
+  logRetention: {
+    days: parseInt(process.env.LOG_RETENTION_DAYS || "30", 10),
+  },
 });
 
 // M3: fail-fast in production for critical secrets that have known weak defaults
@@ -250,6 +303,25 @@ if (process.env.NODE_ENV === "production") {
     );
   }
 
+  // SEC-02 / ARCH-27 收编: production 下每个 CORS origin 必须是合法的
+  // http(s) URL —— 此前该校验在 main.ts bootstrap 内直读 env 重复实现，
+  // 现收编到配置层（fail-fast 时点从 NestFactory.create 前移至 ConfigModule
+  // 初始化，仍在监听端口之前），main.ts 保留复核注释。
+  for (const origin of corsAllowed) {
+    if (!origin.startsWith("https://") && !origin.startsWith("http://")) {
+      throw new Error(
+        `CORS_ALLOWED_ORIGINS origin "${origin}" must start with http:// or https://`,
+      );
+    }
+    try {
+      new URL(origin);
+    } catch {
+      throw new Error(
+        `CORS_ALLOWED_ORIGINS origin "${origin}" is not a valid URL`,
+      );
+    }
+  }
+
   // ARCH-006: production 显式请求 DB_SYNCHRONIZE=true 时 fail-fast，
   // 防止不受控的 schema 修改；synchronize 一律走 migrations。
   if (process.env.DB_SYNCHRONIZE === "true") {
@@ -258,7 +330,8 @@ if (process.env.NODE_ENV === "production") {
     );
   }
 
-  // Validate initial admin password is changed
+  // Validate initial admin password is changed (ARCH-27: seed 逻辑已注册至
+  // initialAdmin 节，users.service 经 ConfigService 读取)
   const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD ?? "";
   if (weakValues.has(initialAdminPassword)) {
     console.warn(

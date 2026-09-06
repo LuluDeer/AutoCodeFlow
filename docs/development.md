@@ -223,6 +223,29 @@ npm run build
 
 ## 代码规范
 
+### 配置读取规约（ARCH-27，apps/admin-api）
+
+**痛点**：env 直读散布曾导致死配置（W-22：`@Throttle` 装饰器在模块求值期读
+`process.env.LOGIN_THROTTLE_LIMIT`，早于 ConfigModule 载入 `.env`，配置静默失效）。
+
+**规则**（ESLint `no-restricted-properties` 已封禁 `process.env` 直读，违规即 lint 失败）：
+
+1. **新增配置必须先注册**：`apps/admin-api/src/app.module.ts` 的
+   ConfigModule `validationSchema`（Joi）声明变量与默认值 →
+   `src/config/configuration.ts` 映射为配置对象 → 消费方注入 `ConfigService`
+   以 `configService.get("section.key")` 读取。
+2. **直读豁免清单**（维护位置：`apps/admin-api/.eslintrc.js` 的
+   `overrides`，每处必须带理由注释）：
+   - `src/config/configuration.ts` —— 唯一合法的 env → 配置映射层；
+   - `src/config/env.ts`（`getEnvVar()`）—— 模块求值期（装饰器参数、模块级
+     常量）或无 DI 环境（如 TypeORM CLI）的唯一收口 util，调用点必须注释
+     W-22 前科与豁免理由；
+   - `**/*.spec.ts`、`test/**` —— 测试 fixture 需直接操纵 env。
+3. **回归守卫**：`src/__tests__/main-env-preload.spec.ts` 钉住
+   main.ts 在 import app.module 前预载 `.env` + 动态 import 的顺序 ——
+   求值期读取依赖该顺序，请勿"整理"回静态 import。
+4. 完整规约原文见 `src/config/configuration.ts` 头部注释。
+
 ### TypeScript / JavaScript
 
 - 使用 ESLint + Prettier 进行代码检查和格式化

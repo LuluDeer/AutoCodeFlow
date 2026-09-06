@@ -8,6 +8,7 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
+import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
 import { User, UserRole } from "./entities/user.entity";
 import { CreateUserDto } from "./dto/create-user.dto";
@@ -21,18 +22,25 @@ export class UsersService implements OnModuleInit {
   constructor(
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
+    // ARCH-27: 种子账号配置经 ConfigService 读取（configuration.ts
+    // initialAdmin 节 + Joi INITIAL_ADMIN_PASSWORD / INITIAL_ADMIN_EMAIL），
+    // 取代原先 onModuleInit 直读 process.env 的模式。
+    private readonly configService: ConfigService,
   ) {}
 
   /**
-   * Bootstrap: seed the initial admin user from INITIAL_ADMIN_PASSWORD env var
-   * if no users exist in the database yet.
+   * Bootstrap: seed the initial admin user from the registered initialAdmin
+   * configuration (env INITIAL_ADMIN_PASSWORD / INITIAL_ADMIN_EMAIL) if no
+   * users exist in the database yet.
    */
   async onModuleInit() {
     const count = await this.usersRepository.count();
     if (count > 0) return;
 
-    const password = process.env.INITIAL_ADMIN_PASSWORD;
-    const email = process.env.INITIAL_ADMIN_EMAIL ?? "admin@autoflow.local";
+    const password = this.configService.get<string>("initialAdmin.password");
+    const email =
+      this.configService.get<string>("initialAdmin.email") ??
+      "admin@autoflow.local";
     if (!password) {
       this.logger.warn("INITIAL_ADMIN_PASSWORD not set — skipping admin seed");
       return;
