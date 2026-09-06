@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Spin, Progress, Typography, Breadcrumb, Empty, Tooltip, Space } from 'antd';
+import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Spin, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert } from 'antd';
 import { WarningOutlined, CopyOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { executorsApi } from '../api/executors';
@@ -202,6 +202,15 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item label="描述" span={2}>{executor.description || '-'}</Descriptions.Item>
         </Descriptions>
       </Card>
+
+      {!isOnline && (
+        <Alert
+          type="warning"
+          showIcon
+          message="执行器离线，以下指标为最后一次心跳的缓存数据，可能已过期"
+          style={{ marginTop: 16 }}
+        />
+      )}
 
       <Row gutter={16} style={{ marginTop: 16 }}>
         <Col span={12}>

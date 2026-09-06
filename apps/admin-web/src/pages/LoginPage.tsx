@@ -18,7 +18,9 @@ export default function LoginPage() {
     try {
       const res = await authApi.login(values);
       setAuth(res.accessToken, res.refreshToken, res.user);
-      nav('/dashboard', { replace: true });
+      // 401 登出跳转带 ?redirect=（仅接受站内路径，防开放重定向）——优先回跳原页面
+      const redirect = new URLSearchParams(window.location.search).get('redirect');
+      nav(redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/dashboard', { replace: true });
     } catch (err: unknown) {
       const msg = getErrMsg(err, '用户名或密码错误');
       message.error(msg);

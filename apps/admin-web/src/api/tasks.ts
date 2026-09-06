@@ -64,6 +64,8 @@ export interface TaskExecution {
   logs?: string;
   errorMessage?: string;
   failureReason?: string | null;
+  /** 非零/非空退出码（后端终态回调入库；null=旧数据未采集） */
+  exitCode?: number | null;
   aiAnalysis?: string;
   retryCount?: number;
   taskVersion?: string | null;

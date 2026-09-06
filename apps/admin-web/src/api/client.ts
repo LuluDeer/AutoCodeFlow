@@ -102,6 +102,12 @@ client.interceptors.response.use(
   },
   async (err) => {
     const originalRequest = err.config;
+    // 401 跳登录时带上当前路由，登录成功后回跳（LoginPage 读 ?redirect=）
+    const redirectToLogin = () => {
+      const current = window.location.pathname + window.location.search;
+      const suffix = current && current !== '/login' ? `?redirect=${encodeURIComponent(current)}` : '';
+      window.location.href = `/login${suffix}`;
+    };
     // Avoid infinite retry loop on the refresh endpoint itself
     if (err.response?.status === 401 && !originalRequest._retried && !originalRequest.url?.includes('/auth/refresh')) {
       originalRequest._retried = true;
@@ -112,11 +118,11 @@ client.interceptors.response.use(
         return client(originalRequest);
       } catch {
         useAuthStore.getState().logout();
-        window.location.href = '/login';
+        redirectToLogin();
       }
     } else if (err.response?.status === 401) {
       useAuthStore.getState().logout();
-      window.location.href = '/login';
+      redirectToLogin();
     }
     // Retry only safe methods: a failed response may still have caused side effects.
     if (!originalRequest._retryCount) originalRequest._retryCount = 0;
