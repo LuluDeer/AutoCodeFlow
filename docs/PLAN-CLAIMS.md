@@ -107,7 +107,7 @@
 | QA-06 | P2 | unclaimed | | | compose 演练脚本 | | 混沌/故障注入四场景 |
 | QA-07 | P2 | unclaimed | | | 新建共享契约 fixture | | 四客户端包契约测试统一 |
 | QA-08 | P2 | unclaimed | | | CI workflow | | 跨版本迁移演练月度 job |
-| QA-09 | P3 | unclaimed | | | e2e 安全套件 | | 审计红线路径回归固化 |
+| QA-09 | P3 | in_progress | main-A | 2026-09-07 | docs/SECURITY-REDLINE-CHECKLIST.md + e2e | | 清单已建（六域 30+ 红线）；e2e 套件化剩余 |
 | QA-10 | P3 | unclaimed | | | 基准脚本 | | 关键路径性能基准 |
 | SEC-01 | P1 | unclaimed | | | 复审报告 v2 | | =BUG-12~16 汇总项，可拆半场认领 |
 | SEC-02 | P1 | unclaimed | | | task env 加密 | | 任务 secrets 加密落库 |
