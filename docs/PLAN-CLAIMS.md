@@ -37,7 +37,7 @@
 | BUG-19 | P2 | unclaimed | | | scripts/load-test | | 大规模并发压测 + 容量白皮书 |
 | BUG-20 | P3 | unclaimed | | | Dockerfile/CI | | ARM64 multi-arch |
 | FEAT-01 | P1 | unclaimed | | | admin-api notification + admin-web settings | ⚠️ | 通知静默持久化；**避开 NotificationSettingsPage（并行会话在途）** |
-| FEAT-02 | P1 | unclaimed | | | admin-web TaskDetailPage + DAG 组件 | | 依赖 DAG 可视化 |
+| FEAT-02 | P1 | done | main-A | 2026-09-07 | admin-web dag-layout.ts + TaskDependencyGraph.tsx + TaskDetailPage | 见批四 commit | 依赖 DAG 可视化：纯函数布局（10 测试）+ 零新依赖组件 + 详情页新 Tab |
 | FEAT-03 | P1 | done | main-A | 2026-09-07 | admin-web ExecutionsPage + ExecutionCompare | 0409000 | 孤儿组件复核=**零引用**；拆 ExecutionCompareModal + 列表多选一键对比（93/93 ✓） |
 | FEAT-04 | P2 | unclaimed | | | admin-web ExecutorDetailPage + api | | 执行器指标趋势图（依赖 executor_metrics_history 消费） |
 | FEAT-05 | P2 | unclaimed | | | 双执行器 + admin-api uploads + admin-web | | 执行产物 artifacts 通道 |
@@ -132,4 +132,5 @@
 - 2026-09-07 main-A：批一收工。done=W2 前端半场(f0c5f32)/BUG-08(313d203)/BUG-09(780dbcf)/QA-04(0a4d5c0)/FEAT-03(0409000)；BUG-02 复核销账（第十四轮已实现）；BUG-01 blocked（重试 R11 已实现，收口在 controller，等并行会话提交）。基线：executor-node 235/235 · executor-python 201/201 · admin-web 93/93（并行会话 WIP 测试文件除外）· 我方文件 lint 0。
 - 2026-09-07 main-A：W2 整体闭环确认（并行会话 747ea40 提交 API 半场）→ done；BUG-01 阻塞解除 → unclaimed。并行会话另提交 269d249（W1/W3/W7/W8 通知/应用页面）。
 - 2026-09-07 main-A：批二收工。done=BUG-05（3caabb4 + prettier follow-up）——SSE 活跃流 gauge 落地，指标字典补录 4 counter+2 gauge。
+- 2026-09-07 main-A：批四 done=FEAT-02（DAG 可视化，admin-web 108/108+build ✓，避开 metrics/config/executor 在途文件）。
 - 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场+rbac.spec)、MainLayout.tsx、logout.test.tsx、AppDeploymentPage.tsx、ApplicationDetailPage.tsx、ApplicationListPage.tsx、NotificationSettingsPage.tsx(W1)、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 app-deployment-race.test.tsx（tsc 报错在途）——上述文件在清理前请勿认领触碰。
