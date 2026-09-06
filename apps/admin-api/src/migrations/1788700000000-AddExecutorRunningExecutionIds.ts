@@ -8,9 +8,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 语义：NULL = 旧版执行器未上报（区别于 []：[] 表示已上报且当前空闲）。
  * 幂等：IF NOT EXISTS / IF EXISTS，重复执行与 revert 重放均无副作用。
  */
-export class AddExecutorRunningExecutionIds1788700000000
-  implements MigrationInterface
-{
+export class AddExecutorRunningExecutionIds1788700000000 implements MigrationInterface {
   name = "AddExecutorRunningExecutionIds1788700000000";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

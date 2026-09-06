@@ -313,10 +313,7 @@ describe("NotificationService", () => {
       resetRuntimeMetrics();
     });
     const payload = { title: "t", content: "c", level: "info" as const };
-    const deliveryCount = (
-      channel: string,
-      result: "success" | "failure",
-    ) =>
+    const deliveryCount = (channel: string, result: "success" | "failure") =>
       runtimeCount("autoflow_notification_delivery_total", {
         channel,
         result,
@@ -332,10 +329,7 @@ describe("NotificationService", () => {
       email.send.mockResolvedValue("sent");
       slack.send.mockRejectedValue(new Error("smtp down"));
 
-      await service.sendToChannels(payload, [
-        "email" as any,
-        "slack" as any,
-      ]);
+      await service.sendToChannels(payload, ["email" as any, "slack" as any]);
       expect(deliveryCount("email", "success")).toBe(1);
       expect(deliveryCount("slack", "failure")).toBe(1);
       expect(deliveryCount("email", "failure")).toBe(0);

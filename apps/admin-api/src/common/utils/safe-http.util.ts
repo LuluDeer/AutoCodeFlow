@@ -316,7 +316,9 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
   }
   host = host.replace(/^\[|\]$/g, "");
   if (!host) {
-    throw new BadRequestException(`Git repository URL missing host: ${rawRepo}`);
+    throw new BadRequestException(
+      `Git repository URL missing host: ${rawRepo}`,
+    );
   }
 
   const check = (addr: string) => {

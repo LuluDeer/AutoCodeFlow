@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ConflictException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan } from "typeorm";
@@ -18,10 +19,16 @@ import { ApplicationVersion } from "./entities/application-version.entity";
 import { Application } from "./entities/application.entity";
 import { ApplicationService } from "./application.service";
 import { ExecutorService } from "../executor/executor.service";
+import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 import {
   CreateDeploymentDto,
   DeploymentHeartbeatDto,
 } from "./dto/app-deployment.dto";
+
+/** R5: name of the partial unique index created by migration
+ *  1789000000000-AddAppDeploymentsInFlightUniqueIndex (applicationId is
+ *  unique among rows with status pending/deploying). */
+const IN_FLIGHT_UNIQUE_INDEX = "uq_app_deployments_application_in_flight";
 
 @Injectable()
 export class AppDeploymentService {
@@ -100,8 +107,10 @@ export class AppDeploymentService {
   private maskDeploymentForRead(d: AppDeployment): AppDeployment {
     const masked: AppDeployment = {
       ...d,
-      env: (this.appService.maskEnvForRead(d.env) ??
-        d.env) as Record<string, string> | null,
+      env: (this.appService.maskEnvForRead(d.env) ?? d.env) as Record<
+        string,
+        string
+      > | null,
     };
     if (masked.application) {
       masked.application = this.appService.maskReadSurface(masked.application);
@@ -232,13 +241,22 @@ export class AppDeploymentService {
     const updateDto: Record<string, any> = { version: target.deployedVersion };
     if (typeof target.deployedCommit === "string")
       updateDto.gitCommit = target.deployedCommit;
-
+    // R16: legacy deployments predate version snapshots and carry no
+    // packageUrl column of their own; the only related value is the parent
+    // application's CURRENT packageUrl, which is not a historical artifact —
+    // "restoring" it would be a no-op dressed up as a rollback. So the
+    // legacy path restores version/commit only and explicitly declines the
+    // packageUrl restore (exposed as packageUrlRestored=false in the
+    // response below). Rollbacks that must pin a package file should target
+    // a version snapshot (which stores packageUrl in its snapshot payload).
     const updatedApp = await this.appService.update(appId, updateDto);
     const result = await this.upgradeRunningDeployments(appId);
     return {
       ...result,
       rolledBackTo: target.deployedVersion,
       versionId: null,
+      // R16: explicit marker — legacy rollback cannot restore packageUrl.
+      packageUrlRestored: false,
       updatedApp,
     };
   }
@@ -285,7 +303,25 @@ export class AppDeploymentService {
       startCommand: dto.startCommand ?? app.entrypoint ?? null,
       status: DeploymentStatus.PENDING,
     });
-    const saved = await this.repo.save(deployment);
+
+    // R5: the findOne guard above is TOCTOU-racy — two concurrent deploy()
+    // calls can both pass it. The partial unique index
+    // uq_app_deployments_application_in_flight (migration 1789000000000) is
+    // the real race-closing guard: the losing insert fails with 23505 and is
+    // surfaced here as the same "already in-progress" rejection the guard
+    // raises (409 instead of 400).
+    let saved: AppDeployment;
+    try {
+      saved = await this.repo.save(deployment);
+    } catch (err: unknown) {
+      if (this.isInFlightUniqueViolation(err)) {
+        throw new ConflictException(
+          `Application ${app.name} already has an in-progress deployment. ` +
+            `Wait for it to finish or cancel it first.`,
+        );
+      }
+      throw err;
+    }
 
     // Asynchronously push deploy command to executor
     this.pushDeployToExecutor(saved, app).catch((err) => {
@@ -334,6 +370,11 @@ export class AppDeploymentService {
         deployment.executorAddress,
         `api/app-stop`,
       );
+      // R8: stop() is an outbound admin→executor request, same exposure as
+      // dispatch — run the executor SSRF policy (metadata/link-local refused)
+      // before contacting the address. A refusal is logged and treated like
+      // any other stop-signal failure: the row still transitions to STOPPED.
+      await assertSafeExecutorUrl(url);
       await axios.post(
         url,
         { deploymentId: deployment.id },
@@ -394,6 +435,37 @@ export class AppDeploymentService {
   // -----------------------------------------------------------------------
 
   /**
+   * R5: detect a Postgres unique-violation (SQLSTATE 23505) specifically for
+   * the in-flight partial unique index. TypeORM wraps the driver error in a
+   * QueryFailedError (driverError / cause carry `code` and `constraint`), so
+   * walk one wrapper level deep and require the index name — any other
+   * unique violation must not be misreported as "in-flight deployment".
+   */
+  private isInFlightUniqueViolation(err: unknown): boolean {
+    const candidates: Array<Record<string, unknown> | unknown> = [err];
+    if (err && typeof err === "object") {
+      candidates.push((err as any).driverError, (err as any).cause);
+    }
+    for (const e of candidates) {
+      if (!e || typeof e !== "object") continue;
+      const anyErr = e as {
+        code?: string;
+        constraint?: string;
+        message?: string;
+      };
+      if (anyErr.constraint === IN_FLIGHT_UNIQUE_INDEX) return true;
+      if (
+        anyErr.code === "23505" &&
+        typeof anyErr.message === "string" &&
+        anyErr.message.includes(IN_FLIGHT_UNIQUE_INDEX)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Validate that an executor address looks like "host:port" to prevent SSRF.
    * Allows IPv4, IPv6 brackets, and hostnames.
    */
@@ -419,15 +491,33 @@ export class AppDeploymentService {
     app: Application,
     upgrade = false,
   ): Promise<void> {
-    deployment.status = DeploymentStatus.DEPLOYING;
+    // R5: upgrades keep the row in UPGRADING for the whole push. Transitioning
+    // to DEPLOYING here would make concurrent rolling upgrades of multiple
+    // RUNNING deployments of the same application collide on the partial
+    // unique index uq_app_deployments_application_in_flight. The executor's
+    // heartbeat moves the row to RUNNING (or FAILED) afterwards.
+    deployment.status = upgrade
+      ? DeploymentStatus.UPGRADING
+      : DeploymentStatus.DEPLOYING;
     deployment.statusMessage = upgrade
       ? "Pulling latest commit..."
       : "Cloning repository...";
     await this.repo.save(deployment);
 
-    // SSRF guard: validate address format before making any outbound request
+    // SSRF guard: validate address format before making any outbound request.
+    // R8: format-only validation was not enough — the address is
+    // executor-controlled (register/heartbeat carry it), so a poisoned row
+    // could point the authenticated deploy push at cloud metadata / loopback
+    // while skipping the guard entirely (dispatch and package-push both run
+    // assertSafeExecutorUrl). The full URL goes through the same policy; a
+    // refusal takes the FAILED branch below like any other push failure.
+    const url = this.executorService.getExecutorUrl(
+      deployment.executorAddress,
+      "api/deploy",
+    );
     try {
       this.validateExecutorAddress(deployment.executorAddress);
+      await assertSafeExecutorUrl(url);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       deployment.status = DeploymentStatus.FAILED;
@@ -435,11 +525,6 @@ export class AppDeploymentService {
       await this.repo.save(deployment);
       return;
     }
-
-    const url = this.executorService.getExecutorUrl(
-      deployment.executorAddress,
-      "api/deploy",
-    );
 
     const payload = {
       deploymentId: deployment.id,
@@ -467,7 +552,9 @@ export class AppDeploymentService {
           headers: await this.getExecutorHeaders(),
         });
         // Success
-        deployment.status = DeploymentStatus.DEPLOYING;
+        deployment.status = upgrade
+          ? DeploymentStatus.UPGRADING
+          : DeploymentStatus.DEPLOYING;
         deployment.statusMessage = "Deploy command sent to executor";
         deployment.deployedCommit = app.gitCommit || null;
         deployment.deployedVersion = app.version || null;
@@ -650,15 +737,32 @@ export class AppDeploymentService {
     };
   }
 
-  /** Scan every 2 minutes for deployments stuck in 'deploying' > 10 minutes and mark them failed */
+  /** Scan every 2 minutes for deployments stuck in an in-progress state
+   *  ('deploying'/'upgrading') with no update for > 10 minutes and mark them
+   *  failed.
+   *  R6: the predicate used to be createdAt-based — a legacy deployment
+   *  upgraded (re-entering DEPLOYING on the SAME row) kept its original
+   *  createdAt and was mis-marked FAILED by this cron 10 minutes later,
+   *  polluting the version snapshot. updatedAt is refreshed both when the
+   *  row enters DEPLOYING/UPGRADING (status save) and on every heartbeat
+   *  save, so the semantics are now "in-progress and untouched for 10
+   *  minutes". UPGRADING is included because upgrades no longer pass through
+   *  DEPLOYING (R5 index compatibility) and still need the same timeout
+   *  coverage. */
   @Cron("0 */2 * * * *")
   async detectStuckDeployments(): Promise<void> {
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
     const stuck = await this.repo.find({
-      where: {
-        status: DeploymentStatus.DEPLOYING,
-        createdAt: LessThan(tenMinutesAgo),
-      },
+      where: [
+        {
+          status: DeploymentStatus.DEPLOYING,
+          updatedAt: LessThan(tenMinutesAgo),
+        },
+        {
+          status: DeploymentStatus.UPGRADING,
+          updatedAt: LessThan(tenMinutesAgo),
+        },
+      ],
     });
     if (stuck.length === 0) return;
     for (const d of stuck) {

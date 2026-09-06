@@ -56,10 +56,7 @@ describe("AppDeploymentController RBAC (R1)", () => {
 
   it("does NOT restrict findAll/findById (read surface open to any authenticated user)", () => {
     expect(
-      Reflect.getMetadata(
-        ROLES_KEY,
-        AppDeploymentController.prototype.findAll,
-      ),
+      Reflect.getMetadata(ROLES_KEY, AppDeploymentController.prototype.findAll),
     ).toBeUndefined();
     expect(
       Reflect.getMetadata(

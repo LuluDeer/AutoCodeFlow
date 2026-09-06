@@ -14,17 +14,20 @@ describe("AppModule — BullMQ root config (OPS-P1)", () => {
   const getBullRootOptions = (
     config: Record<string, unknown> = {},
   ): Record<string, unknown> => {
-    const imports = (Reflect.getMetadata("imports", AppModule) ??
-      []) as Array<Record<string, unknown>>;
+    const imports = (Reflect.getMetadata("imports", AppModule) ?? []) as Array<
+      Record<string, unknown>
+    >;
     const bullRoot = imports.find(
       (m) =>
         typeof m === "object" &&
         m !== null &&
         (m as { module?: { name?: string } }).module?.name === "BullModule" &&
         Array.isArray((m as { providers?: unknown[] }).providers),
-    ) as unknown as {
-      providers: Array<{ useFactory?: (...args: unknown[]) => unknown }>;
-    } | undefined;
+    ) as unknown as
+      | {
+          providers: Array<{ useFactory?: (...args: unknown[]) => unknown }>;
+        }
+      | undefined;
     if (!bullRoot) {
       throw new Error(
         "BullModule.forRootAsync dynamic module not found in AppModule imports",

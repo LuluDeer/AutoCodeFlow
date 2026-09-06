@@ -1,6 +1,10 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { NotFoundException, BadRequestException } from "@nestjs/common";
+import {
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { AppDeploymentService } from "../app-deployment.service";
 import {
@@ -19,6 +23,27 @@ jest.mock("axios", () => ({
 }));
 import axios from "axios";
 const mockAxiosPost = axios.post as jest.Mock;
+
+// R8: pushDeployToExecutor / stop now run assertSafeExecutorUrl, which
+// resolves hostnames via node:dns/promises — pin it so specs never hit DNS.
+jest.mock("node:dns/promises", () => ({ lookup: jest.fn() }));
+import { lookup } from "node:dns/promises";
+const mockedLookup = lookup as unknown as jest.Mock;
+
+/** R5: a TypeORM-shaped unique-violation error (SQLSTATE 23505). */
+const makeUniqueViolation = (constraint: string | null) =>
+  Object.assign(
+    new Error(
+      `duplicate key value violates unique constraint "${constraint ?? "other_constraint"}"`,
+    ),
+    constraint
+      ? {
+          code: "23505",
+          constraint,
+          driverError: { code: "23505", constraint },
+        }
+      : { code: "23505" },
+  );
 
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   find: jest.fn(),
@@ -56,11 +81,18 @@ describe("AppDeploymentService", () => {
   let appService: jest.Mocked<
     Pick<
       ApplicationService,
-      "findById" | "findByIdRaw" | "update" | "maskReadSurface" | "maskEnvForRead"
+      | "findById"
+      | "findByIdRaw"
+      | "update"
+      | "maskReadSurface"
+      | "maskEnvForRead"
     >
   >;
   let executorService: jest.Mocked<
-    Pick<ExecutorService, "findOne" | "getExecutorUrl" | "getSharedToken">
+    Pick<
+      ExecutorService,
+      "findOne" | "getExecutorUrl" | "getSharedToken" | "selectLeastLoaded"
+    >
   >;
 
   beforeEach(async () => {
@@ -79,9 +111,14 @@ describe("AppDeploymentService", () => {
     };
     executorService = {
       findOne: jest.fn().mockResolvedValue(mockExecutor),
-      getExecutorUrl: jest.fn((addr, path) => `${addr}/${path}`),
+      // Mirror the real getExecutorUrl: bare host:port gets the http:// scheme.
+      getExecutorUrl: jest.fn(
+        (addr: string, p: string) =>
+          `${addr.startsWith("http://") || addr.startsWith("https://") ? "" : "http://"}${addr}/${p}`,
+      ),
       // 部署指令鉴权头现走 DB 优先的 getSharedToken
       getSharedToken: jest.fn().mockResolvedValue(""),
+      selectLeastLoaded: jest.fn().mockResolvedValue(mockExecutor),
     };
 
     const module = await Test.createTestingModule({
@@ -103,6 +140,14 @@ describe("AppDeploymentService", () => {
 
     service = module.get(AppDeploymentService);
     mockAxiosPost.mockClear();
+    // R8: default lookup resolves to a public address — individual tests
+    // override this to simulate metadata / unreachable hosts.
+    mockedLookup.mockReset();
+    mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+  });
+
+  afterEach(() => {
+    mockedLookup.mockReset();
   });
 
   describe("findAll", () => {
@@ -202,6 +247,40 @@ describe("AppDeploymentService", () => {
       const savedArg = repo.save.mock.calls[0][0];
       expect(savedArg.env).toEqual({ API_KEY: "raw-value" });
     });
+
+    // R5: upgrades must stay in UPGRADING (never DEPLOYING) so concurrent
+    // rolling upgrades of one application do not collide on the partial
+    // unique index uq_app_deployments_application_in_flight.
+    it("R5: upgrade keeps the row in UPGRADING instead of DEPLOYING during the push", async () => {
+      const d = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        executorAddress: "203.0.113.10:3001",
+        env: null,
+      };
+      repo.save.mockImplementation(async (e: any) => e);
+      mockAxiosPost.mockResolvedValue({ data: {} });
+      versionRepo.findOne.mockResolvedValue(null);
+
+      await (service as any).pushDeployToExecutor(d, mockApp, true);
+
+      const statuses = repo.save.mock.calls.map((c) => (c[0] as any).status);
+      expect(statuses).not.toContain(DeploymentStatus.DEPLOYING);
+      expect(d.status).toBe(DeploymentStatus.UPGRADING);
+      expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+      // plain deploys still transition through DEPLOYING
+      const d2 = {
+        id: "deploy-2",
+        applicationId: "app-1",
+        status: DeploymentStatus.PENDING,
+        executorAddress: "203.0.113.10:3001",
+        env: null,
+      };
+      mockAxiosPost.mockClear();
+      await (service as any).pushDeployToExecutor(d2, mockApp);
+      expect(d2.status).toBe(DeploymentStatus.DEPLOYING);
+    });
   });
 
   describe("deploy", () => {
@@ -235,6 +314,61 @@ describe("AppDeploymentService", () => {
           runMode: RunMode.DAEMON,
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+
+    // R5: the findOne guard is TOCTOU-racy; the partial unique index
+    // (migration 1789000000000) is the real race-closer. A losing concurrent
+    // insert surfaces as SQLSTATE 23505 and must be converted to 409.
+    it("R5: converts the in-flight unique violation (23505) into 409 Conflict", async () => {
+      repo.findOne.mockResolvedValue(null); // guard passes (TOCTOU window)
+      repo.save.mockRejectedValue(
+        makeUniqueViolation("uq_app_deployments_application_in_flight"),
+      );
+
+      await expect(
+        service.deploy("app-1", {
+          executorId: "exec-1",
+          runMode: RunMode.DAEMON,
+        }),
+      ).rejects.toMatchObject({
+        constructor: ConflictException,
+        status: 409,
+        message: expect.stringContaining(
+          "already has an in-progress deployment",
+        ),
+      });
+    });
+
+    it("R5: matches the violation through the TypeORM driverError wrapper", async () => {
+      repo.findOne.mockResolvedValue(null);
+      const err = new Error("QueryFailedError");
+      (err as any).driverError = {
+        code: "23505",
+        constraint: "uq_app_deployments_application_in_flight",
+      };
+      repo.save.mockRejectedValue(err);
+
+      await expect(
+        service.deploy("app-1", { runMode: RunMode.DAEMON }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it("R5: does not misreport unrelated unique violations", async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.save.mockRejectedValue(makeUniqueViolation("some_other_constraint"));
+
+      await expect(
+        service.deploy("app-1", { runMode: RunMode.DAEMON }),
+      ).rejects.not.toBeInstanceOf(ConflictException);
+    });
+
+    it("R5: rethrows non-unique save errors unchanged", async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.save.mockRejectedValue(new Error("connection refused"));
+
+      await expect(
+        service.deploy("app-1", { runMode: RunMode.DAEMON }),
+      ).rejects.toThrow("connection refused");
     });
   });
 
@@ -439,6 +573,43 @@ describe("AppDeploymentService", () => {
       ).rejects.toThrow(BadRequestException);
       expect(appService.update).not.toHaveBeenCalled();
     });
+
+    // R16: legacy deployments predate version snapshots and have no stored
+    // packageUrl. The parent app's CURRENT packageUrl is not a historical
+    // artifact, so the legacy path restores version/commit only and marks
+    // packageUrlRestored=false instead of pretending to restore it.
+    it("R16: legacy rollback restores version/commit and reports packageUrlRestored=false", async () => {
+      versionRepo.findOne.mockResolvedValue(null);
+      repo.find.mockResolvedValue([
+        {
+          id: "deploy-legacy",
+          deployedVersion: "0.9.0",
+          deployedCommit: "cafef00d",
+          status: DeploymentStatus.RUNNING,
+        },
+      ]);
+
+      const result = await service.rollbackApplication(
+        "app-1",
+        "deploy-legacy",
+      );
+
+      expect(appService.update).toHaveBeenCalledWith("app-1", {
+        version: "0.9.0",
+        gitCommit: "cafef00d",
+      });
+      // packageUrl must NOT be written back from the app's current value
+      expect(appService.update.mock.calls[0][1]).not.toHaveProperty(
+        "packageUrl",
+      );
+      expect(result).toEqual(
+        expect.objectContaining({
+          rolledBackTo: "0.9.0",
+          versionId: null,
+          packageUrlRestored: false,
+        }),
+      );
+    });
   });
 
   describe("version snapshots", () => {
@@ -500,6 +671,108 @@ describe("AppDeploymentService", () => {
       expect(deployment.status).toBe(DeploymentStatus.FAILED);
       expect(versionRepo.save).not.toHaveBeenCalled();
       jest.restoreAllMocks();
+    });
+
+    // R8: pushDeployToExecutor is an authenticated outbound request whose
+    // target address comes from executor-controlled rows — it must clear the
+    // same executor SSRF policy as dispatch before any request is sent.
+    it("R8: pushDeployToExecutor refuses a metadata address and never sends", async () => {
+      mockedLookup.mockRejectedValue(new Error("no such host"));
+      const deployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        executorAddress: "169.254.169.254:80",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.PENDING,
+        statusMessage: null as string | null,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await (service as any).pushDeployToExecutor(deployment, mockApp);
+
+      expect(deployment.status).toBe(DeploymentStatus.FAILED);
+      expect(deployment.statusMessage).toMatch(/refused|resolves/i);
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+      expect(versionRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("R8: pushDeployToExecutor refuses a loopback IP literal before sending", async () => {
+      const deployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        executorAddress: "127.0.0.1:3001",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.PENDING,
+        statusMessage: null as string | null,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await (service as any).pushDeployToExecutor(deployment, mockApp);
+
+      expect(deployment.status).toBe(DeploymentStatus.FAILED);
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+    });
+
+    it("R8: pushDeployToExecutor still reaches a public executor (behavior unchanged)", async () => {
+      const deployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        executorAddress: "203.0.113.10:3001",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.PENDING,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      await (service as any).pushDeployToExecutor(deployment, mockApp);
+
+      expect(deployment.status).toBe(DeploymentStatus.DEPLOYING);
+      expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+    });
+
+    it("R8: stop refuses a metadata address without an outbound request", async () => {
+      const deployment = {
+        id: "deploy-1",
+        status: DeploymentStatus.RUNNING,
+        executorAddress: "169.254.169.254:3001",
+        pid: 1234,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => {});
+
+      const result = await service.stop("deploy-1");
+
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("refused"));
+      // stop semantics preserved: the row still transitions to STOPPED.
+      expect(result.status).toBe(DeploymentStatus.STOPPED);
+      warnSpy.mockRestore();
+    });
+
+    it("R8: stop still signals a public executor", async () => {
+      const deployment = {
+        id: "deploy-1",
+        status: DeploymentStatus.RUNNING,
+        executorAddress: "203.0.113.10:3001",
+        pid: 1234,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      await service.stop("deploy-1");
+
+      expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+      expect(mockAxiosPost.mock.calls[0][0]).toContain("203.0.113.10:3001");
     });
   });
 
@@ -575,6 +848,58 @@ describe("AppDeploymentService", () => {
       );
       expect(versionSnapshot.status).toBe("failed");
       expect(versionRepo.save).toHaveBeenCalledWith(versionSnapshot);
+    });
+
+    // R6: the stuck predicate must key on updatedAt (refreshed when the row
+    // enters DEPLOYING/UPGRADING and on every heartbeat), not createdAt. A
+    // legacy deployment upgraded in place re-enters an in-progress state on
+    // the SAME row with its original createdAt — a createdAt-based cron
+    // mis-marked it FAILED and polluted the version snapshot.
+    it("R6: selects stuck rows by updatedAt, never createdAt (deploying + upgrading)", async () => {
+      repo.find.mockResolvedValue([]);
+
+      await service.detectStuckDeployments();
+
+      expect(repo.find).toHaveBeenCalledTimes(1);
+      const arg = repo.find.mock.calls[0][0];
+      const where = arg.where as Array<Record<string, unknown>>;
+      expect(Array.isArray(where)).toBe(true);
+      expect(where.map((w) => w.status)).toEqual(
+        expect.arrayContaining([
+          DeploymentStatus.DEPLOYING,
+          DeploymentStatus.UPGRADING,
+        ]),
+      );
+      for (const w of where) {
+        expect(w.createdAt).toBeUndefined();
+        const op = w.updatedAt as { type: string; value: Date };
+        // TypeORM FindOperator carrying LessThan(now - 10min)
+        expect(op).toBeDefined();
+        expect(op.type).toBe("lessThan");
+        const threshold = op.value.getTime();
+        expect(Date.now() - threshold).toBeGreaterThanOrEqual(
+          10 * 60 * 1000 - 1000,
+        );
+        expect(Date.now() - threshold).toBeLessThan(10 * 60 * 1000 + 5000);
+      }
+    });
+
+    it("R6: an upgraded legacy deployment (old createdAt, fresh updatedAt) is not in the stuck set", async () => {
+      // Simulates exactly the DB behavior the new predicate produces: the
+      // row's createdAt is old but updatedAt was refreshed by the
+      // DEPLOYING save, so it does not match updatedAt < now-10min.
+      const now = Date.now();
+      const upgradedRow = {
+        id: "deploy-9",
+        createdAt: new Date(now - 40 * 24 * 60 * 60 * 1000),
+        updatedAt: new Date(now - 30 * 1000),
+        status: DeploymentStatus.DEPLOYING,
+      };
+      const predicate = (row: { updatedAt: Date }) =>
+        row.updatedAt.getTime() < now - 10 * 60 * 1000;
+      expect(predicate(upgradedRow)).toBe(false);
+      // sanity: the old createdAt-based predicate WOULD have killed it
+      expect(upgradedRow.createdAt.getTime() < now - 10 * 60 * 1000).toBe(true);
     });
   });
 
