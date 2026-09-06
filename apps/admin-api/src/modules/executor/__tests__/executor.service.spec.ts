@@ -849,6 +849,55 @@ describe("ExecutorService (__tests__)", () => {
       );
     });
 
+    // E9: 执行器热更新容量后随心跳被采纳（派发闸门/负载分读 DB 值）；
+    // 校验域 1..10000 正整数，非法/缺失一律不改 DB 值。
+    describe("maxConcurrentTasks adoption (E9)", () => {
+      const onlineExecutor = () => ({
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        maxConcurrentTasks: 4,
+      });
+
+      it("adopts a valid reported capacity", async () => {
+        const executor = onlineExecutor();
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", { maxConcurrentTasks: 8 });
+        expect(executor.maxConcurrentTasks).toBe(8);
+      });
+
+      it("accepts boundary values 1 and 10000", async () => {
+        const executor = onlineExecutor();
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", { maxConcurrentTasks: 1 });
+        expect(executor.maxConcurrentTasks).toBe(1);
+        await service.heartbeat("127.0.0.1:3105", { maxConcurrentTasks: 10000 });
+        expect(executor.maxConcurrentTasks).toBe(10000);
+      });
+
+      it("keeps the stored value when the field is not reported", async () => {
+        const executor = onlineExecutor();
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", { cpuUsage: 1 });
+        expect(executor.maxConcurrentTasks).toBe(4);
+      });
+
+      it.each([0, -3, 1.5, 10_001, Number.NaN, "8"])(
+        "rejects invalid value %p and keeps the stored value",
+        async (bad) => {
+          const executor = onlineExecutor();
+          executorRepo.findOne.mockResolvedValue(executor);
+          executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+          await service.heartbeat("127.0.0.1:3105", {
+            maxConcurrentTasks: bad as unknown as number,
+          });
+          expect(executor.maxConcurrentTasks).toBe(4);
+        },
+      );
+    });
+
     it("recovers running executions predating heartbeat startup when executor lacks startup baseline", async () => {
       const executor = {
         address: "127.0.0.1:3105",

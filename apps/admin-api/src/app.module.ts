@@ -221,6 +221,18 @@ import { RegistryModule } from "./modules/registry/registry.module";
             return Math.min(times * 100, 3000);
           },
         },
+        // OPS-P1: 终态 job 保留策略——cron/fixed_rate 任务每 tick 入队一个
+        // job，无保留策略时 completed/failed 集合在 Redis 无界增长。
+        // completed 保留 1h（滚动窗口 1000 条上限）供排障；failed 保留 24h
+        //（5000 条上限）便于回溯失败。BullMQ 合并语义为
+        // {...defaultJobOptions, ...perJobOpts}（per-job 覆盖 default）：
+        // 本仓库全部 4 处 add()（task.service trigger/rollback、
+        // scheduler.enqueue、executor restart retry）只设 attempts/backoff/
+        // priority，不携带 removeOn*，不存在反向覆盖。
+        defaultJobOptions: {
+          removeOnComplete: { age: 3600, count: 1000 },
+          removeOnFail: { age: 86400, count: 5000 },
+        },
       }),
       inject: [ConfigService],
     }),

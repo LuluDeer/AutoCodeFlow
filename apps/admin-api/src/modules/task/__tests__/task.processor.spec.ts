@@ -442,3 +442,23 @@ describe("TaskProcessor", () => {
     expect(executorService.dispatch).toHaveBeenCalled();
   });
 });
+
+// PERF-P3a: worker 并发配置断言。@nestjs/bullmq v11 的 @Processor 装饰器把
+// 第一参数（队列名等 ProcessorOptions）写入 'bullmq:processor_metadata'，
+// 第二参数（NestWorkerOptions，bull.explorer 直接展开进 Worker 构造函数）
+// 写入 'bullmq:worker_metadata'。concurrency 只认第二参数——若误写成
+// @Processor({ name, concurrency }) 单对象形式，worker_metadata 会是空对象，
+// 本断言即失败。
+describe("TaskProcessor worker metadata (PERF-P3a)", () => {
+  it("subscribes to task-queue", () => {
+    expect(
+      Reflect.getMetadata("bullmq:processor_metadata", TaskProcessor),
+    ).toMatchObject({ name: "task-queue" });
+  });
+
+  it("runs the worker with concurrency 5", () => {
+    expect(Reflect.getMetadata("bullmq:worker_metadata", TaskProcessor)).toEqual(
+      { concurrency: 5 },
+    );
+  });
+});

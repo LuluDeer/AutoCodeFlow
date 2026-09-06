@@ -208,6 +208,9 @@ export class ExecutorController {
       // CONSISTENCY-02: executor-node 活性上报（可选，旧版执行器缺省即不传）。
       runningExecutionIds?: string[];
       deadLetterCount?: number;
+      // E9: 执行器热更新容量后随心跳上报（可选；范围校验在 service 侧，
+      // 非法/缺失不改 DB 值）。
+      maxConcurrentTasks?: number;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -234,6 +237,8 @@ export class ExecutorController {
       // CONSISTENCY-02: 转发活性上报，字段级校验与裁剪在 service 侧完成。
       runningExecutionIds: body.runningExecutionIds,
       deadLetterCount: body.deadLetterCount,
+      // E9: 转发容量热更新值，正整数 1..10000 校验在 service 侧完成。
+      maxConcurrentTasks: body.maxConcurrentTasks,
     };
     const saved = await this.svc.heartbeat(body.address, metrics);
     // R9 (round-8 P1 closure, W3): echo the CURRENT stored tokenHash with

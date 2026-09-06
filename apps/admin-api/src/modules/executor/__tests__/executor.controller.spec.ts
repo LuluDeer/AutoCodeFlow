@@ -597,5 +597,31 @@ describe("ExecutorController", () => {
         "10.0.0.9:3002",
       );
     });
+
+    // E9: controller 只负责白名单转发，1..10000 校验在 service 侧完成
+    it("forwards maxConcurrentTasks to the heartbeat service", async () => {
+      const svc = {
+        validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        heartbeat: jest
+          .fn()
+          .mockResolvedValue({ address: "10.0.0.9:3002", status: "online" }),
+        getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+      };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+
+      await controller.heartbeat(
+        { address: "10.0.0.9:3002", maxConcurrentTasks: 12 },
+        "Bearer per-executor-token",
+      );
+
+      expect(svc.heartbeat).toHaveBeenCalledWith(
+        "10.0.0.9:3002",
+        expect.objectContaining({ maxConcurrentTasks: 12 }),
+      );
+    });
   });
 });

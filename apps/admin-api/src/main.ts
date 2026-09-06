@@ -27,6 +27,7 @@ import {
   isOriginAllowed,
   parseAllowedOrigins,
 } from "./common/utils/cors-origin.util";
+import { installShutdownForceExitGuard } from "./common/utils/shutdown-guard.util";
 import { createUploadAuthMiddleware } from "./common/middleware/upload-auth.middleware";
 import { SystemConfigService } from "./modules/config/config.service";
 // import { TraceMiddleware } from "./common/middleware/trace.middleware";
@@ -332,9 +333,14 @@ AutoFlow is a modern workflow automation platform providing task orchestration, 
   const logger = new Logger("Bootstrap");
   // OPS-05: graceful shutdown — lets K8s/docker stop drain in-flight requests before exit
   app.enableShutdownHooks();
+  // OPS-P3b: 信号停机兜底——enableShutdownHooks 的正常路径会等 worker.close()
+  // 排空 in-flight job，极端时挂死到 K8s SIGKILL。收到 SIGTERM/SIGINT/SIGBREAK
+  // 后 arm 一个 15s 强制 exit(1) 定时器（unref，正常排空完成不阻止退出），
+  // 与 fatal 路径 gracefulFatalShutdown 的 10s 硬超时互补。
+  installShutdownForceExitGuard();
   // R-08 (windows-findings): on Windows taskkill cannot deliver SIGTERM to a
   // console app; Ctrl+Break surfaces as SIGBREAK. Route it through the same
-  // shutdown hooks so a manually stopped Windows admin-api drains cleanly.
+  // shutdown hooks so a manually stopped admin-api drains cleanly.
   // No-op on POSIX (the event never fires there).
   process.on("SIGBREAK", () => {
     void app.close();
