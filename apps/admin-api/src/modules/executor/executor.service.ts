@@ -423,6 +423,27 @@ export class ExecutorService {
     return { executor, perExecutorToken };
   }
 
+  /**
+   * CONSISTENCY-02: heartbeat ingest for executor-node 上报的 runningExecutionIds。
+   * 输入为 executor 可控字段，须严格防御：非数组视为未上报（返回 null）；逐项仅
+   * 保留匹配安全字符集 [A-Za-z0-9_-] 的字符串（其余丢弃）；最多裁剪至 200 项。
+   * null 与 [] 语义不同——null = 旧版执行器未上报该字段（见实体注释），[] = 已
+   * 上报且当前空闲。
+   */
+  private sanitizeRunningExecutionIds(
+    value: unknown,
+  ): string[] | null {
+    if (!Array.isArray(value)) return null;
+    const safe: string[] = [];
+    for (const item of value) {
+      if (typeof item === "string" && /^[A-Za-z0-9_-]+$/.test(item)) {
+        safe.push(item);
+        if (safe.length >= 200) break;
+      }
+    }
+    return safe;
+  }
+
   async heartbeat(
     address: string,
     metrics: {
@@ -435,6 +456,8 @@ export class ExecutorService {
       failedTaskCount?: number;
       restartedAt?: string | Date | null;
       startupId?: string | null;
+      runningExecutionIds?: string[] | null;
+      deadLetterCount?: number;
     },
   ) {
     const e = await this.repo.findOne({ where: { address } });
@@ -452,7 +475,13 @@ export class ExecutorService {
     const shouldRecoverMissingBaseline = Boolean(
       !didRestart && !hasStartupBaseline && incomingStartedAt,
     );
-    const { restartedAt: _r, startupId: _s, ...metricValues } = metrics;
+    const {
+      restartedAt: _r,
+      startupId: _s,
+      runningExecutionIds,
+      deadLetterCount,
+      ...metricValues
+    } = metrics;
     if (didRestart) {
       await this.failRunningExecutionsAfterRestart(address);
     } else if (shouldRecoverMissingBaseline) {
@@ -494,6 +523,26 @@ export class ExecutorService {
     e.lastHeartbeat = new Date();
     if (incomingStartedAt) e.executorStartedAt = incomingStartedAt;
     if (incomingStartupId) e.executorStartupId = incomingStartupId;
+
+    // CONSISTENCY-02: persist executor-node 的活性上报。缺省字段写 null
+    // （= 旧版执行器未上报，区别于 [] 的"已上报且空闲"）；仅在字段上报时才
+    // 覆盖，避免旧版心跳把新版已写入的活性集合擦回 null。deadLetterCount>0
+    // 仅告警（本模块不新建指标，按约定）。
+    if (runningExecutionIds !== undefined) {
+      e.runningExecutionIds = this.sanitizeRunningExecutionIds(
+        runningExecutionIds,
+      );
+    }
+    if (
+      typeof deadLetterCount === "number" &&
+      Number.isFinite(deadLetterCount) &&
+      deadLetterCount > 0
+    ) {
+      this.logger.warn(
+        `Executor ${address} reported ${deadLetterCount} dead-letter execution(s) awaiting callback retries`,
+      );
+    }
+
     const saved = await this.repo.save(e);
     return saved;
   }

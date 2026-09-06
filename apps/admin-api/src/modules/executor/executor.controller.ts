@@ -205,6 +205,9 @@ export class ExecutorController {
       failedTaskCount?: number;
       restartedAt?: string | null;
       startupId?: string | null;
+      // CONSISTENCY-02: executor-node 活性上报（可选，旧版执行器缺省即不传）。
+      runningExecutionIds?: string[];
+      deadLetterCount?: number;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -228,6 +231,9 @@ export class ExecutorController {
       failedTaskCount: body.failedTaskCount,
       restartedAt: body.restartedAt,
       startupId: body.startupId,
+      // CONSISTENCY-02: 转发活性上报，字段级校验与裁剪在 service 侧完成。
+      runningExecutionIds: body.runningExecutionIds,
+      deadLetterCount: body.deadLetterCount,
     };
     const saved = await this.svc.heartbeat(body.address, metrics);
     // R9 (round-8 P1 closure, W3): echo the CURRENT stored tokenHash with
