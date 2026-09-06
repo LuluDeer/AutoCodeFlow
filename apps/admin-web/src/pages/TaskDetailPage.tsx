@@ -18,6 +18,7 @@ import { getErrMsg } from '../utils/error';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 import GlueEditor from '../components/GlueEditor';
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
+import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 
 const { Text } = Typography;
@@ -341,6 +342,9 @@ export default function TaskDetailPage() {
                   )}
                   <Descriptions.Item label="超时">{task.timeout ? `${task.timeout} 秒` : '-'}</Descriptions.Item>
                   <Descriptions.Item label="最大重试">{task.maxRetry ?? 0} 次</Descriptions.Item>
+                  <Descriptions.Item label="优先级">
+                    <Tag color={priorityTag(task.priority).color}>{priorityTag(task.priority).label}</Tag>
+                  </Descriptions.Item>
                   <Descriptions.Item label="调度模式">
                     {task.executeMode === 'broadcast' ? '广播（所有节点）' : task.executeMode === 'single' ? '单节点' : task.executeMode || '自动'}
                   </Descriptions.Item>

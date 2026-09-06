@@ -18,6 +18,7 @@ import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 import { CronHelper } from '../components/CronHelper';
+import { TASK_PRIORITY_OPTIONS, toPriorityValue } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 import GlueEditor from '../components/GlueEditor';
 import AlarmConfig from '../components/AlarmConfig';
@@ -119,6 +120,7 @@ export default function TaskFormPage() {
           cronExpression: task.cronExpression,
           timezone: task.timezone,
           fixedRate: task.fixedRate,
+          priority: toPriorityValue(task.priority),
           timeout: task.timeoutSeconds ?? task.timeout ?? 300,
           maxRetry: task.maxRetry ?? 3,
           retryDelay: task.retryDelay ?? 0,
@@ -241,7 +243,7 @@ export default function TaskFormPage() {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3, retryDelay: 0 }}
+        initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3, retryDelay: 0, priority: 2 }}
         onValuesChange={(changed) => {
           if (changed.triggerType) setTriggerType(changed.triggerType);
         }}
@@ -471,6 +473,13 @@ export default function TaskFormPage() {
 
             <Form.Item name="retryDelay" label={<>重试延迟 <Text type="secondary" style={{ fontSize: 12 }}>（秒，0 = 不延迟）</Text></>}>
               <InputNumber min={0} max={3600} style={{ width: 160 }} />
+            </Form.Item>
+
+            <Form.Item name="priority" label={<>调度优先级 <Text type="secondary" style={{ fontSize: 12 }}>（BullMQ 队列优先出队；多任务拥塞时高优先行）</Text></>}>
+              <Select
+                style={{ width: 200 }}
+                options={TASK_PRIORITY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              />
             </Form.Item>
 
             <Divider />
