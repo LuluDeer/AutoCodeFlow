@@ -7,17 +7,20 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { BadRequestException } from "@nestjs/common";
 import { NotificationSilenceService } from "../notification-silence.service";
 import { NotificationSilence } from "../entities/notification-silence.entity";
-import {
-  NotificationService,
-  WecomChannel,
-  DingtalkChannel,
-  EmailChannel,
-  SlackChannel,
-  WebhookChannel,
-} from "../notification.service";
+import { NotificationService } from "../notification.service";
+// 渠道类不经 notification.service 转出口——直从 channels/ 模块导入
+import { WecomChannel } from "../channels/wecom.channel";
+import { DingtalkChannel } from "../channels/dingtalk.channel";
+import { EmailChannel } from "../channels/email.channel";
+import { SlackChannel } from "../channels/slack.channel";
+import { WebhookChannel } from "../channels/webhook.channel";
 
 const makeRepo = () => ({
-  create: jest.fn((d) => ({ ...d, id: "sil-1", startTime: d.startTime ?? new Date() })),
+  create: jest.fn((d) => ({
+    ...d,
+    id: "sil-1",
+    startTime: d.startTime ?? new Date(),
+  })),
   save: jest.fn((e) => Promise.resolve({ ...e, id: "sil-1" })),
   count: jest.fn().mockResolvedValue(0),
   find: jest.fn().mockResolvedValue([]),
@@ -57,9 +60,9 @@ describe("NotificationSilenceService (FEAT-01)", () => {
     await expect(service.create({ scope: "task" })).rejects.toThrow(
       BadRequestException,
     );
-    await expect(
-      service.create({ scope: "weird" } as never),
-    ).rejects.toThrow(BadRequestException);
+    await expect(service.create({ scope: "weird" } as never)).rejects.toThrow(
+      BadRequestException,
+    );
     await expect(
       service.create({ scope: "application", channelType: "pagerduty" }),
     ).rejects.toThrow(BadRequestException);
@@ -105,7 +108,9 @@ describe("NotificationService silence persistence wiring (FEAT-01)", () => {
     };
   }
 
-  async function makeService(silenceStore: ReturnType<typeof silenceStoreMock> | undefined) {
+  async function makeService(
+    silenceStore: ReturnType<typeof silenceStoreMock> | undefined,
+  ) {
     const module = await Test.createTestingModule({
       providers: [
         NotificationService,
