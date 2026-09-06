@@ -136,6 +136,7 @@
 - 2026-09-07 main-A：⚠️ 流程事故复盘——dc82ac7（session-B 的 BUG-01 提交）顺带带走了 main-A 已暂存的 ECO-02 四文件（共享 index 暂存碰撞）。核对无内容丢失，但归属纠缠。**新纪律：多会话环境下 git add 后必须立即 commit，禁止长时暂存**；提交前 git log --stat 盘点是否被顺带提交。
 - 2026-09-07 main-A：批五 done=DOC-04（ADR 十篇：回调 token/双保险调度/幂等签发/信封契约/bundle 同 commit/RBAC 同批/配置优先级/真机冒烟/S3 双存储/去重窗口语义）。
 - 2026-09-07 main-A：批七 done=BUG-10（四端联动失败分类细化）。基线刷新：executor-node 240/240 · executor-python 206/206 · autoflow-sdk 100/100 · admin-web 118/118 · registry-pypi 52/52。
+- 2026-09-07 main-A：批八 done=FEAT-01 API 半场 / DOC-03 demo:seed / ARCH-20 根级入口 / QA-09 红线清单 / CORE-03-lite 克隆 / **真机冒烟 13/13**（本地 WSL2 PG+Redis，迁移 6 条全绿含 silences 表；CORE-06 端到端 P99=50ms；四件脚本坑修复入库 smoke-round16.mjs）。
 - 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场+rbac.spec)、MainLayout.tsx、logout.test.tsx、AppDeploymentPage.tsx、ApplicationDetailPage.tsx、ApplicationListPage.tsx、NotificationSettingsPage.tsx(W1)、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 app-deployment-race.test.tsx（tsc 报错在途）——上述文件在清理前请勿认领触碰。
 
 - 2026-09-07 session-B：批 B1 done=BUG-01(dc82ac7)/FEAT-08(fd99579)；协作修复 CORE-01 e2e 回归（6912b4d 列级 transformer）；另代修 mcp-server BUG-14 测试两处（0241b5a，afterEach 导入+模块态隔离）与 e2e 选择器作用域（2a4070d）。CI 24 job 绿（run 34051398995）。基线：admin-api 1224/62 · admin-web 112/112 · mcp-server 69/69。
