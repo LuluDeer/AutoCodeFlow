@@ -84,6 +84,7 @@ function helpText(): string {
     'Environment variables:',
     '  AUTOCODEFLOW_API_URL     Admin API base URL (default: http://localhost:3105)',
     '  AUTOCODEFLOW_API_TOKEN   JWT bearer token for the Admin API (required)',
+    '  AUTOCODEFLOW_API_REFRESH_TOKEN  Optional. Enables 401 self-heal: on access-token expiry the server refreshes once and replays the request (in-memory rotation for the process lifetime)',
     '',
   ].join('\n');
 }
