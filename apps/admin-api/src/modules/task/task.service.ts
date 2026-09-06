@@ -48,7 +48,10 @@ import { AuditService } from "../audit/audit.service";
 import { S3LogStorage } from "./log-storage/s3-log-storage";
 // 可观测性补齐轮：运行时计数器埋点入口（模块级纯内存自增，无模块环，
 // 见 metrics/runtime-metrics-entry.ts 注释）。
-import { recordRuntime } from "../metrics/runtime-metrics-entry";
+import {
+  recordRuntime,
+  setRuntimeGauge,
+} from "../metrics/runtime-metrics-entry";
 
 /**
  * Detects truncation markers inserted by executors when callback logs exceed
@@ -773,6 +776,11 @@ export class TaskService {
 
     this.sseStreamsPerExecution.set(execId, currentForExec + 1);
     this.sseStreamsGlobal++;
+    // BUG-05：活跃流 gauge（瞬时值）——占用/释放两点同步写，渲染侧
+    // PrometheusMetricsService 读快照 set() 绝对值。limit 一并透出，
+    // 抓取方可直接算占用率 active/limit。
+    setRuntimeGauge("autoflow_sse_streams_active", this.sseStreamsGlobal);
+    setRuntimeGauge("autoflow_sse_streams_limit", global);
 
     let released = false;
     return () => {
@@ -782,6 +790,7 @@ export class TaskService {
       if (n <= 0) this.sseStreamsPerExecution.delete(execId);
       else this.sseStreamsPerExecution.set(execId, n);
       this.sseStreamsGlobal = Math.max(0, this.sseStreamsGlobal - 1);
+      setRuntimeGauge("autoflow_sse_streams_active", this.sseStreamsGlobal);
     };
   }
 

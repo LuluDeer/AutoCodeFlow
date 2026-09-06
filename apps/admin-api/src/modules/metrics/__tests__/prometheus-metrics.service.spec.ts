@@ -5,7 +5,12 @@ import { SchedulerMetricsService } from "../../scheduler/scheduler-metrics.servi
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { ExecutionCallbackMetricsService } from "../../task/execution-callback-metrics.service";
 // 可观测性补齐轮：运行时计数器模块级入口（Task/Notification 埋点的同一实例）
-import { recordRuntime, resetRuntimeMetrics } from "../runtime-metrics-entry";
+import {
+  recordRuntime,
+  resetRuntimeGauges,
+  resetRuntimeMetrics,
+  setRuntimeGauge,
+} from "../runtime-metrics-entry";
 
 /**
  * R7: prom-client exposition 端点测试。
@@ -394,5 +399,35 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
   it("enabled reflects metrics.prometheus.enabled config (default true)", () => {
     expect(makeService().enabled).toBe(true);
     expect(makeService({ enabled: false }).enabled).toBe(false);
+  });
+});
+
+// BUG-05：运行时 gauge（瞬时值）——set() 绝对值渲染，无单调约束。
+describe("runtime gauges (BUG-05 SSE capacity observability)", () => {
+  afterEach(() => {
+    resetRuntimeGauges();
+  });
+
+  it("renders autoflow_sse_streams_active/limit from the module-level gauge snapshot", async () => {
+    const svc = makeService();
+    setRuntimeGauge("autoflow_sse_streams_active", 7);
+    setRuntimeGauge("autoflow_sse_streams_limit", 64);
+
+    const out = await svc.render();
+    expect(out).toContain("# HELP autoflow_sse_streams_active ");
+    expect(out).toContain("autoflow_sse_streams_active 7");
+    expect(out).toContain("autoflow_sse_streams_limit 64");
+
+    // gauge 数值回退合法（连接释放），下一次抓取跟随最新值
+    setRuntimeGauge("autoflow_sse_streams_active", 3);
+    const out2 = await svc.render();
+    expect(out2).toContain("autoflow_sse_streams_active 3");
+  });
+
+  it("renders gauges as 0 before any observation (series set stable)", async () => {
+    const svc = makeService();
+    const out = await svc.render();
+    expect(out).toContain("autoflow_sse_streams_active 0");
+    expect(out).toContain("autoflow_sse_streams_limit 0");
   });
 });

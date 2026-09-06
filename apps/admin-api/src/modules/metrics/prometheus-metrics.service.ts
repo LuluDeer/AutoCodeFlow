@@ -7,8 +7,16 @@ import {
   EXECUTION_CALLBACK_AUTH_RESULTS,
   ExecutionCallbackMetricsService,
 } from "../task/execution-callback-metrics.service";
-import { RUNTIME_COUNTERS, RuntimeCounterName } from "./runtime-metrics";
-import { getRuntimeCountersSnapshot } from "./runtime-metrics-entry";
+import {
+  RUNTIME_COUNTERS,
+  RUNTIME_GAUGES,
+  RuntimeCounterName,
+  RuntimeGaugeName,
+} from "./runtime-metrics";
+import {
+  getRuntimeCountersSnapshot,
+  getRuntimeGaugesSnapshot,
+} from "./runtime-metrics-entry";
 
 /** BullMQ 队列深度状态维度（与 SchedulerService.getQueueDepth 的返回键一致） */
 const QUEUE_STATES = [
@@ -52,6 +60,8 @@ export class PrometheusMetricsService {
    * 此处只做 snapshot→render 映射，与 scheduler/callback-auth 同一模式。
    */
   private readonly runtimeCounters: Record<RuntimeCounterName, Counter>;
+  /** BUG-05：运行时 gauge（SSE 活跃流/上限，瞬时值 set() 语义） */
+  private readonly runtimeGauges: Record<RuntimeGaugeName, Gauge>;
   private readonly _enabled: boolean;
   /** N31: 进行中的 render（并发抓取共享同一次重建，见 render 注释） */
   private renderInFlight: Promise<string> | null = null;
@@ -142,6 +152,16 @@ export class PrometheusMetricsService {
         }),
       ]),
     ) as Record<RuntimeCounterName, Counter>;
+    this.runtimeGauges = Object.fromEntries(
+      (Object.keys(RUNTIME_GAUGES) as RuntimeGaugeName[]).map((name) => [
+        name,
+        new Gauge({
+          name,
+          help: RUNTIME_GAUGES[name].help,
+          registers: [this.registry],
+        }),
+      ]),
+    ) as Record<RuntimeGaugeName, Gauge>;
   }
 
   /** METRICS_PROMETHEUS_ENABLED 开关（false 时控制器对端点返回 404） */
@@ -242,6 +262,12 @@ export class PrometheusMetricsService {
           }
         }
       }
+    }
+
+    // BUG-05：运行时 gauge——绝对值 set()，无 reset 需要（gauge 非单调）。
+    const gaugesSnapshot = getRuntimeGaugesSnapshot();
+    for (const name of Object.keys(this.runtimeGauges) as RuntimeGaugeName[]) {
+      this.runtimeGauges[name].set(gaugesSnapshot.get(name) ?? 0);
     }
 
     const depth = await this.schedulerService.getQueueDepth();

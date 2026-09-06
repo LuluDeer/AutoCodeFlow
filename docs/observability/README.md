@@ -147,6 +147,22 @@ rule_files:
 | `autoflow_queue_up` | gauge | — | 1=BullMQ 计数可从 Redis 读取；0=Redis 不可读 |
 | `autoflow_execution_callback_auth_total` | counter | `result=ok\|v1_expired\|v1_binding_mismatch\|v1_bad_signature\|legacy_shared_invalid\|missing_token\|bad_address` | `POST /executions/callback` 认证结果七分类（第九轮 N32）；七个 series 恒在、未计数时为 0 |
 
+### 4.1 运行时计数器与 gauge（可观测性补齐轮 + BUG-05 补录）
+
+> 本节补录字典缺口的 4 个 runtime counter（埋点在 TaskService /
+> NotificationService，经 runtime-metrics-entry 模块级注册表交接）与 BUG-05
+> 新增的 2 个 runtime gauge。声明处：`runtime-metrics.ts`（RUNTIME_COUNTERS /
+> RUNTIME_GAUGES），渲染处：`prometheus-metrics.service.ts`。
+
+| series | 类型 | labels | 语义 |
+| --- | --- | --- | --- |
+| `autoflow_execution_result_total` | counter | `status=success\|failed\|timeout` | 回调终态唯一赢家 UPDATE 命中后的执行结果分类 |
+| `autoflow_sse_streams_rejected_total` | counter | — | SSE 日志流因 per-execution / global 并发上限被拒次数（TASK-008） |
+| `autoflow_notification_delivery_total` | counter | `channel=email\|slack\|dingtalk\|wecom\|webhook` × `result=success\|failure` | 通知扇出投递结果 |
+| `autoflow_callback_business_total` | counter | `result=accepted\|duplicate\|not_found\|address_mismatch\|address_mismatch_missing_address\|error` | 回调业务结果分类（终态重复/地址不符等） |
+| `autoflow_sse_streams_active` | gauge | — | 本进程当前持有的 SSE 日志流连接数（占用/释放两点同步写，BUG-05）；多实例容量 = Σ(instance) |
+| `autoflow_sse_streams_limit` | gauge | — | 本实例全局 SSE 并发上限（SSE_MAX_STREAMS_GLOBAL，默认 64，BUG-05）；占用率 = active/limit |
+
 进程默认指标（`collectDefaultMetrics`，prom-client ^15.1.3；面板用到以下
 名称，已在 `node_modules/prom-client/lib/metrics/` 核对）：
 

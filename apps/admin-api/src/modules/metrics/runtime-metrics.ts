@@ -102,3 +102,30 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       })),
     },
   };
+
+/**
+ * BUG-05（SSE 多实例容量可观测）：运行时 Gauge 声明。
+ *
+ * 与 RUNTIME_COUNTERS 的差异：gauge 是瞬时值（不是单调累计），渲染侧
+ * set() 绝对值重建而非 reset+inc。交接通道与计数器相同——
+ * runtime-metrics-entry.ts 的模块级注册表（TaskService 埋点、
+ * PrometheusMetricsService 渲染，无模块环）。
+ * 多实例部署语义：每个实例暴露自己的进程内活跃流数，容量上限 =
+ * 实例数 × SSE_MAX_STREAMS_GLOBAL（线性叠加），由抓取方按 instance 聚合。
+ */
+export type RuntimeGaugeName =
+  | "autoflow_sse_streams_active"
+  | "autoflow_sse_streams_limit";
+
+export interface RuntimeGaugeSpec {
+  help: string;
+}
+
+export const RUNTIME_GAUGES: Record<RuntimeGaugeName, RuntimeGaugeSpec> = {
+  autoflow_sse_streams_active: {
+    help: "Currently active SSE log-stream connections held by this process (TASK-008 slot registry)",
+  },
+  autoflow_sse_streams_limit: {
+    help: "Configured global SSE log-stream concurrency limit of this instance (SSE_MAX_STREAMS_GLOBAL)",
+  },
+};

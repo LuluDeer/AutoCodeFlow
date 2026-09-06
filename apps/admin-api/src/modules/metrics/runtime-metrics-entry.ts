@@ -1,7 +1,9 @@
 import {
   RUNTIME_COUNTERS,
+  RUNTIME_GAUGES,
   RuntimeCounterLabels,
   RuntimeCounterName,
+  RuntimeGaugeName,
 } from "./runtime-metrics";
 
 /**
@@ -44,4 +46,26 @@ export function getRuntimeCountersSnapshot(): Map<
  */
 export function resetRuntimeMetrics(): void {
   counters.clear();
+}
+
+// ── 运行时 Gauge（BUG-05）：瞬时值注册表 ──────────────────────────────────
+// 与计数器同通道、不同语义：gauge 记录"当前值"，渲染侧 set() 绝对值写入，
+// 不参与单调性约束，也无 reset 需要。
+
+const gauges = new Map<RuntimeGaugeName, number>();
+
+/** 记录运行时 gauge 当前值（纯内存写入，不抛错；未知名称静默忽略）。 */
+export function setRuntimeGauge(name: RuntimeGaugeName, value: number): void {
+  if (!(name in RUNTIME_GAUGES)) return;
+  gauges.set(name, value);
+}
+
+/** 当前快照：gauge 名 → 瞬时值。渲染侧唯一事实来源。 */
+export function getRuntimeGaugesSnapshot(): Map<RuntimeGaugeName, number> {
+  return gauges;
+}
+
+/** 清空 gauge——与 resetRuntimeMetrics 同测试专用语义。 */
+export function resetRuntimeGauges(): void {
+  gauges.clear();
 }
