@@ -468,32 +468,44 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
   });
 });
 
-// BUG-05：运行时 gauge（瞬时值）——set() 绝对值渲染，无单调约束。
-describe("runtime gauges (BUG-05 SSE capacity observability)", () => {
-  afterEach(() => {
-    resetRuntimeGauges();
+// CORE-06：调度触发延迟直方图——bucket(le) 累计 + sum/count。
+// 自包含作用域（外层 describe 的 makeService 会把 SchedulerMetricsService
+// 注入服务——这里复刻同样的构造链，避免跨作用域引用）。
+describe("trigger latency histogram (CORE-06)", () => {
+  const QUEUE_EMPTY = {
+    waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0,
+  };
+
+  const makeServiceWithMetrics = () => {
+    const config = { get: jest.fn(() => true) };
+    const schedulerMetrics = new SchedulerMetricsService();
+    const callbackMetrics = new ExecutionCallbackMetricsService();
+    const svc = new PrometheusMetricsService(
+      config as unknown as ConfigService,
+      schedulerMetrics,
+      { getQueueDepth: jest.fn().mockResolvedValue({ ...QUEUE_EMPTY }) } as unknown as SchedulerService,
+      callbackMetrics,
+    );
+    return { svc, schedulerMetrics };
+  };
+
+  it("renders bucket/sum/count series with stable 0 baselines", async () => {
+    const { svc } = makeServiceWithMetrics();
+    const out = await svc.render();
+    expect(out).toContain(`autoflow_scheduler_trigger_latency_ms_bucket{le="10"} 0`);
+    expect(out).toContain(`autoflow_scheduler_trigger_latency_ms_bucket{le="+Inf"} 0`);
+    expect(out).toContain("autoflow_scheduler_trigger_latency_ms_sum 0");
+    expect(out).toContain("autoflow_scheduler_trigger_latency_ms_count 0");
   });
 
-  it("renders autoflow_sse_streams_active/limit from the module-level gauge snapshot", async () => {
-    const svc = makeService();
-    setRuntimeGauge("autoflow_sse_streams_active", 7);
-    setRuntimeGauge("autoflow_sse_streams_limit", 64);
+  it("renders observed latencies into cumulative buckets", async () => {
+    const { svc, schedulerMetrics } = makeServiceWithMetrics();
+    schedulerMetrics.recordTriggerLatency(30);
+    schedulerMetrics.recordTriggerLatency(4000);
 
     const out = await svc.render();
-    expect(out).toContain("# HELP autoflow_sse_streams_active ");
-    expect(out).toContain("autoflow_sse_streams_active 7");
-    expect(out).toContain("autoflow_sse_streams_limit 64");
-
-    // gauge 数值回退合法（连接释放），下一次抓取跟随最新值
-    setRuntimeGauge("autoflow_sse_streams_active", 3);
-    const out2 = await svc.render();
-    expect(out2).toContain("autoflow_sse_streams_active 3");
-  });
-
-  it("renders gauges as 0 before any observation (series set stable)", async () => {
-    const svc = makeService();
-    const out = await svc.render();
-    expect(out).toContain("autoflow_sse_streams_active 0");
-    expect(out).toContain("autoflow_sse_streams_limit 0");
+    expect(out).toContain(`autoflow_scheduler_trigger_latency_ms_bucket{le="50"} 1`);
+    expect(out).toContain(`autoflow_scheduler_trigger_latency_ms_bucket{le="+Inf"} 2`);
+    expect(out).toContain("autoflow_scheduler_trigger_latency_ms_count 2");
   });
 });

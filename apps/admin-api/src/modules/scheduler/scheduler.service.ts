@@ -806,7 +806,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async enqueue(task: Task, triggerType: string) {
+  async enqueue(
+    task: Task,
+    triggerType: string,
+    /** CORE-06：定时器计划触发的时刻（Date.now()），用于 fire→入队延迟分布 */
+    fireTime?: number,
+  ) {
     // N6: the dedup window is derived from the trigger period, NOT the task
     // timeout (the old max(timeout, interval) TTL silently suppressed
     // short-period tasks down to the task timeout). See computeTriggerDedupTtlMs.
@@ -982,6 +987,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       });
       // R4-§5.5: 触发成功（claim 赢家且执行已入队）
       this.schedulerMetrics.recordTriggerClaimed();
+      // CORE-06：定时触发的 fire→入队延迟（手动触发无计划时刻，不记录）
+      if (fireTime != null) {
+        this.schedulerMetrics.recordTriggerLatency(Date.now() - fireTime);
+      }
       return exec;
     } finally {
       // P1: deliberately do NOT release the dedup lock — its TTL is the
@@ -1061,12 +1070,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             );
             return;
           }
+          // CORE-06：计划触发时刻——回调第一行取样，延迟含事件循环滞后 +
+          // findOne + 去重锁 + 入队全链
+          const fireTime = Date.now();
           this.runningTasks.set(taskId, true);
           try {
             const latest = await this.taskRepo.findOne({
               where: { id: taskId, status: TaskStatus.ACTIVE },
             });
-            if (latest) await this.enqueue(latest, "fixed_rate");
+            if (latest) await this.enqueue(latest, "fixed_rate", fireTime);
           } finally {
             this.runningTasks.delete(taskId);
           }
@@ -1089,10 +1101,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         const cronTask = nodeCron.schedule(
           task.cronExpression,
           async () => {
+            const fireTime = Date.now();
             const latest = await this.taskRepo.findOne({
               where: { id: taskId, status: TaskStatus.ACTIVE },
             });
-            if (latest) await this.enqueue(latest, "cron");
+            if (latest) await this.enqueue(latest, "cron", fireTime);
           },
           this.getCronOptions(task),
         );

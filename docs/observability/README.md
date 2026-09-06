@@ -160,6 +160,8 @@ rule_files:
 | `autoflow_sse_streams_rejected_total` | counter | — | SSE 日志流因 per-execution / global 并发上限被拒次数（TASK-008） |
 | `autoflow_notification_delivery_total` | counter | `channel=email\|slack\|dingtalk\|wecom\|webhook` × `result=success\|failure` | 通知扇出投递结果 |
 | `autoflow_callback_business_total` | counter | `result=accepted\|duplicate\|not_found\|address_mismatch\|address_mismatch_missing_address\|error` | 回调业务结果分类（终态重复/地址不符等） |
+| `autoflow_scheduler_trigger_latency_ms_bucket` | counter/hist | `le=10\|50\|100\|250\|500\|1000\|2500\|5000\|+Inf` | CORE-06：定时触发（fixed_rate/cron）fire→入队延迟累计桶（毫秒）；与 scheduler-metrics.service.ts 的 TRIGGER_LATENCY_BUCKETS_MS 逐字对齐 |
+| `autoflow_scheduler_trigger_latency_ms_sum` / `_count` | counter | — | 延迟累计和 / 样本数（avg = sum/count） |
 | `autoflow_sse_streams_active` | gauge | — | 本进程当前持有的 SSE 日志流连接数（占用/释放两点同步写，BUG-05）；多实例容量 = Σ(instance) |
 | `autoflow_sse_streams_limit` | gauge | — | 本实例全局 SSE 并发上限（SSE_MAX_STREAMS_GLOBAL，默认 64，BUG-05）；占用率 = active/limit |
 
