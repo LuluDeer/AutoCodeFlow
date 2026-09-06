@@ -52,49 +52,45 @@ const CHANNEL_CONFIG_FIELDS: Record<string, Array<{ key: string; label: string; 
   ],
 };
 
-export default function NotificationSettingsPage() {
-  const [activeTab, setActiveTab] = useState('email');
+// ─── 单渠道配置面板（W1）────────────────────────────────────────────────────
+// 每个渠道一个独立组件实例 → Form.useForm() 为该渠道私有，字段同名（如三个渠道的
+// webhookUrl）也互不串写。antd Tabs 非激活面板默认保持挂载（removeOnLeave=false），
+// 共用单个 form 实例时会发生跨渠道并集合并与 resetFields 串清，这里从根上消除。
+function ChannelConfigForm({
+  channelKey,
+  config,
+  description,
+  onSaved,
+}: {
+  channelKey: string;
+  config: Record<string, string>;
+  description: string;
+  onSaved: () => void;
+}) {
   const [form] = Form.useForm();
   const [testResult, setTestResult] = useState<TestResult | null>(null);
-  const [globalTestResult, setGlobalTestResult] = useState<TestResult | null>(null);
-
-  const { data: channels, loading, refresh } = useRequest(notificationApi.getChannels);
-  const channel = channels?.find((c) => c.key === activeTab);
 
   const { run: updateChannel, loading: updating } = useRequest(
     async (values: Record<string, string>) => {
-      await notificationApi.updateChannel(activeTab, { config: values });
+      await notificationApi.updateChannel(channelKey, { config: values });
     },
-    { manual: true, onSuccess: () => { message.success('保存成功'); refresh(); } },
+    { manual: true, onSuccess: () => { message.success('保存成功'); onSaved(); } },
   );
 
   const { run: testChannel, loading: testing } = useRequest(
     async (values: Record<string, string>) => {
-      const result = await notificationApi.testChannel(activeTab, values);
-      setTestResult({ success: result.success, message: result.message, channel: channel?.name });
+      const result = await notificationApi.testChannel(channelKey, values);
+      setTestResult({ success: result.success, message: result.message, channel: channelKey });
     },
     { manual: true },
   );
 
-  const { run: sendTest, loading: sending } = useRequest(
-    async (data: { channels: string[]; title: string; content: string }) => {
-      const result = await notificationApi.sendTestNotification(data);
-      setGlobalTestResult({ success: result.success, message: result.message });
-    },
-    { manual: true },
-  );
+  const fields = CHANNEL_CONFIG_FIELDS[channelKey] || [];
 
-  const handleEnableChange = async (enabled: boolean) => {
-    await notificationApi.updateChannel(activeTab, { enabled });
-    refresh();
-    message.success(`已${enabled ? '启用' : '禁用'} ${channel?.name}`);
-  };
-
-  const renderConfigFields = () => {
-    const fields = CHANNEL_CONFIG_FIELDS[activeTab] || [];
-    const config = channel?.config || {};
-
-    return (
+  return (
+    <div>
+      <Text type="secondary">{description}</Text>
+      <Divider />
       <Form
         form={form}
         layout="vertical"
@@ -142,7 +138,7 @@ export default function NotificationSettingsPage() {
                 showIcon
                 title={
                   testResult.success
-                    ? `${testResult.channel ?? activeTab} 测试消息发送成功`
+                    ? `${testResult.channel ?? channelKey} 测试消息发送成功`
                     : `测试失败：${testResult.message}`
                 }
                 closable
@@ -152,7 +148,29 @@ export default function NotificationSettingsPage() {
           </Space>
         </Form.Item>
       </Form>
-    );
+    </div>
+  );
+}
+
+export default function NotificationSettingsPage() {
+  const [activeTab, setActiveTab] = useState('email');
+  const [globalTestResult, setGlobalTestResult] = useState<TestResult | null>(null);
+
+  const { data: channels, loading, refresh } = useRequest(notificationApi.getChannels);
+  const channel = channels?.find((c) => c.key === activeTab);
+
+  const { run: sendTest, loading: sending } = useRequest(
+    async (data: { channels: string[]; title: string; content: string }) => {
+      const result = await notificationApi.sendTestNotification(data);
+      setGlobalTestResult({ success: result.success, message: result.message });
+    },
+    { manual: true },
+  );
+
+  const handleEnableChange = async (enabled: boolean) => {
+    await notificationApi.updateChannel(activeTab, { enabled });
+    refresh();
+    message.success(`已${enabled ? '启用' : '禁用'} ${channel?.name}`);
   };
 
   const tabItems = channels?.map((c: NotificationChannel) => ({
@@ -171,11 +189,14 @@ export default function NotificationSettingsPage() {
         </Space>
         <Divider />
         {c.enabled ? (
-          <>
-            <Text type="secondary">{c.description}</Text>
-            <Divider />
-            {renderConfigFields()}
-          </>
+          // W1：渠道级独立组件——每渠道私有 form 实例，面板间字段与保存互不影响
+          <ChannelConfigForm
+            key={c.key}
+            channelKey={c.key}
+            config={c.config || {}}
+            description={c.description}
+            onSaved={refresh}
+          />
         ) : (
           <Alert title="此通知渠道已禁用，启用后可配置推送参数" type="info" showIcon />
         )}
@@ -187,9 +208,10 @@ export default function NotificationSettingsPage() {
     <div>
       <Typography.Title level={4} style={{ marginBottom: 16 }}>通知设置</Typography.Title>
       <Card loading={loading}>
+        {/* W1：ChannelConfigForm 自带渠道私有 form 与测试状态，切 Tab 无需 resetFields */}
         <Tabs
           activeKey={activeTab}
-          onChange={(k) => { setActiveTab(k); form.resetFields(); setTestResult(null); }}
+          onChange={(k) => { setActiveTab(k); }}
           items={tabItems}
         />
       </Card>

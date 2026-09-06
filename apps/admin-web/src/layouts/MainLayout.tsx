@@ -132,12 +132,7 @@ export default function MainLayout() {
       disabled: true,
     },
     { type: 'divider' as const },
-    {
-      key: 'profile',
-      icon: <UserOutlined />,
-      label: '个人信息',
-    },
-    { type: 'divider' as const },
+    // W8：已移除「个人信息」死项——handleUserMenu 只处理 logout，原条目点击无任何行为
     {
       key: 'logout',
       icon: <LogoutOutlined />,

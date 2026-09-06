@@ -101,3 +101,21 @@ describe('DR-04 explicit logout', () => {
     expect(post).not.toHaveBeenCalled();
   });
 });
+
+describe('W8 user menu', () => {
+  it('用户菜单不再包含「个人信息」死项（handleUserMenu 只处理 logout）', async () => {
+    render(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <Routes>
+          <Route path="/dashboard" element={<MainLayout />} />
+          <Route path="/login" element={<div>Login destination</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByText('alice'));
+    // 退出登录仍在
+    expect(await screen.findByText('退出登录')).toBeTruthy();
+    // 个人信息已移除
+    expect(screen.queryByText('个人信息')).toBeNull();
+  });
+});
