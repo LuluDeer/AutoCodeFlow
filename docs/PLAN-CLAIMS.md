@@ -22,7 +22,7 @@
 | QA-04 | P1 | done | main-A | 2026-09-07 | docs/VERIFY-MATRIX.md | 0a4d5c0 | 真机矩阵 checklist 固化：平台/拓扑矩阵 + 按变更类型必跑表 + VERIFY 模板 |
 | BUG-03 | P2 | unclaimed | | | admin-api 各模块 spec | | coverage 地板提升（68/58/56/69→75/65/62/75），分两轮 |
 | BUG-04 | P3 | unclaimed | | | 无代码（跟踪上游） | | minio 链 moderate，等上游 |
-| BUG-05 | P2 | unclaimed | | | admin-api metrics + docs/observability | | SSE 多实例容量可观测 |
+| BUG-05 | P2 | done | main-A | 2026-09-07 | admin-api metrics 模块 + task.service + docs/observability | 3caabb4+style | SSE active/limit gauge 双 series + 占用率可算；1179/1179 ✓（lint 0）|
 | BUG-06 | P2 | unclaimed | | | admin-api log-storage 清理路径 | | S3 回退行清理语义复核 |
 | BUG-07 | P2 | unclaimed | | | Windows 测试任务书 + e2e 脚本 | | QA8 detached 信号深验（需 Windows 真机窗口） |
 | BUG-10 | P3 | unclaimed | | | 双执行器失败分类 | | failureReason 细化 |
@@ -129,4 +129,5 @@
 
 - 2026-09-07 main-A：建板。认领 W2-前端半场（in_progress）、BUG-01/02/08/09、QA-04（claimed）。
 - 2026-09-07 main-A：批一收工。done=W2 前端半场(f0c5f32)/BUG-08(313d203)/BUG-09(780dbcf)/QA-04(0a4d5c0)/FEAT-03(0409000)；BUG-02 复核销账（第十四轮已实现）；BUG-01 blocked（重试 R11 已实现，收口在 controller，等并行会话提交）。基线：executor-node 235/235 · executor-python 201/201 · admin-web 93/93（并行会话 WIP 测试文件除外）· 我方文件 lint 0。
+- 2026-09-07 main-A：批二收工。done=BUG-05（3caabb4 + prettier follow-up）——SSE 活跃流 gauge 落地，指标字典补录 4 counter+2 gauge。
 - 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场+rbac.spec)、MainLayout.tsx、logout.test.tsx、AppDeploymentPage.tsx、ApplicationDetailPage.tsx、ApplicationListPage.tsx、NotificationSettingsPage.tsx(W1)、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 app-deployment-race.test.tsx（tsc 报错在途）——上述文件在清理前请勿认领触碰。

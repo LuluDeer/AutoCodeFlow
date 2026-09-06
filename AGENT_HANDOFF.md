@@ -17,6 +17,7 @@
   - `0a4d5c0` **QA-04**：docs/VERIFY-MATRIX.md 真机矩阵 checklist（平台/拓扑/按变更类型必跑）
   - `0409000` **FEAT-03**：孤儿组件 ExecutionCompare（零引用）拆出 ExecutionCompareModal 接回 ExecutionsPage 多选对比；admin-web 93/93
   - 复核销账：**BUG-02**（sweep 重试预算第十四轮已实现+测试）；**BUG-01/N51**（401 重签重试 R11 已实现，收口改进在 executor.controller.ts 被并行会话占用→blocked，且该重试路径无专项测试）
+  - `3caabb4` **BUG-05**：SSE 活跃流 gauge（autoflow_sse_streams_active/limit）——runtime-gauges 模块级注册表+task.service 占用/释放两点埋点+prom 绝对值渲染；observability README 字典补录 4 runtime counter+2 gauge（此前后台字典滞后）；admin-api **1179/1179** + lint 0
   - ⚠️ 并行会话在途（勿动）：W1 通知设置页/W2 API 半场/应用三页面+MainLayout/logout.test/app-deployment-race.test.tsx（该文件 tsc 在途报错，全量 build 被其阻塞）
 - 测试基线（全绿）：
   - admin-api **870/870** (jest, 53 suites) + eslint **0/0** + coverage 地板（68/58/56/69）
