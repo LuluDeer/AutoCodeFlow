@@ -13,6 +13,7 @@ import { useNavigate } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
+import { useDebounce } from '../hooks/useDebounce';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 
 const { Text } = Typography;
@@ -52,17 +53,20 @@ export default function ExecutionsPage() {
     }
   };
 
+  // 搜索防抖：避免每击键发一次列表请求
+  const debouncedSearch = useDebounce(search);
+
   const { data, loading, refresh } = useRequest(
     () => tasksApi.allExecutions({
       page,
       pageSize,
       status: statusFilter,
-      taskName: search || undefined,
+      taskName: debouncedSearch || undefined,
       executorAddress: executorFilter || undefined,
       startTime: timeRange?.[0]?.toISOString(),
       endTime: timeRange?.[1]?.toISOString(),
     }),
-    { refreshDeps: [page, pageSize, statusFilter, search, executorFilter, timeRange], pollingInterval: 15000 },
+    { refreshDeps: [page, pageSize, statusFilter, debouncedSearch, executorFilter, timeRange], pollingInterval: 15000 },
   );
 
   const executions: TaskExecution[] = data?.items ?? [];
@@ -171,7 +175,7 @@ export default function ExecutionsPage() {
           <Typography.Title level={4} style={{ margin: 0 }}>执行记录</Typography.Title>
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>全部任务执行历史</Typography.Text>
         </div>
-        <Button icon={<ReloadOutlined />} onClick={() => { setPage(1); refresh(); }}>刷新</Button>
+        <Button icon={<ReloadOutlined />} onClick={() => refresh()}>刷新</Button>
       </div>
 
       <Space style={{ marginBottom: 16 }} wrap>

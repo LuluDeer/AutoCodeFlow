@@ -12,6 +12,7 @@ import { useRequest } from 'ahooks';
 import { useNavigate } from 'react-router-dom';
 import { tasksApi, Task } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
+import { useDebounce } from '../hooks/useDebounce';
 import ParamsEditor from '../components/ParamsEditor';
 
 const { Text } = Typography;
@@ -47,9 +48,12 @@ export default function TaskListPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
+  // 搜索防抖：输入框即时回显 search，列表查询跟随 debounced 值，避免每击键发请求
+  const debouncedSearch = useDebounce(search);
+
   const { data, loading, refresh } = useRequest(
-    () => tasksApi.list({ page, pageSize, name: search || undefined, status: statusFilter, triggerType: triggerFilter }),
-    { pollingInterval: 30000, refreshDeps: [page, pageSize, search, statusFilter, triggerFilter] },
+    () => tasksApi.list({ page, pageSize, name: debouncedSearch || undefined, status: statusFilter, triggerType: triggerFilter }),
+    { pollingInterval: 30000, refreshDeps: [page, pageSize, debouncedSearch, statusFilter, triggerFilter] },
   );
 
   const tasks: Task[] = data?.items ?? [];
@@ -263,7 +267,7 @@ export default function TaskListPage() {
         <div>
           <Typography.Title level={4} style={{ margin: 0 }}>任务调度</Typography.Title>
           <Text type="secondary" style={{ fontSize: 13}}>
-            {tasks.filter(t => t.status === 'active').length} 个运行中，共{tasks.length} 个任务
+            共 {total} 个任务
           </Text>
         </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => nav('/tasks/new')}>
