@@ -36,7 +36,7 @@ import { configRouter } from './routes/config';
 import { logsRouter } from './routes/logs';
 import { deployRouter } from './routes/deploy';
 import { updatePackageRouter } from './routes/update-package';
-import { verifyToken } from './middleware/auth';
+import { verifyToken, setOnTokenAcquired } from './middleware/auth';
 
 const app = express();
 app.use(express.json());
@@ -67,7 +67,15 @@ function detectAvailableRuntimes(): string[] {
   return runtimes;
 }
 
-async function registerExecutor() {
+// N41: register 失败不再永久依赖进程重启恢复。token 链恢复（fetchToken 成功，
+// 经 setOnTokenAcquired 钩子）后触发一次带富元数据的重注册——admin 侧对同
+// (address, startupId) 的 register 幂等（不轮换 token、按白名单更新元数据），
+// 所以这次补注册只会修复 /token side effect 重建行时丢失的
+// type/capabilities/maxConcurrent/version，不会引发旋转风暴。
+let registerSucceeded = false;
+let reRegisterInFlight = false;
+
+async function registerExecutor(): Promise<boolean> {
   const runtimes = detectAvailableRuntimes();
   try {
     const resp = await postWithStaticToken('/api/executors/register', {
@@ -92,18 +100,25 @@ async function registerExecutor() {
     // the admin ResponseInterceptor ({code,message,data}) — unwrapAdminResponseData
     // reads both shapes (R9: shared with middleware/auth.ts fetchToken).
     adoptExecutorTokenHash(resp?.data);
+    registerSucceeded = true;
     logger.info(`Registered to admin-api (runtimes: ${runtimes.join(', ')}, maxConcurrent: ${config.maxConcurrentTasks})`);
+    return true;
   } catch (err: any) {
-    // N41 (round-10): the old "(will retry via heartbeat)" wording was
-    // false — heartbeat never registers (unknown address → 404). The only
-    // self-heal is the register-on-token side effect of
-    // POST /executors/token in the token-refresh path, which rebuilds the
-    // row WITHOUT the rich metadata above (type/capabilities/maxConcurrent/
-    // version); full metadata returns only on process restart.
+    registerSucceeded = false;
     logger.warn(
-      `Register failed (no auto re-register; /token fallback rebuilds the row without rich metadata): ${err.message}`,
+      `Register failed (will re-register with rich metadata on next token acquisition): ${err.message}`,
     );
+    return false;
   }
+}
+
+/** N41: token 恢复后的补注册——已注册短路 + in-flight 去重，防重复风暴。 */
+function maybeReRegister(): void {
+  if (registerSucceeded || reRegisterInFlight) return;
+  reRegisterInFlight = true;
+  void registerExecutor().finally(() => {
+    reRegisterInFlight = false;
+  });
 }
 
 async function notifyOffline(): Promise<void> {
@@ -229,6 +244,9 @@ const server = app.listen(config.port, async () => {
     initAdminClients(config.adminApiUrls);
     await checkAdminApiConnectivity();
 
+    // N41: token 恢复钩子先于首次注册挂载——启动期 admin 不可达时，register
+    // 失败后由后续成功的 fetchToken 自动补注册（maybeReRegister 自带去重）。
+    setOnTokenAcquired(maybeReRegister);
     await registerExecutor();
     heartbeatInterval = startHeartbeat();
     startCallbackThread();

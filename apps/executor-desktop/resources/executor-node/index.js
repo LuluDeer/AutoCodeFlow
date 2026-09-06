@@ -47807,6 +47807,13 @@ function detectAvailableRuntimes() {
     }
     return runtimes;
 }
+// N41: register 失败不再永久依赖进程重启恢复。token 链恢复（fetchToken 成功，
+// 经 setOnTokenAcquired 钩子）后触发一次带富元数据的重注册——admin 侧对同
+// (address, startupId) 的 register 幂等（不轮换 token、按白名单更新元数据），
+// 所以这次补注册只会修复 /token side effect 重建行时丢失的
+// type/capabilities/maxConcurrent/version，不会引发旋转风暴。
+let registerSucceeded = false;
+let reRegisterInFlight = false;
 async function registerExecutor() {
     const runtimes = detectAvailableRuntimes();
     try {
@@ -47832,17 +47839,24 @@ async function registerExecutor() {
         // the admin ResponseInterceptor ({code,message,data}) — unwrapAdminResponseData
         // reads both shapes (R9: shared with middleware/auth.ts fetchToken).
         (0, admin_envelope_1.adoptExecutorTokenHash)(resp?.data);
+        registerSucceeded = true;
         logger_1.logger.info(`Registered to admin-api (runtimes: ${runtimes.join(', ')}, maxConcurrent: ${config_1.config.maxConcurrentTasks})`);
+        return true;
     }
     catch (err) {
-        // N41 (round-10): the old "(will retry via heartbeat)" wording was
-        // false — heartbeat never registers (unknown address → 404). The only
-        // self-heal is the register-on-token side effect of
-        // POST /executors/token in the token-refresh path, which rebuilds the
-        // row WITHOUT the rich metadata above (type/capabilities/maxConcurrent/
-        // version); full metadata returns only on process restart.
-        logger_1.logger.warn(`Register failed (no auto re-register; /token fallback rebuilds the row without rich metadata): ${err.message}`);
+        registerSucceeded = false;
+        logger_1.logger.warn(`Register failed (will re-register with rich metadata on next token acquisition): ${err.message}`);
+        return false;
     }
+}
+/** N41: token 恢复后的补注册——已注册短路 + in-flight 去重，防重复风暴。 */
+function maybeReRegister() {
+    if (registerSucceeded || reRegisterInFlight)
+        return;
+    reRegisterInFlight = true;
+    void registerExecutor().finally(() => {
+        reRegisterInFlight = false;
+    });
 }
 async function notifyOffline() {
     try {
@@ -47951,6 +47965,9 @@ const server = app.listen(config_1.config.port, async () => {
         // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
         (0, admin_client_1.initAdminClients)(config_1.config.adminApiUrls);
         await (0, admin_client_1.checkAdminApiConnectivity)();
+        // N41: token 恢复钩子先于首次注册挂载——启动期 admin 不可达时，register
+        // 失败后由后续成功的 fetchToken 自动补注册（maybeReRegister 自带去重）。
+        (0, auth_1.setOnTokenAcquired)(maybeReRegister);
         await registerExecutor();
         heartbeatInterval = (0, scheduler_1.startHeartbeat)();
         (0, callback_1.startCallbackThread)();
@@ -48069,6 +48086,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getStaticToken = getStaticToken;
+exports.setOnTokenAcquired = setOnTokenAcquired;
 exports.verifyToken = verifyToken;
 exports.getCurrentToken = getCurrentToken;
 exports.forceTokenRefresh = forceTokenRefresh;
@@ -48089,6 +48107,24 @@ let tokenExpiresAt = null;
 const TOKEN_REFRESH_INTERVAL = 30 * 60 * 1000; // 30 minutes
 let tokenFetchFailedAt = null;
 const TOKEN_FETCH_BACKOFF_MS = 30000;
+let tokenAcquiredListener = null;
+function setOnTokenAcquired(listener) {
+    tokenAcquiredListener = listener;
+}
+function notifyTokenAcquired() {
+    const listener = tokenAcquiredListener;
+    if (!listener)
+        return;
+    // Non-blocking: the listener runs outside the token/request path. Errors
+    // are swallowed here — the listener owns its retry semantics.
+    Promise.resolve()
+        .then(listener)
+        .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(`[auth] onTokenAcquired listener failed: ${msg}`);
+    });
+}
 function getAdminApiUrl() {
     if (config_1.config.adminApiUrlExternal) {
         return config_1.config.adminApiUrlExternal;
@@ -48135,6 +48171,7 @@ async function fetchToken() {
             // source secret for per-execution callback tokens stays in sync with
             // whatever admin-api currently stores (see admin-envelope.ts).
             (0, admin_envelope_1.adoptExecutorTokenHash)(response.data);
+            notifyTokenAcquired();
             return token;
         }
     }
@@ -50301,7 +50338,6 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.logsRouter = void 0;
 exports.pageLogLines = pageLogLines;
 exports.getExecutorAuthToken = getExecutorAuthToken;
-exports.executorAuthMiddleware = executorAuthMiddleware;
 const express_1 = __nccwpck_require__(925);
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
@@ -50341,25 +50377,12 @@ async function pageLogLines(logFile, fromLine, limit) {
         input.on('error', reject);
     });
 }
-/** S-01: Express middleware — validates Bearer token from EXECUTOR_SHARED_TOKEN env. */
+/** Resolve the executor's shared token from env/config. Env priority mirrors
+ *  config.ts. Consumed by /health (routes/health.ts) to report whether auth is
+ *  configured. The /api/* Bearer gate itself lives in middleware/auth.ts
+ *  (verifyToken) — the single, timing-safe, fail-closed check. */
 function getExecutorAuthToken() {
     return process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || config_1.config.token || '';
-}
-function executorAuthMiddleware(req, res, next) {
-    // Read env at call time so tests can set/unset tokens per-case;
-    // fall back to the config value (populated from CLI --token or config file).
-    const secret = getExecutorAuthToken();
-    if (!secret) {
-        next(); // dev mode: no secret configured
-        return;
-    }
-    const auth = req.headers.authorization || '';
-    const [scheme, token] = auth.split(' ');
-    if (scheme?.toLowerCase() !== 'bearer' || token !== secret) {
-        res.status(401).json({ error: 'Invalid or missing executor token' });
-        return;
-    }
-    next();
 }
 exports.logsRouter.get('/logs/:executionId', async (req, res) => {
     const { executionId } = req.params;
