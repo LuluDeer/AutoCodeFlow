@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan } from "typeorm";
 import { Cron } from "@nestjs/schedule";
@@ -68,7 +68,9 @@ export class AuditService {
     if (action) {
       const sanitizedAction = action.trim().slice(0, 100);
       if (!/^[a-zA-Z0-9_.\-\s]+$/.test(sanitizedAction)) {
-        throw new Error("Invalid action parameter");
+        // S13: a client-supplied filter value must map to 400, not an
+        // unhandled Error that surfaces as a 500.
+        throw new BadRequestException("Invalid action parameter");
       }
       qb.andWhere("log.action ILIKE :action", {
         action: `%${sanitizedAction}%`,
@@ -93,9 +95,23 @@ export class AuditService {
       .limit(10_000)
       .getRawMany();
 
+    // S8: CSV formula injection. Spreadsheet apps (Excel, LibreOffice,
+    // Google Sheets) interpret cells whose text starts with = + - @ (and
+    // tab/CR variants) as formulas when a CSV is opened, so a value like
+    // `=HYPERLINK(...)` recorded in an audit field would execute on export
+    // open. Defense per OWASP "CSV Injection": prefix such cells with a
+    // single quote, which is the only mitigation that is honored safely by
+    // both Excel and Google Sheets (a leading apostrophe is rendered as
+    // literal text and is not itself displayed). The quote is applied
+    // BEFORE RFC 4180 quoting so commas/quotes/newlines still escape
+    // correctly on top of it.
+    const FORMULA_CHARS = /^[=+\-@\t\r]/;
     const escape = (v: unknown) => {
       if (v === null || v === undefined) return "";
-      const s = String(v);
+      let s = String(v);
+      if (FORMULA_CHARS.test(s)) {
+        s = `'${s}`;
+      }
       if (s.includes(",") || s.includes('"') || s.includes("\n")) {
         return `"${s.replace(/"/g, '""')}"`;
       }
@@ -143,7 +159,9 @@ export class AuditService {
       const sanitizedAction = action.trim().slice(0, 100);
       // Only allow alphanumeric, underscore, hyphen, and space characters
       if (!/^[a-zA-Z0-9_.\-\s]+$/.test(sanitizedAction)) {
-        throw new Error(
+        // S13: BadRequestException (400) instead of a bare Error (500) — the
+        // value comes straight from the client query string.
+        throw new BadRequestException(
           "Invalid action parameter: only alphanumeric characters, underscores, hyphens, and spaces are allowed",
         );
       }

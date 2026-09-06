@@ -55,6 +55,42 @@ import {
 import { ExecutorPackage } from "./executor-package.entity";
 import { UserRole } from "../users/entities/user.entity";
 
+/**
+ * QA10: build a header-safe Content-Disposition value. The filename comes
+ * from the uploader's original filename (attacker-controlled on any
+ * authenticated upload path) — embedding it raw would let CR/LF split the
+ * response header (header injection) or unbalanced quotes break out of the
+ * quoted-string. Control characters (incl. CR/LF) are stripped entirely;
+ * names that are not plain unquoted ASCII are carried in an RFC 5987
+ * filename* parameter (percent-encoded UTF-8) with a sanitized ASCII
+ * fallback filename for legacy clients.
+ */
+export function buildContentDisposition(
+  rawFilename: string | null | undefined,
+): string {
+  const FALLBACK = "download";
+  // Strip CR/LF and every other C0/C1 control char (header-injection kill).
+  const cleaned = (rawFilename ?? "").replace(/[\x00-\x1f\x7f]/g, "").trim();
+  if (!cleaned) {
+    return `attachment; filename="${FALLBACK}"`;
+  }
+  // quoted-string safe: printable ASCII without the quote and backslash
+  if (/^[\x20-\x21\x23-\x5b\x5d-\x7e]+$/.test(cleaned)) {
+    return `attachment; filename="${cleaned}"`;
+  }
+  // RFC 5987 attr-char via encodeURIComponent plus the extended set ('()*)
+  // that encodeURIComponent leaves bare but RFC 5987 requires to be encoded.
+  const encoded = encodeURIComponent(cleaned).replace(
+    /['()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
+  const asciiFallback =
+    cleaned
+      .replace(/[^\x20-\x21\x23-\x5b\x5d-\x7e]/g, "_")
+      .replace(/^_+|_+$/g, "") || FALLBACK;
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
+}
+
 @ApiTags("Executor Package Management")
 @ApiBearerAuth("JWT")
 // R4 F-1: package management (upload/push/delete/activate) is admin-only.
@@ -235,9 +271,13 @@ export class ExecutorPackageController {
     // one Buffer. Headers/auth/404 semantics unchanged (Content-Length comes
     // from the on-disk stat, filename/type from the stored row).
     const { stream, fileSize, pkg } = await this.svc.openPackageFile(id);
+    // QA10: the stored originalFilename is user-controlled — sanitize the
+    // header value (CR/LF/quote stripping, RFC 5987 for non-ASCII names).
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${pkg.originalFilename ?? pkg.filename ?? `${pkg.name}-${pkg.version}`}"`,
+      buildContentDisposition(
+        pkg.originalFilename ?? pkg.filename ?? `${pkg.name}-${pkg.version}`,
+      ),
     );
     res.setHeader("Content-Type", pkg.mimeType ?? "application/octet-stream");
     res.setHeader("Content-Length", fileSize);

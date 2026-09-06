@@ -128,6 +128,28 @@ describe("configuration (ARCH-004/005/006) throttle, redis tls, db synchronize",
     process.env.REDIS_TLS_REJECT_UNAUTHORIZED = "false";
     expect(loadConfig().redis.tlsRejectUnauthorized).toBe(false);
   });
+
+  // S5: optional Verdaccio service account for the registry proxy — unset
+  // keeps the anonymous behavior, set values surface under registry.npm.
+  it("S5: defaults the npm registry service account to empty (anonymous listing preserved)", () => {
+    delete process.env.NPM_REGISTRY_TOKEN;
+    delete process.env.NPM_REGISTRY_USER;
+    delete process.env.NPM_REGISTRY_PASS;
+    const cfg = loadConfig();
+    expect(cfg.registry.npm).toEqual({ token: "", user: "", pass: "" });
+  });
+
+  it("S5: maps NPM_REGISTRY_TOKEN / NPM_REGISTRY_USER / NPM_REGISTRY_PASS into registry.npm", () => {
+    process.env.NPM_REGISTRY_TOKEN = "t0k3n";
+    process.env.NPM_REGISTRY_USER = "svc";
+    process.env.NPM_REGISTRY_PASS = "svc-pass";
+    const cfg = loadConfig();
+    expect(cfg.registry.npm).toEqual({
+      token: "t0k3n",
+      user: "svc",
+      pass: "svc-pass",
+    });
+  });
 });
 
 describe("configuration (ARCH-001) CORS_ALLOWED_ORIGINS whitelist", () => {

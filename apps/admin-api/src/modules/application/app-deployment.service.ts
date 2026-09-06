@@ -273,18 +273,31 @@ export class AppDeploymentService {
     // value (read-surface masking would deliver "***" to the runner).
     const app = await this.appService.findByIdRaw(applicationId);
 
-    // Duplicate-deployment guard: reject if a PENDING or DEPLOYING record already exists
-    // for this application (regardless of executor). This prevents double-clicking the
-    // deploy button or concurrent webhook retries from spawning two real processes.
+    // Duplicate-deployment guard: reject if a PENDING, DEPLOYING or UPGRADING
+    // record already exists for this application (regardless of executor).
+    // This prevents double-clicking the deploy button or concurrent webhook
+    // retries from spawning two real processes.
+    // QA4: UPGRADING must be covered too — upgrade() keeps the row in
+    // UPGRADING for the whole push (R5), and the partial unique index below
+    // intentionally does NOT constrain UPGRADING rows (concurrent rolling
+    // upgrades of one application must not collide on it). A deploy issued
+    // while an upgrade is in flight would therefore pass the index and start
+    // a second real process on the executor; the application-layer guard is
+    // the only interception point for that case.
     const inFlight = await this.repo.findOne({
       where: [
         { applicationId, status: DeploymentStatus.PENDING },
         { applicationId, status: DeploymentStatus.DEPLOYING },
+        { applicationId, status: DeploymentStatus.UPGRADING },
       ],
     });
     if (inFlight) {
-      throw new BadRequestException(
-        `Application ${app.name} already has an in-progress deployment (id=${inFlight.id}, status=${inFlight.status}). ` +
+      // QA4: 409 (not 400) — same conflict semantics and same message as the
+      // unique-violation branch below, so both interception surfaces answer
+      // identically.
+      throw new ConflictException(
+        `Application ${app.name} already has an in-progress deployment ` +
+          `(id=${inFlight.id}, status=${inFlight.status}). ` +
           `Wait for it to finish or cancel it first.`,
       );
     }
@@ -435,13 +448,18 @@ export class AppDeploymentService {
   // -----------------------------------------------------------------------
 
   /**
-   * R5: detect a Postgres unique-violation (SQLSTATE 23505) specifically for
-   * the in-flight partial unique index. TypeORM wraps the driver error in a
-   * QueryFailedError (driverError / cause carry `code` and `constraint`), so
-   * walk one wrapper level deep and require the index name — any other
-   * unique violation must not be misreported as "in-flight deployment".
+   * R5: detect a Postgres unique-violation (SQLSTATE 23505) for a specific
+   * constraint. TypeORM wraps the driver error in a QueryFailedError
+   * (driverError / cause carry `code` and `constraint`), so walk one wrapper
+   * level deep and require the constraint name — any other unique violation
+   * must not be misreported.
+   * (QA6: shared by the in-flight deployment guard and the version-snapshot
+   * dedupe.)
    */
-  private isInFlightUniqueViolation(err: unknown): boolean {
+  private isUniqueViolationWithConstraint(
+    err: unknown,
+    constraint: string,
+  ): boolean {
     const candidates: Array<Record<string, unknown> | unknown> = [err];
     if (err && typeof err === "object") {
       candidates.push((err as any).driverError, (err as any).cause);
@@ -453,16 +471,20 @@ export class AppDeploymentService {
         constraint?: string;
         message?: string;
       };
-      if (anyErr.constraint === IN_FLIGHT_UNIQUE_INDEX) return true;
+      if (anyErr.constraint === constraint) return true;
       if (
         anyErr.code === "23505" &&
         typeof anyErr.message === "string" &&
-        anyErr.message.includes(IN_FLIGHT_UNIQUE_INDEX)
+        anyErr.message.includes(constraint)
       ) {
         return true;
       }
     }
     return false;
+  }
+
+  private isInFlightUniqueViolation(err: unknown): boolean {
+    return this.isUniqueViolationWithConstraint(err, IN_FLIGHT_UNIQUE_INDEX);
   }
 
   /**
@@ -619,17 +641,41 @@ export class AppDeploymentService {
     });
     if (existing) return;
 
-    await this.versionRepo.save(
-      this.versionRepo.create({
-        applicationId: app.id,
-        version: app.version,
-        gitCommit: app.gitCommit ?? null,
-        sourceDeploymentId: deployment.id,
-        status,
-        snapshot: this.buildSnapshot(app),
-        description: `Deployment ${deployment.id}`,
-      }),
-    );
+    try {
+      await this.versionRepo.save(
+        this.versionRepo.create({
+          applicationId: app.id,
+          version: app.version,
+          gitCommit: app.gitCommit ?? null,
+          sourceDeploymentId: deployment.id,
+          status,
+          snapshot: this.buildSnapshot(app),
+          description: `Deployment ${deployment.id}`,
+        }),
+      );
+    } catch (err: unknown) {
+      // QA6: uq_application_versions_applicationId_version constrains only
+      // (applicationId, version), while the findOne dedupe above keys on
+      // sourceDeploymentId as well. When the same application rolls out on
+      // several executors concurrently (rolling upgrade), every instance
+      // passes the dedupe check but only the first INSERT wins; the losers
+      // fail with 23505. That must NOT fail the push — the executor already
+      // accepted the deploy and the snapshot row exists (first writer wins),
+      // so swallow exactly that violation and keep the push-success semantics.
+      if (
+        this.isUniqueViolationWithConstraint(
+          err,
+          "uq_application_versions_applicationId_version",
+        )
+      ) {
+        this.logger.warn(
+          `Version snapshot for ${app.id}@${app.version} already exists ` +
+            `(concurrent deployment ${deployment.id}) — skipping duplicate snapshot`,
+        );
+        return;
+      }
+      throw err;
+    }
   }
 
   private async markVersionSnapshotStatus(
@@ -748,12 +794,25 @@ export class AppDeploymentService {
    *  save, so the semantics are now "in-progress and untouched for 10
    *  minutes". UPGRADING is included because upgrades no longer pass through
    *  DEPLOYING (R5 index compatibility) and still need the same timeout
-   *  coverage. */
+   *  coverage.
+   *  QA5: PENDING is swept on a shorter threshold (5 minutes). deploy()
+   *  INSERTs the row as PENDING and pushes to the executor asynchronously —
+   *  a crash between the two steps leaves the row PENDING forever, where it
+   *  keeps matching the partial unique index
+   *  uq_app_deployments_application_in_flight and permanently 409s every
+   *  future deployment of the application. The normal PENDING window is
+   *  process-internal (auto-select + push retries ≈ <100s), so 5 minutes is
+   *  safely above any legitimate hold. */
   @Cron("0 */2 * * * *")
   async detectStuckDeployments(): Promise<void> {
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
     const stuck = await this.repo.find({
       where: [
+        {
+          status: DeploymentStatus.PENDING,
+          updatedAt: LessThan(fiveMinutesAgo),
+        },
         {
           status: DeploymentStatus.DEPLOYING,
           updatedAt: LessThan(tenMinutesAgo),
@@ -766,12 +825,16 @@ export class AppDeploymentService {
     });
     if (stuck.length === 0) return;
     for (const d of stuck) {
+      const pendingTimedOut = d.status === DeploymentStatus.PENDING;
       d.status = DeploymentStatus.FAILED;
-      d.statusMessage = "[System] Deployment timed out after 10 minutes";
+      d.statusMessage = pendingTimedOut
+        ? "[System] Deployment stuck in PENDING (deploy push never started, " +
+          "likely a restart between insert and push) — timed out after 5 minutes"
+        : "[System] Deployment timed out after 10 minutes";
       await this.repo.save(d);
       await this.markVersionSnapshotStatus(d, "failed");
       this.logger.warn(
-        `Stuck deployment marked FAILED: id=${d.id}, app=${d.applicationId}`,
+        `Stuck deployment marked FAILED: id=${d.id}, app=${d.applicationId}, status=${d.status}`,
       );
     }
   }

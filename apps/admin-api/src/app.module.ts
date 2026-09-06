@@ -141,6 +141,14 @@ import { RegistryModule } from "./modules/registry/registry.module";
         STALE_RECOVERY_RETRY_ENABLED: Joi.string()
           .valid("true", "false")
           .default("true"),
+
+        // S5: optional Verdaccio service account for the admin-api registry
+        // proxy (npm package listing against registry-npm, which requires
+        // $authenticated access for every pattern). All optional — unset
+        // keeps the previous anonymous behavior (empty list on 401).
+        NPM_REGISTRY_TOKEN: Joi.string().allow("").optional(),
+        NPM_REGISTRY_USER: Joi.string().allow("").optional(),
+        NPM_REGISTRY_PASS: Joi.string().allow("").optional(),
       }),
       // Only validate in production and test environments
       validationOptions: {

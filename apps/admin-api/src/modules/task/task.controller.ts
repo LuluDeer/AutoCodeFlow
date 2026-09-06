@@ -621,6 +621,17 @@ export class TaskController {
       const send = (line: string) => {
         res.write(`data: ${JSON.stringify(line)}\n\n`);
       };
+      // QA3: idle keep-alive sink — a raw SSE comment frame (": ping\n\n").
+      // Per the SSE spec clients ignore comment lines, so EventSource parsing
+      // in admin-web is unaffected; the frame just keeps proxies whose
+      // proxy_read_timeout is shorter than a silent execution from reaping
+      // the stream. Shares the raw socket with `send`, so it must not run
+      // after `done()` ends the response — the service only pings inside the
+      // polling loop, which exits before `done` is invoked.
+      const ping = () => {
+        if (res.writableEnded) return;
+        res.write(`: ping\n\n`);
+      };
       const done = () => {
         res.write(`event: done\ndata: [DONE]\n\n`);
         res.end();
@@ -633,6 +644,7 @@ export class TaskController {
           done,
           ac.signal,
           releaseSlot,
+          ping,
         );
       } catch {
         res.write(`event: error\ndata: stream error\n\n`);
