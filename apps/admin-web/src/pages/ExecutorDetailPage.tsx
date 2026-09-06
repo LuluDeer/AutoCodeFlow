@@ -4,6 +4,7 @@ import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined } fro
 import { useRequest } from 'ahooks';
 import { executorsApi, type ExecutorExecution } from '../api/executors';
 import { getErrMsg } from '../utils/error';
+import { useAuthStore, isAdminUser } from '../store/auth';
 import { useState } from 'react';
 
 const { Text } = Typography;
@@ -33,6 +34,9 @@ function usageColor(value: number, warn =60, danger = 80): string {
 export default function ExecutorDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  // W2 对齐：管理写操作（编辑/配置热更新/设置离线/轮换 Token）后端已收紧
+  // ADMIN-only，非 admin 隐藏入口，避免"可见但点击 403"（R5 门控模式）。
+  const isAdmin = isAdminUser(useAuthStore((s) => s.user));
   const [editOpen, setEditOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [execPage, setExecPage] = useState(1);
@@ -166,6 +170,7 @@ export default function ExecutorDetailPage() {
       <Card
         title="执行器详情"
         extra={
+          isAdmin ? (
           <Space>
             <Button.Group>
               <Button onClick={() => { editForm.setFieldsValue(executor); setEditOpen(true); }}>编辑</Button>
@@ -205,6 +210,7 @@ export default function ExecutorDetailPage() {
               >轮换 Token</Button>
             </Tooltip>
           </Space>
+          ) : undefined
         }
       >
         <Descriptions column={3}>
