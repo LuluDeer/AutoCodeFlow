@@ -14,12 +14,12 @@
 
 | 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
 |---|---|---|---|---|---|---|---|
-| W2-闭环 | P0 | in_progress | main-A | 2026-09-07 | admin-web/src/pages/ExecutorDetailPage.tsx；docs/PLAN-CLAIMS.md | | **分半场**：API 半场（executor.controller.ts + rbac.spec.ts 未提交改动）在途归并行会话，勿动；main-A 接前端门控半场 + 收口 |
-| BUG-01 | P1 | claimed | main-A | 2026-09-07 | admin-api executor.service.ts（reload-config 冷缓存重签重试） | | N51；避开 executor.controller.ts（并行会话在途） |
-| BUG-02 | P2 | claimed | main-A | 2026-09-07 | admin-api scheduler/task sweep 路径 | | 崩溃型 RUNNING 重试语义按计划 §2.1 方案落地 |
-| BUG-08 | P2 | claimed | main-A | 2026-09-07 | executor-node/src/main.ts + 相关 spec + **bundle 重打同 commit** | | N41 /token fallback 富元数据丢失 |
-| BUG-09 | P2 | claimed | main-A | 2026-09-07 | executor-python shutdown/drain 路径 | | 停机树杀后回调 drain 缺口 |
-| QA-04 | P1 | claimed | main-A | 2026-09-07 | docs/QA-真机矩阵-checklist.md（新建） | | 真机验证矩阵 checklist 固化 |
+| W2-闭环 | P0 | in_progress | main-A + 并行会话 | 2026-09-07 | admin-web/src/pages/ExecutorDetailPage.tsx；docs/PLAN-CLAIMS.md | f0c5f32（前端半场） | **分半场**：前端门控半场 done（f0c5f32，87/87+build ✓）；API 半场（executor.controller.ts + rbac.spec.ts）在途归并行会话——其提交后本任务整体 done |
+| BUG-01 | P1 | blocked | main-A | 2026-09-07 | admin-api executor.controller.ts（被并行会话占用） | | 复核结论：401 重签重试 R11 **已实现**（controller 内联+诚实 N50 注释）；剩余收口=双 401 错误文案精确化 + push auth-retry 指标，均需改 controller——待并行会话提交后认领；另注意：该重试路径**无专项测试**（grep 无覆盖） |
+| BUG-02 | P2 | done | main-A | 2026-09-07 | 无改动（复核销账） | | 复核结论：sweep 重试预算语义（hasRetryBudget→kill best-effort→re-enqueue+STALE_RECOVERY_RETRY_ENABLED 默认开）**第十四轮已完整实现且有测试**（scheduler.service.spec 1309 关闭态例），计划信息滞后，无需改动 |
+| BUG-08 | P2 | done | main-A | 2026-09-07 | executor-node/src/main.ts + middleware/auth.* + bundle | 313d203 | N41 修复：auth.ts setOnTokenAcquired 钩子 + main.ts maybeReRegister（短路+去重）+ admin 同 startupId register 幂等复核通过；+3 测试，executor-node 235/235；bundle 同 commit |
+| BUG-09 | P2 | done | main-A | 2026-09-07 | executor-python main.py + routers/execute.py + tests | 780dbcf | QA8 修复：await_background_tasks_after_kill 窗口 + _run_and_callback CancelledError 落盘守卫 + lifespan 顺序钉死（杀树→flush→drain）；+4 测试，executor-python 201/201 |
+| QA-04 | P1 | done | main-A | 2026-09-07 | docs/VERIFY-MATRIX.md | 0a4d5c0 | 真机矩阵 checklist 固化：平台/拓扑矩阵 + 按变更类型必跑表 + VERIFY 模板 |
 | BUG-03 | P2 | unclaimed | | | admin-api 各模块 spec | | coverage 地板提升（68/58/56/69→75/65/62/75），分两轮 |
 | BUG-04 | P3 | unclaimed | | | 无代码（跟踪上游） | | minio 链 moderate，等上游 |
 | BUG-05 | P2 | unclaimed | | | admin-api metrics + docs/observability | | SSE 多实例容量可观测 |
@@ -38,7 +38,7 @@
 | BUG-20 | P3 | unclaimed | | | Dockerfile/CI | | ARM64 multi-arch |
 | FEAT-01 | P1 | unclaimed | | | admin-api notification + admin-web settings | ⚠️ | 通知静默持久化；**避开 NotificationSettingsPage（并行会话在途）** |
 | FEAT-02 | P1 | unclaimed | | | admin-web TaskDetailPage + DAG 组件 | | 依赖 DAG 可视化 |
-| FEAT-03 | P1 | unclaimed | | | admin-web ExecutionsPage + ExecutionCompare | | 执行对比入口强化 |
+| FEAT-03 | P1 | done | main-A | 2026-09-07 | admin-web ExecutionsPage + ExecutionCompare | 0409000 | 孤儿组件复核=**零引用**；拆 ExecutionCompareModal + 列表多选一键对比（93/93 ✓） |
 | FEAT-04 | P2 | unclaimed | | | admin-web ExecutorDetailPage + api | | 执行器指标趋势图（依赖 executor_metrics_history 消费） |
 | FEAT-05 | P2 | unclaimed | | | 双执行器 + admin-api uploads + admin-web | | 执行产物 artifacts 通道 |
 | FEAT-06 | P2 | unclaimed | | | admin-api scheduler + task 实体 | | 任务维护窗口 |
@@ -128,4 +128,5 @@
 ## 变更日志
 
 - 2026-09-07 main-A：建板。认领 W2-前端半场（in_progress）、BUG-01/02/08/09、QA-04（claimed）。
-- 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场)、NotificationSettingsPage.tsx、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 notification-settings.test.tsx——上述文件在清理前请勿认领触碰。
+- 2026-09-07 main-A：批一收工。done=W2 前端半场(f0c5f32)/BUG-08(313d203)/BUG-09(780dbcf)/QA-04(0a4d5c0)/FEAT-03(0409000)；BUG-02 复核销账（第十四轮已实现）；BUG-01 blocked（重试 R11 已实现，收口在 controller，等并行会话提交）。基线：executor-node 235/235 · executor-python 201/201 · admin-web 93/93（并行会话 WIP 测试文件除外）· 我方文件 lint 0。
+- 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场+rbac.spec)、MainLayout.tsx、logout.test.tsx、AppDeploymentPage.tsx、ApplicationDetailPage.tsx、ApplicationListPage.tsx、NotificationSettingsPage.tsx(W1)、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 app-deployment-race.test.tsx（tsc 报错在途）——上述文件在清理前请勿认领触碰。
