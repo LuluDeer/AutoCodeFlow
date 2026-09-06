@@ -26,7 +26,7 @@ export default function DashboardPage() {
 
   const { data: summary, loading: summaryLoading, refresh: refreshSummary } = useRequest(
     () => metricsApi.getSummary(),
-    { pollingInterval: 30000 },
+    { pollingInterval: 30000, pollingWhenHidden: false },
   );
 
   const { data: trend, loading: trendLoading } = useRequest(
@@ -36,17 +36,17 @@ export default function DashboardPage() {
 
   const { data: executorStats, loading: execLoading } = useRequest(
     () => metricsApi.getExecutorStats(),
-    { pollingInterval: 30000 },
+    { pollingInterval: 30000, pollingWhenHidden: false },
   );
 
   const { data: failures, loading: failLoading } = useRequest(
     () => metricsApi.getRecentFailures(),
-    { pollingInterval: 30000 },
+    { pollingInterval: 30000, pollingWhenHidden: false },
   );
 
   const { data: schedulerStats } = useRequest(
     () => tasksApi.schedulerStats(),
-    { pollingInterval: 30000 },
+    { pollingInterval: 30000, pollingWhenHidden: false },
   );
 
   interface DashboardSummary {
@@ -321,8 +321,9 @@ export default function DashboardPage() {
                       title={
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
+                            {/* U6: 直接链到执行详情页，失败溯源一步到位 */}
                             <a
-                              onClick={() => nav(`/tasks/${f.taskId}`)}
+                              onClick={() => nav(`/tasks/${f.taskId}/executions/${f.id}`)}
                               style={{ fontSize: 12, fontWeight: 500, display: 'block' }}
                             >
                               {f.taskName}
@@ -335,6 +336,21 @@ export default function DashboardPage() {
                                 {f.errorMessage || '未知错误'}
                               </Text>
                             </Tooltip>
+                            {/* U6: 消费后端 failureReason + exitCode */}
+                            {(f.failureReason || f.exitCode != null) && (
+                              <Space size={4} style={{ marginTop: 2 }}>
+                                {f.failureReason && (
+                                  <Tooltip title={f.failureReason}>
+                                    <Tag color="volcano" style={{ fontSize: 10, lineHeight: '16px', marginInlineEnd: 0 }}>
+                                      {f.failureReason.length > 12 ? `${f.failureReason.slice(0, 12)}…` : f.failureReason}
+                                    </Tag>
+                                  </Tooltip>
+                                )}
+                                {f.exitCode != null && (
+                                  <Tag style={{ fontSize: 10, lineHeight: '16px', marginInlineEnd: 0 }}>exit {f.exitCode}</Tag>
+                                )}
+                              </Space>
+                            )}
                           </div>
                           <Text type="secondary" style={{ fontSize: 11, marginLeft: 8, whiteSpace: 'nowrap' }}>
                             {formatDuration(f.duration)}

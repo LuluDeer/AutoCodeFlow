@@ -1,8 +1,9 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Spin, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert } from 'antd';
-import { WarningOutlined, CopyOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Spin, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result } from 'antd';
+import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { executorsApi } from '../api/executors';
+import { executorsApi, type ExecutorExecution } from '../api/executors';
+import { getErrMsg } from '../utils/error';
 import { useState } from 'react';
 
 const { Text } = Typography;
@@ -38,14 +39,14 @@ export default function ExecutorDetailPage() {
   const [editForm] = Form.useForm();
   const [configForm] = Form.useForm();
 
-  const { data: executor, loading: loadingExecutor, refresh: refreshExecutor } = useRequest(
+  const { data: executor, loading: loadingExecutor, error: executorError, refresh: refreshExecutor } = useRequest(
     () => executorsApi.get(id!),
     { ready: !!id, refreshDeps: [id] },
   );
 
   const { data: metrics, loading: loadingMetrics } = useRequest(
     () => executorsApi.getMetrics(id!),
-    { ready: !!id, refreshDeps: [id], pollingInterval: 30000 },
+    { ready: !!id, refreshDeps: [id], pollingInterval: 30000, pollingWhenHidden: false },
   );
 
   const { data: executions, loading: loadingExecutions } = useRequest(
@@ -89,12 +90,33 @@ export default function ExecutorDetailPage() {
     },
   );
 
-  if (loadingExecutor) return <div style={{ display: 'flex', justifyContent: 'center', marginTop: 100 }}><Spin size="large" /></div>;
+  if (loadingExecutor && !executor) return <div style={{ display: 'flex', justifyContent: 'center', marginTop: 100 }}><Spin size="large" /></div>;
+  // U7: 请求失败 ≠ 执行器不存在——错误态给重试入口，数据确空才显示 Empty
+  if (!executor && executorError) {
+    return (
+      <Result
+        status="error"
+        title="执行器详情加载失败"
+        subTitle={getErrMsg(executorError, '请求失败，请重试')}
+        extra={
+          <Space>
+            <Button onClick={() => navigate('/executors')}>返回执行器列表</Button>
+            <Button type="primary" icon={<ReloadOutlined />} onClick={refreshExecutor}>重试</Button>
+          </Space>
+        }
+      />
+    );
+  }
   if (!executor) return <div style={{ padding: 80 }}><Empty description="执行器不存在或已被删除" /></div>;
 
   const isOnline = executor.status === 'online';
   const maxConcurrent = executor.maxConcurrentTasks ?? 0;
-  const runningCount = executor.runningTaskCount ?? 0;
+  // U5: CPU/内存/运行计数取 30s 轮询的 metrics.current（首轮返回前回退进页快照）。
+  // diskUsage/lastHeartbeat/runningExecutionIds 不在 metrics 接口内，仍来自 get 快照，
+  // 活性区（最后心跳/运行中执行）在 UI 标注快照语义。
+  const liveCpu = metrics?.current?.cpuUsage ?? executor.cpuUsage ?? 0;
+  const liveMem = metrics?.current?.memUsage ?? executor.memUsage ?? 0;
+  const runningCount = metrics?.current?.runningTaskCount ?? executor.runningTaskCount ?? 0;
   const runningPercent = maxConcurrent > 0 ? Math.min(100, Math.round((runningCount / maxConcurrent) * 100)) : 0;
 
   // CONSISTENCY-02: 执行器心跳上报的运行中 executionId（null = 旧版未上报）。
@@ -117,13 +139,17 @@ export default function ExecutorDetailPage() {
     cancelled: { badge: 'default',    label: '已取消' },
   };
   const execColumns = [
-    { title: '任务ID', dataIndex: 'taskId', key: 'taskId', ellipsis: true },
+    // U10: 补任务名/退出码列，行点击直达执行详情页
+    { title: '任务', dataIndex: 'taskName', key: 'taskName', ellipsis: true, render: (v: string | undefined, r: ExecutorExecution) => (
+      <a onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${r.taskId}/executions/${r.id}`); }}>{v || r.taskId}</a>
+    )},
     { title: '状态', dataIndex: 'status', key: 'status', width: 90, render: (v: string) => {
       const cfg = STATUS_MAP[v] || { badge: 'default' as BadgeStatus, label: v };
       return <Badge status={cfg.badge} text={cfg.label} />;
     }},
     { title: '开始时间', dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '-' },
     { title: '耗时', dataIndex: 'duration', key: 'duration', width: 90, render: (v: number) => v != null ? (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`) : '-' },
+    { title: '退出码', dataIndex: 'exitCode', key: 'exitCode', width: 80, render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-' },
     { title: '错误', dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
   ];
 
@@ -192,7 +218,7 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item label="分组">{executor.groupName || '-'}</Descriptions.Item>
           <Descriptions.Item label="标签">{executor.tags?.join(', ') || '-'}</Descriptions.Item>
           <Descriptions.Item label="最大并发">{executor.maxConcurrentTasks ?? '无限制'}</Descriptions.Item>
-          <Descriptions.Item label="最后心跳">
+          <Descriptions.Item label="最后心跳（进页快照）">
             <Tooltip title={heartbeatAbsolute}>
               {heartbeatStale ? (
                 <Text style={{ color: '#fa8c16' }}>
@@ -205,7 +231,7 @@ export default function ExecutorDetailPage() {
             </Tooltip>
           </Descriptions.Item>
           <Descriptions.Item label="描述" span={2}>{executor.description || '-'}</Descriptions.Item>
-          <Descriptions.Item label="运行中执行（活性上报）">
+          <Descriptions.Item label="运行中执行（活性上报 · 进页快照）">
             {reportedIds === undefined || reportedIds === null ? (
               <Tooltip title="该执行器版本未上报运行中执行列表，stale 扫描对其不启用活性跳过">
                 <Text type="secondary">未上报 <InfoCircleOutlined /></Text>
@@ -238,11 +264,16 @@ export default function ExecutorDetailPage() {
 
       <Row gutter={16} style={{ marginTop: 16 }}>
         <Col span={12}>
-          <Card title="实时资源使用" loading={loadingMetrics}>
+          <Card
+            title="实时资源使用"
+            loading={loadingMetrics && !metrics}
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>每 30s 轮询</Text>}
+          >
             <Row gutter={16}>
               {([
-                { title: 'CPU 使用率', value: executor.cpuUsage ?? 0, warn: 60, danger: 80 },
-                { title: '内存使用率', value: executor.memUsage ?? 0, warn: 60, danger: 80 },
+                { title: 'CPU 使用率', value: liveCpu, warn: 60, danger: 80 },
+                { title: '内存使用率', value: liveMem, warn: 60, danger: 80 },
+                // diskUsage 不在 metrics 接口内：仍取进页快照
                 { title: '磁盘使用率', value: executor.diskUsage ?? 0, warn: 70, danger: 90 },
               ] as const).map(({ title, value, warn, danger }) => (
                 <Col span={8} key={title}>
@@ -254,7 +285,7 @@ export default function ExecutorDetailPage() {
           </Card>
         </Col>
         <Col span={12}>
-          <Card title="性能统计（近7天）" loading={loadingMetrics}>
+          <Card title="性能统计（近7天）" loading={loadingMetrics && !metrics}>
             {metrics ? (
               <Row gutter={16}>
                 <Col span={8}><Statistic title="总执行次数" value={metrics.sevenDayStats.totalExecutions} /></Col>
@@ -299,6 +330,10 @@ export default function ExecutorDetailPage() {
           columns={execColumns}
           dataSource={executions?.items ?? []}
           loading={loadingExecutions}
+          onRow={(r: ExecutorExecution) => ({
+            onClick: () => navigate(`/tasks/${r.taskId}/executions/${r.id}`),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             total: executions?.total,
             pageSize: 20,
