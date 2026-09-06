@@ -48479,6 +48479,7 @@ exports.suppressNextRestartExitReport = suppressNextRestartExitReport;
 exports.shouldReportProcessExit = shouldReportProcessExit;
 exports.downloadPackage = downloadPackage;
 exports.buildDeploymentPaths = buildDeploymentPaths;
+exports.findUnsafeZipEntries = findUnsafeZipEntries;
 const express_1 = __nccwpck_require__(925);
 const path = __importStar(__nccwpck_require__(6928));
 const fs = __importStar(__nccwpck_require__(9896));
@@ -48765,19 +48766,61 @@ function restoreCurrentRelease(currentLink, previousTarget) {
         logger_1.logger.warn(`[deploy] Failed to restore previous current release: ${err.message}`);
     }
 }
-async function assertSafeZipEntries(zipPath) {
-    if (process.platform === 'win32')
-        return;
-    const listR = await (0, run_command_1.runCommand)('unzip', ['-Z1', zipPath], { timeout: 30000 });
-    if (listR.status !== 0) {
-        throw new Error(listR.stderr?.toString() || 'unzip listing failed');
-    }
-    const entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
+/** S6: Pure zip-entry validator. Given the list of entry names read from an
+ *  archive, return the ones that would escape the extraction directory. It
+ *  rejects POSIX (`/x`), Windows drive (`C:\x`, `C:/x`) and UNC (`\\x`)
+ *  absolute paths, and any entry carrying a `..` path segment — splitting on
+ *  BOTH separators so a backslash-smuggled traversal (`..\\x`) is caught
+ *  identically to `../x`. Kept free of any platform/process/`path.isAbsolute`
+ *  dependency so the Linux (`unzip -Z1`) and Windows (PowerShell .NET) listing
+ *  branches enforce the exact same rule, and so it is unit-testable on any
+ *  host. (The old inline check used `path.isAbsolute`, which on Linux silently
+ *  let a Windows-absolute `C:\x` entry through; the explicit patterns here
+ *  close that gap.) */
+function findUnsafeZipEntries(entries) {
+    const unsafe = [];
     for (const entry of entries) {
         const parts = entry.split(/[\\/]+/).filter(Boolean);
-        if (path.isAbsolute(entry) || parts.includes('..')) {
-            throw new Error(`Unsafe zip entry path: ${entry}`);
+        const isAbsolute = entry.startsWith('/') ||
+            entry.startsWith('\\') ||
+            /^[A-Za-z]:[\\/]/.test(entry);
+        if (isAbsolute || parts.includes('..')) {
+            unsafe.push(entry);
         }
+    }
+    return unsafe;
+}
+async function assertSafeZipEntries(zipPath) {
+    // Read the entry list with a platform-appropriate tool, then run the SAME
+    // traversal check. Windows previously returned early here and relied solely
+    // on Expand-Archive's own (undocumented) path handling — an asymmetric guard
+    // versus the Linux branch.
+    let entries;
+    if (process.platform === 'win32') {
+        // No `unzip` on Windows: enumerate via .NET's ZipFile (zero new deps).
+        // ZipFile lives in System.IO.Compression — loaded by default on PowerShell
+        // 7+, needing Add-Type on Windows PowerShell 5.1 — so the Add-Type is
+        // wrapped in try/catch to work on both. Entry.FullName uses '/' separators
+        // per the zip spec; findUnsafeZipEntries normalises both anyway.
+        const script = 'try { Add-Type -AssemblyName System.IO.Compression.FileSystem } catch {}; ' +
+            '$z = [System.IO.Compression.ZipFile]::OpenRead($args[0]); ' +
+            'try { $z.Entries | ForEach-Object { $_.FullName } } finally { $z.Dispose() }';
+        const listR = await (0, run_command_1.runCommand)('powershell.exe', ['-NoProfile', '-Command', script, zipPath], { timeout: 30000 });
+        if (listR.status !== 0) {
+            throw new Error(listR.stderr?.toString() || 'zip listing failed');
+        }
+        entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
+    }
+    else {
+        const listR = await (0, run_command_1.runCommand)('unzip', ['-Z1', zipPath], { timeout: 30000 });
+        if (listR.status !== 0) {
+            throw new Error(listR.stderr?.toString() || 'unzip listing failed');
+        }
+        entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
+    }
+    const unsafe = findUnsafeZipEntries(entries);
+    if (unsafe.length > 0) {
+        throw new Error(`Unsafe zip entry path: ${unsafe[0]}`);
     }
 }
 /** Main deploy handler */
@@ -48891,8 +48934,19 @@ exports.deployRouter.post('/deploy', async (req, res) => {
             }
             else if (gitRepo) {
                 // SEC: all git commands use array args via async spawn — no shell, no injection
-                logger_1.logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
-                const cloneR = await (0, run_command_1.runCommand)('git', ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, '.'], { cwd: paths.extractDir, timeout: 120000 });
+                // S12: the branch was validated above against `gitBranch || 'main'`, but
+                // the clone used the RAW gitBranch — an empty/undefined value reached git
+                // as a bad `--branch` argument (empty string, or a spawn TypeError on
+                // undefined). Pass `--branch` only when a branch was actually specified;
+                // otherwise let git clone the remote's default HEAD (forcing 'main' would
+                // break repos whose default is 'master'/other). When gitBranch IS set it
+                // is exactly the value the validator checked.
+                const cloneArgs = ['clone', '--depth', '1'];
+                if (gitBranch)
+                    cloneArgs.push('--branch', gitBranch);
+                cloneArgs.push(gitRepo, '.');
+                logger_1.logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch || '<default>'}`);
+                const cloneR = await (0, run_command_1.runCommand)('git', cloneArgs, { cwd: paths.extractDir, timeout: 120000 });
                 if (cloneR.status !== 0)
                     throw new Error(cloneR.stderr?.toString() || 'git clone failed');
                 if (gitCommit) {
