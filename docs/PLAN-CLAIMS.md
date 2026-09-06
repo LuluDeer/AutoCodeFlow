@@ -41,7 +41,7 @@
 | FEAT-03 | P1 | done | main-A | 2026-09-07 | admin-web ExecutionsPage + ExecutionCompare | 0409000 | 孤儿组件复核=**零引用**；拆 ExecutionCompareModal + 列表多选一键对比（93/93 ✓） |
 | FEAT-04 | P2 | done | session-B（员工 005 承接） | 2026-09-07 02:4x | admin-api executor metrics + admin-web | 见变更日志 | metrics 端点追加 history（15min AVG 桶≤96 点/limit 500）+ recharts 双 Y 轴三线卡（既有依赖零新增）+空态兜底；后端 6 例前端 3 例 |
 | FEAT-05 | P2 | unclaimed | | | 双执行器 + admin-api uploads + admin-web | | 执行产物 artifacts 通道 |
-| FEAT-06 | P2 | in_progress | session-B（员工 005 承接） | 2026-09-07 04:1x | admin-api task 实体+scheduler + admin-web TaskForm/Detail | | 任务级维护窗口（maintenanceWindows cron 段）：触发前检查跳过+skipped 指标+UI 编辑/展示 |
+| FEAT-06 | P2 | done | session-B（员工 005 承接） | 2026-09-07 04:1x | admin-api task 实体+scheduler+DTO + admin-web 表单/详情 | 见变更日志 | maintenanceWindows cron 窗口（start/end 触达开关窗+7 天回看）enqueue 顶部跳过+triggersSkippedMaintenance 指标+表单 Form.List/详情 Tag；后端 33 例前端 10 例 |
 | FEAT-07 | P2 | unclaimed | | | admin-api 新模块 event-subscriptions | | Webhook 出站事件 |
 | FEAT-08 | P2 | done | session-B（员工 005 承接） | 2026-09-07 01:2x | admin-api config 模块 + admin-web settings/api | fd99579 | 回滚语义矩阵（create→删除/update 无旧值 400/delete→重建/保留元数据）+ 掩码哨兵拒绝（S3 镜像防线）+ action=rollback 独立留痕 + 前端行级回滚入口（isAdmin+Popconfirm+逐行 loading）；后端 13 例前端 4 例 |
 | FEAT-09 | P3 | unclaimed | | | admin-web 全局组件 | | 全局搜索/命令面板 |
@@ -104,7 +104,7 @@
 | QA-02 | P1 | unclaimed | | | 各端 spec | | =BUG-03 同义项（coverage 提升），认领任一即可 |
 | QA-03 | P1 | unclaimed | | | admin-web __tests__ | | 组件测试扩面 200+ |
 | QA-05 | P2 | unclaimed | | | scripts/load-test + docs | | =BUG-19 同义项 |
-| QA-06 | P2 | in_progress | session-B（员工 001 承接） | 2026-09-07 04:1x | scripts/chaos-drill.sh（新建）+ docs | | 混沌/故障注入四场景：Redis 宕 fail-open/执行器断网恢复/admin 双实例滚动重启/队列深度回归（PG 主从需真机，脚本预留） |
+| QA-06 | P2 | done | session-B（员工 001 承接） | 2026-09-07 04:1x | scripts/chaos-drill* + docs/operations.md | 见变更日志 | 四场景脚本（A Redis 宕/B 断网 150s/C 双实例滚动/D PG 主从真机骨架）+selftest 33 例；断言参数按实现核实校准（90s 离线阈值等）；真跑验收留真机轮 |
 | QA-07 | P2 | unclaimed | | | 新建共享契约 fixture | | 四客户端包契约测试统一 |
 | QA-08 | P2 | unclaimed | | | CI workflow | | 跨版本迁移演练月度 job |
 | QA-09 | P3 | in_progress | main-A | 2026-09-07 | docs/SECURITY-REDLINE-CHECKLIST.md + e2e | | 清单已建（六域 30+ 红线）；e2e 套件化剩余 |
@@ -147,3 +147,5 @@
 - 2026-09-07 session-B：认领 OBS-05（001）/FEAT-12（005）→ in_progress。
 
 - 2026-09-07 session-B：DOC-03 复核销账（ARCH-20 批次已实现，selftest 过）；认领 QA-06（001）/FEAT-06（005）→ in_progress。
+
+- 2026-09-07 session-B：批 B3 done=FEAT-06/QA-06。基线：admin-api 1291/67 · admin-web 131/131。
