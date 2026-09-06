@@ -15,7 +15,7 @@
 | 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
 |---|---|---|---|---|---|---|---|
 | W2-闭环 | P0 | done | main-A（前端半场）+ 并行会话（API 半场） | 2026-09-07 | admin-web/src/pages/ExecutorDetailPage.tsx | f0c5f32 + 747ea40 | **整体闭环**：API 半场由并行会话以 747ea40 提交（executor 写面 ADMIN 收口+rbac spec），前端门控半场 f0c5f32（main-A）。RBAC 收紧前后端同批发布纪律达成 |
-| BUG-01 | P1 | unclaimed | | | admin-api executor.controller.ts + spec | | 复核结论：401 重签重试 R11 **已实现**；剩余收口=双 401 错误文案精确化 + push auth-retry 指标 + 补专项测试（当前无覆盖）。**阻塞已解除**（并行会话 747ea40 已提交 controller），可认领 |
+| BUG-01 | P1 | in_progress | session-B（员工 001 承接） | 2026-09-07 01:2x | admin-api executor.controller.ts（reloadConfig 区）+ prometheus metrics + 专项 spec | | 收口：双 401 错误文案精确化 + push auth-retry 指标 + 重试路径专项测试（此前无覆盖） |
 | BUG-02 | P2 | done | main-A | 2026-09-07 | 无改动（复核销账） | | 复核结论：sweep 重试预算语义（hasRetryBudget→kill best-effort→re-enqueue+STALE_RECOVERY_RETRY_ENABLED 默认开）**第十四轮已完整实现且有测试**（scheduler.service.spec 1309 关闭态例），计划信息滞后，无需改动 |
 | BUG-08 | P2 | done | main-A | 2026-09-07 | executor-node/src/main.ts + middleware/auth.* + bundle | 313d203 | N41 修复：auth.ts setOnTokenAcquired 钩子 + main.ts maybeReRegister（短路+去重）+ admin 同 startupId register 幂等复核通过；+3 测试，executor-node 235/235；bundle 同 commit |
 | BUG-09 | P2 | done | main-A | 2026-09-07 | executor-python main.py + routers/execute.py + tests | 780dbcf | QA8 修复：await_background_tasks_after_kill 窗口 + _run_and_callback CancelledError 落盘守卫 + lifespan 顺序钉死（杀树→flush→drain）；+4 测试，executor-python 201/201 |
@@ -43,7 +43,7 @@
 | FEAT-05 | P2 | unclaimed | | | 双执行器 + admin-api uploads + admin-web | | 执行产物 artifacts 通道 |
 | FEAT-06 | P2 | unclaimed | | | admin-api scheduler + task 实体 | | 任务维护窗口 |
 | FEAT-07 | P2 | unclaimed | | | admin-api 新模块 event-subscriptions | | Webhook 出站事件 |
-| FEAT-08 | P2 | unclaimed | | | admin-api system-config + admin-web settings | | 配置历史回滚 |
+| FEAT-08 | P2 | in_progress | session-B（员工 005 承接） | 2026-09-07 01:2x | admin-api config 模块 + admin-web settings（HistoryModal 区） | | 配置历史回滚：后端回滚端点（走 system-config 同一校验/掩码守卫+审计留痕）+ 前端「回滚到此版本」按钮；与 BUG-01 文件足迹无重叠 |
 | FEAT-09 | P3 | unclaimed | | | admin-web 全局组件 | | 全局搜索/命令面板 |
 | FEAT-10 | P3 | unclaimed | | | admin-api notification | | 通知模板变量 |
 | FEAT-11 | P3 | unclaimed | | | task 实体 + admin-web | | 任务 runbook 字段 |
