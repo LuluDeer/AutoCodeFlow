@@ -469,6 +469,9 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Patch(":id")
+  // W2: executor management writes are ADMIN-only (same posture as
+  // install-cmd DR-01) — the global RolesGuard enforces the metadata.
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Update executor metadata",
     description:
@@ -512,6 +515,8 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Post(":id/reload-config")
+  // W2: ADMIN-only config hot-update push (carries the executor token).
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Push config hot-update to executor",
     description:
@@ -630,6 +635,8 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Post(":id/rotate-token")
+  // W2: ADMIN-only — the response contains the plaintext executor token.
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Rotate executor token",
     description:
@@ -742,6 +749,8 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Post(":id/set-offline")
+  // W2: ADMIN-only executor lifecycle mutation.
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Mark executor offline",
     description:
@@ -758,6 +767,8 @@ export class ExecutorController {
   @UseGuards(JwtAuthGuard)
   @Delete(":id")
   @HttpCode(HttpStatus.NO_CONTENT)
+  // W2: ADMIN-only destructive removal.
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Delete executor record",
     description:

@@ -23,7 +23,17 @@ const logger = {
 // 从环境变量或默认值获取参数
 const getParam = (key, defaultValue) => {
   const envKey = `AUTOFLOW_${key.toUpperCase()}`;
-  return process.env[envKey] !== undefined ? JSON.parse(process.env[envKey]) : defaultValue;
+  const envValue = process.env[envKey];
+  if (envValue !== undefined) {
+    try {
+      return JSON.parse(envValue);
+    } catch (e) {
+      // 纯字符串参数（URL、关键词等）不是合法 JSON —— 原样返回，
+      // 不让 SyntaxError 崩掉整个任务
+      return envValue;
+    }
+  }
+  return defaultValue;
 };
 
 async function main() {
