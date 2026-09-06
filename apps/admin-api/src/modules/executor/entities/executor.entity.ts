@@ -64,6 +64,15 @@ export class Executor {
   runningExecutionIds: string[] | null;
 
   /**
+   * U16: executor 心跳上报的 dead-letter 积压数（回调重试死信队列长度）。
+   * node 端 ab4971f 起上报、python 端 001 起上报；admin 侧经心跳白名单采纳
+   * （非负整数 0..100000，非法/缺失不改 DB 值，与 maxConcurrentTasks 同模式）。
+   * 语义：null = 旧版执行器未上报该字段。幂等迁移见
+   * migrations/1788900000000-AddExecutorDeadLetterCount.ts。
+   */
+  @Column({ type: "int", nullable: true }) deadLetterCount: number | null;
+
+  /**
    * SEC-03: per-executor token stored as bcrypt hash.
    * Rotated via POST /api/executors/:id/rotate-token.
    */

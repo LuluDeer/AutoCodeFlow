@@ -1,7 +1,11 @@
 import { Test } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { NotFoundException, ServiceUnavailableException } from "@nestjs/common";
+import {
+  NotFoundException,
+  ServiceUnavailableException,
+  Logger,
+} from "@nestjs/common";
 import { ExecutorService } from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
 import { Task } from "../../task/entities/task.entity";
@@ -898,6 +902,56 @@ describe("ExecutorService (__tests__)", () => {
       );
     });
 
+    // U16: deadLetterCount 采纳——与 E9 maxConcurrentTasks 同模式的心跳白名单
+    // + 取值域校验（非负整数 0..100000）；非法/缺失一律不改 DB 值。node 端
+    // ab4971f 起上报、python 端 001 起上报，GET /executors(/:id) 随实体透出。
+    describe("deadLetterCount adoption (U16)", () => {
+      const onlineExecutor = () => ({
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        deadLetterCount: 7,
+      });
+
+      it("adopts a valid reported count", async () => {
+        const executor = onlineExecutor();
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", { deadLetterCount: 42 });
+        expect(executor.deadLetterCount).toBe(42);
+      });
+
+      it("adopts boundary values 0 and 100000", async () => {
+        const executor = onlineExecutor();
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", { deadLetterCount: 0 });
+        expect(executor.deadLetterCount).toBe(0);
+        await service.heartbeat("127.0.0.1:3105", { deadLetterCount: 100_000 });
+        expect(executor.deadLetterCount).toBe(100_000);
+      });
+
+      it("keeps the stored value when the field is not reported", async () => {
+        const executor = onlineExecutor();
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", { cpuUsage: 1 });
+        expect(executor.deadLetterCount).toBe(7);
+      });
+
+      it.each([-1, 1.5, 100_001, Number.NaN, "3"])(
+        "rejects invalid value %p and keeps the stored value",
+        async (bad) => {
+          const executor = onlineExecutor();
+          executorRepo.findOne.mockResolvedValue(executor);
+          executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+          await service.heartbeat("127.0.0.1:3105", {
+            deadLetterCount: bad as unknown as number,
+          });
+          expect(executor.deadLetterCount).toBe(7);
+        },
+      );
+    });
+
     it("recovers running executions predating heartbeat startup when executor lacks startup baseline", async () => {
       const executor = {
         address: "127.0.0.1:3105",
@@ -1089,6 +1143,159 @@ describe("ExecutorService (__tests__)", () => {
         expect.stringContaining("dead-letter"),
       );
       warnSpy.mockRestore();
+    });
+  });
+
+  // P2: 共享重试兑现模式（executor-restart 恢复 + scheduler stale sweep 共用）
+  // 与收敛至此的 best-effort kill 通知（TaskService.notifyExecutorKill 现委托
+  // 本实现）。scheduleRetryAfterRestart 旧名仅存于 restart 内部调用，公开面为
+  // scheduleRetryAfterRecovery / hasRetryBudget / notifyExecutorKill。
+  describe("scheduleRetryAfterRecovery / hasRetryBudget (P2)", () => {
+    const mkTask = (overrides: Record<string, unknown> = {}) =>
+      ({
+        id: "task-1",
+        name: "Task 1",
+        params: { a: 1 },
+        currentVersion: "v1",
+        maxRetry: 3,
+        retryDelay: 0,
+        ...overrides,
+      }) as unknown as Task;
+    const mkFailedExec = (overrides: Record<string, unknown> = {}) =>
+      ({
+        id: "exec-1",
+        taskId: "task-1",
+        status: ExecutionStatus.FAILED,
+        params: { b: 2 },
+        triggerType: "cron",
+        taskVersion: "v1",
+        retryCount: 0,
+        ...overrides,
+      }) as unknown as TaskExecution;
+
+    it("hasRetryBudget mirrors the attempts semantics", () => {
+      expect(
+        service.hasRetryBudget(mkTask({ maxRetry: 3 }), mkFailedExec({ retryCount: 0 })),
+      ).toBe(true);
+      expect(
+        service.hasRetryBudget(mkTask({ maxRetry: 3 }), mkFailedExec({ retryCount: 1 })),
+      ).toBe(true);
+      // nextRetryCount(2+1) >= maxAttempts(3) → 预算耗尽
+      expect(
+        service.hasRetryBudget(mkTask({ maxRetry: 3 }), mkFailedExec({ retryCount: 2 })),
+      ).toBe(false);
+      expect(
+        service.hasRetryBudget(mkTask({ maxRetry: 1 }), mkFailedExec({ retryCount: 0 })),
+      ).toBe(false);
+      expect(
+        service.hasRetryBudget(mkTask({ maxRetry: 0 }), mkFailedExec({ retryCount: 0 })),
+      ).toBe(false);
+      expect(
+        service.hasRetryBudget(
+          mkTask({ maxRetry: null }),
+          mkFailedExec({ retryCount: undefined }),
+        ),
+      ).toBe(false);
+    });
+
+    it("budget exhausted: creates nothing and enqueues nothing", async () => {
+      await service.scheduleRetryAfterRecovery(
+        mkTask({ maxRetry: 1 }),
+        mkFailedExec({ retryCount: 0 }),
+      );
+      expect(execRepo.create).not.toHaveBeenCalled();
+      expect(taskQueue.add).not.toHaveBeenCalled();
+    });
+
+    it("creates a new PENDING execution and enqueues with remaining attempts", async () => {
+      execRepo.save.mockImplementation((e: any) =>
+        Promise.resolve(e.id ? e : { ...e, id: "retry-1" }),
+      );
+      await service.scheduleRetryAfterRecovery(
+        mkTask({ maxRetry: 3, retryDelay: 0 }),
+        mkFailedExec({ retryCount: 1 }),
+        "stale_recovery",
+      );
+      expect(execRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "task-1",
+          taskName: "Task 1",
+          status: ExecutionStatus.PENDING,
+          params: { b: 2 },
+          triggerType: "cron",
+          taskVersion: "v1",
+          retryCount: 2,
+        }),
+      );
+      expect(taskQueue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "retry-1" },
+        { attempts: 1, backoff: undefined },
+      );
+    });
+
+    it("uses the fallback trigger type only when the original row has none", async () => {
+      execRepo.save.mockImplementation((e: any) =>
+        Promise.resolve(e.id ? e : { ...e, id: "retry-2" }),
+      );
+      await service.scheduleRetryAfterRecovery(
+        mkTask(),
+        mkFailedExec({ triggerType: null }),
+        "stale_recovery",
+      );
+      expect(execRepo.create).toHaveBeenLastCalledWith(
+        expect.objectContaining({ triggerType: "stale_recovery" }),
+      );
+      // restart 路径保持既有默认值（不传第三参）
+      await service.scheduleRetryAfterRecovery(
+        mkTask(),
+        mkFailedExec({ triggerType: null }),
+      );
+      expect(execRepo.create).toHaveBeenLastCalledWith(
+        expect.objectContaining({ triggerType: "executor_restart" }),
+      );
+    });
+
+    it("compensates by deleting the row when enqueue fails", async () => {
+      execRepo.save.mockImplementation((e: any) =>
+        Promise.resolve(e.id ? e : { ...e, id: "retry-3" }),
+      );
+      taskQueue.add.mockRejectedValueOnce(new Error("redis down"));
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      await service.scheduleRetryAfterRecovery(mkTask(), mkFailedExec());
+      expect(execRepo.delete).toHaveBeenCalledWith("retry-3");
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe("notifyExecutorKill (P2 consolidated)", () => {
+    it("posts to the executor kill endpoint", async () => {
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      await service.notifyExecutorKill("e1", "10.0.0.9:8002");
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        "http://10.0.0.9:8002/api/executions/e1/kill",
+        {},
+        expect.objectContaining({ timeout: 3000 }),
+      );
+    });
+
+    it("swallows failures (offline / 404 / timeout) — never throws", async () => {
+      mockedAxios.post.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      await expect(
+        service.notifyExecutorKill("e1", "10.0.0.9:8002"),
+      ).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it("skips silently when the executor address is unavailable", async () => {
+      await service.notifyExecutorKill("e1", null);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
     });
   });
 

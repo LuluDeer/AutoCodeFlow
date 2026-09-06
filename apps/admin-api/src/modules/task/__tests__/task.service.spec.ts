@@ -140,6 +140,13 @@ describe("TaskService (__tests__)", () => {
     sendAll: jest.Mock;
   };
   let auditService: { log: jest.Mock };
+  // P2: kill 通知实现收敛至 ExecutorService.notifyExecutorKill，TaskService
+  // 侧只保留委托（空地址跳过 + 异常兜底），用例断言委托调用。
+  let executorServiceMock: {
+    getExecutorUrl: jest.Mock;
+    getSharedToken: jest.Mock;
+    notifyExecutorKill: jest.Mock;
+  };
 
   beforeEach(async () => {
     // 可观测性补齐轮：运行时计数是模块级进程内计数，跨用例显式重置
@@ -189,6 +196,16 @@ describe("TaskService (__tests__)", () => {
       sendAll: jest.fn().mockResolvedValue(undefined),
     };
     auditService = { log: jest.fn().mockResolvedValue(undefined) };
+    executorServiceMock = {
+      getExecutorUrl: jest
+        .fn()
+        .mockImplementation(
+          (_addr: string, p: string) => `http://executor:3001/${p}`,
+        ),
+      // 日志回填 token 现走 DB 优先的 getSharedToken（与 dispatch/push 一致）
+      getSharedToken: jest.fn().mockResolvedValue(""),
+      notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+    };
 
     const module = await Test.createTestingModule({
       providers: [
@@ -208,18 +225,7 @@ describe("TaskService (__tests__)", () => {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue("") },
         },
-        {
-          provide: ExecutorService,
-          useValue: {
-            getExecutorUrl: jest
-              .fn()
-              .mockImplementation(
-                (_addr: string, p: string) => `http://executor:3001/${p}`,
-              ),
-            // 日志回填 token 现走 DB 优先的 getSharedToken（与 dispatch/push 一致）
-            getSharedToken: jest.fn().mockResolvedValue(""),
-          },
-        },
+        { provide: ExecutorService, useValue: executorServiceMock },
         { provide: NotificationService, useValue: notificationService },
         { provide: AuditService, useValue: auditService },
       ],
@@ -2649,10 +2655,10 @@ describe("TaskService (__tests__)", () => {
     });
 
     // 改动5: kill 命中后通知执行器终止进程（best-effort）。
-    it("notifies the executor /kill endpoint after a successful kill (改动5)", async () => {
-      const axios = ((await import("axios")) as any).default;
-      (axios.post as jest.Mock).mockReset();
-      (axios.post as jest.Mock).mockResolvedValue({ data: { ok: true } });
+    // P2: HTTP 实现已收敛至 ExecutorService.notifyExecutorKill（scheduler
+    // stale sweep 共用），本组用例断言 TaskService 侧的委托与调用点契约；
+    // 真实 HTTP 行为（URL/头/超时/吞异常）在 executor.service.spec 覆盖。
+    it("delegates the kill notification to ExecutorService after a successful kill (改动5)", async () => {
       const exec = {
         id: "e1",
         status: ExecutionStatus.RUNNING,
@@ -2664,18 +2670,17 @@ describe("TaskService (__tests__)", () => {
       const result = await service.killExecution("e1");
 
       expect(result.success).toBe(true);
-      expect(axios.post).toHaveBeenCalledWith(
-        "http://executor:3001/api/executions/e1/kill",
-        {},
-        expect.objectContaining({ timeout: 3000 }),
+      expect(executorServiceMock.notifyExecutorKill).toHaveBeenCalledWith(
+        "e1",
+        "10.0.0.9:8002",
       );
     });
 
     it("still returns success and releases the slot when the kill notification fails (改动5 fail-safe)", async () => {
       jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
-      const axios = ((await import("axios")) as any).default;
-      (axios.post as jest.Mock).mockReset();
-      (axios.post as jest.Mock).mockRejectedValue(new Error("ECONNREFUSED"));
+      executorServiceMock.notifyExecutorKill.mockRejectedValue(
+        new Error("ECONNREFUSED"),
+      );
       const exec = {
         id: "e1",
         status: ExecutionStatus.RUNNING,
@@ -2693,15 +2698,13 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("skips the kill notification when the executor address is unavailable (改动5)", async () => {
-      const axios = ((await import("axios")) as any).default;
-      (axios.post as jest.Mock).mockReset();
       const exec = { id: "e1", status: ExecutionStatus.RUNNING };
       execRepo.findOne.mockResolvedValue(exec);
 
       const result = await service.killExecution("e1");
 
       expect(result.success).toBe(true);
-      expect(axios.post).not.toHaveBeenCalled();
+      expect(executorServiceMock.notifyExecutorKill).not.toHaveBeenCalled();
     });
   });
 

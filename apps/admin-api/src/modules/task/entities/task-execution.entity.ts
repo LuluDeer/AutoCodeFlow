@@ -26,6 +26,12 @@ export enum ExecutionFailureReason {
   TIMEOUT = "timeout",
   EXECUTOR_OFFLINE = "executor_offline",
   EXECUTOR_RESTART = "executor_restart",
+  /**
+   * P2: stale sweep 赢得 RUNNING→FAILED 条件 UPDATE 时写入的可溯源标记——
+   * 区别于执行器回调上报的 UNKNOWN，便于排查"worker 崩溃型故障 + sweep 兑现
+   * 重试预算"的链路。命名沿用既有 snake_case 约定（对齐 executor_restart）。
+   */
+  STALE_RECOVERED = "stale_recovered",
   KILLED = "killed",
   UNKNOWN = "unknown",
 }
