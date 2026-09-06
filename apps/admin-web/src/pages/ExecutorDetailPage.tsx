@@ -250,6 +250,23 @@ export default function ExecutorDetailPage() {
               </Tooltip>
             )}
           </Descriptions.Item>
+          {/* U16: 死信积压——回调持续失败的载荷落盘执行器本地 dead-letter */}
+          <Descriptions.Item label="死信积压（活性上报 · 进页快照）">
+            {executor.deadLetterCount === undefined || executor.deadLetterCount === null ? (
+              <Tooltip title="该执行器版本未上报死信积压数（node ab4971f / python 001 起上报）">
+                <Text type="secondary">未上报 <InfoCircleOutlined /></Text>
+              </Tooltip>
+            ) : executor.deadLetterCount === 0 ? (
+              <Text type="success">0（无积压）</Text>
+            ) : (
+              <Tooltip title="回调持续失败已落盘执行器本地 dead-letter，需人工排查">
+                <Text type="warning">
+                  <WarningOutlined style={{ marginRight: 4 }} />
+                  {executor.deadLetterCount} 条待重试 <InfoCircleOutlined />
+                </Text>
+              </Tooltip>
+            )}
+          </Descriptions.Item>
         </Descriptions>
       </Card>
 
@@ -290,10 +307,10 @@ export default function ExecutorDetailPage() {
               <Row gutter={16}>
                 <Col span={8}><Statistic title="总执行次数" value={metrics.sevenDayStats.totalExecutions} /></Col>
                 <Col span={8}>
-                  <Statistic title="成功率" value={Number.isFinite(+metrics.sevenDayStats.successRate) ? +metrics.sevenDayStats.successRate : 0} suffix="%" styles={{ content: { color: '#3f8600' } }} precision={1} />
+                  <Statistic title="成功率" value={metrics.sevenDayStats.successRate} suffix="%" styles={{ content: { color: '#3f8600' } }} precision={1} />
                   <Text type="secondary" style={{ fontSize: 12 }}>成功 {metrics.sevenDayStats.successful} / 失败 {metrics.sevenDayStats.failed}</Text>
                 </Col>
-                <Col span={8}><Statistic title="平均耗时" value={Number.isFinite(+metrics.sevenDayStats.averageDurationMs) ? +metrics.sevenDayStats.averageDurationMs : 0} suffix="ms" precision={0} /></Col>
+                <Col span={8}><Statistic title="平均耗时" value={metrics.sevenDayStats.averageDurationMs} suffix="ms" precision={0} /></Col>
               </Row>
             ) : (
               !loadingMetrics && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无性能数据，执行任务后将在此显示统计信息" />
