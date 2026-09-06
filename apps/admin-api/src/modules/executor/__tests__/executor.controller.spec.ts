@@ -891,4 +891,45 @@ describe("ExecutorController", () => {
       );
     });
   });
+
+  // FEAT-04: the metrics handler stays a thin passthrough — the history
+  // payload (24h bucketed samples) is assembled in ExecutorService.
+  it("forwards GET :id/metrics to the service (history included verbatim)", async () => {
+    const metricsPayload = {
+      executor: {
+        id: "executor-1",
+        address: "10.0.0.9:3002",
+        status: "online",
+      },
+      sevenDayStats: {
+        totalExecutions: 10,
+        successful: 9,
+        failed: 1,
+        successRate: 90,
+        averageDurationMs: 1200,
+      },
+      current: { runningTaskCount: 1, cpuUsage: 12.5, memUsage: 40.1 },
+      history: [
+        {
+          timestamp: "2026-09-06T02:00:00.000Z",
+          cpuUsage: 12.3,
+          memUsage: null,
+          runningTaskCount: 1,
+        },
+      ],
+    };
+    const svc = {
+      getExecutorMetrics: jest.fn().mockResolvedValue(metricsPayload),
+    };
+    const controller = new ExecutorController(
+      svc as any,
+      {} as ConfigService,
+      {} as any,
+    );
+
+    await expect(controller.getExecutorMetrics("executor-1")).resolves.toBe(
+      metricsPayload,
+    );
+    expect(svc.getExecutorMetrics).toHaveBeenCalledWith("executor-1");
+  });
 });

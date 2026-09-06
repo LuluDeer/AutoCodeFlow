@@ -8,6 +8,7 @@ import {
 } from "@nestjs/common";
 import { ExecutorService } from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
+import { ExecutorMetricsHistory } from "../entities/executor-metrics-history.entity";
 import { Task } from "../../task/entities/task.entity";
 import {
   TaskExecution,
@@ -57,6 +58,8 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
     andWhere: jest.fn().mockReturnThis(),
     groupBy: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    // FEAT-04: metrics-history aggregate query applies a LIMIT guard
+    limit: jest.fn().mockReturnThis(),
     getRawMany: jest.fn().mockResolvedValue([]),
     getRawOne: jest.fn().mockResolvedValue(null),
     getCount: jest.fn().mockResolvedValue(0),
@@ -70,6 +73,8 @@ describe("ExecutorService (__tests__)", () => {
   let executorRepo: ReturnType<typeof makeRepo>;
   let execRepo: ReturnType<typeof makeRepo>;
   let taskRepo: ReturnType<typeof makeRepo>;
+  // FEAT-04: metrics-history repo mock (read side of GET :id/metrics)
+  let metricsHistoryRepo: ReturnType<typeof makeRepo>;
   let taskQueue: { add: jest.Mock };
   let configService: jest.Mocked<Pick<ConfigService, "get">>;
 
@@ -81,6 +86,10 @@ describe("ExecutorService (__tests__)", () => {
         { provide: getRepositoryToken(Executor), useValue: repo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
         { provide: getQueueToken("task-queue"), useValue: taskQueue },
         { provide: ConfigService, useValue: configService },
         {
@@ -108,6 +117,7 @@ describe("ExecutorService (__tests__)", () => {
     executorRepo = makeRepo();
     execRepo = makeRepo();
     taskRepo = makeRepo();
+    metricsHistoryRepo = makeRepo();
     taskQueue = { add: jest.fn().mockResolvedValue(undefined) };
     configService = { get: jest.fn().mockReturnValue("http") };
     const module = await Test.createTestingModule({
@@ -116,6 +126,10 @@ describe("ExecutorService (__tests__)", () => {
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
         { provide: getQueueToken("task-queue"), useValue: taskQueue },
         { provide: ConfigService, useValue: configService },
         {
@@ -1807,10 +1821,119 @@ describe("ExecutorService (__tests__)", () => {
         avgDuration: "1200",
       });
       execRepo.createQueryBuilder.mockReturnValue(qb);
+      // FEAT-04: history read must not break the existing metrics contract —
+      // default the history repo to an empty result unless a test opts in.
+      const hqb = metricsHistoryRepo.createQueryBuilder();
+      hqb.getRawMany.mockResolvedValue([]);
+      metricsHistoryRepo.createQueryBuilder.mockReturnValue(hqb);
       const result = await service.getExecutorMetrics("e1");
       expect(result.sevenDayStats.totalExecutions).toBe(100);
       expect(result.sevenDayStats.successful).toBe(95);
       expect(result.current.runningTaskCount).toBe(2);
+      expect(result.history).toEqual([]);
+    });
+
+    it("FEAT-04: returns history points aggregated into 15-min AVG buckets, ascending", async () => {
+      const executor = {
+        id: "e1",
+        address: "host:3002",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 2,
+        cpuUsage: 40,
+        memUsage: 60,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      const statsQb = execRepo.createQueryBuilder();
+      statsQb.getRawOne.mockResolvedValue({
+        total: "0",
+        successful: "0",
+        failed: "0",
+        avgDuration: null,
+      });
+      execRepo.createQueryBuilder.mockReturnValue(statsQb);
+      // Raw aggregate rows as PG would return them (bucket = epoch seconds)
+      const hqb = metricsHistoryRepo.createQueryBuilder();
+      hqb.getRawMany.mockResolvedValue([
+        {
+          bucket: "1782950400",
+          cpu: "30.5",
+          mem: "55.25",
+          running: "1.6",
+        },
+        {
+          bucket: "1782951300",
+          cpu: null,
+          mem: null,
+          running: "0",
+        },
+      ]);
+      metricsHistoryRepo.createQueryBuilder.mockReturnValue(hqb);
+
+      const result = await service.getExecutorMetrics("e1");
+
+      expect(result.history).toHaveLength(2);
+      // Ascending by bucket; ISO timestamps derived from the bucket epoch
+      expect(result.history[0].timestamp).toBe(
+        new Date(1782950400_000).toISOString(),
+      );
+      expect(result.history[0]).toEqual({
+        timestamp: new Date(1782950400_000).toISOString(),
+        cpuUsage: 30.5,
+        memUsage: 55.3, // rounded to 1 decimal
+        runningTaskCount: 2, // AVG 1.6 → round
+      });
+      // AVG over NULL-only heartbeats → null cpu/mem, count coerced to 0
+      expect(result.history[1]).toEqual({
+        timestamp: new Date(1782951300_000).toISOString(),
+        cpuUsage: null,
+        memUsage: null,
+        runningTaskCount: 0,
+      });
+
+      // Query contract: 24h window, bucketed AVG aggregate, capped, ascending
+      const { ExecutorService: Svc } = await import("../executor.service");
+      const bucketSeconds = Svc.METRICS_HISTORY_BUCKET_SECONDS;
+      expect(bucketSeconds).toBe(900); // 24h/900s = 96 buckets ≤ 100 cap
+      expect(Svc.METRICS_HISTORY_QUERY_LIMIT).toBe(500);
+      expect(hqb.select).toHaveBeenCalledWith(
+        expect.stringContaining("900"),
+        "bucket",
+      );
+      expect(hqb.addSelect).toHaveBeenCalledWith("AVG(h.cpuUsage)", "cpu");
+      expect(hqb.where).toHaveBeenCalledWith("h.executorAddress = :address", {
+        address: "host:3002",
+      });
+      expect(hqb.andWhere).toHaveBeenCalledWith("h.createdAt > :since", {
+        since: expect.any(Date),
+      });
+      const sinceArg = (hqb.andWhere as jest.Mock).mock.calls[0][1]
+        .since as Date;
+      expect(Date.now() - sinceArg.getTime()).toBeGreaterThanOrEqual(
+        Svc.METRICS_HISTORY_WINDOW_MS - 1000,
+      );
+      expect(hqb.limit).toHaveBeenCalledWith(500);
+      expect(hqb.orderBy).toHaveBeenCalledWith("bucket", "ASC");
+    });
+
+    it("FEAT-04: returns empty history when the executor has no samples", async () => {
+      const executor = {
+        id: "e1",
+        address: "host:3002",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        cpuUsage: null,
+        memUsage: null,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      const statsQb = execRepo.createQueryBuilder();
+      statsQb.getRawOne.mockResolvedValue(null);
+      execRepo.createQueryBuilder.mockReturnValue(statsQb);
+      const hqb = metricsHistoryRepo.createQueryBuilder();
+      hqb.getRawMany.mockResolvedValue([]);
+      metricsHistoryRepo.createQueryBuilder.mockReturnValue(hqb);
+
+      const result = await service.getExecutorMetrics("e1");
+      expect(result.history).toEqual([]);
     });
   });
 

@@ -49,6 +49,25 @@ export interface ExecutorMetrics {
     cpuUsage?: number;
     memUsage?: number;
   };
+  /** FEAT-04: 最近 24h 资源趋势采样（15 分钟 AVG 桶，升序）；无数据为空数组 */
+  history: ExecutorMetricsHistoryPoint[];
+}
+
+/**
+ * FEAT-04: GET /executors/:id/metrics `history` 采样点。
+ * 后端把最近 24h 的 executor_metrics_history 心跳按固定 15 分钟时间桶 AVG
+ * 聚合（24h/900s = ≤96 桶，时间升序）；整桶无 CPU/内存上报时为 null，
+ * 前端折线以断点呈现（connectNulls）。
+ */
+export interface ExecutorMetricsHistoryPoint {
+  /** 桶起点时间（ISO 8601 字符串，服务端 toISOString 序列化） */
+  timestamp: string;
+  /** 桶内 CPU 均值（%）；整桶无上报为 null */
+  cpuUsage: number | null;
+  /** 桶内内存均值（%）；整桶无上报为 null */
+  memUsage: number | null;
+  /** 桶内运行任务数均值（四舍五入取整） */
+  runningTaskCount: number;
 }
 
 export interface ExecutorExecution {
