@@ -13,6 +13,8 @@
  *   acf app analyze <id>
  *   acf deploy upgrade <deploymentId> | stop <deploymentId>
  *   acf executor list | get <id>
+ *   acf exec tail <execId>
+ *   acf task lint <file>
  *   acf audit list
  *   acf config show
  */
@@ -24,6 +26,7 @@ import { appsCommand } from './commands/apps';
 import { executorsCommand } from './commands/executors';
 import { deployCommand } from './commands/deploy';
 import { auditCommand } from './commands/audit';
+import { execCommand } from './commands/exec';
 import { showConfig, setApiUrl, setToken } from './config';
 
 const program = new Command();
@@ -51,6 +54,7 @@ program.addCommand(appsCommand());
 program.addCommand(executorsCommand());
 program.addCommand(deployCommand());
 program.addCommand(auditCommand());
+program.addCommand(execCommand());
 
 // acf config show / set
 const configCmd = new Command('config').description('View or update CLI configuration');

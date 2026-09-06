@@ -3,6 +3,9 @@ import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
 import axios from 'axios';
+import { spawnSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { get, post, patch, del, formatApiError } from '../client';
 
 interface Task {
@@ -477,6 +480,79 @@ export function tasksCommand(): Command {
         spinner.fail('Failed to cancel execution');
         console.error(chalk.red(formatApiError(e)));
         process.exit(1);
+      }
+    });
+
+  // ECO-02: acf task lint <file> —— 本地语法检查（node: 语法编译不执行；
+  // python: ast.parse；shell: bash -n）。上传 glue 前把语法错误挡在本地。
+  cmd
+    .command('lint <file>')
+    .description('Syntax-check a glue script locally (js/mjs/cjs/py/sh) without executing it')
+    .option('--language <lang>', 'Override language detection (node/python/shell)')
+    .action((file: string, opts: { language?: string }) => {
+      let source: string;
+      try {
+        source = fs.readFileSync(file, 'utf-8');
+      } catch {
+        console.error(chalk.red(`Cannot read file: ${file}`));
+        process.exit(1);
+      }
+      const ext = path.extname(file).toLowerCase();
+      const lang =
+        opts.language ??
+        (['.js', '.mjs', '.cjs'].includes(ext)
+          ? 'node'
+          : ext === '.py'
+            ? 'python'
+            : ['.sh', '.bash'].includes(ext)
+              ? 'shell'
+              : undefined);
+      if (!lang) {
+        console.error(chalk.red(`Cannot infer language from extension "${ext}" — pass --language node|python|shell`));
+        process.exit(1);
+      }
+      const ok = (msg: string) => {
+        console.log(chalk.green(`✔ ${file}: ${msg}`));
+        process.exit(0);
+      };
+      if (lang === 'node') {
+        try {
+          // new Function 编译函数体但不调用——纯语法检查，零执行副作用。
+          // 包裹 try/catch 形态的 glue 源码同样能被编译。
+          // eslint-disable-next-line no-new-func
+          new Function(source);
+        } catch (err) {
+          console.error(chalk.red(`✗ ${file}: syntax error`));
+          console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+          process.exit(1);
+        }
+        ok('syntax OK (node)');
+      } else if (lang === 'python') {
+        const py = ['python3', 'python'].find((bin) => {
+          const r = spawnSync(bin, ['--version'], { stdio: 'ignore' });
+          return r.status === 0;
+        });
+        if (!py) {
+          console.error(chalk.red('python not found on PATH — install Python 3 to lint python glue'));
+          process.exit(1);
+        }
+        const r = spawnSync(py, ['-c', `import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())`, file], {
+          stdio: 'pipe',
+        });
+        if (r.status !== 0) {
+          console.error(chalk.red(`✗ ${file}: syntax error`));
+          process.stderr.write(r.stderr?.toString() ?? '');
+          process.exit(1);
+        }
+        ok('syntax OK (python, ast.parse)');
+      } else {
+        const r = spawnSync('bash', ['-n', file], { stdio: 'pipe' });
+        if (r.status !== 0) {
+          console.error(chalk.red(`✗ ${file}: syntax error`));
+          process.stderr.write(r.stderr?.toString() ?? '');
+          process.exit(1);
+        }
+        ok('syntax OK (bash -n)');
       }
     });
 
