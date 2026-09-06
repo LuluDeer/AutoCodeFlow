@@ -23,7 +23,7 @@
 | BUG-03 | P2 | unclaimed | | | admin-api 各模块 spec | | coverage 地板提升（68/58/56/69→75/65/62/75），分两轮 |
 | BUG-04 | P3 | unclaimed | | | 无代码（跟踪上游） | | minio 链 moderate，等上游 |
 | BUG-05 | P2 | done | main-A | 2026-09-07 | admin-api metrics 模块 + task.service + docs/observability | 3caabb4+style | SSE active/limit gauge 双 series + 占用率可算；1179/1179 ✓（lint 0）|
-| BUG-06 | P2 | unclaimed | | | admin-api log-storage 清理路径 | | S3 回退行清理语义复核 |
+| BUG-06 | P2 | done | main-A | 2026-09-07 | admin-api task.service storeLogLines | 2711c9d | 复核坐实两处真实缺陷（replace 陈旧指针/append 孤儿行）并修复，+2 集成回归，1218/1218 |
 | BUG-07 | P2 | unclaimed | | | Windows 测试任务书 + e2e 脚本 | | QA8 detached 信号深验（需 Windows 真机窗口） |
 | BUG-10 | P3 | unclaimed | | | 双执行器失败分类 | | failureReason 细化 |
 | BUG-11 | P3 | unclaimed | | | executor-desktop assets | | W-16 图标入库 |
@@ -60,7 +60,7 @@
 | OBS-04 | P1 | unclaimed | | | admin-api + admin-web | | execution_reports 消费 + 时间线 Tab |
 | OBS-05 | P1 | unclaimed | | | admin-api metrics | | 容量水位 Gauge 系列 |
 | ECO-01 | P1 | unclaimed | | | 双 SDK + examples | | SDK 统一矩阵 + 官方示例（路线图 #10 收口） |
-| ECO-02 | P1 | unclaimed | | | packages/acf-cli | | CLI tail/lint/--json |
+| ECO-02 | P1 | in_progress | main-A | 2026-09-07 | packages/acf-cli | | tail+lint 已落地（66/66）；--json 全命令覆盖为剩余子项，后续批次继续 |
 | ECO-03 | P1 | unclaimed | | | packages/mcp-server | | MCP 工具面扩容 4 工具 |
 | ECO-04 | P1 | unclaimed | | | 无代码（secrets 配置 + tag） | | release 首发演练 v1.1.0 |
 | ECO-05 | P1 | unclaimed | | | docs + VitePress | | SDK 文档站 |
@@ -122,7 +122,7 @@
 | DOC-01 | P1 | unclaimed | | | PR 模板 + api-reference | ⚠️ | API 变更检查项机制（api-reference 并行会话在途，先建模板） |
 | DOC-02 | P1 | unclaimed | | | docs/operations.md | | 运维手册补全（依赖 QA-05/08 产出） |
 | DOC-03 | P2 | unclaimed | | | 种子脚本 | | demo:seed 一键演示数据 |
-| DOC-04 | P2 | unclaimed | | | docs/adr/（新建） | | ADR-001~010 固化历轮决策 |
+| DOC-04 | P2 | done | main-A | 2026-09-07 | docs/adr/（新建 11 文件） | 见批五 commit | ADR-001~010 + 索引 README |
 | DOC-05 | P2 | unclaimed | | | release 配置 | | CHANGELOG 自动化（release-please） |
 | DOC-06 | P3 | unclaimed | | | docs 教程 | | 「从 0 到生产」四篇 |
 
@@ -133,4 +133,6 @@
 - 2026-09-07 main-A：W2 整体闭环确认（并行会话 747ea40 提交 API 半场）→ done；BUG-01 阻塞解除 → unclaimed。并行会话另提交 269d249（W1/W3/W7/W8 通知/应用页面）。
 - 2026-09-07 main-A：批二收工。done=BUG-05（3caabb4 + prettier follow-up）——SSE 活跃流 gauge 落地，指标字典补录 4 counter+2 gauge。
 - 2026-09-07 main-A：批四 done=FEAT-02（DAG 可视化，admin-web 108/108+build ✓，避开 metrics/config/executor 在途文件）。
+- 2026-09-07 main-A：⚠️ 流程事故复盘——dc82ac7（session-B 的 BUG-01 提交）顺带带走了 main-A 已暂存的 ECO-02 四文件（共享 index 暂存碰撞）。核对无内容丢失，但归属纠缠。**新纪律：多会话环境下 git add 后必须立即 commit，禁止长时暂存**；提交前 git log --stat 盘点是否被顺带提交。
+- 2026-09-07 main-A：批五 done=DOC-04（ADR 十篇：回调 token/双保险调度/幂等签发/信封契约/bundle 同 commit/RBAC 同批/配置优先级/真机冒烟/S3 双存储/去重窗口语义）。
 - 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场+rbac.spec)、MainLayout.tsx、logout.test.tsx、AppDeploymentPage.tsx、ApplicationDetailPage.tsx、ApplicationListPage.tsx、NotificationSettingsPage.tsx(W1)、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 app-deployment-race.test.tsx（tsc 报错在途）——上述文件在清理前请勿认领触碰。
