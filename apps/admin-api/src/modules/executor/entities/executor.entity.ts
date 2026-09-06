@@ -52,6 +52,17 @@ export class Executor {
 
   /** Max concurrent tasks this executor may run simultaneously (null = unlimited). */
   @Column({ type: "int", nullable: true }) maxConcurrentTasks: number | null;
+
+  /**
+   * CONSISTENCY-02: executor-node 心跳上报的"当前正在执行的 executionId 列表"
+   * （≤200，执行器侧裁剪）。stale 扫描据此判断 RUNNING 行是否仍在真实执行——
+   * 执行器在线且上报集合包含该 executionId 时跳过本轮误判恢复，避免把回调退避
+   * 重试/排队导致超阈值的正常执行误杀。
+   * 语义：null = 旧版执行器未上报该字段（区别于 []：[] 表示上报了且当前空闲）。
+   */
+  @Column({ type: "jsonb", nullable: true })
+  runningExecutionIds: string[] | null;
+
   /**
    * SEC-03: per-executor token stored as bcrypt hash.
    * Rotated via POST /api/executors/:id/rotate-token.
