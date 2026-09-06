@@ -1170,11 +1170,23 @@ export class TaskService {
     const lines = typeof logs === "string" ? logs.split("\n") : logs;
     const append = opts.append === true;
     const s3 = this.resolveS3Storage();
+    // BUG-06 修复：S3 失败回退时的内容并集与指针收回。
+    // existing 在 try 外声明——append 模式在 put 前读取的既有内容是回退
+    // 路径唯一能拿到的"此前页面"，put 失败后必须并入 DB 回退，否则：
+    // - append：本页落 DB 成孤儿行（exec 行仍指 S3，S3 优先读取面永远
+    //   看不到它们）；
+    // - replace：旧 DB 行 + 旧 S3 对象都在，事务重写 DB 后指针仍指旧
+    //   对象，读取面永远看到 STALE 内容。
+    // 两种场景都在回退事务成功后把 exec 行指针收回 db，使 DB 恢复自洽；
+    // 残留的旧 S3 对象成为惰性垃圾（键按 executionId 确定性复用，后续
+    // 一次成功的 storeLogLines 会覆盖它），跨存储一致性边界见方法头注。
+    let existing: string | null = null;
+    let s3Failed = false;
     if (s3) {
       try {
         let content = lines.join("\n");
         if (append) {
-          const existing = await this.s3GetExistingLog(s3, executionId);
+          existing = await this.s3GetExistingLog(s3, executionId);
           if (existing !== null && existing.length > 0) {
             content = `${existing}\n${content}`;
           }
@@ -1189,30 +1201,43 @@ export class TaskService {
         });
         return;
       } catch (err: unknown) {
+        s3Failed = true;
         this.logger.warn(
           `S3 log upload failed for execution ${executionId} (${err instanceof Error ? err.message : String(err)}) — falling back to DB log lines`,
         );
       }
     }
-    // R4-P2: single transaction — the replace-delete and every chunk insert
-    // either all land or none do (append mode skips the delete but still
-    // needs the chunk inserts to be atomic against mid-flight failures).
-    const entities = lines.map((content, i) =>
+    // append 回退且此前内容在 S3：全量改写（existing + 本页），行号归零
+    const mergeExisting = append && s3Failed && existing !== null;
+    const fallbackLines =
+      mergeExisting && existing !== null
+        ? [...existing.split("\n"), ...lines]
+        : lines;
+    const fallbackReplace = !append || mergeExisting;
+    const fallbackStart = mergeExisting ? 0 : startLineNumber;
+    const entities = fallbackLines.map((content, i) =>
       this.logLineRepo.create({
         executionId,
-        lineNumber: startLineNumber + i,
+        lineNumber: fallbackStart + i,
         content,
       }),
     );
     const CHUNK = 500;
     await this.dataSource.transaction(async (manager) => {
-      if (!append) {
+      if (fallbackReplace) {
         await manager.delete(ExecutionLogLine, { executionId });
       }
       for (let i = 0; i < entities.length; i += CHUNK) {
         await manager.save(ExecutionLogLine, entities.slice(i, i + CHUNK));
       }
     });
+    if (s3Failed) {
+      // 事务成功后收回指针（顺序不可换：先改指针再写行会闪出"无行可读"窗口）
+      await this.execRepo.update(executionId, {
+        logStorage: "db",
+        logObjectKey: null,
+      });
+    }
   }
 
   /**
