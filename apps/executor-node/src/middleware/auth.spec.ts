@@ -371,3 +371,63 @@ describe('verifyToken — Bearer authentication (migrated)', () => {
     expect(src).not.toMatch(/token\s*!==?\s*(secret|STATIC_TOKEN)/);
   });
 });
+
+// N41: fetchToken 成功后触发 onTokenAcquired 钩子——main.ts 用它在启动期
+// register 失败、token 链恢复后补一次带富元数据的重注册（/token side effect
+// 重建的行没有 type/capabilities/maxConcurrent/version）。钩子必须
+// fire-and-forget：监听器抛错不得影响 token 获取主流程。
+describe('setOnTokenAcquired — N41 register self-heal hook', () => {
+  async function freshAuth() {
+    jest.resetModules();
+    const axiosDefault = ((await import('axios')) as any).default;
+    const { getCurrentToken, setOnTokenAcquired } = await import('./auth');
+    return {
+      post: axiosDefault.post as jest.Mock,
+      getCurrentToken,
+      setOnTokenAcquired,
+    };
+  }
+
+  const flushAsync = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('fires the listener after a successful token fetch', async () => {
+    const { post, getCurrentToken, setOnTokenAcquired } = await freshAuth();
+    post.mockResolvedValue({
+      status: 201,
+      data: { code: 201, message: 'success', data: { token: 'healed-token' } },
+    });
+    const listener = jest.fn();
+    setOnTokenAcquired(listener);
+
+    await expect(getCurrentToken()).resolves.toBe('healed-token');
+    // 钩子是非阻塞的 fire-and-forget：让出微任务队列后再断言。
+    await flushAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire the listener when the fetch fails', async () => {
+    const { post, getCurrentToken, setOnTokenAcquired } = await freshAuth();
+    post.mockRejectedValue(new Error('admin unreachable'));
+    const listener = jest.fn();
+    setOnTokenAcquired(listener);
+
+    await expect(getCurrentToken()).resolves.toBeFalsy();
+    await flushAsync();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('listener errors are swallowed and never break the token flow', async () => {
+    const { post, getCurrentToken, setOnTokenAcquired } = await freshAuth();
+    post.mockResolvedValue({
+      status: 201,
+      data: { code: 201, message: 'success', data: { token: 'token-x' } },
+    });
+    setOnTokenAcquired(() => {
+      throw new Error('re-register boom');
+    });
+
+    // 主流程不受监听器异常影响（re-register 失败由监听器自担，下轮再试）。
+    await expect(getCurrentToken()).resolves.toBe('token-x');
+    await flushAsync();
+  });
+});
