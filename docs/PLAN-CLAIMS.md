@@ -15,7 +15,7 @@
 | 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
 |---|---|---|---|---|---|---|---|
 | W2-闭环 | P0 | done | main-A（前端半场）+ 并行会话（API 半场） | 2026-09-07 | admin-web/src/pages/ExecutorDetailPage.tsx | f0c5f32 + 747ea40 | **整体闭环**：API 半场由并行会话以 747ea40 提交（executor 写面 ADMIN 收口+rbac spec），前端门控半场 f0c5f32（main-A）。RBAC 收紧前后端同批发布纪律达成 |
-| BUG-01 | P1 | in_progress | session-B（员工 001 承接） | 2026-09-07 01:2x | admin-api executor.controller.ts（reloadConfig 区）+ prometheus metrics + 专项 spec | | 收口：双 401 错误文案精确化 + push auth-retry 指标 + 重试路径专项测试（此前无覆盖） |
+| BUG-01 | P1 | done | session-B（员工 001 承接） | 2026-09-07 01:2x | admin-api executor.controller.ts + runtime-metrics + spec | dc82ac7 | 双 401 文案精确化（重签后仍 401→rotate-token 建议/非 401 重试失败→等心跳自愈）+ autoflow_push_auth_retry_total 计数器 + 7 例专项测试（此前零覆盖） |
 | BUG-02 | P2 | done | main-A | 2026-09-07 | 无改动（复核销账） | | 复核结论：sweep 重试预算语义（hasRetryBudget→kill best-effort→re-enqueue+STALE_RECOVERY_RETRY_ENABLED 默认开）**第十四轮已完整实现且有测试**（scheduler.service.spec 1309 关闭态例），计划信息滞后，无需改动 |
 | BUG-08 | P2 | done | main-A | 2026-09-07 | executor-node/src/main.ts + middleware/auth.* + bundle | 313d203 | N41 修复：auth.ts setOnTokenAcquired 钩子 + main.ts maybeReRegister（短路+去重）+ admin 同 startupId register 幂等复核通过；+3 测试，executor-node 235/235；bundle 同 commit |
 | BUG-09 | P2 | done | main-A | 2026-09-07 | executor-python main.py + routers/execute.py + tests | 780dbcf | QA8 修复：await_background_tasks_after_kill 窗口 + _run_and_callback CancelledError 落盘守卫 + lifespan 顺序钉死（杀树→flush→drain）；+4 测试，executor-python 201/201 |
@@ -43,12 +43,12 @@
 | FEAT-05 | P2 | unclaimed | | | 双执行器 + admin-api uploads + admin-web | | 执行产物 artifacts 通道 |
 | FEAT-06 | P2 | unclaimed | | | admin-api scheduler + task 实体 | | 任务维护窗口 |
 | FEAT-07 | P2 | unclaimed | | | admin-api 新模块 event-subscriptions | | Webhook 出站事件 |
-| FEAT-08 | P2 | in_progress | session-B（员工 005 承接） | 2026-09-07 01:2x | admin-api config 模块 + admin-web settings（HistoryModal 区） | | 配置历史回滚：后端回滚端点（走 system-config 同一校验/掩码守卫+审计留痕）+ 前端「回滚到此版本」按钮；与 BUG-01 文件足迹无重叠 |
+| FEAT-08 | P2 | done | session-B（员工 005 承接） | 2026-09-07 01:2x | admin-api config 模块 + admin-web settings/api | fd99579 | 回滚语义矩阵（create→删除/update 无旧值 400/delete→重建/保留元数据）+ 掩码哨兵拒绝（S3 镜像防线）+ action=rollback 独立留痕 + 前端行级回滚入口（isAdmin+Popconfirm+逐行 loading）；后端 13 例前端 4 例 |
 | FEAT-09 | P3 | unclaimed | | | admin-web 全局组件 | | 全局搜索/命令面板 |
 | FEAT-10 | P3 | unclaimed | | | admin-api notification | | 通知模板变量 |
 | FEAT-11 | P3 | unclaimed | | | task 实体 + admin-web | | 任务 runbook 字段 |
 | FEAT-12 | P3 | done | main-A | 2026-09-07 | registry-pypi main.py + tests | f93999b | 索引页增强：版本聚合/体积/UTC 时间/计数；PEP 503 锚点语义不变；+2 测试 52/52 |
-| CORE-01 | P1 | done | main-A | 2026-09-07 | admin-web TaskForm/List/Detail + utils/priority | 批六 commit | 前端 UI 化 done（后端本就绪）；剩余=拥塞下优先出队的真机断言（并入真机轮） |
+| CORE-01 | P1 | done | main-A | 2026-09-07 | admin-web TaskForm/List/Detail + utils/priority | 批六 commit | 前端 UI 化 done（后端本就绪）；剩余=拥塞下优先出队的真机断言（并入真机轮）。**协作注记（session-B）**：CORE-01 数字 priority 直写 PG enum 致 500（e2e 23-25/29 红），已在 6912b4d 以列级 transformer+6 例 spec 修复并 CI 绿——「mock 不等于能跑」第四次前科 |
 | CORE-02 | P1 | unclaimed | | | admin-api task + admin-web | | 重试策略精细化（attempt 链可视化） |
 | CORE-03 | P1 | unclaimed | | | admin-api 模板实体 + admin-web | | 任务模板与一键克隆 |
 | CORE-04 | P1 | unclaimed | | | admin-api + 双执行器 | | 超时策略分级（warn/动作可选） |
@@ -137,3 +137,5 @@
 - 2026-09-07 main-A：批五 done=DOC-04（ADR 十篇：回调 token/双保险调度/幂等签发/信封契约/bundle 同 commit/RBAC 同批/配置优先级/真机冒烟/S3 双存储/去重窗口语义）。
 - 2026-09-07 main-A：批七 done=BUG-10（四端联动失败分类细化）。基线刷新：executor-node 240/240 · executor-python 206/206 · autoflow-sdk 100/100 · admin-web 118/118 · registry-pypi 52/52。
 - 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场+rbac.spec)、MainLayout.tsx、logout.test.tsx、AppDeploymentPage.tsx、ApplicationDetailPage.tsx、ApplicationListPage.tsx、NotificationSettingsPage.tsx(W1)、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 app-deployment-race.test.tsx（tsc 报错在途）——上述文件在清理前请勿认领触碰。
+
+- 2026-09-07 session-B：批 B1 done=BUG-01(dc82ac7)/FEAT-08(fd99579)；协作修复 CORE-01 e2e 回归（6912b4d 列级 transformer）；另代修 mcp-server BUG-14 测试两处（0241b5a，afterEach 导入+模块态隔离）与 e2e 选择器作用域（2a4070d）。CI 24 job 绿（run 34051398995）。基线：admin-api 1224/62 · admin-web 112/112 · mcp-server 69/69。
