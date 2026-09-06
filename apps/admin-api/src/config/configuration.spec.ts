@@ -297,6 +297,10 @@ describe("configuration (ARCH-27) newly registered config sections", () => {
   });
 
   it("registers initialAdmin section (password default empty = skip seed)", () => {
+    // CI runner 环境可能自带 INITIAL_ADMIN_PASSWORD（e2e 侧配置）——用例语义是
+    // "env 缺省时默认空"，先剥离环境再断言，避免宿主环境泄漏进断言。
+    delete process.env.INITIAL_ADMIN_PASSWORD;
+    delete process.env.INITIAL_ADMIN_EMAIL;
     const cfg = loadConfig();
     expect(cfg.initialAdmin.password).toBe("");
     expect(cfg.initialAdmin.email).toBe("admin@autoflow.local");
