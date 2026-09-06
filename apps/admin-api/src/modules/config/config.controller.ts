@@ -9,6 +9,7 @@ import {
   UseGuards,
   Req,
   Query,
+  ParseIntPipe,
 } from "@nestjs/common";
 import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
 import { Request } from "express";
@@ -94,7 +95,10 @@ export class ConfigController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Rollback config to a historical version" })
   async rollback(
-    @Param("id") id: number,
+    // S15: validate the path param as an integer — a non-numeric id must map
+    // to 400 (ValidationPipe) instead of reaching TypeORM/PG and surfacing
+    // as a 500.
+    @Param("id", ParseIntPipe) id: number,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {

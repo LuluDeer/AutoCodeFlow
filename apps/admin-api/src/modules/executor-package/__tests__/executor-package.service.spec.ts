@@ -249,6 +249,73 @@ describe("ExecutorPackageService", () => {
       const unlink = (fs.promises as any).unlink as jest.Mock;
       expect(unlink).toHaveBeenCalledWith(UPLOAD_TMP_FILE);
     });
+
+    // QA9: at save-failure time the upload has ALREADY been moved into its
+    // final location — that file must be unlinked too, otherwise an orphan
+    // (invisible to every listing) lingers on disk and collides with a
+    // future upload of the same checksum.
+    it("QA9: unlinks the moved-in-place file when the DB save fails", async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.create.mockReturnValue(mockPkg);
+      repo.save.mockRejectedValue(new Error("db down"));
+
+      await expect(
+        service.create(
+          { name: "my-executor", version: "1.0.0", type: "node" } as any,
+          mockFile,
+        ),
+      ).rejects.toThrow("db down");
+
+      const rename = (fs.promises as any).rename as jest.Mock;
+      const dest = rename.mock.calls[0][1] as string;
+      const unlink = (fs.promises as any).unlink as jest.Mock;
+      expect(unlink).toHaveBeenCalledWith(dest);
+      // the orphan is gone from disk
+      expect(diskFiles.has(dest)).toBe(false);
+    });
+  });
+
+  // QA9: startup sweep — a crashed process or a killed 500 MB upload leaves
+  // multer temp files in upload-tmp with no request path to clean them up.
+  describe("QA9: onModuleInit sweeps stale upload-tmp files", () => {
+    it("removes only stale regular files (keeps fresh files and directories)", async () => {
+      const now = Date.now();
+      (fs.promises as any).readdir = jest
+        .fn()
+        .mockResolvedValue(["stale.tmp", "fresh.tmp", "subdir"]);
+      (fs.promises as any).stat = jest.fn(async (p: string) => {
+        if (p.endsWith("stale.tmp"))
+          return {
+            isFile: () => true,
+            mtimeMs: now - 2 * 60 * 60 * 1000,
+          };
+        if (p.endsWith("fresh.tmp"))
+          return { isFile: () => true, mtimeMs: now };
+        return { isFile: () => false, mtimeMs: now - 5 * 60 * 60 * 1000 };
+      });
+
+      await service.onModuleInit();
+
+      const unlink = (fs.promises as any).unlink as jest.Mock;
+      expect(unlink).toHaveBeenCalledTimes(1);
+      expect(String(unlink.mock.calls[0][0])).toContain("stale.tmp");
+    });
+
+    it("a sweep failure is logged and does not block bootstrap", async () => {
+      (fs.promises as any).readdir = jest
+        .fn()
+        .mockRejectedValue(new Error("EACCES"));
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => {});
+
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to sweep"),
+      );
+      warnSpy.mockRestore();
+    });
   });
 
   describe("findAll", () => {

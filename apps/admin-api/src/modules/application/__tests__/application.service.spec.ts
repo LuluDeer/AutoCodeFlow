@@ -337,6 +337,61 @@ describe("ApplicationService", () => {
       // no synchronous spawn call sites remain (doc-comment mentions excluded)
       expect(src).not.toContain("spawnSync(");
     });
+
+    // QA8: runaway children must not balloon the admin-api heap and must not
+    // survive the timeout as detached process groups.
+    describe("QA8: spawnAsync output cap + process-group timeout", () => {
+      const SERVICE_SRC = fs.readFileSync(
+        path.join(__dirname, "..", "application.service.ts"),
+        "utf-8",
+      );
+
+      it("caps stdout/stderr aggregation at 10 MB (run-command.ts parity)", () => {
+        expect(SERVICE_SRC).toMatch(/const CAP = 10 \* 1024 \* 1024;/);
+        // both data handlers stop appending past the cap
+        expect(SERVICE_SRC).toMatch(
+          /if \(stdout\.length < CAP\) stdout \+= c\.toString\("utf-8"\);/,
+        );
+        expect(SERVICE_SRC).toMatch(
+          /if \(stderr\.length < CAP\) stderr \+= c\.toString\("utf-8"\);/,
+        );
+      });
+
+      it("spawns detached on POSIX only and kills the process group on timeout", () => {
+        // detached would open a console window on Windows with no kill
+        // benefit there — the option must be gated to non-win32.
+        expect(SERVICE_SRC).toMatch(/detached: process\.platform !== "win32"/);
+        // the timeout path signals the group (negative pid) best-effort
+        expect(SERVICE_SRC).toMatch(/process\.kill\(-child\.pid\)/);
+      });
+
+      it("behavior: an oversized child output resolves (capped) instead of OOM-ing", async () => {
+        appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+        mockedLookup.mockResolvedValue([
+          { address: "93.184.216.34", family: 4 },
+        ]);
+        // 60 MB of stdout — 6x the cap. Both spawned calls (clone and
+        // rev-parse) must resolve promptly with the cap in place.
+        mockedSpawn
+          .mockImplementationOnce(() =>
+            fakeSpawn({ status: 0, stdout: "a".repeat(60 * 1024 * 1024) }),
+          )
+          .mockImplementationOnce(() =>
+            fakeSpawn({ status: 0, stdout: "deadbeef" }),
+          );
+
+        await service.deployFromGit(
+          "1",
+          "https://github.com/org/repo.git",
+          "main",
+        );
+
+        expect(mockedSpawn).toHaveBeenCalledTimes(2);
+        const lastSave =
+          appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+        expect(lastSave.gitCommit).toBe("deadbeef");
+      });
+    });
   });
 
   describe("remove", () => {

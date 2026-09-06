@@ -313,7 +313,57 @@ describe("AppDeploymentService", () => {
           executorId: "exec-1",
           runMode: RunMode.DAEMON,
         }),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(ConflictException);
+    });
+
+    // QA4: upgrade() leaves the row UPGRADING for the whole push (R5) and the
+    // partial unique index intentionally does not constrain UPGRADING rows
+    // (concurrent rolling upgrades must not collide on it). A deploy issued
+    // while an upgrade is in flight would otherwise start a second real
+    // process on the executor — the findOne guard must catch it.
+    it("QA4: rejects a deploy while an UPGRADING deployment is in flight (409)", async () => {
+      repo.findOne.mockResolvedValue({
+        id: "deploy-upgrading",
+        status: DeploymentStatus.UPGRADING,
+      });
+
+      await expect(
+        service.deploy("app-1", {
+          executorId: "exec-1",
+          runMode: RunMode.DAEMON,
+        }),
+      ).rejects.toMatchObject({
+        constructor: ConflictException,
+        status: 409,
+        message: expect.stringContaining("status=upgrading"),
+      });
+      // Rejected before any row is created or any push is sent.
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+    });
+
+    // QA4: the guard's where-clause must include PENDING, DEPLOYING and
+    // UPGRADING — pin all three statuses on the interceptor query.
+    it("QA4: the in-flight guard queries PENDING + DEPLOYING + UPGRADING", async () => {
+      repo.findOne.mockResolvedValue(null);
+
+      await service
+        .deploy("app-1", {
+          executorId: "exec-1",
+          runMode: RunMode.DAEMON,
+        })
+        .catch(() => undefined);
+
+      expect(repo.findOne).toHaveBeenCalled();
+      const where = (repo.findOne.mock.calls[0][0] as any).where as Array<
+        Record<string, unknown>
+      >;
+      expect(where.map((w) => w.status)).toEqual([
+        DeploymentStatus.PENDING,
+        DeploymentStatus.DEPLOYING,
+        DeploymentStatus.UPGRADING,
+      ]);
     });
 
     // R5: the findOne guard is TOCTOU-racy; the partial unique index
@@ -673,6 +723,82 @@ describe("AppDeploymentService", () => {
       jest.restoreAllMocks();
     });
 
+    // QA6: uq_application_versions_applicationId_version constrains only
+    // (applicationId, version) while the dedupe keys on sourceDeploymentId
+    // too. Two instances of the same application upgrading concurrently both
+    // pass the dedupe, and the losing INSERT fails with 23505 — that must not
+    // fail (and retry!) the already-accepted deploy push.
+    it("QA6: a 23505 on the version unique index is swallowed — push success semantics preserved", async () => {
+      const deployment: any = {
+        id: "deploy-2",
+        applicationId: "app-1",
+        executorAddress: "203.0.113.10:3001",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.PENDING,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      // Dedupe misses: same (app, version) but a DIFFERENT sourceDeploymentId
+      // is what makes the concurrent case slip past the findOne check.
+      versionRepo.findOne.mockResolvedValue(null);
+      versionRepo.create.mockImplementation((e: any) => e);
+      versionRepo.save.mockRejectedValue(
+        makeUniqueViolation("uq_application_versions_applicationId_version"),
+      );
+      mockAxiosPost.mockResolvedValue({ data: {} });
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => {});
+
+      await expect(
+        (service as any).pushDeployToExecutor(deployment, mockApp),
+      ).resolves.toBeUndefined();
+
+      // The push itself succeeded: exactly one executor POST (no retry storm)
+      // and the row reached DEPLOYING with deploy metadata recorded.
+      expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+      expect(deployment.status).toBe(DeploymentStatus.DEPLOYING);
+      expect(deployment.deployedVersion).toBe(mockApp.version);
+      expect(deployment.deployedAt).toBeInstanceOf(Date);
+      // The skip is observable (warn), not silent.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("already exists"),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("QA6: an unrelated unique violation on the snapshot save still fails the push", async () => {
+      jest.spyOn(global, "setTimeout").mockImplementation((cb: any) => {
+        cb();
+        return 0 as any;
+      });
+      const deployment = {
+        id: "deploy-3",
+        applicationId: "app-1",
+        executorAddress: "203.0.113.10:3001",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.PENDING,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      versionRepo.findOne.mockResolvedValue(null);
+      versionRepo.create.mockImplementation((e: any) => e);
+      versionRepo.save.mockRejectedValue(
+        makeUniqueViolation("some_other_constraint"),
+      );
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      await (service as any).pushDeployToExecutor(deployment, mockApp);
+
+      // Pre-existing retry semantics: the violation escapes saveVersionSnapshot
+      // into the push loop, which retries and eventually marks the row FAILED.
+      expect(mockAxiosPost).toHaveBeenCalledTimes(3);
+      expect(deployment.status).toBe(DeploymentStatus.FAILED);
+      jest.restoreAllMocks();
+    });
+
     // R8: pushDeployToExecutor is an authenticated outbound request whose
     // target address comes from executor-controlled rows — it must clear the
     // same executor SSRF policy as dispatch before any request is sent.
@@ -855,7 +981,8 @@ describe("AppDeploymentService", () => {
     // legacy deployment upgraded in place re-enters an in-progress state on
     // the SAME row with its original createdAt — a createdAt-based cron
     // mis-marked it FAILED and polluted the version snapshot.
-    it("R6: selects stuck rows by updatedAt, never createdAt (deploying + upgrading)", async () => {
+    // QA5: PENDING joins the scan with its own shorter threshold.
+    it("R6: selects stuck rows by updatedAt, never createdAt (pending + deploying + upgrading)", async () => {
       repo.find.mockResolvedValue([]);
 
       await service.detectStuckDeployments();
@@ -866,22 +993,58 @@ describe("AppDeploymentService", () => {
       expect(Array.isArray(where)).toBe(true);
       expect(where.map((w) => w.status)).toEqual(
         expect.arrayContaining([
+          DeploymentStatus.PENDING,
           DeploymentStatus.DEPLOYING,
           DeploymentStatus.UPGRADING,
         ]),
       );
+      // Per-status thresholds: PENDING is swept after 5 minutes (QA5 — the
+      // normal PENDING window is process-internal), DEPLOYING/UPGRADING after
+      // the original 10.
+      const expectedMs: Record<string, number> = {
+        [DeploymentStatus.PENDING]: 5 * 60 * 1000,
+        [DeploymentStatus.DEPLOYING]: 10 * 60 * 1000,
+        [DeploymentStatus.UPGRADING]: 10 * 60 * 1000,
+      };
       for (const w of where) {
         expect(w.createdAt).toBeUndefined();
         const op = w.updatedAt as { type: string; value: Date };
-        // TypeORM FindOperator carrying LessThan(now - 10min)
+        // TypeORM FindOperator carrying LessThan(now - threshold)
         expect(op).toBeDefined();
         expect(op.type).toBe("lessThan");
         const threshold = op.value.getTime();
-        expect(Date.now() - threshold).toBeGreaterThanOrEqual(
-          10 * 60 * 1000 - 1000,
-        );
-        expect(Date.now() - threshold).toBeLessThan(10 * 60 * 1000 + 5000);
+        const expected = expectedMs[w.status as string];
+        expect(Date.now() - threshold).toBeGreaterThanOrEqual(expected - 1000);
+        expect(Date.now() - threshold).toBeLessThan(expected + 5000);
       }
+    });
+
+    // QA5: deploy() INSERTs PENDING then pushes asynchronously — a crash
+    // between the two steps leaves the row PENDING forever, where it keeps
+    // matching the partial unique index and permanently 409s every future
+    // deployment of the application. The sweep must recover such rows.
+    it("QA5: a PENDING row stuck past the threshold is marked FAILED with an explanatory message", async () => {
+      const pendingRow = {
+        id: "deploy-pending",
+        applicationId: "app-1",
+        status: DeploymentStatus.PENDING,
+        statusMessage: null,
+        deployedVersion: null,
+        deployedCommit: null,
+      };
+      repo.find.mockResolvedValue([pendingRow]);
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      versionRepo.findOne.mockResolvedValue(null);
+
+      await service.detectStuckDeployments();
+
+      expect(pendingRow.status).toBe(DeploymentStatus.FAILED);
+      expect(pendingRow.statusMessage).toMatch(/PENDING/);
+      expect(pendingRow.statusMessage).toMatch(/5 minutes/);
+      // PENDING rows have no version snapshot yet — nothing to mark failed.
+      expect(versionRepo.save).not.toHaveBeenCalled();
+      // FAILED releases the partial unique index for the application.
+      expect(pendingRow.status).not.toBe(DeploymentStatus.PENDING);
     });
 
     it("R6: an upgraded legacy deployment (old createdAt, fresh updatedAt) is not in the stuck set", async () => {

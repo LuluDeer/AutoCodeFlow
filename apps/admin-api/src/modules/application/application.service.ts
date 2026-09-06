@@ -28,6 +28,11 @@ import { AiService } from "../ai/ai.service";
  * spawnSync call sites consumed. Spawn errors (ENOENT, ...) resolve with
  * status = -1 and the error message on stderr so callers keep one failure
  * path. The event loop stays live for the whole duration.
+ *
+ * QA8: output aggregation is capped at 10 MB (same budget as executor-node
+ * run-command.ts) and the timeout path also signals the child's whole
+ * process group on POSIX, where the child is spawned detached so git's
+ * helper processes (git-remote-https etc.) do not outlive the timeout.
  */
 function spawnAsync(
   cmd: string,
@@ -35,7 +40,23 @@ function spawnAsync(
   opts: { timeout: number },
 ): Promise<{ status: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    // QA8: detached is POSIX-only, mirroring executor-node run-command.ts.
+    // On POSIX it makes the child the leader of its own process group so the
+    // timeout path can kill the whole tree; no signal semantics change for
+    // the direct child (child.kill() still targets the leader). On Windows
+    // detached would give the child its own console window while
+    // child.kill() remains a direct kill regardless — so Windows keeps the
+    // previous behavior. Trade-off accepted on POSIX: a child that survives
+    // the parent's own death is possible (same as executor-node); here the
+    // timeout still reaps the group while the process is alive.
+    const child = spawn(cmd, args, {
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    // QA8: 10 MB aggregation cap (run-command.ts parity). Appending stops
+    // once the cap is reached, so the captured tail may overshoot by at most
+    // one chunk — a runaway clone must not balloon the admin-api heap.
+    const CAP = 10 * 1024 * 1024;
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -56,10 +77,10 @@ function spawnAsync(
     };
 
     child.stdout?.on("data", (c: Buffer) => {
-      stdout += c.toString("utf-8");
+      if (stdout.length < CAP) stdout += c.toString("utf-8");
     });
     child.stderr?.on("data", (c: Buffer) => {
-      stderr += c.toString("utf-8");
+      if (stderr.length < CAP) stderr += c.toString("utf-8");
     });
     child.on("error", (err: Error) => {
       finish(-1, err.message);
@@ -72,6 +93,17 @@ function spawnAsync(
       // Match spawnSync's timeout semantics: kill the child; the close
       // event then resolves with a non-zero status.
       child.kill();
+      // QA8 (POSIX, detached): also signal the child's process group so
+      // grandchildren cannot linger past the timeout. Best-effort — the
+      // group may already be gone (ESRCH) or unpermitted (EPERM), in which
+      // case the direct kill above is all we have.
+      if (process.platform !== "win32" && child.pid) {
+        try {
+          process.kill(-child.pid);
+        } catch {
+          // group already gone / not permitted — direct kill above stands
+        }
+      }
       finish(-1, `Process timed out after ${opts.timeout}ms`);
     }, opts.timeout);
   });

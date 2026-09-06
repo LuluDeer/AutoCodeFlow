@@ -38,18 +38,33 @@ export class SystemConfigService {
     dto: UpsertConfigDto,
     options?: HistoryOptions,
   ): Promise<SystemConfig> {
-    await this.validateConfig(dto);
-
     const existing = await this.repo.findOneBy({ key: dto.key });
     const action = existing ? "update" : "create";
+
+    // S3: the read surface masks secret values to '***' (ConfigController
+    // findAll/findOne) and admin-web prefills that mask into the edit form.
+    // Saving a form that round-trips the mask must not clobber the real
+    // secret (e.g. executor.sharedToken drives cluster-wide executor auth).
+    // Same sentinel semantics as the notification ChannelConfigStore write
+    // path: a value of '***' on an isSecret item means "unchanged" — keep the
+    // stored value instead of persisting the mask.
+    const isSecret = dto.isSecret ?? false;
+    let value = dto.value;
+    if (isSecret && value === "***" && existing) {
+      value = existing.value;
+    }
+
+    // Validate the effective value (a '***' sentinel is not valid JSON, but
+    // the preserved real value may well be).
+    await this.validateConfig({ ...dto, value });
 
     await this.repo.upsert(
       {
         key: dto.key,
-        value: dto.value,
+        value,
         description: dto.description,
         valueType: dto.valueType ?? "string",
-        isSecret: dto.isSecret ?? false,
+        isSecret,
       },
       { conflictPaths: ["key"], skipUpdateIfNoValuesChanged: true },
     );
@@ -57,7 +72,7 @@ export class SystemConfigService {
     await this.recordHistory({
       configKey: dto.key,
       oldValue: existing?.value,
-      newValue: dto.value,
+      newValue: value,
       description: dto.description,
       action,
       ...options,
