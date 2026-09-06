@@ -14,8 +14,8 @@
 
 | 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
 |---|---|---|---|---|---|---|---|
-| W2-闭环 | P0 | in_progress | main-A + 并行会话 | 2026-09-07 | admin-web/src/pages/ExecutorDetailPage.tsx；docs/PLAN-CLAIMS.md | f0c5f32（前端半场） | **分半场**：前端门控半场 done（f0c5f32，87/87+build ✓）；API 半场（executor.controller.ts + rbac.spec.ts）在途归并行会话——其提交后本任务整体 done |
-| BUG-01 | P1 | blocked | main-A | 2026-09-07 | admin-api executor.controller.ts（被并行会话占用） | | 复核结论：401 重签重试 R11 **已实现**（controller 内联+诚实 N50 注释）；剩余收口=双 401 错误文案精确化 + push auth-retry 指标，均需改 controller——待并行会话提交后认领；另注意：该重试路径**无专项测试**（grep 无覆盖） |
+| W2-闭环 | P0 | done | main-A（前端半场）+ 并行会话（API 半场） | 2026-09-07 | admin-web/src/pages/ExecutorDetailPage.tsx | f0c5f32 + 747ea40 | **整体闭环**：API 半场由并行会话以 747ea40 提交（executor 写面 ADMIN 收口+rbac spec），前端门控半场 f0c5f32（main-A）。RBAC 收紧前后端同批发布纪律达成 |
+| BUG-01 | P1 | unclaimed | | | admin-api executor.controller.ts + spec | | 复核结论：401 重签重试 R11 **已实现**；剩余收口=双 401 错误文案精确化 + push auth-retry 指标 + 补专项测试（当前无覆盖）。**阻塞已解除**（并行会话 747ea40 已提交 controller），可认领 |
 | BUG-02 | P2 | done | main-A | 2026-09-07 | 无改动（复核销账） | | 复核结论：sweep 重试预算语义（hasRetryBudget→kill best-effort→re-enqueue+STALE_RECOVERY_RETRY_ENABLED 默认开）**第十四轮已完整实现且有测试**（scheduler.service.spec 1309 关闭态例），计划信息滞后，无需改动 |
 | BUG-08 | P2 | done | main-A | 2026-09-07 | executor-node/src/main.ts + middleware/auth.* + bundle | 313d203 | N41 修复：auth.ts setOnTokenAcquired 钩子 + main.ts maybeReRegister（短路+去重）+ admin 同 startupId register 幂等复核通过；+3 测试，executor-node 235/235；bundle 同 commit |
 | BUG-09 | P2 | done | main-A | 2026-09-07 | executor-python main.py + routers/execute.py + tests | 780dbcf | QA8 修复：await_background_tasks_after_kill 窗口 + _run_and_callback CancelledError 落盘守卫 + lifespan 顺序钉死（杀树→flush→drain）；+4 测试，executor-python 201/201 |
@@ -129,5 +129,6 @@
 
 - 2026-09-07 main-A：建板。认领 W2-前端半场（in_progress）、BUG-01/02/08/09、QA-04（claimed）。
 - 2026-09-07 main-A：批一收工。done=W2 前端半场(f0c5f32)/BUG-08(313d203)/BUG-09(780dbcf)/QA-04(0a4d5c0)/FEAT-03(0409000)；BUG-02 复核销账（第十四轮已实现）；BUG-01 blocked（重试 R11 已实现，收口在 controller，等并行会话提交）。基线：executor-node 235/235 · executor-python 201/201 · admin-web 93/93（并行会话 WIP 测试文件除外）· 我方文件 lint 0。
+- 2026-09-07 main-A：W2 整体闭环确认（并行会话 747ea40 提交 API 半场）→ done；BUG-01 阻塞解除 → unclaimed。并行会话另提交 269d249（W1/W3/W7/W8 通知/应用页面）。
 - 2026-09-07 main-A：批二收工。done=BUG-05（3caabb4 + prettier follow-up）——SSE 活跃流 gauge 落地，指标字典补录 4 counter+2 gauge。
 - 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场+rbac.spec)、MainLayout.tsx、logout.test.tsx、AppDeploymentPage.tsx、ApplicationDetailPage.tsx、ApplicationListPage.tsx、NotificationSettingsPage.tsx(W1)、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 app-deployment-race.test.tsx（tsc 报错在途）——上述文件在清理前请勿认领触碰。
