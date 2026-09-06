@@ -470,10 +470,21 @@ async function startExecutionInBackground(
 }
 
 /** prepare 失败信息的 failureReason 归类（对齐 admin ExecutionFailureReason）：
- *  git/npm 依赖获取类 → package_fetch_failed；其余 → unknown。
+ *  BUG-10 细化——git 拉取 / 依赖安装 / 运行时缺失拆分为独立分类，便于
+ *  统计与告警；未命中细分的获取类错误保持 package_fetch_failed 兜底。
  *  导出供测试固化该映射。 */
 export function prepareFailureReason(message: string): CallbackFailureReason {
-  if (/git (clone|fetch|checkout) failed|npm install failed|Dependency installation failed|Invalid npm package name/i.test(message)) {
+  // git clone/fetch/checkout 或 CalledProcessError 形态（node 侧 git 也是子进程）
+  if (/git (clone|fetch|checkout) failed|\bgit\b.*returned non-zero|\bgit\b.*\b(clone|fetch|checkout)\b.*fail/i.test(message)) {
+    return 'git_fetch_failed';
+  }
+  if (/npm install failed|uv pip install failed|pip install failed|Dependency installation failed/i.test(message)) {
+    return 'dependency_install_failed';
+  }
+  if (/spawn .*ENOENT|runtime .*not (supported|available)|executable .*not found|No such file or directory/i.test(message)) {
+    return 'runtime_missing';
+  }
+  if (/Invalid npm package name/i.test(message)) {
     return 'package_fetch_failed';
   }
   return 'unknown';

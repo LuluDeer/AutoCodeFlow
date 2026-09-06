@@ -28,6 +28,10 @@ const TRIGGER_LABEL: Record<string, string> = {
 
 const FAILURE_REASON_MAP: Record<string, { color: string; label: string; hint: string }> = {
   package_fetch_failed: { color: 'gold', label: '包拉取失败', hint: '检查代码仓库、依赖安装与网络连通性。' },
+  // BUG-10 细化分类
+  git_fetch_failed: { color: 'gold', label: 'Git 拉取失败', hint: '检查 gitRepo 地址、凭据、分支/commit 是否存在与网络连通性。' },
+  dependency_install_failed: { color: 'gold', label: '依赖安装失败', hint: '检查 requirements 是否可解析、私服可达性与版本冲突。' },
+  runtime_missing: { color: 'gold', label: '运行时缺失', hint: '执行器缺少任务运行时（node/python/uv）——安装运行时或改派到支持该 runtime 的执行器。' },
   script_error: { color: 'red', label: '脚本错误', hint: '检查任务脚本异常、退出码和运行时日志。' },
   timeout: { color: 'orange', label: '执行超时', hint: '检查任务耗时并调整超时配置。' },
   executor_offline: { color: 'volcano', label: '执行器离线', hint: '检查执行器在线状态、地址和网络。' },

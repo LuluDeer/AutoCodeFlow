@@ -150,6 +150,37 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _refine_failure_reason(message: str) -> Optional[str]:
+    """BUG-10：从 prepare/运行期异常文本归类细粒度 failureReason。
+
+    对齐 admin ExecutionFailureReason 与 node 侧 prepareFailureReason 的
+    细化规则：git 拉取 / 依赖安装（uv venv + uv pip install）/ 运行时缺失
+    （uv/git/python 可执行文件不存在）。返回 None 表示不设 reason，交给
+    admin 端 inferFailureReason 兜底（旧语义不变）。
+    """
+    if not message:
+        return None
+    lowered = message.lower()
+    if "git" in lowered and (
+        re.search(r"git.{0,40}(clone|fetch|checkout)", lowered)
+        or re.search(r"'git'.{0,80}returned non-zero", lowered)
+    ):
+        return "git_fetch_failed"
+    if re.search(
+        r"uv (pip install|venv) (install )?failed|uv venv timed out|pip install failed"
+        r"|dependency installation failed",
+        lowered,
+    ):
+        return "dependency_install_failed"
+    if re.search(
+        r"no such file or directory.{0,60}(uv|git|python3?)"
+        r"|spawn .*enoent|runtime.{0,20}not (supported|available)",
+        lowered,
+    ):
+        return "runtime_missing"
+    return None
+
+
 def _executor_callback_address() -> str:
     return settings.executor_address_public or settings.executor_address or f'127.0.0.1:{settings.port}'
 
@@ -1128,6 +1159,12 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                     'durationMs': result.get('durationMs'),
                     'executorAddress': _executor_callback_address(),
                 }
+                # BUG-10: 运行期失败（依赖/Git/运行时）细分类，未命中不设
+                # reason（admin inferFailureReason 兜底，旧语义不变）
+                if not result.get('success'):
+                    reason = _refine_failure_reason(str(result.get('errorMessage') or ''))
+                    if reason:
+                        payload['failureReason'] = reason
             except Exception as exc:
                 payload = {
                     'executionId': req.executionId,
@@ -1135,6 +1172,10 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                     'errorMessage': _truncate_error_message(str(exc)),
                     'executorAddress': _executor_callback_address(),
                 }
+                # BUG-10: prepare 阶段异常（git/venv/pip/uv）细分类
+                reason = _refine_failure_reason(str(exc))
+                if reason:
+                    payload['failureReason'] = reason
             finally:
                 sched.decrement_running()
 

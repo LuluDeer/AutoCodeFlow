@@ -10,6 +10,9 @@ import { post } from './admin-client';
  *  rejected item fails the whole callback batch. */
 export type CallbackFailureReason =
   | 'package_fetch_failed'
+  | 'dependency_install_failed'
+  | 'git_fetch_failed'
+  | 'runtime_missing'
   | 'script_error'
   | 'timeout'
   | 'executor_offline'
