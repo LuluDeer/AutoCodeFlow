@@ -163,6 +163,8 @@ Content-Type: application/json
 | `startCommand` | string | 启动命令覆盖（留空使用 manifest entrypoint） |
 
 > *heartbeat 使用 `X-Executor-Token` 请求头认证（按部署关联的执行器逐个校验 per-executor token，兼容旧共享 token），非用户 JWT。
+>
+> **并发部署冲突（409）**：同一应用已存在 `pending` / `deploying` / `upgrading` 状态的部署行时，再次 `POST /app-deployments/applications/:appId/deploy` 返回 **409**（`already has an in-progress deployment... Wait for it to finish or cancel it first`）。应用层 findOne 预检与数据库部分唯一索引 `uq_app_deployments_application_in_flight`（并发插入竞态兜底，23505 → 409）双层拦截，两条路径返回同一冲突语义。等待在途部署完成（或升级结束）后重试即可。
 
 ---
 
@@ -245,7 +247,7 @@ Content-Type: application/json
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | POST | `/executors/register` | 否* | 执行器注册（返回/绑定执行器专属 Token） |
-| POST | `/executors/heartbeat` | 否* | 执行器心跳上报（携带 `restartedAt`/`startupId` 用于重启收敛） |
+| POST | `/executors/heartbeat` | 否* | 执行器心跳上报（携带 `restartedAt`/`startupId` 用于重启收敛）。可选指标字段：`cpuUsage` / `memUsage` / `diskUsage` / `networkLatency` / `runningTaskCount` / `totalTaskCount` / `failedTaskCount` / `runningExecutionIds`（≤200，`null`=旧版未上报）/ `deadLetterCount`（回调死信积压数，**0..100000** 非负整数，`null`=旧版执行器未上报该字段（区别于 `0`：已上报且无积压），`>0` 表示回调持续失败、载荷已落盘执行器本地 dead-letter）/ `maxConcurrentTasks`（1..10000 容量热更新）。服务端对白名单外字段静默丢弃（防 mass-assignment），非法取值不落库 |
 | POST | `/executors/token` | 否* | 执行器以注册凭证换取专属 Token。**副作用（register-on-token）**：若该 `address` 尚无执行器行（典型场景：compose 启动竞态下 register 失败——register 不会自动重试，heartbeat 对未知地址返回 404 也不建行），本端点会补建仅含 `address`/`appName` 的瘦行：`type`/`capabilities`/`maxConcurrentTasks`/`executorVersion` 等富元数据缺失（runtime 过滤对空 capabilities 全放行，故竞态窗口内该执行器可能被选中执行任意 runtime 任务），直到执行器进程重启重新 register 才补齐 |
 | POST | `/executors/offline` | 否* | 执行器主动下线 |
 | GET | `/executors` | 是 | 查询执行器列表（含在线状态） |
@@ -281,6 +283,9 @@ Content-Type: application/json
 > **N23：per-execution 回调 token（任务代码安全回调）**。除执行器 Token 外，本端点还接受执行器为单次执行签发的一次性 HMAC token：`Authorization: Bearer v1.<executionId>.<expiresAtUnixSec>.<hmacHex>`，由 executor-node 以 `AUTOFLOW_CALLBACK_TOKEN` 注入任务子进程（签名密钥优先级 = `EXECUTION_CALLBACK_SECRET` → 注册/取 token/心跳响应采纳的 per-executor tokenHash（N26/R9；R10 起手动轮换后 ≤ 一次心跳内自动对齐）→ 执行器共享 token；`key = HMAC-SHA256(secret, "autocodeflow:execution-callback:v1")`，`hmacHex = HMAC-SHA256(key, "v1.<executionId>.<expiresAtUnixSec>")`）。校验规则（全部 fail-closed）：签名与 TTL 有效、**批次内每条 item 的 `executionId` 必须与 token 绑定的一致**、每条仍须携带 `executorAddress`（服务层再与执行记录的执行器地址比对）。token 过期即失效，不能伪造为共享 token，也不授权其他执行。共享 token / per-address token 路径完全保留（向后兼容旧执行器）。
 >
 > 取消/终止执行请使用 `POST /tasks/:id/executions/:execId/kill`（见 Tasks 章节）。
+>
+> **执行失败原因（failureReason）枚举**（`ExecutionFailureReason`，执行详情/全局执行列表响应字段）：
+> `package_fetch_failed`（应用包拉取失败）/ `script_error`（脚本异常，任务回调默认值）/ `timeout`（超时）/ `executor_offline`（pinning 执行器离线）/ `executor_restart`（执行器重启中断）/ `stale_recovered`（失联回收——stale sweep 赢得 RUNNING→FAILED 条件更新、兑现重试预算时标记，区别于执行器回调上报的 `unknown`，便于排查"worker 崩溃型故障 + sweep 兑现重试预算"链路）/ `killed`（被 kill 接口强制取消）/ `unknown`（执行器回调未给出原因）。
 
 ---
 
@@ -358,6 +363,18 @@ Content-Type: application/json
 
 ---
 
+## AI — AI 配置与测试
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/ai/config` | 是（Admin） | 获取当前 AI 生效配置（`provider` / `openaiModel` / `openaiBaseUrl` / `ollamaHost` / `ollamaModel`）。API key 永不回传明文——仅返回 `hasApiKey: boolean` 表示系统配置库中是否已存有 `ai.openaiApiKey` |
+| POST | `/ai/config` | 是（Admin） | 保存 AI 配置到系统配置存储（upsert，逐项写入）。body：`provider` 必填（`disabled` \| `openai` \| `ollama`）；`openaiApiKey` 可选，**非空时才更新**已存 key（留空/缺省不覆盖）；`openaiModel`（默认 `gpt-4o-mini`）、`openaiBaseUrl`（默认 `https://api.openai.com/v1`）、`ollamaHost`（默认 `http://localhost:11434`）、`ollamaModel`（默认 `llama3`）可选，缺省落默认值。响应 `{ ok: true }` |
+| POST | `/ai/test` | 是（Admin） | 用已保存配置发送一次真实样例 AI 调用（失败分析样例），验证连通性与凭证。响应 `{ ok, message }`；AI 未启用（provider=disabled）或返回空响应时 `ok: false`（不打失败码）。`message` 为模型返回的分析文本或失败说明 |
+
+> 三个端点均为 ADMIN-only（全局 RolesGuard 读取 `@Roles(ADMIN)` 元数据）：读配置暴露内部 baseUrl/host 拓扑，写配置可把出站调用重定向到任意外部主机，`/ai/test` 会真实消耗已配置 provider 的 API 配额。
+
+---
+
 ## ExecutorPackages — 执行器包管理
 
 | 方法 | 路径 | 需要认证 | 说明 |
@@ -420,6 +437,11 @@ Content-Type: application/json
 | `SSE_MAX_STREAMS_GLOBAL` | `64` | 全局 SSE 并发上限（同上，进程内） |
 | `TRUST_PROXY` | `false` | **第四轮起默认关闭**。Express `trust proxy` 仅在 `true` 时启用——nginx/负载均衡后的部署**必须设为 `true`**，否则限流键与审计 IP 全部记为代理地址 |
 | `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | executor 出站 SSRF 校验（dispatch/broadcast/reload-config/package push）：默认放行私网段（10/8、172.16/12、192.168/16、IPv6 ULA）但**拒绝 loopback**；admin-api 与 executor 同机（127.0.0.1）部署时必须设为 `true`。云元数据段（169.254.169.254 等）任何取值下都拒绝 |
+| `NPM_REGISTRY_TOKEN` | 空 | 私有 npm registry 代理的预签发 access token（优先于 user/pass 组合，存在时直接以 `Bearer` 拉取包列表） |
+| `NPM_REGISTRY_USER` | 空 | registry 代理 Basic Auth 用户名（与 `NPM_REGISTRY_PASS` 配套，用于 `PUT /-/user/login` 换取 bearer token） |
+| `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码 |
+
+> 三者全缺时 registry 代理保持匿名行为：authenticated-only registry（如 Verdaccio `access: $authenticated`）对包列表返回 401 → admin 包列表为空（仅 debug 日志提示凭证未配置），不视为错误。
 
 > 其余环境变量（`JWT_*`、`DB_*`、`EXECUTOR_SECRET`、`AI_*`、`LOG_STORAGE_*` 等）见 `apps/admin-api/src/app.module.ts` 的 Joi 校验 schema 与 `src/config/configuration.ts`。
 

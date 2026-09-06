@@ -36,14 +36,46 @@ def get_file_info(file_path):
     }
 
 
+def get_typed_param(ctx, key, default=None):
+    """
+    JSON 容错解析任务参数。
+
+    执行器把所有触发参数字符串化注入（AUTOFLOW_* 环境变量），python SDK
+    from_env 不做类型还原——operations 这类列表参数拿到的其实是字符串，
+    直接按列表迭代只会逐字符空转。尝试 json.loads 还原，失败则原样返回
+    字符串（对齐 Node 示例 getParam 的兜底语义）。
+    """
+    raw = ctx.get_param(key)
+    if raw is None:
+        return default
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+
+
+def is_truthy_param(value) -> bool:
+    """布尔参数显式判定：字符串 "true"/"1" 为真，"false"/"0" 为假。
+    避免 if value: 对非空字符串（如 "false"）恒真的真值反转。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return bool(value)
+
+
 def main():
     ctx = TaskContext.from_env()
-    
-    # 获取任务参数
-    source_dir = ctx.get_param("sourceDir", "/tmp/file_automation_source")
-    target_dir = ctx.get_param("targetDir", "/tmp/file_automation_target")
-    operations = ctx.get_param("operations", [])
-    create_test_files = ctx.get_param("createTestFiles", True)
+
+    # 获取任务参数（operations 列表 / createTestFiles 布尔经 JSON 容错解析
+    # 还原，见 helper 注释）
+    source_dir = get_typed_param(ctx, "sourceDir", "/tmp/file_automation_source")
+    target_dir = get_typed_param(ctx, "targetDir", "/tmp/file_automation_target")
+    operations = get_typed_param(ctx, "operations", [])
+    if not isinstance(operations, list):
+        ctx.log.warning("operations 参数应为 JSON 数组，已按空列表处理")
+        operations = []
+    create_test_files = is_truthy_param(get_typed_param(ctx, "createTestFiles", True))
     
     ctx.log.info("开始文件系统自动化任务")
     ctx.log.info(f"源目录: {source_dir}")
