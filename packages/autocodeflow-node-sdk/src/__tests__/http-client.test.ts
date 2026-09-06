@@ -36,7 +36,8 @@ describe('HttpClient', () => {
   describe('constructor', () => {
     it('creates an axios instance with the given baseURL', () => {
       new HttpClient(BASE_URL, TOKEN);
-      expect(mockedAxios.create).toHaveBeenCalledWith({ baseURL: BASE_URL });
+      // 10s 默认超时对齐 python SDK（callback.py），防 admin-api 挂起拖死任务进程
+      expect(mockedAxios.create).toHaveBeenCalledWith({ baseURL: BASE_URL, timeout: 10_000 });
     });
 
     it('registers a request interceptor', () => {
@@ -221,7 +222,7 @@ describe('HttpClient', () => {
         executorToken: TOKEN,
       });
       expect(client.enabled).toBe(true);
-      expect(mockedAxios.create).toHaveBeenCalledWith({ baseURL: BASE_URL });
+      expect(mockedAxios.create).toHaveBeenCalledWith({ baseURL: BASE_URL, timeout: 10_000 });
     });
   });
 });

@@ -53,7 +53,10 @@ export class HttpClient {
         'are required.';
       return;
     }
-    this.client = axios.create({ baseURL });
+    // 10s default matches the python SDK (callback.py) so a hung admin-api
+    // can't stall the task process until the executor's timeout kill; callers
+    // can still override per-request via axios config.
+    this.client = axios.create({ baseURL, timeout: 10_000 });
 
     // Attach auth + trace headers on every outgoing request.
     this.client.interceptors.request.use((config) => {

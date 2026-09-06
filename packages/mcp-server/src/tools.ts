@@ -169,7 +169,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       status: z
         .string()
         .optional()
-        .describe('Filter by status: pending | running | success | failed | timeout | cancelled'),
+        .describe('Filter by status: pending | running | success | failed | timeout | killed | cancelled'),
       page: z.number().int().min(1).default(1),
       pageSize: z.number().int().min(1).max(50).default(10),
     },

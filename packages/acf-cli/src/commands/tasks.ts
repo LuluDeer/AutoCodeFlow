@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
+import axios from 'axios';
 import { get, post, patch, del, formatApiError } from '../client';
 
 interface Task {
@@ -496,8 +497,16 @@ async function pollExecution(execId: string): Promise<void> {
         return;
       }
       spinner.text = `Status: ${exec.status}…`;
-    } catch {
-      // transient, keep polling
+    } catch (e: unknown) {
+      // 4xx（除 429）是确定性失败（token 失效/执行不存在等）——继续轮询只会
+      // 空转到 MAX_WAIT 并误报超时，掩盖真实错误；立即退出并透出后端消息。
+      const status = axios.isAxiosError(e) ? e.response?.status : undefined;
+      if (status && status >= 400 && status < 500 && status !== 429) {
+        spinner.fail('Waiting for execution failed');
+        console.error(chalk.red(formatApiError(e)));
+        process.exit(1);
+      }
+      // transient (network / 429 / 5xx), keep polling
     }
   }
   spinner.fail('Timed out waiting for execution');
