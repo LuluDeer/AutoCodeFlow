@@ -3,6 +3,7 @@ import { ExecutionContext, Logger } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import { NotificationConfigController } from "../notification-config.controller";
 import { NotificationConfigService } from "../notification-config.service";
+import { NotificationSilenceService } from "../notification-silence.service";
 import {
   NotificationService,
   AlertChannel,
@@ -29,6 +30,12 @@ const mockNotificationService = () => ({
   sendToChannels: jest.fn().mockResolvedValue({}),
 });
 
+const mockSilenceService = () => ({
+  listAll: jest.fn().mockResolvedValue([]),
+  create: jest.fn().mockResolvedValue({}),
+  remove: jest.fn().mockResolvedValue(true),
+});
+
 describe("NotificationConfigController", () => {
   let controller: NotificationConfigController;
   let svc: ReturnType<typeof mockConfigService>;
@@ -40,6 +47,7 @@ describe("NotificationConfigController", () => {
       providers: [
         { provide: NotificationConfigService, useFactory: mockConfigService },
         { provide: NotificationService, useFactory: mockNotificationService },
+        { provide: NotificationSilenceService, useFactory: mockSilenceService },
       ],
     }).compile();
 
@@ -235,6 +243,7 @@ describe("NotificationConfigController", () => {
         providers: [
           { provide: NotificationConfigService, useFactory: mockConfigService },
           NotificationService,
+          { provide: NotificationSilenceService, useFactory: mockSilenceService },
           { provide: WecomChannel, useFactory: stubChannel },
           { provide: DingtalkChannel, useFactory: stubChannel },
           { provide: EmailChannel, useFactory: stubChannel },
