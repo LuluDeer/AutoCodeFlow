@@ -650,6 +650,264 @@
       ],
       "title": "Event loop lag",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
+      "id": 4,
+      "panels": [],
+      "title": "容量水位（Capacity，OBS-05）",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "PG 连接池水位四 series（OBS-05；取数路径 DataSource.driver.master = pg.Pool 实时计数，见 README 4.2）。active = 已借出连接（totalCount - idle），idle = 空闲，waiting = 排队等连接的请求（>0 持续 5m 即饱和，建议告警），max = 有效容量（DB_POOL_SIZE）。max==0 表示池句柄不可读（此时其余项一并置 0，不参与利用率告警）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": { "A": 1 }, "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "green", "value": null } ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 37 },
+      "id": 401,
+      "options": {
+        "legend": { "calcs": [ "mean", "lastNotNull", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "autoflow_db_pool_active_connections{instance=~\"$instance\"}",
+          "legendFormat": "active {{instance}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "autoflow_db_pool_idle_connections{instance=~\"$instance\"}",
+          "legendFormat": "idle {{instance}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "autoflow_db_pool_waiting_requests{instance=~\"$instance\"}",
+          "legendFormat": "waiting {{instance}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "autoflow_db_pool_max_connections{instance=~\"$instance\"}",
+          "legendFormat": "max {{instance}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "PG pool 水位（active/idle/waiting vs max）",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "PG 连接池利用率水位 = Σ(active)/Σ(max)（所选实例合计）。阈值：80 黄（建议 active/max > 0.8 持续 5m 告警）、90 红。max==0（句柄不可读）时利用率显示 0%，请结合左侧面板 max 曲线判读。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 80 },
+              { "color": "red", "value": 90 }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 37 },
+      "id": 402,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "100 * sum(autoflow_db_pool_active_connections{instance=~\"$instance\"}) / clamp_min(sum(autoflow_db_pool_max_connections{instance=~\"$instance\"}), 1)",
+          "legendFormat": "pool utilization",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "PG pool 利用率（active/max %，阈值 80/90）",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "每执行器磁盘水位（OBS-05；executor 标签 = 唯一 address）。仅在线且心跳上报了 diskUsage 的执行器有 series（旧版执行器缺席而非 0）；DB 查询失败时保留上一轮值（略陈旧好过整组消失）。建议 >90 持续 10m 告警（黄色线为 80% 参考线）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": { "A": 1 }, "mode": "none" },
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 80 },
+              { "color": "red", "value": 90 }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 37 },
+      "id": 403,
+      "options": {
+        "legend": { "calcs": [ "lastNotNull", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "autoflow_executor_disk_usage_percent{instance=~\"$instance\"}",
+          "legendFormat": "{{executor}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Executor 磁盘水位（按执行器，阈值 80/90）",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "SSE 日志流槽位水位（BUG-05，TASK-008 槽位注册表）。active = 本进程当前连接数；limit = 本实例上限（SSE_MAX_STREAMS_GLOBAL）。多实例容量 = 各实例 limit 线性叠加，占用率 Σ(active)/Σ(limit) > 0.8 持续 10m 建议关注（配合 autoflow_sse_streams_rejected_total 观察拒绝速率）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": { "A": 1 }, "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "green", "value": null } ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 45 },
+      "id": 404,
+      "options": {
+        "legend": { "calcs": [ "mean", "lastNotNull", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "autoflow_sse_streams_active{instance=~\"$instance\"}",
+          "legendFormat": "active {{instance}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "autoflow_sse_streams_limit{instance=~\"$instance\"}",
+          "legendFormat": "limit {{instance}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "SSE 流水位（active vs limit）",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

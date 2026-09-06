@@ -136,9 +136,9 @@ export interface RuntimeGaugeSpec {
 
 export const RUNTIME_GAUGES: Record<RuntimeGaugeName, RuntimeGaugeSpec> = {
   autoflow_sse_streams_active: {
-    help: "Currently active SSE log-stream connections held by this process (TASK-008 slot registry)",
+    help: "Currently active SSE log-stream connections held by this process (TASK-008 slot registry) — stream water level; alert when sum(active)/sum(limit) > 0.8 sustained 10m",
   },
   autoflow_sse_streams_limit: {
-    help: "Configured global SSE log-stream concurrency limit of this instance (SSE_MAX_STREAMS_GLOBAL)",
+    help: "Configured global SSE log-stream concurrency limit of this instance (SSE_MAX_STREAMS_GLOBAL) — denominator of the stream utilization water level",
   },
 };

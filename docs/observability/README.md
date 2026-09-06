@@ -4,13 +4,15 @@ admin-api 的 Prometheus 指标（`GET /api/metrics`）配套的 Grafana 面板�
 
 | 文件 | 内容 |
 | --- | --- |
-| `grafana-dashboard.json` | 可导入的 Grafana dashboard（schemaVersion 39，uid `autoflow-obs-v1`）：调度健康 / 回调认证 / 进程资源 三组共 11 个数据面板 |
+| `grafana-dashboard.json` | 可导入的 Grafana dashboard（schemaVersion 39，uid `autoflow-obs-v1`）：调度健康 / 回调认证 / 进程资源 / 容量水位（OBS-05） 四组共 15 个数据面板 |
 | `alerting-rules.yml` | Prometheus rule 文件：6 条启用告警 + 1 条注释预留（ExecutorOffline） |
 | `README.md` | 本文件：抓取配置、导入/挂载步骤、指标字典、series 核对清单 |
 
 指标事实来源（唯一注册处）：
 `apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts`（独立 Registry，
-`collectDefaultMetrics` + 9 个业务 series）；端点定义在
+`collectDefaultMetrics` + 业务 series，逐字清单见第 4 节指标字典与附录 A）；
+SSE 两个 runtime gauge 的声明在同目录 `runtime-metrics.ts`（RUNTIME_GAUGES）。
+端点定义在
 `apps/admin-api/src/modules/metrics/metrics.controller.ts`（类级 `JwtAuthGuard`，
 全局前缀 `api` → 实际路径 `/api/metrics`，默认端口 `PORT=3105`）。
 
@@ -109,6 +111,9 @@ curl -fsS -X POST http://prometheus:9090/-/reload     # 需 --web.enable-lifecyc
   2. **回调认证**：auth rate by result 表格（instant）；七分类占比饼图
      （`increase(...[$__range])`）；非 ok 分类累计绝对值时序。
   3. **进程资源**：CPU（单核 %）、内存（RSS / V8 heap）、event loop lag。
+  4. **容量水位（OBS-05）**：PG 连接池水位四 series（max/active/idle/waiting
+     + 利用率 ratio stat，告警阈值 0.8）；executor 磁盘水位 per-executor
+     （阈值 90%）；SSE 流水位（active/limit + 占用率 stat，阈值 0.8）。
 
 ## 3. 告警规则挂载
 
@@ -165,6 +170,42 @@ rule_files:
 | `autoflow_sse_streams_active` | gauge | — | 本进程当前持有的 SSE 日志流连接数（占用/释放两点同步写，BUG-05）；多实例容量 = Σ(instance) |
 | `autoflow_sse_streams_limit` | gauge | — | 本实例全局 SSE 并发上限（SSE_MAX_STREAMS_GLOBAL，默认 64，BUG-05）；占用率 = active/limit |
 
+### 4.2 容量水位 Gauge 四件套（OBS-05）
+
+> 目标：把四个容量关键信号统一为"水位"语义（当前用量 / 上限，一眼可读），
+> help 文案均内嵌告警建议阈值。落点矩阵：
+
+| 信号 | 状态 | series | 水位读法 |
+| --- | --- | --- | --- |
+| BullMQ 队列深度 | 已有（本轮 help 升级为水位语义） | `autoflow_queue_depth{state}` | 积压水位 = `waiting`；告警 `waiting > 100` 持续 10m（AUTOFLOW_QUEUE_BACKLOG 已启用） |
+| SSE 流槽位 | 已有（BUG-05 落地，本轮 help 升级） | `autoflow_sse_streams_active` / `autoflow_sse_streams_limit` | 占用率 = Σ(active)/Σ(limit)（per-instance 线性叠加）；建议 > 0.8 持续 10m 关注 |
+| PG 连接池水位 | **本轮新增** | `autoflow_db_pool_max_connections` / `autoflow_db_pool_active_connections` / `autoflow_db_pool_idle_connections` / `autoflow_db_pool_waiting_requests` | 利用率 = active/max；**建议 active/max > 0.8 持续 5m 告警**；waiting > 0 持续 5m = 饱和（有人在排队等连接），建议告警 |
+| executor 磁盘水位 | **本轮新增**（数据源已有：心跳字段） | `autoflow_executor_disk_usage_percent{executor="<address>"}` | 每执行器磁盘百分数（0-100）；**建议 > 90 持续 10m 告警** |
+
+PG 连接池取数路径（已在依赖源码逐层核实，无新增 DI token）：
+`Repository<Executor>`（MetricsModule 既有 `forFeature` 注入，与 MetricsService
+同模式）→ `manager.connection`（typeorm 0.3.31 `EntityManager.connection`，
+即 app.module `TypeOrmModule.forRootAsync` 建立的默认 DataSource）→
+`driver.master`（PostgresDriver `connect()` 后挂载的 node-pg Pool）→
+`totalCount / idleCount / waitingCount / options.max`（pg Pool 实时字段，
+`options.max` 即 PERF-04 `extra.max` = `DB_POOL_SIZE`，默认 20）。
+语义：`active = totalCount - idleCount`（已借出连接数）。
+
+PG 池 series 的可读性约定：**`max_connections == 0` 表示池句柄不可读**
+（未完成连接 / 非 PG 驱动 / 进程启动早期），此时其余三项一并置 0——
+与 `autoflow_queue_up == 0` 同一姿态，利用率告警须以 `max > 0` 为前提。
+
+executor 磁盘 series 的呈现约定（如实，不强造数据）：
+
+- 仅产出**在线**（`Executor.status=online`）且心跳上报了 `diskUsage`
+  的执行器（`executor.controller.ts` heartbeat 白名单字段，落
+  `executors.diskUsage` 列）；旧版执行器未上报 → **series 缺席而非 0**；
+- 每次抓取 reset+set 重建：执行器下线/换址后其 series 随抓取消失
+  （Prometheus staleness 收口）；DB 查询失败时保留上一轮值（略陈旧
+  好过整组消失），不会让 `/api/metrics` 因该可选项失败而 500；
+- 该 series 为 per-executor label（label 值 = 唯一 `address`），执行器
+  数量级为个位~十位，cardinality 可控。
+
 进程默认指标（`collectDefaultMetrics`，prom-client ^15.1.3；面板用到以下
 名称，已在 `node_modules/prom-client/lib/metrics/` 核对）：
 
@@ -189,6 +230,26 @@ python3 -c "import json; json.load(open('docs/observability/grafana-dashboard.js
 python3 -c "import yaml; yaml.safe_load(open('docs/observability/alerting-rules.yml'))"  # OK
 # promtool：本机未安装，未跑 `promtool check rules`（yml 按官方 rule 语法编写）
 ```
+
+### 5.1 OBS-05 容量水位轮验证（2026-09-06）
+
+```bash
+# dashboard JSON 追加 row 4 + 面板 401~404 后语法校验
+node -e "JSON.parse(require('fs').readFileSync('docs/observability/grafana-dashboard.json','utf8'))"  # OK
+cd apps/admin-api && npx tsc --noEmit -p tsconfig.json   # exit 0
+cd apps/admin-api && npx jest --silent
+#   Test Suites: 66 passed, 66 total
+#   Tests:       1258 passed, 1258 total（含 OBS-05 新增 7 例：池水位取数/
+#   句柄不可读置 0/active 钳 0/磁盘 per-executor 与 stale 收口/查询失败保留
+#   旧值/未上报不造 0/where 查询契约）
+cd apps/admin-api && npm run lint   # 0 问题
+```
+
+新增 series 取数路径已在依赖源码/运行时核实：pg.Pool 的
+`totalCount/idleCount/waitingCount` 为实时 number（node 运行时验证），
+`options.max` 反映 PERF-04 `extra.max`；typeorm 0.3.31
+`EntityManager.connection: DataSource`；PostgresDriver `connect()` 后
+`driver.master` 挂载 pg.Pool。
 
 面板 PromQL 中出现的全部 series 名与 label 值均已与附录 A 清单逐一比对，
 无对不上的项；不确定的 series 一律未做成面板（见附录 A 备注）。
@@ -217,7 +278,10 @@ grep -rn 'QUEUE_STATES' apps/admin-api/src/modules/metrics/prometheus-metrics.se
 | 8 | `autoflow_queue_up` | — | 同上 L105 | 105、SCHEDULER_DOWN、TARGET_DOWN、$instance 变量 | ✅ |
 | 9 | `autoflow_execution_callback_auth_total` | `ok`/`v1_expired`/`v1_binding_mismatch`/`v1_bad_signature`/`legacy_shared_invalid`/`missing_token`/`bad_address`（execution-callback-metrics.service.ts L25-40） | prometheus-metrics.service.ts L118 | 201、202、203、三条 AUTH 告警 | ✅ |
 | 10 | `process_cpu_seconds_total` 等默认指标 | — | prom-client ^15.1.3 `lib/metrics/`（processCpuTotal.js 等） | 301、302、303 | ✅ |
-| — | 执行器在线 series | — | 全库 grep `autoflow_` 仅命中 metrics 模块 → **不存在** | EXECUTOR_OFFLINE 注释预留 | ✅（按任务要求注释说明） |
+| 11 | `autoflow_sse_streams_active` / `autoflow_sse_streams_limit` | — | runtime-metrics.ts `RUNTIME_GAUGES`（渲染于 prometheus-metrics.service.ts） | 404 | ✅ |
+| 12 | `autoflow_db_pool_max_connections` / `autoflow_db_pool_active_connections` / `autoflow_db_pool_idle_connections` / `autoflow_db_pool_waiting_requests` | — | prometheus-metrics.service.ts（OBS-05，取数路径见 4.2） | 401、402 | ✅ |
+| 13 | `autoflow_executor_disk_usage_percent` | `executor=<address>`（动态集合：在线且上报 diskUsage 的执行器，见 4.2 呈现约定） | prometheus-metrics.service.ts（OBS-05） | 403 | ✅ |
+| — | 执行器在线 series | — | 全库 grep `autoflow_` 仍无在线状态 series（OBS-05 的 disk series 是心跳上报的磁盘水位数值，**不是**在线状态） | EXECUTOR_OFFLINE 注释预留 | ✅（按任务要求注释说明） |
 
 备注：
 
@@ -226,7 +290,8 @@ grep -rn 'QUEUE_STATES' apps/admin-api/src/modules/metrics/prometheus-metrics.se
 - ② tick 耗时 p95：源码只有 counter（累计）+ gauge（最近一次），**无
   histogram bucket**，任何 p95 表达式都不可实现；面板 102 以「窗口均值 +
   last tick」如实替代并标注。
-- ③ `docs/api-reference.md` L302 的 series 清单与源码一致（含第九轮新增的
-  callback auth 七分类），无出入。
+- ③ `docs/api-reference.md` L302 的 series 清单与第十轮源码一致；**OBS-05
+  新增的 5 个 series（4.2 节）尚未回补该文件**（本轮改动范围限定
+  docs/observability/，回补待办）。
 - ④ 端点路径：`main.ts` `setGlobalPrefix("api")` + `@Controller("metrics")`
   → `/api/metrics`；默认端口 3105（`main.ts` L319）。
