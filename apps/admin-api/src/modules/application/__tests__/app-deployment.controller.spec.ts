@@ -28,14 +28,13 @@ describe("AppDeploymentController RBAC (R1)", () => {
   });
   const mockExec = () => ({ validateExecutorToken: jest.fn() });
 
-  let controller: AppDeploymentController;
   let svc: ReturnType<typeof mockSvc>;
   let exec: ReturnType<typeof mockExec>;
 
   beforeEach(() => {
     svc = mockSvc();
     exec = mockExec();
-    controller = new AppDeploymentController(
+    void new AppDeploymentController(
       svc as unknown as AppDeploymentService,
       exec as unknown as ExecutorService,
     );
