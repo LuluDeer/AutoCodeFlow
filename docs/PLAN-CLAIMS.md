@@ -44,7 +44,7 @@
 | FEAT-06 | P2 | done | session-B（员工 005 承接） | 2026-09-07 04:1x | admin-api task 实体+scheduler+DTO + admin-web 表单/详情 | 见变更日志 | maintenanceWindows cron 窗口（start/end 触达开关窗+7 天回看）enqueue 顶部跳过+triggersSkippedMaintenance 指标+表单 Form.List/详情 Tag；后端 33 例前端 10 例 |
 | FEAT-07 | P2 | unclaimed | | | admin-api 新模块 event-subscriptions | | Webhook 出站事件 |
 | FEAT-08 | P2 | done | session-B（员工 005 承接） | 2026-09-07 01:2x | admin-api config 模块 + admin-web settings/api | fd99579 | 回滚语义矩阵（create→删除/update 无旧值 400/delete→重建/保留元数据）+ 掩码哨兵拒绝（S3 镜像防线）+ action=rollback 独立留痕 + 前端行级回滚入口（isAdmin+Popconfirm+逐行 loading）；后端 13 例前端 4 例 |
-| FEAT-09 | P3 | unclaimed | | | admin-web 全局组件 | | 全局搜索/命令面板 |
+| FEAT-09 | P3 | in_progress | session-B（员工 005 承接） | 2026-09-07 05:0x | admin-web 全局组件 + router | | ⌘K 命令面板：任务/执行器/应用/执行记录模糊搜索直达（走既有列表 API，零后端改动） |
 | FEAT-10 | P3 | unclaimed | | | admin-api notification | | 通知模板变量 |
 | FEAT-11 | P3 | unclaimed | | | task 实体 + admin-web | | 任务 runbook 字段 |
 | FEAT-12 | P3 | done | main-A | 2026-09-07 | registry-pypi main.py + tests | f93999b | 索引页增强：版本聚合/体积/UTC 时间/计数；PEP 503 锚点语义不变；+2 测试 52/52 |
@@ -85,7 +85,7 @@
 | ARCH-24 | P3 | unclaimed | | | admin-api TypeORM 配置 | | 读写分离（可选配置） |
 | ARCH-25 | P3 | unclaimed | | | 双执行器 + admin-api | | 插件化任务 runtime |
 | ARCH-26 | P2 | unclaimed | | | admin-web 渐进改造 | | TanStack Query 渐进引入 |
-| ARCH-27 | P2 | unclaimed | | | admin-api configuration + eslint 规则 | | process.env 直读收口 lint |
+| ARCH-27 | P2 | in_progress | session-B（员工 001 承接） | 2026-09-07 05:0x | admin-api configuration.ts + eslint 配置/规则 + 违规点收口 | | process.env 直读收口：审计现存直读点（@Throttle 装饰器类 W-22 前科），lint 规则禁止模块内直读+白名单豁免，配置项清单文档 |
 | UI-01 | P1 | unclaimed | | | admin-web 全局样式 + antd token | | 设计系统令牌落地（dark algorithm） |
 | UI-02 | P1 | unclaimed | | | admin-web store + 布局 | | 明暗主题切换 |
 | UI-03 | P1 | unclaimed | | | admin-web layouts + router | | 布局升级（侧边栏分组/折叠/PageHeader） |
@@ -149,3 +149,5 @@
 - 2026-09-07 session-B：DOC-03 复核销账（ARCH-20 批次已实现，selftest 过）；认领 QA-06（001）/FEAT-06（005）→ in_progress。
 
 - 2026-09-07 session-B：批 B3 done=FEAT-06/QA-06。基线：admin-api 1291/67 · admin-web 131/131。
+
+- 2026-09-07 session-B：认领 ARCH-27（001）/FEAT-09（005）→ in_progress。
