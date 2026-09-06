@@ -72,6 +72,12 @@ export class TaskExecution {
   @Column({ nullable: true }) errorMessage: string;
   @Column({ type: "varchar", nullable: true })
   failureReason: ExecutionFailureReason | null;
+  /**
+   * 改动2（可观测性补齐）：执行器回调上报的原始进程退出码（nullable=未上报）。
+   * failureReason 是由 errorMessage/logs/exitCode 推断的分类，本列保留原始
+   * 退出码用于失败溯源；幂等迁移见 migrations/1788800000000-AddExecutionExitCode.ts。
+   */
+  @Column({ type: "int", nullable: true }) exitCode: number | null;
   @Column({ type: "text", nullable: true }) aiAnalysis: string;
   @Column({ nullable: true }) triggerType: string;
   @Column({ nullable: true }) taskVersion: string;

@@ -4,6 +4,11 @@ import { PrometheusMetricsService } from "../prometheus-metrics.service";
 import { SchedulerMetricsService } from "../../scheduler/scheduler-metrics.service";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { ExecutionCallbackMetricsService } from "../../task/execution-callback-metrics.service";
+// 可观测性补齐轮：运行时计数器模块级入口（Task/Notification 埋点的同一实例）
+import {
+  recordRuntime,
+  resetRuntimeMetrics,
+} from "../runtime-metrics-entry";
 
 /**
  * R7: prom-client exposition 端点测试。
@@ -184,6 +189,115 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
         /autoflow_execution_callback_auth_total\{result="v1_expired"\} \d+/g,
       ),
     ).toHaveLength(1);
+  });
+
+  // 可观测性补齐轮：4 个运行时计数器（执行结果成败 / SSE 并发拒绝 /
+  // 通知投递结果 / callback 业务结果分类）——埋点走模块级入口
+  // recordRuntime（TaskService / NotificationService 的同一入口），
+  // 本 describe 只验证 snapshot→render 映射与 series 稳定性。
+  describe("runtime counters (execution result / SSE reject / notification / callback business)", () => {
+    // 模块级计数跨用例/文件共享，进入与离开本组用例各显式重置一次。
+    beforeEach(() => {
+      resetRuntimeMetrics();
+    });
+    afterEach(() => {
+      resetRuntimeMetrics();
+    });
+
+    it("renders zero baselines for every known series before any observation", async () => {
+      const svc = makeService();
+      const text = await svc.render();
+      for (const status of ["success", "failed", "timeout"]) {
+        expect(text).toContain(
+          `autoflow_execution_result_total{status="${status}"} 0`,
+        );
+      }
+      expect(text).toContain("autoflow_sse_streams_rejected_total 0");
+      for (const channel of ["email", "slack", "dingtalk", "wecom", "webhook"]) {
+        for (const result of ["success", "failure"]) {
+          expect(text).toContain(
+            `autoflow_notification_delivery_total{channel="${channel}",result="${result}"} 0`,
+          );
+        }
+      }
+      for (const result of [
+        "accepted",
+        "duplicate",
+        "not_found",
+        "address_mismatch",
+        "address_mismatch_missing_address",
+        "error",
+      ]) {
+        expect(text).toContain(
+          `autoflow_callback_business_total{result="${result}"} 0`,
+        );
+      }
+    });
+
+    it("maps runtime observations to prometheus counter series", async () => {
+      const svc = makeService();
+      recordRuntime("autoflow_execution_result_total", { status: "failed" });
+      recordRuntime("autoflow_execution_result_total", { status: "failed" });
+      recordRuntime("autoflow_execution_result_total", { status: "success" });
+      recordRuntime("autoflow_sse_streams_rejected_total");
+      recordRuntime("autoflow_sse_streams_rejected_total");
+      recordRuntime("autoflow_notification_delivery_total", {
+        channel: "email",
+        result: "success",
+      });
+      recordRuntime("autoflow_notification_delivery_total", {
+        channel: "webhook",
+        result: "failure",
+      });
+      recordRuntime("autoflow_callback_business_total", { result: "accepted" });
+
+      const text = await svc.render();
+      expect(text).toContain("# TYPE autoflow_execution_result_total counter");
+      expect(text).toContain(
+        'autoflow_execution_result_total{status="failed"} 2',
+      );
+      expect(text).toContain(
+        'autoflow_execution_result_total{status="success"} 1',
+      );
+      expect(text).toContain("autoflow_sse_streams_rejected_total 2");
+      expect(text).toContain(
+        'autoflow_notification_delivery_total{channel="email",result="success"} 1',
+      );
+      expect(text).toContain(
+        'autoflow_notification_delivery_total{channel="webhook",result="failure"} 1',
+      );
+      expect(text).toContain(
+        'autoflow_callback_business_total{result="accepted"} 1',
+      );
+    });
+
+    it("keeps runtime series present and monotonic across scrapes", async () => {
+      const svc = makeService();
+      const first = await svc.render();
+      expect(first).toContain(
+        'autoflow_callback_business_total{result="not_found"} 0',
+      );
+      recordRuntime("autoflow_callback_business_total", { result: "not_found" });
+      recordRuntime("autoflow_callback_business_total", { result: "not_found" });
+      const second = await svc.render();
+      expect(second).toContain(
+        'autoflow_callback_business_total{result="not_found"} 2',
+      );
+      expect(
+        second.match(
+          /autoflow_callback_business_total\{result="not_found"\} \d+/g,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("ignores unknown counter names (record never throws)", async () => {
+      const svc = makeService();
+      recordRuntime(
+        "autoflow_not_a_real_metric" as never,
+        {} as never,
+      );
+      expect(await svc.render()).not.toContain("autoflow_not_a_real_metric");
+    });
   });
 
   it("exposes queue depth gauges and autoflow_queue_up=1 when Redis is readable", async () => {

@@ -7,6 +7,8 @@ import {
   EXECUTION_CALLBACK_AUTH_RESULTS,
   ExecutionCallbackMetricsService,
 } from "../task/execution-callback-metrics.service";
+import { RUNTIME_COUNTERS, RuntimeCounterName } from "./runtime-metrics";
+import { getRuntimeCountersSnapshot } from "./runtime-metrics-entry";
 
 /** BullMQ 队列深度状态维度（与 SchedulerService.getQueueDepth 的返回键一致） */
 const QUEUE_STATES = [
@@ -43,6 +45,13 @@ export class PrometheusMetricsService {
   private readonly queueUp: Gauge;
   private readonly queueDepth: Gauge;
   private readonly callbackAuth: Counter;
+  /**
+   * 可观测性补齐轮：4 个运行时计数器（执行结果成败 / SSE 并发拒绝 /
+   * 通知投递结果 / callback 业务结果分类）。埋点在 TaskService /
+   * NotificationService（模块级入口 runtime-metrics-entry，见该文件注释），
+   * 此处只做 snapshot→render 映射，与 scheduler/callback-auth 同一模式。
+   */
+  private readonly runtimeCounters: Record<RuntimeCounterName, Counter>;
   private readonly _enabled: boolean;
   /** N31: 进行中的 render（并发抓取共享同一次重建，见 render 注释） */
   private renderInFlight: Promise<string> | null = null;
@@ -120,6 +129,19 @@ export class PrometheusMetricsService {
       labelNames: ["result"] as const,
       registers: [this.registry],
     });
+    // 运行时计数器声明集中在 runtime-metrics.ts（labelNames 空数组时
+    // prom-client 对无标签 Counter 的 inc() 同样成立）。
+    this.runtimeCounters = Object.fromEntries(
+      (Object.keys(RUNTIME_COUNTERS) as RuntimeCounterName[]).map((name) => [
+        name,
+        new Counter({
+          name,
+          help: RUNTIME_COUNTERS[name].help,
+          labelNames: RUNTIME_COUNTERS[name].labelNames as string[],
+          registers: [this.registry],
+        }),
+      ]),
+    ) as Record<RuntimeCounterName, Counter>;
   }
 
   /** METRICS_PROMETHEUS_ENABLED 开关（false 时控制器对端点返回 404） */
@@ -191,6 +213,35 @@ export class PrometheusMetricsService {
     this.callbackAuth.reset();
     for (const result of EXECUTION_CALLBACK_AUTH_RESULTS) {
       this.callbackAuth.inc({ result }, cb.auth[result]);
+    }
+
+    // 可观测性补齐轮：运行时计数器——同一 reset+inc 快照模式；已知标签
+    // 组合全部显式 inc（inc(0) 保留 0 值 series，series 集合稳定），快照中
+    // 观测到的额外组合（理论上不出现，标签值均为固定枚举）一并呈现，
+    // 保证抓取侧取值序列单调。
+    const runtime = getRuntimeCountersSnapshot();
+    for (const name of Object.keys(
+      this.runtimeCounters,
+    ) as RuntimeCounterName[]) {
+      const counter = this.runtimeCounters[name];
+      const spec = RUNTIME_COUNTERS[name];
+      counter.reset();
+      const byLabel = runtime.get(name);
+      const rendered = new Set<string>();
+      for (const labels of spec.labelValueSets) {
+        counter.inc(
+          labels as Record<string, string>,
+          byLabel?.get(JSON.stringify(labels)) ?? 0,
+        );
+        rendered.add(JSON.stringify(labels));
+      }
+      if (byLabel) {
+        for (const [key, value] of byLabel) {
+          if (!rendered.has(key)) {
+            counter.inc(JSON.parse(key) as Record<string, string>, value);
+          }
+        }
+      }
     }
 
     const depth = await this.schedulerService.getQueueDepth();
