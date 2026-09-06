@@ -44,26 +44,12 @@ export async function pageLogLines(
   });
 }
 
-/** S-01: Express middleware — validates Bearer token from EXECUTOR_SHARED_TOKEN env. */
+/** Resolve the executor's shared token from env/config. Env priority mirrors
+ *  config.ts. Consumed by /health (routes/health.ts) to report whether auth is
+ *  configured. The /api/* Bearer gate itself lives in middleware/auth.ts
+ *  (verifyToken) — the single, timing-safe, fail-closed check. */
 export function getExecutorAuthToken(): string {
   return process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || config.token || '';
-}
-
-export function executorAuthMiddleware(req: Request, res: Response, next: () => void): void {
-  // Read env at call time so tests can set/unset tokens per-case;
-  // fall back to the config value (populated from CLI --token or config file).
-  const secret = getExecutorAuthToken();
-  if (!secret) {
-    next(); // dev mode: no secret configured
-    return;
-  }
-  const auth = req.headers.authorization || '';
-  const [scheme, token] = auth.split(' ');
-  if (scheme?.toLowerCase() !== 'bearer' || token !== secret) {
-    res.status(401).json({ error: 'Invalid or missing executor token' });
-    return;
-  }
-  next();
 }
 
 logsRouter.get('/logs/:executionId', async (req: Request, res: Response) => {
