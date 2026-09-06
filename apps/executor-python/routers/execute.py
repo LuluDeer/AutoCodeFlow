@@ -576,6 +576,42 @@ async def kill_running_task_processes() -> int:
     return killed
 
 
+async def await_background_tasks_after_kill(timeout_seconds: float | None = None) -> int:
+    """QA8 (shutdown ordering): after the tree-kill, give the surviving
+    ``_run_and_callback`` workers a bounded window to deliver (or persist)
+    their terminal callbacks BEFORE the process exits.
+
+    ``kill_running_task_processes`` only kills OS processes — the worker
+    coroutine observes the child's exit afterwards and only then produces
+    the terminal callback. The shutdown sequence used to go straight from
+    the kill to ``stop_callback_retry_task`` (which drains only the
+    persisted-file REPLAY loop) and exit, so these live callbacks were
+    neither delivered nor persisted: the execution stayed RUNNING on admin
+    until the stale sweep repaired it, and the real killed/timeout
+    classification was lost.
+
+    Workers still pending when the window expires are cancelled — with the
+    CancelledError persistence guard in ``_run_and_callback`` their payloads
+    still reach disk for the next process's replay. Returns the number of
+    workers that finished within the window. (``timeout_seconds`` defaults
+    at call time to CALLBACK_DRAIN_TIMEOUT_SECONDS — the constant is defined
+    further down in this module.)"""
+    window = timeout_seconds if timeout_seconds is not None else CALLBACK_DRAIN_TIMEOUT_SECONDS
+    # isinstance guard: only real asyncio Tasks are awaitable/cancellable —
+    # tests may leave stub handles in the set, and a stray non-Task entry must
+    # not crash shutdown.
+    pending = [t for t in list(_background_tasks)
+               if isinstance(t, asyncio.Task) and not t.done()]
+    if not pending:
+        return 0
+    done, still_pending = await asyncio.wait(pending, timeout=window)
+    if still_pending:
+        for t in still_pending:
+            t.cancel()
+        await asyncio.gather(*still_pending, return_exceptions=True)
+    return len(done)
+
+
 @router.post('/execute', dependencies=[Depends(verify_token)])
 async def execute(req: ExecuteRequest):
     if sched.get_running_count() >= settings.max_concurrent_tasks:
@@ -1125,11 +1161,21 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
             # snapshot stays as the fallback for .env-file-only deployments
             # where os.environ carries nothing.
             token = await get_current_token() or _get_callback_token()
-            await _send_callback_with_retry(
-                build_admin_api_url('/executions/callback'),
-                payload,
-                token,
-            )
+            try:
+                await _send_callback_with_retry(
+                    build_admin_api_url('/executions/callback'),
+                    payload,
+                    token,
+                )
+            except asyncio.CancelledError:
+                # QA8: 停机 worker-flush 窗口耗尽被取消——投递已不可能，至少把
+                # 终态载荷落盘交给下个进程重放（否则该执行只能等 admin 的
+                # stale sweep 修复，真实 killed/timeout 分类随之丢失）。
+                _persist_giving_up(
+                    payload,
+                    build_admin_api_url('/executions/callback'),
+                )
+                raise
     finally:
         # E1: terminal (callback sent or given up) — stop reporting liveness.
         unregister_live_execution(req.executionId)
