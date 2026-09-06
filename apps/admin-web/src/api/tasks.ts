@@ -22,6 +22,7 @@ export interface Task {
   priority?: string | number;
   maxRetry: number;
   retryDelay?: number;
+  retryableErrors?: string[];
   timeout: number;
   timeoutSeconds?: number;
   applicationId?: string | null;

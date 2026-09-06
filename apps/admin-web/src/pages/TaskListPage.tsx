@@ -5,7 +5,7 @@ import {
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
-  DeleteOutlined, EyeOutlined, EditOutlined,
+  CopyOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
   CheckSquareOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
@@ -142,6 +142,54 @@ export default function TaskListPage() {
     catch (err: unknown) { message.error(getErrMsg(err, '删除失败')); }
   };
 
+  // CORE-03-lite：一键克隆——复制任务全部可编辑字段生成 "-copy-" 副本，
+  // 服务端字段（id/createdAt/status 等）不回传；glue 源码一并复制。
+  const [cloningId, setCloningId] = useState<string | null>(null);
+  const handleClone = async (r: Task) => {
+    if (cloningId) return;
+    setCloningId(r.id);
+    try {
+      const src = await tasksApi.get(r.id);
+      const cloneName = `${r.name}-copy-${String(Date.now()).slice(-4)}`;
+      const payload: Record<string, unknown> = {
+        name: cloneName,
+        description: src.description,
+        runtime: src.runtime,
+        entrypoint: src.entrypoint,
+        requirements: src.requirements ?? [],
+        triggerType: src.triggerType,
+        cronExpression: src.cronExpression,
+        timezone: src.timezone,
+        fixedRate: src.fixedRate,
+        timeout: src.timeoutSeconds ?? src.timeout,
+        maxRetry: src.maxRetry,
+        retryDelay: src.retryDelay,
+        retryableErrors: src.retryableErrors,
+        priority: typeof src.priority === 'number' ? src.priority : undefined,
+        params: src.params,
+        dependencies: src.dependencies,
+        executeMode: src.executeMode,
+        executorId: src.executorId,
+        executorGroup: src.executorGroup,
+        executorTags: src.executorTags,
+        gitRepo: src.gitRepo,
+        gitBranch: src.gitBranch,
+        gitCommit: src.gitCommit,
+        glueSource: src.glueSource,
+        glueLanguage: src.glueLanguage,
+        applicationId: src.applicationId,
+      };
+      Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+      const created = await tasksApi.create(payload);
+      message.success(`已克隆为 ${cloneName}（参数与依赖引用原样复制）`);
+      nav(`/tasks/${created.id}`);
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '克隆失败'));
+    } finally {
+      setCloningId(null);
+    }
+  };
+
   const columns = [
     {
       title: '任务名称',
@@ -257,6 +305,13 @@ export default function TaskListPage() {
           </Tooltip>
           <Tooltip title="编辑">
             <Button type="text" size="small" icon={<EditOutlined />} onClick={() => nav(`/tasks/${r.id}/edit`)} />
+          </Tooltip>
+          <Tooltip title="克隆（复制全部配置创建副本）">
+            <Button
+              type="text" size="small" icon={<CopyOutlined />}
+              loading={cloningId === r.id}
+              onClick={() => handleClone(r)}
+            />
           </Tooltip>
           <Tooltip title="立即执行">
             <Button
