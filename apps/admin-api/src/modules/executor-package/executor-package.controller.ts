@@ -18,8 +18,9 @@ import {
   Logger,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { memoryStorage } from "multer";
+import { diskStorage } from "multer";
 import { Response } from "express";
+import { pipeline } from "stream/promises";
 import * as jwt from "jsonwebtoken";
 import { UnauthorizedException } from "@nestjs/common";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -43,6 +44,7 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { ExecutorPackageService } from "./executor-package.service";
+import { PACKAGE_UPLOAD_TMP_DIR } from "./executor-package.service";
 import { ExecutorService } from "../executor/executor.service";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -74,9 +76,13 @@ export class ExecutorPackageController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  // R9: diskStorage instead of memoryStorage — a 500 MB upload used to be
+  // fully resident in the Node heap (buffer + hash copy). The file lands in
+  // PACKAGE_UPLOAD_TMP_DIR (same volume as the final destination, so the
+  // service's persist step is an atomic rename) and is streamed for hashing.
   @UseInterceptors(
     FileInterceptor("file", {
-      storage: memoryStorage(),
+      storage: diskStorage({ destination: PACKAGE_UPLOAD_TMP_DIR }),
       limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
     }),
   )
@@ -183,7 +189,10 @@ export class ExecutorPackageController {
   })
   @ApiParam({ name: "id", description: "Package ID" })
   @ApiResponse({ status: 200, description: "File content" })
-  @ApiResponse({ status: 401, description: "Invalid access JWT or executor token" })
+  @ApiResponse({
+    status: 401,
+    description: "Invalid access JWT or executor token",
+  })
   @ApiResponse({ status: 404, description: "Package or file not found" })
   async download(
     @Param("id", ParseUUIDPipe) id: string,
@@ -192,7 +201,11 @@ export class ExecutorPackageController {
   ): Promise<void> {
     let authorized = false;
     try {
-      await verifyExecutorToken(authHeader, this.configService, this.systemConfigService);
+      await verifyExecutorToken(
+        authHeader,
+        this.configService,
+        this.systemConfigService,
+      );
       authorized = true;
     } catch {
       // Fall back to the management access JWT.
@@ -218,14 +231,26 @@ export class ExecutorPackageController {
       );
     }
 
-    const { buffer, pkg } = await this.svc.getFileBuffer(id);
+    // R9: stream the file to the client instead of readFileSync-ing it into
+    // one Buffer. Headers/auth/404 semantics unchanged (Content-Length comes
+    // from the on-disk stat, filename/type from the stored row).
+    const { stream, fileSize, pkg } = await this.svc.openPackageFile(id);
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${pkg.originalFilename ?? pkg.filename ?? `${pkg.name}-${pkg.version}`}"`,
     );
     res.setHeader("Content-Type", pkg.mimeType ?? "application/octet-stream");
-    res.setHeader("Content-Length", buffer.length);
-    res.end(buffer);
+    res.setHeader("Content-Length", fileSize);
+    try {
+      await pipeline(stream, res);
+    } catch (err: unknown) {
+      // Headers are already sent at this point; surface the abort in logs
+      // instead of leaking a stack trace through the response.
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Download stream for package ${pkg.id} ended with error: ${msg}`,
+      );
+    }
   }
 
   @Patch(":id/deprecate")
@@ -344,10 +369,11 @@ export class ExecutorPackageController {
     { executorId: string; address: string; success: boolean; error?: string }[]
   > {
     const executors = await this.executorService.findAll();
-    const sharedToken = (await getExecutorSharedToken(
-      this.configService,
-      this.systemConfigService,
-    )) ?? undefined;
+    const sharedToken =
+      (await getExecutorSharedToken(
+        this.configService,
+        this.systemConfigService,
+      )) ?? undefined;
     return this.svc.pushToExecutors(id, executorIds, executors, sharedToken);
   }
 }

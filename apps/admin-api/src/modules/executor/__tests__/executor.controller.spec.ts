@@ -435,28 +435,39 @@ describe("ExecutorController", () => {
           { provide: APP_GUARD, useValue: jwtGuard },
           { provide: APP_GUARD, useClass: RolesGuard },
         ],
-      }).overrideGuard(JwtAuthGuard).useValue(jwtGuard).compile();
+      })
+        .overrideGuard(JwtAuthGuard)
+        .useValue(jwtGuard)
+        .compile();
       app = module.createNestApplication();
       await app.init();
     });
 
-    afterEach(async () => { await app?.close(); });
+    afterEach(async () => {
+      await app?.close();
+    });
 
     it("returns 403 to a normal user without exposing credentials", async () => {
-      const res = await request(app.getHttpServer()).get("/executors/install-cmd")
-        .set("x-test-role", "user").expect(403);
+      const res = await request(app.getHttpServer())
+        .get("/executors/install-cmd")
+        .set("x-test-role", "user")
+        .expect(403);
       expect(svc.getInstallCmd).not.toHaveBeenCalled();
       expect(JSON.stringify(res.body)).not.toContain("shared-token");
     });
 
     it("returns 401 without authentication", async () => {
-      await request(app.getHttpServer()).get("/executors/install-cmd").expect(401);
+      await request(app.getHttpServer())
+        .get("/executors/install-cmd")
+        .expect(401);
       expect(svc.getInstallCmd).not.toHaveBeenCalled();
     });
 
     it("returns the unchanged command/token/URL structure to an admin", async () => {
-      const res = await request(app.getHttpServer()).get("/executors/install-cmd")
-        .set("x-test-role", "admin").expect(200);
+      const res = await request(app.getHttpServer())
+        .get("/executors/install-cmd")
+        .set("x-test-role", "admin")
+        .expect(200);
       expect(res.body).toEqual(response);
       expect(res.body.cmd).toContain("/api/executors/install.sh");
       expect(res.body.cmd).toContain("--secret 'shared-token'");
@@ -466,7 +477,12 @@ describe("ExecutorController", () => {
 
   describe("RBAC — install command is ADMIN-only", () => {
     it("declares ADMIN role metadata", () => {
-      expect(Reflect.getMetadata(ROLES_KEY, ExecutorController.prototype.getInstallCmd)).toEqual(["admin"]);
+      expect(
+        Reflect.getMetadata(
+          ROLES_KEY,
+          ExecutorController.prototype.getInstallCmd,
+        ),
+      ).toEqual(["admin"]);
     });
   });
 

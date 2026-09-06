@@ -878,9 +878,9 @@ describe("TaskService (__tests__)", () => {
 
     it("returns NotFoundException when an execution belongs to another task", async () => {
       execRepo.findOne.mockResolvedValue(null);
-      await expect(service.getExecution("exec-1", "other-task")).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.getExecution("exec-1", "other-task"),
+      ).rejects.toThrow(NotFoundException);
       expect(execRepo.findOne).toHaveBeenCalledWith({
         where: { id: "exec-1", taskId: "other-task" },
       });
@@ -1678,7 +1678,9 @@ describe("TaskService (__tests__)", () => {
           }),
         ).toBe(1);
         expect(
-          runtimeCount("autoflow_execution_result_total", { status: "success" }),
+          runtimeCount("autoflow_execution_result_total", {
+            status: "success",
+          }),
         ).toBe(1);
         expect(
           runtimeCount("autoflow_execution_result_total", { status: "failed" }),
@@ -1720,7 +1722,9 @@ describe("TaskService (__tests__)", () => {
           }),
         ).toBe(0);
         expect(
-          runtimeCount("autoflow_execution_result_total", { status: "success" }),
+          runtimeCount("autoflow_execution_result_total", {
+            status: "success",
+          }),
         ).toBe(0);
       });
 
@@ -1780,7 +1784,9 @@ describe("TaskService (__tests__)", () => {
           }),
         ).toBe(1);
         expect(
-          runtimeCount("autoflow_execution_result_total", { status: "success" }),
+          runtimeCount("autoflow_execution_result_total", {
+            status: "success",
+          }),
         ).toBe(1);
       });
 
@@ -2323,9 +2329,9 @@ describe("TaskService (__tests__)", () => {
         ]);
 
         expect(result[0].success).toBe(true);
-        expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
-          1,
-        );
+        expect(
+          notificationService.notifyFailureWithConfig,
+        ).toHaveBeenCalledTimes(1);
         const [name, id, error, ai, email, channels, wh, taskId] =
           notificationService.notifyFailureWithConfig.mock.calls[0];
         expect(name).toBe("nightly-etl");
@@ -2352,11 +2358,17 @@ describe("TaskService (__tests__)", () => {
         taskRepo.findOne.mockResolvedValue(null);
 
         await service.handleCallback([
-          { executionId: "e1", status: "failed", errorMessage: "Execution timed out" },
+          {
+            executionId: "e1",
+            status: "failed",
+            errorMessage: "Execution timed out",
+          },
         ]);
 
         expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
-        expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
+        expect(
+          notificationService.notifyFailureWithConfig,
+        ).toHaveBeenCalledTimes(1);
       });
 
       it("does NOT notify on a SUCCESS callback", async () => {
@@ -2369,9 +2381,13 @@ describe("TaskService (__tests__)", () => {
         };
         execRepo.findOne.mockResolvedValue(exec);
 
-        await service.handleCallback([{ executionId: "e1", status: "success" }]);
+        await service.handleCallback([
+          { executionId: "e1", status: "success" },
+        ]);
 
-        expect(notificationService.notifyFailureWithConfig).not.toHaveBeenCalled();
+        expect(
+          notificationService.notifyFailureWithConfig,
+        ).not.toHaveBeenCalled();
       });
 
       it("is fail-open: a throwing notification writes NOTIFICATION_FAILED audit and still returns success", async () => {
@@ -2480,16 +2496,19 @@ describe("TaskService (__tests__)", () => {
       } as any);
 
       const whereArgs: Array<Record<string, unknown>> = [];
-      dataSource.createQueryBuilder.mockImplementation(() => ({
-        update: jest.fn().mockReturnThis(),
-        set: jest.fn().mockReturnThis(),
-        where: jest.fn((_sql: string, params: Record<string, unknown>) => {
-          whereArgs.push(params);
-          return {
-            execute: jest.fn().mockResolvedValue({ affected: 1 }),
-          };
-        }),
-      }) as any);
+      dataSource.createQueryBuilder.mockImplementation(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn((_sql: string, params: Record<string, unknown>) => {
+              whereArgs.push(params);
+              return {
+                execute: jest.fn().mockResolvedValue({ affected: 1 }),
+              };
+            }),
+          }) as any,
+      );
 
       const result = await service.handleCallback([
         { executionId: "e1", status: "success", durationMs: 100 },
@@ -2558,7 +2577,10 @@ describe("TaskService (__tests__)", () => {
       expect(versionRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           taskId: "t1",
-          snapshot: expect.objectContaining({ name: "snapshot-name", timeout: 60 }),
+          snapshot: expect.objectContaining({
+            name: "snapshot-name",
+            timeout: 60,
+          }),
         }),
       );
     });

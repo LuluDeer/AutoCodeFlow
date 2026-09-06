@@ -5,10 +5,7 @@ import { SchedulerMetricsService } from "../../scheduler/scheduler-metrics.servi
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { ExecutionCallbackMetricsService } from "../../task/execution-callback-metrics.service";
 // 可观测性补齐轮：运行时计数器模块级入口（Task/Notification 埋点的同一实例）
-import {
-  recordRuntime,
-  resetRuntimeMetrics,
-} from "../runtime-metrics-entry";
+import { recordRuntime, resetRuntimeMetrics } from "../runtime-metrics-entry";
 
 /**
  * R7: prom-client exposition 端点测试。
@@ -213,7 +210,13 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
         );
       }
       expect(text).toContain("autoflow_sse_streams_rejected_total 0");
-      for (const channel of ["email", "slack", "dingtalk", "wecom", "webhook"]) {
+      for (const channel of [
+        "email",
+        "slack",
+        "dingtalk",
+        "wecom",
+        "webhook",
+      ]) {
         for (const result of ["success", "failure"]) {
           expect(text).toContain(
             `autoflow_notification_delivery_total{channel="${channel}",result="${result}"} 0`,
@@ -277,8 +280,12 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
       expect(first).toContain(
         'autoflow_callback_business_total{result="not_found"} 0',
       );
-      recordRuntime("autoflow_callback_business_total", { result: "not_found" });
-      recordRuntime("autoflow_callback_business_total", { result: "not_found" });
+      recordRuntime("autoflow_callback_business_total", {
+        result: "not_found",
+      });
+      recordRuntime("autoflow_callback_business_total", {
+        result: "not_found",
+      });
       const second = await svc.render();
       expect(second).toContain(
         'autoflow_callback_business_total{result="not_found"} 2',
@@ -292,10 +299,7 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
 
     it("ignores unknown counter names (record never throws)", async () => {
       const svc = makeService();
-      recordRuntime(
-        "autoflow_not_a_real_metric" as never,
-        {} as never,
-      );
+      recordRuntime("autoflow_not_a_real_metric" as never, {} as never);
       expect(await svc.render()).not.toContain("autoflow_not_a_real_metric");
     });
   });

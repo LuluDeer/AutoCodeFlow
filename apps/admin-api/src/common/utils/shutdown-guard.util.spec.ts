@@ -17,11 +17,19 @@ describe("installShutdownForceExitGuard (OPS-P3b)", () => {
   const proc = process as unknown as NodeJS.EventEmitter;
   let exitSpy: jest.SpyInstance;
   let logger: { error: jest.Mock };
-  let installed: Array<{ guard: ShutdownForceGuard; signal: string; exitBefore: number }> = [];
+  let installed: Array<{
+    guard: ShutdownForceGuard;
+    signal: string;
+    exitBefore: number;
+  }> = [];
 
   const install = (signals: readonly string[], timeoutMs: number) => {
     const exitBefore = proc.listenerCount("exit");
-    const guard = installShutdownForceExitGuard(signals, timeoutMs, logger as never);
+    const guard = installShutdownForceExitGuard(
+      signals,
+      timeoutMs,
+      logger as never,
+    );
     installed.push({ guard, signal: signals[0], exitBefore });
     return guard;
   };
@@ -30,9 +38,9 @@ describe("installShutdownForceExitGuard (OPS-P3b)", () => {
     jest.useFakeTimers();
     exitSpy = jest
       .spyOn(process, "exit")
-      .mockImplementation((() => undefined) as unknown as (
-        code?: number,
-      ) => never);
+      .mockImplementation(
+        (() => undefined) as unknown as (code?: number) => never,
+      );
     logger = { error: jest.fn() };
     installed = [];
   });

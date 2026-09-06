@@ -13,12 +13,69 @@ import {
   CreateApplicationDto,
   UpdateApplicationDto,
 } from "./dto/application.dto";
-import { spawnSync } from "child_process";
+import { spawn } from "child_process";
 import { assertSafeGitRepoUrl } from "../../common/utils/safe-http.util";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { AiService } from "../ai/ai.service";
+
+/**
+ * R4: Promise wrapper around async child_process.spawn. Aggregates
+ * stdout/stderr as utf-8 strings, enforces a wall-clock timeout (kills the
+ * child and reports a non-zero status like spawnSync's timeout option did),
+ * and resolves `{ status, stdout, stderr }` — the same shape the previous
+ * spawnSync call sites consumed. Spawn errors (ENOENT, ...) resolve with
+ * status = -1 and the error message on stderr so callers keep one failure
+ * path. The event loop stays live for the whole duration.
+ */
+function spawnAsync(
+  cmd: string,
+  args: string[],
+  opts: { timeout: number },
+): Promise<{ status: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    const finish = (status: number, errMsg?: string) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      // Pull anything the child managed to write before exiting.
+      child.stdout?.destroy?.();
+      child.stderr?.destroy?.();
+      resolve({
+        status,
+        stdout,
+        stderr: errMsg ? `${errMsg}${stderr ? `\n${stderr}` : ""}` : stderr,
+      });
+    };
+
+    child.stdout?.on("data", (c: Buffer) => {
+      stdout += c.toString("utf-8");
+    });
+    child.stderr?.on("data", (c: Buffer) => {
+      stderr += c.toString("utf-8");
+    });
+    child.on("error", (err: Error) => {
+      finish(-1, err.message);
+    });
+    child.on("close", (code) => {
+      finish(code ?? -1);
+    });
+
+    timer = setTimeout(() => {
+      // Match spawnSync's timeout semantics: kill the child; the close
+      // event then resolves with a non-zero status.
+      child.kill();
+      finish(-1, `Process timed out after ${opts.timeout}ms`);
+    }, opts.timeout);
+  });
+}
 
 @Injectable()
 export class ApplicationService implements OnModuleInit {
@@ -198,10 +255,73 @@ export class ApplicationService implements OnModuleInit {
     return this.maskReadSurface(saved);
   }
 
+  /**
+   * R18/R9c: local upload root for application packages (uploads/packages
+   * under the process working directory — the same directory the upload
+   * endpoint writes into and main.ts serves statically).
+   */
+  private static readonly PACKAGE_UPLOAD_ROOT = path.normalize(
+    path.join(process.cwd(), "uploads", "packages"),
+  );
+
   async remove(id: string): Promise<void> {
     const app = await this.findById(id);
     await this.repo.remove(app);
+    // R18/R9c: the application row may point at a locally served package
+    // (uploads/packages/<file>.zip). The old remove() left that file behind,
+    // accumulating orphan zips. Best-effort unlink AFTER the DB row is gone
+    // (an unlink failure then only leaves a harmless orphan file; deleting
+    // first would leave a live row pointing at a missing file) — but ONLY
+    // for paths that resolve inside this service's own upload root (the
+    // packageUrl host can be remote or user-supplied, so an unvalidated
+    // unlink would allow deleting arbitrary absolute paths).
+    if (app.packageUrl) {
+      const toDelete = this.resolveLocalPackagePath(app.packageUrl);
+      if (toDelete) {
+        try {
+          await fs.promises.unlink(toDelete);
+          this.logger.log(`Deleted package file: ${toDelete}`);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`Failed to delete package file ${toDelete}: ${msg}`);
+        }
+      }
+    }
     this.logger.log(`Application removed: ${app.name}`);
+  }
+
+  /**
+   * R18/R9c: map a stored packageUrl to a local file path under
+   * uploads/packages, or return null when the URL is remote, malformed, or
+   * escapes the upload root (path-traversal / arbitrary-delete guard).
+   */
+  private resolveLocalPackagePath(packageUrl: string): string | null {
+    try {
+      const url = new URL(packageUrl);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+      const decoded = decodeURIComponent(url.pathname);
+      const marker = "/uploads/packages/";
+      const idx = decoded.indexOf(marker);
+      if (idx === -1) return null;
+      const filename = decoded.slice(idx + marker.length);
+      if (!filename || filename.includes("/") || filename.includes("\\")) {
+        return null;
+      }
+      if (filename.includes("..")) return null;
+      const resolved = path.normalize(
+        path.join(ApplicationService.PACKAGE_UPLOAD_ROOT, filename),
+      );
+      // Containment check: the resolved path must stay inside the upload root.
+      if (
+        resolved !== ApplicationService.PACKAGE_UPLOAD_ROOT &&
+        !resolved.startsWith(ApplicationService.PACKAGE_UPLOAD_ROOT + path.sep)
+      ) {
+        return null;
+      }
+      return resolved;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -338,28 +458,31 @@ export class ApplicationService implements OnModuleInit {
       await assertSafeGitRepoUrl(gitRepo);
 
       this.logger.log(`Cloning ${gitRepo}@${gitBranch} into ${tmpDir}`);
-      // SEC: spawnSync with array args — no shell expansion, no injection risk
-      // R4 (known residual, deliberately NOT fixed this round): spawnSync
-      // blocks the event loop for up to the 120s clone timeout — a slow or
-      // hostile repo can stall every other request on this worker. The fix
-      // is a spawn (async) rewrite of deployFromGit; that refactor is out of
-      // scope here and is tracked as a follow-up.
-      const cloneResult = spawnSync(
+      // SEC: spawn with array args — no shell expansion, no injection risk.
+      // R4: async (child_process spawn + Promise) instead of the blocking
+      // sync spawn variant, which froze the entire NestJS event loop (every
+      // request, heartbeat and BullMQ job) for up to the 120s clone timeout.
+      // Error semantics are preserved: non-zero exit / timeout / spawn
+      // failure surface stderr (or a generic message) as a thrown Error.
+      const cloneResult = await spawnAsync(
         "git",
         ["clone", "--depth", "1", "--branch", gitBranch, gitRepo, tmpDir],
-        { timeout: 120_000, stdio: "pipe" },
+        { timeout: 120_000 },
       );
       if (cloneResult.status !== 0) {
-        const errMsg =
-          cloneResult.stderr?.toString("utf-8") || "git clone failed";
+        const errMsg = cloneResult.stderr || "git clone failed";
         throw new Error(errMsg);
       }
 
-      const revResult = spawnSync("git", ["-C", tmpDir, "rev-parse", "HEAD"], {
-        encoding: "utf-8",
-      });
+      const revResult = await spawnAsync(
+        "git",
+        ["-C", tmpDir, "rev-parse", "HEAD"],
+        {
+          timeout: 10_000,
+        },
+      );
       if (revResult.status !== 0) throw new Error("git rev-parse HEAD failed");
-      app.gitCommit = (revResult.stdout as string).trim();
+      app.gitCommit = (revResult.stdout || "").trim();
 
       // Parse manifest.json and auto-register tasks
       const manifestPath = path.join(tmpDir, "manifest.json");
