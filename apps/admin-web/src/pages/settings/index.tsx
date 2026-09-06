@@ -228,9 +228,9 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
   });
 
   const cols: ColumnsType<ConfigHistory> = [
-    { title: '时间', dataIndex: 'changedAt', width: 170,
-      render: (v: string) => new Date(v).toLocaleString('zh-CN') },
-    { title: '操作者', dataIndex: 'changedBy', width: 100, render: (v: string) => v ?? '系统' },
+    { title: '时间', dataIndex: 'createdAt', width: 170,
+      render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
+    { title: '操作者', dataIndex: 'username', width: 100, render: (v: string) => v ?? '系统' },
     { title: '旧值', dataIndex: 'oldValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '新值', dataIndex: 'newValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '', width: 80,

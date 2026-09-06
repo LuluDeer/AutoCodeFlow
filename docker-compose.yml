@@ -189,11 +189,18 @@ services:
     restart: unless-stopped
     mem_limit: 1G
     cpus: '1.0'
+    # S9: /api/execute is a code-execution surface — host access is
+    # loopback-only (same precedent as registry-pypi/registry-npm below);
+    # admin-api reaches executors over the internal network, so this mapping
+    # only affects host-side access. Override deliberately for external use.
     ports:
-      - '8001:8001'
+      - '127.0.0.1:8001:8001'
     environment:
       APP_NAME: executor-python-1
       PORT: 8001
+      # S9: fail closed (503) instead of dev-mode allow-all when no token is
+      # configured; admin-api holds the same EXECUTOR_SECRET below.
+      REQUIRE_TOKEN: 'true'
       EXECUTOR_ADDRESS: executor-python:8001
       EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_PYTHON_PUBLIC_ADDRESS:-executor-python:8001}
       ADMIN_API_URL: http://admin-api:3105
@@ -230,11 +237,15 @@ services:
     restart: unless-stopped
     mem_limit: 1G
     cpus: '1.0'
+    # S9: loopback-only host mapping — see executor-python above.
     ports:
-      - '8002:8002'
+      - '127.0.0.1:8002:8002'
     environment:
       APP_NAME: executor-node-1
       PORT: 8002
+      # S9: fail closed (503) instead of dev-mode allow-all when no token is
+      # configured; admin-api holds the same EXECUTOR_SECRET below.
+      REQUIRE_TOKEN: 'true'
       EXECUTOR_ADDRESS: executor-node:8002
       EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_NODE_PUBLIC_ADDRESS:-executor-node:8002}
       ADMIN_API_URL: http://admin-api:3105

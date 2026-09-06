@@ -418,3 +418,80 @@ class TestConcurrentUpload:
         assert artifact.read_bytes() == original
         assert artifact.with_name(artifact.name + ".sha256").read_text().strip() == \
             hashlib.sha256(original).hexdigest()
+
+
+class TestUploadSizeLimit:
+    """S10: direct uploads are capped at 50 MB (parity with the admin-api
+    proxy's multer limit). Exceeding it returns 413 and leaves no partial
+    artifact — neither the destination nor a leftover .upload temp file."""
+
+    def test_oversized_upload_rejected_413(self, client, tmp_packages_dir, monkeypatch):
+        import main as app_module
+        # Two chunks: the first fits, the second crosses the cumulative cap.
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES",
+                            app_module.HASH_CHUNK_SIZE + 1)
+        chunk = b"x" * app_module.HASH_CHUNK_SIZE
+        payload = chunk + chunk  # 2 MiB > 1 MiB + 1 cap
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "big-pkg", "version": "1.0"},
+                           files={"content": ("big-pkg-1.0.whl", payload,
+                                              "application/octet-stream")})
+        assert resp.status_code == 413
+
+    def test_oversized_upload_leaves_no_partial_file(self, client, tmp_packages_dir, monkeypatch):
+        import main as app_module
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES",
+                            app_module.HASH_CHUNK_SIZE + 1)
+        chunk = b"x" * app_module.HASH_CHUNK_SIZE
+        payload = chunk + chunk
+        client.post("/", auth=AUTH,
+                    data={"name": "big-pkg", "version": "1.0"},
+                    files={"content": ("big-pkg-1.0.whl", payload,
+                                       "application/octet-stream")})
+        # No published artifact, no sidecar, no .upload temp leftover.
+        pkg = tmp_packages_dir / "big-pkg"
+        assert not (pkg / "big-pkg-1.0.whl").exists()
+        assert not (pkg / "big-pkg-1.0.whl.sha256").exists()
+        leftovers = [f.name for f in pkg.iterdir()
+                     if f.name.endswith(".upload")]
+        assert leftovers == []
+        assert list(pkg.glob("*")) == [], \
+            "only the (pre-created) empty package dir may exist — no files"
+
+    def test_upload_just_under_limit_succeeds(self, client, tmp_packages_dir, monkeypatch):
+        """Boundary: a payload exactly at the cap must still be accepted
+        (cumulative total, not > cap)."""
+        import hashlib
+        import main as app_module
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES", 8)
+        payload = b"12345678"  # exactly 8 bytes == cap
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "edge-pkg", "version": "1.0"},
+                           files={"content": ("edge-pkg-1.0.whl", payload,
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+        artifact = tmp_packages_dir / "edge-pkg" / "edge-pkg-1.0.whl"
+        assert artifact.read_bytes() == payload
+        assert artifact.with_name(artifact.name + ".sha256").read_text().strip() == \
+            hashlib.sha256(payload).hexdigest()
+
+
+class TestEggRejected:
+    """S11: the .egg contract is removed from the registry to match the
+    admin-api proxy whitelist (.whl/.tar.gz/.zip only)."""
+
+    @pytest.mark.parametrize("path", ["/", "/upload"])
+    def test_egg_upload_rejected(self, client, path):
+        resp = client.post(path, auth=AUTH,
+                           data={"name": "legacy-egg", "version": "1.0"},
+                           files={"content": ("legacy-egg-1.0.egg", b"egg bytes",
+                                              "application/octet-stream")})
+        assert resp.status_code == 400
+
+    def test_all_still_accepted_formats_unchanged(self, client):
+        for fname in ("fmt-pkg-1.0.whl", "fmt-pkg-1.0.tar.gz", "fmt-pkg-1.0.zip"):
+            resp = client.post("/", auth=AUTH,
+                               data={"name": "fmt-pkg", "version": "1.0"},
+                               files={"content": (fname, b"fmt bytes",
+                                                  "application/octet-stream")})
+            assert resp.status_code == 200, fname

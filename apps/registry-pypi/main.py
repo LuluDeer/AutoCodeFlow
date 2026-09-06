@@ -90,6 +90,10 @@ def pkg_dir(name: str) -> Path:
 # sidecar next to the artifact, so the per-package index page never has to
 # read whole wheels into memory on every pip request.
 HASH_CHUNK_SIZE = 1024 * 1024
+# S10: cumulative per-artifact upload cap — matches the admin-api proxy's
+# multer limit (FileInterceptor fileSize: 50 * 1024 * 1024), so a client
+# cannot bypass the proxy path by uploading oversized artifacts directly.
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 SIDECAR_SUFFIX = ".sha256"
 UPLOAD_SUFFIX = ".upload"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -187,8 +191,8 @@ async def upload_package(
     filename = Path(content.filename).name if content.filename else ""
     if not filename:
         raise HTTPException(status_code=400, detail="No filename")
-    if not re.search(r'\.(whl|tar\.gz|zip|egg)$', filename, re.IGNORECASE):
-        raise HTTPException(status_code=400, detail="Invalid package format. Only .whl, .tar.gz, .zip, .egg are allowed")
+    if not re.search(r'\.(whl|tar\.gz|zip)$', filename, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="Invalid package format. Only .whl, .tar.gz, .zip are allowed")
     d = pkg_dir(name)
     dest = d / filename
 
@@ -200,11 +204,21 @@ async def upload_package(
     tmp = Path(tmp_name)
     try:
         h = hashlib.sha256()
+        total = 0
         with os.fdopen(fd, "wb") as out:
             while True:
                 chunk = await content.read(HASH_CHUNK_SIZE)
                 if not chunk:
                     break
+                total += len(chunk)
+                # S10: enforce the cap mid-stream — raise before os.link so the
+                # destination is never created; the finally below removes the
+                # partial .upload temp file.
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(f"Package too large: exceeds the "
+                                f"{MAX_UPLOAD_BYTES} byte upload limit"))
                 h.update(chunk)
                 out.write(chunk)
         sha = h.hexdigest()
