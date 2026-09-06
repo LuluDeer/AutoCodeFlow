@@ -11,6 +11,10 @@ import { EventEmitter } from 'events';
 
 jest.mock('fs');
 jest.mock('child_process');
+// verifyToken (mounted on appWithAuth) calls refreshTokenIfNeeded -> axios.post
+// on every request; automock keeps that a fast no-op (fetch fails -> falls back
+// to the static token captured from the config mock below).
+jest.mock('axios');
 
 jest.mock('../config', () => ({
   config: {
@@ -109,7 +113,7 @@ import { buildNpmRcContent, executionExists } from './execute';
 import { pushCallback } from '../callback';
 import { taskWorkerManager } from '../task-worker';
 import { config as testConfig } from '../config';
-import { executorAuthMiddleware } from './logs';
+import { verifyToken } from '../middleware/auth';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 const mockCp = childProcess as jest.Mocked<typeof childProcess>;
@@ -127,8 +131,12 @@ function buildApp(...middleware: Array<(req: any, res: any, next: any) => void>)
 }
 
 const appNoAuth = buildApp();
-const TEST_TOKEN = 'test-secret-token';
-const appWithAuth = buildApp(executorAuthMiddleware);
+// verifyToken compares against STATIC_TOKEN = config.token captured at module
+// load (the config mock above pins it to 'test-shared-secret'), so the bearer
+// used by the auth tests must match that value — not an env var (verifyToken
+// never reads EXECUTOR_SHARED_TOKEN directly; config.ts resolves it once).
+const AUTH_TOKEN = 'test-shared-secret';
+const appWithAuth = buildApp(verifyToken);
 
 function flushAsync() {
   return new Promise(r => setImmediate(r));
@@ -175,12 +183,13 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Auth (S-01) — kill endpoint protected by same middleware
+// Auth (S-01) — /api/execute + kill guarded by the现役 verifyToken middleware
+// (same gate main.ts mounts). STATIC_TOKEN is captured from the config mock
+// ('test-shared-secret'); verifyToken ignores EXECUTOR_SHARED_TOKEN at request
+// time, so the bearer below must match config.token.
 // ---------------------------------------------------------------------------
 
-describe('POST /api/execute — authentication (S-01)', () => {
-  beforeEach(() => { process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN; });
-
+describe('POST /api/execute — authentication (verifyToken)', () => {
   it('returns 401 when no Authorization header is provided', async () => {
     const res = await request(appWithAuth).post('/api/execute')
       .send({ executionId: 'exec-auth-001', task: { runtime: 'node' } });
@@ -199,7 +208,7 @@ describe('POST /api/execute — authentication (S-01)', () => {
   it('returns 401 when Authorization scheme is not Bearer', async () => {
     const res = await request(appWithAuth)
       .post('/api/execute')
-      .set('Authorization', `Basic ${TEST_TOKEN}`)
+      .set('Authorization', `Basic ${AUTH_TOKEN}`)
       .send({ executionId: 'exec-auth-003', task: { runtime: 'node' } });
     expect(res.status).toBe(401);
   });
@@ -208,7 +217,7 @@ describe('POST /api/execute — authentication (S-01)', () => {
     (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
     const res = await request(appWithAuth)
       .post('/api/execute')
-      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
       .send({ executionId: 'exec-auth-004', task: { runtime: 'node' } });
     expect(res.status).toBe(200);
   });
@@ -223,7 +232,7 @@ describe('POST /api/execute — authentication (S-01)', () => {
     // 正确 token 下才能进到运行表查找（404 = 通过鉴权但不在表中）
     const ok = await request(appWithAuth)
       .post('/api/executions/exec-auth-kill/kill')
-      .set('Authorization', `Bearer ${TEST_TOKEN}`);
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
     expect(ok.status).toBe(404);
   });
 });
