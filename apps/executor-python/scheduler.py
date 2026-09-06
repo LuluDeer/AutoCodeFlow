@@ -70,6 +70,24 @@ def register_running_execution_ids_provider(fn) -> None:
     _running_execution_ids_provider = fn
 
 
+# E2 (node scheduler.ts deadLetterCountProvider parity): dead-letter backlog
+# reported via heartbeat so long disconnections (callbacks parked on disk)
+# stay visible to ops. Default provider returns 0 — an executor that has
+# never imported routers/execute reports "no dead letters" rather than
+# omitting the field.
+def _default_dead_letter_count() -> int:
+    return 0
+
+
+_dead_letter_count_provider = _default_dead_letter_count
+
+
+def register_dead_letter_count_provider(fn) -> None:
+    """Install the getter returning the dead-letter file count."""
+    global _dead_letter_count_provider
+    _dead_letter_count_provider = fn
+
+
 def _heartbeat_retry_exhausted(retry_state):
     """Called when all retries are exhausted — return None to suppress RetryError."""
     logger.warning(f'Heartbeat failed after all retries: {retry_state.outcome.exception()}')
@@ -115,6 +133,10 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
             # E1: liveness report — capped at 200 ids (node parity,
             # scheduler.ts sendHeartbeat). Always present, never omitted.
             'runningExecutionIds': _running_execution_ids_provider()[:200],
+            # E2: dead-letter backlog (node scheduler.ts sendHeartbeat sends
+            # deadLetterCountProvider()). Always present, never omitted; the
+            # provider serves a cached count so this never rescans the disk.
+            'deadLetterCount': max(0, int(_dead_letter_count_provider())),
             'restartedAt': executor_started_at,
             'startupId': executor_startup_id,
         },
