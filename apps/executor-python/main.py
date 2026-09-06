@@ -105,6 +105,19 @@ async def lifespan(app: FastAPI):
             )
     except Exception as e:
         logger.warning(f'Shutdown task tree-kill failed: {e}')
+    # QA8: 树杀后、drain 前，给 worker 协程一个有限窗口把终态回调投出去或
+    # 落盘——被杀任务的 _run_and_callback 要先观察到子进程退出才会产出回调，
+    # 若不等它们，进程退出会把未送达的回调一起带走（执行只能等 stale sweep
+    # 修复，真实 killed/timeout 分类丢失）。窗口耗尽未完成的 worker 被取消，
+    # _run_and_callback 的 CancelledError 守卫保证载荷落盘。
+    try:
+        flushed = await execute.await_background_tasks_after_kill()
+        if flushed:
+            logger.info(
+                f'Shutdown: {flushed} task worker(s) completed their terminal callback after tree-kill'
+            )
+    except Exception as e:
+        logger.warning(f'Shutdown worker callback flush failed: {e}')
     # E2 (node stopCallbackThread parity): bounded drain of the callback
     # re-send loop — in-flight replay gets a limited wait, undelivered files
     # simply stay on disk for the next process's replay.
