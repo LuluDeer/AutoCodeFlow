@@ -218,29 +218,55 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
   const isAdmin = useIsAdmin();
 
   const qc = useQueryClient();
-  const { mutateAsync: rollback, isPending: rolling } = useMutation({
+  // FEAT-08：回滚目标 id 状态实现逐行 loading（多行不共用同一个 spinner）。
+  const [rollingId, setRollingId] = useState<number | null>(null);
+  const { mutateAsync: rollback } = useMutation({
     mutationFn: (id: number) => configApi.rollback(id),
     onSuccess: () => {
       message.success('已回滚');
+      // 刷新当前配置读面 + 历史列表（回滚本身也会写一条 rollback 历史）
       qc.invalidateQueries({ queryKey: ['system-configs'] });
       qc.invalidateQueries({ queryKey: ['config-history', configKey] });
     },
+    // 失败提示由 api/client.ts 响应拦截器统一 toast（含 400/403 后端文案），
+    // 这里仅复位逐行 loading，避免双重报错。
+    onSettled: () => setRollingId(null),
   });
+
+  const handleRollback = async (id: number) => {
+    setRollingId(id);
+    await rollback(id);
+  };
 
   const cols: ColumnsType<ConfigHistory> = [
     { title: '时间', dataIndex: 'createdAt', width: 170,
       render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
     { title: '操作者', dataIndex: 'username', width: 100, render: (v: string) => v ?? '系统' },
+    { title: '动作', dataIndex: 'action', width: 70,
+      render: (v: ConfigHistory['action']) => v === 'create' ? '创建'
+        : v === 'delete' ? '删除' : v === 'rollback' ? '回滚' : '修改' },
     { title: '旧值', dataIndex: 'oldValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '新值', dataIndex: 'newValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '', width: 80,
-      render: (_: unknown, row: ConfigHistory) => (
-        <Popconfirm title="确认回滚到此版本？" onConfirm={() => rollback(row.id)} okText="回滚" disabled={!isAdmin}>
-          <Tooltip title={isAdmin ? undefined : '仅管理员可回滚'}>
-            <Button size="small" loading={rolling} disabled={!isAdmin}>回滚</Button>
-          </Tooltip>
-        </Popconfirm>
-      ) },
+      render: (_: unknown, row: ConfigHistory) => {
+        if (!isAdmin) return null;
+        // 创建条目（oldValue 为 null）回滚=删除该配置项，禁用并说明。
+        const disabled = row.oldValue == null;
+        return (
+          <Popconfirm
+            title="确认回滚到此版本？"
+            description={row.action === 'create' ? '该条目为创建动作，回滚将删除此配置项。' : undefined}
+            onConfirm={() => handleRollback(row.id)}
+            okText="回滚"
+            okButtonProps={{ danger: true }}
+            disabled={disabled}
+          >
+            <Tooltip title={disabled ? '创建条目无可回滚的历史值' : undefined}>
+              <Button size="small" loading={rollingId === row.id} disabled={disabled}>回滚</Button>
+            </Tooltip>
+          </Popconfirm>
+        );
+      } },
   ];
 
   return (
