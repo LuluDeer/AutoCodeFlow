@@ -7,6 +7,7 @@
   - 包下载
   - 基本认证（REGISTRY_USER / REGISTRY_PASS）
 """
+from datetime import datetime, timezone
 from pathlib import Path
 import base64
 import binascii
@@ -142,30 +143,87 @@ def health():
 
 # S9: also protect simple-index and download endpoints so unauthenticated
 # clients cannot enumerate or download private packages
+def _human_size(n: int) -> str:
+    # FEAT-12: 人类可读体积（索引页展示用；API/pip 语义不变）
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+def _version_from_filename(name: str) -> str:
+    # wheel: {dist}-{version}(-build)?-{python}-{abi}-{platform}.whl
+    # sdist: {name}-{version}.tar.gz / .zip
+    if name.endswith(".whl"):
+        parts = name[:-4].split("-")
+        return parts[1] if len(parts) >= 2 else "-"
+    stem = name
+    for ext in (".tar.gz", ".zip", ".tar.bz2"):
+        if stem.endswith(ext):
+            stem = stem[: -len(ext)]
+            break
+    return stem.rsplit("-", 1)[1] if "-" in stem else "-"
+
+
 @app.get("/simple/", response_class=HTMLResponse)
 def simple_index(_user: str = Depends(verify_auth)):
-    """PEP 503 root index."""
-    pkgs = [d.name for d in PACKAGES_DIR.iterdir() if d.is_dir()]
-    links = "".join(f'<a href="/simple/{p}/">{p}</a><br/>\n' for p in sorted(pkgs))
+    """PEP 503 root index.
+
+    FEAT-12: pip 只解析 <a> 锚点——锚点必须保持在每行最前，附加的
+    计数等纯文本不破坏 PEP 503 兼容性。
+    """
+    pkgs = sorted(d.name for d in PACKAGES_DIR.iterdir() if d.is_dir())
+    counts = [
+        sum(1 for f in (PACKAGES_DIR / p).glob("*") if f.is_file() and not is_meta_file(f.name))
+        for p in pkgs
+    ]
+    total_files = sum(counts)
+    links = "".join(
+        f'<a href="/simple/{p}/">{p}</a> ({c} file{"s" if c != 1 else ""})<br/>' + "\n"
+        for p, c in zip(pkgs, counts)
+    )
     return f"""<!DOCTYPE html><html><head><title>Simple Index</title></head>
-<body><h1>Simple Index</h1>\n{links}</body></html>"""
+<body><h1>Simple Index</h1>
+<p>{len(pkgs)} package{"s" if len(pkgs) != 1 else ""} · {total_files} file{"s" if total_files != 1 else ""}</p>
+\n{links}</body></html>"""
 
 
 @app.get("/simple/{package_name}/", response_class=HTMLResponse)
 def package_index(package_name: str, _user: str = Depends(verify_auth)):
-    """PEP 503 per-package index."""
+    """PEP 503 per-package index.
+
+    FEAT-12: 人类可读增强——按版本聚合 + 体积/上传时间；锚点（href#sha256）
+    语义与 PEP 503 完全不变，pip 解析不受影响。
+    """
     d = PACKAGES_DIR / normalize(package_name)
     if not d.exists():
         raise HTTPException(status_code=404, detail="Package not found")
     # N18: hashes come from upload-time sidecars (lazily backfilled for
     # legacy files); no whole-file reads into memory per request.
     files = [f for f in sorted(d.glob("*")) if f.is_file() and not is_meta_file(f.name)]
-    links = ""
+    by_version: dict = {}
     for f in files:
-        sha256 = artifact_sha256(f)
-        links += f'<a href="/packages/{normalize(package_name)}/{f.name}#sha256={sha256}">{f.name}</a><br/>\n'
+        by_version.setdefault(_version_from_filename(f.name), []).append(f)
+
+    def _version_key(v: str):
+        return [int(x) if x.isdigit() else x for x in v.split(".")]
+
+    rows = ""
+    for version in sorted(by_version, key=_version_key):
+        for f in sorted(by_version[version], key=lambda x: x.name):
+            sha256 = artifact_sha256(f)
+            size = _human_size(f.stat().st_size)
+            mtime = datetime.fromtimestamp(f.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M")
+            rows += (
+                f'<a href="/packages/{normalize(package_name)}/{f.name}#sha256={sha256}">{f.name}</a>'
+                f" — {version} · {size} · {mtime} UTC<br/>" + "\n"
+            )
     return f"""<!DOCTYPE html><html><head><title>Links for {package_name}</title></head>
-<body><h1>Links for {package_name}</h1>\n{links}</body></html>"""
+<body><h1>Links for {package_name}</h1>
+<p>{len(files)} file{"s" if len(files) != 1 else ""} · {len(by_version)} version{"s" if len(by_version) != 1 else ""}</p>
+\n{rows}</body></html>"""
 
 
 @app.get("/packages/{package_name}/{filename}")

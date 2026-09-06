@@ -127,6 +127,36 @@ class TestSimpleIndex:
         # sha256 fragment must be present
         assert "sha256=" in resp.text
 
+    def test_package_index_shows_version_size_time(self, client):
+        # FEAT-12: 人类可读增强——版本/体积/时间行；锚点语义不变
+        client.post("/", auth=AUTH,
+                    data={"name": "richpkg", "version": "1.0.0"},
+                    files={"content": ("richpkg-1.0.0-py3-none-any.whl", b"w" * 2048, "application/octet-stream")})
+        resp = client.get("/simple/richpkg/", auth=AUTH)
+        assert resp.status_code == 200
+        # 版本聚合行存在
+        assert "1.0.0" in resp.text
+        # 体积（>1KB → KB 保留一位小数）
+        assert "2.0 KB" in resp.text
+        # UTC 时间戳行
+        assert "UTC" in resp.text
+        # PEP 503 兼容：锚点仍在且带 sha256
+        assert 'href="/packages/richpkg/richpkg-1.0.0-py3-none-any.whl#sha256=' in resp.text
+        # 计数行
+        assert "1 file" in resp.text and "1 version" in resp.text
+
+    def test_simple_index_shows_package_and_file_counts(self, client):
+        client.post("/", auth=AUTH,
+                    data={"name": "countpkg", "version": "0.2.0"},
+                    files={"content": ("countpkg-0.2.0.tar.gz", b"tar bytes", "application/octet-stream")})
+        resp = client.get("/simple/", auth=AUTH)
+        assert resp.status_code == 200
+        assert "countpkg" in resp.text
+        # 计数行（包数 + 文件数）
+        assert "package" in resp.text and "file" in resp.text
+        # PEP 503 兼容：包锚点仍以 /simple/{name}/ 结尾
+        assert 'href="/simple/countpkg/"' in resp.text
+
     def test_missing_package_returns_404(self, client):
         resp = client.get("/simple/nonexistent/", auth=AUTH)
         assert resp.status_code == 404
