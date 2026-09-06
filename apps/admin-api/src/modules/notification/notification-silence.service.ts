@@ -56,9 +56,7 @@ export class NotificationSilenceService {
         input.channelType,
       )
     ) {
-      throw new BadRequestException(
-        `invalid channelType ${input.channelType}`,
-      );
+      throw new BadRequestException(`invalid channelType ${input.channelType}`);
     }
 
     const activeCount = await this.repo.count();

@@ -1,6 +1,7 @@
 import { forwardRef, Inject, Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, MoreThanOrEqual, Between } from "typeorm";
+import { ConfigService } from "@nestjs/config";
 import { Task } from "../task/entities/task.entity";
 import {
   TaskExecution,
@@ -24,6 +25,9 @@ export class MetricsService {
     // 反向依赖 MetricsModule）。
     @Inject(forwardRef(() => SchedulerService))
     private schedulerService: SchedulerService,
+    // ARCH-27: 进程标识（hostname）经 ConfigService 读取（configuration.ts
+    // app.hostname，OS/容器注入），取代直读 process.env.HOSTNAME。
+    private readonly configService: ConfigService,
   ) {}
 
   async getSummary() {
@@ -238,7 +242,9 @@ export class MetricsService {
       scheduler: this.schedulerService.getStats(),
       instance: {
         pid: process.pid,
-        hostname: process.env.HOSTNAME ?? "",
+        // ARCH-27: 经 ConfigService 读 app.hostname（OS/容器注入的进程标识，
+        // 未配置时回退空串，Windows 开发环境 HOSTNAME 可能不存在）。
+        hostname: this.configService.get<string>("app.hostname") ?? "",
       },
     };
   }

@@ -23,10 +23,7 @@ const importAppModule = async () => (await import("./app.module")).AppModule;
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { ResponseInterceptor } from "./common/interceptors/response.interceptor";
 import { TimeoutInterceptor } from "./common/interceptors/timeout.interceptor";
-import {
-  isOriginAllowed,
-  parseAllowedOrigins,
-} from "./common/utils/cors-origin.util";
+import { isOriginAllowed } from "./common/utils/cors-origin.util";
 import { installShutdownForceExitGuard } from "./common/utils/shutdown-guard.util";
 import { createUploadAuthMiddleware } from "./common/middleware/upload-auth.middleware";
 import { SystemConfigService } from "./modules/config/config.service";
@@ -63,28 +60,11 @@ async function gracefulFatalShutdown(reason: unknown): Promise<void> {
 }
 
 async function bootstrap() {
-  // SEC-02 / ARCH-001: Validate CORS whitelist in production environment.
-  // The whitelist itself is fail-fast validated in configuration.ts; here we
-  // additionally assert every entry is a well-formed http(s) origin.
-  if (process.env.NODE_ENV === "production") {
-    const origins = parseAllowedOrigins(
-      process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS,
-    );
-    for (const origin of origins) {
-      if (!origin.startsWith("https://") && !origin.startsWith("http://")) {
-        throw new Error(
-          `CORS_ALLOWED_ORIGINS origin "${origin}" must start with http:// or https://`,
-        );
-      }
-      try {
-        new URL(origin);
-      } catch {
-        throw new Error(
-          `CORS_ALLOWED_ORIGINS origin "${origin}" is not a valid URL`,
-        );
-      }
-    }
-  }
+  // SEC-02 / ARCH-001 / ARCH-27: production CORS 白名单校验（显式配置、
+  // 禁 localhost、合法 http(s) URL）已统一收编到 configuration.ts 的
+  // fail-fast 块 —— 在 ConfigModule 初始化（NestFactory.create 内）抛出，
+  // 仍早于 app.listen，bootstrap().catch 会以非零码退出。此处不再直读
+  // process.env 重复实现同一校验。
 
   // W-22: dynamic require so app.module (and its controllers' @Throttle
   // decorators reading process.env at class-definition time) evaluates AFTER
@@ -93,6 +73,11 @@ async function bootstrap() {
   // OPS-06 / ARCH-008: expose the app instance to the fatal-signal handlers
   // below so they can trigger a graceful close instead of an abrupt exit.
   runningApp = app;
+
+  // ARCH-27: 配置统一经 ConfigService 读取 —— 以下 bootstrap 逻辑
+  // （helmet/trust-proxy/CORS/swagger/port）全部改用 configuration.ts
+  // 注册的配置节，不再直读 process.env。
+  const configService = app.get(ConfigService);
 
   // P2: the execution callback batch legitimately exceeds the 1 MB global
   // cap (100 items × up to 512 KB of logs each) — parse that route with a
@@ -123,7 +108,9 @@ async function bootstrap() {
     helmet({
       // Allow SSE connections and inline scripts needed for Swagger UI in dev
       contentSecurityPolicy:
-        process.env.NODE_ENV === "production" ? undefined : false,
+        configService.get<string>("app.nodeEnv") === "production"
+          ? undefined
+          : false,
       crossOriginEmbedderPolicy: false,
     }),
   );
@@ -134,7 +121,7 @@ async function bootstrap() {
   // rate-limit key per request. Enable TRUST_PROXY=true only when a trusted
   // reverse proxy (nginx / load balancer) actually fronts this instance and
   // overwrites XFF.
-  if (process.env.TRUST_PROXY === "true") {
+  if (configService.get<boolean>("app.trustProxy")) {
     app.getHttpAdapter().getInstance().set("trust proxy", 1);
   }
 
@@ -146,10 +133,11 @@ async function bootstrap() {
   // When no whitelist is configured, development defaults to http://localhost:*
   // and http://127.0.0.1:* only (see isOriginAllowed).
   // '*' + credentials is rejected by browsers so we use a callback instead.
-  const allowedOrigins = parseAllowedOrigins(
-    process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGINS,
-  );
-  const isDevelopment = process.env.NODE_ENV !== "production";
+  // ARCH-27: 白名单取自 configuration.ts cors.allowedOrigins（同一份
+  // fail-fast 校验结果），生产 URL 合法性校验也在配置层完成。
+  const allowedOrigins = configService.get<string[]>("cors.allowedOrigins");
+  const isDevelopment =
+    configService.get<string>("app.nodeEnv") !== "production";
 
   app.enableCors({
     origin: (origin, callback) => {
@@ -212,16 +200,18 @@ async function bootstrap() {
   // Global interceptors
   // ClassSerializerInterceptor must come before ResponseInterceptor so that
   // @Exclude() fields are stripped before the response wrapper runs.
+  // ARCH-27: TimeoutInterceptor reads app.requestTimeoutMs via ConfigService
+  // (no more module-load-time process.env read).
   app.useGlobalInterceptors(
-    new TimeoutInterceptor(app.get(Reflector)),
+    new TimeoutInterceptor(app.get(Reflector), app.get(ConfigService)),
     new ClassSerializerInterceptor(app.get(Reflector)),
     new ResponseInterceptor(),
   );
 
-  // Swagger Configuration — ARCH-007: production environments skip building
+  // ARCH-007: production environments skip building
   // the OpenAPI document entirely (saves startup work, and hardcoded server
   // URLs can never leak via logs/debug output of the doc object).
-  if (process.env.NODE_ENV !== "production") {
+  if (configService.get<string>("app.nodeEnv") !== "production") {
     const config = new DocumentBuilder()
       .setTitle("AutoFlow Admin API")
       .setDescription(
@@ -329,7 +319,8 @@ AutoFlow is a modern workflow automation platform providing task orchestration, 
     });
   }
 
-  const port = process.env.PORT || 3105;
+  // ARCH-27: 端口取自 configuration.ts app.port（PORT 经 Joi 校验）。
+  const port = configService.get<number>("app.port") ?? 3105;
   const logger = new Logger("Bootstrap");
   // OPS-05: graceful shutdown — lets K8s/docker stop drain in-flight requests before exit
   app.enableShutdownHooks();
@@ -347,7 +338,7 @@ AutoFlow is a modern workflow automation platform providing task orchestration, 
   });
   await app.listen(port);
   logger.log(`Application is running on: http://localhost:${port}`);
-  if (process.env.NODE_ENV !== "production") {
+  if (configService.get<string>("app.nodeEnv") !== "production") {
     logger.log(`Swagger docs: http://localhost:${port}/api/docs`);
   }
 }

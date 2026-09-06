@@ -15,6 +15,7 @@ import * as request from "supertest";
 import { IS_PUBLIC_KEY } from "../../../common/decorators/public.decorator";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { RolesGuard } from "../../../common/guards/roles.guard";
+import { ConfigService } from "@nestjs/config";
 import { AppDeploymentService } from "../app-deployment.service";
 import { ApplicationController } from "../application.controller";
 import { ApplicationService } from "../application.service";
@@ -28,6 +29,12 @@ function sign(secret: string, timestamp: string, body: Buffer): string {
       .digest("hex")
   );
 }
+
+// ARCH-27: apiBase 改经 ConfigService（app.apiBaseUrl）读取 —— spec 注入
+// 桩 ConfigService；读取在调用时发生，与原 process.env 操纵的用例流兼容。
+const stubConfig = (apiBase?: string) => ({
+  get: (key: string) => (key === "app.apiBaseUrl" ? apiBase : undefined),
+});
 
 describe("ApplicationController webhook", () => {
   const fixedNow = 1_700_000_000_000;
@@ -51,7 +58,11 @@ describe("ApplicationController webhook", () => {
       findRunningByApp: jest.fn().mockResolvedValue([]),
       upgrade: jest.fn(),
     };
-    controller = new ApplicationController(svc as any, deploymentSvc as any);
+    controller = new ApplicationController(
+      svc as any,
+      deploymentSvc as any,
+      stubConfig() as any,
+    );
   });
 
   afterEach(() => {
@@ -275,6 +286,8 @@ describe("ApplicationController webhook HTTP raw body", () => {
       providers: [
         { provide: ApplicationService, useValue: svc },
         { provide: AppDeploymentService, useValue: deploymentSvc },
+        // ARCH-27: webhook 路由不消费配置，注入空桩即可满足 DI。
+        { provide: ConfigService, useValue: stubConfig() },
       ],
     }).compile();
 
@@ -367,7 +380,13 @@ describe("ApplicationController upload — APP-002", () => {
         ),
       update: jest.fn(),
     };
-    controller = new ApplicationController(svc as any, {} as any);
+    // ARCH-27: 桩在调用时读取 process.env.API_BASE_URL，保持原用例的
+    // 逐用例 env 操纵方式；生产路径由 Joi 注册 + configuration.ts 提供。
+    controller = new ApplicationController(
+      svc as any,
+      {} as any,
+      { get: () => process.env.API_BASE_URL } as any,
+    );
     // 不真实写盘（R9b: 写盘走 fs.promises.writeFile）
     jest.spyOn(fs, "existsSync").mockReturnValue(true);
     jest.spyOn(fs, "mkdirSync").mockImplementation((() => undefined) as any);

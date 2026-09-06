@@ -2,15 +2,19 @@ import * as fs from "fs";
 import * as path from "path";
 
 /**
- * W-22 regression guard. auth.controller's @Throttle limit is read from
- * `process.env.LOGIN_THROTTLE_LIMIT` at DECORATOR-EVAL time (class definition),
- * which runs when app.module first enters the import graph. ConfigModule's
- * dotenv load happens later (module lifecycle), so a `.env`-only value is
- * invisible to the decorator unless main.ts preloads `.env` BEFORE app.module
- * is imported. That preload+dynamic-import is the whole fix; if someone
- * "tidies" main.ts back to a static `import { AppModule } from "./app.module"`
- * at the top, the fix silently reverts and `.env`-configured login throttling
- * breaks again (this is what the 29-case e2e hit as cascading 429s).
+ * W-22 regression guard. auth.controller's @Throttle limit is resolved at
+ * DECORATOR-EVAL time (class definition), which runs when app.module first
+ * enters the import graph. ConfigModule's dotenv load happens later (module
+ * lifecycle), so a `.env`-only value is invisible to the decorator unless
+ * main.ts preloads `.env` BEFORE app.module is imported. That preload +
+ * dynamic-import is the whole fix; if someone "tidies" main.ts back to a
+ * static `import { AppModule } from "./app.module"` at the top, the fix
+ * silently reverts and `.env`-configured login throttling breaks again
+ * (this is what the 29-case e2e hit as cascading 429s).
+ *
+ * ARCH-27: the raw `process.env.LOGIN_THROTTLE_LIMIT` read was consolidated
+ * into src/config/env.ts's getEnvVar() (the only sanctioned escape hatch);
+ * the eval-time semantics — and therefore this guard — are unchanged.
  *
  * Static source assertions cheaply pin the two invariants that make the fix
  * work, in the same spirit as the install.sh byte-identity guard.
@@ -42,11 +46,15 @@ describe("main.ts env-preload ordering (W-22 guard)", () => {
     expect(code).toMatch(/loadEnvFile\(\s*\{\s*path:/);
   });
 
-  it("auth.controller still reads the throttle limit from process.env (couple the guard to the site it protects)", () => {
+  it("auth.controller still resolves the throttle limit at decorator-eval time via the env.ts util (couple the guard to the site it protects)", () => {
     const authSrc = fs.readFileSync(
       path.join(__dirname, "..", "modules", "auth", "auth.controller.ts"),
       "utf8",
     );
-    expect(authSrc).toMatch(/process\.env\.LOGIN_THROTTLE_LIMIT/);
+    // ARCH-27: 直读已收口为 getEnvVar（全仓唯一直读通道），但求值期语义
+    // 不变 —— 仍依赖 main.ts 在 import app.module 前预载 .env。
+    expect(authSrc).toMatch(/getEnvVar\(\s*["']LOGIN_THROTTLE_LIMIT["']\s*\)/);
+    // 禁止回退到裸 process.env 直读（W-22 死配置模式）。
+    expect(authSrc).not.toMatch(/process\.env\.LOGIN_THROTTLE_LIMIT/);
   });
 });

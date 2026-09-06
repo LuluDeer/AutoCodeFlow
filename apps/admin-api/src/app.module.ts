@@ -40,6 +40,18 @@ import { RegistryModule } from "./modules/registry/registry.module";
         LOG_LEVEL: Joi.string()
           .valid("error", "warn", "info", "debug", "verbose")
           .default("info"),
+        // ARCH-27: 此前 configuration.ts 读取但未注册（审计缺口）。
+        APP_PROTOCOL: Joi.string().default("http"),
+        DB_POOL_SIZE: Joi.number().integer().min(1).default(20),
+        // ARCH-27: executor 心跳参数此前未注册（审计缺口）。
+        EXECUTOR_HEARTBEAT_INTERVAL: Joi.number()
+          .integer()
+          .min(1000)
+          .default(30000),
+        EXECUTOR_HEARTBEAT_TIMEOUT_MULTIPLIER: Joi.number()
+          .integer()
+          .min(1)
+          .default(3),
 
         // Database
         DB_HOST: Joi.string().hostname().default("localhost"),
@@ -149,6 +161,36 @@ import { RegistryModule } from "./modules/registry/registry.module";
         NPM_REGISTRY_TOKEN: Joi.string().allow("").optional(),
         NPM_REGISTRY_USER: Joi.string().allow("").optional(),
         NPM_REGISTRY_PASS: Joi.string().allow("").optional(),
+
+        // ARCH-27（配置中心收口）: 此前存在读取点但未在 Joi 注册的 env，
+        // 审计后补齐（默认值与 configuration.ts 既有回退保持一致）。
+        // N16: login 路由限流上限（auth.controller @Throttle 装饰器求值期
+        // 读取，W-22 模式 —— 见 auth.controller.ts / src/config/env.ts）。
+        LOGIN_THROTTLE_LIMIT: Joi.number().integer().min(1).default(20),
+        // OPS-07: 全局请求超时（timeout.interceptor 经 ConfigService 读取
+        // app.requestTimeoutMs）。
+        REQUEST_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
+        // APP-002: executor 拉取 packageUrl 的对外基础 URL（application
+        // controller fail-fast 校验；空表示未配置，运行时报 500 提示）。
+        API_BASE_URL: Joi.string().uri().allow("").optional(),
+        // DB-002: 执行日志保留天数（logRetention.days；非数字会被 Joi 拒绝
+        // 并 fail-fast，取代旧运行时回退）。
+        LOG_RETENTION_DAYS: Joi.number().integer().min(1).default(30),
+        // users.service admin 种子账号（initialAdmin 节；密码缺省 = 跳过 seed）。
+        INITIAL_ADMIN_PASSWORD: Joi.string().allow("").optional(),
+        INITIAL_ADMIN_EMAIL: Joi.string().default("admin@autoflow.local"),
+
+        // ARCH-27: logStorage 节（S3 外置日志）此前未注册（审计缺口）；
+        // 全部可选，默认与 configuration.ts 回退一致。
+        LOG_STORAGE_DRIVER: Joi.string().valid("db", "s3").default("db"),
+        LOG_STORAGE_BUCKET: Joi.string().default("autoflow-logs"),
+        LOG_STORAGE_ENDPOINT: Joi.string().allow("").optional(),
+        LOG_STORAGE_ACCESS_KEY: Joi.string().allow("").optional(),
+        LOG_STORAGE_SECRET_KEY: Joi.string().allow("").optional(),
+        LOG_STORAGE_USE_SSL: Joi.string()
+          .valid("true", "false")
+          .default("false"),
+        LOG_STORAGE_REGION: Joi.string().allow("").optional(),
       }),
       // Only validate in production and test environments
       validationOptions: {

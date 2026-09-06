@@ -1,6 +1,9 @@
 import { BadRequestException } from "@nestjs/common";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+// ARCH-27: 本文件是无 DI 的纯工具函数，无法注入 ConfigService —— env 读取
+// 统一经 src/config/env.ts 收口（全仓唯一直读通道）。
+import { getEnvVar } from "../../config/env";
 
 /**
  * Parse an IPv6 literal into its eight 16-bit groups. Handles `::`
@@ -557,8 +560,15 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
     throw new BadRequestException("Executor URL must not embed credentials");
   }
 
+  // ARCH-27/W-22 豁免说明: EXECUTOR_ALLOW_PRIVATE_NETWORK 已在
+  // configuration.ts (executor.allowPrivateNetwork) + Joi 注册，运行时标准
+  // 消费路径是 ConfigService；但本函数是被 executor.service / executor.controller /
+  // app-deployment.service / executor-package.service 多处调用的无 DI 纯函数，
+  // 若改签名注入 ConfigService 值需波及 5 个调用点及其 spec（超出本次收口
+  // 边界）。故按"求值期/无 DI"豁免路径经 getEnvVar() 收口，调用时读取，
+  // 测试仍可用 env 直接操纵（safe-http.util.spec / ssrf-deny-matrix.spec）。
   const allowPrivateNetwork =
-    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK === "true";
+    getEnvVar("EXECUTOR_ALLOW_PRIVATE_NETWORK") === "true";
 
   const check = (addr: string) => {
     const risk = classifyAddressRisk(addr);

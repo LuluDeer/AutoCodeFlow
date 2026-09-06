@@ -23,6 +23,22 @@ import { Public } from "../../common/decorators/public.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
+// ARCH-27: 装饰器参数在模块求值期（类定义时）确定，ConfigService 在该时点
+// 尚不存在 —— 必须经唯一的 env 收口 util 读取，禁止裸 process.env。
+import { getEnvVar } from "../../config/env";
+
+/**
+ * N16: login 路由限流上限（默认 20，env LOGIN_THROTTLE_LIMIT 可覆盖，
+ * 生产建议 5）。
+ *
+ * W-22（windows-findings）前科现场：@Throttle 的参数在装饰器求值期读取，
+ * 早于 ConfigModule 生命周期应用 .env。修复 = main.ts 在 import app.module
+ * 前预载 .env（见 main.ts 头部，由 src/__tests__/main-env-preload.spec.ts
+ * 守护）+ 本处经 src/config/env.ts 的 getEnvVar() 统一收口。这里保留
+ * 模块求值期直读是 ARCH-27 审计后的显式豁免（配置值已同步注册到
+ * configuration.ts throttle.loginLimit 供运行时一致性检查与文档化）。
+ */
+const LOGIN_THROTTLE_LIMIT = Number(getEnvVar("LOGIN_THROTTLE_LIMIT")) || 20;
 
 @ApiTags("Auth")
 @Controller("auth")
@@ -38,7 +54,7 @@ export class AuthController {
   @Throttle({
     default: {
       ttl: 60_000,
-      limit: Number(process.env.LOGIN_THROTTLE_LIMIT) || 20,
+      limit: LOGIN_THROTTLE_LIMIT,
     },
   })
   @Public()

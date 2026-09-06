@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
+import { ConfigService } from "@nestjs/config";
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 
 /** 默认日志保留天数（可经 LOG_RETENTION_DAYS 覆盖） */
@@ -30,6 +31,9 @@ export class LogRetentionCleanupService {
   constructor(
     @InjectRepository(ExecutionLogLine)
     private readonly logLineRepo: Repository<ExecutionLogLine>,
+    // ARCH-27: 保留期配置经 ConfigService 读取（configuration.ts
+    // logRetention.days + Joi LOG_RETENTION_DAYS），取代直读 process.env。
+    private readonly configService: ConfigService,
   ) {}
 
   /** 每日定时入口；清理失败只记日志，等下一轮 cron 重试，不影响主流程 */
@@ -90,21 +94,21 @@ export class LogRetentionCleanupService {
   }
 
   /**
-   * 解析保留期：直接读 process.env（不经过 configuration.ts）。
-   * 未配置回退默认 30 天；配置了非法值（非数字 / <= 0）同样回退并告警。
+   * 解析保留期：经 ConfigService 读 logRetention.days（ARCH-27 收口）。
+   * Joi 保证 LOG_RETENTION_DAYS 是 >=1 的整数，正常路径不会走回退；
+   * 保留防御性回退（非数字 / <= 0）以兼容跳过 Joi 校验的测试场景。
    */
   private resolveRetentionDays(): number {
-    const raw = process.env.LOG_RETENTION_DAYS;
-    if (raw === undefined || raw.trim() === "") {
-      return DEFAULT_LOG_RETENTION_DAYS;
+    const parsed = this.configService.get<number>("logRetention.days");
+    if (typeof parsed === "number" && Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
     }
-    const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
+    const rawValue = this.configService.get<string>("LOG_RETENTION_DAYS");
+    if (rawValue !== undefined) {
       this.logger.warn(
-        `DB-002: 非法的 LOG_RETENTION_DAYS="${raw}"，回退默认 ${DEFAULT_LOG_RETENTION_DAYS} 天`,
+        `DB-002: 非法的 LOG_RETENTION_DAYS="${rawValue}"，回退默认 ${DEFAULT_LOG_RETENTION_DAYS} 天`,
       );
-      return DEFAULT_LOG_RETENTION_DAYS;
     }
-    return parsed;
+    return DEFAULT_LOG_RETENTION_DAYS;
   }
 }

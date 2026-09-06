@@ -6,9 +6,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * NOTIF-003 的静默 Map 是内存态、重启即丢——本表作为恢复源（写穿 +
  * onModuleInit 回灌）。幂等：IF NOT EXISTS，重复执行与 revert 重放无副作用。
  */
-export class CreateNotificationSilences1789100000000
-  implements MigrationInterface
-{
+export class CreateNotificationSilences1789100000000 implements MigrationInterface {
   name = "CreateNotificationSilences1789100000000";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

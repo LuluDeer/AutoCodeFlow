@@ -230,4 +230,105 @@ describe("configuration (ARCH-001) CORS_ALLOWED_ORIGINS whitelist", () => {
       "https://admin.example.com",
     ]);
   });
+
+  // ARCH-27 (SEC-02 收编): production 下 CORS origin 必须是合法 http(s) URL
+  // —— 校验从 main.ts 收编到配置层 fail-fast。
+  it("rejects a production origin that is not a valid URL (moved from main.ts)", () => {
+    process.env = {
+      ...ORIGINAL_ENV,
+      ...STRONG_PRODUCTION_ENV,
+      CORS_ALLOWED_ORIGINS: "admin.example.com",
+    };
+    expect(() => loadConfig()).toThrow(
+      /must start with http:\/\/ or https:\/\//,
+    );
+  });
+
+  it("rejects a production origin that looks like a scheme but is not a URL", () => {
+    process.env = {
+      ...ORIGINAL_ENV,
+      ...STRONG_PRODUCTION_ENV,
+      CORS_ALLOWED_ORIGINS: "http://",
+    };
+    expect(() => loadConfig()).toThrow(/is not a valid URL/);
+  });
+});
+
+// ARCH-27（配置中心收口）: 此前存在读取点但未注册的 env 在 configuration.ts
+// 补映射后的行为钉子 —— 消费方一律经 ConfigService 读这些配置节。
+describe("configuration (ARCH-27) newly registered config sections", () => {
+  const ORIGINAL_ENV = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  afterEach(() => {
+    process.env = ORIGINAL_ENV;
+    jest.resetModules();
+  });
+
+  const loadConfig = () => {
+    let cfg: Record<string, any>;
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      cfg = require("./configuration").default();
+    });
+    return cfg!;
+  };
+
+  it("registers throttle.loginLimit from LOGIN_THROTTLE_LIMIT (default 20)", () => {
+    expect(loadConfig().throttle.loginLimit).toBe(20);
+    process.env.LOGIN_THROTTLE_LIMIT = "5";
+    expect(loadConfig().throttle.loginLimit).toBe(5);
+  });
+
+  it("registers app.requestTimeoutMs from REQUEST_TIMEOUT_MS (default 30000)", () => {
+    expect(loadConfig().app.requestTimeoutMs).toBe(30000);
+    process.env.REQUEST_TIMEOUT_MS = "45000";
+    expect(loadConfig().app.requestTimeoutMs).toBe(45000);
+  });
+
+  it("registers app.apiBaseUrl from API_BASE_URL (default empty = unset)", () => {
+    expect(loadConfig().app.apiBaseUrl).toBe("");
+    process.env.API_BASE_URL = "https://api.example.com";
+    expect(loadConfig().app.apiBaseUrl).toBe("https://api.example.com");
+  });
+
+  it("registers initialAdmin section (password default empty = skip seed)", () => {
+    const cfg = loadConfig();
+    expect(cfg.initialAdmin.password).toBe("");
+    expect(cfg.initialAdmin.email).toBe("admin@autoflow.local");
+    process.env.INITIAL_ADMIN_PASSWORD = "seed-secret";
+    process.env.INITIAL_ADMIN_EMAIL = "seed@example.com";
+    const overridden = loadConfig().initialAdmin;
+    expect(overridden.password).toBe("seed-secret");
+    expect(overridden.email).toBe("seed@example.com");
+  });
+
+  it("registers logRetention.days from LOG_RETENTION_DAYS (default 30)", () => {
+    expect(loadConfig().logRetention.days).toBe(30);
+    process.env.LOG_RETENTION_DAYS = "7";
+    expect(loadConfig().logRetention.days).toBe(7);
+  });
+
+  it("registers executor.allowPrivateNetwork from EXECUTOR_ALLOW_PRIVATE_NETWORK", () => {
+    expect(loadConfig().executor.allowPrivateNetwork).toBe(false);
+    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
+    expect(loadConfig().executor.allowPrivateNetwork).toBe(true);
+  });
+
+  it("registers app.trustProxy from TRUST_PROXY (default false)", () => {
+    expect(loadConfig().app.trustProxy).toBe(false);
+    process.env.TRUST_PROXY = "true";
+    expect(loadConfig().app.trustProxy).toBe(true);
+  });
+
+  it("registers app.hostname from HOSTNAME (fallback empty on Windows dev)", () => {
+    delete process.env.HOSTNAME;
+    expect(loadConfig().app.hostname).toBe("");
+    process.env.HOSTNAME = "container-7f3a";
+    expect(loadConfig().app.hostname).toBe("container-7f3a");
+  });
 });

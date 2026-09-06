@@ -16,11 +16,13 @@ import {
   DatabaseOutlined,
   HomeOutlined,
   QuestionCircleOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { authApi } from '../api/auth';
 import { logoutRemote } from '../api/logout';
+import CommandPalette from '../components/CommandPalette';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -58,6 +60,8 @@ export default function MainLayout() {
   const isAdmin = user?.role === 'admin';
   const [collapsed, setCollapsed] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  // FEAT-09: 全局命令面板（⌘K / Ctrl+K 唤起，头部搜索按钮同快捷键行为）
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const { token } = theme.useToken();
 
   // R5: 登录响应只含 token，role 需从 GET /auth/profile 补齐。
@@ -281,6 +285,17 @@ export default function MainLayout() {
               <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{dateStr}</div>
             </div>
 
+            {/* FEAT-09: 全局搜索入口——点击行为与 ⌘K/Ctrl+K 一致（再按切换） */}
+            <Tooltip title="Ctrl K">
+              <Button
+                type="text"
+                icon={<SearchOutlined />}
+                aria-label="全局搜索"
+                style={{ fontSize: 16, color: token.colorTextSecondary }}
+                onClick={() => setPaletteOpen((v) => !v)}
+              />
+            </Tooltip>
+
             {/* 帮助按钮 */}
             <Tooltip title="帮助文档">
               <Button type="text" icon={<QuestionCircleOutlined />} style={{ fontSize: 16, color: token.colorTextSecondary }} />
@@ -337,6 +352,9 @@ export default function MainLayout() {
           <Outlet />
         </Content>
       </Layout>
+
+      {/* FEAT-09: 全局命令面板——⌘K/Ctrl+K 或头部搜索按钮唤起 */}
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
     </Layout>
   );
 }
