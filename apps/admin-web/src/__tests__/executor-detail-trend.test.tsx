@@ -126,7 +126,7 @@ describe('ExecutorDetailPage — 资源趋势（24h）卡片（FEAT-04）', () =
         successRate: 0,
         averageDurationMs: 0,
       },
-      current: { runningTaskCount: 0, cpuUsage: null, memUsage: null },
+      current: { runningTaskCount: 0, cpuUsage: undefined, memUsage: undefined },
       history: [],
     });
 
@@ -155,7 +155,7 @@ describe('ExecutorDetailPage — 资源趋势（24h）卡片（FEAT-04）', () =
         successRate: 0,
         averageDurationMs: 0,
       },
-      current: { runningTaskCount: 0, cpuUsage: null, memUsage: null },
+      current: { runningTaskCount: 0, cpuUsage: undefined, memUsage: undefined },
     } as never);
 
     renderPage();
