@@ -200,3 +200,56 @@ class TestHeartbeatTokenHashAdoption:
         await _send_heartbeat(mock_client, 'test-token')
 
         assert auth_module.get_executor_token_hash() == 'keep-me'
+
+
+class TestHeartbeatRunningExecutionIds:
+    """E1 (CONSISTENCY round, port of executor-node STALE-01): admin's
+    recoverStaleExecutions grants liveness protection ONLY to executors that
+    report runningExecutionIds — a missing field means "legacy executor, never
+    reported" and skips the protection (scheduler.service.ts:631), which got
+    python executors' prepare stages (git clone + venv, up to ~600s) misjudged
+    FAILED. The field must therefore ALWAYS be present (empty list = reported
+    & idle), mirror the live-execution registry, and be capped at 200 ids."""
+
+    async def _capture_body(self, mock_client):
+        with patch('scheduler.psutil.cpu_percent', return_value=1.0), \
+             patch('scheduler.psutil.virtual_memory') as mem_mock:
+            mem_mock.return_value = SimpleNamespace(percent=2.0)
+            await _send_heartbeat(mock_client, 'test-token')
+        return mock_client.post.call_args.kwargs['json']
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_includes_live_execution_ids(self):
+        import routers.execute as execute_module
+        execute_module.register_live_execution('exec-hb-1')
+        execute_module.register_live_execution('exec-hb-2')
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=create_mock_response(200))
+        body = await self._capture_body(mock_client)
+
+        assert sorted(body['runningExecutionIds']) == ['exec-hb-1', 'exec-hb-2']
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_idle_reports_empty_list(self):
+        # importing routers.execute installs the real provider (module wiring);
+        # an empty registry must still send [] — never omit the field
+        import routers.execute  # noqa: F401
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=create_mock_response(200))
+        body = await self._capture_body(mock_client)
+
+        assert 'runningExecutionIds' in body
+        assert body['runningExecutionIds'] == []
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_truncates_running_execution_ids_to_200(self):
+        import routers.execute as execute_module
+        for i in range(250):
+            execute_module.register_live_execution(f'exec-{i:03d}')
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=create_mock_response(200))
+        body = await self._capture_body(mock_client)
+
+        assert len(body['runningExecutionIds']) == 200

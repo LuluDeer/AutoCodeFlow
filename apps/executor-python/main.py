@@ -85,6 +85,18 @@ async def lifespan(app: FastAPI):
     if get_running_count() > 0:
         logger.info(f'Graceful shutdown: waiting for {get_running_count()} task(s) to finish...')
         await wait_for_tasks()
+    # E5 (parity with executor-node main.ts killRunningTaskProcesses): the
+    # grace period expired (or nothing was running) — tree-kill every task
+    # process still registered so detached children don't outlive the
+    # executor as unmanaged orphans. No-op when the registry is empty.
+    try:
+        killed = await execute.kill_running_task_processes()
+        if killed:
+            logger.warning(
+                f'Shutdown: killed {killed} task process tree(s) still running'
+            )
+    except Exception as e:
+        logger.warning(f'Shutdown task tree-kill failed: {e}')
     await notify_offline()
     logger.info('Executor shutdown complete')
 

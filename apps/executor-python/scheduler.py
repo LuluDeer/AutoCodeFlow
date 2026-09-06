@@ -47,6 +47,29 @@ def _get_admin_api_url() -> str:
     return get_admin_api_base_url()
 
 
+# E1 (CONSISTENCY round, parity with executor-node scheduler.ts STALE-01):
+# admin's recoverStaleExecutions grants liveness protection ONLY to executors
+# that report runningExecutionIds — a missing field means "legacy executor,
+# never reported" and skips the protection (scheduler.service.ts:631), so a
+# python executor in the prepare stage (git clone + venv, up to ~600s) gets
+# its execution misjudged FAILED mid-run. The live-execution registry lives
+# in routers/execute.py which imports this module — importing back would form
+# a cycle, so the data owner registers its getter here (same posture as node).
+# The field must ALWAYS be sent (an empty list = reported & idle); the only
+# forbidden shape is omitting it.
+def _default_running_execution_ids() -> list:
+    return []
+
+
+_running_execution_ids_provider = _default_running_execution_ids
+
+
+def register_running_execution_ids_provider(fn) -> None:
+    """Install the getter returning currently-live executionIds."""
+    global _running_execution_ids_provider
+    _running_execution_ids_provider = fn
+
+
 def _heartbeat_retry_exhausted(retry_state):
     """Called when all retries are exhausted — return None to suppress RetryError."""
     logger.warning(f'Heartbeat failed after all retries: {retry_state.outcome.exception()}')
@@ -89,6 +112,9 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
             'cpuUsage': cpu,
             'memUsage': mem,
             'runningTaskCount': get_running_count(),
+            # E1: liveness report — capped at 200 ids (node parity,
+            # scheduler.ts sendHeartbeat). Always present, never omitted.
+            'runningExecutionIds': _running_execution_ids_provider()[:200],
             'restartedAt': executor_started_at,
             'startupId': executor_startup_id,
         },

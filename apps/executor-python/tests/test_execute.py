@@ -11,6 +11,7 @@ import asyncio
 import re
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -133,7 +134,7 @@ def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
 
     posted = {}
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         return {
             'success': True,
             'logs': 'done',
@@ -166,6 +167,10 @@ def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
     monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'dynamic-token')
     monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
     monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'public-executor:9000')
+    # E3: callback prefers auth.get_current_token(); None here pins the
+    # settings-token fallback (no real admin-api round trip in tests).
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(execute_module, 'get_current_token', AsyncMock(return_value=None))
 
     req = ExecuteRequest(
         executionId='exec-callback',
@@ -797,6 +802,11 @@ def _patch_callback_env(monkeypatch):
     monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'tok')
     monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
     monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'pub:9000')
+    # E3: the callback now prefers the dynamic token (auth.get_current_token);
+    # return None so these tests keep exercising the settings-token fallback
+    # without a real admin-api round trip.
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(execute_module, 'get_current_token', AsyncMock(return_value=None))
 
 
 def test_run_and_callback_retries_transient_failures(monkeypatch):
@@ -821,7 +831,7 @@ def test_run_and_callback_retries_transient_failures(monkeypatch):
                 raise httpx.ConnectError('boom')
             return _FakeResponse(200)
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 5}
 
     monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
@@ -855,7 +865,7 @@ def test_run_and_callback_no_retry_on_permanent_4xx(monkeypatch):
             calls.append(url)
             return _FakeResponse(422)
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         return {'success': False, 'logs': '', 'exitCode': 1,
                 'errorMessage': 'bad', 'durationMs': 5}
 
@@ -888,7 +898,7 @@ def test_run_and_callback_gives_up_after_max_attempts(monkeypatch):
             calls.append(url)
             return _FakeResponse(503)
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 5}
 
     monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
@@ -923,7 +933,7 @@ def test_run_and_callback_truncates_result_error_message(monkeypatch):
             posted['json'] = json
             return _FakeResponse(200)
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         return {'success': False, 'logs': '', 'exitCode': 1,
                 'errorMessage': 'x' * 50000, 'durationMs': 5}
 
@@ -958,7 +968,7 @@ def test_run_and_callback_truncates_exception_message(monkeypatch):
             posted['json'] = json
             return _FakeResponse(200)
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         raise RuntimeError('y' * 50000)
 
     monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
@@ -1232,3 +1242,247 @@ def test_run_task_omits_callback_token_without_secret(tmp_path, monkeypatch):
     assert 'AUTOFLOW_CALLBACK_TOKEN' not in env
     assert env['AUTOFLOW_ADMIN_API_URL'] == 'http://admin.local'
     assert env['AUTOFLOW_EXECUTOR_ADDRESS'] == 'pub:9000'
+
+
+# ---------------------------------------------------------------------------
+# E1/E7 (CONSISTENCY round): live-execution registry + duplicate-accept guard
+# ---------------------------------------------------------------------------
+
+def test_register_live_execution_rejects_duplicate():
+    """E7 unit: the registry's check-and-insert is atomic; a second register
+    for the same id returns None (the route maps that to 400)."""
+    from routers import execute as execute_module
+
+    entry = execute_module.register_live_execution('exec-dup-unit')
+    assert entry is not None
+    assert execute_module.execution_exists('exec-dup-unit')
+    assert execute_module.register_live_execution('exec-dup-unit') is None
+    execute_module.unregister_live_execution('exec-dup-unit')
+    assert not execute_module.execution_exists('exec-dup-unit')
+
+
+def test_list_active_execution_ids_reflects_registry():
+    """E1: the heartbeat getter mirrors the registry contents exactly."""
+    from routers import execute as execute_module
+
+    assert execute_module.list_active_execution_ids() == []
+    execute_module.register_live_execution('exec-a')
+    execute_module.register_live_execution('exec-b')
+    assert sorted(execute_module.list_active_execution_ids()) == ['exec-a', 'exec-b']
+
+
+def test_execute_module_registers_heartbeat_provider():
+    """E1 wiring: routers/execute registers its registry getter with the
+    scheduler at import time (node STALE-01 provider pattern — avoids the
+    scheduler <-> routes import cycle)."""
+    import scheduler as sched_module
+    from routers import execute as execute_module
+
+    execute_module.register_live_execution('exec-wired')
+    try:
+        assert sched_module._running_execution_ids_provider() == ['exec-wired']
+    finally:
+        execute_module.unregister_live_execution('exec-wired')
+
+
+def test_execute_duplicate_execution_id_returns_400(auth_client, monkeypatch):
+    """E7 (node execute.ts:339-342 parity): a second /execute for an
+    executionId still live on this executor (queued/prepare/running) is
+    refused with 400 — the 429→BullMQ retry chain can otherwise re-dispatch a
+    merely-slow execution and double-run it."""
+    from routers import execute as execute_module
+
+    class FakeTaskHandle:
+        def add_done_callback(self, cb):
+            pass
+
+    def fake_create_task(coro):
+        coro.close()
+        return FakeTaskHandle()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_task', fake_create_task)
+    original = sched.running_count
+    sched.running_count = 0
+    try:
+        body = {
+            'executionId': 'exec-double-dispatch',
+            'task': {'name': 't', 'runtime': 'python', 'script': 'pass'},
+        }
+        first = auth_client.post('/api/execute', json=body)
+        second = auth_client.post('/api/execute', json=body)
+    finally:
+        sched.running_count = original
+
+    assert first.status_code == 200
+    assert first.json()['status'] == 'accepted'
+    assert second.status_code == 400
+    assert 'already active' in second.json()['detail']
+    # the rejected duplicate must not leak a second registry entry
+    assert list(execute_module._live_executions) == ['exec-double-dispatch']
+
+
+def test_run_and_callback_unregisters_after_terminal_callback(monkeypatch):
+    """E1: once the terminal callback path completes the execution must leave
+    the live registry — the heartbeat stops claiming liveness for it."""
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+
+    async def fake_run_task(req, entry=None):
+        return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 1}
+
+    class OkClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            return _FakeResponse(200)
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', OkClient)
+    _patch_callback_env(monkeypatch)
+
+    entry = execute_module.register_live_execution('exec-lifecycle')
+    original = sched.running_count
+    sched.running_count = 1
+    try:
+        asyncio.run(execute_module._run_and_callback(
+            ExecuteRequest(executionId='exec-lifecycle', task={'name': 'n'}), entry))
+    finally:
+        sched.running_count = original
+
+    assert not execute_module.execution_exists('exec-lifecycle')
+
+
+# ---------------------------------------------------------------------------
+# E3 (CONSISTENCY round): callback 401 self-heal via auth.request_with_self_heal
+# ---------------------------------------------------------------------------
+
+def test_callback_401_self_heals_with_fresh_token(monkeypatch):
+    """A 401 (admin rotated our per-executor token) triggers ONE
+    force_token_refresh + retry with the fresh bearer — same posture as the
+    heartbeat (R11) and node admin-client.request (R10 gap #3)."""
+    import auth as auth_module
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(auth_module, 'force_token_refresh',
+                        AsyncMock(return_value='fresh-token'))
+    calls = []
+
+    class HealingClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            calls.append(dict(headers))
+            return _FakeResponse(401 if len(calls) == 1 else 200)
+
+    async def fake_run_task(req, entry=None):
+        return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 1}
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', HealingClient)
+    _patch_callback_env(monkeypatch)
+    # override the helper's None: simulate a stale dynamic token in play
+    monkeypatch.setattr(execute_module, 'get_current_token',
+                        AsyncMock(return_value='stale-token'))
+
+    asyncio.run(execute_module._run_and_callback(
+        ExecuteRequest(executionId='exec-heal', task={'name': 'n'})))
+
+    assert len(calls) == 2
+    assert calls[0]['Authorization'] == 'Bearer stale-token'
+    assert calls[1]['Authorization'] == 'Bearer fresh-token'
+
+
+def test_callback_persistent_401_goes_through_retry_loop(monkeypatch):
+    """E3: 401 left the non-retryable branch — when the heal is unavailable
+    (force_token_refresh → None, admin unreachable) the persistent 401 now
+    consumes the full 3-attempt + backoff budget instead of being dropped on
+    attempt 1."""
+    import auth as auth_module
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(auth_module, 'force_token_refresh', AsyncMock(return_value=None))
+    calls = []
+
+    class Always401Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            calls.append(url)
+            return _FakeResponse(401)
+
+    async def fake_run_task(req, entry=None):
+        return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 1}
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', Always401Client)
+    monkeypatch.setattr(execute_module, 'CALLBACK_RETRY_BASE_DELAY_SECONDS', 0)
+    _patch_callback_env(monkeypatch)
+
+    asyncio.run(execute_module._run_and_callback(
+        ExecuteRequest(executionId='exec-401-loop', task={'name': 'n'})))
+
+    assert len(calls) == execute_module.CALLBACK_RETRY_ATTEMPTS
+
+
+def test_callback_prefers_dynamic_token(monkeypatch):
+    """E3: the callback bearer now comes from auth.get_current_token (dynamic
+    per-executor token, node callback.ts post() parity) instead of the
+    startup settings snapshot only."""
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+    from unittest.mock import AsyncMock
+
+    posted_headers = []
+
+    async def fake_run_task(req, entry=None):
+        return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 1}
+
+    class RecordingClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            posted_headers.append(dict(headers))
+            return _FakeResponse(200)
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', RecordingClient)
+    _patch_callback_env(monkeypatch)
+    monkeypatch.setattr(execute_module, 'get_current_token',
+                        AsyncMock(return_value='dynamic-current'))
+
+    asyncio.run(execute_module._run_and_callback(
+        ExecuteRequest(executionId='exec-dyn-token', task={'name': 'n'})))
+
+    assert posted_headers[0]['Authorization'] == 'Bearer dynamic-current'
