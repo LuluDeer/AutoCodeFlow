@@ -4,10 +4,12 @@
 支持：
   - 包上传（twine upload / pip upload）
   - 简单索引（PEP 503 /simple/）
+  - 人类可读落地页（GET / 与 /simple/ HTML 页）
   - 包下载
   - 基本认证（REGISTRY_USER / REGISTRY_PASS）
 """
 from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 import base64
 import binascii
@@ -167,36 +169,152 @@ def _version_from_filename(name: str) -> str:
     return stem.rsplit("-", 1)[1] if "-" in stem else "-"
 
 
+# ── FEAT-12: 人类可读 HTML 索引页 ─────────────────────────────────────────────
+# 约束：零外部资源——私服可能离线部署，样式全部内联，不引用任何 CDN/字体/JS。
+# 缓存取舍：选 no-cache 而非短 max-age——索引必须在 CI 上传后立即可见，陈旧
+# 索引会让 pip 解析不到刚推送的版本；私服页面体量为 KB 级，每次回源代价可
+# 忽略。未配置 ETag/Last-Modified 校验器，no-cache 实际表现为每次全量重取。
+_CACHE_HEADERS = {"Cache-Control": "no-cache"}
+
+_PAGE_STYLE = """<style>
+:root{color-scheme:dark}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:#101014;color:#e4e4e9;margin:0;padding:2rem 1rem 4rem}
+main{max-width:52rem;margin:0 auto}
+h1{font-size:1.3rem;margin:0 0 .3rem}
+p.meta{color:#9a9aa5;font-size:.85rem;margin:.3rem 0 1.1rem}
+ul.pkg{list-style:none;margin:0 0 1.5rem;padding:0;border:1px solid #26262e;border-radius:8px;overflow:hidden}
+ul.pkg li{padding:.5rem .9rem;border-bottom:1px solid #1f1f26;font-size:.9rem}
+ul.pkg li:nth-child(odd){background:#15151a}
+a{color:#7ab3ff;text-decoration:none}
+a:hover{text-decoration:underline}
+.muted{color:#9a9aa5}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85em;background:#1a1a21;border:1px solid #26262e;border-radius:4px;padding:.05rem .3rem}
+footer{margin-top:2rem;color:#6e6e78;font-size:.75rem}
+</style>"""
+
+
+def _page(title: str, body_html: str) -> str:
+    """共享页面外壳。title 在此处转义；body_html 是受信组装的标记——其中
+    一切用户可控值（包名/文件名/版本号）必须先经 _render_* 里的 html.escape
+    （quote=True 默认转义引号，属性/文本两个上下文都覆盖）。"""
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>{escape(title)}</title>
+{_PAGE_STYLE}
+</head>
+<body>
+<main>
+{body_html}
+<footer>AutoFlow PyPI Registry · 私有 Python 包服务 · pip 入口 <code>/simple/</code>（PEP 503）</footer>
+</main>
+</body>
+</html>"""
+
+
+def _render_root_index(packages: list, total_files: int) -> str:
+    """GET / 落地页：包名列表（链到 /simple/<name>/）+ 包数量 + 服务说明。"""
+    if packages:
+        listing = '<ul class="pkg">\n' + "".join(
+            f'<li><a href="/simple/{escape(p)}/">{escape(p)}</a></li>\n'
+            for p in packages
+        ) + "</ul>"
+    else:
+        listing = '<p class="muted">暂无已上传的包。</p>'
+    body = (
+        "<h1>AutoFlow PyPI Registry</h1>\n"
+        '<p class="meta">AutoCodeFlow 私有 Python 包索引（PEP 503 协议）。'
+        "pip 安装示例：<code>pip install --index-url "
+        "http://&lt;host&gt;:8003/simple/ &lt;package&gt;</code></p>"
+        f'<p class="meta">{len(packages)} 个包 · {total_files} 个文件</p>'
+        f"{listing}"
+    )
+    return _page("AutoFlow PyPI Registry", body)
+
+
+def _render_simple_index(packages: list, counts: list, total_files: int) -> str:
+    """PEP 503 根索引。
+
+    pip 只解析 <a> 锚点（admin-api parsePypiIndex 同样只取锚点文本），锚点
+    href/文本语义不变；计数等附加内容为纯文本/span，不影响 PEP 503 兼容性。
+    包名来自上传表单——normalize() 不剥离 <>&'" 等字符——必须 escape。
+    """
+    if packages:
+        listing = '<ul class="pkg">\n' + "".join(
+            f'<li><a href="/simple/{escape(p)}/">{escape(p)}</a>'
+            f' <span class="muted">({c} file{"s" if c != 1 else ""})</span></li>\n'
+            for p, c in zip(packages, counts)
+        ) + "</ul>"
+    else:
+        listing = '<p class="muted">No packages published yet.</p>'
+    body = (
+        "<h1>Simple Index</h1>\n"
+        f'<p class="meta">{len(packages)} package{"s" if len(packages) != 1 else ""} · '
+        f'{total_files} file{"s" if total_files != 1 else ""}</p>\n'
+        f"{listing}"
+    )
+    return _page("Simple Index", body)
+
+
+def _render_package_index(package_name: str, rows: list,
+                          file_count: int, version_count: int) -> str:
+    """PEP 503 包级索引。
+
+    rows: (version, filename, sha256, size, mtime)——version/filename 均可被
+    上传方控制，href 属性与文本节点统一 escape；锚点 href#sha256 语义与
+    PEP 503 完全不变，pip 解析不受影响。
+    """
+    links = "".join(
+        f'<li><a href="/packages/{escape(normalize(package_name))}/'
+        f'{escape(filename)}#sha256={sha256}">{escape(filename)}</a>'
+        f'<br/><span class="muted">版本 {escape(version)} · {size} · {mtime} UTC</span></li>\n'
+        for version, filename, sha256, size, mtime in rows
+    )
+    body = (
+        f"<h1>Links for {escape(package_name)}</h1>\n"
+        f'<p class="meta">{file_count} file{"s" if file_count != 1 else ""} · '
+        f'{version_count} version{"s" if version_count != 1 else ""}</p>\n'
+        f'<ul class="pkg">\n{links}</ul>'
+    )
+    return _page(f"Links for {package_name}", body)
+
+
+def _version_sort_key(v: str):
+    # 混合 int/str 版本段此前会让 sorted() 抛 TypeError（文件名解析不出版本
+    # 时得到 "-"，与 "1.0.0" 同页排序即 500）；打标签后任意两段均可比。
+    return tuple((0, int(x)) if x.isdigit() else (1, x) for x in v.split("."))
+
+
+@app.get("/", response_class=HTMLResponse)
+def root_index(_user: str = Depends(verify_auth)):
+    """FEAT-12: 人类可读服务首页（HTML，需认证——与 S9 索引保护策略一致）。"""
+    pkgs = sorted(d.name for d in PACKAGES_DIR.iterdir() if d.is_dir())
+    total_files = sum(
+        1
+        for p in pkgs
+        for f in (PACKAGES_DIR / p).glob("*")
+        if f.is_file() and not is_meta_file(f.name)
+    )
+    return HTMLResponse(_render_root_index(pkgs, total_files), headers=_CACHE_HEADERS)
+
+
 @app.get("/simple/", response_class=HTMLResponse)
 def simple_index(_user: str = Depends(verify_auth)):
-    """PEP 503 root index.
-
-    FEAT-12: pip 只解析 <a> 锚点——锚点必须保持在每行最前，附加的
-    计数等纯文本不破坏 PEP 503 兼容性。
-    """
+    """PEP 503 root index (pip 消费入口)."""
     pkgs = sorted(d.name for d in PACKAGES_DIR.iterdir() if d.is_dir())
     counts = [
         sum(1 for f in (PACKAGES_DIR / p).glob("*") if f.is_file() and not is_meta_file(f.name))
         for p in pkgs
     ]
-    total_files = sum(counts)
-    links = "".join(
-        f'<a href="/simple/{p}/">{p}</a> ({c} file{"s" if c != 1 else ""})<br/>' + "\n"
-        for p, c in zip(pkgs, counts)
-    )
-    return f"""<!DOCTYPE html><html><head><title>Simple Index</title></head>
-<body><h1>Simple Index</h1>
-<p>{len(pkgs)} package{"s" if len(pkgs) != 1 else ""} · {total_files} file{"s" if total_files != 1 else ""}</p>
-\n{links}</body></html>"""
+    return HTMLResponse(
+        _render_simple_index(pkgs, counts, sum(counts)), headers=_CACHE_HEADERS)
 
 
 @app.get("/simple/{package_name}/", response_class=HTMLResponse)
 def package_index(package_name: str, _user: str = Depends(verify_auth)):
-    """PEP 503 per-package index.
-
-    FEAT-12: 人类可读增强——按版本聚合 + 体积/上传时间；锚点（href#sha256）
-    语义与 PEP 503 完全不变，pip 解析不受影响。
-    """
+    """PEP 503 per-package index (pip 消费入口)."""
     d = PACKAGES_DIR / normalize(package_name)
     if not d.exists():
         raise HTTPException(status_code=404, detail="Package not found")
@@ -206,24 +324,20 @@ def package_index(package_name: str, _user: str = Depends(verify_auth)):
     by_version: dict = {}
     for f in files:
         by_version.setdefault(_version_from_filename(f.name), []).append(f)
-
-    def _version_key(v: str):
-        return [int(x) if x.isdigit() else x for x in v.split(".")]
-
-    rows = ""
-    for version in sorted(by_version, key=_version_key):
+    rows = []
+    for version in sorted(by_version, key=_version_sort_key):
         for f in sorted(by_version[version], key=lambda x: x.name):
-            sha256 = artifact_sha256(f)
-            size = _human_size(f.stat().st_size)
-            mtime = datetime.fromtimestamp(f.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M")
-            rows += (
-                f'<a href="/packages/{normalize(package_name)}/{f.name}#sha256={sha256}">{f.name}</a>'
-                f" — {version} · {size} · {mtime} UTC<br/>" + "\n"
-            )
-    return f"""<!DOCTYPE html><html><head><title>Links for {package_name}</title></head>
-<body><h1>Links for {package_name}</h1>
-<p>{len(files)} file{"s" if len(files) != 1 else ""} · {len(by_version)} version{"s" if len(by_version) != 1 else ""}</p>
-\n{rows}</body></html>"""
+            rows.append((
+                version,
+                f.name,
+                artifact_sha256(f),
+                _human_size(f.stat().st_size),
+                datetime.fromtimestamp(
+                    f.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            ))
+    return HTMLResponse(
+        _render_package_index(package_name, rows, len(files), len(by_version)),
+        headers=_CACHE_HEADERS)
 
 
 @app.get("/packages/{package_name}/{filename}")
