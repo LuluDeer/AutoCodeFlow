@@ -1,6 +1,7 @@
 import {
   assertSafeHttpUrl,
   assertSafeExecutorUrl,
+  assertSafeGitRepoUrl,
   normalizeIpForClassification,
 } from "../safe-http.util";
 
@@ -368,5 +369,89 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
         ).rejects.toThrow(/blocked address/);
       }
     });
+  });
+});
+
+/**
+ * R4: git-repo SSRF guard (deployFromGit clone target). Policy: public and
+ * private-LAN allowed (self-hosted GitLab topology); loopback / link-local /
+ * metadata / reserved / benchmark / CGNAT / IPv6-ULA refused; all three repo
+ * URL shapes (https, ssh://, scp-like git@host:path) covered.
+ */
+describe("safe-http.util — assertSafeGitRepoUrl (R4)", () => {
+  afterEach(() => mockedLookup.mockReset());
+
+  it("allows a public https repo (hostname resolving to a public IP)", async () => {
+    mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    await expect(
+      assertSafeGitRepoUrl("https://github.com/org/repo.git"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("allows a private-LAN git host (self-hosted GitLab topology)", async () => {
+    mockedLookup.mockResolvedValue([{ address: "10.0.0.42", family: 4 }]);
+    await expect(
+      assertSafeGitRepoUrl("https://gitlab.internal/org/repo.git"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("blocks cloud metadata via DNS answer", async () => {
+    mockedLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
+    await expect(
+      assertSafeGitRepoUrl("http://evil.example.com/r.git"),
+    ).rejects.toThrow(/link-local.*clone refused|clone refused/);
+  });
+
+  it("blocks loopback IP literal in https form", async () => {
+    await expect(
+      assertSafeGitRepoUrl("http://127.0.0.1:3000/r.git"),
+    ).rejects.toThrow(/loopback/);
+  });
+
+  it("blocks IPv6 loopback literal in ssh:// form", async () => {
+    await expect(assertSafeGitRepoUrl("ssh://git@[::1]/r.git")).rejects.toThrow(
+      /loopback/,
+    );
+  });
+
+  it("blocks loopback in scp-like git@host:path form", async () => {
+    await expect(
+      assertSafeGitRepoUrl("git@127.0.0.1:org/repo.git"),
+    ).rejects.toThrow(/loopback/);
+  });
+
+  it("blocks CGNAT / benchmark ranges (Tailscale/TUN overlays)", async () => {
+    for (const addr of ["100.64.0.1", "198.18.0.1"]) {
+      mockedLookup.mockResolvedValue([{ address: addr, family: 4 }]);
+      await expect(
+        assertSafeGitRepoUrl("https://overlay.example.com/r.git"),
+      ).rejects.toThrow(/clone refused/);
+    }
+  });
+
+  it("blocks IPv6 ULA (fc00::/7) even though it classifies as private-lan", async () => {
+    mockedLookup.mockResolvedValue([{ address: "fd12:3456::7", family: 6 }]);
+    await expect(
+      assertSafeGitRepoUrl("https://ula.example.com/r.git"),
+    ).rejects.toThrow(/clone refused/);
+  });
+
+  it("blocks IPv4-mapped IPv6 metadata literal (::ffff:169.254.169.254)", async () => {
+    await expect(
+      assertSafeGitRepoUrl("http://[::ffff:169.254.169.254]/r.git"),
+    ).rejects.toThrow(/link-local/);
+  });
+
+  it("rejects unsupported repo shapes (no https/ssh/git@ prefix)", async () => {
+    await expect(assertSafeGitRepoUrl("/etc/passwd")).rejects.toThrow(
+      /Unsupported git repository URL shape/,
+    );
+  });
+
+  it("rejects when the host does not resolve", async () => {
+    mockedLookup.mockResolvedValue([]);
+    await expect(
+      assertSafeGitRepoUrl("https://nx.example.invalid/r.git"),
+    ).rejects.toThrow(/did not resolve/);
   });
 });

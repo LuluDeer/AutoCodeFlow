@@ -208,6 +208,38 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     return delivery;
   }
 
+  /**
+   * R2: dispatch exactly one channel's send() with an optional per-call
+   * config override. Used by NotificationConfigService.testChannel to
+   * validate unsaved admin-form values without publishing them to the
+   * global ChannelConfigStore. The override NEVER reaches
+   * sendToChannels / sendAll and therefore cannot affect any other
+   * in-flight or future notification.
+   *
+   * Fail-open posture preserved: an SSRF block returns "blocked" instead
+   * of throwing, matching the existing fan-out contract.
+   */
+  async testChannel(
+    payload: NotificationPayload,
+    channel: AlertChannel,
+    configOverride?: Record<string, string>,
+  ): Promise<ChannelDeliveryStatus> {
+    switch (channel) {
+      case AlertChannel.EMAIL:
+        return this.email.send(payload, configOverride);
+      case AlertChannel.SLACK:
+        return this.slack.send(payload, configOverride);
+      case AlertChannel.DINGTALK:
+        return this.dingtalk.send(payload, configOverride);
+      case AlertChannel.WECOM:
+        return this.wecom.send(payload, configOverride);
+      case AlertChannel.WEBHOOK:
+        return this.webhook.send(payload, undefined, configOverride);
+      default:
+        return "skipped";
+    }
+  }
+
   isSilenced(taskId?: string, level?: AlertLevel): boolean {
     const now = new Date();
 

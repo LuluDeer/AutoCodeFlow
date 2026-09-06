@@ -21,7 +21,11 @@ describe("AuthService (__tests__)", () => {
   let usersService: jest.Mocked<
     Pick<
       UsersService,
-      "findByUsername" | "findById" | "recordLoginFailure" | "resetLoginFailure"
+      | "findByUsername"
+      | "findById"
+      | "recordLoginFailure"
+      | "resetLoginFailure"
+      | "clearExpiredLock"
     >
   >;
   let jwtService: jest.Mocked<Pick<JwtService, "sign" | "verify">>;
@@ -34,6 +38,7 @@ describe("AuthService (__tests__)", () => {
       findById: jest.fn(),
       recordLoginFailure: jest.fn().mockResolvedValue(undefined),
       resetLoginFailure: jest.fn().mockResolvedValue(undefined),
+      clearExpiredLock: jest.fn().mockResolvedValue(true),
     };
     jwtService = {
       sign: jest.fn().mockReturnValue("signed-token"),
@@ -125,6 +130,57 @@ describe("AuthService (__tests__)", () => {
       await expect(
         service.login({ username: "admin", password: "pass" }),
       ).rejects.toThrow(UnauthorizedException);
+      // R10: an ACTIVE lock must not be cleared — only expired ones are.
+      expect(usersService.clearExpiredLock).not.toHaveBeenCalled();
+    });
+
+    // R10: after the lock window expires, the fail counter must be reset
+    // BEFORE the password check — otherwise loginFailCount is still at
+    // MAX_FAIL and one fresh failure re-locks instantly (permanent lockout).
+    it("R10: expired lock + wrong password resets the counter before recording the new failure", async () => {
+      const expiredLockUser = {
+        ...mockUser,
+        loginFailCount: 5,
+        lockedUntil: new Date(Date.now() - 60_000), // window already passed
+      };
+      usersService.findByUsername.mockResolvedValue(expiredLockUser as any);
+      jest.spyOn(bcrypt, "compare").mockResolvedValue(false as never);
+      await expect(
+        service.login({ username: "admin", password: "wrong" }),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(usersService.clearExpiredLock).toHaveBeenCalledWith(mockUser.id);
+      // Ordering: the reset happens BEFORE recordLoginFailure, so the new
+      // failure increments from 0 (1 < MAX_FAIL → no immediate re-lock).
+      const resetCall =
+        (usersService.clearExpiredLock as jest.Mock).mock.invocationCallOrder[0];
+      const failCall =
+        (usersService.recordLoginFailure as jest.Mock).mock
+          .invocationCallOrder[0];
+      expect(resetCall).toBeLessThan(failCall);
+    });
+
+    it("R10: expired lock + correct password logs in normally", async () => {
+      const expiredLockUser = {
+        ...mockUser,
+        loginFailCount: 5,
+        lockedUntil: new Date(Date.now() - 60_000),
+      };
+      usersService.findByUsername.mockResolvedValue(expiredLockUser as any);
+      jest.spyOn(bcrypt, "compare").mockResolvedValue(true as never);
+      const result = await service.login({
+        username: "admin",
+        password: "pass",
+      });
+      expect(result).toHaveProperty("accessToken");
+      expect(usersService.clearExpiredLock).toHaveBeenCalledWith(mockUser.id);
+      expect(usersService.resetLoginFailure).toHaveBeenCalledWith(mockUser.id);
+    });
+
+    it("R10: user without any lock never touches clearExpiredLock", async () => {
+      usersService.findByUsername.mockResolvedValue(mockUser as any);
+      jest.spyOn(bcrypt, "compare").mockResolvedValue(true as never);
+      await service.login({ username: "admin", password: "pass" });
+      expect(usersService.clearExpiredLock).not.toHaveBeenCalled();
     });
 
     it("SEC-05: throws when account is disabled (isActive=false)", async () => {

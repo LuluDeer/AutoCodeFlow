@@ -157,6 +157,39 @@ describe("AiService", () => {
     });
   });
 
+  // R3: assertSafeHttpUrl only validates the first hop — both provider
+  // call sites must pin maxRedirects: 0 so a 3xx cannot reroute the
+  // (Bearer-credentialed) request into a private/metadata target.
+  describe("R3: provider calls refuse redirects (maxRedirects: 0)", () => {
+    it("OpenAI call sends maxRedirects: 0", async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === "ai.provider") return "openai";
+        if (key === "ai.openaiApiKey") return "test-key";
+        return defaultVal;
+      });
+      mockedAxios.post = jest.fn().mockResolvedValue({
+        data: { choices: [{ message: { content: "ok" } }] },
+      });
+      await service.analyzeFailure({ name: "t", runtime: "node" }, "err");
+      const config = (mockedAxios.post as jest.Mock).mock.calls[0][2];
+      expect(config).toEqual(expect.objectContaining({ maxRedirects: 0 }));
+    });
+
+    it("Ollama call sends maxRedirects: 0", async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === "ai.provider") return "ollama";
+        if (key === "ai.ollamaHost") return "http://93.184.216.34:11434";
+        return defaultVal;
+      });
+      mockedAxios.post = jest.fn().mockResolvedValue({
+        data: { response: "ok" },
+      });
+      await service.analyzeFailure({ name: "t", runtime: "node" }, "err");
+      const config = (mockedAxios.post as jest.Mock).mock.calls[0][2];
+      expect(config).toEqual(expect.objectContaining({ maxRedirects: 0 }));
+    });
+  });
+
   describe("suggestSchedule", () => {
     it("should return default cron when provider is disabled", async () => {
       configService.get.mockReturnValue("disabled");

@@ -125,7 +125,12 @@ export class AiController {
     return { ok: true };
   }
 
+  // R11: POST /ai/test performs a real outbound AI call with the saved
+  // config (same posture as GET/POST /ai/config above, N11) — a plain user
+  // could use it to probe the configured provider, burn API quota, and read
+  // back provider responses through the message field. Admin only.
   @Post("test")
+  @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: "Test current AI configuration with a sample prompt",

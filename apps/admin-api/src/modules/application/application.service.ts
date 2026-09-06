@@ -14,6 +14,7 @@ import {
   UpdateApplicationDto,
 } from "./dto/application.dto";
 import { spawnSync } from "child_process";
+import { assertSafeGitRepoUrl } from "../../common/utils/safe-http.util";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -46,13 +47,89 @@ export class ApplicationService implements OnModuleInit {
   }
 
   async findAll(): Promise<Application[]> {
-    return this.repo.find({ order: { createdAt: "DESC" } });
+    const rows = await this.repo.find({ order: { createdAt: "DESC" } });
+    return rows.map((r) => this.maskReadSurface(r));
   }
 
   async findById(id: string): Promise<Application> {
     const app = await this.repo.findOne({ where: { id } });
     if (!app) throw new NotFoundException(`Application ${id} not found`);
+    return this.maskReadSurface(app);
+  }
+
+  /**
+   * R1: internal callers (deploy/upgrade/rollback paths) need the raw
+   * env so executors can pull secrets at deploy time. They go through
+   * this RAW lookup to bypass the read-surface masking applied by
+   * findById/findAll. The HTTP surface never reaches this method.
+   */
+  async findByIdRaw(id: string): Promise<Application> {
+    const app = await this.repo.findOne({ where: { id } });
+    if (!app) throw new NotFoundException(`Application ${id} not found`);
     return app;
+  }
+
+  /**
+   * R1: the env map is operator-authored and frequently carries secrets
+   * (DB URLs, API keys, signing tokens) that executors pull at deploy
+   * time. The DB row keeps the raw values; the HTTP read surface masks
+   * them — same posture as NotificationConfigService.maskChannel / N32
+   * url-query masking so a non-admin authenticated user never sees
+   * plaintext secrets. Returns a shallow clone so the stored entity is
+   * not mutated (TypeORM reuses identity-mapped objects across requests).
+   */
+  /** R1/QA1: not private — AppDeploymentService reuses it to mask the
+   *  nested application relation it returns alongside deployment rows. */
+  maskReadSurface(app: Application): Application {
+    if (!app.env || typeof app.env !== "object") return app;
+    return { ...app, env: this.maskEnvForRead(app.env) as any };
+  }
+
+  /** QA1: mask secret-class keys of an arbitrary env record for HTTP read
+   *  surfaces — shared by the application surface above and the deployment /
+   *  version-snapshot surfaces (deployment.env, relations.application.env,
+   *  snapshot.env) so the same secrets cannot leak through a sibling read
+   *  path while this one is masked. */
+  maskEnvForRead(
+    env: Record<string, string> | null | undefined,
+  ): Record<string, string> | null | undefined {
+    if (!env || typeof env !== "object") return env;
+    const masked: Record<string, string> = {};
+    for (const [k, v] of Object.entries(env)) {
+      masked[k] = ApplicationService.SECRET_FIELD_RE.test(k) ? "***" : v;
+    }
+    return masked;
+  }
+
+  /** Mirror of NotificationConfigService.SECRET_FIELD_RE — kept local so
+   *  the application module has no cross-module coupling on a private
+   *  field naming rule. */
+  private static readonly SECRET_FIELD_RE = /pass|secret|token|api[_-]?key/i;
+
+  /**
+   * R1: the admin form round-trips the masked read surface, so an untouched
+   * secret-class key comes back as the '***' sentinel. Writing that sentinel
+   * over the saved raw value would destroy the secret — same reason
+   * NotificationConfigService.updateChannel skips isMaskedEcho entries.
+   * Keep the saved raw value for any incoming '***' on a secret-class key;
+   * everything else passes through.
+   */
+  private mergeEnvPreservingMaskedEcho(
+    saved: Record<string, string> | null | undefined,
+    incoming: Record<string, string>,
+  ): Record<string, string> {
+    const merged: Record<string, string> = { ...incoming };
+    for (const [k, v] of Object.entries(merged)) {
+      if (
+        v === "***" &&
+        ApplicationService.SECRET_FIELD_RE.test(k) &&
+        saved &&
+        Object.prototype.hasOwnProperty.call(saved, k)
+      ) {
+        merged[k] = saved[k];
+      }
+    }
+    return merged;
   }
 
   async findByName(name: string): Promise<Application | null> {
@@ -104,9 +181,21 @@ export class ApplicationService implements OnModuleInit {
   }
 
   async update(id: string, dto: UpdateApplicationDto): Promise<Application> {
-    const app = await this.findById(id);
-    Object.assign(app, dto);
-    return this.repo.save(app);
+    // R1: load the RAW row, never the masked findById() result — saving a
+    // masked entity back would persist '***' over the real secret env
+    // values (webhook version bumps and upload upserts both flow through
+    // here without touching env). The response is masked again so the
+    // public webhook route can never echo raw secrets.
+    const app = await this.findByIdRaw(id);
+    const next: UpdateApplicationDto = dto.env
+      ? {
+          ...dto,
+          env: this.mergeEnvPreservingMaskedEcho(app.env, dto.env),
+        }
+      : dto;
+    Object.assign(app, next);
+    const saved = await this.repo.save(app);
+    return this.maskReadSurface(saved);
   }
 
   async remove(id: string): Promise<void> {
@@ -219,7 +308,10 @@ export class ApplicationService implements OnModuleInit {
     gitBranch: string,
     gitCommit?: string,
   ): Promise<void> {
-    const app = await this.findById(id);
+    // R1: this path saves the entity back (status/git metadata/manifest) —
+    // it must operate on the RAW row, otherwise the masked read surface
+    // would persist '***' over the real secret env values.
+    const app = await this.findByIdRaw(id);
     app.status = ApplicationStatus.DEPLOYING;
     app.gitRepo = gitRepo;
     app.gitBranch = gitBranch;
@@ -237,9 +329,21 @@ export class ApplicationService implements OnModuleInit {
       if (!/^(https?:\/\/|git@|ssh:\/\/)[\w.\-/:@]+(\.git)?$/.test(gitRepo)) {
         throw new Error(`Invalid git repository URL: ${gitRepo}`);
       }
+      // R4: the regex above only checks the FORMAT — a well-formed
+      // http://169.254.169.254/... or http://127.0.0.1:8080/... repo would
+      // make `git clone` an unauthenticated-by-network SSRF first hop.
+      // Reuse the safe-http classification to refuse metadata / link-local /
+      // loopback / reserved hosts before the clone runs (public and private
+      // LAN git servers keep working).
+      await assertSafeGitRepoUrl(gitRepo);
 
       this.logger.log(`Cloning ${gitRepo}@${gitBranch} into ${tmpDir}`);
       // SEC: spawnSync with array args — no shell expansion, no injection risk
+      // R4 (known residual, deliberately NOT fixed this round): spawnSync
+      // blocks the event loop for up to the 120s clone timeout — a slow or
+      // hostile repo can stall every other request on this worker. The fix
+      // is a spawn (async) rewrite of deployFromGit; that refactor is out of
+      // scope here and is tracked as a follow-up.
       const cloneResult = spawnSync(
         "git",
         ["clone", "--depth", "1", "--branch", gitBranch, gitRepo, tmpDir],

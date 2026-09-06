@@ -26,6 +26,8 @@ import {
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { UserRole } from "../users/entities/user.entity";
 import { ApplicationService } from "./application.service";
 import { AppDeploymentService } from "./app-deployment.service";
 import {
@@ -70,25 +72,38 @@ export class ApplicationController {
     return this.svc.findById(id);
   }
 
+  // R1: application lifecycle (create/update/delete) plus all deployment
+  // management routes below are admin-only — they mutate cluster-level
+  // state (deployments, versions, env vars, git refs) that affects every
+  // executor. Read endpoints (findAll/findById/version history) stay
+  // visible to any authenticated user; the env field on the read surface
+  // is masked the same way notification channel credentials are (see
+  // NotificationConfigService). The @Public() webhook is a CI machine
+  // endpoint with HMAC auth — RolesGuard finds no @Roles metadata on it
+  // and lets the request through after JwtAuthGuard's @Public opt-out.
   @Post()
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create application" })
   create(@Body() dto: CreateApplicationDto) {
     return this.svc.create(dto);
   }
 
   @Put(":id")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Update application" })
   update(@Param("id") id: string, @Body() dto: UpdateApplicationDto) {
     return this.svc.update(id, dto);
   }
 
   @Delete(":id")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Delete application" })
   remove(@Param("id") id: string) {
     return this.svc.remove(id);
   }
 
   @Post("upload")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Upload application package (zip)" })
   @ApiConsumes("multipart/form-data")
   @ApiBody({
@@ -314,6 +329,7 @@ export class ApplicationController {
   }
 
   @Post(":id/upgrade-all")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Trigger all running instances to upgrade to latest version",
   })
@@ -333,6 +349,7 @@ export class ApplicationController {
   }
 
   @Post(":id/sync-tasks")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Sync task registration from manifest.json",
     description: "Parse app manifest.json and auto-register task definitions",
@@ -343,6 +360,7 @@ export class ApplicationController {
   }
 
   @Post(":id/analyze")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "AI application health analysis",
     description:
@@ -353,6 +371,7 @@ export class ApplicationController {
   }
 
   @Post(":id/rollback/:deploymentId")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Rollback application to historical version",
     description:

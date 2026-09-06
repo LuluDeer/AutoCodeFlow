@@ -134,6 +134,11 @@ export class UsersService implements OnModuleInit {
 
   async update(id: number, updateUserDto: UpdateUserDto) {
     const user = await this.findById(id);
+    // R19: currentPassword is a verification-only field (checked in the
+    // controller). Object.assign would graft it onto the entity and
+    // save() returns the same object — the plaintext current password
+    // would be echoed back in the API response. Drop it before merging.
+    delete updateUserDto.currentPassword;
     if (updateUserDto.password) {
       this.validatePasswordStrength(updateUserDto.password);
       updateUserDto.password = await bcrypt.hash(updateUserDto.password, 12);
@@ -191,6 +196,32 @@ export class UsersService implements OnModuleInit {
         now: new Date(),
       })
       .execute();
+  }
+
+  /**
+   * R10: atomically clear an EXPIRED lockout (loginFailCount → 0,
+   * lockedUntil → NULL) with a single conditional UPDATE —
+   * `lockedUntil IS NOT NULL AND lockedUntil < now` — so concurrent
+   * logins cannot race a reset against a still-active lock, and a lock
+   * that another request already cleared (or re-extended) is left alone.
+   *
+   * Without this the fail counter survives the lock window: after the
+   * 15-minute expiry, loginFailCount is still MAX_FAIL, so ONE fresh wrong
+   * password re-trips the threshold and re-locks instantly — the account
+   * is effectively permanently locked for anyone who fails once after each
+   * window (the "expired lock + 1 failure" case).
+   */
+  async clearExpiredLock(userId: number): Promise<boolean> {
+    const result = await this.usersRepository
+      .createQueryBuilder()
+      .update()
+      .set({ loginFailCount: 0, lockedUntil: null })
+      .where("id = :id", { id: userId })
+      .andWhere("lockedUntil IS NOT NULL AND lockedUntil < :now", {
+        now: new Date(),
+      })
+      .execute();
+    return (result.affected ?? 0) > 0;
   }
 
   /** SEC-05: Reset failure counter and lock on successful login. */

@@ -59,7 +59,7 @@ export class AppDeploymentService {
       skip: (page - 1) * limit,
       take: limit,
     });
-    return { data, total };
+    return { data: data.map((d) => this.maskDeploymentForRead(d)), total };
   }
 
   /** Internal: get all deployment records for an app without pagination */
@@ -71,13 +71,42 @@ export class AppDeploymentService {
     });
   }
 
-  async findById(id: string): Promise<AppDeployment> {
+  /** Internal: raw lookup (unmasked env) for deploy/upgrade send paths —
+   *  masking is a read-surface concern and must never leak into what gets
+   *  pushed to the executor (round-7 lesson: masking must not reach the
+   *  send path). */
+  async findByIdRaw(id: string): Promise<AppDeployment> {
     const d = await this.repo.findOne({
       where: { id },
       relations: ["application"],
     });
     if (!d) throw new NotFoundException(`Deployment ${id} not found`);
     return d;
+  }
+
+  async findById(id: string): Promise<AppDeployment> {
+    const d = await this.repo.findOne({
+      where: { id },
+      relations: ["application"],
+    });
+    if (!d) throw new NotFoundException(`Deployment ${id} not found`);
+    return this.maskDeploymentForRead(d);
+  }
+
+  /** QA1: deployment rows carry their own env snapshot plus the parent
+   *  application relation — both hold the same raw secrets the application
+   *  read surface masks. Mask every env occurrence (row env, nested
+   *  application env) so a sibling GET cannot bypass application masking. */
+  private maskDeploymentForRead(d: AppDeployment): AppDeployment {
+    const masked: AppDeployment = {
+      ...d,
+      env: (this.appService.maskEnvForRead(d.env) ??
+        d.env) as Record<string, string> | null,
+    };
+    if (masked.application) {
+      masked.application = this.appService.maskReadSurface(masked.application);
+    }
+    return masked;
   }
 
   /**
@@ -116,7 +145,10 @@ export class AppDeploymentService {
       createdAt: v.createdAt,
       executorAddress: null,
       deployCount: deployCount.get(v.version) ?? 1,
-      snapshot: v.snapshot,
+      // QA1: buildSnapshot stores the raw application env — mask the env
+      // key (shallow clone) so the version read surface cannot serve the
+      // secrets the application surface hides.
+      snapshot: this.maskSnapshotForRead(v.snapshot),
     }));
 
     return [
@@ -132,7 +164,10 @@ export class AppDeploymentService {
   }
 
   async rollbackApplication(appId: string, targetId: string) {
-    const app = await this.appService.findById(appId);
+    // R1: deployment-mutating paths must read the raw env (the snapshot
+    // carries the env that gets written back); bypass the read-surface
+    // masking applied by appService.findById.
+    const app = await this.appService.findByIdRaw(appId);
     const version = await this.versionRepo.findOne({ where: { id: targetId } });
     if (version) {
       if (version.applicationId !== appId) {
@@ -216,7 +251,9 @@ export class AppDeploymentService {
     applicationId: string,
     dto: CreateDeploymentDto,
   ): Promise<AppDeployment> {
-    const app = await this.appService.findById(applicationId);
+    // R1: deploy pushes the app env to the executor — must be the raw
+    // value (read-surface masking would deliver "***" to the runner).
+    const app = await this.appService.findByIdRaw(applicationId);
 
     // Duplicate-deployment guard: reject if a PENDING or DEPLOYING record already exists
     // for this application (regardless of executor). This prevents double-clicking the
@@ -255,15 +292,21 @@ export class AppDeploymentService {
       this.logger.error(`Failed to push deploy to executor: ${err.message}`);
     });
 
-    return saved;
+    // QA1: HTTP response is a read surface — return masked.
+    return this.maskDeploymentForRead(saved);
   }
 
   /**
    * Trigger upgrade on an existing deployment (git pull + restart).
    */
   async upgrade(deploymentId: string): Promise<AppDeployment> {
-    const deployment = await this.findById(deploymentId);
-    const app = await this.appService.findById(deployment.applicationId);
+    // R1/QA1: raw lookup — the merged env is pushed to the executor AND the
+    // entity is saved back; either step persisting the masked surface would
+    // destroy the stored secrets with '***'.
+    const deployment = await this.findByIdRaw(deploymentId);
+    // R1: upgrade pushes the merged app+deployment env to the executor —
+    // must be the raw value, not the masked read surface.
+    const app = await this.appService.findByIdRaw(deployment.applicationId);
 
     deployment.status = DeploymentStatus.UPGRADING;
     deployment.statusMessage = "Upgrade triggered";
@@ -273,14 +316,18 @@ export class AppDeploymentService {
       this.logger.error(`Upgrade push failed: ${err.message}`);
     });
 
-    return deployment;
+    // QA1: HTTP response is a read surface — return masked (the push above
+    // used the raw entity).
+    return this.maskDeploymentForRead(deployment);
   }
 
   /**
    * Stop a running deployment.
    */
   async stop(deploymentId: string): Promise<AppDeployment> {
-    const deployment = await this.findById(deploymentId);
+    // QA1: raw lookup — the entity is saved back below; persisting the
+    // masked read surface would overwrite stored env secrets with '***'.
+    const deployment = await this.findByIdRaw(deploymentId);
 
     try {
       const url = this.executorService.getExecutorUrl(
@@ -299,7 +346,9 @@ export class AppDeploymentService {
 
     deployment.status = DeploymentStatus.STOPPED;
     deployment.pid = null;
-    return this.repo.save(deployment);
+    const saved = await this.repo.save(deployment);
+    // QA1: mask the HTTP return; the raw entity was already persisted.
+    return this.maskDeploymentForRead(saved);
   }
 
   /**
@@ -573,6 +622,18 @@ export class AppDeploymentService {
       }
     }
     return versionHistory;
+  }
+
+  /** QA1: shallow-clone a version snapshot with its env record masked. */
+  private maskSnapshotForRead(
+    snapshot: Record<string, any> | null,
+  ): Record<string, any> | null {
+    if (!snapshot || typeof snapshot !== "object") return snapshot;
+    if (!("env" in snapshot)) return snapshot;
+    return {
+      ...snapshot,
+      env: this.appService.maskEnvForRead(snapshot.env),
+    };
   }
 
   private async upgradeRunningDeployments(appId: string) {

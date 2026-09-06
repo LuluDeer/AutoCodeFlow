@@ -3,16 +3,21 @@ import {
   InternalServerErrorException,
   Logger,
   UnauthorizedException,
+  ExecutionContext,
 } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
+import { Reflector } from "@nestjs/core";
 import { createHmac } from "crypto";
 import * as express from "express";
 import * as fs from "fs";
 import * as request from "supertest";
 import { IS_PUBLIC_KEY } from "../../../common/decorators/public.decorator";
+import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
+import { RolesGuard } from "../../../common/guards/roles.guard";
 import { AppDeploymentService } from "../app-deployment.service";
 import { ApplicationController } from "../application.controller";
 import { ApplicationService } from "../application.service";
+import { UserRole } from "../../users/entities/user.entity";
 
 function sign(secret: string, timestamp: string, body: Buffer): string {
   return (
@@ -404,5 +409,118 @@ describe("ApplicationController upload — APP-002", () => {
         packageUrl: expect.stringContaining("https://api.example.com/"),
       }),
     );
+  });
+});
+
+// R1: application lifecycle routes are admin-only. The global RolesGuard
+// reads the @Roles metadata and rejects USER callers (403); ADMIN callers
+// pass. The @Public() webhook carries no metadata, so it is unaffected.
+describe("ApplicationController RBAC (R1)", () => {
+  const guard = new RolesGuard(new Reflector());
+  const ctxWith = (
+    handler: (...args: unknown[]) => unknown,
+    role: UserRole,
+  ): ExecutionContext =>
+    ({
+      getHandler: () => handler,
+      getClass: () => ApplicationController,
+      switchToHttp: () => ({ getRequest: () => ({ user: { role } }) }),
+    }) as unknown as ExecutionContext;
+
+  it("declares @Roles(ADMIN) on every mutation route", () => {
+    const adminRoutes = [
+      "create",
+      "update",
+      "remove",
+      "upload",
+      "upgradeAll",
+      "syncTasks",
+      "analyzeHealth",
+      "rollback",
+    ];
+    for (const name of adminRoutes) {
+      expect(
+        Reflect.getMetadata(
+          ROLES_KEY,
+          ApplicationController.prototype[name],
+        ),
+      ).toEqual([UserRole.ADMIN]);
+    }
+  });
+
+  it("does NOT restrict findAll/findById/getVersionHistory (read surface open to any authenticated user)", () => {
+    expect(
+      Reflect.getMetadata(ROLES_KEY, ApplicationController.prototype.findAll),
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(ROLES_KEY, ApplicationController.prototype.findById),
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(
+        ROLES_KEY,
+        ApplicationController.prototype.getVersionHistory,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("plain user is denied (RolesGuard → 403) on every mutation route", () => {
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.create, UserRole.USER),
+      ),
+    ).toBe(false);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.update, UserRole.USER),
+      ),
+    ).toBe(false);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.remove, UserRole.USER),
+      ),
+    ).toBe(false);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.upload, UserRole.USER),
+      ),
+    ).toBe(false);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.upgradeAll, UserRole.USER),
+      ),
+    ).toBe(false);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.rollback, UserRole.USER),
+      ),
+    ).toBe(false);
+  });
+
+  it("admin passes on every mutation route (200 path)", () => {
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.create, UserRole.ADMIN),
+      ),
+    ).toBe(true);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.update, UserRole.ADMIN),
+      ),
+    ).toBe(true);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.remove, UserRole.ADMIN),
+      ),
+    ).toBe(true);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.upload, UserRole.ADMIN),
+      ),
+    ).toBe(true);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.rollback, UserRole.ADMIN),
+      ),
+    ).toBe(true);
   });
 });

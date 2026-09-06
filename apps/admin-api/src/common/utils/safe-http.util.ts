@@ -262,6 +262,100 @@ function classifyAddressRisk(addr: string): AddressRisk | null {
 }
 
 /**
+ * R4: SSRF guard for `git clone` targets (application deployFromGit).
+ *
+ * The format regex in deployFromGit only checks the URL SHAPE — a
+ * well-formed http://169.254.169.254/... or git@127.0.0.1:repo would make
+ * the clone an outbound request straight into cloud metadata / loopback.
+ * This helper reuses the same parse + classify machinery as
+ * assertSafeExecutorUrl (normalizeIpForClassification + classifyAddressRisk)
+ * with the webhook/AI posture for the truly dangerous ranges:
+ *  - ALWAYS blocked: link-local / cloud metadata (169.254.169.254),
+ *    loopback (127.0.0.0/8, ::1), unspecified/reserved (0.x, multicast),
+ *    benchmarking (198.18/15) and CGNAT (100.64/10), IPv6 ULA fc00::/7.
+ *  - ALLOWED: public addresses (behavior unchanged) and private LAN
+ *    ranges (10/8, 172.16/12, 192.168/16) — self-hosted GitLab/Gitea on
+ *    the internal network is a documented topology, so the blanket RFC1918
+ *    deny used for webhook/AI targets would break legitimate installs.
+ *
+ * Accepted repo shapes: `https?://host/...`, `ssh://[user@]host[:port]/...`
+ * and the scp-like `git@host:path` form. Anything else is rejected (the
+ * caller's format regex already gates the shape; this is defense in depth).
+ *
+ * Residual risk (same as assertSafeHttpUrl): DNS rebinding — the address
+ * checked here and the one `git` later resolves can differ. Pinning would
+ * require rewriting the clone target to the resolved IP with a Host/SNI
+ * header, which breaks TLS and virtual-hosted git servers; left as a
+ * follow-up, like the maxRedirects note in the axios call sites.
+ */
+export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
+  let host: string;
+  const scpMatch = /^[A-Za-z0-9._-]+@([A-Za-z0-9.\-]+):/.exec(rawRepo);
+  if (/^https?:\/\//i.test(rawRepo)) {
+    let url: URL;
+    try {
+      url = new URL(rawRepo);
+    } catch {
+      throw new BadRequestException(`Invalid git repository URL: ${rawRepo}`);
+    }
+    host = url.hostname;
+  } else if (/^ssh:\/\//i.test(rawRepo)) {
+    let url: URL;
+    try {
+      url = new URL(rawRepo);
+    } catch {
+      throw new BadRequestException(`Invalid git repository URL: ${rawRepo}`);
+    }
+    host = url.hostname;
+  } else if (scpMatch) {
+    host = scpMatch[1];
+  } else {
+    throw new BadRequestException(
+      `Unsupported git repository URL shape: ${rawRepo}`,
+    );
+  }
+  host = host.replace(/^\[|\]$/g, "");
+  if (!host) {
+    throw new BadRequestException(`Git repository URL missing host: ${rawRepo}`);
+  }
+
+  const check = (addr: string) => {
+    const risk = classifyAddressRisk(addr);
+    // R4: public + private-lan allowed; loopback/link-local/reserved/
+    // restricted (benchmark, CGNAT) refused. IPv6 ULA classifies as
+    // private-lan but is NOT a documented git topology — block it like
+    // the webhook/AI guard does (N32 posture).
+    const lower = normalizeIpForClassification(addr).toLowerCase();
+    const isUla = lower.startsWith("fc") || lower.startsWith("fd");
+    if ((risk === "public" || risk === "private-lan") && !isUla) return;
+    throw new BadRequestException(
+      `Git repository host ${host} resolves to ${addr} (${risk}) — clone refused (SSRF guard)`,
+    );
+  };
+
+  if (isIP(host)) {
+    check(host);
+    return;
+  }
+  let addrs: { address: string }[];
+  try {
+    addrs = await lookup(host, { all: true });
+  } catch (err) {
+    throw new BadRequestException(
+      `Failed to resolve git repository host ${host}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (addrs.length === 0) {
+    throw new BadRequestException(
+      `Git repository host ${host} did not resolve — clone refused`,
+    );
+  }
+  for (const a of addrs) {
+    check(a.address);
+  }
+}
+
+/**
  * F-3: SSRF guard for outbound requests whose target is an EXECUTOR address
  * (registered via /api/executors/register or carried in deployment rows).
  *

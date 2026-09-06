@@ -265,10 +265,24 @@ export class NotificationConfigService {
    * out, ignore the caller-supplied config AND the returned
    * ChannelDeliveryResults, and unconditionally report success — an SSRF-
    * blocked or failed channel still showed OK (the exact "fake OK" V2 set out
-   * to eliminate). Now it tests only the requested channel, honors an
-   * optional unsaved config override (temporarily published to the store the
-   * send path reads, restored afterwards), and reports the real per-channel
-   * outcome: success only when the delivery status is `sent`.
+   * to eliminate). Now it tests only the requested channel and reports the
+   * real per-channel outcome: success only when the delivery status is `sent`.
+   *
+   * R2: the optional config override is now passed to the channel's send()
+   * as a request-scoped parameter — it is NEVER published to the global
+   * ChannelConfigStore. The previous implementation wrote the override into
+   * the store for the duration of the test (await up to 33s with retries),
+   * which:
+   *  - rerouted concurrent production alerts through unsaved admin-form
+   *    values for the whole await window,
+   *  - on concurrent tests, persisted the LATER override as if it had been
+   *    PATCH-saved (the other test's "saved" snapshot was restored on top
+   *    of the in-flight override — the wrong one won).
+   * The new shape: one channel.send(payload, override) call, override lives
+   * only in the call frame. The N37 'webhook enabled gating' rule still
+   * applies inside WebhookChannel.send (the saved url is only honored while
+   * the channel is enabled); the override url bypasses that gate because it
+   * is an explicit per-call argument (matches the sendWebhook semantics).
    */
   async testChannel(
     key: string,
@@ -286,40 +300,36 @@ export class NotificationConfigService {
       );
     }
 
-    // Optional config override (admin form values not saved yet). Merge over
-    // the saved raw config; the '***' masked echo must not clobber the real
-    // secret (same sentinel rule as updateChannel).
-    const saved = this.store.get(key);
-    const savedEnabled = this.store.isEnabled(key);
-    const hasOverride = !!config && Object.keys(config).length > 0;
-    // N37 (round-10): the test send is an explicit admin action meant to
-    // validate a channel's config BEFORE it is enabled, so the effective
-    // config (saved or merged) is published as enabled for the duration of
-    // the test only — the webhook channel gates its saved url on the flag.
-    // The pre-test (config, enabled) pair is restored in the finally below.
-    if (hasOverride) {
-      const merged = { ...(saved ?? {}) };
-      for (const [k, v] of Object.entries(config!)) {
-        if (this.isMaskedEcho(k, v)) {
-          continue;
-        }
-        merged[k] = v;
+    // Build the per-call override. The N11 '***' masked echo must not
+    // reach the channel as a real value — channels now merge override
+    // over saved+env, and a '***' for a secret-class key would clobber
+    // the saved secret for the duration of the test. Strip those echoes
+    // out so the channel falls through to the saved/env value.
+    const override: Record<string, string> = {};
+    if (config) {
+      for (const [k, v] of Object.entries(config)) {
+        if (this.isMaskedEcho(k, v)) continue;
+        override[k] = v;
       }
-      this.store.set(key, merged, true);
-    } else if (!savedEnabled) {
-      this.store.set(key, saved ?? {}, true);
     }
 
+    const payload = {
+      title: "AutoFlow Test Notification",
+      content: `This is a test notification\nTime: ${new Date().toLocaleString()}`,
+      level: "info" as const,
+    };
+
     try {
-      const results = await this.notificationService.sendToChannels(
-        {
-          title: "AutoFlow Test Notification",
-          content: `This is a test notification\nTime: ${new Date().toLocaleString()}`,
-          level: "info",
-        },
-        [key as AlertChannel],
+      // R2: invoke the channel directly with the override. The global
+      // send path (sendToChannels / sendAll) is intentionally NOT called —
+      // those paths have no override and would also publish any change
+      // to the store as a side effect of the test.
+      const status = await this.notificationService.testChannel(
+        payload,
+        key as AlertChannel,
+        Object.keys(override).length > 0 ? override : undefined,
       );
-      const status = results[key] ?? "skipped";
+      const results = { [key]: status };
       if (status === "sent") {
         return {
           success: true,
@@ -341,14 +351,6 @@ export class NotificationConfigService {
         success: false,
         message: err instanceof Error ? err.message : String(err),
       };
-    } finally {
-      // Restore the store to its pre-test state — a test send must never
-      // persist unsaved config (or the test-time enabled pin) into the live
-      // send path.
-      if (hasOverride || !savedEnabled) {
-        if (saved) this.store.set(key, saved, savedEnabled);
-        else this.store.delete(key);
-      }
     }
   }
 
