@@ -3,8 +3,15 @@ import * as path from 'path';
 import { config } from './config';
 import { logger } from './logger';
 
-const logsDir = path.join(config.workDir, 'logs');
-fs.mkdirSync(logsDir, { recursive: true });
+// E10: logsDir 惰性解析（与 callback.ts 的 getCallbackDir 同构）——每次访问
+// 经 config.workDir（读 process.env 的 getter）重算，/config/reload 热更
+// workDir 后写路径与 routes/logs.ts 的读路径同步切换，不再于模块加载期固化
+// 导致写旧目录、读新目录的分裂。
+function getLogsDir(): string {
+  const dir = path.join(config.workDir, 'logs');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 function formatDate(date: Date): string {
   const year = date.getFullYear();
@@ -15,7 +22,7 @@ function formatDate(date: Date): string {
 
 export function getLogFilePath(executionId: string, date?: Date): string {
   const dateStr = date ? formatDate(date) : formatDate(new Date());
-  const dateDir = path.join(logsDir, dateStr);
+  const dateDir = path.join(getLogsDir(), dateStr);
   fs.mkdirSync(dateDir, { recursive: true });
   return path.join(dateDir, `${executionId}.log`);
 }
@@ -119,7 +126,8 @@ export function clearLog(executionId: string): void {
 export function deleteOldLogs(retentionDays: number): number {
   let deletedCount = 0;
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  
+  const logsDir = getLogsDir();
+
   try {
     const dateDirs = fs.readdirSync(logsDir);
     for (const dateDir of dateDirs) {
@@ -179,6 +187,8 @@ export function stopLogCleanup(): void {
 //   - .git_cache / .node_modules entries not touched within TTL are removed
 //   - .pkg-updates keeps only the newest MAX_PKG_UPDATES package files
 //   - callbacks/dead-letter keeps only the newest MAX_DEAD_LETTER_FILES files
+//   - orphan callbacks/*.meta (dead-lettering failed to unlink them) older
+//     than ORPHAN_META_TTL_MS are reclaimed (E13)
 const CLEANUP_TTL_DAYS = Math.max(1, config.logRetentionDays || 7);
 const CLEANUP_SWEEP_INTERVAL_HOURS = 6;
 const PROTECTED_WORKDIR_NAMES = new Set([
@@ -197,7 +207,7 @@ function removePath(target: string): boolean {
   }
 }
 
-function removeOlderThan(dir: string, cutoffMs: number, options: { keepNewest?: number; directoryNames?: RegExp } = {}): number {
+function removeOlderThan(dir: string, cutoffMs: number, options: { keepNewest?: number; directoryNames?: RegExp; filesOnly?: boolean } = {}): number {
   let deleted = 0;
   let entries: fs.Dirent[];
   try {
@@ -208,6 +218,10 @@ function removeOlderThan(dir: string, cutoffMs: number, options: { keepNewest?: 
   // newest (largest mtime) first so "keep newest N" retention is deterministic
   const withMtime: Array<{ name: string; isDir: boolean; mtime: number }> = [];
   for (const entry of entries) {
+    // E12: filesOnly — the dead-letter sweep must mirror getDeadLetterCount's
+    // "only regular files" semantics: a stray subdirectory is neither counted
+    // toward keepNewest nor recursively removed (it is not a callback payload).
+    if (options.filesOnly && entry.isDirectory()) continue;
     if (options.directoryNames && entry.isDirectory() && !options.directoryNames.test(entry.name)) continue;
     try {
       const stat = fs.statSync(path.join(dir, entry.name));
@@ -225,16 +239,53 @@ function removeOlderThan(dir: string, cutoffMs: number, options: { keepNewest?: 
   return deleted;
 }
 
+/** E13: reclaim orphan callback `.meta` files stranded in the callbacks/ top
+ *  level. When a callback payload is dead-lettered (or retried successfully),
+ *  callback.ts unlinks the companion `<file>.json.meta`; if that unlink fails
+ *  the meta is stranded forever — retryFailedCallbacks only matches
+ *  `callback-*.json`, the dead-letter sweep only descends into dead-letter/,
+ *  and `callbacks` itself is in PROTECTED_WORKDIR_NAMES so the workdir sweep
+ *  skips it. Remove top-level `.meta` files whose companion payload json is
+ *  gone and that are older than ORPHAN_META_TTL_MS. A live retry round
+ *  rewrites the meta every pass (well within the window), so an aged orphan
+ *  is genuinely stranded. */
+function removeOrphanCallbackMetaFiles(callbackDir: string, nowMs: number): number {
+  let deleted = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(callbackDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.meta')) continue;
+    const metaPath = path.join(callbackDir, entry.name);
+    // Companion payload: strip the trailing ".meta" -> "<...>.json".
+    const jsonPath = metaPath.slice(0, -'.meta'.length);
+    if (fs.existsSync(jsonPath)) continue; // still owned by a live callback file
+    try {
+      const stat = fs.statSync(metaPath);
+      if (nowMs - stat.mtimeMs < ORPHAN_META_TTL_MS) continue;
+    } catch {
+      /* raced — skip */
+      continue;
+    }
+    if (removePath(metaPath)) deleted++;
+  }
+  return deleted;
+}
+
 /** Remove expired task workdirs, stale caches, old packages and dead-letter
  *  overflow. Safe to run at startup and on an interval. */
 export function cleanupWorkDir(
   ttlDays: number = CLEANUP_TTL_DAYS,
-): { workDirs: number; caches: number; packages: number; deadLetters: number } {
+): { workDirs: number; caches: number; packages: number; deadLetters: number; orphanMetaFiles: number } {
   const cutoff = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
   let workDirs = 0;
   let caches = 0;
   let packages = 0;
   let deadLetters = 0;
+  let orphanMetaFiles = 0;
 
   try {
     // 1. Task workdirs: any top-level entry that is not infrastructure.
@@ -261,25 +312,38 @@ export function cleanupWorkDir(
     });
 
     // 4. Dead-letter callbacks: keep only the newest few for manual replay.
+    //    filesOnly (E12): mirrors getDeadLetterCount's file-only semantics —
+    //    a stray subdirectory is neither counted toward keepNewest nor
+    //    recursively deleted here.
     deadLetters = removeOlderThan(path.join(config.workDir, 'callbacks', 'dead-letter'), cutoff, {
       keepNewest: MAX_DEAD_LETTER_FILES,
+      filesOnly: true,
     });
+
+    // 5. E13: reclaim orphan `.meta` files stranded in the callbacks/ top level.
+    orphanMetaFiles = removeOrphanCallbackMetaFiles(
+      path.join(config.workDir, 'callbacks'),
+      Date.now(),
+    );
   } catch (error: unknown) {
     logger.error(
       `Workdir cleanup error: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
-  return { workDirs, caches, packages, deadLetters };
+  return { workDirs, caches, packages, deadLetters, orphanMetaFiles };
 }
 
 const MAX_PKG_UPDATES = 3;
 const MAX_DEAD_LETTER_FILES = 50;
+const ORPHAN_META_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** Current dead-letter backlog size (file count). Reported via heartbeat so
  *  long disconnections (callbacks parked on disk) stay visible to ops. Only
- *  regular files are counted — the cleanup sweep below only ever removes
- *  files, so a stray subdirectory must not inflate the reported backlog. */
+ *  regular files are counted — the dead-letter retention sweep in
+ *  cleanupWorkDir runs with filesOnly (E12), so it too only ever removes
+ *  files: a stray subdirectory neither inflates the reported backlog nor gets
+ *  reclaimed by that sweep. */
 export function getDeadLetterCount(): number {
   try {
     return fs
@@ -301,10 +365,10 @@ let workdirCleanupInterval: NodeJS.Timeout | null = null;
 export function startWorkDirCleanup(ttlDays: number = CLEANUP_TTL_DAYS): void {
   const sweep = () => {
     const r = cleanupWorkDir(ttlDays);
-    const total = r.workDirs + r.caches + r.packages + r.deadLetters;
+    const total = r.workDirs + r.caches + r.packages + r.deadLetters + r.orphanMetaFiles;
     if (total > 0) {
       logger.info(
-        `Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s)`,
+        `Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s), ${r.orphanMetaFiles} orphan meta file(s)`,
       );
     }
   };
@@ -342,7 +406,7 @@ export function getLogStats(): { totalSize: number; fileCount: number } {
   };
   
   try {
-    walk(logsDir);
+    walk(getLogsDir());
   } catch {
     // Ignore if logs directory doesn't exist
   }

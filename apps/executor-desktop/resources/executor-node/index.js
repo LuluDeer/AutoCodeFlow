@@ -46429,9 +46429,35 @@ const callbackQueue = [];
 // assigned, so repeated startCallbackThread() calls spawned parallel loops.
 let loopStarted = false;
 let stopped = false;
+let callbackLoopPromise = null;
+const CALLBACK_DRAIN_TIMEOUT_MS = 10000;
+let stopPromise = null;
+let drainExpired = false;
+const deadlineListeners = new Set();
+// Remove listeners after each operation so normal operation does not retain
+// every completed POST until shutdown. Late network rejections remain handled.
+function untilDeadline(operation, fallback) {
+    return new Promise((resolve, reject) => {
+        const expire = () => resolve(fallback);
+        deadlineListeners.add(expire);
+        operation.then(resolve, reject).finally(() => deadlineListeners.delete(expire));
+        if (drainExpired)
+            expire();
+    });
+}
+async function callbackDelay(ms) {
+    let timer;
+    try {
+        await untilDeadline(new Promise(resolve => { timer = setTimeout(resolve, ms); }), undefined);
+    }
+    finally {
+        clearTimeout(timer);
+    }
+}
 /** admin-api hard-rejects batches over 100 items (BadRequestException), so
  *  every send and every persisted file must respect this chunk size. */
 const CALLBACK_BATCH_SIZE = 100;
+let persistenceSequence = 0;
 /** A persisted callback file gets this many retry rounds before it is moved
  *  to the dead-letter directory and stops being re-sent every second. */
 const CALLBACK_FILE_MAX_RETRIES = 5;
@@ -46466,7 +46492,9 @@ function pushCallback(request) {
 }
 async function doCallback(requests) {
     try {
-        const response = await (0, admin_client_1.post)('/api/executions/callback', requests);
+        const response = await untilDeadline((0, admin_client_1.post)('/api/executions/callback', requests), null);
+        if (!response)
+            return false;
         if (response.status >= 200 && response.status < 300) {
             logger_1.logger.debug(`Callback successful for ${requests.length} execution(s)`);
             return true;
@@ -46483,6 +46511,7 @@ async function doCallback(requests) {
  *  after CALLBACK_FILE_MAX_RETRIES instead of retrying forever. */
 function persistFailedCallbacks(requests) {
     const timestamp = Date.now();
+    const sequence = persistenceSequence++;
     try {
         const chunks = [];
         for (let i = 0; i < requests.length; i += CALLBACK_BATCH_SIZE) {
@@ -46490,7 +46519,7 @@ function persistFailedCallbacks(requests) {
         }
         chunks.forEach((chunk, index) => {
             const suffix = chunks.length > 1 ? `-${index}` : '';
-            const filename = path.join(getCallbackDir(), `callback-${timestamp}${suffix}.json`);
+            const filename = path.join(getCallbackDir(), `callback-${timestamp}-${sequence}${suffix}.json`);
             fs.writeFileSync(filename, JSON.stringify(chunk, null, 2));
             fs.writeFileSync(`${filename}.meta`, JSON.stringify({ retries: 0, persistedAt: timestamp }), 'utf-8');
             logger_1.logger.info(`Persisted ${chunk.length} failed callbacks to ${filename}`);
@@ -46548,6 +46577,8 @@ async function retryFailedCallbacks() {
         const callbackDir = getCallbackDir();
         const files = fs.readdirSync(callbackDir);
         for (const file of files) {
+            if (stopped)
+                break;
             if (!file.startsWith('callback-') || !file.endsWith('.json'))
                 continue;
             const filepath = path.join(callbackDir, file);
@@ -46564,6 +46595,8 @@ async function retryFailedCallbacks() {
                 const content = fs.readFileSync(filepath, 'utf-8');
                 const requests = JSON.parse(content);
                 const success = await doCallback(requests);
+                if (drainExpired)
+                    return; // Already durable; do not count an interrupted retry.
                 if (success) {
                     fs.unlinkSync(filepath);
                     try {
@@ -46604,16 +46637,22 @@ async function processCallbacksWithBackoff(requests) {
     // fail all 5 attempts and then poison the persisted file forever.
     const failed = [];
     for (let i = 0; i < requests.length; i += CALLBACK_BATCH_SIZE) {
+        if (drainExpired) {
+            failed.push(...requests.slice(i));
+            break;
+        }
         const chunk = requests.slice(i, i + CALLBACK_BATCH_SIZE);
         let delivered = false;
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
             delivered = await doCallback(chunk);
-            if (delivered)
+            if (delivered || drainExpired)
                 break;
             logger_1.logger.warn(`Callback attempt ${attempt + 1}/${MAX_RETRIES} failed for ${chunk.length} item(s)`);
             if (attempt < MAX_RETRIES - 1) {
                 const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-                await new Promise(resolve => setTimeout(resolve, delay));
+                await callbackDelay(delay);
+                if (drainExpired)
+                    break;
             }
         }
         if (!delivered)
@@ -46625,7 +46664,7 @@ async function processCallbacksWithBackoff(requests) {
     }
 }
 async function processCallbacks() {
-    while (!stopped) {
+    while (!stopped || callbackQueue.length > 0) {
         try {
             if (callbackQueue.length > 0) {
                 const requests = [...callbackQueue];
@@ -46637,7 +46676,10 @@ async function processCallbacks() {
         catch (error) {
             logger_1.logger.error(`Callback thread error: ${error instanceof Error ? error.message : String(error)}`);
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        if (stopped && callbackQueue.length === 0)
+            break;
+        if (!stopped)
+            await callbackDelay(1000);
     }
 }
 function startCallbackThread() {
@@ -46645,12 +46687,34 @@ function startCallbackThread() {
         return;
     loopStarted = true;
     stopped = false;
+    stopPromise = null;
+    drainExpired = false;
     logger_1.logger.info('Starting callback thread');
-    processCallbacks();
+    callbackLoopPromise = processCallbacks().catch(error => {
+        logger_1.logger.error(`Callback thread stopped unexpectedly: ${error instanceof Error ? error.message : String(error)}`);
+    });
 }
 function stopCallbackThread() {
+    if (stopPromise)
+        return stopPromise;
+    if (!loopStarted || !callbackLoopPromise)
+        return Promise.resolve();
     stopped = true;
-    logger_1.logger.info('Stopping callback thread');
+    logger_1.logger.info('Stopping callback thread and draining pending callbacks');
+    const timer = setTimeout(() => {
+        drainExpired = true;
+        for (const expire of deadlineListeners)
+            expire();
+        deadlineListeners.clear();
+    }, CALLBACK_DRAIN_TIMEOUT_MS);
+    // The consumer owns in-flight payloads as well as the queue, so it must
+    // persist unconfirmed results before stop resolves, even after the deadline.
+    stopPromise = callbackLoopPromise.finally(() => {
+        clearTimeout(timer);
+        loopStarted = false;
+        callbackLoopPromise = null;
+    });
+    return stopPromise;
 }
 function getPendingCallbackCount() {
     return callbackQueue.length;
@@ -46683,12 +46747,26 @@ exports.config = {
     adminApiUrlInternal,
     adminApiUrlExternal: process.env.ADMIN_API_URL_EXTERNAL || '',
     adminApiUrls: configuredAdminApiUrls.length > 0 ? configuredAdminApiUrls : [adminApiUrlInternal],
-    workDir: process.env.WORK_DIR || '/tmp/autocodeflow/tasks',
+    // WORK_DIR 优先；Windows 部署误配 Work_Dir/work_dir 时也能读到（大小写
+    // 不敏感回退，键名精确匹配不取）。getter 惰性读取 process.env，与 routes/
+    // config.ts 热重载其它字段（直接改 process.env / config 即生效）行为一致。
+    get workDir() {
+        if (process.env.WORK_DIR)
+            return process.env.WORK_DIR;
+        const key = Object.keys(process.env).find(k => k.toLowerCase() === 'work_dir');
+        return (key && process.env[key]) || '/tmp/autocodeflow/tasks';
+    },
     maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_TASKS || '10', 10),
     taskTimeoutSeconds: parseInt(process.env.TASK_TIMEOUT_SECONDS || '300', 10),
     heartbeatIntervalSeconds: parseInt(process.env.HEARTBEAT_INTERVAL_SECONDS || '30', 10),
     logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
     npmRegistryUrl: process.env.NPM_REGISTRY_URL || '', // Private npm registry for task dependencies
+    // Auth token for the private npm registry (registry-npm/verdaccio grants
+    // '**' access only to $authenticated, so anonymous task installs 401).
+    // Executor-side ONLY: written into the per-task .npmrc by execute.ts and
+    // deliberately NOT in the env whitelist — it must never reach task
+    // children. Never logged.
+    npmRegistryToken: process.env.NPM_REGISTRY_TOKEN || '',
     pythonRegistryUrl: process.env.PYTHON_REGISTRY_URL || '', // Private PyPI registry for task dependencies
     token: process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || (() => { const i = process.argv.indexOf('--token'); return i !== -1 ? process.argv[i + 1] || '' : ''; })(),
     // N23: dedicated HMAC secret for per-execution callback tokens; when unset
@@ -46976,6 +47054,7 @@ exports.deleteOldLogs = deleteOldLogs;
 exports.startLogCleanup = startLogCleanup;
 exports.stopLogCleanup = stopLogCleanup;
 exports.cleanupWorkDir = cleanupWorkDir;
+exports.getDeadLetterCount = getDeadLetterCount;
 exports.startWorkDirCleanup = startWorkDirCleanup;
 exports.stopWorkDirCleanup = stopWorkDirCleanup;
 exports.getLogStats = getLogStats;
@@ -46983,8 +47062,15 @@ const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
 const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
-const logsDir = path.join(config_1.config.workDir, 'logs');
-fs.mkdirSync(logsDir, { recursive: true });
+// E10: logsDir 惰性解析（与 callback.ts 的 getCallbackDir 同构）——每次访问
+// 经 config.workDir（读 process.env 的 getter）重算，/config/reload 热更
+// workDir 后写路径与 routes/logs.ts 的读路径同步切换，不再于模块加载期固化
+// 导致写旧目录、读新目录的分裂。
+function getLogsDir() {
+    const dir = path.join(config_1.config.workDir, 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+}
 function formatDate(date) {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -46993,7 +47079,7 @@ function formatDate(date) {
 }
 function getLogFilePath(executionId, date) {
     const dateStr = date ? formatDate(date) : formatDate(new Date());
-    const dateDir = path.join(logsDir, dateStr);
+    const dateDir = path.join(getLogsDir(), dateStr);
     fs.mkdirSync(dateDir, { recursive: true });
     return path.join(dateDir, `${executionId}.log`);
 }
@@ -47082,6 +47168,7 @@ function clearLog(executionId) {
 function deleteOldLogs(retentionDays) {
     let deletedCount = 0;
     const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    const logsDir = getLogsDir();
     try {
         const dateDirs = fs.readdirSync(logsDir);
         for (const dateDir of dateDirs) {
@@ -47135,6 +47222,8 @@ function stopLogCleanup() {
 //   - .git_cache / .node_modules entries not touched within TTL are removed
 //   - .pkg-updates keeps only the newest MAX_PKG_UPDATES package files
 //   - callbacks/dead-letter keeps only the newest MAX_DEAD_LETTER_FILES files
+//   - orphan callbacks/*.meta (dead-lettering failed to unlink them) older
+//     than ORPHAN_META_TTL_MS are reclaimed (E13)
 const CLEANUP_TTL_DAYS = Math.max(1, config_1.config.logRetentionDays || 7);
 const CLEANUP_SWEEP_INTERVAL_HOURS = 6;
 const PROTECTED_WORKDIR_NAMES = new Set([
@@ -47162,6 +47251,11 @@ function removeOlderThan(dir, cutoffMs, options = {}) {
     // newest (largest mtime) first so "keep newest N" retention is deterministic
     const withMtime = [];
     for (const entry of entries) {
+        // E12: filesOnly — the dead-letter sweep must mirror getDeadLetterCount's
+        // "only regular files" semantics: a stray subdirectory is neither counted
+        // toward keepNewest nor recursively removed (it is not a callback payload).
+        if (options.filesOnly && entry.isDirectory())
+            continue;
         if (options.directoryNames && entry.isDirectory() && !options.directoryNames.test(entry.name))
             continue;
         try {
@@ -47183,6 +47277,47 @@ function removeOlderThan(dir, cutoffMs, options = {}) {
     });
     return deleted;
 }
+/** E13: reclaim orphan callback `.meta` files stranded in the callbacks/ top
+ *  level. When a callback payload is dead-lettered (or retried successfully),
+ *  callback.ts unlinks the companion `<file>.json.meta`; if that unlink fails
+ *  the meta is stranded forever — retryFailedCallbacks only matches
+ *  `callback-*.json`, the dead-letter sweep only descends into dead-letter/,
+ *  and `callbacks` itself is in PROTECTED_WORKDIR_NAMES so the workdir sweep
+ *  skips it. Remove top-level `.meta` files whose companion payload json is
+ *  gone and that are older than ORPHAN_META_TTL_MS. A live retry round
+ *  rewrites the meta every pass (well within the window), so an aged orphan
+ *  is genuinely stranded. */
+function removeOrphanCallbackMetaFiles(callbackDir, nowMs) {
+    let deleted = 0;
+    let entries;
+    try {
+        entries = fs.readdirSync(callbackDir, { withFileTypes: true });
+    }
+    catch {
+        return 0;
+    }
+    for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.meta'))
+            continue;
+        const metaPath = path.join(callbackDir, entry.name);
+        // Companion payload: strip the trailing ".meta" -> "<...>.json".
+        const jsonPath = metaPath.slice(0, -'.meta'.length);
+        if (fs.existsSync(jsonPath))
+            continue; // still owned by a live callback file
+        try {
+            const stat = fs.statSync(metaPath);
+            if (nowMs - stat.mtimeMs < ORPHAN_META_TTL_MS)
+                continue;
+        }
+        catch {
+            /* raced — skip */
+            continue;
+        }
+        if (removePath(metaPath))
+            deleted++;
+    }
+    return deleted;
+}
 /** Remove expired task workdirs, stale caches, old packages and dead-letter
  *  overflow. Safe to run at startup and on an interval. */
 function cleanupWorkDir(ttlDays = CLEANUP_TTL_DAYS) {
@@ -47191,6 +47326,7 @@ function cleanupWorkDir(ttlDays = CLEANUP_TTL_DAYS) {
     let caches = 0;
     let packages = 0;
     let deadLetters = 0;
+    let orphanMetaFiles = 0;
     try {
         // 1. Task workdirs: any top-level entry that is not infrastructure.
         const baseEntries = fs.readdirSync(config_1.config.workDir, { withFileTypes: true });
@@ -47216,17 +47352,42 @@ function cleanupWorkDir(ttlDays = CLEANUP_TTL_DAYS) {
             keepNewest: MAX_PKG_UPDATES,
         });
         // 4. Dead-letter callbacks: keep only the newest few for manual replay.
+        //    filesOnly (E12): mirrors getDeadLetterCount's file-only semantics —
+        //    a stray subdirectory is neither counted toward keepNewest nor
+        //    recursively deleted here.
         deadLetters = removeOlderThan(path.join(config_1.config.workDir, 'callbacks', 'dead-letter'), cutoff, {
             keepNewest: MAX_DEAD_LETTER_FILES,
+            filesOnly: true,
         });
+        // 5. E13: reclaim orphan `.meta` files stranded in the callbacks/ top level.
+        orphanMetaFiles = removeOrphanCallbackMetaFiles(path.join(config_1.config.workDir, 'callbacks'), Date.now());
     }
     catch (error) {
         logger_1.logger.error(`Workdir cleanup error: ${error instanceof Error ? error.message : String(error)}`);
     }
-    return { workDirs, caches, packages, deadLetters };
+    return { workDirs, caches, packages, deadLetters, orphanMetaFiles };
 }
 const MAX_PKG_UPDATES = 3;
 const MAX_DEAD_LETTER_FILES = 50;
+const ORPHAN_META_TTL_MS = 24 * 60 * 60 * 1000;
+/** Current dead-letter backlog size (file count). Reported via heartbeat so
+ *  long disconnections (callbacks parked on disk) stay visible to ops. Only
+ *  regular files are counted — the dead-letter retention sweep in
+ *  cleanupWorkDir runs with filesOnly (E12), so it too only ever removes
+ *  files: a stray subdirectory neither inflates the reported backlog nor gets
+ *  reclaimed by that sweep. */
+function getDeadLetterCount() {
+    try {
+        return fs
+            .readdirSync(path.join(config_1.config.workDir, 'callbacks', 'dead-letter'), {
+            withFileTypes: true,
+        })
+            .filter((d) => d.isFile()).length;
+    }
+    catch {
+        return 0;
+    }
+}
 /** Separate interval from the log-retention sweep so the two cleanups can be
  *  stopped/started independently. */
 let workdirCleanupInterval = null;
@@ -47235,9 +47396,9 @@ let workdirCleanupInterval = null;
 function startWorkDirCleanup(ttlDays = CLEANUP_TTL_DAYS) {
     const sweep = () => {
         const r = cleanupWorkDir(ttlDays);
-        const total = r.workDirs + r.caches + r.packages + r.deadLetters;
+        const total = r.workDirs + r.caches + r.packages + r.deadLetters + r.orphanMetaFiles;
         if (total > 0) {
-            logger_1.logger.info(`Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s)`);
+            logger_1.logger.info(`Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s), ${r.orphanMetaFiles} orphan meta file(s)`);
         }
     };
     sweep();
@@ -47270,7 +47431,7 @@ function getLogStats() {
         }
     };
     try {
-        walk(logsDir);
+        walk(getLogsDir());
     }
     catch {
         // Ignore if logs directory doesn't exist
@@ -47436,6 +47597,15 @@ function downloadFile(url, dest, options = {}) {
             removePartialFile(file, dest);
             reject(err);
         };
+        // The stream can already fail on OPEN (ENOENT: parent dir vanished under
+        // us, EACCES/EDQUOT…). The response-callback registration of this same
+        // handler below is too late for that early error — with no listener, the
+        // 'error' event escapes as an unhandled exception (observed: an
+        // update-package test whose temp dir was cleaned while a follow-up
+        // download's createWriteStream was still opening, crashing whatever test
+        // shared the worker next). fail() is settled-guarded, so the second
+        // registration stays harmless.
+        file.on('error', fail);
         const headers = {};
         if (sendAuth && config_1.config.token) {
             headers['Authorization'] = `Bearer ${config_1.config.token}`;
@@ -47698,8 +47868,8 @@ async function gracefulShutdown(signal, exitCode = 0) {
         clearInterval(heartbeatInterval);
         heartbeatInterval = null;
     }
-    // Stop callback thread
-    (0, callback_1.stopCallbackThread)();
+    // Stop accepting new requests before task shutdown can enqueue final callbacks
+    server.close();
     // Stop log cleanup thread + buffered log writer
     (0, file_logger_1.stopLogCleanup)();
     (0, file_logger_1.stopWorkDirCleanup)();
@@ -47711,8 +47881,7 @@ async function gracefulShutdown(signal, exitCode = 0) {
     while ((0, scheduler_1.getRunningCount)() > 0) {
         if (Date.now() - startTime > maxWait) {
             // Grace expired: kill the detached task process groups, otherwise they
-            // outlive the executor as unmanaged orphans (callbacks are already
-            // stopped, so their results could never be reported anyway).
+            // outlive the executor as unmanaged orphans (callbacks from tasks killed below may not be reported; queued callbacks are drained normally).
             const killed = (0, execute_1.killRunningTaskProcesses)();
             logger_1.logger.warn(`Grace period expired, ${(0, scheduler_1.getRunningCount)()} task(s) still running, forcing shutdown` +
                 (killed > 0 ? ` — killed ${killed} task process group(s)` : ''));
@@ -47721,8 +47890,8 @@ async function gracefulShutdown(signal, exitCode = 0) {
         logger_1.logger.info(`Waiting for ${(0, scheduler_1.getRunningCount)()} task(s) to complete...`);
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
-    // Stop accepting new requests
-    server.close();
+    // Drain callbacks produced by stopped and completed workers before exiting
+    await (0, callback_1.stopCallbackThread)();
     // Flush any buffered task logs to disk before exiting
     try {
         await (0, file_logger_1.flushLogs)();
@@ -48071,10 +48240,43 @@ async function forceTokenRefresh() {
 /***/ }),
 
 /***/ 4080:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.configRouter = void 0;
 /**
@@ -48082,10 +48284,13 @@ exports.configRouter = void 0;
  * Allows admin-api to push configuration updates without executor restart.
  */
 const express_1 = __nccwpck_require__(925);
+const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
 const auth_1 = __nccwpck_require__(9473);
 const config_1 = __nccwpck_require__(3650);
 const admin_client_1 = __nccwpck_require__(6609);
 const logger_1 = __nccwpck_require__(6888);
+const execute_1 = __nccwpck_require__(8690);
 exports.configRouter = (0, express_1.Router)();
 exports.configRouter.use(auth_1.verifyToken);
 function rebuildAdminApiUrls(explicitUrls) {
@@ -48130,6 +48335,53 @@ exports.configRouter.post('/config/reload', async (req, res) => {
             config_1.config.heartbeatIntervalSeconds = body.heartbeatIntervalSeconds;
             updatedFields.push('heartbeatIntervalSeconds');
             logger_1.logger.info(`Hot-reloaded heartbeatIntervalSeconds=${body.heartbeatIntervalSeconds}`);
+        }
+        // WORK_DIR 热切换：新基目录必须是绝对路径、无 ".." 段、真实存在且非
+        // symlink，并复用 execute.ts 的同一套校验（validateExecutionWorkDir，
+        // 规则不得漂移）；存在仍在旧目录运行的执行时拒绝切换，避免运行中的
+        // 任务目录与后续清理/日志回捞路径脱钩。
+        if (body.workDir !== undefined || body.WORK_DIR !== undefined) {
+            const raw = String(body.workDir ?? body.WORK_DIR).trim();
+            const isAbsolute = path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw);
+            if (!raw || !isAbsolute || /(^|[\\/])\.\.([\\/]|$)/.test(raw)) {
+                res.status(400).json({ error: 'workDir must be an absolute path without ".." segments' });
+                return;
+            }
+            const resolvedNew = path.resolve(raw);
+            if (!fs.existsSync(resolvedNew)) {
+                res.status(400).json({ error: `workDir does not exist: ${resolvedNew}` });
+                return;
+            }
+            try {
+                if (fs.lstatSync(resolvedNew).isSymbolicLink()) {
+                    res.status(400).json({ error: 'workDir cannot be a symbolic link' });
+                    return;
+                }
+            }
+            catch (err) {
+                res.status(400).json({ error: `workDir validation failed: ${err instanceof Error ? err.message : String(err)}` });
+                return;
+            }
+            const active = (0, execute_1.listActiveExecutionIds)();
+            for (const executionId of active) {
+                const guard = (0, execute_1.validateExecutionWorkDir)(path.join(resolvedNew, executionId), resolvedNew);
+                if (guard !== null) {
+                    res.status(400).json({ error: `workDir validation failed for active execution ${executionId}: ${guard}` });
+                    return;
+                }
+            }
+            if (active.length > 0) {
+                res.status(400).json({ error: `workDir cannot change while ${active.length} execution(s) are running on the old directory` });
+                return;
+            }
+            // config.workDir 是读 process.env 的 getter——热更新写 env 即全链路生效
+            // （含 workDir 派生的日志/回调目录解析路径）。E10：file-logger 的
+            // logsDir 已改惰性解析（getLogsDir 每次经 config.workDir 重算），与
+            // routes/logs.ts 的读路径、callback.ts 的 getCallbackDir 对齐；新增
+            // workDir 派生路径时必须保持"调用期解析"，不得模块加载期固化。
+            process.env.WORK_DIR = resolvedNew;
+            updatedFields.push('workDir');
+            logger_1.logger.info(`Hot-reloaded workDir=${resolvedNew}`);
         }
         let adminApiUrlsChanged = false;
         let explicitAdminApiUrls;
@@ -48757,6 +49009,12 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.BoundedLogBuffer = exports.executeRouter = void 0;
 exports.gitCheckoutTo = gitCheckoutTo;
+exports.validateExecutionWorkDir = validateExecutionWorkDir;
+exports.executionExists = executionExists;
+exports.listActiveExecutionIds = listActiveExecutionIds;
+exports.prepareFailureReason = prepareFailureReason;
+exports.dispatchExecutionToWorker = dispatchExecutionToWorker;
+exports.buildNpmRcContent = buildNpmRcContent;
 exports.killRunningTaskProcesses = killRunningTaskProcesses;
 exports.runTask = runTask;
 const express_1 = __nccwpck_require__(925);
@@ -48827,38 +49085,59 @@ function quarantineBrokenCache(cacheDir) {
         fs.rmSync(cacheDir, { recursive: true, force: true });
     }
 }
-async function gitCheckoutTo(repoUrl, ref, dest) {
+/**
+ * Clone/fetch/checkout the specified ref to dest directory.
+ * `signal` lets the execution kill endpoint abort a prepare-phase checkout
+ * (改动2): the in-flight git process tree is hard-killed and the queued job
+ * chain rejects with ExecutionCancelledError.
+ */
+async function gitCheckoutTo(repoUrl, ref, dest, signal) {
     const cacheDir = path.join(config_1.config.workDir, '.git_cache', repoDirName(repoUrl));
     await queueGitCheckout(cacheDir, async () => {
+        if (signal?.aborted)
+            throw new task_worker_1.ExecutionCancelledError(dest);
         if (fs.existsSync(cacheDir) && !(await isBareGitRepo(cacheDir))) {
             logger_1.logger.warn(`[git] cache ${cacheDir} is not a valid bare repo (killed clone?) — quarantining and re-cloning`);
             quarantineBrokenCache(cacheDir);
         }
         if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
             fs.mkdirSync(cacheDir, { recursive: true });
-            const r = await (0, run_command_1.runCommand)('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120000 });
+            const r = await (0, run_command_1.runCommand)('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120000, signal });
+            if (signal?.aborted)
+                throw new task_worker_1.ExecutionCancelledError(dest);
             if (r.status !== 0) {
                 fs.rmSync(cacheDir, { recursive: true, force: true });
                 throw new Error(`git clone failed: ${r.stderr.trim()}`);
             }
         }
         else {
-            const r = await (0, run_command_1.runCommand)('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60000 });
+            const r = await (0, run_command_1.runCommand)('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60000, signal });
+            if (signal?.aborted)
+                throw new task_worker_1.ExecutionCancelledError(dest);
             if (r.status !== 0) {
                 // Continuing with a stale cache made tasks silently run old code.
                 throw new Error(`git fetch failed: ${r.stderr.trim()}`);
             }
         }
         fs.mkdirSync(dest, { recursive: true });
-        const r = await (0, run_command_1.runCommand)('git', [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'], { timeout: 30000 });
+        const r = await (0, run_command_1.runCommand)('git', [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'], { timeout: 30000, signal });
+        if (signal?.aborted)
+            throw new task_worker_1.ExecutionCancelledError(dest);
         if (r.status !== 0)
             throw new Error(`git checkout failed: ${r.stderr.trim()}`);
     });
 }
 const taskInstallQueues = new Map();
 /** Serialize dependency installs per task id — concurrent requests for the
- *  same task would race on the shared .node_modules/<taskId> directory. */
-function queueTaskInstall(taskId, job) {
+ *  same task would race on the shared .node_modules/<taskId> directory.
+ *  A rejected job propagates the rejection to every chained follower (改动2:
+ *  a kill-aborted install must reach ALL queued executions, not just the
+ *  first one — each of their git/npm processes has already been hard-killed
+ *  via its own abort signal, so they must not proceed as if the install
+ *  succeeded). An aborted follower converts the shared rejection into an
+ *  ExecutionCancelledError so the ownership chain (worker skip, no double
+ *  release) kicks in. */
+function queueTaskInstall(taskId, job, isAborted) {
     const prev = taskInstallQueues.get(taskId) ?? Promise.resolve();
     const run = prev.then(job, job);
     const tail = run.then(() => undefined, () => undefined);
@@ -48867,10 +49146,116 @@ function queueTaskInstall(taskId, job) {
         if (taskInstallQueues.get(taskId) === tail)
             taskInstallQueues.delete(taskId);
     });
-    return run;
+    return run.catch((err) => {
+        if (isAborted())
+            throw new task_worker_1.ExecutionCancelledError(taskId);
+        throw err;
+    });
 }
 exports.executeRouter = (0, express_1.Router)();
-exports.executeRouter.post('/execute', async (req, res) => {
+/** executionId 会被用作 workDir 下的目录名——限定安全字符集，杜绝路径穿越
+ *  （S6/Q11 的字符级前置，深度解析检查见 validateExecutionWorkDir）。 */
+function isSafeExecutionIdSegment(id) {
+    return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id);
+}
+/** S6/Q11 + SEC-04: path traversal / symlink guard for workDir.
+ *  Returns an error message, or null when the directory is safe to use.
+ *  Shared by POST /execute (request + background) and the /config/reload
+ *  workDir validation (routes/config.ts) so the rules never drift apart. */
+function validateExecutionWorkDir(workDir, baseDir) {
+    const resolvedWorkDir = path.resolve(workDir);
+    const resolvedBase = path.resolve(baseDir);
+    if (!resolvedWorkDir.startsWith(resolvedBase + path.sep) && resolvedWorkDir !== resolvedBase) {
+        return 'Invalid executionId: path traversal detected';
+    }
+    // SEC-04: Check for symbolic link attacks
+    try {
+        // Check if the base directory exists and is not a symlink
+        const baseStats = fs.lstatSync(resolvedBase);
+        if (baseStats.isSymbolicLink()) {
+            return 'Base work directory cannot be a symbolic link';
+        }
+        // If workDir already exists, check if it's a symlink
+        if (fs.existsSync(resolvedWorkDir)) {
+            const workDirStats = fs.lstatSync(resolvedWorkDir);
+            if (workDirStats.isSymbolicLink()) {
+                return 'Work directory cannot be a symbolic link';
+            }
+            // Check the real path to prevent symlink escape
+            const realWorkDir = fs.realpathSync(resolvedWorkDir);
+            const realBase = fs.realpathSync(resolvedBase);
+            if (!realWorkDir.startsWith(realBase + path.sep) && realWorkDir !== realBase) {
+                return 'Symbolic link escape detected';
+            }
+        }
+    }
+    catch (err) {
+        return `Path validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`;
+    }
+    return null;
+}
+const liveExecutions = new Map();
+/** 推送（且只推一次）killed 失败回调。容量释放不在这里——所有权见各调用方
+ *  注释：未开始路径 kill 端点释放；prepare/运行中被取消路径 worker 的
+ *  onComplete 释放。 */
+function pushKilledCallbackOnce(executionId, entry) {
+    if (entry.killedCallbackPushed)
+        return;
+    entry.killedCallbackPushed = true;
+    (0, file_logger_1.appendLog)(executionId, 'Execution killed by admin request');
+    writeExecMeta(executionId, {
+        status: 'failed',
+        endTime: Date.now(),
+        errorMessage: 'Killed by admin request',
+    });
+    (0, callback_1.pushCallback)({
+        executionId,
+        status: 'failed',
+        errorMessage: 'Execution killed by admin request',
+        failureReason: 'killed',
+    });
+}
+function createExecutionEntry(executionId, taskId) {
+    const entry = {
+        executionId,
+        taskId,
+        aborted: false,
+        abortController: new AbortController(),
+        killedByRequest: false,
+        killedCallbackPushed: false,
+        enqueued: false,
+        cancelled: false,
+        workerFinished: false,
+        capacityReleased: false,
+        release: () => {
+            if (entry.capacityReleased)
+                return; // 幂等：kill 与自然完成竞争时只减一次
+            entry.capacityReleased = true;
+            Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
+            liveExecutions.delete(entry.executionId);
+        },
+    };
+    return entry;
+}
+/** execution 是否在本执行器的运行表中（/execute 重复领取检查用，测试导出）。 */
+function executionExists(executionId) {
+    return liveExecutions.has(executionId);
+}
+/** 当前运行表中所有 executionId（/config/reload 的 workDir 切换安全检查用）。 */
+function listActiveExecutionIds() {
+    return [...liveExecutions.keys()];
+}
+// STALE-01: 心跳上报本机运行中的 executionId 与死信积压。scheduler 不能反向
+// import routes（会成环），故由数据属主在此注册 provider。
+(0, scheduler_1.registerRunningExecutionIdsProvider)(listActiveExecutionIds);
+(0, scheduler_1.registerDeadLetterCountProvider)(file_logger_1.getDeadLetterCount);
+// ---------------------------------------------------------------------------
+// POST /execute — 只做参数校验 + 并发预检 + 登记，prepare/spawn 全部进入
+// 后台（改动2）。同步 prepare 时 clone(120s)+fetch(60s)+install(300s) 会
+// 超过 admin 侧 dispatch HTTP 超时（(task.timeout+10)s），导致 admin 把
+// 超时误判为 TIMEOUT 终态而执行器随后成功回调被丢弃、容量计数失真。
+// ---------------------------------------------------------------------------
+exports.executeRouter.post('/execute', (req, res) => {
     // BUG-03: Use atomic operations to prevent race conditions in capacity checking
     // Atomically increment counter first, then check if over capacity
     const current = Atomics.add((0, scheduler_1.getRunningCountArray)(), 0, 1);
@@ -48879,307 +49264,540 @@ exports.executeRouter.post('/execute', async (req, res) => {
         res.status(429).json({ error: 'Executor is at capacity' });
         return;
     }
-    // Helper function to release capacity exactly once for synchronous rejection paths.
-    const releaseCapacity = () => {
-        Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
-    };
-    const sendError = (status, error) => {
-        releaseCapacity();
+    let entry = null;
+    /** 同步拒绝路径：释放容量（幂等）。 */
+    const reject = (status, error) => {
+        if (entry)
+            entry.release();
+        else
+            Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
         res.status(status).json({ error });
     };
-    // Set once the task is queued — after that the worker's onComplete owns
-    // the capacity slot and the outer catch must not double-release it.
-    let handedOff = false;
     try {
         const body = req.body;
-        const { executionId, params } = body;
+        const executionId = body?.executionId;
+        const params = body?.params;
         if (!executionId || !body.task) {
-            sendError(400, 'executionId and task are required');
+            reject(400, 'executionId and task are required');
+            return;
+        }
+        if (!isSafeExecutionIdSegment(executionId)) {
+            reject(400, 'Invalid executionId: path traversal detected');
+            return;
+        }
+        // 重复领取守卫：同一 execution 仍在运行（含排队）时不得二次领取——
+        // 二次 Atomics.add 与首个并发路径叠加会失真/双释放。
+        if (liveExecutions.has(executionId)) {
+            reject(400, `Execution ${executionId} is already active on this executor`);
             return;
         }
         const workDir = path.join(config_1.config.workDir, executionId);
-        // S6/Q11: path traversal guard — ensure workDir stays within configured base
-        const resolvedWorkDir = path.resolve(workDir);
-        const resolvedBase = path.resolve(config_1.config.workDir);
-        if (!resolvedWorkDir.startsWith(resolvedBase + path.sep) && resolvedWorkDir !== resolvedBase) {
-            sendError(400, 'Invalid executionId: path traversal detected');
+        const guardError = validateExecutionWorkDir(workDir, config_1.config.workDir);
+        if (guardError) {
+            reject(400, guardError);
             return;
         }
-        // SEC-04: Check for symbolic link attacks
-        try {
-            // Check if the base directory exists and is not a symlink
-            const baseStats = fs.lstatSync(resolvedBase);
-            if (baseStats.isSymbolicLink()) {
-                sendError(400, 'Base work directory cannot be a symbolic link');
+        // 廉价同步校验（纯字符串检查，防注入/防误配置，语义与原实现一致）：
+        // 后台化后若仍走失败回调，admin 侧 execution 尚未置 running 会丢弃回调，
+        // 留下永久僵尸行——必须保持同步 4xx。
+        const gitRepo = body.task.gitRepo;
+        if (gitRepo) {
+            // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
+            const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
+            if (!allowedGitPattern.test(gitRepo)) {
+                reject(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
                 return;
             }
-            // If workDir already exists, check if it's a symlink
-            if (fs.existsSync(resolvedWorkDir)) {
-                const workDirStats = fs.lstatSync(resolvedWorkDir);
-                if (workDirStats.isSymbolicLink()) {
-                    sendError(400, 'Work directory cannot be a symbolic link');
-                    return;
-                }
-                // Check the real path to prevent symlink escape
-                const realWorkDir = fs.realpathSync(resolvedWorkDir);
-                const realBase = fs.realpathSync(resolvedBase);
-                if (!realWorkDir.startsWith(realBase + path.sep) && realWorkDir !== realBase) {
-                    sendError(400, 'Symbolic link escape detected');
-                    return;
-                }
+            // S7: SSRF guard — block private IP addresses and localhost
+            const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
+            if (privateIpPattern.test(gitRepo)) {
+                reject(400, `gitRepo URL contains restricted address: ${gitRepo}`);
+                return;
+            }
+            const ref = (body.task.gitCommit || body.task.gitBranch || 'main');
+            // git checkout uses array args (no shell injection), but an option-like
+            // ref (`-b`, `--orphan`) would still be parsed as a flag by git — same
+            // guard deploy.ts applies to its checkout path.
+            if (/^-/.test(ref)) {
+                reject(400, `Invalid git ref: ${ref}`);
+                return;
             }
         }
-        catch (err) {
-            sendError(400, `Path validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        // S16: validate each package name against npm naming rules before any
+        // shell expansion (install itself now runs in the background).
+        const reqs = body.task.requirements || [];
+        const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
+        for (const pkg of reqs) {
+            if (!npmNameRe.test(pkg)) {
+                reject(400, `Invalid npm package name: ${pkg}`);
+                return;
+            }
+        }
+        // timeout=0 表示不限时（admin 侧 task.entity/scheduler 语义，改动4）——
+        // 仅 null/undefined 才回退默认值；越界与非数值保持原 400 语义。
+        const rawTimeout = body.task.timeout;
+        const timeout = rawTimeout === 0 ? 0 : rawTimeout || config_1.config.taskTimeoutSeconds;
+        if (timeout !== 0 && (!Number.isFinite(timeout) || timeout < 1 || timeout > 86400)) {
+            reject(400, `Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
             return;
         }
+        // Glue 语言的字符串校验是同步 400 语义（与原实现一致），语言支持性判定
+        // 依赖 runtime（可能被 manifest 覆盖），留在后台 prepare。
+        const glueSource = body.task.glueSource || body.task.glue_source;
+        if (glueSource !== undefined && typeof glueSource !== 'string') {
+            reject(400, 'glueSource must be a string');
+            return;
+        }
+        // 登记 + 立即 accepted。prepare（clone/checkout、依赖安装）与 spawn
+        // 在后台执行（经 worker 按 taskId 串行，见 dispatch）。
+        entry = createExecutionEntry(executionId, String(body.task.id || executionId));
+        liveExecutions.set(executionId, entry);
+        void startExecutionInBackground(executionId, body, params, entry);
+        // 响应体与旧实现逐字一致——admin 对 2xx 的处理不变。
+        res.json({ status: 'accepted', executionId });
+    }
+    catch (err) {
+        // Express 4 does not await async handlers: a synchronous throw below the
+        // capacity reservation must not hang the request or leak the slot.
+        if (!res.headersSent) {
+            reject(500, err instanceof Error ? err.message : 'Internal executor error');
+        }
+    }
+});
+/**
+ * 后台启动：先做与 worker 无关的前置（mkdir/chmod + 二次 symlink 检查），
+ * 然后移交 worker——同一 taskId 的 worker 轮到本执行时才运行 prepare 与
+ * spawn（保持原有同任务串行语义），失败回调走现有 pushCallback 通道。
+ */
+async function startExecutionInBackground(executionId, body, params, entry) {
+    const failStart = (message, failureReason, logs) => {
+        (0, file_logger_1.appendLog)(executionId, `[prepare] ${message}`);
+        writeExecMeta(executionId, {
+            executionId,
+            status: 'failed',
+            endTime: Date.now(),
+            errorMessage: message,
+        });
+        (0, callback_1.pushCallback)({
+            executionId,
+            status: 'failed',
+            errorMessage: truncateCallbackErrorMessage(message),
+            failureReason,
+            logs: truncateCallbackLogs(logs),
+        });
+        entry.release(); // 幂等
+    };
+    try {
+        if (entry.aborted) {
+            // kill 在移交前到达：后台流程不启动，收尾由 kill 端点负责。
+            return;
+        }
+        const workDir = path.join(config_1.config.workDir, executionId);
         fs.mkdirSync(workDir, { recursive: true });
         // S6/Q11: restrict permissions so sibling tasks cannot read this directory
         try {
             fs.chmodSync(workDir, 0o700);
         }
         catch (_) { /* ignore on unsupported filesystems */ }
-        // --- Git version binding: if task specifies gitRepo, clone/checkout to work dir ---
-        const gitRepo = body.task.gitRepo;
-        const gitCommit = body.task.gitCommit;
-        const gitBranch = body.task.gitBranch ?? 'main';
-        if (gitRepo) {
-            // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
-            const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
-            if (!allowedGitPattern.test(gitRepo)) {
-                sendError(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
-                return;
-            }
-            // S7: SSRF guard — block private IP addresses and localhost
-            const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
-            if (privateIpPattern.test(gitRepo)) {
-                sendError(400, `gitRepo URL contains restricted address: ${gitRepo}`);
-                return;
-            }
-            const ref = gitCommit || gitBranch;
-            // git checkout uses array args (no shell injection), but an option-like
-            // ref (`-b`, `--orphan`) would still be parsed as a flag by git — same
-            // guard deploy.ts applies to its checkout path.
-            if (/^-/.test(ref)) {
-                sendError(400, `Invalid git ref: ${ref}`);
-                return;
-            }
-            logger_1.logger.info(`Checking out ${redactUrl(gitRepo)}@${ref} to ${workDir}`);
-            try {
-                await gitCheckoutTo(gitRepo, ref, workDir);
-            }
-            catch (err) {
-                sendError(500, err instanceof Error ? err.message : 'Git checkout failed');
-                return;
-            }
-        }
-        // Load manifest.yaml and merge with task (task fields take priority)
-        const manifest = (0, manifest_1.loadManifest)(workDir);
-        const task = (0, manifest_1.mergeTaskWithManifest)(body.task, manifest);
-        const runtime = task.runtime || 'node';
-        const entrypoint = task.entrypoint || 'index.js';
-        const timeout = task.timeout || config_1.config.taskTimeoutSeconds;
-        // Bounded timeout: a negative value fires setTimeout immediately (instant
-        // task kill) and an unbounded one arms a near-permanent timer.
-        if (!Number.isFinite(timeout) || timeout < 1 || timeout > 86400) {
-            sendError(400, `Invalid task timeout: ${timeout} (expected 1..86400 seconds)`);
+        // symlink 检查在 mkdir 之前无法覆盖"dirent 恰在检查与 mkdir 之间被替换"
+        // 的 TOCTOU 窗口，这里在真正使用前复查一次。
+        const guardError = validateExecutionWorkDir(workDir, config_1.config.workDir);
+        if (guardError) {
+            failStart(guardError, 'unknown');
             return;
         }
-        const requirements = task.requirements || [];
-        const taskId = String(task.id || executionId);
-        // Glue script support: write inline source to a temp file and use it as entrypoint
-        let actualRuntime = runtime;
-        let actualEntrypoint = entrypoint;
-        let actualRequirements = requirements;
-        const glueSource = task.glueSource || task.glue_source;
-        const glueLanguage = task.glueLanguage || task.glue_language;
-        if (glueSource) {
-            let glueFile;
-            const glLower = glueLanguage ? glueLanguage.toLowerCase() : '';
-            if (glLower === 'javascript' || glLower === 'glue_node' || (!glueLanguage && runtime === 'node')) {
-                glueFile = path.join(workDir, 'glue_script.js');
-                actualRuntime = 'node';
-            }
-            else if (glLower === 'python' || glLower === 'glue_python' || (!glueLanguage && runtime === 'python')) {
-                glueFile = path.join(workDir, 'glue_script.py');
-                actualRuntime = 'python';
-            }
-            else if (glLower === 'shell' || glLower === 'glue_shell' || (!glueLanguage && runtime === 'shell')) {
-                // W-11 (windows-findings): parity bug — node/python branches accept a
-                // missing glueLanguage (fall back to task.runtime), shell did not and
-                // 400'd `Unsupported glue language: ` for shell glue created without
-                // the explicit field. Also on win32 the file MUST end in .cmd:
-                // `cmd.exe /c <path>.sh` neither runs the batch nor exits cleanly —
-                // it hangs (observed holding a task slot until timeout).
-                glueFile = path.join(workDir, process.platform === 'win32' ? 'glue_script.cmd' : 'glue_script.sh');
-                actualRuntime = 'shell';
-            }
-            else {
-                sendError(400, `Unsupported glue language: ${glueLanguage}`);
-                return;
-            }
-            if (typeof glueSource !== 'string') {
-                sendError(400, 'glueSource must be a string');
-                return;
-            }
-            fs.writeFileSync(glueFile, glueSource, 'utf-8');
-            fs.chmodSync(glueFile, 0o755);
-            logger_1.logger.info(`Glue script written to ${glueFile} (${glueSource.length} bytes)`);
-            actualEntrypoint = actualRuntime === 'shell' ? glueFile : path.basename(glueFile);
-            actualRequirements = []; // Glue scripts use system runtime, no per-task deps
-        }
-        // node runtime: install dependencies on demand to task-isolated directory
-        let sharedNodeModulesDir = null;
-        if (actualRuntime === 'node' && actualRequirements.length > 0) {
-            const nodeModulesDir = path.join(config_1.config.workDir, '.node_modules', taskId);
-            sharedNodeModulesDir = nodeModulesDir;
-            fs.mkdirSync(nodeModulesDir, { recursive: true });
-            const pkgJson = path.join(nodeModulesDir, 'package.json');
-            if (!fs.existsSync(pkgJson)) {
-                fs.writeFileSync(pkgJson, JSON.stringify({ name: `task-${taskId}`, version: '1.0.0' }));
-            }
-            // S16: validate each package name against npm naming rules before shell expansion
-            const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
-            for (const pkg of actualRequirements) {
-                if (!npmNameRe.test(pkg)) {
-                    sendError(400, `Invalid npm package name: ${pkg}`);
-                    return;
-                }
-            }
-            logger_1.logger.info(`Installing ${actualRequirements.length} packages for task ${taskId}`);
-            // Generate .npmrc to use private registry for @autocodeflow scoped packages
-            if (config_1.config.npmRegistryUrl) {
-                const npmrc = path.join(nodeModulesDir, '.npmrc');
-                const hasAutoflowPackage = actualRequirements.some(pkg => pkg.startsWith('@autocodeflow/'));
-                const registryConfig = hasAutoflowPackage
-                    ? `@autocodeflow:registry=${config_1.config.npmRegistryUrl}\n`
-                    : `registry=${config_1.config.npmRegistryUrl}\n`;
-                fs.writeFileSync(npmrc, registryConfig);
-                logger_1.logger.info(`Using npm registry: ${redactUrl(config_1.config.npmRegistryUrl)} for task ${taskId}`);
-            }
-            const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-            const installResult = await queueTaskInstall(taskId, () => (0, run_command_1.runCommand)(npmCmd, ['install', '--prefix', nodeModulesDir, ...actualRequirements], { timeout: 300000, shell: process.platform === 'win32' }));
-            if (installResult.status !== 0) {
-                const errMsg = installResult.stderr.trim() || 'npm install failed';
-                sendError(500, `Dependency installation failed: ${errMsg}`);
-                return;
-            }
-        }
-        // SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
-        const env = (0, env_whitelist_1.buildChildEnv)();
-        // Requirements were installed to .node_modules/<taskId>/node_modules via npm
-        // --prefix; Node's resolution chain never reaches a dot-prefixed sibling
-        // directory, so point NODE_PATH at it or every require() fails with
-        // MODULE_NOT_FOUND (verified reproduction — see review round 4).
-        if (sharedNodeModulesDir) {
-            const taskNodeModules = path.join(sharedNodeModulesDir, 'node_modules');
-            env['NODE_PATH'] = env['NODE_PATH']
-                ? `${taskNodeModules}${path.delimiter}${env['NODE_PATH']}`
-                : taskNodeModules;
-        }
-        // inject task-scoped context
-        env['EXECUTION_ID'] = executionId;
-        env['TASK_ID'] = String(task.id || '');
-        env['TASK_NAME'] = String(task.name || '');
-        if (params) {
-            for (const [k, v] of Object.entries(params)) {
-                env[`AUTOFLOW_${k.toUpperCase()}`] = String(v);
-            }
-        }
-        // N23: per-execution callback credentials — injected AFTER the params loop
-        // so user params can never override them. The token is an HMAC bound to
-        // this executionId with a short TTL (task timeout + grace), derived from
-        // the executor shared secret; it lets task code call
-        // POST /api/executions/callback without ever seeing the shared token
-        // (SEC-01 whitelist untouched — this is the explicit extra channel).
-        // AUTOFLOW_ADMIN_API_URL is non-secret routing info, same value the
-        // executor itself uses to reach admin-api.
-        const callbackToken = (0, execution_callback_token_1.createExecutionCallbackToken)(executionId, timeout + execution_callback_token_1.CALLBACK_TOKEN_GRACE_SECONDS);
-        if (callbackToken) {
-            env['AUTOFLOW_CALLBACK_TOKEN'] = callbackToken;
-        }
-        const adminApiUrl = config_1.config.adminApiUrlInternal || config_1.config.adminApiUrl;
-        if (adminApiUrl) {
-            env['AUTOFLOW_ADMIN_API_URL'] = adminApiUrl;
-        }
-        // N27: the address this executor registered itself with (same value
-        // main.ts sends to /api/executors/register). Non-secret routing info —
-        // the per-execution callback path requires every callback item to carry
-        // executorAddress, and task code cannot know it any other way. Injected
-        // after the params loop so user params can never override it.
-        const registeredAddress = config_1.config.executorAddressPublic || config_1.config.executorAddress;
-        if (registeredAddress) {
-            env['AUTOFLOW_EXECUTOR_ADDRESS'] = registeredAddress;
-        }
-        let cmd;
-        let args;
-        if (actualRuntime === 'node') {
-            cmd = process.platform === 'win32' ? 'node.exe' : 'node';
-            args = [actualEntrypoint];
-        }
-        else if (actualRuntime === 'python') {
-            cmd = process.platform === 'win32' ? 'python.exe' : 'python3';
-            args = [actualEntrypoint];
-        }
-        else if (actualRuntime === 'shell') {
-            if (process.platform === 'win32') {
-                cmd = 'cmd.exe';
-                args = ['/c', actualEntrypoint];
-            }
-            else {
-                cmd = 'bash';
-                // spawn already runs with cwd=workDir — passing the entrypoint
-                // directly avoids quote-breakout through string concatenation.
-                args = [actualEntrypoint];
-            }
-        }
-        else {
-            sendError(400, `Unsupported runtime: ${actualRuntime}`);
-            return;
-        }
-        // Hardening: the entrypoint is resolved against the work dir by every
-        // runtime (cwd=workDir), so a relative path with `..` could execute a
-        // script anywhere on the host. Glue scripts use absolute paths that are
-        // already inside the work dir and pass this guard unchanged.
-        const entryAbs = path.resolve(workDir, actualEntrypoint);
-        const workDirAbs = path.resolve(workDir);
-        if (entryAbs !== workDirAbs && !entryAbs.startsWith(workDirAbs + path.sep)) {
-            sendError(400, 'entrypoint escapes the task work directory');
-            return;
-        }
-        logger_1.logger.info(`Running task ${String(task.name)} [${executionId}]: ${cmd} ${args.join(' ')}`);
-        const taskInfo = {
-            taskId,
-            task: { ...task, runtime: actualRuntime, entrypoint: actualEntrypoint, timeout, workDir, env, cmd, args },
-            params,
-            executionId,
-        };
-        try {
-            task_worker_1.taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId }, () => {
-                releaseCapacity();
-            });
-            handedOff = true;
-        }
-        catch (err) {
-            releaseCapacity();
-            res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to enqueue task' });
-            return;
-        }
-        res.json({ status: 'accepted', executionId });
+        await dispatchExecutionToWorker(executionId, body, params, workDir, entry);
     }
     catch (err) {
-        // Express 4 does not await async handlers: a synchronous throw below the
-        // capacity reservation (mkdirSync, writeFileSync, manifest parse, …)
-        // would hang the request forever and leak the reserved slot.
-        if (handedOff) {
-            // The worker's onComplete owns the capacity slot from here on.
-            logger_1.logger.error(`Post-enqueue error: ${err instanceof Error ? err.message : String(err)}`);
-            return;
+        failStart(err instanceof Error ? err.message : 'Executor background start failed', 'unknown');
+    }
+}
+/** prepare 失败信息的 failureReason 归类（对齐 admin ExecutionFailureReason）：
+ *  git/npm 依赖获取类 → package_fetch_failed；其余 → unknown。
+ *  导出供测试固化该映射。 */
+function prepareFailureReason(message) {
+    if (/git (clone|fetch|checkout) failed|npm install failed|Dependency installation failed|Invalid npm package name/i.test(message)) {
+        return 'package_fetch_failed';
+    }
+    return 'unknown';
+}
+/**
+ * 构造 prepared task 并移交 worker（导出供测试注入）。taskId 此时即可得
+ * （manifest 合并允许覆盖任意字段，但 worker 分组仅用于同任务串行，无安全
+ * 含义）。移交后容量/收尾责任归 worker 的 onComplete。
+ */
+async function dispatchExecutionToWorker(executionId, body, params, workDir, entry) {
+    const taskId = String(body.task.id || executionId);
+    entry.taskId = taskId;
+    const placeholder = {
+        ...body.task,
+        workDir,
+        runtime: body.task.runtime,
+        entrypoint: body.task.entrypoint,
+    };
+    const runPrepared = async (assertNotCancelled) => {
+        try {
+            return await prepareExecution(executionId, body, params, workDir, entry, assertNotCancelled);
         }
-        if (!res.headersSent) {
-            sendError(500, err instanceof Error ? err.message : 'Internal executor error');
+        catch (err) {
+            if (err instanceof task_worker_1.ExecutionCancelledError || entry.aborted || entry.cancelled) {
+                // 被 kill：worker 跳过任务执行。失败回调的推送责任按取消发生的阶段
+                // 划分——未开始/排队中被摘除的路径由 kill 端点收尾；已被 worker 取出
+                // （不在队列，kill 端点找不到可杀的进程）时由这里补推。容量释放统一
+                // 走 worker onComplete（未取消标记时），幂等防双释放。
+                if (entry.killedByRequest && !entry.cancelled) {
+                    pushKilledCallbackOnce(executionId, entry);
+                }
+                throw err instanceof task_worker_1.ExecutionCancelledError ? err : new task_worker_1.ExecutionCancelledError(executionId);
+            }
+            // prepare 真实失败（git clone / 依赖安装 / 参数非法）：这里完成回调上报
+            // （原实现经 HTTP 500 反馈，现已 accepted），容量仍由 worker 的
+            // onComplete 释放——不留悬挂状态。
+            const message = err instanceof Error ? err.message : 'Task preparation failed';
+            (0, file_logger_1.appendLog)(executionId, `[prepare] ${message}`);
+            writeExecMeta(executionId, {
+                status: 'failed',
+                endTime: Date.now(),
+                errorMessage: message,
+            });
+            (0, callback_1.pushCallback)({
+                executionId,
+                status: 'failed',
+                errorMessage: truncateCallbackErrorMessage(message),
+                failureReason: prepareFailureReason(message),
+            });
+            throw err;
+        }
+    };
+    const onComplete = () => {
+        entry.workerFinished = true;
+        entry.release();
+    };
+    try {
+        await task_worker_1.taskWorkerManager.execute(taskId, executionId, placeholder, { ...(params || {}), executionId }, onComplete, runPrepared);
+        entry.enqueued = true;
+    }
+    catch (err) {
+        // 移交失败：worker 不会调用 onComplete，这里负责失败回调 + 释放。
+        const message = err instanceof Error ? err.message : 'Failed to enqueue task';
+        (0, file_logger_1.appendLog)(executionId, `[prepare] ${message}`);
+        (0, callback_1.pushCallback)({
+            executionId,
+            status: 'failed',
+            errorMessage: truncateCallbackErrorMessage(message),
+            failureReason: 'unknown',
+        });
+        entry.release();
+    }
+}
+/**
+ * prepare 阶段（原同步请求路径逻辑，改动2）：git checkout → manifest 合并
+ * → glue → 依赖安装 → env 注入 → 组装 cmd/args。返回真正可运行的 task。
+ * 每个检查点响应 kill（aborted 标志 + abortController.signal）。
+ * 失败抛普通 Error（调用方负责回调），被 kill 时抛 ExecutionCancelledError
+ * （调用方静默退出，收尾归 kill 端点）。
+ */
+async function prepareExecution(executionId, body, params, workDir, entry, assertNotCancelled) {
+    const signal = entry.abortController.signal;
+    const checkAbort = () => {
+        if (entry.aborted)
+            throw new task_worker_1.ExecutionCancelledError(executionId);
+        assertNotCancelled();
+    };
+    checkAbort();
+    const taskName = String(body.task.name || body.task.id || executionId);
+    const logPrepare = (message) => {
+        logger_1.logger.info(message);
+        (0, file_logger_1.appendLog)(executionId, message);
+    };
+    // --- Git version binding: if task specifies gitRepo, clone/checkout to work dir ---
+    const gitRepo = body.task.gitRepo;
+    const gitCommit = body.task.gitCommit;
+    const gitBranch = body.task.gitBranch ?? 'main';
+    if (gitRepo) {
+        const ref = gitCommit || gitBranch;
+        logPrepare(`Checking out ${redactUrl(gitRepo)}@${ref} to ${workDir}`);
+        try {
+            await gitCheckoutTo(gitRepo, ref, workDir, signal);
+        }
+        catch (err) {
+            if (err instanceof task_worker_1.ExecutionCancelledError || entry.aborted)
+                throw err;
+            const message = err instanceof Error ? err.message : 'Git checkout failed';
+            logPrepare(`Git checkout failed: ${message}`);
+            throw new Error(message);
         }
     }
+    checkAbort();
+    // Load manifest.yaml and merge with task (task fields take priority)
+    const manifest = (0, manifest_1.loadManifest)(workDir);
+    const task = (0, manifest_1.mergeTaskWithManifest)(body.task, manifest);
+    const runtime = task.runtime || 'node';
+    const entrypoint = task.entrypoint || 'index.js';
+    // 改动4：timeout=0 = 不限时（不设 kill 定时器）；null/undefined 才用默认。
+    const rawTimeout = task.timeout;
+    const timeout = rawTimeout === 0 ? 0 : rawTimeout || config_1.config.taskTimeoutSeconds;
+    // Bounded timeout: a negative value fires setTimeout immediately (instant
+    // task kill) and an unbounded one arms a near-permanent timer.
+    if (timeout !== 0 && (!Number.isFinite(timeout) || timeout < 1 || timeout > 86400)) {
+        throw new Error(`Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
+    }
+    const requirements = task.requirements || [];
+    const taskId = entry.taskId;
+    // Glue script support: write inline source to a temp file and use it as entrypoint
+    let actualRuntime = runtime;
+    let actualEntrypoint = entrypoint;
+    let actualRequirements = requirements;
+    const glueSource = task.glueSource || task.glue_source;
+    const glueLanguage = task.glueLanguage || task.glue_language;
+    if (glueSource) {
+        if (typeof glueSource !== 'string') {
+            throw new Error('glueSource must be a string');
+        }
+        let glueFile;
+        const glLower = glueLanguage ? glueLanguage.toLowerCase() : '';
+        if (glLower === 'javascript' || glLower === 'glue_node' || (!glueLanguage && runtime === 'node')) {
+            glueFile = path.join(workDir, 'glue_script.js');
+            actualRuntime = 'node';
+        }
+        else if (glLower === 'python' || glLower === 'glue_python' || (!glueLanguage && runtime === 'python')) {
+            glueFile = path.join(workDir, 'glue_script.py');
+            actualRuntime = 'python';
+        }
+        else if (glLower === 'shell' || glLower === 'glue_shell' || (!glueLanguage && runtime === 'shell')) {
+            // W-11 (windows-findings): parity bug — node/python branches accept a
+            // missing glueLanguage (fall back to task.runtime), shell did not and
+            // 400'd `Unsupported glue language: ` for shell glue created without
+            // the explicit field. Also on win32 the file MUST end in .cmd:
+            // `cmd.exe /c <path>.sh` neither runs the batch nor exits cleanly —
+            // it hangs (observed holding a task slot until timeout).
+            glueFile = path.join(workDir, process.platform === 'win32' ? 'glue_script.cmd' : 'glue_script.sh');
+            actualRuntime = 'shell';
+        }
+        else {
+            throw new Error(`Unsupported glue language: ${glueLanguage}`);
+        }
+        fs.writeFileSync(glueFile, glueSource, 'utf-8');
+        fs.chmodSync(glueFile, 0o755);
+        logPrepare(`Glue script written to ${glueFile} (${glueSource.length} bytes)`);
+        actualEntrypoint = actualRuntime === 'shell' ? glueFile : path.basename(glueFile);
+        actualRequirements = []; // Glue scripts use system runtime, no per-task deps
+    }
+    // node runtime: install dependencies on demand to task-isolated directory
+    let sharedNodeModulesDir = null;
+    if (actualRuntime === 'node' && actualRequirements.length > 0) {
+        const nodeModulesDir = path.join(config_1.config.workDir, '.node_modules', taskId);
+        sharedNodeModulesDir = nodeModulesDir;
+        fs.mkdirSync(nodeModulesDir, { recursive: true });
+        const pkgJson = path.join(nodeModulesDir, 'package.json');
+        if (!fs.existsSync(pkgJson)) {
+            fs.writeFileSync(pkgJson, JSON.stringify({ name: `task-${taskId}`, version: '1.0.0' }));
+        }
+        // S16: names were validated synchronously at /execute; re-check here in
+        // case requirements arrived only via manifest.yaml.
+        const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
+        for (const pkg of actualRequirements) {
+            if (!npmNameRe.test(pkg)) {
+                throw new Error(`Invalid npm package name: ${pkg}`);
+            }
+        }
+        logPrepare(`Installing ${actualRequirements.length} packages for task ${taskId}`);
+        // 改动3: .npmrc 指向私服（@autoflow / @autocodeflow 双 scope 行）；
+        // 配置了 NPM_REGISTRY_TOKEN 时追加 _authToken 行——registry-npm 对
+        // '**' 的 access 是 $authenticated，匿名安装必 401。token 不打日志。
+        if (config_1.config.npmRegistryUrl) {
+            const npmrc = path.join(nodeModulesDir, '.npmrc');
+            fs.writeFileSync(npmrc, buildNpmRcContent(config_1.config.npmRegistryUrl, config_1.config.npmRegistryToken, actualRequirements));
+            logger_1.logger.info(`Using npm registry: ${redactUrl(config_1.config.npmRegistryUrl)} for task ${taskId}`);
+        }
+        const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+        const installResult = await queueTaskInstall(taskId, async () => {
+            if (entry.aborted)
+                throw new task_worker_1.ExecutionCancelledError(executionId);
+            return (0, run_command_1.runCommand)(npmCmd, ['install', '--prefix', nodeModulesDir, ...actualRequirements], { timeout: 300000, shell: process.platform === 'win32', signal });
+        }, () => entry.aborted);
+        if (entry.aborted)
+            throw new task_worker_1.ExecutionCancelledError(executionId);
+        if (installResult.status !== 0) {
+            const errMsg = installResult.stderr.trim() || 'npm install failed';
+            const message = `Dependency installation failed: ${errMsg}`;
+            logPrepare(message);
+            throw new Error(message);
+        }
+    }
+    checkAbort();
+    // SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
+    const env = (0, env_whitelist_1.buildChildEnv)();
+    // Requirements were installed to .node_modules/<taskId>/node_modules via npm
+    // --prefix; Node's resolution chain never reaches a dot-prefixed sibling
+    // directory, so point NODE_PATH at it or every require() fails with
+    // MODULE_NOT_FOUND (verified reproduction — see review round 4).
+    if (sharedNodeModulesDir) {
+        const taskNodeModules = path.join(sharedNodeModulesDir, 'node_modules');
+        env['NODE_PATH'] = env['NODE_PATH']
+            ? `${taskNodeModules}${path.delimiter}${env['NODE_PATH']}`
+            : taskNodeModules;
+    }
+    // inject task-scoped context
+    env['EXECUTION_ID'] = executionId;
+    env['TASK_ID'] = String(task.id || '');
+    env['TASK_NAME'] = String(task.name || '');
+    if (params) {
+        for (const [k, v] of Object.entries(params)) {
+            env[`AUTOFLOW_${k.toUpperCase()}`] = String(v);
+        }
+    }
+    // N23: per-execution callback credentials — injected AFTER the params loop
+    // so user params can never override them. The token is an HMAC bound to
+    // this executionId with a short TTL (task timeout + grace), derived from
+    // the executor shared secret; it lets task code call
+    // POST /api/executions/callback without ever seeing the shared token
+    // (SEC-01 whitelist untouched — this is the explicit extra channel).
+    // AUTOFLOW_ADMIN_API_URL is non-secret routing info, same value the
+    // executor itself uses to reach admin-api.
+    const callbackToken = (0, execution_callback_token_1.createExecutionCallbackToken)(executionId, (timeout === 0 ? TOKEN_TTL_UNBOUNDED_SECONDS : timeout) + execution_callback_token_1.CALLBACK_TOKEN_GRACE_SECONDS);
+    if (callbackToken) {
+        env['AUTOFLOW_CALLBACK_TOKEN'] = callbackToken;
+    }
+    const adminApiUrl = config_1.config.adminApiUrlInternal || config_1.config.adminApiUrl;
+    if (adminApiUrl) {
+        env['AUTOFLOW_ADMIN_API_URL'] = adminApiUrl;
+    }
+    // N27: the address this executor registered itself with (same value
+    // main.ts sends to /api/executors/register). Non-secret routing info —
+    // the per-execution callback path requires every callback item to carry
+    // executorAddress, and task code cannot know it any other way. Injected
+    // after the params loop so user params can never override it.
+    const registeredAddress = config_1.config.executorAddressPublic || config_1.config.executorAddress;
+    if (registeredAddress) {
+        env['AUTOFLOW_EXECUTOR_ADDRESS'] = registeredAddress;
+    }
+    let cmd;
+    let args;
+    if (actualRuntime === 'node') {
+        cmd = process.platform === 'win32' ? 'node.exe' : 'node';
+        args = [actualEntrypoint];
+    }
+    else if (actualRuntime === 'python') {
+        cmd = process.platform === 'win32' ? 'python.exe' : 'python3';
+        args = [actualEntrypoint];
+    }
+    else if (actualRuntime === 'shell') {
+        if (process.platform === 'win32') {
+            cmd = 'cmd.exe';
+            args = ['/c', actualEntrypoint];
+        }
+        else {
+            cmd = 'bash';
+            // spawn already runs with cwd=workDir — passing the entrypoint
+            // directly avoids quote-breakout through string concatenation.
+            args = [actualEntrypoint];
+        }
+    }
+    else {
+        throw new Error(`Unsupported runtime: ${actualRuntime}`);
+    }
+    // Hardening: the entrypoint is resolved against the work dir by every
+    // runtime (cwd=workDir), so a relative path with `..` could execute a
+    // script anywhere on the host. Glue scripts use absolute paths that are
+    // already inside the work dir and pass this guard unchanged.
+    const entryAbs = path.resolve(workDir, actualEntrypoint);
+    const workDirAbs = path.resolve(workDir);
+    if (entryAbs !== workDirAbs && !entryAbs.startsWith(workDirAbs + path.sep)) {
+        throw new Error('entrypoint escapes the task work directory');
+    }
+    logger_1.logger.info(`Running task ${taskName} [${executionId}]: ${cmd} ${args.join(' ')}`);
+    const timeoutForTask = timeout === 0 ? Infinity : timeout;
+    return {
+        task: { ...task, runtime: actualRuntime, entrypoint: actualEntrypoint, timeout: timeoutForTask, workDir, env, cmd, args },
+        params: { ...(params || {}), executionId },
+    };
+}
+// timeout=0（不限时）任务的回调 token 必须有数字 TTL——取 10 年上限
+// （86400s/天 × 3650）。admin 侧僵尸回收对该类任务本就有 1h 兜底窗口。
+const TOKEN_TTL_UNBOUNDED_SECONDS = 315360000;
+/**
+ * 任务 .npmrc 内容（改动3）：
+ * - 仅内部 scope 依赖 → 只写 scoped registry 行（保持既有行为：公共包走默认
+ *   registry，匿名可用）；
+ * - 含公共包 → 写全局 registry 行（私服作为缓存代理加速）；
+ * - 两种 scope（@autoflow / @autocodeflow，命名三处漂移）都写 scoped 行；
+ * - 配置了 token → 追加 `//<host:port>/:_authToken=`（http/https 均支持）。
+ * token 绝不出现在返回值之外的任何地方（不打日志）。
+ */
+function buildNpmRcContent(registryUrl, token, requirements) {
+    const lines = [];
+    for (const scope of ['@autoflow', '@autocodeflow']) {
+        lines.push(`${scope}:registry=${registryUrl}`);
+    }
+    const scopedOnly = requirements.length > 0 &&
+        requirements.every(pkg => pkg.startsWith('@autoflow/') || pkg.startsWith('@autocodeflow/'));
+    if (!scopedOnly) {
+        lines.push(`registry=${registryUrl}`);
+    }
+    if (token) {
+        const authLine = npmAuthUrlLine(registryUrl);
+        if (authLine)
+            lines.push(`${authLine}:_authToken=${token}`);
+    }
+    return lines.join('\n') + '\n';
+}
+/** `https://host:port/base/` → `//host:port/base/`（npm auth 行键格式）。 */
+function npmAuthUrlLine(registryUrl) {
+    const m = /^https?:\/\/(.+)$/i.exec(registryUrl.trim());
+    return m ? `//${m[1]}` : null;
+}
+// ---------------------------------------------------------------------------
+// POST /executions/:executionId/kill — 改动1：admin 的 killExecution 此前只
+// 改 DB，被 kill 的任务在本执行器上继续跑完。这里按运行中注册表终止进程树
+// （或中止 prepare 阶段），幂等释放并发槽，回调照常走失败路径
+// （failureReason=killed）。
+// ---------------------------------------------------------------------------
+exports.executeRouter.post('/executions/:executionId/kill', (req, res) => {
+    const { executionId } = req.params;
+    const entry = liveExecutions.get(executionId);
+    if (!entry) {
+        // 不在运行表中（从未领取 / 已结束 / 已清理）
+        res.status(404).json({ ok: false });
+        return;
+    }
+    entry.killedByRequest = true;
+    entry.aborted = true;
+    entry.abortController.abort();
+    const finalizeKilled = () => {
+        pushKilledCallbackOnce(executionId, entry);
+        entry.release(); // 幂等防双释放
+    };
+    if (!entry.enqueued) {
+        // prepare 尚未移交 worker（后台前置阶段）：立刻收尾，runPrepared 检查点
+        // 会因 aborted 标志静默退出。
+        finalizeKilled();
+        res.json({ ok: true });
+        return;
+    }
+    if (task_worker_1.taskWorkerManager.cancelExecution(entry.taskId, executionId)) {
+        // 已从 worker 队列摘除（尚未到点）：onComplete 不会再被触发，这里收尾。
+        entry.cancelled = true;
+        finalizeKilled();
+        res.json({ ok: true });
+        return;
+    }
+    if (entry.workerFinished) {
+        // 恰在 kill 到达前自然结束：仍按 200 返回（admin 侧已是终态，回调被忽略）。
+        res.json({ ok: true });
+        return;
+    }
+    // 已 spawn：终止整个进程树（复用 killProcessTree），close 事件走 runTask
+    // 失败路径（据 killedByRequest 标记 failureReason=killed），容量由 worker
+    // onComplete 释放（幂等）。
+    const proc = runningTaskProcesses.get(executionId);
+    if (proc) {
+        (0, run_command_1.killProcessTree)(proc, 'SIGKILL');
+    }
+    else {
+        logger_1.logger.warn(`[kill] ${executionId} enqueued but no live process registered — waiting for natural end`);
+    }
+    res.json({ ok: true });
 });
 /** Write execution metadata to workDir/meta/{executionId}.json so the desktop can build history */
 function writeExecMeta(executionId, data) {
@@ -49257,7 +49875,8 @@ class BoundedLogBuffer {
 }
 exports.BoundedLogBuffer = BoundedLogBuffer;
 /** Live task child processes keyed by executionId — lets graceful shutdown
- *  kill detached process groups instead of orphaning them on exit. */
+ *  kill detached process groups instead of orphaning them on exit, and lets
+ *  the kill endpoint (改动1) find the process tree of one execution. */
 const runningTaskProcesses = new Map();
 /** Kill every running task's process group (POSIX) / process (win32).
  *  Called when the executor's graceful-shutdown grace period expires so
@@ -49313,6 +49932,9 @@ async function runTask(task, params, executionId) {
         const message = err instanceof Error ? err.message : String(err);
         const logs = typeof processErr?.logs === 'string' ? processErr.logs : undefined;
         const exitCode = typeof processErr?.exitCode === 'number' ? processErr.exitCode : undefined;
+        // 改动1：kill 端点已下达终止指令——失败回调标记 failureReason=killed
+        // （与 admin 侧 ExecutionFailureReason.KILLED 对齐）。
+        const killed = liveExecutions.get(executionId)?.killedByRequest === true;
         writeExecMeta(executionId, {
             status: 'failed',
             endTime: Date.now(),
@@ -49324,7 +49946,8 @@ async function runTask(task, params, executionId) {
             status: 'failed',
             exitCode,
             logs: truncateCallbackLogs(logs),
-            errorMessage: truncateCallbackErrorMessage(message),
+            errorMessage: truncateCallbackErrorMessage(killed ? 'Task process tree killed by admin request' : message),
+            ...(killed ? { failureReason: 'killed' } : {}),
             durationMs: Date.now() - startTime,
         });
     }
@@ -49379,21 +50002,26 @@ function runProcess(cmd, args, cwd, env, timeoutSec, executionId) {
                 runningTaskProcesses.delete(executionId ?? `pid-${proc.pid}`);
             }
         };
-        const timer = setTimeout(() => {
-            if (settled)
-                return;
-            settled = true;
-            // B-06: kill the entire process group so child processes spawned by the task are also terminated
-            (0, run_command_1.killProcessTree)(proc, 'SIGKILL');
-            // Attach collected logs like the close path does — otherwise the
-            // failure callback carries no logs and the admin-side full-log
-            // backfill (LOG-01) never triggers.
-            const timeoutErr = new Error(`Task timeout after ${timeoutSec}s`);
-            timeoutErr.logs = logBuffer.toString();
-            reject(timeoutErr);
-        }, timeoutSec * 1000);
+        // 改动4：timeoutSec=0/Infinity → 不限时，不挂 kill 定时器（setTimeout
+        // 传 Infinity 会溢出为立即触发）。
+        const timer = timeoutSec && Number.isFinite(timeoutSec)
+            ? setTimeout(() => {
+                if (settled)
+                    return;
+                settled = true;
+                // B-06: kill the entire process group so child processes spawned by the task are also terminated
+                (0, run_command_1.killProcessTree)(proc, 'SIGKILL');
+                // Attach collected logs like the close path does — otherwise the
+                // failure callback carries no logs and the admin-side full-log
+                // backfill (LOG-01) never triggers.
+                const timeoutErr = new Error(`Task timeout after ${timeoutSec}s`);
+                timeoutErr.logs = logBuffer.toString();
+                reject(timeoutErr);
+            }, timeoutSec * 1000)
+            : null;
         proc.on('close', (code) => {
-            clearTimeout(timer);
+            if (timer)
+                clearTimeout(timer);
             unregister();
             if (settled)
                 return;
@@ -49411,7 +50039,8 @@ function runProcess(cmd, args, cwd, env, timeoutSec, executionId) {
             }
         });
         proc.on('error', (err) => {
-            clearTimeout(timer);
+            if (timer)
+                clearTimeout(timer);
             unregister();
             if (settled)
                 return;
@@ -49616,14 +50245,48 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.logsRouter = void 0;
+exports.pageLogLines = pageLogLines;
 exports.getExecutorAuthToken = getExecutorAuthToken;
 exports.executorAuthMiddleware = executorAuthMiddleware;
 const express_1 = __nccwpck_require__(925);
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
+const readline_1 = __nccwpck_require__(3785);
 const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
 exports.logsRouter = (0, express_1.Router)();
+/** LOG-02: stream `logFile` line by line and return the requested page plus
+ *  totals. Response semantics match the previous readFileSync implementation
+ *  exactly (lines split on '\n', trailing empty piece dropped, `totalLines`
+ *  counts every line, `hasMore` flags a further page) — but the file is never
+ *  held in memory: admin backfill and the UI page through here repeatedly and
+ *  a long-running task's log can reach hundreds of MB, which used to spike
+ *  memory per request and block the event loop (heartbeats and /health share
+ *  it). The whole file is always walked so `totalLines` stays correct for
+ *  backfill paging. */
+async function pageLogLines(logFile, fromLine, limit) {
+    return new Promise((resolve, reject) => {
+        const input = fs.createReadStream(logFile, { encoding: 'utf-8' });
+        const rl = (0, readline_1.createInterface)({ input });
+        const lines = [];
+        let index = 0;
+        rl.on('line', (line) => {
+            if (index >= fromLine && lines.length < limit) {
+                lines.push(line);
+            }
+            index++;
+        });
+        rl.on('close', () => {
+            resolve({
+                lines,
+                totalLines: index,
+                hasMore: fromLine + lines.length < index,
+            });
+        });
+        rl.on('error', reject);
+        input.on('error', reject);
+    });
+}
 /** S-01: Express middleware — validates Bearer token from EXECUTOR_SHARED_TOKEN env. */
 function getExecutorAuthToken() {
     return process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || config_1.config.token || '';
@@ -49644,7 +50307,7 @@ function executorAuthMiddleware(req, res, next) {
     }
     next();
 }
-exports.logsRouter.get('/logs/:executionId', (req, res) => {
+exports.logsRouter.get('/logs/:executionId', async (req, res) => {
     const { executionId } = req.params;
     // N4: basename guard — reject if executionId contains path separators or is modified by basename
     const safeId = path.basename(executionId);
@@ -49694,16 +50357,7 @@ exports.logsRouter.get('/logs/:executionId', (req, res) => {
     const requestedLimit = parseInt(String(req.query.limit ?? '500'), 10) || 500;
     const limit = Math.min(Math.max(requestedLimit, 1), MAX_LIMIT);
     try {
-        const raw = fs.readFileSync(logFile, 'utf-8');
-        const allLines = raw.split('\n');
-        // Remove trailing empty line from final newline
-        if (allLines.length > 0 && allLines[allLines.length - 1] === '') {
-            allLines.pop();
-        }
-        const total = allLines.length;
-        const sliced = allLines.slice(fromLine, fromLine + limit);
-        const hasMore = fromLine + sliced.length < total;
-        res.json({ lines: sliced, totalLines: total, hasMore });
+        res.json(await pageLogLines(logFile, fromLine, limit));
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -49872,9 +50526,14 @@ exports.updatePackageRouter.post('/update-package', async (req, res) => {
         catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             logger_1.logger.error(`[update-package] Update failed: ${msg}`);
-            // Clean up partial download
-            if (fs.existsSync(tmpFile))
-                fs.unlinkSync(tmpFile);
+            // Clean up partial download — 清理本身不得再抛（tmpFile 可能与外部清理
+            // 竞态：unlinkSync 的 ENOENT 在 setImmediate 异步回调里无人接住，会以
+            // unhandledRejection 归因到同 worker 的下一个无关测试）。
+            try {
+                if (fs.existsSync(tmpFile))
+                    fs.unlinkSync(tmpFile);
+            }
+            catch (_) { /* already gone */ }
             await (0, admin_client_1.post)('/api/executor-packages/push-result', {
                 packageId: body.packageId,
                 executorId: config_1.config.executorId || undefined,
@@ -49965,6 +50624,23 @@ function runCommand(cmd, args, opts = {}) {
                 killProcessTree(child, 'SIGKILL');
             }, opts.timeout)
             : null;
+        // Abort support (execution kill during prepare): killing the tree makes
+        // the child exit, the close handler below resolves — callers treat the
+        // non-zero status as the failure signal and re-check the abort flag.
+        const onAbort = () => {
+            killProcessTree(child, 'SIGKILL');
+        };
+        if (opts.signal) {
+            if (opts.signal.aborted)
+                onAbort();
+            else
+                opts.signal.addEventListener('abort', onAbort, { once: true });
+        }
+        const clearWatchers = () => {
+            if (timer)
+                clearTimeout(timer);
+            opts.signal?.removeEventListener('abort', onAbort);
+        };
         child.stdout?.on('data', (d) => {
             if (stdout.length < CAP)
                 stdout += d.toString();
@@ -49974,13 +50650,11 @@ function runCommand(cmd, args, opts = {}) {
                 stderr += d.toString();
         });
         child.on('error', (err) => {
-            if (timer)
-                clearTimeout(timer);
+            clearWatchers();
             resolve({ status: null, stdout, stderr: `${stderr}${err.message}` });
         });
         child.on('close', (code) => {
-            if (timer)
-                clearTimeout(timer);
+            clearWatchers();
             resolve({ status: code, stdout, stderr });
         });
     });
@@ -50049,6 +50723,8 @@ exports.getRunningCount = getRunningCount;
 exports.getRunningCountArray = getRunningCountArray;
 exports.incrementRunning = incrementRunning;
 exports.decrementRunning = decrementRunning;
+exports.registerRunningExecutionIdsProvider = registerRunningExecutionIdsProvider;
+exports.registerDeadLetterCountProvider = registerDeadLetterCountProvider;
 exports.startHeartbeat = startHeartbeat;
 const os = __importStar(__nccwpck_require__(857));
 const crypto_1 = __nccwpck_require__(6982);
@@ -50079,6 +50755,17 @@ function decrementRunning() {
 }
 // For backward compatibility — use getRunningCount() directly for new code
 exports.runningCount = getRunningCount; // alias to the function
+// STALE-01: heartbeat enrichment providers. The live execution registry lives
+// in routes/execute.ts which already imports this module — importing back
+// would form a cycle, so the data owners register their getters here.
+let runningExecutionIdsProvider = () => [];
+let deadLetterCountProvider = () => 0;
+function registerRunningExecutionIdsProvider(fn) {
+    runningExecutionIdsProvider = fn;
+}
+function registerDeadLetterCountProvider(fn) {
+    deadLetterCountProvider = fn;
+}
 /**
  * Measure actual CPU usage by sampling cpu times over 500ms.
  * os.loadavg() always returns [0,0,0] on Windows, so we use this instead.
@@ -50120,6 +50807,14 @@ async function sendHeartbeat() {
             cpuUsage,
             memUsage,
             runningTaskCount: getRunningCount(),
+            // STALE-01: admin 的 stale sweep 据此跳过"回调只是迟到"（重试退避、
+            // 同任务排队）的执行，避免误判失败+提前释放容量；裁剪 200 封顶报文。
+            // deadLetterCount 暴露落盘回调积压，供运维感知长期断连。
+            runningExecutionIds: runningExecutionIdsProvider().slice(0, 200),
+            deadLetterCount: deadLetterCountProvider(),
+            // E9: 上报当前并发上限，admin 容量核算不再依赖注册期快照；读 config
+            // 对象属性，/config/reload 热更 maxConcurrentTasks 后下个心跳即回传新值。
+            maxConcurrentTasks: config_1.config.maxConcurrentTasks,
             restartedAt: startup_identity_1.executorStartedAt,
             startupId: startup_identity_1.executorStartupId,
         });
@@ -50137,7 +50832,24 @@ async function sendHeartbeat() {
     }
 }
 function startHeartbeat() {
-    return setInterval(sendHeartbeat, config_1.config.heartbeatIntervalSeconds * 1000);
+    // Poll once per second so hot-reloaded intervals take effect without
+    // rebuilding the timer; main.ts can still stop it with clearInterval.
+    let lastHeartbeatAt = Date.now();
+    let heartbeatInFlight = false;
+    return setInterval(async () => {
+        const intervalMs = config_1.config.heartbeatIntervalSeconds * 1000;
+        if (heartbeatInFlight || Date.now() - lastHeartbeatAt < intervalMs) {
+            return;
+        }
+        lastHeartbeatAt = Date.now();
+        heartbeatInFlight = true;
+        try {
+            await sendHeartbeat();
+        }
+        finally {
+            heartbeatInFlight = false;
+        }
+    }, 1000);
 }
 
 
@@ -50177,10 +50889,19 @@ exports.executorStartupId = (0, crypto_1.randomUUID)();
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TaskWorkerManager = exports.TaskWorker = exports.taskWorkerManager = exports.IDLE_RECYCLE_MS = void 0;
+exports.TaskWorkerManager = exports.TaskWorker = exports.taskWorkerManager = exports.IDLE_RECYCLE_MS = exports.ExecutionCancelledError = void 0;
 const logger_1 = __nccwpck_require__(6888);
 const execute_1 = __nccwpck_require__(8690);
 const callback_1 = __nccwpck_require__(4915);
+/** prepare/执行期间被 kill 端点取消的内部信号——worker 捕获后静默返回，
+ *  收尾责任在发起取消的一方。 */
+class ExecutionCancelledError extends Error {
+    constructor(executionId) {
+        super(`Execution ${executionId} was cancelled`);
+        this.name = 'ExecutionCancelledError';
+    }
+}
+exports.ExecutionCancelledError = ExecutionCancelledError;
 class TaskWorker {
     constructor(taskId, maxConcurrent = 1, onIdle) {
         this.taskId = taskId;
@@ -50194,8 +50915,8 @@ class TaskWorker {
         this.runningCount = 0;
         this.onIdle = onIdle;
     }
-    enqueue(executionId, task, params, onComplete) {
-        this.state.queue.push({ executionId, task, params, onComplete });
+    enqueue(executionId, task, params, onComplete, runPrepared) {
+        this.state.queue.push({ executionId, task, params, onComplete, runPrepared });
         logger_1.logger.debug(`Task ${this.taskId}: Enqueued execution ${executionId}, queue size: ${this.state.queue.length}`);
         this.process();
     }
@@ -50220,18 +50941,51 @@ class TaskWorker {
         }
     }
     async executeItem(item) {
-        const { executionId, task, params, onComplete } = item;
+        const { executionId, params, onComplete } = item;
         try {
             logger_1.logger.debug(`Task ${this.taskId}: Starting execution ${executionId}`);
-            await (0, execute_1.runTask)(task, params, executionId);
+            // runPrepared 由 execute.ts 提供：prepare（git/依赖安装）在轮到本
+            // 执行时才跑，返回真正可运行的 task；未提供则沿用旧语义直接 runTask。
+            let task = item.task;
+            let runParams = params;
+            if (item.runPrepared) {
+                if (item.cancelled) {
+                    throw new ExecutionCancelledError(executionId);
+                }
+                const prepared = await item.runPrepared(() => {
+                    if (item.cancelled)
+                        throw new ExecutionCancelledError(executionId);
+                });
+                task = prepared.task;
+                runParams = prepared.params;
+            }
+            await (0, execute_1.runTask)(task, runParams, executionId);
             logger_1.logger.debug(`Task ${this.taskId}: Completed execution ${executionId}`);
         }
         catch (error) {
+            if (error instanceof ExecutionCancelledError || item.cancelled) {
+                // kill 取消：任务从未启动。失败回调由 kill 端点/runPrepared 取消分支
+                // 负责；容量释放走下面 finally 的 onComplete——entry.release() 幂等，
+                // 与 kill 端点的收尾并存也不会双释放。
+                logger_1.logger.info(`Task ${this.taskId}: Execution ${executionId} cancelled by kill request`);
+                return;
+            }
             logger_1.logger.error(`Task ${this.taskId}: Execution ${executionId} failed: ${error.message}`);
         }
         finally {
-            onComplete?.();
+            if (!item.cancelled) {
+                onComplete?.();
+            }
         }
+    }
+    /** 见 TaskWorkerManager.cancelExecution：仅处理未开始（仍在队列中）的执行。 */
+    cancelQueued(executionId) {
+        const idx = this.state.queue.findIndex(i => i.executionId === executionId);
+        if (idx === -1)
+            return false;
+        const [item] = this.state.queue.splice(idx, 1);
+        item.cancelled = true;
+        return true;
     }
     stop() {
         this.stopped = true;
@@ -50275,9 +51029,16 @@ class TaskWorkerManager {
         }
         return worker;
     }
-    async execute(taskId, executionId, task, params, onComplete) {
+    async execute(taskId, executionId, task, params, onComplete, runPrepared) {
         const worker = this.getWorker(taskId);
-        worker.enqueue(executionId, task, params, onComplete);
+        worker.enqueue(executionId, task, params, onComplete, runPrepared);
+    }
+    /** 把仍在排队的执行从 worker 队列中摘除并标记取消。true=执行尚未开始，
+     *  调用方（kill 端点）负责失败回调与容量释放；false=已在运行中（或不存在），
+     *  调用方改走"杀进程 + 等 worker 正常收尾"路径。 */
+    cancelExecution(taskId, executionId) {
+        const worker = this.workers.get(taskId);
+        return worker ? worker.cancelQueued(executionId) : false;
     }
     scheduleIdleRecycle(taskId) {
         this.cancelIdleRecycle(taskId);
@@ -50454,6 +51215,14 @@ module.exports = require("path");
 
 "use strict";
 module.exports = require("querystring");
+
+/***/ }),
+
+/***/ 3785:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("readline");
 
 /***/ }),
 
