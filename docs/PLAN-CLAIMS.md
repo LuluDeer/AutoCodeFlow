@@ -28,10 +28,10 @@
 | BUG-10 | P3 | unclaimed | | | 双执行器失败分类 | | failureReason 细化 |
 | BUG-11 | P3 | unclaimed | | | executor-desktop assets | | W-16 图标入库 |
 | BUG-12 | P2 | unclaimed | | | executor-desktop main/IPC | | SEC-01 项之一（desktop 凭据/IPC/env 复审） |
-| BUG-13 | P2 | unclaimed | | | packages/acf-cli | | SEC-01 项之一（CLI 认证链复审） |
-| BUG-14 | P2 | unclaimed | | | packages/mcp-server | | SEC-01 项之一（MCP 鉴权链复审） |
-| BUG-15 | P2 | unclaimed | | | packages/autocodeflow-node-sdk + autoflow-sdk | | SEC-01 项之一（双 SDK 降级语义复审） |
-| BUG-16 | P2 | unclaimed | | | apps/registry-npm | | SEC-01 项之一（下载路由 token 边界复审） |
+| BUG-13 | P2 | in_progress | main-A | 2026-09-07 | packages/acf-cli + docs/SEC-01-复审报告.md | | SEC-01 四项复审第一批（CLI 认证链/降级/重试） |
+| BUG-14 | P2 | in_progress | main-A | 2026-09-07 | packages/mcp-server | | SEC-01 四项复审（MCP 鉴权链）与 BUG-13 同报告销账 |
+| BUG-15 | P2 | in_progress | main-A | 2026-09-07 | packages/autocodeflow-node-sdk + autoflow-sdk | | SEC-01 四项复审（双 SDK 降级/重试/错误传播） |
+| BUG-16 | P2 | in_progress | main-A | 2026-09-07 | apps/registry-npm | | SEC-01 四项复审（下载路由 token 边界） |
 | BUG-17 | P3 | unclaimed | | | 真机验证脚本 | | nginx SSE 24h 长流验证 |
 | BUG-18 | P2 | unclaimed | | | e2e + registry 双仓 | | 私服 npm/PyPI 端到端集成验证 |
 | BUG-19 | P2 | unclaimed | | | scripts/load-test | | 大规模并发压测 + 容量白皮书 |
