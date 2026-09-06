@@ -4,6 +4,8 @@ import { BullModule } from "@nestjs/bullmq";
 import { ExecutorController } from "./executor.controller";
 import { ExecutorService } from "./executor.service";
 import { Executor } from "./entities/executor.entity";
+// FEAT-04: metrics history read side for GET /executors/:id/metrics `history`
+import { ExecutorMetricsHistory } from "./entities/executor-metrics-history.entity";
 import { Task } from "../task/entities/task.entity";
 import { TaskExecution } from "../task/entities/task-execution.entity";
 import { NotificationModule } from "../notification/notification.module";
@@ -11,7 +13,12 @@ import { SystemConfigModule } from "../config/config.module";
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Executor, Task, TaskExecution]),
+    TypeOrmModule.forFeature([
+      Executor,
+      Task,
+      TaskExecution,
+      ExecutorMetricsHistory,
+    ]),
     BullModule.registerQueue({ name: "task-queue" }),
     NotificationModule,
     SystemConfigModule,

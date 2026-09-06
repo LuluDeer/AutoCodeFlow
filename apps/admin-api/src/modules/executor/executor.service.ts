@@ -14,6 +14,7 @@ import { Repository, LessThan, In } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
 import { Executor, ExecutorStatus } from "./entities/executor.entity";
+import { ExecutorMetricsHistory } from "./entities/executor-metrics-history.entity";
 import {
   TaskExecution,
   ExecutionFailureReason,
@@ -96,6 +97,11 @@ export class ExecutorService {
     @InjectRepository(TaskExecution)
     private execRepo: Repository<TaskExecution>,
     @InjectRepository(Task) private taskRepo: Repository<Task>,
+    // FEAT-04: metrics-history read side (24h trend sampling). The writer is
+    // external (executor-node heartbeat pipeline); the repository is read-only
+    // from this service's perspective.
+    @InjectRepository(ExecutorMetricsHistory)
+    private metricsHistoryRepo: Repository<ExecutorMetricsHistory>,
     @InjectQueue("task-queue") private taskQueue: Queue,
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
@@ -1610,6 +1616,12 @@ export class ExecutorService {
 
   /**
    * Get performance metrics for a specific executor.
+   *
+   * FEAT-04: the response now carries `history` — sampled resource-trend
+   * points for the last 24h, read from executor_metrics_history (populated by
+   * the executor-node heartbeat pipeline; see getExecutorMetricsHistory for
+   * the sampling/downsampling contract). Empty array when the executor has no
+   * history rows — the frontend renders an explicit empty state.
    */
   async getExecutorMetrics(id: string): Promise<{
     executor: { id: string; address: string; status: string };
@@ -1625,6 +1637,12 @@ export class ExecutorService {
       cpuUsage: number | null;
       memUsage: number | null;
     };
+    history: Array<{
+      timestamp: string;
+      cpuUsage: number | null;
+      memUsage: number | null;
+      runningTaskCount: number;
+    }>;
   }> {
     const executor = await this.findOne(id);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -1677,6 +1695,89 @@ export class ExecutorService {
         cpuUsage: executor.cpuUsage,
         memUsage: executor.memUsage,
       },
+      history: await this.getExecutorMetricsHistory(executor.address),
     };
+  }
+
+  // ── FEAT-04: executor metrics history (24h trend) ────────────────────────
+  // Sampling window: the most recent 24h of executor_metrics_history rows.
+  public static readonly METRICS_HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
+  // Downsampling strategy: fixed 15-minute time buckets aggregated with AVG —
+  // 24h / 900s = 96 buckets, structurally ≤ the 100-point cap, with full
+  // 24h window coverage regardless of heartbeat cadence (whereas even-stride
+  // point picking over a row-capped fetch would bias toward one window end).
+  public static readonly METRICS_HISTORY_BUCKET_SECONDS = 900;
+  // Hard LIMIT guard on the aggregate query as defense-in-depth; the bucket
+  // design already caps output at 96 rows.
+  public static readonly METRICS_HISTORY_QUERY_LIMIT = 500;
+
+  /**
+   * FEAT-04: read the last-24h resource trend samples (CPU / memory /
+   * running-task count) for one executor, aggregated into fixed 15-minute AVG
+   * buckets (≤96 points), ascending by timestamp.
+   *
+   * Data source: executor_metrics_history (written by the executor-node
+   * heartbeat pipeline; compound index executorAddress + createdAt). AVG
+   * ignores NULLs: a bucket whose heartbeats never reported cpuUsage/memUsage
+   * yields null — the frontend draws a gap for those points (connectNulls).
+   * Returns an EMPTY array when the executor has no history rows (fresh
+   * executor or history pipeline not yet active) — the admin UI renders an
+   * explicit "no samples" empty state for that case.
+   *
+   * SQL note: bucket expressions use TypeORM property references
+   * (h.createdAt/h.cpuUsage → quoted physical columns, same pattern as the
+   * AVG(CASE WHEN e.duration ...) aggregate in getExecutorMetrics); the
+   * bucket divisor is a server-computed constant, never user input.
+   */
+  private async getExecutorMetricsHistory(address: string): Promise<
+    Array<{
+      timestamp: string;
+      cpuUsage: number | null;
+      memUsage: number | null;
+      runningTaskCount: number;
+    }>
+  > {
+    const bucketSeconds = ExecutorService.METRICS_HISTORY_BUCKET_SECONDS;
+    const since = new Date(
+      Date.now() - ExecutorService.METRICS_HISTORY_WINDOW_MS,
+    );
+    // Bucket start as epoch-seconds aligned to bucketSeconds; kept numeric
+    // (no to_timestamp) so the raw driver value parses identically everywhere.
+    const bucketExpr = `FLOOR(EXTRACT(EPOCH FROM h.createdAt) / ${bucketSeconds}) * ${bucketSeconds}`;
+    const rows: Array<Record<string, unknown>> = await this.metricsHistoryRepo
+      .createQueryBuilder("h")
+      .select(bucketExpr, "bucket")
+      .addSelect("AVG(h.cpuUsage)", "cpu")
+      .addSelect("AVG(h.memUsage)", "mem")
+      .addSelect("AVG(h.runningTaskCount)", "running")
+      .where("h.executorAddress = :address", { address })
+      .andWhere("h.createdAt > :since", { since })
+      .groupBy("bucket")
+      .orderBy("bucket", "ASC")
+      .limit(ExecutorService.METRICS_HISTORY_QUERY_LIMIT)
+      .getRawMany();
+
+    const toNumber = (v: unknown): number | null =>
+      v === null || v === undefined ? null : parseFloat(String(v));
+    const points: Array<{
+      timestamp: string;
+      cpuUsage: number | null;
+      memUsage: number | null;
+      runningTaskCount: number;
+    }> = [];
+    for (const row of rows) {
+      const bucketEpoch = parseFloat(String(row.bucket));
+      if (!Number.isFinite(bucketEpoch)) continue; // defensive: skip bad rows
+      const cpu = toNumber(row.cpu);
+      const mem = toNumber(row.mem);
+      const running = toNumber(row.running);
+      points.push({
+        timestamp: new Date(bucketEpoch * 1000).toISOString(),
+        cpuUsage: cpu === null ? null : Math.round(cpu * 10) / 10,
+        memUsage: mem === null ? null : Math.round(mem * 10) / 10,
+        runningTaskCount: running === null ? 0 : Math.round(running),
+      });
+    }
+    return points;
   }
 }

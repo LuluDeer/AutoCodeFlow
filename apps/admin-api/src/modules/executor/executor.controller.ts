@@ -859,24 +859,51 @@ export class ExecutorController {
   @Get(":id/metrics")
   @ApiOperation({
     summary: "Get executor performance metrics",
+    // FEAT-04 (append-only): response now also carries `history`.
     description:
-      "Get executor performance metrics for the last 7 days including total executions, success rate, and avg time.",
+      "Get executor performance metrics for the last 7 days including total executions, success rate, and avg time. " +
+      "FEAT-04: the response also carries `history` — the last 24h of executor_metrics_history samples aggregated " +
+      "into fixed 15-minute AVG buckets (≤96 points, ascending; each point is {timestamp, cpuUsage, memUsage, " +
+      "runningTaskCount}; cpuUsage/memUsage are null when a bucket has no reported value). Returns an empty array " +
+      "when the executor has no history samples — the admin UI renders an empty state for that case.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
+  // FEAT-04 (append-only): example updated to the real response shape —
+  // executor + sevenDayStats + current + history (24h bucketed samples).
   @ApiResponse({
     status: 200,
-    description: "Performance metrics",
+    description:
+      "Performance metrics with 24h resource-trend history (FEAT-04)",
     schema: {
       example: {
         code: 200,
         message: "success",
         data: {
-          totalExecutions: 1000,
-          successRate: 98.5,
-          avgDurationMs: 1250,
-          maxDurationMs: 5000,
-          minDurationMs: 100,
-          dateRange: "2024-01-01 to 2024-01-07",
+          executor: {
+            id: "uuid",
+            address: "10.0.0.9:3002",
+            status: "online",
+          },
+          sevenDayStats: {
+            totalExecutions: 1000,
+            successful: 985,
+            failed: 15,
+            successRate: 98.5,
+            averageDurationMs: 1250,
+          },
+          current: {
+            runningTaskCount: 2,
+            cpuUsage: 35.2,
+            memUsage: 61.8,
+          },
+          history: [
+            {
+              timestamp: "2026-09-06T02:00:00.000Z",
+              cpuUsage: 30.1,
+              memUsage: 58.4,
+              runningTaskCount: 1,
+            },
+          ],
         },
       },
     },

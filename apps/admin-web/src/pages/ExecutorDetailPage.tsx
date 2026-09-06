@@ -1,6 +1,8 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Spin, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result } from 'antd';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+// FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useRequest } from 'ahooks';
 import { executorsApi, type ExecutorExecution } from '../api/executors';
 import { getErrMsg } from '../utils/error';
@@ -29,6 +31,23 @@ function usageColor(value: number, warn =60, danger = 80): string {
   if (value >= danger) return '#cf1322';
   if (value >= warn) return '#faad14';
   return '#3f8600';
+}
+
+/** FEAT-04: 折线图 X 轴刻度——按小时:分钟显示（样本桶距 15 分钟起） */
+function trendTickFormatter(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** FEAT-04: Tooltip 标题——完整本地时间，区分同日/跨日 */
+function trendTooltipLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? d.toLocaleTimeString('zh-CN', { hour12: false })
+    : d.toLocaleString('zh-CN', { hour12: false });
 }
 
 export default function ExecutorDetailPage() {
@@ -115,6 +134,9 @@ export default function ExecutorDetailPage() {
 
   const isOnline = executor.status === 'online';
   const maxConcurrent = executor.maxConcurrentTasks ?? 0;
+  // FEAT-04: 24h 资源趋势采样点（后端 15 分钟 AVG 桶，≤96 点，升序；
+  // history 缺失（旧响应）与空数组同视——走空态兜底）。
+  const historyPoints = metrics?.history ?? [];
   // U5: CPU/内存/运行计数取 30s 轮询的 metrics.current（首轮返回前回退进页快照）。
   // diskUsage/lastHeartbeat/runningExecutionIds 不在 metrics 接口内，仍来自 get 快照，
   // 活性区（最后心跳/运行中执行）在 UI 标注快照语义。
@@ -324,6 +346,41 @@ export default function ExecutorDetailPage() {
           </Card>
         </Col>
       </Row>
+
+      {/* FEAT-04: 24h 资源趋势——CPU/内存（左轴 %）与并发任务数（右轴）。
+          数据随 metrics 端点 30s 轮询顺带刷新（后端 15 分钟聚合桶，变化慢）；
+          空数据显示显式空态（执行器新建或历史采样未启用时为常态）。 */}
+      <Card
+        title="资源趋势（24h）"
+        style={{ marginTop: 16 }}
+        loading={loadingMetrics && !metrics}
+        extra={<Text type="secondary" style={{ fontSize: 12 }}>15 分钟均值聚合 · 最多 96 点</Text>}
+      >
+        {historyPoints.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无历史采样" />
+        ) : (
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={historyPoints} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis
+                dataKey="timestamp"
+                tickFormatter={trendTickFormatter}
+                tick={{ fontSize: 11 }}
+                minTickGap={32}
+                interval="preserveStartEnd"
+              />
+              {/* 左轴：CPU/内存百分比；右轴：并发任务数（独立量纲） */}
+              <YAxis yAxisId="pct" domain={[0, 100]} width={36} tick={{ fontSize: 11 }} />
+              <YAxis yAxisId="cnt" orientation="right" allowDecimals={false} width={36} tick={{ fontSize: 11 }} />
+              <RechartTooltip labelFormatter={trendTooltipLabel} labelStyle={{ fontSize: 12 }} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Line yAxisId="pct" type="monotone" dataKey="cpuUsage" name="CPU %" stroke="#1677ff" strokeWidth={1.5} dot={false} connectNulls />
+              <Line yAxisId="pct" type="monotone" dataKey="memUsage" name="内存 %" stroke="#722ed1" strokeWidth={1.5} dot={false} connectNulls />
+              <Line yAxisId="cnt" type="monotone" dataKey="runningTaskCount" name="并发任务" stroke="#fa8c16" strokeWidth={1.5} dot={false} connectNulls />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </Card>
 
       <Row gutter={16} style={{ marginTop: 16 }}>
         <Col span={8}>
