@@ -3,7 +3,7 @@
  * apiRequest fetch plumbing (path / method / body / Authorization header),
  * with node-fetch mocked.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock('node-fetch', () => ({ default: fetchMock }));
@@ -232,10 +232,16 @@ describe('401 refresh self-heal (BUG-14)', () => {
   });
 
   it('without a refresh token: fails with the 401 error as before', async () => {
+    // 本用例要求"全新进程"语义（currentRefreshToken 为空）。同文件前序用例
+    // 的轮换会把模块级内存 token 污染为 'r3'，refreshAccessToken 的
+    // `currentRefreshToken || envRefresh` 会短路 env 判空——用 resetModules
+    // + 动态导入取一个干净模块实例（vi.mock('node-fetch') 对新导入仍生效）。
     vi.stubEnv('AUTOCODEFLOW_API_REFRESH_TOKEN', '');
+    vi.resetModules();
+    const fresh = await import('../api');
     fetchMock.mockResolvedValueOnce(jsonResponse(false, { message: 'jwt expired' }, 401));
 
-    await expect(apiGet('/tasks')).rejects.toThrow(/401/);
+    await expect(fresh.apiGet('/tasks')).rejects.toThrow(/401/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
