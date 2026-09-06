@@ -663,3 +663,131 @@ def test_lifespan_starts_retry_task_and_drains_on_shutdown(monkeypatch):
         stop_drain.assert_awaited_once()
 
     asyncio.run(scenario())
+
+
+# ── QA8: shutdown worker-flush window ─────────────────────────────────────────
+# 树杀（kill_running_task_processes）只杀 OS 进程；_run_and_callback 协程要先
+# 观察到子进程退出才会产出终态回调。停机序列若从树杀直接进 stop_callback_retry_task
+# （只 drain 已落盘重放环）再退出，这些 live 回调既不投递也不落盘——执行在
+# admin 侧只能等 stale sweep 修复，真实 killed/timeout 分类丢失。
+
+def test_await_background_tasks_after_kill_waits_for_in_flight_worker():
+    """树杀后登记在册的 worker 协程拿到有限窗口完成终态回调。"""
+    from routers import execute as execute_module
+
+    async def scenario():
+        async def worker():
+            await asyncio.sleep(0.01)
+            return 'callback-sent'
+        task = asyncio.create_task(worker())
+        execute_module._background_tasks.add(task)
+        task.add_done_callback(execute_module._background_tasks.discard)
+        try:
+            flushed = await execute_module.await_background_tasks_after_kill(timeout_seconds=2)
+            assert flushed == 1
+            assert task.done() and not task.cancelled()
+        finally:
+            execute_module._background_tasks.clear()
+
+    asyncio.run(scenario())
+
+
+def test_await_background_tasks_after_kill_cancels_pending_workers_when_window_expires():
+    """窗口耗尽的 worker 被取消——载荷落盘由 _run_and_callback 的
+    CancelledError 守卫负责，本函数只保证不无限阻塞停机。"""
+    from routers import execute as execute_module
+
+    async def scenario():
+        async def stuck():
+            await asyncio.sleep(1000)
+        task = asyncio.create_task(stuck())
+        execute_module._background_tasks.add(task)
+        try:
+            flushed = await execute_module.await_background_tasks_after_kill(timeout_seconds=0.05)
+            assert flushed == 0
+            assert task.cancelled()
+        finally:
+            execute_module._background_tasks.discard(task)
+
+    asyncio.run(scenario())
+
+
+def test_run_and_callback_persists_payload_when_send_cancelled(monkeypatch):
+    """停机窗口耗尽取消 worker 时，终态载荷必须落盘（下个进程重放），
+    而不是随进程一起消失。"""
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+
+    persisted = {}
+
+    def fake_persist_giving_up(payload, url):
+        persisted['payload'] = payload
+        persisted['url'] = url
+
+    async def cancelled_send(url, payload, token):
+        raise asyncio.CancelledError()
+
+    async def fake_run_task(req, entry=None):
+        return {'success': True, 'logs': 'done', 'exitCode': 0, 'durationMs': 1}
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module, '_send_callback_with_retry', cancelled_send)
+    monkeypatch.setattr(execute_module, '_persist_giving_up', fake_persist_giving_up)
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'dynamic-token')
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'public-executor:9000')
+    monkeypatch.setattr(execute_module, 'get_current_token', AsyncMock(return_value=None))
+
+    req = ExecuteRequest(
+        executionId='exec-cancelled-callback',
+        task={'name': 'noop', 'runtime': 'python'},
+    )
+
+    async def scenario():
+        with pytest.raises(asyncio.CancelledError):
+            await execute_module._run_and_callback(req)
+
+    asyncio.run(scenario())
+
+    assert persisted['payload']['executionId'] == 'exec-cancelled-callback'
+    assert persisted['payload']['status'] == 'success'
+    assert persisted['url'].endswith('/executions/callback')
+
+
+def test_lifespan_flushes_workers_between_kill_and_drain(monkeypatch):
+    """QA8 顺序钉死：树杀 → worker flush → 回调 drain。"""
+    import main as main_module
+    from routers import execute as execute_module
+
+    order = []
+    monkeypatch.setattr(main_module, 'check_admin_api_connectivity', AsyncMock())
+    monkeypatch.setattr(main_module, 'register_executor', AsyncMock())
+    monkeypatch.setattr(main_module, 'notify_offline', AsyncMock())
+
+    async def fake_kill():
+        order.append('kill')
+        return 0
+
+    async def fake_flush():
+        order.append('flush')
+        return 0
+
+    async def fake_drain():
+        order.append('drain')
+
+    monkeypatch.setattr(main_module.execute, 'kill_running_task_processes', fake_kill)
+    monkeypatch.setattr(main_module.execute, 'await_background_tasks_after_kill', fake_flush)
+    monkeypatch.setattr(main_module.execute, 'stop_callback_retry_task', fake_drain)
+    monkeypatch.setattr(main_module.execute, 'start_callback_retry_task', lambda: None)
+    monkeypatch.setattr(main_module.maintenance, 'start_disk_cleanup_task', lambda: None)
+    monkeypatch.setattr(main_module.maintenance, 'stop_disk_cleanup_task', lambda: None)
+
+    async def scenario():
+        async with main_module.lifespan(main_module.app):
+            pass
+        assert order == ['kill', 'flush', 'drain']
+
+    asyncio.run(scenario())
