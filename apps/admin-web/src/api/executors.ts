@@ -52,6 +52,8 @@ export interface ExecutorExecution {
   endTime?: string;
   duration?: number;
   errorMessage?: string;
+  /** 后端返回完整 TaskExecution 实体：终态退出码（null=旧数据未采集） */
+  exitCode?: number | null;
   createdAt: string;
 }
 

@@ -53,7 +53,7 @@ export default function TaskListPage() {
 
   const { data, loading, refresh } = useRequest(
     () => tasksApi.list({ page, pageSize, name: debouncedSearch || undefined, status: statusFilter, triggerType: triggerFilter }),
-    { pollingInterval: 30000, refreshDeps: [page, pageSize, debouncedSearch, statusFilter, triggerFilter] },
+    { pollingInterval: 30000, pollingWhenHidden: false, refreshDeps: [page, pageSize, debouncedSearch, statusFilter, triggerFilter] },
   );
 
   const tasks: Task[] = data?.items ?? [];

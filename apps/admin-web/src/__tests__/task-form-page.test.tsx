@@ -191,7 +191,8 @@ describe('TaskFormPage 创建流程跨步骤提交 payload 完整性（P0 回归
     expect(payload.executorGroup).toBeNull();
     expect(payload.executorTags).toBeNull();
     expect(payload.executeMode).toBe('single');
-  });
+    // 该用例冷启动实测 3.4~4.3s，与新增测试文件并行时贴默认 5s 超时偶发超时，放宽到 15s。
+  }, 15_000);
 });
 
 describe('TaskFormPage 编辑态加载 executorId → pinned 选择器', () => {
