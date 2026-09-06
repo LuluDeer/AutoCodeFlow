@@ -1,10 +1,48 @@
 import { Router, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createInterface } from 'readline';
 import { config } from '../config';
 import { logger } from '../logger';
 
 export const logsRouter = Router();
+
+/** LOG-02: stream `logFile` line by line and return the requested page plus
+ *  totals. Response semantics match the previous readFileSync implementation
+ *  exactly (lines split on '\n', trailing empty piece dropped, `totalLines`
+ *  counts every line, `hasMore` flags a further page) — but the file is never
+ *  held in memory: admin backfill and the UI page through here repeatedly and
+ *  a long-running task's log can reach hundreds of MB, which used to spike
+ *  memory per request and block the event loop (heartbeats and /health share
+ *  it). The whole file is always walked so `totalLines` stays correct for
+ *  backfill paging. */
+export async function pageLogLines(
+  logFile: string,
+  fromLine: number,
+  limit: number,
+): Promise<{ lines: string[]; totalLines: number; hasMore: boolean }> {
+  return new Promise((resolve, reject) => {
+    const input = fs.createReadStream(logFile, { encoding: 'utf-8' });
+    const rl = createInterface({ input });
+    const lines: string[] = [];
+    let index = 0;
+    rl.on('line', (line: string) => {
+      if (index >= fromLine && lines.length < limit) {
+        lines.push(line);
+      }
+      index++;
+    });
+    rl.on('close', () => {
+      resolve({
+        lines,
+        totalLines: index,
+        hasMore: fromLine + lines.length < index,
+      });
+    });
+    rl.on('error', reject);
+    input.on('error', reject);
+  });
+}
 
 /** S-01: Express middleware — validates Bearer token from EXECUTOR_SHARED_TOKEN env. */
 export function getExecutorAuthToken(): string {
@@ -28,7 +66,7 @@ export function executorAuthMiddleware(req: Request, res: Response, next: () => 
   next();
 }
 
-logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
+logsRouter.get('/logs/:executionId', async (req: Request, res: Response) => {
   const { executionId } = req.params;
   // N4: basename guard — reject if executionId contains path separators or is modified by basename
   const safeId = path.basename(executionId);
@@ -81,16 +119,7 @@ logsRouter.get('/logs/:executionId', (req: Request, res: Response) => {
   const limit = Math.min(Math.max(requestedLimit, 1), MAX_LIMIT);
 
   try {
-    const raw = fs.readFileSync(logFile, 'utf-8');
-    const allLines = raw.split('\n');
-    // Remove trailing empty line from final newline
-    if (allLines.length > 0 && allLines[allLines.length - 1] === '') {
-      allLines.pop();
-    }
-    const total = allLines.length;
-    const sliced = allLines.slice(fromLine, fromLine + limit);
-    const hasMore = fromLine + sliced.length < total;
-    res.json({ lines: sliced, totalLines: total, hasMore });
+    res.json(await pageLogLines(logFile, fromLine, limit));
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Failed to read log file ${logFile}: ${msg}`);

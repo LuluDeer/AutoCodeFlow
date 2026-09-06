@@ -116,6 +116,21 @@ volumes:
 tar -czf /backup/autoflow/logs_$(date +%Y%m%d).tar.gz ./data/executor-logs/
 ```
 
+### S3/MinIO 日志对象生命周期
+
+`LOG_STORAGE_DRIVER=s3` 时执行日志以对象形式写入 MinIO 的 `execution-logs/` 前缀（桶名默认 `autoflow-logs`）。admin 侧的日志保留期清理只覆盖数据库行，不覆盖外置对象——MinIO 数据卷没有内置过期，必须配置 bucket lifecycle 使对象与 DB 保留期同步到期，否则 `minio_data` 卷会随日志对象无限增长直至磁盘写满：
+
+```bash
+# 一次性配置（mc 客户端指向部署的 MinIO）
+mc alias set autoflow-minio http://127.0.0.1:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
+mc ilm rule add --expiry-days 30 --prefix "execution-logs/" autoflow-minio/autoflow-logs
+
+# 验证
+mc ilm rule ls autoflow-minio/autoflow-logs
+```
+
+`--expiry-days` 应与 `LOG_RETENTION_DAYS`（默认 30）保持一致，使对象先于或同步于 DB 行过期。执行器本地 `workDir/logs`（7 天）与死信回调（50 个文件上限）由执行器自身清理，不在本节范围内。
+
 ---
 
 ## 执行器生命周期管理
