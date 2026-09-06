@@ -1,23 +1,33 @@
 /**
  * Unit tests for the CLI HTTP client: envelope unwrapping, method/path
  * plumbing (via a mocked axios instance) and readable error formatting
- * that distinguishes 401 from 403.
+ * that distinguishes 401 from 403. BUG-13 adds the 401 single-flight
+ * refresh self-heal (access token expired → /auth/refresh → replay once).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { axiosInstance } = vi.hoisted(() => ({
-  axiosInstance: {
-    get: vi.fn(),
-    post: vi.fn(),
-    put: vi.fn(),
-    patch: vi.fn(),
-    delete: vi.fn(),
-  },
-}));
+const { axiosInstance, requestInterceptors, responseInterceptors, tokenState } =
+  vi.hoisted(() => ({
+    axiosInstance: {
+      get: vi.fn(),
+      post: vi.fn(),
+      put: vi.fn(),
+      patch: vi.fn(),
+      delete: vi.fn(),
+      request: vi.fn(),
+    },
+    requestInterceptors: { use: vi.fn() },
+    responseInterceptors: { use: vi.fn() },
+    tokenState: { access: 'test-token', refresh: '' },
+  }));
 
 vi.mock('axios', () => ({
   default: {
-    create: vi.fn(() => axiosInstance),
+    create: vi.fn(() => ({
+      ...axiosInstance,
+      interceptors: { request: requestInterceptors, response: responseInterceptors },
+    })),
+    post: vi.fn(),
     isAxiosError: (e: unknown) =>
       !!e && typeof e === 'object' && (e as { isAxiosError?: boolean }).isAxiosError === true,
   },
@@ -25,9 +35,14 @@ vi.mock('axios', () => ({
 
 vi.mock('../config', () => ({
   getApiUrl: () => 'http://localhost:3105',
-  getToken: () => 'test-token',
+  getToken: () => tokenState.access,
+  getRefreshToken: () => tokenState.refresh,
+  setToken: (t: string) => { tokenState.access = t; },
+  setRefreshToken: (t: string) => { tokenState.refresh = t; },
+  clearAuth: () => { tokenState.access = ''; tokenState.refresh = ''; },
 }));
 
+import axios from 'axios';
 import { get, post, put, patch, del, unwrap, resetClient, formatApiError } from '../client';
 
 const envelope = (data: unknown) => ({ data: { code: 0, message: 'success', data } });
@@ -35,7 +50,19 @@ const envelope = (data: unknown) => ({ data: { code: 0, message: 'success', data
 beforeEach(() => {
   resetClient();
   vi.clearAllMocks();
+  tokenState.access = 'test-token';
+  tokenState.refresh = '';
 });
+
+/** 创建 client（注册拦截器）并取出 response onRejected 回调 */
+function getOnRejected(): (err: unknown) => Promise<unknown> {
+  axiosInstance.get.mockResolvedValueOnce(envelope(null));
+  // mock 就位后再触发 client 创建；probe 请求自消化（唯一注册的 resolved 值）
+  void get('/__probe__', {}).catch(() => undefined);
+  const onRejected = responseInterceptors.use.mock.calls.at(-1)?.[1];
+  expect(typeof onRejected).toBe('function');
+  return onRejected as (err: unknown) => Promise<unknown>;
+}
 
 describe('unwrap', () => {
   it('strips the { code, message, data } envelope', () => {
@@ -92,13 +119,114 @@ describe('client methods (mocked axios)', () => {
   });
 });
 
-function axiosError(status?: number, data?: unknown, message = 'Request failed') {
+// ---------------------------------------------------------------------------
+// BUG-13: 401 单飞刷新自愈
+// ---------------------------------------------------------------------------
+
+function axiosError(status?: number, data?: unknown, message = 'Request failed', config?: unknown) {
   return {
     isAxiosError: true,
     message,
     ...(status !== undefined ? { response: { status, data } } : {}),
+    ...(config !== undefined ? { config } : {}),
   };
 }
+
+describe('401 refresh self-heal (BUG-13)', () => {
+  const retriable401 = () =>
+    axiosError(401, { message: 'jwt expired' }, 'Request failed with status code 401', {
+      url: '/tasks',
+      headers: { Authorization: 'Bearer test-token' },
+    });
+
+  it('on 401 with a stored refresh token: refreshes once and replays the request', async () => {
+    const onRejected = getOnRejected();
+    tokenState.refresh = 'refresh-token';
+
+    (axios.post as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      envelope({ accessToken: 'new-access', refreshToken: 'new-refresh' }),
+    );
+    axiosInstance.request.mockResolvedValueOnce(envelope({ ok: true }));
+
+    const result = (await onRejected(retriable401())) as { data: unknown };
+
+    // 单飞刷新：POST {base}/auth/refresh，双 token 均换发入库
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(axios.post).toHaveBeenCalledWith(
+      'http://localhost:3105/auth/refresh',
+      { refreshToken: 'refresh-token' },
+      expect.objectContaining({ timeout: 10_000 }),
+    );
+    expect(tokenState.access).toBe('new-access');
+    expect(tokenState.refresh).toBe('new-refresh');
+    // 原请求经 instance.request 重放（request 拦截器会重写 Authorization）
+    expect(axiosInstance.request).toHaveBeenCalledTimes(1);
+    expect(axiosInstance.request.mock.calls[0][0]).toMatchObject({ url: '/tasks' });
+    expect(result).toEqual(envelope({ ok: true }));
+  });
+
+  it('refresh failure wipes local credentials and rethrows (no replay)', async () => {
+    const onRejected = getOnRejected();
+    tokenState.refresh = 'stale-refresh';
+
+    (axios.post as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('401 on refresh'));
+
+    await expect(onRejected(retriable401())).rejects.toMatchObject({
+      response: { status: 401 },
+    });
+    expect(tokenState.access).toBe('');
+    expect(tokenState.refresh).toBe('');
+    expect(axiosInstance.request).not.toHaveBeenCalled();
+  });
+
+  it('without a stored refresh token: fails fast without calling /auth/refresh', async () => {
+    const onRejected = getOnRejected();
+
+    await expect(onRejected(retriable401())).rejects.toMatchObject({
+      response: { status: 401 },
+    });
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(axiosInstance.request).not.toHaveBeenCalled();
+  });
+
+  it('does not refresh for /auth/* paths (login failure is not token expiry)', async () => {
+    const onRejected = getOnRejected();
+    tokenState.refresh = 'refresh-token';
+
+    const err = axiosError(401, { message: 'Invalid credentials' }, '401', {
+      url: '/auth/login',
+      headers: {},
+    });
+    await expect(onRejected(err)).rejects.toBeTruthy();
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it('concurrent 401s share a single refresh flight, each replays', async () => {
+    const onRejected = getOnRejected();
+    tokenState.refresh = 'refresh-token';
+
+    (axios.post as ReturnType<typeof vi.fn>).mockResolvedValue(
+      envelope({ accessToken: 'new-access', refreshToken: 'new-refresh' }),
+    );
+    axiosInstance.request.mockResolvedValue(envelope({ ok: true }));
+
+    const errA = axiosError(401, undefined, '401', { url: '/tasks', headers: {} });
+    const errB = axiosError(401, undefined, '401', { url: '/executors', headers: {} });
+    await Promise.all([onRejected(errA), onRejected(errB)]);
+
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(axiosInstance.request).toHaveBeenCalledTimes(2);
+  });
+
+  it('non-401 errors are rethrown untouched (DR-06: no business retry)', async () => {
+    const onRejected = getOnRejected();
+    tokenState.refresh = 'refresh-token';
+
+    const err = axiosError(500, { message: 'boom' }, '500', { url: '/tasks', headers: {} });
+    await expect(onRejected(err)).rejects.toBe(err);
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+});
 
 describe('formatApiError', () => {
   it('401 → tells the user to log in', () => {

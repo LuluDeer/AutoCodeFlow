@@ -175,3 +175,95 @@ describe('method helpers', () => {
     expect(fetchMock.mock.calls[3][1].body).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// BUG-14: 401 单飞刷新自愈（长驻 MCP 进程，access token 15m 过期）
+// ---------------------------------------------------------------------------
+
+describe('401 refresh self-heal (BUG-14)', () => {
+  beforeEach(() => {
+    vi.stubEnv('AUTOCODEFLOW_API_REFRESH_TOKEN', 'env-refresh');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('on 401 with a refresh token: POSTs /auth/refresh once and replays the request', async () => {
+    fetchMock
+      // 第一次业务请求 401
+      .mockResolvedValueOnce(jsonResponse(false, { message: 'jwt expired' }, 401))
+      // 刷新成功（原子轮换返回新双 token）
+      .mockResolvedValueOnce(
+        jsonResponse(true, { code: 0, message: 'success', data: { accessToken: 'new-access', refreshToken: 'new-refresh' } }, 201),
+      )
+      // 重放成功
+      .mockResolvedValueOnce(jsonResponse(true, { code: 0, message: 'success', data: { ok: 1 } }));
+
+    const result = await apiGet<{ ok: number }>('/tasks');
+
+    expect(result).toEqual({ ok: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [refreshUrl, refreshInit] = fetchMock.mock.calls[1];
+    expect(refreshUrl).toContain('/auth/refresh');
+    expect(JSON.parse(String(refreshInit.body))).toEqual({ refreshToken: 'env-refresh' });
+    // 重放请求携带换发后的新 token
+    const [replayUrl, replayInit] = fetchMock.mock.calls[2];
+    expect(replayUrl).not.toContain('/auth/');
+    expect((replayInit.headers as Record<string, string>).Authorization).toBe('Bearer new-access');
+  });
+
+  it('keeps the rotated refresh token in memory for the next expiry (process-lifetime self-heal)', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(false, { message: 'jwt expired' }, 401))
+      .mockResolvedValueOnce(jsonResponse(true, { code: 0, message: 'success', data: { accessToken: 'a2', refreshToken: 'r2' } }, 201))
+      .mockResolvedValueOnce(jsonResponse(true, { code: 0, message: 'success', data: { ok: 1 } }))
+      // 第二轮过期：必须用内存中轮换后的 r2（不是 env 里的 env-refresh）
+      .mockResolvedValueOnce(jsonResponse(false, { message: 'jwt expired' }, 401))
+      .mockResolvedValueOnce(jsonResponse(true, { code: 0, message: 'success', data: { accessToken: 'a3', refreshToken: 'r3' } }, 201))
+      .mockResolvedValueOnce(jsonResponse(true, { code: 0, message: 'success', data: { ok: 2 } }));
+
+    await apiGet('/tasks');
+    await apiGet('/tasks');
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    const secondRefreshBody = JSON.parse(String(fetchMock.mock.calls[4][1].body));
+    expect(secondRefreshBody).toEqual({ refreshToken: 'r2' });
+  });
+
+  it('without a refresh token: fails with the 401 error as before', async () => {
+    vi.stubEnv('AUTOCODEFLOW_API_REFRESH_TOKEN', '');
+    fetchMock.mockResolvedValueOnce(jsonResponse(false, { message: 'jwt expired' }, 401));
+
+    await expect(apiGet('/tasks')).rejects.toThrow(/401/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not refresh when the 401 comes from an /auth/* path', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(false, { message: 'Invalid credentials' }, 401));
+
+    await expect(apiPost('/auth/login', { username: 'u', password: 'p' })).rejects.toThrow(/401/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refresh failure surfaces the original 401 error', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(false, { message: 'jwt expired' }, 401))
+      .mockResolvedValueOnce(jsonResponse(false, { message: 'refresh token expired' }, 401));
+
+    await expect(apiGet('/tasks')).rejects.toThrow(/401/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('concurrent 401s share a single refresh flight', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(false, { message: 'jwt expired' }, 401))
+      .mockResolvedValueOnce(jsonResponse(false, { message: 'jwt expired' }, 401))
+      .mockResolvedValueOnce(jsonResponse(true, { code: 0, message: 'success', data: { accessToken: 'new-access', refreshToken: 'new-refresh' } }, 201))
+      .mockResolvedValue(jsonResponse(true, { code: 0, message: 'success', data: { ok: 1 } }));
+
+    await Promise.all([apiGet('/tasks'), apiGet('/executors')]);
+
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/auth/refresh'))).toHaveLength(1);
+  });
+});

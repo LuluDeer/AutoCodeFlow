@@ -4,7 +4,13 @@ import httpx
 
 
 class HttpClient:
-    """Async-friendly HTTP client with basic retry logic."""
+    """
+    Thin httpx wrapper for task HTTP calls.
+
+    No automatic retry (BUG-15 复审: 原文档串声称 "basic retry logic" 但实现
+    从未有过——照写即错)。非幂等方法（post/put/delete）永不被隐式重试；
+    幂等重试由任务代码自行决定（raise_for_status 直抛 HTTPStatusError）。
+    """
 
     def __init__(self, base_url: str = "", timeout: float = 30.0, headers: Optional[Dict[str, str]] = None):
         self.base_url = base_url.rstrip("/")

@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import * as readline from 'readline';
 import { post, formatApiError } from '../client';
-import { setApiUrl, setToken, showConfig } from '../config';
+import { setApiUrl, setToken, setRefreshToken, showConfig } from '../config';
 import { resetClient } from '../client';
 import chalk from 'chalk';
 
@@ -35,6 +35,10 @@ export function loginCommand(): Command {
           throw new Error('Login response missing accessToken (unexpected auth payload)');
         }
         setToken(data.accessToken);
+        // BUG-13: refreshToken 一并入库——access token 默认 15m 过期，
+        // client 的 401 单飞自愈（/auth/refresh + 重放一次）依赖它，
+        // 否则过期后全命令 401 只能重新 login。
+        setRefreshToken(data.refreshToken ?? '');
         console.log(chalk.green('✔ Logged in successfully'));
         showConfig();
       } catch (e: unknown) {

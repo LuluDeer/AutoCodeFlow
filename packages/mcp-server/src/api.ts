@@ -10,16 +10,57 @@ import fetch from 'node-fetch';
 export const API_URL = process.env.AUTOCODEFLOW_API_URL || 'http://localhost:3105';
 export const API_TOKEN = process.env.AUTOCODEFLOW_API_TOKEN || '';
 
-// W-07: the missing-token WARNING used to fire here at module-import time.
-// Because `--help`/`--version` import this module to reach the CLI parser,
-// those query-only paths printed the warning before clean output. The check
-// moved to main() (index.ts) — the only path that actually talks to Admin API.
-
 /**
- * 请求超时预算（N12）：admin-api 卡死时 MCP 工具不得无限挂起。
- * 导出以便测试注入更短的超时（apiRequest 的 timeoutMs 参数）。
+ * BUG-14 (SEC-01 复审): 可选的 refresh token 自愈。
+ *
+ * MCP server 是长驻进程，access token 默认 15m 过期——此前过期后所有工具
+ * 永久 401，只能重启进程换新 token。设置 AUTOCODEFLOW_API_REFRESH_TOKEN 后：
+ * 401（/auth/* 自身除外）触发单飞 POST /auth/refresh，成功则换发并重放原
+ * 请求一次；admin-api 的 refresh 是原子轮换（DR-07），响应携带的新
+ * refreshToken 保存在内存中供下一次过期使用（进程生命周期内持续自愈；
+ * 不落盘——MCP 无凭据存储职责，进程重启重新注入 env）。
+ * env 在每次 401 时懒读取，便于测试注入。
  */
+
+/** 请求超时预算（N12）：admin-api 卡死时 MCP 工具不得无限挂起。
+ * 导出以便测试注入更短的超时（apiRequest 的 timeoutMs 参数）。 */
 export const REQUEST_TIMEOUT_MS = 30_000;
+
+let currentToken = API_TOKEN;
+let currentRefreshToken = process.env.AUTOCODEFLOW_API_REFRESH_TOKEN || '';
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function refreshAccessToken(): Promise<boolean> {
+  const envRefresh = process.env.AUTOCODEFLOW_API_REFRESH_TOKEN || '';
+  const refreshToken = currentRefreshToken || envRefresh;
+  if (!refreshToken) return false;
+  try {
+    const res = await fetch(`${API_URL}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return false;
+    const data = unwrap<{ accessToken?: string; refreshToken?: string }>(
+      await res.json(),
+    );
+    if (typeof data?.accessToken === 'string' && data.accessToken.length > 0) {
+      currentToken = data.accessToken;
+      // 原子轮换：新 refreshToken 必须跟进，否则下一次过期刷新必 401
+      if (
+        typeof data.refreshToken === 'string' &&
+        data.refreshToken.length > 0
+      ) {
+        currentRefreshToken = data.refreshToken;
+      }
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Perform an HTTP request against the admin API and strip the global
@@ -30,6 +71,7 @@ export async function apiRequest<T>(
   path: string,
   body?: unknown,
   timeoutMs: number = REQUEST_TIMEOUT_MS,
+  _retried = false,
 ): Promise<T> {
   const signal = AbortSignal.timeout(timeoutMs);
   let res;
@@ -38,7 +80,7 @@ export async function apiRequest<T>(
       method,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${API_TOKEN}`,
+        Authorization: `Bearer ${currentToken}`,
       },
       signal,
       ...(body ? { body: JSON.stringify(body) } : {}),
@@ -53,6 +95,21 @@ export async function apiRequest<T>(
     throw err;
   }
   if (!res.ok) {
+    // BUG-13 同款自愈（/_retried 钉死单次重放；/auth/* 自身不触发）
+    if (
+      res.status === 401 &&
+      !_retried &&
+      !path.includes('/auth/') &&
+      (currentRefreshToken || process.env.AUTOCODEFLOW_API_REFRESH_TOKEN)
+    ) {
+      refreshInFlight ??= refreshAccessToken().finally(() => {
+        refreshInFlight = null;
+      });
+      const healed = await refreshInFlight;
+      if (healed) {
+        return apiRequest<T>(method, path, body, timeoutMs, true);
+      }
+    }
     const text = await res.text();
     throw buildHttpError(method, path, res.status, text);
   }

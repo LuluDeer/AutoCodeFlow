@@ -57,8 +57,12 @@ vi.mock('../client', () => ({
 vi.mock('../config', () => ({
   getApiUrl: () => 'http://localhost:3105',
   getToken: () => '',
+  getRefreshToken: () => '',
   setApiUrl: vi.fn(),
   setToken: vi.fn(),
+  // BUG-13: login 现在同时落库 refreshToken
+  setRefreshToken: vi.fn(),
+  clearAuth: vi.fn(),
   showConfig: vi.fn(),
 }));
 
