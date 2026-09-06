@@ -13,7 +13,10 @@ import {
   ArrayMaxSize,
   IsUUID,
   Matches,
+  ValidateNested,
 } from "class-validator";
+import { Type } from "class-transformer";
+import { MaintenanceWindowDto } from "./maintenance-window.dto";
 import {
   TaskStatus,
   TaskTriggerType,
@@ -50,6 +53,25 @@ export class CreateTaskDto {
   @IsOptional()
   timezone?: string;
   @ApiPropertyOptional() @IsInt() @Min(1) @IsOptional() fixedRate?: number;
+  /**
+   * FEAT-06: 任务级维护窗口。每条 { start, end, description? }，start/end
+   * 均为 5 字段 cron——start 最近触达开窗、end 最近触达关窗（半开区间，
+   * 语义见 maintenance-window.util.ts）。结构校验（≤10 条、cron 表达式
+   * 结构合法）在 DTO 边界完成；窗口命中时的调度跳过在 scheduler.enqueue。
+   * PATCH 语义（N28）：字段缺省 = 保留旧值；显式 null / [] = 清空。
+   */
+  @ApiPropertyOptional({
+    description:
+      "Task-level maintenance windows: scheduled triggers falling inside a window are skipped (manual/API triggers unaffected). Each entry {start, end, description?} with 5-field crons; the window opens at the latest start-cron touch and closes at the latest end-cron touch. Max 10 entries.",
+    type: [MaintenanceWindowDto],
+    maxItems: 10,
+  })
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => MaintenanceWindowDto)
+  @IsOptional()
+  maintenanceWindows?: MaintenanceWindowDto[] | null;
   @ApiPropertyOptional()
   @IsEnum(TaskRuntime)
   @IsOptional()

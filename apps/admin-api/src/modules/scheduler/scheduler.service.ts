@@ -19,6 +19,7 @@ import {
   MisfireStrategy,
   normalizeTaskPriority,
 } from "../task/entities/task.entity";
+import { findActiveMaintenanceWindow } from "../task/maintenance-window.util";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -812,6 +813,24 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     /** CORE-06：定时器计划触发的时刻（Date.now()），用于 fire→入队延迟分布 */
     fireTime?: number,
   ) {
+    // FEAT-06: 任务级维护窗口——命中即跳过（不 claim 去重锁、不建
+    // executions 行、不推进 lastTriggerTime），窗口关闭后的下一个调度点
+    // 正常触发。检查放在去重锁之前：被窗口抑制的触发不应消耗本周期的
+    // 去重窗口。范围取舍：仅约束调度入队路径（cron/fixed_rate/misfire
+    // 补偿）；手动/API 触发与依赖扇出走 TaskService.trigger，不受窗口
+    // 约束（发布窗口内人工补跑是预期操作）。可观测性：metrics 的
+    // triggersSkippedMaintenance + 本日志，executions 不建行（窗口内
+    // 每个触发点都会跳过，建行会淹没执行记录）。
+    const activeWindow = findActiveMaintenanceWindow(task.maintenanceWindows);
+    if (activeWindow) {
+      this.logger.log(
+        `Task "${task.name}" trigger skipped: inside maintenance window ` +
+          `(start=${activeWindow.start}, end=${activeWindow.end}` +
+          `${activeWindow.description ? `, ${activeWindow.description}` : ""})`,
+      );
+      this.schedulerMetrics.recordTriggerSkippedMaintenance();
+      return null;
+    }
     // N6: the dedup window is derived from the trigger period, NOT the task
     // timeout (the old max(timeout, interval) TTL silently suppressed
     // short-period tasks down to the task timeout). See computeTriggerDedupTtlMs.

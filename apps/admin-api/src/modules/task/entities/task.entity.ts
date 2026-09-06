@@ -9,6 +9,7 @@ import {
   JoinColumn,
   Index,
 } from "typeorm";
+import { TaskMaintenanceWindows } from "../maintenance-window.util";
 
 export enum TaskStatus {
   ACTIVE = "active",
@@ -202,6 +203,17 @@ export class Task {
 
   /** Language of the glue script: python, javascript, shell. */
   @Column({ nullable: true }) glueLanguage: string | null;
+
+  /**
+   * FEAT-06: 任务级维护窗口（可空 jsonb 数组）。
+   * 形态 [{ start: "30 2 * * *", end: "0 4 * * *", description?: string }]，
+   * start/end 均为 5 字段 cron：start 最近触达开窗、end 最近触达关窗
+   * （半开区间 [start, end)，语义详见 task/maintenance-window.util.ts）。
+   * 计划触发（scheduler.enqueue）命中窗口即跳过；手动/API 触发不受限。
+   * 结构校验在 CreateTaskDto 边界完成。
+   */
+  @Column({ type: "jsonb", nullable: true })
+  maintenanceWindows: TaskMaintenanceWindows | null;
 
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;

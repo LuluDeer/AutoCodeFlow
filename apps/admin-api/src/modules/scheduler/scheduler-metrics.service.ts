@@ -27,6 +27,8 @@ export interface SchedulerMetricsSnapshot {
   triggersSkippedDbClaim: number;
   triggersSkippedInactive: number;
   triggersSkippedBlockStrategy: number;
+  /** FEAT-06：命中任务级维护窗口被跳过的触发数 */
+  triggersSkippedMaintenance: number;
   triggersFailed: number;
   /** 依赖扇出触发计数（R4-P3 claim 赢家）与被去重跳过数 */
   dependencyTriggersClaimed: number;
@@ -43,7 +45,9 @@ export interface SchedulerMetricsSnapshot {
 }
 
 /** CORE-06：延迟直方图桶上界（毫秒），渲染端 le 标签与此逐字对齐 */
-export const TRIGGER_LATENCY_BUCKETS_MS = [10, 50, 100, 250, 500, 1000, 2500, 5000];
+export const TRIGGER_LATENCY_BUCKETS_MS = [
+  10, 50, 100, 250, 500, 1000, 2500, 5000,
+];
 
 /** 读取时计算的派生速率（每秒），基于进程启动时间 */
 export interface SchedulerMetricsDerived {
@@ -67,12 +71,15 @@ export class SchedulerMetricsService {
   private triggersSkippedDbClaim = 0;
   private triggersSkippedInactive = 0;
   private triggersSkippedBlockStrategy = 0;
+  private triggersSkippedMaintenance = 0;
   private triggersFailed = 0;
   private dependencyTriggersClaimed = 0;
   private dependencyTriggersSkipped = 0;
   private triggerLatencyCount = 0;
   private triggerLatencySumMs = 0;
-  private triggerLatencyBuckets = new Array<number>(TRIGGER_LATENCY_BUCKETS_MS.length).fill(0);
+  private triggerLatencyBuckets = new Array<number>(
+    TRIGGER_LATENCY_BUCKETS_MS.length,
+  ).fill(0);
   private lastTriggerLatencyMs = 0;
 
   /** 记录一次调度扫描 tick 及其耗时 */
@@ -106,6 +113,11 @@ export class SchedulerMetricsService {
   /** 记录一次触发因"blockStrategy=DISCARD 命中运行中执行"被跳过 */
   recordTriggerSkippedBlockStrategy(): void {
     this.triggersSkippedBlockStrategy++;
+  }
+
+  /** FEAT-06: 记录一次触发因"命中任务级维护窗口"被跳过 */
+  recordTriggerSkippedMaintenance(): void {
+    this.triggersSkippedMaintenance++;
   }
 
   /** 记录一次触发失败（入队/补偿失败等） */
@@ -147,6 +159,7 @@ export class SchedulerMetricsService {
       triggersSkippedDbClaim: this.triggersSkippedDbClaim,
       triggersSkippedInactive: this.triggersSkippedInactive,
       triggersSkippedBlockStrategy: this.triggersSkippedBlockStrategy,
+      triggersSkippedMaintenance: this.triggersSkippedMaintenance,
       triggersFailed: this.triggersFailed,
       dependencyTriggersClaimed: this.dependencyTriggersClaimed,
       dependencyTriggersSkipped: this.dependencyTriggersSkipped,
@@ -190,7 +203,9 @@ export class SchedulerMetricsService {
         const prevCum = i === 0 ? 0 : this.triggerLatencyBuckets[i - 1];
         const inBucket = this.triggerLatencyBuckets[i] - prevCum;
         if (inBucket <= 0) return upper;
-        return Math.round(lower + ((rank - prevCum) / inBucket) * (upper - lower));
+        return Math.round(
+          lower + ((rank - prevCum) / inBucket) * (upper - lower),
+        );
       }
     }
     return this.lastTriggerLatencyMs;
