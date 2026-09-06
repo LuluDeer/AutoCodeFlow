@@ -415,6 +415,89 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
     });
   });
 
+  // BUG-06 修复回归：replace 模式 S3 put 失败——DB 重写后指针必须收回 db，
+  // 否则 exec 行仍指旧对象，读取面永远看到 STALE 内容。
+  it("BUG-06 fallback pointer reset: replace-mode S3 failure clears the stale s3 pointer", async () => {
+    const exec = {
+      id: "e-stale",
+      status: ExecutionStatus.RUNNING,
+      logs: "",
+      logStorage: "s3",
+      logObjectKey: "execution-logs/e-stale.log.gz",
+    };
+    execRepo.findOne.mockResolvedValue(exec);
+    minioClient.putObject.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+    await service.handleCallback([
+      { executionId: "e-stale", status: "success", logs: "fresh-1\nfresh-2" },
+    ]);
+
+    // DB 重写（replace：先 delete 再插新行）
+    expect(logLineRepo.delete).toHaveBeenCalledWith({ executionId: "e-stale" });
+    // 指针收回：不再 advertise 旧 S3 对象
+    expect(execRepo.update).toHaveBeenLastCalledWith("e-stale", {
+      logStorage: "db",
+      logObjectKey: null,
+    });
+  });
+
+  // BUG-06 修复回归：append 模式 S3 put 失败——既有 S3 内容并入 DB 回退，
+  // 根治"本页落 DB 成孤儿行（S3 优先读取面永远看不到）"。
+  it("BUG-06 fallback merge: append-mode S3 failure merges existing object content into DB rows", async () => {
+    const exec = {
+      id: "e-merge",
+      status: ExecutionStatus.RUNNING,
+      executorAddress: "exec-1:8002",
+      logs: "",
+    };
+    execRepo.findOne.mockResolvedValue(exec);
+    const axios = (await import("axios")).default as any;
+    axios.get
+      .mockResolvedValueOnce({
+        data: { lines: ["m0", "m1"], totalLines: 4, hasMore: true },
+      })
+      .mockResolvedValueOnce({
+        data: { lines: ["m2", "m3"], totalLines: 4, hasMore: false },
+      });
+    // page-1 的 append 先读回 page-0 对象，随后 put 失败
+    minioClient.getObject.mockImplementationOnce(() =>
+      Promise.resolve(
+        Readable.from([gzipSync(Buffer.from("m0\nm1", "utf-8"))]),
+      ),
+    );
+    minioClient.putObject
+      .mockResolvedValueOnce(undefined) // page-0 成功上 S3
+      .mockRejectedValueOnce(new Error("ECONNREFUSED")); // page-1 失败
+
+    await service.handleCallback([
+      {
+        executionId: "e-merge",
+        status: "success",
+        executorAddress: "exec-1:8002",
+        logs: "...[truncated, total 50000 chars]...",
+      },
+    ]);
+
+    // 回退把 existing(m0/m1) + 本页(m2/m3) 全量写 DB，行号归零
+    expect(logLineRepo.create).toHaveBeenCalledWith({
+      executionId: "e-merge",
+      lineNumber: 0,
+      content: "m0",
+    });
+    expect(logLineRepo.create).toHaveBeenCalledWith({
+      executionId: "e-merge",
+      lineNumber: 3,
+      content: "m3",
+    });
+    // 全量改写 = replace 语义（先 delete）
+    expect(logLineRepo.delete).toHaveBeenCalledWith({ executionId: "e-merge" });
+    // 指针收回 db
+    expect(execRepo.update).toHaveBeenLastCalledWith("e-merge", {
+      logStorage: "db",
+      logObjectKey: null,
+    });
+  });
+
   it("db driver: callback writes DB rows and never touches S3", async () => {
     // Override the config to disable s3 for this test only.
     configGet.mockImplementation((key: string) => {
