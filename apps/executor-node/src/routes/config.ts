@@ -118,7 +118,10 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
         return;
       }
       // config.workDir 是读 process.env 的 getter——热更新写 env 即全链路生效
-      // （含 workDir 派生的日志/回调目录解析路径）。
+      // （含 workDir 派生的日志/回调目录解析路径）。E10：file-logger 的
+      // logsDir 已改惰性解析（getLogsDir 每次经 config.workDir 重算），与
+      // routes/logs.ts 的读路径、callback.ts 的 getCallbackDir 对齐；新增
+      // workDir 派生路径时必须保持"调用期解析"，不得模块加载期固化。
       process.env.WORK_DIR = resolvedNew;
       updatedFields.push('workDir');
       logger.info(`Hot-reloaded workDir=${resolvedNew}`);

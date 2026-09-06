@@ -18,6 +18,19 @@ function loadModule(workDir: string): FileLoggerModule {
   return require('./file-logger') as FileLoggerModule;
 }
 
+// E10: mirror the REAL config.workDir shape — a getter resolving mutable
+// state (process.env.WORK_DIR) at call time, which is exactly what
+// /config/reload hot-swaps. Static-property mocks cannot express this.
+function loadModuleWithWorkDirGetter(getWorkDir: () => string): FileLoggerModule {
+  const mockGetWorkDir = getWorkDir;
+  jest.resetModules();
+  jest.mock('./config', () => ({
+    config: { get workDir() { return mockGetWorkDir(); }, logRetentionDays: 7 },
+  }));
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('./file-logger') as FileLoggerModule;
+}
+
 // Freeze time at local noon: getLogFilePath derives the date directory from
 // wall-clock time, so a real midnight (or a TZ where local date != UTC date)
 // between appendLog and the expected-path computation would point the
@@ -85,6 +98,70 @@ describe('appendLog (buffered async writer)', () => {
     fl.appendLogSync('exec-sync', 'immediate');
     const logPath = expectedLogPath(dir, 'exec-sync');
     expect(fs.readFileSync(logPath, 'utf-8')).toBe('immediate\n');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E10: workDir 热更新后写/读路径不得分裂——logsDir 必须每次经 config.workDir
+// 惰性解析（对齐 routes/logs.ts 的读路径），而非模块加载期固化。
+// ---------------------------------------------------------------------------
+describe('workDir hot-reload (E10: lazy logsDir)', () => {
+  let oldDir: string;
+  let newDir: string;
+
+  beforeEach(() => {
+    jest.useFakeTimers({ now: FIXED_NOW });
+    oldDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-fl-old-'));
+    newDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-fl-new-'));
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('write and read paths follow a hot-reloaded workDir (no split)', async () => {
+    const mockWorkDirRef = { current: oldDir };
+    const fl = loadModuleWithWorkDirGetter(() => mockWorkDirRef.current);
+    try {
+      fl.appendLogSync('exec-before', 'old-dir');
+      expect(fs.existsSync(expectedLogPath(oldDir, 'exec-before'))).toBe(true);
+
+      // Simulate /config/reload: process.env.WORK_DIR now points at the new base.
+      mockWorkDirRef.current = newDir;
+
+      // Write side (file-logger) resolves the NEW directory…
+      fl.appendLogSync('exec-after', 'new-dir');
+      expect(fs.existsSync(expectedLogPath(newDir, 'exec-after'))).toBe(true);
+      expect(fs.existsSync(expectedLogPath(oldDir, 'exec-after'))).toBe(false);
+
+      // …and the read side agrees: getLogFilePath/readLog/getLogStats match
+      // the routes/logs.ts read path (path.join(config.workDir, 'logs')).
+      expect(fl.getLogFilePath('exec-after')).toBe(expectedLogPath(newDir, 'exec-after'));
+      expect(fl.readLog('exec-after')).toEqual({ lines: ['new-dir'], totalLines: 1 });
+      expect(fl.getLogStats().fileCount).toBe(1);
+
+      // Buffered writes flush into the new directory as well.
+      fl.appendLog('exec-buffered', 'buffered-new');
+      await fl.flushLogs();
+      expect(fs.readFileSync(expectedLogPath(newDir, 'exec-buffered'), 'utf-8')).toBe(
+        'buffered-new\n',
+      );
+
+      // deleteOldLogs targets the new base only; the old base is left untouched.
+      const staleDate = '2020-01-01';
+      for (const base of [oldDir, newDir]) {
+        const stale = path.join(base, 'logs', staleDate);
+        fs.mkdirSync(stale, { recursive: true });
+        fs.writeFileSync(path.join(stale, 'x.log'), 'data');
+      }
+      expect(fl.deleteOldLogs(7)).toBe(1);
+      expect(fs.existsSync(path.join(newDir, 'logs', staleDate))).toBe(false);
+      expect(fs.existsSync(path.join(oldDir, 'logs', staleDate))).toBe(true);
+    } finally {
+      fl.stopLogCleanup();
+      fl.stopWorkDirCleanup();
+      fl.stopLogWriter();
+    }
   });
 });
 
@@ -189,6 +266,61 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     expect(result.deadLetters).toBe(1); // MAX_DEAD_LETTER_FILES=50 → oldest dropped
     expect(fs.existsSync(path.join(deadDir, 'callback-50.json'))).toBe(false); // oldest
     expect(fs.existsSync(path.join(deadDir, 'callback-0.json'))).toBe(true);   // newest kept
+  });
+
+  it('dead-letter sweep removes only files and leaves subdirectories untouched (E12)', () => {
+    // filesOnly 语义（与 getDeadLetterCount 只数文件对称）：杂散子目录既不
+    // 占用 keepNewest 名额，也不被递归删除。
+    const deadDir = path.join(dir, 'callbacks', 'dead-letter');
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.mkdirSync(deadDir, { recursive: true });
+    for (let i = 0; i < 51; i++) {
+      const p = path.join(deadDir, `callback-${i}.json`);
+      fs.writeFileSync(p, '[]');
+      const t = new Date(oldDate.getTime() - i * 1000); // i=50 oldest
+      fs.utimesSync(p, t, t);
+    }
+    const strayDir = path.join(deadDir, 'stray-subdir');
+    fs.mkdirSync(strayDir);
+    fs.writeFileSync(path.join(strayDir, 'nested.json'), '[]');
+    fs.utimesSync(strayDir, oldDate, oldDate);
+
+    const result = fl.cleanupWorkDir(7);
+    expect(result.deadLetters).toBe(1); // only the oldest FILE dropped
+    expect(fs.existsSync(path.join(deadDir, 'callback-50.json'))).toBe(false);
+    expect(fs.existsSync(path.join(deadDir, 'callback-0.json'))).toBe(true);
+    expect(fs.existsSync(strayDir)).toBe(true);                       // dir survives
+    expect(fs.existsSync(path.join(strayDir, 'nested.json'))).toBe(true); // not recursed
+  });
+
+  it('reclaims orphan .meta files stranded by a failed dead-lettering unlink (E13)', () => {
+    const callbackDir = path.join(dir, 'callbacks');
+    fs.mkdirSync(callbackDir, { recursive: true });
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000); // > 24h
+    const recentDate = new Date(Date.now() - 60 * 60 * 1000);        // < 24h
+
+    // Orphans: companion json already moved/deleted, .meta unlink failed.
+    const orphanOld = path.join(callbackDir, 'callback-111-0.json.meta');
+    const orphanFresh = path.join(callbackDir, 'callback-222-0.json.meta');
+    fs.writeFileSync(orphanOld, '{"retries":5}');
+    fs.writeFileSync(orphanFresh, '{"retries":1}');
+    fs.utimesSync(orphanOld, oldDate, oldDate);
+    fs.utimesSync(orphanFresh, recentDate, recentDate);
+
+    // Paired meta: companion json still lives in callbacks/ — must be kept
+    // even when older than the orphan window (owned by the retry loop).
+    const liveJson = path.join(callbackDir, 'callback-333-0.json');
+    const liveMeta = `${liveJson}.meta`;
+    fs.writeFileSync(liveJson, '[]');
+    fs.writeFileSync(liveMeta, '{"retries":2}');
+    fs.utimesSync(liveMeta, oldDate, oldDate);
+
+    const result = fl.cleanupWorkDir(7);
+    expect(result.orphanMetaFiles).toBe(1);
+    expect(fs.existsSync(orphanOld)).toBe(false);
+    expect(fs.existsSync(orphanFresh)).toBe(true);  // inside the 24h grace window
+    expect(fs.existsSync(liveMeta)).toBe(true);     // still owned by its json
+    expect(fs.existsSync(liveJson)).toBe(true);
   });
 
   it('startWorkDirCleanup performs an initial sweep', () => {

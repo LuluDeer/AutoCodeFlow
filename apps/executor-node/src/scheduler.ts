@@ -102,6 +102,9 @@ async function sendHeartbeat() {
       // deadLetterCount 暴露落盘回调积压，供运维感知长期断连。
       runningExecutionIds: runningExecutionIdsProvider().slice(0, 200),
       deadLetterCount: deadLetterCountProvider(),
+      // E9: 上报当前并发上限，admin 容量核算不再依赖注册期快照；读 config
+      // 对象属性，/config/reload 热更 maxConcurrentTasks 后下个心跳即回传新值。
+      maxConcurrentTasks: config.maxConcurrentTasks,
       restartedAt: executorStartedAt,
       startupId: executorStartupId,
     });
