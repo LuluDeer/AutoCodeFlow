@@ -1,0 +1,31 @@
+{
+  "name": "autocodeflow-monorepo",
+  "version": "1.0.1",
+  "private": true,
+  "description": "AutoCodeFlow monorepo root — unified command entry (per-app installs remain independent; no workspace hoisting by design, see ARCH-20)",
+  "scripts": {
+    "test:api": "cd apps/admin-api && npx jest",
+    "test:node": "cd apps/executor-node && npx jest",
+    "test:python": "cd apps/executor-python && python -m pytest -q",
+    "test:web": "cd apps/admin-web && npx vitest run",
+    "test:cli": "cd packages/acf-cli && npx vitest run",
+    "test:mcp": "cd packages/mcp-server && npx vitest run",
+    "test:pypi": "cd apps/registry-pypi && python -m pytest -q",
+    "test:sdk-py": "cd packages/autoflow-sdk && python -m pytest -q",
+    "test:registry-npm": "echo 'registry-npm is verdaccio config only — see apps/registry-npm/README.md'",
+    "test:all": "npm run test:api && npm run test:node && npm run test:python && npm run test:web && npm run test:cli && npm run test:mcp && npm run test:pypi && npm run test:sdk-py",
+    "typecheck:api": "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json",
+    "typecheck:node": "cd apps/executor-node && npx tsc --noEmit",
+    "typecheck:cli": "cd packages/acf-cli && npx tsc --noEmit",
+    "typecheck:mcp": "cd packages/mcp-server && npx tsc --noEmit",
+    "typecheck:all": "npm run typecheck:api && npm run typecheck:node && npm run typecheck:cli && npm run typecheck:mcp && cd apps/admin-web && npm run typecheck",
+    "lint:api": "cd apps/admin-api && npx eslint src",
+    "lint:web": "cd apps/admin-web && npm run lint",
+    "lint:all": "npm run lint:api && npm run lint:web && cd apps/executor-node && npx eslint src",
+    "build:web": "cd apps/admin-web && npm run build",
+    "bundle:executor": "cd apps/executor-desktop && bash scripts/bundle-executor.sh",
+    "demo:seed": "node scripts/demo-seed.mjs",
+    "demo:seed:selftest": "node scripts/demo-seed.selftest.mjs",
+    "load-test": "node scripts/load-test.mjs"
+  }
+}

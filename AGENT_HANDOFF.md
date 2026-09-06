@@ -156,7 +156,8 @@
 ## 会话恢复速查
 
 ```bash
-# 各子项目独立运行命令，根目录无统一 workspace 入口
+# ARCH-20（根级聚合入口，per-app 安装模型不变）：npm run test:all / typecheck:all / lint:all / test:api / demo:seed 等
+# 各子项目独立运行命令（仍可用）:
 cd apps/admin-api && npx jest && npx tsc --noEmit -p tsconfig.json
 cd apps/executor-node && npx jest
 cd apps/executor-python && python3 -m pytest -q
