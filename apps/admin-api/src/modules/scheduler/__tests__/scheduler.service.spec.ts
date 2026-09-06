@@ -21,6 +21,10 @@ import {
   ExecutionStatus,
   ExecutionFailureReason,
 } from "../../task/entities/task-execution.entity";
+import {
+  Executor,
+  ExecutorStatus,
+} from "../../executor/entities/executor.entity";
 import { DataSource } from "typeorm";
 import * as nodeCron from "node-cron";
 import { RedisLockService } from "../../../common/services/redis-lock.service";
@@ -58,6 +62,12 @@ const mockDataSource = () => ({
     set: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     execute: jest.fn().mockResolvedValue({ affected: 1 }),
+  })),
+  // CONSISTENCY-02: recoverStaleExecutions 活性探测经 getRepository(Executor).find
+  // 批量查在线执行器。默认返回空集（等价"无在线执行器上报"→ 维持既有恢复），
+  // 需要探测语义的用例各自 override getRepository。
+  getRepository: jest.fn(() => ({
+    find: jest.fn().mockResolvedValue([]),
   })),
   transaction: jest.fn(),
 });
@@ -1004,6 +1014,152 @@ describe("SchedulerService", () => {
       await service.recoverStaleExecutions();
 
       expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  // CONSISTENCY-02: stale 恢复的执行器活性探测。timeout=300s → stale 阈值
+  // max(2×300,60)=600s（10min），绝对兜底 max(6×300,30min)=30min。
+  describe("recoverStaleExecutions liveness probe (CONSISTENCY-02)", () => {
+    const mkExec = (ageMin: number, id = "exec-live") => ({
+      id,
+      taskId: "task-1",
+      status: ExecutionStatus.RUNNING,
+      startTime: new Date(Date.now() - ageMin * 60 * 1000),
+      executorAddress: "host:3002",
+      errorMessage: null,
+      endTime: null,
+    });
+    const setupScan = (exec: unknown) => {
+      execRepo.find
+        .mockResolvedValueOnce([exec]) // RUNNING scan
+        .mockResolvedValueOnce([]); // PENDING sweep
+      taskRepo.find.mockResolvedValue([makeTask({ id: "task-1", timeout: 300 })]);
+      taskRepo.findBy.mockResolvedValue([
+        makeTask({ id: "task-1", timeout: 300 }),
+      ]);
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({
+          createQueryBuilder: () =>
+            makeUpdateQb({
+              affected: 1,
+              raw: [{ id: (exec as any).id, executorAddress: "host:3002" }],
+            }),
+        }),
+      );
+    };
+    const reportRunning = (
+      rows: Array<{
+        address: string;
+        status: ExecutorStatus;
+        runningExecutionIds: string[] | null;
+      }>,
+    ) => {
+      dataSource.getRepository.mockReturnValue({
+        find: jest.fn().mockResolvedValue(rows),
+      });
+    };
+
+    it("skips recovery when the executor is ONLINE and reports the id as running", async () => {
+      await makeLeader();
+      const exec = mkExec(20); // 20min > 10min stale, < 30min absolute floor
+      setupScan(exec);
+      reportRunning([
+        {
+          address: "host:3002",
+          status: ExecutorStatus.ONLINE,
+          runningExecutionIds: ["exec-live"],
+        },
+      ]);
+
+      await service.recoverStaleExecutions();
+
+      // Liveness probe ran, id is alive → no recovery transaction at all.
+      expect(dataSource.getRepository).toHaveBeenCalledWith(Executor);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it("recovers anyway once the absolute fallback (30min) is exceeded", async () => {
+      await makeLeader();
+      const exec = mkExec(40); // 40min > 30min absolute floor
+      setupScan(exec);
+      reportRunning([
+        {
+          address: "host:3002",
+          status: ExecutorStatus.ONLINE,
+          runningExecutionIds: ["exec-live"], // still falsely reported
+        },
+      ]);
+
+      await service.recoverStaleExecutions();
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovers when the executor is OFFLINE despite a stale report", async () => {
+      await makeLeader();
+      const exec = mkExec(20);
+      setupScan(exec);
+      reportRunning([
+        {
+          address: "host:3002",
+          status: ExecutorStatus.OFFLINE,
+          runningExecutionIds: ["exec-live"],
+        },
+      ]);
+
+      await service.recoverStaleExecutions();
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovers when the executor is ONLINE but the id is not in its report", async () => {
+      await makeLeader();
+      const exec = mkExec(20);
+      setupScan(exec);
+      reportRunning([
+        {
+          address: "host:3002",
+          status: ExecutorStatus.ONLINE,
+          runningExecutionIds: ["some-other-exec"],
+        },
+      ]);
+
+      await service.recoverStaleExecutions();
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovers when the executor never reported the field (null = old executor)", async () => {
+      await makeLeader();
+      const exec = mkExec(20);
+      setupScan(exec);
+      reportRunning([
+        {
+          address: "host:3002",
+          status: ExecutorStatus.ONLINE,
+          runningExecutionIds: null,
+        },
+      ]);
+
+      await service.recoverStaleExecutions();
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovers as before when the liveness lookup throws (probe degrades)", async () => {
+      await makeLeader();
+      const exec = mkExec(20);
+      setupScan(exec);
+      dataSource.getRepository.mockImplementation(() => {
+        throw new Error("executor table unavailable");
+      });
+
+      await service.recoverStaleExecutions();
+
+      // Degrade-to-recover: a failed probe must never silently suspend recovery.
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -23,6 +23,7 @@ import {
   ExecutionStatus,
   ExecutionFailureReason,
 } from "../task/entities/task-execution.entity";
+import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import {
   RedisLockService,
   Lock,
@@ -70,6 +71,17 @@ export const TRIGGER_DEDUP_JITTER_BUFFER_MS = 500;
  * N5: stale 扫描的固定兜底窗口——timeout=0（不限时）任务的最短回收延迟。
  */
 export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
+
+/**
+ * CONSISTENCY-02: 执行器活性探测的绝对兜底参数。当候选 stale 行所属执行器在线
+ * 且心跳上报"仍在执行该 executionId"时，本轮跳过误判恢复；但该跳过不是无限的
+ * ——一旦 stale 时长超过 max(6 × taskTimeout, ABSOLUTE_FLOOR_MS)，无视上报仍强制
+ * 恢复，防止执行器 bug（谎报 running）导致行永久悬挂。timeout=0（无显式超时）
+ * 或算得的绝对兜底短于该行 stale 阈值时，回退到 stale 阈值（保持既有回收行为，
+ * 不因探测而放宽无限时任务的回收）。
+ */
+export const STALE_LIVENESS_ABSOLUTE_FLOOR_MS = 30 * 60 * 1000; // 30 min
+export const STALE_LIVENESS_ABSOLUTE_TIMEOUT_MULTIPLIER = 6;
 
 /**
  * N6: 计算触发去重锁的 TTL。去重窗口必须由"触发周期"决定而非任务超时：
@@ -401,6 +413,17 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     // （如并发回调刚写入 SUCCESS）绝不会被置为 FAILED。
     const timedOut = new Map<number, TaskExecution[]>(); // taskTimeoutSec -> execs
     const recovered: TaskExecution[] = [];
+
+    // CONSISTENCY-02: 先收集"超阈值候选"，再对候选做一次批量执行器活性探测，
+    // 命中"执行器在线且上报仍在执行该 executionId"的行本轮跳过（改到绝对兜底仍
+    // 未上报时才恢复）。先聚合候选再探测，避免把无谓的执行器查询塞进行循环。
+    type StaleCandidate = {
+      exec: TaskExecution;
+      taskTimeoutSec?: number;
+      staleMs: number;
+      ageMs: number;
+    };
+    const candidates: StaleCandidate[] = [];
     for (const exec of runningExecs) {
       const anchor = exec.startTime ?? exec.createdAt;
       if (!anchor) continue;
@@ -414,16 +437,27 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           ? staleThresholdMs(taskTimeoutSec)
           : DEFAULT_STALE_MS;
 
-      if (now - anchor.getTime() > staleMs) {
-        if (taskTimeoutSec && taskTimeoutSec > 0) {
-          const bucket = timedOut.get(taskTimeoutSec) ?? [];
-          bucket.push(exec);
-          timedOut.set(taskTimeoutSec, bucket);
-        } else {
-          recovered.push(exec);
-        }
+      const ageMs = now - anchor.getTime();
+      if (ageMs > staleMs) {
+        candidates.push({ exec, taskTimeoutSec, staleMs, ageMs });
       }
     }
+
+    const liveness = await this.collectRunningLiveness(candidates);
+    for (const c of candidates) {
+      // 活性命中：执行器在线且明确上报仍在跑该 executionId，且未到绝对兜底 →
+      // 本轮跳过，交由后续心跳 / 真实回调收敛。
+      if (liveness.deferredIds.has(c.exec.id)) continue;
+      if (c.taskTimeoutSec && c.taskTimeoutSec > 0) {
+        const bucket = timedOut.get(c.taskTimeoutSec) ?? [];
+        bucket.push(c.exec);
+        timedOut.set(c.taskTimeoutSec, bucket);
+      } else {
+        recovered.push(c.exec);
+      }
+    }
+
+    // 跳过本轮的行不计入 recovered，故 totalRecovered 自动不含它们。
 
     const OPEN_STATUSES = OPEN_EXECUTION_STATUSES;
     const finishedAt = new Date();
@@ -532,6 +566,89 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         `REC-01: recovered ${totalRecovered} stale execution(s)`,
       );
     }
+  }
+
+  /**
+   * CONSISTENCY-02: 对超阈值候选做一次执行器活性探测。返回本轮应"跳过恢复"的
+   * executionId 集合（deferredIds）。跳过条件——候选行所属执行器 status=ONLINE
+   * 且其心跳上报的 runningExecutionIds 命中该 executionId，且 stale 时长未超过
+   * 绝对兜底 max(6×timeout, 30min)。执行器离线 / 无记录 / 未上报（runningExecutionIds
+   * 为 null 或不含该 id）→ 不跳过，维持既有恢复行为。
+   *
+   * 探测失败（执行器表查询异常）时降级为"不跳过"（空集），宁可对疑似仍健康的行
+   * 恢复一次，也不放大容量误判。
+   */
+  private async collectRunningLiveness(
+    candidates: Array<{
+      exec: TaskExecution;
+      taskTimeoutSec?: number;
+      staleMs: number;
+      ageMs: number;
+    }>,
+  ): Promise<{ deferredIds: Set<string> }> {
+    const deferredIds = new Set<string>();
+    if (candidates.length === 0) return { deferredIds };
+
+    const addresses = [
+      ...new Set(
+        candidates
+          .map((c) => c.exec.executorAddress)
+          .filter((a): a is string => Boolean(a)),
+      ),
+    ];
+    if (addresses.length === 0) return { deferredIds };
+
+    let executors: Array<{
+      address: string;
+      status: ExecutorStatus;
+      runningExecutionIds: string[] | null;
+    }> = [];
+    try {
+      executors = await this.dataSource
+        .getRepository(Executor)
+        .find({
+          where: { address: In(addresses) },
+          select: ["address", "status", "runningExecutionIds"],
+        });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `recoverStaleExecutions liveness probe degraded (recover normally): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return { deferredIds };
+    }
+
+    const byAddress = new Map(
+      executors.map((ex) => [ex.address, ex] as const),
+    );
+    for (const c of candidates) {
+      const addr = c.exec.executorAddress;
+      if (!addr) continue;
+      const ex = byAddress.get(addr);
+      // 执行器离线 / 无记录 / 未上报该字段 / 未命中该 executionId → 不跳过。
+      if (!ex || ex.status !== ExecutorStatus.ONLINE) continue;
+      if (!Array.isArray(ex.runningExecutionIds)) continue;
+      if (!ex.runningExecutionIds.includes(c.exec.id)) continue;
+
+      // 活性命中，但设绝对兜底：超过 max(6×timeout, 30min) 仍强制恢复。
+      // ageMs 以 anchor（startTime ?? createdAt）为基准，与 stale 判定同锚。
+      const absoluteFloorMs = Math.max(
+        c.taskTimeoutSec && c.taskTimeoutSec > 0
+          ? c.taskTimeoutSec * 1000 * STALE_LIVENESS_ABSOLUTE_TIMEOUT_MULTIPLIER
+          : 0,
+        STALE_LIVENESS_ABSOLUTE_FLOOR_MS,
+        c.staleMs,
+      );
+      if (c.ageMs > absoluteFloorMs) {
+        this.logger.warn(
+          `REC-01: execution ${c.exec.id} reported still-running by ${addr} but exceeded the absolute fallback — recovering anyway`,
+        );
+        continue;
+      }
+      deferredIds.add(c.exec.id);
+    }
+    return { deferredIds };
   }
 
   private async releaseExecutorSlot(address?: string | null): Promise<void> {

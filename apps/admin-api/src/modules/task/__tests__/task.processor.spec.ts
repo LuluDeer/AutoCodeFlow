@@ -392,4 +392,53 @@ describe("TaskProcessor", () => {
       repairLog.mock.calls.some((c: any) => /Repaired/.test(String(c[0]))),
     ).toBe(false);
   });
+
+  // CONSISTENCY-01: a stalled BullMQ redelivery must not re-claim a row that is
+  // still RUNNING. The claim UPDATE now only accepts pending/failed, so the
+  // redelivered job's claim affects 0 rows and handle() returns idle without a
+  // second dispatch — preventing two live copies of one executionId.
+  it("does not re-claim a RUNNING row: claimable set excludes RUNNING", async () => {
+    // Simulate the real DB: the row is RUNNING, so the guarded claim UPDATE
+    // (`status IN (:...claimable)`) matches nothing → affected=0.
+    execRepo.findOne = jest
+      .fn()
+      .mockResolvedValue({ ...exec, status: ExecutionStatus.RUNNING });
+    execRepo.createQueryBuilder = jest.fn(() => ({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 0 }),
+    }));
+    executorService.dispatch.mockResolvedValue({ status: "accepted" });
+
+    await processor.handle({ data: { executionId: "exec-1" } } as any);
+
+    const claimQb = (execRepo.createQueryBuilder as jest.Mock).mock.results[0]
+      .value;
+    const claimable = (claimQb.andWhere as jest.Mock).mock.calls
+      .map((c: any) => c)
+      .find((c: any) => String(c[0]).includes("status IN"))?.[1]?.claimable as
+      | string[]
+      | undefined;
+    expect(claimable).toBeDefined();
+    expect(claimable).toContain(ExecutionStatus.PENDING);
+    expect(claimable).toContain(ExecutionStatus.FAILED);
+    expect(claimable).not.toContain(ExecutionStatus.RUNNING);
+    // The RUNNING row was not claimable → no dispatch, idle return, and the
+    // finally-block transaction is never opened (no worker-owned overwrite).
+    expect(executorService.dispatch).not.toHaveBeenCalled();
+    expect(dataSource.createQueryRunner).not.toHaveBeenCalled();
+  });
+
+  it("still claims a FAILED row (BullMQ retry path preserved)", async () => {
+    execRepo.findOne = jest
+      .fn()
+      .mockResolvedValue({ ...exec, status: ExecutionStatus.FAILED });
+    executorService.dispatch.mockResolvedValue({ status: "accepted" });
+
+    await processor.handle({ data: { executionId: "exec-1" } } as any);
+
+    expect(executorService.dispatch).toHaveBeenCalled();
+  });
 });

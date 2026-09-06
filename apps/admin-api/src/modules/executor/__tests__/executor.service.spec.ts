@@ -944,6 +944,103 @@ describe("ExecutorService (__tests__)", () => {
       expect(executor.executorStartupId).toBe("startup-new");
       expect(executorRepo.save).toHaveBeenCalledWith(executor);
     });
+
+    // CONSISTENCY-02: heartbeat ingest for the optional liveness report.
+    it("writes sanitized runningExecutionIds reported by the heartbeat", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        runningExecutionIds: null,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.heartbeat("127.0.0.1:3105", {
+        runningExecutionIds: ["exec-a", "exec_b-1"],
+      });
+
+      expect(executor.runningExecutionIds).toEqual(["exec-a", "exec_b-1"]);
+    });
+
+    it("trims runningExecutionIds to 200 and drops ids outside the safe charset", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        runningExecutionIds: null,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const noisy = [
+        ...Array.from({ length: 210 }, (_, i) => `exec-${i}`),
+        "with space",
+        "with/slash",
+        "with.dot",
+        42 as unknown as string,
+        null as unknown as string,
+      ];
+
+      await service.heartbeat("127.0.0.1:3105", { runningExecutionIds: noisy });
+
+      const ids = executor.runningExecutionIds as string[];
+      expect(ids).toHaveLength(200);
+      expect(ids.every((id) => /^[A-Za-z0-9_-]+$/.test(id))).toBe(true);
+      expect(ids).not.toContain("with space");
+      expect(ids).not.toContain("with/slash");
+      expect(ids).not.toContain("with.dot");
+    });
+
+    it("treats a malformed (non-array) report as unreported → null", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        runningExecutionIds: ["prior"],
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.heartbeat("127.0.0.1:3105", {
+        runningExecutionIds: "not-an-array" as unknown as string[],
+      });
+
+      expect(executor.runningExecutionIds).toBeNull();
+    });
+
+    it("leaves the stored set untouched when the field is absent (old executor)", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        runningExecutionIds: ["exec-live-1"],
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.heartbeat("127.0.0.1:3105", { cpuUsage: 10 });
+
+      // Absent field ≠ empty report: must not erase a prior liveness signal.
+      expect(executor.runningExecutionIds).toEqual(["exec-live-1"]);
+    });
+
+    it("warns when deadLetterCount>0 and stays quiet otherwise", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+      await service.heartbeat("127.0.0.1:3105", { deadLetterCount: 3 });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("dead-letter"),
+      );
+
+      warnSpy.mockClear();
+      await service.heartbeat("127.0.0.1:3105", { deadLetterCount: 0 });
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("dead-letter"),
+      );
+      warnSpy.mockRestore();
+    });
   });
 
   describe("findAll", () => {

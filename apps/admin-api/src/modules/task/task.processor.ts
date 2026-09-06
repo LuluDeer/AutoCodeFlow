@@ -69,7 +69,24 @@ export class TaskProcessor extends WorkerHost {
 
     // P0: claim the execution atomically. A KILLED/CANCELLED execution (e.g.
     // killed while still queued) must never be revived by a worker; FAILED is
-    // still claimable because BullMQ retries run through here again.
+    // still claimable because BullMQ retries run through here again (the
+    // executor-restart retry path in executor.service.scheduleRetryAfterRestart
+    // also creates a fresh PENDING row, but the legacy retry semantics that
+    // let a FAILED row be re-dispatched must remain intact — do not drop
+    // FAILED from this list).
+    //
+    // CONSISTENCY-01: RUNNING is deliberately NOT claimable. A stalled BullMQ
+    // job (worker crash / lost lock) is redelivered and re-runs handle() while
+    // the DB row is still RUNNING from the first claim. Previously a second
+    // claim would re-flip RUNNING→RUNNING and dispatch the same executionId to
+    // — possibly — a different executor, so the old executor kept running
+    // unaware: two live copies of one execution, doubled side effects, and the
+    // duration/startTime rewritten by whichever callback arrived first. With
+    // RUNNING excluded, the redelivered job's claim affects 0 rows and the
+    // processor returns idle (no second dispatch). Zombie RUNNING rows left by
+    // a genuinely dead executor are converged by the existing stale sweep
+    // (SchedulerService.recoverStaleExecutions) — the two recovery paths keep
+    // their separate responsibilities.
     const startTime = new Date();
     const claimed = await this.execRepo
       .createQueryBuilder()
@@ -77,11 +94,7 @@ export class TaskProcessor extends WorkerHost {
       .set({ status: ExecutionStatus.RUNNING, startTime })
       .where("id = :id", { id: executionId })
       .andWhere("status IN (:...claimable)", {
-        claimable: [
-          ExecutionStatus.PENDING,
-          ExecutionStatus.RUNNING,
-          ExecutionStatus.FAILED,
-        ],
+        claimable: [ExecutionStatus.PENDING, ExecutionStatus.FAILED],
       })
       .execute();
     if (!claimed.affected) {
