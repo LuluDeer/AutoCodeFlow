@@ -64,14 +64,29 @@ export class NotificationConfigController {
    * treated as an unsaved config override for the tested channel, and the
    * response reflects the real per-channel delivery result instead of an
    * unconditional success:true.
+   *
+   * R2: testChannel is admin-only — it triggers an actual outbound
+   * delivery using the override config and the response carries the
+   * SSRF/transport verdict. A non-admin caller could probe the network
+   * path or exfiltrate config through the same endpoint. The global
+   * RolesGuard reads the @Roles metadata; no extra @UseGuards entry is
+   * needed (same pattern as the channel-config PATCH above).
    */
   @Post("channels/:key/test")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Test notification channel" })
   testChannel(@Param("key") key: string, @Body() body: Record<string, string>) {
     return this.configService.testChannel(key, body);
   }
 
+  /**
+   * R2: sendTest is admin-only — same rationale as testChannel above; the
+   * fan-out hits every requested enabled channel and the response leaks
+   * their actual delivery outcomes (sent/blocked/failed). Limiting it to
+   * ADMIN matches the audit/notification-config posture (N11).
+   */
   @Post("test")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Send test notification to channel" })
   sendTest(
     @Body() body: { channels: string[]; title: string; content: string },

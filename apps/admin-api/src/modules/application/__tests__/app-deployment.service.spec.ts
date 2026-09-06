@@ -50,7 +50,15 @@ describe("AppDeploymentService", () => {
   let service: AppDeploymentService;
   let repo: ReturnType<typeof makeRepo>;
   let versionRepo: ReturnType<typeof makeRepo>;
-  let appService: jest.Mocked<Pick<ApplicationService, "findById" | "update">>;
+  // R1: deploy/rollback read the RAW application row (findByIdRaw) so the
+  // executor receives the unmasked env; the HTTP read surface (findById)
+  // is no longer on these paths.
+  let appService: jest.Mocked<
+    Pick<
+      ApplicationService,
+      "findById" | "findByIdRaw" | "update" | "maskReadSurface" | "maskEnvForRead"
+    >
+  >;
   let executorService: jest.Mocked<
     Pick<ExecutorService, "findOne" | "getExecutorUrl" | "getSharedToken">
   >;
@@ -60,9 +68,14 @@ describe("AppDeploymentService", () => {
     versionRepo = makeRepo();
     appService = {
       findById: jest.fn().mockResolvedValue(mockApp),
+      findByIdRaw: jest.fn().mockResolvedValue(mockApp),
       update: jest.fn((_: string, dto: any) =>
         Promise.resolve({ ...mockApp, ...dto }),
       ),
+      // QA1: pass-through in unit tests — masking semantics are covered by
+      // the dedicated maskEnvForRead / deployment read-surface specs.
+      maskEnvForRead: jest.fn((env: any) => env),
+      maskReadSurface: jest.fn((app: any) => app),
     };
     executorService = {
       findOne: jest.fn().mockResolvedValue(mockExecutor),
@@ -130,6 +143,67 @@ describe("AppDeploymentService", () => {
     });
   });
 
+  // QA1: the deployment read surface (row env, nested application env) and
+  // the version-snapshot env must be masked like the application surface,
+  // while upgrade/stop keep pushing and persisting the RAW env.
+  describe("QA1: env read-surface masking", () => {
+    const SECRET_RE = /pass|secret|token|api[_-]?key/i;
+    const realMask = (env: any) => {
+      if (!env || typeof env !== "object") return env;
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(env as Record<string, string>))
+        out[k] = SECRET_RE.test(k) ? "***" : v;
+      return out;
+    };
+
+    beforeEach(() => {
+      appService.maskEnvForRead.mockImplementation(realMask as any);
+      appService.maskReadSurface.mockImplementation(((app: any) => ({
+        ...app,
+        env: realMask(app.env),
+      })) as any);
+    });
+
+    it("findById masks secret-class keys on the row and the nested application", async () => {
+      const d = {
+        id: "deploy-1",
+        status: DeploymentStatus.RUNNING,
+        env: { API_KEY: "raw-secret", LOG_LEVEL: "debug" },
+        application: {
+          id: "app-1",
+          env: { DB_PASSWORD: "raw-pw", FOO: "bar" },
+        },
+      };
+      repo.findOne.mockResolvedValue(d);
+      const result = await service.findById("deploy-1");
+      expect(result.env).toEqual({ API_KEY: "***", LOG_LEVEL: "debug" });
+      expect(result.application.env).toEqual({
+        DB_PASSWORD: "***",
+        FOO: "bar",
+      });
+    });
+
+    it("upgrade pushes and persists the RAW env (masking never reaches the send path)", async () => {
+      const d = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        executorAddress: mockExecutor.address,
+        env: { API_KEY: "raw-value" },
+      };
+      repo.findOne.mockResolvedValue(d);
+      repo.save.mockImplementation(async (e: any) => e);
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      await service.upgrade("deploy-1");
+
+      expect(appService.findByIdRaw).toHaveBeenCalledWith("app-1");
+      expect(appService.findById).not.toHaveBeenCalled();
+      const savedArg = repo.save.mock.calls[0][0];
+      expect(savedArg.env).toEqual({ API_KEY: "raw-value" });
+    });
+  });
+
   describe("deploy", () => {
     it("creates deployment record and returns it", async () => {
       const saved = {
@@ -146,7 +220,7 @@ describe("AppDeploymentService", () => {
       });
 
       expect(result.id).toBe("deploy-1");
-      expect(appService.findById).toHaveBeenCalledWith("app-1");
+      expect(appService.findByIdRaw).toHaveBeenCalledWith("app-1");
       expect(executorService.findOne).toHaveBeenCalledWith("exec-1");
     });
 

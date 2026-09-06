@@ -573,3 +573,180 @@ describe("EmailChannel", () => {
     );
   });
 });
+
+// ────────────────────────────────────────────────────────────
+// R2: per-call config override
+//
+// testChannel no longer publishes the override to the global
+// ChannelConfigStore — it passes it as a request-scoped argument to
+// the channel's send(). The override wins over the saved+env value for
+// one call only; the store is never mutated.
+// ────────────────────────────────────────────────────────────
+describe("R2: per-call config override reaches the channel without mutating the store", () => {
+  const payload = { title: "Override Test", content: "body" } as any;
+  let sendMailMock: jest.Mock;
+  let createTransportSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    sendMailMock = jest.fn().mockResolvedValue({ messageId: "123" });
+    createTransportSpy = jest
+      .spyOn(nodemailer, "createTransport")
+      .mockReturnValue({ sendMail: sendMailMock } as any);
+  });
+
+  afterEach(() => {
+    createTransportSpy.mockRestore();
+  });
+
+  it("SlackChannel: override wins over saved, env not consulted", async () => {
+    const channel = new SlackChannel(
+      makeConfig({ "notification.slackWebhook": "https://env.example.com" }),
+      makeStore({ slack: { webhookUrl: "https://saved.example.com" } }),
+    );
+    await channel.send(payload, {
+      webhookUrl: "https://override.example.com",
+    });
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      "https://override.example.com",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("SlackChannel: override is request-scoped — store is not written", async () => {
+    const store = makeStore({ slack: { webhookUrl: "https://saved.example.com" } });
+    const channel = new SlackChannel(makeConfig({}), store);
+    await channel.send(payload, {
+      webhookUrl: "https://override.example.com",
+    });
+    // store still has only what the admin PATCH-ed
+    expect(store.get("slack")).toEqual({
+      webhookUrl: "https://saved.example.com",
+    });
+  });
+
+  it("WebhookChannel: override.url wins over saved url (N37 gating stays in effect for saved url, override bypasses)", async () => {
+    const store = new ChannelConfigStore();
+    store.set("webhook", { url: "https://saved.example.com" }, false); // disabled
+    const channel = new WebhookChannel(store);
+    // override bypasses the disabled flag (explicit per-call semantics)
+    await channel.send(payload, undefined, {
+      url: "https://override.example.com",
+    });
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      "https://override.example.com",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("EmailChannel: a '***' override for password falls through to saved secret", async () => {
+    const channel = new EmailChannel(
+      makeConfig({}),
+      makeStore({
+        email: {
+          host: "smtp.saved.com",
+          port: "587",
+          secure: "false",
+          user: "saved@example.com",
+          password: "real-smtp-secret",
+          to: "saved-dest@example.com",
+        },
+      }),
+    );
+    await channel.send(payload, {
+      host: "smtp.unsaved.com",
+      password: "***", // masked echo from the admin form
+    });
+    // nodemailer was created with the SAVED password, not "***"
+    expect(createTransportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: "smtp.unsaved.com",
+        auth: { user: "saved@example.com", pass: "real-smtp-secret" },
+      }),
+    );
+  });
+});
+
+// ────────────────────────────────────────────────────────────
+// R3: SSRF first-hop bypass via redirects — every axios call guarded by
+// assertSafeHttpUrl must pin maxRedirects: 0 so a 3xx cannot hop the
+// validated public URL into a private/metadata target.
+// ────────────────────────────────────────────────────────────
+describe("R3: redirects refused (maxRedirects: 0)", () => {
+  const payload = { title: "R3", content: "body" };
+
+  beforeEach(() => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+  });
+
+  const postConfigOf = (callIndex = 0) =>
+    (mockedAxios.post as jest.Mock).mock.calls[callIndex][2];
+
+  it("DingtalkChannel sends with maxRedirects: 0", async () => {
+    const channel = new DingtalkChannel(
+      makeConfig({
+        "notification.dingtalkWebhook": "https://oapi.dingtalk.com/robot/send",
+      }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("sent");
+    expect(postConfigOf()).toEqual(
+      expect.objectContaining({ maxRedirects: 0 }),
+    );
+  });
+
+  it("WecomChannel sends with maxRedirects: 0", async () => {
+    const channel = new WecomChannel(
+      makeConfig({
+        "notification.wecomWebhook": "https://qyapi.weixin.qq.com/hook",
+      }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("sent");
+    expect(postConfigOf()).toEqual(
+      expect.objectContaining({ maxRedirects: 0 }),
+    );
+  });
+
+  it("SlackChannel sends with maxRedirects: 0", async () => {
+    const channel = new SlackChannel(
+      makeConfig({ "notification.slackWebhook": "https://hooks.slack.com/x" }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("sent");
+    expect(postConfigOf()).toEqual(
+      expect.objectContaining({ maxRedirects: 0 }),
+    );
+  });
+
+  it("WebhookChannel sends with maxRedirects: 0", async () => {
+    const channel = new WebhookChannel(makeStore());
+    await channel.send(payload, "https://target.example.com/hook");
+    expect(postConfigOf()).toEqual(
+      expect.objectContaining({ maxRedirects: 0 }),
+    );
+  });
+
+  it("WebhookChannel: a 302 response is a FAILURE, not a followed hop (status 'failed')", async () => {
+    // With maxRedirects: 0 axios rejects 3xx (validateStatus default
+    // accepts <400 only). The channel must surface that as 'failed' —
+    // the delivery did NOT happen, and no request went to the redirect
+    // target. QA5: a 3xx is a deterministic reject — withRetry no longer
+    // burns the 3-attempt backoff on it, so exactly ONE request is made.
+    const redirectErr = Object.assign(new Error("Request failed with status code 302"), {
+      response: { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data/" } },
+    });
+    mockedAxios.post = jest.fn().mockRejectedValue(redirectErr);
+    const channel = new WebhookChannel(makeStore());
+    await expect(
+      channel.send(payload, "https://redirecting.example.com/hook"),
+    ).resolves.toBe("failed");
+    // Exactly one attempt, and it targeted the ORIGINAL validated URL —
+    // the Location header was never followed.
+    const urls = (mockedAxios.post as jest.Mock).mock.calls.map((c) => c[0]);
+    expect(urls).toHaveLength(1); // QA5: 3xx is deterministic, not retried
+    expect(urls[0]).toBe("https://redirecting.example.com/hook");
+  });
+});

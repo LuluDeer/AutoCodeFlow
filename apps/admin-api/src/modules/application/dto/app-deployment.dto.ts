@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsObject,
   IsUUID,
+  IsInt,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { RunMode } from "../entities/app-deployment.entity";
@@ -51,8 +52,11 @@ export class DeploymentHeartbeatDto {
   })
   status: string;
 
-  @ApiPropertyOptional({ description: "Process PID" })
+  // R17: pid is persisted/compared as a number — without @IsInt a string
+  // like "123" (or an object) would pass validation and land in the row.
+  @ApiPropertyOptional({ description: "Process PID", type: Number })
   @IsOptional()
+  @IsInt()
   pid?: number;
 
   @ApiPropertyOptional()

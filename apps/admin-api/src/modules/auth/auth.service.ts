@@ -51,6 +51,17 @@ export class AuthService {
       );
     }
 
+    // R10: the lock window has expired — atomically reset the fail counter
+    // BEFORE the password check. loginFailCount still sits at MAX_FAIL from
+    // the original lockout, so without this a single fresh failure would
+    // re-trip the threshold and re-lock for another full window (effectively
+    // a permanent lockout for anyone who mistypes once after expiry). The
+    // conditional UPDATE only clears a genuinely expired lock, so a
+    // concurrent request cannot race a reset against an active window.
+    if (user && user.lockedUntil) {
+      await this.usersService.clearExpiredLock(user.id);
+    }
+
     // F-4: always run the full bcrypt compare — for an unknown user compare
     // against a pre-computed dummy hash so both paths take the same time and
     // usernames cannot be enumerated via response timing.
