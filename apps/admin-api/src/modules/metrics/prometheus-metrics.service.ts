@@ -1,7 +1,10 @@
 import { forwardRef, Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Counter, Gauge, Registry, collectDefaultMetrics } from "prom-client";
-import { SchedulerMetricsService } from "../scheduler/scheduler-metrics.service";
+import {
+  SchedulerMetricsService,
+  TRIGGER_LATENCY_BUCKETS_MS,
+} from "../scheduler/scheduler-metrics.service";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import {
   EXECUTION_CALLBACK_AUTH_RESULTS,
@@ -62,6 +65,10 @@ export class PrometheusMetricsService {
   private readonly runtimeCounters: Record<RuntimeCounterName, Counter>;
   /** BUG-05：运行时 gauge（SSE 活跃流/上限，瞬时值 set() 语义） */
   private readonly runtimeGauges: Record<RuntimeGaugeName, Gauge>;
+  /** CORE-06：调度触发延迟直方图（bucket 累计计数 + sum/count） */
+  private readonly triggerLatencyBuckets: Counter;
+  private readonly triggerLatencySum: Counter;
+  private readonly triggerLatencyCount: Counter;
   private readonly _enabled: boolean;
   /** N31: 进行中的 render（并发抓取共享同一次重建，见 render 注释） */
   private renderInFlight: Promise<string> | null = null;
@@ -162,6 +169,22 @@ export class PrometheusMetricsService {
         }),
       ]),
     ) as Record<RuntimeGaugeName, Gauge>;
+    this.triggerLatencyBuckets = new Counter({
+      name: "autoflow_scheduler_trigger_latency_ms_bucket",
+      help: "Scheduled trigger fire-to-enqueued latency cumulative buckets (le in ms; +Inf = count)",
+      labelNames: ["le"] as const,
+      registers: [this.registry],
+    });
+    this.triggerLatencySum = new Counter({
+      name: "autoflow_scheduler_trigger_latency_ms_sum",
+      help: "Cumulative scheduled trigger fire-to-enqueued latency in milliseconds",
+      registers: [this.registry],
+    });
+    this.triggerLatencyCount = new Counter({
+      name: "autoflow_scheduler_trigger_latency_ms_count",
+      help: "Scheduled triggers recorded in the latency histogram",
+      registers: [this.registry],
+    });
   }
 
   /** METRICS_PROMETHEUS_ENABLED 开关（false 时控制器对端点返回 404） */
@@ -269,6 +292,25 @@ export class PrometheusMetricsService {
     for (const name of Object.keys(this.runtimeGauges) as RuntimeGaugeName[]) {
       this.runtimeGauges[name].set(gaugesSnapshot.get(name) ?? 0);
     }
+
+    // CORE-06：触发延迟直方图——le 累计桶 + sum/count（reset+inc 快照模式，
+    // counter 单调语义成立；+Inf 桶显式渲染保持 series 集合稳定）
+    const lat = s.triggerLatencyBuckets ?? [];
+    this.triggerLatencyBuckets.reset();
+    let prevCum = 0;
+    for (let i = 0; i < TRIGGER_LATENCY_BUCKETS_MS.length; i++) {
+      const cum = lat[i] ?? 0;
+      this.triggerLatencyBuckets.inc(
+        { le: String(TRIGGER_LATENCY_BUCKETS_MS[i]) },
+        cum - prevCum,
+      );
+      prevCum = cum;
+    }
+    this.triggerLatencyBuckets.inc({ le: "+Inf" }, s.triggerLatencyCount);
+    this.triggerLatencySum.reset();
+    this.triggerLatencySum.inc(s.triggerLatencySumMs);
+    this.triggerLatencyCount.reset();
+    this.triggerLatencyCount.inc(s.triggerLatencyCount);
 
     const depth = await this.schedulerService.getQueueDepth();
     // getQueueDepth 在 Redis 不可用时返回全 null：以 autoflow_queue_up=0
