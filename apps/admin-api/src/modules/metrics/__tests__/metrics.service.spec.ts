@@ -1,4 +1,5 @@
 import { Test, TestingModule } from "@nestjs/testing";
+import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { MetricsService } from "../metrics.service";
 import { SchedulerService } from "../../scheduler/scheduler.service";
@@ -44,6 +45,8 @@ describe("MetricsService", () => {
     getSchedulerMetrics: jest.Mock;
     getStats: jest.Mock;
   };
+  // ARCH-27: ConfigService 桩（app.hostname）
+  let metricsConfig: { get: jest.Mock };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -60,6 +63,12 @@ describe("MetricsService", () => {
             getStats: jest.fn(),
           },
         },
+        // ARCH-27: instance.hostname 经 ConfigService 读 app.hostname ——
+        // spec 注入桩值。
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("test-hostname") },
+        },
       ],
     }).compile();
 
@@ -69,6 +78,7 @@ describe("MetricsService", () => {
     executorRepo = module.get(getRepositoryToken(Executor));
     reportRepo = module.get(getRepositoryToken(ExecutionReport));
     schedulerService = module.get(SchedulerService);
+    metricsConfig = module.get(ConfigService);
   });
 
   describe("getSummary", () => {
@@ -300,6 +310,8 @@ describe("MetricsService", () => {
       expect(result.scheduler.isLeader).toBe(true);
       expect(result.scheduler.activeTimers).toBe(2);
       expect(result.instance.pid).toBe(process.pid);
+      // ARCH-27: hostname 来自 ConfigService（app.hostname），不再直读 env。
+      expect(result.instance.hostname).toBe("test-hostname");
       expect(schedulerService.getSchedulerMetrics).toHaveBeenCalledTimes(1);
     });
 
@@ -315,6 +327,21 @@ describe("MetricsService", () => {
 
       expect(result.counters).toEqual({ ticks: 1 });
       expect(result.scheduler).toEqual({ isLeader: false });
+    });
+
+    // ARCH-27: OS/容器注入的 hostname 未配置（get 返回 undefined）时回退空串。
+    it("falls back to an empty instance.hostname when app.hostname is unset", async () => {
+      schedulerService.getSchedulerMetrics.mockResolvedValue({
+        counters: {},
+        derived: {},
+        queue: {},
+      });
+      schedulerService.getStats.mockReturnValue({});
+      metricsConfig.get.mockReturnValue(undefined);
+
+      const result = await service.getSchedulerMetrics();
+
+      expect(result.instance.hostname).toBe("");
     });
   });
 });

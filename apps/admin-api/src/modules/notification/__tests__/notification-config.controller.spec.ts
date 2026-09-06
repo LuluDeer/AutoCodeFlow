@@ -243,7 +243,10 @@ describe("NotificationConfigController", () => {
         providers: [
           { provide: NotificationConfigService, useFactory: mockConfigService },
           NotificationService,
-          { provide: NotificationSilenceService, useFactory: mockSilenceService },
+          {
+            provide: NotificationSilenceService,
+            useFactory: mockSilenceService,
+          },
           { provide: WecomChannel, useFactory: stubChannel },
           { provide: DingtalkChannel, useFactory: stubChannel },
           { provide: EmailChannel, useFactory: stubChannel },

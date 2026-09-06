@@ -1,3 +1,4 @@
+import { ConfigService } from "@nestjs/config";
 import {
   LogRetentionCleanupService,
   DEFAULT_LOG_RETENTION_DAYS,
@@ -17,22 +18,17 @@ const mockRepo = () => {
 describe("LogRetentionCleanupService", () => {
   let service: LogRetentionCleanupService;
   let repo: ReturnType<typeof mockRepo>;
-  const ORIGINAL_ENV = process.env.LOG_RETENTION_DAYS;
+  let configService: { get: jest.Mock };
 
   beforeEach(() => {
-    delete process.env.LOG_RETENTION_DAYS;
     repo = mockRepo();
+    // ARCH-27: 保留期改为经 ConfigService 读 logRetention.days —— spec 用
+    // 桩 ConfigService 提供配置值，不再操纵 process.env。
+    configService = { get: jest.fn().mockReturnValue(undefined) };
     service = new LogRetentionCleanupService(
       repo as unknown as import("typeorm").Repository<ExecutionLogLine>,
+      configService as unknown as ConfigService,
     );
-  });
-
-  afterEach(() => {
-    if (ORIGINAL_ENV === undefined) {
-      delete process.env.LOG_RETENTION_DAYS;
-    } else {
-      process.env.LOG_RETENTION_DAYS = ORIGINAL_ENV;
-    }
   });
 
   /** 取第 n 次批删除的 where 参数（cutoff / batchSize） */
@@ -97,35 +93,45 @@ describe("LogRetentionCleanupService", () => {
     });
   });
 
-  describe("cleanupExpiredLines — 保留期计算", () => {
-    it("未配置时默认保留 30 天，cutoff = now - 30d", async () => {
+  describe("cleanupExpiredLines — 保留期计算（ARCH-27: 经 ConfigService）", () => {
+    it("未配置（logRetention.days 缺失）时默认保留 30 天，cutoff = now - 30d", async () => {
       const now = new Date("2026-09-02T03:30:00.000Z");
       await service.cleanupExpiredLines(now);
       const { cutoff } = getBatchCall(0);
       expect(cutoff.getTime()).toBe(
         now.getTime() - DEFAULT_LOG_RETENTION_DAYS * 86_400_000,
       );
+      expect(configService.get).toHaveBeenCalledWith("logRetention.days");
     });
 
-    it("LOG_RETENTION_DAYS=7 时 cutoff = now - 7d", async () => {
-      process.env.LOG_RETENTION_DAYS = "7";
+    it("logRetention.days=7（Joi 校验后的数字）时 cutoff = now - 7d", async () => {
+      configService.get.mockImplementation((key: string) =>
+        key === "logRetention.days" ? 7 : undefined,
+      );
       const now = new Date("2026-09-02T03:30:00.000Z");
       await service.cleanupExpiredLines(now);
       const { cutoff } = getBatchCall(0);
       expect(cutoff.getTime()).toBe(now.getTime() - 7 * 86_400_000);
     });
 
-    it("非法配置（abc / 0 / 负数）回退默认 30 天", async () => {
+    it("非法配置（NaN / 0 / 负数）回退默认 30 天", async () => {
       const now = new Date("2026-09-02T03:30:00.000Z");
-      for (const bad of ["abc", "0", "-5"]) {
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => {});
+      for (const bad of [NaN, 0, -5]) {
         repo.createQueryBuilder.mockClear();
-        process.env.LOG_RETENTION_DAYS = bad;
+        configService.get.mockImplementation((key: string) =>
+          key === "logRetention.days" ? bad : String(bad),
+        );
         await service.cleanupExpiredLines(now);
         const { cutoff } = getBatchCall(0);
         expect(cutoff.getTime()).toBe(
           now.getTime() - DEFAULT_LOG_RETENTION_DAYS * 86_400_000,
         );
       }
+      expect(warnSpy).toHaveBeenCalledTimes(3);
+      warnSpy.mockRestore();
     });
 
     it("where 子句使用参数化 cutoff（无 SQL 注入面）", async () => {
