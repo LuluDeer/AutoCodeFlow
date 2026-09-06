@@ -372,7 +372,7 @@ export default function ExecutorDetailPage() {
               {/* 左轴：CPU/内存百分比；右轴：并发任务数（独立量纲） */}
               <YAxis yAxisId="pct" domain={[0, 100]} width={36} tick={{ fontSize: 11 }} />
               <YAxis yAxisId="cnt" orientation="right" allowDecimals={false} width={36} tick={{ fontSize: 11 }} />
-              <RechartTooltip labelFormatter={trendTooltipLabel} labelStyle={{ fontSize: 12 }} />
+              <RechartTooltip labelFormatter={(label) => trendTooltipLabel(String(label))} labelStyle={{ fontSize: 12 }} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Line yAxisId="pct" type="monotone" dataKey="cpuUsage" name="CPU %" stroke="#1677ff" strokeWidth={1.5} dot={false} connectNulls />
               <Line yAxisId="pct" type="monotone" dataKey="memUsage" name="内存 %" stroke="#722ed1" strokeWidth={1.5} dot={false} connectNulls />
