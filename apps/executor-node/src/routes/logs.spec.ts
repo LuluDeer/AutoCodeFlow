@@ -16,7 +16,7 @@ jest.mock('../config', () => ({
 }));
 jest.mock('../logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
 
-import { logsRouter, executorAuthMiddleware, getExecutorAuthToken } from './logs';
+import { logsRouter, getExecutorAuthToken } from './logs';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 
@@ -33,15 +33,12 @@ function mockLogFile(content: string) {
 // ---------------------------------------------------------------------------
 const TEST_TOKEN = 'test-secret-token';
 
-// App without auth middleware
+// App without auth middleware — the /api/* Bearer gate is verifyToken
+// (middleware/auth.ts), exercised in its own spec; the logs route itself is
+// tested here without auth.
 const appNoAuth = express();
 appNoAuth.use(express.json());
 appNoAuth.use('/api', logsRouter);
-
-// App with auth middleware
-const appWithAuth = express();
-appWithAuth.use(express.json());
-appWithAuth.use('/api', executorAuthMiddleware, logsRouter);
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -56,72 +53,28 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// executorAuthMiddleware unit tests
+// getExecutorAuthToken — token source resolution (live code, used by /health).
+// The former legacy logs-route Bearer middleware checks are covered against the
+//现役 gate verifyToken in middleware/auth.spec.ts.
 // ---------------------------------------------------------------------------
-describe('executorAuthMiddleware', () => {
+describe('getExecutorAuthToken', () => {
   it('prefers EXECUTOR_SHARED_TOKEN over legacy EXECUTOR_SECRET', () => {
     process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
     process.env.EXECUTOR_SECRET = 'legacy-secret-token';
-
     expect(getExecutorAuthToken()).toBe(TEST_TOKEN);
-
-    const req = { headers: { authorization: 'Bearer legacy-secret-token' } } as any;
-    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() } as any;
-    const next = jest.fn();
-
-    executorAuthMiddleware(req, res, next);
-
-    expect(next).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(401);
   });
 
-  it('calls next() immediately when no secret is configured', () => {
+  it('falls back to legacy EXECUTOR_SECRET when the shared token is unset', () => {
     delete process.env.EXECUTOR_SHARED_TOKEN;
-    const req = {} as any;
-    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() } as any;
-    const next = jest.fn();
-
-    executorAuthMiddleware(req, res, next);
-
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(res.status).not.toHaveBeenCalled();
+    process.env.EXECUTOR_SECRET = 'legacy-secret-token';
+    expect(getExecutorAuthToken()).toBe('legacy-secret-token');
   });
 
-  it('returns 401 when secret is set but no Authorization header is provided', () => {
-    process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
-    const req = { headers: {} } as any;
-    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() } as any;
-    const next = jest.fn();
-
-    executorAuthMiddleware(req, res, next);
-
-    expect(next).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringMatching(/Invalid or missing executor token/) }));
-  });
-
-  it('returns 401 when wrong token is provided', () => {
-    process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
-    const req = { headers: { authorization: 'Bearer wrong-token' } } as any;
-    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() } as any;
-    const next = jest.fn();
-
-    executorAuthMiddleware(req, res, next);
-
-    expect(next).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(401);
-  });
-
-  it('calls next() when correct Bearer token is provided', () => {
-    process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
-    const req = { headers: { authorization: `Bearer ${TEST_TOKEN}` } } as any;
-    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() } as any;
-    const next = jest.fn();
-
-    executorAuthMiddleware(req, res, next);
-
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(res.status).not.toHaveBeenCalled();
+  it('returns empty string when no token is configured (dev mode)', () => {
+    delete process.env.EXECUTOR_SHARED_TOKEN;
+    delete process.env.EXECUTOR_SECRET;
+    // config mock for this spec carries no `token`, so the getter bottoms out.
+    expect(getExecutorAuthToken()).toBe('');
   });
 });
 
@@ -252,27 +205,5 @@ describe('GET /api/logs/:executionId', () => {
     const res = await request(appNoAuth).get('/api/logs/exec-error');
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/Failed to read log file/);
-  });
-
-  it('auth middleware blocks request with wrong token for logs route', async () => {
-    process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
-    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    mockLogFile('log line\n');
-
-    const res = await request(appWithAuth)
-      .get('/api/logs/exec-authtest')
-      .set('Authorization', 'Bearer wrong');
-    expect(res.status).toBe(401);
-  });
-
-  it('auth middleware allows request with correct token for logs route', async () => {
-    process.env.EXECUTOR_SHARED_TOKEN = TEST_TOKEN;
-    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
-    mockLogFile('log line\n');
-
-    const res = await request(appWithAuth)
-      .get('/api/logs/exec-authtest')
-      .set('Authorization', `Bearer ${TEST_TOKEN}`);
-    expect(res.status).toBe(200);
   });
 });
