@@ -23,6 +23,11 @@ interface Executor {
   totalTaskCount?: number;
   failedTaskCount?: number;
   lastHeartbeat?: string;
+  // CONSISTENCY-02: executionIds the executor reported on its last
+  // heartbeat. Same tri-state as admin-web's ExecutorDetailPage:
+  // null/undefined = older executor that never reports it, [] = online and
+  // idle, non-empty = those executions are currently running.
+  runningExecutionIds?: string[] | null;
 }
 
 function statusColor(s: string): string {
@@ -41,6 +46,18 @@ function heartbeatAge(ts?: string): string {
 
 function pct(v?: number | null): string {
   return v === null || v === undefined ? '-' : `${v}%`;
+}
+
+// CONSISTENCY-02 (U11): tri-state rendering matching admin-web's
+// ExecutorDetailPage semantics for the heartbeat-reported id list.
+function runningExecutionIdsText(ids?: string[] | null): string {
+  if (ids === null || ids === undefined) {
+    return chalk.gray('not reported (older executor)');
+  }
+  if (ids.length === 0) {
+    return chalk.gray('idle (none running)');
+  }
+  return `${ids.length} running: ${ids.join(', ')}`;
 }
 
 export function executorsCommand(): Command {
@@ -97,6 +114,7 @@ export function executorsCommand(): Command {
         console.log('  Tags              :', e.tags?.length ? e.tags.join(', ') : '-');
         console.log('  Description       :', e.description ?? '-');
         console.log('  Running Tasks     :', e.runningTaskCount ?? 0);
+        console.log('  Running Executions:', runningExecutionIdsText(e.runningExecutionIds));
         console.log('  Max Concurrent    :', e.maxConcurrentTasks ?? '-');
         console.log('  Total Tasks       :', e.totalTaskCount ?? 0);
         console.log('  Failed Tasks      :', e.failedTaskCount ?? 0);

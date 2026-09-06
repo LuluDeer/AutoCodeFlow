@@ -21,6 +21,12 @@ interface Execution {
   duration?: number;
   createdAt: string;
   aiAnalysis?: string;
+  // U11: aligned with admin-api task-execution.entity.ts — the executor
+  // callback records these on terminal executions; without them the CLI
+  // silently dropped the failure cause.
+  exitCode?: number | null;
+  failureReason?: string | null;
+  errorMessage?: string | null;
 }
 
 interface PaginatedTasks {
@@ -137,8 +143,10 @@ export function tasksCommand(): Command {
         });
         spinner.stop();
         const table = new Table({
-          head: ['Exec ID', 'Status', 'Duration', 'Started'],
-          colWidths: [14, 12, 12, 25],
+          // U11: exitCode column — distinguishes "failed by callback
+          // report" (exit 0 / null) from "process died" (non-zero).
+          head: ['Exec ID', 'Status', 'Duration', 'Exit', 'Started'],
+          colWidths: [14, 12, 12, 6, 25],
           style: { head: ['cyan'] },
         });
         for (const e of data.list ?? []) {
@@ -146,6 +154,7 @@ export function tasksCommand(): Command {
             e.id.slice(0, 12),
             statusColor(e.status),
             e.duration ? `${e.duration}ms` : '-',
+            e.exitCode ?? '-',
             new Date(e.createdAt).toLocaleString(),
           ]);
         }
@@ -490,6 +499,19 @@ async function pollExecution(execId: string): Promise<void> {
           spinner.succeed(`Execution ${exec.status} in ${exec.duration ?? '?'}ms`);
         } else {
           spinner.fail(`Execution ${exec.status}`);
+          // U11: surface the structured failure cause the executor reported
+          // (exitCode / failureReason) — previously only aiAnalysis printed,
+          // so a non-zero exit or timeout reason was invisible without
+          // digging through `acf task logs`.
+          if (exec.exitCode !== null && exec.exitCode !== undefined) {
+            console.log(chalk.yellow('  Exit code      :'), exec.exitCode);
+          }
+          if (exec.failureReason) {
+            console.log(chalk.yellow('  Failure reason :'), exec.failureReason);
+          }
+          if (exec.errorMessage) {
+            console.log(chalk.yellow('  Error          :'), exec.errorMessage);
+          }
           if (exec.aiAnalysis) {
             console.log(chalk.yellow('\nAI Analysis:'), exec.aiAnalysis);
           }

@@ -10,6 +10,7 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<{ content: Array<{
 
 interface RegisteredTool {
   name: string;
+  description: string;
   schema: Record<string, unknown>;
   handler: ToolHandler;
 }
@@ -28,8 +29,8 @@ function setup(): { tools: Map<string, RegisteredTool>; call: ReturnType<typeof 
   const registered = new Map<string, RegisteredTool>();
   const call = vi.fn().mockResolvedValue({ ok: true });
   const fakeServer = {
-    tool: (name: string, _description: string, _schema: Record<string, z.ZodTypeAny>, handler: ToolHandler) => {
-      registered.set(name, { name, schema: _schema, handler });
+    tool: (name: string, description: string, _schema: Record<string, z.ZodTypeAny>, handler: ToolHandler) => {
+      registered.set(name, { name, description, schema: _schema, handler });
     },
   };
   for (const fn of registerFns) fn(fakeServer as never, call as never);
@@ -64,7 +65,7 @@ describe('tool registry surface', () => {
       // deployments
       'list_deployments', 'deploy_application', 'upgrade_deployment', 'stop_deployment',
       // executors
-      'list_executors', 'get_executor',
+      'list_executors', 'get_executor', 'get_executor_metrics',
       // audit
       'list_audit_logs',
     ];
@@ -311,6 +312,27 @@ describe('get_executor', () => {
   it('list_executors GETs /executors', async () => {
     await tools.get('list_executors')!.handler({});
     expect(call).toHaveBeenCalledWith('GET', '/executors');
+  });
+
+  // U12: get_executor only hits GET /executors/:id — the 7-day performance
+  // metrics live on /executors/:id/metrics and are exposed as their own tool.
+  it('get_executor description no longer promises performance metrics', () => {
+    expect(tools.get('get_executor')!.description).not.toMatch(/performance metrics/);
+  });
+
+  it('get_executor_metrics GETs /executors/:id/metrics and passes the body through', async () => {
+    const metrics = {
+      executor: { id: 'e1', address: 'x:1', status: 'online' },
+      sevenDayStats: {
+        totalExecutions: 10, successful: 9, failed: 1,
+        successRate: 90, averageDurationMs: 120,
+      },
+      current: { runningTaskCount: 1, cpuUsage: 10, memUsage: 20 },
+    };
+    call.mockResolvedValueOnce(metrics);
+    const r = await tools.get('get_executor_metrics')!.handler({ executorId: 'e1' });
+    expect(call).toHaveBeenCalledWith('GET', '/executors/e1/metrics');
+    expect(parse(r)).toEqual(metrics);
   });
 });
 

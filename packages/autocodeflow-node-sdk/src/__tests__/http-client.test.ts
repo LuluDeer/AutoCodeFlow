@@ -15,7 +15,10 @@ describe('HttpClient', () => {
     post: jest.Mock;
     put: jest.Mock;
     delete: jest.Mock;
-    interceptors: { request: { use: jest.Mock } };
+    interceptors: {
+      request: { use: jest.Mock };
+      response: { use: jest.Mock };
+    };
   };
 
   beforeEach(() => {
@@ -24,7 +27,7 @@ describe('HttpClient', () => {
       post: jest.fn(),
       put: jest.fn(),
       delete: jest.fn(),
-      interceptors: { request: { use: jest.fn() } },
+      interceptors: { request: { use: jest.fn() }, response: { use: jest.fn() } },
     };
     mockedAxios.create.mockReturnValue(mockInstance as any);
   });
@@ -183,6 +186,80 @@ describe('HttpClient', () => {
       const result = await client.delete('/items/1');
       expect(mockInstance.delete).toHaveBeenCalledWith('/items/1', undefined);
       expect(result).toEqual({ deleted: true });
+    });
+  });
+
+  // U14: admin-api's global ResponseInterceptor wraps every body in
+  // { code, message, data }. The helpers must unwrap it (callback callers
+  // read `results` off the resolved value) and keep failure messages
+  // readable by surfacing the envelope's `message`.
+  describe('admin-api envelope unwrapping (U14)', () => {
+    it('get() unwraps the { code, message, data } envelope', async () => {
+      mockInstance.get.mockResolvedValue({
+        data: { code: 200, message: 'success', data: { items: [1, 2] } },
+      });
+      const client = new HttpClient(BASE_URL, TOKEN);
+      expect(await client.get('/items')).toEqual({ items: [1, 2] });
+    });
+
+    it('post() to the callback endpoint resolves with { results }', async () => {
+      mockInstance.post.mockResolvedValue({
+        data: {
+          code: 200,
+          message: 'success',
+          data: { results: [{ executionId: 'e1', success: true }] },
+        },
+      });
+      const client = new HttpClient(BASE_URL, TOKEN);
+      const result = (await client.post('/api/executions/callback', [
+        { executionId: 'e1', status: 'success' },
+      ])) as { results: Array<{ executionId: string; success: boolean }> };
+      expect(result.results).toEqual([{ executionId: 'e1', success: true }]);
+    });
+
+    it('put()/delete() unwrap the envelope too', async () => {
+      mockInstance.put.mockResolvedValue({
+        data: { code: 200, message: 'success', data: { updated: true } },
+      });
+      mockInstance.delete.mockResolvedValue({
+        data: { code: 200, message: 'success', data: { deleted: true } },
+      });
+      const client = new HttpClient(BASE_URL, TOKEN);
+      expect(await client.put('/items/1', {})).toEqual({ updated: true });
+      expect(await client.delete('/items/1')).toEqual({ deleted: true });
+    });
+
+    it('non-enveloped bodies pass through unchanged', async () => {
+      mockInstance.get.mockResolvedValue({ data: { results: [] } });
+      const client = new HttpClient(BASE_URL, TOKEN);
+      expect(await client.get('/x')).toEqual({ results: [] });
+    });
+
+    it('registers a response error interceptor that surfaces the server message', async () => {
+      new HttpClient(BASE_URL, TOKEN);
+      expect(mockInstance.interceptors.response.use).toHaveBeenCalledTimes(1);
+      const onRejected = mockInstance.interceptors.response.use.mock.calls[0][1];
+      const error = Object.assign(
+        new Error('Request failed with status code 401'),
+        {
+          response: {
+            status: 401,
+            data: { code: 401, message: 'Invalid or expired execution callback token' },
+          },
+        },
+      );
+      await expect(onRejected(error)).rejects.toBe(error);
+      expect(error.message).toBe(
+        'Request failed with status code 401: Invalid or expired execution callback token',
+      );
+    });
+
+    it('error interceptor leaves non-envelope errors untouched', async () => {
+      new HttpClient(BASE_URL, TOKEN);
+      const onRejected = mockInstance.interceptors.response.use.mock.calls[0][1];
+      const error = Object.assign(new Error('Network Error'), { response: undefined });
+      await expect(onRejected(error)).rejects.toBe(error);
+      expect(error.message).toBe('Network Error');
     });
   });
 
