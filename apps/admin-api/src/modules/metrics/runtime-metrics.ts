@@ -114,8 +114,7 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
  * 实例数 × SSE_MAX_STREAMS_GLOBAL（线性叠加），由抓取方按 instance 聚合。
  */
 export type RuntimeGaugeName =
-  | "autoflow_sse_streams_active"
-  | "autoflow_sse_streams_limit";
+  "autoflow_sse_streams_active" | "autoflow_sse_streams_limit";
 
 export interface RuntimeGaugeSpec {
   help: string;
