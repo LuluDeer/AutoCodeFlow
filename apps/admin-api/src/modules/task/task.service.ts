@@ -49,6 +49,9 @@ import {
 } from "../notification/notification.service";
 import { AuditService } from "../audit/audit.service";
 import { S3LogStorage } from "./log-storage/s3-log-storage";
+// 可观测性补齐轮：运行时计数器埋点入口（模块级纯内存自增，无模块环，
+// 见 metrics/runtime-metrics-entry.ts 注释）。
+import { recordRuntime } from "../metrics/runtime-metrics-entry";
 
 /**
  * Detects truncation markers inserted by executors when callback logs exceed
@@ -757,11 +760,15 @@ export class TaskService {
     const currentForExec = this.sseStreamsPerExecution.get(execId) ?? 0;
 
     if (currentForExec >= perExec) {
+      // 可观测性补齐：并发拒绝计数（autoflow_sse_streams_rejected_total）——
+      // 只在超限抛错路径记录，成功占用不计数。
+      recordRuntime("autoflow_sse_streams_rejected_total");
       throw new ServiceUnavailableException(
         `Too many concurrent log streams for execution ${execId} (max ${perExec})`,
       );
     }
     if (this.sseStreamsGlobal >= global) {
+      recordRuntime("autoflow_sse_streams_rejected_total");
       throw new ServiceUnavailableException(
         `Too many concurrent log streams server-wide (max ${global})`,
       );
@@ -1421,6 +1428,10 @@ export class TaskService {
           where: { id: cb.executionId },
         });
         if (!execution) {
+          // 可观测性补齐：callback 业务结果分类计数（not_found）
+          recordRuntime("autoflow_callback_business_total", {
+            result: "not_found",
+          });
           results.push({
             executionId: cb.executionId,
             success: false,
@@ -1436,6 +1447,12 @@ export class TaskService {
           execution.executorAddress &&
           cb.executorAddress !== execution.executorAddress
         ) {
+          // 可观测性补齐：地址不符与缺地址分别归类计数
+          recordRuntime("autoflow_callback_business_total", {
+            result: cb.executorAddress
+              ? "address_mismatch"
+              : "address_mismatch_missing_address",
+          });
           results.push({
             executionId: cb.executionId,
             success: false,
@@ -1475,6 +1492,12 @@ export class TaskService {
             patch.errorMessage = cb.errorMessage;
           }
         }
+        // 改动2（可观测性补齐）：回调上报的原始退出码入库溯源（终态成败均
+        // 适用）。DTO 层已 @IsInt 校验，这里再运行态兜底（handleCallback 还有
+        // 内部调用方）：非整数按缺省处理，不写入 patch——绝不把已有值覆盖成 null。
+        if (typeof cb.exitCode === "number" && Number.isInteger(cb.exitCode)) {
+          patch.exitCode = cb.exitCode;
+        }
         if (cb.logs) {
           patch.logs = cb.logs;
         }
@@ -1505,9 +1528,23 @@ export class TaskService {
             where: { id: cb.executionId },
           });
           if (fresh) await this.persistCallbackLogsIfMissing(fresh, cb);
+          // 可观测性补齐：重复回调（已终态）业务分类计数；终态结果不计数——
+          // 执行结果 series 只在唯一 winner 的 UPDATE 命中处记录。
+          recordRuntime("autoflow_callback_business_total", {
+            result: "duplicate",
+          });
           results.push({ executionId: cb.executionId, success: true });
           continue;
         }
+
+        // 可观测性补齐：终态条件 UPDATE 命中（winner）——业务受理计数 +
+        // 按最终 status 记录执行结果（success/failed/timeout）。
+        recordRuntime("autoflow_callback_business_total", {
+          result: "accepted",
+        });
+        recordRuntime("autoflow_execution_result_total", {
+          status: patch.status,
+        });
 
         // winner 行（RETURNING 结果）为权威：地址/日志持久化都以此为准。
         const winnerRow = Array.isArray((updated as { raw?: unknown }).raw)
@@ -1565,6 +1602,9 @@ export class TaskService {
 
         results.push({ executionId: cb.executionId, success: true });
       } catch (error: unknown) {
+        // 可观测性补齐：per-item 异常兜底分支（如日志持久化抛错）——业务
+        // 分类计 error；执行结果不计数（终态可能已写入，由 winner 处计数）。
+        recordRuntime("autoflow_callback_business_total", { result: "error" });
         results.push({
           executionId: cb.executionId,
           success: false,

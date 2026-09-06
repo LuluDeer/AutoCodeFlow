@@ -7,8 +7,22 @@ import { DingtalkChannel } from "../channels/dingtalk.channel";
 import { EmailChannel } from "../channels/email.channel";
 import { SlackChannel } from "../channels/slack.channel";
 import { WebhookChannel } from "../channels/webhook.channel";
+// 可观测性补齐轮：投递结果计数模块级快照（埋点断言入口）
+import {
+  getRuntimeCountersSnapshot,
+  resetRuntimeMetrics,
+} from "../../metrics/runtime-metrics-entry";
 
 const mockChannel = () => ({ send: jest.fn() });
+
+/** 读取运行时计数（模块级单调快照；本文件用例内 afterEach 重置） */
+const runtimeCount = (
+  name: string,
+  labels: Record<string, string> = {},
+): number =>
+  getRuntimeCountersSnapshot()
+    .get(name as never)
+    ?.get(JSON.stringify(labels)) ?? 0;
 
 describe("NotificationService", () => {
   let service: NotificationService;
@@ -284,6 +298,76 @@ describe("NotificationService", () => {
         webhook: "skipped",
       });
       logSpy.mockRestore();
+    });
+  });
+
+  // 可观测性补齐轮：fan-out 的 per-channel 投递结果计数
+  // （autoflow_notification_delivery_total{channel,result}）。fail-open
+  // 语义不变——埋点只记计数，不改变返回与控制流。
+  describe("sendToChannels — delivery outcome counters", () => {
+    // 模块级计数跨用例/文件共享，进入本组用例前显式重置保证隔离。
+    beforeEach(() => {
+      resetRuntimeMetrics();
+    });
+    afterEach(() => {
+      resetRuntimeMetrics();
+    });
+    const payload = { title: "t", content: "c", level: "info" as const };
+    const deliveryCount = (
+      channel: string,
+      result: "success" | "failure",
+    ) =>
+      runtimeCount("autoflow_notification_delivery_total", {
+        channel,
+        result,
+      });
+
+    it("counts per-channel success/failure and accumulates across fan-outs", async () => {
+      const errSpy = jest
+        .spyOn(Logger.prototype, "error")
+        .mockImplementation(() => {});
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      email.send.mockResolvedValue("sent");
+      slack.send.mockRejectedValue(new Error("smtp down"));
+
+      await service.sendToChannels(payload, [
+        "email" as any,
+        "slack" as any,
+      ]);
+      expect(deliveryCount("email", "success")).toBe(1);
+      expect(deliveryCount("slack", "failure")).toBe(1);
+      expect(deliveryCount("email", "failure")).toBe(0);
+
+      // 跨次 fan-out 单调累计
+      await service.sendToChannels(payload, ["email" as any]);
+      expect(deliveryCount("email", "success")).toBe(2);
+      errSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it("counts blocked/skipped/legacy-void outcomes as success (not delivery failures)", async () => {
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      slack.send.mockResolvedValue("blocked");
+      wecom.send.mockResolvedValue(undefined); // legacy mock 渠道
+
+      await service.sendToChannels(payload, ["slack" as any, "wecom" as any]);
+      expect(deliveryCount("slack", "success")).toBe(1);
+      expect(deliveryCount("slack", "failure")).toBe(0);
+      expect(deliveryCount("wecom", "success")).toBe(1);
+      warnSpy.mockRestore();
+    });
+
+    it("sendWebhook direct path is not fan-out counted", async () => {
+      webhook.send.mockResolvedValue("sent");
+      await expect(
+        service.sendWebhook(payload, "https://hooks.example.com/x"),
+      ).resolves.toBe("sent");
+      expect(deliveryCount("webhook", "success")).toBe(0);
+      expect(deliveryCount("webhook", "failure")).toBe(0);
     });
   });
 

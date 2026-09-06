@@ -131,6 +131,10 @@ export class MetricsService {
         "taskId",
         "taskName",
         "errorMessage",
+        "failureReason",
+        // 改动2（可观测性补齐）：透出回调上报的原始退出码，失败溯源不再
+        // 只有推断出的 failureReason。
+        "exitCode",
         "createdAt",
         "duration",
       ],

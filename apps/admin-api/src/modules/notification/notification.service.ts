@@ -14,6 +14,9 @@ import {
   ChannelDeliveryStatus,
   NotificationPayload,
 } from "./channels/base.channel";
+// 可观测性补齐轮：通知投递结果计数埋点入口（模块级纯内存自增，无模块环，
+// 见 metrics/runtime-metrics-entry.ts 注释）。
+import { recordRuntime } from "../metrics/runtime-metrics-entry";
 
 /** NOTIF-003: 静默规则数量上限，防止通过 API 无限添加导致内存缓慢泄漏。 */
 export const MAX_ALERT_SILENCES = 1000;
@@ -167,6 +170,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     const failures: string[] = [];
     results.forEach((result, i) => {
       const name = entries[i].name;
+      // 可观测性补齐：per-channel 投递结果计数（success/failure）。判定口径：
+      // promise rejected（渠道异常）计 failure，其余（含 mocked/blocked——
+      // SSRF 拦截是策略结果而非投递故障）计 success。fail-open 语义不变：
+      // 只记计数，不影响返回值与控制流。
+      recordRuntime("autoflow_notification_delivery_total", {
+        channel: name,
+        result: result.status === "rejected" ? "failure" : "success",
+      });
       if (result.status === "rejected") {
         const msg =
           result.reason instanceof Error
