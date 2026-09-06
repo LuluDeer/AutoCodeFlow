@@ -32,6 +32,8 @@ import { AuditService } from "../../audit/audit.service";
 // 可观测性补齐轮：运行时计数器模块级快照（埋点断言入口）
 import {
   getRuntimeCountersSnapshot,
+  getRuntimeGaugesSnapshot,
+  resetRuntimeGauges,
   resetRuntimeMetrics,
 } from "../../metrics/runtime-metrics-entry";
 
@@ -1144,6 +1146,24 @@ describe("TaskService (__tests__)", () => {
       );
       expect(runtimeCount("autoflow_sse_streams_rejected_total")).toBe(1);
       releases.forEach((rel) => rel());
+    });
+
+    // BUG-05：活跃流 gauge（瞬时值）——占用/释放两点同步写快照。
+    it("tracks autoflow_sse_streams_active/limit gauges across acquire and release", () => {
+      resetRuntimeGauges();
+      const gauge = (name: string): number =>
+        getRuntimeGaugesSnapshot().get(name as never) ?? 0;
+
+      const r1 = service.acquireSseSlot("exec-g1");
+      const r2 = service.acquireSseSlot("exec-g2");
+      expect(gauge("autoflow_sse_streams_active")).toBe(2);
+      expect(gauge("autoflow_sse_streams_limit")).toBe(64);
+
+      r1();
+      expect(gauge("autoflow_sse_streams_active")).toBe(1);
+      r2();
+      expect(gauge("autoflow_sse_streams_active")).toBe(0);
+      resetRuntimeGauges();
     });
 
     it("releases the slot when the stream ends normally", async () => {
