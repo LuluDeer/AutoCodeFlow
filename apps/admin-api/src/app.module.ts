@@ -134,6 +134,13 @@ import { RegistryModule } from "./modules/registry/registry.module";
         METRICS_PROMETHEUS_DEFAULT_METRICS_ENABLED: Joi.string()
           .valid("true", "false")
           .default("true"),
+
+        // P2: stale sweep retry-budget re-enqueue switch (default true;
+        // "false" restores the old FAILED-only recovery). Semantics in
+        // configuration.ts (scheduler.staleRecoveryRetryEnabled).
+        STALE_RECOVERY_RETRY_ENABLED: Joi.string()
+          .valid("true", "false")
+          .default("true"),
       }),
       // Only validate in production and test environments
       validationOptions: {

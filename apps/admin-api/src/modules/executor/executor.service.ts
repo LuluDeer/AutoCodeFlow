@@ -167,20 +167,52 @@ export class ExecutorService {
     return false;
   }
 
-  private async scheduleRetryAfterRestart(
+  /**
+   * P2: 重试预算语义的唯一来源（BullMQ attempts 语义：maxRetry 为总尝试预算，
+   * retryCount 为已消耗的重试次数）。executor-restart 恢复路径与 scheduler
+   * stale sweep 共用——sweep 此前只置 FAILED 不 re-enqueue，而 task.processor
+   * 已将 RUNNING 移出 claimable，worker 崩溃型执行只能等 sweep 收敛，
+   * task.maxRetry>0 的任务实际拿不到任何重试。
+   */
+  private static retryBudgetExhausted(
     task: Task,
     execution: TaskExecution,
+  ): boolean {
+    const maxAttempts = Math.max(1, task.maxRetry ?? 1);
+    const nextRetryCount = (execution.retryCount ?? 0) + 1;
+    return nextRetryCount >= maxAttempts;
+  }
+
+  /**
+   * P2: 公开预算判定，供调用方把前置副作用（如 stale sweep 的 kill 通知）
+   * 门控在"确实会安排重试"之上。scheduleRetryAfterRecovery 内部仍会复查，
+   * 二者共享 retryBudgetExhausted，语义不会漂移。
+   */
+  hasRetryBudget(task: Task, execution: TaskExecution): boolean {
+    return !ExecutorService.retryBudgetExhausted(task, execution);
+  }
+
+  /**
+   * RUNNING→新 PENDING execution + 入队。executor-restart 恢复与 scheduler
+   * stale sweep（P2）共用的重试兑现模式：预算耗尽则静默跳过（只保留 FAILED）。
+   * fallbackTriggerType 仅在原执行未带 triggerType 时生效（restart 路径保持
+   * 既有 "executor_restart"；sweep 传 "stale_recovery" 便于溯源）。
+   */
+  async scheduleRetryAfterRecovery(
+    task: Task,
+    execution: TaskExecution,
+    fallbackTriggerType = "executor_restart",
   ): Promise<void> {
     const maxAttempts = Math.max(1, task.maxRetry ?? 1);
     const nextRetryCount = (execution.retryCount ?? 0) + 1;
-    if (nextRetryCount >= maxAttempts) return;
+    if (ExecutorService.retryBudgetExhausted(task, execution)) return;
 
     const retryExecution = this.execRepo.create({
       taskId: task.id,
       taskName: task.name,
       status: ExecutionStatus.PENDING,
       params: execution.params ?? task.params,
-      triggerType: execution.triggerType ?? "executor_restart",
+      triggerType: execution.triggerType ?? fallbackTriggerType,
       taskVersion: execution.taskVersion ?? task.currentVersion,
       retryCount: nextRetryCount,
     });
@@ -207,7 +239,35 @@ export class ExecutorService {
         );
       });
       this.logger.warn(
-        `Failed to enqueue restart retry for execution ${execution.id}: ${message}`,
+        `Failed to enqueue recovery retry for execution ${execution.id}: ${message}`,
+      );
+    }
+  }
+
+  /**
+   * P2: best-effort 通知执行器终止指定 execution（stale sweep re-enqueue 前
+   * 调用，防"执行器谎报/进程僵死但仍存活"场景下原进程与新执行双跑）。
+   * 实现自 task.service.notifyExecutorKill 收敛至此（kill 端点 node/python
+   * 两端均已就绪），TaskService 现委托本方法，避免两份逻辑。
+   * 契约：地址为空跳过；任何失败（离线/404/超时）仅 warn，绝不抛出。
+   */
+  async notifyExecutorKill(
+    executionId: string,
+    executorAddress?: string | null,
+  ): Promise<void> {
+    if (!executorAddress) return;
+    try {
+      const token = await this.getSharedToken();
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const url = this.getExecutorUrl(
+        executorAddress,
+        `api/executions/${executionId}/kill`,
+      );
+      await axios.post(url, {}, { headers, timeout: 3_000 });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Failed to notify executor ${executorAddress} to kill execution ${executionId}: ${message}`,
       );
     }
   }
@@ -254,7 +314,7 @@ export class ExecutorService {
       execution.logs = `${execution.logs || ""}\n[System] Executor restarted; execution marked as FAILED`;
       await this.execRepo.save(execution);
       await this.releaseExecutorSlot(execution.executorAddress);
-      if (task) await this.scheduleRetryAfterRestart(task, execution);
+      if (task) await this.scheduleRetryAfterRecovery(task, execution);
     }
     if (executionsToFail.length > 0) {
       this.logger.warn(
@@ -440,6 +500,20 @@ export class ExecutorService {
   }
 
   /**
+   * U16: 心跳采纳 deadLetterCount 的取值域——非负整数 0..100000。
+   * 越界/非整数/非数字一律视为未上报（不改 DB 值），与 maxConcurrentTasks
+   * 采纳同模式：执行器上报面不可信，白名单字段必须先过范围校验再落列。
+   */
+  private static isAdoptableDeadLetterCount(value: unknown): value is number {
+    return (
+      typeof value === "number" &&
+      Number.isInteger(value) &&
+      value >= 0 &&
+      value <= 100_000
+    );
+  }
+
+  /**
    * CONSISTENCY-02: heartbeat ingest for executor-node 上报的 runningExecutionIds。
    * 输入为 executor 可控字段，须严格防御：非数组视为未上报（返回 null）；逐项仅
    * 保留匹配安全字符集 [A-Za-z0-9_-] 的字符串（其余丢弃）；最多裁剪至 200 项。
@@ -503,7 +577,6 @@ export class ExecutorService {
       restartedAt: _r,
       startupId: _s,
       runningExecutionIds,
-      deadLetterCount,
       ...metricValues
     } = metrics;
     if (didRestart) {
@@ -523,7 +596,8 @@ export class ExecutorService {
     // E9 exception: maxConcurrentTasks is deliberately whitelisted so an
     // executor that hot-updates its capacity is adopted without re-register;
     // it goes through the range check below first (invalid → treated as
-    // not-reported, DB value untouched).
+    // not-reported, DB value untouched). U16 applies the same posture to
+    // deadLetterCount (non-negative integer 0..100000).
     const metricsWhitelist: Array<
       | "cpuUsage"
       | "memUsage"
@@ -533,6 +607,7 @@ export class ExecutorService {
       | "totalTaskCount"
       | "failedTaskCount"
       | "maxConcurrentTasks"
+      | "deadLetterCount"
     > = [
       "cpuUsage",
       "memUsage",
@@ -542,6 +617,7 @@ export class ExecutorService {
       "totalTaskCount",
       "failedTaskCount",
       "maxConcurrentTasks",
+      "deadLetterCount",
     ];
     if (
       metricValues.maxConcurrentTasks !== undefined &&
@@ -556,6 +632,20 @@ export class ExecutorService {
       );
       delete metricValues.maxConcurrentTasks;
     }
+    // U16: deadLetterCount 采纳（node ab4971f / python 001 起上报）。非法值
+    // 视同未上报——从 metricValues 删除，DB 值不动，与上轮 maxConcurrentTasks
+    // 采纳同模式。
+    if (
+      metricValues.deadLetterCount !== undefined &&
+      !ExecutorService.isAdoptableDeadLetterCount(metricValues.deadLetterCount)
+    ) {
+      this.logger.warn(
+        `Executor ${address} reported invalid deadLetterCount=${String(
+          metricValues.deadLetterCount,
+        )} (expected integer in 0..100000); keeping stored value`,
+      );
+      delete metricValues.deadLetterCount;
+    }
     for (const key of metricsWhitelist) {
       if (metricValues[key] !== undefined) {
         (e as any)[key] = metricValues[key];
@@ -568,20 +658,20 @@ export class ExecutorService {
 
     // CONSISTENCY-02: persist executor-node 的活性上报。缺省字段写 null
     // （= 旧版执行器未上报，区别于 [] 的"已上报且空闲"）；仅在字段上报时才
-    // 覆盖，避免旧版心跳把新版已写入的活性集合擦回 null。deadLetterCount>0
-    // 仅告警（本模块不新建指标，按约定）。
+    // 覆盖，避免旧版心跳把新版已写入的活性集合擦回 null。deadLetterCount
+    // 经上方白名单校验后采纳落列（U16），>0 时仍保留告警。
     if (runningExecutionIds !== undefined) {
       e.runningExecutionIds = this.sanitizeRunningExecutionIds(
         runningExecutionIds,
       );
     }
     if (
-      typeof deadLetterCount === "number" &&
-      Number.isFinite(deadLetterCount) &&
-      deadLetterCount > 0
+      typeof metricValues.deadLetterCount === "number" &&
+      Number.isFinite(metricValues.deadLetterCount) &&
+      metricValues.deadLetterCount > 0
     ) {
       this.logger.warn(
-        `Executor ${address} reported ${deadLetterCount} dead-letter execution(s) awaiting callback retries`,
+        `Executor ${address} reported ${metricValues.deadLetterCount} dead-letter execution(s) awaiting callback retries`,
       );
     }
 

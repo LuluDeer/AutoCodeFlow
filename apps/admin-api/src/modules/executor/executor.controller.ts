@@ -780,7 +780,8 @@ export class ExecutorController {
   })
   @ApiParam({ name: "id", description: "Executor ID" })
   @ApiQuery({ name: "page", required: false, description: "Page number" })
-  @ApiQuery({ name: "limit", required: false, description: "Page size" })
+  // U13: 与实现对齐——本端点收 PaginationDto（page/pageSize），而非 `limit`。
+  @ApiQuery({ name: "pageSize", required: false, description: "Page size" })
   @ApiResponse({ status: 200, description: "Execution record list" })
   getExecutorExecutions(@Param("id") id: string, @Query() p: PaginationDto) {
     return this.svc.getExecutorExecutions(id, p);

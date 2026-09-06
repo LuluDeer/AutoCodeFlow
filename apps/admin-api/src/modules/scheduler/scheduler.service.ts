@@ -8,6 +8,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, In, LessThan, Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
+import { ConfigService } from "@nestjs/config";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import * as nodeCron from "node-cron";
 import {
@@ -24,6 +25,7 @@ import {
   ExecutionFailureReason,
 } from "../task/entities/task-execution.entity";
 import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
+import { ExecutorService } from "../executor/executor.service";
 import {
   RedisLockService,
   Lock,
@@ -147,6 +149,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     private redisLockService: RedisLockService,
     private dataSource: DataSource,
     private schedulerMetrics: SchedulerMetricsService,
+    // P2: stale sweep 的重试兑现（scheduleRetryAfterRecovery/hasRetryBudget）
+    // 与 re-enqueue 前的 best-effort kill 通知（notifyExecutorKill）。
+    private executorService: ExecutorService,
+    private configService: ConfigService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -357,6 +363,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * and mark them FAILED so the UI never shows permanently-running tasks.
    * Runs on startup and every 10 minutes thereafter.
    *
+   * P2: sweep 赢得 RUNNING→FAILED 后还兑现重试预算——预算未耗尽的执行经
+   * ExecutorService.scheduleRetryAfterRecovery 创建新 PENDING execution 并
+   * 入队（re-enqueue 前先 best-effort kill 原执行器进程），开关见
+   * STALE_RECOVERY_RETRY_ENABLED。
+   *
    * Timeout logic:
    * - If the associated task has a timeout > 0, use that as the stale threshold.
    * - Otherwise fall back to a 1-hour global grace window.
@@ -405,6 +416,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         taskTimeouts.set(t.id, t.timeout);
       }
     }
+    // P2: re-enqueue 需要完整 task 行（maxRetry/retryDelay 预算语义）与原执行
+    // 快照（retryCount/params/triggerType）——循环外各索引一次。
+    const taskById = new Map(tasks.map((t) => [t.id, t]));
+    const execById = new Map(runningExecs.map((e) => [e.id, e]));
 
     // TASK-004: 在内存中按"超时类型"分组，随后用单事务内的条件批量 UPDATE
     // 一次性恢复（替代原先逐行 save 的 N 条独立 UPDATE）。
@@ -503,18 +518,75 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             failureReason: ExecutionFailureReason.TIMEOUT,
           });
         }
+        // P2: 本桶是 sweep 自行定案的"worker 崩溃型/回调丢失型"恢复行，
+        // failureReason 用 STALE_RECOVERED 取代泛化的 UNKNOWN，使"sweep 恢复 +
+        // 重试预算兑现/耗尽"全链路可溯源。timedOut 桶保留 TIMEOUT——超时分类
+        // 本身有语义且被下游消费，sweep 归属由 REC-01 日志承载。
         await runUpdate(recovered, {
           status: ExecutionStatus.FAILED,
           endTime: finishedAt,
           errorMessage:
-            "Execution did not complete (recovered on node restart)",
-          failureReason: ExecutionFailureReason.UNKNOWN,
+            "Execution did not complete (recovered by stale sweep)",
+          failureReason: ExecutionFailureReason.STALE_RECOVERED,
         });
       });
 
+      // P2 (sweep 重试预算兑现): task.processor 已把 RUNNING 移出 claimable，
+      // worker 在 claim 后崩溃的执行只能等本 sweep 收敛——若只置 FAILED 不
+      // re-enqueue，task.maxRetry>0 的任务实际拿不到任何重试。此处对 sweep
+      // 赢家兑现预算。
+      //
+      // 幂等/竞态护栏：recoveredRows 来自 UPDATE ... RETURNING，只含条件
+      // UPDATE（status IN open）真正命中的行——并发回调已写终态的输家行不在
+      // 其中，绝不触发 re-enqueue；新 execution 由 execRepo.create 生成全新
+      // uuid，同一 execution 不会被重复 re-enqueue。
+      //
+      // timeout=0（不限时）任务不做特判：它们只有在"执行器在线且活性上报仍
+      // 含该 execution"被 defer 到绝对兜底（30min）之后才会进入本恢复路径，
+      // 上报已不可信（谎报/僵死），与其余行同等对待——kill 通知尽力而为，
+      // 预算未耗尽则重试。取舍：极端情况下可能与仍在运行的原进程并行一次，
+      // 由 kill 通知兜底；相比"静默丢重试"，这是更安全的失败方向。
+      const retryOnRecovery = this.staleRecoveryRetryEnabled();
       for (const row of recoveredRows) {
         await this.releaseExecutorSlot(row.executorAddress);
         this.logger.warn(`REC-01: execution ${row.id} recovered as FAILED`);
+        if (!retryOnRecovery) continue;
+        const exec = execById.get(row.id);
+        const task = exec ? taskById.get(exec.taskId) : undefined;
+        if (!exec || !task) {
+          // 任务已删除/查不到：无预算可对照，维持旧行为（只 FAILED）。
+          continue;
+        }
+        // 预算语义与 executor-restart 路径同源（ExecutorService）。预算耗尽
+        // 时连 kill 都不发——没有新执行就不会双跑。
+        if (!this.executorService.hasRetryBudget(task, exec)) continue;
+        // kill 必须在 re-enqueue 之前：防"执行器谎报/进程僵死但仍存活"场景下
+        // 原进程与新执行双跑。best-effort——离线/404/超时不阻塞重试。
+        try {
+          await this.executorService.notifyExecutorKill(
+            exec.id,
+            exec.executorAddress,
+          );
+        } catch (err: unknown) {
+          this.logger.warn(
+            `REC-01: kill notification before retry failed for ${exec.id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+        try {
+          await this.executorService.scheduleRetryAfterRecovery(
+            task,
+            exec,
+            "stale_recovery",
+          );
+        } catch (err: unknown) {
+          this.logger.warn(
+            `REC-01: retry scheduling failed for recovered execution ${exec.id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
       }
     }
 
@@ -649,6 +721,18 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       deferredIds.add(c.exec.id);
     }
     return { deferredIds };
+  }
+
+  /**
+   * P2: stale sweep 重试兑现开关（env STALE_RECOVERY_RETRY_ENABLED，默认
+   * true）。仅显式 false 关闭；ConfigService 未注册/未命中（如单测环境）时
+   * 按默认开启处理，保证生产默认行为与设计一致。
+   */
+  private staleRecoveryRetryEnabled(): boolean {
+    return (
+      this.configService.get<boolean>("scheduler.staleRecoveryRetryEnabled") !==
+      false
+    );
   }
 
   private async releaseExecutorSlot(address?: string | null): Promise<void> {
