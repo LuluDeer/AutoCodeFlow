@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import signal
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -69,8 +71,9 @@ def _quarantine_broken_cache(cache_dir: Path) -> None:
     """Move a corrupt cache aside instead of deleting it: keeps the forensic
     state, and dodges Windows EBUSY on a directory a just-killed process may
     still hold open (a failed rmtree would leave the permanent-failure state
-    we are trying to heal). The TTL log cleanup can sweep *.git_cache/*-broken
-    later; until then a stale partial clone costs only disk."""
+    we are trying to heal). The E8 disk TTL sweep can reclaim *.git_cache
+    entries past the retention window (*-broken ones included) later; until
+    then a stale partial clone costs only disk."""
     broken = cache_dir.with_name(cache_dir.name + f'-broken-{int(time.time())}')
     try:
         cache_dir.rename(broken)
@@ -78,10 +81,47 @@ def _quarantine_broken_cache(cache_dir: Path) -> None:
         shutil.rmtree(cache_dir, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# E6 (node routes/execute.ts gitCacheQueues parity): per-repo locks around the
+# shared .git_cache/<repo> directory. Concurrent executions of the same repo
+# would race `git clone --bare` / `git fetch --all` into the same cache and
+# the losing side fails the whole execution. threading.Lock (not asyncio.Lock)
+# for the same reason as _live_lock below: the checkout runs in an executor
+# thread via run_in_executor, and a threading.Lock is loop-agnostic, while an
+# asyncio.Lock binds to whichever loop first awaited it (breaking the
+# per-test asyncio.run loops used across this suite).
+# ---------------------------------------------------------------------------
+_git_cache_locks: dict[str, threading.Lock] = {}
+_git_cache_locks_guard = threading.Lock()
+
+
+def _get_git_cache_lock(cache_key: str) -> threading.Lock:
+    """Atomically fetch-or-create the per-repo cache lock."""
+    with _git_cache_locks_guard:
+        lock = _git_cache_locks.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _git_cache_locks[cache_key] = lock
+        return lock
+
+
 def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
-    """Clone (with cache) and checkout the specified ref to the dest directory."""
+    """Clone (with cache) and checkout the specified ref to the dest directory.
+
+    E6: the clone/fetch phase is serialized per cache directory so concurrent
+    executions sharing a repo queue instead of corrupting the cache; the
+    final checkout (`--work-tree` export) only reads the cache and is left
+    outside the critical section (node queues the whole body; keeping the
+    export outside shortens the hold time without adding a race the
+    bare-repo probe cannot already heal)."""
     _validate_git_ref(ref)
     cache_dir = Path(settings.work_dir) / '.git_cache' / _repo_dir_name(repo_url)
+    with _get_git_cache_lock(str(cache_dir)):
+        _git_checkout_to_locked(repo_url, cache_dir, ref, dest)
+
+
+def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path) -> None:
+    """Clone/fetch phase — caller holds the per-repo cache lock."""
     if cache_dir.exists() and not _is_bare_git_repo(cache_dir):
         logger.warning('git cache %s is not a valid bare repo (killed clone?) — quarantining and re-cloning', cache_dir)
         _quarantine_broken_cache(cache_dir)
@@ -358,11 +398,15 @@ _background_tasks: set['asyncio.Task'] = set()
 class _LiveExecution:
     """One accepted, not-yet-terminal execution (node ExecutionEntry parity)."""
 
-    __slots__ = ('execution_id', 'cancelled', 'killed_by_request',
+    __slots__ = ('execution_id', 'task_id', 'cancelled', 'killed_by_request',
                  'killed_callback_pushed', 'proc')
 
     def __init__(self, execution_id: str):
         self.execution_id = execution_id
+        # E6/E8: request-level task id (node ExecutionEntry.taskId parity) —
+        # the per-task serialization key, and the .venvs/<task_id> name the
+        # E8 disk sweep must not reclaim while an execution is live.
+        self.task_id: Optional[str] = None
         # kill 已下达（排队/prepare 路径）：run_task 检查点据此静默退出
         self.cancelled = False
         # kill 端点已下达终止指令（运行中路径）：失败回调据此标记
@@ -411,6 +455,62 @@ def list_active_execution_ids() -> list[str]:
     """当前运行表中所有 executionId（心跳活性上报用，E1）。"""
     with _live_lock:
         return list(_live_executions.keys())
+
+
+def list_live_execution_entries() -> list['_LiveExecution']:
+    """当前运行表条目快照（E8：磁盘清理的活跃目录保护 provider 数据源）。
+
+    entry 上的 execution_id / task_id 由调用方 duck-typing 读取，避免
+    maintenance 反向 import 本模块。"""
+    with _live_lock:
+        return list(_live_executions.values())
+
+
+def _get_task_lock(task_id: str) -> asyncio.Lock:
+    """E6 (node task-worker.ts maxConcurrentPerTask=1 parity): the per-task
+    execution lock — same-task executions queue here instead of racing
+    (prepare + venv + run are not safe to run concurrently for one task).
+
+    asyncio.Lock 绑定"第一次 await 它"的事件循环；本套件每个测试都用
+    asyncio.run 起独立循环，模块级单例锁会在第二个循环上抛 RuntimeError
+    （这正是 _live_executions 注册表用 threading.Lock 的原因）。因此锁字典
+    按当前运行循环分桶，循环切换时整体失效重建：生产环境只有一个循环，
+    行为不变；测试环境每个循环拿到干净的一组锁。dict 读写全程无 await，
+    threading.Lock 保证跨线程安全——与注册表同一加锁模式。"""
+    global _task_locks, _task_locks_loop
+    loop = asyncio.get_running_loop()
+    with _task_locks_guard:
+        if _task_locks_loop is not loop:
+            _task_locks = {}
+            _task_locks_loop = loop
+        lock = _task_locks.get(task_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _task_locks[task_id] = lock
+        return lock
+
+
+_task_locks: dict[str, asyncio.Lock] = {}
+_task_locks_loop = None
+_task_locks_guard = threading.Lock()
+
+
+def _derive_task_key(req: ExecuteRequest) -> str:
+    """QA4: the ONE derivation of the per-task key. Every consumer — the E6
+    per-task lock, the E8 live-protection snapshot (``entry.task_id``, i.e.
+    the ``.venvs/<id>`` name the disk sweep must not reclaim) and the
+    ``.venvs/<id>`` directory itself — must use this exact value.
+
+    Derives from the REQUEST task payload before any manifest merge
+    (dispatch-time semantics; no security meaning, serialization only). A
+    missing / None / empty-string id falls back to executionId; a non-string
+    id (e.g. int) is stringified. Previously the lock fell back on empty
+    ids while the venv path used the merged ``task.get('id', executionId)``
+    verbatim: an empty task.id collapsed the venv onto the ``.venvs`` root
+    itself while the lock and the E8 protection set keyed off a different
+    name (and a manifest-only id desynchronised the two entirely)."""
+    task = req.task if isinstance(req.task, dict) else {}
+    return str(task.get('id') or req.executionId)
 
 
 # E1: heartbeat enrichment — scheduler cannot import this module (cycle), so
@@ -538,6 +638,9 @@ async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str
             if (400 <= response.status_code < 500
                     and response.status_code not in (401, 408, 429)):
                 logger.error('Callback rejected with HTTP %s (non-retryable); giving up', response.status_code)
+                # E2: terminal rejection still loses the result unless it is
+                # persisted — replay will re-confirm or dead-letter it.
+                _persist_giving_up(payload, url)
                 return False
             last_error = RuntimeError(f'callback failed with HTTP {response.status_code}')
             logger.warning('Callback attempt %d/%d failed: HTTP %s',
@@ -549,7 +652,347 @@ async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str
             await asyncio.sleep(CALLBACK_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
     logger.error('Failed to send execution callback after %d attempts: %s',
                  CALLBACK_RETRY_ATTEMPTS, last_error)
+    # E2 (node persistFailedCallbacks parity): retries exhausted — park the
+    # payload on disk for the background re-send loop instead of losing the
+    # execution result to a transient admin-api outage.
+    _persist_giving_up(payload, url)
     return False
+
+
+# ---------------------------------------------------------------------------
+# E2 (parity with executor-node callback.ts): callback persistence + a
+# background re-send loop + dead-lettering. When the bounded retry loop above
+# is exhausted, the payload is written to <workDir>/callbacks/callback-*.json
+# and a companion `<file>.meta` tracks the retry rounds; a background task
+# periodically replays those files and moves them to callbacks/dead-letter/
+# after CALLBACK_FILE_MAX_RETRIES failed rounds. Terminal results therefore
+# survive executor restarts instead of being silently lost during a
+# transient admin-api outage.
+#
+# Token policy (verified against node persistFailedCallbacks: node never
+# stores credentials either — it queues the payload before post() added the
+# Authorization header): the bearer token is deliberately NOT persisted. It
+# is a dynamic per-executor credential that admin may rotate at any time;
+# replay re-signs each request with the token that is valid at replay time
+# (auth.get_current_token, falling back to the shared token), mirroring how
+# fresh live callbacks are authenticated.
+# ---------------------------------------------------------------------------
+
+CALLBACK_FILE_MAX_RETRIES = 5            # replay rounds before dead-lettering
+CALLBACK_FILE_MAX_SIZE_BYTES = 64 * 1024 * 1024   # oversized payload guard
+CALLBACK_RETRY_SWEEP_INTERVAL_SECONDS = 1.0
+CALLBACK_DRAIN_TIMEOUT_SECONDS = 10.0    # node stopCallbackThread drain cap
+# E2: per-file exponential backoff between replay rounds (base * 2**retries,
+# capped). Base 1s matches node's 1s re-send cadence for a fresh failure;
+# later rounds back off instead of hammering a down admin-api every second.
+CALLBACK_REPLAY_BACKOFF_BASE_SECONDS = 1.0
+CALLBACK_REPLAY_BACKOFF_MAX_SECONDS = 60.0
+DEAD_LETTER_COUNT_CACHE_TTL_SECONDS = 60.0
+
+_callback_retry_task: Optional['asyncio.Task'] = None
+_callback_retry_stop = threading.Event()
+_callback_persistence_sequence = 0
+_persistence_sequence_lock = threading.Lock()
+# Dead-letter backlog cache: the retry sweep refreshes it every pass, so the
+# heartbeat (and anything else) can read the count without rescanning the
+# directory. [count, monotonic timestamp]; count < 0 = cache invalid.
+_dead_letter_count_cache: list = [-1, 0.0]
+
+
+def _callback_dir() -> Path:
+    d = Path(settings.work_dir) / 'callbacks'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _dead_letter_dir() -> Path:
+    d = _callback_dir() / 'dead-letter'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _refresh_dead_letter_count() -> None:
+    """Recount dead-letter files and stamp the cache. QA9: this is the only
+    cache maintenance point — every dead-letter move happens inside
+    retry_persisted_callbacks, which ends with this refresh on each sweep
+    (1s cadence), so a separate invalidate hook had no reachable call site
+    and was removed."""
+    try:
+        count = sum(1 for p in _dead_letter_dir().iterdir() if p.is_file())
+    except OSError:
+        count = 0
+    _dead_letter_count_cache[0] = count
+    _dead_letter_count_cache[1] = time.monotonic()
+
+
+def get_dead_letter_count() -> int:
+    """Current dead-letter backlog size (regular-file count, node
+    getDeadLetterCount parity). Served from the cache the retry sweep keeps
+    fresh (it refreshes at the end of every pass, so dead-letter moves are
+    visible without any invalidate hook); a cache older than the TTL (or the
+    never-computed initial value) is recomputed lazily so the heartbeat never
+    scans a huge directory on every tick."""
+    count, cached_at = _dead_letter_count_cache
+    if count < 0 or time.monotonic() - cached_at > DEAD_LETTER_COUNT_CACHE_TTL_SECONDS:
+        _refresh_dead_letter_count()
+    return _dead_letter_count_cache[0]
+
+
+def _persist_giving_up(payload: dict, url: str) -> None:
+    """Give-up wrapper around _persist_failed_callback: persistence failures
+    must never escalate into the caller's terminal path — the result was
+    already reported as lost in the logs at that point."""
+    try:
+        _persist_failed_callback(payload, url)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error('Callback persistence failed: %s', exc)
+
+
+def _persist_failed_callback(payload: dict, url: str) -> Optional[Path]:
+    """Write an undeliverable callback payload to <workDir>/callbacks/.
+
+    Node parity: the file holds ONLY the admin-acceptable payload batch (no
+    Authorization header, no dynamic token) — replay re-signs at send time.
+    Returns the payload file path, or None when persistence itself failed
+    (nothing more can be done; the result was already logged)."""
+    global _callback_persistence_sequence
+    try:
+        callback_dir = _callback_dir()
+        with _persistence_sequence_lock:
+            sequence = _callback_persistence_sequence
+            _callback_persistence_sequence += 1
+        filename = callback_dir / f'callback-{int(time.time() * 1000)}-{sequence}.json'
+        tmp = filename.with_name(filename.name + '.tmp')
+        tmp.write_text(json.dumps({'url': url, 'payloads': [payload]}, ensure_ascii=False), encoding='utf-8')
+        # Windows rename-over-existing is not atomic-safe; unlink first
+        if filename.exists():
+            filename.unlink()
+        tmp.rename(filename)
+        # The replay backoff counts from "last attempt" — the just-failed
+        # live POSTs already consumed the round-trip time, so the stored
+        # persistedAt is backdated by one gate interval and the sweep can
+        # retry immediately instead of sleeping a full gate on a payload
+        # that has already been waiting through the live retry budget.
+        persisted_at = int((time.time() - CALLBACK_REPLAY_BACKOFF_BASE_SECONDS - 1) * 1000)
+        meta_path = filename.with_name(filename.name + '.meta')
+        meta_path.write_text(
+            json.dumps({'retries': 0, 'persistedAt': persisted_at}), encoding='utf-8')
+        logger.info('Persisted failed callback to %s', filename)
+        return filename
+    except OSError as exc:
+        logger.error('Failed to persist callbacks: %s', exc)
+        return None
+
+
+def _write_retry_count(filepath: Path, retries: int) -> None:
+    """Bump the .meta retry counter. ``updatedAt`` doubles as the
+    last-attempt timestamp for the per-file replay backoff gate."""
+    try:
+        filepath.with_name(filepath.name + '.meta').write_text(
+            json.dumps({'retries': retries, 'updatedAt': int(time.time() * 1000)}), encoding='utf-8')
+    except OSError as exc:
+        logger.warning('Failed to update retry counter for %s: %s', filepath, exc)
+
+
+def _replay_backoff_elapsed(filepath: Path, meta: dict, retries: int) -> bool:
+    """True when the per-file exponential backoff since the last attempt has
+    expired. The last-attempt timestamp is the .meta ``updatedAt`` (or the
+    original ``persistedAt``, or the file mtime as a last resort); base*2**n
+    grows with the failure count and is capped so a long backlog still
+    cycles (node has no gate — it resends every second; the base is chosen
+    so a fresh failure keeps that cadence while exhausted files slow down)."""
+    now_ms = time.time() * 1000
+    last_attempt_ms = None
+    for key in ('updatedAt', 'persistedAt'):
+        value = meta.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            last_attempt_ms = value
+            break
+    if last_attempt_ms is None:
+        try:
+            last_attempt_ms = filepath.stat().st_mtime * 1000
+        except OSError:
+            return True
+    gate_ms = min(
+        CALLBACK_REPLAY_BACKOFF_BASE_SECONDS * (2 ** retries),
+        CALLBACK_REPLAY_BACKOFF_MAX_SECONDS,
+    ) * 1000
+    return (now_ms - last_attempt_ms) >= gate_ms
+
+
+def _dead_letter_callback_file(filepath: Path, reason: str) -> None:
+    """Move a permanently-failed callback file to dead-letter/ (node parity):
+    the retry loop stops resending it, but the payload stays on disk for
+    manual inspection/replay."""
+    try:
+        target = _dead_letter_dir() / filepath.name
+        if target.exists():
+            target.unlink()
+        filepath.rename(target)
+        logger.warning('Callback file %s moved to dead-letter after %s; manual replay required',
+                       filepath.name, reason)
+    except OSError as exc:
+        # Last resort: at least stop retrying it.
+        try:
+            filepath.unlink()
+        except OSError:
+            pass
+        logger.error('Failed to move callback file %s to dead-letter: %s', filepath, exc)
+    try:
+        filepath.with_name(filepath.name + '.meta').unlink()
+    except OSError:
+        pass  # meta may not exist
+
+
+async def _replay_persisted_callback_file(filepath: Path, requests: list[dict], url: str) -> bool:
+    """One replay attempt of a persisted callback file, re-signed with the
+    token that is valid NOW (node replays through admin-client.post, which
+    attaches the current credential)."""
+    token = await get_current_token() or _get_callback_token()
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await request_with_self_heal(client, 'post', url, token=token, json=requests)
+    if response.status_code < 400:
+        return True
+    raise RuntimeError(f'callback replay failed with HTTP {response.status_code}')
+
+
+async def retry_persisted_callbacks() -> int:
+    """Scan <workDir>/callbacks/ and replay persisted payloads. Returns the
+    number of files successfully delivered (dead-letter moves are counted
+    separately in logs). Mirrors node retryFailedCallbacks: per-file retry
+    budget via the .meta counter, dead-letter on exhaustion, dead-letter for
+    corrupt/unparseable poison files, and the oversized-payload hard stop."""
+    callback_dir = _callback_dir()
+    delivered = 0
+    try:
+        files = sorted(p for p in callback_dir.iterdir()
+                       if p.is_file() and p.name.startswith('callback-') and p.name.endswith('.json'))
+    except OSError:
+        return 0
+    for filepath in files:
+        if _callback_retry_stop.is_set():
+            break
+        try:
+            raw_meta = {}
+            try:
+                raw_meta = json.loads(
+                    filepath.with_name(filepath.name + '.meta').read_text(encoding='utf-8'))
+                if not isinstance(raw_meta, dict):
+                    raw_meta = {}
+            except (OSError, ValueError):
+                raw_meta = {}
+            retries = raw_meta.get('retries')
+            if not isinstance(retries, int) or retries < 0:
+                retries = 0
+            if retries >= CALLBACK_FILE_MAX_RETRIES:
+                _dead_letter_callback_file(filepath, f'{retries} failed retry rounds')
+                continue
+            if filepath.stat().st_size > CALLBACK_FILE_MAX_SIZE_BYTES:
+                _dead_letter_callback_file(filepath, 'oversized payload')
+                continue
+
+            # Parse + validate BEFORE the backoff gate: a corrupt/poison file
+            # must dead-letter on the first sweep (node dead-letters on
+            # SyntaxError regardless of cadence), never idle behind a gate.
+            data = json.loads(filepath.read_text(encoding='utf-8'))
+            # executor-python writes {"url": ..., "payloads": [...]}; a bare
+            # list is accepted for manual hand-repair / cross-format replay.
+            if isinstance(data, list):
+                data = {'payloads': data}
+            url = data.get('url') or build_admin_api_url('/executions/callback')
+            requests = data.get('payloads')
+            if not isinstance(requests, list) or not requests:
+                raise ValueError('empty payload batch')
+            if not _replay_backoff_elapsed(filepath, raw_meta, retries):
+                continue  # per-file exponential backoff not yet expired
+
+            try:
+                await _replay_persisted_callback_file(filepath, requests, url)
+            except Exception:
+                # node parity: an in-flight replay interrupted by shutdown is
+                # "already durable" — do not count it as a failed round, the
+                # next process replays it from scratch.
+                if _callback_retry_stop.is_set():
+                    continue
+                next_retries = retries + 1
+                _write_retry_count(filepath, next_retries)
+                if next_retries >= CALLBACK_FILE_MAX_RETRIES:
+                    _dead_letter_callback_file(filepath, f'{next_retries} failed retry rounds')
+                continue
+            delivered += 1
+            filepath.unlink()
+            try:
+                filepath.with_name(filepath.name + '.meta').unlink()
+            except OSError:
+                pass  # meta may not exist
+            logger.info('Retried and removed %s', filepath)
+        except (ValueError, json.JSONDecodeError):
+            # Corrupt/unparseable poison files would never succeed —
+            # dead-letter them instead of burning a re-send forever.
+            _dead_letter_callback_file(filepath, 'corrupt payload')
+        except OSError as exc:
+            logger.warning('Failed to retry callback file %s: %s', filepath.name, exc)
+    _refresh_dead_letter_count()
+    return delivered
+
+
+async def callback_retry_task() -> None:
+    """Background re-send loop (node processCallbacks parity): replays
+    persisted callbacks every CALLBACK_RETRY_SWEEP_INTERVAL_SECONDS until
+    stopped. The stop flag is polled between sweeps (and checked per file),
+    so the shutdown drain only ever waits for one in-flight replay."""
+    logger.info('Starting callback retry task')
+    try:
+        while not _callback_retry_stop.is_set():
+            try:
+                await retry_persisted_callbacks()
+            except Exception as exc:  # never let the sweep die
+                logger.error('Callback retry error: %s', exc)
+            if _callback_retry_stop.is_set():
+                break
+            await asyncio.sleep(CALLBACK_RETRY_SWEEP_INTERVAL_SECONDS)
+    finally:
+        logger.info('Callback retry task stopped')
+
+
+def start_callback_retry_task() -> None:
+    """node startCallbackThread parity (idempotent re-entry guard). Must be
+    called from the running event loop (lifespan)."""
+    global _callback_retry_task
+    if _callback_retry_task is not None and not _callback_retry_task.done():
+        return
+    _callback_retry_stop.clear()
+    _callback_retry_task = asyncio.create_task(callback_retry_task())
+
+
+# E2: dead-letter backlog report — same provider pattern as the E1 liveness
+# report above (node registerDeadLetterCountProvider(getDeadLetterCount)).
+sched.register_dead_letter_count_provider(get_dead_letter_count)
+
+
+async def stop_callback_retry_task() -> None:
+    """Shutdown drain (node stopCallbackThread parity): give the in-flight
+    sweep a bounded window to finish (it may be mid-POST), then cancel.
+    Payloads that could not be delivered simply stay on disk for the next
+    process's replay — durability is the file, not the loop."""
+    global _callback_retry_task
+    task = _callback_retry_task
+    if task is None:
+        return
+    _callback_retry_stop.set()
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=CALLBACK_DRAIN_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
+    _callback_retry_task = None
 
 
 async def _push_killed_callback(executionId: str) -> None:
@@ -625,27 +1068,39 @@ async def kill_execution(executionId: str):
 async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None):
     if entry is None:
         entry = get_live_execution(req.executionId)
+    # E6 (node task-worker.ts 同任务串行 parity): task.id groups executions —
+    # same-task executions queue on a per-task lock instead of concurrently
+    # racing prepare/venv/run. QA4: the key comes from the single
+    # _derive_task_key derivation, shared with run_task's .venvs/<id> path
+    # and the E8 live-protection snapshot below. The lock covers run_task
+    # only — the terminal callback POSTs after release, mirroring node where
+    # the worker slot is freed by onComplete before the callback thread
+    # delivers.
+    task_id = _derive_task_key(req)
+    if entry is not None:
+        entry.task_id = task_id
     try:
-        try:
-            result = await run_task(req, entry)
-            payload = {
-                'executionId': req.executionId,
-                'status': 'success' if result.get('success') else 'failed',
-                'exitCode': result.get('exitCode'),
-                'logs': result.get('logs'),
-                'errorMessage': _truncate_error_message(result.get('errorMessage')),
-                'durationMs': result.get('durationMs'),
-                'executorAddress': _executor_callback_address(),
-            }
-        except Exception as exc:
-            payload = {
-                'executionId': req.executionId,
-                'status': 'failed',
-                'errorMessage': _truncate_error_message(str(exc)),
-                'executorAddress': _executor_callback_address(),
-            }
-        finally:
-            sched.decrement_running()
+        async with _get_task_lock(task_id):
+            try:
+                result = await run_task(req, entry)
+                payload = {
+                    'executionId': req.executionId,
+                    'status': 'success' if result.get('success') else 'failed',
+                    'exitCode': result.get('exitCode'),
+                    'logs': result.get('logs'),
+                    'errorMessage': _truncate_error_message(result.get('errorMessage')),
+                    'durationMs': result.get('durationMs'),
+                    'executorAddress': _executor_callback_address(),
+                }
+            except Exception as exc:
+                payload = {
+                    'executionId': req.executionId,
+                    'status': 'failed',
+                    'errorMessage': _truncate_error_message(str(exc)),
+                    'executorAddress': _executor_callback_address(),
+                }
+            finally:
+                sched.decrement_running()
 
         if entry is not None and entry.killed_callback_pushed:
             # E4: the kill endpoint already pushed the terminal killed callback
@@ -812,7 +1267,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         settings.task_timeout_seconds,
     )
     requirements: list[str] = task.get('requirements', [])
-    task_id = str(task.get('id', req.executionId))
+    # QA4: same derivation as the E6 task lock and the E8 live-protection
+    # snapshot (_run_and_callback sets entry.task_id from it) — the venv
+    # directory name, the lock key and the disk-sweep protection set can
+    # never disagree (an empty request id falls back to executionId here
+    # too, instead of collapsing onto the .venvs root).
+    task_id = _derive_task_key(req)
 
     # Glue script support: write inline source to a temp file and use it as entrypoint
     glue_source = task.get('glueSource') or task.get('glue_source')
@@ -883,6 +1343,11 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             # Each task ID maps to a persistent venv; same task reuses the same env
             _validate_requirements(requirements)
             venv_dir = Path(settings.work_dir) / '.venvs' / task_id
+            # E6: ensure_venv mutates .venvs/<task_id> — its only production
+            # call site is here inside run_task, which only runs under the
+            # per-task lock from _run_and_callback, so venv creation/install
+            # never runs concurrently for the same task (E8 additionally
+            # protects a live task's venv dir from the disk TTL sweep).
             python_bin = await ensure_venv(venv_dir, requirements)
             cmd = [str(python_bin), entrypoint]
         else:
