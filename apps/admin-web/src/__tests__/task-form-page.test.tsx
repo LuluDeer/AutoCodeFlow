@@ -15,6 +15,7 @@ import {
   buildExecutorPayload,
   applyRequirementsPayload,
 } from '../pages/executor-mode';
+import { applyMaintenanceWindowsPayload } from '../pages/maintenance-windows';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
@@ -261,5 +262,118 @@ describe('applyRequirementsPayload（W-21）', () => {
     expect(payload.name).toBe('t');
     expect(payload.executorId).toBe('e1');
     expect(payload.requirements).toEqual(['flask']);
+  });
+});
+
+// FEAT-06: 维护窗口——提交序列化 + 组件级动态行增删与编辑回填。
+describe('applyMaintenanceWindowsPayload（FEAT-06）', () => {
+  it('trim cron/说明并丢弃全空幽灵行', () => {
+    const payload = applyMaintenanceWindowsPayload({
+      maintenanceWindows: [
+        { start: ' 30 2 * * * ', end: '0 4 * * * ', description: ' 发布冻结 ' },
+        { start: '', end: '' },
+        { start: undefined, end: undefined },
+      ],
+    });
+    expect(payload.maintenanceWindows).toEqual([
+      { start: '30 2 * * *', end: '0 4 * * *', description: '发布冻结' },
+    ]);
+  });
+
+  it('说明为空串/空白 → 归一为 undefined（后端 @IsOptional 语义）', () => {
+    const payload = applyMaintenanceWindowsPayload({
+      maintenanceWindows: [{ start: '0 1 * * *', end: '0 2 * * *', description: '  ' }],
+    });
+    expect(payload.maintenanceWindows).toEqual([{ start: '0 1 * * *', end: '0 2 * * *' }]);
+  });
+
+  it('空集/未挂载 → 显式 null（N28：PATCH 缺省=保留，删除全部须发 null）', () => {
+    expect(applyMaintenanceWindowsPayload({ maintenanceWindows: [] }).maintenanceWindows).toBeNull();
+    expect(applyMaintenanceWindowsPayload({}).maintenanceWindows).toBeNull();
+    expect(applyMaintenanceWindowsPayload({ name: 't' }).maintenanceWindows).toBeNull();
+  });
+
+  it('半填行保留（交给后端结构校验 400，不静默吞掉半截输入）', () => {
+    const payload = applyMaintenanceWindowsPayload({
+      maintenanceWindows: [{ start: '30 2 * * *', end: '' }],
+    });
+    expect(payload.maintenanceWindows).toEqual([{ start: '30 2 * * *', end: '' }]);
+  });
+});
+
+describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级）', () => {
+  it('添加行 → 填写 cron → 删除行：输入随行增删', async () => {
+    mockRouteParams = {}; // 创建态
+    render(<TaskFormPage />);
+
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'mw-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /下一步：调度配置/ }));
+
+    // 默认无行：添加 → 出现一对 cron 输入
+    fireEvent.click(await screen.findByRole('button', { name: /添加维护窗口/ }));
+    const startInput = await screen.findByPlaceholderText('开始 Cron，如 30 2 * * *');
+    const endInput = screen.getByPlaceholderText('结束 Cron，如 0 4 * * *');
+    fireEvent.change(startInput, { target: { value: '30 2 * * *' } });
+    fireEvent.change(endInput, { target: { value: '0 4 * * *' } });
+
+    // 删除 → 输入消失
+    fireEvent.click(screen.getByRole('button', { name: /删除维护窗口 1/ }));
+    await vi.waitFor(() =>
+      expect(screen.queryByPlaceholderText('开始 Cron，如 30 2 * * *')).toBeNull(),
+    );
+  }, 15_000);
+
+  it('填写窗口后提交：payload.maintenanceWindows 带结构化数组', async () => {
+    mockRouteParams = {}; // 创建态
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+    render(<TaskFormPage />);
+
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'mw-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /下一步：调度配置/ }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /添加维护窗口/ }));
+    fireEvent.change(await screen.findByPlaceholderText('开始 Cron，如 30 2 * * *'), {
+      target: { value: '30 2 * * *' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('结束 Cron，如 0 4 * * *'), {
+      target: { value: '0 4 * * *' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /下一步：参数配置/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /创建任务/ }));
+
+    await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect(payload.maintenanceWindows).toEqual([{ start: '30 2 * * *', end: '0 4 * * *' }]);
+  }, 15_000);
+
+  it('编辑态回填已有窗口：行输入带后端值', async () => {
+    vi.mocked(tasksApi.get).mockReset().mockResolvedValue({
+      id: 'task-1',
+      name: 'windowed-job',
+      runtime: 'python',
+      entrypoint: 'main.py',
+      triggerType: 'manual',
+      executeMode: 'single',
+      timeoutSeconds: 300,
+      maxRetry: 3,
+      params: {},
+      maintenanceWindows: [
+        { start: '0 22 * * 5', end: '0 6 * * 6', description: '发布冻结' },
+      ],
+    } as never);
+
+    render(<TaskFormPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /下一步：调度配置/ }));
+    expect(await screen.findByDisplayValue('0 22 * * 5')).toBeTruthy();
+    expect(screen.getByDisplayValue('0 6 * * 6')).toBeTruthy();
+    expect(screen.getByDisplayValue('发布冻结')).toBeTruthy();
   });
 });

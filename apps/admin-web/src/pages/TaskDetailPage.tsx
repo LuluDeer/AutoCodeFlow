@@ -332,6 +332,18 @@ export default function TaskDetailPage() {
                           : `${task.fixedRate} 秒`}
                     </Descriptions.Item>
                   )}
+                  {/* FEAT-06: 任务级维护窗口（命中时调度计划触发被跳过） */}
+                  {task.maintenanceWindows && task.maintenanceWindows.length > 0 && (
+                    <Descriptions.Item label="维护窗口" span={2}>
+                      <Space size={[4, 4]} wrap>
+                        {task.maintenanceWindows.map((w, i) => (
+                          <Tag key={i} color="orange" style={{ fontFamily: 'monospace' }}>
+                            {`${w.start} → ${w.end}${w.description ? `（${w.description}）` : ''}`}
+                          </Tag>
+                        ))}
+                      </Space>
+                    </Descriptions.Item>
+                  )}
                   <Descriptions.Item label="入口文件">{task.entrypoint || '-'}</Descriptions.Item>
                   {task.requirements && task.requirements.length > 0 && (
                     <Descriptions.Item label="依赖包">

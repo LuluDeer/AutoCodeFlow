@@ -6,12 +6,12 @@ import {
 } from './executor-mode';
 import {
   Card, Form, Input, Select, Button, Steps, Space, Typography,
-  InputNumber, Radio, Alert, message, Divider, Tag, Spin,
+  InputNumber, Radio, Alert, message, Divider, Tag, Spin, Tooltip,
 } from 'antd';
 import {
   ThunderboltOutlined, ClockCircleOutlined, ArrowLeftOutlined,
   InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined,
-  CodeOutlined,
+  CodeOutlined, PlusOutlined, DeleteOutlined, ToolOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
@@ -22,6 +22,10 @@ import { TASK_PRIORITY_OPTIONS, toPriorityValue } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 import GlueEditor from '../components/GlueEditor';
 import AlarmConfig from '../components/AlarmConfig';
+import {
+  applyMaintenanceWindowsPayload,
+  MAINTENANCE_WINDOWS_MAX,
+} from './maintenance-windows';
 
 const { Title, Text } = Typography;
 
@@ -128,6 +132,8 @@ export default function TaskFormPage() {
           executorGroup: task.executorGroup,
           executorTags: task.executorTags,
           params: task.params ?? {},
+          // FEAT-06: 维护窗口（null/缺省 → 空数组占位，添加行即编辑）
+          maintenanceWindows: (task.maintenanceWindows ?? []).map((w) => ({ ...w })),
         });
       })
       .catch(() => message.error('加载任务失败'))
@@ -192,8 +198,8 @@ export default function TaskFormPage() {
     }
     setSaving(true);
     try {
-      const payload = applyRequirementsPayload(
-        buildExecutorPayload(values, executorMode),
+      const payload = applyMaintenanceWindowsPayload(
+        applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
       );
       if (isEdit && editId) {
         await tasksApi.update(editId, payload);
@@ -391,6 +397,68 @@ export default function TaskFormPage() {
                 />
               </Form.Item>
             )}
+
+            {/* FEAT-06: 任务级维护窗口——发布冻结期跳过计划触发（手动触发不受限） */}
+            <Divider style={{ margin: '16px 0' }} />
+            <div style={{ marginBottom: 8 }}>
+              <Space size={4}>
+                <ToolOutlined />
+                <Typography.Text strong>维护窗口（可选）</Typography.Text>
+                <Tooltip title="发布/停机时段保护：窗口内的计划触发（Cron、固定间隔、错失补偿）会被跳过并计入调度指标；手动触发不受影响。窗口在『开始 Cron』触达时刻开启、『结束 Cron』触达时刻关闭（半开区间）；窗口 Cron 按服务端本地时间评估。最多 10 条。">
+                  <InfoCircleOutlined style={{ color: '#1677ff' }} />
+                </Tooltip>
+              </Space>
+            </div>
+            <Form.List name="maintenanceWindows">
+              {(fields, { add, remove }) => (
+                <>
+                  {fields.map(field => (
+                    <Space key={field.key} style={{ display: 'flex', marginBottom: 8 }} align="baseline" wrap>
+                      <Form.Item
+                        name={[field.name, 'start']}
+                        noStyle
+                        rules={[
+                          { required: true, message: '开始 Cron 必填' },
+                          { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: '需 5 字段 Cron（分 时 日 月 周）' },
+                        ]}
+                      >
+                        <Input placeholder="开始 Cron，如 30 2 * * *" style={{ width: 200, fontFamily: 'monospace' }} />
+                      </Form.Item>
+                      <Form.Item
+                        name={[field.name, 'end']}
+                        noStyle
+                        rules={[
+                          { required: true, message: '结束 Cron 必填' },
+                          { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: '需 5 字段 Cron（分 时 日 月 周）' },
+                        ]}
+                      >
+                        <Input placeholder="结束 Cron，如 0 4 * * *" style={{ width: 200, fontFamily: 'monospace' }} />
+                      </Form.Item>
+                      <Form.Item name={[field.name, 'description']} noStyle>
+                        <Input placeholder="说明（可选）" style={{ width: 160 }} />
+                      </Form.Item>
+                      <Button
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        aria-label={`删除维护窗口 ${field.name + 1}`}
+                        onClick={() => remove(field.name)}
+                      />
+                    </Space>
+                  ))}
+                  <Form.Item style={{ marginBottom: 0 }}>
+                    <Button
+                      type="dashed"
+                      icon={<PlusOutlined />}
+                      onClick={() => add()}
+                      disabled={fields.length >= MAINTENANCE_WINDOWS_MAX}
+                    >
+                      添加维护窗口
+                    </Button>
+                  </Form.Item>
+                </>
+              )}
+            </Form.List>
 
             <Divider style={{ margin: '16px 0' }} />
 

@@ -1,5 +1,18 @@
 import { client } from './client';
 
+/**
+ * FEAT-06: 任务级维护窗口条目（tasks.maintenanceWindows jsonb）。
+ * start/end 均为 5 字段 cron：start 最近触达开窗、end 最近触达关窗
+ * （半开区间 [start, end)，跨午夜按最近触达自然成立）。
+ * 命中窗口时调度计划触发被跳过（计入 scheduler metrics 的
+ * triggersSkippedMaintenance）；手动/API 触发不受窗口约束。
+ */
+export interface MaintenanceWindow {
+  start: string;
+  end: string;
+  description?: string;
+}
+
 export interface Task {
   id: string;
   name: string;
@@ -34,6 +47,8 @@ export interface Task {
   executorGroup?: string | null;
   executorTags?: string[] | null;
   dependencies?: Record<string, string> | null;
+  /** FEAT-06: 维护窗口（null/[] = 未配置；表单未填写时提交 null 以清空） */
+  maintenanceWindows?: MaintenanceWindow[] | null;
   gitRepo?: string | null;
   gitBranch?: string | null;
   gitCommit?: string | null;

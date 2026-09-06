@@ -261,4 +261,139 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
       expect(ok.timeoutSeconds).toBe(7200);
     });
   });
+
+  // FEAT-06: maintenanceWindows — DTO boundary enforces STRUCTURE only
+  // (array of ≤10 {start,end} 5-field cron entries); the window-hit skip
+  // semantics live in scheduler.enqueue + maintenance-window.util.ts.
+  // UpdateTaskDto inherits every validator via PartialType. N28 PATCH
+  // semantics: field absent = keep old value; explicit null/[] = clear.
+  describe("maintenanceWindows validation (FEAT-06)", () => {
+    it("accepts an array of {start,end} windows", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "cron",
+        cronExpression: "*/5 * * * *",
+        maintenanceWindows: [
+          { start: "30 2 * * *", end: "0 4 * * *" },
+          { start: "0 22 * * 5", end: "0 6 * * 6", description: "发布冻结" },
+        ],
+      });
+      expect(result.maintenanceWindows).toHaveLength(2);
+      expect(result.maintenanceWindows![1].description).toBe("发布冻结");
+    });
+
+    it("stays optional when absent", async () => {
+      const result = await validateCreate({ name: "t1", triggerType: "api" });
+      expect(result.maintenanceWindows).toBeUndefined();
+    });
+
+    it("accepts explicit null (clear-all semantics for PATCH)", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        maintenanceWindows: null,
+      });
+      expect(result.maintenanceWindows).toBeNull();
+    });
+
+    it("accepts an empty array (clear-all semantics)", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        maintenanceWindows: [],
+      });
+      expect(result.maintenanceWindows).toEqual([]);
+    });
+
+    it("rejects a non-array value", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: { start: "30 2 * * *", end: "0 4 * * *" },
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects an item with an invalid start cron", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: [{ start: "not a cron", end: "0 4 * * *" }],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects an item with an invalid end cron (out of range minute)", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: [{ start: "30 2 * * *", end: "61 4 * * *" }],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects an item missing end", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: [{ start: "30 2 * * *" }],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects unknown props inside a window entry (forbidNonWhitelisted)", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: [
+            { start: "30 2 * * *", end: "0 4 * * *", cron: "x" },
+          ],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects an over-cap array (>10)", async () => {
+      const many = Array.from({ length: 11 }, () => ({
+        start: "30 2 * * *",
+        end: "0 4 * * *",
+      }));
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: many,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("accepts exactly 10 entries (boundary)", async () => {
+      const ten = Array.from({ length: 10 }, () => ({
+        start: "30 2 * * *",
+        end: "0 4 * * *",
+      }));
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        maintenanceWindows: ten,
+      });
+      expect(result.maintenanceWindows).toHaveLength(10);
+    });
+
+    it("UpdateTaskDto inherits the maintenanceWindows validators", async () => {
+      const ok = await validateUpdate({
+        maintenanceWindows: [{ start: "0 22 * * 5", end: "0 6 * * 6" }],
+      });
+      expect(ok.maintenanceWindows).toHaveLength(1);
+      await expect(
+        validateUpdate({
+          maintenanceWindows: [{ start: "30 2 * * *" }],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
 });

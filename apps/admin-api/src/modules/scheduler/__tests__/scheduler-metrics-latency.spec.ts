@@ -1,7 +1,10 @@
 /**
  * CORE-06：调度触发 fire→入队延迟直方图——桶分布、P99 插值、快照输出。
  */
-import { SchedulerMetricsService, TRIGGER_LATENCY_BUCKETS_MS } from "../scheduler-metrics.service";
+import {
+  SchedulerMetricsService,
+  TRIGGER_LATENCY_BUCKETS_MS,
+} from "../scheduler-metrics.service";
 
 describe("SchedulerMetricsService trigger latency (CORE-06)", () => {
   it("accumulates cumulative buckets and sum/count", () => {
