@@ -12,14 +12,20 @@ export interface SystemConfig {
   updatedAt: string;
 }
 
+// 与后端 ConfigHistory 实体逐字段对齐
+// （apps/admin-api/src/modules/config/entities/config-history.entity.ts）。
+// 可空性按实体 @Column({ nullable: true }) 标注；createdAt 为 ISO 字符串。
 export interface ConfigHistory {
   id: number;
   configKey: string;
+  action: 'create' | 'update' | 'delete';
   oldValue: string | null;
   newValue: string | null;
-  changedBy: string | null;
-  changedAt: string;
+  description: string | null;
+  userId: string | null;
+  username: string | null;
   ipAddress: string | null;
+  createdAt: string;
 }
 
 export interface UpsertConfigPayload {
