@@ -12,6 +12,8 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { UserRole } from "../users/entities/user.entity";
 import { AppDeploymentService } from "./app-deployment.service";
 import { ExecutorService } from "../executor/executor.service";
 import { ApiHeader } from "@nestjs/swagger";
@@ -71,19 +73,27 @@ export class AppDeploymentController {
     return this.svc.findById(id);
   }
 
+  // R1: deploy/upgrade/stop are cluster-mutating routes (assign work to
+  // executors, restart processes, kill runs). Listing/details stay open
+  // to any authenticated user. The @Public() heartbeat below is a
+  // machine-to-machine callback with X-Executor-Token auth — it carries
+  // no @Roles metadata, so the global RolesGuard skips it.
   @Post("applications/:appId/deploy")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Assign application to executor" })
   deploy(@Param("appId") appId: string, @Body() dto: CreateDeploymentDto) {
     return this.svc.deploy(appId, dto);
   }
 
   @Post(":id/upgrade")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Trigger overlay upgrade" })
   upgrade(@Param("id") id: string) {
     return this.svc.upgrade(id);
   }
 
   @Post(":id/stop")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Stop running deployment" })
   stop(@Param("id") id: string) {
     return this.svc.stop(id);

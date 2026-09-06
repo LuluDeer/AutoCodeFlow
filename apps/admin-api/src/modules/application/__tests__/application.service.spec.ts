@@ -5,6 +5,15 @@ import { Application, ApplicationStatus } from "../entities/application.entity";
 import { ModuleRef } from "@nestjs/core";
 import { AiService } from "../../ai/ai.service";
 
+// R4/R1: deployFromGit spawns git and resolves the repo host — pin both so
+// the specs never touch the network or a real binary.
+jest.mock("child_process", () => ({ spawnSync: jest.fn() }));
+jest.mock("node:dns/promises", () => ({ lookup: jest.fn() }));
+import { spawnSync } from "child_process";
+import { lookup } from "node:dns/promises";
+const mockedSpawn = spawnSync as unknown as jest.Mock;
+const mockedLookup = lookup as unknown as jest.Mock;
+
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findOne: jest.fn(),
   find: jest.fn(),
@@ -65,6 +74,62 @@ describe("ApplicationService", () => {
     });
   });
 
+  // R1: env masking on the read surface — secrets stay raw in the DB
+  // (executors need them at deploy time) but the HTTP read surface
+  // returns '***' for password/secret/token/api_key class field names.
+  describe("findById / findAll — env masking (R1)", () => {
+    it("masks secret-class env keys on the read surface", async () => {
+      const row = {
+        id: "1",
+        name: "app1",
+        env: {
+          DATABASE_URL: "postgres://user:pass@db/app",
+          API_KEY: "sk-very-secret",
+          NODE_ENV: "production",
+        },
+      };
+      appRepo.findOne.mockResolvedValue(row);
+      const result = await service.findById("1");
+      expect(result.env).toEqual({
+        DATABASE_URL: "postgres://user:pass@db/app",
+        API_KEY: "***",
+        NODE_ENV: "production",
+      });
+      // the underlying row is untouched (mask is a shallow clone)
+      expect(row.env.API_KEY).toBe("sk-very-secret");
+    });
+
+    it("findByIdRaw bypasses masking for internal deploy/upgrade callers", async () => {
+      const row = {
+        id: "1",
+        name: "app1",
+        env: { API_KEY: "sk-very-secret", NODE_ENV: "production" },
+      };
+      appRepo.findOne.mockResolvedValue(row);
+      const result = await service.findByIdRaw("1");
+      expect(result.env.API_KEY).toBe("sk-very-secret");
+    });
+
+    it("findAll applies the mask to every row", async () => {
+      const rows = [
+        { id: "1", name: "a", env: { SECRET_TOKEN: "abc" } },
+        { id: "2", name: "b", env: { password: "hunter2", OTHER: "x" } },
+      ];
+      appRepo.find.mockResolvedValue(rows);
+      const result = await service.findAll();
+      expect(result[0].env.SECRET_TOKEN).toBe("***");
+      expect(result[1].env.password).toBe("***");
+      expect(result[1].env.OTHER).toBe("x");
+    });
+
+    it("apps with no env map are returned unchanged", async () => {
+      const row = { id: "1", name: "app1" };
+      appRepo.findOne.mockResolvedValue(row);
+      const result = await service.findById("1");
+      expect(result).toEqual(row);
+    });
+  });
+
   describe("create", () => {
     it("should create an application successfully", async () => {
       appRepo.findOne.mockResolvedValue(null);
@@ -100,6 +165,129 @@ describe("ApplicationService", () => {
 
       const result = await service.update("1", { description: "updated" });
       expect(result.description).toBe("updated");
+    });
+
+    // R1: update() must load the RAW row. If it went through the masked
+    // findById(), every env-less update (webhook version bump, upload
+    // upsert) would persist '***' over the real secret values.
+    it("R1: persists the RAW env — a masked read surface is never written back", async () => {
+      const row = {
+        id: "1",
+        name: "app1",
+        env: { API_KEY: "sk-real", NODE_ENV: "prod" },
+      };
+      appRepo.findOne.mockResolvedValue(row);
+
+      await service.update("1", { description: "bumped by webhook" });
+
+      const saved = appRepo.save.mock.calls[0][0];
+      expect(saved.env.API_KEY).toBe("sk-real");
+      expect(saved.env.NODE_ENV).toBe("prod");
+    });
+
+    it("R1: an admin form echoing '***' for a secret key keeps the saved raw value", async () => {
+      const row = { id: "1", name: "app1", env: { API_KEY: "sk-real" } };
+      appRepo.findOne.mockResolvedValue(row);
+
+      await service.update("1", { env: { API_KEY: "***", NEW_VAR: "v" } });
+
+      const saved = appRepo.save.mock.calls[0][0];
+      expect(saved.env).toEqual({ API_KEY: "sk-real", NEW_VAR: "v" });
+    });
+
+    it("R1: the update RESPONSE is masked (public webhook route must never echo raw env)", async () => {
+      const row = { id: "1", name: "app1", env: { API_KEY: "sk-real" } };
+      appRepo.findOne.mockResolvedValue(row);
+
+      const result = await service.update("1", { description: "d" });
+
+      expect(result.env.API_KEY).toBe("***");
+    });
+  });
+
+  // R4: gitRepo only passed a FORMAT regex before — a well-formed
+  // http://169.254.169.254/... made `git clone` an SSRF first hop. The host
+  // must now clear the safe-http classification BEFORE spawnSync.
+  describe("deployFromGit — R1 raw write + R4 SSRF gate", () => {
+    afterEach(() => {
+      mockedSpawn.mockReset();
+      mockedLookup.mockReset();
+    });
+
+    it("persists the RAW env on the DEPLOYING save (not the masked row)", async () => {
+      const row = { id: "1", name: "app1", env: { API_KEY: "sk-real" } };
+      appRepo.findOne.mockResolvedValue(row);
+      mockedLookup.mockResolvedValue([
+        { address: "93.184.216.34", family: 4 },
+      ]);
+      // Clone fails fast — we only care about the FIRST save (DEPLOYING).
+      // Snapshot each save arg: the service mutates the same entity object
+      // (status → FAILED) before saving again.
+      const saves: Array<Record<string, unknown>> = [];
+      appRepo.save.mockImplementation((e: any) => {
+        saves.push({ ...e });
+        return Promise.resolve(e);
+      });
+      mockedSpawn.mockReturnValue({
+        status: 128,
+        stderr: Buffer.from("repository not found"),
+      });
+
+      await expect(
+        service.deployFromGit("1", "https://github.com/org/repo.git", "main"),
+      ).rejects.toThrow();
+
+      expect(saves[0].status).toBe(ApplicationStatus.DEPLOYING);
+      expect((saves[0].env as Record<string, string>).API_KEY).toBe("sk-real");
+    });
+
+    it("R4: refuses a repo whose host resolves to cloud metadata — git never spawns", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+      mockedLookup.mockResolvedValue([
+        { address: "169.254.169.254", family: 4 },
+      ]);
+
+      await expect(
+        service.deployFromGit("1", "http://evil.example.com/r.git", "main"),
+      ).rejects.toThrow(/clone refused/);
+      expect(mockedSpawn).not.toHaveBeenCalled();
+    });
+
+    it("R4: refuses a loopback IP-literal repo URL", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+
+      await expect(
+        service.deployFromGit("1", "http://127.0.0.1:3000/r.git", "main"),
+      ).rejects.toThrow(/loopback/);
+      expect(mockedSpawn).not.toHaveBeenCalled();
+    });
+
+    it("R4: refuses the scp-like git@127.0.0.1:path form", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+
+      await expect(
+        service.deployFromGit("1", "git@127.0.0.1:org/repo.git", "main"),
+      ).rejects.toThrow(/loopback/);
+      expect(mockedSpawn).not.toHaveBeenCalled();
+    });
+
+    it("R4: a public repo proceeds to clone (behavior unchanged)", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+      mockedLookup.mockResolvedValue([
+        { address: "93.184.216.34", family: 4 },
+      ]);
+      mockedSpawn.mockReturnValue({ status: 0, stdout: "deadbeef" });
+
+      await service.deployFromGit(
+        "1",
+        "https://github.com/org/repo.git",
+        "main",
+      );
+
+      expect(mockedSpawn).toHaveBeenCalled();
+      const lastSave =
+        appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+      expect(lastSave.status).toBe(ApplicationStatus.ACTIVE);
     });
   });
 
