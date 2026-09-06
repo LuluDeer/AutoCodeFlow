@@ -76,10 +76,11 @@ export class TaskProcessor extends WorkerHost {
     // P0: claim the execution atomically. A KILLED/CANCELLED execution (e.g.
     // killed while still queued) must never be revived by a worker; FAILED is
     // still claimable because BullMQ retries run through here again (the
-    // executor-restart retry path in executor.service.scheduleRetryAfterRestart
-    // also creates a fresh PENDING row, but the legacy retry semantics that
-    // let a FAILED row be re-dispatched must remain intact — do not drop
-    // FAILED from this list).
+    // shared recovery retry pattern in executor.service.scheduleRetryAfterRecovery
+    // — used by both the executor-restart path and the P2 stale-sweep
+    // re-enqueue — also creates a fresh PENDING row, but the legacy retry
+    // semantics that let a FAILED row be re-dispatched must remain intact — do
+    // not drop FAILED from this list).
     //
     // CONSISTENCY-01: RUNNING is deliberately NOT claimable. A stalled BullMQ
     // job (worker crash / lost lock) is redelivered and re-runs handle() while

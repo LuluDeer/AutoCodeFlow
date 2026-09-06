@@ -110,6 +110,14 @@ export default () => ({
       return t;
     })(),
   },
+  // P2: stale sweep 重试预算兑现开关。true（默认）时，sweep 赢得 RUNNING→
+  // FAILED 条件 UPDATE 后，对重试预算未耗尽的执行创建新 PENDING execution
+  // 并入队（re-enqueue 前 best-effort kill 原执行器进程）；false 恢复旧的
+  // "只置 FAILED 不重试"行为。见 scheduler.service.recoverStaleExecutions。
+  scheduler: {
+    staleRecoveryRetryEnabled:
+      process.env.STALE_RECOVERY_RETRY_ENABLED !== "false",
+  },
   // N23: dedicated secret for per-execution callback tokens (HMAC key
   // material). Optional: falls back to the executor shared token when
   // unset — executor-node derives the same key from its own env, so both

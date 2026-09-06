@@ -1385,7 +1385,11 @@ export class TaskService {
    * 地址来源为库中实际值（RETURNING 结果，快照作兜底）；拿不到地址则跳过。
    * 任何失败（离线 / 超时 / 404 / 网络错）一律吞掉并 logger.warn，绝不影响
    * kill 的结果返回——执行器侧 /kill 返回 200=已终止或已结束、404=不在运行，
-   * 均无需回传给管理员。动态 import axios，与 backfillFullLogsFromExecutor 同款风格。
+   * 均无需回传给管理员。
+   *
+   * P2: HTTP 实现收敛至 ExecutorService.notifyExecutorKill（scheduler stale
+   * sweep re-enqueue 前的 kill 通知共用，避免两份逻辑）。本包装保留调用点
+   * 契约：空地址跳过、异常兜底吞掉。
    */
   private async notifyExecutorKill(
     executionId: string,
@@ -1393,14 +1397,7 @@ export class TaskService {
   ): Promise<void> {
     if (!executorAddress) return;
     try {
-      const token = await this.executorService.getSharedToken();
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const { default: axios } = await import("axios");
-      const url = this.executorService.getExecutorUrl(
-        executorAddress,
-        `api/executions/${executionId}/kill`,
-      );
-      await axios.post(url, {}, { headers, timeout: 3_000 });
+      await this.executorService.notifyExecutorKill(executionId, executorAddress);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(
