@@ -25,7 +25,7 @@
 | BUG-05 | P2 | done | main-A | 2026-09-07 | admin-api metrics 模块 + task.service + docs/observability | 3caabb4+style | SSE active/limit gauge 双 series + 占用率可算；1179/1179 ✓（lint 0）|
 | BUG-06 | P2 | done | main-A | 2026-09-07 | admin-api task.service storeLogLines | 2711c9d | 复核坐实两处真实缺陷（replace 陈旧指针/append 孤儿行）并修复，+2 集成回归，1218/1218 |
 | BUG-07 | P2 | unclaimed | | | Windows 测试任务书 + e2e 脚本 | | QA8 detached 信号深验（需 Windows 真机窗口） |
-| BUG-10 | P3 | unclaimed | | | 双执行器失败分类 | | failureReason 细化 |
+| BUG-10 | P3 | done | main-A | 2026-09-07 | admin 枚举 + 双执行器 + autoflow-sdk + admin-web 映射 | 见批七 commit | +3 分类（git_fetch/dependency_install/runtime_missing），四端联动 |
 | BUG-11 | P3 | unclaimed | | | executor-desktop assets | | W-16 图标入库 |
 | BUG-12 | P2 | unclaimed | | | executor-desktop main/IPC | | SEC-01 项之一（desktop 凭据/IPC/env 复审） |
 | BUG-13 | P2 | done | main-A | 2026-09-07 | packages/acf-cli + docs/SEC-01-复审报告.md | | SEC-01 四项复审第一批（CLI 认证链/降级/重试） |
@@ -47,7 +47,7 @@
 | FEAT-09 | P3 | unclaimed | | | admin-web 全局组件 | | 全局搜索/命令面板 |
 | FEAT-10 | P3 | unclaimed | | | admin-api notification | | 通知模板变量 |
 | FEAT-11 | P3 | unclaimed | | | task 实体 + admin-web | | 任务 runbook 字段 |
-| FEAT-12 | P3 | done | main-A | 2026-09-07 | registry-pypi main.py + tests | 见批六 commit | 索引页增强：版本聚合/体积/UTC 时间/计数；PEP 503 锚点语义不变；+2 测试 52/52 |
+| FEAT-12 | P3 | done | main-A | 2026-09-07 | registry-pypi main.py + tests | f93999b | 索引页增强：版本聚合/体积/UTC 时间/计数；PEP 503 锚点语义不变；+2 测试 52/52 |
 | CORE-01 | P1 | done | main-A | 2026-09-07 | admin-web TaskForm/List/Detail + utils/priority | 批六 commit | 前端 UI 化 done（后端本就绪）；剩余=拥塞下优先出队的真机断言（并入真机轮） |
 | CORE-02 | P1 | unclaimed | | | admin-api task + admin-web | | 重试策略精细化（attempt 链可视化） |
 | CORE-03 | P1 | unclaimed | | | admin-api 模板实体 + admin-web | | 任务模板与一键克隆 |
@@ -135,4 +135,5 @@
 - 2026-09-07 main-A：批四 done=FEAT-02（DAG 可视化，admin-web 108/108+build ✓，避开 metrics/config/executor 在途文件）。
 - 2026-09-07 main-A：⚠️ 流程事故复盘——dc82ac7（session-B 的 BUG-01 提交）顺带带走了 main-A 已暂存的 ECO-02 四文件（共享 index 暂存碰撞）。核对无内容丢失，但归属纠缠。**新纪律：多会话环境下 git add 后必须立即 commit，禁止长时暂存**；提交前 git log --stat 盘点是否被顺带提交。
 - 2026-09-07 main-A：批五 done=DOC-04（ADR 十篇：回调 token/双保险调度/幂等签发/信封契约/bundle 同 commit/RBAC 同批/配置优先级/真机冒烟/S3 双存储/去重窗口语义）。
+- 2026-09-07 main-A：批七 done=BUG-10（四端联动失败分类细化）。基线刷新：executor-node 240/240 · executor-python 206/206 · autoflow-sdk 100/100 · admin-web 118/118 · registry-pypi 52/52。
 - 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场+rbac.spec)、MainLayout.tsx、logout.test.tsx、AppDeploymentPage.tsx、ApplicationDetailPage.tsx、ApplicationListPage.tsx、NotificationSettingsPage.tsx(W1)、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 app-deployment-race.test.tsx（tsc 报错在途）——上述文件在清理前请勿认领触碰。

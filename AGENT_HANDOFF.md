@@ -18,6 +18,7 @@
   - `0409000` **FEAT-03**：孤儿组件 ExecutionCompare（零引用）拆出 ExecutionCompareModal 接回 ExecutionsPage 多选对比；admin-web 93/93
   - 复核销账：**BUG-02**（sweep 重试预算第十四轮已实现+测试）；**BUG-01/N51**（401 重签重试 R11 已实现，收口改进在 executor.controller.ts 被并行会话占用→blocked，且该重试路径无专项测试）
   - `3caabb4` **BUG-05**：SSE 活跃流 gauge（autoflow_sse_streams_active/limit）——runtime-gauges 模块级注册表+task.service 占用/释放两点埋点+prom 绝对值渲染；observability README 字典补录 4 runtime counter+2 gauge（此前后台字典滞后）；admin-api **1179/1179** + lint 0
+  - 批五~批七（01:04-02:00，main-A 持续推进）：`SEC-01 复审四项`（BUG-13 CLI 401 刷新自愈+refreshToken 入库 / BUG-14 MCP AUTOCODEFLOW_API_REFRESH_TOKEN 长驻自愈 / BUG-15 SDK 契约对称性 / BUG-16+12 复审）→ docs/SEC-01-复审报告.md，新发现 desktop token 明文落盘→SEC-NEW-1；`BUG-06` S3 回退指针语义（replace STALE 指针/append 孤儿行，storeLogLines 全量并入+指针收回）；`FEAT-02` 依赖 DAG 可视化（dag-layout 纯函数+TaskDependencyGraph+详情页 Tab）；`CORE-01` 优先级 UI 化（双形态契约 utils/priority）；`ECO-02` acf exec tail（SSE）+ task lint；`DOC-04` ADR-001~010；`FEAT-12` pypi 索引页增强；`BUG-10` 失败分类细化四端联动（git_fetch/dependency_install/runtime_missing）。基线：admin-api 1218 · executor-node 240 · executor-python 206 · autoflow-sdk 100 · acf-cli 66 · mcp-server 46 · registry-pypi 52 · admin-web 118。⚠️ 流程事故复盘：共享 index 暂存碰撞（dc82ac7 顺带带走 main-A 已暂存的 ECO-02 文件，无内容丢失）——**add 后立即 commit，禁长时暂存**。
   - ⚠️ 并行会话在途（勿动）：W1 通知设置页/W2 API 半场/应用三页面+MainLayout/logout.test/app-deployment-race.test.tsx（该文件 tsc 在途报错，全量 build 被其阻塞）
 - 测试基线（全绿）：
   - admin-api **870/870** (jest, 53 suites) + eslint **0/0** + coverage 地板（68/58/56/69）
