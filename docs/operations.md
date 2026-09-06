@@ -228,6 +228,55 @@ curl -fsSL http://your-admin-api-host:3105/api/executors/install.sh \
 
 ---
 
+## 混沌演练（chaos-drill）
+
+`scripts/chaos-drill.sh` 对在跑的 compose 栈做受控故障注入，每个场景按
+**注入 → 断言 → 恢复 → 二次断言** 推进；退出码 = 失败场景数。场景语义均
+已对 `apps/admin-api/src` 实现核实（fail-open 判定、判离线阈值、Leader 锁
+TTL），脚本内注释标注了断言窗口与实现常量的对应关系。
+
+### 前置条件
+
+- docker compose 完整栈在跑：admin-api(:3105)、redis、executor-node 至少各一
+- 管理员凭据可用（默认 `admin` / `Admin@123456`，即 compose 缺省 `INITIAL_ADMIN_PASSWORD`）
+- 容器按 compose label（`com.docker.compose.service=redis/admin-api/executor-node`）自动发现，非标命名用 `CHAOS_*_CONTAINER` 环境变量覆盖
+
+### 运行方式
+
+```bash
+bash scripts/chaos-drill.sh --scenario A            # 单场景
+bash scripts/chaos-drill.sh --scenario a,b          # 逗号组合
+bash scripts/chaos-drill.sh --scenario all          # 默认：全部场景
+bash scripts/chaos-drill.sh --scenario B --with-task          # B 场景恢复后加派发验证
+bash scripts/chaos-drill.sh --scenario B --pause-seconds 30   # B 短断网变体
+```
+
+- 每场景独立日志写入 `mktemp -d` 目录（`CHAOS_LOG_ROOT` 可改根），结束时打印路径
+- **Ctrl-C / 退出即恢复**：trap 只做逆操作（unpause/start 还原容器状态），绝不 `rm` 用户容器
+- 常用环境变量：`CHAOS_API_URL`（默认 `http://localhost:3105`）、`CHAOS_USERNAME/PASSWORD`、`CHAOS_PAUSE_SECONDS`（默认 150）、`CHAOS_OFFLINE_THRESHOLD_SEC`（默认 90）、`CHAOS_HTTP_TIMEOUT`（默认 10）；完整清单见脚本头注释
+- 无 docker 环境的验收路径：`bash scripts/chaos-drill.selftest.sh`（bash -n 语法 + 33 例纯函数自检，覆盖场景名解析 / 断言窗口计算 / 日志路径生成 / JSON 取值助手）
+
+### 四场景说明
+
+| 场景 | 注入 | 核心断言 | 恢复 / 二次断言 |
+|------|------|----------|------------------|
+| A Redis 宕机 | `docker stop redis` | 观察窗（默认 30s）内 `/api/health` 存活；admin 日志出现 `Redis connection error`（锁客户端感知故障） | `docker start redis` + `redis-cli PONG`；`/api/health/metrics` 的 `queueSize` 恢复可读且 `/api/health/services` 的 queue 组件回 healthy（BullMQ 重连，队列深度 series 回归） |
+| B 执行器断网 | `docker pause executor-node`（默认 150s） | 预算窗 = 阈值 90s + 扫描 30s + 缓冲 30s 内 `onlineExecutors` 下降（`markStaleOffline` 每 30s cron，阈值 = `EXECUTOR_HEARTBEAT_INTERVAL` 30s × `EXECUTOR_HEARTBEAT_TIMEOUT_MULTIPLIER` 3 = 90s） | `docker unpause`；默认 90s 内 `onlineExecutors` 回归基线；`--with-task` 再创建/触发任务并等终态 success |
+| C admin 双实例滚动重启 | 逐个 `docker restart` 两 admin 容器 | 全程轮询双地址，任一时刻至少一个 `/api/health` 200（容忍 1 次瞬时抖动）；锁在 Redis（`EXISTS lock:scheduler:leader`）前提下，全程日志必现 `leadership acquired`（接管窗 = 锁 TTL 30s + 竞选重试 15s + 缓冲 15s = 60s） | 双实例同时恢复 200 |
+| D PG 主从切换 | ——（跳过） | 本机 compose 仅单主 postgres，无从库可注入；脚本保留 TODO 骨架（pg_promote 提升 / 复制流断言 / pg_rewind rejoin），需真机拓扑后补齐 | —— |
+
+注意：**30s 短断网不会触发判离线**（阈值 90s），这是实现语义而非缺陷；
+`--pause-seconds 30` 会走反向断言「短断网不误判离线」。
+
+### 已知边界（需真机确认的断言）
+
+- **A 的 fail-open 降级日志**：`degrading to leader` 仅当注入前该实例非 Leader 才出现；已持锁实例的 fail-open 语义是保持 `isLeader=true` 继续调度，不打新日志。脚本把它作为 best-effort 观测落日志，硬断言落在 `/api/health` 存活与队列深度回归上。停机期 `/api/health` 单次响应可能被 BullMQ 重连拖慢（无 commandTimeout），脚本在观察窗内取到一次 200 即判存活
+- **C 的双实例拓扑**：compose 里 admin-api 固定映射 `3105:3105`，`--scale admin-api=2` 会端口冲突，需手工起第二实例（同 env、`-p 3106:3105`、加入同一 autoflow internal/public 网络）后用 `CHAOS_ADMIN2_CONTAINER` 指定；接管日志断言的前提是锁确实在 Redis——若两实例都处于 fail-open 降级（锁不在 Redis），该断言自动降级为观测项
+- **D 完全依赖真机**：需真实 PG 主从拓扑，脚本只保留骨架与窗口建议（只读窗口 ≤60s、写恢复 ≤120s，受 TypeORM 重连退避影响）
+- 开发环境（本机无 docker）无法真跑注入：以上断言设计均已对实现核实，但「真跑通过」需在 docker 环境执行一次确认
+
+---
+
 ## 故障排查
 
 ### 任务一直处于 `pending` 状态
