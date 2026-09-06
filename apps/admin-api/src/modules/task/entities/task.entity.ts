@@ -144,7 +144,28 @@ export class Task {
     default: MisfireStrategy.IGNORE,
   })
   misfireStrategy: MisfireStrategy;
-  @Column({ type: "enum", enum: TaskPriority, default: TaskPriority.NORMAL })
+  /**
+   * CORE-01 回归修复：CORE-01 前端以数字（1-4）提交 priority，而本列的 PG
+   * enum 只接受 label 字符串（'normal' 等，见 N2 注释）——数字直写 PG 报
+   * `invalid input value for enum` 500（create/PATCH 全线炸，e2e 23-25/29 红）。
+   * 入队边界的 normalizeTaskPriority 只救 BullMQ，救不了实体落库。transformer
+   * 在列级把数字统一转小写 label，覆盖一切写路径（save/upsert/query builder
+   * 之外的 set+save 均经此）；读路径恒为 label 字符串，from 保持透传。
+   */
+  @Column({
+    type: "enum",
+    enum: TaskPriority,
+    default: TaskPriority.NORMAL,
+    transformer: {
+      to: (v?: unknown): string | undefined => {
+        if (typeof v === "number") {
+          return String(TaskPriority[v]).toLowerCase();
+        }
+        return v as string | undefined;
+      },
+      from: (v?: unknown): unknown => v,
+    },
+  })
   priority: TaskPriority;
   @Column({ type: "enum", enum: ExecuteMode, default: ExecuteMode.SINGLE })
   executeMode: ExecuteMode;
