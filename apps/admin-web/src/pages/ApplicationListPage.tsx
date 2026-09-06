@@ -13,8 +13,19 @@ import { executorsApi } from '../api/executors';
 import { useNavigate } from 'react-router-dom';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
+import { useAuthStore, isAdminUser } from '../store/auth';
 
 const { Text } = Typography;
+
+/**
+ * W3 RBAC（对齐 settings 页先例）：应用写面（创建/上传/编辑/删除/快速部署）
+ * 后端已全链 @Roles(ADMIN)，读面（列表/详情）登录即可。
+ * 普通用户：写按钮禁用并给出提示（读面保持可见），不发起会 403 的请求。
+ */
+function useIsAdmin() {
+  const user = useAuthStore((s) => s.user);
+  return isAdminUser(user);
+}
 
 const GIT_URL_RE = /^(https?:\/\/[\w.@:/~_-]+\.git|git@[\w.-]+:[\w./_-]+\.git)$/;
 
@@ -44,6 +55,7 @@ interface AppWithStats extends Application {
 
 export default function ApplicationListPage() {
   const nav = useNavigate();
+  const isAdmin = useIsAdmin();
   const [apps, setApps] = useState<AppWithStats[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -285,23 +297,31 @@ export default function ApplicationListPage() {
           >
             详情
           </Button>
-          <Button
-            type="link"
-            size="small"
-            icon={<RocketOutlined />}
-            onClick={() => openQuickDeploy(record.id)}
-          >
-            新建部署
-          </Button>
-          <Button type="link" size="small" onClick={() => handleEdit(record)}>编辑</Button>
+          <Tooltip title={isAdmin ? '快速新建部署' : '仅管理员可部署应用'}>
+            <Button
+              type="link"
+              size="small"
+              icon={<RocketOutlined />}
+              onClick={() => openQuickDeploy(record.id)}
+              disabled={!isAdmin}
+            >
+              新建部署
+            </Button>
+          </Tooltip>
+          <Tooltip title={isAdmin ? '编辑' : '仅管理员可编辑应用'}>
+            <Button type="link" size="small" onClick={() => handleEdit(record)} disabled={!isAdmin}>编辑</Button>
+          </Tooltip>
           <Popconfirm
             title="确认删除此应用？"
             description="删除后无法恢复，请确认。"
             onConfirm={() => handleDelete(record.id)}
             okText="删除"
             okButtonProps={{ danger: true }}
+            disabled={!isAdmin}
           >
-            <Button type="link" size="small" danger>删除</Button>
+            <Tooltip title={isAdmin ? '删除' : '仅管理员可删除应用'}>
+              <Button type="link" size="small" danger disabled={!isAdmin}>删除</Button>
+            </Tooltip>
           </Popconfirm>
         </Space>
       ),
@@ -313,14 +333,18 @@ export default function ApplicationListPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <Typography.Title level={4} style={{ margin: 0 }}>应用管理</Typography.Title>
         <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-            创建应用
-          </Button>
-          <Button icon={<UploadOutlined />} onClick={() => {
-            setUploadModalOpen(true);
-          }}>
-            上传 ZIP
-          </Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可创建应用'}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate} disabled={!isAdmin}>
+              创建应用
+            </Button>
+          </Tooltip>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可上传应用'}>
+            <Button icon={<UploadOutlined />} onClick={() => {
+              setUploadModalOpen(true);
+            }} disabled={!isAdmin}>
+              上传 ZIP
+            </Button>
+          </Tooltip>
           <Button icon={<ReloadOutlined />} onClick={fetchApps} loading={loading}>刷新</Button>
         </Space>
       </div>
