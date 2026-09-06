@@ -1,5 +1,9 @@
 import axios from "axios";
-import { UnauthorizedException, NotFoundException } from "@nestjs/common";
+import {
+  UnauthorizedException,
+  NotFoundException,
+  Logger,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { INestApplication, ExecutionContext } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
@@ -20,6 +24,12 @@ import {
 } from "../install-script.content";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { IS_PUBLIC_KEY } from "../../../common/decorators/public.decorator";
+// BUG-01：401 重签重试可观测计数（模块级进程内计数表，与渲染侧同实例），
+// 专项用例围绕 autoflow_push_auth_retry_total 的两条 result 标签展开。
+import {
+  getRuntimeCountersSnapshot,
+  resetRuntimeMetrics,
+} from "../../metrics/runtime-metrics-entry";
 
 jest.mock("axios");
 // F-3: reload-config now consults the SSRF layer before posting; stub it here
@@ -176,9 +186,17 @@ describe("ExecutorController", () => {
     });
     mockedAxios.post.mockRejectedValue(unauthorized);
 
-    await expect(controller.reloadConfig("executor-1", {})).rejects.toThrow(
-      "Failed to reach executor",
+    // BUG-01 (b): 重签重试后仍 401 → 精确文案：执行器地址 + "重签重试后仍 401"
+    // 语义 + 建议动作（等待一个心跳自愈 / rotate-token）。
+    const err = await controller.reloadConfig("executor-1", {}).catch((e) => e);
+    expect(err).toBeInstanceOf(UnauthorizedException);
+    expect(err.message).toContain(
+      "Executor executor.local:8001 rejected the config push with 401 even after a token re-issue retry",
     );
+    expect(err.message).toContain("rotate-token");
+    // F-8: 仍不回显 axios 错误文本
+    expect(err.message).not.toContain("Invalid or missing executor token");
+    expect(err.message).not.toContain("Request failed");
     // exactly one auth retry: two posts, two issuances — never a third
     expect(mockedAxios.post).toHaveBeenCalledTimes(2);
     expect(svc.issueToken).toHaveBeenCalledTimes(2);
@@ -212,6 +230,239 @@ describe("ExecutorController", () => {
     );
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     expect(svc.issueToken).toHaveBeenCalledTimes(1);
+  });
+
+  // BUG-01（N51 收口）：401 重签重试的可观测性与双 401 文案区分。
+  // recordRuntime 的计数表是模块级单例（与渲染侧共享同一实例），进/出本
+  // describe 各显式重置一次，防跨用例/跨文件串扰；计数断言直接读快照，
+  // 与 prometheus-metrics.service.spec 的渲染测试互补。
+  describe("reload-config 401 retry observability (BUG-01)", () => {
+    beforeEach(() => {
+      resetRuntimeMetrics();
+      // 静默 BUG-01 新增的 warn/fx 日志，保持测试输出干净
+      jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+    });
+    afterEach(() => {
+      resetRuntimeMetrics();
+      jest.restoreAllMocks();
+    });
+
+    const retryCount = (result: "reissued_success" | "still_unauthorized") =>
+      getRuntimeCountersSnapshot()
+        .get("autoflow_push_auth_retry_total")
+        ?.get(JSON.stringify({ result })) ?? 0;
+
+    const makeOnlineExecutor = (overrides: Record<string, unknown> = {}) => ({
+      id: "executor-1",
+      address: "executor.local:8001",
+      appName: "executor-node",
+      executorStartupId: null, // legacy row → 首发 401 的冷缓存形态
+      status: ExecutorStatus.ONLINE,
+      ...overrides,
+    });
+
+    const unauthorized = () =>
+      Object.assign(new Error("Request failed"), {
+        response: {
+          status: 401,
+          data: { error: "Invalid or missing executor token" },
+        },
+      });
+
+    // a) 首发 401 → 重签成功 → 重试 2xx：响应 success，issueToken 被重签调用，
+    //    计数 reissued_success +1。
+    it("re-issues once after a first-attempt 401 and succeeds on the retry (a)", async () => {
+      const svc = {
+        findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
+        issueToken: jest
+          .fn()
+          .mockResolvedValueOnce({ token: "first-token", tokenHash: "h1" })
+          .mockResolvedValueOnce({ token: "second-token", tokenHash: "h2" }),
+        getExecutorUrl: jest
+          .fn()
+          .mockReturnValue("http://executor.local:8001/api/config/reload"),
+      };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+      mockedAxios.post
+        .mockRejectedValueOnce(unauthorized())
+        .mockResolvedValueOnce({ data: { success: true } });
+
+      await expect(controller.reloadConfig("executor-1", {})).resolves.toEqual({
+        success: true,
+      });
+      // 首发 + 重签共两次签发，重试请求携带重签 token
+      expect(svc.issueToken).toHaveBeenCalledTimes(2);
+      expect(mockedAxios.post).toHaveBeenLastCalledWith(
+        "http://executor.local:8001/api/config/reload",
+        {},
+        {
+          headers: { Authorization: "Bearer second-token" },
+          timeout: 10_000,
+        },
+      );
+      expect(retryCount("reissued_success")).toBe(1);
+      expect(retryCount("still_unauthorized")).toBe(0);
+    });
+
+    // b) 首发 401 → 重签后仍 401：错误文案含执行器地址与"重签重试后"语义，
+    //    建议动作齐全；计数 still_unauthorized +1。
+    it("surfaces the precise still-401 message after the retry also fails with 401 (b)", async () => {
+      const svc = {
+        findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
+        issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
+        getExecutorUrl: jest
+          .fn()
+          .mockReturnValue("http://executor.local:8001/api/config/reload"),
+      };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+      mockedAxios.post.mockRejectedValue(unauthorized());
+
+      const err = await controller
+        .reloadConfig("executor-1", {})
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(UnauthorizedException);
+      expect(err.message).toContain("executor.local:8001");
+      expect(err.message).toContain("even after a token re-issue retry");
+      expect(err.message).toContain("one heartbeat");
+      expect(err.message).toContain("rotate-token");
+      expect(retryCount("still_unauthorized")).toBe(1);
+      expect(retryCount("reissued_success")).toBe(0);
+    });
+
+    // c) 非 401 失败不触发重签（connect/timeout 保持单发），也不产生任何
+    //    重试计数——只有真正的 401 裁定才进 metric。
+    it("keeps non-401 failures single-shot and leaves the retry counter untouched (c)", async () => {
+      const svc = {
+        findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
+        issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
+        getExecutorUrl: jest
+          .fn()
+          .mockReturnValue("http://executor.local:8001/api/config/reload"),
+      };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+      mockedAxios.post.mockRejectedValue(new Error("connect ECONNREFUSED"));
+
+      await expect(controller.reloadConfig("executor-1", {})).rejects.toThrow(
+        "Failed to reach executor",
+      );
+      expect(svc.issueToken).toHaveBeenCalledTimes(1);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      expect(retryCount("reissued_success")).toBe(0);
+      expect(retryCount("still_unauthorized")).toBe(0);
+    });
+
+    // c) 补充：首发 2xx 的正常路径完全不触碰重签与计数。
+    it("does not re-issue or count anything when the first push succeeds (c)", async () => {
+      const svc = {
+        findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
+        issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
+        getExecutorUrl: jest
+          .fn()
+          .mockReturnValue("http://executor.local:8001/api/config/reload"),
+      };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+      mockedAxios.post.mockResolvedValue({ data: { success: true } });
+
+      await expect(controller.reloadConfig("executor-1", {})).resolves.toEqual({
+        success: true,
+      });
+      expect(svc.issueToken).toHaveBeenCalledTimes(1);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      expect(retryCount("reissued_success")).toBe(0);
+      expect(retryCount("still_unauthorized")).toBe(0);
+    });
+
+    // d) 重试仅一次：首发 401 + 重试 401 后总计恰两次 POST、两次签发，无第三次。
+    it("retries the push EXACTLY once, never a second re-issue cycle (d)", async () => {
+      const svc = {
+        findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
+        issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
+        getExecutorUrl: jest
+          .fn()
+          .mockReturnValue("http://executor.local:8001/api/config/reload"),
+      };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+      mockedAxios.post.mockRejectedValue(unauthorized());
+
+      await expect(
+        controller.reloadConfig("executor-1", {}),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+      expect(svc.issueToken).toHaveBeenCalledTimes(2);
+    });
+
+    // e) 计数在 a/b 两分支各 +1 且跨分支累加（monotonic within the reset window）。
+    it("increments the counter once per retry outcome across both branches (e)", async () => {
+      // 分支 a：首发 401 → 重试 2xx
+      const svcA = {
+        findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
+        issueToken: jest
+          .fn()
+          .mockResolvedValueOnce({ token: "first-token", tokenHash: "h1" })
+          .mockResolvedValueOnce({ token: "second-token", tokenHash: "h2" }),
+        getExecutorUrl: jest
+          .fn()
+          .mockReturnValue("http://executor.local:8001/api/config/reload"),
+      };
+      const controllerA = new ExecutorController(
+        svcA as any,
+        {} as ConfigService,
+        {} as any,
+      );
+      mockedAxios.post
+        .mockRejectedValueOnce(unauthorized())
+        .mockResolvedValueOnce({ data: { success: true } });
+      await controllerA.reloadConfig("executor-1", {});
+      expect(retryCount("reissued_success")).toBe(1);
+
+      // 分支 b：首发 401 → 重试 401（另一控制器实例，同一模块级计数表）
+      const svcB = {
+        findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
+        issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
+        getExecutorUrl: jest
+          .fn()
+          .mockReturnValue("http://executor.local:8001/api/config/reload"),
+      };
+      const controllerB = new ExecutorController(
+        svcB as any,
+        {} as ConfigService,
+        {} as any,
+      );
+      mockedAxios.post.mockRejectedValue(unauthorized());
+      await expect(
+        controllerB.reloadConfig("executor-1", {}),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(retryCount("reissued_success")).toBe(1);
+      expect(retryCount("still_unauthorized")).toBe(1);
+
+      // 再走一轮分支 a：reissued_success 累加到 2（单调累计）
+      mockedAxios.post
+        .mockRejectedValueOnce(unauthorized())
+        .mockResolvedValueOnce({ data: { success: true } });
+      await controllerB.reloadConfig("executor-1", {});
+      expect(retryCount("reissued_success")).toBe(2);
+      expect(retryCount("still_unauthorized")).toBe(1);
+    });
   });
 
   it("rejects config reload for offline executor", async () => {

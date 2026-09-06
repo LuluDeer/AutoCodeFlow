@@ -13,6 +13,32 @@ import {
 } from "../runtime-metrics-entry";
 
 /**
+ * BUG-05 gauge describe 与 R7 describe 是两个平级顶层 describe：R7 的
+ * `const makeService` 只在其闭包内可见，gauge 用例原样调用会产生
+ * TS2304（模块无法编译）。这里补一个模块级同款工厂供 gauge describe
+ * 使用；R7 describe 内部的局部定义按块级作用域遮蔽本函数，行为不变。
+ */
+function makeService(): PrometheusMetricsService {
+  const config = {
+    get: jest.fn(() => undefined),
+  };
+  return new PrometheusMetricsService(
+    config as unknown as ConfigService,
+    new SchedulerMetricsService(),
+    {
+      getQueueDepth: jest.fn().mockResolvedValue({
+        waiting: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+      }),
+    } as unknown as SchedulerService,
+    new ExecutionCallbackMetricsService(),
+  );
+}
+
+/**
  * R7: prom-client exposition 端点测试。
  * 每个用例构造独立的 PrometheusMetricsService（内部独立 Registry），
  * 既验证映射正确性，也验证不污染 prom-client 全局 registry。
@@ -240,6 +266,46 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
           `autoflow_callback_business_total{result="${result}"} 0`,
         );
       }
+    });
+
+    // BUG-01（N51 收口）：reload-config 401 重签重试计数器——同一 recordRuntime
+    // → render 快照模式，两个 result 标签均参与 0 基线与观测映射。
+    it("renders zero baselines and observed values for autoflow_push_auth_retry_total (BUG-01)", async () => {
+      const svc = makeService();
+      const baseline = await svc.render();
+      expect(baseline).toContain(
+        "# TYPE autoflow_push_auth_retry_total counter",
+      );
+      expect(baseline).toContain(
+        'autoflow_push_auth_retry_total{result="reissued_success"} 0',
+      );
+      expect(baseline).toContain(
+        'autoflow_push_auth_retry_total{result="still_unauthorized"} 0',
+      );
+
+      recordRuntime("autoflow_push_auth_retry_total", {
+        result: "reissued_success",
+      });
+      recordRuntime("autoflow_push_auth_retry_total", {
+        result: "still_unauthorized",
+      });
+      recordRuntime("autoflow_push_auth_retry_total", {
+        result: "still_unauthorized",
+      });
+
+      const text = await svc.render();
+      expect(text).toContain(
+        'autoflow_push_auth_retry_total{result="reissued_success"} 1',
+      );
+      expect(text).toContain(
+        'autoflow_push_auth_retry_total{result="still_unauthorized"} 2',
+      );
+      // 同一实例重复抓取不产生残留的双 series
+      expect(
+        text.match(
+          /autoflow_push_auth_retry_total\{result="still_unauthorized"\} \d+/g,
+        ),
+      ).toHaveLength(1);
     });
 
     it("maps runtime observations to prometheus counter series", async () => {
