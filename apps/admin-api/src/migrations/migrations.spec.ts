@@ -115,5 +115,26 @@ if (
       expect(typeof instance.up).toBe("function");
       expect(typeof instance.down).toBe("function");
     });
+
+    // 改动2（可观测性补齐）：task_executions.exitCode 溯源列迁移。
+    it("exitCode 溯源迁移存在、可解析且幂等（IF [NOT] EXISTS）", () => {
+      const m = migrationFiles().find((f) =>
+        /-AddExecutionExitCode\.ts$/.test(f.file),
+      );
+      expect(m).toBeDefined();
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require(path.join(MIGRATIONS_DIR, m!.file));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const proto = Object.values(mod)[0] as any;
+      const instance = new proto();
+      expect(instance.name).toBe(proto.name);
+      expect(proto.name.endsWith(m!.stamp)).toBe(true);
+      expect(proto.name).toBe(`AddExecutionExitCode${m!.stamp}`);
+      expect(typeof instance.up).toBe("function");
+      expect(typeof instance.down).toBe("function");
+      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, m!.file), "utf8");
+      expect(sql).toContain('ADD COLUMN IF NOT EXISTS "exitCode"');
+      expect(sql).toContain('DROP COLUMN IF EXISTS "exitCode"');
+    });
   });
 }

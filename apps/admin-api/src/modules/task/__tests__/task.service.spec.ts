@@ -29,8 +29,22 @@ import { ConfigService } from "@nestjs/config";
 import { ExecutorService } from "../../executor/executor.service";
 import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
+// 可观测性补齐轮：运行时计数器模块级快照（埋点断言入口）
+import {
+  getRuntimeCountersSnapshot,
+  resetRuntimeMetrics,
+} from "../../metrics/runtime-metrics-entry";
 
 jest.mock("axios");
+
+/** 读取运行时计数（模块级单调快照；afterEach 重置保证用例隔离） */
+const runtimeCount = (
+  name: string,
+  labels: Record<string, string> = {},
+): number =>
+  getRuntimeCountersSnapshot()
+    .get(name as never)
+    ?.get(JSON.stringify(labels)) ?? 0;
 
 const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
   const repo: Record<string, jest.Mock> = {
@@ -128,6 +142,8 @@ describe("TaskService (__tests__)", () => {
   let auditService: { log: jest.Mock };
 
   beforeEach(async () => {
+    // 可观测性补齐轮：运行时计数是模块级进程内计数，跨用例显式重置
+    resetRuntimeMetrics();
     taskRepo = makeRepo();
     execRepo = makeRepo();
     logLineRepo = makeRepo();
@@ -1108,6 +1124,22 @@ describe("TaskService (__tests__)", () => {
       releases.slice(1).forEach((rel) => rel());
     });
 
+    // 可观测性补齐轮：拒绝计数只在超限抛 503 路径记录，成功占用不计数。
+    it("counts rejected streams to autoflow_sse_streams_rejected_total", () => {
+      const releases: Array<() => void> = [
+        service.acquireSseSlot("exec-cnt"),
+        service.acquireSseSlot("exec-cnt"),
+        service.acquireSseSlot("exec-cnt"),
+        service.acquireSseSlot("exec-cnt"),
+      ];
+      expect(runtimeCount("autoflow_sse_streams_rejected_total")).toBe(0);
+      expect(() => service.acquireSseSlot("exec-cnt")).toThrow(
+        ServiceUnavailableException,
+      );
+      expect(runtimeCount("autoflow_sse_streams_rejected_total")).toBe(1);
+      releases.forEach((rel) => rel());
+    });
+
     it("releases the slot when the stream ends normally", async () => {
       execRepo.findOne.mockResolvedValue(flushableExec);
       const send = jest.fn();
@@ -1623,6 +1655,171 @@ describe("TaskService (__tests__)", () => {
       ]);
       expect(result[0].success).toBe(false);
       expect(result[0].error).toMatch(/not found/i);
+    });
+
+    // 可观测性补齐轮（改动1+2）：handleCallback 的运行时计数埋点
+    // （业务结果分类 / 执行结果终态）与回调原始 exitCode 入库溯源。
+    describe("runtime metrics & exitCode persistence", () => {
+      it("counts winner callback as accepted + execution result by final status", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          { executionId: "e1", status: "success", durationMs: 5 },
+        ]);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "accepted",
+          }),
+        ).toBe(1);
+        expect(
+          runtimeCount("autoflow_execution_result_total", { status: "success" }),
+        ).toBe(1);
+        expect(
+          runtimeCount("autoflow_execution_result_total", { status: "failed" }),
+        ).toBe(0);
+      });
+
+      it("counts timeout terminal status distinctly", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "failed",
+            errorMessage: "Execution timed out",
+          },
+        ]);
+        expect(
+          runtimeCount("autoflow_execution_result_total", {
+            status: "timeout",
+          }),
+        ).toBe(1);
+      });
+
+      it("counts duplicate callbacks without recording execution results", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.SUCCESS, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        const result = await service.handleCallback([
+          { executionId: "e1", status: "success" },
+        ]);
+        expect(result[0].success).toBe(true);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "duplicate",
+          }),
+        ).toBe(1);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "accepted",
+          }),
+        ).toBe(0);
+        expect(
+          runtimeCount("autoflow_execution_result_total", { status: "success" }),
+        ).toBe(0);
+      });
+
+      it("counts not_found callbacks", async () => {
+        execRepo.findOne.mockResolvedValue(null);
+        await service.handleCallback([
+          { executionId: "ghost", status: "success" },
+        ]);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "not_found",
+          }),
+        ).toBe(1);
+      });
+
+      it("splits address mismatch vs missing callback address", async () => {
+        const exec = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: "executor-a:8002",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          { executionId: "e1", status: "success", executorAddress: "other:1" },
+        ]);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "address_mismatch",
+          }),
+        ).toBe(1);
+        await service.handleCallback([
+          { executionId: "e1", status: "success" },
+        ]);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "address_mismatch_missing_address",
+          }),
+        ).toBe(1);
+      });
+
+      it("counts error only when the post-transition path throws", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "x" };
+        execRepo.findOne.mockResolvedValue(exec);
+        logLineRepo.delete.mockRejectedValue(new Error("db exploded"));
+        const result = await service.handleCallback([
+          { executionId: "e1", status: "success", logs: "a\nb" },
+        ]);
+        expect(result[0].success).toBe(false);
+        expect(
+          runtimeCount("autoflow_callback_business_total", { result: "error" }),
+        ).toBe(1);
+        // winner 语义不变：终态 UPDATE 已命中 → accepted 与执行结果各计一次
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "accepted",
+          }),
+        ).toBe(1);
+        expect(
+          runtimeCount("autoflow_execution_result_total", { status: "success" }),
+        ).toBe(1);
+      });
+
+      it("persists integer exitCode on the terminal update", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "failed",
+            exitCode: 42,
+            errorMessage: "boom",
+          },
+        ]);
+        expect((exec as any).exitCode).toBe(42);
+      });
+
+      it("tolerates non-integer exitCode without overwriting stored value", async () => {
+        const exec = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+          exitCode: 7,
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        const result = await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "failed",
+            exitCode: 1.5,
+            errorMessage: "boom",
+          },
+        ]);
+        expect(result[0].success).toBe(true);
+        expect((exec as any).exitCode).toBe(7);
+      });
+
+      it("leaves exitCode untouched when callback omits it", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          { executionId: "e1", status: "success" },
+        ]);
+        expect("exitCode" in exec).toBe(false);
+      });
     });
 
     describe("dependency fan-out (R4-P0: moved from TaskProcessor to handleCallback)", () => {
