@@ -346,6 +346,44 @@ describe('acf task trigger --wait (N10)', () => {
       vi.useRealTimers();
     }
   });
+
+  // U11: 失败终态必须透出执行器回调记录的 exitCode / failureReason /
+  // errorMessage，不再只依赖 aiAnalysis。
+  it('失败终态输出 exitCode/failureReason/errorMessage', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      mockedPost.mockResolvedValueOnce({ id: 'x4', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      mockedGet.mockResolvedValue({
+        id: 'x4', status: 'failed', createdAt: '2026-01-01T00:00:00Z',
+        exitCode: 3, failureReason: 'script_error', errorMessage: 'boom',
+      });
+      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
+      const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(out).toMatch(/Exit code\s*:\s*3/);
+      expect(out).toMatch(/Failure reason\s*:\s*script_error/);
+      expect(out).toMatch(/Error\s*:\s*boom/);
+    } finally {
+      log.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('exitCode/failureReason 缺失时不打印对应行（旧数据不显示 undefined）', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      mockedPost.mockResolvedValueOnce({ id: 'x5', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      mockedGet.mockResolvedValue({ id: 'x5', status: 'timeout', createdAt: '2026-01-01T00:00:00Z' });
+      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
+      const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(out).not.toMatch(/Exit code/);
+      expect(out).not.toMatch(/Failure reason/);
+    } finally {
+      log.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -379,6 +417,27 @@ describe('acf executor get', () => {
     });
     await run(executorsCommand(), 'executor get e1');
     expect(mockedGet).toHaveBeenCalledTimes(1);
+  });
+
+  // U11 (CONSISTENCY-02 parity with admin-web): runningExecutionIds tri-state
+  // — null = 旧版执行器未上报, [] = 空闲, 非空 = 运行中列表。
+  it.each([
+    { value: ['aaaa-bbbb', 'cccc-dddd'], pattern: /Running Executions:\s*2 running: aaaa-bbbb, cccc-dddd/ },
+    { value: [], pattern: /Running Executions:\s*idle \(none running\)/ },
+    { value: null, pattern: /Running Executions:\s*not reported \(older executor\)/ },
+  ])('Running Executions 三态输出（$value）', async ({ value, pattern }) => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      mockedGet.mockResolvedValueOnce({
+        id: 'e1', appName: 'exec', address: 'x:1', status: 'online',
+        runningExecutionIds: value,
+      });
+      await run(executorsCommand(), 'executor get e1');
+      const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(out).toMatch(pattern);
+    } finally {
+      log.mockRestore();
+    }
   });
 });
 
