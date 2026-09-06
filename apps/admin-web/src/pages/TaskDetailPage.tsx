@@ -4,6 +4,7 @@ import {
   Spin, Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert, Result,
 } from 'antd';
 import {
+  ApartmentOutlined,
   ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
   PlayCircleOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
   EyeOutlined, ClockCircleOutlined, StopOutlined, RobotOutlined, CodeOutlined,
@@ -16,6 +17,7 @@ import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg } from '../utils/error';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 import GlueEditor from '../components/GlueEditor';
+import TaskDependencyGraph from '../components/TaskDependencyGraph';
 import ParamsEditor from '../components/ParamsEditor';
 
 const { Text } = Typography;
@@ -375,6 +377,17 @@ export default function TaskDetailPage() {
                   initialLanguage={task.glueLanguage ?? undefined}
                   taskRuntime={task.runtime}
                 />
+              </Card>
+            ),
+          },
+          {
+            key: 'deps',
+            label: (
+              <span><ApartmentOutlined /> 依赖 DAG</span>
+            ),
+            children: (
+              <Card>
+                <TaskDependencyGraph taskId={id!} />
               </Card>
             ),
           },
