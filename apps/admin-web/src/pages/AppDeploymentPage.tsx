@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Table, Button, Tag, Space, Typography, message, Modal, Select,
   Badge, Tooltip, Alert, Empty, Popconfirm, Form, Progress, Radio, Input,
@@ -60,26 +60,38 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [deployForm] = Form.useForm();
   const [runMode, setRunMode] = useState<'once' | 'daemon' | 'scheduled'>('once');
   // R5 RBAC：安装向导为 ADMIN-only，普通用户隐藏入口
+  // W3：部署写面（deploy/stop/upgrade/upgrade-all）后端已 @Roles(ADMIN)，按钮级禁用
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
 
+  // W7 竞态守卫：fetchAll 无取消机制，翻页/轮询并发时旧响应可覆盖新页数据。
+  // 每次调用自增 fetchSeq，仅最后一次请求允许 setState；cleanup（卸载或翻页）
+  // 置 cancelled，让已 in-flight 的旧响应在 resolve 后被丢弃。
+  const fetchSeq = useRef(0);
   const fetchAll = useCallback(async () => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
     try {
       const [deps, execs] = await Promise.all([
         deploymentsApi.list(applicationId, page),
         executorsApi.list(),
       ]);
+      if (seq !== fetchSeq.current) return; // 已有更新的请求/卸载，丢弃过期响应
       setDeployments(deps.data);
       setTotal(deps.total);
       setExecutors(execs);
     } catch (err: unknown) {
+      if (seq !== fetchSeq.current) return;
       message.error(getErrMsg(err, '加载失败'));
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   }, [applicationId, page]);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => {
+    fetchAll();
+    // W7：卸载/翻页时自增序号，让本 effect 发起的请求结果作废
+    return () => { const { current } = fetchSeq; fetchSeq.current = current + 1; };
+  }, [fetchAll]);
 
   // Auto-poll while any deployment is in progress
   useEffect(() => {
@@ -221,32 +233,41 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       render: (_: unknown, r: AppDeployment) => (
         <Space size={4}>
           {r.status === 'running' && (
-            <Button
-              size="small"
-              icon={<ReloadOutlined />}
-              onClick={() => handleUpgrade(r.id)}
->
-              升级
-            </Button>
+            <Tooltip title={isAdmin ? undefined : '仅管理员可升级部署'}>
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                onClick={() => handleUpgrade(r.id)}
+                disabled={!isAdmin}
+              >
+                升级
+              </Button>
+            </Tooltip>
           )}
           {(r.status === 'running' || r.status === 'deploying') && (
             <Popconfirm
               title="确认停止？"
               onConfirm={() => handleStop(r.id)}
               okText="停止" okButtonProps={{ danger: true }}
->
-              <Button size="small" danger icon={<StopOutlined />}>停止</Button>
+              disabled={!isAdmin}
+            >
+              <Tooltip title={isAdmin ? undefined : '仅管理员可停止部署'}>
+                <Button size="small" danger icon={<StopOutlined />} disabled={!isAdmin}>停止</Button>
+              </Tooltip>
             </Popconfirm>
           )}
           {(r.status === 'stopped' || r.status === 'failed') && (
-            <Button
-              size="small"
-              type="primary"
-              icon={<RocketOutlined />}
-              onClick={() => { deployForm.setFieldValue('executorId', r.executorId); setDeployModalOpen(true); }}
-            >
-              重新部署
-            </Button>
+            <Tooltip title={isAdmin ? undefined : '仅管理员可部署应用'}>
+              <Button
+                size="small"
+                type="primary"
+                icon={<RocketOutlined />}
+                onClick={() => { deployForm.setFieldValue('executorId', r.executorId); setDeployModalOpen(true); }}
+                disabled={!isAdmin}
+              >
+                重新部署
+              </Button>
+            </Tooltip>
           )}
         </Space>
       ),
@@ -272,24 +293,30 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
               description="将对所有运行中实例触发 git pull + 重启"
               onConfirm={handleUpgradeAll}
               okText="确认升级" okButtonProps={{ icon: <UpCircleOutlined /> }}
+              disabled={!isAdmin}
             >
-              <Button
-                icon={<UpCircleOutlined />}
-                loading={upgradingAll}
-                size="small"
-              >
-                升级所有
-              </Button>
+              <Tooltip title={isAdmin ? undefined : '仅管理员可升级部署'}>
+                <Button
+                  icon={<UpCircleOutlined />}
+                  loading={upgradingAll}
+                  size="small"
+                  disabled={!isAdmin}
+                >
+                  升级所有
+                </Button>
+              </Tooltip>
             </Popconfirm>
           )}
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={openDeployModal}
-            disabled={onlineExecutors.length === 0}
-          >
-            新建部署
-          </Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可部署应用'}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={openDeployModal}
+              disabled={onlineExecutors.length === 0 || !isAdmin}
+            >
+              新建部署
+            </Button>
+          </Tooltip>
         </Space>
       </div>
 
@@ -308,14 +335,16 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description="该应用尚未部署"
         >
-          <Button
-            type="primary"
-            icon={<RocketOutlined />}
-            onClick={openDeployModal}
-            disabled={onlineExecutors.length === 0}
-          >
-            立即部署
-          </Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可部署应用'}>
+            <Button
+              type="primary"
+              icon={<RocketOutlined />}
+              onClick={openDeployModal}
+              disabled={onlineExecutors.length === 0 || !isAdmin}
+            >
+              立即部署
+            </Button>
+          </Tooltip>
         </Empty>
       ) : (
         <Table

@@ -14,12 +14,23 @@ import { aiApi, AppHealthReport } from '../api/ai';
 import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+import { useAuthStore, isAdminUser } from '../store/auth';
+
+/**
+ * W3 RBAC（对齐 settings 页先例）：应用详情页内的写操作——同步任务、保存应用设置、
+ * 回滚、AI 分析——后端已收紧为 @Roles(ADMIN)。普通用户按钮禁用并提示（读面保持可见）。
+ */
+function useIsAdmin() {
+  const user = useAuthStore((s) => s.user);
+  return isAdminUser(user);
+}
 
 // ─── AI Analysis Tab ────────────────────────────────────────────────────────────
 function AiAnalysisTab({ appId }: { appId: string }) {
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<AppHealthReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const isAdmin = useIsAdmin();
 
   const runAnalysis = useCallback(async () => {
     setLoading(true);
@@ -37,14 +48,20 @@ function AiAnalysisTab({ appId }: { appId: string }) {
   return (
     <Card
       title={<span><RobotOutlined /> AI 健康分析</span>}
-      extra={<Button icon={<ReloadOutlined />} onClick={runAnalysis} loading={loading}>重新分析</Button>}
+      extra={(
+        <Tooltip title={isAdmin ? undefined : '仅管理员可执行 AI 分析'}>
+          <Button icon={<ReloadOutlined />} onClick={runAnalysis} loading={loading} disabled={!isAdmin}>重新分析</Button>
+        </Tooltip>
+      )}
     >
       {!report && !loading && !error && (
         <Empty
           description="点击「重新分析」让 AI 分析该应用的健康状态"
           image={<RobotOutlined style={{ fontSize: 48, color: '#1677ff' }} />}
         >
-          <Button type="primary" icon={<RobotOutlined />} onClick={runAnalysis}>开始分析</Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可执行 AI 分析'}>
+            <Button type="primary" icon={<RobotOutlined />} onClick={runAnalysis} disabled={!isAdmin}>开始分析</Button>
+          </Tooltip>
         </Empty>
       )}
       {loading && <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="AI 分析中…" size="large" /></div>}
@@ -192,6 +209,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
   const nav = useNavigate();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
+  const isAdmin = useIsAdmin();
 
   const fetchTasks = useCallback(async () => {
     setLoading(true);
@@ -208,8 +226,8 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
       variant="borderless"
       extra={
         <Space>
-          <Tooltip title="重新解析 manifest.json 并注册任务">
-            <Button loading={syncing} icon={<SyncOutlined />} onClick={onSync} size="small">同步任务</Button>
+          <Tooltip title={isAdmin ? '重新解析 manifest.json 并注册任务' : '仅管理员可同步任务'}>
+            <Button loading={syncing} icon={<SyncOutlined />} onClick={onSync} size="small" disabled={!isAdmin}>同步任务</Button>
           </Tooltip>
           <Button type="primary" size="small" onClick={() => nav(`/tasks/new?applicationId=${appId}`)}>新建任务</Button>
           <Button icon={<ReloadOutlined />} size="small" onClick={fetchTasks}>刷新</Button>
@@ -253,6 +271,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
 function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Application) => void }) {
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
+  const isAdmin = useIsAdmin();
 
   useEffect(() => {
     form.setFieldsValue({
@@ -312,7 +331,9 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
           <Input placeholder="src/tasks/index.js" />
         </Form.Item>
         <Form.Item>
-          <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving}>保存修改</Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可修改应用设置'}>
+            <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!isAdmin}>保存修改</Button>
+          </Tooltip>
         </Form.Item>
       </Form>
     </Card>
@@ -326,6 +347,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
   const [records, setRecords] = useState<VersionRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [rollingBack, setRollingBack] = useState<string | null>(null);
+  const isAdmin = useIsAdmin();
 
   const getVersionKey = (record: VersionRecord) => record.id ?? record.deploymentId ?? `${record.version ?? 'unknown'}-${record.commit ?? 'none'}-${record.createdAt ?? record.deployedAt ?? 'unknown'}`;
 
@@ -403,11 +425,11 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
               const rollbackDisabled = !!record.id && record.status !== 'released';
               if (isCurrent) return <Tag color="green">当前版本</Tag>;
               return (
-                <Tooltip title={rollbackDisabled ? '仅已发布版本可回滚' : undefined}>
+                <Tooltip title={rollbackDisabled ? '仅已发布版本可回滚' : !isAdmin ? '仅管理员可回滚' : undefined}>
                   <Button
                     size="small"
                     danger
-                    disabled={rollbackDisabled}
+                    disabled={rollbackDisabled || !isAdmin}
                     loading={rollingBack === key}
                     onClick={() => handleRollback(key, record.version)}
                   >
