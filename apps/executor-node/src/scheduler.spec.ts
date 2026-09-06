@@ -1,6 +1,7 @@
 jest.mock('./config', () => ({
   config: {
     heartbeatIntervalSeconds: 12,
+    maxConcurrentTasks: 10,
     executorAddress: 'localhost:8002',
     executorAddressPublic: '',
   },
@@ -34,11 +35,16 @@ describe('scheduler', () => {
     // STALE-01: 无 provider 注册（execute.ts 未加载）时心跳体携带默认空值
     expect(post.mock.calls[0][1].runningExecutionIds).toEqual([]);
     expect(post.mock.calls[0][1].deadLetterCount).toBe(0);
+    // E9: 心跳体上报当前并发上限（与 admin 侧心跳白名单字段名配套）
+    expect(post.mock.calls[0][1].maxConcurrentTasks).toBe(10);
     const callsBeforeReload = post.mock.calls.length;
 
     config.heartbeatIntervalSeconds = 6;
+    config.maxConcurrentTasks = 4;
     await jest.advanceTimersByTimeAsync(6_000);
     expect(post.mock.calls.length).toBeGreaterThan(callsBeforeReload);
+    // E9: /config/reload 热更后下个心跳即回传新值
+    expect(post.mock.calls.at(-1)![1].maxConcurrentTasks).toBe(4);
 
     clearInterval(timer);
   });
