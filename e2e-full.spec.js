@@ -783,7 +783,7 @@ test('22. TaskFormPage — auto/group/pinned/broadcast 四模式切换与 pinned
   await expect(page.locator('#executorId')).toBeVisible();
   await page.locator('#executorId').click();
   await page.locator('.ant-select-item-option', { hasText: executor.appName }).first().click();
-  await expect(page.locator('.ant-select-content')).toContainText(executor.appName);
+  await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
   console.log(`  ✓ pinned 选中执行器 ${executor.appName} (${executor.id})`);
 
   // broadcast → pinned 选择器卸载（互斥，不残留字段）
@@ -799,7 +799,7 @@ test('22. TaskFormPage — auto/group/pinned/broadcast 四模式切换与 pinned
   // 回到 pinned：选择器重新挂载且表单 store 保留已选值（preserve 语义）
   await pinnedRadio.click();
   await expect(page.locator('#executorId')).toBeVisible();
-  await expect(page.locator('.ant-select-content')).toContainText(executor.appName);
+  await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
   // 推进到 Step 2 参数配置
   await page.getByRole('button', { name: /下一步：参数配置/ }).click();
   await expect(page.getByText('任务默认参数')).toBeVisible();
@@ -830,7 +830,7 @@ test('23. executorId 残留清理 — 编辑页还原 pinned，切 broadcast 后
   await page.getByRole('button', { name: /下一步：调度配置/ }).click();
   // deriveExecutorMode：executorId 存在 → pinned 选中且显示正确执行器
   await expect(page.getByRole('radio', { name: /固定到指定的执行器节点/ })).toBeChecked({ timeout: 10000 });
-  await expect(page.locator('.ant-select-content')).toContainText(executor.appName);
+  await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
   console.log('  ✓ 编辑页还原 pinned 且选中正确执行器');
 
   // 切 broadcast → 选择器消失 → 保存
@@ -865,7 +865,7 @@ test('24. executorId 残留清理 — 切 auto 提交后 executorId 显式置空
   await page.waitForLoadState('networkidle');
   await page.getByRole('button', { name: /下一步：调度配置/ }).click();
   await expect(page.getByRole('radio', { name: /固定到指定的执行器节点/ })).toBeChecked({ timeout: 10000 });
-  await expect(page.locator('.ant-select-content')).toContainText(executor.appName);
+  await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
 
   // 切 auto → 保存 → executorId 显式 null（buildExecutorPayload auto 分支）
   await page.getByRole('radio', { name: /系统自动选择负载最低/ }).click();
@@ -1014,7 +1014,7 @@ test('26. pinned 全链 — 详情页绑定可见、UI 触发、执行记录 exe
   await page.waitForLoadState('networkidle');
   await page.getByRole('button', { name: /下一步：调度配置/ }).click();
   await expect(page.getByRole('radio', { name: /固定到指定的执行器节点/ })).toBeChecked({ timeout: 10000 });
-  await expect(page.locator('.ant-select-content')).toContainText(executor.appName);
+  await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
   console.log('  ✓ 编辑页还原 pinned 且 Select 显示目标执行器名');
 
   // 回详情页 UI 触发（Modal OK 按钮可访问名含图标前缀「thunderbolt 触发」，限定 footer 用正则匹配）
