@@ -13,6 +13,13 @@ export class ExecutorProcess {
   private stopping = false;
   private onStatusChange: StatusChangeCallback | null = null;
   private currentStatus: ExecutorStatus = 'stopped';
+  /**
+   * R23: admin registration/heartbeat verdict inferred from executor-node
+   * log lines. The health poll is only a liveness signal — while this is
+   * 'failed' (Register failed / Heartbeat failed seen, no success log yet),
+   * a live /health/live must NOT flip the tray back to 'online'.
+   */
+  private adminRegistration: 'unknown' | 'registered' | 'failed' = 'unknown';
 
   getStatus(): ExecutorStatus {
     return this.currentStatus;
@@ -47,6 +54,7 @@ export class ExecutorProcess {
       return;
     }
     this.stopping = false;
+    this.adminRegistration = 'unknown';
     this.notifyStatus('pending');
 
     const entryPath = this.getEntryPath();
@@ -168,8 +176,9 @@ export class ExecutorProcess {
   private healthPollTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
-   * Start polling executor-node's /health/live endpoint to determine
-   * online/offline status. More reliable than log string matching.
+   * Start polling executor-node's /health/live endpoint. This is a
+   * liveness signal only: R23 — a passing poll must not override a known
+   * admin-registration failure (see adminRegistration / inferStatusFromLog).
    */
   private startHealthPoll(port: number): void {
     this.stopHealthPoll();
@@ -189,7 +198,13 @@ export class ExecutorProcess {
           req.on('error', reject);
           req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
         });
-        if (this.currentStatus !== 'online') {
+        if (this.adminRegistration === 'failed') {
+          // Process alive but admin registration/heartbeat is failing: the
+          // tray must show offline until a success log line clears the flag.
+          if (this.currentStatus !== 'offline') {
+            this.notifyStatus('offline');
+          }
+        } else if (this.currentStatus !== 'online') {
           this.notifyStatus('online');
         }
       } catch {
@@ -213,14 +228,17 @@ export class ExecutorProcess {
   }
 
   /**
-   * @deprecated Log-text inference is kept as a secondary signal only.
-   * The primary status signal is now the HTTP health poll above.
-   * This handles the edge case where the health endpoint responds OK
-   * but admin registration is still failing (process alive ≠ admin connected).
+   * Infer admin connectivity from executor-node log lines and record it in
+   * `adminRegistration`. The health poll only proves liveness; per R23 the
+   * 'online' verdict additionally requires that a known registration/
+   * heartbeat failure has been cleared by a success log line (matching the
+   * semantics heartbeat.ts documents: online is decided by admin-facing
+   * heartbeat results, not by local liveness alone).
    */
   private inferStatusFromLog(line: string): void {
     // Registration/heartbeat success confirms admin connectivity beyond just liveness
     if (line.includes('Registered to admin-api') || line.includes('Heartbeat succeeded')) {
+      this.adminRegistration = 'registered';
       if (this.currentStatus !== 'online') {
         this.notifyStatus('online');
       }
@@ -228,6 +246,7 @@ export class ExecutorProcess {
     }
     // Registration/heartbeat failure: process alive but admin unreachable
     if (line.includes('Register failed') || line.includes('Heartbeat failed')) {
+      this.adminRegistration = 'failed';
       if (this.currentStatus === 'online' || this.currentStatus === 'pending') {
         this.notifyStatus('offline');
       }

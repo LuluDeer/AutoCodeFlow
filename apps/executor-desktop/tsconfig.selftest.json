@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-selftest",
+    "rootDir": "src/main",
+    "sourceMap": false
+  },
+  "include": ["src/main/path-domain.ts", "src/main/path-domain.selftest.ts"],
+  "exclude": []
+}
