@@ -40,6 +40,12 @@ class AIAnalyzer:
         print(result.root_cause)
     """
 
+    #: URL suffix that completes a chat-completions endpoint. ``base_url``
+    #: accepts either a base address (R22: same "base" semantics as the
+    #: admin-api ``openaiBaseUrl`` setting, e.g. ``.../v1``) or a full
+    #: endpoint (legacy form); the base form is normalized automatically.
+    _CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
+
     def __init__(
         self,
         provider: str = "openai",
@@ -113,7 +119,7 @@ JSON:"""
         import httpx
 
         if self.provider == "openai":
-            url = self.base_url or "https://api.openai.com/v1/chat/completions"
+            url = self._build_endpoint(self.base_url or "https://api.openai.com/v1")
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
@@ -124,7 +130,7 @@ JSON:"""
                 "temperature": 0.3,
             }
         elif self.provider == "ollama":
-            url = self.base_url or "http://localhost:11434/v1/chat/completions"
+            url = self._build_endpoint(self.base_url or "http://localhost:11434/v1")
             headers = {"Content-Type": "application/json"}
             body = {
                 "model": self.model,
@@ -140,16 +146,56 @@ JSON:"""
             data = resp.json()
             return data["choices"][0]["message"]["content"]
 
+    @classmethod
+    def _build_endpoint(cls, base_url: str) -> str:
+        """Normalize a base_url into a full chat-completions endpoint.
+
+        R22: ``base_url`` is unified to the admin-api ``openaiBaseUrl``
+        convention — a base address (``https://host`` or ``https://host/v1``)
+        to which the ``/chat/completions`` path is appended, tolerating a
+        trailing slash. A legacy value that already names the full endpoint
+        keeps working unchanged.
+        """
+        trimmed = base_url.strip().rstrip("/")
+        if trimmed.endswith(cls._CHAT_COMPLETIONS_SUFFIX):
+            return trimmed
+        return f"{trimmed}{cls._CHAT_COMPLETIONS_SUFFIX}"
+
+    @staticmethod
+    def _strip_code_fence(text: str) -> str:
+        """Strip a markdown code fence (```lang ... ```) line by line.
+
+        R22: the previous ``split("\\n", 1)[1]`` raised IndexError on a
+        single-line response such as ``"```json{...}```"`` (no newline after
+        the language tag). Peeling fence lines — while keeping JSON that is
+        glued to the opening fence line — handles every shape.
+        """
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            rest = lines[0].strip()[3:]  # text after the backticks
+            starts = [i for i in (rest.find("{"), rest.find("[")) if i != -1]
+            if starts:
+                # Content glued to the opening fence (e.g. '```json{...}').
+                lines[0] = rest[min(starts):]
+            else:
+                # Pure fence/language-tag line ('```' or '```json').
+                lines = lines[1:]
+        if lines:
+            last = lines[-1].rstrip()
+            if last.endswith("```"):
+                trimmed = last[:-3].rstrip()
+                if trimmed:
+                    lines[-1] = trimmed
+                else:
+                    lines = lines[:-1]
+        return "\n".join(lines).strip()
+
     @staticmethod
     def _parse_response(text: str) -> AnalysisResult:
         """Parse AI JSON response into AnalysisResult."""
         try:
             # Extract JSON from response (may have markdown fences)
-            text = text.strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1]
-                if text.endswith("```"):
-                    text = text[:-3]
+            text = AIAnalyzer._strip_code_fence(text.strip())
             obj = json.loads(text)
             return AnalysisResult(
                 summary=obj.get("summary", ""),
@@ -158,6 +204,6 @@ JSON:"""
                 confidence=float(obj.get("confidence", 0)),
                 raw_response=text,
             )
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
+        except (json.JSONDecodeError, KeyError, ValueError, IndexError) as e:
             logger.warning(f"Failed to parse AI response: {e}")
             return AnalysisResult(summary=text[:500], raw_response=text)
