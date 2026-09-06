@@ -5,38 +5,7 @@ import { SchedulerMetricsService } from "../../scheduler/scheduler-metrics.servi
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { ExecutionCallbackMetricsService } from "../../task/execution-callback-metrics.service";
 // 可观测性补齐轮：运行时计数器模块级入口（Task/Notification 埋点的同一实例）
-import {
-  recordRuntime,
-  resetRuntimeGauges,
-  resetRuntimeMetrics,
-  setRuntimeGauge,
-} from "../runtime-metrics-entry";
-
-/**
- * BUG-05 gauge describe 与 R7 describe 是两个平级顶层 describe：R7 的
- * `const makeService` 只在其闭包内可见，gauge 用例原样调用会产生
- * TS2304（模块无法编译）。这里补一个模块级同款工厂供 gauge describe
- * 使用；R7 describe 内部的局部定义按块级作用域遮蔽本函数，行为不变。
- */
-function makeService(): PrometheusMetricsService {
-  const config = {
-    get: jest.fn(() => undefined),
-  };
-  return new PrometheusMetricsService(
-    config as unknown as ConfigService,
-    new SchedulerMetricsService(),
-    {
-      getQueueDepth: jest.fn().mockResolvedValue({
-        waiting: 0,
-        active: 0,
-        delayed: 0,
-        failed: 0,
-        completed: 0,
-      }),
-    } as unknown as SchedulerService,
-    new ExecutionCallbackMetricsService(),
-  );
-}
+import { recordRuntime, resetRuntimeMetrics } from "../runtime-metrics-entry";
 
 /**
  * R7: prom-client exposition 端点测试。
@@ -473,7 +442,11 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
 // 注入服务——这里复刻同样的构造链，避免跨作用域引用）。
 describe("trigger latency histogram (CORE-06)", () => {
   const QUEUE_EMPTY = {
-    waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0,
+    waiting: 0,
+    active: 0,
+    delayed: 0,
+    failed: 0,
+    completed: 0,
   };
 
   const makeServiceWithMetrics = () => {
@@ -483,7 +456,9 @@ describe("trigger latency histogram (CORE-06)", () => {
     const svc = new PrometheusMetricsService(
       config as unknown as ConfigService,
       schedulerMetrics,
-      { getQueueDepth: jest.fn().mockResolvedValue({ ...QUEUE_EMPTY }) } as unknown as SchedulerService,
+      {
+        getQueueDepth: jest.fn().mockResolvedValue({ ...QUEUE_EMPTY }),
+      } as unknown as SchedulerService,
       callbackMetrics,
     );
     return { svc, schedulerMetrics };
@@ -492,8 +467,12 @@ describe("trigger latency histogram (CORE-06)", () => {
   it("renders bucket/sum/count series with stable 0 baselines", async () => {
     const { svc } = makeServiceWithMetrics();
     const out = await svc.render();
-    expect(out).toContain(`autoflow_scheduler_trigger_latency_ms_bucket{le="10"} 0`);
-    expect(out).toContain(`autoflow_scheduler_trigger_latency_ms_bucket{le="+Inf"} 0`);
+    expect(out).toContain(
+      `autoflow_scheduler_trigger_latency_ms_bucket{le="10"} 0`,
+    );
+    expect(out).toContain(
+      `autoflow_scheduler_trigger_latency_ms_bucket{le="+Inf"} 0`,
+    );
     expect(out).toContain("autoflow_scheduler_trigger_latency_ms_sum 0");
     expect(out).toContain("autoflow_scheduler_trigger_latency_ms_count 0");
   });
@@ -504,8 +483,12 @@ describe("trigger latency histogram (CORE-06)", () => {
     schedulerMetrics.recordTriggerLatency(4000);
 
     const out = await svc.render();
-    expect(out).toContain(`autoflow_scheduler_trigger_latency_ms_bucket{le="50"} 1`);
-    expect(out).toContain(`autoflow_scheduler_trigger_latency_ms_bucket{le="+Inf"} 2`);
+    expect(out).toContain(
+      `autoflow_scheduler_trigger_latency_ms_bucket{le="50"} 1`,
+    );
+    expect(out).toContain(
+      `autoflow_scheduler_trigger_latency_ms_bucket{le="+Inf"} 2`,
+    );
     expect(out).toContain("autoflow_scheduler_trigger_latency_ms_count 2");
   });
 });
