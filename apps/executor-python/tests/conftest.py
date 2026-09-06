@@ -45,3 +45,15 @@ def auth_client(app):
     """Test client that always sends the correct Bearer token."""
     with TestClient(app, headers={'Authorization': 'Bearer testsecret'}) as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def _clear_live_executions():
+    """E1/E7: the live-execution registry is module state. Route-level tests
+    fake the background task (so the terminal callback never runs to evict the
+    entry); clear before and after every test to keep the duplicate-accept
+    guard and the heartbeat liveness report from leaking across tests."""
+    from routers import execute as execute_module
+    execute_module._live_executions.clear()
+    yield
+    execute_module._live_executions.clear()

@@ -8,13 +8,15 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from typing import Any, Optional
 import scheduler as sched
-from auth import verify_token
+from auth import verify_token, get_current_token, request_with_self_heal
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 from execution_callback_token import CALLBACK_TOKEN_GRACE_SECONDS, create_execution_callback_token
@@ -339,13 +341,160 @@ def _build_callback_logs(
 _background_tasks: set['asyncio.Task'] = set()
 
 
+# ---------------------------------------------------------------------------
+# E1/E7/E4/E5 (CONSISTENCY round, parity with executor-node liveExecutions):
+# module-level registry of accepted-but-not-yet-terminal executions, keyed by
+# executionId. Registered at /execute accept time (so prepare-stage executions
+# — git clone + venv, up to ~600s — are covered by admin's heartbeat liveness
+# protection), removed when the terminal callback path completes or the kill
+# endpoint finalizes a not-yet-spawned execution. A threading.Lock guards the
+# dict: every mutation is synchronous with no awaits inside the critical
+# section, which makes check-and-register atomic for asyncio callers *and*
+# safe if a helper is ever invoked from a worker thread / second loop
+# (asyncio.Lock would bind to the first loop and break the per-test
+# asyncio.run loops used across this suite).
+# ---------------------------------------------------------------------------
+
+class _LiveExecution:
+    """One accepted, not-yet-terminal execution (node ExecutionEntry parity)."""
+
+    __slots__ = ('execution_id', 'cancelled', 'killed_by_request',
+                 'killed_callback_pushed', 'proc')
+
+    def __init__(self, execution_id: str):
+        self.execution_id = execution_id
+        # kill 已下达（排队/prepare 路径）：run_task 检查点据此静默退出
+        self.cancelled = False
+        # kill 端点已下达终止指令（运行中路径）：失败回调据此标记
+        # failureReason=killed
+        self.killed_by_request = False
+        # killed 失败回调已推送（kill 端点与 _run_and_callback 共用防双推）
+        self.killed_callback_pushed = False
+        # 已 spawn 的任务子进程（asyncio subprocess），供 kill/停机树杀使用
+        self.proc = None
+
+
+_live_executions: dict[str, _LiveExecution] = {}
+_live_lock = threading.Lock()
+
+
+def register_live_execution(execution_id: str) -> Optional['_LiveExecution']:
+    """Atomically add executionId to the live registry.
+
+    Returns the entry, or ``None`` when the id is already active — the
+    duplicate-accept guard (E7, node execute.ts ``liveExecutions.has``)."""
+    with _live_lock:
+        if execution_id in _live_executions:
+            return None
+        entry = _LiveExecution(execution_id)
+        _live_executions[execution_id] = entry
+        return entry
+
+
+def unregister_live_execution(execution_id: str) -> None:
+    with _live_lock:
+        _live_executions.pop(execution_id, None)
+
+
+def get_live_execution(execution_id: str) -> Optional['_LiveExecution']:
+    with _live_lock:
+        return _live_executions.get(execution_id)
+
+
+def execution_exists(execution_id: str) -> bool:
+    """execution 是否在本执行器的运行表中（重复领取检查用，测试导出）。"""
+    with _live_lock:
+        return execution_id in _live_executions
+
+
+def list_active_execution_ids() -> list[str]:
+    """当前运行表中所有 executionId（心跳活性上报用，E1）。"""
+    with _live_lock:
+        return list(_live_executions.keys())
+
+
+# E1: heartbeat enrichment — scheduler cannot import this module (cycle), so
+# the data owner registers the getter (node STALE-01 parity).
+sched.register_running_execution_ids_provider(list_active_execution_ids)
+
+
+async def _kill_process_tree(proc) -> None:
+    """B-06/W-02: kill a task child and its whole process tree.
+
+    POSIX: the child was spawned with ``preexec_fn=os.setsid`` (its own
+    process group), so ``killpg`` takes down grandchildren too. Windows has
+    no process groups — ``taskkill /T /F`` walks the pid tree (mirrors
+    executor-node killProcessTree). Extracted from the timeout handler so the
+    kill endpoint (E4) and shutdown (E5) reuse the exact same platform
+    branches.
+    """
+    if proc.pid is None:
+        return
+    if sys.platform == 'win32':
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                'taskkill', '/T', '/F', '/PID', str(proc.pid),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(killer.wait(), timeout=5)
+        except Exception:
+            pass
+        # The tree kill above usually reaps the child first; killing an
+        # already-closed transport raises ProcessLookupError on win32.
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+
+
+async def kill_running_task_processes() -> int:
+    """E5 (parity with executor-node main.ts killRunningTaskProcesses):
+    tree-kill every task process still registered at shutdown so detached
+    children don't outlive the executor as unmanaged orphans. Returns the
+    number of process trees killed."""
+    with _live_lock:
+        entries = [e for e in _live_executions.values() if e.proc is not None]
+    killed = 0
+    for entry in entries:
+        proc, entry.proc = entry.proc, None
+        if proc is None:
+            continue
+        try:
+            await _kill_process_tree(proc)
+            killed += 1
+        except Exception:  # pragma: no cover - already-dead children
+            pass
+    return killed
+
+
 @router.post('/execute', dependencies=[Depends(verify_token)])
 async def execute(req: ExecuteRequest):
     if sched.get_running_count() >= settings.max_concurrent_tasks:
         raise HTTPException(status_code=429, detail='Executor is at capacity')
 
+    # E7: duplicate-accept guard (node execute.ts:339-342 parity) — a still
+    # live (queued/prepare/running) executionId must never be accepted twice:
+    # the second background task would double-count capacity and double-callback
+    # the same execution (the 429→BullMQ retry chain can otherwise re-dispatch
+    # an execution whose first attempt is merely slow, not lost).
+    entry = register_live_execution(req.executionId)
+    if entry is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Execution {req.executionId} is already active on this executor',
+        )
+
     sched.increment_running()
-    bg_task = asyncio.create_task(_run_and_callback(req))
+    bg_task = asyncio.create_task(_run_and_callback(req, entry))
     _background_tasks.add(bg_task)
     bg_task.add_done_callback(_background_tasks.discard)
     return {
@@ -355,23 +504,39 @@ async def execute(req: ExecuteRequest):
     }
 
 
-async def _send_callback_with_retry(url: str, payload: dict, headers: dict) -> bool:
+async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str]) -> bool:
     """POST the execution callback with bounded retries.
 
     R4-C P2: the original fired exactly one request and only logged transport
     failures — a transient admin-api blip silently lost the execution result
     (only the admin-side zombie sweeper could repair state). 4xx responses
-    (except 408/429) are terminal: the payload itself is being rejected, so
-    retrying would just hammer admin-api forever.
+    (except 401/408/429) are terminal: the payload itself is being rejected,
+    so retrying would just hammer admin-api forever.
+
+    E3 (parity with executor-node admin-client.request R10 gap #3): the send
+    goes through ``request_with_self_heal`` — a 401 (admin rotated our
+    per-executor token out from under us) triggers ONE immediate re-fetch +
+    retry instead of being dropped. 401 is therefore no longer in the
+    non-retryable branch: if the heal did not turn it into a success (admin
+    unreachable / token unchanged), the persistent 401 falls through to the
+    bounded retry loop like any other transient failure. The 3-attempt +
+    exponential-backoff shape is unchanged.
     """
     last_error: Exception | None = None
     for attempt in range(1, CALLBACK_RETRY_ATTEMPTS + 1):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.post(url, json=[payload], headers=headers)
+                response = await request_with_self_heal(
+                    client,
+                    'post',
+                    url,
+                    token=token,
+                    json=[payload],
+                )
             if response.status_code < 400:
                 return True
-            if 400 <= response.status_code < 500 and response.status_code not in (408, 429):
+            if (400 <= response.status_code < 500
+                    and response.status_code not in (401, 408, 429)):
                 logger.error('Callback rejected with HTTP %s (non-retryable); giving up', response.status_code)
                 return False
             last_error = RuntimeError(f'callback failed with HTTP {response.status_code}')
@@ -387,39 +552,132 @@ async def _send_callback_with_retry(url: str, payload: dict, headers: dict) -> b
     return False
 
 
-async def _run_and_callback(req: ExecuteRequest):
-    try:
-        result = await run_task(req)
-        payload = {
-            'executionId': req.executionId,
-            'status': 'success' if result.get('success') else 'failed',
-            'exitCode': result.get('exitCode'),
-            'logs': result.get('logs'),
-            'errorMessage': _truncate_error_message(result.get('errorMessage')),
-            'durationMs': result.get('durationMs'),
-            'executorAddress': _executor_callback_address(),
-        }
-    except Exception as exc:
-        payload = {
-            'executionId': req.executionId,
-            'status': 'failed',
-            'errorMessage': _truncate_error_message(str(exc)),
-            'executorAddress': _executor_callback_address(),
-        }
-    finally:
-        sched.decrement_running()
-
+async def _push_killed_callback(executionId: str) -> None:
+    """E4: push the terminal killed callback for an execution that never got
+    a live process (queued/prepare stage). The kill endpoint already marked
+    ``killed_callback_pushed`` and removed the registry entry; the background
+    ``_run_and_callback`` sees the flag and skips its own callback, so admin
+    receives exactly one terminal result."""
     admin_api_url = _get_admin_api_url()
-    if admin_api_url:
-        headers = {}
-        callback_token = _get_callback_token()
-        if callback_token:
-            headers['Authorization'] = f'Bearer {callback_token}'
-        await _send_callback_with_retry(
-            build_admin_api_url('/executions/callback'),
-            payload,
-            headers,
-        )
+    if not admin_api_url:
+        return
+    payload = {
+        'executionId': executionId,
+        'status': 'failed',
+        'errorMessage': 'Execution killed by admin request',
+        'failureReason': 'killed',
+        'executorAddress': _executor_callback_address(),
+    }
+    token = await get_current_token() or _get_callback_token()
+    await _send_callback_with_retry(
+        build_admin_api_url('/executions/callback'),
+        payload,
+        token,
+    )
+
+
+def _spawn_background(coro) -> None:
+    """Keep a strong reference to a fire-and-forget task (R4-C P2)."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+@router.post('/executions/{executionId}/kill', dependencies=[Depends(verify_token)])
+async def kill_execution(executionId: str):
+    """E4 (改动1 port, node execute.ts:847-895 parity): admin's killExecution
+    only flipped the DB row; the task kept running on this executor. Admin
+    calls ``POST api/executions/:executionId/kill`` with the shared token and
+    a 3s timeout (task.service.ts notifyExecutorKill).
+
+    Response shape is field-for-field node's: running/known → 200 ``{ok:true}``
+    (process tree killed, or cancellation flagged for the background flow);
+    not in the live registry → 404 ``{ok:false}`` (never accepted / already
+    terminal — admin treats both as done and ignores any late callback)."""
+    entry = get_live_execution(executionId)
+    if entry is None:
+        # 不在运行表中（从未领取 / 已结束 / 已清理）
+        return JSONResponse(status_code=404, content={'ok': False})
+
+    entry.killed_by_request = True
+    entry.cancelled = True
+
+    proc = entry.proc
+    if proc is not None:
+        # 已 spawn：终止整个进程树（复用 _kill_process_tree）。子进程死亡后
+        # run_task 自然走失败返回，_run_and_callback 据 killed_by_request 推送
+        # failureReason=killed 的终态回调并摘除注册表条目——与 node 的
+        # "close 事件走 runTask 失败路径" 一致，这里不重复推送。
+        await _kill_process_tree(proc)
+        return {'ok': True}
+
+    # 排队/prepare（尚未 spawn）：立刻收尾——推送一次 killed 回调（后台任务，
+    # 不阻塞 admin 的 3s 超时）并摘除注册表；run_task 的 cancelled 检查点会让
+    # 后台流程静默退出，绝不双发回调、绝不双释放容量（decrement 仍归
+    # _run_and_callback 的 finally 所有）。
+    if not entry.killed_callback_pushed:
+        entry.killed_callback_pushed = True
+        _spawn_background(_push_killed_callback(executionId))
+    unregister_live_execution(executionId)
+    return {'ok': True}
+
+
+async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None):
+    if entry is None:
+        entry = get_live_execution(req.executionId)
+    try:
+        try:
+            result = await run_task(req, entry)
+            payload = {
+                'executionId': req.executionId,
+                'status': 'success' if result.get('success') else 'failed',
+                'exitCode': result.get('exitCode'),
+                'logs': result.get('logs'),
+                'errorMessage': _truncate_error_message(result.get('errorMessage')),
+                'durationMs': result.get('durationMs'),
+                'executorAddress': _executor_callback_address(),
+            }
+        except Exception as exc:
+            payload = {
+                'executionId': req.executionId,
+                'status': 'failed',
+                'errorMessage': _truncate_error_message(str(exc)),
+                'executorAddress': _executor_callback_address(),
+            }
+        finally:
+            sched.decrement_running()
+
+        if entry is not None and entry.killed_callback_pushed:
+            # E4: the kill endpoint already pushed the terminal killed callback
+            # for this execution — sending another would race admin's terminal
+            # transition guard with a redundant (and possibly misleading) one.
+            logger.info('Callback skipped (killed callback already pushed): %s',
+                        req.executionId)
+            return
+
+        if entry is not None and entry.killed_by_request:
+            # E4 (node runTask parity): the process tree was killed by admin
+            # request — classify the failure callback accordingly instead of
+            # surfacing the raw exit-code/-signal text.
+            payload['status'] = 'failed'
+            payload['errorMessage'] = 'Task process tree killed by admin request'
+            payload['failureReason'] = 'killed'
+
+        admin_api_url = _get_admin_api_url()
+        if admin_api_url:
+            # E3: dynamic-capable token (node callback.ts post() parity) with
+            # 401 self-heal inside _send_callback_with_retry; the settings
+            # snapshot stays as the fallback for .env-file-only deployments
+            # where os.environ carries nothing.
+            token = await get_current_token() or _get_callback_token()
+            await _send_callback_with_retry(
+                build_admin_api_url('/executions/callback'),
+                payload,
+                token,
+            )
+    finally:
+        # E1: terminal (callback sent or given up) — stop reporting liveness.
+        unregister_live_execution(req.executionId)
 
 
 async def _run_uv(args: list[str], timeout_seconds: float) -> tuple[int | None, str]:
@@ -493,8 +751,20 @@ async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
     return python_bin
 
 
-async def run_task(req: ExecuteRequest) -> dict:
+async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None) -> dict:
     started_at = time.monotonic()
+    if entry is None:
+        entry = get_live_execution(req.executionId)
+    # E4: kill landed before the background flow even started — the kill
+    # endpoint already pushed the terminal callback; do no work at all.
+    if entry is not None and entry.cancelled:
+        return {
+            'success': False,
+            'logs': '',
+            'exitCode': None,
+            'errorMessage': 'Execution killed by admin request',
+            'durationMs': int((time.monotonic() - started_at) * 1000),
+        }
     # Working directory
     work_dir = Path(settings.work_dir) / req.executionId
     # S6/Q11: path traversal guard — executionId must not escape the base work_dir
@@ -646,6 +916,18 @@ async def run_task(req: ExecuteRequest) -> dict:
 
     logger.info(f'Running task {task.get("name")} [{req.executionId}]: {cmd}')
 
+    # E4: kill arrived while still queued/preparing (no live process yet) — the
+    # kill endpoint already pushed the terminal killed callback and unregistered
+    # the execution; bail out before spawning anything.
+    if entry is not None and entry.cancelled:
+        return {
+            'success': False,
+            'logs': '',
+            'exitCode': None,
+            'errorMessage': 'Execution killed by admin request',
+            'durationMs': int((time.monotonic() - started_at) * 1000),
+        }
+
     log_file = work_dir / f'{req.executionId}.log'
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -656,6 +938,14 @@ async def run_task(req: ExecuteRequest) -> dict:
             env=env,
             **_spawn_kwargs_for_platform(),  # W-02: setsid on POSIX, process-group flag on win32
         )
+        if entry is not None:
+            # E4/E5: publish the child so the kill endpoint and shutdown can
+            # reach its process tree. Re-check cancelled right after: a kill
+            # that landed between the checkpoint above and this registration
+            # must take the fresh tree down instead of running un-killed.
+            entry.proc = proc
+            if entry.cancelled:
+                await _kill_process_tree(proc)
         log_chunks: list[str] = []
         captured_chars = 0        # chars retained in memory for the callback payload
         captured_truncated = False
@@ -739,31 +1029,10 @@ async def run_task(req: ExecuteRequest) -> dict:
 
         return {'success': True, 'logs': logs, 'exitCode': proc.returncode, 'durationMs': duration_ms}
     except asyncio.TimeoutError:
-        # B-06: kill the entire process group so child processes spawned by the task are also terminated
-        # W-02: win32 has no process groups — taskkill /T /F walks the child
-        # tree instead (mirrors executor-node's TerminateProcess fallback).
-        if sys.platform == 'win32':
-            try:
-                killer = await asyncio.create_subprocess_exec(
-                    'taskkill', '/T', '/F', '/PID', str(proc.pid),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await asyncio.wait_for(killer.wait(), timeout=5)
-            except Exception:
-                pass
-            # The tree kill above usually reaps the child first; killing an
-            # already-closed transport raises ProcessLookupError on win32.
-            try:
-                proc.kill()
-            except (ProcessLookupError, OSError):
-                pass
-        else:
-            try:
-                if proc.pid is not None:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                proc.kill()
+        # B-06: kill the entire process group so child processes spawned by the
+        # task are also terminated. E4/E5: same platform branches now live in
+        # _kill_process_tree (win32 taskkill /T /F, POSIX killpg SIGKILL).
+        await _kill_process_tree(proc)
         try:
             # Reap the killed child so its transport is finalized on a live
             # loop (otherwise it lingers until GC after the loop closed).
@@ -799,3 +1068,10 @@ async def run_task(req: ExecuteRequest) -> dict:
             'errorMessage': _truncate_error_message(str(e)),
             'durationMs': int((time.monotonic() - started_at) * 1000),
         }
+    finally:
+        # E4/E5: the child is dead or was never spawned — drop the process
+        # handle so kill/shutdown never tree-kills a reaped or absent proc.
+        # Registry removal itself stays with _run_and_callback (terminal
+        # callback ownership), matching node's release-on-completion posture.
+        if entry is not None:
+            entry.proc = None
