@@ -72,10 +72,13 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           failedTaskCount: 1,
           restartedAt: "2026-01-01T00:00:00.000Z",
           startupId: "startup-1",
+          // E9: maxConcurrentTasks 自 round-9 起是心跳白名单字段——controller
+          // 原样转发，1..10000 范围校验在 service 侧（越界值不改 DB，见
+          // executor.service.spec "maxConcurrentTasks adoption (E9)"）。
+          maxConcurrentTasks: 100000,
           // injection attempts below must be dropped by the controller
           tokenHash: "$2b$12$attackerhash",
           version: 99,
-          maxConcurrentTasks: 100000,
           status: "offline",
           id: "victim-id",
         } as any,
@@ -91,6 +94,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         failedTaskCount: 1,
         restartedAt: "2026-01-01T00:00:00.000Z",
         startupId: "startup-1",
+        maxConcurrentTasks: 100000,
       });
     });
 

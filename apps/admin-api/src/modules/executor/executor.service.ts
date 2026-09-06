@@ -424,11 +424,33 @@ export class ExecutorService {
   }
 
   /**
+   * E9: 心跳采纳 maxConcurrentTasks 的取值域——正整数 1..10000。
+   * 越界/非整数/非数字一律视为未上报（不改 DB 值），防止执行器经心跳
+   * 写入荒谬容量饿死派发闸门（selectLeastLoaded 以该列判满）。
+   */
+  private static isAdoptableMaxConcurrentTasks(
+    value: unknown,
+  ): value is number {
+    return (
+      typeof value === "number" &&
+      Number.isInteger(value) &&
+      value >= 1 &&
+      value <= 10_000
+    );
+  }
+
+  /**
    * CONSISTENCY-02: heartbeat ingest for executor-node 上报的 runningExecutionIds。
    * 输入为 executor 可控字段，须严格防御：非数组视为未上报（返回 null）；逐项仅
    * 保留匹配安全字符集 [A-Za-z0-9_-] 的字符串（其余丢弃）；最多裁剪至 200 项。
    * null 与 [] 语义不同——null = 旧版执行器未上报该字段（见实体注释），[] = 已
    * 上报且当前空闲。
+   *
+   * 注意：此处字符集 ^[A-Za-z0-9_-]+$ 比执行器侧（executor-node 的 id 生成/
+   * 透传面）更窄，是刻意的防御面收窄——executionId 现为 UUID（仅十六进制 +
+   * '-'，天然落在该集合内），收窄不损失合法输入，却把心跳可写入的字符串
+   * 形态压到最小（防注入控制字符/超长垃圾项）。若未来 executionId 改用其他
+   * 格式，须同步复核此集合而不是盲目放宽。
    */
   private sanitizeRunningExecutionIds(
     value: unknown,
@@ -458,6 +480,8 @@ export class ExecutorService {
       startupId?: string | null;
       runningExecutionIds?: string[] | null;
       deadLetterCount?: number;
+      // E9: 执行器热更新容量上报（可选，正整数 1..10000，非法/缺失不改 DB）
+      maxConcurrentTasks?: number;
     },
   ) {
     const e = await this.repo.findOne({ where: { address } });
@@ -494,9 +518,12 @@ export class ExecutorService {
     // F-2: assign metrics EXPLICITLY — never spread untrusted request fields
     // onto the entity. A spread would let a caller overwrite server-owned
     // columns such as tokenHash (persistent auth backdoor surviving shared-
-    // token rotation), the optimistic-lock version, maxConcurrentTasks or
-    // executorStartupId. Only the known metric columns below are writable via
-    // heartbeat.
+    // token rotation), the optimistic-lock version or executorStartupId.
+    // Only the known metric columns below are writable via heartbeat.
+    // E9 exception: maxConcurrentTasks is deliberately whitelisted so an
+    // executor that hot-updates its capacity is adopted without re-register;
+    // it goes through the range check below first (invalid → treated as
+    // not-reported, DB value untouched).
     const metricsWhitelist: Array<
       | "cpuUsage"
       | "memUsage"
@@ -505,6 +532,7 @@ export class ExecutorService {
       | "runningTaskCount"
       | "totalTaskCount"
       | "failedTaskCount"
+      | "maxConcurrentTasks"
     > = [
       "cpuUsage",
       "memUsage",
@@ -513,7 +541,21 @@ export class ExecutorService {
       "runningTaskCount",
       "totalTaskCount",
       "failedTaskCount",
+      "maxConcurrentTasks",
     ];
+    if (
+      metricValues.maxConcurrentTasks !== undefined &&
+      !ExecutorService.isAdoptableMaxConcurrentTasks(
+        metricValues.maxConcurrentTasks,
+      )
+    ) {
+      this.logger.warn(
+        `Executor ${address} reported invalid maxConcurrentTasks=${String(
+          metricValues.maxConcurrentTasks,
+        )} (expected integer in 1..10000); keeping stored value`,
+      );
+      delete metricValues.maxConcurrentTasks;
+    }
     for (const key of metricsWhitelist) {
       if (metricValues[key] !== undefined) {
         (e as any)[key] = metricValues[key];

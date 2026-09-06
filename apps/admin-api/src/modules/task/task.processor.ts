@@ -17,7 +17,13 @@ import { NotificationService } from "../notification/notification.service";
 import { AuditService } from "../audit/audit.service";
 import { TaskService } from "./task.service";
 
-@Processor("task-queue")
+// PERF-P3a: worker 并发 1→5，消除队头阻塞（一个慢 dispatch HTTP 不再卡住
+// 整条队列）。安全性依据：执行器容量闸门在 dispatch 内由 DB 原子操作保证
+// （executor.service selectLeastLoaded + 条件 UPDATE 占坑），worker 并发
+// 只是并行化派发，不会超卖执行器槽位。注意 @nestjs/bullmq v11 中
+// concurrency 必须走第二参数 NestWorkerOptions（单对象形式仅支持
+// name/scope/configKey，多余键会被静默丢弃）。
+@Processor("task-queue", { concurrency: 5 })
 export class TaskProcessor extends WorkerHost {
   private readonly logger = new Logger(TaskProcessor.name);
 
