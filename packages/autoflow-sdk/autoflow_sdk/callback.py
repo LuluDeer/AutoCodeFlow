@@ -54,6 +54,10 @@ VALID_FAILURE_REASONS = frozenset({
     # BUG-15 复审: P2 起 admin 枚举新增 stale_recovered（sweep 赢家标记），
     # 白名单与 admin DTO（@IsIn(Object.values(ExecutionFailureReason))）保持同步
     "stale_recovered",
+    # BUG-10: 执行器侧细分分类（依赖安装 / Git 拉取 / 运行时缺失）
+    "dependency_install_failed",
+    "git_fetch_failed",
+    "runtime_missing",
     "killed",
     "unknown",
 })

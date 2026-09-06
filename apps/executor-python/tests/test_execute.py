@@ -1486,3 +1486,82 @@ def test_callback_prefers_dynamic_token(monkeypatch):
         ExecuteRequest(executionId='exec-dyn-token', task={'name': 'n'})))
 
     assert posted_headers[0]['Authorization'] == 'Bearer dynamic-current'
+
+
+# ── BUG-10: 失败分类细化 ──────────────────────────────────────────────────────
+
+def test_refine_failure_reason_git_variants():
+    from routers.execute import _refine_failure_reason as r
+    assert r("git clone failed: exit 128") == 'git_fetch_failed'
+    assert r("git fetch failed after 60s") == 'git_fetch_failed'
+    assert r("Command '['git', 'clone', '--bare', 'url']' returned non-zero exit status 128.") == 'git_fetch_failed'
+    assert r("git checkout failed for ref 'main'") == 'git_fetch_failed'
+
+
+def test_refine_failure_reason_dependency_variants():
+    from routers.execute import _refine_failure_reason as r
+    assert r("uv pip install failed: no matching distribution") == 'dependency_install_failed'
+    assert r("uv venv failed: BrokenPipe") == 'dependency_install_failed'
+    assert r("uv venv timed out after 600s (uv process killed)") == 'dependency_install_failed'
+    assert r("Dependency installation failed") == 'dependency_install_failed'
+
+
+def test_refine_failure_reason_runtime_missing_variants():
+    from routers.execute import _refine_failure_reason as r
+    assert r("No such file or directory: 'uv'") == 'runtime_missing'
+    assert r("No such file or directory: '/root/.local/bin/uv'") == 'runtime_missing'
+    assert r("runtime not supported on this executor") == 'runtime_missing'
+
+
+def test_refine_failure_reason_none_for_unclassified():
+    from routers.execute import _refine_failure_reason as r
+    assert r("") is None
+    assert r("script blew up: ZeroDivisionError") is None
+    assert r("killed by admin request") is None
+
+
+def test_run_and_callback_attaches_refined_reason_on_prepare_exception(monkeypatch):
+    """prepare 阶段 raise（uv pip install failed）→ 回调带 dependency_install_failed。"""
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    posted = {}
+
+    class FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json, headers):
+            posted['json'] = json
+            return SimpleNamespace(status_code=200)
+
+    async def fake_run_task(req, entry=None):
+        raise RuntimeError('uv pip install failed: no matching distribution')
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', FakeAsyncClient)
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'tok')
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'exec:9000')
+    monkeypatch.setattr(execute_module, 'get_current_token', AsyncMock(return_value=None))
+
+    req = ExecuteRequest(
+        executionId='exec-refine-reason',
+        task={'name': 'noop', 'runtime': 'python'},
+    )
+    asyncio.run(execute_module._run_and_callback(req))
+
+    items = posted['json']
+    assert items[0]['status'] == 'failed'
+    assert items[0]['failureReason'] == 'dependency_install_failed'
