@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Table, Typography, Badge, Button, Input, Select, Space,
   Empty, Tooltip, Popconfirm, message, DatePicker,
 } from 'antd';
 import {
   SearchOutlined, FilterOutlined, ReloadOutlined, EyeOutlined, StopOutlined,
+  SwapOutlined,
 } from '@ant-design/icons';
 import type { Dayjs } from 'dayjs';
 
@@ -15,6 +16,7 @@ import type { TaskExecution } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
+import { ExecutionCompareModal, COMPARE_MAX } from '../components/ExecutionCompare';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -39,6 +41,14 @@ export default function ExecutionsPage() {
   const [executorFilter, setExecutorFilter] = useState('');
   const [timeRange, setTimeRange] = useState<[Dayjs, Dayjs] | null>(null);
   const [killingId, setKillingId] = useState<string | null>(null);
+  // FEAT-03: 多选对比——选中本页行后一键打开指标对比 modal
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [compareOpen, setCompareOpen] = useState(false);
+
+  // 翻页/筛选变化后当前页数据会变，跨页选中行不再可见——清空选中防误比
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [page, pageSize, statusFilter, search, executorFilter, timeRange]);
 
   const handleKill = async (r: TaskExecution) => {
     setKillingId(r.id);
@@ -179,6 +189,22 @@ export default function ExecutionsPage() {
       </div>
 
       <Space style={{ marginBottom: 16 }} wrap>
+        {selectedIds.length > 0 && (
+          <Button
+            icon={<SwapOutlined />}
+            type="primary"
+            disabled={selectedIds.length < 2}
+            onClick={() => {
+              if (selectedIds.length > COMPARE_MAX) {
+                message.warning(`最多对比 ${COMPARE_MAX} 条执行记录`);
+                return;
+              }
+              setCompareOpen(true);
+            }}
+          >
+            对比 ({selectedIds.length})
+          </Button>
+        )}
         <Input
           placeholder="搜索任务名"
           prefix={<SearchOutlined />}
@@ -229,6 +255,10 @@ export default function ExecutionsPage() {
         columns={columns}
         dataSource={executions}
         loading={loading}
+        rowSelection={{
+          selectedRowKeys: selectedIds,
+          onChange: (keys) => setSelectedIds(keys as string[]),
+        }}
         pagination={{
           total,
           current: page,
@@ -240,6 +270,13 @@ export default function ExecutionsPage() {
         locale={{
           emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行记录" />,
         }}
+      />
+
+      <ExecutionCompareModal
+        open={compareOpen}
+        onClose={() => setCompareOpen(false)}
+        executions={executions}
+        compareIds={selectedIds}
       />
     </div>
   );
