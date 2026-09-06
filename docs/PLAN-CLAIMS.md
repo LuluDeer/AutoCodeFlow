@@ -47,8 +47,8 @@
 | FEAT-09 | P3 | unclaimed | | | admin-web 全局组件 | | 全局搜索/命令面板 |
 | FEAT-10 | P3 | unclaimed | | | admin-api notification | | 通知模板变量 |
 | FEAT-11 | P3 | unclaimed | | | task 实体 + admin-web | | 任务 runbook 字段 |
-| FEAT-12 | P3 | unclaimed | | | registry-pypi | | PyPI 索引页 UI 化 |
-| CORE-01 | P1 | in_progress | main-A | 2026-09-07 | admin-web TaskForm/List/Detail + utils/priority | 见批六 commit | 前端 UI 化 done（后端本就绪）；剩余=拥塞下优先出队的真机断言（并入真机轮） |
+| FEAT-12 | P3 | done | main-A | 2026-09-07 | registry-pypi main.py + tests | 见批六 commit | 索引页增强：版本聚合/体积/UTC 时间/计数；PEP 503 锚点语义不变；+2 测试 52/52 |
+| CORE-01 | P1 | done | main-A | 2026-09-07 | admin-web TaskForm/List/Detail + utils/priority | 批六 commit | 前端 UI 化 done（后端本就绪）；剩余=拥塞下优先出队的真机断言（并入真机轮） |
 | CORE-02 | P1 | unclaimed | | | admin-api task + admin-web | | 重试策略精细化（attempt 链可视化） |
 | CORE-03 | P1 | unclaimed | | | admin-api 模板实体 + admin-web | | 任务模板与一键克隆 |
 | CORE-04 | P1 | unclaimed | | | admin-api + 双执行器 | | 超时策略分级（warn/动作可选） |
