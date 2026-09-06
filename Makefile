@@ -87,6 +87,12 @@ db-migrate: ## 运行数据库迁移
 db-migrate-revert: ## 回滚最后一次迁移
 	cd apps/admin-api && npm run migration:revert
 
+demo-seed: ## 造一套演示数据（demo- 前缀任务；需 admin-api 已启动）
+	node scripts/demo-seed.mjs
+
+demo-seed-selftest: ## demo-seed 纯函数自检
+	node scripts/demo-seed.selftest.mjs
+
 db-migrate-gen: ## 生成新的迁移文件
 	cd apps/admin-api && npm run migration:generate
 
