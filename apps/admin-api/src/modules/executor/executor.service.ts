@@ -526,9 +526,7 @@ export class ExecutorService {
    * 形态压到最小（防注入控制字符/超长垃圾项）。若未来 executionId 改用其他
    * 格式，须同步复核此集合而不是盲目放宽。
    */
-  private sanitizeRunningExecutionIds(
-    value: unknown,
-  ): string[] | null {
+  private sanitizeRunningExecutionIds(value: unknown): string[] | null {
     if (!Array.isArray(value)) return null;
     const safe: string[] = [];
     for (const item of value) {
@@ -661,9 +659,8 @@ export class ExecutorService {
     // 覆盖，避免旧版心跳把新版已写入的活性集合擦回 null。deadLetterCount
     // 经上方白名单校验后采纳落列（U16），>0 时仍保留告警。
     if (runningExecutionIds !== undefined) {
-      e.runningExecutionIds = this.sanitizeRunningExecutionIds(
-        runningExecutionIds,
-      );
+      e.runningExecutionIds =
+        this.sanitizeRunningExecutionIds(runningExecutionIds);
     }
     if (
       typeof metricValues.deadLetterCount === "number" &&

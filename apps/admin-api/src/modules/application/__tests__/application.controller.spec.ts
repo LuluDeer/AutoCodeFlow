@@ -10,6 +10,7 @@ import { Reflector } from "@nestjs/core";
 import { createHmac } from "crypto";
 import * as express from "express";
 import * as fs from "fs";
+import * as path from "path";
 import * as request from "supertest";
 import { IS_PUBLIC_KEY } from "../../../common/decorators/public.decorator";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
@@ -347,6 +348,8 @@ describe("ApplicationController upload — APP-002", () => {
     update: jest.Mock;
   };
   let controller: ApplicationController;
+  let writeFile: jest.SpyInstance;
+  let unlink: jest.SpyInstance;
 
   const uploadArgs = () =>
     [
@@ -365,12 +368,13 @@ describe("ApplicationController upload — APP-002", () => {
       update: jest.fn(),
     };
     controller = new ApplicationController(svc as any, {} as any);
-    // 不真实写盘
+    // 不真实写盘（R9b: 写盘走 fs.promises.writeFile）
     jest.spyOn(fs, "existsSync").mockReturnValue(true);
     jest.spyOn(fs, "mkdirSync").mockImplementation((() => undefined) as any);
-    jest
-      .spyOn(fs, "writeFileSync")
-      .mockImplementation((() => undefined) as any);
+    writeFile = jest
+      .spyOn(fs.promises, "writeFile")
+      .mockResolvedValue(undefined);
+    unlink = jest.spyOn(fs.promises, "unlink").mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -393,6 +397,8 @@ describe("ApplicationController upload — APP-002", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("API_BASE_URL"),
     );
+    // R9b: API_BASE_URL 校验失败必须先于落盘——不产生孤儿 zip 文件
+    expect(writeFile).not.toHaveBeenCalled();
   });
 
   it("builds packageUrl from API_BASE_URL and never from localhost", async () => {
@@ -409,6 +415,29 @@ describe("ApplicationController upload — APP-002", () => {
         packageUrl: expect.stringContaining("https://api.example.com/"),
       }),
     );
+    expect(writeFile).toHaveBeenCalledTimes(1);
+  });
+
+  // R9b: the file write is async (fs.promises.writeFile) — no 200 MB
+  // synchronous disk stall on the event loop.
+  it("R9b: writes the package asynchronously via fs.promises.writeFile", async () => {
+    process.env.API_BASE_URL = "https://api.example.com";
+    await controller.upload(...uploadArgs());
+    expect(writeFile).toHaveBeenCalledWith(
+      expect.stringContaining(path.join(process.cwd(), "uploads", "packages")),
+      ZIP_MAGIC,
+    );
+  });
+
+  // R9b: a DB failure after the file landed must not leave an orphan zip.
+  it("R9b: unlinks the freshly written file when the DB upsert fails", async () => {
+    process.env.API_BASE_URL = "https://api.example.com";
+    svc.findByName.mockResolvedValue({ id: "app-1", name: "my-app" });
+    svc.update.mockRejectedValue(new Error("db down"));
+
+    await expect(controller.upload(...uploadArgs())).rejects.toThrow("db down");
+    expect(writeFile).toHaveBeenCalledTimes(1);
+    expect(unlink).toHaveBeenCalledWith(writeFile.mock.calls[0][0]);
   });
 });
 
@@ -440,10 +469,7 @@ describe("ApplicationController RBAC (R1)", () => {
     ];
     for (const name of adminRoutes) {
       expect(
-        Reflect.getMetadata(
-          ROLES_KEY,
-          ApplicationController.prototype[name],
-        ),
+        Reflect.getMetadata(ROLES_KEY, ApplicationController.prototype[name]),
       ).toEqual([UserRole.ADMIN]);
     }
   });

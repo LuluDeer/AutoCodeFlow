@@ -151,11 +151,10 @@ describe("AuthService (__tests__)", () => {
       expect(usersService.clearExpiredLock).toHaveBeenCalledWith(mockUser.id);
       // Ordering: the reset happens BEFORE recordLoginFailure, so the new
       // failure increments from 0 (1 < MAX_FAIL → no immediate re-lock).
-      const resetCall =
-        (usersService.clearExpiredLock as jest.Mock).mock.invocationCallOrder[0];
-      const failCall =
-        (usersService.recordLoginFailure as jest.Mock).mock
-          .invocationCallOrder[0];
+      const resetCall = (usersService.clearExpiredLock as jest.Mock).mock
+        .invocationCallOrder[0];
+      const failCall = (usersService.recordLoginFailure as jest.Mock).mock
+        .invocationCallOrder[0];
       expect(resetCall).toBeLessThan(failCall);
     });
 
@@ -306,59 +305,99 @@ describe("AuthService (__tests__)", () => {
 
   describe("DR-07 atomic consumption", () => {
     beforeEach(() => {
-      jwtService.verify.mockReturnValue({ sub: 1, username: "admin", type: "refresh", jti: mockJti });
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+        jti: mockJti,
+      });
       usersService.findById.mockResolvedValue(mockUser as any);
     });
 
     it("allows only one concurrent refresh of the same jti", async () => {
-      refreshTokenRepo.update.mockResolvedValueOnce({ affected: 1 }).mockResolvedValueOnce({ affected: 0 });
+      refreshTokenRepo.update
+        .mockResolvedValueOnce({ affected: 1 })
+        .mockResolvedValueOnce({ affected: 0 });
       const generate = jest.spyOn(service as any, "generateTokens");
       const results = await Promise.allSettled([
-        service.refreshToken("same-token"), service.refreshToken("same-token"),
+        service.refreshToken("same-token"),
+        service.refreshToken("same-token"),
       ]);
       expect(results[0].status).toBe("fulfilled");
-      expect(results[1]).toMatchObject({ status: "rejected", reason: new UnauthorizedException("Refresh token has been revoked") });
+      expect(results[1]).toMatchObject({
+        status: "rejected",
+        reason: new UnauthorizedException("Refresh token has been revoked"),
+      });
       expect(usersService.findById).toHaveBeenCalledTimes(1);
       expect(generate).toHaveBeenCalledTimes(1);
       expect(refreshTokenRepo.update).toHaveBeenCalledTimes(2);
-      expect(refreshTokenRepo.update).toHaveBeenCalledWith({ jti: mockJti, revoked: false }, { revoked: true });
+      expect(refreshTokenRepo.update).toHaveBeenCalledWith(
+        { jti: mockJti, revoked: false },
+        { revoked: true },
+      );
     });
 
     it("rejects an undefined affected count without looking up the user", async () => {
       refreshTokenRepo.update.mockResolvedValue({ affected: undefined });
-      await expect(service.refreshToken("token")).rejects.toThrow("Refresh token has been revoked");
+      await expect(service.refreshToken("token")).rejects.toThrow(
+        "Refresh token has been revoked",
+      );
       expect(usersService.findById).not.toHaveBeenCalled();
       expect(jwtService.sign).not.toHaveBeenCalled();
     });
 
     it("rejects an inactive user after consuming the token", async () => {
-      usersService.findById.mockResolvedValue({ ...mockUser, isActive: false } as any);
-      await expect(service.refreshToken("token")).rejects.toThrow(UnauthorizedException);
+      usersService.findById.mockResolvedValue({
+        ...mockUser,
+        isActive: false,
+      } as any);
+      await expect(service.refreshToken("token")).rejects.toThrow(
+        UnauthorizedException,
+      );
       expect(refreshTokenRepo.update).toHaveBeenCalledTimes(1);
       expect(usersService.findById).toHaveBeenCalledWith(1);
       expect(jwtService.sign).not.toHaveBeenCalled();
     });
 
     it("keeps the old token consumed if issuance fails", async () => {
-      refreshTokenRepo.update.mockResolvedValueOnce({ affected: 1 }).mockResolvedValueOnce({ affected: 0 });
-      jwtService.sign.mockImplementation(() => { throw new Error("signing failed"); });
-      await expect(service.refreshToken("token")).rejects.toThrow("signing failed");
-      await expect(service.refreshToken("token")).rejects.toThrow("Refresh token has been revoked");
+      refreshTokenRepo.update
+        .mockResolvedValueOnce({ affected: 1 })
+        .mockResolvedValueOnce({ affected: 0 });
+      jwtService.sign.mockImplementation(() => {
+        throw new Error("signing failed");
+      });
+      await expect(service.refreshToken("token")).rejects.toThrow(
+        "signing failed",
+      );
+      await expect(service.refreshToken("token")).rejects.toThrow(
+        "Refresh token has been revoked",
+      );
       expect(usersService.findById).toHaveBeenCalledTimes(1);
       expect(jwtService.sign).toHaveBeenCalledTimes(1);
     });
 
-    it.each(["signature", "type", "jti"])("rejects invalid %s before consumption", async (invalid) => {
-      if (invalid === "signature") {
-        jwtService.verify.mockImplementation(() => { throw new Error("expired"); });
-      } else {
-        jwtService.verify.mockReturnValue({ sub: 1, type: invalid === "type" ? "access" : "refresh", jti: invalid === "jti" ? undefined : mockJti });
-      }
-      await expect(service.refreshToken("token")).rejects.toThrow(UnauthorizedException);
-      expect(refreshTokenRepo.update).not.toHaveBeenCalled();
-      expect(usersService.findById).not.toHaveBeenCalled();
-      expect(jwtService.sign).not.toHaveBeenCalled();
-    });
+    it.each(["signature", "type", "jti"])(
+      "rejects invalid %s before consumption",
+      async (invalid) => {
+        if (invalid === "signature") {
+          jwtService.verify.mockImplementation(() => {
+            throw new Error("expired");
+          });
+        } else {
+          jwtService.verify.mockReturnValue({
+            sub: 1,
+            type: invalid === "type" ? "access" : "refresh",
+            jti: invalid === "jti" ? undefined : mockJti,
+          });
+        }
+        await expect(service.refreshToken("token")).rejects.toThrow(
+          UnauthorizedException,
+        );
+        expect(refreshTokenRepo.update).not.toHaveBeenCalled();
+        expect(usersService.findById).not.toHaveBeenCalled();
+        expect(jwtService.sign).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe("revokeAllForUser", () => {

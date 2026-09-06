@@ -88,9 +88,8 @@ export class WebhookChannel extends BaseChannel {
       // QA5: with maxRedirects:0 a 3xx lands here as a deterministic reject —
       // say so explicitly instead of a bare "delivery failed", so an operator
       // with a short-link / http→https redirect webhook knows the fix.
-      const status = (
-        error as { response?: { status?: number } } | undefined
-      )?.response?.status;
+      const status = (error as { response?: { status?: number } } | undefined)
+        ?.response?.status;
       const reason =
         typeof status === "number" && status >= 300 && status < 400
           ? `redirect refused by SSRF policy (maxRedirects=0) — configure the final URL directly (HTTP ${status})`

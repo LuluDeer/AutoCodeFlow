@@ -615,7 +615,9 @@ describe("R2: per-call config override reaches the channel without mutating the 
   });
 
   it("SlackChannel: override is request-scoped — store is not written", async () => {
-    const store = makeStore({ slack: { webhookUrl: "https://saved.example.com" } });
+    const store = makeStore({
+      slack: { webhookUrl: "https://saved.example.com" },
+    });
     const channel = new SlackChannel(makeConfig({}), store);
     await channel.send(payload, {
       webhookUrl: "https://override.example.com",
@@ -735,9 +737,15 @@ describe("R3: redirects refused (maxRedirects: 0)", () => {
     // the delivery did NOT happen, and no request went to the redirect
     // target. QA5: a 3xx is a deterministic reject — withRetry no longer
     // burns the 3-attempt backoff on it, so exactly ONE request is made.
-    const redirectErr = Object.assign(new Error("Request failed with status code 302"), {
-      response: { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data/" } },
-    });
+    const redirectErr = Object.assign(
+      new Error("Request failed with status code 302"),
+      {
+        response: {
+          status: 302,
+          headers: { location: "http://169.254.169.254/latest/meta-data/" },
+        },
+      },
+    );
     mockedAxios.post = jest.fn().mockRejectedValue(redirectErr);
     const channel = new WebhookChannel(makeStore());
     await expect(

@@ -525,8 +525,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         await runUpdate(recovered, {
           status: ExecutionStatus.FAILED,
           endTime: finishedAt,
-          errorMessage:
-            "Execution did not complete (recovered by stale sweep)",
+          errorMessage: "Execution did not complete (recovered by stale sweep)",
           failureReason: ExecutionFailureReason.STALE_RECOVERED,
         });
       });
@@ -676,12 +675,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       runningExecutionIds: string[] | null;
     }> = [];
     try {
-      executors = await this.dataSource
-        .getRepository(Executor)
-        .find({
-          where: { address: In(addresses) },
-          select: ["address", "status", "runningExecutionIds"],
-        });
+      executors = await this.dataSource.getRepository(Executor).find({
+        where: { address: In(addresses) },
+        select: ["address", "status", "runningExecutionIds"],
+      });
     } catch (err: unknown) {
       this.logger.warn(
         `recoverStaleExecutions liveness probe degraded (recover normally): ${
@@ -691,9 +688,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       return { deferredIds };
     }
 
-    const byAddress = new Map(
-      executors.map((ex) => [ex.address, ex] as const),
-    );
+    const byAddress = new Map(executors.map((ex) => [ex.address, ex] as const));
     for (const c of candidates) {
       const addr = c.exec.executorAddress;
       if (!addr) continue;

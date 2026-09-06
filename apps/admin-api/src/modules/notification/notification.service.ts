@@ -437,13 +437,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!alarmChannels || alarmChannels.length === 0) {
-      return this.notifyFailure(
-        taskName,
-        execId,
-        error,
-        aiAnalysis,
-        taskId,
-      );
+      return this.notifyFailure(taskName, execId, error, aiAnalysis, taskId);
     }
     const payload: NotificationPayload = {
       title: `Task failed: ${taskName}`,

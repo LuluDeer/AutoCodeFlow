@@ -40,7 +40,9 @@ export class EmailChannel extends BaseChannel {
       saved.user ||
       this.config.get<string>("notification.email.user");
     const to =
-      override.to || saved.to || this.config.get<string>("notification.email.to");
+      override.to ||
+      saved.to ||
+      this.config.get<string>("notification.email.to");
     // Q8: skip silently when email is not configured
     if (!host || !user || !to) return "skipped";
 

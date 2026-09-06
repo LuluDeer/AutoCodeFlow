@@ -235,7 +235,8 @@ export class TaskProcessor extends WorkerHost {
           )
         : [];
       if (retryableErrors.length > 0) {
-        const haystack = `${exec.errorMessage ?? ""}\n${exec.failureReason ?? ""}`.toLowerCase();
+        const haystack =
+          `${exec.errorMessage ?? ""}\n${exec.failureReason ?? ""}`.toLowerCase();
         const matched = retryableErrors.some((p) =>
           haystack.includes(p.trim().toLowerCase()),
         );
@@ -285,7 +286,9 @@ export class TaskProcessor extends WorkerHost {
         ...(exec.failureReason !== undefined
           ? { failureReason: exec.failureReason }
           : {}),
-        ...(exec.aiAnalysis !== undefined ? { aiAnalysis: exec.aiAnalysis } : {}),
+        ...(exec.aiAnalysis !== undefined
+          ? { aiAnalysis: exec.aiAnalysis }
+          : {}),
         ...(exec.endTime ? { endTime: exec.endTime } : {}),
         ...(exec.duration !== undefined ? { duration: exec.duration } : {}),
       };

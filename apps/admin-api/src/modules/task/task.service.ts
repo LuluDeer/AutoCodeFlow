@@ -1302,8 +1302,10 @@ export class TaskService {
     // 控制在 500 字符内，避免把整段日志塞进告警。
     const detail =
       cb.errorMessage || (cb.logs ? cb.logs.split("\n")[0] : "") || "no detail";
-    const errorSummary =
-      `${failureReason ?? "UNKNOWN"}: ${detail}`.slice(0, 500);
+    const errorSummary = `${failureReason ?? "UNKNOWN"}: ${detail}`.slice(
+      0,
+      500,
+    );
     try {
       const task = execution.taskId
         ? await this.taskRepo.findOne({ where: { id: execution.taskId } })
@@ -1394,7 +1396,10 @@ export class TaskService {
   ): Promise<void> {
     if (!executorAddress) return;
     try {
-      await this.executorService.notifyExecutorKill(executionId, executorAddress);
+      await this.executorService.notifyExecutorKill(
+        executionId,
+        executorAddress,
+      );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(
@@ -1615,7 +1620,8 @@ export class TaskService {
     description?: string,
     taskSnapshot?: Task,
   ): Promise<TaskVersion> {
-    const task = taskSnapshot ?? (await this.taskRepo.findOne({ where: { id: taskId } }));
+    const task =
+      taskSnapshot ?? (await this.taskRepo.findOne({ where: { id: taskId } }));
     if (!task) {
       throw new NotFoundException("Task not found");
     }

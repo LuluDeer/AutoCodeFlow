@@ -145,22 +145,15 @@ export class ApplicationController {
       throw new BadRequestException("File is not a valid ZIP archive");
     }
 
-    // Save uploaded zip to persistent uploads directory (served as static files)
-    const uploadsDir = path.join(process.cwd(), "uploads", "packages");
-    if (!fs.existsSync(uploadsDir))
-      fs.mkdirSync(uploadsDir, { recursive: true });
-    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const filename = `${safeName}_${Date.now()}.zip`;
-    const zipPath = path.join(uploadsDir, filename);
-    fs.writeFileSync(zipPath, file.buffer);
-
-    // Build a URL that the executor can use to download the package
     // APP-002: packageUrl 会被 executor 节点拉取。旧实现缺 API_BASE_URL 时静默
     // 回退 `http://localhost:PORT`，生成的 URL 在其它机器上不可达，问题被推迟到
     // 部署阶段才暴露。这里选择 fail-fast（使用时记 error 并抛 500）而非从请求
     // Host 推导：上传请求的 Host 可能是 CI 容器的 localhost 或反向代理地址，
     // 静默推导同样会存下不可达的 URL，只是把失败换个地方隐藏；显式报错能在
     // 上传这一步就把配置缺失暴露给调用方。
+    // R9b: the API_BASE_URL check runs BEFORE anything is written to disk —
+    // the old order (write file → check) leaked an orphan zip on every
+    // misconfigured upload.
     const apiBase = process.env.API_BASE_URL;
     if (!apiBase) {
       this.logger.error(
@@ -170,24 +163,47 @@ export class ApplicationController {
         "API_BASE_URL is not configured; cannot build a package download URL",
       );
     }
+
+    // Save uploaded zip to persistent uploads directory (served as static files)
+    // R9b: async write (fs.promises.writeFile) — no 200 MB synchronous disk
+    // stall on the event loop; and any failure AFTER the write unlinks the
+    // freshly written file so a failed upsert cannot leave orphan zips.
+    const uploadsDir = path.join(process.cwd(), "uploads", "packages");
+    if (!fs.existsSync(uploadsDir))
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const filename = `${safeName}_${Date.now()}.zip`;
+    const zipPath = path.join(uploadsDir, filename);
+    await fs.promises.writeFile(zipPath, file.buffer);
     const packageUrl = `${apiBase}/uploads/packages/${filename}`;
 
     // Upsert the application record: create if not exists, update packageUrl if exists.
     // This makes upload idempotent and supports iterative releases.
-    const existing = await this.svc.findByName(name);
     let app;
-    if (existing) {
-      app = await this.svc.update(existing.id, {
-        packageUrl,
-        ...(runtime ? { runtime } : {}),
-      });
-    } else {
-      app = await this.svc.create({
-        name,
-        packageUrl,
-        runtime: runtime || "python",
-        version: "1.0.0",
-      });
+    try {
+      const existing = await this.svc.findByName(name);
+      if (existing) {
+        app = await this.svc.update(existing.id, {
+          packageUrl,
+          ...(runtime ? { runtime } : {}),
+        });
+      } else {
+        app = await this.svc.create({
+          name,
+          packageUrl,
+          runtime: runtime || "python",
+          version: "1.0.0",
+        });
+      }
+    } catch (err: unknown) {
+      // R9b: DB upsert failed after the file landed — best-effort unlink so
+      // the failed upload does not leave an orphan file behind.
+      try {
+        await fs.promises.unlink(zipPath);
+      } catch {
+        // best-effort
+      }
+      throw err;
     }
     return app;
   }

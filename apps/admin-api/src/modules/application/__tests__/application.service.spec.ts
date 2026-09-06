@@ -1,5 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import * as fs from "fs";
+import * as path from "path";
 import { ApplicationService } from "../application.service";
 import { Application, ApplicationStatus } from "../entities/application.entity";
 import { ModuleRef } from "@nestjs/core";
@@ -7,12 +9,48 @@ import { AiService } from "../../ai/ai.service";
 
 // R4/R1: deployFromGit spawns git and resolves the repo host — pin both so
 // the specs never touch the network or a real binary.
-jest.mock("child_process", () => ({ spawnSync: jest.fn() }));
+jest.mock("child_process", () => ({ spawn: jest.fn() }));
 jest.mock("node:dns/promises", () => ({ lookup: jest.fn() }));
-import { spawnSync } from "child_process";
+import { spawn } from "child_process";
 import { lookup } from "node:dns/promises";
-const mockedSpawn = spawnSync as unknown as jest.Mock;
+import { EventEmitter } from "events";
+const mockedSpawn = spawn as unknown as jest.Mock;
 const mockedLookup = lookup as unknown as jest.Mock;
+
+/**
+ * R4: the service now uses async child_process.spawn wrapped in a Promise.
+ * The fake mimics the real child surface the wrapper consumes: stdout/stderr
+ * streams that emit buffered data, plus error/close events. The `result`
+ * option preloads the stream payload and exit code; an `error` option
+ * simulates a spawn failure (ENOENT). Timing is async so the wrapper's
+ * promise path is exercised.
+ */
+const fakeSpawn = (opts: {
+  status?: number;
+  stdout?: string;
+  stderr?: string;
+  error?: Error;
+}) => {
+  const child = new EventEmitter() as EventEmitter & {
+    stdout: EventEmitter;
+    stderr: EventEmitter;
+    kill: jest.Mock;
+  };
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = jest.fn();
+  setImmediate(() => {
+    if (opts.error) {
+      child.emit("error", opts.error);
+      child.emit("close", null);
+      return;
+    }
+    if (opts.stdout) child.stdout.emit("data", Buffer.from(opts.stdout));
+    if (opts.stderr) child.stderr.emit("data", Buffer.from(opts.stderr));
+    child.emit("close", opts.status ?? 0);
+  });
+  return child;
+};
 
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findOne: jest.fn(),
@@ -217,9 +255,7 @@ describe("ApplicationService", () => {
     it("persists the RAW env on the DEPLOYING save (not the masked row)", async () => {
       const row = { id: "1", name: "app1", env: { API_KEY: "sk-real" } };
       appRepo.findOne.mockResolvedValue(row);
-      mockedLookup.mockResolvedValue([
-        { address: "93.184.216.34", family: 4 },
-      ]);
+      mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
       // Clone fails fast — we only care about the FIRST save (DEPLOYING).
       // Snapshot each save arg: the service mutates the same entity object
       // (status → FAILED) before saving again.
@@ -228,14 +264,13 @@ describe("ApplicationService", () => {
         saves.push({ ...e });
         return Promise.resolve(e);
       });
-      mockedSpawn.mockReturnValue({
-        status: 128,
-        stderr: Buffer.from("repository not found"),
-      });
+      mockedSpawn.mockImplementation(() =>
+        fakeSpawn({ status: 128, stderr: "repository not found" }),
+      );
 
       await expect(
         service.deployFromGit("1", "https://github.com/org/repo.git", "main"),
-      ).rejects.toThrow();
+      ).rejects.toThrow("repository not found");
 
       expect(saves[0].status).toBe(ApplicationStatus.DEPLOYING);
       expect((saves[0].env as Record<string, string>).API_KEY).toBe("sk-real");
@@ -273,10 +308,10 @@ describe("ApplicationService", () => {
 
     it("R4: a public repo proceeds to clone (behavior unchanged)", async () => {
       appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
-      mockedLookup.mockResolvedValue([
-        { address: "93.184.216.34", family: 4 },
-      ]);
-      mockedSpawn.mockReturnValue({ status: 0, stdout: "deadbeef" });
+      mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+      mockedSpawn.mockImplementation(() =>
+        fakeSpawn({ status: 0, stdout: "deadbeef" }),
+      );
 
       await service.deployFromGit(
         "1",
@@ -288,6 +323,19 @@ describe("ApplicationService", () => {
       const lastSave =
         appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
       expect(lastSave.status).toBe(ApplicationStatus.ACTIVE);
+      expect(lastSave.gitCommit).toBe("deadbeef");
+    });
+
+    it("R4: spawn stays async — no spawnSync import remains on the event loop", async () => {
+      // Regression pin: the service must use the async child_process.spawn
+      // wrapper (event loop stays live during a 120s clone), not spawnSync.
+      const src = fs.readFileSync(
+        path.join(__dirname, "..", "application.service.ts"),
+        "utf-8",
+      );
+      expect(src).toContain('import { spawn } from "child_process"');
+      // no synchronous spawn call sites remain (doc-comment mentions excluded)
+      expect(src).not.toContain("spawnSync(");
     });
   });
 
@@ -299,6 +347,88 @@ describe("ApplicationService", () => {
 
       await service.remove("1");
       expect(appRepo.remove).toHaveBeenCalledWith(app);
+    });
+
+    // R18/R9c: deleting an application should best-effort unlink the local
+    // package file it points at — but only when the URL resolves inside the
+    // service's own uploads/packages root (arbitrary-delete guard).
+    it("R9c: unlinks a local package file under uploads/packages", async () => {
+      const app = {
+        id: "1",
+        name: "app1",
+        packageUrl: "http://api.example.com/uploads/packages/my-app_123.zip",
+      };
+      appRepo.findOne.mockResolvedValue(app);
+      appRepo.remove.mockResolvedValue(undefined);
+      const unlink = jest
+        .spyOn(fs.promises, "unlink")
+        .mockResolvedValue(undefined);
+
+      await service.remove("1");
+
+      const calledPath = unlink.mock.calls[0][0] as string;
+      expect(path.normalize(calledPath)).toBe(
+        path.normalize(
+          path.join(process.cwd(), "uploads", "packages", "my-app_123.zip"),
+        ),
+      );
+      expect(appRepo.remove).toHaveBeenCalledWith(app);
+      unlink.mockRestore();
+    });
+
+    it("R9c: does not unlink for a remote package URL outside /uploads/packages", async () => {
+      const app = {
+        id: "1",
+        name: "app1",
+        packageUrl: "http://cdn.example.com/downloads/whatever.zip",
+      };
+      appRepo.findOne.mockResolvedValue(app);
+      appRepo.remove.mockResolvedValue(undefined);
+      const unlink = jest
+        .spyOn(fs.promises, "unlink")
+        .mockResolvedValue(undefined);
+
+      await service.remove("1");
+
+      expect(unlink).not.toHaveBeenCalled();
+      unlink.mockRestore();
+    });
+
+    it("R9c: refuses traversal attempts out of the upload root", async () => {
+      const app = {
+        id: "1",
+        name: "app1",
+        packageUrl:
+          "http://api.example.com/uploads/packages/..%2F..%2Fsecrets.txt",
+      };
+      appRepo.findOne.mockResolvedValue(app);
+      appRepo.remove.mockResolvedValue(undefined);
+      const unlink = jest
+        .spyOn(fs.promises, "unlink")
+        .mockResolvedValue(undefined);
+
+      await service.remove("1");
+
+      expect(unlink).not.toHaveBeenCalled();
+      expect(appRepo.remove).toHaveBeenCalledWith(app);
+      unlink.mockRestore();
+    });
+
+    it("R9c: a failed unlink does not block the DB deletion", async () => {
+      const app = {
+        id: "1",
+        name: "app1",
+        packageUrl: "http://api.example.com/uploads/packages/app.zip",
+      };
+      appRepo.findOne.mockResolvedValue(app);
+      appRepo.remove.mockResolvedValue(undefined);
+      const unlink = jest
+        .spyOn(fs.promises, "unlink")
+        .mockRejectedValue(new Error("EBUSY"));
+
+      await expect(service.remove("1")).resolves.toBeUndefined();
+      expect(appRepo.remove).toHaveBeenCalledWith(app);
+      unlink.mockRestore();
     });
   });
 

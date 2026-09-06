@@ -1057,7 +1057,9 @@ describe("SchedulerService", () => {
       execRepo.find
         .mockResolvedValueOnce([exec]) // RUNNING scan
         .mockResolvedValueOnce([]); // PENDING sweep
-      taskRepo.find.mockResolvedValue([makeTask({ id: "task-1", timeout: 300 })]);
+      taskRepo.find.mockResolvedValue([
+        makeTask({ id: "task-1", timeout: 300 }),
+      ]);
       taskRepo.findBy.mockResolvedValue([
         makeTask({ id: "task-1", timeout: 300 }),
       ]);
@@ -1249,8 +1251,7 @@ describe("SchedulerService", () => {
       expect(
         executorService.notifyExecutorKill.mock.invocationCallOrder[0],
       ).toBeLessThan(
-        executorService.scheduleRetryAfterRecovery.mock
-          .invocationCallOrder[0],
+        executorService.scheduleRetryAfterRecovery.mock.invocationCallOrder[0],
       );
     });
 

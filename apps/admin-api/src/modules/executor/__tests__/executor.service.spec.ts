@@ -876,7 +876,9 @@ describe("ExecutorService (__tests__)", () => {
         executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
         await service.heartbeat("127.0.0.1:3105", { maxConcurrentTasks: 1 });
         expect(executor.maxConcurrentTasks).toBe(1);
-        await service.heartbeat("127.0.0.1:3105", { maxConcurrentTasks: 10000 });
+        await service.heartbeat("127.0.0.1:3105", {
+          maxConcurrentTasks: 10000,
+        });
         expect(executor.maxConcurrentTasks).toBe(10000);
       });
 
@@ -1175,20 +1177,35 @@ describe("ExecutorService (__tests__)", () => {
 
     it("hasRetryBudget mirrors the attempts semantics", () => {
       expect(
-        service.hasRetryBudget(mkTask({ maxRetry: 3 }), mkFailedExec({ retryCount: 0 })),
+        service.hasRetryBudget(
+          mkTask({ maxRetry: 3 }),
+          mkFailedExec({ retryCount: 0 }),
+        ),
       ).toBe(true);
       expect(
-        service.hasRetryBudget(mkTask({ maxRetry: 3 }), mkFailedExec({ retryCount: 1 })),
+        service.hasRetryBudget(
+          mkTask({ maxRetry: 3 }),
+          mkFailedExec({ retryCount: 1 }),
+        ),
       ).toBe(true);
       // nextRetryCount(2+1) >= maxAttempts(3) → 预算耗尽
       expect(
-        service.hasRetryBudget(mkTask({ maxRetry: 3 }), mkFailedExec({ retryCount: 2 })),
+        service.hasRetryBudget(
+          mkTask({ maxRetry: 3 }),
+          mkFailedExec({ retryCount: 2 }),
+        ),
       ).toBe(false);
       expect(
-        service.hasRetryBudget(mkTask({ maxRetry: 1 }), mkFailedExec({ retryCount: 0 })),
+        service.hasRetryBudget(
+          mkTask({ maxRetry: 1 }),
+          mkFailedExec({ retryCount: 0 }),
+        ),
       ).toBe(false);
       expect(
-        service.hasRetryBudget(mkTask({ maxRetry: 0 }), mkFailedExec({ retryCount: 0 })),
+        service.hasRetryBudget(
+          mkTask({ maxRetry: 0 }),
+          mkFailedExec({ retryCount: 0 }),
+        ),
       ).toBe(false);
       expect(
         service.hasRetryBudget(
@@ -1804,9 +1821,12 @@ describe("ExecutorService (__tests__)", () => {
 
     beforeEach(() => {
       candidate = {
-        id: "lost-1", taskId: "task-1", executorAddress: "host:3002",
+        id: "lost-1",
+        taskId: "task-1",
+        executorAddress: "host:3002",
         status: ExecutionStatus.RUNNING,
-        startTime: new Date(Date.now() - 20 * 60_000), logs: "existing logs",
+        startTime: new Date(Date.now() - 20 * 60_000),
+        logs: "existing logs",
       };
       qb = execRepo.createQueryBuilder();
       qb.getMany.mockResolvedValue([candidate]);
@@ -1815,7 +1835,9 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.findBy.mockResolvedValue([
         { address: "host:3002", status: ExecutorStatus.OFFLINE },
       ]);
-      warn = jest.spyOn((service as any).logger, "warn").mockImplementation(() => {});
+      warn = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => {});
     });
 
     afterEach(() => warn.mockRestore());
@@ -1824,34 +1846,45 @@ describe("ExecutorService (__tests__)", () => {
       await service.detectLostExecutions();
       expect(qb.update).toHaveBeenCalledWith(TaskExecution);
       expect(qb.where).toHaveBeenCalledWith("id = :id AND status = :status", {
-        id: "lost-1", status: ExecutionStatus.RUNNING,
+        id: "lost-1",
+        status: ExecutionStatus.RUNNING,
       });
       expect(qb.set).toHaveBeenCalledWith({
         status: ExecutionStatus.FAILED,
         endTime: expect.any(Date),
-        errorMessage: "[System] Executor offline or task timed out, marked as failed by scheduler",
+        errorMessage:
+          "[System] Executor offline or task timed out, marked as failed by scheduler",
         logs: "existing logs\n[System] Execution timed out without callback, forcefully marked as FAILED",
       });
       expect(execRepo.save).not.toHaveBeenCalled();
       expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
       const release = executorRepo.createQueryBuilder.mock.results[0].value;
-      expect(release.where).toHaveBeenCalledWith("address = :address", { address: "host:3002" });
+      expect(release.where).toHaveBeenCalledWith("address = :address", {
+        address: "host:3002",
+      });
       expect(release.execute).toHaveBeenCalledTimes(1);
-      expect(warn).toHaveBeenCalledWith("Lost execution marked FAILED: execId=lost-1, taskId=task-1");
+      expect(warn).toHaveBeenCalledWith(
+        "Lost execution marked FAILED: execId=lost-1, taskId=task-1",
+      );
     });
 
-    it.each([0, undefined])("does not release or warn when affected=%s", async (affected) => {
-      qb.execute.mockResolvedValue({ affected });
-      const snapshot = { ...candidate };
-      await service.detectLostExecutions();
-      expect(candidate).toEqual(snapshot);
-      expect(execRepo.save).not.toHaveBeenCalled();
-      expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
-      expect(warn).not.toHaveBeenCalled();
-    });
+    it.each([0, undefined])(
+      "does not release or warn when affected=%s",
+      async (affected) => {
+        qb.execute.mockResolvedValue({ affected });
+        const snapshot = { ...candidate };
+        await service.detectLostExecutions();
+        expect(candidate).toEqual(snapshot);
+        expect(execRepo.save).not.toHaveBeenCalled();
+        expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+      },
+    );
 
     it("releases once across two scans of the same stale candidate", async () => {
-      qb.execute.mockResolvedValueOnce({ affected: 1 }).mockResolvedValueOnce({ affected: 0 });
+      qb.execute
+        .mockResolvedValueOnce({ affected: 1 })
+        .mockResolvedValueOnce({ affected: 0 });
       await service.detectLostExecutions();
       await service.detectLostExecutions();
       expect(qb.execute).toHaveBeenCalledTimes(2);
@@ -1859,17 +1892,22 @@ describe("ExecutorService (__tests__)", () => {
       expect(warn).toHaveBeenCalledTimes(1);
     });
 
-    it.each(["online", "within timeout"])("skips candidates %s", async (reason) => {
-      if (reason === "online") {
-        executorRepo.findBy.mockResolvedValue([{ address: "host:3002", status: ExecutorStatus.ONLINE }]);
-      } else {
-        candidate.startTime = new Date(Date.now() - 6 * 60_000);
-      }
-      await service.detectLostExecutions();
-      expect(qb.update).not.toHaveBeenCalled();
-      expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
-      expect(warn).not.toHaveBeenCalled();
-    });
+    it.each(["online", "within timeout"])(
+      "skips candidates %s",
+      async (reason) => {
+        if (reason === "online") {
+          executorRepo.findBy.mockResolvedValue([
+            { address: "host:3002", status: ExecutorStatus.ONLINE },
+          ]);
+        } else {
+          candidate.startTime = new Date(Date.now() - 6 * 60_000);
+        }
+        await service.detectLostExecutions();
+        expect(qb.update).not.toHaveBeenCalled();
+        expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe("cleanupOldRecords", () => {
@@ -1930,7 +1968,8 @@ describe("ExecutorService (__tests__)", () => {
       configService.get.mockImplementation((key) =>
         key === "ADMIN_API_URL" ? "https://admin.example.com" : "old-env-token",
       );
-      const lookup = jest.spyOn((service as any).systemConfigService, "findOne")
+      const lookup = jest
+        .spyOn((service as any).systemConfigService, "findOne")
         .mockResolvedValue({ value: "rotated-db-token" });
       const result = await service.getInstallCmd();
       expect(lookup).toHaveBeenCalledWith("executor.sharedToken");

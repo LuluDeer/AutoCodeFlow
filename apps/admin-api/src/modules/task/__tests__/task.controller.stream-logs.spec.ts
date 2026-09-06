@@ -10,7 +10,9 @@ import { SKIP_TIMEOUT_KEY } from "../../../common/decorators/skip-timeout.decora
 describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
   const makeDeps = () => {
     const taskService = {
-      getExecution: jest.fn().mockResolvedValue({ id: "exec-1", taskId: "task-1" }),
+      getExecution: jest
+        .fn()
+        .mockResolvedValue({ id: "exec-1", taskId: "task-1" }),
       acquireSseSlot: jest.fn().mockReturnValue(jest.fn()),
       streamExecutionLogs: jest.fn().mockResolvedValue(undefined),
     };
@@ -48,9 +50,9 @@ describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
       throw new ServiceUnavailableException("Too many concurrent log streams");
     });
 
-    await expect(controller.streamLogs("task-1", "exec-1", req, res)).rejects.toThrow(
-      ServiceUnavailableException,
-    );
+    await expect(
+      controller.streamLogs("task-1", "exec-1", req, res),
+    ).rejects.toThrow(ServiceUnavailableException);
     // 响应头未写出 → 全局异常过滤器可以正常返回 503 JSON
     expect(res.setHeader).not.toHaveBeenCalled();
     expect(res.flushHeaders).not.toHaveBeenCalled();

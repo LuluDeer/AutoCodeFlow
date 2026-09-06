@@ -378,8 +378,8 @@ describe("TaskProcessor", () => {
     // Repair wrote via a conditional UPDATE (status guard), not findOne→save.
     expect(repairRunner.manager.findOne).not.toHaveBeenCalled();
     expect(repairRunner.manager.save).not.toHaveBeenCalled();
-    const repairQB = (repairRunner.manager.createQueryBuilder as jest.Mock)
-      .mock.results[0].value;
+    const repairQB = (repairRunner.manager.createQueryBuilder as jest.Mock).mock
+      .results[0].value;
     expect(repairQB.update).toHaveBeenCalled();
     const andWhereCalls = (repairQB.andWhere as jest.Mock).mock.calls.map(
       (c: any) => String(c[0]),
@@ -419,8 +419,7 @@ describe("TaskProcessor", () => {
     const claimable = (claimQb.andWhere as jest.Mock).mock.calls
       .map((c: any) => c)
       .find((c: any) => String(c[0]).includes("status IN"))?.[1]?.claimable as
-      | string[]
-      | undefined;
+      string[] | undefined;
     expect(claimable).toBeDefined();
     expect(claimable).toContain(ExecutionStatus.PENDING);
     expect(claimable).toContain(ExecutionStatus.FAILED);
@@ -457,8 +456,8 @@ describe("TaskProcessor worker metadata (PERF-P3a)", () => {
   });
 
   it("runs the worker with concurrency 5", () => {
-    expect(Reflect.getMetadata("bullmq:worker_metadata", TaskProcessor)).toEqual(
-      { concurrency: 5 },
-    );
+    expect(
+      Reflect.getMetadata("bullmq:worker_metadata", TaskProcessor),
+    ).toEqual({ concurrency: 5 });
   });
 });
