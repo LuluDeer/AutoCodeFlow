@@ -43,10 +43,7 @@ import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { AiService } from "../ai/ai.service";
 import { ExecutorService } from "../executor/executor.service";
-import {
-  NotificationService,
-  AlertLevel,
-} from "../notification/notification.service";
+import { NotificationService } from "../notification/notification.service";
 import { AuditService } from "../audit/audit.service";
 import { S3LogStorage } from "./log-storage/s3-log-storage";
 // 可观测性补齐轮：运行时计数器埋点入口（模块级纯内存自增，无模块环，

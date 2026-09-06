@@ -470,16 +470,18 @@ describe('POST /api/executions/:executionId/kill', () => {
     await flushAsync(); // runProcess 注册 runningTaskProcesses[exec-kill-run]
 
     const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
-    let killRes: any;
     try {
-      killRes = await request(appNoAuth).post('/api/executions/exec-kill-run/kill');
+      const killRes: any = await request(appNoAuth).post('/api/executions/exec-kill-run/kill');
+      expect(killRes.status).toBe(200);
+      expect(killRes.body.ok).toBe(true);
+      if (process.platform !== 'win32') {
+        // killProcessTree 走进程组。断言必须在 mockRestore 之前——
+        // mockRestore 会清空 mock.calls，restore 后断言恒为 0 次调用
+        //（此前的写法在 POSIX 上必挂、win32 因断言被跳过而漏检）。
+        expect(killSpy).toHaveBeenCalledWith(-7001, 'SIGKILL');
+      }
     } finally {
       killSpy.mockRestore();
-    }
-    expect(killRes.status).toBe(200);
-    expect(killRes.body.ok).toBe(true);
-    if (process.platform !== 'win32') {
-      expect(killSpy).toHaveBeenCalledWith(-7001, 'SIGKILL'); // killProcessTree 走进程组
     }
 
     // 进程树被杀 → close(null) → runTask 失败路径（标记 killed）；容量释放走
