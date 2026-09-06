@@ -32,6 +32,7 @@ const FAILURE_REASON_MAP: Record<string, { color: string; label: string; hint: s
   timeout: { color: 'orange', label: '执行超时', hint: '检查任务耗时并调整超时配置。' },
   executor_offline: { color: 'volcano', label: '执行器离线', hint: '检查执行器在线状态、地址和网络。' },
   executor_restart: { color: 'volcano', label: '执行器重启', hint: '执行器重启导致运行中任务中断，检查执行器重启原因并按需重试。' },
+  stale_recovered: { color: 'volcano', label: '失联回收', hint: '执行长时间无回调被中台回收；若任务仍有重试预算，中台已自动创建新执行（见同任务的后续执行）。' },
   killed: { color: 'default', label: '手动终止', hint: '执行被管理员手动终止。' },
   unknown: { color: 'default', label: '未知原因', hint: '查看错误信息和执行日志定位根因。' },
 };
@@ -42,6 +43,18 @@ const FAILURE_REASON_MAP: Record<string, { color: string; label: string; hint: s
 function getSseBase(): string {
   return getApiBaseUrl();
 }
+
+/**
+ * U2: 与 admin-api task.service.ts 的 LOG_TRUNCATION_MARKER 对齐——执行器回调
+ * 载荷超限时插入的截断标记（后端不返回 truncated 标志，只嵌在日志文本里）：
+ * Node:   "... [logs truncated, original length N chars] ..."
+ * Python: "...[truncated, total N chars]..."
+ */
+const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
+// 后端 getExecutionLogs 单页上限（task.controller.ts limit 封顶 2000）
+const LOG_PAGE_LIMIT = 2000;
+// 兜底页数上限，与后端 backfill MAX_PAGES 对齐，防 hasMore 异常导致死循环
+const LOG_MAX_PAGES = 200;
 
 export default function ExecutionDetailPage() {
   const { taskId, execId } = useParams<{ taskId: string; execId: string }>();
@@ -54,6 +67,9 @@ export default function ExecutionDetailPage() {
   const [streaming, setStreaming] = useState(false);
   const [streamDisconnected, setStreamDisconnected] = useState(false);
   const [reconnectKey, setReconnectKey] = useState(0);
+  // U2: 截断日志兜底——"加载完整日志"成功后覆盖显示（null=未加载）
+  const [fullLogs, setFullLogs] = useState<string | null>(null);
+  const [loadingFullLogs, setLoadingFullLogs] = useState(false);
   const token = useAuthStore((s) => s.token);
 
   const { data, refresh, loading, error } = useRequest(
@@ -111,6 +127,44 @@ export default function ExecutionDetailPage() {
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [data?.logs, streamLines]);
+
+  // U2: 切换执行记录时丢弃上一条已加载的完整日志
+  useEffect(() => {
+    setFullLogs(null);
+  }, [execId]);
+
+  // U2: 当前展示的日志：完整日志 > SSE 流 > 实体回调日志
+  const rawLogs = streamLines ? streamLines.join('\n') : (data?.logs ?? '');
+  const displayLogs = fullLogs ?? rawLogs;
+  const logsTruncated = fullLogs === null && LOG_TRUNCATION_MARKER.test(rawLogs);
+
+  // U2: 回调日志被执行器截断时，从全量日志端点按行分页拉全（后端 limit 上限
+  // 2000/页，hasMore 驱动翻页）。成功替换显示与复制/下载内容；失败 toast 保留现状。
+  const handleLoadFullLogs = async () => {
+    if (!taskId || !execId) return;
+    setLoadingFullLogs(true);
+    try {
+      const all: string[] = [];
+      let fromLine = 0;
+      for (let page = 0; page < LOG_MAX_PAGES; page++) {
+        const resp = await tasksApi.executionLogs(taskId, execId, { fromLine, limit: LOG_PAGE_LIMIT });
+        const lines = Array.isArray(resp?.lines) ? resp.lines : [];
+        if (lines.length === 0) break;
+        all.push(...lines);
+        fromLine += lines.length;
+        if (!resp?.hasMore) break;
+      }
+      if (all.length === 0) {
+        throw new Error('全量日志端点未返回日志行');
+      }
+      setFullLogs(all.join('\n'));
+      message.success('已加载完整日志');
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '加载完整日志失败'));
+    } finally {
+      setLoadingFullLogs(false);
+    }
+  };
 
   const handleKill = async () => {
     setKilling(true);
@@ -335,8 +389,7 @@ export default function ExecutionDetailPage() {
                 size="small"
                 icon={<CopyOutlined />}
                 onClick={() => {
-                  const txt = streamLines ? streamLines.join('\n') : (data?.logs ?? '');
-                  navigator.clipboard.writeText(txt);
+                  navigator.clipboard.writeText(displayLogs);
                   message.success('已复制');
                 }}
               >
@@ -346,8 +399,7 @@ export default function ExecutionDetailPage() {
                 size="small"
                 icon={<DownloadOutlined />}
                 onClick={() => {
-                  const txt = streamLines ? streamLines.join('\n') : (data?.logs ?? '');
-                  const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+                  const blob = new Blob([displayLogs], { type: 'text/plain;charset=utf-8' });
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement('a');
                   a.href = url;
@@ -361,6 +413,25 @@ export default function ExecutionDetailPage() {
             </Space>
           }
         >
+          {logsTruncated && (
+            <Alert
+              type="warning"
+              showIcon
+              title="日志已截断：回调载荷超过执行器上报上限，当前仅保留了截断片段"
+              description="可从执行器侧持久化的全量日志分页加载完整内容；若仍失败请检查执行器可达性与本地日志文件。"
+              style={{ marginBottom: 12 }}
+              action={
+                <Button
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  loading={loadingFullLogs}
+                  onClick={handleLoadFullLogs}
+                >
+                  加载完整日志
+                </Button>
+              }
+            />
+          )}
           <pre
             ref={logRef}
             style={{
@@ -378,7 +449,7 @@ export default function ExecutionDetailPage() {
               wordBreak: 'break-word',
             }}
           >
-            {streamLines ? streamLines.join('\n') : data?.logs}
+            {displayLogs}
           </pre>
         </Card>
       )}

@@ -121,11 +121,20 @@ export default function ExecutorListPage() {
       dataIndex: 'status',
       key: 'status',
       width: 90,
-      render: (v: string) => (
-        <Badge
-          status={v === 'online' ? 'success' : v === 'busy' ? 'warning' : 'default'}
-          text={v === 'online' ? '在线' : v === 'busy' ? '忙碌' : '离线'}
-        />
+      render: (v: string, r: Executor) => (
+        <Space orientation="vertical" size={0}>
+          <Badge
+            status={v === 'online' ? 'success' : v === 'busy' ? 'warning' : 'default'}
+            text={v === 'online' ? '在线' : v === 'busy' ? '忙碌' : '离线'}
+          />
+          {/* U16: 死信积压仅 >0 时高亮（null=旧版未上报、0=无积压均不打扰，
+              三态细分见详情页活性上报区） */}
+          {r.deadLetterCount != null && r.deadLetterCount > 0 && (
+            <Tooltip title="回调持续失败已落盘执行器本地 dead-letter，需人工排查">
+              <Tag color="orange" style={{ marginInlineEnd: 0 }}>死信 {r.deadLetterCount}</Tag>
+            </Tooltip>
+          )}
+        </Space>
       ),
     },
     {

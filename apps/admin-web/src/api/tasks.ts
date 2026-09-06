@@ -94,6 +94,16 @@ export interface PageResult<T> {
   pageSize: number;
 }
 
+/**
+ * U2: GET /tasks/:id/executions/:execId/logs 响应形状
+ * （task.service.ts getExecutionLogs：按行分页，limit 后端上限 2000）。
+ */
+export interface ExecutionLogsPage {
+  lines: string[];
+  totalLines: number;
+  hasMore: boolean;
+}
+
 export const tasksApi = {
   list: (params?: { page?: number; pageSize?: number; name?: string; status?: string; triggerType?: string; runtime?: string; applicationId?: string }) =>
     client.get('/tasks', { params }) as Promise<PageResult<Task>>,
@@ -137,6 +147,9 @@ export const tasksApi = {
     client.post(`/tasks/${taskId}/executions/${execId}/kill`) as Promise<{ success: boolean; message: string }>,
   analyzeExecution: (taskId: string, execId: string) =>
     client.post(`/tasks/${taskId}/executions/${execId}/analyze`) as Promise<{ aiAnalysis: string }>,
+  /** U2: 分页拉取持久化日志行（截断兜底"加载完整日志"用），limit 后端上限 2000 */
+  executionLogs: (taskId: string, execId: string, params?: { fromLine?: number; limit?: number }) =>
+    client.get(`/tasks/${taskId}/executions/${execId}/logs`, { params }) as Promise<ExecutionLogsPage>,
   schedulerStats: () =>
     client.get('/tasks/scheduler/stats') as Promise<{ healthy: boolean; activeTimers: number; activeCronTasks: number; runningTaskCount: number; totalScheduledTasks: number; uptime: number }>,
 };

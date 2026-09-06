@@ -25,6 +25,12 @@ export interface Executor {
    * stale 扫描据此跳过"回调只是迟到"的正常执行，详情页据此做活性交叉核对。
    */
   runningExecutionIds?: string[] | null;
+  /**
+   * U16: executor-node/python 心跳上报的回调死信（dead-letter）积压数。
+   * null = 旧版执行器未上报该字段（区别于 0：已上报且无积压）。
+   * >0 表示回调持续失败、载荷已落盘执行器本地 dead-letter，需人工排查。
+   */
+  deadLetterCount?: number | null;
 }
 
 export interface ExecutorMetrics {
@@ -33,8 +39,10 @@ export interface ExecutorMetrics {
     totalExecutions: number;
     successful: number;
     failed: number;
-    successRate: string;
-    averageDurationMs: string;
+    // U13: 后端 executor.service.ts getExecutorMetrics 返回 number（非字符串），
+    // 声明对齐，调用点无需 `+` 强转。
+    successRate: number;
+    averageDurationMs: number;
   };
   current: {
     runningTaskCount: number;
