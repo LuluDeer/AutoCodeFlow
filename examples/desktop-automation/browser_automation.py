@@ -10,17 +10,45 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import os
+import json
 from pathlib import Path
 from autoflow_sdk import TaskContext
+
+
+def get_typed_param(ctx, key, default=None):
+    """
+    JSON 容错解析任务参数。
+
+    执行器把所有触发参数字符串化注入（AUTOFLOW_* 环境变量），python SDK
+    from_env 不做类型还原——列表/数字/布尔参数拿到的都是字符串。尝试
+    json.loads 还原，失败则原样返回字符串（对齐 Node 示例 getParam 的兜底）。
+    """
+    raw = ctx.get_param(key)
+    if raw is None:
+        return default
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+
+
+def is_truthy_param(value) -> bool:
+    """布尔参数显式判定：字符串 "true"/"1" 为真，"false"/"0" 为假。
+    避免 if value: 对非空字符串（如 "false"）恒真的真值反转。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return bool(value)
 
 
 def main():
     ctx = TaskContext.from_env()
     
-    # 获取任务参数
-    url = ctx.get_param("url", "https://www.baidu.com")
-    search_keyword = ctx.get_param("keyword", "AutoCodeFlow")
-    headless = ctx.get_param("headless", False)
+    # 获取任务参数（JSON 容错解析 + 布尔显式比较，见 helper 注释）
+    url = get_typed_param(ctx, "url", "https://www.baidu.com")
+    search_keyword = get_typed_param(ctx, "keyword", "AutoCodeFlow")
+    headless = is_truthy_param(get_typed_param(ctx, "headless", False))
     
     ctx.log.info(f"开始浏览器自动化任务")
     ctx.log.info(f"目标URL: {url}")
