@@ -1,15 +1,18 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from "@nestjs/common";
 import { WecomChannel } from "./channels/wecom.channel";
 import { DingtalkChannel } from "./channels/dingtalk.channel";
 import { EmailChannel } from "./channels/email.channel";
 import { SlackChannel } from "./channels/slack.channel";
 import { WebhookChannel } from "./channels/webhook.channel";
+import { NotificationSilenceService } from "./notification-silence.service";
 import {
   ChannelDeliveryStatus,
   NotificationPayload,
@@ -40,11 +43,17 @@ export enum AlertChannel {
 
 export interface AlertSilence {
   id?: string;
+  /** FEAT-01：静默范围（默认 global，兼容存量内存态） */
+  scope?: "global" | "task" | "application";
+  /** FEAT-01：仅静默该渠道（空=全渠道） */
+  channelType?: string;
+  applicationId?: string;
   taskId?: string;
   level?: AlertLevel;
   durationMinutes: number;
   startTime?: Date;
   endTime?: Date;
+  reason?: string;
   createdAt?: Date;
 }
 
@@ -73,6 +82,11 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     private email: EmailChannel,
     private slack: SlackChannel,
     private webhook: WebhookChannel,
+    // FEAT-01: 静默规则持久化写穿层——@Optional 保证存量测试模块与
+    // DB 不可用场景都降级回 NOTIF-003 的纯内存语义
+    @Optional()
+    @Inject(NotificationSilenceService)
+    private silenceStore?: NotificationSilenceService,
   ) {}
 
   /**
@@ -114,6 +128,41 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       }
     }, SILENCE_CLEANUP_INTERVAL_MS);
     this.silenceCleanupTimer.unref();
+    // FEAT-01: 重启后从 DB 回灌生效中的静默（失败降级内存态）
+    void this.restoreSilencesFromStore();
+  }
+
+  /** FEAT-01: 把 DB 中生效中的静默回灌进内存 Map（重启存活的关键） */
+  private async restoreSilencesFromStore(): Promise<void> {
+    if (!this.silenceStore) return;
+    try {
+      const rows = await this.silenceStore.listActive();
+      let restored = 0;
+      for (const row of rows) {
+        if (this.silences.has(row.id)) continue;
+        this.silences.set(row.id, {
+          id: row.id,
+          scope: row.scope,
+          channelType: row.channelType ?? undefined,
+          applicationId: row.applicationId ?? undefined,
+          taskId: row.taskId ?? undefined,
+          level: (row.level as AlertLevel | null) ?? undefined,
+          reason: row.reason ?? undefined,
+          startTime: row.startTime ?? undefined,
+          endTime: row.endTime ?? undefined,
+          durationMinutes: row.durationMinutes ?? undefined,
+          createdAt: row.createdAt,
+        });
+        restored++;
+      }
+      if (restored > 0) {
+        this.logger.log(`[silences] restored ${restored} persisted silence(s) from DB`);
+      }
+    } catch (e) {
+      this.logger.warn(
+        `[silences] DB restore failed (memory-only mode): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   onModuleDestroy() {
@@ -283,10 +332,41 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.silences.set(id, newSilence);
+    // FEAT-01: 写穿持久化（异步、失败仅告警——内存态语义不受影响）
+    if (this.silenceStore) {
+      void this.silenceStore
+        .create({
+          scope: newSilence.scope ?? (newSilence.taskId ? "task" : "global"),
+          channelType: newSilence.channelType ?? null,
+          taskId: newSilence.taskId ?? null,
+          applicationId: newSilence.applicationId ?? null,
+          level: newSilence.level ?? null,
+          reason: newSilence.reason ?? null,
+          durationMinutes: newSilence.durationMinutes ?? null,
+          startTime: newSilence.startTime ?? null,
+          endTime: newSilence.endTime ?? null,
+        })
+        .then((row) => {
+          newSilence.id = row.id;
+        })
+        .catch((e) => {
+          this.logger.warn(
+            `[silences] DB persist failed (memory-only): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        });
+    }
     return id;
   }
 
   removeSilence(id: string): boolean {
+    // FEAT-01: 内存 + DB 双删（DB 删除失败不阻断内存语义）
+    if (this.silenceStore) {
+      void this.silenceStore.remove(id).catch((e) => {
+        this.logger.warn(
+          `[silences] DB remove failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+    }
     return this.silences.delete(id);
   }
 
@@ -297,6 +377,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
   cleanExpiredSilences(): number {
     const now = new Date();
     let removedCount = 0;
+    // FEAT-01: DB 侧过期行同步清扫（fire-and-forget，失败仅告警）
+    if (this.silenceStore) {
+      void this.silenceStore.cleanExpired(now).catch((e) => {
+        this.logger.warn(
+          `[silences] DB cleanup failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+    }
 
     for (const [id, silence] of this.silences) {
       if (silence.endTime && silence.endTime < now) {

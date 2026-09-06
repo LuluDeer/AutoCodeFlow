@@ -36,7 +36,7 @@
 | BUG-18 | P2 | unclaimed | | | e2e + registry 双仓 | | 私服 npm/PyPI 端到端集成验证 |
 | BUG-19 | P2 | unclaimed | | | scripts/load-test | | 大规模并发压测 + 容量白皮书 |
 | BUG-20 | P3 | unclaimed | | | Dockerfile/CI | | ARM64 multi-arch |
-| FEAT-01 | P1 | unclaimed | | | admin-api notification + admin-web settings | ⚠️ | 通知静默持久化；**避开 NotificationSettingsPage（并行会话在途）** |
+| FEAT-01 | P1 | in_progress | main-A（API 半场 done）+ unclaimed（UI 半场） | 2026-09-07 | admin-api notification 模块（entity/migration/service/controller） | 见批八 commit | API 半场 done：notification_silences 表+迁移+CRUD(ADMIN)+写穿/回灌/降级；**UI 半场（admin-web 静默管理 Tab）unclaimed** |
 | FEAT-02 | P1 | done | main-A | 2026-09-07 | admin-web dag-layout.ts + TaskDependencyGraph.tsx + TaskDetailPage | 见批四 commit | 依赖 DAG 可视化：纯函数布局（10 测试）+ 零新依赖组件 + 详情页新 Tab |
 | FEAT-03 | P1 | done | main-A | 2026-09-07 | admin-web ExecutionsPage + ExecutionCompare | 0409000 | 孤儿组件复核=**零引用**；拆 ExecutionCompareModal + 列表多选一键对比（93/93 ✓） |
 | FEAT-04 | P2 | in_progress | session-B（员工 005 承接） | 2026-09-07 02:4x | admin-api executor metrics history 端点 + admin-web ExecutorDetailPage 图表 | | 24h CPU/内存/并发折线（消费 executor_metrics_history，轻量方案） |
