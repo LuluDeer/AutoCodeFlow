@@ -9,6 +9,7 @@ import signal
 import httpx
 
 from routers import execute, health, logs, config as config_router
+import maintenance
 from admin_api import build_admin_api_url, check_admin_api_connectivity, get_admin_api_base_url
 from config import settings
 from scheduler import heartbeat_task, get_running_count, executor_started_at, executor_startup_id
@@ -78,6 +79,13 @@ async def lifespan(app: FastAPI):
     await register_executor()
     # Start heartbeat background task
     _heartbeat_task = asyncio.create_task(heartbeat_task())
+    # E2: background replay of persisted callbacks (node startCallbackThread).
+    # The retry task's sweep keeps the deadLetterCount heartbeat field fresh.
+    execute.start_callback_retry_task()
+    # E8: disk TTL reclamation (node startWorkDirCleanup). The live-execution
+    # snapshot provider is registered first so sweeps can protect active dirs.
+    maintenance.register_live_entries_provider(execute.list_live_execution_entries)
+    maintenance.start_disk_cleanup_task()
     logger.info(f'Executor started: {settings.app_name} @ {settings.executor_address}')
     yield
     # Graceful shutdown: wait for running tasks to complete
@@ -97,6 +105,15 @@ async def lifespan(app: FastAPI):
             )
     except Exception as e:
         logger.warning(f'Shutdown task tree-kill failed: {e}')
+    # E2 (node stopCallbackThread parity): bounded drain of the callback
+    # re-send loop — in-flight replay gets a limited wait, undelivered files
+    # simply stay on disk for the next process's replay.
+    try:
+        await execute.stop_callback_retry_task()
+    except Exception as e:
+        logger.warning(f'Shutdown callback drain failed: {e}')
+    # E8: stop the disk sweep before exiting.
+    maintenance.stop_disk_cleanup_task()
     await notify_offline()
     logger.info('Executor shutdown complete')
 

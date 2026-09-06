@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     # R4-C P2: when true, an executor without a configured token refuses
     # /api/* requests (503) instead of the dev-mode allow-all behavior.
     require_token: bool = False
+    # E8: disk TTL reclamation (node file-logger.ts parity — there TTL days
+    # = max(1, LOG_RETENTION_DAYS || 7) and the sweep runs every 6h; python
+    # adds a deferred first sweep so a fresh boot doesn't scan+delete while
+    # executions from the previous process may still be recovering).
+    disk_cleanup_ttl_days: int = 7
+    disk_cleanup_interval_seconds: int = 6 * 60 * 60
+    disk_cleanup_initial_delay_seconds: int = 600
 
 
 settings = Settings()
