@@ -114,7 +114,8 @@ docker-compose ps
 
 # 检查健康状态
 echo -e "${YELLOW}检查健康状态...${NC}"
-if curl -s http://localhost:3105/health | grep -q "healthy"; then
+# S2: admin-api 全局前缀 api，健康端点为 /api/health/live（/health 是 404）
+if curl -s http://localhost:3105/api/health/live | grep -q "OK"; then
     echo -e "${GREEN}✅ 所有服务启动成功！${NC}"
     echo -e "${GREEN}管理后台: http://localhost${NC}"
     echo -e "${GREEN}API 文档: http://localhost:3105/api/docs${NC}"
