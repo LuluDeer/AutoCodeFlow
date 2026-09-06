@@ -1,5 +1,5 @@
 import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, Breadcrumb, message, Alert, Popconfirm } from 'antd';
-import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { useRequest } from 'ahooks';
 import { useParams, useNavigate, Link } from 'react-router-dom';
@@ -261,6 +261,13 @@ export default function ExecutionDetailPage() {
           <Descriptions.Item label="耗时">
             {data?.duration != null ? formatDuration(data.duration) : '-'}
           </Descriptions.Item>
+          <Descriptions.Item label="退出码">
+            {data?.exitCode != null ? (
+              <Text type={data.exitCode !== 0 ? 'danger' : undefined} code>
+                {data.exitCode}
+              </Text>
+            ) : '-'}
+          </Descriptions.Item>
           {failureReason && (
             <Descriptions.Item label="失败分类" span={3}>
               <Space>
@@ -312,6 +319,22 @@ export default function ExecutionDetailPage() {
                 }}
               >
                 复制
+              </Button>
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                onClick={() => {
+                  const txt = streamLines ? streamLines.join('\n') : (data?.logs ?? '');
+                  const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `exec-${execId}-${new Date().toISOString().slice(0, 10)}.log`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                下载
               </Button>
             </Space>
           }
