@@ -13,6 +13,7 @@ import { useNavigate } from 'react-router-dom';
 import { tasksApi, Task } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
+import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 
 const { Text } = Typography;
@@ -160,6 +161,23 @@ export default function TaskListPage() {
       render: (s: string) => {
         const cfg = STATUS_CONFIG[s] || { badge: 'default', label: s, color: 'default' };
         return <Badge status={cfg.badge} text={cfg.label} />;
+      },
+    },
+    {
+      title: '触发方式',
+      dataIndex: 'triggerType',
+      width: 100,
+      render: (v: string) => (
+        <Tag color={TRIGGER_COLOR[v] || 'default'}>{TRIGGER_LABEL[v] || v}</Tag>
+      ),
+    },
+    {
+      title: '优先级',
+      key: 'priority',
+      width: 80,
+      render: (_: unknown, r: Task) => {
+        const t = priorityTag(r.priority);
+        return <Tag color={t.color}>{t.label}</Tag>;
       },
     },
     {

@@ -18,6 +18,8 @@ export interface Task {
   cronExpression?: string;
   timezone?: string | null;
   params?: Record<string, string | number | boolean>;
+  /** CORE-01：DTO 收数字 1-4，PG enum 读回 label 字符串——双形态，见 utils/priority */
+  priority?: string | number;
   maxRetry: number;
   retryDelay?: number;
   timeout: number;
