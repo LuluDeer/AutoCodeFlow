@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Spin, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert } from 'antd';
-import { WarningOutlined, CopyOutlined } from '@ant-design/icons';
+import { WarningOutlined, CopyOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { executorsApi } from '../api/executors';
 import { useState } from 'react';
@@ -96,6 +96,11 @@ export default function ExecutorDetailPage() {
   const maxConcurrent = executor.maxConcurrentTasks ?? 0;
   const runningCount = executor.runningTaskCount ?? 0;
   const runningPercent = maxConcurrent > 0 ? Math.min(100, Math.round((runningCount / maxConcurrent) * 100)) : 0;
+
+  // CONSISTENCY-02: 执行器心跳上报的运行中 executionId（null = 旧版未上报）。
+  // 与 runningTaskCount 交叉核对：长期不一致提示执行器计数或回调链路异常。
+  const reportedIds = executor.runningExecutionIds;
+  const reportedCount = reportedIds?.length;
 
   const heartbeatStale = executor.lastHeartbeat ? isHeartbeatStale(executor.lastHeartbeat) : false;
   const heartbeatText = executor.lastHeartbeat ? relativeTime(executor.lastHeartbeat) : '-';
@@ -200,6 +205,25 @@ export default function ExecutorDetailPage() {
             </Tooltip>
           </Descriptions.Item>
           <Descriptions.Item label="描述" span={2}>{executor.description || '-'}</Descriptions.Item>
+          <Descriptions.Item label="运行中执行（活性上报）">
+            {reportedIds === undefined || reportedIds === null ? (
+              <Tooltip title="该执行器版本未上报运行中执行列表，stale 扫描对其不启用活性跳过">
+                <Text type="secondary">未上报 <InfoCircleOutlined /></Text>
+              </Tooltip>
+            ) : reportedCount === 0 ? (
+              <Text type="secondary">0（空闲）</Text>
+            ) : (
+              <Tooltip title={
+                <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+                  {reportedIds.map((eid) => (
+                    <div key={eid} style={{ fontFamily: 'monospace', fontSize: 12 }}>{eid}</div>
+                  ))}
+                </div>
+              }>
+                <Text>{reportedCount} 条 <InfoCircleOutlined /></Text>
+              </Tooltip>
+            )}
+          </Descriptions.Item>
         </Descriptions>
       </Card>
 
@@ -253,6 +277,11 @@ export default function ExecutorDetailPage() {
             <Statistic title="当前运行任务" value={runningCount} suffix={`/ ${executor.maxConcurrentTasks ?? '∞'}`} />
             {maxConcurrent > 0 && (
               <Progress percent={runningPercent} showInfo={false} strokeColor={usageColor(runningPercent, 70, 90)} style={{ marginTop: 8 }} />
+            )}
+            {reportedCount != null && reportedCount !== runningCount && (
+              <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+                活性上报 {reportedCount} 条，与运行计数 {runningCount} 不一致
+              </Text>
             )}
           </Card>
         </Col>
