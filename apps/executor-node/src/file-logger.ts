@@ -277,12 +277,16 @@ const MAX_PKG_UPDATES = 3;
 const MAX_DEAD_LETTER_FILES = 50;
 
 /** Current dead-letter backlog size (file count). Reported via heartbeat so
- *  long disconnections (callbacks parked on disk) stay visible to ops. */
+ *  long disconnections (callbacks parked on disk) stay visible to ops. Only
+ *  regular files are counted — the cleanup sweep below only ever removes
+ *  files, so a stray subdirectory must not inflate the reported backlog. */
 export function getDeadLetterCount(): number {
   try {
-    return fs.readdirSync(
-      path.join(config.workDir, 'callbacks', 'dead-letter'),
-    ).length;
+    return fs
+      .readdirSync(path.join(config.workDir, 'callbacks', 'dead-letter'), {
+        withFileTypes: true,
+      })
+      .filter((d) => d.isFile()).length;
   } catch {
     return 0;
   }

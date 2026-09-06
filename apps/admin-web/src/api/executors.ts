@@ -19,6 +19,12 @@ export interface Executor {
   tags?: string[] | null;
   description?: string | null;
   maxConcurrentTasks?: number | null;
+  /**
+   * CONSISTENCY-02: executor-node 心跳上报的运行中 executionId 列表（≤200）。
+   * null = 旧版执行器未上报该字段（区别于 []：已上报且当前空闲）。
+   * stale 扫描据此跳过"回调只是迟到"的正常执行，详情页据此做活性交叉核对。
+   */
+  runningExecutionIds?: string[] | null;
 }
 
 export interface ExecutorMetrics {

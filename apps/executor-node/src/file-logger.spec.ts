@@ -204,3 +204,40 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     fl.stopWorkDirCleanup();
   });
 });
+
+describe('getDeadLetterCount (heartbeat backlog gauge)', () => {
+  let dir: string;
+  let fl: FileLoggerModule;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-dl-'));
+    fl = loadModule(dir);
+  });
+
+  afterEach(() => {
+    fl.stopLogCleanup();
+    fl.stopWorkDirCleanup();
+    fl.stopLogWriter();
+  });
+
+  it('returns 0 when the dead-letter directory does not exist', () => {
+    expect(fl.getDeadLetterCount()).toBe(0);
+  });
+
+  it('counts only regular files, ignoring subdirectories', () => {
+    const deadDir = path.join(dir, 'callbacks', 'dead-letter');
+    fs.mkdirSync(deadDir, { recursive: true });
+    fs.writeFileSync(path.join(deadDir, 'a.json'), '[]');
+    fs.writeFileSync(path.join(deadDir, 'b.json'), '[]');
+    fs.mkdirSync(path.join(deadDir, 'stray-subdir'));
+
+    expect(fl.getDeadLetterCount()).toBe(2);
+  });
+
+  it('returns 0 for an empty directory', () => {
+    fs.mkdirSync(path.join(dir, 'callbacks', 'dead-letter'), {
+      recursive: true,
+    });
+    expect(fl.getDeadLetterCount()).toBe(0);
+  });
+});
