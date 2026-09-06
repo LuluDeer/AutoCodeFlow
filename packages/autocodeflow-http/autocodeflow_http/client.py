@@ -16,6 +16,10 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
+# U4: RFC 9110 "safe" methods — retrying these can never cause duplicate
+# side effects on the server, unlike POST/PUT/DELETE/PATCH.
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
 
 @dataclass
 class RetryConfig:
@@ -24,6 +28,14 @@ class RetryConfig:
     min_wait_sec: float = 1.0
     max_wait_sec: float = 30.0
     retryable_statuses: tuple[int, ...] = (429, 500, 502, 503, 504)
+    #: U4: when True (default), only safe/idempotent methods (GET/HEAD/OPTIONS)
+    #: are retried automatically. Mutating requests (POST/PUT/PATCH/DELETE) are
+    #: attempted exactly once, because a retry after a timeout or a 5xx that
+    #: actually committed would duplicate side effects on the external
+    #: service. Set to False to restore the legacy retry-everything behaviour
+    #: (only appropriate for endpoints whose payloads carry their own
+    #: idempotency key).
+    safe_methods_only: bool = True
 
 
 @dataclass
@@ -94,6 +106,12 @@ class AutoFlowHttpClient:
             headers.update(extra)
         return headers
 
+    def _should_retry(self, method: str) -> bool:
+        """U4: auto-retry is limited to safe methods unless explicitly opted out."""
+        if not self._retry.safe_methods_only:
+            return True
+        return method.upper() in SAFE_METHODS
+
     async def _request(
         self, method: str, path: str, data: Any = None, headers: dict[str, str] | None = None
     ) -> httpx.Response:
@@ -102,12 +120,6 @@ class AutoFlowHttpClient:
 
         url = f"{self.base_url}{path}" if self.base_url else path
 
-        @retry(
-            stop=stop_after_attempt(self._retry.max_retries + 1),
-            wait=wait_exponential(multiplier=self._retry.min_wait_sec, max=self._retry.max_wait_sec),
-            retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError)),
-            reraise=True,
-        )
         async def _do() -> httpx.Response:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.request(
@@ -120,6 +132,18 @@ class AutoFlowHttpClient:
                         response=resp,
                     )
                 return resp
+
+        # U4: mutating methods (POST/PUT/PATCH/DELETE) are attempted exactly
+        # once by default — a blind retry after a timeout/5xx can duplicate
+        # the side effect server-side. Only safe methods get the tenacity
+        # wrapper unless RetryConfig.safe_methods_only is disabled.
+        if self._should_retry(method):
+            _do = retry(
+                stop=stop_after_attempt(self._retry.max_retries + 1),
+                wait=wait_exponential(multiplier=self._retry.min_wait_sec, max=self._retry.max_wait_sec),
+                retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError)),
+                reraise=True,
+            )(_do)
 
         try:
             resp = await _do()

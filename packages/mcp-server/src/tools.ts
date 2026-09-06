@@ -520,12 +520,29 @@ export function registerExecutorTools(server: McpServer, call: ApiCall): void {
   // ---- get_executor ---------------------------------------------------------
   server.tool(
     'get_executor',
-    'Get detailed info for a single executor by ID, including config, status, and performance metrics.',
+    // U12: the old description promised "performance metrics" but this only
+    // hits GET /executors/:id (entity fields: config, status, resource
+    // usage, heartbeat-reported running executions). Metrics live on
+    // GET /executors/:id/metrics — exposed as get_executor_metrics below.
+    'Get detailed info for a single executor by ID: config, status, group/tags, CPU & memory usage, task counters, and the execution ids it reported running on its last heartbeat. Does NOT include 7-day statistics — use get_executor_metrics for those.',
     {
       executorId: z.string().describe('Executor ID'),
     },
     async ({ executorId }) => {
       const data = await call<unknown>('GET', `/executors/${executorId}`);
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- get_executor_metrics -------------------------------------------------
+  server.tool(
+    'get_executor_metrics',
+    'Get performance metrics for a single executor: { executor, sevenDayStats (totalExecutions/successful/failed/successRate/averageDurationMs over the last 7 days), current (runningTaskCount/cpuUsage/memUsage) }. Backed by GET /executors/:id/metrics.',
+    {
+      executorId: z.string().describe('Executor ID'),
+    },
+    async ({ executorId }) => {
+      const data = await call<unknown>('GET', `/executors/${executorId}/metrics`);
       return JSON_CONTENT(data);
     },
   );
