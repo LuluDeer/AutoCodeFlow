@@ -39,7 +39,7 @@
 | FEAT-01 | P1 | in_progress | main-A（API 半场 done）+ unclaimed（UI 半场） | 2026-09-07 | admin-api notification 模块（entity/migration/service/controller） | 见批八 commit | API 半场 done：notification_silences 表+迁移+CRUD(ADMIN)+写穿/回灌/降级；**UI 半场（admin-web 静默管理 Tab）unclaimed** |
 | FEAT-02 | P1 | done | main-A | 2026-09-07 | admin-web dag-layout.ts + TaskDependencyGraph.tsx + TaskDetailPage | 见批四 commit | 依赖 DAG 可视化：纯函数布局（10 测试）+ 零新依赖组件 + 详情页新 Tab |
 | FEAT-03 | P1 | done | main-A | 2026-09-07 | admin-web ExecutionsPage + ExecutionCompare | 0409000 | 孤儿组件复核=**零引用**；拆 ExecutionCompareModal + 列表多选一键对比（93/93 ✓） |
-| FEAT-04 | P2 | in_progress | session-B（员工 005 承接） | 2026-09-07 02:4x | admin-api executor metrics history 端点 + admin-web ExecutorDetailPage 图表 | | 24h CPU/内存/并发折线（消费 executor_metrics_history，轻量方案） |
+| FEAT-04 | P2 | done | session-B（员工 005 承接） | 2026-09-07 02:4x | admin-api executor metrics + admin-web | 见变更日志 | metrics 端点追加 history（15min AVG 桶≤96 点/limit 500）+ recharts 双 Y 轴三线卡（既有依赖零新增）+空态兜底；后端 6 例前端 3 例 |
 | FEAT-05 | P2 | unclaimed | | | 双执行器 + admin-api uploads + admin-web | | 执行产物 artifacts 通道 |
 | FEAT-06 | P2 | unclaimed | | | admin-api scheduler + task 实体 | | 任务维护窗口 |
 | FEAT-07 | P2 | unclaimed | | | admin-api 新模块 event-subscriptions | | Webhook 出站事件 |
@@ -112,7 +112,7 @@
 | SEC-01 | P1 | unclaimed | | | 复审报告 v2 | | =BUG-12~16 汇总项，可拆半场认领 |
 | SEC-02 | P1 | unclaimed | | | task env 加密 | | 任务 secrets 加密落库 |
 | SEC-03 | P1 | unclaimed | | | users/auth 模块 + admin-web | | TOTP 两步验证 + 会话管理页 |
-| SEC-04 | P2 | in_progress | session-B（员工 001 承接） | 2026-09-07 02:4x | admin-api common/utils（safe-http 等）+ 各调用点 + spec | | SSRF 守卫统一：单一 url-guard util+统一 deny 常量+单测矩阵（::ffff:/198.18/100.64 回归），三套守卫收敛为单一事实源 |
+| SEC-04 | P2 | done | session-B（员工 001 承接） | 2026-09-07 02:4x | admin-api common/utils + spec | 见变更日志 | SSRF_DENY_HOST_PATTERNS 统一 deny 表（三套并集零收窄）+表驱动分类器；修复真实缺口：全文本形 IPv6 判 public（DNS 应答路径可放行）与 http 守卫 [ ] 括号剥离；15 例统一矩阵 spec |
 | SEC-05 | P2 | unclaimed | | | 上传链路 | | zip bomb 防护+扫描钩子 |
 | SEC-06 | P2 | unclaimed | | | CI + pre-commit | | 供应链（audit moderate+gitleaks） |
 | SEC-07 | P2 | unclaimed | | | Dockerfile + compose | | executor 容器 non-root 化 |
@@ -141,3 +141,5 @@
 - 2026-09-07 session-B：批 B1 done=BUG-01(dc82ac7)/FEAT-08(fd99579)；协作修复 CORE-01 e2e 回归（6912b4d 列级 transformer）；另代修 mcp-server BUG-14 测试两处（0241b5a，afterEach 导入+模块态隔离）与 e2e 选择器作用域（2a4070d）。CI 24 job 绿（run 34051398995）。基线：admin-api 1224/62 · admin-web 112/112 · mcp-server 69/69。
 
 - 2026-09-07 session-B：认领 SEC-04（001）/FEAT-04（005）→ in_progress。
+
+- 2026-09-07 session-B：批 B2 done=SEC-04/FEAT-04（SSRF 统一 deny 表+全文本形 IPv6 缺口修复；24h 资源趋势图）。基线：admin-api 1245/66 · admin-web 121/121。
