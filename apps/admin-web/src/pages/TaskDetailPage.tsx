@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Card, Descriptions, Tag, Typography, Button, Space, Table, Badge, Tabs,
-  Spin, Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert,
+  Spin, Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert, Result,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
@@ -60,10 +60,10 @@ export default function TaskDetailPage() {
 
   const { data: schedulerStats } = useRequest(
     tasksApi.schedulerStats,
-    { pollingInterval: 30000 },
+    { pollingInterval: 30000, pollingWhenHidden: false },
   );
 
-  const { data: task, loading: taskLoading, refresh: refreshTask } = useRequest(
+  const { data: task, loading: taskLoading, error: taskError, refresh: refreshTask } = useRequest(
     () => tasksApi.get(id!),
     { ready: !!id, refreshDeps: [id] },
   );
@@ -75,7 +75,7 @@ export default function TaskDetailPage() {
 
   const { data: taskStats } = useRequest(
     () => tasksApi.stats(id!),
-    { ready: !!id, refreshDeps: [id], pollingInterval: 60_000 },
+    { ready: !!id, refreshDeps: [id], pollingInterval: 60_000, pollingWhenHidden: false },
   );
 
   const executions: TaskExecution[] = execData?.items ?? [];
@@ -146,6 +146,22 @@ export default function TaskDetailPage() {
   };
 
   if (taskLoading && !task) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
+  // U7: 请求失败 ≠ 任务不存在——错误态给重试入口，数据确空才显示 Empty
+  if (!task && taskError) {
+    return (
+      <Result
+        status="error"
+        title="任务详情加载失败"
+        subTitle={getErrMsg(taskError, '请求失败，请重试')}
+        extra={
+          <Space>
+            <Button onClick={() => nav('/tasks')}>返回任务列表</Button>
+            <Button type="primary" icon={<ReloadOutlined />} onClick={refreshTask}>重试</Button>
+          </Space>
+        }
+      />
+    );
+  }
   if (!task) return <Empty description="任务不存在" />;
 
   const execColumns = [

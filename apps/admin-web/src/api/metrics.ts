@@ -32,6 +32,10 @@ export interface RecentFailure {
   taskId: string;
   taskName: string;
   errorMessage: string;
+  /** 后端 /metrics/failures 已透出（metrics.service.ts select）：失败分类 */
+  failureReason?: string | null;
+  /** 回调上报的原始退出码；null = 旧数据未采集 */
+  exitCode?: number | null;
   createdAt: string;
   duration: number;
 }

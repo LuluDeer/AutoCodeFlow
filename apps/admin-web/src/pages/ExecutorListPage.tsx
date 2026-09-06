@@ -28,6 +28,7 @@ export default function ExecutorListPage() {
 
   const { data, loading } = useRequest(executorsApi.list, {
     pollingInterval: 30000,
+    pollingWhenHidden: false,
     onSuccess: (executors: Executor[]) => {
       if (isFirstLoad.current) {
         executors.forEach((ex) => { prevStatusMap.current[ex.id] = ex.status; });

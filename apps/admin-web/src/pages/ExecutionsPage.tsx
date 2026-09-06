@@ -66,7 +66,7 @@ export default function ExecutionsPage() {
       startTime: timeRange?.[0]?.toISOString(),
       endTime: timeRange?.[1]?.toISOString(),
     }),
-    { refreshDeps: [page, pageSize, statusFilter, debouncedSearch, executorFilter, timeRange], pollingInterval: 15000 },
+    { refreshDeps: [page, pageSize, statusFilter, debouncedSearch, executorFilter, timeRange], pollingInterval: 15000, pollingWhenHidden: false },
   );
 
   const executions: TaskExecution[] = data?.items ?? [];
@@ -195,6 +195,7 @@ export default function ExecutionsPage() {
           onChange={v => { setStatusFilter(v); setPage(1); }}
           suffixIcon={<FilterOutlined />}
           options={[
+            { value: 'pending',   label: '等待中' },
             { value: 'running',   label: '运行中' },
             { value: 'success',   label: '成功'   },
             { value: 'failed',    label: '失败'   },
