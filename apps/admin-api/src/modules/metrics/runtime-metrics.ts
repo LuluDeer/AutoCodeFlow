@@ -54,7 +54,8 @@ export type RuntimeCounterName =
   | "autoflow_execution_result_total"
   | "autoflow_sse_streams_rejected_total"
   | "autoflow_notification_delivery_total"
-  | "autoflow_callback_business_total";
+  | "autoflow_callback_business_total"
+  | "autoflow_push_auth_retry_total";
 
 /** 计数器标签集（无标签计数器传空对象） */
 export type RuntimeCounterLabels = Readonly<Record<string, string>>;
@@ -100,6 +101,19 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       labelValueSets: RUNTIME_CALLBACK_BUSINESS_LABELS.map((result) => ({
         result,
       })),
+    },
+    // BUG-01（N51 收口）：reload-config 推送遇 401 后的重签重试可观测性。
+    // result 标签区分两条路径：reissued_success（重签后重试 2xx，执行器一个
+    // 心跳内自愈的过渡态）与 still_unauthorized（重试后仍 401，执行器顽固
+    // 失配，需人工 rotate-token）。埋点在 ExecutorController.reloadConfig，
+    // 与本文件其余计数器同走 recordRuntime → render 快照模式。
+    autoflow_push_auth_retry_total: {
+      help: "Reload-config push 401 re-issue retries by result (reissued_success / still_unauthorized)",
+      labelNames: ["result"],
+      labelValueSets: [
+        { result: "reissued_success" },
+        { result: "still_unauthorized" },
+      ],
     },
   };
 

@@ -14,6 +14,7 @@ import {
   HttpStatus,
   Res,
   NotFoundException,
+  Logger,
 } from "@nestjs/common";
 import { Response } from "express";
 import { existsSync, readFileSync } from "fs";
@@ -39,6 +40,11 @@ import axios from "axios";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+// BUG-01：401 重签重试可观测计数——走 runtime-metrics 模块级入口（与
+// TaskService / NotificationService 的埋点方式一致，无模块环、零 DI 接线），
+// 由 PrometheusMetricsService 的 render 快照模式渲染为
+// autoflow_push_auth_retry_total{result} series。
+import { recordRuntime } from "../metrics/runtime-metrics-entry";
 
 /**
  * R11: true when the executor answered a reload-config push with an HTTP 401
@@ -67,6 +73,9 @@ function isUnauthorizedPushError(err: unknown): boolean {
 @ApiTags("Executors")
 @Controller("executors")
 export class ExecutorController {
+  /** BUG-01：401 重签重试路径的 warn 日志（首发 401 / 重试结果）。 */
+  private readonly logger = new Logger(ExecutorController.name);
+
   constructor(
     private readonly svc: ExecutorService,
     private readonly configService: ConfigService,
@@ -570,6 +579,18 @@ export class ExecutorController {
    * R11), after which the next push succeeds. If the retry still fails we
    * surface the original fixed error. Trade-off accepted: the first
    * reload-config attempt after an admin-api restart reports one failure.
+   *
+   * BUG-01 (N51 收口) supersedes the "original fixed error" sentence above
+   * for the auth classes only: a retry that still gets an auth-rejection
+   * verdict throws the precise (b) message — executor address + "after a
+   * token re-issue retry" + both remedies (one-heartbeat self-heal or
+   * rotate-token); a retry failing with a non-auth error throws the (a)
+   * first-attempt message (首发 401, cold-cache wording, heartbeat advice).
+   * Every retry outcome also increments
+   * autoflow_push_auth_retry_total{result="reissued_success"|
+   * "still_unauthorized"} via runtime-metrics-entry, with warn logs on all
+   * three transitions. F-8 holds everywhere: axios error text is never
+   * echoed; the non-auth first-failure message below stays generic.
    */
   async reloadConfig(
     @Param("id") id: string,
@@ -614,6 +635,12 @@ export class ExecutorController {
       // retry the push once. The second issueToken() may return the same
       // cached plaintext (then the retry fails identically and we throw) or,
       // if cache state moved, a token the executor can accept.
+      // BUG-01: both outcomes are now observable — recordRuntime increments
+      // autoflow_push_auth_retry_total{result=...} — and the failure message
+      // distinguishes the two 401 classes instead of the generic one-liner.
+      this.logger.warn(
+        `Push auth retry: executor ${executor.address} rejected reload-config with 401 on first attempt (token re-issued once)`,
+      );
       const retry = await this.svc.issueToken({
         address: executor.address,
         appName: executor.appName,
@@ -624,10 +651,39 @@ export class ExecutorController {
           headers: { Authorization: `Bearer ${retry.token}` },
           timeout: 10_000,
         });
+        recordRuntime("autoflow_push_auth_retry_total", {
+          result: "reissued_success",
+        });
+        this.logger.warn(
+          `Push auth retry accepted: executor ${executor.address} approved reload-config with the re-issued token (2xx after the first-attempt 401)`,
+        );
         return resp.data;
-      } catch {
-        // F-8: same fixed message; the original 401 error is not echoed.
-        throw new UnauthorizedException("Failed to reach executor");
+      } catch (retryErr) {
+        if (isUnauthorizedPushError(retryErr)) {
+          // BUG-01 (b) 重签重试后仍 401：执行器顽固失配，需人工 rotate。
+          recordRuntime("autoflow_push_auth_retry_total", {
+            result: "still_unauthorized",
+          });
+          this.logger.warn(
+            `Push auth retry still 401 for executor ${executor.address}: token mismatch persists after re-issue; manual rotate-token required (executor-side outbound self-heal may also converge within one heartbeat)`,
+          );
+          // F-8: fixed message — the original 401 error is not echoed (no
+          // internal-topology / SSRF-oracle leak). BUG-01: the message now
+          // identifies the executor address, states this is AFTER the one
+          // re-issue retry (vs the first-attempt class below), and names the
+          // operator action. Address is pre-validated by the SSRF guard.
+          throw new UnauthorizedException(
+            `Executor ${executor.address} rejected the config push with 401 even after a token re-issue retry: its held token is persistently out of sync with the issued one. Wait one heartbeat for executor-side outbound self-heal to converge, or use POST /executors/${id}/rotate-token and reconfigure the executor.`,
+          );
+        }
+        // BUG-01 (a) 首发 401：执行器拒收首发推送（其持有 token 与 admin 签发
+        // 不一致，如 admin 重启后签发缓存冷），随后的一次重签重试未产生鉴权
+        // 裁定（非 401 失败）。文案如实指向首发拒收 + 等待一个心跳自愈。该
+        // 分支不写入 push_auth_retry 计数（无认证结果，标签集保持任务定义的
+        // 两值闭合）；F-8：不回显 axios 错误文本。
+        throw new UnauthorizedException(
+          `Executor ${executor.address} rejected the config push with 401 on the first attempt (executor-held token is out of sync with the issued one, e.g. a cold issuance cache after an admin-api restart); the re-issue retry failed with a non-auth error. Wait one heartbeat for the executor's outbound self-heal to re-align, then retry the push; if it persists, use POST /executors/${id}/rotate-token.`,
+        );
       }
     }
   }
