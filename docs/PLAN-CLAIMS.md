@@ -41,7 +41,7 @@
 | FEAT-03 | P1 | done | main-A | 2026-09-07 | admin-web ExecutionsPage + ExecutionCompare | 0409000 | 孤儿组件复核=**零引用**；拆 ExecutionCompareModal + 列表多选一键对比（93/93 ✓） |
 | FEAT-04 | P2 | done | session-B（员工 005 承接） | 2026-09-07 02:4x | admin-api executor metrics + admin-web | 见变更日志 | metrics 端点追加 history（15min AVG 桶≤96 点/limit 500）+ recharts 双 Y 轴三线卡（既有依赖零新增）+空态兜底；后端 6 例前端 3 例 |
 | FEAT-05 | P2 | unclaimed | | | 双执行器 + admin-api uploads + admin-web | | 执行产物 artifacts 通道 |
-| FEAT-06 | P2 | unclaimed | | | admin-api scheduler + task 实体 | | 任务维护窗口 |
+| FEAT-06 | P2 | in_progress | session-B（员工 005 承接） | 2026-09-07 04:1x | admin-api task 实体+scheduler + admin-web TaskForm/Detail | | 任务级维护窗口（maintenanceWindows cron 段）：触发前检查跳过+skipped 指标+UI 编辑/展示 |
 | FEAT-07 | P2 | unclaimed | | | admin-api 新模块 event-subscriptions | | Webhook 出站事件 |
 | FEAT-08 | P2 | done | session-B（员工 005 承接） | 2026-09-07 01:2x | admin-api config 模块 + admin-web settings/api | fd99579 | 回滚语义矩阵（create→删除/update 无旧值 400/delete→重建/保留元数据）+ 掩码哨兵拒绝（S3 镜像防线）+ action=rollback 独立留痕 + 前端行级回滚入口（isAdmin+Popconfirm+逐行 loading）；后端 13 例前端 4 例 |
 | FEAT-09 | P3 | unclaimed | | | admin-web 全局组件 | | 全局搜索/命令面板 |
@@ -104,7 +104,7 @@
 | QA-02 | P1 | unclaimed | | | 各端 spec | | =BUG-03 同义项（coverage 提升），认领任一即可 |
 | QA-03 | P1 | unclaimed | | | admin-web __tests__ | | 组件测试扩面 200+ |
 | QA-05 | P2 | unclaimed | | | scripts/load-test + docs | | =BUG-19 同义项 |
-| QA-06 | P2 | unclaimed | | | compose 演练脚本 | | 混沌/故障注入四场景 |
+| QA-06 | P2 | in_progress | session-B（员工 001 承接） | 2026-09-07 04:1x | scripts/chaos-drill.sh（新建）+ docs | | 混沌/故障注入四场景：Redis 宕 fail-open/执行器断网恢复/admin 双实例滚动重启/队列深度回归（PG 主从需真机，脚本预留） |
 | QA-07 | P2 | unclaimed | | | 新建共享契约 fixture | | 四客户端包契约测试统一 |
 | QA-08 | P2 | unclaimed | | | CI workflow | | 跨版本迁移演练月度 job |
 | QA-09 | P3 | in_progress | main-A | 2026-09-07 | docs/SECURITY-REDLINE-CHECKLIST.md + e2e | | 清单已建（六域 30+ 红线）；e2e 套件化剩余 |
@@ -121,7 +121,7 @@
 | SEC-NEW-1 | P3 | unclaimed | | | executor-desktop config-store + safeStorage | | SEC-01 复审新发现：executorToken 明文落盘，改 safeStorage 加密+存量迁移（三平台差异）|
 | DOC-01 | P1 | unclaimed | | | PR 模板 + api-reference | ⚠️ | API 变更检查项机制（api-reference 并行会话在途，先建模板） |
 | DOC-02 | P1 | unclaimed | | | docs/operations.md | | 运维手册补全（依赖 QA-05/08 产出） |
-| DOC-03 | P2 | unclaimed | | | 种子脚本 | | demo:seed 一键演示数据 |
+| DOC-03 | P2 | done | main-A（ARCH-20 批次实现）/session-B 复核销账 | 2026-09-07 04:1x | scripts/demo-seed*.mjs | | 复核：demo:seed+selftest 已实现且自检通过（含 --password 门槛/演示数据形态），板信息滞后补记 |
 | DOC-04 | P2 | done | main-A | 2026-09-07 | docs/adr/（新建 11 文件） | 见批五 commit | ADR-001~010 + 索引 README |
 | DOC-05 | P2 | unclaimed | | | release 配置 | | CHANGELOG 自动化（release-please） |
 | DOC-06 | P3 | unclaimed | | | docs 教程 | | 「从 0 到生产」四篇 |
@@ -145,3 +145,5 @@
 - 2026-09-07 session-B：批 B2 done=SEC-04/FEAT-04（SSRF 统一 deny 表+全文本形 IPv6 缺口修复；24h 资源趋势图）。基线：admin-api 1245/66 · admin-web 121/121。
 
 - 2026-09-07 session-B：认领 OBS-05（001）/FEAT-12（005）→ in_progress。
+
+- 2026-09-07 session-B：DOC-03 复核销账（ARCH-20 批次已实现，selftest 过）；认领 QA-06（001）/FEAT-06（005）→ in_progress。
