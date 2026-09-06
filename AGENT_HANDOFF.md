@@ -3,8 +3,8 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-06（第十三轮：三路只读审查 → 33 项发现 → 5 路并行修复，21 项落地；详见「状态快照」末条）
-当前分支：`develop`（本地领先 origin/develop 75+ commits，**push 无凭证**——CI 真跑待用户解决）
+更新时间：2026-09-06（第十四轮：001-006 员工 SubAgent 编排——python 可靠性三件套+P2 重试兑现+安全收口 R1-R19+QA 闭环；详见「状态快照」末条）
+当前分支：`develop`（本地领先 origin/develop 80+ commits，**push 无凭证**——CI 真跑待用户解决）
 
 ## 状态快照
 
@@ -77,6 +77,14 @@
   - **Playwright 29/29**：pinned 部署全链 4 例（在线/离线/不存在/全 UI 闭环）
   - **P1 修复（V 抓到）**：python register 用动态 token 打 bootstrap 端点 401（R9 修复揭开）→ 改静态 token + 状态码检查；**N33-N36**：issuedTokenCache 有界化（1000/24h）、artifact query token 风险标注、ci-local 差异声明
 - **里程碑（2026-09-05）**：**v1.0.1 三包发布完成**（npm `@autocodeflow/sdk` + `autocodeflow-mcp-server` 1.0.1、PyPI `autoflow-sdk` 1.0.1，双版本可回溯）；**develop→main 发版合并完成**（main 与 develop 树一致，两父 merge commit `bddac27`，main CI 全绿）；**Windows 深度测试任务书就绪**：`docs/WINDOWS-TESTING-PLAN.md`（R13 基线→R14 功能冒烟→R15 修复批→R16 desktop 打包，含 13 项已知平台风险点与问题回传模板——Win 机器拉取后按此推进）
+- 本轮（2026-09-06 第十四轮，员工 SubAgent 001/002/006 主力（003/004 触模型日限由 general-purpose 兜底）→ QA 审查 10 项 → 修复闭环）：
+  - **executor-python 可靠性三件套**（153→197）：E2 回调失败落盘+后台重试环+dead-letter（token 永不落盘、重放现取动态 token 走自愈；停机 drain 10s）；E6 同任务串行锁（按 loop 分桶）+git cache per-repo 互斥；E8 磁盘 TTL 回收（workdir/.git_cache/.venvs/logs，TTL 7d/周期 6h/首跑延迟 600s env 可配，活跃目录保护 fail-safe）+dead-letter 目录 TTL 清扫+清理移入 to_thread；心跳恒报 deadLetterCount。
+  - **admin-api P2**（1014→1098）：sweep 条件 UPDATE 赢家兑现重试预算（hasRetryBudget→kill best-effort→scheduleRetryAfterRecovery 入队，STALE_RECOVERY_RETRY_ENABLED 开关）；failureReason 新增 stale_recovered；deadLetterCount 实体列+幂等迁移+心跳采纳（0..100000）。
+  - **admin-api 安全收口**（006 审计 R1-R19）：application/app-deployment 全链 @Roles(ADMIN)+env 读面全链脱敏（含 QA1 闭合的 deployment.env/relations/snapshot.env 三处绕过）；SSRF maxRedirects:0（6 出站点）+assertSafeGitRepoUrl；通知 test 端点 ADMIN+override 请求级化（不再写全局 store）；账号过期锁原子重置；ai/test ADMIN；pid @IsInt；currentPassword 不回显；3xx 确定性拒绝不重试+文案明示。
+  - **admin-web**（83→87）：死信三态可视化（详情/列表）；截断日志"加载完整日志"分页兜底（对齐 fromLine/limit≤2000 契约）；stale_recovered 映射；U13 类型修正。
+  - **流程注记**：004 员工在模型日限触发前留下 R1/R2/R3 半成品（含掩码回写真实 env 的数据损坏缺陷），兜底 agent 已修复补齐——员工 SubAgent 中断后必须 diff 盘点其遗留。
+  - 测试基线刷新：admin-api **1098**（58 套件）· executor-python **197** · admin-web **87** · executor-node 218（本轮未动）· 包类 218→本轮未动。
+  - 本轮遗留（下一轮候选）：deployFromGit spawnSync 阻塞事件循环（R4 后半，需异步化）；R5-R9（部署 TOCTOU/卡死误判/stop 语义/推送 SSRF/上传流式化）；R13 Electron IPC 路径校验；R14/R22 python 包通知/AI 契约；python 停机树杀后 live 回调不在 drain 范围（QA8，可由 P2 收敛）。
 - 本轮（2026-09-06 第十三轮，三路只读审查 P/E/U 共 33 项 → 5 路并行修复落地 21 项 → 全量回归）：
   - **admin-api**（1014/1014）：BullMQ `defaultJobOptions` 终态保留策略（completed 1h/1000、failed 24h/5000，Redis 无界堆积根治）；`@Processor("task-queue",{concurrency:5})` 消除大 timeout 任务队头阻塞（核实 @nestjs/bullmq 11 单对象形式 concurrency 会被静默丢弃，须用第二参数）；SIGTERM 15s 强制退出兜底（`shutdown-guard.util.ts`）；心跳白名单采纳 `maxConcurrentTasks`（1..10000 校验，E9 admin 侧）。
   - **executor-node**（218/218，ncc bundle 已重打）：心跳上报 `maxConcurrentTasks`（热更后下个心跳回传，E9 node 侧）；`logsDir` 改 lazy getter 修复 workDir 热更写读分裂（E10）；死信清理 `filesOnly` 与计数口径对齐（E12）；callbacks/ 顶层孤儿 .meta 24h 回收（E13）。
