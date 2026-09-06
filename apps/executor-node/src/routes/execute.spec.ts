@@ -330,7 +330,8 @@ describe('POST /api/execute', () => {
       .map(c => c[0])
       .find(p => p.status === 'failed' && /git clone failed/.test(p.errorMessage || ''));
     expect(failCall).toBeTruthy();
-    expect(failCall.failureReason).toBe('package_fetch_failed');
+    // BUG-10 细化：git clone 失败从 package_fetch_failed 拆分为 git_fetch_failed
+    expect(failCall.failureReason).toBe('git_fetch_failed');
     expect(Atomics.load(_runningCountArr, 0)).toBe(0);
   });
 

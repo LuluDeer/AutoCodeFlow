@@ -32,6 +32,12 @@ export enum ExecutionFailureReason {
    * 重试预算"的链路。命名沿用既有 snake_case 约定（对齐 executor_restart）。
    */
   STALE_RECOVERED = "stale_recovered",
+  /** BUG-10 细化：依赖安装失败（npm install / uv pip install / uv venv） */
+  DEPENDENCY_INSTALL_FAILED = "dependency_install_failed",
+  /** BUG-10 细化：Git clone/fetch/checkout 失败（区别于包拉取） */
+  GIT_FETCH_FAILED = "git_fetch_failed",
+  /** BUG-10 细化：运行时/可执行文件不可用（spawn ENOENT、uv 缺失） */
+  RUNTIME_MISSING = "runtime_missing",
   KILLED = "killed",
   UNKNOWN = "unknown",
 }
