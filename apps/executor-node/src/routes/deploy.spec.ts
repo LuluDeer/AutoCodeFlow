@@ -29,6 +29,7 @@ import {
   buildDeploymentPaths,
   deployRouter,
   downloadPackage,
+  findUnsafeZipEntries,
   shouldReportProcessExit,
   suppressNextRestartExitReport,
 } from './deploy';
@@ -141,6 +142,58 @@ describe('versioned deployment paths', () => {
 
     expect(paths.releaseKey).toBe('v1-build-deploy-1');
     expect(paths.finalReleaseDir).toBe(path.join('/tmp/work', 'apps', 'app-1', 'releases', 'v1-build-deploy-1'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S6: pure zip-entry traversal validator (platform-agnostic, so it runs the
+// same on win32 and POSIX — the win32 PowerShell listing branch feeds it the
+// exact same entry names the Linux `unzip -Z1` branch does).
+// ---------------------------------------------------------------------------
+describe('findUnsafeZipEntries', () => {
+  it('accepts a normal relative entry list', () => {
+    expect(
+      findUnsafeZipEntries(['index.js', 'src/app.ts', 'assets/logo.png', 'README.md']),
+    ).toEqual([]);
+  });
+
+  it('flags POSIX absolute paths', () => {
+    expect(findUnsafeZipEntries(['/etc/passwd'])).toEqual(['/etc/passwd']);
+  });
+
+  it('flags parent-directory traversal with forward slashes', () => {
+    expect(findUnsafeZipEntries(['../escape.txt'])).toEqual(['../escape.txt']);
+    expect(findUnsafeZipEntries(['a/../../b'])).toEqual(['a/../../b']);
+  });
+
+  it('flags traversal smuggled with backslashes (mixed separators)', () => {
+    expect(findUnsafeZipEntries(['..\\escape.txt'])).toEqual(['..\\escape.txt']);
+    expect(findUnsafeZipEntries(['a\\..\\..\\b'])).toEqual(['a\\..\\..\\b']);
+  });
+
+  it('flags Windows drive-letter and UNC absolute paths', () => {
+    expect(findUnsafeZipEntries(['C:\\Windows\\system32\\evil.dll'])).toEqual([
+      'C:\\Windows\\system32\\evil.dll',
+    ]);
+    expect(findUnsafeZipEntries(['D:/evil.txt'])).toEqual(['D:/evil.txt']);
+    expect(findUnsafeZipEntries(['\\\\server\\share\\evil.txt'])).toEqual([
+      '\\\\server\\share\\evil.txt',
+    ]);
+  });
+
+  it('returns every violating entry, preserving order', () => {
+    const unsafe = findUnsafeZipEntries([
+      'ok.txt',
+      '../a',
+      'also-ok/deep/file.js',
+      '/abs',
+    ]);
+    expect(unsafe).toEqual(['../a', '/abs']);
+  });
+
+  it('does not flag a filename that merely contains ".." without a segment boundary', () => {
+    // "a..b" is a single safe segment; only a standalone ".." segment escapes.
+    expect(findUnsafeZipEntries(['a..b', 'x...y', 'foo..bar.js'])).toEqual([]);
   });
 });
 
@@ -275,6 +328,51 @@ describe('POST /api/deploy — async pipeline', () => {
       ),
     );
     expect(mockCp.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it('passes the validated branch to git clone when one is specified', async () => {
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+    const res = await request(app)
+      .post('/api/deploy')
+      .send({ ...basePayload, gitBranch: 'release-1' });
+    expect(res.status).toBe(200);
+
+    await waitFor(() =>
+      (mockCp.spawn as jest.Mock).mock.calls.some(
+        (c: unknown[]) => (c[1] as string[])[0] === 'clone',
+      ),
+    );
+    const cloneCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+      (c: unknown[]) => (c[1] as string[])[0] === 'clone',
+    ) as [string, string[]];
+    const args = cloneCall[1];
+    const branchIdx = args.indexOf('--branch');
+    expect(branchIdx).toBeGreaterThan(-1);
+    expect(args[branchIdx + 1]).toBe('release-1');
+  });
+
+  it('omits --branch entirely when gitBranch is empty (clones remote default)', async () => {
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+    const res = await request(app)
+      .post('/api/deploy')
+      .send({ ...basePayload, gitBranch: '' });
+    expect(res.status).toBe(200);
+
+    await waitFor(() =>
+      (mockCp.spawn as jest.Mock).mock.calls.some(
+        (c: unknown[]) => (c[1] as string[])[0] === 'clone',
+      ),
+    );
+    const cloneCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+      (c: unknown[]) => (c[1] as string[])[0] === 'clone',
+    ) as [string, string[]];
+    const args = cloneCall[1];
+    // S12: an empty/undefined gitBranch must never reach git as a bad
+    // `--branch` argument — the flag is dropped so git clones the default HEAD.
+    expect(args).not.toContain('--branch');
+    expect(args).not.toContain('');
+    expect(args).toContain('https://example.com/repo.git');
+    expect(args[args.length - 1]).toBe('.');
   });
 
   it('startApp env contains only whitelisted vars plus app envVars (no executor secrets)', async () => {

@@ -33,7 +33,7 @@ import { killRunningTaskProcesses } from './routes/execute';
 import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
 import { configRouter } from './routes/config';
-import { logsRouter, executorAuthMiddleware } from './routes/logs';
+import { logsRouter } from './routes/logs';
 import { deployRouter } from './routes/deploy';
 import { updatePackageRouter } from './routes/update-package';
 import { verifyToken } from './middleware/auth';
