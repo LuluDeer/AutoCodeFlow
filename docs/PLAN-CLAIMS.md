@@ -40,7 +40,7 @@
 | FEAT-02 | P1 | done | main-A | 2026-09-07 | admin-web dag-layout.ts + TaskDependencyGraph.tsx + TaskDetailPage | 见批四 commit | 依赖 DAG 可视化：纯函数布局（10 测试）+ 零新依赖组件 + 详情页新 Tab |
 | FEAT-03 | P1 | done | main-A | 2026-09-07 | admin-web ExecutionsPage + ExecutionCompare | 0409000 | 孤儿组件复核=**零引用**；拆 ExecutionCompareModal + 列表多选一键对比（93/93 ✓） |
 | FEAT-04 | P2 | done | session-B（员工 005 承接） | 2026-09-07 02:4x | admin-api executor metrics + admin-web | 见变更日志 | metrics 端点追加 history（15min AVG 桶≤96 点/limit 500）+ recharts 双 Y 轴三线卡（既有依赖零新增）+空态兜底；后端 6 例前端 3 例 |
-| FEAT-05 | P2 | unclaimed | | | 双执行器 + admin-api uploads + admin-web | | 执行产物 artifacts 通道 |
+| FEAT-05 | P2 | in_progress | 004（子代理） | 2026-09-07 | 新迁移 + admin-api artifacts 模块(上传/鉴权下载端点) + execution-callback.dto + task.service.handleCallback + executor-node src(重打 bundle) + executor-python execute.py | | 后端+双执行器+数据链路；admin-web 展示视余量，否则移交 |
 | FEAT-06 | P2 | done | session-B（员工 005 承接） | 2026-09-07 04:1x | admin-api task 实体+scheduler+DTO + admin-web 表单/详情 | 见变更日志 | maintenanceWindows cron 窗口（start/end 触达开关窗+7 天回看）enqueue 顶部跳过+triggersSkippedMaintenance 指标+表单 Form.List/详情 Tag；后端 33 例前端 10 例 |
 | FEAT-07 | P2 | unclaimed | | | admin-api 新模块 event-subscriptions | | Webhook 出站事件 |
 | FEAT-08 | P2 | done | session-B（员工 005 承接） | 2026-09-07 01:2x | admin-api config 模块 + admin-web settings/api | fd99579 | 回滚语义矩阵（create→删除/update 无旧值 400/delete→重建/保留元数据）+ 掩码哨兵拒绝（S3 镜像防线）+ action=rollback 独立留痕 + 前端行级回滚入口（isAdmin+Popconfirm+逐行 loading）；后端 13 例前端 4 例 |
@@ -51,7 +51,7 @@
 | CORE-01 | P1 | done | main-A | 2026-09-07 | admin-web TaskForm/List/Detail + utils/priority | 批六 commit | 前端 UI 化 done（后端本就绪）；剩余=拥塞下优先出队的真机断言（并入真机轮）。**协作注记（session-B）**：CORE-01 数字 priority 直写 PG enum 致 500（e2e 23-25/29 红），已在 6912b4d 以列级 transformer+6 例 spec 修复并 CI 绿——「mock 不等于能跑」第四次前科 |
 | CORE-02 | P1 | unclaimed | | | admin-api task + admin-web | | 重试策略精细化（attempt 链可视化） |
 | CORE-03 | P1 | unclaimed | | | admin-api 模板实体 + admin-web | | 任务模板与一键克隆 |
-| CORE-04 | P1 | unclaimed | | | admin-api + 双执行器 | | 超时策略分级（warn/动作可选） |
+| CORE-04 | P1 | in_progress | 001（子代理） | 2026-09-07 09:5x | admin-api task 实体/DTO/processor + admin-web 表单/详情 + docs/api-reference.md（执行器不改，树杀仍在执行器侧） | | 超时策略分级（warn/动作可选） |
 | CORE-05 | P1 | unclaimed | | | admin-api dispatch + 心跳 | | estimatedDurationSec 参与 loadScore |
 | CORE-06 | P1 | unclaimed | | | admin-api SchedulerMetrics + Grafana | | 调度延迟分布 P99 |
 | OBS-01 | P1 | unclaimed | | | admin-api + 双执行器 + compose | | OpenTelemetry 追踪（跨三端，宜整轮承接） |
@@ -168,3 +168,5 @@
 - 2026-09-07 001（本会话）：认领 ECO-03 → in_progress（文件足迹：packages/mcp-server/src/{tools,api}.ts 及 __tests__，他人勿动）。同批候选（后续再认领）：QA-07、FEAT-11、CORE-04、CORE-02。
 - 2026-09-07 001：ECO-03 done（6297f21，mcp-server 79/79）；认领 QA-07 → in_progress。
 - 2026-09-07 001：QA-07 done（a00438b）；认领 FEAT-11 → in_progress。
+- 2026-09-07 001（子代理）：认领 CORE-04 → in_progress（文件足迹：admin-api task 实体/DTO/processor + admin-web TaskFormPage/TaskDetailPage + docs/api-reference.md，执行器两仓不改）。工作区他人在途改动已盘点：executor.service.spec.ts 格式微调 + registry-pypi/acfdemopkg 演示包，均不触碰。
+- 2026-09-07 004（子代理）：认领 FEAT-05 → in_progress（文件足迹：apps/admin-api 新 `modules/artifacts` 模块 + 新迁移 `AddExecutionArtifacts` + `execution-callback.dto.ts`(加 artifacts) + `task.service.handleCallback`(落 artifacts) + `app.module`；apps/executor-node src + 重打 bundle；apps/executor-python routers/execute.py；docs/api-reference.md 与 001 避让=小改即提交）。他人在途改动（executor.service.spec.ts / acfdemopkg / CORE-04 认领行）不触碰；bundle 重打确定性本机已验证（未改源重打逐字节一致）。
