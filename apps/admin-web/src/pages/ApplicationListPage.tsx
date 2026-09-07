@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Table, Button, Space, Tag, Modal, Form, Input, Select, Upload, message,
-  Popconfirm, Typography, Tooltip, Badge, Radio,
+  Popconfirm, Typography, Tooltip, Badge, Radio, Empty,
 } from 'antd';
 import {
   PlusOutlined, UploadOutlined, ReloadOutlined, GithubOutlined,
@@ -14,8 +14,16 @@ import { useNavigate } from 'react-router-dom';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 import { useAuthStore, isAdminUser } from '../store/auth';
+import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
+import StateError from '../components/StateError';
 
 const { Text } = Typography;
+
+/** UI-08：首屏 Skeleton 渲染判据——初次加载（无数据）且未出错时以骨架屏替代表格 Spin */
+function shouldShowSkeleton(loading: boolean, error: unknown, count: number): boolean {
+  return loading && count === 0 && !error;
+}
 
 /**
  * W3 RBAC（对齐 settings 页先例）：应用写面（创建/上传/编辑/删除/快速部署）
@@ -58,6 +66,8 @@ export default function ApplicationListPage() {
   const isAdmin = useIsAdmin();
   const [apps, setApps] = useState<AppWithStats[]>([]);
   const [loading, setLoading] = useState(false);
+  // UI-08：首屏加载失败不再只弹一次性 toast——记录错误并原位呈现「重试+复制」错误块
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [editingApp, setEditingApp] = useState<Application | null>(null);
@@ -73,6 +83,7 @@ export default function ApplicationListPage() {
 
   const fetchApps = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const data = await applicationsApi.list();
 
@@ -99,6 +110,7 @@ export default function ApplicationListPage() {
 
       setApps(enriched);
     } catch (err: unknown) {
+      setLoadError(err);
       message.error(getErrMsg(err, '加载应用列表失败'));
     } finally {
       setLoading(false);
@@ -330,24 +342,32 @@ export default function ApplicationListPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Typography.Title level={4} style={{ margin: 0 }}>应用管理</Typography.Title>
-        <Space>
-          <Tooltip title={isAdmin ? undefined : '仅管理员可创建应用'}>
-            <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate} disabled={!isAdmin}>
-              创建应用
-            </Button>
-          </Tooltip>
-          <Tooltip title={isAdmin ? undefined : '仅管理员可上传应用'}>
-            <Button icon={<UploadOutlined />} onClick={() => {
-              setUploadModalOpen(true);
-            }} disabled={!isAdmin}>
-              上传 ZIP
-            </Button>
-          </Tooltip>
-          <Button icon={<ReloadOutlined />} onClick={fetchApps} loading={loading}>刷新</Button>
-        </Space>
-      </div>
+      {/* UI-03/UI-08：页头标准化（原 Typography.Title+操作区迁入 PageHeader） */}
+      <PageHeader
+        title="应用管理"
+        extra={
+          <>
+            <Tooltip title={isAdmin ? undefined : '仅管理员可创建应用'}>
+              <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate} disabled={!isAdmin}>
+                创建应用
+              </Button>
+            </Tooltip>
+            <Tooltip title={isAdmin ? undefined : '仅管理员可上传应用'}>
+              <Button icon={<UploadOutlined />} onClick={() => {
+                setUploadModalOpen(true);
+              }} disabled={!isAdmin}>
+                上传 ZIP
+              </Button>
+            </Tooltip>
+            <Button icon={<ReloadOutlined />} onClick={fetchApps} loading={loading}>刷新</Button>
+          </>
+        }
+      />
+
+      {/* UI-08：首屏错误态（重试+复制错误信息） */}
+      {loadError !== null && !loading && (
+        <StateError error={loadError} onRetry={fetchApps} style={{ marginBottom: 16 }} />
+      )}
 
       {/* 搜索/筛选栏 */}
       <Space style={{ marginBottom: 16 }} wrap>
@@ -399,8 +419,16 @@ export default function ApplicationListPage() {
         columns={columns}
         dataSource={filtered}
         rowKey="id"
-        loading={loading}
-        pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }}
+        loading={false}
+        locale={{
+          emptyText: shouldShowSkeleton(loading, loadError, apps.length)
+            ? <PageSkeleton variant="table" />
+            : (loadError
+              ? undefined
+              : (hasFilters
+                ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配应用" />
+                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无应用，点击右上角「创建应用」开始" />)),
+        }}
       />
 
       {/* Create/Edit Modal */}

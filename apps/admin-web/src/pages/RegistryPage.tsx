@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Tabs, Table, Button, Upload, Form, Input, Modal, message, Space,
-  Typography, Tag, Empty, Spin, Card,
+  Typography, Tag, Empty, Card,
 } from 'antd';
 import {
   UploadOutlined, ReloadOutlined, CodeOutlined, InboxOutlined,
@@ -9,6 +9,8 @@ import {
 import { useRequest } from 'ahooks';
 import { registryApi } from '../api/registry';
 import { getErrMsg } from '../utils/error';
+import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
 
 const { Text, Paragraph } = Typography;
 
@@ -70,7 +72,8 @@ function PypiTab() {
       </Card>
 
       {loading ? (
-        <Spin style={{ display: 'block', textAlign: 'center', padding: 40 }} />
+        // UI-08：首屏骨架屏替代裸 Spin
+        <PageSkeleton variant="table" rows={4} />
       ) : packages.length === 0 ? (
         <Empty description="暂无 PyPI 包，点击上传添加第一个包" />
       ) : (
@@ -162,7 +165,8 @@ function NpmTab() {
       </Card>
 
       {loading ? (
-        <Spin style={{ display: 'block', textAlign: 'center', padding: 40 }} />
+        // UI-08：首屏骨架屏替代裸 Spin
+        <PageSkeleton variant="table" rows={4} />
       ) : packages.length === 0 ? (
         <Empty description="暂无 npm 包，使用 npm publish 发布" />
       ) : (
@@ -209,7 +213,11 @@ function NpmTab() {
 export default function RegistryPage() {
   return (
     <div>
-      <Typography.Title level={4} style={{ marginBottom: 24 }}>包市场</Typography.Title>
+      {/* UI-03/UI-08：页头标准化 */}
+      <PageHeader
+        title="包市场"
+        description="私有 PyPI / npm 制品仓库；上传后可在任务与执行器侧引用。"
+      />
       <Tabs
         defaultActiveKey="pypi"
         items={[

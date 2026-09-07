@@ -14,10 +14,11 @@ import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
 import { useAuthStore, isAdminUser } from '../../store/auth';
 import type { ColumnsType } from 'antd/es/table';
+import PageHeader from '../../components/PageHeader';
 // SEC-03: 安全设置 Tab（TOTP 两步验证 + 登录会话管理），独立文件避免与其他 Tab 耦合
 import SecuritySettings from './SecuritySettings';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 /**
  * R5 RBAC（按第四轮收紧矩阵）：
@@ -581,18 +582,19 @@ export default function SettingsPage() {
 
   return (
     <div style={{ maxWidth: 900 }}>
-      <div style={{ marginBottom: 24 }}>
-        <Title level={4} style={{ margin: 0 }}>系统设置</Title>
-        <Text type="secondary">配置调度中心的核心参数与运行时选项</Text>
-        {!isAdmin && (
-          <Alert
-            type="info"
-            showIcon
-            title="您以普通用户身份查看，写操作（配置修改、回滚）与 AI 配置仅管理员可用"
-            style={{ marginTop: 12 }}
-          />
-        )}
-      </div>
+      {/* UI-03/UI-08：页头标准化（原 Title+描述迁入 PageHeader；非管理员提示保留页头下方） */}
+      <PageHeader
+        title="系统设置"
+        description="配置调度中心的核心参数与运行时选项"
+      />
+      {!isAdmin && (
+        <Alert
+          type="info"
+          showIcon
+          title="您以普通用户身份查看，写操作（配置修改、回滚）与 AI 配置仅管理员可用"
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <Tabs items={tabs} />
     </div>
   );

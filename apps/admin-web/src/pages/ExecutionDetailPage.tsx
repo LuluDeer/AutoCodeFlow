@@ -1,4 +1,4 @@
-import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, message, Alert, Popconfirm, Result, Select, Input, Tabs } from 'antd';
+import { Card, Descriptions, Tag, Typography, Button, Space, Badge, message, Alert, Popconfirm, Result, Select, Input, Tabs } from 'antd';
 import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, FieldTimeOutlined, LinkOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRequest } from 'ahooks';
@@ -17,6 +17,7 @@ import { failureRunbookAction, FAILURE_CARD_STATUSES } from './failure-runbook';
 import ExecutionReportPanel from '../components/ExecutionReportPanel';
 import { executionReportsApi } from '../api/execution-reports';
 import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
 // FEAT-05 UI 半场：产物列表（003 产出组件，本任务作为「参数与产物」Tab 单点接入）
 import ArtifactsList from '../components/ArtifactsList';
 // CORE-02: 重试链纯逻辑（Card 迁入重试 Tab 时沿用）
@@ -378,7 +379,8 @@ export default function ExecutionDetailPage() {
   const showFailureCard = FAILURE_CARD_STATUSES.includes(data?.status || '');
 
   if (loading && !data) {
-    return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
+    // UI-08：首屏骨架屏替代裸 Spin（仅此加载区块；Tab 结构与业务 JSX 不动）
+    return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
   }
 
   // U7: 请求失败 ≠ 记录不存在——给出错误态与重试，而非全 '-' 空壳

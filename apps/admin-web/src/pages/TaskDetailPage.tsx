@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Card, Descriptions, Tag, Typography, Button, Space, Table, Badge, Tabs,
-  Spin, Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert, Result,
+  Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert, Result,
 } from 'antd';
 import {
   ApartmentOutlined,
@@ -24,6 +24,7 @@ import ArtifactsList from '../components/ArtifactsList';
 // CORE-02: retryableErrors 中文文案映射（与表单选项同一来源）
 import { RETRYABLE_ERROR_OPTIONS } from './retry-policy';
 import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
 
 const { Text } = Typography;
 
@@ -152,7 +153,8 @@ export default function TaskDetailPage() {
     finally { setKillingId(null); }
   };
 
-  if (taskLoading && !task) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
+  // UI-08：首屏骨架屏替代裸 Spin
+  if (taskLoading && !task) return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
   // U7: 请求失败 ≠ 任务不存在——错误态给重试入口，数据确空才显示 Empty
   if (!task && taskError) {
     return (
@@ -545,7 +547,7 @@ export default function TaskDetailPage() {
         width={560}
       >
         {aiLoading ? (
-          <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="AI 分析中…" /></div>
+          <div style={{ textAlign: 'center', padding: 40 }}><PageSkeleton variant="table" rows={2} /></div>
         ) : aiSuggestion ? (
           <div>
             <Descriptions size="small" column={1} bordered style={{ marginBottom: 16 }}>
