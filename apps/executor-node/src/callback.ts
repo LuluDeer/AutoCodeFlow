@@ -31,6 +31,8 @@ export interface CallbackRequest {
   durationMs?: number;
   /** FEAT-05: 执行产物清单（best-effort，随终态回调上报，与 admin CallbackItemDto 对齐）。 */
   artifacts?: Array<{ name: string; size: number; sha256: string }>;
+  /** OBS-01: dispatch 请求携带的 W3C traceparent（admin 追踪开启时存在）。 */
+  traceparent?: string;
 }
 
 const callbackQueue: CallbackRequest[] = [];
@@ -93,6 +95,13 @@ function withExecutorAddress(request: CallbackRequest): CallbackRequest {
   };
 }
 
+/** OBS-01: 批次内第一个携带 traceparent 的执行决定回传头（同批多执行在
+ *  实际流量中几乎同 trace——同一次触发；无 traceparent 时零头回传）。 */
+function traceparentHeaderFor(requests: CallbackRequest[]): Record<string, string> {
+  const traceparent = requests.find(r => r.traceparent)?.traceparent;
+  return traceparent ? { traceparent } : {};
+}
+
 export function pushCallback(request: CallbackRequest): void {
   const callbackRequest = withExecutorAddress(request);
   const existingIndex = callbackQueue.findIndex(r => r.executionId === request.executionId);
@@ -107,7 +116,11 @@ export function pushCallback(request: CallbackRequest): void {
 
 async function doCallback(requests: CallbackRequest[]): Promise<boolean> {
   try {
-    const response = await untilDeadline(post('/api/executions/callback', requests), null);
+    // OBS-01: 回传 traceparent 头（admin 侧 execution-callback.controller 解析关联）
+    const response = await untilDeadline(
+      post('/api/executions/callback', requests, traceparentHeaderFor(requests)),
+      null,
+    );
     if (!response) return false;
     if (response.status >= 200 && response.status < 300) {
       logger.debug(`Callback successful for ${requests.length} execution(s)`);

@@ -95,7 +95,7 @@ describe('callbacks', () => {
     cb.pushCallback(latest);
     cb.startCallbackThread();
     await cb.stopCallbackThread();
-    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(latest)]);
+    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(latest)], {});
   });
 
   it('includes executorAddress when posting callbacks', async () => {
@@ -103,7 +103,7 @@ describe('callbacks', () => {
     cb.pushCallback(request);
     cb.startCallbackThread();
     await cb.stopCallbackThread();
-    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)]);
+    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)], {});
   });
 
   it('returns 0 for an empty queue', () => {
@@ -125,7 +125,7 @@ describe('callbacks', () => {
     await jest.advanceTimersByTimeAsync(1_000);
     await stopping;
     expect(post).toHaveBeenCalledTimes(1);
-    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)]);
+    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)], {});
     expect(cb.getPendingCallbackCount()).toBe(0);
     expect(files()).toEqual([]);
     expect(jest.getTimerCount()).toBe(0);
@@ -185,7 +185,7 @@ describe('callbacks', () => {
     flight.resolve({ status: 200 });
     await stopping;
     expect(post).toHaveBeenCalledTimes(1);
-    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)]);
+    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)], {});
     expect(cb.getPendingCallbackCount()).toBe(0);
     expect(files()).toEqual([]);
     expect(jest.getTimerCount()).toBe(0);

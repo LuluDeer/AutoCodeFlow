@@ -105,8 +105,11 @@ async function performRequest<T = any>(
   path: string,
   data?: Record<string, any>,
   retryCount: number = adminUrls.length,
+  extraHeaders?: Record<string, string>,
 ): Promise<AxiosResponse<T>> {
-  const headers = buildAuthHeaders(token);
+  const headers = extraHeaders
+    ? { ...buildAuthHeaders(token), ...extraHeaders }
+    : buildAuthHeaders(token);
 
   for (let i = 0; i < retryCount; i++) {
     try {
@@ -150,10 +153,11 @@ export async function request<T = any>(
   data?: Record<string, any>,
   retryCount: number = adminUrls.length,
   tokenMode: TokenMode = 'current',
+  extraHeaders?: Record<string, string>,
 ): Promise<AxiosResponse<T>> {
   const token = tokenMode === 'static' ? getStaticToken() : await getCurrentToken();
   try {
-    return await performRequest<T>(token, method, path, data, retryCount);
+    return await performRequest<T>(token, method, path, data, retryCount, extraHeaders);
   } catch (error) {
     // R10 (round-10 gap #3): stale-credential self-heal. A 401 on a
     // dynamic-token request means admin-api rotated our per-executor token
@@ -175,7 +179,7 @@ export async function request<T = any>(
     if (tokenMode === 'current' && isUnauthorized(error)) {
       const fresh = await forceTokenRefresh();
       if (fresh && fresh !== token) {
-        return performRequest<T>(fresh, method, path, data, retryCount);
+        return performRequest<T>(fresh, method, path, data, retryCount, extraHeaders);
       }
     }
     throw error;
@@ -186,8 +190,12 @@ export async function get<T = any>(path: string): Promise<AxiosResponse<T>> {
   return request('get', path);
 }
 
-export async function post<T = any>(path: string, data?: Record<string, any>): Promise<AxiosResponse<T>> {
-  return request('post', path, data);
+export async function post<T = any>(
+  path: string,
+  data?: Record<string, any>,
+  extraHeaders?: Record<string, string>,
+): Promise<AxiosResponse<T>> {
+  return request('post', path, data, adminUrls.length, 'current', extraHeaders);
 }
 
 export async function postWithStaticToken<T = any>(path: string, data?: Record<string, any>): Promise<AxiosResponse<T>> {
