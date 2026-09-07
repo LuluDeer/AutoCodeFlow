@@ -1415,6 +1415,7 @@ export class TaskService {
         task?.alarmChannels,
         undefined,
         execution.taskId ?? undefined,
+        task?.runbook,
       );
     } catch (err: unknown) {
       const notifyErrMsg = err instanceof Error ? err.message : String(err);
