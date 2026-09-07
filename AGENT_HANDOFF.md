@@ -3,13 +3,17 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-M：001/002 并行认领——SEC-05/DOC-01+CORE-03 收尾三项 done，主会话统一验收；仅剩 OBS-01 压轴）
+更新时间：2026-09-08（第十六轮·批 subagent-N 压轴收官：002 独扛 OBS-01 跨三端追踪全链闭环——**P1 任务板全清**，主会话五端总终验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-08 第十六轮·批 subagent-N 压轴，主会话总终验收）：
+  - `dff036d`+`5141962`+`e207958`+`54f9f6a`+`4228097` **OBS-01（002）OpenTelemetry 分布式追踪 done（可观测性 2.0 收官）**：架构裁定=只用 @opentelemetry/api 1.9.1 + 自实现极薄 span 管理（不引 sdk-*/exporter——无 collector 部署，span 树以进程内结构化日志承载，升级路径写入 deployment.md，埋点零改动可挂 SDK）；span 树 task.trigger→enqueue→dispatch.http→callback.receive 四站点父子串联；**W3C traceparent 全链贯穿**：traceId 落 task_executions（迁移 1789900000003 可空+索引）→ dispatch 头透传 → 执行器读头注入任务 env AUTOFLOW_TRACE_ID（用户参数不可覆盖）→ 六 pushCallback 站点（node）/_run_and_callback 双路径（py）回传 → admin 关联；OTEL_ENABLED 默认 false 零开销零行为变化，畸形头 fail-open；compose jaeger profile 预置（未启用零资源）；admin-web 详情页 traceId 展示+复制。缩水如实：执行器侧不做完整 span 树（预案内）、py kill 链路无 trace 关联（registry 先移除，注记）、Jaeger URL 不硬编码（纪律）。
+  - **主会话五端总终验收（全绿）**：admin-api **1884/1884**（+38）+ tsc ✓ + coverage 门槛卡点 · admin-web **297/297**（+4）+ build ✓ · executor-node **266/266**（+4，bundle 无漂移）· executor-python **222/222**（+5）
+- **第十六轮子代理批次总账（批 C~N，主会话派工+统一验收）**：P1 任务全部清零——CORE-01~06 · OBS-01~05 · SEC-01~05 · UI-01~05+08 · QA-02 两阶段 · ECO-01/03 · FEAT-01/02/04/05/06/08~12 · W2 · BUG-01/02/05~10/13~16 · QA-04/06 · ARCH-20/21/22/27 · DOC-01/02/03/04 全 done。测试基线从接手时 admin-api 1370/admin-web 160 增长到 **admin-api 1884 · admin-web 297 · executor-node 266 · executor-python 222**（全端 tsc/build/coverage 卡点绿）。剩余 unclaimed 53 项：P2/P3 长尾（AUTH 多租户族/DSK 桌面族/DEP-02~04/BUG 真机族/ECO-04~05/OBS-02 配套等）——多数依赖真机环境或产品拍板（AUTH-01 scope/DSK 真机/OBS-01 真机链路验证），按计划书 §10 编排滚入后续轮次。
 - 本轮（2026-09-08 第十六轮·批 subagent-M 终验收，主会话）：
   - `907af4f`+`a3012ca` **DOC-01（002）PR 检查项机制 done**：新建 .github/PULL_REQUEST_TEMPLATE.md——「API 变更？」四查（端点+api-reference 同批/breaking 影响面+四客户端包同批/env 三处登记引 W-22 前科/迁移时间戳防撞号）+「平台影响？」（bundle 同 commit/真机矩阵）+交付纪律段；development.md「PR 前检查清单」节交叉引用。
   - `726e2ec` **CORE-03 收尾「保存为模板」UI done（整体闭环）**：TaskDetailPage 页头 extra → Modal（名称/描述/分类）→ task-template-extract.ts 白名单抽取 17 项 CreateTaskDto 真实声明字段（priority 双形态归一，排除 id/status/glue 等非配置键）→ POST /task-templates；+7 例，admin-web **293/293**（基线 286）。glue 任务模板化留后续评估。
