@@ -36,6 +36,8 @@ import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 import { Optional } from "@nestjs/common";
 // CORE-02: 重试退避抖动——±20% 摊开同刻重试（recovery re-enqueue 路径）
 import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
+// CORE-05: 评分公式抽出（selectLeastLoaded / dispatch 双站点共享同一实现）
+import { computeExecutorLoadScore } from "./executor-score.util";
 
 @Injectable()
 export class ExecutorService {
@@ -872,22 +874,26 @@ export class ExecutorService {
       );
     }
 
-    // Weighted scoring: 50% task load ratio, 25% CPU, 25% memory.
+    // Weighted scoring (see executor-score.util.ts for the formula and units):
+    // 50% task load ratio + 25% CPU + 25% memory + 10% long-task penalty
+    // (CORE-05: executors currently running long-estimated tasks score worse,
+    // so a long task is preferentially steered to the emptier executor).
     // Executors at or above max capacity are excluded before scoring.
-    const scored = candidates
-      .filter((e) => {
-        const max = e.maxConcurrentTasks ?? Infinity;
-        return e.runningTaskCount < max;
-      })
-      .map((e) => {
-        const max = e.maxConcurrentTasks ?? 10;
-        const loadScore = e.runningTaskCount / max;
-        const cpuScore = (e.cpuUsage ?? 0) / 100;
-        const memScore = (e.memUsage ?? 0) / 100;
-        const score = loadScore * 0.5 + cpuScore * 0.25 + memScore * 0.25;
-        return { executor: e, score };
-      })
-      .sort((a, b) => a.score - b.score);
+    const scored = (
+      await Promise.all(
+        candidates
+          .filter((e) => {
+            const max = e.maxConcurrentTasks ?? Infinity;
+            return e.runningTaskCount < max;
+          })
+          .map(async (e) => ({
+            executor: e,
+            score: computeExecutorLoadScore(e, {
+              estimatedDurations: await this.estimatedDurationsFor(e),
+            }),
+          })),
+      )
+    ).sort((a, b) => a.score - b.score);
 
     if (scored.length === 0) {
       throw new ServiceUnavailableException(
@@ -895,6 +901,32 @@ export class ExecutorService {
       );
     }
     return scored[0].executor;
+  }
+
+  /**
+   * CORE-05: 该执行器当前运行中任务的预估时长集合（秒）。批量按地址取
+   * RUNNING 执行行，只取 taskId → tasks.estimatedDurationSec 一跳。
+   * 任何失败（查询异常/行丢失）按"无估时"降级 → longTaskPenalty=0，
+   * 评分退化为旧公式，调度永不因可观测性辅助面中断。
+   */
+  private async estimatedDurationsFor(executor: Executor): Promise<number[]> {
+    if (executor.runningTaskCount <= 0) return [];
+    try {
+      const running = await this.execRepo.find({
+        where: { executorAddress: executor.address, status: ExecutionStatus.RUNNING },
+        select: ["taskId"],
+      });
+      if (running.length === 0) return [];
+      const ids = [...new Set(running.map((r) => r.taskId))];
+      const rows = await this.taskRepo.find({
+        where: { id: In(ids) },
+        select: ["id", "estimatedDurationSec"],
+      });
+      const byId = new Map(rows.map((r) => [r.id, r.estimatedDurationSec]));
+      return running.map((r) => byId.get(r.taskId) ?? null);
+    } catch {
+      return [];
+    }
   }
 
   async dispatch(task: Task, execution: TaskExecution) {
@@ -978,20 +1010,20 @@ export class ExecutorService {
       }
     }
 
-    // 3. Weighted scoring (load 50%+CPU 25%+mem 25%), try optimistic lock in order
-    const sorted = [...candidates].sort((a, b) => {
-      const maxA = a.maxConcurrentTasks ?? 10;
-      const maxB = b.maxConcurrentTasks ?? 10;
-      const scoreA =
-        (a.runningTaskCount / maxA) * 0.5 +
-        ((a.cpuUsage ?? 0) / 100) * 0.25 +
-        ((a.memUsage ?? 0) / 100) * 0.25;
-      const scoreB =
-        (b.runningTaskCount / maxB) * 0.5 +
-        ((b.cpuUsage ?? 0) / 100) * 0.25 +
-        ((b.memUsage ?? 0) / 100) * 0.25;
-      return scoreA - scoreB;
-    });
+    // 3. Weighted scoring via the shared CORE-05 formula (load 50% + CPU 25% +
+    // mem 25% + long-task penalty 10%, see executor-score.util.ts), try
+    // optimistic lock in order.
+    const withScores = await Promise.all(
+      candidates.map(async (c) => ({
+        executor: c,
+        score: computeExecutorLoadScore(c, {
+          estimatedDurations: await this.estimatedDurationsFor(c),
+        }),
+      })),
+    );
+    const sorted = withScores
+      .sort((a, b) => a.score - b.score)
+      .map((s) => s.executor);
 
     // R-P0-006: Use optimistic locking with version to prevent TOCTOU race conditions
     let matched: Executor | null = null;

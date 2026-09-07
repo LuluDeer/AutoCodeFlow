@@ -263,6 +263,16 @@ export class Task {
   @Column({ type: "int", nullable: true })
   timeoutWarnRatio: number | null;
 
+  /**
+   * CORE-05: 预估执行时长（秒，可空整数，0/缺省 = 未知）。任务侧属性，
+   * 仅参与调度侧的执行器负载评分（ExecutorService 的 loadScore 加权），
+   * 心跳与统计面不消费该字段。null/0 表示未知——未知时长任务在评分中
+   * 按 ANTI_AFFINITY 公式的默认项计（见 executor.service.ts 的
+   * ESTIMATED_DURATION_WEIGHTS），行为与既有短任务语义对齐。
+   */
+  @Column({ type: "int", nullable: true })
+  estimatedDurationSec: number | null;
+
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;
 
