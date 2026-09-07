@@ -4,7 +4,7 @@ admin-api 的 Prometheus 指标（`GET /api/metrics`）配套的 Grafana 面板�
 
 | 文件 | 内容 |
 | --- | --- |
-| `grafana-dashboard.json` | 可导入的 Grafana dashboard（schemaVersion 39，uid `autoflow-obs-v1`）：调度健康 / 回调认证 / 进程资源 / 容量水位（OBS-05） 四组共 15 个数据面板 |
+| `grafana-dashboard.json` | 可导入的 Grafana dashboard（schemaVersion 39，uid `autoflow-obs-v1`）：调度健康 / 回调认证 / 进程资源 / 容量水位（OBS-05）/ 调度延迟（CORE-06） 五组共 17 个数据面板 |
 | `alerting-rules.yml` | Prometheus rule 文件：6 条启用告警 + 1 条注释预留（ExecutorOffline） |
 | `README.md` | 本文件：抓取配置、导入/挂载步骤、指标字典、series 核对清单 |
 
@@ -114,6 +114,13 @@ curl -fsS -X POST http://prometheus:9090/-/reload     # 需 --web.enable-lifecyc
   4. **容量水位（OBS-05）**：PG 连接池水位四 series（max/active/idle/waiting
      + 利用率 ratio stat，告警阈值 0.8）；executor 磁盘水位 per-executor
      （阈值 90%）；SSE 流水位（active/limit + 占用率 stat，阈值 0.8）。
+  5. **调度延迟（CORE-06）**：P99 / 窗口均值时序
+     （`histogram_quantile(0.99, sum by (le, instance) (rate(bucket[5m])))`，
+     阈值 250ms 黄 / 1000ms 红；avg = `rate(sum)/rate(count)`）+ P99 区间
+     累计瞬时值 stat。数据源 = `autoflow_scheduler_trigger_latency_ms_bucket`
+     （直方图桶 10/50/100/250/500/1000/2500/5000ms，+Inf 收口）；仅
+     fixed_rate/cron 触发计入。lastTriggerLatencyMs 未导出 prom series
+     （附录 A 纪律：不确定的 series 不做面板），故不设「最近一次延迟」stat。
 
 ## 3. 告警规则挂载
 
@@ -237,6 +244,8 @@ PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/
 | `autoflow_callback_business_total` | counter | `result=accepted\|duplicate\|not_found\|address_mismatch\|address_mismatch_missing_address\|error` | 回调业务结果分类（终态重复/地址不符等） |
 | `autoflow_scheduler_trigger_latency_ms_bucket` | counter/hist | `le=10\|50\|100\|250\|500\|1000\|2500\|5000\|+Inf` | CORE-06：定时触发（fixed_rate/cron）fire→入队延迟累计桶（毫秒）；与 scheduler-metrics.service.ts 的 TRIGGER_LATENCY_BUCKETS_MS 逐字对齐 |
 | `autoflow_scheduler_trigger_latency_ms_sum` / `_count` | counter | — | 延迟累计和 / 样本数（avg = sum/count） |
+
+> CORE-06 消费注记：P99 = `histogram_quantile(0.99, sum by (le, instance) (rate(autoflow_scheduler_trigger_latency_ms_bucket[5m])))`（区间线性插值，落在空桶时取桶上界）；avg = `rate(sum[5m])/clamp_min(rate(count[5m]), 1e-9)`。Grafana row 5（面板 501/502）已按此查询渲染；无样本时 P99 曲线缺席（rate 无增量），属正常态而非断线。
 | `autoflow_sse_streams_active` | gauge | — | 本进程当前持有的 SSE 日志流连接数（占用/释放两点同步写，BUG-05）；多实例容量 = Σ(instance) |
 | `autoflow_sse_streams_limit` | gauge | — | 本实例全局 SSE 并发上限（SSE_MAX_STREAMS_GLOBAL，默认 64，BUG-05）；占用率 = active/limit |
 
@@ -352,6 +361,8 @@ grep -rn 'QUEUE_STATES' apps/admin-api/src/modules/metrics/prometheus-metrics.se
 | 11 | `autoflow_sse_streams_active` / `autoflow_sse_streams_limit` | — | runtime-metrics.ts `RUNTIME_GAUGES`（渲染于 prometheus-metrics.service.ts） | 404 | ✅ |
 | 12 | `autoflow_db_pool_max_connections` / `autoflow_db_pool_active_connections` / `autoflow_db_pool_idle_connections` / `autoflow_db_pool_waiting_requests` | — | prometheus-metrics.service.ts（OBS-05，取数路径见 4.2） | 401、402 | ✅ |
 | 13 | `autoflow_executor_disk_usage_percent` | `executor=<address>`（动态集合：在线且上报 diskUsage 的执行器，见 4.2 呈现约定） | prometheus-metrics.service.ts（OBS-05） | 403 | ✅ |
+| 14 | `autoflow_scheduler_trigger_latency_ms_bucket` | `le=10/50/100/250/500/1000/2500/5000/+Inf`（prometheus-metrics.service.ts L219-224 与 TRIGGER_LATENCY_BUCKETS_MS 逐字对齐） | 同上 L219-360（渲染）← scheduler-metrics.service.ts L48-50（桶定义） | 501、502（CORE-06 row 5） | ✅ |
+| 15 | `autoflow_scheduler_trigger_latency_ms_sum` / `_count` | — | 同上 L225-233 / L357-360 | 501（avg = rate(sum)/rate(count)） | ✅ |
 | — | 执行器在线 series | — | 全库 grep `autoflow_` 仍无在线状态 series（OBS-05 的 disk series 是心跳上报的磁盘水位数值，**不是**在线状态） | EXECUTOR_OFFLINE 注释预留 | ✅（按任务要求注释说明） |
 
 备注：
@@ -364,5 +375,6 @@ grep -rn 'QUEUE_STATES' apps/admin-api/src/modules/metrics/prometheus-metrics.se
 - ③ `docs/api-reference.md` L302 的 series 清单与第十轮源码一致；**OBS-05
   新增的 5 个 series（4.2 节）尚未回补该文件**（本轮改动范围限定
   docs/observability/，回补待办）。
-- ④ 端点路径：`main.ts` `setGlobalPrefix("api")` + `@Controller("metrics")`
+- ④ CORE-06 lastTriggerLatencyMs：scheduler-metrics snapshot 里有，但未导出 prom series（prometheus-metrics.service.ts 无对应 Gauge 声明）——遵守「不确定的 series 不做面板」纪律，row 5 未设「最近一次延迟」stat，P99 瞬时值（区间累计）代替。
+- ⑤ 端点路径：`main.ts` `setGlobalPrefix("api")` + `@Controller("metrics")`
   → `/api/metrics`；默认端口 3105（`main.ts` L319）。
