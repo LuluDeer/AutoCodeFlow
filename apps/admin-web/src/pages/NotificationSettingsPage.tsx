@@ -1,8 +1,11 @@
 import { useState } from 'react';
-import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, Tag, Typography, Alert, Checkbox } from 'antd';
+import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, Tag, Typography, Alert, Checkbox, Popconfirm, Table, Select, InputNumber } from 'antd';
 import { CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
+import type { ColumnsType } from 'antd/es/table';
 import { client } from '../api/client';
+import { silencesApi, type NotificationSilence, type CreateSilencePayload, type SilenceScope } from '../api/notifications';
+import { useAuthStore, isAdminUser } from '../store/auth';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -152,9 +155,179 @@ function ChannelConfigForm({
   );
 }
 
+// ─── FEAT-01: 静默规则面板 ───────────────────────────────────────────────────
+// 后端端点（ADMIN-only，对齐 admin-api notification-config.controller.ts）：
+//   GET/POST /notification/silences、DELETE /notification/silences/:id。
+// 抑制语义（与后端 NotificationService.isSilenced 逐条对齐）：
+//   生效窗口内（startTime<=now<=endTime），命中 taskId（为空=全部任务）与
+//   level（为空=全部级别）的告警在发送前即被丢弃——全渠道抑制，不区分渠道；
+//   scope=task/application 均以 taskId 判定，channelType 仅作范围记录。
+const CHANNEL_LABELS: Record<string, string> = {
+  email: '邮件',
+  slack: 'Slack',
+  dingtalk: '钉钉',
+  wecom: '企业微信',
+  webhook: 'Webhook',
+};
+
+function fmtEndTime(v: string | null): string {
+  return v ? new Date(v).toLocaleString('zh-CN') : '不过期';
+}
+
+/** 剩余时间；已过期或无界（endTime 为空）返回 null */
+function fmtRemaining(endTime: string | null): string | null {
+  if (!endTime) return null;
+  const mins = Math.floor((new Date(endTime).getTime() - Date.now()) / 60_000);
+  if (mins <= 0) return null;
+  const d = Math.floor(mins / 1440);
+  const h = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  if (d > 0) return `${d} 天 ${h} 小时`;
+  if (h > 0) return `${h} 小时 ${m} 分`;
+  return `${m} 分钟`;
+}
+
+function SilenceRulesPanel({ active }: { active: boolean }) {
+  const [form] = Form.useForm();
+  const scope: SilenceScope = Form.useWatch('scope', form) ?? 'global';
+
+  // 仅在「静默规则」Tab 激活时拉取（useRequest ready），避免进入页面即发 ADMIN-only 请求
+  const { data: silences, loading, refresh } = useRequest(silencesApi.list, { ready: active });
+
+  const { run: createRule, loading: creating } = useRequest(
+    async (payload: CreateSilencePayload) => {
+      await silencesApi.create(payload);
+    },
+    { manual: true, onSuccess: () => { message.success('静默规则已创建'); form.resetFields(); refresh(); } },
+  );
+
+  const { run: removeRule } = useRequest(
+    async (id: string) => {
+      await silencesApi.remove(id);
+    },
+    { manual: true, onSuccess: () => { message.success('静默规则已删除'); refresh(); } },
+  );
+
+  const onFinish = (values: {
+    scope: SilenceScope;
+    taskId?: string;
+    applicationId?: string;
+    durationMinutes: number;
+    reason?: string;
+  }) => {
+    const payload: CreateSilencePayload = {
+      scope: values.scope,
+      durationMinutes: values.durationMinutes,
+    };
+    if (values.reason?.trim()) payload.reason = values.reason.trim();
+    if (values.scope === 'task') payload.taskId = values.taskId?.trim();
+    if (values.scope === 'application') payload.applicationId = values.applicationId?.trim();
+    createRule(payload);
+  };
+
+  const cols: ColumnsType<NotificationSilence> = [
+    { title: '维度', dataIndex: 'scope', width: 220,
+      render: (_: unknown, r: NotificationSilence) =>
+        r.scope === 'global' ? (
+          <Tag color="purple">全局</Tag>
+        ) : r.scope === 'task' ? (
+          <span>任务 <Typography.Text code style={{ fontSize: 12 }}>{r.taskId ?? '-'}</Typography.Text></span>
+        ) : (
+          <span>应用 <Typography.Text code style={{ fontSize: 12 }}>{r.applicationId ?? '-'}</Typography.Text></span>
+        ) },
+    { title: '渠道', dataIndex: 'channelType', width: 100,
+      render: (v: string | null) => (v ? CHANNEL_LABELS[v] ?? v : '全部渠道') },
+    { title: '有效期至', dataIndex: 'endTime', width: 170, render: fmtEndTime },
+    { title: '剩余时间', dataIndex: 'endTime', width: 130,
+      render: (v: string | null) => {
+        const remain = fmtRemaining(v);
+        if (remain) return remain;
+        return v ? <Tag color="red">已过期</Tag> : <Typography.Text type="secondary">-</Typography.Text>;
+      } },
+    { title: '创建人', dataIndex: 'createdBy', width: 100,
+      render: (v: string | null) => v ?? '-' },
+    { title: '说明', dataIndex: 'reason', ellipsis: true,
+      render: (v: string | null) => v ?? '-' },
+    { title: '', width: 80,
+      render: (_: unknown, r: NotificationSilence) => (
+        // Popconfirm 删除，对齐 settings 页 SystemConfigTab 先例
+        <Popconfirm
+          title="确认删除此静默规则？"
+          description="删除后对应告警将立即恢复推送。"
+          okText="删除"
+          okButtonProps={{ danger: true }}
+          onConfirm={() => removeRule(r.id)}
+        >
+          <Button size="small" danger>删除</Button>
+        </Popconfirm>
+      ) },
+  ];
+
+  return (
+    <div>
+      <Alert
+        type="info"
+        showIcon
+        title="静默生效期间，命中规则的告警将被抑制发送"
+        description={
+          '在有效期窗口内（生效中的规则在服务重启后仍保留），命中任务与级别的告警在发送前即被拦截、不会推送到任何通知渠道。' +
+          '匹配逻辑与后端发送判定一致：未指定任务 = 全部任务，级别为全部级别；静默命中时全渠道抑制，渠道字段仅作范围记录。'
+        }
+      />
+      <Card type="inner" title="新建静默规则" style={{ marginTop: 16 }}>
+        <Form form={form} layout="vertical" initialValues={{ scope: 'global' }} onFinish={onFinish}>
+          <Form.Item name="scope" label="静默维度" rules={[{ required: true, message: '请选择静默维度' }]}>
+            <Select
+              options={[
+                { value: 'global', label: '全局（抑制所有任务的告警）' },
+                { value: 'task', label: '指定任务' },
+                { value: 'application', label: '指定应用' },
+              ]}
+            />
+          </Form.Item>
+          {scope === 'task' && (
+            <Form.Item name="taskId" label="任务 ID" rules={[{ required: true, whitespace: true, message: '请输入任务 ID' }]}>
+              <Input placeholder="任务 UUID（仅该任务的告警被静默）" />
+            </Form.Item>
+          )}
+          {scope === 'application' && (
+            <Form.Item name="applicationId" label="应用 ID" rules={[{ required: true, whitespace: true, message: '请输入应用 ID' }]}>
+              <Input placeholder="应用 UUID（该应用下任务的告警被静默）" />
+            </Form.Item>
+          )}
+          <Form.Item name="durationMinutes" label="静默时长" rules={[{ required: true, message: '请输入静默时长' }]}>
+            <InputNumber min={1} precision={0} placeholder="如 30" addonAfter="分钟" style={{ width: 220 }} />
+          </Form.Item>
+          <Form.Item name="reason" label="说明（可选）">
+            <TextArea rows={2} maxLength={255} placeholder="静默原因，如：发布窗口、线上维护" />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" loading={creating}>新建静默规则</Button>
+          </Form.Item>
+        </Form>
+      </Card>
+      <Card type="inner" title="静默规则列表" style={{ marginTop: 16 }}>
+        <Table
+          loading={loading}
+          dataSource={silences ?? []}
+          rowKey="id"
+          columns={cols}
+          size="small"
+          pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }}
+          locale={{ emptyText: '暂无静默规则' }}
+        />
+      </Card>
+    </div>
+  );
+}
+
 export default function NotificationSettingsPage() {
   const [activeTab, setActiveTab] = useState('email');
   const [globalTestResult, setGlobalTestResult] = useState<TestResult | null>(null);
+  // FEAT-01: 静默规则 CRUD 端点为 ADMIN-only，非管理员不渲染 Tab（零入口，
+  // 对齐 settings 页 useIsAdmin 先例——不做无谓的 403 请求）
+  const user = useAuthStore((s) => s.user);
+  const isAdmin = isAdminUser(user);
 
   const { data: channels, loading, refresh } = useRequest(notificationApi.getChannels);
   const channel = channels?.find((c) => c.key === activeTab);
@@ -204,6 +377,19 @@ export default function NotificationSettingsPage() {
     ),
   })) ?? [];
 
+  // FEAT-01: 增量追加「静默规则」Tab（不影响既有渠道 Tab 的组织方式）；
+  // 面板仅在激活时拉取列表（ready: active）。
+  const tabItems2 = [
+    ...tabItems,
+    ...(isAdmin
+      ? [{
+          key: 'silences',
+          label: '静默规则',
+          children: <SilenceRulesPanel active={activeTab === 'silences'} />,
+        }]
+      : []),
+  ];
+
   return (
     <div>
       <Typography.Title level={4} style={{ marginBottom: 16 }}>通知设置</Typography.Title>
@@ -212,7 +398,7 @@ export default function NotificationSettingsPage() {
         <Tabs
           activeKey={activeTab}
           onChange={(k) => { setActiveTab(k); }}
-          items={tabItems}
+          items={tabItems2}
         />
       </Card>
 
