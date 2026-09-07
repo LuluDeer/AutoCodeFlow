@@ -85,7 +85,8 @@ POST /api/auth/login
 | PUT | `/applications/:id` | 是 | 更新应用信息（含 `webhookSecret` 配置） |
 | DELETE | `/applications/:id` | 是 | 删除应用 |
 | POST | `/applications/upload` | 是 | 上传应用包（multipart/form-data，按名称 upsert） |
-| GET | `/applications/:id/versions` | 是 | 版本历史快照（无快照的历史数据回退展示部署记录） |
+| GET | `/applications/:id/versions` | 是 | 版本历史快照（无快照的历史数据回退展示部署记录）——DEP-01 后作为过渡期 alias 保留，统一追溯请用 `/applications/:id/releases` |
+| GET | `/applications/:id/releases` | 是 | **统一发布追溯视图（DEP-01 新增）**：按版本聚合包地址与最近一次部署的状态/时间/触发方式，见下节 |
 | POST | `/applications/:id/upgrade-all` | 是 | 对所有 RUNNING 部署触发滚动升级 |
 | POST | `/applications/:id/sync-tasks` | 是 | 解析应用 manifest.json 自动注册任务 |
 | POST | `/applications/:id/analyze` | 是 | AI 应用健康分析（聚合全部任务执行统计） |
@@ -146,7 +147,7 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/app-deployments` | 是 | 分页查询部署列表，支持 `applicationId` 过滤（`page` 默认 1，`pageSize` 默认 20、最大 100） |
+| GET | `/app-deployments` | 是 | 分页查询部署列表，支持 `applicationId` 过滤（`page` 默认 1，`pageSize` 默认 20、最大 100）——DEP-01 后作为过渡期 alias 保留，「按版本聚合部署信息」的统一视图用 `/applications/:id/releases` |
 | GET | `/app-deployments/:id` | 是 | 获取部署详情 |
 | POST | `/app-deployments/applications/:appId/deploy` | 是 | 将应用分配到执行器部署；`executorId` 留空时自动选择在线且负载最低的执行器 |
 | POST | `/app-deployments/:id/upgrade` | 是 | 触发部署升级（overlay upgrade） |
@@ -165,6 +166,27 @@ Content-Type: application/json
 > *heartbeat 使用 `X-Executor-Token` 请求头认证（按部署关联的执行器逐个校验 per-executor token，兼容旧共享 token），非用户 JWT。
 >
 > **并发部署冲突（409）**：同一应用已存在 `pending` / `deploying` / `upgrading` 状态的部署行时，再次 `POST /app-deployments/applications/:appId/deploy` 返回 **409**（`already has an in-progress deployment... Wait for it to finish or cancel it first`）。应用层 findOne 预检与数据库部分唯一索引 `uq_app_deployments_application_in_flight`（并发插入竞态兜底，23505 → 409）双层拦截，两条路径返回同一冲突语义。等待在途部署完成（或升级结束）后重试即可。
+
+---
+
+## Releases — 统一发布追溯（DEP-01 新增）
+
+`GET /api/applications/:id/releases?page=1&pageSize=50`（任意认证用户，默认 JWT）
+
+**目标**：合并 `application_versions`（版本号/包地址/快照）与 `app_deployments`（部署时间/状态/执行器）两个语义面，**一行 = 一次版本发布**，「这次部署用了哪个包」一屏完成。纯只读聚合视图，**零 schema 变更**（不占迁移时间戳）。
+
+**响应** `{ data: AppReleaseRow[], total, page, pageSize }`——`total` 为版本快照表行数（synthetic 部署聚合行不并入，属过渡期语义），`pageSize` 默认 50、**上限 200**（超出部分截断，防全表）。排序键 = 该版本最近一次部署完成时刻（无部署则为版本行创建时刻），降序。
+
+| 字段 | 来源 | 说明 |
+|------|------|------|
+| `version` / `id` / `gitCommit` / `status` / `createdAt` / `sourceDeploymentId` | `application_versions` | `id` 为快照行 id；合成部署行时 `id=null` |
+| `packageUrl` | 快照行 `snapshot.packageUrl` | 部署当时的包地址（历史语义，不回退应用当前值——当前值在 `GET /applications/:id`）；无快照行为 null |
+| `deployedAt` / `latestDeploymentId` / `deploymentStatus` / `executorAddress` / `runMode` | 该版本 `deployedVersion` 匹配的**最近一次** `app_deployments` 行（`deployedAt ?? createdAt` 最大） | 同版本多实例/多次部署各计入 `deploymentCount`；无部署的版本行这些字段为 null（行仍出现） |
+| `triggerType` | 推导：升级指纹（statusMessage `Upgrade triggered`/`Pulling latest commit…`）→ `upgrade`；`deployedAt` 已置位 → `manual`；否则 `unknown`；无部署 → null | **已知限制**：两表无持久化 trigger 列；既有部署行被复用做升级且推送成功后文案被覆盖时可能误判 `manual`。落库 trigger 列属后续轮 schema 工作 |
+| `operator` / `operatorSource` / `operatorMissingReason` | `application_versions.createdBy` | **来源缺失如实标注**：当前所有写入路径均未填充 `createdBy`（恒 null），且 `audit_logs` 不覆盖部署写面；AUTH-05 审计扩展接线后自动可得 |
+| `synthetic` | — | 有部署记录但从未保存版本快照的历史数据（心跳竞态等）合成行，`deployedVersion=null` 的部署归一为一条 `version=null` 行；对齐 `/versions` 的 legacy fallback 语义，仅第 1 页参与 |
+
+> **旧端点过渡期保留（不删除、不重定向）**：`GET /applications/:id/versions`（版本快照/回滚消费面，携带 snapshot 与 deployCount）与 `GET /app-deployments`（逐部署行列表）与本端点数据同源；新前端一律消费 `/releases`，旧端点收口另立任务。admin-web `ApplicationDetailPage` 接入为后续轮工作（本任务只落 API 契约）。
 
 ---
 
