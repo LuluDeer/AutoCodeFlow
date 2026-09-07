@@ -35,10 +35,28 @@ import { BatchTaskIdsDto } from "./dto/batch-task.dto";
 import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import {
   AllExecutionsQueryDto,
+  ExecutionLogsQueryDto,
   TaskExecutionsQueryDto,
 } from "./dto/execution-query.dto";
 import { SkipTimeout } from "../../common/decorators/skip-timeout.decorator";
 import { AuditService } from "../audit/audit.service";
+// OBS-03: level 查询参数的值域常量（与实体列/迁移/DTO 共用口径）
+import { LOG_LEVEL_VALUES, type LogLevel } from "./log-level.util";
+
+/**
+ * OBS-03: level 查询参数的运行态兜底归一化（HTTP 边界已由全局
+ * ValidationPipe 对 ExecutionLogsQueryDto.level 的 @IsIn 枚举校验拦截
+ * 非法值为 400，且枚举严格大写；这里只为兼容大小写变体/防编程式调用方
+ * 把脏值送进 SQL）。非法值返回 undefined（= 不过滤），与"未传 level"
+ * 同一语义，绝不产生错误过滤结果。
+ */
+function parseLevelParam(level?: string): LogLevel | undefined {
+  if (!level) return undefined;
+  const normalized = level.toUpperCase();
+  return (LOG_LEVEL_VALUES as readonly string[]).includes(normalized)
+    ? (normalized as LogLevel)
+    : undefined;
+}
 
 @ApiTags("Task Management")
 @ApiBearerAuth("JWT")
@@ -325,15 +343,22 @@ export class TaskController {
     required: false,
     description: "Lines per page, default 500, max 2000",
   })
+  @ApiQuery({
+    name: "level",
+    required: false,
+    enum: LOG_LEVEL_VALUES,
+    description:
+      "Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count.",
+  })
   executionLogsByExecId(
     @Param("execId") execId: string,
-    @Query("fromLine") fromLine?: string,
-    @Query("limit") limit?: string,
+    @Query() query: ExecutionLogsQueryDto,
   ) {
     return this.taskService.getExecutionLogs(
       execId,
-      fromLine ? parseInt(fromLine, 10) || 0 : 0,
-      limit ? Math.min(parseInt(limit, 10) || 500, 2000) : 500,
+      query.fromLine ? parseInt(query.fromLine, 10) || 0 : 0,
+      query.limit ? Math.min(parseInt(query.limit, 10) || 500, 2000) : 500,
+      parseLevelParam(query.level),
     );
   }
 
@@ -566,17 +591,24 @@ export class TaskController {
     required: false,
     description: "Lines per page, default 500, max 2000",
   })
+  @ApiQuery({
+    name: "level",
+    required: false,
+    enum: LOG_LEVEL_VALUES,
+    description:
+      "Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count.",
+  })
   async executionLogs(
     @Param("id") id: string,
     @Param("execId") execId: string,
-    @Query("fromLine") fromLine?: string,
-    @Query("limit") limit?: string,
+    @Query() query: ExecutionLogsQueryDto,
   ) {
     await this.taskService.getExecution(execId, id);
     return this.taskService.getExecutionLogs(
       execId,
-      fromLine ? parseInt(fromLine, 10) || 0 : 0,
-      limit ? Math.min(parseInt(limit, 10) || 500, 2000) : 500,
+      query.fromLine ? parseInt(query.fromLine, 10) || 0 : 0,
+      query.limit ? Math.min(parseInt(query.limit, 10) || 500, 2000) : 500,
+      parseLevelParam(query.level),
     );
   }
 

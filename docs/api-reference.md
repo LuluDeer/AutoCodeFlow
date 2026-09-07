@@ -189,13 +189,13 @@ Content-Type: application/json
 | POST | `/tasks/:id/suggest-schedule` | 是 | AI 调度建议（响应含 `fallback` 标记，见下） |
 | GET | `/tasks/:id/executions` | 是 | 分页查询该任务的执行记录 |
 | GET | `/tasks/:id/executions/:execId` | 是 | 执行详情 |
-| GET | `/tasks/:id/executions/:execId/logs` | 是 | 按行分页获取执行日志（`fromLine` 默认 0，`limit` 默认 500、最大 2000） |
+| GET | `/tasks/:id/executions/:execId/logs` | 是 | 按行分页获取执行日志（`fromLine` 默认 0，`limit` 默认 500、最大 2000；可选 `level` 过滤，见下） |
 | GET | `/tasks/:id/executions/:execId/logs/stream` | 是 | SSE 实时日志流（并发上限，见下） |
 | POST | `/tasks/:id/executions/:execId/kill` | 是 | 强制取消 running/pending 执行 |
 | POST | `/tasks/:id/executions/:execId/analyze` | 是 | 按需触发 AI 执行分析，结果落库并返回 |
 | GET | `/tasks/executions/all` | 是 | 全局执行记录分页（status/taskId/taskName/executorAddress/时间范围） |
 | GET | `/tasks/executions/:execId` | 是 | 按执行 ID 查详情（兼容别名，acf-cli / mcp-server 使用） |
-| GET | `/tasks/executions/:execId/logs` | 是 | 按执行 ID 取日志（兼容别名） |
+| GET | `/tasks/executions/:execId/logs` | 是 | 按执行 ID 取日志（兼容别名；参数同上，含 `level`） |
 | GET | `/tasks/scheduler/stats` | 是 | 调度器状态 |
 | GET | `/tasks/:id/versions` | 是 | 任务版本列表 |
 | GET | `/tasks/:id/versions/:v1/compare/:v2` | 是 | 两个版本的 diff |
@@ -233,6 +233,13 @@ Content-Type: application/json
 ```
 
 - `fallback: true` 表示 AI 不可用或响应解析失败，`suggestedCron` 回退为当前 cron 值（服务端记录 warn 日志）；调用方可据此区分「AI 建议」与「回退值」。
+
+**执行日志按级别过滤（GET /tasks/:id/executions/:execId/logs 及其兼容别名，OBS-03）：**
+
+- 查询参数 `level`：可选，枚举 `ERROR` / `WARN` / `INFO` / `DEBUG`（严格大写）。日志行写入时从行文本推断级别（行首或时间戳后的 `[ERROR]`/`ERROR:` 等标注，大小写不敏感，`WARNING` 归一化为 `WARN`）并落库；过滤在 SQL 层等值下推
+- **未知级别行（`level=null`：存量历史行或文本推断不到的行）在 `level` 过滤时一律不返回**；不传 `level` 时行为与引入前完全一致（含 null 行）
+- 带 `level` 过滤时，`fromLine` 的语义从"物理行号游标"变为"**过滤后序列的偏移量**"（被过滤掉的行不占用分页窗口），响应中的 `totalLines` 与 `hasMore` 均按**过滤后行集**计算；不传 `level` 时保持既有"物理行号游标 + 全量 `totalLines`"语义
+- 分页参数不变：`fromLine` 默认 0，`limit` 默认 500、最大 2000
 
 **SSE 日志流（GET /tasks/:id/executions/:execId/logs/stream）：**
 
