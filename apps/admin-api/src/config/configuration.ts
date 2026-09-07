@@ -282,6 +282,13 @@ export default () => ({
       10,
     ),
   },
+  // OBS-01: OpenTelemetry 分布式追踪开关。默认 false——零开销零行为变化
+  // （TracingService 全方法短路：不产 span、不生成 traceparent、不加请求头）。
+  // true 时进程内 span 树 + traceId 贯穿落库（@opentelemetry/api-only 方案，
+  // 不引 sdk-*/exporter——升级路径见 docs/deployment.md OTEL 段）。
+  tracing: {
+    enabled: process.env.OTEL_ENABLED === "true",
+  },
 });
 
 // M3: fail-fast in production for critical secrets that have known weak defaults
