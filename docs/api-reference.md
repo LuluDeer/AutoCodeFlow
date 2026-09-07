@@ -166,6 +166,8 @@ multipart/form-data 字段：
 - 按名称 upsert：应用已存在则只更新 `packageUrl`（可选更新 runtime），不存在则创建（初始版本 `1.0.0`）
 - `packageUrl` 由 `API_BASE_URL` 拼接生成：`{API_BASE_URL}/uploads/packages/{filename}`
 - **`API_BASE_URL` 未配置时直接返回 500（fail-fast）**，不再静默回退 `http://localhost:PORT` 生成不可达 URL
+- **SEC-05 zip bomb 防护（400 拒绝）**：包落库前过中央目录结构守卫——解压比 / 条目数 / 单文件与总量声明上限（env `ZIP_MAX_*` 可调，默认 100 / 10000 / 1 GiB / 2 GiB）+ 嵌套 zip 探测 1 层；结构损坏（截断 / CD 尺寸篡改 / zip64 哨兵）同样 400（`Package rejected by zip-bomb guard (<violation>)`）
+- **SEC-05 可选 clamd 扫描（`CLAMD_ENABLED=true` 时）**：上传包流式 INSTREAM 送 ClamAV；**fail-closed**——检出 400，扫描不可达/超时/异常 503（`antivirus scan is unavailable (fail-closed)`）；默认关闭零影响。行为细节见 docs/deployment.md「上传面 zip bomb 防护与病毒扫描」
 
 **Webhook 发版请求体：**
 
