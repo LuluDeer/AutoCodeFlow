@@ -12,12 +12,15 @@ const INTERNAL = 'http://internal.test:3105';
 const EXTERNAL = 'https://external.test/api';
 
 // 隔离 api 层：页面只需 execution 返回非终态即可触发 SSE 效果。
+// CORE-02: 详情页新增消费 get / executionsWithStatus——mock 补齐防 TypeError。
 vi.mock('../api/tasks', () => ({
   tasksApi: {
     execution: vi.fn(),
     killExecution: vi.fn(),
     trigger: vi.fn(),
     analyzeExecution: vi.fn(),
+    get: vi.fn(),
+    executionsWithStatus: vi.fn(),
   },
 }));
 
@@ -74,6 +77,11 @@ async function openSseWithToggle(useExternal: boolean): Promise<{ url: string; a
     status: 'running',
     triggerType: 'manual',
     createdAt: new Date().toISOString(),
+  } as never);
+  // CORE-02: 详情页新增消费——本套件不关注，空实现即可。
+  vi.mocked(tasksApi.get).mockResolvedValue({ id: 't1', maxRetry: 3, retryDelay: 5 } as never);
+  vi.mocked(tasksApi.executionsWithStatus).mockResolvedValue({
+    items: [{ id: 'e1', retryCount: 0, status: 'running' }], total: 1, page: 1, pageSize: 100,
   } as never);
   const { useAuthStore } = await import('../store/auth');
   useAuthStore.getState().setAuth('tok-123', 'refresh-1', { id: 1, username: 'admin' });

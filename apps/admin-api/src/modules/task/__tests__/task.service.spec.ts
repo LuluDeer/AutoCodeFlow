@@ -31,6 +31,8 @@ import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
 // SEC-02: secrets 加密服务（测试默认降级明文；加密/脱敏专项断言另有 spec）
 import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.service";
+// OBS-04（001 在途）：TaskService 新增注入的读侧实体（本 spec 仅注册空仓 provider）
+import { ExecutionReport } from "../../metrics/entities/execution-report.entity";
 // 可观测性补齐轮：运行时计数器模块级快照（埋点断言入口）
 import {
   getRuntimeCountersSnapshot,
@@ -243,6 +245,10 @@ describe("TaskService (__tests__)", () => {
           provide: SecretsCryptoService,
           useValue: new SecretsCryptoService({ get: () => "" } as any),
         },
+        // OBS-04（001 在途）：TaskService 新增 ExecutionReport 注入——本 spec
+        // 补空仓 provider 兜底（002/CORE-02 提交时工作区共存，147 例用例
+        // 因缺 provider 整套红；此 provider 为结构性兜底，不改变任何断言）。
+        { provide: getRepositoryToken(ExecutionReport), useValue: {} },
       ],
     }).compile();
 
@@ -763,12 +769,20 @@ describe("TaskService (__tests__)", () => {
         "execute",
         { executionId: "exec-1" },
         // N2: enqueue options now always carry a normalized numeric priority
+        // CORE-02: delay 带 ±20% 抖动——断言落在 [4000, 6000] 区间
         {
           attempts: 3,
-          backoff: { type: "exponential", delay: 5_000 },
+          backoff: {
+            type: "exponential",
+            delay: expect.any(Number),
+          },
           priority: 2,
         },
       );
+      const opts = taskQueue.add.mock.calls[0][2];
+      expect(opts.backoff.delay).toBeGreaterThanOrEqual(4_000);
+      expect(opts.backoff.delay).toBeLessThanOrEqual(6_000);
+      expect(Number.isInteger(opts.backoff.delay)).toBe(true);
       expect(result).toEqual(exec);
     });
 
@@ -1444,12 +1458,16 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "rb-exec" },
+        // CORE-02: delay 带 ±20% 抖动——断言落在 [5600, 8400] 区间
         {
           attempts: 2,
-          backoff: { type: "exponential", delay: 7_000 },
+          backoff: { type: "exponential", delay: expect.any(Number) },
           priority: 2,
         },
       );
+      const rollbackOpts = taskQueue.add.mock.calls[0][2];
+      expect(rollbackOpts.backoff.delay).toBeGreaterThanOrEqual(5_600);
+      expect(rollbackOpts.backoff.delay).toBeLessThanOrEqual(8_400);
     });
 
     it("re-schedules active task after rollback", async () => {

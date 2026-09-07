@@ -20,6 +20,8 @@ import {
   normalizeTaskPriority,
 } from "../task/entities/task.entity";
 import { findActiveMaintenanceWindow } from "../task/maintenance-window.util";
+// CORE-02: 重试退避抖动——±20% 摊开同周期失败任务的的重试时刻
+import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -970,7 +972,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           task.retryDelay > 0
             ? {
                 type: "exponential" as const,
-                delay: task.retryDelay * 1000,
+                // CORE-02: 首次尝试即预乘指数基座并加 ±20% 抖动，摊开同周期
+                // 失败任务的重试时刻（thundering herd）。
+                delay: jitteredRetryDelayMs(task.retryDelay, 1),
               }
             : undefined,
         // N2: DB 里 priority 是 PG 字符串枚举，TypeORM 读回 'normal' 等
