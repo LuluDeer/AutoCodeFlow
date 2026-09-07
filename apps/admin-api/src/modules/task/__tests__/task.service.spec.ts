@@ -3479,3 +3479,493 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     });
   });
 });
+
+// ============================================================================
+// QA-02 第二阶段（branches 冲 75）：task.service 剩余分支定向补测。
+// 范围：findAll/getAllExecutions 过滤分支、suggestSchedule 统计分支、
+// getExecutionStats 空/满矩阵、update 超时策略归一化、SSE 槽位配置解析、
+// saveVersion maxNum 分支、rollback enqueue 失败补偿。
+// 全部断言具体行为，无凑数弱断言。
+// ============================================================================
+
+describe("TaskService — QA-02 phase 2 branch gaps", () => {
+  let service: TaskService;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let logLineRepo: ReturnType<typeof makeRepo>;
+  let versionRepo: ReturnType<typeof makeRepo>;
+  let taskQueue: { add: jest.Mock };
+  let dataSource: { transaction: jest.Mock; createQueryBuilder: jest.Mock };
+  let aiService: {
+    analyzeFailure: jest.Mock;
+    chat: jest.Mock;
+    suggestSchedule: jest.Mock;
+  };
+
+  beforeEach(async () => {
+    resetRuntimeMetrics();
+    taskRepo = makeRepo();
+    execRepo = makeRepo();
+    // makeRepo 基础键不含 update——rollback 的 enqueue 失败补偿走 execRepo.update
+    execRepo.update = jest.fn().mockResolvedValue({ affected: 1 });
+    logLineRepo = makeRepo();
+    versionRepo = makeRepo();
+    taskQueue = { add: jest.fn().mockResolvedValue({}) };
+    const releaseSlotExecute = jest.fn().mockResolvedValue({ affected: 1 });
+    dataSource = {
+      transaction: jest.fn(async (fn: any) =>
+        fn({
+          delete: jest.fn(async (_t: unknown, c: unknown) =>
+            logLineRepo.delete(c as any),
+          ),
+          create: jest.fn((d: any) => d),
+          save: jest.fn(async (_t: unknown, rows: unknown) =>
+            logLineRepo.save(rows as any),
+          ),
+        }),
+      ),
+      createQueryBuilder: jest.fn(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: releaseSlotExecute,
+      })),
+    };
+    aiService = {
+      analyzeFailure: jest.fn().mockResolvedValue(""),
+      chat: jest.fn().mockResolvedValue(""),
+      suggestSchedule: jest.fn().mockResolvedValue({
+        suggestedCron: "0 3 * * *",
+        reasoning: "AI suggestion",
+        fallback: false,
+      }),
+    };
+
+    const module = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        {
+          provide: getRepositoryToken(ExecutionLogLine),
+          useValue: logLineRepo,
+        },
+        { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
+        { provide: getQueueToken("task-queue"), useValue: taskQueue },
+        { provide: DataSource, useValue: dataSource },
+        {
+          provide: SchedulerService,
+          useValue: {
+            stop: jest.fn(),
+            scheduleOne: jest.fn(),
+            getStats: jest.fn().mockReturnValue({}),
+          },
+        },
+        { provide: AiService, useValue: aiService },
+        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue("") } },
+        {
+          provide: ExecutorService,
+          useValue: {
+            getExecutorUrl: jest.fn(
+              (_a: string, p: string) => `http://executor:3001/${p}`,
+            ),
+            getSharedToken: jest.fn().mockResolvedValue(""),
+            notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+            scheduleRetryAfterRecovery: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: DomainEventBus, useValue: { emit: jest.fn() } },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+        { provide: getRepositoryToken(ExecutionReport), useValue: {} },
+      ],
+    }).compile();
+
+    service = module.get(TaskService);
+  });
+
+  describe("findAll — filter matrix", () => {
+    it("combines status/name/runtime/applicationId into the where clause", async () => {
+      taskRepo.findAndCount.mockResolvedValue([[], 0]);
+      await service.findAll({
+        status: "active",
+        name: "backup",
+        runtime: "python",
+        applicationId: "app-1",
+        page: 2,
+        pageSize: 20,
+      } as any);
+      const arg = taskRepo.findAndCount.mock.calls[0][0];
+      expect(arg.where).toEqual({
+        status: "active",
+        name: expect.anything(), // ILike
+        runtime: "python",
+        applicationId: "app-1",
+      });
+      expect(arg.skip).toBe(20);
+      expect(arg.take).toBe(20);
+    });
+
+    it("omits absent filters from the where clause", async () => {
+      taskRepo.findAndCount.mockResolvedValue([[], 0]);
+      await service.findAll({ page: 1, pageSize: 10 } as any);
+      const arg = taskRepo.findAndCount.mock.calls[0][0];
+      expect(Object.keys(arg.where)).toEqual(["status"]);
+    });
+  });
+
+  describe("getAllExecutions — time-range filters and taskName coalescing", () => {
+    const makeQb = (rows: unknown[]) => ({
+      leftJoin: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([rows, rows.length]),
+    });
+
+    it("applies startTime/endTime range filters to the query", async () => {
+      const qb = makeQb([]);
+      execRepo.createQueryBuilder.mockReturnValue(qb as any);
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 10,
+        startTime: "2026-09-01T00:00:00Z",
+        endTime: "2026-09-02T00:00:00Z",
+      } as any);
+      const called = qb.andWhere.mock.calls.map((c: unknown[]) => c[0]);
+      expect(called).toContain("e.createdAt >= :startTime");
+      expect(called).toContain("e.createdAt <= :endTime");
+    });
+
+    it("keeps a missing taskName as null when no task row backfills it", async () => {
+      const qb = makeQb([{ id: "e1", taskId: "t1", taskName: null }]);
+      execRepo.createQueryBuilder.mockReturnValue(qb as any);
+      taskRepo.find.mockResolvedValue([]);
+      const result = await service.getAllExecutions({
+        page: 1,
+        pageSize: 10,
+      } as any);
+      expect(result.list[0].taskName).toBeNull();
+      // 回填批量查询确实发起（missingIds 非空分支；In() 包装为 FindOperator）
+      expect(taskRepo.find).toHaveBeenCalledTimes(1);
+      expect(taskRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ select: ["id", "name"] }),
+      );
+    });
+
+    it("prefers the row's own taskName over the backfilled map value", async () => {
+      const qb = makeQb([{ id: "e1", taskId: "t1", taskName: "Own Name" }]);
+      execRepo.createQueryBuilder.mockReturnValue(qb as any);
+      const result = await service.getAllExecutions({
+        page: 1,
+        pageSize: 10,
+      } as any);
+      expect(result.list[0].taskName).toBe("Own Name");
+      expect(taskRepo.find).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("suggestSchedule — statistics branches", () => {
+    it("computes success/failure counts, avg and p95 durations, and best hours", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "job",
+        cronExpression: "0 1 * * *",
+      });
+      const mk = (
+        status: string,
+        duration: number | null,
+        createdAt: Date,
+      ) => ({ id: `e-${Math.random()}`, status, duration, createdAt });
+      execRepo.find.mockResolvedValue([
+        mk("success", 100, new Date("2026-09-01T03:10:00Z")),
+        mk("success", 300, new Date("2026-09-02T03:20:00Z")),
+        mk("failed", 900, new Date("2026-09-03T07:00:00Z")),
+        mk("timeout", null, new Date("2026-09-04T07:30:00Z")),
+        mk("running", null, new Date("2026-09-05T09:00:00Z")),
+      ]);
+
+      await service.suggestSchedule("t1");
+
+      const stats = aiService.suggestSchedule.mock.calls[0][2];
+      expect(stats.total).toBe(5);
+      expect(stats.successes).toBe(2);
+      expect(stats.failures).toBe(2); // failed + timeout
+      expect(stats.avgDurationMs).toBe(Math.round((100 + 300 + 900) / 3));
+      // p95 over sorted durations [100,300,900] → index floor(3*0.95)=2 → 900
+      expect(stats.p95DurationMs).toBe(900);
+      expect(stats.bestHoursUtc).toContain(3);
+      expect(aiService.suggestSchedule.mock.calls[0][1]).toBe("0 1 * * *");
+    });
+
+    it("returns zeroed stats and a fallback cron when the task has no executions", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "empty-job",
+        cronExpression: null,
+      });
+      execRepo.find.mockResolvedValue([]);
+
+      await service.suggestSchedule("t1");
+
+      const stats = aiService.suggestSchedule.mock.calls[0][2];
+      expect(stats).toEqual({
+        total: 0,
+        successes: 0,
+        failures: 0,
+        avgDurationMs: 0,
+        p95DurationMs: 0,
+        bestHoursUtc: expect.any(Array),
+      });
+      expect(stats.bestHoursUtc).toHaveLength(3);
+      // currentCron null → 透传 null
+      expect(aiService.suggestSchedule.mock.calls[0][1]).toBeNull();
+    });
+
+    it("throws NotFoundException when the task does not exist", async () => {
+      taskRepo.findOne.mockResolvedValue(null);
+      await expect(service.suggestSchedule("ghost")).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe("getExecutionStats — success-rate branches", () => {
+    it("reports 0% success rate and avg duration when no recent run succeeded", async () => {
+      execRepo.find.mockResolvedValue([
+        { id: "e1", status: ExecutionStatus.FAILED, duration: 250 },
+        { id: "e2", status: ExecutionStatus.TIMEOUT, duration: 750 },
+      ]);
+      execRepo.count.mockResolvedValue(4);
+
+      const stats = await service.getExecutionStats("t1");
+      expect(stats.totalRuns).toBe(4);
+      expect(stats.successRate).toBe(0);
+      expect(stats.avgDuration).toBe(500); // round(250+750)/2
+    });
+
+    it("reports a partial success rate with one-decimal rounding", async () => {
+      execRepo.find.mockResolvedValue([
+        { id: "e1", status: ExecutionStatus.SUCCESS, duration: 100 },
+        { id: "e2", status: ExecutionStatus.FAILED, duration: null },
+        { id: "e3", status: ExecutionStatus.SUCCESS, duration: 300 },
+      ]);
+      execRepo.count.mockResolvedValue(3);
+
+      const stats = await service.getExecutionStats("t1");
+      expect(stats.successRate).toBe(66.7); // round(2/3*1000)/10
+      expect(stats.avgDuration).toBe(200);
+    });
+
+    it("reports 0% with zero avg when nothing ran", async () => {
+      execRepo.find.mockResolvedValue([]);
+      execRepo.count.mockResolvedValue(0);
+
+      const stats = await service.getExecutionStats("t1");
+      expect(stats.totalRuns).toBe(0);
+      expect(stats.successRate).toBe(0);
+      expect(stats.avgDuration).toBe(0);
+    });
+  });
+
+  describe("update — timeout policy normalization branches (CORE-04 runtime guard)", () => {
+    it("maps timeoutSeconds → timeout and normalizes an explicit null timeoutAction", async () => {
+      const existing = { id: "t1", name: "job", status: TaskStatus.PAUSED };
+      taskRepo.findOne.mockResolvedValue(existing);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+      await service.update("t1", {
+        timeoutSeconds: 42,
+        timeoutAction: null,
+        timeoutWarnRatio: 120 as unknown as number, // 运行态防线：越界归 null
+      } as any);
+
+      const saved = taskRepo.save.mock.calls[0][0];
+      expect(saved.timeout).toBe(42);
+      expect(saved.timeoutSeconds).toBeUndefined();
+      expect(saved.timeoutAction).toBeNull();
+      expect(saved.timeoutWarnRatio).toBeNull();
+    });
+
+    it("keeps a valid timeoutAction untouched and clamps warn ratio inside 0-90", async () => {
+      const existing = { id: "t1", name: "job", status: TaskStatus.PAUSED };
+      taskRepo.findOne.mockResolvedValue(existing);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+      await service.update("t1", {
+        timeoutAction: "kill_retry",
+        timeoutWarnRatio: 75,
+      } as any);
+
+      const saved = taskRepo.save.mock.calls[0][0];
+      expect(saved.timeoutAction).toBe("kill_retry");
+      expect(saved.timeoutWarnRatio).toBe(75);
+    });
+  });
+
+  describe("SSE slot config getters (TASK-008 runtime parsing)", () => {
+    it("accepts a string-form numeric config value for per-execution and global limits", async () => {
+      const configGet = jest.fn((key: string) => {
+        if (key === "sse.maxStreamsPerExecution") return "2";
+        if (key === "sse.maxStreamsGlobal") return "3";
+        return "";
+      });
+      // 重新装配仅改 config 的服务
+      const module = await Test.createTestingModule({
+        providers: [
+          TaskService,
+          { provide: getRepositoryToken(Task), useValue: makeRepo() },
+          { provide: getRepositoryToken(TaskExecution), useValue: makeRepo() },
+          {
+            provide: getRepositoryToken(ExecutionLogLine),
+            useValue: makeRepo(),
+          },
+          { provide: getRepositoryToken(TaskVersion), useValue: makeRepo() },
+          { provide: getQueueToken("task-queue"), useValue: taskQueue },
+          { provide: DataSource, useValue: dataSource },
+          {
+            provide: SchedulerService,
+            useValue: { stop: jest.fn(), scheduleOne: jest.fn(), getStats: jest.fn() },
+          },
+          { provide: AiService, useValue: aiService },
+          { provide: ConfigService, useValue: { get: configGet } },
+          {
+            provide: ExecutorService,
+            useValue: { getSharedToken: jest.fn().mockResolvedValue("") },
+          },
+          { provide: DomainEventBus, useValue: { emit: jest.fn() } },
+          {
+            provide: SecretsCryptoService,
+            useValue: new SecretsCryptoService({ get: () => "" } as any),
+          },
+          { provide: getRepositoryToken(ExecutionReport), useValue: {} },
+        ],
+      }).compile();
+      const svc = module.get(TaskService);
+
+      const r1 = svc.acquireSseSlot("exec-1");
+      const r2 = svc.acquireSseSlot("exec-1");
+      // "2" 解析成功 → 上限 2：第 3 个 per-execution 拒绝
+      expect(() => svc.acquireSseSlot("exec-1")).toThrow(
+        ServiceUnavailableException,
+      );
+      r1();
+      r2();
+      // 全局上限 3：占满 3 个不同 exec
+      const g1 = svc.acquireSseSlot("a");
+      const g2 = svc.acquireSseSlot("b");
+      const g3 = svc.acquireSseSlot("c");
+      expect(() => svc.acquireSseSlot("d")).toThrow(
+        ServiceUnavailableException,
+      );
+      g1();
+      g2();
+      g3();
+    });
+  });
+
+  describe("saveVersion / rollback — numbering and compensation branches", () => {
+    it("saveVersion uses MAX+1 numbering and starts at v1 for a fresh task", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "job",
+        description: "d",
+      });
+      const qb = versionRepo.createQueryBuilder();
+      qb.getRawOne.mockResolvedValue({ maxNum: 0 });
+      versionRepo.createQueryBuilder.mockReturnValue(qb);
+      versionRepo.create.mockImplementation((d: any) => d);
+      versionRepo.save.mockImplementation((v: any) => Promise.resolve(v));
+
+      const version = await service.saveVersion("t1", "admin");
+      expect(version.version).toBe("v1");
+      expect(version.createdBy).toBe("admin");
+    });
+
+    it("saveVersion throws NotFoundException when the task is gone", async () => {
+      taskRepo.findOne.mockResolvedValue(null);
+      await expect(service.saveVersion("ghost")).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it("rollback compensates the PENDING row when the queue is down", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "job",
+        gitCommit: "old",
+        status: TaskStatus.ACTIVE,
+      });
+      // rollback 的事务形态：manager.save(Task, task) → manager.create →
+      // manager.save(create 结果) 返回执行行。
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({
+          save: jest.fn(async (_t: unknown, e: unknown) =>
+            (e as { id?: string })?.id ? e : { id: "rb-exec-1", status: "pending" },
+          ),
+          create: jest
+            .fn()
+            .mockReturnValue({ id: "rb-exec-1", status: "pending" }),
+        }),
+      );
+      taskQueue.add.mockRejectedValue(new Error("queue down"));
+
+      await expect(
+        service.rollback("t1", { gitCommit: "abc123" }),
+      ).rejects.toThrow("Failed to enqueue execution: queue down");
+
+      // 补偿：PENDING 行被写为 FAILED（makeRepo 默认 update mock 返回 affected:1）
+      expect(execRepo.update).toHaveBeenCalledWith(
+        "rb-exec-1",
+        expect.objectContaining({ status: ExecutionStatus.FAILED }),
+      );
+    });
+  });
+
+  describe("analyzeExecution / getExecution — lookup branches", () => {
+    it("getExecution constrains by taskId when provided", async () => {
+      execRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.getExecution("exec-1", "task-1"),
+      ).rejects.toThrow(NotFoundException);
+      expect(execRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "exec-1", taskId: "task-1" },
+      });
+    });
+
+    it("analyzeExecution feeds errorMessage+logs to the AI and persists the analysis", async () => {
+      const exec = {
+        id: "exec-1",
+        taskName: "job",
+        errorMessage: "boom",
+        logs: "trace",
+        aiAnalysis: null as string | null,
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      aiService.analyzeFailure.mockResolvedValue("AI: fix it");
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const result = await service.analyzeExecution("exec-1");
+      expect(aiService.analyzeFailure).toHaveBeenCalledWith(
+        { name: "job", runtime: "unknown" },
+        "boom\ntrace",
+      );
+      expect(result.aiAnalysis).toBe("AI: fix it");
+    });
+
+    it("analyzeExecution falls back to a placeholder when no logs exist", async () => {
+      const exec = { id: "exec-1", taskName: "job", aiAnalysis: null };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.analyzeExecution("exec-1");
+      expect(aiService.analyzeFailure).toHaveBeenCalledWith(
+        expect.anything(),
+        "(no logs)",
+      );
+    });
+  });
+});
