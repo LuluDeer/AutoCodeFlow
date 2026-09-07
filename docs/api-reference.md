@@ -514,6 +514,85 @@ Alertmanager 侧 route/receiver 配置样例与加签提示见 `docs/observabili
 
 ---
 
+## Event Subscriptions — Webhook 出站事件（FEAT-07，第十六轮新增）
+
+平台事件可订阅后以签名 webhook 推送到外部端点（如 CI 在任务失败时触发流程）。事件沿 ARCH-21 领域事件总线派发，主链零改动。
+
+**可订阅事件目录**（稳定契约，只增不改）：
+
+| 事件名 | 载荷 `data` 主要字段 | 发布时机 |
+|--------|---------------------|----------|
+| `execution.completed` | `executionId` `taskId` `taskName` `status` `failureReason(null)` `durationMs` `finishedAt` | 执行以 SUCCESS 终态落库后（恰好一次） |
+| `execution.failed` | `executionId` `taskId` `taskName` `status`(failed/timeout/killed) `failureReason` `errorMessage?` `durationMs` `finishedAt` | 执行以失败类终态落库后（恰好一次） |
+| `executor.offline` | `executorId` `appName` `address` | 执行器翻转 OFFLINE 落库后（心跳超时 sweep / 优雅停机 / 管理台置离线，三路） |
+| `deployment.completed` | `deploymentId` `applicationId` `executorAddress` `status` `deployedVersion` `deployedCommit` | 部署心跳确认进入 RUNNING 终态落库后 |
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/event-subscriptions` | 是 | 列出订阅：ADMIN 看全部；普通用户看自己的 + 系统级（`userId=null`）。`secret` 恒脱敏为 `******` |
+| POST | `/event-subscriptions` | 是 | 新建订阅。body: `{ url（必填，公网 http(s)）, eventTypes（1-10 个，取值=上表事件名）, secret?（≥16 字符；省略则服务端生成 64 字符 hex 并在**本次响应** `generatedSecret` 字段一次性回显） }`。url 经 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据）→ 400 |
+| PATCH | `/event-subscriptions/:id` | 是 | 更新（属主/ADMIN）。body: `{ enabled?, url?, eventTypes?, secret? }`（url 变更时再次 SSRF 校验） |
+| DELETE | `/event-subscriptions/:id` | 是 | 删除订阅（属主/ADMIN），死信级联删除（FK ON DELETE CASCADE） |
+| GET | `/event-subscriptions/:id/dead-letters` | 是 | 死信分页列表（属主/ADMIN）。`page` 默认 1，`limit` 默认 20、最大 100。行含 `eventType` / `payload`（发送时完整载荷）/ `error`（末次失败摘要）/ `attempts` / `createdAt` |
+| POST | `/event-subscriptions/:id/dead-letters/:dlId/replay` | 是 | 手动重放：以订阅**当前** url/secret 重新签名派发**一次**（不自动重试）。成功 `{ ok: true }` 且死信删除；失败 `{ ok: false, error }` 且死信保留（可再次重放） |
+
+**派发语义**：
+
+- 事件到达 → 快照 `enabled=true` 的订阅 → 按 `eventTypes` 过滤 → 每订阅独立投递（单订阅失败不影响其他订阅，更不影响事件源）。
+- **失败重试**：最多 3 次尝试（首次 + 2 重试），指数退避 1s / 2s / 4s（进程内 setTimeout 队列）；3 次全败 → 整包落 `event_subscription_dead_letters` 死信表 + 订阅行累加 `consecutiveFailures` / `lastFailureAt` / `lastFailureError`（成功派发即清零）。
+- **投递请求**：`POST <url>`，`Content-Type: application/json`，超时 10s，**禁跟随 3xx 重定向**（SSRF 纪律——只访问经校验的首跳地址）。载荷信封：`{ "event": "<事件名>", "occurredAt": "<ISO 时刻>", "data": { ...载荷 } }`。
+- 订阅 url 出站前二次 SSRF 复核（订阅可能被并发 PATCH）；被拒按确定性失败处理。
+
+**签名校验（订阅方接入指南）** —— 与 `POST /applications/webhook` 发版 webhook 的约定**完全一致**：
+
+- 头 `X-AutoCodeFlow-Event`：事件名（冗余于载荷 `event` 字段，便于路由）。
+- 头 `X-AutoCodeFlow-Timestamp`：毫秒时间戳；订阅方应拒绝 `|now - timestamp| > 5 分钟` 的请求（防重放）。
+- 头 `X-Hub-Signature-256`：`sha256=<hex>`，`<hex> = HMAC_SHA256(secret, "${timestamp}.${rawBody}")`——注意签名输入是 `${timestamp}.` 前缀拼接**原始请求体字节**（先 `Buffer.from(`${timestamp}.`)` 再拼 body，不是字符串层面分开哈希）。
+
+Node.js 订阅方校验示例：
+
+```js
+const crypto = require("node:crypto");
+
+function verifyWebhook(req, secret) {
+  const timestamp = req.headers["x-autocodeflow-timestamp"];
+  const signature = req.headers["x-hub-signature-256"];
+  if (!timestamp || !signature) return false;
+  // ±5 分钟窗口
+  if (Math.abs(Date.now() - Number(timestamp)) > 5 * 60 * 1000) return false;
+  const expected =
+    "sha256=" +
+    crypto
+      .createHmac("sha256", secret)
+      .update(Buffer.concat([Buffer.from(`${timestamp}.`), req.rawBody]))
+      .digest("hex");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signature);
+  // 常数时间比较
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+```
+
+Python 订阅方校验示例：
+
+```python
+import hmac, hashlib, time
+
+def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str) -> bool:
+    if abs(time.time() * 1000 - int(timestamp)) > 5 * 60 * 1000:
+        return False
+    expected = "sha256=" + hmac.new(
+        secret.encode(), timestamp.encode() + b"." + raw_body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+```
+
+> 快速上手：`POST /event-subscriptions` 传 `{ "url": "https://ci.example.com/hooks", "eventTypes": ["execution.failed"] }` → 从响应 `generatedSecret` 取出签名密钥（仅此一次可见）→ 用上面的校验方法在订阅方验证签名。验收路径：任务失败 → 订阅方收到带正确签名的失败事件（CI 触发部署场景）。
+
+> **at-least-once 语义说明**：本版为进程内最低正确形态——首投 + 进程内重试 + 终败死信落库可重放。进程重启会丢失在途的退避重试（跨进程 outbox 留后续轮）；对「至少收到一次」要求严格的订阅方应同时容忍极端情况下的漏发（当前窗口：投递在途时重启），或依赖 replay 端点人工补发。
+
+---
+
 ## Metrics — 监控指标
 
 | 方法 | 路径 | 需要认证 | 说明 |
@@ -655,6 +734,7 @@ Alertmanager 侧 route/receiver 配置样例与加签提示见 `docs/observabili
 | `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码 |
 | `ALERT_WEBHOOK_SECRET` | 空 | Alertmanager webhook 入站 HMAC secret（OBS-02，`POST /api/alerts/webhook`）。留空 = 端点 503 禁用（安全缺省，绝不无鉴权接收）；配置后签名约定同发版 webhook。建议 `openssl rand -hex 32`。Alertmanager 配置样例见 `docs/observability/README.md` §3.5 |
 | `SEC_SECRETS_KEY` | 空 | **任务级 secrets 落库加密密钥**（SEC-02）：32 字节 hex（`openssl rand -hex 32`）或 base64，其他口令按 sha-256 拉伸。留空 = tasks.secrets 明文存储（启动 warn 一次）；配置后写路径全加密（AES-256-GCM `enc:v1:` 信封），派发时解密注入执行器 env。**密钥丢失 = 密文 secrets 不可解密**（派发报错、不静默裸跑）——请纳入密钥管理系统备份；轮换 = 换 key 后对任务做一次任意 update |
+| `EXECUTOR_HEARTBEAT_INTERVAL` | `30000` | executor 心跳间隔毫秒（FEAT-07 注记：心跳超时 sweep 触发的 OFFLINE 翻转现在会发布 `executor.offline` 出站事件，见「Event Subscriptions」段） |
 
 > 三者全缺时 registry 代理保持匿名行为：authenticated-only registry（如 Verdaccio `access: $authenticated`）对包列表返回 401 → admin 包列表为空（仅 debug 日志提示凭证未配置），不视为错误。
 
