@@ -50,6 +50,7 @@
 | `LOG_STORAGE_DRIVER` | `db` | 执行日志存储：`db` 或 `s3`（`s3` 需启用 minio profile 并配置 `LOG_STORAGE_*` 与 `MINIO_ROOT_PASSWORD`） |
 | `MINIO_ROOT_PASSWORD` | - | MinIO root 密码（启用 minio profile 时必填，无默认值） |
 | `LOG_RETENTION_DAYS` | `7` | 执行器工作目录/日志 TTL 回收天数（下限 1） |
+| `SEC_SECRETS_KEY` | - | 任务级 secrets（tasks.secrets）落库加密密钥，32 字节 hex（`openssl rand -hex 32`）或 base64。留空 = 明文存储（启动 warn 一次，零破坏升级路径）；配置后写路径全加密（AES-256-GCM，`enc:v1:` 信封格式，明文/密文行可共存——存量行首次 update 自然转密文）。**生产环境必须配置并纳入密钥备份**：密钥丢失则密文 secrets 无法解密（任务派发报错，不静默裸跑）；轮换 = 更换 key 后对任务执行一次任意 update |
 
 > 注：以上变量均已收入 `.env.example`；其中 `THROTTLE_*`、`STALE_RECOVERY_RETRY_ENABLED`、`EXECUTOR_ALLOW_PRIVATE_NETWORK`、`EXECUTION_CALLBACK_SECRET`、`NPM_REGISTRY_*`、`REGISTRY_UPLOAD_TIMEOUT_MS`、`DISK_CLEANUP_*` 由服务进程直接读取，根 compose 默认未注入——独立部署时通过进程环境传入，或在 compose 的 `environment:` 中显式添加。
 
@@ -180,6 +181,11 @@ docker compose exec postgres pg_dump -U autoflow autoflow > backup_$(date +%Y%m%
 # 恢复数据库
 docker compose exec -T postgres psql -U autoflow autoflow < backup.sql
 ```
+
+> **SEC-02 备份安全注记**：配置 `SEC_SECRETS_KEY` 后，DB 备份中的 `tasks.secrets`
+> 为 AES-256-GCM 密文（`enc:v1:` 信封），备份文件泄露不再直接泄密——但**密钥与
+> 备份必须分开保管**（密钥入密钥管理系统，不入同一备份介质），否则攻击者可解密。
+> 未配置 key 的部署中 secrets 为明文，备份即明文，生产环境务必配置。
 
 ### Redis 操作
 
