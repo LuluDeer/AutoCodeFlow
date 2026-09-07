@@ -1,18 +1,26 @@
-import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, message, Alert, Popconfirm, Result, Select } from 'antd';
-import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined } from '@ant-design/icons';
+import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, message, Alert, Popconfirm, Result, Select, Input, Tabs } from 'antd';
+import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, FieldTimeOutlined, LinkOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRequest } from 'ahooks';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import { getApiBaseUrl } from '../api/client';
 import { getErrMsg } from '../utils/error';
 import { useAuthStore } from '../store/auth';
 import { formatDateTime, formatDuration } from '../utils/timeFormat';
 import { LOG_LEVEL_VALUES, logLineHighlightClass } from '../utils/logLevel';
+// UI-05: 搜索高亮分段（纯函数）+ 防抖常量
+import { buildLogSearchSegments, LOG_SEARCH_DEBOUNCE_MS } from '../utils/log-search';
+// UI-05: 失败定位映射（语义镜像 mcp FAILURE_RUNBOOK，BUG-10 十二类）
+import { failureRunbookAction, FAILURE_CARD_STATUSES } from './failure-runbook';
 // OBS-04: 分析报告/时间线面板（核心展示逻辑独立成组件文件，便于单独测试）
 import ExecutionReportPanel from '../components/ExecutionReportPanel';
 import { executionReportsApi } from '../api/execution-reports';
 import PageHeader from '../components/PageHeader';
+// FEAT-05 UI 半场：产物列表（003 产出组件，本任务作为「参数与产物」Tab 单点接入）
+import ArtifactsList from '../components/ArtifactsList';
+// CORE-02: 重试链纯逻辑（Card 迁入重试 Tab 时沿用）
+import { buildRetryChain, nextPendingRetryAt, type RetryChainLink } from './retry-chain';
 
 const { Text } = Typography;
 
@@ -46,6 +54,12 @@ const FAILURE_REASON_MAP: Record<string, { color: string; label: string; hint: s
   unknown: { color: 'default', label: '未知原因', hint: '查看错误信息和执行日志定位根因。' },
 };
 
+// UI-05: 重试链状态 Tag（随重试链 Card 迁入重试 Tab，渲染逻辑与 CORE-02 一致）
+const RETRY_STATUS_COLOR: Record<string, string> = {
+  pending: 'default', running: 'processing', success: 'green',
+  failed: 'red', timeout: 'orange', killed: 'volcano', cancelled: 'default',
+};
+
 // U1: SSE 与 axios API 必须同源——复用 client.ts 的 getApiBaseUrl
 // （含 localStorage 内/外网开关 autoflow_use_external_api）。
 // 旧实现恒优先 VITE_API_URL_EXTERNAL，双地址配置时内网环境 SSE 永远打外网。
@@ -67,6 +81,16 @@ const LOG_MAX_PAGES = 200;
 // OBS-03: 级别过滤下拉——'ALL' 表示不过滤（不带 level，行为与之前完全一致）
 const LOG_LEVEL_FILTER_ALL = 'ALL';
 type LogLevelFilter = typeof LOG_LEVEL_FILTER_ALL | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
+
+// UI-05: Tab key 与 URL ?tab= 双向记忆（ApplicationDetailPage 先例）——
+// 刷新/分享链接回到原 Tab；非法值回退默认 Tab（日志）。
+const TAB_KEY_DEFAULT = 'logs';
+const TAB_KEYS = ['logs', 'report', 'retry', 'context'] as const;
+type TabKey = (typeof TAB_KEYS)[number];
+
+function normalizeTabKey(raw: string | null): TabKey {
+  return (TAB_KEYS as readonly string[]).includes(raw || '') ? (raw as TabKey) : TAB_KEY_DEFAULT;
+}
 
 export default function ExecutionDetailPage() {
   const { taskId, execId } = useParams<{ taskId: string; execId: string }>();
@@ -90,13 +114,40 @@ export default function ExecutionDetailPage() {
   const [levelFilter, setLevelFilter] = useState<LogLevelFilter>(LOG_LEVEL_FILTER_ALL);
   const [filteredLogs, setFilteredLogs] = useState<string | null>(null);
   const [loadingFilteredLogs, setLoadingFilteredLogs] = useState(false);
+  // UI-05: 关键词搜索——inputKeyword 即时回显（受控输入）、activeKeyword
+  // 防抖后生效触发分段重算（大日志逐键重切分代价高）。
+  const [inputKeyword, setInputKeyword] = useState('');
+  const [activeKeyword, setActiveKeyword] = useState('');
   const token = useAuthStore((s) => s.token);
+
+  // UI-05: Tab 记忆走 searchParams（?tab=），与 ApplicationDetailPage 同款；
+  // 页面自身路由无 hash 语义冲突，选实现稳的 searchParams 方案。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = normalizeTabKey(searchParams.get('tab'));
 
   const { data, refresh, loading, error } = useRequest(
     () => tasksApi.execution(taskId!, execId!),
     { pollingInterval: undefined, refreshDeps: [execId] },
   );
   const isLive = data?.status === 'running' || data?.status === 'pending';
+
+  // ===== UI-05: 重试链数据（CORE-02 语义原样迁移，Card 移入「重试链」Tab）=====
+  const { data: taskData } = useRequest(() => tasksApi.get(taskId!), {
+    ready: !!taskId,
+    refreshDeps: [taskId],
+  });
+  const { data: siblingPage } = useRequest(
+    () => tasksApi.executionsWithStatus(taskId!, { page: 1, pageSize: 100 }),
+    { ready: !!taskId, refreshDeps: [taskId] },
+  );
+  const siblings = useMemo(() => siblingPage?.items ?? [], [siblingPage]);
+
+  const retryChain: RetryChainLink[] = useMemo(
+    () => (data ? buildRetryChain(siblings, { id: data.id, retryCount: data.retryCount ?? 0 }) : []),
+    [siblings, data],
+  );
+  const pendingRetry = useMemo(() => nextPendingRetryAt(retryChain), [retryChain]);
+  const taskMaxRetry = taskData?.maxRetry ?? 0;
 
   // ===== OBS-04: 分析报告 / 时间线 =====
   // 一次性拉取 report 端点（execution 行 + DB 时间戳映射的 timeline +
@@ -167,7 +218,15 @@ export default function ExecutionDetailPage() {
     setFullLogs(null);
     setLevelFilter(LOG_LEVEL_FILTER_ALL);
     setFilteredLogs(null);
+    setInputKeyword('');
+    setActiveKeyword('');
   }, [execId]);
+
+  // UI-05: 搜索关键词防抖（LOG_SEARCH_DEBOUNCE_MS 后生效）
+  useEffect(() => {
+    const t = setTimeout(() => setActiveKeyword(inputKeyword.trim()), LOG_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [inputKeyword]);
 
   // U2: 当前展示的日志：级别过滤视图 > 完整日志 > SSE 流 > 实体回调日志
   const rawLogs = streamLines ? streamLines.join('\n') : (data?.logs ?? '');
@@ -180,36 +239,37 @@ export default function ExecutionDetailPage() {
   }, [displayLogs]);
 
   /**
-   * OBS-03: 行级高亮分段——ERROR 红 / WARN 黄。按行前缀推断级别
-   * （logLevel.ts 与后端 log-level.util.ts 同一规则，不做富文本重解析）：
-   * 仅命中行包成带 className 的 span，其余行聚合为单个纯文本块，万行日志
-   * 最多只产生"高亮行数 + 1"个 React 节点（无高亮时退化为单文本节点），
-   * 且 useMemo 按 displayLogs 缓存，流式追加时元素数组引用稳定、重复渲染
-   * 走 React 的同引用 bail-out。分段文本拼接与 displayLogs 逐字符相等，
-   * 复制/下载/滚动定位行为与未渲染分段前一致。
+   * UI-05: 行级高亮（OBS-03 口径）× 关键词高亮双维度分段。
+   * - 无关键词：与 OBS-03 完全同构（行 span 或聚合文本块）；
+   * 有关键词：按行构建（行类 + 命中 mark 分段）。
+   * 两个维度都由 useMemo 缓存，拼接文本与 displayLogs 逐字符一致
+   * （复制/下载/滚动行为不受影响）。
    */
   const logSegments = useMemo(() => {
     if (!displayLogs) return null;
-    const lines = displayLogs.split('\n');
-    const segs: { text: string; cls: string }[] = [];
-    let buf = '';
-    for (let i = 0; i < lines.length; i++) {
-      // 行间换行符跟随该行所在块（高亮行带尾随 \n），保证拼接后与原文一致
-      const sep = i < lines.length - 1 ? '\n' : '';
-      const cls = logLineHighlightClass(lines[i]);
-      if (cls) {
-        if (buf) {
-          segs.push({ text: buf, cls: '' });
-          buf = '';
+    if (!activeKeyword) {
+      // OBS-03 原分段：无高亮行聚合为单块，控制节点数量
+      const lines = displayLogs.split('\n');
+      const segs: { text: string; cls: string }[] = [];
+      let buf = '';
+      for (let i = 0; i < lines.length; i++) {
+        const sep = i < lines.length - 1 ? '\n' : '';
+        const cls = logLineHighlightClass(lines[i]);
+        if (cls) {
+          if (buf) {
+            segs.push({ text: buf, cls: '' });
+            buf = '';
+          }
+          segs.push({ text: lines[i] + sep, cls });
+        } else {
+          buf += lines[i] + sep;
         }
-        segs.push({ text: lines[i] + sep, cls });
-      } else {
-        buf += lines[i] + sep;
       }
+      if (buf) segs.push({ text: buf, cls: '' });
+      return segs;
     }
-    if (buf) segs.push({ text: buf, cls: '' });
-    return segs;
-  }, [displayLogs]);
+    return buildLogSearchSegments(displayLogs, activeKeyword, logLineHighlightClass);
+  }, [displayLogs, activeKeyword]);
 
   /**
    * U2/OBS-03 共用：分页拉全日志行（后端 limit 封顶 2000/页，hasMore 驱动
@@ -314,6 +374,9 @@ export default function ExecutionDetailPage() {
     }
   };
 
+  // UI-05: 失败定位卡片可见性（failed/timeout；killed 无排障价值不渲染）
+  const showFailureCard = FAILURE_CARD_STATUSES.includes(data?.status || '');
+
   if (loading && !data) {
     return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
   }
@@ -343,6 +406,18 @@ export default function ExecutionDetailPage() {
         hint: '未识别的失败分类，请查看错误信息和执行日志。',
       }
     : undefined;
+  // UI-05: 建议动作（未知键回退 unknown 兜底）
+  const runbookAction = failureRunbookAction(data?.failureReason);
+  const runbookText = taskData?.runbook || null;
+
+  /** UI-05: Tab 切换写回 ?tab=（非法值 normalize 已兜底） */
+  const handleTabChange = (key: string) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', normalizeTabKey(key));
+      return next;
+    }, { replace: true });
+  };
 
   return (
     <div>
@@ -435,6 +510,7 @@ export default function ExecutionDetailPage() {
         />
       )}
 
+      {/* UI-05: 信息卡保留 Tab 外顶部——执行状态/耗时/执行器常驻视野 */}
       <Card title="执行信息" style={{ marginBottom: 16 }}>
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
           <Descriptions.Item label="任务名">
@@ -482,163 +558,419 @@ export default function ExecutionDetailPage() {
         </Descriptions>
       </Card>
 
-      {['failed', 'timeout', 'killed'].includes(data?.status || '') && (data?.errorMessage || failureReason) && (
-        <Alert
-          type={data?.status === 'timeout' ? 'warning' : 'error'}
-          title={failureReason ? `${status.label}：${failureReason.label}` : status.label}
-          description={failureReason
-            ? [failureReason.hint, data?.errorMessage].filter(Boolean).join('\n')
-            : data?.errorMessage}
-          style={{ marginBottom: 16, whiteSpace: 'pre-line' }}
-          action={
-            data?.status !== 'killed' ? (
-              <Button size="small" danger icon={<RedoOutlined />} onClick={handleRetry} loading={retrying}>
-                重新触发
-              </Button>
-            ) : undefined
-          }
-        />
-      )}
-
-      {(data?.logs || (streamLines && streamLines.length > 0)) && (
-        <Card
-          title="执行日志"
-          style={{ marginBottom: 16 }}
-          extra={
-            <Space>
-              {streaming && <Badge status="processing" text="实时推送" />}
-              {/* OBS-03: 级别过滤（服务端）。"全部"不带 level——行为与
-                  OBS-03 之前完全一致；选择具体级别后经分页端点重新拉取
-                  过滤后行集（流模式下为拉取时刻的服务端快照，见
-                  handleLevelFilterChange 注释）。 */}
-              <Select<LogLevelFilter>
-                size="small"
-                style={{ minWidth: 112 }}
-                aria-label="日志级别过滤"
-                value={levelFilter}
-                loading={loadingFilteredLogs}
-                disabled={loadingFilteredLogs}
-                onChange={handleLevelFilterChange}
-                options={[
-                  { value: LOG_LEVEL_FILTER_ALL, label: '全部级别' },
-                  ...LOG_LEVEL_VALUES.map((lv) => ({ value: lv, label: lv })),
-                ]}
-              />
-              <Button
-                size="small"
-                icon={<CopyOutlined />}
-                onClick={() => {
-                  // OBS-03 取舍：复制反映"当前视图"（所见即所得）——级别
-                  // 过滤生效时复制过滤视图，"全部"时复制当前展示内容
-                  // （可能含 SSE 流缓冲）。需要全量请切回"全部"后复制。
-                  navigator.clipboard.writeText(displayLogs);
-                  message.success('已复制');
-                }}
-              >
-                复制
-              </Button>
-              <Button
-                size="small"
-                icon={<DownloadOutlined />}
-                onClick={() => {
-                  // OBS-03 取舍：与复制一致——下载当前视图（过滤生效时
-                  // 即过滤结果），与页面展示严格一致，避免"看到的与拿到
-                  // 的不同"。需要全量请切回"全部"后下载。
-                  const blob = new Blob([displayLogs], { type: 'text/plain;charset=utf-8' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `exec-${execId}-${new Date().toISOString().slice(0, 10)}.log`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
-              >
-                下载
-              </Button>
-            </Space>
-          }
-        >
-          {logsTruncated && (
-            <Alert
-              type="warning"
-              showIcon
-              title="日志已截断：回调载荷超过执行器上报上限，当前仅保留了截断片段"
-              description="可从执行器侧持久化的全量日志分页加载完整内容；若仍失败请检查执行器可达性与本地日志文件。"
-              style={{ marginBottom: 12 }}
-              action={
-                <Button
-                  size="small"
-                  icon={<DownloadOutlined />}
-                  loading={loadingFullLogs}
-                  onClick={handleLoadFullLogs}
+      {/* UI-05: Tab 化信息架构——日志（默认）/时间线·报告/重试链/参数与产物 */}
+      <Tabs
+        activeKey={activeTab}
+        onChange={handleTabChange}
+        data-testid="execution-detail-tabs"
+        items={[
+          {
+            key: 'logs',
+            label: <span data-testid="tab-label-logs">执行日志</span>,
+            children: (
+              <>
+                {/* UI-05: 失败定位卡片——failed/timeout 时置顶日志 Tab */}
+                {showFailureCard && (
+                  <Alert
+                    type={data?.status === 'timeout' ? 'warning' : 'error'}
+                    showIcon
+                    icon={<ExperimentOutlined />}
+                    data-testid="failure-triage-card"
+                    title={failureReason ? `${status.label}：${failureReason.label}` : status.label}
+                    description={
+                      <div>
+                        <div style={{ marginBottom: 4 }}>
+                          <Text strong>建议动作：</Text>
+                          <Text>{runbookAction.action}</Text>
+                        </div>
+                        {data?.errorMessage && (
+                          <div style={{ marginBottom: 4 }}>
+                            <Text strong>错误信息：</Text>
+                            <Text type="danger">{data.errorMessage}</Text>
+                          </div>
+                        )}
+                        {runbookText && (
+                          <div data-testid="failure-runbook" style={{ marginTop: 8 }}>
+                            <Space size={4}>
+                              <BookOutlined />
+                              <Text strong>Runbook</Text>
+                            </Space>
+                            <pre
+                              style={{
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                                margin: '4px 0 0',
+                                padding: 8,
+                                borderRadius: 6,
+                                fontSize: 12,
+                                background: 'var(--log-bg)',
+                                color: 'var(--log-text)',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              {runbookText}
+                            </pre>
+                          </div>
+                        )}
+                        <Button
+                          size="small"
+                          type="link"
+                          icon={<LinkOutlined />}
+                          style={{ padding: 0, marginTop: 4 }}
+                          onClick={() => handleTabChange('report')}
+                        >
+                          查看 AI 分析与时间线
+                        </Button>
+                      </div>
+                    }
+                    style={{ marginBottom: 16 }}
+                    action={
+                      data?.status === 'failed' ? (
+                        <Button size="small" danger icon={<RedoOutlined />} onClick={handleRetry} loading={retrying}>
+                          重新触发
+                        </Button>
+                      ) : undefined
+                    }
+                  />
+                )}
+                <Card
+                  title="执行日志"
+                  styles={{ body: { paddingTop: 12 } }}
+                  extra={
+                    <Space>
+                      {streaming && <Badge status="processing" text="实时推送" />}
+                      {/* UI-05: 关键词搜索——前端对已加载行切分高亮，
+                          防抖 300ms 生效；清空即恢复原渲染。 */}
+                      <Input
+                        size="small"
+                        allowClear
+                        prefix={<SearchOutlined />}
+                        placeholder="搜索日志关键词"
+                        aria-label="日志搜索"
+                        // data-testid 落在真实 <input> 上（allowClear 时 Input
+                        // 根节点会包一层 span，取根会拿不到输入元素）
+                        data-testid="log-search-input"
+                        style={{ width: 180 }}
+                        value={inputKeyword}
+                        onChange={(e) => setInputKeyword(e.target.value)}
+                      />
+                      {/* OBS-03: 级别过滤（服务端）。"全部"不带 level——行为与
+                          OBS-03 之前完全一致；选择具体级别后经分页端点重新拉取
+                          过滤后行集（流模式下为拉取时刻的服务端快照，见
+                          handleLevelFilterChange 注释）。 */}
+                      <Select<LogLevelFilter>
+                        size="small"
+                        style={{ minWidth: 112 }}
+                        aria-label="日志级别过滤"
+                        value={levelFilter}
+                        loading={loadingFilteredLogs}
+                        disabled={loadingFilteredLogs}
+                        onChange={handleLevelFilterChange}
+                        options={[
+                          { value: LOG_LEVEL_FILTER_ALL, label: '全部级别' },
+                          ...LOG_LEVEL_VALUES.map((lv) => ({ value: lv, label: lv })),
+                        ]}
+                      />
+                      <Button
+                        size="small"
+                        icon={<CopyOutlined />}
+                        onClick={() => {
+                          // OBS-03 取舍：复制反映"当前视图"（所见即所得）——级别
+                          // 过滤生效时复制过滤视图，"全部"时复制当前展示内容
+                          // （可能含 SSE 流缓冲）。需要全量请切回"全部"后复制。
+                          navigator.clipboard.writeText(displayLogs);
+                          message.success('已复制');
+                        }}
+                      >
+                        复制
+                      </Button>
+                      <Button
+                        size="small"
+                        icon={<DownloadOutlined />}
+                        onClick={() => {
+                          // OBS-03 取舍：与复制一致——下载当前视图（过滤生效时
+                          // 即过滤结果），与页面展示严格一致，避免"看到的与拿到
+                          // 的不同"。需要全量请切回"全部"后下载。
+                          const blob = new Blob([displayLogs], { type: 'text/plain;charset=utf-8' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `exec-${execId}-${new Date().toISOString().slice(0, 10)}.log`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        }}
+                      >
+                        下载
+                      </Button>
+                    </Space>
+                  }
                 >
-                  加载完整日志
-                </Button>
-              }
-            />
-          )}
-          {/* OBS-03: 级别过滤空结果是合法态（该级别无日志行），显式提示而非空白 */}
-          {levelFilter !== LOG_LEVEL_FILTER_ALL && filteredLogs !== null && filteredLogs.length === 0 && (
-            <Alert
-              type="info"
-              showIcon
-              title={`无 ${levelFilter} 级别日志`}
-              description="当前执行未匹配到该级别的日志行，切换为全部级别可查看完整日志。"
-              style={{ marginBottom: 12 }}
-            />
-          )}
-          <pre
-            ref={logRef}
-            style={{
-              // UI-02：SSE 日志区双主题（亮面白底深字 / 暗面 MASTER OLED 画布）
-              background: 'var(--log-bg)',
-              color: 'var(--log-text)',
-              padding: 16,
-              borderRadius: 8,
-              maxHeight: 500,
-              overflow: 'auto',
-              fontSize: 12,
-              margin: 0,
-              // UI-01：MASTER.md §Typography——日志/等宽场景用 Fira Code
-              fontFamily: 'var(--font-mono)',
-              lineHeight: 1.6,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}
-          >
-            {logSegments
-              ? logSegments.map((seg, i) =>
-                  seg.cls ? (
-                    <span key={i} className={seg.cls}>{seg.text}</span>
+                  {logsTruncated && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      title="日志已截断：回调载荷超过执行器上报上限，当前仅保留了截断片段"
+                      description="可从执行器侧持久化的全量日志分页加载完整内容；若仍失败请检查执行器可达性与本地日志文件。"
+                      style={{ marginBottom: 12 }}
+                      action={
+                        <Button
+                          size="small"
+                          icon={<DownloadOutlined />}
+                          loading={loadingFullLogs}
+                          onClick={handleLoadFullLogs}
+                        >
+                          加载完整日志
+                        </Button>
+                      }
+                    />
+                  )}
+                  {/* OBS-03: 级别过滤空结果是合法态（该级别无日志行），显式提示而非空白 */}
+                  {levelFilter !== LOG_LEVEL_FILTER_ALL && filteredLogs !== null && filteredLogs.length === 0 && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      title={`无 ${levelFilter} 级别日志`}
+                      description="当前执行未匹配到该级别的日志行，切换为全部级别可查看完整日志。"
+                      style={{ marginBottom: 12 }}
+                    />
+                  )}
+                  {activeKeyword && displayLogs && !displayLogs.includes(activeKeyword) && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      title={`未找到匹配「${activeKeyword}」的日志内容`}
+                      style={{ marginBottom: 12 }}
+                    />
+                  )}
+                  <pre
+                    ref={logRef}
+                    data-testid="log-pre"
+                    style={{
+                      // UI-02：SSE 日志区双主题（亮面白底深字 / 暗面 MASTER OLED 画布）
+                      background: 'var(--log-bg)',
+                      color: 'var(--log-text)',
+                      padding: 16,
+                      borderRadius: 8,
+                      maxHeight: 500,
+                      overflow: 'auto',
+                      fontSize: 12,
+                      margin: 0,
+                      // UI-01：MASTER.md §Typography——日志/等宽场景用 Fira Code
+                      fontFamily: 'var(--font-mono)',
+                      lineHeight: 1.6,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {logSegments === null
+                      ? displayLogs
+                      : logSegments.map((seg, i) => renderLogSegment(seg, i, activeKeyword))}
+                  </pre>
+                </Card>
+              </>
+            ),
+          },
+          {
+            key: 'report',
+            label: <span data-testid="tab-label-report"><FieldTimeOutlined /> 时间线·报告</span>,
+            children: (
+              <>
+                {data?.aiAnalysis && (
+                  <Card
+                    title="🤖 AI 故障分析"
+                    style={{ borderColor: '#1677ff', marginBottom: 16 }}
+                    styles={{ header: { background: 'linear-gradient(90deg, #e6f7ff, #f0f5ff)', color: '#1677ff' } }}
+                  >
+                    <Text style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.8 }}>
+                      {data.aiAnalysis}
+                    </Text>
+                  </Card>
+                )}
+                {/* OBS-04: 分析报告 / 时间线——核心逻辑在独立组件 ExecutionReportPanel
+                    （时间线映射/AI 分析段/当日报告段），本页仅做一次数据拉取与
+                    最小挂载（原页尾纵向堆叠整体迁入本 Tab）。 */}
+                <ExecutionReportPanel
+                  payload={reportPayload}
+                  loadError={reportError}
+                  loading={reportLoading}
+                />
+              </>
+            ),
+          },
+          {
+            key: 'retry',
+            label: <span data-testid="tab-label-retry">重试链</span>,
+            children: (
+              <>
+                {/* CORE-02: 重试链 Card 原样迁入（构建逻辑/展示字段零改动） */}
+                {retryChain.length > 0 && (
+                  <Card
+                    title="重试链路"
+                    style={{ marginBottom: 16 }}
+                    extra={
+                      taskMaxRetry > 0 ? (
+                        <Tag>
+                          重试预算：Attempt #{(data?.retryCount ?? 0) + 1} of {taskMaxRetry + 1}
+                          {taskMaxRetry - (data?.retryCount ?? 0) > 0
+                            ? `（剩余 ${taskMaxRetry - (data?.retryCount ?? 0)} 次重试）`
+                            : '（预算已耗尽）'}
+                        </Tag>
+                      ) : undefined
+                    }
+                  >
+                    {retryChain.map((link) => (
+                      <div
+                        key={link.execId}
+                        data-testid="retry-chain-item"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '6px 0',
+                          borderBottom: '1px solid var(--color-border, #f0f0f0)',
+                          flexWrap: 'wrap',
+                        }}
+                      >
+                        <Tag color={RETRY_STATUS_COLOR[link.status] || 'default'}>Attempt #{link.retryCount}</Tag>
+                        {link.execId === data?.id ? (
+                          <Text strong>当前执行</Text>
+                        ) : (
+                          <a onClick={() => nav(`/tasks/${taskId}/executions/${link.execId}`)}>
+                            {link.execId.slice(0, 8)}…
+                          </a>
+                        )}
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {link.triggerType ? TRIGGER_LABEL[link.triggerType] ?? link.triggerType : '-'}
+                          {link.executorAddress ? ` · ${link.executorAddress}` : ''}
+                        </Text>
+                        {link.failureReason && (
+                          <Tag>{FAILURE_REASON_MAP[link.failureReason]?.label ?? link.failureReason}</Tag>
+                        )}
+                        {link.errorMessage && (
+                          <Text type="danger" style={{ fontSize: 12 }} ellipsis>
+                            {link.errorMessage}
+                          </Text>
+                        )}
+                      </div>
+                    ))}
+                    {pendingRetry && (
+                      <Alert
+                        type="info"
+                        showIcon
+                        style={{ marginTop: 12 }}
+                        title={`存在等待中的重试执行（Attempt #${pendingRetry.retryCount}）——按 retryDelay 指数退避+jitter 排队，到点自动开跑。`}
+                      />
+                    )}
+                  </Card>
+                )}
+                {retryChain.length === 0 && (
+                  <Card>
+                    <Text type="secondary">本执行无关联的重试链（原始尝试，或兄弟执行行尚未拉取）。</Text>
+                  </Card>
+                )}
+                {taskMaxRetry > 0 && (
+                  <Card size="small">
+                    <Text type="secondary">
+                      手动提前重试：任务详情页的「立即触发」可不经退避等待直接触发一次新执行
+                      （POST /tasks/:id/trigger 既有端点）。
+                    </Text>
+                  </Card>
+                )}
+              </>
+            ),
+          },
+          {
+            key: 'context',
+            label: <span data-testid="tab-label-context"><AppstoreOutlined /> 参数与产物</span>,
+            children: (
+              <>
+                <Card title="执行参数（任务默认参数快照）" style={{ marginBottom: 16 }}>
+                  {taskData?.params && Object.keys(taskData.params).length > 0 ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {Object.entries(taskData.params).map(([k, v]) => (
+                        <Tag key={k} style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                          {k} = {String(v)}
+                        </Tag>
+                      ))}
+                    </div>
                   ) : (
-                    seg.text
-                  ),
-                )
-              : displayLogs}
-          </pre>
-        </Card>
-      )}
-
-      {data?.aiAnalysis && (
-        <Card
-          title="🤖 AI 故障分析"
-          style={{ borderColor: '#1677ff' }}
-          styles={{ header: { background: 'linear-gradient(90deg, #e6f7ff, #f0f5ff)', color: '#1677ff' } }}
-        >
-          <Text style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.8 }}>
-            {data.aiAnalysis}
-          </Text>
-        </Card>
-      )}
-
-      {/* OBS-04: 分析报告 / 时间线——核心逻辑在独立组件 ExecutionReportPanel
-          （时间线映射/AI 分析段/当日报告段），本页仅做一次数据拉取与最小
-          挂载，避免与并行会话在本页的在途编辑产生结构冲突。 */}
-      <ExecutionReportPanel
-        payload={reportPayload}
-        loadError={reportError}
-        loading={reportLoading}
+                    <Text type="secondary">本任务未配置默认参数（params）。</Text>
+                  )}
+                  {taskData?.runbook && (
+                    <div style={{ marginTop: 12 }}>
+                      <Space size={4}>
+                        <BookOutlined />
+                        <Text strong>任务 Runbook</Text>
+                      </Space>
+                      <pre
+                        style={{
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          margin: '4px 0 0',
+                          padding: 8,
+                          borderRadius: 6,
+                          fontSize: 12,
+                          background: 'var(--log-bg)',
+                          color: 'var(--log-text)',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {taskData.runbook}
+                      </pre>
+                    </div>
+                  )}
+                </Card>
+                {/* FEAT-05 UI 半场（003）：产物列表组件单点接入——
+                    空清单整段不渲染（组件内 return null），故外层不包空态。 */}
+                <Card title="执行产物">
+                  <ArtifactsList execId={execId!} />
+                </Card>
+              </>
+            ),
+          },
+        ]}
       />
     </div>
   );
 }
+
+/**
+ * UI-05: 分段渲染。无关键词时沿用 OBS-03 的扁平 span 流（行类可选、
+ * 无高亮行为纯文本节点）；有关键词时逐行渲染：行类 span 包裹整行 +
+ * 命中片段 mark.log-search-hit，行间换行符跟随前一行（拼接保真）。
+ */
+function renderLogSegment(
+  seg: unknown,
+  index: number,
+  activeKeyword: string,
+): React.ReactNode {
+  if (!activeKeyword) {
+    const s = seg as { text: string; cls: string };
+    return s.cls ? (
+      <span key={index} className={s.cls}>{s.text}</span>
+    ) : (
+      s.text
+    );
+  }
+  const line = seg as import('../utils/log-search').LogLineSegments;
+  const separator = line.isLast ? '' : '\n';
+  const inner = line.segments.map((piece, j) =>
+    piece.hit ? (
+      <mark key={j} className="log-search-hit">{piece.text}</mark>
+    ) : (
+      piece.text
+    ),
+  );
+  return line.lineClass ? (
+    <span key={index} className={line.lineClass}>
+      {inner}
+      {separator}
+    </span>
+  ) : (
+    <span key={index}>
+      {inner}
+      {separator}
+    </span>
+  );
+}
+
