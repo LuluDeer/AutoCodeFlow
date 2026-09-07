@@ -6,7 +6,7 @@ import {
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
   CopyOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
-  CheckSquareOutlined,
+  CheckSquareOutlined, FileTextOutlined,
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useNavigate } from 'react-router-dom';
@@ -343,9 +343,15 @@ export default function TaskListPage() {
             共 {total} 个任务
           </Text>
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => nav('/tasks/new')}>
-          创建任务
-        </Button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {/* CORE-03: 任务模板入口——从预置/自定义模板一键克隆 config */}
+          <Button icon={<FileTextOutlined />} onClick={() => nav('/task-templates')}>
+            任务模板
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => nav('/tasks/new')}>
+            创建任务
+          </Button>
+        </div>
       </div>
 
       <Space style={{ marginBottom: 16 }} wrap>
