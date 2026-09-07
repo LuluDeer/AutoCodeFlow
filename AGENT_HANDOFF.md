@@ -3,13 +3,18 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-07（第十六轮·批 subagent-G：主会话派出员工 002/003/004 三个子代理并行认领——SEC-03/ARCH-21/CORE-03 三项 done，主会话统一验收；004 会话中断后由替补接手收尾）
+更新时间：2026-09-07（第十六轮·批 subagent-H：主会话派出员工 001/002 两个子代理并行认领——UI-01+02 打包/FEAT-07 两项 done，主会话统一验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-07 第十六轮·批 subagent-H 终验收，主会话；**注意：003/004 子代理已删除，后续批次仅 001/002 可派**）：
+  - `e54b092`+`76e86b4` **UI-01+UI-02（001，打包实施）设计系统令牌+明暗主题 done**：theme/tokens.ts 程序化镜像 MASTER.md（单一常量源，antd token 与 CSS 变量两处消费防漂移）+ index.css 变量注入（dark 面 #020617 OLED）+ ThemeProviders（darkAlgorithm + colorPrimary=#22C55E）+ zustand persist 三态主题 store（light/dark/system 跟随 matchMedia）+ MainLayout 头部三态循环按钮 + index.html 防 FOUC；字体 @fontsource/fira-code+fira-sans（lockfile +61 行最小变更）；双主题适配=壳层+Dashboard/执行器趋势图/SSE 日志区。admin-web **239/239**（基线 225，+14）。缩水如实：axe 未做（无浏览器环境，改对比度人工核算+高频页抽查，真机轮 Playwright+axe 补扫）；硬编码色值清缴面=壳层+4 高频页约 40 处，其余约 30 处散点留 UI-03~08 顺带。
+  - `c962d7a`+`c57bc3e`+`b35ac85` **FEAT-07（002）Webhook 出站事件 done**：event-subscriptions 独占模块（10 文件 1509 行）+ 迁移 1789900000000 两表（订阅+死信）；CRUD+死信查看/replay（JWT：ADMIN 全量/普通用户自有+系统级；url 双层守卫=@IsUrl+assertSafeHttpUrl DNS 逐地址 SSRF 深校验+出站前复核；secret 服务端代生成一次性回显后恒脱敏）；OutboundEventDispatcher 按 ARCH-21 接入形态注册 bus 监听器（主链零改动），**签名与 applications 发版 webhook 逐字节一致**（X-Hub-Signature-256 sha256=hex(timestamp.rawBody) ±5min 窗，实测断言）+ maxRedirects=0；重试=进程内 3 次 1s/2s/4s 指数退避→终败落死信+replay（跨进程 outbox 不做，api-reference 如实声明重启丢在途窗口）。补两个发布点：executor.offline（三路 OFFLINE 翻转每台恰一次）+ deployment.completed（心跳终态落库后），均 @Optional+fail-open。+18 例，admin-api **1603/1603**（基线 1585）。
+- **主会话终验收基线（全绿）**：admin-api **1603/1603**（基线 1585，+18）+ tsc ✓ · admin-web **239/239**（基线 225，+14）+ build ✓
+- 真机轮留验：双主题全页走查+axe 补扫（UI-01/02）· 订阅真实端点收 execution.failed 验签+重试时序（FEAT-07）· ANTD v6 fontFamilyCode 消费验证
 - 本轮（2026-09-07 第十六轮·批 subagent-G 终验收，主会话）：
   - `0b97477`+`cd4f0fb` **SEC-03（002）登录安全升级 done**：① TOTP 两步验证（用户级 opt-in）——totp.util 自实现 RFC 6238（HMAC-SHA1/6 位/30s/±1 步漂移，附录 B 六组官方参考向量测试全过），四端点 setup/enable/verify（@Public+限流+错码计入锁定）/disable（需密码或有效码防被窃 JWT 单独关 2FA）；login 契约写死 200+{totpRequired:true}，未启用用户零变化。② 会话管理——access token 增 sid 声明（=refresh jti），refresh_tokens 落 userAgent/ip，GET /auth/sessions（当前标记）/DELETE :id（属主校验）/revoke-others（无 sid fail-safe 吊销全部）。admin-web：登录二段式 + 设置末位「安全设置」Tab（otpauth 文本+secret 复制替代二维码——零新依赖，lockfile 零变更）。迁移 1789800000001。+69 例（api 57/web 12）。
   - `323b442`+`0933d72`+`de681b8` **ARCH-21（003）领域事件总线 done（红线达成）**：DomainEventBus（原生 EventEmitter 封装，不引依赖；emit fail-open；@Global+@Optional 零 spec 破坏）；handleCallback winner 分支终态后 emit execution.completed/failed；**task.service.ts 零 NotificationService import/注入**，notifyCallbackFailure+审计兜底整体迁入 ExecutionEventsListener（九参数语义逐行等价）。顺带闭合 OBS-02 AlertsController 缺 taskRepo provider 的启动级注入缺口（ADR-008 形态，spec 全 mock 掩盖）。ADR-011 记录事件契约；**有意语义变化：通知从回调响应前同步改为可能在途**（真机轮观察）。范围注记：processor AI+dispatch 失败通知直调保留（验收口径=task.service）；KILLED 未 emit（类型预留）；timeout 折叠进 failed（等价）。FEAT-07 铺路就绪（出站 webhook=注册 execution.* 监听器即可）。+28 例。
