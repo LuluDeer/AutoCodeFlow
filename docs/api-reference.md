@@ -724,7 +724,8 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | `REDIS_TLS` | `false` | `true` 时 ioredis/BullMQ 连接启用 TLS 传输加密 |
 | `REDIS_TLS_REJECT_UNAUTHORIZED` | `true` | 仅自签证书调试时设为 `false` |
 | `DB_SYNCHRONIZE` | `false` | 显式 schema 同步开关（不再依赖 NODE_ENV 推断）；**生产环境设为 `true` 直接启动失败**，schema 变更一律走 migrations |
-| `LOG_RETENTION_DAYS` | `30` | `execution_log_lines` 日志行保留天数，每日 03:30 分批（≤5000 行/批）清理过期日志 |
+| `LOG_RETENTION_DAYS` | `30` | `execution_log_lines` 日志行保留天数。分区库（迁移 1789900000002 后）每日 03:30 cron 对超期分区整体 DETACH+DROP；legacy 普通表/回退开关下分批（≤5000 行/批）DELETE |
+| `LOG_PARTITION_ENABLED` | `true` | ARCH-22 分区清理路径开关：`false` 时即使库已分区化也回退 legacy 分批 DELETE（不改 schema，重新开启无需迁移）。运维细节见 operations.md「执行日志分区表运维」 |
 | `API_BASE_URL` | 无 | 对外可达的 API 基地址；**上传应用包时必需**——`POST /applications/upload` 用它生成 executor 可下载的 `packageUrl`，缺失时返回 500 |
 | `SSE_MAX_STREAMS_PER_EXECUTION` | `4` | 单 execution SSE 并发上限（进程内计数，多实例部署实际上限=实例数×该值） |
 | `SSE_MAX_STREAMS_GLOBAL` | `64` | 全局 SSE 并发上限（同上，进程内） |

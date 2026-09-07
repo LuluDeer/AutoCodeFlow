@@ -616,6 +616,66 @@ DELETE FROM execution_log_lines
 WHERE execution_id NOT IN (SELECT id FROM task_executions);
 ```
 
+### 执行日志分区表运维（ARCH-22）
+
+`execution_log_lines` 自迁移 `1789900000002-PartitionExecutionLogLines` 起为 **PARTITION BY RANGE (createdAt)** 的按日分区表（UTC 日历日切分，主键为联合主键 `(id, createdAt)`——PG 分区表要求唯一约束必须包含分区键）。保留期清理由每日 03:30 cron（`LogRetentionCleanupService`）执行：
+
+- **分区库主路径**：超期分区（上界 ≤ 保留期截止时刻）整体 `DETACH PARTITION` 后立即 `DROP`——元数据级操作，替代逐行 DELETE，大表清理不再产生 VACUUM 压力（这是 10× 时长改善的来源）；同一 cron 内预建未来 7 天分区（`CREATE TABLE IF NOT EXISTS ... PARTITION OF`，幂等）。
+- **fallback 路径**：`LOG_PARTITION_ENABLED=false` 或库仍为普通表（未跑迁移）时，回退为分批 DELETE（每批 5000 行）。开关只影响运行期清理路径，**不改 schema**——重新开启无需再跑迁移。
+- **S3 驱动**：`LOG_STORAGE_DRIVER=s3` 上传成功时 DB 不写日志行，分区表常空；完整日志的到期清理仍由上文「S3/MinIO 日志对象生命周期」的 bucket lifecycle 负责。
+
+#### 确认分区状态
+
+```sql
+-- 父表是否分区化（relkind 应为 'p'）
+SELECT c.relname, c.relkind FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = current_schema() AND c.relname = 'execution_log_lines';
+
+-- 现有分区及行数估算
+SELECT c.relname AS partition,
+       pg_get_expr(c.relpartbound, c.oid) AS bound,
+       c.reltuples::bigint AS approx_rows
+FROM pg_class c
+JOIN pg_inherits i ON i.inhrelid = c.oid
+WHERE i.inhparent = 'execution_log_lines'::regclass
+ORDER BY c.relname;
+```
+
+#### 存量库升级演练（迁移上线前的维护窗口执行）
+
+1. **演练前**：对 `execution_log_lines` 行数与占用做基线（`SELECT COUNT(*), pg_size_pretty(pg_total_relation_size('execution_log_lines'))`；建议在行数 ≥ 100 万的真机库演练，充分暴露搬迁耗时）。
+2. **执行**：`docker compose exec admin-api npm run migration:run`。存量库在线搬迁流程（迁移内自动完成，无需人工干预）：rename 原表为 `execution_log_lines_legacy`（瞬时元数据操作）→ 建分区父表（同列 + 联合 PK + 三个读取路径索引）→ `INSERT SELECT` 一次性搬迁存量数据 → 预建 today-1 ~ today+7 分区。
+3. **中断可续跑**：搬迁是守卫式分步推进（按 relkind 判定状态），中断后重新 `migration:run` 自动从断点续走，`ON CONFLICT DO NOTHING` 保证不重复插。
+4. **验证**：`migration:show` 显示迁移已应用；上方「确认分区状态」查询可见分区表 + 日分区；抽查若干 executionId 的日志读取（管理台执行详情页日志 Tab）与搬迁前一致；新写入的执行产生新日志行且落入当日分区。
+5. **验收（10× 时长）**：搬迁完成次日观察 03:30 cron 日志——分区库路径单次清理为 2 条 DDL（毫秒级），对比 legacy DELETE 清理同量级行数（数百万行/数十批）的分钟级时长，差值即为验收依据；如需精确计时可在演练库手动构造 30 天前分区对比两种路径。
+
+#### legacy 表人工清理（迁移完成并观察 ≥ 1 个保留期后）
+
+迁移**不删除** `execution_log_lines_legacy`（保留为人工回退源）。确认新表运行正常（日志读写无异常、清理 cron 正常 DETACH）后，人工清理：
+
+```sql
+-- 1. 确认 legacy 无新增依赖：新表数据完整后 legacy 只是只读冗余
+SELECT COUNT(*) FROM execution_log_lines_legacy;
+
+-- 2. 一次性释放空间（大表建议分批或 maintenance window）
+DROP TABLE execution_log_lines_legacy;
+```
+
+如需回滚分区化（罕见：如降级 PG 版本），`npm run migration:revert` 会把分区数据回流 legacy 普通表后再 DROP 分区父表；大表回流耗时长，务必在维护窗口执行。
+
+#### 分区异常兜底
+
+- **预建 job 停摆**（连续多日 cron 失败）：跨过预建窗口的日期没有分区，当日写入会显式报错（无 DEFAULT 分区，故意设计——隐蔽堆积比显式报错危险）。人工补建：
+
+```sql
+CREATE TABLE execution_log_lines_20260910
+  PARTITION OF execution_log_lines
+  FOR VALUES FROM ('2026-09-10 00:00:00') TO ('2026-09-11 00:00:00');
+```
+
+- **人工分区命名**：清理 job 按 `pg_get_expr(relpartbound)` 解析分区边界，不依赖命名；人工建的分区即使不符合 `execution_log_lines_YYYYMMDD` 命名规范也会被正常 DETACH（除非边界是不可解析的非常规表达式——那类分区会被跳过并在日志点名，绝不误删）。
+
 ---
 
 ## 升级注意事项
