@@ -3,13 +3,18 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-J：主会话派出员工 001/002 两个子代理并行认领——UI-04/QA-02 第二阶段两项 done，主会话统一验收；持续派工循环进行中）
+更新时间：2026-09-08（第十六轮·批 subagent-K：001/002 并行认领——UI-05/CORE-05+06 两项 done，主会话统一验收；持续派工循环进行中）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-08 第十六轮·批 subagent-K 终验收，主会话）：
+  - `50c648b`+`dfd73bf` **UI-05（001）执行详情页信息架构 done**：antd Tabs 四页签（日志默认/时间线·报告=ExecutionReportPanel 迁入/重试链/参数与产物=**ArtifactsList 单点接入闭环 FEAT-05 UI 半场**），Tab key 走 ?tab= searchParams 记忆；日志查看器加 300ms 防抖关键词搜索高亮（log-search.ts 纯函数+mark 双主题 ≥4.5:1，不改变文本流复制下载保真）；失败定位卡片（failure-runbook.ts 镜像 mcp FAILURE_RUNBOOK 十二类+runbook pre-wrap+跳时间线锚点+重新触发快捷）。**虚拟滚动缩水决策**：保持 fromLine/limit 服务端分页（limit 封顶 2000）+OBS-03 聚合渲染策略已是常数成本，不引 react-window（零 lockfile 变更），注记入板。admin-web **278/278**（基线 264，+14）+ build/tsc ✓；既有 log-level/sse/truncated-logs 三测试文件零改动全绿。
+  - `11cd26e`+`807bc3e`+`457531a` **CORE-05+06（002 打包）done**：CORE-05 loadScore 新公式 `0.5×loadRatio+0.25×cpu+0.25×mem+0.1×longTaskPenalty`（executor-score.util 共享纯函数，前三项与旧实现逐字节一致零回归；估时查询失败降级不断调度）；tasks.estimatedDurationSec 可空列（迁移 1789900000001）+DTO 校验+saveVersion 快照纳入。CORE-06 缺口侦察=直方图/P99/prom series 均已存在零重做，真实缺口仅 Grafana——补 row 5 两面板（P99/均值 timeseries + 瞬时 stat）；per-task 直方图缩为全局（label 爆炸，预案内）。admin-api **1787/1787**（基线 1750，+37），coverage 90.65/78.69/81.49/91.64 门槛全过。
+- **主会话终验收基线（全绿）**：admin-api **1787/1787** + tsc ✓ + coverage 卡点 · admin-web **278/278** + build ✓
+- 真机轮留验：Tab 双主题+万行日志搜索体感（UI-05）· 双执行器长/短任务分布断言（CORE-05）· Grafana row5 数据面（CORE-06）
 - 本轮（2026-09-08 第十六轮·批 subagent-J 终验收，主会话）：
   - `11721b1`+`568d480` **UI-04（001）Dashboard 重构五项 done**：KpiSparkline（7 天窗——后端日粒度下 24h 无意义，缩水声明）/FailureTopList（Top5 聚合+次数色阶+跳详情；失败率无分母不展示）/ExecutorHeatBars（CPU/内存双条 85/65 阈值色阶）/SchedulerLatencyCard（p99/avg/last 三数字，CORE-06 后端字段已存在纯前端呈现）/DashboardEmptyGuide（totalTasks===0 引导创建）。五新组件独立文件+纯函数伴生，theme tokens 双主题不破。admin-web **264/264**（基线 253，+11）+ build/tsc ✓。零迁移零 admin-api 改动。
   - `3b76a30`+`da0b4d1`+`cc17e38`+`af8e083` **QA-02 两阶段整体 done（002，branches 冲 75 达成）**：第二阶段 +63 例（executor dispatch/乐观锁/broadcast 全分支矩阵、task findAll/统计/SSE 槽位/回滚补偿、application 状态机与 spawnAsync 边角、notification 渠道分流/静默/silenceStore 写穿）；coverage 排除 bootstrap 面（main.ts/app.module/migrations 等 7 项逐条理由入库，分母口径变化已注记）；四指标 **91.6/81.34/78.47/90.6**（branches 75 达成超 3.47），门槛上调 **75/69/84/84**。零业务源码改动、零真 bug（+63 例直绿）。admin-api **1750/1750**（基线 1652，+98 两阶段合计）。
