@@ -3,13 +3,19 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-L：001/002 并行认领——UI-08/ARCH-22 两项 done，主会话统一验收；持续派工循环进行中）
+更新时间：2026-09-08（第十六轮·批 subagent-M：001/002 并行认领——SEC-05/DOC-01+CORE-03 收尾三项 done，主会话统一验收；仅剩 OBS-01 压轴）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-08 第十六轮·批 subagent-M 终验收，主会话）：
+  - `907af4f`+`a3012ca` **DOC-01（002）PR 检查项机制 done**：新建 .github/PULL_REQUEST_TEMPLATE.md——「API 变更？」四查（端点+api-reference 同批/breaking 影响面+四客户端包同批/env 三处登记引 W-22 前科/迁移时间戳防撞号）+「平台影响？」（bundle 同 commit/真机矩阵）+交付纪律段；development.md「PR 前检查清单」节交叉引用。
+  - `726e2ec` **CORE-03 收尾「保存为模板」UI done（整体闭环）**：TaskDetailPage 页头 extra → Modal（名称/描述/分类）→ task-template-extract.ts 白名单抽取 17 项 CreateTaskDto 真实声明字段（priority 双形态归一，排除 id/status/glue 等非配置键）→ POST /task-templates；+7 例，admin-web **293/293**（基线 286）。glue 任务模板化留后续评估。
+  - `2fa4888`+`1dab41e` **SEC-05（001）上传面纵深 done**：侦察结论=解压主战场在 executor-node deploy.ts（admin-api 不解压），**双侧同规则双闸**——zip-guard 双端同语义零依赖（EOCD+中央目录解析：解压比 ≤100/条目 ≤10000/单文件 ≤1GiB/全包 ≤2GiB/嵌套探测 1 层/zip64 与 CD 篡改 fail-closed，九项 env 走 Joi）；clamd 可选钩子 CLAMD_ENABLED 默认 false，true 时 fail-closed（无 verdict ≠ 放行）。恶意样件集 12+ 例程序化构造全拒（42MiB 高比/条目洪泛/嵌套套娃/EICAR/截断/zip64）。executor-node bundle 同 commit 重打。admin-api **1846/1846**（+27）· executor-node **262/262**（+14）。缩水：update-package 未接线（本就不自动解压，文档注明）。
+- **主会话终验收基线（全绿）**：admin-api **1846/1846** + tsc ✓ + coverage 卡点 · admin-web **293/293** + build ✓ · executor-node **262/262**（bundle 无漂移）
+- 真机轮留验：PR 模板真实渲染走查 · 存模板→模板页→建任务全链路 · clamd 容器联通+EICAR 端到端 · Windows Expand-Archive 恶意包拒绝
 - 本轮（2026-09-08 第十六轮·批 subagent-L 终验收，主会话）：
   - `7ea1ddb`+`13b4c91` **ARCH-22（002）execution_log_lines 按日 RANGE 分区 done**：单迁移 1789900000002 三态守卫式（已分区幂等重入/存量普通表在线搬迁四步 RENAME→建父表（联合 PK (id,createdAt)——侦察坐实 id 无外部消费方零破坏）→INSERT SELECT 搬迁+setval 序列对齐→legacy 保留人工清理/新库直建+预建 9 日分区），中断自动续走；清理服务双路径=分区库 DETACH PARTITION+DROP（双安全闸：边界不可解析跳过+时钟回拨绝不 DETACH 未来分区）+legacy DELETE fallback；每日预建未来 7 天分区；LOG_PARTITION_ENABLED 默认 true（只影响清理路径不影响 schema）。测试为 SQL 结构断言（本机无 PG 约定，先例同形态），真机 DDL 语义+10× 时长如实留真机轮。+32 例，operations.md 运维段含演练/回滚步骤。
   - `0b98ec7`+`0902318`+`1f80433` **UI-08（001）三态标准化 done**：ErrorFallback 增强（Result+重试+复制错误信息 clipboard 降级）+新 StateError 页内错误块+PageSkeleton（table/cards 双形态）+PageFallback 骨架化；17 页三态盘点表入库，15 页接入（骨架屏替换裸 Spin、TaskTemplates/ApplicationList 两页 StateError 标杆）；**UI-03 低频 9 页 PageHeader 遗留清零**。缩水：toast-only 页 StateError 逐页补齐留后续（两页标杆模式已固化）。admin-web **286/286**（基线 278，+8）+ build/tsc ✓；被改页既有 23 例测试复核全绿。
