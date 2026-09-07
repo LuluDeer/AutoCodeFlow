@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   UseInterceptors,
   UploadedFile,
@@ -36,6 +37,7 @@ import {
   UploadApplicationDto,
 } from "./dto/application.dto";
 import { AppReleaseWebhookDto } from "./dto/app-release-webhook.dto";
+import { ListReleasesQueryDto } from "./dto/app-release.dto";
 import * as fs from "fs";
 import * as path from "path";
 import { createHmac, timingSafeEqual } from "crypto";
@@ -347,6 +349,27 @@ export class ApplicationController {
   async getVersionHistory(@Param("id") id: string) {
     await this.svc.findById(id);
     return this.deploymentSvc.getVersionHistory(id);
+  }
+
+  /**
+   * DEP-01 统一资源：版本 × 部署一屏追溯（每行 = 一次版本发布，聚合包地址/
+   * 最近一次部署时间、状态、触发方式、操作人）。只读端点，与 findAll/findById/
+   * versions 同权限面——任意认证用户可见（类级 JwtAuthGuard），不写入、不改 schema。
+   * 旧端点 GET /applications/:id/versions 与 GET /app-deployments 原样保留为
+   * 过渡期 alias（数据同源；过渡期结束另行任务收口）。
+   */
+  @Get(":id/releases")
+  @ApiOperation({
+    summary: "List unified releases (version × latest deployment) for an application",
+    description:
+      "统一发布追溯视图：按版本聚合部署信息，分页默认 50、上限 200。",
+  })
+  listReleases(@Param("id") id: string, @Query() query: ListReleasesQueryDto) {
+    return this.deploymentSvc.getReleases(
+      id,
+      query.page ?? 1,
+      query.pageSize ?? 50,
+    );
   }
 
   @Post(":id/upgrade-all")
