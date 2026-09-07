@@ -59,6 +59,7 @@
 | `CLAMD_ENABLED` | `false` | SEC-05 可选 clamd（ClamAV 守护进程）病毒扫描钩子。**默认 false = 零影响**；`true` 时 application / executor-package 上传包流式 INSTREAM 送扫。**失败策略 = fail-closed**：扫描不可达/超时/异常一律拒绝上传（503），检出威胁 400（签名名仅入服务端日志）——未获 verdict 绝不放行（安全缺省） |
 | `CLAMD_HOST` / `CLAMD_PORT` | `127.0.0.1` / `3310` | SEC-05——clamd TCP 地址（`CLAMD_ENABLED=true` 时必达，否则上传全拒） |
 | `CLAMD_TIMEOUT_MS` | `10000` | SEC-05——单次扫描超时（毫秒），超时按 fail-closed 拒绝 |
+| `OTEL_ENABLED` | `false` | OBS-01 OpenTelemetry 分布式追踪开关。**默认 false = 零开销零行为变化**（不生成 traceId、不带头、不落库）；`true` 时 traceId 贯穿落库（`task_executions.traceId`）+ W3C traceparent 头 dispatch 透传/回调回传，执行详情页展示追踪标识（详见下方「OTEL / Jaeger」段） |
 
 > 注：以上变量均已收入 `.env.example`；其中 `THROTTLE_*`、`STALE_RECOVERY_RETRY_ENABLED`、`EXECUTOR_ALLOW_PRIVATE_NETWORK`、`EXECUTION_CALLBACK_SECRET`、`NPM_REGISTRY_*`、`REGISTRY_UPLOAD_TIMEOUT_MS`、`DISK_CLEANUP_*` 由服务进程直接读取，根 compose 默认未注入——独立部署时通过进程环境传入，或在 compose 的 `environment:` 中显式添加。
 
@@ -222,6 +223,24 @@ INSTREAM 送 ClamAV 守护进程（docker 部署建议 `clamav/clamd` 镜像 + �
 检出威胁 400（签名名仅入服务端日志，如 EICAR 测试串
 `EICAR-STANDARD-ANTIVIRUS-TEST-FILE`）。开启前请确认 clamd 可达，否则
 上传通道整体拒绝。可用性优先于严格扫描的部署保持默认 `false` 即可。
+
+### OTEL / Jaeger 分布式追踪（OBS-01）
+
+平台在 `OTEL_ENABLED=true` 时启用 admin-api → 执行器 → 回调的全链路 traceId 贯穿（W3C Trace Context）；**默认 `false`，开启与否不影响任何既有行为**（关闭时不生成 traceId、不加请求头、`task_executions.traceId` 保持 null）。trace-id 在触发/入队侧生成落库，dispatch 指令以 `traceparent` 头透传执行器并注入任务 env `AUTOFLOW_TRACE_ID`（任务代码可读），执行器终态回调回传同名头关联。管理台执行详情页在 traceId 有值时展示追踪标识与「复制 traceId」按钮。契约细节见 api-reference.md「Distributed Tracing」段。
+
+**架构决策（@opentelemetry/api-only）**：当前仅依赖 `@opentelemetry/api`（轻量 API 包，无 SDK 实现）——span 树在 admin-api 进程内管理并以 `[trace] start/end` 结构化日志输出，**不引入 `@opentelemetry/sdk-*` 全家桶与 exporter**。理由：本项目无稳定部署的 collector，SDK 捆绑大量传递依赖并引入每 span 出站序列化开销，而当前唯一消费场景是「traceId 贯穿 + UI 展示/复制检索」；埋点边界（trigger/enqueue/dispatch/callback）已按 OpenAPI 语义收敛，未来接 Jaeger/Tempo 时只需实现 SDK `TracerProvider` 挂载到 `@opentelemetry/api` 全局并配置 OTLP exporter，无需改动任何埋点代码。
+
+**Jaeger 接入（可选 profile，当前为预置）**：
+
+```bash
+# 启动 Jaeger all-in-one（未启用 profile 时零资源占用）
+docker compose --profile jaeger up -d jaeger
+# UI: http://localhost:16686
+```
+
+> 注意：collector 容器已预置（OTLP gRPC 4317 / HTTP 4318 + UI 16686，loopback-only），但平台 span **尚未出站**——需先完成上述 SDK TracerProvider 挂载（一次性、埋点零改动），并在 admin-api 侧设置 `OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317`。挂载后从执行详情页复制 traceId 粘贴到 Jaeger「Search」框即可定位整条 span 树。
+
+**执行器侧行为**：双执行器读取 dispatch 头 → 记日志（trace-id 段）→ 注入 `AUTOFLOW_TRACE_ID` env → 回调回传；执行器侧不做完整 span 树（缩水声明，见 api-reference 契约段）。
 
 ### Redis 操作
 
