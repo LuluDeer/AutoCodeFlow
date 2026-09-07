@@ -24,6 +24,9 @@ import { ApplicationModule } from "./modules/application/application.module";
 import { ExecutorPackageModule } from "./modules/executor-package/executor-package.module";
 import { RegistryModule } from "./modules/registry/registry.module";
 import { ArtifactsModule } from "./modules/artifacts/artifacts.module";
+// ARCH-21: 进程内领域事件总线（@Global 单例——emit 侧在 task 模块，
+// listener 侧在 notification 模块，FEAT-07 出站 webhook 届时直接订阅）。
+import { DomainEventModule } from "./common/services/domain-event-bus.service";
 
 @Module({
   imports: [
@@ -320,6 +323,7 @@ import { ArtifactsModule } from "./modules/artifacts/artifacts.module";
     ExecutorPackageModule,
     RegistryModule,
     ArtifactsModule,
+    DomainEventModule,
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally
