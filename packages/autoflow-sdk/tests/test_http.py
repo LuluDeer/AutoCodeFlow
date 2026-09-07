@@ -2,7 +2,7 @@
 import pytest
 import httpx
 import respx
-from autoflow_sdk.http import HttpClient, AsyncHttpClient
+from autoflow_sdk.http import HttpClient, AsyncHttpClient, HttpClientError
 
 
 class TestHttpClientInit:
@@ -89,3 +89,49 @@ class TestAsyncHttpClientRequests:
         async with AsyncHttpClient(base_url="http://async.test") as c:
             with pytest.raises(httpx.HTTPStatusError):
                 await c.get("/err")
+
+
+class TestHttpClientErrorSubclass:
+    """ECO-01 parity: SDK-managed transport failures raise the HttpClientError
+    subclass (node-style identifiable type) while remaining catchable as
+    httpx.HTTPStatusError — zero behavior change for existing task code."""
+
+    @respx.mock
+    def test_sync_error_is_http_client_error(self):
+        respx.get("http://api.test/missing").mock(return_value=httpx.Response(404))
+        c = HttpClient(base_url="http://api.test")
+        with pytest.raises(HttpClientError) as excinfo:
+            c.get("/missing")
+        # subclass relationship: existing except-clauses keep working
+        assert isinstance(excinfo.value, httpx.HTTPStatusError)
+        assert excinfo.value.response.status_code == 404
+        assert excinfo.value.request is not None
+
+    @respx.mock
+    def test_sync_error_on_5xx(self):
+        respx.post("http://api.test/boom").mock(return_value=httpx.Response(502))
+        c = HttpClient(base_url="http://api.test")
+        with pytest.raises(HttpClientError):
+            c.post("/boom", json={})
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_async_error_is_http_client_error(self):
+        respx.get("http://async.test/err").mock(return_value=httpx.Response(403))
+        async with AsyncHttpClient(base_url="http://async.test") as c:
+            with pytest.raises(HttpClientError) as excinfo:
+                await c.get("/err")
+            assert isinstance(excinfo.value, httpx.HTTPStatusError)
+
+    @respx.mock
+    def test_success_path_raises_nothing(self):
+        # 2xx must never raise even with the new _raise helper
+        respx.get("http://api.test/ok").mock(return_value=httpx.Response(200, json={"ok": True}))
+        c = HttpClient(base_url="http://api.test")
+        assert c.get("/ok").status_code == 200
+        assert c.get("/ok").json()["ok"] is True
+
+    def test_exported_from_package_root(self):
+        import autoflow_sdk
+
+        assert autoflow_sdk.HttpClientError is HttpClientError

@@ -1,4 +1,5 @@
 import { TaskContext } from '../context';
+import { ERROR_MESSAGE_MAX_LENGTH, LOGS_MAX_LENGTH } from '../context';
 import { TaskEnv } from '../types';
 
 const baseEnv: TaskEnv = {
@@ -213,6 +214,119 @@ describe('TaskContext', () => {
           /missing required environment variable "TASK_ID"/,
         );
       });
+    });
+  });
+
+  // ECO-01: node-side callback shorthands mirroring the python SDK's
+  // ctx.report_success / ctx.report_failure — item shape, defaults,
+  // truncation caps and the omitted-vs-empty executorAddress behavior
+  // must stay byte-comparable across the two SDKs.
+  describe('callback shorthands (ECO-01, python parity)', () => {
+    const CRED_ENV: TaskEnv = {
+      ...baseEnv,
+      executorAddress: 'executor-node:8002',
+    };
+    let post: jest.Mock;
+
+    beforeEach(() => {
+      jest.mock('axios');
+      post = jest.fn().mockResolvedValue({ results: [] });
+      // bypass the real HttpClient: stub ctx.http.post directly
+    });
+
+    function ctxWithPost(): TaskContext {
+      const ctx = TaskContext.create(CRED_ENV);
+      // Replace the axios-backed client's post with a spy — item shape is
+      // what this suite asserts, not transport behavior (covered elsewhere).
+      (ctx as { http: unknown }).http = { post } as unknown;
+      return ctx;
+    }
+
+    it('reportSuccess posts status=success with executionId pinned', async () => {
+      const ctx = ctxWithPost();
+      await ctx.reportSuccess({ summary: '3 rows written', durationMs: 1234 });
+      expect(post).toHaveBeenCalledTimes(1);
+      const [url, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(url).toBe('/api/executions/callback');
+      expect(items).toEqual([
+        {
+          executionId: 'exec-001',
+          status: 'success',
+          executorAddress: 'executor-node:8002',
+          logs: '3 rows written',
+          durationMs: 1234,
+        },
+      ]);
+    });
+
+    it('reportSuccess omits logs/durationMs when not provided', async () => {
+      const ctx = ctxWithPost();
+      await ctx.reportSuccess();
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(items).toEqual([
+        { executionId: 'exec-001', status: 'success', executorAddress: 'executor-node:8002' },
+      ]);
+      expect(items[0]).not.toHaveProperty('logs');
+      expect(items[0]).not.toHaveProperty('durationMs');
+    });
+
+    it('reportSuccess omits executorAddress entirely when unknown (never empty string)', async () => {
+      const ctx = TaskContext.create(baseEnv); // no executorAddress
+      (ctx as { http: unknown }).http = { post } as unknown;
+      await ctx.reportSuccess();
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(items[0]).not.toHaveProperty('executorAddress');
+    });
+
+    it('reportFailure defaults to failureReason=script_error and maps error message', async () => {
+      const ctx = ctxWithPost();
+      await ctx.reportFailure(new Error('upstream 503'));
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(items[0]).toMatchObject({
+        executionId: 'exec-001',
+        status: 'failed',
+        errorMessage: 'upstream 503',
+        failureReason: 'script_error',
+        executorAddress: 'executor-node:8002',
+      });
+    });
+
+    it('reportFailure stringifies non-Error values and accepts a custom reason', async () => {
+      const ctx = ctxWithPost();
+      await ctx.reportFailure({ code: 7 }, { failureReason: 'timeout', durationMs: 42 });
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(items[0]).toMatchObject({
+        errorMessage: '{"code":7}',
+        failureReason: 'timeout',
+        durationMs: 42,
+      });
+    });
+
+    it('reportFailure truncates errorMessage to the 4 KB DTO cap', async () => {
+      const ctx = ctxWithPost();
+      await ctx.reportFailure('x'.repeat(ERROR_MESSAGE_MAX_LENGTH + 100));
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect((items[0].errorMessage as string).length).toBe(ERROR_MESSAGE_MAX_LENGTH);
+    });
+
+    it('reportSuccess truncates summary to the 512 KB logs cap', async () => {
+      const ctx = ctxWithPost();
+      await ctx.reportSuccess({ summary: 'y'.repeat(LOGS_MAX_LENGTH + 1) });
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect((items[0].logs as string).length).toBe(LOGS_MAX_LENGTH);
+    });
+
+    it('shorthands surface the disabled-client rejection instead of swallowing it', async () => {
+      // Disabled client: credentials absent → the real HttpClient must reject.
+      const disabled = TaskContext.create({
+        executionId: 'e',
+        taskId: 't',
+        taskName: 'n',
+      });
+      await expect(disabled.reportSuccess()).rejects.toThrow(/HttpClient is disabled/);
+      await expect(disabled.reportFailure(new Error('x'))).rejects.toThrow(
+        /HttpClient is disabled/,
+      );
     });
   });
 });
