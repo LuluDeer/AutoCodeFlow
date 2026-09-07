@@ -45,10 +45,40 @@
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| POST | `/auth/login` | 否 | 用户名密码登录，返回 `accessToken` 与 `refreshToken`（camelCase；独立限流，默认 20 次/分钟） |
+| POST | `/auth/login` | 否 | 用户名密码登录，返回 `accessToken` 与 `refreshToken`（camelCase；独立限流，默认 20 次/分钟）。**TOTP 已启用用户**返回 `200 + {"totpRequired": true}`（不发 token，见下） |
+| POST | `/auth/totp/verify` | 否 | SEC-03 TOTP 登录第二步：username+password+code 复验后签发 `accessToken`/`refreshToken`（限流 10 次/分钟；错码计入登录失败锁定计数） |
 | POST | `/auth/refresh` | 否 | 使用 refresh_token 刷新 access_token（限流 10 次/分钟） |
-| POST | `/auth/logout` | 是 | 登出，使当前 refresh_token 失效 |
+| POST | `/auth/logout` | 是 | 登出，吊销当前用户全部 refresh_token |
 | GET | `/auth/profile` | 是 | 获取当前登录用户信息 |
+| POST | `/auth/totp/setup` | 是 | SEC-03 暂存新 TOTP 密钥（Base32）+ `otpauth://` URL（限流 10 次/分钟；已启用时 400） |
+| POST | `/auth/totp/enable` | 是 | SEC-03 校验一次动态码后激活 TOTP（`{code}`；无暂存密钥或错码 400） |
+| POST | `/auth/totp/disable` | 是 | SEC-03 关闭 TOTP，需 `{password}` 或 `{code}` 之一确认（否则 401；未启用时幂等返回 `{disabled:false}`） |
+| GET | `/auth/sessions` | 是 | SEC-03 列出我的活跃会话（refresh token 行），`current:true` 标记当前会话 |
+| DELETE | `/auth/sessions/:id` | 是 | SEC-03 吊销我的单个会话（非本人或不存在的 id 返回 401） |
+| POST | `/auth/sessions/revoke-others` | 是 | SEC-03 吊销除当前会话外的全部会话；access token 无 `sid` 声明时退化为吊销全部（fail-safe） |
+
+**TOTP 两步验证（SEC-03）语义约定：**
+
+- **登录契约写死为 200 + 字段**：`POST /auth/login` 对已启用 TOTP 的用户返回
+  `{"code":200,"data":{"totpRequired":true}}`——不返回 401，避免前端把「需要第二步验证」
+  与「密码错误」混淆。前端收到 `totpRequired:true` 后收集 6 位动态码调用
+  `POST /auth/totp/verify` 完成登录。
+- **未启用用户登录路径零变化**：`totpEnabled=false` 时 login 直接签发双 token，行为与
+  SEC-03 之前完全一致。
+- **绑定流程**：`setup`（暂存密钥，此时 `totpEnabled` 仍为 false）→ 用户在验证器
+  （Google/Microsoft Authenticator 等任意 TOTP 应用，SHA-1/6 位/30s，RFC 6238）中添加
+  → `enable`（验证一次码后激活）。重复 `setup` 会以新密钥覆盖暂存。
+- **TOTP 参数**：HMAC-SHA1、6 位数字、步长 30s、允许 ±1 步（±30s）时钟漂移。
+  `otpauth://totp/AutoCodeFlow:<username>?secret=<base32>&issuer=AutoCodeFlow&algorithm=SHA1&digits=6&period=30`
+- **关闭确认**：`disable` 需账号密码或有效动态码之一——被窃的 access token 单独不足以
+  关闭 2FA。`users.totpSecret` 列永不出现在任何 API 响应中（entity `@Exclude`）。
+- **access token 新增 `sid` 声明**：等于本次签发的 refresh token 的 `jti`，用于
+  `GET /auth/sessions` 标记当前会话与 `revoke-others` 排除自身。旧 token 无 `sid`
+  时会话列表正常（无 current 标记），revoke-others 退化为吊销全部。
+- **会话 = refresh_tokens 表一行**：吊销即 `revoked=true`（DR-04 撤销语义，立即生效，
+  被吊销设备下次 refresh 即 401）。签发时记录 `userAgent`（截断 256 字符）与 `ip`
+  供会话列表展示。迁移 `1789800000001`（幂等）新增
+  `users.totpSecret`/`users.totpEnabled`/`refresh_tokens.userAgent`/`refresh_tokens.ip`。
 
 **登录请求示例：**
 
@@ -70,6 +100,35 @@ POST /api/auth/login
     "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
     "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
   }
+}
+```
+
+**TOTP 启用用户的登录响应（200，非 401）：**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": { "totpRequired": true }
+}
+```
+
+**会话列表响应示例：**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": [
+    {
+      "id": 42,
+      "createdAt": "2026-09-07T08:00:00.000Z",
+      "expiresAt": "2026-10-07T08:00:00.000Z",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0) Chrome/126.0",
+      "ip": "192.168.1.8",
+      "current": true
+    }
+  ]
 }
 ```
 
