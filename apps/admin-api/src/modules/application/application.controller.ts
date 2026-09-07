@@ -14,6 +14,7 @@ import {
   BadRequestException,
   UnauthorizedException,
   InternalServerErrorException,
+  ServiceUnavailableException,
   Headers,
   Req,
 } from "@nestjs/common";
@@ -43,6 +44,17 @@ import * as path from "path";
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Request } from "express";
 import { ConfigService } from "@nestjs/config";
+import {
+  ZipGuardError,
+  assertZipSafe,
+  resolveZipGuardLimits,
+} from "../../common/utils/zip-guard.util";
+import {
+  ClamdInfectionError,
+  ClamdUnavailableError,
+  isFailedVerdict,
+  scanBufferWithClamd,
+} from "../../common/utils/clamd-scan.util";
 
 @ApiTags("Application Management")
 @ApiBearerAuth()
@@ -149,6 +161,78 @@ export class ApplicationController {
       !file.buffer.subarray(0, 4).equals(ZIP_MAGIC)
     ) {
       throw new BadRequestException("File is not a valid ZIP archive");
+    }
+
+    // SEC-05: zip bomb guard — structural central-directory vetting BEFORE
+    // the archive is persisted or advertised to executors. Rejects
+    // high-ratio bombs / entry-count floods / oversized single files /
+    // oversized totals, with bounded nested-zip probing. Fail-closed: any
+    // parse anomaly (including an unreadable structure) is a rejection.
+    try {
+      assertZipSafe(
+        file.buffer,
+        resolveZipGuardLimits(this.configService.get("zipGuard")),
+      );
+    } catch (err: unknown) {
+      if (err instanceof ZipGuardError) {
+        this.logger.warn(
+          `Application package upload rejected by zip-guard [${err.violation}]: ${err.message}`,
+        );
+        throw new BadRequestException(
+          `Package rejected by zip-bomb guard (${err.violation})`,
+        );
+      }
+      throw err;
+    }
+
+    // SEC-05: optional ClamAV scan hook. CLAMD_ENABLED=false (default) makes
+    // this a no-op. Fail-closed when enabled: an unreachable / timed-out /
+    // errored scanner REJECTS the upload (503) — absence of a verdict is
+    // never an allow. An infection is a 400 with a generic message (the
+    // signature name is logged server-side only).
+    try {
+      const verdict = await scanBufferWithClamd(
+        file.buffer,
+        {
+          enabled:
+            this.configService.get<boolean>("clamd.enabled") === true,
+          host: this.configService.get<string>("clamd.host") || "127.0.0.1",
+          port: this.configService.get<number>("clamd.port") || 3310,
+          timeoutMs: this.configService.get<number>("clamd.timeoutMs") || 10000,
+        },
+        this.logger,
+      );
+      if (isFailedVerdict(verdict)) {
+        if (verdict.reason === "infected") {
+          this.logger.warn(
+            `Application package upload rejected: clamd infection ${verdict.detail}`,
+          );
+          throw new ClamdInfectionError(verdict.detail);
+        }
+        throw new ClamdUnavailableError(
+          verdict.reason === "timeout"
+            ? "timeout"
+            : verdict.reason === "error"
+              ? "error"
+              : "unreachable",
+          verdict.detail,
+        );
+      }
+    } catch (err: unknown) {
+      if (
+        err instanceof ClamdInfectionError ||
+        err instanceof ClamdUnavailableError
+      ) {
+        if (err instanceof ClamdInfectionError) {
+          throw new BadRequestException(
+            "Package rejected: antivirus scan detected a threat",
+          );
+        }
+        throw new ServiceUnavailableException(
+          "Package rejected: antivirus scan is unavailable (fail-closed)",
+        );
+      }
+      throw err;
     }
 
     // APP-002: packageUrl 会被 executor 节点拉取。旧实现缺 API_BASE_URL 时静默
