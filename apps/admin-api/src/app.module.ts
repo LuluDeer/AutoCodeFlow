@@ -186,6 +186,11 @@ import { ArtifactsModule } from "./modules/artifacts/artifacts.module";
         LOG_STORAGE_DRIVER: Joi.string().valid("db", "s3").default("db"),
         LOG_STORAGE_BUCKET: Joi.string().default("autoflow-logs"),
         LOG_STORAGE_ENDPOINT: Joi.string().allow("").optional(),
+
+        // SEC-02: 任务级 secrets 落库加密 key（secrets.key 节；空 = 降级
+        // 明文存储并 warn，见 secret-crypto.util.service.ts）。可选——
+        // 未配置保持既有明文行为（零破坏升级路径），配置后写路径全加密。
+        SEC_SECRETS_KEY: Joi.string().allow("").optional(),
         LOG_STORAGE_ACCESS_KEY: Joi.string().allow("").optional(),
         LOG_STORAGE_SECRET_KEY: Joi.string().allow("").optional(),
         LOG_STORAGE_USE_SSL: Joi.string()

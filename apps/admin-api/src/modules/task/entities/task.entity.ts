@@ -177,6 +177,20 @@ export class Task {
   @Column({ nullable: true }) executorAppName: string;
   @Column({ nullable: true }) applicationId: string;
 
+  /**
+   * SEC-02: 任务级 secrets（凭据形态的键值对，独立于 params 的普通运行参数）。
+   * 存储格式由 SEC_SECRETS_KEY 决定：配置 key 后所有叶子值为
+   * `enc:v1:<iv>:<tag>:<ciphertext>`（AES-256-GCM，见 common/utils/
+   * secret-crypto.util.ts）；未配置时降级明文存储（零破坏升级路径）。
+   * 写路径：TaskService.create/update 经 SecretsCryptoService.encryptForStorage；
+   * 读路径：API 响应经 maskForResponse 脱敏（叶子值永不回传）；
+   * 派发路径：ExecutorService.dispatch/dispatchBroadcast 经 decryptForDispatch
+   * 解密后与 params 合并注入执行器 env（AUTOFLOW_<KEY>），不落 TaskExecution.params
+   * （明文不二次入库）。存量行不做迁移加密——首次 update 时自然转为密文。
+   */
+  @Column({ type: "jsonb", nullable: true })
+  secrets: Record<string, unknown> | null;
+
   @ManyToOne("Application", "tasks", { nullable: true, onDelete: "SET NULL" })
   @JoinColumn({ name: "applicationId" })
   application: { id: string; name: string; version: string } | null;
@@ -222,6 +236,32 @@ export class Task {
    */
   @Column({ type: "text", nullable: true })
   runbook: string | null;
+
+  /**
+   * CORE-04: 超时后动作（可空 varchar，值域见 timeout-policy.util.ts 的
+   * TimeoutAction）。null/缺省 = kill——与既有单级树杀语义完全一致：
+   * 执行器到时杀进程树并回调 timeout 终态，admin 不额外动作。
+   *  - kill_retry：同样树杀，但 admin 侧在超时终态落定后按既有重试预算
+   *    （maxRetry/retryDelay，复用 ExecutorService 的 re-enqueue 模式）
+   *    兑现一次重试；预算耗尽退化为普通 kill。
+   *  - notify_only：admin 不额外下发终止指令（执行器自身的硬超时仍在，
+   *    进程树仍会被执行器杀掉并回调——本策略只改变 admin 侧行为），保证
+   *    超时告警发出。notify_only ≠ 不超时，文档写明边界。
+   * 决策逻辑统一在 task/timeout-policy.util.ts，processor/TaskService
+   * 共享同一实现。
+   */
+  @Column({ type: "varchar", nullable: true })
+  timeoutAction: string | null;
+
+  /**
+   * CORE-04: 超时预警阈值（占 timeout 的百分数，整数 0-90，可空）。
+   * 执行运行时长达到 timeout×ratio/100 时发送一次 WARNING 预警通知
+   * （NotificationService.notifyTimeout），每个执行至多一次。null =
+   * 未启用预警——存量任务零新通知。无 DB 约束，值域由 DTO 边界与
+   * normalizeTimeoutWarnRatio 双重把关。
+   */
+  @Column({ type: "int", nullable: true })
+  timeoutWarnRatio: number | null;
 
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;

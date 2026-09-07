@@ -18,6 +18,8 @@ import { NotificationModule } from "../notification/notification.module";
 import { AuditModule } from "../audit/audit.module";
 import { SchedulerModule } from "../scheduler/scheduler.module";
 import { SystemConfigModule } from "../config/config.module";
+// SEC-02: 任务级 secrets 落库加密（无状态 provider，task/executor 两模块共用）
+import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 
 @Module({
   imports: [
@@ -43,11 +45,13 @@ import { SystemConfigModule } from "../config/config.module";
   providers: [
     TaskService,
     TaskProcessor,
+    // SEC-02: secrets 加密服务（Key 生命周期：env SEC_SECRETS_KEY，未配置降级明文）
+    SecretsCryptoService,
     LogRetentionCleanupService,
     // N32: callback 401 分类计数（controller 埋点，MetricsModule 的
     // Prometheus 抓取端读取快照——单一实例经 exports 共享）。
     ExecutionCallbackMetricsService,
   ],
-  exports: [TaskService, ExecutionCallbackMetricsService],
+  exports: [TaskService, ExecutionCallbackMetricsService, SecretsCryptoService],
 })
 export class TaskModule {}

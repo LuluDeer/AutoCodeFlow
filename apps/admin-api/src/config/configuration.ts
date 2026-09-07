@@ -228,6 +228,13 @@ export default () => ({
   logRetention: {
     days: parseInt(process.env.LOG_RETENTION_DAYS || "30", 10),
   },
+  // SEC-02: 任务级 secrets 落库加密的 key（KMS 语义：32 字节 hex/base64，
+  // 短口令会被 sha-256 拉伸——建议 openssl rand -hex 32）。未配置时降级
+  // 明文存储并 warn 一次（零破坏升级路径），见
+  // common/utils/secret-crypto.util.service.ts。
+  secrets: {
+    key: process.env.SEC_SECRETS_KEY || "",
+  },
 });
 
 // M3: fail-fast in production for critical secrets that have known weak defaults

@@ -46,6 +46,13 @@ import { ExecutorService } from "../executor/executor.service";
 import { NotificationService } from "../notification/notification.service";
 import { AuditService } from "../audit/audit.service";
 import { S3LogStorage } from "./log-storage/s3-log-storage";
+// SEC-02: 任务级 secrets 落库加密 / 读脱敏 / 派发解密的统一入口
+import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
+// CORE-04: 超时策略归一化（DTO 边界之外的运行态兜底——编程式/旧数据形态）
+import {
+  normalizeTimeoutAction,
+  normalizeTimeoutWarnRatio,
+} from "./timeout-policy.util";
 // OBS-03: 日志行级别推断（纯函数）——写入落库 + S3 读取后过滤共用同一实现
 import { levelOfLine } from "./log-level.util";
 // 可观测性补齐轮：运行时计数器埋点入口（模块级纯内存自增，无模块环，
@@ -126,10 +133,27 @@ export class TaskService {
     const normalized = { ...dto } as T & {
       timeout?: number;
       timeoutSeconds?: number;
+      timeoutAction?: string | null;
+      timeoutWarnRatio?: number | null;
     };
     if (normalized.timeoutSeconds !== undefined) {
       normalized.timeout = normalized.timeoutSeconds;
       delete normalized.timeoutSeconds;
+    }
+    // CORE-04: 超时策略字段在持久化边界归一化。timeoutAction 缺省 undefined
+    // = PATCH 保留旧值（不写键）；显式 null = 回到缺省 kill（归一化为 null
+    // 落库，读路径 normalizeTimeoutAction 再兜底）。timeoutWarnRatio 非
+    // 0-90 整数一律归 null（未启用）——DTO @Min/@Max 之外的运行态防线。
+    if (normalized.timeoutAction !== undefined) {
+      normalized.timeoutAction =
+        normalized.timeoutAction === null
+          ? null
+          : normalizeTimeoutAction(normalized.timeoutAction);
+    }
+    if (normalized.timeoutWarnRatio !== undefined) {
+      normalized.timeoutWarnRatio = normalizeTimeoutWarnRatio(
+        normalized.timeoutWarnRatio,
+      );
     }
     // W-21: requirements reach `uv pip install` / `npm install` as argv on
     // the executor. Reject option-shaped specs (`--index-url http://evil`
@@ -212,6 +236,8 @@ export class TaskService {
     private executorService: ExecutorService,
     private notificationService: NotificationService,
     private auditService: AuditService,
+    // SEC-02: secrets 落库加密/读脱敏（providers 由 TaskModule 提供）
+    private secretsCrypto: SecretsCryptoService,
   ) {}
 
   async create(dto: CreateTaskDto) {
@@ -219,6 +245,10 @@ export class TaskService {
       await this.checkCircularDependency(dto.id, dto.dependencies);
     }
     const normalized = this.normalizeTaskDto(dto);
+    // SEC-02: secrets 在持久化边界统一加密（key 未配置时降级明文并 warn）
+    normalized.secrets = this.secretsCrypto.encryptForStorage(
+      normalized.secrets,
+    ) as Record<string, unknown> | null | undefined;
     // R6: 客户端自带 id 时先查重——软删除行对普通 findOne 不可见但同样
     // 占用主键，必须 withDeleted；预检查之外，save 处仍兜底捕获 23505
     //（覆盖并发创建的 TOCTOU 窗口），两者都返回 409 而非裸 500。
@@ -342,6 +372,13 @@ export class TaskService {
       take: p.pageSize,
       order: { createdAt: "DESC" },
     });
+    // SEC-02: 列表响应 secrets 永久脱敏（叶子值回 ******，密文不外泄）
+    list.forEach((t) => {
+      t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
+        | Record<string, unknown>
+        | null
+        | undefined;
+    });
     return paginate(list, total, p.page, p.pageSize);
   }
 
@@ -350,12 +387,28 @@ export class TaskService {
       where: { id, status: Not(TaskStatus.DELETED) },
     });
     if (!t) throw new NotFoundException("Task not found");
+    // SEC-02: 详情响应同样脱敏；写路径（update）走独立归一化，不受影响
+    t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
+      | Record<string, unknown>
+      | null
+      | undefined;
     return t;
   }
 
   async update(id: string, dto: UpdateTaskDto) {
     const t = await this.findOne(id);
-    const updated = Object.assign(t, this.normalizeTaskDto(dto));
+    const normalized = this.normalizeTaskDto(dto);
+    // SEC-02: PATCH 语义——secrets 缺省 = 保留旧值（不触碰既有列）；
+    // 显式 null / {} = 清空/替换。归一化在脱敏副本上做（findOne 已脱敏，
+    // DTO 未带 secrets 时不能把脱敏值当新值再加密一层）。
+    if (normalized.secrets !== undefined) {
+      normalized.secrets = this.secretsCrypto.encryptForStorage(
+        normalized.secrets,
+      ) as Record<string, unknown> | null | undefined;
+      t.secrets = normalized.secrets as Record<string, unknown> | null;
+    }
+    delete normalized.secrets;
+    const updated = Object.assign(t, normalized);
     // R7 (N17): PATCH 合并路径的互斥校验必须看合并后的实体态——请求体只带
     // executorId（已有任务 executeMode=broadcast）或只带 executeMode=broadcast
     // （已有任务已 pin）时，normalizeTaskDto 看不到另一半，会漏判产生
@@ -1673,6 +1726,44 @@ export class TaskService {
           await this.notifyCallbackFailure(execution, patch.failureReason, cb);
         }
 
+        // CORE-04: 超时终态落定后的动作兑现。执行器回调 failureReason=timeout
+        // （自身硬超时树杀后上报）且任务配置了非缺省 timeoutAction 时：
+        //  - notify_only：admin 不额外动作（告警已由上方改动1路径发出）——
+        //    显式 no-op 分支只是让语义可读；
+        //  - kill_retry：按任务既有重试预算 re-enqueue 一次新执行（与
+        //    executor-restart / stale sweep 共用 hasRetryBudget +
+        //    scheduleRetryAfterRecovery，fail-open：预算耗尽/入队失败仅记日志，
+        //    终态已落定不受影响）。kill（缺省/null）走到这里即无追加动作。
+        // 放在 winner 分支保证恰好一次（duplicate 回调在 affected=0 提前返回）。
+        if (patch.status === ExecutionStatus.TIMEOUT) {
+          const task = execution.taskId
+            ? await this.taskRepo.findOne({ where: { id: execution.taskId } })
+            : null;
+          const action = normalizeTimeoutAction(task?.timeoutAction);
+          if (action === "kill_retry" && task) {
+            this.logger.warn(
+              `CORE-04: timeout action kill_retry for execution ${execution.id} (task "${task.name}")`,
+            );
+            try {
+              await this.executorService.scheduleRetryAfterRecovery(
+                task,
+                execution,
+                "timeout_retry",
+              );
+            } catch (retryErr: unknown) {
+              const retryMsg =
+                retryErr instanceof Error
+                  ? retryErr.message
+                  : String(retryErr);
+              this.logger.warn(
+                `CORE-04: kill_retry re-enqueue failed for execution ${execution.id}: ${retryMsg} (terminal state preserved)`,
+              );
+            }
+          }
+          // notify_only：无追加 admin 动作——超时告警已发出（改动1 路径），
+          // 执行器侧树杀照常发生。此分支显式留空以承载语义。
+        }
+
         // R4-P0: dependency fan-out lives on the unique-winner path. The
         // worker's in-memory status can only be RUNNING/FAILED/TIMEOUT when
         // its finally block runs (SUCCESS is written exclusively by the
@@ -1750,6 +1841,10 @@ export class TaskService {
       requirements: task.requirements,
       params: task.params,
       timeout: task.timeout,
+      // CORE-04: 超时策略随快照——缺省时版本回滚不得静默重置为 null（否则
+      // "回滚到旧版本"会悄悄改变超时动作/预警配置）。
+      timeoutAction: task.timeoutAction,
+      timeoutWarnRatio: task.timeoutWarnRatio,
       maxRetry: task.maxRetry,
       retryDelay: task.retryDelay,
       retryableErrors: task.retryableErrors,
