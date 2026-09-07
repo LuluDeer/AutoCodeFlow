@@ -28,6 +28,8 @@ import { ArtifactsModule } from "./modules/artifacts/artifacts.module";
 // listener 侧在 notification 模块，FEAT-07 出站 webhook 届时直接订阅）。
 import { DomainEventModule } from "./common/services/domain-event-bus.service";
 import { TaskTemplateModule } from "./modules/task-template/task-template.module";
+// FEAT-07: 出站事件订阅（webhook 出站）——消费 DomainEventBus 事件派发签名回调。
+import { EventSubscriptionModule } from "./modules/event-subscriptions/event-subscription.module";
 
 @Module({
   imports: [
@@ -326,6 +328,7 @@ import { TaskTemplateModule } from "./modules/task-template/task-template.module
     ArtifactsModule,
     DomainEventModule,
     TaskTemplateModule,
+    EventSubscriptionModule,
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally

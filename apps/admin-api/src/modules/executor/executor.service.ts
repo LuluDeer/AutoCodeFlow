@@ -27,6 +27,13 @@ import { SystemConfigService } from "../config/config.service";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 // SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
+// FEAT-07: executor.offline 出站事件（总线 @Global；Optional 注入先例 task.service）
+import {
+  DOMAIN_EVENTS,
+  ExecutorOfflineEventPayload,
+} from "../../common/events/domain-events";
+import { DomainEventBus } from "../../common/services/domain-event-bus.service";
+import { Optional } from "@nestjs/common";
 // CORE-02: 重试退避抖动——±20% 摊开同刻重试（recovery re-enqueue 路径）
 import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 
@@ -112,8 +119,35 @@ export class ExecutorService {
     private readonly systemConfigService: SystemConfigService,
     // SEC-02: dispatch 时解密 task.secrets（与 params 合并注入执行器 env）
     private readonly secretsCrypto: SecretsCryptoService,
+    // FEAT-07: executor.offline 出站事件发布（@Global 总线；@Optional 仅为
+    // 既有单测装配兼容——provider 缺失 → null → 事件静默不发，主链行为不变，
+    // 先例同 task.service 的 eventBus 注入）。
+    @Optional()
+    private readonly eventBus: DomainEventBus | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
+  }
+
+  /**
+   * FEAT-07: 状态落库后发布 executor.offline（fail-open——emit 抛错绝不改变
+   * 调用方结果；eventBus 为 null 时静默跳过）。载荷全为原始类型，与
+   * domain-events.ts 设计约束一致。
+   */
+  private emitExecutorOffline(
+    executor: Pick<Executor, "id" | "appName" | "address">,
+  ): void {
+    if (!this.eventBus) return;
+    const payload: ExecutorOfflineEventPayload = {
+      executorId: executor.id,
+      appName: executor.appName,
+      address: executor.address,
+      occurredAt: new Date().toISOString(),
+    };
+    try {
+      this.eventBus.emit(DOMAIN_EVENTS.EXECUTOR_OFFLINE, payload);
+    } catch {
+      /* bus contract is fail-open; second fuse */
+    }
   }
 
   public getExecutorUrl(address: string, path: string): string {
@@ -1261,6 +1295,10 @@ export class ExecutorService {
       this.logger.warn(
         `Marked ${result.affected} executor(s) as OFFLINE due to heartbeat timeout (${timeoutMs}ms)`,
       );
+      // FEAT-07: 状态落库后发布 executor.offline（每台恰一次，与下方通知同扇出位）。
+      for (const exec of staleExecutors) {
+        this.emitExecutorOffline(exec);
+      }
       // Fire offline notifications — fire-and-forget, errors must not break the cron job
       for (const exec of staleExecutors) {
         this.notificationService
@@ -1631,6 +1669,12 @@ export class ExecutorService {
       { status: ExecutorStatus.OFFLINE, lastHeartbeat: new Date() },
     );
     this.logger.log(`Executor ${address} marked as offline`);
+    // FEAT-07: 状态落库后发布 executor.offline（优雅停机路径）。
+    const exec = await this.repo.findOne({
+      where: { address },
+      select: ["id", "appName", "address"],
+    });
+    if (exec) this.emitExecutorOffline(exec);
   }
 
   /**
@@ -1644,6 +1688,8 @@ export class ExecutorService {
     this.logger.log(
       `Executor ${executor.address} set offline by admin (id=${id})`,
     );
+    // FEAT-07: 状态落库后发布 executor.offline（管理台置离线路径）。
+    this.emitExecutorOffline(saved);
     return saved;
   }
 
