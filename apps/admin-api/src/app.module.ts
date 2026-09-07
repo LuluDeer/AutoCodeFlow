@@ -214,6 +214,28 @@ import { EventSubscriptionModule } from "./modules/event-subscriptions/event-sub
           .valid("true", "false")
           .default("false"),
         LOG_STORAGE_REGION: Joi.string().allow("").optional(),
+
+        // SEC-05: 上传面 zip bomb 防护阈值（zipGuard 节）。四项上限均可
+        // 调整；缺省即安全值（比率 100 / 条目 10000 / 单文件 1 GiB /
+        // 总量 2 GiB / 嵌套探测 1 层）。
+        ZIP_MAX_RATIO: Joi.number().integer().min(1).default(100),
+        ZIP_MAX_ENTRIES: Joi.number().integer().min(1).default(10000),
+        ZIP_MAX_FILE_BYTES: Joi.number()
+          .integer()
+          .min(1)
+          .default(1024 * 1024 * 1024),
+        ZIP_MAX_TOTAL_BYTES: Joi.number()
+          .integer()
+          .min(1)
+          .default(2 * 1024 * 1024 * 1024),
+        ZIP_MAX_NESTING_DEPTH: Joi.number().integer().min(0).default(1),
+
+        // SEC-05: 可选 clamd 病毒扫描钩子（clamd 节）。默认 false——零影响；
+        // true 时上传包流式 INSTREAM 送扫，fail-closed（扫描不可达拒绝包）。
+        CLAMD_ENABLED: Joi.string().valid("true", "false").default("false"),
+        CLAMD_HOST: Joi.string().hostname().default("127.0.0.1"),
+        CLAMD_PORT: Joi.number().port().default(3310),
+        CLAMD_TIMEOUT_MS: Joi.number().integer().min(1).default(10000),
       }),
       // Only validate in production and test environments
       validationOptions: {

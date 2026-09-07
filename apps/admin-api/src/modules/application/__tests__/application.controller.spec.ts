@@ -20,6 +20,9 @@ import { AppDeploymentService } from "../app-deployment.service";
 import { ApplicationController } from "../application.controller";
 import { ApplicationService } from "../application.service";
 import { UserRole } from "../../users/entities/user.entity";
+// SEC-05: uploads are now vetted by the zip-bomb guard — tests need a real,
+// structurally-valid zip (the old 4-byte magic stub fails CD parsing).
+import { buildBenignZip } from "../../../common/utils/__tests__/zip-samples";
 
 function sign(secret: string, timestamp: string, body: Buffer): string {
   return (
@@ -354,7 +357,9 @@ describe("ApplicationController webhook HTTP raw body", () => {
 });
 
 describe("ApplicationController upload — APP-002", () => {
-  const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+  // SEC-05: real minimal zip — the guard parses the central directory, so a
+  // bare PK\x03\x04 stub would be rejected as unparseable.
+  const ZIP_MAGIC = buildBenignZip();
   let svc: {
     findByName: jest.Mock;
     create: jest.Mock;

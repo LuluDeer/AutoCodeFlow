@@ -249,6 +249,39 @@ export default () => ({
   alert: {
     webhookSecret: process.env.ALERT_WEBHOOK_SECRET || "",
   },
+  // SEC-05: 上传面 zip bomb 防护阈值（common/utils/zip-guard.util.ts，在
+  // application / executor-package 上传路径消费）。四项上限均可 env 调整，
+  // 缺省即安全值；非法值由 Joi 拒绝（fail-fast）。
+  zipGuard: {
+    // 解压比上限：CD 声明的 uncompressed 总量 / compressed 总量 ≤ 100。
+    maxRatio: parseInt(process.env.ZIP_MAX_RATIO || "100", 10),
+    // 条目数上限。
+    maxEntries: parseInt(process.env.ZIP_MAX_ENTRIES || "10000", 10),
+    // 单文件解压后大小上限（1 GiB）。
+    maxFileBytes: parseInt(
+      process.env.ZIP_MAX_FILE_BYTES || String(1024 * 1024 * 1024),
+      10,
+    ),
+    // 全包声明解压总量上限（2 GiB）——比率上限无法约束绝对膨胀。
+    maxTotalUncompressedBytes: parseInt(
+      process.env.ZIP_MAX_TOTAL_BYTES || String(2 * 1024 * 1024 * 1024),
+      10,
+    ),
+    // 嵌套 zip 积极探测层数（默认 1 层；更深层按其声明大小计入外层比率）。
+    maxNestingDepth: parseInt(process.env.ZIP_MAX_NESTING_DEPTH || "1", 10),
+  },
+  // SEC-05: 可选 clamd（ClamAV 守护进程）病毒扫描钩子。默认关闭——零影响；
+  // 开启后上传包流式 INSTREAM 送扫，**fail-closed**（扫描不可达/超时/异常
+  // 一律拒绝包，安全缺省，见 clamd-scan.util.ts 头注）。
+  clamd: {
+    enabled: process.env.CLAMD_ENABLED === "true",
+    host: process.env.CLAMD_HOST || "127.0.0.1",
+    port: parseInt(process.env.CLAMD_PORT || "3310", 10),
+    timeoutMs: parseInt(
+      process.env.CLAMD_TIMEOUT_MS || "10000",
+      10,
+    ),
+  },
 });
 
 // M3: fail-fast in production for critical secrets that have known weak defaults

@@ -18,6 +18,8 @@ import { Readable } from "stream";
 import axios from "axios";
 import { ExecutorPackageController } from "../executor-package.controller";
 import { assertSafeExecutorUrl } from "../../../common/utils/safe-http.util";
+// SEC-05: structurally-valid minimal zip for upload fixtures.
+import { buildBenignZip } from "../../../common/utils/__tests__/zip-samples";
 
 // The controller only needs findAll; avoid native dependencies under the fs mock.
 jest.mock("../../executor/executor.service", () => ({
@@ -25,6 +27,29 @@ jest.mock("../../executor/executor.service", () => ({
 }));
 jest.mock("axios");
 jest.mock("../../../common/utils/safe-http.util");
+
+// SEC-05: zip-guard/clamd consume the temp file via fs — but this spec
+// jest.mocks fs wholesale. Keep the REAL guard logic and feed it the fixture
+// bytes from the fake disk map, so the upload path still exercises its true
+// validation (the mocked fs would otherwise crash the guard with undefined
+// readFileSync). clamd stays a no-op (CLAMD_ENABLED=false in tests).
+jest.mock("../../../common/utils/zip-guard.util", () => {
+  const actual = jest.requireActual("../../../common/utils/zip-guard.util");
+  return {
+    ...actual,
+    assertZipFileSafe: (p: string, limits?: unknown) => {
+      const buf = diskFiles.get(p);
+      return actual.assertZipSafe(buf ?? Buffer.alloc(0), limits as never);
+    },
+  };
+});
+jest.mock("../../../common/utils/clamd-scan.util", () => {
+  const actual = jest.requireActual("../../../common/utils/clamd-scan.util");
+  return {
+    ...actual,
+    scanBufferWithClamd: jest.fn(() => Promise.resolve({ ok: true })),
+  };
+});
 
 jest.mock("fs");
 const mockFs = fs as jest.Mocked<typeof fs>;
@@ -58,6 +83,9 @@ const stubFsDisk = () => {
       diskFiles.set(to, diskFiles.get(from) ?? Buffer.alloc(0));
       diskFiles.delete(from);
     }),
+    readFile: jest.fn(async (p: string) =>
+      Buffer.from(diskFiles.get(p) ?? Buffer.alloc(0)),
+    ),
     unlink: jest.fn(async (p: string) => {
       diskFiles.delete(p);
     }),
@@ -86,10 +114,10 @@ describe("ExecutorPackageService", () => {
   const mockFile: Express.Multer.File = {
     // P1: the on-disk temp content must start with the zip magic bytes
     // (PK\x03\x04) to pass the upload content validation.
-    buffer: Buffer.concat([
-      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
-      Buffer.from("fake-zip-content"),
-    ]),
+    // SEC-05: content must also be a structurally-valid zip — the upload
+    // path now parses the central directory (a bare PK stub is rejected as
+    // unparseable), so use the shared minimal-archive builder.
+    buffer: buildBenignZip(),
     originalname: "executor-v1.0.0.zip",
     mimetype: "application/zip",
     size: 1024,

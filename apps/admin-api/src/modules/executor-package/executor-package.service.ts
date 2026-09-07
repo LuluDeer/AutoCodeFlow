@@ -6,8 +6,7 @@ import {
   ServiceUnavailableException,
   Logger,
   OnModuleInit,
-} from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
+} from "@nestjs/common";import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, Like, FindOptionsWhere } from "typeorm";
 import * as fs from "fs";
 import * as path from "path";
@@ -15,6 +14,16 @@ import * as crypto from "crypto";
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+import {
+  ZipGuardError,
+  assertZipFileSafe,
+  resolveZipGuardLimits,
+} from "../../common/utils/zip-guard.util";
+import {
+  ClamdUnavailableError,
+  isFailedVerdict,
+  scanBufferWithClamd,
+} from "../../common/utils/clamd-scan.util";
 import {
   ExecutorPackage,
   ExecutorPackageStatus,
@@ -188,6 +197,58 @@ export class ExecutorPackageService implements OnModuleInit {
         throw new BadRequestException(
           "Package content is not a zip/wheel/gzip archive",
         );
+      }
+
+      // SEC-05: zip bomb guard for the .zip / .whl slice of the whitelist.
+      // .whl IS a zip (PEP 427) — same structural vetting applies. Only the
+      // PK family is analyzed: gzip (0x1f 0x8b) streams (.tar.gz/.tgz) have
+      // no central directory and are bounded by the 500 MB multer limit
+      // plus the executor's extraction-side guard. Fail-closed on parse
+      // anomalies (an unreadable package cannot be vetted).
+      if (head[0] === 0x50 && head[1] === 0x4b) {
+        try {
+          assertZipFileSafe(tmpPath, resolveZipGuardLimits(this.configService.get("zipGuard")));
+        } catch (err: unknown) {
+          if (err instanceof ZipGuardError) {
+            this.logger.warn(
+              `Executor package upload rejected by zip-guard [${err.violation}]: ${err.message}`,
+            );
+            throw new BadRequestException(
+              `Package rejected by zip-bomb guard (${err.violation})`,
+            );
+          }
+          throw err;
+        }
+
+        // SEC-05: optional clamd hook (same fail-closed policy as the
+        // application upload path; CLAMD_ENABLED=false keeps it a no-op).
+        const verdict = await scanBufferWithClamd(
+          await fs.promises.readFile(tmpPath),
+          {
+            enabled: this.configService.get<boolean>("clamd.enabled") === true,
+            host: this.configService.get<string>("clamd.host") || "127.0.0.1",
+            port: this.configService.get<number>("clamd.port") || 3310,
+            timeoutMs:
+              this.configService.get<number>("clamd.timeoutMs") || 10000,
+          },
+          this.logger,
+        );
+        if (isFailedVerdict(verdict)) {
+          if (verdict.reason === "infected") {
+            this.logger.warn(
+              `Executor package upload rejected: clamd infection ${verdict.detail}`,
+            );
+            throw new BadRequestException(
+              "Package rejected: antivirus scan detected a threat",
+            );
+          }
+          this.logger.warn(
+            `Executor package upload rejected: clamd unavailable (${verdict.reason}): ${verdict.detail}`,
+          );
+          throw new ServiceUnavailableException(
+            "Package rejected: antivirus scan is unavailable (fail-closed)",
+          );
+        }
       }
 
       // Calculate SHA-256 checksum (streamed from disk)

@@ -9,6 +9,7 @@ import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
 import { downloadFile } from '../lib/download';
 import { isSafePathSegment } from '../safe-path';
+import { guardZipOrThrow } from '../zip-guard';
 
 export const deployRouter = Router();
 
@@ -500,6 +501,11 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
         const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
         await downloadPackage(packageUrl, zipPath);
+        // SEC-05: zip-bomb guard — reject declared-size bombs (ratio /
+        // entry-count / per-file & total caps, bounded nested probing)
+        // BEFORE handing the archive to Expand-Archive / unzip. Runs after
+        // the traversal check below would run; both are independent gates.
+        guardZipOrThrow(zipPath);
         await assertSafeZipEntries(zipPath);
         logger.info(`[deploy] Extracting package for ${deploymentId}`);
         // Use platform-appropriate extraction (async — spawnSync here froze
