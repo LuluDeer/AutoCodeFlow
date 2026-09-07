@@ -109,6 +109,8 @@ export interface TaskExecution {
   aiAnalysis?: string;
   retryCount?: number;
   taskVersion?: string | null;
+  /** OBS-01: W3C trace-id（admin OTEL_ENABLED=true 时落库；null=未追踪） */
+  traceId?: string | null;
   createdAt: string;
 }
 
