@@ -20,6 +20,7 @@ import GlueEditor from '../components/GlueEditor';
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
 import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
+import ArtifactsList from '../components/ArtifactsList';
 
 const { Text } = Typography;
 
@@ -446,6 +447,12 @@ export default function TaskDetailPage() {
                   </Space>
                 }
               >
+                {/* FEAT-05（UI 半场）：最近一次执行的产物列表；无产物时组件返回 null，整段不渲染 */}
+                {executions.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <ArtifactsList execId={executions[0].id} />
+                  </div>
+                )}
                 <Table<TaskExecution>
                   rowKey="id"
                   columns={execColumns}
