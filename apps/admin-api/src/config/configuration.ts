@@ -235,6 +235,13 @@ export default () => ({
   secrets: {
     key: process.env.SEC_SECRETS_KEY || "",
   },
+  // OBS-02: Alertmanager webhook 入站鉴权 secret（POST /api/alerts/webhook
+  // 的 HMAC-SHA256 over `${timestamp}.${rawBody}`）。未配置时端点 503 拒绝
+  // （安全缺省——绝不退化为无鉴权接收，防告警伪造）。Alertmanager 侧配置
+  // 样例见 docs/observability/README.md 的 OBS-02 段。
+  alert: {
+    webhookSecret: process.env.ALERT_WEBHOOK_SECRET || "",
+  },
 });
 
 // M3: fail-fast in production for critical secrets that have known weak defaults

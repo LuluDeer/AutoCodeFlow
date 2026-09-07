@@ -4,6 +4,7 @@ import { ConfigModule } from "@nestjs/config";
 import { NotificationService } from "./notification.service";
 import { NotificationConfigService } from "./notification-config.service";
 import { NotificationConfigController } from "./notification-config.controller";
+import { AlertsController } from "./alerts.controller"; // OBS-02
 import { NotificationSilence } from "./entities/notification-silence.entity";
 import { NotificationSilenceService } from "./notification-silence.service";
 import { ChannelConfigStore } from "./channel-config.store";
@@ -15,7 +16,7 @@ import { WebhookChannel } from "./channels/webhook.channel";
 
 @Module({
   imports: [ConfigModule, TypeOrmModule.forFeature([NotificationSilence])],
-  controllers: [NotificationConfigController],
+  controllers: [NotificationConfigController, AlertsController],
   providers: [
     NotificationService,
     NotificationSilenceService,
