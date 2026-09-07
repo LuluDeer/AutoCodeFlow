@@ -161,3 +161,102 @@ describe("DeploymentHeartbeatDto validation (R17)", () => {
     expect((await validate(make({ pid: 1.5 }))).length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * QA-02（coverage 第一阶段）：部署控制器的端点委托与心跳鉴权链行为。
+ * RBAC 元数据与 DTO 校验已有专项 spec；本段补「调用参数进入服务 +
+ * X-Executor-Token 三段校验（缺头/无执行器/错 token）+ 部署面委托」。
+ */
+describe("AppDeploymentController — endpoint delegation & heartbeat auth (QA-02)", () => {
+  const base = {
+    deploymentId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+    status: "running",
+  };
+
+  const make = () => {
+    const svc = {
+      findAll: jest.fn().mockResolvedValue({ data: [], total: 0 }),
+      findById: jest
+        .fn()
+        .mockResolvedValue({ id: "deploy-1", executorId: "exec-1" }),
+      deploy: jest.fn().mockResolvedValue({ id: "deploy-1" }),
+      upgrade: jest.fn().mockResolvedValue({ id: "deploy-1", status: "upgrading" }),
+      stop: jest.fn().mockResolvedValue({ id: "deploy-1", status: "stopped" }),
+      handleHeartbeat: jest.fn().mockResolvedValue(undefined),
+    };
+    const exec = { validateExecutorToken: jest.fn().mockResolvedValue(true) };
+    const controller = new AppDeploymentController(
+      svc as unknown as AppDeploymentService,
+      exec as unknown as ExecutorService,
+    );
+    return { controller, svc, exec };
+  };
+
+  it("findAll forwards applicationId with default paging when omitted", () => {
+    const { controller, svc } = make();
+    controller.findAll({ applicationId: "app-1" } as any);
+    expect(svc.findAll).toHaveBeenCalledWith("app-1", 1, 20);
+
+    controller.findAll({ page: 3, pageSize: 50 } as any);
+    expect(svc.findAll).toHaveBeenLastCalledWith(undefined, 3, 50);
+  });
+
+  it("findById and deploy/upgrade/stop delegate one-to-one", () => {
+    const { controller, svc } = make();
+
+    controller.findById("deploy-1");
+    expect(svc.findById).toHaveBeenCalledWith("deploy-1");
+
+    controller.deploy("app-1", { executorId: "exec-1" } as any);
+    expect(svc.deploy).toHaveBeenCalledWith("app-1", { executorId: "exec-1" });
+
+    controller.upgrade("deploy-1");
+    expect(svc.upgrade).toHaveBeenCalledWith("deploy-1");
+
+    controller.stop("deploy-1");
+    expect(svc.stop).toHaveBeenCalledWith("deploy-1");
+  });
+
+  it("heartbeat rejects a missing X-Executor-Token before any lookup", async () => {
+    const { controller, svc, exec } = make();
+    await expect(
+      controller.heartbeat({ ...base } as any, undefined),
+    ).rejects.toThrow("Missing X-Executor-Token header");
+    expect(svc.findById).not.toHaveBeenCalled();
+    expect(exec.validateExecutorToken).not.toHaveBeenCalled();
+  });
+
+  it("heartbeat rejects when the deployment has no associated executor", async () => {
+    const { controller, svc, exec } = make();
+    svc.findById.mockResolvedValueOnce({ id: "deploy-1", executorId: null });
+    await expect(
+      controller.heartbeat({ ...base } as any, "tok"),
+    ).rejects.toThrow("deployment has no associated executor");
+    expect(exec.validateExecutorToken).not.toHaveBeenCalled();
+    expect(svc.handleHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("heartbeat rejects an invalid executor token", async () => {
+    const { controller, exec, svc } = make();
+    exec.validateExecutorToken.mockResolvedValueOnce(false);
+    await expect(
+      controller.heartbeat({ ...base } as any, "wrong-token"),
+    ).rejects.toThrow("Invalid executor token");
+    expect(svc.handleHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("heartbeat validates the token against the deployment's own executor then forwards", async () => {
+    const { controller, exec, svc } = make();
+
+    await controller.heartbeat({ ...base, pid: 42 } as any, "good-token");
+
+    expect(exec.validateExecutorToken).toHaveBeenCalledWith(
+      "exec-1",
+      "good-token",
+    );
+    expect(svc.handleHeartbeat).toHaveBeenCalledWith({
+      ...base,
+      pid: 42,
+    });
+  });
+});
