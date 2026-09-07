@@ -191,6 +191,11 @@ import { ArtifactsModule } from "./modules/artifacts/artifacts.module";
         // 明文存储并 warn，见 secret-crypto.util.service.ts）。可选——
         // 未配置保持既有明文行为（零破坏升级路径），配置后写路径全加密。
         SEC_SECRETS_KEY: Joi.string().allow("").optional(),
+
+        // OBS-02: Alertmanager webhook 入站 HMAC secret（alert.webhookSecret
+        // 节）。可选——未配置时 POST /api/alerts/webhook 返回 503（安全缺省，
+        // 端点禁用），配置后才能接收告警外发。
+        ALERT_WEBHOOK_SECRET: Joi.string().allow("").optional(),
         LOG_STORAGE_ACCESS_KEY: Joi.string().allow("").optional(),
         LOG_STORAGE_SECRET_KEY: Joi.string().allow("").optional(),
         LOG_STORAGE_USE_SSL: Joi.string()
