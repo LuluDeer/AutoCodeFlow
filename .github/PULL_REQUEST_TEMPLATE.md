@@ -39,6 +39,6 @@
 
 ## 交付纪律
 
-- [ ] 测试只增不减（基线见 `docs/AGENT_HANDOFF.md` 状态快照）；
+- [ ] 测试只增不减（基线见 `AGENT_HANDOFF.md` 状态快照）；
 - [ ] `PLAN-CLAIMS.md` 认领状态已同步（in_progress → done + commit hash）；
 - [ ] 中文 conventional commits，`git log --stat` 核对无他人文件误带入。
