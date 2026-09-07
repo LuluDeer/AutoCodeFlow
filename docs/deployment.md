@@ -51,6 +51,14 @@
 | `MINIO_ROOT_PASSWORD` | - | MinIO root 密码（启用 minio profile 时必填，无默认值） |
 | `LOG_RETENTION_DAYS` | `7` | 执行器工作目录/日志 TTL 回收天数（下限 1） |
 | `SEC_SECRETS_KEY` | - | 任务级 secrets（tasks.secrets）落库加密密钥，32 字节 hex（`openssl rand -hex 32`）或 base64。留空 = 明文存储（启动 warn 一次，零破坏升级路径）；配置后写路径全加密（AES-256-GCM，`enc:v1:` 信封格式，明文/密文行可共存——存量行首次 update 自然转密文）。**生产环境必须配置并纳入密钥备份**：密钥丢失则密文 secrets 无法解密（任务派发报错，不静默裸跑）；轮换 = 更换 key 后对任务执行一次任意 update |
+| `ZIP_MAX_RATIO` | `100` | SEC-05 上传面 zip bomb 防护——解压比上限（中央目录声明的 uncompressed 总量 / compressed 总量），超出拒绝上传（400） |
+| `ZIP_MAX_ENTRIES` | `10000` | SEC-05——zip 条目数上限，超出拒绝上传（400） |
+| `ZIP_MAX_FILE_BYTES` | `1073741824` | SEC-05——单文件解压后大小上限（字节，默认 1 GiB），超出拒绝上传（400） |
+| `ZIP_MAX_TOTAL_BYTES` | `2147483648` | SEC-05——全包声明解压总量上限（字节，默认 2 GiB；比率上限无法约束绝对膨胀），超出拒绝上传（400） |
+| `ZIP_MAX_NESTING_DEPTH` | `1` | SEC-05——嵌套 zip 积极探测层数；更深层按其声明大小计入外层比率/总量（探测成本有界），执行器解压时按同规则再校验 |
+| `CLAMD_ENABLED` | `false` | SEC-05 可选 clamd（ClamAV 守护进程）病毒扫描钩子。**默认 false = 零影响**；`true` 时 application / executor-package 上传包流式 INSTREAM 送扫。**失败策略 = fail-closed**：扫描不可达/超时/异常一律拒绝上传（503），检出威胁 400（签名名仅入服务端日志）——未获 verdict 绝不放行（安全缺省） |
+| `CLAMD_HOST` / `CLAMD_PORT` | `127.0.0.1` / `3310` | SEC-05——clamd TCP 地址（`CLAMD_ENABLED=true` 时必达，否则上传全拒） |
+| `CLAMD_TIMEOUT_MS` | `10000` | SEC-05——单次扫描超时（毫秒），超时按 fail-closed 拒绝 |
 
 > 注：以上变量均已收入 `.env.example`；其中 `THROTTLE_*`、`STALE_RECOVERY_RETRY_ENABLED`、`EXECUTOR_ALLOW_PRIVATE_NETWORK`、`EXECUTION_CALLBACK_SECRET`、`NPM_REGISTRY_*`、`REGISTRY_UPLOAD_TIMEOUT_MS`、`DISK_CLEANUP_*` 由服务进程直接读取，根 compose 默认未注入——独立部署时通过进程环境传入，或在 compose 的 `environment:` 中显式添加。
 
@@ -186,6 +194,34 @@ docker compose exec -T postgres psql -U autoflow autoflow < backup.sql
 > 为 AES-256-GCM 密文（`enc:v1:` 信封），备份文件泄露不再直接泄密——但**密钥与
 > 备份必须分开保管**（密钥入密钥管理系统，不入同一备份介质），否则攻击者可解密。
 > 未配置 key 的部署中 secrets 为明文，备份即明文，生产环境务必配置。
+
+### 上传面 zip bomb 防护与病毒扫描（SEC-05）
+
+上传纵深分两层，独立生效：
+
+**第 1 层（admin-api 上传口）**：`POST /applications/upload` 与
+`POST /executor-packages` 在包落库/对外可见前，对 zip 家族（.zip/.whl，含
+PEP 427 wheel）做零依赖的中央目录结构解析，按上表 `ZIP_MAX_*` 阈值校验
+解压比/条目数/单文件与总量上限，超限返回 400（`Package rejected by
+zip-bomb guard (<violation>)`），具体规则命中记服务端 warn 日志。结构
+损坏（截断、中央目录尺寸被篡改、zip64 哨兵）同样拒绝——无法核验的包不
+入库。gzip 流（.tar.gz/.tgz）无中央目录，由 500 MB multer 上限 + 第 2 层
+防护覆盖。嵌套 zip 积极探测 1 层（`ZIP_MAX_NESTING_DEPTH` 可调），更深层
+按声明大小计入外层总量/比率，探测成本有界。
+
+**第 2 层（executor-node 解压口）**：应用包部署（`/deploy`，zip 路径）在
+下载落盘后、Expand-Archive/unzip 执行前，先过同规则的 zip-guard（声明
+尺寸校验，拒绝在真实磁盘字节产生之前），再过既有的 S6 路径穿越校验
+（`assertSafeZipEntries`，两闸独立）。被拒包标记部署失败并回传原因，
+临时目录自动清理。
+
+**可选 clamd 病毒扫描（默认关闭）**：`CLAMD_ENABLED=true` 时上传包流式
+INSTREAM 送 ClamAV 守护进程（docker 部署建议 `clamav/clamd` 镜像 + 内网
+端口 3310）。**失败策略 = fail-closed**（安全缺省，有意决策）：扫描服务
+不可达/超时/异常响应一律拒绝上传（503 `antivirus scan is unavailable`），
+检出威胁 400（签名名仅入服务端日志，如 EICAR 测试串
+`EICAR-STANDARD-ANTIVIRUS-TEST-FILE`）。开启前请确认 clamd 可达，否则
+上传通道整体拒绝。可用性优先于严格扫描的部署保持默认 `false` 即可。
 
 ### Redis 操作
 
