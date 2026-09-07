@@ -541,3 +541,47 @@ describe('acf login', () => {
     expect(spy).toHaveBeenCalledWith('jwt-abc');
   });
 });
+
+// ECO-02: --json 输出面（CI 消费）——payload 不经表格直出
+describe('acf --json outputs (ECO-02)', () => {
+  it('task list --json prints the unwrapped payload as JSON', async () => {
+    const payload = { list: [{ id: 't-1', name: 'n1', runtime: 'python', status: 'active', cronExpression: null }], total: 1, page: 1, pageSize: 20 };
+    mockedGet.mockResolvedValueOnce(payload);
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    try {
+      await run(tasksCommand(), 'task list --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(line).toBeDefined();
+    expect(JSON.parse(line as string)).toEqual(payload);
+  });
+
+  it('executor list --json prints a bare array', async () => {
+    mockedGet.mockResolvedValueOnce([{ id: 'e-1', appName: 'exec', address: 'h:1', status: 'online' }]);
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    try {
+      await run(executorsCommand(), 'executor list --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('['));
+    expect(JSON.parse(line as string)).toEqual([{ id: 'e-1', appName: 'exec', address: 'h:1', status: 'online' }]);
+  });
+
+  it('app list --json prints a bare array', async () => {
+    mockedGet.mockResolvedValueOnce({ list: [{ id: 'a-1', name: 'app', status: 'running' }], total: 1 });
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    try {
+      await run(appsCommand(), 'app list --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('['));
+    expect(JSON.parse(line as string)).toEqual([{ id: 'a-1', name: 'app', status: 'running' }]);
+  });
+});

@@ -58,6 +58,7 @@ export function tasksCommand(): Command {
     .option('-k, --keyword <keyword>', 'Search by name (sent as the `name` query param)')
     .option('-p, --page <n>', 'Page number', '1')
     .option('-n, --page-size <n>', 'Items per page', '20')
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
     .action(async (opts) => {
       const spinner = ora('Fetching tasks…').start();
       try {
@@ -69,6 +70,11 @@ export function tasksCommand(): Command {
           name: opts.keyword,
         });
         spinner.stop();
+        if (opts.json) {
+          // ECO-02: --json —— CI/脚本消费面（信封已拆，直接可用负载）
+          console.log(JSON.stringify(data));
+          return;
+        }
         const table = new Table({
           head: ['ID', 'Name', 'Runtime', 'Status', 'Cron'],
           colWidths: [14, 30, 12, 10, 20],
