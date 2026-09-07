@@ -10,6 +10,13 @@
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-07 第十六轮·批 004，员工 004 子代理会话——FEAT-05 执行产物通道）：
+  - `7e0c1c7` admin-api：迁移 `1789600000000-AddExecutionArtifacts`（task_executions.artifacts jsonb 可空列）+ 新 `modules/artifacts`（PUT 上传复用包上传通道 memoryStorage 100MB + 机器鉴权复用回调凭据形态；GET `/tasks/executions/:execId/artifacts[/:name]` JWT 守卫 + 裸文件名防路径穿越 + 流式；每日 TTL 清理搭车 LOG_RETENTION_DAYS，根目录 `LOG_ARTIFACT_DIR` 可覆盖）+ CallbackItemDto.artifacts 校验（≤20/裸名/sha256）+ handleCallback 非空清单落库（缺省不擦除）；admin-api 隔离 worktree **1389/1389** 全绿
+  - `1b12073` executor-python：`artifacts.py` collect（`<workDir>/artifacts/` ≤20/≤100MB/跳过子目录·超限·非法名）+ httpx multipart PUT + `gather_artifacts_for_callback` 仅入成功项；execute.py 预建目录+注入 `AUTOFLOW_ARTIFACTS_DIR`+终态回调附清单（best-effort）；**217/217**
+  - `c739024` executor-node：`src/artifacts.ts` 对等实现（global fetch+FormData/Blob）+ callback.ts CallbackRequest.artifacts + execute.ts prepare/runTask 接入；jest **248/248**；`resources/executor-node/index.js` **同 commit 重打**（本机验证改前空重打逐字节一致，CI bundle-drift 守卫安全）
+  - 验收数据链路（截图→artifacts/→PUT→回调清单→task_executions.artifacts→JWT 下载）双执行器均闭合
+  - **移交 admin-web（未做）**：执行/任务详情页新增「产物」列表（GET `/tasks/executions/:execId/artifacts`）+ 逐条下载（GET `.../artifacts/:name`，用 axios blob + objectURL，参照 executor-packages.ts 的 download 写法，因 JWT 仅从 Header 取）；api-reference.md「Artifacts」小节已文档化三端点
+  - 注：本会话 shared 文件（app.module.ts / task.service.ts）严格 hunk 隔离提交，未卷入 001(CORE-04)/002(SEC-02) 在途半成品；工作区 executor.service.spec 红为 002 SecretsCryptoService 未 mock 所致，非我引入、未触碰
 - 本轮（2026-09-07 第十六轮·批 001-C，员工 001 会话；详见认领板变更日志）：
   - `6297f21` **ECO-03**：MCP 工具面扩容 4 工具——get_execution_timeline（OBS-04 时间线+失败三联卡对齐 BUG-10 分类）/list_dead_letters（心跳 deadLetterCount 聚合）/create_task_from_template（5 官方模板，字段全走 CreateTaskDto 白名单）/get_scheduler_health（leader/queue/latency 四段重塑）；mcp-server **79/79**
   - `a00438b` **QA-07**：共享契约 fixture——`packages/contract-fixtures/contract.json` 单一事实源（envelope/passthrough/2xx 区间/错误体形态/knownHeuristicEdge+knownDivergence），四端消费同一向量（acf-cli 74 · mcp-server 84 · node-sdk 53 · autoflow-sdk 105）；审计副产两处修复：CLI detailFromData 空串 message 遮蔽 error 兜底；knownDivergence 留档 cli/mcp 宽松启发式 vs node/py-sdk 严格三键分歧（真实流量不受影响，待统一）
