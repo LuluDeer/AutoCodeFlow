@@ -3,13 +3,22 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-07（第十六轮·批一：开发计划+任务认领板入库，main-A 会话接手 6 项清偿/功能任务；并行会话 W 系列审计修复同期在途）
+更新时间：2026-09-07（第十六轮·批 001-C：员工 001 会话承接计划任务——ECO-03/QA-07/FEAT-11 三项 done）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-07 第十六轮·批 001-C，员工 001 会话；详见认领板变更日志）：
+  - `6297f21` **ECO-03**：MCP 工具面扩容 4 工具——get_execution_timeline（OBS-04 时间线+失败三联卡对齐 BUG-10 分类）/list_dead_letters（心跳 deadLetterCount 聚合）/create_task_from_template（5 官方模板，字段全走 CreateTaskDto 白名单）/get_scheduler_health（leader/queue/latency 四段重塑）；mcp-server **79/79**
+  - `a00438b` **QA-07**：共享契约 fixture——`packages/contract-fixtures/contract.json` 单一事实源（envelope/passthrough/2xx 区间/错误体形态/knownHeuristicEdge+knownDivergence），四端消费同一向量（acf-cli 74 · mcp-server 84 · node-sdk 53 · autoflow-sdk 105）；审计副产两处修复：CLI detailFromData 空串 message 遮蔽 error 兜底；knownDivergence 留档 cli/mcp 宽松启发式 vs node/py-sdk 严格三键分歧（真实流量不受影响，待统一）
+  - `9e93e22` **FEAT-11**：任务 runbook 字段——迁移 1789400000000（tasks.runbook 可空 text）+ DTO/实体 + 通知双路径透传（dispatch 失败/回调失败 notifyFailureWithConfig 增尾参）+ admin-web 表单 TextArea/详情展示条目（**OBS-02 告警 runbook 链接的前置已就位**）；admin-api **1370/68** · admin-web **160/160** + build ✓
+  - 未竟移交：CORE-04（超时策略分级）/CORE-02（重试策略精细化）已侦察未开工（触达面：task.processor timeout 路径+DTO+admin-web 表单），无在途半成品；QA-09 e2e 套件化剩余仍归 main-A
+- 测试基线（本会话收工时点，全绿）：
+  - admin-api **1370/1370**（68 suites）· admin-web vitest **160/160** + build ✓
+  - acf-cli **74/74** · mcp-server **84/84** · autocodeflow-node-sdk **53/53** · autoflow-sdk **105/105**
+  - 全端 tsc ✓（admin-api/acf-cli/mcp-server/node-sdk 均复验）
 - 本轮（2026-09-07 第十六轮·批一，main-A 会话；详见认领板变更日志）：
   - `84ff261` 计划+认领板入库；`f0c5f32` **W2 前端半场**——执行器管理写操作（编辑/配置热更/设置离线/轮换Token）非 admin 隐藏（API 半场 executor.controller.ts+rbac.spec.ts 在途归并行会话，其提交后 W2 整体闭环）
   - `313d203` **BUG-08/N41**：executor-node register 失败自愈——auth.ts setOnTokenAcquired 钩子 + maybeReRegister（已注册短路+in-flight 去重），token 恢复后补注册回填富元数据（admin 同 startupId register 幂等不轮换已复核）；bundle 同 commit 重打；executor-node **235/235**
