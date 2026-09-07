@@ -216,6 +216,7 @@ Content-Type: application/json
 | `maxRetry` | number | 否 | 最大尝试次数（BullMQ attempts），0–10；服务端会保证至少为 `1` |
 | `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff |
 | `retryableErrors` | string[] | 否 | 预留的可重试错误分类列表 |
+| `secrets` | object | 否 | 任务级凭据键值对（SEC-02，独立于 `params` 的普通运行参数）。**存储加密**：配置 `SEC_SECRETS_KEY` 后所有叶子值以 AES-256-GCM `enc:v1:<iv>:<tag>:<ciphertext>` 信封落库；未配置时降级明文并启动 warn 一次（零破坏升级路径）。**读取永久脱敏**：`GET /tasks`、`GET /tasks/:id` 响应中叶子值一律回 `******`（密文也不外泄），因此已保存的 secrets 不可经 API 回读。**派发语义**：执行时解密与 params 合并注入执行器 env（`AUTOFLOW_<KEY>`，与 params 同通道），同名键 secrets 覆盖 params；明文仅存在于派发 HTTPS 载荷与执行器内存，不落 `task_executions.params`。**PATCH 语义**：缺省 = 保留旧值，显式 `null` / `{}` = 清空/替换（整体替换，非按键合并）。存量行不做迁移加密——配置 key 后首次 update 自然转为密文 |
 | `executorId` | string (UUID) | 否 | 任务级 executor pinning（第六轮）：设置后调度**仅**派给该执行器，绕过 group/tags/runtime 过滤，但仍受其并发槽位上限约束；该执行器离线/不存在时执行直接置 FAILED（failureReason 分别为 `executor_offline` / `unknown`）。与 `executeMode=broadcast` 互斥，同时提供返回 400。`PATCH /tasks/:id` 按**合并后的任务态**校验该互斥（第七轮 N17）：为 broadcast 任务补 `executorId`、或将已 pin 任务改为 `broadcast` 同样返回 400；显式传 `executorId: null` 可清除 pinning |
 
 > 兼容说明：API 入参优先读取 `timeoutSeconds` 并落库到现有 `timeout` 字段；响应中可能同时包含历史字段 `timeout`。Python SDK 同时支持 snake_case（如 `timeout_seconds`、`retry_delay`、`max_retry`），Node/API wire format 推荐 camelCase。
@@ -294,6 +295,28 @@ Content-Type: application/json
 >
 > **执行失败原因（failureReason）枚举**（`ExecutionFailureReason`，执行详情/全局执行列表响应字段）：
 > `package_fetch_failed`（应用包拉取失败）/ `script_error`（脚本异常，任务回调默认值）/ `timeout`（超时）/ `executor_offline`（pinning 执行器离线）/ `executor_restart`（执行器重启中断）/ `stale_recovered`（失联回收——stale sweep 赢得 RUNNING→FAILED 条件更新、兑现重试预算时标记，区别于执行器回调上报的 `unknown`，便于排查"worker 崩溃型故障 + sweep 兑现重试预算"链路）/ `killed`（被 kill 接口强制取消）/ `unknown`（执行器回调未给出原因）。
+
+---
+
+## Artifacts — 执行产物（FEAT-05，本轮新增）
+
+执行器任务可在其工作目录约定的 `artifacts/` 子目录写入交付物（截图 / 报表 / CSV 等）。任务结束时双执行器（executor-node、executor-python）会：
+
+1. 扫描 `<workDir>/artifacts/`（仅顶层普通文件），构造清单 `[{ name, size, sha256 }]`——**上限 20 个、单文件 ≤ 100 MB**，超限 / 非法名 / 子目录一律跳过并记日志；
+2. 逐文件 multipart PUT 上传到下方"上传"端点（复用执行器回调的同一 token 做机器鉴权）；
+3. 把**实际上传成功**的清单随终态回调 `POST /executions/callback` 的 `artifacts` 字段上报，服务端落库到 `task_executions.artifacts`（jsonb 可空列，缺省不覆盖为 null）。
+
+> ⚠️ **best-effort 铁律**：产物收集 / 上传的任何失败都只记日志，**绝不阻塞、绝不改变任务终态**。artifacts 永远不是任务成败的一部分。管理台任务文件可通过环境变量 `AUTOFLOW_ARTIFACTS_DIR`（执行器注入）定位写入目录。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| PUT | `/executions/:execId/artifacts/:name` | 否* | 执行器上传单个产物（multipart `file` 字段，复用包上传通道形态；body 上限 100 MB）。可选 `?sha256=` 与实际字节交叉核对，不符返回 400 |
+| GET | `/tasks/executions/:execId/artifacts` | 是 | 读取执行记录的产物清单（来自终态回调落库的 `artifacts`） |
+| GET | `/tasks/executions/:execId/artifacts/:name` | 是 | 流式下载单个产物（JWT）；`name` 必须是裸安全文件名，服务端二次校验防路径穿越，文件缺失返回 404 |
+
+> *上传端点豁免全局 JWT（`@Public`），处理器内复用回调的凭据形态校验：执行器共享 token（`verifyExecutorToken`）**或** 每执行器动态 token（`validateTokenByAddress`，按执行行的 `executorAddress` 绑定）任一命中即放行；执行行不存在返回 404，凭据均不匹配返回 401。
+>
+> **存储与生命周期**：产物字节落在 admin 的 `uploads/artifacts/<execId>/<name>`（与执行器安装包同 `uploads` 卷；根目录可用 `LOG_ARTIFACT_DIR` 环境变量覆盖，缺省回退该 uploads 路径）。每日 03:45 的 TTL 清理服务复用 `LOG_RETENTION_DAYS`（默认 30 天），按子目录最旧文件 mtime 超期即整目录回收——与日志保留策略搭车，无需单独配置。
 
 ---
 
@@ -448,6 +471,7 @@ Content-Type: application/json
 | `NPM_REGISTRY_TOKEN` | 空 | 私有 npm registry 代理的预签发 access token（优先于 user/pass 组合，存在时直接以 `Bearer` 拉取包列表） |
 | `NPM_REGISTRY_USER` | 空 | registry 代理 Basic Auth 用户名（与 `NPM_REGISTRY_PASS` 配套，用于 `PUT /-/user/login` 换取 bearer token） |
 | `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码 |
+| `SEC_SECRETS_KEY` | 空 | **任务级 secrets 落库加密密钥**（SEC-02）：32 字节 hex（`openssl rand -hex 32`）或 base64，其他口令按 sha-256 拉伸。留空 = tasks.secrets 明文存储（启动 warn 一次）；配置后写路径全加密（AES-256-GCM `enc:v1:` 信封），派发时解密注入执行器 env。**密钥丢失 = 密文 secrets 不可解密**（派发报错、不静默裸跑）——请纳入密钥管理系统备份；轮换 = 换 key 后对任务做一次任意 update |
 
 > 三者全缺时 registry 代理保持匿名行为：authenticated-only registry（如 Verdaccio `access: $authenticated`）对包列表返回 401 → admin 包列表为空（仅 debug 日志提示凭证未配置），不视为错误。
 
