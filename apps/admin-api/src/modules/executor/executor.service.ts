@@ -1403,6 +1403,9 @@ export class ExecutorService {
     address: string,
     presented: string,
   ): Promise<boolean> {
+    // 真机冒烟（round-16）：无 Authorization 头的心跳（presented=undefined）
+    // 曾在 Buffer.from 处抛 500——未携带凭据就是未通过，直接 false（fail-closed）
+    if (!presented) return false;
     // F-5: positive-result cache — a repeated (address, token) pair within the
     // TTL skips the bcrypt compare entirely. Negative results are never cached
     // (a legitimate executor rotating its token must immediately succeed).

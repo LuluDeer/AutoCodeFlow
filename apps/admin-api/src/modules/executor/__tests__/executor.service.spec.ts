@@ -1719,6 +1719,15 @@ describe("ExecutorService (__tests__)", () => {
       expect(result).toBe(true);
     });
 
+    // 真机冒烟（round-16）：无 Authorization 头的心跳（presented=undefined）
+    // 曾在 Buffer.from 处抛 500——现在必须 fail-closed 返回 false
+    it("returns false (not a crash) when presented is undefined or empty", async () => {
+      const result = await service.validateTokenByAddress("host:3002", undefined as never);
+      expect(result).toBe(false);
+      const result2 = await service.validateTokenByAddress("host:3002", "");
+      expect(result2).toBe(false);
+    });
+
     it("returns false for invalid token", async () => {
       const qb = executorRepo.createQueryBuilder();
       qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: null });
