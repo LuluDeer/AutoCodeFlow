@@ -1,21 +1,24 @@
 import { useState } from 'react';
 import {
   Card, Descriptions, Tag, Typography, Button, Space, Table, Badge, Tabs,
-  Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert, Result,
+  Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert, Result, Input,
 } from 'antd';
 import {
   ApartmentOutlined,
   ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
   PlayCircleOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
   EyeOutlined, ClockCircleOutlined, StopOutlined, RobotOutlined, CodeOutlined,
-  CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined,
+  CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined, SaveOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useRequest } from 'ahooks';
 import { tasksApi, TaskExecution } from '../api/tasks';
+import { taskTemplatesApi } from '../api/task-templates';
 import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg } from '../utils/error';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
+// CORE-03 收尾：保存为自定义模板的 config 白名单抽取
+import { extractTemplateConfigFromTask } from '../utils/task-template-extract';
 import GlueEditor from '../components/GlueEditor';
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
 import { priorityTag } from '../utils/priority';
@@ -50,6 +53,33 @@ export default function TaskDetailPage() {
   const [triggering, setTriggering] = useState(false);
   const [killingId, setKillingId] = useState<string | null>(null);
   const [toggleLoading, setToggleLoading] = useState(false);
+  // CORE-03 收尾：保存为自定义模板 Modal
+  const [tplModalOpen, setTplModalOpen] = useState(false);
+  const [tplForm] = Form.useForm<{ name: string; description?: string; category?: string }>();
+  const [tplSaving, setTplSaving] = useState(false);
+
+  const handleSaveAsTemplate = async () => {
+    if (!task) return;
+    try {
+      const values = await tplForm.validateFields();
+      setTplSaving(true);
+      await taskTemplatesApi.create({
+        name: values.name.trim(),
+        description: values.description?.trim() || undefined,
+        category: values.category?.trim() || undefined,
+        config: extractTemplateConfigFromTask(task),
+      });
+      message.success(`已保存为模板「${values.name.trim()}」，可在任务模板页查看`);
+      setTplModalOpen(false);
+    } catch (err: unknown) {
+      // validateFields 的 reject 是带 errorFields 的校验对象，不是请求错误——
+      // 仅对真正的请求失败弹 toast，表单校验错误由 Form 自带红字呈现。
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error(getErrMsg(err, '保存模板失败'));
+    } finally {
+      setTplSaving(false);
+    }
+  };
 
   const handleAiSuggest = async () => {
     if (!id) return;
@@ -255,6 +285,14 @@ export default function TaskDetailPage() {
             {isActive && <Button icon={<PauseCircleOutlined />} loading={toggleLoading} disabled={toggleLoading} onClick={handlePause}>暂停</Button>}
             {isPaused && <Button icon={<PlayCircleOutlined />} type="primary" loading={toggleLoading} disabled={toggleLoading} onClick={handleResume}>恢复</Button>}
             <Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading}>AI 调度建议</Button>
+            {/* CORE-03 收尾：把当前任务配置固化为自定义模板（POST /task-templates） */}
+            <Button
+              icon={<SaveOutlined />}
+              data-testid="save-as-template"
+              onClick={() => { tplForm.setFieldsValue({ name: `${task.name} 模板` }); setTplModalOpen(true); }}
+            >
+              保存为模板
+            </Button>
             <Button icon={<EditOutlined />} onClick={handleEdit}>编辑</Button>
             <Popconfirm title="确认删除此任务？" onConfirm={handleDelete} okText="删除" okButtonProps={{ danger: true }}>
               <Button icon={<DeleteOutlined />} danger>删除</Button>
@@ -563,6 +601,40 @@ export default function TaskDetailPage() {
             )}
           </div>
         ) : null}
+      </Modal>
+
+      {/* CORE-03 收尾：保存为自定义模板弹窗——config 由 extractTemplateConfigFromTask
+          白名单抽取（CreateTaskDto 子集，后端 forbidNonWhitelisted 校验），此处只填模板元信息 */}
+      <Modal
+        title={<Space><SaveOutlined /> 保存为自定义模板</Space>}
+        open={tplModalOpen}
+        onCancel={() => setTplModalOpen(false)}
+        onOk={handleSaveAsTemplate}
+        okText="保存模板"
+        okButtonProps={{ loading: tplSaving, 'data-testid': 'tpl-save-confirm' } as never}
+        cancelText="取消"
+        width={520}
+        destroyOnHidden
+      >
+        <Form form={tplForm} layout="vertical">
+          <Form.Item
+            name="name"
+            label="模板名称"
+            rules={[{ required: true, whitespace: true, message: '请输入模板名称' }]}
+          >
+            <Input placeholder="如：每日报表生成" maxLength={128} data-testid="tpl-name-input" />
+          </Form.Item>
+          <Form.Item name="description" label="描述（可选）">
+            <Input.TextArea rows={2} placeholder="模板用途说明" maxLength={500} data-testid="tpl-desc-input" />
+          </Form.Item>
+          <Form.Item name="category" label="分类（可选）">
+            <Input placeholder="如：备份 / 巡检 / 同步" maxLength={32} data-testid="tpl-category-input" />
+          </Form.Item>
+        </Form>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          将保存当前任务的完整配置（触发方式/运行时/超时/重试/参数等），不含名称与运行状态；
+          保存后可在「任务模板」页一键复用。
+        </Typography.Text>
       </Modal>
     </div>
   );
