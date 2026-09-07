@@ -29,6 +29,8 @@ import { ConfigService } from "@nestjs/config";
 import { ExecutorService } from "../../executor/executor.service";
 import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
+// SEC-02: secrets 加密服务（测试默认降级明文；加密/脱敏专项断言另有 spec）
+import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.service";
 // 可观测性补齐轮：运行时计数器模块级快照（埋点断言入口）
 import {
   getRuntimeCountersSnapshot,
@@ -148,6 +150,9 @@ describe("TaskService (__tests__)", () => {
     getExecutorUrl: jest.Mock;
     getSharedToken: jest.Mock;
     notifyExecutorKill: jest.Mock;
+    // CORE-04: kill_retry re-enqueue
+    scheduleRetryAfterRecovery: jest.Mock;
+    hasRetryBudget: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -207,6 +212,9 @@ describe("TaskService (__tests__)", () => {
       // 日志回填 token 现走 DB 优先的 getSharedToken（与 dispatch/push 一致）
       getSharedToken: jest.fn().mockResolvedValue(""),
       notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+      // CORE-04: kill_retry 经 scheduleRetryAfterRecovery re-enqueue
+      scheduleRetryAfterRecovery: jest.fn().mockResolvedValue(undefined),
+      hasRetryBudget: jest.fn().mockReturnValue(true),
     };
 
     const module = await Test.createTestingModule({
@@ -230,6 +238,11 @@ describe("TaskService (__tests__)", () => {
         { provide: ExecutorService, useValue: executorServiceMock },
         { provide: NotificationService, useValue: notificationService },
         { provide: AuditService, useValue: auditService },
+        // SEC-02: 默认降级明文（key 空）——既有用例语义零变化
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
       ],
     }).compile();
 
@@ -2540,6 +2553,133 @@ describe("TaskService (__tests__)", () => {
         ).not.toHaveBeenCalled();
       });
 
+      // CORE-04: 超时终态落定后的动作兑现——kill_retry re-enqueue /
+      // notify_only 显式 no-op / 缺省 kill 无追加动作 / re-enqueue 失败
+      // fail-open（终态已落定）。均断言在唯一 winner 分支恰好一次。
+      describe("timeout action (CORE-04)", () => {
+        const timeoutExec = (extra: Record<string, unknown> = {}) => ({
+          id: "e1",
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+          ...extra,
+        });
+        const timeoutCb = {
+          executionId: "e1",
+          status: "failed" as const,
+          failureReason: ExecutionFailureReason.TIMEOUT,
+          errorMessage: "Task timeout after 60s",
+        };
+
+        it("kill_retry: re-enqueues via scheduleRetryAfterRecovery with the timeout_retry trigger", async () => {
+          const exec = timeoutExec();
+          execRepo.findOne.mockResolvedValue(exec);
+          taskRepo.findOne.mockResolvedValue({ id: "t1", name: "job", timeoutAction: "kill_retry", maxRetry: 3 });
+
+          await service.handleCallback([timeoutCb]);
+
+          expect(execRepo.createQueryBuilder).toHaveBeenCalled();
+          expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).toHaveBeenCalledTimes(1);
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).toHaveBeenCalledWith(
+            expect.objectContaining({ id: "t1", timeoutAction: "kill_retry" }),
+            exec,
+            "timeout_retry",
+          );
+        });
+
+        it("notify_only: no re-enqueue, terminal TIMEOUT preserved, failure alert still sent once", async () => {
+          const exec = timeoutExec();
+          execRepo.findOne.mockResolvedValue(exec);
+          taskRepo.findOne.mockResolvedValue({
+            id: "t1",
+            name: "job",
+            timeoutAction: "notify_only",
+          });
+
+          const result = await service.handleCallback([timeoutCb]);
+
+          expect(result[0].success).toBe(true);
+          expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).not.toHaveBeenCalled();
+          expect(
+            notificationService.notifyFailureWithConfig,
+          ).toHaveBeenCalledTimes(1);
+        });
+
+        it("default kill (null action): no re-enqueue (existing behavior)", async () => {
+          execRepo.findOne.mockResolvedValue(timeoutExec());
+          taskRepo.findOne.mockResolvedValue({
+            id: "t1",
+            name: "job",
+            timeoutAction: null,
+          });
+
+          await service.handleCallback([timeoutCb]);
+
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).not.toHaveBeenCalled();
+        });
+
+        it("kill_retry is fail-open: a throwing re-enqueue still reports callback success", async () => {
+          jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+          const exec = timeoutExec();
+          execRepo.findOne.mockResolvedValue(exec);
+          taskRepo.findOne.mockResolvedValue({
+            id: "t1",
+            name: "job",
+            timeoutAction: "kill_retry",
+          });
+          executorServiceMock.scheduleRetryAfterRecovery.mockRejectedValue(
+            new Error("redis down"),
+          );
+
+          const result = await service.handleCallback([timeoutCb]);
+
+          expect(result[0].success).toBe(true);
+          expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
+        });
+
+        it("duplicate (already terminal) callback does not re-enqueue twice", async () => {
+          // 首个 findOne 是读执行行（RUNNING），QB execute 模拟并发回调已写
+          // TIMEOUT 终态——重跑一次 handleCallback 前把行置为终态，affected=0
+          // 分支提前返回，scheduleRetryAfterRecovery 不得再次触发。
+          const exec = timeoutExec();
+          execRepo.findOne.mockResolvedValue(exec);
+          taskRepo.findOne.mockResolvedValue({
+            id: "t1",
+            name: "job",
+            timeoutAction: "kill_retry",
+          });
+          await service.handleCallback([timeoutCb]);
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).toHaveBeenCalledTimes(1);
+          // 第二次回调：行已是终态（makeRepo 的 QB execute 对 TERMINAL 状态
+          // 返回 affected=0），不得再 re-enqueue。
+          exec.status = ExecutionStatus.TIMEOUT;
+          await service.handleCallback([timeoutCb]);
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).toHaveBeenCalledTimes(1);
+        });
+      });
+
+      it("does NOT notify on a SUCCESS callback", async () => {
+
+        expect(
+          notificationService.notifyFailureWithConfig,
+        ).not.toHaveBeenCalled();
+      });
+
       it("is fail-open: a throwing notification writes NOTIFICATION_FAILED audit and still returns success", async () => {
         jest.spyOn(Logger.prototype, "error").mockImplementation(() => {});
         const exec = {
@@ -3053,6 +3193,11 @@ describe("OBS-03: execution log level（写入抽取）", () => {
           },
         },
         { provide: AuditService, useValue: { log: jest.fn() } },
+        // SEC-02: 默认降级明文（key 空）——既有用例语义零变化
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
       ],
     }).compile();
 
@@ -3167,6 +3312,11 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
           },
         },
         { provide: AuditService, useValue: { log: jest.fn() } },
+        // SEC-02: 默认降级明文（key 空）——既有用例语义零变化
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
       ],
     }).compile();
 

@@ -20,6 +20,8 @@ import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
 import { NotificationService } from "../../notification/notification.service";
 import { SystemConfigService } from "../../config/config.service";
+// SEC-02: secrets 派发解密（测试默认降级明文，dispatch 载荷与既往一致）
+import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.service";
 
 jest.mock("axios");
 // F-3: dispatch now consults the SSRF layer before every outbound POST. These
@@ -108,6 +110,11 @@ describe("ExecutorService (__tests__)", () => {
             findOne: jest.fn().mockRejectedValue(new Error("not found")),
           },
         },
+        // SEC-02: 默认降级明文（key 空）
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
       ],
     }).compile();
     return module.get(ExecutorService);
@@ -147,6 +154,11 @@ describe("ExecutorService (__tests__)", () => {
           useValue: {
             findOne: jest.fn().mockRejectedValue(new Error("not found")),
           },
+        },
+        // SEC-02: 默认降级明文（key 空）
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
         },
       ],
     }).compile();
@@ -1722,7 +1734,10 @@ describe("ExecutorService (__tests__)", () => {
     // 真机冒烟（round-16）：无 Authorization 头的心跳（presented=undefined）
     // 曾在 Buffer.from 处抛 500——现在必须 fail-closed 返回 false
     it("returns false (not a crash) when presented is undefined or empty", async () => {
-      const result = await service.validateTokenByAddress("host:3002", undefined as never);
+      const result = await service.validateTokenByAddress(
+        "host:3002",
+        undefined as never,
+      );
       expect(result).toBe(false);
       const result2 = await service.validateTokenByAddress("host:3002", "");
       expect(result2).toBe(false);

@@ -11,6 +11,8 @@ import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
 import { NotificationService } from "../../notification/notification.service";
 import { SystemConfigService } from "../../config/config.service";
+// SEC-02: secrets 派发解密（测试默认降级明文）
+import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.service";
 
 jest.mock("axios", () => {
   const actual = jest.requireActual("axios");
@@ -101,6 +103,11 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         {
           provide: SystemConfigService,
           useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+        },
+        // SEC-02: 默认降级明文（key 空）
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
         },
       ],
     }).compile();
