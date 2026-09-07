@@ -44,8 +44,14 @@ import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { AiService } from "../ai/ai.service";
 import { ExecutorService } from "../executor/executor.service";
-import { NotificationService } from "../notification/notification.service";
-import { AuditService } from "../audit/audit.service";
+// ARCH-21: 领域事件总线——终态事件（execution.completed/failed）发布入口。
+// 主链由此与 NotificationService 彻底解耦（验收红线：本文件不再 import 它）。
+import { DomainEventBus } from "../../common/services/domain-event-bus.service";
+import {
+  DOMAIN_EVENTS,
+  ExecutionTerminalEventPayload,
+} from "../../common/events/domain-events";
+// ARCH-21: AuditService import 随注入移除（唯一消费方 notifyCallbackFailure 已迁监听器）。
 import { S3LogStorage } from "./log-storage/s3-log-storage";
 // SEC-02: 任务级 secrets 落库加密 / 读脱敏 / 派发解密的统一入口
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
@@ -241,8 +247,14 @@ export class TaskService {
     private aiService: AiService,
     private configService: ConfigService,
     private executorService: ExecutorService,
-    private notificationService: NotificationService,
-    private auditService: AuditService,
+    // ARCH-21: 事件总线（@Global 模块恒提供）。@Optional 仅为既有单测装配
+    // 兼容（provider 缺失 → null → 终态事件静默不发，主链行为不变），
+    // 先例同 001/OBS-04 的 reportRepo。
+    @Optional()
+    private readonly eventBus: DomainEventBus | null,
+    // ARCH-21: AuditService 注入已随 notifyCallbackFailure 迁出删除——其在
+    // 本服务的唯一消费方（NOTIFICATION_FAILED 审计兜底）现由
+    // notification 模块 ExecutionEventsListener 持有。
     // SEC-02: secrets 落库加密/读脱敏（providers 由 TaskModule 提供）
     private secretsCrypto: SecretsCryptoService,
     // OBS-04: execution_reports 读侧（只读——写方在 MetricsService）。
@@ -1483,61 +1495,56 @@ export class TaskService {
   }
 
   /**
-   * 改动1：执行器回调报出真实失败终态（FAILED/TIMEOUT）时发送告警通知。
+   * ARCH-21：终态落库（唯一 winner）之后发布领域事件，副作用与主链解耦。
    *
-   * 复用 dispatch 失败路径（task.processor.ts）同款通知模式：配置来源为 Task
-   * 实体的 alarmEmail / alarmChannels，交由 notifyFailureWithConfig 解析渠道。
-   * 与 dispatch 失败通知保持一致——仅传 taskName/execId/error/aiAnalysis +
-   * 告警配置，taskId 一并透传以启用任务级静默窗口。
-   *
-   * fail-open：通知本身或其依赖（如 taskRepo）抛错都不得污染回调结果，
-   * 失败按 task.processor.ts 既有模式写审计（NOTIFICATION_FAILED），审计
-   * 自身 best-effort 再兜底。
+   * - SUCCESS → execution.completed；FAILED/TIMEOUT → execution.failed。
+   *   迁移前的「改动1」失败告警（notifyCallbackFailure 直调）现由
+   *   notification 模块 ExecutionEventsListener 订阅 execution.failed 复刻
+   *   同款语义（含 taskRepo 回查告警配置与 NOTIFICATION_FAILED 审计兜底）。
+   * - emit 时机 = 迁移前通知直调的时机（fan-out/日志持久化之前）：即便后续
+   *   步骤抛错被 catch 成 success:false（执行器会重试整批），事件也已派发
+   *   一次；重试回调走 affected=0 分支不再 emit——「每个失败执行一次告警」
+   *   的旧不变量原样保持。
+   * - fail-open：总线对监听器抛错只记日志（同步/异步都吞），绝不影响主链
+   *   结果（测试断言）；payload 带全监听器所需 id 级信息，实体配置由监听器
+   *   自行回查——common 层不反向依赖 task 实体（见 domain-events.ts）。
+   * - eventBus 为 null（@Optional 兜底）时静默跳过：主链行为与迁移前一致，
+   *   仅事件不发（既有旧单测装配兼容，先例 OBS-04 reportRepo）。
    */
-  private async notifyCallbackFailure(
+  private emitTerminalEvent(
     execution: TaskExecution,
-    failureReason: ExecutionFailureReason | null | undefined,
+    status: ExecutionStatus,
+    failureReason: ExecutionFailureReason | null,
     cb: { errorMessage?: string; logs?: string },
-  ): Promise<void> {
-    const taskName = execution.taskName ?? execution.taskId;
-    // 通知内容摘要：failureReason + errorMessage（缺省回退到回调日志头），
-    // 控制在 500 字符内，避免把整段日志塞进告警。
-    const detail =
-      cb.errorMessage || (cb.logs ? cb.logs.split("\n")[0] : "") || "no detail";
-    const errorSummary = `${failureReason ?? "UNKNOWN"}: ${detail}`.slice(
-      0,
-      500,
-    );
+    durationMs: number | null,
+    finishedAt: Date,
+  ): void {
+    if (!this.eventBus) return;
+    const payload: ExecutionTerminalEventPayload = {
+      executionId: execution.id,
+      taskId: execution.taskId ?? null,
+      taskName: execution.taskName ?? execution.taskId,
+      // ExecutionStatus 枚举值即小写字面量（"success"/"failed"/"timeout"），
+      // 载荷类型以字面量联合表达——common 层不 import task 实体（见上注）。
+      status: status as ExecutionTerminalEventPayload["status"],
+      failureReason: failureReason ?? null,
+      errorMessage: cb.errorMessage,
+      logs: cb.logs,
+      aiAnalysis: execution.aiAnalysis ?? null,
+      durationMs,
+      finishedAt: finishedAt.toISOString(),
+    };
+    // 总线自身契约即 fail-open（emit 永不外抛）；此 try/catch 是第二道保险丝，
+    // 保证「发布事件」这一新增步骤在任何意外实现下也绝不改变主链结果。
     try {
-      const task = execution.taskId
-        ? await this.taskRepo.findOne({ where: { id: execution.taskId } })
-        : null;
-      await this.notificationService.notifyFailureWithConfig(
-        taskName,
-        execution.id,
-        errorSummary,
-        execution.aiAnalysis ?? "",
-        task?.alarmEmail,
-        task?.alarmChannels,
-        undefined,
-        execution.taskId ?? undefined,
-        task?.runbook,
+      this.eventBus.emit(
+        status === ExecutionStatus.SUCCESS
+          ? DOMAIN_EVENTS.EXECUTION_COMPLETED
+          : DOMAIN_EVENTS.EXECUTION_FAILED,
+        payload,
       );
-    } catch (err: unknown) {
-      const notifyErrMsg = err instanceof Error ? err.message : String(err);
-      this.logger.error(
-        `Notification failed for callback of execution ${execution.id}: ${notifyErrMsg}`,
-      );
-      try {
-        await this.auditService.log({
-          action: "NOTIFICATION_FAILED",
-          resource: "task_execution",
-          resourceId: execution.id,
-          detail: { task: taskName, error: notifyErrMsg },
-        });
-      } catch {
-        /* audit is best-effort */
-      }
+    } catch {
+      /* never reached with DomainEventBus's fail-open contract */
     }
   }
 
@@ -1768,16 +1775,22 @@ export class TaskService {
         // 改动4: 优先用 RETURNING 的库中实际地址，快照兜底。
         await this.releaseExecutorSlot(winnerAddress);
 
-        // 改动1: 真实执行失败（FAILED/TIMEOUT）告警。放在依赖 fan-out 与日志
-        // 持久化之前，确保即便后续步骤抛错被 catch 成 success:false（执行器随后
-        // 会重试整批），告警也已发出一次；重试路径在 affected=0 分支不再告警，
-        // 恰好保持"每个失败执行一次告警"，与终态条件 UPDATE 的 winner 语义一致。
-        if (
-          patch.status === ExecutionStatus.FAILED ||
-          patch.status === ExecutionStatus.TIMEOUT
-        ) {
-          await this.notifyCallbackFailure(execution, patch.failureReason, cb);
-        }
+        // ARCH-21（原「改动1」解耦）：终态事件发布——旧的 FAILED/TIMEOUT
+        // 直调告警改为 execution.failed（notification 模块监听器复刻等价
+        // 语义），并在 SUCCESS 新增 execution.completed（本轮通知侧刻意不
+        // 订阅——旧路径成功本就不发通知；事件为 FEAT-07 出站 webhook 铺路）。
+        // 放在依赖 fan-out 与日志持久化之前，与旧直调时机点一致：确保即便
+        // 后续步骤抛错被 catch 成 success:false（执行器随后会重试整批），
+        // 事件也已发出一次；重试路径在 affected=0 分支不再 emit，恰好保持
+        // "每个失败执行一次告警"，与终态条件 UPDATE 的 winner 语义一致。
+        this.emitTerminalEvent(
+          execution,
+          patch.status as ExecutionStatus,
+          patch.failureReason ?? null,
+          cb,
+          patch.duration ?? null,
+          finishedAt,
+        );
 
         // CORE-04: 超时终态落定后的动作兑现。执行器回调 failureReason=timeout
         // （自身硬超时树杀后上报）且任务配置了非缺省 timeoutAction 时：
