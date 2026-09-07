@@ -2575,7 +2575,12 @@ describe("TaskService (__tests__)", () => {
         it("kill_retry: re-enqueues via scheduleRetryAfterRecovery with the timeout_retry trigger", async () => {
           const exec = timeoutExec();
           execRepo.findOne.mockResolvedValue(exec);
-          taskRepo.findOne.mockResolvedValue({ id: "t1", name: "job", timeoutAction: "kill_retry", maxRetry: 3 });
+          taskRepo.findOne.mockResolvedValue({
+            id: "t1",
+            name: "job",
+            timeoutAction: "kill_retry",
+            maxRetry: 3,
+          });
 
           await service.handleCallback([timeoutCb]);
 
@@ -2674,7 +2679,6 @@ describe("TaskService (__tests__)", () => {
       });
 
       it("does NOT notify on a SUCCESS callback", async () => {
-
         expect(
           notificationService.notifyFailureWithConfig,
         ).not.toHaveBeenCalled();

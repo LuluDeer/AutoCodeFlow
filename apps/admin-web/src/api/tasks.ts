@@ -13,6 +13,22 @@ export interface MaintenanceWindow {
   description?: string;
 }
 
+/**
+ * CORE-04: 超时后动作（tasks.timeoutAction 可空 varchar，与后端
+ * admin-api task/timeout-policy.util.ts 的 TimeoutAction 值域对齐）。
+ *  - kill（缺省/null）：执行器到时树杀进程树（既有行为）；
+ *  - kill_retry：同样树杀，admin 侧按任务重试预算 re-enqueue 一次；
+ *  - notify_only：admin 不额外下发终止指令、只保证超时告警——执行器
+ *    自身硬超时仍在，进程仍会被执行器杀掉（notify_only ≠ 不超时）。
+ */
+export type TimeoutAction = 'kill' | 'kill_retry' | 'notify_only';
+
+export const TIMEOUT_ACTION_OPTIONS: { value: TimeoutAction; label: string }[] = [
+  { value: 'kill', label: '终止（默认）' },
+  { value: 'kill_retry', label: '终止并重试' },
+  { value: 'notify_only', label: '仅通知' },
+];
+
 export interface Task {
   id: string;
   name: string;
@@ -38,6 +54,10 @@ export interface Task {
   retryableErrors?: string[];
   timeout: number;
   timeoutSeconds?: number;
+  /** CORE-04: 超时动作（null/缺省 = kill）；表单提交 undefined = 保留旧值 */
+  timeoutAction?: TimeoutAction | null;
+  /** CORE-04: 超时预警阈值（timeout 的百分数 0-90；null = 未启用） */
+  timeoutWarnRatio?: number | null;
   applicationId?: string | null;
   executeMode?: string | null;
   executorAppName?: string | null;

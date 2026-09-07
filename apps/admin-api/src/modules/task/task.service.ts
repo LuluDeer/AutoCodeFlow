@@ -375,9 +375,7 @@ export class TaskService {
     // SEC-02: 列表响应 secrets 永久脱敏（叶子值回 ******，密文不外泄）
     list.forEach((t) => {
       t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
-        | Record<string, unknown>
-        | null
-        | undefined;
+        Record<string, unknown> | null | undefined;
     });
     return paginate(list, total, p.page, p.pageSize);
   }
@@ -389,9 +387,7 @@ export class TaskService {
     if (!t) throw new NotFoundException("Task not found");
     // SEC-02: 详情响应同样脱敏；写路径（update）走独立归一化，不受影响
     t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
-      | Record<string, unknown>
-      | null
-      | undefined;
+      Record<string, unknown> | null | undefined;
     return t;
   }
 
@@ -1752,9 +1748,7 @@ export class TaskService {
               );
             } catch (retryErr: unknown) {
               const retryMsg =
-                retryErr instanceof Error
-                  ? retryErr.message
-                  : String(retryErr);
+                retryErr instanceof Error ? retryErr.message : String(retryErr);
               this.logger.warn(
                 `CORE-04: kill_retry re-enqueue failed for execution ${execution.id}: ${retryMsg} (terminal state preserved)`,
               );

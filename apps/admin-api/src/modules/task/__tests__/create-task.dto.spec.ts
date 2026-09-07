@@ -281,7 +281,11 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
 
     it("rejects non-string values", async () => {
       await expect(
-        validateCreate({ name: "t1", triggerType: "api", runbook: 42 as never }),
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          runbook: 42 as never,
+        }),
       ).rejects.toThrow(BadRequestException);
     });
   });
@@ -488,10 +492,18 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
 
     it("rejects timeoutWarnRatio out of range or non-integer with 400", async () => {
       await expect(
-        validateCreate({ name: "t1", triggerType: "api", timeoutWarnRatio: 91 }),
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutWarnRatio: 91,
+        }),
       ).rejects.toThrow(BadRequestException);
       await expect(
-        validateCreate({ name: "t1", triggerType: "api", timeoutWarnRatio: -1 }),
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutWarnRatio: -1,
+        }),
       ).rejects.toThrow(BadRequestException);
       await expect(
         validateCreate({
@@ -505,9 +517,9 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
     it("UpdateTaskDto inherits the timeoutWarnRatio validator", async () => {
       const ok = await validateUpdate({ timeoutWarnRatio: 80 });
       expect(ok.timeoutWarnRatio).toBe(80);
-      await expect(
-        validateUpdate({ timeoutWarnRatio: 101 }),
-      ).rejects.toThrow(BadRequestException);
+      await expect(validateUpdate({ timeoutWarnRatio: 101 })).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 });

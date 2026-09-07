@@ -26,6 +26,12 @@ import {
   applyMaintenanceWindowsPayload,
   MAINTENANCE_WINDOWS_MAX,
 } from './maintenance-windows';
+import {
+  applyTimeoutPolicyPayload,
+  timeoutPolicyFormValues,
+  TIMEOUT_WARN_RATIO_MAX,
+  TIMEOUT_ACTION_OPTIONS,
+} from './timeout-policy';
 
 const { Title, Text } = Typography;
 
@@ -126,6 +132,8 @@ export default function TaskFormPage() {
           fixedRate: task.fixedRate,
           priority: toPriorityValue(task.priority),
           timeout: task.timeoutSeconds ?? task.timeout ?? 300,
+          // CORE-04: 超时策略（timeoutAction 缺省 kill；预警阈值空态 undefined）
+          ...timeoutPolicyFormValues(task),
           maxRetry: task.maxRetry ?? 3,
           retryDelay: task.retryDelay ?? 0,
           executorId: task.executorId ?? undefined,
@@ -200,8 +208,10 @@ export default function TaskFormPage() {
     }
     setSaving(true);
     try {
-      const payload = applyMaintenanceWindowsPayload(
-        applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
+      const payload = applyTimeoutPolicyPayload(
+        applyMaintenanceWindowsPayload(
+          applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
+        ),
       );
       if (isEdit && editId) {
         await tasksApi.update(editId, payload);
@@ -251,7 +261,7 @@ export default function TaskFormPage() {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3, retryDelay: 0, priority: 2 }}
+        initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3, retryDelay: 0, priority: 2, timeoutAction: 'kill' }}
         onValuesChange={(changed) => {
           if (changed.triggerType) setTriggerType(changed.triggerType);
         }}
@@ -535,6 +545,33 @@ export default function TaskFormPage() {
 
             <Form.Item name="timeout" label={<>超时时间 <Text type="secondary" style={{ fontSize: 12 }}>（秒）</Text></>}>
               <InputNumber min={10} max={86400} style={{ width: 160 }} placeholder="300" />
+            </Form.Item>
+
+            {/* CORE-04: 超时策略分级——超时后动作三选一。kill 为既有树杀
+                语义；kill_retry 超时终态后按任务重试预算 re-enqueue 一次；
+                notify_only 仅保证超时告警（执行器自身硬超时仍在，进程仍会
+                被执行器杀掉——并非"永不超时"）。 */}
+            <Form.Item
+              name="timeoutAction"
+              label={<>超时动作 <Text type="secondary" style={{ fontSize: 12 }}>（到时后的处理方式）</Text></>}
+              initialValue="kill"
+              tooltip={{ title: '终止：执行器杀掉进程树（默认）。终止并重试：杀掉后按最大尝试次数重新排队一次。仅通知：不额外下发终止指令，只发超时告警——进程仍会被执行器的硬超时终止。', icon: <InfoCircleOutlined /> }}
+            >
+              <Radio.Group optionType="button" buttonStyle="solid">
+                {TIMEOUT_ACTION_OPTIONS.map((o) => (
+                  <Radio.Button key={o.value} value={o.value}>{o.label}</Radio.Button>
+                ))}
+              </Radio.Group>
+            </Form.Item>
+
+            {/* CORE-04: 超时预警——运行时长达到 超时时间×阈值% 时发一次
+                WARNING 通知（每个执行至多一次）。留空 = 不启用。 */}
+            <Form.Item
+              name="timeoutWarnRatio"
+              label={<>超时预警阈值 <Text type="secondary" style={{ fontSize: 12 }}>（占超时时间的百分比，0-90；留空不预警）</Text></>}
+              tooltip={{ title: '例如超时 600 秒、阈值 80：运行到 480 秒时发送一次超时预警通知，便于在硬超时前介入。', icon: <InfoCircleOutlined /> }}
+            >
+              <InputNumber min={0} max={TIMEOUT_WARN_RATIO_MAX} style={{ width: 160 }} placeholder="如 80，留空不预警" />
             </Form.Item>
 
             <Form.Item name="maxRetry" label={<>最大尝试次数 <Text type="secondary" style={{ fontSize: 12 }}>（1 = 不重试）</Text></>}>

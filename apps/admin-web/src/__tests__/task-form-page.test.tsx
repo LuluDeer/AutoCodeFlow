@@ -16,6 +16,10 @@ import {
   applyRequirementsPayload,
 } from '../pages/executor-mode';
 import { applyMaintenanceWindowsPayload } from '../pages/maintenance-windows';
+import {
+  applyTimeoutPolicyPayload,
+  timeoutPolicyFormValues,
+} from '../pages/timeout-policy';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
@@ -375,5 +379,57 @@ describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级）', () => {
     expect(await screen.findByDisplayValue('0 22 * * 5')).toBeTruthy();
     expect(screen.getByDisplayValue('0 6 * * 6')).toBeTruthy();
     expect(screen.getByDisplayValue('发布冻结')).toBeTruthy();
+  });
+});
+
+// CORE-04: 超时策略分级——表单序列化纯逻辑（payload 归一 + 加载态映射）。
+// PATCH 语义（N28 同源）：timeoutAction undefined → null（回缺省 kill）；
+// timeoutWarnRatio 空串/undefined/非法 → null（真正关闭预警）。
+describe('applyTimeoutPolicyPayload（CORE-04）', () => {
+  it('合法值原样保留（三动作 + 0/90 边界阈值）', () => {
+    const a = applyTimeoutPolicyPayload({ timeoutAction: 'kill_retry', timeoutWarnRatio: 80 });
+    expect(a.timeoutAction).toBe('kill_retry');
+    expect(a.timeoutWarnRatio).toBe(80);
+    const b = applyTimeoutPolicyPayload({ timeoutAction: 'notify_only', timeoutWarnRatio: 0 });
+    expect(b.timeoutWarnRatio).toBe(0);
+    const c = applyTimeoutPolicyPayload({ timeoutAction: 'kill', timeoutWarnRatio: 90 });
+    expect(c.timeoutWarnRatio).toBe(90);
+  });
+
+  it('timeoutAction undefined（未挂载）→ null（回缺省 kill）', () => {
+    const payload = applyTimeoutPolicyPayload({ name: 't' });
+    expect(payload.timeoutAction).toBeNull();
+  });
+
+  it('timeoutWarnRatio 空串/undefined/非法/越界 → null（关闭预警）', () => {
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: '' }).timeoutWarnRatio).toBeNull();
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: undefined }).timeoutWarnRatio).toBeNull();
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: null }).timeoutWarnRatio).toBeNull();
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: 91 }).timeoutWarnRatio).toBeNull();
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: -1 }).timeoutWarnRatio).toBeNull();
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: 12.5 }).timeoutWarnRatio).toBeNull();
+  });
+
+  it('保留其它字段不变（仅接管超时策略两字段）', () => {
+    const payload = applyTimeoutPolicyPayload({ name: 't', timeout: 600, executorId: 'e1' });
+    expect(payload.name).toBe('t');
+    expect(payload.timeout).toBe(600);
+    expect(payload.executorId).toBe('e1');
+  });
+});
+
+describe('timeoutPolicyFormValues（CORE-04 编辑态加载映射）', () => {
+  it('后端读回值映射到表单形态；未知/缺省动作归 kill', () => {
+    expect(timeoutPolicyFormValues({ timeoutAction: 'kill_retry', timeoutWarnRatio: 80 })).toEqual({
+      timeoutAction: 'kill_retry',
+      timeoutWarnRatio: 80,
+    });
+    expect(timeoutPolicyFormValues({ timeoutAction: 'notify_only' })).toEqual({
+      timeoutAction: 'notify_only',
+      timeoutWarnRatio: undefined,
+    });
+    expect(timeoutPolicyFormValues({ timeoutAction: null }).timeoutAction).toBe('kill');
+    expect(timeoutPolicyFormValues({}).timeoutAction).toBe('kill');
+    expect(timeoutPolicyFormValues({ timeoutWarnRatio: null }).timeoutWarnRatio).toBeUndefined();
   });
 });
