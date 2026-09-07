@@ -25,6 +25,8 @@ import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
 import { SystemConfigService } from "../config/config.service";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+// SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
+import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 
 @Injectable()
 export class ExecutorService {
@@ -106,6 +108,8 @@ export class ExecutorService {
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
     private readonly systemConfigService: SystemConfigService,
+    // SEC-02: dispatch 时解密 task.secrets（与 params 合并注入执行器 env）
+    private readonly secretsCrypto: SecretsCryptoService,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
   }
@@ -133,6 +137,37 @@ export class ExecutorService {
       // DB token is optional; fall back to environment/config-file value.
     }
     return this.configService.get<string>("executor.sharedToken") ?? "";
+  }
+
+  /**
+   * SEC-02: build the executor-bound `params` payload = execution params
+   * merged with decrypted task.secrets. Secrets WIN over params (a credential
+   * set at task level must not be shadowable by a per-trigger param of the
+   * same name — executors map every entry to AUTOFLOW_<KEY> env vars). The
+   * merged map lives only on the dispatch HTTP payload: it is never persisted
+   * back to TaskExecution.params, so plaintext never re-enters the database.
+   * A decryption failure (e.g. key missing/rotated away) surfaces as a
+   * dispatch error and the execution fails with a clear message instead of
+   * silently running without its credentials.
+   */
+  private buildDispatchParams(
+    task: Task,
+    execution: TaskExecution,
+  ): Record<string, unknown> {
+    const params = (execution.params ?? task.params ?? {}) as Record<
+      string,
+      unknown
+    >;
+    let decrypted: Record<string, unknown> | null | undefined;
+    try {
+      decrypted = this.secretsCrypto.decryptForDispatch(task.secrets);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Task secrets could not be decrypted for dispatch: ${message}`,
+      );
+    }
+    return { ...(params ?? {}), ...(decrypted ?? {}) };
   }
 
   private async releaseExecutorSlot(address?: string | null): Promise<void> {
@@ -964,9 +999,11 @@ export class ExecutorService {
       const sharedToken = await this.getSharedToken();
       const headers: Record<string, string> = {};
       if (sharedToken) headers["Authorization"] = `Bearer ${sharedToken}`;
+      // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
+      const dispatchParams = this.buildDispatchParams(task, execution);
       const resp = await axios.post(
         url,
-        { executionId: execution.id, task, params: execution.params },
+        { executionId: execution.id, task, params: dispatchParams },
         { timeout: ((task.timeout || 300) + 10) * 1000, headers },
       );
       return resp.data;
@@ -1042,6 +1079,8 @@ export class ExecutorService {
     const broadcastHeaders: Record<string, string> = {};
     if (sharedToken)
       broadcastHeaders["Authorization"] = `Bearer ${sharedToken}`;
+    // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
+    const dispatchParams = this.buildDispatchParams(task, execution);
 
     const results = await Promise.allSettled(
       candidates.map(async (executor) => {
@@ -1054,7 +1093,7 @@ export class ExecutorService {
         await assertSafeExecutorUrl(dispatchUrl);
         const resp = await axios.post(
           dispatchUrl,
-          { executionId: execution.id, task, params: execution.params },
+          { executionId: execution.id, task, params: dispatchParams },
           {
             timeout: ((task.timeout || 300) + 10) * 1000,
             headers: broadcastHeaders,
