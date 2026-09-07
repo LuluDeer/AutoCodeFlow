@@ -17,6 +17,11 @@ import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
+import { taskTemplatesApi } from '../api/task-templates';
+import {
+  templateConfigToFormValues,
+  templateTriggerAndRuntime,
+} from './task-template-prefill';
 import { CronHelper } from '../components/CronHelper';
 import { TASK_PRIORITY_OPTIONS, toPriorityValue } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
@@ -85,6 +90,8 @@ export default function TaskFormPage() {
   const { id: editId } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const appId = searchParams.get('applicationId');
+  // CORE-03：创建态带 ?templateId= 时，拉取模板 config 预填表单（显式可改）。
+  const templateId = searchParams.get('templateId');
   const isEdit = !!editId;
 
   const [step, setStep] = useState(0);
@@ -156,6 +163,25 @@ export default function TaskFormPage() {
       .catch(() => message.error('加载任务失败'))
       .finally(() => setLoadingTask(false));
   }, [editId, form]);
+
+  // CORE-03：创建态带 ?templateId= 时拉取模板，config 预填表单（显式字段仍可改；
+  // name 一律由用户填写——模板 name 常含中文，不满足任务名 [a-z0-9_-] 约束）。
+  useEffect(() => {
+    if (!templateId || isEdit) return;
+    let cancelled = false;
+    taskTemplatesApi
+      .get(templateId)
+      .then((tpl) => {
+        if (cancelled) return;
+        form.setFieldsValue(templateConfigToFormValues(tpl.config));
+        if (tpl.description) form.setFieldValue('description', tpl.description);
+        setTriggerType(templateTriggerAndRuntime(tpl).triggerType);
+      })
+      .catch(() => message.warning('加载任务模板失败，已使用空白表单'));
+    return () => {
+      cancelled = true;
+    };
+  }, [templateId, isEdit, form]);
 
   const handleStep0Next = async () => {
     try {
