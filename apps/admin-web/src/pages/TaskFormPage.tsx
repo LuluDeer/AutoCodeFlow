@@ -42,8 +42,9 @@ import {
   retryableErrorsFormValues,
   RETRYABLE_ERROR_OPTIONS,
 } from './retry-policy';
+import PageHeader from '../components/PageHeader';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 const TRIGGER_OPTIONS = [
   { value: 'manual', label: '手动触发', desc: '只能通过界面或 API 手动触发' },
@@ -277,10 +278,20 @@ export default function TaskFormPage() {
 
   return (
     <div style={{ maxWidth: 720 }}>
-      <Space style={{ marginBottom: 20 }}>
-        <Button icon={<ArrowLeftOutlined />} type="text" onClick={() => nav(-1)} />
-        <Title level={4} style={{ margin: 0 }}>{isEdit ? '编辑任务' : '创建任务'}</Title>
-      </Space>
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，面包屑语义=任务→新建/编辑；
+          原返回按钮保留于 extra 首位，行为不变） */}
+      <PageHeader
+        title={isEdit ? '编辑任务' : '创建任务'}
+        breadcrumb={[
+          { title: '任务调度', to: '/tasks' },
+          { title: isEdit ? '编辑任务' : '新建任务' },
+        ]}
+        extra={
+          <Button icon={<ArrowLeftOutlined />} type="text" onClick={() => nav(-1)}>
+            返回
+          </Button>
+        }
+      />
 
       <Steps
         current={step}

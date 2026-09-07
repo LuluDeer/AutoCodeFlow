@@ -33,6 +33,36 @@ import type { ThemeMode } from '../theme/store';
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
 
+// UI-03：折叠态与分组展开态持久化键（localStorage 直存——单布尔/字符串数组，
+// 无需 zustand 重量级方案；key 命名对齐 autoflow-theme 惯例）
+const SIDER_COLLAPSED_KEY = 'autoflow-sider-collapsed';
+const MENU_OPEN_KEYS_KEY = 'autoflow-menu-open-keys';
+// 默认展开「任务」「执行」两组（计划书指定），首次进入即见高频入口
+const DEFAULT_OPEN_KEYS = ['g-tasks', 'g-executions'];
+
+/** 读取持久化折叠态（非法值/缺席按未折叠处理） */
+export function readCollapsedPreference(): boolean {
+  try {
+    return window.localStorage.getItem(SIDER_COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/** 读取持久化分组展开键（过滤掉已不存在的分组键，防止 IA 调整后残留脏值） */
+export function readMenuOpenKeys(validKeys: string[]): string[] {
+  try {
+    const raw = window.localStorage.getItem(MENU_OPEN_KEYS_KEY);
+    if (!raw) return DEFAULT_OPEN_KEYS;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_OPEN_KEYS;
+    const valid = new Set(validKeys);
+    return parsed.filter((k): k is string => typeof k === 'string' && valid.has(k));
+  } catch {
+    return DEFAULT_OPEN_KEYS;
+  }
+}
+
 // UI-02：主题三态切换按钮的图标/文案/aria 标签（light → dark → system 循环）
 const THEME_BUTTON_META: Record<ThemeMode, { icon: ReactNode; label: string; aria: string }> = {
   light: { icon: <SunOutlined />, label: '亮色', aria: '切换主题（当前亮色，点击切换到暗色）' },
@@ -40,18 +70,51 @@ const THEME_BUTTON_META: Record<ThemeMode, { icon: ReactNode; label: string; ari
   system: { icon: <DesktopOutlined />, label: '跟随系统', aria: '切换主题（当前跟随系统，点击切换到亮色）' },
 };
 
-// 菜单全量定义；渲染时按角色过滤（R5 RBAC）
+// UI-03：菜单分组结构（新导航 IA：概览/任务/执行/执行器/应用/系统）——
+// 渲染时按角色过滤（R5 RBAC），分组键不带 '/'，页面键以路由开头。
+// 分组用 antd Menu 的 submenu 形态（非 type:'group'），保证分组可折叠/展开并持久化。
 const allMenuItems = [
-  { key: '/dashboard', icon: <DashboardOutlined />, label: '控制台' },
-  { key: '/applications', icon: <AppstoreOutlined />, label: '应用管理' },
-  { key: '/tasks', icon: <ThunderboltOutlined />, label: '任务调度' },
-  { key: '/task-templates', icon: <FileTextOutlined />, label: '任务模板' },
-  { key: '/executions', icon: <HistoryOutlined />, label: '执行记录' },
-  { key: '/executors', icon: <ClusterOutlined />, label: '执行器' },
-  { key: '/executor-packages', icon: <DatabaseOutlined />, label: '执行器包' },
-  { key: '/registry', icon: <DatabaseOutlined />, label: '包注册中心' },
   {
-    key: 'system',
+    key: 'g-overview',
+    icon: <DashboardOutlined />,
+    label: '概览',
+    children: [{ key: '/dashboard', icon: <DashboardOutlined />, label: '控制台' }],
+  },
+  {
+    key: 'g-tasks',
+    icon: <ThunderboltOutlined />,
+    label: '任务',
+    children: [
+      { key: '/tasks', icon: <ThunderboltOutlined />, label: '任务调度' },
+      { key: '/task-templates', icon: <FileTextOutlined />, label: '任务模板' },
+    ],
+  },
+  {
+    key: 'g-executions',
+    icon: <HistoryOutlined />,
+    label: '执行',
+    children: [{ key: '/executions', icon: <HistoryOutlined />, label: '执行记录' }],
+  },
+  {
+    key: 'g-executors',
+    icon: <ClusterOutlined />,
+    label: '执行器',
+    children: [
+      { key: '/executors', icon: <ClusterOutlined />, label: '执行器列表' },
+      { key: '/executor-packages', icon: <DatabaseOutlined />, label: '执行器包' },
+    ],
+  },
+  {
+    key: 'g-applications',
+    icon: <AppstoreOutlined />,
+    label: '应用',
+    children: [
+      { key: '/applications', icon: <AppstoreOutlined />, label: '应用管理' },
+      { key: '/registry', icon: <DatabaseOutlined />, label: '包注册中心' },
+    ],
+  },
+  {
+    key: 'g-system',
     icon: <SettingOutlined />,
     label: '系统',
     children: [
@@ -72,7 +135,16 @@ export default function MainLayout() {
   const location = useLocation();
   const { user, setUser } = useAuthStore();
   const isAdmin = user?.role === 'admin';
-  const [collapsed, setCollapsed] = useState(false);
+  // UI-03：折叠态持久化到 localStorage（跨会话记忆用户偏好）
+  const [collapsed, setCollapsedState] = useState<boolean>(() => readCollapsedPreference());
+  const setCollapsed = (v: boolean) => {
+    setCollapsedState(v);
+    try {
+      window.localStorage.setItem(SIDER_COLLAPSED_KEY, String(v));
+    } catch {
+      /* 隐私模式等 localStorage 不可用时静默降级为会话内记忆 */
+    }
+  };
   const [currentTime, setCurrentTime] = useState(new Date());
   // FEAT-09: 全局命令面板（⌘K / Ctrl+K 唤起，头部搜索按钮同快捷键行为）
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -99,16 +171,27 @@ export default function MainLayout() {
     return () => clearInterval(timer);
   }, []);
 
-  // 按角色过滤菜单：ADMIN-only 项对普通用户隐藏
-  const menuItems = isAdmin
-    ? allMenuItems
-    : allMenuItems
-        .map((item) =>
-          item.children
-            ? { ...item, children: item.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key)) }
-            : item,
-        )
-        .filter((item) => !ADMIN_ONLY_MENU_KEYS.has(item.key));
+  // 按角色过滤菜单：ADMIN-only 项对普通用户隐藏（UI-03：顶层恒为分组，逐层过滤）
+  const menuItems = allMenuItems
+    .map((group) => ({
+      ...group,
+      children: group.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key)),
+    }))
+    .filter((group) => group.children.length > 0);
+
+
+
+  // UI-03：分组折叠/展开持久化——受控 openKeys + onOpenKeys 回写 localStorage。
+  // 初始值读持久化（残留脏键被 readMenuOpenKeys 过滤），否则默认展开任务/执行。
+  const [openKeys, setOpenKeysState] = useState<string[]>(() => readMenuOpenKeys(menuItems.map((g) => g.key)));
+  const setOpenKeys = (keys: string[]) => {
+    setOpenKeysState(keys);
+    try {
+      window.localStorage.setItem(MENU_OPEN_KEYS_KEY, JSON.stringify(keys));
+    } catch {
+      /* localStorage 不可用时静默降级为会话内记忆 */
+    }
+  };
 
   const selectedKey = '/' + location.pathname.split('/')[1];
 
@@ -242,10 +325,11 @@ export default function MainLayout() {
         <Menu
           mode="inline"
           selectedKeys={[selectedKey]}
-          defaultOpenKeys={['system']}
+          openKeys={openKeys}
+          onOpenChange={setOpenKeys}
           items={menuItemsWithTooltip}
           onClick={({ key }) => nav(key)}
-          style={{ border: 'none', marginTop: 8 }}
+          style={{ border: 'none', marginTop: 8, paddingBottom: 56 }}
         />
 
         {/* 侧边栏底部折叠按钮 */}
@@ -269,6 +353,7 @@ export default function MainLayout() {
           <Tooltip title={collapsed ? '展开菜单' : '收起菜单'} placement="right">
             <Button
               type="text"
+              data-testid="sider-toggle"
               icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               style={{ fontSize: 15, color: token.colorTextSecondary }}
             />
