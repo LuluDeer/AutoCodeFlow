@@ -38,3 +38,27 @@
 
 - 无执行器在线：任务执行全链（派发→回调→槽位释放）未在本轮冒烟覆盖，由既有 e2e-full（29 例）与后续带执行器真机轮覆盖。
 - smoke 脚本可扩充：带一个 executor-node 注册后的全链断言（下一轮真机轮候选）。
+
+## 二阶段：executor-python 全链（03:5x-04:1x）
+
+拉起本地 executor-python（uvicorn :8001）对真 admin-api 注册，验证全链。**抓到两枚真 bug 并当轮修复**：
+
+| # | 缺陷 | 根因 | 修复 |
+|---|---|---|---|
+| V16-1 | 裸机 `.env` 部署下 executor-python 静态 token **静默为空**（注册/心跳全 401，REQUIRE_TOKEN=true 下直接拒服） | `auth._get_static_token` 用 `os.environ` 直读——pydantic-settings 从 .env 读入的值**不进 os.environ**；Docker（真环境变量）一直正常，裸机 .env 部署必踩 | auth.py 优先级链改为：真环境变量 > settings（.env）> 空；conftest 补封闭性守卫（开发者本机 .env 不泄漏进用例）；executor-python 206/206 |
+| V16-2 | 无 Authorization 头的心跳令 admin **500**（`validateTokenByAddress` 对 undefined 直接 `Buffer.from`） | presented 无空值守卫 | fail-closed 返回 false + 回归用例（undefined/空串）；admin-api 1228/1228 |
+
+另一处环境语义发现（W-22 家族变体）：admin-api 的 dotenvx 注入为 **override:true**——`.env` 值会覆盖 shell 注入的同名环境变量，本地调试时 `EXECUTOR_SECRET=x node dist/main.js` 的显式注入会被 .env 空值清掉。已在 VERIFY 记录，容器部署不受影响。
+
+## 全链断言
+
+- 注册：executor-python → admin `Registered to admin-api` ✅（修复后）
+- 派发→执行→回调：python glue 任务 `success`，日志回传 `smoke full chain` ✅
+- gl ue 任务 requirements 清零语义确认（W-21）：坏 requirements 的 glue 任务跳过安装直接成功——BUG-10 依赖路径的真链验证需 entrypoint+git 仓库夹具，留下一轮真机轮
+- runtime DTO 白名单（python/node/shell）拦住 runtime_missing 的 API 侧构造 ✅（分类器由单测覆盖）
+- 清理：smoke 任务软删、probe 执行器行删除、smoke-admin 用户删除、进程停止
+
+## 本轮变更（双修复提交）
+
+- executor-python：auth.py + conftest.py + test_auth.py（3 例语义更新）
+- admin-api：executor.service.ts presented 守卫 + spec +1
