@@ -23,6 +23,7 @@ import { HealthModule } from "./modules/health/health.module";
 import { ApplicationModule } from "./modules/application/application.module";
 import { ExecutorPackageModule } from "./modules/executor-package/executor-package.module";
 import { RegistryModule } from "./modules/registry/registry.module";
+import { ArtifactsModule } from "./modules/artifacts/artifacts.module";
 
 @Module({
   imports: [
@@ -308,6 +309,7 @@ import { RegistryModule } from "./modules/registry/registry.module";
     ApplicationModule,
     ExecutorPackageModule,
     RegistryModule,
+    ArtifactsModule,
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally
