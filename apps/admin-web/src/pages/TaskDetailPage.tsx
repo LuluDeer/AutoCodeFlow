@@ -352,6 +352,16 @@ export default function TaskDetailPage() {
                       </Space>
                     </Descriptions.Item>
                   )}
+                  {/* FEAT-11: 运行手册（markdown 排障知识） */}
+                  {task.runbook && (
+                    <Descriptions.Item label="Runbook" span={2}>
+                      <Typography.Paragraph
+                        style={{ marginBottom: 0, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 12 }}
+                      >
+                        {task.runbook}
+                      </Typography.Paragraph>
+                    </Descriptions.Item>
+                  )}
                   <Descriptions.Item label="超时">{task.timeout ? `${task.timeout} 秒` : '-'}</Descriptions.Item>
                   <Descriptions.Item label="最大重试">{task.maxRetry ?? 0} 次</Descriptions.Item>
                   <Descriptions.Item label="优先级">

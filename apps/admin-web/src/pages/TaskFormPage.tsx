@@ -134,6 +134,8 @@ export default function TaskFormPage() {
           params: task.params ?? {},
           // FEAT-06: 维护窗口（null/缺省 → 空数组占位，添加行即编辑）
           maintenanceWindows: (task.maintenanceWindows ?? []).map((w) => ({ ...w })),
+          // FEAT-11: markdown 运行手册
+          runbook: task.runbook ?? '',
         });
       })
       .catch(() => message.error('加载任务失败'))
@@ -577,6 +579,21 @@ export default function TaskFormPage() {
               <Typography.Text strong>告警配置</Typography.Text>
             </div>
             <AlarmConfig />
+
+            <Divider style={{ margin: '20px 0 16px' }} />
+            <div style={{ marginBottom: 8 }}>
+              <Typography.Text strong>运行手册（可选）</Typography.Text>
+            </div>
+            <Form.Item
+              name="runbook"
+              label="Runbook（markdown）"
+              tooltip={{ title: '失败时的排障知识：详情页展示，失败通知附带；支持 markdown', icon: <InfoCircleOutlined /> }}
+            >
+              <Input.TextArea
+                rows={6}
+                placeholder={'## 排障步骤\n1. 检查依赖服务连通性\n2. 查看上游数据是否就绪\n## 升级路径\n值班群：@xxx'}
+              />
+            </Form.Item>
 
             <Divider />
             <Space>

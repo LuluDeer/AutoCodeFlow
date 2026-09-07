@@ -169,4 +169,11 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() glueSource?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() glueLanguage?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() applicationId?: string;
+  @ApiPropertyOptional({
+    description:
+      "FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts.",
+  })
+  @IsString()
+  @IsOptional()
+  runbook?: string;
 }

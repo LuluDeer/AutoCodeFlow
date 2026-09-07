@@ -215,6 +215,14 @@ export class Task {
   @Column({ type: "jsonb", nullable: true })
   maintenanceWindows: TaskMaintenanceWindows | null;
 
+  /**
+   * FEAT-11: 任务运行手册（可空 text，markdown）。失败时的排障知识：
+   * 任务详情页展示，并作为 OBS-02 告警路由的 runbook 链接/内容来源。
+   * 列可空——未配置 runbook 的任务行为零变化（迁移 1789400000000）。
+   */
+  @Column({ type: "text", nullable: true })
+  runbook: string | null;
+
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;
 
