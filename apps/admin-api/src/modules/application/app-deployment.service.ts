@@ -6,7 +6,7 @@ import {
   ConflictException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, LessThan } from "typeorm";
+import { Repository, LessThan, In } from "typeorm";
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
 import { Cron } from "@nestjs/schedule";
@@ -24,11 +24,37 @@ import {
   CreateDeploymentDto,
   DeploymentHeartbeatDto,
 } from "./dto/app-deployment.dto";
+import {
+  AppReleaseRow,
+  ReleaseTriggerType,
+  RELEASE_OPERATOR_MISSING_REASON,
+} from "./dto/app-release.dto";
 
 /** R5: name of the partial unique index created by migration
  *  1789000000000-AddAppDeploymentsInFlightUniqueIndex (applicationId is
  *  unique among rows with status pending/deploying). */
 const IN_FLIGHT_UNIQUE_INDEX = "uq_app_deployments_application_in_flight";
+
+/** DEP-01：/releases 分页参数（默认 50，上限 200，防全表拖库）。 */
+export const RELEASES_DEFAULT_PAGE_SIZE = 50;
+export const RELEASES_MAX_PAGE_SIZE = 200;
+
+/** DEP-01：统一列表的排序键（毫秒时间戳）：有部署取该版本最近一次部署完成时刻
+ *  （deployedAt，缺则行 createdAt），无部署取版本行 createdAt。纯函数便于测试。 */
+export function releaseSortTimestampMs(input: {
+  deployedAt?: Date | string | null;
+  latestDeploymentCreatedAt?: Date | string | null;
+  versionCreatedAt?: Date | string | null;
+}): number {
+  const t =
+    input.deployedAt ??
+    input.latestDeploymentCreatedAt ??
+    input.versionCreatedAt ??
+    null;
+  if (!t) return 0;
+  const ms = new Date(t).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
+}
 
 @Injectable()
 export class AppDeploymentService {
@@ -170,6 +196,224 @@ export class AppDeploymentService {
         (bt ? new Date(bt).getTime() : 0) - (at ? new Date(at).getTime() : 0)
       );
     });
+  }
+
+  // -----------------------------------------------------------------------
+  // DEP-01: /applications/:id/releases —— 版本 × 部署统一只读追溯视图
+  // -----------------------------------------------------------------------
+
+  /**
+   * 合并 application_versions（版本号/包地址/操作人列）与 app_deployments
+   * （部署时间/状态/所在执行器）两个语义面：**一行 = 一个版本发布**，聚合出
+   * 「这次部署用了哪个包」的一屏追溯。零 schema 变更，纯读视图；旧端点
+   * GET /applications/:id/versions 与 GET /app-deployments 原样保留为过渡期
+   * alias（/versions 面向快照/回滚消费且携带 deployCount 合成行，本端点面向
+   * 部署追溯，两者数据同源）。
+   *
+   * 行来源：
+   *  - 版本行（application_versions，分页主体）：packageUrl 取快照内当次部署
+   *    值（历史语义，不回退应用当前 packageUrl）；deploymentStatus/deployedAt
+   *    取该版本 deployedVersion 匹配的**最近一次**部署（createdAt DESC 首行，
+   *    同版本多实例/多次部署各计入 deploymentCount）；**无部署的版本行也出现**
+   *    （部署字段为 null）。
+   *  - 合成行（synthetic=true）：有部署记录但从未保存版本快照（心跳竞态等历史
+   *    数据），按 deployedVersion 聚合出最近一次部署一行，对齐 /versions 的
+   *    legacy fallback 语义。仅两表皆空的应用整表为空（应用刚创建未部署，
+   *    无追溯对象——不回退应用当前 packageUrl 造一行，理由同上）。
+   *  - synthetic 行只参与第 1 页（聚合行天然很少，不额外分页）。
+   *
+   * 已知来源缺失（详见 docs/api-reference.md）：
+   *  - operator：读 application_versions.createdBy 列，当前所有写入路径均未
+   *    填充 → 恒 null，行上带 operatorMissingReason 标注；
+   *  - triggerType：两表无 trigger 列，按部署行持久化信号推导（classifyRelease
+   *    Trigger），历史升级复用既有部署行时状态信息已被覆盖，无法判定时 unknown。
+   */
+  async getReleases(
+    applicationId: string,
+    page = 1,
+    pageSize = RELEASES_DEFAULT_PAGE_SIZE,
+  ): Promise<{
+    data: AppReleaseRow[];
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    const safePageSize = Math.min(
+      Math.max(1, Math.trunc(Number(pageSize)) || RELEASES_DEFAULT_PAGE_SIZE),
+      RELEASES_MAX_PAGE_SIZE,
+    );
+    const safePage = Math.max(1, Math.trunc(Number(page)) || 1);
+
+    const [versions, total] = await this.versionRepo.findAndCount({
+      where: { applicationId },
+      order: { createdAt: "DESC", id: "DESC" },
+      skip: (safePage - 1) * safePageSize,
+      take: safePageSize,
+    });
+
+    // 一次取回本分页版本关联的全部部署行（createdAt DESC → 每版本首见即最新）。
+    // 行数受该应用部署总量约束，与既有 buildDeployCountMap/findAllByApp 同一
+    // 读取面量级；聚合在内存完成（count + 最新行 + 触发方式推导）。
+    const versionStrings = versions.map((v) => v.version);
+    const deploymentsForVersions = versionStrings.length
+      ? await this.repo.find({
+          where: { applicationId, deployedVersion: In(versionStrings) },
+          order: { createdAt: "DESC" },
+        })
+      : [];
+    const latestByDeployment = new Map<string, AppDeployment>();
+    const deployCountByDeployment = new Map<string, number>();
+    for (const d of deploymentsForVersions) {
+      if (!d.deployedVersion) continue;
+      if (!latestByDeployment.has(d.deployedVersion)) {
+        latestByDeployment.set(d.deployedVersion, d);
+      }
+      deployCountByDeployment.set(
+        d.deployedVersion,
+        (deployCountByDeployment.get(d.deployedVersion) ?? 0) + 1,
+      );
+    }
+
+    // 版本行的触发方式来自其 source 部署行（快照诞生时那次 push 的载体）。
+    const sourceIds = [
+      ...new Set(
+        versions
+          .map((v) => v.sourceDeploymentId)
+          .filter((x): x is string => Boolean(x)),
+      ),
+    ];
+    const sourceDeployments = sourceIds.length
+      ? await this.repo.find({ where: { id: In(sourceIds) } })
+      : [];
+    const sourceById = new Map(sourceDeployments.map((d) => [d.id, d]));
+
+    const data: AppReleaseRow[] = versions.map((v) => {
+      const latest = latestByDeployment.get(v.version) ?? null;
+      const snapshot =
+        v.snapshot && typeof v.snapshot === "object"
+          ? (v.snapshot as Record<string, any>)
+          : {};
+      const packageUrl =
+        typeof snapshot.packageUrl === "string" && snapshot.packageUrl
+          ? snapshot.packageUrl
+          : null;
+      const triggerSource = latest ?? sourceById.get(v.sourceDeploymentId ?? "");
+      const deployedAt =
+        (latest?.deployedAt ?? latest?.createdAt ?? null) ?? null;
+      return {
+        id: v.id,
+        version: v.version,
+        packageUrl,
+        gitCommit: v.gitCommit ?? null,
+        deployedAt: deployedAt ? new Date(deployedAt).toISOString() : null,
+        latestDeploymentId: latest?.id ?? null,
+        deploymentStatus: latest?.status ?? null,
+        deploymentCount: deployCountByDeployment.get(v.version) ?? 0,
+        executorAddress: latest?.executorAddress ?? null,
+        runMode: latest?.runMode ?? null,
+        triggerType: this.classifyReleaseTrigger(triggerSource),
+        operator: v.createdBy ?? null,
+        operatorSource: "application_versions.createdBy",
+        operatorMissingReason: RELEASE_OPERATOR_MISSING_REASON,
+        sourceDeploymentId: v.sourceDeploymentId ?? null,
+        status: v.status,
+        createdAt: v.createdAt ? new Date(v.createdAt).toISOString() : null,
+        synthetic: false,
+      };
+    });
+
+    // synthetic 聚合行（仅第 1 页）：优先覆盖无快照行的应用（整表回退，与
+    // /versions 的 legacy fallback 同语义），否则补「有部署但版本不在快照表」
+    // 的孤儿 deployedVersion。
+    if (safePage === 1) {
+      const allDeployments = await this.repo.find({
+        where: { applicationId },
+        order: { createdAt: "DESC" },
+      });
+      const seen = new Map<string, { latest: AppDeployment; count: number }>();
+      for (const d of allDeployments) {
+        const key = d.deployedVersion ?? "__unknown__";
+        const cur = seen.get(key);
+        if (cur) cur.count += 1;
+        else seen.set(key, { latest: d, count: 1 });
+      }
+      const snapshotVersions = new Set(
+        versions.length === 0
+          ? [] // 整表回退分支：无快照行可比对，全部部署聚合都出 synthetic 行
+          : (
+              await this.versionRepo.find({
+                where: { applicationId },
+                select: ["version"] as never,
+              })
+            ).map((v) => v.version),
+      );
+      for (const [key, { latest, count }] of seen) {
+        if (versions.length > 0) {
+          if (key === "__unknown__") continue;
+          if (snapshotVersions.has(key)) continue;
+        }
+        const deployedAt = latest.deployedAt ?? latest.createdAt ?? null;
+        data.push({
+          id: null,
+          version: key === "__unknown__" ? null : key,
+          packageUrl: null,
+          gitCommit: latest.deployedCommit ?? null,
+          deployedAt: deployedAt ? new Date(deployedAt).toISOString() : null,
+          latestDeploymentId: latest.id,
+          deploymentStatus: latest.status,
+          deploymentCount: count,
+          executorAddress: latest.executorAddress ?? null,
+          runMode: latest.runMode ?? null,
+          triggerType: this.classifyReleaseTrigger(latest),
+          operator: null,
+          operatorSource: "application_versions.createdBy",
+          operatorMissingReason: RELEASE_OPERATOR_MISSING_REASON,
+          sourceDeploymentId: latest.id,
+          status: latest.status,
+          createdAt: deployedAt ? new Date(deployedAt).toISOString() : null,
+          synthetic: true,
+        });
+      }
+    }
+
+    // 统一视图时间序：最近部署在前，无部署的版本行按快照时刻落位。
+    data.sort(
+      (a, b) =>
+        releaseSortTimestampMs({
+          deployedAt: b.deployedAt,
+          versionCreatedAt: b.createdAt,
+        }) -
+        releaseSortTimestampMs({
+          deployedAt: a.deployedAt,
+          versionCreatedAt: a.createdAt,
+        }),
+    );
+
+    return { data, total, page: safePage, pageSize: safePageSize };
+  }
+
+  /** DEP-01：从部署行的持久化信号推导触发方式（无 trigger 列，零 schema 变更）。
+   *  规则（按优先级）：
+   *   1. statusMessage 含升级指纹（"Upgrade triggered"/"Pulling latest
+   *      commit…"，upgrade() 与升级 push 路径写入）→ upgrade；
+   *   2. deployedAt 已置位（pushDeployToExecutor 成功分支写入；upgrade() 复用
+   *      既有行也会置位，故已被规则 1 的指纹先行拦截）→ manual；
+   *   3. 其余（PENDING 未推送/失败超时/system 文案/竞态后心跳覆盖）→ unknown。
+   *  已知限制：行复用升级且 push 成功后 statusMessage 被覆盖为部署文案、指纹
+   *  丢失时可能误判 manual —— 持久化 trigger 列属后续轮 schema 工作。 */
+  private classifyReleaseTrigger(
+    deployment: AppDeployment | null | undefined,
+  ): ReleaseTriggerType | null {
+    if (!deployment) return null;
+    const msg = deployment.statusMessage ?? "";
+    if (
+      msg.startsWith("Upgrade triggered") ||
+      msg.startsWith("Pulling latest commit")
+    ) {
+      return "upgrade";
+    }
+    if (deployment.deployedAt) return "manual";
+    return "unknown";
   }
 
   async rollbackApplication(appId: string, targetId: string) {
