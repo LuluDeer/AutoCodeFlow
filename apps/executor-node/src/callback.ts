@@ -29,6 +29,8 @@ export interface CallbackRequest {
   errorMessage?: string;
   failureReason?: CallbackFailureReason;
   durationMs?: number;
+  /** FEAT-05: 执行产物清单（best-effort，随终态回调上报，与 admin CallbackItemDto 对齐）。 */
+  artifacts?: Array<{ name: string; size: number; sha256: string }>;
 }
 
 const callbackQueue: CallbackRequest[] = [];
