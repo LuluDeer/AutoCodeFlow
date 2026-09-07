@@ -28,6 +28,8 @@ vi.mock('../api/applications', () => ({ applicationsApi: { list: vi.fn() } }));
 
 // 路由 mock：保留 MemoryRouter 等真实导出（对齐 login-totp.test 先例），
 // 仅覆写 useParams/useSearchParams/useNavigate 以控制创建态参数。
+// UI-03：TaskFormPage 页头 PageHeader 面包屑消费 Link——测试在 Router 上下文外
+// 直接渲染页面组件，真实 Link 需 Router，故覆写为纯锚点桩。
 let mockSearch = '';
 const mockNav = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -37,6 +39,7 @@ vi.mock('react-router-dom', async () => {
     useNavigate: () => mockNav,
     useParams: () => ({}),
     useSearchParams: () => [new URLSearchParams(mockSearch)],
+    Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
   };
 });
 

@@ -19,8 +19,9 @@ import { tasksApi } from '../api/tasks';
 import { formatDuration } from '../utils/timeFormat';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
+import PageHeader from '../components/PageHeader';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 export default function DashboardPage() {
   const nav = useNavigate();
@@ -81,24 +82,24 @@ export default function DashboardPage() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {/* 顶部标题 + 刷新 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <Title level={4} style={{ margin: 0 }}>控制台</Title>
-          <Text type="secondary" style={{ fontSize: 13 }}>系统运行总览，每 30 秒自动刷新</Text>
-        </div>
-        <Space>
-          {schedulerStats && (
-            <Tag
-              icon={schedulerStats.healthy ? <CheckCircleOutlined /> : <WarningOutlined />}
-              color={schedulerStats.healthy ? 'success' : 'warning'}
-            >
-              调度器 {schedulerStats.healthy ? '健康' : '异常'} · {schedulerStats.totalScheduledTasks} 任务
-            </Tag>
-          )}
-          <Button icon={<ReloadOutlined />} size="small" onClick={refreshSummary}>刷新</Button>
-        </Space>
-      </div>
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，调度器健康 Tag/刷新进 extra） */}
+      <PageHeader
+        title="控制台"
+        description="系统运行总览，每 30 秒自动刷新"
+        extra={
+          <>
+            {schedulerStats && (
+              <Tag
+                icon={schedulerStats.healthy ? <CheckCircleOutlined /> : <WarningOutlined />}
+                color={schedulerStats.healthy ? 'success' : 'warning'}
+              >
+                调度器 {schedulerStats.healthy ? '健康' : '异常'} · {schedulerStats.totalScheduledTasks} 任务
+              </Tag>
+            )}
+            <Button icon={<ReloadOutlined />} size="small" onClick={refreshSummary}>刷新</Button>
+          </>
+        }
+      />
 
       {/* KPI 卡片——UI-02：卡片底色接入 CSS 变量（双主题），强调色取 token 语义面 */}
       <Spin spinning={summaryLoading}>

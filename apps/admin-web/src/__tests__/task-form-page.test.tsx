@@ -37,6 +37,8 @@ vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
   useParams: () => mockRouteParams,
   useSearchParams: () => [new URLSearchParams('')],
+  // UI-03：TaskFormPage 页头 PageHeader 面包屑消费 Link——mock 补齐导出（纯锚点桩）
+  Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
 }));
 
 // jsdom 缺失 antd 依赖的浏览器 API，先行补齐（对齐 settings.ai.test 先例）。
