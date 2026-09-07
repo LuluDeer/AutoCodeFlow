@@ -228,6 +228,13 @@ export default () => ({
   logRetention: {
     days: parseInt(process.env.LOG_RETENTION_DAYS || "30", 10),
   },
+  // ARCH-22: execution_log_lines 按日分区的清理路径开关。默认 true——
+  // 库已分区化（迁移 1789900000002）时清理走 DETACH PARTITION + 每日
+  // 预建未来分区；false 回退 legacy 分批 DELETE 路径（schema 不回滚，
+  // 重新开启无需迁移）。
+  logPartition: {
+    enabled: process.env.LOG_PARTITION_ENABLED !== "false",
+  },
   // SEC-02: 任务级 secrets 落库加密的 key（KMS 语义：32 字节 hex/base64，
   // 短口令会被 sha-256 拉伸——建议 openssl rand -hex 32）。未配置时降级
   // 明文存储并 warn 一次（零破坏升级路径），见
