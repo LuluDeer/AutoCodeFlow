@@ -544,6 +544,32 @@ export default function ExecutionDetailPage() {
               </Text>
             ) : '-'}
           </Descriptions.Item>
+          {/* OBS-01: traceId 有值时展示追踪标识 + 复制按钮。Jaeger/Tempo 跳转
+              链接留配置项（collector 未部署，不硬编码 URL）——后续接入时在此
+              追加 <a href={`${TRACE_BASE_URL}/search?service=autoflow&tags=${encodeURIComponent(`traceId=${data.traceId}`)}`}>。
+              复制出的 trace-id 可直接粘贴到 Jaeger/Tempo 检索框。 */}
+          {data?.traceId && (
+            <Descriptions.Item label="追踪 ID">
+              <Space size={4}>
+                <Text code style={{ fontSize: 12 }} data-testid="execution-trace-id">
+                  {data.traceId}
+                </Text>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<CopyOutlined />}
+                  aria-label="复制 traceId"
+                  data-testid="copy-trace-id"
+                  onClick={() => {
+                    navigator.clipboard.writeText(data.traceId!).then(
+                      () => message.success('traceId 已复制'),
+                      () => message.error('复制失败'),
+                    );
+                  }}
+                />
+              </Space>
+            </Descriptions.Item>
+          )}
           {failureReason && (
             <Descriptions.Item label="失败分类" span={3}>
               <Space>
