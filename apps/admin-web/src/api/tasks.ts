@@ -158,6 +158,13 @@ export const tasksApi = {
     client.post(`/tasks/${id}/trigger`, { params }),
   executions: (id: string, p?: { page?: number; pageSize?: number }) =>
     client.get(`/tasks/${id}/executions`, { params: p }) as Promise<PageResult<TaskExecution>>,
+  /**
+   * CORE-02: 按状态过滤拉取任务执行列表（复用 GET /tasks/:id/executions 的
+   * 既有 status 查询参数，零新端点）。ExecutionDetailPage 重试链路段用它取
+   * 同任务的兄弟执行行（retryCount 递增）拼装 attempt 链。
+   */
+  executionsWithStatus: (id: string, p: { page: number; pageSize: number; status?: string }) =>
+    client.get(`/tasks/${id}/executions`, { params: p }) as Promise<PageResult<TaskExecution>>,
   execution: (taskId: string, execId: string) =>
     client.get(`/tasks/${taskId}/executions/${execId}`) as Promise<TaskExecution>,
   rollback: (id: string, gitCommit: string, params?: Record<string, unknown>) =>

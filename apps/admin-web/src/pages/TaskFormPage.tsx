@@ -32,6 +32,11 @@ import {
   TIMEOUT_WARN_RATIO_MAX,
   TIMEOUT_ACTION_OPTIONS,
 } from './timeout-policy';
+import {
+  applyRetryableErrorsPayload,
+  retryableErrorsFormValues,
+  RETRYABLE_ERROR_OPTIONS,
+} from './retry-policy';
 
 const { Title, Text } = Typography;
 
@@ -136,6 +141,8 @@ export default function TaskFormPage() {
           ...timeoutPolicyFormValues(task),
           maxRetry: task.maxRetry ?? 3,
           retryDelay: task.retryDelay ?? 0,
+          // CORE-02: 可重试错误类型白名单（null/缺省 → 空数组占位=全部可重试）
+          ...retryableErrorsFormValues(task),
           executorId: task.executorId ?? undefined,
           executorGroup: task.executorGroup,
           executorTags: task.executorTags,
@@ -208,9 +215,11 @@ export default function TaskFormPage() {
     }
     setSaving(true);
     try {
-      const payload = applyTimeoutPolicyPayload(
-        applyMaintenanceWindowsPayload(
-          applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
+      const payload = applyRetryableErrorsPayload(
+        applyTimeoutPolicyPayload(
+          applyMaintenanceWindowsPayload(
+            applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
+          ),
         ),
       );
       if (isEdit && editId) {
@@ -578,8 +587,24 @@ export default function TaskFormPage() {
               <InputNumber min={1} max={10} style={{ width: 120 }} />
             </Form.Item>
 
-            <Form.Item name="retryDelay" label={<>重试延迟 <Text type="secondary" style={{ fontSize: 12 }}>（秒，0 = 不延迟）</Text></>}>
+            <Form.Item name="retryDelay" label={<>重试延迟 <Text type="secondary" style={{ fontSize: 12 }}>（秒，0 = 不延迟；实际延迟带 ±20% 抖动以摊开重试洪峰）</Text></>}>
               <InputNumber min={0} max={3600} style={{ width: 160 }} />
+            </Form.Item>
+
+            {/* CORE-02: 可重试错误类型白名单——留空 = 全部可重试（既有语义）；
+                勾选后仅白名单内的失败（错误消息子串或失败分类，大小写不敏感）
+                会重试。timeout 类失败另有防双派发守卫，永不自动重试。 */}
+            <Form.Item
+              name="retryableErrors"
+              label={<>可重试错误类型 <Text type="secondary" style={{ fontSize: 12 }}>（留空 = 全部可重试）</Text></>}
+              tooltip={{ title: '仅勾选的错误类型会被自动重试（匹配错误消息或失败分类）。例如只勾选"执行器离线"，脚本错误将在第一次失败后直接终态，不再烧尽重试预算。', icon: <InfoCircleOutlined /> }}
+            >
+              <Select
+                mode="multiple"
+                allowClear
+                placeholder="不选择 = 任何失败都按重试预算自动重试"
+                options={RETRYABLE_ERROR_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              />
             </Form.Item>
 
             <Form.Item name="priority" label={<>调度优先级 <Text type="secondary" style={{ fontSize: 12 }}>（BullMQ 队列优先出队；多任务拥塞时高优先行）</Text></>}>
