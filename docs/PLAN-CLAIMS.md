@@ -36,7 +36,7 @@
 | BUG-18 | P2 | unclaimed | | | e2e + registry 双仓 | | 私服 npm/PyPI 端到端集成验证 |
 | BUG-19 | P2 | unclaimed | | | scripts/load-test | | 大规模并发压测 + 容量白皮书 |
 | BUG-20 | P3 | unclaimed | | | Dockerfile/CI | | ARM64 multi-arch |
-| FEAT-01 | P1 | in_progress | main-A（API 半场 done）+ session-B（UI 半场，员工 005 承接） | 2026-09-07 | admin-api notification 模块 + admin-web 通知设置页静默 Tab | 见批八 commit + session-B 后续 | API 半场 done：notification_silences 表+迁移+CRUD(ADMIN)+写穿/回灌/降级；**UI 半场 session-B/005 认领开工**（基于 W1 修后的每渠道独立 form 页面） |
+| FEAT-01 | P1 | done | main-A（API 半场）+ session-B（UI 半场，005 承接） | 2026-09-07 | admin-api notification 模块 + admin-web 静默 Tab | 见批八 commit + 2e97d35 | **整体闭环**：API 半场（main-A）+ UI 半场（session-B：静默 Tab 列表/新建/删除/过期标/isSilenced 实写文案，8 例测试）；admin-web 150/150 |
 | FEAT-02 | P1 | done | main-A | 2026-09-07 | admin-web dag-layout.ts + TaskDependencyGraph.tsx + TaskDetailPage | 见批四 commit | 依赖 DAG 可视化：纯函数布局（10 测试）+ 零新依赖组件 + 详情页新 Tab |
 | FEAT-03 | P1 | done | main-A | 2026-09-07 | admin-web ExecutionsPage + ExecutionCompare | 0409000 | 孤儿组件复核=**零引用**；拆 ExecutionCompareModal + 列表多选一键对比（93/93 ✓） |
 | FEAT-04 | P2 | done | session-B（员工 005 承接） | 2026-09-07 02:4x | admin-api executor metrics + admin-web | 见变更日志 | metrics 端点追加 history（15min AVG 桶≤96 点/limit 500）+ recharts 双 Y 轴三线卡（既有依赖零新增）+空态兜底；后端 6 例前端 3 例 |
@@ -56,7 +56,7 @@
 | CORE-06 | P1 | unclaimed | | | admin-api SchedulerMetrics + Grafana | | 调度延迟分布 P99 |
 | OBS-01 | P1 | unclaimed | | | admin-api + 双执行器 + compose | | OpenTelemetry 追踪（跨三端，宜整轮承接） |
 | OBS-02 | P1 | unclaimed | | | admin-api 新端点 + Alertmanager 配置 | | 告警路由到通知渠道（依赖 FEAT-11） |
-| OBS-03 | P1 | in_progress | session-B（001=后端半场；前端半场留待后续） | 2026-09-07 05:5x | admin-api execution-log-lines 实体/迁移/写入与查询 + spec | | 后端半场：log_lines level 列抽取（写入时）+索引+查询参数 level 过滤；前端半场另行认领 |
+| OBS-03 | P1 | in_progress | session-B（001=后端半场 done；005=前端半场 in_progress） | 2026-09-07 05:5x | admin-api 侧 done；admin-web 日志区 | 111f648（后端） | 后端半场 done：level 列+三列索引+查询过滤+S3 读后过滤（1366/68）；**前端半场（级别过滤下拉+错误高亮）session-B/005 in_progress** |
 | OBS-04 | P1 | unclaimed | | | admin-api + admin-web | | execution_reports 消费 + 时间线 Tab |
 | OBS-05 | P1 | done | session-B（员工 001 承接） | 2026-09-07 03:3x | admin-api metrics 模块 + docs/observability | 5b5bfb5 | 容量水位四件套（PG 池四 series 真实 pg.Pool 取数/executor 磁盘/SSE/队列）+Grafana row4+阈值文档（并发编辑覆盖后补记，CI 绿佐证） |
 | ECO-01 | P1 | unclaimed | | | 双 SDK + examples | | SDK 统一矩阵 + 官方示例（路线图 #10 收口） |
@@ -157,3 +157,5 @@
 - 2026-09-07 session-B：批 B4 done=ARCH-27(cf70459)/FEAT-09(45d0a8b)；随批修复 initialAdmin 用例 env 隔离。基线：admin-api 1309/67 · admin-web 142/142。⚠️ acf-cli trigger --wait 在 run 34061277789 慢环境 30s 超时（本地过，exec 重构域归 main-A 复核）。
 
 - 2026-09-07 session-B：OBS-05 done 补记（并发编辑覆盖回退）；认领 OBS-03 后端半场（001）/FEAT-01 UI 半场（005）。
+
+- 2026-09-07 session-B：批 B5 done=OBS-03 后端半场(111f648)/FEAT-01 UI 半场(2e97d35)；认领收尾波：OBS-03 前端半场（005）/DOC-02 容量规划小节（001）。
