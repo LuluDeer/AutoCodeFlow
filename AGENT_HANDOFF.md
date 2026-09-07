@@ -3,13 +3,20 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-07（第十六轮·批 001-C：员工 001 会话承接计划任务——ECO-03/QA-07/FEAT-11 三项 done）
+更新时间：2026-09-07（第十六轮·批 subagent-D：主会话派出员工 001/002/004 三个子代理并行认领——CORE-04/SEC-02/FEAT-05 三项 done，主会话统一验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-07 第十六轮·批 subagent-D 终验收，主会话）：
+  - `c24f61d`+`f62b776` **CORE-04（001）超时策略分级 done**：tasks.timeoutAction 三动作（kill 缺省 / kill_retry=超时终态后按既有重试预算 re-enqueue，triggerType=timeout_retry，预算耗尽退化 kill / notify_only=admin 不额外下发终止指令，告警仍由失败通知路径保证一次）+ timeoutWarnRatio（0-90 预警阈值，每执行至多一次 WARNING）；纯决策层 timeout-policy.util 两端共享；迁移 1789500000000 可空零破坏；版本快照纳入两字段；admin-web 表单 Radio+阈值/详情展示（序列化纯逻辑 pages/timeout-policy.ts，清空须发 null 的 N28 语义）
+  - `d7e7c84`+`7bd9378`+`a0ae1b3` **SEC-02（002）任务 secrets 加密落库 done**：新增 tasks.secrets 独立 jsonb 列（方案 B——params 是普通运行参数且被列表/版本快照明文消费，整体加密伤审计面）；AES-256-GCM `enc:v1:` 自描述信封（嵌套逐叶加密+幂等）；SEC_SECRETS_KEY 未配置降级明文 warn 一次（零破坏升级，Joi/configuration/.env.example 已登记）；写路径全加密/读路径永久脱敏 ****** /dispatch 解密与 params 合并注入执行器 env（secrets 胜出、明文不二次入库、解密失败不裸派发）；迁移 1789500000001
+  - `7e0c1c7`+`1b12073`+`c739024`+`ef0e7e6` **FEAT-05（004）执行产物通道后端+双执行器 done**（详见下方 004 批注）：artifacts 链路 admin-api/executor-python/executor-node 三半场全闭合，node bundle 同 commit 重打（重打幂等已验证）
+  - **主会话终验收基线（全绿）**：admin-api **1434/1434**（73 suites，1370 基线 +64）+ tsc ✓ · executor-python **217/217** · executor-node **248/248**（bundle 无漂移）· admin-web **165/165** + build ✓（160 基线）
+  - 移交：FEAT-05 admin-web UI 半场（产物列表+blob 下载，见 ef0e7e6/api-reference「Artifacts」）；真机轮留验=CORE-04 三动作各一例 + warn 接线（processor 持 warned 标记调 util）+ SEC-02 备份泄露演练
+  - ⚠️ 流程注记：三子代理并行下迁移时间戳曾撞号（001/002 同选 1789500000000，migrations.spec 抓住后 002 改 1789500000001）——后续并行轮次建议认领时预分配迁移时间戳段；shared 文件（task.service.ts/create-task.dto.spec.ts/executor.service.spec.ts）hunk 隔离提交已实操验证可行但成本高，能避让尽量避让
 - 本轮（2026-09-07 第十六轮·批 004，员工 004 子代理会话——FEAT-05 执行产物通道）：
   - `7e0c1c7` admin-api：迁移 `1789600000000-AddExecutionArtifacts`（task_executions.artifacts jsonb 可空列）+ 新 `modules/artifacts`（PUT 上传复用包上传通道 memoryStorage 100MB + 机器鉴权复用回调凭据形态；GET `/tasks/executions/:execId/artifacts[/:name]` JWT 守卫 + 裸文件名防路径穿越 + 流式；每日 TTL 清理搭车 LOG_RETENTION_DAYS，根目录 `LOG_ARTIFACT_DIR` 可覆盖）+ CallbackItemDto.artifacts 校验（≤20/裸名/sha256）+ handleCallback 非空清单落库（缺省不擦除）；admin-api 隔离 worktree **1389/1389** 全绿
   - `1b12073` executor-python：`artifacts.py` collect（`<workDir>/artifacts/` ≤20/≤100MB/跳过子目录·超限·非法名）+ httpx multipart PUT + `gather_artifacts_for_callback` 仅入成功项；execute.py 预建目录+注入 `AUTOFLOW_ARTIFACTS_DIR`+终态回调附清单（best-effort）；**217/217**
