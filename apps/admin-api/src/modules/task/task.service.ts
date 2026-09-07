@@ -6,6 +6,7 @@ import {
   ConflictException,
   ServiceUnavailableException,
   Inject,
+  Optional,
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -55,6 +56,10 @@ import {
 } from "./timeout-policy.util";
 // OBS-03: 日志行级别推断（纯函数）——写入落库 + S3 读取后过滤共用同一实现
 import { levelOfLine } from "./log-level.util";
+// OBS-04: 执行时间线映射（纯函数）——report 端点与 mcp-server timeline 同语义
+import { buildExecutionTimeline } from "./execution-timeline.util";
+// OBS-04: execution_reports 当日聚合行读侧（写方为 MetricsService.generateReport）
+import { ExecutionReport } from "../metrics/entities/execution-report.entity";
 // 可观测性补齐轮：运行时计数器埋点入口（模块级纯内存自增，无模块环，
 // 见 metrics/runtime-metrics-entry.ts 注释）。
 import {
@@ -238,6 +243,12 @@ export class TaskService {
     private auditService: AuditService,
     // SEC-02: secrets 落库加密/读脱敏（providers 由 TaskModule 提供）
     private secretsCrypto: SecretsCryptoService,
+    // OBS-04: execution_reports 读侧（只读——写方在 MetricsService）。
+    // @Optional：既有单测模块（task.service.spec / s3 integration spec）
+    // 未提供该仓储时回退 null，零破坏——report 端点在缺失时返回 null 行。
+    @Optional()
+    @InjectRepository(ExecutionReport)
+    private reportRepo: Repository<ExecutionReport> | null,
   ) {}
 
   async create(dto: CreateTaskDto) {
@@ -713,6 +724,41 @@ export class TaskService {
     });
     if (!e) throw new NotFoundException("Execution not found");
     return e;
+  }
+
+  /**
+   * OBS-04: 执行报告端点读侧——单次响应合并三类数据，供详情页
+   * 「分析报告/时间线」Tab 一次拉取渲染：
+   *
+   * 1. execution：task_executions 行原样返回（含 createdAt/startTime/endTime/
+   *    duration/status/triggerType/executorAddress/aiAnalysis 等时间线与 AI
+   *    分析字段——时间线由前端从此行的时间戳列映射，保证与 DB 一致）；
+   * 2. timeline：与 mcp-server buildExecutionTimeline 同一语义的三段时刻
+   *    （created→started→finished；缺省时刻 at=null，前端显示「—」）；
+   * 3. report：metrics.execution_reports 当日聚合行（triggerDay=execution
+   *    createdAt 的本地日期）。该表由 MetricsService.generateReport 按"日"
+   *    聚合写入，与单次执行无外键关系，故只按日期粗粒度关联；无行时返回
+   *    report:null（前端降级渲染——本表写入方是手动触发的 today-report
+   *    读取路径，环境里常为空表，缺报告属正常态而非错误）。
+   */
+  async getExecutionReport(id: string, taskId?: string) {
+    const execution = await this.getExecution(id, taskId);
+    // execution_reports.triggerDay 是 DATE 列（无时间成分）：把执行的
+    // createdAt 截到本地零点做等值匹配，避免时区偏移导致查不到当日行。
+    // 仓储未注册（@Optional 回退）时同样返回 null——前端按"无报告"降级。
+    let report: ExecutionReport | null = null;
+    if (this.reportRepo) {
+      const day = new Date(execution.createdAt);
+      day.setHours(0, 0, 0, 0);
+      report = await this.reportRepo.findOne({
+        where: { triggerDay: day },
+      });
+    }
+    return {
+      execution,
+      timeline: buildExecutionTimeline(execution),
+      report: report ?? null,
+    };
   }
 
   /**
