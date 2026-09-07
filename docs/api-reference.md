@@ -432,6 +432,37 @@ Content-Type: application/json
 
 ---
 
+## Task Templates — 任务模板（CORE-03，本轮新增）
+
+常用任务形态（定时备份 / 健康巡检 / 数据同步 / 日志清理 / Webhook 探活）固化为模板。迁移 `1789800000000` 建表并幂等 seed 5 个官方模板（`INSERT ... ON CONFLICT (key) DO NOTHING`），五个 key（`scheduled_backup` / `health_check` / `data_sync` / `log_cleanup` / `webhook_ping`）与 mcp-server `TASK_TEMPLATES`（ECO-03）**同一口径**，避免 admin 与 MCP 两套模板语义漂移。
+
+- `config` 是**合法 CreateTaskDto 子集**（省略 `name`）：落库与实例化前都走 `plainToInstance + validate`（whitelist + forbidNonWhitelisted，与全局 ValidationPipe 同口径）复检，多余键 / 非法值直接 400，防脏模板。
+- `POST /task-templates` 创建**自定义模板**；官方模板不可删（403）。
+- 「从模板创建任务」语义（模板 config 作默认、请求体显式字段覆盖）由独占端点 `instantiate` 承担（复用 `TaskService.create`；`POST /tasks` 本体不带 `templateId`）。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/task-templates` | 是 | 模板列表（官方在前、自定义在后），返回 `TaskTemplate[]` |
+| GET | `/task-templates/:id` | 是 | 单个模板（创建表单预填取 `config`）；不存在 404 |
+| POST | `/task-templates` | 是 | 新建自定义模板（body：`name` 必填 ≤128 / `description?` ≤500 / `category?` ≤32 / `key?`（缺省由 name 规整，1-64 位 `[A-Za-z0-9_-]`）/ `config` 必填对象）。config 非法 400、key 重复 409 |
+| POST | `/task-templates/:id/instantiate` | 是 | 一键建任务：模板 config 展开为默认值、body 显式字段覆盖（至少提供 `name`；body 内 `templateId` 键被剥离防越权）。合并载荷经 CreateTaskDto 语义校验后走标准任务创建路径，返回创建的任务；缺 name / 非法载荷 400，模板不存在 404 |
+| DELETE | `/task-templates/:id` | 是 | 删除自定义模板（官方模板 403，不存在 404），返回 `{ ok: true }` |
+
+**TaskTemplate 响应结构：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | uuid | 模板 ID |
+| `key` | string | 稳定标识（唯一；官方五模板固定 key） |
+| `name` | string | 展示名（中文，如「定时备份」） |
+| `description` | string? | 模板说明 |
+| `category` | string? | 粗分类（备份/巡检/同步/清理/通知…），前端渲染 Tag |
+| `config` | object | 合法 CreateTaskDto 子集（省略 name），实例化时作默认值 |
+| `isOfficial` | boolean | 官方预置模板标记（官方不可删） |
+| `createdAt` / `updatedAt` | timestamp | 时间戳 |
+
+---
+
 ## Notifications — 通知渠道配置
 
 | 方法 | 路径 | 需要认证 | 说明 |
