@@ -10,6 +10,9 @@ import { Task } from "../task/entities/task.entity";
 import { TaskExecution } from "../task/entities/task-execution.entity";
 import { NotificationModule } from "../notification/notification.module";
 import { SystemConfigModule } from "../config/config.module";
+// SEC-02: dispatch 时解密 task.secrets 与 params 合并注入执行器 env
+// （SecretsCryptoService 由 TaskModule export 提供，无需在此声明 provider）
+import { TaskModule } from "../task/task.module";
 
 @Module({
   imports: [
@@ -22,6 +25,9 @@ import { SystemConfigModule } from "../config/config.module";
     BullModule.registerQueue({ name: "task-queue" }),
     NotificationModule,
     SystemConfigModule,
+    // SEC-02: SecretsCryptoService 注入 TaskModule export 的单例（key
+    // 生命周期全进程一致；本地 providers 声明在此冗余，勿加回）
+    TaskModule,
   ],
   // 注：原 InstallCmdController 与 ExecutorController 重复注册了
   // GET /executors/install-cmd（前者运行时不可达），已作为死代码删除，

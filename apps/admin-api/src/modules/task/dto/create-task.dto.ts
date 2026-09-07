@@ -14,6 +14,7 @@ import {
   IsUUID,
   Matches,
   ValidateNested,
+  IsIn,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { MaintenanceWindowDto } from "./maintenance-window.dto";
@@ -26,6 +27,7 @@ import {
   TaskPriority,
   ExecuteMode,
 } from "../entities/task.entity";
+import { TIMEOUT_ACTIONS, TimeoutAction } from "../timeout-policy.util";
 
 export class CreateTaskDto {
   // R6: id 是 UUID 主键——客户端自带任意字符串会在插入时触发 PG 22P02/23505
@@ -128,6 +130,35 @@ export class CreateTaskDto {
   @Max(86400)
   @IsOptional()
   timeoutSeconds?: number;
+  /**
+   * CORE-04: 超时后动作。kill（缺省/null）= 既有树杀语义；kill_retry =
+   * 树杀 + 按既有重试预算 re-enqueue；notify_only = admin 不额外下发终止
+   * 指令、只保证超时告警（执行器自身硬超时仍在，进程仍会被执行器杀掉——
+   * notify_only ≠ 不超时，语义边界见 timeout-policy.util.ts / 文档）。
+   * PATCH 语义（N28 同源）：缺省 = 保留旧值；显式 null = 回到缺省 kill。
+   */
+  @ApiPropertyOptional({
+    description:
+      "CORE-04: what happens when the task times out. kill (default) = executor tree-kills the process (existing behavior); kill_retry = also kill, but admin re-enqueues a fresh execution using the task's retry budget; notify_only = admin sends the timeout alert and issues no extra kill command (the executor's own hard timeout still applies). Omit on PATCH to keep the current value; explicit null resets to kill.",
+    enum: TIMEOUT_ACTIONS,
+  })
+  @IsIn(TIMEOUT_ACTIONS as unknown as string[])
+  @IsOptional()
+  timeoutAction?: TimeoutAction | null;
+  /**
+   * CORE-04: 超时预警阈值（占 timeout 的百分数，整数 0-90，可空）。
+   * 运行时长达到 timeout×ratio/100 时发一次 WARNING 预警通知（每个执行
+   * 至多一次）；null/缺省 = 未启用（存量任务零新通知）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "CORE-04: timeout warning threshold as a percentage of the timeout (integer 0-90). A single WARNING notification is sent once the running time reaches timeout × ratio/100 (at most once per execution). Omit/null = disabled.",
+  })
+  @IsInt()
+  @Min(0)
+  @Max(90)
+  @IsOptional()
+  timeoutWarnRatio?: number | null;
   // TASK-02: cap retries to prevent runaway queue exhaustion
   @ApiPropertyOptional()
   @IsOptional()
@@ -156,6 +187,23 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsEmail() @IsOptional() alarmEmail?: string;
   @ApiPropertyOptional() @IsArray() @IsOptional() alarmChannels?: string[];
   @ApiPropertyOptional() @IsObject() @IsOptional() params?: Record<string, any>;
+  /**
+   * SEC-02: 任务级 secrets（凭据键值对，独立于 params 的普通运行参数）。
+   * 服务端存储加密（AES-256-GCM，SEC_SECRETS_KEY；未配置降级明文并 warn），
+   * API 读取永久脱敏（叶子值回 ******），派发时解密与 params 合并注入执行器
+   * env（AUTOFLOW_<KEY>，与既有 params 注入同通道）。PATCH 语义：缺省=保留，
+   * 显式 null=清空；已存储的密文不可经 API 回读，更新即整体替换。
+   */
+  @ApiPropertyOptional({
+    description:
+      "Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked. Dispatched to the executor env as AUTOFLOW_<KEY> merged over params.",
+    type: "object",
+    additionalProperties: { type: "string" },
+    example: { API_TOKEN: "sk-live-...", DB_PASSWORD: "hunter2" },
+  })
+  @IsObject()
+  @IsOptional()
+  secrets?: Record<string, unknown> | null;
   @ApiPropertyOptional() @IsString() @IsOptional() executorAppName?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() executorGroup?: string;
   @ApiPropertyOptional() @IsArray() @IsOptional() executorTags?: string[];
