@@ -119,6 +119,8 @@
 | SEC-08 | P3 | unclaimed | | | main.ts helmet 配置 | | CSP/HSTS 收紧 |
 | SEC-09 | P3 | unclaimed | | | throttle 配置 | | 限流分域（依赖 AUTH-03） |
 | SEC-NEW-1 | P3 | unclaimed | | | executor-desktop config-store + safeStorage | | SEC-01 复审新发现：executorToken 明文落盘，改 safeStorage 加密+存量迁移（三平台差异）|
+| SEC-NEW-2 | P2 | unclaimed | | | executor-python routers/execute.py gitRepo 守卫 | | 真机冒烟新发现：py 执行器无条件拒私网 gitRepo（正则 S7），admin 侧允许私网 LAN（ADR 注释文档化拓扑）——两端策略不一致，内网 GitLab 拉取对 py 执行器不可用；需镜像 admin 的 EXECUTOR_ALLOW_PRIVATE_NETWORK 式开关（安全姿态变更，需拍板）|
+| SEC-NEW-3 | P3 | unclaimed | | | executor-python main.py registerExecutor | | 对齐 BUG-08/313d203：py 侧 register 失败后无 token 恢复补注册（node 侧已有钩子），/token fallback 重建行丢富元数据 |
 | DOC-01 | P1 | unclaimed | | | PR 模板 + api-reference | ⚠️ | API 变更检查项机制（api-reference 并行会话在途，先建模板） |
 | DOC-02 | P1 | unclaimed | | | docs/operations.md | | 运维手册补全（依赖 QA-05/08 产出） |
 | DOC-03 | P2 | done | main-A（ARCH-20 批次实现）/session-B 复核销账 | 2026-09-07 04:1x | scripts/demo-seed*.mjs | | 复核：demo:seed+selftest 已实现且自检通过（含 --password 门槛/演示数据形态），板信息滞后补记 |
@@ -138,6 +140,7 @@
 - 2026-09-07 main-A：批七 done=BUG-10（四端联动失败分类细化）。基线刷新：executor-node 240/240 · executor-python 206/206 · autoflow-sdk 100/100 · admin-web 118/118 · registry-pypi 52/52。
 - 2026-09-07 main-A：批八 done=FEAT-01 API 半场 / DOC-03 demo:seed / ARCH-20 根级入口 / QA-09 红线清单 / CORE-03-lite 克隆 / **真机冒烟 13/13**（本地 WSL2 PG+Redis，迁移 6 条全绿含 silences 表；CORE-06 端到端 P99=50ms；四件脚本坑修复入库 smoke-round16.mjs）。
 - 2026-09-07 main-A：批九=**executor-python 全链真机冒烟**——注册/派发/执行/回调全通；抓到 V16-1（py 静态 token .env 不可见，裸机部署 401）与 V16-2（admin 心跳无凭据 500）双真 bug 当轮修复；dotenvx override:true 语义发现（W-22 家族变体）。
+- 2026-09-07 main-A：批十=BUG-18 链路攻坚（私网 git 哑 http 私服+本地 pypi+演示 wheel）——被 SEC-NEW-2 拦截（py 端私网 gitRepo 拒绝）；链路基建与三枚新发现（SEC-NEW-2/3、dotenvx override:true）全部记档。pypi_registry_url --index-url 消费链确认在位。
 - 2026-09-07 盘点：并行会话在途未提交改动=executor.controller.ts(W2 API 半场+rbac.spec)、MainLayout.tsx、logout.test.tsx、AppDeploymentPage.tsx、ApplicationDetailPage.tsx、ApplicationListPage.tsx、NotificationSettingsPage.tsx(W1)、docs/api-reference.md、docs/sdk-guide.md、examples/desktop-automation/*（5 文件）、新增 app-deployment-race.test.tsx（tsc 报错在途）——上述文件在清理前请勿认领触碰。
 
 - 2026-09-07 session-B：批 B1 done=BUG-01(dc82ac7)/FEAT-08(fd99579)；协作修复 CORE-01 e2e 回归（6912b4d 列级 transformer）；另代修 mcp-server BUG-14 测试两处（0241b5a，afterEach 导入+模块态隔离）与 e2e 选择器作用域（2a4070d）。CI 24 job 绿（run 34051398995）。基线：admin-api 1224/62 · admin-web 112/112 · mcp-server 69/69。
