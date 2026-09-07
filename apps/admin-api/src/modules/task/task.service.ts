@@ -1515,6 +1515,8 @@ export class TaskService {
       failureReason?: ExecutionFailureReason;
       durationMs?: number;
       executorAddress?: string;
+      /** FEAT-05: 执行产物清单（可选，best-effort，随终态回调上报）。 */
+      artifacts?: Array<{ name: string; size: number; sha256: string }>;
     }>,
   ) {
     const results = [];
@@ -1596,6 +1598,11 @@ export class TaskService {
         }
         if (cb.logs) {
           patch.logs = cb.logs;
+        }
+        // FEAT-05: 产物清单落库（best-effort）。仅在回调上报非空清单时写入，
+        // 绝不在缺省时覆盖成 null——重复/兜底回调不会擦除先前已保存的清单。
+        if (Array.isArray(cb.artifacts) && cb.artifacts.length > 0) {
+          patch.artifacts = cb.artifacts;
         }
 
         // R-P0-007: Exclude KILLED status to prevent callback from overwriting user-initiated kill

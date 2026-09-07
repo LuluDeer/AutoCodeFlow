@@ -42,6 +42,18 @@ export enum ExecutionFailureReason {
   UNKNOWN = "unknown",
 }
 
+/**
+ * FEAT-05：单个执行产物（artifact）的清单条目。执行器在任务工作目录下约定
+ * `artifacts/` 收集文件，任务结束回调随清单（name/size/sha256）上报，文件字节
+ * 单独 PUT 上传到 admin 的 uploads/artifacts/<execId>/ 目录。清单是 best-effort
+ * ——收集/上传失败绝不阻塞任务终态。
+ */
+export interface ExecutionArtifact {
+  name: string;
+  size: number;
+  sha256: string;
+}
+
 @Entity("task_executions")
 @Index(["taskId"])
 @Index(["status"])
@@ -91,6 +103,12 @@ export class TaskExecution {
    */
   @Column({ type: "int", nullable: true }) exitCode: number | null;
   @Column({ type: "text", nullable: true }) aiAnalysis: string;
+  /**
+   * FEAT-05: 执行产物清单（见 ExecutionArtifact）。nullable=无产物/未上报。
+   * 幂等迁移见 migrations/1789600000000-AddExecutionArtifacts.ts。
+   */
+  @Column({ type: "jsonb", nullable: true })
+  artifacts: ExecutionArtifact[] | null;
   @Column({ nullable: true }) triggerType: string;
   @Column({ nullable: true }) taskVersion: string;
   @CreateDateColumn() createdAt: Date;
