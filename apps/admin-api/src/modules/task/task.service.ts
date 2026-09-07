@@ -1909,6 +1909,9 @@ export class TaskService {
       // "回滚到旧版本"会悄悄改变超时动作/预警配置）。
       timeoutAction: task.timeoutAction,
       timeoutWarnRatio: task.timeoutWarnRatio,
+      // CORE-05: 预估时长随快照——否则版本回滚会把已配置的预估静默重置
+      // （与上方超时策略两字段同一理由）。
+      estimatedDurationSec: task.estimatedDurationSec,
       maxRetry: task.maxRetry,
       retryDelay: task.retryDelay,
       retryableErrors: task.retryableErrors,
