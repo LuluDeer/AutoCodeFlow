@@ -80,12 +80,21 @@ def _clear_all_tokens(monkeypatch):
     monkeypatch.setattr(auth_module, '_dynamic_token', None)
     monkeypatch.delenv('EXECUTOR_SHARED_TOKEN', raising=False)
     monkeypatch.delenv('EXECUTOR_SECRET', raising=False)
+    # round-16 修复后 _get_static_token 会回退到 settings（.env 值）——
+    # 开发者本机 .env 的真实 token 也必须清掉，用例才能到达 dev-mode 分支
+    from config import settings as _settings
+    monkeypatch.setattr(_settings, 'executor_shared_token', '')
+    monkeypatch.setattr(_settings, 'executor_secret', '')
 
 
 def test_verify_token_dev_mode_allows_when_require_token_unset(monkeypatch):
     """Default: an executor without any token keeps the dev-mode allow-all."""
     _clear_all_tokens(monkeypatch)
     monkeypatch.delenv('REQUIRE_TOKEN', raising=False)
+    # round-16：require_token_enabled 回退 settings——本机 .env 的
+    # REQUIRE_TOKEN=true 不能泄漏进这条 dev-mode 用例
+    from config import settings as _settings
+    monkeypatch.setattr(_settings, 'require_token', False)
     asyncio.run(auth_module.verify_token(''))  # must not raise
 
 

@@ -14,8 +14,20 @@ from startup_identity import executor_startup_id
 logger = logging.getLogger(__name__)
 
 def _get_static_token() -> str:
-    """Read static token from env each call so test fixtures can override it."""
-    return os.environ.get('EXECUTOR_SHARED_TOKEN') or os.environ.get('EXECUTOR_SECRET') or ''
+    """Read static token each call so test fixtures can override it.
+
+    真机冒烟（round-16）修复：pydantic-settings 从 .env 读入的值**不会**
+    进 os.environ——Docker 部署（真环境变量）一直正常，但裸机只配 .env 时
+    静态 token 静默为空，REQUIRE_TOKEN=true 下注册/心跳全 401。
+    优先级：真环境变量（容器/fixture 覆盖语义不变）> settings（.env）> 空。
+    """
+    return (
+        os.environ.get('EXECUTOR_SHARED_TOKEN')
+        or settings.executor_shared_token
+        or os.environ.get('EXECUTOR_SECRET')
+        or settings.executor_secret
+        or ''
+    )
 
 
 def get_static_token() -> str | None:
