@@ -19,9 +19,43 @@ export const DOMAIN_EVENTS = {
   EXECUTION_COMPLETED: "execution.completed",
   /** 执行以失败类终态落库（FAILED/TIMEOUT/KILLED，唯一 winner 之后）。 */
   EXECUTION_FAILED: "execution.failed",
+  /**
+   * FEAT-07: 执行器翻转 OFFLINE 后发布（心跳超时 sweep / 优雅停机
+   * markOffline / 管理台 setOfflineById 三路，状态落库后 emit，fail-open）。
+   */
+  EXECUTOR_OFFLINE: "executor.offline",
+  /**
+   * FEAT-07: 应用部署进入 RUNNING 终态（心跳确认）后发布（状态落库后
+   * emit，fail-open）。失败类部署态不单列事件——与 execution.* 的
+   * 「终态才发」语义一致，部署失败经既有通知渠道外发。
+   */
+  DEPLOYMENT_COMPLETED: "deployment.completed",
 } as const;
 
 export type DomainEventName = (typeof DOMAIN_EVENTS)[keyof typeof DOMAIN_EVENTS];
+
+/**
+ * FEAT-07: executor.offline 载荷（全原始类型，common 层不 import 实体）。
+ */
+export interface ExecutorOfflineEventPayload {
+  executorId: string;
+  appName: string;
+  address: string;
+  occurredAt: string;
+}
+
+/**
+ * FEAT-07: deployment.completed 载荷（全原始类型，common 层不 import 实体）。
+ */
+export interface DeploymentCompletedEventPayload {
+  deploymentId: string;
+  applicationId: string;
+  executorAddress: string;
+  status: string;
+  deployedVersion: string | null;
+  deployedCommit: string | null;
+  occurredAt: string;
+}
 
 /** 执行终态载荷。execution.completed / execution.failed 共用。 */
 export interface ExecutionTerminalEventPayload {

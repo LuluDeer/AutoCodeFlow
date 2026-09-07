@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan, In } from "typeorm";
@@ -29,6 +30,12 @@ import {
   ReleaseTriggerType,
   RELEASE_OPERATOR_MISSING_REASON,
 } from "./dto/app-release.dto";
+// FEAT-07: deployment.completed 出站事件（总线 @Global；Optional 注入先例 task.service）
+import {
+  DOMAIN_EVENTS,
+  DeploymentCompletedEventPayload,
+} from "../../common/events/domain-events";
+import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 
 /** R5: name of the partial unique index created by migration
  *  1789000000000-AddAppDeploymentsInFlightUniqueIndex (applicationId is
@@ -68,6 +75,10 @@ export class AppDeploymentService {
     private readonly appService: ApplicationService,
     private readonly executorService: ExecutorService,
     private readonly configService: ConfigService,
+    // FEAT-07: deployment.completed 出站事件发布（@Global 总线；@Optional 仅为
+    // 既有单测装配兼容——provider 缺失 → null → 事件静默不发，先例 task.service）。
+    @Optional()
+    private readonly eventBus: DomainEventBus | null = null,
   ) {}
 
   /** Build auth headers for executor requests. Must resolve through
@@ -684,6 +695,32 @@ export class AppDeploymentService {
       await this.markVersionSnapshotStatus(deployment, "released");
     } else if (deployment.status === DeploymentStatus.FAILED) {
       await this.markVersionSnapshotStatus(deployment, "failed");
+    }
+    // FEAT-07: 部署终态落库后发布 deployment.completed（status=running 视为
+    // 完成；fail-open，eventBus 为 null 时静默跳过）。
+    this.emitDeploymentCompleted(deployment);
+  }
+
+  /**
+   * FEAT-07: 部署终态落库后发布 deployment.completed（fail-open；载荷全为
+   * 原始类型，与 domain-events.ts 设计约束一致）。
+   */
+  private emitDeploymentCompleted(deployment: AppDeployment): void {
+    if (!this.eventBus) return;
+    if (deployment.status !== DeploymentStatus.RUNNING) return;
+    const payload: DeploymentCompletedEventPayload = {
+      deploymentId: deployment.id,
+      applicationId: deployment.applicationId,
+      executorAddress: deployment.executorAddress,
+      status: deployment.status,
+      deployedVersion: deployment.deployedVersion ?? null,
+      deployedCommit: deployment.deployedCommit ?? null,
+      occurredAt: new Date().toISOString(),
+    };
+    try {
+      this.eventBus.emit(DOMAIN_EVENTS.DEPLOYMENT_COMPLETED, payload);
+    } catch {
+      /* bus contract is fail-open; second fuse */
     }
   }
 
