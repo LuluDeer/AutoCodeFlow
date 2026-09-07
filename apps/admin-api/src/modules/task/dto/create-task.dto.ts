@@ -167,6 +167,22 @@ export class CreateTaskDto {
   @Max(10)
   maxRetry?: number;
   @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() retryDelay?: number;
+  /**
+   * CORE-05: 预估执行时长（秒，可选整数 0..604800=7 天上限；0/缺省 = 未知）。
+   * 任务侧属性——调度侧把它作为执行器 loadScore 的加权输入（长任务给
+   * 执行器更重的「预期占用」评分，长短混布时倾向把长任务派给更空闲的
+   * 执行器）；执行链路（心跳/超时/统计）不消费该字段。可空：显式 null
+   * = 重置为未知（PATCH 语义对齐 timeoutWarnRatio 的 null 透传）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "CORE-05: estimated execution duration in seconds (0 or omitted = unknown). Used only by scheduler-side executor load scoring (longer estimates penalize busy executors more); never consumed by the execution chain (heartbeat/timeout/stats). Explicit null on PATCH resets to unknown.",
+  })
+  @IsInt()
+  @Min(0)
+  @Max(604800)
+  @IsOptional()
+  estimatedDurationSec?: number | null;
   @ApiPropertyOptional() @IsArray() @IsOptional() retryableErrors?: string[];
   @ApiPropertyOptional()
   @IsEnum(TaskPriority)
