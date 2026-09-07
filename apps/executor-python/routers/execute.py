@@ -14,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from typing import Any, Optional
 import scheduler as sched
@@ -431,7 +431,7 @@ class _LiveExecution:
     """One accepted, not-yet-terminal execution (node ExecutionEntry parity)."""
 
     __slots__ = ('execution_id', 'task_id', 'cancelled', 'killed_by_request',
-                 'killed_callback_pushed', 'proc')
+                 'killed_callback_pushed', 'proc', 'traceparent')
 
     def __init__(self, execution_id: str):
         self.execution_id = execution_id
@@ -448,6 +448,9 @@ class _LiveExecution:
         self.killed_callback_pushed = False
         # 已 spawn 的任务子进程（asyncio subprocess），供 kill/停机树杀使用
         self.proc = None
+        # OBS-01: dispatch 请求的 W3C traceparent 头（admin OTEL_ENABLED=false
+        # 时缺省）——注入任务 env AUTOFLOW_TRACE_ID 并随回调回传。
+        self.traceparent: Optional[str] = None
 
 
 _live_executions: dict[str, _LiveExecution] = {}
@@ -645,7 +648,7 @@ async def await_background_tasks_after_kill(timeout_seconds: float | None = None
 
 
 @router.post('/execute', dependencies=[Depends(verify_token)])
-async def execute(req: ExecuteRequest):
+async def execute(req: ExecuteRequest, request: Request = None):
     if sched.get_running_count() >= settings.max_concurrent_tasks:
         raise HTTPException(status_code=429, detail='Executor is at capacity')
 
@@ -661,6 +664,15 @@ async def execute(req: ExecuteRequest):
             detail=f'Execution {req.executionId} is already active on this executor',
         )
 
+    # OBS-01: 记录 admin 派发请求的 W3C traceparent 头（缺省=无追踪），
+    # 注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。
+    if request is not None:
+        traceparent_header = request.headers.get('traceparent')
+        if traceparent_header:
+            entry.traceparent = traceparent_header
+            logger.info('Execution %s trace: %s', req.executionId,
+                        traceparent_header.split('-')[1] if '-' in traceparent_header else 'malformed')
+
     sched.increment_running()
     bg_task = asyncio.create_task(_run_and_callback(req, entry))
     _background_tasks.add(bg_task)
@@ -673,6 +685,11 @@ async def execute(req: ExecuteRequest):
 
 
 async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str]) -> bool:
+    traceparent_headers: dict = {}
+    if payload.get('traceparent'):
+        # OBS-01: 回传 traceparent 头（admin execution-callback.controller
+        # 解析关联）；头与载荷字段同值，载荷字段 admin DTO whitelist 剥离。
+        traceparent_headers = {'traceparent': payload['traceparent']}
     """POST the execution callback with bounded retries.
 
     R4-C P2: the original fired exactly one request and only logged transport
@@ -699,6 +716,7 @@ async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str
                     'post',
                     url,
                     token=token,
+                    headers=traceparent_headers or None,
                     json=[payload],
                 )
             if response.status_code < 400:
@@ -1160,6 +1178,8 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                     'durationMs': result.get('durationMs'),
                     'executorAddress': _executor_callback_address(),
                 }
+                if entry is not None and entry.traceparent:
+                    payload['traceparent'] = entry.traceparent
                 # BUG-10: 运行期失败（依赖/Git/运行时）细分类，未命中不设
                 # reason（admin inferFailureReason 兜底，旧语义不变）
                 if not result.get('success'):
@@ -1173,6 +1193,8 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                     'errorMessage': _truncate_error_message(str(exc)),
                     'executorAddress': _executor_callback_address(),
                 }
+                if entry is not None and entry.traceparent:
+                    payload['traceparent'] = entry.traceparent
                 # BUG-10: prepare 阶段异常（git/venv/pip/uv）细分类
                 reason = _refine_failure_reason(str(exc))
                 if reason:
@@ -1450,6 +1472,11 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         env['AUTOFLOW_EXECUTOR_ADDRESS'] = registered_address
     # FEAT-05: 告诉任务产物目录约定位置，任务把交付物写入此目录即被收集上传。
     env['AUTOFLOW_ARTIFACTS_DIR'] = str(artifacts_dir_for(work_dir))
+    # OBS-01: 把 dispatch 请求的 W3C traceparent 头透传为任务 env（任务代码
+    # 可读 AUTOFLOW_TRACE_ID 做下游关联）。在 params 注入之后（用户参数不可
+    # 覆盖，与 AUTOFLOW_CALLBACK_TOKEN 同一纪律）。缺省不注入。
+    if entry is not None and entry.traceparent:
+        env['AUTOFLOW_TRACE_ID'] = entry.traceparent
 
     if runtime == 'python':
         if requirements:
