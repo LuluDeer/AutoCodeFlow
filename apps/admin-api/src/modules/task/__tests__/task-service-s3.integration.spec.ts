@@ -285,11 +285,13 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
       executionId: "e-fb",
       lineNumber: 0,
       content: "line-A",
+      level: null,
     });
     expect(logLineRepo.create).toHaveBeenCalledWith({
       executionId: "e-fb",
       lineNumber: 1,
       content: "line-B",
+      level: null,
     });
     expect(logLineRepo.save).toHaveBeenCalled();
 
@@ -483,11 +485,13 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
       executionId: "e-merge",
       lineNumber: 0,
       content: "m0",
+      level: null,
     });
     expect(logLineRepo.create).toHaveBeenCalledWith({
       executionId: "e-merge",
       lineNumber: 3,
       content: "m3",
+      level: null,
     });
     // 全量改写 = replace 语义（先 delete）
     expect(logLineRepo.delete).toHaveBeenCalledWith({ executionId: "e-merge" });
@@ -517,11 +521,13 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
       executionId: "e-db",
       lineNumber: 0,
       content: "alpha",
+      level: null,
     });
     expect(logLineRepo.create).toHaveBeenCalledWith({
       executionId: "e-db",
       lineNumber: 1,
       content: "beta",
+      level: null,
     });
   });
 
@@ -555,5 +561,62 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Client } = require("minio");
     expect(Client).toHaveBeenCalledTimes(1);
+  });
+
+  // OBS-03: S3 路径无 level 列可下推——整流解码后逐行重推断过滤。
+  // 取舍（正确性 > 数据量）：MAX_LOG_BYTES 已为解码体积兜底，重推断是
+  // O(lines) 文本扫描。这里验证：过滤行集、过滤后分页偏移与 totalLines。
+  describe("OBS-03: S3 read-path level filter (post-read)", () => {
+    const PAYLOAD = [
+      "[INFO] starting",
+      "[ERROR] boom",
+      "no level",
+      "2024-01-01 10:00:00 [ERROR] tz boom",
+      "[WARN] careful",
+    ].join("\n");
+
+    beforeEach(() => {
+      minioClient.getObject.mockImplementation(() =>
+        Promise.resolve(
+          Readable.from([gzipSync(Buffer.from(PAYLOAD, "utf-8"))]),
+        ),
+      );
+      execRepo.findOne.mockResolvedValue({
+        id: "e-level",
+        status: ExecutionStatus.SUCCESS,
+        logStorage: "s3",
+        logObjectKey: "execution-logs/e-level.log.gz",
+      });
+    });
+
+    it("filters by level after decode; unknown-level rows are excluded", async () => {
+      const result = await service.getExecutionLogs("e-level", 0, 50, "ERROR");
+      expect(result.lines).toEqual([
+        "[ERROR] boom",
+        "2024-01-01 10:00:00 [ERROR] tz boom",
+      ]);
+      expect(result.totalLines).toBe(2);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it("fromLine is an offset into the filtered sequence (not the physical line)", async () => {
+      // 过滤后序列：0=[ERROR] boom, 1=tz boom → offset 1 起第二页
+      const secondPage = await service.getExecutionLogs(
+        "e-level",
+        1,
+        1,
+        "ERROR",
+      );
+      expect(secondPage.lines).toEqual(["2024-01-01 10:00:00 [ERROR] tz boom"]);
+      expect(secondPage.totalLines).toBe(2);
+      expect(secondPage.hasMore).toBe(false);
+    });
+
+    it("no level param keeps unfiltered behavior on the S3 path", async () => {
+      const result = await service.getExecutionLogs("e-level", 0, 50);
+      expect(result.lines).toEqual(PAYLOAD.split("\n"));
+      expect(result.totalLines).toBe(5);
+      expect(result.hasMore).toBe(false);
+    });
   });
 });

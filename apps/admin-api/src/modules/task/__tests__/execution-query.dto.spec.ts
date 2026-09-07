@@ -1,6 +1,7 @@
 import { ValidationPipe, BadRequestException } from "@nestjs/common";
 import {
   AllExecutionsQueryDto,
+  ExecutionLogsQueryDto,
   TaskExecutionsQueryDto,
 } from "../dto/execution-query.dto";
 import { TaskController } from "../task.controller";
@@ -87,6 +88,50 @@ describe("AllExecutionsQueryDto (GET /tasks/executions/all)", () => {
   });
 });
 
+describe("ExecutionLogsQueryDto (OBS-03: GET /tasks/:id/executions/:execId/logs)", () => {
+  const validate = (value: object) =>
+    pipe.transform(value, {
+      type: "query",
+      metatype: ExecutionLogsQueryDto,
+    }) as Promise<ExecutionLogsQueryDto>;
+
+  it("accepts fromLine/limit passthrough plus a valid level", async () => {
+    const result = await validate({
+      fromLine: "10",
+      limit: "100",
+      level: "ERROR",
+    });
+    expect(result.fromLine).toBe("10");
+    expect(result.limit).toBe("100");
+    expect(result.level).toBe("ERROR");
+  });
+
+  it("accepts bare fromLine/limit without level (backward compat)", async () => {
+    const result = await validate({ fromLine: "0", limit: "500" });
+    expect(result.level).toBeUndefined();
+  });
+
+  it("level is optional", async () => {
+    const result = await validate({});
+    expect(result.level).toBeUndefined();
+  });
+
+  it("rejects a level outside the enum value domain", async () => {
+    await expect(validate({ level: "FATAL" })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(validate({ level: "VERBOSE" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it("rejects unknown query params (forbidNonWhitelisted)", async () => {
+    await expect(validate({ level: "ERROR", bogus: "1" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+});
+
 describe("TaskController query metatypes (N7 root cause)", () => {
   it("executions/allExecutions emit real DTO classes, not Object", () => {
     const executions = Reflect.getMetadata(
@@ -102,5 +147,21 @@ describe("TaskController query metatypes (N7 root cause)", () => {
       "allExecutions",
     );
     expect(allExecutions[0]).toBe(AllExecutionsQueryDto);
+  });
+
+  it("OBS-03: both log endpoints bind ExecutionLogsQueryDto as @Query() metatype", () => {
+    const byExecId = Reflect.getMetadata(
+      "design:paramtypes",
+      TaskController.prototype,
+      "executionLogsByExecId",
+    );
+    expect(byExecId).toContain(ExecutionLogsQueryDto);
+
+    const scoped = Reflect.getMetadata(
+      "design:paramtypes",
+      TaskController.prototype,
+      "executionLogs",
+    );
+    expect(scoped).toContain(ExecutionLogsQueryDto);
   });
 });

@@ -46,6 +46,8 @@ import { ExecutorService } from "../executor/executor.service";
 import { NotificationService } from "../notification/notification.service";
 import { AuditService } from "../audit/audit.service";
 import { S3LogStorage } from "./log-storage/s3-log-storage";
+// OBS-03: 日志行级别推断（纯函数）——写入落库 + S3 读取后过滤共用同一实现
+import { levelOfLine } from "./log-level.util";
 // 可观测性补齐轮：运行时计数器埋点入口（模块级纯内存自增，无模块环，
 // 见 metrics/runtime-metrics-entry.ts 注释）。
 import {
@@ -681,7 +683,23 @@ export class TaskService {
     return exec;
   }
 
-  async getExecutionLogs(execId: string, fromLine = 0, limit = 500) {
+  /**
+   * Paged execution log fetch.
+   *
+   * OBS-03: `level`（可选，ERROR/WARN/INFO/DEBUG）为等值过滤：
+   * - DB 路径在 SQL 层下推（level = :level），与 fromLine/limit 同一语义；
+   * - totalLines / hasMore 按"过滤后"的行集计算——分页元数据必须描述
+   *   调用方实际能翻到的行，而不是全量行数（CODE-01 语义在过滤下的自然
+   *   延伸）；
+   * - level=null（未过滤）时行为与 OBS-03 之前完全一致；
+   * - 过滤时 level IS NULL 的行（存量行/推断不到的行 = 未知级别）不返回。
+   */
+  async getExecutionLogs(
+    execId: string,
+    fromLine = 0,
+    limit = 500,
+    level?: string | null,
+  ) {
     // Cap limit to prevent accidental memory exhaustion
     const safeLimit = Math.min(Math.max(1, limit), 2000);
     const exec = await this.execRepo.findOne({ where: { id: execId } });
@@ -694,7 +712,9 @@ export class TaskService {
         const s3 = this.resolveS3Storage();
         if (s3) {
           const stream = await s3.getStream(exec.logObjectKey);
-          const result = await paginateLogStream(stream, fromLine, safeLimit);
+          const result = await paginateLogStream(stream, fromLine, safeLimit, {
+            level: level ?? null,
+          });
           return result;
         }
       } catch (err: unknown) {
@@ -705,16 +725,32 @@ export class TaskService {
     }
     // N10: use typed logLineRepo instead of string-based getRepository
     // CODE-01: fetch true total in parallel so pagination metadata is accurate
+    // OBS-03: level 过滤在 SQL 层下推（level = :level）；未传 level 时查询
+    // 形态与 OBS-03 之前完全一致（行号游标 + 全量 count），存量行为不变。
+    const qb = this.logLineRepo
+      .createQueryBuilder("l")
+      .where("l.executionId = :id", { id: execId });
+    if (level) {
+      qb.andWhere("l.level = :level", { level });
+    } else {
+      qb.andWhere("l.lineNumber >= :from", { from: fromLine });
+    }
+    // OBS-03: level 过滤后行集不再按 lineNumber 连续，行号游标
+    // （lineNumber >= from）会让 fromLine += lines.length 的既有客户端翻页
+    // 契约产生重复/漏行——过滤模式下 fromLine 语义切换为"过滤后序列的
+    // 偏移量"（skip/OFFSET），与 S3 路径的读后过滤分页保持同一语义（见
+    // api-reference.md）。未传 level 时绝不触碰 skip（行为不变）。
+    const paged = qb
+      .orderBy("l.lineNumber", "ASC")
+      .select(["l.lineNumber", "l.content"])
+      .take(safeLimit);
     const [lines, totalLines] = await Promise.all([
-      this.logLineRepo
-        .createQueryBuilder("l")
-        .where("l.executionId = :id", { id: execId })
-        .andWhere("l.lineNumber >= :from", { from: fromLine })
-        .orderBy("l.lineNumber", "ASC")
-        .select(["l.lineNumber", "l.content"])
-        .take(safeLimit)
-        .getMany(),
-      this.logLineRepo.count({ where: { executionId: execId } }),
+      (level ? paged.skip(fromLine) : paged).getMany(),
+      // OBS-03: totalLines 与过滤语义一致——level 过滤时按 level 计数
+      // （分页元数据描述的是调用方能翻到的行集），未过滤时保持全量计数。
+      level
+        ? this.logLineRepo.count({ where: { executionId: execId, level } })
+        : this.logLineRepo.count({ where: { executionId: execId } }),
     ]);
     return {
       lines: lines.map((r) => r.content),
@@ -1220,6 +1256,10 @@ export class TaskService {
         executionId,
         lineNumber: fallbackStart + i,
         content,
+        // OBS-03: 每行推断级别落库（levelOfLine 纯文本推断——执行器侧
+        // stdout/stderr 已合流，回调不带流来源，无更强信号可用）；
+        // 推断不到为 null = 未知级别，level 过滤查询不返回。
+        level: levelOfLine(content),
       }),
     );
     const CHUNK = 500;
@@ -1869,22 +1909,42 @@ export class TaskService {
  * full line-array is ever materialized — only the slice the caller asked
  * for plus the running total. Lines themselves are short-lived; the total
  * count is exposed as `totalLines` so the caller can paginate further.
+ *
+ * OBS-03: opts.level（可选）启用级别过滤。S3 对象是纯 gzip 文本，级别未
+ * 随对象持久化，无法在存储层下推过滤——只能整流解码后逐行用 levelOfLine
+ * 重推断。取舍：正确性优先于数据量——MAX_LOG_BYTES（见 s3-log-storage）
+ * 已为解码体积兜底上限，重推断是 O(lines) 纯文本扫描，可接受；若未来
+ * 日志对象带侧车索引（level→line ranges）可再优化。
+ *
+ * level 过滤下 fromLine 的语义是"过滤后序列的偏移量"（与 DB 路径的
+ * OFFSET 模式一致）：被过滤掉的行不占用分页窗口，也不计入 totalLines——
+ * totalLines 是"过滤后总行数"，hasMore 由过滤后行集计算。未传 level 时
+ * 行为与 OBS-03 之前逐字节一致。
  */
 async function paginateLogStream(
   stream: Readable,
   fromLine: number,
   limit: number,
+  opts: { level?: string | null } = {},
 ): Promise<{ lines: string[]; totalLines: number; hasMore: boolean }> {
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
   const out: string[] = [];
-  let idx = 0;
+  let idx = 0; // physical line index (unfiltered)
+  let matched = 0; // OBS-03: lines surviving the level filter
   for await (const line of rl) {
-    if (idx >= fromLine && out.length < limit) out.push(line);
-    idx++;
+    if (opts.level) {
+      if (levelOfLine(line) !== opts.level) continue;
+      if (matched >= fromLine && out.length < limit) out.push(line);
+      matched++;
+    } else {
+      if (idx >= fromLine && out.length < limit) out.push(line);
+      idx++;
+    }
   }
+  const totalLines = opts.level ? matched : idx;
   return {
     lines: out,
-    totalLines: idx,
-    hasMore: fromLine + out.length < idx,
+    totalLines,
+    hasMore: fromLine + out.length < totalLines,
   };
 }
