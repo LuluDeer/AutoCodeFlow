@@ -420,4 +420,94 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
       ).rejects.toThrow(BadRequestException);
     });
   });
+
+  // CORE-04: 超时策略分级——timeoutAction（三动作枚举）与 timeoutWarnRatio
+  // （0-90 整数）。UpdateTaskDto 经 PartialType 继承同一校验器。PATCH 语义
+  // 同 N28 家族：缺省 = 保留旧值；显式 null = 回缺省 kill / 关闭预警。
+  describe("timeout policy validation (CORE-04)", () => {
+    it("accepts each of the three timeout actions", async () => {
+      for (const action of ["kill", "kill_retry", "notify_only"]) {
+        const result = await validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutAction: action,
+        });
+        expect(result.timeoutAction).toBe(action);
+      }
+    });
+
+    it("rejects an unknown timeout action with 400", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutAction: "explode",
+        }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutAction: 42 as never,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("timeoutAction stays optional and accepts explicit null (reset-to-kill)", async () => {
+      const absent = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+      });
+      expect(absent.timeoutAction).toBeUndefined();
+      const nulled = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        timeoutAction: null,
+      });
+      expect(nulled.timeoutAction).toBeNull();
+    });
+
+    it("UpdateTaskDto inherits the timeoutAction validator", async () => {
+      const ok = await validateUpdate({ timeoutAction: "kill_retry" });
+      expect(ok.timeoutAction).toBe("kill_retry");
+      await expect(
+        validateUpdate({ timeoutAction: "kill-and-dance" }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("accepts timeoutWarnRatio within 0..90 (boundaries included)", async () => {
+      for (const ratio of [0, 50, 80, 90]) {
+        const result = await validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutWarnRatio: ratio,
+        });
+        expect(result.timeoutWarnRatio).toBe(ratio);
+      }
+    });
+
+    it("rejects timeoutWarnRatio out of range or non-integer with 400", async () => {
+      await expect(
+        validateCreate({ name: "t1", triggerType: "api", timeoutWarnRatio: 91 }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        validateCreate({ name: "t1", triggerType: "api", timeoutWarnRatio: -1 }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutWarnRatio: 12.5,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("UpdateTaskDto inherits the timeoutWarnRatio validator", async () => {
+      const ok = await validateUpdate({ timeoutWarnRatio: 80 });
+      expect(ok.timeoutWarnRatio).toBe(80);
+      await expect(
+        validateUpdate({ timeoutWarnRatio: 101 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
 });
