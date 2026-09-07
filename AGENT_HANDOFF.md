@@ -3,13 +3,18 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-K：001/002 并行认领——UI-05/CORE-05+06 两项 done，主会话统一验收；持续派工循环进行中）
+更新时间：2026-09-08（第十六轮·批 subagent-L：001/002 并行认领——UI-08/ARCH-22 两项 done，主会话统一验收；持续派工循环进行中）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-08 第十六轮·批 subagent-L 终验收，主会话）：
+  - `7ea1ddb`+`13b4c91` **ARCH-22（002）execution_log_lines 按日 RANGE 分区 done**：单迁移 1789900000002 三态守卫式（已分区幂等重入/存量普通表在线搬迁四步 RENAME→建父表（联合 PK (id,createdAt)——侦察坐实 id 无外部消费方零破坏）→INSERT SELECT 搬迁+setval 序列对齐→legacy 保留人工清理/新库直建+预建 9 日分区），中断自动续走；清理服务双路径=分区库 DETACH PARTITION+DROP（双安全闸：边界不可解析跳过+时钟回拨绝不 DETACH 未来分区）+legacy DELETE fallback；每日预建未来 7 天分区；LOG_PARTITION_ENABLED 默认 true（只影响清理路径不影响 schema）。测试为 SQL 结构断言（本机无 PG 约定，先例同形态），真机 DDL 语义+10× 时长如实留真机轮。+32 例，operations.md 运维段含演练/回滚步骤。
+  - `0b98ec7`+`0902318`+`1f80433` **UI-08（001）三态标准化 done**：ErrorFallback 增强（Result+重试+复制错误信息 clipboard 降级）+新 StateError 页内错误块+PageSkeleton（table/cards 双形态）+PageFallback 骨架化；17 页三态盘点表入库，15 页接入（骨架屏替换裸 Spin、TaskTemplates/ApplicationList 两页 StateError 标杆）；**UI-03 低频 9 页 PageHeader 遗留清零**。缩水：toast-only 页 StateError 逐页补齐留后续（两页标杆模式已固化）。admin-web **286/286**（基线 278，+8）+ build/tsc ✓；被改页既有 23 例测试复核全绿。
+- **主会话终验收基线（全绿）**：admin-api **1819/1819**（基线 1787，+32）+ tsc ✓ · admin-web **286/286**（基线 278，+8）+ build ✓
+- 真机轮留验：ARCH-22 存量库升级演练（≥100 万行基线→migration:run→中断续跑→DETACH 时长对比→legacy 人工 DROP，步骤固化 operations.md）· UI-08 双主题骨架/错误块走查
 - 本轮（2026-09-08 第十六轮·批 subagent-K 终验收，主会话）：
   - `50c648b`+`dfd73bf` **UI-05（001）执行详情页信息架构 done**：antd Tabs 四页签（日志默认/时间线·报告=ExecutionReportPanel 迁入/重试链/参数与产物=**ArtifactsList 单点接入闭环 FEAT-05 UI 半场**），Tab key 走 ?tab= searchParams 记忆；日志查看器加 300ms 防抖关键词搜索高亮（log-search.ts 纯函数+mark 双主题 ≥4.5:1，不改变文本流复制下载保真）；失败定位卡片（failure-runbook.ts 镜像 mcp FAILURE_RUNBOOK 十二类+runbook pre-wrap+跳时间线锚点+重新触发快捷）。**虚拟滚动缩水决策**：保持 fromLine/limit 服务端分页（limit 封顶 2000）+OBS-03 聚合渲染策略已是常数成本，不引 react-window（零 lockfile 变更），注记入板。admin-web **278/278**（基线 264，+14）+ build/tsc ✓；既有 log-level/sse/truncated-logs 三测试文件零改动全绿。
   - `11cd26e`+`807bc3e`+`457531a` **CORE-05+06（002 打包）done**：CORE-05 loadScore 新公式 `0.5×loadRatio+0.25×cpu+0.25×mem+0.1×longTaskPenalty`（executor-score.util 共享纯函数，前三项与旧实现逐字节一致零回归；估时查询失败降级不断调度）；tasks.estimatedDurationSec 可空列（迁移 1789900000001）+DTO 校验+saveVersion 快照纳入。CORE-06 缺口侦察=直方图/P99/prom series 均已存在零重做，真实缺口仅 Grafana——补 row 5 两面板（P99/均值 timeseries + 瞬时 stat）；per-task 直方图缩为全局（label 爆炸，预案内）。admin-api **1787/1787**（基线 1750，+37），coverage 90.65/78.69/81.49/91.64 门槛全过。
