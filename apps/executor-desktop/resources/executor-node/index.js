@@ -46376,6 +46376,177 @@ function adoptExecutorTokenHash(raw) {
 
 /***/ }),
 
+/***/ 1413:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.MAX_ARTIFACT_SIZE = exports.MAX_ARTIFACT_COUNT = void 0;
+exports.artifactsDirFor = artifactsDirFor;
+exports.collectArtifacts = collectArtifacts;
+exports.gatherArtifacts = gatherArtifacts;
+const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
+const crypto = __importStar(__nccwpck_require__(6982));
+const logger_1 = __nccwpck_require__(6888);
+/**
+ * FEAT-05: 执行产物（artifacts）收集与上传 —— executor-node 侧。
+ *
+ * 与 executor-python/artifacts.py 对等：任务把交付物写进工作目录下的
+ * `artifacts/`，任务结束时收集清单 [{name,size,sha256}]，逐文件 multipart PUT
+ * 上传到 admin `/api/executions/:execId/artifacts/:name`（机器鉴权，复用回调
+ * 同一 token），清单随终态回调上报。artifacts 永远 best-effort —— 任何异常只
+ * 记日志，绝不抛出、绝不阻塞任务终态。
+ */
+exports.MAX_ARTIFACT_COUNT = 20;
+exports.MAX_ARTIFACT_SIZE = 100 * 1024 * 1024; // 100 MB
+const ART_DIR_NAME = 'artifacts';
+// 与 admin SAFE_ARTIFACT_NAME_RE 对齐：裸文件名、字母数字开头、仅 [A-Za-z0-9._-]。
+const SAFE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
+function artifactsDirFor(workDir) {
+    return path.join(workDir, ART_DIR_NAME);
+}
+function sha256OfFile(file) {
+    const h = crypto.createHash('sha256');
+    const fd = fs.openSync(file, 'r');
+    try {
+        const buf = Buffer.alloc(1024 * 1024);
+        let n;
+        while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
+            h.update(buf.subarray(0, n));
+        }
+    }
+    finally {
+        fs.closeSync(fd);
+    }
+    return h.digest('hex');
+}
+/** 扫描 <workDir>/artifacts/（仅顶层普通文件），返回待上传项（best-effort）。 */
+function collectArtifacts(workDir) {
+    const dir = artifactsDirFor(workDir);
+    let entries;
+    try {
+        if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory())
+            return [];
+        entries = fs.readdirSync(dir);
+    }
+    catch (err) {
+        logger_1.logger.warn(`artifacts: 无法读取 ${dir}: ${String(err)}`);
+        return [];
+    }
+    const items = [];
+    for (const name of entries.sort()) {
+        if (items.length >= exports.MAX_ARTIFACT_COUNT) {
+            logger_1.logger.warn(`artifacts: 超过 ${exports.MAX_ARTIFACT_COUNT} 上限，跳过其余文件`);
+            break;
+        }
+        const abs = path.join(dir, name);
+        try {
+            const st = fs.statSync(abs);
+            if (!st.isFile())
+                continue;
+            if (st.size > exports.MAX_ARTIFACT_SIZE) {
+                logger_1.logger.warn(`artifacts: 跳过超限文件 ${name} (${st.size} bytes)`);
+                continue;
+            }
+            if (!SAFE_NAME_RE.test(name)) {
+                logger_1.logger.warn(`artifacts: 跳过非法文件名 ${JSON.stringify(name)}`);
+                continue;
+            }
+            items.push({ name, size: st.size, sha256: sha256OfFile(abs), absPath: abs });
+        }
+        catch (err) {
+            logger_1.logger.warn(`artifacts: 处理 ${name} 失败: ${String(err)}`);
+        }
+    }
+    return items;
+}
+function apiBase(adminBaseUrl) {
+    const base = adminBaseUrl.replace(/\/+$/, '');
+    return base.endsWith('/api') ? base : `${base}/api`;
+}
+async function uploadOne(adminBaseUrl, executionId, item, token) {
+    try {
+        const url = `${apiBase(adminBaseUrl)}/executions/${encodeURIComponent(executionId)}` +
+            `/artifacts/${encodeURIComponent(item.name)}?sha256=${item.sha256}`;
+        const buf = fs.readFileSync(item.absPath);
+        const form = new FormData();
+        form.append('file', new Blob([buf]), item.name);
+        const headers = {};
+        if (token)
+            headers['Authorization'] = `Bearer ${token}`;
+        const resp = await fetch(url, { method: 'PUT', headers, body: form });
+        if (resp.ok)
+            return true;
+        logger_1.logger.warn(`artifacts: 上传 ${item.name} 返回 HTTP ${resp.status}（跳过）`);
+        return false;
+    }
+    catch (err) {
+        logger_1.logger.warn(`artifacts: 上传 ${item.name} 失败: ${String(err)}`);
+        return false;
+    }
+}
+/** 收集 + 上传，返回入库清单（仅上传成功项）；adminBaseUrl 缺省则返回 []。 */
+async function gatherArtifacts(executionId, workDir, adminBaseUrl, token) {
+    if (!adminBaseUrl)
+        return [];
+    let items;
+    try {
+        items = collectArtifacts(workDir);
+    }
+    catch (err) {
+        logger_1.logger.warn(`artifacts: 收集异常: ${String(err)}`);
+        return [];
+    }
+    const manifest = [];
+    for (const item of items) {
+        const ok = await uploadOne(adminBaseUrl, executionId, item, token);
+        if (ok)
+            manifest.push({ name: item.name, size: item.size, sha256: item.sha256 });
+    }
+    if (manifest.length) {
+        logger_1.logger.info(`artifacts: 已上传 ${manifest.length} 个产物 for ${executionId}`);
+    }
+    return manifest;
+}
+
+
+/***/ }),
+
 /***/ 4915:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -49118,6 +49289,9 @@ const logger_1 = __nccwpck_require__(6888);
 const scheduler_1 = __nccwpck_require__(1415);
 const manifest_1 = __nccwpck_require__(5537);
 const callback_1 = __nccwpck_require__(4915);
+const artifacts_1 = __nccwpck_require__(1413);
+const auth_1 = __nccwpck_require__(9473);
+const admin_client_1 = __nccwpck_require__(6609);
 const file_logger_1 = __nccwpck_require__(4723);
 const task_worker_1 = __nccwpck_require__(8404);
 const run_command_1 = __nccwpck_require__(3879);
@@ -49774,6 +49948,16 @@ async function prepareExecution(executionId, body, params, workDir, entry, asser
     if (registeredAddress) {
         env['AUTOFLOW_EXECUTOR_ADDRESS'] = registeredAddress;
     }
+    // FEAT-05: 预建产物目录约定 <workDir>/artifacts/，注入 AUTOFLOW_ARTIFACTS_DIR，
+    // 任务把交付物写此目录即被收集上传。best-effort，失败不阻断。
+    const artifactsDir = (0, artifacts_1.artifactsDirFor)(workDir);
+    try {
+        fs.mkdirSync(artifactsDir, { recursive: true });
+    }
+    catch (e) {
+        logger_1.logger.warn(`create artifacts dir failed (non-critical): ${String(e)}`);
+    }
+    env['AUTOFLOW_ARTIFACTS_DIR'] = artifactsDir;
     let cmd;
     let args;
     if (actualRuntime === 'node') {
@@ -50002,6 +50186,18 @@ function killRunningTaskProcesses(signal = 'SIGKILL') {
     }
     return killed;
 }
+/** FEAT-05: 终态回调前收集/上传产物清单，best-effort——任何异常只记日志返回 undefined。 */
+async function collectTerminalArtifacts(executionId, workDir) {
+    try {
+        const token = await (0, auth_1.getCurrentToken)();
+        const manifest = await (0, artifacts_1.gatherArtifacts)(executionId, workDir, (0, admin_client_1.getCurrentAdminUrl)(), token ?? null);
+        return manifest.length ? manifest : undefined;
+    }
+    catch (e) {
+        logger_1.logger.warn(`artifacts: 终态收集异常（忽略，不阻塞回调）: ${String(e)}`);
+        return undefined;
+    }
+}
 async function runTask(task, params, executionId) {
     const { cmd, args, workDir, env, timeout } = task;
     const startTime = Date.now();
@@ -50026,6 +50222,7 @@ async function runTask(task, params, executionId) {
             exitCode: result.exitCode,
             logs: truncateCallbackLogs(result.logs),
             durationMs: Date.now() - startTime,
+            artifacts: await collectTerminalArtifacts(executionId, workDir),
         });
     }
     catch (err) {
@@ -50051,6 +50248,7 @@ async function runTask(task, params, executionId) {
             errorMessage: truncateCallbackErrorMessage(killed ? 'Task process tree killed by admin request' : message),
             ...(killed ? { failureReason: 'killed' } : {}),
             durationMs: Date.now() - startTime,
+            artifacts: await collectTerminalArtifacts(executionId, workDir),
         });
     }
 }

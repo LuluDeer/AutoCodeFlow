@@ -12,6 +12,9 @@ import {
 } from '../scheduler';
 import { loadManifest, mergeTaskWithManifest } from '../manifest';
 import { pushCallback, CallbackFailureReason } from '../callback';
+import { gatherArtifacts, artifactsDirFor, ArtifactManifestEntry } from '../artifacts';
+import { getCurrentToken } from '../middleware/auth';
+import { getCurrentAdminUrl } from '../admin-client';
 import { appendLog, getDeadLetterCount } from '../file-logger';
 import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
@@ -766,6 +769,16 @@ async function prepareExecution(
     env['AUTOFLOW_EXECUTOR_ADDRESS'] = registeredAddress;
   }
 
+  // FEAT-05: 预建产物目录约定 <workDir>/artifacts/，注入 AUTOFLOW_ARTIFACTS_DIR，
+  // 任务把交付物写此目录即被收集上传。best-effort，失败不阻断。
+  const artifactsDir = artifactsDirFor(workDir);
+  try {
+    fs.mkdirSync(artifactsDir, { recursive: true });
+  } catch (e) {
+    logger.warn(`create artifacts dir failed (non-critical): ${String(e)}`);
+  }
+  env['AUTOFLOW_ARTIFACTS_DIR'] = artifactsDir;
+
   let cmd: string;
   let args: string[];
 
@@ -1008,6 +1021,26 @@ export function killRunningTaskProcesses(signal: NodeJS.Signals = 'SIGKILL'): nu
   return killed;
 }
 
+/** FEAT-05: 终态回调前收集/上传产物清单，best-effort——任何异常只记日志返回 undefined。 */
+async function collectTerminalArtifacts(
+  executionId: string,
+  workDir: string,
+): Promise<ArtifactManifestEntry[] | undefined> {
+  try {
+    const token = await getCurrentToken();
+    const manifest = await gatherArtifacts(
+      executionId,
+      workDir,
+      getCurrentAdminUrl(),
+      token ?? null,
+    );
+    return manifest.length ? manifest : undefined;
+  } catch (e) {
+    logger.warn(`artifacts: 终态收集异常（忽略，不阻塞回调）: ${String(e)}`);
+    return undefined;
+  }
+}
+
 export async function runTask(task: any, params: Record<string, any>, executionId: string): Promise<void> {
   const { cmd, args, workDir, env, timeout } = task;
   const startTime = Date.now();
@@ -1036,6 +1069,7 @@ export async function runTask(task: any, params: Record<string, any>, executionI
       exitCode: result.exitCode,
       logs: truncateCallbackLogs(result.logs),
       durationMs: Date.now() - startTime,
+      artifacts: await collectTerminalArtifacts(executionId, workDir),
     });
   } catch (err: unknown) {
     // Extract structured fields attached by the close handler; fall back for plain errors
@@ -1062,6 +1096,7 @@ export async function runTask(task: any, params: Record<string, any>, executionI
       errorMessage: truncateCallbackErrorMessage(killed ? 'Task process tree killed by admin request' : message),
       ...(killed ? { failureReason: 'killed' as CallbackFailureReason } : {}),
       durationMs: Date.now() - startTime,
+      artifacts: await collectTerminalArtifacts(executionId, workDir),
     });
   }
 }
