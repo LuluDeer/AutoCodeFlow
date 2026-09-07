@@ -1,0 +1,6 @@
+# 任务级依赖声明（W-21）：executor-python 会将其装入 per-task venv。
+# 私服模式：executor 配置 PYPI_REGISTRY_URL 后，uv pip install 以
+#   --index-url <私服>/simple 安装下列包（apps/registry-pypi 即内置私服）。
+# 注意：只能写包规格——以 `-` 开头的 option 形条目会被执行器拒绝（R4-C P3）。
+acfdemopkg
+example_pkg>=1.0
