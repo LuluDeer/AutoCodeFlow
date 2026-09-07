@@ -183,6 +183,12 @@ import { EventSubscriptionModule } from "./modules/event-subscriptions/event-sub
         // DB-002: 执行日志保留天数（logRetention.days；非数字会被 Joi 拒绝
         // 并 fail-fast，取代旧运行时回退）。
         LOG_RETENTION_DAYS: Joi.number().integer().min(1).default(30),
+        // ARCH-22: execution_log_lines 分区清理路径开关（logPartition.enabled
+        // 节；默认 true——分区库走 DETACH PARTITION + 每日预建；false 回退
+        // legacy 分批 DELETE）。
+        LOG_PARTITION_ENABLED: Joi.string()
+          .valid("true", "false")
+          .default("true"),
         // users.service admin 种子账号（initialAdmin 节；密码缺省 = 跳过 seed）。
         INITIAL_ADMIN_PASSWORD: Joi.string().allow("").optional(),
         INITIAL_ADMIN_EMAIL: Joi.string().default("admin@autoflow.local"),
