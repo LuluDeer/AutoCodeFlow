@@ -165,8 +165,15 @@ export const tasksApi = {
     client.post(`/tasks/${taskId}/executions/${execId}/kill`) as Promise<{ success: boolean; message: string }>,
   analyzeExecution: (taskId: string, execId: string) =>
     client.post(`/tasks/${taskId}/executions/${execId}/analyze`) as Promise<{ aiAnalysis: string }>,
-  /** U2: 分页拉取持久化日志行（截断兜底"加载完整日志"用），limit 后端上限 2000 */
-  executionLogs: (taskId: string, execId: string, params?: { fromLine?: number; limit?: number }) =>
+  /** U2: 分页拉取持久化日志行（截断兜底"加载完整日志"用），limit 后端上限 2000。
+   * OBS-03: level（ERROR/WARN/INFO/DEBUG）为服务端过滤——过滤模式下 fromLine
+   * 语义是"过滤后序列的偏移量"（后端 skip/OFFSET，行号游标失效），totalLines
+   * 为过滤后计数，客户端翻页循环契约不变（offset += lines.length）。 */
+  executionLogs: (
+    taskId: string,
+    execId: string,
+    params?: { fromLine?: number; limit?: number; level?: string },
+  ) =>
     client.get(`/tasks/${taskId}/executions/${execId}/logs`, { params }) as Promise<ExecutionLogsPage>,
   schedulerStats: () =>
     client.get('/tasks/scheduler/stats') as Promise<{ healthy: boolean; activeTimers: number; activeCronTasks: number; runningTaskCount: number; totalScheduledTasks: number; uptime: number }>,
