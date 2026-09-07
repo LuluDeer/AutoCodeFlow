@@ -580,5 +580,343 @@ describe("ApplicationService", () => {
         (create.mock.calls[1][0] as Record<string, unknown>).requirements,
       ).toEqual(["left-pad"]);
     });
+
+    // QA-02 phase 2: manifestPath 文件分支与「无 manifest 可用」早退分支。
+    it("reads a manifest from an explicit file path when provided", async () => {
+      const manifestPath = path.join(__dirname, "manifest.fixture.json");
+      fs.writeFileSync(
+        manifestPath,
+        JSON.stringify({
+          runtime: "python",
+          tasks: [{ id: "file-task", name: "from-file" }],
+        }),
+      );
+      try {
+        appRepo.findOne.mockResolvedValue({ id: "app-1", manifest: null });
+        const create = jest.fn().mockResolvedValue({ id: "file-task" });
+        (service as any)._taskService = { create };
+
+        const count = await service.syncTasksFromManifest(
+          "app-1",
+          manifestPath,
+        );
+
+        expect(count).toBe(1);
+        expect(create).toHaveBeenCalledWith(
+          expect.objectContaining({ id: "file-task", runtime: "python" }),
+        );
+      } finally {
+        fs.unlinkSync(manifestPath);
+      }
+    });
+
+    it("returns 0 when neither a path nor a stored manifest is available", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "app-1", manifest: null });
+      expect(await service.syncTasksFromManifest("app-1")).toBe(0);
+    });
+
+    it("returns 0 when the manifest has no tasks array or no taskService", async () => {
+      appRepo.findOne.mockResolvedValue({
+        id: "app-1",
+        manifest: { runtime: "node" },
+      });
+      (service as any)._taskService = { create: jest.fn() };
+      expect(await service.syncTasksFromManifest("app-1")).toBe(0);
+
+      // tasks 数组在但 taskService 未接入 → 早退 0
+      appRepo.findOne.mockResolvedValue({
+        id: "app-1",
+        manifest: { tasks: [{ id: "t" }] },
+      });
+      (service as any)._taskService = null;
+      expect(await service.syncTasksFromManifest("app-1")).toBe(0);
+    });
+  });
+
+  // ============================================================================
+  // QA-02 第二阶段（branches 冲 75）：application.service 剩余分支定向补测。
+  // 范围：analyzeHealth 统计聚合、deployFromGit manifest 自动注册、
+  // resolveLocalPackagePath 防御矩阵、spawnAsync error/信号退出分支。
+  // 全部断言具体行为，无凑数弱断言。
+  // ============================================================================
+
+  describe("analyzeHealth — aggregation branches (QA-02 phase 2)", () => {
+    it("aggregates per-task stats and flags critical tasks (successRate<50, totalRuns>3)", async () => {
+      appRepo.findOne.mockResolvedValue({
+        id: "app-1",
+        name: "my-app",
+        env: { API_KEY: "sk" },
+      });
+      const findAll = jest.fn().mockResolvedValue({
+        list: [
+          { id: "t1", name: "healthy" },
+          { id: "t2", name: "critical" },
+        ],
+      });
+      const stats = jest
+        .fn()
+        .mockResolvedValueOnce({
+          successRate: 95,
+          avgDuration: 100,
+          totalRuns: 10,
+        })
+        .mockResolvedValueOnce({
+          successRate: 20,
+          avgDuration: 800,
+          totalRuns: 5,
+        });
+      (service as any)._taskService = { findAll, getExecutionStats: stats };
+      (service as any).aiService.analyzeAppHealth = jest
+        .fn()
+        .mockResolvedValue("looks mostly fine");
+
+      const result = await service.analyzeHealth("app-1");
+
+      expect(result.stats.totalTasks).toBe(2);
+      expect(result.stats.avgSuccessRate).toBe(57.5); // round((95+20)/2*10)/10
+      expect(result.stats.avgDuration).toBe(450);
+      expect(result.stats.criticalTasks).toEqual(["critical"]);
+      expect(result.analysis).toBe("looks mostly fine");
+    });
+
+    it("falls back to neutral stats (100% / 0ms) when every task stats lookup fails", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "app-1", name: "my-app" });
+      const findAll = jest.fn().mockResolvedValue({
+        list: [{ id: "t1", name: "never-ran" }],
+      });
+      const stats = jest
+        .fn()
+        .mockRejectedValue(new Error("stats backend down"));
+      (service as any)._taskService = { findAll, getExecutionStats: stats };
+
+      const result = await service.analyzeHealth("app-1");
+
+      expect(result.stats.avgSuccessRate).toBe(100);
+      expect(result.stats.avgDuration).toBe(0);
+      expect(result.stats.criticalTasks).toEqual([]);
+    });
+
+    it("renders a degraded analysis string when the AI returns empty", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "app-1", name: "my-app" });
+      (service as any)._taskService = {
+        findAll: jest.fn().mockResolvedValue({ list: [] }),
+      };
+      (service as any).aiService.analyzeAppHealth = jest
+        .fn()
+        .mockResolvedValue("");
+
+      const result = await service.analyzeHealth("app-1");
+      expect(result.analysis).toBe(
+        "AI analysis not available (AI provider not configured).",
+      );
+    });
+  });
+
+  describe("deployFromGit — manifest auto-registration and clone error paths (QA-02 phase 2)", () => {
+    afterEach(() => {
+      mockedSpawn.mockReset();
+      mockedLookup.mockReset();
+    });
+
+    it("rejects an invalid git branch name before any spawn", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+      await expect(
+        service.deployFromGit(
+          "1",
+          "https://github.com/o/r.git",
+          "bad branch; rm -rf",
+        ),
+      ).rejects.toThrow(/Invalid git branch name/);
+      expect(mockedSpawn).not.toHaveBeenCalled();
+    });
+
+    it("rejects a malformed git repo URL (format gate)", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+      await expect(
+        service.deployFromGit("1", "not-a-url", "main"),
+      ).rejects.toThrow(/Invalid git repository URL/);
+      expect(mockedSpawn).not.toHaveBeenCalled();
+    });
+
+    it("auto-registers manifest tasks after a successful clone and honors manifest defaults", async () => {
+      const tmpRoot = path.join(__dirname, "deploy-fixture");
+      fs.mkdirSync(tmpRoot, { recursive: true });
+      const manifestFile = path.join(tmpRoot, "manifest.json");
+      fs.writeFileSync(
+        manifestFile,
+        JSON.stringify({
+          runtime: "python",
+          entrypoint: "run.py",
+          timeout: 600,
+          tasks: [
+            { id: "mt1", name: "manifest-task-one", cron: "0 5 * * *" },
+            { id: "mt2" },
+          ],
+        }),
+      );
+      appRepo.findOne.mockResolvedValue({
+        id: "1",
+        name: "app1",
+        runtime: "node",
+        entrypoint: "index.js",
+        gitCommit: null,
+      });
+      const create = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Task with id "mt1" already exists'))
+        .mockResolvedValueOnce({ id: "mt2" });
+      (service as any)._taskService = { create };
+      // 让 mkdtempSync 命中我们的 fixture 目录：spy 临时目录创建。
+      const mkdtempSpy = jest
+        .spyOn(fs, "mkdtempSync")
+        .mockReturnValue(tmpRoot as unknown as string);
+      const rmSpy = jest.spyOn(fs, "rmSync").mockImplementation(() => {});
+      mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+      mockedSpawn
+        .mockImplementationOnce(() => fakeSpawn({ status: 0, stdout: "" }))
+        .mockImplementationOnce(() =>
+          fakeSpawn({ status: 0, stdout: "deadbeef" }),
+        );
+
+      try {
+        await service.deployFromGit(
+          "1",
+          "https://github.com/o/r.git",
+          "main",
+        );
+      } finally {
+        // 清理 fixture（rmSpy 屏蔽了服务自身的清理调用）
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+        mkdtempSpy.mockRestore();
+        rmSpy.mockRestore();
+      }
+
+      const created = create.mock.calls.map(
+        (c: any[]) => c[0] as Record<string, unknown>,
+      );
+      expect(created).toHaveLength(2);
+      // 任务级字段缺省时回退 manifest 级默认
+      expect(created[0]).toMatchObject({
+        id: "mt1",
+        runtime: "python",
+        entrypoint: "run.py",
+        timeout: 600,
+        applicationId: "1",
+      });
+      expect(created[1].name).toBe("mt2");
+      // already-exists 仅 warn 不中断（第二个任务仍被注册），终态 ACTIVE
+      const lastSave =
+        appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+      expect(lastSave.status).toBe(ApplicationStatus.ACTIVE);
+      expect(lastSave.gitCommit).toBe("deadbeef");
+    });
+
+    it("surfaces a rev-parse failure as a deployment failure (status=FAILED)", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+      mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+      mockedSpawn
+        .mockImplementationOnce(() => fakeSpawn({ status: 0, stdout: "" }))
+        .mockImplementationOnce(() => fakeSpawn({ status: 128 }));
+      const rmSpy = jest.spyOn(fs, "rmSync").mockImplementation(() => {});
+
+      try {
+        await expect(
+          service.deployFromGit("1", "https://github.com/o/r.git", "main"),
+        ).rejects.toThrow("git rev-parse HEAD failed");
+      } finally {
+        rmSpy.mockRestore();
+      }
+      const lastSave =
+        appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+      expect(lastSave.status).toBe(ApplicationStatus.FAILED);
+    });
+
+    it("spawnAsync: a spawn error event resolves with status -1 and the error message", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+      mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+      mockedSpawn.mockImplementation(() =>
+        fakeSpawn({ error: new Error("spawn git ENOENT") }),
+      );
+      const rmSpy = jest.spyOn(fs, "rmSync").mockImplementation(() => {});
+
+      try {
+        await expect(
+          service.deployFromGit("1", "https://github.com/o/r.git", "main"),
+        ).rejects.toThrow(/spawn git ENOENT/);
+      } finally {
+        rmSpy.mockRestore();
+      }
+    });
+
+    it("spawnAsync: a signal-killed clone (close code null) resolves as -1 and fails the clone", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+      mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+      // 模拟信号击杀：'close' 事件带 null code —— finish(code ?? -1) → -1。
+      // 这里不用 fakeSpawn（其 `opts.status ?? 0` 会把 null 变 0），改为内联
+      // 构造一个 close(null) 的 child。
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        kill: jest.Mock;
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = jest.fn();
+      setImmediate(() => child.emit("close", null));
+      mockedSpawn.mockImplementation(() => child);
+      const rmSpy = jest.spyOn(fs, "rmSync").mockImplementation(() => {});
+
+      try {
+        await expect(
+          service.deployFromGit("1", "https://github.com/o/r.git", "main"),
+        ).rejects.toThrow(/git clone failed/);
+        const lastSave =
+          appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+        expect(lastSave.status).toBe(ApplicationStatus.FAILED);
+      } finally {
+        rmSpy.mockRestore();
+      }
+    });
+  });
+
+  describe("remove — resolveLocalPackagePath defense matrix (QA-02 phase 2)", () => {
+    it.each([
+      ["ftp scheme", "ftp://cdn.example.com/uploads/packages/a.zip"],
+      [
+        "nested path under the marker",
+        "http://api.example.com/uploads/packages/nested/a.zip",
+      ],
+      [
+        "backslash traversal",
+        "http://api.example.com/uploads/packages/..%5C..%5Csecret.txt",
+      ],
+    ])("refuses unlink for %s", async (_label, packageUrl) => {
+      const app = { id: "1", name: "app1", packageUrl };
+      appRepo.findOne.mockResolvedValue(app);
+      const unlink = jest
+        .spyOn(fs.promises, "unlink")
+        .mockResolvedValue(undefined);
+
+      await service.remove("1");
+      expect(unlink).not.toHaveBeenCalled();
+      unlink.mockRestore();
+    });
+
+    it("unlinks a resolved package file and still removes the app row", async () => {
+      const app = {
+        id: "1",
+        name: "app1",
+        packageUrl: "http://api.example.com/uploads/packages/clean.zip",
+      };
+      appRepo.findOne.mockResolvedValue(app);
+      const unlink = jest
+        .spyOn(fs.promises, "unlink")
+        .mockResolvedValue(undefined);
+
+      await service.remove("1");
+      expect(unlink).toHaveBeenCalledTimes(1);
+      expect(appRepo.remove).toHaveBeenCalledWith(app);
+      unlink.mockRestore();
+    });
   });
 });

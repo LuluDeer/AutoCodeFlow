@@ -7,6 +7,8 @@ import { DingtalkChannel } from "../channels/dingtalk.channel";
 import { EmailChannel } from "../channels/email.channel";
 import { SlackChannel } from "../channels/slack.channel";
 import { WebhookChannel } from "../channels/webhook.channel";
+// QA-02 第二阶段：silenceStore 写穿持久化分支的注入桩
+import { NotificationSilenceService } from "../notification-silence.service";
 // 可观测性补齐轮：投递结果计数模块级快照（埋点断言入口）
 import {
   getRuntimeCountersSnapshot,
@@ -508,6 +510,420 @@ describe("NotificationService", () => {
       expect(typeof timer.unref).toBe("function");
       // unref 后 hasRef() 为 false：定时器不会阻止进程退出
       expect(timer.hasRef()).toBe(false);
+    });
+  });
+
+  // ============================================================================
+  // QA-02 第二阶段（branches 冲 75）：notification.service 剩余分支定向补测。
+  // 范围：notify() 渠道分流、notify* 家族静默短路、testChannel default 分支、
+  // sendToChannels 错误堆栈日志、FEAT-01 写穿持久化（silenceStore 注入）双路径。
+  // 全部断言具体行为，无凑数弱断言。
+  // ============================================================================
+
+  describe("notify() — channel routing and silencing (QA-02 phase 2)", () => {
+    it("fans out to only the requested channels when channels are provided", async () => {
+      email.send.mockResolvedValue("sent");
+      slack.send.mockResolvedValue("sent");
+      await service.notify("job", "hello", AlertLevel.INFO, "task-1", [
+        "email" as any,
+        "slack" as any,
+      ]);
+      expect(email.send).toHaveBeenCalledTimes(1);
+      expect(slack.send).toHaveBeenCalledTimes(1);
+      expect(wecom.send).not.toHaveBeenCalled();
+      expect(webhook.send).not.toHaveBeenCalled();
+    });
+
+    it("falls back to sendAll (all five channels) when channels are omitted", async () => {
+      const logSpy = jest
+        .spyOn(Logger.prototype, "log")
+        .mockImplementation(() => {});
+      await service.notify("job", "hello", AlertLevel.INFO);
+      expect(email.send).toHaveBeenCalledTimes(1);
+      expect(wecom.send).toHaveBeenCalledTimes(1);
+      expect(webhook.send).toHaveBeenCalledTimes(1);
+      logSpy.mockRestore();
+    });
+
+    it("falls back to sendAll for an empty channels array (not a no-op)", async () => {
+      const logSpy = jest
+        .spyOn(Logger.prototype, "log")
+        .mockImplementation(() => {});
+      await service.notify("job", "hello", AlertLevel.INFO, undefined, []);
+      expect(email.send).toHaveBeenCalledTimes(1);
+      logSpy.mockRestore();
+    });
+
+    it("short-circuits when the (taskId, level) pair is silenced", async () => {
+      service.addSilence({
+        taskId: "task-9",
+        level: AlertLevel.WARNING,
+        durationMinutes: 10,
+      });
+      const sendAll = jest.spyOn(service, "sendAll");
+      await service.notify("job", "hello", AlertLevel.WARNING, "task-9");
+      expect(sendAll).not.toHaveBeenCalled();
+      sendAll.mockRestore();
+    });
+  });
+
+  describe("notify* family — per-level silencing (QA-02 phase 2)", () => {
+    it("notifySuccess skips the fan-out when INFO is silenced for the task", async () => {
+      service.addSilence({ taskId: "t1", level: AlertLevel.INFO, durationMinutes: 10 });
+      const sendAll = jest.spyOn(service, "sendAll");
+      await service.notifySuccess("job", "exec-1", 1234, "t1");
+      expect(sendAll).not.toHaveBeenCalled();
+      sendAll.mockRestore();
+    });
+
+    it("notifySuccess fans out with the duration payload otherwise", async () => {
+      const sendAll = jest
+        .spyOn(service, "sendAll")
+        .mockResolvedValue(undefined);
+      await service.notifySuccess("job", "exec-1", 1234, "t1");
+      expect(sendAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Task succeeded: job",
+          content: expect.stringContaining("1234ms"),
+          level: "info",
+        }),
+      );
+      sendAll.mockRestore();
+    });
+
+    it("notifyTimeout skips the fan-out when WARNING is silenced", async () => {
+      service.addSilence({ taskId: "t1", level: AlertLevel.WARNING, durationMinutes: 10 });
+      const sendAll = jest.spyOn(service, "sendAll");
+      await service.notifyTimeout("job", "exec-1", 300, "t1");
+      expect(sendAll).not.toHaveBeenCalled();
+      sendAll.mockRestore();
+    });
+
+    it("notifyTimeout fans out with the timeout payload otherwise", async () => {
+      const sendAll = jest
+        .spyOn(service, "sendAll")
+        .mockResolvedValue(undefined);
+      await service.notifyTimeout("job", "exec-1", 300);
+      expect(sendAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Task timed out: job",
+          content: expect.stringContaining("Timeout: 300s"),
+          level: "warning",
+        }),
+      );
+      sendAll.mockRestore();
+    });
+
+    it("notifyFailure skips the fan-out when ERROR is silenced", async () => {
+      service.addSilence({ taskId: "t1", level: AlertLevel.ERROR, durationMinutes: 10 });
+      const sendAll = jest.spyOn(service, "sendAll");
+      await service.notifyFailure("job", "exec-1", "boom", undefined, "t1");
+      expect(sendAll).not.toHaveBeenCalled();
+      sendAll.mockRestore();
+    });
+
+    it("notifyFailure includes the runbook section only when a runbook is provided", async () => {
+      const sendAll = jest
+        .spyOn(service, "sendAll")
+        .mockResolvedValue(undefined);
+      await service.notifyFailure("job", "exec-1", "boom", "AI says", "t1", "redeploy.md");
+      expect(sendAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining("Runbook:\nredeploy.md"),
+        }),
+      );
+      sendAll.mockRestore();
+    });
+
+    it("notifyExecutorOffline/Online honor global (undefined-task) silences", async () => {
+      service.addSilence({ level: AlertLevel.WARNING, durationMinutes: 10 });
+      const sendAll = jest.spyOn(service, "sendAll");
+      await service.notifyExecutorOffline("node-1", "10.0.0.9:3002");
+      expect(sendAll).not.toHaveBeenCalled();
+
+      // WARNING 静默不影响 INFO 渠道
+      await service.notifyExecutorOnline("node-1", "10.0.0.9:3002");
+      expect(sendAll).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Executor online: node-1" }),
+      );
+      sendAll.mockRestore();
+    });
+
+    it("notifyFailureWithConfig masks the recipient into the content only when alarmEmail exists", async () => {
+      const sendToChannels = jest
+        .spyOn(service, "sendToChannels")
+        .mockResolvedValue({});
+      await service.notifyFailureWithConfig(
+        "job",
+        "exec-1",
+        "boom",
+        "AI says",
+        "ops@example.com",
+        ["email"],
+      );
+      expect(sendToChannels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining("Recipient: ops@example.com"),
+        }),
+        ["email"],
+        undefined,
+      );
+      sendToChannels.mockRestore();
+    });
+  });
+
+  describe("testChannel — switch dispatch (QA-02 phase 2)", () => {
+    const payload = { title: "t", content: "c", level: "info" as const };
+
+    it("dispatches to each concrete channel exactly once with the override", async () => {
+      email.send.mockResolvedValue("sent");
+      slack.send.mockResolvedValue("sent");
+      dingtalk.send.mockResolvedValue("sent");
+      wecom.send.mockResolvedValue("sent");
+      webhook.send.mockResolvedValue("sent");
+
+      await expect(
+        service.testChannel(payload, "email" as any, { user: "u" }),
+      ).resolves.toBe("sent");
+      expect(email.send).toHaveBeenCalledWith(payload, { user: "u" });
+
+      await expect(
+        service.testChannel(payload, "slack" as any),
+      ).resolves.toBe("sent");
+      expect(slack.send).toHaveBeenCalledWith(payload, undefined);
+
+      await expect(
+        service.testChannel(payload, "dingtalk" as any),
+      ).resolves.toBe("sent");
+      await expect(
+        service.testChannel(payload, "wecom" as any),
+      ).resolves.toBe("sent");
+      await expect(
+        service.testChannel(payload, "webhook" as any),
+      ).resolves.toBe("sent");
+      expect(webhook.send).toHaveBeenCalledWith(payload, undefined, undefined);
+    });
+
+    it("returns 'skipped' for an unknown channel key (default branch)", async () => {
+      await expect(
+        service.testChannel(payload, "carrier-pigeon" as any),
+      ).resolves.toBe("skipped");
+      // 未触达任何渠道
+      expect(email.send).not.toHaveBeenCalled();
+      expect(webhook.send).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("sendToChannels — error logging branches (QA-02 phase 2)", () => {
+    it("logs the rejected reason's message for Error and string failures alike", async () => {
+      const errSpy = jest
+        .spyOn(Logger.prototype, "error")
+        .mockImplementation(() => {});
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      email.send.mockRejectedValue(new Error("smtp exploded"));
+      slack.send.mockRejectedValue("plain-string-reason");
+      webhook.send.mockRejectedValue(new Error("hook down"));
+
+      const results = await service.sendToChannels(
+        { title: "t", content: "c", level: "error" as const },
+        ["email" as any, "slack" as any, "webhook" as any],
+      );
+
+      expect(results).toEqual({
+        email: "failed",
+        slack: "failed",
+        webhook: "failed",
+      });
+      const logged = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("smtp exploded");
+      expect(logged).toContain("plain-string-reason");
+      errSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe("silenceStore write-through (FEAT-01 @Optional, QA-02 phase 2)", () => {
+    const makeServiceWithStore = async (store: unknown) => {
+      const module = await Test.createTestingModule({
+        providers: [
+          NotificationService,
+          { provide: WecomChannel, useFactory: mockChannel },
+          { provide: DingtalkChannel, useFactory: mockChannel },
+          { provide: EmailChannel, useFactory: mockChannel },
+          { provide: SlackChannel, useFactory: mockChannel },
+          { provide: WebhookChannel, useFactory: mockChannel },
+          { provide: NotificationSilenceService, useValue: store },
+        ],
+      }).compile();
+      return module.get(NotificationService);
+    };
+
+    it("persists a new silence through the store and adopts the DB row id", async () => {
+      let resolveCreate: (row: unknown) => void = () => {};
+      const create = jest.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveCreate = resolve;
+          }),
+      );
+      const svc = await makeServiceWithStore({ create, remove: jest.fn(), cleanExpired: jest.fn() });
+
+      const localId = svc.addSilence({ taskId: "t1", level: AlertLevel.ERROR, durationMinutes: 5 });
+      expect(localId).toBeDefined();
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: "task",
+          taskId: "t1",
+          level: AlertLevel.ERROR,
+          durationMinutes: 5,
+        }),
+      );
+
+      // DB 行落库（生成正式 id）→ 内存条目 id 被替换，无失败告警
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      resolveCreate({ id: "db-row-1" });
+      await new Promise((r) => setImmediate(r));
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("persist failed"),
+      );
+      warnSpy.mockRestore();
+      expect(svc.getSilences().map((s) => s.id)).toContain("db-row-1");
+    });
+
+    it("keeps memory semantics when the store create fails (warn, not throw)", async () => {
+      const create = jest.fn().mockRejectedValue(new Error("pg down"));
+      const svc = await makeServiceWithStore({ create, remove: jest.fn(), cleanExpired: jest.fn() });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+
+      const id = svc.addSilence({ taskId: "t1", durationMinutes: 5 });
+      expect(id).toBeDefined();
+      await new Promise((r) => setImmediate(r));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("persist failed"),
+      );
+      expect(svc.getSilences()).toHaveLength(1);
+      warnSpy.mockRestore();
+    });
+
+    it("removeSilence deletes from both memory and store; a store failure does not block", async () => {
+      const remove = jest.fn().mockResolvedValue(undefined);
+      const create = jest.fn().mockResolvedValue({ id: "db-1" });
+      const svc = await makeServiceWithStore({ create, remove, cleanExpired: jest.fn() });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+
+      const id = svc.addSilence({ taskId: "t1", durationMinutes: 5 });
+      await new Promise((r) => setImmediate(r));
+      expect(svc.removeSilence(id)).toBe(true);
+      expect(remove).toHaveBeenCalledWith(id);
+      expect(svc.getSilences()).toHaveLength(0);
+
+      // store 删除失败 → 仅 warn，内存态不受影响（catch 异步落地，等一拍）
+      remove.mockRejectedValue(new Error("pg down"));
+      const id2 = svc.addSilence({ taskId: "t2", durationMinutes: 5 });
+      await new Promise((r) => setImmediate(r));
+      expect(svc.removeSilence(id2)).toBe(true);
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("DB remove failed"),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("cleanExpiredSilences also sweeps the store (fire-and-forget)", async () => {
+      const cleanExpired = jest.fn().mockResolvedValue(undefined);
+      const create = jest.fn().mockResolvedValue({ id: "db-1" });
+      const svc = await makeServiceWithStore({ create, remove: jest.fn(), cleanExpired });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+
+      svc.addSilence({ taskId: "t1", durationMinutes: 0, endTime: new Date(Date.now() - 1000) } as any);
+      const removed = svc.cleanExpiredSilences();
+      expect(removed).toBe(1);
+      expect(cleanExpired).toHaveBeenCalledWith(expect.any(Date));
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      // store 清扫失败 → 仅 warn
+      cleanExpired.mockRejectedValue(new Error("pg down"));
+      svc.addSilence({ taskId: "t2", durationMinutes: 0, endTime: new Date(Date.now() - 1000) } as any);
+      svc.cleanExpiredSilences();
+      await new Promise((r) => setImmediate(r));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("DB cleanup failed"),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("restoreSilencesFromStore rehydrates active rows after a restart", async () => {
+      const listActive = jest.fn().mockResolvedValue([
+        {
+          id: "db-row-1",
+          scope: "task",
+          channelType: null,
+          applicationId: null,
+          taskId: "t1",
+          level: "error",
+          reason: "maintenance",
+          startTime: null,
+          endTime: new Date(Date.now() + 60_000),
+          durationMinutes: 10,
+          createdAt: new Date(),
+        },
+      ]);
+      const svc = await makeServiceWithStore({
+        create: jest.fn(),
+        remove: jest.fn(),
+        cleanExpired: jest.fn(),
+        listActive,
+      });
+
+      await (svc as any).restoreSilencesFromStore();
+      expect(svc.getSilences()).toHaveLength(1);
+      const restored = svc.getSilences()[0];
+      expect(restored.id).toBe("db-row-1");
+      expect(restored.taskId).toBe("t1");
+      expect(restored.level).toBe(AlertLevel.ERROR);
+    });
+
+    it("restoreSilencesFromStore warns and keeps an empty map on store failure", async () => {
+      const listActive = jest.fn().mockRejectedValue(new Error("pg down"));
+      const svc = await makeServiceWithStore({ listActive, remove: jest.fn(), cleanExpired: jest.fn(), create: jest.fn() });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+
+      await (svc as any).restoreSilencesFromStore();
+      expect(svc.getSilences()).toHaveLength(0);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("DB restore failed"),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("addSilence persists an application-scoped silence with the application scope", async () => {
+      const create = jest.fn().mockResolvedValue({ id: "db-app-1" });
+      const svc = await makeServiceWithStore({ create, remove: jest.fn(), cleanExpired: jest.fn() });
+
+      svc.addSilence({
+        scope: "application",
+        applicationId: "app-1",
+        durationMinutes: 30,
+      } as any);
+      await new Promise((r) => setImmediate(r));
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: "application", applicationId: "app-1" }),
+      );
     });
   });
 });
