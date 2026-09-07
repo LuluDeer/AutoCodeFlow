@@ -3,13 +3,19 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-07（第十六轮·批 subagent-E：主会话派出员工 001/002/003 三个子代理并行认领——CORE-02/OBS-04/FEAT-05 UI 半场三项 done，主会话统一验收）
+更新时间：2026-09-07（第十六轮·批 subagent-F：主会话派出员工 001/002/004 三个子代理并行认领——OBS-02/ECO-01/DEP-01 三项 done，主会话统一验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-07 第十六轮·批 subagent-F 终验收，主会话）：
+  - `8301cff`+`2a169a5` **OBS-02（001）告警路由到通知渠道 done**：新端点 POST /api/alerts/webhook（@Public + HMAC-SHA256：时间戳 ±5min 窗+X-Hub-Signature-256 rawBody 常数时间比较，复用 applications 发版 webhook 先例；ALERT_WEBHOOK_SECRET 未配置 503 安全缺省，鉴权失败统一 401 防枚举）；Alertmanager v2 载荷纯函数映射（firing→error/全 resolved→info，两态都发，多告警合并，空载荷 400）；runbook 兑现=annotations.runbook_url 优先+labels.taskId 查 tasks.runbook 拼段（FEAT-11 消费点，零迁移）；外发走既有 sendAll，全渠道 skipped 502 供 Alertmanager 重试。+19 例，Alertmanager 侧加签反代部署件已在 observability README §3.5 文档化。
+  - `e2574bd`+`029a987`+`0365803` **ECO-01（002）SDK 统一矩阵+官方示例 done（路线图 #10 收口）**：sdk-guide 23 项能力矩阵逐项对齐（每项源码证据路径）+5 条差异裁定（不收敛项写明理由）；补齐两个对等缺口——node ctx.reportSuccess/reportFailure（py 端孪生）+ py HttpClientError 可判别错误子类（零破坏）；官方示例 4 件（回调 py/node + 私服依赖 py/node，每件=入口+README+task.example.json，API 逐行核源，本地降级路径烟测过）。autoflow-sdk 110/110 · node-sdk 61/61。fromEnv 抛错 vs from_env 兜底的失败模式分歧留后续 breaking 拍板。
+  - `3e982a6`+`c0c31b5` **DEP-01（004）/releases 统一资源 done**：GET /applications/:id/releases 只读聚合（版本×最近部署一屏追溯；无部署版本行也出现、synthetic 行归一历史数据；分页 50/上限 200；排序纯函数）；零迁移；operator 恒 null 带 operatorMissingReason 标注、triggerType 推导规则已知限制均如实文档化；旧端点保留过渡期 alias。+12 例。
+- **主会话终验收基线（全绿）**：admin-api **1483/1483**（+31，基线 1452）+ tsc ✓ · autoflow-sdk **110** · node-sdk **61** · acf-cli 74 · mcp-server 84（本批未触，复跑确认）
+- 真机轮留验：OBS-02 全链（Prometheus→Alertmanager→加签反代→/api/alerts/webhook→WECOM 5min 内）· ECO-01 四示例端到端（平台触发+私服真装+回调 token）· DEP-01 一屏追溯 · fromEnv 失败模式统一（breaking，双 SDK 同批）
 - 本轮（2026-09-07 第十六轮·批 004-F，员工 004 子代理会话——DEP-01 /releases 统一资源）：
   - `3e982a6`+`c0c31b5` **DEP-01 done**：新只读聚合端点 `GET /applications/:id/releases`（一行=一次版本发布：版本号/包地址取 application_versions 快照当次值，deployedAt/deploymentStatus/deploymentCount/executorAddress/runMode 按 deployedVersion 聚合「最近一次」app_deployments；无部署版本行也出现；有部署无快照历史数据合成 synthetic 行；分页默认 50/上限 200 双重截断；排序=最近部署时刻降序，releaseSortTimestampMs 纯函数）。**零迁移**（纯读视图未占时间戳，1789700000000 仍归 002/ECO-01）。已知来源缺失如实标注：operator=createdBy 列恒 null（写入路径未填充+audit 不覆盖部署写面，行带 operatorMissingReason）；triggerType 按部署行状态面推导（upgrade 指纹/manual/unknown），落库化留后续 schema。旧端点 `/applications/:id/versions` 与 `GET /app-deployments` 原样保留为过渡期 alias（不删除不重定向）。测试 +12 例；admin-api **1483/1483**（+19 为 001/OBS-02 并行入库）+ tsc ✓。**移交/遗留**：admin-web ApplicationDetailPage 消费 releases 契约（docs/api-reference.md「Releases」段已文档化）；triggerType 持久化列；真机一屏追溯验收留真机轮。
 - 本轮（2026-09-07 第十六轮·批 subagent-E 终验收，主会话）：
