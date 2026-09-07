@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Row, Col, Card, Statistic, Badge, Typography, Table,
+  Row, Col, Card, Statistic, Badge, Typography,
   Segmented, Spin, Progress, Tag, Space, Tooltip, Button, Alert,
 } from 'antd';
 import {
@@ -15,11 +15,17 @@ import {
   Tooltip as RechartTooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { metricsApi } from '../api/metrics';
+import type { SchedulerMetricsResponse } from '../api/metrics';
 import { tasksApi } from '../api/tasks';
 import { formatDuration } from '../utils/timeFormat';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
 import PageHeader from '../components/PageHeader';
+import KpiSparkline, { buildSparklineData } from '../components/dashboard/KpiSparkline';
+import FailureTopList from '../components/dashboard/FailureTopList';
+import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
+import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
+import DashboardEmptyGuide from '../components/dashboard/DashboardEmptyGuide';
 
 const { Text } = Typography;
 
@@ -39,6 +45,13 @@ export default function DashboardPage() {
     { refreshDeps: [trendDays] },
   );
 
+  // UI-04 ①：sparkline 用近 7 天趋势（含 24h；趋势图主卡共用一次请求，
+  // days=1 时后端按日桶仅 1~2 点形状无意义，故 sparkline 取 7 天窗口）
+  const { data: sparkTrend } = useRequest(
+    () => metricsApi.getDailyTrend(7),
+    { pollingInterval: 30000, pollingWhenHidden: false },
+  );
+
   const { data: executorStats, loading: execLoading } = useRequest(
     () => metricsApi.getExecutorStats(),
     { pollingInterval: 30000, pollingWhenHidden: false },
@@ -46,6 +59,12 @@ export default function DashboardPage() {
 
   const { data: failures, loading: failLoading } = useRequest(
     () => metricsApi.getRecentFailures(),
+    { pollingInterval: 30000, pollingWhenHidden: false },
+  );
+
+  // UI-04 ④：调度延迟卡数据源（既有 /metrics/scheduler，CORE-06 字段已在）
+  const { data: schedulerMetrics } = useRequest(
+    () => metricsApi.getSchedulerMetrics(),
     { pollingInterval: 30000, pollingWhenHidden: false },
   );
 
@@ -68,10 +87,6 @@ export default function DashboardPage() {
   const totalExec = s?.executions?.total ?? 0;
   const runningCount = s?.executions?.running ?? 0;
 
-  const topExecutors = [...(executorStats ?? [])]
-    .sort((a, b) => b.runningTaskCount - a.runningTaskCount)
-    .slice(0, 5);
-
   const failureList = (failures ?? []).slice(0, 8);
 
   const trendData = (trend ?? []).map(d => ({
@@ -79,6 +94,12 @@ export default function DashboardPage() {
     成功: d.success,
     失败: d.failed,
   }));
+
+  // UI-04 ①：三张 KPI 卡各自的 sparkline 序列（补零 7 天窗，形状稳定）
+  const runSpark = buildSparklineData(sparkTrend, 7);
+  const sparkHasData = runSpark.some(p => p.value > 0);
+
+  const schedMetrics = schedulerMetrics as SchedulerMetricsResponse | undefined;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -101,6 +122,9 @@ export default function DashboardPage() {
         }
       />
 
+      {/* UI-04 ⑤：空态引导——无任何任务时整页引导创建，替代空指标噪音 */}
+      <DashboardEmptyGuide totalTasks={s?.totalTasks} onCreateTask={() => nav('/tasks/new')} />
+
       {/* KPI 卡片——UI-02：卡片底色接入 CSS 变量（双主题），强调色取 token 语义面 */}
       <Spin spinning={summaryLoading}>
         <Row gutter={[16, 16]}>
@@ -114,6 +138,7 @@ export default function DashboardPage() {
               />
             </Card>
           </Col>
+          {/* UI-04 ①：24h 执行量 + sparkline */}
           <Col xs={12} sm={6}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
@@ -122,8 +147,10 @@ export default function DashboardPage() {
                 prefix={<ThunderboltOutlined style={{ color: CHART_COLORS.success }} />}
                 styles={{ content: { color: CHART_COLORS.success, fontSize: 28 } }}
               />
+              <KpiSparkline color={CHART_COLORS.success} hasData={sparkHasData} data={runSpark} />
             </Card>
           </Col>
+          {/* UI-04 ①：运行中 + sparkline */}
           <Col xs={12} sm={6}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
@@ -137,6 +164,7 @@ export default function DashboardPage() {
                     : undefined
                 }
               />
+              <KpiSparkline color={CHART_COLORS.concurrent} hasData={sparkHasData} data={runSpark} />
             </Card>
           </Col>
           <Col xs={12} sm={6}>
@@ -168,7 +196,7 @@ export default function DashboardPage() {
                 strokeColor={successRate >= 95 ? CHART_COLORS.success : successRate >= 80 ? CHART_COLORS.concurrent : CHART_COLORS.failed}
                 format={p => <span style={{ fontSize: 14, fontWeight: 600 }}>{p}%</span>}
               />
-              <div>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                   <CheckCircleOutlined style={{ color: CHART_COLORS.success }} />
                   <Text>成功 {s?.executions?.success ?? 0}</Text>
@@ -179,6 +207,8 @@ export default function DashboardPage() {
                 </div>
               </div>
             </div>
+            {/* UI-04 ①：成功率随执行量趋势（同一 sparkline 序列，失败率高时观感即成功率走势） */}
+            <KpiSparkline color={CHART_COLORS.cpu} hasData={sparkHasData} data={runSpark} />
           </Card>
         </Col>
         <Col xs={24} sm={12}>
@@ -243,64 +273,45 @@ export default function DashboardPage() {
         </Spin>
       </Card>
 
-      {/* 执行器状态 + 最近失败 */}
+      {/* 执行器资源热力条（UI-04 ③） + 调度延迟（UI-04 ④） */}
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>执行器负载 TOP 5</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>执行器资源</Text>}
             style={{ borderRadius: 10 }}
             extra={<a onClick={() => nav('/executors')} style={{ fontSize: 12 }}>全部</a>}
           >
             <Spin spinning={execLoading}>
-              <Table
-                rowKey="id"
-                size="small"
-                pagination={false}
-                dataSource={topExecutors}
-                locale={{ emptyText: '暂无在线执行器' }}
-                columns={[
-                  {
-                    title: '地址',
-                    dataIndex: 'address',
-                    ellipsis: true,
-                    render: (v: string, r: { id: string }) => (
-                      <a onClick={() => nav(`/executors/${r.id}`)} style={{ fontSize: 12 }}>{v}</a>
-                    ),
-                  },
-                  {
-                    title: '状态',
-                    dataIndex: 'status',
-                    width: 70,
-                    render: (v: string) => (
-                      <Badge
-                        status={v === 'online' ? 'success' : v === 'busy' ? 'processing' : 'default'}
-                        text={<Text style={{ fontSize: 11 }}>{v === 'online' ? '在线' : v === 'busy' ? '忙碌' : '离线'}</Text>}
-                      />
-                    ),
-                  },
-                  {
-                    title: 'CPU',
-                    dataIndex: 'cpuUsage',
-                    width: 65,
-                    render: (v: number) => (
-                      <Text style={{ fontSize: 11, color: v > 80 ? CHART_COLORS.failed : v > 60 ? CHART_COLORS.concurrent : CHART_COLORS.success }}>
-                        {v?.toFixed(0)}%
-                      </Text>
-                    ),
-                  },
-                  {
-                    title: '运行中',
-                    dataIndex: 'runningTaskCount',
-                    width: 60,
-                    render: (v: number) => <Text style={{ fontSize: 11 }}>{v}</Text>,
-                  },
-                ]}
-              />
+              <ExecutorHeatBars executors={executorStats ?? []} onOpenExecutor={id => nav(`/executors/${id}`)} />
             </Spin>
           </Card>
         </Col>
+        <Col xs={24} lg={12}>
+          <Card
+            size="small" variant="borderless"
+            title={<Text strong style={{ fontSize: 14 }}>调度延迟</Text>}
+            style={{ borderRadius: 10 }}
+          >
+            <SchedulerLatencyCard metrics={schedMetrics} />
+          </Card>
+        </Col>
+      </Row>
 
+      {/* 失败 Top 任务榜（UI-04 ②） + 最近失败明细 */}
+      <Row gutter={[16, 16]}>
+        <Col xs={24} lg={12}>
+          <Card
+            size="small" variant="borderless"
+            title={<Text strong style={{ fontSize: 14 }}>失败 Top 任务</Text>}
+            style={{ borderRadius: 10 }}
+            extra={<a onClick={() => nav('/executions?status=failed')} style={{ fontSize: 12 }}>全部失败</a>}
+          >
+            <Spin spinning={failLoading}>
+              <FailureTopList failures={failures} onOpenTask={id => nav(`/tasks/${id}`)} />
+            </Spin>
+          </Card>
+        </Col>
         <Col xs={24} lg={12}>
           <Card
             size="small" variant="borderless"
