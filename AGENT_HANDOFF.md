@@ -3,13 +3,20 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-07（第十六轮·批 subagent-F：主会话派出员工 001/002/004 三个子代理并行认领——OBS-02/ECO-01/DEP-01 三项 done，主会话统一验收）
+更新时间：2026-09-07（第十六轮·批 subagent-G：主会话派出员工 002/003/004 三个子代理并行认领——SEC-03/ARCH-21/CORE-03 三项 done，主会话统一验收；004 会话中断后由替补接手收尾）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-07 第十六轮·批 subagent-G 终验收，主会话）：
+  - `0b97477`+`cd4f0fb` **SEC-03（002）登录安全升级 done**：① TOTP 两步验证（用户级 opt-in）——totp.util 自实现 RFC 6238（HMAC-SHA1/6 位/30s/±1 步漂移，附录 B 六组官方参考向量测试全过），四端点 setup/enable/verify（@Public+限流+错码计入锁定）/disable（需密码或有效码防被窃 JWT 单独关 2FA）；login 契约写死 200+{totpRequired:true}，未启用用户零变化。② 会话管理——access token 增 sid 声明（=refresh jti），refresh_tokens 落 userAgent/ip，GET /auth/sessions（当前标记）/DELETE :id（属主校验）/revoke-others（无 sid fail-safe 吊销全部）。admin-web：登录二段式 + 设置末位「安全设置」Tab（otpauth 文本+secret 复制替代二维码——零新依赖，lockfile 零变更）。迁移 1789800000001。+69 例（api 57/web 12）。
+  - `323b442`+`0933d72`+`de681b8` **ARCH-21（003）领域事件总线 done（红线达成）**：DomainEventBus（原生 EventEmitter 封装，不引依赖；emit fail-open；@Global+@Optional 零 spec 破坏）；handleCallback winner 分支终态后 emit execution.completed/failed；**task.service.ts 零 NotificationService import/注入**，notifyCallbackFailure+审计兜底整体迁入 ExecutionEventsListener（九参数语义逐行等价）。顺带闭合 OBS-02 AlertsController 缺 taskRepo provider 的启动级注入缺口（ADR-008 形态，spec 全 mock 掩盖）。ADR-011 记录事件契约；**有意语义变化：通知从回调响应前同步改为可能在途**（真机轮观察）。范围注记：processor AI+dispatch 失败通知直调保留（验收口径=task.service）；KILLED 未 emit（类型预留）；timeout 折叠进 failed（等价）。FEAT-07 铺路就绪（出站 webhook=注册 execution.* 监听器即可）。+28 例。
+  - `7302328`+`114cc94`+`999d30b` **CORE-03（004，会话中断后替补接手收尾）任务模板与一键克隆 done**：后端 task_templates 实体+迁移 1789800000000（幂等 seed 5 官方模板，与 mcp TASK_TEMPLATES 同口径）+CRUD+instantiate 端点（POST /task-templates/:id/instantiate 承担 templateId 展开语义——避开 003 的 task.service 足迹）+config 走 CreateTaskDto 语义校验防脏模板，+30 例；前端 TaskTemplatesPage 模板页/路由/侧边栏菜单/TaskListPage 挂载点+TaskFormPage ?templateId= 预填（timeoutSeconds→timeout 桥接、失败降级空白表单），+16 例。「保存为自定义模板」UI 入口与模板市场 CORE-12 留后续。
+- **主会话终验收基线（全绿）**：admin-api **1585/1585**（92 suites，基线 1483，+102）+ tsc ✓ · admin-web **225/225**（基线 197，+28）+ build ✓
+- 真机轮留验：SEC-03 真实验证器绑定+错码锁定 · ARCH-21 失败告警异步派发到达观察 · CORE-03 模板页→使用→预填→提交全链
+- ⚠️ 流程注记：004 子代理会话在本批中途中断（后端已提交、前端 4 文件半成品在工作区），由主会话指示后按侦察→盘点→续作模式接手完成——**子代理中断后其未提交产物留在共享工作区，接手者先 git status/PLAN-CLAIMS 交叉盘点再续作，勿重做勿覆盖**。
 - 本轮（2026-09-07 第十六轮·批 003-G，员工 003 子代理会话——ARCH-21 领域事件总线）：
   - `323b442`+`0933d72`+docs **ARCH-21 done**：进程内 DomainEventBus（原生 EventEmitter 封装薄服务，不引 @nestjs/event-emitter；emit fail-open——监听器同步抛错/异步 reject 只记日志绝不冒泡主链；@Global 模块恒提供 + TaskService @Optional 注入零 spec 破坏）；handleCallback winner 分支终态 UPDATE 后 emit execution.completed/failed（emit 时机=旧通知直调点，「每个失败执行一次告警/每个终态一个事件」不变量保持，重复回调不重发）；**红线达成：task.service.ts 零 NotificationService import/注入**，notifyCallbackFailure+审计兜底整体迁入 notification 模块 ExecutionEventsListener（taskRepo 回查告警配置，九参数通知语义逐行等价）。顺带闭合 OBS-02 AlertsController 缺 taskRepo provider 的启动级注入缺口（forFeature([Task])）。ADR-011 载明事件契约与 FEAT-07 接入形态。**范围注记**：processor isLastAttempt 的 AI+通知直调保留（验收口径=task.service 解耦）；KILLED 未 emit（载荷类型预留）；execution.timeout 折叠进 execution.failed（status 区分，与旧语义等价）；依赖扇出不动。测试 +22 总线/监听器 + 6 主链改写（admin-api 1584 passed；唯一红=004 在途 task-template.migration.spec 非我足迹）。遗留：通知改异步派发为有意语义变化（ADR-011 后果段），真机轮观察失败告警到达；outbox/at-least-once 归 FEAT-07。
 - 本轮（2026-09-07 第十六轮·批 subagent-F 终验收，主会话）：
