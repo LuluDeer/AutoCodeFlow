@@ -336,6 +336,32 @@ services:
         max-size: '10m'
         max-file: '5'
 
+  # ── Jaeger (可选，profile: jaeger) — OBS-01 ──────────────
+  # 启用: docker compose --profile jaeger up -d
+  # UI: http://localhost:16686 —— 从执行详情页复制 traceId 粘贴到 Jaeger
+  # 「Search」框即可定位整条链路。
+  # 注意：当前平台仅用 @opentelemetry/api（不引 sdk-*/exporter），span 尚未
+  # 出站到 collector——本服务为未来接 Jaeger/Tempo 预置（TracerProvider 挂载
+  # + OTEL_EXPORTER_OTLP_ENDPOINT 配置，升级路径见 docs/deployment.md
+  # 「OTEL / Jaeger」段）。未启用 profile 时零资源占用。
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    profiles: ['jaeger']
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: 'true'
+    ports:
+      # OTLP gRPC（未来 exporter 出站目标）
+      - '127.0.0.1:4317:4317'
+      # OTLP HTTP
+      - '127.0.0.1:4318:4318'
+      # Jaeger UI（loopback-only，S9 同款主机面收紧）
+      - '127.0.0.1:16686:16686'
+    volumes:
+      - jaeger_data:/badger
+    networks:
+      - autoflow-internal
+
 volumes:
   postgres_data:
   redis_data:
@@ -344,3 +370,4 @@ volumes:
   npm_data:
   executor_python_data:
   executor_node_data:
+  jaeger_data:

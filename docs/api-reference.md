@@ -413,6 +413,25 @@ Content-Type: application/json
 
 ---
 
+## Distributed Tracing — 分布式追踪契约（OBS-01，本轮新增）
+
+平台在 `OTEL_ENABLED=true` 时启用跨三端（admin-api → 执行器 → 回调）的 W3C Trace Context 贯穿。**默认 `false`——零开销零行为变化**（不生成 traceId、不带头、不落库，执行行 `traceId` 保持 null）。仅依赖 `@opentelemetry/api`（轻量 API 包），span 树在 admin-api 进程内管理并输出结构化日志（`[trace] start/end` 行）；不引入 `sdk-*`/exporter——接 Jaeger/Tempo 的升级路径见 deployment.md「OTEL / Jaeger」段。
+
+**traceparent 头契约（W3C Trace Context，版本 00）：**
+
+| 链路段 | 方向 | 头 | 说明 |
+|---|---|---|---|
+| dispatch | admin-api → 执行器 | `traceparent: 00-<traceId32>-<spanId16>-01` | executor.service 派发 `POST /api/execute` 时注入；执行器读取并注入任务 env `AUTOFLOW_TRACE_ID`（任务代码可读做下游关联；用户 params 不可覆盖） |
+| callback | 执行器 → admin-api | `traceparent` 同上 | 执行器终态回调 `POST /executions/callback` 回传（批次内第一个携带 traceparent 的执行决定头值）；admin 解析 trace-id 与执行行落库值同源关联 |
+
+**落库与展示：** trace-id（32 hex）在触发/入队侧生成并落 `task_executions.traceId`（可空列，迁移 `1789900000003`，附索引）；执行详情 API 响应携带该字段，管理台执行详情页「执行信息」卡在其有值时展示追踪标识与「复制 traceId」按钮（复制的值可直接粘贴到 Jaeger/Tempo 检索框）。畸形/非法 traceparent 头一律 **fail-open** 丢弃（不阻断派发与回调主链）。
+
+**span 埋点（进程内，日志形态）：** `task.trigger` / `task.enqueue`（手动触发入队）、`scheduler.enqueue`（调度入队）、`dispatch.http`（派发出站 HTTP 前后）、`callback.receive`（回调受理）。未来挂载 SDK TracerProvider 后这些点位即升级为真实出站 span。
+
+**executor 侧行为（两执行器一致）：** 读取头 → 记录日志（trace-id 段）→ 注入 env → 回调回传。执行器侧**不做完整 span 树**（缩水声明：span 记录仅 admin-api 侧，执行器只做 traceId 关联与回传）。
+
+---
+
 ## Artifacts — 执行产物（FEAT-05，本轮新增）
 
 执行器任务可在其工作目录约定的 `artifacts/` 子目录写入交付物（截图 / 报表 / CSV 等）。任务结束时双执行器（executor-node、executor-python）会：
