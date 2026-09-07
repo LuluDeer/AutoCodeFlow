@@ -135,6 +135,76 @@ rule_files:
 | `AUTOFLOW_CALLBACK_AUTH_MISUSE` | warning | `v1_binding_mismatch\|missing_token\|bad_address` 合计 > 0.1/s（配置错误类） |
 | `AUTOFLOW_EXECUTOR_OFFLINE` | —（注释预留） | admin-api **无**执行器在线 Prometheus series（状态在 DB `Executor.status/lastHeartbeat`，仅 JSON 端点暴露）；建议走现有 notification 渠道（`apps/admin-api/src/modules/notification`），待未来补 gauge 后启用 |
 
+## 3.5 Alertmanager → 平台通知渠道路由（OBS-02，第十六轮）
+
+第十六轮起，Alertmanager 的告警可以直接接入平台既有通知渠道（企业微信 /
+钉钉 / Slack / 邮件），打通「Grafana 规则已有、告警通知与平台通知渠道割裂」
+的缺口。
+
+### 3.5.1 端点与鉴权
+
+- `POST /api/alerts/webhook`（`@Public`，无 JWT；机器对机器调用）。
+- HMAC-SHA256 签名，与发版 webhook（`POST /api/applications/webhook`）同一
+  约定：header `X-AutoCodeFlow-Timestamp`（毫秒时间戳，±5 分钟窗）+
+  `X-Hub-Signature-256: sha256=<hex>`，其中
+  `<hex> = HMAC_SHA256(secret, "${timestamp}.${rawBody}")`。
+- secret 走环境变量 `ALERT_WEBHOOK_SECRET`；**未配置时端点返回 503（安全
+  缺省——绝不退化为无鉴权接收）**。鉴权失败统一 401，不区分具体原因。
+
+### 3.5.2 Alertmanager 侧配置样例（v2）
+
+```yaml
+# alertmanager.yml —— route + receiver 指向 admin-api 新端点
+route:
+  receiver: autoflow-webhook
+  group_by: [alertname, instance]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: autoflow-webhook
+    webhook_configs:
+      - url: http://<admin-api-host>:3000/api/alerts/webhook
+        # Alertmanager v2 会 POST 标准 v2 JSON（alerts[] 带
+        # status/labels/annotations/startsAt）到该端点。
+        # 签名需要 timestamp + HMAC(secret, "${timestamp}.${rawBody}")，
+        # 原生 webhook_config 不支持自定义签名头——用 alertmanager 的
+        # webhook 代理（或 nginx njs / simple proxy 加签）注入：
+        #   X-AutoCodeFlow-Timestamp: <now ms>
+        #   X-Hub-Signature-256: sha256=<hex>
+        max_alerts: 0
+        send_resolved: true   # resolved 恢复通知也发（level=info）
+```
+
+> 加签实现提示：原生 Alertmanager 不带 HMAC 头。最小做法是在 admin-api 同
+> 侧放一个 10 行的反代（nginx njs / node 一行脚本）：收到 Alertmanager POST
+> 后计算 `HMAC_SHA256(ALERT_WEBHOOK_SECRET, "${ts}.${rawBody}")` 并附加两个
+> header 转发。平台侧测试向量见
+> `apps/admin-api/src/modules/notification/__tests__/alerts.controller.spec.ts`。
+
+### 3.5.3 告警消息形态（含 runbook 链接）
+
+映射为单条通知（多条告警合并，title = `[Alert] <alertname> <firing|resolved>`，
+content = labels / annotations 摘要 + startsAt；任一 firing → level=error，
+全部 resolved → level=info）：
+
+- **annotations.runbook_url**：Grafana/Alertmanager 规则的 annotations 惯例
+  字段，命中时消息追加 `Runbook: <url>` 段。本目录 `alerting-rules.yml` 已
+  为每条规则写有 `runbook` annotation——生产部署时把它换成 `runbook_url`
+  （或两者都写）即可让链接直达告警消息。
+- **labels.taskId**：告警 labels 带平台任务 ID 时，端点会查 `tasks.runbook`
+  （FEAT-11 字段）并把内容拼接为 `Runbook:` 段——任务级排障知识随告警直达
+  值班渠道。查询失败降级为无该段，不阻断外发。
+
+### 3.5.4 验收路径（真机轮）
+
+PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/metrics`
+（`AUTOFLOW_METRICS_TARGET_DOWN` / `AUTOFLOW_SCHEDULER_DOWN` 即覆盖 PG 不可
+读场景）→ Alertmanager 触发 → 加签转发 `POST /api/alerts/webhook` →
+`notificationService.sendAll` 全渠道扇出（企业微信渠道需已配置
+`WECOM_WEBHOOK` 或管理台渠道配置）。
+
 ## 4. 指标字典
 
 业务 series（注册于 `prometheus-metrics.service.ts`；均为 per-process 计数，
