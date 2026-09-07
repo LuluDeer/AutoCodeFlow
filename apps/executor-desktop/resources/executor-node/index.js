@@ -48699,6 +48699,7 @@ const run_command_1 = __nccwpck_require__(3879);
 const env_whitelist_1 = __nccwpck_require__(5809);
 const download_1 = __nccwpck_require__(7848);
 const safe_path_1 = __nccwpck_require__(1733);
+const zip_guard_1 = __nccwpck_require__(4629);
 exports.deployRouter = (0, express_1.Router)();
 /** Map of deploymentId -> running child process (daemon mode) */
 const runningApps = new Map();
@@ -49110,6 +49111,11 @@ exports.deployRouter.post('/deploy', async (req, res) => {
                 logger_1.logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
                 const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
                 await downloadPackage(packageUrl, zipPath);
+                // SEC-05: zip-bomb guard — reject declared-size bombs (ratio /
+                // entry-count / per-file & total caps, bounded nested probing)
+                // BEFORE handing the archive to Expand-Archive / unzip. Runs after
+                // the traversal check below would run; both are independent gates.
+                (0, zip_guard_1.guardZipOrThrow)(zipPath);
                 await assertSafeZipEntries(zipPath);
                 logger_1.logger.info(`[deploy] Extracting package for ${deploymentId}`);
                 // Use platform-appropriate extraction (async — spawnSync here froze
@@ -51380,6 +51386,282 @@ class TaskWorkerManager {
 }
 exports.TaskWorkerManager = TaskWorkerManager;
 exports.taskWorkerManager = new TaskWorkerManager();
+
+
+/***/ }),
+
+/***/ 4629:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ZipGuardError = exports.ZIP_GUARD_DEFAULT_LIMITS = void 0;
+exports.getZipGuardLimitsFromEnv = getZipGuardLimitsFromEnv;
+exports.locateEocd = locateEocd;
+exports.parseCentralDirectory = parseCentralDirectory;
+exports.checkSummaryAgainstLimits = checkSummaryAgainstLimits;
+exports.assertZipSafe = assertZipSafe;
+exports.assertZipFileSafe = assertZipFileSafe;
+exports.guardZipOrThrow = guardZipOrThrow;
+const fs = __importStar(__nccwpck_require__(9896));
+const zlib = __importStar(__nccwpck_require__(3106));
+const logger_1 = __nccwpck_require__(6888);
+exports.ZIP_GUARD_DEFAULT_LIMITS = {
+    maxRatio: 100,
+    maxEntries: 10000,
+    maxFileBytes: 1024 * 1024 * 1024, // 1 GiB
+    maxTotalUncompressedBytes: 2 * 1024 * 1024 * 1024, // 2 GiB
+    maxNestingDepth: 1,
+};
+/** Read limits from env with safe defaults (lazy — test-friendly). */
+function getZipGuardLimitsFromEnv(env = process.env) {
+    const num = (v, d) => {
+        const n = parseInt(v || '', 10);
+        return Number.isFinite(n) && n > 0 ? n : d;
+    };
+    const depth = parseInt(env.ZIP_MAX_NESTING_DEPTH || '', 10);
+    return {
+        maxRatio: num(env.ZIP_MAX_RATIO, exports.ZIP_GUARD_DEFAULT_LIMITS.maxRatio),
+        maxEntries: num(env.ZIP_MAX_ENTRIES, exports.ZIP_GUARD_DEFAULT_LIMITS.maxEntries),
+        maxFileBytes: num(env.ZIP_MAX_FILE_BYTES, exports.ZIP_GUARD_DEFAULT_LIMITS.maxFileBytes),
+        maxTotalUncompressedBytes: num(env.ZIP_MAX_TOTAL_BYTES, exports.ZIP_GUARD_DEFAULT_LIMITS.maxTotalUncompressedBytes),
+        maxNestingDepth: Number.isFinite(depth) && depth >= 0
+            ? depth
+            : exports.ZIP_GUARD_DEFAULT_LIMITS.maxNestingDepth,
+    };
+}
+class ZipGuardError extends Error {
+    constructor(violation, message) {
+        super(message);
+        this.violation = violation;
+        this.name = 'ZipGuardError';
+    }
+}
+exports.ZipGuardError = ZipGuardError;
+const U16 = (b, o) => b.readUInt16LE(o);
+const U32 = (b, o) => b.readUInt32LE(o);
+const SIG_EOCD = 0x06054b50;
+const SIG_CD = 0x02014b50;
+const SIG_LOCAL = 0x04034b50;
+const EOCD_FIXED_SIZE = 22;
+const CD_HEADER_SIZE = 46;
+/** Locate the EOCD record (comment makes the offset variable). */
+function locateEocd(buf) {
+    const minStart = buf.length - EOCD_FIXED_SIZE;
+    if (minStart < 0) {
+        throw new ZipGuardError('unparseable', 'file smaller than an EOCD record');
+    }
+    const MAX_COMMENT = 65536 + EOCD_FIXED_SIZE;
+    const scanStart = Math.max(0, buf.length - MAX_COMMENT);
+    for (let off = minStart; off >= scanStart; off--) {
+        if (U32(buf, off) === SIG_EOCD)
+            return off;
+    }
+    throw new ZipGuardError('unparseable', 'EOCD signature not found');
+}
+/** Parse the central directory and aggregate declared sizes. */
+function parseCentralDirectory(buf) {
+    const eocdOff = locateEocd(buf);
+    const cdEntries = U16(buf, eocdOff + 10);
+    const cdSize = U32(buf, eocdOff + 12);
+    const cdOffset = U32(buf, eocdOff + 16);
+    if (cdOffset === 0xffffffff || cdEntries === 0xffff || cdSize === 0xffffffff) {
+        throw new ZipGuardError('unparseable', 'zip64 EOCD sentinels present — unsupported');
+    }
+    let totalCompressed = 0;
+    let totalUncompressed = 0;
+    let seen = 0;
+    const nestedZipNames = [];
+    let off = cdOffset;
+    for (; seen < cdEntries; seen++) {
+        if (off + CD_HEADER_SIZE > buf.length || U32(buf, off) !== SIG_CD) {
+            throw new ZipGuardError('unparseable', `central directory record ${seen} missing or corrupted`);
+        }
+        const compressedSize = U32(buf, off + 20);
+        const uncompressedSize = U32(buf, off + 24);
+        const nameLen = U16(buf, off + 28);
+        const extraLen = U16(buf, off + 30);
+        const commentLen = U16(buf, off + 32);
+        const nameStart = off + CD_HEADER_SIZE;
+        const nameEnd = nameStart + nameLen;
+        if (nameEnd > buf.length) {
+            throw new ZipGuardError('unparseable', 'CD name overruns buffer');
+        }
+        const name = buf.toString('utf8', nameStart, nameEnd);
+        totalCompressed += compressedSize;
+        totalUncompressed += uncompressedSize;
+        if (name.toLowerCase().endsWith('.zip'))
+            nestedZipNames.push(name);
+        off = nameEnd + extraLen + commentLen;
+    }
+    if (off !== cdOffset + cdSize) {
+        throw new ZipGuardError('unparseable', 'central directory size mismatch with EOCD record');
+    }
+    return { entries: seen, totalCompressed, totalUncompressed, nestedZipNames };
+}
+/** Pure rule check over an aggregate summary. */
+function checkSummaryAgainstLimits(summary, limits) {
+    if (summary.entries > limits.maxEntries) {
+        throw new ZipGuardError('too_many_entries', `zip declares ${summary.entries} entries (limit ${limits.maxEntries})`);
+    }
+    if (summary.totalUncompressed > limits.maxTotalUncompressedBytes) {
+        throw new ZipGuardError('total_uncompressed_exceeded', `zip declares ${summary.totalUncompressed} uncompressed bytes (limit ${limits.maxTotalUncompressedBytes})`);
+    }
+    if (summary.totalCompressed > 0 &&
+        summary.totalUncompressed / summary.totalCompressed > limits.maxRatio) {
+        throw new ZipGuardError('ratio_exceeded', `compression ratio ${(summary.totalUncompressed / summary.totalCompressed).toFixed(1)} exceeds limit ${limits.maxRatio}`);
+    }
+}
+/**
+ * Full vetting of one in-memory zip buffer. Bounded nested-zip probing with
+ * raw-deflate inflation capped at declared sizes. Throws ZipGuardError.
+ */
+function assertZipSafe(buf, limits = exports.ZIP_GUARD_DEFAULT_LIMITS, depth = 0) {
+    const summary = parseCentralDirectory(buf);
+    checkSummaryAgainstLimits(summary, limits);
+    // Per-file declared cap.
+    {
+        const eocdOff = locateEocd(buf);
+        const cdEntries = U16(buf, eocdOff + 10);
+        const cdOffset = U32(buf, eocdOff + 16);
+        let off = cdOffset;
+        for (let seen = 0; seen < cdEntries; seen++) {
+            if (off + CD_HEADER_SIZE > buf.length || U32(buf, off) !== SIG_CD)
+                break;
+            const size = U32(buf, off + 24);
+            if (size > limits.maxFileBytes) {
+                throw new ZipGuardError('single_file_too_large', `zip declares an entry of ${size} uncompressed bytes (limit ${limits.maxFileBytes})`);
+            }
+            const nameLen = U16(buf, off + 28);
+            const extraLen = U16(buf, off + 30);
+            const commentLen = U16(buf, off + 32);
+            off += CD_HEADER_SIZE + nameLen + extraLen + commentLen;
+        }
+    }
+    if (depth < limits.maxNestingDepth) {
+        for (const name of summary.nestedZipNames) {
+            const inner = extractNestedZipBytes(buf, name);
+            if (!inner) {
+                throw new ZipGuardError('unparseable', `nested zip "${name}" could not be located/extracted for vetting`);
+            }
+            try {
+                assertZipSafe(inner, limits, depth + 1);
+            }
+            catch (err) {
+                if (err instanceof ZipGuardError && err.violation === 'unparseable') {
+                    throw new ZipGuardError('unparseable', `nested zip "${name}" is corrupt or unreadable`);
+                }
+                throw err;
+            }
+        }
+    }
+    else if (summary.nestedZipNames.length > 0 && depth >= 16) {
+        throw new ZipGuardError('nested_zip_too_deep', `zip nesting exceeds ${limits.maxNestingDepth} eagerly-vetted level(s)`);
+    }
+    return summary;
+}
+/** Pull a nested member's bytes (stored or raw-deflate), size-capped. */
+function extractNestedZipBytes(buf, name) {
+    const eocdOff = locateEocd(buf);
+    const cdEntries = U16(buf, eocdOff + 10);
+    const cdOffset = U32(buf, eocdOff + 16);
+    let off = cdOffset;
+    for (let seen = 0; seen < cdEntries; seen++) {
+        if (off + CD_HEADER_SIZE > buf.length || U32(buf, off) !== SIG_CD)
+            return null;
+        const method = U16(buf, off + 10);
+        const compressedSize = U32(buf, off + 20);
+        const uncompressedSize = U32(buf, off + 24);
+        const localOffset = U32(buf, off + 42);
+        const nameLen = U16(buf, off + 28);
+        const extraLen = U16(buf, off + 30);
+        const commentLen = U16(buf, off + 32);
+        const entryName = buf.toString('utf8', off + CD_HEADER_SIZE, off + CD_HEADER_SIZE + nameLen);
+        off += CD_HEADER_SIZE + nameLen + extraLen + commentLen;
+        if (entryName !== name)
+            continue;
+        if (localOffset + 30 > buf.length)
+            return null;
+        if (U32(buf, localOffset) !== SIG_LOCAL)
+            return null;
+        const localNameLen = U16(buf, localOffset + 26);
+        const localExtraLen = U16(buf, localOffset + 28);
+        const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+        const dataEnd = dataStart + compressedSize;
+        if (dataEnd > buf.length)
+            return null;
+        const payload = buf.subarray(dataStart, dataEnd);
+        if (method === 0)
+            return Buffer.from(payload);
+        if (method === 8) {
+            try {
+                return zlib.inflateRawSync(payload, { maxOutputLength: uncompressedSize });
+            }
+            catch {
+                return null;
+            }
+        }
+        return null; // bzip2/lzma/encrypted — cannot vet, fail closed
+    }
+    return null;
+}
+/**
+ * Vet a zip on disk (streamed read of the whole file into memory — the
+ * download cap bounds this at 2 GiB; typical packages are far smaller).
+ * Called by deploy/update-package before extraction.
+ */
+function assertZipFileSafe(filePath, limits = getZipGuardLimitsFromEnv()) {
+    const buf = fs.readFileSync(filePath);
+    return assertZipSafe(buf, limits);
+}
+/** Convenience wrapper: log the violation and convert to a plain Error with
+ *  a `[violation]` prefix so existing catch-and-report paths stay unchanged. */
+function guardZipOrThrow(filePath) {
+    try {
+        assertZipFileSafe(filePath);
+    }
+    catch (err) {
+        if (err instanceof ZipGuardError) {
+            logger_1.logger.warn(`[zip-guard] Package rejected [${err.violation}]: ${err.message} (${filePath})`);
+            throw new Error(`Unsafe package rejected by zip-guard [${err.violation}]`);
+        }
+        throw err;
+    }
+}
 
 
 /***/ }),
