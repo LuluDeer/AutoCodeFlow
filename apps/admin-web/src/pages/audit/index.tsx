@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker } from 'antd';
+import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker, Empty } from 'antd';
 import { SearchOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { client } from '../../api/client';
 import dayjs, { type Dayjs } from 'dayjs';
+import PageHeader from '../../components/PageHeader';
+import PageSkeleton from '../../components/PageSkeleton';
 
 const { Option } = Select;
 
@@ -117,9 +119,8 @@ export default function AuditLogPage() {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography.Title level={4} style={{ margin: 0 }}>审计日志</Typography.Title>
-      </div>
+      {/* UI-03/UI-08：页头标准化（原 Typography.Title 区块迁入 PageHeader） */}
+      <PageHeader title="审计日志" description="管理员操作留痕：登录、配置变更、任务与应用管理全量记录。" />
       <Space style={{ marginBottom: 16 }} wrap>
         <Input
           placeholder="操作关键词"
@@ -166,10 +167,14 @@ export default function AuditLogPage() {
       </Space>
       <Table
         rowKey="id"
-        loading={isLoading}
+        loading={isLoading ? false : undefined}
         columns={columns}
         dataSource={data?.data ?? []}
-        locale={{ emptyText: '暂无审计记录' }}
+        locale={{
+          emptyText: isLoading
+            ? <PageSkeleton variant="table" rows={3} />
+            : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无审计记录" />,
+        }}
         pagination={{
           current: page,
           pageSize: 20,
