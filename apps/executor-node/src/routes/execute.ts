@@ -238,6 +238,8 @@ interface ExecutionEntry {
   /** worker 的 onComplete（含停机失败路径）已执行，容量已随之释放 */
   workerFinished: boolean;
   capacityReleased: boolean;
+  /** OBS-01: dispatch 请求的 W3C traceparent 头（admin OTEL_ENABLED=false 时缺省） */
+  traceparent?: string;
   release(): void;
 }
 
@@ -260,6 +262,9 @@ function pushKilledCallbackOnce(executionId: string, entry: ExecutionEntry): voi
     status: 'failed',
     errorMessage: 'Execution killed by admin request',
     failureReason: 'killed',
+    ...(liveExecutions.get(executionId)?.traceparent
+      ? { traceparent: liveExecutions.get(executionId)!.traceparent }
+      : {}),
   });
 }
 
@@ -407,6 +412,13 @@ executeRouter.post('/execute', (req: Request, res: Response) => {
     // 在后台执行（经 worker 按 taskId 串行，见 dispatch）。
     entry = createExecutionEntry(executionId, String(body.task.id || executionId));
     liveExecutions.set(executionId, entry);
+    // OBS-01: 记录 admin 派发请求的 W3C traceparent 头（缺省=无追踪），
+    // 后续注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。
+    const traceparentHeader = req.headers['traceparent'];
+    if (typeof traceparentHeader === 'string' && traceparentHeader) {
+      entry.traceparent = traceparentHeader;
+      logger.info(`Execution ${executionId} trace: ${traceparentHeader.split('-')[1] ?? 'malformed'}`);
+    }
 
     void startExecutionInBackground(executionId, body, params, entry);
 
@@ -446,6 +458,7 @@ async function startExecutionInBackground(
       errorMessage: truncateCallbackErrorMessage(message),
       failureReason,
       logs: truncateCallbackLogs(logs),
+      ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
     });
     entry.release(); // 幂等
   };
@@ -542,6 +555,7 @@ export async function dispatchExecutionToWorker(
         status: 'failed',
         errorMessage: truncateCallbackErrorMessage(message),
         failureReason: prepareFailureReason(message),
+        ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
       });
       throw err;
     }
@@ -562,6 +576,7 @@ export async function dispatchExecutionToWorker(
       status: 'failed',
       errorMessage: truncateCallbackErrorMessage(message),
       failureReason: 'unknown',
+      ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
     });
     entry.release();
   }
@@ -778,6 +793,14 @@ async function prepareExecution(
     logger.warn(`create artifacts dir failed (non-critical): ${String(e)}`);
   }
   env['AUTOFLOW_ARTIFACTS_DIR'] = artifactsDir;
+
+  // OBS-01: 把 dispatch 请求的 W3C traceparent 头透传为任务 env（任务代码
+  // 可读 AUTOFLOW_TRACE_ID 做下游关联）。在 params 注入之后（用户参数不可
+  // 覆盖，与 AUTOFLOW_CALLBACK_TOKEN 同一纪律）。缺省（admin 未开追踪）
+  // 不注入，与既有行为一致。
+  if (entry.traceparent) {
+    env['AUTOFLOW_TRACE_ID'] = entry.traceparent;
+  }
 
   let cmd: string;
   let args: string[];
@@ -1070,6 +1093,9 @@ export async function runTask(task: any, params: Record<string, any>, executionI
       logs: truncateCallbackLogs(result.logs),
       durationMs: Date.now() - startTime,
       artifacts: await collectTerminalArtifacts(executionId, workDir),
+      ...(liveExecutions.get(executionId)?.traceparent
+        ? { traceparent: liveExecutions.get(executionId)!.traceparent }
+        : {}),
     });
   } catch (err: unknown) {
     // Extract structured fields attached by the close handler; fall back for plain errors
@@ -1097,6 +1123,9 @@ export async function runTask(task: any, params: Record<string, any>, executionI
       ...(killed ? { failureReason: 'killed' as CallbackFailureReason } : {}),
       durationMs: Date.now() - startTime,
       artifacts: await collectTerminalArtifacts(executionId, workDir),
+      ...(liveExecutions.get(executionId)?.traceparent
+        ? { traceparent: liveExecutions.get(executionId)!.traceparent }
+        : {}),
     });
   }
 }
