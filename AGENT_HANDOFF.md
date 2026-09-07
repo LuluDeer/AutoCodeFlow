@@ -3,13 +3,20 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-07（第十六轮·批 subagent-D：主会话派出员工 001/002/004 三个子代理并行认领——CORE-04/SEC-02/FEAT-05 三项 done，主会话统一验收）
+更新时间：2026-09-07（第十六轮·批 subagent-E：主会话派出员工 001/002/003 三个子代理并行认领——CORE-02/OBS-04/FEAT-05 UI 半场三项 done，主会话统一验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-07 第十六轮·批 subagent-E 终验收，主会话）：
+  - `5c0a7b5`+`2c0fe7e`+`221253e` **CORE-02（002）重试策略精细化 done**：① retryableErrors 表单化（retry-policy.ts 九类中文映射剔除 killed/stale_recovered，空集显式 null 的 N28 语义，后端本就绪零改动）；② retryDelay ±20% jitter（retry-backoff.util 纯函数随机源注入，四处 enqueue 边界注入数值方案：trigger/rollback/scheduler.enqueue/scheduleRetryAfterRecovery）；③ attempt 链可视化（retry-chain.ts 兄弟行 retryCount 拼装+间断截断，ExecutionDetailPage 重试链 Card+预算 Tag+下次重试近似时刻，手动提前重试指路既有 trigger）。零迁移（1789700000000 预留未用）。下次重试时间为近似值（BullMQ delayed 精确时刻不落库，精确值留后续）。
+  - `dd88d0a`+`8088766`+`fb466d7` **OBS-04（001）执行报告消费+时间线 done**：新端点 GET /tasks/:id/executions/:execId/report 一次合并 task_executions 行+created→started→finished 三段时间线（与 DB 时间戳一致，与 mcp-server ECO-03 buildExecutionTimeline 同语义）+execution_reports 当日聚合行；reportRepo @Optional 注入零破坏；ExecutionDetailPage 挂 ExecutionReportPanel（Steps 时间线缺省「—」+AI 分析段+报告段存在才渲染）。缩水说明：execution_reports 无单执行级写入方（仅 MetricsService 日聚合懒生成），按计划预案降级为「时间线+AI 分析」主体，零 schema 变更。
+  - `7a5c589`+`2571c2c` **FEAT-05 UI 半场（003）done**：新 api/artifacts.ts（blob+objectURL 下载，参照 executor-packages.download，直链会 401）+ ArtifactsList 组件（name/size/sha8/逐行 loading，空态不渲染）+ TaskDetailPage 产物段最小插入；ExecutionDetailPage 侧入口留待复用 <ArtifactsList execId={execution.id}/> 单点接入。
+- **主会话终验收基线（全绿）**：admin-api **1452/1452**（74 suites，1434 基线 +18）+ tsc ✓ · admin-web **197/197**（165 基线 +32）+ build ✓ · executor-python 217 · executor-node 248（本批未触）
+- 真机轮留验：CORE-02 retryableErrors 命中/不命中各一例+重试链 UI 断言 · OBS-04 report 端点真实数据渲染 · FEAT-05 artifacts 端到端一例（上传→列表→下载）
+- ⚠️ 流程注记：002 为验证隔离两次 stash 001 在途文件（已原样归还）；001 docs commit 8088766 顺带入库 002 的 5 个新文件（内容逐字节一致，归属已注记）——**并行 hunk 隔离协作连续两轮实操可行，但 stash 交错与顺带入库仍是事故高发点，同文件强冲突任务仍应错峰认领**。
 - 本轮（2026-09-07 第十六轮·批 subagent-D 终验收，主会话）：
   - `c24f61d`+`f62b776` **CORE-04（001）超时策略分级 done**：tasks.timeoutAction 三动作（kill 缺省 / kill_retry=超时终态后按既有重试预算 re-enqueue，triggerType=timeout_retry，预算耗尽退化 kill / notify_only=admin 不额外下发终止指令，告警仍由失败通知路径保证一次）+ timeoutWarnRatio（0-90 预警阈值，每执行至多一次 WARNING）；纯决策层 timeout-policy.util 两端共享；迁移 1789500000000 可空零破坏；版本快照纳入两字段；admin-web 表单 Radio+阈值/详情展示（序列化纯逻辑 pages/timeout-policy.ts，清空须发 null 的 N28 语义）
   - `d7e7c84`+`7bd9378`+`a0ae1b3` **SEC-02（002）任务 secrets 加密落库 done**：新增 tasks.secrets 独立 jsonb 列（方案 B——params 是普通运行参数且被列表/版本快照明文消费，整体加密伤审计面）；AES-256-GCM `enc:v1:` 自描述信封（嵌套逐叶加密+幂等）；SEC_SECRETS_KEY 未配置降级明文 warn 一次（零破坏升级，Joi/configuration/.env.example 已登记）；写路径全加密/读路径永久脱敏 ****** /dispatch 解密与 params 合并注入执行器 env（secrets 胜出、明文不二次入库、解密失败不裸派发）；迁移 1789500000001
