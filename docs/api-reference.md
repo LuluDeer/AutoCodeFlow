@@ -217,8 +217,16 @@ Content-Type: application/json
 | `timeoutAction` | string | 否 | 超时后动作（CORE-04）：`kill`（缺省）/ `kill_retry` / `notify_only`。`kill` = 既有树杀语义，执行器到时强杀进程树并回调 `timeout` 终态；`kill_retry` = 同样树杀，但 admin 在超时终态落定后按任务既有重试预算（`maxRetry`/`retryDelay`，与 executor-restart / stale sweep 共用同一 re-enqueue 模式，触发类型 `timeout_retry`）追加一次新执行——预算耗尽退化为普通 `kill`，终态保持 `TIMEOUT`；`notify_only` = admin 不额外下发终止指令、只保证超时告警（告警由既有失败通知路径发出一次）。**边界**：`notify_only` ≠ 不超时——执行器自身的硬超时仍然生效，进程树仍会被执行器杀掉并回调，本策略只改变 admin 侧行为。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` = 回缺省 `kill` |
 | `timeoutWarnRatio` | number | 否 | 超时预警阈值（CORE-04）：占 `timeout` 的百分数，整数 0–90。执行运行时长达到 `timeout × ratio / 100` 时发送一次 WARNING 级预警通知（复用 `notifyTimeout` 通道，受任务级静默窗口约束），每个执行**至多一次**；例如 `timeout=600`、`ratio=80` → 运行到 480 秒时预警。缺省/`null` = 未启用（存量任务零新通知）；运行态归一化时非 0–90 整数一律视为未启用 |
 | `maxRetry` | number | 否 | 最大尝试次数（BullMQ attempts），0–10；服务端会保证至少为 `1` |
-| `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff |
-| `retryableErrors` | string[] | 否 | 预留的可重试错误分类列表 |
+| `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff。**CORE-02 抖动语义**：实际重试延迟 = `retryDelay × 1000 × 2^(attempt-1)` 的指数基座上加 **±20% 抖动**（admin-api `retry-backoff.util.ts` 纯函数，在四处 enqueue 边界算好整数毫秒传入 BullMQ），摊开同周期失败任务的的重试时刻（thundering herd）；`retryDelay<=0` 仍保持不延迟 |
+| `retryableErrors` | string[] | 否 | 可重试错误类型白名单（CORE-02 已 UI 化，admin-web 表单暴露九类中文选项）。**消费语义**（task.processor RETRY-01）：非空白名单 = 仅白名单内的失败会被 BullMQ 重试——匹配规则为错误消息子串或 `failureReason` 分类值（大小写不敏感），未命中转 `UnrecoverableError` 烧尽预算；`null`/`[]` = 全部可重试（既有行为）。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` = 回到全量可重试。**边界**：`timeout` 类失败另有防双派发守卫，无论白名单如何配置都不会自动重试 |
+
+**重试链路与 attempt 可视化（CORE-02）：**
+
+- **attempt 语义**：`task_executions.retryCount`（0 起）标识该执行行是任务的第几次重试载体；详情页"重试预算"展示 `Attempt #N of M`（N = retryCount+1，M = maxRetry）与剩余预算。BullMQ 同执行行内的 job 级自动重试不产生新行。
+- **重试链拼装**：重试链 = 同任务下 `retryCount` 递增的兄弟执行行（executor_restart / stale_recovery / timeout_retry 等 re-enqueue 路径创建）。前端复用既有 `GET /tasks/:id/executions`（按 `taskId` 查询）拉取兄弟行后按连续档拼装，中间档缺失在间断处截断；各次尝试展示状态/耗时/与上次尝试的间隔（下行 `startTime` − 上行 `endTime`）。
+- **下次重试时间**：链上存在 PENDING 行时展示近似开跑时刻（行 `createdAt` + `retryDelay × 2^(attempt-1)` 指数基座，注明 ±20% 抖动）——BullMQ delayed job 的精确到期时刻不落库，此为近似值。
+- **手动提前重试**：无专用端点；使用既有 `POST /tasks/:id/trigger` 手动触发（admin-web 执行详情页「重新触发」按钮）。
+- **退避抖动纯函数**：`apps/admin-api/src/modules/task/retry-backoff.util.ts` `jitteredRetryDelayMs(retryDelaySec, attempt, random?, ratio?)`，输出 `[base×0.8, base×1.2]` 内整数毫秒，`retryDelay<=0` 返回 `0`（调用方省略 backoff）。
 | `secrets` | object | 否 | 任务级凭据键值对（SEC-02，独立于 `params` 的普通运行参数）。**存储加密**：配置 `SEC_SECRETS_KEY` 后所有叶子值以 AES-256-GCM `enc:v1:<iv>:<tag>:<ciphertext>` 信封落库；未配置时降级明文并启动 warn 一次（零破坏升级路径）。**读取永久脱敏**：`GET /tasks`、`GET /tasks/:id` 响应中叶子值一律回 `******`（密文也不外泄），因此已保存的 secrets 不可经 API 回读。**派发语义**：执行时解密与 params 合并注入执行器 env（`AUTOFLOW_<KEY>`，与 params 同通道），同名键 secrets 覆盖 params；明文仅存在于派发 HTTPS 载荷与执行器内存，不落 `task_executions.params`。**PATCH 语义**：缺省 = 保留旧值，显式 `null` / `{}` = 清空/替换（整体替换，非按键合并）。存量行不做迁移加密——配置 key 后首次 update 自然转为密文 |
 | `executorId` | string (UUID) | 否 | 任务级 executor pinning（第六轮）：设置后调度**仅**派给该执行器，绕过 group/tags/runtime 过滤，但仍受其并发槽位上限约束；该执行器离线/不存在时执行直接置 FAILED（failureReason 分别为 `executor_offline` / `unknown`）。与 `executeMode=broadcast` 互斥，同时提供返回 400。`PATCH /tasks/:id` 按**合并后的任务态**校验该互斥（第七轮 N17）：为 broadcast 任务补 `executorId`、或将已 pin 任务改为 `broadcast` 同样返回 400；显式传 `executorId: null` 可清除 pinning |
 
