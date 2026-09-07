@@ -363,6 +363,19 @@ export default function TaskDetailPage() {
                     </Descriptions.Item>
                   )}
                   <Descriptions.Item label="超时">{task.timeout ? `${task.timeout} 秒` : '-'}</Descriptions.Item>
+                  {/* CORE-04: 超时策略分级展示 */}
+                  <Descriptions.Item label="超时动作">
+                    {task.timeoutAction === 'kill_retry'
+                      ? '终止并重试'
+                      : task.timeoutAction === 'notify_only'
+                        ? '仅通知'
+                        : '终止（默认）'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="超时预警">
+                    {typeof task.timeoutWarnRatio === 'number'
+                      ? `超时时间的 ${task.timeoutWarnRatio}%`
+                      : '未启用'}
+                  </Descriptions.Item>
                   <Descriptions.Item label="最大重试">{task.maxRetry ?? 0} 次</Descriptions.Item>
                   <Descriptions.Item label="优先级">
                     <Tag color={priorityTag(task.priority).color}>{priorityTag(task.priority).label}</Tag>
