@@ -213,6 +213,8 @@ Content-Type: application/json
 | `maintenanceWindows` | MaintenanceWindow[] | 否 | 任务级维护窗口（FEAT-06）：数组形态 `[{ start, end, description? }]`，`start`/`end` 均为 5 字段 Cron——`start` 最近触达时刻开窗、`end` 最近触达时刻关窗（半开区间 `[start, end)`）。命中窗口的**计划触发**（cron/fixed_rate/错失补偿等调度入队路径）被跳过并计入 `/metrics/scheduler` 的 `triggersSkippedMaintenance`，不建执行记录；手动/API 触发不受窗口约束。上限 10 条；窗口 Cron 按服务端本地时间评估。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` / `[]` = 清空 |
 | `timeoutSeconds` | number | 否 | 任务执行超时，单位秒；推荐使用该字段 |
 | `timeout` | number | 否 | 兼容旧字段，语义同 `timeoutSeconds` |
+| `timeoutAction` | string | 否 | 超时后动作（CORE-04）：`kill`（缺省）/ `kill_retry` / `notify_only`。`kill` = 既有树杀语义，执行器到时强杀进程树并回调 `timeout` 终态；`kill_retry` = 同样树杀，但 admin 在超时终态落定后按任务既有重试预算（`maxRetry`/`retryDelay`，与 executor-restart / stale sweep 共用同一 re-enqueue 模式，触发类型 `timeout_retry`）追加一次新执行——预算耗尽退化为普通 `kill`，终态保持 `TIMEOUT`；`notify_only` = admin 不额外下发终止指令、只保证超时告警（告警由既有失败通知路径发出一次）。**边界**：`notify_only` ≠ 不超时——执行器自身的硬超时仍然生效，进程树仍会被执行器杀掉并回调，本策略只改变 admin 侧行为。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` = 回缺省 `kill` |
+| `timeoutWarnRatio` | number | 否 | 超时预警阈值（CORE-04）：占 `timeout` 的百分数，整数 0–90。执行运行时长达到 `timeout × ratio / 100` 时发送一次 WARNING 级预警通知（复用 `notifyTimeout` 通道，受任务级静默窗口约束），每个执行**至多一次**；例如 `timeout=600`、`ratio=80` → 运行到 480 秒时预警。缺省/`null` = 未启用（存量任务零新通知）；运行态归一化时非 0–90 整数一律视为未启用 |
 | `maxRetry` | number | 否 | 最大尝试次数（BullMQ attempts），0–10；服务端会保证至少为 `1` |
 | `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff |
 | `retryableErrors` | string[] | 否 | 预留的可重试错误分类列表 |
