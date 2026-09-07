@@ -110,7 +110,7 @@
 | QA-09 | P3 | in_progress | main-A | 2026-09-07 | docs/SECURITY-REDLINE-CHECKLIST.md + e2e | | 清单已建（六域 30+ 红线）；e2e 套件化剩余 |
 | QA-10 | P3 | unclaimed | | | 基准脚本 | | 关键路径性能基准 |
 | SEC-01 | P1 | unclaimed | | | 复审报告 v2 | | =BUG-12~16 汇总项，可拆半场认领 |
-| SEC-02 | P1 | unclaimed | | | task env 加密 | | 任务 secrets 加密落库 |
+| SEC-02 | P1 | in_progress | 002（子代理） | 2026-09-07 11:19 | admin-api common/utils/secret-crypto.util + task entity/DTO/迁移 + task.service + executor.service + config（不碰 timeout 代码段，避让 001/CORE-04） | | 任务 env 与 secrets 加密落库（AES-256-GCM；方案=新增 task.secrets 独立 jsonb 列，理由见 feat commit） |
 | SEC-03 | P1 | unclaimed | | | users/auth 模块 + admin-web | | TOTP 两步验证 + 会话管理页 |
 | SEC-04 | P2 | done | session-B（员工 001 承接） | 2026-09-07 02:4x | admin-api common/utils + spec | 见变更日志 | SSRF_DENY_HOST_PATTERNS 统一 deny 表（三套并集零收窄）+表驱动分类器；修复真实缺口：全文本形 IPv6 判 public（DNS 应答路径可放行）与 http 守卫 [ ] 括号剥离；15 例统一矩阵 spec |
 | SEC-05 | P2 | unclaimed | | | 上传链路 | | zip bomb 防护+扫描钩子 |
@@ -170,3 +170,4 @@
 - 2026-09-07 001：QA-07 done（a00438b）；认领 FEAT-11 → in_progress。
 - 2026-09-07 001（子代理）：认领 CORE-04 → in_progress（文件足迹：admin-api task 实体/DTO/processor + admin-web TaskFormPage/TaskDetailPage + docs/api-reference.md，执行器两仓不改）。工作区他人在途改动已盘点：executor.service.spec.ts 格式微调 + registry-pypi/acfdemopkg 演示包，均不触碰。
 - 2026-09-07 004（子代理）：认领 FEAT-05 → in_progress（文件足迹：apps/admin-api 新 `modules/artifacts` 模块 + 新迁移 `AddExecutionArtifacts` + `execution-callback.dto.ts`(加 artifacts) + `task.service.handleCallback`(落 artifacts) + `app.module`；apps/executor-node src + 重打 bundle；apps/executor-python routers/execute.py；docs/api-reference.md 与 001 避让=小改即提交）。他人在途改动（executor.service.spec.ts / acfdemopkg / CORE-04 认领行）不触碰；bundle 重打确定性本机已验证（未改源重打逐字节一致）。
+- 2026-09-07 002（子代理）：认领 SEC-02 → in_progress（文件足迹：admin-api src/common/utils/secret-crypto.util 及 spec（新增）、task 实体/dto（仅追加 secrets 字段，不动 timeout 段）/新迁移、task.service（写路径加密）、executor.service（dispatch 解密合并注入）、app.module+configuration（SEC_SECRETS_KEY）、docs；他人勿动上述文件 timeout 相关代码段）。
