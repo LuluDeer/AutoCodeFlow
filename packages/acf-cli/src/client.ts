@@ -1,7 +1,7 @@
 /**
  * Thin HTTP client wrapper for the AutoCodeFlow Admin API.
  */
-import axios, { AxiosInstance, AxiosError, AxiosRequestConfig } from 'axios';
+import axios, { AxiosInstance, AxiosError, AxiosRequestConfig } from "axios";
 import {
   getApiUrl,
   getToken,
@@ -9,13 +9,13 @@ import {
   setToken,
   setRefreshToken,
   clearAuth,
-} from './config';
+} from "./config";
 
 let _client: AxiosInstance | null = null;
 
 /** base URL without trailing slashes（/auth/refresh 直连拼接用） */
 function baseUrl(): string {
-  return getApiUrl().replace(/\/+$/, '');
+  return getApiUrl().replace(/\/+$/, "");
 }
 
 /** Reset client (needed after config changes in same process). */
@@ -28,9 +28,13 @@ export function resetClient(): void {
 // client and strip that envelope so callers can keep using `data.list`,
 // `data.total`, etc. without unwrapping manually.
 export function unwrap<T>(raw: unknown): T {
-  if (raw && typeof raw === 'object' && 'data' in (raw as Record<string, unknown>)) {
+  if (
+    raw &&
+    typeof raw === "object" &&
+    "data" in (raw as Record<string, unknown>)
+  ) {
     const envelope = raw as { code?: unknown; data?: unknown };
-    if ('code' in envelope || 'message' in envelope) {
+    if ("code" in envelope || "message" in envelope) {
       return (envelope.data ?? (null as unknown)) as T;
     }
   }
@@ -60,12 +64,14 @@ async function refreshAccessToken(): Promise<string | null> {
       { refreshToken },
       { timeout: 10_000 },
     );
-    const data = unwrap<{ accessToken?: string; refreshToken?: string }>(r.data);
-    if (typeof data?.accessToken === 'string' && data.accessToken.length > 0) {
+    const data = unwrap<{ accessToken?: string; refreshToken?: string }>(
+      r.data,
+    );
+    if (typeof data?.accessToken === "string" && data.accessToken.length > 0) {
       setToken(data.accessToken);
       // DR-07 修复后的 refresh 是原子轮换：响应携带新 refreshToken 必须跟进
       if (
-        typeof data.refreshToken === 'string' &&
+        typeof data.refreshToken === "string" &&
         data.refreshToken.length > 0
       ) {
         setRefreshToken(data.refreshToken);
@@ -79,7 +85,7 @@ async function refreshAccessToken(): Promise<string | null> {
 }
 
 function isAuthPath(url?: string): boolean {
-  return !!url && url.includes('/auth/');
+  return !!url && url.includes("/auth/");
 }
 
 function getClient(): AxiosInstance {
@@ -102,9 +108,13 @@ function getClient(): AxiosInstance {
     _client.interceptors.response.use(undefined, async (err: AxiosError) => {
       const status = err.response?.status;
       const cfg = err.config as
-        | (AxiosRequestConfig & { _acfAuthRetried?: boolean })
-        | undefined;
-      if (status !== 401 || !cfg || cfg._acfAuthRetried || isAuthPath(cfg.url)) {
+        (AxiosRequestConfig & { _acfAuthRetried?: boolean }) | undefined;
+      if (
+        status !== 401 ||
+        !cfg ||
+        cfg._acfAuthRetried ||
+        isAuthPath(cfg.url)
+      ) {
         throw err;
       }
       cfg._acfAuthRetried = true;
@@ -124,7 +134,10 @@ function getClient(): AxiosInstance {
   return _client;
 }
 
-export async function get<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
+export async function get<T>(
+  path: string,
+  params?: Record<string, string | number | undefined>,
+): Promise<T> {
   const r = await getClient().get<unknown>(path, { params });
   return unwrap<T>(r.data);
 }
@@ -158,13 +171,15 @@ export async function del<T>(path: string): Promise<T> {
 // so without this helper the actual cause never reaches the terminal.
 
 function detailFromData(data: unknown): string {
-  if (!data || typeof data !== 'object') return '';
+  if (!data || typeof data !== "object") return "";
   const d = data as Record<string, unknown>;
   const m = d.message;
-  if (typeof m === 'string') return m;
-  if (Array.isArray(m)) return m.map(String).join('; ');
-  if (typeof d.error === 'string') return d.error;
-  return '';
+  // QA-07 契约：空串 message 视为「未提供」，继续走 message[]/error 兜底
+  //（与 mcp-server extractDetail 对齐；此前空串 message 会遮蔽 error 字段）。
+  if (typeof m === "string" && m) return m;
+  if (Array.isArray(m) && m.length) return m.map(String).join("; ");
+  if (typeof d.error === "string" && d.error) return d.error;
+  return "";
 }
 
 /**
@@ -179,15 +194,15 @@ export function formatApiError(e: unknown): string {
     const detail = detailFromData(err.response?.data);
     switch (status) {
       case 400:
-        return `Bad request (400): ${detail || 'invalid parameters — the API rejects fields not declared in its DTO whitelist'}`;
+        return `Bad request (400): ${detail || "invalid parameters — the API rejects fields not declared in its DTO whitelist"}`;
       case 401:
-        return `Unauthorized (401): ${detail || 'token missing, expired or invalid'} — run "acf login" or pass --token / set ACF_TOKEN`;
+        return `Unauthorized (401): ${detail || "token missing, expired or invalid"} — run "acf login" or pass --token / set ACF_TOKEN`;
       case 403:
-        return `Forbidden (403): ${detail || 'your account is not allowed to perform this operation (some endpoints require the ADMIN role)'}`;
+        return `Forbidden (403): ${detail || "your account is not allowed to perform this operation (some endpoints require the ADMIN role)"}`;
       case 404:
-        return `Not found (404): ${detail || 'resource does not exist'}`;
+        return `Not found (404): ${detail || "resource does not exist"}`;
       case 409:
-        return `Conflict (409): ${detail || 'resource already exists'}`;
+        return `Conflict (409): ${detail || "resource already exists"}`;
       default:
         if (status) {
           return `API error (${status}): ${detail || err.message}`;
