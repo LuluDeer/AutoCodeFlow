@@ -34,6 +34,8 @@ import { AiService } from "../../ai/ai.service";
 import { ExecutorService } from "../../executor/executor.service";
 import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
+// SEC-02: secrets 加密服务（降级明文，日志链路用例语义零变化）
+import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.service";
 
 const minioClient = {
   bucketExists: jest.fn(),
@@ -219,6 +221,11 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
           },
         },
         { provide: AuditService, useValue: { log: jest.fn() } },
+        // SEC-02: 默认降级明文
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
       ],
     }).compile();
 
