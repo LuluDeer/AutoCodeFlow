@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Spin, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result } from 'antd';
+import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result } from 'antd';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -9,6 +9,7 @@ import { getErrMsg } from '../utils/error';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
+import PageSkeleton from '../components/PageSkeleton';
 import { useState } from 'react';
 
 const { Text } = Typography;
@@ -117,7 +118,8 @@ export default function ExecutorDetailPage() {
     },
   );
 
-  if (loadingExecutor && !executor) return <div style={{ display: 'flex', justifyContent: 'center', marginTop: 100 }}><Spin size="large" /></div>;
+  // UI-08：首屏骨架屏替代裸 Spin
+  if (loadingExecutor && !executor) return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
   // U7: 请求失败 ≠ 执行器不存在——错误态给重试入口，数据确空才显示 Empty
   if (!executor && executorError) {
     return (

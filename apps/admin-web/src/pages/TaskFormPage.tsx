@@ -6,7 +6,7 @@ import {
 } from './executor-mode';
 import {
   Card, Form, Input, Select, Button, Steps, Space, Typography,
-  InputNumber, Radio, Alert, message, Divider, Tag, Spin, Tooltip,
+  InputNumber, Radio, Alert, message, Divider, Tag, Tooltip,
 } from 'antd';
 import {
   ThunderboltOutlined, ClockCircleOutlined, ArrowLeftOutlined,
@@ -27,6 +27,7 @@ import { TASK_PRIORITY_OPTIONS, toPriorityValue } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 import GlueEditor from '../components/GlueEditor';
 import AlarmConfig from '../components/AlarmConfig';
+import PageSkeleton from '../components/PageSkeleton';
 import {
   applyMaintenanceWindowsPayload,
   MAINTENANCE_WINDOWS_MAX,
@@ -271,7 +272,8 @@ export default function TaskFormPage() {
   };
 
   if (loadingTask) {
-    return <div style={{ display: 'flex', justifyContent: 'center', marginTop: 100 }}><Spin size="large" tip="加载任务数据..." /></div>;
+    // UI-08：首屏骨架屏替代裸 Spin（仅此加载区块；表单结构与分步逻辑不动）
+    return <PageSkeleton variant="table" rows={6} style={{ maxWidth: 720, padding: 24 }} />;
   }
 
   const glueTaskId = createdTaskId || (isEdit ? editId : null);

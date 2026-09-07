@@ -16,6 +16,7 @@ import {
   Col,
   Input,
 } from 'antd';
+import PageHeader from '../components/PageHeader';
 import {
   DownloadOutlined,
   CopyOutlined,
@@ -277,15 +278,22 @@ export default function ExecutorInstallWizardPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 24, gap: 12 }}>
-        <Button
-          icon={<ArrowLeftOutlined />}
-          type="text"
-          onClick={() => navigate('/executors')}
-          aria-label="返回执行器列表"
-        />
-        <Title level={4} style={{ margin: 0 }}>执行器安装向导</Title>
-      </div>
+      {/* UI-03/UI-08：页头标准化（返回按钮迁入 PageHeader extra，行为不变） */}
+      <PageHeader
+        title="执行器安装向导"
+        description="按步骤完成系统要求检查、安装包选择、命令获取与安装验证。"
+        breadcrumb={[{ title: '执行器列表', to: '/executors' }, { title: '安装向导' }]}
+        extra={
+          <Button
+            icon={<ArrowLeftOutlined />}
+            type="text"
+            onClick={() => navigate('/executors')}
+            aria-label="返回执行器列表"
+          >
+            返回执行器列表
+          </Button>
+        }
+      />
 
       <Steps
         current={currentStep}

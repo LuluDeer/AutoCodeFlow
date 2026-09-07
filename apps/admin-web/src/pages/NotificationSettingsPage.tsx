@@ -6,6 +6,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { client } from '../api/client';
 import { silencesApi, type NotificationSilence, type CreateSilencePayload, type SilenceScope } from '../api/notifications';
 import { useAuthStore, isAdminUser } from '../store/auth';
+import PageHeader from '../components/PageHeader';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -392,7 +393,11 @@ export default function NotificationSettingsPage() {
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginBottom: 16 }}>通知设置</Typography.Title>
+      {/* UI-03/UI-08：页头标准化（原 Typography.Title 区块迁入 PageHeader） */}
+      <PageHeader
+        title="通知设置"
+        description="配置告警通知渠道（邮件/Slack/钉钉/企业微信）、静默规则与全局测试发送。"
+      />
       <Card loading={loading}>
         {/* W1：ChannelConfigForm 自带渠道私有 form 与测试状态，切 Tab 无需 resetFields */}
         <Tabs

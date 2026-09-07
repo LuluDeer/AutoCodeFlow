@@ -15,6 +15,8 @@ import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 import { useAuthStore, isAdminUser } from '../store/auth';
+import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
 
 /**
  * W3 RBAC（对齐 settings 页先例）：应用详情页内的写操作——同步任务、保存应用设置、
@@ -115,7 +117,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
   );
 }
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 const STATUS_COLORS: Record<string, string> = {
   active: 'green', deploying: 'blue', failed: 'red',
@@ -486,34 +488,27 @@ export default function ApplicationDetailPage() {
     finally { setSyncing(false); }
   };
 
-  if (loading) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
+  // UI-08：首屏加载以骨架屏替代裸 Spin
+  if (loading) return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
   if (!app) return <Empty description="应用不存在" />;
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/applications')}>返回</Button>
-        <Button icon={<ReloadOutlined />} onClick={fetchApp}>刷新</Button>
-      </Space>
-
-      <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
-        <Col>
-          <Space align="center">
-            {app.gitRepo && <GithubOutlined style={{ fontSize: 20 }} />}
-            <Title level={4} style={{ margin: 0 }}>{app.name}</Title>
-            <Tag color={STATUS_COLORS[app.status] || 'default'}>
-              {STATUS_LABELS[app.status] || app.status}
-            </Tag>
-            {app.gitBranch && <Tag>{app.gitBranch}</Tag>}
-            <Tag color="blue">{app.version}</Tag>
-          </Space>
-        </Col>
-        <Col>
-          <Button type="primary" icon={<RocketOutlined />} onClick={() => setSearchParams({ tab: 'deployments' })}>
-            新建部署
-          </Button>
-        </Col>
-      </Row>
+      {/* UI-03/UI-08：页头标准化（返回/刷新迁入 extra，面包屑声明二级层级） */}
+      <PageHeader
+        title={app.name}
+        description="应用配置、版本与部署管理"
+        breadcrumb={[{ title: '应用管理', to: '/applications' }, { title: app.name }]}
+        extra={
+          <>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/applications')}>返回</Button>
+            <Button icon={<ReloadOutlined />} onClick={fetchApp}>刷新</Button>
+            <Button type="primary" icon={<RocketOutlined />} onClick={() => setSearchParams({ tab: 'deployments' })}>
+              新建部署
+            </Button>
+          </>
+        }
+      />
 
       <Tabs
         activeKey={activeTab}

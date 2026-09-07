@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Card, Row, Col, Typography, Tag, Space, Button, Empty, Popconfirm,
-  message, Spin, Alert,
+  message,
 } from 'antd';
 import {
   CopyOutlined, DeleteOutlined, FileTextOutlined,
@@ -11,6 +11,8 @@ import { useNavigate } from 'react-router-dom';
 import { useRequest } from 'ahooks';
 import { taskTemplatesApi, TaskTemplate } from '../api/task-templates';
 import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
+import StateError from '../components/StateError';
 
 const { Text, Paragraph } = Typography;
 
@@ -62,8 +64,17 @@ export default function TaskTemplatesPage() {
   // TaskFormPage 读取后预填（用户在表单里补 name 后提交即为「可运行任务」）。
   const handleUse = (tpl: TaskTemplate) => nav(`/tasks/new?templateId=${tpl.id}`);
 
+  // UI-08：首屏加载（卡片页形态）以骨架屏替代裸 Spin
   if (loading) {
-    return <div style={{ display: 'flex', justifyContent: 'center', marginTop: 100 }}><Spin size="large" /></div>;
+    return (
+      <div>
+        <PageHeader
+          title="任务模板"
+          description="常用任务形态固化为模板，一键复制配置生成可运行任务草稿。"
+        />
+        <PageSkeleton variant="cards" rows={4} />
+      </div>
+    );
   }
 
   return (
@@ -74,9 +85,14 @@ export default function TaskTemplatesPage() {
         description="常用任务形态固化为模板，一键复制配置生成可运行任务草稿。"
       />
 
+      {/* UI-08：错误态标准化——原仅 Alert 提示，升级为「重试 + 复制错误信息」错误块 */}
       {error && (
-        <Alert type="error" showIcon style={{ marginBottom: 16 }}
-          title="加载模板失败" description="请稍后重试或检查后端服务。" />
+        <StateError
+          error={error}
+          onRetry={refresh}
+          title="加载模板失败"
+          style={{ marginBottom: 16 }}
+        />
       )}
 
       {!loading && !error && (!templates || templates.length === 0) && (
