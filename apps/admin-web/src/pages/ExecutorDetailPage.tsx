@@ -7,6 +7,8 @@ import { useRequest } from 'ahooks';
 import { executorsApi, type ExecutorExecution } from '../api/executors';
 import { getErrMsg } from '../utils/error';
 import { useAuthStore, isAdminUser } from '../store/auth';
+import { useThemeStore, selectResolvedTheme } from '../theme/store';
+import { CHART_COLORS } from '../theme/tokens';
 import { useState } from 'react';
 
 const { Text } = Typography;
@@ -56,6 +58,8 @@ export default function ExecutorDetailPage() {
   // W2 对齐：管理写操作（编辑/配置热更新/设置离线/轮换 Token）后端已收紧
   // ADMIN-only，非 admin 隐藏入口，避免"可见但点击 403"（R5 门控模式）。
   const isAdmin = isAdminUser(useAuthStore((s) => s.user));
+  // UI-02：资源趋势图双主题（网格线/轴文字）
+  const isDark = useThemeStore(selectResolvedTheme) === 'dark';
   const [editOpen, setEditOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [execPage, setExecPage] = useState(1);
@@ -361,22 +365,23 @@ export default function ExecutorDetailPage() {
         ) : (
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={historyPoints} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              {/* UI-02：网格/轴随双主题切换 */}
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={CHART_COLORS.grid(isDark)} />
               <XAxis
                 dataKey="timestamp"
                 tickFormatter={trendTickFormatter}
-                tick={{ fontSize: 11 }}
+                tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }}
                 minTickGap={32}
                 interval="preserveStartEnd"
               />
               {/* 左轴：CPU/内存百分比；右轴：并发任务数（独立量纲） */}
-              <YAxis yAxisId="pct" domain={[0, 100]} width={36} tick={{ fontSize: 11 }} />
-              <YAxis yAxisId="cnt" orientation="right" allowDecimals={false} width={36} tick={{ fontSize: 11 }} />
+              <YAxis yAxisId="pct" domain={[0, 100]} width={36} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
+              <YAxis yAxisId="cnt" orientation="right" allowDecimals={false} width={36} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
               <RechartTooltip labelFormatter={(label) => trendTooltipLabel(String(label))} labelStyle={{ fontSize: 12 }} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Line yAxisId="pct" type="monotone" dataKey="cpuUsage" name="CPU %" stroke="#1677ff" strokeWidth={1.5} dot={false} connectNulls />
-              <Line yAxisId="pct" type="monotone" dataKey="memUsage" name="内存 %" stroke="#722ed1" strokeWidth={1.5} dot={false} connectNulls />
-              <Line yAxisId="cnt" type="monotone" dataKey="runningTaskCount" name="并发任务" stroke="#fa8c16" strokeWidth={1.5} dot={false} connectNulls />
+              <Line yAxisId="pct" type="monotone" dataKey="cpuUsage" name="CPU %" stroke={CHART_COLORS.cpu} strokeWidth={1.5} dot={false} connectNulls />
+              <Line yAxisId="pct" type="monotone" dataKey="memUsage" name="内存 %" stroke={CHART_COLORS.memory} strokeWidth={1.5} dot={false} connectNulls />
+              <Line yAxisId="cnt" type="monotone" dataKey="runningTaskCount" name="并发任务" stroke={CHART_COLORS.concurrent} strokeWidth={1.5} dot={false} connectNulls />
             </LineChart>
           </ResponsiveContainer>
         )}

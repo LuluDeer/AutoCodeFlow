@@ -17,12 +17,16 @@ import {
 import { metricsApi } from '../api/metrics';
 import { tasksApi } from '../api/tasks';
 import { formatDuration } from '../utils/timeFormat';
+import { useThemeStore, selectResolvedTheme } from '../theme/store';
+import { CHART_COLORS } from '../theme/tokens';
 
 const { Text, Title } = Typography;
 
 export default function DashboardPage() {
   const nav = useNavigate();
   const [trendDays, setTrendDays] = useState<number>(7);
+  // UI-02：图表双主题——网格线/轴文字随 data-theme 切换
+  const isDark = useThemeStore(selectResolvedTheme) === 'dark';
 
   const { data: summary, loading: summaryLoading, refresh: refreshSummary } = useRequest(
     () => metricsApi.getSummary(),
@@ -96,36 +100,36 @@ export default function DashboardPage() {
         </Space>
       </div>
 
-      {/* KPI 卡片 */}
+      {/* KPI 卡片——UI-02：卡片底色接入 CSS 变量（双主题），强调色取 token 语义面 */}
       <Spin spinning={summaryLoading}>
         <Row gutter={[16, 16]}>
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: '#f0f9ff', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
                 title={<Text style={{ fontSize: 13 }}>任务总数</Text>}
                 value={s?.totalTasks ?? '-'}
-                prefix={<RocketOutlined style={{ color: '#1677ff' }} />}
-                styles={{ content: { color: '#1677ff', fontSize: 28 } }}
+                prefix={<RocketOutlined style={{ color: CHART_COLORS.cpu }} />}
+                styles={{ content: { color: CHART_COLORS.cpu, fontSize: 28 } }}
               />
             </Card>
           </Col>
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: '#f6ffed', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
                 title={<Text style={{ fontSize: 13 }}>今日执行</Text>}
                 value={s?.todayRuns ?? totalExec}
-                prefix={<ThunderboltOutlined style={{ color: '#52c41a' }} />}
-                styles={{ content: { color: '#52c41a', fontSize: 28 } }}
+                prefix={<ThunderboltOutlined style={{ color: CHART_COLORS.success }} />}
+                styles={{ content: { color: CHART_COLORS.success, fontSize: 28 } }}
               />
             </Card>
           </Col>
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: '#fff7e6', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
                 title={<Text style={{ fontSize: 13 }}>运行中</Text>}
                 value={runningCount}
-                prefix={<ClockCircleOutlined style={{ color: '#fa8c16' }} />}
-                styles={{ content: { color: runningCount > 0 ? '#fa8c16' : '#999', fontSize: 28 } }}
+                prefix={<ClockCircleOutlined style={{ color: CHART_COLORS.concurrent }} />}
+                styles={{ content: { color: runningCount > 0 ? CHART_COLORS.concurrent : 'var(--chart-axis-text)', fontSize: 28 } }}
                 suffix={
                   runningCount > 0
                     ? <Badge status="processing" style={{ marginLeft: 6 }} />
@@ -135,12 +139,12 @@ export default function DashboardPage() {
             </Card>
           </Col>
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: '#f9f0ff', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
                 title={<Text style={{ fontSize: 13 }}>在线执行器</Text>}
                 value={`${s?.onlineExecutors ?? '-'} / ${s?.totalExecutors ?? '-'}`}
-                prefix={<ApiOutlined style={{ color: '#722ed1' }} />}
-                styles={{ content: { color: '#722ed1', fontSize: 28 } }}
+                prefix={<ApiOutlined style={{ color: CHART_COLORS.memory }} />}
+                styles={{ content: { color: CHART_COLORS.memory, fontSize: 28 } }}
               />
             </Card>
           </Col>
@@ -160,16 +164,16 @@ export default function DashboardPage() {
                 type="circle"
                 percent={Math.round(successRate * 100) / 100}
                 size={80}
-                strokeColor={successRate >= 95 ? '#52c41a' : successRate >= 80 ? '#fa8c16' : '#ff4d4f'}
+                strokeColor={successRate >= 95 ? CHART_COLORS.success : successRate >= 80 ? CHART_COLORS.concurrent : CHART_COLORS.failed}
                 format={p => <span style={{ fontSize: 14, fontWeight: 600 }}>{p}%</span>}
               />
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                  <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                  <CheckCircleOutlined style={{ color: CHART_COLORS.success }} />
                   <Text>成功 {s?.executions?.success ?? 0}</Text>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                  <CloseCircleOutlined style={{ color: CHART_COLORS.failed }} />
                   <Text>失败 {s?.executions?.failed ?? 0}</Text>
                 </div>
               </div>
@@ -183,7 +187,7 @@ export default function DashboardPage() {
             style={{ borderRadius: 10 }}
           >
             <div style={{ textAlign: 'center', paddingTop: 8 }}>
-              <Text style={{ fontSize: 32, fontWeight: 700, color: '#1677ff' }}>
+              <Text style={{ fontSize: 32, fontWeight: 700, color: CHART_COLORS.cpu }}>
                 {formatDuration(s?.avgDurationMs)}
               </Text>
               <div style={{ marginTop: 8 }}>
@@ -217,21 +221,22 @@ export default function DashboardPage() {
             <AreaChart data={trendData} margin={{ top: 5, right: 16, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="gradSuccess" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#52c41a" stopOpacity={0.25} />
-                  <stop offset="95%" stopColor="#52c41a" stopOpacity={0} />
+                  <stop offset="5%" stopColor={CHART_COLORS.success} stopOpacity={0.25} />
+                  <stop offset="95%" stopColor={CHART_COLORS.success} stopOpacity={0} />
                 </linearGradient>
                 <linearGradient id="gradFailed" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#ff4d4f" stopOpacity={0.25} />
-                  <stop offset="95%" stopColor="#ff4d4f" stopOpacity={0} />
+                  <stop offset="5%" stopColor={CHART_COLORS.failed} stopOpacity={0.25} />
+                  <stop offset="95%" stopColor={CHART_COLORS.failed} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+              {/* UI-02：网格/轴随双主题切换 */}
+              <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid(isDark)} />
+              <XAxis dataKey="date" tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
+              <YAxis tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} allowDecimals={false} />
               <RechartTooltip />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Area type="monotone" dataKey="成功" stroke="#52c41a" fill="url(#gradSuccess)" strokeWidth={2} />
-              <Area type="monotone" dataKey="失败" stroke="#ff4d4f" fill="url(#gradFailed)" strokeWidth={2} />
+              <Area type="monotone" dataKey="成功" stroke={CHART_COLORS.success} fill="url(#gradSuccess)" strokeWidth={2} />
+              <Area type="monotone" dataKey="失败" stroke={CHART_COLORS.failed} fill="url(#gradFailed)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
         </Spin>
@@ -278,7 +283,7 @@ export default function DashboardPage() {
                     dataIndex: 'cpuUsage',
                     width: 65,
                     render: (v: number) => (
-                      <Text style={{ fontSize: 11, color: v > 80 ? '#ff4d4f' : v > 60 ? '#fa8c16' : '#52c41a' }}>
+                      <Text style={{ fontSize: 11, color: v > 80 ? CHART_COLORS.failed : v > 60 ? CHART_COLORS.concurrent : CHART_COLORS.success }}>
                         {v?.toFixed(0)}%
                       </Text>
                     ),
@@ -305,7 +310,7 @@ export default function DashboardPage() {
             <Spin spinning={failLoading}>
               {failureList.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '24px 0' }}>
-                  <CheckCircleOutlined style={{ fontSize: 28, color: '#52c41a' }} />
+                  <CheckCircleOutlined style={{ fontSize: 28, color: CHART_COLORS.success }} />
                   <div style={{ marginTop: 8 }}>
                     <Text type="secondary">近期无失败记录</Text>
                   </div>

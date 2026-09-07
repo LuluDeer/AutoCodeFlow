@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { Layout, Menu, Avatar, Dropdown, Badge, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
 import {
   DashboardOutlined,
@@ -18,15 +18,27 @@ import {
   HomeOutlined,
   QuestionCircleOutlined,
   SearchOutlined,
+  SunOutlined,
+  MoonOutlined,
+  DesktopOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { authApi } from '../api/auth';
 import { logoutRemote } from '../api/logout';
 import CommandPalette from '../components/CommandPalette';
+import { useThemeStore } from '../theme/store';
+import type { ThemeMode } from '../theme/store';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
+
+// UI-02：主题三态切换按钮的图标/文案/aria 标签（light → dark → system 循环）
+const THEME_BUTTON_META: Record<ThemeMode, { icon: ReactNode; label: string; aria: string }> = {
+  light: { icon: <SunOutlined />, label: '亮色', aria: '切换主题（当前亮色，点击切换到暗色）' },
+  dark: { icon: <MoonOutlined />, label: '暗色', aria: '切换主题（当前暗色，点击切换为跟随系统）' },
+  system: { icon: <DesktopOutlined />, label: '跟随系统', aria: '切换主题（当前跟随系统，点击切换到亮色）' },
+};
 
 // 菜单全量定义；渲染时按角色过滤（R5 RBAC）
 const allMenuItems = [
@@ -65,6 +77,10 @@ export default function MainLayout() {
   // FEAT-09: 全局命令面板（⌘K / Ctrl+K 唤起，头部搜索按钮同快捷键行为）
   const [paletteOpen, setPaletteOpen] = useState(false);
   const { token } = theme.useToken();
+  // UI-02：主题三态——mode 为用户意愿（按钮图标/文案随态变化）
+  const themeMode = useThemeStore((s) => s.mode);
+  const cycleThemeMode = useThemeStore((s) => s.cycleMode);
+  const themeMeta = THEME_BUTTON_META[themeMode];
 
   // R5: 登录响应只含 token，role 需从 GET /auth/profile 补齐。
   // 覆盖两种场景：刚登录（store 里 user 为空）+ 旧 localStorage 会话（user 无 role）。
@@ -133,7 +149,7 @@ export default function MainLayout() {
       label: (
         <div style={{ padding: '4px 0' }}>
           <div style={{ fontWeight: 600, fontSize: 14 }}>{user?.username || '用户'}</div>
-          <div style={{ fontSize: 12, color: '#8c8c8c' }}>{user?.role === 'admin' ? '管理员' : '普通用户'}</div>
+          <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{user?.role === 'admin' ? '管理员' : '普通用户'}</div>
         </div>
       ),
       disabled: true,
@@ -181,7 +197,7 @@ export default function MainLayout() {
         style={{
           background: token.colorBgContainer,
           borderRight: `1px solid ${token.colorBorderSecondary}`,
-          boxShadow: '2px 0 8px rgba(0,0,0,0.04)',
+          boxShadow: 'var(--shadow-sm)',
         }}
       >
         {/* Logo */}
@@ -202,12 +218,13 @@ export default function MainLayout() {
               width: 28,
               height: 28,
               borderRadius: 8,
-              background: 'linear-gradient(135deg, #1677ff 0%, #7c3aed 100%)',
+              // UI-01：强调色 #22C55E 渐变（MASTER.md Accent/CTA）
+              background: 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               flexShrink: 0,
-              boxShadow: '0 2px 8px rgba(22,119,255,0.3)',
+              boxShadow: '0 2px 8px rgba(34, 197, 94, 0.3)',
             }}
           >
             <ThunderboltOutlined style={{ color: '#fff', fontSize: 14 }} />
@@ -272,7 +289,7 @@ export default function MainLayout() {
             position: 'sticky',
             top: 0,
             zIndex: 100,
-            boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+            boxShadow: 'var(--shadow-sm)',
           }}
         >
           <Space size={12}>
@@ -287,6 +304,19 @@ export default function MainLayout() {
               <div style={{ fontSize: 14, fontWeight: 600, color: token.colorText }}>{timeStr}</div>
               <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{dateStr}</div>
             </div>
+
+            {/* UI-02：明暗主题切换——light → dark → system 三态循环，
+                图标随当前态变化，aria-label 随态更新（可达性） */}
+            <Tooltip title={`主题：${themeMeta.label}（点击切换）`}>
+              <Button
+                type="text"
+                icon={themeMeta.icon}
+                aria-label={themeMeta.aria}
+                data-testid="theme-toggle"
+                style={{ fontSize: 16, color: token.colorTextSecondary }}
+                onClick={cycleThemeMode}
+              />
+            </Tooltip>
 
             {/* FEAT-09: 全局搜索入口——点击行为与 ⌘K/Ctrl+K 一致（再按切换） */}
             <Tooltip title="Ctrl K">
@@ -331,7 +361,7 @@ export default function MainLayout() {
               >
                 <Avatar
                   size={30}
-                  style={{ background: 'linear-gradient(135deg, #1677ff, #7c3aed)', fontSize: 13, flexShrink: 0 }}
+                  style={{ background: 'linear-gradient(135deg, #22c55e, #16a34a)', fontSize: 13, flexShrink: 0 }}
                 >
                   {user?.username?.[0]?.toUpperCase() || 'U'}
                 </Avatar>
