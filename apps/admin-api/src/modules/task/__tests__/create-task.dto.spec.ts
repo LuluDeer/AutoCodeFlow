@@ -262,6 +262,30 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
     });
   });
 
+  // FEAT-11: runbook — plain optional string (markdown). No structure
+  // validation by design; UpdateTaskDto inherits via PartialType.
+  describe("runbook validation (FEAT-11)", () => {
+    it("accepts a markdown runbook string", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        runbook: "## 排障步骤\n1. 检查依赖服务",
+      });
+      expect(result.runbook).toContain("排障步骤");
+    });
+
+    it("stays optional when absent", async () => {
+      const result = await validateCreate({ name: "t1", triggerType: "api" });
+      expect(result.runbook).toBeUndefined();
+    });
+
+    it("rejects non-string values", async () => {
+      await expect(
+        validateCreate({ name: "t1", triggerType: "api", runbook: 42 as never }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
   // FEAT-06: maintenanceWindows — DTO boundary enforces STRUCTURE only
   // (array of ≤10 {start,end} 5-field cron entries); the window-hit skip
   // semantics live in scheduler.enqueue + maintenance-window.util.ts.

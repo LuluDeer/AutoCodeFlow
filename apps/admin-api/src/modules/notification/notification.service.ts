@@ -431,6 +431,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     error: string,
     aiAnalysis?: string,
     taskId?: string,
+    runbook?: string | null,
   ) {
     if (this.isSilenced(taskId, AlertLevel.ERROR)) {
       this.logger.debug(`Failure alert silenced for task ${taskName}`);
@@ -439,7 +440,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
     return this.sendAll({
       title: `Task failed: ${taskName}`,
-      content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}`,
+      content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}${runbook ? `\n\nRunbook:\n${runbook}` : ""}`,
       level: "error",
     });
   }
@@ -515,6 +516,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     alarmChannels?: string[],
     webhookUrl?: string,
     taskId?: string,
+    runbook?: string | null,
   ) {
     const taskChannels =
       (alarmChannels?.map((c) => c.toLowerCase()) as AlertChannel[]) || [];
@@ -527,11 +529,11 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!alarmChannels || alarmChannels.length === 0) {
-      return this.notifyFailure(taskName, execId, error, aiAnalysis, taskId);
+      return this.notifyFailure(taskName, execId, error, aiAnalysis, taskId, runbook);
     }
     const payload: NotificationPayload = {
       title: `Task failed: ${taskName}`,
-      content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}${alarmEmail ? `\nRecipient: ${alarmEmail}` : ""}`,
+      content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}${alarmEmail ? `\nRecipient: ${alarmEmail}` : ""}${runbook ? `\n\nRunbook:\n${runbook}` : ""}`,
       level: "error",
     };
 

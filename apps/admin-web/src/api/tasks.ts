@@ -49,6 +49,8 @@ export interface Task {
   dependencies?: Record<string, string> | null;
   /** FEAT-06: 维护窗口（null/[] = 未配置；表单未填写时提交 null 以清空） */
   maintenanceWindows?: MaintenanceWindow[] | null;
+  /** FEAT-11: markdown 运行手册——失败排障知识，详情页展示并随失败通知附链接 */
+  runbook?: string | null;
   gitRepo?: string | null;
   gitBranch?: string | null;
   gitCommit?: string | null;

@@ -196,6 +196,9 @@ export class TaskProcessor extends WorkerHost {
             exec.aiAnalysis,
             task.alarmEmail,
             task.alarmChannels,
+            undefined,
+            undefined,
+            task.runbook,
           );
         } catch (notifyErr: unknown) {
           // B-08: record notification failure to audit log so it is not silently discarded
