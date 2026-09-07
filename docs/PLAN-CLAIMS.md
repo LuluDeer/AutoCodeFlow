@@ -56,7 +56,7 @@
 | CORE-06 | P1 | unclaimed | | | admin-api SchedulerMetrics + Grafana | | 调度延迟分布 P99 |
 | OBS-01 | P1 | unclaimed | | | admin-api + 双执行器 + compose | | OpenTelemetry 追踪（跨三端，宜整轮承接） |
 | OBS-02 | P1 | unclaimed | | | admin-api 新端点 + Alertmanager 配置 | | 告警路由到通知渠道（依赖 FEAT-11） |
-| OBS-03 | P1 | in_progress | session-B（001=后端半场 done；005=前端半场 in_progress） | 2026-09-07 05:5x | admin-api 侧 done；admin-web 日志区 | 111f648（后端） | 后端半场 done：level 列+三列索引+查询过滤+S3 读后过滤（1366/68）；**前端半场（级别过滤下拉+错误高亮）session-B/005 in_progress** |
+| OBS-03 | P1 | done | session-B（001=后端半场 111f648；005=前端半场 c47884b） | 2026-09-07 05:5x | admin-api task 模块 + admin-web 日志区 | 111f648 + c47884b | **整体闭环**：level 列+三列索引+SQL 过滤+S3 读后过滤（后端 57 例）；前端级别过滤 Select+行高亮（useMemo 分段+逐字符相等测试）+10 例；admin-web 160/160 |
 | OBS-04 | P1 | unclaimed | | | admin-api + admin-web | | execution_reports 消费 + 时间线 Tab |
 | OBS-05 | P1 | done | session-B（员工 001 承接） | 2026-09-07 03:3x | admin-api metrics 模块 + docs/observability | 5b5bfb5 | 容量水位四件套（PG 池四 series 真实 pg.Pool 取数/executor 磁盘/SSE/队列）+Grafana row4+阈值文档（并发编辑覆盖后补记，CI 绿佐证） |
 | ECO-01 | P1 | unclaimed | | | 双 SDK + examples | | SDK 统一矩阵 + 官方示例（路线图 #10 收口） |
@@ -122,7 +122,7 @@
 | SEC-NEW-2 | P2 | unclaimed | | | executor-python routers/execute.py gitRepo 守卫 | | 真机冒烟新发现：py 执行器无条件拒私网 gitRepo（正则 S7），admin 侧允许私网 LAN（ADR 注释文档化拓扑）——两端策略不一致，内网 GitLab 拉取对 py 执行器不可用；需镜像 admin 的 EXECUTOR_ALLOW_PRIVATE_NETWORK 式开关（安全姿态变更，需拍板）|
 | SEC-NEW-3 | P3 | unclaimed | | | executor-python main.py registerExecutor | | 对齐 BUG-08/313d203：py 侧 register 失败后无 token 恢复补注册（node 侧已有钩子），/token fallback 重建行丢富元数据 |
 | DOC-01 | P1 | unclaimed | | | PR 模板 + api-reference | ⚠️ | API 变更检查项机制（api-reference 并行会话在途，先建模板） |
-| DOC-02 | P1 | unclaimed | | | docs/operations.md | | 运维手册补全（依赖 QA-05/08 产出） |
+| DOC-02 | P1 | in_progress | session-B（前半 done：容量规划+备份恢复；升级 runbook 留 QA-08 产出后） | 2026-09-07 09:3x | docs/operations.md + observability 交叉引用 | ff56c15 | 前半 done：容量规划（水位表/扩容要点/压测占位 5 处"待压测确认"）+备份恢复（对象清单/五步骨架/pgBackRest 骨架/演练 checklist）；升级 runbook 待 QA-08 |
 | DOC-03 | P2 | done | main-A（ARCH-20 批次实现）/session-B 复核销账 | 2026-09-07 04:1x | scripts/demo-seed*.mjs | | 复核：demo:seed+selftest 已实现且自检通过（含 --password 门槛/演示数据形态），板信息滞后补记 |
 | DOC-04 | P2 | done | main-A | 2026-09-07 | docs/adr/（新建 11 文件） | 见批五 commit | ADR-001~010 + 索引 README |
 | DOC-05 | P2 | unclaimed | | | release 配置 | | CHANGELOG 自动化（release-please） |
@@ -162,3 +162,5 @@
 - 2026-09-07 session-B：OBS-05 done 补记（并发编辑覆盖回退）；认领 OBS-03 后端半场（001）/FEAT-01 UI 半场（005）。
 
 - 2026-09-07 session-B：批 B5 done=OBS-03 后端半场(111f648)/FEAT-01 UI 半场(2e97d35)；认领收尾波：OBS-03 前端半场（005）/DOC-02 容量规划小节（001）。
+
+- 2026-09-07 session-B：批 B6 done=OBS-03 前端半场(c47884b，整体闭环)/DOC-02 前半(ff56c15)。session-B 收工总结：认领 13 任务全 done（BUG-01/FEAT-08/SEC-04/FEAT-04/OBS-05/FEAT-12/QA-06/FEAT-06/ARCH-27/FEAT-09/OBS-03/FEAT-01-UI 半场/DOC-02 前半）+DOC-03 复核销账+CORE-01 协作修复+CI 红治理 4 轮；基线 admin-api 1367/68 · admin-web 160/160 · registry-pypi 68 · CI 24 job 绿（run 34073326212，HEAD ff56c15）。
