@@ -3,6 +3,58 @@ import { TaskEnv, TaskResult, LogEntry } from './types';
 import { TaskLogger } from './logger';
 
 /**
+ * ECO-01: CallbackItemDto field caps (parity with the python SDK's
+ * `callback.py` constants and the admin DTO
+ * apps/admin-api/src/modules/task/dto/execution-callback.dto.ts).
+ */
+export const ERROR_MESSAGE_MAX_LENGTH = 4096;
+export const LOGS_MAX_LENGTH = 512_000;
+
+/**
+ * ECO-01: stringify an arbitrary thrown value for the callback item's
+ * `errorMessage` field. Language-native equivalent of the python SDK's
+ * `str(error)` — Error instances contribute their message, plain objects
+ * serialize as JSON (python's str() renders a dict repr), anything else
+ * falls back to `String()`. The result is truncated to the DTO's 4 KB cap
+ * by `reportFailure`.
+ */
+function stringifyError(error: unknown): string {
+  if (error === undefined || error === null) return '';
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    return JSON.stringify(error) ?? String(error);
+  } catch {
+    return String(error); // circular structures etc.
+  }
+}
+
+/** Options for `TaskContext.reportSuccess()` (ECO-01, mirrors the python SDK's
+ *  `report_success(summary=..., duration_ms=...)` keywords). */
+export interface ReportSuccessOptions {
+  /** Written to the callback item's `logs` field (truncated to LOGS_MAX_LENGTH). */
+  summary?: string;
+  /** Written to the callback item's `durationMs` field (omitted when undefined). */
+  durationMs?: number;
+}
+
+/** Options for `TaskContext.reportFailure()` (mirrors the python SDK's
+ *  `report_failure(error, summary=..., duration_ms=..., failure_reason=...)`). */
+export interface ReportFailureOptions {
+  summary?: string;
+  durationMs?: number;
+  /**
+   * admin-api `ExecutionFailureReason` value. Defaults to `script_error` —
+   * the same default as the python SDK. Note the deliberate divergence:
+   * the python SDK validates the value client-side against its whitelist
+   * and raises ValueError, while the node SDK stays a thin client and lets
+   * the admin DTO validation reject unknown values (see
+   * docs/sdk-guide.md capability matrix).
+   */
+  failureReason?: string;
+}
+
+/**
  * Runtime context handed to every task handler.
  *
  * Provides:
@@ -161,5 +213,62 @@ export class TaskContext {
    */
   get executorAddress(): string | undefined {
     return this.env.executorAddress;
+  }
+
+  // ------------------------------------------------------------------ callback shorthands
+
+  /**
+   * Build the `executorAddress` field for a callback item: present only
+   * when this executor's address is known — an omitted field is never sent
+   * as an empty string (the python SDK's `report_success`/`report_failure`
+   * do exactly this, and the admin DTO treats empty the same as absent).
+   */
+  private callbackAddressField(): Record<string, unknown> {
+    return this.env.executorAddress
+      ? { executorAddress: this.env.executorAddress }
+      : {};
+  }
+
+  /**
+   * ECO-01: report `status=success` for this execution — the node-side twin
+   * of the python SDK's `ctx.report_success(summary=..., duration_ms=...)`.
+   * `executionId` is pinned to this execution and `executorAddress` is
+   * stamped automatically (N27); the response is the unwrapped
+   * `{ results: [...] }` payload (U14 envelope handling in HttpClient).
+   *
+   * Throws when the client is disabled (missing credentials) — the same
+   * fail-closed behavior as a manual `ctx.http.post(...)` on a disabled
+   * client; gate on `ctx.http.enabled` when capability is uncertain.
+   */
+  reportSuccess(options: ReportSuccessOptions = {}): Promise<unknown> {
+    const { summary, durationMs } = options;
+    const item: Record<string, unknown> = {
+      executionId: this.env.executionId,
+      status: 'success',
+      ...this.callbackAddressField(),
+    };
+    if (summary) item.logs = summary.slice(0, LOGS_MAX_LENGTH);
+    if (durationMs !== undefined) item.durationMs = durationMs;
+    return this.http.post('/api/executions/callback', [item]);
+  }
+
+  /**
+   * ECO-01: report `status=failed` for this execution — the node-side twin
+   * of the python SDK's `ctx.report_failure(error, ...)`. `error` is
+   * stringified into `errorMessage` and truncated to the DTO's 4 KB cap
+   * (`ERROR_MESSAGE_MAX_LENGTH`, python parity).
+   */
+  reportFailure(error: unknown, options: ReportFailureOptions = {}): Promise<unknown> {
+    const { summary, durationMs, failureReason = 'script_error' } = options;
+    const item: Record<string, unknown> = {
+      executionId: this.env.executionId,
+      status: 'failed',
+      errorMessage: stringifyError(error).slice(0, ERROR_MESSAGE_MAX_LENGTH),
+      failureReason,
+      ...this.callbackAddressField(),
+    };
+    if (summary) item.logs = summary.slice(0, LOGS_MAX_LENGTH);
+    if (durationMs !== undefined) item.durationMs = durationMs;
+    return this.http.post('/api/executions/callback', [item]);
   }
 }
