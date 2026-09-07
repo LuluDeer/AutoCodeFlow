@@ -258,6 +258,43 @@ describe("SchedulerService", () => {
       expect(service.getStats().isLeader).toBe(true);
     });
 
+    // TASK-006 demote 语义边角：lease 校验发现锁对象已 released → 直接返回，
+    // 既不 demote 也不触 EQ 探测（锁已由 onModuleDestroy 等路径主动释放）。
+    it("verifyLeadership is a no-op when the lock was already released", async () => {
+      const lock = {
+        key: "scheduler:leader",
+        lockId: "leader-lock-id",
+        ttlMs: 30000,
+        released: true,
+        release: jest.fn().mockResolvedValue(true),
+      };
+      redisLockService.acquireLock.mockResolvedValueOnce(lock);
+      await service.initLeaderElection();
+      expect(service.getStats().isLeader).toBe(true);
+
+      await (service as any).verifyLeadership();
+
+      expect(redisLockService.extendLock).not.toHaveBeenCalled();
+      expect(service.getStats().isLeader).toBe(true);
+    });
+
+    // fail-open 降级 Leader 让位边角：降级期间（isLeader=true 且 leaderLock 为
+    // null）真实锁被其它实例拿到 → 立即 demote，避免双 Leader。
+    it("degraded leader yields when another instance acquires the real lock", async () => {
+      // 第一轮：Redis 抛错 → fail-open 降级为 Leader（leaderLock=null）
+      redisLockService.acquireLock.mockRejectedValueOnce(
+        new Error("redis down"),
+      );
+      await service.initLeaderElection();
+      expect(service.getStats().isLeader).toBe(true);
+
+      // 下一轮重试：Redis 恢复但锁已被其它实例持有 → 降级 Leader 必须让位
+      redisLockService.acquireLock.mockResolvedValueOnce(null);
+      await (service as any).tryAcquireLeadership();
+
+      expect(service.getStats().isLeader).toBe(false);
+    });
+
     it("only one instance wins the leader lock when two contend (redis-backed)", async () => {
       // 模拟两个实例串行竞选：Redis SET NX 保证只有一个 OK
       const results: boolean[] = [];
@@ -1401,6 +1438,30 @@ describe("SchedulerService", () => {
       expect(executorService.scheduleRetryAfterRecovery).not.toHaveBeenCalled();
       // 槽位释放照常
       expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    // REC-01: kill 通知成功但 re-enqueue 自身失败（DB/队列抖动）不得让
+    // sweep 整体抛错——恢复主链（条件 UPDATE 落库）必须已完成，失败仅记日志。
+    it("re-enqueue failure after a successful kill does not abort the sweep", async () => {
+      await makeLeader();
+      const exec = crashExec();
+      const task = makeTask({ id: "task-1", timeout: 0, maxRetry: 3 });
+      setupCrashScan(exec, task);
+      executorService.scheduleRetryAfterRecovery.mockRejectedValue(
+        new Error("queue unavailable"),
+      );
+
+      await expect(service.recoverStaleExecutions()).resolves.toBeUndefined();
+
+      // kill 通知已按预算语义发出
+      expect(executorService.hasRetryBudget).toHaveBeenCalledWith(task, exec);
+      expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
+        "exec-crash",
+        "host:3002",
+      );
+      // 重试编排失败被吞掉，恢复事务仍已完成
+      expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalled();
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
     });
   });
 

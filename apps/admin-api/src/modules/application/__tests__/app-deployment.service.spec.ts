@@ -15,6 +15,7 @@ import {
 import { ApplicationVersion } from "../entities/application-version.entity";
 import { ApplicationService } from "../application.service";
 import { ExecutorService } from "../../executor/executor.service";
+import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
 
 // Mock axios to avoid real HTTP calls
 jest.mock("axios", () => ({
@@ -1116,6 +1117,146 @@ describe("AppDeploymentService", () => {
       });
       // status should remain unchanged
       expect(deployment.status).toBe(DeploymentStatus.RUNNING);
+    });
+
+    // 部署状态机（心跳侧）：RUNNING 心跳 → 版本快照 released + deployment.completed
+    it("running heartbeat marks the version snapshot released and emits deployment.completed", async () => {
+      const deployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        deployedVersion: "1.2.0",
+        deployedCommit: "abc123",
+        executorAddress: "host:3002",
+        pid: null,
+        statusMessage: null,
+        lastHeartbeat: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.save.mockResolvedValue(deployment);
+      versionRepo.findOne.mockResolvedValue({ id: "v-1", status: "pending" });
+      const bus = { emit: jest.fn() };
+      (service as unknown as { eventBus: unknown }).eventBus = bus;
+
+      await service.handleHeartbeat({
+        deploymentId: "deploy-1",
+        status: "running",
+      });
+
+      // 快照状态翻转：pending → released，按版本+commit+来源部署四键定位
+      expect(versionRepo.findOne).toHaveBeenCalledWith({
+        where: {
+          applicationId: "app-1",
+          version: "1.2.0",
+          gitCommit: "abc123",
+          sourceDeploymentId: "deploy-1",
+        },
+      });
+      expect(versionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "v-1", status: "released" }),
+      );
+      // FEAT-07: 终态落库后出站事件（载荷全原始类型）
+      expect(bus.emit).toHaveBeenCalledWith(
+        DOMAIN_EVENTS.DEPLOYMENT_COMPLETED,
+        expect.objectContaining({
+          deploymentId: "deploy-1",
+          applicationId: "app-1",
+          executorAddress: "host:3002",
+          status: DeploymentStatus.RUNNING,
+          deployedVersion: "1.2.0",
+          deployedCommit: "abc123",
+        }),
+      );
+    });
+
+    // failed 心跳 → 版本快照 failed；非 RUNNING 终态不发 deployment.completed
+    it("failed heartbeat marks the version snapshot failed and does not emit deployment.completed", async () => {
+      const deployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        deployedVersion: "1.2.0",
+        deployedCommit: "abc123",
+        pid: null,
+        statusMessage: null,
+        lastHeartbeat: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.save.mockResolvedValue(deployment);
+      versionRepo.findOne.mockResolvedValue({ id: "v-1", status: "released" });
+      const bus = { emit: jest.fn() };
+      (service as unknown as { eventBus: unknown }).eventBus = bus;
+
+      await service.handleHeartbeat({
+        deploymentId: "deploy-1",
+        status: "failed",
+        message: "process crashed",
+      });
+
+      expect(deployment.status).toBe(DeploymentStatus.FAILED);
+      expect(deployment.statusMessage).toBe("process crashed");
+      expect(versionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "v-1", status: "failed" }),
+      );
+      expect(bus.emit).not.toHaveBeenCalled();
+    });
+
+    // stopped 心跳：不在状态机两分支内——不动快照、不发事件，仅落心跳与状态
+    it("stopped heartbeat leaves snapshots untouched and emits nothing", async () => {
+      const deployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        deployedVersion: "1.2.0",
+        pid: null,
+        statusMessage: null,
+        lastHeartbeat: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.save.mockResolvedValue(deployment);
+      const bus = { emit: jest.fn() };
+      (service as unknown as { eventBus: unknown }).eventBus = bus;
+
+      await service.handleHeartbeat({
+        deploymentId: "deploy-1",
+        status: "stopped",
+      });
+
+      expect(deployment.status).toBe(DeploymentStatus.STOPPED);
+      expect(versionRepo.findOne).not.toHaveBeenCalled();
+      expect(versionRepo.save).not.toHaveBeenCalled();
+      expect(bus.emit).not.toHaveBeenCalled();
+    });
+
+    // 快照幂等：status 已是目标态时不再写库；无 deployedVersion 的心跳
+    // 不触发任何快照查询
+    it("skips snapshot writes when status matches or no deployedVersion exists", async () => {
+      const deployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        deployedVersion: null,
+        pid: null,
+        statusMessage: null,
+        lastHeartbeat: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.save.mockResolvedValue(deployment);
+
+      await service.handleHeartbeat({
+        deploymentId: "deploy-1",
+        status: "running",
+      });
+      expect(versionRepo.findOne).not.toHaveBeenCalled();
+
+      deployment.deployedVersion = "1.2.0";
+      versionRepo.findOne.mockResolvedValue({ id: "v-1", status: "released" });
+      await service.handleHeartbeat({
+        deploymentId: "deploy-1",
+        status: "running",
+      });
+      expect(versionRepo.findOne).toHaveBeenCalledTimes(1);
+      expect(versionRepo.save).not.toHaveBeenCalled();
     });
   });
 });
