@@ -38,6 +38,8 @@ import { Optional } from "@nestjs/common";
 import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 // CORE-05: 评分公式抽出（selectLeastLoaded / dispatch 双站点共享同一实现）
 import { computeExecutorLoadScore } from "./executor-score.util";
+// OBS-01: 派发链路追踪——dispatch span + traceparent 头透传执行器
+import { TracingService } from "../../common/tracing/tracing.service";
 
 @Injectable()
 export class ExecutorService {
@@ -126,6 +128,10 @@ export class ExecutorService {
     // 先例同 task.service 的 eventBus 注入）。
     @Optional()
     private readonly eventBus: DomainEventBus | null = null,
+    // OBS-01: 派发追踪（@Global 恒提供；disabled 时全短路零开销）。
+    // @Optional 仅为既有单测装配兼容（先例 eventBus）。
+    @Optional()
+    private readonly tracing: TracingService | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
   }
@@ -1073,6 +1079,17 @@ export class ExecutorService {
       const sharedToken = await this.getSharedToken();
       const headers: Record<string, string> = {};
       if (sharedToken) headers["Authorization"] = `Bearer ${sharedToken}`;
+      // OBS-01: W3C traceparent 头透传执行器（disabled 时零头注入，语义为
+      // 无 trace——执行器侧 fail-open 读取）。traceId 已随 dispatch 前落库。
+      this.tracing?.injectContext(
+        headers,
+        this.buildExecutionTraceparent(execution),
+      );
+      const endSpan = this.tracing?.startSpan(
+        execution.traceId,
+        "dispatch.http",
+        { executor: matched.address, executionId: execution.id },
+      );
       // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
       const dispatchParams = this.buildDispatchParams(task, execution);
       const resp = await axios.post(
@@ -1080,6 +1097,7 @@ export class ExecutorService {
         { executionId: execution.id, task, params: dispatchParams },
         { timeout: ((task.timeout || 300) + 10) * 1000, headers },
       );
+      endSpan?.();
       return resp.data;
     } catch (err: unknown) {
       // Rollback counter on dispatch failure to avoid leaks
@@ -1089,8 +1107,27 @@ export class ExecutorService {
         .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
         .where("id = :id", { id: matched.id })
         .execute();
+      this.tracing
+        ?.startSpan(execution.traceId, "dispatch.http", {
+          executor: matched.address,
+          executionId: execution.id,
+        })
+        ?.call(
+          this,
+          err instanceof Error ? err.message : String(err),
+        );
       throw err;
     }
+  }
+
+  /**
+   * OBS-01: 由执行行上的 traceId 构造回传/透传 traceparent 头值。
+   * traceId 为 null（追踪未开启）或非法时返回 null——injectContext 不注入。
+   */
+  private buildExecutionTraceparent(
+    execution: Pick<TaskExecution, "traceId">,
+  ): string | null {
+    return this.tracing?.buildTraceparentFromTraceId(execution.traceId) ?? null;
   }
 
   /**
@@ -1153,6 +1190,11 @@ export class ExecutorService {
     const broadcastHeaders: Record<string, string> = {};
     if (sharedToken)
       broadcastHeaders["Authorization"] = `Bearer ${sharedToken}`;
+    // OBS-01: 广播路径同样透传 traceparent（disabled 时零头注入）。
+    this.tracing?.injectContext(
+      broadcastHeaders,
+      this.buildExecutionTraceparent(execution),
+    );
     // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
     const dispatchParams = this.buildDispatchParams(task, execution);
 

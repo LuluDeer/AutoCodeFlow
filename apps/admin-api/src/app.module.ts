@@ -27,6 +27,9 @@ import { ArtifactsModule } from "./modules/artifacts/artifacts.module";
 // ARCH-21: 进程内领域事件总线（@Global 单例——emit 侧在 task 模块，
 // listener 侧在 notification 模块，FEAT-07 出站 webhook 届时直接订阅）。
 import { DomainEventModule } from "./common/services/domain-event-bus.service";
+// OBS-01: OpenTelemetry 追踪（@Global——埋点在 task/scheduler/executor/
+// execution-callback 多处；OTEL_ENABLED=false 时 TracingService 全短路）。
+import { TracingModule } from "./common/tracing/tracing.module";
 import { TaskTemplateModule } from "./modules/task-template/task-template.module";
 // FEAT-07: 出站事件订阅（webhook 出站）——消费 DomainEventBus 事件派发签名回调。
 import { EventSubscriptionModule } from "./modules/event-subscriptions/event-subscription.module";
@@ -236,6 +239,11 @@ import { EventSubscriptionModule } from "./modules/event-subscriptions/event-sub
         CLAMD_HOST: Joi.string().hostname().default("127.0.0.1"),
         CLAMD_PORT: Joi.number().port().default(3310),
         CLAMD_TIMEOUT_MS: Joi.number().integer().min(1).default(10000),
+
+        // OBS-01: OpenTelemetry 分布式追踪开关（tracing.enabled 节）。
+        // 默认 false——零开销零行为变化（span 生成短路）；true 时 traceId
+        // 贯穿 + W3C traceparent 透传（@opentelemetry/api-only 方案）。
+        OTEL_ENABLED: Joi.string().valid("true", "false").default("false"),
       }),
       // Only validate in production and test environments
       validationOptions: {
@@ -355,6 +363,7 @@ import { EventSubscriptionModule } from "./modules/event-subscriptions/event-sub
     RegistryModule,
     ArtifactsModule,
     DomainEventModule,
+    TracingModule,
     TaskTemplateModule,
     EventSubscriptionModule,
   ],

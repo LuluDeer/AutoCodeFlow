@@ -3,6 +3,7 @@ import {
   Logger,
   OnModuleInit,
   OnModuleDestroy,
+  Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, In, LessThan, Repository } from "typeorm";
@@ -38,6 +39,8 @@ import {
   SchedulerMetricsSnapshot,
   SchedulerMetricsDerived,
 } from "./scheduler-metrics.service";
+// OBS-01: 调度入队链路追踪（disabled 时全短路零开销）
+import { TracingService } from "../../common/tracing/tracing.service";
 
 /** TASK-006: Leader Election 锁 key（RedisLockService 会加 lock: 前缀） */
 export const SCHEDULER_LEADER_LOCK_KEY = "scheduler:leader";
@@ -156,6 +159,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     // 与 re-enqueue 前的 best-effort kill 通知（notifyExecutorKill）。
     private executorService: ExecutorService,
     private configService: ConfigService,
+    // OBS-01: 调度入队 span（@Global 恒提供；disabled 时全短路）。
+    // @Optional 仅为既有单测装配兼容（provider 缺失 → null → no-op）。
+    @Optional()
+    private tracing: TracingService | null,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -963,6 +970,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           params: task.params,
           triggerType,
           taskVersion: task.currentVersion,
+          // OBS-01: 追踪开启时由入队侧生成 trace 根（NULL=追踪未开启）。
+          traceId: this.newExecutionTraceId(),
         }),
       );
 
@@ -1014,6 +1023,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       if (fireTime != null) {
         this.schedulerMetrics.recordTriggerLatency(Date.now() - fireTime);
       }
+      // OBS-01: 调度入队 span（traceId 来自刚落库的执行行；null=no-op）
+      this.tracing?.startSpan(exec.traceId, "scheduler.enqueue", {
+        executionId: exec.id,
+        triggerType,
+      })?.();
       return exec;
     } finally {
       // P1: deliberately do NOT release the dedup lock — its TTL is the
@@ -1048,6 +1062,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       )
       .execute();
     return (result?.affected ?? 0) > 0;
+  }
+
+  /**
+   * OBS-01: 追踪开启时为新建执行生成 trace 根并返回 traceId（落库）。
+   * disabled 恒返回 null——零行为变化。
+   */
+  private newExecutionTraceId(): string | null {
+    const traceparent = this.tracing?.startTrace() ?? null;
+    return this.tracing?.extractContext(traceparent) ?? null;
   }
 
   /** Stop and remove all schedules for the given task */
