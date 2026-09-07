@@ -7,13 +7,15 @@ import {
 import {
   KeyOutlined, CopyOutlined, EyeOutlined, EyeInvisibleOutlined,
   PlusOutlined, EditOutlined, DeleteOutlined, HistoryOutlined,
-  ReloadOutlined, RobotOutlined, ThunderboltOutlined,
+  ReloadOutlined, RobotOutlined, ThunderboltOutlined, SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
 import { useAuthStore, isAdminUser } from '../../store/auth';
 import type { ColumnsType } from 'antd/es/table';
+// SEC-03: 安全设置 Tab（TOTP 两步验证 + 登录会话管理），独立文件避免与其他 Tab 耦合
+import SecuritySettings from './SecuritySettings';
 
 const { Title, Text } = Typography;
 
@@ -567,6 +569,13 @@ export default function SettingsPage() {
       key: 'config',
       label: '系统配置',
       children: <SystemConfigTab />,
+    },
+    // SEC-03: 安全设置（TOTP + 会话管理）——所有登录用户可用（仅涉及本人账号），
+    // 置于末位 Tab：不改变既有 Tab 排序/默认激活行为（settings.ai 等既有测试依赖）
+    {
+      key: 'security',
+      label: <Space><SafetyCertificateOutlined />安全设置</Space>,
+      children: <SecuritySettings />,
     },
   ];
 
