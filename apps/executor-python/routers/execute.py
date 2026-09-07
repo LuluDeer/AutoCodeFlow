@@ -23,6 +23,7 @@ from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 from execution_callback_token import CALLBACK_TOKEN_GRACE_SECONDS, create_execution_callback_token
 from manifest import load_manifest, merge_task_with_manifest
+from artifacts import gather_artifacts_for_callback, artifacts_dir_for
 try:
     from autocodeflow_sdk.models import ExecuteRequest
 except ImportError:
@@ -1202,6 +1203,22 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
             # snapshot stays as the fallback for .env-file-only deployments
             # where os.environ carries nothing.
             token = await get_current_token() or _get_callback_token()
+            # FEAT-05: 收集 <work_dir>/artifacts/ 并 PUT 上传，把清单随终态回调
+            # 上报。best-effort —— 任何异常只记日志，绝不阻塞/污染任务终态。
+            try:
+                artifact_manifest = await gather_artifacts_for_callback(
+                    req.executionId,
+                    Path(settings.work_dir) / req.executionId,
+                    admin_api_url,
+                    token,
+                )
+                if artifact_manifest:
+                    payload['artifacts'] = artifact_manifest
+            except Exception as art_err:  # noqa: BLE001
+                logger.warning(
+                    "artifacts collection/upload failed (non-blocking) for %s: %s",
+                    req.executionId, art_err,
+                )
             try:
                 await _send_callback_with_retry(
                     build_admin_api_url('/executions/callback'),
@@ -1321,6 +1338,13 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     except Exception as chmod_err:
         logger.warning("chmod work_dir failed (non-critical): %s", chmod_err)
 
+    # FEAT-05: 预建产物目录约定 <work_dir>/artifacts/，供任务写入截图/报表等；
+    # best-effort，失败不阻断（收集阶段目录不存在则视为无产物）。
+    try:
+        artifacts_dir_for(work_dir).mkdir(parents=True, exist_ok=True)
+    except Exception as art_dir_err:
+        logger.warning("create artifacts dir failed (non-critical): %s", art_dir_err)
+
     # --- Git version binding: if task specifies gitRepo, clone/checkout to work dir ---
     git_repo: str | None = req.task.get('gitRepo') or req.task.get('git_repo')
     git_commit: str | None = req.task.get('gitCommit') or req.task.get('git_commit')
@@ -1424,6 +1448,8 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     registered_address = _executor_callback_address()
     if registered_address:
         env['AUTOFLOW_EXECUTOR_ADDRESS'] = registered_address
+    # FEAT-05: 告诉任务产物目录约定位置，任务把交付物写入此目录即被收集上传。
+    env['AUTOFLOW_ARTIFACTS_DIR'] = str(artifacts_dir_for(work_dir))
 
     if runtime == 'python':
         if requirements:
