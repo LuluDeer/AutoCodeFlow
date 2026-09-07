@@ -62,3 +62,13 @@
 
 - executor-python：auth.py + conftest.py + test_auth.py（3 例语义更新）
 - admin-api：executor.service.ts presented 守卫 + spec +1
+
+## 三阶段：BUG-18 私服依赖链攻坚（04:2x-04:4x）
+
+搭建完整私有拓扑验证「任务 requirements 指向私服」链路：
+- 演示包 acfdemopkg 0.1.0 构建 + 上传本地 registry-pypi（:8003，Basic 认证）✅
+- 哑 http git 服务（:8080，LAN IP 192.168.4.54）+ 哑协议克隆验证 ✅（URL 必须带 .git 后缀——git 探测 /info/refs?service=… 时 http.server 无智能协议回退，404 on 无后缀路径）
+- 任务派发：admin 侧 assertSafeGitRepoUrl **放行**私网 LAN ✅ → executor-python 自身 S7 守卫**无条件拒绝私网 gitRepo** → SEC-NEW-2（两端策略不一致）
+- pypi_registry_url 的 --index-url 消费链确认在位（execute.py L1286-1288），依赖安装真链验证被 SEC-NEW-2 阻断，随其解锁后补测
+- 顺带确认：runtime DTO 白名单（python/node/shell）在 API 侧即拦下 runtime_missing 构造——分类器由单测覆盖
+
