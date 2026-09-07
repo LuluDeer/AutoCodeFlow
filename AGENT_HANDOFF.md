@@ -3,13 +3,18 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-07（第十六轮·批 subagent-H：主会话派出员工 001/002 两个子代理并行认领——UI-01+02 打包/FEAT-07 两项 done，主会话统一验收）
+更新时间：2026-09-07（第十六轮·批 subagent-I：主会话派出员工 001/002 两个子代理并行认领——UI-03/QA-02 第一阶段两项 done，主会话统一验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-07 第十六轮·批 subagent-I 终验收，主会话）：
+  - `167f886`+`7fce990` **UI-03（001）布局升级 done**：侧边栏六大分组 IA（概览/任务/执行/执行器/应用/系统，antd v6 受控 openKeys+onOpenChange，持久化 localStorage 含脏键回退），任意页面 ≤2 跳达成（IA 表留档）；Sider 折叠态持久化+测试锚点；PageHeader 标准组件（面包屑显式传参，tokens 只读复用）高频 8 页替换完成（低频 9 页留清单，props 化单点接入即可）。admin-web **253/253**（基线 239，+14）+ build/tsc ✓。
+  - `f5e5594`+`d64b8c1` **QA-02 第一阶段（002）coverage 提升 done（超额）**：实测基线已高于计划书滞后的 68/58/56/69——本轮 +49 例定向补测（s3-log-storage 流式读边角/scheduler Leader 边角/部署状态机与 completed 事件载荷/心跳鉴权/task.controller 44 方法主链（新 spec）/event-subscription 七端点（新 spec）/config 脱敏矩阵（新 spec）），四指标 82.46/65.35/71.33/82.46→**83.98/69.29/73.07/83.32**，门槛同步上调 83/68/72/82（各留 ≥0.7 余量，CI 卡点通过）。零源码改动、零真 bug 发现（计划点名的心跳裁剪已有完整边界矩阵）。第二阶段建议：主攻 branches（73.07→75，缺口集中 executor.service/task.service/application.service/notification.service 大文件），main.ts 等 bootstrap 建议入排除名单。
+- **主会话终验收基线（全绿）**：admin-api **1652/1652**（基线 1603，+49）+ tsc ✓ · admin-web **253/253**（基线 239，+14）+ build ✓
+- 真机轮留验：分组折叠/折叠态双主题走查（UI-03）· coverage 门槛 CI 首跑观察（QA-02）
 - 本轮（2026-09-07 第十六轮·批 subagent-H 终验收，主会话；**注意：003/004 子代理已删除，后续批次仅 001/002 可派**）：
   - `e54b092`+`76e86b4` **UI-01+UI-02（001，打包实施）设计系统令牌+明暗主题 done**：theme/tokens.ts 程序化镜像 MASTER.md（单一常量源，antd token 与 CSS 变量两处消费防漂移）+ index.css 变量注入（dark 面 #020617 OLED）+ ThemeProviders（darkAlgorithm + colorPrimary=#22C55E）+ zustand persist 三态主题 store（light/dark/system 跟随 matchMedia）+ MainLayout 头部三态循环按钮 + index.html 防 FOUC；字体 @fontsource/fira-code+fira-sans（lockfile +61 行最小变更）；双主题适配=壳层+Dashboard/执行器趋势图/SSE 日志区。admin-web **239/239**（基线 225，+14）。缩水如实：axe 未做（无浏览器环境，改对比度人工核算+高频页抽查，真机轮 Playwright+axe 补扫）；硬编码色值清缴面=壳层+4 高频页约 40 处，其余约 30 处散点留 UI-03~08 顺带。
   - `c962d7a`+`c57bc3e`+`b35ac85` **FEAT-07（002）Webhook 出站事件 done**：event-subscriptions 独占模块（10 文件 1509 行）+ 迁移 1789900000000 两表（订阅+死信）；CRUD+死信查看/replay（JWT：ADMIN 全量/普通用户自有+系统级；url 双层守卫=@IsUrl+assertSafeHttpUrl DNS 逐地址 SSRF 深校验+出站前复核；secret 服务端代生成一次性回显后恒脱敏）；OutboundEventDispatcher 按 ARCH-21 接入形态注册 bus 监听器（主链零改动），**签名与 applications 发版 webhook 逐字节一致**（X-Hub-Signature-256 sha256=hex(timestamp.rawBody) ±5min 窗，实测断言）+ maxRedirects=0；重试=进程内 3 次 1s/2s/4s 指数退避→终败落死信+replay（跨进程 outbox 不做，api-reference 如实声明重启丢在途窗口）。补两个发布点：executor.offline（三路 OFFLINE 翻转每台恰一次）+ deployment.completed（心跳终态落库后），均 @Optional+fail-open。+18 例，admin-api **1603/1603**（基线 1585）。
