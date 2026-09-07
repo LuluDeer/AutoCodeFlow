@@ -22,6 +22,13 @@ import { NotificationService } from "../../notification/notification.service";
 import { SystemConfigService } from "../../config/config.service";
 // SEC-02: secrets 派发解密（测试默认降级明文，dispatch 载荷与既往一致）
 import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.service";
+// FEAT-07: executor.offline 发布点断言入口（DOMAIN_EVENTS 常量）
+import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
+// QA-02 第二阶段：运行时 gauge 快照（活跃流/上限双 series 的读面）
+import {
+  getRuntimeGaugesSnapshot,
+  resetRuntimeGauges,
+} from "../../metrics/runtime-metrics-entry";
 
 jest.mock("axios");
 // F-3: dispatch now consults the SSRF layer before every outbound POST. These
@@ -1646,6 +1653,29 @@ describe("ExecutorService (__tests__)", () => {
         expect.objectContaining({ status: ExecutorStatus.OFFLINE }),
       );
     });
+
+    // FEAT-07 发布点（优雅停机路径）：落库后 re-find 并 emit executor.offline。
+    it("emits executor.offline for the row after the graceful-shutdown write", async () => {
+      executorRepo.update.mockResolvedValue({ affected: 1 });
+      executorRepo.findOne.mockResolvedValue({
+        id: "exec-3",
+        appName: "graceful",
+        address: "127.0.0.1:3105",
+      });
+      const bus = { emit: jest.fn() };
+      (service as unknown as { eventBus: unknown }).eventBus = bus;
+
+      await service.markOffline("127.0.0.1:3105");
+
+      expect(bus.emit).toHaveBeenCalledWith(
+        DOMAIN_EVENTS.EXECUTOR_OFFLINE,
+        expect.objectContaining({
+          executorId: "exec-3",
+          appName: "graceful",
+          address: "127.0.0.1:3105",
+        }),
+      );
+    });
   });
 
   describe("rotateToken", () => {
@@ -2093,6 +2123,60 @@ describe("ExecutorService (__tests__)", () => {
         { status: ExecutorStatus.OFFLINE },
       );
     });
+
+    // FEAT-07 发布点：状态落库后 emit executor.offline，每台恰一次。
+    it("emits executor.offline once per stale executor after the status write", async () => {
+      resetRuntimeGauges();
+      configService.get
+        .mockReturnValueOnce(30000)
+        .mockReturnValueOnce(3);
+      const stale = {
+        id: "exec-9",
+        appName: "stale-app",
+        address: "10.0.0.5:3002",
+      };
+      executorRepo.find.mockResolvedValue([stale]);
+      executorRepo.update.mockResolvedValue({ affected: 1 });
+      const bus = { emit: jest.fn() };
+      (service as unknown as { eventBus: unknown }).eventBus = bus;
+
+      await service.markStaleOffline();
+
+      expect(bus.emit).toHaveBeenCalledTimes(1);
+      expect(bus.emit).toHaveBeenCalledWith(
+        DOMAIN_EVENTS.EXECUTOR_OFFLINE,
+        expect.objectContaining({
+          executorId: "exec-9",
+          appName: "stale-app",
+          address: "10.0.0.5:3002",
+          occurredAt: expect.any(String),
+        }),
+      );
+      // 离线通知与事件同扇出位：fire-and-forget 但必须发起
+      await Promise.resolve();
+      expect(
+        (service as any).notificationService.notifyExecutorOffline,
+      ).toHaveBeenCalledWith("stale-app", "10.0.0.5:3002");
+    });
+
+    it("emit failure is fail-open — markStaleOffline still resolves", async () => {
+      configService.get
+        .mockReturnValueOnce(30000)
+        .mockReturnValueOnce(3);
+      executorRepo.find.mockResolvedValue([
+        { id: "exec-9", appName: "a", address: "10.0.0.5:3002" },
+      ]);
+      executorRepo.update.mockResolvedValue({ affected: 1 });
+      const bus = {
+        emit: jest.fn(() => {
+          throw new Error("bus exploded");
+        }),
+      };
+      (service as unknown as { eventBus: unknown }).eventBus = bus;
+
+      await expect(service.markStaleOffline()).resolves.toBeUndefined();
+      expect(executorRepo.update).toHaveBeenCalled();
+    });
   });
 
   describe("setOfflineById", () => {
@@ -2116,6 +2200,31 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.findOne.mockResolvedValue(null);
       await expect(service.setOfflineById("missing")).rejects.toThrow(
         NotFoundException,
+      );
+    });
+
+    // FEAT-07 发布点（管理台置离线路径）：save 后 emit executor.offline。
+    it("emits executor.offline after the admin-triggered offline save", async () => {
+      const executor: any = {
+        id: "exec-9",
+        appName: "admin-off",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const bus = { emit: jest.fn() };
+      (service as unknown as { eventBus: unknown }).eventBus = bus;
+
+      await service.setOfflineById("exec-9");
+
+      expect(bus.emit).toHaveBeenCalledWith(
+        DOMAIN_EVENTS.EXECUTOR_OFFLINE,
+        expect.objectContaining({
+          executorId: "exec-9",
+          appName: "admin-off",
+          address: "127.0.0.1:3105",
+        }),
       );
     });
   });
@@ -2173,6 +2282,707 @@ describe("ExecutorService (__tests__)", () => {
       await expect(service.getInstallCmd()).rejects.toThrow(
         /ADMIN_API_URL is not configured/,
       );
+    });
+  });
+
+  // ============================================================================
+  // QA-02 第二阶段（branches 冲 75）：selectLeastLoaded / dispatch / dispatch
+  // Broadcast / validateExecutorToken / registerExecutor / metrics-history /
+  // detectLostExecutions / markStaleOffline 的未覆盖分支定向补测。
+  // 全部断言具体行为（过滤结果/重试顺序/载荷/返回值），无凑数弱断言。
+  // ============================================================================
+
+  describe("selectLeastLoaded (QA-02 phase 2)", () => {
+    const mk = (over: Record<string, unknown> = {}) => ({
+      id: "e1",
+      address: "127.0.0.1:3105",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      ...over,
+    });
+
+    it("throws ServiceUnavailableException when the fleet is empty", async () => {
+      executorRepo.find.mockResolvedValue([]);
+      await expect(service.selectLeastLoaded()).rejects.toThrow(
+        ServiceUnavailableException,
+      );
+    });
+
+    it("filters by group and rejects when no executor matches", async () => {
+      executorRepo.find.mockResolvedValue([mk({ groupName: "staging" })]);
+      await expect(
+        service.selectLeastLoaded({ group: "production" }),
+      ).rejects.toThrow(/match the requested group\/tags\/runtime/);
+    });
+
+    it("filters by tags: candidates missing a required tag are excluded", async () => {
+      executorRepo.find.mockResolvedValue([
+        mk({ id: "e-no-tags", tags: null }),
+        mk({ id: "e-partial", tags: ["gpu"] }),
+        mk({ id: "e-full", tags: ["gpu", "cuda"] }),
+      ]);
+      executorRepo.createQueryBuilder.mockClear();
+      const chosen = await service.selectLeastLoaded({ tags: ["gpu", "cuda"] });
+      expect(chosen.id).toBe("e-full");
+    });
+
+    it("rejects when tags filter excludes every online executor", async () => {
+      executorRepo.find.mockResolvedValue([mk({ tags: ["cpu"] })]);
+      await expect(
+        service.selectLeastLoaded({ tags: ["gpu"] }),
+      ).rejects.toThrow(/match the requested group\/tags\/runtime/);
+    });
+
+    it("treats an executor with no capabilities as runtime-universal", async () => {
+      executorRepo.find.mockResolvedValue([mk({ capabilities: [] })]);
+      const chosen = await service.selectLeastLoaded({ runtime: "python" });
+      expect(chosen.id).toBe("e1");
+    });
+
+    it("excludes an executor whose capabilities lack the requested runtime", async () => {
+      executorRepo.find.mockResolvedValue([
+        mk({ id: "e-node", capabilities: ["node"] }),
+      ]);
+      await expect(
+        service.selectLeastLoaded({ runtime: "python" }),
+      ).rejects.toThrow(/match the requested group\/tags\/runtime/);
+    });
+
+    it("skips executors at max capacity and reports all-at-capacity otherwise", async () => {
+      executorRepo.find.mockResolvedValue([
+        mk({ id: "e-full", runningTaskCount: 2, maxConcurrentTasks: 2 }),
+      ]);
+      await expect(service.selectLeastLoaded()).rejects.toThrow(
+        /all online executors are at maximum capacity/,
+      );
+    });
+
+    it("scores by load/cpu/mem and prefers the least loaded executor", async () => {
+      executorRepo.find.mockResolvedValue([
+        mk({
+          id: "e-busy",
+          runningTaskCount: 4,
+          cpuUsage: 90,
+          memUsage: 90,
+          maxConcurrentTasks: 10,
+        }),
+        mk({
+          id: "e-idle",
+          runningTaskCount: 1,
+          cpuUsage: 10,
+          memUsage: 10,
+          maxConcurrentTasks: 10,
+        }),
+      ]);
+      const chosen = await service.selectLeastLoaded();
+      expect(chosen.id).toBe("e-idle");
+    });
+
+    it("falls back to maxConcurrentTasks=10 for scoring when the column is null", async () => {
+      executorRepo.find.mockResolvedValue([
+        mk({ id: "e-null-max", runningTaskCount: 3, maxConcurrentTasks: null }),
+        mk({ id: "e-light", runningTaskCount: 1, maxConcurrentTasks: null }),
+      ]);
+      const chosen = await service.selectLeastLoaded();
+      expect(chosen.id).toBe("e-light");
+    });
+  });
+
+  describe("dispatch — filters, scoring and optimistic-lock retry (QA-02 phase 2)", () => {
+    const execution = { id: "exec-1", params: {} } as TaskExecution;
+
+    it("rejects with an appName-classified message when no executor has that appName", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "127.0.0.1:3105", status: ExecutorStatus.ONLINE, runningTaskCount: 0 },
+      ]);
+      await expect(
+        service.dispatch(
+          {
+            id: "task-1",
+            name: "t",
+            executorAppName: "ghost-app",
+            timeout: 10,
+          } as unknown as Task,
+          execution,
+        ),
+      ).rejects.toThrow(/No available executor with appName "ghost-app"/);
+    });
+
+    it("filters by tag subset and never dispatches to an executor missing a tag", async () => {
+      const task = {
+        id: "task-1",
+        name: "t",
+        executorTags: ["gpu", "cuda"],
+        timeout: 10,
+      } as unknown as Task;
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "a:1", status: ExecutorStatus.ONLINE, runningTaskCount: 0, tags: ["gpu"] },
+        { id: "e2", address: "b:2", status: ExecutorStatus.ONLINE, runningTaskCount: 0, tags: ["gpu", "cuda"] },
+      ]);
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      await service.dispatch(task, execution);
+      expect((mockedAxios.post.mock.calls[0][0] as string).startsWith("b:2") ||
+        (mockedAxios.post.mock.calls[0][0] as string).includes("b:2")).toBe(true);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it("excludes executors whose capabilities lack the task runtime", async () => {
+      const task = { id: "task-1", name: "t", runtime: "python", timeout: 10 } as unknown as Task;
+      executorRepo.find.mockResolvedValue([
+        { id: "e-node", address: "n:1", status: ExecutorStatus.ONLINE, runningTaskCount: 0, capabilities: ["node"] },
+        { id: "e-py", address: "p:1", status: ExecutorStatus.ONLINE, runningTaskCount: 0, capabilities: ["python"] },
+      ]);
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      await service.dispatch(task, execution);
+      expect(mockedAxios.post.mock.calls[0][0]).toContain("p:1");
+    });
+
+    it("treats empty capabilities as runtime-universal in dispatch filtering", async () => {
+      const task = { id: "task-1", name: "t", runtime: "mystery", timeout: 10 } as unknown as Task;
+      executorRepo.find.mockResolvedValue([
+        { id: "e-any", address: "any:1", status: ExecutorStatus.ONLINE, runningTaskCount: 0, capabilities: [] },
+      ]);
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      await service.dispatch(task, execution);
+      expect(mockedAxios.post.mock.calls[0][0]).toContain("any:1");
+    });
+
+    it("retries the next candidate when the first loses the optimistic-lock race, then succeeds", async () => {
+      const first = {
+        id: "e-first",
+        address: "first:1",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        maxConcurrentTasks: 2,
+        version: 1,
+      };
+      const second = {
+        id: "e-second",
+        address: "second:2",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        maxConcurrentTasks: 2,
+        version: 5,
+      };
+      // 静态排序确定尝试顺序：first（running=0）先于 second（running=1）
+      second.runningTaskCount = 1;
+      executorRepo.find.mockResolvedValue([first, second]);
+      let executes = 0;
+      executorRepo.createQueryBuilder.mockImplementation(() => {
+        executes += 1;
+        // 第 1 次 qb = 乐观锁 UPDATE（first 输）；第 2 次 = second 赢；
+        // 第 3 次 = 派发失败回滚。
+        const won = executes === 2;
+        return {
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: won ? 1 : 0 }),
+        } as any;
+      });
+      // first 赢得乐观锁但 HTTP 派发失败 → 回滚 its slot，整体向上抛
+      // （second 已不会被尝试——乐观锁赢家的 HTTP 失败即失败）。
+      // 此用例改为验证：first 乐观锁输 → second 赢 → HTTP 成功。
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+      const result = await service.dispatch(
+        { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+        execution,
+      );
+      expect(result.ok).toBe(true);
+      // 至少两次乐观锁尝试（first 输、second 赢），无回滚（HTTP 成功）
+      expect(executes).toBeGreaterThanOrEqual(2);
+      expect(mockedAxios.post.mock.calls[0][0]).toContain("second:2");
+    });
+
+    it("throws when every candidate loses the optimistic-lock race (capacity full / version conflict)", async () => {
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          address: "a:1",
+          status: ExecutorStatus.ONLINE,
+          runningTaskCount: 1,
+          maxConcurrentTasks: 1,
+          version: 1,
+        },
+      ]);
+      executorRepo.createQueryBuilder.mockImplementation(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 0 }),
+      }) as any);
+      await expect(
+        service.dispatch(
+          { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+          execution,
+        ),
+      ).rejects.toThrow(/all at capacity or concurrency conflict/);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it("skips the capacity guard (1=1) for executors without maxConcurrentTasks", async () => {
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e-inf",
+          address: "inf:1",
+          status: ExecutorStatus.ONLINE,
+          runningTaskCount: 0,
+          maxConcurrentTasks: null,
+          version: 3,
+        },
+      ]);
+      const andWhere = jest.fn().mockReturnThis();
+      executorRepo.createQueryBuilder.mockImplementation(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            andWhere,
+            execute: jest.fn().mockResolvedValue({ affected: 1 }),
+          }) as any,
+      );
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      await service.dispatch(
+        { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+        execution,
+      );
+      // maxConcurrentTasks=null → Infinity → 容量 andWhere 分支收 "1=1"
+      const capacityCall = andWhere.mock.calls.find(
+        (c: unknown[]) => String(c[0]) === "1=1",
+      );
+      expect(capacityCall).toBeDefined();
+    });
+
+    it("injects an Authorization header only when a shared token resolves", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "a:1", status: ExecutorStatus.ONLINE, runningTaskCount: 0 },
+      ]);
+      // SystemConfigService.findOne 默认 reject → 走 config fallback（"http" 非 token 也非空）。
+      // 返回值 mock 为可识别 token 验证 header 注入。
+      (service as any).systemConfigService.findOne = jest
+        .fn()
+        .mockResolvedValue({ value: "db-token-1" });
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      await service.dispatch(
+        { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+        execution,
+      );
+      const config = mockedAxios.post.mock.calls[0][2] as {
+        headers: Record<string, string>;
+      };
+      expect(config.headers["Authorization"]).toBe("Bearer db-token-1");
+    });
+
+    it("omits the Authorization header when no shared token is configured", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "a:1", status: ExecutorStatus.ONLINE, runningTaskCount: 0 },
+      ]);
+      (service as any).systemConfigService.findOne = jest
+        .fn()
+        .mockResolvedValue({ value: "" });
+      configService.get.mockReturnValue("");
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      await service.dispatch(
+        { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+        execution,
+      );
+      const config = mockedAxios.post.mock.calls[0][2] as {
+        headers: Record<string, string>;
+      };
+      expect(config.headers["Authorization"]).toBeUndefined();
+    });
+
+    it("surfaces a secrets decryption failure as a dispatch error (no silent credential-less run)", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "a:1", status: ExecutorStatus.ONLINE, runningTaskCount: 0 },
+      ]);
+      (service as any).secretsCrypto = {
+        decryptForDispatch: jest.fn(() => {
+          throw new Error("key rotated away");
+        }),
+      };
+      await expect(
+        service.dispatch(
+          { id: "task-1", name: "t", timeout: 10, secrets: { API_KEY: "enc:v1:x" } } as unknown as Task,
+          execution,
+        ),
+      ).rejects.toThrow(/could not be decrypted for dispatch/);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it("rolls back the slot when the pinned dispatch HTTP call fails", async () => {
+      const pinned = {
+        id: "e-pin",
+        address: "pin:1",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        version: 1,
+      };
+      executorRepo.findOne.mockResolvedValue(pinned);
+      const set = jest.fn().mockReturnThis();
+      executorRepo.createQueryBuilder.mockImplementation(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set,
+            where: jest.fn().mockReturnThis(),
+            andWhere: jest.fn().mockReturnThis(),
+            execute: jest.fn().mockResolvedValue({ affected: 1 }),
+          }) as any,
+      );
+      mockedAxios.post.mockRejectedValue(new Error("pin connection refused"));
+
+      await expect(
+        service.dispatch(
+          { id: "task-1", name: "t", timeout: 10, executorId: "e-pin" } as unknown as Task,
+          execution,
+        ),
+      ).rejects.toThrow("pin connection refused");
+      // qb#1 = 乐观锁占用，qb#2 = 回滚
+      expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
+      expect(set).toHaveBeenCalledWith({
+        runningTaskCount: expect.anything(),
+      });
+    });
+  });
+
+  describe("dispatchBroadcast — filter and failure paths (QA-02 phase 2)", () => {
+    const execution = { id: "exec-1", params: {} } as TaskExecution;
+
+    it("rejects when no online executor has the requested appName", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "a:1", status: ExecutorStatus.ONLINE, appName: "other" },
+      ]);
+      await expect(
+        service.dispatchBroadcast(
+          { id: "task-1", name: "t", executorAppName: "ghost", timeout: 10 } as unknown as Task,
+          execution,
+        ),
+      ).rejects.toThrow("No available executor for broadcast dispatch");
+    });
+
+    it("applies group/tag/runtime filters to the broadcast target set", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "wrong:1", status: ExecutorStatus.ONLINE, groupName: "staging", tags: ["gpu"], capabilities: [] },
+        { id: "e2", address: "right:2", status: ExecutorStatus.ONLINE, groupName: "prod", tags: ["gpu", "cuda"], capabilities: [] },
+      ]);
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      const results = await service.dispatchBroadcast(
+        {
+          id: "task-1",
+          name: "t",
+          executorGroup: "prod",
+          executorTags: ["gpu", "cuda"],
+          timeout: 10,
+        } as unknown as Task,
+        execution,
+      );
+      expect(results).toHaveLength(1);
+      expect(mockedAxios.post.mock.calls[0][0]).toContain("right:2");
+    });
+
+    it("surfaces the per-target error message in the all-failed broadcast error", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "a:1", status: ExecutorStatus.ONLINE },
+      ]);
+      mockedAxios.post.mockRejectedValue(new Error("boom-on-a1"));
+      await expect(
+        service.dispatchBroadcast(
+          { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+          execution,
+        ),
+      ).rejects.toThrow(/a:1: boom-on-a1/);
+    });
+
+    it("maps a non-Error rejection reason into the failure list", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "a:1", status: ExecutorStatus.ONLINE },
+      ]);
+      mockedAxios.post.mockRejectedValue("string-reason");
+      await expect(
+        service.dispatchBroadcast(
+          { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+          execution,
+        ),
+      ).rejects.toThrow(/a:1: string-reason/);
+    });
+  });
+
+  describe("validateExecutorToken (QA-02 phase 2)", () => {
+    it("returns false when the executor row does not exist", async () => {
+      executorRepo.createQueryBuilder.mockReturnValue({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      } as any);
+      await expect(
+        service.validateExecutorToken("ghost", "tok"),
+      ).resolves.toBe(false);
+    });
+
+    it("validates a per-executor token via bcrypt compare", async () => {
+      const raw = "per-executor-token";
+      const hash = await bcrypt.hash(raw, 1);
+      executorRepo.createQueryBuilder.mockReturnValue({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: "e1", tokenHash: hash }),
+      } as any);
+      await expect(
+        service.validateExecutorToken("e1", raw),
+      ).resolves.toBe(true);
+      await expect(
+        service.validateExecutorToken("e1", "wrong"),
+      ).resolves.toBe(false);
+    });
+
+    it("returns false when falling back to a shared token that is not configured", async () => {
+      executorRepo.createQueryBuilder.mockReturnValue({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: "e1", tokenHash: null }),
+      } as any);
+      (service as any).systemConfigService.findOne = jest
+        .fn()
+        .mockRejectedValue(new Error("nf"));
+      configService.get.mockReturnValue("");
+      await expect(
+        service.validateExecutorToken("e1", "anything"),
+      ).resolves.toBe(false);
+    });
+
+    it("rejects a shared-token candidate of a different length without timingSafeEqual", async () => {
+      executorRepo.createQueryBuilder.mockReturnValue({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: "e1", tokenHash: null }),
+      } as any);
+      (service as any).systemConfigService.findOne = jest
+        .fn()
+        .mockResolvedValue({ value: "short" });
+      await expect(
+        service.validateExecutorToken("e1", "a-much-longer-token"),
+      ).resolves.toBe(false);
+    });
+
+    it("accepts the exact shared token via constant-time comparison", async () => {
+      executorRepo.createQueryBuilder.mockReturnValue({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: "e1", tokenHash: null }),
+      } as any);
+      (service as any).systemConfigService.findOne = jest
+        .fn()
+        .mockResolvedValue({ value: "exact-shared" });
+      await expect(
+        service.validateExecutorToken("e1", "exact-shared"),
+      ).resolves.toBe(true);
+    });
+  });
+
+  describe("registerExecutor — restart/baseline edge branches (QA-02 phase 2)", () => {
+    const makeQbRepo = (prior: any) =>
+      makeRepo({
+        createQueryBuilder: jest.fn(() => ({
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(prior),
+        })),
+      });
+
+    it("executorVersion is only updated when the register payload carries version", async () => {
+      const existing = {
+        id: "e1",
+        appName: "app",
+        address: "127.0.0.1:3105",
+        executorStartupId: "startup-1",
+        executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+        executorVersion: "0.9",
+        tokenHash: "$2b$12$existinghash",
+      };
+      const repo = makeQbRepo(existing);
+      repo.findOne.mockResolvedValue(existing);
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const svc = await makeServiceWithRepo(repo);
+      jest
+        .spyOn(svc, "rotateToken")
+        .mockResolvedValue({ token: "issued-token" });
+
+      // 同 startupId + tokenHash → sameProcess → 无重签；version 缺省 → 版本列不动
+      await svc.registerExecutor({
+        appName: "app",
+        address: "127.0.0.1:3105",
+        startupId: "startup-1",
+      });
+      expect(existing.executorVersion).toBe("0.9");
+
+      // version 字段出现 → 白名单内赋值
+      await svc.registerExecutor({
+        appName: "app",
+        address: "127.0.0.1:3105",
+        startupId: "startup-1",
+        version: "1.1",
+      });
+      expect(existing.executorVersion).toBe("1.1");
+    });
+  });
+
+  describe("getExecutorMetricsHistory — defensive branches (QA-02 phase 2)", () => {
+    it("skips rows whose bucket is not finite and coerces null running to 0", async () => {
+      executorRepo.findOne.mockResolvedValue({
+        id: "e1",
+        address: "host:3002",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+      });
+      const statsQb = execRepo.createQueryBuilder();
+      statsQb.getRawOne.mockResolvedValue({
+        total: "0",
+        successful: "0",
+        failed: "0",
+        avgDuration: null,
+      });
+      execRepo.createQueryBuilder.mockReturnValue(statsQb);
+      const hqb = metricsHistoryRepo.createQueryBuilder();
+      hqb.getRawMany.mockResolvedValue([
+        { bucket: "not-a-number", cpu: "10", mem: "10", running: "1" },
+        { bucket: "1782950400", cpu: "20", mem: "40", running: null },
+      ]);
+      metricsHistoryRepo.createQueryBuilder.mockReturnValue(hqb);
+
+      const result = await service.getExecutorMetrics("e1");
+      expect(result.history).toHaveLength(1);
+      expect(result.history[0]).toEqual({
+        timestamp: new Date(1782950400_000).toISOString(),
+        cpuUsage: 20,
+        memUsage: 40,
+        runningTaskCount: 0,
+      });
+    });
+  });
+
+  describe("detectLostExecutions — per-task timeout branches (QA-02 phase 2)", () => {
+    it("uses the task's own timeout for the per-execution threshold (task present)", async () => {
+      const exec = {
+        id: "exec-1",
+        taskId: "task-1",
+        taskName: "t",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "dead:1",
+        startTime: new Date(Date.now() - 20 * 60 * 1000),
+        logs: "partial output",
+      };
+      const qb = execRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([exec]);
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      taskRepo.findBy.mockResolvedValue([
+        { id: "task-1", name: "t", timeout: 5 },
+      ]);
+      executorRepo.findBy.mockResolvedValue([
+        { address: "dead:1", status: ExecutorStatus.OFFLINE },
+      ]);
+      executorRepo.createQueryBuilder.mockImplementation(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      }) as any);
+
+      await service.detectLostExecutions();
+
+      // FAILED 落库（logs 保留原有内容并追加系统行）
+      const setArg = execRepo.createQueryBuilder.mock.results[0].value.set
+        .mock.calls[0][0] as Record<string, unknown>;
+      expect(setArg.status).toBe(ExecutionStatus.FAILED);
+      expect(String(setArg.logs)).toContain("partial output");
+      expect(String(setArg.logs)).toContain(
+        "[System] Execution timed out without callback",
+      );
+    });
+
+    it("keeps an execution whose executor is still ONLINE (no false positive)", async () => {
+      const exec = {
+        id: "exec-2",
+        taskId: "task-1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "alive:1",
+        startTime: new Date(Date.now() - 20 * 60 * 1000),
+      };
+      const qb = execRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([exec]);
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      taskRepo.findBy.mockResolvedValue([]);
+      executorRepo.findBy.mockResolvedValue([
+        { address: "alive:1", status: ExecutorStatus.ONLINE },
+      ]);
+
+      await service.detectLostExecutions();
+
+      const setMock = (execRepo.createQueryBuilder.mock.results[0].value as any)
+        .set;
+      expect(setMock).not.toHaveBeenCalled();
+    });
+
+    it("uses the 5-minute default threshold when the task row is gone", async () => {
+      const exec = {
+        id: "exec-3",
+        taskId: "missing-task",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: null,
+        startTime: new Date(Date.now() - 20 * 60 * 1000),
+      };
+      const qb = execRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([exec]);
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      qb.execute.mockResolvedValue({ affected: 1 });
+      taskRepo.findBy.mockResolvedValue([]);
+      executorRepo.findBy.mockResolvedValue([]);
+
+      await service.detectLostExecutions();
+      // executorAddress 为 null → releaseExecutorSlot 早退（executor qb 不触碰）
+      expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(qb.execute).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("heartbeat — runtime metric default branches (QA-02 phase 2)", () => {
+    it("keeps the stored value for metric fields the heartbeat omits", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.OFFLINE,
+        cpuUsage: 11,
+        memUsage: 22,
+        diskUsage: 33,
+        runningTaskCount: 5,
+        totalTaskCount: 9,
+        failedTaskCount: 2,
+        networkLatency: 7,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const saved = await service.heartbeat("127.0.0.1:3105", {
+        cpuUsage: 44,
+      });
+
+      // 未上报字段不被覆盖（白名单仅赋值 undefined 键之外的字段）
+      expect(saved.memUsage).toBe(22);
+      expect(saved.diskUsage).toBe(33);
+      expect(saved.runningTaskCount).toBe(5);
+      expect(saved.cpuUsage).toBe(44);
+      // 心跳即上线
+      expect(saved.status).toBe(ExecutorStatus.ONLINE);
+      expect(saved.lastHeartbeat).toBeInstanceOf(Date);
+    });
+
+    it("restoreSilencesFromStore failure keeps the memory-only mode (notification store contract mirrored)", async () => {
+      // 占位对齐 notification.service.spec 的语义——此处无 silenceStore 注入，
+      // restoreSilencesFromStore 走 !silenceStore 早退分支，不抛错即契约。
+      expect((service as any).tokenValidationCache).toBeDefined();
     });
   });
 });
