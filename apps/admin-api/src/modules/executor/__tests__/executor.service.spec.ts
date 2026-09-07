@@ -284,8 +284,18 @@ describe("ExecutorService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "retry-exec" },
-        { attempts: 2, backoff: { type: "exponential", delay: 5_000 } },
+        // CORE-02: recovery 重试 attempt=1（retryCount 0→1）、base 5s，
+        // delay 带 ±20% 抖动——断言落在 [4000, 6000] 区间
+        {
+          attempts: 2,
+          backoff: { type: "exponential", delay: expect.any(Number) },
+        },
       );
+      const retryOpts = taskQueue.add.mock.calls.find(
+        (c: any[]) => c[1]?.executionId === "retry-exec",
+      )?.[2];
+      expect(retryOpts.backoff.delay).toBeGreaterThanOrEqual(4_000);
+      expect(retryOpts.backoff.delay).toBeLessThanOrEqual(6_000);
     });
 
     it("recovers running executions predating startup when old executors lack startup baseline", async () => {

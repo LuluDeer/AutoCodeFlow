@@ -27,6 +27,8 @@ import { SystemConfigService } from "../config/config.service";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 // SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
+// CORE-02: 重试退避抖动——±20% 摊开同刻重试（recovery re-enqueue 路径）
+import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 
 @Injectable()
 export class ExecutorService {
@@ -264,9 +266,15 @@ export class ExecutorService {
         { executionId: saved.id },
         {
           attempts: Math.max(1, maxAttempts - nextRetryCount),
+          // CORE-02: recovery 重试的 attempt 序号 = retryCount+1（该执行行
+          // 本身就是第 nextRetryCount 次重试的载体），delay 预乘指数基座并加
+          // ±20% 抖动；返回 0（retryDelay<=0）保持 backoff: undefined 语义。
           backoff:
             task.retryDelay > 0
-              ? { type: "exponential", delay: task.retryDelay * 1000 }
+              ? {
+                  type: "exponential",
+                  delay: jitteredRetryDelayMs(task.retryDelay, nextRetryCount),
+                }
               : undefined,
         },
       );

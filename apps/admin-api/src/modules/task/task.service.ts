@@ -56,6 +56,8 @@ import {
 } from "./timeout-policy.util";
 // OBS-03: 日志行级别推断（纯函数）——写入落库 + S3 读取后过滤共用同一实现
 import { levelOfLine } from "./log-level.util";
+// CORE-02: 重试退避抖动——±20% 摊开同时刻重试，避免 thundering herd
+import { jitteredRetryDelayMs } from "./retry-backoff.util";
 // OBS-04: 执行时间线映射（纯函数）——report 端点与 mcp-server timeline 同语义
 import { buildExecutionTimeline } from "./execution-timeline.util";
 // OBS-04: execution_reports 当日聚合行读侧（写方为 MetricsService.generateReport）
@@ -495,9 +497,14 @@ export class TaskService {
         {
           // Bull requires attempts >= 1; guard against maxRetry=0
           attempts: Math.max(1, task.maxRetry ?? 1),
+          // CORE-02: delay 预乘指数基座并加 ±20% 抖动（首次尝试 attempt=1）。
+          // 返回 0（retryDelay<=0）保持既有 backoff: undefined 不延迟语义。
           backoff:
             task.retryDelay > 0
-              ? { type: "exponential", delay: task.retryDelay * 1000 }
+              ? {
+                  type: "exponential",
+                  delay: jitteredRetryDelayMs(task.retryDelay, 1),
+                }
               : undefined,
           // N2: unify with scheduler.enqueue — always pass a normalized numeric
           // priority (DB stores the PG string enum; a raw label must never
@@ -1092,9 +1099,13 @@ export class TaskService {
         {
           // Bull requires attempts >= 1; guard against maxRetry=0
           attempts: Math.max(1, task.maxRetry ?? 1),
+          // CORE-02: delay 预乘指数基座并加 ±20% 抖动（首次尝试 attempt=1）。
           backoff:
             task.retryDelay > 0
-              ? { type: "exponential", delay: task.retryDelay * 1000 }
+              ? {
+                  type: "exponential",
+                  delay: jitteredRetryDelayMs(task.retryDelay, 1),
+                }
               : undefined,
           // N2: normalized numeric priority (see trigger()).
           priority: normalizeTaskPriority(task.priority),

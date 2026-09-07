@@ -21,6 +21,8 @@ import TaskDependencyGraph from '../components/TaskDependencyGraph';
 import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 import ArtifactsList from '../components/ArtifactsList';
+// CORE-02: retryableErrors 中文文案映射（与表单选项同一来源）
+import { RETRYABLE_ERROR_OPTIONS } from './retry-policy';
 
 const { Text } = Typography;
 
@@ -378,6 +380,20 @@ export default function TaskDetailPage() {
                       : '未启用'}
                   </Descriptions.Item>
                   <Descriptions.Item label="最大重试">{task.maxRetry ?? 0} 次</Descriptions.Item>
+                  {/* CORE-02: 可重试错误类型白名单展示（null/[] = 全部可重试） */}
+                  <Descriptions.Item label="可重试错误类型" span={2}>
+                    {task.retryableErrors && task.retryableErrors.length > 0 ? (
+                      <Space size={[4, 4]} wrap>
+                        {task.retryableErrors.map((r) => (
+                          <Tag key={r} color="orange">
+                            {RETRYABLE_ERROR_OPTIONS.find((o) => o.value === r)?.label ?? r}
+                          </Tag>
+                        ))}
+                      </Space>
+                    ) : (
+                      <Text type="secondary">全部可重试（未配置白名单）</Text>
+                    )}
+                  </Descriptions.Item>
                   <Descriptions.Item label="优先级">
                     <Tag color={priorityTag(task.priority).color}>{priorityTag(task.priority).label}</Tag>
                   </Descriptions.Item>

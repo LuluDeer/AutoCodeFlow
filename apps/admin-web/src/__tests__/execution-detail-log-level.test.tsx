@@ -24,6 +24,8 @@ import ExecutionDetailPage from '../pages/ExecutionDetailPage';
 import { levelOfLine, logLineHighlightClass } from '../utils/logLevel';
 
 // 隔离 api 层：只关心 execution / executionLogs 两个调用契约。
+// CORE-02: 详情页新增消费 get（任务元数据 maxRetry/retryDelay）与
+// executionsWithStatus（重试链）——mock 需补齐，缺省会抛 TypeError。
 vi.mock('../api/tasks', () => ({
   tasksApi: {
     execution: vi.fn(),
@@ -31,6 +33,8 @@ vi.mock('../api/tasks', () => ({
     killExecution: vi.fn(),
     trigger: vi.fn(),
     analyzeExecution: vi.fn(),
+    get: vi.fn(),
+    executionsWithStatus: vi.fn(),
   },
 }));
 
@@ -72,6 +76,14 @@ function mockExecution(logs: string) {
     triggerType: 'manual',
     logs,
     createdAt: new Date().toISOString(),
+  } as never);
+  // CORE-02: 详情页新增消费——任务元数据与重试链拉取（本套件不关注，
+  // mock 空实现即可；executionsWithStatus 返回仅当前行的"无重试链"页）。
+  vi.mocked(tasksApi.get).mockReset().mockResolvedValue({
+    id: 't1', maxRetry: 3, retryDelay: 5,
+  } as never);
+  vi.mocked(tasksApi.executionsWithStatus).mockReset().mockResolvedValue({
+    items: [{ id: 'e1', retryCount: 0, status: 'failed' }], total: 1, page: 1, pageSize: 100,
   } as never);
 }
 
