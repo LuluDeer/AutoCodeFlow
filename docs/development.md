@@ -288,6 +288,23 @@ docs: 更新 SDK 使用示例
 - `fix/xxx`：Bug 修复分支
 - `release/x.x.x`：发布分支
 
+## PR 前检查清单（DOC-01）
+
+提交 PR 时 `.github/PULL_REQUEST_TEMPLATE.md` 会自带「API 变更？」检查项，
+发起 PR 前先逐项自查（模板不适用的小节勾「否」保留，不要删除）：
+
+1. **新增/修改端点** → 同一 PR 内更新 `docs/api-reference.md`（列明方法 + 路径与
+   请求/响应契约），不留「文档后补」——历轮多次出现端点已合入、文档滞后数轮的补漏。
+2. **Breaking 变更**（删字段/改语义/改状态码/收紧鉴权）→ 列明影响面，四个客户端包
+   （`acf-cli` / `mcp-server` / `autocodeflow-node-sdk` / `autoflow-sdk`）是否需要
+   同批适配；鉴权类收紧参考「前后端同批发布」先例（W2 RBAC）。
+3. **新增环境变量** → 三处同批登记：`configuration.ts`（+ app.module Joi 校验）、
+   `.env.example`、`docs/` 对应环境变量表——规约详见上文「配置读取规约（ARCH-27）」。
+4. **新增数据库迁移** → 时间戳先查 `docs/PLAN-CLAIMS.md` 认领板确认未被并行会话
+   占用，并在 PR 模板中填写。
+5. **平台影响** → `executor-node` 源码改动必须与重打的 `bundle` 同 commit 提交；
+   涉及执行器/调度行为变更对照 `docs/VERIFY-MATRIX.md` 补真机验证项。
+
 ## 项目结构
 
 ```
