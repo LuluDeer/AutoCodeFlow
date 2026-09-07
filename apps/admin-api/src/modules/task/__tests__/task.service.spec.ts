@@ -1618,6 +1618,7 @@ describe("TaskService (__tests__)", () => {
         executionId: "e1",
         lineNumber: 1,
         content: "full-1",
+        level: null,
       });
     });
 
@@ -1645,6 +1646,7 @@ describe("TaskService (__tests__)", () => {
         executionId: "e1",
         lineNumber: 0,
         content: "head",
+        level: null,
       });
     });
 
@@ -1687,6 +1689,7 @@ describe("TaskService (__tests__)", () => {
         executionId: "e1",
         lineNumber: 4,
         content: "l4",
+        level: null,
       });
     });
 
@@ -1730,12 +1733,12 @@ describe("TaskService (__tests__)", () => {
       // All 6 lines persisted exactly once, with absolute line numbers.
       const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
       expect(created).toEqual([
-        { executionId: "e1", lineNumber: 0, content: "p0-a" },
-        { executionId: "e1", lineNumber: 1, content: "p0-b" },
-        { executionId: "e1", lineNumber: 2, content: "p1-a" },
-        { executionId: "e1", lineNumber: 3, content: "p1-b" },
-        { executionId: "e1", lineNumber: 4, content: "p2-a" },
-        { executionId: "e1", lineNumber: 5, content: "p2-b" },
+        { executionId: "e1", lineNumber: 0, content: "p0-a", level: null },
+        { executionId: "e1", lineNumber: 1, content: "p0-b", level: null },
+        { executionId: "e1", lineNumber: 2, content: "p1-a", level: null },
+        { executionId: "e1", lineNumber: 3, content: "p1-b", level: null },
+        { executionId: "e1", lineNumber: 4, content: "p2-a", level: null },
+        { executionId: "e1", lineNumber: 5, content: "p2-b", level: null },
       ]);
       expect(logLineRepo.save).toHaveBeenCalledTimes(3);
     });
@@ -1768,8 +1771,8 @@ describe("TaskService (__tests__)", () => {
       expect(logLineRepo.delete).toHaveBeenCalledTimes(1);
       const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
       expect(created).toEqual([
-        { executionId: "e1", lineNumber: 0, content: "only-0" },
-        { executionId: "e1", lineNumber: 1, content: "only-1" },
+        { executionId: "e1", lineNumber: 0, content: "only-0", level: null },
+        { executionId: "e1", lineNumber: 1, content: "only-1", level: null },
       ]);
     });
 
@@ -1797,6 +1800,7 @@ describe("TaskService (__tests__)", () => {
         executionId: "e1",
         lineNumber: 0,
         content: "line0",
+        level: null,
       });
     });
 
@@ -2414,10 +2418,10 @@ describe("TaskService (__tests__)", () => {
         // All four lines persisted across the two transactions.
         const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
         expect(created).toEqual([
-          { executionId: "e1", lineNumber: 0, content: "p0-a" },
-          { executionId: "e1", lineNumber: 1, content: "p0-b" },
-          { executionId: "e1", lineNumber: 2, content: "p1-a" },
-          { executionId: "e1", lineNumber: 3, content: "p1-b" },
+          { executionId: "e1", lineNumber: 0, content: "p0-a", level: null },
+          { executionId: "e1", lineNumber: 1, content: "p0-b", level: null },
+          { executionId: "e1", lineNumber: 2, content: "p1-a", level: null },
+          { executionId: "e1", lineNumber: 3, content: "p1-b", level: null },
         ]);
       });
     });
@@ -2945,6 +2949,312 @@ describe("TaskService (__tests__)", () => {
       await expect(service.deleteVersion("t1", "ghost")).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+});
+
+// ============================================================================
+// OBS-03: 执行日志结构化检索（level 列）
+//   - 写入抽取：storeLogLines 为每行推断 level 并落库（推断不到 → null）
+//   - 查询过滤：getExecutionLogs 的 level 参数在 SQL 层下推
+//   - 分页协调：level 过滤时 totalLines/hasMore 按过滤后行集计算
+//   - 兼容：无 level 参数时行为与引入前完全一致
+// ============================================================================
+
+/** makeLogQb：构造 getExecutionLogs 可链式 qb mock（含 skip/take） */
+function makeLogQb(rows: unknown[]) {
+  return {
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    take: jest.fn().mockReturnThis(),
+    skip: jest.fn().mockReturnThis(),
+    getMany: jest.fn().mockResolvedValue(rows),
+    getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
+  } as any;
+}
+
+describe("OBS-03: execution log level（写入抽取）", () => {
+  let service: TaskService;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let logLineRepo: ReturnType<typeof makeRepo>;
+
+  beforeEach(async () => {
+    resetRuntimeMetrics();
+    const taskRepo = makeRepo();
+    execRepo = makeRepo();
+    logLineRepo = makeRepo();
+    const versionRepo = makeRepo();
+    const releaseSlotExecute = jest.fn().mockResolvedValue({ affected: 1 });
+    const dataSource = {
+      transaction: jest.fn(async (fn: any) =>
+        fn({
+          delete: jest.fn(async (_t: unknown, c: unknown) =>
+            logLineRepo.delete(c as any),
+          ),
+          save: jest.fn(async (_t: unknown, rows: unknown) =>
+            logLineRepo.save(rows as any),
+          ),
+        }),
+      ),
+      createQueryBuilder: jest.fn(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: releaseSlotExecute,
+      })),
+    };
+
+    const module = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        {
+          provide: getRepositoryToken(ExecutionLogLine),
+          useValue: logLineRepo,
+        },
+        { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
+        { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+        { provide: DataSource, useValue: dataSource },
+        {
+          provide: SchedulerService,
+          useValue: {
+            stop: jest.fn(),
+            scheduleOne: jest.fn(),
+            getStats: jest.fn(),
+          },
+        },
+        {
+          provide: AiService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        {
+          provide: ExecutorService,
+          useValue: {
+            getExecutorUrl: jest.fn(
+              (_a: string, p: string) => `http://executor:3001/${p}`,
+            ),
+            getSharedToken: jest.fn().mockResolvedValue(""),
+            notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailureWithConfig: jest.fn().mockResolvedValue(undefined),
+            notifyFailure: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: AuditService, useValue: { log: jest.fn() } },
+      ],
+    }).compile();
+
+    service = module.get(TaskService);
+  });
+
+  it("storeLogLines 按行推断 level 落库（括号/无括号/时间戳/未知形态）", async () => {
+    const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+    execRepo.findOne.mockResolvedValue(exec);
+    execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+    await service.handleCallback([
+      {
+        executionId: "e1",
+        status: "success",
+        logs: "[ERROR] boom\nplain text\nerror: lower\n2024-01-01 10:00:00 [WARN] careful",
+      },
+    ]);
+    expect(logLineRepo.create).toHaveBeenCalledWith({
+      executionId: "e1",
+      lineNumber: 0,
+      content: "[ERROR] boom",
+      level: "ERROR",
+    });
+    expect(logLineRepo.create).toHaveBeenCalledWith({
+      executionId: "e1",
+      lineNumber: 1,
+      content: "plain text",
+      level: null,
+    });
+    expect(logLineRepo.create).toHaveBeenCalledWith({
+      executionId: "e1",
+      lineNumber: 2,
+      content: "error: lower",
+      level: "ERROR",
+    });
+    expect(logLineRepo.create).toHaveBeenCalledWith({
+      executionId: "e1",
+      lineNumber: 3,
+      content: "2024-01-01 10:00:00 [WARN] careful",
+      level: "WARN",
+    });
+  });
+});
+
+describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
+  let service: TaskService;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let logLineRepo: ReturnType<typeof makeRepo>;
+
+  beforeEach(async () => {
+    resetRuntimeMetrics();
+    const taskRepo = makeRepo();
+    execRepo = makeRepo();
+    logLineRepo = makeRepo();
+    const versionRepo = makeRepo();
+
+    const module = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        {
+          provide: getRepositoryToken(ExecutionLogLine),
+          useValue: logLineRepo,
+        },
+        { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
+        { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: jest.fn(),
+            createQueryBuilder: jest.fn(() => ({
+              update: jest.fn().mockReturnThis(),
+              set: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
+              execute: jest.fn().mockResolvedValue({ affected: 1 }),
+            })),
+          },
+        },
+        {
+          provide: SchedulerService,
+          useValue: {
+            stop: jest.fn(),
+            scheduleOne: jest.fn(),
+            getStats: jest.fn(),
+          },
+        },
+        {
+          provide: AiService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        {
+          provide: ExecutorService,
+          useValue: {
+            getExecutorUrl: jest.fn(
+              (_a: string, p: string) => `http://executor:3001/${p}`,
+            ),
+            getSharedToken: jest.fn().mockResolvedValue(""),
+            notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailureWithConfig: jest.fn().mockResolvedValue(undefined),
+            notifyFailure: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: AuditService, useValue: { log: jest.fn() } },
+      ],
+    }).compile();
+
+    service = module.get(TaskService);
+  });
+
+  it("无 level 参数：保持既有行为（行号游标 + 全量 count），不触碰 skip", async () => {
+    execRepo.findOne.mockResolvedValue({ id: "exec-1" });
+    const qb = makeLogQb([{ lineNumber: 0, content: "line0" }]);
+    logLineRepo.createQueryBuilder.mockReturnValue(qb);
+    logLineRepo.count.mockResolvedValue(5);
+
+    const result = await service.getExecutionLogs("exec-1", 2, 100);
+
+    expect(qb.andWhere).toHaveBeenCalledWith("l.lineNumber >= :from", {
+      from: 2,
+    });
+    expect(qb.andWhere).not.toHaveBeenCalledWith("l.level = :level", {
+      level: expect.anything(),
+    });
+    expect(qb.skip).not.toHaveBeenCalled();
+    expect(logLineRepo.count).toHaveBeenCalledWith({
+      where: { executionId: "exec-1" },
+    });
+    expect(result).toEqual({
+      lines: ["line0"],
+      totalLines: 5,
+      hasMore: true,
+    });
+  });
+
+  it("level 参数：SQL 层下推等值过滤 + 过滤后偏移量翻页", async () => {
+    execRepo.findOne.mockResolvedValue({ id: "exec-1" });
+    const qb = makeLogQb([{ lineNumber: 7, content: "[ERROR] boom" }]);
+    logLineRepo.createQueryBuilder.mockReturnValue(qb);
+    logLineRepo.count.mockResolvedValue(9);
+
+    const result = await service.getExecutionLogs("exec-1", 2, 100, "ERROR");
+
+    expect(qb.andWhere).toHaveBeenCalledWith("l.level = :level", {
+      level: "ERROR",
+    });
+    expect(qb.andWhere).not.toHaveBeenCalledWith("l.lineNumber >= :from", {
+      from: expect.anything(),
+    });
+    // 过滤模式下 fromLine = 过滤后序列的偏移量（skip/OFFSET）
+    expect(qb.skip).toHaveBeenCalledWith(2);
+    // totalLines 按 level 过滤后计数（分页元数据描述过滤行集）
+    expect(logLineRepo.count).toHaveBeenCalledWith({
+      where: { executionId: "exec-1", level: "ERROR" },
+    });
+    expect(result).toEqual({
+      lines: ["[ERROR] boom"],
+      totalLines: 9,
+      hasMore: true, // fromLine(2) + 1 < 9
+    });
+  });
+
+  it("level 参数：最后一页 hasMore=false 与过滤 totalLines 协调", async () => {
+    execRepo.findOne.mockResolvedValue({ id: "exec-1" });
+    const qb = makeLogQb([
+      { lineNumber: 7, content: "[ERROR] a" },
+      { lineNumber: 11, content: "[ERROR] b" },
+    ]);
+    logLineRepo.createQueryBuilder.mockReturnValue(qb);
+    logLineRepo.count.mockResolvedValue(2);
+
+    const result = await service.getExecutionLogs("exec-1", 0, 100, "ERROR");
+
+    expect(result.hasMore).toBe(false); // 0 + 2 < 2 为假
+    expect(result.totalLines).toBe(2);
+    expect(result.lines).toEqual(["[ERROR] a", "[ERROR] b"]);
+  });
+
+  it("level=undefined 与显式 null 等价：都走无过滤路径（编程式调用兜底）", async () => {
+    execRepo.findOne.mockResolvedValue({ id: "exec-1" });
+    const qb = makeLogQb([]);
+    logLineRepo.createQueryBuilder.mockReturnValue(qb);
+    logLineRepo.count.mockResolvedValue(3);
+
+    await service.getExecutionLogs("exec-1", 0, 100, null);
+
+    expect(qb.andWhere).toHaveBeenCalledWith("l.lineNumber >= :from", {
+      from: 0,
+    });
+    expect(qb.skip).not.toHaveBeenCalled();
+    expect(logLineRepo.count).toHaveBeenCalledWith({
+      where: { executionId: "exec-1" },
     });
   });
 });
