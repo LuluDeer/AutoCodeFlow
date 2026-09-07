@@ -46232,8 +46232,10 @@ function buildAuthHeaders(token) {
 function isUnauthorized(error) {
     return error?.response?.status === 401;
 }
-async function performRequest(token, method, path, data, retryCount = adminUrls.length) {
-    const headers = buildAuthHeaders(token);
+async function performRequest(token, method, path, data, retryCount = adminUrls.length, extraHeaders) {
+    const headers = extraHeaders
+        ? { ...buildAuthHeaders(token), ...extraHeaders }
+        : buildAuthHeaders(token);
     for (let i = 0; i < retryCount; i++) {
         try {
             const client = axios_1.default.create({
@@ -46267,10 +46269,10 @@ async function performRequest(token, method, path, data, retryCount = adminUrls.
     }
     throw new Error('Request failed after all retries');
 }
-async function request(method, path, data, retryCount = adminUrls.length, tokenMode = 'current') {
+async function request(method, path, data, retryCount = adminUrls.length, tokenMode = 'current', extraHeaders) {
     const token = tokenMode === 'static' ? (0, auth_1.getStaticToken)() : await (0, auth_1.getCurrentToken)();
     try {
-        return await performRequest(token, method, path, data, retryCount);
+        return await performRequest(token, method, path, data, retryCount, extraHeaders);
     }
     catch (error) {
         // R10 (round-10 gap #3): stale-credential self-heal. A 401 on a
@@ -46293,7 +46295,7 @@ async function request(method, path, data, retryCount = adminUrls.length, tokenM
         if (tokenMode === 'current' && isUnauthorized(error)) {
             const fresh = await (0, auth_1.forceTokenRefresh)();
             if (fresh && fresh !== token) {
-                return performRequest(fresh, method, path, data, retryCount);
+                return performRequest(fresh, method, path, data, retryCount, extraHeaders);
             }
         }
         throw error;
@@ -46302,8 +46304,8 @@ async function request(method, path, data, retryCount = adminUrls.length, tokenM
 async function get(path) {
     return request('get', path);
 }
-async function post(path, data) {
-    return request('post', path, data);
+async function post(path, data, extraHeaders) {
+    return request('post', path, data, adminUrls.length, 'current', extraHeaders);
 }
 async function postWithStaticToken(path, data) {
     return request('post', path, data, adminUrls.length, 'static');
@@ -46649,6 +46651,12 @@ function withExecutorAddress(request) {
         ...request,
     };
 }
+/** OBS-01: 批次内第一个携带 traceparent 的执行决定回传头（同批多执行在
+ *  实际流量中几乎同 trace——同一次触发；无 traceparent 时零头回传）。 */
+function traceparentHeaderFor(requests) {
+    const traceparent = requests.find(r => r.traceparent)?.traceparent;
+    return traceparent ? { traceparent } : {};
+}
 function pushCallback(request) {
     const callbackRequest = withExecutorAddress(request);
     const existingIndex = callbackQueue.findIndex(r => r.executionId === request.executionId);
@@ -46663,7 +46671,8 @@ function pushCallback(request) {
 }
 async function doCallback(requests) {
     try {
-        const response = await untilDeadline((0, admin_client_1.post)('/api/executions/callback', requests), null);
+        // OBS-01: 回传 traceparent 头（admin 侧 execution-callback.controller 解析关联）
+        const response = await untilDeadline((0, admin_client_1.post)('/api/executions/callback', requests, traceparentHeaderFor(requests)), null);
         if (!response)
             return false;
         if (response.status >= 200 && response.status < 300) {
@@ -49484,6 +49493,9 @@ function pushKilledCallbackOnce(executionId, entry) {
         status: 'failed',
         errorMessage: 'Execution killed by admin request',
         failureReason: 'killed',
+        ...(liveExecutions.get(executionId)?.traceparent
+            ? { traceparent: liveExecutions.get(executionId).traceparent }
+            : {}),
     });
 }
 function createExecutionEntry(executionId, taskId) {
@@ -49623,6 +49635,13 @@ exports.executeRouter.post('/execute', (req, res) => {
         // 在后台执行（经 worker 按 taskId 串行，见 dispatch）。
         entry = createExecutionEntry(executionId, String(body.task.id || executionId));
         liveExecutions.set(executionId, entry);
+        // OBS-01: 记录 admin 派发请求的 W3C traceparent 头（缺省=无追踪），
+        // 后续注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。
+        const traceparentHeader = req.headers['traceparent'];
+        if (typeof traceparentHeader === 'string' && traceparentHeader) {
+            entry.traceparent = traceparentHeader;
+            logger_1.logger.info(`Execution ${executionId} trace: ${traceparentHeader.split('-')[1] ?? 'malformed'}`);
+        }
         void startExecutionInBackground(executionId, body, params, entry);
         // 响应体与旧实现逐字一致——admin 对 2xx 的处理不变。
         res.json({ status: 'accepted', executionId });
@@ -49655,6 +49674,7 @@ async function startExecutionInBackground(executionId, body, params, entry) {
             errorMessage: truncateCallbackErrorMessage(message),
             failureReason,
             logs: truncateCallbackLogs(logs),
+            ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
         });
         entry.release(); // 幂等
     };
@@ -49747,6 +49767,7 @@ async function dispatchExecutionToWorker(executionId, body, params, workDir, ent
                 status: 'failed',
                 errorMessage: truncateCallbackErrorMessage(message),
                 failureReason: prepareFailureReason(message),
+                ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
             });
             throw err;
         }
@@ -49768,6 +49789,7 @@ async function dispatchExecutionToWorker(executionId, body, params, workDir, ent
             status: 'failed',
             errorMessage: truncateCallbackErrorMessage(message),
             failureReason: 'unknown',
+            ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
         });
         entry.release();
     }
@@ -49964,6 +49986,13 @@ async function prepareExecution(executionId, body, params, workDir, entry, asser
         logger_1.logger.warn(`create artifacts dir failed (non-critical): ${String(e)}`);
     }
     env['AUTOFLOW_ARTIFACTS_DIR'] = artifactsDir;
+    // OBS-01: 把 dispatch 请求的 W3C traceparent 头透传为任务 env（任务代码
+    // 可读 AUTOFLOW_TRACE_ID 做下游关联）。在 params 注入之后（用户参数不可
+    // 覆盖，与 AUTOFLOW_CALLBACK_TOKEN 同一纪律）。缺省（admin 未开追踪）
+    // 不注入，与既有行为一致。
+    if (entry.traceparent) {
+        env['AUTOFLOW_TRACE_ID'] = entry.traceparent;
+    }
     let cmd;
     let args;
     if (actualRuntime === 'node') {
@@ -50229,6 +50258,9 @@ async function runTask(task, params, executionId) {
             logs: truncateCallbackLogs(result.logs),
             durationMs: Date.now() - startTime,
             artifacts: await collectTerminalArtifacts(executionId, workDir),
+            ...(liveExecutions.get(executionId)?.traceparent
+                ? { traceparent: liveExecutions.get(executionId).traceparent }
+                : {}),
         });
     }
     catch (err) {
@@ -50255,6 +50287,9 @@ async function runTask(task, params, executionId) {
             ...(killed ? { failureReason: 'killed' } : {}),
             durationMs: Date.now() - startTime,
             artifacts: await collectTerminalArtifacts(executionId, workDir),
+            ...(liveExecutions.get(executionId)?.traceparent
+                ? { traceparent: liveExecutions.get(executionId).traceparent }
+                : {}),
         });
     }
 }
