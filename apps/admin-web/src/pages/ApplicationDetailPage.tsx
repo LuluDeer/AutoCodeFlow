@@ -191,8 +191,10 @@ function OverviewTab({ app }: { app: Application }) {
           <Collapse ghost>
             <Collapse.Panel header="查看详情" key="manifest">
               <pre style={{
-                background: '#1e1e1e', color: '#d4d4d4', padding: 16,
+                // UI-02：清单 pre 块双主题（同 SSE 日志区变量）
+                background: 'var(--log-bg)', color: 'var(--log-text)', padding: 16,
                 borderRadius: 8, maxHeight: 300, overflow: 'auto', fontSize: 13,
+                fontFamily: 'var(--font-mono)',
               }}>
                 {JSON.stringify(app.manifest, null, 2)}
               </pre>

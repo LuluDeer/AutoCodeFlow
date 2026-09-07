@@ -589,15 +589,17 @@ export default function ExecutionDetailPage() {
           <pre
             ref={logRef}
             style={{
-              background: '#1e1e1e',
-              color: '#d4d4d4',
+              // UI-02：SSE 日志区双主题（亮面白底深字 / 暗面 MASTER OLED 画布）
+              background: 'var(--log-bg)',
+              color: 'var(--log-text)',
               padding: 16,
               borderRadius: 8,
               maxHeight: 500,
               overflow: 'auto',
               fontSize: 12,
               margin: 0,
-              fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
+              // UI-01：MASTER.md §Typography——日志/等宽场景用 Fira Code
+              fontFamily: 'var(--font-mono)',
               lineHeight: 1.6,
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
