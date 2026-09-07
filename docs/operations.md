@@ -131,6 +131,82 @@ mc ilm rule ls autoflow-minio/autoflow-logs
 
 `--expiry-days` 应与 `LOG_RETENTION_DAYS`（默认 30）保持一致，使对象先于或同步于 DB 行过期。执行器本地 `workDir/logs`（7 天）与死信回调（50 个文件上限）由执行器自身清理，不在本节范围内。
 
+### 备份对象清单
+
+上述 pg_dump 只覆盖数据库。完整备份需包含以下对象：
+
+| 对象 | 内容 | 说明 |
+|------|------|------|
+| PostgreSQL 全库 | tasks / task_executions / execution_log_lines / 系统配置、用户与审计等全部业务表 | 上文 `pg_dump` 命令（每日 cron）；或对 `postgres_data` 卷做物理快照（见下文 pgBackRest 建议） |
+| `.env` secrets | `JWT_SECRET` / `DB_PASSWORD` / `REDIS_PASSWORD` / `EXECUTOR_SECRET` / `MINIO_ROOT_PASSWORD` / `INITIAL_ADMIN_PASSWORD` 等 | 文件级备份并妥善保管权限；丢失后按「安全加固」节重建并轮换 |
+| 上传包目录 | admin-api 容器内 `uploads/packages`（应用包）与 `uploads/executor-packages`（执行器包） | **注意**：compose 未为 admin-api 挂载卷，该目录仅存于容器文件系统，容器重建即丢失。备份：`docker compose cp admin-api:/app/uploads /backup/autoflow/uploads_$(date +%F)`；或接受重建后重新上传 |
+| S3/MinIO 日志桶 | `LOG_STORAGE_DRIVER=s3` 时 `autoflow-logs` 桶 `execution-logs/` 前缀对象（`minio_data` 卷） | `mc mirror autoflow-minio/autoflow-logs /backup/autoflow/minio/`；MinIO 卷本身无内置备份，仅镜像导出 |
+| 包仓库缓存（可选） | `pypi_data`（registry-pypi `/data/packages`）、`npm_data`（registry-npm verdaccio storage） | 仅上游包缓存，可从 PyPI/npm 重建，备份优先级低 |
+
+### 恢复步骤骨架
+
+```bash
+# 1. 停止依赖数据库的服务
+docker compose stop admin-api
+
+# 2. 恢复 PG 全库（与上文「恢复数据库」一致）
+gunzip -c /backup/autoflow/db_20240101_020000.sql.gz \
+  | docker compose exec -T postgres psql -U autoflow autoflow
+
+# 3. 按备份对象清单回放其余对象：.env、uploads 包目录（docker compose cp 回灌）、
+#    MinIO 对象（mc mirror --overwrite 回放）
+
+# 4. 启动并跑迁移链（幂等，重复执行无副作用，可安全重跑）
+docker compose start admin-api
+docker compose exec admin-api npm run migration:show
+docker compose exec admin-api npm run migration:run
+
+# 5. 健康检查
+curl http://localhost:3105/health
+```
+
+**迁移链幂等性说明**：全部迁移以 `IF NOT EXISTS` / `IF EXISTS` 编写，重复执行与
+revert 重放均无副作用；CI 已有「空库 + 续跑」双轮幂等 job 兜底。恢复点版本落后于
+当前代码版本时，`migration:run` 会补齐差异迁移——这正是恢复步骤中总是跑一次
+`migration:run` 的原因。存量库跨 3 个版本升级的演练（QA-08 第三态）尚未完成
+（见 `docs/DEVELOPMENT-PLAN-2026-09.md` §7），跨大版本升级后的恢复演练应先在
+测试环境执行。
+
+### 物理备份建议（pgBackRest）与定期 dump
+
+逻辑备份（上文每日 `pg_dump` cron）适合当前规模。数据量增长后建议引入 pgBackRest
+（支持增量与时间点恢复 PITR），骨架如下（未随 compose 交付，落地前需在测试环境验证）：
+
+```ini
+# /etc/pgbackrest/pgbackrest.conf 骨架
+[global]
+repo1-path=/backup/pgbackrest
+repo1-retention-full=2
+
+[autoflow]
+pg1-port=5432
+pg1-user=autoflow
+```
+
+```bash
+# crontab 示例：每周日全量 + 工作日增量
+0 3 * * 0 pgbackrest --stanza=autoflow backup --type=full
+0 3 * * 1-6 pgbackrest --stanza=autoflow backup --type=incr
+```
+
+### 恢复演练清单
+
+建议每季度演练一次，逐项验证：
+
+- [ ] 恢复后健康检查端点通过：`curl http://localhost:3105/health`、
+      `/api/health/services`（各组件 healthy）、`/api/health/metrics`（`queueSize` 可读）
+- [ ] 任务列表抽查：`GET /api/tasks` 返回记录数量与备份点一致，抽样任务可查看
+      执行记录与日志明细
+- [ ] 执行器重注册：`docker compose restart executor-node executor-python` 后约
+      10-15 秒心跳出现（见上文「执行器重新注册」），`GET /api/executors` 可见且为
+      在线状态
+- [ ] 恢复耗时记录归档，作为 QA-08 升级 runbook 的输入
+
 ---
 
 ## 执行器生命周期管理
@@ -225,6 +301,64 @@ curl -fsSL http://your-admin-api-host:3105/api/executors/install.sh \
 - **不限定**（默认）：由系统自动选择空闲执行器
 - **指定执行器**：固定在某台执行器上运行（适合需要特定环境的任务）
 - **指定执行器组**（通过标签）：在一组执行器中负载均衡
+
+---
+
+## 容量规划
+
+> 本节为 DOC-02 规划内容：水位指标与告警阈值提炼自
+> `docs/observability/README.md` 4.2 节（OBS-05 容量水位四件套）与
+> `docs/observability/alerting-rules.yml`。**容量白皮书（QA-05 并发压测专项）尚未产出**：
+> 下列阈值均为既有告警配置的既定值，涉及「容量上限」的数字均标注**待压测确认**。
+
+### 容量水位指标清单与建议告警阈值
+
+| 信号 | series（逐字） | 水位读法 / 建议阈值 | 前提与备注 |
+|------|----------------|----------------------|------------|
+| PG 连接池水位 | `autoflow_db_pool_max_connections` / `autoflow_db_pool_active_connections` / `autoflow_db_pool_idle_connections` / `autoflow_db_pool_waiting_requests` | 利用率 = active/max，**> 0.8（80%）持续 5m 建议告警**；`waiting_requests > 0` 持续 5m = 池饱和（有人在排队等连接），建议告警 | 告警须以 `max_connections > 0` 为前提——`max == 0` 表示池句柄不可读（进程启动早期 / 非 PG 驱动），此时其余三项一并置 0。池上限 = `DB_POOL_SIZE`（默认 20，PERF-04），实际承载能力**待压测确认** |
+| SSE 日志流槽位 | `autoflow_sse_streams_active` / `autoflow_sse_streams_limit` | 占用率 = Σ(active)/Σ(limit)，**> 0.8 持续 10m 关注** | 配合 `autoflow_sse_streams_rejected_total` 观察拒绝速率；limit = `SSE_MAX_STREAMS_GLOBAL`（默认 64，进程内计数） |
+| 队列积压 | `autoflow_queue_depth{state="waiting"}` | **> 100 持续 10m 告警**（`AUTOFLOW_QUEUE_BACKLOG` 已启用） | Redis 不可读时 `autoflow_queue_up == 0` 且 depth 全部置 0，勿把抓取故障误读为「无积压」 |
+| executor 磁盘水位 | `autoflow_executor_disk_usage_percent{executor="<address>"}` | **> 90（90%）持续 10m 建议告警** | 仅在线且心跳上报 `diskUsage` 的执行器有 series（旧版执行器缺席而非 0）；per-executor label，执行器下线/换址后 series 随抓取消失 |
+
+阈值来源：`docs/observability/README.md` 4.2 节与 `alerting-rules.yml`（6 条启用告警）。
+series 名已与唯一注册处
+`apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts` 逐字核对（见该 README
+附录 A）。注意抓取端点 `/api/metrics` 需要 Bearer JWT，抓取配置见该 README 第 1 节。
+
+### 横向扩容要点
+
+- **admin-api 多实例与 SSE 容量**：SSE 流计数为**进程内** gauge（per-instance，进程重启
+  归零），多实例 SSE 总容量 = 实例数 × `SSE_MAX_STREAMS_GLOBAL`（默认 64）线性叠加
+  （占用率按 Σ(active)/Σ(limit) 计算）——该上限值**待压测确认**。每实例独立抓取
+  （`instance` label 由 Prometheus 注入），告警按 `job=autoflow-admin-api` 聚合。
+- **Leader Election 双实例语义**：调度扫描由 Redis 锁选主（`lock:scheduler:leader`，锁
+  TTL 30s + 竞选重试 15s，接管窗 60s），同一时刻仅 Leader 实例执行调度；任务触发去重的
+  唯一跨进程保障也是 Redis 分布式锁——进程内 `runningTasks` Map 不跨实例。Redis 不可用时
+  持锁实例 fail-open（保持 `isLeader=true` 继续调度）。双实例滚动重启的行为验证见
+  「混沌演练」C 场景。
+- **执行器侧并发与派发闸门**：执行器自身并发上限 `MAX_CONCURRENT_TASKS`（compose 缺省
+  10；管理界面可调，执行器 `/config/reload` 热更后随下个心跳回传，admin 侧按正整数
+  1..10000 校验采纳，非法值视为未上报不改 DB）。admin 派发闸门：候选池先按在线/分组/
+  标签/runtime 过滤，再剔除 `runningTaskCount >= maxConcurrentTasks` 的满载执行器，按
+  加权分（负载 50% / CPU 25% / 内存 25%）选优；全部满载即抛 `ServiceUnavailableException`
+  （"No available executor — all online executors are at maximum capacity"），本次派发
+  失败；pin 指定执行器满载时同样派发失败且**不回落**其他实例。全系统执行并发理论值 =
+  各执行器上限之和，实际极限**待压测确认**。
+- **全局限流**：`THROTTLE_LIMIT` 默认 60 req/min（登录另有 `LOGIN_THROTTLE_LIMIT`
+  20/min），是 API 侧最先到达的容量墙；压测前按 `scripts/load-test.README.md` 建议临时
+  调高（如 600）并重启 admin-api，避免 429 退避主导吞吐数字。
+
+### 压测与容量基线（占位）
+
+压测工具与用法见 `scripts/load-test.mjs` 与 `scripts/load-test.README.md`（并发创建/触发
+glue 任务 → 轮询终态 → 吞吐 / p50/p95 / 429 / 重复执行违规报告，可进 CI/巡检）。注意该
+工具刻意**不做执行器饱和打满**（速率压在限流之下），测的是「调度正确性 + 限流内吞吐」，
+不是执行器极限容量。
+
+**容量白皮书（QA-05 并发压测专项）尚未产出**：单实例 500 并发执行、1000 任务/分钟入队、
+SSE 500 连接、回调风暴等规划目标，以及 PG 连接池 / BullMQ / 回调路由的瓶颈定位，全部
+**待压测确认**后再回填本节（规划项见 `docs/DEVELOPMENT-PLAN-2026-09.md` §7 QA-05）。
+本节当前不给出任何经验证的容量上限数字。
 
 ---
 
