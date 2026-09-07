@@ -9,6 +9,9 @@ import { getErrMsg } from '../utils/error';
 import { useAuthStore } from '../store/auth';
 import { formatDateTime, formatDuration } from '../utils/timeFormat';
 import { LOG_LEVEL_VALUES, logLineHighlightClass } from '../utils/logLevel';
+// OBS-04: 分析报告/时间线面板（核心展示逻辑独立成组件文件，便于单独测试）
+import ExecutionReportPanel from '../components/ExecutionReportPanel';
+import { executionReportsApi } from '../api/execution-reports';
 
 const { Text } = Typography;
 
@@ -93,6 +96,25 @@ export default function ExecutionDetailPage() {
     { pollingInterval: undefined, refreshDeps: [execId] },
   );
   const isLive = data?.status === 'running' || data?.status === 'pending';
+
+  // ===== OBS-04: 分析报告 / 时间线 =====
+  // 一次性拉取 report 端点（execution 行 + DB 时间戳映射的 timeline +
+  // execution_reports 当日聚合行；缺行 report=null 属正常态，面板内降级）。
+  // 失败仅降级提示，不阻塞主视图；主执行数据刷新时同步刷新报告。
+  const {
+    data: reportPayload,
+    loading: reportLoading,
+    error: reportErr,
+    refresh: refreshReport,
+  } = useRequest(() => executionReportsApi.report(taskId!, execId!), {
+    ready: !!taskId && !!execId,
+    refreshDeps: [taskId, execId],
+    onError: () => undefined,
+  });
+  const reportError = reportErr ? getErrMsg(reportErr, '报告数据加载失败') : null;
+  useEffect(() => {
+    refreshReport();
+  }, [data?.status, refreshReport]);
 
   // SSE log streaming when running
   useEffect(() => {
@@ -605,6 +627,15 @@ export default function ExecutionDetailPage() {
           </Text>
         </Card>
       )}
+
+      {/* OBS-04: 分析报告 / 时间线——核心逻辑在独立组件 ExecutionReportPanel
+          （时间线映射/AI 分析段/当日报告段），本页仅做一次数据拉取与最小
+          挂载，避免与并行会话在本页的在途编辑产生结构冲突。 */}
+      <ExecutionReportPanel
+        payload={reportPayload}
+        loadError={reportError}
+        loading={reportLoading}
+      />
     </div>
   );
 }

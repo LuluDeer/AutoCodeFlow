@@ -573,6 +573,19 @@ export class TaskController {
     return this.taskService.getExecution(execId, id);
   }
 
+  @Get(":id/executions/:execId/report")
+  @ApiOperation({
+    summary: "Execution report + timeline",
+    description:
+      "OBS-04: one-shot payload for the execution detail 'analysis report / timeline' tab. Returns the execution row (timestamps drive the timeline), a created→started→finished timeline mapped from those DB timestamps, and the execution_reports daily aggregate row for the execution's day (report=null when absent — the frontend degrades gracefully).",
+  })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiResponse({ status: 404, description: "Execution record not found" })
+  executionReport(@Param("id") id: string, @Param("execId") execId: string) {
+    return this.taskService.getExecutionReport(execId, id);
+  }
+
   @Get(":id/executions/:execId/logs")
   @ApiOperation({
     summary: "Execution logs",

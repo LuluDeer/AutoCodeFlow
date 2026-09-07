@@ -11,6 +11,9 @@ import { Task } from "./entities/task.entity";
 import { TaskExecution } from "./entities/task-execution.entity";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
+// OBS-04: execution_reports 读侧（metrics 模块实体跨模块注册——TypeORM
+// forFeature 只取连接与元数据，无运行时依赖环；MetricsModule 同样只注册）
+import { ExecutionReport } from "../metrics/entities/execution-report.entity";
 import { LogRetentionCleanupService } from "./log-retention/log-retention-cleanup.service"; // Stream D/DB-002
 import { ExecutorModule } from "../executor/executor.module";
 import { AiModule } from "../ai/ai.module";
@@ -28,6 +31,8 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
       TaskExecution,
       ExecutionLogLine,
       TaskVersion,
+      // OBS-04: 执行报告读侧（execution_reports 表；写方 MetricsService）
+      ExecutionReport,
     ]),
     BullModule.registerQueue({ name: "task-queue" }),
     ExecutorModule,
