@@ -144,3 +144,18 @@ html[data-theme='dark'] .log-line-error {
 html[data-theme='dark'] .log-line-warn {
   color: #ffc53d;
 }
+
+/* UI-05: 日志关键词搜索高亮——mark 底色 + 继承行色。
+   亮面黄底深字、暗面金底近黑字，双主题均 ≥4.5:1；与行级高亮
+   （log-line-*，只改前景色）正交叠加互不覆盖。 */
+mark.log-search-hit {
+  background: #fde68a;
+  color: #713f12;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+html[data-theme='dark'] mark.log-search-hit {
+  background: #fbbf24;
+  color: #1c1917;
+}
