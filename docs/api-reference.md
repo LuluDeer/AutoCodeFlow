@@ -363,6 +363,45 @@ Content-Type: application/json
 
 ---
 
+### Alerts — 告警入站路由（OBS-02，第十六轮新增）
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| POST | `/alerts/webhook` | 否（HMAC 签名） | Alertmanager v2 webhook 接收入口：把 Prometheus/Alertmanager 告警映射为平台通知并走**既有通知渠道**（email / slack / dingtalk / wecom / webhook）全渠道扇出（`sendAll`），不新建渠道类型 |
+
+> 鉴权约定与 `POST /applications/webhook` 一致（`@Public` + HMAC）：
+> - header `X-AutoCodeFlow-Timestamp`（毫秒时间戳，±5 分钟窗）+ `X-Hub-Signature-256: sha256=<hex>`，`<hex> = HMAC_SHA256(secret, "${timestamp}.${rawBody}")`；
+> - secret 为环境变量 `ALERT_WEBHOOK_SECRET`；**未配置时端点 503 拒绝（安全缺省）**；所有鉴权失败统一 401（`"Alert webhook authentication failed"`），原因只写服务端日志。
+
+请求体为 Alertmanager v2 JSON（`alerts[]` 带 `status` / `labels` / `annotations` / `startsAt`）。映射语义：
+
+- `title = [Alert] <alertname> <firing|resolved>`（alertname 缺省 `unknown`）；多条告警合并为一条通知。
+- `content` = 逐条告警的 labels / annotations 键值摘要 + `startsAt` + Alertmanager `externalURL`（如有）。
+- **level**：任一 `firing` → `error`；全部 `resolved` → `info`（resolved 恢复通知也发）。
+- **runbook 链接**（FEAT-11）：`annotations.runbook_url` 命中时追加 `Runbook: <url>` 段；`labels.taskId` 命中时查 `tasks.runbook` 拼接 `Runbook:` 段（查询失败降级，不阻断外发）。
+
+响应：`{ ok: true, delivered: <n>, results: { <channel>: sent|blocked|failed|skipped } }`；全部渠道无人可投递（全 `skipped`）时返回 **502** + results 明细（让 Alertmanager 重试）。`alerts` 缺失/为空 → 400。
+
+```json
+POST /api/alerts/webhook
+{
+  "version": "4",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": { "alertname": "PG_DOWN", "severity": "critical", "taskId": "task-abc" },
+      "annotations": { "summary": "PostgreSQL 不可达", "runbook_url": "https://wiki.example.com/rb/pg" },
+      "startsAt": "2026-09-07T05:00:00Z"
+    }
+  ]
+}
+```
+
+Alertmanager 侧 route/receiver 配置样例与加签提示见 `docs/observability/README.md` §3.5。
+
+---
+
 ## Metrics — 监控指标
 
 | 方法 | 路径 | 需要认证 | 说明 |
@@ -502,6 +541,7 @@ Content-Type: application/json
 | `NPM_REGISTRY_TOKEN` | 空 | 私有 npm registry 代理的预签发 access token（优先于 user/pass 组合，存在时直接以 `Bearer` 拉取包列表） |
 | `NPM_REGISTRY_USER` | 空 | registry 代理 Basic Auth 用户名（与 `NPM_REGISTRY_PASS` 配套，用于 `PUT /-/user/login` 换取 bearer token） |
 | `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码 |
+| `ALERT_WEBHOOK_SECRET` | 空 | Alertmanager webhook 入站 HMAC secret（OBS-02，`POST /api/alerts/webhook`）。留空 = 端点 503 禁用（安全缺省，绝不无鉴权接收）；配置后签名约定同发版 webhook。建议 `openssl rand -hex 32`。Alertmanager 配置样例见 `docs/observability/README.md` §3.5 |
 | `SEC_SECRETS_KEY` | 空 | **任务级 secrets 落库加密密钥**（SEC-02）：32 字节 hex（`openssl rand -hex 32`）或 base64，其他口令按 sha-256 拉伸。留空 = tasks.secrets 明文存储（启动 warn 一次）；配置后写路径全加密（AES-256-GCM `enc:v1:` 信封），派发时解密注入执行器 env。**密钥丢失 = 密文 secrets 不可解密**（派发报错、不静默裸跑）——请纳入密钥管理系统备份；轮换 = 换 key 后对任务做一次任意 update |
 
 > 三者全缺时 registry 代理保持匿名行为：authenticated-only registry（如 Verdaccio `access: $authenticated`）对包列表返回 401 → admin 包列表为空（仅 debug 日志提示凭证未配置），不视为错误。
