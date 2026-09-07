@@ -34,3 +34,16 @@ a {
 a:hover {
   color: #40a9ff;
 }
+
+/* OBS-03: 执行日志行级高亮——ERROR 红 / WARN 黄。
+   作用于 ExecutionDetailPage 日志 pre 内按行前缀推断的 span
+   （utils/logLevel.ts logLineHighlightClass，规则与 admin-api
+   log-level.util.ts 一致）；深色底（#1e1e1e）下取高对比配色。 */
+.log-line-error {
+  color: #ff6b6b;
+  font-weight: 600;
+}
+
+.log-line-warn {
+  color: #ffc53d;
+}

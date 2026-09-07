@@ -1,6 +1,6 @@
-import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, Breadcrumb, message, Alert, Popconfirm, Result } from 'antd';
+import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, Breadcrumb, message, Alert, Popconfirm, Result, Select } from 'antd';
 import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined } from '@ant-design/icons';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRequest } from 'ahooks';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
@@ -8,6 +8,7 @@ import { getApiBaseUrl } from '../api/client';
 import { getErrMsg } from '../utils/error';
 import { useAuthStore } from '../store/auth';
 import { formatDateTime, formatDuration } from '../utils/timeFormat';
+import { LOG_LEVEL_VALUES, logLineHighlightClass } from '../utils/logLevel';
 
 const { Text } = Typography;
 
@@ -59,6 +60,9 @@ const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
 const LOG_PAGE_LIMIT = 2000;
 // 兜底页数上限，与后端 backfill MAX_PAGES 对齐，防 hasMore 异常导致死循环
 const LOG_MAX_PAGES = 200;
+// OBS-03: 级别过滤下拉——'ALL' 表示不过滤（不带 level，行为与之前完全一致）
+const LOG_LEVEL_FILTER_ALL = 'ALL';
+type LogLevelFilter = typeof LOG_LEVEL_FILTER_ALL | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
 
 export default function ExecutionDetailPage() {
   const { taskId, execId } = useParams<{ taskId: string; execId: string }>();
@@ -71,9 +75,17 @@ export default function ExecutionDetailPage() {
   const [streaming, setStreaming] = useState(false);
   const [streamDisconnected, setStreamDisconnected] = useState(false);
   const [reconnectKey, setReconnectKey] = useState(0);
+  // OBS-03: 级别过滤拉取的时序守卫——快速连续切换级别时只让最新一次
+  // 请求的响应落地，过期响应（晚到的旧 seq）直接丢弃。
+  const levelFetchSeq = useRef(0);
   // U2: 截断日志兜底——"加载完整日志"成功后覆盖显示（null=未加载）
   const [fullLogs, setFullLogs] = useState<string | null>(null);
   const [loadingFullLogs, setLoadingFullLogs] = useState(false);
+  // OBS-03: 级别过滤（服务端过滤）——非 ALL 时经分页端点带 level 拉取过滤后
+  // 行集，结果落在 filteredLogs（优先级高于 fullLogs/rawLogs）
+  const [levelFilter, setLevelFilter] = useState<LogLevelFilter>(LOG_LEVEL_FILTER_ALL);
+  const [filteredLogs, setFilteredLogs] = useState<string | null>(null);
+  const [loadingFilteredLogs, setLoadingFilteredLogs] = useState(false);
   const token = useAuthStore((s) => s.token);
 
   const { data, refresh, loading, error } = useRequest(
@@ -127,20 +139,79 @@ export default function ExecutionDetailPage() {
     return () => clearInterval(timer);
   }, [streamDisconnected, isLive, refresh]);
 
-  // 日志滚动到底部
-  useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [data?.logs, streamLines]);
-
-  // U2: 切换执行记录时丢弃上一条已加载的完整日志
+  // U2: 切换执行记录时丢弃上一条已加载的完整日志与过滤结果
   useEffect(() => {
     setFullLogs(null);
+    setLevelFilter(LOG_LEVEL_FILTER_ALL);
+    setFilteredLogs(null);
   }, [execId]);
 
-  // U2: 当前展示的日志：完整日志 > SSE 流 > 实体回调日志
+  // U2: 当前展示的日志：级别过滤视图 > 完整日志 > SSE 流 > 实体回调日志
   const rawLogs = streamLines ? streamLines.join('\n') : (data?.logs ?? '');
-  const displayLogs = fullLogs ?? rawLogs;
-  const logsTruncated = fullLogs === null && LOG_TRUNCATION_MARKER.test(rawLogs);
+  const displayLogs = filteredLogs ?? fullLogs ?? rawLogs;
+  const logsTruncated = filteredLogs === null && fullLogs === null && LOG_TRUNCATION_MARKER.test(rawLogs);
+
+  // 日志滚动到底部（displayLogs 覆盖流式追加/加载完整日志/切换过滤视图）
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [displayLogs]);
+
+  /**
+   * OBS-03: 行级高亮分段——ERROR 红 / WARN 黄。按行前缀推断级别
+   * （logLevel.ts 与后端 log-level.util.ts 同一规则，不做富文本重解析）：
+   * 仅命中行包成带 className 的 span，其余行聚合为单个纯文本块，万行日志
+   * 最多只产生"高亮行数 + 1"个 React 节点（无高亮时退化为单文本节点），
+   * 且 useMemo 按 displayLogs 缓存，流式追加时元素数组引用稳定、重复渲染
+   * 走 React 的同引用 bail-out。分段文本拼接与 displayLogs 逐字符相等，
+   * 复制/下载/滚动定位行为与未渲染分段前一致。
+   */
+  const logSegments = useMemo(() => {
+    if (!displayLogs) return null;
+    const lines = displayLogs.split('\n');
+    const segs: { text: string; cls: string }[] = [];
+    let buf = '';
+    for (let i = 0; i < lines.length; i++) {
+      // 行间换行符跟随该行所在块（高亮行带尾随 \n），保证拼接后与原文一致
+      const sep = i < lines.length - 1 ? '\n' : '';
+      const cls = logLineHighlightClass(lines[i]);
+      if (cls) {
+        if (buf) {
+          segs.push({ text: buf, cls: '' });
+          buf = '';
+        }
+        segs.push({ text: lines[i] + sep, cls });
+      } else {
+        buf += lines[i] + sep;
+      }
+    }
+    if (buf) segs.push({ text: buf, cls: '' });
+    return segs;
+  }, [displayLogs]);
+
+  /**
+   * U2/OBS-03 共用：分页拉全日志行（后端 limit 封顶 2000/页，hasMore 驱动
+   * 翻页，LOG_MAX_PAGES 兜底防死循环）。level 传入时为服务端过滤模式——
+   * 过滤后行集不再按行号连续，fromLine 语义是"过滤后序列的偏移量"（后端
+   * SQL skip/OFFSET），客户端沿用既有翻页契约 fromLine += lines.length
+   * （收到的行数即过滤后已消费的偏移量），与后端 hasMore =
+   * fromLine + lines.length < totalLines（过滤后计数）自洽。
+   */
+  const fetchAllLogLines = async (level?: string): Promise<string[]> => {
+    const all: string[] = [];
+    let fromLine = 0;
+    for (let page = 0; page < LOG_MAX_PAGES; page++) {
+      const resp = await tasksApi.executionLogs(
+        taskId!, execId!,
+        level ? { fromLine, limit: LOG_PAGE_LIMIT, level } : { fromLine, limit: LOG_PAGE_LIMIT },
+      );
+      const lines = Array.isArray(resp?.lines) ? resp.lines : [];
+      if (lines.length === 0) break;
+      all.push(...lines);
+      fromLine += lines.length;
+      if (!resp?.hasMore) break;
+    }
+    return all;
+  };
 
   // U2: 回调日志被执行器截断时，从全量日志端点按行分页拉全（后端 limit 上限
   // 2000/页，hasMore 驱动翻页）。成功替换显示与复制/下载内容；失败 toast 保留现状。
@@ -148,16 +219,7 @@ export default function ExecutionDetailPage() {
     if (!taskId || !execId) return;
     setLoadingFullLogs(true);
     try {
-      const all: string[] = [];
-      let fromLine = 0;
-      for (let page = 0; page < LOG_MAX_PAGES; page++) {
-        const resp = await tasksApi.executionLogs(taskId, execId, { fromLine, limit: LOG_PAGE_LIMIT });
-        const lines = Array.isArray(resp?.lines) ? resp.lines : [];
-        if (lines.length === 0) break;
-        all.push(...lines);
-        fromLine += lines.length;
-        if (!resp?.hasMore) break;
-      }
+      const all = await fetchAllLogLines();
       if (all.length === 0) {
         throw new Error('全量日志端点未返回日志行');
       }
@@ -167,6 +229,39 @@ export default function ExecutionDetailPage() {
       message.error(getErrMsg(err, '加载完整日志失败'));
     } finally {
       setLoadingFullLogs(false);
+    }
+  };
+
+  /**
+   * OBS-03: 级别过滤。选择非"全部"级别时调用分页端点带 level 重新拉取
+   * （复用 fetchAllLogLines 的分页循环；请求不带 level 时行为不变）。
+   * 取舍说明——与 SSE 流模式的关系采用"统一服务端过滤快照"最小方案：
+   * 流的 DB 路径本就逐秒轮询持久化日志行（logLineRepo），分页端点在运行中
+   * 同样可读同一行集（S3 路径与 SSE 流自身一样仅在终态可读），因此无需为
+   * 流缓冲单做一条客户端过滤路径；代价是流模式下过滤视图为拉取时刻的快照，
+   * 新增行需切回"全部"查看（实时流视图不受影响）。
+   * 空结果属合法态（该级别无日志）→ 展示空视图不报错；失败 toast 且保留
+   * 原视图。seq 计数防快速连续切换的过期响应回写。
+   */
+  const handleLevelFilterChange = async (value: LogLevelFilter) => {
+    setLevelFilter(value);
+    const seq = ++levelFetchSeq.current;
+    if (value === LOG_LEVEL_FILTER_ALL) {
+      setFilteredLogs(null);
+      return;
+    }
+    if (!taskId || !execId) return;
+    setLoadingFilteredLogs(true);
+    try {
+      const all = await fetchAllLogLines(value);
+      if (levelFetchSeq.current !== seq) return;
+      setFilteredLogs(all.join('\n'));
+    } catch (err: unknown) {
+      if (levelFetchSeq.current !== seq) return;
+      setFilteredLogs(null);
+      message.error(getErrMsg(err, '按级别过滤日志失败'));
+    } finally {
+      if (levelFetchSeq.current === seq) setLoadingFilteredLogs(false);
     }
   };
 
@@ -389,10 +484,30 @@ export default function ExecutionDetailPage() {
           extra={
             <Space>
               {streaming && <Badge status="processing" text="实时推送" />}
+              {/* OBS-03: 级别过滤（服务端）。"全部"不带 level——行为与
+                  OBS-03 之前完全一致；选择具体级别后经分页端点重新拉取
+                  过滤后行集（流模式下为拉取时刻的服务端快照，见
+                  handleLevelFilterChange 注释）。 */}
+              <Select<LogLevelFilter>
+                size="small"
+                style={{ minWidth: 112 }}
+                aria-label="日志级别过滤"
+                value={levelFilter}
+                loading={loadingFilteredLogs}
+                disabled={loadingFilteredLogs}
+                onChange={handleLevelFilterChange}
+                options={[
+                  { value: LOG_LEVEL_FILTER_ALL, label: '全部级别' },
+                  ...LOG_LEVEL_VALUES.map((lv) => ({ value: lv, label: lv })),
+                ]}
+              />
               <Button
                 size="small"
                 icon={<CopyOutlined />}
                 onClick={() => {
+                  // OBS-03 取舍：复制反映"当前视图"（所见即所得）——级别
+                  // 过滤生效时复制过滤视图，"全部"时复制当前展示内容
+                  // （可能含 SSE 流缓冲）。需要全量请切回"全部"后复制。
                   navigator.clipboard.writeText(displayLogs);
                   message.success('已复制');
                 }}
@@ -403,6 +518,9 @@ export default function ExecutionDetailPage() {
                 size="small"
                 icon={<DownloadOutlined />}
                 onClick={() => {
+                  // OBS-03 取舍：与复制一致——下载当前视图（过滤生效时
+                  // 即过滤结果），与页面展示严格一致，避免"看到的与拿到
+                  // 的不同"。需要全量请切回"全部"后下载。
                   const blob = new Blob([displayLogs], { type: 'text/plain;charset=utf-8' });
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement('a');
@@ -436,6 +554,16 @@ export default function ExecutionDetailPage() {
               }
             />
           )}
+          {/* OBS-03: 级别过滤空结果是合法态（该级别无日志行），显式提示而非空白 */}
+          {levelFilter !== LOG_LEVEL_FILTER_ALL && filteredLogs !== null && filteredLogs.length === 0 && (
+            <Alert
+              type="info"
+              showIcon
+              title={`无 ${levelFilter} 级别日志`}
+              description="当前执行未匹配到该级别的日志行，切换为全部级别可查看完整日志。"
+              style={{ marginBottom: 12 }}
+            />
+          )}
           <pre
             ref={logRef}
             style={{
@@ -453,7 +581,15 @@ export default function ExecutionDetailPage() {
               wordBreak: 'break-word',
             }}
           >
-            {displayLogs}
+            {logSegments
+              ? logSegments.map((seg, i) =>
+                  seg.cls ? (
+                    <span key={i} className={seg.cls}>{seg.text}</span>
+                  ) : (
+                    seg.text
+                  ),
+                )
+              : displayLogs}
           </pre>
         </Card>
       )}
