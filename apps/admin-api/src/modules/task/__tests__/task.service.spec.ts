@@ -29,6 +29,11 @@ import { ConfigService } from "@nestjs/config";
 import { ExecutorService } from "../../executor/executor.service";
 import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
+// ARCH-21: 事件总线 mock——handleCallback 终态事件（execution.completed/
+// execution.failed）的发布断言打在此桩上；NotificationService 断言已随
+// notifyCallbackFailure 迁至 listener 等价 spec（execution-events.listener.spec）。
+import { DomainEventBus } from "../../../common/services/domain-event-bus.service";
+import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
 // SEC-02: secrets 加密服务（测试默认降级明文；加密/脱敏专项断言另有 spec）
 import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.service";
 // OBS-04（001 在途）：TaskService 新增注入的读侧实体（本 spec 仅注册空仓 provider）
@@ -140,12 +145,13 @@ describe("TaskService (__tests__)", () => {
     scheduleOne: jest.Mock;
     getStats: jest.Mock;
   };
-  let notificationService: {
-    notifyFailureWithConfig: jest.Mock;
-    notifyFailure: jest.Mock;
-    sendAll: jest.Mock;
+  // ARCH-21: 终态事件发布断言入口（DomainEventBus 桩）。
+  let eventBus: {
+    emit: jest.Mock;
+    on: jest.Mock;
+    off: jest.Mock;
+    listenerCount: jest.Mock;
   };
-  let auditService: { log: jest.Mock };
   // P2: kill 通知实现收敛至 ExecutorService.notifyExecutorKill，TaskService
   // 侧只保留委托（空地址跳过 + 异常兜底），用例断言委托调用。
   let executorServiceMock: {
@@ -199,12 +205,12 @@ describe("TaskService (__tests__)", () => {
       chat: jest.fn().mockResolvedValue(""),
     };
 
-    notificationService = {
-      notifyFailureWithConfig: jest.fn().mockResolvedValue(undefined),
-      notifyFailure: jest.fn().mockResolvedValue(undefined),
-      sendAll: jest.fn().mockResolvedValue(undefined),
+    eventBus = {
+      emit: jest.fn().mockReturnValue(true),
+      on: jest.fn(),
+      off: jest.fn(),
+      listenerCount: jest.fn().mockReturnValue(0),
     };
-    auditService = { log: jest.fn().mockResolvedValue(undefined) };
     executorServiceMock = {
       getExecutorUrl: jest
         .fn()
@@ -238,8 +244,10 @@ describe("TaskService (__tests__)", () => {
           useValue: { get: jest.fn().mockReturnValue("") },
         },
         { provide: ExecutorService, useValue: executorServiceMock },
-        { provide: NotificationService, useValue: notificationService },
-        { provide: AuditService, useValue: auditService },
+        // ARCH-21: TaskService 不再注入 NotificationService/AuditService
+        // （notifyCallbackFailure 已迁 listener）；改为事件总线桩，终态
+        // 事件断言打在此处。
+        { provide: DomainEventBus, useValue: eventBus },
         // SEC-02: 默认降级明文（key 空）——既有用例语义零变化
         {
           provide: SecretsCryptoService,
@@ -2484,9 +2492,10 @@ describe("TaskService (__tests__)", () => {
       expect(releaseSlotExecute).not.toHaveBeenCalled();
     });
 
-    // 改动1: 执行器回调真实失败终态触发告警通知（复用 dispatch 失败通知模式）。
-    describe("failure-terminal notification (改动1)", () => {
-      it("notifies via notifyFailureWithConfig on a FAILED callback, passing task alarm config + taskId", async () => {
+    // ARCH-21: 执行器回调真实终态发布领域事件（原「改动1」告警直调解耦；
+    // 通知语义等价性在 listener spec 断言，此处只验事件发布与主链无感）。
+    describe("execution terminal domain events (ARCH-21)", () => {
+      it("emits execution.failed on a FAILED callback with full listener payload", async () => {
         const exec = {
           id: "e1",
           taskId: "t1",
@@ -2510,24 +2519,28 @@ describe("TaskService (__tests__)", () => {
         ]);
 
         expect(result[0].success).toBe(true);
-        expect(
-          notificationService.notifyFailureWithConfig,
-        ).toHaveBeenCalledTimes(1);
-        const [name, id, error, ai, email, channels, wh, taskId] =
-          notificationService.notifyFailureWithConfig.mock.calls[0];
-        expect(name).toBe("nightly-etl");
-        expect(id).toBe("e1");
-        // 内容含 failureReason + errorMessage 摘要
-        expect(error).toMatch(/script_error/i);
-        expect(error).toMatch(/divide by zero/);
-        expect(ai).toBe("");
-        expect(email).toBe("ops@example.com");
-        expect(channels).toEqual(["email", "slack"]);
-        expect(wh).toBeUndefined();
-        expect(taskId).toBe("t1");
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+        const [event, payload] = eventBus.emit.mock.calls[0];
+        expect(event).toBe(DOMAIN_EVENTS.EXECUTION_FAILED);
+        expect(payload).toEqual(
+          expect.objectContaining({
+            executionId: "e1",
+            taskId: "t1",
+            taskName: "nightly-etl",
+            status: "failed",
+            // 推断分类与旧告警摘要同源（inferFailureReason：Traceback→script_error）
+            failureReason: "script_error",
+            errorMessage: "Traceback: divide by zero",
+            aiAnalysis: null,
+          }),
+        );
+        expect(typeof payload.finishedAt).toBe("string");
+        expect(Number.isFinite(Date.parse(payload.finishedAt))).toBe(true);
+        expect(typeof payload.durationMs).toBe("number");
+        // 红线：主链不再触达 NotificationService（本 describe 全程无该桩）。
       });
 
-      it("notifies on a TIMEOUT callback", async () => {
+      it("emits execution.failed with status timeout on a TIMEOUT callback", async () => {
         const exec = {
           id: "e1",
           taskId: "t1",
@@ -2547,12 +2560,14 @@ describe("TaskService (__tests__)", () => {
         ]);
 
         expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
-        expect(
-          notificationService.notifyFailureWithConfig,
-        ).toHaveBeenCalledTimes(1);
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+        const [event, payload] = eventBus.emit.mock.calls[0];
+        expect(event).toBe(DOMAIN_EVENTS.EXECUTION_FAILED);
+        expect(payload.status).toBe("timeout");
+        expect(payload.failureReason).toBe("timeout");
       });
 
-      it("does NOT notify on a SUCCESS callback", async () => {
+      it("emits execution.completed on a SUCCESS callback (and NOT execution.failed)", async () => {
         const exec = {
           id: "e1",
           taskId: "t1",
@@ -2566,9 +2581,47 @@ describe("TaskService (__tests__)", () => {
           { executionId: "e1", status: "success" },
         ]);
 
-        expect(
-          notificationService.notifyFailureWithConfig,
-        ).not.toHaveBeenCalled();
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+        const [event, payload] = eventBus.emit.mock.calls[0];
+        expect(event).toBe(DOMAIN_EVENTS.EXECUTION_COMPLETED);
+        expect(payload.status).toBe("success");
+        expect(payload.failureReason).toBeNull();
+      });
+
+      it("does NOT emit on a rejected callback (address mismatch / not found) or a duplicate winner", async () => {
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: "addr-1",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+
+        // 地址不符：UPDATE 前即拒绝——不 emit。
+        await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "success",
+            executorAddress: "other:9",
+          },
+        ]);
+        expect(eventBus.emit).not.toHaveBeenCalled();
+
+        // 首个 winner 回调：emit 一次。
+        await service.handleCallback([
+          { executionId: "e1", status: "success", executorAddress: "addr-1" },
+        ]);
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+
+        // 重复回调（行已终态，affected=0 分支）：不再 emit——保证
+        // 「每个终态恰好一个事件」与旧「每个失败执行一次告警」不变量一致。
+        exec.status = ExecutionStatus.SUCCESS;
+        await service.handleCallback([
+          { executionId: "e1", status: "success", executorAddress: "addr-1" },
+        ]);
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
       });
 
       // CORE-04: 超时终态落定后的动作兑现——kill_retry re-enqueue /
@@ -2616,7 +2669,7 @@ describe("TaskService (__tests__)", () => {
           );
         });
 
-        it("notify_only: no re-enqueue, terminal TIMEOUT preserved, failure alert still sent once", async () => {
+        it("notify_only: no re-enqueue, terminal TIMEOUT preserved, failure event still emitted once", async () => {
           const exec = timeoutExec();
           execRepo.findOne.mockResolvedValue(exec);
           taskRepo.findOne.mockResolvedValue({
@@ -2632,9 +2685,12 @@ describe("TaskService (__tests__)", () => {
           expect(
             executorServiceMock.scheduleRetryAfterRecovery,
           ).not.toHaveBeenCalled();
-          expect(
-            notificationService.notifyFailureWithConfig,
-          ).toHaveBeenCalledTimes(1);
+          // ARCH-21: 原「失败告警恰好一次」不变量以事件形式保持——
+          // execution.failed 在 TIMEOUT 终态 winner 上恰好 emit 一次。
+          expect(eventBus.emit).toHaveBeenCalledTimes(1);
+          expect(eventBus.emit.mock.calls[0][0]).toBe(
+            DOMAIN_EVENTS.EXECUTION_FAILED,
+          );
         });
 
         it("default kill (null action): no re-enqueue (existing behavior)", async () => {
@@ -2696,14 +2752,14 @@ describe("TaskService (__tests__)", () => {
         });
       });
 
-      it("does NOT notify on a SUCCESS callback", async () => {
-        expect(
-          notificationService.notifyFailureWithConfig,
-        ).not.toHaveBeenCalled();
-      });
-
-      it("is fail-open: a throwing notification writes NOTIFICATION_FAILED audit and still returns success", async () => {
-        jest.spyOn(Logger.prototype, "error").mockImplementation(() => {});
+      // ARCH-21 fail-open 组合证明：
+      // ① 总线级（domain-event-bus.service.spec）：监听器抛错/reject → emit
+      //    不外抛、其余监听器照常收派发；
+      // ② 主链级（本例）：即便 emit 意外抛错（模拟总线故障），handleCallback
+      //    结果与终态落库都不受影响（emitTerminalEvent 第二道保险丝）；
+      // ③ 通知失败写 NOTIFICATION_FAILED 审计的兜底语义随迁移进
+      //    listener 等价 spec（execution-events.listener.spec.ts）断言。
+      it("is fail-open: a throwing event bus emit cannot change the callback result", async () => {
         const exec = {
           id: "e1",
           taskId: "t1",
@@ -2713,23 +2769,16 @@ describe("TaskService (__tests__)", () => {
         };
         execRepo.findOne.mockResolvedValue(exec);
         taskRepo.findOne.mockResolvedValue(null);
-        notificationService.notifyFailureWithConfig.mockRejectedValue(
-          new Error("smtp down"),
-        );
+        eventBus.emit.mockImplementation(() => {
+          throw new Error("bus exploded");
+        });
 
         const result = await service.handleCallback([
           { executionId: "e1", status: "failed", errorMessage: "boom" },
         ]);
 
         expect(result[0].success).toBe(true);
-        expect(auditService.log).toHaveBeenCalledWith(
-          expect.objectContaining({
-            action: "NOTIFICATION_FAILED",
-            resource: "task_execution",
-            resourceId: "e1",
-          }),
-        );
-        jest.restoreAllMocks();
+        expect(exec.status).toBe(ExecutionStatus.FAILED);
       });
     });
 
