@@ -1,0 +1,10 @@
+{
+  "name": "private-registry-deps-node-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AutoCodeFlow 示例：node 任务通过私服 npm registry 安装私有包（executor 侧 NPM_REGISTRY_URL）",
+  "main": "private_dep_task.js",
+  "dependencies": {
+    "@autocodeflow/sdk": "^1.0.1"
+  }
+}
