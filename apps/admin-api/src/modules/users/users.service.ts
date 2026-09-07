@@ -162,6 +162,15 @@ export class UsersService implements OnModuleInit {
   }
 
   /**
+   * SEC-03: persist a fully-loaded user entity (TOTP staging / enable /
+   * disable paths). Caller must have fetched the entity via findById /
+   * findByIdRaw — this is a plain save, no partial-update semantics.
+   */
+  async saveUser(user: import("./entities/user.entity").User) {
+    return this.usersRepository.save(user);
+  }
+
+  /**
    * M-3 + SEC-05: increment loginFailCount atomically and lock the account
    * when the threshold is reached. The previous read-modify-write lost
    * updates under concurrent failed logins (two near-simultaneous wrong

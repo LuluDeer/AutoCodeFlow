@@ -9,6 +9,8 @@ export interface JwtPayload {
   sub: number;
   username: string;
   type?: string;
+  /** SEC-03: session id — mirrors the refresh token jti this login issued. */
+  sid?: string;
 }
 
 /**

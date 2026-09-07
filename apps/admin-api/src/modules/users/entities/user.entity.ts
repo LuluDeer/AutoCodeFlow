@@ -43,6 +43,16 @@ export class User {
   @Column({ nullable: true, type: "timestamp" })
   lockedUntil: Date | null;
 
+  // SEC-03: TOTP two-factor auth — Base32 secret (staged by setup before
+  // enable; null when never set up). Never serialized to API responses.
+  @Column({ nullable: true, type: "varchar", length: 64 })
+  @Exclude()
+  totpSecret: string | null;
+
+  // SEC-03: user-level opt-in switch — false keeps the login path unchanged
+  @Column({ default: false })
+  totpEnabled: boolean;
+
   @CreateDateColumn()
   createdAt: Date;
 
