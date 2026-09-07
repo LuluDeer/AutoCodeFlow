@@ -6,6 +6,7 @@ import {
   Headers,
   ParseArrayPipe,
   UnauthorizedException,
+  Optional,
 } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from "@nestjs/swagger";
@@ -23,6 +24,8 @@ import {
 import { ExecutionCallbackMetricsService } from "./execution-callback-metrics.service";
 import { CallbackItemDto } from "./dto/execution-callback.dto";
 import { ExecutorService } from "../executor/executor.service";
+// OBS-01: 回调链路追踪——执行器回传 traceparent 头关联（disabled 时短路）。
+import { TracingService } from "../../common/tracing/tracing.service";
 
 /**
  * F-5: this controller used to be fully @SkipThrottle()'d — an unauthenticated
@@ -43,6 +46,10 @@ export class ExecutionCallbackController {
     private readonly executorService: ExecutorService,
     // N32: 401 分类观测计数（进程内，Prometheus 经快照映射暴露）。
     private readonly callbackMetrics: ExecutionCallbackMetricsService,
+    // OBS-01: 回调 traceparent 头解析（@Optional 仅为既有单测装配兼容；
+    // disabled/缺失时 extractContext 恒 null）。
+    @Optional()
+    private readonly tracing: TracingService | null,
   ) {}
 
   @Post("callback")
@@ -79,6 +86,7 @@ export class ExecutionCallbackController {
   })
   async callback(
     @Headers("authorization") auth: string | undefined,
+    @Headers("traceparent") traceparent: string | undefined,
     @Body(new ParseArrayPipe({ items: CallbackItemDto, whitelist: true }))
     callbacks: CallbackItemDto[],
   ) {
@@ -106,8 +114,19 @@ export class ExecutionCallbackController {
       await this.verifyPerExecutionCallbackToken(token, callbacks);
       // N32: 认证通过即计 ok（业务层 per-item 结果不属于认证维度）。
       this.callbackMetrics.recordAuthResult("ok");
-      const results = await this.taskService.handleCallback(callbacks);
-      return { results };
+      // OBS-01: 解析执行器回传的 traceparent 头关联链路（disabled=恒 null）。
+      const cbTraceId = this.tracing?.extractContext(traceparent) ?? null;
+      const endSpan = this.tracing?.startSpan(cbTraceId, "callback.receive", {
+        items: callbacks.length,
+      });
+      try {
+        const results = await this.taskService.handleCallback(callbacks);
+        endSpan?.();
+        return { results };
+      } catch (err: unknown) {
+        endSpan?.(err instanceof Error ? err.message : String(err));
+        throw err;
+      }
     }
 
     // TASK-001: per-item per-address token check — a single shared token
@@ -159,8 +178,19 @@ export class ExecutionCallbackController {
     }
     // N32: legacy 路径认证通过。
     this.callbackMetrics.recordAuthResult("ok");
-    const results = await this.taskService.handleCallback(callbacks);
-    return { results };
+    // OBS-01: legacy 回调路径同样解析 traceparent（disabled=短路）。
+    const cbTraceId = this.tracing?.extractContext(traceparent) ?? null;
+    const endSpan = this.tracing?.startSpan(cbTraceId, "callback.receive", {
+      items: callbacks.length,
+    });
+    try {
+      const results = await this.taskService.handleCallback(callbacks);
+      endSpan?.();
+      return { results };
+    } catch (err: unknown) {
+      endSpan?.(err instanceof Error ? err.message : String(err));
+      throw err;
+    }
   }
 
   /**

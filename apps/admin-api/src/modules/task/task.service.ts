@@ -74,6 +74,9 @@ import {
   recordRuntime,
   setRuntimeGauge,
 } from "../metrics/runtime-metrics-entry";
+// OBS-01: OpenTelemetry 追踪（@Global；OTEL_ENABLED=false 时全方法短路）
+import { TracingService } from "../../common/tracing/tracing.service";
+import { extractTraceId } from "../../common/tracing/traceparent.util";
 
 /**
  * Detects truncation markers inserted by executors when callback logs exceed
@@ -257,6 +260,11 @@ export class TaskService {
     // notification 模块 ExecutionEventsListener 持有。
     // SEC-02: secrets 落库加密/读脱敏（providers 由 TaskModule 提供）
     private secretsCrypto: SecretsCryptoService,
+    // OBS-01: OpenTelemetry 追踪（@Global 恒提供）。@Optional 仅为既有单测
+    // 装配兼容（provider 缺失 → null → 全方法短路，与 disabled 等价），
+    // 先例同 eventBus/reportRepo。
+    @Optional()
+    private tracing: TracingService | null,
     // OBS-04: execution_reports 读侧（只读——写方在 MetricsService）。
     // @Optional：既有单测模块（task.service.spec / s3 integration spec）
     // 未提供该仓储时回退 null，零破坏——report 端点在缺失时返回 null 行。
@@ -490,6 +498,13 @@ export class TaskService {
 
   async trigger(id: string, dto: TriggerTaskDto) {
     const task = await this.findOne(id);
+    // OBS-01: 追踪开启时生成 trace 根，traceId 落库（null=追踪未开启）。
+    const traceparent = this.tracing?.startTrace() ?? null;
+    const traceId = this.tracing?.extractContext(traceparent) ?? null;
+    const endSpan = this.tracing?.startSpan(traceId, "task.trigger", {
+      taskId: task.id,
+      taskName: task.name,
+    });
     const exec = await this.dataSource.transaction(async (manager) => {
       return manager.save(
         manager.create(TaskExecution, {
@@ -499,6 +514,7 @@ export class TaskService {
           params: dto.params ?? task.params,
           triggerType: "manual",
           taskVersion: task.currentVersion,
+          traceId: this.tracing?.isValidTraceId(traceId) ? traceId : null,
         }),
       );
     });
@@ -524,10 +540,12 @@ export class TaskService {
           priority: normalizeTaskPriority(task.priority),
         },
       );
+      endSpan?.();
     } catch (err: unknown) {
       // P1: the PENDING row is already committed — without compensation it
       // would hang forever when Redis/the queue is down.
       const message = err instanceof Error ? err.message : String(err);
+      endSpan?.(message);
       await this.execRepo.update(exec.id, {
         status: ExecutionStatus.FAILED,
         endTime: new Date(),
@@ -537,6 +555,7 @@ export class TaskService {
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
       throw new Error(`Failed to enqueue execution: ${message}`);
     }
+    endSpan?.();
     return exec;
   }
 

@@ -68,7 +68,7 @@ describe("ExecutionCallbackController — F-5 rate limiting", () => {
     };
     // No shared token configured in this harness → the handler must still
     // fail closed with UnauthorizedException (behaviour unchanged by F-5).
-    await expect(controller.callback("Bearer tok", [item])).rejects.toThrow(
+    await expect(controller.callback("Bearer tok", undefined, [item])).rejects.toThrow(
       /shared token/,
     );
   });

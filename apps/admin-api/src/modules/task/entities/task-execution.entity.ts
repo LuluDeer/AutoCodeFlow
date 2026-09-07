@@ -111,6 +111,13 @@ export class TaskExecution {
   artifacts: ExecutionArtifact[] | null;
   @Column({ nullable: true }) triggerType: string;
   @Column({ nullable: true }) taskVersion: string;
+  /**
+   * OBS-01: W3C trace-id（traceparent 头的 trace-id 段，32 hex）。
+   * 触发/入队侧生成（OTEL_ENABLED=true 时），dispatch traceparent 头透传
+   * 执行器，终态行携带供 UI 展示与 Jaeger/Tempo 检索。NULL=追踪未开启或旧数据。
+   * 迁移见 migrations/1789900000003-AddExecutionTraceId.ts。
+   */
+  @Column({ type: "varchar", nullable: true }) traceId: string | null;
   @CreateDateColumn() createdAt: Date;
 
   /** R-P0-007: Optimistic lock version for preventing concurrent updates */
