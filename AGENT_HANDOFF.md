@@ -3,13 +3,18 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-07（第十六轮·批 subagent-I：主会话派出员工 001/002 两个子代理并行认领——UI-03/QA-02 第一阶段两项 done，主会话统一验收）
+更新时间：2026-09-08（第十六轮·批 subagent-J：主会话派出员工 001/002 两个子代理并行认领——UI-04/QA-02 第二阶段两项 done，主会话统一验收；持续派工循环进行中）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-08 第十六轮·批 subagent-J 终验收，主会话）：
+  - `11721b1`+`568d480` **UI-04（001）Dashboard 重构五项 done**：KpiSparkline（7 天窗——后端日粒度下 24h 无意义，缩水声明）/FailureTopList（Top5 聚合+次数色阶+跳详情；失败率无分母不展示）/ExecutorHeatBars（CPU/内存双条 85/65 阈值色阶）/SchedulerLatencyCard（p99/avg/last 三数字，CORE-06 后端字段已存在纯前端呈现）/DashboardEmptyGuide（totalTasks===0 引导创建）。五新组件独立文件+纯函数伴生，theme tokens 双主题不破。admin-web **264/264**（基线 253，+11）+ build/tsc ✓。零迁移零 admin-api 改动。
+  - `3b76a30`+`da0b4d1`+`cc17e38`+`af8e083` **QA-02 两阶段整体 done（002，branches 冲 75 达成）**：第二阶段 +63 例（executor dispatch/乐观锁/broadcast 全分支矩阵、task findAll/统计/SSE 槽位/回滚补偿、application 状态机与 spawnAsync 边角、notification 渠道分流/静默/silenceStore 写穿）；coverage 排除 bootstrap 面（main.ts/app.module/migrations 等 7 项逐条理由入库，分母口径变化已注记）；四指标 **91.6/81.34/78.47/90.6**（branches 75 达成超 3.47），门槛上调 **75/69/84/84**。零业务源码改动、零真 bug（+63 例直绿）。admin-api **1750/1750**（基线 1652，+98 两阶段合计）。
+- **主会话终验收基线（全绿）**：admin-api **1750/1750** + tsc ✓ + coverage 门槛卡点 · admin-web **264/264** + build ✓
+- 真机轮留验：Dashboard 双主题走查与五卡真数据渲染（UI-04）· coverage 新门槛 CI 首跑（QA-02）
 - 本轮（2026-09-07 第十六轮·批 subagent-I 终验收，主会话）：
   - `167f886`+`7fce990` **UI-03（001）布局升级 done**：侧边栏六大分组 IA（概览/任务/执行/执行器/应用/系统，antd v6 受控 openKeys+onOpenChange，持久化 localStorage 含脏键回退），任意页面 ≤2 跳达成（IA 表留档）；Sider 折叠态持久化+测试锚点；PageHeader 标准组件（面包屑显式传参，tokens 只读复用）高频 8 页替换完成（低频 9 页留清单，props 化单点接入即可）。admin-web **253/253**（基线 239，+14）+ build/tsc ✓。
   - `f5e5594`+`d64b8c1` **QA-02 第一阶段（002）coverage 提升 done（超额）**：实测基线已高于计划书滞后的 68/58/56/69——本轮 +49 例定向补测（s3-log-storage 流式读边角/scheduler Leader 边角/部署状态机与 completed 事件载荷/心跳鉴权/task.controller 44 方法主链（新 spec）/event-subscription 七端点（新 spec）/config 脱敏矩阵（新 spec）），四指标 82.46/65.35/71.33/82.46→**83.98/69.29/73.07/83.32**，门槛同步上调 83/68/72/82（各留 ≥0.7 余量，CI 卡点通过）。零源码改动、零真 bug 发现（计划点名的心跳裁剪已有完整边界矩阵）。第二阶段建议：主攻 branches（73.07→75，缺口集中 executor.service/task.service/application.service/notification.service 大文件），main.ts 等 bootstrap 建议入排除名单。
