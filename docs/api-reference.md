@@ -189,6 +189,7 @@ Content-Type: application/json
 | POST | `/tasks/:id/suggest-schedule` | 是 | AI 调度建议（响应含 `fallback` 标记，见下） |
 | GET | `/tasks/:id/executions` | 是 | 分页查询该任务的执行记录 |
 | GET | `/tasks/:id/executions/:execId` | 是 | 执行详情 |
+| GET | `/tasks/:id/executions/:execId/report` | 是 | 执行报告+时间线一次拉取（OBS-04，见下） |
 | GET | `/tasks/:id/executions/:execId/logs` | 是 | 按行分页获取执行日志（`fromLine` 默认 0，`limit` 默认 500、最大 2000；可选 `level` 过滤，见下） |
 | GET | `/tasks/:id/executions/:execId/logs/stream` | 是 | SSE 实时日志流（并发上限，见下） |
 | POST | `/tasks/:id/executions/:execId/kill` | 是 | 强制取消 running/pending 执行 |
@@ -243,6 +244,26 @@ Content-Type: application/json
 - **未知级别行（`level=null`：存量历史行或文本推断不到的行）在 `level` 过滤时一律不返回**；不传 `level` 时行为与引入前完全一致（含 null 行）
 - 带 `level` 过滤时，`fromLine` 的语义从"物理行号游标"变为"**过滤后序列的偏移量**"（被过滤掉的行不占用分页窗口），响应中的 `totalLines` 与 `hasMore` 均按**过滤后行集**计算；不传 `level` 时保持既有"物理行号游标 + 全量 `totalLines`"语义
 - 分页参数不变：`fromLine` 默认 0，`limit` 默认 500、最大 2000
+
+**执行报告 + 时间线（GET /tasks/:id/executions/:execId/report，OBS-04）：**
+
+执行详情「分析报告/时间线」面板的一次性载荷，单请求合并三类数据：
+
+```json
+{
+  "execution": { "id": "uuid", "status": "failed", "createdAt": "...", "startTime": "...", "endTime": "...", "duration": 295000, "aiAnalysis": "...", "...": "task_executions 行原样" },
+  "timeline": [
+    { "phase": "created",  "at": "2026-09-07T01:00:00.000Z", "detail": "trigger=cron" },
+    { "phase": "started",  "at": "2026-09-07T01:00:05.000Z", "detail": "executor=http://..." },
+    { "phase": "finished", "at": "2026-09-07T01:05:00.000Z", "detail": "status=failed" }
+  ],
+  "report": { "id": 7, "triggerDay": "2026-09-07", "successCount": 10, "failCount": 3, "avgDurationMs": 42000, "...": "..." }
+}
+```
+
+- `timeline` 三段（created→started→finished）由 `task_executions` 行的 DB 时间戳列（`createdAt`/`startTime`/`endTime`）直接映射，与 admin-api `execution-timeline.util.ts`、mcp-server `buildExecutionTimeline`（ECO-03）三端同语义；未到达的阶段 `at=null`（前端渲染「—」），不抛错、不二次推算
+- `report` 为 `execution_reports` 表中该执行所在**日**的聚合行（按 `triggerDay` DATE 等值匹配执行 `createdAt` 的本地零点）；该表由 MetricsService 按日聚合懒写入，与单次执行无外键关系——**无行时 `report: null` 属正常态**，前端降级渲染提示而非报错
+- 未知执行（或执行不属于该任务）返回 404，与 `GET /tasks/:id/executions/:execId` 一致
 
 **SSE 日志流（GET /tasks/:id/executions/:execId/logs/stream）：**
 
