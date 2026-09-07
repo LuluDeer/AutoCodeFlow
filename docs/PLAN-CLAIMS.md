@@ -46,7 +46,7 @@
 | FEAT-08 | P2 | done | session-B（员工 005 承接） | 2026-09-07 01:2x | admin-api config 模块 + admin-web settings/api | fd99579 | 回滚语义矩阵（create→删除/update 无旧值 400/delete→重建/保留元数据）+ 掩码哨兵拒绝（S3 镜像防线）+ action=rollback 独立留痕 + 前端行级回滚入口（isAdmin+Popconfirm+逐行 loading）；后端 13 例前端 4 例 |
 | FEAT-09 | P3 | done | session-B（员工 005 承接） | 2026-09-07 05:0x | admin-web CommandPalette + MainLayout | 见变更日志 | ⌘K 面板四分组（任务 ILIKE/执行器/应用/最近执行）+防抖并行+序号守卫+键盘导航；11 例测试 |
 | FEAT-10 | P3 | unclaimed | | | admin-api notification | | 通知模板变量 |
-| FEAT-11 | P3 | unclaimed | | | task 实体 + admin-web | | 任务 runbook 字段 |
+| FEAT-11 | P3 | done | 001（本会话） | 2026-09-07 | admin-api task/DTO/迁移 + notification + admin-web | 9e93e22 | runbook 可空 text + 双通知路径透传（dispatch/回调失败）+ 表单 TextArea/详情展示；admin-api 1370 · admin-web 160 |
 | FEAT-12 | P3 | done | main-A | 2026-09-07 | registry-pypi main.py + tests | f93999b | 索引页增强：版本聚合/体积/UTC 时间/计数；PEP 503 锚点语义不变；+2 测试 52/52 |
 | CORE-01 | P1 | done | main-A | 2026-09-07 | admin-web TaskForm/List/Detail + utils/priority | 批六 commit | 前端 UI 化 done（后端本就绪）；剩余=拥塞下优先出队的真机断言（并入真机轮）。**协作注记（session-B）**：CORE-01 数字 priority 直写 PG enum 致 500（e2e 23-25/29 红），已在 6912b4d 以列级 transformer+6 例 spec 修复并 CI 绿——「mock 不等于能跑」第四次前科 |
 | CORE-02 | P1 | unclaimed | | | admin-api task + admin-web | | 重试策略精细化（attempt 链可视化） |
@@ -61,7 +61,7 @@
 | OBS-05 | P1 | done | session-B（员工 001 承接） | 2026-09-07 03:3x | admin-api metrics 模块 + docs/observability | 5b5bfb5 | 容量水位四件套（PG 池四 series 真实 pg.Pool 取数/executor 磁盘/SSE/队列）+Grafana row4+阈值文档（并发编辑覆盖后补记，CI 绿佐证） |
 | ECO-01 | P1 | unclaimed | | | 双 SDK + examples | | SDK 统一矩阵 + 官方示例（路线图 #10 收口） |
 | ECO-02 | P1 | done | main-A | 2026-09-07 | packages/acf-cli | 批十 commit | tail/lint/--json（task list/executor list/app list）三件齐，acf-cli 69/69 |
-| ECO-03 | P1 | unclaimed | | | packages/mcp-server | | MCP 工具面扩容 4 工具 |
+| ECO-03 | P1 | done | 001（本会话） | 2026-09-07 | packages/mcp-server/src/{tools,index}.ts + __tests__ | 6297f21 | 4 工具落地（timeline 失败三联卡对齐 BUG-10 分类/dead-letters 聚合/template 5 官方模板白名单字段/scheduler-health 四段重塑）+10 测试 79/79，tsc/prettier 绿 |
 | ECO-04 | P1 | unclaimed | | | 无代码（secrets 配置 + tag） | | release 首发演练 v1.1.0 |
 | ECO-05 | P1 | unclaimed | | | docs + VitePress | | SDK 文档站 |
 | AUTH-01 | P2 | unclaimed | | | admin-api 全域迁移 + JWT | ⚠️ 大 | Project 实体与隔离（需产品拍板后启动，迁移分三批） |
@@ -105,7 +105,7 @@
 | QA-03 | P1 | unclaimed | | | admin-web __tests__ | | 组件测试扩面 200+ |
 | QA-05 | P2 | unclaimed | | | scripts/load-test + docs | | =BUG-19 同义项 |
 | QA-06 | P2 | done | session-B（员工 001 承接） | 2026-09-07 04:1x | scripts/chaos-drill* + docs/operations.md | 见变更日志 | 四场景脚本（A Redis 宕/B 断网 150s/C 双实例滚动/D PG 主从真机骨架）+selftest 33 例；断言参数按实现核实校准（90s 离线阈值等）；真跑验收留真机轮 |
-| QA-07 | P2 | unclaimed | | | 新建共享契约 fixture | | 四客户端包契约测试统一 |
+| QA-07 | P2 | done | 001（本会话） | 2026-09-07 | packages/contract-fixtures + 四包测试文件 | a00438b | contract.json 单一事实源+README；四端消费同一向量（cli 74/mcp 84/node-sdk 53/py-sdk 105）；审计修 CLI detailFromData 空串遮蔽 + knownDivergence 分歧留档 |
 | QA-08 | P2 | unclaimed | | | CI workflow | | 跨版本迁移演练月度 job |
 | QA-09 | P3 | in_progress | main-A | 2026-09-07 | docs/SECURITY-REDLINE-CHECKLIST.md + e2e | | 清单已建（六域 30+ 红线）；e2e 套件化剩余 |
 | QA-10 | P3 | unclaimed | | | 基准脚本 | | 关键路径性能基准 |
@@ -164,3 +164,7 @@
 - 2026-09-07 session-B：批 B5 done=OBS-03 后端半场(111f648)/FEAT-01 UI 半场(2e97d35)；认领收尾波：OBS-03 前端半场（005）/DOC-02 容量规划小节（001）。
 
 - 2026-09-07 session-B：批 B6 done=OBS-03 前端半场(c47884b，整体闭环)/DOC-02 前半(ff56c15)。session-B 收工总结：认领 13 任务全 done（BUG-01/FEAT-08/SEC-04/FEAT-04/OBS-05/FEAT-12/QA-06/FEAT-06/ARCH-27/FEAT-09/OBS-03/FEAT-01-UI 半场/DOC-02 前半）+DOC-03 复核销账+CORE-01 协作修复+CI 红治理 4 轮；基线 admin-api 1367/68 · admin-web 160/160 · registry-pypi 68 · CI 24 job 绿（run 34073326212，HEAD ff56c15）。
+
+- 2026-09-07 001（本会话）：认领 ECO-03 → in_progress（文件足迹：packages/mcp-server/src/{tools,api}.ts 及 __tests__，他人勿动）。同批候选（后续再认领）：QA-07、FEAT-11、CORE-04、CORE-02。
+- 2026-09-07 001：ECO-03 done（6297f21，mcp-server 79/79）；认领 QA-07 → in_progress。
+- 2026-09-07 001：QA-07 done（a00438b）；认领 FEAT-11 → in_progress。
