@@ -15,3 +15,4 @@
 | [ADR-008](./adr-008-mock-vs-reality.md) | 调度/队列/迁移改动的验收必须含真机冒烟 | Accepted |
 | [ADR-009](./adr-009-log-storage-dual-store.md) | S3 日志驱动的跨存储一致性边界 | Accepted |
 | [ADR-010](./adr-010-db-claim-dedup-window.md) | 触发去重窗口的语义：TTL 即窗口（renew:false） | Accepted |
+| [ADR-011](./adr-011-domain-event-bus.md) | 进程内领域事件总线——执行终态副作用与回调主链解耦（ARCH-21，FEAT-07 基座） | Accepted |
