@@ -60,7 +60,7 @@
 | OBS-04 | P1 | unclaimed | | | admin-api + admin-web | | execution_reports 消费 + 时间线 Tab |
 | OBS-05 | P1 | done | session-B（员工 001 承接） | 2026-09-07 03:3x | admin-api metrics 模块 + docs/observability | 5b5bfb5 | 容量水位四件套（PG 池四 series 真实 pg.Pool 取数/executor 磁盘/SSE/队列）+Grafana row4+阈值文档（并发编辑覆盖后补记，CI 绿佐证） |
 | ECO-01 | P1 | unclaimed | | | 双 SDK + examples | | SDK 统一矩阵 + 官方示例（路线图 #10 收口） |
-| ECO-02 | P1 | in_progress | main-A | 2026-09-07 | packages/acf-cli | | tail+lint 已落地（66/66）；--json 全命令覆盖为剩余子项，后续批次继续 |
+| ECO-02 | P1 | done | main-A | 2026-09-07 | packages/acf-cli | 批十 commit | tail/lint/--json（task list/executor list/app list）三件齐，acf-cli 69/69 |
 | ECO-03 | P1 | unclaimed | | | packages/mcp-server | | MCP 工具面扩容 4 工具 |
 | ECO-04 | P1 | unclaimed | | | 无代码（secrets 配置 + tag） | | release 首发演练 v1.1.0 |
 | ECO-05 | P1 | unclaimed | | | docs + VitePress | | SDK 文档站 |

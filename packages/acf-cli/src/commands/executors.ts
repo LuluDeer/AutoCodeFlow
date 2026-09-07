@@ -65,11 +65,17 @@ export function executorsCommand(): Command {
 
   cmd.command('list')
     .description('List all executors and their status')
-    .action(async () => {
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (opts) => {
       const spinner = ora('Fetching executors…').start();
       try {
         const data = await get<Executor[] | { list: Executor[] }>('/executors');
         spinner.stop();
+        if (opts.json) {
+          // ECO-02: --json —— CI/脚本消费面
+          console.log(JSON.stringify(Array.isArray(data) ? data : data.list ?? []));
+          return;
+        }
         const executors: Executor[] = Array.isArray(data) ? data : (data.list ?? []);
         const table = new Table({
           head: ['ID', 'App Name', 'Status', 'Address', 'Last Heartbeat', 'CPU', 'Running'],

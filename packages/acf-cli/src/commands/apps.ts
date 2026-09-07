@@ -54,12 +54,18 @@ export function appsCommand(): Command {
   // acf app list
   cmd.command('list')
     .description('List all applications')
-    .action(async () => {
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (opts) => {
       const spinner = ora('Fetching applications…').start();
       try {
         const data = await get<{ list: Application[]; total: number }>('/applications');
         spinner.stop();
         const apps: Application[] = Array.isArray(data) ? data : (data.list ?? []);
+        if (opts.json) {
+          // ECO-02: --json —— CI/脚本消费面
+          console.log(JSON.stringify(apps));
+          return;
+        }
         const table = new Table({
           head: ['ID', 'Name', 'Status', 'Version', 'Git Repo', 'Branch'],
           colWidths: [14, 26, 12, 10, 28, 14],
