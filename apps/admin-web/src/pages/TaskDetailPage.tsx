@@ -23,6 +23,7 @@ import ParamsEditor from '../components/ParamsEditor';
 import ArtifactsList from '../components/ArtifactsList';
 // CORE-02: retryableErrors 中文文案映射（与表单选项同一来源）
 import { RETRYABLE_ERROR_OPTIONS } from './retry-policy';
+import PageHeader from '../components/PageHeader';
 
 const { Text } = Typography;
 
@@ -237,33 +238,41 @@ export default function TaskDetailPage() {
         <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/tasks')}>返回</Button>
       </Space>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-        <div>
-          <Space align="center">
-            <Typography.Title level={4} style={{ margin: 0 }}>{task.name}</Typography.Title>
-            <Badge
-              status={isActive ? 'success' : isPaused ? 'warning' : 'default'}
-              text={isActive ? '运行中' : isPaused ? '已暂停' : task.status}
-            />
-          </Space>
-          {task.description && <Text type="secondary">{task.description}</Text>}
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，面包屑语义=任务→详情（≤2 跳），
+          操作按钮整体进 extra；返回按钮与状态 Badge/调度 Tag 原样保留） */}
+      <PageHeader
+        title={task.name}
+        description={task.description}
+        breadcrumb={[
+          { title: '任务调度', to: '/tasks' },
+          { title: task.name },
+        ]}
+        extra={
+          <>
+            <Button icon={<ThunderboltOutlined />} type="primary" onClick={handleTrigger}>立即触发</Button>
+            {isActive && <Button icon={<PauseCircleOutlined />} loading={toggleLoading} disabled={toggleLoading} onClick={handlePause}>暂停</Button>}
+            {isPaused && <Button icon={<PlayCircleOutlined />} type="primary" loading={toggleLoading} disabled={toggleLoading} onClick={handleResume}>恢复</Button>}
+            <Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading}>AI 调度建议</Button>
+            <Button icon={<EditOutlined />} onClick={handleEdit}>编辑</Button>
+            <Popconfirm title="确认删除此任务？" onConfirm={handleDelete} okText="删除" okButtonProps={{ danger: true }}>
+              <Button icon={<DeleteOutlined />} danger>删除</Button>
+            </Popconfirm>
+          </>
+        }
+      />
+      <div style={{ marginBottom: 16 }}>
+        <Space>
+          <Badge
+            status={isActive ? 'success' : isPaused ? 'warning' : 'default'}
+            text={isActive ? '运行中' : isPaused ? '已暂停' : task.status}
+          />
           {schedulerStats && (
-            <Space size={4} style={{ marginTop: 4 }}>
+            <>
               <Tag style={{ fontSize: 11 }}>活跃定时器 {schedulerStats.activeTimers}</Tag>
               <Tag style={{ fontSize: 11 }}>Cron {schedulerStats.activeCronTasks}</Tag>
               <Tag color="processing" style={{ fontSize: 11 }}>运行中 {schedulerStats.runningTaskCount}</Tag>
-            </Space>
+            </>
           )}
-        </div>
-        <Space>
-          <Button icon={<ThunderboltOutlined />} type="primary" onClick={handleTrigger}>立即触发</Button>
-          {isActive && <Button icon={<PauseCircleOutlined />} loading={toggleLoading} disabled={toggleLoading} onClick={handlePause}>暂停</Button>}
-          {isPaused && <Button icon={<PlayCircleOutlined />} type="primary" loading={toggleLoading} disabled={toggleLoading} onClick={handleResume}>恢复</Button>}
-          <Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading}>AI 调度建议</Button>
-          <Button icon={<EditOutlined />} onClick={handleEdit}>编辑</Button>
-          <Popconfirm title="确认删除此任务？" onConfirm={handleDelete} okText="删除" okButtonProps={{ danger: true }}>
-            <Button icon={<DeleteOutlined />} danger>删除</Button>
-          </Popconfirm>
         </Space>
       </div>
 

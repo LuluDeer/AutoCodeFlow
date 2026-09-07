@@ -10,8 +10,9 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useRequest } from 'ahooks';
 import { taskTemplatesApi, TaskTemplate } from '../api/task-templates';
+import PageHeader from '../components/PageHeader';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 
 const TRIGGER_LABEL: Record<string, string> = {
   manual: '手动', cron: 'Cron 定时', fixed_rate: '固定间隔', api: 'API 触发',
@@ -67,12 +68,11 @@ export default function TaskTemplatesPage() {
 
   return (
     <div>
-      <div style={{ marginBottom: 16 }}>
-        <Title level={4} style={{ margin: 0 }}>任务模板</Title>
-        <Text type="secondary" style={{ fontSize: 13 }}>
-          常用任务形态固化为模板，一键复制配置生成可运行任务草稿。
-        </Text>
-      </div>
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader） */}
+      <PageHeader
+        title="任务模板"
+        description="常用任务形态固化为模板，一键复制配置生成可运行任务草稿。"
+      />
 
       {error && (
         <Alert type="error" showIcon style={{ marginBottom: 16 }}

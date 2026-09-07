@@ -15,6 +15,7 @@ import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
+import PageHeader from '../components/PageHeader';
 
 const { Text } = Typography;
 
@@ -336,23 +337,22 @@ export default function TaskListPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>任务调度</Typography.Title>
-          <Text type="secondary" style={{ fontSize: 13}}>
-            共 {total} 个任务
-          </Text>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {/* CORE-03: 任务模板入口——从预置/自定义模板一键克隆 config */}
-          <Button icon={<FileTextOutlined />} onClick={() => nav('/task-templates')}>
-            任务模板
-          </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => nav('/tasks/new')}>
-            创建任务
-          </Button>
-        </div>
-      </div>
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，操作按钮进 extra） */}
+      <PageHeader
+        title="任务调度"
+        description={<>共 {total} 个任务</>}
+        extra={
+          <>
+            {/* CORE-03: 任务模板入口——从预置/自定义模板一键克隆 config */}
+            <Button icon={<FileTextOutlined />} onClick={() => nav('/task-templates')}>
+              任务模板
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => nav('/tasks/new')}>
+              创建任务
+            </Button>
+          </>
+        }
+      />
 
       <Space style={{ marginBottom: 16 }} wrap>
         <Input

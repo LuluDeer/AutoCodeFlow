@@ -17,6 +17,7 @@ import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 import { ExecutionCompareModal, COMPARE_MAX } from '../components/ExecutionCompare';
+import PageHeader from '../components/PageHeader';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -180,13 +181,12 @@ export default function ExecutionsPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>执行记录</Typography.Title>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>全部任务执行历史</Typography.Text>
-        </div>
-        <Button icon={<ReloadOutlined />} onClick={() => refresh()}>刷新</Button>
-      </div>
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，刷新进 extra） */}
+      <PageHeader
+        title="执行记录"
+        description="全部任务执行历史"
+        extra={<Button icon={<ReloadOutlined />} onClick={() => refresh()}>刷新</Button>}
+      />
 
       <Space style={{ marginBottom: 16 }} wrap>
         {selectedIds.length > 0 && (

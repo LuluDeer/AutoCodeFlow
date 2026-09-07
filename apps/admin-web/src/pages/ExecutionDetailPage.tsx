@@ -1,8 +1,8 @@
-import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, Breadcrumb, message, Alert, Popconfirm, Result, Select } from 'antd';
+import { Card, Descriptions, Tag, Typography, Button, Space, Badge, Spin, message, Alert, Popconfirm, Result, Select } from 'antd';
 import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRequest } from 'ahooks';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import { getApiBaseUrl } from '../api/client';
 import { getErrMsg } from '../utils/error';
@@ -12,6 +12,7 @@ import { LOG_LEVEL_VALUES, logLineHighlightClass } from '../utils/logLevel';
 // OBS-04: 分析报告/时间线面板（核心展示逻辑独立成组件文件，便于单独测试）
 import ExecutionReportPanel from '../components/ExecutionReportPanel';
 import { executionReportsApi } from '../api/execution-reports';
+import PageHeader from '../components/PageHeader';
 
 const { Text } = Typography;
 
@@ -345,76 +346,76 @@ export default function ExecutionDetailPage() {
 
   return (
     <div>
-      <Breadcrumb
-        items={[
-          { title: <Link to="/executions">执行记录</Link> },
+      {/* UI-03：页头标准化（面包屑/返回/状态标签/操作按钮迁入 PageHeader；
+          终止/重新触发/AI 分析/刷新原样保留于 extra，语义不变） */}
+      <PageHeader
+        title="执行详情"
+        description={data?.taskName}
+        breadcrumb={[
+          { title: '执行记录', to: '/executions' },
           { title: data?.taskName || '任务' },
           { title: '执行详情' },
         ]}
-        style={{ marginBottom: 16 }}
-      />
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Space>
-          <Button icon={<ArrowLeftOutlined />} onClick={() => nav(`/tasks/${taskId}`)}>返回任务</Button>
-          <Tag color={status.color} style={{ fontSize: 14, padding: '2px 10px' }}>
-            {status.label}
-          </Tag>
-          {data?.status === 'running' && !streamDisconnected && (
-            <Badge status="processing" text={<Text type="secondary">实时更新中</Text>} />
-          )}
-        </Space>
-        <Space>
-          {(data?.status === 'running' || data?.status === 'pending') && (
-            <Popconfirm
-              title="确认终止此执行？"
-              description="终止后执行将中断且不可恢复。"
-              onConfirm={handleKill}
-              okText="终止" okButtonProps={{ danger: true }}
-            >
-              <Button
-                icon={<StopOutlined />}
-                danger
-                loading={killing}
+        extra={
+          <>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => nav(`/tasks/${taskId}`)}>返回任务</Button>
+            <Tag color={status.color} style={{ fontSize: 14, padding: '2px 10px' }}>
+              {status.label}
+            </Tag>
+            {data?.status === 'running' && !streamDisconnected && (
+              <Badge status="processing" text={<Text type="secondary">实时更新中</Text>} />
+            )}
+            {(data?.status === 'running' || data?.status === 'pending') && (
+              <Popconfirm
+                title="确认终止此执行？"
+                description="终止后执行将中断且不可恢复。"
+                onConfirm={handleKill}
+                okText="终止" okButtonProps={{ danger: true }}
               >
-                终止执行
+                <Button
+                  icon={<StopOutlined />}
+                  danger
+                  loading={killing}
+                >
+                  终止执行
+                </Button>
+              </Popconfirm>
+            )}
+            {data?.status === 'failed' && (
+              <Button
+                icon={<RedoOutlined />}
+                type="primary"
+                danger
+                loading={retrying}
+                onClick={handleRetry}
+              >
+                重新触发
               </Button>
-            </Popconfirm>
-          )}
-          {data?.status === 'failed' && (
-            <Button
-              icon={<RedoOutlined />}
-              type="primary"
-              danger
-              loading={retrying}
-              onClick={handleRetry}
-            >
-              重新触发
-            </Button>
-          )}
-          {(data?.status === 'failed' || data?.status === 'timeout') && (
-            <Button
-              icon={<RobotOutlined />}
-              loading={analyzing}
-              onClick={async () => {
-                setAnalyzing(true);
-                try {
-                  await tasksApi.analyzeExecution(taskId!, execId!);
-                  message.success('AI 分析完成');
-                  refresh();
-                } catch (err: unknown) {
-                  message.error(getErrMsg(err, 'AI 分析失败'));
-                } finally {
-                  setAnalyzing(false);
-                }
-              }}
-            >
-              AI 分析
-            </Button>
-          )}
-          <Button icon={<SyncOutlined />} onClick={refresh} loading={loading}>刷新</Button>
-        </Space>
-      </div>
+            )}
+            {(data?.status === 'failed' || data?.status === 'timeout') && (
+              <Button
+                icon={<RobotOutlined />}
+                loading={analyzing}
+                onClick={async () => {
+                  setAnalyzing(true);
+                  try {
+                    await tasksApi.analyzeExecution(taskId!, execId!);
+                    message.success('AI 分析完成');
+                    refresh();
+                  } catch (err: unknown) {
+                    message.error(getErrMsg(err, 'AI 分析失败'));
+                  } finally {
+                    setAnalyzing(false);
+                  }
+                }}
+              >
+                AI 分析
+              </Button>
+            )}
+            <Button icon={<SyncOutlined />} onClick={refresh} loading={loading}>刷新</Button>
+          </>
+        }
+      />
 
       {streamDisconnected && isLive && (
         <Alert

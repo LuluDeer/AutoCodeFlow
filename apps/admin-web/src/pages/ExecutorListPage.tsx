@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import { executorsApi, Executor } from '../api/executors';
 import { client } from '../api/client';
 import { useAuthStore } from '../store/auth';
+import PageHeader from '../components/PageHeader';
 
 function heartbeatLabel(lastHeartbeat: string): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
@@ -232,22 +233,21 @@ export default function ExecutorListPage() {
           closable
         />
       )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>执行器</Typography.Title>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            {onlineCount} / {executors.length} 台在线
-          </Typography.Text>
-        </div>
-        <Space>
-          {isAdmin && <Button onClick={() => navigate('/executors/install')}>安装向导</Button>}
-          {isAdmin && (
-            <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
-              快速添加
-            </Button>
-          )}
-        </Space>
-      </div>
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，安装向导/快速添加进 extra） */}
+      <PageHeader
+        title="执行器"
+        description={<>{onlineCount} / {executors.length} 台在线</>}
+        extra={
+          <>
+            {isAdmin && <Button onClick={() => navigate('/executors/install')}>安装向导</Button>}
+            {isAdmin && (
+              <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
+                快速添加
+              </Button>
+            )}
+          </>
+        }
+      />
 
       <Space style={{ marginBottom: 16 }} wrap>
         <Input

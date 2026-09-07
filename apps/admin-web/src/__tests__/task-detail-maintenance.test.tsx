@@ -25,6 +25,8 @@ vi.mock('../api/ai', () => ({ aiApi: { suggestSchedule: vi.fn() } }));
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
   useParams: () => ({ id: 'task-1' }),
+  // UI-03：TaskDetailPage 页头 PageHeader 面包屑消费 Link——mock 补齐导出（纯锚点桩）
+  Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
 }));
 // 重子组件裁剪：详情展示只关心 Descriptions 区，Glue/DAG/参数编辑器换成桩。
 vi.mock('../components/GlueEditor', () => ({ default: () => <div data-testid="glue-editor" /> }));
@@ -103,7 +105,8 @@ describe('TaskDetailPage 维护窗口展示（FEAT-06）', () => {
 
     render(<TaskDetailPage />);
     // 等任务名出现（数据已加载完成）再断言负向
-    expect(await screen.findByText('windowed-job')).toBeTruthy();
+    // UI-03：任务名现同时出现于页头面包屑与标题，改用 getAllByText 计数 > 0
+    expect((await screen.findAllByText('windowed-job')).length).toBeGreaterThan(0);
     expect(screen.queryByText('维护窗口')).toBeNull();
   });
 
@@ -114,7 +117,8 @@ describe('TaskDetailPage 维护窗口展示（FEAT-06）', () => {
     } as never);
 
     render(<TaskDetailPage />);
-    await waitFor(() => expect(screen.getByText('windowed-job')).toBeTruthy());
+    // UI-03：任务名现同时出现于页头面包屑与标题，改用 findAllByText 计数 > 0
+    await waitFor(() => expect(screen.getAllByText('windowed-job').length).toBeGreaterThan(0));
     expect(screen.queryByText('维护窗口')).toBeNull();
   });
 });
