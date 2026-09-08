@@ -66,18 +66,16 @@ stop: ## 停止所有服务
 restart: stop start ## 重启所有服务
 
 # ── 代码质量 ──────────────────────────────────────────────────
-test: ## 运行所有测试
-	cd apps/admin-api && npm test
-	cd apps/executor-python && .venv/bin/pytest tests/ -v
-	cd apps/executor-node && npm test
+# ARCH-20: 委托给根 package.json 的统一入口（npm run test:all / typecheck:all /
+# lint:all），避免两处命令清单漂移 —— Makefile 仅保留少数高频便捷目标。
+test: ## 运行所有测试（等价 npm run test:all，覆盖全部子项目）
+	npm run test:all
 
-lint: ## 运行代码检查
-	cd apps/admin-api && npm run lint
-	cd apps/admin-web && npm run lint
+lint: ## 运行代码检查（等价 npm run lint:all）
+	npm run lint:all
 
-typecheck: ## 运行 TypeScript 类型检查
-	cd apps/admin-api && npm run typecheck
-	cd apps/admin-web && npm run typecheck
+typecheck: ## 运行 TypeScript 类型检查（等价 npm run typecheck:all）
+	npm run typecheck:all
 
 # ── 数据库 ────────────────────────────────────────────────────
 db-migrate: ## 运行数据库迁移
