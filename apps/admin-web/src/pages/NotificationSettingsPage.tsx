@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, Tag, Typography, Alert, Checkbox, Popconfirm, Table, Select, InputNumber } from 'antd';
-import { CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
+import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, Tag, Typography, Alert, Checkbox, Popconfirm, Table, Select, InputNumber, Tooltip } from 'antd';
+import { CheckCircleFilled, CloseCircleFilled, InfoCircleOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import type { ColumnsType } from 'antd/es/table';
 import { client } from '../api/client';
@@ -55,6 +55,141 @@ const CHANNEL_CONFIG_FIELDS: Record<string, Array<{ key: string; label: string; 
     { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...' },
   ],
 };
+
+// ─── FEAT-10: 渠道级通知模板 ────────────────────────────────────────────────
+// 模板以 titleTemplate / contentTemplate 两个可选 config 键存储（与渠道其它
+// 配置同走 PATCH /notification/channels/:key，零迁移）。留空 = 走系统固定
+// 拼串（零破坏）。变量占位符 {{var}}，未知变量保留原文，输出上限 8KB。
+const TEMPLATE_VAR_DOCS = [
+  ['{{task}} / {{taskName}}', '任务名称'],
+  ['{{executionId}}', '执行 ID'],
+  ['{{failedReason}}', '失败原因/错误摘要'],
+  ['{{logs}}', '日志摘要（失败路径）'],
+  ['{{duration}}', '执行时长（毫秒，成功路径）'],
+  ['{{runbook}}', '运行手册链接（若任务已配置）'],
+  ['{{level}}', '通知级别（info/warning/error）'],
+] as const;
+
+function TemplateVarsTooltip() {
+  return (
+    <div>
+      <div>可用变量（占位符替换，未知变量保留原文，输出上限 8KB）：</div>
+      {TEMPLATE_VAR_DOCS.map(([v, d]) => (
+        <div key={v}>
+          <Typography.Text code style={{ fontSize: 12 }}>{v}</Typography.Text>
+          {' '}
+          <span>{d}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** FEAT-10: 渠道模板编辑区（可折叠，独立于基础连接配置的 Form） */
+function ChannelTemplatePanel({
+  channelKey,
+  config,
+  onSaved,
+}: {
+  channelKey: string;
+  config: Record<string, string>;
+  onSaved: () => void;
+}) {
+  const [form] = Form.useForm();
+  const [collapsed, setCollapsed] = useState(
+    !config.titleTemplate && !config.contentTemplate,
+  );
+
+  const { run: saveTemplate, loading: saving } = useRequest(
+    async (values: { titleTemplate?: string; contentTemplate?: string }) => {
+      // 折叠即视为不使用模板：显式提交空串（后端空串=未配置，走固定拼串）
+      await notificationApi.updateChannel(channelKey, {
+        config: {
+          titleTemplate: values.titleTemplate ?? '',
+          contentTemplate: values.contentTemplate ?? '',
+        },
+      });
+    },
+    { manual: true, onSuccess: () => { message.success('模板已保存'); onSaved(); } },
+  );
+
+  if (collapsed) {
+    return (
+      <Card
+        type="inner"
+        title="消息模板（可选）"
+        style={{ marginTop: 16 }}
+        extra={
+          <Button type="link" size="small" onClick={() => setCollapsed(false)}>
+            展开
+          </Button>
+        }
+      >
+        <Text type="secondary">未配置模板 — 使用系统默认内容格式。</Text>
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      type="inner"
+      title={
+        <Space>
+          <span>消息模板（可选）</span>
+          <Tooltip title={<TemplateVarsTooltip />}>
+            <InfoCircleOutlined />
+          </Tooltip>
+        </Space>
+      }
+      style={{ marginTop: 16 }}
+      extra={
+        <Button type="link" size="small" onClick={() => setCollapsed(true)}>
+          收起
+        </Button>
+      }
+    >
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={{
+          titleTemplate: config.titleTemplate ?? '',
+          contentTemplate: config.contentTemplate ?? '',
+        }}
+        onFinish={saveTemplate}
+      >
+        <Form.Item
+          name="titleTemplate"
+          label={
+            <Space>
+              标题模板
+              <Tooltip title={<TemplateVarsTooltip />}>
+                <InfoCircleOutlined />
+              </Tooltip>
+            </Space>
+          }
+        >
+          <TextArea
+            rows={2}
+            maxLength={500}
+            placeholder={'例如：[{{level}}] 任务 {{taskName}} 执行失败'}
+          />
+        </Form.Item>
+        <Form.Item name="contentTemplate" label="内容模板">
+          <TextArea
+            rows={4}
+            maxLength={8000}
+            placeholder={'例如：执行 {{executionId}} 失败：{{failedReason}}\n日志：{{logs}}'}
+          />
+        </Form.Item>
+        <Form.Item style={{ marginBottom: 0 }}>
+          <Button type="primary" htmlType="submit" loading={saving}>
+            保存模板
+          </Button>
+        </Form.Item>
+      </Form>
+    </Card>
+  );
+}
 
 // ─── 单渠道配置面板（W1）────────────────────────────────────────────────────
 // 每个渠道一个独立组件实例 → Form.useForm() 为该渠道私有，字段同名（如三个渠道的
@@ -364,13 +499,22 @@ export default function NotificationSettingsPage() {
         <Divider />
         {c.enabled ? (
           // W1：渠道级独立组件——每渠道私有 form 实例，面板间字段与保存互不影响
-          <ChannelConfigForm
-            key={c.key}
-            channelKey={c.key}
-            config={c.config || {}}
-            description={c.description}
-            onSaved={refresh}
-          />
+          <>
+            <ChannelConfigForm
+              key={c.key}
+              channelKey={c.key}
+              config={c.config || {}}
+              description={c.description}
+              onSaved={refresh}
+            />
+            {/* FEAT-10: 渠道级消息模板（titleTemplate/contentTemplate，可折叠） */}
+            <ChannelTemplatePanel
+              key={`${c.key}-template`}
+              channelKey={c.key}
+              config={c.config || {}}
+              onSaved={refresh}
+            />
+          </>
         ) : (
           <Alert title="此通知渠道已禁用，启用后可配置推送参数" type="info" showIcon />
         )}

@@ -173,3 +173,67 @@ describe('全局测试发送（QA-03）', () => {
     expect(await screen.findByText('发送失败：SMTP 未配置')).toBeTruthy();
   });
 });
+
+// ─── FEAT-10: 渠道级消息模板编辑（可折叠 TextArea + 变量说明）────────────────
+describe('FEAT-10 渠道消息模板', () => {
+  it('未配置模板时面板折叠态渲染，展开后出现标题/内容模板输入', async () => {
+    render(<NotificationSettingsPage />);
+    await screen.findByText('启用此通知渠道：');
+
+    // 折叠态：inner Card 标题 + 提示
+    expect(await screen.findByText('消息模板（可选）')).toBeTruthy();
+    expect(screen.getByText('未配置模板 — 使用系统默认内容格式。')).toBeTruthy();
+
+    // 展开
+    fireEvent.click(screen.getByRole('button', { name: '展开' }));
+    expect(await screen.findByText('标题模板')).toBeTruthy();
+    expect(screen.getByText('内容模板')).toBeTruthy();
+  });
+
+  it('填写模板并保存 → PATCH config 携带 titleTemplate/contentTemplate', async () => {
+    mockedClient.patch.mockResolvedValue(channelsFixture[0]);
+    render(<NotificationSettingsPage />);
+    await screen.findByText('启用此通知渠道：');
+    fireEvent.click(screen.getByRole('button', { name: '展开' }));
+
+    fireEvent.change(await screen.findByPlaceholderText('例如：[{{level}}] 任务 {{taskName}} 执行失败'), {
+      target: { value: '[{{level}}] {{taskName}}' },
+    });
+    fireEvent.click(findBtn(document.body, '保存模板')!);
+
+    await waitFor(() => {
+      expect(mockedClient.patch).toHaveBeenCalledWith('/notification/channels/email', {
+        config: { titleTemplate: '[{{level}}] {{taskName}}', contentTemplate: '' },
+      });
+    });
+    expect(await screen.findByText('模板已保存')).toBeTruthy();
+  });
+
+  it('已配置模板的渠道展开渲染（预填模板值）', async () => {
+    mockedClient.get.mockImplementation((url: string) => {
+      if (String(url) === '/notification/channels') {
+        return Promise.resolve([
+          {
+            key: 'dingtalk',
+            name: '钉钉',
+            enabled: true,
+            config: { titleTemplate: '[{{level}}] {{task}}', contentTemplate: '' },
+            description: '钉钉群机器人',
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    render(<NotificationSettingsPage />);
+    // fixture 只含钉钉渠道，而页面 activeTab 默认 'email' —— 必须先点击
+    // 钉钉 Tab 让面板挂载，否则找不到任何模板输入
+    fireEvent.click(await screen.findByRole('tab', { name: /钉钉/ }));
+
+    // 已配置 → 默认展开（无「展开」按钮），TextArea 预填已保存模板
+    expect(screen.queryByRole('button', { name: '展开' })).toBeNull();
+    const titleArea = (await screen.findByPlaceholderText(
+      '例如：[{{level}}] 任务 {{taskName}} 执行失败',
+    )) as HTMLTextAreaElement;
+    expect(titleArea.value).toBe('[{{level}}] {{task}}');
+  });
+});
