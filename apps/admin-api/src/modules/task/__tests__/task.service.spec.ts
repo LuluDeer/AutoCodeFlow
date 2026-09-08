@@ -3089,6 +3089,94 @@ describe("TaskService (__tests__)", () => {
       expect(result.success).toBe(true);
       expect(executorServiceMock.notifyExecutorKill).not.toHaveBeenCalled();
     });
+
+    // FEAT-18: KILLED 终态落库后发布 execution.killed 领域事件（ARCH-21 预留
+    // 补发）。载荷形状对齐 execution.failed 的 ExecutionTerminalEventPayload。
+    it("emits execution.killed with terminal payload after a successful kill (FEAT-18)", async () => {
+      const exec = {
+        id: "e1",
+        taskId: "t1",
+        taskName: "nightly-etl",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:8002",
+        startTime: new Date(Date.now() - 5000),
+        aiAnalysis: null,
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      await service.killExecution("e1");
+
+      expect(eventBus.emit).toHaveBeenCalledTimes(1);
+      const [eventName, payload] = eventBus.emit.mock.calls[0];
+      expect(eventName).toBe(DOMAIN_EVENTS.EXECUTION_KILLED);
+      expect(payload).toEqual(
+        expect.objectContaining({
+          executionId: "e1",
+          taskId: "t1",
+          taskName: "nightly-etl",
+          status: "killed",
+          failureReason: ExecutionFailureReason.KILLED,
+          errorMessage: "Manually terminated by administrator",
+          finishedAt: expect.any(String),
+        }),
+      );
+      expect(typeof payload.durationMs).toBe("number");
+    });
+
+    it("does NOT emit execution.killed when the kill hits no row (terminal state)", async () => {
+      const exec = { id: "e3", status: ExecutionStatus.SUCCESS };
+      execRepo.findOne.mockResolvedValue(exec);
+      await expect(service.killExecution("e3")).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(eventBus.emit).not.toHaveBeenCalled();
+    });
+
+    it("still kills successfully when the event bus is absent (@Optional fail-open, FEAT-18)", async () => {
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          TaskService,
+          { provide: getRepositoryToken(Task), useValue: taskRepo },
+          { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+          {
+            provide: getRepositoryToken(ExecutionLogLine),
+            useValue: logLineRepo,
+          },
+          { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
+          { provide: getQueueToken("task-queue"), useValue: taskQueue },
+          { provide: DataSource, useValue: dataSource },
+          { provide: SchedulerService, useValue: schedulerService },
+          {
+            provide: AiService,
+            useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+          },
+          {
+            provide: ConfigService,
+            useValue: { get: jest.fn().mockReturnValue("") },
+          },
+          { provide: ExecutorService, useValue: executorServiceMock },
+          // eventBus 缺席（@Optional → null）——主链行为不变，仅事件不发。
+          {
+            provide: SecretsCryptoService,
+            useValue: new SecretsCryptoService({ get: () => "" } as any),
+          },
+          { provide: getRepositoryToken(ExecutionReport), useValue: {} },
+        ],
+      }).compile();
+      const buslessService = moduleRef.get(TaskService);
+
+      const exec = {
+        id: "e1",
+        taskId: "t1",
+        taskName: "nightly-etl",
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 5000),
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await buslessService.killExecution("e1");
+      expect(result.success).toBe(true);
+    });
   });
 
   describe("getExecutionStats", () => {
