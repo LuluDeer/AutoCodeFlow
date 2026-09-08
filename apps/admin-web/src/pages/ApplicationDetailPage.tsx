@@ -9,7 +9,7 @@ import {
   RocketOutlined, RobotOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { applicationsApi, Application, VersionHistoryEntry } from '../api/applications';
+import { applicationsApi, Application, VersionHistoryEntry, AppReleaseRow } from '../api/applications';
 import { aiApi, AppHealthReport } from '../api/ai';
 import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
@@ -17,6 +17,7 @@ import { getErrMsg, isFormValidationError } from '../utils/error';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
+import StateError from '../components/StateError';
 
 /**
  * W3 RBAC（对齐 settings 页先例）：应用详情页内的写操作——同步任务、保存应用设置、
@@ -453,6 +454,133 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
   );
 }
 
+// ─── Releases（DEP-01 统一发布追溯）───────────────────────────────────────────
+const RELEASE_DEPLOY_STATUS_COLORS: Record<string, string> = {
+  running: 'green', stopped: 'default', failed: 'red', deploying: 'blue', upgrading: 'blue', pending: 'default',
+};
+const RELEASE_DEPLOY_STATUS_LABELS: Record<string, string> = {
+  pending: '等待中', deploying: '部署中', running: '运行中', stopped: '已停止', failed: '失败', upgrading: '升级中',
+};
+const RELEASE_TRIGGER_LABELS: Record<string, string> = {
+  upgrade: '滚动升级', manual: '手动部署', unknown: '未知',
+};
+
+function ReleasesTab({ app }: { app: Application }) {
+  const [rows, setRows] = useState<AppReleaseRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
+
+  const fetchReleases = useCallback(async (p: number) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await applicationsApi.getReleases(app.id, p, 20);
+      setRows(res.data ?? []);
+      setTotal(res.total ?? 0);
+      setPage(res.page ?? p);
+    } catch (err: unknown) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [app.id]);
+
+  useEffect(() => { fetchReleases(1); }, [fetchReleases]);
+
+  const columns = [
+    {
+      title: '版本', dataIndex: 'version', width: 150,
+      render: (v: string | null, r: AppReleaseRow) => (
+        <Space size={4}>
+          {v ? <Tag color="blue" data-testid="release-version">{v}</Tag> : <Tag>未知</Tag>}
+          {r.synthetic && (
+            <Tooltip title="该部署记录未保存版本快照（历史数据合成行）">
+              <Tag style={{ fontSize: 11 }}>合成</Tag>
+            </Tooltip>
+          )}
+          {r.deploymentCount > 1 && (
+            <Tooltip title={`该版本共部署 ${r.deploymentCount} 次`}>
+              <Tag color="default" style={{ fontSize: 11 }}>{r.deploymentCount}次</Tag>
+            </Tooltip>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: 'Commit', dataIndex: 'gitCommit', width: 110,
+      render: (v: string | null) => (v ? <Text code>{v.slice(0, 8)}</Text> : '-'),
+    },
+    {
+      title: '部署状态', dataIndex: 'deploymentStatus', width: 100,
+      render: (v: string | null) =>
+        v ? (
+          <Tag color={RELEASE_DEPLOY_STATUS_COLORS[v] || 'default'}>
+            {RELEASE_DEPLOY_STATUS_LABELS[v] || v}
+          </Tag>
+        ) : (
+          <Text type="secondary">未部署</Text>
+        ),
+    },
+    {
+      title: '触发方式', dataIndex: 'triggerType', width: 100,
+      render: (v: string | null) => (v ? <Tag>{RELEASE_TRIGGER_LABELS[v] || v}</Tag> : '-'),
+    },
+    { title: '执行器', dataIndex: 'executorAddress', ellipsis: true, render: (v: string | null) => v || '-' },
+    {
+      title: '部署时间', dataIndex: 'deployedAt', width: 170,
+      render: (v: string | null, r: AppReleaseRow) => {
+        const t = v ?? r.createdAt;
+        return t ? new Date(t).toLocaleString('zh-CN') : '-';
+      },
+    },
+    {
+      title: '操作人', dataIndex: 'operator', width: 110,
+      render: (v: string | null) =>
+        v ? v : (
+          <Tooltip title="当前所有写入路径均未记录部署操作人（application_versions.createdBy 未填充），来源扩展属后续任务">
+            <Text type="secondary">—</Text>
+          </Tooltip>
+        ),
+    },
+  ];
+
+  if (error) {
+    // UI-08：页内错误态标准块（重试 + 复制错误信息），整页不炸
+    return (
+      <Card variant="borderless">
+        <StateError
+          error={error}
+          onRetry={() => fetchReleases(1)}
+          title="加载版本追溯失败"
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={() => fetchReleases(page)}>刷新</Button>}>
+      <Table<AppReleaseRow>
+        rowKey={(r) => r.id ?? r.latestDeploymentId ?? `${r.version ?? 'unknown'}-${r.createdAt ?? 'none'}`}
+        columns={columns}
+        dataSource={rows}
+        loading={loading}
+        size="small"
+        data-testid="releases-table"
+        pagination={{
+          current: page,
+          pageSize: 20,
+          total,
+          showTotal: (t) => `共 ${t} 个版本`,
+          onChange: (p) => fetchReleases(p),
+        }}
+        locale={{ emptyText: '暂无发布记录（该应用还没有版本快照或部署历史）' }}
+      />
+    </Card>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function ApplicationDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -530,6 +658,12 @@ export default function ApplicationDetailPage() {
             key: 'versions',
             label: <span><HistoryOutlined /> 版本历史</span>,
             children: <VersionHistoryTab app={app} onAppReload={fetchApp} />,
+          },
+          // DEP-01：统一发布追溯（版本 × 最近一次部署一屏追溯）
+          {
+            key: 'releases',
+            label: <span><HistoryOutlined /> 版本追溯</span>,
+            children: <ReleasesTab app={app} />,
           },
           {
             key: 'settings',
