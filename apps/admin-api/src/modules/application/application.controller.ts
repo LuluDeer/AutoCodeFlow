@@ -39,6 +39,7 @@ import {
 } from "./dto/application.dto";
 import { AppReleaseWebhookDto } from "./dto/app-release-webhook.dto";
 import { ListReleasesQueryDto } from "./dto/app-release.dto";
+import { UpgradeAllDto } from "./dto/rollout.dto";
 import * as fs from "fs";
 import * as path from "path";
 import { createHmac, timingSafeEqual } from "crypto";
@@ -460,20 +461,15 @@ export class ApplicationController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Trigger all running instances to upgrade to latest version",
+    description:
+      "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；" +
+      "rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ " +
+      "健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；" +
+      "任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，" +
+      "admin-api 重启即暂停（行级 rolloutState=failed）。",
   })
-  async upgradeAll(@Param("id") id: string) {
-    await this.svc.findById(id);
-    const deployments = await this.deploymentSvc.findRunningByApp(id);
-    const results = await Promise.allSettled(
-      deployments.map((d) => this.deploymentSvc.upgrade(d.id)),
-    );
-    const succeeded = results.filter((r) => r.status === "fulfilled").length;
-    return {
-      ok: true,
-      total: deployments.length,
-      succeeded,
-      failed: deployments.length - succeeded,
-    };
+  async upgradeAll(@Param("id") id: string, @Body() dto: UpgradeAllDto) {
+    return this.deploymentSvc.upgradeAllWithRollout(id, dto?.rollout ?? null);
   }
 
   @Post(":id/sync-tasks")
