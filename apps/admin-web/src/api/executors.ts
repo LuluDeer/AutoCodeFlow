@@ -107,8 +107,14 @@ export const executorsApi = {
     client.patch(`/executors/${id}`, data) as Promise<Executor>,
   getGroups: () => client.get('/executors/groups') as Promise<string[]>,
   getTags: () => client.get('/executors/tags') as Promise<string[]>,
-  rotateToken: (id: string) =>
-    client.post(`/executors/${id}/rotate-token`) as Promise<{ token: string; expiresAt: string }>,
+  rotateToken: (id: string, reason?: string) =>
+    client.post(`/executors/${id}/rotate-token`, reason ? { reason } : undefined) as Promise<{ token: string; expiresAt: string }>,
+  /**
+   * AUTH-05 交接：删除执行器（ADMIN-only）。可选 reason（≤200 字符）随
+   * body 发送，写审计 executor.delete（detail={address,appName,reason?}）。
+   */
+  remove: (id: string, reason?: string) =>
+    client.delete(`/executors/${id}`, reason ? { data: { reason } } : undefined) as Promise<void>,
   reloadConfig: (id: string, data: {
     maxConcurrentTasks?: number;
     taskTimeoutSeconds?: number;
