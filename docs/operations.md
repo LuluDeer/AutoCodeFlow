@@ -687,3 +687,82 @@ CREATE TABLE execution_log_lines_20260910
 3. 测试环境先验证
 4. 在业务低峰期操作
 5. 准备好回滚方案（保留旧镜像或快照）
+
+## Operator 升级 Runbook（DOC-07）
+
+面向运维操作者的标准升级流程。按顺序执行，每步有明确通过判据；
+失败即停在当前步，按下文「回滚」一节处理，不要带病继续。
+
+### 前置检查（升级前 1 天）
+
+| # | 检查项 | 通过判据 |
+|---|--------|----------|
+| 1 | 阅读本版 CHANGELOG（根 `CHANGELOG.md`，release-please 生成） | 破坏性变更（Breaking/⚠️ 标注）逐条列出并确认影响面 |
+| 2 | 破坏性变更涉及 env → 对照 `.env.example` 增量 | 新增 env 已登记 configuration.ts + Joi + `.env.example`（PR 模板纪律），生产 `.env` 已补齐 |
+| 3 | 破坏性变更涉及迁移 → 在测试环境走完整升级 + 回滚一遍 | 迁移全绿 + 回滚可达 |
+| 4 | 数据库备份（上文「备份 PostgreSQL 数据库」） | 备份文件存在且 `pg_restore --list` 可读 |
+| 5 | 记录当前版本 | `docker compose images` + `git rev-parse HEAD` 留档 |
+| 6 | 容量水位 | 上文「容量水位指标清单」各指标处于正常区间（磁盘余量 ≥30%） |
+
+### 升级步骤（低峰期执行，预计 10~30 分钟）
+
+```bash
+# 0. 进入维护窗口前：暂停调度器入队（可选，长迁移时建议）
+#    方式：管理台逐个暂停 cron 任务，或直接在低峰期硬切（BullMQ 在途任务重启后恢复）。
+
+# 1. 拉取目标版本
+git fetch && git checkout <target-tag>   # 或 git pull（develop 跟踪部署）
+
+# 2. 构建并滚动重启（先 API/后执行器；执行器与 API 版本需同批升级）
+docker compose pull
+docker compose up -d --build admin-api admin-web
+docker compose up -d --build executor-node executor-python
+
+# 3. 数据库迁移（幂等；重复执行为 no-op）
+docker compose exec admin-api npm run migration:run
+
+# 4. 通过判据（逐条验证）
+curl -fsS http://localhost:<api端口>/api/health   # 健康检查 200（另 /api/health/ready）
+docker compose ps                                     # 各服务 Up
+docker compose logs admin-api --since 5m | grep -iE "error|warn" || true   # 无新错误刷屏
+```
+
+升级后验证（业务面抽样）：
+
+1. 管理台登录 → 任务列表加载 → 手动触发一个 ping 类任务 → 执行成功有日志。
+2. 执行器心跳：执行器列表全部「在线」，最后一跳时间在一个心跳间隔内。
+3. 若本版含部署/审批流（DEP-02~04）：创建一个测试部署，观察 rollout/审批行为符合预期。
+
+### 回滚
+
+```bash
+# 1. 回到旧版本代码/镜像
+git checkout <previous-tag>
+docker compose up -d --build
+
+# 2. 数据库回滚（仅当本版迁移有破坏性变更且旧代码不兼容新列时才需要；
+#    迁移默认只增不改，旧代码通常兼容新 schema，优先跳过此步）
+docker compose exec admin-api npm run migration:revert   # 单步回退，逐步执行
+
+# 3. 最坏情况：从备份恢复（上文「恢复步骤骨架」）
+```
+
+回滚判据：健康检查 200 + 业务抽样（同升级后验证）通过。
+
+### 已知升级坑（历轮沉淀）
+
+- **迁移链断裂**：2026-09-05 真机曾抓到迁移链断档。防护=CI 月度演练
+  （`migration:generate --check` 漂移检查 + revert/re-run 演练，QA-08），
+  升级前若 `migration:run` 报「missing migration」先核对迁移目录完整性再操作。
+- **迁移时间戳撞号**：多会话并行开发曾有两名并行任务同时抢一段号。防护=CI
+  `check-migrations` job（ARCH-29）；升级遇到「重复迁移时间戳」报错说明部署的
+  版本混入了撞号 commit，退回上一个 tag 并上报。
+- **执行器与 admin-api 版本差**：回调 token/信封契约（第八/九轮）要求双端同批
+  升级；旧执行器连新 API 会 401（token 机制不匹配），执行器会自动重新注册对齐
+  （BUG-08/SEC-NEW-3 补注册链），但建议不要跨多个版本差升级。
+- **`SEC_SECRETS_KEY` 首次配置**：配置后存量任务 secrets 在下次 update 时自然
+  转密文（零破坏），无需停机迁移；但密钥一旦配置并加密落库，丢失即不可解密——
+  升级前把该 key 纳入备份核对清单。
+- **`.env` 增量**：升级后 `diff .env .env.example` 核对新增键；漏配会被 Joi
+  启动校验拦截（启动失败报缺哪个键，按提示补齐重启即可）。
+
