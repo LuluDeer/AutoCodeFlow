@@ -26,14 +26,12 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { createHmac } from "node:crypto";
-import { setTimeout as sleepSetTimeout } from "node:timers/promises";
 import axios from "axios";
-import { Repository, In } from "typeorm";
+import { Repository } from "typeorm";
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 import {
   DOMAIN_EVENTS,
   DomainEventName,
-  ExecutionTerminalEventPayload,
 } from "../../common/events/domain-events";
 import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
 import { EventSubscription } from "./entities/event-subscription.entity";
@@ -129,7 +127,9 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
       );
       return;
     }
-    const targets = subs.filter((s) => subscriptionMatches(s.eventTypes, eventName));
+    const targets = subs.filter((s) =>
+      subscriptionMatches(s.eventTypes, eventName),
+    );
     if (targets.length === 0) return;
     this.logger.log(
       `Outbound event "${eventName}" → ${targets.length} subscription(s)`,
@@ -184,7 +184,12 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     const signature =
       "sha256=" +
       createHmac("sha256", sub.secret)
-        .update(Buffer.concat([Buffer.from(`${timestamp}.`), Buffer.from(body, "utf8")]))
+        .update(
+          Buffer.concat([
+            Buffer.from(`${timestamp}.`),
+            Buffer.from(body, "utf8"),
+          ]),
+        )
         .digest("hex");
     await axios.post(sub.url, body, {
       timeout: OUTBOUND_TIMEOUT_MS,
@@ -279,13 +284,12 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
       typeof buildEventPayload
     >;
     try {
-      await this.deliverOnce(
-        subscription,
-        deadLetter.eventType,
-        payload,
-      );
+      await this.deliverOnce(subscription, deadLetter.eventType, payload);
     } catch (err: unknown) {
-      const error = (err instanceof Error ? err.message : String(err)).slice(0, 1024);
+      const error = (err instanceof Error ? err.message : String(err)).slice(
+        0,
+        1024,
+      );
       await this.subService
         .recordDeliveryFailure(subscription, error)
         .catch(() => undefined);

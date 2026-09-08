@@ -41,10 +41,7 @@ describe("traceparent.util（OBS-01 W3C Trace Context 纯函数）", () => {
       ["", "空串"],
       ["not-a-traceparent", "无分隔结构"],
       ["00-abc-def-01", "段长度不足"],
-      [
-        `01-${KNOWN_TRACE_ID}-${KNOWN_PARENT_ID}-01`,
-        "version 非 00",
-      ],
+      [`01-${KNOWN_TRACE_ID}-${KNOWN_PARENT_ID}-01`, "version 非 00"],
       [
         `${"g".repeat(32)}-${KNOWN_PARENT_ID}-01`.replace(/^/, "00-"),
         "trace-id 含非 hex",
@@ -57,18 +54,12 @@ describe("traceparent.util（OBS-01 W3C Trace Context 纯函数）", () => {
         `00-${KNOWN_TRACE_ID}-${"0".repeat(16)}-01`,
         "parent-id 全零（规范非法）",
       ],
-      [
-        `00-${KNOWN_TRACE_ID}-${KNOWN_PARENT_ID}-zz`,
-        "flags 非 hex",
-      ],
+      [`00-${KNOWN_TRACE_ID}-${KNOWN_PARENT_ID}-zz`, "flags 非 hex"],
       [
         `00-${KNOWN_TRACE_ID.toUpperCase()}-${KNOWN_PARENT_ID}-01`,
         "大写 hex（规范要求小写）",
       ],
-      [
-        `00-${KNOWN_TRACE_ID}-${KNOWN_PARENT_ID}-01-extra`,
-        "多余段",
-      ],
+      [`00-${KNOWN_TRACE_ID}-${KNOWN_PARENT_ID}-01-extra`, "多余段"],
     ])("非法输入 %s（%s）返回 null", (input) => {
       expect(extractTraceId(input as string)).toBeNull();
     });

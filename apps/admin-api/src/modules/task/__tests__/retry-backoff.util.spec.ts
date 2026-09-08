@@ -1,4 +1,7 @@
-import { jitteredRetryDelayMs, RETRY_JITTER_RATIO } from "../retry-backoff.util";
+import {
+  jitteredRetryDelayMs,
+  RETRY_JITTER_RATIO,
+} from "../retry-backoff.util";
 
 describe("retry-backoff.util / jitteredRetryDelayMs", () => {
   it("returns 0 for non-positive or missing retryDelay (no-delay semantics preserved)", () => {

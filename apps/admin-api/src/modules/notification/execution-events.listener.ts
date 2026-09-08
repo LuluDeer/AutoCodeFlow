@@ -32,9 +32,7 @@ import { AuditService } from "../audit/audit.service";
 import { NotificationService } from "./notification.service";
 
 @Injectable()
-export class ExecutionEventsListener
-  implements OnModuleInit, OnModuleDestroy
-{
+export class ExecutionEventsListener implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ExecutionEventsListener.name);
 
   constructor(

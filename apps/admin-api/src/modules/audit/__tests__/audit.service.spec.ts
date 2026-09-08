@@ -181,9 +181,12 @@ describe("AuditService", () => {
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
 
       await service.findAll({ resourceId: "task-abc-123" });
-      expect(qbMock.andWhere).toHaveBeenCalledWith("log.resourceId = :resourceId", {
-        resourceId: "task-abc-123",
-      });
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        "log.resourceId = :resourceId",
+        {
+          resourceId: "task-abc-123",
+        },
+      );
     });
 
     it("AUTH-05: applies resource + resourceId as a combined pair filter", async () => {
@@ -200,9 +203,12 @@ describe("AuditService", () => {
       expect(qbMock.andWhere).toHaveBeenCalledWith("log.resource = :resource", {
         resource: "executor",
       });
-      expect(qbMock.andWhere).toHaveBeenCalledWith("log.resourceId = :resourceId", {
-        resourceId: "e-1",
-      });
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        "log.resourceId = :resourceId",
+        {
+          resourceId: "e-1",
+        },
+      );
     });
 
     it("AUTH-05: caps an oversized resourceId needle at 100 chars", async () => {
@@ -216,9 +222,12 @@ describe("AuditService", () => {
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
 
       await service.findAll({ resourceId: "x".repeat(500) });
-      expect(qbMock.andWhere).toHaveBeenCalledWith("log.resourceId = :resourceId", {
-        resourceId: "x".repeat(100),
-      });
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        "log.resourceId = :resourceId",
+        {
+          resourceId: "x".repeat(100),
+        },
+      );
     });
   });
 

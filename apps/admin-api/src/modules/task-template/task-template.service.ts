@@ -78,10 +78,7 @@ export class TaskTemplateService {
    * body 至少含 `name`（新任务名），其余任意 CreateTaskDto 字段可选覆盖。
    * templateId 键从 body 剥离（由 :id 决定，防越权指定他模板）。
    */
-  async instantiate(
-    id: string,
-    body: Record<string, unknown>,
-  ): Promise<Task> {
+  async instantiate(id: string, body: Record<string, unknown>): Promise<Task> {
     const tpl = await this.findOne(id);
     const overrides: Record<string, unknown> = { ...(body ?? {}) };
     delete overrides.templateId;

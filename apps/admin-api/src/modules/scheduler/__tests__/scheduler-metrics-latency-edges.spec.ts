@@ -61,7 +61,10 @@ describe("CORE-06 P99 插值边界（scheduler-metrics）", () => {
     m.recordTriggerLatency(300);
     const d = m.derived;
     const s = m.snapshot;
-    expect(d.avgTriggerLatencyMs).toBeCloseTo(s.triggerLatencySumMs / s.triggerLatencyCount, 9);
+    expect(d.avgTriggerLatencyMs).toBeCloseTo(
+      s.triggerLatencySumMs / s.triggerLatencyCount,
+      9,
+    );
     expect(s.triggerLatencyCount).toBe(2);
   });
 

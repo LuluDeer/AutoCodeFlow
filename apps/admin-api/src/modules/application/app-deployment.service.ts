@@ -34,10 +34,7 @@ import {
 } from "./dto/app-release.dto";
 // DEP-02/DEP-03: 灰度（canary）批次 + manifest 健康探针 + 自动回滚
 import { RolloutState } from "./entities/app-deployment.entity";
-import {
-  canaryBatchSize,
-  parseManifestHealthCheck,
-} from "./dto/rollout.dto";
+import { canaryBatchSize, parseManifestHealthCheck } from "./dto/rollout.dto";
 
 // FEAT-07: deployment.completed 出站事件（总线 @Global；Optional 注入先例 task.service）
 import {
@@ -352,9 +349,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         typeof snapshot.packageUrl === "string" && snapshot.packageUrl
           ? snapshot.packageUrl
           : null;
-      const triggerSource = latest ?? sourceById.get(v.sourceDeploymentId ?? "");
-      const deployedAt =
-        (latest?.deployedAt ?? latest?.createdAt ?? null) ?? null;
+      const triggerSource =
+        latest ?? sourceById.get(v.sourceDeploymentId ?? "");
+      const deployedAt = latest?.deployedAt ?? latest?.createdAt ?? null;
       return {
         id: v.id,
         version: v.version,
@@ -1545,7 +1542,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   ): string | null {
     let hostname: string | null = null;
     let port: number | null = null;
-    if (executorAddress.startsWith("http://") || executorAddress.startsWith("https://")) {
+    if (
+      executorAddress.startsWith("http://") ||
+      executorAddress.startsWith("https://")
+    ) {
       try {
         const u = new URL(executorAddress);
         hostname = u.hostname;
@@ -1556,7 +1556,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     } else {
       // host:port 形态（含 [IPv6]:port）；无端口的裸主机名也放行——探测
       // 端口此时必须由 manifest.port 显式提供。
-      const m = executorAddress.match(/^(\[[a-zA-Z0-9:]+\]|[a-zA-Z0-9._-]+)(?::([0-9]{1,5}))?$/);
+      const m = executorAddress.match(
+        /^(\[[a-zA-Z0-9:]+\]|[a-zA-Z0-9._-]+)(?::([0-9]{1,5}))?$/,
+      );
       if (!m) return null;
       hostname = m[1];
       port = m[2] ? Number(m[2]) : null;

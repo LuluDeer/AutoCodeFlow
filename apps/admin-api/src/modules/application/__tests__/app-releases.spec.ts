@@ -1,7 +1,5 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { ExecutionContext } from "@nestjs/common";
-import { Reflector } from "@nestjs/core";
 import { AppDeploymentService } from "../app-deployment.service";
 import {
   releaseSortTimestampMs,
@@ -79,7 +77,11 @@ describe("AppDeploymentService.getReleases (DEP-01)", () => {
     create: jest.Mock;
     save: jest.Mock;
   };
-  let versionRepo: { find: jest.Mock; findOne: jest.Mock; findAndCount: jest.Mock };
+  let versionRepo: {
+    find: jest.Mock;
+    findOne: jest.Mock;
+    findAndCount: jest.Mock;
+  };
 
   beforeEach(async () => {
     deploymentRepo = {
@@ -97,14 +99,20 @@ describe("AppDeploymentService.getReleases (DEP-01)", () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         AppDeploymentService,
-        { provide: getRepositoryToken(AppDeployment), useValue: deploymentRepo },
+        {
+          provide: getRepositoryToken(AppDeployment),
+          useValue: deploymentRepo,
+        },
         {
           provide: getRepositoryToken(ApplicationVersion),
           useValue: versionRepo,
         },
         {
           provide: ApplicationService,
-          useValue: { maskEnvForRead: (e: unknown) => e, maskReadSurface: (a: unknown) => a },
+          useValue: {
+            maskEnvForRead: (e: unknown) => e,
+            maskReadSurface: (a: unknown) => a,
+          },
         },
         {
           provide: ExecutorService,
@@ -271,7 +279,12 @@ describe("AppDeploymentService.getReleases (DEP-01)", () => {
 
   it("triggerType：升级部署行（statusMessage 含 Upgrade triggered）→ upgrade", async () => {
     versionRepo.findAndCount.mockResolvedValue([
-      [versionRow("v-up", "3.0.0", { snapshot: {}, sourceDeploymentId: "d-up" })],
+      [
+        versionRow("v-up", "3.0.0", {
+          snapshot: {},
+          sourceDeploymentId: "d-up",
+        }),
+      ],
       1,
     ]);
     deploymentRepo.find.mockImplementation(async (opts: any) => {
@@ -450,8 +463,7 @@ describe("ApplicationController GET /applications/:id/releases 鉴权元数据",
   it("路由声明使用 JwtAuthGuard（类级）且未被 @Public 标记（默认 JWT 鉴权）", async () => {
     // 直接反射验证装饰器：控制器类在 @UseGuards(JwtAuthGuard) 之下，
     // releases 处理器不携带 IS_PUBLIC_KEY 元数据。
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { ApplicationController } = require("../application.controller");
+    const { ApplicationController } = await import("../application.controller");
     const isPublic = Reflect.getMetadata(
       IS_PUBLIC_KEY,
       ApplicationController.prototype.listReleases,
@@ -462,9 +474,10 @@ describe("ApplicationController GET /applications/:id/releases 鉴权元数据",
   });
 
   it("releases 处理器委托 AppDeploymentService.getReleases（分页参数透传）", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { ApplicationController } = require("../application.controller");
-    const deploymentSvc = { getReleases: jest.fn().mockResolvedValue({ data: [], total: 0 }) };
+    const { ApplicationController } = await import("../application.controller");
+    const deploymentSvc = {
+      getReleases: jest.fn().mockResolvedValue({ data: [], total: 0 }),
+    };
     const controller = new ApplicationController(
       {} as any,
       deploymentSvc as any,

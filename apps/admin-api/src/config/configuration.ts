@@ -78,7 +78,10 @@ export default () => ({
       10,
     ),
     intervalMs: parseInt(process.env.METRICS_STREAM_INTERVAL_MS || "3000", 10),
-    idlePingMs: parseInt(process.env.METRICS_STREAM_IDLE_PING_MS || "15000", 10),
+    idlePingMs: parseInt(
+      process.env.METRICS_STREAM_IDLE_PING_MS || "15000",
+      10,
+    ),
   },
   jwt: {
     // S4: fail-fast on weak/missing secrets — throw at startup rather than silently using defaults
@@ -288,10 +291,7 @@ export default () => ({
     enabled: process.env.CLAMD_ENABLED === "true",
     host: process.env.CLAMD_HOST || "127.0.0.1",
     port: parseInt(process.env.CLAMD_PORT || "3310", 10),
-    timeoutMs: parseInt(
-      process.env.CLAMD_TIMEOUT_MS || "10000",
-      10,
-    ),
+    timeoutMs: parseInt(process.env.CLAMD_TIMEOUT_MS || "10000", 10),
   },
   // OBS-01: OpenTelemetry 分布式追踪开关。默认 false——零开销零行为变化
   // （TracingService 全方法短路：不产 span、不生成 traceparent、不加请求头）。

@@ -1,4 +1,7 @@
-import { mapAlertmanagerPayload, normalizeAlertStatus } from "../alert-webhook.mapping";
+import {
+  mapAlertmanagerPayload,
+  normalizeAlertStatus,
+} from "../alert-webhook.mapping";
 
 /** Alertmanager v2 webhook 标准形态的最小样本（对齐官方文档字段）。 */
 const firingAlert = {
@@ -60,10 +63,7 @@ describe("mapAlertmanagerPayload (OBS-02)", () => {
 
   it("mixed firing/resolved takes worst case (error) and firing title", () => {
     const mapped = mapAlertmanagerPayload({
-      alerts: [
-        { ...firingAlert, status: "resolved" },
-        firingAlert,
-      ],
+      alerts: [{ ...firingAlert, status: "resolved" }, firingAlert],
     })!;
     expect(mapped.level).toBe("error");
     expect(mapped.title).toBe("[Alert] AUTOFLOW_QUEUE_BACKLOG firing");

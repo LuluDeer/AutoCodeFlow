@@ -98,17 +98,24 @@ export class UpgradeAllDto {
  */
 export function parseManifestHealthCheck(
   manifest: unknown,
-): Required<
-  Pick<ManifestHealthCheckDto, "path" | "interval" | "failThreshold" | "timeoutMs">
-> & { port: number | null } | null {
+):
+  | (Required<
+      Pick<
+        ManifestHealthCheckDto,
+        "path" | "interval" | "failThreshold" | "timeoutMs"
+      >
+    > & { port: number | null })
+  | null {
   if (!manifest || typeof manifest !== "object") return null;
   const hc = (manifest as Record<string, unknown>).healthCheck;
   if (!hc || typeof hc !== "object") return null;
   const raw = hc as Record<string, unknown>;
   if (typeof raw.path !== "string" || !raw.path.startsWith("/")) return null;
   const port =
-    typeof raw.port === "number" && Number.isInteger(raw.port) &&
-    raw.port >= 1 && raw.port <= 65535
+    typeof raw.port === "number" &&
+    Number.isInteger(raw.port) &&
+    raw.port >= 1 &&
+    raw.port <= 65535
       ? raw.port
       : null;
   const intOr = (v: unknown, d: number, lo: number, hi: number) =>

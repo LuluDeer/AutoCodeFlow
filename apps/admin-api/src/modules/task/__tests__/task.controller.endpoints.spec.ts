@@ -36,11 +36,17 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
       getAllExecutions: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       getExecution: jest.fn().mockResolvedValue({ id: "exec-1" }),
       getExecutionReport: jest.fn().mockResolvedValue({ execution: {} }),
-      getExecutionLogs: jest.fn().mockResolvedValue({ lines: [], totalLines: 0 }),
+      getExecutionLogs: jest
+        .fn()
+        .mockResolvedValue({ lines: [], totalLines: 0 }),
       getExecutionStats: jest.fn().mockResolvedValue({ successRate: 100 }),
-      suggestSchedule: jest.fn().mockResolvedValue({ suggestedCron: "* * * * *" }),
+      suggestSchedule: jest
+        .fn()
+        .mockResolvedValue({ suggestedCron: "* * * * *" }),
       analyzeExecution: jest.fn().mockResolvedValue({ id: "exec-1" }),
-      killExecution: jest.fn().mockResolvedValue({ id: "exec-1", status: "killed" }),
+      killExecution: jest
+        .fn()
+        .mockResolvedValue({ id: "exec-1", status: "killed" }),
       rollback: jest.fn().mockResolvedValue({ id: "task-1" }),
       rollbackToVersion: jest.fn().mockResolvedValue({ id: "task-1" }),
       getVersions: jest.fn().mockResolvedValue([]),

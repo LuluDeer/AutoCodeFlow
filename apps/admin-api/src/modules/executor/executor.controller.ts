@@ -720,10 +720,7 @@ export class ExecutorController {
       },
     },
   })
-  rotateToken(
-    @Param("id") id: string,
-    @Body() body?: { reason?: string },
-  ) {
+  rotateToken(@Param("id") id: string, @Body() body?: { reason?: string }) {
     return this.svc.rotateToken(id, body?.reason);
   }
 

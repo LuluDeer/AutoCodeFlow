@@ -44,7 +44,11 @@ export class TaskTemplateController {
       "Returns all task templates. Official presets (seeded by migration, aligned " +
       "with the MCP `TASK_TEMPLATES`) come first; user-created custom templates follow.",
   })
-  @ApiResponse({ status: 200, description: "Template list", type: [TaskTemplate] })
+  @ApiResponse({
+    status: 200,
+    description: "Template list",
+    type: [TaskTemplate],
+  })
   list(): Promise<TaskTemplate[]> {
     return this.svc.findAll();
   }
@@ -69,7 +73,11 @@ export class TaskTemplateController {
       "The `config` object is validated against CreateTaskDto semantics before " +
       "persisting; a stray/invalid field is rejected with 400.",
   })
-  @ApiResponse({ status: 201, description: "Created custom template", type: TaskTemplate })
+  @ApiResponse({
+    status: 201,
+    description: "Created custom template",
+    type: TaskTemplate,
+  })
   @ApiResponse({ status: 400, description: "Invalid config / key" })
   @ApiResponse({ status: 409, description: "Template key already exists" })
   create(@Body() dto: CreateTaskTemplateDto): Promise<TaskTemplate> {
@@ -86,7 +94,10 @@ export class TaskTemplateController {
   })
   @ApiParam({ name: "id", description: "Template UUID" })
   @ApiResponse({ status: 201, description: "Created task" })
-  @ApiResponse({ status: 400, description: "Missing name / invalid merged payload" })
+  @ApiResponse({
+    status: 400,
+    description: "Missing name / invalid merged payload",
+  })
   @ApiResponse({ status: 404, description: "Template not found" })
   instantiate(
     @Param("id", ParseUUIDPipe) id: string,
@@ -102,7 +113,10 @@ export class TaskTemplateController {
   })
   @ApiParam({ name: "id", description: "Template UUID" })
   @ApiResponse({ status: 200, description: "Deleted" })
-  @ApiResponse({ status: 403, description: "Official template cannot be deleted" })
+  @ApiResponse({
+    status: 403,
+    description: "Official template cannot be deleted",
+  })
   @ApiResponse({ status: 404, description: "Template not found" })
   async remove(@Param("id", ParseUUIDPipe) id: string): Promise<{ ok: true }> {
     await this.svc.remove(id);

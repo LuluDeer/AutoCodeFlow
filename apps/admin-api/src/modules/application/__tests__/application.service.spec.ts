@@ -779,11 +779,7 @@ describe("ApplicationService", () => {
         );
 
       try {
-        await service.deployFromGit(
-          "1",
-          "https://github.com/o/r.git",
-          "main",
-        );
+        await service.deployFromGit("1", "https://github.com/o/r.git", "main");
       } finally {
         // 清理 fixture（rmSpy 屏蔽了服务自身的清理调用）
         fs.rmSync(tmpRoot, { recursive: true, force: true });

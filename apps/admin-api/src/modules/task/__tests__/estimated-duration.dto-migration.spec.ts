@@ -34,7 +34,10 @@ describe("estimatedDurationSec DTO 校验（CORE-05）", () => {
   const validBase = { name: "t", triggerType: "api" };
 
   it("创建：合法正整数被接受", async () => {
-    const dto = await validateCreate({ ...validBase, estimatedDurationSec: 3600 });
+    const dto = await validateCreate({
+      ...validBase,
+      estimatedDurationSec: 3600,
+    });
     expect(dto.estimatedDurationSec).toBe(3600);
   });
 
@@ -67,7 +70,10 @@ describe("estimatedDurationSec DTO 校验（CORE-05）", () => {
   });
 
   it("创建：显式 null 被接受（未知语义）", async () => {
-    const dto = await validateCreate({ ...validBase, estimatedDurationSec: null });
+    const dto = await validateCreate({
+      ...validBase,
+      estimatedDurationSec: null,
+    });
     expect(dto.estimatedDurationSec).toBeNull();
   });
 

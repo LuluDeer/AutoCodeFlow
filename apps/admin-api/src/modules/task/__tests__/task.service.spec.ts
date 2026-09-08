@@ -3562,7 +3562,10 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
           },
         },
         { provide: AiService, useValue: aiService },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue("") } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
         {
           provide: ExecutorService,
           useValue: {
@@ -3828,7 +3831,11 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
           { provide: DataSource, useValue: dataSource },
           {
             provide: SchedulerService,
-            useValue: { stop: jest.fn(), scheduleOne: jest.fn(), getStats: jest.fn() },
+            useValue: {
+              stop: jest.fn(),
+              scheduleOne: jest.fn(),
+              getStats: jest.fn(),
+            },
           },
           { provide: AiService, useValue: aiService },
           { provide: ConfigService, useValue: { get: configGet } },
@@ -3904,7 +3911,9 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       dataSource.transaction.mockImplementation(async (fn: any) =>
         fn({
           save: jest.fn(async (_t: unknown, e: unknown) =>
-            (e as { id?: string })?.id ? e : { id: "rb-exec-1", status: "pending" },
+            (e as { id?: string })?.id
+              ? e
+              : { id: "rb-exec-1", status: "pending" },
           ),
           create: jest
             .fn()
@@ -3928,9 +3937,9 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
   describe("analyzeExecution / getExecution — lookup branches", () => {
     it("getExecution constrains by taskId when provided", async () => {
       execRepo.findOne.mockResolvedValue(null);
-      await expect(
-        service.getExecution("exec-1", "task-1"),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.getExecution("exec-1", "task-1")).rejects.toThrow(
+        NotFoundException,
+      );
       expect(execRepo.findOne).toHaveBeenCalledWith({
         where: { id: "exec-1", taskId: "task-1" },
       });

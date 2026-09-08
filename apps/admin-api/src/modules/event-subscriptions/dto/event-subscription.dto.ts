@@ -22,7 +22,8 @@ import { SUBSCRIBABLE_EVENTS } from "../event-subscription.util";
  */
 export class CreateEventSubscriptionDto {
   @ApiProperty({
-    description: "Callback URL (public http(s) endpoint; private networks rejected)",
+    description:
+      "Callback URL (public http(s) endpoint; private networks rejected)",
     example: "https://ci.example.com/hooks/autoflow",
   })
   @IsUrl({ require_tld: false, protocols: ["http", "https"] })

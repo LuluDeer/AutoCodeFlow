@@ -15,9 +15,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * 幂等：IF NOT EXISTS，重复执行与 revert 重放均无副作用。
  */
-export class AddDeploymentRolloutColumns1790000000001
-  implements MigrationInterface
-{
+export class AddDeploymentRolloutColumns1790000000001 implements MigrationInterface {
   name = "AddDeploymentRolloutColumns1790000000001";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

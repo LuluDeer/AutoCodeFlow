@@ -39,14 +39,16 @@ describe("PartitionExecutionLogLines1789900000002（ARCH-22）", () => {
     expect(sql.includes('PRIMARY KEY ("id", "createdAt")')).toBe(true);
     // up 建两次（存量搬迁路径 + 新库直建路径），down 不重建分区表
     const upPart = sql.split("public async down")[0];
-    expect(upPart.match(/PARTITION BY RANGE/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(upPart.match(/PARTITION BY RANGE/g)?.length).toBeGreaterThanOrEqual(
+      2,
+    );
   });
 
   it("列结构对齐实体（level 列 + createdAt 默认 now()）", () => {
     expect(sql.includes('"level" VARCHAR(8)')).toBe(true);
-    expect(
-      sql.includes('"createdAt" TIMESTAMP NOT NULL DEFAULT now()'),
-    ).toBe(true);
+    expect(sql.includes('"createdAt" TIMESTAMP NOT NULL DEFAULT now()')).toBe(
+      true,
+    );
     expect(sql.includes('"content" TEXT NOT NULL')).toBe(true);
     expect(sql.includes('"executionId" VARCHAR NOT NULL')).toBe(true);
     expect(sql.includes('"lineNumber" INTEGER NOT NULL')).toBe(true);
@@ -73,10 +75,12 @@ describe("PartitionExecutionLogLines1789900000002（ARCH-22）", () => {
   it("legacy 表保留不删（人工回退源），清理步骤文档化于 operations.md", () => {
     // up 路径绝不出现 DROP legacy
     const upPart = sql.split("public async down")[0];
-    expect(upPart.includes('DROP TABLE IF EXISTS "execution_log_lines_legacy"')).toBe(
+    expect(
+      upPart.includes('DROP TABLE IF EXISTS "execution_log_lines_legacy"'),
+    ).toBe(false);
+    expect(upPart.includes('DROP TABLE "execution_log_lines_legacy"')).toBe(
       false,
     );
-    expect(upPart.includes('DROP TABLE "execution_log_lines_legacy"')).toBe(false);
     expect(upPart.includes("不 DROP legacy")).toBe(true);
   });
 
@@ -90,24 +94,20 @@ describe("PartitionExecutionLogLines1789900000002（ARCH-22）", () => {
   });
 
   it("索引策略：只建读取路径消费的三索引", () => {
-    expect(
-      sql.includes('"IDX_execution_log_lines_execId_lineNumber"'),
-    ).toBe(true);
+    expect(sql.includes('"IDX_execution_log_lines_execId_lineNumber"')).toBe(
+      true,
+    );
     expect(
       sql.includes('"IDX_execution_log_lines_execId_level_lineNumber"'),
     ).toBe(true);
     expect(sql.includes('"idx_execution_log_lines_createdAt"')).toBe(true);
     // 不搬 legacy 上的冗余单列索引
-    expect(
-      sql.includes('"idx_execution_log_lines_execution_id"'),
-    ).toBe(false);
+    expect(sql.includes('"idx_execution_log_lines_execution_id"')).toBe(false);
     expect(sql.includes('"idx_execution_log_lines_line_number"')).toBe(false);
   });
 
   it("预建分区窗口 today-1 ~ today+7（九个偏移量）", () => {
-    expect(
-      sql.includes("[-1, 0, 1, 2, 3, 4, 5, 6, 7]"),
-    ).toBe(true);
+    expect(sql.includes("[-1, 0, 1, 2, 3, 4, 5, 6, 7]")).toBe(true);
     // 预建走 CREATE TABLE IF NOT EXISTS（幂等）
     expect(sql.includes("CREATE TABLE IF NOT EXISTS")).toBe(true);
     // 分区名由共享 util 生成（与清理服务预建/清理同源防漂移）
@@ -118,11 +118,9 @@ describe("PartitionExecutionLogLines1789900000002（ARCH-22）", () => {
 
   it("down：分区数据回流 legacy 后 DROP 父表，不丢数据", () => {
     const downPart = sql.split("public async down")[1] ?? "";
-    expect(
-      downPart.includes(
-        'INSERT INTO "execution_log_lines_legacy"',
-      ),
-    ).toBe(true);
+    expect(downPart.includes('INSERT INTO "execution_log_lines_legacy"')).toBe(
+      true,
+    );
     expect(downPart.includes('DROP TABLE "execution_log_lines"')).toBe(true);
   });
 
@@ -132,6 +130,8 @@ describe("PartitionExecutionLogLines1789900000002（ARCH-22）", () => {
     const bareAlters = upPart.match(/ALTER TABLE "execution_log_lines" [^R]/g);
     // 允许的形态只有 RENAME（守卫内）
     expect(bareAlters).toBeNull();
-    expect(upPart.includes("ALTER TABLE \"execution_log_lines\" RENAME TO")).toBe(true);
+    expect(upPart.includes('ALTER TABLE "execution_log_lines" RENAME TO')).toBe(
+      true,
+    );
   });
 });

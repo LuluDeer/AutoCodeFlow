@@ -76,7 +76,6 @@ import {
 } from "../metrics/runtime-metrics-entry";
 // OBS-01: OpenTelemetry 追踪（@Global；OTEL_ENABLED=false 时全方法短路）
 import { TracingService } from "../../common/tracing/tracing.service";
-import { extractTraceId } from "../../common/tracing/traceparent.util";
 
 /**
  * Detects truncation markers inserted by executors when callback logs exceed
@@ -249,6 +248,9 @@ export class TaskService {
     private schedulerService: SchedulerService,
     private aiService: AiService,
     private configService: ConfigService,
+    // 跨 task↔executor 模块环的 provider 注入：模块级 forwardRef 配套
+    // （executor.module 注释）。
+    @Inject(forwardRef(() => ExecutorService))
     private executorService: ExecutorService,
     // ARCH-21: 事件总线（@Global 模块恒提供）。@Optional 仅为既有单测装配
     // 兼容（provider 缺失 → null → 终态事件静默不发，主链行为不变），

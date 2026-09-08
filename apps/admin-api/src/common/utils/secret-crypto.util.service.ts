@@ -54,7 +54,12 @@ export class SecretsCryptoService {
     if ((secrets === null || secrets === undefined) && !this.key) {
       return secrets;
     }
-    if (!this.key && secrets && Object.keys(secrets).length > 0 && !this.warnOnce.fired) {
+    if (
+      !this.key &&
+      secrets &&
+      Object.keys(secrets).length > 0 &&
+      !this.warnOnce.fired
+    ) {
       this.warnOnce.fired = true;
       this.logger.warn(
         "Storing task secrets in plaintext (SEC_SECRETS_KEY unset) — set the key to encrypt at rest.",

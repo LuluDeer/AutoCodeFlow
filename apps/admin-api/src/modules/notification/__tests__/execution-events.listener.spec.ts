@@ -61,9 +61,9 @@ describe("ExecutionEventsListener (ARCH-21)", () => {
 
       await listener.onExecutionFailed(event({ aiAnalysis: null }));
 
-      expect(
-        notificationService.notifyFailureWithConfig,
-      ).toHaveBeenCalledTimes(1);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
       const [name, id, error, ai, email, channels, wh, taskId, runbook] =
         notificationService.notifyFailureWithConfig.mock.calls[0];
       expect(name).toBe("nightly-etl");
@@ -120,9 +120,9 @@ describe("ExecutionEventsListener (ARCH-21)", () => {
     it("skips the task lookup when taskId is null and still notifies", async () => {
       await listener.onExecutionFailed(event({ taskId: null }));
       expect(taskRepo.findOne).not.toHaveBeenCalled();
-      expect(
-        notificationService.notifyFailureWithConfig,
-      ).toHaveBeenCalledTimes(1);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
       const [name, , , , , , , taskId] =
         notificationService.notifyFailureWithConfig.mock.calls[0];
       expect(name).toBe("nightly-etl");
@@ -226,9 +226,9 @@ describe("ExecutionEventsListener (ARCH-21)", () => {
       realBus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, event());
       // 监听器为 async——等一轮 microtask 队列再断言。
       await new Promise((r) => setTimeout(r, 0));
-      expect(
-        notificationService.notifyFailureWithConfig,
-      ).toHaveBeenCalledTimes(1);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
     });
   });
 });

@@ -74,7 +74,11 @@ describe("OBS-04 execution report/timeline", () => {
         { provide: DataSource, useValue: { transaction: jest.fn() } },
         {
           provide: SchedulerService,
-          useValue: { stop: jest.fn(), scheduleOne: jest.fn(), getStats: jest.fn() },
+          useValue: {
+            stop: jest.fn(),
+            scheduleOne: jest.fn(),
+            getStats: jest.fn(),
+          },
         },
         { provide: AiService, useValue: { analyzeFailure: jest.fn() } },
         {
@@ -256,9 +260,9 @@ describe("OBS-04 execution report/timeline", () => {
       const spy = jest
         .spyOn(service, "getExecutionReport")
         .mockResolvedValue(payload as any);
-      await expect(controller.executionReport("task-1", "exec-1")).resolves.toBe(
-        payload,
-      );
+      await expect(
+        controller.executionReport("task-1", "exec-1"),
+      ).resolves.toBe(payload);
       expect(spy).toHaveBeenCalledWith("exec-1", "task-1");
     });
   });
