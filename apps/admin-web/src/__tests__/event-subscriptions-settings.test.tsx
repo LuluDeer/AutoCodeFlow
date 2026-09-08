@@ -265,6 +265,40 @@ describe('FEAT-15 EventSubscriptionsSettings', () => {
     expect(screen.getByTestId('dead-letter-replay-d1111111-1111-4111-8111-111111111111')).toBeTruthy();
   });
 
+  // ── UI-15：请求级失败（reject）反馈断言——此前仅覆盖 ok=false 业务失败 ──
+  it('死信 replay 请求 reject → 兜底 toast（UI-15 onError 补齐）', async () => {
+    mocked.replayDeadLetter.mockRejectedValue(new Error('network reset'));
+    renderPage();
+    const replayBtn = await screen.findByTestId('dead-letter-replay-d1111111-1111-4111-8111-111111111111');
+    await waitFor(() => expect(replayBtn).toBeTruthy());
+    fireEvent.click(replayBtn);
+    await confirmDialog('确认重放该死信？');
+    await waitFor(() =>
+      expect(mocked.replayDeadLetter).toHaveBeenCalledWith(
+        'e1111111-1111-4111-8111-111111111111',
+        'd1111111-1111-4111-8111-111111111111',
+      ),
+    );
+    expect(await screen.findByText('network reset')).toBeTruthy();
+  });
+
+  it('删除订阅请求 reject → 错误 toast（UI-15）', async () => {
+    mocked.remove.mockRejectedValue(
+      Object.assign(new Error('bad'), { response: { data: { message: '订阅正在投递中' } } }),
+    );
+    renderPage();
+    fireEvent.click(await screen.findByTestId('sub-delete-e1111111-1111-4111-8111-111111111111'));
+    // 前一用例成功 toast「订阅已删除（关联死信级联删除）」在 message holder 中
+    // 残留 → getByText 多命中报错，改 getAllByText 容忍（notification-silences 先例）
+    await waitFor(() => expect(screen.getAllByText(/关联死信级联删除/).length).toBeGreaterThanOrEqual(1));
+    await confirmDialog('确认删除该订阅？');
+    await waitFor(() => expect(mocked.remove).toHaveBeenCalled());
+    // onError toast 文案 = getErrMsg 取 response.data.message
+    await waitFor(() => {
+      expect(screen.getAllByText('订阅正在投递中').length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
   it('无订阅时死信段不渲染', async () => {
     mocked.list.mockResolvedValue([]);
     renderPage();

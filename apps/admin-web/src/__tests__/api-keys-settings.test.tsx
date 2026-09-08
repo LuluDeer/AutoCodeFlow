@@ -101,14 +101,18 @@ describe('AUTH-03 ApiKeysSettings', () => {
     expect(screen.getByText('复制密钥')).toBeTruthy();
   });
 
-  it('创建失败：不弹明文（错误由 useMutation onError 静默/表单保留）', async () => {
-    mocked.create.mockRejectedValue(new Error('boom'));
+  it('创建失败：不弹明文（UI-15：onError 补齐后错误 toast 可见）', async () => {
+    mocked.create.mockRejectedValue(
+      Object.assign(new Error('bad'), { response: { data: { message: '名称重复' } } }),
+    );
     renderPage();
     fireEvent.click(await screen.findByTestId('apikey-create'));
     fireEvent.change(screen.getByPlaceholderText('如 ci-deploy'), { target: { value: 'x' } });
     fireEvent.click(screen.getByText('创 建'));
     await waitFor(() => expect(mocked.create).toHaveBeenCalled());
     expect(screen.queryByText('API Key 已创建')).toBeNull();
+    // UI-15：失败 toast 可见（getErrMsg 提取 response.data.message）
+    expect(await screen.findByText('名称重复')).toBeTruthy();
   });
 
   it('吊销按钮出现在未吊销行、已吊销行显示占位', async () => {

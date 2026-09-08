@@ -165,4 +165,42 @@ describe('SEC-03 会话列表', () => {
     renderSecurity();
     expect(await screen.findByText('暂无活跃会话')).toBeTruthy();
   });
+
+  // ── UI-15：失败反馈断言（此前 5 处 useMutation 无 onError 失败静默）──
+  it('吊销会话失败 → 错误 toast（UI-15 onError 补齐）', async () => {
+    vi.mocked(authApi.revokeSession).mockRejectedValue(
+      Object.assign(new Error('bad'), { response: { data: { message: '会话已被清理' } } }),
+    );
+    renderSecurity();
+    await screen.findByText('Firefox · Linux');
+    fireEvent.click(screen.getByLabelText('吊销会话 12'));
+    fireEvent.click(await screen.findByRole('button', { name: '确认吊销' }));
+    await waitFor(() => expect(authApi.revokeSession).toHaveBeenCalledWith(12));
+    expect(await screen.findByText('会话已被清理')).toBeTruthy();
+  });
+
+  it('吊销其他全部失败 → 兜底文案 toast（UI-15）', async () => {
+    vi.mocked(authApi.revokeOtherSessions).mockRejectedValue(new Error('boom'));
+    renderSecurity();
+    await screen.findByText('Firefox · Linux');
+    fireEvent.click(screen.getByText(/吊销其他全部（1）/));
+    fireEvent.click(await screen.findByRole('button', { name: '吊销其他' }));
+    await waitFor(() => expect(authApi.revokeOtherSessions).toHaveBeenCalled());
+    // getErrMsg(err, '批量吊销失败，请刷新后重试')：Error('boom').message=boom
+    // → onError toast 文案即 'boom'（上一用例『会话已被清理』toast 同理）。
+    expect(await screen.findByText('boom')).toBeTruthy();
+  });
+
+  it('TOTP enable 失败 → 错误 toast（UI-15）', async () => {
+    vi.mocked(authApi.totpEnable).mockRejectedValue(
+      Object.assign(new Error('bad'), { response: { data: { message: '动态码错误' } } }),
+    );
+    renderSecurity();
+    fireEvent.click(await screen.findByText('开始绑定'));
+    await screen.findByText(/otpauth:\/\/totp/);
+    fireEvent.change(screen.getByLabelText('动态验证码'), { target: { value: '287082' } });
+    fireEvent.click(screen.getByRole('button', { name: '验证并开启' }));
+    await waitFor(() => expect(authApi.totpEnable).toHaveBeenCalledWith('287082'));
+    expect(await screen.findByText('动态码错误')).toBeTruthy();
+  });
 });

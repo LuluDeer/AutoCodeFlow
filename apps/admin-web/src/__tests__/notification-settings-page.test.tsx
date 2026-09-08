@@ -109,6 +109,41 @@ describe('渠道 Tab 渲染与启停（QA-03）', () => {
   });
 });
 
+// ── UI-15：请求级失败（reject）反馈断言 ──
+describe('渠道启停与测试发送请求失败（UI-15）', () => {
+  it('渠道开关 PATCH reject → 错误 toast，不再静默', async () => {
+    mockedClient.patch.mockRejectedValue(
+      Object.assign(new Error('bad'), { response: { data: { message: '渠道配置锁定' } } }),
+    );
+    render(<NotificationSettingsPage />);
+    await screen.findByText('启用此通知渠道：');
+
+    const switches = document.querySelectorAll('button.ant-switch');
+    fireEvent.click(switches[0]);
+
+    await waitFor(() => {
+      expect(mockedClient.patch).toHaveBeenCalledWith('/notification/channels/email', { enabled: false });
+    });
+    expect(await screen.findByText('渠道配置锁定')).toBeTruthy();
+  });
+
+  it('全局测试发送 POST reject → 错误 Alert（UI-15 onError 补齐）', async () => {
+    mockedClient.post.mockRejectedValue(new Error('gateway timeout'));
+    render(<NotificationSettingsPage />);
+    await screen.findByText('启用此通知渠道：');
+
+    fireEvent.click(screen.getByLabelText('邮件'));
+    fireEvent.change(screen.getByPlaceholderText('测试通知'), { target: { value: '演练标题' } });
+    fireEvent.change(screen.getByPlaceholderText('这是一条测试通知...'), { target: { value: '演练内容' } });
+    fireEvent.click(findBtn(document.body, '发送测试通知')!);
+
+    await waitFor(() => {
+      expect(mockedClient.post).toHaveBeenCalled();
+    });
+    expect(await screen.findByText('发送失败：gateway timeout')).toBeTruthy();
+  });
+});
+
 describe('权限渲染（QA-03 / FEAT-01 回归）', () => {
   it('管理员：渲染「静默规则」Tab', async () => {
     mockedSilences.list.mockResolvedValue([]);

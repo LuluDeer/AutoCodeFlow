@@ -9,6 +9,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
 import { authApi, AuthSession } from '../../api/auth';
+import { getErrMsg } from '../../utils/error';
 import { useAuthStore } from '../../store/auth';
 
 const { Text } = Typography;
@@ -54,6 +55,10 @@ export function TotpCard() {
       setSetup(res);
       setStage('staged');
     },
+    // UI-15：绑定起点失败不能静默（按钮 loading 复位后界面无任何反馈）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '获取绑定密钥失败，请稍后重试'));
+    },
   });
 
   const { mutateAsync: doEnable, isPending: enabling } = useMutation({
@@ -65,6 +70,10 @@ export function TotpCard() {
       setCode('');
       qc.invalidateQueries({ queryKey: ['auth-profile'] });
     },
+    // UI-15：动态码错误等失败反馈（常见失败=验证码错误/过期）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '开启失败，请检查动态码后重试'));
+    },
   });
 
   const { mutateAsync: doDisable, isPending: disabling } = useMutation({
@@ -73,6 +82,10 @@ export function TotpCard() {
       message.success('两步验证已关闭');
       setDisablePassword('');
       qc.invalidateQueries({ queryKey: ['auth-profile'] });
+    },
+    // UI-15：密码校验失败等反馈
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '关闭失败，请确认登录密码后重试'));
     },
   });
 
@@ -151,7 +164,14 @@ export function TotpCard() {
               style={{ width: 200 }}
               aria-label="动态验证码"
             />
-            <Button type="primary" loading={enabling} disabled={code.trim().length !== 6} onClick={() => doEnable()}>
+            <Button type="primary" loading={enabling} disabled={code.trim().length !== 6} onClick={async () => {
+              // UI-15：rejection 在此消费（onError 已 toast，防 unhandled rejection）
+              try {
+                await doEnable();
+              } catch {
+                /* toast 已由 onError 呈现 */
+              }
+            }}>
               验证并开启
             </Button>
             <Button onClick={() => { setStage('idle'); setSetup(null); setCode(''); }}>取消</Button>
@@ -179,6 +199,10 @@ export function SessionsCard() {
       message.success('会话已吊销');
       qc.invalidateQueries({ queryKey: ['auth-sessions'] });
     },
+    // UI-15：吊销失败反馈（会话可能已被服务端清理）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '吊销失败，请刷新后重试'));
+    },
   });
 
   const { mutateAsync: revokeOthers, isPending: revokingOthers } = useMutation({
@@ -186,6 +210,10 @@ export function SessionsCard() {
     onSuccess: () => {
       message.success('已吊销其他所有会话');
       qc.invalidateQueries({ queryKey: ['auth-sessions'] });
+    },
+    // UI-15：同上，批量吊销失败同样要有可见反馈
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '批量吊销失败，请刷新后重试'));
     },
   });
 
@@ -222,7 +250,13 @@ export function SessionsCard() {
             description="该设备将被强制退出登录。"
             okText="确认吊销"
             okButtonProps={{ danger: true }}
-            onConfirm={() => revokeOne(row.id)}
+            onConfirm={async () => {
+              try {
+                await revokeOne(row.id);
+              } catch {
+                // UI-15：同 revokeOthers——rejection 已由 onError toast 呈现，防 unhandled rejection。
+              }
+            }}
           >
             <Button size="small" danger aria-label={`吊销会话 ${row.id}`}>吊销</Button>
           </Popconfirm>
@@ -244,7 +278,14 @@ export function SessionsCard() {
             okText="吊销其他"
             okButtonProps={{ danger: true }}
             disabled={others === 0}
-            onConfirm={() => revokeOthers()}
+            onConfirm={async () => {
+              try {
+                await revokeOthers();
+              } catch {
+                // UI-15：Popconfirm onConfirm 返回 Promise 会被 rc 确认弹层 await，
+                // rejection 已由上方 onError toast 呈现，这里吞掉防 unhandled rejection。
+              }
+            }}
           >
             <Button size="small" danger disabled={others === 0} loading={revokingOthers}>
               吊销其他全部（{others}）

@@ -241,6 +241,37 @@ describe('删除静默规则（FEAT-01）', () => {
   });
 });
 
+// ── UI-15：失败反馈断言（此前创建/删除 useRequest 无 onError 失败静默）──
+describe('静默规则失败反馈（UI-15）', () => {
+  it('创建失败 → 错误 toast（getErrMsg 兜底文案）', async () => {
+    vi.mocked(client.post).mockRejectedValue(new Error('quota exceeded'));
+    await openSilencesTab();
+    fireEvent.change(screen.getByPlaceholderText('如 30'), { target: { value: '30' } });
+    fireEvent.click(findBtn(document.body, '新建静默规则') as HTMLButtonElement);
+    await waitFor(() => expect(client.post).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('quota exceeded')).toBeTruthy();
+  });
+
+  it('删除失败 → 错误 toast（后端 message 透出）', async () => {
+    vi.mocked(client.delete).mockRejectedValue(
+      Object.assign(new Error('bad'), { response: { data: { message: '规则已被删除' } } }),
+    );
+    await openSilencesTab();
+    const row = (screen.getByText('发布窗口静默').closest('tr') as HTMLElement);
+    fireEvent.click(findBtn(row, '删除') as HTMLButtonElement);
+
+    const confirmText = await screen.findByText('确认删除此静默规则？');
+    const layer = (confirmText.closest('.ant-popover') ??
+      confirmText.closest('[class*="popconfirm"]') ??
+      document.body) as HTMLElement;
+    const layerBtns = (Array.from(layer.querySelectorAll('button')) as HTMLButtonElement[]);
+    fireEvent.click(layerBtns[layerBtns.length - 1] as HTMLButtonElement);
+
+    await waitFor(() => expect(client.delete).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('规则已被删除')).toBeTruthy();
+  });
+});
+
 describe('非管理员零入口（FEAT-01）', () => {
   it('非 admin 不渲染「静默规则」Tab，也不发起 silences 请求', async () => {
     useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
