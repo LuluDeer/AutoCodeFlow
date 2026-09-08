@@ -43,6 +43,9 @@ import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
 import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { AiService } from "../ai/ai.service";
+// ARCH-30: on-demand 分析同走服务化封装（重试 + autoflow_ai_analysis_total
+// 指标 + fail-open），processor 直调点与手动分析点共用同一降级/观测策略。
+import { AiAnalysisService } from "../ai/ai-analysis.service";
 import { ExecutorService } from "../executor/executor.service";
 // ARCH-21: 领域事件总线——终态事件（execution.completed/failed）发布入口。
 // 主链由此与 NotificationService 彻底解耦（验收红线：本文件不再 import 它）。
@@ -247,6 +250,8 @@ export class TaskService {
     @Inject(forwardRef(() => SchedulerService))
     private schedulerService: SchedulerService,
     private aiService: AiService,
+    // ARCH-30: AI 分析服务化封装（手动 analyzeExecution 路径消费）
+    private aiAnalysisService: AiAnalysisService,
     private configService: ConfigService,
     // 跨 task↔executor 模块环的 provider 注入：模块级 forwardRef 配套
     // （executor.module 注释）。
@@ -813,7 +818,12 @@ export class TaskService {
     const logContent =
       [exec.errorMessage, exec.logs].filter(Boolean).join("\n") || "(no logs)";
     const task = { name: exec.taskName, runtime: "unknown" };
-    exec.aiAnalysis = await this.aiService.analyzeFailure(task, logContent);
+    // ARCH-30: 走服务化封装（重试 1 次 + 指标 + 永不抛错）；空串结果原样
+    // 落库（前端按"无分析"降级渲染），与此前直调 AiService 的空串语义一致。
+    exec.aiAnalysis = await this.aiAnalysisService.analyzeFailure(
+      task,
+      logContent,
+    );
     await this.execRepo.save(exec);
     return exec;
   }
