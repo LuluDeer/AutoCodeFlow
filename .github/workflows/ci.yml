@@ -128,9 +128,20 @@ jobs:
       - run: npm run typecheck
         working-directory: apps/admin-api
 
-  # ── 依赖安全审计：prod 依赖链 high 及以上红灯，moderate 容忍 ──────
-  # 第七轮清偿后残留：admin-api 的 minio→query-string→decode-uri-component
-  # 链 3 处 moderate（上游修复需 minio 大版本变更，暂容忍）；其余三端清零。
+  # ── 依赖安全审计：prod 依赖链 moderate 及以上红灯（SEC-06）────────
+  # ① 门槛从 high 升到 moderate：moderate 已是可利用 DoS 级（如
+  #    stream-json O(depth²) 事件循环阻塞），不应长期容忍；known 豁免走
+  #    下方 AWK 豁免清单机制（命中即打印复查日期并通过，未命中仍红）。
+  # ② 豁免机制（SEC-06）：当前唯一豁免 = admin-api 的
+  #    minio→query-string→{decode-uri-component, stream-json} 链 4 处
+  #    moderate——上游 minio 8.0.7（2026-02-27 最新）仍钉
+  #    query-string ^7.1.3 / stream-json ^1.8.0，修复版需 minio 大版本
+  #    变更（npm audit fix --force 会装 minio@7.1.3 降级，不可取）。
+  #    ⏰ 复查日期 2026-10-01：届时若 minio 未发新版，评估 overrides
+  #    强制 query-string@9 / stream-json@3（需本地回归 S3 日志链）。
+  # ③ 矩阵补 executor-desktop（此前漏审——本轮侦察发现其
+  #    electron-builder→ajv→fast-uri 链 1 high + xmldom 1 moderate，
+  #    已以 non-breaking audit fix 清偿并入库）。
   # npm audit 仅需 lockfile 解析依赖树，无需 npm ci。
   npm-audit:
     runs-on: ubuntu-latest
@@ -140,6 +151,7 @@ jobs:
         project:
           - apps/admin-api
           - apps/executor-node
+          - apps/executor-desktop
           - packages/acf-cli
           - packages/mcp-server
     steps:
@@ -150,20 +162,65 @@ jobs:
           cache: 'npm'
           cache-dependency-path: ${{ matrix.project }}/package-lock.json
       # npm registry 的 audit endpoint 偶发 503/瞬时不可用（非真实漏洞），
-      # 退避重试三次；真实 HIGH+ 漏洞在重试后仍会稳定红灯。
+      # 退避重试三次；真实漏洞在重试后仍会稳定红灯。
+      # 输出同时落 /tmp/audit.json（--json）供豁免清单比对。
       - name: npm audit (with retry)
         working-directory: ${{ matrix.project }}
         run: |
           status=0
           for attempt in 1 2 3; do
-            if npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=high; then
+            if npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=moderate --json > /tmp/audit.json 2>/tmp/audit.err; then
+              cat /tmp/audit.err >&2 || true
               exit 0
             fi
             status=$?
+            cat /tmp/audit.err >&2 || true
             echo "audit attempt $attempt failed (exit $status), backing off..."
             if [ "$attempt" -lt 3 ]; then sleep $((attempt * 30)); fi
           done
-          exit $status
+          # 重试后仍红 → 与豁免清单比对：全部命中已知豁免则放行并提示复查，
+          # 任何未登记的新漏洞保持红灯（fail-closed）。
+          # 豁免判定键 = advisory 的 GHSA 编号（模块名会随链路变化，
+          # GHSA 是稳定身份）；新增豁免必须在下方注释登记模块链+原因+复查日期。
+          #
+          # ── 豁免清单（append-only，逐条注明链路/原因/复查日期）──
+          # GHSA-vcc3-ghjq-m6fr  decode-uri-component ≤0.2.2 DoS
+          #   链：admin-api minio@8.0.7→query-string@7.1.3→decode-uri-component@0.2.2
+          #   原因：上游 minio 8.x 钉 query-string ^7，修复需其大版本变更
+          #   复查：2026-10-01（届时评估 npm overrides 强升 query-string@9）
+          # GHSA-528h-pc64-c93x  stream-json ≤3.4.0 O(depth²) DoS
+          #   链：admin-api minio@8.0.7→stream-json@1.9.1
+          #   原因：同上（minio 8.x 钉 stream-json ^1.8）
+          #   复查：2026-10-01（同上）
+          #
+          echo "Still failing after retries — matching against exemption list (SEC-06)..."
+          known='GHSA-vcc3-ghjq-m6fr
+          GHSA-528h-pc64-c93x'
+          # 提取 JSON 中所有 moderate 及以上 advisory 的 GHSA id（去重排序）
+          found=$(node -e '
+            const a = require("/tmp/audit.json");
+            const vulns = a.vulnerabilities ? Object.values(a.vulnerabilities) : [];
+            const ids = new Set();
+            for (const v of vulns) {
+              for (const via of v.via || []) {
+                if (typeof via === "object" && via.url) {
+                  const m = via.url.match(/GHSA-[A-Za-z0-9-]+/);
+                  if (m) ids.add(m[0]);
+                }
+              }
+            }
+            console.log([...ids].sort().join("\n"));
+          ')
+          echo "Known exemptions:"; echo "$known" | sed 's/^ *//'
+          echo "Found in this audit:"; echo "$found"
+          unmatched=$(comm -23 <(echo "$found" | grep -v '^$' | sort) <(echo "$known" | sed 's/^ *//' | grep -v '^$' | sort))
+          if [ -n "$unmatched" ]; then
+            echo "::error::New vulnerability (moderate+) not on the exemption list — must fix or review explicitly:"
+            echo "$unmatched"
+            exit 1
+          fi
+          echo "::notice::All findings are known exemptions (SEC-06). Next review date: 2026-10-01."
+          exit 0
 
   executor-node-test:
     runs-on: ubuntu-latest
@@ -246,6 +303,58 @@ jobs:
         working-directory: apps/admin-web
         env:
           VITE_API_URL: http://localhost:3105
+
+  # ── lockfile 完整性校验（SEC-06 ②）────────────────────────────
+  # 各包独立 lockfile 的多包仓（无 workspace 统一锁）最易出的漂移是：
+  # 改了 package.json 忘了同步 lockfile——npm install 时 lock 会被静默
+  # 重写（依赖树与审计面从此与提交记录脱钩）。npm ci 天然拒绝这种漂移
+  # （本地实测：package.json 引入 lock 外依赖版本时 dry-run 即失败），
+  # 但主测试 job 们可能因缓存/局部路径绕过感知。此处集中对所有 npm 包
+  # 一次性 dry-run 守卫：零安装产物、秒级、任何 lock↔manifest 失配即红。
+  lockfile-integrity:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - apps/admin-api
+          - apps/admin-web
+          - apps/executor-node
+          - apps/executor-desktop
+          - packages/acf-cli
+          - packages/mcp-server
+          - packages/autocodeflow-node-sdk
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+        # 不配 npm 缓存——dry-run 不写 node_modules，缓存无收益
+      - name: Verify lockfile matches package.json (npm ci --dry-run)
+        working-directory: ${{ matrix.project }}
+        run: |
+          if [ ! -f package-lock.json ]; then
+            echo "::error::${{ matrix.project }}/package-lock.json missing — every npm package must commit its lockfile"
+            exit 1
+          fi
+          npm ci --dry-run --silent \
+            || { echo "::error::${{ matrix.project }}: package.json 与 package-lock.json 漂移 — 运行 npm install 同步后提交两文件"; exit 1; }
+
+  # ── Secret 泄漏扫描（SEC-06 ③）────────────────────────────────
+  # 双保险的 CI 侧：pre-commit gitleaks hook 拦本地提交，本 job 拦直推
+  # 与历史面（gitleaks-action 自动扫描全量 commit 历史并上报 code scanning）。
+  # 配置 = 仓库根 .gitleaks.toml（默认规则集 + 测试样例 allowlist）。
+  # 全量历史扫描放 PR/push：增量面由 --pre-commit 风格的 hook 保证，
+  # 历史一次性红可接受（若有红即真实历史泄漏，应当处理而非静默）。
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # gitleaks 需要完整历史才能扫全部 commit
+      - uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ── Python services & packages ────────────────────────────
   executor-python-test:

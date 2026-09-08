@@ -48,3 +48,14 @@ repos:
       - id: shellcheck
         name: Shell 脚本静态分析
         files: \.sh$
+
+  # ── Secret 泄漏扫描（SEC-06）────────────────────────────────
+  # gitleaks：全量规则集（AWS/GCP/Azure/Slack/私钥/通用 token 等一百余条）+
+  # 仓库根 .gitleaks.toml 例外清单（仅测试样例/文档占位符，逐条注明理由）。
+  # rev 固定 v8.30.1（2026-03-21 发布）；升级时同步核对 .gitleaks.toml 兼容性。
+  # CI 侧双保险见 .github/workflows/ci.yml 的 secret-scan job。
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        name: Secret 泄漏扫描（gitleaks）
