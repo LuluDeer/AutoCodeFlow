@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Table, Button, Space, Tag, Modal, Form, Input, Select, Upload, message,
-  Popconfirm, Typography, Tooltip, Badge, Radio, Empty,
+  Popconfirm, Typography, Tooltip, Badge, Radio, Empty, Switch,
 } from 'antd';
 import {
   PlusOutlined, UploadOutlined, ReloadOutlined, GithubOutlined,
@@ -550,6 +550,19 @@ export default function ApplicationListPage() {
             }}
           >
             <Input placeholder="src/tasks/index.js" />
+          </Form.Item>
+
+          {/* DEP-04: 部署审批流开关——开启后该应用的新部署需第二人批准才派发 */}
+          <Form.Item
+            name="approvalRequired"
+            label="部署审批"
+            valuePropName="checked"
+            tooltip={{
+              title: '开启后，该应用的新部署请求将冻结为「待审批」状态，需另一位管理员批准后才派发到执行器（第二人规则：提交者本人不能审批自己的请求）。',
+              icon: <InfoCircleOutlined />,
+            }}
+          >
+            <Switch checkedChildren="需审批" unCheckedChildren="直派" />
           </Form.Item>
         </Form>
       </Modal>
