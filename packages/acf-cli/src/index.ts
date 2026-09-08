@@ -12,7 +12,7 @@
  *   acf app list | create | update <id> | delete <id>
  *   acf app analyze <id>
  *   acf deploy upgrade <deploymentId> | stop <deploymentId>
- *   acf executor list | get <id>
+ *   acf executor list | get <id> | rotate <name|id> | offline <name|id>
  *   acf exec tail <execId>
  *   acf task lint <file>
  *   acf audit list
