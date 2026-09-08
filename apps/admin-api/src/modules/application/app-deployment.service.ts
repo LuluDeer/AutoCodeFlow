@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Optional,
   OnModuleDestroy,
   OnModuleInit,
@@ -16,6 +17,7 @@ import { Cron } from "@nestjs/schedule";
 import {
   AppDeployment,
   DeploymentStatus,
+  DeploymentApprovalStatus,
   RunMode,
 } from "./entities/app-deployment.entity";
 import { ApplicationVersion } from "./entities/application-version.entity";
@@ -42,6 +44,10 @@ import {
   DeploymentCompletedEventPayload,
 } from "../../common/events/domain-events";
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
+
+// DEP-04: 审批留痕（AuditService @Optional 注入，先例 executor.service——
+// 存量单测未提供 AuditModule 时降级为仅日志，主链不因审计故障中断）。
+import { AuditService } from "../audit/audit.service";
 
 /** DEP-02：upgrade-all canary 缺省百分比（首批台数 = ceil(N×pct%)，至少 1 台）。 */
 const ROLLOUT_DEFAULT_PERCENTAGE = 50;
@@ -97,6 +103,13 @@ export function releaseSortTimestampMs(input: {
   return Number.isNaN(ms) ? 0 : ms;
 }
 
+/** DEP-04：审批动作人身份（controller 从 @CurrentUser 提取；API-key 主体的
+ *  userId 与 JWT 用户 id 同域，名字带前缀便于审计区分）。 */
+export interface DeploymentApprovalActor {
+  id: number | null;
+  name: string | null;
+}
+
 @Injectable()
 export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   private readonly logger = new Logger(AppDeploymentService.name);
@@ -120,6 +133,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // 既有单测装配兼容——provider 缺失 → null → 事件静默不发，先例 task.service）。
     @Optional()
     private readonly eventBus: DomainEventBus | null = null,
+    // DEP-04: 审批留痕（@Optional 同上——存量 spec 未提供 AuditService 兼容）。
+    @Optional()
+    private readonly audit: AuditService | null = null,
   ) {}
 
   /** Build auth headers for executor requests. Must resolve through
@@ -134,9 +150,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     applicationId?: string,
     page = 1,
     limit = 20,
+    approvalStatus?: string,
   ): Promise<{ data: AppDeployment[]; total: number }> {
     const where: import("typeorm").FindOptionsWhere<AppDeployment> = {};
     if (applicationId) where.applicationId = applicationId;
+    // DEP-04: 审批待办列表过滤（值域由 controller DTO IsEnum 把关）。
+    if (approvalStatus) where.approvalStatus = approvalStatus;
     const [data, total] = await this.repo.findAndCount({
       where,
       order: { createdAt: "DESC" },
@@ -564,6 +583,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   async deploy(
     applicationId: string,
     dto: CreateDeploymentDto,
+    actor?: DeploymentApprovalActor,
   ): Promise<AppDeployment> {
     // R1: deploy pushes the app env to the executor — must be the raw
     // value (read-surface masking would deliver "***" to the runner).
@@ -603,6 +623,45 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       ? await this.executorService.findOne(dto.executorId)
       : await this.executorService.selectLeastLoaded();
 
+    // DEP-04: approval-gated application — freeze the request as a
+    // pending-approval row (status=pending keeps holding the in-flight
+    // slot, so concurrent deploys stay blocked by the guard above and the
+    // partial unique index alike) and return WITHOUT dispatching.
+    // pushDeployToExecutor runs only from approve(); rejection/cancel
+    // marks the row FAILED so the slot frees.
+    if (app.approvalRequired) {
+      const request = this.repo.create({
+        applicationId,
+        executorId: executor.id,
+        executorAddress: executor.address,
+        runMode: dto.runMode ?? RunMode.DAEMON,
+        env: dto.env ?? app.env,
+        startCommand: dto.startCommand ?? app.entrypoint ?? null,
+        status: DeploymentStatus.PENDING,
+        approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
+        approvalMeta: {
+          requestedBy: actor?.id ?? null,
+          requestedByName: actor?.name ?? null,
+          requestedAt: new Date().toISOString(),
+        },
+        statusMessage: "Awaiting deployment approval",
+      });
+      let savedRequest: AppDeployment;
+      try {
+        savedRequest = await this.repo.save(request);
+      } catch (err: unknown) {
+        if (this.isInFlightUniqueViolation(err)) {
+          throw new ConflictException(
+            `Application ${app.name} already has an in-progress deployment. ` +
+              `Wait for it to finish or cancel it first.`,
+          );
+        }
+        throw err;
+      }
+      // QA1: HTTP response is a read surface — return masked.
+      return this.maskDeploymentForRead(savedRequest);
+    }
+
     const deployment = this.repo.create({
       applicationId,
       executorId: executor.id,
@@ -641,6 +700,226 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     return this.maskDeploymentForRead(saved);
   }
 
+  // -----------------------------------------------------------------------
+  // DEP-04: deployment approval flow
+  // -----------------------------------------------------------------------
+
+  /** DEP-04: 审批通过——第二人规则校验后转入正常推送链。
+   *  原子认领（UPDATE … WHERE approvalStatus='pending_approval'）保证并发
+   *  双审批只有首者生效，不会双推；推送链与 deploy() 同款 fire-and-forget，
+   *  PENDING→DEPLOYING→FAILED 转移与失败语义由 pushDeployToExecutor 独占。 */
+  async approveDeployment(
+    deploymentId: string,
+    actor: DeploymentApprovalActor,
+    reason?: string,
+  ): Promise<AppDeployment> {
+    const deployment = await this.findPendingApproval(deploymentId);
+    this.assertSecondPerson(deployment, actor);
+
+    const actedAt = new Date().toISOString();
+    const nextMeta: Record<string, any> = {
+      ...(deployment.approvalMeta ?? {}),
+      actedBy: actor.id ?? null,
+      actedByName: actor.name ?? null,
+      actedAt,
+    };
+    if (reason) nextMeta.reason = reason;
+    const claimed = await this.repo.update(
+      {
+        id: deploymentId,
+        approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
+      },
+      {
+        approvalStatus: DeploymentApprovalStatus.APPROVED,
+        approvalMeta: nextMeta,
+      },
+    );
+    if (!claimed.affected) {
+      throw new ConflictException(
+        `Deployment ${deploymentId} was already decided by a concurrent action`,
+      );
+    }
+
+    deployment.approvalStatus = DeploymentApprovalStatus.APPROVED;
+    deployment.approvalMeta = nextMeta;
+
+    // R1: the push sends the merged app+deployment env — raw entity only.
+    const app = await this.appService.findByIdRaw(deployment.applicationId);
+    this.pushDeployToExecutor(deployment, app).catch((err) => {
+      this.logger.error(`Approved deploy push failed: ${err.message}`);
+    });
+    await this.writeApprovalAudit("deployment.approve", deployment, actor);
+    return this.maskDeploymentForRead(deployment);
+  }
+
+  /** DEP-04: 审批拒绝——终态落 FAILED（离开 in-flight 集合），reason 随
+   *  approvalMeta 与 statusMessage 双落。第二人规则与 approve 同校验
+   *  （提交者撤回自己的请求走 cancel，不走 reject）。 */
+  async rejectDeployment(
+    deploymentId: string,
+    actor: DeploymentApprovalActor,
+    reason?: string,
+  ): Promise<AppDeployment> {
+    const deployment = await this.findPendingApproval(deploymentId);
+    this.assertSecondPerson(deployment, actor);
+
+    const actedAt = new Date().toISOString();
+    const nextMeta: Record<string, any> = {
+      ...(deployment.approvalMeta ?? {}),
+      actedBy: actor.id ?? null,
+      actedByName: actor.name ?? null,
+      actedAt,
+      reason: reason ?? null,
+    };
+    const claimed = await this.repo.update(
+      {
+        id: deploymentId,
+        approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
+      },
+      {
+        approvalStatus: DeploymentApprovalStatus.REJECTED,
+        status: DeploymentStatus.FAILED,
+        statusMessage:
+          `Deployment rejected by ${actor.name ?? "unknown"}` +
+          (reason ? `: ${reason}` : ""),
+        approvalMeta: nextMeta,
+      },
+    );
+    if (!claimed.affected) {
+      throw new ConflictException(
+        `Deployment ${deploymentId} was already decided by a concurrent action`,
+      );
+    }
+
+    deployment.approvalStatus = DeploymentApprovalStatus.REJECTED;
+    deployment.status = DeploymentStatus.FAILED;
+    deployment.statusMessage =
+      `Deployment rejected by ${actor.name ?? "unknown"}` +
+      (reason ? `: ${reason}` : "");
+    deployment.approvalMeta = nextMeta;
+    await this.writeApprovalAudit("deployment.reject", deployment, actor, reason);
+    return this.maskDeploymentForRead(deployment);
+  }
+
+  /** DEP-04: 提交者撤回自己的待审批请求（第二人规则的镜像面——其他管理员
+   *  想否决走 reject）。终态语义与 reject 相同（FAILED 离开 in-flight）。 */
+  async cancelDeployment(
+    deploymentId: string,
+    actor: DeploymentApprovalActor,
+  ): Promise<AppDeployment> {
+    const deployment = await this.findPendingApproval(deploymentId);
+
+    const meta = deployment.approvalMeta ?? {};
+    if (meta.requestedBy != null && actor.id != null && meta.requestedBy !== actor.id) {
+      throw new ForbiddenException(
+        "Only the requester can cancel a pending deployment approval; " +
+          "use reject instead",
+      );
+    }
+
+    const actedAt = new Date().toISOString();
+    const nextMeta: Record<string, any> = {
+      ...meta,
+      actedBy: actor.id ?? null,
+      actedByName: actor.name ?? null,
+      actedAt,
+    };
+    const claimed = await this.repo.update(
+      {
+        id: deploymentId,
+        approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
+      },
+      {
+        approvalStatus: DeploymentApprovalStatus.CANCELLED,
+        status: DeploymentStatus.FAILED,
+        statusMessage: `Deployment request cancelled by ${actor.name ?? "unknown"}`,
+        approvalMeta: nextMeta,
+      },
+    );
+    if (!claimed.affected) {
+      throw new ConflictException(
+        `Deployment ${deploymentId} was already decided by a concurrent action`,
+      );
+    }
+
+    deployment.approvalStatus = DeploymentApprovalStatus.CANCELLED;
+    deployment.status = DeploymentStatus.FAILED;
+    deployment.statusMessage = `Deployment request cancelled by ${actor.name ?? "unknown"}`;
+    deployment.approvalMeta = nextMeta;
+    await this.writeApprovalAudit("deployment.cancel", deployment, actor);
+    return this.maskDeploymentForRead(deployment);
+  }
+
+  /** DEP-04: 待审批行加载（三动作共用前置）。 */
+  private async findPendingApproval(
+    deploymentId: string,
+  ): Promise<AppDeployment> {
+    const deployment = await this.findByIdRaw(deploymentId);
+    if (
+      deployment.approvalStatus !==
+      DeploymentApprovalStatus.PENDING_APPROVAL
+    ) {
+      throw new ConflictException(
+        `Deployment ${deploymentId} is not awaiting approval ` +
+          `(approvalStatus=${deployment.approvalStatus ?? "none"})`,
+      );
+    }
+    return deployment;
+  }
+
+  /** DEP-04: 第二人规则——审批者不得与提交者为同一人（userId 同域比较，
+   *  API-key 主体的 userId 即属主用户 id）。任一侧未知（理论不可达：deploy
+   *  与审批端点均为已认证主体）时放行并留 warn，避免脏数据卡死审批链。 */
+  private assertSecondPerson(
+    deployment: AppDeployment,
+    actor: DeploymentApprovalActor,
+  ): void {
+    const requestedBy = deployment.approvalMeta?.requestedBy ?? null;
+    if (requestedBy == null || actor.id == null) {
+      this.logger.warn(
+        `Second-person check skipped (requestedBy=${String(requestedBy)}, ` +
+          `actorId=${String(actor.id)}) for deployment ${deployment.id}`,
+      );
+      return;
+    }
+    if (requestedBy === actor.id) {
+      throw new ForbiddenException(
+        "Second-person rule: the requester cannot decide their own " +
+          "deployment approval",
+      );
+    }
+  }
+
+  /** DEP-04: 审批决策审计留痕（best-effort fail-open，先例 executor.service
+   *  的 rotate/delete——审计故障不阻断主链，仅 warn）。 */
+  private async writeApprovalAudit(
+    action: "deployment.approve" | "deployment.reject" | "deployment.cancel",
+    deployment: AppDeployment,
+    actor: DeploymentApprovalActor,
+    reason?: string,
+  ): Promise<void> {
+    if (!this.audit) return;
+    try {
+      await this.audit.log({
+        userId: actor.id ?? undefined,
+        username: actor.name ?? undefined,
+        action,
+        resource: "app_deployment",
+        resourceId: deployment.id,
+        detail: {
+          applicationId: deployment.applicationId,
+          executorAddress: deployment.executorAddress,
+          reason: reason ?? null,
+        },
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Approval audit write failed: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
   /**
    * Trigger upgrade on an existing deployment (git pull + restart).
    */
@@ -649,6 +928,16 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // entity is saved back; either step persisting the masked surface would
     // destroy the stored secrets with '***'.
     const deployment = await this.findByIdRaw(deploymentId);
+    // DEP-04: 待审批行从未被派发过，upgrade 语义（拉新版本重启）不适用；
+    // 出口只有 approve/reject/cancel 三条审批动作。
+    if (
+      deployment.approvalStatus ===
+      DeploymentApprovalStatus.PENDING_APPROVAL
+    ) {
+      throw new ConflictException(
+        "Deployment is awaiting approval; approve or reject it first",
+      );
+    }
     // R1: upgrade pushes the merged app+deployment env to the executor —
     // must be the raw value, not the masked read surface.
     const app = await this.appService.findByIdRaw(deployment.applicationId);
@@ -673,6 +962,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // QA1: raw lookup — the entity is saved back below; persisting the
     // masked read surface would overwrite stored env secrets with '***'.
     const deployment = await this.findByIdRaw(deploymentId);
+    // DEP-04: 待审批行从未派发，对执行器发 stop 信号无意义；出口同 upgrade。
+    if (
+      deployment.approvalStatus ===
+      DeploymentApprovalStatus.PENDING_APPROVAL
+    ) {
+      throw new ConflictException(
+        "Deployment is awaiting approval; approve or reject it first",
+      );
+    }
 
     try {
       const url = this.executorService.getExecutorUrl(

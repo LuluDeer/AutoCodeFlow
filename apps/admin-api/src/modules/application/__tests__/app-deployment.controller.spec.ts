@@ -197,10 +197,10 @@ describe("AppDeploymentController — endpoint delegation & heartbeat auth (QA-0
   it("findAll forwards applicationId with default paging when omitted", () => {
     const { controller, svc } = make();
     controller.findAll({ applicationId: "app-1" } as any);
-    expect(svc.findAll).toHaveBeenCalledWith("app-1", 1, 20);
+    expect(svc.findAll).toHaveBeenCalledWith("app-1", 1, 20, undefined);
 
     controller.findAll({ page: 3, pageSize: 50 } as any);
-    expect(svc.findAll).toHaveBeenLastCalledWith(undefined, 3, 50);
+    expect(svc.findAll).toHaveBeenLastCalledWith(undefined, 3, 50, undefined);
   });
 
   it("findById and deploy/upgrade/stop delegate one-to-one", () => {
@@ -209,8 +209,14 @@ describe("AppDeploymentController — endpoint delegation & heartbeat auth (QA-0
     controller.findById("deploy-1");
     expect(svc.findById).toHaveBeenCalledWith("deploy-1");
 
-    controller.deploy("app-1", { executorId: "exec-1" } as any);
-    expect(svc.deploy).toHaveBeenCalledWith("app-1", { executorId: "exec-1" });
+    controller.deploy("app-1", { executorId: "exec-1" } as any, {
+      id: 1,
+      username: "alice",
+    });
+    expect(svc.deploy).toHaveBeenCalledWith("app-1", { executorId: "exec-1" }, {
+      id: 1,
+      name: "alice",
+    });
 
     controller.upgrade("deploy-1");
     expect(svc.upgrade).toHaveBeenCalledWith("deploy-1");
