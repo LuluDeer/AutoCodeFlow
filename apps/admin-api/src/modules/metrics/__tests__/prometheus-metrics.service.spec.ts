@@ -222,6 +222,7 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
         "dingtalk",
         "wecom",
         "webhook",
+        "feishu",
       ]) {
         for (const result of ["success", "failure"]) {
           expect(text).toContain(

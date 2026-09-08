@@ -20,13 +20,14 @@ export const RUNTIME_EXECUTION_RESULT_LABELS = [
   ExecutionStatus.TIMEOUT,
 ] as const;
 
-/** autoflow_notification_delivery_total 的 channel 标签全集（与 NotificationService.sendToChannels 的渠道名一致） */
+/** autoflow_notification_delivery_total 的 channel 标签全集（与 NotificationService.sendToChannels 的渠道名一致；NF-05 起 feishu 加入） */
 export const RUNTIME_NOTIFICATION_CHANNELS = [
   "email",
   "slack",
   "dingtalk",
   "wecom",
   "webhook",
+  "feishu",
 ] as const;
 
 /** autoflow_notification_delivery_total 的 result 标签全集 */
