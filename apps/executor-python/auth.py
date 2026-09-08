@@ -1,9 +1,10 @@
 """SEC-03: Executor token management with expiration and rotation support."""
+import asyncio
 import hmac
 import logging
 import os
-from datetime import datetime, timedelta
-from typing import Any, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Optional
 
 from fastapi import Header, HTTPException, status
 import httpx
@@ -74,6 +75,45 @@ def get_executor_token_hash() -> Optional[str]:
     return _executor_token_hash
 
 
+# SEC-NEW-3 (N41/BUG-08 parity, executor-node middleware/auth.ts
+# setOnTokenAcquired): fired (fire-and-forget) after every SUCCESSFUL
+# _fetch_token. main.py mounts a hook that re-registers with rich metadata
+# when the startup register failed — the /token endpoint's register side
+# effect rebuilds the row WITHOUT type/capabilities/maxConcurrentTasks/
+# version, and only a real register call restores them.
+TokenAcquiredListener = Callable[[], Any]
+_token_acquired_listener: Optional[TokenAcquiredListener] = None
+
+
+def set_on_token_acquired(listener: Optional[TokenAcquiredListener]) -> None:
+    """Install (or, with ``None``, remove) the token-acquired listener."""
+    global _token_acquired_listener
+    _token_acquired_listener = listener
+
+
+def notify_token_acquired() -> None:
+    """Fire the listener without touching the token/request path: any error
+    (including a failed re-register) is swallowed here — the listener owns
+    its retry semantics."""
+    listener = _token_acquired_listener
+    if listener is None:
+        return
+    try:
+        result = listener()
+        if asyncio.iscoroutine(result):
+            # 常见挂法：lambda 里 create_task(maybe_re_register()) 返回 Task
+            # （非协程，不会被二次调度）；这里兜底直挂协程的调用方——调度后
+            # 吞掉异常，保证 fire-and-forget 语义。
+            async def _run() -> None:
+                try:
+                    await result
+                except Exception as exc:
+                    logger.warning('[auth] onTokenAcquired listener failed: %s', exc)
+            asyncio.get_running_loop().create_task(_run())
+    except Exception as exc:
+        logger.warning('[auth] onTokenAcquired listener failed: %s', exc)
+
+
 def adopt_executor_token_hash(raw: Any) -> None:
     """Adopt ``tokenHash`` from an admin-api response payload.
 
@@ -134,6 +174,10 @@ async def _fetch_token() -> Optional[str]:
                 # R9 (W3): adopt the tokenHash that matches this token so the
                 # callback-token HMAC key stays in sync with admin-api.
                 adopt_executor_token_hash(response.json())
+                # SEC-NEW-3 (N41 parity): a successful token fetch may have
+                # healed the token chain after a failed startup register —
+                # give main.py's re-register hook a fire-and-forget poke.
+                notify_token_acquired()
                 return token
     except Exception as e:
         # Fall back to static token if dynamic token fetch fails
@@ -145,7 +189,7 @@ async def _refresh_token_if_needed() -> None:
     """Refresh token if expired or about to expire."""
     global _dynamic_token, _token_expires_at
     
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     # Refresh if no token, expired, or within 5 minutes of expiration
     if _token_expires_at is None or now >= _token_expires_at - timedelta(minutes=5):
         new_token = await _fetch_token()

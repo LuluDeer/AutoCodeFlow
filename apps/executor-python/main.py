@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import signal
+import time
 import httpx
 
 from routers import execute, health, logs, config as config_router
@@ -13,7 +14,13 @@ import maintenance
 from admin_api import build_admin_api_url, check_admin_api_connectivity, get_admin_api_base_url
 from config import settings
 from scheduler import heartbeat_task, get_running_count, executor_started_at, executor_startup_id
-from auth import get_current_token, get_static_token, require_token_enabled, adopt_executor_token_hash
+from auth import (
+    get_current_token,
+    get_static_token,
+    require_token_enabled,
+    adopt_executor_token_hash,
+    set_on_token_acquired,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -21,6 +28,11 @@ logger = logging.getLogger(__name__)
 # Graceful shutdown state
 _shutting_down = False
 _heartbeat_task = None
+
+# SEC-NEW-3: startup register outcome for the re-register chain (True after a
+# successful register — maybe_re_register short-circuits; False keeps the
+# token-acquired hook armed).
+_register_succeeded = False
 
 
 def is_shutting_down() -> bool:
@@ -62,7 +74,7 @@ async def wait_for_tasks(timeout_seconds: int = 30):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _heartbeat_task
+    global _heartbeat_task, _register_succeeded
     # Check Admin API connectivity first so startup logs show clear diagnostics.
     await check_admin_api_connectivity()
     # R4-C P2: warn loudly when the executor would run in dev-mode (no token).
@@ -75,8 +87,13 @@ async def lifespan(app: FastAPI):
                 'No executor token configured — /api/* is open to unauthenticated callers (dev mode). '
                 'Set EXECUTOR_SHARED_TOKEN or set REQUIRE_TOKEN=true to refuse.'
             )
+    # SEC-NEW-3 (N41 parity): the token-acquired hook is mounted BEFORE the
+    # first register — when the startup register fails (admin unreachable),
+    # a later successful _fetch_token auto re-registers with rich metadata
+    # (maybe_re_register dedupes + backs off internally).
+    set_on_token_acquired(lambda: asyncio.get_running_loop().create_task(maybe_re_register()))
     # Register to admin-api on startup
-    await register_executor()
+    _register_succeeded = await register_executor()
     # Start heartbeat background task
     _heartbeat_task = asyncio.create_task(heartbeat_task())
     # E2: background replay of persisted callbacks (node startCallbackThread).
@@ -128,10 +145,45 @@ async def lifespan(app: FastAPI):
     # E8: stop the disk sweep before exiting.
     maintenance.stop_disk_cleanup_task()
     await notify_offline()
-    logger.info('Executor shutdown complete')
+    logger.info(f'Executor shutdown complete')
+    # SEC-NEW-3: drop the hook with the lifespan so a re-run (tests) never
+    # resurrect tasks on a dead loop.
+    set_on_token_acquired(None)
 
 
-async def register_executor():
+# SEC-NEW-3 (BUG-08/313d203 parity): register 失败不再永久依赖进程重启恢复。
+# token 链恢复（_fetch_token 成功，经 on_token_acquired 钩子）后触发一次带
+# 富元数据的重注册——admin 侧对同 (address, startupId) 的 register 幂等
+# （N4：不轮换 token、按白名单更新元数据），所以这次补注册只会修复 /token
+# side effect 重建行时丢失的 type/capabilities/maxConcurrentTasks/version，
+# 不会引发旋转风暴。
+_re_register_in_flight = asyncio.Lock()
+
+# 补注册退避（node TOKEN_FETCH_BACKOFF_MS 对等）：_fetch_token 失败后冷却
+# 30s，期间 hook 触发的重注册直接跳过——admin 不可达时 verify_token 每请求
+# 都会走 refresh 链，没有退避就是每个入站请求一发 10s 超时的注册炮灰。
+_re_register_backoff_until = 0.0
+_RE_REGISTER_BACKOFF_SECONDS = 30.0
+
+
+def _register_payload() -> dict:
+    """富元数据单一来源：首次注册与补注册共用，/token fallback 重建行丢的
+    type/capabilities/maxConcurrentTasks/version 从这里原样恢复。"""
+    return {
+        'appName': settings.app_name,
+        'address': settings.executor_address_public or settings.executor_address,
+        'type': 'python',
+        'version': '1.0.0',
+        'capabilities': ['python', 'shell'],
+        'maxConcurrentTasks': settings.max_concurrent_tasks,
+        'restartedAt': executor_started_at,
+        'startupId': executor_startup_id,
+    }
+
+
+async def register_executor() -> bool:
+    """POST /executors/register with the static bootstrap token. Returns True
+    on a 2xx with the stored tokenHash adopted; False on any failure."""
     try:
         # R9-fix (P1, VERIFY-round9-e2e §1.4): admin's POST /executors/register
         # authenticates with verifyExecutorToken, which only accepts the shared
@@ -147,37 +199,24 @@ async def register_executor():
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 build_admin_api_url('/executors/register'),
-                json={
-                    'appName': settings.app_name,
-                    'address': settings.executor_address_public or settings.executor_address,
-                    'type': 'python',
-                    'version': '1.0.0',
-                    'capabilities': ['python', 'shell'],
-                    'maxConcurrentTasks': settings.max_concurrent_tasks,
-                    'restartedAt': executor_started_at,
-                    'startupId': executor_startup_id,
-                },
+                json=_register_payload(),
                 headers=headers,
                 timeout=10,
             )
             # R9-fix: the old code logged "Registered" even on 4xx — check the
             # status and surface rejections (with a body summary) as errors.
-            # N41 (round-10): the old "(will retry via heartbeat)" wording was
-            # false — heartbeat never registers (unknown address → 404). The
-            # only self-heal is the register-on-token side effect of
-            # POST /executors/token in the heartbeat loop, which rebuilds the
-            # row WITHOUT the rich metadata above (type/capabilities/
-            # maxConcurrentTasks/version); full metadata returns only on
-            # process restart.
+            # SEC-NEW-3: a rejection no longer strands the rich metadata until
+            # process restart — maybe_re_register() re-fires this call once
+            # the token chain heals (hook below).
             if not 200 <= response.status_code < 300:
                 body_summary = (response.text or '')[:200]
                 logger.error(
                     'Register rejected by admin-api: HTTP %s %s '
-                    '(no auto re-register; /token fallback would rebuild the row without rich metadata)',
+                    '(will re-register via the token-acquired hook once the token chain heals)',
                     response.status_code,
                     body_summary,
                 )
-                return
+                return False
             # R9 (round-9, W3 parity with executor-node main.ts): the
             # register response carries the stored tokenHash (N26) — adopt
             # it as the per-execution callback-token HMAC source secret.
@@ -186,11 +225,42 @@ async def register_executor():
             except Exception:  # pragma: no cover - non-JSON admin bodies
                 pass
             logger.info('Registered to admin-api')
+            return True
     except Exception as e:
-        # N41 (round-10): no heartbeat re-register exists (heartbeat 404s for
-        # unknown addresses); see the rejection branch above for the real
-        # (lossy) self-heal path.
-        logger.warning(f'Register failed (no auto re-register; /token fallback rebuilds the row without rich metadata): {e}')
+        # SEC-NEW-3 (N41 parity): register failure is recoverable — the
+        # on_token_acquired hook re-registers once _fetch_token succeeds.
+        logger.warning(f'Register failed (will re-register with rich metadata on next token acquisition): {e}')
+        return False
+
+
+async def maybe_re_register() -> None:
+    """SEC-NEW-3 (port of executor-node main.ts ``maybeReRegister``, BUG-08):
+    token 恢复后的补注册——已注册短路 + in-flight 去重 + 失败退避，防风暴。
+
+    挂在 auth.on_token_acquired 上（_fetch_token 成功即触发，fire-and-
+    forget）：启动期 register 失败（admin 未就绪/网络抖动）或注册成功后
+    token 被服务端 rotate 的场景下，token 链一恢复就用与首次注册相同的富
+    元数据补注册。返回是否真的补注册成功；三重风暴防护：
+    - 短路：register_executor 已成功则 no-op（admin 幂等也兜底）；
+    - 去重：in-flight 重注册不叠加（并发 verify_token 各自触发 hook）；
+    - 退避：token 获取失败后 30s 冷却，admin 不可达时不逐请求空转。
+    """
+    global _re_register_backoff_until
+    if _register_succeeded:
+        return False
+    if _re_register_backoff_until and time.monotonic() < _re_register_backoff_until:
+        return False
+    if _re_register_in_flight.locked():
+        return False
+    async with _re_register_in_flight:
+        if _register_succeeded:
+            return False
+        ok = await register_executor()
+        if ok:
+            _re_register_backoff_until = 0.0
+        else:
+            _re_register_backoff_until = time.monotonic() + _RE_REGISTER_BACKOFF_SECONDS
+        return ok
 
 
 app = FastAPI(
