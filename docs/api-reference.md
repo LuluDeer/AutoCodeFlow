@@ -144,9 +144,11 @@ POST /api/auth/login
 
 | scope | 读（GET/HEAD/OPTIONS） | POST /tasks/:id/trigger 与 /tasks/batch/trigger | 其他写（POST/PUT/PATCH/DELETE） |
 |-------|:---:|:---:|:---:|
-| `readonly` | ✅ | ❌ 403 | ❌ 403 |
+| `readonly` | ✅ | ❌ 403（**例外**：持有 `scopes` 词表 `task:trigger` 的 Key 可触发 `POST /tasks/:id/trigger`，NF-01） | ❌ 403 |
 | `trigger` | ✅ | ✅ | ❌ 403 |
 | `manage` | ✅ | ✅ | ✅ |
+
+**NF-01 任务级触发 token（`scopes` 词表，迁移 1790000000005）**：`api_keys` 表可空列 `scopes`（varchar(128)，空格分隔词表，存量行 null 零影响）。当前唯一扩展词 = `task:trigger`——持有该词的 readonly Key 可调 `POST /tasks/:id/trigger`（**仅单任务触发**；batch/其他写面/管理面照旧拒绝），guard 分流在既有 ApiKeyAuth 链上叠加窄域豁免（仅 POST + 触发路径 + 词表命中），触发响应契约与 JWT 面完全一致，审计落 `task.trigger_api`（username=`api-key:<keyPrefix>`，detail 含 apiKeyId/taskId）。创建 Key 时 body 增可选 `scopes`（白名单校验，仅接受 `task:trigger`）；403=无词表（scope 提示）、401=无效 Key。适用场景：CI/脚本免登录触发任务，无需发放完整 JWT 或 trigger scope 全量 Key。
 
 **敏感面例外（任何 scope 均拒绝，401）**：`/api-keys`、`/auth/*`、`/users` 仅接受用户 JWT——API Key 不能管理 API Key（防自我复制/提权）。角色语义不适用：API Key principal 为 `{type:"apiKey", userId, scope}`，`@Roles(ADMIN)` 端点对 API Key 一律 403。
 
@@ -305,8 +307,8 @@ Content-Type: application/json
 | `version` / `id` / `gitCommit` / `status` / `createdAt` / `sourceDeploymentId` | `application_versions` | `id` 为快照行 id；合成部署行时 `id=null` |
 | `packageUrl` | 快照行 `snapshot.packageUrl` | 部署当时的包地址（历史语义，不回退应用当前值——当前值在 `GET /applications/:id`）；无快照行为 null |
 | `deployedAt` / `latestDeploymentId` / `deploymentStatus` / `executorAddress` / `runMode` | 该版本 `deployedVersion` 匹配的**最近一次** `app_deployments` 行（`deployedAt ?? createdAt` 最大） | 同版本多实例/多次部署各计入 `deploymentCount`；无部署的版本行这些字段为 null（行仍出现） |
-| `triggerType` | 推导：升级指纹（statusMessage `Upgrade triggered`/`Pulling latest commit…`）→ `upgrade`；`deployedAt` 已置位 → `manual`；否则 `unknown`；无部署 → null | **已知限制**：两表无持久化 trigger 列；既有部署行被复用做升级且推送成功后文案被覆盖时可能误判 `manual`。落库 trigger 列属后续轮 schema 工作 |
-| `operator` / `operatorSource` / `operatorMissingReason` | `application_versions.createdBy` | **来源缺失如实标注**：当前所有写入路径均未填充 `createdBy`（恒 null），且 `audit_logs` 不覆盖部署写面；AUTH-05 审计扩展接线后自动可得 |
+| `triggerType` | `app_deployments.triggerType` 列（FEAT-20，迁移 1790000000004）：`manual` / `upgrade` / `rollback` / `approval`（approve 动作产生的部署行）；存量行回退推导（升级指纹→`upgrade`、`deployedAt` 已置位→`manual`、否则 `unknown`、无部署 null） | 列值优先，推导仅兜底 |
+| `operator` / `operatorSource` / `operatorMissingReason` | 部署行 `operator` 列（FEAT-20，写入=JWT 用户名；deploy/upgrade/rollback/approve 各写面均落）优先；存量行回退 `application_versions.createdBy` | `operatorSource` 标注命中面：`deployments.operator` / `application_versions.createdBy`；两处皆 null 时 `operatorMissingReason` 说明 |
 | `synthetic` | — | 有部署记录但从未保存版本快照的历史数据（心跳竞态等）合成行，`deployedVersion=null` 的部署归一为一条 `version=null` 行；对齐 `/versions` 的 legacy fallback 语义，仅第 1 页参与 |
 
 > **旧端点过渡期保留（不删除、不重定向）**：`GET /applications/:id/versions`（版本快照/回滚消费面，携带 snapshot 与 deployCount）与 `GET /app-deployments`（逐部署行列表）与本端点数据同源；新前端一律消费 `/releases`，旧端点收口另立任务。admin-web `ApplicationDetailPage` 接入为后续轮工作（本任务只落 API 契约）。
@@ -605,8 +607,8 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/notification/channels` | 是 | 查询所有通知渠道配置（内置渠道：email / slack / dingtalk / wecom / webhook）。读面对 password/secret/token 类字段脱敏为 `***`（N11）；URL 值内 query 参数名命中同类规则的（如 `?access_token=...`）其值也脱敏（N32，第九轮） |
-| PATCH | `/notification/channels/:key` | 是 | 更新指定渠道配置（body: `enabled?`、`config?`）。合法 key：email / slack / dingtalk / wecom / webhook（N32 起 webhook 可配置，config 形状 `{ url: string }`；未知 key 返回 400）。发送时 webhook 渠道 URL 优先级（N37，第十轮修正）：显式 `webhookUrl` 请求参数 > 已保存**且渠道 enabled** 的 `url` > env 回退（webhook 渠道无 env 项）——渠道 disabled 时已保存 url 不生效，不再静默改道显式参数；掩码回显（`***` / `?…=***`）不会覆盖存储中的真实值 |
+| GET | `/notification/channels` | 是 | 查询所有通知渠道配置（内置渠道：email / slack / dingtalk / wecom / feishu / webhook）。读面对 password/secret/token 类字段脱敏为 `***`（N11）；URL 值内 query 参数名命中同类规则的（如 `?access_token=...`）其值也脱敏（N32，第九轮） |
+| PATCH | `/notification/channels/:key` | 是 | 更新指定渠道配置（body: `enabled?`、`config?`）。合法 key：email / slack / dingtalk / wecom / feishu / webhook（N32 起 webhook 可配置，config 形状 `{ url: string }`；未知 key 返回 400）。发送时 webhook 渠道 URL 优先级（N37，第十轮修正）：显式 `webhookUrl` 请求参数 > 已保存**且渠道 enabled** 的 `url` > env 回退（webhook 渠道无 env 项）——渠道 disabled 时已保存 url 不生效，不再静默改道显式参数；掩码回显（`***` / `?…=***`）不会覆盖存储中的真实值 |
 | POST | `/notification/channels/:key/test` | 是 | 向指定渠道发送测试消息（测试发送不套用渠道模板——payload 无 `vars`，与正式通知路径区分） |
 | POST | `/notification/test` | 是 | 向多个渠道发送测试通知（body: `{ channels: string[], title, content }`）；全部请求渠道均 disabled → `success:false`（N29 空 results 报错，不再假 OK）。测试发送不套用渠道模板（FEAT-10） |
 
@@ -687,7 +689,8 @@ Alertmanager 侧 route/receiver 配置样例与加签提示见 `docs/observabili
 | 事件名 | 载荷 `data` 主要字段 | 发布时机 |
 |--------|---------------------|----------|
 | `execution.completed` | `executionId` `taskId` `taskName` `status` `failureReason(null)` `durationMs` `finishedAt` | 执行以 SUCCESS 终态落库后（恰好一次） |
-| `execution.failed` | `executionId` `taskId` `taskName` `status`(failed/timeout/killed) `failureReason` `errorMessage?` `durationMs` `finishedAt` | 执行以失败类终态落库后（恰好一次） |
+| `execution.failed` | `executionId` `taskId` `taskName` `status`(failed/timeout) `failureReason` `errorMessage?` `durationMs` `finishedAt` | 执行以失败类终态落库后（恰好一次） |
+| `execution.killed` | 同 `execution.failed` 形状（`status="killed"`，`errorMessage="Manually terminated by administrator"`） | 管理员手动 kill 落库后（FEAT-18；通知面对齐 failed 语义） |
 | `executor.offline` | `executorId` `appName` `address` | 执行器翻转 OFFLINE 落库后（心跳超时 sweep / 优雅停机 / 管理台置离线，三路） |
 | `deployment.completed` | `deploymentId` `applicationId` `executorAddress` `status` `deployedVersion` `deployedCommit` | 部署心跳确认进入 RUNNING 终态落库后 |
 
