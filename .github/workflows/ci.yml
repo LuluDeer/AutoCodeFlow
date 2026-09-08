@@ -337,7 +337,11 @@ jobs:
             echo "::error::${{ matrix.project }}/package-lock.json missing — every npm package must commit its lockfile"
             exit 1
           fi
-          npm ci --dry-run --silent \
+          # --ignore-scripts：dry-run 校验的是 lock↔manifest 一致性，不装
+          # 依赖也就没有 .bin 可执行文件——executor-desktop 的 postinstall
+          # （electron-builder install-app-deps）在裸 runner 上必挂，误报
+          # 「lockfile 漂移」（2026-09-08 CI 实证）。
+          npm ci --dry-run --ignore-scripts --silent \
             || { echo "::error::${{ matrix.project }}: package.json 与 package-lock.json 漂移 — 运行 npm install 同步后提交两文件"; exit 1; }
 
   # ── Secret 泄漏扫描（SEC-06 ③）────────────────────────────────

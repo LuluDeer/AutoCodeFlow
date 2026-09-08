@@ -20,7 +20,7 @@ vi.mock('../api/api-keys', () => ({
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
-  return { ...actual, Link: (p: any) => <a href={p.to}>{p.children}</a> };
+  return { ...actual, Link: (p: { to: string; children: React.ReactNode }) => <a href={p.to}>{p.children}</a> };
 });
 
 const mocked = vi.mocked(apiKeysApi);
