@@ -200,7 +200,8 @@
 
 ## 10. 新增任务注册表（本期增量 · 认领板同步）
 
-> 本节为 **PLAN-CLAIMS.md 新增行**的镜像（H2 新编号段：FEAT-13~20 / NF-01~08 / ARCH-28~31 / UI-15~16 / QA-11~12 / SEC-10 / DOC-07~09 / P0-1~4）。
+> 本节为 **PLAN-CLAIMS.md 新增行**的镜像（H2 新编号段：P0-1~4 / FEAT-13~20 / NF-01~08 / ARCH-28~31 / UI-15~16 / QA-11~12 / SEC-10 / DOC-07~09）。
+> **沿用原编号的遗留 unclaimed（BUG-04/07/12/17/18/19/20、ECO-04、AUTH-01/02/04、DSK-01~05、ARCH-23/24/25、UI-09/10/12/13、QA-01/05/08/10、SEC-01/09、SEC-NEW-1~3、QA-09）不在此重复注册**——认领行以 PLAN-CLAIMS 总表原行为准，内容见本计划 §2~§9 各池。
 > 规则不变：认领=状态改 claimed + Owner + 文件足迹；完成=done + commit；足迹重叠不得并行。
 
 | 编号 | 优先级 | 状态 | 建议足迹 | 依赖/备注 |
@@ -229,24 +230,11 @@
 | ARCH-29 迁移号治理 | P2 | unclaimed | docs/PLAN-CLAIMS.md 常设段 + CI 校验 | 小任务，宜尽快 |
 | ARCH-30 AI 服务化 | P3 | unclaimed | admin-api notification 监听器 + ai 库接线 | ARCH-21 范围注记收口 |
 | ARCH-31 多实例矩阵 | P3 | unclaimed | 盘点文档 + silences/outbox Redis 化（如拍板） | 真机双实例 |
-| UI-09 移动端 | P2 | unclaimed | admin-web 三页响应式 | 值班场景 |
-| UI-10 i18n | P2 | unclaimed | admin-web 全站 ⚠️大 | 越晚越贵，宜早拍板 |
-| UI-12 无障碍 | P3 | unclaimed | admin-web | axe 基线 |
-| UI-13 desktop 令牌 | P3 | unclaimed | executor-desktop renderer | 与 SEC-NEW-1 可同人 |
 | UI-15 反馈一致性 | P2 | unclaimed | admin-web mutation 面盘点+统一 | QA-03 两处前科 |
 | UI-16 StateError 补齐 | P3 | unclaimed | admin-web toast-only 页 | UI-08 缩水项 |
-| QA-05 压测 | P2 | unclaimed | scripts/load-test + docs | =BUG-19 |
-| QA-08 迁移月度 job | P2 | unclaimed | .github/workflows/ci.yml | 存量库第三态 |
-| QA-10 性能基准 | P3 | unclaimed | scripts/ 基准 | 防退化 |
 | QA-11 py 测试 strict | P2 | unclaimed | executor-python tests + CI | 小任务 |
 | QA-12 desktop e2e | P3 | unclaimed | executor-desktop + CI（可 windows-only） | Playwright _electron |
-| SEC-01 收口（desktop 复审=BUG-12） | P1 | unclaimed | executor-desktop main/IPC + 复审报告 v2 | P0-4 后可连做 |
-| SEC-09 限流分域 | P3 | unclaimed | admin-api throttle 配置 | AUTH-03 已解锁 |
-| SEC-NEW-1 safeStorage | P2 | unclaimed | executor-desktop config-store + safeStorage | P0-4 前置 |
-| SEC-NEW-2 py 私网开关 | P2 | unclaimed | executor-python routers/execute.py | 姿态变更需拍板（ADR） |
-| SEC-NEW-3 py 补注册 | P3 | unclaimed | executor-python main.py | 对齐 313d203 |
 | SEC-10 审计防篡改 | P2 | unclaimed | admin-api audit 模块 | 拍板项（hash-chain vs append-only） |
-| ECO-04 release 演练 | P1 | unclaimed | secrets 配置 + tag（无代码） | 需用户配 secrets |
 | DOC-07 升级 runbook | P2 | unclaimed | docs/operations.md | QA-08 产出后 |
 | DOC-08 windows 长尾 | P3 | unclaimed | 滚动 | 每轮认领 |
 | DOC-09 文档同步机制 | P3 | unclaimed | packages/docs-site + CI | 小任务 |
