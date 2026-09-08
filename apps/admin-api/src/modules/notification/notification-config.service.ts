@@ -57,6 +57,16 @@ export class NotificationConfigService {
       description:
         "Generic HTTP webhook (per-request webhookUrl takes precedence; saved url applies only while the channel is enabled)",
     },
+    {
+      // NF-05: 飞书自定义机器人加入可配置枚举。config 形状 `{ webhookUrl,
+      // secret? }`——secret 为可选加签密钥（配置后启用飞书官方加签算法）。
+      key: "feishu",
+      name: "Feishu",
+      enabled: false,
+      config: {},
+      description:
+        "Feishu (Lark) custom bot webhook (text payload; optional signing secret)",
+    },
   ];
 
   // In-memory channel registry (enabled flag + config). V1: the RAW config
@@ -143,6 +153,21 @@ export class NotificationConfigService {
       wecom.config = {
         webhookUrl:
           this.configService.get<string>("notification.wecom.webhookUrl") || "",
+      };
+    }
+
+    // NF-05: 飞书 env 回退（与 slack/dingtalk/wecom 同形态；secret 可选）。
+    const feishuEnabled = this.configService.get<boolean>(
+      "notification.feishu.enabled",
+    );
+    if (feishuEnabled) {
+      const feishu = this.channelConfigs.get("feishu")!;
+      feishu.enabled = true;
+      feishu.config = {
+        webhookUrl:
+          this.configService.get<string>("notification.feishu.webhookUrl") || "",
+        secret:
+          this.configService.get<string>("notification.feishu.secret") || "",
       };
     }
 
@@ -397,6 +422,14 @@ export class NotificationConfigService {
           case "wecom":
             status = (await this.notificationService["wecom"].send(payload)) as
               ChannelDeliveryStatus | undefined;
+            break;
+          // NF-05: feishu joined the configurable enum — same "fake OK"
+          // guard as webhook (N32): a requested+enabled feishu test must
+          // report the real delivery status, never a silent no-op.
+          case "feishu":
+            status = (await this.notificationService["feishu"].send(
+              payload,
+            )) as ChannelDeliveryStatus | undefined;
             break;
           // N32: webhook joined the configurable enum — without this case a
           // requested+enabled webhook test would silently report "sent" for

@@ -14,6 +14,8 @@ import { DingtalkChannel } from "../channels/dingtalk.channel";
 import { EmailChannel } from "../channels/email.channel";
 import { SlackChannel } from "../channels/slack.channel";
 import { WebhookChannel } from "../channels/webhook.channel";
+// NF-05: feishu 渠道桩（第六路扇出）
+import { FeishuChannel } from "../channels/feishu.channel";
 
 const makeRepo = () => ({
   create: jest.fn((d) => ({
@@ -119,6 +121,7 @@ describe("NotificationService silence persistence wiring (FEAT-01)", () => {
         { provide: EmailChannel, useValue: { send: jest.fn() } },
         { provide: SlackChannel, useValue: { send: jest.fn() } },
         { provide: WebhookChannel, useValue: { send: jest.fn() } },
+        { provide: FeishuChannel, useValue: { send: jest.fn() } },
         ...(silenceStore
           ? [{ provide: NotificationSilenceService, useValue: silenceStore }]
           : []),

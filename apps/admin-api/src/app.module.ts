@@ -109,6 +109,21 @@ import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
         THROTTLE_LIMIT: Joi.number().integer().min(1).default(60),
         THROTTLE_TTL: Joi.number().integer().min(1000).default(60000),
 
+        // SEC-09: 限流分域三处登记之二（configuration.ts throttle 节 +
+        // .env.example；装饰器求值期消费点 src/config/throttle-profiles.ts 为
+        // ARCH-27 显式豁免）。
+        // THROTTLE_ENABLED=false → ThrottlerModule 顶层 skipIf 全域旁路
+        // （灰度/排障逃生门，运行期 ConfigService 读取；默认 true 生效）。
+        THROTTLE_ENABLED: Joi.string().valid("true", "false").default("true"),
+        // 严格档：auth 敏写面（refresh/totp*），默认 10 次/60s（防爆破，
+        // 与 account lockout 互补；login 保留 LOGIN_THROTTLE_LIMIT 契约）。
+        THROTTLE_AUTH_LIMIT: Joi.number().integer().min(1).default(10),
+        THROTTLE_AUTH_TTL: Joi.number().integer().min(1000).default(60000),
+        // 中档：触发/执行干预写面（trigger/kill/rollback/deploy/审批等），
+        // 默认 30 次/60s。
+        THROTTLE_OPS_LIMIT: Joi.number().integer().min(1).default(30),
+        THROTTLE_OPS_TTL: Joi.number().integer().min(1000).default(60000),
+
         // F-6: opt-in — set true ONLY behind a trusted reverse proxy that
         // overwrites X-Forwarded-For. Default false keeps req.ip equal to the
         // socket address so the throttler tracker cannot be spoofed via XFF.
@@ -149,6 +164,9 @@ import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
         WECOM_WEBHOOK: Joi.string().uri().allow("").optional(),
         DINGTALK_WEBHOOK: Joi.string().uri().allow("").optional(),
         SLACK_WEBHOOK: Joi.string().uri().allow("").optional(),
+        // NF-05: 飞书自定义机器人（可选；secret 为加签密钥，非 URL 类不加 uri 校验）
+        FEISHU_WEBHOOK: Joi.string().uri().allow("").optional(),
+        FEISHU_SECRET: Joi.string().allow("").optional(),
 
         // R7: Prometheus exposition endpoint (GET /api/metrics) switches.
         // Defaults true; semantics in configuration.ts (metrics.prometheus).
@@ -263,10 +281,16 @@ import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
     // ARCH-004: global rate limit — tightened default (60 req/min, was 100)
     // and overridable via THROTTLE_LIMIT / THROTTLE_TTL. Sensitive routes keep
     // their own stricter @Throttle (e.g. auth login via LOGIN_THROTTLE_LIMIT).
+    // SEC-09: 分域档位由各路由自己的 @Throttle({ default: ... }) 覆盖（严格档
+    // = auth refresh/totp*，中档 = trigger/kill/rollback/deploy 等干预写面，
+    // SSE 建连 @SkipThrottle 豁免——分域矩阵见 src/config/throttle-profiles.ts
+    // 头注）。顶层 skipIf = THROTTLE_ENABLED=false 全局旁路逃生门（运行期
+    // ConfigService 读取，每次 canActivate 重新求值，无需重启即生效于新请求）。
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => ({
+        skipIf: () => cfg.get<boolean>("throttle.enabled") === false,
         throttlers: [
           {
             ttl: cfg.get<number>("throttle.ttl"),

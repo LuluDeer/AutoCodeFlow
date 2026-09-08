@@ -11,6 +11,8 @@ import { DingtalkChannel } from "../channels/dingtalk.channel";
 import { EmailChannel } from "../channels/email.channel";
 import { SlackChannel } from "../channels/slack.channel";
 import { WebhookChannel } from "../channels/webhook.channel";
+// NF-05: feishu 渠道注入桩（第六路扇出）
+import { FeishuChannel } from "../channels/feishu.channel";
 // QA-02 第二阶段：silenceStore 写穿持久化分支的注入桩
 import { NotificationSilenceService } from "../notification-silence.service";
 // FEAT-10: 渠道级模板渲染的读取源注入桩
@@ -39,6 +41,7 @@ describe("NotificationService", () => {
   let wecom: { send: jest.Mock };
   let dingtalk: { send: jest.Mock };
   let webhook: { send: jest.Mock };
+  let feishu: { send: jest.Mock };
 
   beforeEach(async () => {
     const module = await Test.createTestingModule({
@@ -49,6 +52,7 @@ describe("NotificationService", () => {
         { provide: EmailChannel, useFactory: mockChannel },
         { provide: SlackChannel, useFactory: mockChannel },
         { provide: WebhookChannel, useFactory: mockChannel },
+        { provide: FeishuChannel, useFactory: mockChannel },
       ],
     }).compile();
 
@@ -58,6 +62,7 @@ describe("NotificationService", () => {
     wecom = module.get(WecomChannel);
     dingtalk = module.get(DingtalkChannel);
     webhook = module.get(WebhookChannel);
+    feishu = module.get(FeishuChannel);
   });
 
   describe("notifyFailureWithConfig", () => {
@@ -287,7 +292,7 @@ describe("NotificationService", () => {
       warnSpy.mockRestore();
     });
 
-    it("sendAll returns the results map for all five channels", async () => {
+    it("sendAll returns the results map for all six channels (NF-05: feishu joined)", async () => {
       const logSpy = jest
         .spyOn(Logger.prototype, "log")
         .mockImplementation(() => {});
@@ -296,6 +301,7 @@ describe("NotificationService", () => {
       dingtalk.send.mockResolvedValue("skipped");
       wecom.send.mockResolvedValue("skipped");
       webhook.send.mockResolvedValue("skipped");
+      feishu.send.mockResolvedValue("sent");
 
       const results = await service.sendAll(payload);
       expect(results).toEqual({
@@ -304,6 +310,7 @@ describe("NotificationService", () => {
         dingtalk: "skipped",
         wecom: "skipped",
         webhook: "skipped",
+        feishu: "sent",
       });
       logSpy.mockRestore();
     });
@@ -717,6 +724,7 @@ describe("NotificationService", () => {
           { provide: EmailChannel, useFactory: mockChannel },
           { provide: SlackChannel, useFactory: mockChannel },
           { provide: WebhookChannel, useFactory: mockChannel },
+          { provide: FeishuChannel, useFactory: mockChannel },
           { provide: ChannelConfigStore, useValue: store },
         ],
       }).compile();
@@ -785,6 +793,7 @@ describe("NotificationService", () => {
           { provide: EmailChannel, useFactory: mockChannel },
           { provide: SlackChannel, useFactory: mockChannel },
           { provide: WebhookChannel, useFactory: mockChannel },
+          { provide: FeishuChannel, useFactory: mockChannel },
           { provide: ChannelConfigStore, useValue: store },
         ],
       }).compile();
@@ -922,6 +931,7 @@ describe("NotificationService", () => {
           { provide: EmailChannel, useFactory: mockChannel },
           { provide: SlackChannel, useFactory: mockChannel },
           { provide: WebhookChannel, useFactory: mockChannel },
+          { provide: FeishuChannel, useFactory: mockChannel },
           { provide: NotificationSilenceService, useValue: store },
         ],
       }).compile();
