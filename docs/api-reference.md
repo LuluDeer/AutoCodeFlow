@@ -594,8 +594,34 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 |------|------|:--------:|------|
 | GET | `/notification/channels` | 是 | 查询所有通知渠道配置（内置渠道：email / slack / dingtalk / wecom / webhook）。读面对 password/secret/token 类字段脱敏为 `***`（N11）；URL 值内 query 参数名命中同类规则的（如 `?access_token=...`）其值也脱敏（N32，第九轮） |
 | PATCH | `/notification/channels/:key` | 是 | 更新指定渠道配置（body: `enabled?`、`config?`）。合法 key：email / slack / dingtalk / wecom / webhook（N32 起 webhook 可配置，config 形状 `{ url: string }`；未知 key 返回 400）。发送时 webhook 渠道 URL 优先级（N37，第十轮修正）：显式 `webhookUrl` 请求参数 > 已保存**且渠道 enabled** 的 `url` > env 回退（webhook 渠道无 env 项）——渠道 disabled 时已保存 url 不生效，不再静默改道显式参数；掩码回显（`***` / `?…=***`）不会覆盖存储中的真实值 |
-| POST | `/notification/channels/:key/test` | 是 | 向指定渠道发送测试消息 |
-| POST | `/notification/test` | 是 | 向多个渠道发送测试通知（body: `{ channels: string[], title, content }`）；全部请求渠道均 disabled → `success:false`（N29 空 results 报错，不再假 OK） |
+| POST | `/notification/channels/:key/test` | 是 | 向指定渠道发送测试消息（测试发送不套用渠道模板——payload 无 `vars`，与正式通知路径区分） |
+| POST | `/notification/test` | 是 | 向多个渠道发送测试通知（body: `{ channels: string[], title, content }`）；全部请求渠道均 disabled → `success:false`（N29 空 results 报错，不再假 OK）。测试发送不套用渠道模板（FEAT-10） |
+
+### FEAT-10 — 渠道级通知模板
+
+渠道 config 新增两个**可选**键（随既有 `PATCH /notification/channels/:key` 保存，走内存注册表 + ChannelConfigStore 写穿，**零迁移**）：
+
+| config 键 | 说明 |
+|------|------|
+| `titleTemplate` | 标题模板（可选，空串=未配置） |
+| `contentTemplate` | 内容模板（可选，空串=未配置） |
+
+**渲染规则**（`renderTemplate`，apps/admin-api/src/common/utils/render-template.util.ts）：
+
+- 占位符语法 `{{variable}}`（两侧空白容忍，如 `{{ taskName }}`）；
+- **变量集**：`{{task}}` / `{{taskName}}`（任务名）、`{{executionId}}`（执行 ID）、`{{failedReason}}`（失败原因/错误摘要）、`{{logs}}`（日志摘要，失败路径）、`{{duration}}`（执行时长 ms，成功路径）、`{{runbook}}`（运行手册链接，若任务已配置）、`{{level}}`（通知级别）、`{{taskId}}`、`{{aiAnalysis}}`、`{{content}}`；
+- **单 pass 替换**：变量值中的 `{{...}}` 不再展开（阻断 `{{a}}→{{b}}` 递归注入——变量值来自不可信的任务日志/错误信息）；
+- **未知变量保留原文**：`{{nope}}` 原样留在输出（配置拼写错误可见）；
+- **8KB 输出上限**：超限截断并追加 `
+…[已截断: 超过 8KB 模板输出上限]`；
+- 变量值 null/undefined 渲染为空串；数字 String() 化。
+
+**生效语义（零破坏）**：
+
+- 渠道未配置模板（或值为空串）→ 该渠道走既有固定拼串，行为不变；
+- 发送方未携带模板变量表（如 admin 测试发送）→ 模板整体旁路；
+- **fail-open**：渲染失败回退默认文案 + warn 日志，绝不阻断通知发送；
+- 每渠道渲染独立副本（webhook 渠道与钉钉渠道可用不同模板），渲染副本不再携带变量表（不做二次渲染）。
 | POST | `/notification/send` | 是 | 任务代码主动上报通知（autocodeflow-notify SDK 唯一入口，N22；第七轮落地，本行第十轮 N38 补文档）。body: `{ content（必填）, title?, taskName?, level?(info|warning|error|critical，默认 info), channels?(email|slack|dingtalk|wecom|webhook 子集), webhookUrl?, taskId? }`；`title` 缺省为 `[LEVEL] taskName`；传 `webhookUrl` 而未列 `channels` 时自动追加 webhook 渠道；`channels` 为空则按 `sendAll` 全渠道扇出。webhook 目标解析遵循上行的 N37 优先级链（显式 `webhookUrl` 优先，已保存 url 仅在渠道 enabled 时生效）。响应恒为 2xx + `{ success: true, results: { <channel>: sent|blocked|failed|skipped } }`——单渠道失败或 SSRF 拦截绝不 5xx 任务回调，逐渠道真实结果以 `results` 为准（`blocked`=SSRF 拒绝；`skipped`=无可用 URL/凭证） |
 
 ---
@@ -747,8 +773,8 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/audit` | 是（Admin） | 分页查询审计日志（支持 action/resource/userId/username/startTime/endTime 筛选） |
-| GET | `/audit/export` | 是（Admin） | 导出审计日志为 CSV（最多 10000 行，支持相同过滤条件） |
+| GET | `/audit` | 是（Admin） | 分页查询审计日志（支持 action/resource/resourceId/userId/username/startTime/endTime 筛选；AUTH-05 起 resourceId 精确匹配） |
+| GET | `/audit/export` | 是（Admin） | 导出审计日志为 CSV（最多 10000 行，支持相同过滤条件；`@Roles(ADMIN)` 收敛为管理员专属——AUTH-05 复核确认在位） |
 
 **审计日志查询参数：**
 
@@ -758,6 +784,13 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | `userId` | number | 按操作用户过滤 |
 | `action` | string | 操作类型（task.create / task.update / task.delete / 登录等） |
 | `resource` | string | 资源类型（task / executor / application 等） |
+| `resourceId` | string | 资源 ID **精确匹配**（AUTH-05 新增；与 `resource` 组合成 (resource, resourceId) 对筛选——Project 实体维度筛选按计划预案缩为此形态，AUTH-01 未启动）。查询串值超 100 字符截断到 100 |
+
+### 高危操作审计与 reason（AUTH-05）
+
+- `POST /executors/:id/rotate-token` 与 `DELETE /executors/:id` 新增**可选** body 字段 `reason`（字符串，≤200 字符，超长截断）——端点本身保持非破坏（无 body 照常工作，前端执行器页二次确认 Modal 属 UI-07 足迹留后续）。
+- 上述两操作现写入审计日志：action=`executor.rotate_token` / `executor.delete`，resource=`executor`，resourceId=执行器 ID，`detail` 携带 `{ address, appName, reason? }`（未提供 reason 则无该键）。审计写入 best-effort——审计失败仅 warn，不影响操作结果。
+- 审计行为变更说明：此前 rotate-token/删除执行器无审计留痕，AUTH-05 起留痕（ADMIN-only 端点，行为变更仅增不减）。
 
 ---
 
