@@ -3,13 +3,22 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-S：001/002 并行认领——UI-11 命令面板动作区/DOC-05+06 三项 done，主会话统一验收）
+更新时间：2026-09-08（第十六轮·批 subagent-T：001/002 并行认领——AUTH-05 交接项+QA-03 二阶段/ARCH-20+SEC-07+SEC-08 五项 done，主会话总终验收；**无真机硬依赖任务全部清空**）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-08 第十六轮·批 subagent-T 终验收，主会话）：
+  - `e9bddce` **AUTH-05 交接项（001）单台高危二次确认 done**：ExecutorDetailPage 轮换改受控 Modal（Alert 警示+Descriptions 影响清单+reason 可选 TextArea ≤200 超限拦截）；新增删除执行器入口同形态；reason 链路与 admin-api 契约逐字对齐（空 reason 不发 body）；+10 例。
+  - `409d9f3` **QA-03（001）两阶段整体 done（+94 例，297→472）**：第二阶段四页深交互 38 例——TaskList（筛选组合/批量触发暂停/克隆链路 -copy-XXXX 命名）、ApplicationDetail（回滚三重门控/同步任务门控）、Registry（上传拦截/npm Tab/空态兜底）、ApiKeys（scope 三级/payload 精确/吊销门控——吊销失败无 onError 如实断言未虚报）。
+  - `c98e870` **ARCH-20（002）核查补齐 done（非纯销账）**：16 子项目逐包盘点，发现真实缺口并修复——typecheck:web 坏链（引用不存在 script）改 tsc -b；六子项目零测试/typecheck 入口补齐（node-sdk/py-libs×4/desktop）；Makefile 三目标委托根 scripts 消除双清单漂移；typecheck:all 7 环逐条真跑验证（node-sdk 61/lib-http 18/lib-ai 25/lib-notify 18/lib-db 8/desktop selftest）。未引 pnpm-workspace（no-hoisting 保持）。
+  - `939bfc0` **SEC-07（002）容器最小权限 done**：复核双 executor Dockerfile non-root 已在位（Q-08/Q-09 先例）；增量=compose 双执行器 cap_drop ALL+no-new-privileges（回滚纪律注释）；deployment.md 容器安全段（真机三步清单）。本机无 docker，build/容器内验证如实留真机轮。
+  - `cc5aff8` **SEC-08（002）CSP/HSTS 收紧 done**：部署形态侦察（admin-web 独立 nginx 不同 origin+生产 Swagger 已关+纯 JSON 响应）→ 生产 CSP 收至最严（default-src/script-src 'self'/frame-ancestors none/upgrade-insecure-requests，逐指令理由注记）+HSTS 半年+Referrer-Policy same-origin；开发/测试宽松分支；security-headers.util 工厂+supertest 7 例。
+  - 主会话顺手修：s3-log-storage MAX_LOG_BYTES 例第三参显式 15s（coverage 全量并发偶发超 5s 默认窗，188 行先例同形态）并补提交（002 批内未入库）。
+- **总终验收基线（全绿，复跑确认）**：admin-api **2015/2015**（接手时 1370）+ tsc ✓ + coverage 90.5/78.3/82.2/91.4 门槛卡点 · admin-web **472/472**（接手时 160）+ build/tsc ✓ · executor-node 266 · executor-python 222 · docs-site build ✓ · 全端 typecheck:all ✓
+- **第十六轮子代理批次收官总账（批 C~T 共 16 批，001/002/003/004 轮换参与）**：P0+P1 全清；P2 清至仅剩真机硬依赖族（AUTH-01/02 需产品拍板、DSK 全族+BUG-07/11/12/17~20 真机、DEP-04 依赖 AUTH-03 已解锁可下轮、ECO-04 需 secrets）；P3 清至 UI-09/10/12/13、QA-10、SEC-NEW-1、SEC-09（可选）。累计新增测试 **+1150 例**，全部「行为断言」纪律（两处 flaky 治理为显式超时放宽非弱断言）。
 - 本轮（2026-09-08 第十六轮·批 subagent-S 终验收，主会话）：
   - `c98e870`+`939bfc0`+`cc5aff8` **ARCH-20 复核补齐 + SEC-07 + SEC-08（002）done**：ARCH-20=16 子项目逐包核查补三类缺口（admin-web typecheck:web 坏链改 tsc -b / node-sdk+desktop+4 py 库六项 test/typecheck 入口新增 / typecheck:all 补至 7 环全绿）+ Makefile test/lint/typecheck 收敛委托根 scripts，逐条真跑验证（node-sdk 61/61、py 库 18/25/18/8、desktop selftest 过）；SEC-07=executor Dockerfile non-root 复核已在位（Q-08/Q-09），增量=compose 双 executor `cap_drop:[ALL]`+`no-new-privileges` + deployment.md「容器安全」段（本机无 docker，build 与任务可跑留真机轮）；SEC-08=helmet 配置工厂 `buildHelmetOptions`（生产 CSP 显式指令集逐条理由/HSTS 半年+子域不 preload/Referrer-Policy same-origin；开发宽松保留），CSP 依据=部署形态侦察（admin-web 独立 nginx 不同源、admin-api 纯 JSON、生产 Swagger 已关、SSE 同源 connect-src self 覆盖）；+7 例 supertest 端到端。
   - `29e4092`（含 DOC-05 四文件入库，归属记档）→ `d7e1c72` **UI-11（001）命令面板动作区 done**：侦察坐实 FEAT-09 面板已存在（四分组搜索/防抖/键盘导航全齐），本任务=增强 §6.3 动作区——置顶「操作」分组（新建任务/创建应用，零输入键盘直达）+ 任务行内动作（触发/暂停/恢复按状态出键，actingKey 互斥+跳详情+失败 toast）+ isAdmin 门控（admin-only 项隐藏）；MainLayout 零改动（触发体验四项核对全既有）。admin-web **424/424**（基线 418，+6）+ build/tsc ✓。
