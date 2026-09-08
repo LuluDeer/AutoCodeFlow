@@ -1,7 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { BadRequestException, Logger } from "@nestjs/common";
 import { NotificationService } from "../notification.service";
-import { AlertLevel, MAX_ALERT_SILENCES } from "../notification.service";
+import { AlertLevel, AlertChannel, MAX_ALERT_SILENCES } from "../notification.service";
 import { WecomChannel } from "../channels/wecom.channel";
 import { DingtalkChannel } from "../channels/dingtalk.channel";
 import { EmailChannel } from "../channels/email.channel";
@@ -9,6 +9,8 @@ import { SlackChannel } from "../channels/slack.channel";
 import { WebhookChannel } from "../channels/webhook.channel";
 // QA-02 第二阶段：silenceStore 写穿持久化分支的注入桩
 import { NotificationSilenceService } from "../notification-silence.service";
+// FEAT-10: 渠道级模板渲染的读取源注入桩
+import { ChannelConfigStore } from "../channel-config.store";
 // 可观测性补齐轮：投递结果计数模块级快照（埋点断言入口）
 import {
   getRuntimeCountersSnapshot,
@@ -669,6 +671,149 @@ describe("NotificationService", () => {
         undefined,
       );
       sendToChannels.mockRestore();
+    });
+  });
+
+  describe("FEAT-10 — per-channel template rendering in sendToChannels", () => {
+    it("renders title/content from the channel's saved templates when payload carries vars", async () => {
+      const store = new ChannelConfigStore();
+      store.set(
+        "dingtalk",
+        {
+          webhookUrl: "https://oapi.example.com/x",
+          titleTemplate: "[{{level}}] {{task}}",
+          contentTemplate: "exec {{executionId}} failed: {{failedReason}}",
+        },
+        true,
+      );
+      const module2 = await Test.createTestingModule({
+        providers: [
+          NotificationService,
+          { provide: WecomChannel, useFactory: mockChannel },
+          { provide: DingtalkChannel, useFactory: mockChannel },
+          { provide: EmailChannel, useFactory: mockChannel },
+          { provide: SlackChannel, useFactory: mockChannel },
+          { provide: WebhookChannel, useFactory: mockChannel },
+          { provide: ChannelConfigStore, useValue: store },
+        ],
+      }).compile();
+      const svc = module2.get(NotificationService);
+      const ding = module2.get(DingtalkChannel) as { send: jest.Mock };
+      const emailCh = module2.get(EmailChannel) as { send: jest.Mock };
+      ding.send.mockResolvedValue("sent");
+      emailCh.send.mockResolvedValue("skipped");
+
+      await svc.sendToChannels(
+        {
+          title: "Task failed: nightly",
+          content: "Execution ID: e1\nError: boom",
+          level: "error",
+          vars: {
+            task: "nightly",
+            executionId: "e1",
+            failedReason: "boom",
+            level: "error",
+          },
+        },
+        [AlertChannel.DINGTALK, AlertChannel.EMAIL],
+      );
+
+      // dingtalk 收到模板渲染后的专属副本
+      expect(ding.send).toHaveBeenCalledTimes(1);
+      const rendered = ding.send.mock.calls[0][0];
+      expect(rendered.title).toBe("[error] nightly");
+      expect(rendered.content).toBe("exec e1 failed: boom");
+      // 渲染副本不携带 vars（防下游二次渲染）
+      expect(rendered.vars).toBeUndefined();
+      // email 无模板 → 原样载荷
+      expect(emailCh.send).toHaveBeenCalledTimes(1);
+      expect(emailCh.send.mock.calls[0][0].title).toBe("Task failed: nightly");
+    });
+
+    it("channels without templates receive the payload verbatim (zero breakage, no store)", async () => {
+      email.send.mockResolvedValue("sent");
+      const payload = {
+        title: "t",
+        content: "c",
+        level: "info" as const,
+        vars: { task: "x" },
+      };
+      await service.sendToChannels(payload, [AlertChannel.EMAIL]);
+      expect(email.send).toHaveBeenCalledWith(payload);
+    });
+
+    it("a broken template fails open — original payload used, warn logged, delivery continues", async () => {
+      const store = new ChannelConfigStore();
+      store.set("wecom", { webhookUrl: "https://qy.example.com/y" }, true);
+      // 模拟渲染失败：直接往 store 塞一个无法命中渲染器的值不行（渲染器不抛），
+      // 因此改为 monkey-patch renderTemplate 入口不可行——这里以 getter 抛错模拟。
+      const bomb = {
+        get titleTemplate(): string {
+          throw new Error("boom");
+        },
+      } as unknown as Record<string, string>;
+      (store as any).configs = new Map([["wecom", bomb]]);
+
+      const module2 = await Test.createTestingModule({
+        providers: [
+          NotificationService,
+          { provide: WecomChannel, useFactory: mockChannel },
+          { provide: DingtalkChannel, useFactory: mockChannel },
+          { provide: EmailChannel, useFactory: mockChannel },
+          { provide: SlackChannel, useFactory: mockChannel },
+          { provide: WebhookChannel, useFactory: mockChannel },
+          { provide: ChannelConfigStore, useValue: store },
+        ],
+      }).compile();
+      const svc = module2.get(NotificationService);
+      const wecomCh = module2.get(WecomChannel) as { send: jest.Mock };
+      wecomCh.send.mockResolvedValue("sent");
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+
+      const payload = {
+        title: "orig",
+        content: "orig-content",
+        level: "error" as const,
+        vars: { task: "t" },
+      };
+      await svc.sendToChannels(payload, [AlertChannel.WECOM]);
+
+      expect(wecomCh.send).toHaveBeenCalledWith(payload);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("falling back to the default content"),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("notifyFailure populates the documented variable set (task/executionId/failedReason/runbook...)", async () => {
+      const sendAll = jest
+        .spyOn(service, "sendAll")
+        .mockResolvedValue(undefined);
+      await service.notifyFailure(
+        "nightly-etl",
+        "exec-9",
+        "TIMEOUT: 60s",
+        "AI says retry",
+        "task-1",
+        "docs/rb.md",
+      );
+      const arg = sendAll.mock.calls[0][0];
+      expect(arg.vars).toMatchObject({
+        task: "nightly-etl",
+        taskName: "nightly-etl",
+        taskId: "task-1",
+        executionId: "exec-9",
+        failedReason: "TIMEOUT: 60s",
+        aiAnalysis: "AI says retry",
+        runbook: "docs/rb.md",
+        level: "error",
+      });
+      // 固定拼串行为不变（零破坏）
+      expect(arg.title).toBe("Task failed: nightly-etl");
+      expect(arg.content).toContain("Runbook:\ndocs/rb.md");
+      sendAll.mockRestore();
     });
   });
 
