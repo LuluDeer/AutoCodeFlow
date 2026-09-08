@@ -32,14 +32,32 @@ import FailureTopList from '../components/dashboard/FailureTopList';
 import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
 import DashboardEmptyGuide from '../components/dashboard/DashboardEmptyGuide';
+import { useMetricsStream, type MetricsStreamStatus } from '../hooks/useMetricsStream';
 
 const { Text } = Typography;
+
+/** UI-14: SSE 连接状态点——Badge 颜色/文案随连接态切换（导出供测试锚定） */
+export function streamStatusBadge(status: MetricsStreamStatus): { color: string; label: string } {
+  switch (status) {
+    case 'live':
+      return { color: '#22c55e', label: '实时' };
+    case 'reconnecting':
+      return { color: '#f59e0b', label: '重连中' };
+    default:
+      return { color: '#94a3b8', label: '连接中' };
+  }
+}
 
 export default function DashboardPage() {
   const nav = useNavigate();
   const [trendDays, setTrendDays] = useState<number>(7);
   // UI-02：图表双主题——网格线/轴文字随 data-theme 切换
   const isDark = useThemeStore(selectResolvedTheme) === 'dark';
+
+  // UI-14: Dashboard 汇总流——SSE 推送 summary/executors/scheduler 快照直接
+  // 写入 queryClient 缓存（setQueryData），连接活跃时页面免轮询；断线自动退避
+  // 重连，页头状态点实时提示。
+  const streamStatus = useMetricsStream();
 
   // ARCH-26: TanStack Query 改造——六个 useRequest 轮询合并为 queries.ts 薄层
   // hooks（全局默认 staleTime 30s 保底新鲜度，切页 30s 内返回不再重复拉取；
@@ -102,6 +120,14 @@ export default function DashboardPage() {
         description="系统运行总览，每 30 秒自动刷新"
         extra={
           <>
+            {/* UI-14: 汇总流连接状态点 */}
+            <Tooltip title={`汇总推送流（/metrics/stream）：${streamStatusBadge(streamStatus).label}`}>
+              <Badge
+                color={streamStatusBadge(streamStatus).color}
+                text={<Text type="secondary" style={{ fontSize: 12 }}>{streamStatusBadge(streamStatus).label}</Text>}
+                data-testid="metrics-stream-status"
+              />
+            </Tooltip>
             {schedulerStats && (
               <Tag
                 icon={schedulerStats.healthy ? <CheckCircleOutlined /> : <WarningOutlined />}
