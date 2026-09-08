@@ -8,7 +8,7 @@ import {
   KeyOutlined, CopyOutlined, EyeOutlined, EyeInvisibleOutlined,
   PlusOutlined, EditOutlined, DeleteOutlined, HistoryOutlined,
   ReloadOutlined, RobotOutlined, ThunderboltOutlined, SafetyCertificateOutlined,
-  ApiOutlined,
+  ApiOutlined, BellOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
@@ -20,6 +20,8 @@ import PageHeader from '../../components/PageHeader';
 import SecuritySettings from './SecuritySettings';
 // AUTH-03: API Keys Tab（限权机器凭证管理），独立文件
 import ApiKeysSettings from './ApiKeysSettings';
+// FEAT-15: 事件订阅 Tab（webhook 出站事件 + 死信 replay），独立文件
+import EventSubscriptionsSettings from './EventSubscriptionsSettings';
 
 const { Text } = Typography;
 
@@ -587,6 +589,13 @@ export default function SettingsPage() {
       key: 'api-keys',
       label: <Space><ApiOutlined />API Keys</Space>,
       children: <ApiKeysSettings />,
+    },
+    // FEAT-15: 事件订阅（webhook 出站 + 死信 replay）——ADMIN 看全部、普通用户
+    // 看自己的 + 系统级（后端读面语义），置于末位不改变既有 Tab 默认激活行为
+    {
+      key: 'event-subscriptions',
+      label: <Space><BellOutlined />事件订阅</Space>,
+      children: <EventSubscriptionsSettings />,
     },
   ];
 
