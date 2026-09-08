@@ -210,6 +210,13 @@ services:
       WORK_DIR: /data/tasks
       LOG_LEVEL: ${LOG_LEVEL:-info}
       PYPI_REGISTRY_URL: ${PYPI_REGISTRY_URL:-http://registry-pypi:8003/simple/}
+    # SEC-07: 最小权限双闸（镜像层已 non-root，见 apps/executor-python/Dockerfile
+    # Q-08 —— adduser appuser + USER）。cap_drop 移除全部 Linux capabilities
+    # （代码执行面不需要任何特权操作）；no-new-privileges 阻断 setuid 提权路径。
+    # 真机验收（容器内非 root 且任务可跑）见 docs/deployment.md「容器安全」段。
+    cap_drop: ['ALL']
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - executor_python_data:/data/tasks
     depends_on:
@@ -257,6 +264,12 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       NPM_REGISTRY_URL: ${NPM_REGISTRY_URL:-http://registry-npm:4873}
       PYTHON_REGISTRY_URL: ${PYTHON_REGISTRY_URL:-http://registry-pypi:8003/simple/}
+    # SEC-07: 最小权限双闸（镜像层已 non-root，见 apps/executor-node/Dockerfile
+    # Q-09 —— adduser appuser + USER）。cap_drop/no-new-privileges 语义同
+    # executor-python 上方注释。
+    cap_drop: ['ALL']
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - executor_node_data:/data/tasks
     depends_on:
