@@ -6,6 +6,8 @@ import { client } from '../../api/client';
 import dayjs, { type Dayjs } from 'dayjs';
 import PageHeader from '../../components/PageHeader';
 import PageSkeleton from '../../components/PageSkeleton';
+// UI-16：toast-only 页补齐页内错误态标准块（错误块 + 重试，对齐 UI-08 形态）
+import StateError from '../../components/StateError';
 
 const { Option } = Select;
 
@@ -32,7 +34,7 @@ export default function AuditLogPage() {
   const [pending, setPending] = useState({ action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
   const [detailModal, setDetailModal] = useState<{ open: boolean; data?: Record<string, unknown> }>({ open: false });
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['audit', page, filters],
     queryFn: async () => {
       const params: Record<string, string> = { page: String(page), pageSize: '20' };
@@ -176,6 +178,16 @@ export default function AuditLogPage() {
         <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>搜索</Button>
         {hasFilters && <Button icon={<ReloadOutlined />} onClick={handleReset}>重置</Button>}
       </Space>
+      {/* UI-16：请求失败渲染页内错误态标准块（StateError，重试=refetch），
+          此前失败静默表现为「暂无审计记录」空态——查询失败与确无记录两种语义分离 */}
+      {error && (
+        <StateError
+          error={error}
+          onRetry={() => refetch()}
+          title="审计日志加载失败"
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <Table
         rowKey="id"
         loading={isLoading ? false : undefined}
