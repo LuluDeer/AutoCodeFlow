@@ -4,6 +4,7 @@ import {
   IsObject,
   IsEnum,
   IsNotEmpty,
+  IsBoolean,
   MaxLength,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
@@ -38,6 +39,16 @@ export class CreateApplicationDto {
   @IsOptional() @IsObject() env?: Record<string, string>;
   @IsOptional() @IsString() entrypoint?: string;
   @IsOptional() @IsString() packageUrl?: string;
+
+  /** DEP-04: 部署审批流开关（开启后 deploy 冻结为待审批行，需第二人放行）。 */
+  @ApiPropertyOptional({
+    description:
+      "DEP-04: require second-person approval before new deployments dispatch",
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  approvalRequired?: boolean;
 }
 
 export class UpdateApplicationDto {
@@ -54,6 +65,11 @@ export class UpdateApplicationDto {
   @IsOptional() @IsString() packageUrl?: string;
   /** HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable. */
   @IsOptional() @IsString() @MaxLength(256) webhookSecret?: string;
+
+  /** DEP-04: 部署审批流开关（语义同 CreateApplicationDto）。 */
+  @IsOptional()
+  @IsBoolean()
+  approvalRequired?: boolean;
 }
 
 /**
