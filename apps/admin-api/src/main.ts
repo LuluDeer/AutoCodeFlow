@@ -25,6 +25,7 @@ import { ResponseInterceptor } from "./common/interceptors/response.interceptor"
 import { TimeoutInterceptor } from "./common/interceptors/timeout.interceptor";
 import { isOriginAllowed } from "./common/utils/cors-origin.util";
 import { installShutdownForceExitGuard } from "./common/utils/shutdown-guard.util";
+import { buildHelmetOptions } from "./common/utils/security-headers.util";
 import { createUploadAuthMiddleware } from "./common/middleware/upload-auth.middleware";
 import { SystemConfigService } from "./modules/config/config.service";
 // import { TraceMiddleware } from "./common/middleware/trace.middleware";
@@ -103,17 +104,16 @@ async function bootstrap() {
   );
   app.use(express.urlencoded({ limit: "1mb", extended: true }));
 
-  // SEC-07: Set security-related HTTP headers via helmet
-  app.use(
-    helmet({
-      // Allow SSE connections and inline scripts needed for Swagger UI in dev
-      contentSecurityPolicy:
-        configService.get<string>("app.nodeEnv") === "production"
-          ? undefined
-          : false,
-      crossOriginEmbedderPolicy: false,
-    }),
-  );
+  // SEC-08: security headers via helmet — production CSP explicitly tightened
+  // (per-directive rationale in security-headers.util.ts), dev keeps CSP off
+  // for Swagger UI inline scripts. Deployment-shape basis (surveyed 2026-09-08):
+  // admin-web is a separate nginx-hosted Vite artifact (different origin from
+  // this API), production Swagger is disabled (ARCH-007 below), SSE streams are
+  // same-origin so `connect-src 'self'` covers them — a strict API-side CSP
+  // breaks nothing. HSTS/Referrer-Policy are pinned explicitly for production.
+  const isProductionEnv =
+    configService.get<string>("app.nodeEnv") === "production";
+  app.use(helmet(buildHelmetOptions(isProductionEnv)));
 
   // F-6: trust proxy is OPT-IN. Unconditional `trust proxy = 1` made req.ip
   // (throttler tracker, audit IP) follow the client-supplied X-Forwarded-For
