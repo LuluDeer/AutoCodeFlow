@@ -17,8 +17,16 @@
 export const DOMAIN_EVENTS = {
   /** 执行以 SUCCESS 终态落库（唯一 winner 之后，恰好一次）。 */
   EXECUTION_COMPLETED: "execution.completed",
-  /** 执行以失败类终态落库（FAILED/TIMEOUT/KILLED，唯一 winner 之后）。 */
+  /** 执行以失败类终态落库（FAILED/TIMEOUT，唯一 winner 之后）。 */
   EXECUTION_FAILED: "execution.failed",
+  /**
+   * FEAT-18（ARCH-21 预留补发）：执行被管理员手动 kill，KILLED 终态落库后
+   * 发布（task.service.killExecution 条件 UPDATE 命中后，fail-open）。
+   * 与 execution.failed 分立的原因：KILLED 的翻转点不在 handleCallback 主链
+   * （管理员动作直连 killExecution），单独命名便于订阅方区分「任务自己失败」
+   * 与「被人终止」；载荷形状与 ExecutionTerminalEventPayload 完全一致。
+   */
+  EXECUTION_KILLED: "execution.killed",
   /**
    * FEAT-07: 执行器翻转 OFFLINE 后发布（心跳超时 sweep / 优雅停机
    * markOffline / 管理台 setOfflineById 三路，状态落库后 emit，fail-open）。

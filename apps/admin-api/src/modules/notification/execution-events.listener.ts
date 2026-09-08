@@ -45,17 +45,22 @@ export class ExecutionEventsListener implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit(): void {
     this.bus.on(DOMAIN_EVENTS.EXECUTION_FAILED, this.onExecutionFailed);
+    // FEAT-18: KILLED 终态事件复用 failed 的通知路径——管理员手动 kill 同属
+    // 「执行非成功终态」，告警语义一致（载荷形状同为 ExecutionTerminalEventPayload，
+    // 管理员动作的结果更应让值守知晓）。直接对齐 failed 语义，不设开关。
+    this.bus.on(DOMAIN_EVENTS.EXECUTION_KILLED, this.onExecutionFailed);
   }
 
   onModuleDestroy(): void {
     this.bus.off(DOMAIN_EVENTS.EXECUTION_FAILED, this.onExecutionFailed);
+    this.bus.off(DOMAIN_EVENTS.EXECUTION_KILLED, this.onExecutionFailed);
   }
 
   /**
-   * 失败类终态（FAILED/TIMEOUT；未来 KILLED 的 sweep 路径接入时语义同样
-   * 成立）→ 告警通知。SUCCESS 不发通知——与迁移前主链行为一致（旧代码仅
-   * FAILED/TIMEOUT 触发告警），execution.completed 事件现阶段供 FEAT-07
-   * 出站 webhook 等未来消费者，通知侧刻意不订阅。
+   * 失败类终态（FAILED/TIMEOUT；FEAT-18 起 KILLED 经 execution.killed 也走
+   * 本方法，语义同样成立）→ 告警通知。SUCCESS 不发通知——与迁移前主链行为
+   * 一致（旧代码仅 FAILED/TIMEOUT 触发告警），execution.completed 事件现阶段
+   * 供 FEAT-07 出站 webhook 等未来消费者，通知侧刻意不订阅。
    */
   onExecutionFailed = async (
     event: ExecutionTerminalEventPayload,

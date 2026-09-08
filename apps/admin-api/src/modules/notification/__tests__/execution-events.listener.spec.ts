@@ -139,6 +139,74 @@ describe("ExecutionEventsListener (ARCH-21)", () => {
     });
   });
 
+  // FEAT-18: execution.killed 复用 failed 通知路径（直接对齐失败类语义）。
+  describe("killed notification (FEAT-18, execution.killed → 同 failed 语义)", () => {
+    const killedEvent = (): ExecutionTerminalEventPayload =>
+      event({
+        status: "killed",
+        failureReason: "killed",
+        errorMessage: "Manually terminated by administrator",
+      });
+
+    it("routes an execution.killed payload through onExecutionFailed (notify with alarm config)", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        alarmEmail: "ops@example.com",
+        alarmChannels: ["email"],
+        runbook: null,
+      });
+
+      await listener.onExecutionFailed(killedEvent());
+
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
+      const [name, id, error, , email, channels] =
+        notificationService.notifyFailureWithConfig.mock.calls[0];
+      expect(name).toBe("nightly-etl");
+      expect(id).toBe("e1");
+      expect(error).toMatch(/^killed:/);
+      expect(error).toContain("Manually terminated by administrator");
+      expect(email).toBe("ops@example.com");
+      expect(channels).toEqual(["email"]);
+    });
+
+    it("end-to-end via a real bus: emitted execution.killed reaches notify", async () => {
+      const realBus = new DomainEventBus();
+      const wired = new ExecutionEventsListener(
+        realBus,
+        notificationService as never,
+        auditService as never,
+        taskRepo as never,
+      );
+      wired.onModuleInit();
+      realBus.emit(DOMAIN_EVENTS.EXECUTION_KILLED, killedEvent());
+      // 监听器为 async——等一轮 microtask 队列再断言。
+      await new Promise((r) => setTimeout(r, 0));
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
+      expect(auditService.log).not.toHaveBeenCalled();
+    });
+
+    it("bus lifecycle: subscribes/unsubscribes both execution.failed and execution.killed", () => {
+      const realBus = new DomainEventBus();
+      const wired = new ExecutionEventsListener(
+        realBus,
+        notificationService as never,
+        auditService as never,
+        taskRepo as never,
+      );
+      expect(realBus.listenerCount(DOMAIN_EVENTS.EXECUTION_KILLED)).toBe(0);
+      wired.onModuleInit();
+      expect(realBus.listenerCount(DOMAIN_EVENTS.EXECUTION_KILLED)).toBe(1);
+      expect(realBus.listenerCount(DOMAIN_EVENTS.EXECUTION_FAILED)).toBe(1);
+      wired.onModuleDestroy();
+      expect(realBus.listenerCount(DOMAIN_EVENTS.EXECUTION_KILLED)).toBe(0);
+      expect(realBus.listenerCount(DOMAIN_EVENTS.EXECUTION_FAILED)).toBe(0);
+    });
+  });
+
   describe("fail-open (NOTIFICATION_FAILED 审计兜底，语义自 task.service 原样迁移)", () => {
     it("a rejecting notification logs NOTIFICATION_FAILED audit and does not rethrow", async () => {
       const errorSpy = jest
