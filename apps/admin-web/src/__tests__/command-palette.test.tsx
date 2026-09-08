@@ -1,11 +1,14 @@
 /**
- * FEAT-09 回归：全局搜索 / 命令面板（⌘K / Ctrl+K）。
+ * FEAT-09 回归 + UI-11 动作区：全局搜索 / 命令面板（⌘K / Ctrl+K）。
  *
  * 数据契约（对齐组件头注）：tasks 用 name ILIKE 服务端模糊参数（page/pageSize
  * 分页形态），executors/applications 全量数组，executions 取
  * allExecutions({page:1,pageSize:5})（后端 createdAt DESC = 最近 5 条）。
  * 搜索为客户端包含匹配（小写化）；错误静默降级为组内「加载失败」行；
  * 请求序号守卫防旧响应覆盖（快速换词只落地最新一轮）。
+ * UI-11 动作区：静态动作（操作分组，置顶、始终可见、不参与过滤）——
+ * 新建任务→/tasks/new、创建应用→/applications（admin-only）；任务行内动作
+ * 触发/暂停/恢复按 status 动态出键（isAdmin 门控），语义对齐 TaskListPage。
  * 对齐既有页面测试风格（application-list-rbac / executor-detail-trend）：
  * mock api 层隔离 axios 拦截器 + antd 浏览器 API shim + MemoryRouter。
  * 跳转断言用 LocationProbe 渲染真实 location.pathname（useNavigate 契约）。
@@ -23,7 +26,13 @@ import { applicationsApi } from '../api/applications';
 import { useAuthStore } from '../store/auth';
 
 vi.mock('../api/tasks', () => ({
-  tasksApi: { list: vi.fn(), allExecutions: vi.fn() },
+  tasksApi: {
+    list: vi.fn(),
+    allExecutions: vi.fn(),
+    trigger: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+  },
 }));
 vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn() },
@@ -60,7 +69,7 @@ if (!window.matchMedia) {
   })) as unknown as typeof window.matchMedia;
 }
 
-const PLACEHOLDER = '搜索任务、执行记录、执行器、应用…';
+const PLACEHOLDER = '搜索任务、执行记录、执行器、应用，或输入指令…';
 
 // 四组 fixture 名称均含 'service' —— 单一关键词可同时命中全部分组
 const taskFixture = {
@@ -74,6 +83,12 @@ const taskFixture = {
   timeout: 60,
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:00Z',
+};
+const pausedTaskFixture = {
+  ...taskFixture,
+  id: 'task-2',
+  name: 'Paused Service',
+  status: 'paused',
 };
 const executionFixture = {
   id: 'exec-1',
@@ -160,6 +175,7 @@ const waitForResults = async (title: string) => {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } as never });
   mockedTasks.list.mockResolvedValue({ items: [taskFixture], total: 1, page: 1, pageSize: 50 });
   mockedTasks.allExecutions.mockResolvedValue({
     items: [executionFixture],
@@ -204,7 +220,7 @@ describe('CommandPalette — 快捷键与开关（FEAT-09）', () => {
   });
 
   it('MainLayout 全局挂载：头部搜索按钮（tooltip Ctrl K）与 Ctrl+K 均可唤起', async () => {
-    useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
+    useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } as never });
     render(
       <MemoryRouter initialEntries={['/dashboard']}>
         <Routes>
@@ -231,7 +247,7 @@ describe('CommandPalette — 快捷键与开关（FEAT-09）', () => {
 });
 
 describe('CommandPalette — 分组渲染与跳转', () => {
-  it('单一关键词命中四组：分组标题与条目齐全，点击执行器行跳 /executors/:id', async () => {
+  it('单一关键词命中四组：分组标题与条目齐全，点击执行器行跳 /executors/:id（操作分组置顶共存）', async () => {
     const { container } = renderPalette();
     const input = getPaletteInput();
     fireEvent.change(input, { target: { value: 'service' } });
@@ -240,7 +256,8 @@ describe('CommandPalette — 分组渲染与跳转', () => {
     expect(screen.getByText('Service Runner')).toBeTruthy();
     expect(screen.getByText('service-executor')).toBeTruthy();
     expect(screen.getByText('order-service')).toBeTruthy();
-    // 四个分组标题齐全
+    // 五个分组标题齐全（UI-11：操作分组 + 原四搜索分组）
+    expect(screen.getByText('操作')).toBeTruthy();
     expect(screen.getByText('任务')).toBeTruthy();
     expect(screen.getByText('执行记录')).toBeTruthy();
     expect(screen.getByText('执行器')).toBeTruthy();
@@ -252,29 +269,33 @@ describe('CommandPalette — 分组渲染与跳转', () => {
     });
   });
 
-  it('多组命中时 Enter 跳第一项（任务 → /tasks/:id）', async () => {
+  it('多组命中时高亮默认第一项（UI-11 动作区置顶 → /tasks/new），↓ 两次后 Enter 跳任务详情', async () => {
     const { container } = renderPalette();
     const input = getPaletteInput();
     fireEvent.change(input, { target: { value: 'service' } });
     await waitForResults('Deploy Service');
 
+    fireEvent.keyDown(input, { key: 'ArrowDown', keyCode: 40, bubbles: true });
+    fireEvent.keyDown(input, { key: 'ArrowDown', keyCode: 40, bubbles: true });
     fireEvent.keyDown(input, { key: 'Enter', keyCode: 13, bubbles: true });
     await waitFor(() => {
       expect(container.textContent).toContain('route:/tasks/task-1');
     });
   });
 
-  it('↑↓ 循环导航 + Enter 依次跳转四类详情路由', async () => {
+  it('↑↓ 循环导航 + Enter 依次跳转：操作组→任务→执行记录→执行器→应用（UI-11 动作区并入扁平索引）', async () => {
     const { container } = renderPalette();
     const input = getPaletteInput();
     fireEvent.change(input, { target: { value: 'service' } });
     await waitForResults('Deploy Service');
 
     const key = (k: string) => fireEvent.keyDown(input, { key: k, keyCode: k === 'Enter' ? 13 : 40, bubbles: true });
-    // 扁平顺序：任务(0) → 执行记录(1) → 执行器(2) → 应用(3)
+    // 扁平顺序：操作 admin（0）→ 操作 app（1）→ 任务(2) → 执行记录(3) → 执行器(4) → 应用(5)
+    key('ArrowDown');
+    key('ArrowDown');
     key('Enter');
     expect(container.textContent).toContain('route:/tasks/task-1');
-    // ↓↑↓（覆盖上键）停在第 1 项 → 执行记录
+    // ↓↑↓（覆盖上键）停在第 3 项 → 执行记录
     key('ArrowDown');
     key('ArrowUp');
     key('ArrowDown');
@@ -306,6 +327,146 @@ describe('CommandPalette — 分组渲染与跳转', () => {
     expect(screen.getByText('bulk-executor-4')).toBeTruthy();
     expect(screen.queryByText('bulk-executor-5')).toBeNull();
     expect(screen.queryByText('bulk-executor-7')).toBeNull();
+  });
+
+  it('UI-11 静态动作：零输入即可见（操作分组不参与过滤），键盘 Enter 直达新建任务', async () => {
+    const { container } = renderPalette();
+    const input = getPaletteInput();
+    // 不输入任何关键词：操作分组照常渲染（原搜索四组隐藏）
+    expect(screen.getByText('新建任务')).toBeTruthy();
+    expect(screen.getByText('创建应用')).toBeTruthy();
+    expect(screen.queryByText('任务')).toBeNull();
+
+    // 高亮默认第一项=新建任务，Enter 直接跳 /tasks/new
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 13, bubbles: true });
+    await waitFor(() => {
+      expect(container.textContent).toContain('route:/tasks/new');
+    });
+  });
+
+  it('UI-11 静态动作：点击创建应用跳 /applications；普通用户（role=user）该动作隐藏', async () => {
+    const { container } = renderPalette('/tasks');
+    fireEvent.click(screen.getByText('创建应用'));
+    await waitFor(() => {
+      expect(container.textContent).toContain('route:/applications');
+    });
+
+    cleanup();
+    useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } as never });
+    renderPalette();
+    // role 缺失按非 admin（isAdminUser 守卫）
+    expect(screen.getByText('新建任务')).toBeTruthy();
+    expect(screen.queryByText('创建应用')).toBeNull();
+
+    // 旧 localStorage 会话（user 无 role）同样按非 admin
+    cleanup();
+    useAuthStore.setState({ user: { id: 3, username: 'legacy' } as never });
+    renderPalette();
+    expect(screen.getByText('新建任务')).toBeTruthy();
+    expect(screen.queryByText('创建应用')).toBeNull();
+  });
+
+  it('UI-11 任务行内动作：active 任务出「触发/暂停」，paused 任务出「触发/恢复」；点击触发调 API 且跳详情', async () => {
+    mockedTasks.list.mockResolvedValue({
+      items: [taskFixture, pausedTaskFixture],
+      total: 2,
+      page: 1,
+      pageSize: 50,
+    });
+    const { container } = renderPalette();
+    const input = getPaletteInput();
+    fireEvent.change(input, { target: { value: 'service' } });
+
+    await waitForResults('Deploy Service');
+    expect(screen.getByText('Paused Service')).toBeTruthy();
+    // active → 触发+暂停；paused → 触发+恢复
+    expect(screen.getByLabelText('触发任务 Deploy Service')).toBeTruthy();
+    expect(screen.getByLabelText('暂停任务 Deploy Service')).toBeTruthy();
+    expect(screen.queryByLabelText('恢复任务 Deploy Service')).toBeNull();
+    expect(screen.getByLabelText('触发任务 Paused Service')).toBeTruthy();
+    expect(screen.getByLabelText('恢复任务 Paused Service')).toBeTruthy();
+    expect(screen.queryByLabelText('暂停任务 Paused Service')).toBeNull();
+
+    fireEvent.click(screen.getByLabelText('触发任务 Deploy Service'));
+    await waitFor(() => {
+      expect(mockedTasks.trigger).toHaveBeenCalledWith('task-1');
+    });
+    await waitFor(() => {
+      expect(container.textContent).toContain('route:/tasks/task-1');
+    });
+  });
+
+  it('UI-11 行内动作：暂停/恢复各调对应端点并提示；失败 toast 兜底不跳转', async () => {
+    const { container } = renderPalette();
+    const input = getPaletteInput();
+    fireEvent.change(input, { target: { value: 'service' } });
+    await waitForResults('Deploy Service');
+
+    fireEvent.click(screen.getByLabelText('暂停任务 Deploy Service'));
+    await waitFor(() => {
+      expect(mockedTasks.pause).toHaveBeenCalledWith('task-1');
+    });
+    await waitFor(() => {
+      expect(container.textContent).toContain('route:/tasks/task-1');
+    });
+
+    cleanup();
+    // Axios 形态错误（err.response.data.message）→ toast 展示后端文案
+    mockedTasks.trigger.mockRejectedValueOnce({
+      response: { data: { message: '触发失败' } },
+    } as never);
+    renderPalette();
+    const input2 = getPaletteInput();
+    fireEvent.change(input2, { target: { value: 'service' } });
+    await waitForResults('Deploy Service');
+    fireEvent.click(screen.getByLabelText('触发任务 Deploy Service'));
+    await waitFor(() => {
+      expect(screen.getByText('触发失败')).toBeTruthy();
+    });
+    // 失败不跳转（面板 Modal 挂 body，container 仅含初始路由探针仍为空即未跳转）
+    expect(container.textContent).not.toContain('route:/tasks/task-1');
+  });
+
+  it('UI-11 行内动作普通用户不可见（isAdmin 门控），Enter 落在任务行仍正常跳详情', async () => {
+    useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } as never });
+    const { container } = renderPalette();
+    const input = getPaletteInput();
+    fireEvent.change(input, { target: { value: 'service' } });
+    await waitForResults('Deploy Service');
+
+    expect(screen.queryByLabelText('触发任务 Deploy Service')).toBeNull();
+    expect(screen.queryByLabelText('暂停任务 Deploy Service')).toBeNull();
+
+    // 动作区只余新建任务一项 → 任务行扁平索引 1，↓ 后 Enter 跳 /tasks/:id
+    fireEvent.keyDown(input, { key: 'ArrowDown', keyCode: 40, bubbles: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 13, bubbles: true });
+    await waitFor(() => {
+      expect(container.textContent).toContain('route:/tasks/task-1');
+    });
+  });
+
+  it('UI-11 输入框聚焦时按其他键不误触全局快捷键（非 ⌘K 键零副作用）', async () => {
+    const spy = vi.fn();
+    render(
+      <MemoryRouter>
+        <CommandPalette
+          open
+          onOpenChange={(v) => {
+            spy(v);
+          }}
+        />
+      </MemoryRouter>,
+    );
+    const input = getPaletteInput();
+    input.focus();
+    // 输入普通字符（无修饰键）：不触发开关、不关闭面板
+    fireEvent.keyDown(input, { key: 'a', keyCode: 65, bubbles: true });
+    fireEvent.keyDown(input, { key: 'ArrowDown', keyCode: 40, bubbles: true });
+    expect(spy).not.toHaveBeenCalled();
+    expect(getPaletteInput()).toBeTruthy();
+    // ⌘K（metaKey）在输入框内同样可切换关闭（toggle 语义）
+    fireEvent.keyDown(window, { key: 'k', code: 'KeyK', keyCode: 75, metaKey: true, bubbles: true });
+    expect(spy).toHaveBeenCalledWith(false);
   });
 });
 
