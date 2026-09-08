@@ -13,7 +13,7 @@ import {
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import { Task } from "../entities/task.entity";
 import { ExecutorService } from "../../executor/executor.service";
-import { AiService } from "../../ai/ai.service";
+import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
 import { TaskService } from "../task.service";
@@ -65,7 +65,7 @@ describe("TaskProcessor", () => {
   let executorService: jest.Mocked<
     Pick<ExecutorService, "dispatch" | "dispatchBroadcast">
   >;
-  let aiService: jest.Mocked<Pick<AiService, "analyzeFailure">>;
+  let aiService: { analyzeFailure: jest.Mock };
   let notificationService: jest.Mocked<
     Pick<NotificationService, "notifyFailureWithConfig">
   >;
@@ -111,7 +111,7 @@ describe("TaskProcessor", () => {
           useValue: logLineRepo,
         },
         { provide: ExecutorService, useValue: executorService },
-        { provide: AiService, useValue: aiService },
+        { provide: AiAnalysisService, useValue: aiService },
         { provide: NotificationService, useValue: notificationService },
         {
           provide: ConfigService,

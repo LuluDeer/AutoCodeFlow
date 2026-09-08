@@ -242,6 +242,13 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
           `autoflow_callback_business_total{result="${result}"} 0`,
         );
       }
+      // ARCH-30: AI 分析结果三分类——同一 0 值基线契约（series 集合稳定，
+      // rate() 自首次计数前即可计算）。
+      for (const result of ["ok", "fail", "skipped"]) {
+        expect(text).toContain(
+          `autoflow_ai_analysis_total{result="${result}"} 0`,
+        );
+      }
     });
 
     // BUG-01（N51 收口）：reload-config 401 重签重试计数器——同一 recordRuntime

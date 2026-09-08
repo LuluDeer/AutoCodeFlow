@@ -23,6 +23,7 @@ import { TaskVersion } from "../entities/task-version.entity";
 import { ExecutionReport } from "../../metrics/entities/execution-report.entity";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { AiService } from "../../ai/ai.service";
+import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { ExecutorService } from "../../executor/executor.service";
 import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
@@ -81,6 +82,7 @@ describe("OBS-04 execution report/timeline", () => {
           },
         },
         { provide: AiService, useValue: { analyzeFailure: jest.fn() } },
+        { provide: AiAnalysisService, useValue: { analyzeFailure: jest.fn() } },
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue("") },
