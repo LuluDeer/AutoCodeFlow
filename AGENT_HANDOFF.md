@@ -3,13 +3,19 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-N 压轴收官：002 独扛 OBS-01 跨三端追踪全链闭环——**P1 任务板全清**，主会话五端总终验收）
+更新时间：2026-09-08（第十六轮·批 subagent-O：001/002 并行认领——AUTH-03/SEC-06+QA-03 一阶段三项 done，主会话统一验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-08 第十六轮·批 subagent-O 终验收，主会话）：
+  - `d8158a2`+`e24e49c`+`aa2b2f1` **AUTH-03（002）限权 API Key done**：api_keys 表（迁移 1790000000000：sha256 唯一索引/前 8 位 prefix 展示/明文仅创建响应回显一次/revokedAt 软删+expiresAt）+ `/api-keys` CRUD 全 JWT（非本人 404）；JwtAuthGuard 保持唯一 APP_GUARD，@Optional facade 注入分流 `acf_` 前缀（JWT 是 base64 段不可能命中）——api-keys/auth/users 前缀对 API Key 一律 401（防被窃 Key 自管提权）；scope 三级矩阵（readonly 只读/trigger +POST trigger/manage 全量，403 带所需 scope 提示）；lastUsedAt 每分钟节流防写放大；审计 create/revoke/used/auth_failure 全 fail-open。admin-web settings 末位 API Keys Tab（一次性明文回显+复制+吊销「立即 401」警示）。admin-api **1936/1936**（+51）· admin-web 303（+6）。TOTP/会话回归零破坏。
+  - `04c82ee`+`816531d` **SEC-06（001）供应链 done**：npm-audit 升 moderate+矩阵补 executor-desktop 漏审；GHSA 豁免机制（重试后 JSON 提取比对，minio 链上游未解核实（逐版查证），豁免仅 2 条复查 2026-10-01，未登记新漏洞 fail-closed）；lockfile-integrity job（7 包 npm ci --dry-run）；gitleaks 双保险（pre-commit rev 固定+.gitleaks.toml allowlist 逐条理由+CI action 全量历史）。**意外收获：executor-desktop electron-builder→fast-uri 链 1 high 顺手修复**（04c82ee），audit low 归零。
+  - `5b15134`~`85877c6` **QA-03 第一阶段（001）done +56 例**：五个零覆盖高频页补核心交互（ExecutionsPage 13/ExecutorListPage 13/UserManagement 9/AuditLog 8/NotificationSettings 7）；类型与 unhandled rejection 收口。admin-web **353/353**（基线 297）。第二阶段：ApplicationDetail/Registry/TaskList 深交互+API Keys 页测试。
+- **主会话终验收基线（全绿）**：admin-api **1936/1936** + tsc ✓ + coverage 卡点 · admin-web **353/353**（44 套件）+ build/tsc ✓
+- 真机轮留验：API Key 触发→吊销→立即 401 全链实测 · gitleaks CI 首跑 allowlist 验证
 - 本轮（2026-09-08 第十六轮·批 subagent-N 压轴，主会话总终验收）：
   - `dff036d`+`5141962`+`e207958`+`54f9f6a`+`4228097` **OBS-01（002）OpenTelemetry 分布式追踪 done（可观测性 2.0 收官）**：架构裁定=只用 @opentelemetry/api 1.9.1 + 自实现极薄 span 管理（不引 sdk-*/exporter——无 collector 部署，span 树以进程内结构化日志承载，升级路径写入 deployment.md，埋点零改动可挂 SDK）；span 树 task.trigger→enqueue→dispatch.http→callback.receive 四站点父子串联；**W3C traceparent 全链贯穿**：traceId 落 task_executions（迁移 1789900000003 可空+索引）→ dispatch 头透传 → 执行器读头注入任务 env AUTOFLOW_TRACE_ID（用户参数不可覆盖）→ 六 pushCallback 站点（node）/_run_and_callback 双路径（py）回传 → admin 关联；OTEL_ENABLED 默认 false 零开销零行为变化，畸形头 fail-open；compose jaeger profile 预置（未启用零资源）；admin-web 详情页 traceId 展示+复制。缩水如实：执行器侧不做完整 span 树（预案内）、py kill 链路无 trace 关联（registry 先移除，注记）、Jaeger URL 不硬编码（纪律）。
   - **主会话五端总终验收（全绿）**：admin-api **1884/1884**（+38）+ tsc ✓ + coverage 门槛卡点 · admin-web **297/297**（+4）+ build ✓ · executor-node **266/266**（+4，bundle 无漂移）· executor-python **222/222**（+5）
