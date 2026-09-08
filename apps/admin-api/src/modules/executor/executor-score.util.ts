@@ -83,6 +83,9 @@ export function computeExecutorLoadScore(
   const memRatio = (executor.memUsage ?? 0) / 100;
   const penalty = longTaskPenalty(options?.estimatedDurations ?? []);
   return (
-    w.load * loadRatio + w.cpu * cpuRatio + w.mem * memRatio + w.estimated * penalty
+    w.load * loadRatio +
+    w.cpu * cpuRatio +
+    w.mem * memRatio +
+    w.estimated * penalty
   );
 }

@@ -24,7 +24,8 @@ const CRC_TABLE = (() => {
 
 function crc32(buf: Buffer): number {
   let c = 0 ^ -1;
-  for (let i = 0; i < buf.length; i++) c = (c >>> 8) ^ CRC_TABLE[(c ^ buf[i]) & 0xff];
+  for (let i = 0; i < buf.length; i++)
+    c = (c >>> 8) ^ CRC_TABLE[(c ^ buf[i]) & 0xff];
   return (c ^ -1) >>> 0;
 }
 
@@ -52,8 +53,7 @@ export function buildZip(entries: ZipEntryInput[]): Buffer {
     const nameBuf = Buffer.from(e.name, "utf8");
     const data = e.data ?? Buffer.alloc(0);
     const method = e.method ?? (e.data ? 8 : 0);
-    const stored =
-      method === 8 ? zlib.deflateRawSync(data) : Buffer.from(data);
+    const stored = method === 8 ? zlib.deflateRawSync(data) : Buffer.from(data);
     const crc = crc32(data);
 
     const declaredComp = e.declaredCompressed ?? stored.length;
@@ -113,9 +113,7 @@ export function buildZip(entries: ZipEntryInput[]): Buffer {
 
 /** 42 MB of highly compressible zeros → declared 42 MiB, compressed ~KB. */
 export function buildHighRatioBomb(): Buffer {
-  return buildZip([
-    { name: "bomb.bin", data: Buffer.alloc(42 * 1024 * 1024) },
-  ]);
+  return buildZip([{ name: "bomb.bin", data: Buffer.alloc(42 * 1024 * 1024) }]);
 }
 
 /** Max-size single file: 1 GiB of zeros — real deflation keeps it tiny. */
@@ -128,7 +126,8 @@ export function buildSingleFileOversizeBomb(): Buffer {
 /** Entry-count flood: many tiny entries (default: 10_001 > limit). */
 export function buildTooManyEntriesBomb(count = 10_001): Buffer {
   const entries: ZipEntryInput[] = [];
-  for (let i = 0; i < count; i++) entries.push({ name: `e${i}.txt`, data: Buffer.from("x") });
+  for (let i = 0; i < count; i++)
+    entries.push({ name: `e${i}.txt`, data: Buffer.from("x") });
   return buildZip(entries);
 }
 
@@ -140,7 +139,9 @@ export function buildNestedZipBomb(): Buffer {
 
 /** Two nesting levels — outer charge must come from declared sizes. */
 export function buildDoubleNestedZip(): Buffer {
-  const innermost = buildZip([{ name: "core.txt", data: Buffer.alloc(5 * 1024 * 1024) }]);
+  const innermost = buildZip([
+    { name: "core.txt", data: Buffer.alloc(5 * 1024 * 1024) },
+  ]);
   const middle = buildZip([{ name: "inner.zip", data: innermost }]);
   return buildZip([{ name: "outer.zip", data: middle }]);
 }
@@ -150,7 +151,9 @@ export const EICAR_STRING =
   "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
 
 export function buildEicarZip(): Buffer {
-  return buildZip([{ name: "eicar.com", data: Buffer.from(EICAR_STRING, "ascii") }]);
+  return buildZip([
+    { name: "eicar.com", data: Buffer.from(EICAR_STRING, "ascii") },
+  ]);
 }
 
 /** Benign control: a small, honestly-declared archive. */

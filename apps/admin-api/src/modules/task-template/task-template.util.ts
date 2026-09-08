@@ -37,11 +37,7 @@ function flattenErrors(errors: ValidationError[], prefix = ""): string[] {
 export async function assertValidTaskTemplateConfig(
   config: unknown,
 ): Promise<Record<string, unknown>> {
-  if (
-    typeof config !== "object" ||
-    config === null ||
-    Array.isArray(config)
-  ) {
+  if (typeof config !== "object" || config === null || Array.isArray(config)) {
     throw new BadRequestException("模板 config 必须是对象");
   }
   const dto = plainToInstance(CreateTaskDto, {
@@ -58,9 +54,7 @@ export async function assertValidTaskTemplateConfig(
   if (errors.length > 0) {
     const detail = flattenErrors(errors).filter((m) => !m.startsWith("name:"));
     if (detail.length > 0) {
-      throw new BadRequestException(
-        `模板 config 非法：${detail.join(" | ")}`,
-      );
+      throw new BadRequestException(`模板 config 非法：${detail.join(" | ")}`);
     }
   }
   return config as Record<string, unknown>;

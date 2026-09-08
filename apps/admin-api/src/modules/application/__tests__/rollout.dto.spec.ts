@@ -58,7 +58,9 @@ describe("rollout.dto（DEP-02/03）", () => {
     });
 
     it("缺省：port 缺省 null（回退执行器端口），interval/failThreshold/timeoutMs 取平台缺省", () => {
-      const hc = parseManifestHealthCheck({ healthCheck: { path: "/healthz" } });
+      const hc = parseManifestHealthCheck({
+        healthCheck: { path: "/healthz" },
+      });
       expect(hc).toEqual({
         path: "/healthz",
         port: null,
@@ -78,11 +80,21 @@ describe("rollout.dto（DEP-02/03）", () => {
 
     it("非法声明 fail-safe 归 null（不 throw）：path 缺失/不以 / 开头/非字符串", () => {
       expect(parseManifestHealthCheck({ healthCheck: {} })).toBeNull();
-      expect(parseManifestHealthCheck({ healthCheck: { path: "health" } })).toBeNull();
-      expect(parseManifestHealthCheck({ healthCheck: { path: 123 } })).toBeNull();
+      expect(
+        parseManifestHealthCheck({ healthCheck: { path: "health" } }),
+      ).toBeNull();
+      expect(
+        parseManifestHealthCheck({ healthCheck: { path: 123 } }),
+      ).toBeNull();
       // 越界数值字段回退缺省而非拒绝整个声明
-      expect(parseManifestHealthCheck({ healthCheck: { path: "/h", interval: 1 } })?.interval).toBe(5000);
-      expect(parseManifestHealthCheck({ healthCheck: { path: "/h", port: 99999 } })?.port).toBeNull();
+      expect(
+        parseManifestHealthCheck({ healthCheck: { path: "/h", interval: 1 } })
+          ?.interval,
+      ).toBe(5000);
+      expect(
+        parseManifestHealthCheck({ healthCheck: { path: "/h", port: 99999 } })
+          ?.port,
+      ).toBeNull();
     });
   });
 
@@ -126,15 +138,22 @@ describe("rollout.dto（DEP-02/03）", () => {
   describe("RolloutStrategyDto 边界", () => {
     it("percentage 越界（0/101/非整数）被校验拒绝", async () => {
       for (const percentage of [0, 101, 3.5]) {
-        const dto = plainToInstance(RolloutStrategyDto, { strategy: "canary", percentage });
+        const dto = plainToInstance(RolloutStrategyDto, {
+          strategy: "canary",
+          percentage,
+        });
         const errors = await validate(dto);
         expect(errors.some((e) => e.property === "percentage")).toBe(true);
       }
     });
 
     it("strategy 枚举外取值被拒绝；all 合法", async () => {
-      const bad = plainToInstance(RolloutStrategyDto, { strategy: "blue-green" });
-      expect((await validate(bad)).some((e) => e.property === "strategy")).toBe(true);
+      const bad = plainToInstance(RolloutStrategyDto, {
+        strategy: "blue-green",
+      });
+      expect((await validate(bad)).some((e) => e.property === "strategy")).toBe(
+        true,
+      );
       const good = plainToInstance(RolloutStrategyDto, { strategy: "all" });
       expect(await validate(good)).toHaveLength(0);
     });

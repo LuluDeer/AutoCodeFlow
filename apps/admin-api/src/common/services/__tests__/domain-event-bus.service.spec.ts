@@ -72,18 +72,18 @@ describe("DomainEventBus (ARCH-21)", () => {
     const completed = jest.fn();
     bus.on(DOMAIN_EVENTS.EXECUTION_FAILED, failed);
     bus.on(DOMAIN_EVENTS.EXECUTION_COMPLETED, completed);
-    bus.emit(DOMAIN_EVENTS.EXECUTION_COMPLETED, failedPayload({ status: "success", failureReason: null }));
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_COMPLETED,
+      failedPayload({ status: "success", failureReason: null }),
+    );
     expect(completed).toHaveBeenCalledTimes(1);
     expect(failed).not.toHaveBeenCalled();
   });
 
   it("fail-open: a synchronously throwing listener does not propagate to emit()", () => {
-    bus.on(
-      DOMAIN_EVENTS.EXECUTION_FAILED,
-      () => {
-        throw new Error("listener exploded");
-      },
-    );
+    bus.on(DOMAIN_EVENTS.EXECUTION_FAILED, () => {
+      throw new Error("listener exploded");
+    });
     const after = jest.fn();
     bus.on(DOMAIN_EVENTS.EXECUTION_FAILED, after);
     expect(() =>
@@ -96,12 +96,9 @@ describe("DomainEventBus (ARCH-21)", () => {
   });
 
   it("fail-open: an async listener rejection is swallowed and logged (no unhandledRejection)", () => {
-    bus.on(
-      DOMAIN_EVENTS.EXECUTION_FAILED,
-      async () => {
-        throw new Error("async boom");
-      },
-    );
+    bus.on(DOMAIN_EVENTS.EXECUTION_FAILED, async () => {
+      throw new Error("async boom");
+    });
     expect(() =>
       bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, failedPayload()),
     ).not.toThrow();

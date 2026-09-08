@@ -51,7 +51,9 @@ describe("renderTemplate (FEAT-10)", () => {
     const bigLog = "x".repeat(TEMPLATE_MAX_BYTES + 1000);
     const out = renderTemplate("{{logs}}", { logs: bigLog });
     // 截断到 8KB + 追加标记
-    expect(out.length).toBe(TEMPLATE_MAX_BYTES + TEMPLATE_TRUNCATION_SUFFIX.length);
+    expect(out.length).toBe(
+      TEMPLATE_MAX_BYTES + TEMPLATE_TRUNCATION_SUFFIX.length,
+    );
     expect(out.endsWith(TEMPLATE_TRUNCATION_SUFFIX)).toBe(true);
     expect(out.startsWith("x")).toBe(true);
   });
@@ -103,7 +105,9 @@ describe("renderTemplate (FEAT-10)", () => {
   it("12. truncation marker itself does not push output past the cap twice", () => {
     const big = "z".repeat(TEMPLATE_MAX_BYTES * 3);
     const out = renderTemplate("{{logs}}", { logs: big });
-    expect(out.length).toBe(TEMPLATE_MAX_BYTES + TEMPLATE_TRUNCATION_SUFFIX.length);
+    expect(out.length).toBe(
+      TEMPLATE_MAX_BYTES + TEMPLATE_TRUNCATION_SUFFIX.length,
+    );
   });
 });
 

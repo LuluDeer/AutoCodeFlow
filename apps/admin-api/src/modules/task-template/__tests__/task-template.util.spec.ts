@@ -111,7 +111,11 @@ describe("expandTemplateConfigIntoTaskDto (CORE-03)", () => {
 
   it("显式字段覆盖模板值", () => {
     const merged = expandTemplateConfigIntoTaskDto(
-      { triggerType: "cron", cronExpression: "0 2 * * *", timeoutSeconds: 3600 },
+      {
+        triggerType: "cron",
+        cronExpression: "0 2 * * *",
+        timeoutSeconds: 3600,
+      },
       { name: "x", cronExpression: "*/15 * * * *", timeoutSeconds: 60 },
     );
     expect(merged.cronExpression).toBe("*/15 * * * *");
@@ -139,7 +143,9 @@ describe("suggestTemplateKey (CORE-03)", () => {
   it("规整中文/特殊字符名并限长", () => {
     expect(suggestTemplateKey("Daily  Order Sync!")).toBe("daily-order-sync");
     expect(suggestTemplateKey("  spaced  ")).toBe("spaced");
-    expect(suggestTemplateKey("".padEnd(100, "a")).length).toBeLessThanOrEqual(64);
+    expect(suggestTemplateKey("".padEnd(100, "a")).length).toBeLessThanOrEqual(
+      64,
+    );
   });
 
   it("空名回退时间戳 key", () => {

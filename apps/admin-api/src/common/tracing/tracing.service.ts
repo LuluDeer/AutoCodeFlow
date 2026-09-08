@@ -1,5 +1,6 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { randomBytes } from "crypto";
 import {
   generateTraceparent,
   extractTraceId,
@@ -36,11 +37,8 @@ export interface TraceSpan {
 }
 
 const OTEL_TRACE_ID_RE = /^[0-9a-f]{32}$/;
-const OTEL_SPAN_ID_RE = /^[0-9a-f]{16}$/;
 
 function randomHexId(bytes: number): string {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { randomBytes } = require("crypto") as typeof import("crypto");
   return randomBytes(bytes).toString("hex");
 }
 
@@ -127,7 +125,9 @@ export class TracingService {
    * 构造回传用 traceparent 头值（executor 回调带 traceparent 头时的解析
    * 对侧：admin 在响应头回传 traceparent 供抓包关联，及内部构造校验）。
    */
-  buildTraceparentFromTraceId(traceId: string | null | undefined): string | null {
+  buildTraceparentFromTraceId(
+    traceId: string | null | undefined,
+  ): string | null {
     if (!this.enabled) return null;
     return buildTraceparent(traceId);
   }

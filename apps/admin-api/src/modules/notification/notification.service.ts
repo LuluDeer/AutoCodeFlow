@@ -221,13 +221,25 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       promise: Promise<ChannelDeliveryStatus | void>;
     }> = [];
     if (channels.includes(AlertChannel.EMAIL))
-      entries.push({ name: "email", promise: this.email.send(rendered.email ?? payload) });
+      entries.push({
+        name: "email",
+        promise: this.email.send(rendered.email ?? payload),
+      });
     if (channels.includes(AlertChannel.SLACK))
-      entries.push({ name: "slack", promise: this.slack.send(rendered.slack ?? payload) });
+      entries.push({
+        name: "slack",
+        promise: this.slack.send(rendered.slack ?? payload),
+      });
     if (channels.includes(AlertChannel.DINGTALK))
-      entries.push({ name: "dingtalk", promise: this.dingtalk.send(rendered.dingtalk ?? payload) });
+      entries.push({
+        name: "dingtalk",
+        promise: this.dingtalk.send(rendered.dingtalk ?? payload),
+      });
     if (channels.includes(AlertChannel.WECOM))
-      entries.push({ name: "wecom", promise: this.wecom.send(rendered.wecom ?? payload) });
+      entries.push({
+        name: "wecom",
+        promise: this.wecom.send(rendered.wecom ?? payload),
+      });
     if (channels.includes(AlertChannel.WEBHOOK))
       entries.push({
         name: "webhook",
@@ -625,7 +637,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!alarmChannels || alarmChannels.length === 0) {
-      return this.notifyFailure(taskName, execId, error, aiAnalysis, taskId, runbook);
+      return this.notifyFailure(
+        taskName,
+        execId,
+        error,
+        aiAnalysis,
+        taskId,
+        runbook,
+      );
     }
     const payload: NotificationPayload = {
       title: `Task failed: ${taskName}`,

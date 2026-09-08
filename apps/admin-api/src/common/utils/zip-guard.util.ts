@@ -159,9 +159,7 @@ export function locateEocd(buf: Buffer): number {
  * Parse the central directory of a zip held in memory and aggregate declared
  * sizes. Throws ZipGuardError("unparseable") when the structure is corrupt.
  */
-export function parseCentralDirectory(
-  buf: Buffer,
-): ZipCentralDirectorySummary {
+export function parseCentralDirectory(buf: Buffer): ZipCentralDirectorySummary {
   const eocdOff = locateEocd(buf);
   const cdEntries = U16(buf, eocdOff + 10);
   const cdSize = U32(buf, eocdOff + 12);
@@ -170,7 +168,11 @@ export function parseCentralDirectory(
   // zip64 (0xffffffff sentinels) is not resolved here: admin-api upload caps
   // are 200 MB / 500 MB, and a >4 GB-CD archive cannot be legit for this
   // platform. Fail closed rather than trusting the truncated 32-bit fields.
-  if (cdOffset === 0xffffffff || cdEntries === 0xffff || cdSize === 0xffffffff) {
+  if (
+    cdOffset === 0xffffffff ||
+    cdEntries === 0xffff ||
+    cdSize === 0xffffffff
+  ) {
     throw new ZipGuardError(
       "unparseable",
       "zip64 EOCD sentinels present — unsupported for upload vetting",
@@ -198,7 +200,10 @@ export function parseCentralDirectory(
     const nameStart = off + CD_HEADER_SIZE;
     const nameEnd = nameStart + nameLen;
     if (nameEnd > buf.length) {
-      throw new ZipGuardError("unparseable", "central directory name overruns buffer");
+      throw new ZipGuardError(
+        "unparseable",
+        "central directory name overruns buffer",
+      );
     }
     const name = buf.toString("utf8", nameStart, nameEnd);
     totalCompressed += compressedSize;
@@ -353,16 +358,14 @@ function perEntryUncompressedSizes(buf: Buffer): number[] {
  * gigabytes — output is capped at the declared uncompressed size + slack).
  * Returns null when the entry cannot be located/validated.
  */
-function extractNestedZipBytes(
-  buf: Buffer,
-  name: string,
-): Buffer | null {
+function extractNestedZipBytes(buf: Buffer, name: string): Buffer | null {
   const eocdOff = locateEocd(buf);
   const cdEntries = U16(buf, eocdOff + 10);
   const cdOffset = U32(buf, eocdOff + 16);
   let off = cdOffset;
   for (let seen = 0; seen < cdEntries; seen++) {
-    if (off + CD_HEADER_SIZE > buf.length || U32(buf, off) !== SIG_CD) return null;
+    if (off + CD_HEADER_SIZE > buf.length || U32(buf, off) !== SIG_CD)
+      return null;
     const method = U16(buf, off + 10);
     const compressedSize = U32(buf, off + 20);
     const uncompressedSize = U32(buf, off + 24);
@@ -370,18 +373,28 @@ function extractNestedZipBytes(
     const nameLen = U16(buf, off + 28);
     const extraLen = U16(buf, off + 30);
     const commentLen = U16(buf, off + 32);
-    const entryName = buf.toString("utf8", off + CD_HEADER_SIZE, off + CD_HEADER_SIZE + nameLen);
+    const entryName = buf.toString(
+      "utf8",
+      off + CD_HEADER_SIZE,
+      off + CD_HEADER_SIZE + nameLen,
+    );
     off += CD_HEADER_SIZE + nameLen + extraLen + commentLen;
     if (entryName !== name) continue;
 
     // Read the local file header to find the true data start (its name/extra
     // lengths may differ from the CD record).
-    if (localOffset + LOCAL_HEADER_FILENAME_LEN_OFFSET + 4 > buf.length) return null;
+    if (localOffset + LOCAL_HEADER_FILENAME_LEN_OFFSET + 4 > buf.length)
+      return null;
     if (U32(buf, localOffset) !== SIG_LOCAL) return null;
-    const localNameLen = U16(buf, localOffset + LOCAL_HEADER_FILENAME_LEN_OFFSET);
-    const localExtraLen = U16(buf, localOffset + LOCAL_HEADER_FILENAME_LEN_OFFSET + 2);
-    const dataStart =
-      localOffset + 30 + localNameLen + localExtraLen;
+    const localNameLen = U16(
+      buf,
+      localOffset + LOCAL_HEADER_FILENAME_LEN_OFFSET,
+    );
+    const localExtraLen = U16(
+      buf,
+      localOffset + LOCAL_HEADER_FILENAME_LEN_OFFSET + 2,
+    );
+    const dataStart = localOffset + 30 + localNameLen + localExtraLen;
     const dataEnd = dataStart + compressedSize;
     if (dataEnd > buf.length) return null;
     const payload = buf.subarray(dataStart, dataEnd);

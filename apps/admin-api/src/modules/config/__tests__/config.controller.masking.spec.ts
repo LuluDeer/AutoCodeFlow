@@ -59,7 +59,11 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
     ]);
 
     const result = (await controller.findAll()) as Array<any>;
-    expect(result[0]).toEqual({ key: "plain", value: "visible", isSecret: false });
+    expect(result[0]).toEqual({
+      key: "plain",
+      value: "visible",
+      isSecret: false,
+    });
     expect(result[1].value).toBe("***");
   });
 
@@ -79,12 +83,20 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
 
   it("findOne masks a secret key and passes a plain key through", async () => {
     const { controller, service } = makeDeps();
-    service.findOne.mockResolvedValue({ key: "secret", value: "hide-me", isSecret: true });
+    service.findOne.mockResolvedValue({
+      key: "secret",
+      value: "hide-me",
+      isSecret: true,
+    });
 
     const masked = (await controller.findOne("secret")) as any;
     expect(masked.value).toBe("***");
 
-    service.findOne.mockResolvedValue({ key: "plain", value: "v", isSecret: false });
+    service.findOne.mockResolvedValue({
+      key: "plain",
+      value: "v",
+      isSecret: false,
+    });
     expect(((await controller.findOne("plain")) as any).value).toBe("v");
   });
 
@@ -129,7 +141,10 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
 
   it("getExecutorSharedToken returns plaintext with hasToken, or a safe empty shape", async () => {
     const { controller, service } = makeDeps();
-    service.findOne.mockResolvedValueOnce({ key: "executor.sharedToken", value: "tok" });
+    service.findOne.mockResolvedValueOnce({
+      key: "executor.sharedToken",
+      value: "tok",
+    });
     expect(await controller.getExecutorSharedToken()).toEqual({
       token: "tok",
       hasToken: true,
@@ -172,16 +187,18 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
     );
 
     await controller.batchUpsert([{ key: "k" }] as any, admin, req);
-    expect(service.batchUpsert).toHaveBeenCalledWith(
-      [{ key: "k" }],
-      { userId: "1", username: "admin", ipAddress: "10.1.1.1" },
-    );
+    expect(service.batchUpsert).toHaveBeenCalledWith([{ key: "k" }], {
+      userId: "1",
+      username: "admin",
+      ipAddress: "10.1.1.1",
+    });
 
     await controller.remove("k", admin, req);
-    expect(service.remove).toHaveBeenCalledWith(
-      "k",
-      { userId: "1", username: "admin", ipAddress: "10.1.1.1" },
-    );
+    expect(service.remove).toHaveBeenCalledWith("k", {
+      userId: "1",
+      username: "admin",
+      ipAddress: "10.1.1.1",
+    });
   });
 
   it("rollback forwards the actor context with the parsed integer id", async () => {
@@ -197,7 +214,9 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
 
   it("list propagates service failures (no masking-layer swallowing)", async () => {
     const { controller, service } = makeDeps();
-    service.getByPrefix.mockRejectedValue(new BadRequestException("bad prefix"));
+    service.getByPrefix.mockRejectedValue(
+      new BadRequestException("bad prefix"),
+    );
     await expect(controller.findAll("x")).rejects.toThrow(BadRequestException);
   });
 });

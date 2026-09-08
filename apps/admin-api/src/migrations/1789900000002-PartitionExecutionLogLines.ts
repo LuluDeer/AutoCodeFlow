@@ -1,5 +1,8 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
-import { partitionNameFor, partitionRangeFor } from "../modules/task/log-retention/log-partition.util";
+import {
+  partitionNameFor,
+  partitionRangeFor,
+} from "../modules/task/log-retention/log-partition.util";
 
 /**
  * ARCH-22「execution_log_lines 按日分区」——schema 改造为

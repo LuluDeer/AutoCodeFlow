@@ -1,10 +1,8 @@
 import { Test } from "@nestjs/testing";
-import { getRepositoryToken } from "@nestjs/typeorm";
 import { ForbiddenException, UnauthorizedException } from "@nestjs/common";
 import { ExecutionContext } from "@nestjs/common";
 import { ApiKeyAuth } from "../api-key-auth.helper";
 import { ApiKeysService } from "../api-keys.service";
-import { AuditService } from "../../audit/audit.service";
 import { ApiKey, ApiKeyScope } from "../entities/api-key.entity";
 import { hashApiKey } from "../api-key.util";
 
@@ -52,10 +50,7 @@ describe("AUTH-03 ApiKeyAuth（guard acf_ 分支）", () => {
       auditAuthFailure: jest.fn().mockResolvedValue(undefined),
     };
     const moduleRef = await Test.createTestingModule({
-      providers: [
-        ApiKeyAuth,
-        { provide: ApiKeysService, useValue: svc },
-      ],
+      providers: [ApiKeyAuth, { provide: ApiKeysService, useValue: svc }],
     }).compile();
     auth = moduleRef.get(ApiKeyAuth);
   });
@@ -117,14 +112,22 @@ describe("AUTH-03 ApiKeyAuth（guard acf_ 分支）", () => {
   it("readonly key + POST trigger → 403 且文案含 scope 提示", async () => {
     svc.authenticate.mockResolvedValue({ apiKey: keyRow() });
     await expect(
-      auth.authenticate(makeContext("POST", "tasks/abc/trigger"), "acf_deadbeef"),
+      auth.authenticate(
+        makeContext("POST", "tasks/abc/trigger"),
+        "acf_deadbeef",
+      ),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it("trigger key + POST trigger → 放行；trigger key + DELETE tasks → 403", async () => {
-    svc.authenticate.mockResolvedValue({ apiKey: keyRow({ scope: "trigger" }) });
+    svc.authenticate.mockResolvedValue({
+      apiKey: keyRow({ scope: "trigger" }),
+    });
     await expect(
-      auth.authenticate(makeContext("POST", "tasks/abc/trigger"), "acf_deadbeef"),
+      auth.authenticate(
+        makeContext("POST", "tasks/abc/trigger"),
+        "acf_deadbeef",
+      ),
     ).resolves.toBe(true);
     await expect(
       auth.authenticate(makeContext("DELETE", "tasks/abc"), "acf_deadbeef"),
@@ -134,7 +137,10 @@ describe("AUTH-03 ApiKeyAuth（guard acf_ 分支）", () => {
   it("manage key + PUT config → 放行；manage key 仍被 auth/ api-keys 面 401", async () => {
     svc.authenticate.mockResolvedValue({ apiKey: keyRow({ scope: "manage" }) });
     await expect(
-      auth.authenticate(makeContext("PUT", "config/executor-shared-token"), "acf_deadbeef"),
+      auth.authenticate(
+        makeContext("PUT", "config/executor-shared-token"),
+        "acf_deadbeef",
+      ),
     ).resolves.toBe(true);
     await expect(
       auth.authenticate(makeContext("POST", "api-keys"), "acf_deadbeef"),

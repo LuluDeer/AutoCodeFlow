@@ -14,9 +14,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 时间戳 1789800000001 为 002/SEC-03 声明占用（避让 004/CORE-03 的
  * 1789800000000，见 docs/PLAN-CLAIMS.md 变更日志）。
  */
-export class AddUserTotpAndSessionMeta1789800000001
-  implements MigrationInterface
-{
+export class AddUserTotpAndSessionMeta1789800000001 implements MigrationInterface {
   name = "AddUserTotpAndSessionMeta1789800000001";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

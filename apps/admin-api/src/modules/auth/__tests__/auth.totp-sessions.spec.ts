@@ -60,12 +60,12 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
   beforeEach(async () => {
     usersService = {
       findByUsername: jest.fn(),
-      findById: jest.fn().mockImplementation(async (id: number) =>
-        makeUser({ id }),
-      ),
-      findByIdRaw: jest.fn().mockImplementation(async (id: number) =>
-        makeUser({ id }),
-      ),
+      findById: jest
+        .fn()
+        .mockImplementation(async (id: number) => makeUser({ id })),
+      findByIdRaw: jest
+        .fn()
+        .mockImplementation(async (id: number) => makeUser({ id })),
       recordLoginFailure: jest.fn().mockResolvedValue(undefined),
       resetLoginFailure: jest.fn().mockResolvedValue(undefined),
       clearExpiredLock: jest.fn().mockResolvedValue(true),
@@ -225,9 +225,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       usersService.findById.mockResolvedValue(
         makeUser({ totpSecret: FIXED_SECRET, totpEnabled: true }) as any,
       );
-      await expect(
-        service.totpSetup(1),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.totpSetup(1)).rejects.toThrow(BadRequestException);
     });
 
     it("enable with a valid code flips totpEnabled=true (end-to-end: setup→enable→login requires verify→verify issues)", async () => {
@@ -258,8 +256,8 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
     });
 
     it("enable with a wrong code fails and leaves the staged secret disabled", async () => {
-      usersService.findById.mockImplementation(async (id: number) =>
-        makeUser({ id, totpSecret: FIXED_SECRET }) as any,
+      usersService.findById.mockImplementation(
+        async (id: number) => makeUser({ id, totpSecret: FIXED_SECRET }) as any,
       );
       await expect(service.totpEnable(1, badCode())).rejects.toThrow(
         "Invalid TOTP code",
@@ -408,10 +406,13 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
 
     it("generateTokens stamps session metadata and signs sid claim into the access token", async () => {
       usersService.findByUsername.mockResolvedValue(makeUser() as any);
-      await service.login({ username: "alice", password: "p" }, {
-        userAgent: "UA-TEST",
-        ip: "127.0.0.1",
-      });
+      await service.login(
+        { username: "alice", password: "p" },
+        {
+          userAgent: "UA-TEST",
+          ip: "127.0.0.1",
+        },
+      );
       expect(refreshTokenRepo.create).toHaveBeenCalledWith(
         expect.objectContaining({ userAgent: "UA-TEST", ip: "127.0.0.1" }),
       );

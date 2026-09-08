@@ -2,7 +2,6 @@ import { EventSubscriptionController } from "../event-subscription.controller";
 import { AuthUser } from "../../../common/interfaces/auth-user.interface";
 import { UserRole } from "../../users/entities/user.entity";
 import { EventSubscription } from "../entities/event-subscription.entity";
-import { EventSubscriptionDeadLetter } from "../entities/event-subscription-dead-letter.entity";
 import { ParseUUIDPipe } from "@nestjs/common";
 
 /**
@@ -104,12 +103,7 @@ describe("EventSubscriptionController — 端点委托契约（QA-02）", () => 
       { page: 2, limit: 50 } as any,
       req,
     );
-    expect(svc.listDeadLetters).toHaveBeenCalledWith(
-      SUB_ID,
-      req.user,
-      2,
-      50,
-    );
+    expect(svc.listDeadLetters).toHaveBeenCalledWith(SUB_ID, req.user, 2, 50);
     expect(result).toEqual({ data: [{ id: DL_ID }], total: 1 });
   });
 

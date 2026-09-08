@@ -115,10 +115,7 @@ export class ArtifactsService {
     this.assertWithinCountCap(execId);
 
     const sha256 = crypto.createHash("sha256").update(buf).digest("hex");
-    if (
-      declaredSha256 &&
-      declaredSha256.toLowerCase() !== sha256
-    ) {
+    if (declaredSha256 && declaredSha256.toLowerCase() !== sha256) {
       throw new BadRequestException(
         "Artifact sha256 does not match uploaded bytes",
       );

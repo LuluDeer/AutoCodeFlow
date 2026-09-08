@@ -16,7 +16,6 @@ import { createHmac } from "node:crypto";
 import { UserRole } from "../../../modules/users/entities/user.entity";
 import { DomainEventBus } from "../../../common/services/domain-event-bus.service";
 import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
-import { assertSafeHttpUrl } from "../../../common/utils/safe-http.util";
 import { EventSubscription } from "../entities/event-subscription.entity";
 import { EventSubscriptionDeadLetter } from "../entities/event-subscription-dead-letter.entity";
 import { EventSubscriptionService } from "../event-subscription.service";
@@ -38,15 +37,17 @@ jest.mock("axios", () => ({
 }));
 jest.mock("../../../common/utils/safe-http.util", () => ({
   ...jest.requireActual("../../../common/utils/safe-http.util"),
-  assertSafeHttpUrl: jest.fn().mockResolvedValue(new URL("https://x.example.com")),
+  assertSafeHttpUrl: jest
+    .fn()
+    .mockResolvedValue(new URL("https://x.example.com")),
 }));
 
 // 工厂 mock 带 __esModule+default（ts-jest 无 esModuleInterop 的既有先例，
 // app-deployment.service.spec.ts 同款）；requireMock 拿同一实例。
 import axios from "axios";
 const axiosPost = axios.post as unknown as jest.Mock;
-const assertSafe = (jest.requireMock("../../../common/utils/safe-http.util")
-  .assertSafeHttpUrl as unknown) as jest.Mock;
+const assertSafe = jest.requireMock("../../../common/utils/safe-http.util")
+  .assertSafeHttpUrl as unknown as jest.Mock;
 
 const adminUser: AuthUser = {
   id: 1,
@@ -63,7 +64,9 @@ const plainUser: AuthUser = {
   isActive: true,
 };
 
-function makeSub(overrides: Partial<EventSubscription> = {}): EventSubscription {
+function makeSub(
+  overrides: Partial<EventSubscription> = {},
+): EventSubscription {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     userId: 7,
@@ -80,7 +83,9 @@ function makeSub(overrides: Partial<EventSubscription> = {}): EventSubscription 
   } as EventSubscription;
 }
 
-function makeDl(overrides: Partial<EventSubscriptionDeadLetter> = {}): EventSubscriptionDeadLetter {
+function makeDl(
+  overrides: Partial<EventSubscriptionDeadLetter> = {},
+): EventSubscriptionDeadLetter {
   return {
     id: "22222222-2222-4222-8222-222222222222",
     subscriptionId: "11111111-1111-4111-8111-111111111111",
@@ -103,8 +108,12 @@ describe("FEAT-07 event-subscription.util", () => {
   });
 
   it("subscriptionMatches 只命中订阅的事件名；空集不命中", () => {
-    expect(subscriptionMatches(["execution.failed"], "execution.failed")).toBe(true);
-    expect(subscriptionMatches(["execution.failed"], "execution.completed")).toBe(false);
+    expect(subscriptionMatches(["execution.failed"], "execution.failed")).toBe(
+      true,
+    );
+    expect(
+      subscriptionMatches(["execution.failed"], "execution.completed"),
+    ).toBe(false);
     expect(subscriptionMatches([], "execution.failed")).toBe(false);
     expect(subscriptionMatches(null, "execution.failed")).toBe(false);
   });
@@ -148,7 +157,10 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
         OutboundEventDispatcher,
         DomainEventBus,
         { provide: EventSubscriptionService, useValue: subServiceMock },
-        { provide: getRepositoryToken(EventSubscription), useValue: subRepoMock },
+        {
+          provide: getRepositoryToken(EventSubscription),
+          useValue: subRepoMock,
+        },
         {
           provide: getRepositoryToken(EventSubscriptionDeadLetter),
           useValue: dlRepoMock,
@@ -183,7 +195,9 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
     const expected =
       "sha256=" +
       createHmac("sha256", "s3cret-s3cret-s3cret-1234")
-        .update(Buffer.concat([Buffer.from(`${ts}.`), Buffer.from(body, "utf8")]))
+        .update(
+          Buffer.concat([Buffer.from(`${ts}.`), Buffer.from(body, "utf8")]),
+        )
         .digest("hex");
     expect(config.headers["X-Hub-Signature-256"]).toBe(expected);
     // 先例同款输入：`${timestamp}.${rawBody}` 拼接（application.controller.ts L291-295）。
@@ -242,7 +256,11 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
     subRepoMock.find.mockResolvedValue([makeSub({ consecutiveFailures: 2 })]);
     bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, {});
     // dispatch → deliverOnce(axios) → recordDeliverySuccess 链路跨多个微任务拍。
-    for (let i = 0; i < 10 && subServiceMock.recordDeliverySuccess.mock.calls.length < 1; i++) {
+    for (
+      let i = 0;
+      i < 10 && subServiceMock.recordDeliverySuccess.mock.calls.length < 1;
+      i++
+    ) {
       await Promise.resolve();
     }
     expect(axiosPost).toHaveBeenCalledTimes(1);
@@ -330,7 +348,10 @@ describe("FEAT-07 EventSubscriptionService", () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         EventSubscriptionService,
-        { provide: getRepositoryToken(EventSubscription), useValue: subRepoMock },
+        {
+          provide: getRepositoryToken(EventSubscription),
+          useValue: subRepoMock,
+        },
         {
           provide: getRepositoryToken(EventSubscriptionDeadLetter),
           useValue: dlRepoMock,

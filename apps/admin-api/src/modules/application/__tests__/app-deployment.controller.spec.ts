@@ -180,7 +180,9 @@ describe("AppDeploymentController — endpoint delegation & heartbeat auth (QA-0
         .fn()
         .mockResolvedValue({ id: "deploy-1", executorId: "exec-1" }),
       deploy: jest.fn().mockResolvedValue({ id: "deploy-1" }),
-      upgrade: jest.fn().mockResolvedValue({ id: "deploy-1", status: "upgrading" }),
+      upgrade: jest
+        .fn()
+        .mockResolvedValue({ id: "deploy-1", status: "upgrading" }),
       stop: jest.fn().mockResolvedValue({ id: "deploy-1", status: "stopped" }),
       handleHeartbeat: jest.fn().mockResolvedValue(undefined),
     };

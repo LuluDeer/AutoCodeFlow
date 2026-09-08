@@ -5,7 +5,10 @@ import {
   LOG_RETENTION_BATCH_SIZE,
 } from "../log-retention/log-retention-cleanup.service";
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
-import { partitionNameFor, partitionRangeFor } from "../log-retention/log-partition.util";
+import {
+  partitionNameFor,
+  partitionRangeFor,
+} from "../log-retention/log-partition.util";
 
 const mockRepo = () => {
   const qb = () => ({
@@ -190,8 +193,7 @@ describe("LogRetentionCleanupService", () => {
               name: p.name,
               bound: p.bound,
               // undefined（未传）→ 缺省 "100"；显式 null 原样透传
-              approxRows:
-                p.approxRows === undefined ? "100" : p.approxRows,
+              approxRows: p.approxRows === undefined ? "100" : p.approxRows,
             })),
           );
         }
@@ -343,9 +345,7 @@ describe("LogRetentionCleanupService", () => {
       expect(repo.createQueryBuilder).toHaveBeenCalledTimes(1);
       // 未走 DETACH
       expect(
-        repo.query.mock.calls.filter(([sql]) =>
-          String(sql).includes("DETACH"),
-        ),
+        repo.query.mock.calls.filter(([sql]) => String(sql).includes("DETACH")),
       ).toHaveLength(0);
     });
 

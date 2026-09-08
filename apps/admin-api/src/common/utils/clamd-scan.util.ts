@@ -107,7 +107,9 @@ export async function scanBufferWithClamd(
 
     socket.once("error", (err: Error) => {
       clearTimeout(timer);
-      logger?.warn?.(`clamd unreachable at ${cfg.host}:${cfg.port}: ${err.message}`);
+      logger?.warn?.(
+        `clamd unreachable at ${cfg.host}:${cfg.port}: ${err.message}`,
+      );
       finish({
         ok: false,
         reason: "unreachable",

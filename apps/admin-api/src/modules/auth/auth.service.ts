@@ -1,4 +1,8 @@
-import { Injectable, UnauthorizedException, BadRequestException } from "@nestjs/common";
+import {
+  Injectable,
+  UnauthorizedException,
+  BadRequestException,
+} from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -10,11 +14,7 @@ import { UsersService } from "../users/users.service";
 import { LoginDto } from "./dto/login.dto";
 import { JwtPayload } from "./strategies/jwt.strategy";
 import { RefreshToken } from "./entities/refresh-token.entity";
-import {
-  generateTotpSecret,
-  totpVerify,
-  buildOtpauthUrl,
-} from "./totp.util";
+import { generateTotpSecret, totpVerify, buildOtpauthUrl } from "./totp.util";
 
 /**
  * F-4: bcrypt hash of a throw-away password, pre-computed offline (cost 12).
@@ -48,7 +48,10 @@ export class AuthService {
    */
   private clock: () => number = () => Math.floor(Date.now() / 1000);
 
-  async login(loginDto: LoginDto, meta?: { userAgent?: string | null; ip?: string | null }) {
+  async login(
+    loginDto: LoginDto,
+    meta?: { userAgent?: string | null; ip?: string | null },
+  ) {
     const user = await this.usersService.findByUsername(loginDto.username);
 
     // SEC-003: check the lockout state BEFORE running bcrypt — if the account
@@ -234,8 +237,7 @@ export class AuthService {
 
     let confirmed = false;
     if (opts.code && user.totpSecret) {
-      confirmed = totpVerify(user.totpSecret, opts.code, this.clock())
-        .valid;
+      confirmed = totpVerify(user.totpSecret, opts.code, this.clock()).valid;
     } else if (opts.password) {
       confirmed = await bcrypt.compare(opts.password, user.password);
     }
@@ -349,10 +351,10 @@ export class AuthService {
         .createQueryBuilder()
         .update(RefreshToken)
         .set({ revoked: true })
-        .where(
-          '"userId" = :userId AND "revoked" = false AND "jti" != :sid',
-          { userId, sid: currentSid },
-        )
+        .where('"userId" = :userId AND "revoked" = false AND "jti" != :sid', {
+          userId,
+          sid: currentSid,
+        })
         .execute();
       return { revoked: result.affected ?? 0 };
     }

@@ -31,10 +31,14 @@ describe("log-partition.util（ARCH-22）", () => {
       const d = parseDayFromPartitionName("execution_log_lines_20260908");
       expect(d).not.toBeNull();
       expect(d!.toISOString()).toBe("2026-09-08T00:00:00.000Z");
-      expect(parseDayFromPartitionName("execution_log_lines_legacy")).toBeNull();
+      expect(
+        parseDayFromPartitionName("execution_log_lines_legacy"),
+      ).toBeNull();
       expect(parseDayFromPartitionName("other_table_20260908")).toBeNull();
       // 非法月日数字 → NaN → null
-      expect(parseDayFromPartitionName("execution_log_lines_20269999")).toBeNull();
+      expect(
+        parseDayFromPartitionName("execution_log_lines_20269999"),
+      ).toBeNull();
     });
   });
 
@@ -77,9 +81,13 @@ describe("log-partition.util（ARCH-22）", () => {
     it("不可解析输入返回 null（调用方跳过该分区不误删）", () => {
       expect(parsePartitionUpperBound("")).toBeNull();
       expect(parsePartitionUpperBound("FOR VALUES IN ('a','b')")).toBeNull();
-      expect(parsePartitionUpperBound(undefined as unknown as string)).toBeNull();
+      expect(
+        parsePartitionUpperBound(undefined as unknown as string),
+      ).toBeNull();
       // 时间戳字段残缺 → Invalid Date → null
-      expect(parsePartitionUpperBound("FOR VALUES FROM ('x') TO ('y')")).toBeNull();
+      expect(
+        parsePartitionUpperBound("FOR VALUES FROM ('x') TO ('y')"),
+      ).toBeNull();
     });
   });
 });

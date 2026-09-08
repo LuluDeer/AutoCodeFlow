@@ -190,7 +190,12 @@ describe("zip-guard.util — 规则细节", () => {
   it("空压缩载荷（0/0 比）不被除零误判", () => {
     expect(() =>
       checkSummaryAgainstLimits(
-        { entries: 1, totalCompressed: 0, totalUncompressed: 0, nestedZipNames: [] },
+        {
+          entries: 1,
+          totalCompressed: 0,
+          totalUncompressed: 0,
+          nestedZipNames: [],
+        },
         ZIP_GUARD_DEFAULT_LIMITS,
       ),
     ).not.toThrow();

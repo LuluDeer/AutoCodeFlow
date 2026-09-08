@@ -35,7 +35,10 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
       ExecutionReport,
     ]),
     BullModule.registerQueue({ name: "task-queue" }),
-    ExecutorModule,
+    // forwardRef：SEC-02 起 ExecutorModule 反向 import 本模块（取
+    // SecretsCryptoService export），与既有 ExecutorModule 引用成环——
+    // 两端模块级 forwardRef 解开（详见 executor.module 同位置注释）。
+    forwardRef(() => ExecutorModule),
     AiModule,
     NotificationModule,
     AuditModule,

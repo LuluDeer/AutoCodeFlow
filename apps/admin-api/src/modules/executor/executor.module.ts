@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common";
+import { Module, forwardRef } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { BullModule } from "@nestjs/bullmq";
 import { ExecutorController } from "./executor.controller";
@@ -29,8 +29,13 @@ import { AuditModule } from "../audit/audit.module";
     NotificationModule,
     SystemConfigModule,
     // SEC-02: SecretsCryptoService 注入 TaskModule export 的单例（key
-    // 生命周期全进程一致；本地 providers 声明在此冗余，勿加回）
-    TaskModule,
+    // 生命周期全进程一致；本地 providers 声明在此冗余，勿加回）。
+    // forwardRef：TaskModule 自初始提交即 import ExecutorModule，SEC-02
+    // 反向引入形成模块环——e2e bootstrap 实证 require 顺序敏感（task 先
+    // 加载时本模块 imports 元数据拿到 undefined）。与 task↔scheduler 环
+    // 同款解法：两端模块级 forwardRef + 跨环 provider 注入显式
+    // @Inject(forwardRef())。
+    forwardRef(() => TaskModule),
     // AUTH-05: AuditService（executor.rotate_token / executor.delete 审计）
     AuditModule,
   ],

@@ -13,7 +13,7 @@ import {
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
-import { Request, Response } from "express";
+import { Response } from "express";
 import { pipeline } from "stream/promises";
 import {
   ApiBearerAuth,
@@ -26,10 +26,7 @@ import {
 import { Public } from "../../common/decorators/public.decorator";
 import { buildContentDisposition } from "../executor-package/executor-package.controller";
 import { ArtifactsService } from "./artifacts.service";
-import {
-  MAX_ARTIFACT_COUNT,
-  MAX_ARTIFACT_SIZE_BYTES,
-} from "./artifacts.constants";
+import { MAX_ARTIFACT_SIZE_BYTES } from "./artifacts.constants";
 
 /**
  * FEAT-05：执行产物通道。
@@ -63,9 +60,16 @@ export class ArtifactsController {
   })
   @ApiParam({ name: "execId", description: "Execution ID (UUID)" })
   @ApiParam({ name: "name", description: "Bare artifact file name" })
-  @ApiQuery({ name: "sha256", required: false, description: "Expected sha256 hex" })
+  @ApiQuery({
+    name: "sha256",
+    required: false,
+    description: "Expected sha256 hex",
+  })
   @ApiResponse({ status: 201, description: "Stored" })
-  @ApiResponse({ status: 400, description: "Invalid name / over cap / sha mismatch" })
+  @ApiResponse({
+    status: 400,
+    description: "Invalid name / over cap / sha mismatch",
+  })
   @ApiResponse({ status: 401, description: "Invalid executor credential" })
   @ApiResponse({ status: 404, description: "Execution not found" })
   @UseInterceptors(

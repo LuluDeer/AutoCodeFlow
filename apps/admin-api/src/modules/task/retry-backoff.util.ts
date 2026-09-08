@@ -33,9 +33,12 @@ export function jitteredRetryDelayMs(
   random: () => number = Math.random,
   ratio: number = RETRY_JITTER_RATIO,
 ): number {
-  const delaySec = typeof retryDelaySec === "number" && Number.isFinite(retryDelaySec) && retryDelaySec > 0
-    ? retryDelaySec
-    : 0;
+  const delaySec =
+    typeof retryDelaySec === "number" &&
+    Number.isFinite(retryDelaySec) &&
+    retryDelaySec > 0
+      ? retryDelaySec
+      : 0;
   if (delaySec === 0) return 0;
 
   const effectiveAttempt =

@@ -1,17 +1,6 @@
-import {
-  Controller,
-  Get,
-  Logger,
-  Req,
-  Res,
-  UseGuards,
-} from "@nestjs/common";
+import { Controller, Get, Logger, Req, Res, UseGuards } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from "@nestjs/swagger";
+import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Request, Response } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { SkipTimeout } from "../../common/decorators/skip-timeout.decorator";
@@ -82,10 +71,7 @@ export class MetricsStreamController {
       "Concurrency: METRICS_STREAM_MAX_GLOBAL slots per instance (503 when full).",
   })
   @SkipTimeout()
-  async stream(
-    @Req() req: Request,
-    @Res() res: Response,
-  ): Promise<void> {
+  async stream(@Req() req: Request, @Res() res: Response): Promise<void> {
     // 在写任何 SSE 头之前占用槽位——超限抛 ServiceUnavailableException
     // 会被全局异常过滤器渲染为真正的 503（logs/stream TASK-008 先例）。
     const releaseSlot = this.slots.acquireSlot();
@@ -147,7 +133,10 @@ export class MetricsStreamController {
           const snap = await snapshot();
           if (ac.signal.aborted) break;
           if (snap.errors.length > 0) {
-            send({ failed: snap.errors, at: new Date().toISOString() }, "error");
+            send(
+              { failed: snap.errors, at: new Date().toISOString() },
+              "error",
+            );
           }
           send(snap);
           lastWriteAt = Date.now();
