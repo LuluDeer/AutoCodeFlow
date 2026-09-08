@@ -157,7 +157,7 @@
 | NF-07 | P3 | unclaimed | | | packages/acf-cli | | CLI 执行器管理命令（list/rotate/offline，对齐 W2 ADMIN 语义） |
 | NF-08 | P3 | unclaimed | | | scripts/demo-seed* + docs/tutorials | | demo 故障演练包（失败/runbook/死信/审批待办预置，教程四篇可复现） |
 | ARCH-28 | P2 | unclaimed | | | 根 package.json + CI workflows | | workspace/turbo 二期评估与分批迁移（CI 时长对比报告） |
-| ARCH-29 | P2 | unclaimed | | | docs/PLAN-CLAIMS.md 常设段 + CI 校验 | | 迁移时间戳分配表+撞号 CI 拦截（小任务宜尽快；当前最高 1790000000002） |
+| ARCH-29 | P2 | done | 接手会话第二轮（主会话） | 2026-09-09 | scripts/check-migrations.mjs(+selftest) + docs/PLAN-CLAIMS.md 常设段 + .github/workflows/ci.yml(check-migrations job) + docs/development.md 检查清单第 4 条 | 本轮补 commit hash | 迁移时间戳分配表+撞号 CI 拦截 **done**：①分配表常设段建账（47 个在盘迁移全量回填归属：初始骨架/建板前存量按序标注，建板后 1789100000000 起逐个对齐认领板任务编号）；②scripts/check-migrations.mjs 三判据（文件名时间戳唯一/在盘必已注册/注册表无重复行，预留未落盘允许）+selftest 11 例全绿；③CI 新 check-migrations job（校验+selftest 双跑）；④development.md PR 检查清单第 4 条改指分配表（先登记再建文件）。分配规则裁定：在盘最大+1 连续分配（放弃旧「段预留」惯例——1790000000002 后下一号=1790000000003，由脚本输出） |
 | ARCH-30 | P3 | unclaimed | | | admin-api notification 监听器 + ai 库 | | AI 分析服务化（processor 直调迁出+失败重试+落库率指标） |
 | ARCH-31 | P3 | unclaimed | | | 盘点文档+silences/outbox Redis 化 | | 多 admin 实例兼容矩阵（进程内单例状态全盘点） |
 | UI-15 | P2 | unclaimed | | | admin-web mutation 面盘点+统一 | | toast/错误反馈一致性治理（QA-03 两处静默失败前科收口） |
@@ -168,6 +168,60 @@
 | DOC-07 | P2 | unclaimed | | | docs/operations.md | | operator 升级 runbook（QA-08 产出后补） |
 | DOC-08 | P3 | unclaimed | | | 滚动 | | windows-findings 长尾清偿（BUG-07 专项并入） |
 | DOC-09 | P3 | unclaimed | | | packages/docs-site + CI | | 文档站与仓库文档 drift 同步机制 |
+
+## 迁移时间戳分配表（ARCH-29 常设段）
+
+> 单一事实源：apps/admin-api/src/migrations/ 的时间戳分配。**新增迁移前先在此登记，再建文件**；分配规则=在盘最大时间戳 +1（不跳号、不段预留），撞号/漏登由 CI `check-migrations` 拦截（scripts/check-migrations.mjs，自检 scripts/check-migrations.selftest.mjs）。时间戳即 Date.now() 毫秒段，与既有序一致。
+
+| 时间戳 | 迁移 | 任务/归属 | 备注 |
+|---|---|---|---|
+| 1717473142678 | InitialSchema | 初始骨架 | 已落盘 |
+| 1717473142679 | TaskExecutionForeignKey | 初始骨架 | 已落盘 |
+| 1717473142680 | RefreshTokenTable | 初始骨架 | 已落盘 |
+| 1717473142681 | AccountLockout | 初始骨架 | 已落盘 |
+| 1717473142682 | ExecutorTokenHash | 初始骨架 | 已落盘 |
+| 1717473142683 | AddPerformanceIndexes | 初始骨架 | 已落盘 |
+| 1717473142684 | AddApplicationAndTaskFields | 初始骨架 | 已落盘 |
+| 1717473142685 | AddExecutorMissingColumns | 初始骨架 | 已落盘 |
+| 1717473142686 | CreateApplicationVersionsTable | 初始骨架 | 已落盘 |
+| 1717473142687 | AddTaskExecutionFailureReason | 初始骨架 | 已落盘 |
+| 1717473142688 | AddTaskTimezone | 初始骨架 | 已落盘 |
+| 1717473142689 | AddExecutorStartupTracking | 初始骨架 | 已落盘 |
+| 1717473142690 | AddExecutionLogStorage | 初始骨架 | 已落盘 |
+| 1717473142691 | AddMissingUniqueAndCompositeIndexes | 初始骨架 | 已落盘 |
+| 1717473142692 | AddTaskExecutionVersion | 初始骨架 | 已落盘 |
+| 1717473142693 | AddExecutorVersion | 初始骨架 | 已落盘 |
+| 1717473142694 | CreateExecutorPackagesTable | 初始骨架 | 已落盘 |
+| 1717473142700 | AddTaskSoftDelete | 初始骨架 | 已落盘 |
+| 1717473142701 | AddApplicationVersionUniqueIndex | 初始骨架 | 已落盘 |
+| 1717473142702 | LimitUsersUsernameLength | 初始骨架 | 已落盘 |
+| 1717473142703 | AddExecutionLogLineCreatedAt | 初始骨架 | 已落盘 |
+| 1717473142704 | EnsureSystemConfigValueText | 初始骨架 | 已落盘 |
+| 1788274394054 | RenameExecutorVersionColumn | 建板前存量 | 已落盘 |
+| 1788274394055 | CreateAppDeploymentsTable | 建板前存量 | 已落盘 |
+| 1788369816718 | AddTaskExecutorId | 建板前存量 | 已落盘 |
+| 1788581485026 | AddTaskRequirements | 建板前存量 | 已落盘 |
+| 1788700000000 | AddExecutorRunningExecutionIds | 建板前存量 | 已落盘 |
+| 1788800000000 | AddExecutionExitCode | 建板前存量 | 已落盘 |
+| 1788900000000 | AddExecutorDeadLetterCount | 建板前存量 | 已落盘 |
+| 1789000000000 | AddAppDeploymentsInFlightUniqueIndex | 建板前存量 | 已落盘 |
+| 1789000000001 | AddMissingTablesAndColumns | 建板前存量 | 已落盘 |
+| 1789100000000 | CreateNotificationSilences | FEAT-01 | 已落盘 |
+| 1789200000000 | AddTaskMaintenanceWindows | FEAT-06 | 已落盘 |
+| 1789300000000 | AddExecutionLogLineLevel | OBS-03 | 已落盘 |
+| 1789400000000 | AddTaskRunbook | FEAT-11 | 已落盘 |
+| 1789500000000 | AddTaskTimeoutPolicy | CORE-04 | 已落盘 |
+| 1789500000001 | AddTaskSecrets | SEC-02 | 已落盘 |
+| 1789600000000 | AddExecutionArtifacts | FEAT-05 | 已落盘 |
+| 1789800000000 | CreateTaskTemplates | CORE-03 | 已落盘 |
+| 1789800000001 | AddUserTotpAndSessionMeta | SEC-03 | 已落盘 |
+| 1789900000000 | CreateEventSubscriptions | FEAT-07 | 已落盘 |
+| 1789900000001 | AddTaskEstimatedDuration | CORE-05 | 已落盘 |
+| 1789900000002 | PartitionExecutionLogLines | ARCH-22 | 已落盘 |
+| 1789900000003 | AddExecutionTraceId | OBS-01 | 已落盘 |
+| 1790000000000 | CreateApiKeys | AUTH-03 | 已落盘 |
+| 1790000000001 | AddDeploymentRolloutColumns | DEP-02/03 | 已落盘 |
+| 1790000000002 | AddDeploymentApprovalColumns | DEP-04 | 已落盘 |
 
 ## 变更日志
 

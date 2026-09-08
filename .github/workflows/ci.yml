@@ -360,6 +360,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ARCH-29：迁移时间戳唯一性 + 认领板分配表注册校验（撞号/漏登拦截）
+  check-migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Migration allocation check
+        run: |
+          node scripts/check-migrations.mjs
+          node scripts/check-migrations.selftest.mjs
+
   # ── Python services & packages ────────────────────────────
   executor-python-test:
     runs-on: ubuntu-latest
