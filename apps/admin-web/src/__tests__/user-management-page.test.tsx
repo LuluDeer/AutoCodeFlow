@@ -144,20 +144,12 @@ describe('UserManagementPage 新建用户（QA-03）', () => {
 
     fireEvent.change(screen.getByPlaceholderText('请输入用户名'), { target: { value: 'dave' } });
     fireEvent.change(screen.getByPlaceholderText('请输入密码'), { target: { value: 'weak' } });
-    // 页面 handleCreateSubmit 的 validateFields() rejection 无消费方（onOk
-    // 不 await、无 catch）——antd 校验失败会产生 unhandled rejection 噪音。
-    // 在 vitest 捕获前用 process 级一次性监听消费（先于 click 注册），
-    // 断言只关注「校验提示渲染 + create 未被调用」；不改业务代码。
-    const swallowed: unknown[] = [];
-    const onRejection = (reason: unknown) => { swallowed.push(reason); };
-    process.on('unhandledRejection', onRejection);
+    // UI-15：handleCreateSubmit 已补 .catch（isFormValidationError 分支静默，
+    // 由 Form 红字呈现）——不再产生 unhandled rejection，无需 process 级监听兜底。
     fireEvent.click(findBtn(document.body, '创建')!);
 
     await screen.findByText('密码至少8个字符');
     expect(mockedUsers.create).not.toHaveBeenCalled();
-    // flush microtasks 让 rejection 在监听移除前落地
-    await new Promise((r) => setTimeout(r, 0));
-    process.removeListener('unhandledRejection', onRejection);
   });
 
   it('合法提交：create 收到 username/password/role payload 并提示成功', async () => {
@@ -249,16 +241,11 @@ describe('UserManagementPage 重置密码（QA-03）', () => {
 
     fireEvent.change(screen.getByPlaceholderText('请输入新密码'), { target: { value: 'NewPass1!' } });
     fireEvent.change(screen.getByPlaceholderText('再次输入新密码'), { target: { value: 'NewPass2!' } });
-    // 同前：validateFields rejection 无消费方 → process 级一次性监听消费
-    const swallowed: unknown[] = [];
-    const onRejection = (reason: unknown) => { swallowed.push(reason); };
-    process.on('unhandledRejection', onRejection);
+    // UI-15：handleResetPwdSubmit 已补 .catch（isFormValidationError 静默）
     fireEvent.click(findBtn(document.body, '确认重置')!);
 
     await screen.findByText('两次密码不一致');
     expect(mockedUsers.update).not.toHaveBeenCalled();
-    await new Promise((r) => setTimeout(r, 0));
-    process.removeListener('unhandledRejection', onRejection);
   });
 
   it('一致 → update(id, { password }) 成功提示「密码已重置」', async () => {

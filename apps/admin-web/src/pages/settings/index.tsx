@@ -13,6 +13,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
+import { getErrMsg } from '../../utils/error';
 import { useAuthStore, isAdminUser } from '../../store/auth';
 import type { ColumnsType } from 'antd/es/table';
 import PageHeader from '../../components/PageHeader';
@@ -55,6 +56,11 @@ function TokenSection() {
   const { mutateAsync: generate, isPending: generating } = useMutation({
     mutationFn: configApi.generateExecutorToken,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['executor-token'] }),
+    // UI-15：生成失败反馈（handleGenerate 的 onOk await 链会 reject，
+    // 但 antd Modal.confirm 静默吞掉该 rejection——必须显式 onError）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '生成 Token 失败'));
+    },
   });
 
   const handleGenerate = () => {
@@ -168,6 +174,11 @@ function EditModal({ record, onClose, onSaved }: EditModalProps) {
       message.success(isNew ? '配置已添加' : '配置已更新');
       onSaved();
     },
+    // UI-15：保存失败反馈（Modal 保持打开由 handleOk await 链承担，
+    // onError 补 toast 保证失败原因可见且不依赖调用形态）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, isNew ? '新增配置失败' : '更新配置失败'));
+    },
   });
 
   const handleOk = async () => {
@@ -239,11 +250,18 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
     // 失败提示由 api/client.ts 响应拦截器统一 toast（含 400/403 后端文案），
     // 这里仅复位逐行 loading，避免双重报错。
     onSettled: () => setRollingId(null),
+    // UI-15：兜底 onError 补齐（与上方注记一致——统一 toast 已覆盖，
+    // 显式 onError 保证不依赖 client 拦截器行为也必有反馈）。
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '回滚失败'));
+    },
   });
 
-  const handleRollback = async (id: number) => {
+  const handleRollback = (id: number) => {
+    // UI-15：Popconfirm onConfirm 返回 Promise 时 rc-confirm 会 await 并在
+    // reject 时静默复位按钮——reject 链必须有终点（mutation onError 已 toast）。
     setRollingId(id);
-    await rollback(id);
+    rollback(id).catch(() => undefined);
   };
 
   const cols: ColumnsType<ConfigHistory> = [
@@ -309,6 +327,10 @@ function SystemConfigTab() {
     onSuccess: () => {
       message.success('已删除');
       qc.invalidateQueries({ queryKey: ['system-configs'] });
+    },
+    // UI-15：删除失败反馈（对齐回滚 onError 形态）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '删除配置失败'));
     },
   });
 
@@ -418,6 +440,10 @@ function AiConfigTab() {
       message.success('AI 配置已保存');
       qc.invalidateQueries({ queryKey: ['ai-config'] });
     },
+    // UI-15：保存失败反馈（handleSave await 链的 rejection 无人消费时兜底）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '保存 AI 配置失败'));
+    },
   });
 
   const { mutateAsync: test, isPending: testing } = useMutation({
@@ -425,12 +451,17 @@ function AiConfigTab() {
     onSuccess: (res) => setTestResult(res),
     onError: () => setTestResult({ ok: false, message: '请求失败，请检查配置' }),
   });
-
   const provider = Form.useWatch('provider', form);
 
   const handleSave = async () => {
-    const vals = await form.validateFields();
-    await save(vals as SaveAiConfigPayload);
+    // UI-15：保存失败反馈（rejection 在此消费，防 unhandled rejection）
+    try {
+      const vals = await form.validateFields();
+      await save(vals as SaveAiConfigPayload);
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error(getErrMsg(err, '保存 AI 配置失败'));
+    }
   };
 
   const providerBadge = () => {

@@ -196,7 +196,7 @@ describe('ApiKeysSettings 吊销链路（QA-03 第二阶段）', () => {
     });
   });
 
-  it('吊销失败 → 页面不崩溃（useMutation 无 onError，失败静默=实现现状，如实断言）', async () => {
+  it('吊销失败 → 错误 toast（UI-15：补 onError 后不再静默，文案取后端 message）', async () => {
     mocked.revoke.mockRejectedValue(
       Object.assign(new Error('bad'), { response: { data: { message: '吊销事务冲突' } } }),
     );
@@ -206,10 +206,23 @@ describe('ApiKeysSettings 吊销链路（QA-03 第二阶段）', () => {
     await waitFor(() => {
       expect(mocked.revoke).toHaveBeenCalledWith(1);
     });
+    // UI-15：getErrMsg 提取 response.data.message → 错误 toast 可见
+    expect(await screen.findByText('吊销事务冲突')).toBeTruthy();
     // 失败后未吊销行按钮仍在（无状态翻转）
     await waitFor(() => {
       expect(screen.getByTestId('apikey-revoke-1')).toBeTruthy();
     });
+  });
+
+  it('吊销失败（无后端文案）→ 兜底文案 toast（UI-15）', async () => {
+    mocked.revoke.mockRejectedValue(new Error('network down'));
+    renderPage();
+    fireEvent.click(await screen.findByTestId('apikey-revoke-1'));
+    await confirmPopconfirm();
+    await waitFor(() => {
+      expect(mocked.revoke).toHaveBeenCalledWith(1);
+    });
+    expect(await screen.findByText('network down')).toBeTruthy();
   });
 
   it('已吊销行渲染「已吊销」Tag 与操作列占位；过期行渲染「已过期」', async () => {

@@ -23,7 +23,7 @@ import {
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, type User, type CreateUserDto, type UpdateUserDto } from '../api/users';
-import { getErrMsg } from '../utils/error';
+import { getErrMsg, isFormValidationError } from '../utils/error';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 
@@ -144,18 +144,27 @@ export default function UserManagementPage() {
   );
 
   const handleCreateSubmit = useCallback(() => {
-    createForm.validateFields().then((values) => {
-      if (editing) {
-        const dto: UpdateUserDto = {
-          username: values.username,
-          email: values.email,
-          role: values.role,
-        };
-        updateMutation.mutate({ id: editing.id, dto });
-      } else {
-        createMutation.mutate(values as CreateUserDto);
-      }
-    });
+    // UI-15：validateFields 的 rejection 必须有消费方——校验失败由 Form 自带
+    // 红字呈现（isFormValidationError 分支静默），其余异常兜底 toast，
+    // 消除 QA-03 记录的 unhandled rejection 前科。
+    createForm
+      .validateFields()
+      .then((values) => {
+        if (editing) {
+          const dto: UpdateUserDto = {
+            username: values.username,
+            email: values.email,
+            role: values.role,
+          };
+          updateMutation.mutate({ id: editing.id, dto });
+        } else {
+          createMutation.mutate(values as CreateUserDto);
+        }
+      })
+      .catch((err: unknown) => {
+        if (isFormValidationError(err)) return;
+        message.error(getErrMsg(err, '提交失败，请检查表单后重试'));
+      });
   }, [createForm, editing, createMutation, updateMutation]);
 
   const handleResetPwd = useCallback(
@@ -168,13 +177,20 @@ export default function UserManagementPage() {
   );
 
   const handleResetPwdSubmit = useCallback(() => {
-    resetPwdForm.validateFields().then((values) => {
-      if (!resetPwdUser) return;
-      resetPwdMutation.mutate({
-        id: resetPwdUser.id,
-        password: values.newPassword,
+    // UI-15：同 handleCreateSubmit——校验 rejection 有消费方，非校验异常兜底 toast。
+    resetPwdForm
+      .validateFields()
+      .then((values) => {
+        if (!resetPwdUser) return;
+        resetPwdMutation.mutate({
+          id: resetPwdUser.id,
+          password: values.newPassword,
+        });
+      })
+      .catch((err: unknown) => {
+        if (isFormValidationError(err)) return;
+        message.error(getErrMsg(err, '提交失败，请检查表单后重试'));
       });
-    });
   }, [resetPwdForm, resetPwdUser, resetPwdMutation]);
 
   const columns = [
