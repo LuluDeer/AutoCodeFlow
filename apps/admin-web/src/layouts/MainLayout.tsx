@@ -171,11 +171,15 @@ export default function MainLayout() {
     return () => clearInterval(timer);
   }, []);
 
-  // 按角色过滤菜单：ADMIN-only 项对普通用户隐藏（UI-03：顶层恒为分组，逐层过滤）
+  // 按角色过滤菜单：ADMIN-only 项对普通用户隐藏（UI-03：顶层恒为分组，逐层过滤）。
+  // R6 回归守卫：isAdmin 放行条件必须在分组化改造后保留——无条件过滤会把
+  // 「通知设置/用户管理/审计日志/执行器包」对管理员一并藏掉（e2e-17 实证）。
   const menuItems = allMenuItems
     .map((group) => ({
       ...group,
-      children: group.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key)),
+      children: isAdmin
+        ? group.children
+        : group.children.filter((c) => !ADMIN_ONLY_MENU_KEYS.has(c.key)),
     }))
     .filter((group) => group.children.length > 0);
 

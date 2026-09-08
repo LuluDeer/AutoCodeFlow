@@ -761,13 +761,12 @@ test('22. TaskFormPage — auto/group/pinned/broadcast 四模式切换与 pinned
   await page.goto(`${BASE}/tasks/new`);
   await page.waitForLoadState('networkidle');
 
-  // Step 0 基本配置
+  // UI-06 单页分区：全部字段同时挂载，无需向导推进
   await page.locator('#name').fill('e2e-mode-' + Date.now().toString().slice(-6));
   await page.getByText('Node.js', { exact: true }).click();
   await page.locator('#entrypoint').fill('index.js');
-  await page.getByRole('button', { name: /下一步：调度配置/ }).click();
 
-  // Step 1：四模式单选组齐备，默认 auto（注意：radio 可访问名含图标前缀，用描述文字定位）
+  // 执行器策略分区：四模式单选组齐备，默认 auto（radio 可访问名含图标前缀，用描述文字定位）
   const autoRadio = page.getByRole('radio', { name: /系统自动选择负载最低/ });
   const groupRadio = page.getByRole('radio', { name: /按分组\/标签/ });
   const pinnedRadio = page.getByRole('radio', { name: /固定到指定的执行器节点/ });
@@ -800,10 +799,9 @@ test('22. TaskFormPage — auto/group/pinned/broadcast 四模式切换与 pinned
   await pinnedRadio.click();
   await expect(page.locator('#executorId')).toBeVisible();
   await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
-  // 推进到 Step 2 参数配置
-  await page.getByRole('button', { name: /下一步：参数配置/ }).click();
+  // 单页分区下「任务默认参数」恒可见，断言仍在（UI-06 Steps→锚点导航改造）
   await expect(page.getByText('任务默认参数')).toBeVisible();
-  console.log('  ✓ 模式来回切换后 pinned 选择值保留，可推进到参数配置步骤');
+  console.log('  ✓ 模式来回切换后 pinned 选择值保留（单页分区）');
   await page.screenshot({ path: '/tmp/e2e-22-taskform-modes.png' });
   // 注：创建向导「提交」路径已修复（R8 P0），由用例 25 回归守卫；
   //     提交 payload 的 executorId 清理语义另由用例 23/24（编辑→PATCH）覆盖。
@@ -827,7 +825,6 @@ test('23. executorId 残留清理 — 编辑页还原 pinned，切 broadcast 后
   await login(page);
   await page.goto(`${BASE}/tasks/${seeded.id}/edit`);
   await page.waitForLoadState('networkidle');
-  await page.getByRole('button', { name: /下一步：调度配置/ }).click();
   // deriveExecutorMode：executorId 存在 → pinned 选中且显示正确执行器
   await expect(page.getByRole('radio', { name: /固定到指定的执行器节点/ })).toBeChecked({ timeout: 10000 });
   await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
@@ -836,7 +833,6 @@ test('23. executorId 残留清理 — 编辑页还原 pinned，切 broadcast 后
   // 切 broadcast → 选择器消失 → 保存
   await page.getByRole('radio', { name: /广播（全部执行）/ }).click();
   await expect(page.locator('#executorId')).toHaveCount(0);
-  await page.getByRole('button', { name: /下一步：参数配置/ }).click();
   const patchPromise = page.waitForResponse((r) => r.url().includes(`/api/tasks/${seeded.id}`) && r.request().method() === 'PATCH');
   await page.getByRole('button', { name: /保存更改/ }).click();
   await patchPromise;
@@ -863,14 +859,12 @@ test('24. executorId 残留清理 — 切 auto 提交后 executorId 显式置空
   await login(page);
   await page.goto(`${BASE}/tasks/${seeded.id}/edit`);
   await page.waitForLoadState('networkidle');
-  await page.getByRole('button', { name: /下一步：调度配置/ }).click();
   await expect(page.getByRole('radio', { name: /固定到指定的执行器节点/ })).toBeChecked({ timeout: 10000 });
   await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
 
   // 切 auto → 保存 → executorId 显式 null（buildExecutorPayload auto 分支）
   await page.getByRole('radio', { name: /系统自动选择负载最低/ }).click();
   await expect(page.locator('#executorId')).toHaveCount(0);
-  await page.getByRole('button', { name: /下一步：参数配置/ }).click();
   const patchPromise = page.waitForResponse((r) => r.url().includes(`/api/tasks/${seeded.id}`) && r.request().method() === 'PATCH');
   await page.getByRole('button', { name: /保存更改/ }).click();
   await patchPromise;
@@ -900,11 +894,10 @@ test('25. 创建向导 pinned 提交应携带完整字段与 executorId（R8 P0 
   await page.locator('#name').fill('e2e-create-' + Date.now().toString().slice(-6));
   await page.getByText('Node.js', { exact: true }).click();
   await page.locator('#entrypoint').fill('index.js');
-  await page.getByRole('button', { name: /下一步：调度配置/ }).click();
+  // UI-06 单页分区：执行器策略字段同页挂载，无需向导推进
   await page.getByRole('radio', { name: /固定到指定的执行器节点/ }).click();
   await page.locator('#executorId').click();
   await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option', { hasText: executor.appName }).first().click();
-  await page.getByRole('button', { name: /下一步：参数配置/ }).click();
   const createRespPromise = page.waitForResponse((r) => r.url().includes('/api/tasks') && r.request().method() === 'POST');
   await page.getByRole('button', { name: /创建任务/ }).click();
   const resp = await createRespPromise;
@@ -1012,7 +1005,6 @@ test('26. pinned 全链 — 详情页绑定可见、UI 触发、执行记录 exe
   // 编辑页：executorId 绑定的权威 UI 展示（pinned radio 选中 + Select 显示执行器名）
   await page.goto(`${BASE}/tasks/${seeded.id}/edit`);
   await page.waitForLoadState('networkidle');
-  await page.getByRole('button', { name: /下一步：调度配置/ }).click();
   await expect(page.getByRole('radio', { name: /固定到指定的执行器节点/ })).toBeChecked({ timeout: 10000 });
   await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
   console.log('  ✓ 编辑页还原 pinned 且 Select 显示目标执行器名');
@@ -1149,11 +1141,10 @@ test('29. UI 向导建 pinned 任务 → 触发执行 executorAddress=绑定执�
   await page.locator('#name').fill('e2e-pin-wizard-' + Date.now().toString().slice(-6));
   await page.getByText('Node.js', { exact: true }).click();
   await page.locator('#entrypoint').fill('index.js');
-  await page.getByRole('button', { name: /下一步：调度配置/ }).click();
+  // UI-06 单页分区：执行器策略字段同页挂载，无需向导推进
   await page.getByRole('radio', { name: /固定到指定的执行器节点/ }).click();
   await page.locator('#executorId').click();
   await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option', { hasText: executor.appName }).first().click();
-  await page.getByRole('button', { name: /下一步：参数配置/ }).click();
   const createRespPromise = page.waitForResponse((r) => r.url().includes('/api/tasks') && r.request().method() === 'POST');
   await page.getByRole('button', { name: /创建任务/ }).click();
   const created = (await (await createRespPromise).json()).data;
