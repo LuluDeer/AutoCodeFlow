@@ -13,6 +13,12 @@ import { executorsApi, Executor } from '../api/executors';
 import { client } from '../api/client';
 import { useAuthStore } from '../store/auth';
 import PageHeader from '../components/PageHeader';
+// UI-07：视图切换 / 分组聚合条 / 卡片视图 / 批量操作条 / 实时状态
+import ViewToggle, { readViewMode, writeViewMode, type ExecutorViewMode } from '../components/executor/ViewToggle';
+import GroupFilterBar from '../components/executor/GroupFilterBar';
+import ExecutorCardGrid from '../components/executor/ExecutorCardGrid';
+import BatchActionBar from '../components/executor/BatchActionBar';
+import { useExecutorLive } from '../hooks/useExecutorLive';
 
 function heartbeatLabel(lastHeartbeat: string): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
@@ -66,6 +72,10 @@ export default function ExecutorListPage() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [groupFilter, setGroupFilter] = useState<string | undefined>();
   const [installCmdModal, setInstallCmdModal] = useState(false);
+  // UI-07 ①：卡片/表格双视图（localStorage 记忆，读失败回退表格）
+  const [viewMode, setViewMode] = useState<ExecutorViewMode>(() => readViewMode(typeof localStorage !== 'undefined' ? localStorage : undefined));
+  // UI-07 ③：批量选择（两视图共享选中集合）
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
 
   const { data: groups } = useRequest(executorsApi.getGroups, { cacheKey: 'executor-groups' });
   const [installCmd, setInstallCmd] = useState<{ cmd: string } | null>(null);
@@ -81,7 +91,11 @@ export default function ExecutorListPage() {
   };
 
   // 稳定引用：data 未变时 executors 身份不变，避免下游 useMemo 每渲染失效
-  const executors: Executor[] = useMemo(() => data ?? [], [data]);
+  const polledExecutors: Executor[] = useMemo(() => data ?? [], [data]);
+
+  // UI-07 ④：/metrics/stream executors 段覆盖（状态/CPU/内存/任务数 3s 实时；
+  // 断线时覆盖层回退轮询快照——list 接口仍是数据源，SSE 只做覆盖加速）
+  const { executors, isLive } = useExecutorLive(polledExecutors);
 
   const hasLongOffline = useMemo(() => executors.some((e) => {
     if (e.status !== 'offline') return false;
@@ -101,6 +115,20 @@ export default function ExecutorListPage() {
 
   const hasFilters = !!(searchText || statusFilter || groupFilter);
   const onlineCount = executors.filter(e => e.status === 'online').length;
+
+  // UI-07 ③：选中执行器实体（批量操作条需要 status/appName/address）
+  const selectedExecutors = useMemo(
+    () => executors.filter((ex) => selectedRowKeys.includes(ex.id)),
+    [executors, selectedRowKeys],
+  );
+  const toggleSelect = (id: string, checked: boolean) => {
+    setSelectedRowKeys((prev) => (checked ? [...prev, id] : prev.filter((k) => k !== id)));
+  };
+
+  const handleViewChange = (mode: ExecutorViewMode) => {
+    setViewMode(mode);
+    writeViewMode(typeof localStorage !== 'undefined' ? localStorage : undefined, mode);
+  };
 
   const columns = [
     {
@@ -238,14 +266,26 @@ export default function ExecutorListPage() {
         title="执行器"
         description={<>{onlineCount} / {executors.length} 台在线</>}
         extra={
-          <>
+          <Space wrap>
+            {/* UI-07 ④：SSE 连接状态点（live=实时，connecting/reconnecting=30s 轮询兜底） */}
+            <Tooltip
+              title={isLive
+                ? '实时状态已连接（/metrics/stream · 3s 推送）'
+                : '实时流未连接，正在按 30s 轮询刷新'}
+            >
+              <Badge
+                status={isLive ? 'processing' : 'warning'}
+                text={<Typography.Text type="secondary" style={{ fontSize: 12 }}>{isLive ? '实时' : '轮询'}</Typography.Text>}
+              />
+            </Tooltip>
+            <ViewToggle value={viewMode} onChange={handleViewChange} />
             {isAdmin && <Button onClick={() => navigate('/executors/install')}>安装向导</Button>}
             {isAdmin && (
               <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
                 快速添加
               </Button>
             )}
-          </>
+          </Space>
         }
       />
 
@@ -289,28 +329,53 @@ export default function ExecutorListPage() {
         )}
       </Space>
 
-      <Table
-        rowKey="id"
-        columns={columns}
-        dataSource={filtered}
-        loading={loading}
-        pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
-        locale={{
-          emptyText: hasFilters ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配执行器">
-              <Button type="link" size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); }}>
-                清除筛选
-              </Button>
-            </Empty>
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行器">
-              {isAdmin && (
-                <Button type="primary" onClick={() => navigate('/executors/install')}>安装第一个执行器</Button>
-              )}
-            </Empty>
-          ),
-        }}
+      {/* UI-07 ②：分组聚合条（点击等价 groupFilter；全部执行器均无分组时整条隐藏） */}
+      <GroupFilterBar executors={executors} value={groupFilter} onChange={setGroupFilter} />
+
+      {/* UI-07 ③：批量操作条（ADMIN-only；两视图共享选中集合） */}
+      <BatchActionBar
+        selected={selectedExecutors}
+        isAdmin={isAdmin}
+        onDone={() => setSelectedRowKeys([])}
       />
+
+      {viewMode === 'card' ? (
+        <ExecutorCardGrid
+          executors={filtered}
+          selectedIds={selectedRowKeys}
+          onToggleSelect={toggleSelect}
+          onOpenDetail={(id) => navigate(`/executors/${id}`)}
+          isAdmin={isAdmin}
+          onReloadConfig={(ex) => setSelectedRowKeys([ex.id])}
+          onRotateToken={(ex) => setSelectedRowKeys([ex.id])}
+        />
+      ) : (
+        <Table
+          rowKey="id"
+          columns={columns}
+          dataSource={filtered}
+          loading={loading}
+          // UI-07 ③：表格多选（ADMIN 门控在操作条——非 admin 无操作条，
+          // 选中集合为空集，多选列对普通用户仅是筛选辅助，不暴露写入口）
+          rowSelection={{ selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys as string[]) }}
+          pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+          locale={{
+            emptyText: hasFilters ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配执行器">
+                <Button type="link" size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); }}>
+                  清除筛选
+                </Button>
+              </Empty>
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行器">
+                {isAdmin && (
+                  <Button type="primary" onClick={() => navigate('/executors/install')}>安装第一个执行器</Button>
+                )}
+              </Empty>
+            ),
+          }}
+        />
+      )}
 
       <Modal
         title="快速添加执行器"
