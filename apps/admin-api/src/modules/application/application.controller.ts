@@ -29,9 +29,11 @@ import {
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
 import { Roles } from "../../common/decorators/roles.decorator";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { ApplicationService } from "./application.service";
 import { AppDeploymentService } from "./app-deployment.service";
+import { DeploymentTriggerType } from "./entities/app-deployment.entity";
 import {
   CreateApplicationDto,
   UpdateApplicationDto,
@@ -475,8 +477,22 @@ export class ApplicationController {
       "任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，" +
       "admin-api 重启即暂停（行级 rolloutState=failed）。",
   })
-  async upgradeAll(@Param("id") id: string, @Body() dto: UpgradeAllDto) {
-    return this.deploymentSvc.upgradeAllWithRollout(id, dto?.rollout ?? null);
+  async upgradeAll(
+    @Param("id") id: string,
+    @Body() dto: UpgradeAllDto,
+    // FEAT-20: upgrade-all 逐行落 upgrade 语义 + 操作人用户名。
+    @CurrentUser() user: { id: number; username: string },
+  ) {
+    return this.deploymentSvc.upgradeAllWithRollout(
+      id,
+      dto?.rollout ?? null,
+      user
+        ? {
+            operator: user.username,
+            triggerType: DeploymentTriggerType.UPGRADE,
+          }
+        : undefined,
+    );
   }
 
   @Post(":id/sync-tasks")
@@ -513,7 +529,18 @@ export class ApplicationController {
   async rollback(
     @Param("id") appId: string,
     @Param("deploymentId") deploymentId: string,
+    // FEAT-20: 回退链逐行落 rollback 语义 + 操作人用户名。
+    @CurrentUser() user: { id: number; username: string },
   ) {
-    return this.deploymentSvc.rollbackApplication(appId, deploymentId);
+    return this.deploymentSvc.rollbackApplication(
+      appId,
+      deploymentId,
+      user
+        ? {
+            operator: user.username,
+            triggerType: DeploymentTriggerType.ROLLBACK,
+          }
+        : undefined,
+    );
   }
 }

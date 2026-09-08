@@ -18,6 +18,7 @@ import {
   AppDeployment,
   DeploymentStatus,
   DeploymentApprovalStatus,
+  DeploymentTriggerType,
   RunMode,
 } from "./entities/app-deployment.entity";
 import { ApplicationVersion } from "./entities/application-version.entity";
@@ -108,6 +109,17 @@ export function releaseSortTimestampMs(input: {
 export interface DeploymentApprovalActor {
   id: number | null;
   name: string | null;
+}
+
+/**
+ * FEAT-20（迁移 1790000000004）：部署行落库触发来源（triggerType/operator）。
+ * controller 各写面把 JWT user.username 传进来（无认证主体——心跳等机器
+ * 路径——不落）；operator=操作人用户名，triggerType 按动作语义取
+ * DeploymentTriggerType。写入一次后不再被状态迁移覆盖。
+ */
+export interface DeploymentTriggerContext {
+  operator: string | null;
+  triggerType: DeploymentTriggerType;
 }
 
 @Injectable()
@@ -294,10 +306,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  - synthetic 行只参与第 1 页（聚合行天然很少，不额外分页）。
    *
    * 已知来源缺失（详见 docs/api-reference.md）：
-   *  - operator：读 application_versions.createdBy 列，当前所有写入路径均未
-   *    填充 → 恒 null，行上带 operatorMissingReason 标注；
-   *  - triggerType：两表无 trigger 列，按部署行持久化信号推导（classifyRelease
-   *    Trigger），历史升级复用既有部署行时状态信息已被覆盖，无法判定时 unknown。
+   *  - operator：FEAT-20（迁移 1790000000004）起取最近一次部署行 operator
+   *    持久化列；存量行回退 application_versions.createdBy（历史恒 null），
+   *    仍无值时行上带 operatorMissingReason 标注；
+   *  - triggerType：FEAT-20 起部署行持久化列优先（manual/upgrade/rollback/
+   *    approval），存量行（列为 null）回退持久化信号推导（classifyRelease
+   *    Trigger），无法判定时 unknown。
    */
   async getReleases(
     applicationId: string,
@@ -371,6 +385,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       const triggerSource =
         latest ?? sourceById.get(v.sourceDeploymentId ?? "");
       const deployedAt = latest?.deployedAt ?? latest?.createdAt ?? null;
+      // FEAT-20: operator 取最近一次部署行持久化列（JWT 用户名）；
+      // 存量行回退版本快照 createdBy（历史恒 null）。来源随命中面标注。
+      const operator =
+        latest?.operator ?? v.createdBy ?? null;
       return {
         id: v.id,
         version: v.version,
@@ -382,10 +400,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         deploymentCount: deployCountByDeployment.get(v.version) ?? 0,
         executorAddress: latest?.executorAddress ?? null,
         runMode: latest?.runMode ?? null,
-        triggerType: this.classifyReleaseTrigger(triggerSource),
-        operator: v.createdBy ?? null,
-        operatorSource: "application_versions.createdBy",
-        operatorMissingReason: RELEASE_OPERATOR_MISSING_REASON,
+        triggerType: this.resolveReleaseTrigger(triggerSource),
+        operator,
+        operatorSource: latest?.operator
+          ? "deployments.operator"
+          : "application_versions.createdBy",
+        operatorMissingReason: operator
+          ? ""
+          : RELEASE_OPERATOR_MISSING_REASON,
         sourceDeploymentId: v.sourceDeploymentId ?? null,
         status: v.status,
         createdAt: v.createdAt ? new Date(v.createdAt).toISOString() : null,
@@ -435,10 +457,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           deploymentCount: count,
           executorAddress: latest.executorAddress ?? null,
           runMode: latest.runMode ?? null,
-          triggerType: this.classifyReleaseTrigger(latest),
-          operator: null,
-          operatorSource: "application_versions.createdBy",
-          operatorMissingReason: RELEASE_OPERATOR_MISSING_REASON,
+          triggerType: this.resolveReleaseTrigger(latest),
+          operator: latest.operator ?? null,
+          operatorSource: latest.operator
+            ? "deployments.operator"
+            : "application_versions.createdBy",
+          operatorMissingReason: latest.operator
+            ? ""
+            : RELEASE_OPERATOR_MISSING_REASON,
           sourceDeploymentId: latest.id,
           status: latest.status,
           createdAt: deployedAt ? new Date(deployedAt).toISOString() : null,
@@ -471,7 +497,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *      既有行也会置位，故已被规则 1 的指纹先行拦截）→ manual；
    *   3. 其余（PENDING 未推送/失败超时/system 文案/竞态后心跳覆盖）→ unknown。
    *  已知限制：行复用升级且 push 成功后 statusMessage 被覆盖为部署文案、指纹
-   *  丢失时可能误判 manual —— 持久化 trigger 列属后续轮 schema 工作。 */
+   *  丢失时可能误判 manual —— FEAT-20（迁移 1790000000004）起部署行落
+   *  triggerType 持久化列，本推导仅作存量行（列为 null）的回退。 */
   private classifyReleaseTrigger(
     deployment: AppDeployment | null | undefined,
   ): ReleaseTriggerType | null {
@@ -487,7 +514,24 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     return "unknown";
   }
 
-  async rollbackApplication(appId: string, targetId: string) {
+  /** FEAT-20：release 行触发方式解析——部署行 triggerType 持久化列优先
+   *  （manual/upgrade/rollback/approval 直读），存量行（null）回退既有
+   *  classifyReleaseTrigger 信号推导。 */
+  private resolveReleaseTrigger(
+    deployment: AppDeployment | null | undefined,
+  ): ReleaseTriggerType | null {
+    if (!deployment) return null;
+    if (deployment.triggerType) {
+      return deployment.triggerType as ReleaseTriggerType;
+    }
+    return this.classifyReleaseTrigger(deployment);
+  }
+
+  async rollbackApplication(
+    appId: string,
+    targetId: string,
+    trigger?: DeploymentTriggerContext,
+  ) {
     // R1: deployment-mutating paths must read the raw env (the snapshot
     // carries the env that gets written back); bypass the read-surface
     // masking applied by appService.findById.
@@ -531,7 +575,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         updateDto.manifest = snapshot.manifest as Record<string, any>;
 
       const updatedApp = await this.appService.update(appId, updateDto);
-      const result = await this.upgradeRunningDeployments(appId);
+      const result = await this.upgradeRunningDeployments(appId, trigger ?? {
+        operator: null,
+        triggerType: DeploymentTriggerType.ROLLBACK,
+      });
       return {
         ...result,
         rolledBackTo: version.version,
@@ -565,7 +612,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // response below). Rollbacks that must pin a package file should target
     // a version snapshot (which stores packageUrl in its snapshot payload).
     const updatedApp = await this.appService.update(appId, updateDto);
-    const result = await this.upgradeRunningDeployments(appId);
+    const result = await this.upgradeRunningDeployments(appId, trigger ?? {
+      operator: null,
+      triggerType: DeploymentTriggerType.ROLLBACK,
+    });
     return {
       ...result,
       rolledBackTo: target.deployedVersion,
@@ -584,6 +634,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     applicationId: string,
     dto: CreateDeploymentDto,
     actor?: DeploymentApprovalActor,
+    trigger?: DeploymentTriggerContext,
   ): Promise<AppDeployment> {
     // R1: deploy pushes the app env to the executor — must be the raw
     // value (read-surface masking would deliver "***" to the runner).
@@ -644,6 +695,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           requestedByName: actor?.name ?? null,
           requestedAt: new Date().toISOString(),
         },
+        // FEAT-20: 提交动作来源落列（审批行与其派发行同源，approve 接力时
+        // 覆写为 approval 语义）。
+        triggerType: trigger?.triggerType ?? null,
+        operator: trigger?.operator ?? null,
         statusMessage: "Awaiting deployment approval",
       });
       let savedRequest: AppDeployment;
@@ -670,6 +725,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       env: dto.env ?? app.env,
       startCommand: dto.startCommand ?? app.entrypoint ?? null,
       status: DeploymentStatus.PENDING,
+      // FEAT-20: 部署触发来源（manual=控制台部署，operator=JWT 用户名）。
+      triggerType: trigger?.triggerType ?? null,
+      operator: trigger?.operator ?? null,
     });
 
     // R5: the findOne guard above is TOCTOU-racy — two concurrent deploy()
@@ -712,6 +770,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     deploymentId: string,
     actor: DeploymentApprovalActor,
     reason?: string,
+    trigger?: DeploymentTriggerContext,
   ): Promise<AppDeployment> {
     const deployment = await this.findPendingApproval(deploymentId);
     this.assertSecondPerson(deployment, actor);
@@ -742,6 +801,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
     deployment.approvalStatus = DeploymentApprovalStatus.APPROVED;
     deployment.approvalMeta = nextMeta;
+    // FEAT-20: 审批通过即实际派发动作——行覆写为 approval 语义 + 审批人。
+    // （提交时的 manual 痕迹已被替换：该行的最终触发来源 = 让它真正
+    // 发生的人。提交人仍可在 approvalMeta.requestedByName 追溯。）
+    deployment.triggerType = trigger?.triggerType ??
+      DeploymentTriggerType.APPROVAL;
+    deployment.operator = trigger?.operator ?? actor.name ?? null;
 
     // R1: the push sends the merged app+deployment env — raw entity only.
     const app = await this.appService.findByIdRaw(deployment.applicationId);
@@ -923,7 +988,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   /**
    * Trigger upgrade on an existing deployment (git pull + restart).
    */
-  async upgrade(deploymentId: string): Promise<AppDeployment> {
+  async upgrade(
+    deploymentId: string,
+    trigger?: DeploymentTriggerContext,
+  ): Promise<AppDeployment> {
     // R1/QA1: raw lookup — the merged env is pushed to the executor AND the
     // entity is saved back; either step persisting the masked surface would
     // destroy the stored secrets with '***'.
@@ -944,6 +1012,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
     deployment.status = DeploymentStatus.UPGRADING;
     deployment.statusMessage = "Upgrade triggered";
+    // FEAT-20: 升级动作落触发来源（upgrade 语义；不覆盖既有 operator 时
+    // 用本次触发人——行复用升级，最近一次动作人是最新事实）。
+    if (trigger) {
+      deployment.triggerType = trigger.triggerType;
+      deployment.operator = trigger.operator;
+    }
     await this.repo.save(deployment);
 
     this.pushDeployToExecutor(deployment, app, true).catch((err) => {
@@ -1398,10 +1472,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     };
   }
 
-  private async upgradeRunningDeployments(appId: string) {
+  private async upgradeRunningDeployments(
+    appId: string,
+    trigger?: DeploymentTriggerContext,
+  ) {
     const running = await this.findRunningByApp(appId);
     const results = await Promise.allSettled(
-      running.map((d) => this.upgrade(d.id)),
+      running.map((d) => this.upgrade(d.id, trigger)),
     );
     const succeeded = results.filter((r) => r.status === "fulfilled").length;
     return {
@@ -1488,6 +1565,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   async upgradeAllWithRollout(
     appId: string,
     rollout?: { strategy?: "canary" | "all"; percentage?: number } | null,
+    trigger?: DeploymentTriggerContext,
   ): Promise<{
     ok: boolean;
     total: number;
@@ -1506,7 +1584,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // all 模式：逐字节保持既有 controller 内联实现（QA-02 spec 消费该形状）。
     if (strategy !== "canary" || deployments.length === 0) {
       const results = await Promise.allSettled(
-        deployments.map((d) => this.upgrade(d.id)),
+        deployments.map((d) => this.upgrade(d.id, trigger)),
       );
       const succeeded = results.filter((r) => r.status === "fulfilled").length;
       return {
@@ -1555,7 +1633,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         upgradedIds: canaryRows.map((x) => x.id),
       });
       try {
-        await this.upgrade(d.id);
+        await this.upgrade(d.id, trigger);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         await this.failBatch(batch, d.id, `upgrade trigger failed: ${msg}`);
@@ -1703,7 +1781,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         failureReason: reason,
       });
       try {
-        await this.rollbackDeploymentToPrevious(id);
+        await this.rollbackDeploymentToPrevious(id, {
+          operator: null,
+          triggerType: DeploymentTriggerType.ROLLBACK,
+        });
         await this.markRolloutState(id, RolloutState.ROLLED_BACK, {
           batchId: batch.batchId,
           failureReason: reason,
@@ -1725,7 +1806,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * 取该部署行 deployedVersion 之外的最近一个 released 快照（时间倒序），
    * 有则把快照字段恢复到本台 push（upgradeWithSnapshot）；无上一版本可回退
    * 时仅记录（fail-safe：保持新版本运行比把行打成 FAILED 更可预期）。 */
-  async rollbackDeploymentToPrevious(deploymentId: string): Promise<void> {
+  async rollbackDeploymentToPrevious(
+    deploymentId: string,
+    trigger?: DeploymentTriggerContext,
+  ): Promise<void> {
     const deployment = await this.findByIdRaw(deploymentId);
     const versions = await this.versionRepo.find({
       where: { applicationId: deployment.applicationId, status: "released" },
@@ -1742,7 +1826,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       );
       return;
     }
-    await this.upgradeWithSnapshot(deployment, previous);
+    await this.upgradeWithSnapshot(deployment, previous, trigger);
   }
 
   /** 快照回退的单台升级（快照字段恢复→pushDeployToExecutor upgrade 链）。
@@ -1755,6 +1839,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       gitCommit: string | null;
       snapshot: Record<string, any>;
     },
+    trigger?: DeploymentTriggerContext,
   ): Promise<void> {
     const snapshot = version.snapshot ?? {};
     // R1：回退 push 用原始 env（掩码面不得进入发送路径）。
@@ -1776,6 +1861,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       pushApp.entrypoint = snapshot.entrypoint;
     deployment.status = DeploymentStatus.UPGRADING;
     deployment.statusMessage = `Rolling back to ${version.version}`;
+    // FEAT-20: 自动回滚痕迹（rollback 语义；operator 保留原行值——
+    // 机器触发的自动回滚无人工操作者）。
+    if (trigger) {
+      deployment.triggerType = trigger.triggerType;
+      deployment.operator = trigger.operator;
+    }
     await this.repo.save(deployment);
     await this.pushDeployToExecutor(deployment, pushApp, true);
   }
