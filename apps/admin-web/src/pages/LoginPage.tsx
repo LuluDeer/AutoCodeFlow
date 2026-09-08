@@ -3,7 +3,7 @@ import { UserOutlined, LockOutlined, ThunderboltOutlined, SafetyOutlined } from 
 import { useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 import { authApi } from '../api/auth';
-import { useAuthStore } from '../store/auth';
+import { useAuthStore, type AuthUser } from '../store/auth';
 import { getErrMsg } from '../utils/error';
 
 const { Title, Text } = Typography;
@@ -16,7 +16,7 @@ export default function LoginPage() {
   const [totpStage, setTotpStage] = useState(false);
   const [credentials, setCredentials] = useState({ username: '', password: '' });
 
-  const completeLogin = (res: { accessToken?: string; refreshToken?: string; user?: any }) => {
+  const completeLogin = (res: { accessToken?: string; refreshToken?: string; user?: AuthUser }) => {
     if (!res.accessToken || !res.refreshToken) {
       message.error('登录响应缺少凭据');
       return;
