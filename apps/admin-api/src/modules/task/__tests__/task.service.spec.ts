@@ -25,6 +25,8 @@ import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import { TaskVersion } from "../entities/task-version.entity";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { AiService } from "../../ai/ai.service";
+// ARCH-30: AI 分析服务化封装（analyzeExecution 路径 + DI 面）
+import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { ConfigService } from "@nestjs/config";
 import { ExecutorService } from "../../executor/executor.service";
 import { NotificationService } from "../../notification/notification.service";
@@ -239,6 +241,7 @@ describe("TaskService (__tests__)", () => {
         { provide: DataSource, useValue: dataSource },
         { provide: SchedulerService, useValue: schedulerService },
         { provide: AiService, useValue: aiService },
+        { provide: AiAnalysisService, useValue: aiService },
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue("") },
@@ -3151,6 +3154,10 @@ describe("TaskService (__tests__)", () => {
             useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
           },
           {
+            provide: AiAnalysisService,
+            useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+          },
+          {
             provide: ConfigService,
             useValue: { get: jest.fn().mockReturnValue("") },
           },
@@ -3330,6 +3337,10 @@ describe("OBS-03: execution log level（写入抽取）", () => {
           useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
         },
         {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+        },
+        {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue("") },
         },
@@ -3447,6 +3458,10 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
         {
           provide: AiService,
           useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
         },
         {
           provide: ConfigService,
@@ -3650,6 +3665,7 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
           },
         },
         { provide: AiService, useValue: aiService },
+        { provide: AiAnalysisService, useValue: aiService },
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue("") },
@@ -3926,6 +3942,7 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
             },
           },
           { provide: AiService, useValue: aiService },
+          { provide: AiAnalysisService, useValue: aiService },
           { provide: ConfigService, useValue: { get: configGet } },
           {
             provide: ExecutorService,

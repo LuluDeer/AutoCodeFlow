@@ -56,7 +56,10 @@ export type RuntimeCounterName =
   | "autoflow_sse_streams_rejected_total"
   | "autoflow_notification_delivery_total"
   | "autoflow_callback_business_total"
-  | "autoflow_push_auth_retry_total";
+  | "autoflow_push_auth_retry_total"
+  // ARCH-30: AI 分析服务化——aiAnalysis 落库率三分类（ok=有分析落库 /
+  // fail=重试耗尽 fail-open / skipped=provider 未配置或返回空）。
+  | "autoflow_ai_analysis_total";
 
 /** 计数器标签集（无标签计数器传空对象） */
 export type RuntimeCounterLabels = Readonly<Record<string, string>>;
@@ -114,6 +117,18 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       labelValueSets: [
         { result: "reissued_success" },
         { result: "still_unauthorized" },
+      ],
+    },
+    // ARCH-30: AI 分析结果分类——埋点在 AiAnalysisService.analyzeFailure
+    // （task.processor / task.service.analyzeExecution 统一经服务调用），
+    // 与本文件其余计数器同走 recordRuntime → render 快照模式。
+    autoflow_ai_analysis_total: {
+      help: "AI failure-analysis outcomes by result (ok / fail / skipped)",
+      labelNames: ["result"],
+      labelValueSets: [
+        { result: "ok" },
+        { result: "fail" },
+        { result: "skipped" },
       ],
     },
   };

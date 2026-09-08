@@ -31,6 +31,8 @@ import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import { TaskVersion } from "../entities/task-version.entity";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { AiService } from "../../ai/ai.service";
+// ARCH-30: AI 分析服务化封装注入
+import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { ExecutorService } from "../../executor/executor.service";
 import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
@@ -202,6 +204,10 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
         {
           provide: AiService,
           useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
         },
         { provide: ConfigService, useValue: { get: configGet } },
         {

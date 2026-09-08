@@ -12,7 +12,9 @@ import {
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { Task } from "./entities/task.entity";
 import { ExecutorService } from "../executor/executor.service";
-import { AiService } from "../ai/ai.service";
+// ARCH-30: AI 分析直调迁出——processor 经 AiAnalysisService 调用（封装
+// 重试 + autoflow_ai_analysis_total 指标 + fail-open 降级），不再直连 AiService。
+import { AiAnalysisService } from "../ai/ai-analysis.service";
 import { NotificationService } from "../notification/notification.service";
 import { AuditService } from "../audit/audit.service";
 import { TaskService } from "./task.service";
@@ -36,7 +38,7 @@ export class TaskProcessor extends WorkerHost {
     // 跨 task↔executor 模块环的 provider 注入：模块级 forwardRef 配套。
     @Inject(forwardRef(() => ExecutorService))
     private executorService: ExecutorService,
-    private aiService: AiService,
+    private aiAnalysisService: AiAnalysisService,
     private notificationService: NotificationService,
     private configService: ConfigService,
     private auditService: AuditService,
@@ -175,18 +177,13 @@ export class TaskProcessor extends WorkerHost {
       const isLastAttempt =
         (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
       if (isLastAttempt) {
-        try {
-          exec.aiAnalysis = await this.aiService.analyzeFailure(
-            task,
-            exec.logs,
-          );
-        } catch (aiErr: unknown) {
-          const aiErrMsg =
-            aiErr instanceof Error ? aiErr.message : String(aiErr);
-          this.logger.warn(
-            `AI analysis failed for task ${task.id}: ${aiErrMsg}`,
-          );
-        }
+        // ARCH-30: AiAnalysisService never throws (fail-open preserved) —
+        // it retries once internally, records autoflow_ai_analysis_total,
+        // and returns "" on exhaustion instead of raising.
+        exec.aiAnalysis = await this.aiAnalysisService.analyzeFailure(
+          task,
+          exec.logs,
+        );
       }
       this.logger.error(`Task ${task.id} failed: ${errMsg}`);
       if (isLastAttempt) {

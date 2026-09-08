@@ -6,6 +6,8 @@ import { ApplicationService } from "../application.service";
 import { Application, ApplicationStatus } from "../entities/application.entity";
 import { ModuleRef } from "@nestjs/core";
 import { AiService } from "../../ai/ai.service";
+// ARCH-30: 应用健康分析走 AiAnalysisService 封装
+import { AiAnalysisService } from "../../ai/ai-analysis.service";
 
 // R4/R1: deployFromGit spawns git and resolves the repo host — pin both so
 // the specs never touch the network or a real binary.
@@ -78,6 +80,12 @@ describe("ApplicationService", () => {
           useValue: {
             analyzeAppHealth: jest.fn().mockResolvedValue({ aiAnalysis: "" }),
           },
+        },
+        // ARCH-30: AiAnalysisService 直通桩（application.analyzeHealth 不经
+        // 该封装——其 AI 面是 analyzeAppHealth 非 analyzeFailure——仅补齐 DI 面）
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
         },
       ],
     }).compile();
