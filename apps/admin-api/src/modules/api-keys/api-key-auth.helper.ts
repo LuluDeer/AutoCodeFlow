@@ -12,7 +12,8 @@ import {
 } from "../../common/guards/jwt-auth.guard";
 import { isApiKeyUser } from "../../common/interfaces/auth-user.interface";
 import { ApiKeysService } from "./api-keys.service";
-import { scopeAllows } from "./api-key-scope.util";
+import { scopeAllows, isTaskTriggerPath } from "./api-key-scope.util";
+import { parseApiKeyScopes } from "./entities/api-key.entity";
 
 /**
  * AUTH-03: API-Key authentication + scope enforcement, injected into the
@@ -68,10 +69,20 @@ export class ApiKeyAuth implements ApiKeyAuthFacade {
     }
 
     // 5. Scope enforcement (method × path matrix, pure decision layer).
-    const verdict = scopeAllows(apiKey.scope, {
-      method: req?.method ?? "GET",
-      path,
-    });
+    const method = req?.method ?? "GET";
+    let verdict = scopeAllows(apiKey.scope, { method, path });
+    // NF-01: `task:trigger` extra scope — a narrow domain layered on top of
+    // the legacy matrix. It ONLY lifts a denial that falls on a single-task
+    // trigger POST (tasks/<id>/trigger); it never widens reads (already
+    // open to every scope) or any other write.
+    if (
+      !verdict.allowed &&
+      method.toUpperCase() === "POST" &&
+      isTaskTriggerPath(path) &&
+      parseApiKeyScopes(apiKey.scopes).includes("task:trigger")
+    ) {
+      verdict = { allowed: true };
+    }
     if (!verdict.allowed) {
       throw new ForbiddenException(verdict.reason);
     }
