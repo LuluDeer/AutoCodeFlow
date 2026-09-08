@@ -25,7 +25,10 @@ import {
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
-import { AuthUser } from "../../common/interfaces/auth-user.interface";
+import {
+  AuthUser,
+  isApiKeyUser,
+} from "../../common/interfaces/auth-user.interface";
 import { TaskService } from "./task.service";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
@@ -516,7 +519,10 @@ export class TaskController {
   @ApiOperation({
     summary: "Manual trigger",
     description:
-      "Manually trigger task execution. Custom params can override task defaults.",
+      "Manually trigger task execution. Custom params can override task defaults. " +
+      "NF-01: 双凭据面——用户 JWT 或携带 task:trigger 扩展域的 API Key " +
+      "（Authorization: Bearer acf_...，guard 分流见 jwt-auth.guard/api-key-auth.helper）；" +
+      "响应契约与 JWT 面完全一致。",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiResponse({
@@ -541,6 +547,20 @@ export class TaskController {
     @Req() req: Request,
   ) {
     const result = await this.taskService.trigger(id, dto);
+    // NF-01: API-Key 主体（CI/脚本免登录触发）——execution 行 triggerType
+    // 已由 service 固定 manual；审计以 task.trigger_api 区分机器触发。
+    if (isApiKeyUser(user)) {
+      await this.audit.log({
+        userId: user.userId,
+        username: `api-key:${user.keyPrefix}`,
+        action: "task.trigger_api",
+        resource: "task",
+        resourceId: id,
+        detail: { apiKeyId: user.apiKeyId, taskId: id, scope: user.scope },
+        ip: req.ip,
+      });
+      return result;
+    }
     await this.audit.log({
       userId: user?.id,
       username: user?.username,

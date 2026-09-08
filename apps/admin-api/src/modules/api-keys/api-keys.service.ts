@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { ApiKey, ApiKeyScope } from "./entities/api-key.entity";
+import { ApiKey, ApiKeyScope, parseApiKeyScopes } from "./entities/api-key.entity";
 import { generateApiKey, hashApiKey } from "./api-key.util";
 import { AuditService } from "../audit/audit.service";
 
@@ -10,6 +10,8 @@ export interface CreateApiKeyInput {
   username?: string | null;
   name: string;
   scope: ApiKeyScope;
+  /** NF-01: extra narrow-domain scopes (word list, e.g. "task:trigger"). */
+  scopes?: string | null;
   /** Days until expiry; omit/0/null = never expires. */
   expiresInDays?: number | null;
   ip?: string | null;
@@ -20,6 +22,8 @@ export interface ApiKeyView {
   name: string;
   keyPrefix: string;
   scope: ApiKeyScope;
+  /** NF-01: extra narrow-domain scopes (word list, e.g. "task:trigger"). */
+  scopes: string[];
   expiresAt: Date | null;
   revokedAt: Date | null;
   lastUsedAt: Date | null;
@@ -65,6 +69,8 @@ export class ApiKeysService {
         keyPrefix,
         keyHash,
         scope: input.scope,
+        // NF-01: normalized word list (whitespace-collapsed, trimmed).
+        scopes: input.scopes ? input.scopes.split(/\s+/).filter(Boolean).join(" ") : null,
         expiresAt,
       }),
     );
@@ -77,6 +83,7 @@ export class ApiKeysService {
       detail: {
         name: input.name,
         scope: input.scope,
+        scopes: parseApiKeyScopes(input.scopes ?? null),
         keyPrefix,
         expiresInDays: input.expiresInDays ?? null,
       },
@@ -197,6 +204,7 @@ export class ApiKeysService {
       name: row.name,
       keyPrefix: row.keyPrefix,
       scope: row.scope,
+      scopes: parseApiKeyScopes(row.scopes),
       expiresAt: row.expiresAt,
       revokedAt: row.revokedAt,
       lastUsedAt: row.lastUsedAt,

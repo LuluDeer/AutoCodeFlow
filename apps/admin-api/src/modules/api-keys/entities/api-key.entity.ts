@@ -20,6 +20,33 @@ import {
 export type ApiKeyScope = "readonly" | "trigger" | "manage";
 
 /**
+ * NF-01: extended scope vocabulary (migration 1790000000005).
+ *
+ * The legacy `scope` column keeps the three-tier ApiKeyScope for backward
+ * compatibility and display. The nullable `scopes` column stores a
+ * space-separated word list granting narrow domains beyond the legacy
+ * tiers — currently only `task:trigger` (CI/script trigger of a single
+ * task via POST /tasks/:id/trigger without a user JWT).
+ *
+ * Enforcement order in the guard branch (api-key-auth.helper):
+ *   1. legacy scopeAllows matrix (readonly/trigger/manage);
+ *   2. if denied AND the key carries `task:trigger` in `scopes` AND the
+ *      request is exactly a single-task trigger POST → allowed.
+ * Nothing else changes: task:trigger never widens reads or other writes.
+ */
+export const API_KEY_EXTRA_SCOPES = ["task:trigger"] as const;
+export type ApiKeyExtraScope = (typeof API_KEY_EXTRA_SCOPES)[number];
+
+/** Parse the nullable `scopes` word-list column into an array. */
+export function parseApiKeyScopes(scopes: string | null | undefined): string[] {
+  if (!scopes) return [];
+  return scopes
+    .split(/\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
  * AUTH-03: persistent API Key record.
  *
  * Security invariants:
@@ -55,6 +82,11 @@ export class ApiKey {
   /** Permission tier: readonly | trigger | manage. */
   @Column({ type: "varchar", length: 16, default: "readonly" })
   scope: ApiKeyScope;
+
+  /** NF-01 (migration 1790000000005): extra narrow-domain scopes as a
+   *  space-separated word list (e.g. "task:trigger"). NULL/empty = none. */
+  @Column({ type: "varchar", length: 128, nullable: true })
+  scopes: string | null;
 
   /** Optional expiry — expired keys authenticate as 401. */
   @Column({ type: "timestamptz", nullable: true })

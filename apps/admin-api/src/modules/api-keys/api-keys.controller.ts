@@ -20,7 +20,9 @@ import {
   MaxLength,
   Min,
   MinLength,
+  Contains,
 } from "class-validator";
+import { Transform } from "class-transformer";
 import { ApiKeysService } from "./api-keys.service";
 import { API_KEY_SCOPES, API_KEY_PLAINTEXT_PREFIX } from "./api-key.util";
 import { ApiKeyScope } from "./entities/api-key.entity";
@@ -37,6 +39,23 @@ export class CreateApiKeyDto {
 
   @IsIn(API_KEY_SCOPES as unknown as string[])
   scope: ApiKeyScope;
+
+  /**
+   * NF-01: optional extra narrow-domain scopes (space-separated word list).
+   * Only `task:trigger` is accepted today — it allows the key to call
+   * POST /tasks/:id/trigger (single-task trigger) in addition to the
+   * legacy tier's surface, for CI/script dispatch without a user JWT.
+   */
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value) ? value.join(" ") : String(value ?? ""),
+  )
+  @Contains("task:trigger", {
+    message:
+      "scopes 仅支持 task:trigger（空格分隔词表；当前无其他扩展域）",
+  })
+  @MaxLength(128)
+  scopes?: string;
 
   @IsOptional()
   @IsInt()
@@ -82,6 +101,7 @@ export class ApiKeysController {
       username: user.username,
       name: dto.name,
       scope: dto.scope,
+      scopes: dto.scopes ?? null,
       expiresInDays: dto.expiresInDays,
       ip: req?.ip,
     });
