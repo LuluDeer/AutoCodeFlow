@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-# 根级 29 例 Playwright e2e 全链编排（CI 与本地同一入口）
+# 根级 43 例 Playwright e2e 全链编排（CI 与本地同一入口）
 #
 # 链路：PG + Redis → admin-api(:3105) → executor-node(:8002 注册在线)
-#       → admin-web vite(:5176) → 根级 e2e-full.spec.js（29 例，chromium）
+#       → admin-web vite(:5176) → 根级 e2e-full.spec.js（43 例，chromium）
 #
 # 前置：bash + docker + node>=20 + apps/*/node_modules 已安装
 #       （CI job 与本脚本各自保证；playwright chromium 由脚本兜底 install）
@@ -15,11 +15,12 @@
 # 可覆盖环境变量（SKIP_DOCKER 模式常用）：
 #   E2E_DB_HOST/E2E_DB_PORT/E2E_DB_USER/E2E_DB_PASS/E2E_DB_NAME
 #   E2E_REDIS_HOST/E2E_REDIS_PORT/E2E_REDIS_PASS
+#   E2E_API_BASE  # admin-api 地址漂移时覆盖（默认 http://localhost:3105）
 #
 # 设计注记（对齐 windows-findings W-22 教训——一律真实进程环境，不依赖 .env）：
 #   - 每次全新 DB：迁移链真实空库跑一遍，admin seed / 任务 / 执行记录零残留，
 #     断言不漂移（docker 模式 drop+create 重建，SKIP_DOCKER 模式要求空库）。
-#   - LOGIN_THROTTLE_LIMIT / THROTTLE_LIMIT 显式放大：29 例 ~40 次登录 +
+#   - LOGIN_THROTTLE_LIMIT / THROTTLE_LIMIT 显式放大：43 例 ~60 次登录 +
 #     高频 API 轮询，默认 20/60 必级联 429（Windows 首跑 W-22 同根）。
 #   - EXECUTION_CALLBACK_SECRET 两端同值：显式配置消除 fallback 语义漂移。
 #   - EXECUTOR_ALLOW_PRIVATE_NETWORK=true：派发目标 localhost:8002 是回环地址，
@@ -197,7 +198,7 @@ PIDS+=($!)
 wait_http "http://localhost:$PORT_WEB/" 60 "admin-web" "$LOG_DIR/admin-web.log"
 echo "vite OK"
 
-echo "══ [6/6] Playwright 29 例（根级 spec + 根级 config）══"
+echo "══ [6/6] Playwright 43 例（根级 spec + 根级 config）══"
 cd apps/admin-web
 npx playwright install chromium >/dev/null 2>&1 || true
 set +e

@@ -3,6 +3,7 @@
 > 目的：把十五轮安全审计（R1-R19 / S1-S16 / DR-01~07 / W1-W8 / SEC-01）修掉的每一条"红线路径"固化为**可执行的回归检查**——防止后续重构把同一类口子重新打开。
 > 用法：① 触碰下列任一区域时，PR 必须附对应行的回归证据（测试名或真机断言）；② 每次安全专项复审以本清单为底册核对。
 > 姿态基线：fail-closed 优先；错误响应不区分原因（防枚举）；凭据绝不落日志/透传子进程/进入 URL query（install.sh artifact 除外——该例外有显式标注）。
+> e2e 标注（P0-1，2026-09-09）：`e2e: ✔` 表示该红线已有根级 e2e-full.spec.js 的 Playwright 断言守卫（describe 名随标注给出，CI e2e-full / e2e-full-windows job 首验）；无标注行仍以单测 spec（apps/*/src/**/__tests__ 或 *.spec.ts）或真机轮为回归锚点，人工专项标注保留。
 
 ## 一、认证与凭据
 
@@ -20,13 +21,13 @@
 
 | # | 红线路径 | 回归锚点 |
 |---|---|---|
-| B-1 | 全局 RolesGuard + 机器端点（@Public）空 @Roles() 覆盖的语义不破 | roles-guard 相关 spec |
-| B-2 | 执行器写面（update/reload-config/rotate-token/set-offline/delete）ADMIN-only（W2） | executor.controller.rbac.spec（401/403/2xx 矩阵） |
-| B-3 | config 写面 / notification+ai config / audit / executor-packages 收紧 ADMIN（N11/R 系） | 各 controller spec；config.controller.rbac.spec |
-| B-4 | 应用/部署全链 @Roles(ADMIN) + env 读面全链脱敏（deployment.env/relations/snapshot.env 三处绕过闭合） | application 相关 spec |
+| B-1 | 全局 RolesGuard + 机器端点（@Public）空 @Roles() 覆盖的语义不破 | roles-guard 相关 spec；e2e: ✔ security-redline-rbac（401/403 分界：无 token 401、普通用户 403） |
+| B-2 | 执行器写面（update/reload-config/rotate-token/set-offline/delete）ADMIN-only（W2） | executor.controller.rbac.spec（401/403/2xx 矩阵）；e2e: ✔ security-redline-rbac（例 36 五端点全 403） |
+| B-3 | config 写面 / notification+ai config / audit / executor-packages 收紧 ADMIN（N11/R 系） | 各 controller spec；config.controller.rbac.spec；e2e: ✔ security-redline-rbac（例 38 审计/配置/AI/用户面全 403） |
+| B-4 | 应用/部署全链 @Roles(ADMIN) + env 读面全链脱敏（deployment.env/relations/snapshot.env 三处绕过闭合） | application 相关 spec；e2e: ✔ security-redline-rbac（例 37 应用与部署写面 7 端点全 403） |
 | B-5 | /uploads 静态面强制鉴权（JWT 或共享 token），公开前缀白名单为空 | ARCH-002 spec |
 | B-6 | SSE query token 仅 /logs/stream 路径接受且强制 type=access | N7/N22 spec |
-| B-7 | 前端门控与后端收紧同批（ADR-006）：admin 视角与非 admin 视角 Playwright 均有断言 | e2e 角色例（RBAC/降级） |
+| B-7 | 前端门控与后端收紧同批（ADR-006）：admin 视角与非 admin 视角 Playwright 均有断言 | e2e 角色例（RBAC/降级，e2e-full.spec.js 例 17~20 既有覆盖）+ e2e: ✔ security-redline-rbac（API 层 403 矩阵） |
 
 ## 三、注入与输入面
 
@@ -44,8 +45,8 @@
 
 | # | 红线路径 | 回归锚点 |
 |---|---|---|
-| D-1 | 六出站点全部过 guard：dispatch/broadcast/reload-config/push + 三通知渠道 | assertSafeExecutorUrl spec |
-| D-2 | IPv4-mapped IPv6（::ffff:）归一（N25）；deny 段含 198.18/15、100.64/10（V3）；maxRedirects:0 | url-guard 矩阵 |
+| D-1 | 六出站点全部过 guard：dispatch/broadcast/reload-config/push + 三通知渠道 | assertSafeExecutorUrl spec；e2e: ✔ security-redline-ssrf（例 41/42 经 webhook 订阅面 assertSafeHttpUrl 14 恶意 URL 全 400——同一 SEC-04 deny 分类器入口） |
+| D-2 | IPv4-mapped IPv6（::ffff:）归一（N25）；deny 段含 198.18/15、100.64/10（V3）；maxRedirects:0 | url-guard 矩阵；e2e: ✔ security-redline-ssrf（例 41 含 `::ffff:127.0.0.1`/0x7f000001/云元数据字面量） |
 | D-3 | 包下载跨主机重定向剥离凭据（eadedca） | 下载器 spec |
 | D-4 | webhook 渠道 config-first/显式参数优先级钉死 + URL query 脱敏 | webhook 优先级 spec |
 
@@ -69,8 +70,24 @@
 | F-3 | 审计 CSV 注入消毒（S8）+ 400 化（S9 族）+ ParseIntPipe（S13） | audit spec |
 | F-4 | 通知日志脱敏摘要（NOTIF-002）+ silences 上限（NOTIF-003/FEAT-01 持久化后仍限 1000） | notification spec |
 
+## 六之续、部署审批红线（DEP-04，H2 增补域）
+
+| # | 红线路径 | 回归锚点 |
+|---|---|---|
+| G-1 | approvalRequired 应用 deploy 冻结 pending_approval 零派发；in-flight 槽位仍被持有（重复 deploy 409） | app-deployment.service.spec；e2e: ✔ security-redline-approval（例 30） |
+| G-2 | 第二人规则：approve/reject 者 ≠ approvalMeta.requestedBy，违反 403 | app-deployment.service.spec（assertSecondPerson）；e2e: ✔ security-redline-approval（例 31） |
+| G-3 | 并发双审批原子认领：UPDATE WHERE approvalStatus='pending_approval'，恰一者生效、后者 409 | app-deployment.service.spec；e2e: ✔ security-redline-approval（例 32，Promise.all 双 approve 断言恰一 200 一 409） |
+| G-4 | reject/cancel 落 FAILED 终态离开 in-flight；cancel 仅限提交者本人（他人 403） | app-deployment.service.spec；e2e: ✔ security-redline-approval（例 33/34） |
+| G-5 | 审批端点 ADMIN-only（approve/reject/cancel/approvals-pending） | controller @Roles(ADMIN)；e2e: ✔ security-redline-approval（例 35：普通用户 403 + 无 token 401） |
+
 ## 七、待办缺口（复审中识别、尚未闭环）
 
 - SEC-NEW-1：desktop executorToken 明文落盘 → safeStorage 加密（docs/SEC-01-复审报告.md F12-1）。
 - registry-npm `someProp` 死键清理 + API JWT 60d 缩短评估（BUG-16 注记）。
 - minio 链 3 moderate（上游未发版）——豁免归档，复查每轮 npm-audit job。
+
+## 八、e2e 覆盖与人工专项分界（P0-1 收尾注记，2026-09-09）
+
+- 已 e2e 套件化：根级 e2e-full.spec.js 三个 describe 共 14 例（security-redline-ssrf 3 / security-redline-rbac 5 / security-redline-approval 6），随 CI `e2e-full`（ubuntu，develop push 即跑）与 `e2e-full-windows`（PR/手动/月度）首验。断言均为响应码级红线（400/401/403/409），不依赖 UI 渲染。
+- e2e 未覆盖、仍以单测 spec 为锚点的行：A-1~A-7（凭据/回调 token/轮换/登录枚举——需要进程内向量与真密钥，HTTP 黑盒不可达）、B-5/B-6（uploads 静态面/SSE query token 路径白名单——需静态资源与 SSE 客户端语义）、C-1~C-7（注入面——需要构造恶意载荷文件与执行器沙箱观测）、D-3/D-4（下载重定向/渠道优先级——需要假 upstream）、E-1~E-6（可靠性——需要进程内条件 UPDATE 断言与故障注入）、F-1~F-4（观测——需要 prom series 解析）。
+- 人工专项（真机轮）保留项：G 域 approve 后的真机派发闭环（P0-2 真机轮任务）；A-4 install.sh 真机下载链；C-5 clamd 容器联通 + EICAR 实测。

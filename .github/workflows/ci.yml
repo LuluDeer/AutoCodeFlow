@@ -580,10 +580,11 @@ jobs:
         env:
           VITE_API_URL: http://localhost:3105
 
-  # ── 根级 29 例 Playwright e2e（全链真环境）──────────────────
+  # ── 根级 43 例 Playwright e2e（全链真环境）──────────────────
   # admin-api(3105) + executor-node(8002 注册在线) + admin-web vite(5176)
   # + 空库迁移链，跑根级 e2e-full.spec.js（登录/任务向导/pinned 全链/RBAC/
-  # 并发/中断/指标等 29 例）。编排收敛在 scripts/e2e-full.sh（CI 与本地
+  # 并发/中断/指标等 29 例 + 安全红线 14 例：SSRF 六出站点/RBAC 全端点/
+  # DEP-04 审批第二人规则）。编排收敛在 scripts/e2e-full.sh（CI 与本地
   # 同一入口）；PG/Redis 由 services 提供后走 SKIP_DOCKER=1 分支复用。
   # 防抖要点（详见脚本头注）：每次全新库消除种子残留、登录/全局节流放大
   # 防级联 429（W-22 同根）、回调密钥两端显式同值、执行器注册 online 显式等待。
@@ -636,7 +637,7 @@ jobs:
       - name: Install chromium (+ system deps)
         run: npx playwright install --with-deps chromium
         working-directory: apps/admin-web
-      - name: Run 29-case full-chain e2e
+      - name: Run 43-case full-chain e2e
         run: bash scripts/e2e-full.sh
       - name: Upload e2e logs & failure screenshots
         if: failure()
@@ -731,7 +732,7 @@ jobs:
             Start-Sleep -Seconds 2
           }
           if (-not ($pgOk -and $rdOk)) { throw "PG/Redis 60s 内未就绪" }
-      - name: Run 29-case full-chain e2e (Windows)
+      - name: Run 43-case full-chain e2e (Windows)
         shell: bash
         run: bash scripts/e2e-full.sh
       - name: Upload e2e logs & failure screenshots
