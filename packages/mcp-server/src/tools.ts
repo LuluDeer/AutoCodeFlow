@@ -458,6 +458,48 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     },
   );
 
+  // ---- retry_execution ------------------------------------------------------
+  // NF-06: the admin API has NO native retry endpoint (grep task.controller/
+  // task.service/docs — only BullMQ-side auto retry exists). Re-running a past
+  // execution therefore goes through the ordinary manual-trigger path, which
+  // creates a NEW execution row; the original row's params are replayed here
+  // (fetched via the by-execId compat alias) so the rerun matches what the
+  // failed run actually received, not today's task defaults.
+  server.tool(
+    "retry_execution",
+    "Re-run a past execution: creates a NEW execution of the same task via the manual-trigger path (the admin API has no native retry endpoint — this is a fresh run, not a continuation of the original attempt counter). The original execution's runtime params are replayed automatically; pass params to override them. Returns the new execution (id) — poll it with get_execution.",
+    {
+      taskId: z.string().describe("Task ID that owns the execution"),
+      executionId: z
+        .string()
+        .describe("Execution ID to re-run (from list_executions / get_execution)"),
+      params: z
+        .record(z.unknown())
+        .optional()
+        .describe(
+          "Override the replayed runtime parameters (when absent, the original execution's params are reused; if it had none, the task's current defaults apply)",
+        ),
+    },
+    async ({ taskId, executionId, params }) => {
+      let body: Record<string, unknown> = {};
+      if (params) {
+        body = { params };
+      } else {
+        const prev = await call<{ params?: Record<string, unknown> | null }>(
+          "GET",
+          `/tasks/executions/${executionId}`,
+        );
+        if (prev?.params) body = { params: prev.params };
+      }
+      const data = await call<Record<string, unknown>>(
+        "POST",
+        `/tasks/${taskId}/trigger`,
+        body,
+      );
+      return JSON_CONTENT({ retriedFrom: executionId, ...data });
+    },
+  );
+
   // ---- pause_task -----------------------------------------------------------
   server.tool(
     "pause_task",
@@ -704,9 +746,12 @@ export function registerDeploymentTools(
   );
 
   // ---- deploy_application --------------------------------------------------
+  // DEP-04: applications with approvalRequired=true return a frozen
+  // pending_approval row (no dispatch) — the response's approvalStatus field
+  // surfaces that; polling/next steps live in the tool description.
   server.tool(
     "deploy_application",
-    "Deploy an application to an executor. Leave executorId empty to auto-select the online executor with lowest load. Optionally override run mode, env vars, and start command.",
+    "Deploy an application to an executor. Leave executorId empty to auto-select the online executor with lowest load. Optionally override run mode, env vars, and start command. NOTE (DEP-04): if the application has deployment approval enabled, the response returns approvalStatus=pending_approval and NOTHING is dispatched — the deployment waits for a second-person approval (POST /app-deployments/:id/approval/approve|reject, or /approval/cancel by the requester). A 409 means the application already has an in-progress deployment.",
     {
       applicationId: z.string().describe("Application ID"),
       executorId: z
@@ -731,11 +776,86 @@ export function registerDeploymentTools(
           ([, v]) => v !== undefined,
         ),
       );
-      const data = await call<unknown>(
+      const data = await call<Record<string, unknown>>(
         "POST",
         `/app-deployments/applications/${applicationId}/deploy`,
         body,
       );
+      // DEP-04: pending_approval rows are frozen (not dispatched) — make that
+      // state impossible to miss instead of returning a look-alike 200 payload.
+      if (data?.approvalStatus === "pending_approval") {
+        return JSON_CONTENT({
+          ...data,
+          dispatched: false,
+          note: "Deployment is frozen pending approval (DEP-04): nothing was dispatched to the executor. A second person must approve POST /app-deployments/" +
+            String(data.id ?? ":id") +
+            "/approval/approve (or the requester cancels via /approval/cancel).",
+        });
+      }
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- deploy_app (NF-06) ---------------------------------------------------
+  // Thin variant over the same POST /app-deployments/applications/:id/deploy
+  // route for users who identify the application by name: resolves
+  // name → applicationId via GET /applications first. The backend accepts the
+  // appName+version form of the brief only through the application record
+  // itself (CreateDeploymentDto carries executorId/runMode/env/startCommand —
+  // no appName/version fields, forbidNonWhitelisted would 400 on them).
+  server.tool(
+    "deploy_app",
+    "Deploy an application by NAME (resolved via GET /applications). Shares the deploy_application route and DEP-04 approval semantics: applications with approval enabled return approvalStatus=pending_approval and are not dispatched until a second person approves.",
+    {
+      appName: z.string().describe("Application name (unique)"),
+      executorId: z
+        .string()
+        .optional()
+        .describe(
+          "Target executor ID (optional — auto-selects the lowest-load online executor)",
+        ),
+      runMode: z
+        .string()
+        .optional()
+        .describe("Run mode override (see RunMode enum, e.g. daemon)"),
+      env: z
+        .record(z.string())
+        .optional()
+        .describe("Environment variable overrides"),
+      startCommand: z.string().optional().describe("Startup command override"),
+    },
+    async ({ appName, executorId, runMode, env, startCommand }) => {
+      const apps = await call<
+        | Array<{ id?: string; name?: string; version?: string }>
+        | { list?: Array<{ id?: string; name?: string; version?: string }> }
+      >("GET", "/applications");
+      const rows = Array.isArray(apps) ? apps : (apps?.list ?? []);
+      const app = rows.find((a) => a?.name === appName);
+      if (!app?.id) {
+        return JSON_CONTENT({
+          error: `Application "${appName}" not found`,
+          available: rows.map((a) => a?.name).filter(Boolean),
+        });
+      }
+      const body = Object.fromEntries(
+        Object.entries({ executorId, runMode, env, startCommand }).filter(
+          ([, v]) => v !== undefined,
+        ),
+      );
+      const data = await call<Record<string, unknown>>(
+        "POST",
+        `/app-deployments/applications/${app.id}/deploy`,
+        body,
+      );
+      if (data?.approvalStatus === "pending_approval") {
+        return JSON_CONTENT({
+          ...data,
+          dispatched: false,
+          note: "Deployment is frozen pending approval (DEP-04): nothing was dispatched to the executor. A second person must approve POST /app-deployments/" +
+            String(data.id ?? ":id") +
+            "/approval/approve (or the requester cancels via /approval/cancel).",
+        });
+      }
       return JSON_CONTENT(data);
     },
   );
