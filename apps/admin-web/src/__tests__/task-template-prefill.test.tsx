@@ -152,19 +152,18 @@ describe('templateTriggerAndRuntime（内部 state 同步映射）', () => {
   });
 });
 
-describe('TaskFormPage 创建态 ?templateId= 预填（组件级）', () => {
-  it('拉取模板后表单预填 config 值（入口文件/运行时可见；cron 值由提交用例覆盖）', async () => {
+describe('TaskFormPage 创建态 ?templateId= 预填（组件级，UI-06 单页语义）', () => {
+  it('拉取模板后表单预填 config 值（入口文件/运行时/cron 同屏可见）', async () => {
     mockSearch = 'templateId=a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
     vi.mocked(taskTemplatesApi.get).mockClear().mockResolvedValue(makeTemplate() as never);
 
     render(<TaskFormPage />);
 
-    // 描述与入口文件/运行时预填（step 0 挂载的控件）；cronExpression 属 step 1
-    // 条件渲染控件，act 环境外二次 setState 的可见性在 jsdom 下不稳定，
-    // 其 store 值由下方「预填后显式修改仍可提交」用例经 payload 断言覆盖。
+    // 单页全挂载：cronExpression 条件渲染控件（triggerType=cron 预填后）也同屏可见。
     expect(await screen.findByDisplayValue(/周期性备份任务/)).toBeTruthy();
     expect(screen.getByDisplayValue('backup.sh')).toBeTruthy();
     expect(screen.getByDisplayValue('shell')).toBeTruthy();
+    expect(screen.getByDisplayValue('0 2 * * *')).toBeTruthy();
     expect(taskTemplatesApi.get).toHaveBeenCalledWith('a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
   }, 15_000);
 
@@ -188,14 +187,13 @@ describe('TaskFormPage 创建态 ?templateId= 预填（组件级）', () => {
     const nameInput = await screen.findByPlaceholderText('daily-report');
     fireEvent.change(nameInput, { target: { value: 'nightly-backup' } });
 
-    fireEvent.click(screen.getByRole('button', { name: /下一步：调度配置/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /下一步：参数配置/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /创建任务/ }));
+    // 单页：直接提交，不再分步推进。
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
 
     await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
     const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
     expect(payload.name).toBe('nightly-backup');
-    // 预填值原样进入 payload（cron 步骤推进依赖 triggerType=cron 的预填 state 生效）。
+    // 预填值原样进入 payload。
     expect(payload.cronExpression).toBe('0 2 * * *');
     expect(payload.entrypoint).toBe('backup.sh');
     expect(payload.runtime).toBe('shell');
