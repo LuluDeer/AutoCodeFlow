@@ -19,6 +19,36 @@
 
 `.env.example` 中的密码和密钥均为开发占位值；生产部署必须覆盖数据库密码（包括 `POSTGRES_PASSWORD`/`DB_PASSWORD`）、`REDIS_PASSWORD`、`JWT_SECRET`、`EXECUTOR_SECRET`、registry 凭据和 `INITIAL_ADMIN_PASSWORD`，并通过密钥管理系统或受控环境变量注入。CI/e2e 中出现的测试凭据只用于自动化测试，不得复制到生产；本仓库未据此证明生产使用默认口令，生产防火墙和安全组仍需部署方核实。
 
+## 容器安全（SEC-07）
+
+执行器是平台的代码执行面（`/api/execute` 接收并运行任意任务脚本），最小权限按「镜像层 + 运行时层」双闸收敛：
+
+**镜像层 non-root**（SEC-07 前置侦察确认已在位，无需改动）：
+
+- `apps/executor-node/Dockerfile`（Q-09）：运行段 `addgroup -S appgroup && adduser -S appuser -G appgroup`，`/data/tasks` 与 `/app` 均 `chown` 到该用户后 `USER appuser`。
+- `apps/executor-python/Dockerfile`（Q-08）：`addgroup --system appgroup && adduser --system --ingroup appgroup --no-create-home appuser`，同样 `chown /data/tasks /app` 后 `USER appuser`。
+- 镜像内进程以 `appuser`（非 root，alpine 分配的系统 uid）运行；任务脚本继承同一 uid，即使被容器逃逸面利用也无法获得 root。
+
+**运行时层 capability 收敛**（本轮 SEC-07 落地，见根 `docker-compose.yml` 两个 executor 服务）：
+
+```yaml
+cap_drop: ['ALL']              # 移除全部 Linux capabilities——任务派发/执行/依赖安装均不需要特权操作
+security_opt:
+  - no-new-privileges:true     # 阻断 setuid/setgid 文件提权路径
+```
+
+- `cap_drop: ['ALL']` 从内核 capability 边界表清空全部能力（含 CHOWN/SETUID/NET_ADMIN 等），配合 non-root uid 形成双保险：即使容器内进程被提权利用，也无法获取任何 capability。
+- `no-new-privileges:true` 通过内核 `NoNewPrivs` 标志使 `execve` 无法经 setuid 位或其他途径获得比父进程更多权限。
+- admin-api/admin-web/nginx 等基础设施服务**未**默认加 `cap_drop`（nginx 需绑定 80 端口、admin-api 镜像当前以 root 启动 node），后续可单独评估；执行器作为最高风险面先行收敛。
+- 回滚：若某任务确需特殊 capability（罕见），在受控的 compose override 中按能力白名单 `cap_add` 单项放开，不要整体恢复 `cap_drop` 缺省。
+
+**真机验收清单**（留真机轮执行，本轮本机无 docker 环境未实测）：
+
+1. `docker compose build executor-node executor-python` 成功；
+2. `docker compose run --rm executor-node id` 输出 `uid=<非0> appuser`、`docker compose run --rm executor-python id` 同理；
+3. 派发一个真实任务（script 执行 + 依赖安装），确认 `/data/tasks` 读写、回调上报均正常（非 root 下常见坑：工作目录属主、npm/pip 缓存目录 `HOME` 不可写——如遇 EACCES，在 Dockerfile 中补 `ENV HOME=/app` 或 `NPM_CONFIG_CACHE=/app/.npm` 级别的环境变量，不要回退 USER）。
+
+
 ## 必填环境变量
 
 复制 `.env.example` 为 `.env` 并按下表填写：
