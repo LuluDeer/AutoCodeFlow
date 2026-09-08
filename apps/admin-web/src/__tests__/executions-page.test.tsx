@@ -175,7 +175,7 @@ describe('ExecutionsPage 导航（QA-03）', () => {
   it('点详情按钮跳执行详情页（taskId + execId 双参）', async () => {
     mockedTasks.allExecutions.mockResolvedValue(pageFixture([exec({})]));
     renderPage();
-    (await screen.findAllByText(/备份\s*任务/))[0];
+    expect((await screen.findAllByText(/备份\s*任务/)).length).toBeGreaterThan(0);
     const detail = findBtn(document.body, '详情');
     expect(detail).toBeTruthy();
     fireEvent.click(detail!);
