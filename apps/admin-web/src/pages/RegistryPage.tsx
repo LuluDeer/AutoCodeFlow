@@ -10,7 +10,8 @@ import { useRequest } from 'ahooks';
 import { registryApi } from '../api/registry';
 import { getErrMsg } from '../utils/error';
 import PageHeader from '../components/PageHeader';
-import PageSkeleton from '../components/PageSkeleton';
+// UI-16：toast-only 页补齐页内错误态标准块（错误块 + 重试，对齐 TaskTemplatesPage 形态）
+import StateError from '../components/StateError';
 
 const { Text, Paragraph } = Typography;
 
@@ -20,7 +21,7 @@ function PypiTab() {
   const [form] = Form.useForm();
   const [uploading, setUploading] = useState(false);
 
-  const { data: packages = [], loading, refresh } = useRequest(registryApi.listPypiPackages);
+  const { data: packages = [], loading, error, refresh } = useRequest(registryApi.listPypiPackages);
 
   const handleUpload = async (values: { name: string; version: string; file: { fileList?: { originFileObj?: File }[] } }) => {
     const fileObj: File | undefined = values.file?.fileList?.[0]?.originFileObj;
@@ -71,12 +72,20 @@ function PypiTab() {
         </Text>
       </Card>
 
-      {loading ? (
-        // UI-08：首屏骨架屏替代裸 Spin
-        <PageSkeleton variant="table" rows={4} />
-      ) : packages.length === 0 ? (
+      {/* UI-16：请求失败渲染 StateError 标准错误块（此前 api 层吞错，失败静默
+          表现为「暂无 PyPI 包」空态——失败与空态语义分离） */}
+      {error && (
+        <StateError
+          error={error}
+          onRetry={refresh}
+          title="PyPI 包列表加载失败"
+          style={{ marginBottom: 16 }}
+        />
+      )}
+      {!loading && !error && packages.length === 0 && (
         <Empty description="暂无 PyPI 包，点击上传添加第一个包" />
-      ) : (
+      )}
+      {!loading && !error && packages.length > 0 && (
         <Table
           dataSource={packages.map(name => ({ name }))}
           columns={columns}
@@ -129,7 +138,7 @@ function PypiTab() {
 // ─── NPM tab ─────────────────────────────────────────────────────────────────
 function NpmTab() {
   const [publishOpen, setPublishOpen] = useState(false);
-  const { data: packages = [], loading, refresh } = useRequest(registryApi.listNpmPackages);
+  const { data: packages = [], loading, error, refresh } = useRequest(registryApi.listNpmPackages);
 
   const columns = [
     { title: '包名', dataIndex: 'name', key: 'name', render: (n: string) => <Text code>{n}</Text> },
@@ -164,12 +173,19 @@ function NpmTab() {
         </Text>
       </Card>
 
-      {loading ? (
-        // UI-08：首屏骨架屏替代裸 Spin
-        <PageSkeleton variant="table" rows={4} />
-      ) : packages.length === 0 ? (
+      {/* UI-16：npm Tab 同 PyPI——请求失败渲染 StateError 标准错误块 */}
+      {error && (
+        <StateError
+          error={error}
+          onRetry={refresh}
+          title="npm 包列表加载失败"
+          style={{ marginBottom: 16 }}
+        />
+      )}
+      {!loading && !error && packages.length === 0 && (
         <Empty description="暂无 npm 包，使用 npm publish 发布" />
-      ) : (
+      )}
+      {!loading && !error && packages.length > 0 && (
         <Table
           dataSource={packages}
           columns={columns}

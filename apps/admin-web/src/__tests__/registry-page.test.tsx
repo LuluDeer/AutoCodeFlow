@@ -1,17 +1,15 @@
 /**
- * QA-03 第二阶段：RegistryPage（包市场）组件测试（此前零覆盖）。
+ * QA-03 第二阶段：RegistryPage（包市场）组件测试。
  *
- * 页面形态：PyPI / npm 双 Tab。侦察结论（与任务书差异如实注记）：
- *  - registryApi.listPypiPackages / listNpmPackages **内部 try/catch 吞错返回 []**，
- *    StateError 页内错误块形态不适用于本页（UI-08 变更日志已注明「Registry 等
- *    请求失败仅 toast 的页面保留现状」）；错误态断言改为「失败 → 空态文案」语义；
- *  - 本页无删除入口（删除门控无从谈起）——深交互按实际代码覆盖：列表渲染/
- *    空态/上传 Modal 表单校验/上传成功载荷与刷新/npm 发布说明 Modal/Tab 切换。
+ * 页面形态：PyPI / npm 双 Tab。
+ * UI-16 变更注记：registryApi.listPypiPackages / listNpmPackages 不再吞错返回
+ * []——请求 reject 时页面渲染 StateError 标准错误块（标题+错误信息+重试+复制），
+ * 失败与空态语义分离（原「失败 → 空态文案」断言随之升级）。
  *
  * ahooks useRequest 真实现仅 mock api 层（dashboard-ui04 先例）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-library/react';
 import RegistryPage from '../pages/RegistryPage';
 import { registryApi } from '../api/registry';
 
@@ -24,6 +22,9 @@ vi.mock('../api/registry', () => ({
   },
 }));
 const mockedRegistry = vi.mocked(registryApi, true);
+// 精确引用 mock 函数（mockReset 后重设 resolved 值的用例使用）
+const listPypiMock = vi.mocked(registryApi.listPypiPackages);
+const listNpmMock = vi.mocked(registryApi.listNpmPackages);
 
 // jsdom 缺失 antd 依赖的浏览器 API（既有先例 shim）
 const g = globalThis as Record<string, unknown>;
@@ -80,10 +81,36 @@ describe('RegistryPage PyPI Tab（QA-03 第二阶段）', () => {
     expect(await screen.findByText('暂无 PyPI 包，点击上传添加第一个包')).toBeTruthy();
   });
 
-  it('请求失败 → api 层吞错返回 [] → 空态（本页错误形态=空态兜底，非 StateError）', async () => {
-    mockedRegistry.listPypiPackages.mockRejectedValue(new Error('registry down'));
+  it('请求失败 → StateError 错误块渲染（UI-16：失败与空态语义分离；重试恢复列表）', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    // mockReset 后再设 reject→resolve 序列（beforeEach 的 resolved 值被清掉）
+    listPypiMock
+      .mockReset()
+      .mockRejectedValueOnce(new Error('registry down'))
+      .mockResolvedValueOnce(['acme-core'] as never);
+    mockedRegistry.listNpmPackages.mockResolvedValue([
+      { name: '@acme/node-runner', versions: ['1.0.0'], description: '', latest: '1.0.0' },
+    ] as never);
     renderPage();
-    expect(await screen.findByText('暂无 PyPI 包，点击上传添加第一个包')).toBeTruthy();
+
+    // StateError 标准错误块：testid 锚点 + 标题 + 具体错误消息
+    expect(await screen.findByTestId('state-error')).toBeTruthy();
+    expect(screen.getByText('PyPI 包列表加载失败')).toBeTruthy();
+    expect(screen.getByText('registry down')).toBeTruthy();
+
+    // 复制错误信息走剪贴板
+    fireEvent.click(screen.getByText('复制错误信息'));
+    await waitFor(() => {
+      expect(writeText.mock.calls[0][0]).toContain('registry down');
+    });
+
+    // 重试 → list 再次被调用（refresh 语义）且恢复列表渲染
+    fireEvent.click(screen.getByText('重试'));
+    await waitFor(() => {
+      expect(listPypiMock).toHaveBeenCalledTimes(2);
+    });
+    expect(await screen.findByText('acme-core')).toBeTruthy();
   });
 
   it('上传 Modal：必填校验拦截（不调 uploadPypiPackage）', async () => {
@@ -147,6 +174,27 @@ describe('RegistryPage npm Tab（QA-03 第二阶段）', () => {
     renderPage();
     await screen.findByText('acme-core');
     fireEvent.click(screen.getByText(/npm \(Node\.js\)/));
+    expect(await screen.findByText('暂无 npm 包，使用 npm publish 发布')).toBeTruthy();
+  });
+
+  it('npm 请求失败 → StateError 错误块渲染，重试恢复空态（UI-16）', async () => {
+    listNpmMock
+      .mockReset()
+      .mockRejectedValueOnce(new Error('npm registry unreachable'))
+      .mockResolvedValueOnce([] as never);
+    renderPage();
+    await screen.findByText('acme-core');
+    fireEvent.click(screen.getByText(/npm \(Node\.js\)/));
+
+    expect(await screen.findByTestId('state-error')).toBeTruthy();
+    expect(screen.getByText('npm 包列表加载失败')).toBeTruthy();
+    expect(screen.getByText('npm registry unreachable')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('重试'));
+    await waitFor(() => {
+      expect(listNpmMock).toHaveBeenCalledTimes(2);
+    });
+    // 重试成功返回空列表 → 空态恢复
     expect(await screen.findByText('暂无 npm 包，使用 npm publish 发布')).toBeTruthy();
   });
 

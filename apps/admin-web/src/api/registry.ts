@@ -20,14 +20,12 @@ export interface NpmPackage {
 
 // PyPI registry
 export const registryApi = {
-  // List all PyPI packages — proxied through admin-api to avoid CORS/auth issues
+  // List all PyPI packages — proxied through admin-api to avoid CORS/auth issues.
+  // UI-16：不再 try/catch 吞错返回 []（失败与空态语义分离），错误透出给页面
+  // StateError 呈现（对齐 taskTemplatesApi.list 透出先例）。
   listPypiPackages: async (): Promise<string[]> => {
-    try {
-      const resp = await client.get('/registry/pypi/packages') as { packages: string[] };
-      return resp.packages ?? [];
-    } catch {
-      return [];
-    }
+    const resp = await client.get('/registry/pypi/packages') as { packages: string[] };
+    return resp.packages ?? [];
   },
 
   // Get files for a PyPI package (direct link; same origin in prod behind nginx)
@@ -57,13 +55,9 @@ export const registryApi = {
     });
   },
 
-  // List npm packages — proxied through admin-api
+  // List npm packages — proxied through admin-api（UI-16：同 PyPI，错误透出）
   listNpmPackages: async (): Promise<NpmPackage[]> => {
-    try {
-      const resp = await client.get('/registry/npm/packages') as { packages: NpmPackage[] };
-      return resp.packages ?? [];
-    } catch {
-      return [];
-    }
+    const resp = await client.get('/registry/npm/packages') as { packages: NpmPackage[] };
+    return resp.packages ?? [];
   },
 };
