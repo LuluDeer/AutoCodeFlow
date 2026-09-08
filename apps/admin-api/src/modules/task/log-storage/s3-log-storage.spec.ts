@@ -233,14 +233,20 @@ describe("S3LogStorage", () => {
     });
   });
 
-  it("get() rejects when the materialized payload exceeds MAX_LOG_BYTES", async () => {
-    minioClient.getObject.mockResolvedValue(
-      Readable.from([gzipSync(Buffer.alloc(MAX_LOG_BYTES + 1))]),
-    );
-    await expect(storage().get("execution-logs/exec-1.log.gz")).rejects.toThrow(
-      /exceeds MAX_LOG_BYTES/,
-    );
-  });
+  it(
+    "get() rejects when the materialized payload exceeds MAX_LOG_BYTES",
+    // coverage 全量并发跑下 gzip 2MB 同步压缩叠加插桩，默认 5s 偶发不足（同
+    // spec 188 行先例），第三参显式放宽到 15s——断言本体不变，仅放宽执行窗。
+    async () => {
+      minioClient.getObject.mockResolvedValue(
+        Readable.from([gzipSync(Buffer.alloc(MAX_LOG_BYTES + 1))]),
+      );
+      await expect(
+        storage().get("execution-logs/exec-1.log.gz"),
+      ).rejects.toThrow(/exceeds MAX_LOG_BYTES/);
+    },
+    15_000,
+  );
 
   it("get() aggregates content delivered in many small chunks", async () => {
     // The get() loop re-checks its own tally per chunk; several small chunks
