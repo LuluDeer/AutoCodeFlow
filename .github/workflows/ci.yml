@@ -8,6 +8,11 @@ on:
   # W-28：windows-latest e2e 较重（PG 服务启动 + portable redis 下载 + 真实浏览器），
   # 不在每次 develop push 跑，仅 PR / 手动触发，避免拖慢主干与引入 windows 侧偶发。
   workflow_dispatch:
+  # QA-08：每月 1 日 03:20 UTC 跑一次跨版本迁移演练（迁移链空库全量 + 二次幂等 +
+  # 实体同步漂移检查 + revert 单步回滚）；主 jobs 由 `if: github.event_name != 'schedule'`
+  # 旁路，仅迁移演练与冒烟套件运行。
+  schedule:
+    - cron: '20 3 1 * *'
 
 # 同一分支的旧跑自动取消（group 含 ref，不同分支互不影响）
 concurrency:
@@ -18,6 +23,8 @@ jobs:
   # ── Node.js services & packages ──────────────────────────
   admin-api-test:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     services:
       postgres:
         image: postgres:16-alpine
@@ -127,6 +134,25 @@ jobs:
             || { echo "::error::second migration:run was not a no-op"; exit 1; }
       - run: npm run typecheck
         working-directory: apps/admin-api
+      # ── QA-08：跨版本迁移演练月度增强步（仅 schedule 触发时执行）──────
+      # 在 PR/push 轮，上面三步已覆盖「空库全量 + 二次幂等」；月度轮追加：
+      # ① 迁移链 ↔ 实体定义漂移检查（migration:generate 必须产出空迁移，
+      #    否则说明实体与迁移链脱节——历史真机轮抓过迁移链断裂，此为防复发闸）；
+      # ② 最新迁移单步 revert → 重跑（演练 down 路径可达，部署回滚依赖它）。
+      # 两种形态共用本 job：schedule 触发时主套件已被 if 旁路，本 job 独跑。
+      - name: QA-08 drill — entity/migration drift check (schedule only)
+        if: github.event_name == 'schedule'
+        working-directory: apps/admin-api
+        # typeorm 原生 check 模式：实体与迁移链一致时 exit 0（"No changes in
+        # database schema were found"），有漂移时 exit 1 并打印差异迁移。
+        run: npm run migration:generate -- --check ./src/migrations/Qa08DriftCheck
+      - name: QA-08 drill — revert latest then re-run (schedule only)
+        if: github.event_name == 'schedule'
+        working-directory: apps/admin-api
+        run: |
+          npm run migration:revert
+          npm run migration:run
+          echo "revert + re-run OK：down 路径可达"
 
   # ── 依赖安全审计：prod 依赖链 moderate 及以上红灯（SEC-06）────────
   # ① 门槛从 high 升到 moderate：moderate 已是可利用 DoS 级（如
@@ -145,6 +171,8 @@ jobs:
   # npm audit 仅需 lockfile 解析依赖树，无需 npm ci。
   npm-audit:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -224,6 +252,8 @@ jobs:
 
   executor-node-test:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -241,6 +271,8 @@ jobs:
 
   acf-cli-test:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -257,6 +289,8 @@ jobs:
 
   mcp-server-test:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -273,6 +307,8 @@ jobs:
 
   autocodeflow-node-sdk-test:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -287,6 +323,8 @@ jobs:
 
   admin-web-build:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -313,6 +351,8 @@ jobs:
   # 一次性 dry-run 守卫：零安装产物、秒级、任何 lock↔manifest 失配即红。
   lockfile-integrity:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -352,6 +392,8 @@ jobs:
   # 历史一次性红可接受（若有红即真实历史泄漏，应当处理而非静默）。
   secret-scan:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -376,6 +418,8 @@ jobs:
   # ── Python services & packages ────────────────────────────
   executor-python-test:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -390,6 +434,8 @@ jobs:
 
   autoflow-sdk-python-test:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -404,6 +450,8 @@ jobs:
 
   python-packages-test:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     strategy:
       matrix:
         package: [autocodeflow-http, autocodeflow-notify, autocodeflow-db, autocodeflow-ai]
@@ -421,6 +469,8 @@ jobs:
 
   registry-pypi-test:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -442,6 +492,8 @@ jobs:
   # electron 二进制下载，只取 @vercel/ncc。
   desktop-bundle-drift:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -478,6 +530,8 @@ jobs:
   # glue .cmd、行尾守卫），此 job 防止兼容修复在后续迭代中回退。
   windows-node-tests:
     runs-on: windows-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -535,6 +589,7 @@ jobs:
   # 防级联 429（W-22 同根）、回调密钥两端显式同值、执行器注册 online 显式等待。
   e2e-full:
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     services:
       postgres:
         image: postgres:16-alpine
@@ -605,7 +660,7 @@ jobs:
   # 门控 pull_request / workflow_dispatch：拖慢 + windows 服务/下载 flaky 面
   # 不进每次 develop push（拍板选项 A）。
   e2e-full-windows:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: windows-latest
     env:
       SKIP_DOCKER: '1'
@@ -698,6 +753,8 @@ jobs:
   # 见 packages/docs-site/README.md 与该站 release.md。
   docs-site-build:
     runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
