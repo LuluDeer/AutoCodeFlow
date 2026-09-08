@@ -218,6 +218,56 @@ describe('AuditLogPage 分页（QA-03）', () => {
   });
 });
 
+// ─── AUTH-05: resourceId 精确筛选（与资源类型组合）──────────────────────────
+describe('AUTH-05 资源ID 筛选', () => {
+  it('输入资源ID后点搜索 → 查询串携带 resourceId 参数', async () => {
+    renderPage();
+    await screen.findByText('task.create');
+
+    fireEvent.change(screen.getByPlaceholderText('资源 ID'), {
+      target: { value: 'exec-abc-123' },
+    });
+    fireEvent.click(findBtn(document.body, '搜索')!);
+
+    await waitFor(() => {
+      expect(lastAuditQuery()).toContain('resourceId=exec-abc-123');
+    });
+  });
+
+  it('资源类型 + 资源ID 组合筛选 → 查询串同时携带 resource 与 resourceId', async () => {
+    renderPage();
+    await screen.findByText('task.create');
+
+    fireEvent.mouseDown(screen.getByText('资源类型'));
+    const option = await screen.findByText('executor', { selector: '.ant-select-item-option-content' });
+    fireEvent.click(option);
+    fireEvent.change(screen.getByPlaceholderText('资源 ID'), { target: { value: 'e-42' } });
+    fireEvent.click(findBtn(document.body, '搜索')!);
+
+    await waitFor(() => {
+      const qs = lastAuditQuery();
+      expect(qs).toContain('resource=executor');
+      expect(qs).toContain('resourceId=e-42');
+    });
+  });
+
+  it('重置后查询串不再携带 resourceId', async () => {
+    renderPage();
+    await screen.findByText('task.create');
+
+    fireEvent.change(screen.getByPlaceholderText('资源 ID'), { target: { value: 'e-42' } });
+    fireEvent.click(findBtn(document.body, '搜索')!);
+    await waitFor(() => {
+      expect(lastAuditQuery()).toContain('resourceId=e-42');
+    });
+
+    fireEvent.click(findBtn(document.body, '重置')!);
+    await waitFor(() => {
+      expect(lastAuditQuery()).not.toContain('resourceId=');
+    });
+  });
+});
+
 describe('AuditLogPage 空态（QA-03 / UI-08）', () => {
   it('无记录渲染「暂无审计记录」空态', async () => {
     mockedClient.get.mockResolvedValue({ data: [], total: 0 } as never);

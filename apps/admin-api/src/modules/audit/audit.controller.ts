@@ -31,6 +31,10 @@ export class AuditController {
       pageSize: query.pageSize,
       action: query.action,
       resource: query.resource,
+      // AUTH-05: (resource, resourceId) pair filter — the scoped-down
+      // replacement for the planned per-Project dimension (no Project entity
+      // exists yet; AUTH-01 unclaimed).
+      resourceId: query.resourceId,
       username: query.username,
       startTime: query.startTime,
       endTime: query.endTime,
@@ -49,6 +53,7 @@ export class AuditController {
     const csv = await this.svc.exportCsv({
       action: query.action,
       resource: query.resource,
+      resourceId: query.resourceId,
       username: query.username,
       startTime: query.startTime,
       endTime: query.endTime,
