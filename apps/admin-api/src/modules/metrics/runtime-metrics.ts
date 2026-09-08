@@ -128,7 +128,10 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
  * 实例数 × SSE_MAX_STREAMS_GLOBAL（线性叠加），由抓取方按 instance 聚合。
  */
 export type RuntimeGaugeName =
-  "autoflow_sse_streams_active" | "autoflow_sse_streams_limit";
+  | "autoflow_sse_streams_active"
+  | "autoflow_sse_streams_limit"
+  | "autoflow_metrics_streams_active"
+  | "autoflow_metrics_streams_limit";
 
 export interface RuntimeGaugeSpec {
   help: string;
@@ -140,5 +143,13 @@ export const RUNTIME_GAUGES: Record<RuntimeGaugeName, RuntimeGaugeSpec> = {
   },
   autoflow_sse_streams_limit: {
     help: "Configured global SSE log-stream concurrency limit of this instance (SSE_MAX_STREAMS_GLOBAL) — denominator of the stream utilization water level",
+  },
+  // UI-14 第一阶段：Dashboard 汇总流（GET /metrics/stream）水位——与日志流
+  // 分开计数（容量画像不同，见 metrics-stream-slot.service.ts 头注）。
+  autoflow_metrics_streams_active: {
+    help: "Currently active metrics summary SSE streams held by this process (UI-14 /metrics/stream slot registry)",
+  },
+  autoflow_metrics_streams_limit: {
+    help: "Configured global metrics summary SSE stream concurrency limit of this instance (METRICS_STREAM_MAX_GLOBAL)",
   },
 };

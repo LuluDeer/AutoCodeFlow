@@ -23,7 +23,10 @@ export interface JwtPayload {
 export const SSE_QUERY_TOKEN_PARAM = "access_token";
 
 /** Path suffixes on which the `access_token` query parameter is accepted. */
-const SSE_QUERY_TOKEN_PATH_SUFFIXES = ["/logs/stream"];
+// UI-14 第一阶段：/metrics/stream（Dashboard 汇总流）同款回退——EventSource
+// 无法设置 Authorization 头，与 /logs/stream 共享 ?access_token= 先例
+// （type=access 限定仍由 validate() 强制，refresh token 无法借道）。
+const SSE_QUERY_TOKEN_PATH_SUFFIXES = ["/logs/stream", "/metrics/stream"];
 
 export function extractJwtFromRequest(req: Request): string | null {
   const headerToken = req?.headers
