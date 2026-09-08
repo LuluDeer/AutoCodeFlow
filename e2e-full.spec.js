@@ -676,7 +676,9 @@ test('17. RBAC — admin 访问 /notifications 正常且菜单入口可见', asy
   await login(page);
   await page.goto(`${BASE}/dashboard`);
   await page.waitForLoadState('networkidle');
-  // 侧边菜单含「通知设置」入口（R6 起该入口 ADMIN-only）
+  // 侧边菜单含「通知设置」入口（R6 起该入口 ADMIN-only；UI-03 分组化后
+  // 位于「系统」子菜单内，先展开分组再断言子项可见）
+  await page.locator('.ant-menu').getByText('系统', { exact: true }).click();
   await expect(page.locator('.ant-menu').getByText('通知设置')).toBeVisible({ timeout: 10000 });
   console.log('  ✓ admin 菜单含通知设置入口');
   // 路由可访问：渲染 NotificationSettingsPage 特有区块，而非 RequireAdmin 403
@@ -785,6 +787,14 @@ test('22. TaskFormPage — auto/group/pinned/broadcast 四模式切换与 pinned
   await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
   console.log(`  ✓ pinned 选中执行器 ${executor.appName} (${executor.id})`);
 
+  // pinned 态下 broadcast 项输入期互斥禁用（UI-06 ③），auto 可正常切换
+  await expect(broadcastRadio).toBeDisabled();
+  console.log('  ✓ pinned 态 broadcast 输入期互斥禁用（N17 UI 面前移）');
+
+  // 切回 auto → pinned 选择器卸载（不残留字段），broadcast 恢复可选
+  await autoRadio.click();
+  await expect(page.locator('#executorId')).toHaveCount(0);
+  await expect(broadcastRadio).toBeEnabled();
   // broadcast → pinned 选择器卸载（互斥，不残留字段）
   await broadcastRadio.click();
   await expect(page.locator('#executorId')).toHaveCount(0);
@@ -830,7 +840,9 @@ test('23. executorId 残留清理 — 编辑页还原 pinned，切 broadcast 后
   await expect(page.locator('.ant-select:has(#executorId) .ant-select-content')).toContainText(executor.appName);
   console.log('  ✓ 编辑页还原 pinned 且选中正确执行器');
 
-  // 切 broadcast → 选择器消失 → 保存
+  // pinned 态 broadcast 输入期禁用（UI-06 ③）→ 经 auto 中转切 broadcast
+  await page.getByRole('radio', { name: /系统自动选择负载最低/ }).click();
+  await expect(page.locator('#executorId')).toHaveCount(0);
   await page.getByRole('radio', { name: /广播（全部执行）/ }).click();
   await expect(page.locator('#executorId')).toHaveCount(0);
   const patchPromise = page.waitForResponse((r) => r.url().includes(`/api/tasks/${seeded.id}`) && r.request().method() === 'PATCH');
