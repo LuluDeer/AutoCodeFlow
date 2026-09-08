@@ -183,6 +183,9 @@ describe("S3LogStorage", () => {
       expect(Buffer.concat(parts).toString("utf-8")).toBe("chunk-a\nchunk-b");
     });
 
+    // AUTH-05 轮注记：本例在 coverage 全量跑（压测机器 CPU 满载）下偶发
+    // 5s 默认超时——gzip 同步压缩 2MB+ 零缓冲与 coverage 插桩叠加拖慢了
+    // 流水线。显式放宽到 15s，仅影响测试执行窗，断言本体不变。
     it("rejects when the decompressed payload exceeds MAX_LOG_BYTES (cap transform)", async () => {
       // A valid gzip stream of zeros larger than the cap: the first gunzipped
       // chunk alone crosses MAX_LOG_BYTES, so the running tally guard must
@@ -196,7 +199,7 @@ describe("S3LogStorage", () => {
           /* drain until the cap transform errors */
         }
       }).rejects.toThrow(/exceeds MAX_LOG_BYTES/);
-    });
+    }, 15_000);
 
     it("propagates an S3 read error to the stream consumer (raw error path)", async () => {
       // Simulate a mid-flight storage failure: the raw readable errors after
