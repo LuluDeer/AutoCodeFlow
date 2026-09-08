@@ -1,0 +1,70 @@
+name: Release Please
+
+# ── DOC-05：CHANGELOG 自动化（release-please）──────────────────────────
+# 选型裁定（vs changesets）：
+#   1) 本仓 commit 纪律是「中文 conventional commits」（feat:/fix:/docs:/chore:…，
+#      见 docs/development.md「Commit 规范」节）——release-please 对 conventional
+#      commits 原生解析，零迁移成本；changesets 依赖 PR 里手写 .changeset/*.md
+#      增量文件，与既有纪律并行多一套仪式，收益主要是 JS monorepo 手动管理场景。
+#   2) 本仓三包（@autocodeflow/sdk / autocodeflow-mcp-server / autoflow-sdk）
+#      实际走 **lockstep 单版本线**（当前均 1.0.1，version-guard 四处一致性
+#      强制同版本），无需 changesets 的「按包独立版本 + private 包提升」能力。
+#   3) release-please 对 python（pyproject.toml）与 node（package.json）混合仓
+#      原生支持，changesets 只管 npm 包。
+#
+# 与既有 release.yml 的衔接（**不改动 release.yml 本体**）：
+#   ┌ push main ──→ 本 workflow：汇总 conventional commits →
+#   │   若有可发布变更：开/更新 Release PR（bump 三包 version + 生成/追加
+#   │   CHANGELOG.md）——注意 Release PR 的 merge 不会直接触发发布；
+#   │   release-please 创建 GitHub Release 时才打 tag v(X.Y.Z)。
+#   └ tag v* push ──→ 既有 release.yml：version-guard（tag == 三包四处
+#       version 一致性）→ environment 审批闸 → npm + PyPI 发布。
+#   即：**Release PR 合并 → release-please 打 tag → tag 恰好触发 release.yml**
+#   ——发布管道、审批闸、幂等语义全部复用既有实现。
+#
+# lockstep 对齐（关键配置）：
+#   release-please-config.json 用 `include-component-in-tag: false`，tag 形态
+#   为裸 `vX.Y.Z`（非 `pkg-vX.Y.Z`），与 release.yml 的 tag 触发模式 `v*` 与
+#   version-guard 的 `v(\d+\.\d+\.\d+…)` 正则精确匹配。
+#
+# 已知限制（首次启用时观察点，见 docs/development.md「版本与发布流程」）：
+#   a) manifest 缺省：三包独立维护 changelog 头会各自提议版本；本仓 lockstep
+#      靠 version-guard 兜底——若三包 version 出现漂移，tag push 会被
+#      version-guard 拦截（fail 安全，不会发出不一致的包）。首次 Release PR
+#      合并前人工核对三包 version 已收敛为同一值。
+#   b) 根级 CHANGELOG.md 由 release-please 首次运行时生成（追加式，不覆盖
+#      手工历史）；若仓库已有手写 CHANGELOG.md 需先归档（当前仓库无根级
+#      CHANGELOG.md，已核实）。
+#   c) python 包的 extra-files（__init__.py 的 __version__）由
+#      release-please 的 python release-type 自动同步；首个 Release PR 里
+#      核对四处 version（含 autocodeflow-node-sdk/mcp-server package.json）
+#      是否齐全。
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          # token 用默认 GITHUB_TOKEN 即可创建 Release PR 与 Release；
+          # 若需 Release 触发其他 workflow（本仓 release.yml 由 tag 触发，
+          # release-please 打 tag 用 GITHUB_TOKEN 即可触发 push 事件），
+          # 如遇「tag push 未触发 release.yml」再换 PAT（GITHUB_TOKEN 触发
+          # 的 workflow 事件不会级联触发新 workflow——tag push 属于例外，
+          # GITHUB_TOKEN 创建的 release/tag 会触发 on:push:tags）。
+          config-file: release-please-config.json
+          # 显式指向 manifest 文件（缺省同为 release-please-manifest.json，
+          # 写明以减少隐式约定）
+          manifest-file: release-please-manifest.json
