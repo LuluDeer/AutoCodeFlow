@@ -55,6 +55,7 @@ export class AuditService {
   async exportCsv(options: {
     action?: string;
     resource?: string;
+    resourceId?: string;
     username?: string;
     startTime?: string;
     endTime?: string;
@@ -77,6 +78,14 @@ export class AuditService {
       });
     }
     if (resource) qb.andWhere("log.resource = :resource", { resource });
+    // AUTH-05: exact match on the identifier column — the DTO field is a
+    // plain string, but a bound-parameter cap keeps oversized query-string
+    // needles from reaching PG at all.
+    if (options.resourceId) {
+      qb.andWhere("log.resourceId = :resourceId", {
+        resourceId: options.resourceId.slice(0, 100),
+      });
+    }
     if (userId) qb.andWhere("log.userId = :userId", { userId });
     this.applyExtraFilters(qb, options);
 
@@ -143,6 +152,7 @@ export class AuditService {
     pageSize?: number;
     action?: string;
     resource?: string;
+    resourceId?: string;
     username?: string;
     startTime?: string;
     endTime?: string;
@@ -171,6 +181,13 @@ export class AuditService {
     }
 
     if (resource) qb.andWhere("log.resource = :resource", { resource });
+    // AUTH-05: exact match, same bound-parameter cap as exportCsv — both
+    // paths honour the identical filter set (R4 P1-2 parity).
+    if (options.resourceId) {
+      qb.andWhere("log.resourceId = :resourceId", {
+        resourceId: options.resourceId.slice(0, 100),
+      });
+    }
     if (userId) qb.andWhere("log.userId = :userId", { userId });
     this.applyExtraFilters(qb, options);
     // Q12: cap pageSize to prevent full-table scans regardless of caller input

@@ -29,6 +29,8 @@ import {
   getRuntimeGaugesSnapshot,
   resetRuntimeGauges,
 } from "../../metrics/runtime-metrics-entry";
+// AUTH-05: 高危操作审计断言
+import { AuditService } from "../../audit/audit.service";
 
 jest.mock("axios");
 // F-3: dispatch now consults the SSRF layer before every outbound POST. These
@@ -1742,6 +1744,120 @@ describe("ExecutorService (__tests__)", () => {
         token: result.token,
         startupId: null,
       });
+    });
+
+    // AUTH-05: high-risk operation audit (best-effort — @Optional provider).
+    it("AUTH-05: writes an executor.rotate_token audit entry with the supplied reason", async () => {
+      const audit = { log: jest.fn().mockResolvedValue(undefined) };
+      const module2 = await Test.createTestingModule({
+        providers: [
+          ExecutorService,
+          { provide: getRepositoryToken(Executor), useValue: executorRepo },
+          { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+          { provide: getRepositoryToken(Task), useValue: taskRepo },
+          {
+            provide: getRepositoryToken(ExecutorMetricsHistory),
+            useValue: metricsHistoryRepo,
+          },
+          { provide: getQueueToken("task-queue"), useValue: taskQueue },
+          { provide: ConfigService, useValue: configService },
+          {
+            provide: NotificationService,
+            useValue: { notifyExecutorOnline: jest.fn(), notifyExecutorOffline: jest.fn() },
+          },
+          {
+            provide: SystemConfigService,
+            useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+          },
+          {
+            provide: SecretsCryptoService,
+            useValue: new SecretsCryptoService({ get: () => "" } as any),
+          },
+          { provide: AuditService, useValue: audit },
+        ],
+      }).compile();
+      const svc = module2.get(ExecutorService);
+
+      const executor = {
+        id: "e1",
+        address: "10.0.0.9:3002",
+        appName: "node-1",
+        tokenHash: null,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await svc.rotateToken("e1", "suspected leak");
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "executor.rotate_token",
+          resource: "executor",
+          resourceId: "e1",
+          detail: expect.objectContaining({
+            address: "10.0.0.9:3002",
+            appName: "node-1",
+            reason: "suspected leak",
+          }),
+        }),
+      );
+    });
+
+    it("AUTH-05: rotateToken audit omits detail.reason when none supplied and never fails the rotation", async () => {
+      const audit = {
+        log: jest.fn().mockRejectedValue(new Error("audit down")),
+      };
+      const module2 = await Test.createTestingModule({
+        providers: [
+          ExecutorService,
+          { provide: getRepositoryToken(Executor), useValue: executorRepo },
+          { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+          { provide: getRepositoryToken(Task), useValue: taskRepo },
+          {
+            provide: getRepositoryToken(ExecutorMetricsHistory),
+            useValue: metricsHistoryRepo,
+          },
+          { provide: getQueueToken("task-queue"), useValue: taskQueue },
+          { provide: ConfigService, useValue: configService },
+          {
+            provide: NotificationService,
+            useValue: { notifyExecutorOnline: jest.fn(), notifyExecutorOffline: jest.fn() },
+          },
+          {
+            provide: SystemConfigService,
+            useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+          },
+          {
+            provide: SecretsCryptoService,
+            useValue: new SecretsCryptoService({ get: () => "" } as any),
+          },
+          { provide: AuditService, useValue: audit },
+        ],
+      }).compile();
+      // 静默 warn 日志噪声
+      jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+      const svc = module2.get(ExecutorService);
+
+      const executor = { id: "e1", address: "10.0.0.9:3002", tokenHash: null };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const result = await svc.rotateToken("e1");
+      expect(result).toHaveProperty("token");
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "executor.rotate_token",
+          detail: expect.not.objectContaining({ reason: expect.anything() }),
+        }),
+      );
+    });
+
+    it("AUTH-05: skips audit entirely when no AuditService is wired (@Optional legacy assemblies)", async () => {
+      const executor = { id: "e1", address: "10.0.0.9:3002", tokenHash: null };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      // service（beforeEach 装配）无 AuditService provider — 不抛错即通过
+      const result = await service.rotateToken("e1");
+      expect(result).toHaveProperty("token");
     });
   });
 

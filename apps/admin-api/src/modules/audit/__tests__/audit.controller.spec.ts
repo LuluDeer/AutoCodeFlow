@@ -86,6 +86,20 @@ describe("AuditController", () => {
       );
     });
 
+    // AUTH-05: (resource, resourceId) pair filter passthrough.
+    it("AUTH-05: passes resourceId filter to service", async () => {
+      svc.findAll.mockResolvedValue({ data: [], total: 0 });
+      await controller.findAll({
+        page: 1,
+        pageSize: 10,
+        resource: "executor",
+        resourceId: "e-42",
+      } as any);
+      expect(svc.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ resource: "executor", resourceId: "e-42" }),
+      );
+    });
+
     it("passes userId filter to service", async () => {
       svc.findAll.mockResolvedValue({ data: [], total: 0 });
       await controller.findAll({ page: 1, pageSize: 10, userId: 42 } as any);
@@ -154,6 +168,21 @@ describe("AuditController", () => {
         "text/csv; charset=utf-8",
       );
       expect(res.send).toHaveBeenCalledWith("id,action\n1,auth.login");
+    });
+
+    // AUTH-05: export honours the identical filter set including resourceId.
+    it("AUTH-05: exportCsv passes resourceId through to the service", async () => {
+      svc.exportCsv.mockResolvedValue("id,action\n1,auth.login");
+      const res = { setHeader: jest.fn(), send: jest.fn() } as any;
+
+      await controller.exportCsv(
+        { resourceId: "exec-abc" } as any,
+        res,
+      );
+
+      expect(svc.exportCsv).toHaveBeenCalledWith(
+        expect.objectContaining({ resourceId: "exec-abc" }),
+      );
     });
   });
 });

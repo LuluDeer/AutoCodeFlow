@@ -64,4 +64,12 @@ describe("AuditQueryDto", () => {
       BadRequestException,
     );
   });
+
+  // AUTH-05: the (resource, resourceId) pair filter rides the same whitelist
+  // — declared fields pass, undeclared ones still 400 (W4 discipline kept).
+  it("AUTH-05: accepts resourceId and passes the whitelist", async () => {
+    const result = await validate({ resource: "executor", resourceId: "e-1" });
+    expect(result.resource).toBe("executor");
+    expect(result.resourceId).toBe("e-1");
+  });
 });

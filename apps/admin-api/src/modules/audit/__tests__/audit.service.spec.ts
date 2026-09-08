@@ -167,6 +167,59 @@ describe("AuditService", () => {
       await service.findAll({ pageSize: 9999 });
       expect(qbMock.take).toHaveBeenCalledWith(100);
     });
+
+    // AUTH-05: (resource, resourceId) pair filter — scoped-down replacement
+    // for the planned per-Project dimension (no Project entity exists yet).
+    it("AUTH-05: applies exact resourceId filter", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ resourceId: "task-abc-123" });
+      expect(qbMock.andWhere).toHaveBeenCalledWith("log.resourceId = :resourceId", {
+        resourceId: "task-abc-123",
+      });
+    });
+
+    it("AUTH-05: applies resource + resourceId as a combined pair filter", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ resource: "executor", resourceId: "e-1" });
+      expect(qbMock.andWhere).toHaveBeenCalledWith("log.resource = :resource", {
+        resource: "executor",
+      });
+      expect(qbMock.andWhere).toHaveBeenCalledWith("log.resourceId = :resourceId", {
+        resourceId: "e-1",
+      });
+    });
+
+    it("AUTH-05: caps an oversized resourceId needle at 100 chars", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ resourceId: "x".repeat(500) });
+      expect(qbMock.andWhere).toHaveBeenCalledWith("log.resourceId = :resourceId", {
+        resourceId: "x".repeat(100),
+      });
+    });
   });
 
   describe("exportCsv", () => {
@@ -323,6 +376,29 @@ describe("AuditService", () => {
           action: expect.stringContaining("task.create"),
         }),
       );
+    });
+
+    // AUTH-05: the CSV export must honour the identical filter set as the
+    // list endpoint (R4 P1-2 parity extended with the resourceId pair).
+    it("AUTH-05: exportCsv applies the same resource/resourceId pair filter", async () => {
+      const qb = makeExportQb([]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      await service.exportCsv({ resource: "executor", resourceId: "e-9" });
+      expect(qb.andWhere).toHaveBeenCalledWith("log.resource = :resource", {
+        resource: "executor",
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith("log.resourceId = :resourceId", {
+        resourceId: "e-9",
+      });
+    });
+
+    it("AUTH-05: exportCsv caps an oversized resourceId needle at 100 chars", async () => {
+      const qb = makeExportQb([]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      await service.exportCsv({ resourceId: "y".repeat(300) });
+      expect(qb.andWhere).toHaveBeenCalledWith("log.resourceId = :resourceId", {
+        resourceId: "y".repeat(100),
+      });
     });
   });
 
