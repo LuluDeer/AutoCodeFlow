@@ -673,3 +673,22 @@ jobs:
             apps/admin-web/test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  # ── SDK 文档站构建验证（ECO-05）────────────────────────────────
+  # 仅验证 packages/docs-site（VitePress）可构建——死链会 fail build
+  # （ignoreDeadLinks: false），build 绿即站点无死链、无白屏级错误。
+  # 不部署：托管位置（GitHub Pages / 平台自身）留后续决策，
+  # 见 packages/docs-site/README.md 与该站 release.md。
+  docs-site-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: packages/docs-site/package-lock.json
+      - run: npm ci
+        working-directory: packages/docs-site
+      - run: npm run build
+        working-directory: packages/docs-site
