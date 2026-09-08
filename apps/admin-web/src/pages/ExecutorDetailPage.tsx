@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result } from 'antd';
-import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useRequest } from 'ahooks';
@@ -13,6 +13,9 @@ import PageSkeleton from '../components/PageSkeleton';
 import { useState } from 'react';
 
 const { Text } = Typography;
+
+/** AUTH-05 交接：高危操作 reason 上限（对齐 admin-api DTO 契约：≤200 字符） */
+const MAX_REASON_LENGTH = 200;
 
 function relativeTime(isoString: string): string {
   const diff = Date.now() - new Date(isoString).getTime();
@@ -64,8 +67,13 @@ export default function ExecutorDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [execPage, setExecPage] = useState(1);
+  // AUTH-05 交接：单台高危操作二次确认（受控 Modal，含可选 reason ≤200）
+  const [rotateOpen, setRotateOpen] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
   const [editForm] = Form.useForm();
   const [configForm] = Form.useForm();
+  const [rotateForm] = Form.useForm();
+  const [removeForm] = Form.useForm();
 
   const { data: executor, loading: loadingExecutor, error: executorError, refresh: refreshExecutor } = useRequest(
     () => executorsApi.get(id!),
@@ -92,11 +100,14 @@ export default function ExecutorDetailPage() {
     { manual: true, onSuccess: () => { message.success('配置已推送'); setConfigOpen(false); } },
   );
 
+  // AUTH-05 交接：轮换请求体携带可选 reason（≤200，审计 executor.rotate_token）
   const { run: rotateToken, loading: rotating } = useRequest(
-    () => executorsApi.rotateToken(id!),
+    (reason?: string) => executorsApi.rotateToken(id!, reason?.trim() || undefined),
     {
       manual: true,
       onSuccess: (res) => {
+        setRotateOpen(false);
+        rotateForm.resetFields();
         Modal.success({
           title: '新Token（请妥善保存，关闭后不再显示）',
           content: (
@@ -106,6 +117,20 @@ export default function ExecutorDetailPage() {
           ),
         });
       },
+      onError: (e) => { message.error(`轮换失败：${getErrMsg(e, '请重试')}`); },
+    },
+  );
+
+  // AUTH-05 交接：删除执行器（此前前端无删除入口）。reason 可选随 body 写审计
+  const { run: removeExecutor, loading: removing } = useRequest(
+    (reason?: string) => executorsApi.remove(id!, reason?.trim() || undefined),
+    {
+      manual: true,
+      onSuccess: () => {
+        message.success('执行器已删除');
+        navigate('/executors');
+      },
+      onError: (e) => { message.error(`删除失败：${getErrMsg(e, '请重试')}`); },
     },
   );
 
@@ -223,19 +248,17 @@ export default function ExecutorDetailPage() {
             <Tooltip title="轮换后旧Token 立即失效">
               <Button
                 danger
-                loading={rotating}
                 icon={<CopyOutlined />}
-                onClick={() => {
-                  Modal.confirm({
-                    title: '确认轮换 Token',
-                    content: '所有使用旧 Token 的执行器将立即失效并掉线，需要重新注册后才能恢复连接。确认继续？',
-                    okText: '确认轮换',
-                    okButtonProps: { danger: true },
-                    cancelText: '取消',
-                    onOk: rotateToken,
-                  });
-                }}
+                onClick={() => { rotateForm.resetFields(); setRotateOpen(true); }}
               >轮换 Token</Button>
+            </Tooltip>
+            {/* AUTH-05 交接：删除执行器入口（高危，与列表批量操作互补的单台形态） */}
+            <Tooltip title="删除后需执行器重新注册">
+              <Button
+                danger
+                icon={<DeleteOutlined />}
+                onClick={() => { removeForm.resetFields(); setRemoveOpen(true); }}
+              >删除</Button>
             </Tooltip>
           </Space>
           ) : undefined
@@ -449,6 +472,90 @@ export default function ExecutorDetailPage() {
           <Form.Item name="adminApiUrl" label="Admin API地址"><Input placeholder="默认 Admin API 地址" /></Form.Item>
           <Form.Item name="adminApiUrlInternal" label="Admin API内部地址"><Input placeholder="执行器容器/内网访问地址" /></Form.Item>
           <Form.Item name="adminApiUrlExternal" label="Admin API外部地址"><Input placeholder="执行器回调优先使用的公网地址" /></Form.Item>
+        </Form>
+      </Modal>
+
+      {/* AUTH-05 交接：单台轮换 Token 二次确认（受控 Modal——列出影响 + reason
+          可选 ≤200 随请求体发送写审计；批量版形态见 BatchActionBar，本单台版
+          增强点 = reason 输入与超限校验） */}
+      <Modal
+        title="确认轮换 Token"
+        open={rotateOpen}
+        onCancel={() => setRotateOpen(false)}
+        onOk={() => rotateForm.submit()}
+        confirmLoading={rotating}
+        okText="确认轮换"
+        okButtonProps={{ danger: true }}
+        cancelText="取消"
+        width={520}
+        destroyOnHidden
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="高危操作"
+          description="轮换后旧 Token 立即失效，该执行器将短暂重新注册后恢复连接（node/python 执行器在一个心跳间隔内自动对齐）。新 Token 仅在结果弹窗中展示一次。"
+          style={{ marginBottom: 12 }}
+        />
+        <Descriptions size="small" column={1} style={{ marginBottom: 12 }}>
+          <Descriptions.Item label="执行器">{executor.appName}</Descriptions.Item>
+          <Descriptions.Item label="地址"><Text code>{executor.address}</Text></Descriptions.Item>
+          <Descriptions.Item label="影响">Token 将轮换，执行器短暂重新注册</Descriptions.Item>
+        </Descriptions>
+        <Form form={rotateForm} layout="vertical" onFinish={(v: { reason?: string }) => rotateToken(v.reason)}>
+          <Form.Item
+            name="reason"
+            label="操作原因（可选，记录到审计日志）"
+            rules={[{ max: MAX_REASON_LENGTH, message: `原因不能超过 ${MAX_REASON_LENGTH} 个字符` }]}
+          >
+            <Input.TextArea
+              rows={2}
+              maxLength={MAX_REASON_LENGTH}
+              showCount
+              placeholder="如：token 疑似泄露 / 例行轮换"
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* AUTH-05 交接：删除执行器二次确认（删除不可恢复 + reason 可选写审计） */}
+      <Modal
+        title="确认删除执行器"
+        open={removeOpen}
+        onCancel={() => setRemoveOpen(false)}
+        onOk={() => removeForm.submit()}
+        confirmLoading={removing}
+        okText="确认删除"
+        okButtonProps={{ danger: true }}
+        cancelText="取消"
+        width={520}
+        destroyOnHidden
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="高危操作 · 不可恢复"
+          description="删除后该执行器记录将永久移除，正在其上运行的任务不受影响但不再派发；执行器需重新注册才能恢复接入。"
+          style={{ marginBottom: 12 }}
+        />
+        <Descriptions size="small" column={1} style={{ marginBottom: 12 }}>
+          <Descriptions.Item label="执行器">{executor.appName}</Descriptions.Item>
+          <Descriptions.Item label="地址"><Text code>{executor.address}</Text></Descriptions.Item>
+          <Descriptions.Item label="影响">执行器记录删除，需重新注册</Descriptions.Item>
+        </Descriptions>
+        <Form form={removeForm} layout="vertical" onFinish={(v: { reason?: string }) => removeExecutor(v.reason)}>
+          <Form.Item
+            name="reason"
+            label="操作原因（可选，记录到审计日志）"
+            rules={[{ max: MAX_REASON_LENGTH, message: `原因不能超过 ${MAX_REASON_LENGTH} 个字符` }]}
+          >
+            <Input.TextArea
+              rows={2}
+              maxLength={MAX_REASON_LENGTH}
+              showCount
+              placeholder="如：主机已下线 / 迁移至新机器"
+            />
+          </Form.Item>
         </Form>
       </Modal>
     </div>
