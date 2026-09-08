@@ -86,8 +86,10 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
     };
     executorService = {
       findOne: jest.fn(),
+      // 对齐真实 getExecutorUrl：裸 host:port 补 http:// scheme
       getExecutorUrl: jest.fn(
-        (addr: string, p: string) => `${addr}/${p}`,
+        (addr: string, p: string) =>
+          `${addr.startsWith("http://") || addr.startsWith("https://") ? "" : "http://"}${addr}/${p}`,
       ),
       getSharedToken: jest.fn().mockResolvedValue("tok"),
       selectLeastLoaded: jest.fn(),
@@ -338,8 +340,13 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
     }, 15000);
 
     it("failThreshold 窗口耗尽：批次失败 + 已升级台自动回滚（upgradeWithSnapshot 链）", async () => {
-      const deployments = [row("d1"), row("d2", { id: "d2" })];
-      deployments[0].deployedVersion = "2.0.0";
+      // 部署行地址为 host:port 形态（validateExecutorAddress 只认该形态；
+      // 与既有 app-deployment.service.spec 的 203.0.113.10:3001 夹具同约定）。
+      const deployments = [
+        row("d1", { deployedVersion: "2.0.0", executorAddress: "203.0.113.10:3001" }),
+        row("d2", { id: "d2", deployedVersion: "2.0.0", executorAddress: "203.0.113.10:3001" }),
+        row("d3", { id: "d3", deployedVersion: "2.0.0", executorAddress: "203.0.113.10:3001" }),
+      ];
       repo.find.mockImplementation(async ({ where }: any) => {
         if (where && "rolloutState" in where) return [];
         return deployments;
@@ -368,7 +375,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
 
       await service.upgradeAllWithRollout("app-1", {
         strategy: "canary",
-        percentage: 50,
+        percentage: 34, // ceil(3×34%)=2 → 首批 d1+d2，promotion d3
       });
       // d1 心跳确认 RUNNING → probing → 探测窗耗尽 → failBatch（回滚 d2）
       await service.handleHeartbeat({
