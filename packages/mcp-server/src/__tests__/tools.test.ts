@@ -90,6 +90,7 @@ describe("tool registry surface", () => {
       "suggest_schedule",
       "get_execution_logs",
       "kill_execution",
+      "retry_execution",
       "pause_task",
       "resume_task",
       "create_task_from_template",
@@ -103,6 +104,7 @@ describe("tool registry surface", () => {
       // deployments
       "list_deployments",
       "deploy_application",
+      "deploy_app",
       "upgrade_deployment",
       "stop_deployment",
       // executors
@@ -385,6 +387,128 @@ describe("deploy_application", () => {
       },
     );
   });
+
+  // NF-06 (DEP-04): approval-gated applications come back frozen — the tool
+  // must surface pending_approval as an explicit non-dispatched state.
+  it("flags dispatched:false with a next-step note on approvalStatus=pending_approval", async () => {
+    call.mockResolvedValueOnce({
+      id: "d9",
+      status: "pending",
+      approvalStatus: "pending_approval",
+      approvalMeta: { requestedBy: 1 },
+    });
+    const out = parse(
+      await tools
+        .get("deploy_application")!
+        .handler({ applicationId: "a1" }),
+    );
+    expect(out.dispatched).toBe(false);
+    expect(out.approvalStatus).toBe("pending_approval");
+    expect(out.note).toContain("/app-deployments/d9/approval/approve");
+  });
+
+  it("returns the plain deployment payload when approvalStatus is absent or not pending", async () => {
+    call.mockResolvedValueOnce({ id: "d1", status: "pending", approvalStatus: null });
+    const out = parse(
+      await tools.get("deploy_application")!.handler({ applicationId: "a1" }),
+    );
+    expect(out).toEqual({ id: "d1", status: "pending", approvalStatus: null });
+    call.mockResolvedValueOnce({ id: "d2", approvalStatus: "approved" });
+    const out2 = parse(
+      await tools.get("deploy_application")!.handler({ applicationId: "a1" }),
+    );
+    expect(out2.dispatched).toBeUndefined();
+  });
+
+  it("lets upstream errors bubble (409 conflict / 403 non-admin keep the apiRequest message)", async () => {
+    call.mockRejectedValueOnce(
+      new Error(
+        "API error (409): Application demo already has an in-progress deployment",
+      ),
+    );
+    await expect(
+      tools.get("deploy_application")!.handler({ applicationId: "a1" }),
+    ).rejects.toThrow(/API error \(409\): Application demo already has/);
+    call.mockRejectedValueOnce(
+      new Error(
+        "Forbidden (403): Forbidden resource — your account is not allowed to perform this operation (some endpoints require the ADMIN role)",
+      ),
+    );
+    await expect(
+      tools.get("deploy_application")!.handler({ applicationId: "a1" }),
+    ).rejects.toThrow(/Forbidden \(403\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NF-06: deploy_app (deploy by application NAME)
+// ---------------------------------------------------------------------------
+describe("deploy_app", () => {
+  it("resolves the name via GET /applications then POSTs the deploy route", async () => {
+    // first call: GET /applications
+    call.mockResolvedValueOnce([
+      { id: "a1", name: "demo", version: "1.0.0" },
+      { id: "a2", name: "other", version: "2.0.0" },
+    ]);
+    call.mockResolvedValueOnce({ id: "d1", status: "pending" });
+    const out = parse(
+      await tools.get("deploy_app")!.handler({ appName: "demo" }),
+    );
+    expect(call).toHaveBeenNthCalledWith(1, "GET", "/applications");
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "POST",
+      "/app-deployments/applications/a1/deploy",
+      {},
+    );
+    expect(out.id).toBe("d1");
+  });
+
+  it("does not call the deploy route when the name is unknown", async () => {
+    call.mockResolvedValueOnce([{ id: "a2", name: "other" }]);
+    const out = parse(
+      await tools.get("deploy_app")!.handler({ appName: "nope" }),
+    );
+    expect(call).toHaveBeenCalledTimes(1); // only the GET /applications lookup
+    expect(out.error).toMatch(/Application "nope" not found/);
+    expect(out.available).toEqual(["other"]);
+  });
+
+  it("accepts the { list } envelope for the application lookup", async () => {
+    call.mockResolvedValueOnce({ list: [{ id: "a1", name: "demo" }] });
+    call.mockResolvedValueOnce({ id: "d2", status: "pending" });
+    await tools.get("deploy_app")!.handler({
+      appName: "demo",
+      executorId: "e1",
+      env: { K: "V" },
+    });
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "POST",
+      "/app-deployments/applications/a1/deploy",
+      { executorId: "e1", env: { K: "V" } },
+    );
+  });
+
+  it("surfaces pending_approval (dispatched:false) and upstream errors", async () => {
+    call.mockResolvedValueOnce([{ id: "a1", name: "demo" }]);
+    call.mockResolvedValueOnce({
+      id: "d3",
+      approvalStatus: "pending_approval",
+    });
+    const out = parse(
+      await tools.get("deploy_app")!.handler({ appName: "demo" }),
+    );
+    expect(out.dispatched).toBe(false);
+    expect(out.note).toContain("/approval/approve");
+
+    call.mockRejectedValueOnce(
+      new Error("Forbidden (403): Forbidden resource"),
+    );
+    await expect(
+      tools.get("deploy_app")!.handler({ appName: "demo" }),
+    ).rejects.toThrow(/Forbidden \(403\)/);
+  });
 });
 
 describe("list_deployments", () => {
@@ -641,6 +765,122 @@ describe("get_scheduler_health", () => {
     });
     const out2 = parse(await tools.get("get_scheduler_health")!.handler({}));
     expect(out2.healthy).toBe(true);
+  });
+});
+
+// NF-06: retry_execution — the API has no native retry endpoint, so the tool
+// replays the original execution's params through the manual trigger route.
+describe("retry_execution", () => {
+  it("fetches the original execution and POSTs /tasks/:id/trigger with the replayed params", async () => {
+    call.mockResolvedValueOnce({
+      id: "e1",
+      taskId: "t1",
+      status: "failed",
+      params: { url: "http://x" },
+    });
+    call.mockResolvedValueOnce({ id: "e9", taskId: "t1", status: "pending" });
+    const out = parse(
+      await tools
+        .get("retry_execution")!
+        .handler({ taskId: "t1", executionId: "e1" }),
+    );
+    expect(call).toHaveBeenNthCalledWith(1, "GET", "/tasks/executions/e1");
+    expect(call).toHaveBeenNthCalledWith(2, "POST", "/tasks/t1/trigger", {
+      params: { url: "http://x" },
+    });
+    expect(out.retriedFrom).toBe("e1");
+    expect(out.id).toBe("e9");
+  });
+
+  it("explicit params override the replay and omit the params body when the original had none", async () => {
+    call.mockResolvedValueOnce({ id: "e2", taskId: "t1", status: "timeout", params: null });
+    call.mockResolvedValueOnce({ id: "e10", status: "pending" });
+    await tools
+      .get("retry_execution")!
+      .handler({ taskId: "t1", executionId: "e2" });
+    expect(call).toHaveBeenNthCalledWith(2, "POST", "/tasks/t1/trigger", {});
+
+    await tools
+      .get("retry_execution")!
+      .handler({ taskId: "t1", executionId: "e2", params: { a: 1 } });
+    // explicit params skips the GET lookup entirely
+    expect(call).toHaveBeenLastCalledWith("POST", "/tasks/t1/trigger", {
+      params: { a: 1 },
+    });
+  });
+
+  it("surfaces upstream 404 verbatim (execution not found)", async () => {
+    call.mockRejectedValueOnce(
+      new Error("API error (404): Execution record not found"),
+    );
+    await expect(
+      tools.get("retry_execution")!.handler({ taskId: "t1", executionId: "nope" }),
+    ).rejects.toThrow(/API error \(404\): Execution record not found/);
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("update_task error passthrough (NF-06)", () => {
+  it("bubbles 400/403/404 messages from the api layer unchanged", async () => {
+    call.mockRejectedValueOnce(
+      new Error(
+        "Bad request (400): property executorId should be a valid UUID",
+      ),
+    );
+    await expect(
+      tools.get("update_task")!.handler({ taskId: "t1", executorId: "not-a-uuid" }),
+    ).rejects.toThrow(/Bad request \(400\): property executorId should be a valid UUID/);
+    call.mockRejectedValueOnce(
+      new Error(
+        "Forbidden (403): Forbidden resource — your account is not allowed to perform this operation (some endpoints require the ADMIN role)",
+      ),
+    );
+    await expect(
+      tools.get("update_task")!.handler({ taskId: "t1", name: "x" }),
+    ).rejects.toThrow(/Forbidden \(403\)/);
+    call.mockRejectedValueOnce(new Error("API error (404): Task not found"));
+    await expect(
+      tools.get("update_task")!.handler({ taskId: "missing", name: "x" }),
+    ).rejects.toThrow(/API error \(404\): Task not found/);
+  });
+});
+
+describe("pause_task / resume_task (NF-06)", () => {
+  it("POSTs their dedicated routes and passes the task through", async () => {
+    call.mockResolvedValueOnce({ id: "t1", status: "paused" });
+    const paused = parse(
+      await tools.get("pause_task")!.handler({ taskId: "t1" }),
+    );
+    expect(call).toHaveBeenCalledWith("POST", "/tasks/t1/pause");
+    expect(paused.status).toBe("paused");
+    call.mockResolvedValueOnce({ id: "t1", status: "active" });
+    const resumed = parse(
+      await tools.get("resume_task")!.handler({ taskId: "t1" }),
+    );
+    expect(call).toHaveBeenCalledWith("POST", "/tasks/t1/resume");
+    expect(resumed.status).toBe("active");
+  });
+
+  it("bubbles the already-paused 400 and missing-task 404 verbatim", async () => {
+    call.mockRejectedValueOnce(
+      new Error("API error (400): Task is already paused"),
+    );
+    await expect(
+      tools.get("pause_task")!.handler({ taskId: "t1" }),
+    ).rejects.toThrow(/API error \(400\): Task is already paused/);
+    call.mockRejectedValueOnce(new Error("API error (404): Task not found"));
+    await expect(
+      tools.get("resume_task")!.handler({ taskId: "missing" }),
+    ).rejects.toThrow(/API error \(404\): Task not found/);
+  });
+});
+
+describe("trigger_task error passthrough (NF-06)", () => {
+  it("bubbles the 404 task-not-found message", async () => {
+    call.mockRejectedValueOnce(new Error("API error (404): Task not found"));
+    await expect(
+      tools.get("trigger_task")!.handler({ taskId: "missing" }),
+    ).rejects.toThrow(/API error \(404\): Task not found/);
   });
 });
 
