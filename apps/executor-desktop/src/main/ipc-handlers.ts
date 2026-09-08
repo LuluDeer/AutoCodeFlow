@@ -29,7 +29,10 @@ function getAllowedLogDomains(): string[] {
 
 export function registerIpcHandlers(): void {
   // ── 配置 ──────────────────────────────────────────────
-  ipcMain.handle('config:get', () => configStore.getAll());
+  // SEC-NEW-1: the token is never returned over IPC — the renderer gets a
+  // `******` mask (or '') and sends the mask back on save, which config-store
+  // maps to "keep the stored token".
+  ipcMain.handle('config:get', () => configStore.getAllMasked());
 
   ipcMain.handle('config:save', async (_event, cfg) => {
     configStore.save(cfg);
@@ -84,10 +87,12 @@ export function registerIpcHandlers(): void {
     return { ok: true };
   });
 
+  // SEC-NEW-1: status payload returns the masked config for the same reason
+  // as config:get — the renderer must not receive the stored token.
   ipcMain.handle('executor:status', () => ({
     running: executorProcess.isRunning(),
     status: executorProcess.getStatus(),
-    config: configStore.getAll(),
+    config: configStore.getAllMasked(),
   }));
 
   // ── 开机自启 ──────────────────────────────────────────

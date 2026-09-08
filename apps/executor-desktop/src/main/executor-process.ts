@@ -2,11 +2,22 @@ import { ChildProcess, spawn } from 'child_process';
 import * as path from 'path';
 import { app, BrowserWindow } from 'electron';
 import { AppConfig } from './config-store';
+import { decryptToken } from './token-crypto';
 import log from './logger';
 
 export type ExecutorStatus = 'stopped' | 'pending' | 'online' | 'offline';
 
 type StatusChangeCallback = (status: ExecutorStatus) => void;
+
+/** Resolve the stored token (plaintext or enc:ss: envelope) to plaintext. */
+function resolveToken(config: AppConfig): string {
+  try {
+    return decryptToken(config.executorToken);
+  } catch (err: any) {
+    log.error(`Failed to resolve executor token: ${err?.message ?? err}`);
+    return '';
+  }
+}
 
 export class ExecutorProcess {
   private proc: ChildProcess | null = null;
@@ -71,7 +82,9 @@ export class ExecutorProcess {
       ADMIN_API_URL: config.adminApiUrl,
       WORK_DIR: config.workDir,
       MAX_CONCURRENT_TASKS: String(config.maxConcurrentTasks),
-      EXECUTOR_SHARED_TOKEN: config.executorToken,
+      // SEC-NEW-1: config may hold the enc:ss: envelope — resolve to the real
+      // secret for the child env (the only consumer that needs plaintext).
+      EXECUTOR_SHARED_TOKEN: resolveToken(config),
     };
 
     this.proc = spawn(process.execPath, [entryPath], {

@@ -5,6 +5,11 @@
     "rootDir": "src/main",
     "sourceMap": false
   },
-  "include": ["src/main/path-domain.ts", "src/main/path-domain.selftest.ts"],
+  "include": [
+    "src/main/path-domain.ts",
+    "src/main/path-domain.selftest.ts",
+    "src/main/token-crypto.ts",
+    "src/main/token-crypto.selftest.ts"
+  ],
   "exclude": []
 }
