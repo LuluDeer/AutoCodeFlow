@@ -674,6 +674,16 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/metrics/executors` | 是 | 执行器负载和状态统计 |
 | GET | `/metrics/failures` | 是 | 最近失败执行列表 |
 | GET | `/metrics/scheduler` | 是 | 调度器可观测性（第五轮新增）：tick 计数/耗时、trigger claimed/skipped/failed、依赖扇出 claim、BullMQ 队列深度、isLeader 与 pid/hostname（多实例区分）；进程内计数，重启归零。CORE-06 追加：`triggerLatencyCount/SumMs/Buckets`（与 TRIGGER_LATENCY_BUCKETS_MS 对齐的累计桶）与派生 `derived.avgTriggerLatencyMs`/`derived.p99TriggerLatencyMs`（直方图插值） |
+| GET | `/metrics/stream` | 是 | **Dashboard 汇总 SSE 流（UI-14 第一阶段）**：`text/event-stream` 常驻推送，每 `METRICS_STREAM_INTERVAL_MS`（默认 3000）一拍快照。见下节 |
+
+**SSE 汇总流（GET /metrics/stream，UI-14 第一阶段）：**
+
+- **快照载荷**：每拍一帧 `data:` 事件，JSON 结构 `{ summary, executors, scheduler, errors }`——`summary` = `GET /metrics/summary` 同构载荷；`executors` = `GET /metrics/executors` 数组；`scheduler` = `GET /metrics/scheduler` 同构载荷（含队列深度）；`errors` 为本拍查询失败降级段名（如 `["summary"]`，对应段为 `null`，流不终止——观测链 fail-open）。任一段查询失败时额外发一帧 `event: error`（`{failed, at}`）
+- **终止**：客户端断开或服务端关停时发送 `event: done` 后结束；空闲超过 `METRICS_STREAM_IDLE_PING_MS`（默认 15000）发送 `: ping` 注释帧保活反向代理（SSE 规范要求客户端忽略注释行）
+- **认证**：JWT bearer 头，或 **`?access_token=<JWT>` 查询串回退**（EventSource 无法自定义请求头；与 `/logs/stream` 共享白名单机制，`type=access` 强制，refresh token 不可用；其它路径的 query token 一律拒绝）
+- **容量**：独立于日志流的并发槽位，**全局默认 32**（`METRICS_STREAM_MAX_GLOBAL` 可覆盖）；超限在写出任何 SSE 头之前直接返回 **503**。Prometheus series `autoflow_metrics_streams_active` / `autoflow_metrics_streams_limit`（BUG-05 同款 runtime gauge，进程内瞬时值，多实例按 instance 聚合）
+- **节奏**：`METRICS_STREAM_INTERVAL_MS`（默认 3000，快照间隔）/ `METRICS_STREAM_IDLE_PING_MS`（默认 15000）。快照为直读查询（非事件驱动），interval 越小 DB 压力越大——该流定位为 Dashboard 级客户端数（浏览器 Tab），不宜做大规模 fan-out
+- **消费方**：admin-web DashboardPage（`useMetricsStream`，断线按 3s×2^n 封顶 30s 退避重连，快照写 TanStack Query 缓存）
 
 > 注意：`/metrics` 与 `/metrics/*` 均需要 JWT（Prometheus 抓取方需配置 bearer token）。免认证的系统指标请使用 `GET /health/metrics`（见 Health 章节）。
 
