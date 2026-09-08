@@ -3,13 +3,19 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-R：001/002 并行认领——UI-07 执行器两页/AUTH-05+FEAT-10 两项 done，主会话统一验收）
+更新时间：2026-09-08（第十六轮·批 subagent-S：001/002 并行认领——UI-11 命令面板动作区/DOC-05+06 三项 done，主会话统一验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-08 第十六轮·批 subagent-S 终验收，主会话）：
+  - `29e4092`（含 DOC-05 四文件入库，归属记档）→ `d7e1c72` **UI-11（001）命令面板动作区 done**：侦察坐实 FEAT-09 面板已存在（四分组搜索/防抖/键盘导航全齐），本任务=增强 §6.3 动作区——置顶「操作」分组（新建任务/创建应用，零输入键盘直达）+ 任务行内动作（触发/暂停/恢复按状态出键，actingKey 互斥+跳详情+失败 toast）+ isAdmin 门控（admin-only 项隐藏）；MainLayout 零改动（触发体验四项核对全既有）。admin-web **424/424**（基线 418，+6）+ build/tsc ✓。
+  - `29e4092`+`77a4d94` **DOC-05+06（002）done**：DOC-05=release-please 选型裁定（中文 conventional commits 原生解析/三包 lockstep 无需 per-package/node+py 混合仓支持，胜 changesets）——衔接设计 release.yml 本体零改动（Release PR→合并→tag v*→恰好触发既有 release.yml，include-component-in-tag:false 保证裸 tag 匹配）；release-please.yml（actionlint 过）+config+manifest 基线 1.0.1+development.md DOC-05 节。DOC-06=tutorials/ 四篇（模板两方式/私服依赖含 publish 链/多执行器含 loadScore 公式与 canary 契约/告警值班含静默 API+HMAC+runbook 双通路+停 Redis 演练），字段逐条对照源码；docs-site「教程」分组接入，build 死链检查绿。
+- **主会话终验收基线（全绿）**：admin-web **424/424**（基线 418，+6）+ build ✓ · admin-api 2008（本批未触）· docs-site build 死链绿
+- 真机轮留验：release-please 首跑观察点（三包 version 收敛人工核对/__version__ extra-files 同步/GITHUB_TOKEN tag 级联触发，development.md 已固化）· ⌘K 双主题走查
+- 交接项累计：执行器页单台 rotate-token/删除二次确认 Modal+reason 输入（API 已就绪）
 - 本轮（2026-09-08 第十六轮·批 subagent-R 终验收，主会话）：
   - `bbb7e8a` **UI-07（001）执行器列表/详情升级 done**：卡片/表格双视图（ViewToggle localStorage 记忆，表格视图与 QA-03 的 13 例锚定断言零改动）；分组聚合 CheckableTag 条（扁平 string[] 数据下裁定树形过度）；批量 reload-config/rotate-token（ADMIN 门控对齐 W2；轮换高危二次确认 Modal 列受影响台+重注册警示+新 token 集中展示）；实时状态复用 UI-14 的 /metrics/stream executors 段（**零 admin-api 改动**——侦察确认流字段全量覆盖列表需求，不做逐执行器心跳端点；useExecutorLive 字段级覆盖轮询值+断线轮询兜底+连接状态点）。+22 例，admin-web 415（后随 002 增至 418）。
   - `28c6c7d` **AUTH-05（002）审计增强 done**：AuditQueryDto 加 resourceId 精确筛选（Project 未做缩水声明，AUTH-01 前置）+ admin-web audit 页资源 ID 输入框；CSV 导出 ADMIN 已有核实零改动；**高危操作 reason API 侧**——rotate-token/DELETE executor 接受可选 reason（≤200）经 auditHighRisk 写审计（@Optional 注入 best-effort）；前端二次确认 Modal 留交接（001/UI-07 同期在碰该页）。
