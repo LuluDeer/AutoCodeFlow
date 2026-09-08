@@ -305,6 +305,55 @@ docs: 更新 SDK 使用示例
 5. **平台影响** → `executor-node` 源码改动必须与重打的 `bundle` 同 commit 提交；
    涉及执行器/调度行为变更对照 `docs/VERIFY-MATRIX.md` 补真机验证项。
 
+## 版本与发布流程·CHANGELOG 自动化（DOC-05）
+
+发版手工链路（三包 version 同批 bump → 手写 CHANGELOG → 打 tag）自本轮起由
+[release-please](https://github.com/googleapis/release-please) 自动化。**选型裁定
+（vs changesets）**：
+
+1. 本仓 commit 纪律是中文 conventional commits（见上文「Git 提交规范」）——
+   release-please 对 conventional commits 原生解析、零迁移成本；changesets
+   需要 PR 手写 `.changeset/*.md` 增量文件，与既有纪律并行多一套仪式。
+2. 三包走 **lockstep 单版本线**（`@autocodeflow/sdk` / `autocodeflow-mcp-server` /
+   `autoflow-sdk` 当前均 1.0.1，`release.yml` 的 version-guard 强制四处 version
+   一致），不需要 changesets 的按包独立版本管理。
+3. release-please 对 node（package.json）+ python（pyproject.toml）混合仓原生
+   支持；changesets 只管 npm 包。
+
+### 接入形态（最小正确）
+
+| 文件 | 作用 |
+|------|------|
+| `.github/workflows/release-please.yml` | push 到 `main` 时汇总 conventional commits：有可发布变更 → 创建/更新 **Release PR**（bump 三包 version + 生成/追加根级 `CHANGELOG.md`）；Release PR 合并 → 打 tag `vX.Y.Z` + 创建 GitHub Release |
+| `release-please-config.json` | 三包路径 → release-type（node/node/python）；`include-component-in-tag: false` 使 tag 为裸 `vX.Y.Z`（非 `pkg-vX.Y.Z`） |
+| `release-please-manifest.json` | 记录已发布版本基线（当前 1.0.1） |
+
+### 与 release.yml 的衔接（release.yml 本体零改动）
+
+```
+push main ──→ release-please.yml：开/更新 Release PR（version bump + CHANGELOG）
+Release PR 合并 ──→ release-please 打 tag v(X.Y.Z)
+tag v* push ──→ 既有 release.yml：version-guard → environment 审批闸 → npm + PyPI 发布
+```
+
+即 release-please 产出的 tag **恰好触发**既有 tag 触发的 `release.yml`——发布管道、
+审批闸、幂等语义全部复用既有实现（见 `docs/sdk-guide.md`「版本与发布流程」）。
+
+### 首次启用观察点
+
+- **版本漂移兜底**：三包独立提议版本时可能漂移，但 tag 一旦 push 会被
+  version-guard 拦截（fail 安全，不会发出不一致的包）；首次 Release PR 合并前
+  **人工核对三包 version 已收敛为同一值**。
+- `autoflow_sdk.__version__`（`packages/autoflow-sdk/autoflow_sdk/__init__.py`）
+  由 python release-type 的 extra-files 机制同步，首次 Release PR 里核对四处
+  version 是否齐全。
+- **真跑验证不可行**（需 main push 权限 + 实际 PR 流程），已以 actionlint 语法
+  校验 + 本节干跑说明代替；首次发布时观察：① Release PR 是否正确汇总
+  conventional commits；② 合并后 tag 是否触发 release.yml；③ 根级
+  `CHANGELOG.md` 是否生成（当前仓库无根级 CHANGELOG.md，追加式生成不覆盖历史）。
+- GITHUB_TOKEN 创建的 tag 会触发 `on: push: tags`；若首次运行发现 release.yml
+  未被触发（GitHub 事件级联策略调整），再评估改用 PAT。
+
 ## 项目结构
 
 ```
