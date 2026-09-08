@@ -161,33 +161,29 @@ describe('buildExecutorPayload（提交 payload，N19 + R8/N28）', () => {
   });
 });
 
-describe('TaskFormPage 创建流程跨步骤提交 payload 完整性（P0 回归）', () => {
-  it('step 0 填写的 name/runtime/entrypoint 在 step 2 提交时仍存在于 POST payload', async () => {
-    // E2E 实证（e2e-full.spec.js 用例 25）：分步渲染卸载 step 0/1 的
-    // Form.Item 后，validateFields() 只返回当前挂载字段 → POST 缺 name → 400。
-    // 修复后 handleSubmit 用 getFieldsValue(true) 取全量 store 值。
+describe('TaskFormPage 创建流程提交 payload 完整性（P0 回归，UI-06 单页语义）', () => {
+  it('单页全挂载下直接提交：name/runtime/entrypoint 仍在 POST payload（不再依赖分步推进）', async () => {
+    // 历史（e2e-full.spec.js 用例 25）：分步渲染卸载 step 0/1 的 Form.Item 后
+    // validateFields() 只返回当前挂载字段 → POST 缺 name → 400。
+    // UI-06 重构为分区单页（全部 Form.Item 同时挂载），缺陷土壤消除；
+    // 本用例改单页语义：同屏填写后直接点提交，不再有「下一步」按钮。
     mockRouteParams = {}; // 创建态：无 :id
     vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
 
     render(<TaskFormPage />);
 
-    // step 0：填写核心必填（runtime 由 initialValues 默认 python）。
+    // 单页：直接填写核心必填（runtime 由 initialValues 默认 python）。
     const nameInput = await screen.findByPlaceholderText('daily-report');
     fireEvent.change(nameInput, { target: { value: 'my-task' } });
     fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
       target: { value: 'tasks/main.py' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /下一步：调度配置/ }));
-
-    // step 1：默认 manual 触发 + auto 调度，直接前进。
-    fireEvent.click(await screen.findByRole('button', { name: /下一步：参数配置/ }));
-
-    // step 2：提交创建。
-    fireEvent.click(await screen.findByRole('button', { name: /创建任务/ }));
+    // 直接提交（单页下不再有 step 推进）。
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
 
     await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
     const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
-    // P0 回归点：已卸载步骤的字段必须仍在 payload 中。
+    // P0 回归点：全部字段同挂载，payload 完整。
     expect(payload.name).toBe('my-task');
     expect(payload.runtime).toBe('python');
     expect(payload.entrypoint).toBe('tasks/main.py');
@@ -198,12 +194,11 @@ describe('TaskFormPage 创建流程跨步骤提交 payload 完整性（P0 回归
     expect(payload.executorGroup).toBeNull();
     expect(payload.executorTags).toBeNull();
     expect(payload.executeMode).toBe('single');
-    // 该用例冷启动实测 3.4~4.3s，与新增测试文件并行时贴默认 5s 超时偶发超时，放宽到 15s。
   }, 15_000);
 });
 
-describe('TaskFormPage 编辑态加载 executorId → pinned 选择器', () => {
-  it('加载 executorId-pin 任务后，步骤 1 渲染绑定 executorId 的选择器', async () => {
+describe('TaskFormPage 编辑态加载 executorId → pinned 选择器（UI-06 单页语义）', () => {
+  it('加载 executorId-pin 任务后，单页直接渲染绑定 executorId 的选择器', async () => {
     vi.mocked(tasksApi.get).mockReset().mockResolvedValue({
       id: 'task-1',
       name: 'pinned-job',
@@ -218,13 +213,7 @@ describe('TaskFormPage 编辑态加载 executorId → pinned 选择器', () => {
     } as never);
 
     render(<TaskFormPage />);
-    // 等待加载态结束（loadingTask=false 后步骤 0 表单出现）。
-    const nextBtn = await screen.findByRole('button', { name: /下一步：调度配置/ });
-    fireEvent.click(nextBtn);
-    // 推进到步骤 1（触发 & 执行器）。
-    const step1Next = await screen.findByRole('button', { name: /下一步：参数配置/ });
-    expect(step1Next).toBeTruthy();
-    // pinned 模式才会渲染绑定 executorId 的选择器；executorId 命中列表项时
+    // 单页：无需推进步骤，pinned 选择器同屏渲染；executorId 命中列表项时
     // Select 展示选中项 label（appName + address），而非占位文案。
     expect(await screen.findByText(/node-a/)).toBeTruthy();
   });
@@ -307,20 +296,14 @@ describe('applyMaintenanceWindowsPayload（FEAT-06）', () => {
   });
 });
 
-describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级）', () => {
+describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级，UI-06 单页语义）', () => {
   it('添加行 → 填写 cron → 删除行：输入随行增删', async () => {
     mockRouteParams = {}; // 创建态
     render(<TaskFormPage />);
 
-    const nameInput = await screen.findByPlaceholderText('daily-report');
-    fireEvent.change(nameInput, { target: { value: 'mw-task' } });
-    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
-      target: { value: 'tasks/main.py' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /下一步：调度配置/ }));
-
-    // 默认无行：添加 → 出现一对 cron 输入
-    fireEvent.click(await screen.findByRole('button', { name: /添加维护窗口/ }));
+    // 单页：维护窗口区块同屏可达，无需推进步骤。
+    const addButton = await screen.findByRole('button', { name: /添加维护窗口/ });
+    fireEvent.click(addButton);
     const startInput = await screen.findByPlaceholderText('开始 Cron，如 30 2 * * *');
     const endInput = screen.getByPlaceholderText('结束 Cron，如 0 4 * * *');
     fireEvent.change(startInput, { target: { value: '30 2 * * *' } });
@@ -338,13 +321,13 @@ describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级）', () => {
     vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
     render(<TaskFormPage />);
 
-    const nameInput = await screen.findByPlaceholderText('daily-report');
-    fireEvent.change(nameInput, { target: { value: 'mw-task' } });
+    // 单页：同屏填写 name/entrypoint + 维护窗口后直接提交。
+    fireEvent.change(await screen.findByPlaceholderText('daily-report'), {
+      target: { value: 'mw-task' },
+    });
     fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
       target: { value: 'tasks/main.py' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /下一步：调度配置/ }));
-
     fireEvent.click(await screen.findByRole('button', { name: /添加维护窗口/ }));
     fireEvent.change(await screen.findByPlaceholderText('开始 Cron，如 30 2 * * *'), {
       target: { value: '30 2 * * *' },
@@ -352,8 +335,7 @@ describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级）', () => {
     fireEvent.change(screen.getByPlaceholderText('结束 Cron，如 0 4 * * *'), {
       target: { value: '0 4 * * *' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /下一步：参数配置/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /创建任务/ }));
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
 
     await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
     const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
@@ -377,7 +359,7 @@ describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级）', () => {
     } as never);
 
     render(<TaskFormPage />);
-    fireEvent.click(await screen.findByRole('button', { name: /下一步：调度配置/ }));
+    // 单页：回填行同屏可见，无需推进步骤。
     expect(await screen.findByDisplayValue('0 22 * * 5')).toBeTruthy();
     expect(screen.getByDisplayValue('0 6 * * 6')).toBeTruthy();
     expect(screen.getByDisplayValue('发布冻结')).toBeTruthy();
