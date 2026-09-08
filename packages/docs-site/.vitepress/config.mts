@@ -17,6 +17,7 @@ export default defineConfig({
     nav: [
       { text: '首页', link: '/' },
       { text: '快速开始', link: '/getting-started' },
+      { text: '教程', link: '/tutorials', activeMatch: '/tutorial' },
       { text: 'SDK 参考', link: '/sdk-node', activeMatch: '/sdk-(node|python)' },
       { text: '能力矩阵', link: '/capability-matrix' },
       { text: '示例库', link: '/examples' },
@@ -28,6 +29,16 @@ export default defineConfig({
         text: '上手',
         items: [
           { text: '快速开始（5 分钟）', link: '/getting-started' },
+        ],
+      },
+      {
+        text: '教程：从 0 到生产（DOC-06）',
+        items: [
+          { text: '教程索引', link: '/tutorials' },
+          { text: '01 · 第一个定时任务', link: '/tutorial-01-first-task' },
+          { text: '02 · 私服依赖', link: '/tutorial-02-private-registry-deps' },
+          { text: '03 · 多执行器扩容', link: '/tutorial-03-multi-executor-scaling' },
+          { text: '04 · 告警接入值班', link: '/tutorial-04-alerting-oncall' },
         ],
       },
       {
