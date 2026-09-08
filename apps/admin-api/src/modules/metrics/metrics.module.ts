@@ -30,7 +30,11 @@ import { TaskModule } from "../task/task.module";
     forwardRef(() => SchedulerModule),
     TaskModule,
   ],
-  providers: [MetricsService, PrometheusMetricsService, MetricsStreamSlotService],
+  providers: [
+    MetricsService,
+    PrometheusMetricsService,
+    MetricsStreamSlotService,
+  ],
   controllers: [MetricsController, MetricsStreamController],
   exports: [MetricsService, PrometheusMetricsService],
 })

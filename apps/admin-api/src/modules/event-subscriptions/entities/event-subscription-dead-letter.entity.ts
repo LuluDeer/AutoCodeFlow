@@ -17,7 +17,10 @@ import {
  * url/secret 重新签名派发一次，成功即删行；重放不自动重试）。
  */
 @Entity("event_subscription_dead_letters")
-@Index("idx_event_subscription_dead_letters_sub", ["subscriptionId", "createdAt"])
+@Index("idx_event_subscription_dead_letters_sub", [
+  "subscriptionId",
+  "createdAt",
+])
 export class EventSubscriptionDeadLetter {
   @PrimaryGeneratedColumn("uuid")
   id: string;

@@ -15,7 +15,10 @@ import { RolloutState } from "../entities/app-deployment.entity";
 // Mock axios（既有套件同约定：无真实 HTTP）。
 jest.mock("axios", () => ({
   __esModule: true,
-  default: { post: jest.fn().mockResolvedValue({ data: {} }), get: jest.fn().mockResolvedValue({ status: 200 }) },
+  default: {
+    post: jest.fn().mockResolvedValue({ data: {} }),
+    get: jest.fn().mockResolvedValue({ status: 200 }),
+  },
 }));
 import axios from "axios";
 const mockAxiosGet = axios.get as jest.Mock;
@@ -171,8 +174,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       const deployments = [row("d1"), row("d2"), row("d3")];
       repo.find.mockResolvedValue(deployments);
       // markRolloutState 走 repo.findOne；upgrade 用 spy 截停
-      repo.findOne.mockImplementation(async ({ where }: any) =>
-        deployments.find((d) => d.id === where.id) ?? null,
+      repo.findOne.mockImplementation(
+        async ({ where }: any) =>
+          deployments.find((d) => d.id === where.id) ?? null,
       );
       const upSpy = jest
         .spyOn(service, "upgrade")
@@ -232,9 +236,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         .map(([e]: any[]) => e)
         .filter((e: any) => e.rolloutState === RolloutState.FAILED);
       expect(failedRows.length).toBeGreaterThanOrEqual(1);
-      expect(
-        failedRows.some((r: any) => r.id === "d1"),
-      ).toBe(true);
+      expect(failedRows.some((r: any) => r.id === "d1")).toBe(true);
       expect(failedRows[0].rolloutMeta.failureReason).toContain(
         "upgrade trigger failed",
       );
@@ -275,8 +277,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         if (where && "rolloutState" in where) return []; // restart sweep 等
         return deployments;
       });
-      repo.findOne.mockImplementation(async ({ where }: any) =>
-        deployments.find((d) => d.id === where.id) ?? null,
+      repo.findOne.mockImplementation(
+        async ({ where }: any) =>
+          deployments.find((d) => d.id === where.id) ?? null,
       );
       const upSpy = jest
         .spyOn(service, "upgrade")
@@ -314,7 +317,12 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       jest.spyOn(service, "upgrade").mockResolvedValue(deployments[0]);
       mockApp.manifest = {
         // interval 下限 250（parseManifestHealthCheck 钳制）——两连败后第 3 次成功
-        healthCheck: { path: "/h", port: 8080, failThreshold: 3, interval: 250 },
+        healthCheck: {
+          path: "/h",
+          port: 8080,
+          failThreshold: 3,
+          interval: 250,
+        },
       };
       mockAxiosGet
         .mockRejectedValueOnce(new Error("ECONNREFUSED"))
@@ -333,9 +341,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
 
       expect(mockAxiosGet).toHaveBeenCalledTimes(3);
       // 无 promotion 台 → 批次收尾
-      expect(
-        (service as any).rolloutBatches.has("app-1"),
-      ).toBe(false);
+      expect((service as any).rolloutBatches.has("app-1")).toBe(false);
       delete mockApp.manifest;
     }, 15000);
 
@@ -343,20 +349,37 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       // 部署行地址为 host:port 形态（validateExecutorAddress 只认该形态；
       // 与既有 app-deployment.service.spec 的 203.0.113.10:3001 夹具同约定）。
       const deployments = [
-        row("d1", { deployedVersion: "2.0.0", executorAddress: "203.0.113.10:3001" }),
-        row("d2", { id: "d2", deployedVersion: "2.0.0", executorAddress: "203.0.113.10:3001" }),
-        row("d3", { id: "d3", deployedVersion: "2.0.0", executorAddress: "203.0.113.10:3001" }),
+        row("d1", {
+          deployedVersion: "2.0.0",
+          executorAddress: "203.0.113.10:3001",
+        }),
+        row("d2", {
+          id: "d2",
+          deployedVersion: "2.0.0",
+          executorAddress: "203.0.113.10:3001",
+        }),
+        row("d3", {
+          id: "d3",
+          deployedVersion: "2.0.0",
+          executorAddress: "203.0.113.10:3001",
+        }),
       ];
       repo.find.mockImplementation(async ({ where }: any) => {
         if (where && "rolloutState" in where) return [];
         return deployments;
       });
-      repo.findOne.mockImplementation(async ({ where }: any) =>
-        deployments.find((d) => d.id === where.id) ?? null,
+      repo.findOne.mockImplementation(
+        async ({ where }: any) =>
+          deployments.find((d) => d.id === where.id) ?? null,
       );
       jest.spyOn(service, "upgrade").mockResolvedValue(deployments[0]);
       mockApp.manifest = {
-        healthCheck: { path: "/h", port: 8080, failThreshold: 2, interval: 250 },
+        healthCheck: {
+          path: "/h",
+          port: 8080,
+          failThreshold: 2,
+          interval: 250,
+        },
       };
       mockAxiosGet.mockRejectedValue(new Error("ECONNREFUSED"));
       // 上一版本快照（released、非当前版本）
@@ -392,7 +415,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         .filter((e: any) => e.rolloutState === RolloutState.ROLLED_BACK);
       expect(rolledBack.map((r: any) => r.id)).toContain("d2");
       // 回滚载荷携带快照版本
-      const postPayloads = mockAxiosPost.mock.calls.map(([, payload]: any[]) => payload);
+      const postPayloads = mockAxiosPost.mock.calls.map(
+        ([, payload]: any[]) => payload,
+      );
       expect(postPayloads.some((p: any) => p.version === "1.0.0")).toBe(true);
       delete mockApp.manifest;
     }, 15000);
@@ -402,8 +427,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
     it("handleHeartbeat RUNNING：批次 canary 行推进 pending→probing；FAILED 心跳判批次失败", async () => {
       const deployments = [row("d1"), row("d2")];
       repo.find.mockResolvedValue(deployments);
-      repo.findOne.mockImplementation(async ({ where }: any) =>
-        deployments.find((d) => d.id === where.id) ?? null,
+      repo.findOne.mockImplementation(
+        async ({ where }: any) =>
+          deployments.find((d) => d.id === where.id) ?? null,
       );
       jest.spyOn(service, "upgrade").mockResolvedValue(deployments[0]);
 

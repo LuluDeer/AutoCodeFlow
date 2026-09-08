@@ -83,7 +83,10 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: NotificationService, useValue: {} },
         { provide: SystemConfigService, useValue: {} },
-        { provide: SecretsCryptoService, useValue: { decryptForDispatch: jest.fn() } },
+        {
+          provide: SecretsCryptoService,
+          useValue: { decryptForDispatch: jest.fn() },
+        },
       ],
     }).compile();
     service = moduleRef.get(ExecutorService);
@@ -116,7 +119,11 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
     executorRepo.find.mockResolvedValue([
       mk({ id: "e1", address: "a:1", runningTaskCount: 2 }),
     ]);
-    execRepo.find.mockResolvedValue([{ taskId: "t1" }, { taskId: "t1" }, { taskId: "t2" }]);
+    execRepo.find.mockResolvedValue([
+      { taskId: "t1" },
+      { taskId: "t1" },
+      { taskId: "t2" },
+    ]);
     taskRepo.find.mockResolvedValue([
       { id: "t1", estimatedDurationSec: 120 },
       { id: "t2", estimatedDurationSec: null },
@@ -162,8 +169,22 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
 
   it("dispatch：长任务倾向空闲执行器（同 CPU/内存、load 差距小于惩罚差距时让位）", async () => {
     executorRepo.find.mockResolvedValue([
-      mk({ id: "e-long", address: "long:3105", runningTaskCount: 2, maxConcurrentTasks: 10, cpuUsage: 0, memUsage: 0 }),
-      mk({ id: "e-short", address: "short:3105", runningTaskCount: 3, maxConcurrentTasks: 10, cpuUsage: 0, memUsage: 0 }),
+      mk({
+        id: "e-long",
+        address: "long:3105",
+        runningTaskCount: 2,
+        maxConcurrentTasks: 10,
+        cpuUsage: 0,
+        memUsage: 0,
+      }),
+      mk({
+        id: "e-short",
+        address: "short:3105",
+        runningTaskCount: 3,
+        maxConcurrentTasks: 10,
+        cpuUsage: 0,
+        memUsage: 0,
+      }),
     ]);
     execRepo.find
       .mockResolvedValueOnce([{ taskId: "t1" }])
@@ -172,7 +193,10 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
       .mockResolvedValueOnce([{ id: "t1", estimatedDurationSec: 7200 }])
       .mockResolvedValueOnce([{ id: "t2", estimatedDurationSec: 30 }]);
 
-    await service.dispatch({ id: "task-1", name: "t", timeout: 10 } as unknown as Task, execution);
+    await service.dispatch(
+      { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+      execution,
+    );
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     const calledUrl = String(mockedAxios.post.mock.calls[0][0]);
     expect(calledUrl).toContain("short:3105");
@@ -180,23 +204,48 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
 
   it("dispatch：全舰队无估时数据（空 RUNNING 行）时选择与旧公式同序", async () => {
     executorRepo.find.mockResolvedValue([
-      mk({ id: "e-a", address: "a:3101", runningTaskCount: 1, maxConcurrentTasks: 10, cpuUsage: 10, memUsage: 10 }),
-      mk({ id: "e-b", address: "b:3102", runningTaskCount: 4, maxConcurrentTasks: 10, cpuUsage: 90, memUsage: 90 }),
+      mk({
+        id: "e-a",
+        address: "a:3101",
+        runningTaskCount: 1,
+        maxConcurrentTasks: 10,
+        cpuUsage: 10,
+        memUsage: 10,
+      }),
+      mk({
+        id: "e-b",
+        address: "b:3102",
+        runningTaskCount: 4,
+        maxConcurrentTasks: 10,
+        cpuUsage: 90,
+        memUsage: 90,
+      }),
     ]);
     execRepo.find.mockResolvedValue([]);
 
-    await service.dispatch({ id: "task-1", name: "t", timeout: 10 } as unknown as Task, execution);
+    await service.dispatch(
+      { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+      execution,
+    );
     const calledUrl = String(mockedAxios.post.mock.calls[0][0]);
     expect(calledUrl).toContain("a:3101");
   });
 
   it("dispatch：乐观锁槽位占用成功后新评分不再影响本轮（首个胜者直接锁定）", async () => {
     executorRepo.find.mockResolvedValue([
-      mk({ id: "e-win", address: "w:1", runningTaskCount: 0, maxConcurrentTasks: 10 }),
+      mk({
+        id: "e-win",
+        address: "w:1",
+        runningTaskCount: 0,
+        maxConcurrentTasks: 10,
+      }),
     ]);
     execRepo.find.mockResolvedValue([]);
 
-    await service.dispatch({ id: "task-1", name: "t", timeout: 10 } as unknown as Task, execution);
+    await service.dispatch(
+      { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+      execution,
+    );
     // 槽位原子 UPDATE 走 repo.createQueryBuilder().update(...).execute()
     const qbCalls = executorRepo.createQueryBuilder.mock.calls.length;
     expect(qbCalls).toBeGreaterThanOrEqual(1);

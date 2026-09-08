@@ -1,4 +1,9 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+} from "crypto";
 
 /**
  * SEC-02: task-level secrets at-rest encryption (AES-256-GCM).
@@ -112,9 +117,10 @@ export function decryptSecretValue(envelope: string, key: Buffer): string {
   }
   const decipher = createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(
-    "utf8",
-  );
+  return Buffer.concat([
+    decipher.update(ciphertext),
+    decipher.final(),
+  ]).toString("utf8");
 }
 
 /**

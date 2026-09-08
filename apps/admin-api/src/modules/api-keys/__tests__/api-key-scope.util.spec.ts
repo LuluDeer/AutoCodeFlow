@@ -55,14 +55,21 @@ describe("AUTH-03 api-key-scope.util", () => {
   describe("trigger scope", () => {
     const scope: ApiKeyScope = "trigger";
     it("allows POST tasks/<id>/trigger and batch/trigger", () => {
-      expect(scopeAllows(scope, { method: "POST", path: "tasks/abc-1/trigger" }).allowed).toBe(true);
+      expect(
+        scopeAllows(scope, { method: "POST", path: "tasks/abc-1/trigger" })
+          .allowed,
+      ).toBe(true);
       for (const p of TRIGGER_PATHS) {
-        expect(scopeAllows(scope, { method: "POST", path: p }).allowed).toBe(true);
+        expect(scopeAllows(scope, { method: "POST", path: p }).allowed).toBe(
+          true,
+        );
       }
     });
 
     it("allows reads", () => {
-      expect(scopeAllows(scope, { method: "GET", path: "tasks" }).allowed).toBe(true);
+      expect(scopeAllows(scope, { method: "GET", path: "tasks" }).allowed).toBe(
+        true,
+      );
     });
 
     it("blocks other writes with a manage-naming message", () => {
@@ -98,12 +105,20 @@ describe("AUTH-03 api-key-scope.util", () => {
     });
 
     it("still allows reads", () => {
-      expect(scopeAllows(scope, { method: "GET", path: "metrics" }).allowed).toBe(true);
+      expect(
+        scopeAllows(scope, { method: "GET", path: "metrics" }).allowed,
+      ).toBe(true);
     });
   });
 
   it("normalizes leading/trailing slashes and case of method", () => {
-    expect(scopeAllows("readonly", { method: "post", path: "/tasks/1/trigger/" }).allowed).toBe(false);
-    expect(scopeAllows("trigger", { method: "post", path: "/tasks/1/trigger/" }).allowed).toBe(true);
+    expect(
+      scopeAllows("readonly", { method: "post", path: "/tasks/1/trigger/" })
+        .allowed,
+    ).toBe(false);
+    expect(
+      scopeAllows("trigger", { method: "post", path: "/tasks/1/trigger/" })
+        .allowed,
+    ).toBe(true);
   });
 });

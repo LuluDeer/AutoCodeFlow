@@ -71,9 +71,9 @@ export function hasChannelTemplate(
 ): boolean {
   if (!config) return false;
   return (
-    typeof config.titleTemplate === "string" && config.titleTemplate.length > 0
-  ) || (
-    typeof config.contentTemplate === "string" &&
-    config.contentTemplate.length > 0
+    (typeof config.titleTemplate === "string" &&
+      config.titleTemplate.length > 0) ||
+    (typeof config.contentTemplate === "string" &&
+      config.contentTemplate.length > 0)
   );
 }

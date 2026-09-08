@@ -26,9 +26,7 @@ export interface ScopeRequest {
 }
 
 /** POST paths an API Key with `trigger` scope may call. */
-export const TRIGGER_PATHS: readonly string[] = [
-  "tasks/batch/trigger",
-];
+export const TRIGGER_PATHS: readonly string[] = ["tasks/batch/trigger"];
 
 /** True when path matches `tasks/<id>/trigger` (any task id shape). */
 export function isTaskTriggerPath(path: string): boolean {

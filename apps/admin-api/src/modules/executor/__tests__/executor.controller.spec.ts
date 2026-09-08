@@ -791,10 +791,7 @@ describe("ExecutorController", () => {
       );
 
       await controller.removeExecutor("e1", { reason: "host decommissioned" });
-      expect(svc.removeById).toHaveBeenCalledWith(
-        "e1",
-        "host decommissioned",
-      );
+      expect(svc.removeById).toHaveBeenCalledWith("e1", "host decommissioned");
     });
 
     it("removeExecutor works without a body (non-breaking)", async () => {

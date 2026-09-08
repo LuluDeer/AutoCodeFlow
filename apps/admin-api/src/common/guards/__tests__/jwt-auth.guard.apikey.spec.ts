@@ -30,7 +30,9 @@ describe("AUTH-03 JwtAuthGuard 分流", () => {
   it("Bearer acf_… → 分发到 ApiKeyAuthFacade.authenticate", async () => {
     const facade = { authenticate: jest.fn(async () => true) };
     const guard = makeGuard(facade);
-    await expect(guard.canActivate(makeContext("Bearer acf_deadbeef"))).resolves.toBe(true);
+    await expect(
+      guard.canActivate(makeContext("Bearer acf_deadbeef")),
+    ).resolves.toBe(true);
     expect(facade.authenticate).toHaveBeenCalledTimes(1);
   });
 
@@ -41,7 +43,9 @@ describe("AUTH-03 JwtAuthGuard 分流", () => {
     // passport super.canActivate 在单测环境无法完整执行——断言 facade 未被调用即可；
     // passport 路径本身由既有 jwt.strategy.spec / e2e 覆盖。
     try {
-      await guard.canActivate(makeContext("Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"));
+      await guard.canActivate(
+        makeContext("Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"),
+      );
     } catch {
       // 单测环境无 passport 请求装配，401/异常皆可
     }

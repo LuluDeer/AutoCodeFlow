@@ -195,8 +195,7 @@ export class ApplicationController {
       const verdict = await scanBufferWithClamd(
         file.buffer,
         {
-          enabled:
-            this.configService.get<boolean>("clamd.enabled") === true,
+          enabled: this.configService.get<boolean>("clamd.enabled") === true,
           host: this.configService.get<string>("clamd.host") || "127.0.0.1",
           port: this.configService.get<number>("clamd.port") || 3310,
           timeoutMs: this.configService.get<number>("clamd.timeoutMs") || 10000,
@@ -445,7 +444,8 @@ export class ApplicationController {
    */
   @Get(":id/releases")
   @ApiOperation({
-    summary: "List unified releases (version × latest deployment) for an application",
+    summary:
+      "List unified releases (version × latest deployment) for an application",
     description:
       "统一发布追溯视图：按版本聚合部署信息，分页默认 50、上限 200。",
   })

@@ -185,9 +185,7 @@ export class AlertsController {
 
     // 通知渠道全 skipped（一个渠道都没配置）——告警没人收到，按失败报
     // （502 让 Alertmanager 重试），但仍返回明细供排障。
-    const delivered = Object.values(results).filter(
-      (s) => s === "sent",
-    ).length;
+    const delivered = Object.values(results).filter((s) => s === "sent").length;
     if (delivered === 0) {
       this.logger.error(
         `Alert webhook: notification delivered to 0 channels: ${JSON.stringify(results)}`,

@@ -25,8 +25,7 @@ export interface GeneratedApiKey {
 }
 
 export function generateApiKey(): GeneratedApiKey {
-  const plaintext =
-    API_KEY_PLAINTEXT_PREFIX + randomBytes(32).toString("hex");
+  const plaintext = API_KEY_PLAINTEXT_PREFIX + randomBytes(32).toString("hex");
   return {
     plaintext,
     keyPrefix: plaintext.slice(0, API_KEY_DISPLAY_PREFIX_LEN),
@@ -39,7 +38,9 @@ export function hashApiKey(plaintext: string): string {
 }
 
 /** Does this bearer credential look like an API Key (dispatch marker)? */
-export function looksLikeApiKey(credential: string | null | undefined): boolean {
+export function looksLikeApiKey(
+  credential: string | null | undefined,
+): boolean {
   return (
     typeof credential === "string" &&
     credential.startsWith(API_KEY_PLAINTEXT_PREFIX)

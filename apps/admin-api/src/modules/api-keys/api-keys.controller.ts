@@ -11,7 +11,16 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
-import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from "class-validator";
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+  MinLength,
+} from "class-validator";
 import { ApiKeysService } from "./api-keys.service";
 import { API_KEY_SCOPES, API_KEY_PLAINTEXT_PREFIX } from "./api-key.util";
 import { ApiKeyScope } from "./entities/api-key.entity";
@@ -77,7 +86,10 @@ export class ApiKeysController {
       ip: req?.ip,
     });
     // One-time plaintext echo — the ONLY place it ever appears.
-    return { ...apiKey, plaintext: `${API_KEY_PLAINTEXT_PREFIX}${plaintext.slice(API_KEY_PLAINTEXT_PREFIX.length)}` };
+    return {
+      ...apiKey,
+      plaintext: `${API_KEY_PLAINTEXT_PREFIX}${plaintext.slice(API_KEY_PLAINTEXT_PREFIX.length)}`,
+    };
   }
 
   /** Soft-revoke (kept for REST semantics symmetry with the sessions API). */
@@ -88,7 +100,12 @@ export class ApiKeysController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const row = await this.apiKeysService.revoke(id, user.id, user.username, req?.ip);
+    const row = await this.apiKeysService.revoke(
+      id,
+      user.id,
+      user.username,
+      req?.ip,
+    );
     if (!row) throw new NotFoundException(`API Key #${id} not found`);
     return { success: true, apiKey: row };
   }
@@ -101,7 +118,12 @@ export class ApiKeysController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const row = await this.apiKeysService.revoke(id, user.id, user.username, req?.ip);
+    const row = await this.apiKeysService.revoke(
+      id,
+      user.id,
+      user.username,
+      req?.ip,
+    );
     if (!row) throw new NotFoundException(`API Key #${id} not found`);
     return { success: true, apiKey: row };
   }

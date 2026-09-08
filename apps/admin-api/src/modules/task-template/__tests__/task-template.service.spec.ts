@@ -46,7 +46,9 @@ describe("TaskTemplateService (CORE-03)", () => {
 
   beforeEach(async () => {
     repo = makeRepo();
-    taskService = { create: jest.fn((dto) => Promise.resolve({ id: "task-1", ...dto })) };
+    taskService = {
+      create: jest.fn((dto) => Promise.resolve({ id: "task-1", ...dto })),
+    };
     const module = await Test.createTestingModule({
       providers: [
         TaskTemplateService,
@@ -82,7 +84,9 @@ describe("TaskTemplateService (CORE-03)", () => {
       },
     });
     expect(repo.save).toHaveBeenCalled();
-    expect((repo.create.mock.calls[0][0] as { isOfficial: boolean }).isOfficial).toBe(false);
+    expect(
+      (repo.create.mock.calls[0][0] as { isOfficial: boolean }).isOfficial,
+    ).toBe(false);
     expect(created.config.triggerType).toBe("fixed_rate");
   });
 
@@ -101,7 +105,12 @@ describe("TaskTemplateService (CORE-03)", () => {
     await expect(
       svc.create({
         name: "bad",
-        config: { triggerType: "manual", runtime: "node", entrypoint: "x.js", bogus: 1 },
+        config: {
+          triggerType: "manual",
+          runtime: "node",
+          entrypoint: "x.js",
+          bogus: 1,
+        },
       }),
     ).rejects.toThrow(BadRequestException);
     expect(repo.save).not.toHaveBeenCalled();
@@ -130,13 +139,14 @@ describe("TaskTemplateService (CORE-03)", () => {
   });
 
   it("remove 自定义模板删除", async () => {
-    repo.findOne.mockResolvedValue(official({ id: "c-1", key: "mine", isOfficial: false }));
+    repo.findOne.mockResolvedValue(
+      official({ id: "c-1", key: "mine", isOfficial: false }),
+    );
     await svc.remove("c-1");
     expect(repo.delete).toHaveBeenCalledWith({ id: "c-1" });
   });
 
   it("instantiate：模板 config 作默认、显式覆盖胜出、复用 TaskService.create", async () => {
-    const seed = OFFICIAL_TASK_TEMPLATES[0]; // scheduled_backup: cron 0 2 * * *, timeoutSeconds 3600
     repo.findOne.mockResolvedValue(official());
     const task = await svc.instantiate("official-1", {
       name: "prod-backup",
@@ -165,7 +175,10 @@ describe("TaskTemplateService (CORE-03)", () => {
       name: "ok",
       templateId: "someone-else-template",
     });
-    const passed = taskService.create.mock.calls[0][0] as Record<string, unknown>;
+    const passed = taskService.create.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
     expect(passed.templateId).toBeUndefined();
   });
 

@@ -1,7 +1,11 @@
 import { Test } from "@nestjs/testing";
 import { BadRequestException, Logger } from "@nestjs/common";
 import { NotificationService } from "../notification.service";
-import { AlertLevel, AlertChannel, MAX_ALERT_SILENCES } from "../notification.service";
+import {
+  AlertLevel,
+  AlertChannel,
+  MAX_ALERT_SILENCES,
+} from "../notification.service";
 import { WecomChannel } from "../channels/wecom.channel";
 import { DingtalkChannel } from "../channels/dingtalk.channel";
 import { EmailChannel } from "../channels/email.channel";
@@ -571,7 +575,11 @@ describe("NotificationService", () => {
 
   describe("notify* family — per-level silencing (QA-02 phase 2)", () => {
     it("notifySuccess skips the fan-out when INFO is silenced for the task", async () => {
-      service.addSilence({ taskId: "t1", level: AlertLevel.INFO, durationMinutes: 10 });
+      service.addSilence({
+        taskId: "t1",
+        level: AlertLevel.INFO,
+        durationMinutes: 10,
+      });
       const sendAll = jest.spyOn(service, "sendAll");
       await service.notifySuccess("job", "exec-1", 1234, "t1");
       expect(sendAll).not.toHaveBeenCalled();
@@ -594,7 +602,11 @@ describe("NotificationService", () => {
     });
 
     it("notifyTimeout skips the fan-out when WARNING is silenced", async () => {
-      service.addSilence({ taskId: "t1", level: AlertLevel.WARNING, durationMinutes: 10 });
+      service.addSilence({
+        taskId: "t1",
+        level: AlertLevel.WARNING,
+        durationMinutes: 10,
+      });
       const sendAll = jest.spyOn(service, "sendAll");
       await service.notifyTimeout("job", "exec-1", 300, "t1");
       expect(sendAll).not.toHaveBeenCalled();
@@ -617,7 +629,11 @@ describe("NotificationService", () => {
     });
 
     it("notifyFailure skips the fan-out when ERROR is silenced", async () => {
-      service.addSilence({ taskId: "t1", level: AlertLevel.ERROR, durationMinutes: 10 });
+      service.addSilence({
+        taskId: "t1",
+        level: AlertLevel.ERROR,
+        durationMinutes: 10,
+      });
       const sendAll = jest.spyOn(service, "sendAll");
       await service.notifyFailure("job", "exec-1", "boom", undefined, "t1");
       expect(sendAll).not.toHaveBeenCalled();
@@ -628,7 +644,14 @@ describe("NotificationService", () => {
       const sendAll = jest
         .spyOn(service, "sendAll")
         .mockResolvedValue(undefined);
-      await service.notifyFailure("job", "exec-1", "boom", "AI says", "t1", "redeploy.md");
+      await service.notifyFailure(
+        "job",
+        "exec-1",
+        "boom",
+        "AI says",
+        "t1",
+        "redeploy.md",
+      );
       expect(sendAll).toHaveBeenCalledWith(
         expect.objectContaining({
           content: expect.stringContaining("Runbook:\nredeploy.md"),
@@ -832,17 +855,17 @@ describe("NotificationService", () => {
       ).resolves.toBe("sent");
       expect(email.send).toHaveBeenCalledWith(payload, { user: "u" });
 
-      await expect(
-        service.testChannel(payload, "slack" as any),
-      ).resolves.toBe("sent");
+      await expect(service.testChannel(payload, "slack" as any)).resolves.toBe(
+        "sent",
+      );
       expect(slack.send).toHaveBeenCalledWith(payload, undefined);
 
       await expect(
         service.testChannel(payload, "dingtalk" as any),
       ).resolves.toBe("sent");
-      await expect(
-        service.testChannel(payload, "wecom" as any),
-      ).resolves.toBe("sent");
+      await expect(service.testChannel(payload, "wecom" as any)).resolves.toBe(
+        "sent",
+      );
       await expect(
         service.testChannel(payload, "webhook" as any),
       ).resolves.toBe("sent");
@@ -913,9 +936,17 @@ describe("NotificationService", () => {
             resolveCreate = resolve;
           }),
       );
-      const svc = await makeServiceWithStore({ create, remove: jest.fn(), cleanExpired: jest.fn() });
+      const svc = await makeServiceWithStore({
+        create,
+        remove: jest.fn(),
+        cleanExpired: jest.fn(),
+      });
 
-      const localId = svc.addSilence({ taskId: "t1", level: AlertLevel.ERROR, durationMinutes: 5 });
+      const localId = svc.addSilence({
+        taskId: "t1",
+        level: AlertLevel.ERROR,
+        durationMinutes: 5,
+      });
       expect(localId).toBeDefined();
       expect(create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -941,7 +972,11 @@ describe("NotificationService", () => {
 
     it("keeps memory semantics when the store create fails (warn, not throw)", async () => {
       const create = jest.fn().mockRejectedValue(new Error("pg down"));
-      const svc = await makeServiceWithStore({ create, remove: jest.fn(), cleanExpired: jest.fn() });
+      const svc = await makeServiceWithStore({
+        create,
+        remove: jest.fn(),
+        cleanExpired: jest.fn(),
+      });
       const warnSpy = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});
@@ -959,7 +994,11 @@ describe("NotificationService", () => {
     it("removeSilence deletes from both memory and store; a store failure does not block", async () => {
       const remove = jest.fn().mockResolvedValue(undefined);
       const create = jest.fn().mockResolvedValue({ id: "db-1" });
-      const svc = await makeServiceWithStore({ create, remove, cleanExpired: jest.fn() });
+      const svc = await makeServiceWithStore({
+        create,
+        remove,
+        cleanExpired: jest.fn(),
+      });
       const warnSpy = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});
@@ -986,12 +1025,20 @@ describe("NotificationService", () => {
     it("cleanExpiredSilences also sweeps the store (fire-and-forget)", async () => {
       const cleanExpired = jest.fn().mockResolvedValue(undefined);
       const create = jest.fn().mockResolvedValue({ id: "db-1" });
-      const svc = await makeServiceWithStore({ create, remove: jest.fn(), cleanExpired });
+      const svc = await makeServiceWithStore({
+        create,
+        remove: jest.fn(),
+        cleanExpired,
+      });
       const warnSpy = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});
 
-      svc.addSilence({ taskId: "t1", durationMinutes: 0, endTime: new Date(Date.now() - 1000) } as any);
+      svc.addSilence({
+        taskId: "t1",
+        durationMinutes: 0,
+        endTime: new Date(Date.now() - 1000),
+      } as any);
       const removed = svc.cleanExpiredSilences();
       expect(removed).toBe(1);
       expect(cleanExpired).toHaveBeenCalledWith(expect.any(Date));
@@ -1001,7 +1048,11 @@ describe("NotificationService", () => {
 
       // store 清扫失败 → 仅 warn
       cleanExpired.mockRejectedValue(new Error("pg down"));
-      svc.addSilence({ taskId: "t2", durationMinutes: 0, endTime: new Date(Date.now() - 1000) } as any);
+      svc.addSilence({
+        taskId: "t2",
+        durationMinutes: 0,
+        endTime: new Date(Date.now() - 1000),
+      } as any);
       svc.cleanExpiredSilences();
       await new Promise((r) => setImmediate(r));
       expect(warnSpy).toHaveBeenCalledWith(
@@ -1043,7 +1094,12 @@ describe("NotificationService", () => {
 
     it("restoreSilencesFromStore warns and keeps an empty map on store failure", async () => {
       const listActive = jest.fn().mockRejectedValue(new Error("pg down"));
-      const svc = await makeServiceWithStore({ listActive, remove: jest.fn(), cleanExpired: jest.fn(), create: jest.fn() });
+      const svc = await makeServiceWithStore({
+        listActive,
+        remove: jest.fn(),
+        cleanExpired: jest.fn(),
+        create: jest.fn(),
+      });
       const warnSpy = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});
@@ -1058,7 +1114,11 @@ describe("NotificationService", () => {
 
     it("addSilence persists an application-scoped silence with the application scope", async () => {
       const create = jest.fn().mockResolvedValue({ id: "db-app-1" });
-      const svc = await makeServiceWithStore({ create, remove: jest.fn(), cleanExpired: jest.fn() });
+      const svc = await makeServiceWithStore({
+        create,
+        remove: jest.fn(),
+        cleanExpired: jest.fn(),
+      });
 
       svc.addSilence({
         scope: "application",
@@ -1067,7 +1127,10 @@ describe("NotificationService", () => {
       } as any);
       await new Promise((r) => setImmediate(r));
       expect(create).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: "application", applicationId: "app-1" }),
+        expect.objectContaining({
+          scope: "application",
+          applicationId: "app-1",
+        }),
       );
     });
   });

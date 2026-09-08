@@ -43,7 +43,8 @@ export const RETRY_BASE_DELAY_MS = 1_000;
  * 纯函数（随机源注入可选留扩展；本轮确定性退避即可测）。
  */
 export function retryDelayMs(failedAttempt: number): number {
-  const base = RETRY_BASE_DELAY_MS * Math.pow(2, Math.max(0, failedAttempt - 1));
+  const base =
+    RETRY_BASE_DELAY_MS * Math.pow(2, Math.max(0, failedAttempt - 1));
   return Math.min(base, 30_000);
 }
 

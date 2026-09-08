@@ -7,6 +7,8 @@ import {
   ParseArrayPipe,
   UnauthorizedException,
   Optional,
+  Inject,
+  forwardRef,
 } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from "@nestjs/swagger";
@@ -43,6 +45,8 @@ export class ExecutionCallbackController {
     private readonly taskService: TaskService,
     private readonly configService: ConfigService,
     private readonly systemConfigService: SystemConfigService,
+    // 跨 task↔executor 模块环的 provider 注入：模块级 forwardRef 配套。
+    @Inject(forwardRef(() => ExecutorService))
     private readonly executorService: ExecutorService,
     // N32: 401 分类观测计数（进程内，Prometheus 经快照映射暴露）。
     private readonly callbackMetrics: ExecutionCallbackMetricsService,

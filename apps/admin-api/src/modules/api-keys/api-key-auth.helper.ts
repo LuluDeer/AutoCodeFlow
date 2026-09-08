@@ -5,7 +5,6 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import {
-  API_KEY_AUTH_FACADE,
   ApiKeyAuthFacade,
   extractBearerCredential,
   isJwtOnlyPath,
@@ -52,7 +51,8 @@ export class ApiKeyAuth implements ApiKeyAuthFacade {
       );
     }
 
-    const { apiKey, failure } = await this.apiKeysService.authenticate(credential);
+    const { apiKey, failure } =
+      await this.apiKeysService.authenticate(credential);
     if (!apiKey) {
       try {
         await this.apiKeysService.auditAuthFailure(

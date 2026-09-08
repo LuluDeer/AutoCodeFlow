@@ -33,6 +33,8 @@ export class TaskProcessor extends WorkerHost {
     @InjectRepository(Task) private taskRepo: Repository<Task>,
     @InjectRepository(ExecutionLogLine)
     private logLineRepo: Repository<ExecutionLogLine>,
+    // 跨 task↔executor 模块环的 provider 注入：模块级 forwardRef 配套。
+    @Inject(forwardRef(() => ExecutorService))
     private executorService: ExecutorService,
     private aiService: AiService,
     private notificationService: NotificationService,

@@ -1,6 +1,5 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { NotFoundException } from "@nestjs/common";
 import { ApiKeysService } from "../api-keys.service";
 import { AuditService } from "../../audit/audit.service";
 import { ApiKey } from "../entities/api-key.entity";
@@ -59,7 +58,12 @@ describe("AUTH-03 ApiKeysService", () => {
 
     it("expiresInDays 换算 expiresAt；不传为 null（永不过期）", async () => {
       const before = Date.now();
-      await svc.create({ userId: 1, name: "a", scope: "readonly", expiresInDays: 30 });
+      await svc.create({
+        userId: 1,
+        name: "a",
+        scope: "readonly",
+        expiresInDays: 30,
+      });
       const row = repo.create.mock.calls[0][0];
       expect(row.expiresAt.getTime()).toBeGreaterThanOrEqual(
         before + 30 * 86_400_000 - 1000,
@@ -70,7 +74,11 @@ describe("AUTH-03 ApiKeysService", () => {
 
     it("创建审计写点失败不阻断主流程（fail-open）", async () => {
       audit.log.mockRejectedValueOnce(new Error("db down"));
-      const { plaintext } = await svc.create({ userId: 1, name: "x", scope: "readonly" });
+      const { plaintext } = await svc.create({
+        userId: 1,
+        name: "x",
+        scope: "readonly",
+      });
       expect(plaintext).toMatch(/^acf_/);
     });
   });
@@ -78,7 +86,17 @@ describe("AUTH-03 ApiKeysService", () => {
   describe("listForUser", () => {
     it("只返回本人 key 且视图脱敏（无 keyHash）", async () => {
       repo.find.mockResolvedValueOnce([
-        { id: 1, name: "k", keyPrefix: "acf_aa", scope: "readonly", expiresAt: null, revokedAt: null, lastUsedAt: null, createdAt: new Date(), keyHash: "h" },
+        {
+          id: 1,
+          name: "k",
+          keyPrefix: "acf_aa",
+          scope: "readonly",
+          expiresAt: null,
+          revokedAt: null,
+          lastUsedAt: null,
+          createdAt: new Date(),
+          keyHash: "h",
+        },
       ]);
       const rows = await svc.listForUser(42);
       expect(repo.find).toHaveBeenCalledWith(
@@ -91,7 +109,14 @@ describe("AUTH-03 ApiKeysService", () => {
 
   describe("revoke（软删）", () => {
     it("属主吊销：revokedAt 置位 + 审计", async () => {
-      repo.findOne.mockResolvedValueOnce({ id: 9, userId: 42, name: "k", keyPrefix: "acf_aa", scope: "readonly", revokedAt: null });
+      repo.findOne.mockResolvedValueOnce({
+        id: 9,
+        userId: 42,
+        name: "k",
+        keyPrefix: "acf_aa",
+        scope: "readonly",
+        revokedAt: null,
+      });
       const row = await svc.revoke(9, 42, "alice");
       expect(row.revokedAt).toBeInstanceOf(Date);
       expect(audit.log).toHaveBeenCalledWith(
@@ -100,14 +125,22 @@ describe("AUTH-03 ApiKeysService", () => {
     });
 
     it("非属主 / 不存在 → null（控制器 404）", async () => {
-      repo.findOne.mockResolvedValueOnce({ id: 9, userId: 99, revokedAt: null });
+      repo.findOne.mockResolvedValueOnce({
+        id: 9,
+        userId: 99,
+        revokedAt: null,
+      });
       expect(await svc.revoke(9, 42)).toBeNull();
       repo.findOne.mockResolvedValueOnce(null);
       expect(await svc.revoke(404, 42)).toBeNull();
     });
 
     it("幂等：已吊销 key 再 revoke 不重复审计", async () => {
-      repo.findOne.mockResolvedValueOnce({ id: 9, userId: 42, revokedAt: new Date() });
+      repo.findOne.mockResolvedValueOnce({
+        id: 9,
+        userId: 42,
+        revokedAt: new Date(),
+      });
       await svc.revoke(9, 42);
       expect(repo.save).not.toHaveBeenCalled();
       expect(audit.log).not.toHaveBeenCalled();
@@ -116,17 +149,36 @@ describe("AUTH-03 ApiKeysService", () => {
 
   describe("authenticate（guard 消费）", () => {
     it("sha256 命中 → 返回行并节流更新 lastUsedAt（首次写 + 首用审计）", async () => {
-      const row = { id: 5, userId: 42, keyHash: hashApiKey("acf_k"), scope: "readonly", lastUsedAt: null };
+      const row = {
+        id: 5,
+        userId: 42,
+        keyHash: hashApiKey("acf_k"),
+        scope: "readonly",
+        lastUsedAt: null,
+      };
       repo.findOne.mockResolvedValueOnce(row);
       const { apiKey, failure } = await svc.authenticate("acf_k");
       expect(failure).toBeUndefined();
       expect(apiKey.id).toBe(5);
-      expect(repo.update).toHaveBeenCalledWith(5, expect.objectContaining({ lastUsedAt: expect.any(Date) }));
-      expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ action: "apikey.used", detail: expect.objectContaining({ firstUse: true }) }));
+      expect(repo.update).toHaveBeenCalledWith(
+        5,
+        expect.objectContaining({ lastUsedAt: expect.any(Date) }),
+      );
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "apikey.used",
+          detail: expect.objectContaining({ firstUse: true }),
+        }),
+      );
     });
 
     it("60 秒内重复使用不重复写库（防写放大）", async () => {
-      const row = { id: 5, userId: 42, keyHash: hashApiKey("acf_k"), lastUsedAt: new Date(Date.now() - 30_000) };
+      const row = {
+        id: 5,
+        userId: 42,
+        keyHash: hashApiKey("acf_k"),
+        lastUsedAt: new Date(Date.now() - 30_000),
+      };
       repo.findOne.mockResolvedValueOnce(row);
       await svc.authenticate("acf_k");
       expect(repo.update).not.toHaveBeenCalled();
@@ -137,12 +189,21 @@ describe("AUTH-03 ApiKeysService", () => {
       expect((await svc.authenticate("acf_x")).failure).toBe("unknown");
       repo.findOne.mockResolvedValueOnce({ id: 1, revokedAt: new Date() });
       expect((await svc.authenticate("acf_x")).failure).toBe("revoked");
-      repo.findOne.mockResolvedValueOnce({ id: 1, revokedAt: null, expiresAt: new Date(Date.now() - 1000) });
+      repo.findOne.mockResolvedValueOnce({
+        id: 1,
+        revokedAt: null,
+        expiresAt: new Date(Date.now() - 1000),
+      });
       expect((await svc.authenticate("acf_x")).failure).toBe("expired");
     });
 
     it("lastUsedAt 写库失败不影响认证结果", async () => {
-      repo.findOne.mockResolvedValueOnce({ id: 5, userId: 42, keyHash: hashApiKey("acf_k"), lastUsedAt: null });
+      repo.findOne.mockResolvedValueOnce({
+        id: 5,
+        userId: 42,
+        keyHash: hashApiKey("acf_k"),
+        lastUsedAt: null,
+      });
       repo.update.mockRejectedValueOnce(new Error("write fail"));
       const { apiKey } = await svc.authenticate("acf_k");
       expect(apiKey.id).toBe(5);
@@ -153,7 +214,10 @@ describe("AUTH-03 ApiKeysService", () => {
     it("写 auth_failure 审计（result=failure）", async () => {
       await svc.auditAuthFailure("acf_dead", "revoked", "1.2.3.4");
       expect(audit.log).toHaveBeenCalledWith(
-        expect.objectContaining({ action: "apikey.auth_failure", result: "failure" }),
+        expect.objectContaining({
+          action: "apikey.auth_failure",
+          result: "failure",
+        }),
       );
     });
   });

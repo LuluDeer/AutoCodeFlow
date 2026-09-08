@@ -10,7 +10,6 @@ import {
 import { AlertsController } from "../alerts.controller";
 import { NotificationService } from "../notification.service";
 import { Task } from "../../task/entities/task.entity";
-import { ChannelDeliveryStatus } from "../../notification/channels/base.channel";
 
 const SECRET = "test-alert-webhook-secret";
 const FIXED_NOW = 1_700_000_000_000;
@@ -51,9 +50,11 @@ describe("AlertsController webhook (OBS-02)", () => {
     jest.spyOn(Date, "now").mockReturnValue(FIXED_NOW);
     notificationService = { sendAll: jest.fn() };
     taskRepo = { findOne: jest.fn().mockResolvedValue(null) };
-    configGet = jest.fn().mockImplementation((key: string) =>
-      key === "alert.webhookSecret" ? SECRET : undefined,
-    );
+    configGet = jest
+      .fn()
+      .mockImplementation((key: string) =>
+        key === "alert.webhookSecret" ? SECRET : undefined,
+      );
 
     const moduleRef = await Test.createTestingModule({
       controllers: [AlertsController],

@@ -10,8 +10,7 @@ const MIGRATIONS_DIR = path.join(__dirname, "..", "..", "..", "migrations");
 const TARGET = "1789800000001-AddUserTotpAndSessionMeta.ts";
 
 describe("SEC-03 迁移 1789800000001（users TOTP 列 + refresh_tokens 会话元数据）", () => {
-  const sql = () =>
-    fs.readFileSync(path.join(MIGRATIONS_DIR, TARGET), "utf8");
+  const sql = () => fs.readFileSync(path.join(MIGRATIONS_DIR, TARGET), "utf8");
 
   it("迁移文件存在且类名后缀与时间戳一致", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports

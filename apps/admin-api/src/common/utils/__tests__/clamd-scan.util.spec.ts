@@ -38,7 +38,11 @@ function startFakeClamd(
             if (reply !== null) socket.write(reply);
             socket.end();
           };
-          opts.delayMs ? setTimeout(send, opts.delayMs) : send();
+          if (opts.delayMs) {
+            setTimeout(send, opts.delayMs);
+          } else {
+            send();
+          }
           return;
         }
         if (pending.length < 4 + size) return;
@@ -70,9 +74,7 @@ describe("clamd-scan.util (SEC-05)", () => {
       expect(parseClamdReply("stream:OK\n")).toEqual({ ok: true });
     });
     it("EICAR signature FOUND → infected with signature name", () => {
-      const v = parseClamdReply(
-        "stream: Eicar-Signature FOUND",
-      );
+      const v = parseClamdReply("stream: Eicar-Signature FOUND");
       expect(v).toEqual({
         ok: false,
         reason: "infected",
@@ -120,9 +122,7 @@ describe("clamd-scan.util (SEC-05)", () => {
     });
 
     it("EICAR 检出 FOUND → infected 拒绝", async () => {
-      const fake = await startFakeClamd(
-        "stream: Eicar-Test-Signature FOUND\n",
-      );
+      const fake = await startFakeClamd("stream: Eicar-Test-Signature FOUND\n");
       try {
         const v = await scanBufferWithClamd(
           Buffer.from(EICAR_STRING, "ascii"),
@@ -144,7 +144,10 @@ describe("clamd-scan.util (SEC-05)", () => {
     it("扫描超时/掐断 → fail-closed 拒绝", async () => {
       const fake = await startFakeClamd("stream: OK\n", { delayMs: 800 });
       try {
-        const v = await scanBufferWithClamd(Buffer.from("x"), cfg(fake.port, 100));
+        const v = await scanBufferWithClamd(
+          Buffer.from("x"),
+          cfg(fake.port, 100),
+        );
         expect(v.ok).toBe(false);
         // 定时器先触发→timeout；socket 在等待窗口内被 close（delayMs 未到
         // 时 fake 已 write 前 end 的路径）→error。两者均 fail-closed。

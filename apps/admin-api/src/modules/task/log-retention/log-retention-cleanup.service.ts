@@ -107,7 +107,7 @@ export class LogRetentionCleanupService {
    * 清理 createdAt 早于保留期截止时间的日志行，返回清理总行数。
    *
    * - 分区库：逐个 DETACH 上界 ≤ cutoff 的分区后 DROP，行数取
-     * pg_class.reltuples 估算值（元数据操作无精确行数；返回值仅用于日志）；
+   * pg_class.reltuples 估算值（元数据操作无精确行数；返回值仅用于日志）；
    * - legacy 普通表：分批 DELETE（`id IN (SELECT id ... LIMIT 批大小)`），
    *   循环直至单批影响行数小于批大小，避免长事务锁表；定时任务可能
    *   多实例同时运行，按同一条件删除幂等无副作用。

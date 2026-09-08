@@ -84,11 +84,16 @@ const schedulerFixture = {
   instance: { pid: 1, hostname: "t" },
 };
 
-function makeSvc(over: Partial<Record<"getSummary" | "getExecutorStats" | "getSchedulerMetrics", jest.Mock>> = {}) {
+function makeSvc(
+  over: Partial<
+    Record<"getSummary" | "getExecutorStats" | "getSchedulerMetrics", jest.Mock>
+  > = {},
+) {
   return {
     getSummary: over.getSummary ?? jest.fn().mockResolvedValue(summaryFixture),
     getExecutorStats:
-      over.getExecutorStats ?? jest.fn().mockResolvedValue(executorStatsFixture),
+      over.getExecutorStats ??
+      jest.fn().mockResolvedValue(executorStatsFixture),
     getSchedulerMetrics:
       over.getSchedulerMetrics ?? jest.fn().mockResolvedValue(schedulerFixture),
   };
@@ -117,13 +122,18 @@ async function makeModule(
       },
     ],
   }).compile();
-  const controller = module.get<MetricsStreamController>(MetricsStreamController);
+  const controller = module.get<MetricsStreamController>(
+    MetricsStreamController,
+  );
   const slots = module.get<MetricsStreamSlotService>(MetricsStreamSlotService);
   return { controller, slots };
 }
 
-function parseFrames(writes: string[]): Array<{ event?: string; data?: string; comment?: boolean }> {
-  const frames: Array<{ event?: string; data?: string; comment?: boolean }> = [];
+function parseFrames(
+  writes: string[],
+): Array<{ event?: string; data?: string; comment?: boolean }> {
+  const frames: Array<{ event?: string; data?: string; comment?: boolean }> =
+    [];
   let current: { event?: string; data?: string; comment?: boolean } = {};
   for (const chunk of writes) {
     for (const line of chunk.split("\n")) {
@@ -147,7 +157,11 @@ describe("MetricsStreamController — GET /metrics/stream（UI-14 第一阶段�
   });
 
   function makeReq(onClose?: () => void): { on: jest.Mock } {
-    return { on: jest.fn().mockImplementation((_e: string, cb: () => void) => { onClose?.(); }) };
+    return {
+      on: jest.fn().mockImplementation((_e: string, _cb: () => void) => {
+        onClose?.();
+      }),
+    };
   }
 
   it("写出标准 SSE 头并推送首个快照（summary+executors+scheduler 三段齐备）", async () => {
@@ -158,7 +172,9 @@ describe("MetricsStreamController — GET /metrics/stream（UI-14 第一阶段�
 
     const done = controller.stream(req as never, res as never);
     // 首拍完成后 abort 收尾（setImmediate 让出微任务，保证首帧已写出）
-    const close = req.on.mock.calls.find(([e]: [string]) => e === "close")?.[1] as () => void;
+    const close = req.on.mock.calls.find(
+      ([e]: [string]) => e === "close",
+    )?.[1] as () => void;
     setImmediate(() => close());
     await done;
 
@@ -168,7 +184,9 @@ describe("MetricsStreamController — GET /metrics/stream（UI-14 第一阶段�
     expect(res.ended).toBe(true);
 
     const frames = parseFrames(res.writes);
-    const dataFrames = frames.filter((f) => !f.comment && f.event !== "done" && f.event !== "error");
+    const dataFrames = frames.filter(
+      (f) => !f.comment && f.event !== "done" && f.event !== "error",
+    );
     expect(dataFrames.length).toBeGreaterThanOrEqual(1);
     const payload = JSON.parse(dataFrames[0].data) as Record<string, unknown>;
     expect(payload.summary).toEqual(summaryFixture);
@@ -201,9 +219,16 @@ describe("MetricsStreamController — GET /metrics/stream（UI-14 第一阶段�
   it("断连清理：close 事件 abort 后槽位归还（active 回零）", async () => {
     const svc = makeSvc();
     // intervalMs 大：主循环停留在等待段，等 req close 触发 abort
-    const { controller, slots } = await makeModule(svc, { intervalMs: 60_000, idlePingMs: 15_000 });
+    const { controller, slots } = await makeModule(svc, {
+      intervalMs: 60_000,
+      idlePingMs: 15_000,
+    });
     let closeCb: (() => void) | null = null;
-    const req = { on: jest.fn().mockImplementation((_e: string, cb: () => void) => { closeCb = cb; }) };
+    const req = {
+      on: jest.fn().mockImplementation((_e: string, cb: () => void) => {
+        closeCb = cb;
+      }),
+    };
     const { res } = makeMockRes();
 
     const done = controller.stream(req as never, res as never);
@@ -222,9 +247,16 @@ describe("MetricsStreamController — GET /metrics/stream（UI-14 第一阶段�
   it("节流：intervalMs 覆盖生效（快照间等待按配置推进）", async () => {
     const svc = makeSvc();
     // intervalMs=40：至少推送 2 拍后手动 abort 结束（留 110ms 余量 > 2×40ms）
-    const { controller, slots } = await makeModule(svc, { intervalMs: 40, idlePingMs: 15_000 });
+    const { controller, slots } = await makeModule(svc, {
+      intervalMs: 40,
+      idlePingMs: 15_000,
+    });
     let closeCb: (() => void) | null = null;
-    const req = { on: jest.fn().mockImplementation((_e: string, cb: () => void) => { closeCb = cb; }) };
+    const req = {
+      on: jest.fn().mockImplementation((_e: string, cb: () => void) => {
+        closeCb = cb;
+      }),
+    };
     const { res } = makeMockRes();
 
     const done = controller.stream(req as never, res as never);
@@ -249,7 +281,9 @@ describe("MetricsStreamController — GET /metrics/stream（UI-14 第一阶段�
 
     const done = controller.stream(req as never, res as never);
     // 首拍（含 error 帧 + 降级快照）后 abort 收尾
-    const close = req.on.mock.calls.find(([e]: [string]) => e === "close")?.[1] as () => void;
+    const close = req.on.mock.calls.find(
+      ([e]: [string]) => e === "close",
+    )?.[1] as () => void;
     setImmediate(() => close());
     await done;
 
@@ -257,8 +291,15 @@ describe("MetricsStreamController — GET /metrics/stream（UI-14 第一阶段�
     const errorFrame = frames.find((f) => f.event === "error");
     expect(errorFrame).toBeTruthy();
     const payload = JSON.parse(
-      frames.filter((f) => !f.comment && f.event !== "done" && f.event !== "error")[0].data,
-    ) as { summary: unknown; executors: unknown; scheduler: unknown; errors: string[] };
+      frames.filter(
+        (f) => !f.comment && f.event !== "done" && f.event !== "error",
+      )[0].data,
+    ) as {
+      summary: unknown;
+      executors: unknown;
+      scheduler: unknown;
+      errors: string[];
+    };
     expect(payload.summary).toBeNull();
     expect(payload.executors).toEqual(executorStatsFixture);
     expect(payload.scheduler).toEqual(schedulerFixture);
@@ -282,14 +323,24 @@ describe("MetricsStreamController — GET /metrics/stream（UI-14 第一阶段�
     const svc = makeSvc();
     const { slots } = await makeModule(svc);
     const r1 = slots.acquireSlot();
-    expect(getRuntimeGaugesSnapshot().get("autoflow_metrics_streams_active")).toBe(1);
-    expect(getRuntimeGaugesSnapshot().get("autoflow_metrics_streams_limit")).toBe(32);
+    expect(
+      getRuntimeGaugesSnapshot().get("autoflow_metrics_streams_active"),
+    ).toBe(1);
+    expect(
+      getRuntimeGaugesSnapshot().get("autoflow_metrics_streams_limit"),
+    ).toBe(32);
     const r2 = slots.acquireSlot();
-    expect(getRuntimeGaugesSnapshot().get("autoflow_metrics_streams_active")).toBe(2);
+    expect(
+      getRuntimeGaugesSnapshot().get("autoflow_metrics_streams_active"),
+    ).toBe(2);
     r1();
     r2();
-    expect(getRuntimeGaugesSnapshot().get("autoflow_metrics_streams_active")).toBe(0);
+    expect(
+      getRuntimeGaugesSnapshot().get("autoflow_metrics_streams_active"),
+    ).toBe(0);
     // limit 是配置值，不随 active 回落
-    expect(getRuntimeGaugesSnapshot().get("autoflow_metrics_streams_limit")).toBe(32);
+    expect(
+      getRuntimeGaugesSnapshot().get("autoflow_metrics_streams_limit"),
+    ).toBe(32);
   });
 });

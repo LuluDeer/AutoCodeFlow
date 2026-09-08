@@ -32,8 +32,12 @@ describe("AddDeploymentRolloutColumns1790000000001（DEP-02/03）", () => {
   it("up：app_deployments 加 rolloutState varchar 可空 + rolloutMeta jsonb 可空", () => {
     const upPart = sql.split("public async down")[0];
     expect(upPart).toContain('ALTER TABLE "app_deployments"');
-    expect(upPart).toContain('ADD COLUMN IF NOT EXISTS "rolloutState" VARCHAR(32) NULL');
-    expect(upPart).toContain('ADD COLUMN IF NOT EXISTS "rolloutMeta" JSONB NULL');
+    expect(upPart).toContain(
+      'ADD COLUMN IF NOT EXISTS "rolloutState" VARCHAR(32) NULL',
+    );
+    expect(upPart).toContain(
+      'ADD COLUMN IF NOT EXISTS "rolloutMeta" JSONB NULL',
+    );
     // 不应有 NOT NULL（存量行零破坏）
     expect(upPart).not.toContain("NOT NULL");
   });

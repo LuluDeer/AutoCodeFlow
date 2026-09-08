@@ -55,7 +55,9 @@ describe("secret-crypto.util (SEC-02)", () => {
       const secret = "p@ssw0rd-字典-🔐";
       const envelope = encryptSecretValue(secret, KEY);
       expect(isEncryptedSecret(envelope)).toBe(true);
-      expect(envelope).toMatch(/^enc:v1:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/);
+      expect(envelope).toMatch(
+        /^enc:v1:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/,
+      );
       expect(envelope).not.toContain(secret);
       expect(decryptSecretValue(envelope, KEY)).toBe(secret);
     });
@@ -104,7 +106,10 @@ describe("secret-crypto.util (SEC-02)", () => {
       expect(isEncryptedSecret(stored.db.password)).toBe(true);
       expect(isEncryptedSecret(stored.db.port)).toBe(true); // numbers stringified then sealed
       expect(stored.empty).toBeNull();
-      const roundtrip = decryptSecretsObject(stored, KEY) as Record<string, any>;
+      const roundtrip = decryptSecretsObject(stored, KEY) as Record<
+        string,
+        any
+      >;
       // Numeric leaves are stringified before sealing (encrypt-everything
       // semantics for a secrets-shaped object) — document it in the contract.
       expect(roundtrip).toEqual({
@@ -169,7 +174,8 @@ describe("secret-crypto.util (SEC-02)", () => {
 describe("SecretsCryptoService (SEC-02)", () => {
   const makeService = (env: Record<string, string | undefined>) =>
     new SecretsCryptoService({
-      get: (path: string) => (path === "secrets.key" ? env.SEC_SECRETS_KEY : undefined),
+      get: (path: string) =>
+        path === "secrets.key" ? env.SEC_SECRETS_KEY : undefined,
     } as any);
 
   it("degrades to plaintext when the key is not configured (no crash)", () => {
@@ -210,6 +216,8 @@ describe("SecretsCryptoService (SEC-02)", () => {
 
   it("rejects encryptValue in degraded mode", () => {
     const svc = makeService({});
-    expect(() => svc.encryptValue("x")).toThrow(/SEC_SECRETS_KEY is not configured/);
+    expect(() => svc.encryptValue("x")).toThrow(
+      /SEC_SECRETS_KEY is not configured/,
+    );
   });
 });

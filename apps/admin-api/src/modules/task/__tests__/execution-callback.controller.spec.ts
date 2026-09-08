@@ -102,7 +102,11 @@ describe("ExecutionCallbackController", () => {
       const item = makeCallbackItem({
         executorAddress: "executor-python:8001",
       });
-      const result = await controller.callback(`Bearer ${VALID_TOKEN}`, undefined, [item]);
+      const result = await controller.callback(
+        `Bearer ${VALID_TOKEN}`,
+        undefined,
+        [item],
+      );
       expect(result.results).toBeDefined();
       expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
     });
@@ -176,7 +180,9 @@ describe("ExecutionCallbackController", () => {
       const dbToken = "db-token-value";
       systemConfigService.findOne.mockResolvedValue({ value: dbToken });
       const item = makeCallbackItem({ executorAddress: "executor-a:8001" });
-      const result = await controller.callback(`Bearer ${dbToken}`, undefined, [item]);
+      const result = await controller.callback(`Bearer ${dbToken}`, undefined, [
+        item,
+      ]);
       expect(result.results).toBeDefined();
     });
   });
@@ -188,10 +194,11 @@ describe("ExecutionCallbackController", () => {
         { executionId: "another-id", success: false, error: "not found" },
       ];
       taskService.handleCallback.mockResolvedValue(expected);
-      const result = await controller.callback(`Bearer ${VALID_TOKEN}`, undefined, [
-        makeCallbackItem(),
-        makeCallbackItem({ executionId: "another-id" }),
-      ]);
+      const result = await controller.callback(
+        `Bearer ${VALID_TOKEN}`,
+        undefined,
+        [makeCallbackItem(), makeCallbackItem({ executionId: "another-id" })],
+      );
       expect(result.results).toEqual(expected);
     });
 
@@ -230,7 +237,9 @@ describe("ExecutionCallbackController", () => {
     it("accepts a valid token bound to the batch's executionId", async () => {
       const token = sign(EXEC_UUID, nowSec() + 60);
       const item = makeCallbackItem();
-      const result = await controller.callback(`Bearer ${token}`, undefined, [item]);
+      const result = await controller.callback(`Bearer ${token}`, undefined, [
+        item,
+      ]);
       expect(result.results).toBeDefined();
       expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
       // Per-execution tokens bypass the per-address shared-token dance.
@@ -306,7 +315,9 @@ describe("ExecutionCallbackController", () => {
       const token = sign(EXEC_UUID, nowSec() + 60);
       const item = makeCallbackItem();
       item.executorAddress = undefined;
-      const result = await controller.callback(`Bearer ${token}`, undefined, [item]);
+      const result = await controller.callback(`Bearer ${token}`, undefined, [
+        item,
+      ]);
       expect(result.results).toBeDefined();
       expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
     });
@@ -337,7 +348,9 @@ describe("ExecutionCallbackController", () => {
         );
         const token = sign(EXEC_UUID, nowSec() + 60, EXECUTOR_HASH);
         const item = makeCallbackItem();
-        const result = await controller.callback(`Bearer ${token}`, undefined, [item]);
+        const result = await controller.callback(`Bearer ${token}`, undefined, [
+          item,
+        ]);
         expect(result.results).toBeDefined();
         expect(executorService.getCallbackSecretByAddress).toHaveBeenCalledWith(
           "executor-python:8001",
@@ -347,7 +360,9 @@ describe("ExecutionCallbackController", () => {
 
       it("does not consult per-executor secrets when a global candidate verifies", async () => {
         const token = sign(EXEC_UUID, nowSec() + 60); // global VALID_TOKEN
-        await controller.callback(`Bearer ${token}`, undefined, [makeCallbackItem()]);
+        await controller.callback(`Bearer ${token}`, undefined, [
+          makeCallbackItem(),
+        ]);
         expect(
           executorService.getCallbackSecretByAddress,
         ).not.toHaveBeenCalled();
@@ -362,7 +377,9 @@ describe("ExecutionCallbackController", () => {
         );
         const token = sign(EXEC_UUID, nowSec() + 60, EXECUTOR_HASH);
         await expect(
-          controller.callback(`Bearer ${token}`, undefined, [makeCallbackItem()]),
+          controller.callback(`Bearer ${token}`, undefined, [
+            makeCallbackItem(),
+          ]),
         ).resolves.toBeDefined();
       });
 
@@ -394,7 +411,9 @@ describe("ExecutionCallbackController", () => {
         executorService.getCallbackSecretByAddress.mockResolvedValue(null);
         const token = sign(EXEC_UUID, nowSec() + 60, EXECUTOR_HASH);
         await expect(
-          controller.callback(`Bearer ${token}`, undefined, [makeCallbackItem()]),
+          controller.callback(`Bearer ${token}`, undefined, [
+            makeCallbackItem(),
+          ]),
         ).rejects.toBeInstanceOf(UnauthorizedException);
         expect(taskService.handleCallback).not.toHaveBeenCalled();
       });
@@ -413,7 +432,9 @@ describe("ExecutionCallbackController", () => {
           EXECUTOR_HASH,
         );
         await expect(
-          controller.callback(`Bearer ${token}`, undefined, [makeCallbackItem()]),
+          controller.callback(`Bearer ${token}`, undefined, [
+            makeCallbackItem(),
+          ]),
         ).rejects.toBeInstanceOf(UnauthorizedException);
         expect(taskService.handleCallback).not.toHaveBeenCalled();
       });
@@ -432,13 +453,17 @@ describe("ExecutionCallbackController", () => {
         EXEC_UUID,
         nowSec() + 60,
       );
-      await controller.callback(`Bearer ${token}`, undefined, [makeCallbackItem()]);
+      await controller.callback(`Bearer ${token}`, undefined, [
+        makeCallbackItem(),
+      ]);
       expect(authCounts().ok).toBe(1);
       expect(authCounts().v1_bad_signature).toBe(0);
     });
 
     it("counts result=ok on the legacy per-address success path", async () => {
-      await controller.callback("Bearer dynamic-token", undefined, [makeCallbackItem()]);
+      await controller.callback("Bearer dynamic-token", undefined, [
+        makeCallbackItem(),
+      ]);
       expect(authCounts().ok).toBe(1);
     });
 
@@ -501,7 +526,9 @@ describe("ExecutionCallbackController", () => {
 
     it("counts v1_bad_signature for a malformed v1 token (not expired)", async () => {
       await expect(
-        controller.callback("Bearer v1.garbage", undefined, [makeCallbackItem()]),
+        controller.callback("Bearer v1.garbage", undefined, [
+          makeCallbackItem(),
+        ]),
       ).rejects.toBeInstanceOf(UnauthorizedException);
       expect(authCounts().v1_bad_signature).toBe(1);
       expect(authCounts().v1_expired).toBe(0);

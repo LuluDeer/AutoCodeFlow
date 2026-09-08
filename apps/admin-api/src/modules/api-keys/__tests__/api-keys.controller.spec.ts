@@ -3,7 +3,6 @@ import { NotFoundException } from "@nestjs/common";
 import { ApiKeysController } from "../api-keys.controller";
 import { ApiKeysService } from "../api-keys.service";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
-import { Reflector } from "@nestjs/core";
 
 /**
  * AUTH-03: /api-keys 控制器——CRUD 委托契约、一次性明文回显、
@@ -11,12 +10,19 @@ import { Reflector } from "@nestjs/core";
  */
 
 const svcMock = () => ({
-  listForUser: jest.fn(async () => [{ id: 1, name: "k", keyPrefix: "acf_aa", scope: "readonly" }]),
+  listForUser: jest.fn(async () => [
+    { id: 1, name: "k", keyPrefix: "acf_aa", scope: "readonly" },
+  ]),
   create: jest.fn(async (input) => ({
-    apiKey: { id: 2, name: input.name, keyPrefix: "acf_bb", scope: input.scope },
+    apiKey: {
+      id: 2,
+      name: input.name,
+      keyPrefix: "acf_bb",
+      scope: input.scope,
+    },
     plaintext: "acf_" + "a".repeat(64),
   })),
-  revoke: jest.fn(async (id, userId) =>
+  revoke: jest.fn(async (id, _userId) =>
     id === 404 ? null : { id, revokedAt: new Date() },
   ),
 });
@@ -69,9 +75,9 @@ describe("AUTH-03 ApiKeysController", () => {
     const ok = await controller.revoke(9, USER, {} as any);
     expect(ok.success).toBe(true);
     expect(svc.revoke).toHaveBeenCalledWith(9, 42, "alice", undefined);
-    await expect(controller.revoke(404, USER, {} as any)).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
+    await expect(
+      controller.revoke(404, USER, {} as any),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it("POST :id/revoke 别名等价且只操作本人 key", async () => {

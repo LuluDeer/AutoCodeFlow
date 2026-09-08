@@ -53,7 +53,9 @@ export interface MappedAlertNotification {
 }
 
 /** 归一化告警状态：仅认 firing / resolved，未知状态 fail-safe 归 firing。 */
-export function normalizeAlertStatus(status: string | undefined): "firing" | "resolved" {
+export function normalizeAlertStatus(
+  status: string | undefined,
+): "firing" | "resolved" {
   return status === "resolved" ? "resolved" : "firing";
 }
 
@@ -70,7 +72,10 @@ function formatKvLines(kv: Record<string, string> | undefined): string[] {
  * runbookUrl 参数由调用方解析（annotations.runbook_url 或 tasks.runbook 注入）
  * 后传入——本函数不做 DB 查询。
  */
-function renderAlertSection(alert: AlertmanagerAlert, runbookUrl: string | null): string {
+function renderAlertSection(
+  alert: AlertmanagerAlert,
+  runbookUrl: string | null,
+): string {
   const lines: string[] = [];
   const status = normalizeAlertStatus(alert.status);
   const alertname = alert.labels?.alertname ?? "unknown";
@@ -116,7 +121,8 @@ export function extractRunbookUrl(alert: AlertmanagerAlert): string | null {
  */
 export function mapAlertmanagerPayload(
   payload: AlertmanagerWebhookPayload,
-  options?: { /** 调用方查库得到的 tasks.runbook 内容/链接（taskId 命中时传入）。 */
+  options?: {
+    /** 调用方查库得到的 tasks.runbook 内容/链接（taskId 命中时传入）。 */
     taskRunbook?: string | null;
     /** 注入时间源，缺省 Date.now——测试钉死"时间戳过期"行为用。 */
     nowMs?: number;
@@ -130,9 +136,12 @@ export function mapAlertmanagerPayload(
   ).length;
   const headStatus = firingCount > 0 ? "firing" : "resolved";
   const firstFiring =
-    alerts.find((a) => normalizeAlertStatus(a.status) === "firing") ?? alerts[0];
+    alerts.find((a) => normalizeAlertStatus(a.status) === "firing") ??
+    alerts[0];
   const alertname =
-    firstFiring.labels?.alertname ?? payload.commonLabels?.alertname ?? "unknown";
+    firstFiring.labels?.alertname ??
+    payload.commonLabels?.alertname ??
+    "unknown";
 
   // runbook 解析顺序：第一条 firing 告警的 annotations.runbook_url >
   // 调用方查库注入的 tasks.runbook（labels.taskId 命中）。

@@ -1,4 +1,5 @@
 import * as path from "path";
+import { getEnvVar } from "../../config/env";
 
 /**
  * FEAT-05：执行产物（artifacts）在 admin 侧的落盘根目录（惰性求值，便于测试注入）。
@@ -13,7 +14,9 @@ import * as path from "path";
  * LOG_ARTIFACT_DIR 指向 OS 临时目录，避免污染仓库。
  */
 export function getArtifactRootDir(): string {
-  const override = process.env.LOG_ARTIFACT_DIR;
+  // ARCH-27 豁免位：模块求值期读取（ConfigService 尚未就绪），经
+  // src/config/env.ts 的 getEnvVar() 集中放行（W-22 教训）。
+  const override = getEnvVar("LOG_ARTIFACT_DIR");
   if (override && override.trim()) return override.trim();
   return path.join(process.cwd(), "uploads", "artifacts");
 }

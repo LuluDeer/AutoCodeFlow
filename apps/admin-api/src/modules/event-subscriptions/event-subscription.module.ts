@@ -15,7 +15,9 @@ import { OutboundEventDispatcher } from "./outbound-event-dispatcher.service";
  * 无任何业务模块反向依赖本模块，不成环。
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([EventSubscription, EventSubscriptionDeadLetter])],
+  imports: [
+    TypeOrmModule.forFeature([EventSubscription, EventSubscriptionDeadLetter]),
+  ],
   controllers: [EventSubscriptionController],
   providers: [EventSubscriptionService, OutboundEventDispatcher],
   exports: [EventSubscriptionService],

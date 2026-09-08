@@ -32,7 +32,8 @@ export const DOMAIN_EVENTS = {
   DEPLOYMENT_COMPLETED: "deployment.completed",
 } as const;
 
-export type DomainEventName = (typeof DOMAIN_EVENTS)[keyof typeof DOMAIN_EVENTS];
+export type DomainEventName =
+  (typeof DOMAIN_EVENTS)[keyof typeof DOMAIN_EVENTS];
 
 /**
  * FEAT-07: executor.offline 载荷（全原始类型，common 层不 import 实体）。

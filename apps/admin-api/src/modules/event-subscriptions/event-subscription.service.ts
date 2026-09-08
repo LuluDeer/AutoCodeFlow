@@ -185,7 +185,10 @@ export class EventSubscriptionService {
     id: string,
     deadLetterId: string,
     user: AuthUser,
-  ): Promise<{ subscription: EventSubscription; deadLetter: EventSubscriptionDeadLetter }> {
+  ): Promise<{
+    subscription: EventSubscription;
+    deadLetter: EventSubscriptionDeadLetter;
+  }> {
     const sub = await this.subRepo.findOne({ where: { id } });
     if (!sub) throw new NotFoundException(`Subscription ${id} not found`);
     this.assertCanManage(sub, user);

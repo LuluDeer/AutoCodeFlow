@@ -8,9 +8,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 按「未知时长」默认项处理，行为与既有实现一致。
  * 幂等：IF NOT EXISTS / IF EXISTS，重复执行与 revert 重放均无副作用。
  */
-export class AddTaskEstimatedDuration1789900000001
-  implements MigrationInterface
-{
+export class AddTaskEstimatedDuration1789900000001 implements MigrationInterface {
   name = "AddTaskEstimatedDuration1789900000001";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

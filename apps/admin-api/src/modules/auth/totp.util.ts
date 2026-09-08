@@ -106,7 +106,10 @@ export function totpVerify(
 }
 
 /** 当前时刻（±窗口）应该出现的一组有效码——仅用于确定性测试。 */
-export function totpCodesAt(secretBase32: string, unixSeconds: number): string[] {
+export function totpCodesAt(
+  secretBase32: string,
+  unixSeconds: number,
+): string[] {
   const counter = Math.floor(unixSeconds / TOTP_STEP_SECONDS);
   const codes: string[] = [];
   for (let drift = -TOTP_WINDOW_STEPS; drift <= TOTP_WINDOW_STEPS; drift++) {

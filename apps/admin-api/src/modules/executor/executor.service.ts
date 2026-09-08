@@ -3,6 +3,8 @@ import {
   Logger,
   NotFoundException,
   ServiceUnavailableException,
+  Inject,
+  forwardRef,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectQueue } from "@nestjs/bullmq";
@@ -123,7 +125,10 @@ export class ExecutorService {
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
     private readonly systemConfigService: SystemConfigService,
-    // SEC-02: dispatch 时解密 task.secrets（与 params 合并注入执行器 env）
+    // SEC-02: dispatch 时解密 task.secrets（与 params 合并注入执行器 env）。
+    // 跨 task↔executor 模块环的 provider 注入：模块级 forwardRef 配套
+    // （executor.module 同位置注释）。
+    @Inject(forwardRef(() => SecretsCryptoService))
     private readonly secretsCrypto: SecretsCryptoService,
     // FEAT-07: executor.offline 出站事件发布（@Global 总线；@Optional 仅为
     // 既有单测装配兼容——provider 缺失 → null → 事件静默不发，主链行为不变，
@@ -958,7 +963,10 @@ export class ExecutorService {
     if (executor.runningTaskCount <= 0) return [];
     try {
       const running = await this.execRepo.find({
-        where: { executorAddress: executor.address, status: ExecutionStatus.RUNNING },
+        where: {
+          executorAddress: executor.address,
+          status: ExecutionStatus.RUNNING,
+        },
         select: ["taskId"],
       });
       if (running.length === 0) return [];
@@ -1151,10 +1159,7 @@ export class ExecutorService {
           executor: matched.address,
           executionId: execution.id,
         })
-        ?.call(
-          this,
-          err instanceof Error ? err.message : String(err),
-        );
+        ?.call(this, err instanceof Error ? err.message : String(err));
       throw err;
     }
   }

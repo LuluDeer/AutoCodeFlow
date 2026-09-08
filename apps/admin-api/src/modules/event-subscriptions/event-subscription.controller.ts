@@ -64,7 +64,11 @@ export class EventSubscriptionController {
 
   @Get()
   @ApiOperation({ summary: "List outbound event subscriptions" })
-  @ApiResponse({ status: 200, description: "Subscription list", type: [EventSubscription] })
+  @ApiResponse({
+    status: 200,
+    description: "Subscription list",
+    type: [EventSubscription],
+  })
   list(@Req() req: Request & { user: AuthUser }): Promise<EventSubscription[]> {
     return this.svc.findAll(req.user);
   }
@@ -78,7 +82,10 @@ export class EventSubscriptionController {
       "`generatedSecret`).",
   })
   @ApiResponse({ status: 201, description: "Created subscription" })
-  @ApiResponse({ status: 400, description: "Invalid URL / event types / quota exceeded" })
+  @ApiResponse({
+    status: 400,
+    description: "Invalid URL / event types / quota exceeded",
+  })
   create(
     @Body() dto: CreateEventSubscriptionDto,
     @Req() req: Request & { user: AuthUser },
@@ -88,10 +95,15 @@ export class EventSubscriptionController {
 
   @Patch(":id")
   @ApiOperation({
-    summary: "Update a subscription (enable/disable, url, eventTypes, secret rotation)",
+    summary:
+      "Update a subscription (enable/disable, url, eventTypes, secret rotation)",
   })
   @ApiParam({ name: "id", description: "Subscription UUID" })
-  @ApiResponse({ status: 200, description: "Updated subscription", type: EventSubscription })
+  @ApiResponse({
+    status: 200,
+    description: "Updated subscription",
+    type: EventSubscription,
+  })
   @ApiResponse({ status: 403, description: "Not the owner" })
   @ApiResponse({ status: 404, description: "Subscription not found" })
   update(
@@ -133,16 +145,23 @@ export class EventSubscriptionController {
 
   @Post(":id/dead-letters/:dlId/replay")
   @ApiOperation({
-    summary: "Replay a dead letter once with the subscription's current url/secret",
+    summary:
+      "Replay a dead letter once with the subscription's current url/secret",
     description:
       "Single delivery attempt (no auto-retry). On success the dead letter row is " +
       "removed; on failure the error is returned and the row is kept.",
   })
   @ApiParam({ name: "id", description: "Subscription UUID" })
   @ApiParam({ name: "dlId", description: "Dead letter UUID" })
-  @ApiResponse({ status: 200, description: "Replayed (ok true/false with error)" })
+  @ApiResponse({
+    status: 200,
+    description: "Replayed (ok true/false with error)",
+  })
   @ApiResponse({ status: 403, description: "Not the owner" })
-  @ApiResponse({ status: 404, description: "Subscription or dead letter not found" })
+  @ApiResponse({
+    status: 404,
+    description: "Subscription or dead letter not found",
+  })
   async replay(
     @Param("id", ParseUUIDPipe) id: string,
     @Param("dlId", ParseUUIDPipe) dlId: string,
@@ -153,7 +172,10 @@ export class EventSubscriptionController {
       dlId,
       req.user,
     );
-    const result = await this.dispatcher.replayDeadLetter(subscription, deadLetter);
+    const result = await this.dispatcher.replayDeadLetter(
+      subscription,
+      deadLetter,
+    );
     if (result.ok) return { ok: true };
     return { ok: false, error: result.error };
   }

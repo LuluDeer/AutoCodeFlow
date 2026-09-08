@@ -6,7 +6,8 @@ import {
   ServiceUnavailableException,
   Logger,
   OnModuleInit,
-} from "@nestjs/common";import { InjectRepository } from "@nestjs/typeorm";
+} from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, Like, FindOptionsWhere } from "typeorm";
 import * as fs from "fs";
 import * as path from "path";
@@ -20,7 +21,6 @@ import {
   resolveZipGuardLimits,
 } from "../../common/utils/zip-guard.util";
 import {
-  ClamdUnavailableError,
   isFailedVerdict,
   scanBufferWithClamd,
 } from "../../common/utils/clamd-scan.util";
@@ -207,7 +207,10 @@ export class ExecutorPackageService implements OnModuleInit {
       // anomalies (an unreadable package cannot be vetted).
       if (head[0] === 0x50 && head[1] === 0x4b) {
         try {
-          assertZipFileSafe(tmpPath, resolveZipGuardLimits(this.configService.get("zipGuard")));
+          assertZipFileSafe(
+            tmpPath,
+            resolveZipGuardLimits(this.configService.get("zipGuard")),
+          );
         } catch (err: unknown) {
           if (err instanceof ZipGuardError) {
             this.logger.warn(

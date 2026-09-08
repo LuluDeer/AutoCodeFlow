@@ -175,10 +175,7 @@ describe("AuditController", () => {
       svc.exportCsv.mockResolvedValue("id,action\n1,auth.login");
       const res = { setHeader: jest.fn(), send: jest.fn() } as any;
 
-      await controller.exportCsv(
-        { resourceId: "exec-abc" } as any,
-        res,
-      );
+      await controller.exportCsv({ resourceId: "exec-abc" } as any, res);
 
       expect(svc.exportCsv).toHaveBeenCalledWith(
         expect.objectContaining({ resourceId: "exec-abc" }),
