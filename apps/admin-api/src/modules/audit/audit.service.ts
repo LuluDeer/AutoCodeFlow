@@ -1,8 +1,18 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, LessThan } from "typeorm";
+import { DataSource, Repository, LessThan } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import { AuditLog } from "./entities/audit-log.entity";
+
+/**
+ * SEC-10: append-only 语义开关——迁移 1790000000006 给 audit_logs 加了
+ * BEFORE UPDATE OR DELETE 触发器（RAISE EXCEPTION）。retention 清理
+ * （cleanupOldAuditLogs）是唯一的合法批量 DELETE：放行机制 = 事务内
+ * `SET LOCAL app.bypass_audit_guard = 'on'`（触发器读会话 GUC 放行，
+ * 事务提交即失效）。绕过面收敛为：能直连 DB 且显式开启该 GUC 的进程；
+ * 应用代码中唯一放行点就是本服务的清理任务。
+ */
+const AUDIT_GUARD_BYPASS_SQL = `SET LOCAL app.bypass_audit_guard = 'on'`;
 
 export interface AuditLogPayload {
   userId?: number;
@@ -22,7 +32,25 @@ export class AuditService {
   constructor(
     @InjectRepository(AuditLog)
     private readonly repo: Repository<AuditLog>,
+    private readonly dataSource: DataSource,
   ) {}
+
+  /**
+   * SEC-10: the only sanctioned bulk-DELETE path for audit rows (Q7
+   * retention). Runs inside a transaction with the session GUC
+   * `app.bypass_audit_guard = 'on'` so the append-only trigger
+   * (migration 1790000000006) lets the rows go; everything else —
+   * UPDATE/DELETE from any other path — hits the trigger's exception.
+   */
+  private async retentionDelete(cutoff: Date): Promise<number> {
+    return this.dataSource.transaction(async (em) => {
+      await em.query(AUDIT_GUARD_BYPASS_SQL);
+      const result = await em
+        .getRepository(AuditLog)
+        .delete({ createdAt: LessThan(cutoff) });
+      return result.affected ?? 0;
+    });
+  }
 
   async log(payload: AuditLogPayload): Promise<void> {
     const entry = this.repo.create({
@@ -36,13 +64,13 @@ export class AuditService {
   @Cron("0 5 2 * * *")
   async cleanupOldAuditLogs(): Promise<void> {
     const oneEightyDaysAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
-    const result = await this.repo.delete({
-      createdAt: LessThan(oneEightyDaysAgo),
-    });
-    if (result.affected && result.affected > 0) {
+    // SEC-10: 走 bypass 事务（append-only 触发器唯一放行点），替代原
+    // 直连 repo.delete（迁移 1790000000006 后会被触发器拒绝）。
+    const affected = await this.retentionDelete(oneEightyDaysAgo);
+    if (affected > 0) {
       // Log the cleanup itself — but don't create an audit log entry to avoid recursion
       this.logger.log(
-        `Q7 Cleanup: removed ${result.affected} audit logs older than 180 days`,
+        `Q7 Cleanup: removed ${affected} audit logs older than 180 days`,
       );
     }
   }

@@ -1,6 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { BadRequestException } from "@nestjs/common";
+import { DataSource } from "typeorm";
 import { AuditService } from "../audit.service";
 import { AuditLog } from "../entities/audit-log.entity";
 
@@ -30,6 +31,9 @@ describe("AuditService", () => {
       providers: [
         AuditService,
         { provide: getRepositoryToken(AuditLog), useValue: repo },
+        // SEC-10: AuditService 新增 DataSource 依赖（retention 清理的
+        // append-only bypass 事务）——本套件不触发清理路径，给桩即可。
+        { provide: DataSource, useValue: { transaction: jest.fn() } },
       ],
     }).compile();
     service = module.get(AuditService);
