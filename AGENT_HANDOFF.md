@@ -3,14 +3,20 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-O：001/002 并行认领——AUTH-03/SEC-06+QA-03 一阶段三项 done，主会话统一验收）
+更新时间：2026-09-08（第十六轮·批 subagent-P：001/002 并行认领——DEP-02+03 灰度健康检查/ARCH-26+UI-14 一阶段两项 done，主会话统一验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
-- 本轮（2026-09-08 第十六轮·批 subagent-P 长尾推进，002 子代理）：
+- 本轮（2026-09-08 第十六轮·批 subagent-P 终验收，主会话）：
+  - `7a9188f`+`68e4170` **DEP-02+03（001）灰度发布+健康检查+自动回滚 done**：upgrade-all 新可选 `rollout:{strategy:canary|all,percentage}`（缺省 all 逐字节零破坏）；canary 分台 ceil(N×p%)≥1 台 → 心跳 RUNNING 确认 → admin-api 侧主动探测（manifest healthCheck 声明 path/port/interval/failThreshold，**执行器零改动零 bundle 重打**；buildProbeUrl 纯函数六形态含 IPv6）；批次失败五路判定 → 已升级台自动 rollbackDeploymentToPrevious 落 rolled_back；rolloutState/rolloutMeta 新列（迁移 1790000000001）；重启 sweep 把 pending/probing 标 failed（不自动恢复，契约写明）。+32 例，admin-api **1975/1975**（基线 1936）。admin-web rolloutState Tag 避让 002 留下批。
+  - `abc9c91`+`872c4e8`+`957577b` **ARCH-26+UI-14 第一阶段（002）done**：TanStack Query 基础设施（QueryClient 全局 staleTime 30s/retry 2/focus 不重取；queries.ts 七 hooks+queryKey 工厂+invalidateExecutionData）+ 两示范页改造（DashboardPage/ExecutionsPage，发现并合并 trend 双请求）；新端点 GET /metrics/stream（3s 快照推 summary/executors/scheduler/errors，fail-open 降级帧+15s ping+独立 MetricsStreamSlotService 32 槽+runtime gauge）；Dashboard 接 useMetricsStream（setQueryData 直写 query 缓存与轮询互斥共存，断线 3s×2^n 封顶 30s 重连）。零迁移零 lockfile 变更。+7 api/+9 web 专项。全站推广留后续。
+- **主会话终验收基线（全绿）**：admin-api **1975/1975**（基线 1936，+39）+ tsc ✓ + coverage 90.44/78.06/82.07/91.4 门槛卡点 · admin-web **362/362**（基线 353，+9）+ build ✓
+- 事故记档：001 自留 WIP 曾误入 stash 又 pop 回滚，零丢失完整恢复并立即入库——**「add 后立即 commit」纪律同样适用于子代理自留 WIP**。
+- 真机轮留验：三执行器灰度 1+2+坏包自动回滚实测 · Dashboard 双 Tab SSE 槽位与重连观察 · rolloutState Tag（admin-web 避让遗留）
+- 本轮（2026-09-08 第十六轮·批 subagent-O 终验收，主会话）：
   - `abc9c91` **ARCH-26（002）TanStack Query 渐进引入第一阶段 done**：新 `src/api/queries.ts` 薄层 hooks（queryKey 工厂 metrics/executions/scheduler 层级前缀 + useMetricsSummary/useMetricsTrend/useExecutorStats/useRecentFailures/useSchedulerMetrics/useSchedulerStats/useExecutionsList 七 hooks + invalidateExecutionData 写后失效辅助）+ main.tsx 全局默认（staleTime 30s 对齐原轮询节奏/retry 2/refetchOnWindowFocus:false 防多 Tab 聚焦请求风暴）；示范页两处=DashboardPage（六个 useRequest 轮询换 query hooks，trend 主卡与 sparkline 卡 days=7 同 key 合并请求消除重复拉取）+ ExecutionsPage（筛选参数进 queryKey，15s 轮询可见性 useEffect 兜底，kill 后 invalidate 列表+Dashboard 缓存）。**引依赖说明**：@tanstack/react-query 5.102.8 初始提交即入 lockfile（UserManagementPage 早已消费 useQuery），本批零 lockfile 变更。其余 13 处 ahooks 页面原样（渐进路线全站推广留后续）。
   - `872c4e8`+`957577b`+`c9a9d3d` **UI-14（002）实时推送统一第一阶段 done（Dashboard 汇总流示范）**：admin-api 新 GET /metrics/stream（@Res() 直写+@SkipTimeout 同 logs/stream 先例；3s 快照 {summary,executors,scheduler,errors} 复用既有三读面零新 SQL；查询失败 fail-open 降级 null 段+error 帧不终止流；空闲 15s ": ping" 保活）+ 新 MetricsStreamSlotService 独立槽位（默认 32 METRICS_STREAM_MAX_GLOBAL，与日志流分开计数——容量画像不同；占用在写 SSE 头前超限真 503；释放幂等+finally 双保险）+ runtime gauge autoflow_metrics_streams_active/limit（BUG-05 同款通道渲染侧零改动）+ configuration metricsStream 节三 env + jwt.strategy SSE 白名单增 /metrics/stream（?access_token= 回退）；admin-web 新 useMetricsStream（EventSource 常驻+快照 setQueryData 直写 queryClient 缓存与 ARCH-26 hooks 共享——SSE 活跃轮询空转、断线 hooks 节奏兜底；退避重连 3s×2^n 封顶 30s；卸载清理）+ Dashboard 页头三态连接状态点。
   - **测试基线**：admin-api +7 例（隔离验证 **1943/1943**，基线 1936 只增不减）+ coverage 90.14/77.84/81.83/91.08 过 75/69/84/84 门槛 · admin-web +9 专项+24 既有适配（**362/362**，基线 353 只增不减）+ tsc -b/build ✓。协作注记：001/DEP-02+03 application 足迹零触碰（其 rollout spec 在途红例经其 7a9188f 自行入库，stash 隔离坐实非我引入）。
