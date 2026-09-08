@@ -6,7 +6,7 @@
 
 ## 认证说明
 
-- 需要认证的接口须在请求头携带：`Authorization: Bearer <access_token>`
+- 需要认证的接口须在请求头携带：`Authorization: Bearer <access_token>`（用户 JWT）或 `Authorization: Bearer acf_<64 hex>`（AUTH-03 限权 API Key，CI/CD 机器场景，scope 矩阵与限制见下文「API Keys」节）
 - Access Token 通过登录接口获取，有效期默认 15 分钟（`JWT_EXPIRES_IN`）
 - Token 过期后使用 Refresh Token 接口刷新，无需重新登录
 - 全局限流默认 60 次/分钟（`THROTTLE_LIMIT` / `THROTTLE_TTL`），超限返回 429；登录、刷新接口有更严格的独立限流；executor callback 端点限流 60 次/分钟（第四轮起不再豁免）
@@ -130,6 +130,55 @@ POST /api/auth/login
     }
   ]
 }
+```
+
+---
+
+## API Keys — 限权 API Key（AUTH-03）
+
+面向 CI/CD 等机器场景的限权凭证：`Authorization: Bearer acf_<64 hex>`（`acf_` 前缀 + 32 字节随机数的 hex）。服务端只保存 SHA-256 哈希，**明文仅在创建响应回显一次**，此后无法查看。
+
+**与 JWT 并列的认证方式**：全局认证 guard 按凭证形态分流——`acf_` 前缀走 API Key 校验链（哈希查找 → 未吊销 → 未过期 → scope 判定），其余 Bearer 凭证维持 JWT 校验（含 SSE 日志流的 `?access_token=` 查询串回退，不受影响）。`@Public` 机器端点（executor callback/心跳/发版 webhook 等）不走本认证，维持既有鉴权。
+
+**scope 三级矩阵**（403 文案带 scope 提示）：
+
+| scope | 读（GET/HEAD/OPTIONS） | POST /tasks/:id/trigger 与 /tasks/batch/trigger | 其他写（POST/PUT/PATCH/DELETE） |
+|-------|:---:|:---:|:---:|
+| `readonly` | ✅ | ❌ 403 | ❌ 403 |
+| `trigger` | ✅ | ✅ | ❌ 403 |
+| `manage` | ✅ | ✅ | ✅ |
+
+**敏感面例外（任何 scope 均拒绝，401）**：`/api-keys`、`/auth/*`、`/users` 仅接受用户 JWT——API Key 不能管理 API Key（防自我复制/提权）。角色语义不适用：API Key principal 为 `{type:"apiKey", userId, scope}`，`@Roles(ADMIN)` 端点对 API Key 一律 403。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/api-keys` | JWT | 列出我的 API Key（脱敏视图：id/name/keyPrefix/scope/expiresAt/revokedAt/lastUsedAt/createdAt，永不含哈希） |
+| POST | `/api-keys` | JWT | 创建 `{name, scope, expiresInDays?}`（有效期 1~3650 天，缺省永不过期）；响应一次性回显 `plaintext`；审计 `apikey.create` |
+| DELETE | `/api-keys/:id` | JWT | 吊销（软删，`revokedAt` 置位，不可恢复）；仅本人 Key（否则 404）；审计 `apikey.revoke` |
+| POST | `/api-keys/:id/revoke` | JWT | 吊销别名端点（幂等） |
+
+**吊销/过期即时性**：每次请求实时校验 `revokedAt`/`expiresAt`，吊销或过期后**同 Key 下一次请求立即 401**（统一文案 `Invalid or expired API key`，不区分未知/吊销/过期防枚举；精确原因写入审计 `apikey.auth_failure`）。`lastUsedAt` 节流更新（每 Key 每分钟至多一次，防写放大），首次使用写审计 `apikey.used`。
+
+**curl 示例（CI/CD 触发任务）**：
+
+```bash
+# 创建（管理台 JWT 调用，一次性取得明文 Key）
+curl -X POST http://localhost:3105/api/api-keys \
+  -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
+  -d '{"name":"ci-deploy","scope":"trigger"}'
+# → {"id":1,"name":"ci-deploy","keyPrefix":"acf_ab12","scope":"trigger",
+#    "expiresAt":null,"revokedAt":null,"lastUsedAt":null,...,"plaintext":"acf_<64 hex>"}
+
+# 使用 API Key 触发任务（trigger scope）
+curl -X POST http://localhost:3105/api/tasks/<taskId>/trigger \
+  -H "Authorization: Bearer acf_<64 hex>" -H "Content-Type: application/json" -d '{}'
+
+# 只读查询
+curl http://localhost:3105/api/tasks -H "Authorization: Bearer acf_<64 hex>"
+
+# 吊销后立即 401
+curl -i http://localhost:3105/api/tasks -H "Authorization: Bearer acf_<64 hex>"
+# → HTTP/1.1 401 Invalid or expired API key
 ```
 
 ---
