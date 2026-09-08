@@ -8,7 +8,15 @@
 
 ## 状态快照
 
-- **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账——上期 105 任务盘点 ~86 done/31 收编/1 in_progress，新任务详情/验收/里程碑 17~26 轮排期）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
+- **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
+- **本轮（2026-09-09 接手第二轮：两波 20+ 任务清偿，接手会话）**：
+  - **主会话直落 4 件**：`3bbe177` ARCH-29 迁移时间戳分配表建账（47 迁移回填归属）+ `scripts/check-migrations.mjs` 撞号/漏登校验（selftest 11 例）+ CI check-migrations job + PR 检查清单改指分配表（分配规则=在盘最大+1）；`ba04183`/`9b1e59c` 两波认领登记；`d528978` QA-08 CI 月度迁移演练（schedule 每月 1 日，主套件旁路，typeorm --check 漂移检查 + revert→重跑 down 路径）；`32ee795` DOC-07 operator 升级 runbook（operations.md：前置检查/步骤判据/回滚/已知坑）。
+  - **Wave1（5 路并行，9 任务 done）**：FEAT-18 KILLED 终态事件（ef55581）+ FEAT-19 webhook at-least-once outbox（迁移 1790000000003，e34b018+ab23cee，Symbol 令牌解 DI 成环）；FEAT-13 保存为模板（baa91b1）+ FEAT-14 /releases 版本追溯 Tab（2f49ea7）+ FEAT-15 事件订阅 UI（d450a36）；NF-06 MCP retry_execution/deploy_app（9e76802，侦察坐实 4 处 brief 与真实契约偏差按实落地）+ NF-07 CLI executor rotate/offline（11b349e）；SEC-NEW-3 py 补注册链（85bca38，真实现）+ QA-11 strict warnings（a2aa9f6，filterwarnings=error 不缩水，顺修 2 例 flaky）；P0-1 安全红线 e2e 14 例三 describe（7bf0e24，SSRF/RBAC/审批第二人规则，CI 首验）。
+  - **Wave2（5 路并行，11 任务 done）**：FEAT-20 部署 triggerType/operator 落库（迁移 1790000000004，f640832）+ NF-01 api_keys.scopes 词表 task:trigger（迁移 1790000000005，b92c39c）；UI-15 mutation 反馈一致性 19 处收口（3eec70c）+ UI-16 StateError 补齐（6019529）；SEC-09 限流三档分域（3fc5359）+ SEC-10 审计防篡改 append-only 触发器+验证工具（迁移 1790000000006，2a44927，真机验证过）；NF-05 飞书渠道含官方加签（4a256f5）+ ARCH-30 AI 分析服务化 AiAnalysisService+指标（f573109）；P0-4 ADR-012 safeStorage 拍板（e6b9ff0）+ SEC-NEW-1 desktop token 加密 enc:ss:（8fe9fe1）+ BUG-12 desktop IPC 复审双修（49a75bb）。
+  - `5b26982` api-reference 契约面汇总核对（FEAT-20 列值优先/NF-01 词表段/execution.killed/feishu 渠道）。
+  - **收尾基线（全量复跑）**：admin-api **2136/2136**（2037 起 +99）· admin-web **527/527**（480 起 +47）· executor-node 266 · executor-python **234**（strict 0 warning）· mcp-server **98** · acf-cli **82** · node-sdk 61 · autoflow-sdk 110 · registry-pypi 68 · desktop selftest 双套件绿。双端 tsc/build/lint 绿，51 迁移 check-migrations 绿（下一号 1790000000007）。
+  - **留验/后续**：P0-1 e2e 14 例 CI 首验；outbox 补投/kill 事件真机外发；desktop Linux keyring 真机加密往返；审批第二人规则双人真机（P0-2）；ECO-04 v1.1.0 需用户 secrets；SEC-10 dead_letters 对 outbox 路径仅日志级（FK 哨兵拒收，需表结构演进）。
+
 - **本轮（2026-09-08 H2 计划建账，主会话）**：
   - 盘点确认 DEP-04 前端（374bbe8）与销账（403b0ad）已全部入库，工作区干净，九套件基线 2037/480/266/222/74/84/61/110/68 有效。
   - 新建 `docs/DEVELOPMENT-PLAN-2026-09H2.md`：P0 清偿 4 项（QA-09 收尾/DEP-04 真机/docs-site host/safeStorage 拍板）+ 遗留 bug 池 7 项 + 功能补漏 FEAT-13~20 + 新功能 NF-01~08 + 架构 ARCH-28~31 + UI-15~16 + QA-11~12 + SEC-10 + DOC-07~09，共 41 个新任务点全部注册入 PLAN-CLAIMS「H2 新任务段」。
