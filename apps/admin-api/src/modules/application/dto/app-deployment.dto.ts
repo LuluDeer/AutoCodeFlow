@@ -5,6 +5,7 @@ import {
   IsObject,
   IsUUID,
   IsInt,
+  MaxLength,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { RunMode } from "../entities/app-deployment.entity";
@@ -35,6 +36,19 @@ export class CreateDeploymentDto {
   @IsString()
   @IsOptional()
   startCommand?: string;
+}
+
+/** DEP-04: 审批动作请求体（approve/reject 共用；reason 可选 ≤200，拒绝时
+ *  建议携带——随 approvalMeta/statusMessage 留痕，语义对齐 AUTH-05）。 */
+export class ApprovalActionDto {
+  @ApiPropertyOptional({
+    description: "Optional decision reason (≤200 chars), recorded in audit",
+    maxLength: 200,
+  })
+  @IsString()
+  @MaxLength(200)
+  @IsOptional()
+  reason?: string;
 }
 
 export class DeploymentHeartbeatDto {
