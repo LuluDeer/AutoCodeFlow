@@ -194,6 +194,12 @@ import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
         LOG_PARTITION_ENABLED: Joi.string()
           .valid("true", "false")
           .default("true"),
+        // FEAT-19: 出站 webhook 跨进程 outbox 开关（eventOutbox.enabled 节；
+        // 默认 true——派发入口同步落 event_outbox + 周期扫描补投，
+        // at-least-once；false 回退纯进程内派发）。
+        EVENT_OUTBOX_ENABLED: Joi.string()
+          .valid("true", "false")
+          .default("true"),
         // users.service admin 种子账号（initialAdmin 节；密码缺省 = 跳过 seed）。
         INITIAL_ADMIN_PASSWORD: Joi.string().allow("").optional(),
         INITIAL_ADMIN_EMAIL: Joi.string().default("admin@autoflow.local"),
