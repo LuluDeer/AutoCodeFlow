@@ -13,6 +13,7 @@ import { EmailChannel } from "./channels/email.channel";
 import { SlackChannel } from "./channels/slack.channel";
 import { WebhookChannel } from "./channels/webhook.channel";
 import { NotificationSilenceService } from "./notification-silence.service";
+import { ChannelConfigStore } from "./channel-config.store";
 import {
   ChannelDeliveryStatus,
   NotificationPayload,
@@ -20,6 +21,11 @@ import {
 // 可观测性补齐轮：通知投递结果计数埋点入口（模块级纯内存自增，无模块环，
 // 见 metrics/runtime-metrics-entry.ts 注释）。
 import { recordRuntime } from "../metrics/runtime-metrics-entry";
+// FEAT-10: 渠道级模板渲染（单 pass 替换 + 8KB 上限 + 未知变量保留原文）
+import {
+  renderTemplate,
+  hasChannelTemplate,
+} from "../../common/utils/render-template.util";
 
 /** NOTIF-003: 静默规则数量上限，防止通过 API 无限添加导致内存缓慢泄漏。 */
 export const MAX_ALERT_SILENCES = 1000;
@@ -87,6 +93,11 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     @Inject(NotificationSilenceService)
     private silenceStore?: NotificationSilenceService,
+    // FEAT-10: 渠道级模板读取源（与各渠道同源的 ChannelConfigStore 单例）。
+    // @Optional 先例同 silenceStore——存量测试模块未提供时模板整体旁路，
+    // 固定拼串行为不变。
+    @Optional()
+    private channelStore?: ChannelConfigStore,
   ) {}
 
   /**
@@ -195,22 +206,32 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     channels: AlertChannel[],
     webhookUrl?: string,
   ): Promise<ChannelDeliveryResults> {
+    // FEAT-10: per-channel template rendering. When the sender attached a
+    // template variable table (vars) AND the target channel's saved config
+    // declares titleTemplate/contentTemplate, the channel's copy is rendered
+    // through the sandboxed renderer (single-pass replacement, 8KB output
+    // cap, unknown variables kept verbatim). Fail-open: any rendering error
+    // falls back to the original fixed strings with a warn — a broken
+    // template must never suppress or 500 a notification. Channels without
+    // templates receive the payload unchanged (zero breakage).
+    const rendered = this.applyChannelTemplates(payload, channels);
+
     const entries: Array<{
       name: string;
       promise: Promise<ChannelDeliveryStatus | void>;
     }> = [];
     if (channels.includes(AlertChannel.EMAIL))
-      entries.push({ name: "email", promise: this.email.send(payload) });
+      entries.push({ name: "email", promise: this.email.send(rendered.email ?? payload) });
     if (channels.includes(AlertChannel.SLACK))
-      entries.push({ name: "slack", promise: this.slack.send(payload) });
+      entries.push({ name: "slack", promise: this.slack.send(rendered.slack ?? payload) });
     if (channels.includes(AlertChannel.DINGTALK))
-      entries.push({ name: "dingtalk", promise: this.dingtalk.send(payload) });
+      entries.push({ name: "dingtalk", promise: this.dingtalk.send(rendered.dingtalk ?? payload) });
     if (channels.includes(AlertChannel.WECOM))
-      entries.push({ name: "wecom", promise: this.wecom.send(payload) });
+      entries.push({ name: "wecom", promise: this.wecom.send(rendered.wecom ?? payload) });
     if (channels.includes(AlertChannel.WEBHOOK))
       entries.push({
         name: "webhook",
-        promise: this.webhook.send(payload, webhookUrl),
+        promise: this.webhook.send(rendered.webhook ?? payload, webhookUrl),
       });
 
     const results = await Promise.allSettled(entries.map((e) => e.promise));
@@ -270,6 +291,44 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
    * Fail-open posture preserved: an SSRF block returns "blocked" instead
    * of throwing, matching the existing fan-out contract.
    */
+  /**
+   * FEAT-10: build the per-channel rendered payload map. For each requested
+   * channel: if its saved config (ChannelConfigStore, published by
+   * PATCH /notification/channels/:key) has a non-empty titleTemplate and/or
+   * contentTemplate AND the payload carries `vars`, render a channel-local
+   * copy. Rendering is wrapped in try/catch — on failure the original
+   * payload is used and a warn is logged (fail-open). Payloads without
+   * `vars` (e.g. admin "test" sends) bypass templates entirely.
+   */
+  private applyChannelTemplates(
+    payload: NotificationPayload,
+    channels: AlertChannel[],
+  ): Record<AlertChannel, NotificationPayload> {
+    const out = {} as Record<AlertChannel, NotificationPayload>;
+    if (!payload.vars) return out;
+    for (const channel of channels) {
+      try {
+        const config = this.channelStore?.get(channel);
+        if (!hasChannelTemplate(config)) continue;
+        const next: NotificationPayload = { ...payload };
+        if (config!.titleTemplate) {
+          next.title = renderTemplate(config!.titleTemplate, payload.vars);
+        }
+        if (config!.contentTemplate) {
+          next.content = renderTemplate(config!.contentTemplate, payload.vars);
+        }
+        // 渲染后的渠道专属副本不再携带 vars（下游渠道不做二次渲染）
+        delete next.vars;
+        out[channel] = next;
+      } catch (e) {
+        this.logger.warn(
+          `[templates] rendering failed for channel ${channel} — falling back to the default content: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    return out;
+  }
+
   async testChannel(
     payload: NotificationPayload,
     channel: AlertChannel,
@@ -416,6 +475,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       title: `[${level.toUpperCase()}] ${taskName}`,
       content: message,
       level,
+      // FEAT-10: template variables for channel-level content templates
+      vars: {
+        task: taskName,
+        taskName,
+        taskId: taskId ?? null,
+        level,
+        content: message,
+      },
     };
 
     if (channels && channels.length > 0) {
@@ -442,6 +509,17 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       title: `Task failed: ${taskName}`,
       content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}${runbook ? `\n\nRunbook:\n${runbook}` : ""}`,
       level: "error",
+      // FEAT-10: template variables for channel-level content templates
+      vars: {
+        task: taskName,
+        taskName,
+        taskId: taskId ?? null,
+        executionId: execId,
+        failedReason: error,
+        aiAnalysis: aiAnalysis ?? null,
+        runbook: runbook ?? null,
+        level: "error",
+      },
     });
   }
 
@@ -460,6 +538,15 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       title: `Task succeeded: ${taskName}`,
       content: `Execution ID: ${execId}\nDuration: ${durationMs}ms`,
       level: "info",
+      // FEAT-10: template variables for channel-level content templates
+      vars: {
+        task: taskName,
+        taskName,
+        taskId: taskId ?? null,
+        executionId: execId,
+        duration: durationMs,
+        level: "info",
+      },
     });
   }
 
@@ -478,6 +565,15 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       title: `Task timed out: ${taskName}`,
       content: `Execution ID: ${execId}\nTimeout: ${timeoutSec}s`,
       level: "warning",
+      // FEAT-10: template variables for channel-level content templates
+      vars: {
+        task: taskName,
+        taskName,
+        taskId: taskId ?? null,
+        executionId: execId,
+        failedReason: `timeout after ${timeoutSec}s`,
+        level: "warning",
+      },
     });
   }
 
@@ -535,6 +631,17 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       title: `Task failed: ${taskName}`,
       content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}${alarmEmail ? `\nRecipient: ${alarmEmail}` : ""}${runbook ? `\n\nRunbook:\n${runbook}` : ""}`,
       level: "error",
+      // FEAT-10: template variables for channel-level content templates
+      vars: {
+        task: taskName,
+        taskName,
+        taskId: taskId ?? null,
+        executionId: execId,
+        failedReason: error,
+        aiAnalysis: aiAnalysis ?? null,
+        runbook: runbook ?? null,
+        level: "error",
+      },
     };
 
     return this.sendToChannels(payload, taskChannels, webhookUrl);

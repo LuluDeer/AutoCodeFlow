@@ -2,6 +2,15 @@ export interface NotificationPayload {
   title: string;
   content: string;
   level?: "info" | "warning" | "error" | "critical";
+  /**
+   * FEAT-10: template variables for per-channel title/content templates
+   * (titleTemplate / contentTemplate in the channel's saved config). Only
+   * senders that know the alert context populate this — when present,
+   * NotificationService.sendToChannels renders each channel's copy through
+   * renderTemplate (single-pass, 8KB cap, fail-open). Absent → payloads flow
+   * to channels exactly as before (zero breakage).
+   */
+  vars?: Record<string, string | number | null | undefined>;
 }
 
 /**
