@@ -686,7 +686,7 @@ test('17. RBAC — admin 访问 /notifications 正常且菜单入口可见', asy
   await page.waitForLoadState('networkidle');
   const body = await page.locator('body').innerText();
   expect(body).not.toContain('您没有权限访问该页面');
-  await expect(page.getByText('全局测试')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByText('全局测试', { exact: true })).toBeVisible({ timeout: 10000 });
   console.log('  ✓ admin /notifications 页面正常渲染');
   await page.screenshot({ path: '/tmp/e2e-17-notifications-admin.png' });
 });
