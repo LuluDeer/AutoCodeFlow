@@ -4,6 +4,10 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Request, Response } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { SkipTimeout } from "../../common/decorators/skip-timeout.decorator";
+// SEC-09: SSE 长连接豁免限流——建连不进计数窗口，防 Dashboard Tab 自动
+// 重连被误杀（logs/stream @SkipThrottle 先例，SEC-09 分域矩阵见
+// src/config/throttle-profiles.ts 头注）。
+import { SkipThrottle } from "@nestjs/throttler";
 import { MetricsService } from "./metrics.service";
 import { MetricsStreamSlotService } from "./metrics-stream-slot.service";
 
@@ -62,6 +66,7 @@ export class MetricsStreamController {
     return Number.isFinite(n) && n > 0 ? n : 15_000;
   }
 
+  @SkipThrottle()
   @Get("stream")
   @ApiOperation({
     summary: "Dashboard summary SSE stream (UI-14 phase 1)",

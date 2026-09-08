@@ -35,6 +35,10 @@ import { TracingService } from "../../common/tracing/tracing.service";
  * bcrypt compares + 55 MB JSON parsing with zero rate limiting. Restore a
  * RELAXED limit instead (heartbeats/callbacks legitimately arrive at ~2/min
  * per executor; 60/min gives 30x headroom) so abuse is still bounded.
+ *
+ * SEC-09: 机器回调面（executor → admin-api）语义保持不变——60/min 独立于
+ * 人操作面的 strict/ops 档位（回调速率由 executor 心跳节奏决定，档位收紧
+ * 只会误杀；分域矩阵见 src/config/throttle-profiles.ts 头注）。
  */
 const CALLBACK_THROTTLE = { default: { limit: 60, ttl: 60_000 } };
 

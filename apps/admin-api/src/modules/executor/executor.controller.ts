@@ -182,6 +182,10 @@ export class ExecutorController {
   }
 
   @Public()
+  // SEC-09: 机器心跳面豁免分域档位——心跳节奏由 EXECUTOR_HEARTBEAT_INTERVAL
+  // 决定（默认 30s = 2/min/执行器），多执行器共享出口 IP 时按 IP 计数的
+  // strict/ops 档位会误杀心跳；本路由保持全局默认档兜底（分域矩阵见
+  // src/config/throttle-profiles.ts 头注）。
   @Post("heartbeat")
   @ApiOperation({
     summary: "Heartbeat report",
