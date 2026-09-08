@@ -233,6 +233,21 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Outbox row ${row.id} (${row.eventType}) dead-lettered after ${attempts} attempts: ${message}`,
       );
+      // 终态回写与死信落库解耦：先收敛行（不再扫描），死信落库 best-effort
+      // ——dead_letters.subscriptionId 有 FK（哨兵 id 无对应订阅行时插入被
+      // 拒），若两者同 try，死信失败会拖住终态导致该行无限重投。
+      try {
+        await this.outboxRepo.update(
+          { id: row.id },
+          { deadLettered: true, attempts, nextAttemptAt: null },
+        );
+      } catch (dbErr: unknown) {
+        this.logger.error(
+          `Failed to finalize outbox row ${row.id}: ${
+            dbErr instanceof Error ? dbErr.message : String(dbErr)
+          }`,
+        );
+      }
       try {
         await this.deadLetterRepo.save(
           this.deadLetterRepo.create({
@@ -242,10 +257,6 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
             error: message,
             attempts,
           }),
-        );
-        await this.outboxRepo.update(
-          { id: row.id },
-          { deadLettered: true, attempts, nextAttemptAt: null },
         );
       } catch (dbErr: unknown) {
         this.logger.error(
