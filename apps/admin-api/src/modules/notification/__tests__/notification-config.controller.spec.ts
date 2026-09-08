@@ -14,6 +14,8 @@ import { DingtalkChannel } from "../channels/dingtalk.channel";
 import { EmailChannel } from "../channels/email.channel";
 import { SlackChannel } from "../channels/slack.channel";
 import { WebhookChannel } from "../channels/webhook.channel";
+// NF-05: feishu 渠道桩（第六路扇出）
+import { FeishuChannel } from "../channels/feishu.channel";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { UserRole } from "../../users/entities/user.entity";
@@ -252,6 +254,7 @@ describe("NotificationConfigController", () => {
           { provide: EmailChannel, useFactory: stubChannel },
           { provide: SlackChannel, useFactory: stubChannel },
           { provide: WebhookChannel, useFactory: stubChannel },
+          { provide: FeishuChannel, useFactory: stubChannel },
         ],
       }).compile();
       const realController = mod.get(NotificationConfigController);

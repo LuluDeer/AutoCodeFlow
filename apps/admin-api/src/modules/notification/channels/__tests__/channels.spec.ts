@@ -20,6 +20,8 @@ import { WecomChannel } from "../wecom.channel";
 import { WebhookChannel } from "../webhook.channel";
 import { EmailChannel } from "../email.channel";
 import { SlackChannel } from "../slack.channel";
+// NF-05: 飞书自定义机器人渠道
+import { FeishuChannel } from "../feishu.channel";
 import { ChannelConfigStore } from "../../channel-config.store";
 
 function makeConfig(values: Record<string, any>): ConfigService {
@@ -756,5 +758,136 @@ describe("R3: redirects refused (maxRedirects: 0)", () => {
     const urls = (mockedAxios.post as jest.Mock).mock.calls.map((c) => c[0]);
     expect(urls).toHaveLength(1); // QA5: 3xx is deterministic, not retried
     expect(urls[0]).toBe("https://redirecting.example.com/hook");
+  });
+});
+
+// ────────────────────────────────────────────────────────────
+// NF-05: FeishuChannel — 飞书自定义机器人（text payload + 可选加签）
+// 对齐既有渠道测试形态（axios mock + ChannelConfigStore 桩），覆盖：
+// 成功 / 非 2xx 失败 / 配置缺失降级（skipped）/ SSRF 拦截（blocked）/
+// saved config 优先 / per-call override / 加签模式。
+// ────────────────────────────────────────────────────────────
+describe("FeishuChannel (NF-05)", () => {
+  const payload = { title: "Feishu Alert", content: "Something happened" };
+  const FEISHU_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/xxx";
+
+  beforeEach(() => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+  });
+
+  it("skips (status 'skipped') when webhook URL is not configured", async () => {
+    const channel = new FeishuChannel(makeConfig({}), makeStore());
+    await expect(channel.send(payload)).resolves.toBe("skipped");
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it("posts text message {msg_type:'text', content:{text}} to configured webhook", async () => {
+    const channel = new FeishuChannel(
+      makeConfig({ "notification.feishuWebhook": FEISHU_URL }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("sent");
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      FEISHU_URL,
+      {
+        msg_type: "text",
+        content: { text: "Feishu Alert\nSomething happened" },
+      },
+      expect.objectContaining({ timeout: 10_000, maxRedirects: 0 }),
+    );
+  });
+
+  it("logs error and returns 'failed' when post returns non-2xx/transport error", async () => {
+    mockedAxios.post = jest.fn().mockRejectedValue(new Error("network error"));
+    const channel = new FeishuChannel(
+      makeConfig({ "notification.feishuWebhook": FEISHU_URL }),
+      makeStore(),
+    );
+    // Should not throw even when axios fails on all retries (fail-open)
+    await expect(channel.send(payload)).resolves.toBe("failed");
+  });
+
+  it("NF-001: refuses metadata URL and reports 'blocked'", async () => {
+    const channel = new FeishuChannel(
+      makeConfig({
+        "notification.feishuWebhook": "http://169.254.169.254/hook",
+      }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("blocked");
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it("prefers saved channel config over env webhook (V1 precedence)", async () => {
+    const channel = new FeishuChannel(
+      makeConfig({ "notification.feishuWebhook": "https://env.example.com" }),
+      makeStore({ feishu: { webhookUrl: "https://saved.example.com" } }),
+    );
+    await channel.send(payload);
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      "https://saved.example.com",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("per-call override wins over saved config; store is never mutated (R2)", async () => {
+    const store = makeStore({
+      feishu: { webhookUrl: "https://saved.example.com" },
+    });
+    const channel = new FeishuChannel(makeConfig({}), store);
+    await channel.send(payload, { webhookUrl: "https://override.example.com" });
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      "https://override.example.com",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(store.get("feishu")).toEqual({
+      webhookUrl: "https://saved.example.com",
+    });
+  });
+
+  it("signs the payload (timestamp + sign) when secret is configured", async () => {
+    jest.spyOn(Date, "now").mockReturnValue(1700000000000);
+    const channel = new FeishuChannel(
+      makeConfig({
+        "notification.feishuWebhook": FEISHU_URL,
+        "notification.feishuSecret": "my-secret",
+      }),
+      makeStore(),
+    );
+    await channel.send(payload);
+    const body = (mockedAxios.post as jest.Mock).mock.calls[0][1];
+    expect(body.timestamp).toBe("1700000000");
+    // sign = base64(HMAC-SHA256(key="1700000000\nmy-secret", msg=""))
+    const expected = require("crypto")
+      .createHmac("sha256", "1700000000\nmy-secret")
+      .update("")
+      .digest("base64");
+    expect(body.sign).toBe(expected);
+    expect(body.msg_type).toBe("text");
+    (Date.now as jest.Mock).mockRestore();
+  });
+
+  it("sends unsigned when no secret is configured (no timestamp/sign fields)", async () => {
+    const channel = new FeishuChannel(
+      makeConfig({ "notification.feishuWebhook": FEISHU_URL }),
+      makeStore(),
+    );
+    await channel.send(payload);
+    const body = (mockedAxios.post as jest.Mock).mock.calls[0][1];
+    expect(body.timestamp).toBeUndefined();
+    expect(body.sign).toBeUndefined();
+    expect(body.msg_type).toBe("text");
+  });
+
+  it("feishu sends with maxRedirects: 0 (R3 redirect guard)", async () => {
+    const channel = new FeishuChannel(
+      makeConfig({ "notification.feishuWebhook": FEISHU_URL }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("sent");
+    const postConfig = (mockedAxios.post as jest.Mock).mock.calls[0][2];
+    expect(postConfig).toEqual(expect.objectContaining({ maxRedirects: 0 }));
   });
 });

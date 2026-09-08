@@ -38,9 +38,9 @@ describe("NotificationConfigService", () => {
   });
 
   describe("getAllChannels", () => {
-    it("should return all 5 default channels", () => {
+    it("should return all 6 default channels (NF-05: feishu joined)", () => {
       const channels = service.getAllChannels();
-      expect(channels).toHaveLength(5);
+      expect(channels).toHaveLength(6);
       const keys = channels.map((c) => c.key);
       expect(keys).toContain("email");
       expect(keys).toContain("slack");
@@ -48,6 +48,8 @@ describe("NotificationConfigService", () => {
       expect(keys).toContain("wecom");
       // N32 (round-9): webhook joined the PATCH-able enum (V2 §7.1 gap).
       expect(keys).toContain("webhook");
+      // NF-05: feishu（飞书自定义机器人）加入可配置枚举。
+      expect(keys).toContain("feishu");
     });
 
     it("should have all channels disabled by default", () => {

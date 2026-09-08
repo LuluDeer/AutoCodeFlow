@@ -59,6 +59,17 @@ export default () => ({
     // N16 / ARCH-27: 登录路由限流（@Throttle 装饰器求值期约束见
     // auth.controller.ts 头部注释与 W-22 记录）。默认 20。
     loginLimit: parseInt(process.env.LOGIN_THROTTLE_LIMIT || "20", 10),
+    // SEC-09: 全局限流总开关（false = ThrottlerModule 顶层 skipIf 全域旁路，
+    // 灰度/排障逃生门；默认 true 保持限流生效）。运行期经 ConfigService 在
+    // ThrottlerModule.forRootAsync 工厂内消费。
+    enabled: process.env.THROTTLE_ENABLED !== "false",
+    // SEC-09: 分域档位（装饰器求值期消费点在 src/config/throttle-profiles.ts，
+    // W-22 豁免；此处双轨注册供运行时一致性检查与文档化，默认值须与
+    // throttle-profiles.ts 的回退一致）。
+    authLimit: parseInt(process.env.THROTTLE_AUTH_LIMIT || "10", 10),
+    authTtl: parseInt(process.env.THROTTLE_AUTH_TTL || "60000", 10),
+    opsLimit: parseInt(process.env.THROTTLE_OPS_LIMIT || "30", 10),
+    opsTtl: parseInt(process.env.THROTTLE_OPS_TTL || "60000", 10),
   },
   // SSE 日志流并发上限（进程内计数）：单 execution / 全局。
   // task.service.ts 读取本配置节；此前 sse 节从未注册，env 覆盖是死代码，现补齐。
@@ -226,6 +237,9 @@ export default () => ({
     wecomWebhook: process.env.WECOM_WEBHOOK || "",
     dingtalkWebhook: process.env.DINGTALK_WEBHOOK || "",
     slackWebhook: process.env.SLACK_WEBHOOK || "",
+    // NF-05: 飞书自定义机器人 env 回退（URL + 可选加签 secret）。
+    feishuWebhook: process.env.FEISHU_WEBHOOK || "",
+    feishuSecret: process.env.FEISHU_SECRET || "",
     email: {
       host: process.env.EMAIL_HOST || "",
       port: parseInt(process.env.EMAIL_PORT, 10) || 465,

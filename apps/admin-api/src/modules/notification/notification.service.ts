@@ -12,6 +12,8 @@ import { DingtalkChannel } from "./channels/dingtalk.channel";
 import { EmailChannel } from "./channels/email.channel";
 import { SlackChannel } from "./channels/slack.channel";
 import { WebhookChannel } from "./channels/webhook.channel";
+// NF-05: 飞书自定义机器人渠道（渠道白名单第六类，AlertChannel 同步扩展）
+import { FeishuChannel } from "./channels/feishu.channel";
 import { NotificationSilenceService } from "./notification-silence.service";
 import { ChannelConfigStore } from "./channel-config.store";
 import {
@@ -45,6 +47,8 @@ export enum AlertChannel {
   WECOM = "wecom",
   SLACK = "slack",
   WEBHOOK = "webhook",
+  // NF-05: 飞书自定义机器人（open.feishu.cn webhook，text payload + 可选加签）
+  FEISHU = "feishu",
 }
 
 export interface AlertSilence {
@@ -88,6 +92,8 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     private email: EmailChannel,
     private slack: SlackChannel,
     private webhook: WebhookChannel,
+    // NF-05: 飞书渠道（sendAll 第六路扇出；testChannel switch 同步）
+    private feishu: FeishuChannel,
     // FEAT-01: 静默规则持久化写穿层——@Optional 保证存量测试模块与
     // DB 不可用场景都降级回 NOTIF-003 的纯内存语义
     @Optional()
@@ -193,6 +199,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       AlertChannel.DINGTALK,
       AlertChannel.WECOM,
       AlertChannel.WEBHOOK,
+      AlertChannel.FEISHU,
     ];
     this.logger.log(
       `[sendAll] channels=${channels.join(",")} title=${payload.title} level=${payload.level} content=${this.buildContentDigest(payload.content)}`,
@@ -244,6 +251,12 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       entries.push({
         name: "webhook",
         promise: this.webhook.send(rendered.webhook ?? payload, webhookUrl),
+      });
+    // NF-05: 飞书渠道扇出（与既有五渠道同语义——rendered 优先，缺省原 payload）
+    if (channels.includes(AlertChannel.FEISHU))
+      entries.push({
+        name: "feishu",
+        promise: this.feishu.send(rendered.feishu ?? payload),
       });
 
     const results = await Promise.allSettled(entries.map((e) => e.promise));
@@ -357,6 +370,9 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         return this.wecom.send(payload, configOverride);
       case AlertChannel.WEBHOOK:
         return this.webhook.send(payload, undefined, configOverride);
+      // NF-05: 飞书测试发送（R2 per-call override 语义与既有 webhook 渠道一致）
+      case AlertChannel.FEISHU:
+        return this.feishu.send(payload, configOverride);
       default:
         return "skipped";
     }

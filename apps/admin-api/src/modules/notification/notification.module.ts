@@ -13,6 +13,8 @@ import { DingtalkChannel } from "./channels/dingtalk.channel";
 import { EmailChannel } from "./channels/email.channel";
 import { SlackChannel } from "./channels/slack.channel";
 import { WebhookChannel } from "./channels/webhook.channel";
+// NF-05: 飞书自定义机器人渠道（注册表第五类 webhook 渠道，payload text 版）
+import { FeishuChannel } from "./channels/feishu.channel";
 // ARCH-21: 执行终态事件监听器——Task 仓储用于回查告警配置（alarmEmail/
 // alarmChannels/runbook，与迁移前 task.service.notifyCallbackFailure 同款只读
 // 查询）。顺带闭合 OBS-02 AlertsController 一直缺 provider 的注入面（同一
@@ -39,6 +41,7 @@ import { ExecutionEventsListener } from "./execution-events.listener";
     EmailChannel,
     SlackChannel,
     WebhookChannel,
+    FeishuChannel,
     ExecutionEventsListener,
   ],
   exports: [
