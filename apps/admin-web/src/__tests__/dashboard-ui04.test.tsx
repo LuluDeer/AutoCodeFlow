@@ -208,10 +208,23 @@ function mockAll({
   mockedTasks.schedulerStats.mockResolvedValue(schedulerStatsFixture);
 }
 
+// UI-14: DashboardPage 现挂 useMetricsStream（SSE）——jsdom 无 EventSource，
+// 用 noop 桩（对齐 execution-detail-sse 先例）；本套件不断言流行为，
+// 流接入行为见 use-metrics-stream.test.tsx 专项。
+class NoopEventSource {
+  onopen: (() => void) | null = null;
+  onmessage: ((e: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  constructor(public url: string) {}
+  addEventListener() {}
+  close() {}
+}
+
 describe('DashboardPage — UI-04 五项', () => {
   beforeEach(() => {
     cleanup();
     vi.clearAllMocks();
+    vi.stubGlobal('EventSource', NoopEventSource);
     useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   });
 
