@@ -13,16 +13,20 @@
  *   ——注意签名输入是 `${timestamp}.` 前缀拼接**原始请求体字节**，与
  *   application.controller.ts webhook 端点的 expected 计算完全一致。
  *
- * at-least-once 决策（进程内最低正确形态）：事件到达即同步快照待发订阅列表，
- * 首投 + 最多 3 次尝试指数退避（setTimeout 队列，纯进程内）→ 终败落
- * event_subscription_dead_letters + 更新订阅失败统计。进程重启即丢在途重试
- * （at-most-once for in-flight retries）——跨进程 outbox 属后续轮。
+ * at-least-once 决策（FEAT-19 升级为跨进程 outbox 兜底）：事件到达即
+ * ① 同步落一行 event_outbox（OutboxDispatcher.enqueue，写成功即事件"已接收"
+ * ——进程重启不丢，OutboxDispatcher 周期扫描补投，at-least-once，订阅方幂等），
+ * ② 内存快照待发订阅列表走首投 + 最多 3 次尝试指数退避（setTimeout 队列，
+ * 纯进程内快速路径）→ 终败落 event_subscription_dead_letters + 更新订阅失败
+ * 统计。两路并行：快速路径低延迟，outbox 兜底跨进程不丢。
  */
 import {
   Injectable,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
+  Inject,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { createHmac } from "node:crypto";
@@ -46,6 +50,20 @@ import {
   subscriptionMatches,
 } from "./event-subscription.util";
 
+/**
+ * FEAT-19 依赖方向说明：OutboxDispatcher（补投方）import 本类做构造器注入；
+ * 本类对 OutboxDispatcher 只经 @Optional 注入令牌引用——**刻意不 import 其
+ * 模块**（循环依赖会让 TS 的 design:paramtypes 在模块求值序的不利侧拿到
+ * undefined，Nest 解析报错；先例/机理见 task.service↔executor.service 的
+ * forwardRef 注释）。令牌在模块注册处手工构造，注入参数用 @Inject 显式绑定。
+ */
+export const OUTBOX_DISPATCHER_TOKEN = Symbol("OUTBOX_DISPATCHER_TOKEN");
+
+/** OutboxDispatcher 的结构最小面（本类消费的入口），避免 import 其模块。 */
+export interface OutboxDispatcherLike {
+  enqueue(eventType: string, payload: Record<string, unknown>): Promise<void>;
+}
+
 @Injectable()
 export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(OutboundEventDispatcher.name);
@@ -58,6 +76,12 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly bus: DomainEventBus,
     private readonly subService: EventSubscriptionService,
+    // FEAT-19: outbox 兜底——派发入口同步落 event_outbox（@Optional：极简单测
+    // 装配无 OutboxDispatcher 时跳过落库，快速路径行为不变）。令牌注入断开
+    // 与 OutboxDispatcher 的 import 环（见 OUTBOX_DISPATCHER_TOKEN 注释）。
+    @Optional()
+    @Inject(OUTBOX_DISPATCHER_TOKEN)
+    private readonly outbox: OutboxDispatcherLike | null,
     @InjectRepository(EventSubscription)
     private readonly subRepo: Repository<EventSubscription>,
     @InjectRepository(EventSubscriptionDeadLetter)
@@ -100,7 +124,7 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     this.busListeners.push([eventName, listener]);
   }
 
-  /** 事件入口：快照匹配订阅 → 每订阅独立派发（含重试）。 */
+  /** 事件入口：落 outbox（跨进程兜底）→ 快照匹配订阅 → 每订阅独立派发（含重试）。 */
   private async dispatch(
     eventName: DomainEventName,
     raw: unknown,
@@ -112,6 +136,16 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
       (raw ?? {}) as Record<string, unknown>,
       occurredAt,
     );
+    // FEAT-19: 先落 outbox 再走内存快速路径——落库成功即事件"已接收"，
+    // 进程重启后由 OutboxDispatcher 扫描补投（at-least-once；落库失败仅记
+    // 日志 fail-open，快速路径照常）。注意：快速路径成功 + outbox 也会被
+    // 补投扫描再次投递 → 订阅方可能收到重复投递，必须幂等消费。
+    if (this.outbox) {
+      await this.outbox.enqueue(
+        eventName,
+        payload as unknown as Record<string, unknown>,
+      );
+    }
     let subs: EventSubscription[];
     try {
       subs = await this.subRepo.find({
@@ -269,8 +303,44 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // ─── replay（controller 经 service 校验属主后调用）──────────────────────────
+  // ─── FEAT-19: outbox 补投复用的派发面 ──────────────────────────────────────
 
+  /**
+   * 给定事件与完整出站信封，对当前 enabled 订阅中匹配该事件的每一订阅执行
+   * 同款派发（含 3 次退避 + 死信 + 失败统计）。
+   *
+   * OutboxDispatcher 扫描补投时调用：复用既有 deliverWithRetries（签名/SSRF
+   * 复核/超时纪律/死信语义零复制）。任一订阅失败不外抛（deliverWithRetries
+   * 已兜底为死信落库）——本方法拒绝（reject）仅当订阅快照读取失败（DB 抖动
+   * 等），由 outbox 侧行退避重试。
+   */
+  async deliverToSubscribers(
+    eventName: string,
+    payload: ReturnType<typeof buildEventPayload>,
+  ): Promise<void> {
+    let subs: EventSubscription[];
+    try {
+      subs = await this.subRepo.find({
+        where: { enabled: true },
+        select: ["id", "url", "secret", "eventTypes", "consecutiveFailures"],
+      });
+    } catch (err: unknown) {
+      throw new Error(
+        `Outbound redeliver "${eventName}": failed to load subscriptions: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    const targets = subs.filter((s) =>
+      subscriptionMatches(s.eventTypes, eventName),
+    );
+    if (targets.length === 0) return;
+    await Promise.all(
+      targets.map((sub) => this.deliverWithRetries(sub, eventName, payload)),
+    );
+  }
+
+  // ─── replay（controller 经 service 校验属主后调用）──────────────────────────
   /**
    * 手动重放一行死信：以订阅当前 url/secret 重新签名派发**一次**（不自动重试
    * ——人工动作，失败原因直接返回给调用方）。成功返回 true；失败返回错误

@@ -48,6 +48,26 @@ export function retryDelayMs(failedAttempt: number): number {
   return Math.min(base, 30_000);
 }
 
+// ─── FEAT-19: outbox（跨进程 at-least-once）参数 ────────────────────────────
+
+/** outbox 补投退避基座（毫秒）：第 n 次失败后延迟 base * 2^(n-1)。 */
+export const OUTBOX_RETRY_BASE_DELAY_MS = 5_000;
+/** outbox 补投退避封顶（毫秒）。 */
+export const OUTBOX_RETRY_MAX_DELAY_MS = 5 * 60_000;
+/** outbox 补投次数阈值：超过即落 event_subscription_dead_letters + 行终态。 */
+export const MAX_OUTBOX_ATTEMPTS = 20;
+
+/**
+ * outbox 第 n 次失败后的补投延迟：5s * 2^(n-1)，封顶 5min。
+ * attempt=1 → 5s；2 → 10s；3 → 20s；4 → 40s；5 → 80s；… ≥7 封顶 5min。
+ * 纯函数，与进程内 retryDelayMs 分立（outbox 是跨进程慢路径，节奏放宽）。
+ */
+export function outboxRetryDelayMs(failedAttempt: number): number {
+  const base =
+    OUTBOX_RETRY_BASE_DELAY_MS * Math.pow(2, Math.max(0, failedAttempt - 1));
+  return Math.min(base, OUTBOX_RETRY_MAX_DELAY_MS);
+}
+
 /** 生成订阅 secret（32 字节 hex = 64 字符）。 */
 export function generateSubscriptionSecret(): string {
   return randomBytes(32).toString("hex");

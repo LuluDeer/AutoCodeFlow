@@ -172,6 +172,13 @@ export default () => ({
     staleRecoveryRetryEnabled:
       process.env.STALE_RECOVERY_RETRY_ENABLED !== "false",
   },
+  // FEAT-19: 出站 webhook 跨进程 outbox 开关（eventOutbox.enabled 节）。
+  // true（默认）时 OutboundEventDispatcher 派发入口同步落 event_outbox 行，
+  // OutboxDispatcher 启动 + 每 5s 扫描补投（跨进程重启不丢待投事件，
+  // at-least-once）；false 回退纯进程内派发（FEAT-07 原行为）。
+  eventOutbox: {
+    enabled: process.env.EVENT_OUTBOX_ENABLED !== "false",
+  },
   // N23: dedicated secret for per-execution callback tokens (HMAC key
   // material). Optional: falls back to the executor shared token when
   // unset — executor-node derives the same key from its own env, so both
