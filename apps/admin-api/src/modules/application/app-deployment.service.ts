@@ -1426,12 +1426,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     });
   }
 
-  /**
-   * DEP-03：单台自动回滚——「重新部署上一版本」。复用既有版本快照链：
+  /** DEP-03：单台自动回滚——「重新部署上一版本」。复用既有版本快照链：
    * 取该部署行 deployedVersion 之外的最近一个 released 快照（时间倒序），
    * 有则把快照字段恢复到本台 push（upgradeWithSnapshot）；无上一版本可回退
-   * 时仅记录（fail-safe：保持新版本运行比把行打成 FAILED 更可预期）。
-   */
+   * 时仅记录（fail-safe：保持新版本运行比把行打成 FAILED 更可预期）。 */
   async rollbackDeploymentToPrevious(deploymentId: string): Promise<void> {
     const deployment = await this.findByIdRaw(deploymentId);
     const versions = await this.versionRepo.find({
