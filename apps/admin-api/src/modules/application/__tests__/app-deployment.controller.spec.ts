@@ -216,10 +216,14 @@ describe("AppDeploymentController — endpoint delegation & heartbeat auth (QA-0
     expect(svc.deploy).toHaveBeenCalledWith("app-1", { executorId: "exec-1" }, {
       id: 1,
       name: "alice",
-    });
+    }, { operator: "alice", triggerType: "manual" });
 
-    controller.upgrade("deploy-1");
-    expect(svc.upgrade).toHaveBeenCalledWith("deploy-1");
+    // FEAT-20: upgrade 落触发来源（upgrade 语义 + JWT 用户名）
+    controller.upgrade("deploy-1", { id: 1, username: "alice" });
+    expect(svc.upgrade).toHaveBeenCalledWith("deploy-1", {
+      operator: "alice",
+      triggerType: "upgrade",
+    });
 
     controller.stop("deploy-1");
     expect(svc.stop).toHaveBeenCalledWith("deploy-1");
