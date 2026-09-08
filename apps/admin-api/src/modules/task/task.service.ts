@@ -2035,6 +2035,43 @@ export class TaskService {
     return this.schedulerService.getStats();
   }
 
+  /**
+   * FEAT-18（ARCH-21 预留补发）：killExecution 的 KILLED 翻转落库后发布
+   * `execution.killed` 领域事件。
+   *
+   * - 时机：条件 UPDATE（status IN (PENDING,RUNNING)）命中（affected>0）之后，
+   *   即"已提交的既成事实"——与 ARCH-21 总线时序契约一致。
+   * - 载荷形状对齐 emitTerminalEvent 的 ExecutionTerminalEventPayload
+   *   （taskId/taskName/failureReason/durationMs/finishedAt），使 notification
+   *   listener 与 FEAT-07 出站派发器可复用同一条失败类消费路径。
+   * - fail-open：@Optional 注入的 eventBus 为 null 时静默跳过（既有单测装配
+   *   兼容，先例同 emitTerminalEvent）；emit 本身被总线兜底 + try/catch 二道
+   *   保险丝，绝不影响 kill 主链结果。
+   */
+  private emitKilledEvent(
+    execution: TaskExecution,
+    durationMs: number | null,
+    finishedAt: Date,
+  ): void {
+    if (!this.eventBus) return;
+    const payload: ExecutionTerminalEventPayload = {
+      executionId: execution.id,
+      taskId: execution.taskId ?? null,
+      taskName: execution.taskName ?? execution.taskId,
+      status: "killed",
+      failureReason: ExecutionFailureReason.KILLED,
+      errorMessage: "Manually terminated by administrator",
+      aiAnalysis: execution.aiAnalysis ?? null,
+      durationMs,
+      finishedAt: finishedAt.toISOString(),
+    };
+    try {
+      this.eventBus.emit(DOMAIN_EVENTS.EXECUTION_KILLED, payload);
+    } catch {
+      /* never reached with DomainEventBus's fail-open contract */
+    }
+  }
+
   /** Force-terminate a running execution */
   async killExecution(
     execId: string,
@@ -2076,6 +2113,11 @@ export class TaskService {
         `Execution is in '${execution.status}' status (terminal state) and cannot be terminated`,
       );
     }
+
+    // FEAT-18: KILLED 终态已落库（UPDATE 命中 winner），发布 execution.killed。
+    // emit 在通知执行器/释放槽位之前——事件即既成事实，后续步骤全是 best-effort
+    // 副作用，任何失败都不回头改库（与 ARCH-21「落库后即 emit」时序契约一致）。
+    this.emitKilledEvent(execution, duration, now);
 
     // 改动4: 优先用 RETURNING 的库中实际地址，快照作 fallback。
     const killedRow = Array.isArray((result as { raw?: unknown }).raw)
