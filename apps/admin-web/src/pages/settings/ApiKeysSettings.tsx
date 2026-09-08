@@ -8,6 +8,7 @@ import {
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiKeysApi, ApiKeyView, ApiKeyScope, ApiKeyCreateResult } from '../../api/api-keys';
+import { getErrMsg } from '../../utils/error';
 import type { ColumnsType } from 'antd/es/table';
 
 const { Text, Paragraph } = Typography;
@@ -116,6 +117,12 @@ export default function ApiKeysSettings() {
       setCreated(result);
       qc.invalidateQueries({ queryKey: ['api-keys'] });
     },
+    // UI-15：失败必须有可见反馈（QA-03 前科收口——静默失败会让用户误以为
+    // 创建成功）。getErrMsg 取后端文案（client 拦截器会再叠一层全局 toast，
+    // 但 mutation 层文案更贴动作语义，与 UserManagementPage 同形态）。
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '创建 API Key 失败'));
+    },
   });
 
   const revokeMut = useMutation({
@@ -123,6 +130,11 @@ export default function ApiKeysSettings() {
     onSuccess: () => {
       message.success('API Key 已吊销，使用该 Key 的请求将立即 401');
       qc.invalidateQueries({ queryKey: ['api-keys'] });
+    },
+    // UI-15：吊销失败补 onError（QA-03 前科：此前失败静默，按钮 loading 复位
+    // 但无任何提示）。文案走 getErrMsg（axios 错误取 response.data.message）。
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '吊销失败，请稍后重试'));
     },
   });
 

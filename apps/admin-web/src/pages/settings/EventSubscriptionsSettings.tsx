@@ -16,6 +16,7 @@ import {
   EventSubscriptionDeadLetter,
 } from '../../api/event-subscriptions';
 import type { ColumnsType } from 'antd/es/table';
+import { getErrMsg } from '../../utils/error';
 
 const { Text, Paragraph } = Typography;
 
@@ -129,6 +130,11 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
       qc.invalidateQueries({ queryKey: ['event-dead-letters'] });
       qc.invalidateQueries({ queryKey: ['event-subscriptions'] });
     },
+    // UI-15：mutateAsync 的 rejection 已被 Modal.confirm onOk 消费（Promise 返回
+    // 给确认弹窗），但为不依赖消费方形态，这里兜底 toast（双路径都有反馈）。
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '重放请求失败，死信保留可再次重放'));
+    },
   });
 
   const handleReplay = (subId: string, dl: EventSubscriptionDeadLetter) => {
@@ -137,9 +143,17 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
       content: '将以订阅当前的 URL 与 secret 重新签名派发一次（不自动重试）。成功后死信删除，失败则保留可再次重放。',
       okText: '重放',
       cancelText: '取消',
-      onOk: () => {
+      onOk: async () => {
         setReplayingId(dl.id);
-        return replayMut.mutateAsync({ subId, dlId: dl.id }).finally(() => setReplayingId(null));
+        // UI-15：Modal.confirm onOk 返回的 Promise 会被确认弹层 await，
+        // rejection 需有终点（onError 已 toast，这里吞掉防 unhandled rejection）。
+        try {
+          await replayMut.mutateAsync({ subId, dlId: dl.id });
+        } catch {
+          /* toast 已由 onError 呈现 */
+        } finally {
+          setReplayingId(null);
+        }
       },
     });
   };
@@ -243,6 +257,11 @@ function SubscriptionFormModal(props: {
       setCreated(result);
       qc.invalidateQueries({ queryKey: ['event-subscriptions'] });
     },
+    // UI-15：创建失败反馈（Modal 保持打开由 handleOk 的 await 链路承担，
+    // 这里补 toast 保证文案可见且不依赖调用形态）。
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '创建订阅失败，请检查 URL 与网络'));
+    },
   });
   const [created, setCreated] = useState<EventSubscriptionCreateResult | null>(null);
 
@@ -258,6 +277,10 @@ function SubscriptionFormModal(props: {
       message.success('订阅已更新');
       onClose();
       qc.invalidateQueries({ queryKey: ['event-subscriptions'] });
+    },
+    // UI-15：更新失败反馈（SSRF 深校验 400 等后端文案经 getErrMsg 透出）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '更新订阅失败'));
     },
   });
 
@@ -352,6 +375,10 @@ export default function EventSubscriptionsSettings() {
       message.success(vars.enabled ? '订阅已启用' : '订阅已停用');
       qc.invalidateQueries({ queryKey: ['event-subscriptions'] });
     },
+    // UI-15：开关切换失败反馈（Switch 会自动回弹，但失败原因仍需可见）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '更新订阅状态失败'));
+    },
   });
 
   const removeMut = useMutation({
@@ -359,6 +386,10 @@ export default function EventSubscriptionsSettings() {
     onSuccess: () => {
       message.success('订阅已删除（关联死信级联删除）');
       qc.invalidateQueries({ queryKey: ['event-subscriptions'] });
+    },
+    // UI-15：删除失败反馈
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '删除订阅失败'));
     },
   });
 

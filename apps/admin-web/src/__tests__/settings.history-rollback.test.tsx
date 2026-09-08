@@ -207,6 +207,29 @@ describe('settings 变更历史回滚（FEAT-08）', () => {
     void modal;
   });
 
+  // ── UI-15：回滚失败反馈断言（onError 补齐后文案可见）──
+  it('回滚失败 → 错误 toast（UI-15 onError 补齐）', async () => {
+    vi.mocked(configApi.rollback).mockRejectedValue(
+      Object.assign(new Error('bad'), { response: { data: { message: '配置已被并发修改' } } }),
+    );
+    // 只清残留 notice，不清 .ant-message holder 单例（notification-silences
+    // 先例注记：holder 被 remove 后内部引用成游离节点，后续 toast 渲染进不可见节点）
+    document.body.querySelectorAll('.ant-message-notice').forEach((el) => el.remove());
+    await openHistoryAsAdmin();
+    const updateRow = (screen.getByText('old-1').closest('tr') as HTMLElement);
+    fireEvent.click(findBtn(updateRow, '回滚') as HTMLButtonElement);
+
+    const confirmText = await screen.findByText('确认回滚到此版本？');
+    const layer = (confirmText.closest('.ant-popover') ??
+      confirmText.closest('[class*="popconfirm"]') ??
+      document.body) as HTMLElement;
+    const layerBtns = (Array.from(layer.querySelectorAll('button')) as HTMLButtonElement[]);
+    fireEvent.click(layerBtns[layerBtns.length - 1] as HTMLButtonElement);
+
+    await waitFor(() => expect(configApi.rollback).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('配置已被并发修改')).toBeTruthy();
+  });
+
   it('非管理员：不渲染回滚入口，也不发起回滚请求', async () => {
     useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
     renderSettings();

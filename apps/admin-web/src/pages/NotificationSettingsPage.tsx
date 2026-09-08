@@ -5,6 +5,7 @@ import { useRequest } from 'ahooks';
 import type { ColumnsType } from 'antd/es/table';
 import { client } from '../api/client';
 import { silencesApi, type NotificationSilence, type CreateSilencePayload, type SilenceScope } from '../api/notifications';
+import { getErrMsg } from '../utils/error';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 
@@ -110,7 +111,12 @@ function ChannelTemplatePanel({
         },
       });
     },
-    { manual: true, onSuccess: () => { message.success('模板已保存'); onSaved(); } },
+    // UI-15：模板保存失败反馈（ahooks useRequest manual onError）
+    {
+      manual: true,
+      onSuccess: () => { message.success('模板已保存'); onSaved(); },
+      onError: (err: unknown) => { message.error(getErrMsg(err, '保存模板失败')); },
+    },
   );
 
   if (collapsed) {
@@ -213,7 +219,12 @@ function ChannelConfigForm({
     async (values: Record<string, string>) => {
       await notificationApi.updateChannel(channelKey, { config: values });
     },
-    { manual: true, onSuccess: () => { message.success('保存成功'); onSaved(); } },
+    // UI-15：渠道配置保存失败反馈
+    {
+      manual: true,
+      onSuccess: () => { message.success('保存成功'); onSaved(); },
+      onError: (err: unknown) => { message.error(getErrMsg(err, '保存失败')); },
+    },
   );
 
   const { run: testChannel, loading: testing } = useRequest(
@@ -221,7 +232,15 @@ function ChannelConfigForm({
       const result = await notificationApi.testChannel(channelKey, values);
       setTestResult({ success: result.success, message: result.message, channel: channelKey });
     },
-    { manual: true },
+    // UI-15：测试请求本身失败（网络/5xx）也要有可见反馈——业务失败
+    // （success=false）走下方 testResult Alert 形态。
+    {
+      manual: true,
+      onError: (err: unknown) => {
+        message.error(getErrMsg(err, '发送测试请求失败'));
+        setTestResult({ success: false, message: getErrMsg(err, '发送测试请求失败'), channel: channelKey });
+      },
+    },
   );
 
   const fields = CHANNEL_CONFIG_FIELDS[channelKey] || [];
@@ -334,14 +353,24 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
     async (payload: CreateSilencePayload) => {
       await silencesApi.create(payload);
     },
-    { manual: true, onSuccess: () => { message.success('静默规则已创建'); form.resetFields(); refresh(); } },
+    // UI-15：新建失败反馈
+    {
+      manual: true,
+      onSuccess: () => { message.success('静默规则已创建'); form.resetFields(); refresh(); },
+      onError: (err: unknown) => { message.error(getErrMsg(err, '创建静默规则失败')); },
+    },
   );
 
   const { run: removeRule } = useRequest(
     async (id: string) => {
       await silencesApi.remove(id);
     },
-    { manual: true, onSuccess: () => { message.success('静默规则已删除'); refresh(); } },
+    // UI-15：删除失败反馈
+    {
+      manual: true,
+      onSuccess: () => { message.success('静默规则已删除'); refresh(); },
+      onError: (err: unknown) => { message.error(getErrMsg(err, '删除静默规则失败')); },
+    },
   );
 
   const onFinish = (values: {
@@ -473,11 +502,24 @@ export default function NotificationSettingsPage() {
       const result = await notificationApi.sendTestNotification(data);
       setGlobalTestResult({ success: result.success, message: result.message });
     },
-    { manual: true },
+    // UI-15：测试发送请求本身失败（网络/5xx）也要有可见反馈——业务失败
+    // （success=false）走下方 globalTestResult Alert 形态。
+    {
+      manual: true,
+      onError: (err: unknown) => {
+        setGlobalTestResult({ success: false, message: getErrMsg(err, '发送测试通知失败') });
+      },
+    },
   );
 
   const handleEnableChange = async (enabled: boolean) => {
-    await notificationApi.updateChannel(activeTab, { enabled });
+    try {
+      await notificationApi.updateChannel(activeTab, { enabled });
+    } catch (err: unknown) {
+      // UI-15：渠道启停失败反馈（此前失败静默，Switch 视觉状态与后端不一致且无提示）
+      message.error(getErrMsg(err, '更新渠道状态失败'));
+      return;
+    }
     refresh();
     message.success(`已${enabled ? '启用' : '禁用'} ${channel?.name}`);
   };
