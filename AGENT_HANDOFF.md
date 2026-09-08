@@ -3,13 +3,18 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-P：001/002 并行认领——DEP-02+03 灰度健康检查/ARCH-26+UI-14 一阶段两项 done，主会话统一验收）
+更新时间：2026-09-08（第十六轮·批 subagent-Q：001/002 并行认领——UI-06 表单重构/ECO-05 SDK 文档站两项 done，主会话统一验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-08 第十六轮·批 subagent-Q 终验收，主会话）：
+  - `48e4909` **UI-06（001）任务表单重构 done（高危区行为等价）**：Steps 四步 → 单页五分区+左侧 Anchor 锚点条+sticky 提交条，全部 Form.Item 同时挂载（分步挂载缺陷土壤消除，第八轮 missing 兜底保留为双保险改锚点滚动）；Glue 区保持原 step3 语义（创建前锁定占位/成功后解锁）；payload 纯函数链逐字节复用、templateId 预填/N28 null 语义不变。TriggerPreview 零新依赖（trigger-preview.ts 手写 5 字段 cron 解析与 admin-api cronMatchesAt 同口径+逐分钟墙钟推算+Intl timezone，18 例）；pinning/broadcast 输入期互斥禁用（N17 前置）。admin-web **390/390**（基线 362，+28）+ build/tsc/eslint ✓；既有 40 例表单测试适配后语义不变全绿。
+  - `f53b095`+`d61b364` **ECO-05（002）SDK 文档站 done**：packages/docs-site 独立 VitePress 1.6.4（中文七页导航：快速开始/双 SDK 参考/能力矩阵/示例库/契约/发布），内容全部从 ECO-01 矩阵/sdk-guide/双 README/examples 重组零臆造（版本号写现值 1.0.1）；lockfile 隔离（独立 package-lock，7 个运行时包零触碰）；CI 尾部轻量 docs-site-build job（死链 fail build 即验收，不部署 host 留后）；构建 5.93s 绿+preview 冒烟全 200。站点为镜像视图纪律：SDK 内容先改源头文档再同步（写进两侧 README）。
+- **主会话终验收基线（全绿）**：admin-web **390/390**（基线 362，+28）+ build ✓ · docs-site build ✓ · admin-api 1975（本批未触）
+- 真机轮留验：锚点条滚动高亮/表单全链真浏览器走查（UI-06）· 文档站 host 决策（GitHub Pages 或其他）
 - 本轮（2026-09-08 第十六轮·批 subagent-P 终验收，主会话）：
   - `7a9188f`+`68e4170` **DEP-02+03（001）灰度发布+健康检查+自动回滚 done**：upgrade-all 新可选 `rollout:{strategy:canary|all,percentage}`（缺省 all 逐字节零破坏）；canary 分台 ceil(N×p%)≥1 台 → 心跳 RUNNING 确认 → admin-api 侧主动探测（manifest healthCheck 声明 path/port/interval/failThreshold，**执行器零改动零 bundle 重打**；buildProbeUrl 纯函数六形态含 IPv6）；批次失败五路判定 → 已升级台自动 rollbackDeploymentToPrevious 落 rolled_back；rolloutState/rolloutMeta 新列（迁移 1790000000001）；重启 sweep 把 pending/probing 标 failed（不自动恢复，契约写明）。+32 例，admin-api **1975/1975**（基线 1936）。admin-web rolloutState Tag 避让 002 留下批。
   - `abc9c91`+`872c4e8`+`957577b` **ARCH-26+UI-14 第一阶段（002）done**：TanStack Query 基础设施（QueryClient 全局 staleTime 30s/retry 2/focus 不重取；queries.ts 七 hooks+queryKey 工厂+invalidateExecutionData）+ 两示范页改造（DashboardPage/ExecutionsPage，发现并合并 trend 双请求）；新端点 GET /metrics/stream（3s 快照推 summary/executors/scheduler/errors，fail-open 降级帧+15s ping+独立 MetricsStreamSlotService 32 槽+runtime gauge）；Dashboard 接 useMetricsStream（setQueryData 直写 query 缓存与轮询互斥共存，断线 3s×2^n 封顶 30s 重连）。零迁移零 lockfile 变更。+7 api/+9 web 专项。全站推广留后续。
