@@ -580,6 +580,14 @@ services:
 7. **压测/巡检限流参数**
    - 使用 `scripts/load-test.mjs` 做压测前，建议临时调高 admin-api 的 `THROTTLE_LIMIT`（如 600）并重启服务，避免 429 退避主导吞吐数字；用法见 `scripts/load-test.README.md`
 
+### 审计防篡改（SEC-10）
+
+审计表 `audit_logs` 为 **append-only**：迁移 `1790000000006` 在 DB 层安装了行级触发器 `trg_audit_logs_append_only`（BEFORE UPDATE OR DELETE → RAISE EXCEPTION），任何 UPDATE/DELETE 都会被拒绝。
+
+- **唯一放行点**：审计保留清理任务（Q7，每日 02:05，清理 180 天前数据）在事务内以 `SET LOCAL app.bypass_audit_guard = 'on'` 放行批量 DELETE，事务提交即失效。应用代码中不存在其他写/删审计行的路径。
+- **验证工具**：`node scripts/audit-verify.mjs`（在仓库根或 apps/admin-api 下运行）连库输出验证报告：触发器安装与启用检查、受控 UPDATE/DELETE 写试（ROLLBACK 事务内，不产生持久改动）、行序一致性（id 序 vs createdAt 序）与 7 天窗口行数密度。`--report-only` 跳过写试；退出码非 0 = 发现可篡改面或结构缺失。纯函数自检：`node scripts/audit-verify.selftest.mjs`。
+- **限流分域（SEC-09）关联**：`THROTTLE_ENABLED=false` 可全局旁路限流（排障逃生门）；auth 敏写面（refresh/totp*）默认 10 次/分钟/IP、触发/部署干预写面默认 30 次/分钟/IP，SSE 长连接豁免——见 `apps/admin-api/.env.example` 与 `src/config/throttle-profiles.ts` 的分域矩阵。
+
 ---
 
 ## 数据库维护
