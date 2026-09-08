@@ -1,5 +1,11 @@
 # SDK 使用指南
 
+> 本文件是 SDK 文档的**源头事实**（ECO-01 能力矩阵/差异裁定/缺口计划）。
+> ECO-05 起另有按导航重组的 VitePress 文档站（`packages/docs-site/`，
+> 内容全部镜像自本文件与双 SDK README/examples——修改请改本文件后同步）：
+> 本地 `cd packages/docs-site && npm install && npm run dev` 即可浏览，
+> 构建说明见该目录 README。
+
 ## SDK 矩阵
 
 双 SDK（Node/Python）回调契约已于第九轮对齐：同一 `CallbackItemDto` 请求体、
