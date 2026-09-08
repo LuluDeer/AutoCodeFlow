@@ -8,6 +8,7 @@ import {
   KeyOutlined, CopyOutlined, EyeOutlined, EyeInvisibleOutlined,
   PlusOutlined, EditOutlined, DeleteOutlined, HistoryOutlined,
   ReloadOutlined, RobotOutlined, ThunderboltOutlined, SafetyCertificateOutlined,
+  ApiOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
@@ -17,6 +18,8 @@ import type { ColumnsType } from 'antd/es/table';
 import PageHeader from '../../components/PageHeader';
 // SEC-03: 安全设置 Tab（TOTP 两步验证 + 登录会话管理），独立文件避免与其他 Tab 耦合
 import SecuritySettings from './SecuritySettings';
+// AUTH-03: API Keys Tab（限权机器凭证管理），独立文件
+import ApiKeysSettings from './ApiKeysSettings';
 
 const { Text } = Typography;
 
@@ -577,6 +580,13 @@ export default function SettingsPage() {
       key: 'security',
       label: <Space><SafetyCertificateOutlined />安全设置</Space>,
       children: <SecuritySettings />,
+    },
+    // AUTH-03: 限权 API Key 管理（CI/CD 机器认证）——所有登录用户管理本人 Key；
+    // 放在安全设置之后，不改变既有 Tab 默认激活行为
+    {
+      key: 'api-keys',
+      label: <Space><ApiOutlined />API Keys</Space>,
+      children: <ApiKeysSettings />,
     },
   ];
 
