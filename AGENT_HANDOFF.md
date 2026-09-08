@@ -3,13 +3,21 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-Q：001/002 并行认领——UI-06 表单重构/ECO-05 SDK 文档站两项 done，主会话统一验收）
+更新时间：2026-09-08（第十六轮·批 subagent-R：001/002 并行认领——UI-07 执行器两页/AUTH-05+FEAT-10 两项 done，主会话统一验收）
 当前分支：`develop`
 
 ## 状态快照
 
 - 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- 本轮（2026-09-08 第十六轮·批 subagent-R 终验收，主会话）：
+  - `bbb7e8a` **UI-07（001）执行器列表/详情升级 done**：卡片/表格双视图（ViewToggle localStorage 记忆，表格视图与 QA-03 的 13 例锚定断言零改动）；分组聚合 CheckableTag 条（扁平 string[] 数据下裁定树形过度）；批量 reload-config/rotate-token（ADMIN 门控对齐 W2；轮换高危二次确认 Modal 列受影响台+重注册警示+新 token 集中展示）；实时状态复用 UI-14 的 /metrics/stream executors 段（**零 admin-api 改动**——侦察确认流字段全量覆盖列表需求，不做逐执行器心跳端点；useExecutorLive 字段级覆盖轮询值+断线轮询兜底+连接状态点）。+22 例，admin-web 415（后随 002 增至 418）。
+  - `28c6c7d` **AUTH-05（002）审计增强 done**：AuditQueryDto 加 resourceId 精确筛选（Project 未做缩水声明，AUTH-01 前置）+ admin-web audit 页资源 ID 输入框；CSV 导出 ADMIN 已有核实零改动；**高危操作 reason API 侧**——rotate-token/DELETE executor 接受可选 reason（≤200）经 auditHighRisk 写审计（@Optional 注入 best-effort）；前端二次确认 Modal 留交接（001/UI-07 同期在碰该页）。
+  - `a1355a5` **FEAT-10（002）通知模板变量 done**：渠道 config 可选 titleTemplate/contentTemplate（**零迁移**——走既有 ChannelConfigStore 写穿，1790000000002 未占用）；renderTemplate 纯函数（单 pass 阻断递归注入/未知变量保留原文/8KB 截断标记/fail-open 回退默认）；sendToChannels 按渠道渲染独立副本，无模板完全旁路；通知设置页可折叠模板面板。render-template 矩阵 14 例。
+  - 顺手治理：s3-log-storage coverage 全量偶发 5s 超时显式放宽 15s（5cd6ac0，flaky 治理断言不变）。
+- **主会话终验收基线（全绿）**：admin-api **2008/2008**（基线 1975，+33）+ tsc ✓ + coverage 90.51/78.31/82.16/91.44 门槛卡点 · admin-web **418/418**（基线 390，+28）+ build ✓
+- 真机轮留验：模板渲染钉钉/企业微信真机外发 · SSE 3s 实时刷新断线重连 · 批量轮换重注册全链
+- 交接项：执行器页 rotate-token/删除的**前端二次确认 Modal + reason 输入**（API 已就绪，UI-07 已做批量版 Modal，单台版留下批）
 - 本轮（2026-09-08 第十六轮·批 subagent-Q 终验收，主会话）：
   - `48e4909` **UI-06（001）任务表单重构 done（高危区行为等价）**：Steps 四步 → 单页五分区+左侧 Anchor 锚点条+sticky 提交条，全部 Form.Item 同时挂载（分步挂载缺陷土壤消除，第八轮 missing 兜底保留为双保险改锚点滚动）；Glue 区保持原 step3 语义（创建前锁定占位/成功后解锁）；payload 纯函数链逐字节复用、templateId 预填/N28 null 语义不变。TriggerPreview 零新依赖（trigger-preview.ts 手写 5 字段 cron 解析与 admin-api cronMatchesAt 同口径+逐分钟墙钟推算+Intl timezone，18 例）；pinning/broadcast 输入期互斥禁用（N17 前置）。admin-web **390/390**（基线 362，+28）+ build/tsc/eslint ✓；既有 40 例表单测试适配后语义不变全绿。
   - `f53b095`+`d61b364` **ECO-05（002）SDK 文档站 done**：packages/docs-site 独立 VitePress 1.6.4（中文七页导航：快速开始/双 SDK 参考/能力矩阵/示例库/契约/发布），内容全部从 ECO-01 矩阵/sdk-guide/双 README/examples 重组零臆造（版本号写现值 1.0.1）；lockfile 隔离（独立 package-lock，7 个运行时包零触碰）；CI 尾部轻量 docs-site-build job（死链 fail build 即验收，不部署 host 留后）；构建 5.93s 绿+preview 冒烟全 200。站点为镜像视图纪律：SDK 内容先改源头文档再同步（写进两侧 README）。
