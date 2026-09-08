@@ -195,7 +195,7 @@ curl -i http://localhost:3105/api/tasks -H "Authorization: Bearer acf_<64 hex>"
 | POST | `/applications/upload` | 是 | 上传应用包（multipart/form-data，按名称 upsert） |
 | GET | `/applications/:id/versions` | 是 | 版本历史快照（无快照的历史数据回退展示部署记录）——DEP-01 后作为过渡期 alias 保留，统一追溯请用 `/applications/:id/releases` |
 | GET | `/applications/:id/releases` | 是 | **统一发布追溯视图（DEP-01 新增）**：按版本聚合包地址与最近一次部署的状态/时间/触发方式，见下节 |
-| POST | `/applications/:id/upgrade-all` | 是 | 对所有 RUNNING 部署触发滚动升级 |
+| POST | `/applications/:id/upgrade-all` | 是 | 对所有 RUNNING 部署触发滚动升级；**DEP-02 新增可选请求体** `rollout` 灰度策略（缺省=all 保持既有全量语义零破坏），契约见「Rollout 灰度发布与健康检查（DEP-02/03）」节 |
 | POST | `/applications/:id/sync-tasks` | 是 | 解析应用 manifest.json 自动注册任务 |
 | POST | `/applications/:id/analyze` | 是 | AI 应用健康分析（聚合全部任务执行统计） |
 | POST | `/applications/:id/rollback/:deploymentId` | 是 | 回滚到指定版本快照/部署记录 |
@@ -297,6 +297,60 @@ Content-Type: application/json
 | `synthetic` | — | 有部署记录但从未保存版本快照的历史数据（心跳竞态等）合成行，`deployedVersion=null` 的部署归一为一条 `version=null` 行；对齐 `/versions` 的 legacy fallback 语义，仅第 1 页参与 |
 
 > **旧端点过渡期保留（不删除、不重定向）**：`GET /applications/:id/versions`（版本快照/回滚消费面，携带 snapshot 与 deployCount）与 `GET /app-deployments`（逐部署行列表）与本端点数据同源；新前端一律消费 `/releases`，旧端点收口另立任务。admin-web `ApplicationDetailPage` 接入为后续轮工作（本任务只落 API 契约）。
+
+---
+
+## Rollout 灰度发布与健康检查（DEP-02/03，本轮新增）
+
+**`POST /api/applications/:id/upgrade-all`**（ADMIN）：请求体全可选，**缺省（不传 body 或不传 `rollout`）= `all` 全量升级，既有语义逐字节保持**。批次本体是 admin-api 进程内状态（最低正确形态）：**服务重启即暂停灰度**——启动 sweep 把遗留 `pending/probing` 行标记 `failed`（`rolloutMeta.failureReason = "admin-api restarted — rollout batch not resumed"`），需人工重发；批次硬超时 15 分钟兜底收尾，canary 首批心跳确认宽限窗 120 秒。
+
+```json
+{ "rollout": { "strategy": "canary", "percentage": 34 } }
+```
+
+| 字段 | 类型 | 缺省 | 说明 |
+|------|------|------|------|
+| `rollout.strategy` | `"canary" \| "all"` | `all` | canary=分批灰度；all=既有全量（同一 Promise.allSettled 路径） |
+| `rollout.percentage` | int 1-100 | 50 | canary 首批台数 = `ceil(N × percentage%)`，**至少 1 台**、至多 N |
+
+**canary 状态机（`app_deployments.rolloutState`，迁移 1790000000001，NULL=非批次路径）**：
+
+```
+pending（升级指令已受理，等待心跳确认 RUNNING）
+  → probing（心跳 RUNNING 确认；有 healthCheck 时逐台主动探测）
+  → promoted（批次提升轮完成，心跳确认后终态）
+pending/probing 任意环节失败 → failed（未回滚，含重启 sweep）
+probing 探测通过前的已升级台，批次失败时 → rolled_back（自动回滚完成）
+```
+
+**响应**：`all` 模式返回既有 `{ok, total, succeeded, failed}`；canary 模式额外携带 `rollout: {batchId, strategy, canaryIds, promotedIds}`（首批失败时 `ok=false, failed=1`）。
+
+**批次失败判定与自动回滚（DEP-03）**——任一命中即暂停批次（无暂停队列，直接终态）：
+1. 首批/提升轮 `upgrade` 触发抛错；
+2. canary 台心跳上报 `failed/stopped`；
+3. 心跳确认窗（120s）超时仍未 RUNNING；
+4. 健康探测窗耗尽（`failThreshold` 次 × `interval` 间隔全失败）；
+5. 批次硬超时（15min）。
+
+失败时对**已触发升级且未失败**的部署行自动执行「重新部署上一版本」：取 `application_versions` 中该应用最近一个 `released` 且版本号 ≠ 该行当前 `deployedVersion` 的快照，恢复 snapshot 内 `version/gitCommit/packageUrl/gitBranch/env/entrypoint` 后走既有 `pushDeployToExecutor(upgrade)` 链；行落 `rolled_back`（`rolloutMeta.failureReason` 记录原因）。**无上一版本可回退时 fail-safe**：保持新版本运行并仅标记 `failed`（不人为打红可用部署）。注意：自动回滚只恢复单台 push 载荷，**不回写 applications 表当前版本**——全量回退请走既有 `POST /applications/:id/rollback/:deploymentId`。
+
+**健康检查声明（应用 `manifest.healthCheck`，落 applications.manifest jsonb，零新列）**：
+
+```json
+{ "healthCheck": { "path": "/health", "port": 8080, "interval": 5000, "failThreshold": 3, "timeoutMs": 3000 } }
+```
+
+| 字段 | 缺省 | 说明 |
+|------|------|------|
+| `path` | 必填 | 探活路径，必须以 `/` 开头；非法/缺失声明视为无健康检查 |
+| `port` | 回退执行器地址端口 | 应用监听端口。**端口约定（侦察决策）**：平台对部署应用无标准探活端点，path/port 由应用用户提供；探针从 admin-api 侧主动发 `GET http://<executor-host>:<port><path>`（执行器零改动、零 bundle 重打） |
+| `interval` | 5000ms（250-120000） | 重试间隔 |
+| `failThreshold` | 3（1-60） | 连续失败次数判定不健康 |
+| `timeoutMs` | 3000ms（100-30000） | 单次探测超时 |
+
+- 探活成功判定：**HTTP 2xx-4xx 视为通过**（端口有活体即认为应用可路由）；5xx/超时/连接拒绝计失败；`maxRedirects=0`（302 不跟随）；探针不携带任何凭据。
+- **manifest 无 healthCheck 或声明非法 → 跳过探测直接提升**（零破坏：无验收依据时阻塞灰度无意义，仅 warn 日志）。
+- 多台 canary 时逐台探测（首批内每台心跳确认后各自起探测窗），任一台通过即提升其余台；解析（`parseManifestHealthCheck`）与分台（`canaryBatchSize`）为纯函数，宽松 fail-safe 语义（越界数值回退缺省，不 throw 中断升级链）。
 
 ---
 
