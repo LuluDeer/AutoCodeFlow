@@ -5,6 +5,8 @@ import {
   BadRequestException,
   ConflictException,
   Optional,
+  OnModuleDestroy,
+  OnModuleInit,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan, In } from "typeorm";
@@ -30,12 +32,47 @@ import {
   ReleaseTriggerType,
   RELEASE_OPERATOR_MISSING_REASON,
 } from "./dto/app-release.dto";
+// DEP-02/DEP-03: 灰度（canary）批次 + manifest 健康探针 + 自动回滚
+import { RolloutState } from "./entities/app-deployment.entity";
+import {
+  canaryBatchSize,
+  parseManifestHealthCheck,
+} from "./dto/rollout.dto";
+
 // FEAT-07: deployment.completed 出站事件（总线 @Global；Optional 注入先例 task.service）
 import {
   DOMAIN_EVENTS,
   DeploymentCompletedEventPayload,
 } from "../../common/events/domain-events";
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
+
+/** DEP-02：upgrade-all canary 缺省百分比（首批台数 = ceil(N×pct%)，至少 1 台）。 */
+const ROLLOUT_DEFAULT_PERCENTAGE = 50;
+/** DEP-02：canary 首批（pending）心跳确认宽限窗（毫秒）——超窗视为该台失败。 */
+const ROLLOUT_HEARTBEAT_WINDOW_MS = 120_000;
+/** DEP-02：批次推进轮询间隔（毫秒）——canary pending 心跳窗检查节奏。 */
+const ROLLOUT_TICK_MS = 5_000;
+/** DEP-02：批次生命周期硬上限（毫秒）——防 pending/probing 死循环挂批次。 */
+const ROLLOUT_BATCH_TIMEOUT_MS = 15 * 60_000;
+
+/** DEP-02/DEP-03：单个部署行在批次内的健康探测 + 自动回滚（进程内）。
+ *  结构化批次状态（最低正确形态，复用 FEAT-07 dispatcher 的进程内
+ *  setTimeout 队列模式）：批次本体在内存，行级状态落 rolloutState/
+ *  rolloutMeta；服务重启时 pending/probing 批次标记 failed（不自动恢复）。 */
+interface RolloutBatch {
+  batchId: string;
+  applicationId: string;
+  strategy: "canary" | "all";
+  percentage: number;
+  healthCheck: ReturnType<typeof parseManifestHealthCheck>;
+  /** 本轮（canary 首批或 promotion 轮）待确认的部署行 id。 */
+  upgradedIds: string[];
+  /** 后续待提升的部署行 id（canary 通过后逐台升级）。 */
+  promotedIds: string[];
+  startedAt: number;
+  timer: NodeJS.Timeout | null;
+  tickTimer: NodeJS.Timeout | null;
+}
 
 /** R5: name of the partial unique index created by migration
  *  1789000000000-AddAppDeploymentsInFlightUniqueIndex (applicationId is
@@ -64,8 +101,15 @@ export function releaseSortTimestampMs(input: {
 }
 
 @Injectable()
-export class AppDeploymentService {
+export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   private readonly logger = new Logger(AppDeploymentService.name);
+
+  /** DEP-02：进程内活动批次（同一时刻每应用至多一个——复用部署 in-flight
+   *  互斥；key=applicationId）。服务重启即清空，重启收尾由 onModuleInit 侧
+   *  sweep 把遗留 pending/probing 行标记 failed。 */
+  private readonly rolloutBatches = new Map<string, RolloutBatch>();
+  /** 优雅关闭：全部 timer 句柄（先例 outbound-event-dispatcher）。 */
+  private readonly rolloutTimers = new Set<NodeJS.Timeout>();
 
   constructor(
     @InjectRepository(AppDeployment)
@@ -699,6 +743,15 @@ export class AppDeploymentService {
     // FEAT-07: 部署终态落库后发布 deployment.completed（status=running 视为
     // 完成；fail-open，eventBus 为 null 时静默跳过）。
     this.emitDeploymentCompleted(deployment);
+
+    // DEP-02: 灰度批次心跳钩子——批次在途时把 RUNNING/FAILED/STOPPED 上报
+    // 推进到批次状态机（probing/失败）。fire-and-forget：心跳响应路径
+    // 不被批次逻辑阻塞/失败（fail-open）。
+    this.notifyHeartbeatToRollout(deployment).catch((err) => {
+      this.logger.warn(
+        `Rollout heartbeat hook failed for ${deployment.id}: ${err.message}`,
+      );
+    });
   }
 
   /**
@@ -1118,5 +1171,591 @@ export class AppDeploymentService {
         `Stuck deployment marked FAILED: id=${d.id}, app=${d.applicationId}, status=${d.status}`,
       );
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // DEP-02/DEP-03: 灰度（canary）发布批次 + manifest 健康探针 + 自动回滚
+  // -----------------------------------------------------------------------
+
+  /**
+   * DEP-02: upgrade-all 引擎入口。
+   *  - 未传 rollout 或 strategy='all'：既有全量语义原样返回（零破坏——同一
+   *    Promise.allSettled(upgrade) 路径，不落 rolloutState）。
+   *  - strategy='canary'：首批 ceil(N×percentage%) 台（至少 1 台）触发 upgrade
+   *    → 行落 rolloutState=pending（批次元数据见 rolloutMeta）→ 进程内批次
+   *    引擎等待心跳确认（handleHeartbeat 落 RUNNING 时推进）→ 逐台按
+   *    manifest.healthCheck 主动探测（GET http://<host>:<port><path>，
+   *    interval×failThreshold 重试窗）→ 全部通过提升其余台 → 任一失败暂停
+   *    批次并对已升级台自动回滚（复用「重新部署上一版本」链）。
+   *    manifest 无 healthCheck 声明时跳过探测直接提升（行为可预期：无验收
+   *    依据时阻塞灰度毫无意义）。
+   */
+  async upgradeAllWithRollout(
+    appId: string,
+    rollout?: { strategy?: "canary" | "all"; percentage?: number } | null,
+  ): Promise<{
+    ok: boolean;
+    total: number;
+    succeeded: number;
+    failed: number;
+    rollout?: {
+      batchId: string;
+      strategy: "canary" | "all";
+      canaryIds: string[];
+      promotedIds: string[];
+    };
+  }> {
+    const deployments = await this.findRunningByApp(appId);
+    const strategy = rollout?.strategy ?? "all";
+
+    // all 模式：逐字节保持既有 controller 内联实现（QA-02 spec 消费该形状）。
+    if (strategy !== "canary" || deployments.length === 0) {
+      const results = await Promise.allSettled(
+        deployments.map((d) => this.upgrade(d.id)),
+      );
+      const succeeded = results.filter((r) => r.status === "fulfilled").length;
+      return {
+        ok: true,
+        total: deployments.length,
+        succeeded,
+        failed: deployments.length - succeeded,
+      };
+    }
+
+    const percentage =
+      typeof rollout?.percentage === "number" &&
+      Number.isFinite(rollout.percentage)
+        ? rollout.percentage
+        : ROLLOUT_DEFAULT_PERCENTAGE;
+    const canaryCount = canaryBatchSize(deployments.length, percentage);
+    const canaryRows = deployments.slice(0, canaryCount);
+    const promoteRows = deployments.slice(canaryCount);
+    const healthCheck = await this.resolveHealthCheck(appId);
+
+    const batchId = `rollout-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    const batch: RolloutBatch = {
+      batchId,
+      applicationId: appId,
+      strategy: "canary",
+      percentage,
+      healthCheck,
+      upgradedIds: canaryRows.map((d) => d.id),
+      promotedIds: promoteRows.map((d) => d.id),
+      startedAt: Date.now(),
+      timer: null,
+      tickTimer: null,
+    };
+    this.rolloutBatches.set(appId, batch);
+
+    // canary 首批触发 upgrade（复用既有单台链：UPGRADING → 心跳 RUNNING），
+    // 行级 rolloutState=pending + rolloutMeta 批次痕迹落库。
+    for (const d of canaryRows) {
+      await this.markRolloutState(d.id, RolloutState.PENDING, {
+        batchId,
+        role: "canary",
+        strategy: "canary",
+        percentage,
+        upgradedIds: canaryRows.map((x) => x.id),
+      });
+      try {
+        await this.upgrade(d.id);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await this.failBatch(batch, d.id, `upgrade trigger failed: ${msg}`);
+        return {
+          ok: false,
+          total: deployments.length,
+          succeeded: 0,
+          failed: 1,
+          rollout: {
+            batchId,
+            strategy: "canary",
+            canaryIds: [...batch.upgradedIds],
+            promotedIds: [...batch.promotedIds],
+          },
+        };
+      }
+    }
+    this.logger.log(
+      `Rollout batch ${batchId} started for app ${appId}: canary ` +
+        `${batch.upgradedIds.length}/${deployments.length} (percentage=${percentage}), ` +
+        `healthCheck=${healthCheck ? healthCheck.path : "none"}`,
+    );
+
+    // 无健康声明：跳过探测，canary 心跳确认后直接提升（由 tick 引擎处理）。
+    this.scheduleRolloutTick(appId, ROLLOUT_TICK_MS);
+    return {
+      ok: true,
+      total: deployments.length,
+      succeeded: batch.upgradedIds.length,
+      failed: 0,
+      rollout: {
+        batchId,
+        strategy: "canary",
+        canaryIds: [...batch.upgradedIds],
+        promotedIds: [...batch.promotedIds],
+      },
+    };
+  }
+
+  /** DEP-03：解析应用 manifest 的 healthCheck 声明（宽松解析，非法=null）。 */
+  private async resolveHealthCheck(
+    appId: string,
+  ): Promise<ReturnType<typeof parseManifestHealthCheck>> {
+    try {
+      const app = await this.appService.findByIdRaw(appId);
+      return parseManifestHealthCheck(app?.manifest);
+    } catch {
+      return null;
+    }
+  }
+
+  /** 行级批次痕迹落库（不取 raw 面外字段，仅 rolloutState/rolloutMeta 写回，
+   *  不触碰 env——掩码风险为零）。 */
+  private async markRolloutState(
+    deploymentId: string,
+    state: RolloutState,
+    meta: Record<string, any> | null,
+  ): Promise<void> {
+    try {
+      const row = await this.repo.findOne({ where: { id: deploymentId } });
+      if (!row) return;
+      row.rolloutState = state;
+      row.rolloutMeta = meta;
+      await this.repo.save(row);
+    } catch (err: unknown) {
+      // 批次痕迹写失败不阻断升级主链（fail-open，仅日志）。
+      this.logger.warn(
+        `Failed to persist rolloutState=${state} for ${deploymentId}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  /** DEP-02：handleHeartbeat 钩子——批次在途时，RUNNING 确认把行推进到
+   *  probing（健康探测阶段）。FAILED/STOPPED 上报直接判批次失败。 */
+  private async notifyHeartbeatToRollout(
+    deployment: AppDeployment,
+  ): Promise<void> {
+    const batch = this.rolloutBatches.get(deployment.applicationId);
+    if (!batch) return;
+    if (batch.upgradedIds.includes(deployment.id)) {
+      if (deployment.status === DeploymentStatus.RUNNING) {
+        await this.markRolloutState(deployment.id, RolloutState.PROBING, {
+          batchId: batch.batchId,
+          role: "canary",
+          heartbeatConfirmedAt: new Date().toISOString(),
+        });
+        if (batch.healthCheck) {
+          void this.probeDeployment(batch, deployment.id);
+        }
+        // 无健康声明：tick 引擎看到「pending 全部清空」即提升。
+      } else if (
+        deployment.status === DeploymentStatus.FAILED ||
+        deployment.status === DeploymentStatus.STOPPED
+      ) {
+        await this.failBatch(
+          batch,
+          deployment.id,
+          `heartbeat reported ${deployment.status}`,
+        );
+      }
+      return;
+    }
+    // 提升轮（promotedIds）同样吃心跳确认：RUNNING → promoted。
+    if (
+      batch.promotedIds.includes(deployment.id) &&
+      deployment.status === DeploymentStatus.RUNNING
+    ) {
+      await this.markRolloutState(deployment.id, RolloutState.PROMOTED, {
+        batchId: batch.batchId,
+        role: "promoted",
+      });
+      batch.promotedIds = batch.promotedIds.filter((x) => x !== deployment.id);
+      if (batch.promotedIds.length === 0) this.finishBatch(batch.applicationId);
+    }
+  }
+
+  /** 提升轮结束：清批次内存态（行上 promoted 痕迹保留供读面）。 */
+  private finishBatch(appId: string): void {
+    const batch = this.rolloutBatches.get(appId);
+    if (!batch) return;
+    this.clearBatchTimers(batch);
+    this.rolloutBatches.delete(appId);
+    this.logger.log(`Rollout batch ${batch.batchId} finished (promoted all)`);
+  }
+
+  /** DEP-02：批次失败——暂停批次 + 对已升级（含 probing）台自动回滚 +
+   *  meta 记录失败原因。自动回滚=对每台走「重新部署上一版本」既有链；
+   *  触发失败的台自身若未升上去则仅标记不回滚。 */
+  private async failBatch(
+    batch: RolloutBatch,
+    failedId: string,
+    reason: string,
+  ): Promise<void> {
+    this.clearBatchTimers(batch);
+    this.rolloutBatches.delete(batch.applicationId);
+    const failedIds = batch.upgradedIds.filter((x) => x !== failedId);
+    this.logger.error(
+      `Rollout batch ${batch.batchId} failed (${reason}) — rolling back ` +
+        `${failedIds.length} upgraded deployment(s)`,
+    );
+    for (const id of failedIds) {
+      await this.markRolloutState(id, RolloutState.FAILED, {
+        batchId: batch.batchId,
+        failureReason: reason,
+      });
+      try {
+        await this.rollbackDeploymentToPrevious(id);
+        await this.markRolloutState(id, RolloutState.ROLLED_BACK, {
+          batchId: batch.batchId,
+          failureReason: reason,
+        });
+      } catch (err: unknown) {
+        this.logger.error(
+          `Auto-rollback failed for ${id}: ` +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    }
+    await this.markRolloutState(failedId, RolloutState.FAILED, {
+      batchId: batch.batchId,
+      failureReason: reason,
+    });
+  }
+
+  /**
+   * DEP-03：单台自动回滚——「重新部署上一版本」。复用既有版本快照链：
+   * 取该部署行 deployedVersion 之外的最近一个 released 快照（时间倒序），
+   * 有则把快照字段恢复到本台 push（upgradeWithSnapshot）；无上一版本可回退
+   * 时仅记录（fail-safe：保持新版本运行比把行打成 FAILED 更可预期）。
+   */
+  async rollbackDeploymentToPrevious(deploymentId: string): Promise<void> {
+    const deployment = await this.findByIdRaw(deploymentId);
+    const versions = await this.versionRepo.find({
+      where: { applicationId: deployment.applicationId, status: "released" },
+      order: { createdAt: "DESC" },
+    });
+    const previous = versions.find((v) => {
+      if (!v.version) return false;
+      return v.version !== (deployment.deployedVersion ?? null);
+    });
+    if (!previous) {
+      this.logger.warn(
+        `No previous released version to roll back for ${deploymentId} ` +
+          `(current=${deployment.deployedVersion ?? "unknown"})`,
+      );
+      return;
+    }
+    await this.upgradeWithSnapshot(deployment, previous);
+  }
+
+  /** 快照回退的单台升级（快照字段恢复→pushDeployToExecutor upgrade 链）。
+   *  注意：只恢复本台 push 载荷所需字段，不写 applications 表——应用当前
+   *  版本是否随之回退属批次外决策（全量回退请走既有 rollback 端点）。 */
+  private async upgradeWithSnapshot(
+    deployment: AppDeployment,
+    version: {
+      version: string;
+      gitCommit: string | null;
+      snapshot: Record<string, any>;
+    },
+  ): Promise<void> {
+    const snapshot = version.snapshot ?? {};
+    // R1：回退 push 用原始 env（掩码面不得进入发送路径）。
+    const app = await this.appService.findByIdRaw(deployment.applicationId);
+    const pushApp: Application = {
+      ...app,
+      version: version.version,
+    } as Application;
+    if (typeof version.gitCommit === "string")
+      pushApp.gitCommit = version.gitCommit;
+    if (typeof snapshot.packageUrl === "string")
+      pushApp.packageUrl = snapshot.packageUrl;
+    if (typeof snapshot.gitBranch === "string")
+      pushApp.gitBranch = snapshot.gitBranch;
+    if (snapshot.env && typeof snapshot.env === "object") {
+      pushApp.env = snapshot.env as Record<string, string>;
+    }
+    if (typeof snapshot.entrypoint === "string")
+      pushApp.entrypoint = snapshot.entrypoint;
+    deployment.status = DeploymentStatus.UPGRADING;
+    deployment.statusMessage = `Rolling back to ${version.version}`;
+    await this.repo.save(deployment);
+    await this.pushDeployToExecutor(deployment, pushApp, true);
+  }
+
+  /** DEP-03：逐台健康探测——GET http://<host>:<port><path>，
+   *  interval 间隔重试 failThreshold 次；探活成功即提升其余台；窗口耗尽
+   *  失败 → failBatch（自动回滚已升级台）。 */
+  private async probeDeployment(
+    batch: RolloutBatch,
+    deploymentId: string,
+  ): Promise<void> {
+    const hc = batch.healthCheck;
+    if (!hc) return;
+    let deployment: AppDeployment;
+    try {
+      deployment = await this.findByIdRaw(deploymentId);
+    } catch {
+      await this.failBatch(batch, deploymentId, "deployment row vanished");
+      return;
+    }
+    const url = this.buildProbeUrl(
+      deployment.executorAddress,
+      hc.port,
+      hc.path,
+    );
+    if (!url) {
+      await this.failBatch(
+        batch,
+        deploymentId,
+        "invalid executor address for probe",
+      );
+      return;
+    }
+    const attempts = hc.failThreshold;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const ok = await this.probeOnce(url, hc.timeoutMs);
+      if (ok) {
+        this.logger.log(
+          `Health probe passed for ${deploymentId} (attempt ${attempt}/${attempts}): ${url}`,
+        );
+        await this.promoteRest(batch);
+        return;
+      }
+      if (attempt < attempts) {
+        await this.waitMs(hc.interval, batch);
+      }
+    }
+    await this.failBatch(
+      batch,
+      deploymentId,
+      `health probe failed after ${attempts} attempts: ${url}`,
+    );
+  }
+
+  /** 探测 URL 组装：host 取执行器地址（R8 语义——地址本就执行器可控，
+   *  探针端口/路径来自应用 manifest（管理员写入面））；端口缺省回退执行器
+   *  地址端口。纯函数（public 便于测试）。 */
+  buildProbeUrl(
+    executorAddress: string,
+    manifestPort: number | null,
+    pathName: string,
+  ): string | null {
+    let hostname: string | null = null;
+    let port: number | null = null;
+    if (executorAddress.startsWith("http://") || executorAddress.startsWith("https://")) {
+      try {
+        const u = new URL(executorAddress);
+        hostname = u.hostname;
+        port = u.port ? Number(u.port) : null;
+      } catch {
+        return null;
+      }
+    } else {
+      // host:port 形态（含 [IPv6]:port）；无端口的裸主机名也放行——探测
+      // 端口此时必须由 manifest.port 显式提供。
+      const m = executorAddress.match(/^(\[[a-zA-Z0-9:]+\]|[a-zA-Z0-9._-]+)(?::([0-9]{1,5}))?$/);
+      if (!m) return null;
+      hostname = m[1];
+      port = m[2] ? Number(m[2]) : null;
+    }
+    if (!hostname) return null;
+    // IPv6 全文本形（含冒号）需方括号；形如 [::1] 已带括号原样保留；其余
+    // （IPv4/主机名）直拼。
+    let hostPart = hostname;
+    const bareIpv6 =
+      hostname.includes(":") &&
+      !hostname.startsWith("[") &&
+      (hostname.match(/:/g)?.length ?? 0) > 1;
+    if (bareIpv6) hostPart = `[${hostname}]`;
+    const finalPort = manifestPort ?? port;
+    return `http://${hostPart}${finalPort ? `:${finalPort}` : ""}${pathName}`;
+  }
+
+  /** 单次探测：任何 2xx-4xx 状态=探活成功（端口有活体即认为应用可路由）；
+   *  5xx/超时/网络错=失败。 */
+  private async probeOnce(url: string, timeoutMs: number): Promise<boolean> {
+    try {
+      const res = await axios.get(url, {
+        timeout: timeoutMs,
+        maxRedirects: 0,
+        validateStatus: (s) => s >= 200 && s < 500,
+      });
+      return res.status < 500;
+    } catch {
+      return false;
+    }
+  }
+
+  /** canary 全部通过后提升其余台：逐台 upgrade + rolloutState=pending，
+   *  其心跳确认（RUNNING→promoted）由 notifyHeartbeatToRollout 处理。 */
+  private async promoteRest(batch: RolloutBatch): Promise<void> {
+    if (batch.promotedIds.length === 0) {
+      this.finishBatch(batch.applicationId);
+      return;
+    }
+    const promoteIds = [...batch.promotedIds];
+    this.logger.log(
+      `Rollout batch ${batch.batchId}: promoting remaining ${promoteIds.length} deployment(s)`,
+    );
+    for (const id of promoteIds) {
+      await this.markRolloutState(id, RolloutState.PENDING, {
+        batchId: batch.batchId,
+        role: "promoted",
+        strategy: "canary",
+        percentage: batch.percentage,
+        upgradedIds: promoteIds,
+      });
+      try {
+        await this.upgrade(id);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await this.failBatch(batch, id, `promotion upgrade failed: ${msg}`);
+        return;
+      }
+    }
+    // promotedIds 的逐台清空发生在心跳确认侧；此处同步置空避免批次硬超时
+    // 误判（promote 轮心跳可能晚于 tick 节奏）。
+    batch.promotedIds = [];
+  }
+
+  /** 批次推进 tick（进程内 setTimeout 队列，先例 outbound-event-dispatcher）：
+   *  ① canary pending 台心跳窗（ROLLOUT_HEARTBEAT_WINDOW_MS）超时判失败；
+   *  ② 无健康声明时 pending 全部确认 → 直接提升；
+   *  ③ 批次硬超时（ROLLOUT_BATCH_TIMEOUT_MS）兜底收尾。 */
+  private scheduleRolloutTick(appId: string, delayMs: number): void {
+    const batch = this.rolloutBatches.get(appId);
+    if (!batch) return;
+    const t = setTimeout(() => {
+      this.rolloutTimers.delete(t);
+      void this.rolloutTick(appId);
+    }, delayMs);
+    this.rolloutTimers.add(t);
+    batch.tickTimer = t;
+  }
+
+  private async rolloutTick(appId: string): Promise<void> {
+    const batch = this.rolloutBatches.get(appId);
+    if (!batch) return;
+
+    if (Date.now() - batch.startedAt > ROLLOUT_BATCH_TIMEOUT_MS) {
+      const stuckId = batch.upgradedIds[0];
+      await this.failBatch(batch, stuckId, "batch hard timeout");
+      return;
+    }
+
+    // canary pending 行心跳确认进度：确认过的行已被 notifyHeartbeatToRollout
+    // 推到 probing/promoted；行读面核对。
+    const rows = await this.repo.find({
+      where: { id: In(batch.upgradedIds) },
+    });
+    const stillPending = rows.filter(
+      (r) => r.rolloutState === RolloutState.PENDING,
+    );
+    const windowExpired =
+      Date.now() - batch.startedAt > ROLLOUT_HEARTBEAT_WINDOW_MS;
+
+    if (windowExpired && stillPending.length > 0) {
+      await this.failBatch(
+        batch,
+        stillPending[0].id,
+        `heartbeat confirmation window (${ROLLOUT_HEARTBEAT_WINDOW_MS}ms) expired`,
+      );
+      return;
+    }
+
+    if (stillPending.length === 0) {
+      if (!batch.healthCheck) {
+        // 无健康声明：跳过探测直接提升。
+        await this.promoteRest(batch);
+        return;
+      }
+      // 探测在心跳确认时各自启动（probeDeployment 窗口）；全部行已 promoted
+      // 说明探测通过路径已收尾。probing 在途则继续等下一 tick。
+      const promoted = rows.filter(
+        (r) => r.rolloutState === RolloutState.PROMOTED,
+      );
+      if (promoted.length === rows.length) {
+        this.finishBatch(appId);
+        return;
+      }
+    }
+
+    this.scheduleRolloutTick(appId, ROLLOUT_TICK_MS);
+  }
+
+  /** 退避等待（登记句柄供 OnModuleDestroy 统一清理）。 */
+  private waitMs(ms: number, batch: RolloutBatch): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const t = setTimeout(() => {
+        this.rolloutTimers.delete(t);
+        resolve();
+      }, ms);
+      this.rolloutTimers.add(t);
+      batch.timer = t;
+    });
+  }
+
+  private clearBatchTimers(batch: RolloutBatch): void {
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+      this.rolloutTimers.delete(batch.timer);
+      batch.timer = null;
+    }
+    if (batch.tickTimer) {
+      clearTimeout(batch.tickTimer);
+      this.rolloutTimers.delete(batch.tickTimer);
+      batch.tickTimer = null;
+    }
+  }
+
+  /** 优雅关闭：清全部批次 timer（进程内批次随之丢弃，行级 pending/probing
+   *  痕迹由重启 sweep 标记 failed）。 */
+  onModuleDestroy(): void {
+    for (const t of this.rolloutTimers) clearTimeout(t);
+    this.rolloutTimers.clear();
+    this.rolloutBatches.clear();
+  }
+
+  /** DEP-02：服务重启收尾——进程内批次不恢复（最低正确形态），把所有
+   *  pending/probing 行标记 failed（文档写明：重启即暂停灰度，人工重发）。 */
+  async onModuleInit(): Promise<void> {
+    try {
+      await this.markInterruptedRolloutsFailed();
+    } catch (err: unknown) {
+      // DB 尚不可达等启动期异常不阻断应用引导（既有 cron sweep 2 分钟后兜底）。
+      this.logger.warn(
+        `Rollout restart sweep failed: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  /** DEP-02：重启 sweep 本体——pending/probing 行标记 failed。 */
+  async markInterruptedRolloutsFailed(): Promise<number> {
+    const stale = await this.repo.find({
+      where: [
+        { rolloutState: RolloutState.PENDING },
+        { rolloutState: RolloutState.PROBING },
+      ],
+    });
+    for (const d of stale) {
+      d.rolloutState = RolloutState.FAILED;
+      d.rolloutMeta = {
+        ...((d.rolloutMeta as Record<string, any>) ?? {}),
+        failureReason: "admin-api restarted — rollout batch not resumed",
+      };
+      await this.repo.save(d);
+    }
+    if (stale.length > 0) {
+      this.logger.warn(
+        `Marked ${stale.length} interrupted rollout deployment(s) as failed after restart`,
+      );
+    }
+    return stale.length;
   }
 }
