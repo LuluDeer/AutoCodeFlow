@@ -1,5 +1,8 @@
+import asyncio
+import gc
 import os
 import tempfile
+import warnings
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +19,39 @@ os.environ.setdefault('APP_NAME', 'test-executor')
 # test explicitly overrides it (most fs-touching tests monkeypatch work_dir
 # to their own tmp_path anyway).
 os.environ.setdefault('WORK_DIR', tempfile.mkdtemp(prefix='acf-executor-tests-'))
+
+
+@pytest.fixture(autouse=True)
+def _close_asyncio_loops():
+    """QA-11: pytest-asyncio 0.23.8 leaves every test's event loop open and
+    relies on GC to reclaim it. When a LATER test GCs those loop/socket
+    objects (e.g. httpx transports created inside asyncio.run after an async
+    test), pytest surfaces the ResourceWarning as a cross-test unraisable
+    attributed to whichever test happens to be running — the same class of
+    flake the 86bf0ef fix chased. Closing the thread's loop (if any) at test
+    end makes socket/loop reclamation deterministic and owned by the test
+    that created it, which is what lets pytest.ini keep `filterwarnings =
+    error` for ResourceWarning.
+    """
+    yield
+    with warnings.catch_warnings():
+        # get_event_loop() emits "There is no current event loop" on 3.12
+        # when the policy has none — irrelevant here, we only want the
+        # pytest-asyncio loop if it is still bound to this thread.
+        warnings.simplefilter('ignore', DeprecationWarning)
+        try:
+            loop = asyncio.get_event_loop_policy().get_event_loop()
+        except (RuntimeError, DeprecationWarning):
+            loop = None
+    if loop is not None and not loop.is_closed():
+        try:
+            loop.close()
+        except Exception:  # pragma: no cover - loop already torn down
+            pass
+        asyncio.set_event_loop(None)
+    # Flush pending __del__ ResourceWarnings NOW (inside the owning test)
+    # instead of letting them land on whichever test runs next.
+    gc.collect()
 
 
 @pytest.fixture(scope='session')
