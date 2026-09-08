@@ -13,8 +13,21 @@ export interface Application {
   manifest?: Record<string, unknown>;
   env?: Record<string, string>;
   entrypoint?: string;
+  /** DEP-04: 开启后新部署冻结为待审批，需第二人批准后才派发 */
+  approvalRequired?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** DEP-04: 审批痕迹（approvalMeta 列的读面形状）。 */
+export interface DeploymentApprovalMeta {
+  requestedBy?: number | null;
+  requestedByName?: string | null;
+  requestedAt?: string;
+  actedBy?: number | null;
+  actedByName?: string | null;
+  actedAt?: string;
+  reason?: string | null;
 }
 
 export interface AppDeployment {
@@ -33,6 +46,9 @@ export interface AppDeployment {
   lastHeartbeat: string | null;
   statusMessage: string | null;
   deployedAt: string | null;
+  /** DEP-04: 审批推进状态（null=非审批路径） */
+  approvalStatus?: 'pending_approval' | 'approved' | 'rejected' | 'cancelled' | null;
+  approvalMeta?: DeploymentApprovalMeta | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -81,9 +97,14 @@ export const applicationsApi = {
 };
 
 export const deploymentsApi = {
-  list: (applicationId?: string, page = 1, pageSize = 20) =>
+  list: (applicationId?: string, page = 1, pageSize = 20, approvalStatus?: string) =>
     client.get<{ data: AppDeployment[]; total: number }>('/app-deployments', {
-      params: { ...(applicationId ? { applicationId } : {}), page, pageSize },
+      params: {
+        ...(applicationId ? { applicationId } : {}),
+        ...(approvalStatus ? { approvalStatus } : {}),
+        page,
+        pageSize,
+      },
     }),
   get: (id: string) => client.get<AppDeployment>(`/app-deployments/${id}`),
   deploy: (appId: string, dto: CreateDeploymentDto) =>
@@ -92,4 +113,11 @@ export const deploymentsApi = {
     client.post<AppDeployment>(`/app-deployments/${id}/upgrade`),
   stop: (id: string) =>
     client.post<AppDeployment>(`/app-deployments/${id}/stop`),
+  // DEP-04: 审批三动作（后端 @Roles(ADMIN) + 第二人规则）
+  approve: (id: string, reason?: string) =>
+    client.post<AppDeployment>(`/app-deployments/${id}/approval/approve`, reason ? { reason } : {}),
+  reject: (id: string, reason?: string) =>
+    client.post<AppDeployment>(`/app-deployments/${id}/approval/reject`, reason ? { reason } : {}),
+  cancel: (id: string) =>
+    client.post<AppDeployment>(`/app-deployments/${id}/approval/cancel`),
 };

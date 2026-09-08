@@ -257,11 +257,15 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/app-deployments` | 是 | 分页查询部署列表，支持 `applicationId` 过滤（`page` 默认 1，`pageSize` 默认 20、最大 100）——DEP-01 后作为过渡期 alias 保留，「按版本聚合部署信息」的统一视图用 `/applications/:id/releases` |
+| GET | `/app-deployments` | 是 | 分页查询部署列表，支持 `applicationId` 与 `approvalStatus`（DEP-04：pending_approval/approved/rejected/cancelled）过滤（`page` 默认 1，`pageSize` 默认 20、最大 100）——DEP-01 后作为过渡期 alias 保留，「按版本聚合部署信息」的统一视图用 `/applications/:id/releases` |
 | GET | `/app-deployments/:id` | 是 | 获取部署详情 |
-| POST | `/app-deployments/applications/:appId/deploy` | 是 | 将应用分配到执行器部署；`executorId` 留空时自动选择在线且负载最低的执行器 |
-| POST | `/app-deployments/:id/upgrade` | 是 | 触发部署升级（overlay upgrade） |
-| POST | `/app-deployments/:id/stop` | 是 | 停止运行中的部署 |
+| POST | `/app-deployments/applications/:appId/deploy` | 是 | 将应用分配到执行器部署；`executorId` 留空时自动选择在线且负载最低的执行器。**DEP-04：应用开启 `approvalRequired` 时本端点不派发**——冻结为 `approvalStatus=pending_approval` 的行（响应即带该状态），待审批通过后才推送执行器；待审批行占用 in-flight 名额（同应用至多一个待审批/在途部署，冲突 409） |
+| POST | `/app-deployments/:id/upgrade` | 是 | 触发部署升级（overlay upgrade）。DEP-04：待审批行返回 409（未派发，出口仅审批三动作） |
+| POST | `/app-deployments/:id/stop` | 是 | 停止运行中的部署。DEP-04：待审批行返回 409 |
+| GET | `/app-deployments/approvals/pending` | 是* | DEP-04：待审批待办列表（ADMIN）——等价 `GET /app-deployments?approvalStatus=pending_approval` |
+| POST | `/app-deployments/:id/approval/approve` | 是* | DEP-04：批准待审批部署（ADMIN）。第二人规则：审批者 ≠ 提交者（`approvalMeta.requestedBy`），违反 403；通过后走与 deploy 相同的推送链。body 可选 `{ reason ≤200 }` 进审批留痕与审计（`deployment.approve`） |
+| POST | `/app-deployments/:id/approval/reject` | 是* | DEP-04：拒绝待审批部署（ADMIN）。第二人规则同上；行落 FAILED 终态（离开 in-flight），reason 进 `approvalMeta`/`statusMessage` 与审计（`deployment.reject`）。body 可选 `{ reason ≤200 }` |
+| POST | `/app-deployments/:id/approval/cancel` | 是* | DEP-04：提交者撤回自己的待审批请求（ADMIN；非提交者 403——其他管理员想否决走 reject）。行落 FAILED 终态，审计 `deployment.cancel` |
 | POST | `/app-deployments/heartbeat` | 否* | 执行器上报应用运行状态（`deploymentId` + `status`: running/stopped/failed） |
 
 **deploy 请求体（均可选）：**
@@ -273,7 +277,16 @@ Content-Type: application/json
 | `env` | object | 环境变量覆盖 |
 | `startCommand` | string | 启动命令覆盖（留空使用 manifest entrypoint） |
 
-> *heartbeat 使用 `X-Executor-Token` 请求头认证（按部署关联的执行器逐个校验 per-executor token，兼容旧共享 token），非用户 JWT。
+**DEP-04 审批流语义：**
+
+- 应用级开关 `approvalRequired`（`POST/PUT /applications` 传入布尔，默认 false）——开启后该应用的所有新 deploy 走审批；开关在 deploy 时快照生效，部署请求冻结后不受后续开关变化影响。
+- 审批状态机：`pending_approval → approved`（推送链启动）/ `rejected`（FAILED 终态）/ `cancelled`（FAILED 终态）；`NULL = 非审批路径`（关闭审批应用的部署/升级行为与历史数据零变化）。
+- 第二人规则在服务端强制：`approvalMeta.requestedBy`（提交者 userId）与审批动作主体比较；单管理员团队请勿开启审批（开启后将无人能批准自己的请求，可走 cancel 撤回）。
+- 待审批行复用 `status=pending`，天然被部分唯一索引 `uq_app_deployments_application_in_flight` 约束——同一应用同时至多一个待审批/在途部署。
+- 审批三动作均为原子认领（`UPDATE … WHERE approvalStatus='pending_approval'`）：并发双审批仅首者生效，后者 409。
+- 迁移 `1790000000002`：`app_deployments.approvalStatus`/`approvalMeta` 可空列 + `applications.approvalRequired` 默认 false + 审批待办部分索引（幂等）。
+
+> *heartbeat 使用 `X-Executor-Token` 请求头认证（按部署关联的执行器逐个校验 per-executor token，兼容旧共享 token），非用户 JWT。标注 * 的四个审批端点为 ADMIN-only（`@Roles(ADMIN)`）。
 >
 > **并发部署冲突（409）**：同一应用已存在 `pending` / `deploying` / `upgrading` 状态的部署行时，再次 `POST /app-deployments/applications/:appId/deploy` 返回 **409**（`already has an in-progress deployment... Wait for it to finish or cancel it first`）。应用层 findOne 预检与数据库部分唯一索引 `uq_app_deployments_application_in_flight`（并发插入竞态兜底，23505 → 409）双层拦截，两条路径返回同一冲突语义。等待在途部署完成（或升级结束）后重试即可。
 
