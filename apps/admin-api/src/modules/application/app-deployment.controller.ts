@@ -17,6 +17,7 @@ import { Roles } from "../../common/decorators/roles.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { AppDeploymentService } from "./app-deployment.service";
+import { DeploymentTriggerType } from "./entities/app-deployment.entity";
 import { ExecutorService } from "../executor/executor.service";
 import { ApiHeader } from "@nestjs/swagger";
 import {
@@ -115,10 +116,17 @@ export class AppDeploymentController {
     // DEP-04: 提交人身份进审批痕迹（approvalRequired 应用）或未来审计扩展。
     @CurrentUser() user: { id: number; username: string },
   ) {
+    // FEAT-20: 部署触发来源落列（manual + JWT 用户名）。
     return this.svc.deploy(
       appId,
       dto,
       user ? { id: user.id, name: user.username } : undefined,
+      user
+        ? {
+            operator: user.username,
+            triggerType: DeploymentTriggerType.MANUAL,
+          }
+        : undefined,
     );
   }
 
@@ -150,10 +158,17 @@ export class AppDeploymentController {
     @Body() dto: ApprovalActionDto,
     @CurrentUser() user: { id: number; username: string },
   ) {
+    // FEAT-20: 审批通过=实际派发动作，行覆写 approval 语义 + 审批人用户名。
     return this.svc.approveDeployment(
       id,
       { id: user?.id ?? null, name: user?.username ?? null },
       dto?.reason,
+      user?.username
+        ? {
+            operator: user.username,
+            triggerType: DeploymentTriggerType.APPROVAL,
+          }
+        : undefined,
     );
   }
 
@@ -196,8 +211,14 @@ export class AppDeploymentController {
   @Post(":id/upgrade")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Trigger overlay upgrade" })
-  upgrade(@Param("id") id: string) {
-    return this.svc.upgrade(id);
+  upgrade(@Param("id") id: string, @CurrentUser() user: { id: number; username: string }) {
+    // FEAT-20: 升级动作落 upgrade 语义 + 操作人用户名。
+    return this.svc.upgrade(
+      id,
+      user
+        ? { operator: user.username, triggerType: DeploymentTriggerType.UPGRADE }
+        : undefined,
+    );
   }
 
   // SEC-09: 中档限流（部署干预写面，OPS_THROTTLE 默认 30/min）

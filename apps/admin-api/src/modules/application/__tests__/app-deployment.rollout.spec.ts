@@ -139,7 +139,8 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       expect(result).toEqual({ ok: true, total: 2, succeeded: 2, failed: 0 });
       expect(result.rollout).toBeUndefined();
       expect(upSpy).toHaveBeenCalledTimes(2);
-      expect(upSpy).toHaveBeenCalledWith("d1");
+      // FEAT-20: 无触发上下文时 upgrade 以 ("d1", undefined) 调用（零破坏）
+      expect(upSpy).toHaveBeenCalledWith("d1", undefined);
       // 无 rolloutState 写入
       const rolloutSaves = repo.save.mock.calls.filter(
         ([e]: any[]) => e.rolloutState !== undefined && e.rolloutState !== null,

@@ -4,16 +4,23 @@ import { Type } from "class-transformer";
 
 /**
  * DEP-01：`/applications/:id/releases` 统一资源的触发方式。
- * 两表（application_versions / app_deployments）历史上均无 trigger 列，
- * 该值按既有持久化信号推导（见 AppDeploymentService.classifyReleaseTrigger），
- * 无法判定时为 unknown —— 属已知来源缺失，详见 docs/api-reference.md。
+ * FEAT-20（迁移 1790000000004）后 app_deployments 带 triggerType 持久化列：
+ * 部署行已标注时直接取列值（manual/upgrade/rollback/approval）；存量行
+ * （列为 null）回退到既有持久化信号推导（classifyReleaseTrigger），
+ * 仍无法判定时为 unknown —— 见 AppDeploymentService.resolveReleaseTrigger。
  */
-export type ReleaseTriggerType = "manual" | "upgrade" | "unknown";
+export type ReleaseTriggerType =
+  | "manual"
+  | "upgrade"
+  | "rollback"
+  | "approval"
+  | "unknown";
 
-/** 操作人来源标注：version.operator = application_versions.createdBy，
- *  当前所有写入路径均未填充该列 → 恒 null，来源缺失标注如下。 */
+/** 操作人来源标注：version.operator 优先取部署行持久化 operator 列
+ *  （FEAT-20），存量行仍回退 application_versions.createdBy（历史写入
+ *  路径未填充 → null）。 */
 export const RELEASE_OPERATOR_MISSING_REASON =
-  "application_versions.createdBy 未由任何写入路径填充，且 audit_logs 当前不覆盖部署写面（AUTH-05 扩展后自动可得）";
+  "存量部署行无 operator（迁移 1790000000004 前的写入路径未记录），且回退源 application_versions.createdBy 未由历史路径填充";
 
 /**
  * DEP-01：一行 = 一次「版本发布」在部署语义下的统一追溯视图。
@@ -41,11 +48,15 @@ export interface AppReleaseRow {
   executorAddress: string | null;
   /** 执行模式 once/daemon/scheduled（app_deployments.runMode）；无部署时 null */
   runMode: string | null;
-  /** 触发方式（推导语义，见 ReleaseTriggerType 注释）；无部署时 null */
+  /** 触发方式（FEAT-20：部署行持久化列优先，存量行回退推导，见
+   *  ReleaseTriggerType 注释）；无部署时 null */
   triggerType: ReleaseTriggerType | null;
-  /** 操作人：application_versions.createdBy —— 当前恒 null（来源缺失见 operatorMissingReason） */
+  /** 操作人（FEAT-20：最近一次部署行 operator 列，即 JWT 用户名）；
+   *  存量行回退 application_versions.createdBy，两者皆无时 null */
   operator: string | null;
-  operatorSource: "application_versions.createdBy";
+  /** operator 来源：deployments.operator = 部署行持久化列（FEAT-20）；
+   *  application_versions.createdBy = 存量回退（历史恒 null） */
+  operatorSource: "deployments.operator" | "application_versions.createdBy";
   operatorMissingReason: string;
   /** 生成该版本快照的来源部署行 id */
   sourceDeploymentId: string | null;
