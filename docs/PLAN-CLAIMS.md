@@ -132,6 +132,8 @@
 
 ## H2 新任务段（2026-09-08 起可认领 · 详情见 DEVELOPMENT-PLAN-2026-09H2.md §10）
 
+> 只注册 **H2 新增编号**的任务；沿用原编号的遗留 unclaimed（BUG-04/07/12/17/18/19/20、ECO-04、AUTH-01/02/04、DSK-01~05、ARCH-23/24/25、UI-09/10/12/13、QA-01/05/08/10、SEC-01/09、SEC-NEW-1~3、QA-09）仍以上方总表**原行**为认领行，勿在此重复注册。
+
 | 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
 |---|---|---|---|---|---|---|---|
 | P0-1 | P0 | unclaimed | | | e2e-full.spec.js + docs/SECURITY-REDLINE-CHECKLIST.md + CI | | QA-09 收尾：安全红线 e2e 套件化（SSRF 六出站点/RBAC 全端点/审批第二人规则），CI 挂钩（e2e 文件高冲突，一次一人） |
@@ -158,19 +160,11 @@
 | ARCH-29 | P2 | unclaimed | | | docs/PLAN-CLAIMS.md 常设段 + CI 校验 | | 迁移时间戳分配表+撞号 CI 拦截（小任务宜尽快；当前最高 1790000000002） |
 | ARCH-30 | P3 | unclaimed | | | admin-api notification 监听器 + ai 库 | | AI 分析服务化（processor 直调迁出+失败重试+落库率指标） |
 | ARCH-31 | P3 | unclaimed | | | 盘点文档+silences/outbox Redis 化 | | 多 admin 实例兼容矩阵（进程内单例状态全盘点） |
-| UI-09 | P2 | unclaimed | | | admin-web Dashboard/Executions/ExecutionDetail 三页 | | 移动端响应式（值班场景） |
-| UI-10 | P2 | unclaimed | | | admin-web 全站 ⚠️大 | | i18n 框架接入（react-i18next，zh-CN 基准；越晚成本越高） |
-| UI-12 | P3 | unclaimed | | | admin-web | | 键盘可达性与无障碍（axe critical=0） |
-| UI-13 | P3 | unclaimed | | | executor-desktop renderer | | desktop 对齐设计系统令牌（与 SEC-NEW-1 可同人） |
 | UI-15 | P2 | unclaimed | | | admin-web mutation 面盘点+统一 | | toast/错误反馈一致性治理（QA-03 两处静默失败前科收口） |
 | UI-16 | P3 | unclaimed | | | admin-web toast-only 页 | | StateError 补齐（UI-08 缩水项收口） |
-| QA-05 | P2 | unclaimed | | | scripts/load-test + docs | | =BUG-19 并发压测+容量白皮书（500 并发目标） |
-| QA-08 | P2 | unclaimed | | | .github/workflows/ci.yml | | 跨版本迁移演练月度 job（存量库 v1.0.1→HEAD 第三态） |
-| QA-10 | P3 | unclaimed | | | scripts/ 基准 | | 关键路径性能微基准（handleCallback/storeLogLines/dispatch/loadScore） |
 | QA-11 | P2 | unclaimed | | | executor-python tests + CI | | py 测试 strict warnings 评估（unraisable 已修 86bf0ef，deprecation 噪声收尾） |
 | QA-12 | P3 | unclaimed | | | executor-desktop + CI（可 windows-only） | | desktop Electron e2e 冒烟 3 例（Playwright _electron） |
 | SEC-10 | P2 | unclaimed | | | admin-api audit 模块 | | 审计防篡改纵深（hash-chain vs append-only 拍板+验证工具） |
-| ECO-04 | P1 | unclaimed | | | secrets 配置 + tag（无代码） | | release 首发演练 v1.1.0（⚠️ 需用户配 NPM_TOKEN/PYPI_API_TOKEN + environment 审批人） |
 | DOC-07 | P2 | unclaimed | | | docs/operations.md | | operator 升级 runbook（QA-08 产出后补） |
 | DOC-08 | P3 | unclaimed | | | 滚动 | | windows-findings 长尾清偿（BUG-07 专项并入） |
 | DOC-09 | P3 | unclaimed | | | packages/docs-site + CI | | 文档站与仓库文档 drift 同步机制 |
