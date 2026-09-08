@@ -6,18 +6,20 @@ import {
 } from './executor-mode';
 import {
   Card, Form, Input, Select, Button, Space, Typography,
-  InputNumber, Radio, Alert, message, Divider, Tag, Tooltip, Anchor, theme,
+  InputNumber, Radio, Alert, message, Divider, Tag, Tooltip, Anchor, theme, Modal,
 } from 'antd';
 import {
   ThunderboltOutlined, ArrowLeftOutlined,
   InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined,
-  PlusOutlined, DeleteOutlined, ToolOutlined, LockOutlined,
+  PlusOutlined, DeleteOutlined, ToolOutlined, LockOutlined, SaveOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 import { taskTemplatesApi } from '../api/task-templates';
+import { getErrMsg, isFormValidationError } from '../utils/error';
+import { templateConfigFromFormValues } from '../utils/task-template-config-from-form';
 import {
   templateConfigToFormValues,
   templateTriggerAndRuntime,
@@ -113,6 +115,11 @@ export default function TaskFormPage() {
   // Glue: createdTaskId is set after create so GlueEditor can save to the real task id
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
   const [savedRuntime, setSavedRuntime] = useState('python');
+
+  // FEAT-13：「保存为模板」弹窗（表单校验通过后把当前值固化为自定义模板）
+  const [tplModalOpen, setTplModalOpen] = useState(false);
+  const [tplSaving, setTplSaving] = useState(false);
+  const [tplForm] = Form.useForm<{ name: string; description?: string; category?: string }>();
 
   // UI-06 ③：pinning/broadcast 互斥（N17 语义前置到输入期）。触发方式/时区
   // 经 Form.useWatch 订阅供预览组件消费（保持 render 同步且不整表单重渲）。
@@ -259,6 +266,55 @@ export default function TaskFormPage() {
     // jsdom 无布局引擎，Element.scrollIntoView 未实现——守卫后调用，
     // 真浏览器生效；测试环境静默跳过（纯定位增强，无业务语义）。
     document.getElementById(id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  };
+
+  // FEAT-13：「保存为模板」——先跑一遍表单校验（同提交门），通过后把当前值
+  // 映射为 CreateTaskDto 子集 config（POST /task-templates 后端再以
+  // whitelist + forbidNonWhitelisted 复验），弹小 Modal 收模板元信息。
+  const openSaveAsTemplate = async () => {
+    try {
+      await form.validateFields();
+    } catch (err: unknown) {
+      if (isFormValidationError(err)) return;
+      message.error(err instanceof Error ? err.message : '表单校验失败');
+      return;
+    }
+    tplForm.setFieldsValue({
+      name: form.getFieldValue('description')
+        ? undefined
+        : undefined, // name 由用户填写（表单 name 是任务标识，常不满足模板命名习惯）
+    });
+    setTplModalOpen(true);
+  };
+
+  const handleSaveAsTemplate = async () => {
+    let meta: { name: string; description?: string; category?: string };
+    try {
+      meta = await tplForm.validateFields();
+    } catch (err: unknown) {
+      if (isFormValidationError(err)) return;
+      message.error(getErrMsg(err, '保存模板失败'));
+      return;
+    }
+    const values = form.getFieldsValue(true);
+    setTplSaving(true);
+    try {
+      await taskTemplatesApi.create({
+        name: meta.name.trim(),
+        description: meta.description?.trim() || undefined,
+        category: meta.category?.trim() || undefined,
+        config: templateConfigFromFormValues(values, buildExecutorPayload(values, executorMode)),
+      });
+      message.success(`已保存为模板「${meta.name.trim()}」，可在任务模板页查看`);
+      setTplModalOpen(false);
+    } catch (err: unknown) {
+      // validateFields 的 reject 是带 errorFields 的校验对象，不是请求错误——
+      // 仅对真正的请求失败弹 toast，表单校验错误由 Form 自带红字呈现。
+      if (isFormValidationError(err)) return;
+      message.error(getErrMsg(err, '保存模板失败'));
+    } finally {
+      setTplSaving(false);
+    }
   };
 
   const glueTaskId = createdTaskId || (isEdit ? editId : null);
@@ -818,6 +874,15 @@ export default function TaskFormPage() {
             }}
           >
             <Space>
+              {!isEdit && (
+                <Button
+                  icon={<SaveOutlined />}
+                  data-testid="save-as-template"
+                  onClick={openSaveAsTemplate}
+                >
+                  保存为模板
+                </Button>
+              )}
               <Button type="primary" onClick={handleSubmit} loading={saving}
                 icon={<ThunderboltOutlined />}>
                 {isEdit ? '保存更改' : '创建任务'}
@@ -835,6 +900,41 @@ export default function TaskFormPage() {
           setShowCronHelper(false);
         }}
       />
+
+      {/* FEAT-13：保存为自定义模板弹窗——config 由 templateConfigFromFormValues
+          白名单抽取（CreateTaskDto 子集，后端 forbidNonWhitelisted 校验），
+          此处只填模板元信息（name/描述/分类）。 */}
+      <Modal
+        title={<Space><SaveOutlined /> 保存为自定义模板</Space>}
+        open={tplModalOpen}
+        onCancel={() => setTplModalOpen(false)}
+        onOk={handleSaveAsTemplate}
+        okText="保存模板"
+        okButtonProps={{ loading: tplSaving, 'data-testid': 'tpl-save-confirm' } as never}
+        cancelText="取消"
+        width={520}
+        destroyOnHidden
+      >
+        <Form form={tplForm} layout="vertical">
+          <Form.Item
+            name="name"
+            label="模板名称"
+            rules={[{ required: true, whitespace: true, message: '请输入模板名称' }]}
+          >
+            <Input placeholder="如：每日报表生成" maxLength={128} data-testid="tpl-name-input" />
+          </Form.Item>
+          <Form.Item name="description" label="描述（可选）">
+            <Input.TextArea rows={2} placeholder="模板用途说明" maxLength={500} data-testid="tpl-desc-input" />
+          </Form.Item>
+          <Form.Item name="category" label="分类（可选）">
+            <Input placeholder="如：备份 / 巡检 / 同步" maxLength={32} data-testid="tpl-category-input" />
+          </Form.Item>
+        </Form>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          将以当前表单值保存模板配置（触发方式/运行时/超时/重试/参数等，不含关联应用）；
+          保存后可在「任务模板」页一键复用。
+        </Typography.Text>
+      </Modal>
     </div>
   );
 }
