@@ -194,7 +194,7 @@ describe('ExecutionsPage 筛选与请求参数（QA-03）', () => {
     await waitFor(() => {
       expect(mockedTasks.allExecutions.mock.calls.length).toBeGreaterThan(callsBefore);
     });
-    const lastCall = mockedTasks.allExecutions.mock.calls.at(-1)?.[0];
+    const lastCall = mockedTasks.allExecutions.mock.calls[mockedTasks.allExecutions.mock.calls.length - 1]?.[0];
     expect(lastCall?.status).toBe('failed');
   });
 
@@ -212,7 +212,7 @@ describe('ExecutionsPage 筛选与请求参数（QA-03）', () => {
       },
       { timeout: 2000 },
     );
-    const lastCall = mockedTasks.allExecutions.mock.calls.at(-1)?.[0];
+    const lastCall = mockedTasks.allExecutions.mock.calls[mockedTasks.allExecutions.mock.calls.length - 1]?.[0];
     expect(lastCall?.taskName).toBe('备份');
   }, 10000);
 
