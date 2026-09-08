@@ -33,6 +33,8 @@ import { TracingModule } from "./common/tracing/tracing.module";
 import { TaskTemplateModule } from "./modules/task-template/task-template.module";
 // FEAT-07: 出站事件订阅（webhook 出站）——消费 DomainEventBus 事件派发签名回调。
 import { EventSubscriptionModule } from "./modules/event-subscriptions/event-subscription.module";
+// AUTH-03: 限权 API Key（CI/CD 机器认证）——guard 分流消费 ApiKeysService。
+import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
 
 @Module({
   imports: [
@@ -366,6 +368,7 @@ import { EventSubscriptionModule } from "./modules/event-subscriptions/event-sub
     TracingModule,
     TaskTemplateModule,
     EventSubscriptionModule,
+    ApiKeysModule,
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally
