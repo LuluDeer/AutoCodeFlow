@@ -3,12 +3,19 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（第十六轮·批 subagent-T：001/002 并行认领——AUTH-05 交接项+QA-03 二阶段/ARCH-20+SEC-07+SEC-08 五项 done，主会话总终验收；**无真机硬依赖任务全部清空**）
+更新时间：2026-09-08（win 侧接棒会话首轮：DEP-04 部署审批流全栈 done——approvalRequired 应用级开关+第二人规则审批三动作；BUG-03/BUG-11 复核销账；九套件接手基线全绿 admin-api 2037 · admin-web 480）
 当前分支：`develop`
 
 ## 状态快照
 
-- 最新提交：见 `git log -1`
+- **本轮（2026-09-08 win 侧接棒首轮，接手会话）**：
+  - `21842fe` 接手建户：PLAN-CLAIMS 复核销账 BUG-03（QA-02 coverage 91.6/81.34/78.47/90.6 超额覆盖目标 75/65/62/75）+ BUG-11（W-16 已 95363aa 闭环，assets 图标含 ico/icns 均在库）；认领 DEP-04（迁移 1790000000002 独占声明）。
+  - `abc6e82` **DEP-04 后端 done**：迁移 1790000000002（app_deployments.approvalStatus/approvalMeta 可空列 + applications.approvalRequired 默认 false + 审批待办部分索引，幂等）；deploy() 门控——approvalRequired 应用冻结为 pending_approval 行（approvalMeta 记提交者）**零派发**，待审批行复用 status=pending 天然受 in-flight 部分唯一索引约束（零索引重建）；approve/reject/cancel 三动作——原子认领（UPDATE WHERE approvalStatus='pending_approval'，并发双审批仅首者生效 409）+ 第二人规则（审批者≠提交者 403，脏数据放行+warn）+ reject/cancel 落 FAILED 离开 in-flight + reason≤200；upgrade/stop 对待审批行 409；审计 deployment.approve/reject/cancel（AuditModule 接线 @Optional fail-open）；GET /app-deployments?approvalStatus= 过滤 + /approvals/pending 待办。+24 例（迁移结构 7+service 15+controller 适配 2），admin-api **2037/2037**（2015 只增）tsc 绿。
+  - `374bbe8` **DEP-04 前端+docs done**：AppDeploymentPage 待审批行操作区（批准/拒绝 reason Modal/提交者本人撤回 Popconfirm）+ 状态列审批徽标 + 审批待办 Alert + 第二人规则前端禁用 + deploy pending_approval 响应提示；ApplicationListPage 编辑表单「部署审批」Switch；api/applications.ts approve/reject/cancel 封装 + approvalStatus/approvalMeta/approvalRequired 类型；+8 例 UI 测试，admin-web **480/480**（472 只增）+ tsc -b/build/lint 0 errors 绿；api-reference.md 审批流契约（端点/状态机/第二人规则/原子认领/索引约束）。
+  - 接手基线复跑（win 侧 80+ 轮后全量盘点）：admin-api 2015→2037 · admin-web 472→480 · executor-node 266 · executor-python 222 · acf-cli 74 · mcp-server 84 · node-sdk 61 · autoflow-sdk 110 · registry-pypi 68 全绿。
+  - 交接更正：executor-python unraisable 修复已由 win 侧 86bf0ef 实施（跨会话记忆中"已定位未实施"过期）。
+  - 真机轮留验：双人账号第二人规则全链（提交者被禁用审批+他人放行后真机派发）；单管理员团队开启审批后只能 cancel 自撤（文档已写明）。
+- 上一轮（2026-09-08 第十六轮·批 subagent-T 终验收）：- 最新提交：见 `git log -1`
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
 - 本轮（2026-09-08 第十六轮·批 subagent-T 终验收，主会话）：
   - `e9bddce` **AUTH-05 交接项（001）单台高危二次确认 done**：ExecutorDetailPage 轮换改受控 Modal（Alert 警示+Descriptions 影响清单+reason 可选 TextArea ≤200 超限拦截）；新增删除执行器入口同形态；reason 链路与 admin-api 契约逐字对齐（空 reason 不发 body）；+10 例。
