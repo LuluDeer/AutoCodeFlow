@@ -42,6 +42,11 @@ import { SkipTimeout } from "../../common/decorators/skip-timeout.decorator";
 import { AuditService } from "../audit/audit.service";
 // OBS-03: level 查询参数的值域常量（与实体列/迁移/DTO 共用口径）
 import { LOG_LEVEL_VALUES, type LogLevel } from "./log-level.util";
+// SEC-09: 限流分域——中档 OPS_THROTTLE（触发/执行干预写面）与 SSE 豁免
+// @SkipThrottle。装饰器求值期读取属 ARCH-27 显式豁免（W-22 同款，见
+// src/config/throttle-profiles.ts 头注）。
+import { SkipThrottle, Throttle } from "@nestjs/throttler";
+import { OPS_THROTTLE } from "../../config/throttle-profiles";
 
 /**
  * OBS-03: level 查询参数的运行态兜底归一化（HTTP 边界已由全局
@@ -161,6 +166,8 @@ export class TaskController {
     return this.taskService.findAll(p);
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post("batch/trigger")
   @ApiOperation({
     summary: "Batch trigger tasks",
@@ -503,6 +510,8 @@ export class TaskController {
     return result;
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/trigger")
   @ApiOperation({
     summary: "Manual trigger",
@@ -625,6 +634,8 @@ export class TaskController {
     );
   }
 
+  // SEC-09: SSE 长连接豁免限流——建连不进计数窗口，防 Dashboard 自动重连被误杀（N8 流语义不变）
+  @SkipThrottle()
   @Get(":id/executions/:execId/logs/stream")
   @ApiOperation({
     summary: "Execution log SSE stream",
@@ -702,6 +713,8 @@ export class TaskController {
     }
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/rollback")
   @ApiOperation({
     summary: "Git rollback",
@@ -741,6 +754,8 @@ export class TaskController {
     return result;
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/versions/:versionId/rollback")
   @ApiOperation({
     summary: "Version rollback",
@@ -797,6 +812,8 @@ export class TaskController {
     return this.taskService.compareVersions(id, versionId1, versionId2);
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/pause")
   @ApiOperation({
     summary: "Pause task",
@@ -824,6 +841,8 @@ export class TaskController {
     return result;
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/resume")
   @ApiOperation({
     summary: "Resume task",
@@ -878,6 +897,8 @@ export class TaskController {
     return result;
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/executions/:execId/kill")
   @ApiOperation({
     summary: "Cancel execution",
