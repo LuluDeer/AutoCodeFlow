@@ -3,10 +3,16 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-08（win 侧接棒会话首轮：DEP-04 部署审批流全栈 done——approvalRequired 应用级开关+第二人规则审批三动作；BUG-03/BUG-11 复核销账；九套件接手基线全绿 admin-api 2037 · admin-web 480）
+更新时间：2026-09-08（win 侧接棒会话首轮：DEP-04 部署审批流全栈 done——approvalRequired 应用级开关+第二人规则审批三动作；BUG-03/BUG-11 复核销账；九套件接手基线全绿 admin-api 2037 · admin-web 480；**随后主会话建 H2 长期计划 docs/DEVELOPMENT-PLAN-2026-09H2.md——上期 105 任务 ~86 done/31 收编，新增 41 任务点注册入 PLAN-CLAIMS「H2 新任务段」，排期 17~26 轮**）
 当前分支：`develop`
 
 ## 状态快照
+
+- **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账——上期 105 任务盘点 ~86 done/31 收编/1 in_progress，新任务详情/验收/里程碑 17~26 轮排期）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
+- **本轮（2026-09-08 H2 计划建账，主会话）**：
+  - 盘点确认 DEP-04 前端（374bbe8）与销账（403b0ad）已全部入库，工作区干净，九套件基线 2037/480/266/222/74/84/61/110/68 有效。
+  - 新建 `docs/DEVELOPMENT-PLAN-2026-09H2.md`：P0 清偿 4 项（QA-09 收尾/DEP-04 真机/docs-site host/safeStorage 拍板）+ 遗留 bug 池 7 项 + 功能补漏 FEAT-13~20 + 新功能 NF-01~08 + 架构 ARCH-28~31 + UI-15~16 + QA-11~12 + SEC-10 + DOC-07~09，共 41 个新任务点全部注册入 PLAN-CLAIMS「H2 新任务段」。
+  - 里程碑建议：轮 17 清偿速通 → 18 发布+生态（ECO-04 v1.1.0，需用户配 NPM_TOKEN/PYPI_API_TOKEN secrets）→ 19 部署域收口（outbox/KILLED 事件）→ 20 安全纵深（safeStorage/审计防篡改）→ 21 压测容量 → 22 架构二期 → 23 平台扩展 → 24 体验三期 → 25 隔离预研（AUTH-01 拍板）→ 26 i18n。
 
 - **本轮（2026-09-08 win 侧接棒首轮，接手会话）**：
   - `21842fe` 接手建户：PLAN-CLAIMS 复核销账 BUG-03（QA-02 coverage 91.6/81.34/78.47/90.6 超额覆盖目标 75/65/62/75）+ BUG-11（W-16 已 95363aa 闭环，assets 图标含 ico/icns 均在库）；认领 DEP-04（迁移 1790000000002 独占声明）。

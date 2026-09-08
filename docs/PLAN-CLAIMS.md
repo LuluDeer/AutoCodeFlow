@@ -1,6 +1,6 @@
 # 开发计划任务认领板
 
-> 配套文档：[DEVELOPMENT-PLAN-2026-09.md](./DEVELOPMENT-PLAN-2026-09.md)（任务详情/验收标准/排期）
+> 配套文档：[DEVELOPMENT-PLAN-2026-09.md](./DEVELOPMENT-PLAN-2026-09.md)（上期计划）+ [DEVELOPMENT-PLAN-2026-09H2.md](./DEVELOPMENT-PLAN-2026-09H2.md)（**H2 长期计划，2026-09-08 起生效**——新任务详情/验收/排期见其 §10 注册表）
 > 本板是多会话并行开发**唯一的认领事实源**。规则：
 > 1. **认领**：把状态改为 `claimed` 并填 Owner（会话唯一名，如 `main-A`）+ 时间 + 文件足迹（预计要改的文件，供他人避让）。
 > 2. **开工**：`claimed → in_progress`；**完成**：`done` + 填 commit hash；**放弃/移交**：`unclaimed` 并清空 Owner（备注留交接说明）。
@@ -128,8 +128,56 @@
 | DOC-05 | P2 | done | 002（子代理） | 2026-09-08 14:16 | .github/workflows/release-please.yml（新建）+ release-please-config.json（新建）+ release-please-manifest.json（新建）+ docs/development.md「版本与发布流程·CHANGELOG 自动化」节（release.yml 本体零改动） | 29e4092（见变更日志入库说明） | **done**：release-please v4（选型裁定 vs changesets：①本仓中文 conventional commits 纪律原生解析零迁移，changesets 需手写 .changeset 增量文件；②三包 lockstep 单版本线（均 1.0.1）无需按包独立版本管理；③node+python 混合仓原生支持，changesets 只管 npm）。衔接设计：push main→Release PR（bump 三包 version+根级 CHANGELOG.md）→PR 合并→release-please 打 tag v(X.Y.Z)→**tag 恰好触发既有 release.yml**（version-guard 四处一致性→environment 审批闸→npm+PyPI），release.yml 本体零改动。配置：config.json `include-component-in-tag: false` 使 tag 为裸 vX.Y.Z（匹配 release.yml 触发模式 v* 与 version-guard 正则）；manifest 基线 1.0.1。验证：actionlint 1.7.7 过（release-please.yml + release.yml 健全性）、双 JSON 解析过；真跑需 main push 权限不可行，development.md 写明首次发布观察点（三包 version 漂移由 version-guard fail 安全兜底/合并前人工核对四处 version/__init__.py extra-files 同步/GITHUB_TOKEN tag 触发级联） |
 | DOC-06 | P3 | done | 002（子代理） | 2026-09-08 14:16 | docs/tutorials/（新建 5 文件：index + 四篇）+ packages/docs-site（tutorials.md 索引重组 + tutorial-01~04 四篇 + .vitepress/config.mts nav/侧栏「教程」分组）（admin-api/admin-web 零改动） | 77a4d94 | **done**：「从 0 到生产」四篇（每篇可独立阅读，含可复制命令/配置/预期结果）：①第一个定时任务（登录→应用→模板 CORE-03 两方式建任务→手动触发+cron 双验证→执行详情解读→失败排查）；②私服依赖（compose 起 registry-pypi/npm→twine/npm publish→requirements 引私服包→安装链路预期；源码证据逐条核对：requirements 仅 entrypoint 任务生效、`_validate_requirements` 拒 `-option` 防索引劫持、scope 行覆盖范围、Basic Auth S9、回环端口绑定）；③多执行器扩容（install-cmd/install.sh 注册第二台→CORE-05 loadScore 公式与长任务惩罚→DEP-02 rollout canary/percentage 契约+状态机+重启暂停/15min 硬超时边界→pinning/broadcast/tags 手段表）；④告警接入值班（渠道两方式→FEAT-01 静默 API→OBS-02 ALERT_WEBHOOK_SECRET 503 安全缺省+HMAC+加签代理→FEAT-11 runbook 两通路→停 Redis 端到端演练）。字段/端点/env 名逐一对照 api-reference.md 与源码（executor.controller install-cmd、silence controller/service、docker-compose registry 服务、.env.example）。docs-site npm run build 绿（ignoreDeadLinks=false 死链检查过）。缩水：站点版四篇为 docs/tutorials 的重组精简版（ECO-05 站点纪律：重组非重写），仓库内链接指向 GitHub 路径 |
 
+| DOC-06 | P3 | done | 002（子代理） | 2026-09-08 14:16 | docs/tutorials/（新建 5 文件：index + 四篇）+ packages/docs-site（tutorials.md 索引重组 + tutorial-01~04 四篇 + .vitepress/config.mts nav/侧栏「教程」分组）（admin-api/admin-web 零改动） | 77a4d94 | **done**：「从 0 到生产」四篇（每篇可独立阅读，含可复制命令/配置/预期结果）：①第一个定时任务（登录→应用→模板 CORE-03 两方式建任务→手动触发+cron 双验证→执行详情解读→失败排查）；②私服依赖（compose 起 registry-pypi/npm→twine/npm publish→requirements 引私服包→安装链路预期；源码证据逐条核对：requirements 仅 entrypoint 任务生效、`_validate_requirements` 拒 `-option` 防索引劫持、scope 行覆盖范围、Basic Auth S9、回环端口绑定）；③多执行器扩容（install-cmd/install.sh 注册第二台→CORE-05 loadScore 公式与长任务惩罚→DEP-02 rollout canary/percentage 契约+状态机+重启暂停/15min 硬超时边界→pinning/broadcast/tags 手段表）；④告警接入值班（渠道两方式→FEAT-01 静默 API→OBS-02 ALERT_WEBHOOK_SECRET 503 安全缺省+HMAC+加签代理→FEAT-11 runbook 两通路→停 Redis 端到端演练）。字段/端点/env 名逐一对照 api-reference.md 与源码（executor.controller install-cmd、silence controller/service、docker-compose registry 服务、.env.example）。docs-site npm run build 绿（ignoreDeadLinks=false 死链检查过）。缩水：站点版四篇为 docs/tutorials 的重组精简版（ECO-05 站点纪律：重组非重写），仓库内链接指向 GitHub 路径 |
+
+## H2 新任务段（2026-09-08 起可认领 · 详情见 DEVELOPMENT-PLAN-2026-09H2.md §10）
+
+| 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
+|---|---|---|---|---|---|---|---|
+| P0-1 | P0 | unclaimed | | | e2e-full.spec.js + docs/SECURITY-REDLINE-CHECKLIST.md + CI | | QA-09 收尾：安全红线 e2e 套件化（SSRF 六出站点/RBAC 全端点/审批第二人规则），CI 挂钩（e2e 文件高冲突，一次一人） |
+| P0-2 | P0 | unclaimed | | | 真机轮零代码（VERIFY 文档） | | DEP-04 真机收尾：双人第二人规则全链 + approve→真机派发 + reject/cancel 各一例 + 并发双审批 409 |
+| P0-3 | P1 | unclaimed | | | packages/docs-site + CI/部署配置 | | docs-site host 决策+发布（GitHub Pages/admin-web /docs/独立容器） |
+| P0-4 | P1 | unclaimed | | | docs/adr/（零代码） | | safeStorage 三平台差异+存量迁移策略拍板（SEC-NEW-1 前置） |
+| FEAT-13 | P2 | unclaimed | | | admin-web TaskFormPage/TaskTemplatesPage + api | | 「保存为模板」UI（后端 CORE-03 已就绪，零 admin-api） |
+| FEAT-14 | P2 | unclaimed | | | admin-web ApplicationDetailPage + api/applications.ts | | /releases 聚合端点前端消费（契约已文档化） |
+| FEAT-15 | P2 | unclaimed | | | admin-web settings 新 Tab + api/event-subscriptions.ts | | webhook 事件订阅 UI（FEAT-07 后端 done；CRUD/secret 回显/死信 replay） |
+| FEAT-16 | P3 | unclaimed | | | admin-web hooks/pages + admin-api 终态 emit | | SSE 全站推广（Executions 先行+事件驱动推送；与 FEAT-17 可同人） |
+| FEAT-17 | P3 | unclaimed | | | admin-web 13 处 useRequest 页面 | | TanStack Query 全站推广（与 FEAT-16 可同人） |
+| FEAT-18 | P2 | unclaimed | | | admin-api task.service kill 链 + domain-events | | KILLED 终态事件补发（ARCH-21 预留；与 FEAT-19 打包认领佳） |
+| FEAT-19 | P2 | unclaimed | | | admin-api 新 outbox 表+派发器+FEAT-07 接线 | | webhook at-least-once（跨进程 outbox；迁移占号先查 ARCH-29） |
+| FEAT-20 | P3 | unclaimed | | | admin-api app-deployment 写面+迁移两列 | | 部署 triggerType/operator 落库（DEP-01 遗留） |
+| NF-01 | P2 | unclaimed | | | admin-api task 模块+迁移+契约 | | 任务级 API 触发 token（AUTH-03 后；CI/脚本免登录触发） |
+| NF-02 | P2 | unclaimed | | | admin-web 编排视图新页（+可能的依赖策略字段） | | 执行编排 UI：链式依赖创建/批量重跑/fail-fast 策略（复用 FEAT-02 DAG） |
+| NF-03 | P3 | unclaimed | | | admin-api task/application 实体+guard+迁移 | | 任务 owner 字段与轻量隔离（AUTH-01 前置预研） |
+| NF-04 | P3 | unclaimed | | | admin-api scheduler/task DTO+表单 | | 标签亲和/反亲和调度（CORE-05 loadScore 组合） |
+| NF-05 | P3 | unclaimed | | | admin-api notification 渠道注册表+settings UI | | Slack/飞书渠道（FEAT-10 模板变量复用） |
+| NF-06 | P2 | unclaimed | | | packages/mcp-server | | MCP 写面扩容：update_task/pause_resume/retry_execution/deploy_app 四工具 |
+| NF-07 | P3 | unclaimed | | | packages/acf-cli | | CLI 执行器管理命令（list/rotate/offline，对齐 W2 ADMIN 语义） |
+| NF-08 | P3 | unclaimed | | | scripts/demo-seed* + docs/tutorials | | demo 故障演练包（失败/runbook/死信/审批待办预置，教程四篇可复现） |
+| ARCH-28 | P2 | unclaimed | | | 根 package.json + CI workflows | | workspace/turbo 二期评估与分批迁移（CI 时长对比报告） |
+| ARCH-29 | P2 | unclaimed | | | docs/PLAN-CLAIMS.md 常设段 + CI 校验 | | 迁移时间戳分配表+撞号 CI 拦截（小任务宜尽快；当前最高 1790000000002） |
+| ARCH-30 | P3 | unclaimed | | | admin-api notification 监听器 + ai 库 | | AI 分析服务化（processor 直调迁出+失败重试+落库率指标） |
+| ARCH-31 | P3 | unclaimed | | | 盘点文档+silences/outbox Redis 化 | | 多 admin 实例兼容矩阵（进程内单例状态全盘点） |
+| UI-09 | P2 | unclaimed | | | admin-web Dashboard/Executions/ExecutionDetail 三页 | | 移动端响应式（值班场景） |
+| UI-10 | P2 | unclaimed | | | admin-web 全站 ⚠️大 | | i18n 框架接入（react-i18next，zh-CN 基准；越晚成本越高） |
+| UI-12 | P3 | unclaimed | | | admin-web | | 键盘可达性与无障碍（axe critical=0） |
+| UI-13 | P3 | unclaimed | | | executor-desktop renderer | | desktop 对齐设计系统令牌（与 SEC-NEW-1 可同人） |
+| UI-15 | P2 | unclaimed | | | admin-web mutation 面盘点+统一 | | toast/错误反馈一致性治理（QA-03 两处静默失败前科收口） |
+| UI-16 | P3 | unclaimed | | | admin-web toast-only 页 | | StateError 补齐（UI-08 缩水项收口） |
+| QA-05 | P2 | unclaimed | | | scripts/load-test + docs | | =BUG-19 并发压测+容量白皮书（500 并发目标） |
+| QA-08 | P2 | unclaimed | | | .github/workflows/ci.yml | | 跨版本迁移演练月度 job（存量库 v1.0.1→HEAD 第三态） |
+| QA-10 | P3 | unclaimed | | | scripts/ 基准 | | 关键路径性能微基准（handleCallback/storeLogLines/dispatch/loadScore） |
+| QA-11 | P2 | unclaimed | | | executor-python tests + CI | | py 测试 strict warnings 评估（unraisable 已修 86bf0ef，deprecation 噪声收尾） |
+| QA-12 | P3 | unclaimed | | | executor-desktop + CI（可 windows-only） | | desktop Electron e2e 冒烟 3 例（Playwright _electron） |
+| SEC-10 | P2 | unclaimed | | | admin-api audit 模块 | | 审计防篡改纵深（hash-chain vs append-only 拍板+验证工具） |
+| ECO-04 | P1 | unclaimed | | | secrets 配置 + tag（无代码） | | release 首发演练 v1.1.0（⚠️ 需用户配 NPM_TOKEN/PYPI_API_TOKEN + environment 审批人） |
+| DOC-07 | P2 | unclaimed | | | docs/operations.md | | operator 升级 runbook（QA-08 产出后补） |
+| DOC-08 | P3 | unclaimed | | | 滚动 | | windows-findings 长尾清偿（BUG-07 专项并入） |
+| DOC-09 | P3 | unclaimed | | | packages/docs-site + CI | | 文档站与仓库文档 drift 同步机制 |
+
 ## 变更日志
 
+- 2026-09-08 主会话：**H2 长期计划建账（docs/DEVELOPMENT-PLAN-2026-09H2.md）+ 下表 H2 新任务段注册**。上期 105 任务盘点：~86 done / 31 unclaimed（已全部收编至 H2 计划 §2~§9 重新挂池）/ 1 in_progress（QA-09）。新任务段编号规则：P0-1~4（当轮清偿）、FEAT-13~20（功能补漏）、NF-01~08（新功能）、ARCH-28~31、UI-15~16、QA-11~12、SEC-10、DOC-07~09；SEC-NEW-1~3/ECO-04 等沿用原编号。里程碑排期建议 17~26 轮见 H2 §11。
 - 2026-09-08 接手会话（win 侧正式接棒）：**DEP-04 done（abc6e82 后端 + 374bbe8 前端+docs）+ BUG-03/BUG-11 复核销账**。①DEP-04 部署审批流全栈落地：后端=迁移 1790000000002（app_deployments.approvalStatus/approvalMeta + applications.approvalRequired 默认 false + 审批待办部分索引，幂等）+ deploy 冻结门控（approvalRequired 应用落 pending_approval 行零派发，复用 status=pending 天然受 in-flight 部分唯一索引约束，零索引重建）+ approve/reject/cancel 三动作（原子认领 UPDATE WHERE=并发双审批仅首者生效 409；第二人规则审批者≠提交者 403，脏数据放行+warn；reject/cancel 落 FAILED 离开 in-flight；AuditModule @Optional fail-open 审计三动作）+ upgrade/stop 对待审批行 409 + list approvalStatus 过滤 + approvals/pending 待办端点；前端=AppDeploymentPage 审批操作区（批准/拒绝 reason Modal/本人撤回）+审批徽标+待办 Alert+第二人规则前端禁用，ApplicationListPage 编辑开关，api 三动作封装。测试 +25 例（迁移 7+service 15+controller 适配 2+前端 8），admin-api 2037/2037 · admin-web 480/480 双基线只增，双端 tsc/build/lint 全绿。②复核销账：BUG-03（QA-02 已把 coverage 提至 91.6/81.34/78.47/90.6 超额覆盖）、BUG-11（W-16 已于 95363aa 闭环，图标资产含 ico/icns 均已在库）。③交接核实：executor-python unraisable 修复已由 win 侧 86bf0ef 实施（记忆中"未实施"状态过期已更正）。④九套件基线接手复跑全绿（admin-api 2015→2037 · admin-web 472→480 · node 266 · py 222 · acf-cli 74 · mcp 84 · node-sdk 61 · autoflow-sdk 110 · registry-pypi 68）。admin-web 构建期发现 @fontsource 依赖在 lockfile 声明但 node_modules 缺失（本地环境半安装态），--no-save 补装后 build 绿，未动 lockfile。真机留验：双人第二人规则全链 + 审批通过后真机派发。
 
 - 2026-09-08 001（子代理）：**交接项 + QA-03 第二阶段双 done（e9bddce feat + 409d9f3 test；认领行 e3a9209）**。① **AUTH-05 交接项落地**（e9bddce）：ExecutorDetailPage 单台 rotate-token 与删除（新增入口）改造为受控 Modal——Alert 高危警示 + Descriptions 影响清单（appName/地址/「Token 将轮换，执行器短暂重新注册」或「执行器记录删除，需重新注册」）+ reason 可选 TextArea（maxLength=200+showCount+超限校验拦截提交）随请求体发送；api/executors.ts rotateToken 补可选 reason 参数（POST body）、新增 remove 封装（DELETE，reason 走 axios config.data——此前前端无删除执行器入口）；轮换成功 Modal 一次性展示新 token（语义对齐 UI-07 批量版）、删除成功导航回列表、失败 toast 走 getErrMsg；admin-api 零改动（e487075 已文档化 reason 契约）。测试 +10 例（executor-detail-highrisk：影响清单渲染/无 reason body undefined/带 reason payload 精确/超限拦截/失败 toast/非 admin 门控/删除成功导航）。② **QA-03 第二阶段 done**（409d9f3，+38 例）：TaskListPage +10（筛选组合参数/清除复位/批量触发暂停 payload 精确与失败 toast/行内 Switch 双路径/删除 Popconfirm/克隆链路 get→create 副本命名与 glueSource 复制与服务端字段不回传/克隆失败不导航）；ApplicationDetailPage +11（详情渲染/加载失败导航/部署 Tab/关联任务 applicationId 查询/同步任务 ADMIN 门控/版本列表 commit 截断与当前版本 Tag/回滚三重门控（非 released+非 admin）与确认精确调用/失败 toast）；RegistryPage +9（PyPI 列表/空态/吞错空态兜底——api 层 try/catch 返回 []，本页无 StateError 形态且无删除入口，与任务书差异如实注记；上传必填与未选文件拦截/npm Tab 列表空态/发布说明 Modal）；ApiKeysSettings +8（名称必填与超 100 字符校验拦截/scope 三级下拉切换/payload 精确性（expiresInDays 留空不传键）/吊销 Popconfirm→revoke(id)/吊销失败静默（useMutation 无 onError=实现现状如实断言）/已吊销已过期渲染与操作列门控）。**基线：admin-web 472/472（424 只增 +48，53 套件全绿）+ tsc -b 绿 + build ✓；admin-api 2008/2008 基线零触碰**（工作区遗留的 s3-log-storage.spec.ts 超时放宽改动属 002 在途，未卷入本批任何 commit）。**协作注记**：002 并行批（c98e870/939bfc0/cc5aff8，ARCH-20 复核+SEC-07/08）在我 feat commit 之后入库，足迹（根配置/admin-api/Makefile）与本批 admin-web 零重叠，全量套件重跑确认无相互影响。**遗留（非阻塞）**：真机轮验证单台轮换后执行器一个心跳间隔内自愈重连；UserManagementPage 校验 rejection 无 catch 与 ApiKeysSettings 吊销失败静默两处 UX 不一致，建议后续统一。
