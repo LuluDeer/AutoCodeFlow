@@ -106,7 +106,7 @@
 | QA-05 | P2 | unclaimed | | | scripts/load-test + docs | | =BUG-19 同义项 |
 | QA-06 | P2 | done | session-B（员工 001 承接） | 2026-09-07 04:1x | scripts/chaos-drill* + docs/operations.md | 见变更日志 | 四场景脚本（A Redis 宕/B 断网 150s/C 双实例滚动/D PG 主从真机骨架）+selftest 33 例；断言参数按实现核实校准（90s 离线阈值等）；真跑验收留真机轮 |
 | QA-07 | P2 | done | 001（本会话） | 2026-09-07 | packages/contract-fixtures + 四包测试文件 | a00438b | contract.json 单一事实源+README；四端消费同一向量（cli 74/mcp 84/node-sdk 53/py-sdk 105）；审计修 CLI detailFromData 空串遮蔽 + knownDivergence 分歧留档 |
-| QA-08 | P2 | unclaimed | | | CI workflow | | 跨版本迁移演练月度 job |
+| QA-08 | P2 | in_progress | 接手会话第二轮（主会话） | 2026-09-09 | .github/workflows CI + docs | | 跨版本迁移演练月度 job；主会话本轮自承接 |
 | QA-09 | P3 | in_progress | main-A | 2026-09-07 | docs/SECURITY-REDLINE-CHECKLIST.md + e2e | | 清单已建（六域 30+ 红线）；e2e 套件化剩余 |
 | QA-10 | P3 | unclaimed | | | 基准脚本 | | 关键路径性能基准 |
 | SEC-01 | P1 | unclaimed | | | 复审报告 v2 | | =BUG-12~16 汇总项，可拆半场认领 |
@@ -120,7 +120,7 @@
 | SEC-09 | P3 | unclaimed | | | throttle 配置 | | 限流分域（依赖 AUTH-03） |
 | SEC-NEW-1 | P3 | unclaimed | | | executor-desktop config-store + safeStorage | | SEC-01 复审新发现：executorToken 明文落盘，改 safeStorage 加密+存量迁移（三平台差异）|
 | SEC-NEW-2 | P2 | unclaimed | | | executor-python routers/execute.py gitRepo 守卫 | | 真机冒烟新发现：py 执行器无条件拒私网 gitRepo（正则 S7），admin 侧允许私网 LAN（ADR 注释文档化拓扑）——两端策略不一致，内网 GitLab 拉取对 py 执行器不可用；需镜像 admin 的 EXECUTOR_ALLOW_PRIVATE_NETWORK 式开关（安全姿态变更，需拍板）|
-| SEC-NEW-3 | P3 | unclaimed | | | executor-python main.py registerExecutor | | 对齐 BUG-08/313d203：py 侧 register 失败后无 token 恢复补注册（node 侧已有钩子），/token fallback 重建行丢富元数据 |
+| SEC-NEW-3 | P3 | in_progress | 接手会话第二轮（子代理 D） | 2026-09-09 | executor-python main.py registerExecutor | | 对齐 BUG-08/313d203：py 侧 register 失败后补注册（node 钩子对等）；并行子代理 D |
 | DOC-01 | P1 | done | 002（子代理） | 2026-09-08 | .github/PULL_REQUEST_TEMPLATE.md（新建）+ docs/development.md「PR 前检查清单」节（api-reference.md 零改动） | 907af4f + a3012ca | API 变更检查项机制：PR 模板新增「API 变更？」四查（新增/修改端点→必须列明并同步 api-reference.md 位置；breaking→影响面+四客户端包 acf-cli/mcp/双 SDK 是否同批；新增 env→configuration.ts+Joi+.env.example+docs 三处同批登记；新增迁移→填时间戳+先查认领板防撞号）+「平台影响？」checkbox（executor-node bundle 同 commit 纪律/Windows 对照 VERIFY-MATRIX）+ 交付纪律（测试只增不减/认领板同步/conventional commits）；development.md 增「PR 前检查清单」节引用模板并补规约上下文。注：AGENT_HANDOFF.md 状态快照由会话收尾流程统一补记 |
 | DOC-02 | P1 | in_progress | session-B（前半 done：容量规划+备份恢复；升级 runbook 留 QA-08 产出后） | 2026-09-07 09:3x | docs/operations.md + observability 交叉引用 | ff56c15 | 前半 done：容量规划（水位表/扩容要点/压测占位 5 处"待压测确认"）+备份恢复（对象清单/五步骨架/pgBackRest 骨架/演练 checklist）；升级 runbook 待 QA-08 |
 | DOC-03 | P2 | done | main-A（ARCH-20 批次实现）/session-B 复核销账 | 2026-09-07 04:1x | scripts/demo-seed*.mjs | | 复核：demo:seed+selftest 已实现且自检通过（含 --password 门槛/演示数据形态），板信息滞后补记 |
@@ -136,25 +136,25 @@
 
 | 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
 |---|---|---|---|---|---|---|---|
-| P0-1 | P0 | unclaimed | | | e2e-full.spec.js + docs/SECURITY-REDLINE-CHECKLIST.md + CI | | QA-09 收尾：安全红线 e2e 套件化（SSRF 六出站点/RBAC 全端点/审批第二人规则），CI 挂钩（e2e 文件高冲突，一次一人） |
+| P0-1 | P0 | in_progress | 接手会话第二轮（子代理） | 2026-09-09 | e2e-full.spec.js + docs/SECURITY-REDLINE-CHECKLIST.md + CI | | 安全红线 e2e 套件化（SSRF 六出站点/RBAC 全端点/审批第二人规则）；并行子代理 F（e2e 文件独占窗口） |
 | P0-2 | P0 | unclaimed | | | 真机轮零代码（VERIFY 文档） | | DEP-04 真机收尾：双人第二人规则全链 + approve→真机派发 + reject/cancel 各一例 + 并发双审批 409 |
 | P0-3 | P1 | unclaimed | | | packages/docs-site + CI/部署配置 | | docs-site host 决策+发布（GitHub Pages/admin-web /docs/独立容器） |
 | P0-4 | P1 | unclaimed | | | docs/adr/（零代码） | | safeStorage 三平台差异+存量迁移策略拍板（SEC-NEW-1 前置） |
-| FEAT-13 | P2 | unclaimed | | | admin-web TaskFormPage/TaskTemplatesPage + api | | 「保存为模板」UI（后端 CORE-03 已就绪，零 admin-api） |
-| FEAT-14 | P2 | unclaimed | | | admin-web ApplicationDetailPage + api/applications.ts | | /releases 聚合端点前端消费（契约已文档化） |
-| FEAT-15 | P2 | unclaimed | | | admin-web settings 新 Tab + api/event-subscriptions.ts | | webhook 事件订阅 UI（FEAT-07 后端 done；CRUD/secret 回显/死信 replay） |
+| FEAT-13 | P2 | in_progress | 接手会话第二轮（子代理） | 2026-09-09 | admin-web TaskFormPage/TaskTemplatesPage + api/task-templates.ts（独占新文件为主） | | 「保存为模板」UI；并行子代理 B |
+| FEAT-14 | P2 | in_progress | 接手会话第二轮（子代理） | 2026-09-09 | admin-web ApplicationDetailPage + api/applications.ts | | /releases 聚合端点前端消费；并行子代理 B |
+| FEAT-15 | P2 | in_progress | 接手会话第二轮（子代理） | 2026-09-09 | admin-web settings 新 Tab（独立文件）+ api/event-subscriptions.ts | | webhook 事件订阅 UI；并行子代理 B |
 | FEAT-16 | P3 | unclaimed | | | admin-web hooks/pages + admin-api 终态 emit | | SSE 全站推广（Executions 先行+事件驱动推送；与 FEAT-17 可同人） |
 | FEAT-17 | P3 | unclaimed | | | admin-web 13 处 useRequest 页面 | | TanStack Query 全站推广（与 FEAT-16 可同人） |
-| FEAT-18 | P2 | unclaimed | | | admin-api task.service kill 链 + domain-events | | KILLED 终态事件补发（ARCH-21 预留；与 FEAT-19 打包认领佳） |
-| FEAT-19 | P2 | unclaimed | | | admin-api 新 outbox 表+派发器+FEAT-07 接线 | | webhook at-least-once（跨进程 outbox；迁移占号先查 ARCH-29） |
+| FEAT-18 | P2 | in_progress | 接手会话第二轮（子代理） | 2026-09-09 | admin-api task.service kill 链 + domain-events | | KILLED 终态事件补发；并行子代理 A |
+| FEAT-19 | P2 | in_progress | 接手会话第二轮（子代理） | 2026-09-09 | admin-api 新 outbox 迁移（占用 1790000000003，ARCH-29 分配表先登记）+派发器+FEAT-07 接线 | | webhook at-least-once；并行子代理 A |
 | FEAT-20 | P3 | unclaimed | | | admin-api app-deployment 写面+迁移两列 | | 部署 triggerType/operator 落库（DEP-01 遗留） |
 | NF-01 | P2 | unclaimed | | | admin-api task 模块+迁移+契约 | | 任务级 API 触发 token（AUTH-03 后；CI/脚本免登录触发） |
 | NF-02 | P2 | unclaimed | | | admin-web 编排视图新页（+可能的依赖策略字段） | | 执行编排 UI：链式依赖创建/批量重跑/fail-fast 策略（复用 FEAT-02 DAG） |
 | NF-03 | P3 | unclaimed | | | admin-api task/application 实体+guard+迁移 | | 任务 owner 字段与轻量隔离（AUTH-01 前置预研） |
 | NF-04 | P3 | unclaimed | | | admin-api scheduler/task DTO+表单 | | 标签亲和/反亲和调度（CORE-05 loadScore 组合） |
 | NF-05 | P3 | unclaimed | | | admin-api notification 渠道注册表+settings UI | | Slack/飞书渠道（FEAT-10 模板变量复用） |
-| NF-06 | P2 | unclaimed | | | packages/mcp-server | | MCP 写面扩容：update_task/pause_resume/retry_execution/deploy_app 四工具 |
-| NF-07 | P3 | unclaimed | | | packages/acf-cli | | CLI 执行器管理命令（list/rotate/offline，对齐 W2 ADMIN 语义） |
+| NF-06 | P2 | in_progress | 接手会话第二轮（子代理） | 2026-09-09 | packages/mcp-server | | MCP 写面扩容四工具；并行子代理 C |
+| NF-07 | P3 | in_progress | 接手会话第二轮（子代理） | 2026-09-09 | packages/acf-cli | | CLI 执行器管理命令；并行子代理 C |
 | NF-08 | P3 | unclaimed | | | scripts/demo-seed* + docs/tutorials | | demo 故障演练包（失败/runbook/死信/审批待办预置，教程四篇可复现） |
 | ARCH-28 | P2 | unclaimed | | | 根 package.json + CI workflows | | workspace/turbo 二期评估与分批迁移（CI 时长对比报告） |
 | ARCH-29 | P2 | done | 接手会话第二轮（主会话） | 2026-09-09 | scripts/check-migrations.mjs(+selftest) + docs/PLAN-CLAIMS.md 常设段 + .github/workflows/ci.yml(check-migrations job) + docs/development.md 检查清单第 4 条 | 本轮补 commit hash | 迁移时间戳分配表+撞号 CI 拦截 **done**：①分配表常设段建账（47 个在盘迁移全量回填归属：初始骨架/建板前存量按序标注，建板后 1789100000000 起逐个对齐认领板任务编号）；②scripts/check-migrations.mjs 三判据（文件名时间戳唯一/在盘必已注册/注册表无重复行，预留未落盘允许）+selftest 11 例全绿；③CI 新 check-migrations job（校验+selftest 双跑）；④development.md PR 检查清单第 4 条改指分配表（先登记再建文件）。分配规则裁定：在盘最大+1 连续分配（放弃旧「段预留」惯例——1790000000002 后下一号=1790000000003，由脚本输出） |
@@ -162,10 +162,10 @@
 | ARCH-31 | P3 | unclaimed | | | 盘点文档+silences/outbox Redis 化 | | 多 admin 实例兼容矩阵（进程内单例状态全盘点） |
 | UI-15 | P2 | unclaimed | | | admin-web mutation 面盘点+统一 | | toast/错误反馈一致性治理（QA-03 两处静默失败前科收口） |
 | UI-16 | P3 | unclaimed | | | admin-web toast-only 页 | | StateError 补齐（UI-08 缩水项收口） |
-| QA-11 | P2 | unclaimed | | | executor-python tests + CI | | py 测试 strict warnings 评估（unraisable 已修 86bf0ef，deprecation 噪声收尾） |
+| QA-11 | P2 | in_progress | 接手会话第二轮（子代理 D） | 2026-09-09 | executor-python tests + CI | | py strict warnings 评估；并行子代理 D |
 | QA-12 | P3 | unclaimed | | | executor-desktop + CI（可 windows-only） | | desktop Electron e2e 冒烟 3 例（Playwright _electron） |
 | SEC-10 | P2 | unclaimed | | | admin-api audit 模块 | | 审计防篡改纵深（hash-chain vs append-only 拍板+验证工具） |
-| DOC-07 | P2 | unclaimed | | | docs/operations.md | | operator 升级 runbook（QA-08 产出后补） |
+| DOC-07 | P2 | in_progress | 接手会话第二轮（主会话） | 2026-09-09 | docs/operations.md | | operator 升级 runbook；与 QA-08 产出衔接，本轮先落地升级/回滚主链 |
 | DOC-08 | P3 | unclaimed | | | 滚动 | | windows-findings 长尾清偿（BUG-07 专项并入） |
 | DOC-09 | P3 | unclaimed | | | packages/docs-site + CI | | 文档站与仓库文档 drift 同步机制 |
 
