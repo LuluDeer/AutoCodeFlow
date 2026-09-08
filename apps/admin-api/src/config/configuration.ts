@@ -69,6 +69,17 @@ export default () => ({
     ),
     maxStreamsGlobal: parseInt(process.env.SSE_MAX_STREAMS_GLOBAL || "64", 10),
   },
+  // UI-14 第一阶段：Dashboard 汇总流（GET /metrics/stream）——独立于日志流的
+  // 并发上限与推送节奏。快照查询复用 /metrics/* 既有读面，interval 越小
+  // DB 压力越大，默认 3s 仅够 Dashboard 级别客户端数（浏览器 Tab）。
+  metricsStream: {
+    maxStreamsGlobal: parseInt(
+      process.env.METRICS_STREAM_MAX_GLOBAL || "32",
+      10,
+    ),
+    intervalMs: parseInt(process.env.METRICS_STREAM_INTERVAL_MS || "3000", 10),
+    idlePingMs: parseInt(process.env.METRICS_STREAM_IDLE_PING_MS || "15000", 10),
+  },
   jwt: {
     // S4: fail-fast on weak/missing secrets — throw at startup rather than silently using defaults
     secret: (() => {
