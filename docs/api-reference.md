@@ -753,7 +753,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 
 > 快速上手：`POST /event-subscriptions` 传 `{ "url": "https://ci.example.com/hooks", "eventTypes": ["execution.failed"] }` → 从响应 `generatedSecret` 取出签名密钥（仅此一次可见）→ 用上面的校验方法在订阅方验证签名。验收路径：任务失败 → 订阅方收到带正确签名的失败事件（CI 触发部署场景）。
 
-> **at-least-once 语义说明**：本版为进程内最低正确形态——首投 + 进程内重试 + 终败死信落库可重放。进程重启会丢失在途的退避重试（跨进程 outbox 留后续轮）；对「至少收到一次」要求严格的订阅方应同时容忍极端情况下的漏发（当前窗口：投递在途时重启），或依赖 replay 端点人工补发。
+> **at-least-once 语义 + outbox（FEAT-19，第十七轮升级）**：事件到达即同步落 `event_outbox` 表（写成功即"已接收"），随后走进程内快速路径（首投 + 3 次退避）。`OutboxDispatcher` 启动时 + 每 5 秒（`EVENT_OUTBOX_ENABLED`，默认 `true`）扫描未派发行补投，复用同款签名/重试/死信语义；失败退避 5s 起指数封顶 5min，超过 20 次落 `event_subscription_dead_letters` 并标记行终态。**进程重启不再丢待投事件**。含义：①同一事件可能被投递多次（快速路径与补投窗口重叠、终态回写失败重投等），**订阅方必须幂等消费**；②冷订阅集期间到达的事件在订阅创建后不再补投（落库时刻的订阅集即投递对象），如需补投历史事件走 replay 端点人工触发。`EVENT_OUTBOX_ENABLED=false` 回退纯进程内派发（重启丢在途，不推荐）。
 
 ---
 
