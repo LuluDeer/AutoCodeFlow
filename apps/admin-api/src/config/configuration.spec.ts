@@ -284,6 +284,27 @@ describe("configuration (ARCH-27) newly registered config sections", () => {
     expect(loadConfig().throttle.loginLimit).toBe(5);
   });
 
+  it("SEC-09: registers throttle.enabled (default true; THROTTLE_ENABLED=false bypasses all rate limiting)", () => {
+    expect(loadConfig().throttle.enabled).toBe(true);
+    process.env.THROTTLE_ENABLED = "false";
+    expect(loadConfig().throttle.enabled).toBe(false);
+    delete process.env.THROTTLE_ENABLED;
+    expect(loadConfig().throttle.enabled).toBe(true);
+  });
+
+  it("SEC-09: registers throttle domain profiles (auth 10/min strict, ops 30/min default; env overridable)", () => {
+    const cfg = loadConfig();
+    expect(cfg.throttle.authLimit).toBe(10);
+    expect(cfg.throttle.authTtl).toBe(60000);
+    expect(cfg.throttle.opsLimit).toBe(30);
+    expect(cfg.throttle.opsTtl).toBe(60000);
+    process.env.THROTTLE_AUTH_LIMIT = "5";
+    process.env.THROTTLE_OPS_LIMIT = "100";
+    const overridden = loadConfig();
+    expect(overridden.throttle.authLimit).toBe(5);
+    expect(overridden.throttle.opsLimit).toBe(100);
+  });
+
   it("registers app.requestTimeoutMs from REQUEST_TIMEOUT_MS (default 30000)", () => {
     expect(loadConfig().app.requestTimeoutMs).toBe(30000);
     process.env.REQUEST_TIMEOUT_MS = "45000";

@@ -35,6 +35,11 @@ import {
 } from "class-validator";
 import { Type } from "class-transformer";
 import { ApiPropertyOptional } from "@nestjs/swagger";
+// SEC-09: 限流分域——部署/审批/upgrade/stop 属集群干预写面，挂中档
+// OPS_THROTTLE（默认 30/min）。装饰器求值期读取属 ARCH-27 显式豁免
+//（见 src/config/throttle-profiles.ts 头注；heartbeat @Public 机器回调不挂档位）。
+import { Throttle } from "@nestjs/throttler";
+import { OPS_THROTTLE } from "../../config/throttle-profiles";
 
 class ListDeploymentsQueryDto {
   @ApiPropertyOptional({ description: "Filter by application ID" })
@@ -99,6 +104,8 @@ export class AppDeploymentController {
   // to any authenticated user. The @Public() heartbeat below is a
   // machine-to-machine callback with X-Executor-Token auth — it carries
   // no @Roles metadata, so the global RolesGuard skips it.
+  // SEC-09: 中档限流（部署干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post("applications/:appId/deploy")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Assign application to executor" })
@@ -133,6 +140,8 @@ export class AppDeploymentController {
     );
   }
 
+  // SEC-09: 中档限流（部署干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/approval/approve")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Approve a pending deployment (second person)" })
@@ -148,6 +157,8 @@ export class AppDeploymentController {
     );
   }
 
+  // SEC-09: 中档限流（部署干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/approval/reject")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Reject a pending deployment (second person)" })
@@ -163,6 +174,8 @@ export class AppDeploymentController {
     );
   }
 
+  // SEC-09: 中档限流（部署干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/approval/cancel")
   @Roles(UserRole.ADMIN)
   @ApiOperation({
@@ -178,6 +191,8 @@ export class AppDeploymentController {
     });
   }
 
+  // SEC-09: 中档限流（部署干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/upgrade")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Trigger overlay upgrade" })
@@ -185,6 +200,8 @@ export class AppDeploymentController {
     return this.svc.upgrade(id);
   }
 
+  // SEC-09: 中档限流（部署干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/stop")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Stop running deployment" })

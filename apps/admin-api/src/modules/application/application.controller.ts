@@ -45,6 +45,11 @@ import * as path from "path";
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Request } from "express";
 import { ConfigService } from "@nestjs/config";
+// SEC-09: 限流分域——upgrade-all/rollback 属集群干预写面，挂中档
+// OPS_THROTTLE（默认 30/min）。装饰器求值期读取属 ARCH-27 显式豁免
+//（见 src/config/throttle-profiles.ts 头注）。
+import { Throttle } from "@nestjs/throttler";
+import { OPS_THROTTLE } from "../../config/throttle-profiles";
 import {
   ZipGuardError,
   assertZipSafe,
@@ -457,6 +462,8 @@ export class ApplicationController {
     );
   }
 
+  // SEC-09: 中档限流（应用干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/upgrade-all")
   @Roles(UserRole.ADMIN)
   @ApiOperation({
@@ -494,6 +501,8 @@ export class ApplicationController {
     return this.svc.analyzeHealth(id);
   }
 
+  // SEC-09: 中档限流（应用干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/rollback/:deploymentId")
   @Roles(UserRole.ADMIN)
   @ApiOperation({

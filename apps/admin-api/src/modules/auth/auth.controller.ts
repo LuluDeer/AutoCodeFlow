@@ -29,6 +29,9 @@ import { AuthUser } from "../../common/interfaces/auth-user.interface";
 // ARCH-27: 装饰器参数在模块求值期（类定义时）确定，ConfigService 在该时点
 // 尚不存在 —— 必须经唯一的 env 收口 util 读取，禁止裸 process.env。
 import { getEnvVar } from "../../config/env";
+// SEC-09: 限流分域严格档（auth 敏写面）。同样是装饰器求值期读取，
+// 与 LOGIN_THROTTLE_LIMIT 同款 W-22 豁免（main.ts 预载 .env 兜底）。
+import { AUTH_THROTTLE } from "../../config/throttle-profiles";
 
 /** SEC-03: extract session id (sid) claim from the verified access token. */
 function sidOf(req: Request): string | null {
@@ -58,6 +61,11 @@ function requestMeta(req: Request): {
  * 守护）+ 本处经 src/config/env.ts 的 getEnvVar() 统一收口。这里保留
  * 模块求值期直读是 ARCH-27 审计后的显式豁免（配置值已同步注册到
  * configuration.ts throttle.loginLimit 供运行时一致性检查与文档化）。
+ *
+ * SEC-09 限流分域（本控制器）：login 保留 LOGIN_THROTTLE_LIMIT=20 契约，
+ * refresh + totp/* 改挂严格档 AUTH_THROTTLE（默认 10/min，env
+ * THROTTLE_AUTH_LIMIT/TTL 可调）——档位定义与分域矩阵见
+ * src/config/throttle-profiles.ts。
  */
 const LOGIN_THROTTLE_LIMIT = Number(getEnvVar("LOGIN_THROTTLE_LIMIT")) || 20;
 
@@ -71,7 +79,10 @@ export class AuthController {
     private readonly auditService: AuditService,
   ) {}
 
-  // N16: login rate limit — configurable via env LOGIN_THROTTLE_LIMIT (default 20 for dev, use 5 in prod)
+  // N16: login rate limit — configurable via env LOGIN_THROTTLE_LIMIT
+  // (default 20 for dev, use 5 in prod). SEC-09 分域后 login 契约刻意保持
+  // 不变（既有 e2e/文档依赖 20/min 档；其余 auth 敏写面走 AUTH_THROTTLE
+  // 严格档，见 throttle-profiles.ts 分域矩阵）。
   @Throttle({
     default: {
       ttl: 60_000,
@@ -111,7 +122,7 @@ export class AuthController {
     return result;
   }
 
-  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @Throttle({ default: AUTH_THROTTLE })
   @Public()
   @Post("refresh")
   @ApiOperation({
@@ -187,7 +198,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Post("totp/setup")
   @ApiBearerAuth("JWT")
-  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @Throttle({ default: AUTH_THROTTLE })
   @ApiOperation({
     summary: "Stage a TOTP secret (2FA opt-in, step 1)",
     description:
@@ -204,7 +215,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Post("totp/enable")
   @ApiBearerAuth("JWT")
-  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @Throttle({ default: AUTH_THROTTLE })
   @ApiOperation({
     summary: "Enable TOTP (2FA opt-in, step 2)",
     description:
@@ -223,7 +234,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Post("totp/disable")
   @ApiBearerAuth("JWT")
-  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @Throttle({ default: AUTH_THROTTLE })
   @ApiOperation({
     summary: "Disable TOTP",
     description:
@@ -246,7 +257,7 @@ export class AuthController {
    * /auth/login) and separately rate-limited; re-validates credentials
    * before checking the code, so it cannot bypass the password check.
    */
-  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @Throttle({ default: AUTH_THROTTLE })
   @Public()
   @Post("totp/verify")
   @ApiOperation({
