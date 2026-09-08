@@ -34,7 +34,17 @@ export function registerIpcHandlers(): void {
   // maps to "keep the stored token".
   ipcMain.handle('config:get', () => configStore.getAllMasked());
 
+  // BUG-12: the save face only accepts plain-object string|number|boolean
+  // values. An array (or nested object carrying getters) would otherwise
+  // reach electron-store's dot-notation setter and throw deep inside the
+  // store — reject the shape up front.
+  const isPlainConfig = (cfg: unknown): boolean =>
+    cfg !== null && typeof cfg === 'object' && !Array.isArray(cfg);
+
   ipcMain.handle('config:save', async (_event, cfg) => {
+    if (!isPlainConfig(cfg)) {
+      return { ok: false, error: 'invalid config payload' };
+    }
     configStore.save(cfg);
     log.info('Config saved via IPC');
     trayManager.rebuildMenu();
@@ -54,6 +64,9 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('config:save-and-close-wizard', async (_event, cfg) => {
+    if (!isPlainConfig(cfg)) {
+      return { ok: false, error: 'invalid config payload' };
+    }
     configStore.save({ ...cfg, configured: true });
     log.info('Wizard complete, config saved');
     windowManager.closeWizard();
