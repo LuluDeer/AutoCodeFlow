@@ -8,15 +8,20 @@ import {
   ClockCircleOutlined, RocketOutlined, ApiOutlined, ReloadOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
-import { useRequest } from 'ahooks';
 import { useNavigate } from 'react-router-dom';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip as RechartTooltip, Legend, ResponsiveContainer,
 } from 'recharts';
-import { metricsApi } from '../api/metrics';
 import type { SchedulerMetricsResponse } from '../api/metrics';
-import { tasksApi } from '../api/tasks';
+import {
+  useMetricsSummary,
+  useMetricsTrend,
+  useExecutorStats,
+  useRecentFailures,
+  useSchedulerMetrics,
+  useSchedulerStats,
+} from '../api/queries';
 import { formatDuration } from '../utils/timeFormat';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
@@ -36,43 +41,30 @@ export default function DashboardPage() {
   // UI-02：图表双主题——网格线/轴文字随 data-theme 切换
   const isDark = useThemeStore(selectResolvedTheme) === 'dark';
 
-  const { data: summary, loading: summaryLoading, refresh: refreshSummary } = useRequest(
-    () => metricsApi.getSummary(),
-    { pollingInterval: 30000, pollingWhenHidden: false },
-  );
+  // ARCH-26: TanStack Query 改造——六个 useRequest 轮询合并为 queries.ts 薄层
+  // hooks（全局默认 staleTime 30s 保底新鲜度，切页 30s 内返回不再重复拉取；
+  // queryKey 归一后 summary/trend/executors/failures 跨页共享缓存）。
+  // UI-14: Dashboard 汇总流（GET /metrics/stream SSE）推送 summary 快照直接
+  // 写入 queryClient 缓存（setQueryData，见 useMetricsStream），连接活跃时
+  // 免轮询；断线时 30s refetchInterval 兜底恢复轮询节奏（与 SSE 推送互斥共存）。
 
-  const { data: trend, loading: trendLoading } = useRequest(
-    () => metricsApi.getDailyTrend(trendDays),
-    { refreshDeps: [trendDays] },
-  );
+  const { data: summary, isLoading: summaryLoading, refetch: refetchSummary } = useMetricsSummary();
+
+  const { data: trend, isLoading: trendLoading } = useMetricsTrend(trendDays);
 
   // UI-04 ①：sparkline 用近 7 天趋势（含 24h；趋势图主卡共用一次请求，
   // days=1 时后端按日桶仅 1~2 点形状无意义，故 sparkline 取 7 天窗口）
-  const { data: sparkTrend } = useRequest(
-    () => metricsApi.getDailyTrend(7),
-    { pollingInterval: 30000, pollingWhenHidden: false },
-  );
+  // queryKey 与主趋势卡 days=7 时自动合并为同一请求。
+  const { data: sparkTrend } = useMetricsTrend(7);
 
-  const { data: executorStats, loading: execLoading } = useRequest(
-    () => metricsApi.getExecutorStats(),
-    { pollingInterval: 30000, pollingWhenHidden: false },
-  );
+  const { data: executorStats, isLoading: execLoading } = useExecutorStats();
 
-  const { data: failures, loading: failLoading } = useRequest(
-    () => metricsApi.getRecentFailures(),
-    { pollingInterval: 30000, pollingWhenHidden: false },
-  );
+  const { data: failures, isLoading: failLoading } = useRecentFailures();
 
   // UI-04 ④：调度延迟卡数据源（既有 /metrics/scheduler，CORE-06 字段已在）
-  const { data: schedulerMetrics } = useRequest(
-    () => metricsApi.getSchedulerMetrics(),
-    { pollingInterval: 30000, pollingWhenHidden: false },
-  );
+  const { data: schedulerMetrics } = useSchedulerMetrics();
 
-  const { data: schedulerStats } = useRequest(
-    () => tasksApi.schedulerStats(),
-    { pollingInterval: 30000, pollingWhenHidden: false },
-  );
+  const { data: schedulerStats } = useSchedulerStats();
 
   interface DashboardSummary {
     successRate?: number;
@@ -118,7 +110,7 @@ export default function DashboardPage() {
                 调度器 {schedulerStats.healthy ? '健康' : '异常'} · {schedulerStats.totalScheduledTasks} 任务
               </Tag>
             )}
-            <Button icon={<ReloadOutlined />} size="small" onClick={refreshSummary}>刷新</Button>
+            <Button icon={<ReloadOutlined />} size="small" onClick={() => void refetchSummary()}>刷新</Button>
           </>
         }
       />

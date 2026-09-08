@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ExecutionsPage from '../pages/ExecutionsPage';
 import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
@@ -72,14 +73,19 @@ const pageFixture = (rows: TaskExecution[], total = rows.length) => ({
 });
 
 function renderPage() {
+  // ARCH-26: ExecutionsPage 改用 TanStack Query——测试包 QueryClientProvider
+  // （对齐 user-management-page.test 先例，retry:false 防 15s 轮询重试噪音）
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={['/executions']}>
-      <Routes>
-        <Route path="/executions" element={<ExecutionsPage />} />
-        <Route path="/tasks/:taskId" element={<div>task-detail-mock</div>} />
-        <Route path="/tasks/:taskId/executions/:execId" element={<div>execution-detail-mock</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/executions']}>
+        <Routes>
+          <Route path="/executions" element={<ExecutionsPage />} />
+          <Route path="/tasks/:taskId" element={<div>task-detail-mock</div>} />
+          <Route path="/tasks/:taskId/executions/:execId" element={<div>execution-detail-mock</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

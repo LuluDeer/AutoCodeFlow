@@ -9,10 +9,11 @@ import {
 } from '@ant-design/icons';
 import type { Dayjs } from 'dayjs';
 
-import { useRequest } from 'ahooks';
+import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
+import { useExecutionsList, invalidateExecutionData } from '../api/queries';
 import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
@@ -35,6 +36,8 @@ const STATUS_MAP: Record<string, { badge: BadgeStatus; label: string }> = {
 
 export default function ExecutionsPage() {
   const nav = useNavigate();
+  // ARCH-26: 写后失效句柄（kill 后 invalidate 执行列表+Dashboard 汇总缓存）
+  const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
@@ -56,7 +59,9 @@ export default function ExecutionsPage() {
     try {
       await tasksApi.killExecution(r.taskId, r.id);
       message.success('已发送终止信号');
-      refresh();
+      // ARCH-26: 写后失效——执行列表 + Dashboard 汇总面（queryKey 前缀化，
+      // 一处 invalidate 同时刷新两个示范页的缓存）。
+      await invalidateExecutionData(queryClient);
     } catch (err: unknown) {
       message.error(getErrMsg(err, '终止失败'));
     } finally {
@@ -67,18 +72,28 @@ export default function ExecutionsPage() {
   // 搜索防抖：避免每击键发一次列表请求
   const debouncedSearch = useDebounce(search);
 
-  const { data, loading, refresh } = useRequest(
-    () => tasksApi.allExecutions({
-      page,
-      pageSize,
-      status: statusFilter,
-      taskName: debouncedSearch || undefined,
-      executorAddress: executorFilter || undefined,
-      startTime: timeRange?.[0]?.toISOString(),
-      endTime: timeRange?.[1]?.toISOString(),
-    }),
-    { refreshDeps: [page, pageSize, statusFilter, debouncedSearch, executorFilter, timeRange], pollingInterval: 15000, pollingWhenHidden: false },
-  );
+  // ARCH-26: TanStack Query 改造——useRequest 轮询（15s）换 query hooks：
+  // 筛选参数进 queryKey（参数变化自动重取，等价 refreshDeps）；
+  // staleTime 全局 30s 兜底切页缓存。15s 轮询由下方 refetchInterval useEffect
+  // 承担（可见性判定与原 pollingWhenHidden:false 一致）。
+  const { data, isLoading: loading, refetch } = useExecutionsList({
+    page,
+    pageSize,
+    status: statusFilter,
+    taskName: debouncedSearch || undefined,
+    executorAddress: executorFilter || undefined,
+    startTime: timeRange?.[0]?.toISOString(),
+    endTime: timeRange?.[1]?.toISOString(),
+  });
+
+  // 15s 轮询兜底：运行中行需要及时看到终态。标签页不可见时跳过请求
+  // （定时器保留，回到前台后下一拍即恢复——等价 pollingWhenHidden:false）。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void refetch();
+    }, 15_000);
+    return () => clearInterval(timer);
+  }, [refetch]);
 
   const executions: TaskExecution[] = data?.items ?? [];
   const total: number = data?.total ?? 0;
@@ -185,7 +200,7 @@ export default function ExecutionsPage() {
       <PageHeader
         title="执行记录"
         description="全部任务执行历史"
-        extra={<Button icon={<ReloadOutlined />} onClick={() => refresh()}>刷新</Button>}
+        extra={<Button icon={<ReloadOutlined />} onClick={() => void refetch()}>刷新</Button>}
       />
 
       <Space style={{ marginBottom: 16 }} wrap>

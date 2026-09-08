@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cloneElement } from 'react';
 import DashboardPage from '../pages/DashboardPage';
 import { metricsApi } from '../api/metrics';
@@ -175,15 +176,20 @@ const schedulerStatsFixture = {
 };
 
 function renderPage() {
+  // ARCH-26: DashboardPage 改用 TanStack Query——测试包 QueryClientProvider
+  // （对齐 user-management-page.test 先例，retry:false 防失败重试噪音）
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={['/dashboard']}>
-      <Routes>
-        <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/tasks/:id" element={<div>task-detail-mock</div>} />
-        <Route path="/executors/:id" element={<div>executor-detail-mock</div>} />
-        <Route path="/tasks/new" element={<div>task-new-mock</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <Routes>
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/tasks/:id" element={<div>task-detail-mock</div>} />
+          <Route path="/executors/:id" element={<div>executor-detail-mock</div>} />
+          <Route path="/tasks/new" element={<div>task-new-mock</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -334,7 +340,9 @@ describe('DashboardPage — UI-04 五项', () => {
         { timeout: 5000 },
       );
       // p99=80ms / avg=100ms / last=42ms
-      expect(screen.getByText('80ms')).toBeTruthy();
+      // ARCH-26: query 缓存值到达子组件的渲染与 testid 出现不在同一微任务，
+      // 用 findByText 轮询等待（getByText 会撞上「testid 已挂载、值未到」窗口）
+      expect(await screen.findByText('80ms')).toBeTruthy();
       expect(screen.getByText('100ms')).toBeTruthy();
       expect(screen.getByText('42ms')).toBeTruthy();
       // 样本数注记
