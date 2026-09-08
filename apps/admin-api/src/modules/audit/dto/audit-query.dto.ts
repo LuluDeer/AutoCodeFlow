@@ -24,6 +24,22 @@ export class AuditQueryDto extends PaginationDto {
   @IsString()
   resource?: string;
 
+  /**
+   * AUTH-05: exact-match filter on the resource identifier column. Together
+   * with `resource` this forms the (resource, resourceId) pair filter — the
+   * scoped-down replacement for the planned per-Project dimension filter
+   * (the Project entity does not exist yet; AUTH-01 is unclaimed). Exact
+   * match (no ILIKE) because resourceId values are opaque UUIDs/ids where a
+   * partial match would be surprising; the service caps the bound value so a
+   * hostile query string cannot carry arbitrary-length needles.
+   */
+  @ApiPropertyOptional({
+    description: "Filter by exact resource identifier (combine with resource)",
+  })
+  @IsOptional()
+  @IsString()
+  resourceId?: string;
+
   @ApiPropertyOptional({
     description: "Filter by operator user id",
     type: Number,

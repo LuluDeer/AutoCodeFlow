@@ -40,6 +40,8 @@ import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 import { computeExecutorLoadScore } from "./executor-score.util";
 // OBS-01: 派发链路追踪——dispatch span + traceparent 头透传执行器
 import { TracingService } from "../../common/tracing/tracing.service";
+// AUTH-05: 高危操作（rotate-token / 删除执行器）审计留痕
+import { AuditService } from "../audit/audit.service";
 
 @Injectable()
 export class ExecutorService {
@@ -132,8 +134,45 @@ export class ExecutorService {
     // @Optional 仅为既有单测装配兼容（先例 eventBus）。
     @Optional()
     private readonly tracing: TracingService | null = null,
+    // AUTH-05: 高危操作审计（rotate-token / 删除执行器）。@Optional 与
+    // eventBus 同先例——存量单测未提供 AuditService 时降级为仅日志，主链
+    // 不变（审计 best-effort，log() 抛错也绝不影响业务结果）。
+    @Optional()
+    private readonly audit: AuditService | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
+  }
+
+  /**
+   * AUTH-05: best-effort audit write for high-risk executor operations.
+   * Never throws — an audit failure must not fail the operation itself
+   * (the operation already succeeded at this point). No operator identity is
+   * captured here on purpose: the admin surface (JWT principal) lives in the
+   * controller layer; the reason (when the caller supplied one) is recorded
+   * in detail.
+   */
+  private async auditHighRisk(
+    action: "executor.rotate_token" | "executor.delete",
+    executor: Pick<Executor, "id" | "address" | "appName">,
+    reason?: string,
+  ): Promise<void> {
+    if (!this.audit) return;
+    try {
+      await this.audit.log({
+        action,
+        resource: "executor",
+        resourceId: executor.id,
+        detail: {
+          address: executor.address,
+          appName: executor.appName,
+          ...(reason ? { reason } : {}),
+        },
+      });
+    } catch (e) {
+      this.logger.warn(
+        `audit write failed for ${action} on executor ${executor.id}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   /**
@@ -1404,8 +1443,10 @@ export class ExecutorService {
   /**
    * SEC-03: Issue a fresh per-executor token.
    * Returns the raw token once (caller must store it); only the bcrypt hash is persisted.
+   * AUTH-05: accepts an optional admin-supplied `reason` (≤200 chars, capped)
+   * that lands in the audit detail — the rotation itself is unchanged.
    */
-  async rotateToken(id: string): Promise<{ token: string }> {
+  async rotateToken(id: string, reason?: string): Promise<{ token: string }> {
     const executor = await this.repo.findOne({ where: { id } });
     if (!executor) throw new NotFoundException("Executor not found");
     const rawToken = randomBytes(32).toString("hex");
@@ -1438,6 +1479,9 @@ export class ExecutorService {
       issuedAt: Date.now(),
     });
     this.logger.log(`Rotated token for executor ${id} (${executor.address})`);
+    // AUTH-05: rotate-token is a high-risk operation — audit it (with the
+    // admin-supplied reason when present). Best-effort, after the mutation.
+    await this.auditHighRisk("executor.rotate_token", executor, reason);
     return { token: rawToken };
   }
 
@@ -1525,7 +1569,7 @@ export class ExecutorService {
    * Falls back to the legacy shared token for backward compatibility.
    */
   /** Admin: manually remove an executor record by ID */
-  async removeById(id: string): Promise<void> {
+  async removeById(id: string, reason?: string): Promise<void> {
     const executor = await this.repo.findOne({ where: { id } });
     if (!executor) throw new NotFoundException("Executor not found");
     await this.repo.remove(executor);
@@ -1533,6 +1577,9 @@ export class ExecutorService {
     // a re-registered address must get a fresh token, never the removed one.
     this.issuedTokenCache.delete(executor.address);
     this.logger.log(`Executor ${id} (${executor.address}) removed by admin`);
+    // AUTH-05: executor deletion is destructive — audit it (with the
+    // admin-supplied reason when present). Best-effort, after the mutation.
+    await this.auditHighRisk("executor.delete", executor, reason);
   }
 
   async validateExecutorToken(id: string, presented: string): Promise<boolean> {

@@ -699,6 +699,13 @@ export class ExecutorController {
       "Generate a new executor auth token. The new token is shown only once in this response.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiBody({
+    description:
+      "AUTH-05: optional rotation reason, recorded in the audit log detail " +
+      "(the endpoint itself stays non-breaking — an empty body is fine).",
+    schema: { example: { reason: "token suspected leaked" } },
+    required: false,
+  })
   @ApiResponse({
     status: 200,
     description: "Token rotated successfully",
@@ -713,8 +720,11 @@ export class ExecutorController {
       },
     },
   })
-  rotateToken(@Param("id") id: string) {
-    return this.svc.rotateToken(id);
+  rotateToken(
+    @Param("id") id: string,
+    @Body() body?: { reason?: string },
+  ) {
+    return this.svc.rotateToken(id, body?.reason);
   }
 
   @Public()
@@ -831,10 +841,20 @@ export class ExecutorController {
       "Admin: permanently delete an executor record by ID. Use when executor is offline and no longer needed.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiBody({
+    description:
+      "AUTH-05: optional deletion reason, recorded in the audit log detail " +
+      "(the endpoint stays non-breaking — an empty body is fine).",
+    schema: { example: { reason: "decommissioned host" } },
+    required: false,
+  })
   @ApiResponse({ status: 204, description: "Executor deleted" })
   @ApiResponse({ status: 404, description: "Executor not found" })
-  async removeExecutor(@Param("id") id: string): Promise<void> {
-    return this.svc.removeById(id);
+  async removeExecutor(
+    @Param("id") id: string,
+    @Body() body?: { reason?: string },
+  ): Promise<void> {
+    return this.svc.removeById(id, body?.reason);
   }
 
   @ApiBearerAuth("JWT")

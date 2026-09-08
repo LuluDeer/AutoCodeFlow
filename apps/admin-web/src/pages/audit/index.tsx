@@ -27,8 +27,9 @@ const RESULT_LABEL: Record<string, string> = { success: '成功', failure: '失�
 
 export default function AuditLogPage() {
   const [page, setPage] = useState(1);
-  const [filters, setFilters] = useState({ action: '', resource: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
-  const [pending, setPending] = useState({ action: '', resource: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
+  // AUTH-05: 新增 resourceId 精确筛选（与 resource 组成组合筛选）
+  const [filters, setFilters] = useState({ action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
+  const [pending, setPending] = useState({ action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
   const [detailModal, setDetailModal] = useState<{ open: boolean; data?: Record<string, unknown> }>({ open: false });
 
   const { data, isLoading } = useQuery({
@@ -37,6 +38,7 @@ export default function AuditLogPage() {
       const params: Record<string, string> = { page: String(page), pageSize: '20' };
       if (filters.action) params.action = filters.action;
       if (filters.resource) params.resource = filters.resource;
+      if (filters.resourceId) params.resourceId = filters.resourceId;
       if (filters.username) params.username = filters.username;
       if (filters.startTime) params.startTime = filters.startTime;
       if (filters.endTime) params.endTime = filters.endTime;
@@ -47,7 +49,7 @@ export default function AuditLogPage() {
 
   const handleSearch = () => { setPage(1); setFilters(pending); };
   const handleReset = () => {
-    const e = { action: '', resource: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined };
+    const e = { action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined };
     setPending(e); setFilters(e); setPage(1);
   };
 
@@ -57,7 +59,7 @@ export default function AuditLogPage() {
     { label: '最近 30 天', value: [dayjs().subtract(30, 'day'), dayjs()] as [Dayjs, Dayjs] },
   ];
 
-  const hasFilters = !!(pending.action || pending.resource || pending.username || pending.startTime || pending.endTime);
+  const hasFilters = !!(pending.action || pending.resource || pending.resourceId || pending.username || pending.startTime || pending.endTime);
 
   const columns = [
     { title: 'ID', dataIndex: 'id', width: 70 },
@@ -152,6 +154,15 @@ export default function AuditLogPage() {
           <Option value="user">user</Option>
           <Option value="application">application</Option>
         </Select>
+        {/* AUTH-05: resourceId 精确筛选（与资源类型组合） */}
+        <Input
+          placeholder="资源 ID"
+          value={pending.resourceId}
+          onChange={(e) => setPending((p) => ({ ...p, resourceId: e.target.value }))}
+          onPressEnter={handleSearch}
+          style={{ width: 160 }}
+          allowClear
+        />
         <DatePicker.RangePicker
           presets={rangePresets}
           onChange={(dates) => {

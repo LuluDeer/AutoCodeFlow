@@ -754,6 +754,62 @@ describe("ExecutorController", () => {
     });
   });
 
+  // AUTH-05: rotate-token / delete accept an optional { reason } body and
+  // forward it to the service (which records it in the audit detail). The
+  // endpoints stay non-breaking — an empty body is fine.
+  describe("AUTH-05 — optional reason on high-risk executor endpoints", () => {
+    it("forwards body.reason to rotateToken", async () => {
+      const svc = { rotateToken: jest.fn().mockResolvedValue({ token: "t" }) };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+
+      await controller.rotateToken("e1", { reason: "suspected leak" });
+      expect(svc.rotateToken).toHaveBeenCalledWith("e1", "suspected leak");
+    });
+
+    it("rotateToken works without a body (non-breaking)", async () => {
+      const svc = { rotateToken: jest.fn().mockResolvedValue({ token: "t" }) };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+
+      await controller.rotateToken("e1");
+      expect(svc.rotateToken).toHaveBeenCalledWith("e1", undefined);
+    });
+
+    it("forwards body.reason to removeExecutor", async () => {
+      const svc = { removeById: jest.fn().mockResolvedValue(undefined) };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+
+      await controller.removeExecutor("e1", { reason: "host decommissioned" });
+      expect(svc.removeById).toHaveBeenCalledWith(
+        "e1",
+        "host decommissioned",
+      );
+    });
+
+    it("removeExecutor works without a body (non-breaking)", async () => {
+      const svc = { removeById: jest.fn().mockResolvedValue(undefined) };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+
+      await controller.removeExecutor("e1");
+      expect(svc.removeById).toHaveBeenCalledWith("e1", undefined);
+    });
+  });
+
   // R9 (round-8 P1 closure, W2/W3): the token endpoint delegates to the
   // idempotent issueToken() (no more rotate-on-every-call), and the heartbeat
   // response echoes the current tokenHash so the executor's N26 callback

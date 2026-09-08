@@ -254,7 +254,9 @@ describe("ExecutorController — W2 RBAC matrix for management write endpoints",
           .delete("/executors/e1")
           .set("x-test-role", UserRole.ADMIN)
           .expect(204);
-        expect(svcOf().removeById).toHaveBeenCalledWith("e1");
+        // AUTH-05: the endpoint now forwards the (absent) optional reason —
+        // a no-body DELETE calls removeById("e1", undefined).
+        expect(svcOf().removeById).toHaveBeenCalledWith("e1", undefined);
       });
     });
   });
