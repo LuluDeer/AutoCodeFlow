@@ -18,7 +18,7 @@
     "test:lib-notify": "cd packages/autocodeflow-notify && python -m pytest tests -q",
     "test:lib-db": "cd packages/autocodeflow-db && python -m pytest tests -q",
     "test:desktop": "cd apps/executor-desktop && npm run test:main",
-    "test:registry-npm": "echo 'registry-npm is verdaccio config only — see apps/registry-npm/README.md'",
+    "test:registry-npm": "node scripts/registry-npm-config.selftest.mjs",
     "test:all": "npm run test:api && npm run test:node && npm run test:python && npm run test:web && npm run test:cli && npm run test:mcp && npm run test:pypi && npm run test:sdk-py && npm run test:node-sdk",
     "typecheck:api": "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json",
     "typecheck:node": "cd apps/executor-node && npx tsc --noEmit",
@@ -42,6 +42,8 @@
     "bundle:executor": "cd apps/executor-desktop && bash scripts/bundle-executor.sh",
     "demo:seed": "node scripts/demo-seed.mjs",
     "demo:seed:selftest": "node scripts/demo-seed.selftest.mjs",
-    "load-test": "node scripts/load-test.mjs"
+    "load-test": "node scripts/load-test.mjs",
+    "bench:micro": "node scripts/micro-benchmark.mjs",
+    "bench:micro:selftest": "node scripts/micro-benchmark.selftest.mjs"
   }
 }
