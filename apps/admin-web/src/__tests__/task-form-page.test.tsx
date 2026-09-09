@@ -25,7 +25,7 @@ import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 
 // 隔离 api 层：底层 client 会拉起 axios 拦截器，测试只关心调用契约。
-vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn() } }));
+vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn(), list: vi.fn().mockResolvedValue({ items: [], total: 0 }) } }));
 vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
 }));

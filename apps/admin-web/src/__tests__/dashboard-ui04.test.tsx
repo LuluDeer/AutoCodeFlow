@@ -89,10 +89,20 @@ const summaryFixture = {
   avgDurationMs: 3200,
 };
 
+// NF-02 批顺手修复：sparkline 是「近 7 天滚动窗」补零——固定日期夹具在
+// 窗口滚出后（9 月中旬起）会让 sparkHasData 恒 false，kpi-sparkline 永不
+// 渲染 → waitFor 超时（时间炸弹，2026-09-10 实爆）。改为相对今天生成，
+// 落在窗口内，测试与运行日期解耦。
+const daysAgo = (n: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 const trendFixture = [
-  { date: '2026-09-01', success: 5, failed: 1 },
-  { date: '2026-09-02', success: 8, failed: 0 },
-  { date: '2026-09-03', success: 3, failed: 2 },
+  { date: daysAgo(2), success: 5, failed: 1 },
+  { date: daysAgo(1), success: 8, failed: 0 },
+  { date: daysAgo(0), success: 3, failed: 2 },
 ];
 
 const executorsFixture = [
