@@ -208,6 +208,11 @@ export class AiService {
       {
         headers: { Authorization: `Bearer ${apiKey}` },
         timeout: 30_000,
+        // R3: assertSafeHttpUrl only validates the first-hop URL; refuse
+        // 3xx so a redirect cannot bypass the SSRF guard into a private
+        // target. (See common/utils/safe-http.util.ts for the rebinding
+        // residual risk note — DNS pinning is left as a follow-up.)
+        maxRedirects: 0,
       },
     );
     return r.data.choices[0].message.content;
@@ -221,7 +226,10 @@ export class AiService {
     const r = await axios.post(
       `${host}/api/generate`,
       { model, prompt, stream: false },
-      { timeout: 60_000 },
+      // R3: maxRedirects=0 — see callOpenAI comment. Ollama is
+      // self-hosted; a redirect to a private host would still slip past
+      // the first-hop check, so we refuse 3xx outright.
+      { timeout: 60_000, maxRedirects: 0 },
     );
     return r.data.response;
   }

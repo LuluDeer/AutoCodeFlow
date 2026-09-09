@@ -115,5 +115,89 @@ if (
       expect(typeof instance.up).toBe("function");
       expect(typeof instance.down).toBe("function");
     });
+
+    // 改动2（可观测性补齐）：task_executions.exitCode 溯源列迁移。
+    it("exitCode 溯源迁移存在、可解析且幂等（IF [NOT] EXISTS）", () => {
+      const m = migrationFiles().find((f) =>
+        /-AddExecutionExitCode\.ts$/.test(f.file),
+      );
+      expect(m).toBeDefined();
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require(path.join(MIGRATIONS_DIR, m!.file));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const proto = Object.values(mod)[0] as any;
+      const instance = new proto();
+      expect(instance.name).toBe(proto.name);
+      expect(proto.name.endsWith(m!.stamp)).toBe(true);
+      expect(proto.name).toBe(`AddExecutionExitCode${m!.stamp}`);
+      expect(typeof instance.up).toBe("function");
+      expect(typeof instance.down).toBe("function");
+      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, m!.file), "utf8");
+      expect(sql).toContain('ADD COLUMN IF NOT EXISTS "exitCode"');
+      expect(sql).toContain('DROP COLUMN IF EXISTS "exitCode"');
+    });
+
+    // R5: deploy() 在途守卫 TOCTOU —— applicationId 上的部分唯一索引迁移。
+    it("R5: 在途部署部分唯一索引迁移存在、可解析且幂等（IF [NOT] EXISTS）", () => {
+      const m = migrationFiles().find((f) =>
+        /-AddAppDeploymentsInFlightUniqueIndex\.ts$/.test(f.file),
+      );
+      expect(m).toBeDefined();
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require(path.join(MIGRATIONS_DIR, m!.file));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const proto = Object.values(mod)[0] as any;
+      const instance = new proto();
+      expect(instance.name).toBe(proto.name);
+      expect(proto.name.endsWith(m!.stamp)).toBe(true);
+      expect(proto.name).toBe(
+        `AddAppDeploymentsInFlightUniqueIndex${m!.stamp}`,
+      );
+      expect(typeof instance.up).toBe("function");
+      expect(typeof instance.down).toBe("function");
+      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, m!.file), "utf8");
+      // 幂等语义：up 用 IF NOT EXISTS，down 用 DROP IF EXISTS
+      expect(sql).toContain(
+        'CREATE UNIQUE INDEX IF NOT EXISTS "uq_app_deployments_application_in_flight"',
+      );
+      expect(sql).toContain(
+        'DROP INDEX IF EXISTS "uq_app_deployments_application_in_flight"',
+      );
+      // 约束范围仅限在途状态（pending/deploying），不影响 running 等历史行
+      expect(sql).toContain("WHERE \"status\" IN ('pending', 'deploying')");
+      // 存量脏数据去重先行（否则同一应用多行在途时索引创建失败）
+      expect(sql).toContain("ROW_NUMBER()");
+    });
+
+    // OBS-03: execution_log_lines.level 检索列迁移——存在、可解析且幂等。
+    it("OBS-03: 日志行 level 列迁移存在、可解析且幂等（IF [NOT] EXISTS）", () => {
+      const m = migrationFiles().find((f) =>
+        /-AddExecutionLogLineLevel\.ts$/.test(f.file),
+      );
+      expect(m).toBeDefined();
+      // 时间戳基线：晚于并行会话在途的最后迁移（1789100000000 通知族 /
+      // 1789200000000 维护窗口），保证排序确定。
+      expect(Number(m!.stamp)).toBeGreaterThan(1789200000000);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require(path.join(MIGRATIONS_DIR, m!.file));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const proto = Object.values(mod)[0] as any;
+      const instance = new proto();
+      expect(instance.name).toBe(proto.name);
+      expect(proto.name.endsWith(m!.stamp)).toBe(true);
+      expect(proto.name).toBe(`AddExecutionLogLineLevel${m!.stamp}`);
+      expect(typeof instance.up).toBe("function");
+      expect(typeof instance.down).toBe("function");
+      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, m!.file), "utf8");
+      // 幂等语义：up 用 IF NOT EXISTS，down 用 DROP IF EXISTS
+      expect(sql).toContain('ADD COLUMN IF NOT EXISTS "level" VARCHAR(8)');
+      expect(sql).toContain(
+        'CREATE INDEX IF NOT EXISTS "IDX_execution_log_lines_execId_level_lineNumber"',
+      );
+      expect(sql).toContain(
+        'DROP INDEX IF EXISTS "IDX_execution_log_lines_execId_level_lineNumber"',
+      );
+      expect(sql).toContain('DROP COLUMN IF EXISTS "level"');
+    });
   });
 }

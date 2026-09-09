@@ -6751,7 +6751,7 @@ function loadParser (parserName) {
  * @private
  */
 
-var createError = __nccwpck_require__(3891)
+var createError = __nccwpck_require__(8901)
 var destroy = __nccwpck_require__(503)
 var getBody = __nccwpck_require__(6410)
 var iconv = __nccwpck_require__(7899)
@@ -6967,7 +6967,7 @@ function dump (req, callback) {
 
 var bytes = __nccwpck_require__(9402)
 var contentType = __nccwpck_require__(5887)
-var createError = __nccwpck_require__(3891)
+var createError = __nccwpck_require__(8901)
 var debug = __nccwpck_require__(1479)('body-parser:json')
 var read = __nccwpck_require__(9641)
 var typeis = __nccwpck_require__(7042)
@@ -7468,7 +7468,7 @@ function typeChecker (type) {
 
 var bytes = __nccwpck_require__(9402)
 var contentType = __nccwpck_require__(5887)
-var createError = __nccwpck_require__(3891)
+var createError = __nccwpck_require__(8901)
 var debug = __nccwpck_require__(1479)('body-parser:urlencoded')
 var deprecate = __nccwpck_require__(5548)('body-parser')
 var read = __nccwpck_require__(9641)
@@ -7754,458 +7754,6 @@ function typeChecker (type) {
   return function checkType (req) {
     return Boolean(typeis(req, type))
   }
-}
-
-
-/***/ }),
-
-/***/ 3891:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-/*!
- * http-errors
- * Copyright(c) 2014 Jonathan Ong
- * Copyright(c) 2016 Douglas Christopher Wilson
- * MIT Licensed
- */
-
-
-
-/**
- * Module dependencies.
- * @private
- */
-
-var deprecate = __nccwpck_require__(5548)('http-errors')
-var setPrototypeOf = __nccwpck_require__(9904)
-var statuses = __nccwpck_require__(9667)
-var inherits = __nccwpck_require__(9715)
-var toIdentifier = __nccwpck_require__(5461)
-
-/**
- * Module exports.
- * @public
- */
-
-module.exports = createError
-module.exports.HttpError = createHttpErrorConstructor()
-module.exports.isHttpError = createIsHttpErrorFunction(module.exports.HttpError)
-
-// Populate exports for all constructors
-populateConstructorExports(module.exports, statuses.codes, module.exports.HttpError)
-
-/**
- * Get the code class of a status code.
- * @private
- */
-
-function codeClass (status) {
-  return Number(String(status).charAt(0) + '00')
-}
-
-/**
- * Create a new HTTP Error.
- *
- * @returns {Error}
- * @public
- */
-
-function createError () {
-  // so much arity going on ~_~
-  var err
-  var msg
-  var status = 500
-  var props = {}
-  for (var i = 0; i < arguments.length; i++) {
-    var arg = arguments[i]
-    var type = typeof arg
-    if (type === 'object' && arg instanceof Error) {
-      err = arg
-      status = err.status || err.statusCode || status
-    } else if (type === 'number' && i === 0) {
-      status = arg
-    } else if (type === 'string') {
-      msg = arg
-    } else if (type === 'object') {
-      props = arg
-    } else {
-      throw new TypeError('argument #' + (i + 1) + ' unsupported type ' + type)
-    }
-  }
-
-  if (typeof status === 'number' && (status < 400 || status >= 600)) {
-    deprecate('non-error status code; use only 4xx or 5xx status codes')
-  }
-
-  if (typeof status !== 'number' ||
-    (!statuses.message[status] && (status < 400 || status >= 600))) {
-    status = 500
-  }
-
-  // constructor
-  var HttpError = createError[status] || createError[codeClass(status)]
-
-  if (!err) {
-    // create error
-    err = HttpError
-      ? new HttpError(msg)
-      : new Error(msg || statuses.message[status])
-    Error.captureStackTrace(err, createError)
-  }
-
-  if (!HttpError || !(err instanceof HttpError) || err.status !== status) {
-    // add properties to generic error
-    err.expose = status < 500
-    err.status = err.statusCode = status
-  }
-
-  for (var key in props) {
-    if (key !== 'status' && key !== 'statusCode') {
-      err[key] = props[key]
-    }
-  }
-
-  return err
-}
-
-/**
- * Create HTTP error abstract base class.
- * @private
- */
-
-function createHttpErrorConstructor () {
-  function HttpError () {
-    throw new TypeError('cannot construct abstract class')
-  }
-
-  inherits(HttpError, Error)
-
-  return HttpError
-}
-
-/**
- * Create a constructor for a client error.
- * @private
- */
-
-function createClientErrorConstructor (HttpError, name, code) {
-  var className = toClassName(name)
-
-  function ClientError (message) {
-    // create the error object
-    var msg = message != null ? message : statuses.message[code]
-    var err = new Error(msg)
-
-    // capture a stack trace to the construction point
-    Error.captureStackTrace(err, ClientError)
-
-    // adjust the [[Prototype]]
-    setPrototypeOf(err, ClientError.prototype)
-
-    // redefine the error message
-    Object.defineProperty(err, 'message', {
-      enumerable: true,
-      configurable: true,
-      value: msg,
-      writable: true
-    })
-
-    // redefine the error name
-    Object.defineProperty(err, 'name', {
-      enumerable: false,
-      configurable: true,
-      value: className,
-      writable: true
-    })
-
-    return err
-  }
-
-  inherits(ClientError, HttpError)
-  nameFunc(ClientError, className)
-
-  ClientError.prototype.status = code
-  ClientError.prototype.statusCode = code
-  ClientError.prototype.expose = true
-
-  return ClientError
-}
-
-/**
- * Create function to test is a value is a HttpError.
- * @private
- */
-
-function createIsHttpErrorFunction (HttpError) {
-  return function isHttpError (val) {
-    if (!val || typeof val !== 'object') {
-      return false
-    }
-
-    if (val instanceof HttpError) {
-      return true
-    }
-
-    return val instanceof Error &&
-      typeof val.expose === 'boolean' &&
-      typeof val.statusCode === 'number' && val.status === val.statusCode
-  }
-}
-
-/**
- * Create a constructor for a server error.
- * @private
- */
-
-function createServerErrorConstructor (HttpError, name, code) {
-  var className = toClassName(name)
-
-  function ServerError (message) {
-    // create the error object
-    var msg = message != null ? message : statuses.message[code]
-    var err = new Error(msg)
-
-    // capture a stack trace to the construction point
-    Error.captureStackTrace(err, ServerError)
-
-    // adjust the [[Prototype]]
-    setPrototypeOf(err, ServerError.prototype)
-
-    // redefine the error message
-    Object.defineProperty(err, 'message', {
-      enumerable: true,
-      configurable: true,
-      value: msg,
-      writable: true
-    })
-
-    // redefine the error name
-    Object.defineProperty(err, 'name', {
-      enumerable: false,
-      configurable: true,
-      value: className,
-      writable: true
-    })
-
-    return err
-  }
-
-  inherits(ServerError, HttpError)
-  nameFunc(ServerError, className)
-
-  ServerError.prototype.status = code
-  ServerError.prototype.statusCode = code
-  ServerError.prototype.expose = false
-
-  return ServerError
-}
-
-/**
- * Set the name of a function, if possible.
- * @private
- */
-
-function nameFunc (func, name) {
-  var desc = Object.getOwnPropertyDescriptor(func, 'name')
-
-  if (desc && desc.configurable) {
-    desc.value = name
-    Object.defineProperty(func, 'name', desc)
-  }
-}
-
-/**
- * Populate the exports object with constructors for every error class.
- * @private
- */
-
-function populateConstructorExports (exports, codes, HttpError) {
-  codes.forEach(function forEachCode (code) {
-    var CodeError
-    var name = toIdentifier(statuses.message[code])
-
-    switch (codeClass(code)) {
-      case 400:
-        CodeError = createClientErrorConstructor(HttpError, name, code)
-        break
-      case 500:
-        CodeError = createServerErrorConstructor(HttpError, name, code)
-        break
-    }
-
-    if (CodeError) {
-      // export the constructor
-      exports[code] = CodeError
-      exports[name] = CodeError
-    }
-  })
-}
-
-/**
- * Get a class name from a name identifier.
- *
- * @param {string} name
- * @returns {string}
- * @private
- */
-
-function toClassName (name) {
-  return name.slice(-5) === 'Error' ? name : name + 'Error'
-}
-
-
-/***/ }),
-
-/***/ 9667:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-/*!
- * statuses
- * Copyright(c) 2014 Jonathan Ong
- * Copyright(c) 2016 Douglas Christopher Wilson
- * MIT Licensed
- */
-
-
-
-/**
- * Module dependencies.
- * @private
- */
-
-var codes = __nccwpck_require__(9828)
-
-/**
- * Module exports.
- * @public
- */
-
-module.exports = status
-
-// status code to message map
-status.message = codes
-
-// status message (lower-case) to code map
-status.code = createMessageToStatusCodeMap(codes)
-
-// array of status codes
-status.codes = createStatusCodeList(codes)
-
-// status codes for redirects
-status.redirect = {
-  300: true,
-  301: true,
-  302: true,
-  303: true,
-  305: true,
-  307: true,
-  308: true
-}
-
-// status codes for empty bodies
-status.empty = {
-  204: true,
-  205: true,
-  304: true
-}
-
-// status codes for when you should retry the request
-status.retry = {
-  502: true,
-  503: true,
-  504: true
-}
-
-/**
- * Create a map of message to status code.
- * @private
- */
-
-function createMessageToStatusCodeMap (codes) {
-  var map = {}
-
-  Object.keys(codes).forEach(function forEachCode (code) {
-    var message = codes[code]
-    var status = Number(code)
-
-    // populate map
-    map[message.toLowerCase()] = status
-  })
-
-  return map
-}
-
-/**
- * Create a list of all status codes.
- * @private
- */
-
-function createStatusCodeList (codes) {
-  return Object.keys(codes).map(function mapCode (code) {
-    return Number(code)
-  })
-}
-
-/**
- * Get the status code for given message.
- * @private
- */
-
-function getStatusCode (message) {
-  var msg = message.toLowerCase()
-
-  if (!Object.prototype.hasOwnProperty.call(status.code, msg)) {
-    throw new Error('invalid status message: "' + message + '"')
-  }
-
-  return status.code[msg]
-}
-
-/**
- * Get the status message for given code.
- * @private
- */
-
-function getStatusMessage (code) {
-  if (!Object.prototype.hasOwnProperty.call(status.message, code)) {
-    throw new Error('invalid status code: ' + code)
-  }
-
-  return status.message[code]
-}
-
-/**
- * Get the status code.
- *
- * Given a number, this will throw if it is not a known status
- * code, otherwise the code will be returned. Given a string,
- * the string will be parsed for a number and return the code
- * if valid, otherwise will lookup the code assuming this is
- * the status message.
- *
- * @param {string|number} code
- * @returns {number}
- * @public
- */
-
-function status (code) {
-  if (typeof code === 'number') {
-    return getStatusMessage(code)
-  }
-
-  if (typeof code !== 'string') {
-    throw new TypeError('code must be a number or string')
-  }
-
-  // '403'
-  var n = parseInt(code, 10)
-  if (!isNaN(n)) {
-    return getStatusMessage(n)
-  }
-
-  return getStatusCode(code)
 }
 
 
@@ -9420,14 +8968,14 @@ var crypto = __nccwpck_require__(6982);
  * Sign the given `val` with `secret`.
  *
  * @param {String} val
- * @param {String} secret
+ * @param {String|NodeJS.ArrayBufferView|crypto.KeyObject} secret
  * @return {String}
  * @api private
  */
 
 exports.sign = function(val, secret){
-  if ('string' != typeof val) throw new TypeError("Cookie value must be provided as a string.");
-  if ('string' != typeof secret) throw new TypeError("Secret string must be provided.");
+  if ('string' !== typeof val) throw new TypeError("Cookie value must be provided as a string.");
+  if (null == secret) throw new TypeError("Secret key must be provided.");
   return val + '.' + crypto
     .createHmac('sha256', secret)
     .update(val)
@@ -9440,14 +8988,14 @@ exports.sign = function(val, secret){
  * returning `false` if the signature is invalid.
  *
  * @param {String} val
- * @param {String} secret
+ * @param {String|NodeJS.ArrayBufferView|crypto.KeyObject} secret
  * @return {String|Boolean}
  * @api private
  */
 
 exports.unsign = function(val, secret){
-  if ('string' != typeof val) throw new TypeError("Signed cookie string must be provided.");
-  if ('string' != typeof secret) throw new TypeError("Secret string must be provided.");
+  if ('string' !== typeof val) throw new TypeError("Signed cookie string must be provided.");
+  if (null == secret) throw new TypeError("Secret key must be provided.");
   var str = val.slice(0, val.lastIndexOf('.'))
     , mac = exports.sign(str, secret);
   
@@ -9492,6 +9040,7 @@ exports.serialize = serialize;
  */
 
 var __toString = Object.prototype.toString
+var __hasOwnProperty = Object.prototype.hasOwnProperty
 
 /**
  * RegExp to match cookie-name in RFC 6265 sec 4.1.1
@@ -9601,7 +9150,7 @@ function parse(str, opt) {
     var key = str.slice(keyStartIdx, keyEndIdx);
 
     // only assign once
-    if (!obj.hasOwnProperty(key)) {
+    if (!__hasOwnProperty.call(obj, key)) {
       var valStartIdx = startIndex(str, eqIdx + 1, endIdx);
       var valEndIdx = endIndex(str, endIdx, valStartIdx);
 
@@ -20002,13 +19551,14 @@ function populateConstructorExports (exports, codes, HttpError) {
 
 /**
  * Get a class name from a name identifier.
+ *
+ * @param {string} name
+ * @returns {string}
  * @private
  */
 
 function toClassName (name) {
-  return name.substr(-5) !== 'Error'
-    ? name + 'Error'
-    : name
+  return name.slice(-5) === 'Error' ? name : name + 'Error'
 }
 
 
@@ -26333,19 +25883,28 @@ function captureSegment (state, start, end, checkJson) {
   }
 }
 
+function chargeMergeWork (state) {
+  state.totalMergeKeys++
+
+  if (state.maxTotalMergeKeys !== -1 && state.totalMergeKeys > state.maxTotalMergeKeys) {
+    throwError(state, 'merge keys exceeded maxTotalMergeKeys (' + state.maxTotalMergeKeys + ')')
+  }
+}
+
 function mergeMappings (state, destination, source, overridableKeys) {
   if (!common.isObject(source)) {
     throwError(state, 'cannot merge mappings; the provided source object is unacceptable')
   }
+
+  // Count the source mapping itself to bound sequences of empty mappings.
+  chargeMergeWork(state)
 
   const sourceKeys = Object.keys(source)
 
   for (let index = 0, quantity = sourceKeys.length; index < quantity; index += 1) {
     const key = sourceKeys[index]
 
-    if (state.maxTotalMergeKeys !== -1 && ++state.totalMergeKeys > state.maxTotalMergeKeys) {
-      throwError(state, 'merge keys exceeded maxTotalMergeKeys (' + state.maxTotalMergeKeys + ')')
-    }
+    chargeMergeWork(state)
 
     if (!_hasOwnProperty.call(destination, key)) {
       setProperty(destination, key, source[key])
@@ -26388,6 +25947,10 @@ function storeMappingPair (state, _result, overridableKeys, keyTag, keyNode, val
 
   if (keyTag === 'tag:yaml.org,2002:merge') {
     if (Array.isArray(valueNode)) {
+      if (valueNode.length > 100) {
+        throwError(state, 'abnormal merge sequence size')
+      }
+
       for (let index = 0, quantity = valueNode.length; index < quantity; index += 1) {
         mergeMappings(state, _result, valueNode[index], overridableKeys)
       }
@@ -33882,9 +33445,9 @@ var interpretNumericEntities = function (str) {
     });
 };
 
-var parseArrayValue = function (val, options, currentArrayLength, isFlatArrayValue) {
+var parseArrayValue = function (val, options, currentArrayLength) {
     if (val && typeof val === 'string' && options.comma && val.indexOf(',') > -1) {
-        if (isFlatArrayValue && options.throwOnLimitExceeded) {
+        if (options.throwOnLimitExceeded) {
             var commaCount = 0;
             var commaIndex = val.indexOf(',');
             while (commaIndex > -1) {
@@ -33971,8 +33534,7 @@ var parseValues = function parseQueryStringValues(str, options) {
                     parseArrayValue(
                         part.slice(pos + 1),
                         options,
-                        isArray(obj[key]) ? obj[key].length : 0,
-                        part.indexOf('[]=') === -1
+                        isArray(obj[key]) ? obj[key].length : 0
                     ),
                     function (encodedVal) {
                         return options.decoder(encodedVal, defaults.decoder, charset, 'value');
@@ -34304,6 +33866,7 @@ var defaults = {
     charsetSentinel: false,
     commaRoundTrip: false,
     delimiter: '&',
+    depth: Infinity,
     encode: true,
     encodeDotInKeys: false,
     encoder: utils.encode,
@@ -34348,9 +33911,15 @@ var stringify = function stringify(
     formatter,
     encodeValuesOnly,
     charset,
-    sideChannel
+    sideChannel,
+    depth,
+    currentDepth
 ) {
     var obj = object;
+
+    if (currentDepth > depth) {
+        throw new RangeError('Input depth exceeded depth option of ' + depth);
+    }
 
     var tmpSc = sideChannel;
     var step = 0;
@@ -34371,9 +33940,9 @@ var stringify = function stringify(
         }
     }
 
-    if (typeof filter === 'function') {
-        obj = filter(prefix, obj);
-    } else if (obj instanceof Date) {
+    obj = typeof filter === 'function' ? filter(prefix, obj) : obj;
+
+    if (obj instanceof Date) {
         obj = serializeDate(obj);
     } else if (generateArrayPrefix === 'comma' && isArray(obj)) {
         obj = utils.maybeMap(obj, function (value) {
@@ -34426,7 +33995,7 @@ var stringify = function stringify(
 
     var adjustedPrefix = commaRoundTrip && isArray(obj) && obj.length === 1 ? encodedPrefix + '[]' : encodedPrefix;
 
-    if (allowEmptyArrays && isArray(obj) && obj.length === 0) {
+    if (allowEmptyArrays && isArray(obj) && obj.length === 0 && Object.keys(obj).length === 0) {
         return adjustedPrefix + '[]';
     }
 
@@ -34466,7 +34035,9 @@ var stringify = function stringify(
             formatter,
             encodeValuesOnly,
             charset,
-            valueSideChannel
+            valueSideChannel,
+            depth,
+            currentDepth + 1
         ));
     }
 
@@ -34533,6 +34104,7 @@ var normalizeStringifyOptions = function normalizeStringifyOptions(opts) {
         charsetSentinel: typeof opts.charsetSentinel === 'boolean' ? opts.charsetSentinel : defaults.charsetSentinel,
         commaRoundTrip: !!opts.commaRoundTrip,
         delimiter: typeof opts.delimiter === 'undefined' ? defaults.delimiter : opts.delimiter,
+        depth: typeof opts.depth === 'number' ? opts.depth : defaults.depth,
         encode: typeof opts.encode === 'boolean' ? opts.encode : defaults.encode,
         encodeDotInKeys: typeof opts.encodeDotInKeys === 'boolean' ? opts.encodeDotInKeys : defaults.encodeDotInKeys,
         encoder: typeof opts.encoder === 'function' ? opts.encoder : defaults.encoder,
@@ -34592,9 +34164,12 @@ module.exports = function (object, opts) {
         if (options.skipNulls && value === null) {
             continue;
         }
+
+        var encodedKey = options.encodeDotInKeys ? String(key).replace(/\./g, '%2E') : String(key);
+
         pushToArray(keys, stringify(
             value,
-            key,
+            encodedKey,
             generateArrayPrefix,
             commaRoundTrip,
             options.allowEmptyArrays,
@@ -34610,7 +34185,9 @@ module.exports = function (object, opts) {
             options.formatter,
             options.encodeValuesOnly,
             options.charset,
-            sideChannel
+            sideChannel,
+            options.depth,
+            0
         ));
     }
 
@@ -34968,7 +34545,7 @@ var isBuffer = function isBuffer(obj) {
         return false;
     }
 
-    return !!(obj.constructor && obj.constructor.isBuffer && obj.constructor.isBuffer(obj));
+    return !!(obj.constructor && typeof obj.constructor.isBuffer === 'function' && obj.constructor.isBuffer(obj));
 };
 
 var combine = function combine(a, b, arrayLimit, plainObjects, throwOnLimitExceeded) {
@@ -34977,8 +34554,15 @@ var combine = function combine(a, b, arrayLimit, plainObjects, throwOnLimitExcee
         if (throwOnLimitExceeded) {
             throw new RangeError('Array limit exceeded. Only ' + arrayLimit + ' element' + (arrayLimit === 1 ? '' : 's') + ' allowed in an array.');
         }
-        var newIndex = getMaxIndex(a) + 1;
-        a[newIndex] = b;
+        // spread `b` one level, matching the `[].concat(a, b)` used below, so a
+        // collection appended to an already-overflowed object is flattened
+        // rather than nested under a single index
+        var bValues = isArray(b) ? b : [b];
+        var newIndex = getMaxIndex(a);
+        for (var i = 0; i < bValues.length; ++i) {
+            newIndex += 1;
+            a[newIndex] = bValues[i];
+        }
         setMaxIndex(a, newIndex);
         return a;
     }
@@ -35212,7 +34796,7 @@ function sortByRangeStart (a, b) {
 
 var asyncHooks = tryRequireAsyncHooks()
 var bytes = __nccwpck_require__(9402)
-var createError = __nccwpck_require__(6566)
+var createError = __nccwpck_require__(8901)
 var iconv = __nccwpck_require__(7899)
 var unpipe = __nccwpck_require__(7920)
 
@@ -35531,458 +35115,6 @@ function wrap (fn) {
 
   // return bound function
   return res.runInAsyncScope.bind(res, fn, null)
-}
-
-
-/***/ }),
-
-/***/ 6566:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-/*!
- * http-errors
- * Copyright(c) 2014 Jonathan Ong
- * Copyright(c) 2016 Douglas Christopher Wilson
- * MIT Licensed
- */
-
-
-
-/**
- * Module dependencies.
- * @private
- */
-
-var deprecate = __nccwpck_require__(5548)('http-errors')
-var setPrototypeOf = __nccwpck_require__(9904)
-var statuses = __nccwpck_require__(4236)
-var inherits = __nccwpck_require__(9715)
-var toIdentifier = __nccwpck_require__(5461)
-
-/**
- * Module exports.
- * @public
- */
-
-module.exports = createError
-module.exports.HttpError = createHttpErrorConstructor()
-module.exports.isHttpError = createIsHttpErrorFunction(module.exports.HttpError)
-
-// Populate exports for all constructors
-populateConstructorExports(module.exports, statuses.codes, module.exports.HttpError)
-
-/**
- * Get the code class of a status code.
- * @private
- */
-
-function codeClass (status) {
-  return Number(String(status).charAt(0) + '00')
-}
-
-/**
- * Create a new HTTP Error.
- *
- * @returns {Error}
- * @public
- */
-
-function createError () {
-  // so much arity going on ~_~
-  var err
-  var msg
-  var status = 500
-  var props = {}
-  for (var i = 0; i < arguments.length; i++) {
-    var arg = arguments[i]
-    var type = typeof arg
-    if (type === 'object' && arg instanceof Error) {
-      err = arg
-      status = err.status || err.statusCode || status
-    } else if (type === 'number' && i === 0) {
-      status = arg
-    } else if (type === 'string') {
-      msg = arg
-    } else if (type === 'object') {
-      props = arg
-    } else {
-      throw new TypeError('argument #' + (i + 1) + ' unsupported type ' + type)
-    }
-  }
-
-  if (typeof status === 'number' && (status < 400 || status >= 600)) {
-    deprecate('non-error status code; use only 4xx or 5xx status codes')
-  }
-
-  if (typeof status !== 'number' ||
-    (!statuses.message[status] && (status < 400 || status >= 600))) {
-    status = 500
-  }
-
-  // constructor
-  var HttpError = createError[status] || createError[codeClass(status)]
-
-  if (!err) {
-    // create error
-    err = HttpError
-      ? new HttpError(msg)
-      : new Error(msg || statuses.message[status])
-    Error.captureStackTrace(err, createError)
-  }
-
-  if (!HttpError || !(err instanceof HttpError) || err.status !== status) {
-    // add properties to generic error
-    err.expose = status < 500
-    err.status = err.statusCode = status
-  }
-
-  for (var key in props) {
-    if (key !== 'status' && key !== 'statusCode') {
-      err[key] = props[key]
-    }
-  }
-
-  return err
-}
-
-/**
- * Create HTTP error abstract base class.
- * @private
- */
-
-function createHttpErrorConstructor () {
-  function HttpError () {
-    throw new TypeError('cannot construct abstract class')
-  }
-
-  inherits(HttpError, Error)
-
-  return HttpError
-}
-
-/**
- * Create a constructor for a client error.
- * @private
- */
-
-function createClientErrorConstructor (HttpError, name, code) {
-  var className = toClassName(name)
-
-  function ClientError (message) {
-    // create the error object
-    var msg = message != null ? message : statuses.message[code]
-    var err = new Error(msg)
-
-    // capture a stack trace to the construction point
-    Error.captureStackTrace(err, ClientError)
-
-    // adjust the [[Prototype]]
-    setPrototypeOf(err, ClientError.prototype)
-
-    // redefine the error message
-    Object.defineProperty(err, 'message', {
-      enumerable: true,
-      configurable: true,
-      value: msg,
-      writable: true
-    })
-
-    // redefine the error name
-    Object.defineProperty(err, 'name', {
-      enumerable: false,
-      configurable: true,
-      value: className,
-      writable: true
-    })
-
-    return err
-  }
-
-  inherits(ClientError, HttpError)
-  nameFunc(ClientError, className)
-
-  ClientError.prototype.status = code
-  ClientError.prototype.statusCode = code
-  ClientError.prototype.expose = true
-
-  return ClientError
-}
-
-/**
- * Create function to test is a value is a HttpError.
- * @private
- */
-
-function createIsHttpErrorFunction (HttpError) {
-  return function isHttpError (val) {
-    if (!val || typeof val !== 'object') {
-      return false
-    }
-
-    if (val instanceof HttpError) {
-      return true
-    }
-
-    return val instanceof Error &&
-      typeof val.expose === 'boolean' &&
-      typeof val.statusCode === 'number' && val.status === val.statusCode
-  }
-}
-
-/**
- * Create a constructor for a server error.
- * @private
- */
-
-function createServerErrorConstructor (HttpError, name, code) {
-  var className = toClassName(name)
-
-  function ServerError (message) {
-    // create the error object
-    var msg = message != null ? message : statuses.message[code]
-    var err = new Error(msg)
-
-    // capture a stack trace to the construction point
-    Error.captureStackTrace(err, ServerError)
-
-    // adjust the [[Prototype]]
-    setPrototypeOf(err, ServerError.prototype)
-
-    // redefine the error message
-    Object.defineProperty(err, 'message', {
-      enumerable: true,
-      configurable: true,
-      value: msg,
-      writable: true
-    })
-
-    // redefine the error name
-    Object.defineProperty(err, 'name', {
-      enumerable: false,
-      configurable: true,
-      value: className,
-      writable: true
-    })
-
-    return err
-  }
-
-  inherits(ServerError, HttpError)
-  nameFunc(ServerError, className)
-
-  ServerError.prototype.status = code
-  ServerError.prototype.statusCode = code
-  ServerError.prototype.expose = false
-
-  return ServerError
-}
-
-/**
- * Set the name of a function, if possible.
- * @private
- */
-
-function nameFunc (func, name) {
-  var desc = Object.getOwnPropertyDescriptor(func, 'name')
-
-  if (desc && desc.configurable) {
-    desc.value = name
-    Object.defineProperty(func, 'name', desc)
-  }
-}
-
-/**
- * Populate the exports object with constructors for every error class.
- * @private
- */
-
-function populateConstructorExports (exports, codes, HttpError) {
-  codes.forEach(function forEachCode (code) {
-    var CodeError
-    var name = toIdentifier(statuses.message[code])
-
-    switch (codeClass(code)) {
-      case 400:
-        CodeError = createClientErrorConstructor(HttpError, name, code)
-        break
-      case 500:
-        CodeError = createServerErrorConstructor(HttpError, name, code)
-        break
-    }
-
-    if (CodeError) {
-      // export the constructor
-      exports[code] = CodeError
-      exports[name] = CodeError
-    }
-  })
-}
-
-/**
- * Get a class name from a name identifier.
- *
- * @param {string} name
- * @returns {string}
- * @private
- */
-
-function toClassName (name) {
-  return name.slice(-5) === 'Error' ? name : name + 'Error'
-}
-
-
-/***/ }),
-
-/***/ 4236:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-"use strict";
-/*!
- * statuses
- * Copyright(c) 2014 Jonathan Ong
- * Copyright(c) 2016 Douglas Christopher Wilson
- * MIT Licensed
- */
-
-
-
-/**
- * Module dependencies.
- * @private
- */
-
-var codes = __nccwpck_require__(6723)
-
-/**
- * Module exports.
- * @public
- */
-
-module.exports = status
-
-// status code to message map
-status.message = codes
-
-// status message (lower-case) to code map
-status.code = createMessageToStatusCodeMap(codes)
-
-// array of status codes
-status.codes = createStatusCodeList(codes)
-
-// status codes for redirects
-status.redirect = {
-  300: true,
-  301: true,
-  302: true,
-  303: true,
-  305: true,
-  307: true,
-  308: true
-}
-
-// status codes for empty bodies
-status.empty = {
-  204: true,
-  205: true,
-  304: true
-}
-
-// status codes for when you should retry the request
-status.retry = {
-  502: true,
-  503: true,
-  504: true
-}
-
-/**
- * Create a map of message to status code.
- * @private
- */
-
-function createMessageToStatusCodeMap (codes) {
-  var map = {}
-
-  Object.keys(codes).forEach(function forEachCode (code) {
-    var message = codes[code]
-    var status = Number(code)
-
-    // populate map
-    map[message.toLowerCase()] = status
-  })
-
-  return map
-}
-
-/**
- * Create a list of all status codes.
- * @private
- */
-
-function createStatusCodeList (codes) {
-  return Object.keys(codes).map(function mapCode (code) {
-    return Number(code)
-  })
-}
-
-/**
- * Get the status code for given message.
- * @private
- */
-
-function getStatusCode (message) {
-  var msg = message.toLowerCase()
-
-  if (!Object.prototype.hasOwnProperty.call(status.code, msg)) {
-    throw new Error('invalid status message: "' + message + '"')
-  }
-
-  return status.code[msg]
-}
-
-/**
- * Get the status message for given code.
- * @private
- */
-
-function getStatusMessage (code) {
-  if (!Object.prototype.hasOwnProperty.call(status.message, code)) {
-    throw new Error('invalid status code: ' + code)
-  }
-
-  return status.message[code]
-}
-
-/**
- * Get the status code.
- *
- * Given a number, this will throw if it is not a known status
- * code, otherwise the code will be returned. Given a string,
- * the string will be parsed for a number and return the code
- * if valid, otherwise will lookup the code assuming this is
- * the status message.
- *
- * @param {string|number} code
- * @returns {number}
- * @public
- */
-
-function status (code) {
-  if (typeof code === 'number') {
-    return getStatusMessage(code)
-  }
-
-  if (typeof code !== 'string') {
-    throw new TypeError('code must be a number or string')
-  }
-
-  // '403'
-  var n = parseInt(code, 10)
-  if (!isNaN(n)) {
-    return getStatusMessage(n)
-  }
-
-  return getStatusCode(code)
 }
 
 
@@ -39766,7 +38898,7 @@ var createError = __nccwpck_require__(8901)
 var debug = __nccwpck_require__(1479)('send')
 var deprecate = __nccwpck_require__(5548)('send')
 var destroy = __nccwpck_require__(503)
-var encodeUrl = __nccwpck_require__(4400)
+var encodeUrl = __nccwpck_require__(102)
 var escapeHtml = __nccwpck_require__(218)
 var etag = __nccwpck_require__(4582)
 var fresh = __nccwpck_require__(9013)
@@ -40889,74 +40021,6 @@ function setHeaders (res, headers) {
     var key = keys[i]
     res.setHeader(key, headers[key])
   }
-}
-
-
-/***/ }),
-
-/***/ 4400:
-/***/ ((module) => {
-
-"use strict";
-/*!
- * encodeurl
- * Copyright(c) 2016 Douglas Christopher Wilson
- * MIT Licensed
- */
-
-
-
-/**
- * Module exports.
- * @public
- */
-
-module.exports = encodeUrl
-
-/**
- * RegExp to match non-URL code points, *after* encoding (i.e. not including "%")
- * and including invalid escape sequences.
- * @private
- */
-
-var ENCODE_CHARS_REGEXP = /(?:[^\x21\x25\x26-\x3B\x3D\x3F-\x5B\x5D\x5F\x61-\x7A\x7E]|%(?:[^0-9A-Fa-f]|[0-9A-Fa-f][^0-9A-Fa-f]|$))+/g
-
-/**
- * RegExp to match unmatched surrogate pair.
- * @private
- */
-
-var UNMATCHED_SURROGATE_PAIR_REGEXP = /(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF]([^\uDC00-\uDFFF]|$)/g
-
-/**
- * String to replace unmatched surrogate pair with.
- * @private
- */
-
-var UNMATCHED_SURROGATE_PAIR_REPLACE = '$1\uFFFD$2'
-
-/**
- * Encode a URL to a percent-encoded form, excluding already-encoded sequences.
- *
- * This function will take an already-encoded URL and encode all the non-URL
- * code points. This function will not encode the "%" character unless it is
- * not part of a valid sequence (`%20` will be left as-is, but `%foo` will
- * be encoded as `%25foo`).
- *
- * This encode is meant to be "safe" and does not throw errors. It will try as
- * hard as it can to properly encode the given URL, including replacing any raw,
- * unpaired surrogate pairs with the Unicode replacement character prior to
- * encoding.
- *
- * @param {string} url
- * @return {string}
- * @public
- */
-
-function encodeUrl (url) {
-  return String(url)
-    .replace(UNMATCHED_SURROGATE_PAIR_REGEXP, UNMATCHED_SURROGATE_PAIR_REPLACE)
-    .replace(ENCODE_CHARS_REGEXP, encodeURI)
 }
 
 
@@ -44560,6 +43624,7 @@ class Logger extends Transform {
           if (info instanceof Error) {
             infoClone.stack = info.stack;
             infoClone.message = info.message;
+            infoClone.cause = info.cause;
           }
 
           logger.write(infoClone);
@@ -44645,6 +43710,28 @@ class Logger extends Transform {
     if (rejectionHandlers) {
       this.rejections.handle(rejectionHandlers);
     }
+  }
+
+  /* eslint-disable valid-jsdoc */
+  /**
+   * Helper method to get the highest logging level associated with a logger
+   *
+   * @returns { number | null } - The highest configured logging level, null
+   * for invalid configuration
+   */
+  getHighestLogLevel() {
+    // This can be null, if this.level has an invalid value
+    const configuredLevelValue = getLevelValue(this.levels, this.level);
+
+    // If there are no transports, return the level configured at the logger level
+    if (!this.transports || this.transports.length === 0) {
+      return configuredLevelValue;
+    }
+
+    return this.transports.reduce((max, transport) => {
+      const levelValue = getLevelValue(this.levels, transport.level);
+      return levelValue !== null && levelValue > max ? levelValue : max;
+    }, configuredLevelValue);
   }
 
   isLevelEnabled(level) {
@@ -45231,7 +44318,7 @@ class Profiler {
 
     return this.logger.write(info);
   }
-};
+}
 
 module.exports = Profiler;
 
@@ -45935,6 +45022,38 @@ module.exports = class File extends TransportStream {
         setImmediate(() => this._stream.end());
       }
     }
+  }
+
+  /**
+   * Called by Node.js Writable stream before emitting 'finish'.
+   * Ensures all buffered data is flushed to the underlying file stream
+   * before the transport signals completion.
+   * @param {Function} callback - Callback to signal completion.
+   * @private
+   */
+  _final(callback) {
+    // If still opening, wait for the file to be opened first
+    if (this._opening) {
+      this.once('open', () => this._final(callback));
+      return;
+    }
+
+    // End the PassThrough stream
+    this._stream.end();
+
+    // No destination stream, call callback immediately
+    if (!this._dest) {
+      return callback();
+    }
+
+    // Destination is already finished
+    if (this._dest.writableFinished) {
+      return callback();
+    }
+
+    // Wait for destination stream to finish writing
+    this._dest.once('finish', callback);
+    this._dest.once('error', callback);
   }
 
   /**
@@ -47034,9 +46153,11 @@ exports.initAdminClients = initAdminClients;
 exports.getCurrentAdminUrl = getCurrentAdminUrl;
 exports.getAllAdminUrls = getAllAdminUrls;
 exports.failover = failover;
+exports.checkAdminApiConnectivity = checkAdminApiConnectivity;
 exports.request = request;
 exports.get = get;
 exports.post = post;
+exports.postWithStaticToken = postWithStaticToken;
 exports.put = put;
 exports.del = del;
 const axios_1 = __importDefault(__nccwpck_require__(6178));
@@ -47063,8 +46184,39 @@ function failover() {
     currentIndex = (currentIndex + 1) % adminUrls.length;
     logger_1.logger.warn(`Failed over to admin server: ${adminUrls[currentIndex]}`);
 }
-async function request(method, path, data, retryCount = adminUrls.length) {
-    const token = await (0, auth_1.getCurrentToken)();
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+function getErrorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+async function checkAdminApiConnectivity(options = {}) {
+    const attempts = options.attempts ?? 3;
+    const timeoutMs = options.timeoutMs ?? 5000;
+    let delayMs = options.initialDelayMs ?? 1000;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        for (let i = 0; i < adminUrls.length; i++) {
+            const url = adminUrls[i];
+            try {
+                await axios_1.default.get(`${url}/api/health`, { timeout: timeoutMs });
+                currentIndex = i;
+                logger_1.logger.info(`Admin API connectivity check succeeded: ${url}`);
+                return true;
+            }
+            catch (error) {
+                logger_1.logger.warn(`Admin API connectivity check failed for ${url} (attempt ${attempt}/${attempts}): ${getErrorMessage(error)}`);
+            }
+        }
+        if (attempt < attempts) {
+            logger_1.logger.warn(`Admin API is not reachable yet; retrying in ${delayMs}ms`);
+            await sleep(delayMs);
+            delayMs *= 2;
+        }
+    }
+    logger_1.logger.warn('Admin API connectivity check failed after startup retries; executor will continue and heartbeat will retry in the background.');
+    return false;
+}
+function buildAuthHeaders(token) {
     const headers = {
         'Content-Type': 'application/json',
     };
@@ -47073,6 +46225,17 @@ async function request(method, path, data, retryCount = adminUrls.length) {
         headers['X-Executor-Token'] = token;
         headers['Authorization'] = `Bearer ${token}`;
     }
+    return headers;
+}
+/** True when the error is an HTTP 401 ANSWER from admin-api (as opposed to a
+ *  connect/timeout failure). Only meaningful for errors thrown by performRequest. */
+function isUnauthorized(error) {
+    return error?.response?.status === 401;
+}
+async function performRequest(token, method, path, data, retryCount = adminUrls.length, extraHeaders) {
+    const headers = extraHeaders
+        ? { ...buildAuthHeaders(token), ...extraHeaders }
+        : buildAuthHeaders(token);
     for (let i = 0; i < retryCount; i++) {
         try {
             const client = axios_1.default.create({
@@ -47088,6 +46251,12 @@ async function request(method, path, data, retryCount = adminUrls.length) {
             return response;
         }
         catch (error) {
+            // R10 (round-10 gap #3): a 401 is an auth verdict, not a connectivity
+            // failure — every admin replica reads the same DB, so failing over
+            // cannot turn it valid. Surface it to request()'s re-auth handling
+            // instead of burning the failover retries (and the 500ms sleeps) on it.
+            if (isUnauthorized(error))
+                throw error;
             logger_1.logger.warn(`Request to admin ${adminUrls[currentIndex]} failed: ${error.message}`);
             if (i < retryCount - 1) {
                 failover();
@@ -47100,17 +46269,281 @@ async function request(method, path, data, retryCount = adminUrls.length) {
     }
     throw new Error('Request failed after all retries');
 }
+async function request(method, path, data, retryCount = adminUrls.length, tokenMode = 'current', extraHeaders) {
+    const token = tokenMode === 'static' ? (0, auth_1.getStaticToken)() : await (0, auth_1.getCurrentToken)();
+    try {
+        return await performRequest(token, method, path, data, retryCount, extraHeaders);
+    }
+    catch (error) {
+        // R10 (round-10 gap #3): stale-credential self-heal. A 401 on a
+        // dynamic-token request means admin-api rotated our per-executor token
+        // out from under us — the direct path is the admin-UI "rotate token"
+        // button (POST /executors/:id/rotate-token), after which our bearer AND
+        // our adopted tokenHash (the N26 per-execution callback HMAC secret) are
+        // both stale. Without this heal the heartbeat keeps 401ing until the
+        // 30-minute scheduled refresh, the executor gets marked OFFLINE after
+        // 3 missed intervals, and task callbacks 401 the whole time.
+        //
+        // forceTokenRefresh() re-hits POST /token with the STATIC token and, via
+        // fetchToken's envelope handling, adopts BOTH the fresh token and the
+        // matching tokenHash in one round-trip — then we retry the original
+        // request once. Storm guards: exactly one auth retry per request (a
+        // second 401 propagates), forceTokenRefresh degrades to a no-op while
+        // the 30s fetch-failure backoff is active, and admin-api's issueToken is
+        // idempotent per (address, startupId) so concurrent 401s converge on the
+        // same token instead of rotating.
+        if (tokenMode === 'current' && isUnauthorized(error)) {
+            const fresh = await (0, auth_1.forceTokenRefresh)();
+            if (fresh && fresh !== token) {
+                return performRequest(fresh, method, path, data, retryCount, extraHeaders);
+            }
+        }
+        throw error;
+    }
+}
 async function get(path) {
     return request('get', path);
 }
-async function post(path, data) {
-    return request('post', path, data);
+async function post(path, data, extraHeaders) {
+    return request('post', path, data, adminUrls.length, 'current', extraHeaders);
+}
+async function postWithStaticToken(path, data) {
+    return request('post', path, data, adminUrls.length, 'static');
 }
 async function put(path, data) {
     return request('put', path, data);
 }
 async function del(path) {
     return request('delete', path);
+}
+
+
+/***/ }),
+
+/***/ 4138:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.unwrapAdminResponseData = unwrapAdminResponseData;
+exports.adoptExecutorTokenHash = adoptExecutorTokenHash;
+/**
+ * R9 (round-8 P1 closure): admin-api response-envelope helpers.
+ *
+ * The admin-api applies a global ResponseInterceptor that wraps every
+ * successful response in `{ code, message, data }` (see
+ * apps/admin-api/src/common/interceptors/response.interceptor.ts). The
+ * executor's own HTTP helpers must strip that envelope before reading
+ * fields — the same `unwrap()` pattern already used by acf-cli
+ * (packages/acf-cli/src/client.ts) and mcp-server
+ * (packages/mcp-server/src/api.ts). Reading `response.data.token` directly
+ * yields `undefined` on every enveloped response: that bug made
+ * middleware/auth.ts fetch a fresh token every 30s, and because the token
+ * endpoint rotated on every call it put the DB tokenHash on a ~30s rotation
+ * cycle that broke the N26 per-execution callback-token invariant
+ * (docs/VERIFY-round8-e2e.md §1.5).
+ */
+const config_1 = __nccwpck_require__(3650);
+/**
+ * Unwrap the `{ code, message, data }` envelope added by the admin-api
+ * ResponseInterceptor. Bare (non-enveloped) payloads — older admins, direct
+ * service calls, unit-test fixtures — are returned as-is, so callers can
+ * read `token`/`tokenHash` from either shape.
+ */
+function unwrapAdminResponseData(raw) {
+    if (raw && typeof raw === 'object' && 'data' in raw) {
+        const envelope = raw;
+        if ('code' in envelope || 'message' in envelope) {
+            return (envelope.data ?? null);
+        }
+    }
+    return raw;
+}
+/**
+ * N26/W3 adoption: if an admin-api response (register, POST /token, or
+ * heartbeat) carries the executor's current stored `tokenHash`, refresh
+ * `config.executorTokenHash` so the per-execution callback-token HMAC key
+ * follows admin-side rotations instead of going stale. Accepts both the
+ * enveloped and the bare response shape. No-op when the field is absent.
+ */
+function adoptExecutorTokenHash(raw) {
+    const payload = unwrapAdminResponseData(raw);
+    const tokenHash = payload?.tokenHash;
+    if (typeof tokenHash === 'string' && tokenHash) {
+        config_1.config.executorTokenHash = tokenHash;
+    }
+}
+
+
+/***/ }),
+
+/***/ 1413:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.MAX_ARTIFACT_SIZE = exports.MAX_ARTIFACT_COUNT = void 0;
+exports.artifactsDirFor = artifactsDirFor;
+exports.collectArtifacts = collectArtifacts;
+exports.gatherArtifacts = gatherArtifacts;
+const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
+const crypto = __importStar(__nccwpck_require__(6982));
+const logger_1 = __nccwpck_require__(6888);
+/**
+ * FEAT-05: 执行产物（artifacts）收集与上传 —— executor-node 侧。
+ *
+ * 与 executor-python/artifacts.py 对等：任务把交付物写进工作目录下的
+ * `artifacts/`，任务结束时收集清单 [{name,size,sha256}]，逐文件 multipart PUT
+ * 上传到 admin `/api/executions/:execId/artifacts/:name`（机器鉴权，复用回调
+ * 同一 token），清单随终态回调上报。artifacts 永远 best-effort —— 任何异常只
+ * 记日志，绝不抛出、绝不阻塞任务终态。
+ */
+exports.MAX_ARTIFACT_COUNT = 20;
+exports.MAX_ARTIFACT_SIZE = 100 * 1024 * 1024; // 100 MB
+const ART_DIR_NAME = 'artifacts';
+// 与 admin SAFE_ARTIFACT_NAME_RE 对齐：裸文件名、字母数字开头、仅 [A-Za-z0-9._-]。
+const SAFE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
+function artifactsDirFor(workDir) {
+    return path.join(workDir, ART_DIR_NAME);
+}
+function sha256OfFile(file) {
+    const h = crypto.createHash('sha256');
+    const fd = fs.openSync(file, 'r');
+    try {
+        const buf = Buffer.alloc(1024 * 1024);
+        let n;
+        while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
+            h.update(buf.subarray(0, n));
+        }
+    }
+    finally {
+        fs.closeSync(fd);
+    }
+    return h.digest('hex');
+}
+/** 扫描 <workDir>/artifacts/（仅顶层普通文件），返回待上传项（best-effort）。 */
+function collectArtifacts(workDir) {
+    const dir = artifactsDirFor(workDir);
+    let entries;
+    try {
+        if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory())
+            return [];
+        entries = fs.readdirSync(dir);
+    }
+    catch (err) {
+        logger_1.logger.warn(`artifacts: 无法读取 ${dir}: ${String(err)}`);
+        return [];
+    }
+    const items = [];
+    for (const name of entries.sort()) {
+        if (items.length >= exports.MAX_ARTIFACT_COUNT) {
+            logger_1.logger.warn(`artifacts: 超过 ${exports.MAX_ARTIFACT_COUNT} 上限，跳过其余文件`);
+            break;
+        }
+        const abs = path.join(dir, name);
+        try {
+            const st = fs.statSync(abs);
+            if (!st.isFile())
+                continue;
+            if (st.size > exports.MAX_ARTIFACT_SIZE) {
+                logger_1.logger.warn(`artifacts: 跳过超限文件 ${name} (${st.size} bytes)`);
+                continue;
+            }
+            if (!SAFE_NAME_RE.test(name)) {
+                logger_1.logger.warn(`artifacts: 跳过非法文件名 ${JSON.stringify(name)}`);
+                continue;
+            }
+            items.push({ name, size: st.size, sha256: sha256OfFile(abs), absPath: abs });
+        }
+        catch (err) {
+            logger_1.logger.warn(`artifacts: 处理 ${name} 失败: ${String(err)}`);
+        }
+    }
+    return items;
+}
+function apiBase(adminBaseUrl) {
+    const base = adminBaseUrl.replace(/\/+$/, '');
+    return base.endsWith('/api') ? base : `${base}/api`;
+}
+async function uploadOne(adminBaseUrl, executionId, item, token) {
+    try {
+        const url = `${apiBase(adminBaseUrl)}/executions/${encodeURIComponent(executionId)}` +
+            `/artifacts/${encodeURIComponent(item.name)}?sha256=${item.sha256}`;
+        const buf = fs.readFileSync(item.absPath);
+        const form = new FormData();
+        form.append('file', new Blob([buf]), item.name);
+        const headers = {};
+        if (token)
+            headers['Authorization'] = `Bearer ${token}`;
+        const resp = await fetch(url, { method: 'PUT', headers, body: form });
+        if (resp.ok)
+            return true;
+        logger_1.logger.warn(`artifacts: 上传 ${item.name} 返回 HTTP ${resp.status}（跳过）`);
+        return false;
+    }
+    catch (err) {
+        logger_1.logger.warn(`artifacts: 上传 ${item.name} 失败: ${String(err)}`);
+        return false;
+    }
+}
+/** 收集 + 上传，返回入库清单（仅上传成功项）；adminBaseUrl 缺省则返回 []。 */
+async function gatherArtifacts(executionId, workDir, adminBaseUrl, token) {
+    if (!adminBaseUrl)
+        return [];
+    let items;
+    try {
+        items = collectArtifacts(workDir);
+    }
+    catch (err) {
+        logger_1.logger.warn(`artifacts: 收集异常: ${String(err)}`);
+        return [];
+    }
+    const manifest = [];
+    for (const item of items) {
+        const ok = await uploadOne(adminBaseUrl, executionId, item, token);
+        if (ok)
+            manifest.push({ name: item.name, size: item.size, sha256: item.sha256 });
+    }
+    if (manifest.length) {
+        logger_1.logger.info(`artifacts: 已上传 ${manifest.length} 个产物 for ${executionId}`);
+    }
+    return manifest;
 }
 
 
@@ -47165,11 +46598,50 @@ const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
 const admin_client_1 = __nccwpck_require__(6609);
 const callbackQueue = [];
-let callbackThread = null;
+// Real re-entry sentinel — the previous callbackThread variable was never
+// assigned, so repeated startCallbackThread() calls spawned parallel loops.
+let loopStarted = false;
 let stopped = false;
+let callbackLoopPromise = null;
+const CALLBACK_DRAIN_TIMEOUT_MS = 10000;
+let stopPromise = null;
+let drainExpired = false;
+const deadlineListeners = new Set();
+// Remove listeners after each operation so normal operation does not retain
+// every completed POST until shutdown. Late network rejections remain handled.
+function untilDeadline(operation, fallback) {
+    return new Promise((resolve, reject) => {
+        const expire = () => resolve(fallback);
+        deadlineListeners.add(expire);
+        operation.then(resolve, reject).finally(() => deadlineListeners.delete(expire));
+        if (drainExpired)
+            expire();
+    });
+}
+async function callbackDelay(ms) {
+    let timer;
+    try {
+        await untilDeadline(new Promise(resolve => { timer = setTimeout(resolve, ms); }), undefined);
+    }
+    finally {
+        clearTimeout(timer);
+    }
+}
+/** admin-api hard-rejects batches over 100 items (BadRequestException), so
+ *  every send and every persisted file must respect this chunk size. */
+const CALLBACK_BATCH_SIZE = 100;
+let persistenceSequence = 0;
+/** A persisted callback file gets this many retry rounds before it is moved
+ *  to the dead-letter directory and stops being re-sent every second. */
+const CALLBACK_FILE_MAX_RETRIES = 5;
 // Lazily computed so that config.workDir is resolved at call time, not at module load
 function getCallbackDir() {
     const dir = path.join(config_1.config.workDir, 'callbacks');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+}
+function getDeadLetterDir() {
+    const dir = path.join(getCallbackDir(), 'dead-letter');
     fs.mkdirSync(dir, { recursive: true });
     return dir;
 }
@@ -47178,6 +46650,12 @@ function withExecutorAddress(request) {
         executorAddress: config_1.config.executorAddressPublic || config_1.config.executorAddress,
         ...request,
     };
+}
+/** OBS-01: 批次内第一个携带 traceparent 的执行决定回传头（同批多执行在
+ *  实际流量中几乎同 trace——同一次触发；无 traceparent 时零头回传）。 */
+function traceparentHeaderFor(requests) {
+    const traceparent = requests.find(r => r.traceparent)?.traceparent;
+    return traceparent ? { traceparent } : {};
 }
 function pushCallback(request) {
     const callbackRequest = withExecutorAddress(request);
@@ -47193,7 +46671,10 @@ function pushCallback(request) {
 }
 async function doCallback(requests) {
     try {
-        const response = await (0, admin_client_1.post)('/api/executions/callback', requests);
+        // OBS-01: 回传 traceparent 头（admin 侧 execution-callback.controller 解析关联）
+        const response = await untilDeadline((0, admin_client_1.post)('/api/executions/callback', requests, traceparentHeaderFor(requests)), null);
+        if (!response)
+            return false;
         if (response.status >= 200 && response.status < 300) {
             logger_1.logger.debug(`Callback successful for ${requests.length} execution(s)`);
             return true;
@@ -47205,35 +46686,122 @@ async function doCallback(requests) {
         return false;
     }
 }
+/** Persist failed callbacks in admin-acceptable chunks. A companion
+ *  `<file>.meta` records the retry round so the re-send loop can give up
+ *  after CALLBACK_FILE_MAX_RETRIES instead of retrying forever. */
 function persistFailedCallbacks(requests) {
     const timestamp = Date.now();
-    const filename = path.join(getCallbackDir(), `callback-${timestamp}.json`);
+    const sequence = persistenceSequence++;
     try {
-        fs.writeFileSync(filename, JSON.stringify(requests, null, 2));
-        logger_1.logger.info(`Persisted ${requests.length} failed callbacks to ${filename}`);
+        const chunks = [];
+        for (let i = 0; i < requests.length; i += CALLBACK_BATCH_SIZE) {
+            chunks.push(requests.slice(i, i + CALLBACK_BATCH_SIZE));
+        }
+        chunks.forEach((chunk, index) => {
+            const suffix = chunks.length > 1 ? `-${index}` : '';
+            const filename = path.join(getCallbackDir(), `callback-${timestamp}-${sequence}${suffix}.json`);
+            fs.writeFileSync(filename, JSON.stringify(chunk, null, 2));
+            fs.writeFileSync(`${filename}.meta`, JSON.stringify({ retries: 0, persistedAt: timestamp }), 'utf-8');
+            logger_1.logger.info(`Persisted ${chunk.length} failed callbacks to ${filename}`);
+        });
     }
     catch (error) {
         logger_1.logger.error(`Failed to persist callbacks: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+/** Move a permanently-failed callback file to the dead-letter directory so
+ *  the retry loop stops resending it every second (network + log churn) but
+ *  the payloads remain on disk for manual inspection/replay. */
+function deadLetterCallbackFile(filepath, reason) {
+    try {
+        const target = path.join(getDeadLetterDir(), path.basename(filepath));
+        fs.renameSync(filepath, target);
+        logger_1.logger.warn(`Callback file ${path.basename(filepath)} moved to dead-letter after ${reason}; manual replay required`);
+    }
+    catch (error) {
+        // Last resort: at least stop retrying it.
+        try {
+            fs.unlinkSync(filepath);
+        }
+        catch (_) { /* already gone */ }
+        logger_1.logger.error(`Failed to move callback file ${filepath} to dead-letter: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+        fs.unlinkSync(`${filepath}.meta`);
+    }
+    catch (_) { /* meta may not exist */ }
+}
+function readRetryCount(filepath) {
+    try {
+        const raw = fs.readFileSync(`${filepath}.meta`, 'utf-8');
+        const meta = JSON.parse(raw);
+        return typeof meta.retries === 'number' && meta.retries >= 0 ? meta.retries : 0;
+    }
+    catch {
+        return 0;
+    }
+}
+function writeRetryCount(filepath, retries) {
+    try {
+        fs.writeFileSync(`${filepath}.meta`, JSON.stringify({ retries, updatedAt: Date.now() }), 'utf-8');
+    }
+    catch (error) {
+        logger_1.logger.warn(`Failed to update retry counter for ${filepath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+/** Dead-letter files still inside the live callbacks dir from an older
+ *  layout would be retried forever — keep a hard stop as belt-and-suspenders. */
+const CALLBACK_FILE_MAX_SIZE_BYTES = 64 * 1024 * 1024;
 async function retryFailedCallbacks() {
     try {
         const callbackDir = getCallbackDir();
         const files = fs.readdirSync(callbackDir);
         for (const file of files) {
+            if (stopped)
+                break;
             if (!file.startsWith('callback-') || !file.endsWith('.json'))
                 continue;
             const filepath = path.join(callbackDir, file);
             try {
+                const retries = readRetryCount(filepath);
+                if (retries >= CALLBACK_FILE_MAX_RETRIES) {
+                    deadLetterCallbackFile(filepath, `${retries} failed retry rounds`);
+                    continue;
+                }
+                if (fs.statSync(filepath).size > CALLBACK_FILE_MAX_SIZE_BYTES) {
+                    deadLetterCallbackFile(filepath, 'oversized payload');
+                    continue;
+                }
                 const content = fs.readFileSync(filepath, 'utf-8');
                 const requests = JSON.parse(content);
                 const success = await doCallback(requests);
+                if (drainExpired)
+                    return; // Already durable; do not count an interrupted retry.
                 if (success) {
                     fs.unlinkSync(filepath);
+                    try {
+                        fs.unlinkSync(`${filepath}.meta`);
+                    }
+                    catch (_) { /* meta may not exist */ }
                     logger_1.logger.info(`Retried and removed ${filepath}`);
+                }
+                else {
+                    const next = retries + 1;
+                    if (next >= CALLBACK_FILE_MAX_RETRIES) {
+                        deadLetterCallbackFile(filepath, `${next} failed retry rounds`);
+                    }
+                    else {
+                        writeRetryCount(filepath, next);
+                    }
                 }
             }
             catch (error) {
+                // Corrupt/unparseable poison files would never succeed — dead-letter
+                // them instead of burning a re-send every second forever.
+                if (error instanceof SyntaxError) {
+                    deadLetterCallbackFile(filepath, 'corrupt payload');
+                    continue;
+                }
                 logger_1.logger.warn(`Failed to retry callback file ${file}: ${error instanceof Error ? error.message : String(error)}`);
             }
         }
@@ -47245,21 +46813,38 @@ async function retryFailedCallbacks() {
 async function processCallbacksWithBackoff(requests) {
     const MAX_RETRIES = 5;
     const BASE_DELAY_MS = 1000;
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        const success = await doCallback(requests);
-        if (success)
-            return;
-        logger_1.logger.warn(`Callback attempt ${attempt + 1}/${MAX_RETRIES} failed`);
-        if (attempt < MAX_RETRIES - 1) {
-            const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-            await new Promise(resolve => setTimeout(resolve, delay));
+    // admin-api rejects batches > 100 outright — a batch larger than that would
+    // fail all 5 attempts and then poison the persisted file forever.
+    const failed = [];
+    for (let i = 0; i < requests.length; i += CALLBACK_BATCH_SIZE) {
+        if (drainExpired) {
+            failed.push(...requests.slice(i));
+            break;
         }
+        const chunk = requests.slice(i, i + CALLBACK_BATCH_SIZE);
+        let delivered = false;
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            delivered = await doCallback(chunk);
+            if (delivered || drainExpired)
+                break;
+            logger_1.logger.warn(`Callback attempt ${attempt + 1}/${MAX_RETRIES} failed for ${chunk.length} item(s)`);
+            if (attempt < MAX_RETRIES - 1) {
+                const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+                await callbackDelay(delay);
+                if (drainExpired)
+                    break;
+            }
+        }
+        if (!delivered)
+            failed.push(...chunk);
     }
-    logger_1.logger.error(`Callback failed after ${MAX_RETRIES} attempts, persisting to disk`);
-    persistFailedCallbacks(requests);
+    if (failed.length > 0) {
+        logger_1.logger.error(`Callback failed after ${MAX_RETRIES} attempts, persisting ${failed.length} item(s) to disk`);
+        persistFailedCallbacks(failed);
+    }
 }
 async function processCallbacks() {
-    while (!stopped) {
+    while (!stopped || callbackQueue.length > 0) {
         try {
             if (callbackQueue.length > 0) {
                 const requests = [...callbackQueue];
@@ -47271,19 +46856,45 @@ async function processCallbacks() {
         catch (error) {
             logger_1.logger.error(`Callback thread error: ${error instanceof Error ? error.message : String(error)}`);
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        if (stopped && callbackQueue.length === 0)
+            break;
+        if (!stopped)
+            await callbackDelay(1000);
     }
 }
 function startCallbackThread() {
-    if (callbackThread)
+    if (loopStarted)
         return;
+    loopStarted = true;
     stopped = false;
+    stopPromise = null;
+    drainExpired = false;
     logger_1.logger.info('Starting callback thread');
-    processCallbacks();
+    callbackLoopPromise = processCallbacks().catch(error => {
+        logger_1.logger.error(`Callback thread stopped unexpectedly: ${error instanceof Error ? error.message : String(error)}`);
+    });
 }
 function stopCallbackThread() {
+    if (stopPromise)
+        return stopPromise;
+    if (!loopStarted || !callbackLoopPromise)
+        return Promise.resolve();
     stopped = true;
-    logger_1.logger.info('Stopping callback thread');
+    logger_1.logger.info('Stopping callback thread and draining pending callbacks');
+    const timer = setTimeout(() => {
+        drainExpired = true;
+        for (const expire of deadlineListeners)
+            expire();
+        deadlineListeners.clear();
+    }, CALLBACK_DRAIN_TIMEOUT_MS);
+    // The consumer owns in-flight payloads as well as the queue, so it must
+    // persist unconfirmed results before stop resolves, even after the deadline.
+    stopPromise = callbackLoopPromise.finally(() => {
+        clearTimeout(timer);
+        loopStarted = false;
+        callbackLoopPromise = null;
+    });
+    return stopPromise;
 }
 function getPendingCallbackCount() {
     return callbackQueue.length;
@@ -47316,15 +46927,259 @@ exports.config = {
     adminApiUrlInternal,
     adminApiUrlExternal: process.env.ADMIN_API_URL_EXTERNAL || '',
     adminApiUrls: configuredAdminApiUrls.length > 0 ? configuredAdminApiUrls : [adminApiUrlInternal],
-    workDir: process.env.WORK_DIR || '/tmp/autocodeflow/tasks',
+    // WORK_DIR 优先；Windows 部署误配 Work_Dir/work_dir 时也能读到（大小写
+    // 不敏感回退，键名精确匹配不取）。getter 惰性读取 process.env，与 routes/
+    // config.ts 热重载其它字段（直接改 process.env / config 即生效）行为一致。
+    get workDir() {
+        if (process.env.WORK_DIR)
+            return process.env.WORK_DIR;
+        const key = Object.keys(process.env).find(k => k.toLowerCase() === 'work_dir');
+        return (key && process.env[key]) || '/tmp/autocodeflow/tasks';
+    },
     maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_TASKS || '10', 10),
     taskTimeoutSeconds: parseInt(process.env.TASK_TIMEOUT_SECONDS || '300', 10),
     heartbeatIntervalSeconds: parseInt(process.env.HEARTBEAT_INTERVAL_SECONDS || '30', 10),
     logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
     npmRegistryUrl: process.env.NPM_REGISTRY_URL || '', // Private npm registry for task dependencies
+    // Auth token for the private npm registry (registry-npm/verdaccio grants
+    // '**' access only to $authenticated, so anonymous task installs 401).
+    // Executor-side ONLY: written into the per-task .npmrc by execute.ts and
+    // deliberately NOT in the env whitelist — it must never reach task
+    // children. Never logged.
+    npmRegistryToken: process.env.NPM_REGISTRY_TOKEN || '',
     pythonRegistryUrl: process.env.PYTHON_REGISTRY_URL || '', // Private PyPI registry for task dependencies
     token: process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || (() => { const i = process.argv.indexOf('--token'); return i !== -1 ? process.argv[i + 1] || '' : ''; })(),
+    // N23: dedicated HMAC secret for per-execution callback tokens; when unset
+    // the shared token above is used as the HMAC source secret (admin-api
+    // resolves the same fallback). Never forwarded to child env via the
+    // whitelist — only the derived per-execution token is injected (execute.ts).
+    executionCallbackSecret: process.env.EXECUTION_CALLBACK_SECRET || '',
+    // N26 (round-8): the per-executor tokenHash admin-api returned at register
+    // time (see main.ts registerExecutor). Mutable runtime state, not env —
+    // used as the HMAC source secret when EXECUTION_CALLBACK_SECRET is unset,
+    // so per-node `--secret` deployments can verify task-side callbacks.
+    executorTokenHash: '',
 };
+
+
+/***/ }),
+
+/***/ 5809:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/** SEC-01: child-process environment whitelist shared by the task execution
+ *  and deployment paths. Only these variables are forwarded to spawned
+ *  processes — executor secrets (EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET and
+ *  every other process.env entry) must never leak into user-controlled code.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ENV_WHITELIST = void 0;
+exports.buildChildEnv = buildChildEnv;
+exports.ENV_WHITELIST = new Set([
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'NODE_PATH', 'npm_config_cache', 'npm_config_prefix',
+    'TMPDIR', 'TEMP', 'TMP',
+    'USER', 'LOGNAME', 'SHELL',
+    'SYSTEMROOT', 'WINDIR', // Windows compat
+    'COMSPEC', 'PATHEXT', // Windows compat
+    // R-04 (windows-findings): Windows home/identity vars. A detached Windows
+    // deployment (scheduled task / service) has no HOME — without USERPROFILE/
+    // HOMEDRIVE+HOMEPATH the child's os.homedir()/pathlib.Path.home() degrade
+    // to '~', breaking pip/npm caches, git config, and getpass.getuser()
+    // (KeyError: USERNAME). Same disclosure class as the already-forwarded
+    // USER/LOGNAME/HOME on POSIX — these are paths, not secrets.
+    'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME',
+    'APPDATA', 'LOCALAPPDATA', 'ProgramData',
+]);
+/** Names that must never be forwarded even if someone adds them to the
+ *  whitelist later — defense in depth against secret leakage. */
+const SECRET_ENV_DENYLIST = new Set([
+    'EXECUTOR_SHARED_TOKEN',
+    'EXECUTOR_SECRET',
+    // N23: HMAC source secret for per-execution callback tokens. The child
+    // only ever receives the derived, execution-bound, expiring token
+    // (AUTOFLOW_CALLBACK_TOKEN, injected explicitly in execute.ts).
+    'EXECUTION_CALLBACK_SECRET',
+]);
+/** Build a sanitized environment from process.env: whitelist only, secrets
+ *  always stripped. Additional task/deployment-provided variables are merged
+ *  on top (they are explicit, caller-controlled values).
+ *
+ *  W-20 (windows CI, first windows-latest run): Windows environment blocks
+ *  are case-INsensitive and the OS/launchers spell these keys their own way
+ *  (`Path`, `Temp`, `ComSpec`, `APPDATA`…). An exact-key whitelist match
+ *  silently dropped them, so the child received no PATH under the canonical
+ *  name — every PATH-dependent task (npm/git/node resolution) broke on real
+ *  Windows hosts, and the CI run proved it where Git-Bash had masked it.
+ *  On win32 we therefore match case-insensitively and re-forward under the
+ *  whitelist's canonical (upper-case) spelling. POSIX envs are
+ *  case-sensitive — exact matching preserved there. */
+function buildChildEnv(extra = {}) {
+    const win32 = process.platform === 'win32';
+    const canonical = (k) => {
+        if (!win32)
+            return exports.ENV_WHITELIST.has(k) ? k : undefined;
+        const up = k.toUpperCase();
+        for (const w of exports.ENV_WHITELIST) {
+            if (w.toUpperCase() === up)
+                return w;
+        }
+        return undefined;
+    };
+    const env = {};
+    for (const [k, v] of Object.entries(process.env)) {
+        if (v === undefined)
+            continue;
+        if (SECRET_ENV_DENYLIST.has(win32 ? k.toUpperCase() : k))
+            continue;
+        const key = canonical(k);
+        if (key !== undefined)
+            env[key] = v;
+    }
+    for (const [k, v] of Object.entries(extra)) {
+        if (v === undefined)
+            continue;
+        if (SECRET_ENV_DENYLIST.has(k.toUpperCase()))
+            continue;
+        env[k] = v;
+    }
+    return env;
+}
+
+
+/***/ }),
+
+/***/ 4730:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CALLBACK_TOKEN_GRACE_SECONDS = exports.EXECUTION_CALLBACK_TOKEN_PREFIX = void 0;
+exports.resolveCallbackSecret = resolveCallbackSecret;
+exports.signExecutionCallbackToken = signExecutionCallbackToken;
+exports.createExecutionCallbackToken = createExecutionCallbackToken;
+/**
+ * N23: per-execution one-shot callback tokens (executor-node side).
+ *
+ * Task code spawned by this executor must be able to call back into the
+ * Admin API (POST /api/executions/callback) WITHOUT ever seeing the
+ * executor shared token — SEC-01 keeps EXECUTOR_SHARED_TOKEN /
+ * EXECUTOR_SECRET out of child environments. Instead, the executor mints a
+ * short-lived HMAC token bound to a single executionId and injects it as
+ * `AUTOFLOW_CALLBACK_TOKEN` via the explicit extra-env channel in
+ * execute.ts (never via the process.env whitelist).
+ *
+ * Token format (must stay byte-for-byte compatible with admin-api's
+ * apps/admin-api/src/modules/task/execution-callback-token.util.ts —
+ * pinned by an identical test vector in both suites):
+ *
+ *   v1.<executionId>.<expiresAtUnixSec>.<hmacHex>
+ *
+ *   key      = HMAC-SHA256(secret, "autocodeflow:execution-callback:v1")
+ *   hmacHex  = HMAC-SHA256(key, "v1.<executionId>.<expiresAtUnixSec>")
+ *
+ * `secret` resolution order (N26, round-8):
+ *   1. EXECUTION_CALLBACK_SECRET — fleet-wide dedicated HMAC secret;
+ *   2. the per-executor tokenHash admin-api returned at register time
+ *      (config.executorTokenHash, adopted in main.ts) — lets nodes
+ *      installed with their own `--secret` mint tokens the admin can
+ *      verify against the exact hash it stores;
+ *   3. the executor shared token (config.token) — legacy fallback for
+ *      admins that only know the shared secret.
+ * The domain-separation step means the raw shared token is never used
+ * directly as an HMAC key, and a per-execution token can never be forged
+ * into a shared token.
+ *
+ * INVARIANT: the signing secret must equal admin-api's current stored
+ * tokenHash. R9 (round-8 P1 closure) keeps the two in sync: the executor
+ * adopts the admin-returned tokenHash at register, on every POST /token
+ * fetch (middleware/auth.ts fetchToken) and on every heartbeat
+ * (scheduler.sendHeartbeat) — see admin-envelope.ts adoptExecutorTokenHash.
+ * R10 (round-10 gap #3) closes the manual-rotation window: an admin-UI
+ * rotate-token makes our bearer stale, so the next outbound admin request
+ * (heartbeat / callback, ≤ one heartbeat interval) 401s and triggers the
+ * admin-client stale-credential self-heal — an immediate forceTokenRefresh
+ * (POST /token, which adopts the new tokenHash) plus a single retry. The
+ * hash therefore follows admin-side rotations within one request round-trip
+ * instead of waiting for the 30-minute scheduled refresh; tokens minted
+ * between the rotation and that heal still fail verification — documented
+ * in docs/sdk-guide.md.
+ */
+const crypto = __importStar(__nccwpck_require__(6982));
+const config_1 = __nccwpck_require__(3650);
+const DOMAIN_SEPARATOR = 'autocodeflow:execution-callback:v1';
+exports.EXECUTION_CALLBACK_TOKEN_PREFIX = 'v1.';
+/** Extra lifetime beyond the task timeout so a task finishing right at the
+ *  deadline can still deliver its final callback. */
+exports.CALLBACK_TOKEN_GRACE_SECONDS = 900;
+/** Secret used to derive per-execution callback tokens: dedicated env
+ *  first, then the per-executor tokenHash received at register time
+ *  (N26), then the executor shared token the node already holds. */
+function resolveCallbackSecret() {
+    const cfg = config_1.config;
+    return cfg.executionCallbackSecret || cfg.executorTokenHash || cfg.token || '';
+}
+function computeSignature(secret, payload) {
+    const key = crypto
+        .createHmac('sha256', secret)
+        .update(DOMAIN_SEPARATOR)
+        .digest();
+    return crypto.createHmac('sha256', key).update(payload).digest('hex');
+}
+/** Sign a token for (executionId, expiresAtSec) with an explicit secret. */
+function signExecutionCallbackToken(secret, executionId, expiresAtSec) {
+    const payload = `${exports.EXECUTION_CALLBACK_TOKEN_PREFIX}${executionId}.${expiresAtSec}`;
+    return `${payload}.${computeSignature(secret, payload)}`;
+}
+/**
+ * Mint a per-execution callback token valid for `ttlSeconds`.
+ * Returns null when no secret is configured (dev executors without a
+ * token) — callers then simply omit AUTOFLOW_CALLBACK_TOKEN and the SDK
+ * stays in its disabled state, exactly as before N23.
+ */
+function createExecutionCallbackToken(executionId, ttlSeconds, secret = resolveCallbackSecret()) {
+    if (!secret || !executionId)
+        return null;
+    const ttl = Math.max(1, Math.floor(ttlSeconds));
+    const expiresAtSec = Math.floor(Date.now() / 1000) + ttl;
+    return signExecutionCallbackToken(secret, executionId, expiresAtSec);
+}
 
 
 /***/ }),
@@ -47369,19 +47224,33 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getLogFilePath = getLogFilePath;
+exports.flushLogs = flushLogs;
+exports.stopLogWriter = stopLogWriter;
 exports.appendLog = appendLog;
+exports.appendLogSync = appendLogSync;
 exports.readLog = readLog;
 exports.clearLog = clearLog;
 exports.deleteOldLogs = deleteOldLogs;
 exports.startLogCleanup = startLogCleanup;
 exports.stopLogCleanup = stopLogCleanup;
+exports.cleanupWorkDir = cleanupWorkDir;
+exports.getDeadLetterCount = getDeadLetterCount;
+exports.startWorkDirCleanup = startWorkDirCleanup;
+exports.stopWorkDirCleanup = stopWorkDirCleanup;
 exports.getLogStats = getLogStats;
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
 const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
-const logsDir = path.join(config_1.config.workDir, 'logs');
-fs.mkdirSync(logsDir, { recursive: true });
+// E10: logsDir 惰性解析（与 callback.ts 的 getCallbackDir 同构）——每次访问
+// 经 config.workDir（读 process.env 的 getter）重算，/config/reload 热更
+// workDir 后写路径与 routes/logs.ts 的读路径同步切换，不再于模块加载期固化
+// 导致写旧目录、读新目录的分裂。
+function getLogsDir() {
+    const dir = path.join(config_1.config.workDir, 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+}
 function formatDate(date) {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -47390,11 +47259,68 @@ function formatDate(date) {
 }
 function getLogFilePath(executionId, date) {
     const dateStr = date ? formatDate(date) : formatDate(new Date());
-    const dateDir = path.join(logsDir, dateStr);
+    const dateDir = path.join(getLogsDir(), dateStr);
     fs.mkdirSync(dateDir, { recursive: true });
     return path.join(dateDir, `${executionId}.log`);
 }
+// --- Buffered async log writer -------------------------------------------------
+// appendFileSync per stdout chunk blocked the event loop (heartbeats, /health)
+// under high-output tasks. Writes now buffer in memory and flush to disk every
+// FLUSH_INTERVAL_MS via fs.promises (libuv threadpool), keeping the event loop
+// free; an explicit flush covers shutdown, read-back and tests.
+const FLUSH_INTERVAL_MS = 200;
+const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+const pendingWrites = new Map();
+let flushTimer = null;
+let flushing = Promise.resolve();
+function scheduleFlush() {
+    if (flushTimer)
+        return;
+    flushTimer = setInterval(() => {
+        void flushLogs();
+    }, FLUSH_INTERVAL_MS);
+    flushTimer.unref?.();
+}
+async function flushLogs() {
+    const run = flushing.then(async () => {
+        while (pendingWrites.size > 0) {
+            const batch = [...pendingWrites.entries()];
+            pendingWrites.clear();
+            for (const [filePath, content] of batch) {
+                try {
+                    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+                    await fs.promises.appendFile(filePath, content);
+                }
+                catch (error) {
+                    logger_1.logger.error(`Failed to append log ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+                }
+            }
+        }
+    });
+    flushing = run;
+    await run;
+}
+function stopLogWriter() {
+    if (flushTimer) {
+        clearInterval(flushTimer);
+        flushTimer = null;
+    }
+}
 function appendLog(executionId, content) {
+    const filePath = getLogFilePath(executionId);
+    const pending = pendingWrites.get(filePath) ?? '';
+    let combined = `${pending}${content}\n`;
+    // Drop the oldest buffered content if a pathological chunk burst outgrows
+    // the buffer — memory safety wins over log completeness.
+    if (combined.length > MAX_BUFFERED_BYTES) {
+        combined = combined.slice(combined.length - MAX_BUFFERED_BYTES);
+    }
+    pendingWrites.set(filePath, combined);
+    scheduleFlush();
+}
+/** Backwards-compatible synchronous append used by callers that must see the
+ *  content on disk immediately (tests, read-back helpers). */
+function appendLogSync(executionId, content) {
     const filePath = getLogFilePath(executionId);
     fs.appendFileSync(filePath, content + '\n');
 }
@@ -47422,16 +47348,22 @@ function clearLog(executionId) {
 function deleteOldLogs(retentionDays) {
     let deletedCount = 0;
     const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    const logsDir = getLogsDir();
     try {
         const dateDirs = fs.readdirSync(logsDir);
         for (const dateDir of dateDirs) {
-            const dirPath = path.join(logsDir, dateDir);
-            const stat = fs.statSync(dirPath);
-            if (stat.isDirectory() && stat.birthtime.getTime() < cutoff) {
-                fs.rmdirSync(dirPath, { recursive: true });
-                deletedCount++;
-                logger_1.logger.debug(`Deleted old log directory: ${dateDir}`);
-            }
+            // Directory names are YYYY-MM-DD (see formatDate) — stat.birthtime is
+            // unreliable on Linux (often falls back to mtime/epoch), so derive the
+            // age from the directory name instead.
+            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateDir);
+            if (!m)
+                continue;
+            const dirTime = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
+            if (Number.isNaN(dirTime) || dirTime >= cutoff)
+                continue;
+            fs.rmSync(path.join(logsDir, dateDir), { recursive: true, force: true });
+            deletedCount++;
+            logger_1.logger.debug(`Deleted old log directory: ${dateDir}`);
         }
     }
     catch (error) {
@@ -47460,6 +47392,206 @@ function stopLogCleanup() {
         cleanupInterval = null;
         logger_1.logger.info('Stopped log cleanup thread');
     }
+    stopLogWriter();
+}
+// --- Workdir disk cleanup -------------------------------------------------------
+// Task workdirs, git caches and downloaded packages previously accumulated
+// forever — a long-running executor slowly filled the disk until every
+// npm/git/uv operation failed. Strategy (aligned with the 7-day log policy):
+//   - task workdirs older than CLEANUP_TTL_DAYS are removed
+//   - .git_cache / .node_modules entries not touched within TTL are removed
+//   - .pkg-updates keeps only the newest MAX_PKG_UPDATES package files
+//   - callbacks/dead-letter keeps only the newest MAX_DEAD_LETTER_FILES files
+//   - orphan callbacks/*.meta (dead-lettering failed to unlink them) older
+//     than ORPHAN_META_TTL_MS are reclaimed (E13)
+const CLEANUP_TTL_DAYS = Math.max(1, config_1.config.logRetentionDays || 7);
+const CLEANUP_SWEEP_INTERVAL_HOURS = 6;
+const PROTECTED_WORKDIR_NAMES = new Set([
+    'logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps',
+]);
+function removePath(target) {
+    try {
+        fs.rmSync(target, { recursive: true, force: true });
+        return true;
+    }
+    catch (error) {
+        logger_1.logger.warn(`Disk cleanup failed for ${target}: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+    }
+}
+function removeOlderThan(dir, cutoffMs, options = {}) {
+    let deleted = 0;
+    let entries;
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    }
+    catch {
+        return 0;
+    }
+    // newest (largest mtime) first so "keep newest N" retention is deterministic
+    const withMtime = [];
+    for (const entry of entries) {
+        // E12: filesOnly — the dead-letter sweep must mirror getDeadLetterCount's
+        // "only regular files" semantics: a stray subdirectory is neither counted
+        // toward keepNewest nor recursively removed (it is not a callback payload).
+        if (options.filesOnly && entry.isDirectory())
+            continue;
+        if (options.directoryNames && entry.isDirectory() && !options.directoryNames.test(entry.name))
+            continue;
+        try {
+            const stat = fs.statSync(path.join(dir, entry.name));
+            withMtime.push({ name: entry.name, isDir: entry.isDirectory(), mtime: stat.mtimeMs });
+        }
+        catch {
+            /* raced with a concurrent delete — skip */
+        }
+    }
+    withMtime.sort((a, b) => b.mtime - a.mtime);
+    withMtime.forEach((item, index) => {
+        if (item.mtime >= cutoffMs)
+            return;
+        if (options.keepNewest !== undefined && index < options.keepNewest)
+            return;
+        if (removePath(path.join(dir, item.name)))
+            deleted++;
+    });
+    return deleted;
+}
+/** E13: reclaim orphan callback `.meta` files stranded in the callbacks/ top
+ *  level. When a callback payload is dead-lettered (or retried successfully),
+ *  callback.ts unlinks the companion `<file>.json.meta`; if that unlink fails
+ *  the meta is stranded forever — retryFailedCallbacks only matches
+ *  `callback-*.json`, the dead-letter sweep only descends into dead-letter/,
+ *  and `callbacks` itself is in PROTECTED_WORKDIR_NAMES so the workdir sweep
+ *  skips it. Remove top-level `.meta` files whose companion payload json is
+ *  gone and that are older than ORPHAN_META_TTL_MS. A live retry round
+ *  rewrites the meta every pass (well within the window), so an aged orphan
+ *  is genuinely stranded. */
+function removeOrphanCallbackMetaFiles(callbackDir, nowMs) {
+    let deleted = 0;
+    let entries;
+    try {
+        entries = fs.readdirSync(callbackDir, { withFileTypes: true });
+    }
+    catch {
+        return 0;
+    }
+    for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.meta'))
+            continue;
+        const metaPath = path.join(callbackDir, entry.name);
+        // Companion payload: strip the trailing ".meta" -> "<...>.json".
+        const jsonPath = metaPath.slice(0, -'.meta'.length);
+        if (fs.existsSync(jsonPath))
+            continue; // still owned by a live callback file
+        try {
+            const stat = fs.statSync(metaPath);
+            if (nowMs - stat.mtimeMs < ORPHAN_META_TTL_MS)
+                continue;
+        }
+        catch {
+            /* raced — skip */
+            continue;
+        }
+        if (removePath(metaPath))
+            deleted++;
+    }
+    return deleted;
+}
+/** Remove expired task workdirs, stale caches, old packages and dead-letter
+ *  overflow. Safe to run at startup and on an interval. */
+function cleanupWorkDir(ttlDays = CLEANUP_TTL_DAYS) {
+    const cutoff = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
+    let workDirs = 0;
+    let caches = 0;
+    let packages = 0;
+    let deadLetters = 0;
+    let orphanMetaFiles = 0;
+    try {
+        // 1. Task workdirs: any top-level entry that is not infrastructure.
+        const baseEntries = fs.readdirSync(config_1.config.workDir, { withFileTypes: true });
+        for (const entry of baseEntries) {
+            if (PROTECTED_WORKDIR_NAMES.has(entry.name))
+                continue;
+            const full = path.join(config_1.config.workDir, entry.name);
+            try {
+                const stat = fs.statSync(full);
+                if (stat.mtimeMs < cutoff) {
+                    if (removePath(full))
+                        workDirs++;
+                }
+            }
+            catch { /* raced — skip */ }
+        }
+        // 2. Shared caches (.git_cache, .node_modules): drop entries unused past TTL.
+        for (const cacheDirName of ['.git_cache', '.node_modules']) {
+            caches += removeOlderThan(path.join(config_1.config.workDir, cacheDirName), cutoff);
+        }
+        // 3. Downloaded packages: keep only the newest few regardless of age.
+        packages = removeOlderThan(path.join(process.cwd(), '.pkg-updates'), cutoff, {
+            keepNewest: MAX_PKG_UPDATES,
+        });
+        // 4. Dead-letter callbacks: keep only the newest few for manual replay.
+        //    filesOnly (E12): mirrors getDeadLetterCount's file-only semantics —
+        //    a stray subdirectory is neither counted toward keepNewest nor
+        //    recursively deleted here.
+        deadLetters = removeOlderThan(path.join(config_1.config.workDir, 'callbacks', 'dead-letter'), cutoff, {
+            keepNewest: MAX_DEAD_LETTER_FILES,
+            filesOnly: true,
+        });
+        // 5. E13: reclaim orphan `.meta` files stranded in the callbacks/ top level.
+        orphanMetaFiles = removeOrphanCallbackMetaFiles(path.join(config_1.config.workDir, 'callbacks'), Date.now());
+    }
+    catch (error) {
+        logger_1.logger.error(`Workdir cleanup error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return { workDirs, caches, packages, deadLetters, orphanMetaFiles };
+}
+const MAX_PKG_UPDATES = 3;
+const MAX_DEAD_LETTER_FILES = 50;
+const ORPHAN_META_TTL_MS = 24 * 60 * 60 * 1000;
+/** Current dead-letter backlog size (file count). Reported via heartbeat so
+ *  long disconnections (callbacks parked on disk) stay visible to ops. Only
+ *  regular files are counted — the dead-letter retention sweep in
+ *  cleanupWorkDir runs with filesOnly (E12), so it too only ever removes
+ *  files: a stray subdirectory neither inflates the reported backlog nor gets
+ *  reclaimed by that sweep. */
+function getDeadLetterCount() {
+    try {
+        return fs
+            .readdirSync(path.join(config_1.config.workDir, 'callbacks', 'dead-letter'), {
+            withFileTypes: true,
+        })
+            .filter((d) => d.isFile()).length;
+    }
+    catch {
+        return 0;
+    }
+}
+/** Separate interval from the log-retention sweep so the two cleanups can be
+ *  stopped/started independently. */
+let workdirCleanupInterval = null;
+/** Run cleanup at startup and every CLEANUP_SWEEP_INTERVAL_HOURS. Shares the
+ *  cadence/retention policy with the log cleanup (same TTL, logRetentionDays). */
+function startWorkDirCleanup(ttlDays = CLEANUP_TTL_DAYS) {
+    const sweep = () => {
+        const r = cleanupWorkDir(ttlDays);
+        const total = r.workDirs + r.caches + r.packages + r.deadLetters + r.orphanMetaFiles;
+        if (total > 0) {
+            logger_1.logger.info(`Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s), ${r.orphanMetaFiles} orphan meta file(s)`);
+        }
+    };
+    sweep();
+    if (workdirCleanupInterval)
+        clearInterval(workdirCleanupInterval);
+    workdirCleanupInterval = setInterval(sweep, CLEANUP_SWEEP_INTERVAL_HOURS * 60 * 60 * 1000);
+    workdirCleanupInterval.unref?.();
+}
+function stopWorkDirCleanup() {
+    if (workdirCleanupInterval) {
+        clearInterval(workdirCleanupInterval);
+        workdirCleanupInterval = null;
+    }
 }
 function getLogStats() {
     let totalSize = 0;
@@ -47479,12 +47611,262 @@ function getLogStats() {
         }
     };
     try {
-        walk(logsDir);
+        walk(getLogsDir());
     }
     catch {
         // Ignore if logs directory doesn't exist
     }
     return { totalSize, fileCount };
+}
+
+
+/***/ }),
+
+/***/ 3974:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.recordHeartbeat = recordHeartbeat;
+exports.setAdminApiReachable = setAdminApiReachable;
+exports.getHeartbeatState = getHeartbeatState;
+/**
+ * Heartbeat reachability state shared between the scheduler (writer via
+ * recordHeartbeat) and the /health endpoint (reader). Kept in its own module
+ * so scheduler.ts does not import the route tree, which would pull task
+ * execution and its config-dependent initializers into every scheduler
+ * import (and create a scheduler <-> health import cycle).
+ */
+let lastHeartbeatTime = null;
+let adminApiReachable = null;
+function recordHeartbeat(success) {
+    if (success)
+        lastHeartbeatTime = new Date().toISOString();
+    adminApiReachable = success;
+}
+function setAdminApiReachable(reachable) {
+    adminApiReachable = reachable;
+}
+function getHeartbeatState() {
+    return { lastHeartbeatTime, adminApiReachable };
+}
+
+
+/***/ }),
+
+/***/ 7848:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/** Bearer-authenticated download shared by the deploy and update-package
+ *  paths. Carries the executor shared token to the first host, strips it on
+ *  cross-host redirects (token must not leak to third-party domains), enforces
+ *  an overall deadline (a slow-drip server cannot stall the caller forever)
+ *  and a max size cap (a huge file cannot fill the disk). */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.downloadFile = downloadFile;
+const fs = __importStar(__nccwpck_require__(9896));
+const config_1 = __nccwpck_require__(3650);
+const DEFAULT_TIMEOUT_MS = 120000;
+const DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
+/**
+ * Remove a partially-written download AFTER the write stream releases its fd,
+ * without ever gating the caller's promise on completion.
+ *
+ * W-26 (windows-findings), two races both observed in the field/CI:
+ *  - Windows: unlink right after destroy() hits the still-closing fd —
+ *    EBUSY/EPERM — and the original error-swallowing callback leaked the
+ *    partial file forever (404-cleanup test flaked under load).
+ *  - Linux CI: createWriteStream opens lazily, so an IMMEDIATE unlink can run
+ *    before the file exists (ENOENT → "done") and the pending write then
+ *    CREATES it afterwards — byte-cap-abort test failed exactly this way.
+ * Both are closed by the same contract: unlink on the stream's 'close' event
+ * (fd released, file definitely materialised if it ever will be) plus a short
+ * bounded poll as a fallback when 'close' never arrives (pre-open destroy on
+ * some platforms, stubbed streams in unit tests). Callers/tests may poll
+ * existence; the TTL workdir sweep stays the last-resort backstop.
+ *
+ * `expectFile` distinguishes the two callers' futures: fail-path callers may
+ * legitimately see the file appear late (lazy open) → keep polling on ENOENT;
+ * the redirect-continue path is about to re-create the SAME dest via its
+ * recursive download, so ENOENT must STOP immediately — and EBUSY/EPERM may
+ * NOT retry (a retried unlink could delete the fresh recursion's partial
+ * file). For that caller even the 'close' hook must not resurrect polling.
+ */
+function removePartialFile(file, dest, expectFile = true, left = 10) {
+    const unlinkOnce = () => {
+        try {
+            fs.unlinkSync(dest);
+            return true; // removed
+        }
+        catch (err) {
+            const code = err.code;
+            if (code === 'EBUSY' || code === 'EPERM')
+                return false;
+            if (code === 'ENOENT')
+                return !expectFile;
+            return true; // EROFS / stub-throws etc.: best effort, stop quietly
+        }
+    };
+    const retry = (attemptsLeft) => {
+        if (unlinkOnce() || attemptsLeft <= 0)
+            return;
+        setTimeout(() => retry(attemptsLeft - 1), 40);
+    };
+    file?.once?.('close', () => retry(expectFile ? left : 0));
+    retry(left);
+}
+function downloadFile(url, dest, options = {}) {
+    const { maxRedirects = 5, sendAuth = true, timeoutMs = DEFAULT_TIMEOUT_MS, maxBytes = DEFAULT_MAX_BYTES, } = options;
+    return new Promise((resolve, reject) => {
+        // Overall deadline: req.setTimeout is a socket-idle timeout and a
+        // slow-drip server resets it forever, so run an absolute timer too.
+        const deadline = setTimeout(() => {
+            fail(new Error('Download timed out'));
+        }, timeoutMs);
+        let settled = false;
+        const proto = url.startsWith('https') ? __nccwpck_require__(5692) : __nccwpck_require__(8611);
+        const file = fs.createWriteStream(dest);
+        const cleanup = () => {
+            clearTimeout(deadline);
+        };
+        const fail = (err) => {
+            if (settled)
+                return;
+            settled = true;
+            cleanup();
+            file?.destroy?.();
+            // W-26: Windows fd-close race makes a single unlink fail EBUSY — the
+            // bounded retry chain inside removePartialFile guarantees eventual
+            // removal without gating the reject on it (see its doc comment).
+            removePartialFile(file, dest);
+            reject(err);
+        };
+        // The stream can already fail on OPEN (ENOENT: parent dir vanished under
+        // us, EACCES/EDQUOT…). The response-callback registration of this same
+        // handler below is too late for that early error — with no listener, the
+        // 'error' event escapes as an unhandled exception (observed: an
+        // update-package test whose temp dir was cleaned while a follow-up
+        // download's createWriteStream was still opening, crashing whatever test
+        // shared the worker next). fail() is settled-guarded, so the second
+        // registration stays harmless.
+        file.on('error', fail);
+        const headers = {};
+        if (sendAuth && config_1.config.token) {
+            headers['Authorization'] = `Bearer ${config_1.config.token}`;
+        }
+        let req;
+        try {
+            req = proto.get(url, { headers }, (res) => {
+                if (settled) {
+                    res.resume();
+                    return;
+                }
+                if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    cleanup();
+                    res.resume(); // drain the redirect body; nothing is piped to the (destroyed) file
+                    settled = true; // resolution continues in the recursive call below
+                    if (maxRedirects <= 0) {
+                        file.destroy();
+                        removePartialFile(file, dest);
+                        reject(new Error('Download failed: too many redirects'));
+                        return;
+                    }
+                    let nextUrl;
+                    try {
+                        nextUrl = new URL(res.headers.location, url);
+                    }
+                    catch {
+                        file.destroy();
+                        removePartialFile(file, dest);
+                        reject(new Error('Download failed: invalid redirect location'));
+                        return;
+                    }
+                    const nextSendAuth = sendAuth && nextUrl.hostname === new URL(url).hostname;
+                    // W-26: destroy (NOT close): res.pipe(file) is still attached at
+                    // this point and close() would emit data-after-end → an 'error' that
+                    // re-enters fail() and double-follows the redirect. destroy() drops
+                    // the buffered body and releases the fd. removePartialFile runs with
+                    // expectFile=false: nothing was written through this stream (the
+                    // 302 body is drained by res.resume()), and the recursion below
+                    // re-uses dest — a late poll MUST NOT delete the fresh download.
+                    file.destroy();
+                    removePartialFile(file, dest, false);
+                    downloadFile(nextUrl.href, dest, { maxRedirects: maxRedirects - 1, sendAuth: nextSendAuth, timeoutMs, maxBytes })
+                        .then(resolve, reject);
+                    return;
+                }
+                if (!res.statusCode || res.statusCode >= 400) {
+                    fail(new Error(`Download failed with status ${res.statusCode}`));
+                    return;
+                }
+                let bytes = 0;
+                res.on('data', (chunk) => {
+                    bytes += chunk.length;
+                    if (bytes > maxBytes) {
+                        req.destroy();
+                        fail(new Error(`Download exceeded size limit (${maxBytes} bytes)`));
+                    }
+                });
+                res.pipe(file);
+                file.on('finish', () => {
+                    if (settled)
+                        return;
+                    settled = true;
+                    cleanup();
+                    file.close();
+                    resolve(bytes);
+                });
+                file.on('error', fail);
+            });
+        }
+        catch (err) {
+            fail(err instanceof Error ? err : new Error(String(err)));
+            return;
+        }
+        req.on('error', fail);
+        // Socket-idle timeout keeps a fully-stalled connection from waiting out
+        // the whole deadline before failing.
+        req.setTimeout(timeoutMs, () => {
+            req.destroy();
+            fail(new Error('Download timed out'));
+        });
+    });
 }
 
 
@@ -47555,7 +47937,9 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const dotenv = __importStar(__nccwpck_require__(6472));
 const path = __importStar(__nccwpck_require__(6928));
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
-// Polyfill globalThis.crypto for Node.js < 19 (used by uuid and other dependencies)
+// Polyfill globalThis.crypto for Node.js < 19 (defensive: task scripts and
+// third-party dependencies may use the Web Crypto global; executor code
+// itself uses node:crypto randomUUID directly)
 if (!globalThis.crypto) {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const nodeCrypto = __nccwpck_require__(6982);
@@ -47569,9 +47953,11 @@ const scheduler_1 = __nccwpck_require__(1415);
 const callback_1 = __nccwpck_require__(4915);
 const file_logger_1 = __nccwpck_require__(4723);
 const admin_client_1 = __nccwpck_require__(6609);
+const admin_envelope_1 = __nccwpck_require__(4138);
 const task_worker_1 = __nccwpck_require__(8404);
-const health_1 = __nccwpck_require__(6067);
 const execute_1 = __nccwpck_require__(8690);
+const health_1 = __nccwpck_require__(6067);
+const execute_2 = __nccwpck_require__(8690);
 const config_2 = __nccwpck_require__(4080);
 const logs_1 = __nccwpck_require__(4926);
 const deploy_1 = __nccwpck_require__(3462);
@@ -47580,7 +47966,7 @@ const auth_1 = __nccwpck_require__(9473);
 const app = (0, express_1.default)();
 app.use(express_1.default.json());
 app.use('/', health_1.healthRouter);
-app.use('/api', auth_1.verifyToken, execute_1.executeRouter);
+app.use('/api', auth_1.verifyToken, execute_2.executeRouter);
 app.use('/api', auth_1.verifyToken, logs_1.logsRouter);
 app.use('/api', auth_1.verifyToken, deploy_1.deployRouter);
 app.use('/api', auth_1.verifyToken, update_package_1.updatePackageRouter);
@@ -47601,10 +47987,17 @@ function detectAvailableRuntimes() {
     }
     return runtimes;
 }
+// N41: register 失败不再永久依赖进程重启恢复。token 链恢复（fetchToken 成功，
+// 经 setOnTokenAcquired 钩子）后触发一次带富元数据的重注册——admin 侧对同
+// (address, startupId) 的 register 幂等（不轮换 token、按白名单更新元数据），
+// 所以这次补注册只会修复 /token side effect 重建行时丢失的
+// type/capabilities/maxConcurrent/version，不会引发旋转风暴。
+let registerSucceeded = false;
+let reRegisterInFlight = false;
 async function registerExecutor() {
     const runtimes = detectAvailableRuntimes();
     try {
-        await (0, admin_client_1.post)('/api/executors/register', {
+        const resp = await (0, admin_client_1.postWithStaticToken)('/api/executors/register', {
             appName: config_1.config.appName,
             groupName: config_1.config.groupName || undefined,
             address: config_1.config.executorAddressPublic || config_1.config.executorAddress,
@@ -47615,12 +48008,35 @@ async function registerExecutor() {
             // Structured capability fields
             runtime: runtimes,
             maxConcurrent: config_1.config.maxConcurrentTasks,
+            restartedAt: scheduler_1.executorStartedAt,
+            startupId: scheduler_1.executorStartupId,
         });
+        // N26 (round-8): adopt the per-executor tokenHash returned at register
+        // time. It becomes the HMAC source secret for per-execution callback
+        // tokens (execution-callback-token.ts resolveCallbackSecret), so
+        // per-node `--secret` deployments verify on the admin side against the
+        // exact value stored there. The response may or may not be wrapped by
+        // the admin ResponseInterceptor ({code,message,data}) — unwrapAdminResponseData
+        // reads both shapes (R9: shared with middleware/auth.ts fetchToken).
+        (0, admin_envelope_1.adoptExecutorTokenHash)(resp?.data);
+        registerSucceeded = true;
         logger_1.logger.info(`Registered to admin-api (runtimes: ${runtimes.join(', ')}, maxConcurrent: ${config_1.config.maxConcurrentTasks})`);
+        return true;
     }
     catch (err) {
-        logger_1.logger.warn(`Register failed (will retry via heartbeat): ${err.message}`);
+        registerSucceeded = false;
+        logger_1.logger.warn(`Register failed (will re-register with rich metadata on next token acquisition): ${err.message}`);
+        return false;
     }
+}
+/** N41: token 恢复后的补注册——已注册短路 + in-flight 去重，防重复风暴。 */
+function maybeReRegister() {
+    if (registerSucceeded || reRegisterInFlight)
+        return;
+    reRegisterInFlight = true;
+    void registerExecutor().finally(() => {
+        reRegisterInFlight = false;
+    });
 }
 async function notifyOffline() {
     try {
@@ -47636,7 +48052,7 @@ async function notifyOffline() {
 // Graceful shutdown
 let heartbeatInterval = null;
 let isShuttingDown = false;
-async function gracefulShutdown(signal) {
+async function gracefulShutdown(signal, exitCode = 0) {
     if (isShuttingDown)
         return;
     isShuttingDown = true;
@@ -47646,10 +48062,11 @@ async function gracefulShutdown(signal) {
         clearInterval(heartbeatInterval);
         heartbeatInterval = null;
     }
-    // Stop callback thread
-    (0, callback_1.stopCallbackThread)();
-    // Stop log cleanup thread
+    // Stop accepting new requests before task shutdown can enqueue final callbacks
+    server.close();
+    // Stop log cleanup thread + buffered log writer
     (0, file_logger_1.stopLogCleanup)();
+    (0, file_logger_1.stopWorkDirCleanup)();
     // Stop all task workers
     task_worker_1.taskWorkerManager.stopAll();
     // Wait for running tasks (max 30 seconds)
@@ -47657,30 +48074,100 @@ async function gracefulShutdown(signal) {
     const startTime = Date.now();
     while ((0, scheduler_1.getRunningCount)() > 0) {
         if (Date.now() - startTime > maxWait) {
-            logger_1.logger.warn(`Grace period expired, ${(0, scheduler_1.getRunningCount)()} task(s) still running, forcing shutdown`);
+            // Grace expired: kill the detached task process groups, otherwise they
+            // outlive the executor as unmanaged orphans (callbacks from tasks killed below may not be reported; queued callbacks are drained normally).
+            const killed = (0, execute_1.killRunningTaskProcesses)();
+            logger_1.logger.warn(`Grace period expired, ${(0, scheduler_1.getRunningCount)()} task(s) still running, forcing shutdown` +
+                (killed > 0 ? ` — killed ${killed} task process group(s)` : ''));
             break;
         }
         logger_1.logger.info(`Waiting for ${(0, scheduler_1.getRunningCount)()} task(s) to complete...`);
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
+    // Drain callbacks produced by stopped and completed workers before exiting
+    await (0, callback_1.stopCallbackThread)();
+    // Flush any buffered task logs to disk before exiting
+    try {
+        await (0, file_logger_1.flushLogs)();
+    }
+    catch (_) { /* best effort — we are shutting down */ }
     // Send offline notification
     await notifyOffline();
     logger_1.logger.info('Executor shutdown complete');
-    process.exit(0);
+    process.exit(exitCode);
 }
 // Register signal handlers
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+// R-08 (windows-findings 2.9): Node maps the Windows CTRL_BREAK_EVENT console
+// signal to SIGBREAK. Without this handler, Ctrl+Break (the only signal a
+// detached/background executor can receive, since taskkill cannot deliver
+// SIGTERM to console apps) killed the process immediately (exit 0xC000013A)
+// — running task processes were orphaned instead of being reaped by
+// gracefulShutdown's killRunningTaskProcesses. No-op on POSIX.
+process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));
+// W-25 (windows-findings): last-line-of-defence parity with admin-api's
+// OPS-06/ARCH-008. Before this, ANY unexpected async error killed the process
+// by default WITHOUT running gracefulShutdown — task process trees then
+// outlived the executor as unmanaged orphans (the exact failure mode W-24
+// just removed one instance of; this covers every future one). Route both
+// through the same drain + tree-kill chain, then exit(1) so a supervisor
+// restarts us. 45s cap = 30s task grace + slack; if it ever fires, the
+// hard exit still happens.
+function fatalShutdown(reason) {
+    logger_1.logger.error(`FATAL (unhandled): ${reason} — graceful shutdown with exit(1)`);
+    let done = false;
+    const hardExit = setTimeout(() => {
+        if (!done) {
+            logger_1.logger.error('Graceful shutdown stalled after fatal error — hard exiting');
+            process.exit(1);
+        }
+    }, 45000);
+    hardExit.unref();
+    gracefulShutdown(reason, 1)
+        .catch(() => undefined)
+        .finally(() => {
+        done = true;
+        process.exit(1);
+    });
+}
+process.on('unhandledRejection', (reason) => {
+    fatalShutdown(`unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`);
+});
+process.on('uncaughtException', (err) => {
+    fatalShutdown(`uncaughtException: ${err.stack ?? String(err)}`);
+});
 const server = app.listen(config_1.config.port, async () => {
-    logger_1.logger.info(`Executor started: ${config_1.config.appName} @ ${config_1.config.executorAddress}`);
-    // Initialize admin clients for HA support.
-    // config.adminApiUrls already applies the URL priority:
-    // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
-    (0, admin_client_1.initAdminClients)(config_1.config.adminApiUrls);
-    await registerExecutor();
-    heartbeatInterval = (0, scheduler_1.startHeartbeat)();
-    (0, callback_1.startCallbackThread)();
-    (0, file_logger_1.startLogCleanup)(config_1.config.logRetentionDays || 7);
+    try {
+        logger_1.logger.info(`Executor started: ${config_1.config.appName} @ ${config_1.config.executorAddress}`);
+        // Initialize admin clients for HA support.
+        // config.adminApiUrls already applies the URL priority:
+        // ADMIN_API_URLS > ADMIN_API_URL_INTERNAL > ADMIN_API_URL.
+        (0, admin_client_1.initAdminClients)(config_1.config.adminApiUrls);
+        await (0, admin_client_1.checkAdminApiConnectivity)();
+        // N41: token 恢复钩子先于首次注册挂载——启动期 admin 不可达时，register
+        // 失败后由后续成功的 fetchToken 自动补注册（maybeReRegister 自带去重）。
+        (0, auth_1.setOnTokenAcquired)(maybeReRegister);
+        await registerExecutor();
+        heartbeatInterval = (0, scheduler_1.startHeartbeat)();
+        (0, callback_1.startCallbackThread)();
+        (0, file_logger_1.startLogCleanup)(config_1.config.logRetentionDays || 7);
+        // Disk reclamation for task workdirs / git caches / downloaded packages /
+        // dead-letter callbacks — same retention policy as the logs (7 days).
+        (0, file_logger_1.startWorkDirCleanup)(config_1.config.logRetentionDays || 7);
+        // Fail loudly on a misconfiguration that would silently open an
+        // unauthenticated /api/execute endpoint (dev mode passthrough).
+        if (!config_1.config.token) {
+            logger_1.logger.warn('No EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET configured — /api/* accepts UNAUTHENTICATED requests. ' +
+                'Set REQUIRE_TOKEN=true to refuse unauthenticated task submissions instead.');
+        }
+    }
+    catch (err) {
+        // An async callback rejection here would be unhandled — exit loudly
+        // instead so the supervisor restarts the executor.
+        logger_1.logger.error(`Startup failed: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+    }
 });
 
 
@@ -47778,18 +48265,46 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getStaticToken = getStaticToken;
+exports.setOnTokenAcquired = setOnTokenAcquired;
 exports.verifyToken = verifyToken;
 exports.getCurrentToken = getCurrentToken;
+exports.forceTokenRefresh = forceTokenRefresh;
 const axios_1 = __importDefault(__nccwpck_require__(6178));
 const node_crypto_1 = __nccwpck_require__(7598);
 const config_1 = __nccwpck_require__(3650);
 const admin_api_url_1 = __nccwpck_require__(2720);
+const startup_identity_1 = __nccwpck_require__(1566);
+const admin_envelope_1 = __nccwpck_require__(4138);
 // Static token: env vars take priority, then CLI --token arg (via config)
 const STATIC_TOKEN = config_1.config.token;
+function getStaticToken() {
+    return STATIC_TOKEN || null;
+}
 // Dynamic token storage (refreshed periodically)
 let dynamicToken = null;
 let tokenExpiresAt = null;
 const TOKEN_REFRESH_INTERVAL = 30 * 60 * 1000; // 30 minutes
+let tokenFetchFailedAt = null;
+const TOKEN_FETCH_BACKOFF_MS = 30000;
+let tokenAcquiredListener = null;
+function setOnTokenAcquired(listener) {
+    tokenAcquiredListener = listener;
+}
+function notifyTokenAcquired() {
+    const listener = tokenAcquiredListener;
+    if (!listener)
+        return;
+    // Non-blocking: the listener runs outside the token/request path. Errors
+    // are swallowed here — the listener owns its retry semantics.
+    Promise.resolve()
+        .then(listener)
+        .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(`[auth] onTokenAcquired listener failed: ${msg}`);
+    });
+}
 function getAdminApiUrl() {
     if (config_1.config.adminApiUrlExternal) {
         return config_1.config.adminApiUrlExternal;
@@ -47809,9 +48324,35 @@ async function fetchToken() {
         const response = await axios_1.default.post((0, admin_api_url_1.buildAdminApiUrl)(getAdminApiUrl(), '/api/executors/token'), {
             address: config_1.config.executorAddressPublic || config_1.config.executorAddress,
             appName: config_1.config.appName,
+            // R9 (round-8 P1 W2): the process-life identity lets admin-api make
+            // this endpoint idempotent — a same-startupId re-fetch returns the
+            // CURRENT token instead of rotating (N4 register semantics).
+            startupId: startup_identity_1.executorStartupId,
         }, { timeout: 10000, headers });
-        if (response.status === 200) {
-            return response.data.token;
+        // R9: the token endpoint is a Nest POST — it answers 201, not 200. The
+        // old `=== 200` check silently dropped every successful response.
+        if (response.status >= 200 && response.status < 300) {
+            // R9 (round-8 P1 root fix): admin-api's global ResponseInterceptor wraps
+            // the payload in {code,message,data}. Reading response.data.token
+            // directly yielded undefined forever, so every getCurrentToken() call
+            // re-hit POST /token — which used to rotate on every call — putting the
+            // stored tokenHash on a ~30s rotation cycle and breaking the N26
+            // per-execution callback-token invariant (docs/VERIFY-round8-e2e.md §1.5).
+            const payload = (0, admin_envelope_1.unwrapAdminResponseData)(response.data);
+            const token = typeof payload?.token === 'string' && payload.token.length > 0
+                ? payload.token
+                : null;
+            if (!token) {
+                // eslint-disable-next-line no-console
+                console.warn('[auth] fetchToken: admin response carried no token');
+                return null;
+            }
+            // R9 (W3): adopt the tokenHash that matches this token so the HMAC
+            // source secret for per-execution callback tokens stays in sync with
+            // whatever admin-api currently stores (see admin-envelope.ts).
+            (0, admin_envelope_1.adoptExecutorTokenHash)(response.data);
+            notifyTokenAcquired();
+            return token;
         }
     }
     catch (_err) {
@@ -47825,12 +48366,22 @@ async function fetchToken() {
 }
 async function refreshTokenIfNeeded() {
     const now = new Date();
+    // Back off after a failed fetch — without this every request hangs for
+    // the 10s fetch timeout while admin-api is unreachable.
+    if (tokenFetchFailedAt !== null &&
+        now.getTime() - tokenFetchFailedAt < TOKEN_FETCH_BACKOFF_MS) {
+        return;
+    }
     // Refresh if no token, expired, or within 5 minutes of expiration
     if (tokenExpiresAt === null || now >= new Date(tokenExpiresAt.getTime() - 5 * 60 * 1000)) {
         const newToken = await fetchToken();
         if (newToken) {
             dynamicToken = newToken;
             tokenExpiresAt = new Date(now.getTime() + TOKEN_REFRESH_INTERVAL);
+            tokenFetchFailedAt = null;
+        }
+        else {
+            tokenFetchFailedAt = now.getTime();
         }
     }
 }
@@ -47845,8 +48396,14 @@ async function verifyToken(req, res, next) {
     if (STATIC_TOKEN) {
         validTokens.push(STATIC_TOKEN);
     }
-    // If no tokens configured at all, allow all requests (dev mode)
+    // If no tokens configured at all, allow all requests (dev mode) — unless
+    // REQUIRE_TOKEN=true, where fail-closed wins over dev convenience: an
+    // unauthenticated /api/execute is arbitrary code execution on this host.
     if (validTokens.length === 0) {
+        if (process.env.REQUIRE_TOKEN === 'true') {
+            res.status(503).json({ error: 'Executor has no token configured (REQUIRE_TOKEN=true)' });
+            return;
+        }
         next();
         return;
     }
@@ -47873,15 +48430,70 @@ async function getCurrentToken() {
     await refreshTokenIfNeeded();
     return dynamicToken || STATIC_TOKEN;
 }
+/**
+ * R10 (round-10 gap #3): force an immediate token re-fetch, bypassing the
+ * 30-minute refresh schedule. Used by admin-client when an outbound request
+ * comes back 401: the stored per-executor token was rotated out from under
+ * this process (e.g. an admin-UI rotate-token), and the only way to converge
+ * is to re-hit POST /token — which is authenticated with the STATIC token
+ * (shared bootstrap) and whose response fetchToken already uses to adopt the
+ * matching tokenHash (R9/W3). So one call here heals BOTH the bearer
+ * credential and the N26 per-execution callback HMAC secret.
+ *
+ * Storm guards: the TOKEN_FETCH_BACKOFF_MS from the last FAILED fetch still
+ * applies (admin unreachable / wrong shared token → this degrades to a no-op
+ * returning the current token, and the caller must not retry), and
+ * admin-api's issueToken is idempotent per (address, startupId), so several
+ * concurrent 401s re-fetching at once all converge on the SAME token instead
+ * of rotating.
+ */
+async function forceTokenRefresh() {
+    tokenExpiresAt = null;
+    await refreshTokenIfNeeded();
+    return dynamicToken;
+}
 
 
 /***/ }),
 
 /***/ 4080:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.configRouter = void 0;
 /**
@@ -47889,10 +48501,13 @@ exports.configRouter = void 0;
  * Allows admin-api to push configuration updates without executor restart.
  */
 const express_1 = __nccwpck_require__(925);
+const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
 const auth_1 = __nccwpck_require__(9473);
 const config_1 = __nccwpck_require__(3650);
 const admin_client_1 = __nccwpck_require__(6609);
 const logger_1 = __nccwpck_require__(6888);
+const execute_1 = __nccwpck_require__(8690);
 exports.configRouter = (0, express_1.Router)();
 exports.configRouter.use(auth_1.verifyToken);
 function rebuildAdminApiUrls(explicitUrls) {
@@ -47937,6 +48552,53 @@ exports.configRouter.post('/config/reload', async (req, res) => {
             config_1.config.heartbeatIntervalSeconds = body.heartbeatIntervalSeconds;
             updatedFields.push('heartbeatIntervalSeconds');
             logger_1.logger.info(`Hot-reloaded heartbeatIntervalSeconds=${body.heartbeatIntervalSeconds}`);
+        }
+        // WORK_DIR 热切换：新基目录必须是绝对路径、无 ".." 段、真实存在且非
+        // symlink，并复用 execute.ts 的同一套校验（validateExecutionWorkDir，
+        // 规则不得漂移）；存在仍在旧目录运行的执行时拒绝切换，避免运行中的
+        // 任务目录与后续清理/日志回捞路径脱钩。
+        if (body.workDir !== undefined || body.WORK_DIR !== undefined) {
+            const raw = String(body.workDir ?? body.WORK_DIR).trim();
+            const isAbsolute = path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw);
+            if (!raw || !isAbsolute || /(^|[\\/])\.\.([\\/]|$)/.test(raw)) {
+                res.status(400).json({ error: 'workDir must be an absolute path without ".." segments' });
+                return;
+            }
+            const resolvedNew = path.resolve(raw);
+            if (!fs.existsSync(resolvedNew)) {
+                res.status(400).json({ error: `workDir does not exist: ${resolvedNew}` });
+                return;
+            }
+            try {
+                if (fs.lstatSync(resolvedNew).isSymbolicLink()) {
+                    res.status(400).json({ error: 'workDir cannot be a symbolic link' });
+                    return;
+                }
+            }
+            catch (err) {
+                res.status(400).json({ error: `workDir validation failed: ${err instanceof Error ? err.message : String(err)}` });
+                return;
+            }
+            const active = (0, execute_1.listActiveExecutionIds)();
+            for (const executionId of active) {
+                const guard = (0, execute_1.validateExecutionWorkDir)(path.join(resolvedNew, executionId), resolvedNew);
+                if (guard !== null) {
+                    res.status(400).json({ error: `workDir validation failed for active execution ${executionId}: ${guard}` });
+                    return;
+                }
+            }
+            if (active.length > 0) {
+                res.status(400).json({ error: `workDir cannot change while ${active.length} execution(s) are running on the old directory` });
+                return;
+            }
+            // config.workDir 是读 process.env 的 getter——热更新写 env 即全链路生效
+            // （含 workDir 派生的日志/回调目录解析路径）。E10：file-logger 的
+            // logsDir 已改惰性解析（getLogsDir 每次经 config.workDir 重算），与
+            // routes/logs.ts 的读路径、callback.ts 的 getCallbackDir 对齐；新增
+            // workDir 派生路径时必须保持"调用期解析"，不得模块加载期固化。
+            process.env.WORK_DIR = resolvedNew;
+            updatedFields.push('workDir');
+            logger_1.logger.info(`Hot-reloaded workDir=${resolvedNew}`);
         }
         let adminApiUrlsChanged = false;
         let explicitAdminApiUrls;
@@ -48030,6 +48692,11 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runningApps = exports.deployRouter = void 0;
+exports.suppressNextRestartExitReport = suppressNextRestartExitReport;
+exports.shouldReportProcessExit = shouldReportProcessExit;
+exports.downloadPackage = downloadPackage;
+exports.buildDeploymentPaths = buildDeploymentPaths;
+exports.findUnsafeZipEntries = findUnsafeZipEntries;
 const express_1 = __nccwpck_require__(925);
 const path = __importStar(__nccwpck_require__(6928));
 const fs = __importStar(__nccwpck_require__(9896));
@@ -48037,10 +48704,23 @@ const child_process_1 = __nccwpck_require__(5317);
 const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
 const admin_client_1 = __nccwpck_require__(6609);
+const run_command_1 = __nccwpck_require__(3879);
+const env_whitelist_1 = __nccwpck_require__(5809);
+const download_1 = __nccwpck_require__(7848);
+const safe_path_1 = __nccwpck_require__(1733);
+const zip_guard_1 = __nccwpck_require__(4629);
 exports.deployRouter = (0, express_1.Router)();
 /** Map of deploymentId -> running child process (daemon mode) */
 const runningApps = new Map();
 exports.runningApps = runningApps;
+/** Deployments whose next process exit is part of an intentional in-place restart. */
+const restartExitReportsToSuppress = new Set();
+function suppressNextRestartExitReport(deploymentId) {
+    restartExitReportsToSuppress.add(deploymentId);
+}
+function shouldReportProcessExit(deploymentId) {
+    return !restartExitReportsToSuppress.delete(deploymentId);
+}
 /** Report app status back to admin-api */
 async function reportStatus(deploymentId, status, pid, message) {
     try {
@@ -48062,11 +48742,16 @@ function venvBins(venvDir) {
             : path.join(venvDir, 'bin', 'pip'),
     };
 }
-/** Install dependencies for the given deployment directory */
-function installDeps(deployDir, runtime, envVars) {
-    const env = { ...process.env, ...envVars };
+/** Install dependencies for the given deployment directory. Async — the
+ *  previous spawnSync calls froze the event loop for up to 5 minutes
+ *  (npm/pip installs), stopping heartbeats, /health and every API. */
+async function installDeps(deployDir, runtime, envVars) {
+    // SEC: whitelist env only — the previous `{ ...process.env, ...envVars }`
+    // leaked EXECUTOR_SHARED_TOKEN/EXECUTOR_SECRET into user-controlled app
+    // install processes, letting deployed code impersonate this executor
+    // against admin-api (heartbeats, execution callbacks).
+    const env = (0, env_whitelist_1.buildChildEnv)(envVars);
     const isWin = process.platform === 'win32';
-    // SEC: spawnSync with array args — no shell, no injection
     if (runtime === 'node' || runtime === 'nodejs') {
         const pkgJson = path.join(deployDir, 'package.json');
         if (fs.existsSync(pkgJson)) {
@@ -48076,7 +48761,7 @@ function installDeps(deployDir, runtime, envVars) {
             const npmArgs = ['install', '--production'];
             if (config_1.config.npmRegistryUrl)
                 npmArgs.push(`--registry=${config_1.config.npmRegistryUrl}`);
-            const r = (0, child_process_1.spawnSync)(npmCmd, npmArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300000, shell: isWin });
+            const r = await (0, run_command_1.runCommand)(npmCmd, npmArgs, { cwd: deployDir, env, timeout: 300000, shell: isWin });
             if (r.status !== 0)
                 throw new Error(r.stderr?.toString() || 'npm install failed');
         }
@@ -48088,14 +48773,14 @@ function installDeps(deployDir, runtime, envVars) {
             const venvDir = path.join(deployDir, '.venv');
             // Try 'python3' first (Linux/macOS), fall back to 'python' (Windows)
             const pythonCmd = isWin ? 'python' : 'python3';
-            const venvR = (0, child_process_1.spawnSync)(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, stdio: 'pipe', timeout: 60000 });
+            const venvR = await (0, run_command_1.runCommand)(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, timeout: 60000 });
             if (venvR.status !== 0)
                 throw new Error(venvR.stderr?.toString() || `${pythonCmd} -m venv failed`);
             const bins = venvBins(venvDir);
             const pipArgs = ['install', '-r', 'requirements.txt'];
             if (config_1.config.pythonRegistryUrl)
                 pipArgs.push('-i', config_1.config.pythonRegistryUrl);
-            const pipR = (0, child_process_1.spawnSync)(bins.pip, pipArgs, { cwd: deployDir, env, stdio: 'pipe', timeout: 300000 });
+            const pipR = await (0, run_command_1.runCommand)(bins.pip, pipArgs, { cwd: deployDir, env, timeout: 300000 });
             if (pipR.status !== 0)
                 throw new Error(pipR.stderr?.toString() || 'pip install failed');
         }
@@ -48103,7 +48788,10 @@ function installDeps(deployDir, runtime, envVars) {
 }
 /** Start the application process */
 function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars) {
-    const env = { ...process.env, ...envVars };
+    // SEC: whitelist env only — same trust boundary as task execution. The app
+    // and its children get the task/env whitelist plus its own envVars, never
+    // the executor's secrets (EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET).
+    const env = (0, env_whitelist_1.buildChildEnv)(envVars);
     let cmd;
     let args;
     const isWin = process.platform === 'win32';
@@ -48118,8 +48806,20 @@ function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars
         cmd = 'node';
         args = [entrypoint];
     }
-    else {
-        // shell — use cmd.exe on Windows
+    else if (runtime === 'shell' || runtime === 'bash' || runtime === 'sh') {
+        // Critical (executor-node audit 2026-09): shell runtime executes the
+        // user-supplied entrypoint verbatim through `sh -c` / `cmd.exe /c`,
+        // which is a direct arbitrary-command execution surface. Restrict to a
+        // safe character set so attackers cannot smuggle `;`, `&&`, backticks,
+        // `$()` expansions or path escapes into the shell.
+        const SAFE = /^[A-Za-z0-9._\/ :\\-]+$/;
+        if (!SAFE.test(entrypoint)) {
+            throw new Error(`Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]`);
+        }
+        // Belt-and-suspenders: the spawn() call below already uses array args
+        // (not `shell: true`), but we still pre-validate to fail fast and to
+        // leave an audit trail. cmd.exe /c <safe> and sh -c <safe> here run
+        // exactly one command line, with no metacharacter expansion possible.
         if (isWin) {
             cmd = 'cmd.exe';
             args = ['/c', entrypoint];
@@ -48129,23 +48829,51 @@ function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars
             args = ['-c', entrypoint];
         }
     }
+    else {
+        throw new Error(`Unsupported runtime "${runtime}"; expected python | node | shell`);
+    }
     logger_1.logger.info(`[deploy] Starting app ${deploymentId}: ${cmd} ${args.join(' ')}`);
     const child = (0, child_process_1.spawn)(cmd, args, {
         cwd: deployDir,
         env,
-        detached: false,
+        // Detached on POSIX so the app leads its own process group — app-stop /
+        // upgrade can then kill the whole tree (the app may spawn its own
+        // children; a parent-only kill would orphan them).
+        detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
     });
+    // W-24: stdio socket 'error' guards — .pipe() does not swallow source
+    // errors, so a failed spawn (ENOENT: missing startCommand, long deploy
+    // path without LongPathsEnabled…) would otherwise crash the executor.
+    child.stdout?.on('error', () => { });
+    child.stderr?.on('error', () => { });
     runningApps.set(deploymentId, child);
     // Stream logs to file
     const logFile = path.join(deployDir, 'app.log');
     const logStream = fs.createWriteStream(logFile, { flags: 'a' });
-    child.stdout?.pipe(logStream);
-    child.stderr?.pipe(logStream);
+    logStream.on('error', (err) => {
+        logger_1.logger.warn(`[deploy] Failed to write app log for ${deploymentId}: ${err.message}`);
+    });
+    // end:false on both sources — with the default end:true the first stream
+    // to finish would end the file while the other still writes
+    // (write-after-end crash).
+    let openLogSources = 2;
+    const closeLogStream = () => {
+        if (--openLogSources <= 0)
+            logStream.end();
+    };
+    child.stdout?.pipe(logStream, { end: false });
+    child.stderr?.pipe(logStream, { end: false });
+    child.stdout?.on('close', closeLogStream);
+    child.stderr?.on('close', closeLogStream);
     // Report started
     reportStatus(deploymentId, 'running', child.pid);
     child.on('exit', (code) => {
         runningApps.delete(deploymentId);
+        if (!shouldReportProcessExit(deploymentId)) {
+            logger_1.logger.info(`[deploy] Suppressed exit report for restarted app ${deploymentId}`);
+            return;
+        }
         if (code === 0) {
             logger_1.logger.info(`[deploy] App ${deploymentId} exited cleanly`);
             reportStatus(deploymentId, 'stopped', undefined, `Exited with code ${code}`);
@@ -48161,89 +48889,263 @@ function startApp(deploymentId, deployDir, runtime, entrypoint, runMode, envVars
         reportStatus(deploymentId, 'failed', undefined, err.message);
     });
 }
-/** Download a file over HTTP/HTTPS to a local path */
-function downloadPackage(url, dest) {
-    return new Promise((resolve, reject) => {
-        const proto = url.startsWith('https') ? __nccwpck_require__(5692) : __nccwpck_require__(8611);
-        const file = fs.createWriteStream(dest);
-        const req = proto.get(url, (res) => {
-            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                file.close();
-                fs.unlinkSync(dest);
-                downloadPackage(res.headers.location, dest).then(resolve).catch(reject);
-                return;
-            }
-            if (!res.statusCode || res.statusCode >= 400) {
-                reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-                return;
-            }
-            res.pipe(file);
-            file.on('finish', () => { file.close(); resolve(); });
-        });
-        req.on('error', (err) => { fs.unlink(dest, () => { }); reject(err); });
-        req.setTimeout(120000, () => { req.destroy(); reject(new Error('Download timed out')); });
-    });
+/** Strip embedded credentials (user:token@) before a URL reaches the logs. */
+function redactUrl(u) {
+    return u.replace(/\/\/[^/@]+@/, '//***@');
+}
+/** Download a package over HTTP/HTTPS to a local path. Delegates to the
+ *  shared downloader (Bearer token + cross-host redirect stripping + absolute
+ *  download deadline + size cap) so deploy and update-package behave
+ *  identically — update-package previously had a second, token-less copy. */
+function downloadPackage(url, dest, maxRedirects = 5, sendAuth = true) {
+    return (0, download_1.downloadFile)(url, dest, { maxRedirects, sendAuth }).then(() => undefined);
+}
+function validatePackageUrl(packageUrl) {
+    try {
+        const parsed = new URL(packageUrl);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return `packageUrl scheme not allowed: ${parsed.protocol}. Only http and https are permitted.`;
+        }
+        return null;
+    }
+    catch {
+        return 'packageUrl is not a valid URL';
+    }
+}
+function normalizeReleasePart(value, fallback) {
+    const normalized = (value || fallback)
+        .replace(/[^A-Za-z0-9._-]+/g, '-')
+        .replace(/^[._-]+|[._-]+$/g, '')
+        .slice(0, 80);
+    return normalized || fallback;
+}
+function buildDeploymentPaths(workDir, appId, deploymentId, version) {
+    if (!(0, safe_path_1.isSafePathSegment)(appId)) {
+        throw new Error('applicationId contains unsupported characters');
+    }
+    if (!(0, safe_path_1.isSafePathSegment)(deploymentId)) {
+        throw new Error('deploymentId contains unsupported characters');
+    }
+    const versionPart = normalizeReleasePart(version, 'version');
+    const releaseKey = `${versionPart}-${deploymentId}`;
+    const appRoot = path.join(workDir, 'apps', appId);
+    const releasesDir = path.join(appRoot, 'releases');
+    const tmpDir = path.join(appRoot, 'tmp');
+    return {
+        appRoot,
+        releasesDir,
+        tmpDir,
+        currentLink: path.join(appRoot, 'current'),
+        releaseKey,
+        finalReleaseDir: path.join(releasesDir, releaseKey),
+        extractDir: path.join(tmpDir, `${releaseKey}-extracting`),
+    };
+}
+function readCurrentTarget(currentLink) {
+    try {
+        if (fs.existsSync(currentLink) && fs.lstatSync(currentLink).isSymbolicLink()) {
+            return fs.readlinkSync(currentLink);
+        }
+    }
+    catch (err) {
+        logger_1.logger.warn(`[deploy] Failed to read current release link: ${err.message}`);
+    }
+    return null;
+}
+function removePathIfExists(target) {
+    if (fs.existsSync(target)) {
+        fs.rmSync(target, { recursive: true, force: true });
+    }
+}
+function switchCurrentRelease(currentLink, targetDir) {
+    const tmpLink = `${currentLink}.next-${process.pid}-${Date.now()}`;
+    removePathIfExists(tmpLink);
+    fs.symlinkSync(targetDir, tmpLink, process.platform === 'win32' ? 'junction' : 'dir');
+    try {
+        fs.renameSync(tmpLink, currentLink);
+    }
+    catch (err) {
+        if (err?.code !== 'EEXIST')
+            throw err;
+        fs.unlinkSync(currentLink);
+        fs.renameSync(tmpLink, currentLink);
+    }
+}
+function restoreCurrentRelease(currentLink, previousTarget) {
+    try {
+        if (previousTarget) {
+            switchCurrentRelease(currentLink, previousTarget);
+        }
+        else if (fs.existsSync(currentLink)) {
+            fs.unlinkSync(currentLink);
+        }
+    }
+    catch (err) {
+        logger_1.logger.warn(`[deploy] Failed to restore previous current release: ${err.message}`);
+    }
+}
+/** S6: Pure zip-entry validator. Given the list of entry names read from an
+ *  archive, return the ones that would escape the extraction directory. It
+ *  rejects POSIX (`/x`), Windows drive (`C:\x`, `C:/x`) and UNC (`\\x`)
+ *  absolute paths, and any entry carrying a `..` path segment — splitting on
+ *  BOTH separators so a backslash-smuggled traversal (`..\\x`) is caught
+ *  identically to `../x`. Kept free of any platform/process/`path.isAbsolute`
+ *  dependency so the Linux (`unzip -Z1`) and Windows (PowerShell .NET) listing
+ *  branches enforce the exact same rule, and so it is unit-testable on any
+ *  host. (The old inline check used `path.isAbsolute`, which on Linux silently
+ *  let a Windows-absolute `C:\x` entry through; the explicit patterns here
+ *  close that gap.) */
+function findUnsafeZipEntries(entries) {
+    const unsafe = [];
+    for (const entry of entries) {
+        const parts = entry.split(/[\\/]+/).filter(Boolean);
+        const isAbsolute = entry.startsWith('/') ||
+            entry.startsWith('\\') ||
+            /^[A-Za-z]:[\\/]/.test(entry);
+        if (isAbsolute || parts.includes('..')) {
+            unsafe.push(entry);
+        }
+    }
+    return unsafe;
+}
+async function assertSafeZipEntries(zipPath) {
+    // Read the entry list with a platform-appropriate tool, then run the SAME
+    // traversal check. Windows previously returned early here and relied solely
+    // on Expand-Archive's own (undocumented) path handling — an asymmetric guard
+    // versus the Linux branch.
+    let entries;
+    if (process.platform === 'win32') {
+        // No `unzip` on Windows: enumerate via .NET's ZipFile (zero new deps).
+        // ZipFile lives in System.IO.Compression — loaded by default on PowerShell
+        // 7+, needing Add-Type on Windows PowerShell 5.1 — so the Add-Type is
+        // wrapped in try/catch to work on both. Entry.FullName uses '/' separators
+        // per the zip spec; findUnsafeZipEntries normalises both anyway.
+        const script = 'try { Add-Type -AssemblyName System.IO.Compression.FileSystem } catch {}; ' +
+            '$z = [System.IO.Compression.ZipFile]::OpenRead($args[0]); ' +
+            'try { $z.Entries | ForEach-Object { $_.FullName } } finally { $z.Dispose() }';
+        const listR = await (0, run_command_1.runCommand)('powershell.exe', ['-NoProfile', '-Command', script, zipPath], { timeout: 30000 });
+        if (listR.status !== 0) {
+            throw new Error(listR.stderr?.toString() || 'zip listing failed');
+        }
+        entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
+    }
+    else {
+        const listR = await (0, run_command_1.runCommand)('unzip', ['-Z1', zipPath], { timeout: 30000 });
+        if (listR.status !== 0) {
+            throw new Error(listR.stderr?.toString() || 'unzip listing failed');
+        }
+        entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
+    }
+    const unsafe = findUnsafeZipEntries(entries);
+    if (unsafe.length > 0) {
+        throw new Error(`Unsafe zip entry path: ${unsafe[0]}`);
+    }
 }
 /** Main deploy handler */
 exports.deployRouter.post('/deploy', async (req, res) => {
     const payload = req.body;
-    const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
+    const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, version, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
     if (!deploymentId) {
         return res.status(400).json({ error: 'deploymentId is required' });
     }
+    if (!(0, safe_path_1.isSafePathSegment)(deploymentId)) {
+        return res.status(400).json({ error: 'deploymentId contains unsupported characters' });
+    }
     if (!gitRepo && !packageUrl) {
         return res.status(400).json({ error: 'Either gitRepo or packageUrl is required' });
+    }
+    // P0: git argument injection guard — option-like or malformed values would
+    // be parsed as flags by git (e.g. --upload-pack=…) instead of ref/URL.
+    if (gitRepo) {
+        if (/^-/.test(gitRepo) || !/^(https?:\/\/|git@|ssh:\/\/)/i.test(gitRepo)) {
+            return res.status(400).json({ error: `Invalid gitRepo URL: ${gitRepo}` });
+        }
+        const branch = gitBranch || 'main';
+        if (/^-/.test(branch) ||
+            /[\s^~:?*[\]\\]/.test(branch) ||
+            branch.includes('..') ||
+            branch.startsWith('/')) {
+            return res.status(400).json({ error: `Invalid gitBranch: ${branch}` });
+        }
+        if (gitCommit && !/^[0-9a-fA-F]{7,40}$/.test(gitCommit)) {
+            return res.status(400).json({ error: `Invalid gitCommit: ${gitCommit}` });
+        }
+    }
+    if (packageUrl) {
+        const packageUrlError = validatePackageUrl(packageUrl);
+        if (packageUrlError) {
+            return res.status(400).json({ error: packageUrlError });
+        }
     }
     // Work directory for this deployment (accept appId as alias for applicationId)
     const appId = payload.applicationId || payload.appId;
     if (!appId) {
         return res.status(400).json({ error: 'applicationId is required' });
     }
-    const deployDir = path.join(config_1.config.workDir, 'apps', appId, deploymentId);
+    if (!(0, safe_path_1.isSafePathSegment)(appId)) {
+        return res.status(400).json({ error: 'applicationId contains unsupported characters' });
+    }
+    const paths = buildDeploymentPaths(config_1.config.workDir, appId, deploymentId, version);
     // Acknowledge immediately; deploy runs async
     res.json({ ok: true, deploymentId });
     setImmediate(async () => {
+        const previousCurrentTarget = readCurrentTarget(paths.currentLink);
+        let switchedCurrent = false;
         try {
             // Stop existing process if upgrading — wait for actual exit instead of fixed sleep
             if (upgrade && runningApps.has(deploymentId)) {
                 const existing = runningApps.get(deploymentId);
+                suppressNextRestartExitReport(deploymentId);
                 await new Promise((resolve) => {
                     const gracefulTimeout = setTimeout(() => {
                         logger_1.logger.warn(`[deploy] Graceful stop timed out for ${deploymentId}, sending SIGKILL`);
-                        existing.kill('SIGKILL');
+                        (0, run_command_1.killProcessTree)(existing, 'SIGKILL');
                         resolve();
                     }, 10000);
                     existing.once('exit', () => {
                         clearTimeout(gracefulTimeout);
                         resolve();
                     });
-                    existing.kill('SIGTERM');
+                    (0, run_command_1.killProcessTree)(existing, 'SIGTERM');
                 });
                 runningApps.delete(deploymentId);
                 logger_1.logger.info(`[deploy] Stopped existing process for ${deploymentId}`);
             }
-            if (!fs.existsSync(deployDir)) {
-                fs.mkdirSync(deployDir, { recursive: true });
-            }
+            fs.mkdirSync(paths.releasesDir, { recursive: true });
+            fs.mkdirSync(paths.tmpDir, { recursive: true });
+            removePathIfExists(paths.extractDir);
+            fs.mkdirSync(paths.extractDir, { recursive: true });
             if (packageUrl) {
-                // Package-based deployment: download zip and extract
-                logger_1.logger.info(`[deploy] Downloading package from ${packageUrl}`);
-                const zipPath = path.join(deployDir, '_package.zip');
+                // Package-based deployment: download zip and extract into a temporary release dir.
+                logger_1.logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
+                const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
                 await downloadPackage(packageUrl, zipPath);
+                // SEC-05: zip-bomb guard — reject declared-size bombs (ratio /
+                // entry-count / per-file & total caps, bounded nested probing)
+                // BEFORE handing the archive to Expand-Archive / unzip. Runs after
+                // the traversal check below would run; both are independent gates.
+                (0, zip_guard_1.guardZipOrThrow)(zipPath);
+                await assertSafeZipEntries(zipPath);
                 logger_1.logger.info(`[deploy] Extracting package for ${deploymentId}`);
-                // Use platform-appropriate extraction:
+                // Use platform-appropriate extraction (async — spawnSync here froze
+                // the event loop for up to 60s per archive):
                 //   Windows: PowerShell Expand-Archive (built-in since PS 5.0)
                 //   Linux/macOS: unzip
                 let unzipOk = false;
                 if (process.platform === 'win32') {
-                    const psR = (0, child_process_1.spawnSync)('powershell.exe', ['-NoProfile', '-Command',
-                        `Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${deployDir}'`], { stdio: 'pipe', timeout: 60000 });
+                    const psR = await (0, run_command_1.runCommand)('powershell.exe', [
+                        '-NoProfile',
+                        '-Command',
+                        'Expand-Archive -Force -LiteralPath $args[0] -DestinationPath $args[1]',
+                        zipPath,
+                        paths.extractDir,
+                    ], { timeout: 60000 });
                     if (psR.status !== 0)
                         throw new Error(psR.stderr?.toString() || 'Expand-Archive failed');
                     unzipOk = true;
                 }
                 else {
-                    const unzipR = (0, child_process_1.spawnSync)('unzip', ['-o', zipPath, '-d', deployDir], { stdio: 'pipe', timeout: 60000 });
+                    const unzipR = await (0, run_command_1.runCommand)('unzip', ['-o', zipPath, '-d', paths.extractDir], { timeout: 60000 });
                     if (unzipR.status !== 0)
                         throw new Error(unzipR.stderr?.toString() || 'unzip failed');
                     unzipOk = true;
@@ -48254,38 +49156,40 @@ exports.deployRouter.post('/deploy', async (req, res) => {
                 }
             }
             else if (gitRepo) {
-                const gitDir = path.join(deployDir, '.git');
-                // SEC: all git commands use spawnSync with array args — no shell, no injection
-                if (!fs.existsSync(gitDir)) {
-                    // Fresh clone
-                    logger_1.logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch}`);
-                    const cloneR = (0, child_process_1.spawnSync)('git', ['clone', '--depth', '1', '--branch', gitBranch, gitRepo, '.'], { cwd: deployDir, stdio: 'pipe', timeout: 120000 });
-                    if (cloneR.status !== 0)
-                        throw new Error(cloneR.stderr?.toString() || 'git clone failed');
-                }
-                else {
-                    // Pull latest
-                    logger_1.logger.info(`[deploy] Pulling latest for ${deploymentId}`);
-                    const fetchR = (0, child_process_1.spawnSync)('git', ['fetch', '--depth', '1', 'origin'], { cwd: deployDir, stdio: 'pipe', timeout: 60000 });
-                    if (fetchR.status !== 0)
-                        logger_1.logger.warn(`git fetch warning: ${fetchR.stderr?.toString()}`);
-                    const resetR = (0, child_process_1.spawnSync)('git', ['reset', '--hard', `origin/${gitBranch}`], { cwd: deployDir, stdio: 'pipe', timeout: 30000 });
-                    if (resetR.status !== 0)
-                        throw new Error(resetR.stderr?.toString() || 'git reset failed');
-                }
+                // SEC: all git commands use array args via async spawn — no shell, no injection
+                // S12: the branch was validated above against `gitBranch || 'main'`, but
+                // the clone used the RAW gitBranch — an empty/undefined value reached git
+                // as a bad `--branch` argument (empty string, or a spawn TypeError on
+                // undefined). Pass `--branch` only when a branch was actually specified;
+                // otherwise let git clone the remote's default HEAD (forcing 'main' would
+                // break repos whose default is 'master'/other). When gitBranch IS set it
+                // is exactly the value the validator checked.
+                const cloneArgs = ['clone', '--depth', '1'];
+                if (gitBranch)
+                    cloneArgs.push('--branch', gitBranch);
+                cloneArgs.push(gitRepo, '.');
+                logger_1.logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch || '<default>'}`);
+                const cloneR = await (0, run_command_1.runCommand)('git', cloneArgs, { cwd: paths.extractDir, timeout: 120000 });
+                if (cloneR.status !== 0)
+                    throw new Error(cloneR.stderr?.toString() || 'git clone failed');
                 if (gitCommit) {
-                    const coR = (0, child_process_1.spawnSync)('git', ['checkout', gitCommit], { cwd: deployDir, stdio: 'pipe', timeout: 30000 });
+                    const coR = await (0, run_command_1.runCommand)('git', ['checkout', gitCommit], { cwd: paths.extractDir, timeout: 30000 });
                     if (coR.status !== 0)
                         throw new Error(coR.stderr?.toString() || 'git checkout failed');
                 }
             }
-            // Install dependencies
-            installDeps(deployDir, runtime, envVars);
-            // Write .env file for the app
+            // Install dependencies before publishing the release.
+            await installDeps(paths.extractDir, runtime, envVars);
+            // Write .env file for the app before publishing the release.
             if (Object.keys(envVars).length > 0) {
                 const envContent = Object.entries(envVars).map(([k, v]) => `${k}=${v}`).join('\n');
-                fs.writeFileSync(path.join(deployDir, '.env'), envContent, 'utf-8');
+                fs.writeFileSync(path.join(paths.extractDir, '.env'), envContent, { encoding: 'utf-8', mode: 0o600 });
             }
+            removePathIfExists(paths.finalReleaseDir);
+            fs.renameSync(paths.extractDir, paths.finalReleaseDir);
+            switchCurrentRelease(paths.currentLink, paths.finalReleaseDir);
+            switchedCurrent = true;
+            logger_1.logger.info(`[deploy] Current release for ${appName} now points to ${paths.releaseKey}`);
             // Start app if runMode is daemon or once
             // Pick a sensible default entrypoint based on runtime when none was specified
             const defaultEntry = (runtime === 'python') ? 'main.py'
@@ -48293,7 +49197,7 @@ exports.deployRouter.post('/deploy', async (req, res) => {
                     : 'main.sh';
             const entry = entrypoint || defaultEntry;
             if (runMode === 'daemon' || runMode === 'once') {
-                startApp(deploymentId, deployDir, runtime, entry, runMode, envVars);
+                startApp(deploymentId, paths.finalReleaseDir, runtime, entry, runMode, envVars);
             }
             else {
                 // scheduled mode: just deploy, tasks are triggered via normal task dispatch
@@ -48301,6 +49205,10 @@ exports.deployRouter.post('/deploy', async (req, res) => {
             }
         }
         catch (err) {
+            if (switchedCurrent) {
+                restoreCurrentRelease(paths.currentLink, previousCurrentTarget);
+            }
+            removePathIfExists(paths.extractDir);
             logger_1.logger.error(`[deploy] Deployment ${deploymentId} failed: ${err.message}`);
             await reportStatus(deploymentId, 'failed', undefined, err.message);
         }
@@ -48311,7 +49219,15 @@ exports.deployRouter.post('/app-stop', (req, res) => {
     const { deploymentId } = req.body;
     const child = runningApps.get(deploymentId);
     if (child) {
-        child.kill('SIGTERM');
+        // Apps are spawned detached (process-group leaders) — kill the whole
+        // tree so daemons that spawned their own children don't escape.
+        (0, run_command_1.killProcessTree)(child, 'SIGTERM');
+        // Escalate to SIGKILL when the process ignores SIGTERM (mirroring the
+        // upgrade path) — otherwise daemons keep running unmanaged.
+        const killTimer = setTimeout(() => {
+            (0, run_command_1.killProcessTree)(child, 'SIGKILL');
+        }, 10000);
+        child.once('exit', () => clearTimeout(killTimer));
         runningApps.delete(deploymentId);
         logger_1.logger.info(`[deploy] Stopped app ${deploymentId}`);
     }
@@ -48368,10 +49284,19 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.executeRouter = void 0;
+exports.BoundedLogBuffer = exports.executeRouter = void 0;
+exports.gitCheckoutTo = gitCheckoutTo;
+exports.validateExecutionWorkDir = validateExecutionWorkDir;
+exports.executionExists = executionExists;
+exports.listActiveExecutionIds = listActiveExecutionIds;
+exports.prepareFailureReason = prepareFailureReason;
+exports.dispatchExecutionToWorker = dispatchExecutionToWorker;
+exports.buildNpmRcContent = buildNpmRcContent;
+exports.killRunningTaskProcesses = killRunningTaskProcesses;
 exports.runTask = runTask;
 const express_1 = __nccwpck_require__(925);
 const child_process_1 = __nccwpck_require__(5317);
+const crypto = __importStar(__nccwpck_require__(6982));
 const path = __importStar(__nccwpck_require__(6928));
 const fs = __importStar(__nccwpck_require__(9896));
 const config_1 = __nccwpck_require__(3650);
@@ -48379,34 +49304,241 @@ const logger_1 = __nccwpck_require__(6888);
 const scheduler_1 = __nccwpck_require__(1415);
 const manifest_1 = __nccwpck_require__(5537);
 const callback_1 = __nccwpck_require__(4915);
+const artifacts_1 = __nccwpck_require__(1413);
+const auth_1 = __nccwpck_require__(9473);
+const admin_client_1 = __nccwpck_require__(6609);
 const file_logger_1 = __nccwpck_require__(4723);
 const task_worker_1 = __nccwpck_require__(8404);
+const run_command_1 = __nccwpck_require__(3879);
+const env_whitelist_1 = __nccwpck_require__(5809);
+const execution_callback_token_1 = __nccwpck_require__(4730);
 /** Convert git URL to a safe cache directory name */
 function repoDirName(repoUrl) {
     const base = repoUrl.replace(/\/$/, '').split('/').pop() ?? 'repo';
-    return base.replace(/\.git$/, '').replace(/[^a-zA-Z0-9_.-]/g, '_');
+    const cleaned = base.replace(/\.git$/, '').replace(/[^a-zA-Z0-9_.-]/g, '_');
+    // Salt with a URL hash — sanitization alone maps distinct repos like
+    // a/b and a_b onto the same cache directory (cross-repo contamination).
+    const hash = crypto.createHash('sha256').update(repoUrl).digest('hex').slice(0, 12);
+    return `${cleaned}-${hash}`;
+}
+/** Strip embedded credentials (user:token@) before a URL reaches the logs. */
+function redactUrl(u) {
+    return u.replace(/\/\/[^/@]+@/, '//***@');
+}
+const gitCacheQueues = new Map();
+/** Serialize first-time clones per repo — concurrent executions of the same
+ *  repo would race `git clone --bare` into the same cache directory and the
+ *  losing side fails the whole execution (npm installs already queue via
+ *  queueTaskInstall; git had no equivalent). */
+function queueGitCheckout(cacheKey, job) {
+    const prev = gitCacheQueues.get(cacheKey) ?? Promise.resolve();
+    const run = prev.then(job, job);
+    const tail = run.then(() => undefined, () => undefined);
+    gitCacheQueues.set(cacheKey, tail);
+    tail.finally(() => {
+        if (gitCacheQueues.get(cacheKey) === tail)
+            gitCacheQueues.delete(cacheKey);
+    });
+    return run;
 }
 /** Clone (with bare cache) and checkout the specified ref to dest directory */
-function gitCheckoutTo(repoUrl, ref, dest) {
+/** W-23 (windows-findings, parity with executor-python): the clone cache was
+ *  probed by `exists(HEAD)` only — a directory left half-written by a killed
+ *  clone (taskkill /F mid-clone) then either failed `git clone` forever
+ *  ("destination exists") or, worse on the python side, was treated as warm
+ *  cache and failed `fetch` forever. Validate with git itself and quarantine
+ *  (rename, not delete — forensics + Windows may still see file locks) so the
+ *  next checkout self-heals by re-cloning. */
+async function isBareGitRepo(cacheDir) {
+    if (!fs.existsSync(path.join(cacheDir, 'HEAD')))
+        return false;
+    const probe = await (0, run_command_1.runCommand)('git', ['-C', cacheDir, 'rev-parse', '--is-bare-repository'], { timeout: 15000 });
+    return probe.status === 0 && probe.stdout.trim() === 'true';
+}
+function quarantineBrokenCache(cacheDir) {
+    const broken = `${cacheDir}-broken-${Date.now()}`;
+    try {
+        fs.renameSync(cacheDir, broken);
+    }
+    catch (err) {
+        logger_1.logger.warn(`[git] could not quarantine cache dir ${cacheDir} (${err instanceof Error ? err.message : String(err)}); removing`);
+        fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+}
+/**
+ * Clone/fetch/checkout the specified ref to dest directory.
+ * `signal` lets the execution kill endpoint abort a prepare-phase checkout
+ * (改动2): the in-flight git process tree is hard-killed and the queued job
+ * chain rejects with ExecutionCancelledError.
+ */
+async function gitCheckoutTo(repoUrl, ref, dest, signal) {
     const cacheDir = path.join(config_1.config.workDir, '.git_cache', repoDirName(repoUrl));
-    if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
-        fs.mkdirSync(cacheDir, { recursive: true });
-        const r = (0, child_process_1.spawnSync)('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120000 });
+    await queueGitCheckout(cacheDir, async () => {
+        if (signal?.aborted)
+            throw new task_worker_1.ExecutionCancelledError(dest);
+        if (fs.existsSync(cacheDir) && !(await isBareGitRepo(cacheDir))) {
+            logger_1.logger.warn(`[git] cache ${cacheDir} is not a valid bare repo (killed clone?) — quarantining and re-cloning`);
+            quarantineBrokenCache(cacheDir);
+        }
+        if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
+            fs.mkdirSync(cacheDir, { recursive: true });
+            const r = await (0, run_command_1.runCommand)('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120000, signal });
+            if (signal?.aborted)
+                throw new task_worker_1.ExecutionCancelledError(dest);
+            if (r.status !== 0) {
+                fs.rmSync(cacheDir, { recursive: true, force: true });
+                throw new Error(`git clone failed: ${r.stderr.trim()}`);
+            }
+        }
+        else {
+            const r = await (0, run_command_1.runCommand)('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60000, signal });
+            if (signal?.aborted)
+                throw new task_worker_1.ExecutionCancelledError(dest);
+            if (r.status !== 0) {
+                // Continuing with a stale cache made tasks silently run old code.
+                throw new Error(`git fetch failed: ${r.stderr.trim()}`);
+            }
+        }
+        fs.mkdirSync(dest, { recursive: true });
+        const r = await (0, run_command_1.runCommand)('git', [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'], { timeout: 30000, signal });
+        if (signal?.aborted)
+            throw new task_worker_1.ExecutionCancelledError(dest);
         if (r.status !== 0)
-            throw new Error(`git clone failed: ${r.stderr?.toString()}`);
-    }
-    else {
-        const r = (0, child_process_1.spawnSync)('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60000 });
-        if (r.status !== 0)
-            logger_1.logger.warn(`git fetch warning: ${r.stderr?.toString()}`);
-    }
-    fs.mkdirSync(dest, { recursive: true });
-    const r = (0, child_process_1.spawnSync)('git', [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'], { timeout: 30000 });
-    if (r.status !== 0)
-        throw new Error(`git checkout failed: ${r.stderr?.toString()}`);
+            throw new Error(`git checkout failed: ${r.stderr.trim()}`);
+    });
+}
+const taskInstallQueues = new Map();
+/** Serialize dependency installs per task id — concurrent requests for the
+ *  same task would race on the shared .node_modules/<taskId> directory.
+ *  A rejected job propagates the rejection to every chained follower (改动2:
+ *  a kill-aborted install must reach ALL queued executions, not just the
+ *  first one — each of their git/npm processes has already been hard-killed
+ *  via its own abort signal, so they must not proceed as if the install
+ *  succeeded). An aborted follower converts the shared rejection into an
+ *  ExecutionCancelledError so the ownership chain (worker skip, no double
+ *  release) kicks in. */
+function queueTaskInstall(taskId, job, isAborted) {
+    const prev = taskInstallQueues.get(taskId) ?? Promise.resolve();
+    const run = prev.then(job, job);
+    const tail = run.then(() => undefined, () => undefined);
+    taskInstallQueues.set(taskId, tail);
+    tail.finally(() => {
+        if (taskInstallQueues.get(taskId) === tail)
+            taskInstallQueues.delete(taskId);
+    });
+    return run.catch((err) => {
+        if (isAborted())
+            throw new task_worker_1.ExecutionCancelledError(taskId);
+        throw err;
+    });
 }
 exports.executeRouter = (0, express_1.Router)();
-exports.executeRouter.post('/execute', async (req, res) => {
+/** executionId 会被用作 workDir 下的目录名——限定安全字符集，杜绝路径穿越
+ *  （S6/Q11 的字符级前置，深度解析检查见 validateExecutionWorkDir）。 */
+function isSafeExecutionIdSegment(id) {
+    return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id);
+}
+/** S6/Q11 + SEC-04: path traversal / symlink guard for workDir.
+ *  Returns an error message, or null when the directory is safe to use.
+ *  Shared by POST /execute (request + background) and the /config/reload
+ *  workDir validation (routes/config.ts) so the rules never drift apart. */
+function validateExecutionWorkDir(workDir, baseDir) {
+    const resolvedWorkDir = path.resolve(workDir);
+    const resolvedBase = path.resolve(baseDir);
+    if (!resolvedWorkDir.startsWith(resolvedBase + path.sep) && resolvedWorkDir !== resolvedBase) {
+        return 'Invalid executionId: path traversal detected';
+    }
+    // SEC-04: Check for symbolic link attacks
+    try {
+        // Check if the base directory exists and is not a symlink
+        const baseStats = fs.lstatSync(resolvedBase);
+        if (baseStats.isSymbolicLink()) {
+            return 'Base work directory cannot be a symbolic link';
+        }
+        // If workDir already exists, check if it's a symlink
+        if (fs.existsSync(resolvedWorkDir)) {
+            const workDirStats = fs.lstatSync(resolvedWorkDir);
+            if (workDirStats.isSymbolicLink()) {
+                return 'Work directory cannot be a symbolic link';
+            }
+            // Check the real path to prevent symlink escape
+            const realWorkDir = fs.realpathSync(resolvedWorkDir);
+            const realBase = fs.realpathSync(resolvedBase);
+            if (!realWorkDir.startsWith(realBase + path.sep) && realWorkDir !== realBase) {
+                return 'Symbolic link escape detected';
+            }
+        }
+    }
+    catch (err) {
+        return `Path validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`;
+    }
+    return null;
+}
+const liveExecutions = new Map();
+/** 推送（且只推一次）killed 失败回调。容量释放不在这里——所有权见各调用方
+ *  注释：未开始路径 kill 端点释放；prepare/运行中被取消路径 worker 的
+ *  onComplete 释放。 */
+function pushKilledCallbackOnce(executionId, entry) {
+    if (entry.killedCallbackPushed)
+        return;
+    entry.killedCallbackPushed = true;
+    (0, file_logger_1.appendLog)(executionId, 'Execution killed by admin request');
+    writeExecMeta(executionId, {
+        status: 'failed',
+        endTime: Date.now(),
+        errorMessage: 'Killed by admin request',
+    });
+    (0, callback_1.pushCallback)({
+        executionId,
+        status: 'failed',
+        errorMessage: 'Execution killed by admin request',
+        failureReason: 'killed',
+        ...(liveExecutions.get(executionId)?.traceparent
+            ? { traceparent: liveExecutions.get(executionId).traceparent }
+            : {}),
+    });
+}
+function createExecutionEntry(executionId, taskId) {
+    const entry = {
+        executionId,
+        taskId,
+        aborted: false,
+        abortController: new AbortController(),
+        killedByRequest: false,
+        killedCallbackPushed: false,
+        enqueued: false,
+        cancelled: false,
+        workerFinished: false,
+        capacityReleased: false,
+        release: () => {
+            if (entry.capacityReleased)
+                return; // 幂等：kill 与自然完成竞争时只减一次
+            entry.capacityReleased = true;
+            Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
+            liveExecutions.delete(entry.executionId);
+        },
+    };
+    return entry;
+}
+/** execution 是否在本执行器的运行表中（/execute 重复领取检查用，测试导出）。 */
+function executionExists(executionId) {
+    return liveExecutions.has(executionId);
+}
+/** 当前运行表中所有 executionId（/config/reload 的 workDir 切换安全检查用）。 */
+function listActiveExecutionIds() {
+    return [...liveExecutions.keys()];
+}
+// STALE-01: 心跳上报本机运行中的 executionId 与死信积压。scheduler 不能反向
+// import routes（会成环），故由数据属主在此注册 provider。
+(0, scheduler_1.registerRunningExecutionIdsProvider)(listActiveExecutionIds);
+(0, scheduler_1.registerDeadLetterCountProvider)(file_logger_1.getDeadLetterCount);
+// ---------------------------------------------------------------------------
+// POST /execute — 只做参数校验 + 并发预检 + 登记，prepare/spawn 全部进入
+// 后台（改动2）。同步 prepare 时 clone(120s)+fetch(60s)+install(300s) 会
+// 超过 admin 侧 dispatch HTTP 超时（(task.timeout+10)s），导致 admin 把
+// 超时误判为 TIMEOUT 终态而执行器随后成功回调被丢弃、容量计数失真。
+// ---------------------------------------------------------------------------
+exports.executeRouter.post('/execute', (req, res) => {
     // BUG-03: Use atomic operations to prevent race conditions in capacity checking
     // Atomically increment counter first, then check if over capacity
     const current = Atomics.add((0, scheduler_1.getRunningCountArray)(), 0, 1);
@@ -48415,97 +49547,307 @@ exports.executeRouter.post('/execute', async (req, res) => {
         res.status(429).json({ error: 'Executor is at capacity' });
         return;
     }
-    // Helper function to release capacity exactly once for synchronous rejection paths.
-    const releaseCapacity = () => {
-        Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
-    };
-    const sendError = (status, error) => {
-        releaseCapacity();
+    let entry = null;
+    /** 同步拒绝路径：释放容量（幂等）。 */
+    const reject = (status, error) => {
+        if (entry)
+            entry.release();
+        else
+            Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
         res.status(status).json({ error });
     };
-    const body = req.body;
-    const { executionId, params } = body;
-    if (!executionId || !body.task) {
-        sendError(400, 'executionId and task are required');
-        return;
-    }
-    const workDir = path.join(config_1.config.workDir, executionId);
-    // S6/Q11: path traversal guard — ensure workDir stays within configured base
-    const resolvedWorkDir = path.resolve(workDir);
-    const resolvedBase = path.resolve(config_1.config.workDir);
-    if (!resolvedWorkDir.startsWith(resolvedBase + path.sep) && resolvedWorkDir !== resolvedBase) {
-        sendError(400, 'Invalid executionId: path traversal detected');
-        return;
-    }
-    // SEC-04: Check for symbolic link attacks
     try {
-        // Check if the base directory exists and is not a symlink
-        const baseStats = fs.lstatSync(resolvedBase);
-        if (baseStats.isSymbolicLink()) {
-            sendError(400, 'Base work directory cannot be a symbolic link');
+        const body = req.body;
+        const executionId = body?.executionId;
+        const params = body?.params;
+        if (!executionId || !body.task) {
+            reject(400, 'executionId and task are required');
             return;
         }
-        // If workDir already exists, check if it's a symlink
-        if (fs.existsSync(resolvedWorkDir)) {
-            const workDirStats = fs.lstatSync(resolvedWorkDir);
-            if (workDirStats.isSymbolicLink()) {
-                sendError(400, 'Work directory cannot be a symbolic link');
+        if (!isSafeExecutionIdSegment(executionId)) {
+            reject(400, 'Invalid executionId: path traversal detected');
+            return;
+        }
+        // 重复领取守卫：同一 execution 仍在运行（含排队）时不得二次领取——
+        // 二次 Atomics.add 与首个并发路径叠加会失真/双释放。
+        if (liveExecutions.has(executionId)) {
+            reject(400, `Execution ${executionId} is already active on this executor`);
+            return;
+        }
+        const workDir = path.join(config_1.config.workDir, executionId);
+        const guardError = validateExecutionWorkDir(workDir, config_1.config.workDir);
+        if (guardError) {
+            reject(400, guardError);
+            return;
+        }
+        // 廉价同步校验（纯字符串检查，防注入/防误配置，语义与原实现一致）：
+        // 后台化后若仍走失败回调，admin 侧 execution 尚未置 running 会丢弃回调，
+        // 留下永久僵尸行——必须保持同步 4xx。
+        const gitRepo = body.task.gitRepo;
+        if (gitRepo) {
+            // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
+            const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
+            if (!allowedGitPattern.test(gitRepo)) {
+                reject(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
                 return;
             }
-            // Check the real path to prevent symlink escape
-            const realWorkDir = fs.realpathSync(resolvedWorkDir);
-            const realBase = fs.realpathSync(resolvedBase);
-            if (!realWorkDir.startsWith(realBase + path.sep) && realWorkDir !== realBase) {
-                sendError(400, 'Symbolic link escape detected');
+            // S7: SSRF guard — block private IP addresses and localhost
+            const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
+            if (privateIpPattern.test(gitRepo)) {
+                reject(400, `gitRepo URL contains restricted address: ${gitRepo}`);
+                return;
+            }
+            const ref = (body.task.gitCommit || body.task.gitBranch || 'main');
+            // git checkout uses array args (no shell injection), but an option-like
+            // ref (`-b`, `--orphan`) would still be parsed as a flag by git — same
+            // guard deploy.ts applies to its checkout path.
+            if (/^-/.test(ref)) {
+                reject(400, `Invalid git ref: ${ref}`);
                 return;
             }
         }
+        // S16: validate each package name against npm naming rules before any
+        // shell expansion (install itself now runs in the background).
+        const reqs = body.task.requirements || [];
+        const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
+        for (const pkg of reqs) {
+            if (!npmNameRe.test(pkg)) {
+                reject(400, `Invalid npm package name: ${pkg}`);
+                return;
+            }
+        }
+        // timeout=0 表示不限时（admin 侧 task.entity/scheduler 语义，改动4）——
+        // 仅 null/undefined 才回退默认值；越界与非数值保持原 400 语义。
+        const rawTimeout = body.task.timeout;
+        const timeout = rawTimeout === 0 ? 0 : rawTimeout || config_1.config.taskTimeoutSeconds;
+        if (timeout !== 0 && (!Number.isFinite(timeout) || timeout < 1 || timeout > 86400)) {
+            reject(400, `Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
+            return;
+        }
+        // Glue 语言的字符串校验是同步 400 语义（与原实现一致），语言支持性判定
+        // 依赖 runtime（可能被 manifest 覆盖），留在后台 prepare。
+        const glueSource = body.task.glueSource || body.task.glue_source;
+        if (glueSource !== undefined && typeof glueSource !== 'string') {
+            reject(400, 'glueSource must be a string');
+            return;
+        }
+        // 登记 + 立即 accepted。prepare（clone/checkout、依赖安装）与 spawn
+        // 在后台执行（经 worker 按 taskId 串行，见 dispatch）。
+        entry = createExecutionEntry(executionId, String(body.task.id || executionId));
+        liveExecutions.set(executionId, entry);
+        // OBS-01: 记录 admin 派发请求的 W3C traceparent 头（缺省=无追踪），
+        // 后续注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。
+        const traceparentHeader = req.headers['traceparent'];
+        if (typeof traceparentHeader === 'string' && traceparentHeader) {
+            entry.traceparent = traceparentHeader;
+            logger_1.logger.info(`Execution ${executionId} trace: ${traceparentHeader.split('-')[1] ?? 'malformed'}`);
+        }
+        void startExecutionInBackground(executionId, body, params, entry);
+        // 响应体与旧实现逐字一致——admin 对 2xx 的处理不变。
+        res.json({ status: 'accepted', executionId });
     }
     catch (err) {
-        sendError(400, `Path validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
-        return;
+        // Express 4 does not await async handlers: a synchronous throw below the
+        // capacity reservation must not hang the request or leak the slot.
+        if (!res.headersSent) {
+            reject(500, err instanceof Error ? err.message : 'Internal executor error');
+        }
     }
-    fs.mkdirSync(workDir, { recursive: true });
-    // S6/Q11: restrict permissions so sibling tasks cannot read this directory
+});
+/**
+ * 后台启动：先做与 worker 无关的前置（mkdir/chmod + 二次 symlink 检查），
+ * 然后移交 worker——同一 taskId 的 worker 轮到本执行时才运行 prepare 与
+ * spawn（保持原有同任务串行语义），失败回调走现有 pushCallback 通道。
+ */
+async function startExecutionInBackground(executionId, body, params, entry) {
+    const failStart = (message, failureReason, logs) => {
+        (0, file_logger_1.appendLog)(executionId, `[prepare] ${message}`);
+        writeExecMeta(executionId, {
+            executionId,
+            status: 'failed',
+            endTime: Date.now(),
+            errorMessage: message,
+        });
+        (0, callback_1.pushCallback)({
+            executionId,
+            status: 'failed',
+            errorMessage: truncateCallbackErrorMessage(message),
+            failureReason,
+            logs: truncateCallbackLogs(logs),
+            ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
+        });
+        entry.release(); // 幂等
+    };
     try {
-        fs.chmodSync(workDir, 0o700);
+        if (entry.aborted) {
+            // kill 在移交前到达：后台流程不启动，收尾由 kill 端点负责。
+            return;
+        }
+        const workDir = path.join(config_1.config.workDir, executionId);
+        fs.mkdirSync(workDir, { recursive: true });
+        // S6/Q11: restrict permissions so sibling tasks cannot read this directory
+        try {
+            fs.chmodSync(workDir, 0o700);
+        }
+        catch (_) { /* ignore on unsupported filesystems */ }
+        // symlink 检查在 mkdir 之前无法覆盖"dirent 恰在检查与 mkdir 之间被替换"
+        // 的 TOCTOU 窗口，这里在真正使用前复查一次。
+        const guardError = validateExecutionWorkDir(workDir, config_1.config.workDir);
+        if (guardError) {
+            failStart(guardError, 'unknown');
+            return;
+        }
+        await dispatchExecutionToWorker(executionId, body, params, workDir, entry);
     }
-    catch (_) { /* ignore on unsupported filesystems */ }
+    catch (err) {
+        failStart(err instanceof Error ? err.message : 'Executor background start failed', 'unknown');
+    }
+}
+/** prepare 失败信息的 failureReason 归类（对齐 admin ExecutionFailureReason）：
+ *  BUG-10 细化——git 拉取 / 依赖安装 / 运行时缺失拆分为独立分类，便于
+ *  统计与告警；未命中细分的获取类错误保持 package_fetch_failed 兜底。
+ *  导出供测试固化该映射。 */
+function prepareFailureReason(message) {
+    // git clone/fetch/checkout 或 CalledProcessError 形态（node 侧 git 也是子进程）
+    if (/git (clone|fetch|checkout) failed|\bgit\b.*returned non-zero|\bgit\b.*\b(clone|fetch|checkout)\b.*fail/i.test(message)) {
+        return 'git_fetch_failed';
+    }
+    if (/npm install failed|uv pip install failed|pip install failed|Dependency installation failed/i.test(message)) {
+        return 'dependency_install_failed';
+    }
+    if (/spawn .*ENOENT|runtime .*not (supported|available)|executable .*not found|No such file or directory/i.test(message)) {
+        return 'runtime_missing';
+    }
+    if (/Invalid npm package name/i.test(message)) {
+        return 'package_fetch_failed';
+    }
+    return 'unknown';
+}
+/**
+ * 构造 prepared task 并移交 worker（导出供测试注入）。taskId 此时即可得
+ * （manifest 合并允许覆盖任意字段，但 worker 分组仅用于同任务串行，无安全
+ * 含义）。移交后容量/收尾责任归 worker 的 onComplete。
+ */
+async function dispatchExecutionToWorker(executionId, body, params, workDir, entry) {
+    const taskId = String(body.task.id || executionId);
+    entry.taskId = taskId;
+    const placeholder = {
+        ...body.task,
+        workDir,
+        runtime: body.task.runtime,
+        entrypoint: body.task.entrypoint,
+    };
+    const runPrepared = async (assertNotCancelled) => {
+        try {
+            return await prepareExecution(executionId, body, params, workDir, entry, assertNotCancelled);
+        }
+        catch (err) {
+            if (err instanceof task_worker_1.ExecutionCancelledError || entry.aborted || entry.cancelled) {
+                // 被 kill：worker 跳过任务执行。失败回调的推送责任按取消发生的阶段
+                // 划分——未开始/排队中被摘除的路径由 kill 端点收尾；已被 worker 取出
+                // （不在队列，kill 端点找不到可杀的进程）时由这里补推。容量释放统一
+                // 走 worker onComplete（未取消标记时），幂等防双释放。
+                if (entry.killedByRequest && !entry.cancelled) {
+                    pushKilledCallbackOnce(executionId, entry);
+                }
+                throw err instanceof task_worker_1.ExecutionCancelledError ? err : new task_worker_1.ExecutionCancelledError(executionId);
+            }
+            // prepare 真实失败（git clone / 依赖安装 / 参数非法）：这里完成回调上报
+            // （原实现经 HTTP 500 反馈，现已 accepted），容量仍由 worker 的
+            // onComplete 释放——不留悬挂状态。
+            const message = err instanceof Error ? err.message : 'Task preparation failed';
+            (0, file_logger_1.appendLog)(executionId, `[prepare] ${message}`);
+            writeExecMeta(executionId, {
+                status: 'failed',
+                endTime: Date.now(),
+                errorMessage: message,
+            });
+            (0, callback_1.pushCallback)({
+                executionId,
+                status: 'failed',
+                errorMessage: truncateCallbackErrorMessage(message),
+                failureReason: prepareFailureReason(message),
+                ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
+            });
+            throw err;
+        }
+    };
+    const onComplete = () => {
+        entry.workerFinished = true;
+        entry.release();
+    };
+    try {
+        await task_worker_1.taskWorkerManager.execute(taskId, executionId, placeholder, { ...(params || {}), executionId }, onComplete, runPrepared);
+        entry.enqueued = true;
+    }
+    catch (err) {
+        // 移交失败：worker 不会调用 onComplete，这里负责失败回调 + 释放。
+        const message = err instanceof Error ? err.message : 'Failed to enqueue task';
+        (0, file_logger_1.appendLog)(executionId, `[prepare] ${message}`);
+        (0, callback_1.pushCallback)({
+            executionId,
+            status: 'failed',
+            errorMessage: truncateCallbackErrorMessage(message),
+            failureReason: 'unknown',
+            ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
+        });
+        entry.release();
+    }
+}
+/**
+ * prepare 阶段（原同步请求路径逻辑，改动2）：git checkout → manifest 合并
+ * → glue → 依赖安装 → env 注入 → 组装 cmd/args。返回真正可运行的 task。
+ * 每个检查点响应 kill（aborted 标志 + abortController.signal）。
+ * 失败抛普通 Error（调用方负责回调），被 kill 时抛 ExecutionCancelledError
+ * （调用方静默退出，收尾归 kill 端点）。
+ */
+async function prepareExecution(executionId, body, params, workDir, entry, assertNotCancelled) {
+    const signal = entry.abortController.signal;
+    const checkAbort = () => {
+        if (entry.aborted)
+            throw new task_worker_1.ExecutionCancelledError(executionId);
+        assertNotCancelled();
+    };
+    checkAbort();
+    const taskName = String(body.task.name || body.task.id || executionId);
+    const logPrepare = (message) => {
+        logger_1.logger.info(message);
+        (0, file_logger_1.appendLog)(executionId, message);
+    };
     // --- Git version binding: if task specifies gitRepo, clone/checkout to work dir ---
     const gitRepo = body.task.gitRepo;
     const gitCommit = body.task.gitCommit;
     const gitBranch = body.task.gitBranch ?? 'main';
     if (gitRepo) {
-        // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
-        const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
-        if (!allowedGitPattern.test(gitRepo)) {
-            sendError(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
-            return;
-        }
-        // S7: SSRF guard — block private IP addresses and localhost
-        const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
-        if (privateIpPattern.test(gitRepo)) {
-            sendError(400, `gitRepo URL contains restricted address: ${gitRepo}`);
-            return;
-        }
         const ref = gitCommit || gitBranch;
-        logger_1.logger.info(`Checking out ${gitRepo}@${ref} to ${workDir}`);
+        logPrepare(`Checking out ${redactUrl(gitRepo)}@${ref} to ${workDir}`);
         try {
-            gitCheckoutTo(gitRepo, ref, workDir);
+            await gitCheckoutTo(gitRepo, ref, workDir, signal);
         }
         catch (err) {
-            sendError(500, err instanceof Error ? err.message : 'Git checkout failed');
-            return;
+            if (err instanceof task_worker_1.ExecutionCancelledError || entry.aborted)
+                throw err;
+            const message = err instanceof Error ? err.message : 'Git checkout failed';
+            logPrepare(`Git checkout failed: ${message}`);
+            throw new Error(message);
         }
     }
+    checkAbort();
     // Load manifest.yaml and merge with task (task fields take priority)
     const manifest = (0, manifest_1.loadManifest)(workDir);
     const task = (0, manifest_1.mergeTaskWithManifest)(body.task, manifest);
     const runtime = task.runtime || 'node';
     const entrypoint = task.entrypoint || 'index.js';
-    const timeout = task.timeout || config_1.config.taskTimeoutSeconds;
+    // 改动4：timeout=0 = 不限时（不设 kill 定时器）；null/undefined 才用默认。
+    const rawTimeout = task.timeout;
+    const timeout = rawTimeout === 0 ? 0 : rawTimeout || config_1.config.taskTimeoutSeconds;
+    // Bounded timeout: a negative value fires setTimeout immediately (instant
+    // task kill) and an unbounded one arms a near-permanent timer.
+    if (timeout !== 0 && (!Number.isFinite(timeout) || timeout < 1 || timeout > 86400)) {
+        throw new Error(`Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
+    }
     const requirements = task.requirements || [];
-    const taskId = String(task.id || executionId);
+    const taskId = entry.taskId;
     // Glue script support: write inline source to a temp file and use it as entrypoint
     let actualRuntime = runtime;
     let actualEntrypoint = entrypoint;
@@ -48513,6 +49855,9 @@ exports.executeRouter.post('/execute', async (req, res) => {
     const glueSource = task.glueSource || task.glue_source;
     const glueLanguage = task.glueLanguage || task.glue_language;
     if (glueSource) {
+        if (typeof glueSource !== 'string') {
+            throw new Error('glueSource must be a string');
+        }
         let glueFile;
         const glLower = glueLanguage ? glueLanguage.toLowerCase() : '';
         if (glLower === 'javascript' || glLower === 'glue_node' || (!glueLanguage && runtime === 'node')) {
@@ -48523,70 +49868,79 @@ exports.executeRouter.post('/execute', async (req, res) => {
             glueFile = path.join(workDir, 'glue_script.py');
             actualRuntime = 'python';
         }
-        else if (glLower === 'shell' || glLower === 'glue_shell') {
-            glueFile = path.join(workDir, 'glue_script.sh');
+        else if (glLower === 'shell' || glLower === 'glue_shell' || (!glueLanguage && runtime === 'shell')) {
+            // W-11 (windows-findings): parity bug — node/python branches accept a
+            // missing glueLanguage (fall back to task.runtime), shell did not and
+            // 400'd `Unsupported glue language: ` for shell glue created without
+            // the explicit field. Also on win32 the file MUST end in .cmd:
+            // `cmd.exe /c <path>.sh` neither runs the batch nor exits cleanly —
+            // it hangs (observed holding a task slot until timeout).
+            glueFile = path.join(workDir, process.platform === 'win32' ? 'glue_script.cmd' : 'glue_script.sh');
             actualRuntime = 'shell';
         }
         else {
-            sendError(400, `Unsupported glue language: ${glueLanguage}`);
-            return;
-        }
-        if (typeof glueSource !== 'string') {
-            sendError(400, 'glueSource must be a string');
-            return;
+            throw new Error(`Unsupported glue language: ${glueLanguage}`);
         }
         fs.writeFileSync(glueFile, glueSource, 'utf-8');
         fs.chmodSync(glueFile, 0o755);
-        logger_1.logger.info(`Glue script written to ${glueFile} (${glueSource.length} bytes)`);
+        logPrepare(`Glue script written to ${glueFile} (${glueSource.length} bytes)`);
         actualEntrypoint = actualRuntime === 'shell' ? glueFile : path.basename(glueFile);
         actualRequirements = []; // Glue scripts use system runtime, no per-task deps
     }
     // node runtime: install dependencies on demand to task-isolated directory
+    let sharedNodeModulesDir = null;
     if (actualRuntime === 'node' && actualRequirements.length > 0) {
         const nodeModulesDir = path.join(config_1.config.workDir, '.node_modules', taskId);
+        sharedNodeModulesDir = nodeModulesDir;
         fs.mkdirSync(nodeModulesDir, { recursive: true });
         const pkgJson = path.join(nodeModulesDir, 'package.json');
         if (!fs.existsSync(pkgJson)) {
             fs.writeFileSync(pkgJson, JSON.stringify({ name: `task-${taskId}`, version: '1.0.0' }));
         }
-        // S16: validate each package name against npm naming rules before shell expansion
+        // S16: names were validated synchronously at /execute; re-check here in
+        // case requirements arrived only via manifest.yaml.
         const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
         for (const pkg of actualRequirements) {
             if (!npmNameRe.test(pkg)) {
-                sendError(400, `Invalid npm package name: ${pkg}`);
-                return;
+                throw new Error(`Invalid npm package name: ${pkg}`);
             }
         }
-        logger_1.logger.info(`Installing ${actualRequirements.length} packages for task ${taskId}`);
-        // Generate .npmrc to use private registry for @autocodeflow scoped packages
+        logPrepare(`Installing ${actualRequirements.length} packages for task ${taskId}`);
+        // 改动3: .npmrc 指向私服（@autoflow / @autocodeflow 双 scope 行）；
+        // 配置了 NPM_REGISTRY_TOKEN 时追加 _authToken 行——registry-npm 对
+        // '**' 的 access 是 $authenticated，匿名安装必 401。token 不打日志。
         if (config_1.config.npmRegistryUrl) {
             const npmrc = path.join(nodeModulesDir, '.npmrc');
-            const hasAutoflowPackage = actualRequirements.some(pkg => pkg.startsWith('@autocodeflow/'));
-            const registryConfig = hasAutoflowPackage
-                ? `@autocodeflow:registry=${config_1.config.npmRegistryUrl}\n`
-                : `registry=${config_1.config.npmRegistryUrl}\n`;
-            fs.writeFileSync(npmrc, registryConfig);
-            logger_1.logger.info(`Using npm registry: ${config_1.config.npmRegistryUrl} for task ${taskId}`);
+            fs.writeFileSync(npmrc, buildNpmRcContent(config_1.config.npmRegistryUrl, config_1.config.npmRegistryToken, actualRequirements));
+            logger_1.logger.info(`Using npm registry: ${redactUrl(config_1.config.npmRegistryUrl)} for task ${taskId}`);
         }
-        const installResult = (0, child_process_1.spawnSync)('npm', ['install', '--prefix', nodeModulesDir, ...actualRequirements], { stdio: 'pipe', timeout: 300000 });
+        const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+        const installResult = await queueTaskInstall(taskId, async () => {
+            if (entry.aborted)
+                throw new task_worker_1.ExecutionCancelledError(executionId);
+            return (0, run_command_1.runCommand)(npmCmd, ['install', '--prefix', nodeModulesDir, ...actualRequirements], { timeout: 300000, shell: process.platform === 'win32', signal });
+        }, () => entry.aborted);
+        if (entry.aborted)
+            throw new task_worker_1.ExecutionCancelledError(executionId);
         if (installResult.status !== 0) {
-            const errMsg = installResult.stderr?.toString() || 'npm install failed';
-            sendError(500, `Dependency installation failed: ${errMsg}`);
-            return;
+            const errMsg = installResult.stderr.trim() || 'npm install failed';
+            const message = `Dependency installation failed: ${errMsg}`;
+            logPrepare(message);
+            throw new Error(message);
         }
     }
+    checkAbort();
     // SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
-    const ENV_WHITELIST = new Set([
-        'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
-        'NODE_PATH', 'npm_config_cache', 'npm_config_prefix',
-        'TMPDIR', 'TEMP', 'TMP',
-        'USER', 'LOGNAME', 'SHELL',
-        'SYSTEMROOT', 'WINDIR', // Windows compat
-    ]);
-    const env = {};
-    for (const [k, v] of Object.entries(process.env)) {
-        if (ENV_WHITELIST.has(k))
-            env[k] = v;
+    const env = (0, env_whitelist_1.buildChildEnv)();
+    // Requirements were installed to .node_modules/<taskId>/node_modules via npm
+    // --prefix; Node's resolution chain never reaches a dot-prefixed sibling
+    // directory, so point NODE_PATH at it or every require() fails with
+    // MODULE_NOT_FOUND (verified reproduction — see review round 4).
+    if (sharedNodeModulesDir) {
+        const taskNodeModules = path.join(sharedNodeModulesDir, 'node_modules');
+        env['NODE_PATH'] = env['NODE_PATH']
+            ? `${taskNodeModules}${path.delimiter}${env['NODE_PATH']}`
+            : taskNodeModules;
     }
     // inject task-scoped context
     env['EXECUTION_ID'] = executionId;
@@ -48596,6 +49950,48 @@ exports.executeRouter.post('/execute', async (req, res) => {
         for (const [k, v] of Object.entries(params)) {
             env[`AUTOFLOW_${k.toUpperCase()}`] = String(v);
         }
+    }
+    // N23: per-execution callback credentials — injected AFTER the params loop
+    // so user params can never override them. The token is an HMAC bound to
+    // this executionId with a short TTL (task timeout + grace), derived from
+    // the executor shared secret; it lets task code call
+    // POST /api/executions/callback without ever seeing the shared token
+    // (SEC-01 whitelist untouched — this is the explicit extra channel).
+    // AUTOFLOW_ADMIN_API_URL is non-secret routing info, same value the
+    // executor itself uses to reach admin-api.
+    const callbackToken = (0, execution_callback_token_1.createExecutionCallbackToken)(executionId, (timeout === 0 ? TOKEN_TTL_UNBOUNDED_SECONDS : timeout) + execution_callback_token_1.CALLBACK_TOKEN_GRACE_SECONDS);
+    if (callbackToken) {
+        env['AUTOFLOW_CALLBACK_TOKEN'] = callbackToken;
+    }
+    const adminApiUrl = config_1.config.adminApiUrlInternal || config_1.config.adminApiUrl;
+    if (adminApiUrl) {
+        env['AUTOFLOW_ADMIN_API_URL'] = adminApiUrl;
+    }
+    // N27: the address this executor registered itself with (same value
+    // main.ts sends to /api/executors/register). Non-secret routing info —
+    // the per-execution callback path requires every callback item to carry
+    // executorAddress, and task code cannot know it any other way. Injected
+    // after the params loop so user params can never override it.
+    const registeredAddress = config_1.config.executorAddressPublic || config_1.config.executorAddress;
+    if (registeredAddress) {
+        env['AUTOFLOW_EXECUTOR_ADDRESS'] = registeredAddress;
+    }
+    // FEAT-05: 预建产物目录约定 <workDir>/artifacts/，注入 AUTOFLOW_ARTIFACTS_DIR，
+    // 任务把交付物写此目录即被收集上传。best-effort，失败不阻断。
+    const artifactsDir = (0, artifacts_1.artifactsDirFor)(workDir);
+    try {
+        fs.mkdirSync(artifactsDir, { recursive: true });
+    }
+    catch (e) {
+        logger_1.logger.warn(`create artifacts dir failed (non-critical): ${String(e)}`);
+    }
+    env['AUTOFLOW_ARTIFACTS_DIR'] = artifactsDir;
+    // OBS-01: 把 dispatch 请求的 W3C traceparent 头透传为任务 env（任务代码
+    // 可读 AUTOFLOW_TRACE_ID 做下游关联）。在 params 注入之后（用户参数不可
+    // 覆盖，与 AUTOFLOW_CALLBACK_TOKEN 同一纪律）。缺省（admin 未开追踪）
+    // 不注入，与既有行为一致。
+    if (entry.traceparent) {
+        env['AUTOFLOW_TRACE_ID'] = entry.traceparent;
     }
     let cmd;
     let args;
@@ -48614,31 +50010,115 @@ exports.executeRouter.post('/execute', async (req, res) => {
         }
         else {
             cmd = 'bash';
-            args = ['-c', `cd "${workDir}" && exec "${actualEntrypoint}"`];
+            // spawn already runs with cwd=workDir — passing the entrypoint
+            // directly avoids quote-breakout through string concatenation.
+            args = [actualEntrypoint];
         }
     }
     else {
-        sendError(400, `Unsupported runtime: ${actualRuntime}`);
-        return;
+        throw new Error(`Unsupported runtime: ${actualRuntime}`);
     }
-    logger_1.logger.info(`Running task ${String(task.name)} [${executionId}]: ${cmd} ${args.join(' ')}`);
-    const taskInfo = {
-        taskId,
-        task: { ...task, runtime: actualRuntime, entrypoint: actualEntrypoint, timeout, workDir, env, cmd, args },
-        params,
-        executionId,
+    // Hardening: the entrypoint is resolved against the work dir by every
+    // runtime (cwd=workDir), so a relative path with `..` could execute a
+    // script anywhere on the host. Glue scripts use absolute paths that are
+    // already inside the work dir and pass this guard unchanged.
+    const entryAbs = path.resolve(workDir, actualEntrypoint);
+    const workDirAbs = path.resolve(workDir);
+    if (entryAbs !== workDirAbs && !entryAbs.startsWith(workDirAbs + path.sep)) {
+        throw new Error('entrypoint escapes the task work directory');
+    }
+    logger_1.logger.info(`Running task ${taskName} [${executionId}]: ${cmd} ${args.join(' ')}`);
+    const timeoutForTask = timeout === 0 ? Infinity : timeout;
+    return {
+        task: { ...task, runtime: actualRuntime, entrypoint: actualEntrypoint, timeout: timeoutForTask, workDir, env, cmd, args },
+        params: { ...(params || {}), executionId },
     };
-    try {
-        task_worker_1.taskWorkerManager.execute(taskId, executionId, taskInfo.task, { ...params, executionId }, () => {
-            releaseCapacity();
-        });
+}
+// timeout=0（不限时）任务的回调 token 必须有数字 TTL——取 10 年上限
+// （86400s/天 × 3650）。admin 侧僵尸回收对该类任务本就有 1h 兜底窗口。
+const TOKEN_TTL_UNBOUNDED_SECONDS = 315360000;
+/**
+ * 任务 .npmrc 内容（改动3）：
+ * - 仅内部 scope 依赖 → 只写 scoped registry 行（保持既有行为：公共包走默认
+ *   registry，匿名可用）；
+ * - 含公共包 → 写全局 registry 行（私服作为缓存代理加速）；
+ * - 两种 scope（@autoflow / @autocodeflow，命名三处漂移）都写 scoped 行；
+ * - 配置了 token → 追加 `//<host:port>/:_authToken=`（http/https 均支持）。
+ * token 绝不出现在返回值之外的任何地方（不打日志）。
+ */
+function buildNpmRcContent(registryUrl, token, requirements) {
+    const lines = [];
+    for (const scope of ['@autoflow', '@autocodeflow']) {
+        lines.push(`${scope}:registry=${registryUrl}`);
     }
-    catch (err) {
-        releaseCapacity();
-        res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to enqueue task' });
+    const scopedOnly = requirements.length > 0 &&
+        requirements.every(pkg => pkg.startsWith('@autoflow/') || pkg.startsWith('@autocodeflow/'));
+    if (!scopedOnly) {
+        lines.push(`registry=${registryUrl}`);
+    }
+    if (token) {
+        const authLine = npmAuthUrlLine(registryUrl);
+        if (authLine)
+            lines.push(`${authLine}:_authToken=${token}`);
+    }
+    return lines.join('\n') + '\n';
+}
+/** `https://host:port/base/` → `//host:port/base/`（npm auth 行键格式）。 */
+function npmAuthUrlLine(registryUrl) {
+    const m = /^https?:\/\/(.+)$/i.exec(registryUrl.trim());
+    return m ? `//${m[1]}` : null;
+}
+// ---------------------------------------------------------------------------
+// POST /executions/:executionId/kill — 改动1：admin 的 killExecution 此前只
+// 改 DB，被 kill 的任务在本执行器上继续跑完。这里按运行中注册表终止进程树
+// （或中止 prepare 阶段），幂等释放并发槽，回调照常走失败路径
+// （failureReason=killed）。
+// ---------------------------------------------------------------------------
+exports.executeRouter.post('/executions/:executionId/kill', (req, res) => {
+    const { executionId } = req.params;
+    const entry = liveExecutions.get(executionId);
+    if (!entry) {
+        // 不在运行表中（从未领取 / 已结束 / 已清理）
+        res.status(404).json({ ok: false });
         return;
     }
-    res.json({ status: 'accepted', executionId });
+    entry.killedByRequest = true;
+    entry.aborted = true;
+    entry.abortController.abort();
+    const finalizeKilled = () => {
+        pushKilledCallbackOnce(executionId, entry);
+        entry.release(); // 幂等防双释放
+    };
+    if (!entry.enqueued) {
+        // prepare 尚未移交 worker（后台前置阶段）：立刻收尾，runPrepared 检查点
+        // 会因 aborted 标志静默退出。
+        finalizeKilled();
+        res.json({ ok: true });
+        return;
+    }
+    if (task_worker_1.taskWorkerManager.cancelExecution(entry.taskId, executionId)) {
+        // 已从 worker 队列摘除（尚未到点）：onComplete 不会再被触发，这里收尾。
+        entry.cancelled = true;
+        finalizeKilled();
+        res.json({ ok: true });
+        return;
+    }
+    if (entry.workerFinished) {
+        // 恰在 kill 到达前自然结束：仍按 200 返回（admin 侧已是终态，回调被忽略）。
+        res.json({ ok: true });
+        return;
+    }
+    // 已 spawn：终止整个进程树（复用 killProcessTree），close 事件走 runTask
+    // 失败路径（据 killedByRequest 标记 failureReason=killed），容量由 worker
+    // onComplete 释放（幂等）。
+    const proc = runningTaskProcesses.get(executionId);
+    if (proc) {
+        (0, run_command_1.killProcessTree)(proc, 'SIGKILL');
+    }
+    else {
+        logger_1.logger.warn(`[kill] ${executionId} enqueued but no live process registered — waiting for natural end`);
+    }
+    res.json({ ok: true });
 });
 /** Write execution metadata to workDir/meta/{executionId}.json so the desktop can build history */
 function writeExecMeta(executionId, data) {
@@ -48655,6 +50135,9 @@ function writeExecMeta(executionId, data) {
 }
 const CALLBACK_LOG_MAX_LENGTH = 10000;
 const CALLBACK_LOG_HEAD_LENGTH = 5000;
+// admin CallbackItemDto caps errorMessage at 4096 — a longer value makes the
+// DTO validation reject the WHOLE batch (now ≤100 items), so clamp it here.
+const CALLBACK_ERROR_MESSAGE_MAX_LENGTH = 4000;
 function truncateCallbackLogs(logs) {
     if (typeof logs !== 'string' || logs.length <= CALLBACK_LOG_MAX_LENGTH) {
         return logs;
@@ -48662,6 +50145,93 @@ function truncateCallbackLogs(logs) {
     const marker = `\n... [logs truncated, original length ${logs.length} chars] ...\n`;
     const tailLength = Math.max(CALLBACK_LOG_MAX_LENGTH - CALLBACK_LOG_HEAD_LENGTH - marker.length, 0);
     return `${logs.slice(0, CALLBACK_LOG_HEAD_LENGTH)}${marker}${tailLength > 0 ? logs.slice(-tailLength) : ''}`;
+}
+function truncateCallbackErrorMessage(message) {
+    if (typeof message !== 'string' || message.length <= CALLBACK_ERROR_MESSAGE_MAX_LENGTH) {
+        return message;
+    }
+    return `${message.slice(0, CALLBACK_ERROR_MESSAGE_MAX_LENGTH)}... [error message truncated]`;
+}
+const LOG_HEAD_LIMIT = 500000;
+const LOG_TAIL_LIMIT = 500000;
+/** Bounded in-memory log accumulator: keeps the first and last ~500KB of
+ *  output. Without a cap a single `while(true) console.log(...)` task grows
+ *  the string unbounded and OOMs the whole executor (all concurrent tasks
+ *  die with it). The full output is already on disk for LOG-01 backfill. */
+class BoundedLogBuffer {
+    constructor() {
+        this.head = '';
+        this.tail = '';
+        this.truncated = false;
+        this.total = 0;
+    }
+    append(chunk) {
+        this.total += chunk.length;
+        if (this.head.length < LOG_HEAD_LIMIT) {
+            const space = LOG_HEAD_LIMIT - this.head.length;
+            this.head += chunk.slice(0, space);
+            const rest = chunk.slice(space);
+            if (rest)
+                this.pushTail(rest);
+        }
+        else {
+            this.pushTail(chunk);
+        }
+    }
+    pushTail(chunk) {
+        this.tail += chunk;
+        if (this.tail.length > LOG_TAIL_LIMIT) {
+            this.tail = this.tail.slice(this.tail.length - LOG_TAIL_LIMIT);
+            this.truncated = true;
+        }
+    }
+    toString() {
+        if (this.tail.length === 0)
+            return this.head;
+        if (!this.truncated)
+            return this.head + this.tail;
+        const marker = `\n... [log output truncated in memory, ${this.total} chars total, full output on disk] ...\n`;
+        return `${this.head}${marker}${this.tail}`;
+    }
+}
+exports.BoundedLogBuffer = BoundedLogBuffer;
+/** Live task child processes keyed by executionId — lets graceful shutdown
+ *  kill detached process groups instead of orphaning them on exit, and lets
+ *  the kill endpoint (改动1) find the process tree of one execution. */
+const runningTaskProcesses = new Map();
+/** Kill every running task's process group (POSIX) / process (win32).
+ *  Called when the executor's graceful-shutdown grace period expires so
+ *  detached children don't outlive the executor as unmanaged orphans. */
+function killRunningTaskProcesses(signal = 'SIGKILL') {
+    let killed = 0;
+    for (const [key, proc] of runningTaskProcesses) {
+        runningTaskProcesses.delete(key);
+        if (!proc.pid)
+            continue;
+        try {
+            // W-03: delegate to killProcessTree for parity — on win32 it uses
+            // taskkill /T /F so a timed-out task's grandchildren are reaped too,
+            // matching the POSIX negative-pid group kill.
+            (0, run_command_1.killProcessTree)(proc, signal);
+            killed++;
+        }
+        catch (_) {
+            /* already dead */
+        }
+    }
+    return killed;
+}
+/** FEAT-05: 终态回调前收集/上传产物清单，best-effort——任何异常只记日志返回 undefined。 */
+async function collectTerminalArtifacts(executionId, workDir) {
+    try {
+        const token = await (0, auth_1.getCurrentToken)();
+        const manifest = await (0, artifacts_1.gatherArtifacts)(executionId, workDir, (0, admin_client_1.getCurrentAdminUrl)(), token ?? null);
+        return manifest.length ? manifest : undefined;
+    }
+    catch (e) {
+        logger_1.logger.warn(`artifacts: 终态收集异常（忽略，不阻塞回调）: ${String(e)}`);
+        return undefined;
+    }
 }
 async function runTask(task, params, executionId) {
     const { cmd, args, workDir, env, timeout } = task;
@@ -48687,6 +50257,10 @@ async function runTask(task, params, executionId) {
             exitCode: result.exitCode,
             logs: truncateCallbackLogs(result.logs),
             durationMs: Date.now() - startTime,
+            artifacts: await collectTerminalArtifacts(executionId, workDir),
+            ...(liveExecutions.get(executionId)?.traceparent
+                ? { traceparent: liveExecutions.get(executionId).traceparent }
+                : {}),
         });
     }
     catch (err) {
@@ -48695,6 +50269,9 @@ async function runTask(task, params, executionId) {
         const message = err instanceof Error ? err.message : String(err);
         const logs = typeof processErr?.logs === 'string' ? processErr.logs : undefined;
         const exitCode = typeof processErr?.exitCode === 'number' ? processErr.exitCode : undefined;
+        // 改动1：kill 端点已下达终止指令——失败回调标记 failureReason=killed
+        // （与 admin 侧 ExecutionFailureReason.KILLED 对齐）。
+        const killed = liveExecutions.get(executionId)?.killedByRequest === true;
         writeExecMeta(executionId, {
             status: 'failed',
             endTime: Date.now(),
@@ -48706,54 +50283,87 @@ async function runTask(task, params, executionId) {
             status: 'failed',
             exitCode,
             logs: truncateCallbackLogs(logs),
-            errorMessage: message,
+            errorMessage: truncateCallbackErrorMessage(killed ? 'Task process tree killed by admin request' : message),
+            ...(killed ? { failureReason: 'killed' } : {}),
             durationMs: Date.now() - startTime,
+            artifacts: await collectTerminalArtifacts(executionId, workDir),
+            ...(liveExecutions.get(executionId)?.traceparent
+                ? { traceparent: liveExecutions.get(executionId).traceparent }
+                : {}),
         });
     }
 }
 function runProcess(cmd, args, cwd, env, timeoutSec, executionId) {
     return new Promise((resolve, reject) => {
-        const proc = (0, child_process_1.spawn)(cmd, args, { cwd, env, detached: process.platform !== 'win32' });
-        let logs = '';
+        // W-14 (windows-findings R-08/2.9): on win32 the child must NOT share the
+        // executor's console — a console Ctrl+C/CTRL_BREAK event is delivered to
+        // every attached process, hard-killing running tasks instantly (0xC000013A)
+        // and bypassing gracefulShutdown's drain + killRunningTaskProcesses tree
+        // kill entirely, which orphaned the tasks' own detached grandchildren.
+        // windowsHide gives the child its own hidden console (CREATE_NO_WINDOW);
+        // reaping stays with the executor (timeout taskkill /T /F, P-7).
+        const proc = (0, child_process_1.spawn)(cmd, args, {
+            cwd,
+            env,
+            detached: process.platform !== 'win32',
+            windowsHide: true,
+        });
+        // W-24 (windows-findings): when spawn fails on Windows (ENOENT — bad
+        // executable, unreadable/oversized cwd e.g. >260-char WORK_DIR without
+        // LongPathsEnabled), node fires 'error' on the half-open stdio SOCKETS in
+        // addition to the ChildProcess 'error' handler below. An unhandled socket
+        // error is an uncaughtException that KILLS THE WHOLE EXECUTOR (observed:
+        // one task crash took down every running task). No-op guards here route
+        // the failure into the proc-level handler; the task fails, the executor
+        // lives.
+        proc.stdout?.on('error', () => { });
+        proc.stderr?.on('error', () => { });
+        // Bounded accumulator — an unbounded `logs += output` OOMs the executor
+        // on chatty tasks (memory peaks before the 10k callback truncation).
+        const logBuffer = new BoundedLogBuffer();
         // Guard against close firing after timeout has already rejected the promise
         let settled = false;
+        if (proc.pid !== undefined) {
+            runningTaskProcesses.set(executionId ?? `pid-${proc.pid}`, proc);
+        }
         proc.stdout.on('data', (d) => {
             const output = d.toString();
-            logs += output;
+            logBuffer.append(output);
             if (executionId)
                 (0, file_logger_1.appendLog)(executionId, output);
         });
         proc.stderr.on('data', (d) => {
             const output = d.toString();
-            logs += output;
+            logBuffer.append(output);
             if (executionId)
                 (0, file_logger_1.appendLog)(executionId, output);
         });
-        const timer = setTimeout(() => {
-            if (settled)
-                return;
-            settled = true;
-            // B-06: kill the entire process group so child processes spawned by the task are also terminated
-            try {
-                if (proc.pid !== undefined) {
-                    if (process.platform !== 'win32') {
-                        process.kill(-proc.pid, 'SIGKILL');
-                    }
-                    else {
-                        proc.kill('SIGKILL');
-                    }
-                }
+        const unregister = () => {
+            if (proc.pid !== undefined) {
+                runningTaskProcesses.delete(executionId ?? `pid-${proc.pid}`);
             }
-            catch (_) {
-                try {
-                    proc.kill('SIGKILL');
-                }
-                catch (_2) { /* already dead */ }
-            }
-            reject(new Error(`Task timeout after ${timeoutSec}s`));
-        }, timeoutSec * 1000);
+        };
+        // 改动4：timeoutSec=0/Infinity → 不限时，不挂 kill 定时器（setTimeout
+        // 传 Infinity 会溢出为立即触发）。
+        const timer = timeoutSec && Number.isFinite(timeoutSec)
+            ? setTimeout(() => {
+                if (settled)
+                    return;
+                settled = true;
+                // B-06: kill the entire process group so child processes spawned by the task are also terminated
+                (0, run_command_1.killProcessTree)(proc, 'SIGKILL');
+                // Attach collected logs like the close path does — otherwise the
+                // failure callback carries no logs and the admin-side full-log
+                // backfill (LOG-01) never triggers.
+                const timeoutErr = new Error(`Task timeout after ${timeoutSec}s`);
+                timeoutErr.logs = logBuffer.toString();
+                reject(timeoutErr);
+            }, timeoutSec * 1000)
+            : null;
         proc.on('close', (code) => {
-            clearTimeout(timer);
+            if (timer)
+                clearTimeout(timer);
+            unregister();
             if (settled)
                 return;
             settled = true;
@@ -48761,20 +50371,32 @@ function runProcess(cmd, args, cwd, env, timeoutSec, executionId) {
             if (exitCode !== 0) {
                 // Attach logs and exitCode as properties so callers can surface them independently
                 const err = new Error(`Process exited with code ${exitCode}`);
-                err.logs = logs;
+                err.logs = logBuffer.toString();
                 err.exitCode = exitCode;
                 reject(err);
             }
             else {
-                resolve({ success: true, logs, exitCode });
+                resolve({ success: true, logs: logBuffer.toString(), exitCode });
             }
         });
         proc.on('error', (err) => {
-            clearTimeout(timer);
+            if (timer)
+                clearTimeout(timer);
+            unregister();
             if (settled)
                 return;
             settled = true;
-            reject(err);
+            // W-24: surface spawn failures (ENOENT on Windows from an unreachable
+            // cwd, incl. >260-char WORK_DIR without LongPathsEnabled) with a hint
+            // pointing at the most likely cause + the OS toggle, instead of a bare
+            // code.
+            const hint = err && err.code === 'ENOENT' && cwd && cwd.length > 259
+                ? ' (cwd path exceeds Windows MAX_PATH (260) — enable LongPathsEnabled ' +
+                    'or shorten WORK_DIR)'
+                : '';
+            err.logs = logBuffer.toString();
+            err.exitCode = -1;
+            reject(new Error(`${err.message}${hint}`));
         });
     });
 }
@@ -48821,8 +50443,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.healthRouter = void 0;
-exports.recordHeartbeat = recordHeartbeat;
+exports.healthRouter = exports.recordHeartbeat = void 0;
 exports.buildAdminHealthPath = buildAdminHealthPath;
 exports.buildAdminHealthRequestOptions = buildAdminHealthRequestOptions;
 exports.checkAdminApi = checkAdminApi;
@@ -48835,14 +50456,8 @@ const config_1 = __nccwpck_require__(3650);
 const scheduler_1 = __nccwpck_require__(1415);
 const task_worker_1 = __nccwpck_require__(8404);
 const logs_1 = __nccwpck_require__(4926);
-// Track last successful heartbeat time
-let lastHeartbeatTime = null;
-let adminApiReachable = null;
-function recordHeartbeat(success) {
-    if (success)
-        lastHeartbeatTime = new Date().toISOString();
-    adminApiReachable = success;
-}
+const heartbeat_state_1 = __nccwpck_require__(3974);
+Object.defineProperty(exports, "recordHeartbeat", ({ enumerable: true, get: function () { return heartbeat_state_1.recordHeartbeat; } }));
 function buildAdminHealthPath(adminUrl) {
     const basePath = adminUrl.pathname.replace(/\/+$/, '');
     if (!basePath || basePath === '/')
@@ -48894,7 +50509,7 @@ exports.healthRouter.get('/health', async (_req, res) => {
     const diskUsage = await getDiskUsage();
     // Check admin-api connectivity and update cached state
     const reachable = await checkAdminApi();
-    adminApiReachable = reachable;
+    (0, heartbeat_state_1.setAdminApiReachable)(reachable);
     const isHealthy = cpuUsage < 80 && memUsage < 80 && (diskUsage < 90 || diskUsage < 0);
     res.json({
         status: isHealthy ? 'healthy' : 'degraded',
@@ -48908,7 +50523,7 @@ exports.healthRouter.get('/health', async (_req, res) => {
         workerStats: task_worker_1.taskWorkerManager.getStats(),
         adminApiReachable: reachable,
         tokenValid: !!(0, logs_1.getExecutorAuthToken)(),
-        lastHeartbeat: lastHeartbeatTime,
+        lastHeartbeat: (0, heartbeat_state_1.getHeartbeatState)().lastHeartbeatTime,
         timestamp: new Date().toISOString(),
     });
 });
@@ -48971,35 +50586,55 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.logsRouter = void 0;
+exports.pageLogLines = pageLogLines;
 exports.getExecutorAuthToken = getExecutorAuthToken;
-exports.executorAuthMiddleware = executorAuthMiddleware;
 const express_1 = __nccwpck_require__(925);
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
+const readline_1 = __nccwpck_require__(3785);
 const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
 exports.logsRouter = (0, express_1.Router)();
-/** S-01: Express middleware — validates Bearer token from EXECUTOR_SHARED_TOKEN env. */
+/** LOG-02: stream `logFile` line by line and return the requested page plus
+ *  totals. Response semantics match the previous readFileSync implementation
+ *  exactly (lines split on '\n', trailing empty piece dropped, `totalLines`
+ *  counts every line, `hasMore` flags a further page) — but the file is never
+ *  held in memory: admin backfill and the UI page through here repeatedly and
+ *  a long-running task's log can reach hundreds of MB, which used to spike
+ *  memory per request and block the event loop (heartbeats and /health share
+ *  it). The whole file is always walked so `totalLines` stays correct for
+ *  backfill paging. */
+async function pageLogLines(logFile, fromLine, limit) {
+    return new Promise((resolve, reject) => {
+        const input = fs.createReadStream(logFile, { encoding: 'utf-8' });
+        const rl = (0, readline_1.createInterface)({ input });
+        const lines = [];
+        let index = 0;
+        rl.on('line', (line) => {
+            if (index >= fromLine && lines.length < limit) {
+                lines.push(line);
+            }
+            index++;
+        });
+        rl.on('close', () => {
+            resolve({
+                lines,
+                totalLines: index,
+                hasMore: fromLine + lines.length < index,
+            });
+        });
+        rl.on('error', reject);
+        input.on('error', reject);
+    });
+}
+/** Resolve the executor's shared token from env/config. Env priority mirrors
+ *  config.ts. Consumed by /health (routes/health.ts) to report whether auth is
+ *  configured. The /api/* Bearer gate itself lives in middleware/auth.ts
+ *  (verifyToken) — the single, timing-safe, fail-closed check. */
 function getExecutorAuthToken() {
     return process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || config_1.config.token || '';
 }
-function executorAuthMiddleware(req, res, next) {
-    // Read env at call time so tests can set/unset tokens per-case;
-    // fall back to the config value (populated from CLI --token or config file).
-    const secret = getExecutorAuthToken();
-    if (!secret) {
-        next(); // dev mode: no secret configured
-        return;
-    }
-    const auth = req.headers.authorization || '';
-    const [scheme, token] = auth.split(' ');
-    if (scheme?.toLowerCase() !== 'bearer' || token !== secret) {
-        res.status(401).json({ error: 'Invalid or missing executor token' });
-        return;
-    }
-    next();
-}
-exports.logsRouter.get('/logs/:executionId', (req, res) => {
+exports.logsRouter.get('/logs/:executionId', async (req, res) => {
     const { executionId } = req.params;
     // N4: basename guard — reject if executionId contains path separators or is modified by basename
     const safeId = path.basename(executionId);
@@ -49040,17 +50675,16 @@ exports.logsRouter.get('/logs/:executionId', (req, res) => {
         res.status(404).json({ error: 'Log file not found' });
         return;
     }
-    const fromLine = parseInt(String(req.query.fromLine ?? '0'), 10) || 0;
+    // Clamp negatives — slice(-1) would silently return just the last line.
+    const fromLine = Math.max(0, parseInt(String(req.query.fromLine ?? '0'), 10) || 0);
+    // LOG-01 admin backfill pages with limit=2000 and relies on hasMore to
+    // advance; returning the entire tail at once used to blow up both ends'
+    // memory on large logs. Clamp to the admin-side page size.
+    const MAX_LIMIT = 2000;
+    const requestedLimit = parseInt(String(req.query.limit ?? '500'), 10) || 500;
+    const limit = Math.min(Math.max(requestedLimit, 1), MAX_LIMIT);
     try {
-        const raw = fs.readFileSync(logFile, 'utf-8');
-        const allLines = raw.split('\n');
-        // Remove trailing empty line from final newline
-        if (allLines.length > 0 && allLines[allLines.length - 1] === '') {
-            allLines.pop();
-        }
-        const total = allLines.length;
-        const sliced = allLines.slice(fromLine);
-        res.json({ lines: sliced, totalLines: total, hasMore: false });
+        res.json(await pageLogLines(logFile, fromLine, limit));
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -49112,48 +50746,46 @@ const express_1 = __nccwpck_require__(925);
 const path = __importStar(__nccwpck_require__(6928));
 const fs = __importStar(__nccwpck_require__(9896));
 const crypto = __importStar(__nccwpck_require__(6982));
-const https = __importStar(__nccwpck_require__(5692));
-const http = __importStar(__nccwpck_require__(8611));
 const logger_1 = __nccwpck_require__(6888);
 const admin_client_1 = __nccwpck_require__(6609);
 const config_1 = __nccwpck_require__(3650);
+const download_1 = __nccwpck_require__(7848);
+const safe_path_1 = __nccwpck_require__(1733);
 exports.updatePackageRouter = (0, express_1.Router)();
-/** Download file to local path, return actual bytes written */
-function downloadFile(url, dest) {
-    return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(dest);
-        const proto = url.startsWith('https') ? https : http;
-        const req = proto.get(url, (res) => {
-            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                // simple redirect follow
-                file.close();
-                fs.unlinkSync(dest);
-                downloadFile(res.headers.location, dest).then(resolve).catch(reject);
-                return;
-            }
-            if (!res.statusCode || res.statusCode >= 400) {
-                reject(new Error(`Download failed with status ${res.statusCode}`));
-                return;
-            }
-            let bytes = 0;
-            res.on('data', (chunk) => { bytes += chunk.length; });
-            res.pipe(file);
-            file.on('finish', () => { file.close(); resolve(bytes); });
-        });
-        req.on('error', (err) => { fs.unlink(dest, () => { }); reject(err); });
-        req.setTimeout(120000, () => { req.destroy(); reject(new Error('Download timed out')); });
-    });
-}
-/** Calculate file SHA-256 */
+/** Overall download budget — an absolute deadline, so a slow-drip server
+ *  cannot hold updateInProgress forever (it used to get stuck permanently). */
+const DOWNLOAD_TIMEOUT_MS = 5 * 60000;
+const DOWNLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+/** Belt-and-suspenders watchdog: force-release updateInProgress if the
+ *  download+verify flow somehow never settles. */
+const UPDATE_WATCHDOG_MS = 15 * 60000;
+/** Calculate file SHA-256 (streamed — package files can be large) */
 function fileChecksum(filePath) {
-    const buf = fs.readFileSync(filePath);
-    return crypto.createHash('sha256').update(buf).digest('hex');
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256');
+        const stream = fs.createReadStream(filePath);
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.on('end', () => resolve(hash.digest('hex')));
+        stream.on('error', reject);
+    });
 }
 let updateInProgress = false;
 exports.updatePackageRouter.post('/update-package', async (req, res) => {
     const body = req.body;
     if (!body.packageId || !body.downloadUrl || !body.version) {
         res.status(400).json({ error: 'Missing required fields: packageId, downloadUrl, version' });
+        return;
+    }
+    // The temp filename is derived from packageId — an unvalidated value with
+    // '/' or '..' could write the download outside .pkg-updates.
+    if (!(0, safe_path_1.isSafePathSegment)(body.packageId)) {
+        res.status(400).json({ error: 'packageId contains unsupported characters' });
+        return;
+    }
+    // An unverified package update is an unacceptable risk — admin-api always
+    // sends the SHA-256, so a missing checksum means a malformed request.
+    if (!body.checksum) {
+        res.status(400).json({ error: 'checksum is required for package updates' });
         return;
     }
     // Only allow http(s) schemes to prevent SSRF via file://, ftp://, etc.
@@ -49183,13 +50815,26 @@ exports.updatePackageRouter.post('/update-package', async (req, res) => {
             fs.mkdirSync(tmpDir, { recursive: true });
         const ext = body.downloadUrl.includes('.tar') ? '.tar.gz' : '.zip';
         const tmpFile = path.join(tmpDir, `${body.packageId}${ext}`);
+        // Force-release the in-progress flag even if the flow deadlocks below —
+        // otherwise every future package push is rejected with 409 until restart.
+        const watchdog = setTimeout(() => {
+            if (updateInProgress) {
+                updateInProgress = false;
+                logger_1.logger.error(`[update-package] Watchdog fired after ${UPDATE_WATCHDOG_MS}ms — force-releasing updateInProgress`);
+            }
+        }, UPDATE_WATCHDOG_MS);
+        watchdog.unref?.();
         try {
-            // 1. Download
+            // 1. Download (shared downloader: Bearer token + absolute deadline + size cap)
             logger_1.logger.info(`[update-package] Downloading to ${tmpFile}`);
-            await downloadFile(body.downloadUrl, tmpFile);
+            const bytes = await (0, download_1.downloadFile)(body.downloadUrl, tmpFile, {
+                sendAuth: true,
+                timeoutMs: DOWNLOAD_TIMEOUT_MS,
+                maxBytes: DOWNLOAD_MAX_BYTES,
+            });
             // 2. Verify checksum if provided
             if (body.checksum) {
-                const actual = fileChecksum(tmpFile);
+                const actual = await fileChecksum(tmpFile);
                 if (actual !== body.checksum) {
                     throw new Error(`Checksum mismatch: expected ${body.checksum}, got ${actual}`);
                 }
@@ -49202,15 +50847,20 @@ exports.updatePackageRouter.post('/update-package', async (req, res) => {
                 status: 'downloaded',
                 version: body.version,
             }).catch((e) => logger_1.logger.warn(`[update-package] Failed to report push result: ${e.message}`));
-            logger_1.logger.info(`[update-package] Package ${body.name}@${body.version} downloaded successfully to ${tmpFile}`);
+            logger_1.logger.info(`[update-package] Package ${body.name}@${body.version} downloaded successfully to ${tmpFile} (${bytes} bytes)`);
             logger_1.logger.info(`[update-package] Package is available at ${tmpFile} — apply it manually or via your deployment pipeline.`);
         }
         catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             logger_1.logger.error(`[update-package] Update failed: ${msg}`);
-            // Clean up partial download
-            if (fs.existsSync(tmpFile))
-                fs.unlinkSync(tmpFile);
+            // Clean up partial download — 清理本身不得再抛（tmpFile 可能与外部清理
+            // 竞态：unlinkSync 的 ENOENT 在 setImmediate 异步回调里无人接住，会以
+            // unhandledRejection 归因到同 worker 的下一个无关测试）。
+            try {
+                if (fs.existsSync(tmpFile))
+                    fs.unlinkSync(tmpFile);
+            }
+            catch (_) { /* already gone */ }
             await (0, admin_client_1.post)('/api/executor-packages/push-result', {
                 packageId: body.packageId,
                 executorId: config_1.config.executorId || undefined,
@@ -49219,6 +50869,7 @@ exports.updatePackageRouter.post('/update-package', async (req, res) => {
             }).catch(() => { });
         }
         finally {
+            clearTimeout(watchdog);
             updateInProgress = false;
         }
     });
@@ -49227,6 +50878,130 @@ exports.updatePackageRouter.post('/update-package', async (req, res) => {
 exports.updatePackageRouter.get('/update-package/status', (_req, res) => {
     res.json({ inProgress: updateInProgress });
 });
+
+
+/***/ }),
+
+/***/ 3879:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.killProcessTree = killProcessTree;
+exports.runCommand = runCommand;
+const child_process_1 = __nccwpck_require__(5317);
+/** Kill a child process and — on POSIX — its entire process group.
+ *  Children are spawned detached (group leaders), so the negative pid takes
+ *  down the whole tree instead of orphaning grandchildren. */
+function killProcessTree(child, signal = 'SIGKILL') {
+    if (child.pid === undefined)
+        return;
+    if (process.platform !== 'win32') {
+        try {
+            process.kill(-child.pid, signal);
+            return;
+        }
+        catch (_) {
+            /* process group may already be gone — fall through to the direct kill */
+        }
+        try {
+            child.kill(signal);
+        }
+        catch (_) { /* already dead */ }
+    }
+    else {
+        // W-02/parity with executor-python: Node's child.kill on Windows only
+        // terminates the direct child (grandchildren linger). taskkill /T /F walks
+        // the pid tree so a killed task cannot orphan its own spawns.
+        // /F is forced (no graceful path exists for console trees on Windows).
+        try {
+            (0, child_process_1.spawn)('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' });
+        }
+        catch (_) {
+            /* taskkill unavailable — fall back to direct kill only */
+        }
+        try {
+            child.kill(signal);
+        }
+        catch (_) { /* already dead */ }
+    }
+}
+/** Promise-wrapped spawn: git/npm/pip must never use spawnSync on the request
+ *  path — a synchronous 120–300s wait stalls heartbeats, /health and every API.
+ *  The child is detached on POSIX so timeouts can kill its whole group. */
+function runCommand(cmd, args, opts = {}) {
+    return new Promise((resolve) => {
+        const child = (0, child_process_1.spawn)(cmd, args, {
+            ...opts,
+            detached: process.platform !== 'win32',
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        // W-24: guard the stdio sockets' 'error' event (see execute.ts runProcess).
+        // Without these, a failed spawn (ENOENT) emits an unhandled socket error
+        // that becomes an uncaughtException and kills the whole executor process.
+        child.stdout?.on('error', () => { });
+        child.stderr?.on('error', () => { });
+        // Cap captured output so a chatty child cannot balloon executor memory.
+        const CAP = 10 * 1024 * 1024;
+        let stdout = '';
+        let stderr = '';
+        const timer = opts.timeout
+            ? setTimeout(() => {
+                killProcessTree(child, 'SIGKILL');
+            }, opts.timeout)
+            : null;
+        // Abort support (execution kill during prepare): killing the tree makes
+        // the child exit, the close handler below resolves — callers treat the
+        // non-zero status as the failure signal and re-check the abort flag.
+        const onAbort = () => {
+            killProcessTree(child, 'SIGKILL');
+        };
+        if (opts.signal) {
+            if (opts.signal.aborted)
+                onAbort();
+            else
+                opts.signal.addEventListener('abort', onAbort, { once: true });
+        }
+        const clearWatchers = () => {
+            if (timer)
+                clearTimeout(timer);
+            opts.signal?.removeEventListener('abort', onAbort);
+        };
+        child.stdout?.on('data', (d) => {
+            if (stdout.length < CAP)
+                stdout += d.toString();
+        });
+        child.stderr?.on('data', (d) => {
+            if (stderr.length < CAP)
+                stderr += d.toString();
+        });
+        child.on('error', (err) => {
+            clearWatchers();
+            resolve({ status: null, stdout, stderr: `${stderr}${err.message}` });
+        });
+        child.on('close', (code) => {
+            clearWatchers();
+            resolve({ status: code, stdout, stderr });
+        });
+    });
+}
+
+
+/***/ }),
+
+/***/ 1733:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.isSafePathSegment = isSafePathSegment;
+/** Path-segment guard shared by deploy and update-package: values used to
+ *  build file paths must never contain separators or traversal sequences. */
+function isSafePathSegment(value) {
+    return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
 
 
 /***/ }),
@@ -49270,17 +51045,24 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.runningCount = void 0;
+exports.runningCount = exports.executorStartupId = exports.executorStartedAt = void 0;
 exports.getRunningCount = getRunningCount;
 exports.getRunningCountArray = getRunningCountArray;
 exports.incrementRunning = incrementRunning;
 exports.decrementRunning = decrementRunning;
+exports.registerRunningExecutionIdsProvider = registerRunningExecutionIdsProvider;
+exports.registerDeadLetterCountProvider = registerDeadLetterCountProvider;
 exports.startHeartbeat = startHeartbeat;
 const os = __importStar(__nccwpck_require__(857));
 const crypto_1 = __nccwpck_require__(6982);
 const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
 const admin_client_1 = __nccwpck_require__(6609);
+const heartbeat_state_1 = __nccwpck_require__(3974);
+const startup_identity_1 = __nccwpck_require__(1566);
+Object.defineProperty(exports, "executorStartedAt", ({ enumerable: true, get: function () { return startup_identity_1.executorStartedAt; } }));
+Object.defineProperty(exports, "executorStartupId", ({ enumerable: true, get: function () { return startup_identity_1.executorStartupId; } }));
+const admin_envelope_1 = __nccwpck_require__(4138);
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
 // SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
 // we use a simple lock-free approach with Atomics for consistency
@@ -49300,6 +51082,17 @@ function decrementRunning() {
 }
 // For backward compatibility — use getRunningCount() directly for new code
 exports.runningCount = getRunningCount; // alias to the function
+// STALE-01: heartbeat enrichment providers. The live execution registry lives
+// in routes/execute.ts which already imports this module — importing back
+// would form a cycle, so the data owners register their getters here.
+let runningExecutionIdsProvider = () => [];
+let deadLetterCountProvider = () => 0;
+function registerRunningExecutionIdsProvider(fn) {
+    runningExecutionIdsProvider = fn;
+}
+function registerDeadLetterCountProvider(fn) {
+    deadLetterCountProvider = fn;
+}
 /**
  * Measure actual CPU usage by sampling cpu times over 500ms.
  * os.loadavg() always returns [0,0,0] on Windows, so we use this instead.
@@ -49336,21 +51129,83 @@ async function sendHeartbeat() {
         // OPS-03: generate trace ID for heartbeat
         const traceId = (0, crypto_1.randomUUID)();
         logger_1.logger.info(`[${traceId}] Sending heartbeat`);
-        await (0, admin_client_1.post)('/api/executors/heartbeat', {
+        const resp = await (0, admin_client_1.post)('/api/executors/heartbeat', {
             address: config_1.config.executorAddressPublic || config_1.config.executorAddress,
             cpuUsage,
             memUsage,
             runningTaskCount: getRunningCount(),
+            // STALE-01: admin 的 stale sweep 据此跳过"回调只是迟到"（重试退避、
+            // 同任务排队）的执行，避免误判失败+提前释放容量；裁剪 200 封顶报文。
+            // deadLetterCount 暴露落盘回调积压，供运维感知长期断连。
+            runningExecutionIds: runningExecutionIdsProvider().slice(0, 200),
+            deadLetterCount: deadLetterCountProvider(),
+            // E9: 上报当前并发上限，admin 容量核算不再依赖注册期快照；读 config
+            // 对象属性，/config/reload 热更 maxConcurrentTasks 后下个心跳即回传新值。
+            maxConcurrentTasks: config_1.config.maxConcurrentTasks,
+            restartedAt: startup_identity_1.executorStartedAt,
+            startupId: startup_identity_1.executorStartupId,
         });
+        // R9 (round-8 P1 W3): the heartbeat response echoes admin's current
+        // stored tokenHash (same adoption as register/POST /token), so the
+        // per-execution callback HMAC secret stays in sync with admin-side
+        // rotations without waiting for a re-register.
+        (0, admin_envelope_1.adoptExecutorTokenHash)(resp?.data);
         logger_1.logger.info(`[${traceId}] Heartbeat succeeded`);
+        (0, heartbeat_state_1.recordHeartbeat)(true);
     }
     catch (err) {
         logger_1.logger.warn(`Heartbeat failed: ${err instanceof Error ? err.message : String(err)}`);
+        (0, heartbeat_state_1.recordHeartbeat)(false);
     }
 }
 function startHeartbeat() {
-    return setInterval(sendHeartbeat, config_1.config.heartbeatIntervalSeconds * 1000);
+    // Poll once per second so hot-reloaded intervals take effect without
+    // rebuilding the timer; main.ts can still stop it with clearInterval.
+    let lastHeartbeatAt = Date.now();
+    let heartbeatInFlight = false;
+    return setInterval(async () => {
+        const intervalMs = config_1.config.heartbeatIntervalSeconds * 1000;
+        if (heartbeatInFlight || Date.now() - lastHeartbeatAt < intervalMs) {
+            return;
+        }
+        lastHeartbeatAt = Date.now();
+        heartbeatInFlight = true;
+        try {
+            await sendHeartbeat();
+        }
+        finally {
+            heartbeatInFlight = false;
+        }
+    }, 1000);
 }
+
+
+/***/ }),
+
+/***/ 1566:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.executorStartupId = exports.executorStartedAt = void 0;
+/**
+ * R9 (round-8 P1 closure): the executor's process-life identity.
+ *
+ * `startupId` is the idempotency key admin-api uses to tell "same process
+ * re-fetching its token" apart from "a restarted executor" (N4 register
+ * semantics, now extended to POST /api/executors/token). It lives in its own
+ * module because middleware/auth.ts needs it for the token request body, and
+ * importing it from scheduler.ts would create a cycle:
+ *   auth -> scheduler -> admin-client -> auth
+ * (the same reason heartbeat-state.ts exists — see its header comment).
+ *
+ * scheduler.ts re-exports both constants so existing importers (main.ts,
+ * specs) keep working unchanged.
+ */
+const crypto_1 = __nccwpck_require__(6982);
+exports.executorStartedAt = new Date().toISOString();
+exports.executorStartupId = (0, crypto_1.randomUUID)();
 
 
 /***/ }),
@@ -49361,11 +51216,21 @@ function startHeartbeat() {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TaskWorkerManager = exports.TaskWorker = exports.taskWorkerManager = void 0;
+exports.TaskWorkerManager = exports.TaskWorker = exports.taskWorkerManager = exports.IDLE_RECYCLE_MS = exports.ExecutionCancelledError = void 0;
 const logger_1 = __nccwpck_require__(6888);
 const execute_1 = __nccwpck_require__(8690);
+const callback_1 = __nccwpck_require__(4915);
+/** prepare/执行期间被 kill 端点取消的内部信号——worker 捕获后静默返回，
+ *  收尾责任在发起取消的一方。 */
+class ExecutionCancelledError extends Error {
+    constructor(executionId) {
+        super(`Execution ${executionId} was cancelled`);
+        this.name = 'ExecutionCancelledError';
+    }
+}
+exports.ExecutionCancelledError = ExecutionCancelledError;
 class TaskWorker {
-    constructor(taskId, maxConcurrent = 1) {
+    constructor(taskId, maxConcurrent = 1, onIdle) {
         this.taskId = taskId;
         this.maxConcurrent = maxConcurrent;
         this.state = {
@@ -49375,9 +51240,10 @@ class TaskWorker {
         };
         this.stopped = false;
         this.runningCount = 0;
+        this.onIdle = onIdle;
     }
-    enqueue(executionId, task, params, onComplete) {
-        this.state.queue.push({ executionId, task, params, onComplete });
+    enqueue(executionId, task, params, onComplete, runPrepared) {
+        this.state.queue.push({ executionId, task, params, onComplete, runPrepared });
         logger_1.logger.debug(`Task ${this.taskId}: Enqueued execution ${executionId}, queue size: ${this.state.queue.length}`);
         this.process();
     }
@@ -49391,27 +51257,77 @@ class TaskWorker {
             this.runningCount++;
             this.executeItem(item).finally(() => {
                 this.runningCount--;
+                // runningCount 在 process 的 finally 中递减（executeItem 的 finally
+                // 早于该递减执行），空闲判定必须挂在这里：无运行中且无排队时通知
+                // Manager 安排延迟回收，防止 workers Map 按 taskId 只增不减（N9）。
+                if (this.runningCount === 0 && this.state.queue.length === 0) {
+                    this.onIdle?.();
+                }
                 setImmediate(() => this.process());
             });
         }
     }
     async executeItem(item) {
-        const { executionId, task, params, onComplete } = item;
+        const { executionId, params, onComplete } = item;
         try {
             logger_1.logger.debug(`Task ${this.taskId}: Starting execution ${executionId}`);
-            await (0, execute_1.runTask)(task, params, executionId);
+            // runPrepared 由 execute.ts 提供：prepare（git/依赖安装）在轮到本
+            // 执行时才跑，返回真正可运行的 task；未提供则沿用旧语义直接 runTask。
+            let task = item.task;
+            let runParams = params;
+            if (item.runPrepared) {
+                if (item.cancelled) {
+                    throw new ExecutionCancelledError(executionId);
+                }
+                const prepared = await item.runPrepared(() => {
+                    if (item.cancelled)
+                        throw new ExecutionCancelledError(executionId);
+                });
+                task = prepared.task;
+                runParams = prepared.params;
+            }
+            await (0, execute_1.runTask)(task, runParams, executionId);
             logger_1.logger.debug(`Task ${this.taskId}: Completed execution ${executionId}`);
         }
         catch (error) {
+            if (error instanceof ExecutionCancelledError || item.cancelled) {
+                // kill 取消：任务从未启动。失败回调由 kill 端点/runPrepared 取消分支
+                // 负责；容量释放走下面 finally 的 onComplete——entry.release() 幂等，
+                // 与 kill 端点的收尾并存也不会双释放。
+                logger_1.logger.info(`Task ${this.taskId}: Execution ${executionId} cancelled by kill request`);
+                return;
+            }
             logger_1.logger.error(`Task ${this.taskId}: Execution ${executionId} failed: ${error.message}`);
         }
         finally {
-            onComplete?.();
+            if (!item.cancelled) {
+                onComplete?.();
+            }
         }
+    }
+    /** 见 TaskWorkerManager.cancelExecution：仅处理未开始（仍在队列中）的执行。 */
+    cancelQueued(executionId) {
+        const idx = this.state.queue.findIndex(i => i.executionId === executionId);
+        if (idx === -1)
+            return false;
+        const [item] = this.state.queue.splice(idx, 1);
+        item.cancelled = true;
+        return true;
     }
     stop() {
         this.stopped = true;
-        logger_1.logger.info(`Task ${this.taskId}: Worker stopped`);
+        // Fail queued items instead of dropping them silently — admin-api marks
+        // the executions failed and capacity slots are released.
+        const queued = this.state.queue.splice(0);
+        for (const item of queued) {
+            (0, callback_1.pushCallback)({
+                executionId: item.executionId,
+                status: 'failed',
+                errorMessage: 'Executor is shutting down before this execution started',
+            });
+            item.onComplete?.();
+        }
+        logger_1.logger.info(`Task ${this.taskId}: Worker stopped (${queued.length} queued item(s) failed)`);
     }
     getRunningCount() {
         return this.runningCount;
@@ -49421,25 +51337,60 @@ class TaskWorker {
     }
 }
 exports.TaskWorker = TaskWorker;
+/** worker 空闲多久后被回收（N9）。导出以便测试与运维核对。 */
+exports.IDLE_RECYCLE_MS = 5 * 60000;
 class TaskWorkerManager {
     constructor(maxConcurrentPerTask = 1) {
         this.workers = new Map();
+        this.idleTimers = new Map();
         this.maxConcurrentPerTask = maxConcurrentPerTask;
     }
     getWorker(taskId) {
+        // 任何对 worker 的再次命中都视为活动，取消待执行的空闲回收
+        this.cancelIdleRecycle(taskId);
         let worker = this.workers.get(taskId);
         if (!worker) {
-            worker = new TaskWorker(taskId, this.maxConcurrentPerTask);
+            worker = new TaskWorker(taskId, this.maxConcurrentPerTask, () => this.scheduleIdleRecycle(taskId));
             this.workers.set(taskId, worker);
             logger_1.logger.info(`Created worker for task ${taskId}`);
         }
         return worker;
     }
-    async execute(taskId, executionId, task, params, onComplete) {
+    async execute(taskId, executionId, task, params, onComplete, runPrepared) {
         const worker = this.getWorker(taskId);
-        worker.enqueue(executionId, task, params, onComplete);
+        worker.enqueue(executionId, task, params, onComplete, runPrepared);
+    }
+    /** 把仍在排队的执行从 worker 队列中摘除并标记取消。true=执行尚未开始，
+     *  调用方（kill 端点）负责失败回调与容量释放；false=已在运行中（或不存在），
+     *  调用方改走"杀进程 + 等 worker 正常收尾"路径。 */
+    cancelExecution(taskId, executionId) {
+        const worker = this.workers.get(taskId);
+        return worker ? worker.cancelQueued(executionId) : false;
+    }
+    scheduleIdleRecycle(taskId) {
+        this.cancelIdleRecycle(taskId);
+        const timer = setTimeout(() => {
+            this.idleTimers.delete(taskId);
+            const worker = this.workers.get(taskId);
+            // 双保险：回收只作用于真正空闲的 worker，绝不触碰运行中/排队的执行
+            if (worker && worker.getRunningCount() === 0 && worker.getQueueSize() === 0) {
+                logger_1.logger.info(`Recycling idle worker for task ${taskId}`);
+                this.stopWorker(taskId);
+            }
+        }, exports.IDLE_RECYCLE_MS);
+        // 空闲回收定时器不应阻止进程退出
+        timer.unref();
+        this.idleTimers.set(taskId, timer);
+    }
+    cancelIdleRecycle(taskId) {
+        const timer = this.idleTimers.get(taskId);
+        if (timer) {
+            clearTimeout(timer);
+            this.idleTimers.delete(taskId);
+        }
     }
     stopWorker(taskId) {
+        this.cancelIdleRecycle(taskId);
         const worker = this.workers.get(taskId);
         if (worker) {
             worker.stop();
@@ -49447,6 +51398,10 @@ class TaskWorkerManager {
         }
     }
     stopAll() {
+        for (const timer of this.idleTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.idleTimers.clear();
         for (const [taskId, worker] of this.workers) {
             worker.stop();
         }
@@ -49466,6 +51421,282 @@ class TaskWorkerManager {
 }
 exports.TaskWorkerManager = TaskWorkerManager;
 exports.taskWorkerManager = new TaskWorkerManager();
+
+
+/***/ }),
+
+/***/ 4629:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ZipGuardError = exports.ZIP_GUARD_DEFAULT_LIMITS = void 0;
+exports.getZipGuardLimitsFromEnv = getZipGuardLimitsFromEnv;
+exports.locateEocd = locateEocd;
+exports.parseCentralDirectory = parseCentralDirectory;
+exports.checkSummaryAgainstLimits = checkSummaryAgainstLimits;
+exports.assertZipSafe = assertZipSafe;
+exports.assertZipFileSafe = assertZipFileSafe;
+exports.guardZipOrThrow = guardZipOrThrow;
+const fs = __importStar(__nccwpck_require__(9896));
+const zlib = __importStar(__nccwpck_require__(3106));
+const logger_1 = __nccwpck_require__(6888);
+exports.ZIP_GUARD_DEFAULT_LIMITS = {
+    maxRatio: 100,
+    maxEntries: 10000,
+    maxFileBytes: 1024 * 1024 * 1024, // 1 GiB
+    maxTotalUncompressedBytes: 2 * 1024 * 1024 * 1024, // 2 GiB
+    maxNestingDepth: 1,
+};
+/** Read limits from env with safe defaults (lazy — test-friendly). */
+function getZipGuardLimitsFromEnv(env = process.env) {
+    const num = (v, d) => {
+        const n = parseInt(v || '', 10);
+        return Number.isFinite(n) && n > 0 ? n : d;
+    };
+    const depth = parseInt(env.ZIP_MAX_NESTING_DEPTH || '', 10);
+    return {
+        maxRatio: num(env.ZIP_MAX_RATIO, exports.ZIP_GUARD_DEFAULT_LIMITS.maxRatio),
+        maxEntries: num(env.ZIP_MAX_ENTRIES, exports.ZIP_GUARD_DEFAULT_LIMITS.maxEntries),
+        maxFileBytes: num(env.ZIP_MAX_FILE_BYTES, exports.ZIP_GUARD_DEFAULT_LIMITS.maxFileBytes),
+        maxTotalUncompressedBytes: num(env.ZIP_MAX_TOTAL_BYTES, exports.ZIP_GUARD_DEFAULT_LIMITS.maxTotalUncompressedBytes),
+        maxNestingDepth: Number.isFinite(depth) && depth >= 0
+            ? depth
+            : exports.ZIP_GUARD_DEFAULT_LIMITS.maxNestingDepth,
+    };
+}
+class ZipGuardError extends Error {
+    constructor(violation, message) {
+        super(message);
+        this.violation = violation;
+        this.name = 'ZipGuardError';
+    }
+}
+exports.ZipGuardError = ZipGuardError;
+const U16 = (b, o) => b.readUInt16LE(o);
+const U32 = (b, o) => b.readUInt32LE(o);
+const SIG_EOCD = 0x06054b50;
+const SIG_CD = 0x02014b50;
+const SIG_LOCAL = 0x04034b50;
+const EOCD_FIXED_SIZE = 22;
+const CD_HEADER_SIZE = 46;
+/** Locate the EOCD record (comment makes the offset variable). */
+function locateEocd(buf) {
+    const minStart = buf.length - EOCD_FIXED_SIZE;
+    if (minStart < 0) {
+        throw new ZipGuardError('unparseable', 'file smaller than an EOCD record');
+    }
+    const MAX_COMMENT = 65536 + EOCD_FIXED_SIZE;
+    const scanStart = Math.max(0, buf.length - MAX_COMMENT);
+    for (let off = minStart; off >= scanStart; off--) {
+        if (U32(buf, off) === SIG_EOCD)
+            return off;
+    }
+    throw new ZipGuardError('unparseable', 'EOCD signature not found');
+}
+/** Parse the central directory and aggregate declared sizes. */
+function parseCentralDirectory(buf) {
+    const eocdOff = locateEocd(buf);
+    const cdEntries = U16(buf, eocdOff + 10);
+    const cdSize = U32(buf, eocdOff + 12);
+    const cdOffset = U32(buf, eocdOff + 16);
+    if (cdOffset === 0xffffffff || cdEntries === 0xffff || cdSize === 0xffffffff) {
+        throw new ZipGuardError('unparseable', 'zip64 EOCD sentinels present — unsupported');
+    }
+    let totalCompressed = 0;
+    let totalUncompressed = 0;
+    let seen = 0;
+    const nestedZipNames = [];
+    let off = cdOffset;
+    for (; seen < cdEntries; seen++) {
+        if (off + CD_HEADER_SIZE > buf.length || U32(buf, off) !== SIG_CD) {
+            throw new ZipGuardError('unparseable', `central directory record ${seen} missing or corrupted`);
+        }
+        const compressedSize = U32(buf, off + 20);
+        const uncompressedSize = U32(buf, off + 24);
+        const nameLen = U16(buf, off + 28);
+        const extraLen = U16(buf, off + 30);
+        const commentLen = U16(buf, off + 32);
+        const nameStart = off + CD_HEADER_SIZE;
+        const nameEnd = nameStart + nameLen;
+        if (nameEnd > buf.length) {
+            throw new ZipGuardError('unparseable', 'CD name overruns buffer');
+        }
+        const name = buf.toString('utf8', nameStart, nameEnd);
+        totalCompressed += compressedSize;
+        totalUncompressed += uncompressedSize;
+        if (name.toLowerCase().endsWith('.zip'))
+            nestedZipNames.push(name);
+        off = nameEnd + extraLen + commentLen;
+    }
+    if (off !== cdOffset + cdSize) {
+        throw new ZipGuardError('unparseable', 'central directory size mismatch with EOCD record');
+    }
+    return { entries: seen, totalCompressed, totalUncompressed, nestedZipNames };
+}
+/** Pure rule check over an aggregate summary. */
+function checkSummaryAgainstLimits(summary, limits) {
+    if (summary.entries > limits.maxEntries) {
+        throw new ZipGuardError('too_many_entries', `zip declares ${summary.entries} entries (limit ${limits.maxEntries})`);
+    }
+    if (summary.totalUncompressed > limits.maxTotalUncompressedBytes) {
+        throw new ZipGuardError('total_uncompressed_exceeded', `zip declares ${summary.totalUncompressed} uncompressed bytes (limit ${limits.maxTotalUncompressedBytes})`);
+    }
+    if (summary.totalCompressed > 0 &&
+        summary.totalUncompressed / summary.totalCompressed > limits.maxRatio) {
+        throw new ZipGuardError('ratio_exceeded', `compression ratio ${(summary.totalUncompressed / summary.totalCompressed).toFixed(1)} exceeds limit ${limits.maxRatio}`);
+    }
+}
+/**
+ * Full vetting of one in-memory zip buffer. Bounded nested-zip probing with
+ * raw-deflate inflation capped at declared sizes. Throws ZipGuardError.
+ */
+function assertZipSafe(buf, limits = exports.ZIP_GUARD_DEFAULT_LIMITS, depth = 0) {
+    const summary = parseCentralDirectory(buf);
+    checkSummaryAgainstLimits(summary, limits);
+    // Per-file declared cap.
+    {
+        const eocdOff = locateEocd(buf);
+        const cdEntries = U16(buf, eocdOff + 10);
+        const cdOffset = U32(buf, eocdOff + 16);
+        let off = cdOffset;
+        for (let seen = 0; seen < cdEntries; seen++) {
+            if (off + CD_HEADER_SIZE > buf.length || U32(buf, off) !== SIG_CD)
+                break;
+            const size = U32(buf, off + 24);
+            if (size > limits.maxFileBytes) {
+                throw new ZipGuardError('single_file_too_large', `zip declares an entry of ${size} uncompressed bytes (limit ${limits.maxFileBytes})`);
+            }
+            const nameLen = U16(buf, off + 28);
+            const extraLen = U16(buf, off + 30);
+            const commentLen = U16(buf, off + 32);
+            off += CD_HEADER_SIZE + nameLen + extraLen + commentLen;
+        }
+    }
+    if (depth < limits.maxNestingDepth) {
+        for (const name of summary.nestedZipNames) {
+            const inner = extractNestedZipBytes(buf, name);
+            if (!inner) {
+                throw new ZipGuardError('unparseable', `nested zip "${name}" could not be located/extracted for vetting`);
+            }
+            try {
+                assertZipSafe(inner, limits, depth + 1);
+            }
+            catch (err) {
+                if (err instanceof ZipGuardError && err.violation === 'unparseable') {
+                    throw new ZipGuardError('unparseable', `nested zip "${name}" is corrupt or unreadable`);
+                }
+                throw err;
+            }
+        }
+    }
+    else if (summary.nestedZipNames.length > 0 && depth >= 16) {
+        throw new ZipGuardError('nested_zip_too_deep', `zip nesting exceeds ${limits.maxNestingDepth} eagerly-vetted level(s)`);
+    }
+    return summary;
+}
+/** Pull a nested member's bytes (stored or raw-deflate), size-capped. */
+function extractNestedZipBytes(buf, name) {
+    const eocdOff = locateEocd(buf);
+    const cdEntries = U16(buf, eocdOff + 10);
+    const cdOffset = U32(buf, eocdOff + 16);
+    let off = cdOffset;
+    for (let seen = 0; seen < cdEntries; seen++) {
+        if (off + CD_HEADER_SIZE > buf.length || U32(buf, off) !== SIG_CD)
+            return null;
+        const method = U16(buf, off + 10);
+        const compressedSize = U32(buf, off + 20);
+        const uncompressedSize = U32(buf, off + 24);
+        const localOffset = U32(buf, off + 42);
+        const nameLen = U16(buf, off + 28);
+        const extraLen = U16(buf, off + 30);
+        const commentLen = U16(buf, off + 32);
+        const entryName = buf.toString('utf8', off + CD_HEADER_SIZE, off + CD_HEADER_SIZE + nameLen);
+        off += CD_HEADER_SIZE + nameLen + extraLen + commentLen;
+        if (entryName !== name)
+            continue;
+        if (localOffset + 30 > buf.length)
+            return null;
+        if (U32(buf, localOffset) !== SIG_LOCAL)
+            return null;
+        const localNameLen = U16(buf, localOffset + 26);
+        const localExtraLen = U16(buf, localOffset + 28);
+        const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+        const dataEnd = dataStart + compressedSize;
+        if (dataEnd > buf.length)
+            return null;
+        const payload = buf.subarray(dataStart, dataEnd);
+        if (method === 0)
+            return Buffer.from(payload);
+        if (method === 8) {
+            try {
+                return zlib.inflateRawSync(payload, { maxOutputLength: uncompressedSize });
+            }
+            catch {
+                return null;
+            }
+        }
+        return null; // bzip2/lzma/encrypted — cannot vet, fail closed
+    }
+    return null;
+}
+/**
+ * Vet a zip on disk (streamed read of the whole file into memory — the
+ * download cap bounds this at 2 GiB; typical packages are far smaller).
+ * Called by deploy/update-package before extraction.
+ */
+function assertZipFileSafe(filePath, limits = getZipGuardLimitsFromEnv()) {
+    const buf = fs.readFileSync(filePath);
+    return assertZipSafe(buf, limits);
+}
+/** Convenience wrapper: log the violation and convert to a plain Error with
+ *  a `[violation]` prefix so existing catch-and-report paths stay unchanged. */
+function guardZipOrThrow(filePath) {
+    try {
+        assertZipFileSafe(filePath);
+    }
+    catch (err) {
+        if (err instanceof ZipGuardError) {
+            logger_1.logger.warn(`[zip-guard] Package rejected [${err.violation}]: ${err.message} (${filePath})`);
+            throw new Error(`Unsafe package rejected by zip-guard [${err.violation}]`);
+        }
+        throw err;
+    }
+}
 
 
 /***/ }),
@@ -49590,6 +51821,14 @@ module.exports = require("querystring");
 
 /***/ }),
 
+/***/ 3785:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("readline");
+
+/***/ }),
+
 /***/ 2203:
 /***/ ((module) => {
 
@@ -49650,7 +51889,7 @@ module.exports = require("zlib");
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
-/*! Axios v1.19.0 Copyright (c) 2026 Matt Zabriskie and contributors */
+/*! Axios v1.20.0 Copyright (c) 2026 Matt Zabriskie and contributors */
 
 
 var FormData$1 = __nccwpck_require__(5327);
@@ -49697,13 +51936,57 @@ const {
 const hasOwnProperty = (({
   hasOwnProperty
 }) => (obj, prop) => hasOwnProperty.call(obj, prop))(Object.prototype);
+const isUnsafeObjectKey = prop => typeof prop === 'string' && (prop === '__proto__' || prop === 'constructor' || prop === 'prototype');
 
 /**
- * Walk the prototype chain (excluding the shared Object.prototype) looking for
- * an own `prop`. This distinguishes genuine own/inherited members — including
- * class accessors and template prototypes — from members injected via
- * Object.prototype pollution (e.g. `Object.prototype.username = '...'`), which
- * live on Object.prototype itself and are therefore never matched.
+ * Determine whether an inherited object must be treated as a shared-prototype
+ * boundary. Cross-realm Object.prototype objects cannot be distinguished
+ * reliably from application-created null-prototype objects because their
+ * properties are mutable, so all inherited terminal prototypes are excluded
+ * as a fail-closed boundary. A null-prototype source still keeps its own
+ * properties, as produced by mergeConfig and other safe materialization paths.
+ *
+ * @param {*} obj The object to inspect
+ * @param {*} prototype The object's prototype
+ * @param {boolean} source Whether obj is the original traversal source
+ *
+ * @returns {boolean} True when obj is a safe prototype traversal boundary
+ */
+const isPrototypeBoundary = (obj, prototype, source) => obj === Object.prototype || !source && prototype === null;
+
+/**
+ * Determine whether an object can retain its identity through code paths that
+ * add, replace, and remove config properties without bypassing unsafe-key
+ * filtering. Immutable objects, unsafe-key-bearing objects, and objects with
+ * accessor or restricted data properties must be materialized instead.
+ *
+ * @param {*} obj The object to inspect
+ *
+ * @returns {boolean} True when every own property is safe and fully mutable
+ */
+const isSafeAndFullyMutable = obj => {
+  if (!Object.isExtensible(obj)) {
+    return false;
+  }
+  const props = Object.getOwnPropertyNames(obj);
+  if (Object.getOwnPropertySymbols) {
+    props.push(...Object.getOwnPropertySymbols(obj));
+  }
+  return props.every(prop => {
+    if (isUnsafeObjectKey(prop)) {
+      return false;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(obj, prop);
+    return !!descriptor && descriptor.configurable && descriptor.writable === true;
+  });
+};
+
+/**
+ * Walk the prototype chain (excluding the source realm's Object.prototype)
+ * looking for an own `prop`. This distinguishes genuine own/inherited members
+ * — including class accessors and template prototypes — from members injected
+ * via Object.prototype pollution (e.g. `Object.prototype.username = '...'`),
+ * which live on Object.prototype itself and are therefore never matched.
  *
  * @param {*} thing The value whose chain to inspect
  * @param {string|symbol} prop The property key to look for
@@ -49713,15 +51996,19 @@ const hasOwnProperty = (({
 const hasOwnInPrototypeChain = (thing, prop) => {
   let obj = thing;
   const seen = [];
-  while (obj != null && obj !== Object.prototype) {
+  while (obj != null) {
     if (seen.indexOf(obj) !== -1) {
       return false;
     }
     seen.push(obj);
+    const prototype = getPrototypeOf(obj);
+    if (isPrototypeBoundary(obj, prototype, obj === thing)) {
+      return false;
+    }
     if (hasOwnProperty(obj, prop)) {
       return true;
     }
-    obj = getPrototypeOf(obj);
+    obj = prototype;
   }
   return false;
 };
@@ -49738,6 +52025,56 @@ const hasOwnInPrototypeChain = (thing, prop) => {
  * @returns {*} The resolved value, or undefined when unsafe/absent
  */
 const getSafeProp = (obj, prop) => obj != null && hasOwnInPrototypeChain(obj, prop) ? obj[prop] : undefined;
+
+/**
+ * Flatten an object and its application-defined prototype chain into a
+ * null-prototype object. Members inherited only from the source realm's
+ * Object.prototype are deliberately excluded, while class/template members
+ * below that boundary are preserved.
+ *
+ * @param {*} thing The value to flatten
+ *
+ * @returns {*} A null-prototype copy, or the original value when it is already
+ * structurally safe or is not an object
+ */
+const toSafeFlatObject = thing => {
+  if (thing == null || typeof thing !== 'object' && typeof thing !== 'function') {
+    return thing;
+  }
+  const sourcePrototype = getPrototypeOf(thing);
+  if (sourcePrototype === null && isSafeAndFullyMutable(thing)) {
+    return thing;
+  }
+  const result = Object.create(null);
+  const merged = Object.create(null);
+  const seen = [];
+  let current = thing;
+  while (current != null) {
+    if (seen.indexOf(current) !== -1) {
+      break;
+    }
+    seen.push(current);
+    const prototype = current === thing ? sourcePrototype : getPrototypeOf(current);
+    if (isPrototypeBoundary(current, prototype, current === thing)) {
+      break;
+    }
+    const props = Object.getOwnPropertyNames(current);
+    if (Object.getOwnPropertySymbols) {
+      props.push(...Object.getOwnPropertySymbols(current));
+    }
+    for (const prop of props) {
+      if (isUnsafeObjectKey(prop)) {
+        continue;
+      }
+      if (!hasOwnProperty(merged, prop)) {
+        result[prop] = thing[prop];
+        merged[prop] = true;
+      }
+    }
+    current = prototype;
+  }
+  return result;
+};
 const kindOf = (cache => thing => {
   const str = toString.call(thing);
   return cache[str] || (cache[str] = str.slice(8, -1).toLowerCase());
@@ -49861,9 +52198,9 @@ const isPlainObject = val => {
   }
   const prototype = getPrototypeOf(val);
   return (prototype === null || prototype === Object.prototype || getPrototypeOf(prototype) === null) &&
-  // Treat any genuine (non-Object.prototype-polluted) Symbol.toStringTag or
-  // Symbol.iterator as evidence the value is a tagged/iterable type rather
-  // than a plain object, while ignoring keys injected onto Object.prototype.
+  // Treat safe own/inherited Symbol.toStringTag or Symbol.iterator members as
+  // evidence the value is tagged/iterable, while ignoring members reachable
+  // only through shared or terminal prototype boundaries.
   !hasOwnInPrototypeChain(val, toStringTag) && !hasOwnInPrototypeChain(val, iterator);
 };
 
@@ -50611,6 +52948,7 @@ var utils$1 = {
   // an alias to avoid ESLint no-prototype-builtins detection
   hasOwnInPrototypeChain,
   getSafeProp,
+  toSafeFlatObject,
   reduceDescriptors,
   freezeMethods,
   toObjectSet,
@@ -50715,7 +53053,7 @@ function toByteStringHeaderObject(headers) {
   return byteStringHeaders;
 }
 
-const $internals = Symbol('internals');
+const $internals$1 = Symbol('internals');
 function normalizeHeader(header) {
   return header && String(header).trim().toLowerCase();
 }
@@ -51013,7 +53351,7 @@ class AxiosHeaders {
     return computed;
   }
   static accessor(header) {
-    const internals = this[$internals] = this[$internals] = {
+    const internals = this[$internals$1] = this[$internals$1] = {
       accessors: {}
     };
     const accessors = internals.accessors;
@@ -51328,23 +53666,17 @@ function toFormData(obj, formData, options) {
 
   // eslint-disable-next-line no-param-reassign
   formData = formData || new (FormData$1 || FormData)();
-
-  // eslint-disable-next-line no-param-reassign
-  options = utils$1.toFlatObject(options, {
-    metaTokens: true,
-    dots: false,
-    indexes: false
-  }, false, function defined(option, source) {
-    // eslint-disable-next-line no-eq-null,eqeqeq
-    return !utils$1.isUndefined(source[option]);
-  });
-  const metaTokens = options.metaTokens;
+  const option = (name, fallback) => {
+    const value = utils$1.getSafeProp(options, name);
+    return utils$1.isUndefined(value) ? fallback : value;
+  };
+  const metaTokens = option('metaTokens', true);
   // eslint-disable-next-line no-use-before-define
-  const visitor = options.visitor || defaultVisitor;
-  const dots = options.dots;
-  const indexes = options.indexes;
-  const _Blob = options.Blob || typeof Blob !== 'undefined' && Blob;
-  const maxDepth = options.maxDepth === undefined ? DEFAULT_FORM_DATA_MAX_DEPTH : options.maxDepth;
+  const visitor = option('visitor') || defaultVisitor;
+  const dots = option('dots', false);
+  const indexes = option('indexes', false);
+  const _Blob = option('Blob') || typeof Blob !== 'undefined' && Blob;
+  const maxDepth = option('maxDepth', DEFAULT_FORM_DATA_MAX_DEPTH);
   const useBlob = _Blob && utils$1.isSpecCompliantForm(formData);
   const stack = [];
   if (!utils$1.isFunction(visitor)) {
@@ -51557,9 +53889,51 @@ function buildURL(url, params, options) {
   return url;
 }
 
+const $internals = Symbol('internals');
+
+// `handlers` is public and may be replaced with a nullish value by user code;
+// `clear()` has always tolerated that. Treat it as an empty stack rather than
+// dereferencing it.
+function countHandlers(handlers) {
+  return handlers ? handlers.length : 0;
+}
+function trimHandlers(handlers) {
+  if (!handlers) {
+    return;
+  }
+  while (handlers.length && handlers[handlers.length - 1] === null) {
+    handlers.pop();
+  }
+}
+function syncHandlerEntries(manager, internals) {
+  const handlers = manager.handlers;
+  const length = countHandlers(handlers);
+  if (handlers !== internals.handlersRef) {
+    internals.handlersRef = handlers;
+    internals.handlerEntries.clear();
+  } else if (length !== internals.handlersLength) {
+    if (!length) {
+      internals.handlerEntries.clear();
+    } else {
+      internals.handlerEntries.forEach(function removeStaleEntry(entry, id) {
+        if (handlers[entry.index] !== entry.handler) {
+          internals.handlerEntries.delete(id);
+        }
+      });
+    }
+  }
+  internals.handlersLength = length;
+}
 class InterceptorManager {
   constructor() {
     this.handlers = [];
+    this[$internals] = {
+      handlersRef: this.handlers,
+      handlersLength: this.handlers.length,
+      handlerEntries: new Map(),
+      iterationDepth: 0,
+      nextId: 0
+    };
   }
 
   /**
@@ -51572,13 +53946,25 @@ class InterceptorManager {
    * @return {Number} An ID used to remove interceptor later
    */
   use(fulfilled, rejected, options) {
-    this.handlers.push({
+    const handler = {
       fulfilled,
       rejected,
       synchronous: options ? options.synchronous : false,
       runWhen: options ? options.runWhen : null
+    };
+    const internals = this[$internals];
+    if (this.handlers == null) {
+      this.handlers = [];
+    }
+    syncHandlerEntries(this, internals);
+    const id = internals.nextId++;
+    this.handlers.push(handler);
+    internals.handlerEntries.set(id, {
+      handler,
+      index: this.handlers.length - 1
     });
-    return this.handlers.length - 1;
+    internals.handlersLength = this.handlers.length;
+    return id;
   }
 
   /**
@@ -51589,8 +53975,23 @@ class InterceptorManager {
    * @returns {void}
    */
   eject(id) {
-    if (this.handlers[id]) {
-      this.handlers[id] = null;
+    const internals = this[$internals];
+    syncHandlerEntries(this, internals);
+    const entry = internals.handlerEntries.get(id);
+    if (entry) {
+      internals.handlerEntries.delete(id);
+
+      // Ignore IDs invalidated by clear or direct replacement of handlers.
+      if (this.handlers[entry.index] !== entry.handler) {
+        return;
+      }
+      this.handlers[entry.index] = null;
+
+      // Do not reuse an index while forEach is walking its length snapshot.
+      if (!internals.iterationDepth) {
+        trimHandlers(this.handlers);
+        internals.handlersLength = this.handlers.length;
+      }
     }
   }
 
@@ -51602,6 +54003,7 @@ class InterceptorManager {
   clear() {
     if (this.handlers) {
       this.handlers = [];
+      syncHandlerEntries(this, this[$internals]);
     }
   }
 
@@ -51616,11 +54018,22 @@ class InterceptorManager {
    * @returns {void}
    */
   forEach(fn) {
-    utils$1.forEach(this.handlers, function forEachHandler(h) {
-      if (h !== null) {
-        fn(h);
+    const internals = this[$internals];
+    syncHandlerEntries(this, internals);
+    internals.iterationDepth++;
+    try {
+      utils$1.forEach(this.handlers, function forEachHandler(h) {
+        if (h !== null) {
+          fn(h);
+        }
+      });
+    } finally {
+      if (! --internals.iterationDepth) {
+        syncHandlerEntries(this, internals);
+        trimHandlers(this.handlers);
+        internals.handlersLength = countHandlers(this.handlers);
       }
-    });
+    }
   }
 }
 
@@ -51828,6 +54241,8 @@ function formDataToJSON(formData) {
   return null;
 }
 
+const methodList = Object.freeze(['get', 'delete', 'head', 'options', 'post', 'put', 'patch', 'purge', 'link', 'unlink', 'query']);
+
 const own = (obj, key) => obj != null && utils$1.hasOwnProp(obj, key) ? obj[key] : undefined;
 
 /**
@@ -51944,7 +54359,7 @@ const defaults = {
     }
   }
 };
-utils$1.forEach(['delete', 'get', 'head', 'post', 'put', 'patch', 'query'], method => {
+utils$1.forEach(methodList, method => {
   defaults.headers[method] = {};
 });
 
@@ -52043,18 +54458,27 @@ function combineURLs(baseURL, relativeURL) {
   return baseURL.slice(0, end) + '/' + relativeURL.replace(/^\/+/, '');
 }
 
-const malformedHttpProtocol = /^https?:(?!\/\/)/i;
-const httpProtocolControlCharacters = /[\t\n\r]/g;
-function stripLeadingC0ControlOrSpace(url) {
-  let i = 0;
-  while (i < url.length && url.charCodeAt(i) <= 0x20) {
-    i++;
-  }
-  return url.slice(i);
-}
+const urlParserControlCharacters = /[\t\n\r]/g;
+
+/**
+ * Match WHATWG URL preprocessing before checking a URL's protocol.
+ *
+ * @param {string} url
+ *
+ * @returns {string}
+ */
 function normalizeURLForProtocolCheck(url) {
-  return stripLeadingC0ControlOrSpace(url).replace(httpProtocolControlCharacters, '');
+  if (typeof url !== 'string') {
+    return url;
+  }
+  let start = 0;
+  while (start < url.length && url.charCodeAt(start) <= 0x20) {
+    start++;
+  }
+  return url.slice(start).replace(urlParserControlCharacters, '');
 }
+
+const malformedHttpProtocol = /^https?:(?!\/\/)/i;
 
 // Redact the parts of a URL that can carry secrets before it is embedded in an
 // error message. AxiosError.toJSON() serializes `message` verbatim and errors
@@ -52207,7 +54631,7 @@ function getEnv(key) {
   return process.env[key.toLowerCase()] || process.env[key.toUpperCase()] || '';
 }
 
-const VERSION = "1.19.0";
+const VERSION = "1.20.0";
 
 function parseProtocol(url) {
   const match = /^([-+\w]{1,25}):(?:\/\/)?/.exec(url);
@@ -52216,7 +54640,7 @@ function parseProtocol(url) {
 
 // RFC 2397: data:[<mediatype>][;base64],<data>
 // mediatype = type/subtype followed by optional ;name=value parameters
-const DATA_URL_PATTERN = /^([^,;]+\/[^,;]+)?((?:;[^,;=]+=[^,;]+)*)(;base64)?,([\s\S]*)$/;
+const DATA_URL_PATTERN = /^([^,;/]+\/[^,;/]+)?((?:;[^,;=]+=[^,;]+)*)(;base64)?,([\s\S]*)$/;
 
 /**
  * Parse data uri to a Buffer or Blob
@@ -52529,7 +54953,7 @@ class Http2Sessions {
     this.sessions = Object.create(null);
   }
   getSession(authority, options) {
-    options = Object.assign({
+    options = Object.assign(Object.create(null), {
       sessionTimeout: 1000
     }, options);
     let authoritySessions = this.sessions[authority];
@@ -52596,6 +55020,7 @@ class Http2Sessions {
       };
     }
     session.once('close', removeSession);
+    session.once('error', removeSession);
     let entry = [session, options];
     authoritySessions ? authoritySessions.push(entry) : authoritySessions = this.sessions[authority] = [entry];
     return session;
@@ -52616,6 +55041,13 @@ const callbackify = (fn, reducer) => {
 };
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '0.0.0.0']);
+const trimTrailingDots = value => {
+  let end = value.length;
+  while (end && value.charCodeAt(end - 1) === 46) {
+    end--;
+  }
+  return end === value.length ? value : value.slice(0, end);
+};
 const isIPv4Loopback = host => {
   const parts = host.split('.');
   if (parts.length !== 4) return false;
@@ -52671,7 +55103,7 @@ const normalizeIPAddress = host => {
   if (h.charAt(0) === '[' && h.charAt(h.length - 1) === ']') {
     h = h.slice(1, -1);
   }
-  h = h.replace(/\.+$/, '');
+  h = trimTrailingDots(h);
 
   // Allowed characters for any IPv4 shape: digits, dot, 'x', 'X', hex digits.
   if (!/^[0-9.xXa-fA-F]+$/.test(h)) return host;
@@ -52826,6 +55258,40 @@ const unmapIPv4MappedIPv6 = host => {
   }
   return host;
 };
+const IPV4_OCTET_RE = /^(?:0|[1-9]\d{0,2})$/;
+const ipv4ToBytes = host => {
+  const parts = host.split('.');
+  return parts.length === 4 && parts.every(part => IPV4_OCTET_RE.test(part) && Number(part) <= 255) ? parts.map(Number) : null;
+};
+const IPV6_GROUP_RE = /^[0-9a-f]{1,4}$/i;
+const ipv6ToBytes = host => {
+  const halves = host.split('::');
+  if (halves.length > 2) {
+    return null;
+  }
+  const groups = halves[0] ? halves[0].split(':') : [];
+  if (halves.length === 2) {
+    const rear = halves[1] ? halves[1].split(':') : [];
+    const missing = 8 - groups.length - rear.length;
+    if (missing < 1) {
+      return null;
+    }
+    groups.push(...new Array(missing).fill('0'), ...rear);
+  }
+  if (groups.length !== 8 || groups.some(group => !IPV6_GROUP_RE.test(group))) {
+    return null;
+  }
+  return groups.flatMap(group => {
+    const value = Number.parseInt(group, 16);
+    return [value >> 8 & 0xff, value & 0xff];
+  });
+};
+const ipToBytes = host => {
+  if (typeof host !== 'string' || !host) {
+    return null;
+  }
+  return host.indexOf(':') !== -1 ? ipv6ToBytes(host) : ipv4ToBytes(host);
+};
 const normalizeNoProxyHost = hostname => {
   if (!hostname) {
     return hostname;
@@ -52833,7 +55299,7 @@ const normalizeNoProxyHost = hostname => {
   if (hostname.charAt(0) === '[' && hostname.charAt(hostname.length - 1) === ']') {
     hostname = hostname.slice(1, -1);
   }
-  const trimmed = hostname.replace(/\.+$/, '');
+  const trimmed = trimTrailingDots(hostname);
 
   // IPv4 shorthand/octal/hex → dotted-decimal; helper is a no-op for inputs
   // containing ':' (IPv6 and IPv4-mapped IPv6) so we fall through to unmap.
@@ -52842,6 +55308,92 @@ const normalizeNoProxyHost = hostname => {
     return ipv4;
   }
   return unmapIPv4MappedIPv6(trimmed);
+};
+const normalizeCidrBase = input => {
+  let base = input;
+  const startsBracket = base.charAt(0) === '[';
+  const endsBracket = base.charAt(base.length - 1) === ']';
+  const hasBracket = base.includes('[') || base.includes(']');
+  if (startsBracket || endsBracket) {
+    if (!startsBracket || !endsBracket) {
+      return null;
+    }
+    base = base.slice(1, -1);
+    if (base.indexOf(':') === -1 || base.includes('[') || base.includes(']')) {
+      return null;
+    }
+  } else if (hasBracket) {
+    return null;
+  }
+  if (!base || base.charAt(base.length - 1) === '.') {
+    return null;
+  }
+  const wasIPv6 = base.indexOf(':') !== -1;
+  if (wasIPv6) {
+    try {
+      base = new URL(`http://[${base}]/`).hostname.slice(1, -1);
+    } catch (_err) {
+      return null;
+    }
+  } else {
+    base = normalizeIPAddress(base);
+    if (!ipv4ToBytes(base)) {
+      return null;
+    }
+  }
+  return {
+    normalized: unmapIPv4MappedIPv6(base),
+    wasIPv6
+  };
+};
+const CIDR_ENTRY_RE = /^(.+)\/(0|[1-9]\d{0,2})$/;
+const parseCidrEntry = entry => {
+  if (entry.indexOf('/') === -1) {
+    return undefined;
+  }
+  const match = CIDR_ENTRY_RE.exec(entry);
+  if (!match) {
+    return null;
+  }
+  let prefix = Number(match[2]);
+  const parsedBase = normalizeCidrBase(match[1]);
+  if (!parsedBase) {
+    return null;
+  }
+  const {
+    normalized,
+    wasIPv6
+  } = parsedBase;
+  if (wasIPv6 && normalized.indexOf(':') === -1) {
+    if (prefix < 96) {
+      return null;
+    }
+    prefix -= 96;
+  }
+  const bytes = ipToBytes(normalized);
+  if (!bytes || prefix > bytes.length * 8) {
+    return null;
+  }
+  return {
+    bytes,
+    prefix
+  };
+};
+const isInSubnet = (addressBytes, networkBytes, prefix) => {
+  const fullBytes = prefix >> 3;
+  for (let i = 0; i < fullBytes; i++) {
+    if (addressBytes[i] !== networkBytes[i]) {
+      return false;
+    }
+  }
+  const remainingBits = prefix & 7;
+  if (remainingBits) {
+    const mask = 0xff << 8 - remainingBits & 0xff;
+    if ((addressBytes[fullBytes] & mask) !== (networkBytes[fullBytes] & mask)) {
+      return false;
+    }
+  }
+  return true;
 };
 function shouldBypassProxy(location) {
   let parsed;
@@ -52859,12 +55411,17 @@ function shouldBypassProxy(location) {
   }
   const port = Number.parseInt(parsed.port, 10) || DEFAULT_PORTS[parsed.protocol.split(':', 1)[0]] || 0;
   const hostname = normalizeNoProxyHost(parsed.hostname.toLowerCase());
+  const hostnameBytes = ipToBytes(hostname);
   return noProxy.split(/[\s,]+/).some(entry => {
     if (!entry) {
       return false;
     }
     if (entry === '*') {
       return true;
+    }
+    const cidr = parseCidrEntry(entry);
+    if (cidr !== undefined) {
+      return cidr !== null && !!hostnameBytes && hostnameBytes.length === cidr.bytes.length && isInSubnet(hostnameBytes, cidr.bytes, cidr.prefix);
     }
     let [entryHost, entryPort] = parseNoProxyEntry(entry);
     entryHost = normalizeNoProxyHost(entryHost);
@@ -52928,7 +55485,7 @@ function speedometer(samplesCount, min) {
  * Throttle decorator
  * @param {Function} fn
  * @param {Number} freq
- * @return {Function}
+ * @return {Array<Function>}
  */
 function throttle(fn, freq) {
   let timestamp = 0;
@@ -52960,14 +55517,15 @@ function throttle(fn, freq) {
     }
   };
   const flush = () => lastArgs && invoke(lastArgs);
-  return [throttled, flush];
+  const flushWith = (...args) => invoke(args);
+  return [throttled, flush, flushWith];
 }
 
 const progressEventReducer = (listener, isDownloadStream, freq = 3) => {
   let bytesNotified = 0;
   const _speedometer = speedometer(50, 250);
   return throttle(e => {
-    if (!e || typeof e.loaded !== 'number') {
+    if (!e || !utils$1.isNumber(e.loaded)) {
       return;
     }
     const rawLoaded = e.loaded;
@@ -53167,6 +55725,15 @@ const isHttps = /https:?/;
 const kAxiosSocketListener = Symbol('axios.http.socketListener');
 const kAxiosCurrentReq = Symbol('axios.http.currentReq');
 
+// A shared listener avoids retaining an adapter context for the lifetime of a
+// pooled socket. EventEmitter invokes listeners with `this` set to the emitter.
+function handleSocketError(err) {
+  const current = this[kAxiosCurrentReq];
+  if (current && !current.destroyed) {
+    current.destroy(err);
+  }
+}
+
 // Tags HttpsProxyAgent instances installed by setProxy() so the redirect path
 // can strip them without clobbering a user-supplied agent that happens to be
 // an HttpsProxyAgent.
@@ -53312,13 +55879,14 @@ function isSameOriginRedirect(redirectOptions, requestDetails) {
  * @param {http.ClientRequestArgs} options
  * @param {AxiosProxyConfig} configProxy configuration from Axios options object
  * @param {string} location
+ * @param {boolean} [allowEnvProxy=true] whether environment proxy configuration can be used
  *
- * @returns {http.ClientRequestArgs}
+ * @returns {boolean} whether a proxy applies to the selected transport
  */
-function setProxy(options, configProxy, location, isRedirect, configHttpsAgent, configHttpAgent) {
+function setProxy(options, configProxy, location, isRedirect, configHttpsAgent, configHttpAgent, allowEnvProxy = true) {
   let proxy = configProxy;
   const proxyEnvAgent = getProxyEnvAgent(options, configHttpAgent, configHttpsAgent);
-  if (!proxy && proxy !== false && !isNodeEnvProxyEnabled(proxyEnvAgent)) {
+  if (!proxy && proxy !== false && allowEnvProxy && !isNodeEnvProxyEnabled(proxyEnvAgent)) {
     const proxyUrl = getProxyForUrl(location);
     if (proxyUrl) {
       if (!shouldBypassProxy(location)) {
@@ -53453,8 +56021,9 @@ function setProxy(options, configProxy, location, isRedirect, configHttpsAgent, 
   options.beforeRedirects.proxy = function beforeRedirect(redirectOptions) {
     // Configure proxy for redirected request, passing the original config proxy to apply
     // the exact same logic as if the redirected request was performed by axios directly.
-    setProxy(redirectOptions, configProxy, redirectOptions.href, true, configHttpsAgent, configHttpAgent);
+    setProxy(redirectOptions, configProxy, redirectOptions.href, true, configHttpsAgent, configHttpAgent, allowEnvProxy);
   };
+  return Boolean(proxy || configProxy !== false && allowEnvProxy && isNodeEnvProxyEnabled(proxyEnvAgent));
 }
 const isHttpAdapterSupported = typeof process !== 'undefined' && utils$1.kindOf(process) === 'process';
 
@@ -53485,7 +56054,7 @@ const resolveFamily = ({
   family
 }) => {
   if (!utils$1.isString(address)) {
-    throw TypeError('address must be a string');
+    throw new AxiosError('address must be a string', AxiosError.ERR_BAD_OPTION_VALUE);
   }
   return {
     address,
@@ -53496,6 +56065,32 @@ const buildAddressEntry = (address, family) => resolveFamily(utils$1.isObject(ad
   address,
   family
 });
+const normalizedLookupCache = new WeakMap();
+const normalizeLookup = lookup => {
+  let normalized = normalizedLookupCache.get(lookup);
+  if (normalized) {
+    return normalized;
+  }
+  const callbackLookup = callbackify(lookup, value => utils$1.isArray(value) ? value : [value]);
+
+  // Support opt.all, which is required by current Node.js releases.
+  normalized = (hostname, opt, cb) => {
+    callbackLookup(hostname, opt, (err, arg0, arg1) => {
+      if (err) {
+        return cb(err);
+      }
+      let addresses;
+      try {
+        addresses = utils$1.isArray(arg0) ? arg0.map(addr => buildAddressEntry(addr)) : [buildAddressEntry(arg0, arg1)];
+      } catch (error) {
+        return cb(error);
+      }
+      opt.all ? cb(err, addresses) : cb(err, addresses[0].address, addresses[0].family);
+    });
+  };
+  normalizedLookupCache.set(lookup, normalized);
+  return normalized;
+};
 const http2Transport = {
   request(options, cb) {
     const authority = options.protocol + '//' + options.hostname + ':' + (options.port || (options.protocol === 'https:' ? 443 : 80));
@@ -53548,6 +56143,7 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
     let family = own('family');
     let httpVersion = own('httpVersion');
     if (httpVersion === undefined) httpVersion = 1;
+    const rawHttpVersion = httpVersion;
     let http2Options = own('http2Options');
     const httpAgent = own('httpAgent');
     const httpsAgent = own('httpsAgent');
@@ -53564,26 +56160,20 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
     let rejected = false;
     let req;
     let connectPhaseTimer;
-    httpVersion = +httpVersion;
+    try {
+      httpVersion = +httpVersion;
+    } catch (err) {
+      throw new AxiosError('Invalid protocol version: value is not a number', AxiosError.ERR_BAD_OPTION_VALUE, config);
+    }
     if (Number.isNaN(httpVersion)) {
-      throw TypeError(`Invalid protocol version: '${config.httpVersion}' is not a number`);
+      throw new AxiosError(`Invalid protocol version: '${rawHttpVersion}' is not a number`, AxiosError.ERR_BAD_OPTION_VALUE, config);
     }
     if (httpVersion !== 1 && httpVersion !== 2) {
-      throw TypeError(`Unsupported protocol version '${httpVersion}'`);
+      throw new AxiosError(`Unsupported protocol version '${httpVersion}'`, AxiosError.ERR_BAD_OPTION_VALUE, config);
     }
     const isHttp2 = httpVersion === 2;
     if (lookup) {
-      const _lookup = callbackify(lookup, value => utils$1.isArray(value) ? value : [value]);
-      // hotfix to support opt.all option which is required for node 20.x
-      lookup = (hostname, opt, cb) => {
-        _lookup(hostname, opt, (err, arg0, arg1) => {
-          if (err) {
-            return cb(err);
-          }
-          const addresses = utils$1.isArray(arg0) ? arg0.map(addr => buildAddressEntry(addr)) : [buildAddressEntry(arg0, arg1)];
-          opt.all ? cb(err, addresses) : cb(err, addresses[0].address, addresses[0].family);
-        });
-      };
+      lookup = normalizeLookup(lookup);
     }
     const abortEmitter = new events.EventEmitter();
     function abort(reason) {
@@ -53796,6 +56386,11 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
       }));
     }
     headers.set('Accept-Encoding', utils$1.hasOwnProp(transitional, 'advertiseZstdAcceptEncoding') && transitional.advertiseZstdAcceptEncoding === true ? ACCEPT_ENCODING_WITH_ZSTD : ACCEPT_ENCODING, false);
+    if (isHttp2 && lookup) {
+      http2Options = Object.assign(Object.create(null), http2Options, {
+        lookup
+      });
+    }
 
     // Null-prototype to block prototype pollution gadgets on properties read
     // directly by Node's http.request (e.g. insecureHTTPParser, lookup).
@@ -53812,11 +56407,13 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
       family,
       beforeRedirect: dispatchBeforeRedirect,
       beforeRedirects: Object.create(null),
-      http2Options
+      http2Options,
+      createConnection: undefined
     });
 
     // cacheable-lookup integration hotfix
     !utils$1.isUndefined(lookup) && (options.lookup = lookup);
+    let proxyApplied = false;
     if (socketPath) {
       if (typeof socketPath !== 'string') {
         return reject(new AxiosError('socketPath must be a string', AxiosError.ERR_BAD_OPTION_VALUE, config));
@@ -53834,7 +56431,11 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
     } else {
       options.hostname = parsed.hostname.startsWith('[') ? parsed.hostname.slice(1, -1) : parsed.hostname;
       options.port = parsed.port;
-      setProxy(options, configProxy, protocol + '//' + parsed.hostname + (parsed.port ? ':' + parsed.port : '') + options.path, false, httpsAgent, httpAgent);
+      proxyApplied = setProxy(options, configProxy, protocol + '//' + parsed.hostname + (parsed.port ? ':' + parsed.port : '') + options.path, false, httpsAgent, httpAgent,
+      // The HTTP/2 transport connects independently of HTTP/1 agents, so it
+      // cannot apply either axios-resolved or agent-local environment proxies.
+      // Explicit proxy config is still processed and rejected below.
+      !isHttp2);
     }
     let transport;
     let isNativeTransport = false;
@@ -53850,6 +56451,9 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
       options.agent = isHttpsRequest ? httpsAgent : httpAgent;
     }
     if (isHttp2) {
+      if (proxyApplied) {
+        return reject(new AxiosError('HTTP/2 requests with a proxy are not supported', AxiosError.ERR_NOT_SUPPORT, config));
+      }
       transport = http2Transport;
     } else {
       const configTransport = own('transport');
@@ -54097,18 +56701,10 @@ var httpAdapter = isHttpAdapterSupported && function httpAdapter(config) {
         socket.setKeepAlive(true, 1000 * 60);
       }
 
-      // Install a single 'error' listener per socket (not per request) to avoid
-      // accumulating listeners on pooled keep-alive sockets that get reassigned
-      // to new requests before the previous request's 'close' fires (issue #10780).
-      // The listener is bound to the socket's currently-active request via a
-      // symbol, which is swapped as the socket is reassigned.
+      // Install one shared 'error' listener per socket. The symbol follows the
+      // currently-active request as pooled sockets are reassigned (issue #10780).
       if (!socket[kAxiosSocketListener]) {
-        socket.on('error', function handleSocketError(err) {
-          const current = socket[kAxiosCurrentReq];
-          if (current && !current.destroyed) {
-            current.destroy(err);
-          }
-        });
+        socket.on('error', handleSocketError);
         socket[kAxiosSocketListener] = true;
       }
       socket[kAxiosCurrentReq] = req;
@@ -54370,7 +56966,7 @@ function mergeConfig(config1, config2) {
     transformResponse: defaultToConfig2,
     paramsSerializer: defaultToConfig2,
     timeout: defaultToConfig2,
-    timeoutMessage: defaultToConfig2,
+    timeoutErrorMessage: defaultToConfig2,
     withCredentials: defaultToConfig2,
     withXSRFToken: defaultToConfig2,
     adapter: defaultToConfig2,
@@ -54452,11 +57048,12 @@ function resolveConfig(config) {
     }
   }
   if (utils$1.isFormData(data)) {
+    const getHeaders = utils$1.getSafeProp(data, 'getHeaders');
     if (platform.hasStandardBrowserEnv || platform.hasStandardBrowserWebWorkerEnv || utils$1.isReactNative(data)) {
       headers.setContentType(undefined); // browser/web worker/RN handles it
-    } else if (utils$1.isFunction(data.getHeaders)) {
+    } else if (utils$1.isFunction(getHeaders)) {
       // Node.js FormData (like form-data package)
-      setFormDataHeaders(headers, data.getHeaders(), own('formDataHeaderPolicy'));
+      setFormDataHeaders(headers, getHeaders.call(data), own('formDataHeaderPolicy'));
     }
   }
 
@@ -54496,7 +57093,7 @@ var xhrAdapter = isXHRAdapterSupported && function (config) {
     } = _config;
     let onCanceled;
     let uploadThrottled, downloadThrottled;
-    let flushUpload, flushDownload;
+    let flushUpload, flushDownload, flushDownloadWithEvent;
     function done() {
       flushUpload && flushUpload(); // flush events
       flushDownload && flushDownload(); // flush events
@@ -54509,10 +57106,50 @@ var xhrAdapter = isXHRAdapterSupported && function (config) {
 
     // Set the request timeout in MS
     request.timeout = _config.timeout;
-    function onloadend() {
+    function onloadend(event) {
       if (!request) {
         return;
       }
+
+      // Status 0 means no response was received, which onerror and onabort normally
+      // reject before this runs. Firefox 152 fires only readystatechange and loadend for
+      // navigation-canceled requests (https://bugzilla.mozilla.org/show_bug.cgi?id=1505389),
+      // leaving settle() to resolve them as an empty success. ECONNABORTED is the error
+      // onabort raised on Firefox 151. Reads over file:, which some environments report as
+      // status 0 on success, are excluded by the request URL's scheme after browser-style
+      // preprocessing, by the page origin's scheme for relative URLs (which inherit it), or
+      // by responseURL where implemented.
+      if (request.status === 0 && (parseProtocol(normalizeURLForProtocolCheck(_config.url)) || parseProtocol(platform.origin)) !== 'file' && !(request.responseURL && request.responseURL.startsWith('file:'))) {
+        reject(new AxiosError('Request aborted', AxiosError.ECONNABORTED, config, request));
+        done();
+
+        // Clean up request
+        request = null;
+        return;
+      }
+
+      // When loadend is still dispatching, flushing with it gives progress
+      // listeners a final delivery whose event has a live target. The legacy
+      // ready-state fallback has no event, so replay its pending progress.
+      // A throwing listener must not block settlement; rethrow asynchronously,
+      // matching how listener errors surface on the throttle timer path.
+      try {
+        if (event) {
+          flushDownloadWithEvent && flushDownloadWithEvent(event);
+        } else {
+          flushDownload && flushDownload();
+        }
+      } catch (err) {
+        setTimeout(() => {
+          throw err;
+        });
+      }
+
+      // A final progress callback can cancel the request synchronously.
+      if (!request) {
+        return;
+      }
+
       // Prepare the response
       const responseHeaders = AxiosHeaders.from('getAllResponseHeaders' in request && request.getAllResponseHeaders());
       const responseData = !responseType || responseType === 'text' || responseType === 'json' ? request.responseText : request.response;
@@ -54620,7 +57257,7 @@ var xhrAdapter = isXHRAdapterSupported && function (config) {
 
     // Handle progress if needed
     if (onDownloadProgress) {
-      [downloadThrottled, flushDownload] = progressEventReducer(onDownloadProgress, true);
+      [downloadThrottled, flushDownload, flushDownloadWithEvent] = progressEventReducer(onDownloadProgress, true);
       request.addEventListener('progress', downloadThrottled);
     }
 
@@ -54791,6 +57428,17 @@ const trackStream = (stream, chunkSize, onProgress, onFinish) => {
 };
 
 const DEFAULT_CHUNK_SIZE = 64 * 1024;
+const DEFAULT_REQUEST_OPTIONS = {
+  cache: 'default',
+  redirect: 'follow',
+  referrer: 'about:client',
+  referrerPolicy: '',
+  mode: 'cors',
+  integrity: '',
+  keepalive: false,
+  priority: 'auto',
+  window: null
+};
 const {
   isFunction
 } = utils$1;
@@ -54933,7 +57581,8 @@ const factory = env => {
       withCredentials = 'same-origin',
       fetchOptions,
       maxContentLength,
-      maxBodyLength
+      maxBodyLength,
+      maxRedirects
     } = resolveConfig(config);
     const hasMaxContentLength = utils$1.isNumber(maxContentLength) && maxContentLength > -1;
     const hasMaxBodyLength = utils$1.isNumber(maxBodyLength) && maxBodyLength > -1;
@@ -55064,17 +57713,46 @@ const factory = env => {
 
       // Set User-Agent header if not already set (fetch defaults to 'node' in Node.js)
       headers.set('User-Agent', 'axios/' + VERSION, false);
-      const resolvedOptions = {
-        ...fetchOptions,
+      const safeFetchOptions = fetchOptions == null ? fetchOptions : Object.assign(Object.create(null), fetchOptions);
+      if (safeFetchOptions) {
+        // These options are owned by Axios and are already reflected in the
+        // resolved Request passed to fetch.
+        delete safeFetchOptions.body;
+        delete safeFetchOptions.headers;
+        delete safeFetchOptions.method;
+        delete safeFetchOptions.signal;
+        delete safeFetchOptions.duplex;
+        delete safeFetchOptions.credentials;
+      }
+      const resolvedOptions = Object.assign(Object.create(null), safeFetchOptions, {
         signal: composedSignal,
         method: method.toUpperCase(),
         headers: toByteStringHeaderObject(headers.normalize()),
         body: data,
         duplex: 'half',
         credentials: isCredentialsSupported ? withCredentials : undefined
-      };
+      });
+      if (isRequestSupported) {
+        utils$1.forEach(DEFAULT_REQUEST_OPTIONS, (value, key) => {
+          if (resolvedOptions[key] === undefined) {
+            resolvedOptions[key] = value;
+          }
+        });
+        if (resolvedOptions.signal === undefined) {
+          resolvedOptions.signal = null;
+        }
+        if (resolvedOptions.body === undefined) {
+          resolvedOptions.body = null;
+        }
+      }
+      if (maxRedirects === 0) {
+        resolvedOptions.redirect = 'manual';
+        if (safeFetchOptions) {
+          safeFetchOptions.redirect = 'manual';
+        }
+      }
       request = isRequestSupported && new Request(url, resolvedOptions);
-      let response = await (isRequestSupported ? _fetch(request, fetchOptions) : _fetch(url, resolvedOptions));
+      let response = await (isRequestSupported ? _fetch(request, safeFetchOptions) : _fetch(url, resolvedOptions));
       const responseHeaders = AxiosHeaders.from(response.headers);
 
       // Cheap pre-check: if the server honestly declares a content-length that
@@ -55354,9 +58032,13 @@ function throwIfCancellationRequested(config) {
  *
  * @returns {Promise} The Promise to be fulfilled
  */
-function dispatchRequest(config) {
+function dispatchRequest(_config) {
+  // Interceptors may replace the merged config with an ordinary object. Flatten
+  // it at the dispatch boundary so shared prototype members cannot become
+  // request behavior, while preserving intentional template/class members.
+  const config = utils$1.toSafeFlatObject(_config);
   throwIfCancellationRequested(config);
-  config.headers = AxiosHeaders.from(config.headers);
+  config.headers = AxiosHeaders.from(utils$1.getSafeProp(config, 'headers'));
 
   // Transform request data
   config.data = transformData.call(config, config.transformRequest);
@@ -55512,18 +58194,17 @@ class Axios {
       return await this._request(configOrUrl, config);
     } catch (err) {
       if (err instanceof Error) {
-        let dummy = {};
-        Error.captureStackTrace ? Error.captureStackTrace(dummy) : dummy = new Error();
-
-        // slice off the Error: ... line
-        const stack = (() => {
-          if (!dummy.stack) {
-            return '';
-          }
-          const firstNewlineIndex = dummy.stack.indexOf('\n');
-          return firstNewlineIndex === -1 ? '' : dummy.stack.slice(firstNewlineIndex + 1);
-        })();
         try {
+          let dummy = {};
+          Error.captureStackTrace ? Error.captureStackTrace(dummy) : dummy = new Error();
+          const dummyStack = dummy.stack;
+          let stack = '';
+
+          // slice off the Error: ... line
+          if (typeof dummyStack === 'string') {
+            const firstNewlineIndex = dummyStack.indexOf('\n');
+            stack = firstNewlineIndex === -1 ? '' : dummyStack.slice(firstNewlineIndex + 1);
+          }
           if (!err.stack) {
             err.stack = stack;
             // match without the 2 top stack lines
@@ -55536,7 +58217,7 @@ class Axios {
             }
           }
         } catch (e) {
-          // ignore the case where "stack" is an un-writable property
+          // Ignore failures from custom stack hooks or un-writable stack properties.
         }
       }
       throw err;
@@ -55592,11 +58273,11 @@ class Axios {
     }, true);
 
     // Set config.method
-    config.method = (config.method || this.defaults.method || 'get').toLowerCase();
+    config.method = (utils$1.getSafeProp(config, 'method') || utils$1.getSafeProp(this.defaults, 'method') || 'get').toLowerCase();
 
     // Flatten headers
     let contextHeaders = headers && utils$1.merge(headers.common, headers[config.method]);
-    headers && utils$1.forEach(['delete', 'get', 'head', 'post', 'put', 'patch', 'query', 'common'], method => {
+    headers && utils$1.forEach(methodList.concat('common'), method => {
       delete headers[method];
     });
     config.headers = AxiosHeaders.concat(contextHeaders, headers);
@@ -55902,14 +58583,22 @@ const HttpStatusCode = {
   Gone: 410,
   LengthRequired: 411,
   PreconditionFailed: 412,
+  /**
+   * @deprecated Use `ContentTooLarge` instead.
+   */
   PayloadTooLarge: 413,
+  ContentTooLarge: 413,
   UriTooLong: 414,
   UnsupportedMediaType: 415,
   RangeNotSatisfiable: 416,
   ExpectationFailed: 417,
   ImATeapot: 418,
   MisdirectedRequest: 421,
+  /**
+   * @deprecated Use `UnprocessableContent` instead.
+   */
   UnprocessableEntity: 422,
+  UnprocessableContent: 422,
   Locked: 423,
   FailedDependency: 424,
   TooEarly: 425,
@@ -55938,7 +58627,9 @@ const HttpStatusCode = {
   InvalidSslCertificate: 526
 };
 Object.entries(HttpStatusCode).forEach(([key, value]) => {
-  HttpStatusCode[value] = key;
+  if (HttpStatusCode[value] === undefined) {
+    HttpStatusCode[value] = key;
+  }
 });
 
 /**
@@ -56007,14 +58698,6 @@ axios.default = axios;
 
 module.exports = axios;
 
-
-/***/ }),
-
-/***/ 9828:
-/***/ ((module) => {
-
-"use strict";
-module.exports = /*#__PURE__*/JSON.parse('{"100":"Continue","101":"Switching Protocols","102":"Processing","103":"Early Hints","200":"OK","201":"Created","202":"Accepted","203":"Non-Authoritative Information","204":"No Content","205":"Reset Content","206":"Partial Content","207":"Multi-Status","208":"Already Reported","226":"IM Used","300":"Multiple Choices","301":"Moved Permanently","302":"Found","303":"See Other","304":"Not Modified","305":"Use Proxy","307":"Temporary Redirect","308":"Permanent Redirect","400":"Bad Request","401":"Unauthorized","402":"Payment Required","403":"Forbidden","404":"Not Found","405":"Method Not Allowed","406":"Not Acceptable","407":"Proxy Authentication Required","408":"Request Timeout","409":"Conflict","410":"Gone","411":"Length Required","412":"Precondition Failed","413":"Payload Too Large","414":"URI Too Long","415":"Unsupported Media Type","416":"Range Not Satisfiable","417":"Expectation Failed","418":"I\'m a Teapot","421":"Misdirected Request","422":"Unprocessable Entity","423":"Locked","424":"Failed Dependency","425":"Too Early","426":"Upgrade Required","428":"Precondition Required","429":"Too Many Requests","431":"Request Header Fields Too Large","451":"Unavailable For Legal Reasons","500":"Internal Server Error","501":"Not Implemented","502":"Bad Gateway","503":"Service Unavailable","504":"Gateway Timeout","505":"HTTP Version Not Supported","506":"Variant Also Negotiates","507":"Insufficient Storage","508":"Loop Detected","509":"Bandwidth Limit Exceeded","510":"Not Extended","511":"Network Authentication Required"}');
 
 /***/ }),
 
@@ -56098,14 +58781,6 @@ module.exports = /*#__PURE__*/JSON.parse('{"application/andrew-inset":["ez"],"ap
 
 /***/ }),
 
-/***/ 6723:
-/***/ ((module) => {
-
-"use strict";
-module.exports = /*#__PURE__*/JSON.parse('{"100":"Continue","101":"Switching Protocols","102":"Processing","103":"Early Hints","200":"OK","201":"Created","202":"Accepted","203":"Non-Authoritative Information","204":"No Content","205":"Reset Content","206":"Partial Content","207":"Multi-Status","208":"Already Reported","226":"IM Used","300":"Multiple Choices","301":"Moved Permanently","302":"Found","303":"See Other","304":"Not Modified","305":"Use Proxy","307":"Temporary Redirect","308":"Permanent Redirect","400":"Bad Request","401":"Unauthorized","402":"Payment Required","403":"Forbidden","404":"Not Found","405":"Method Not Allowed","406":"Not Acceptable","407":"Proxy Authentication Required","408":"Request Timeout","409":"Conflict","410":"Gone","411":"Length Required","412":"Precondition Failed","413":"Payload Too Large","414":"URI Too Long","415":"Unsupported Media Type","416":"Range Not Satisfiable","417":"Expectation Failed","418":"I\'m a Teapot","421":"Misdirected Request","422":"Unprocessable Entity","423":"Locked","424":"Failed Dependency","425":"Too Early","426":"Upgrade Required","428":"Precondition Required","429":"Too Many Requests","431":"Request Header Fields Too Large","451":"Unavailable For Legal Reasons","500":"Internal Server Error","501":"Not Implemented","502":"Bad Gateway","503":"Service Unavailable","504":"Gateway Timeout","505":"HTTP Version Not Supported","506":"Variant Also Negotiates","507":"Insufficient Storage","508":"Loop Detected","509":"Bandwidth Limit Exceeded","510":"Not Extended","511":"Network Authentication Required"}');
-
-/***/ }),
-
 /***/ 7662:
 /***/ ((module) => {
 
@@ -56118,7 +58793,7 @@ module.exports = /*#__PURE__*/JSON.parse('{"100":"Continue","101":"Switching Pro
 /***/ ((module) => {
 
 "use strict";
-module.exports = {"version":"3.17.0"};
+module.exports = {"version":"3.19.0"};
 
 /***/ })
 

@@ -32,16 +32,42 @@ def test_wrong_token_returns_401(client):
     assert response.status_code == 401
 
 
-def test_correct_token_not_401(auth_client):
+def test_correct_token_not_401(auth_client, monkeypatch):
     """POST /api/execute with correct token should pass auth (may return other errors for bad payload)."""
-    response = auth_client.post(
-        '/api/execute',
-        json={
-            'executionId': 'test-exec-3',
-            'task': {'name': 'test'},
-        },
-        headers={'Authorization': 'Bearer testsecret'},
-    )
+    # A valid token means the endpoint ACCEPTS the request and spawns the real
+    # background execution task. Left running it spawns a subprocess and burns
+    # callback retries against the fake admin URL, and the TestClient loop
+    # teardown abandons it mid-flight — the orphaned subprocess transport then
+    # GCs as a flaky "RuntimeError: Event loop is closed" unraisable warning
+    # attributed to whichever test happens to be running. Stub create_task so
+    # the coroutine never runs (same pattern as
+    # test_execute_below_capacity_returns_accepted).
+    from routers import execute as execute_module
+    import scheduler as sched
+
+    class FakeTaskHandle:
+        def add_done_callback(self, cb):
+            pass
+
+    def fake_create_task(coro):
+        coro.close()
+        return FakeTaskHandle()
+
+    original_count = sched.running_count
+    monkeypatch.setattr(execute_module.asyncio, 'create_task', fake_create_task)
+    try:
+        response = auth_client.post(
+            '/api/execute',
+            json={
+                'executionId': 'test-exec-3',
+                'task': {'name': 'test'},
+            },
+            headers={'Authorization': 'Bearer testsecret'},
+        )
+    finally:
+        # The background task normally decrements this in its finally; with
+        # the coroutine closed it never runs.
+        sched.running_count = original_count
     assert response.status_code != 401
 
 
@@ -54,12 +80,21 @@ def _clear_all_tokens(monkeypatch):
     monkeypatch.setattr(auth_module, '_dynamic_token', None)
     monkeypatch.delenv('EXECUTOR_SHARED_TOKEN', raising=False)
     monkeypatch.delenv('EXECUTOR_SECRET', raising=False)
+    # round-16 修复后 _get_static_token 会回退到 settings（.env 值）——
+    # 开发者本机 .env 的真实 token 也必须清掉，用例才能到达 dev-mode 分支
+    from config import settings as _settings
+    monkeypatch.setattr(_settings, 'executor_shared_token', '')
+    monkeypatch.setattr(_settings, 'executor_secret', '')
 
 
 def test_verify_token_dev_mode_allows_when_require_token_unset(monkeypatch):
     """Default: an executor without any token keeps the dev-mode allow-all."""
     _clear_all_tokens(monkeypatch)
     monkeypatch.delenv('REQUIRE_TOKEN', raising=False)
+    # round-16：require_token_enabled 回退 settings——本机 .env 的
+    # REQUIRE_TOKEN=true 不能泄漏进这条 dev-mode 用例
+    from config import settings as _settings
+    monkeypatch.setattr(_settings, 'require_token', False)
     asyncio.run(auth_module.verify_token(''))  # must not raise
 
 

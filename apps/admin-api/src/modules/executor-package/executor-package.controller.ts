@@ -18,12 +18,18 @@ import {
   Logger,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { memoryStorage } from "multer";
+import { diskStorage } from "multer";
 import { Response } from "express";
+import { pipeline } from "stream/promises";
+import * as jwt from "jsonwebtoken";
+import { UnauthorizedException } from "@nestjs/common";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { Public } from "../../common/decorators/public.decorator";
 import { SystemConfigService } from "../config/config.service";
-import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
+import {
+  getExecutorSharedToken,
+  verifyExecutorToken,
+} from "../../common/utils/verify-executor-token.util";
 import {
   ApiTags,
   ApiOperation,
@@ -38,6 +44,7 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { ExecutorPackageService } from "./executor-package.service";
+import { PACKAGE_UPLOAD_TMP_DIR } from "./executor-package.service";
 import { ExecutorService } from "../executor/executor.service";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -47,6 +54,42 @@ import {
 } from "./dto/executor-package.dto";
 import { ExecutorPackage } from "./executor-package.entity";
 import { UserRole } from "../users/entities/user.entity";
+
+/**
+ * QA10: build a header-safe Content-Disposition value. The filename comes
+ * from the uploader's original filename (attacker-controlled on any
+ * authenticated upload path) — embedding it raw would let CR/LF split the
+ * response header (header injection) or unbalanced quotes break out of the
+ * quoted-string. Control characters (incl. CR/LF) are stripped entirely;
+ * names that are not plain unquoted ASCII are carried in an RFC 5987
+ * filename* parameter (percent-encoded UTF-8) with a sanitized ASCII
+ * fallback filename for legacy clients.
+ */
+export function buildContentDisposition(
+  rawFilename: string | null | undefined,
+): string {
+  const FALLBACK = "download";
+  // Strip CR/LF and every other C0/C1 control char (header-injection kill).
+  const cleaned = (rawFilename ?? "").replace(/[\x00-\x1f\x7f]/g, "").trim();
+  if (!cleaned) {
+    return `attachment; filename="${FALLBACK}"`;
+  }
+  // quoted-string safe: printable ASCII without the quote and backslash
+  if (/^[\x20-\x21\x23-\x5b\x5d-\x7e]+$/.test(cleaned)) {
+    return `attachment; filename="${cleaned}"`;
+  }
+  // RFC 5987 attr-char via encodeURIComponent plus the extended set ('()*)
+  // that encodeURIComponent leaves bare but RFC 5987 requires to be encoded.
+  const encoded = encodeURIComponent(cleaned).replace(
+    /['()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
+  const asciiFallback =
+    cleaned
+      .replace(/[^\x20-\x21\x23-\x5b\x5d-\x7e]/g, "_")
+      .replace(/^_+|_+$/g, "") || FALLBACK;
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
+}
 
 @ApiTags("Executor Package Management")
 @ApiBearerAuth("JWT")
@@ -69,9 +112,13 @@ export class ExecutorPackageController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  // R9: diskStorage instead of memoryStorage — a 500 MB upload used to be
+  // fully resident in the Node heap (buffer + hash copy). The file lands in
+  // PACKAGE_UPLOAD_TMP_DIR (same volume as the final destination, so the
+  // service's persist step is an atomic rename) and is streamed for hashing.
   @UseInterceptors(
     FileInterceptor("file", {
-      storage: memoryStorage(),
+      storage: diskStorage({ destination: PACKAGE_UPLOAD_TMP_DIR }),
       limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
     }),
   )
@@ -166,23 +213,84 @@ export class ExecutorPackageController {
     return this.svc.remove(id);
   }
 
+  @Public()
+  // Reset inherited ADMIN roles: machine callers have no req.user.
+  // Access is gated by the shared token or access JWT checks below.
+  @Roles()
   @Get(":id/download")
-  @ApiOperation({ summary: "Download executor package file" })
+  @ApiOperation({
+    summary: "Download executor package file",
+    description:
+      "Accepts either a valid administrator access JWT or the executor shared token. JWT validation is stateless and does not query the user database, matching upload-auth middleware; access-token expiry provides revocation latency.",
+  })
   @ApiParam({ name: "id", description: "Package ID" })
   @ApiResponse({ status: 200, description: "File content" })
+  @ApiResponse({
+    status: 401,
+    description: "Invalid access JWT or executor token",
+  })
   @ApiResponse({ status: 404, description: "Package or file not found" })
   async download(
     @Param("id", ParseUUIDPipe) id: string,
     @Res() res: Response,
+    @Headers("authorization") authHeader?: string,
   ): Promise<void> {
-    const { buffer, pkg } = await this.svc.getFileBuffer(id);
+    let authorized = false;
+    try {
+      await verifyExecutorToken(
+        authHeader,
+        this.configService,
+        this.systemConfigService,
+      );
+      authorized = true;
+    } catch {
+      // Fall back to the management access JWT.
+    }
+
+    // Mirror upload-auth.middleware: same secret and access type, no user DB
+    // lookup. Revocation relies on short access-token expiry (default 15m).
+    if (!authorized && authHeader?.startsWith("Bearer ")) {
+      try {
+        const payload = jwt.verify(
+          authHeader.slice("Bearer ".length),
+          this.configService.get<string>("jwt.secret"),
+          { ignoreExpiration: false },
+        ) as { type?: string } | string;
+        authorized = typeof payload === "object" && payload.type === "access";
+      } catch {
+        // Both credential channels failed.
+      }
+    }
+    if (!authorized) {
+      throw new UnauthorizedException(
+        "Unauthorized: package downloads require a valid access JWT or executor token",
+      );
+    }
+
+    // R9: stream the file to the client instead of readFileSync-ing it into
+    // one Buffer. Headers/auth/404 semantics unchanged (Content-Length comes
+    // from the on-disk stat, filename/type from the stored row).
+    const { stream, fileSize, pkg } = await this.svc.openPackageFile(id);
+    // QA10: the stored originalFilename is user-controlled — sanitize the
+    // header value (CR/LF/quote stripping, RFC 5987 for non-ASCII names).
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${pkg.originalFilename ?? pkg.filename ?? `${pkg.name}-${pkg.version}`}"`,
+      buildContentDisposition(
+        pkg.originalFilename ?? pkg.filename ?? `${pkg.name}-${pkg.version}`,
+      ),
     );
     res.setHeader("Content-Type", pkg.mimeType ?? "application/octet-stream");
-    res.setHeader("Content-Length", buffer.length);
-    res.end(buffer);
+    res.setHeader("Content-Length", fileSize);
+    try {
+      await pipeline(stream, res);
+    } catch (err: unknown) {
+      // Headers are already sent at this point; surface the abort in logs
+      // instead of leaking a stack trace through the response.
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Download stream for package ${pkg.id} ended with error: ${msg}`,
+      );
+    }
   }
 
   @Patch(":id/deprecate")
@@ -301,7 +409,11 @@ export class ExecutorPackageController {
     { executorId: string; address: string; success: boolean; error?: string }[]
   > {
     const executors = await this.executorService.findAll();
-    const sharedToken = this.configService.get<string>("executor.sharedToken");
+    const sharedToken =
+      (await getExecutorSharedToken(
+        this.configService,
+        this.systemConfigService,
+      )) ?? undefined;
     return this.svc.pushToExecutors(id, executorIds, executors, sharedToken);
   }
 }

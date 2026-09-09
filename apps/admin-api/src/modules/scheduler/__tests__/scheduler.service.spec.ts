@@ -21,9 +21,15 @@ import {
   ExecutionStatus,
   ExecutionFailureReason,
 } from "../../task/entities/task-execution.entity";
+import {
+  Executor,
+  ExecutorStatus,
+} from "../../executor/entities/executor.entity";
 import { DataSource } from "typeorm";
 import * as nodeCron from "node-cron";
+import { ConfigService } from "@nestjs/config";
 import { RedisLockService } from "../../../common/services/redis-lock.service";
+import { ExecutorService } from "../../executor/executor.service";
 
 const mockRepo = () => ({
   find: jest.fn(),
@@ -52,12 +58,32 @@ const mockRedisLock = () => ({
   releaseLock: jest.fn().mockResolvedValue(true),
 });
 
+// P2: stale sweep 重试兑现所需的 ExecutorService 协作面。默认"预算未耗尽、
+// kill/重试均成功"，各用例按需 override。
+const mockExecutorService = () => ({
+  hasRetryBudget: jest.fn().mockReturnValue(true),
+  notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+  scheduleRetryAfterRecovery: jest.fn().mockResolvedValue(undefined),
+});
+
+// P2: STALE_RECOVERY_RETRY_ENABLED 开关。get 缺省返回 undefined → 服务侧按
+// 默认开启处理；关闭用例 override 为 false。
+const mockConfigService = () => ({
+  get: jest.fn(),
+});
+
 const mockDataSource = () => ({
   createQueryBuilder: jest.fn(() => ({
     update: jest.fn().mockReturnThis(),
     set: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     execute: jest.fn().mockResolvedValue({ affected: 1 }),
+  })),
+  // CONSISTENCY-02: recoverStaleExecutions 活性探测经 getRepository(Executor).find
+  // 批量查在线执行器。默认返回空集（等价"无在线执行器上报"→ 维持既有恢复），
+  // 需要探测语义的用例各自 override getRepository。
+  getRepository: jest.fn(() => ({
+    find: jest.fn().mockResolvedValue([]),
   })),
   transaction: jest.fn(),
 });
@@ -102,6 +128,8 @@ describe("SchedulerService", () => {
   let redisLockService: ReturnType<typeof mockRedisLock>;
   let dataSource: ReturnType<typeof mockDataSource>;
   let metrics: SchedulerMetricsService;
+  let executorService: ReturnType<typeof mockExecutorService>;
+  let configService: ReturnType<typeof mockConfigService>;
 
   const makeLeader = async () => {
     redisLockService.acquireLock.mockResolvedValueOnce({
@@ -125,6 +153,8 @@ describe("SchedulerService", () => {
         { provide: getQueueToken("task-queue"), useFactory: mockQueue },
         { provide: RedisLockService, useFactory: mockRedisLock },
         { provide: DataSource, useFactory: mockDataSource },
+        { provide: ExecutorService, useFactory: mockExecutorService },
+        { provide: ConfigService, useFactory: mockConfigService },
       ],
     }).compile();
 
@@ -135,6 +165,8 @@ describe("SchedulerService", () => {
     redisLockService = module.get(RedisLockService);
     dataSource = module.get(DataSource);
     metrics = module.get(SchedulerMetricsService);
+    executorService = module.get(ExecutorService);
+    configService = module.get(ConfigService);
   });
 
   afterEach(() => {
@@ -226,6 +258,43 @@ describe("SchedulerService", () => {
       expect(service.getStats().isLeader).toBe(true);
     });
 
+    // TASK-006 demote 语义边角：lease 校验发现锁对象已 released → 直接返回，
+    // 既不 demote 也不触 EQ 探测（锁已由 onModuleDestroy 等路径主动释放）。
+    it("verifyLeadership is a no-op when the lock was already released", async () => {
+      const lock = {
+        key: "scheduler:leader",
+        lockId: "leader-lock-id",
+        ttlMs: 30000,
+        released: true,
+        release: jest.fn().mockResolvedValue(true),
+      };
+      redisLockService.acquireLock.mockResolvedValueOnce(lock);
+      await service.initLeaderElection();
+      expect(service.getStats().isLeader).toBe(true);
+
+      await (service as any).verifyLeadership();
+
+      expect(redisLockService.extendLock).not.toHaveBeenCalled();
+      expect(service.getStats().isLeader).toBe(true);
+    });
+
+    // fail-open 降级 Leader 让位边角：降级期间（isLeader=true 且 leaderLock 为
+    // null）真实锁被其它实例拿到 → 立即 demote，避免双 Leader。
+    it("degraded leader yields when another instance acquires the real lock", async () => {
+      // 第一轮：Redis 抛错 → fail-open 降级为 Leader（leaderLock=null）
+      redisLockService.acquireLock.mockRejectedValueOnce(
+        new Error("redis down"),
+      );
+      await service.initLeaderElection();
+      expect(service.getStats().isLeader).toBe(true);
+
+      // 下一轮重试：Redis 恢复但锁已被其它实例持有 → 降级 Leader 必须让位
+      redisLockService.acquireLock.mockResolvedValueOnce(null);
+      await (service as any).tryAcquireLeadership();
+
+      expect(service.getStats().isLeader).toBe(false);
+    });
+
     it("only one instance wins the leader lock when two contend (redis-backed)", async () => {
       // 模拟两个实例串行竞选：Redis SET NX 保证只有一个 OK
       const results: boolean[] = [];
@@ -257,6 +326,8 @@ describe("SchedulerService", () => {
           { provide: getQueueToken("task-queue"), useFactory: mockQueue },
           { provide: RedisLockService, useFactory: mockRedisLock },
           { provide: DataSource, useFactory: mockDataSource },
+          { provide: ExecutorService, useFactory: mockExecutorService },
+          { provide: ConfigService, useFactory: mockConfigService },
         ],
       }).compile();
       const instanceB = moduleB.get<SchedulerService>(SchedulerService);
@@ -625,6 +696,54 @@ describe("SchedulerService", () => {
       expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
       expect(queue.add).toHaveBeenCalled();
       expect(execRepo.save).not.toHaveBeenCalledWith(runningExec);
+    });
+
+    // FEAT-06: maintenance windows gate scheduled triggers before the dedup
+    // lock. Deterministic without fake timers: start "* * * * *" touches the
+    // current minute at any real clock; end "* * 31 2 *" (Feb 31) never fires.
+    it("should skip the trigger and count maintenance when inside a maintenance window (FEAT-06)", async () => {
+      await makeLeader();
+      const task = makeTask({
+        maintenanceWindows: [
+          {
+            start: "* * * * *",
+            end: "* * 31 2 *",
+            description: "release freeze",
+          },
+        ],
+      });
+      const lockCallsBefore = redisLockService.acquireLock.mock.calls.length;
+      const result = await service.enqueue(task, "cron");
+      expect(result).toBeNull();
+      expect(queue.add).not.toHaveBeenCalled();
+      // 检查在去重锁之前：不消耗本周期去重窗口
+      expect(redisLockService.acquireLock.mock.calls.length).toBe(
+        lockCallsBefore,
+      );
+      expect(metrics.snapshot.triggersSkippedMaintenance).toBe(1);
+      expect(execRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("should trigger normally when outside all maintenance windows (FEAT-06)", async () => {
+      await makeLeader();
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      const task = makeTask({
+        // start（2 月 31 日）永不触达 → 窗口视为未开启
+        maintenanceWindows: [{ start: "* * 31 2 *", end: "0 4 * * *" }],
+      });
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = {
+        id: "exec-1",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+
+      const result = await service.enqueue(task, "cron");
+      expect(result).toEqual(exec);
+      expect(queue.add).toHaveBeenCalled();
+      expect(metrics.snapshot.triggersSkippedMaintenance).toBe(0);
     });
   });
 
@@ -1004,6 +1123,345 @@ describe("SchedulerService", () => {
       await service.recoverStaleExecutions();
 
       expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  // CONSISTENCY-02: stale 恢复的执行器活性探测。timeout=300s → stale 阈值
+  // max(2×300,60)=600s（10min），绝对兜底 max(6×300,30min)=30min。
+  describe("recoverStaleExecutions liveness probe (CONSISTENCY-02)", () => {
+    const mkExec = (ageMin: number, id = "exec-live") => ({
+      id,
+      taskId: "task-1",
+      status: ExecutionStatus.RUNNING,
+      startTime: new Date(Date.now() - ageMin * 60 * 1000),
+      executorAddress: "host:3002",
+      errorMessage: null,
+      endTime: null,
+    });
+    const setupScan = (exec: unknown) => {
+      execRepo.find
+        .mockResolvedValueOnce([exec]) // RUNNING scan
+        .mockResolvedValueOnce([]); // PENDING sweep
+      taskRepo.find.mockResolvedValue([
+        makeTask({ id: "task-1", timeout: 300 }),
+      ]);
+      taskRepo.findBy.mockResolvedValue([
+        makeTask({ id: "task-1", timeout: 300 }),
+      ]);
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({
+          createQueryBuilder: () =>
+            makeUpdateQb({
+              affected: 1,
+              raw: [{ id: (exec as any).id, executorAddress: "host:3002" }],
+            }),
+        }),
+      );
+    };
+    const reportRunning = (
+      rows: Array<{
+        address: string;
+        status: ExecutorStatus;
+        runningExecutionIds: string[] | null;
+      }>,
+    ) => {
+      dataSource.getRepository.mockReturnValue({
+        find: jest.fn().mockResolvedValue(rows),
+      });
+    };
+
+    it("skips recovery when the executor is ONLINE and reports the id as running", async () => {
+      await makeLeader();
+      const exec = mkExec(20); // 20min > 10min stale, < 30min absolute floor
+      setupScan(exec);
+      reportRunning([
+        {
+          address: "host:3002",
+          status: ExecutorStatus.ONLINE,
+          runningExecutionIds: ["exec-live"],
+        },
+      ]);
+
+      await service.recoverStaleExecutions();
+
+      // Liveness probe ran, id is alive → no recovery transaction at all.
+      expect(dataSource.getRepository).toHaveBeenCalledWith(Executor);
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it("recovers anyway once the absolute fallback (30min) is exceeded", async () => {
+      await makeLeader();
+      const exec = mkExec(40); // 40min > 30min absolute floor
+      setupScan(exec);
+      reportRunning([
+        {
+          address: "host:3002",
+          status: ExecutorStatus.ONLINE,
+          runningExecutionIds: ["exec-live"], // still falsely reported
+        },
+      ]);
+
+      await service.recoverStaleExecutions();
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovers when the executor is OFFLINE despite a stale report", async () => {
+      await makeLeader();
+      const exec = mkExec(20);
+      setupScan(exec);
+      reportRunning([
+        {
+          address: "host:3002",
+          status: ExecutorStatus.OFFLINE,
+          runningExecutionIds: ["exec-live"],
+        },
+      ]);
+
+      await service.recoverStaleExecutions();
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovers when the executor is ONLINE but the id is not in its report", async () => {
+      await makeLeader();
+      const exec = mkExec(20);
+      setupScan(exec);
+      reportRunning([
+        {
+          address: "host:3002",
+          status: ExecutorStatus.ONLINE,
+          runningExecutionIds: ["some-other-exec"],
+        },
+      ]);
+
+      await service.recoverStaleExecutions();
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovers when the executor never reported the field (null = old executor)", async () => {
+      await makeLeader();
+      const exec = mkExec(20);
+      setupScan(exec);
+      reportRunning([
+        {
+          address: "host:3002",
+          status: ExecutorStatus.ONLINE,
+          runningExecutionIds: null,
+        },
+      ]);
+
+      await service.recoverStaleExecutions();
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovers as before when the liveness lookup throws (probe degrades)", async () => {
+      await makeLeader();
+      const exec = mkExec(20);
+      setupScan(exec);
+      dataSource.getRepository.mockImplementation(() => {
+        throw new Error("executor table unavailable");
+      });
+
+      await service.recoverStaleExecutions();
+
+      // Degrade-to-recover: a failed probe must never silently suspend recovery.
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // P2: sweep 重试预算兑现。worker 在 claim 后崩溃的执行只能等 stale sweep
+  // 收敛（processor 不再 claim RUNNING），sweep 赢家必须在预算未耗尽时
+  // re-enqueue（新 PENDING execution + 入队），且 re-enqueue 前先 best-effort
+  // kill 原执行器进程。开关 STALE_RECOVERY_RETRY_ENABLED 默认开。
+  describe("recoverStaleExecutions retry-budget fulfilment (P2)", () => {
+    const crashExec = (overrides: Record<string, unknown> = {}) => ({
+      id: "exec-crash",
+      taskId: "task-1",
+      status: ExecutionStatus.RUNNING,
+      startTime: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2h ago
+      executorAddress: "host:3002",
+      retryCount: 0,
+      triggerType: "cron",
+      params: {},
+      errorMessage: null,
+      endTime: null,
+      ...overrides,
+    });
+
+    /** 让 timeout=0 的任务落入 recovered 桶（STALE_RECOVERED 标记路径） */
+    const setupCrashScan = (
+      exec: ReturnType<typeof crashExec>,
+      task: Task | null,
+      updateResult: { affected: number; raw?: unknown[] } = {
+        affected: 1,
+        raw: [{ id: "exec-crash", executorAddress: "host:3002" }],
+      },
+    ) => {
+      execRepo.find
+        .mockResolvedValueOnce([exec]) // RUNNING scan
+        .mockResolvedValueOnce([]); // PENDING sweep
+      taskRepo.find.mockResolvedValue([]); // N5 cutoff probe → 1h fallback
+      taskRepo.findBy.mockResolvedValue(task ? [task] : []);
+      const updateQb = makeUpdateQb(updateResult);
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({ createQueryBuilder: () => updateQb }),
+      );
+      return updateQb;
+    };
+
+    it("re-enqueues with a kill notification when the retry budget remains", async () => {
+      await makeLeader();
+      const exec = crashExec();
+      const task = makeTask({ id: "task-1", timeout: 0, maxRetry: 3 });
+      setupCrashScan(exec, task);
+
+      await service.recoverStaleExecutions();
+
+      expect(executorService.hasRetryBudget).toHaveBeenCalledWith(task, exec);
+      expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
+        "exec-crash",
+        "host:3002",
+      );
+      expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalledWith(
+        task,
+        exec,
+        "stale_recovery",
+      );
+      // kill 必须先于 re-enqueue（防原进程与新执行双跑）
+      expect(
+        executorService.notifyExecutorKill.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        executorService.scheduleRetryAfterRecovery.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("budget exhausted: FAILED only — no kill, no re-enqueue", async () => {
+      await makeLeader();
+      const exec = crashExec({ retryCount: 2 });
+      const task = makeTask({ id: "task-1", timeout: 0, maxRetry: 3 });
+      setupCrashScan(exec, task);
+      executorService.hasRetryBudget.mockReturnValue(false);
+
+      await service.recoverStaleExecutions();
+
+      expect(executorService.hasRetryBudget).toHaveBeenCalled();
+      expect(executorService.notifyExecutorKill).not.toHaveBeenCalled();
+      expect(executorService.scheduleRetryAfterRecovery).not.toHaveBeenCalled();
+      // 恢复本身照常：条件 UPDATE + 槽位释放
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    it("kill notification failure does not block the re-enqueue", async () => {
+      await makeLeader();
+      const exec = crashExec();
+      const task = makeTask({ id: "task-1", timeout: 0, maxRetry: 3 });
+      setupCrashScan(exec, task);
+      executorService.notifyExecutorKill.mockRejectedValue(
+        new Error("executor offline"),
+      );
+
+      await service.recoverStaleExecutions();
+
+      expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalledWith(
+        task,
+        exec,
+        "stale_recovery",
+      );
+    });
+
+    it("conditional UPDATE loser (no RETURNING row) never re-enqueues", async () => {
+      await makeLeader();
+      const exec = crashExec();
+      const task = makeTask({ id: "task-1", timeout: 0, maxRetry: 3 });
+      // 并发回调已把行写成终态：UPDATE 命中 0 行、RETURNING 为空
+      setupCrashScan(exec, task, { affected: 0, raw: [] });
+
+      await service.recoverStaleExecutions();
+
+      expect(executorService.hasRetryBudget).not.toHaveBeenCalled();
+      expect(executorService.notifyExecutorKill).not.toHaveBeenCalled();
+      expect(executorService.scheduleRetryAfterRecovery).not.toHaveBeenCalled();
+      // 输家也不释放槽位（既有语义，回归护栏）
+      expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it("switch disabled (STALE_RECOVERY_RETRY_ENABLED=false) keeps old FAILED-only behavior", async () => {
+      await makeLeader();
+      const exec = crashExec();
+      const task = makeTask({ id: "task-1", timeout: 0, maxRetry: 3 });
+      setupCrashScan(exec, task);
+      configService.get.mockReturnValue(false);
+
+      await service.recoverStaleExecutions();
+
+      expect(configService.get).toHaveBeenCalledWith(
+        "scheduler.staleRecoveryRetryEnabled",
+      );
+      expect(executorService.hasRetryBudget).not.toHaveBeenCalled();
+      expect(executorService.notifyExecutorKill).not.toHaveBeenCalled();
+      expect(executorService.scheduleRetryAfterRecovery).not.toHaveBeenCalled();
+      // 恢复本身照常
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    it("marks sweep-recovered rows with the stale_recovered failureReason", async () => {
+      await makeLeader();
+      const exec = crashExec();
+      const task = makeTask({ id: "task-1", timeout: 0, maxRetry: 3 });
+      const updateQb = setupCrashScan(exec, task);
+
+      await service.recoverStaleExecutions();
+
+      expect(updateQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: ExecutionStatus.FAILED,
+          failureReason: ExecutionFailureReason.STALE_RECOVERED,
+        }),
+      );
+    });
+
+    it("skips re-enqueue when the task row is gone (deleted task)", async () => {
+      await makeLeader();
+      const exec = crashExec();
+      setupCrashScan(exec, null); // findBy → 任务不存在
+
+      await service.recoverStaleExecutions();
+
+      expect(executorService.hasRetryBudget).not.toHaveBeenCalled();
+      expect(executorService.scheduleRetryAfterRecovery).not.toHaveBeenCalled();
+      // 槽位释放照常
+      expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    // REC-01: kill 通知成功但 re-enqueue 自身失败（DB/队列抖动）不得让
+    // sweep 整体抛错——恢复主链（条件 UPDATE 落库）必须已完成，失败仅记日志。
+    it("re-enqueue failure after a successful kill does not abort the sweep", async () => {
+      await makeLeader();
+      const exec = crashExec();
+      const task = makeTask({ id: "task-1", timeout: 0, maxRetry: 3 });
+      setupCrashScan(exec, task);
+      executorService.scheduleRetryAfterRecovery.mockRejectedValue(
+        new Error("queue unavailable"),
+      );
+
+      await expect(service.recoverStaleExecutions()).resolves.toBeUndefined();
+
+      // kill 通知已按预算语义发出
+      expect(executorService.hasRetryBudget).toHaveBeenCalledWith(task, exec);
+      expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
+        "exec-crash",
+        "host:3002",
+      );
+      // 重试编排失败被吞掉，恢复事务仍已完成
+      expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalled();
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
     });
   });
 

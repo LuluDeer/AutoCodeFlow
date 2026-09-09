@@ -6,6 +6,14 @@ export class ListTasksQueryDto extends PaginationDto {
   @IsUUID()
   applicationId?: string;
 
+  /**
+   * AUTH-01: 项目过滤。字面量 "default" 映射为默认项目 uuid（未分配行
+   * IS NULL OR projectId=默认 uuid 一起命中）；传具体 uuid 时精确过滤。
+   */
+  @IsOptional()
+  @IsString()
+  projectId?: string;
+
   @IsOptional()
   @IsString()
   name?: string;

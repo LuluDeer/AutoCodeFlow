@@ -3,12 +3,16 @@ import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ExecutorService } from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
+// FEAT-04: ExecutorService now injects the metrics-history repo (read side)
+import { ExecutorMetricsHistory } from "../entities/executor-metrics-history.entity";
 import { TaskExecution } from "../../task/entities/task-execution.entity";
 import { Task } from "../../task/entities/task.entity";
 import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
 import { NotificationService } from "../../notification/notification.service";
 import { SystemConfigService } from "../../config/config.service";
+// SEC-02: secrets 派发解密（测试默认降级明文）
+import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.service";
 
 jest.mock("axios", () => {
   const actual = jest.requireActual("axios");
@@ -82,6 +86,11 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
+        // FEAT-04: metrics-history read side — empty by default, unused here
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: { createQueryBuilder: jest.fn() },
+        },
         { provide: getQueueToken("task-queue"), useValue: taskQueue },
         { provide: ConfigService, useValue: configService },
         {
@@ -94,6 +103,11 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         {
           provide: SystemConfigService,
           useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+        },
+        // SEC-02: 默认降级明文（key 空）
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
         },
       ],
     }).compile();

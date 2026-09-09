@@ -14,6 +14,7 @@ import {
   HttpStatus,
   Res,
   NotFoundException,
+  Logger,
 } from "@nestjs/common";
 import { Response } from "express";
 import { existsSync, readFileSync } from "fs";
@@ -32,12 +33,18 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { ExecutorService } from "./executor.service";
+import { UserRole } from "../users/entities/user.entity";
 import { INSTALL_SCRIPT } from "./install-script.content";
 import { SystemConfigService } from "../config/config.service";
 import axios from "axios";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+// BUG-01：401 重签重试可观测计数——走 runtime-metrics 模块级入口（与
+// TaskService / NotificationService 的埋点方式一致，无模块环、零 DI 接线），
+// 由 PrometheusMetricsService 的 render 快照模式渲染为
+// autoflow_push_auth_retry_total{result} series。
+import { recordRuntime } from "../metrics/runtime-metrics-entry";
 
 /**
  * R11: true when the executor answered a reload-config push with an HTTP 401
@@ -66,6 +73,9 @@ function isUnauthorizedPushError(err: unknown): boolean {
 @ApiTags("Executors")
 @Controller("executors")
 export class ExecutorController {
+  /** BUG-01：401 重签重试路径的 warn 日志（首发 401 / 重试结果）。 */
+  private readonly logger = new Logger(ExecutorController.name);
+
   constructor(
     private readonly svc: ExecutorService,
     private readonly configService: ConfigService,
@@ -172,6 +182,10 @@ export class ExecutorController {
   }
 
   @Public()
+  // SEC-09: 机器心跳面豁免分域档位——心跳节奏由 EXECUTOR_HEARTBEAT_INTERVAL
+  // 决定（默认 30s = 2/min/执行器），多执行器共享出口 IP 时按 IP 计数的
+  // strict/ops 档位会误杀心跳；本路由保持全局默认档兜底（分域矩阵见
+  // src/config/throttle-profiles.ts 头注）。
   @Post("heartbeat")
   @ApiOperation({
     summary: "Heartbeat report",
@@ -204,6 +218,12 @@ export class ExecutorController {
       failedTaskCount?: number;
       restartedAt?: string | null;
       startupId?: string | null;
+      // CONSISTENCY-02: executor-node 活性上报（可选，旧版执行器缺省即不传）。
+      runningExecutionIds?: string[];
+      deadLetterCount?: number;
+      // E9: 执行器热更新容量后随心跳上报（可选；范围校验在 service 侧，
+      // 非法/缺失不改 DB 值）。
+      maxConcurrentTasks?: number;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -227,6 +247,11 @@ export class ExecutorController {
       failedTaskCount: body.failedTaskCount,
       restartedAt: body.restartedAt,
       startupId: body.startupId,
+      // CONSISTENCY-02: 转发活性上报，字段级校验与裁剪在 service 侧完成。
+      runningExecutionIds: body.runningExecutionIds,
+      deadLetterCount: body.deadLetterCount,
+      // E9: 转发容量热更新值，正整数 1..10000 校验在 service 侧完成。
+      maxConcurrentTasks: body.maxConcurrentTasks,
     };
     const saved = await this.svc.heartbeat(body.address, metrics);
     // R9 (round-8 P1 closure, W3): echo the CURRENT stored tokenHash with
@@ -319,6 +344,8 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Get("install-cmd")
+  // DR-01: the command contains the shared machine credential, not just a URL.
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Get executor install command",
     description:
@@ -344,8 +371,8 @@ export class ExecutorController {
     description:
       "ADMIN_API_URL is not configured on the server — no usable install command can be generated",
   })
-  getInstallCmd() {
-    return this.svc.getInstallCmd();
+  async getInstallCmd() {
+    return await this.svc.getInstallCmd();
   }
 
   /**
@@ -455,6 +482,9 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Patch(":id")
+  // W2: executor management writes are ADMIN-only (same posture as
+  // install-cmd DR-01) — the global RolesGuard enforces the metadata.
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Update executor metadata",
     description:
@@ -498,6 +528,8 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Post(":id/reload-config")
+  // W2: ADMIN-only config hot-update push (carries the executor token).
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Push config hot-update to executor",
     description:
@@ -551,6 +583,18 @@ export class ExecutorController {
    * R11), after which the next push succeeds. If the retry still fails we
    * surface the original fixed error. Trade-off accepted: the first
    * reload-config attempt after an admin-api restart reports one failure.
+   *
+   * BUG-01 (N51 收口) supersedes the "original fixed error" sentence above
+   * for the auth classes only: a retry that still gets an auth-rejection
+   * verdict throws the precise (b) message — executor address + "after a
+   * token re-issue retry" + both remedies (one-heartbeat self-heal or
+   * rotate-token); a retry failing with a non-auth error throws the (a)
+   * first-attempt message (首发 401, cold-cache wording, heartbeat advice).
+   * Every retry outcome also increments
+   * autoflow_push_auth_retry_total{result="reissued_success"|
+   * "still_unauthorized"} via runtime-metrics-entry, with warn logs on all
+   * three transitions. F-8 holds everywhere: axios error text is never
+   * echoed; the non-auth first-failure message below stays generic.
    */
   async reloadConfig(
     @Param("id") id: string,
@@ -595,6 +639,12 @@ export class ExecutorController {
       // retry the push once. The second issueToken() may return the same
       // cached plaintext (then the retry fails identically and we throw) or,
       // if cache state moved, a token the executor can accept.
+      // BUG-01: both outcomes are now observable — recordRuntime increments
+      // autoflow_push_auth_retry_total{result=...} — and the failure message
+      // distinguishes the two 401 classes instead of the generic one-liner.
+      this.logger.warn(
+        `Push auth retry: executor ${executor.address} rejected reload-config with 401 on first attempt (token re-issued once)`,
+      );
       const retry = await this.svc.issueToken({
         address: executor.address,
         appName: executor.appName,
@@ -605,10 +655,39 @@ export class ExecutorController {
           headers: { Authorization: `Bearer ${retry.token}` },
           timeout: 10_000,
         });
+        recordRuntime("autoflow_push_auth_retry_total", {
+          result: "reissued_success",
+        });
+        this.logger.warn(
+          `Push auth retry accepted: executor ${executor.address} approved reload-config with the re-issued token (2xx after the first-attempt 401)`,
+        );
         return resp.data;
-      } catch {
-        // F-8: same fixed message; the original 401 error is not echoed.
-        throw new UnauthorizedException("Failed to reach executor");
+      } catch (retryErr) {
+        if (isUnauthorizedPushError(retryErr)) {
+          // BUG-01 (b) 重签重试后仍 401：执行器顽固失配，需人工 rotate。
+          recordRuntime("autoflow_push_auth_retry_total", {
+            result: "still_unauthorized",
+          });
+          this.logger.warn(
+            `Push auth retry still 401 for executor ${executor.address}: token mismatch persists after re-issue; manual rotate-token required (executor-side outbound self-heal may also converge within one heartbeat)`,
+          );
+          // F-8: fixed message — the original 401 error is not echoed (no
+          // internal-topology / SSRF-oracle leak). BUG-01: the message now
+          // identifies the executor address, states this is AFTER the one
+          // re-issue retry (vs the first-attempt class below), and names the
+          // operator action. Address is pre-validated by the SSRF guard.
+          throw new UnauthorizedException(
+            `Executor ${executor.address} rejected the config push with 401 even after a token re-issue retry: its held token is persistently out of sync with the issued one. Wait one heartbeat for executor-side outbound self-heal to converge, or use POST /executors/${id}/rotate-token and reconfigure the executor.`,
+          );
+        }
+        // BUG-01 (a) 首发 401：执行器拒收首发推送（其持有 token 与 admin 签发
+        // 不一致，如 admin 重启后签发缓存冷），随后的一次重签重试未产生鉴权
+        // 裁定（非 401 失败）。文案如实指向首发拒收 + 等待一个心跳自愈。该
+        // 分支不写入 push_auth_retry 计数（无认证结果，标签集保持任务定义的
+        // 两值闭合）；F-8：不回显 axios 错误文本。
+        throw new UnauthorizedException(
+          `Executor ${executor.address} rejected the config push with 401 on the first attempt (executor-held token is out of sync with the issued one, e.g. a cold issuance cache after an admin-api restart); the re-issue retry failed with a non-auth error. Wait one heartbeat for the executor's outbound self-heal to re-align, then retry the push; if it persists, use POST /executors/${id}/rotate-token.`,
+        );
       }
     }
   }
@@ -616,12 +695,21 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Post(":id/rotate-token")
+  // W2: ADMIN-only — the response contains the plaintext executor token.
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Rotate executor token",
     description:
       "Generate a new executor auth token. The new token is shown only once in this response.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiBody({
+    description:
+      "AUTH-05: optional rotation reason, recorded in the audit log detail " +
+      "(the endpoint itself stays non-breaking — an empty body is fine).",
+    schema: { example: { reason: "token suspected leaked" } },
+    required: false,
+  })
   @ApiResponse({
     status: 200,
     description: "Token rotated successfully",
@@ -636,8 +724,8 @@ export class ExecutorController {
       },
     },
   })
-  rotateToken(@Param("id") id: string) {
-    return this.svc.rotateToken(id);
+  rotateToken(@Param("id") id: string, @Body() body?: { reason?: string }) {
+    return this.svc.rotateToken(id, body?.reason);
   }
 
   @Public()
@@ -728,6 +816,8 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Post(":id/set-offline")
+  // W2: ADMIN-only executor lifecycle mutation.
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Mark executor offline",
     description:
@@ -744,16 +834,28 @@ export class ExecutorController {
   @UseGuards(JwtAuthGuard)
   @Delete(":id")
   @HttpCode(HttpStatus.NO_CONTENT)
+  // W2: ADMIN-only destructive removal.
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Delete executor record",
     description:
       "Admin: permanently delete an executor record by ID. Use when executor is offline and no longer needed.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiBody({
+    description:
+      "AUTH-05: optional deletion reason, recorded in the audit log detail " +
+      "(the endpoint stays non-breaking — an empty body is fine).",
+    schema: { example: { reason: "decommissioned host" } },
+    required: false,
+  })
   @ApiResponse({ status: 204, description: "Executor deleted" })
   @ApiResponse({ status: 404, description: "Executor not found" })
-  async removeExecutor(@Param("id") id: string): Promise<void> {
-    return this.svc.removeById(id);
+  async removeExecutor(
+    @Param("id") id: string,
+    @Body() body?: { reason?: string },
+  ): Promise<void> {
+    return this.svc.removeById(id, body?.reason);
   }
 
   @ApiBearerAuth("JWT")
@@ -766,7 +868,8 @@ export class ExecutorController {
   })
   @ApiParam({ name: "id", description: "Executor ID" })
   @ApiQuery({ name: "page", required: false, description: "Page number" })
-  @ApiQuery({ name: "limit", required: false, description: "Page size" })
+  // U13: 与实现对齐——本端点收 PaginationDto（page/pageSize），而非 `limit`。
+  @ApiQuery({ name: "pageSize", required: false, description: "Page size" })
   @ApiResponse({ status: 200, description: "Execution record list" })
   getExecutorExecutions(@Param("id") id: string, @Query() p: PaginationDto) {
     return this.svc.getExecutorExecutions(id, p);
@@ -777,24 +880,51 @@ export class ExecutorController {
   @Get(":id/metrics")
   @ApiOperation({
     summary: "Get executor performance metrics",
+    // FEAT-04 (append-only): response now also carries `history`.
     description:
-      "Get executor performance metrics for the last 7 days including total executions, success rate, and avg time.",
+      "Get executor performance metrics for the last 7 days including total executions, success rate, and avg time. " +
+      "FEAT-04: the response also carries `history` — the last 24h of executor_metrics_history samples aggregated " +
+      "into fixed 15-minute AVG buckets (≤96 points, ascending; each point is {timestamp, cpuUsage, memUsage, " +
+      "runningTaskCount}; cpuUsage/memUsage are null when a bucket has no reported value). Returns an empty array " +
+      "when the executor has no history samples — the admin UI renders an empty state for that case.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
+  // FEAT-04 (append-only): example updated to the real response shape —
+  // executor + sevenDayStats + current + history (24h bucketed samples).
   @ApiResponse({
     status: 200,
-    description: "Performance metrics",
+    description:
+      "Performance metrics with 24h resource-trend history (FEAT-04)",
     schema: {
       example: {
         code: 200,
         message: "success",
         data: {
-          totalExecutions: 1000,
-          successRate: 98.5,
-          avgDurationMs: 1250,
-          maxDurationMs: 5000,
-          minDurationMs: 100,
-          dateRange: "2024-01-01 to 2024-01-07",
+          executor: {
+            id: "uuid",
+            address: "10.0.0.9:3002",
+            status: "online",
+          },
+          sevenDayStats: {
+            totalExecutions: 1000,
+            successful: 985,
+            failed: 15,
+            successRate: 98.5,
+            averageDurationMs: 1250,
+          },
+          current: {
+            runningTaskCount: 2,
+            cpuUsage: 35.2,
+            memUsage: 61.8,
+          },
+          history: [
+            {
+              timestamp: "2026-09-06T02:00:00.000Z",
+              cpuUsage: 30.1,
+              memUsage: 58.4,
+              runningTaskCount: 1,
+            },
+          ],
         },
       },
     },

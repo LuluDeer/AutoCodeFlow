@@ -21,8 +21,10 @@ services:
       POSTGRES_DB: ${DB_DATABASE:-autoflow}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Host access is local-only by default; local services use localhost.
+    # Override deliberately when a host client must connect remotely.
     ports:
-      - '5432:5432'
+      - '127.0.0.1:5432:5432'
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-autoflow}']
       interval: 10s
@@ -32,8 +34,10 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # Host access is local-only by default; local services use localhost.
+    # Override deliberately when a host client must connect remotely.
     ports:
-      - '6379:6379'
+      - '127.0.0.1:6379:6379'
     volumes:
       - redis_data:/data
     healthcheck:

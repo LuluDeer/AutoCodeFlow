@@ -30,6 +30,15 @@ export class RefreshToken {
   @Column()
   expiresAt: Date;
 
+  // SEC-03: session-management display metadata, captured at issuance time
+  /** Client User-Agent at issuance (truncated to 256 chars) — may be null. */
+  @Column({ nullable: true, type: "varchar", length: 256 })
+  userAgent: string | null;
+
+  /** Client IP at issuance — may be null. */
+  @Column({ nullable: true, type: "varchar", length: 64 })
+  ip: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 }

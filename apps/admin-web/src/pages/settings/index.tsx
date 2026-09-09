@@ -7,15 +7,24 @@ import {
 import {
   KeyOutlined, CopyOutlined, EyeOutlined, EyeInvisibleOutlined,
   PlusOutlined, EditOutlined, DeleteOutlined, HistoryOutlined,
-  ReloadOutlined, RobotOutlined, ThunderboltOutlined,
+  ReloadOutlined, RobotOutlined, ThunderboltOutlined, SafetyCertificateOutlined,
+  ApiOutlined, BellOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
+import { getErrMsg } from '../../utils/error';
 import { useAuthStore, isAdminUser } from '../../store/auth';
 import type { ColumnsType } from 'antd/es/table';
+import PageHeader from '../../components/PageHeader';
+// SEC-03: 安全设置 Tab（TOTP 两步验证 + 登录会话管理），独立文件避免与其他 Tab 耦合
+import SecuritySettings from './SecuritySettings';
+// AUTH-03: API Keys Tab（限权机器凭证管理），独立文件
+import ApiKeysSettings from './ApiKeysSettings';
+// FEAT-15: 事件订阅 Tab（webhook 出站事件 + 死信 replay），独立文件
+import EventSubscriptionsSettings from './EventSubscriptionsSettings';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 /**
  * R5 RBAC（按第四轮收紧矩阵）：
@@ -47,6 +56,11 @@ function TokenSection() {
   const { mutateAsync: generate, isPending: generating } = useMutation({
     mutationFn: configApi.generateExecutorToken,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['executor-token'] }),
+    // UI-15：生成失败反馈（handleGenerate 的 onOk await 链会 reject，
+    // 但 antd Modal.confirm 静默吞掉该 rejection——必须显式 onError）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '生成 Token 失败'));
+    },
   });
 
   const handleGenerate = () => {
@@ -160,6 +174,11 @@ function EditModal({ record, onClose, onSaved }: EditModalProps) {
       message.success(isNew ? '配置已添加' : '配置已更新');
       onSaved();
     },
+    // UI-15：保存失败反馈（Modal 保持打开由 handleOk await 链承担，
+    // onError 补 toast 保证失败原因可见且不依赖调用形态）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, isNew ? '新增配置失败' : '更新配置失败'));
+    },
   });
 
   const handleOk = async () => {
@@ -218,29 +237,62 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
   const isAdmin = useIsAdmin();
 
   const qc = useQueryClient();
-  const { mutateAsync: rollback, isPending: rolling } = useMutation({
+  // FEAT-08：回滚目标 id 状态实现逐行 loading（多行不共用同一个 spinner）。
+  const [rollingId, setRollingId] = useState<number | null>(null);
+  const { mutateAsync: rollback } = useMutation({
     mutationFn: (id: number) => configApi.rollback(id),
     onSuccess: () => {
       message.success('已回滚');
+      // 刷新当前配置读面 + 历史列表（回滚本身也会写一条 rollback 历史）
       qc.invalidateQueries({ queryKey: ['system-configs'] });
       qc.invalidateQueries({ queryKey: ['config-history', configKey] });
     },
+    // 失败提示由 api/client.ts 响应拦截器统一 toast（含 400/403 后端文案），
+    // 这里仅复位逐行 loading，避免双重报错。
+    onSettled: () => setRollingId(null),
+    // UI-15：兜底 onError 补齐（与上方注记一致——统一 toast 已覆盖，
+    // 显式 onError 保证不依赖 client 拦截器行为也必有反馈）。
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '回滚失败'));
+    },
   });
 
+  const handleRollback = (id: number) => {
+    // UI-15：Popconfirm onConfirm 返回 Promise 时 rc-confirm 会 await 并在
+    // reject 时静默复位按钮——reject 链必须有终点（mutation onError 已 toast）。
+    setRollingId(id);
+    rollback(id).catch(() => undefined);
+  };
+
   const cols: ColumnsType<ConfigHistory> = [
-    { title: '时间', dataIndex: 'changedAt', width: 170,
-      render: (v: string) => new Date(v).toLocaleString('zh-CN') },
-    { title: '操作者', dataIndex: 'changedBy', width: 100, render: (v: string) => v ?? '系统' },
+    { title: '时间', dataIndex: 'createdAt', width: 170,
+      render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
+    { title: '操作者', dataIndex: 'username', width: 100, render: (v: string) => v ?? '系统' },
+    { title: '动作', dataIndex: 'action', width: 70,
+      render: (v: ConfigHistory['action']) => v === 'create' ? '创建'
+        : v === 'delete' ? '删除' : v === 'rollback' ? '回滚' : '修改' },
     { title: '旧值', dataIndex: 'oldValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '新值', dataIndex: 'newValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '', width: 80,
-      render: (_: unknown, row: ConfigHistory) => (
-        <Popconfirm title="确认回滚到此版本？" onConfirm={() => rollback(row.id)} okText="回滚" disabled={!isAdmin}>
-          <Tooltip title={isAdmin ? undefined : '仅管理员可回滚'}>
-            <Button size="small" loading={rolling} disabled={!isAdmin}>回滚</Button>
-          </Tooltip>
-        </Popconfirm>
-      ) },
+      render: (_: unknown, row: ConfigHistory) => {
+        if (!isAdmin) return null;
+        // 创建条目（oldValue 为 null）回滚=删除该配置项，禁用并说明。
+        const disabled = row.oldValue == null;
+        return (
+          <Popconfirm
+            title="确认回滚到此版本？"
+            description={row.action === 'create' ? '该条目为创建动作，回滚将删除此配置项。' : undefined}
+            onConfirm={() => handleRollback(row.id)}
+            okText="回滚"
+            okButtonProps={{ danger: true }}
+            disabled={disabled}
+          >
+            <Tooltip title={disabled ? '创建条目无可回滚的历史值' : undefined}>
+              <Button size="small" loading={rollingId === row.id} disabled={disabled}>回滚</Button>
+            </Tooltip>
+          </Popconfirm>
+        );
+      } },
   ];
 
   return (
@@ -275,6 +327,10 @@ function SystemConfigTab() {
     onSuccess: () => {
       message.success('已删除');
       qc.invalidateQueries({ queryKey: ['system-configs'] });
+    },
+    // UI-15：删除失败反馈（对齐回滚 onError 形态）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '删除配置失败'));
     },
   });
 
@@ -384,6 +440,10 @@ function AiConfigTab() {
       message.success('AI 配置已保存');
       qc.invalidateQueries({ queryKey: ['ai-config'] });
     },
+    // UI-15：保存失败反馈（handleSave await 链的 rejection 无人消费时兜底）
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, '保存 AI 配置失败'));
+    },
   });
 
   const { mutateAsync: test, isPending: testing } = useMutation({
@@ -391,12 +451,17 @@ function AiConfigTab() {
     onSuccess: (res) => setTestResult(res),
     onError: () => setTestResult({ ok: false, message: '请求失败，请检查配置' }),
   });
-
   const provider = Form.useWatch('provider', form);
 
   const handleSave = async () => {
-    const vals = await form.validateFields();
-    await save(vals as SaveAiConfigPayload);
+    // UI-15：保存失败反馈（rejection 在此消费，防 unhandled rejection）
+    try {
+      const vals = await form.validateFields();
+      await save(vals as SaveAiConfigPayload);
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error(getErrMsg(err, '保存 AI 配置失败'));
+    }
   };
 
   const providerBadge = () => {
@@ -542,22 +607,44 @@ export default function SettingsPage() {
       label: '系统配置',
       children: <SystemConfigTab />,
     },
+    // SEC-03: 安全设置（TOTP + 会话管理）——所有登录用户可用（仅涉及本人账号），
+    // 置于末位 Tab：不改变既有 Tab 排序/默认激活行为（settings.ai 等既有测试依赖）
+    {
+      key: 'security',
+      label: <Space><SafetyCertificateOutlined />安全设置</Space>,
+      children: <SecuritySettings />,
+    },
+    // AUTH-03: 限权 API Key 管理（CI/CD 机器认证）——所有登录用户管理本人 Key；
+    // 放在安全设置之后，不改变既有 Tab 默认激活行为
+    {
+      key: 'api-keys',
+      label: <Space><ApiOutlined />API Keys</Space>,
+      children: <ApiKeysSettings />,
+    },
+    // FEAT-15: 事件订阅（webhook 出站 + 死信 replay）——ADMIN 看全部、普通用户
+    // 看自己的 + 系统级（后端读面语义），置于末位不改变既有 Tab 默认激活行为
+    {
+      key: 'event-subscriptions',
+      label: <Space><BellOutlined />事件订阅</Space>,
+      children: <EventSubscriptionsSettings />,
+    },
   ];
 
   return (
     <div style={{ maxWidth: 900 }}>
-      <div style={{ marginBottom: 24 }}>
-        <Title level={4} style={{ margin: 0 }}>系统设置</Title>
-        <Text type="secondary">配置调度中心的核心参数与运行时选项</Text>
-        {!isAdmin && (
-          <Alert
-            type="info"
-            showIcon
-            title="您以普通用户身份查看，写操作（配置修改、回滚）与 AI 配置仅管理员可用"
-            style={{ marginTop: 12 }}
-          />
-        )}
-      </div>
+      {/* UI-03/UI-08：页头标准化（原 Title+描述迁入 PageHeader；非管理员提示保留页头下方） */}
+      <PageHeader
+        title="系统设置"
+        description="配置调度中心的核心参数与运行时选项"
+      />
+      {!isAdmin && (
+        <Alert
+          type="info"
+          showIcon
+          title="您以普通用户身份查看，写操作（配置修改、回滚）与 AI 配置仅管理员可用"
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <Tabs items={tabs} />
     </div>
   );

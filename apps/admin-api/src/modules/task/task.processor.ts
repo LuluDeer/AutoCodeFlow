@@ -12,12 +12,20 @@ import {
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { Task } from "./entities/task.entity";
 import { ExecutorService } from "../executor/executor.service";
-import { AiService } from "../ai/ai.service";
+// ARCH-30: AI 分析直调迁出——processor 经 AiAnalysisService 调用（封装
+// 重试 + autoflow_ai_analysis_total 指标 + fail-open 降级），不再直连 AiService。
+import { AiAnalysisService } from "../ai/ai-analysis.service";
 import { NotificationService } from "../notification/notification.service";
 import { AuditService } from "../audit/audit.service";
 import { TaskService } from "./task.service";
 
-@Processor("task-queue")
+// PERF-P3a: worker 并发 1→5，消除队头阻塞（一个慢 dispatch HTTP 不再卡住
+// 整条队列）。安全性依据：执行器容量闸门在 dispatch 内由 DB 原子操作保证
+// （executor.service selectLeastLoaded + 条件 UPDATE 占坑），worker 并发
+// 只是并行化派发，不会超卖执行器槽位。注意 @nestjs/bullmq v11 中
+// concurrency 必须走第二参数 NestWorkerOptions（单对象形式仅支持
+// name/scope/configKey，多余键会被静默丢弃）。
+@Processor("task-queue", { concurrency: 5 })
 export class TaskProcessor extends WorkerHost {
   private readonly logger = new Logger(TaskProcessor.name);
 
@@ -27,8 +35,10 @@ export class TaskProcessor extends WorkerHost {
     @InjectRepository(Task) private taskRepo: Repository<Task>,
     @InjectRepository(ExecutionLogLine)
     private logLineRepo: Repository<ExecutionLogLine>,
+    // 跨 task↔executor 模块环的 provider 注入：模块级 forwardRef 配套。
+    @Inject(forwardRef(() => ExecutorService))
     private executorService: ExecutorService,
-    private aiService: AiService,
+    private aiAnalysisService: AiAnalysisService,
     private notificationService: NotificationService,
     private configService: ConfigService,
     private auditService: AuditService,
@@ -69,7 +79,25 @@ export class TaskProcessor extends WorkerHost {
 
     // P0: claim the execution atomically. A KILLED/CANCELLED execution (e.g.
     // killed while still queued) must never be revived by a worker; FAILED is
-    // still claimable because BullMQ retries run through here again.
+    // still claimable because BullMQ retries run through here again (the
+    // shared recovery retry pattern in executor.service.scheduleRetryAfterRecovery
+    // — used by both the executor-restart path and the P2 stale-sweep
+    // re-enqueue — also creates a fresh PENDING row, but the legacy retry
+    // semantics that let a FAILED row be re-dispatched must remain intact — do
+    // not drop FAILED from this list).
+    //
+    // CONSISTENCY-01: RUNNING is deliberately NOT claimable. A stalled BullMQ
+    // job (worker crash / lost lock) is redelivered and re-runs handle() while
+    // the DB row is still RUNNING from the first claim. Previously a second
+    // claim would re-flip RUNNING→RUNNING and dispatch the same executionId to
+    // — possibly — a different executor, so the old executor kept running
+    // unaware: two live copies of one execution, doubled side effects, and the
+    // duration/startTime rewritten by whichever callback arrived first. With
+    // RUNNING excluded, the redelivered job's claim affects 0 rows and the
+    // processor returns idle (no second dispatch). Zombie RUNNING rows left by
+    // a genuinely dead executor are converged by the existing stale sweep
+    // (SchedulerService.recoverStaleExecutions) — the two recovery paths keep
+    // their separate responsibilities.
     const startTime = new Date();
     const claimed = await this.execRepo
       .createQueryBuilder()
@@ -77,11 +105,7 @@ export class TaskProcessor extends WorkerHost {
       .set({ status: ExecutionStatus.RUNNING, startTime })
       .where("id = :id", { id: executionId })
       .andWhere("status IN (:...claimable)", {
-        claimable: [
-          ExecutionStatus.PENDING,
-          ExecutionStatus.RUNNING,
-          ExecutionStatus.FAILED,
-        ],
+        claimable: [ExecutionStatus.PENDING, ExecutionStatus.FAILED],
       })
       .execute();
     if (!claimed.affected) {
@@ -153,18 +177,13 @@ export class TaskProcessor extends WorkerHost {
       const isLastAttempt =
         (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
       if (isLastAttempt) {
-        try {
-          exec.aiAnalysis = await this.aiService.analyzeFailure(
-            task,
-            exec.logs,
-          );
-        } catch (aiErr: unknown) {
-          const aiErrMsg =
-            aiErr instanceof Error ? aiErr.message : String(aiErr);
-          this.logger.warn(
-            `AI analysis failed for task ${task.id}: ${aiErrMsg}`,
-          );
-        }
+        // ARCH-30: AiAnalysisService never throws (fail-open preserved) —
+        // it retries once internally, records autoflow_ai_analysis_total,
+        // and returns "" on exhaustion instead of raising.
+        exec.aiAnalysis = await this.aiAnalysisService.analyzeFailure(
+          task,
+          exec.logs,
+        );
       }
       this.logger.error(`Task ${task.id} failed: ${errMsg}`);
       if (isLastAttempt) {
@@ -176,6 +195,9 @@ export class TaskProcessor extends WorkerHost {
             exec.aiAnalysis,
             task.alarmEmail,
             task.alarmChannels,
+            undefined,
+            undefined,
+            task.runbook,
           );
         } catch (notifyErr: unknown) {
           // B-08: record notification failure to audit log so it is not silently discarded
@@ -202,6 +224,30 @@ export class TaskProcessor extends WorkerHost {
       if (exec.failureReason === ExecutionFailureReason.TIMEOUT) {
         throw new UnrecoverableError(errMsg);
       }
+      // RETRY-01: honor `task.retryableErrors` — when the user configured a
+      // non-empty allow-list, only failures whose message (primary) or
+      // classified reason (secondary) match one of the entries are retried;
+      // anything else is converted to UnrecoverableError so BullMQ stops
+      // burning the full attempt budget on an error the user explicitly chose
+      // not to retry. null/undefined/[] keeps the legacy retry-everything
+      // behavior (backward compatible).
+      const retryableErrors = Array.isArray(task.retryableErrors)
+        ? task.retryableErrors.filter(
+            (p) => typeof p === "string" && p.trim() !== "",
+          )
+        : [];
+      if (retryableErrors.length > 0) {
+        const haystack =
+          `${exec.errorMessage ?? ""}\n${exec.failureReason ?? ""}`.toLowerCase();
+        const matched = retryableErrors.some((p) =>
+          haystack.includes(p.trim().toLowerCase()),
+        );
+        if (!matched) {
+          throw new UnrecoverableError(
+            `${errMsg} (failure not in retryableErrors allow-list)`,
+          );
+        }
+      }
       throw err;
     } finally {
       const isTerminal = [
@@ -225,29 +271,31 @@ export class TaskProcessor extends WorkerHost {
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
+      // P0: persist only worker-owned fields via a conditional update — a
+      // concurrent callback or kill may have already written a terminal
+      // state, which the worker must never overwrite. Built once so the
+      // repair path below reuses the exact same guarded patch (REPAIR-01).
+      const ownedPatch: Partial<TaskExecution> = {
+        status: exec.status,
+        ...(exec.executorAddress !== undefined
+          ? { executorAddress: exec.executorAddress }
+          : {}),
+        ...(exec.result !== undefined ? { result: exec.result } : {}),
+        ...(exec.logs !== undefined ? { logs: exec.logs } : {}),
+        ...(exec.errorMessage !== undefined
+          ? { errorMessage: exec.errorMessage }
+          : {}),
+        ...(exec.failureReason !== undefined
+          ? { failureReason: exec.failureReason }
+          : {}),
+        ...(exec.aiAnalysis !== undefined
+          ? { aiAnalysis: exec.aiAnalysis }
+          : {}),
+        ...(exec.endTime ? { endTime: exec.endTime } : {}),
+        ...(exec.duration !== undefined ? { duration: exec.duration } : {}),
+      };
+
       try {
-        // P0: persist only worker-owned fields via a conditional update — a
-        // concurrent callback or kill may have already written a terminal
-        // state, which the worker must never overwrite.
-        const ownedPatch: Partial<TaskExecution> = {
-          status: exec.status,
-          ...(exec.executorAddress !== undefined
-            ? { executorAddress: exec.executorAddress }
-            : {}),
-          ...(exec.result !== undefined ? { result: exec.result } : {}),
-          ...(exec.logs !== undefined ? { logs: exec.logs } : {}),
-          ...(exec.errorMessage !== undefined
-            ? { errorMessage: exec.errorMessage }
-            : {}),
-          ...(exec.failureReason !== undefined
-            ? { failureReason: exec.failureReason }
-            : {}),
-          ...(exec.aiAnalysis !== undefined
-            ? { aiAnalysis: exec.aiAnalysis }
-            : {}),
-          ...(exec.endTime ? { endTime: exec.endTime } : {}),
-          ...(exec.duration !== undefined ? { duration: exec.duration } : {}),
-        };
         await queryRunner.manager
           .createQueryBuilder()
           .update(TaskExecution)
@@ -275,27 +323,27 @@ export class TaskProcessor extends WorkerHost {
           await repairRunner.startTransaction();
 
           try {
-            // Re-fetch the execution to get current state
-            const currentExec = await repairRunner.manager.findOne(
-              TaskExecution,
-              { where: { id: exec.id } },
-            );
-            if (currentExec) {
-              // Only update if the execution is still in RUNNING state
-              if (currentExec.status === ExecutionStatus.RUNNING) {
-                currentExec.status = exec.status;
-                currentExec.endTime = exec.endTime;
-                currentExec.duration = exec.duration;
-                currentExec.result = exec.result;
-                currentExec.logs = exec.logs;
-                currentExec.errorMessage = exec.errorMessage;
-                currentExec.failureReason = exec.failureReason;
-                currentExec.aiAnalysis = exec.aiAnalysis;
-                await repairRunner.manager.save(currentExec);
-                this.logger.log(
-                  `Repaired execution ${exec.id} state after transaction failure`,
-                );
-              }
+            // REPAIR-01: use the same conditional UPDATE as the primary write
+            // instead of findOne→check→save — the check/save pair had a TOCTOU
+            // window (a callback could flip the row to a terminal state between
+            // them) and save() ran through @VersionColumn optimistic locking,
+            // which threw an exception and got swallowed when it lost that
+            // race. The `status IN (pending, running)` guard plus an affected
+            // check makes the repair atomic and can never clobber a terminal
+            // state written concurrently.
+            const repaired = await repairRunner.manager
+              .createQueryBuilder()
+              .update(TaskExecution)
+              .set(ownedPatch)
+              .where("id = :id", { id: exec.id })
+              .andWhere("status IN (:...writable)", {
+                writable: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+              })
+              .execute();
+            if (repaired.affected) {
+              this.logger.log(
+                `Repaired execution ${exec.id} state after transaction failure`,
+              );
             }
             await repairRunner.commitTransaction();
           } catch (repairErr) {

@@ -51,7 +51,12 @@ describe("AuthController", () => {
 
       const result = await controller.login(dto, mockReq);
 
-      expect(authSvc.login).toHaveBeenCalledWith(dto);
+      // SEC-03: controller now passes request metadata (UA/IP) for the
+      // session list; assertion covers the added second argument.
+      expect(authSvc.login).toHaveBeenCalledWith(dto, {
+        userAgent: null,
+        ip: "192.168.1.1",
+      });
       expect(auditSvc.log).toHaveBeenCalledWith(
         expect.objectContaining({
           username: "admin",

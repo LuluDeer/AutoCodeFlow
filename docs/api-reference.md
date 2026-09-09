@@ -6,7 +6,7 @@
 
 ## 认证说明
 
-- 需要认证的接口须在请求头携带：`Authorization: Bearer <access_token>`
+- 需要认证的接口须在请求头携带：`Authorization: Bearer <access_token>`（用户 JWT）或 `Authorization: Bearer acf_<64 hex>`（AUTH-03 限权 API Key，CI/CD 机器场景，scope 矩阵与限制见下文「API Keys」节）
 - Access Token 通过登录接口获取，有效期默认 15 分钟（`JWT_EXPIRES_IN`）
 - Token 过期后使用 Refresh Token 接口刷新，无需重新登录
 - 全局限流默认 60 次/分钟（`THROTTLE_LIMIT` / `THROTTLE_TTL`），超限返回 429；登录、刷新接口有更严格的独立限流；executor callback 端点限流 60 次/分钟（第四轮起不再豁免）
@@ -45,10 +45,40 @@
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| POST | `/auth/login` | 否 | 用户名密码登录，返回 `accessToken` 与 `refreshToken`（camelCase；独立限流，默认 20 次/分钟） |
+| POST | `/auth/login` | 否 | 用户名密码登录，返回 `accessToken` 与 `refreshToken`（camelCase；独立限流，默认 20 次/分钟）。**TOTP 已启用用户**返回 `200 + {"totpRequired": true}`（不发 token，见下） |
+| POST | `/auth/totp/verify` | 否 | SEC-03 TOTP 登录第二步：username+password+code 复验后签发 `accessToken`/`refreshToken`（限流 10 次/分钟；错码计入登录失败锁定计数） |
 | POST | `/auth/refresh` | 否 | 使用 refresh_token 刷新 access_token（限流 10 次/分钟） |
-| POST | `/auth/logout` | 是 | 登出，使当前 refresh_token 失效 |
+| POST | `/auth/logout` | 是 | 登出，吊销当前用户全部 refresh_token |
 | GET | `/auth/profile` | 是 | 获取当前登录用户信息 |
+| POST | `/auth/totp/setup` | 是 | SEC-03 暂存新 TOTP 密钥（Base32）+ `otpauth://` URL（限流 10 次/分钟；已启用时 400） |
+| POST | `/auth/totp/enable` | 是 | SEC-03 校验一次动态码后激活 TOTP（`{code}`；无暂存密钥或错码 400） |
+| POST | `/auth/totp/disable` | 是 | SEC-03 关闭 TOTP，需 `{password}` 或 `{code}` 之一确认（否则 401；未启用时幂等返回 `{disabled:false}`） |
+| GET | `/auth/sessions` | 是 | SEC-03 列出我的活跃会话（refresh token 行），`current:true` 标记当前会话 |
+| DELETE | `/auth/sessions/:id` | 是 | SEC-03 吊销我的单个会话（非本人或不存在的 id 返回 401） |
+| POST | `/auth/sessions/revoke-others` | 是 | SEC-03 吊销除当前会话外的全部会话；access token 无 `sid` 声明时退化为吊销全部（fail-safe） |
+
+**TOTP 两步验证（SEC-03）语义约定：**
+
+- **登录契约写死为 200 + 字段**：`POST /auth/login` 对已启用 TOTP 的用户返回
+  `{"code":200,"data":{"totpRequired":true}}`——不返回 401，避免前端把「需要第二步验证」
+  与「密码错误」混淆。前端收到 `totpRequired:true` 后收集 6 位动态码调用
+  `POST /auth/totp/verify` 完成登录。
+- **未启用用户登录路径零变化**：`totpEnabled=false` 时 login 直接签发双 token，行为与
+  SEC-03 之前完全一致。
+- **绑定流程**：`setup`（暂存密钥，此时 `totpEnabled` 仍为 false）→ 用户在验证器
+  （Google/Microsoft Authenticator 等任意 TOTP 应用，SHA-1/6 位/30s，RFC 6238）中添加
+  → `enable`（验证一次码后激活）。重复 `setup` 会以新密钥覆盖暂存。
+- **TOTP 参数**：HMAC-SHA1、6 位数字、步长 30s、允许 ±1 步（±30s）时钟漂移。
+  `otpauth://totp/AutoCodeFlow:<username>?secret=<base32>&issuer=AutoCodeFlow&algorithm=SHA1&digits=6&period=30`
+- **关闭确认**：`disable` 需账号密码或有效动态码之一——被窃的 access token 单独不足以
+  关闭 2FA。`users.totpSecret` 列永不出现在任何 API 响应中（entity `@Exclude`）。
+- **access token 新增 `sid` 声明**：等于本次签发的 refresh token 的 `jti`，用于
+  `GET /auth/sessions` 标记当前会话与 `revoke-others` 排除自身。旧 token 无 `sid`
+  时会话列表正常（无 current 标记），revoke-others 退化为吊销全部。
+- **会话 = refresh_tokens 表一行**：吊销即 `revoked=true`（DR-04 撤销语义，立即生效，
+  被吊销设备下次 refresh 即 401）。签发时记录 `userAgent`（截断 256 字符）与 `ip`
+  供会话列表展示。迁移 `1789800000001`（幂等）新增
+  `users.totpSecret`/`users.totpEnabled`/`refresh_tokens.userAgent`/`refresh_tokens.ip`。
 
 **登录请求示例：**
 
@@ -73,6 +103,86 @@ POST /api/auth/login
 }
 ```
 
+**TOTP 启用用户的登录响应（200，非 401）：**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": { "totpRequired": true }
+}
+```
+
+**会话列表响应示例：**
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": [
+    {
+      "id": 42,
+      "createdAt": "2026-09-07T08:00:00.000Z",
+      "expiresAt": "2026-10-07T08:00:00.000Z",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0) Chrome/126.0",
+      "ip": "192.168.1.8",
+      "current": true
+    }
+  ]
+}
+```
+
+---
+
+## API Keys — 限权 API Key（AUTH-03）
+
+面向 CI/CD 等机器场景的限权凭证：`Authorization: Bearer acf_<64 hex>`（`acf_` 前缀 + 32 字节随机数的 hex）。服务端只保存 SHA-256 哈希，**明文仅在创建响应回显一次**，此后无法查看。
+
+**与 JWT 并列的认证方式**：全局认证 guard 按凭证形态分流——`acf_` 前缀走 API Key 校验链（哈希查找 → 未吊销 → 未过期 → scope 判定），其余 Bearer 凭证维持 JWT 校验（含 SSE 日志流的 `?access_token=` 查询串回退，不受影响）。`@Public` 机器端点（executor callback/心跳/发版 webhook 等）不走本认证，维持既有鉴权。
+
+**scope 三级矩阵**（403 文案带 scope 提示）：
+
+| scope | 读（GET/HEAD/OPTIONS） | POST /tasks/:id/trigger 与 /tasks/batch/trigger | 其他写（POST/PUT/PATCH/DELETE） |
+|-------|:---:|:---:|:---:|
+| `readonly` | ✅ | ❌ 403（**例外**：持有 `scopes` 词表 `task:trigger` 的 Key 可触发 `POST /tasks/:id/trigger`，NF-01） | ❌ 403 |
+| `trigger` | ✅ | ✅ | ❌ 403 |
+| `manage` | ✅ | ✅ | ✅ |
+
+**NF-01 任务级触发 token（`scopes` 词表，迁移 1790000000005）**：`api_keys` 表可空列 `scopes`（varchar(128)，空格分隔词表，存量行 null 零影响）。当前唯一扩展词 = `task:trigger`——持有该词的 readonly Key 可调 `POST /tasks/:id/trigger`（**仅单任务触发**；batch/其他写面/管理面照旧拒绝），guard 分流在既有 ApiKeyAuth 链上叠加窄域豁免（仅 POST + 触发路径 + 词表命中），触发响应契约与 JWT 面完全一致，审计落 `task.trigger_api`（username=`api-key:<keyPrefix>`，detail 含 apiKeyId/taskId）。创建 Key 时 body 增可选 `scopes`（白名单校验，仅接受 `task:trigger`）；403=无词表（scope 提示）、401=无效 Key。适用场景：CI/脚本免登录触发任务，无需发放完整 JWT 或 trigger scope 全量 Key。
+
+**敏感面例外（任何 scope 均拒绝，401）**：`/api-keys`、`/auth/*`、`/users` 仅接受用户 JWT——API Key 不能管理 API Key（防自我复制/提权）。角色语义不适用：API Key principal 为 `{type:"apiKey", userId, scope}`，`@Roles(ADMIN)` 端点对 API Key 一律 403。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/api-keys` | JWT | 列出我的 API Key（脱敏视图：id/name/keyPrefix/scope/expiresAt/revokedAt/lastUsedAt/createdAt，永不含哈希） |
+| POST | `/api-keys` | JWT | 创建 `{name, scope, expiresInDays?}`（有效期 1~3650 天，缺省永不过期）；响应一次性回显 `plaintext`；审计 `apikey.create` |
+| DELETE | `/api-keys/:id` | JWT | 吊销（软删，`revokedAt` 置位，不可恢复）；仅本人 Key（否则 404）；审计 `apikey.revoke` |
+| POST | `/api-keys/:id/revoke` | JWT | 吊销别名端点（幂等） |
+
+**吊销/过期即时性**：每次请求实时校验 `revokedAt`/`expiresAt`，吊销或过期后**同 Key 下一次请求立即 401**（统一文案 `Invalid or expired API key`，不区分未知/吊销/过期防枚举；精确原因写入审计 `apikey.auth_failure`）。`lastUsedAt` 节流更新（每 Key 每分钟至多一次，防写放大），首次使用写审计 `apikey.used`。
+
+**curl 示例（CI/CD 触发任务）**：
+
+```bash
+# 创建（管理台 JWT 调用，一次性取得明文 Key）
+curl -X POST http://localhost:3105/api/api-keys \
+  -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
+  -d '{"name":"ci-deploy","scope":"trigger"}'
+# → {"id":1,"name":"ci-deploy","keyPrefix":"acf_ab12","scope":"trigger",
+#    "expiresAt":null,"revokedAt":null,"lastUsedAt":null,...,"plaintext":"acf_<64 hex>"}
+
+# 使用 API Key 触发任务（trigger scope）
+curl -X POST http://localhost:3105/api/tasks/<taskId>/trigger \
+  -H "Authorization: Bearer acf_<64 hex>" -H "Content-Type: application/json" -d '{}'
+
+# 只读查询
+curl http://localhost:3105/api/tasks -H "Authorization: Bearer acf_<64 hex>"
+
+# 吊销后立即 401
+curl -i http://localhost:3105/api/tasks -H "Authorization: Bearer acf_<64 hex>"
+# → HTTP/1.1 401 Invalid or expired API key
+```
+
 ---
 
 ## Applications — 应用管理
@@ -85,8 +195,9 @@ POST /api/auth/login
 | PUT | `/applications/:id` | 是 | 更新应用信息（含 `webhookSecret` 配置） |
 | DELETE | `/applications/:id` | 是 | 删除应用 |
 | POST | `/applications/upload` | 是 | 上传应用包（multipart/form-data，按名称 upsert） |
-| GET | `/applications/:id/versions` | 是 | 版本历史快照（无快照的历史数据回退展示部署记录） |
-| POST | `/applications/:id/upgrade-all` | 是 | 对所有 RUNNING 部署触发滚动升级 |
+| GET | `/applications/:id/versions` | 是 | 版本历史快照（无快照的历史数据回退展示部署记录）——DEP-01 后作为过渡期 alias 保留，统一追溯请用 `/applications/:id/releases` |
+| GET | `/applications/:id/releases` | 是 | **统一发布追溯视图（DEP-01 新增）**：按版本聚合包地址与最近一次部署的状态/时间/触发方式，见下节 |
+| POST | `/applications/:id/upgrade-all` | 是 | 对所有 RUNNING 部署触发滚动升级；**DEP-02 新增可选请求体** `rollout` 灰度策略（缺省=all 保持既有全量语义零破坏），契约见「Rollout 灰度发布与健康检查（DEP-02/03）」节 |
 | POST | `/applications/:id/sync-tasks` | 是 | 解析应用 manifest.json 自动注册任务 |
 | POST | `/applications/:id/analyze` | 是 | AI 应用健康分析（聚合全部任务执行统计） |
 | POST | `/applications/:id/rollback/:deploymentId` | 是 | 回滚到指定版本快照/部署记录 |
@@ -106,6 +217,8 @@ multipart/form-data 字段：
 - 按名称 upsert：应用已存在则只更新 `packageUrl`（可选更新 runtime），不存在则创建（初始版本 `1.0.0`）
 - `packageUrl` 由 `API_BASE_URL` 拼接生成：`{API_BASE_URL}/uploads/packages/{filename}`
 - **`API_BASE_URL` 未配置时直接返回 500（fail-fast）**，不再静默回退 `http://localhost:PORT` 生成不可达 URL
+- **SEC-05 zip bomb 防护（400 拒绝）**：包落库前过中央目录结构守卫——解压比 / 条目数 / 单文件与总量声明上限（env `ZIP_MAX_*` 可调，默认 100 / 10000 / 1 GiB / 2 GiB）+ 嵌套 zip 探测 1 层；结构损坏（截断 / CD 尺寸篡改 / zip64 哨兵）同样 400（`Package rejected by zip-bomb guard (<violation>)`）
+- **SEC-05 可选 clamd 扫描（`CLAMD_ENABLED=true` 时）**：上传包流式 INSTREAM 送 ClamAV；**fail-closed**——检出 400，扫描不可达/超时/异常 503（`antivirus scan is unavailable (fail-closed)`）；默认关闭零影响。行为细节见 docs/deployment.md「上传面 zip bomb 防护与病毒扫描」
 
 **Webhook 发版请求体：**
 
@@ -146,11 +259,15 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/app-deployments` | 是 | 分页查询部署列表，支持 `applicationId` 过滤（`page` 默认 1，`pageSize` 默认 20、最大 100） |
+| GET | `/app-deployments` | 是 | 分页查询部署列表，支持 `applicationId` 与 `approvalStatus`（DEP-04：pending_approval/approved/rejected/cancelled）过滤（`page` 默认 1，`pageSize` 默认 20、最大 100）——DEP-01 后作为过渡期 alias 保留，「按版本聚合部署信息」的统一视图用 `/applications/:id/releases` |
 | GET | `/app-deployments/:id` | 是 | 获取部署详情 |
-| POST | `/app-deployments/applications/:appId/deploy` | 是 | 将应用分配到执行器部署；`executorId` 留空时自动选择在线且负载最低的执行器 |
-| POST | `/app-deployments/:id/upgrade` | 是 | 触发部署升级（overlay upgrade） |
-| POST | `/app-deployments/:id/stop` | 是 | 停止运行中的部署 |
+| POST | `/app-deployments/applications/:appId/deploy` | 是 | 将应用分配到执行器部署；`executorId` 留空时自动选择在线且负载最低的执行器。**DEP-04：应用开启 `approvalRequired` 时本端点不派发**——冻结为 `approvalStatus=pending_approval` 的行（响应即带该状态），待审批通过后才推送执行器；待审批行占用 in-flight 名额（同应用至多一个待审批/在途部署，冲突 409） |
+| POST | `/app-deployments/:id/upgrade` | 是 | 触发部署升级（overlay upgrade）。DEP-04：待审批行返回 409（未派发，出口仅审批三动作） |
+| POST | `/app-deployments/:id/stop` | 是 | 停止运行中的部署。DEP-04：待审批行返回 409 |
+| GET | `/app-deployments/approvals/pending` | 是* | DEP-04：待审批待办列表（ADMIN）——等价 `GET /app-deployments?approvalStatus=pending_approval` |
+| POST | `/app-deployments/:id/approval/approve` | 是* | DEP-04：批准待审批部署（ADMIN）。第二人规则：审批者 ≠ 提交者（`approvalMeta.requestedBy`），违反 403；通过后走与 deploy 相同的推送链。body 可选 `{ reason ≤200 }` 进审批留痕与审计（`deployment.approve`） |
+| POST | `/app-deployments/:id/approval/reject` | 是* | DEP-04：拒绝待审批部署（ADMIN）。第二人规则同上；行落 FAILED 终态（离开 in-flight），reason 进 `approvalMeta`/`statusMessage` 与审计（`deployment.reject`）。body 可选 `{ reason ≤200 }` |
+| POST | `/app-deployments/:id/approval/cancel` | 是* | DEP-04：提交者撤回自己的待审批请求（ADMIN；非提交者 403——其他管理员想否决走 reject）。行落 FAILED 终态，审计 `deployment.cancel` |
 | POST | `/app-deployments/heartbeat` | 否* | 执行器上报应用运行状态（`deploymentId` + `status`: running/stopped/failed） |
 
 **deploy 请求体（均可选）：**
@@ -162,7 +279,93 @@ Content-Type: application/json
 | `env` | object | 环境变量覆盖 |
 | `startCommand` | string | 启动命令覆盖（留空使用 manifest entrypoint） |
 
-> *heartbeat 使用 `X-Executor-Token` 请求头认证（按部署关联的执行器逐个校验 per-executor token，兼容旧共享 token），非用户 JWT。
+**DEP-04 审批流语义：**
+
+- 应用级开关 `approvalRequired`（`POST/PUT /applications` 传入布尔，默认 false）——开启后该应用的所有新 deploy 走审批；开关在 deploy 时快照生效，部署请求冻结后不受后续开关变化影响。
+- 审批状态机：`pending_approval → approved`（推送链启动）/ `rejected`（FAILED 终态）/ `cancelled`（FAILED 终态）；`NULL = 非审批路径`（关闭审批应用的部署/升级行为与历史数据零变化）。
+- 第二人规则在服务端强制：`approvalMeta.requestedBy`（提交者 userId）与审批动作主体比较；单管理员团队请勿开启审批（开启后将无人能批准自己的请求，可走 cancel 撤回）。
+- 待审批行复用 `status=pending`，天然被部分唯一索引 `uq_app_deployments_application_in_flight` 约束——同一应用同时至多一个待审批/在途部署。
+- 审批三动作均为原子认领（`UPDATE … WHERE approvalStatus='pending_approval'`）：并发双审批仅首者生效，后者 409。
+- 迁移 `1790000000002`：`app_deployments.approvalStatus`/`approvalMeta` 可空列 + `applications.approvalRequired` 默认 false + 审批待办部分索引（幂等）。
+
+> *heartbeat 使用 `X-Executor-Token` 请求头认证（按部署关联的执行器逐个校验 per-executor token，兼容旧共享 token），非用户 JWT。标注 * 的四个审批端点为 ADMIN-only（`@Roles(ADMIN)`）。
+>
+> **并发部署冲突（409）**：同一应用已存在 `pending` / `deploying` / `upgrading` 状态的部署行时，再次 `POST /app-deployments/applications/:appId/deploy` 返回 **409**（`already has an in-progress deployment... Wait for it to finish or cancel it first`）。应用层 findOne 预检与数据库部分唯一索引 `uq_app_deployments_application_in_flight`（并发插入竞态兜底，23505 → 409）双层拦截，两条路径返回同一冲突语义。等待在途部署完成（或升级结束）后重试即可。
+
+---
+
+## Releases — 统一发布追溯（DEP-01 新增）
+
+`GET /api/applications/:id/releases?page=1&pageSize=50`（任意认证用户，默认 JWT）
+
+**目标**：合并 `application_versions`（版本号/包地址/快照）与 `app_deployments`（部署时间/状态/执行器）两个语义面，**一行 = 一次版本发布**，「这次部署用了哪个包」一屏完成。纯只读聚合视图，**零 schema 变更**（不占迁移时间戳）。
+
+**响应** `{ data: AppReleaseRow[], total, page, pageSize }`——`total` 为版本快照表行数（synthetic 部署聚合行不并入，属过渡期语义），`pageSize` 默认 50、**上限 200**（超出部分截断，防全表）。排序键 = 该版本最近一次部署完成时刻（无部署则为版本行创建时刻），降序。
+
+| 字段 | 来源 | 说明 |
+|------|------|------|
+| `version` / `id` / `gitCommit` / `status` / `createdAt` / `sourceDeploymentId` | `application_versions` | `id` 为快照行 id；合成部署行时 `id=null` |
+| `packageUrl` | 快照行 `snapshot.packageUrl` | 部署当时的包地址（历史语义，不回退应用当前值——当前值在 `GET /applications/:id`）；无快照行为 null |
+| `deployedAt` / `latestDeploymentId` / `deploymentStatus` / `executorAddress` / `runMode` | 该版本 `deployedVersion` 匹配的**最近一次** `app_deployments` 行（`deployedAt ?? createdAt` 最大） | 同版本多实例/多次部署各计入 `deploymentCount`；无部署的版本行这些字段为 null（行仍出现） |
+| `triggerType` | `app_deployments.triggerType` 列（FEAT-20，迁移 1790000000004）：`manual` / `upgrade` / `rollback` / `approval`（approve 动作产生的部署行）；存量行回退推导（升级指纹→`upgrade`、`deployedAt` 已置位→`manual`、否则 `unknown`、无部署 null） | 列值优先，推导仅兜底 |
+| `operator` / `operatorSource` / `operatorMissingReason` | 部署行 `operator` 列（FEAT-20，写入=JWT 用户名；deploy/upgrade/rollback/approve 各写面均落）优先；存量行回退 `application_versions.createdBy` | `operatorSource` 标注命中面：`deployments.operator` / `application_versions.createdBy`；两处皆 null 时 `operatorMissingReason` 说明 |
+| `synthetic` | — | 有部署记录但从未保存版本快照的历史数据（心跳竞态等）合成行，`deployedVersion=null` 的部署归一为一条 `version=null` 行；对齐 `/versions` 的 legacy fallback 语义，仅第 1 页参与 |
+
+> **旧端点过渡期保留（不删除、不重定向）**：`GET /applications/:id/versions`（版本快照/回滚消费面，携带 snapshot 与 deployCount）与 `GET /app-deployments`（逐部署行列表）与本端点数据同源；新前端一律消费 `/releases`，旧端点收口另立任务。admin-web `ApplicationDetailPage` 接入为后续轮工作（本任务只落 API 契约）。
+
+---
+
+## Rollout 灰度发布与健康检查（DEP-02/03，本轮新增）
+
+**`POST /api/applications/:id/upgrade-all`**（ADMIN）：请求体全可选，**缺省（不传 body 或不传 `rollout`）= `all` 全量升级，既有语义逐字节保持**。批次本体是 admin-api 进程内状态（最低正确形态）：**服务重启即暂停灰度**——启动 sweep 把遗留 `pending/probing` 行标记 `failed`（`rolloutMeta.failureReason = "admin-api restarted — rollout batch not resumed"`），需人工重发；批次硬超时 15 分钟兜底收尾，canary 首批心跳确认宽限窗 120 秒。
+
+```json
+{ "rollout": { "strategy": "canary", "percentage": 34 } }
+```
+
+| 字段 | 类型 | 缺省 | 说明 |
+|------|------|------|------|
+| `rollout.strategy` | `"canary" \| "all"` | `all` | canary=分批灰度；all=既有全量（同一 Promise.allSettled 路径） |
+| `rollout.percentage` | int 1-100 | 50 | canary 首批台数 = `ceil(N × percentage%)`，**至少 1 台**、至多 N |
+
+**canary 状态机（`app_deployments.rolloutState`，迁移 1790000000001，NULL=非批次路径）**：
+
+```
+pending（升级指令已受理，等待心跳确认 RUNNING）
+  → probing（心跳 RUNNING 确认；有 healthCheck 时逐台主动探测）
+  → promoted（批次提升轮完成，心跳确认后终态）
+pending/probing 任意环节失败 → failed（未回滚，含重启 sweep）
+probing 探测通过前的已升级台，批次失败时 → rolled_back（自动回滚完成）
+```
+
+**响应**：`all` 模式返回既有 `{ok, total, succeeded, failed}`；canary 模式额外携带 `rollout: {batchId, strategy, canaryIds, promotedIds}`（首批失败时 `ok=false, failed=1`）。
+
+**批次失败判定与自动回滚（DEP-03）**——任一命中即暂停批次（无暂停队列，直接终态）：
+1. 首批/提升轮 `upgrade` 触发抛错；
+2. canary 台心跳上报 `failed/stopped`；
+3. 心跳确认窗（120s）超时仍未 RUNNING；
+4. 健康探测窗耗尽（`failThreshold` 次 × `interval` 间隔全失败）；
+5. 批次硬超时（15min）。
+
+失败时对**已触发升级且未失败**的部署行自动执行「重新部署上一版本」：取 `application_versions` 中该应用最近一个 `released` 且版本号 ≠ 该行当前 `deployedVersion` 的快照，恢复 snapshot 内 `version/gitCommit/packageUrl/gitBranch/env/entrypoint` 后走既有 `pushDeployToExecutor(upgrade)` 链；行落 `rolled_back`（`rolloutMeta.failureReason` 记录原因）。**无上一版本可回退时 fail-safe**：保持新版本运行并仅标记 `failed`（不人为打红可用部署）。注意：自动回滚只恢复单台 push 载荷，**不回写 applications 表当前版本**——全量回退请走既有 `POST /applications/:id/rollback/:deploymentId`。
+
+**健康检查声明（应用 `manifest.healthCheck`，落 applications.manifest jsonb，零新列）**：
+
+```json
+{ "healthCheck": { "path": "/health", "port": 8080, "interval": 5000, "failThreshold": 3, "timeoutMs": 3000 } }
+```
+
+| 字段 | 缺省 | 说明 |
+|------|------|------|
+| `path` | 必填 | 探活路径，必须以 `/` 开头；非法/缺失声明视为无健康检查 |
+| `port` | 回退执行器地址端口 | 应用监听端口。**端口约定（侦察决策）**：平台对部署应用无标准探活端点，path/port 由应用用户提供；探针从 admin-api 侧主动发 `GET http://<executor-host>:<port><path>`（执行器零改动、零 bundle 重打） |
+| `interval` | 5000ms（250-120000） | 重试间隔 |
+| `failThreshold` | 3（1-60） | 连续失败次数判定不健康 |
+| `timeoutMs` | 3000ms（100-30000） | 单次探测超时 |
+
+- 探活成功判定：**HTTP 2xx-4xx 视为通过**（端口有活体即认为应用可路由）；5xx/超时/连接拒绝计失败；`maxRedirects=0`（302 不跟随）；探针不携带任何凭据。
+- **manifest 无 healthCheck 或声明非法 → 跳过探测直接提升**（零破坏：无验收依据时阻塞灰度无意义，仅 warn 日志）。
+- 多台 canary 时逐台探测（首批内每台心跳确认后各自起探测窗），任一台通过即提升其余台；解析（`parseManifestHealthCheck`）与分台（`canaryBatchSize`）为纯函数，宽松 fail-safe 语义（越界数值回退缺省，不 throw 中断升级链）。
 
 ---
 
@@ -187,13 +390,14 @@ Content-Type: application/json
 | POST | `/tasks/:id/suggest-schedule` | 是 | AI 调度建议（响应含 `fallback` 标记，见下） |
 | GET | `/tasks/:id/executions` | 是 | 分页查询该任务的执行记录 |
 | GET | `/tasks/:id/executions/:execId` | 是 | 执行详情 |
-| GET | `/tasks/:id/executions/:execId/logs` | 是 | 按行分页获取执行日志（`fromLine` 默认 0，`limit` 默认 500、最大 2000） |
+| GET | `/tasks/:id/executions/:execId/report` | 是 | 执行报告+时间线一次拉取（OBS-04，见下） |
+| GET | `/tasks/:id/executions/:execId/logs` | 是 | 按行分页获取执行日志（`fromLine` 默认 0，`limit` 默认 500、最大 2000；可选 `level` 过滤，见下） |
 | GET | `/tasks/:id/executions/:execId/logs/stream` | 是 | SSE 实时日志流（并发上限，见下） |
 | POST | `/tasks/:id/executions/:execId/kill` | 是 | 强制取消 running/pending 执行 |
 | POST | `/tasks/:id/executions/:execId/analyze` | 是 | 按需触发 AI 执行分析，结果落库并返回 |
 | GET | `/tasks/executions/all` | 是 | 全局执行记录分页（status/taskId/taskName/executorAddress/时间范围） |
 | GET | `/tasks/executions/:execId` | 是 | 按执行 ID 查详情（兼容别名，acf-cli / mcp-server 使用） |
-| GET | `/tasks/executions/:execId/logs` | 是 | 按执行 ID 取日志（兼容别名） |
+| GET | `/tasks/executions/:execId/logs` | 是 | 按执行 ID 取日志（兼容别名；参数同上，含 `level`） |
 | GET | `/tasks/scheduler/stats` | 是 | 调度器状态 |
 | GET | `/tasks/:id/versions` | 是 | 任务版本列表 |
 | GET | `/tasks/:id/versions/:v1/compare/:v2` | 是 | 两个版本的 diff |
@@ -208,11 +412,24 @@ Content-Type: application/json
 | `cronExpression` | string | 条件 | `triggerType=cron` 时使用的 5 字段 Cron 表达式 |
 | `timezone` | string | 否 | Cron 调度使用的 IANA 时区，例如 `Asia/Shanghai`；留空使用服务端默认时区 |
 | `fixedRate` | number | 条件 | `triggerType=fixed_rate` 时的执行间隔，单位秒 |
+| `maintenanceWindows` | MaintenanceWindow[] | 否 | 任务级维护窗口（FEAT-06）：数组形态 `[{ start, end, description? }]`，`start`/`end` 均为 5 字段 Cron——`start` 最近触达时刻开窗、`end` 最近触达时刻关窗（半开区间 `[start, end)`）。命中窗口的**计划触发**（cron/fixed_rate/错失补偿等调度入队路径）被跳过并计入 `/metrics/scheduler` 的 `triggersSkippedMaintenance`，不建执行记录；手动/API 触发不受窗口约束。上限 10 条；窗口 Cron 按服务端本地时间评估。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` / `[]` = 清空 |
 | `timeoutSeconds` | number | 否 | 任务执行超时，单位秒；推荐使用该字段 |
 | `timeout` | number | 否 | 兼容旧字段，语义同 `timeoutSeconds` |
+| `timeoutAction` | string | 否 | 超时后动作（CORE-04）：`kill`（缺省）/ `kill_retry` / `notify_only`。`kill` = 既有树杀语义，执行器到时强杀进程树并回调 `timeout` 终态；`kill_retry` = 同样树杀，但 admin 在超时终态落定后按任务既有重试预算（`maxRetry`/`retryDelay`，与 executor-restart / stale sweep 共用同一 re-enqueue 模式，触发类型 `timeout_retry`）追加一次新执行——预算耗尽退化为普通 `kill`，终态保持 `TIMEOUT`；`notify_only` = admin 不额外下发终止指令、只保证超时告警（告警由既有失败通知路径发出一次）。**边界**：`notify_only` ≠ 不超时——执行器自身的硬超时仍然生效，进程树仍会被执行器杀掉并回调，本策略只改变 admin 侧行为。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` = 回缺省 `kill` |
+| `timeoutWarnRatio` | number | 否 | 超时预警阈值（CORE-04）：占 `timeout` 的百分数，整数 0–90。执行运行时长达到 `timeout × ratio / 100` 时发送一次 WARNING 级预警通知（复用 `notifyTimeout` 通道，受任务级静默窗口约束），每个执行**至多一次**；例如 `timeout=600`、`ratio=80` → 运行到 480 秒时预警。缺省/`null` = 未启用（存量任务零新通知）；运行态归一化时非 0–90 整数一律视为未启用 |
+| `estimatedDurationSec` | number | 否 | 预估执行时长秒数（CORE-05）：整数 0–604800（7 天上限），`0`/缺省 = 未知。**任务侧属性**，仅参与调度侧执行器负载评分（长任务预估对繁忙执行器惩罚更高，长短混布时倾向把长任务派给更空闲的执行器，权重公式见 executor-score.util.ts）；执行链路（心跳/超时/统计）不消费该字段。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` = 重置为未知；版本快照随存（回滚不静默重置） |
 | `maxRetry` | number | 否 | 最大尝试次数（BullMQ attempts），0–10；服务端会保证至少为 `1` |
-| `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff |
-| `retryableErrors` | string[] | 否 | 预留的可重试错误分类列表 |
+| `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff。**CORE-02 抖动语义**：实际重试延迟 = `retryDelay × 1000 × 2^(attempt-1)` 的指数基座上加 **±20% 抖动**（admin-api `retry-backoff.util.ts` 纯函数，在四处 enqueue 边界算好整数毫秒传入 BullMQ），摊开同周期失败任务的的重试时刻（thundering herd）；`retryDelay<=0` 仍保持不延迟 |
+| `retryableErrors` | string[] | 否 | 可重试错误类型白名单（CORE-02 已 UI 化，admin-web 表单暴露九类中文选项）。**消费语义**（task.processor RETRY-01）：非空白名单 = 仅白名单内的失败会被 BullMQ 重试——匹配规则为错误消息子串或 `failureReason` 分类值（大小写不敏感），未命中转 `UnrecoverableError` 烧尽预算；`null`/`[]` = 全部可重试（既有行为）。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` = 回到全量可重试。**边界**：`timeout` 类失败另有防双派发守卫，无论白名单如何配置都不会自动重试 |
+
+**重试链路与 attempt 可视化（CORE-02）：**
+
+- **attempt 语义**：`task_executions.retryCount`（0 起）标识该执行行是任务的第几次重试载体；详情页"重试预算"展示 `Attempt #N of M`（N = retryCount+1，M = maxRetry）与剩余预算。BullMQ 同执行行内的 job 级自动重试不产生新行。
+- **重试链拼装**：重试链 = 同任务下 `retryCount` 递增的兄弟执行行（executor_restart / stale_recovery / timeout_retry 等 re-enqueue 路径创建）。前端复用既有 `GET /tasks/:id/executions`（按 `taskId` 查询）拉取兄弟行后按连续档拼装，中间档缺失在间断处截断；各次尝试展示状态/耗时/与上次尝试的间隔（下行 `startTime` − 上行 `endTime`）。
+- **下次重试时间**：链上存在 PENDING 行时展示近似开跑时刻（行 `createdAt` + `retryDelay × 2^(attempt-1)` 指数基座，注明 ±20% 抖动）——BullMQ delayed job 的精确到期时刻不落库，此为近似值。
+- **手动提前重试**：无专用端点；使用既有 `POST /tasks/:id/trigger` 手动触发（admin-web 执行详情页「重新触发」按钮）。
+- **退避抖动纯函数**：`apps/admin-api/src/modules/task/retry-backoff.util.ts` `jitteredRetryDelayMs(retryDelaySec, attempt, random?, ratio?)`，输出 `[base×0.8, base×1.2]` 内整数毫秒，`retryDelay<=0` 返回 `0`（调用方省略 backoff）。
+| `secrets` | object | 否 | 任务级凭据键值对（SEC-02，独立于 `params` 的普通运行参数）。**存储加密**：配置 `SEC_SECRETS_KEY` 后所有叶子值以 AES-256-GCM `enc:v1:<iv>:<tag>:<ciphertext>` 信封落库；未配置时降级明文并启动 warn 一次（零破坏升级路径）。**读取永久脱敏**：`GET /tasks`、`GET /tasks/:id` 响应中叶子值一律回 `******`（密文也不外泄），因此已保存的 secrets 不可经 API 回读。**派发语义**：执行时解密与 params 合并注入执行器 env（`AUTOFLOW_<KEY>`，与 params 同通道），同名键 secrets 覆盖 params；明文仅存在于派发 HTTPS 载荷与执行器内存，不落 `task_executions.params`。**PATCH 语义**：缺省 = 保留旧值，显式 `null` / `{}` = 清空/替换（整体替换，非按键合并）。存量行不做迁移加密——配置 key 后首次 update 自然转为密文 |
 | `executorId` | string (UUID) | 否 | 任务级 executor pinning（第六轮）：设置后调度**仅**派给该执行器，绕过 group/tags/runtime 过滤，但仍受其并发槽位上限约束；该执行器离线/不存在时执行直接置 FAILED（failureReason 分别为 `executor_offline` / `unknown`）。与 `executeMode=broadcast` 互斥，同时提供返回 400。`PATCH /tasks/:id` 按**合并后的任务态**校验该互斥（第七轮 N17）：为 broadcast 任务补 `executorId`、或将已 pin 任务改为 `broadcast` 同样返回 400；显式传 `executorId: null` 可清除 pinning |
 
 > 兼容说明：API 入参优先读取 `timeoutSeconds` 并落库到现有 `timeout` 字段；响应中可能同时包含历史字段 `timeout`。Python SDK 同时支持 snake_case（如 `timeout_seconds`、`retry_delay`、`max_retry`），Node/API wire format 推荐 camelCase。
@@ -231,6 +448,33 @@ Content-Type: application/json
 
 - `fallback: true` 表示 AI 不可用或响应解析失败，`suggestedCron` 回退为当前 cron 值（服务端记录 warn 日志）；调用方可据此区分「AI 建议」与「回退值」。
 
+**执行日志按级别过滤（GET /tasks/:id/executions/:execId/logs 及其兼容别名，OBS-03）：**
+
+- 查询参数 `level`：可选，枚举 `ERROR` / `WARN` / `INFO` / `DEBUG`（严格大写）。日志行写入时从行文本推断级别（行首或时间戳后的 `[ERROR]`/`ERROR:` 等标注，大小写不敏感，`WARNING` 归一化为 `WARN`）并落库；过滤在 SQL 层等值下推
+- **未知级别行（`level=null`：存量历史行或文本推断不到的行）在 `level` 过滤时一律不返回**；不传 `level` 时行为与引入前完全一致（含 null 行）
+- 带 `level` 过滤时，`fromLine` 的语义从"物理行号游标"变为"**过滤后序列的偏移量**"（被过滤掉的行不占用分页窗口），响应中的 `totalLines` 与 `hasMore` 均按**过滤后行集**计算；不传 `level` 时保持既有"物理行号游标 + 全量 `totalLines`"语义
+- 分页参数不变：`fromLine` 默认 0，`limit` 默认 500、最大 2000
+
+**执行报告 + 时间线（GET /tasks/:id/executions/:execId/report，OBS-04）：**
+
+执行详情「分析报告/时间线」面板的一次性载荷，单请求合并三类数据：
+
+```json
+{
+  "execution": { "id": "uuid", "status": "failed", "createdAt": "...", "startTime": "...", "endTime": "...", "duration": 295000, "aiAnalysis": "...", "...": "task_executions 行原样" },
+  "timeline": [
+    { "phase": "created",  "at": "2026-09-07T01:00:00.000Z", "detail": "trigger=cron" },
+    { "phase": "started",  "at": "2026-09-07T01:00:05.000Z", "detail": "executor=http://..." },
+    { "phase": "finished", "at": "2026-09-07T01:05:00.000Z", "detail": "status=failed" }
+  ],
+  "report": { "id": 7, "triggerDay": "2026-09-07", "successCount": 10, "failCount": 3, "avgDurationMs": 42000, "...": "..." }
+}
+```
+
+- `timeline` 三段（created→started→finished）由 `task_executions` 行的 DB 时间戳列（`createdAt`/`startTime`/`endTime`）直接映射，与 admin-api `execution-timeline.util.ts`、mcp-server `buildExecutionTimeline`（ECO-03）三端同语义；未到达的阶段 `at=null`（前端渲染「—」），不抛错、不二次推算
+- `report` 为 `execution_reports` 表中该执行所在**日**的聚合行（按 `triggerDay` DATE 等值匹配执行 `createdAt` 的本地零点）；该表由 MetricsService 按日聚合懒写入，与单次执行无外键关系——**无行时 `report: null` 属正常态**，前端降级渲染提示而非报错
+- 未知执行（或执行不属于该任务）返回 404，与 `GET /tasks/:id/executions/:execId` 一致
+
 **SSE 日志流（GET /tasks/:id/executions/:execId/logs/stream）：**
 
 - 响应为 `text/event-stream`，日志行以 `data:` 事件下发，结束时发送 `event: done` + `[DONE]`
@@ -245,7 +489,7 @@ Content-Type: application/json
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | POST | `/executors/register` | 否* | 执行器注册（返回/绑定执行器专属 Token） |
-| POST | `/executors/heartbeat` | 否* | 执行器心跳上报（携带 `restartedAt`/`startupId` 用于重启收敛） |
+| POST | `/executors/heartbeat` | 否* | 执行器心跳上报（携带 `restartedAt`/`startupId` 用于重启收敛）。可选指标字段：`cpuUsage` / `memUsage` / `diskUsage` / `networkLatency` / `runningTaskCount` / `totalTaskCount` / `failedTaskCount` / `runningExecutionIds`（≤200，`null`=旧版未上报）/ `deadLetterCount`（回调死信积压数，**0..100000** 非负整数，`null`=旧版执行器未上报该字段（区别于 `0`：已上报且无积压），`>0` 表示回调持续失败、载荷已落盘执行器本地 dead-letter）/ `maxConcurrentTasks`（1..10000 容量热更新）。服务端对白名单外字段静默丢弃（防 mass-assignment），非法取值不落库 |
 | POST | `/executors/token` | 否* | 执行器以注册凭证换取专属 Token。**副作用（register-on-token）**：若该 `address` 尚无执行器行（典型场景：compose 启动竞态下 register 失败——register 不会自动重试，heartbeat 对未知地址返回 404 也不建行），本端点会补建仅含 `address`/`appName` 的瘦行：`type`/`capabilities`/`maxConcurrentTasks`/`executorVersion` 等富元数据缺失（runtime 过滤对空 capabilities 全放行，故竞态窗口内该执行器可能被选中执行任意 runtime 任务），直到执行器进程重启重新 register 才补齐 |
 | POST | `/executors/offline` | 否* | 执行器主动下线 |
 | GET | `/executors` | 是 | 查询执行器列表（含在线状态） |
@@ -281,6 +525,81 @@ Content-Type: application/json
 > **N23：per-execution 回调 token（任务代码安全回调）**。除执行器 Token 外，本端点还接受执行器为单次执行签发的一次性 HMAC token：`Authorization: Bearer v1.<executionId>.<expiresAtUnixSec>.<hmacHex>`，由 executor-node 以 `AUTOFLOW_CALLBACK_TOKEN` 注入任务子进程（签名密钥优先级 = `EXECUTION_CALLBACK_SECRET` → 注册/取 token/心跳响应采纳的 per-executor tokenHash（N26/R9；R10 起手动轮换后 ≤ 一次心跳内自动对齐）→ 执行器共享 token；`key = HMAC-SHA256(secret, "autocodeflow:execution-callback:v1")`，`hmacHex = HMAC-SHA256(key, "v1.<executionId>.<expiresAtUnixSec>")`）。校验规则（全部 fail-closed）：签名与 TTL 有效、**批次内每条 item 的 `executionId` 必须与 token 绑定的一致**、每条仍须携带 `executorAddress`（服务层再与执行记录的执行器地址比对）。token 过期即失效，不能伪造为共享 token，也不授权其他执行。共享 token / per-address token 路径完全保留（向后兼容旧执行器）。
 >
 > 取消/终止执行请使用 `POST /tasks/:id/executions/:execId/kill`（见 Tasks 章节）。
+>
+> **执行失败原因（failureReason）枚举**（`ExecutionFailureReason`，执行详情/全局执行列表响应字段）：
+> `package_fetch_failed`（应用包拉取失败）/ `script_error`（脚本异常，任务回调默认值）/ `timeout`（超时）/ `executor_offline`（pinning 执行器离线）/ `executor_restart`（执行器重启中断）/ `stale_recovered`（失联回收——stale sweep 赢得 RUNNING→FAILED 条件更新、兑现重试预算时标记，区别于执行器回调上报的 `unknown`，便于排查"worker 崩溃型故障 + sweep 兑现重试预算"链路）/ `killed`（被 kill 接口强制取消）/ `unknown`（执行器回调未给出原因）。
+
+---
+
+## Distributed Tracing — 分布式追踪契约（OBS-01，本轮新增）
+
+平台在 `OTEL_ENABLED=true` 时启用跨三端（admin-api → 执行器 → 回调）的 W3C Trace Context 贯穿。**默认 `false`——零开销零行为变化**（不生成 traceId、不带头、不落库，执行行 `traceId` 保持 null）。仅依赖 `@opentelemetry/api`（轻量 API 包），span 树在 admin-api 进程内管理并输出结构化日志（`[trace] start/end` 行）；不引入 `sdk-*`/exporter——接 Jaeger/Tempo 的升级路径见 deployment.md「OTEL / Jaeger」段。
+
+**traceparent 头契约（W3C Trace Context，版本 00）：**
+
+| 链路段 | 方向 | 头 | 说明 |
+|---|---|---|---|
+| dispatch | admin-api → 执行器 | `traceparent: 00-<traceId32>-<spanId16>-01` | executor.service 派发 `POST /api/execute` 时注入；执行器读取并注入任务 env `AUTOFLOW_TRACE_ID`（任务代码可读做下游关联；用户 params 不可覆盖） |
+| callback | 执行器 → admin-api | `traceparent` 同上 | 执行器终态回调 `POST /executions/callback` 回传（批次内第一个携带 traceparent 的执行决定头值）；admin 解析 trace-id 与执行行落库值同源关联 |
+
+**落库与展示：** trace-id（32 hex）在触发/入队侧生成并落 `task_executions.traceId`（可空列，迁移 `1789900000003`，附索引）；执行详情 API 响应携带该字段，管理台执行详情页「执行信息」卡在其有值时展示追踪标识与「复制 traceId」按钮（复制的值可直接粘贴到 Jaeger/Tempo 检索框）。畸形/非法 traceparent 头一律 **fail-open** 丢弃（不阻断派发与回调主链）。
+
+**span 埋点（进程内，日志形态）：** `task.trigger` / `task.enqueue`（手动触发入队）、`scheduler.enqueue`（调度入队）、`dispatch.http`（派发出站 HTTP 前后）、`callback.receive`（回调受理）。未来挂载 SDK TracerProvider 后这些点位即升级为真实出站 span。
+
+**executor 侧行为（两执行器一致）：** 读取头 → 记录日志（trace-id 段）→ 注入 env → 回调回传。执行器侧**不做完整 span 树**（缩水声明：span 记录仅 admin-api 侧，执行器只做 traceId 关联与回传）。
+
+---
+
+## Artifacts — 执行产物（FEAT-05，本轮新增）
+
+执行器任务可在其工作目录约定的 `artifacts/` 子目录写入交付物（截图 / 报表 / CSV 等）。任务结束时双执行器（executor-node、executor-python）会：
+
+1. 扫描 `<workDir>/artifacts/`（仅顶层普通文件），构造清单 `[{ name, size, sha256 }]`——**上限 20 个、单文件 ≤ 100 MB**，超限 / 非法名 / 子目录一律跳过并记日志；
+2. 逐文件 multipart PUT 上传到下方"上传"端点（复用执行器回调的同一 token 做机器鉴权）；
+3. 把**实际上传成功**的清单随终态回调 `POST /executions/callback` 的 `artifacts` 字段上报，服务端落库到 `task_executions.artifacts`（jsonb 可空列，缺省不覆盖为 null）。
+
+> ⚠️ **best-effort 铁律**：产物收集 / 上传的任何失败都只记日志，**绝不阻塞、绝不改变任务终态**。artifacts 永远不是任务成败的一部分。管理台任务文件可通过环境变量 `AUTOFLOW_ARTIFACTS_DIR`（执行器注入）定位写入目录。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| PUT | `/executions/:execId/artifacts/:name` | 否* | 执行器上传单个产物（multipart `file` 字段，复用包上传通道形态；body 上限 100 MB）。可选 `?sha256=` 与实际字节交叉核对，不符返回 400 |
+| GET | `/tasks/executions/:execId/artifacts` | 是 | 读取执行记录的产物清单（来自终态回调落库的 `artifacts`） |
+| GET | `/tasks/executions/:execId/artifacts/:name` | 是 | 流式下载单个产物（JWT）；`name` 必须是裸安全文件名，服务端二次校验防路径穿越，文件缺失返回 404 |
+
+> *上传端点豁免全局 JWT（`@Public`），处理器内复用回调的凭据形态校验：执行器共享 token（`verifyExecutorToken`）**或** 每执行器动态 token（`validateTokenByAddress`，按执行行的 `executorAddress` 绑定）任一命中即放行；执行行不存在返回 404，凭据均不匹配返回 401。
+>
+> **存储与生命周期**：产物字节落在 admin 的 `uploads/artifacts/<execId>/<name>`（与执行器安装包同 `uploads` 卷；根目录可用 `LOG_ARTIFACT_DIR` 环境变量覆盖，缺省回退该 uploads 路径）。每日 03:45 的 TTL 清理服务复用 `LOG_RETENTION_DAYS`（默认 30 天），按子目录最旧文件 mtime 超期即整目录回收——与日志保留策略搭车，无需单独配置。
+
+---
+
+## Task Templates — 任务模板（CORE-03，本轮新增）
+
+常用任务形态（定时备份 / 健康巡检 / 数据同步 / 日志清理 / Webhook 探活）固化为模板。迁移 `1789800000000` 建表并幂等 seed 5 个官方模板（`INSERT ... ON CONFLICT (key) DO NOTHING`），五个 key（`scheduled_backup` / `health_check` / `data_sync` / `log_cleanup` / `webhook_ping`）与 mcp-server `TASK_TEMPLATES`（ECO-03）**同一口径**，避免 admin 与 MCP 两套模板语义漂移。
+
+- `config` 是**合法 CreateTaskDto 子集**（省略 `name`）：落库与实例化前都走 `plainToInstance + validate`（whitelist + forbidNonWhitelisted，与全局 ValidationPipe 同口径）复检，多余键 / 非法值直接 400，防脏模板。
+- `POST /task-templates` 创建**自定义模板**；官方模板不可删（403）。
+- 「从模板创建任务」语义（模板 config 作默认、请求体显式字段覆盖）由独占端点 `instantiate` 承担（复用 `TaskService.create`；`POST /tasks` 本体不带 `templateId`）。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/task-templates` | 是 | 模板列表（官方在前、自定义在后），返回 `TaskTemplate[]` |
+| GET | `/task-templates/:id` | 是 | 单个模板（创建表单预填取 `config`）；不存在 404 |
+| POST | `/task-templates` | 是 | 新建自定义模板（body：`name` 必填 ≤128 / `description?` ≤500 / `category?` ≤32 / `key?`（缺省由 name 规整，1-64 位 `[A-Za-z0-9_-]`）/ `config` 必填对象）。config 非法 400、key 重复 409 |
+| POST | `/task-templates/:id/instantiate` | 是 | 一键建任务：模板 config 展开为默认值、body 显式字段覆盖（至少提供 `name`；body 内 `templateId` 键被剥离防越权）。合并载荷经 CreateTaskDto 语义校验后走标准任务创建路径，返回创建的任务；缺 name / 非法载荷 400，模板不存在 404 |
+| DELETE | `/task-templates/:id` | 是 | 删除自定义模板（官方模板 403，不存在 404），返回 `{ ok: true }` |
+
+**TaskTemplate 响应结构：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | uuid | 模板 ID |
+| `key` | string | 稳定标识（唯一；官方五模板固定 key） |
+| `name` | string | 展示名（中文，如「定时备份」） |
+| `description` | string? | 模板说明 |
+| `category` | string? | 粗分类（备份/巡检/同步/清理/通知…），前端渲染 Tag |
+| `config` | object | 合法 CreateTaskDto 子集（省略 name），实例化时作默认值 |
+| `isOfficial` | boolean | 官方预置模板标记（官方不可删） |
+| `createdAt` / `updatedAt` | timestamp | 时间戳 |
 
 ---
 
@@ -288,11 +607,156 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/notification/channels` | 是 | 查询所有通知渠道配置（内置渠道：email / slack / dingtalk / wecom / webhook）。读面对 password/secret/token 类字段脱敏为 `***`（N11）；URL 值内 query 参数名命中同类规则的（如 `?access_token=...`）其值也脱敏（N32，第九轮） |
-| PATCH | `/notification/channels/:key` | 是 | 更新指定渠道配置（body: `enabled?`、`config?`）。合法 key：email / slack / dingtalk / wecom / webhook（N32 起 webhook 可配置，config 形状 `{ url: string }`；未知 key 返回 400）。发送时 webhook 渠道 URL 优先级（N37，第十轮修正）：显式 `webhookUrl` 请求参数 > 已保存**且渠道 enabled** 的 `url` > env 回退（webhook 渠道无 env 项）——渠道 disabled 时已保存 url 不生效，不再静默改道显式参数；掩码回显（`***` / `?…=***`）不会覆盖存储中的真实值 |
-| POST | `/notification/channels/:key/test` | 是 | 向指定渠道发送测试消息 |
-| POST | `/notification/test` | 是 | 向多个渠道发送测试通知（body: `{ channels: string[], title, content }`）；全部请求渠道均 disabled → `success:false`（N29 空 results 报错，不再假 OK） |
+| GET | `/notification/channels` | 是 | 查询所有通知渠道配置（内置渠道：email / slack / dingtalk / wecom / feishu / webhook）。读面对 password/secret/token 类字段脱敏为 `***`（N11）；URL 值内 query 参数名命中同类规则的（如 `?access_token=...`）其值也脱敏（N32，第九轮） |
+| PATCH | `/notification/channels/:key` | 是 | 更新指定渠道配置（body: `enabled?`、`config?`）。合法 key：email / slack / dingtalk / wecom / feishu / webhook（N32 起 webhook 可配置，config 形状 `{ url: string }`；未知 key 返回 400）。发送时 webhook 渠道 URL 优先级（N37，第十轮修正）：显式 `webhookUrl` 请求参数 > 已保存**且渠道 enabled** 的 `url` > env 回退（webhook 渠道无 env 项）——渠道 disabled 时已保存 url 不生效，不再静默改道显式参数；掩码回显（`***` / `?…=***`）不会覆盖存储中的真实值 |
+| POST | `/notification/channels/:key/test` | 是 | 向指定渠道发送测试消息（测试发送不套用渠道模板——payload 无 `vars`，与正式通知路径区分） |
+| POST | `/notification/test` | 是 | 向多个渠道发送测试通知（body: `{ channels: string[], title, content }`）；全部请求渠道均 disabled → `success:false`（N29 空 results 报错，不再假 OK）。测试发送不套用渠道模板（FEAT-10） |
+
+### FEAT-10 — 渠道级通知模板
+
+渠道 config 新增两个**可选**键（随既有 `PATCH /notification/channels/:key` 保存，走内存注册表 + ChannelConfigStore 写穿，**零迁移**）：
+
+| config 键 | 说明 |
+|------|------|
+| `titleTemplate` | 标题模板（可选，空串=未配置） |
+| `contentTemplate` | 内容模板（可选，空串=未配置） |
+
+**渲染规则**（`renderTemplate`，apps/admin-api/src/common/utils/render-template.util.ts）：
+
+- 占位符语法 `{{variable}}`（两侧空白容忍，如 `{{ taskName }}`）；
+- **变量集**：`{{task}}` / `{{taskName}}`（任务名）、`{{executionId}}`（执行 ID）、`{{failedReason}}`（失败原因/错误摘要）、`{{logs}}`（日志摘要，失败路径）、`{{duration}}`（执行时长 ms，成功路径）、`{{runbook}}`（运行手册链接，若任务已配置）、`{{level}}`（通知级别）、`{{taskId}}`、`{{aiAnalysis}}`、`{{content}}`；
+- **单 pass 替换**：变量值中的 `{{...}}` 不再展开（阻断 `{{a}}→{{b}}` 递归注入——变量值来自不可信的任务日志/错误信息）；
+- **未知变量保留原文**：`{{nope}}` 原样留在输出（配置拼写错误可见）；
+- **8KB 输出上限**：超限截断并追加 `
+…[已截断: 超过 8KB 模板输出上限]`；
+- 变量值 null/undefined 渲染为空串；数字 String() 化。
+
+**生效语义（零破坏）**：
+
+- 渠道未配置模板（或值为空串）→ 该渠道走既有固定拼串，行为不变；
+- 发送方未携带模板变量表（如 admin 测试发送）→ 模板整体旁路；
+- **fail-open**：渲染失败回退默认文案 + warn 日志，绝不阻断通知发送；
+- 每渠道渲染独立副本（webhook 渠道与钉钉渠道可用不同模板），渲染副本不再携带变量表（不做二次渲染）。
 | POST | `/notification/send` | 是 | 任务代码主动上报通知（autocodeflow-notify SDK 唯一入口，N22；第七轮落地，本行第十轮 N38 补文档）。body: `{ content（必填）, title?, taskName?, level?(info|warning|error|critical，默认 info), channels?(email|slack|dingtalk|wecom|webhook 子集), webhookUrl?, taskId? }`；`title` 缺省为 `[LEVEL] taskName`；传 `webhookUrl` 而未列 `channels` 时自动追加 webhook 渠道；`channels` 为空则按 `sendAll` 全渠道扇出。webhook 目标解析遵循上行的 N37 优先级链（显式 `webhookUrl` 优先，已保存 url 仅在渠道 enabled 时生效）。响应恒为 2xx + `{ success: true, results: { <channel>: sent|blocked|failed|skipped } }`——单渠道失败或 SSRF 拦截绝不 5xx 任务回调，逐渠道真实结果以 `results` 为准（`blocked`=SSRF 拒绝；`skipped`=无可用 URL/凭证） |
+
+---
+
+### Alerts — 告警入站路由（OBS-02，第十六轮新增）
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| POST | `/alerts/webhook` | 否（HMAC 签名） | Alertmanager v2 webhook 接收入口：把 Prometheus/Alertmanager 告警映射为平台通知并走**既有通知渠道**（email / slack / dingtalk / wecom / webhook）全渠道扇出（`sendAll`），不新建渠道类型 |
+
+> 鉴权约定与 `POST /applications/webhook` 一致（`@Public` + HMAC）：
+> - header `X-AutoCodeFlow-Timestamp`（毫秒时间戳，±5 分钟窗）+ `X-Hub-Signature-256: sha256=<hex>`，`<hex> = HMAC_SHA256(secret, "${timestamp}.${rawBody}")`；
+> - secret 为环境变量 `ALERT_WEBHOOK_SECRET`；**未配置时端点 503 拒绝（安全缺省）**；所有鉴权失败统一 401（`"Alert webhook authentication failed"`），原因只写服务端日志。
+
+请求体为 Alertmanager v2 JSON（`alerts[]` 带 `status` / `labels` / `annotations` / `startsAt`）。映射语义：
+
+- `title = [Alert] <alertname> <firing|resolved>`（alertname 缺省 `unknown`）；多条告警合并为一条通知。
+- `content` = 逐条告警的 labels / annotations 键值摘要 + `startsAt` + Alertmanager `externalURL`（如有）。
+- **level**：任一 `firing` → `error`；全部 `resolved` → `info`（resolved 恢复通知也发）。
+- **runbook 链接**（FEAT-11）：`annotations.runbook_url` 命中时追加 `Runbook: <url>` 段；`labels.taskId` 命中时查 `tasks.runbook` 拼接 `Runbook:` 段（查询失败降级，不阻断外发）。
+
+响应：`{ ok: true, delivered: <n>, results: { <channel>: sent|blocked|failed|skipped } }`；全部渠道无人可投递（全 `skipped`）时返回 **502** + results 明细（让 Alertmanager 重试）。`alerts` 缺失/为空 → 400。
+
+```json
+POST /api/alerts/webhook
+{
+  "version": "4",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": { "alertname": "PG_DOWN", "severity": "critical", "taskId": "task-abc" },
+      "annotations": { "summary": "PostgreSQL 不可达", "runbook_url": "https://wiki.example.com/rb/pg" },
+      "startsAt": "2026-09-07T05:00:00Z"
+    }
+  ]
+}
+```
+
+Alertmanager 侧 route/receiver 配置样例与加签提示见 `docs/observability/README.md` §3.5。
+
+---
+
+## Event Subscriptions — Webhook 出站事件（FEAT-07，第十六轮新增）
+
+平台事件可订阅后以签名 webhook 推送到外部端点（如 CI 在任务失败时触发流程）。事件沿 ARCH-21 领域事件总线派发，主链零改动。
+
+**可订阅事件目录**（稳定契约，只增不改）：
+
+| 事件名 | 载荷 `data` 主要字段 | 发布时机 |
+|--------|---------------------|----------|
+| `execution.completed` | `executionId` `taskId` `taskName` `status` `failureReason(null)` `durationMs` `finishedAt` | 执行以 SUCCESS 终态落库后（恰好一次） |
+| `execution.failed` | `executionId` `taskId` `taskName` `status`(failed/timeout) `failureReason` `errorMessage?` `durationMs` `finishedAt` | 执行以失败类终态落库后（恰好一次） |
+| `execution.killed` | 同 `execution.failed` 形状（`status="killed"`，`errorMessage="Manually terminated by administrator"`） | 管理员手动 kill 落库后（FEAT-18；通知面对齐 failed 语义） |
+| `executor.offline` | `executorId` `appName` `address` | 执行器翻转 OFFLINE 落库后（心跳超时 sweep / 优雅停机 / 管理台置离线，三路） |
+| `deployment.completed` | `deploymentId` `applicationId` `executorAddress` `status` `deployedVersion` `deployedCommit` | 部署心跳确认进入 RUNNING 终态落库后 |
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/event-subscriptions` | 是 | 列出订阅：ADMIN 看全部；普通用户看自己的 + 系统级（`userId=null`）。`secret` 恒脱敏为 `******` |
+| POST | `/event-subscriptions` | 是 | 新建订阅。body: `{ url（必填，公网 http(s)）, eventTypes（1-10 个，取值=上表事件名）, secret?（≥16 字符；省略则服务端生成 64 字符 hex 并在**本次响应** `generatedSecret` 字段一次性回显） }`。url 经 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据）→ 400 |
+| PATCH | `/event-subscriptions/:id` | 是 | 更新（属主/ADMIN）。body: `{ enabled?, url?, eventTypes?, secret? }`（url 变更时再次 SSRF 校验） |
+| DELETE | `/event-subscriptions/:id` | 是 | 删除订阅（属主/ADMIN），死信级联删除（FK ON DELETE CASCADE） |
+| GET | `/event-subscriptions/:id/dead-letters` | 是 | 死信分页列表（属主/ADMIN）。`page` 默认 1，`limit` 默认 20、最大 100。行含 `eventType` / `payload`（发送时完整载荷）/ `error`（末次失败摘要）/ `attempts` / `createdAt` |
+| POST | `/event-subscriptions/:id/dead-letters/:dlId/replay` | 是 | 手动重放：以订阅**当前** url/secret 重新签名派发**一次**（不自动重试）。成功 `{ ok: true }` 且死信删除；失败 `{ ok: false, error }` 且死信保留（可再次重放） |
+
+**派发语义**：
+
+- 事件到达 → 快照 `enabled=true` 的订阅 → 按 `eventTypes` 过滤 → 每订阅独立投递（单订阅失败不影响其他订阅，更不影响事件源）。
+- **失败重试**：最多 3 次尝试（首次 + 2 重试），指数退避 1s / 2s / 4s（进程内 setTimeout 队列）；3 次全败 → 整包落 `event_subscription_dead_letters` 死信表 + 订阅行累加 `consecutiveFailures` / `lastFailureAt` / `lastFailureError`（成功派发即清零）。
+- **投递请求**：`POST <url>`，`Content-Type: application/json`，超时 10s，**禁跟随 3xx 重定向**（SSRF 纪律——只访问经校验的首跳地址）。载荷信封：`{ "event": "<事件名>", "occurredAt": "<ISO 时刻>", "data": { ...载荷 } }`。
+- 订阅 url 出站前二次 SSRF 复核（订阅可能被并发 PATCH）；被拒按确定性失败处理。
+
+**签名校验（订阅方接入指南）** —— 与 `POST /applications/webhook` 发版 webhook 的约定**完全一致**：
+
+- 头 `X-AutoCodeFlow-Event`：事件名（冗余于载荷 `event` 字段，便于路由）。
+- 头 `X-AutoCodeFlow-Timestamp`：毫秒时间戳；订阅方应拒绝 `|now - timestamp| > 5 分钟` 的请求（防重放）。
+- 头 `X-Hub-Signature-256`：`sha256=<hex>`，`<hex> = HMAC_SHA256(secret, "${timestamp}.${rawBody}")`——注意签名输入是 `${timestamp}.` 前缀拼接**原始请求体字节**（先 `Buffer.from(`${timestamp}.`)` 再拼 body，不是字符串层面分开哈希）。
+
+Node.js 订阅方校验示例：
+
+```js
+const crypto = require("node:crypto");
+
+function verifyWebhook(req, secret) {
+  const timestamp = req.headers["x-autocodeflow-timestamp"];
+  const signature = req.headers["x-hub-signature-256"];
+  if (!timestamp || !signature) return false;
+  // ±5 分钟窗口
+  if (Math.abs(Date.now() - Number(timestamp)) > 5 * 60 * 1000) return false;
+  const expected =
+    "sha256=" +
+    crypto
+      .createHmac("sha256", secret)
+      .update(Buffer.concat([Buffer.from(`${timestamp}.`), req.rawBody]))
+      .digest("hex");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signature);
+  // 常数时间比较
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+```
+
+Python 订阅方校验示例：
+
+```python
+import hmac, hashlib, time
+
+def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str) -> bool:
+    if abs(time.time() * 1000 - int(timestamp)) > 5 * 60 * 1000:
+        return False
+    expected = "sha256=" + hmac.new(
+        secret.encode(), timestamp.encode() + b"." + raw_body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+```
+
+> 快速上手：`POST /event-subscriptions` 传 `{ "url": "https://ci.example.com/hooks", "eventTypes": ["execution.failed"] }` → 从响应 `generatedSecret` 取出签名密钥（仅此一次可见）→ 用上面的校验方法在订阅方验证签名。验收路径：任务失败 → 订阅方收到带正确签名的失败事件（CI 触发部署场景）。
+
+> **at-least-once 语义 + outbox（FEAT-19，第十七轮升级）**：事件到达即同步落 `event_outbox` 表（写成功即"已接收"），随后走进程内快速路径（首投 + 3 次退避）。`OutboxDispatcher` 启动时 + 每 5 秒（`EVENT_OUTBOX_ENABLED`，默认 `true`）扫描未派发行补投，复用同款签名/重试/死信语义；失败退避 5s 起指数封顶 5min，超过 20 次落 `event_subscription_dead_letters` 并标记行终态。**进程重启不再丢待投事件**。含义：①同一事件可能被投递多次（快速路径与补投窗口重叠、终态回写失败重投等），**订阅方必须幂等消费**；②冷订阅集期间到达的事件在订阅创建后不再补投（落库时刻的订阅集即投递对象），如需补投历史事件走 replay 端点人工触发。`EVENT_OUTBOX_ENABLED=false` 回退纯进程内派发（重启丢在途，不推荐）。
 
 ---
 
@@ -300,12 +764,22 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/metrics` | 是 | **Prometheus 抓取端点**（第七轮新增，prom-client）：text exposition format（Content-Type 由 registry 提供）。series：`autoflow_scheduler_ticks_total`、`autoflow_scheduler_tick_duration_ms_total`、`autoflow_scheduler_last_tick_duration_ms`、`autoflow_scheduler_triggers_total{result=claimed\|failed}`、`autoflow_scheduler_triggers_skipped_total{reason=lock_held\|db_claim\|inactive\|block_strategy}`、`autoflow_scheduler_dependency_triggers_total{result=claimed\|skipped}`、`autoflow_queue_depth{state=waiting\|active\|delayed\|failed\|completed}`、`autoflow_queue_up`（Redis 不可读时置 0、队列深度全部置 0）、`autoflow_execution_callback_auth_total{result=ok\|v1_expired\|v1_binding_mismatch\|v1_bad_signature\|legacy_shared_invalid\|missing_token\|bad_address}`（第九轮 N32 新增：`POST /executions/callback` 认证结果分类计数，per-execution `v1.` token 落地后的 401 排障观测；七个 result series 恒在、未计数时为 0），以及进程默认指标（CPU/内存/GC，`METRICS_PROMETHEUS_DEFAULT_METRICS_ENABLED=false` 可关）。env 开关 `METRICS_PROMETHEUS_ENABLED`（默认 `true`；`false` 时本端点返回 404，用于多实例下避免重复抓取或安全收紧场景）。计数为进程内快照映射，多实例部署按 target 各自抓取 |
+| GET | `/metrics` | 是 | **Prometheus 抓取端点**（第七轮新增，prom-client）：text exposition format（Content-Type 由 registry 提供）。series：`autoflow_scheduler_ticks_total`、`autoflow_scheduler_tick_duration_ms_total`、`autoflow_scheduler_last_tick_duration_ms`、`autoflow_scheduler_triggers_total{result=claimed\|failed}`、`autoflow_scheduler_triggers_skipped_total{reason=lock_held\|db_claim\|inactive\|block_strategy}`、`autoflow_scheduler_dependency_triggers_total{result=claimed\|skipped}`、`autoflow_queue_depth{state=waiting\|active\|delayed\|failed\|completed}`、`autoflow_queue_up`（Redis 不可读时置 0、队列深度全部置 0）、`autoflow_execution_callback_auth_total{result=ok\|v1_expired\|v1_binding_mismatch\|v1_bad_signature\|legacy_shared_invalid\|missing_token\|bad_address}`（第九轮 N32 新增：`POST /executions/callback` 认证结果分类计数，per-execution `v1.` token 落地后的 401 排障观测；七个 result series 恒在、未计数时为 0）、`autoflow_scheduler_trigger_latency_ms_bucket{le=10\|50\|100\|250\|500\|1000\|2500\|5000\|+Inf}`、`autoflow_scheduler_trigger_latency_ms_sum`、`autoflow_scheduler_trigger_latency_ms_count`（CORE-06：定时触发 fixed_rate/cron 的 fire→入队延迟直方图；P99 查询 = `histogram_quantile(0.99, sum by (le, instance) (rate(bucket[5m])))`，avg = rate(sum)/rate(count)；Grafana row 5 面板已消费），以及进程默认指标（CPU/内存/GC，`METRICS_PROMETHEUS_DEFAULT_METRICS_ENABLED=false` 可关）。env 开关 `METRICS_PROMETHEUS_ENABLED`（默认 `true`；`false` 时本端点返回 404，用于多实例下避免重复抓取或安全收紧场景）。计数为进程内快照映射，多实例部署按 target 各自抓取 |
 | GET | `/metrics/summary` | 是 | 系统概览统计 |
 | GET | `/metrics/trend?days=` | 是 | 每日执行趋势（`days` 默认 7，上限 90） |
 | GET | `/metrics/executors` | 是 | 执行器负载和状态统计 |
 | GET | `/metrics/failures` | 是 | 最近失败执行列表 |
-| GET | `/metrics/scheduler` | 是 | 调度器可观测性（第五轮新增）：tick 计数/耗时、trigger claimed/skipped/failed、依赖扇出 claim、BullMQ 队列深度、isLeader 与 pid/hostname（多实例区分）；进程内计数，重启归零 |
+| GET | `/metrics/scheduler` | 是 | 调度器可观测性（第五轮新增）：tick 计数/耗时、trigger claimed/skipped/failed、依赖扇出 claim、BullMQ 队列深度、isLeader 与 pid/hostname（多实例区分）；进程内计数，重启归零。CORE-06 追加：`triggerLatencyCount/SumMs/Buckets`（与 TRIGGER_LATENCY_BUCKETS_MS 对齐的累计桶）与派生 `derived.avgTriggerLatencyMs`/`derived.p99TriggerLatencyMs`（直方图插值） |
+| GET | `/metrics/stream` | 是 | **Dashboard 汇总 SSE 流（UI-14 第一阶段）**：`text/event-stream` 常驻推送，每 `METRICS_STREAM_INTERVAL_MS`（默认 3000）一拍快照。见下节 |
+
+**SSE 汇总流（GET /metrics/stream，UI-14 第一阶段）：**
+
+- **快照载荷**：每拍一帧 `data:` 事件，JSON 结构 `{ summary, executors, scheduler, errors }`——`summary` = `GET /metrics/summary` 同构载荷；`executors` = `GET /metrics/executors` 数组；`scheduler` = `GET /metrics/scheduler` 同构载荷（含队列深度）；`errors` 为本拍查询失败降级段名（如 `["summary"]`，对应段为 `null`，流不终止——观测链 fail-open）。任一段查询失败时额外发一帧 `event: error`（`{failed, at}`）
+- **终止**：客户端断开或服务端关停时发送 `event: done` 后结束；空闲超过 `METRICS_STREAM_IDLE_PING_MS`（默认 15000）发送 `: ping` 注释帧保活反向代理（SSE 规范要求客户端忽略注释行）
+- **认证**：JWT bearer 头，或 **`?access_token=<JWT>` 查询串回退**（EventSource 无法自定义请求头；与 `/logs/stream` 共享白名单机制，`type=access` 强制，refresh token 不可用；其它路径的 query token 一律拒绝）
+- **容量**：独立于日志流的并发槽位，**全局默认 32**（`METRICS_STREAM_MAX_GLOBAL` 可覆盖）；超限在写出任何 SSE 头之前直接返回 **503**。Prometheus series `autoflow_metrics_streams_active` / `autoflow_metrics_streams_limit`（BUG-05 同款 runtime gauge，进程内瞬时值，多实例按 instance 聚合）
+- **节奏**：`METRICS_STREAM_INTERVAL_MS`（默认 3000，快照间隔）/ `METRICS_STREAM_IDLE_PING_MS`（默认 15000）。快照为直读查询（非事件驱动），interval 越小 DB 压力越大——该流定位为 Dashboard 级客户端数（浏览器 Tab），不宜做大规模 fan-out
+- **消费方**：admin-web DashboardPage（`useMetricsStream`，断线按 3s×2^n 封顶 30s 退避重连，快照写 TanStack Query 缓存）
 
 > 注意：`/metrics` 与 `/metrics/*` 均需要 JWT（Prometheus 抓取方需配置 bearer token）。免认证的系统指标请使用 `GET /health/metrics`（见 Health 章节）。
 
@@ -315,8 +789,8 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/audit` | 是（Admin） | 分页查询审计日志（支持 action/resource/userId/username/startTime/endTime 筛选） |
-| GET | `/audit/export` | 是（Admin） | 导出审计日志为 CSV（最多 10000 行，支持相同过滤条件） |
+| GET | `/audit` | 是（Admin） | 分页查询审计日志（支持 action/resource/resourceId/userId/username/startTime/endTime 筛选；AUTH-05 起 resourceId 精确匹配） |
+| GET | `/audit/export` | 是（Admin） | 导出审计日志为 CSV（最多 10000 行，支持相同过滤条件；`@Roles(ADMIN)` 收敛为管理员专属——AUTH-05 复核确认在位） |
 
 **审计日志查询参数：**
 
@@ -326,6 +800,13 @@ Content-Type: application/json
 | `userId` | number | 按操作用户过滤 |
 | `action` | string | 操作类型（task.create / task.update / task.delete / 登录等） |
 | `resource` | string | 资源类型（task / executor / application 等） |
+| `resourceId` | string | 资源 ID **精确匹配**（AUTH-05 新增；与 `resource` 组合成 (resource, resourceId) 对筛选——Project 实体维度筛选按计划预案缩为此形态，AUTH-01 未启动）。查询串值超 100 字符截断到 100 |
+
+### 高危操作审计与 reason（AUTH-05）
+
+- `POST /executors/:id/rotate-token` 与 `DELETE /executors/:id` 新增**可选** body 字段 `reason`（字符串，≤200 字符，超长截断）——端点本身保持非破坏（无 body 照常工作，前端执行器页二次确认 Modal 属 UI-07 足迹留后续）。
+- 上述两操作现写入审计日志：action=`executor.rotate_token` / `executor.delete`，resource=`executor`，resourceId=执行器 ID，`detail` 携带 `{ address, appName, reason? }`（未提供 reason 则无该键）。审计写入 best-effort——审计失败仅 warn，不影响操作结果。
+- 审计行为变更说明：此前 rotate-token/删除执行器无审计留痕，AUTH-05 起留痕（ADMIN-only 端点，行为变更仅增不减）。
 
 ---
 
@@ -355,6 +836,18 @@ Content-Type: application/json
 | PUT | `/config` | 是（Admin） | 创建/更新单个配置项（upsert） |
 | POST | `/config/batch` | 是（Admin） | 批量创建/更新配置项 |
 | DELETE | `/config/:key` | 是 | 删除指定配置项 |
+
+---
+
+## AI — AI 配置与测试
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/ai/config` | 是（Admin） | 获取当前 AI 生效配置（`provider` / `openaiModel` / `openaiBaseUrl` / `ollamaHost` / `ollamaModel`）。API key 永不回传明文——仅返回 `hasApiKey: boolean` 表示系统配置库中是否已存有 `ai.openaiApiKey` |
+| POST | `/ai/config` | 是（Admin） | 保存 AI 配置到系统配置存储（upsert，逐项写入）。body：`provider` 必填（`disabled` \| `openai` \| `ollama`）；`openaiApiKey` 可选，**非空时才更新**已存 key（留空/缺省不覆盖）；`openaiModel`（默认 `gpt-4o-mini`）、`openaiBaseUrl`（默认 `https://api.openai.com/v1`）、`ollamaHost`（默认 `http://localhost:11434`）、`ollamaModel`（默认 `llama3`）可选，缺省落默认值。响应 `{ ok: true }` |
+| POST | `/ai/test` | 是（Admin） | 用已保存配置发送一次真实样例 AI 调用（失败分析样例），验证连通性与凭证。响应 `{ ok, message }`；AI 未启用（provider=disabled）或返回空响应时 `ok: false`（不打失败码）。`message` 为模型返回的分析文本或失败说明 |
+
+> 三个端点均为 ADMIN-only（全局 RolesGuard 读取 `@Roles(ADMIN)` 元数据）：读配置暴露内部 baseUrl/host 拓扑，写配置可把出站调用重定向到任意外部主机，`/ai/test` 会真实消耗已配置 provider 的 API 配额。
 
 ---
 
@@ -394,6 +887,29 @@ Content-Type: application/json
 
 ---
 
+## Projects — 多租户项目（AUTH-01 第一批）
+
+单默认项目起步：迁移自动种子一行 `name="Default"`（固定 uuid `00000000-0000-0000-0000-000000000001`）；存量 tasks 已回填到默认项目，applications/executors/executor_packages 保持可空（未分配行在 `projectId=default` 视图下与默认项目一并返回）。默认项目**不可删除、不可改名**（返回 404）。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/projects` | 是 | 项目列表（全员可读，按 createdAt ASC） |
+| GET | `/projects/:id` | 是 | 项目详情 |
+| POST | `/projects` | 是（ADMIN） | 创建项目 |
+| PATCH | `/projects/:id` | 是（ADMIN） | 更新项目（默认项目仅允许改 description） |
+| DELETE | `/projects/:id` | 是（ADMIN） | 删除项目（默认项目被拦截，404） |
+
+**POST/PATCH 请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `name` | string | POST 是 / PATCH 否 | 项目名（1-100 字符，全局唯一，重名 409） |
+| `description` | string | 否 | 描述（最长 500） |
+
+**列表过滤参数（projectId）**：`GET /tasks` 与 `GET /applications` 均支持可选 `projectId` 查询参数——传字面量 `default` 表示默认项目视图（`projectId IS NULL OR projectId = 默认 uuid` 一起命中，用 Or 处理）；传具体项目 uuid 则精确过滤；不传时行为与既往一致（全量列表）。
+
+---
+
 ## 静态资源 — /uploads（应用包下载）
 
 | 方法 | 路径 | 需要认证 | 说明 |
@@ -414,12 +930,21 @@ Content-Type: application/json
 | `REDIS_TLS` | `false` | `true` 时 ioredis/BullMQ 连接启用 TLS 传输加密 |
 | `REDIS_TLS_REJECT_UNAUTHORIZED` | `true` | 仅自签证书调试时设为 `false` |
 | `DB_SYNCHRONIZE` | `false` | 显式 schema 同步开关（不再依赖 NODE_ENV 推断）；**生产环境设为 `true` 直接启动失败**，schema 变更一律走 migrations |
-| `LOG_RETENTION_DAYS` | `30` | `execution_log_lines` 日志行保留天数，每日 03:30 分批（≤5000 行/批）清理过期日志 |
+| `LOG_RETENTION_DAYS` | `30` | `execution_log_lines` 日志行保留天数。分区库（迁移 1789900000002 后）每日 03:30 cron 对超期分区整体 DETACH+DROP；legacy 普通表/回退开关下分批（≤5000 行/批）DELETE |
+| `LOG_PARTITION_ENABLED` | `true` | ARCH-22 分区清理路径开关：`false` 时即使库已分区化也回退 legacy 分批 DELETE（不改 schema，重新开启无需迁移）。运维细节见 operations.md「执行日志分区表运维」 |
 | `API_BASE_URL` | 无 | 对外可达的 API 基地址；**上传应用包时必需**——`POST /applications/upload` 用它生成 executor 可下载的 `packageUrl`，缺失时返回 500 |
 | `SSE_MAX_STREAMS_PER_EXECUTION` | `4` | 单 execution SSE 并发上限（进程内计数，多实例部署实际上限=实例数×该值） |
 | `SSE_MAX_STREAMS_GLOBAL` | `64` | 全局 SSE 并发上限（同上，进程内） |
 | `TRUST_PROXY` | `false` | **第四轮起默认关闭**。Express `trust proxy` 仅在 `true` 时启用——nginx/负载均衡后的部署**必须设为 `true`**，否则限流键与审计 IP 全部记为代理地址 |
 | `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | executor 出站 SSRF 校验（dispatch/broadcast/reload-config/package push）：默认放行私网段（10/8、172.16/12、192.168/16、IPv6 ULA）但**拒绝 loopback**；admin-api 与 executor 同机（127.0.0.1）部署时必须设为 `true`。云元数据段（169.254.169.254 等）任何取值下都拒绝 |
+| `NPM_REGISTRY_TOKEN` | 空 | 私有 npm registry 代理的预签发 access token（优先于 user/pass 组合，存在时直接以 `Bearer` 拉取包列表） |
+| `NPM_REGISTRY_USER` | 空 | registry 代理 Basic Auth 用户名（与 `NPM_REGISTRY_PASS` 配套，用于 `PUT /-/user/login` 换取 bearer token） |
+| `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码 |
+| `ALERT_WEBHOOK_SECRET` | 空 | Alertmanager webhook 入站 HMAC secret（OBS-02，`POST /api/alerts/webhook`）。留空 = 端点 503 禁用（安全缺省，绝不无鉴权接收）；配置后签名约定同发版 webhook。建议 `openssl rand -hex 32`。Alertmanager 配置样例见 `docs/observability/README.md` §3.5 |
+| `SEC_SECRETS_KEY` | 空 | **任务级 secrets 落库加密密钥**（SEC-02）：32 字节 hex（`openssl rand -hex 32`）或 base64，其他口令按 sha-256 拉伸。留空 = tasks.secrets 明文存储（启动 warn 一次）；配置后写路径全加密（AES-256-GCM `enc:v1:` 信封），派发时解密注入执行器 env。**密钥丢失 = 密文 secrets 不可解密**（派发报错、不静默裸跑）——请纳入密钥管理系统备份；轮换 = 换 key 后对任务做一次任意 update |
+| `EXECUTOR_HEARTBEAT_INTERVAL` | `30000` | executor 心跳间隔毫秒（FEAT-07 注记：心跳超时 sweep 触发的 OFFLINE 翻转现在会发布 `executor.offline` 出站事件，见「Event Subscriptions」段） |
+
+> 三者全缺时 registry 代理保持匿名行为：authenticated-only registry（如 Verdaccio `access: $authenticated`）对包列表返回 401 → admin 包列表为空（仅 debug 日志提示凭证未配置），不视为错误。
 
 > 其余环境变量（`JWT_*`、`DB_*`、`EXECUTOR_SECRET`、`AI_*`、`LOG_STORAGE_*` 等）见 `apps/admin-api/src/app.module.ts` 的 Joi 校验 schema 与 `src/config/configuration.ts`。
 

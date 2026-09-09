@@ -6,6 +6,22 @@ const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
 const RENDERER_INDEX = path.join(app.getAppPath(), 'dist', 'renderer', 'index.html');
 
+/**
+ * BUG-12: one hardened webPreferences block shared by every window.
+ * contextIsolation on + nodeIntegration off keep the renderer sandboxed away
+ * from Node; devTools stays true — this is a tray/desktop tool where users
+ * diagnose their own installs, and disabling it is a UX cost with no security
+ * boundary here (renderer never receives secrets; see SEC-NEW-1 masking).
+ */
+function sharedWebPreferences(): Electron.WebPreferences {
+  return {
+    preload: PRELOAD_PATH,
+    contextIsolation: true,
+    nodeIntegration: false,
+    devTools: true,
+  };
+}
+
 function loadPage(win: BrowserWindow, page: string): void {
   if (process.env.VITE_DEV_SERVER_URL) {
     // Dev mode: use Vite dev server with hash routing
@@ -35,12 +51,7 @@ export class WindowManager {
       show: false,
       frame: false,
       transparent: true,
-      webPreferences: {
-        preload: PRELOAD_PATH,
-        contextIsolation: true,
-        nodeIntegration: false,
-        devTools: true,
-      },
+      webPreferences: sharedWebPreferences(),
     });
 
     this.wizardWindow.once('ready-to-show', () => { this.wizardWindow?.show(); });
@@ -70,12 +81,10 @@ export class WindowManager {
       show: false,
       frame: false,
       transparent: true,
-      webPreferences: {
-        preload: PRELOAD_PATH,
-        contextIsolation: true,
-        nodeIntegration: false,
-        devTools: true,
-      },
+      // BUG-12: single hardened webPreferences source for every window.
+      // sandbox defaults on (Electron ≥20), which also blocks the preload
+      // from pulling full Node modules into the renderer bridge.
+      webPreferences: sharedWebPreferences(),
     });
 
     this.statusWindow.once('ready-to-show', () => { this.statusWindow?.show(); });

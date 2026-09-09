@@ -3,6 +3,7 @@ import { ExecutionContext, Logger } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import { NotificationConfigController } from "../notification-config.controller";
 import { NotificationConfigService } from "../notification-config.service";
+import { NotificationSilenceService } from "../notification-silence.service";
 import {
   NotificationService,
   AlertChannel,
@@ -13,6 +14,8 @@ import { DingtalkChannel } from "../channels/dingtalk.channel";
 import { EmailChannel } from "../channels/email.channel";
 import { SlackChannel } from "../channels/slack.channel";
 import { WebhookChannel } from "../channels/webhook.channel";
+// NF-05: feishu 渠道桩（第六路扇出）
+import { FeishuChannel } from "../channels/feishu.channel";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { UserRole } from "../../users/entities/user.entity";
@@ -29,6 +32,12 @@ const mockNotificationService = () => ({
   sendToChannels: jest.fn().mockResolvedValue({}),
 });
 
+const mockSilenceService = () => ({
+  listAll: jest.fn().mockResolvedValue([]),
+  create: jest.fn().mockResolvedValue({}),
+  remove: jest.fn().mockResolvedValue(true),
+});
+
 describe("NotificationConfigController", () => {
   let controller: NotificationConfigController;
   let svc: ReturnType<typeof mockConfigService>;
@@ -40,6 +49,7 @@ describe("NotificationConfigController", () => {
       providers: [
         { provide: NotificationConfigService, useFactory: mockConfigService },
         { provide: NotificationService, useFactory: mockNotificationService },
+        { provide: NotificationSilenceService, useFactory: mockSilenceService },
       ],
     }).compile();
 
@@ -235,11 +245,16 @@ describe("NotificationConfigController", () => {
         providers: [
           { provide: NotificationConfigService, useFactory: mockConfigService },
           NotificationService,
+          {
+            provide: NotificationSilenceService,
+            useFactory: mockSilenceService,
+          },
           { provide: WecomChannel, useFactory: stubChannel },
           { provide: DingtalkChannel, useFactory: stubChannel },
           { provide: EmailChannel, useFactory: stubChannel },
           { provide: SlackChannel, useFactory: stubChannel },
           { provide: WebhookChannel, useFactory: stubChannel },
+          { provide: FeishuChannel, useFactory: stubChannel },
         ],
       }).compile();
       const realController = mod.get(NotificationConfigController);
@@ -273,7 +288,10 @@ describe("NotificationConfigController", () => {
 
   // N11: channel configs carry SMTP credentials — the global RolesGuard must
   // reject plain users (403) on the channels read/write surface.
-  describe("RBAC — channels endpoints are ADMIN-only (N11)", () => {
+  // R2: the two test endpoints are admin-only too — they trigger real
+  // outbound delivery using admin-form values and leak the per-channel
+  // SSRF/transport verdict back through the response.
+  describe("RBAC — channels endpoints are ADMIN-only (N11 + R2)", () => {
     const guard = new RolesGuard(new Reflector());
     const ctxWith = (
       handler: (...args: unknown[]) => unknown,
@@ -285,57 +303,56 @@ describe("NotificationConfigController", () => {
         switchToHttp: () => ({ getRequest: () => ({ user: { role } }) }),
       }) as unknown as ExecutionContext;
 
-    it("getChannels/updateChannel declare @Roles(ADMIN) metadata", () => {
-      expect(
-        Reflect.getMetadata(
-          ROLES_KEY,
-          NotificationConfigController.prototype.getChannels,
-        ),
-      ).toEqual([UserRole.ADMIN]);
-      expect(
-        Reflect.getMetadata(
-          ROLES_KEY,
-          NotificationConfigController.prototype.updateChannel,
-        ),
-      ).toEqual([UserRole.ADMIN]);
+    it("getChannels/updateChannel/testChannel/sendTest declare @Roles(ADMIN) metadata", () => {
+      for (const name of [
+        "getChannels",
+        "updateChannel",
+        "testChannel",
+        "sendTest",
+      ]) {
+        expect(
+          Reflect.getMetadata(
+            ROLES_KEY,
+            NotificationConfigController.prototype[name],
+          ),
+        ).toEqual([UserRole.ADMIN]);
+      }
     });
 
-    it("plain user is denied (RolesGuard → 403)", () => {
-      expect(
-        guard.canActivate(
-          ctxWith(
-            NotificationConfigController.prototype.getChannels,
-            UserRole.USER,
+    it("plain user is denied (RolesGuard → 403) on every admin route", () => {
+      for (const name of [
+        "getChannels",
+        "updateChannel",
+        "testChannel",
+        "sendTest",
+      ]) {
+        expect(
+          guard.canActivate(
+            ctxWith(
+              NotificationConfigController.prototype[name],
+              UserRole.USER,
+            ),
           ),
-        ),
-      ).toBe(false);
-      expect(
-        guard.canActivate(
-          ctxWith(
-            NotificationConfigController.prototype.updateChannel,
-            UserRole.USER,
-          ),
-        ),
-      ).toBe(false);
+        ).toBe(false);
+      }
     });
 
-    it("admin passes (200 path)", () => {
-      expect(
-        guard.canActivate(
-          ctxWith(
-            NotificationConfigController.prototype.getChannels,
-            UserRole.ADMIN,
+    it("admin passes (200 path) on every admin route", () => {
+      for (const name of [
+        "getChannels",
+        "updateChannel",
+        "testChannel",
+        "sendTest",
+      ]) {
+        expect(
+          guard.canActivate(
+            ctxWith(
+              NotificationConfigController.prototype[name],
+              UserRole.ADMIN,
+            ),
           ),
-        ),
-      ).toBe(true);
-      expect(
-        guard.canActivate(
-          ctxWith(
-            NotificationConfigController.prototype.updateChannel,
-            UserRole.ADMIN,
-          ),
-        ),
-      ).toBe(true);
+        ).toBe(true);
+      }
     });
   });
 });

@@ -16,7 +16,10 @@ Task code uses them via ``TaskContext``::
     # or, on failure:
     ctx.report_failure(ValueError("upstream 503"))
 
-The client is ENABLED only when all three credentials are present. When
+The client is ENABLED when the Admin API URL and the callback token are
+present — ``AUTOFLOW_EXECUTOR_ADDRESS`` is optional (N27 made it optional on
+the admin-api's ``v1.`` per-execution callback path, and the node SDK has
+always treated it as optional; U14 aligns python with that semantics). When
 disabled, construction still succeeds (so ``ctx.callback.enabled`` can be
 checked), but any report attempt raises :class:`CallbackDisabledError`
 naming the missing variables — the same contract as the node SDK's
@@ -26,8 +29,12 @@ Payload shape follows admin-api's ``CallbackItemDto``
 (apps/admin-api/src/modules/task/dto/execution-callback.dto.ts):
 ``POST {admin_api_url}/api/executions/callback`` with
 ``Authorization: Bearer <token>`` and a JSON array body of
-``{executionId, status, executorAddress, logs?, errorMessage?,
+``{executionId, status, executorAddress?, logs?, errorMessage?,
 failureReason?, durationMs?}`` items.
+
+Responses arrive in admin-api's global ``{code, message, data}`` envelope
+(ResponseInterceptor); :meth:`CallbackClient.report` unwraps it and returns
+the inner ``data`` — for the callback endpoint that is ``{results: [...]}``.
 """
 from typing import Any, Dict, List, Optional
 
@@ -44,13 +51,39 @@ VALID_FAILURE_REASONS = frozenset({
     "timeout",
     "executor_offline",
     "executor_restart",
+    # BUG-15 复审: P2 起 admin 枚举新增 stale_recovered（sweep 赢家标记），
+    # 白名单与 admin DTO（@IsIn(Object.values(ExecutionFailureReason))）保持同步
+    "stale_recovered",
+    # BUG-10: 执行器侧细分分类（依赖安装 / Git 拉取 / 运行时缺失）
+    "dependency_install_failed",
+    "git_fetch_failed",
+    "runtime_missing",
     "killed",
     "unknown",
 })
 
 
 class CallbackDisabledError(RuntimeError):
-    """Raised when a callback is attempted without full credentials."""
+    """Raised when a callback is attempted without the required credentials."""
+
+
+def unwrap_envelope(payload: Any) -> Any:
+    """Strip admin-api's global ``{code, message, data}`` response envelope.
+
+    The ResponseInterceptor in apps/admin-api wraps every successful body;
+    without this the caller's ``result["results"]`` lookup would hit the
+    envelope and see nothing (U14). Bodies that do not look like the
+    envelope (proxies, tests, future non-enveloped endpoints) are returned
+    unchanged.
+    """
+    if (
+        isinstance(payload, dict)
+        and "code" in payload
+        and "message" in payload
+        and "data" in payload
+    ):
+        return payload["data"]
+    return payload
 
 
 class CallbackClient:
@@ -70,14 +103,18 @@ class CallbackClient:
         self.execution_id = execution_id or ""
         self.timeout = timeout
 
+        # U14: enabled semantics aligned with the node SDK — only url+token
+        # are required. AUTOFLOW_EXECUTOR_ADDRESS is optional since N27: the
+        # admin-api `v1.` per-execution callback path does not require
+        # executorAddress on items (the token is already execution-bound),
+        # so a N23-era executor that never injects it must not disable
+        # callbacks. When present, it is still auto-stamped on items (N27).
         missing = []
         if not self.admin_api_url:
             missing.append("AUTOFLOW_ADMIN_API_URL")
         if not self.token:
             missing.append("AUTOFLOW_CALLBACK_TOKEN")
-        if not self.executor_address:
-            missing.append("AUTOFLOW_EXECUTOR_ADDRESS")
-        #: Whether all three callback credentials are present.
+        #: Whether the Admin API URL and callback token are both present.
         self.enabled = not missing
         #: Reason for being disabled (populated only when ``enabled`` is False).
         self.disabled_reason: Optional[str] = None
@@ -86,8 +123,9 @@ class CallbackClient:
                 "CallbackClient is disabled: Admin API callback credentials are "
                 "missing (" + ", ".join(missing) + " were not present in the "
                 "environment; older executors never inject them, see SEC-01/N23). "
-                "Provide them via TaskContext(callback_token=..., admin_api_url=..., "
-                "executor_address=...) if callbacks are required."
+                "Provide them via TaskContext(callback_token=..., admin_api_url=...) "
+                "if callbacks are required (AUTOFLOW_EXECUTOR_ADDRESS is optional "
+                "and only used to auto-stamp callback items, N27)."
             )
 
     # ------------------------------------------------------------------ url
@@ -102,10 +140,17 @@ class CallbackClient:
     # ------------------------------------------------------------------ core
 
     def report(self, items: List[Dict[str, Any]]) -> Any:
-        """POST a batch of CallbackItemDto dicts. Returns the parsed response.
+        """POST a batch of CallbackItemDto dicts.
+
+        Returns the unwrapped payload: admin-api wraps every response in a
+        ``{code, message, data}`` envelope (global ResponseInterceptor) and
+        the callback endpoint's ``data`` is ``{results: [{executionId,
+        success, error?}, ...]}`` — callers get that inner object directly.
+        Non-enveloped bodies are passed through unchanged.
 
         Raises CallbackDisabledError without credentials, httpx.HTTPStatusError
-        on a non-2xx answer from the Admin API.
+        on a non-2xx answer from the Admin API (the message is enriched with
+        the envelope's ``message`` field when present).
         """
         if not self.enabled:
             raise CallbackDisabledError(self.disabled_reason)
@@ -116,15 +161,49 @@ class CallbackClient:
                 json=payload,
                 headers={"Authorization": f"Bearer {self.token}"},
             )
-            resp.raise_for_status()
-            return resp.json()
+            if resp.status_code >= 400:
+                raise self._status_error(resp)
+            return unwrap_envelope(resp.json())
+
+    @staticmethod
+    def _status_error(resp: httpx.Response) -> httpx.HTTPStatusError:
+        """HTTPStatusError whose message carries admin-api's envelope detail.
+
+        ``raise_for_status`` alone would only say "401 Client Error", hiding
+        the server-side reason ("Invalid or expired execution callback
+        token", validation messages, ...). Keep the exception type unchanged
+        so callers can still catch httpx.HTTPStatusError.
+        """
+        detail = ""
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            message = body.get("message")
+            if isinstance(message, str) and message:
+                detail = f": {message}"
+            elif isinstance(message, list) and message:
+                detail = ": " + "; ".join(str(m) for m in message)
+        return httpx.HTTPStatusError(
+            f"Client error {resp.status_code} for {resp.request.method} "
+            f"{resp.request.url}{detail}",
+            request=resp.request,
+            response=resp,
+        )
 
     def _with_defaults(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Fill executionId / executorAddress on items that omit them (N27)."""
+        """Fill executionId / executorAddress on items that omit them (N27).
+
+        executorAddress is only stamped when this client knows the address —
+        the admin-api `v1.` callback path treats it as optional, so an
+        executor that never injected AUTOFLOW_EXECUTOR_ADDRESS must not send
+        an empty one.
+        """
         filled = dict(item)
         if not filled.get("executionId"):
             filled["executionId"] = self.execution_id
-        if not filled.get("executorAddress"):
+        if not filled.get("executorAddress") and self.executor_address:
             filled["executorAddress"] = self.executor_address
         return filled
 
@@ -139,8 +218,9 @@ class CallbackClient:
         item: Dict[str, Any] = {
             "executionId": self.execution_id,
             "status": "success",
-            "executorAddress": self.executor_address,
         }
+        if self.executor_address:
+            item["executorAddress"] = self.executor_address
         if summary:
             item["logs"] = summary[:LOGS_MAX_LENGTH]
         if duration_ms is not None:
@@ -168,10 +248,11 @@ class CallbackClient:
         item: Dict[str, Any] = {
             "executionId": self.execution_id,
             "status": "failed",
-            "executorAddress": self.executor_address,
             "errorMessage": str(error)[:ERROR_MESSAGE_MAX_LENGTH],
             "failureReason": failure_reason,
         }
+        if self.executor_address:
+            item["executorAddress"] = self.executor_address
         if summary:
             item["logs"] = summary[:LOGS_MAX_LENGTH]
         if duration_ms is not None:

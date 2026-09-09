@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import {
   BaseChannel,
+  ChannelConfigOverride,
   ChannelDeliveryStatus,
   NotificationPayload,
 } from "./base.channel";
@@ -21,12 +22,17 @@ export class WecomChannel extends BaseChannel {
     super();
   }
 
-  async send(p: NotificationPayload): Promise<ChannelDeliveryStatus> {
-    // V1 (round-7): the config saved via PATCH /notification/channels/wecom
-    // takes precedence; the env webhook (WECOM_WEBHOOK) is only the fallback
-    // default when nothing was saved.
+  async send(
+    p: NotificationPayload,
+    configOverride?: ChannelConfigOverride,
+  ): Promise<ChannelDeliveryStatus> {
+    // R2: override merged over saved (override wins). Never publishes to
+    // the global store — concurrent prod alerts can never see test data.
+    const saved = this.store.get("wecom") ?? {};
+    const override = configOverride ?? {};
     const url =
-      this.store.get("wecom")?.webhookUrl ||
+      override.webhookUrl ||
+      saved.webhookUrl ||
       this.config.get<string>("notification.wecomWebhook");
     if (!url) return "skipped";
 
@@ -49,7 +55,9 @@ export class WecomChannel extends BaseChannel {
             msgtype: "markdown",
             markdown: { content: `## ${p.title}\n${p.content}` },
           },
-          { timeout: 10_000 },
+          // R3: maxRedirects=0 — refuse 3xx so the assertSafeHttpUrl
+          // check on the first hop is the only check applied.
+          { timeout: 10_000, maxRedirects: 0 },
         );
       });
       this.logger.log(`[Wecom] sent: ${p.title}`);

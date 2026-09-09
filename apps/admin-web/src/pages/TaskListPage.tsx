@@ -5,14 +5,18 @@ import {
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
-  DeleteOutlined, EyeOutlined, EditOutlined,
-  CheckSquareOutlined,
+  CopyOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
+  CheckSquareOutlined, FileTextOutlined,
 } from '@ant-design/icons';
-import { useRequest } from 'ahooks';
+import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { tasksApi, Task } from '../api/tasks';
+import { useTasksList, invalidateTaskData } from '../api/queries';
 import { getErrMsg } from '../utils/error';
+import { useDebounce } from '../hooks/useDebounce';
+import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
+import PageHeader from '../components/PageHeader';
 
 const { Text } = Typography;
 
@@ -41,14 +45,25 @@ export default function TaskListPage() {
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string; defaultParams?: Record<string, unknown> } | null>(null);
   const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
   const [triggering, setTriggering] = useState(false);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [batchLoading, setBatchLoading] = useState(false);
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
-  const { data, loading, refresh } = useRequest(
-    () => tasksApi.list({ page, pageSize, name: search || undefined, status: statusFilter, triggerType: triggerFilter }),
-    { pollingInterval: 30000, refreshDeps: [page, pageSize, search, statusFilter, triggerFilter] },
-  );
+  // 搜索防抖：输入框即时回显 search，列表查询跟随 debounced 值，避免每击键发请求
+  const debouncedSearch = useDebounce(search);
+
+  const { data, isLoading: loading } = useTasksList({
+    page,
+    pageSize,
+    name: debouncedSearch || undefined,
+    status: statusFilter,
+    triggerType: triggerFilter,
+  });
+  // FEAT-17: 写后失效句柄（原 useRequest refresh → invalidate 面收口）
+  const queryClient = useQueryClient();
+  const refresh = () => void invalidateTaskData(queryClient);
 
   const tasks: Task[] = data?.items ?? [];
   const total: number = data?.total ?? 0;
@@ -61,20 +76,32 @@ export default function TaskListPage() {
   };
 
   const handleBatchTrigger = async () => {
+    if (batchLoading) return;
+    setBatchLoading(true);
     try { await tasksApi.batchTrigger(selectedRowKeys); message.success(`已触发 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '批量触发失败')); }
+    finally { setBatchLoading(false); }
   };
   const handleBatchPause = async () => {
+    if (batchLoading) return;
+    setBatchLoading(true);
     try { await tasksApi.batchPause(selectedRowKeys); message.success(`已暂停 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '批量暂停失败')); }
+    finally { setBatchLoading(false); }
   };
   const handleBatchResume = async () => {
+    if (batchLoading) return;
+    setBatchLoading(true);
     try { await tasksApi.batchResume(selectedRowKeys); message.success(`已恢复 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '批量恢复失败')); }
+    finally { setBatchLoading(false); }
   };
   const handleBatchDelete = async () => {
+    if (batchLoading) return;
+    setBatchLoading(true);
     try { await tasksApi.batchDelete(selectedRowKeys); message.success(`已删除 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '批量删除失败')); }
+    finally { setBatchLoading(false); }
   };
 
   const handleTrigger = (id: string, name: string, defaultParams?: Record<string, unknown>) => {
@@ -103,13 +130,19 @@ export default function TaskListPage() {
   };
 
   const handlePause = async (id: string) => {
+    if (togglingId) return;
+    setTogglingId(id);
     try { await tasksApi.pause(id); message.success('已暂停'); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '暂停失败')); }
+    finally { setTogglingId(null); }
   };
 
   const handleResume = async (id: string) => {
+    if (togglingId) return;
+    setTogglingId(id);
     try { await tasksApi.resume(id); message.success('已恢复'); refresh(); }
     catch (err: unknown) { message.error(getErrMsg(err, '恢复失败')); }
+    finally { setTogglingId(null); }
   };
 
   const handleDelete = async (id: string) => {
@@ -117,6 +150,61 @@ export default function TaskListPage() {
     catch (err: unknown) { message.error(getErrMsg(err, '删除失败')); }
   };
 
+  // CORE-03-lite：一键克隆——复制任务全部可编辑字段生成 "-copy-" 副本，
+  // 服务端字段（id/createdAt/status 等）不回传；glue 源码一并复制。
+  const [cloningId, setCloningId] = useState<string | null>(null);
+  const handleClone = async (r: Task) => {
+    if (cloningId) return;
+    setCloningId(r.id);
+    try {
+      const src = await tasksApi.get(r.id);
+      const cloneName = `${r.name}-copy-${String(Date.now()).slice(-4)}`;
+      const payload: Record<string, unknown> = {
+        name: cloneName,
+        description: src.description,
+        runtime: src.runtime,
+        entrypoint: src.entrypoint,
+        requirements: src.requirements ?? [],
+        triggerType: src.triggerType,
+        cronExpression: src.cronExpression,
+        timezone: src.timezone,
+        fixedRate: src.fixedRate,
+        timeout: src.timeoutSeconds ?? src.timeout,
+        maxRetry: src.maxRetry,
+        retryDelay: src.retryDelay,
+        retryableErrors: src.retryableErrors,
+        priority: typeof src.priority === 'number' ? src.priority : undefined,
+        params: src.params,
+        dependencies: src.dependencies,
+        executeMode: src.executeMode,
+        executorId: src.executorId,
+        executorGroup: src.executorGroup,
+        executorTags: src.executorTags,
+        gitRepo: src.gitRepo,
+        gitBranch: src.gitBranch,
+        gitCommit: src.gitCommit,
+        glueSource: src.glueSource,
+        glueLanguage: src.glueLanguage,
+        applicationId: src.applicationId,
+      };
+      Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+      const created = await tasksApi.create(payload);
+      message.success(`已克隆为 ${cloneName}（参数与依赖引用原样复制）`);
+      nav(`/tasks/${created.id}`);
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '克隆失败'));
+    } finally {
+      setCloningId(null);
+    }
+  };
+
+  // UI-09：375px 可用性——关键列=名称/状态/启用/操作（值班首查项），其余次要列
+  // responsive: ['md'] 在窄屏收起（CSS 侧 .ui09-hide-mobile 双保险）；
+  // scroll.x 兜底横向滚动。onHeaderCell/onCell 挂类供媒体查询隐藏次要列。
+  const hideOnMobile = {
+    onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+    onCell: () => ({ className: 'ui09-hide-mobile' }),
+  } as const;
   const columns = [
     {
       title: '任务名称',
@@ -142,14 +230,26 @@ export default function TaskListPage() {
       title: '触发方式',
       dataIndex: 'triggerType',
       width: 100,
+      ...hideOnMobile,
       render: (v: string) => (
         <Tag color={TRIGGER_COLOR[v] || 'default'}>{TRIGGER_LABEL[v] || v}</Tag>
       ),
     },
     {
+      title: '优先级',
+      key: 'priority',
+      width: 80,
+      ...hideOnMobile,
+      render: (_: unknown, r: Task) => {
+        const t = priorityTag(r.priority);
+        return <Tag color={t.color}>{t.label}</Tag>;
+      },
+    },
+    {
       title: '调度',
       key: 'schedule',
       width: 160,
+      ...hideOnMobile,
       render: (_: unknown, r: Task) => {
         if (r.triggerType === 'cron' && r.cronExpression) {
           return <Text code style={{ fontSize: 12 }}>{r.cronExpression}</Text>;
@@ -169,6 +269,7 @@ export default function TaskListPage() {
       title: '下次执行',
       key: 'nextRun',
       width: 150,
+      ...hideOnMobile,
       render: (_: unknown, r: Task) => {
         if (r.status !== 'active') return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
         if (r.triggerType === 'cron' && r.cronExpression) {
@@ -188,6 +289,7 @@ export default function TaskListPage() {
       title: '运行时',
       dataIndex: 'runtime',
       width: 80,
+      ...hideOnMobile,
       render: (v: string) => v ? <Tag>{v}</Tag> : '-',
     },
     {
@@ -198,9 +300,9 @@ export default function TaskListPage() {
         <Switch
           size="small"
           checked={r.status === 'active'}
-          loading={false}
+          loading={togglingId === r.id}
           onChange={checked => checked ? handleResume(r.id) : handlePause(r.id)}
-          disabled={r.status === 'failed' || r.status === 'inactive'}
+          disabled={r.status === 'failed' || r.status === 'inactive' || (!!togglingId && togglingId !== r.id)}
         />
       ),
     },
@@ -215,6 +317,13 @@ export default function TaskListPage() {
           </Tooltip>
           <Tooltip title="编辑">
             <Button type="text" size="small" icon={<EditOutlined />} onClick={() => nav(`/tasks/${r.id}/edit`)} />
+          </Tooltip>
+          <Tooltip title="克隆（复制全部配置创建副本）">
+            <Button
+              type="text" size="small" icon={<CopyOutlined />}
+              loading={cloningId === r.id}
+              onClick={() => handleClone(r)}
+            />
           </Tooltip>
           <Tooltip title="立即执行">
             <Button
@@ -239,44 +348,49 @@ export default function TaskListPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>任务调度</Typography.Title>
-          <Text type="secondary" style={{ fontSize: 13}}>
-            {tasks.filter(t => t.status === 'active').length} 个运行中，共{tasks.length} 个任务
-          </Text>
-        </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => nav('/tasks/new')}>
-          创建任务
-        </Button>
-      </div>
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，操作按钮进 extra） */}
+      <PageHeader
+        title="任务调度"
+        description={<>共 {total} 个任务</>}
+        extra={
+          <>
+            {/* CORE-03: 任务模板入口——从预置/自定义模板一键克隆 config */}
+            <Button icon={<FileTextOutlined />} onClick={() => nav('/task-templates')}>
+              任务模板
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => nav('/tasks/new')}>
+              创建任务
+            </Button>
+          </>
+        }
+      />
 
-      <Space style={{ marginBottom: 16 }} wrap>
+      {/* UI-09：筛选区 wrap 堆叠（Space wrap 已有），输入/选择窄屏自适应宽度 */}
+      <Space style={{ marginBottom: 16 }} wrap className="ui09-filter-bar">
         <Input
           placeholder="搜索任务名、描述"
           prefix={<SearchOutlined />}
           value={search}
           onChange={e => setSearch(e.target.value)}
           allowClear
-          style={{ width: 220 }}
+          style={{ width: 220, maxWidth: '100%' }}
         />
         <Select
           placeholder="全部状态"
           allowClear
-          style={{ width: 110 }}
+          style={{ width: 110, maxWidth: '100%' }}
           value={statusFilter}
           onChange={setStatusFilter}
           suffixIcon={<FilterOutlined />}
           options={[
             { value: 'active', label: '运行中' },
             { value: 'paused', label: '已暂停' },
-            { value: 'failed', label: '失败' },
           ]}
         />
         <Select
           placeholder="触发方式"
           allowClear
-          style={{ width: 120 }}
+          style={{ width: 120, maxWidth: '100%' }}
           value={triggerFilter}
           onChange={setTriggerFilter}
           options={[
@@ -301,13 +415,13 @@ export default function TaskListPage() {
         <div style={{ background: '#e6f4ff', border: '1px solid #91caff', borderRadius: 6, padding: '8px 16px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <CheckSquareOutlined style={{ color: '#1677ff' }} />
           <Text>已选 <strong>{selectedRowKeys.length}</strong> 项</Text>
-          <Button size="small" icon={<ThunderboltOutlined />} onClick={handleBatchTrigger}>批量触发</Button>
-          <Button size="small" onClick={handleBatchPause}>批量暂停</Button>
-          <Button size="small" onClick={handleBatchResume}>批量恢复</Button>
+          <Button size="small" icon={<ThunderboltOutlined />} loading={batchLoading} disabled={batchLoading} onClick={handleBatchTrigger}>批量触发</Button>
+          <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchPause}>批量暂停</Button>
+          <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchResume}>批量恢复</Button>
           <Popconfirm title={`确认删除 ${selectedRowKeys.length} 个任务？`} onConfirm={handleBatchDelete} okText="删除" okButtonProps={{ danger: true }}>
-            <Button size="small" danger icon={<DeleteOutlined />}>批量删除</Button>
+            <Button size="small" danger icon={<DeleteOutlined />} loading={batchLoading} disabled={batchLoading}>批量删除</Button>
           </Popconfirm>
-          <Button size="small" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+          <Button size="small" disabled={batchLoading} onClick={() => setSelectedRowKeys([])}>取消选择</Button>
         </div>
       )}
 
@@ -345,6 +459,8 @@ export default function TaskListPage() {
         columns={columns}
         dataSource={tasks}
         loading={loading}
+        // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
+        scroll={{ x: 760 }}
         pagination={{
           total,
           current: page,

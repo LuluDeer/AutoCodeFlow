@@ -4,6 +4,8 @@ import {
   IsOptional,
   IsObject,
   IsUUID,
+  IsInt,
+  MaxLength,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { RunMode } from "../entities/app-deployment.entity";
@@ -36,6 +38,19 @@ export class CreateDeploymentDto {
   startCommand?: string;
 }
 
+/** DEP-04: 审批动作请求体（approve/reject 共用；reason 可选 ≤200，拒绝时
+ *  建议携带——随 approvalMeta/statusMessage 留痕，语义对齐 AUTH-05）。 */
+export class ApprovalActionDto {
+  @ApiPropertyOptional({
+    description: "Optional decision reason (≤200 chars), recorded in audit",
+    maxLength: 200,
+  })
+  @IsString()
+  @MaxLength(200)
+  @IsOptional()
+  reason?: string;
+}
+
 export class DeploymentHeartbeatDto {
   @ApiProperty({ description: "Deployment ID" })
   @IsUUID()
@@ -51,8 +66,11 @@ export class DeploymentHeartbeatDto {
   })
   status: string;
 
-  @ApiPropertyOptional({ description: "Process PID" })
+  // R17: pid is persisted/compared as a number — without @IsInt a string
+  // like "123" (or an object) would pass validation and land in the row.
+  @ApiPropertyOptional({ description: "Process PID", type: Number })
   @IsOptional()
+  @IsInt()
   pid?: number;
 
   @ApiPropertyOptional()

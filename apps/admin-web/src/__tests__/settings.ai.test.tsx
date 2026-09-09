@@ -101,4 +101,21 @@ describe('settings 页 AI 配置区块（R6 ADMIN-only 降级）', () => {
     await waitFor(() => expect(aiApi.getConfig).toHaveBeenCalled());
     expect(await screen.findByText('保存配置')).toBeTruthy();
   });
+
+  // ── UI-15：AI 配置保存失败反馈断言（onError 补齐）──
+  it('保存 AI 配置失败 → 错误 toast（UI-15 onError 补齐）', async () => {
+    useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
+    vi.mocked(aiApi.saveConfig).mockRejectedValue(
+      Object.assign(new Error('bad'), { response: { data: { message: 'AI 配置校验未通过' } } }),
+    );
+    renderSettings();
+    fireEvent.click(screen.getByText('AI 配置'));
+    await screen.findByText('保存配置');
+
+    fireEvent.click(screen.getByText('保存配置'));
+    await waitFor(() => expect(aiApi.saveConfig).toHaveBeenCalledTimes(1));
+    // mutation onError 与 handleSave catch 双路 toast（同文案），holder 内两条 →
+    // getAllByText 容忍多命中（notification-silences 先例）
+    expect((await screen.findAllByText('AI 配置校验未通过')).length).toBeGreaterThanOrEqual(1);
+  });
 });

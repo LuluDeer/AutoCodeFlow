@@ -3,11 +3,13 @@ import {
   Logger,
   OnModuleInit,
   OnModuleDestroy,
+  Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, In, LessThan, Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
+import { ConfigService } from "@nestjs/config";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import * as nodeCron from "node-cron";
 import {
@@ -18,11 +20,16 @@ import {
   MisfireStrategy,
   normalizeTaskPriority,
 } from "../task/entities/task.entity";
+import { findActiveMaintenanceWindow } from "../task/maintenance-window.util";
+// CORE-02: 重试退避抖动——±20% 摊开同周期失败任务的的重试时刻
+import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 import {
   TaskExecution,
   ExecutionStatus,
   ExecutionFailureReason,
 } from "../task/entities/task-execution.entity";
+import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
+import { ExecutorService } from "../executor/executor.service";
 import {
   RedisLockService,
   Lock,
@@ -32,6 +39,8 @@ import {
   SchedulerMetricsSnapshot,
   SchedulerMetricsDerived,
 } from "./scheduler-metrics.service";
+// OBS-01: 调度入队链路追踪（disabled 时全短路零开销）
+import { TracingService } from "../../common/tracing/tracing.service";
 
 /** TASK-006: Leader Election 锁 key（RedisLockService 会加 lock: 前缀） */
 export const SCHEDULER_LEADER_LOCK_KEY = "scheduler:leader";
@@ -70,6 +79,17 @@ export const TRIGGER_DEDUP_JITTER_BUFFER_MS = 500;
  * N5: stale 扫描的固定兜底窗口——timeout=0（不限时）任务的最短回收延迟。
  */
 export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
+
+/**
+ * CONSISTENCY-02: 执行器活性探测的绝对兜底参数。当候选 stale 行所属执行器在线
+ * 且心跳上报"仍在执行该 executionId"时，本轮跳过误判恢复；但该跳过不是无限的
+ * ——一旦 stale 时长超过 max(6 × taskTimeout, ABSOLUTE_FLOOR_MS)，无视上报仍强制
+ * 恢复，防止执行器 bug（谎报 running）导致行永久悬挂。timeout=0（无显式超时）
+ * 或算得的绝对兜底短于该行 stale 阈值时，回退到 stale 阈值（保持既有回收行为，
+ * 不因探测而放宽无限时任务的回收）。
+ */
+export const STALE_LIVENESS_ABSOLUTE_FLOOR_MS = 30 * 60 * 1000; // 30 min
+export const STALE_LIVENESS_ABSOLUTE_TIMEOUT_MULTIPLIER = 6;
 
 /**
  * N6: 计算触发去重锁的 TTL。去重窗口必须由"触发周期"决定而非任务超时：
@@ -135,6 +155,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     private redisLockService: RedisLockService,
     private dataSource: DataSource,
     private schedulerMetrics: SchedulerMetricsService,
+    // P2: stale sweep 的重试兑现（scheduleRetryAfterRecovery/hasRetryBudget）
+    // 与 re-enqueue 前的 best-effort kill 通知（notifyExecutorKill）。
+    private executorService: ExecutorService,
+    private configService: ConfigService,
+    // OBS-01: 调度入队 span（@Global 恒提供；disabled 时全短路）。
+    // @Optional 仅为既有单测装配兼容（provider 缺失 → null → no-op）。
+    @Optional()
+    private tracing: TracingService | null,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -345,6 +373,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * and mark them FAILED so the UI never shows permanently-running tasks.
    * Runs on startup and every 10 minutes thereafter.
    *
+   * P2: sweep 赢得 RUNNING→FAILED 后还兑现重试预算——预算未耗尽的执行经
+   * ExecutorService.scheduleRetryAfterRecovery 创建新 PENDING execution 并
+   * 入队（re-enqueue 前先 best-effort kill 原执行器进程），开关见
+   * STALE_RECOVERY_RETRY_ENABLED。
+   *
    * Timeout logic:
    * - If the associated task has a timeout > 0, use that as the stale threshold.
    * - Otherwise fall back to a 1-hour global grace window.
@@ -393,6 +426,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         taskTimeouts.set(t.id, t.timeout);
       }
     }
+    // P2: re-enqueue 需要完整 task 行（maxRetry/retryDelay 预算语义）与原执行
+    // 快照（retryCount/params/triggerType）——循环外各索引一次。
+    const taskById = new Map(tasks.map((t) => [t.id, t]));
+    const execById = new Map(runningExecs.map((e) => [e.id, e]));
 
     // TASK-004: 在内存中按"超时类型"分组，随后用单事务内的条件批量 UPDATE
     // 一次性恢复（替代原先逐行 save 的 N 条独立 UPDATE）。
@@ -401,6 +438,17 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     // （如并发回调刚写入 SUCCESS）绝不会被置为 FAILED。
     const timedOut = new Map<number, TaskExecution[]>(); // taskTimeoutSec -> execs
     const recovered: TaskExecution[] = [];
+
+    // CONSISTENCY-02: 先收集"超阈值候选"，再对候选做一次批量执行器活性探测，
+    // 命中"执行器在线且上报仍在执行该 executionId"的行本轮跳过（改到绝对兜底仍
+    // 未上报时才恢复）。先聚合候选再探测，避免把无谓的执行器查询塞进行循环。
+    type StaleCandidate = {
+      exec: TaskExecution;
+      taskTimeoutSec?: number;
+      staleMs: number;
+      ageMs: number;
+    };
+    const candidates: StaleCandidate[] = [];
     for (const exec of runningExecs) {
       const anchor = exec.startTime ?? exec.createdAt;
       if (!anchor) continue;
@@ -414,16 +462,27 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           ? staleThresholdMs(taskTimeoutSec)
           : DEFAULT_STALE_MS;
 
-      if (now - anchor.getTime() > staleMs) {
-        if (taskTimeoutSec && taskTimeoutSec > 0) {
-          const bucket = timedOut.get(taskTimeoutSec) ?? [];
-          bucket.push(exec);
-          timedOut.set(taskTimeoutSec, bucket);
-        } else {
-          recovered.push(exec);
-        }
+      const ageMs = now - anchor.getTime();
+      if (ageMs > staleMs) {
+        candidates.push({ exec, taskTimeoutSec, staleMs, ageMs });
       }
     }
+
+    const liveness = await this.collectRunningLiveness(candidates);
+    for (const c of candidates) {
+      // 活性命中：执行器在线且明确上报仍在跑该 executionId，且未到绝对兜底 →
+      // 本轮跳过，交由后续心跳 / 真实回调收敛。
+      if (liveness.deferredIds.has(c.exec.id)) continue;
+      if (c.taskTimeoutSec && c.taskTimeoutSec > 0) {
+        const bucket = timedOut.get(c.taskTimeoutSec) ?? [];
+        bucket.push(c.exec);
+        timedOut.set(c.taskTimeoutSec, bucket);
+      } else {
+        recovered.push(c.exec);
+      }
+    }
+
+    // 跳过本轮的行不计入 recovered，故 totalRecovered 自动不含它们。
 
     const OPEN_STATUSES = OPEN_EXECUTION_STATUSES;
     const finishedAt = new Date();
@@ -469,18 +528,74 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             failureReason: ExecutionFailureReason.TIMEOUT,
           });
         }
+        // P2: 本桶是 sweep 自行定案的"worker 崩溃型/回调丢失型"恢复行，
+        // failureReason 用 STALE_RECOVERED 取代泛化的 UNKNOWN，使"sweep 恢复 +
+        // 重试预算兑现/耗尽"全链路可溯源。timedOut 桶保留 TIMEOUT——超时分类
+        // 本身有语义且被下游消费，sweep 归属由 REC-01 日志承载。
         await runUpdate(recovered, {
           status: ExecutionStatus.FAILED,
           endTime: finishedAt,
-          errorMessage:
-            "Execution did not complete (recovered on node restart)",
-          failureReason: ExecutionFailureReason.UNKNOWN,
+          errorMessage: "Execution did not complete (recovered by stale sweep)",
+          failureReason: ExecutionFailureReason.STALE_RECOVERED,
         });
       });
 
+      // P2 (sweep 重试预算兑现): task.processor 已把 RUNNING 移出 claimable，
+      // worker 在 claim 后崩溃的执行只能等本 sweep 收敛——若只置 FAILED 不
+      // re-enqueue，task.maxRetry>0 的任务实际拿不到任何重试。此处对 sweep
+      // 赢家兑现预算。
+      //
+      // 幂等/竞态护栏：recoveredRows 来自 UPDATE ... RETURNING，只含条件
+      // UPDATE（status IN open）真正命中的行——并发回调已写终态的输家行不在
+      // 其中，绝不触发 re-enqueue；新 execution 由 execRepo.create 生成全新
+      // uuid，同一 execution 不会被重复 re-enqueue。
+      //
+      // timeout=0（不限时）任务不做特判：它们只有在"执行器在线且活性上报仍
+      // 含该 execution"被 defer 到绝对兜底（30min）之后才会进入本恢复路径，
+      // 上报已不可信（谎报/僵死），与其余行同等对待——kill 通知尽力而为，
+      // 预算未耗尽则重试。取舍：极端情况下可能与仍在运行的原进程并行一次，
+      // 由 kill 通知兜底；相比"静默丢重试"，这是更安全的失败方向。
+      const retryOnRecovery = this.staleRecoveryRetryEnabled();
       for (const row of recoveredRows) {
         await this.releaseExecutorSlot(row.executorAddress);
         this.logger.warn(`REC-01: execution ${row.id} recovered as FAILED`);
+        if (!retryOnRecovery) continue;
+        const exec = execById.get(row.id);
+        const task = exec ? taskById.get(exec.taskId) : undefined;
+        if (!exec || !task) {
+          // 任务已删除/查不到：无预算可对照，维持旧行为（只 FAILED）。
+          continue;
+        }
+        // 预算语义与 executor-restart 路径同源（ExecutorService）。预算耗尽
+        // 时连 kill 都不发——没有新执行就不会双跑。
+        if (!this.executorService.hasRetryBudget(task, exec)) continue;
+        // kill 必须在 re-enqueue 之前：防"执行器谎报/进程僵死但仍存活"场景下
+        // 原进程与新执行双跑。best-effort——离线/404/超时不阻塞重试。
+        try {
+          await this.executorService.notifyExecutorKill(
+            exec.id,
+            exec.executorAddress,
+          );
+        } catch (err: unknown) {
+          this.logger.warn(
+            `REC-01: kill notification before retry failed for ${exec.id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+        try {
+          await this.executorService.scheduleRetryAfterRecovery(
+            task,
+            exec,
+            "stale_recovery",
+          );
+        } catch (err: unknown) {
+          this.logger.warn(
+            `REC-01: retry scheduling failed for recovered execution ${exec.id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
       }
     }
 
@@ -532,6 +647,97 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         `REC-01: recovered ${totalRecovered} stale execution(s)`,
       );
     }
+  }
+
+  /**
+   * CONSISTENCY-02: 对超阈值候选做一次执行器活性探测。返回本轮应"跳过恢复"的
+   * executionId 集合（deferredIds）。跳过条件——候选行所属执行器 status=ONLINE
+   * 且其心跳上报的 runningExecutionIds 命中该 executionId，且 stale 时长未超过
+   * 绝对兜底 max(6×timeout, 30min)。执行器离线 / 无记录 / 未上报（runningExecutionIds
+   * 为 null 或不含该 id）→ 不跳过，维持既有恢复行为。
+   *
+   * 探测失败（执行器表查询异常）时降级为"不跳过"（空集），宁可对疑似仍健康的行
+   * 恢复一次，也不放大容量误判。
+   */
+  private async collectRunningLiveness(
+    candidates: Array<{
+      exec: TaskExecution;
+      taskTimeoutSec?: number;
+      staleMs: number;
+      ageMs: number;
+    }>,
+  ): Promise<{ deferredIds: Set<string> }> {
+    const deferredIds = new Set<string>();
+    if (candidates.length === 0) return { deferredIds };
+
+    const addresses = [
+      ...new Set(
+        candidates
+          .map((c) => c.exec.executorAddress)
+          .filter((a): a is string => Boolean(a)),
+      ),
+    ];
+    if (addresses.length === 0) return { deferredIds };
+
+    let executors: Array<{
+      address: string;
+      status: ExecutorStatus;
+      runningExecutionIds: string[] | null;
+    }> = [];
+    try {
+      executors = await this.dataSource.getRepository(Executor).find({
+        where: { address: In(addresses) },
+        select: ["address", "status", "runningExecutionIds"],
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `recoverStaleExecutions liveness probe degraded (recover normally): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return { deferredIds };
+    }
+
+    const byAddress = new Map(executors.map((ex) => [ex.address, ex] as const));
+    for (const c of candidates) {
+      const addr = c.exec.executorAddress;
+      if (!addr) continue;
+      const ex = byAddress.get(addr);
+      // 执行器离线 / 无记录 / 未上报该字段 / 未命中该 executionId → 不跳过。
+      if (!ex || ex.status !== ExecutorStatus.ONLINE) continue;
+      if (!Array.isArray(ex.runningExecutionIds)) continue;
+      if (!ex.runningExecutionIds.includes(c.exec.id)) continue;
+
+      // 活性命中，但设绝对兜底：超过 max(6×timeout, 30min) 仍强制恢复。
+      // ageMs 以 anchor（startTime ?? createdAt）为基准，与 stale 判定同锚。
+      const absoluteFloorMs = Math.max(
+        c.taskTimeoutSec && c.taskTimeoutSec > 0
+          ? c.taskTimeoutSec * 1000 * STALE_LIVENESS_ABSOLUTE_TIMEOUT_MULTIPLIER
+          : 0,
+        STALE_LIVENESS_ABSOLUTE_FLOOR_MS,
+        c.staleMs,
+      );
+      if (c.ageMs > absoluteFloorMs) {
+        this.logger.warn(
+          `REC-01: execution ${c.exec.id} reported still-running by ${addr} but exceeded the absolute fallback — recovering anyway`,
+        );
+        continue;
+      }
+      deferredIds.add(c.exec.id);
+    }
+    return { deferredIds };
+  }
+
+  /**
+   * P2: stale sweep 重试兑现开关（env STALE_RECOVERY_RETRY_ENABLED，默认
+   * true）。仅显式 false 关闭；ConfigService 未注册/未命中（如单测环境）时
+   * 按默认开启处理，保证生产默认行为与设计一致。
+   */
+  private staleRecoveryRetryEnabled(): boolean {
+    return (
+      this.configService.get<boolean>("scheduler.staleRecoveryRetryEnabled") !==
+      false
+    );
   }
 
   private async releaseExecutorSlot(address?: string | null): Promise<void> {
@@ -610,7 +816,30 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async enqueue(task: Task, triggerType: string) {
+  async enqueue(
+    task: Task,
+    triggerType: string,
+    /** CORE-06：定时器计划触发的时刻（Date.now()），用于 fire→入队延迟分布 */
+    fireTime?: number,
+  ) {
+    // FEAT-06: 任务级维护窗口——命中即跳过（不 claim 去重锁、不建
+    // executions 行、不推进 lastTriggerTime），窗口关闭后的下一个调度点
+    // 正常触发。检查放在去重锁之前：被窗口抑制的触发不应消耗本周期的
+    // 去重窗口。范围取舍：仅约束调度入队路径（cron/fixed_rate/misfire
+    // 补偿）；手动/API 触发与依赖扇出走 TaskService.trigger，不受窗口
+    // 约束（发布窗口内人工补跑是预期操作）。可观测性：metrics 的
+    // triggersSkippedMaintenance + 本日志，executions 不建行（窗口内
+    // 每个触发点都会跳过，建行会淹没执行记录）。
+    const activeWindow = findActiveMaintenanceWindow(task.maintenanceWindows);
+    if (activeWindow) {
+      this.logger.log(
+        `Task "${task.name}" trigger skipped: inside maintenance window ` +
+          `(start=${activeWindow.start}, end=${activeWindow.end}` +
+          `${activeWindow.description ? `, ${activeWindow.description}` : ""})`,
+      );
+      this.schedulerMetrics.recordTriggerSkippedMaintenance();
+      return null;
+    }
     // N6: the dedup window is derived from the trigger period, NOT the task
     // timeout (the old max(timeout, interval) TTL silently suppressed
     // short-period tasks down to the task timeout). See computeTriggerDedupTtlMs.
@@ -741,6 +970,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           params: task.params,
           triggerType,
           taskVersion: task.currentVersion,
+          // OBS-01: 追踪开启时由入队侧生成 trace 根（NULL=追踪未开启）。
+          traceId: this.newExecutionTraceId(),
         }),
       );
 
@@ -750,7 +981,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           task.retryDelay > 0
             ? {
                 type: "exponential" as const,
-                delay: task.retryDelay * 1000,
+                // CORE-02: 首次尝试即预乘指数基座并加 ±20% 抖动，摊开同周期
+                // 失败任务的重试时刻（thundering herd）。
+                delay: jitteredRetryDelayMs(task.retryDelay, 1),
               }
             : undefined,
         // N2: DB 里 priority 是 PG 字符串枚举，TypeORM 读回 'normal' 等
@@ -786,6 +1019,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       });
       // R4-§5.5: 触发成功（claim 赢家且执行已入队）
       this.schedulerMetrics.recordTriggerClaimed();
+      // CORE-06：定时触发的 fire→入队延迟（手动触发无计划时刻，不记录）
+      if (fireTime != null) {
+        this.schedulerMetrics.recordTriggerLatency(Date.now() - fireTime);
+      }
+      // OBS-01: 调度入队 span（traceId 来自刚落库的执行行；null=no-op）
+      this.tracing?.startSpan(exec.traceId, "scheduler.enqueue", {
+        executionId: exec.id,
+        triggerType,
+      })?.();
       return exec;
     } finally {
       // P1: deliberately do NOT release the dedup lock — its TTL is the
@@ -820,6 +1062,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       )
       .execute();
     return (result?.affected ?? 0) > 0;
+  }
+
+  /**
+   * OBS-01: 追踪开启时为新建执行生成 trace 根并返回 traceId（落库）。
+   * disabled 恒返回 null——零行为变化。
+   */
+  private newExecutionTraceId(): string | null {
+    const traceparent = this.tracing?.startTrace() ?? null;
+    return this.tracing?.extractContext(traceparent) ?? null;
   }
 
   /** Stop and remove all schedules for the given task */
@@ -865,12 +1116,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             );
             return;
           }
+          // CORE-06：计划触发时刻——回调第一行取样，延迟含事件循环滞后 +
+          // findOne + 去重锁 + 入队全链
+          const fireTime = Date.now();
           this.runningTasks.set(taskId, true);
           try {
             const latest = await this.taskRepo.findOne({
               where: { id: taskId, status: TaskStatus.ACTIVE },
             });
-            if (latest) await this.enqueue(latest, "fixed_rate");
+            if (latest) await this.enqueue(latest, "fixed_rate", fireTime);
           } finally {
             this.runningTasks.delete(taskId);
           }
@@ -893,10 +1147,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         const cronTask = nodeCron.schedule(
           task.cronExpression,
           async () => {
+            const fireTime = Date.now();
             const latest = await this.taskRepo.findOne({
               where: { id: taskId, status: TaskStatus.ACTIVE },
             });
-            if (latest) await this.enqueue(latest, "cron");
+            if (latest) await this.enqueue(latest, "cron", fireTime);
           },
           this.getCronOptions(task),
         );

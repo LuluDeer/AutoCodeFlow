@@ -51,11 +51,28 @@ export class Application {
   @Column({ nullable: true }) packageUrl: string;
 
   /**
+   * DEP-04: when true, deploy() freezes new deployments as pending-approval
+   * rows instead of dispatching; a second person (≠ requester) must approve
+   * via the approval endpoints before the push happens.
+   */
+  @Column({ default: false }) approvalRequired: boolean;
+
+  /**
    * Optional HMAC-SHA256 secret for verifying release webhook signatures.
    * When set, callers must include an X-Hub-Signature-256 header.
    * Format: sha256=<hex-digest> (same convention as GitHub webhooks).
    */
   @Column({ nullable: true, select: false }) webhookSecret: string;
+
+  /**
+   * AUTH-01（多租户 Project，第一批）：应用归属项目（可空）。迁移
+   * 1790000000009 加列 + FK ON DELETE SET NULL + 索引。存量行不回填——
+   * 可空 = 未分配，列表过滤面按「IS NULL OR = 默认项目」归入默认项目
+   * 视图（application.service.findAll）。只加列不加关系，避免与
+   * project 模块循环导入。
+   */
+  @Column({ type: "uuid", nullable: true })
+  projectId: string | null;
 
   @CreateDateColumn() createdAt: Date;
 

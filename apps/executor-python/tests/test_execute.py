@@ -10,6 +10,8 @@ background-task references, uv hardening and P3 validators.
 import asyncio
 import re
 import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -132,7 +134,7 @@ def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
 
     posted = {}
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         return {
             'success': True,
             'logs': 'done',
@@ -165,6 +167,10 @@ def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
     monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'dynamic-token')
     monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
     monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'public-executor:9000')
+    # E3: callback prefers auth.get_current_token(); None here pins the
+    # settings-token fallback (no real admin-api round trip in tests).
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(execute_module, 'get_current_token', AsyncMock(return_value=None))
 
     req = ExecuteRequest(
         executionId='exec-callback',
@@ -237,6 +243,40 @@ def test_execute_at_capacity_returns_429(auth_client):
 # SEC-01: Environment variable isolation (security boundary)
 # ---------------------------------------------------------------------------
 
+def test_env_whitelist_windows_parity_surface():
+    """R-04 (windows-findings): the python executor's whitelist must expose the
+    same Windows system/home/identity surface as executor-node's — a missing
+    USERPROFILE makes expanduser('~') return the literal '~' inside user
+    tasks (breaks pip/npm/git caches), and a missing USERNAME raises
+    KeyError in getpass.getuser(). Host-independent set assertion."""
+    from routers.execute import _ENV_WHITELIST
+    win_vars = {
+        'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+        'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME',
+        'APPDATA', 'LOCALAPPDATA', 'ProgramData',
+    }
+    missing = win_vars - _ENV_WHITELIST
+    assert not missing, f'Windows vars missing from _ENV_WHITELIST: {missing}'
+    # and the classic secrets stay out
+    for secret in ('EXECUTOR_SHARED_TOKEN', 'EXECUTOR_SECRET', 'ADMIN_API_URL'):
+        assert secret not in _ENV_WHITELIST
+
+
+def test_build_child_env_windows_case_insensitive(monkeypatch):
+    """W-20 (parity with executor-node env-whitelist.spec): win32 env blocks
+    spell keys `Path`/`TEMP`/… case-insensitively; the child must receive
+    them under stable keys. POSIX envs keep exact semantics."""
+    from routers.execute import _build_child_env
+    monkeypatch.setenv('Path', '/mixed/case/path')
+    env = _build_child_env()
+    if sys.platform == 'win32':
+        assert env.get('PATH') == '/mixed/case/path'
+        assert 'Path' not in env
+    else:
+        assert env.get('PATH') != '/mixed/case/path'
+        assert 'Path' not in env
+
+
 def test_child_process_env_isolation(tmp_path):
     """SEC-01: Child process should NOT have access to executor secrets like EXECUTOR_SHARED_TOKEN."""
     import subprocess
@@ -258,7 +298,10 @@ def test_child_process_env_isolation(tmp_path):
     for var in sensitive_vars:
         assert var not in _ENV_WHITELIST, f"Sensitive variable {var} should NOT be in whitelist"
 
-    subprocess.run(['python3', str(test_script)], cwd=str(tmp_path), env=env, check=True)
+    # W-05: `python3` does not exist on Windows (Store stub) — use the
+    # interpreter running the test. Also exercises R-04: python.exe must
+    # launch under the *whitelisted* env alone.
+    subprocess.run([sys.executable, str(test_script)], cwd=str(tmp_path), env=env, check=True)
 
     env_keys = set(out_file.read_text().strip().split('\n'))
 
@@ -290,7 +333,7 @@ def test_task_params_injected_as_env_vars(tmp_path):
     for k, v in params.items():
         env[f'AUTOFLOW_{k.upper()}'] = str(v)
 
-    subprocess.run(['python3', str(test_script)], cwd=str(tmp_path), env=env, check=True)
+    subprocess.run([sys.executable, str(test_script)], cwd=str(tmp_path), env=env, check=True)  # W-05
 
     result = json.loads(out_file.read_text())
 
@@ -371,7 +414,25 @@ def test_build_shell_cmd_uses_positional_params(tmp_path):
     the `bash -c` string."""
     from routers.execute import _build_shell_cmd
     cmd = _build_shell_cmd(tmp_path, 'safe.sh')
-    assert cmd == ['bash', '-c', 'cd "$1" && exec "$2"', 'bash', str(tmp_path), 'safe.sh']
+    if sys.platform == 'win32':
+        # W-05: win32 branch uses cmd.exe with the entrypoint as a separate
+        # argv element (no `&&` string interpolation). The spawn's cwd=work_dir
+        # supplies the working directory; the security intent (no task-controlled
+        # text parsed as shell syntax) holds on both platforms.
+        assert cmd == ['cmd.exe', '/c', 'safe.sh']
+        # W-09: POSIX-style './' and '/' are normalized — cmd.exe reads them
+        # as command/option tokens and fails with "'.' 不是内部或外部命令".
+        assert _build_shell_cmd(tmp_path, './safe.sh') == ['cmd.exe', '/c', 'safe.sh']
+        assert _build_shell_cmd(tmp_path, 'sub/dir/safe.sh') == ['cmd.exe', '/c', 'sub\\dir\\safe.sh']
+    else:
+        assert cmd == ['bash', '-c', 'cd "$1" && exec "$2"', 'bash', str(tmp_path), 'safe.sh']
+
+
+def _shell_glue(win: tuple[str, str], posix: tuple[str, str]) -> tuple[str, str]:
+    """W-05/R-09: shell runtime executes via `cmd.exe /c` on Windows and
+    `bash -c` on POSIX, so a glue script's (name, body) must be platform
+    native. Returns the tuple for the current platform."""
+    return win if sys.platform == 'win32' else posix
 
 
 def test_shell_task_runs_normal_entrypoint(tmp_path, monkeypatch):
@@ -380,10 +441,14 @@ def test_shell_task_runs_normal_entrypoint(tmp_path, monkeypatch):
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
-    _make_shell_workdir(tmp_path, 'exec-shell-ok', 'hello.sh', '#!/bin/bash\necho from-script\n')
+    name, content = _shell_glue(
+        ('hello.bat', '@echo off\necho from-script\n'),
+        ('hello.sh', '#!/bin/bash\necho from-script\n'),
+    )
+    _make_shell_workdir(tmp_path, 'exec-shell-ok', name, content)
     req = ExecuteRequest(
         executionId='exec-shell-ok',
-        task={'name': 'shell', 'runtime': 'shell', 'entrypoint': './hello.sh'},
+        task={'name': 'shell', 'runtime': 'shell', 'entrypoint': f'./{name}'},
     )
     result = asyncio.run(run_task(req))
     assert result['success'] is True
@@ -393,14 +458,22 @@ def test_shell_task_runs_normal_entrypoint(tmp_path, monkeypatch):
 
 def test_shell_glue_script_executes(tmp_path, monkeypatch):
     """Glue shell scripts use an absolute entrypoint inside work_dir — they
-    must keep working under the whitelist + positional-args scheme."""
+    must keep working under the whitelist + positional-args scheme.
+
+    W-05/R-09/W-11: on win32 the executor now writes `glue_script.cmd` and
+    runs it via cmd.exe, so the test feeds platform-native source and stays
+    live on both OSes (previously it was POSIX-only and skipped on Windows)."""
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    _, source = _shell_glue(
+        ('glue_script.cmd', '@echo off\necho glue-ok\n'),
+        ('glue_script.sh', '#!/bin/bash\necho glue-ok\n'),
+    )
     req = ExecuteRequest(
         executionId='exec-glue',
-        task={'name': 'glue', 'glueSource': '#!/bin/bash\necho glue-ok\n', 'glueLanguage': 'shell'},
+        task={'name': 'glue', 'glueSource': source, 'glueLanguage': 'shell'},
     )
     result = asyncio.run(run_task(req))
     assert result['success'] is True
@@ -446,7 +519,11 @@ def test_entrypoint_absolute_outside_workdir_rejected(tmp_path, monkeypatch):
 def test_log_memory_cap_and_disk_cap(tmp_path, monkeypatch):
     """P1: output beyond the memory cap is dropped from the callback payload
     (with a truncation marker admin can detect), while the disk log holds more
-    but is itself capped."""
+    but is itself capped.
+
+    W-05/R-09: switched from a POSIX `seq` bash loop to the python runtime so
+    the bounded-accumulation logic under test (runtime-agnostic) also runs on
+    Windows cmd.exe-free of bash-only syntax."""
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
 
@@ -454,14 +531,15 @@ def test_log_memory_cap_and_disk_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(execute_module, 'MAX_LOG_MEMORY_CHARS', 1000)
     monkeypatch.setattr(execute_module, 'MAX_LOG_FILE_BYTES', 2000)
 
-    workdir = _make_shell_workdir(tmp_path, 'exec-logcap', 'spam.sh')
-    script = workdir / 'spam.sh'
-    script.write_text('for i in $(seq 1 200); do echo "line-$i-012345678901234567890123456789"; done\n')
-    script.chmod(0o755)
+    workdir = _make_shell_workdir(tmp_path, 'exec-logcap')
+    (workdir / 'spam.py').write_text(
+        'for i in range(1, 201):\n'
+        '    print(f"line-{i}-012345678901234567890123456789")\n'
+    )
 
     req = ExecuteRequest(
         executionId='exec-logcap',
-        task={'name': 'spam', 'runtime': 'shell', 'entrypoint': './spam.sh'},
+        task={'name': 'spam', 'runtime': 'python', 'entrypoint': 'spam.py'},
     )
     result = asyncio.run(run_task(req))
 
@@ -479,18 +557,22 @@ def test_log_memory_cap_and_disk_cap(tmp_path, monkeypatch):
 
 def test_timeout_logs_are_bounded_and_truncated(tmp_path, monkeypatch):
     """P1: the timeout path must return truncated logs (it previously returned
-    the raw accumulation, which can exceed the admin DTO logs limit)."""
+    the raw accumulation, which can exceed the admin DTO logs limit).
+
+    W-05/R-09: python runtime keeps the sleep-based timeout guard cross-platform."""
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
-    workdir = _make_shell_workdir(
-        tmp_path, 'exec-timeout', 'noisy.sh',
-        'echo "padding-0123456789-0123456789-0123456789-0123456789"; sleep 30\n',
+    workdir = _make_shell_workdir(tmp_path, 'exec-timeout')
+    (workdir / 'noisy.py').write_text(
+        'print("padding-0123456789-0123456789-0123456789-0123456789")\n'
+        'import time\n'
+        'time.sleep(30)\n'
     )
     req = ExecuteRequest(
         executionId='exec-timeout',
-        task={'runtime': 'shell', 'entrypoint': './noisy.sh', 'timeoutSeconds': 1},
+        task={'runtime': 'python', 'entrypoint': 'noisy.py', 'timeoutSeconds': 1},
     )
     result = asyncio.run(run_task(req))
     assert result['success'] is False
@@ -500,19 +582,22 @@ def test_timeout_logs_are_bounded_and_truncated(tmp_path, monkeypatch):
 
 def test_normal_output_truncation_marker_preserved(tmp_path, monkeypatch):
     """Output under the caps but over the 10k callback limit still gets the
-    head/tail truncation marker that admin's LOG-01 backfill recognizes."""
+    head/tail truncation marker that admin's LOG-01 backfill recognizes.
+
+    W-05/R-09: python runtime generator replaces the bash `seq` loop."""
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
-    workdir = _make_shell_workdir(tmp_path, 'exec-10k', 'chat.sh')
-    script = workdir / 'chat.sh'
-    script.write_text('for i in $(seq 1 400); do echo "row-$i-abcdefghijklmnopqrstuvwxyz"; done\n')
-    script.chmod(0o755)
+    workdir = _make_shell_workdir(tmp_path, 'exec-10k')
+    (workdir / 'chat.py').write_text(
+        'for i in range(1, 401):\n'
+        '    print(f"row-{i}-abcdefghijklmnopqrstuvwxyz")\n'
+    )
 
     req = ExecuteRequest(
         executionId='exec-10k',
-        task={'runtime': 'shell', 'entrypoint': './chat.sh'},
+        task={'runtime': 'python', 'entrypoint': 'chat.py'},
     )
     result = asyncio.run(run_task(req))
     assert result['success'] is True
@@ -584,6 +669,45 @@ def test_git_checkout_to_failed_clone_cleans_partial_cache(tmp_path, monkeypatch
     with pytest.raises(subprocess.CalledProcessError):
         git_checkout_to(url, 'main', tmp_path / 'dest')
     assert not (tmp_path / '.git_cache' / execute_module._repo_dir_name(url)).exists()
+
+
+def test_git_checkout_to_heals_corrupt_cache_from_killed_clone(tmp_path, monkeypatch):
+    """W-23 (windows-findings): a process kill (taskkill /F) between the mkdir
+    and git finishing leaves a PARTIAL repo on disk that rmtree cleanup never
+    ran for. The old `cache_dir.exists()` check then took the fetch branch
+    forever — every later checkout of that task failed permanently. The probe
+    must detect the broken cache, quarantine it (rename, not delete), and
+    self-heal by re-cloning."""
+    from routers import execute as execute_module
+    from routers.execute import git_checkout_to, _repo_dir_name
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+
+    src = tmp_path / 'src'
+    src.mkdir()
+
+    def git(*args):
+        subprocess.run(['git', *args], cwd=str(src), check=True, capture_output=True)
+
+    git('init', '-q')
+    (src / 'hello.txt').write_text('healed')
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.')
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init')
+
+    # Simulate the post-kill residue: dir + HEAD + garbage, not a git repo.
+    cache_dir = tmp_path / '.git_cache' / _repo_dir_name(str(src))
+    cache_dir.mkdir(parents=True)
+    (cache_dir / 'HEAD').write_text('refrefs/heads/mainGARBAGE\n')
+    (cache_dir / 'objects').mkdir()
+
+    dest = tmp_path / 'dest'
+    git_checkout_to(str(src), 'HEAD', dest)  # must NOT take fetch path
+
+    assert (dest / 'hello.txt').read_text() == 'healed'
+    # healed cache is a valid bare repo now, and the broken one was quarantined
+    broken_dirs = [p for p in (tmp_path / '.git_cache').iterdir() if '-broken-' in p.name]
+    assert len(broken_dirs) == 1, 'broken cache must be renamed aside, not deleted'
+    assert (broken_dirs[0] / 'HEAD').read_text().startswith('ref')  # forensic state kept
 
 
 # ---------------------------------------------------------------------------
@@ -678,6 +802,11 @@ def _patch_callback_env(monkeypatch):
     monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'tok')
     monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
     monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'pub:9000')
+    # E3: the callback now prefers the dynamic token (auth.get_current_token);
+    # return None so these tests keep exercising the settings-token fallback
+    # without a real admin-api round trip.
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(execute_module, 'get_current_token', AsyncMock(return_value=None))
 
 
 def test_run_and_callback_retries_transient_failures(monkeypatch):
@@ -702,7 +831,7 @@ def test_run_and_callback_retries_transient_failures(monkeypatch):
                 raise httpx.ConnectError('boom')
             return _FakeResponse(200)
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 5}
 
     monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
@@ -736,7 +865,7 @@ def test_run_and_callback_no_retry_on_permanent_4xx(monkeypatch):
             calls.append(url)
             return _FakeResponse(422)
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         return {'success': False, 'logs': '', 'exitCode': 1,
                 'errorMessage': 'bad', 'durationMs': 5}
 
@@ -769,7 +898,7 @@ def test_run_and_callback_gives_up_after_max_attempts(monkeypatch):
             calls.append(url)
             return _FakeResponse(503)
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 5}
 
     monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
@@ -804,7 +933,7 @@ def test_run_and_callback_truncates_result_error_message(monkeypatch):
             posted['json'] = json
             return _FakeResponse(200)
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         return {'success': False, 'logs': '', 'exitCode': 1,
                 'errorMessage': 'x' * 50000, 'durationMs': 5}
 
@@ -839,7 +968,7 @@ def test_run_and_callback_truncates_exception_message(monkeypatch):
             posted['json'] = json
             return _FakeResponse(200)
 
-    async def fake_run_task(req):
+    async def fake_run_task(req, entry=None):
         raise RuntimeError('y' * 50000)
 
     monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
@@ -1113,3 +1242,326 @@ def test_run_task_omits_callback_token_without_secret(tmp_path, monkeypatch):
     assert 'AUTOFLOW_CALLBACK_TOKEN' not in env
     assert env['AUTOFLOW_ADMIN_API_URL'] == 'http://admin.local'
     assert env['AUTOFLOW_EXECUTOR_ADDRESS'] == 'pub:9000'
+
+
+# ---------------------------------------------------------------------------
+# E1/E7 (CONSISTENCY round): live-execution registry + duplicate-accept guard
+# ---------------------------------------------------------------------------
+
+def test_register_live_execution_rejects_duplicate():
+    """E7 unit: the registry's check-and-insert is atomic; a second register
+    for the same id returns None (the route maps that to 400)."""
+    from routers import execute as execute_module
+
+    entry = execute_module.register_live_execution('exec-dup-unit')
+    assert entry is not None
+    assert execute_module.execution_exists('exec-dup-unit')
+    assert execute_module.register_live_execution('exec-dup-unit') is None
+    execute_module.unregister_live_execution('exec-dup-unit')
+    assert not execute_module.execution_exists('exec-dup-unit')
+
+
+def test_list_active_execution_ids_reflects_registry():
+    """E1: the heartbeat getter mirrors the registry contents exactly."""
+    from routers import execute as execute_module
+
+    assert execute_module.list_active_execution_ids() == []
+    execute_module.register_live_execution('exec-a')
+    execute_module.register_live_execution('exec-b')
+    assert sorted(execute_module.list_active_execution_ids()) == ['exec-a', 'exec-b']
+
+
+def test_execute_module_registers_heartbeat_provider():
+    """E1 wiring: routers/execute registers its registry getter with the
+    scheduler at import time (node STALE-01 provider pattern — avoids the
+    scheduler <-> routes import cycle)."""
+    import scheduler as sched_module
+    from routers import execute as execute_module
+
+    execute_module.register_live_execution('exec-wired')
+    try:
+        assert sched_module._running_execution_ids_provider() == ['exec-wired']
+    finally:
+        execute_module.unregister_live_execution('exec-wired')
+
+
+def test_execute_duplicate_execution_id_returns_400(auth_client, monkeypatch):
+    """E7 (node execute.ts:339-342 parity): a second /execute for an
+    executionId still live on this executor (queued/prepare/running) is
+    refused with 400 — the 429→BullMQ retry chain can otherwise re-dispatch a
+    merely-slow execution and double-run it."""
+    from routers import execute as execute_module
+
+    class FakeTaskHandle:
+        def add_done_callback(self, cb):
+            pass
+
+    def fake_create_task(coro):
+        coro.close()
+        return FakeTaskHandle()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_task', fake_create_task)
+    original = sched.running_count
+    sched.running_count = 0
+    try:
+        body = {
+            'executionId': 'exec-double-dispatch',
+            'task': {'name': 't', 'runtime': 'python', 'script': 'pass'},
+        }
+        first = auth_client.post('/api/execute', json=body)
+        second = auth_client.post('/api/execute', json=body)
+    finally:
+        sched.running_count = original
+
+    assert first.status_code == 200
+    assert first.json()['status'] == 'accepted'
+    assert second.status_code == 400
+    assert 'already active' in second.json()['detail']
+    # the rejected duplicate must not leak a second registry entry
+    assert list(execute_module._live_executions) == ['exec-double-dispatch']
+
+
+def test_run_and_callback_unregisters_after_terminal_callback(monkeypatch):
+    """E1: once the terminal callback path completes the execution must leave
+    the live registry — the heartbeat stops claiming liveness for it."""
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+
+    async def fake_run_task(req, entry=None):
+        return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 1}
+
+    class OkClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            return _FakeResponse(200)
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', OkClient)
+    _patch_callback_env(monkeypatch)
+
+    entry = execute_module.register_live_execution('exec-lifecycle')
+    original = sched.running_count
+    sched.running_count = 1
+    try:
+        asyncio.run(execute_module._run_and_callback(
+            ExecuteRequest(executionId='exec-lifecycle', task={'name': 'n'}), entry))
+    finally:
+        sched.running_count = original
+
+    assert not execute_module.execution_exists('exec-lifecycle')
+
+
+# ---------------------------------------------------------------------------
+# E3 (CONSISTENCY round): callback 401 self-heal via auth.request_with_self_heal
+# ---------------------------------------------------------------------------
+
+def test_callback_401_self_heals_with_fresh_token(monkeypatch):
+    """A 401 (admin rotated our per-executor token) triggers ONE
+    force_token_refresh + retry with the fresh bearer — same posture as the
+    heartbeat (R11) and node admin-client.request (R10 gap #3)."""
+    import auth as auth_module
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(auth_module, 'force_token_refresh',
+                        AsyncMock(return_value='fresh-token'))
+    calls = []
+
+    class HealingClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            calls.append(dict(headers))
+            return _FakeResponse(401 if len(calls) == 1 else 200)
+
+    async def fake_run_task(req, entry=None):
+        return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 1}
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', HealingClient)
+    _patch_callback_env(monkeypatch)
+    # override the helper's None: simulate a stale dynamic token in play
+    monkeypatch.setattr(execute_module, 'get_current_token',
+                        AsyncMock(return_value='stale-token'))
+
+    asyncio.run(execute_module._run_and_callback(
+        ExecuteRequest(executionId='exec-heal', task={'name': 'n'})))
+
+    assert len(calls) == 2
+    assert calls[0]['Authorization'] == 'Bearer stale-token'
+    assert calls[1]['Authorization'] == 'Bearer fresh-token'
+
+
+def test_callback_persistent_401_goes_through_retry_loop(monkeypatch):
+    """E3: 401 left the non-retryable branch — when the heal is unavailable
+    (force_token_refresh → None, admin unreachable) the persistent 401 now
+    consumes the full 3-attempt + backoff budget instead of being dropped on
+    attempt 1."""
+    import auth as auth_module
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(auth_module, 'force_token_refresh', AsyncMock(return_value=None))
+    calls = []
+
+    class Always401Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            calls.append(url)
+            return _FakeResponse(401)
+
+    async def fake_run_task(req, entry=None):
+        return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 1}
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', Always401Client)
+    monkeypatch.setattr(execute_module, 'CALLBACK_RETRY_BASE_DELAY_SECONDS', 0)
+    _patch_callback_env(monkeypatch)
+
+    asyncio.run(execute_module._run_and_callback(
+        ExecuteRequest(executionId='exec-401-loop', task={'name': 'n'})))
+
+    assert len(calls) == execute_module.CALLBACK_RETRY_ATTEMPTS
+
+
+def test_callback_prefers_dynamic_token(monkeypatch):
+    """E3: the callback bearer now comes from auth.get_current_token (dynamic
+    per-executor token, node callback.ts post() parity) instead of the
+    startup settings snapshot only."""
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+    from unittest.mock import AsyncMock
+
+    posted_headers = []
+
+    async def fake_run_task(req, entry=None):
+        return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 1}
+
+    class RecordingClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            posted_headers.append(dict(headers))
+            return _FakeResponse(200)
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', RecordingClient)
+    _patch_callback_env(monkeypatch)
+    monkeypatch.setattr(execute_module, 'get_current_token',
+                        AsyncMock(return_value='dynamic-current'))
+
+    asyncio.run(execute_module._run_and_callback(
+        ExecuteRequest(executionId='exec-dyn-token', task={'name': 'n'})))
+
+    assert posted_headers[0]['Authorization'] == 'Bearer dynamic-current'
+
+
+# ── BUG-10: 失败分类细化 ──────────────────────────────────────────────────────
+
+def test_refine_failure_reason_git_variants():
+    from routers.execute import _refine_failure_reason as r
+    assert r("git clone failed: exit 128") == 'git_fetch_failed'
+    assert r("git fetch failed after 60s") == 'git_fetch_failed'
+    assert r("Command '['git', 'clone', '--bare', 'url']' returned non-zero exit status 128.") == 'git_fetch_failed'
+    assert r("git checkout failed for ref 'main'") == 'git_fetch_failed'
+
+
+def test_refine_failure_reason_dependency_variants():
+    from routers.execute import _refine_failure_reason as r
+    assert r("uv pip install failed: no matching distribution") == 'dependency_install_failed'
+    assert r("uv venv failed: BrokenPipe") == 'dependency_install_failed'
+    assert r("uv venv timed out after 600s (uv process killed)") == 'dependency_install_failed'
+    assert r("Dependency installation failed") == 'dependency_install_failed'
+
+
+def test_refine_failure_reason_runtime_missing_variants():
+    from routers.execute import _refine_failure_reason as r
+    assert r("No such file or directory: 'uv'") == 'runtime_missing'
+    assert r("No such file or directory: '/root/.local/bin/uv'") == 'runtime_missing'
+    assert r("runtime not supported on this executor") == 'runtime_missing'
+
+
+def test_refine_failure_reason_none_for_unclassified():
+    from routers.execute import _refine_failure_reason as r
+    assert r("") is None
+    assert r("script blew up: ZeroDivisionError") is None
+    assert r("killed by admin request") is None
+
+
+def test_run_and_callback_attaches_refined_reason_on_prepare_exception(monkeypatch):
+    """prepare 阶段 raise（uv pip install failed）→ 回调带 dependency_install_failed。"""
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    posted = {}
+
+    class FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json, headers):
+            posted['json'] = json
+            return SimpleNamespace(status_code=200)
+
+    async def fake_run_task(req, entry=None):
+        raise RuntimeError('uv pip install failed: no matching distribution')
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', FakeAsyncClient)
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'tok')
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'exec:9000')
+    monkeypatch.setattr(execute_module, 'get_current_token', AsyncMock(return_value=None))
+
+    req = ExecuteRequest(
+        executionId='exec-refine-reason',
+        task={'name': 'noop', 'runtime': 'python'},
+    )
+    asyncio.run(execute_module._run_and_callback(req))
+
+    items = posted['json']
+    assert items[0]['status'] == 'failed'
+    assert items[0]['failureReason'] == 'dependency_install_failed'

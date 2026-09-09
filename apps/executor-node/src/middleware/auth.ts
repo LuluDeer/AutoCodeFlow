@@ -24,6 +24,32 @@ const TOKEN_REFRESH_INTERVAL = 30 * 60 * 1000; // 30 minutes
 let tokenFetchFailedAt: number | null = null;
 const TOKEN_FETCH_BACKOFF_MS = 30_000;
 
+// N41: fired (fire-and-forget) after every SUCCESSFUL fetchToken. main.ts
+// uses it to re-register with rich metadata when the startup register
+// failed — the /token endpoint's register side effect rebuilds the row
+// WITHOUT type/capabilities/maxConcurrent/version, and only a real
+// register call restores them.
+type TokenAcquiredListener = () => void;
+let tokenAcquiredListener: TokenAcquiredListener | null = null;
+
+export function setOnTokenAcquired(listener: TokenAcquiredListener | null): void {
+  tokenAcquiredListener = listener;
+}
+
+function notifyTokenAcquired(): void {
+  const listener = tokenAcquiredListener;
+  if (!listener) return;
+  // Non-blocking: the listener runs outside the token/request path. Errors
+  // are swallowed here — the listener owns its retry semantics.
+  Promise.resolve()
+    .then(listener)
+    .catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.warn(`[auth] onTokenAcquired listener failed: ${msg}`);
+    });
+}
+
 function getAdminApiUrl(): string {
   if (config.adminApiUrlExternal) {
     return config.adminApiUrlExternal;
@@ -78,6 +104,7 @@ async function fetchToken(): Promise<string | null> {
       // source secret for per-execution callback tokens stays in sync with
       // whatever admin-api currently stores (see admin-envelope.ts).
       adoptExecutorTokenHash(response.data);
+      notifyTokenAcquired();
       return token;
     }
   } catch (_err: unknown) {

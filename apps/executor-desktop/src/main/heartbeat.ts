@@ -10,6 +10,7 @@ const FAILURE_THRESHOLD = 2;
 
 export class HeartbeatMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
+  private immediateTimer: ReturnType<typeof setTimeout> | null = null;
   private failCount = 0;
   private port = 8002;
   private onStatus: StatusCallback | null = null;
@@ -24,14 +25,18 @@ export class HeartbeatMonitor {
     this.port = port;
     this.failCount = 0;
     this.timer = setInterval(() => this.check(), INTERVAL_MS);
-    // 立即检查一次
-    setTimeout(() => this.check(), 1_500);
+    // 立即检查一次（句柄保存，stop() 必须能取消它 — R25）
+    this.immediateTimer = setTimeout(() => this.check(), 1_500);
   }
 
   stop(): void {
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.immediateTimer !== null) {
+      clearTimeout(this.immediateTimer);
+      this.immediateTimer = null;
     }
   }
 

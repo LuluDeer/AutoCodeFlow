@@ -3,16 +3,26 @@ import {
   InternalServerErrorException,
   Logger,
   UnauthorizedException,
+  ExecutionContext,
 } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
+import { Reflector } from "@nestjs/core";
 import { createHmac } from "crypto";
 import * as express from "express";
 import * as fs from "fs";
+import * as path from "path";
 import * as request from "supertest";
 import { IS_PUBLIC_KEY } from "../../../common/decorators/public.decorator";
+import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
+import { RolesGuard } from "../../../common/guards/roles.guard";
+import { ConfigService } from "@nestjs/config";
 import { AppDeploymentService } from "../app-deployment.service";
 import { ApplicationController } from "../application.controller";
 import { ApplicationService } from "../application.service";
+import { UserRole } from "../../users/entities/user.entity";
+// SEC-05: uploads are now vetted by the zip-bomb guard — tests need a real,
+// structurally-valid zip (the old 4-byte magic stub fails CD parsing).
+import { buildBenignZip } from "../../../common/utils/__tests__/zip-samples";
 
 function sign(secret: string, timestamp: string, body: Buffer): string {
   return (
@@ -22,6 +32,12 @@ function sign(secret: string, timestamp: string, body: Buffer): string {
       .digest("hex")
   );
 }
+
+// ARCH-27: apiBase 改经 ConfigService（app.apiBaseUrl）读取 —— spec 注入
+// 桩 ConfigService；读取在调用时发生，与原 process.env 操纵的用例流兼容。
+const stubConfig = (apiBase?: string) => ({
+  get: (key: string) => (key === "app.apiBaseUrl" ? apiBase : undefined),
+});
 
 describe("ApplicationController webhook", () => {
   const fixedNow = 1_700_000_000_000;
@@ -45,7 +61,11 @@ describe("ApplicationController webhook", () => {
       findRunningByApp: jest.fn().mockResolvedValue([]),
       upgrade: jest.fn(),
     };
-    controller = new ApplicationController(svc as any, deploymentSvc as any);
+    controller = new ApplicationController(
+      svc as any,
+      deploymentSvc as any,
+      stubConfig() as any,
+    );
   });
 
   afterEach(() => {
@@ -269,6 +289,8 @@ describe("ApplicationController webhook HTTP raw body", () => {
       providers: [
         { provide: ApplicationService, useValue: svc },
         { provide: AppDeploymentService, useValue: deploymentSvc },
+        // ARCH-27: webhook 路由不消费配置，注入空桩即可满足 DI。
+        { provide: ConfigService, useValue: stubConfig() },
       ],
     }).compile();
 
@@ -335,13 +357,17 @@ describe("ApplicationController webhook HTTP raw body", () => {
 });
 
 describe("ApplicationController upload — APP-002", () => {
-  const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+  // SEC-05: real minimal zip — the guard parses the central directory, so a
+  // bare PK\x03\x04 stub would be rejected as unparseable.
+  const ZIP_MAGIC = buildBenignZip();
   let svc: {
     findByName: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
   };
   let controller: ApplicationController;
+  let writeFile: jest.SpyInstance;
+  let unlink: jest.SpyInstance;
 
   const uploadArgs = () =>
     [
@@ -359,13 +385,20 @@ describe("ApplicationController upload — APP-002", () => {
         ),
       update: jest.fn(),
     };
-    controller = new ApplicationController(svc as any, {} as any);
-    // 不真实写盘
+    // ARCH-27: 桩在调用时读取 process.env.API_BASE_URL，保持原用例的
+    // 逐用例 env 操纵方式；生产路径由 Joi 注册 + configuration.ts 提供。
+    controller = new ApplicationController(
+      svc as any,
+      {} as any,
+      { get: () => process.env.API_BASE_URL } as any,
+    );
+    // 不真实写盘（R9b: 写盘走 fs.promises.writeFile）
     jest.spyOn(fs, "existsSync").mockReturnValue(true);
     jest.spyOn(fs, "mkdirSync").mockImplementation((() => undefined) as any);
-    jest
-      .spyOn(fs, "writeFileSync")
-      .mockImplementation((() => undefined) as any);
+    writeFile = jest
+      .spyOn(fs.promises, "writeFile")
+      .mockResolvedValue(undefined);
+    unlink = jest.spyOn(fs.promises, "unlink").mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -388,6 +421,8 @@ describe("ApplicationController upload — APP-002", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("API_BASE_URL"),
     );
+    // R9b: API_BASE_URL 校验失败必须先于落盘——不产生孤儿 zip 文件
+    expect(writeFile).not.toHaveBeenCalled();
   });
 
   it("builds packageUrl from API_BASE_URL and never from localhost", async () => {
@@ -404,5 +439,138 @@ describe("ApplicationController upload — APP-002", () => {
         packageUrl: expect.stringContaining("https://api.example.com/"),
       }),
     );
+    expect(writeFile).toHaveBeenCalledTimes(1);
+  });
+
+  // R9b: the file write is async (fs.promises.writeFile) — no 200 MB
+  // synchronous disk stall on the event loop.
+  it("R9b: writes the package asynchronously via fs.promises.writeFile", async () => {
+    process.env.API_BASE_URL = "https://api.example.com";
+    await controller.upload(...uploadArgs());
+    expect(writeFile).toHaveBeenCalledWith(
+      expect.stringContaining(path.join(process.cwd(), "uploads", "packages")),
+      ZIP_MAGIC,
+    );
+  });
+
+  // R9b: a DB failure after the file landed must not leave an orphan zip.
+  it("R9b: unlinks the freshly written file when the DB upsert fails", async () => {
+    process.env.API_BASE_URL = "https://api.example.com";
+    svc.findByName.mockResolvedValue({ id: "app-1", name: "my-app" });
+    svc.update.mockRejectedValue(new Error("db down"));
+
+    await expect(controller.upload(...uploadArgs())).rejects.toThrow("db down");
+    expect(writeFile).toHaveBeenCalledTimes(1);
+    expect(unlink).toHaveBeenCalledWith(writeFile.mock.calls[0][0]);
+  });
+});
+
+// R1: application lifecycle routes are admin-only. The global RolesGuard
+// reads the @Roles metadata and rejects USER callers (403); ADMIN callers
+// pass. The @Public() webhook carries no metadata, so it is unaffected.
+describe("ApplicationController RBAC (R1)", () => {
+  const guard = new RolesGuard(new Reflector());
+  const ctxWith = (
+    handler: (...args: unknown[]) => unknown,
+    role: UserRole,
+  ): ExecutionContext =>
+    ({
+      getHandler: () => handler,
+      getClass: () => ApplicationController,
+      switchToHttp: () => ({ getRequest: () => ({ user: { role } }) }),
+    }) as unknown as ExecutionContext;
+
+  it("declares @Roles(ADMIN) on every mutation route", () => {
+    const adminRoutes = [
+      "create",
+      "update",
+      "remove",
+      "upload",
+      "upgradeAll",
+      "syncTasks",
+      "analyzeHealth",
+      "rollback",
+    ];
+    for (const name of adminRoutes) {
+      expect(
+        Reflect.getMetadata(ROLES_KEY, ApplicationController.prototype[name]),
+      ).toEqual([UserRole.ADMIN]);
+    }
+  });
+
+  it("does NOT restrict findAll/findById/getVersionHistory (read surface open to any authenticated user)", () => {
+    expect(
+      Reflect.getMetadata(ROLES_KEY, ApplicationController.prototype.findAll),
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(ROLES_KEY, ApplicationController.prototype.findById),
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(
+        ROLES_KEY,
+        ApplicationController.prototype.getVersionHistory,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("plain user is denied (RolesGuard → 403) on every mutation route", () => {
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.create, UserRole.USER),
+      ),
+    ).toBe(false);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.update, UserRole.USER),
+      ),
+    ).toBe(false);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.remove, UserRole.USER),
+      ),
+    ).toBe(false);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.upload, UserRole.USER),
+      ),
+    ).toBe(false);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.upgradeAll, UserRole.USER),
+      ),
+    ).toBe(false);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.rollback, UserRole.USER),
+      ),
+    ).toBe(false);
+  });
+
+  it("admin passes on every mutation route (200 path)", () => {
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.create, UserRole.ADMIN),
+      ),
+    ).toBe(true);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.update, UserRole.ADMIN),
+      ),
+    ).toBe(true);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.remove, UserRole.ADMIN),
+      ),
+    ).toBe(true);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.upload, UserRole.ADMIN),
+      ),
+    ).toBe(true);
+    expect(
+      guard.canActivate(
+        ctxWith(ApplicationController.prototype.rollback, UserRole.ADMIN),
+      ),
+    ).toBe(true);
   });
 });

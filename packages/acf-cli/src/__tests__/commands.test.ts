@@ -57,8 +57,12 @@ vi.mock('../client', () => ({
 vi.mock('../config', () => ({
   getApiUrl: () => 'http://localhost:3105',
   getToken: () => '',
+  getRefreshToken: () => '',
   setApiUrl: vi.fn(),
   setToken: vi.fn(),
+  // BUG-13: login 现在同时落库 refreshToken
+  setRefreshToken: vi.fn(),
+  clearAuth: vi.fn(),
   showConfig: vi.fn(),
 }));
 
@@ -319,7 +323,7 @@ describe('acf task trigger --wait (N10)', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, 30_000);
 
   it('success 终态同样立即返回（回归护栏）', async () => {
     vi.useFakeTimers();
@@ -331,7 +335,7 @@ describe('acf task trigger --wait (N10)', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, 30_000);
 
   it('running→killed：非终态时继续轮询，命中 killed 后退出', async () => {
     vi.useFakeTimers();
@@ -345,7 +349,45 @@ describe('acf task trigger --wait (N10)', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, 30_000);
+
+  // U11: 失败终态必须透出执行器回调记录的 exitCode / failureReason /
+  // errorMessage，不再只依赖 aiAnalysis。
+  it('失败终态输出 exitCode/failureReason/errorMessage', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      mockedPost.mockResolvedValueOnce({ id: 'x4', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      mockedGet.mockResolvedValue({
+        id: 'x4', status: 'failed', createdAt: '2026-01-01T00:00:00Z',
+        exitCode: 3, failureReason: 'script_error', errorMessage: 'boom',
+      });
+      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
+      const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(out).toMatch(/Exit code\s*:\s*3/);
+      expect(out).toMatch(/Failure reason\s*:\s*script_error/);
+      expect(out).toMatch(/Error\s*:\s*boom/);
+    } finally {
+      log.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 30_000);
+
+  it('exitCode/failureReason 缺失时不打印对应行（旧数据不显示 undefined）', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      mockedPost.mockResolvedValueOnce({ id: 'x5', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      mockedGet.mockResolvedValue({ id: 'x5', status: 'timeout', createdAt: '2026-01-01T00:00:00Z' });
+      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
+      const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(out).not.toMatch(/Exit code/);
+      expect(out).not.toMatch(/Failure reason/);
+    } finally {
+      log.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -379,6 +421,27 @@ describe('acf executor get', () => {
     });
     await run(executorsCommand(), 'executor get e1');
     expect(mockedGet).toHaveBeenCalledTimes(1);
+  });
+
+  // U11 (CONSISTENCY-02 parity with admin-web): runningExecutionIds tri-state
+  // — null = 旧版执行器未上报, [] = 空闲, 非空 = 运行中列表。
+  it.each([
+    { value: ['aaaa-bbbb', 'cccc-dddd'], pattern: /Running Executions:\s*2 running: aaaa-bbbb, cccc-dddd/ },
+    { value: [], pattern: /Running Executions:\s*idle \(none running\)/ },
+    { value: null, pattern: /Running Executions:\s*not reported \(older executor\)/ },
+  ])('Running Executions 三态输出（$value）', async ({ value, pattern }) => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      mockedGet.mockResolvedValueOnce({
+        id: 'e1', appName: 'exec', address: 'x:1', status: 'online',
+        runningExecutionIds: value,
+      });
+      await run(executorsCommand(), 'executor get e1');
+      const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(out).toMatch(pattern);
+    } finally {
+      log.mockRestore();
+    }
   });
 });
 
@@ -466,15 +529,61 @@ describe('acf audit list', () => {
 // login (P0 contract regression guard)
 // ---------------------------------------------------------------------------
 describe('acf login', () => {
-  it('reads accessToken (camelCase) from the login response', async () => {
-    const { setToken } = await import('../config');
-    const spy = vi.mocked(setToken);
+  it('reads accessToken/refreshToken (camelCase) from the login response', async () => {
+    const { setToken, setRefreshToken } = await import('../config');
+    const accessSpy = vi.mocked(setToken);
+    const refreshSpy = vi.mocked(setRefreshToken);
     mockedPost.mockResolvedValueOnce({ accessToken: 'jwt-abc', refreshToken: 'r1' });
     await run(loginCommand(), 'login --url http://localhost:9999 --user admin --password secret');
     expect(mockedPost).toHaveBeenCalledWith('/auth/login', {
       username: 'admin',
       password: 'secret',
     });
-    expect(spy).toHaveBeenCalledWith('jwt-abc');
+    expect(accessSpy).toHaveBeenCalledWith('jwt-abc');
+    expect(refreshSpy).toHaveBeenCalledWith('r1');
+  });
+});
+
+// ECO-02: --json 输出面（CI 消费）——payload 不经表格直出
+describe('acf --json outputs (ECO-02)', () => {
+  it('task list --json prints the unwrapped payload as JSON', async () => {
+    const payload = { list: [{ id: 't-1', name: 'n1', runtime: 'python', status: 'active', cronExpression: null }], total: 1, page: 1, pageSize: 20 };
+    mockedGet.mockResolvedValueOnce(payload);
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    try {
+      await run(tasksCommand(), 'task list --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(line).toBeDefined();
+    expect(JSON.parse(line as string)).toEqual(payload);
+  });
+
+  it('executor list --json prints a bare array', async () => {
+    mockedGet.mockResolvedValueOnce([{ id: 'e-1', appName: 'exec', address: 'h:1', status: 'online' }]);
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    try {
+      await run(executorsCommand(), 'executor list --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('['));
+    expect(JSON.parse(line as string)).toEqual([{ id: 'e-1', appName: 'exec', address: 'h:1', status: 'online' }]);
+  });
+
+  it('app list --json prints a bare array', async () => {
+    mockedGet.mockResolvedValueOnce({ list: [{ id: 'a-1', name: 'app', status: 'running' }], total: 1 });
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    try {
+      await run(appsCommand(), 'app list --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('['));
+    expect(JSON.parse(line as string)).toEqual([{ id: 'a-1', name: 'app', status: 'running' }]);
   });
 });

@@ -1,4 +1,4 @@
-"""Tests for autoflow_sdk.callback.CallbackClient (R9, round-9)."""
+"""Tests for autoflow_sdk.callback.CallbackClient (R9, round-9; U14)."""
 import json
 
 import httpx
@@ -27,14 +27,20 @@ class TestEnabledState:
         assert client.enabled is True
         assert client.disabled_reason is None
 
-    @pytest.mark.parametrize("missing", ["admin_api_url", "token", "executor_address"])
-    def test_disabled_when_any_credential_absent(self, missing):
+    # U14: AUTOFLOW_EXECUTOR_ADDRESS is OPTIONAL (node-SDK / admin-api `v1.`
+    # parity) — a N23 executor that never injects it must still be enabled.
+    def test_enabled_without_executor_address(self):
+        client = make_client(executor_address=None)
+        assert client.enabled is True
+        assert client.disabled_reason is None
+
+    @pytest.mark.parametrize("missing", ["admin_api_url", "token"])
+    def test_disabled_when_required_credential_absent(self, missing):
         client = make_client(**{missing: None})
         assert client.enabled is False
         env_name = {
             "admin_api_url": "AUTOFLOW_ADMIN_API_URL",
             "token": "AUTOFLOW_CALLBACK_TOKEN",
-            "executor_address": "AUTOFLOW_EXECUTOR_ADDRESS",
         }[missing]
         assert env_name in client.disabled_reason
 
@@ -153,3 +159,97 @@ class TestDisabledBehaviour:
             client.report_success()
         with pytest.raises(CallbackDisabledError, match="AUTOFLOW_ADMIN_API_URL"):
             client.report_failure("boom")
+
+
+class TestExecutorAddressOptional:
+    """U14: with no AUTOFLOW_EXECUTOR_ADDRESS the client stays enabled and
+    simply omits executorAddress from items (admin-api `v1.` path allows it)."""
+
+    @respx.mock
+    def test_report_success_omits_executor_address_when_unknown(self):
+        route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+        make_client(executor_address=None).report_success()
+        item = json.loads(route.calls.last.request.content)[0]
+        assert "executorAddress" not in item
+
+    @respx.mock
+    def test_report_failure_omits_executor_address_when_empty(self):
+        route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+        make_client(executor_address="").report_failure("boom")
+        item = json.loads(route.calls.last.request.content)[0]
+        assert "executorAddress" not in item
+        assert item["errorMessage"] == "boom"
+
+    @respx.mock
+    def test_batch_report_only_fills_known_address(self):
+        route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+        make_client(executor_address=None).report([{"status": "success"}])
+        item = json.loads(route.calls.last.request.content)[0]
+        assert item == {"executionId": "exec-1", "status": "success"}
+
+
+class TestEnvelopeUnwrapping:
+    """U14: admin-api's ResponseInterceptor wraps every body in
+    {code, message, data}; report() must hand back the inner data so
+    callers can read result["results"]."""
+
+    @respx.mock
+    def test_report_unwraps_admin_api_envelope(self):
+        inner = {"results": [{"executionId": "exec-1", "success": True}]}
+        respx.post(URL).mock(return_value=httpx.Response(200, json={
+            "code": 200, "message": "success", "data": inner,
+        }))
+        assert make_client().report_success() == inner
+
+    @respx.mock
+    def test_non_enveloped_body_passes_through_unchanged(self):
+        respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+        assert make_client().report_failure("boom") == {"results": []}
+
+    @respx.mock
+    def test_envelope_with_null_data_returns_null(self):
+        respx.post(URL).mock(return_value=httpx.Response(200, json={
+            "code": 200, "message": "success", "data": None,
+        }))
+        assert make_client().report_success() is None
+
+
+class TestTransportFailures:
+    @respx.mock
+    def test_timeout_propagates_without_retry(self):
+        route = respx.post(URL).mock(side_effect=httpx.ReadTimeout("callback timed out"))
+
+        with pytest.raises(httpx.ReadTimeout, match="callback timed out"):
+            make_client(timeout=0.1).report_success()
+
+        assert route.call_count == 1
+
+
+class TestErrorReadability:
+    @respx.mock
+    def test_non_2xx_message_includes_envelope_message(self):
+        respx.post(URL).mock(return_value=httpx.Response(401, json={
+            "code": 401,
+            "message": "Invalid or expired execution callback token",
+            "data": None,
+        }))
+        with pytest.raises(httpx.HTTPStatusError) as excinfo:
+            make_client().report_success()
+        assert "Invalid or expired execution callback token" in str(excinfo.value)
+
+    @respx.mock
+    def test_non_2xx_with_validation_message_list(self):
+        respx.post(URL).mock(return_value=httpx.Response(400, json={
+            "code": 400,
+            "message": ["executionId must be a UUID", "status must be one of the following values"],
+            "data": None,
+        }))
+        with pytest.raises(httpx.HTTPStatusError) as excinfo:
+            make_client().report_success()
+        assert "executionId must be a UUID" in str(excinfo.value)
+
+    @respx.mock
+    def test_non_2xx_with_non_json_body_still_raises(self):
+        respx.post(URL).mock(return_value=httpx.Response(502, text="Bad Gateway"))
+        with pytest.raises(httpx.HTTPStatusError):
+            make_client().report_success()

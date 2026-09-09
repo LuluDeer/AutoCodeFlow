@@ -1,0 +1,36 @@
+# ============================================================
+# 行尾统一策略（W-01 / R-01 修复，Windows 深度测试 R13 产出）
+# 仓库内一律 LF；Windows 工作树也检出 LF——避免 autocrlf=true 的
+# 机器上 .sh 被 CRLF 化（bash 执行报 \r）、prettier/eslint 全量
+# 报 Delete `␍`、install.sh 后端副本字节守卫失败。
+# ============================================================
+
+# 默认：文本文件仓库内 LF，工作树也 LF（跨平台一致）
+* text=auto eol=lf
+
+# 显式声明必须 LF 的关键脚本（即使有人本地配了 autocrlf 也不受影响）
+*.sh        text eol=lf
+*.py        text eol=lf
+Makefile    text eol=lf
+*.bash      text eol=lf
+
+# 二进制文件不做任何转换
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.svg       text
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.eot       binary
+*.zip       binary
+*.gz        binary
+*.whl       binary
+*.rdb       binary
+*.node      binary
+*.exe       binary
+*.dll       binary
+*.so        binary
+*.dylib     binary

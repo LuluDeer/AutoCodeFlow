@@ -591,10 +591,17 @@ test('15. AI 配置检查 & Swagger API 文档', async ({ page }) => {
 
 // ── 16. Prometheus 指标验证 ──────────────────────────────────────────────────
 test('16. Prometheus 指标端点', async ({ page }) => {
-  await page.goto('http://localhost:3105/metrics');
-  await page.waitForLoadState('networkidle').catch(() => {});
-  const text = await page.locator('body').innerText();
-  const hasMetrics = text.includes('# HELP') || text.includes('nodejs_') || text.includes('http_');
-  console.log(`  Prometheus 指标: ${hasMetrics ? '✓ 正常' : '✗ 未返回指标'}, 内容: ${text.slice(0, 200)}`);
-  await page.screenshot({ path: '/tmp/e2e-16-metrics.png', fullPage: false });
+  // W-13: the committed version hit http://localhost:3105/metrics, but the
+  // Prometheus exposition endpoint is GET /api/metrics behind the JwtAuthGuard
+  // (metrics.controller.ts, R7). The old path 404'd with no metrics on every
+  // OS — a test bug, not a Windows issue. Fetch with the globalSetup token.
+  const auth = getAuth();
+  const resp = await page.request.get('http://localhost:3105/api/metrics', {
+    headers: { Authorization: `Bearer ${auth.token}` },
+  });
+  const status = resp.status();
+  const text = await resp.text();
+  const hasMetrics = status === 200 && (text.includes('# HELP') || text.includes('nodejs_') || text.includes('autoflow_'));
+  console.log(`  Prometheus 指标: ${hasMetrics ? '✓ 正常' : '✗ 未返回指标'}, HTTP ${status}, 内容: ${text.slice(0, 120)}`);
+  expect(hasMetrics).toBe(true);
 });

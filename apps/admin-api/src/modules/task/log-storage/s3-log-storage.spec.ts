@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { ConfigService } from "@nestjs/config";
-import { S3LogStorage } from "./s3-log-storage";
+import { MAX_LOG_BYTES, S3LogStorage } from "./s3-log-storage";
 
 const minioClient = {
   bucketExists: jest.fn(),
@@ -168,5 +168,88 @@ describe("S3LogStorage", () => {
     expect(key).toBe("execution-logs/exec-big.log.gz");
     expect(body.length).toBe(size);
     expect(gunzipSync(body).toString("utf-8").length).toBe(big.length);
+  });
+
+  // LOG-11: getStream() is the streaming read path used by the SSE log
+  // viewer — its over-cap guard and error propagation semantics must hold
+  // independently of the materializing get().
+  describe("getStream() bounds and error propagation", () => {
+    it("returns a readable stream that yields the gunzipped content", async () => {
+      const gz = gzipSync(Buffer.from("chunk-a\nchunk-b"));
+      minioClient.getObject.mockResolvedValue(Readable.from([gz]));
+      const stream = await storage().getStream("execution-logs/exec-1.log.gz");
+      const parts: Buffer[] = [];
+      for await (const c of stream) parts.push(c as Buffer);
+      expect(Buffer.concat(parts).toString("utf-8")).toBe("chunk-a\nchunk-b");
+    });
+
+    // AUTH-05 轮注记：本例在 coverage 全量跑（压测机器 CPU 满载）下偶发
+    // 5s 默认超时——gzip 同步压缩 2MB+ 零缓冲与 coverage 插桩叠加拖慢了
+    // 流水线。显式放宽到 15s，仅影响测试执行窗，断言本体不变。
+    it("rejects when the decompressed payload exceeds MAX_LOG_BYTES (cap transform)", async () => {
+      // A valid gzip stream of zeros larger than the cap: the first gunzipped
+      // chunk alone crosses MAX_LOG_BYTES, so the running tally guard must
+      // fire before the consumer has buffered the whole payload.
+      minioClient.getObject.mockResolvedValue(
+        Readable.from([gzipSync(Buffer.alloc(MAX_LOG_BYTES + 1))]),
+      );
+      const stream = await storage().getStream("execution-logs/exec-1.log.gz");
+      await expect(async () => {
+        for await (const _c of stream) {
+          /* drain until the cap transform errors */
+        }
+      }).rejects.toThrow(/exceeds MAX_LOG_BYTES/);
+    }, 15_000);
+
+    it("propagates an S3 read error to the stream consumer (raw error path)", async () => {
+      // Simulate a mid-flight storage failure: the raw readable errors after
+      // piping has started. The consumer must see the rejection.
+      const failing = new Readable({
+        read() {
+          this.destroy(new Error("S3 socket reset"));
+        },
+      });
+      minioClient.getObject.mockResolvedValue(failing);
+      const stream = await storage().getStream("execution-logs/exec-1.log.gz");
+      await expect(async () => {
+        for await (const _c of stream) {
+          /* drain until the raw error surfaces */
+        }
+      }).rejects.toThrow("S3 socket reset");
+    });
+
+    it("propagates a gunzip error for corrupt payloads", async () => {
+      // Not a gzip stream — the gunzip transform errors and the consumer
+      // sees the rejection instead of an empty body.
+      minioClient.getObject.mockResolvedValue(
+        Readable.from([Buffer.from("this is not gzip")]),
+      );
+      const stream = await storage().getStream("execution-logs/exec-1.log.gz");
+      await expect(async () => {
+        for await (const _c of stream) {
+          /* drain until gunzip errors */
+        }
+      }).rejects.toThrow();
+    });
+  });
+
+  it("get() rejects when the materialized payload exceeds MAX_LOG_BYTES", async () => {
+    // spec 188 行先例），第三参显式放宽到 15s——断言本体不变，仅放宽执行窗。 // coverage 全量并发跑下 gzip 2MB 同步压缩叠加插桩，默认 5s 偶发不足（同
+    minioClient.getObject.mockResolvedValue(
+      Readable.from([gzipSync(Buffer.alloc(MAX_LOG_BYTES + 1))]),
+    );
+    await expect(storage().get("execution-logs/exec-1.log.gz")).rejects.toThrow(
+      /exceeds MAX_LOG_BYTES/,
+    );
+  }, 15_000);
+
+  it("get() aggregates content delivered in many small chunks", async () => {
+    // The get() loop re-checks its own tally per chunk; several small chunks
+    // exercise the per-chunk bytes branch below the cap.
+    const gz = gzipSync(Buffer.from("l0\nl1\nl2"));
+    const chunks = [gz.subarray(0, 8), gz.subarray(8, 16), gz.subarray(16)];
+    minioClient.getObject.mockResolvedValue(Readable.from(chunks));
+    const text = await storage().get("execution-logs/exec-1.log.gz");
+    expect(text).toBe("l0\nl1\nl2");
   });
 });

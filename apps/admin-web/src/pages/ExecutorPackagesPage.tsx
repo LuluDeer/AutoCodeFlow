@@ -14,6 +14,9 @@ import {
 } from '../api/executor-packages';
 import { executorsApi } from '../api/executors';
 import { getErrMsg } from '../utils/error';
+import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
+import { Empty as AntEmpty } from 'antd';
 
 const { Text } = Typography;
 
@@ -205,13 +208,12 @@ export default function ExecutorPackagesPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-        <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>执行器包管理</Typography.Title>
-          <Text type="secondary">管理执行器运行时包，支持上传、版本管理和一键推送到调度机节点</Text>
-        </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>上传新包</Button>
-      </div>
+      {/* UI-03/UI-08：页头标准化（原 Typography.Title+操作区迁入 PageHeader） */}
+      <PageHeader
+        title="执行器包管理"
+        description="管理执行器运行时包，支持上传、版本管理和一键推送到调度机节点"
+        extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>上传新包</Button>}
+      />
 
       <Space style={{ marginBottom: 16 }} wrap>
         <Input.Search
@@ -237,12 +239,17 @@ export default function ExecutorPackagesPage() {
       </Space>
 
       <Table<PkgRow>
-        rowKey="id" columns={columns} dataSource={rows} loading={loading} size="small"
+        rowKey="id" columns={columns} dataSource={rows} loading={false} size="small"
         pagination={{
           current: page, pageSize: PAGE_SIZE, total, onChange: setPage,
           showTotal: t => `共 ${t} 条`,
         }}
-        locale={{ emptyText: '暂无包，点击「上传新包」添加第一个' }}
+        locale={{
+          // UI-08：首屏加载（无数据）以骨架屏替代表格 Spin；空态引导上传
+          emptyText: loading && rows.length === 0
+            ? <PageSkeleton variant="table" rows={4} />
+            : <AntEmpty image={AntEmpty.PRESENTED_IMAGE_SIMPLE} description="暂无包，点击「上传新包」添加第一个" />,
+        }}
       />
 
       {/* 上传弹窗 */}

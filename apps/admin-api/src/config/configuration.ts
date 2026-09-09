@@ -1,10 +1,43 @@
 import { parseAllowedOrigins } from "../common/utils/cors-origin.util";
 
+/**
+ * 配置读取规约（ARCH-27 配置中心收口）
+ *
+ * 1. 新增配置必须先在 app.module.ts 的 ConfigModule validationSchema（Joi）
+ *    注册，再在本文件映射为配置对象；运行时消费方一律注入 ConfigService 并
+ *    以 `configService.get("section.key")` 读取。
+ * 2. 禁止在业务代码中直读 process.env —— .eslintrc.js 的
+ *    no-restricted-properties 规则已封禁，违规会导致 lint 失败。
+ * 3. 直读豁免清单（维护位置：.eslintrc.js overrides，每处带理由注释）：
+ *    - 本文件（configuration.ts）：唯一合法的 env → 配置映射层（ConfigModule load）；
+ *    - src/config/env.ts（getEnvVar）：模块求值期/无 DI 场景的唯一收口 util，
+ *      背景是 W-22 前科 —— 装饰器参数求值早于 ConfigModule 生命周期，
+ *      main.ts 已在 import app.module 前预载 .env（见 main.ts 头部注释）；
+ *    - src/main.ts：bootstrap 预载段（W-22 修复现场，先于 DI 存在）；
+ *    - 测试/spec 文件（spec 与 test 目录）：fixture 需直接操纵 env。
+ * 4. Joi 未注册但本文件读取的 env 属于审计缺口，发现即补注册
+ *    （ARCH-27 已补：LOGIN_THROTTLE_LIMIT、REQUEST_TIMEOUT_MS、
+ *    INITIAL_ADMIN_PASSWORD/EMAIL、LOG_RETENTION_DAYS、API_BASE_URL、
+ *    APP_PROTOCOL、DB_POOL_SIZE、EXECUTOR_HEARTBEAT_*、LOG_STORAGE_*）。
+ */
 export default () => ({
   app: {
     port: parseInt(process.env.PORT, 10) || 3105,
     nodeEnv: process.env.NODE_ENV || "development",
     protocol: process.env.APP_PROTOCOL || "http",
+    // ARCH-27: 全局请求超时（REQUEST_TIMEOUT_MS）—— 此前由
+    // timeout.interceptor 在模块求值期直读 process.env（W-22 风险模式），
+    // 现注册后由拦截器经 ConfigService 读取，默认 30s。
+    requestTimeoutMs: parseInt(process.env.REQUEST_TIMEOUT_MS || "30000", 10),
+    // ARCH-27: 对外可达的基础 URL —— application.controller 生成 executor
+    // 可拉取的 packageUrl 时 fail-fast 校验所需，此前未注册（审计缺口）。
+    apiBaseUrl: process.env.API_BASE_URL || "",
+    // ARCH-27: TRUST_PROXY 在此登记注册（Joi 已有 schema）。main.ts 仍在
+    // bootstrap 期直读（豁免，见 main.ts 头部），注册用于文档化与后续收口。
+    trustProxy: process.env.TRUST_PROXY === "true",
+    // ARCH-27: OS/容器注入的进程标识（非部署配置，无需 Joi 注册；
+    // metrics.instance.hostname 展示用，此前 metrics.service 直读 process.env）。
+    hostname: process.env.HOSTNAME ?? "",
   },
   database: {
     host: process.env.DB_HOST || "localhost",
@@ -18,11 +51,31 @@ export default () => ({
     synchronize:
       process.env.DB_SYNCHRONIZE === "true" &&
       process.env.NODE_ENV !== "production",
+    // ARCH-24: 可选只读副本连接串（postgres://...）。空/未配置 = 读写分离
+    // 关闭（默认，行为与旧版完全一致——单一连接形态）；配置后 TypeORM 以
+    // replication 形态建立 master + slaves 连接池，SELECT 类读面
+    // （find* / query builder getMany 等）按驱动内建路由走 slaves。
+    // 迁移（migrationsRun / MigrationExecutor）恒走 master，不受影响。
+    readReplicaUrl: process.env.DB_READ_REPLICA_URL || "",
   },
   // ARCH-004: 全局限流默认收紧为 60 次/分钟（原 100），可用环境变量覆盖
   throttle: {
     ttl: parseInt(process.env.THROTTLE_TTL || "60000", 10),
     limit: parseInt(process.env.THROTTLE_LIMIT || "60", 10),
+    // N16 / ARCH-27: 登录路由限流（@Throttle 装饰器求值期约束见
+    // auth.controller.ts 头部注释与 W-22 记录）。默认 20。
+    loginLimit: parseInt(process.env.LOGIN_THROTTLE_LIMIT || "20", 10),
+    // SEC-09: 全局限流总开关（false = ThrottlerModule 顶层 skipIf 全域旁路，
+    // 灰度/排障逃生门；默认 true 保持限流生效）。运行期经 ConfigService 在
+    // ThrottlerModule.forRootAsync 工厂内消费。
+    enabled: process.env.THROTTLE_ENABLED !== "false",
+    // SEC-09: 分域档位（装饰器求值期消费点在 src/config/throttle-profiles.ts，
+    // W-22 豁免；此处双轨注册供运行时一致性检查与文档化，默认值须与
+    // throttle-profiles.ts 的回退一致）。
+    authLimit: parseInt(process.env.THROTTLE_AUTH_LIMIT || "10", 10),
+    authTtl: parseInt(process.env.THROTTLE_AUTH_TTL || "60000", 10),
+    opsLimit: parseInt(process.env.THROTTLE_OPS_LIMIT || "30", 10),
+    opsTtl: parseInt(process.env.THROTTLE_OPS_TTL || "60000", 10),
   },
   // SSE 日志流并发上限（进程内计数）：单 execution / 全局。
   // task.service.ts 读取本配置节；此前 sse 节从未注册，env 覆盖是死代码，现补齐。
@@ -32,6 +85,29 @@ export default () => ({
       10,
     ),
     maxStreamsGlobal: parseInt(process.env.SSE_MAX_STREAMS_GLOBAL || "64", 10),
+  },
+  // UI-14 第一阶段：Dashboard 汇总流（GET /metrics/stream）——独立于日志流的
+  // 并发上限与推送节奏。快照查询复用 /metrics/* 既有读面，interval 越小
+  // DB 压力越大，默认 3s 仅够 Dashboard 级别客户端数（浏览器 Tab）。
+  metricsStream: {
+    maxStreamsGlobal: parseInt(
+      process.env.METRICS_STREAM_MAX_GLOBAL || "32",
+      10,
+    ),
+    intervalMs: parseInt(process.env.METRICS_STREAM_INTERVAL_MS || "3000", 10),
+    idlePingMs: parseInt(
+      process.env.METRICS_STREAM_IDLE_PING_MS || "15000",
+      10,
+    ),
+  },
+  // FEAT-16：执行列表终态推送流（GET /executions/stream）——事件驱动无固定
+  // 数据帧节奏，静默期可能远超反代 proxy_read_timeout；idlePing 即注释帧
+  // 周期（默认 30s，与 metrics/stream 的 15s 快照节奏相比事件流更安静）。
+  executionsStream: {
+    idlePingMs: parseInt(
+      process.env.EXECUTIONS_STREAM_IDLE_PING_MS || "30000",
+      10,
+    ),
   },
   jwt: {
     // S4: fail-fast on weak/missing secrets — throw at startup rather than silently using defaults
@@ -91,6 +167,10 @@ export default () => ({
       parseInt(process.env.EXECUTOR_HEARTBEAT_INTERVAL, 10) || 30000,
     heartbeatTimeoutMultiplier:
       parseInt(process.env.EXECUTOR_HEARTBEAT_TIMEOUT_MULTIPLIER, 10) || 3,
+    // ARCH-27: SSRF 豁免开关在此统一注册 —— 运行时消费方
+    // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
+    // 不再直读 process.env。
+    allowPrivateNetwork: process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK === "true",
     // S-04: shared token executors must present; empty only allowed in dev (with warning)
     sharedToken: (() => {
       // SEC-04: read EXECUTOR_SECRET (matches docker-compose.yml injection key)
@@ -109,6 +189,21 @@ export default () => ({
       }
       return t;
     })(),
+  },
+  // P2: stale sweep 重试预算兑现开关。true（默认）时，sweep 赢得 RUNNING→
+  // FAILED 条件 UPDATE 后，对重试预算未耗尽的执行创建新 PENDING execution
+  // 并入队（re-enqueue 前 best-effort kill 原执行器进程）；false 恢复旧的
+  // "只置 FAILED 不重试"行为。见 scheduler.service.recoverStaleExecutions。
+  scheduler: {
+    staleRecoveryRetryEnabled:
+      process.env.STALE_RECOVERY_RETRY_ENABLED !== "false",
+  },
+  // FEAT-19: 出站 webhook 跨进程 outbox 开关（eventOutbox.enabled 节）。
+  // true（默认）时 OutboundEventDispatcher 派发入口同步落 event_outbox 行，
+  // OutboxDispatcher 启动 + 每 5s 扫描补投（跨进程重启不丢待投事件，
+  // at-least-once）；false 回退纯进程内派发（FEAT-07 原行为）。
+  eventOutbox: {
+    enabled: process.env.EVENT_OUTBOX_ENABLED !== "false",
   },
   // N23: dedicated secret for per-execution callback tokens (HMAC key
   // material). Optional: falls back to the executor shared token when
@@ -139,10 +234,27 @@ export default () => ({
         process.env.METRICS_PROMETHEUS_DEFAULT_METRICS_ENABLED !== "false",
     },
   },
+  // S5: optional Verdaccio service account used by the registry proxy
+  // (modules/registry) when listing npm packages. registry-npm requires
+  // authentication for every package pattern (`access: $authenticated`),
+  // so without these credentials the admin npm package list stays empty
+  // (anonymous 401 → []). A pre-issued token (NPM_REGISTRY_TOKEN) wins over
+  // user/password login. All three are optional: unset keeps the previous
+  // anonymous behavior.
+  registry: {
+    npm: {
+      token: process.env.NPM_REGISTRY_TOKEN || "",
+      user: process.env.NPM_REGISTRY_USER || "",
+      pass: process.env.NPM_REGISTRY_PASS || "",
+    },
+  },
   notification: {
     wecomWebhook: process.env.WECOM_WEBHOOK || "",
     dingtalkWebhook: process.env.DINGTALK_WEBHOOK || "",
     slackWebhook: process.env.SLACK_WEBHOOK || "",
+    // NF-05: 飞书自定义机器人 env 回退（URL + 可选加签 secret）。
+    feishuWebhook: process.env.FEISHU_WEBHOOK || "",
+    feishuSecret: process.env.FEISHU_SECRET || "",
     email: {
       host: process.env.EMAIL_HOST || "",
       port: parseInt(process.env.EMAIL_PORT, 10) || 465,
@@ -153,7 +265,159 @@ export default () => ({
       to: process.env.EMAIL_TO || "",
     },
   },
+  // ARCH-27: 初次部署 admin 种子账号（users.service onModuleInit）。
+  // 此前 users.service 直读 process.env（未注册，审计缺口）；现注册后经
+  // ConfigService 读取。INITIAL_ADMIN_PASSWORD 仅弱值告警（见文件尾）。
+  initialAdmin: {
+    password: process.env.INITIAL_ADMIN_PASSWORD || "",
+    email: process.env.INITIAL_ADMIN_EMAIL || "admin@autoflow.local",
+  },
+  // ARCH-27: 执行日志保留天数（log-retention-cleanup.service，每日 cron
+  // 分批清理 execution_log_lines）。此前该服务直读 process.env 且未注册
+  // （审计缺口）；非法值回退逻辑保留在服务内（Joi 注册允许任意字符串）。
+  logRetention: {
+    days: parseInt(process.env.LOG_RETENTION_DAYS || "30", 10),
+  },
+  // ARCH-22: execution_log_lines 按日分区的清理路径开关。默认 true——
+  // 库已分区化（迁移 1789900000002）时清理走 DETACH PARTITION + 每日
+  // 预建未来分区；false 回退 legacy 分批 DELETE 路径（schema 不回滚，
+  // 重新开启无需迁移）。
+  logPartition: {
+    enabled: process.env.LOG_PARTITION_ENABLED !== "false",
+  },
+  // SEC-02: 任务级 secrets 落库加密的 key（KMS 语义：32 字节 hex/base64，
+  // 短口令会被 sha-256 拉伸——建议 openssl rand -hex 32）。未配置时降级
+  // 明文存储并 warn 一次（零破坏升级路径），见
+  // common/utils/secret-crypto.util.service.ts。
+  secrets: {
+    key: process.env.SEC_SECRETS_KEY || "",
+  },
+  // OBS-02: Alertmanager webhook 入站鉴权 secret（POST /api/alerts/webhook
+  // 的 HMAC-SHA256 over `${timestamp}.${rawBody}`）。未配置时端点 503 拒绝
+  // （安全缺省——绝不退化为无鉴权接收，防告警伪造）。Alertmanager 侧配置
+  // 样例见 docs/observability/README.md 的 OBS-02 段。
+  alert: {
+    webhookSecret: process.env.ALERT_WEBHOOK_SECRET || "",
+  },
+  // SEC-05: 上传面 zip bomb 防护阈值（common/utils/zip-guard.util.ts，在
+  // application / executor-package 上传路径消费）。四项上限均可 env 调整，
+  // 缺省即安全值；非法值由 Joi 拒绝（fail-fast）。
+  zipGuard: {
+    // 解压比上限：CD 声明的 uncompressed 总量 / compressed 总量 ≤ 100。
+    maxRatio: parseInt(process.env.ZIP_MAX_RATIO || "100", 10),
+    // 条目数上限。
+    maxEntries: parseInt(process.env.ZIP_MAX_ENTRIES || "10000", 10),
+    // 单文件解压后大小上限（1 GiB）。
+    maxFileBytes: parseInt(
+      process.env.ZIP_MAX_FILE_BYTES || String(1024 * 1024 * 1024),
+      10,
+    ),
+    // 全包声明解压总量上限（2 GiB）——比率上限无法约束绝对膨胀。
+    maxTotalUncompressedBytes: parseInt(
+      process.env.ZIP_MAX_TOTAL_BYTES || String(2 * 1024 * 1024 * 1024),
+      10,
+    ),
+    // 嵌套 zip 积极探测层数（默认 1 层；更深层按其声明大小计入外层比率）。
+    maxNestingDepth: parseInt(process.env.ZIP_MAX_NESTING_DEPTH || "1", 10),
+  },
+  // SEC-05: 可选 clamd（ClamAV 守护进程）病毒扫描钩子。默认关闭——零影响；
+  // 开启后上传包流式 INSTREAM 送扫，**fail-closed**（扫描不可达/超时/异常
+  // 一律拒绝包，安全缺省，见 clamd-scan.util.ts 头注）。
+  clamd: {
+    enabled: process.env.CLAMD_ENABLED === "true",
+    host: process.env.CLAMD_HOST || "127.0.0.1",
+    port: parseInt(process.env.CLAMD_PORT || "3310", 10),
+    timeoutMs: parseInt(process.env.CLAMD_TIMEOUT_MS || "10000", 10),
+  },
+  // OBS-01: OpenTelemetry 分布式追踪开关。默认 false——零开销零行为变化
+  // （TracingService 全方法短路：不产 span、不生成 traceparent、不加请求头）。
+  // true 时进程内 span 树 + traceId 贯穿落库（@opentelemetry/api-only 方案，
+  // 不引 sdk-*/exporter——升级路径见 docs/deployment.md OTEL 段）。
+  tracing: {
+    enabled: process.env.OTEL_ENABLED === "true",
+  },
 });
+
+/**
+ * ARCH-24: TypeORM DataSource 配置构造（纯函数，供 app.module 的
+ * TypeOrmModule.forRootAsync 工厂与单测共用）。
+ *
+ * 读写分离形态（二选一，TypeORM 同一配置对象里 replication 与
+ * url/host+port 拆字段互斥）：
+ *  - db.readReplicaUrl 为空（默认）→ 沿用既有 host/port/username/...
+ *    单连接拆字段形态，产物无 replication 字段，行为与旧版逐字节一致；
+ *  - db.readReplicaUrl 非空 → replication 形态 { master: {...}, slaves:
+ *    [replicaUrl] }。master 沿用拆字段凭据，slave 用 `url` 单字段——
+ *    PostgresDriver.createPool 对两种凭据形态等价支持（credentials.url →
+ *    pg connectionString）。仅 replica 的 ssl/额外参数经由 URL query 传递，
+ *    master 侧 extra（连接池）两端共享（createPool 把 options.extra 合入
+ *    每个连接池）。
+ *
+ * 路由语义（TypeORM 0.3 内建，无需业务代码参与）：
+ *  - SELECT 读面（SelectQueryBuilder.obtainQueryRunner →
+ *    DataSource.defaultReplicationModeForReads → "slave"）走 slaves；
+ *  - 写面（save/update/delete、QueryBuilder.execute 非查询、事务、
+ *    entityManager/repo 默认 "master" 模式）走 master；
+ *  - 迁移（migrationsRun → MigrationExecutor → createQueryRunner()
+ *    默认 master）恒走 master。
+ */
+export const buildTypeOrmDataSourceOptions = (config: {
+  database: {
+    host: string;
+    port: number;
+    username: string;
+    password: string;
+    database: string;
+    poolSize: number;
+    readReplicaUrl?: string;
+  };
+  app: { nodeEnv: string };
+}): Record<string, unknown> => {
+  const common = {
+    entities: [__dirname + "/../**/*.entity{.ts,.js}"],
+    migrations: [__dirname + "/../migrations/*{.ts,.js}"],
+    migrationsRun: config.app.nodeEnv !== "development",
+    synchronize: false,
+    logging: config.app.nodeEnv === "development",
+    extra: {
+      max: config.database.poolSize,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+    },
+  };
+
+  // 读写分离关闭（默认）：与旧版一致的单 url 拆字段形态。
+  if (!config.database.readReplicaUrl) {
+    return {
+      type: "postgres",
+      host: config.database.host,
+      port: config.database.port,
+      username: config.database.username,
+      password: config.database.password,
+      database: config.database.database,
+      ...common,
+    };
+  }
+
+  // 读写分离开启：master 保留拆字段凭据，slaves 用连接串。
+  return {
+    type: "postgres",
+    replication: {
+      master: {
+        host: config.database.host,
+        port: config.database.port,
+        username: config.database.username,
+        password: config.database.password,
+        database: config.database.database,
+      },
+      // TypeORM 类型面 slaves 声明为凭据对象数组，但 PostgresDriver 等价
+      // 支持字符串形式的 { url }（createPool: connectionString: url）——
+      // 运行时合法，此处收窄断言；单测钉住产物形态。
+      slaves: [config.database.readReplicaUrl],
+    },
+    ...common,
+  } as Record<string, unknown>;
+};
 
 // M3: fail-fast in production for critical secrets that have known weak defaults
 if (process.env.NODE_ENV === "production") {
@@ -228,6 +492,25 @@ if (process.env.NODE_ENV === "production") {
     );
   }
 
+  // SEC-02 / ARCH-27 收编: production 下每个 CORS origin 必须是合法的
+  // http(s) URL —— 此前该校验在 main.ts bootstrap 内直读 env 重复实现，
+  // 现收编到配置层（fail-fast 时点从 NestFactory.create 前移至 ConfigModule
+  // 初始化，仍在监听端口之前），main.ts 保留复核注释。
+  for (const origin of corsAllowed) {
+    if (!origin.startsWith("https://") && !origin.startsWith("http://")) {
+      throw new Error(
+        `CORS_ALLOWED_ORIGINS origin "${origin}" must start with http:// or https://`,
+      );
+    }
+    try {
+      new URL(origin);
+    } catch {
+      throw new Error(
+        `CORS_ALLOWED_ORIGINS origin "${origin}" is not a valid URL`,
+      );
+    }
+  }
+
   // ARCH-006: production 显式请求 DB_SYNCHRONIZE=true 时 fail-fast，
   // 防止不受控的 schema 修改；synchronize 一律走 migrations。
   if (process.env.DB_SYNCHRONIZE === "true") {
@@ -236,7 +519,8 @@ if (process.env.NODE_ENV === "production") {
     );
   }
 
-  // Validate initial admin password is changed
+  // Validate initial admin password is changed (ARCH-27: seed 逻辑已注册至
+  // initialAdmin 节，users.service 经 ConfigService 读取)
   const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD ?? "";
   if (weakValues.has(initialAdminPassword)) {
     console.warn(

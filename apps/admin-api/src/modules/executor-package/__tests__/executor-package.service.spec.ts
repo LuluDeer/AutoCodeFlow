@@ -13,21 +13,111 @@ import {
   ExecutorPackageStatus,
 } from "../executor-package.entity";
 import * as fs from "fs";
+import * as crypto from "crypto";
+import { Readable } from "stream";
+import axios from "axios";
+import { ExecutorPackageController } from "../executor-package.controller";
+import { assertSafeExecutorUrl } from "../../../common/utils/safe-http.util";
+// SEC-05: structurally-valid minimal zip for upload fixtures.
+import { buildBenignZip } from "../../../common/utils/__tests__/zip-samples";
+
+// The controller only needs findAll; avoid native dependencies under the fs mock.
+jest.mock("../../executor/executor.service", () => ({
+  ExecutorService: jest.fn(),
+}));
+jest.mock("axios");
+jest.mock("../../../common/utils/safe-http.util");
+
+// SEC-05: zip-guard/clamd consume the temp file via fs — but this spec
+// jest.mocks fs wholesale. Keep the REAL guard logic and feed it the fixture
+// bytes from the fake disk map, so the upload path still exercises its true
+// validation (the mocked fs would otherwise crash the guard with undefined
+// readFileSync). clamd stays a no-op (CLAMD_ENABLED=false in tests).
+jest.mock("../../../common/utils/zip-guard.util", () => {
+  const actual = jest.requireActual("../../../common/utils/zip-guard.util");
+  return {
+    ...actual,
+    assertZipFileSafe: (p: string, limits?: unknown) => {
+      const buf = diskFiles.get(p);
+      return actual.assertZipSafe(buf ?? Buffer.alloc(0), limits as never);
+    },
+  };
+});
+jest.mock("../../../common/utils/clamd-scan.util", () => {
+  const actual = jest.requireActual("../../../common/utils/clamd-scan.util");
+  return {
+    ...actual,
+    scanBufferWithClamd: jest.fn(() => Promise.resolve({ ok: true })),
+  };
+});
 
 jest.mock("fs");
 const mockFs = fs as jest.Mocked<typeof fs>;
+
+/**
+ * R9: uploads arrive as on-disk temp files (multer diskStorage) and are
+ * hashed by streaming. The fs module is jest-mocked, so stub the promise API
+ * surface the service uses (open/stat/rename/unlink/copyFile) and wire a
+ * real createReadStream to an in-memory map so the streamed checksum is
+ * genuinely computed from file content.
+ */
+const diskFiles = new Map<string, Buffer>();
+
+const stubFsDisk = () => {
+  // jest.mock("fs") automock does not materialize the lazy `promises` getter
+  // — install a full stub object for the promise API surface the service uses.
+  (fs as any).promises = {
+    open: jest.fn(async (p: string) => ({
+      read: async (buf: Buffer) => {
+        const content = diskFiles.get(p) ?? Buffer.alloc(0);
+        const head = content.subarray(0, buf.length);
+        head.copy(buf);
+        return { bytesRead: head.length };
+      },
+      close: async () => undefined,
+    })),
+    stat: jest.fn(async (p: string) => ({
+      size: (diskFiles.get(p) ?? Buffer.alloc(0)).length,
+    })),
+    rename: jest.fn(async (from: string, to: string) => {
+      diskFiles.set(to, diskFiles.get(from) ?? Buffer.alloc(0));
+      diskFiles.delete(from);
+    }),
+    readFile: jest.fn(async (p: string) =>
+      Buffer.from(diskFiles.get(p) ?? Buffer.alloc(0)),
+    ),
+    unlink: jest.fn(async (p: string) => {
+      diskFiles.delete(p);
+    }),
+    copyFile: jest.fn(async (from: string, to: string) => {
+      diskFiles.set(to, diskFiles.get(from) ?? Buffer.alloc(0));
+    }),
+  };
+  (fs as any).createReadStream = jest.fn((p: string) => {
+    const content = diskFiles.get(p);
+    if (!content) {
+      return Readable.from(
+        (async function* () {
+          throw new Error(`ENOENT: ${p}`);
+        })(),
+      );
+    }
+    return Readable.from([content]);
+  });
+};
 
 describe("ExecutorPackageService", () => {
   let service: ExecutorPackageService;
   let repo: jest.Mocked<Repository<ExecutorPackage>>;
 
+  const UPLOAD_TMP_FILE = "/tmp/pkg-upload-tmp/upload-1";
   const mockFile: Express.Multer.File = {
-    // P1: buffer must start with the zip magic bytes (PK\x03\x04) to pass
-    // the upload content validation.
-    buffer: Buffer.concat([
-      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
-      Buffer.from("fake-zip-content"),
-    ]),
+    // P1: the on-disk temp content must start with the zip magic bytes
+    // (PK\x03\x04) to pass the upload content validation.
+    // SEC-05: content must also be a structurally-valid zip — the upload
+    // path now parses the central directory (a bare PK stub is rejected as
+    // unparseable), so use the shared minimal-archive builder.
+    buffer: buildBenignZip(),
     originalname: "executor-v1.0.0.zip",
     mimetype: "application/zip",
     size: 1024,
@@ -35,7 +125,8 @@ describe("ExecutorPackageService", () => {
     encoding: "7bit",
     destination: "",
     filename: "",
-    path: "",
+    // R9: diskStorage puts the upload on disk; the service consumes file.path.
+    path: UPLOAD_TMP_FILE,
     stream: null as any,
   };
 
@@ -62,9 +153,9 @@ describe("ExecutorPackageService", () => {
   beforeEach(async () => {
     mockFs.existsSync = jest.fn().mockReturnValue(true);
     mockFs.mkdirSync = jest.fn();
-    mockFs.writeFileSync = jest.fn();
-    mockFs.unlinkSync = jest.fn();
-    mockFs.readFileSync = jest.fn().mockReturnValue(Buffer.from("content"));
+    diskFiles.clear();
+    diskFiles.set(UPLOAD_TMP_FILE, mockFile.buffer);
+    stubFsDisk();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -105,6 +196,16 @@ describe("ExecutorPackageService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
+    // R9: the service consumes the multer diskStorage temp file (file.path).
+    it("R9: rejects an upload without an on-disk temp path", async () => {
+      await expect(
+        service.create(
+          { name: "x", version: "1.0", type: "node" } as any,
+          { ...mockFile, path: "" } as any,
+        ),
+      ).rejects.toThrow(/diskStorage/);
+    });
+
     it("should throw ConflictException when package already exists", async () => {
       repo.findOne.mockResolvedValue(mockPkg);
       await expect(
@@ -115,7 +216,7 @@ describe("ExecutorPackageService", () => {
       ).rejects.toThrow(ConflictException);
     });
 
-    it("should create and save a new package", async () => {
+    it("should create and save a new package (R9: rename from disk, streamed checksum)", async () => {
       repo.findOne.mockResolvedValue(null);
       repo.create.mockReturnValue(mockPkg);
       repo.save.mockResolvedValue(mockPkg);
@@ -127,8 +228,121 @@ describe("ExecutorPackageService", () => {
       );
 
       expect(result).toEqual(mockPkg);
-      expect(mockFs.writeFileSync).toHaveBeenCalled();
       expect(repo.save).toHaveBeenCalled();
+      // R9: the temp upload is moved into the upload dir (same-volume rename)
+      const rename = (fs.promises as any).rename as jest.Mock;
+      expect(rename).toHaveBeenCalledTimes(1);
+      const [, dest] = rename.mock.calls[0];
+      expect(dest.replace(/\\/g, "/")).toContain("uploads/executor-packages");
+      expect(dest).toMatch(/[\\/]my-executor-1\.0\.0-[0-9a-f]{8}\.zip$/);
+      // the file content was moved intact
+      expect(diskFiles.get(dest)).toEqual(mockFile.buffer);
+      // checksum recorded on the row is the SHA-256 of the file content
+      const createArg = repo.create.mock.calls[0][0] as any;
+      expect(createArg.checksum).toBe(
+        crypto.createHash("sha256").update(mockFile.buffer).digest("hex"),
+      );
+    });
+
+    it("R9: best-effort unlinks the temp upload when validation fails", async () => {
+      repo.findOne.mockResolvedValue(null);
+      // non-archive content on disk
+      diskFiles.set(UPLOAD_TMP_FILE, Buffer.from("not-an-archive"));
+
+      await expect(
+        service.create(
+          { name: "x", version: "1.0", type: "node" } as any,
+          mockFile,
+        ),
+      ).rejects.toThrow(BadRequestException);
+
+      const unlink = (fs.promises as any).unlink as jest.Mock;
+      expect(unlink).toHaveBeenCalledWith(UPLOAD_TMP_FILE);
+      expect(diskFiles.has(UPLOAD_TMP_FILE)).toBe(false);
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it("R9: cleans up the temp upload when the DB save fails", async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.create.mockReturnValue(mockPkg);
+      repo.save.mockRejectedValue(new Error("db down"));
+
+      await expect(
+        service.create(
+          { name: "x", version: "1.0", type: "node" } as any,
+          mockFile,
+        ),
+      ).rejects.toThrow("db down");
+
+      const unlink = (fs.promises as any).unlink as jest.Mock;
+      expect(unlink).toHaveBeenCalledWith(UPLOAD_TMP_FILE);
+    });
+
+    // QA9: at save-failure time the upload has ALREADY been moved into its
+    // final location — that file must be unlinked too, otherwise an orphan
+    // (invisible to every listing) lingers on disk and collides with a
+    // future upload of the same checksum.
+    it("QA9: unlinks the moved-in-place file when the DB save fails", async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.create.mockReturnValue(mockPkg);
+      repo.save.mockRejectedValue(new Error("db down"));
+
+      await expect(
+        service.create(
+          { name: "my-executor", version: "1.0.0", type: "node" } as any,
+          mockFile,
+        ),
+      ).rejects.toThrow("db down");
+
+      const rename = (fs.promises as any).rename as jest.Mock;
+      const dest = rename.mock.calls[0][1] as string;
+      const unlink = (fs.promises as any).unlink as jest.Mock;
+      expect(unlink).toHaveBeenCalledWith(dest);
+      // the orphan is gone from disk
+      expect(diskFiles.has(dest)).toBe(false);
+    });
+  });
+
+  // QA9: startup sweep — a crashed process or a killed 500 MB upload leaves
+  // multer temp files in upload-tmp with no request path to clean them up.
+  describe("QA9: onModuleInit sweeps stale upload-tmp files", () => {
+    it("removes only stale regular files (keeps fresh files and directories)", async () => {
+      const now = Date.now();
+      (fs.promises as any).readdir = jest
+        .fn()
+        .mockResolvedValue(["stale.tmp", "fresh.tmp", "subdir"]);
+      (fs.promises as any).stat = jest.fn(async (p: string) => {
+        if (p.endsWith("stale.tmp"))
+          return {
+            isFile: () => true,
+            mtimeMs: now - 2 * 60 * 60 * 1000,
+          };
+        if (p.endsWith("fresh.tmp"))
+          return { isFile: () => true, mtimeMs: now };
+        return { isFile: () => false, mtimeMs: now - 5 * 60 * 60 * 1000 };
+      });
+
+      await service.onModuleInit();
+
+      const unlink = (fs.promises as any).unlink as jest.Mock;
+      expect(unlink).toHaveBeenCalledTimes(1);
+      expect(String(unlink.mock.calls[0][0])).toContain("stale.tmp");
+    });
+
+    it("a sweep failure is logged and does not block bootstrap", async () => {
+      (fs.promises as any).readdir = jest
+        .fn()
+        .mockRejectedValue(new Error("EACCES"));
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => {});
+
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to sweep"),
+      );
+      warnSpy.mockRestore();
     });
   });
 
@@ -188,7 +402,9 @@ describe("ExecutorPackageService", () => {
 
       await service.remove("pkg-001");
 
-      expect(mockFs.unlinkSync).toHaveBeenCalledWith(mockPkg.filePath);
+      expect((fs.promises as any).unlink).toHaveBeenCalledWith(
+        mockPkg.filePath,
+      );
       expect(repo.remove).toHaveBeenCalledWith(mockPkg);
     });
 
@@ -199,25 +415,164 @@ describe("ExecutorPackageService", () => {
 
       await service.remove("pkg-001");
 
-      expect(mockFs.unlinkSync).not.toHaveBeenCalled();
+      expect((fs.promises as any).unlink).not.toHaveBeenCalled();
       expect(repo.remove).toHaveBeenCalled();
     });
   });
 
-  describe("getFileBuffer", () => {
-    it("should return buffer and pkg when file exists", async () => {
+  describe("openPackageFile (R9 streaming download)", () => {
+    it("should return a readable stream, size and pkg when file exists", async () => {
       repo.findOne.mockResolvedValue(mockPkg);
-      const result = await service.getFileBuffer("pkg-001");
+      diskFiles.set(mockPkg.filePath, Buffer.from("package-bytes"));
+
+      const result = await service.openPackageFile("pkg-001");
+
       expect(result.pkg).toEqual(mockPkg);
-      expect(Buffer.isBuffer(result.buffer)).toBe(true);
+      expect(result.fileSize).toBe("package-bytes".length);
+      expect(fs.createReadStream).toHaveBeenCalledWith(mockPkg.filePath);
+      // drain the stream to prove it yields the file content
+      const chunks: Buffer[] = [];
+      for await (const c of result.stream) chunks.push(c as Buffer);
+      expect(Buffer.concat(chunks).toString()).toBe("package-bytes");
     });
 
     it("should throw NotFoundException when file not on disk", async () => {
       mockFs.existsSync = jest.fn().mockReturnValue(false);
       repo.findOne.mockResolvedValue(mockPkg);
-      await expect(service.getFileBuffer("pkg-001")).rejects.toThrow(
+      await expect(service.openPackageFile("pkg-001")).rejects.toThrow(
         NotFoundException,
       );
+      expect(fs.createReadStream).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("pushToExecutors", () => {
+    const targets = [
+      { id: "exec-001", address: "http://executor:8002" },
+    ] as any;
+    const config = { get: jest.fn() };
+    const systemConfig = { findOne: jest.fn() };
+    let controller: ExecutorPackageController;
+
+    beforeEach(() => {
+      repo.findOne.mockResolvedValue(mockPkg);
+      config.get.mockImplementation((key: string) =>
+        key === "ADMIN_API_URL" ? "http://host:3002/" : "env-token",
+      );
+      systemConfig.findOne.mockResolvedValue({ value: "db-token" });
+      jest.mocked(axios.post).mockResolvedValue({ data: {} });
+      jest.mocked(assertSafeExecutorUrl).mockResolvedValue(undefined);
+      service = new ExecutorPackageService(repo, config as any);
+      controller = new ExecutorPackageController(
+        service,
+        { findAll: jest.fn().mockResolvedValue(targets) } as any,
+        config as any,
+        systemConfig as any,
+      );
+    });
+
+    it.each([
+      "http://host:3002",
+      "http://host:3002/",
+      "http://host:3002///",
+      "http://host:3002/api/",
+      "http://host:3002/api/api/",
+    ])("normalizes %s and sends the DB token", async (baseUrl) => {
+      config.get.mockImplementation((key: string) =>
+        key === "ADMIN_API_URL" ? baseUrl : "env-token",
+      );
+      await expect(controller.push(mockPkg.id)).resolves.toEqual([
+        { executorId: "exec-001", address: targets[0].address, success: true },
+      ]);
+      expect(systemConfig.findOne).toHaveBeenCalledWith("executor.sharedToken");
+      expect(assertSafeExecutorUrl).toHaveBeenCalledWith(targets[0].address);
+      expect(axios.post).toHaveBeenCalledWith(
+        "http://executor:8002/api/update-package",
+        expect.objectContaining({
+          packageId: mockPkg.id,
+          downloadUrl:
+            "http://host:3002/api/executor-packages/pkg-001/download",
+          checksum: mockPkg.checksum,
+        }),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer db-token",
+          }),
+        }),
+      );
+      expect(config.get).not.toHaveBeenCalledWith(
+        "ADMIN_API_BASE_URL",
+        expect.anything(),
+      );
+    });
+
+    it.each([undefined, "", "   "])(
+      "rejects missing configuration %p before sending",
+      async (baseUrl) => {
+        config.get.mockReturnValue(baseUrl);
+        await expect(controller.push(mockPkg.id)).rejects.toMatchObject({
+          status: 503,
+          message:
+            "ADMIN_API_URL is not configured; cannot push executor package",
+        });
+        expect(axios.post).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      "/relative",
+      "ftp://host",
+      "http://host?query=1",
+      "http://host#fragment",
+    ])("rejects invalid base URL %s before sending", async (baseUrl) => {
+      config.get.mockReturnValue(baseUrl);
+      await expect(controller.push(mockPkg.id)).rejects.toMatchObject({
+        status: 503,
+        message: expect.stringContaining("ADMIN_API_URL"),
+      });
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it("falls back to env when the DB key is unavailable", async () => {
+      systemConfig.findOne.mockRejectedValue(new Error("not found"));
+      await controller.push(mockPkg.id);
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Object),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer env-token",
+          }),
+        }),
+      );
+    });
+
+    it("reads the rotated DB token on the next push", async () => {
+      await controller.push(mockPkg.id);
+      systemConfig.findOne.mockResolvedValue({ value: "rotated-token" });
+      await controller.push(mockPkg.id);
+      expect(axios.post).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.any(Object),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer rotated-token",
+          }),
+        }),
+      );
+    });
+
+    it("keeps SSRF rejection before the outbound request", async () => {
+      jest
+        .mocked(assertSafeExecutorUrl)
+        .mockRejectedValue(new Error("Unsafe executor URL"));
+      await expect(controller.push(mockPkg.id)).resolves.toEqual([
+        expect.objectContaining({
+          success: false,
+          error: "Unsafe executor URL",
+        }),
+      ]);
+      expect(axios.post).not.toHaveBeenCalled();
     });
   });
 

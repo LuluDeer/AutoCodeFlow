@@ -6,19 +6,41 @@
 import pyautogui
 import time
 import os
+import json
 from pathlib import Path
 from autoflow_sdk import TaskContext
 import cv2
 import numpy as np
 
 
+def get_typed_param(ctx, key, default=None):
+    """
+    JSON 容错解析任务参数。
+
+    执行器把所有触发参数字符串化注入（AUTOFLOW_* 环境变量），python SDK
+    from_env 不做类型还原——actions 这类列表参数拿到的其实是字符串，
+    直接按列表迭代只会逐字符空转。尝试 json.loads 还原，失败则原样返回
+    字符串（对齐 Node 示例 getParam 的兜底语义）。
+    """
+    raw = ctx.get_param(key)
+    if raw is None:
+        return default
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+
+
 def main():
     ctx = TaskContext.from_env()
     
-    # 获取任务参数
-    actions = ctx.get_param("actions", [])
-    screenshot_interval = ctx.get_param("screenshotInterval", 2)
-    output_dir = ctx.get_param("outputDir", f"/tmp/desktop_automation_{ctx.execution_id}")
+    # 获取任务参数（actions 列表经 JSON 容错解析还原，见 helper 注释）
+    actions = get_typed_param(ctx, "actions", [])
+    if not isinstance(actions, list):
+        ctx.log.warning("actions 参数应为 JSON 数组，已按空列表处理")
+        actions = []
+    screenshot_interval = get_typed_param(ctx, "screenshotInterval", 2)
+    output_dir = get_typed_param(ctx, "outputDir", f"/tmp/desktop_automation_{ctx.execution_id}")
     
     ctx.log.info("开始桌面GUI自动化任务")
     

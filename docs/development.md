@@ -223,6 +223,29 @@ npm run build
 
 ## 代码规范
 
+### 配置读取规约（ARCH-27，apps/admin-api）
+
+**痛点**：env 直读散布曾导致死配置（W-22：`@Throttle` 装饰器在模块求值期读
+`process.env.LOGIN_THROTTLE_LIMIT`，早于 ConfigModule 载入 `.env`，配置静默失效）。
+
+**规则**（ESLint `no-restricted-properties` 已封禁 `process.env` 直读，违规即 lint 失败）：
+
+1. **新增配置必须先注册**：`apps/admin-api/src/app.module.ts` 的
+   ConfigModule `validationSchema`（Joi）声明变量与默认值 →
+   `src/config/configuration.ts` 映射为配置对象 → 消费方注入 `ConfigService`
+   以 `configService.get("section.key")` 读取。
+2. **直读豁免清单**（维护位置：`apps/admin-api/.eslintrc.js` 的
+   `overrides`，每处必须带理由注释）：
+   - `src/config/configuration.ts` —— 唯一合法的 env → 配置映射层；
+   - `src/config/env.ts`（`getEnvVar()`）—— 模块求值期（装饰器参数、模块级
+     常量）或无 DI 环境（如 TypeORM CLI）的唯一收口 util，调用点必须注释
+     W-22 前科与豁免理由；
+   - `**/*.spec.ts`、`test/**` —— 测试 fixture 需直接操纵 env。
+3. **回归守卫**：`src/__tests__/main-env-preload.spec.ts` 钉住
+   main.ts 在 import app.module 前预载 `.env` + 动态 import 的顺序 ——
+   求值期读取依赖该顺序，请勿"整理"回静态 import。
+4. 完整规约原文见 `src/config/configuration.ts` 头部注释。
+
 ### TypeScript / JavaScript
 
 - 使用 ESLint + Prettier 进行代码检查和格式化
@@ -264,6 +287,74 @@ docs: 更新 SDK 使用示例
 - `feat/xxx`：功能开发分支
 - `fix/xxx`：Bug 修复分支
 - `release/x.x.x`：发布分支
+
+## PR 前检查清单（DOC-01）
+
+提交 PR 时 `.github/PULL_REQUEST_TEMPLATE.md` 会自带「API 变更？」检查项，
+发起 PR 前先逐项自查（模板不适用的小节勾「否」保留，不要删除）：
+
+1. **新增/修改端点** → 同一 PR 内更新 `docs/api-reference.md`（列明方法 + 路径与
+   请求/响应契约），不留「文档后补」——历轮多次出现端点已合入、文档滞后数轮的补漏。
+2. **Breaking 变更**（删字段/改语义/改状态码/收紧鉴权）→ 列明影响面，四个客户端包
+   （`acf-cli` / `mcp-server` / `autocodeflow-node-sdk` / `autoflow-sdk`）是否需要
+   同批适配；鉴权类收紧参考「前后端同批发布」先例（W2 RBAC）。
+3. **新增环境变量** → 三处同批登记：`configuration.ts`（+ app.module Joi 校验）、
+   `.env.example`、`docs/` 对应环境变量表——规约详见上文「配置读取规约（ARCH-27）」。
+4. **新增数据库迁移** → 时间戳先在 `docs/PLAN-CLAIMS.md`「迁移时间戳分配表」登记
+   （分配规则=在盘最大时间戳 +1，先登记再建文件），CI `check-migrations` job 会拦截
+   撞号与漏登（scripts/check-migrations.mjs，可本地预跑；配套自检
+   scripts/check-migrations.selftest.mjs）。
+5. **平台影响** → `executor-node` 源码改动必须与重打的 `bundle` 同 commit 提交；
+   涉及执行器/调度行为变更对照 `docs/VERIFY-MATRIX.md` 补真机验证项。
+
+## 版本与发布流程·CHANGELOG 自动化（DOC-05）
+
+发版手工链路（三包 version 同批 bump → 手写 CHANGELOG → 打 tag）自本轮起由
+[release-please](https://github.com/googleapis/release-please) 自动化。**选型裁定
+（vs changesets）**：
+
+1. 本仓 commit 纪律是中文 conventional commits（见上文「Git 提交规范」）——
+   release-please 对 conventional commits 原生解析、零迁移成本；changesets
+   需要 PR 手写 `.changeset/*.md` 增量文件，与既有纪律并行多一套仪式。
+2. 三包走 **lockstep 单版本线**（`@autocodeflow/sdk` / `autocodeflow-mcp-server` /
+   `autoflow-sdk` 当前均 1.0.1，`release.yml` 的 version-guard 强制四处 version
+   一致），不需要 changesets 的按包独立版本管理。
+3. release-please 对 node（package.json）+ python（pyproject.toml）混合仓原生
+   支持；changesets 只管 npm 包。
+
+### 接入形态（最小正确）
+
+| 文件 | 作用 |
+|------|------|
+| `.github/workflows/release-please.yml` | push 到 `main` 时汇总 conventional commits：有可发布变更 → 创建/更新 **Release PR**（bump 三包 version + 生成/追加根级 `CHANGELOG.md`）；Release PR 合并 → 打 tag `vX.Y.Z` + 创建 GitHub Release |
+| `release-please-config.json` | 三包路径 → release-type（node/node/python）；`include-component-in-tag: false` 使 tag 为裸 `vX.Y.Z`（非 `pkg-vX.Y.Z`） |
+| `release-please-manifest.json` | 记录已发布版本基线（当前 1.0.1） |
+
+### 与 release.yml 的衔接（release.yml 本体零改动）
+
+```
+push main ──→ release-please.yml：开/更新 Release PR（version bump + CHANGELOG）
+Release PR 合并 ──→ release-please 打 tag v(X.Y.Z)
+tag v* push ──→ 既有 release.yml：version-guard → environment 审批闸 → npm + PyPI 发布
+```
+
+即 release-please 产出的 tag **恰好触发**既有 tag 触发的 `release.yml`——发布管道、
+审批闸、幂等语义全部复用既有实现（见 `docs/sdk-guide.md`「版本与发布流程」）。
+
+### 首次启用观察点
+
+- **版本漂移兜底**：三包独立提议版本时可能漂移，但 tag 一旦 push 会被
+  version-guard 拦截（fail 安全，不会发出不一致的包）；首次 Release PR 合并前
+  **人工核对三包 version 已收敛为同一值**。
+- `autoflow_sdk.__version__`（`packages/autoflow-sdk/autoflow_sdk/__init__.py`）
+  由 python release-type 的 extra-files 机制同步，首次 Release PR 里核对四处
+  version 是否齐全。
+- **真跑验证不可行**（需 main push 权限 + 实际 PR 流程），已以 actionlint 语法
+  校验 + 本节干跑说明代替；首次发布时观察：① Release PR 是否正确汇总
+  conventional commits；② 合并后 tag 是否触发 release.yml；③ 根级
+  `CHANGELOG.md` 是否生成（当前仓库无根级 CHANGELOG.md，追加式生成不覆盖历史）。
+- GITHUB_TOKEN 创建的 tag 会触发 `on: push: tags`；若首次运行发现 release.yml
+  未被触发（GitHub 事件级联策略调整），再评估改用 PAT。
 
 ## 项目结构
 

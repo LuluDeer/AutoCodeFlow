@@ -25,8 +25,12 @@ export class ConfigHistory {
   @Column({ nullable: true })
   description: string;
 
+  // FEAT-08: 'rollback' marks entries written by the rollback endpoint itself
+  // (one row per rollback, both for value-restore and create-entry deletion).
+  // DB column is a plain VARCHAR (no CHECK constraint) — see migration
+  // 1789000000001 — so the extra value needs no DDL change.
   @Column()
-  action: "create" | "update" | "delete";
+  action: "create" | "update" | "delete" | "rollback";
 
   @Column({ nullable: true })
   userId: string;

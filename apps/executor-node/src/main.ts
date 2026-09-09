@@ -33,10 +33,10 @@ import { killRunningTaskProcesses } from './routes/execute';
 import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
 import { configRouter } from './routes/config';
-import { logsRouter, executorAuthMiddleware } from './routes/logs';
+import { logsRouter } from './routes/logs';
 import { deployRouter } from './routes/deploy';
 import { updatePackageRouter } from './routes/update-package';
-import { verifyToken } from './middleware/auth';
+import { verifyToken, setOnTokenAcquired } from './middleware/auth';
 
 const app = express();
 app.use(express.json());
@@ -67,7 +67,15 @@ function detectAvailableRuntimes(): string[] {
   return runtimes;
 }
 
-async function registerExecutor() {
+// N41: register 失败不再永久依赖进程重启恢复。token 链恢复（fetchToken 成功，
+// 经 setOnTokenAcquired 钩子）后触发一次带富元数据的重注册——admin 侧对同
+// (address, startupId) 的 register 幂等（不轮换 token、按白名单更新元数据），
+// 所以这次补注册只会修复 /token side effect 重建行时丢失的
+// type/capabilities/maxConcurrent/version，不会引发旋转风暴。
+let registerSucceeded = false;
+let reRegisterInFlight = false;
+
+async function registerExecutor(): Promise<boolean> {
   const runtimes = detectAvailableRuntimes();
   try {
     const resp = await postWithStaticToken('/api/executors/register', {
@@ -92,18 +100,25 @@ async function registerExecutor() {
     // the admin ResponseInterceptor ({code,message,data}) — unwrapAdminResponseData
     // reads both shapes (R9: shared with middleware/auth.ts fetchToken).
     adoptExecutorTokenHash(resp?.data);
+    registerSucceeded = true;
     logger.info(`Registered to admin-api (runtimes: ${runtimes.join(', ')}, maxConcurrent: ${config.maxConcurrentTasks})`);
+    return true;
   } catch (err: any) {
-    // N41 (round-10): the old "(will retry via heartbeat)" wording was
-    // false — heartbeat never registers (unknown address → 404). The only
-    // self-heal is the register-on-token side effect of
-    // POST /executors/token in the token-refresh path, which rebuilds the
-    // row WITHOUT the rich metadata above (type/capabilities/maxConcurrent/
-    // version); full metadata returns only on process restart.
+    registerSucceeded = false;
     logger.warn(
-      `Register failed (no auto re-register; /token fallback rebuilds the row without rich metadata): ${err.message}`,
+      `Register failed (will re-register with rich metadata on next token acquisition): ${err.message}`,
     );
+    return false;
   }
+}
+
+/** N41: token 恢复后的补注册——已注册短路 + in-flight 去重，防重复风暴。 */
+function maybeReRegister(): void {
+  if (registerSucceeded || reRegisterInFlight) return;
+  reRegisterInFlight = true;
+  void registerExecutor().finally(() => {
+    reRegisterInFlight = false;
+  });
 }
 
 async function notifyOffline(): Promise<void> {
@@ -121,7 +136,7 @@ async function notifyOffline(): Promise<void> {
 let heartbeatInterval: NodeJS.Timeout | null = null;
 let isShuttingDown = false;
 
-async function gracefulShutdown(signal: string): Promise<void> {
+async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
@@ -133,8 +148,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
     heartbeatInterval = null;
   }
 
-  // Stop callback thread
-  stopCallbackThread();
+  // Stop accepting new requests before task shutdown can enqueue final callbacks
+  server.close();
 
   // Stop log cleanup thread + buffered log writer
   stopLogCleanup();
@@ -149,8 +164,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   while (getRunningCount() > 0) {
     if (Date.now() - startTime > maxWait) {
       // Grace expired: kill the detached task process groups, otherwise they
-      // outlive the executor as unmanaged orphans (callbacks are already
-      // stopped, so their results could never be reported anyway).
+      // outlive the executor as unmanaged orphans (callbacks from tasks killed below may not be reported; queued callbacks are drained normally).
       const killed = killRunningTaskProcesses();
       logger.warn(
         `Grace period expired, ${getRunningCount()} task(s) still running, forcing shutdown` +
@@ -162,8 +176,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
 
-  // Stop accepting new requests
-  server.close();
+  // Drain callbacks produced by stopped and completed workers before exiting
+  await stopCallbackThread();
 
   // Flush any buffered task logs to disk before exiting
   try {
@@ -174,12 +188,51 @@ async function gracefulShutdown(signal: string): Promise<void> {
   await notifyOffline();
 
   logger.info('Executor shutdown complete');
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 // Register signal handlers
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+// R-08 (windows-findings 2.9): Node maps the Windows CTRL_BREAK_EVENT console
+// signal to SIGBREAK. Without this handler, Ctrl+Break (the only signal a
+// detached/background executor can receive, since taskkill cannot deliver
+// SIGTERM to console apps) killed the process immediately (exit 0xC000013A)
+// — running task processes were orphaned instead of being reaped by
+// gracefulShutdown's killRunningTaskProcesses. No-op on POSIX.
+process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));
+
+// W-25 (windows-findings): last-line-of-defence parity with admin-api's
+// OPS-06/ARCH-008. Before this, ANY unexpected async error killed the process
+// by default WITHOUT running gracefulShutdown — task process trees then
+// outlived the executor as unmanaged orphans (the exact failure mode W-24
+// just removed one instance of; this covers every future one). Route both
+// through the same drain + tree-kill chain, then exit(1) so a supervisor
+// restarts us. 45s cap = 30s task grace + slack; if it ever fires, the
+// hard exit still happens.
+function fatalShutdown(reason: string): void {
+  logger.error(`FATAL (unhandled): ${reason} — graceful shutdown with exit(1)`);
+  let done = false;
+  const hardExit = setTimeout(() => {
+    if (!done) {
+      logger.error('Graceful shutdown stalled after fatal error — hard exiting');
+      process.exit(1);
+    }
+  }, 45_000);
+  hardExit.unref();
+  gracefulShutdown(reason, 1)
+    .catch(() => undefined)
+    .finally(() => {
+      done = true;
+      process.exit(1);
+    });
+}
+process.on('unhandledRejection', (reason) => {
+  fatalShutdown(`unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`);
+});
+process.on('uncaughtException', (err) => {
+  fatalShutdown(`uncaughtException: ${err.stack ?? String(err)}`);
+});
 
 const server = app.listen(config.port, async () => {
   try {
@@ -191,6 +244,9 @@ const server = app.listen(config.port, async () => {
     initAdminClients(config.adminApiUrls);
     await checkAdminApiConnectivity();
 
+    // N41: token 恢复钩子先于首次注册挂载——启动期 admin 不可达时，register
+    // 失败后由后续成功的 fetchToken 自动补注册（maybeReRegister 自带去重）。
+    setOnTokenAcquired(maybeReRegister);
     await registerExecutor();
     heartbeatInterval = startHeartbeat();
     startCallbackThread();

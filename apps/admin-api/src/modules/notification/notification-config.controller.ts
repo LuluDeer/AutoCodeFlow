@@ -3,6 +3,7 @@ import {
   Get,
   Patch,
   Post,
+  Delete,
   Body,
   Param,
   UseGuards,
@@ -17,6 +18,7 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { NotificationConfigService } from "./notification-config.service";
+import { NotificationSilenceService } from "./notification-silence.service";
 import {
   AlertChannel,
   AlertLevel,
@@ -36,6 +38,7 @@ export class NotificationConfigController {
   constructor(
     private readonly configService: NotificationConfigService,
     private readonly notificationService: NotificationService,
+    private readonly silenceService: NotificationSilenceService,
   ) {}
 
   // N11: channel configs carry SMTP credentials (password field) and webhook
@@ -64,14 +67,29 @@ export class NotificationConfigController {
    * treated as an unsaved config override for the tested channel, and the
    * response reflects the real per-channel delivery result instead of an
    * unconditional success:true.
+   *
+   * R2: testChannel is admin-only — it triggers an actual outbound
+   * delivery using the override config and the response carries the
+   * SSRF/transport verdict. A non-admin caller could probe the network
+   * path or exfiltrate config through the same endpoint. The global
+   * RolesGuard reads the @Roles metadata; no extra @UseGuards entry is
+   * needed (same pattern as the channel-config PATCH above).
    */
   @Post("channels/:key/test")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Test notification channel" })
   testChannel(@Param("key") key: string, @Body() body: Record<string, string>) {
     return this.configService.testChannel(key, body);
   }
 
+  /**
+   * R2: sendTest is admin-only — same rationale as testChannel above; the
+   * fan-out hits every requested enabled channel and the response leaks
+   * their actual delivery outcomes (sent/blocked/failed). Limiting it to
+   * ADMIN matches the audit/notification-config posture (N11).
+   */
   @Post("test")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Send test notification to channel" })
   sendTest(
     @Body() body: { channels: string[]; title: string; content: string },
@@ -125,5 +143,43 @@ export class NotificationConfigController {
           )
         : await this.notificationService.sendAll(payload);
     return { success: true, results };
+  }
+
+  // FEAT-01: 通知静默规则 CRUD（ADMIN-only，与渠道配置同一 RBAC 姿态）。
+  // 规则持久化到 notification_silences 并写穿 NotificationService 内存态，
+  // 重启后由 onModuleInit 回灌——静默不再是重启即丢的内存态。
+
+  @Get("silences")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: "List notification silences (persisted)" })
+  @ApiResponse({ status: 200, description: "All silences" })
+  listSilences() {
+    return this.silenceService.listAll();
+  }
+
+  @Post("silences")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: "Create a notification silence" })
+  @ApiResponse({ status: 201, description: "Created silence" })
+  createSilence(
+    @Body()
+    body: {
+      scope: "global" | "task" | "application";
+      channelType?: string;
+      taskId?: string;
+      applicationId?: string;
+      level?: string;
+      reason?: string;
+      durationMinutes?: number;
+    },
+  ) {
+    return this.silenceService.create(body);
+  }
+
+  @Delete("silences/:id")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: "Remove a notification silence" })
+  removeSilence(@Param("id") id: string) {
+    return this.silenceService.remove(id);
   }
 }

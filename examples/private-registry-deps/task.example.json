@@ -1,0 +1,14 @@
+{
+  "id": "private-registry-deps-demo",
+  "name": "私服依赖示例（Python）",
+  "runtime": "python",
+  "entrypoint": "examples/private-registry-deps/private_dep_task.py",
+  "cronExpression": "0 0 3 * * *",
+  "timeoutSeconds": 600,
+  "maxRetry": 1,
+  "retryDelay": 30,
+  "params": {
+    "pkg_name": "acfdemopkg"
+  },
+  "requirements": ["acfdemopkg", "example_pkg>=1.0", "autoflow-sdk"]
+}

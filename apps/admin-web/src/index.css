@@ -1,7 +1,65 @@
+/* ============================================================
+   UI-01：设计系统令牌（design-system/autocodeflow/MASTER.md）
+   —— CSS 变量承载，双主题分面：
+   · :root = light（antd defaultAlgorithm 同面）
+   · html[data-theme='dark'] = MASTER.md 暗色 OLED dashboard 色板
+   色值与 src/theme/tokens.ts 同源（一处常量导出两处消费，防漂移）。
+   ============================================================ */
+
+@import '@fontsource/fira-sans/300.css';
+@import '@fontsource/fira-sans/400.css';
+@import '@fontsource/fira-sans/500.css';
+@import '@fontsource/fira-sans/600.css';
+@import '@fontsource/fira-sans/700.css';
+@import '@fontsource/fira-code/400.css';
+@import '@fontsource/fira-code/500.css';
+@import '@fontsource/fira-code/600.css';
+@import '@fontsource/fira-code/700.css';
+
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
-    'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
-    'Noto Color Emoji';
+  /* ---- 主题分面变量（UI-01 §色板）----
+     --color-accent #22C55E 强调色双主题同源；
+     背景/前景/边框三面随 data-theme 切换。 */
+  --color-primary: #0f172a;
+  --color-on-primary: #ffffff;
+  --color-secondary: #1e293b;
+  --color-accent: #22c55e;
+  --color-background: #f8fafc;
+  --color-foreground: #0f172a;
+  --color-muted: #f1f5f9;
+  --color-border: #e2e8f0;
+  --color-destructive: #ef4444;
+  --color-ring: #22c55e;
+
+  /* ---- 间距令牌（MASTER §Spacing Variables）---- */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+
+  /* ---- 阴影令牌（MASTER §Shadow Depths）---- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.15);
+
+  /* ---- 字体令牌（MASTER §Typography）----
+     Fira Sans=正文（中文字形自动回退系统字体）；
+     Fira Code=代码/日志/等宽场景。 */
+  --font-body: 'Fira Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans', sans-serif;
+  --font-mono: 'Fira Code', 'Consolas', 'Monaco', 'Courier New', monospace;
+
+  /* ---- 场景面变量（双主题适配消费点）---- */
+  --log-bg: #ffffff; /* SSE 日志区背景（亮面白底） */
+  --log-text: #0f172a;
+  --chart-grid: #e2e8f0; /* recharts 网格线 */
+  --chart-axis-text: #475569;
+
+  font-family: var(--font-body);
   line-height: 1.5;
   font-weight: 400;
   font-synthesis: none;
@@ -10,27 +68,173 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ---- 暗色面：MASTER.md 暗色 OLED 色板 ---- */
+html[data-theme='dark'] {
+  --color-primary: #f8fafc;
+  --color-on-primary: #020617;
+  --color-secondary: #1e293b;
+  --color-background: #020617;
+  --color-foreground: #f8fafc;
+  --color-muted: #1a1e2f;
+  --color-border: #334155;
+  --color-ring: #22c55e;
+
+  --log-bg: #020617;
+  --log-text: #f8fafc;
+  --chart-grid: #334155;
+  --chart-axis-text: #94a3b8;
+}
+
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
   width: 100%;
 }
 
 body {
-  background-color: #f5f5f5;
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  transition: background-color 200ms ease;
 }
 
 a {
   font-weight: 500;
-  color: #1890ff;
+  color: var(--color-accent);
   text-decoration: none;
 }
 
 a:hover {
-  color: #40a9ff;
+  color: var(--color-accent);
+  opacity: 0.85;
+}
+
+/* UI-02：主题切换过渡（150-300ms，MASTER 反模式清单「Instant state changes」） */
+.ant-layout,
+.ant-layout-header,
+.ant-layout-sider,
+.ant-layout-content {
+  transition: background-color 200ms ease, border-color 200ms ease;
+}
+
+/* OBS-03: 执行日志行级高亮——ERROR 红 / WARN 黄。
+   作用于 ExecutionDetailPage 日志 pre 内按行前缀推断的 span
+   （utils/logLevel.ts logLineHighlightClass，规则与 admin-api
+   log-level.util.ts 一致）；双主题均保持 ≥4.5:1 对比度——
+   亮面取深色变体，暗面取高亮度变体。 */
+.log-line-error {
+  color: #d92d20;
+  font-weight: 600;
+}
+
+.log-line-warn {
+  color: #b54708;
+}
+
+html[data-theme='dark'] .log-line-error {
+  color: #ff6b6b;
+}
+
+html[data-theme='dark'] .log-line-warn {
+  color: #ffc53d;
+}
+
+/* UI-05: 日志关键词搜索高亮——mark 底色 + 继承行色。
+   亮面黄底深字、暗面金底近黑字，双主题均 ≥4.5:1；与行级高亮
+   （log-line-*，只改前景色）正交叠加互不覆盖。 */
+mark.log-search-hit {
+  background: #fde68a;
+  color: #713f12;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+html[data-theme='dark'] mark.log-search-hit {
+  background: #fbbf24;
+  color: #1c1917;
+}
+
+/* ============================================================
+   UI-09：移动端适配（≤768px，值班工程师手机巡查场景）
+   —— 纯 CSS 媒体查询（无 JS 断点逻辑），桌面端零影响：
+   · 侧边栏 off-canvas 抽屉化 + 遮罩（.mobile-sider-open 由 MainLayout 挂载）
+   · 汉堡入口 .mobile-menu-toggle（桌面端 display:none 不渲染观感）
+   · 头部次要信息（时间/面包屑）隐藏
+   · 表格次要列 .ui09-hide-mobile 隐藏（onHeaderCell/onCell 双端挂类）
+   · 弹窗不超屏、触控目标 ≥40px
+   ============================================================ */
+/* 基础规则（桌面端）：汉堡与遮罩默认不显示（!important 压过 antd cssinjs 运行时注入的同权重规则） */
+.mobile-menu-toggle {
+  display: none !important;
+}
+.mobile-sider-mask {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  /* 头部：汉堡入口可见，时间/面包屑等次要信息隐藏（值班只留高频操作） */
+  .mobile-menu-toggle {
+    display: inline-flex !important;
+  }
+  .header-time,
+  .header-breadcrumb {
+    display: none;
+  }
+
+  /* 内容区与头部 padding 收紧（覆盖 antd 内联样式需 !important） */
+  .ant-layout-content {
+    padding: 12px !important;
+  }
+  .ant-layout-header {
+    padding: 0 12px !important;
+  }
+
+  /* 侧边栏抽屉化：fixed off-canvas，展开态滑入（MainLayout 通过 .mobile-sider-open 控制） */
+  .ant-layout-sider {
+    position: fixed !important;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+  }
+  .mobile-sider-open .ant-layout-sider {
+    transform: none;
+    box-shadow: var(--shadow-xl);
+  }
+  .mobile-sider-open .mobile-sider-mask {
+    display: block !important;
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  /* 表格次要列隐藏（值班关键列=名称/状态/时间/错误/操作，横向滚动兜底其余列） */
+  .ui09-hide-mobile {
+    display: none !important;
+  }
+
+  /* 触控目标 ≥40px：表格行内图标按钮放宽热区（375px 指端命中） */
+  .ant-table-tbody .ant-btn-icon-only {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  /* 弹窗不超屏（Modal 固定 width 兜底），内容超高内部滚动 */
+  .ant-modal {
+    max-width: calc(100vw - 16px) !important;
+    margin: 8px auto !important;
+  }
+  .ant-modal .ant-modal-content {
+    max-height: calc(100vh - 64px);
+    overflow: auto;
+  }
 }
