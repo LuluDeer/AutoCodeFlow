@@ -4,6 +4,26 @@ import { TaskExecution } from '../api/tasks';
 
 const { Text } = Typography;
 
+const HIGHLIGHT_KEYS = new Set(['params', 'exitCode', 'duration', 'failureReason']);
+
+function formatCompareValue(key: string, val: unknown): string {
+  if (key === 'startTime' || key === 'endTime') {
+    return val ? new Date(String(val)).toLocaleString() : '-';
+  }
+  if (key === 'duration' && typeof val === 'number') {
+    return val >= 1000 ? `${(val / 1000).toFixed(1)}s` : `${val}ms`;
+  }
+  if (val === null || val === undefined || val === '') return '-';
+  if (typeof val === 'object') return JSON.stringify(val, null, 2);
+  return String(val);
+}
+
+function compareKeyOf(val: unknown): string {
+  if (val === null || val === undefined || val === '') return '';
+  if (typeof val === 'object') return JSON.stringify(val);
+  return String(val);
+}
+
 interface ExecutionCompareProps {
   executions: TaskExecution[];
 }
@@ -40,13 +60,17 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
             const color = val === 'success' ? 'green' : val === 'failed' ? 'red' : 'default';
             return <Tag color={color}>{String(val ?? '-')}</Tag>;
           }
-          if (record.key === 'startTime' || record.key === 'endTime') {
-            return val ? new Date(String(val)).toLocaleString() : '-';
-          }
-          if (record.key === 'duration' && typeof val === 'number') {
-            return val >= 1000 ? `${(val / 1000).toFixed(1)}s` : `${val}ms`;
-          }
-          return String(val ?? '-');
+          const display = formatCompareValue(record.key, val);
+          const shouldHighlight =
+            HIGHLIGHT_KEYS.has(record.key) &&
+            new Set(
+              selectedExecutions.map(item => compareKeyOf(item[record.key as keyof TaskExecution])),
+            ).size > 1;
+          return (
+            <Text mark={shouldHighlight} style={{ whiteSpace: 'pre-wrap' }}>
+              {display}
+            </Text>
+          );
         },
       };
     }),
@@ -60,6 +84,7 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
     { metric: '开始时间', key: 'startTime' },
     { metric: '结束时间', key: 'endTime' },
     { metric: '耗时', key: 'duration' },
+    { metric: '参数', key: 'params' },
     { metric: '退出码', key: 'exitCode' },
     { metric: '失败分类', key: 'failureReason' },
     { metric: '错误信息', key: 'errorMessage' },

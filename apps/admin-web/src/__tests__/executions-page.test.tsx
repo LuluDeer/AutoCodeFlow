@@ -61,6 +61,7 @@ const exec = (over: Partial<TaskExecution>): TaskExecution => ({
   startTime: '2026-09-07T10:00:00Z',
   endTime: '2026-09-07T10:01:00Z',
   duration: 60_000,
+  params: null,
   createdAt: '2026-09-07T10:00:00Z',
   ...over,
 });
@@ -288,10 +289,10 @@ describe('ExecutionsPage 终止执行（QA-03）', () => {
 });
 
 describe('ExecutionsPage 多选对比（QA-03 / FEAT-03 回归）', () => {
-  it('勾选表头全选后出现「对比 (2)」按钮，点击打开对比 modal 渲染指标行', async () => {
+  it('勾选表头全选后出现「对比 (2)」按钮，点击打开对比 modal 渲染指标行并高亮关键差异', async () => {
     mockedTasks.allExecutions.mockResolvedValue(pageFixture([
-      exec({ id: 'e1', status: 'success', duration: 1000 }),
-      exec({ id: 'e2', status: 'failed', duration: 2000, errorMessage: 'boom' }),
+      exec({ id: 'e1', status: 'success', duration: 1000, params: { env: 'prod' }, exitCode: 0, failureReason: null }),
+      exec({ id: 'e2', status: 'failed', duration: 2000, params: { env: 'staging' }, exitCode: 1, failureReason: 'script_error', errorMessage: 'boom' }),
     ]));
     renderPage();
     await (await screen.findAllByText(/备份\s*任务/))[0];
@@ -308,9 +309,13 @@ describe('ExecutionsPage 多选对比（QA-03 / FEAT-03 回归）', () => {
     });
     fireEvent.click(findBtn(document.body, '对比(2)')!);
     // 对比 modal 渲染：指标表头 + 耗时格式化（duration 1000 → "1.0s"，
-    // ExecutionCompare 的 duration 渲染：≥1000 显示秒）+ 卡片耗时 1000ms
+    // ExecutionCompare 的 duration 渲染：≥1000 显示秒）+ params/exitCode/failureReason 差异高亮
     expect(await screen.findByText('指标')).toBeTruthy();
     expect(screen.getAllByText('1.0s').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('参数')).toBeTruthy();
+    expect(screen.getByText(/"env": "prod"/)).toBeTruthy();
+    expect(screen.getByText('script_error')).toBeTruthy();
+    expect(document.querySelectorAll('mark').length).toBeGreaterThanOrEqual(4);
   });
 
   it('逐行勾选：两行都选中时对比按钮可用，仅一行时禁用（selectedIds < 2）', async () => {
