@@ -62,12 +62,20 @@ cd packages/autoflow-sdk
 python -m pip install build && python -m build --wheel
 ```
 
-## 本文档站的构建
+## 本文档站的构建与发布
 
 文档站（`packages/docs-site`）为独立 VitePress 站点，与 SDK 包版本解耦
-（本包 version 跟随 lockstep 但不发布）。CI 侧仅做 build 验证（死链会
-fail build）**不部署**——托管位置（GitHub Pages / 平台自身 / 静态托管）
-留后续决策。
+（本包 version 跟随 lockstep 但不发布）。
+
+- **host（P0-3 裁定）**：GitHub Pages 项目页
+  （`https://<owner>.github.io/AutoCodeFlow/`），`base: '/AutoCodeFlow/'`
+  已在 `.vitepress/config.mts` 对齐；ADR 简记见本目录 README.md。
+- **部署**：`.github/workflows/docs-site-deploy.yml`——仅 main push /
+  workflow_dispatch 触发（develop push 不部署），官方三件套
+  configure-pages / upload-pages-artifact / deploy-pages，前置跑
+  DOC-09 sync-check（源头文档漂移时拦截部署）。
+- **CI 验证**：ci.yml `docs-site-build` 在 push/PR 时跑
+  sync-check + build（死链会 fail build）。
 
 ```bash
 cd packages/docs-site

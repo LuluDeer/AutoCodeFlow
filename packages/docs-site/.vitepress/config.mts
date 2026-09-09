@@ -5,8 +5,17 @@ import { defineConfig } from 'vitepress';
 //   docs/sdk-guide.md（ECO-01 能力矩阵）/ packages/autocodeflow-node-sdk/README.md /
 //   packages/autoflow-sdk/README.md / examples/*/README.md / packages/contract-fixtures/README.md。
 // 仓库相对链接（../ 前缀）一律指向 GitHub 仓库路径，站点内互链用站点根相对路径。
+
+// P0-3 host 决策：GitHub Pages 项目页（ADR 简记见 packages/docs-site/README.md）。
+// 项目页部署在 https://<owner>.github.io/AutoCodeFlow/ 子路径下，VitePress 的
+// base 必须与之对齐，否则静态资源（JS/CSS/logo）全部 404 白屏。
+// 注意：站内链接全部用站点根相对路径（如 /getting-started），VitePress 构建
+// 时会自动拼上 base；`dev` / `preview` 也会在同一子路径下服务，无需另行配置。
+const BASE_PATH = '/AutoCodeFlow/';
+
 export default defineConfig({
   lang: 'zh-CN',
+  base: BASE_PATH,
   title: 'AutoCodeFlow SDK 文档',
   description:
     'AutoCodeFlow 双 SDK（Node.js / Python）使用指南、能力矩阵、官方示例与发布契约',
