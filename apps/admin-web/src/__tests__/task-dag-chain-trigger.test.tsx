@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
 import { tasksApi, type Task } from '../api/tasks';
 
@@ -43,9 +44,11 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
     vi.mocked(tasksApi.batchTrigger).mockResolvedValue([] as never);
 
     render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter>
         <TaskDependencyGraph taskId="cur" />
-      </MemoryRouter>,
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
 
     const btn = await screen.findByTestId('dag-trigger-chain');
@@ -65,9 +68,11 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
       pageSize: 500,
     } as never);
     render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter>
         <TaskDependencyGraph taskId="solo" />
-      </MemoryRouter>,
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
     const btn = await screen.findByTestId('dag-trigger-chain');
     fireEvent.click(btn);
@@ -86,9 +91,11 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
       response: { data: { message: 'boom' } },
     } as never);
     render(
-      <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter>
         <TaskDependencyGraph taskId="solo" />
-      </MemoryRouter>,
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
     const btn = await screen.findByTestId('dag-trigger-chain');
     fireEvent.click(btn);

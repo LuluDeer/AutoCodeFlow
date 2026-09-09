@@ -326,16 +326,21 @@ describe('ExecutionsPage 多选对比（QA-03 / FEAT-03 回归）', () => {
     renderPage();
     await (await screen.findAllByText(/备份\s*任务/))[0];
 
-    const checkboxes = document.querySelectorAll('input.ant-checkbox-input');
+    // UI-09 起 ExecutionsPage 表格加 scroll.x → rc-table 渲染 measure row，
+    // 其内含一个隐藏 checkbox，索引不再稳定——按 data-row-key 精确取行选择框
+    const rowCheckbox = (rowKey: string): HTMLInputElement =>
+      document.querySelector(
+        `.ant-table-tbody tr[data-row-key="${rowKey}"] input.ant-checkbox-input`,
+      ) as HTMLInputElement;
     // 逐行勾选第一行（跳过表头全选框）→ 仅 1 个选中 → 禁用
-    fireEvent.click(checkboxes[1]);
+    fireEvent.click(rowCheckbox('e1'));
     await waitFor(() => {
       const btn = findBtn(document.body, '对比(1)');
       expect(btn).toBeTruthy();
       expect(btn!.disabled).toBe(true);
     });
     // 再勾选第二行 → 2 个选中 → 可用
-    fireEvent.click(checkboxes[2]);
+    fireEvent.click(rowCheckbox('e2'));
     await waitFor(() => {
       const btn = findBtn(document.body, '对比(2)');
       expect(btn).toBeTruthy();

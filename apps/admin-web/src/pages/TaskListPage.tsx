@@ -8,9 +8,10 @@ import {
   CopyOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
   CheckSquareOutlined, FileTextOutlined,
 } from '@ant-design/icons';
-import { useRequest } from 'ahooks';
+import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { tasksApi, Task } from '../api/tasks';
+import { useTasksList, invalidateTaskData } from '../api/queries';
 import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { priorityTag } from '../utils/priority';
@@ -53,10 +54,16 @@ export default function TaskListPage() {
   // 搜索防抖：输入框即时回显 search，列表查询跟随 debounced 值，避免每击键发请求
   const debouncedSearch = useDebounce(search);
 
-  const { data, loading, refresh } = useRequest(
-    () => tasksApi.list({ page, pageSize, name: debouncedSearch || undefined, status: statusFilter, triggerType: triggerFilter }),
-    { pollingInterval: 30000, pollingWhenHidden: false, refreshDeps: [page, pageSize, debouncedSearch, statusFilter, triggerFilter] },
-  );
+  const { data, isLoading: loading } = useTasksList({
+    page,
+    pageSize,
+    name: debouncedSearch || undefined,
+    status: statusFilter,
+    triggerType: triggerFilter,
+  });
+  // FEAT-17: 写后失效句柄（原 useRequest refresh → invalidate 面收口）
+  const queryClient = useQueryClient();
+  const refresh = () => void invalidateTaskData(queryClient);
 
   const tasks: Task[] = data?.items ?? [];
   const total: number = data?.total ?? 0;
@@ -191,6 +198,13 @@ export default function TaskListPage() {
     }
   };
 
+  // UI-09：375px 可用性——关键列=名称/状态/启用/操作（值班首查项），其余次要列
+  // responsive: ['md'] 在窄屏收起（CSS 侧 .ui09-hide-mobile 双保险）；
+  // scroll.x 兜底横向滚动。onHeaderCell/onCell 挂类供媒体查询隐藏次要列。
+  const hideOnMobile = {
+    onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+    onCell: () => ({ className: 'ui09-hide-mobile' }),
+  } as const;
   const columns = [
     {
       title: '任务名称',
@@ -216,6 +230,7 @@ export default function TaskListPage() {
       title: '触发方式',
       dataIndex: 'triggerType',
       width: 100,
+      ...hideOnMobile,
       render: (v: string) => (
         <Tag color={TRIGGER_COLOR[v] || 'default'}>{TRIGGER_LABEL[v] || v}</Tag>
       ),
@@ -224,23 +239,17 @@ export default function TaskListPage() {
       title: '优先级',
       key: 'priority',
       width: 80,
+      ...hideOnMobile,
       render: (_: unknown, r: Task) => {
         const t = priorityTag(r.priority);
         return <Tag color={t.color}>{t.label}</Tag>;
       },
     },
     {
-      title: '触发方式',
-      dataIndex: 'triggerType',
-      width: 100,
-      render: (v: string) => (
-        <Tag color={TRIGGER_COLOR[v] || 'default'}>{TRIGGER_LABEL[v] || v}</Tag>
-      ),
-    },
-    {
       title: '调度',
       key: 'schedule',
       width: 160,
+      ...hideOnMobile,
       render: (_: unknown, r: Task) => {
         if (r.triggerType === 'cron' && r.cronExpression) {
           return <Text code style={{ fontSize: 12 }}>{r.cronExpression}</Text>;
@@ -260,6 +269,7 @@ export default function TaskListPage() {
       title: '下次执行',
       key: 'nextRun',
       width: 150,
+      ...hideOnMobile,
       render: (_: unknown, r: Task) => {
         if (r.status !== 'active') return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
         if (r.triggerType === 'cron' && r.cronExpression) {
@@ -279,6 +289,7 @@ export default function TaskListPage() {
       title: '运行时',
       dataIndex: 'runtime',
       width: 80,
+      ...hideOnMobile,
       render: (v: string) => v ? <Tag>{v}</Tag> : '-',
     },
     {
@@ -354,19 +365,20 @@ export default function TaskListPage() {
         }
       />
 
-      <Space style={{ marginBottom: 16 }} wrap>
+      {/* UI-09：筛选区 wrap 堆叠（Space wrap 已有），输入/选择窄屏自适应宽度 */}
+      <Space style={{ marginBottom: 16 }} wrap className="ui09-filter-bar">
         <Input
           placeholder="搜索任务名、描述"
           prefix={<SearchOutlined />}
           value={search}
           onChange={e => setSearch(e.target.value)}
           allowClear
-          style={{ width: 220 }}
+          style={{ width: 220, maxWidth: '100%' }}
         />
         <Select
           placeholder="全部状态"
           allowClear
-          style={{ width: 110 }}
+          style={{ width: 110, maxWidth: '100%' }}
           value={statusFilter}
           onChange={setStatusFilter}
           suffixIcon={<FilterOutlined />}
@@ -378,7 +390,7 @@ export default function TaskListPage() {
         <Select
           placeholder="触发方式"
           allowClear
-          style={{ width: 120 }}
+          style={{ width: 120, maxWidth: '100%' }}
           value={triggerFilter}
           onChange={setTriggerFilter}
           options={[
@@ -447,6 +459,8 @@ export default function TaskListPage() {
         columns={columns}
         dataSource={tasks}
         loading={loading}
+        // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
+        scroll={{ x: 760 }}
         pagination={{
           total,
           current: page,

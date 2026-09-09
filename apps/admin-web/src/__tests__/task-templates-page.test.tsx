@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskTemplatesPage from '../pages/TaskTemplatesPage';
 import { taskTemplatesApi, type TaskTemplate } from '../api/task-templates';
 
@@ -78,7 +79,11 @@ afterEach(() => {
 
 describe('TaskTemplatesPage（CORE-03）', () => {
   it('渲染官方+自定义模板卡片（名称/官方 Tag/描述摘要）', async () => {
-    render(<TaskTemplatesPage />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskTemplatesPage />
+      </QueryClientProvider>,
+    );
 
     expect(await screen.findByText('定时备份')).toBeTruthy();
     expect(screen.getByText('我的自定义模板')).toBeTruthy();
@@ -90,7 +95,11 @@ describe('TaskTemplatesPage（CORE-03）', () => {
   });
 
   it('「使用此模板」跳转创建表单并带 ?templateId=（≤3 次点击链路的第 1 跳）', async () => {
-    render(<TaskTemplatesPage />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskTemplatesPage />
+      </QueryClientProvider>,
+    );
 
     const useButtons = await screen.findAllByRole('button', { name: /使用此模板/ });
     expect(useButtons.length).toBe(2);
@@ -102,7 +111,11 @@ describe('TaskTemplatesPage（CORE-03）', () => {
   });
 
   it('官方模板不渲染删除按钮；自定义模板渲染删除按钮', async () => {
-    render(<TaskTemplatesPage />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskTemplatesPage />
+      </QueryClientProvider>,
+    );
 
     await screen.findByText('定时备份');
     // 官方卡片 2 个 actions 槽（使用/删除），自定义卡片删除按钮存在——但官方只有一个删除入口不存在。
@@ -113,7 +126,11 @@ describe('TaskTemplatesPage（CORE-03）', () => {
 
   it('列表为空 → 空态提示', async () => {
     vi.mocked(taskTemplatesApi.list).mockClear().mockResolvedValue([] as never);
-    render(<TaskTemplatesPage />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskTemplatesPage />
+      </QueryClientProvider>,
+    );
 
     expect(await screen.findByText('暂无模板')).toBeTruthy();
   });

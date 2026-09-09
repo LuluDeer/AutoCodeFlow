@@ -20,6 +20,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ExecutorListPage from '../pages/ExecutorListPage';
 import { runBatch } from '../components/executor/BatchActionBar';
 import ViewToggle, { readViewMode, writeViewMode } from '../components/executor/ViewToggle';
@@ -78,14 +79,19 @@ const makeExecutor = (over: Partial<Executor>): Executor => ({
 });
 
 function renderPage() {
+  // FEAT-17: ExecutorListPage 改用 TanStack Query——测试包 QueryClientProvider
+  // （executions-page.test 先例，retry:false）
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={['/executors']}>
-      <Routes>
-        <Route path="/executors" element={<ExecutorListPage />} />
-        <Route path="/executors/:id" element={<div>executor-detail-mock</div>} />
-        <Route path="/executors/install" element={<div>install-wizard-mock</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/executors']}>
+        <Routes>
+          <Route path="/executors" element={<ExecutorListPage />} />
+          <Route path="/executors/:id" element={<div>executor-detail-mock</div>} />
+          <Route path="/executors/install" element={<div>install-wizard-mock</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -361,6 +367,10 @@ describe('UI-07 ③ 批量操作条（页面内）', () => {
     mockedExecutors.getGroups.mockResolvedValue([]);
     renderPage();
     await screen.findByText('alpha');
+    // FEAT-17 适配：列表数据源换 TanStack Query 后，首次渲染到行 checkbox
+    // 完全落 DOM 多一拍 React 提交——settle 一帧再取 checkbox（原 useRequest
+    // onSuccess 回调时序下无此拍）。
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
     fireEvent.click(rowCheckbox(0));
     fireEvent.click(rowCheckbox(1));
     fireEvent.click(findBtn(document.body, '批量配置热更新')!);

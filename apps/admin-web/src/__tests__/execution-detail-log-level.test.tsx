@@ -18,6 +18,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import ExecutionDetailPage from '../pages/ExecutionDetailPage';
@@ -135,12 +136,14 @@ describe('ExecutionDetailPage 日志级别过滤（OBS-03）', () => {
   it('工具行渲染级别过滤下拉，默认"全部级别"', async () => {
     mockExecution(LOGS);
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     await screen.findByText(/plain line/);
     const select = getLevelSelect();
     expect(select).toBeTruthy();
@@ -154,12 +157,14 @@ describe('ExecutionDetailPage 日志级别过滤（OBS-03）', () => {
   it('"全部级别"不发请求：初始渲染不调用分页端点', async () => {
     mockExecution(LOGS);
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     await screen.findByText(/plain line/);
     expect(tasksApi.executionLogs).not.toHaveBeenCalled();
   });
@@ -170,12 +175,14 @@ describe('ExecutionDetailPage 日志级别过滤（OBS-03）', () => {
       .mockResolvedValueOnce({ lines: ['2026-09-06 10:00:01 [ERROR] boom-a', 'err-2'], totalLines: 3, hasMore: true } as never)
       .mockResolvedValueOnce({ lines: ['err-3'], totalLines: 3, hasMore: false } as never);
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     await screen.findByText(/plain line/);
     await clickLevelOption('ERROR');
 
@@ -191,12 +198,14 @@ describe('ExecutionDetailPage 日志级别过滤（OBS-03）', () => {
     mockExecution(LOGS);
     vi.mocked(tasksApi.executionLogs).mockResolvedValue({ lines: ['only-error'], totalLines: 1, hasMore: false } as never);
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     await screen.findByText(/plain line/);
     await clickLevelOption('ERROR');
     await vi.waitFor(() => expect(getPre().textContent).toBe('only-error'));
@@ -216,12 +225,14 @@ describe('ExecutionDetailPage 日志级别过滤（OBS-03）', () => {
     const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
 
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     await screen.findByText(/plain line/);
     await clickLevelOption('ERROR');
     await vi.waitFor(() => expect(getPre().textContent).toBe('err-only-1\nerr-only-2'));
@@ -243,12 +254,14 @@ describe('ExecutionDetailPage 日志行级高亮（OBS-03）', () => {
   it('ERROR 行红色、WARN 行黄色高亮，纯文本行不包裹', async () => {
     mockExecution(LOGS);
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     await screen.findByText(/plain line/);
 
     const errSpan = document.querySelector('span.log-line-error');
@@ -272,12 +285,14 @@ describe('ExecutionDetailPage 日志行级高亮（OBS-03）', () => {
     ].join('\n');
     mockExecution(tricky);
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     await screen.findByText(/tail/);
     expect(getPre().textContent).toBe(tricky);
   });

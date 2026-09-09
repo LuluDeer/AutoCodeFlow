@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ArtifactsList from '../components/ArtifactsList';
 import { artifactsApi } from '../api/artifacts';
 import { formatArtifactSize } from '../utils/artifactSize';
@@ -69,7 +70,11 @@ describe('formatArtifactSize', () => {
 
 describe('ArtifactsList', () => {
   it('传入 artifacts：渲染 name/大小/sha 前缀与下载入口', async () => {
-    const { container } = render(<ArtifactsList execId={EXEC_ID} artifacts={ARTIFACTS} />);
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <ArtifactsList execId={EXEC_ID} artifacts={ARTIFACTS} />
+      </QueryClientProvider>,
+    );
     expect(await screen.findByText('screenshot.png')).toBeTruthy();
     expect(screen.getByText('report.csv')).toBeTruthy();
     expect(screen.getByText('2.0 KB')).toBeTruthy();
@@ -88,7 +93,11 @@ describe('ArtifactsList', () => {
   });
 
   it('点击下载：以 (execId, name) 调用 api 层 downloadArtifact', async () => {
-    render(<ArtifactsList execId={EXEC_ID} artifacts={ARTIFACTS} />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <ArtifactsList execId={EXEC_ID} artifacts={ARTIFACTS} />
+      </QueryClientProvider>,
+    );
     await screen.findByText('report.csv');
     fireEvent.click(screen.getByLabelText('下载产物 report.csv'));
     await waitFor(() =>
@@ -98,7 +107,11 @@ describe('ArtifactsList', () => {
   });
 
   it('空清单（传入 []）：整段不渲染', async () => {
-    render(<ArtifactsList execId={EXEC_ID} artifacts={[]} />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <ArtifactsList execId={EXEC_ID} artifacts={[]} />
+      </QueryClientProvider>,
+    );
     await waitFor(() => {
       expect(document.body.textContent).toBe('');
     });
@@ -109,7 +122,11 @@ describe('ArtifactsList', () => {
 
   it('未传 artifacts：按 execId 自 listArtifacts 拉取后渲染', async () => {
     vi.mocked(artifactsApi.listArtifacts).mockResolvedValue(ARTIFACTS);
-    render(<ArtifactsList execId={EXEC_ID} />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <ArtifactsList execId={EXEC_ID} />
+      </QueryClientProvider>,
+    );
     await waitFor(() => expect(artifactsApi.listArtifacts).toHaveBeenCalledWith(EXEC_ID));
     expect(await screen.findByText('screenshot.png')).toBeTruthy();
     expect(screen.getByText('report.csv')).toBeTruthy();
@@ -117,7 +134,11 @@ describe('ArtifactsList', () => {
 
   it('下载失败：调用 api 层后不抛异常，渲染保持', async () => {
     vi.mocked(artifactsApi.downloadArtifact).mockRejectedValueOnce(new Error('401 未授权'));
-    render(<ArtifactsList execId={EXEC_ID} artifacts={ARTIFACTS} />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <ArtifactsList execId={EXEC_ID} artifacts={ARTIFACTS} />
+      </QueryClientProvider>,
+    );
     await screen.findByText('screenshot.png');
     fireEvent.click(screen.getByLabelText('下载产物 screenshot.png'));
     await waitFor(() =>

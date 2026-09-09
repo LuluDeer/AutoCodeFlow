@@ -10,8 +10,8 @@
 import { useState } from 'react';
 import { Button, List, Space, Spin, Typography, message } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
-import { useRequest } from 'ahooks';
 import { artifactsApi, ExecutionArtifact } from '../api/artifacts';
+import { useExecutionArtifacts } from '../api/queries';
 import { getErrMsg } from '../utils/error';
 import { formatArtifactSize } from '../utils/artifactSize';
 
@@ -26,9 +26,11 @@ export default function ArtifactsList({ execId, artifacts }: ArtifactsListProps)
   const [busyName, setBusyName] = useState<string | null>(null);
 
   // 外部未提供清单时才自取数，避免与上层重复请求。
-  const { data: fetched, loading } = useRequest(
-    () => artifactsApi.listArtifacts(execId),
-    { ready: artifacts === undefined && !!execId, refreshDeps: [execId] },
+  // FEAT-17: useRequest 换 useExecutionArtifacts（queryKey 带 execId，
+  // enabled 门控等价原 ready 语义）。
+  const { data: fetched, isLoading: loading } = useExecutionArtifacts(
+    execId,
+    artifacts === undefined,
   );
 
   const list = artifacts ?? fetched ?? [];
