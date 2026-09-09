@@ -1,0 +1,7339 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "description": "Login with username and password, returns Access Token and Refresh Token. Max5 attempts per minute.",
+        "operationId": "AuthController_login",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful, returns accessToken and refreshToken",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "accessToken": "eyJ...",
+                    "refreshToken": "eyJ..."
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid username or password"
+          },
+          "429": {
+            "description": "Too many requests, rate limit exceeded"
+          }
+        },
+        "summary": "User login",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "description": "Use Refresh Token to obtain new Access Token and Refresh Token (token rotation). Old Refresh Token is immediately invalidated.",
+        "operationId": "AuthController_refreshToken",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshTokenDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token refreshed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "accessToken": "eyJ...",
+                    "refreshToken": "eyJ..."
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Refresh Token is invalid or expired"
+          }
+        },
+        "summary": "Refresh token",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "description": "Logout current user and revoke all valid Refresh Tokens to prevent token reuse.",
+        "operationId": "AuthController_logout",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Logout successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "success": true
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Logout (revoke all Refresh Tokens)",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/profile": {
+      "get": {
+        "description": "Return basic info of the current logged-in user including ID, username, and roles.",
+        "operationId": "AuthController_getProfile",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "User info",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "id": 1,
+                    "username": "admin",
+                    "roles": [
+                      "admin"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get current user info",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/totp/setup": {
+      "post": {
+        "description": "Generates a Base32 secret and otpauth:// URL, stores it in staged (disabled) state. Call POST /auth/totp/enable with a valid code from the authenticator to activate.",
+        "operationId": "AuthController_totpSetup",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Staged secret + otpauth URL"
+          },
+          "400": {
+            "description": "TOTP already enabled"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Stage a TOTP secret (2FA opt-in, step 1)",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/totp/enable": {
+      "post": {
+        "description": "Verifies one valid code against the staged secret, then sets totpEnabled=true.",
+        "operationId": "AuthController_totpEnable",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpCodeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "TOTP enabled"
+          },
+          "400": {
+            "description": "Invalid code or nothing staged"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Enable TOTP (2FA opt-in, step 2)",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/totp/disable": {
+      "post": {
+        "description": "Requires the account password or a valid TOTP code as confirmation.",
+        "operationId": "AuthController_totpDisable",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "TOTP disabled (or was not on)"
+          },
+          "401": {
+            "description": "Confirmation failed"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Disable TOTP",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/totp/verify": {
+      "post": {
+        "description": "Re-validates username+password, verifies the 6-digit TOTP code, and issues accessToken/refreshToken. Called after /auth/login returned { totpRequired: true }.",
+        "operationId": "AuthController_totpVerifyLogin",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpVerifyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tokens issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "accessToken": "eyJ...",
+                    "refreshToken": "eyJ..."
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials or TOTP code"
+          }
+        },
+        "summary": "Complete TOTP login (second factor)",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/sessions": {
+      "get": {
+        "description": "One row per active (non-revoked, non-expired) refresh token. The row matching the sid claim of the caller's access token is flagged current=true.",
+        "operationId": "AuthController_listSessions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Session list"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List my active login sessions",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/sessions/{id}": {
+      "delete": {
+        "description": "Marks the given refresh token row revoked (DR-04 semantics — the refresh JWT becomes unusable immediately). Ownership is enforced; foreign ids get 401.",
+        "operationId": "AuthController_revokeSession",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session revoked"
+          },
+          "401": {
+            "description": "Session not found or not yours"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Revoke one of my sessions",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/sessions/revoke-others": {
+      "post": {
+        "description": "Bulk remote-logout of other devices. Without a sid claim this degenerates to revoking ALL sessions (fail-safe, never keeps unknown sessions).",
+        "operationId": "AuthController_revokeOtherSessions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Revocation count"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Revoke all my sessions except the current one",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/users": {
+      "post": {
+        "operationId": "UsersController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUserDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Create user",
+        "tags": [
+          "Users"
+        ]
+      },
+      "get": {
+        "operationId": "UsersController_findAll",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "Filter by task status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runtime",
+            "required": false,
+            "in": "query",
+            "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get user list",
+        "tags": [
+          "Users"
+        ]
+      }
+    },
+    "/users/{id}": {
+      "get": {
+        "operationId": "UsersController_findOne",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get user details",
+        "tags": [
+          "Users"
+        ]
+      },
+      "patch": {
+        "operationId": "UsersController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Update user",
+        "tags": [
+          "Users"
+        ]
+      },
+      "delete": {
+        "operationId": "UsersController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Delete user",
+        "tags": [
+          "Users"
+        ]
+      }
+    },
+    "/tasks": {
+      "post": {
+        "description": "Create a new automation task. Supports cron, webhook, and event trigger modes. Tasks start in paused state.",
+        "operationId": "TaskController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Task created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": {
+                      "id": "task-uuid",
+                      "name": "Data sync task",
+                      "description": "Sync database data at midnight daily",
+                      "type": "cron",
+                      "schedule": "0 0 * * *",
+                      "status": "paused",
+                      "createdAt": "2024-01-01T12:00:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Create task",
+        "tags": [
+          "Task Management"
+        ]
+      },
+      "get": {
+        "description": "Get task list with pagination and search support. Filter by status.",
+        "operationId": "TaskController_findAll",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Page number, default 1",
+            "schema": {
+              "default": 1,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "description": "Page size, default 20",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "Filter by status (active/paused/inactive)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runtime",
+            "required": false,
+            "in": "query",
+            "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": {
+                      "items": [],
+                      "total": 10,
+                      "page": 1,
+                      "limit": 20
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List tasks",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/batch/trigger": {
+      "post": {
+        "description": "Trigger multiple tasks. Partial failures do not affect other tasks.",
+        "operationId": "TaskController_batchTrigger",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "description": "Batch trigger parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "taskIds": [
+                    "task1",
+                    "task2",
+                    "task3"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch trigger results"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Batch trigger tasks",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/batch/pause": {
+      "post": {
+        "description": "Pause multiple tasks. Partial failures do not affect other tasks.",
+        "operationId": "TaskController_batchPause",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "description": "Batch pause parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "taskIds": [
+                    "task1",
+                    "task2",
+                    "task3"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch pause results"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Batch pause tasks",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/batch/resume": {
+      "post": {
+        "description": "Resume multiple tasks. Partial failures do not affect other tasks.",
+        "operationId": "TaskController_batchResume",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "description": "Batch resume parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "taskIds": [
+                    "task1",
+                    "task2",
+                    "task3"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch resume results"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Batch resume tasks",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/batch/delete": {
+      "post": {
+        "description": "Delete multiple tasks. Partial failures do not affect other tasks.",
+        "operationId": "TaskController_batchDelete",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "description": "Batch delete parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "taskIds": [
+                    "task1",
+                    "task2",
+                    "task3"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch delete results"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Batch delete tasks",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/executions/all": {
+      "get": {
+        "operationId": "TaskController_allExecutions",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "Filter by execution status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runtime",
+            "required": false,
+            "in": "query",
+            "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "taskId",
+            "required": false,
+            "in": "query",
+            "description": "Filter by task id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "taskName",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "executorAddress",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy filter by executor address",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "startTime",
+            "required": false,
+            "in": "query",
+            "description": "Only executions created at/after this time (ISO 8601)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "endTime",
+            "required": false,
+            "in": "query",
+            "description": "Only executions created at/before this time (ISO 8601)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Global execution records",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/executions/{execId}/logs": {
+      "get": {
+        "description": "Compat alias of GET /tasks/:id/executions/:execId/logs — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.",
+        "operationId": "TaskController_executionLogsByExecId",
+        "parameters": [
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution record ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fromLine",
+            "required": false,
+            "in": "query",
+            "description": "Start line number, default 0",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "description": "Lines per page, default 500, max 2000",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "required": false,
+            "in": "query",
+            "description": "Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count.",
+            "schema": {
+              "enum": [
+                "ERROR",
+                "WARN",
+                "INFO",
+                "DEBUG"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Execution logs (by execution ID)",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/executions/{execId}": {
+      "get": {
+        "description": "Compat alias of GET /tasks/:id/executions/:execId — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.",
+        "operationId": "TaskController_executionByExecId",
+        "parameters": [
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution record ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Execution details (by execution ID)",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/scheduler/stats": {
+      "get": {
+        "operationId": "TaskController_schedulerStats",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Scheduler status",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/stats": {
+      "get": {
+        "description": "Get execution statistics for a task: success rate, average duration, and last 20 executions.",
+        "operationId": "TaskController_getStats",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Task execution stats",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/suggest-schedule": {
+      "post": {
+        "description": "Analyze execution history and return an AI-recommended cron expression with reasoning",
+        "operationId": "TaskController_suggestSchedule",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "AI schedule suggestion",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}": {
+      "get": {
+        "description": "Get detailed info for a single task including config, status, and execution stats.",
+        "operationId": "TaskController_findOne",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "404": {
+            "description": "Task not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Task details",
+        "tags": [
+          "Task Management"
+        ]
+      },
+      "patch": {
+        "description": "Update task configuration. Note: running tasks are not immediately affected.",
+        "operationId": "TaskController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTaskDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated successfully"
+          },
+          "404": {
+            "description": "Task not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Update task",
+        "tags": [
+          "Task Management"
+        ]
+      },
+      "delete": {
+        "description": "Delete task. Running executions will be forcefully terminated.",
+        "operationId": "TaskController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted successfully"
+          },
+          "404": {
+            "description": "Task not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Delete task",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/glue": {
+      "put": {
+        "description": "Update the GLUE script source code for online editing of execution logic.",
+        "operationId": "TaskController_updateGlue",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "language": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Script updated"
+          },
+          "404": {
+            "description": "Task not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Update GLUE script",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/trigger": {
+      "post": {
+        "description": "Manually trigger task execution. Custom params can override task defaults. NF-01: 双凭据面——用户 JWT 或携带 task:trigger 扩展域的 API Key （Authorization: Bearer acf_...，guard 分流见 jwt-auth.guard/api-key-auth.helper）；响应契约与 JWT 面完全一致。",
+        "operationId": "TaskController_trigger",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriggerTaskDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Trigger successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": {
+                      "taskId": "task-uuid",
+                      "executionId": "exec-uuid",
+                      "status": "pending"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Manual trigger",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/executions": {
+      "get": {
+        "description": "Get the execution history list for a task.",
+        "operationId": "TaskController_executions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Page number",
+            "schema": {
+              "default": 1,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "Filter by execution status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runtime",
+            "required": false,
+            "in": "query",
+            "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "description": "Page size",
+            "schema": {}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Execution records",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/executions/{execId}": {
+      "get": {
+        "description": "Get detailed info for a single execution including time, status, and output.",
+        "operationId": "TaskController_execution",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution record ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "404": {
+            "description": "Execution record not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Execution details",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/executions/{execId}/report": {
+      "get": {
+        "description": "OBS-04: one-shot payload for the execution detail 'analysis report / timeline' tab. Returns the execution row (timestamps drive the timeline), a created→started→finished timeline mapped from those DB timestamps, and the execution_reports daily aggregate row for the execution's day (report=null when absent — the frontend degrades gracefully).",
+        "operationId": "TaskController_executionReport",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution record ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "404": {
+            "description": "Execution record not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Execution report + timeline",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/executions/{execId}/logs": {
+      "get": {
+        "description": "Get execution logs with line-based pagination to avoid memory overload.",
+        "operationId": "TaskController_executionLogs",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution record ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fromLine",
+            "required": false,
+            "in": "query",
+            "description": "Start line number, default 0",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "description": "Lines per page, default 500, max 2000",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "required": false,
+            "in": "query",
+            "description": "Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count.",
+            "schema": {
+              "enum": [
+                "ERROR",
+                "WARN",
+                "INFO",
+                "DEBUG"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Execution logs",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/executions/{execId}/logs/stream": {
+      "get": {
+        "description": "Stream execution logs via Server-Sent Events. Sends [DONE] event on completion.",
+        "operationId": "TaskController_streamLogs",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution record ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Execution log SSE stream",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/rollback": {
+      "post": {
+        "description": "Rollback task to a specific Git commit. Only applies to Git-type tasks.",
+        "operationId": "TaskController_rollback",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Rollback parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "gitCommit": "abc123",
+                  "message": "Rollback to stable version"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Rollback not supported for non-Git tasks"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Git rollback",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/versions/{versionId}/rollback": {
+      "post": {
+        "description": "Rollback task config to a specific historical version.",
+        "operationId": "TaskController_rollbackToVersion",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "versionId",
+            "required": true,
+            "in": "path",
+            "description": "Version ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rollback successful"
+          },
+          "404": {
+            "description": "Task or version not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Version rollback",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/versions": {
+      "get": {
+        "description": "Get task historical version list.",
+        "operationId": "TaskController_getVersions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Version list",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/versions/{versionId1}/compare/{versionId2}": {
+      "get": {
+        "description": "Compare differences between two versions.",
+        "operationId": "TaskController_compareVersions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "versionId1",
+            "required": true,
+            "in": "path",
+            "description": "Version ID 1",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "versionId2",
+            "required": true,
+            "in": "path",
+            "description": "Version ID 2",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Version diff"
+          },
+          "404": {
+            "description": "Task or version not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Version diff",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/pause": {
+      "post": {
+        "description": "Pause task scheduled execution. In-progress executions are not affected.",
+        "operationId": "TaskController_pause",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paused successfully"
+          },
+          "400": {
+            "description": "Task is already paused"
+          },
+          "404": {
+            "description": "Task not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Pause task",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/resume": {
+      "post": {
+        "description": "Resume task scheduled execution.",
+        "operationId": "TaskController_resume",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resumed successfully"
+          },
+          "400": {
+            "description": "Task is already running"
+          },
+          "404": {
+            "description": "Task not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Resume task",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/executions/{execId}/analyze": {
+      "post": {
+        "description": "Trigger on-demand AI analysis for an execution. Stores result in DB and returns it.",
+        "operationId": "TaskController_analyzeExecution",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution record ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "AI analysis result"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "AI analyze execution",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/executions/{execId}/kill": {
+      "post": {
+        "description": "Force-cancel a running or pending execution record.",
+        "operationId": "TaskController_killExecution",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution record ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancelled successfully"
+          },
+          "400": {
+            "description": "Execution is not in a cancellable state"
+          },
+          "404": {
+            "description": "Execution record not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Cancel execution",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks-batch/trigger": {
+      "post": {
+        "description": "Trigger multiple tasks. Partial failures do not affect other tasks.",
+        "operationId": "TaskBatchController_batchTrigger",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "description": "Batch trigger parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "taskIds": [
+                    "uuid-1",
+                    "uuid-2"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch trigger results"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Batch trigger tasks",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks-batch/pause": {
+      "post": {
+        "description": "Pause multiple tasks. Partial failures do not affect other tasks.",
+        "operationId": "TaskBatchController_batchPause",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchTaskIdsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch pause results"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Batch pause tasks",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks-batch/resume": {
+      "post": {
+        "description": "Resume multiple tasks. Partial failures do not affect other tasks.",
+        "operationId": "TaskBatchController_batchResume",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchTaskIdsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch resume results"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Batch resume tasks",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks-batch/delete": {
+      "post": {
+        "description": "Delete multiple tasks. Partial failures do not affect other tasks.",
+        "operationId": "TaskBatchController_batchDelete",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchTaskIdsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch delete results"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Batch delete tasks",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/executions/callback": {
+      "post": {
+        "description": "Called by executor (or task code holding a per-execution AUTOFLOW_CALLBACK_TOKEN) after task completion to report results. Accepts either the executor shared/per-address token or a per-execution `v1.` HMAC token bound to the batch's executionId (N23).",
+        "operationId": "ExecutionCallbackController_callback",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "traceparent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Array of execution callback items (max 100)",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CallbackItemDto"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Callback processed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "results": [
+                      {
+                        "executionId": "exec-uuid-1",
+                        "success": true
+                      },
+                      {
+                        "executionId": "exec-uuid-2",
+                        "success": false,
+                        "error": "Execution not found"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body"
+          },
+          "401": {
+            "description": "Invalid shared token"
+          }
+        },
+        "summary": "Execution result callback",
+        "tags": [
+          "Execution Callback"
+        ]
+      }
+    },
+    "/executors/register": {
+      "post": {
+        "description": "Called when executor starts to register with admin. Requires shared token for auth.",
+        "operationId": "ExecutorController_register",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Registration info",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "address": "192.168.1.100:3002",
+                  "appName": "executor-node",
+                  "groupName": "production",
+                  "tags": [
+                    "nodejs",
+                    "prod"
+                  ],
+                  "description": "Production Node.js executor"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Registered successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": {
+                      "id": "exec-uuid",
+                      "address": "192.168.1.100:3002",
+                      "appName": "executor-node",
+                      "status": "online"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "Register executor",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/heartbeat": {
+      "post": {
+        "description": "Executor calls this periodically to report status including CPU, memory, and running task count.",
+        "operationId": "ExecutorController_heartbeat",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Heartbeat data",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "address": "192.168.1.100:3002",
+                  "cpuUsage": 45.5,
+                  "memUsage": 62.3,
+                  "runningTaskCount": 3
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Heartbeat updated"
+          },
+          "401": {
+            "description": "Invalid executor token"
+          }
+        },
+        "summary": "Heartbeat report",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors": {
+      "get": {
+        "description": "Get list of all executors including online status, group, and tags.",
+        "operationId": "ExecutorController_findAll",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Executor list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": []
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List executors",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/groups": {
+      "get": {
+        "description": "Get all executor groups and their executor count statistics.",
+        "operationId": "ExecutorController_getGroups",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Group list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": [
+                      {
+                        "name": "production",
+                        "count": 5,
+                        "onlineCount": 4
+                      },
+                      {
+                        "name": "staging",
+                        "count": 2,
+                        "onlineCount": 2
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get all executor groups",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/tags": {
+      "get": {
+        "description": "Get all tags used by executors and their statistics.",
+        "operationId": "ExecutorController_getTags",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Tag list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": [
+                      {
+                        "name": "nodejs",
+                        "count": 3
+                      },
+                      {
+                        "name": "python",
+                        "count": 2
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get all executor tags",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/install-cmd": {
+      "get": {
+        "description": "Returns the shell command to install and start the executor on the target machine.",
+        "operationId": "ExecutorController_getInstallCmd",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Install command",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": {
+                      "cmd": "curl -fsSL 'http://localhost:3002/api/executors/install.sh' | bash -s -- --api-url 'http://localhost:3002' --secret 'shared-token'",
+                      "token": "shared-token",
+                      "adminApiUrl": "http://localhost:3002"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "ADMIN_API_URL is not configured on the server — no usable install command can be generated"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get executor install command",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/install.sh": {
+      "get": {
+        "description": "Returns the one-click installer as plain text (curl -fsSL <url>/api/executors/install.sh | bash -s -- --api-url ... --secret ...). Not sensitive: the shared secret is supplied by the caller as a bash argument.",
+        "operationId": "ExecutorController_getInstallScript",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Shell script (text/plain)"
+          }
+        },
+        "summary": "Download executor install script",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/artifact/executor-node.tar.gz": {
+      "get": {
+        "description": "Serves the executor-node install bundle (dist + production node_modules) used by install.sh's remote channel. Requires the executor shared token (Authorization: Bearer <token> or ?token=<token>). Returns 404 until an operator generates the artifact via scripts/bundle-executor-artifact.sh into EXECUTOR_ARTIFACT_DIR.",
+        "operationId": "ExecutorController_getExecutorArtifact",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "token",
+            "required": false,
+            "in": "query",
+            "description": "Executor shared token (alternative to the Authorization Bearer header)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "tar.gz artifact (application/gzip)"
+          },
+          "401": {
+            "description": "Missing / invalid shared token"
+          },
+          "404": {
+            "description": "Artifact not generated / not found"
+          }
+        },
+        "summary": "Download executor-node install artifact (tar.gz)",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/{id}": {
+      "get": {
+        "description": "Get detailed info for a specific executor including config, status, and performance metrics.",
+        "operationId": "ExecutorController_findOne",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Executor ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Executor details"
+          },
+          "404": {
+            "description": "Executor not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get single executor details",
+        "tags": [
+          "Executors"
+        ]
+      },
+      "patch": {
+        "description": "Update executor group, tags, description, and max concurrent tasks.",
+        "operationId": "ExecutorController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Executor ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Update parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "groupName": "production",
+                  "tags": [
+                    "nodejs",
+                    "prod"
+                  ],
+                  "description": "Production executor",
+                  "maxConcurrentTasks": 10
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated successfully"
+          },
+          "404": {
+            "description": "Executor not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Update executor metadata",
+        "tags": [
+          "Executors"
+        ]
+      },
+      "delete": {
+        "description": "Admin: permanently delete an executor record by ID. Use when executor is offline and no longer needed.",
+        "operationId": "ExecutorController_removeExecutor",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Executor ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "description": "AUTH-05: optional deletion reason, recorded in the audit log detail (the endpoint stays non-breaking — an empty body is fine).",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "reason": "decommissioned host"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Executor deleted"
+          },
+          "404": {
+            "description": "Executor not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Delete executor record",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/{id}/reload-config": {
+      "post": {
+        "description": "Dynamically update executor config without restart. Executor must be online.",
+        "operationId": "ExecutorController_reloadConfig",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Executor ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Config parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "maxConcurrentTasks": 10,
+                  "taskTimeoutSeconds": 300,
+                  "heartbeatIntervalSeconds": 30,
+                  "adminApiUrl": "http://admin-api:3105"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Config pushed successfully"
+          },
+          "400": {
+            "description": "Executor offline"
+          },
+          "404": {
+            "description": "Executor not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Push config hot-update to executor",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/{id}/rotate-token": {
+      "post": {
+        "description": "Generate a new executor auth token. The new token is shown only once in this response.",
+        "operationId": "ExecutorController_rotateToken",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Executor ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "description": "AUTH-05: optional rotation reason, recorded in the audit log detail (the endpoint itself stays non-breaking — an empty body is fine).",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "reason": "token suspected leaked"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token rotated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": {
+                      "token": "new-token-value",
+                      "expiresAt": "2024-01-01T12:00:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Rotate executor token",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/token": {
+      "post": {
+        "description": "Executor calls this to get a dynamic token. Uses shared token for initial auth. R9 (round-8 P1): idempotent per (address, startupId) — a same-process re-fetch returns the CURRENT token instead of rotating; rotation happens on first issuance, a new startupId (restart), a legacy startupId-less fetch outside the short reuse window, or when the previously issued token no longer matches the stored hash.",
+        "operationId": "ExecutorController_getToken",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Get token parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "address": "192.168.1.100:3002",
+                  "appName": "executor-node",
+                  "startupId": "uuid-of-this-executor-process-life"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Token obtained (or reused) successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "token": "dynamic-token-value",
+                    "tokenHash": "$2b$12$bcrypt-hash-of-the-token"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid shared token"
+          }
+        },
+        "summary": "Get dynamic token",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/offline": {
+      "post": {
+        "description": "Called during graceful executor shutdown to notify admin and mark executor as offline.",
+        "operationId": "ExecutorController_offline",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Offline parameters",
+          "content": {
+            "application/json": {
+              "schema": {
+                "example": {
+                  "address": "192.168.1.100:3002"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Offline notification successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "success": true
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid executor token"
+          }
+        },
+        "summary": "Executor offline notification",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/{id}/set-offline": {
+      "post": {
+        "description": "Admin: mark a specific executor as offline by ID (does not interrupt running tasks; use for stale records after crash).",
+        "operationId": "ExecutorController_setOffline",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Executor ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated executor entity"
+          },
+          "404": {
+            "description": "Executor not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Mark executor offline",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/{id}/executions": {
+      "get": {
+        "description": "Get all task execution records for a specific executor with pagination.",
+        "operationId": "ExecutorController_getExecutorExecutions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Executor ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Page number",
+            "schema": {
+              "default": 1,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "description": "Page size",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "Filter by task status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runtime",
+            "required": false,
+            "in": "query",
+            "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Execution record list"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get executor task execution history",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/executors/{id}/metrics": {
+      "get": {
+        "description": "Get executor performance metrics for the last 7 days including total executions, success rate, and avg time. FEAT-04: the response also carries `history` — the last 24h of executor_metrics_history samples aggregated into fixed 15-minute AVG buckets (≤96 points, ascending; each point is {timestamp, cpuUsage, memUsage, runningTaskCount}; cpuUsage/memUsage are null when a bucket has no reported value). Returns an empty array when the executor has no history samples — the admin UI renders an empty state for that case.",
+        "operationId": "ExecutorController_getExecutorMetrics",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Executor ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Performance metrics with 24h resource-trend history (FEAT-04)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": {
+                      "executor": {
+                        "id": "uuid",
+                        "address": "10.0.0.9:3002",
+                        "status": "online"
+                      },
+                      "sevenDayStats": {
+                        "totalExecutions": 1000,
+                        "successful": 985,
+                        "failed": 15,
+                        "successRate": 98.5,
+                        "averageDurationMs": 1250
+                      },
+                      "current": {
+                        "runningTaskCount": 2,
+                        "cpuUsage": 35.2,
+                        "memUsage": 61.8
+                      },
+                      "history": [
+                        {
+                          "timestamp": "2026-09-06T02:00:00.000Z",
+                          "cpuUsage": 30.1,
+                          "memUsage": 58.4,
+                          "runningTaskCount": 1
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get executor performance metrics",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
+    "/notification/channels": {
+      "get": {
+        "operationId": "NotificationConfigController_getChannels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get all notification channel configs",
+        "tags": [
+          "Notification Config"
+        ]
+      }
+    },
+    "/notification/channels/{key}": {
+      "patch": {
+        "operationId": "NotificationConfigController_updateChannel",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Update notification channel config",
+        "tags": [
+          "Notification Config"
+        ]
+      }
+    },
+    "/notification/channels/{key}/test": {
+      "post": {
+        "operationId": "NotificationConfigController_testChannel",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Test notification channel",
+        "tags": [
+          "Notification Config"
+        ]
+      }
+    },
+    "/notification/test": {
+      "post": {
+        "operationId": "NotificationConfigController_sendTest",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Send test notification to channel",
+        "tags": [
+          "Notification Config"
+        ]
+      }
+    },
+    "/notification/send": {
+      "post": {
+        "operationId": "NotificationConfigController_send",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendNotificationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "2xx regardless of individual channel outcomes; inspect `results` for per-channel delivery (sent | blocked | failed | skipped).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendNotificationResultDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Send notification from task code (SDK)",
+        "tags": [
+          "Notification Config"
+        ]
+      }
+    },
+    "/notification/silences": {
+      "get": {
+        "operationId": "NotificationConfigController_listSilences",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "All silences"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List notification silences (persisted)",
+        "tags": [
+          "Notification Config"
+        ]
+      },
+      "post": {
+        "operationId": "NotificationConfigController_createSilence",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "Created silence"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Create a notification silence",
+        "tags": [
+          "Notification Config"
+        ]
+      }
+    },
+    "/notification/silences/{id}": {
+      "delete": {
+        "operationId": "NotificationConfigController_removeSilence",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Remove a notification silence",
+        "tags": [
+          "Notification Config"
+        ]
+      }
+    },
+    "/ai/config": {
+      "get": {
+        "operationId": "AiController_getConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get current AI configuration",
+        "tags": [
+          "AI Config"
+        ]
+      },
+      "post": {
+        "operationId": "AiController_saveConfig",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveAiConfigDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Save AI configuration to system config store",
+        "tags": [
+          "AI Config"
+        ]
+      }
+    },
+    "/ai/test": {
+      "post": {
+        "operationId": "AiController_testConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Test current AI configuration with a sample prompt",
+        "tags": [
+          "AI Config"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "Prometheus text exposition format: scheduler counters (autoflow_scheduler_*), BullMQ queue depth gauges (autoflow_queue_*) and process default metrics (CPU/memory/GC). Requires JWT; disable entirely with METRICS_PROMETHEUS_ENABLED=false.",
+        "operationId": "MetricsController_getPrometheusMetrics",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition format"
+          },
+          "404": {
+            "description": "Endpoint disabled via METRICS_PROMETHEUS_ENABLED=false"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Prometheus metrics endpoint",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/metrics/summary": {
+      "get": {
+        "operationId": "MetricsController_getSummary",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/metrics/trend": {
+      "get": {
+        "operationId": "MetricsController_getDailyTrend",
+        "parameters": [
+          {
+            "name": "days",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/metrics/executors": {
+      "get": {
+        "operationId": "MetricsController_getExecutorStats",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/metrics/failures": {
+      "get": {
+        "operationId": "MetricsController_getRecentFailures",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/metrics/scheduler": {
+      "get": {
+        "operationId": "MetricsController_getSchedulerMetrics",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/metrics/stream": {
+      "get": {
+        "description": "Server-Sent Events stream pushing a snapshot every ~3s: { summary, executors, scheduler } (+ error frames on degraded queries). Auth: JWT bearer header, or ?access_token= fallback. Concurrency: METRICS_STREAM_MAX_GLOBAL slots per instance (503 when full).",
+        "operationId": "MetricsStreamController_stream",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Dashboard summary SSE stream (UI-14 phase 1)",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/config": {
+      "get": {
+        "operationId": "ConfigController_findAll",
+        "parameters": [
+          {
+            "name": "prefix",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List all config entries",
+        "tags": [
+          "System Config"
+        ]
+      },
+      "put": {
+        "operationId": "ConfigController_upsert",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertConfigDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Create or update a config entry",
+        "tags": [
+          "System Config"
+        ]
+      }
+    },
+    "/config/history": {
+      "get": {
+        "operationId": "ConfigController_getHistory",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "Filter by task status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runtime",
+            "required": false,
+            "in": "query",
+            "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "required": false,
+            "in": "query",
+            "description": "Filter history by config key",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get config change history",
+        "tags": [
+          "System Config"
+        ]
+      }
+    },
+    "/config/history/{key}": {
+      "get": {
+        "operationId": "ConfigController_getHistoryByKey",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "Filter by task status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runtime",
+            "required": false,
+            "in": "query",
+            "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get history for a specific config key",
+        "tags": [
+          "System Config"
+        ]
+      }
+    },
+    "/config/history/{id}/rollback": {
+      "post": {
+        "operationId": "ConfigController_rollback",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Rollback config to a historical version",
+        "tags": [
+          "System Config"
+        ]
+      }
+    },
+    "/config/executor-shared-token/generate": {
+      "post": {
+        "operationId": "ConfigController_generateExecutorSharedToken",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Generate or rotate executor shared token",
+        "tags": [
+          "System Config"
+        ]
+      }
+    },
+    "/config/executor-shared-token": {
+      "get": {
+        "operationId": "ConfigController_getExecutorSharedToken",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get current executor shared token (plaintext, admin only)",
+        "tags": [
+          "System Config"
+        ]
+      }
+    },
+    "/config/{key}": {
+      "get": {
+        "operationId": "ConfigController_findOne",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get a single config entry",
+        "tags": [
+          "System Config"
+        ]
+      },
+      "delete": {
+        "operationId": "ConfigController_remove",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Delete a config entry",
+        "tags": [
+          "System Config"
+        ]
+      }
+    },
+    "/config/batch": {
+      "post": {
+        "operationId": "ConfigController_batchUpsert",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Batch create or update config entries",
+        "tags": [
+          "System Config"
+        ]
+      }
+    },
+    "/audit": {
+      "get": {
+        "operationId": "AuditController_findAll",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "Filter by task status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runtime",
+            "required": false,
+            "in": "query",
+            "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "required": false,
+            "in": "query",
+            "description": "Filter by action (fuzzy match)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource",
+            "required": false,
+            "in": "query",
+            "description": "Filter by exact resource type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resourceId",
+            "required": false,
+            "in": "query",
+            "description": "Filter by exact resource identifier (combine with resource)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Filter by operator user id",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "username",
+            "required": false,
+            "in": "query",
+            "description": "Filter by operator username",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "startTime",
+            "required": false,
+            "in": "query",
+            "description": "Only logs created at/after this time (ISO 8601)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "endTime",
+            "required": false,
+            "in": "query",
+            "description": "Only logs created at/before this time (ISO 8601)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Query audit logs with pagination (admin only)",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
+    "/audit/export": {
+      "get": {
+        "description": "Returns a CSV file attachment. Supports the same filters as the list endpoint.",
+        "operationId": "AuditController_exportCsv",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "Filter by task status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runtime",
+            "required": false,
+            "in": "query",
+            "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "required": false,
+            "in": "query",
+            "description": "Filter by action (fuzzy match)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource",
+            "required": false,
+            "in": "query",
+            "description": "Filter by exact resource type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resourceId",
+            "required": false,
+            "in": "query",
+            "description": "Filter by exact resource identifier (combine with resource)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Filter by operator user id",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "username",
+            "required": false,
+            "in": "query",
+            "description": "Filter by operator username",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "startTime",
+            "required": false,
+            "in": "query",
+            "description": "Only logs created at/after this time (ISO 8601)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "endTime",
+            "required": false,
+            "in": "query",
+            "description": "Only logs created at/before this time (ISO 8601)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Export audit logs as CSV (max 10 000 rows, admin only)",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Check health of all core services including database, Redis, message queue, executors, and scheduler. Returns detailed health status and metrics.",
+        "operationId": "HealthController_health",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Health check result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "status": "healthy",
+                    "timestamp": "2024-01-01T12:00:00Z",
+                    "services": {
+                      "database": {
+                        "status": "healthy"
+                      },
+                      "redis": {
+                        "status": "healthy"
+                      },
+                      "queue": {
+                        "status": "healthy",
+                        "size": 0
+                      },
+                      "executors": {
+                        "status": "healthy",
+                        "onlineCount": 3,
+                        "totalCount": 3
+                      },
+                      "scheduler": {
+                        "status": "healthy"
+                      }
+                    },
+                    "metrics": {
+                      "totalTasks": 10,
+                      "activeTasks": 8,
+                      "runningExecutions": 2,
+                      "totalExecutors": 3,
+                      "onlineExecutors": 3,
+                      "queueSize": 0
+                    },
+                    "components": [
+                      {
+                        "name": "database",
+                        "status": "healthy"
+                      },
+                      {
+                        "name": "redis",
+                        "status": "healthy"
+                      },
+                      {
+                        "name": "queue",
+                        "status": "healthy"
+                      },
+                      {
+                        "name": "executors",
+                        "status": "healthy"
+                      },
+                      {
+                        "name": "scheduler",
+                        "status": "healthy"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "Full health check",
+        "tags": [
+          "Health Check"
+        ]
+      }
+    },
+    "/health/live": {
+      "get": {
+        "description": "Simple liveness check, returns whether the service is running. Used for Kubernetes liveness probe.",
+        "operationId": "HealthController_live",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Service alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "status": "healthy"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "Liveness check",
+        "tags": [
+          "Health Check"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "description": "Check whether the service is ready to accept requests. Verifies DB and Redis connections. Used for Kubernetes readiness probe.",
+        "operationId": "HealthController_ready",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Readiness check result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "status": "ready",
+                    "timestamp": "2024-01-01T12:00:00Z",
+                    "checks": [
+                      {
+                        "name": "database",
+                        "status": "pass"
+                      },
+                      {
+                        "name": "redis",
+                        "status": "pass"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "Readiness check",
+        "tags": [
+          "Health Check"
+        ]
+      }
+    },
+    "/health/services": {
+      "get": {
+        "description": "Get health status details for each core service.",
+        "operationId": "HealthController_services",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Service status list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "database": {
+                      "status": "healthy"
+                    },
+                    "redis": {
+                      "status": "healthy"
+                    },
+                    "queue": {
+                      "status": "healthy",
+                      "size": 0
+                    },
+                    "executors": {
+                      "status": "healthy",
+                      "onlineCount": 3,
+                      "totalCount": 3
+                    },
+                    "scheduler": {
+                      "status": "healthy"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "Service status",
+        "tags": [
+          "Health Check"
+        ]
+      }
+    },
+    "/health/metrics": {
+      "get": {
+        "description": "Get key system metrics including task count, executor count, queue size, etc.",
+        "operationId": "HealthController_metrics",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "System metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "totalTasks": 10,
+                    "activeTasks": 8,
+                    "runningExecutions": 2,
+                    "totalExecutors": 3,
+                    "onlineExecutors": 3,
+                    "queueSize": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "System metrics",
+        "tags": [
+          "Health Check"
+        ]
+      }
+    },
+    "/applications": {
+      "get": {
+        "operationId": "ApplicationController_findAll",
+        "parameters": [
+          {
+            "name": "projectId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get application list",
+        "tags": [
+          "Application Management"
+        ]
+      },
+      "post": {
+        "operationId": "ApplicationController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApplicationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create application",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/applications/{id}": {
+      "get": {
+        "operationId": "ApplicationController_findById",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get application details",
+        "tags": [
+          "Application Management"
+        ]
+      },
+      "put": {
+        "operationId": "ApplicationController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateApplicationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update application",
+        "tags": [
+          "Application Management"
+        ]
+      },
+      "delete": {
+        "operationId": "ApplicationController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete application",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/applications/upload": {
+      "post": {
+        "operationId": "ApplicationController_upload",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "runtime": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file",
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Upload application package (zip)",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/applications/webhook": {
+      "post": {
+        "description": "Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments. This route is public for CI/CD callers, and matching applications must have webhookSecret configured. Callers must include X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers. The signature is HMAC-SHA256 over `${timestamp}.${rawBody}`.",
+        "operationId": "ApplicationController_webhook",
+        "parameters": [
+          {
+            "name": "x-hub-signature-256",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-autocodeflow-timestamp",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppReleaseWebhookDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Version release webhook",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/applications/{id}/versions": {
+      "get": {
+        "description": "Return persisted application version snapshots, falling back to deployment records for legacy data.",
+        "operationId": "ApplicationController_getVersionHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get application version history",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/applications/{id}/releases": {
+      "get": {
+        "description": "统一发布追溯视图：按版本聚合部署信息，分页默认 50、上限 200。",
+        "operationId": "ApplicationController_listReleases",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 200,
+              "default": 50,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List unified releases (version × latest deployment) for an application",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/applications/{id}/upgrade-all": {
+      "post": {
+        "description": "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。",
+        "operationId": "ApplicationController_upgradeAll",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpgradeAllDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Trigger all running instances to upgrade to latest version",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/applications/{id}/sync-tasks": {
+      "post": {
+        "description": "Parse app manifest.json and auto-register task definitions",
+        "operationId": "ApplicationController_syncTasks",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Sync task registration from manifest.json",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/applications/{id}/analyze": {
+      "post": {
+        "description": "Aggregate execution stats across all tasks in this app and run AI health assessment",
+        "operationId": "ApplicationController_analyzeHealth",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "AI application health analysis",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/applications/{id}/rollback/{deploymentId}": {
+      "post": {
+        "description": "Restore app fields from a version snapshot or legacy deployment record, then trigger running instances to upgrade",
+        "operationId": "ApplicationController_rollback",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "deploymentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rollback application to historical version",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/app-deployments": {
+      "get": {
+        "operationId": "AppDeploymentController_findAll",
+        "parameters": [
+          {
+            "name": "applicationId",
+            "required": false,
+            "in": "query",
+            "description": "Filter by application ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "approvalStatus",
+            "required": false,
+            "in": "query",
+            "description": "DEP-04: filter by approval status (e.g. pending_approval for the approval inbox)",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending_approval",
+                "approved",
+                "rejected",
+                "cancelled"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List deployments",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
+    "/app-deployments/{id}": {
+      "get": {
+        "operationId": "AppDeploymentController_findById",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get deployment details",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
+    "/app-deployments/applications/{appId}/deploy": {
+      "post": {
+        "operationId": "AppDeploymentController_deploy",
+        "parameters": [
+          {
+            "name": "appId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDeploymentDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Assign application to executor",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
+    "/app-deployments/approvals/pending": {
+      "get": {
+        "operationId": "AppDeploymentController_listPendingApprovals",
+        "parameters": [
+          {
+            "name": "applicationId",
+            "required": false,
+            "in": "query",
+            "description": "Filter by application ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "approvalStatus",
+            "required": false,
+            "in": "query",
+            "description": "DEP-04: filter by approval status (e.g. pending_approval for the approval inbox)",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending_approval",
+                "approved",
+                "rejected",
+                "cancelled"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List deployments awaiting approval",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
+    "/app-deployments/{id}/approval/approve": {
+      "post": {
+        "operationId": "AppDeploymentController_approve",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalActionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Approve a pending deployment (second person)",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
+    "/app-deployments/{id}/approval/reject": {
+      "post": {
+        "operationId": "AppDeploymentController_reject",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalActionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Reject a pending deployment (second person)",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
+    "/app-deployments/{id}/approval/cancel": {
+      "post": {
+        "operationId": "AppDeploymentController_cancel",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Cancel own pending deployment request (requester only)",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
+    "/app-deployments/{id}/upgrade": {
+      "post": {
+        "operationId": "AppDeploymentController_upgrade",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Trigger overlay upgrade",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
+    "/app-deployments/{id}/stop": {
+      "post": {
+        "operationId": "AppDeploymentController_stop",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Stop running deployment",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
+    "/app-deployments/heartbeat": {
+      "post": {
+        "operationId": "AppDeploymentController_heartbeat",
+        "parameters": [
+          {
+            "name": "x-executor-token",
+            "required": true,
+            "in": "header",
+            "description": "Executor token (per-executor or shared)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeploymentHeartbeatDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Executor reports app runtime status (requires X-Executor-Token)",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
+    "/executor-packages": {
+      "post": {
+        "operationId": "ExecutorPackageController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "description": "Executor package file and metadata",
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "version",
+                  "file"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "example": "python-runner"
+                  },
+                  "version": {
+                    "type": "string",
+                    "example": "1.0.0"
+                  },
+                  "type": {
+                    "type": "string",
+                    "example": "python"
+                  },
+                  "platform": {
+                    "type": "string",
+                    "example": "linux"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created successfully"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Upload executor package",
+        "tags": [
+          "Executor Package Management"
+        ]
+      },
+      "get": {
+        "operationId": "ExecutorPackageController_findAll",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Object"
+                }
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by task name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "Filter by task status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runtime",
+            "required": false,
+            "in": "query",
+            "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Package list"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get executor package list",
+        "tags": [
+          "Executor Package Management"
+        ]
+      }
+    },
+    "/executor-packages/latest": {
+      "get": {
+        "operationId": "ExecutorPackageController_findLatest",
+        "parameters": [
+          {
+            "name": "type",
+            "required": true,
+            "in": "query",
+            "description": "Executor package type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "platform",
+            "required": false,
+            "in": "query",
+            "description": "Platform (optional)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest package info"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get latest ACTIVE executor package by type",
+        "tags": [
+          "Executor Package Management"
+        ]
+      }
+    },
+    "/executor-packages/{id}": {
+      "get": {
+        "operationId": "ExecutorPackageController_findOne",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Package ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Package details"
+          },
+          "404": {
+            "description": "Package not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get executor package details",
+        "tags": [
+          "Executor Package Management"
+        ]
+      },
+      "patch": {
+        "operationId": "ExecutorPackageController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Package ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateExecutorPackageDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated successfully"
+          },
+          "404": {
+            "description": "Package not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Update executor package info",
+        "tags": [
+          "Executor Package Management"
+        ]
+      },
+      "delete": {
+        "operationId": "ExecutorPackageController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Package ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted successfully"
+          },
+          "404": {
+            "description": "Package not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Delete executor package",
+        "tags": [
+          "Executor Package Management"
+        ]
+      }
+    },
+    "/executor-packages/{id}/download": {
+      "get": {
+        "description": "Accepts either a valid administrator access JWT or the executor shared token. JWT validation is stateless and does not query the user database, matching upload-auth middleware; access-token expiry provides revocation latency.",
+        "operationId": "ExecutorPackageController_download",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Package ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File content"
+          },
+          "401": {
+            "description": "Invalid access JWT or executor token"
+          },
+          "404": {
+            "description": "Package or file not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Download executor package file",
+        "tags": [
+          "Executor Package Management"
+        ]
+      }
+    },
+    "/executor-packages/{id}/deprecate": {
+      "patch": {
+        "operationId": "ExecutorPackageController_deprecate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Package ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deprecated"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Deprecate executor package",
+        "tags": [
+          "Executor Package Management"
+        ]
+      }
+    },
+    "/executor-packages/{id}/activate": {
+      "patch": {
+        "operationId": "ExecutorPackageController_activate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Package ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Activated"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Activate executor package",
+        "tags": [
+          "Executor Package Management"
+        ]
+      }
+    },
+    "/executor-packages/push-result": {
+      "post": {
+        "operationId": "ExecutorPackageController_pushResult",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "packageId",
+                  "executorId",
+                  "status"
+                ],
+                "properties": {
+                  "packageId": {
+                    "type": "string"
+                  },
+                  "executorId": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "downloaded",
+                      "failed"
+                    ]
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "error": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Callback recorded"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Executor package push result callback (called by executor-node)",
+        "tags": [
+          "Executor Package Management"
+        ]
+      }
+    },
+    "/executor-packages/{id}/push": {
+      "post": {
+        "operationId": "ExecutorPackageController_push",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Package ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Push targets (empty = push to all online executors)",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "executorIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Target executor ID list, empty = all"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Push result"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Push executor package to scheduler nodes",
+        "tags": [
+          "Executor Package Management"
+        ]
+      }
+    },
+    "/registry/pypi/packages": {
+      "get": {
+        "operationId": "RegistryController_listPypiPackages",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Registry"
+        ]
+      }
+    },
+    "/registry/npm/packages": {
+      "get": {
+        "operationId": "RegistryController_listNpmPackages",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Registry"
+        ]
+      }
+    },
+    "/registry/pypi/upload": {
+      "post": {
+        "operationId": "RegistryController_uploadPypiPackage",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Registry"
+        ]
+      }
+    },
+    "/executions/{execId}/artifacts/{name}": {
+      "put": {
+        "description": "Authenticates with the executor shared token or the per-executor dynamic token (same credential the executor uses for its terminal callback). Accepts multipart/form-data with a 'file' field (same shape as the executor-package upload channel). Optional ?sha256= is cross-checked against the uploaded bytes.",
+        "operationId": "ArtifactsController_upload",
+        "parameters": [
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution ID (UUID)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "required": true,
+            "in": "path",
+            "description": "Bare artifact file name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sha256",
+            "required": false,
+            "in": "query",
+            "description": "Expected sha256 hex",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Stored"
+          },
+          "400": {
+            "description": "Invalid name / over cap / sha mismatch"
+          },
+          "401": {
+            "description": "Invalid executor credential"
+          },
+          "404": {
+            "description": "Execution not found"
+          }
+        },
+        "summary": "Upload one execution artifact (executor-to-admin, best-effort)",
+        "tags": [
+          "Execution Artifacts"
+        ]
+      }
+    },
+    "/tasks/executions/{execId}/artifacts": {
+      "get": {
+        "description": "Returns the persisted artifact manifest reported by the executor's terminal callback. Requires an administrator JWT (global JwtAuthGuard).",
+        "operationId": "ArtifactsController_list",
+        "parameters": [
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution ID (UUID)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Artifact manifest"
+          },
+          "404": {
+            "description": "Execution not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List execution artifacts (manifest)",
+        "tags": [
+          "Execution Artifacts"
+        ]
+      }
+    },
+    "/tasks/executions/{execId}/artifacts/{name}": {
+      "get": {
+        "description": "Streams a stored artifact to an authenticated administrator. Enforces a bare-safe file-name (path-traversal guarded) and 404 when absent.",
+        "operationId": "ArtifactsController_download",
+        "parameters": [
+          {
+            "name": "execId",
+            "required": true,
+            "in": "path",
+            "description": "Execution ID (UUID)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "required": true,
+            "in": "path",
+            "description": "Bare artifact file name",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File content"
+          },
+          "404": {
+            "description": "Artifact not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Download one execution artifact (streamed)",
+        "tags": [
+          "Execution Artifacts"
+        ]
+      }
+    },
+    "/task-templates": {
+      "get": {
+        "description": "Returns all task templates. Official presets (seeded by migration, aligned with the MCP `TASK_TEMPLATES`) come first; user-created custom templates follow.",
+        "operationId": "TaskTemplateController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Template list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TaskTemplate"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List task templates (official + custom)",
+        "tags": [
+          "Task Templates"
+        ]
+      },
+      "post": {
+        "description": "The `config` object is validated against CreateTaskDto semantics before persisting; a stray/invalid field is rejected with 400.",
+        "operationId": "TaskTemplateController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskTemplateDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created custom template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskTemplate"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid config / key"
+          },
+          "409": {
+            "description": "Template key already exists"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Create a custom task template",
+        "tags": [
+          "Task Templates"
+        ]
+      }
+    },
+    "/task-templates/{id}": {
+      "get": {
+        "description": "Used by the create-task form to prefetch a template's `config` for prefilling.",
+        "operationId": "TaskTemplateController_one",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Template UUID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskTemplate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get one task template",
+        "tags": [
+          "Task Templates"
+        ]
+      },
+      "delete": {
+        "description": "Official templates cannot be deleted (403).",
+        "operationId": "TaskTemplateController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Template UUID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          },
+          "403": {
+            "description": "Official template cannot be deleted"
+          },
+          "404": {
+            "description": "Template not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Delete a custom task template",
+        "tags": [
+          "Task Templates"
+        ]
+      }
+    },
+    "/task-templates/{id}/instantiate": {
+      "post": {
+        "description": "Expands the template's config as defaults and overlays the request body (explicit fields win; at least `name` is required). The merged payload is validated against CreateTaskDto and created via the standard task path.",
+        "operationId": "TaskTemplateController_instantiate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Template UUID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created task"
+          },
+          "400": {
+            "description": "Missing name / invalid merged payload"
+          },
+          "404": {
+            "description": "Template not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Create a runnable task from a template (one-click clone)",
+        "tags": [
+          "Task Templates"
+        ]
+      }
+    },
+    "/event-subscriptions": {
+      "get": {
+        "operationId": "EventSubscriptionController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Subscription list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventSubscription"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List outbound event subscriptions",
+        "tags": [
+          "Event Subscriptions"
+        ]
+      },
+      "post": {
+        "description": "URL is deep-validated against SSRF (private/loopback/link-local/metadata targets rejected). Omit `secret` to have one generated (returned once as `generatedSecret`).",
+        "operationId": "EventSubscriptionController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEventSubscriptionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created subscription"
+          },
+          "400": {
+            "description": "Invalid URL / event types / quota exceeded"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Create an outbound event subscription",
+        "tags": [
+          "Event Subscriptions"
+        ]
+      }
+    },
+    "/event-subscriptions/{id}": {
+      "patch": {
+        "operationId": "EventSubscriptionController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Subscription UUID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSubscriptionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventSubscription"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner"
+          },
+          "404": {
+            "description": "Subscription not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Update a subscription (enable/disable, url, eventTypes, secret rotation)",
+        "tags": [
+          "Event Subscriptions"
+        ]
+      },
+      "delete": {
+        "operationId": "EventSubscriptionController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Subscription UUID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          },
+          "403": {
+            "description": "Not the owner"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Delete a subscription (dead letters cascade)",
+        "tags": [
+          "Event Subscriptions"
+        ]
+      }
+    },
+    "/event-subscriptions/{id}/dead-letters": {
+      "get": {
+        "operationId": "EventSubscriptionController_deadLetters",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Subscription UUID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged dead letters"
+          },
+          "403": {
+            "description": "Not the owner"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List dead letters (deliveries that failed all retry attempts)",
+        "tags": [
+          "Event Subscriptions"
+        ]
+      }
+    },
+    "/event-subscriptions/{id}/dead-letters/{dlId}/replay": {
+      "post": {
+        "description": "Single delivery attempt (no auto-retry). On success the dead letter row is removed; on failure the error is returned and the row is kept.",
+        "operationId": "EventSubscriptionController_replay",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Subscription UUID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dlId",
+            "required": true,
+            "in": "path",
+            "description": "Dead letter UUID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Replayed (ok true/false with error)"
+          },
+          "403": {
+            "description": "Not the owner"
+          },
+          "404": {
+            "description": "Subscription or dead letter not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Replay a dead letter once with the subscription's current url/secret",
+        "tags": [
+          "Event Subscriptions"
+        ]
+      }
+    },
+    "/api-keys": {
+      "get": {
+        "operationId": "ApiKeysController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List my API Keys (masked)",
+        "tags": [
+          "API Keys"
+        ]
+      },
+      "post": {
+        "description": "Returns the plaintext key ONCE (`acf_<64 hex>`); it is stored only as a sha256 hash and can never be retrieved again.",
+        "operationId": "ApiKeysController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create an API Key",
+        "tags": [
+          "API Keys"
+        ]
+      }
+    },
+    "/api-keys/{id}": {
+      "delete": {
+        "operationId": "ApiKeysController_revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Revoke (soft-delete) my API Key",
+        "tags": [
+          "API Keys"
+        ]
+      }
+    },
+    "/api-keys/{id}/revoke": {
+      "post": {
+        "operationId": "ApiKeysController_revokeAlias",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Revoke my API Key (explicit alias, idempotent)",
+        "tags": [
+          "API Keys"
+        ]
+      }
+    },
+    "/projects": {
+      "get": {
+        "operationId": "ProjectsController_findAll",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Projects"
+        ]
+      },
+      "post": {
+        "operationId": "ProjectsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Projects"
+        ]
+      }
+    },
+    "/projects/{id}": {
+      "get": {
+        "operationId": "ProjectsController_findOne",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Projects"
+        ]
+      },
+      "patch": {
+        "operationId": "ProjectsController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProjectDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Projects"
+        ]
+      },
+      "delete": {
+        "operationId": "ProjectsController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Projects"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "AutoFlow Admin API",
+    "description": "AutoCodeFlow Admin API — exported by scripts/export-openapi.ts (ARCH-23). Single source of truth for generated frontend types (apps/admin-web gen:api-types) and the CI api-types-drift check. Regenerate with `npm run swagger:export` after any API contract change.",
+    "version": "1.0.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [
+    {
+      "url": "http://localhost:3105",
+      "description": "Local development"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "JWT": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      }
+    },
+    "schemas": {
+      "LoginDto": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "example": "admin"
+          },
+          "password": {
+            "type": "string",
+            "example": "password123"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ]
+      },
+      "RefreshTokenDto": {
+        "type": "object",
+        "properties": {
+          "refreshToken": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "refreshToken"
+        ]
+      },
+      "TotpCodeDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "123456",
+            "description": "6 位 TOTP 动态验证码"
+          }
+        },
+        "required": [
+          "code"
+        ]
+      },
+      "TotpVerifyDto": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "example": "admin"
+          },
+          "password": {
+            "type": "string",
+            "example": "password123"
+          },
+          "code": {
+            "type": "string",
+            "example": "123456",
+            "description": "6 位 TOTP 动态验证码"
+          }
+        },
+        "required": [
+          "username",
+          "password",
+          "code"
+        ]
+      },
+      "CreateUserDto": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "example": "admin"
+          },
+          "email": {
+            "type": "string",
+            "example": "admin@example.com"
+          },
+          "password": {
+            "type": "string",
+            "description": "At least 8 chars, must include uppercase, lowercase, number, and special character",
+            "minLength": 8,
+            "maxLength": 128
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "user"
+            ],
+            "default": "user"
+          }
+        },
+        "required": [
+          "username",
+          "email",
+          "password"
+        ]
+      },
+      "Object": {
+        "type": "object",
+        "properties": {}
+      },
+      "UpdateUserDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "MaintenanceWindowDto": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "string",
+            "description": "窗口开启 Cron（5 字段：分 时 日 月 周）",
+            "example": "30 2 * * *"
+          },
+          "end": {
+            "type": "string",
+            "description": "窗口关闭 Cron（5 字段：分 时 日 月 周）",
+            "example": "0 4 * * *"
+          },
+          "description": {
+            "type": "string",
+            "description": "窗口用途说明（展示/日志用）"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ]
+      },
+      "CreateTaskDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "status": {
+            "type": "object"
+          },
+          "triggerType": {
+            "type": "object"
+          },
+          "cronExpression": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone for cron schedules, e.g. Asia/Shanghai"
+          },
+          "fixedRate": {
+            "type": "number"
+          },
+          "maintenanceWindows": {
+            "description": "Task-level maintenance windows: scheduled triggers falling inside a window are skipped (manual/API triggers unaffected). Each entry {start, end, description?} with 5-field crons; the window opens at the latest start-cron touch and closes at the latest end-cron touch. Max 10 entries.",
+            "maxItems": 10,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MaintenanceWindowDto"
+            }
+          },
+          "runtime": {
+            "type": "object"
+          },
+          "runtimeVersion": {
+            "type": "string"
+          },
+          "requirements": {
+            "description": "Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: [\"requests>=2.31\", \"rich==13.7.1\"]",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dependencies": {
+            "type": "object",
+            "description": "Upstream task dependency map: { taskId: taskName }",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "uuid-of-task-a": "task-a-name"
+            }
+          },
+          "entrypoint": {
+            "type": "string"
+          },
+          "gitRepo": {
+            "type": "string"
+          },
+          "gitBranch": {
+            "type": "string"
+          },
+          "gitCommit": {
+            "type": "string"
+          },
+          "currentVersion": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Task execution timeout in seconds (legacy field; prefer timeoutSeconds). 0 = no limit; bounded to the executor's 1..86400 window (executor-node rejects larger values with 400 on every attempt)."
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "description": "Task execution timeout in seconds. 0 = no limit; bounded to the executor's 1..86400 window (normalized to `timeout`, which executor-node rejects above 86400 with 400)."
+          },
+          "timeoutAction": {
+            "type": "string",
+            "description": "CORE-04: what happens when the task times out. kill (default) = executor tree-kills the process (existing behavior); kill_retry = also kill, but admin re-enqueues a fresh execution using the task's retry budget; notify_only = admin sends the timeout alert and issues no extra kill command (the executor's own hard timeout still applies). Omit on PATCH to keep the current value; explicit null resets to kill.",
+            "enum": [
+              "kill",
+              "kill_retry",
+              "notify_only"
+            ]
+          },
+          "timeoutWarnRatio": {
+            "type": "number",
+            "description": "CORE-04: timeout warning threshold as a percentage of the timeout (integer 0-90). A single WARNING notification is sent once the running time reaches timeout × ratio/100 (at most once per execution). Omit/null = disabled."
+          },
+          "maxRetry": {
+            "type": "number"
+          },
+          "retryDelay": {
+            "type": "number"
+          },
+          "estimatedDurationSec": {
+            "type": "number",
+            "description": "CORE-05: estimated execution duration in seconds (0 or omitted = unknown). Used only by scheduler-side executor load scoring (longer estimates penalize busy executors more); never consumed by the execution chain (heartbeat/timeout/stats). Explicit null on PATCH resets to unknown."
+          },
+          "retryableErrors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "priority": {
+            "type": "object"
+          },
+          "executeMode": {
+            "type": "object"
+          },
+          "blockStrategy": {
+            "type": "object"
+          },
+          "misfireStrategy": {
+            "type": "object"
+          },
+          "alarmEmail": {
+            "type": "string"
+          },
+          "alarmChannels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "params": {
+            "type": "object"
+          },
+          "secrets": {
+            "type": "object",
+            "description": "Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked. Dispatched to the executor env as AUTOFLOW_<KEY> merged over params.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "API_TOKEN": "sk-live-...",
+              "DB_PASSWORD": "hunter2"
+            }
+          },
+          "executorAppName": {
+            "type": "string"
+          },
+          "executorGroup": {
+            "type": "string"
+          },
+          "executorTags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "executorId": {
+            "type": "string",
+            "description": "Pin the task to a specific executor: dispatch targets ONLY this executor (bypasses group/tags filtering); fails fast if it is offline. Mutually exclusive with executeMode=broadcast."
+          },
+          "glueSource": {
+            "type": "string"
+          },
+          "glueLanguage": {
+            "type": "string"
+          },
+          "applicationId": {
+            "type": "string"
+          },
+          "runbook": {
+            "type": "string",
+            "description": "FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts."
+          }
+        },
+        "required": [
+          "name",
+          "triggerType"
+        ]
+      },
+      "UpdateTaskDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "TriggerTaskDto": {
+        "type": "object",
+        "properties": {
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "BatchTaskIdsDto": {
+        "type": "object",
+        "properties": {
+          "taskIds": {
+            "description": "Task ID list",
+            "example": [
+              "uuid-1",
+              "uuid-2"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "taskIds"
+        ]
+      },
+      "ArtifactManifestItemDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Artifact file name (bare, no path separators)"
+          },
+          "size": {
+            "type": "number",
+            "description": "Artifact size in bytes"
+          },
+          "sha256": {
+            "type": "string",
+            "description": "sha256 hex digest of the artifact bytes"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "sha256"
+        ]
+      },
+      "CallbackItemDto": {
+        "type": "object",
+        "properties": {
+          "executionId": {
+            "type": "string",
+            "description": "Execution ID (UUID)",
+            "example": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+          },
+          "status": {
+            "type": "string",
+            "description": "Execution outcome",
+            "enum": [
+              "success",
+              "failed"
+            ]
+          },
+          "executorAddress": {
+            "type": "string",
+            "description": "Executor address for per-executor token validation"
+          },
+          "exitCode": {
+            "type": "number",
+            "description": "Process exit code"
+          },
+          "logs": {
+            "type": "string",
+            "description": "Raw log output (max 500 KB)",
+            "maxLength": 512000
+          },
+          "errorMessage": {
+            "type": "string",
+            "description": "Error message on failure (max 4 KB)",
+            "maxLength": 4096
+          },
+          "failureReason": {
+            "type": "string",
+            "description": "Structured failure reason",
+            "enum": [
+              "package_fetch_failed",
+              "script_error",
+              "timeout",
+              "executor_offline",
+              "executor_restart",
+              "stale_recovered",
+              "dependency_install_failed",
+              "git_fetch_failed",
+              "runtime_missing",
+              "killed",
+              "unknown"
+            ]
+          },
+          "durationMs": {
+            "type": "number",
+            "description": "Wall-clock execution duration in milliseconds"
+          },
+          "artifacts": {
+            "description": "FEAT-05: execution artifacts manifest (best-effort, max 20 entries). File bytes are uploaded separately via the artifact upload endpoint; the manifest is persisted to task_executions.artifacts on the terminal callback.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArtifactManifestItemDto"
+            }
+          }
+        },
+        "required": [
+          "executionId",
+          "status"
+        ]
+      },
+      "SendNotificationDto": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warning",
+              "error",
+              "critical"
+            ],
+            "default": "info"
+          },
+          "taskName": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "email",
+                "dingtalk",
+                "wecom",
+                "slack",
+                "webhook",
+                "feishu"
+              ]
+            }
+          },
+          "webhookUrl": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ]
+      },
+      "SendNotificationResultDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true,
+            "description": "Request accepted; NOT equivalent to every channel delivering"
+          },
+          "results": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "sent",
+                "blocked",
+                "failed",
+                "skipped"
+              ]
+            },
+            "example": {
+              "email": "sent",
+              "slack": "blocked",
+              "webhook": "failed",
+              "wecom": "skipped"
+            },
+            "description": "Per-channel delivery result: 'sent' delivered; 'blocked' rejected by the SSRF guard (private/loopback/link-local/benchmark/CGNAT target); 'failed' transport error after retries; 'skipped' channel not configured (no saved config and no env default)."
+          }
+        },
+        "required": [
+          "success",
+          "results"
+        ]
+      },
+      "SaveAiConfigDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "UpsertConfigDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "valueType": {
+            "type": "string",
+            "default": "string"
+          },
+          "isSecret": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "key"
+        ]
+      },
+      "CreateApplicationDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique application name",
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "description": "Application description"
+          },
+          "version": {
+            "type": "string",
+            "description": "Application version number",
+            "example": "1.0.0"
+          },
+          "runtime": {
+            "type": "string",
+            "description": "Runtime type",
+            "example": "node"
+          },
+          "approvalRequired": {
+            "type": "boolean",
+            "description": "DEP-04: require second-person approval before new deployments dispatch",
+            "default": false
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "runtime"
+        ]
+      },
+      "UpdateApplicationDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AppReleaseWebhookDto": {
+        "type": "object",
+        "properties": {
+          "appName": {
+            "type": "string",
+            "description": "Application name"
+          },
+          "version": {
+            "type": "string",
+            "description": "New version number, e.g. 1.2.3"
+          },
+          "gitCommit": {
+            "type": "string",
+            "description": "Git commit SHA"
+          },
+          "gitBranch": {
+            "type": "string",
+            "description": "Git branch"
+          },
+          "triggerDeploy": {
+            "type": "boolean",
+            "description": "Whether to trigger rolling upgrade on all RUNNING deployments",
+            "default": false
+          }
+        },
+        "required": [
+          "appName",
+          "version"
+        ]
+      },
+      "RolloutStrategyDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "UpgradeAllDto": {
+        "type": "object",
+        "properties": {
+          "rollout": {
+            "$ref": "#/components/schemas/RolloutStrategyDto"
+          }
+        }
+      },
+      "CreateDeploymentDto": {
+        "type": "object",
+        "properties": {
+          "executorId": {
+            "type": "string",
+            "description": "Executor ID (leave empty to auto-select the online executor with lowest load)"
+          },
+          "runMode": {
+            "type": "string",
+            "enum": [
+              "once",
+              "daemon",
+              "scheduled"
+            ],
+            "default": "daemon"
+          },
+          "env": {
+            "type": "object",
+            "description": "Environment variable overrides"
+          },
+          "startCommand": {
+            "type": "string",
+            "description": "Startup command override (leave empty to use manifest entrypoint)"
+          }
+        }
+      },
+      "ApprovalActionDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Optional decision reason (≤200 chars), recorded in audit",
+            "maxLength": 200
+          }
+        }
+      },
+      "DeploymentHeartbeatDto": {
+        "type": "object",
+        "properties": {
+          "deploymentId": {
+            "type": "string",
+            "description": "Deployment ID"
+          },
+          "status": {
+            "type": "string",
+            "description": "Runtime status",
+            "enum": [
+              "running",
+              "stopped",
+              "failed"
+            ]
+          },
+          "pid": {
+            "type": "number",
+            "description": "Process PID"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deploymentId",
+          "status"
+        ]
+      },
+      "UpdateExecutorPackageDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "TaskTemplate": {
+        "type": "object",
+        "properties": {}
+      },
+      "CreateTaskTemplateDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "模板展示名",
+            "example": "每日订单同步"
+          },
+          "description": {
+            "type": "string",
+            "description": "模板说明（可选）"
+          },
+          "category": {
+            "type": "string",
+            "description": "粗分类标签（备份/巡检/同步/清理/通知…），前端渲染为 Tag"
+          },
+          "key": {
+            "type": "string",
+            "description": "稳定标识；缺省由 name 规整生成。官方模板保留 [a-z][a-z0-9_-]* 命名风格。",
+            "example": "daily_order_sync"
+          },
+          "config": {
+            "type": "object",
+            "description": "合法 CreateTaskDto 子集（省略 name）；作为实例化任务的默认值",
+            "additionalProperties": true,
+            "example": {
+              "triggerType": "cron",
+              "cronExpression": "0 2 * * *",
+              "runtime": "shell",
+              "entrypoint": "backup.sh",
+              "timeoutSeconds": 3600,
+              "maxRetry": 3,
+              "retryDelay": 60,
+              "blockStrategy": "discard"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "config"
+        ]
+      },
+      "EventSubscription": {
+        "type": "object",
+        "properties": {}
+      },
+      "CreateEventSubscriptionDto": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Callback URL (public http(s) endpoint; private networks rejected)",
+            "example": "https://ci.example.com/hooks/autoflow"
+          },
+          "eventTypes": {
+            "type": "array",
+            "description": "Event names to subscribe",
+            "example": [
+              "execution.failed"
+            ],
+            "items": {
+              "type": "string",
+              "enum": [
+                "execution.completed",
+                "execution.failed",
+                "executor.offline",
+                "deployment.completed"
+              ]
+            }
+          },
+          "secret": {
+            "type": "string",
+            "description": "HMAC signing secret. Omit to let the server generate a 32-byte hex secret (returned once in the create response, never shown again)."
+          }
+        },
+        "required": [
+          "url",
+          "eventTypes"
+        ]
+      },
+      "UpdateSubscriptionBody": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable/disable delivery"
+          },
+          "url": {
+            "type": "string",
+            "description": "New callback URL"
+          },
+          "eventTypes": {
+            "description": "Replace the subscribed event set",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "secret": {
+            "type": "string",
+            "description": "Rotate the signing secret"
+          }
+        }
+      },
+      "CreateApiKeyDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "CreateProjectDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "UpdateProjectDto": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  "security": [
+    {
+      "JWT": []
+    }
+  ]
+}

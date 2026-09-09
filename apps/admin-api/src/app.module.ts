@@ -11,6 +11,14 @@ import * as Joi from "joi";
 import configuration, {
   buildTypeOrmDataSourceOptions,
 } from "./config/configuration";
+
+// ARCH-24: DB_READ_REPLICA_URL 的 Joi schema 抽为命名导出——validationSchema
+// 在 ConfigModule.forRoot 闭包内无法反射取出，spec（typeorm-replica.spec.ts）
+// 直接 import 同一 schema 对象断言其行为，保证注册面与测试零漂移。
+export const DB_READ_REPLICA_URL_SCHEMA = Joi.string()
+  .uri({ scheme: ["postgres", "postgresql"] })
+  .allow("")
+  .optional();
 import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { TaskModule } from "./modules/task/task.module";
@@ -79,14 +87,12 @@ import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
         // In production a value of "true" fails fast in configuration.ts.
         DB_SYNCHRONIZE: Joi.string().valid("true", "false").default("false"),
         // ARCH-24: 可选只读副本连接串（postgres:// 或 postgresql://）。
-        // scheme 锁定 + 拒绝空串以外任意非 DB scheme（防误配 http(s)/mysql）。
-        // 留空（默认）= 读写分离关闭，TypeORM 保持单连接形态；配置后 SELECT
-        // 读面经驱动内建路由走 slaves，写面/事务/迁移恒走 master。形态构造
-        // 见 configuration.ts 的 buildTypeOrmDataSourceOptions（单测钉子）。
-        DB_READ_REPLICA_URL: Joi.string()
-          .uri({ scheme: ["postgres", "postgresql"] })
-          .allow("")
-          .optional(),
+        // scheme 锁定防误配 http(s)/mysql 等；留空（默认）= 读写分离关闭，
+        // TypeORM 保持单连接形态；配置后 SELECT 读面经驱动内建路由走
+        // slaves，写面/事务/迁移恒走 master。形态构造见 configuration.ts
+        // 的 buildTypeOrmDataSourceOptions；schema 本体抽到
+        // DB_READ_REPLICA_URL_SCHEMA（供 spec 直接复用，防漂移）。
+        DB_READ_REPLICA_URL: DB_READ_REPLICA_URL_SCHEMA,
 
         // Redis
         REDIS_HOST: Joi.string().hostname().default("localhost"),

@@ -72,6 +72,12 @@ test-results/
 playwright-report/
 .playwright-mcp/
 
+# OpenAPI 导出产物（ARCH-23）……产物**入库**：CI api-types-drift job 以
+# git diff 校验「重新导出 vs 库内版本」逐字节一致，所以 openapi.json 与
+# 生成的 api-types.ts 都必须跟踪；忽略会让 CI 永远看不到 drift。
+# 此前忽略 + admin-web 生成物入库的裁定见 ARCH-23 交付注记。
+!apps/admin-api/openapi.json
+
 # 根目录全量 e2e 基线（W-12 已入库：29 例版，test#16 已同步 W-13 修复）；.cjs 本地编译副本仍忽略
 /e2e-full.spec.cjs
 /playwright.e2e.config.cjs

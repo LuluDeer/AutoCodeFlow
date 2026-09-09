@@ -26,9 +26,8 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
-  Optional,
-  Inject,
 } from "@nestjs/common";
+import { ModuleRef } from "@nestjs/core";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { IsNull, LessThan, Repository } from "typeorm";
@@ -48,12 +47,16 @@ export const OUTBOX_BATCH_SIZE = 50;
 
 /**
  * FEAT-19 依赖方向说明（与 OUTBOX_DISPATCHER_TOKEN 对称）：OutboundEventDispatcher
- * （快速路径）import 本类做构造器注入同样会成环——环上两处注入全部走令牌：
- * - 本服务 → OutboundEventDispatcher：OUTBOUND_DISPATCHER_TOKEN（@Optional，
- *   缺席时补投跳过投递、仅回写终态——测试/降级场景安全）。
- * - OutboundEventDispatcher → 本服务：OUTBOX_DISPATCHER_TOKEN（@Optional，
- *   缺席时只走内存快速路径——FEAT-07 原行为）。
- * 两令牌在本模块 providers 中以 useFactory 别名到真实实例，DI 图无环。
+ * （快速路径）与 本服务 互相需要运行时引用——但**刻意不在构造器里互相注入**
+ * （那会在 DI graph 上形成解析期环：useFactory 别名互相等对方实体，Nest 会挂死）。
+ * 因此两处交叉引用都改为「经构造器注入 ModuleRef，运行时首次用到才
+ * moduleRef.get 取令牌」——构造期无环、同实例，@Optional 语义等价（令牌缺席
+ * 或取不到时按 null 降级）。令牌本身仍在本模块 providers 中注册（useFactory
+ * 别名到真实实例），只是不再作为构造器依赖被解析。
+ * - 本服务 → OutboundEventDispatcher：OUTBOUND_DISPATCHER_TOKEN（缺席时补投
+ *   跳过投递、仅回写终态——测试/降级场景安全）。
+ * - OutboundEventDispatcher → 本服务：OUTBOX_DISPATCHER_TOKEN（缺席时只走内存
+ *   快速路径——FEAT-07 原行为）。
  */
 export const OUTBOUND_DISPATCHER_TOKEN = Symbol("OUTBOUND_DISPATCHER_TOKEN");
 
@@ -76,11 +79,11 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   /** 重入锁：上一轮扫描未结束时跳过本轮（串行化补投，降低重复投递窗口）。 */
   private scanning = false;
   private readonly enabled: boolean;
+  /** 派发面懒解析缓存：undefined=未解析，null=缺席（令牌取不到）。 */
+  private resolvedDispatcher: OutboundDispatcherLike | null | undefined;
 
   constructor(
-    @Optional()
-    @Inject(OUTBOUND_DISPATCHER_TOKEN)
-    private readonly dispatcher: OutboundDispatcherLike | null,
+    private readonly moduleRef: ModuleRef,
     private readonly configService: ConfigService,
     @InjectRepository(EventOutbox)
     private readonly outboxRepo: Repository<EventOutbox>,
@@ -92,6 +95,27 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     // ConfigService 缺席（极简单测装配）时按默认开启兜底。
     this.enabled =
       this.configService?.get<boolean>("eventOutbox.enabled") !== false;
+  }
+
+  /**
+   * 运行时懒取派发面（见类头注释：构造器注入会成解析期环）。首次调用经
+   * ModuleRef 解析 OUTBOUND_DISPATCHER_TOKEN（模块 useFactory 别名到真实
+   * OutboundEventDispatcher）；令牌缺席/取不到时按 null 降级，语义与原本
+   * @Optional 注入一致。结果缓存复用。
+   */
+  private getDispatcher(): OutboundDispatcherLike | null {
+    if (this.resolvedDispatcher === undefined) {
+      try {
+        this.resolvedDispatcher =
+          this.moduleRef?.get<OutboundDispatcherLike>(
+            OUTBOUND_DISPATCHER_TOKEN,
+            { strict: false },
+          ) ?? null;
+      } catch {
+        this.resolvedDispatcher = null;
+      }
+    }
+    return this.resolvedDispatcher;
   }
 
   onModuleInit(): void {
@@ -188,7 +212,8 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       await this.markDispatched(row);
       return;
     }
-    if (!this.dispatcher) {
+    const dispatcher = this.getDispatcher();
+    if (!dispatcher) {
       // 派发面缺席（极简装配/降级）：无法投递也不计失败退避——保持未派发
       // 等派发面恢复后的下一轮扫描（at-least-once 语义不受损）。
       this.logger.warn(
@@ -199,7 +224,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     try {
       // 复用既有派发器（进程内重试语义含 SSRF 复核/退避/死信/统计）——
       // outbox 只负责「跨进程不丢」的兜底语义。
-      await this.dispatcher.deliverToSubscribers(
+      await dispatcher.deliverToSubscribers(
         row.eventType,
         row.payload as never,
       );
