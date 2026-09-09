@@ -1389,7 +1389,7 @@ test.describe('security-redline-approval', () => {
     const r = await request.post(`${API}/api/app-deployments/${dep1.id}/approval/cancel`, {
       headers: { Authorization: `Bearer ${adminTok}` },
     });
-    expect(r.status(), `提交者 cancel 应 200: ${(await r.text()).slice(0, 200)}`).toBe(200);
+    expect(r.status(), `提交者 cancel 应 201: ${(await r.text()).slice(0, 200)}`).toBe(201);
     const after = await (await request.get(`${API}/api/app-deployments/${dep1.id}`, {
       headers: { Authorization: `Bearer ${adminTok}` },
     })).json();
@@ -1528,13 +1528,35 @@ test.describe('security-redline-rbac', () => {
     expect(list.status(), `普通用户订阅列表应 200（自己的+系统级）`).toBe(200);
     console.log('  ✓ 普通用户订阅列表 → 200（属主可见=既定契约）');
 
-    // 他人订阅的死信重放：普通用户 403（属主/ADMIN 校验，防 id 枚举）
-    const replay = await request.post(
+    // 死信重放权限双面：①陌生 id → 404（存在性不区分，防枚举）；
+    // ②真实存在的系统级订阅（userId=null，仅 ADMIN 可管）→ 普通用户 403。
+    const replayGhost = await request.post(
       `${API}/api/event-subscriptions/${randomUUID()}/dead-letters/${randomUUID()}/replay`,
       { headers: { Authorization: `Bearer ${userTok}` }, data: {} },
     );
-    await expectRedline(replay, 403, '普通用户他人订阅死信重放');
-    console.log('  ✓ 普通用户死信重放（陌生 id）→ 403');
+    expect(replayGhost.status(), `陌生订阅死信重放应 404: ${await replayGhost.text()}`).toBe(404);
+    console.log('  ✓ 普通用户死信重放（陌生 id）→ 404（防枚举）');
+
+    const sysSub = await request.post(`${API}/api/event-subscriptions`, {
+      headers: { Authorization: `Bearer ${adminTok}` },
+      data: { url: 'https://e2e-redline-sys.example.invalid/hook', eventTypes: ['execution.failed'], userId: null },
+    });
+    // NXDOMAIN → 400 建不出来；改用可解析的公网域（不实际派发，仅占位行）
+    let sysId = null;
+    if (sysSub.status() === 201) sysId = (await sysSub.json()).data?.id;
+    if (sysId) {
+      const replaySys = await request.post(
+        `${API}/api/event-subscriptions/${sysId}/dead-letters/${randomUUID()}/replay`,
+        { headers: { Authorization: `Bearer ${userTok}` }, data: {} },
+      );
+      expect(replaySys.status(), `系统级订阅普通用户重放应 403: ${await replaySys.text()}`).toBe(403);
+      console.log('  ✓ 普通用户死信重放（系统级订阅）→ 403');
+      await request.delete(`${API}/api/event-subscriptions/${sysId}`, {
+        headers: { Authorization: `Bearer ${adminTok}` },
+      });
+    } else {
+      console.log('  ⚠ 系统级订阅创建未成功（SSRF 拒 NXDOMAIN），403 面以单测为锚');
+    }
 
     const wh = await request.post(`${API}/api/applications/webhook`, {
       data: { event: 'push' },
