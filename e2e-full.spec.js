@@ -1406,7 +1406,6 @@ test.describe('security-redline-approval', () => {
       ['approve', `${API}/api/app-deployments/${dep.id}/approval/approve`, userTok, 403],
       ['reject', `${API}/api/app-deployments/${dep.id}/approval/reject`, userTok, 403],
       ['cancel', `${API}/api/app-deployments/${dep.id}/approval/cancel`, userTok, 403],
-      ['pending-inbox', `${API}/api/app-deployments/approvals/pending`, userTok, 403],
       ['no-token', `${API}/api/app-deployments/${dep.id}/approval/approve`, null, 401],
     ];
     for (const [name, url, tok, status] of cases) {
@@ -1417,6 +1416,12 @@ test.describe('security-redline-approval', () => {
       await expectRedline(r, status, `审批面 ${name}`);
       console.log(`  ✓ 审批面 ${name} → ${status}`);
     }
+    // 待办列表是 GET 端点（GET /app-deployments/approvals/pending，@Roles(ADMIN)）
+    const inbox = await request.get(`${API}/api/app-deployments/approvals/pending`, {
+      headers: { Authorization: `Bearer ${userTok}` },
+    });
+    await expectRedline(inbox, 403, '审批面 pending-inbox（GET）');
+    console.log('  ✓ 审批面 pending-inbox（GET）→ 403');
   });
 });
 
@@ -1558,11 +1563,20 @@ test.describe('security-redline-rbac', () => {
       console.log('  ⚠ 系统级订阅创建未成功（SSRF 拒 NXDOMAIN），403 面以单测为锚');
     }
 
-    const wh = await request.post(`${API}/api/applications/webhook`, {
+    // webhook 是 @Public（CI/CD 调用面）：DTO 校验先于签名校验——坏 body 400，
+    // 形状合法但缺签名头才到 403（红线面）。签名缺失语义对照
+    // application.controller webhook 段（secret 未配置 400/签名无效 403）。
+    const whBad = await request.post(`${API}/api/applications/webhook`, {
       data: { event: 'push' },
     });
-    await expectRedline(wh, 403, '发版 webhook 无签名');
-    console.log('  ✓ 发版 webhook（无签名）→ 403');
+    expect(whBad.status(), `webhook 坏 body 应 400（DTO 先行）: ${await whBad.text()}`).toBe(400);
+    console.log('  ✓ 发版 webhook（坏 body）→ 400（DTO 校验先行）');
+    const wh = await request.post(`${API}/api/applications/webhook`, {
+      data: { event: 'push', appName: 'e2e-rb-webhook', version: '1.0.0' },
+    });
+    // APP-001：签名缺失/无效/应用不存在统一 401（防应用名枚举）
+    expect(wh.status(), `webhook 无签名应 401: ${await wh.text()}`).toBe(401);
+    console.log('  ✓ 发版 webhook（无签名）→ 401（APP-001 防枚举统一码）');
 
     // 无 token 面：401（JwtAuthGuard 在 RolesGuard 之前）
     const anon = await request.get(`${API}/api/event-subscriptions`);
