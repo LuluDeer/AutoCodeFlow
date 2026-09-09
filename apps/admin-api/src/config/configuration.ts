@@ -51,6 +51,12 @@ export default () => ({
     synchronize:
       process.env.DB_SYNCHRONIZE === "true" &&
       process.env.NODE_ENV !== "production",
+    // ARCH-24: 可选只读副本连接串（postgres://...）。空/未配置 = 读写分离
+    // 关闭（默认，行为与旧版完全一致——单一连接形态）；配置后 TypeORM 以
+    // replication 形态建立 master + slaves 连接池，SELECT 类读面
+    // （find* / query builder getMany 等）按驱动内建路由走 slaves。
+    // 迁移（migrationsRun / MigrationExecutor）恒走 master，不受影响。
+    readReplicaUrl: process.env.DB_READ_REPLICA_URL || "",
   },
   // ARCH-004: 全局限流默认收紧为 60 次/分钟（原 100），可用环境变量覆盖
   throttle: {
@@ -322,6 +328,87 @@ export default () => ({
     enabled: process.env.OTEL_ENABLED === "true",
   },
 });
+
+/**
+ * ARCH-24: TypeORM DataSource 配置构造（纯函数，供 app.module 的
+ * TypeOrmModule.forRootAsync 工厂与单测共用）。
+ *
+ * 读写分离形态（二选一，TypeORM 同一配置对象里 replication 与
+ * url/host+port 拆字段互斥）：
+ *  - db.readReplicaUrl 为空（默认）→ 沿用既有 host/port/username/...
+ *    单连接拆字段形态，产物无 replication 字段，行为与旧版逐字节一致；
+ *  - db.readReplicaUrl 非空 → replication 形态 { master: {...}, slaves:
+ *    [replicaUrl] }。master 沿用拆字段凭据，slave 用 `url` 单字段——
+ *    PostgresDriver.createPool 对两种凭据形态等价支持（credentials.url →
+ *    pg connectionString）。仅 replica 的 ssl/额外参数经由 URL query 传递，
+ *    master 侧 extra（连接池）两端共享（createPool 把 options.extra 合入
+ *    每个连接池）。
+ *
+ * 路由语义（TypeORM 0.3 内建，无需业务代码参与）：
+ *  - SELECT 读面（SelectQueryBuilder.obtainQueryRunner →
+ *    DataSource.defaultReplicationModeForReads → "slave"）走 slaves；
+ *  - 写面（save/update/delete、QueryBuilder.execute 非查询、事务、
+ *    entityManager/repo 默认 "master" 模式）走 master；
+ *  - 迁移（migrationsRun → MigrationExecutor → createQueryRunner()
+ *    默认 master）恒走 master。
+ */
+export const buildTypeOrmDataSourceOptions = (config: {
+  database: {
+    host: string;
+    port: number;
+    username: string;
+    password: string;
+    database: string;
+    poolSize: number;
+    readReplicaUrl?: string;
+  };
+  app: { nodeEnv: string };
+}): Record<string, unknown> => {
+  const common = {
+    entities: [__dirname + "/../**/*.entity{.ts,.js}"],
+    migrations: [__dirname + "/../migrations/*{.ts,.js}"],
+    migrationsRun: config.app.nodeEnv !== "development",
+    synchronize: false,
+    logging: config.app.nodeEnv === "development",
+    extra: {
+      max: config.database.poolSize,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+    },
+  };
+
+  // 读写分离关闭（默认）：与旧版一致的单 url 拆字段形态。
+  if (!config.database.readReplicaUrl) {
+    return {
+      type: "postgres",
+      host: config.database.host,
+      port: config.database.port,
+      username: config.database.username,
+      password: config.database.password,
+      database: config.database.database,
+      ...common,
+    };
+  }
+
+  // 读写分离开启：master 保留拆字段凭据，slaves 用连接串。
+  return {
+    type: "postgres",
+    replication: {
+      master: {
+        host: config.database.host,
+        port: config.database.port,
+        username: config.database.username,
+        password: config.database.password,
+        database: config.database.database,
+      },
+      // TypeORM 类型面 slaves 声明为凭据对象数组，但 PostgresDriver 等价
+      // 支持字符串形式的 { url }（createPool: connectionString: url）——
+      // 运行时合法，此处收窄断言；单测钉住产物形态。
+      slaves: [config.database.readReplicaUrl],
+    },
+    ...common,
+  } as Record<string, unknown>;
+};
 
 // M3: fail-fast in production for critical secrets that have known weak defaults
 if (process.env.NODE_ENV === "production") {
