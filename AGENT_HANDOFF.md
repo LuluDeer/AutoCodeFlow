@@ -9,7 +9,15 @@
 ## 状态快照
 
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
-- **本轮（2026-09-09 接手第二轮：两波 20+ 任务清偿，接手会话）**：
+- **本轮（2026-09-09 第三轮 Wave1 验收收口，主会话）**：
+  - **Wave1 四路员工子代理交付验收入库**：AUTH-01 多租户 Project 第一批（ff0e644，迁移 1790000000007~009，2137→2176 只增 +39）/ ARCH-24 读写分离（7210e3b+e5db222）/ DSK-02+03 Linux 打包+自动更新（c4a0fbc）/ ARCH-23 导出管道（1bd4d1c+00ef578）。
+  - `1bd4d1c` **EventSubscriptionModule DI 解析期环根治**（AUTH-01 加模块改变 DI 求值序暴露的挂死）：两派发器改 ModuleRef 运行时懒取（构造器互注入+useFactory 别名=解析期环，@Optional 拦不住「解析中」）；同 commit 附 ARCH-23 导出脚本/e2e spec + multer/hono audit 抬升。
+  - `00ef578` **ARCH-23 收口**：ci.yml api-types-drift job（重导出+重生成双 git diff 闸）+ admin-web openapi-typescript 生成入口；openapi.json（138 paths）与 api-types.ts（7052 行）生成物入库（.gitignore 反转）。
+  - `53d95b3` mcp-server lockfile 同步（hono 4.13.7 override 生效）。
+  - **注记**：c4a0fbc message 声称的 desktop-linux-bundle CI job 实际未随 commit 入库，00ef578 补交。
+  - **基线（收口复跑）**：admin-api **2185/2185** · admin-web **527/527** · 双端 tsc 绿 · 导出两次 md5 一致（字节级幂等）。
+  - **留验**：ARCH-23 drift job CI 首验；AUTH-01 Project 二批（角色细化=AUTH-02）；DSK-02 Ubuntu 真机构建；FEAT-19 outbox 补投真机外发；P0-2 审批双人真机。
+- **上轮（2026-09-09 接手第二轮：两波 20+ 任务清偿，接手会话）**：
   - **主会话直落 4 件**：`3bbe177` ARCH-29 迁移时间戳分配表建账（47 迁移回填归属）+ `scripts/check-migrations.mjs` 撞号/漏登校验（selftest 11 例）+ CI check-migrations job + PR 检查清单改指分配表（分配规则=在盘最大+1）；`ba04183`/`9b1e59c` 两波认领登记；`d528978` QA-08 CI 月度迁移演练（schedule 每月 1 日，主套件旁路，typeorm --check 漂移检查 + revert→重跑 down 路径）；`32ee795` DOC-07 operator 升级 runbook（operations.md：前置检查/步骤判据/回滚/已知坑）。
   - **Wave1（5 路并行，9 任务 done）**：FEAT-18 KILLED 终态事件（ef55581）+ FEAT-19 webhook at-least-once outbox（迁移 1790000000003，e34b018+ab23cee，Symbol 令牌解 DI 成环）；FEAT-13 保存为模板（baa91b1）+ FEAT-14 /releases 版本追溯 Tab（2f49ea7）+ FEAT-15 事件订阅 UI（d450a36）；NF-06 MCP retry_execution/deploy_app（9e76802，侦察坐实 4 处 brief 与真实契约偏差按实落地）+ NF-07 CLI executor rotate/offline（11b349e）；SEC-NEW-3 py 补注册链（85bca38，真实现）+ QA-11 strict warnings（a2aa9f6，filterwarnings=error 不缩水，顺修 2 例 flaky）；P0-1 安全红线 e2e 14 例三 describe（7bf0e24，SSRF/RBAC/审批第二人规则，CI 首验）。
   - **Wave2（5 路并行，11 任务 done）**：FEAT-20 部署 triggerType/operator 落库（迁移 1790000000004，f640832）+ NF-01 api_keys.scopes 词表 task:trigger（迁移 1790000000005，b92c39c）；UI-15 mutation 反馈一致性 19 处收口（3eec70c）+ UI-16 StateError 补齐（6019529）；SEC-09 限流三档分域（3fc5359）+ SEC-10 审计防篡改 append-only 触发器+验证工具（迁移 1790000000006，2a44927，真机验证过）；NF-05 飞书渠道含官方加签（4a256f5）+ ARCH-30 AI 分析服务化 AiAnalysisService+指标（f573109）；P0-4 ADR-012 safeStorage 拍板（e6b9ff0）+ SEC-NEW-1 desktop token 加密 enc:ss:（8fe9fe1）+ BUG-12 desktop IPC 复审双修（49a75bb）。
