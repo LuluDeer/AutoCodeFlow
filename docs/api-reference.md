@@ -887,6 +887,29 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 
 ---
 
+## Projects — 多租户项目（AUTH-01 第一批）
+
+单默认项目起步：迁移自动种子一行 `name="Default"`（固定 uuid `00000000-0000-0000-0000-000000000001`）；存量 tasks 已回填到默认项目，applications/executors/executor_packages 保持可空（未分配行在 `projectId=default` 视图下与默认项目一并返回）。默认项目**不可删除、不可改名**（返回 404）。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/projects` | 是 | 项目列表（全员可读，按 createdAt ASC） |
+| GET | `/projects/:id` | 是 | 项目详情 |
+| POST | `/projects` | 是（ADMIN） | 创建项目 |
+| PATCH | `/projects/:id` | 是（ADMIN） | 更新项目（默认项目仅允许改 description） |
+| DELETE | `/projects/:id` | 是（ADMIN） | 删除项目（默认项目被拦截，404） |
+
+**POST/PATCH 请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `name` | string | POST 是 / PATCH 否 | 项目名（1-100 字符，全局唯一，重名 409） |
+| `description` | string | 否 | 描述（最长 500） |
+
+**列表过滤参数（projectId）**：`GET /tasks` 与 `GET /applications` 均支持可选 `projectId` 查询参数——传字面量 `default` 表示默认项目视图（`projectId IS NULL OR projectId = 默认 uuid` 一起命中，用 Or 处理）；传具体项目 uuid 则精确过滤；不传时行为与既往一致（全量列表）。
+
+---
+
 ## 静态资源 — /uploads（应用包下载）
 
 | 方法 | 路径 | 需要认证 | 说明 |

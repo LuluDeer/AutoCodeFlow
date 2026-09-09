@@ -7,12 +7,15 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ModuleRef } from "@nestjs/core";
-import { Repository } from "typeorm";
+import { Repository, IsNull, Or, In } from "typeorm";
 import { Application, ApplicationStatus } from "./entities/application.entity";
 import {
   CreateApplicationDto,
   UpdateApplicationDto,
 } from "./dto/application.dto";
+// AUTH-01: 默认项目 uuid（"default" 过滤映射目标，与迁移 1790000000008
+// 回填值共享同一常量出处 project.entity.ts）。
+import { DEFAULT_PROJECT_ID } from "../project/project.entity";
 import { spawn } from "child_process";
 import { assertSafeGitRepoUrl } from "../../common/utils/safe-http.util";
 import * as fs from "fs";
@@ -135,8 +138,23 @@ export class ApplicationService implements OnModuleInit {
     }
   }
 
-  async findAll(): Promise<Application[]> {
-    const rows = await this.repo.find({ order: { createdAt: "DESC" } });
+  /**
+   * AUTH-01: 可选 projectId 过滤——"default" 映射为默认项目（未分配 NULL
+   * 行一起归入默认项目视图，Or 处理）；具体 uuid 则精确匹配。不传时行为
+   * 与既往完全一致（全量列表）。
+   */
+  async findAll(projectId?: string): Promise<Application[]> {
+    const findOptions: {
+      order: { createdAt: "DESC" };
+      where?: Record<string, unknown>;
+    } = { order: { createdAt: "DESC" } };
+    if (projectId) {
+      findOptions.where =
+        projectId === "default"
+          ? { projectId: Or(IsNull(), In([DEFAULT_PROJECT_ID])) }
+          : { projectId };
+    }
+    const rows = await this.repo.find(findOptions);
     return rows.map((r) => this.maskReadSurface(r));
   }
 

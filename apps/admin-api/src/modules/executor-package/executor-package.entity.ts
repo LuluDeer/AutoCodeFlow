@@ -86,6 +86,14 @@ export class ExecutorPackage {
     timestamp: string;
   }>;
 
+  /**
+   * AUTH-01（多租户 Project，第一批）：包归属项目（可空）。迁移
+   * 1790000000009 加列 + FK ON DELETE SET NULL + 索引。存量行不回填——
+   * 可空 = 未分配，语义上归默认项目视图。只加列不加关系。
+   */
+  @Column({ type: "uuid", nullable: true })
+  projectId: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 
