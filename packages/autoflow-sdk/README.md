@@ -69,7 +69,10 @@ ctx.callback.report([
 ```
 
 凭证缺失时任何上报调用抛 `CallbackDisabledError` 并指明缺失变量
-（fail-closed，与 Node `HttpClient.disabledReason` 语义对齐）。
+（fail-closed，与 Node `HttpClient.disabledReason` 语义对齐）。回调客户端默认 10 秒超时，
+不做隐式重试；401/403/timeout 等错误会保留后端 message 或 httpx 原始异常并传播给任务代码。
+Python SDK 只读取 `AUTOFLOW_ADMIN_API_URL` / `AUTOFLOW_CALLBACK_TOKEN`，不会读取 Node SDK
+兼容的旧式 `ADMIN_API_URL` / `EXECUTOR_TOKEN`。
 
 ### HttpClient 直用
 

@@ -341,6 +341,44 @@ describe("401 refresh self-heal (BUG-14)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("does not refresh on 403 — forbidden is an authorization failure, not token expiry", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(false, { message: "Forbidden" }, 403),
+    );
+
+    await expect(apiPost("/executors/e1/install")).rejects.toThrow(/403/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes("/auth/refresh")),
+    ).toBe(false);
+  });
+
+  it("does not send the expired access token to /auth/refresh", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(false, { message: "jwt expired" }, 401),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          true,
+          {
+            code: 0,
+            message: "success",
+            data: { accessToken: "new-access", refreshToken: "new-refresh" },
+          },
+          201,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(true, { code: 0, message: "success", data: { ok: 1 } }),
+      );
+
+    await apiGet("/tasks");
+
+    const [, refreshInit] = fetchMock.mock.calls[1];
+    expect(refreshInit.headers).toEqual({ "Content-Type": "application/json" });
+  });
+
   it("refresh failure surfaces the original 401 error", async () => {
     fetchMock
       .mockResolvedValueOnce(

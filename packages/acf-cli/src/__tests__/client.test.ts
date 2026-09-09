@@ -111,6 +111,37 @@ describe("unwrap", () => {
 });
 
 describe("client methods (mocked axios)", () => {
+  function getOnFulfilled(): (cfg: { headers?: Record<string, string> }) => unknown {
+    axiosInstance.get.mockResolvedValueOnce(envelope(null));
+    void get("/__probe__", {}).catch(() => undefined);
+    const onFulfilled = requestInterceptors.use.mock.calls.at(-1)?.[0];
+    expect(typeof onFulfilled).toBe("function");
+    return onFulfilled as (cfg: { headers?: Record<string, string> }) => unknown;
+  }
+
+  it("injects the current Authorization token on every request", () => {
+    const onFulfilled = getOnFulfilled();
+
+    tokenState.access = "first-token";
+    expect(onFulfilled({ headers: { Existing: "1" } })).toMatchObject({
+      headers: { Existing: "1", Authorization: "Bearer first-token" },
+    });
+
+    tokenState.access = "rotated-token";
+    expect(onFulfilled({ headers: {} })).toMatchObject({
+      headers: { Authorization: "Bearer rotated-token" },
+    });
+  });
+
+  it("does not inject Authorization when no token is configured", () => {
+    const onFulfilled = getOnFulfilled();
+    tokenState.access = "";
+
+    expect(onFulfilled({ headers: { Existing: "1" } })).toEqual({
+      headers: { Existing: "1" },
+    });
+  });
+
   it("get passes path and params through", async () => {
     axiosInstance.get.mockResolvedValueOnce(envelope({ list: [], total: 0 }));
     const result = await get<{ list: unknown[]; total: number }>("/tasks", {

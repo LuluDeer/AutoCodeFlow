@@ -209,3 +209,50 @@ class TestRetryMethodSafety:
         resp = await client.post("/items", data={"name": "x"})
         assert resp.status_code == 201
         assert route.call_count == 2  # opt-in restores legacy retry-everything
+
+    @pytest.mark.asyncio
+    async def test_401_and_403_are_not_retried_and_return_response(self, respx_mock):
+        route = respx_mock.get("http://api.example.com/secure").mock(
+            side_effect=[httpx.Response(401), httpx.Response(403)]
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.FAST),
+        )
+
+        assert (await client.get("/secure")).status_code == 401
+        assert (await client.get("/secure")).status_code == 403
+        assert route.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_get_exhausts_retry_budget_as_max_retries_plus_one_attempts(self, respx_mock):
+        route = respx_mock.get("http://api.example.com/data").mock(
+            return_value=httpx.Response(503)
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(max_retries=3, min_wait_sec=0.001, max_wait_sec=0.002),
+        )
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.get("/data")
+        assert route.call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_get_timeout_is_retried_but_post_timeout_is_not(self, respx_mock):
+        get_route = respx_mock.get("http://api.example.com/data").mock(
+            side_effect=[httpx.ReadTimeout("slow"), httpx.Response(200, json={"ok": True})]
+        )
+        post_route = respx_mock.post("http://api.example.com/items").mock(
+            side_effect=httpx.ReadTimeout("slow")
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.FAST),
+        )
+
+        assert (await client.get("/data")).status_code == 200
+        with pytest.raises(httpx.ReadTimeout):
+            await client.post("/items", data={"name": "x"})
+        assert get_route.call_count == 2
+        assert post_route.call_count == 1
