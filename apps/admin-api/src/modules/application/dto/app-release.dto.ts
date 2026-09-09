@@ -10,11 +10,7 @@ import { Type } from "class-transformer";
  * 仍无法判定时为 unknown —— 见 AppDeploymentService.resolveReleaseTrigger。
  */
 export type ReleaseTriggerType =
-  | "manual"
-  | "upgrade"
-  | "rollback"
-  | "approval"
-  | "unknown";
+  "manual" | "upgrade" | "rollback" | "approval" | "unknown";
 
 /** 操作人来源标注：version.operator 优先取部署行持久化 operator 列
  *  （FEAT-20），存量行仍回退 application_versions.createdBy（历史写入

@@ -179,12 +179,14 @@ openssl rand -hex 16   # EXECUTOR_SECRET
 cd packages/acf-cli && npm install && npm run build && npm link
 
 # 使用
-acf login --url http://localhost:3105 --username admin
+acf login --url http://localhost:3105 --user admin
 acf task list
 acf task trigger <taskId>
 acf executor list
 acf app list
 ```
+
+推荐使用 `acf login` 保存 access token 与 refresh token，CLI 会在普通 API 请求遇到 401 时自动刷新并重放一次。`--token` / `ACF_TOKEN` / `acf config set-token` 只适合短期 CI 调用；未配置 refresh token 时，access token 过期会快速失败并提示重新登录。
 
 ### MCP Server
 

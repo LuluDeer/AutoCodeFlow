@@ -148,10 +148,10 @@
 
 | 编号 | 级别 | 内容 | 位置/证据 | 建议方案 | 验收 |
 |---|---|---|---|---|---|
-| BUG-13 | P2 | acf-cli 认证传递、禁用/降级行为、重试出口未做专项复审 | [RV] B.2 | 专项审查 + 补测试（401/403/超时/禁用四态） | 审查报告 + 用例入库 |
-| BUG-14 | P2 | mcp-server 工具调用→API 鉴权全链路未复审（有 30s 超时与错误文案，但 token 刷新/并发工具调用未验证） | [RV] B.3 | 复审 + 并发工具调用测试 | 同上 |
-| BUG-15 | P2 | 双 SDK（node/py）认证传递、禁用/降级语义、重试上限与错误传播未复审 | [RV] B.4 | 复审；重点：disabled client 的 fallback 行为在任务代码里的可感知性 | 同上 |
-| BUG-16 | P3 | registry-npm 下载路由与 token 权限边界未复审（verdaccio 配置加固已做，路由面未验） | [RV] B.5 | 复审 + 拉取/发布权限矩阵测试 | 同上 |
+| BUG-13 | P2 | 已完成：acf-cli 认证传递、禁用/降级行为、重试出口已复审；补 Authorization 逐请求取最新 token、login 同时落库 refreshToken、401 单飞刷新链路文档化，修正 README login 参数与 token/refresh 语义 | [RV] B.2 | `packages/acf-cli/src/__tests__/client.test.ts` / `commands.test.ts` 补回归，`README.md` 补 CLI 鉴权说明 | `npm --prefix packages/acf-cli test -- src/__tests__/client.test.ts src/__tests__/commands.test.ts` 通过（69 tests） |
+| BUG-14 | P2 | 已完成：mcp-server 工具调用→API 鉴权链路已复审；覆盖 30s 超时、401/403 错误文案、access token 过期 refresh 自愈、并发 401 单飞、refresh token 内存轮换、`/auth/*` 排除、403 不刷新、refresh 请求不携带过期 Authorization | [RV] B.3 | `packages/mcp-server/src/__tests__/api.test.ts` 已入库 BUG-14 回归，`README.md` 补 refresh token 配置说明 | `npm test` 与 `npm run typecheck` 均通过 |
+| BUG-15 | P2 | 已完成：Node/Python SDK 与 autocodeflow-http 鉴权、disabled/fallback、401/403、timeout 与 retry 上限已复审；Node SDK 固化 403 readable/no retry，Python callback 固化 timeout 不重试，autocodeflow-http 固化 401/403 不重试返回 response、GET retry 预算、timeout safe-method 语义 | [RV] B.4 | `packages/autocodeflow-node-sdk/src/__tests__/http-client.test.ts`、`packages/autoflow-sdk/tests/test_callback.py`、`packages/autocodeflow-http/tests/test_client.py` 入库，README 补错误传播/legacy env 差异 | node SDK 26 tests、autoflow-sdk callback 28 tests、autocodeflow-http 21 tests 通过 |
+| BUG-16 | P3 | 已完成：registry-npm 下载路由与 token 权限边界已复审；Verdaccio 包权限保持匿名不可读/不可写、登录用户可读写，公共包 fallback 仍需先认证，compose 默认 loopback 暴露 | [RV] B.5 | `apps/registry-npm/README.md` 补权限矩阵，`scripts/registry-npm-config.selftest.mjs` 固化静态回归并接入 `npm run test:registry-npm` | `npm run test:registry-npm` 与 `docker compose config --quiet` 通过（compose 仅既有 env/version 警告） |
 
 ### 2.4 部署与运维
 
@@ -160,7 +160,7 @@
 | BUG-17 | P3 | nginx SSE 依赖 15s `: ping` 保活帧（QA3 方案），专有 location 已在 c90cdae 落地——需真机确认长流 24h 不断 | [H] 第十五轮遗留 | 真机挂 24h 存储任务日志流 + nginx access log 断连统计 | 断连次数 = 0（除客户端主动断开） |
 | BUG-18 | P2 | **未覆盖验证项：私有 npm/PyPI 仓库端到端集成**（任务 requirements 指向私服装内部依赖的真实闭环从未真机验证） | [H] 未覆盖清单 | 真机专项：registry-npm 发布内部包→任务 requirements 引用→executor 安装成功（node/py 双 runtime） | E2E 用例 + VERIFY 文档 |
 | BUG-19 | P2 | **大规模并发压测从未做过**（容量上限、BullMQ/PG/连接池水位未知） | [H] 未覆盖清单 | 见 §7 QA-05（压测专项，scripts/load-test 已有底子） | 容量白皮书：单实例 500 并发执行目标 |
-| BUG-20 | P3 | macOS / ARM64 部署未验证（docker buildx 多架构镜像） | [OPT] §3.4 路线图 | CI 增加 arm64 build job（不跑 e2e，仅 build）+ 文档 | 镜像 multi-arch 推送成功 |
+| BUG-20 | P3 | 已完成：macOS / ARM64 multi-arch 构建链路补 CI buildx 验证与部署文档；CI 覆盖 admin-api、executor-node、executor-python 的 linux/amd64,linux/arm64 build（push=false），发布镜像前置 manifest inspect/ARM64 冒烟说明已补 | [OPT] §3.4 路线图 | `.github/workflows/ci.yml` 新增 `docker-multiarch-build`，`docs/release-checklist.md` / `docs/deployment.md` 补 multi-arch 校验步骤 | CI workflow YAML 解析通过；实际镜像推送仍待接入 GHCR/DockerHub 发布凭证后闭环 |
 
 ---
 
@@ -172,8 +172,8 @@
 |---|---|---|---|---|---|
 | FEAT-01 | P1 | **通知静默规则（silences）持久化** | NOTIF-003 落地为内存 Map（上限 1000 + 定期清理），**重启即丢**，且无 UI 管理 | ① `notification_silences` 表（渠道/任务/应用维度、有效期、创建人）；② CRUD API；③ admin-web 设置页「静默规则」Tab；④ 与通知发送路径集成判断 | 重启后静默仍生效；UI 可增删查 |
 | FEAT-02 | P1 | **任务依赖 DAG 可视化** | `tasks.dependencies` 字段与依赖触发已完整（深度上限 64、DB claim 扇出），但前端**无任何 DAG 展示**——用户只能猜执行顺序 | TaskDetailPage 增 DAG 视图（antd + dagre/reactflow：节点=任务、边=依赖、状态着色=最近一次执行结果）；点击节点跳详情 | 依赖链任务在 UI 可见环路与执行链 |
-| FEAT-03 | P1 | **执行历史对比入口强化** | `ExecutionCompare` 组件已有，但入口深（需手动选两条记录） | 列表多选→「对比」按钮直达；差异高亮 params/exitCode/duration/failureReason | 两键完成对比操作 |
-| FEAT-04 | P2 | **executor_metrics_history 数据消费** | 表已建（迁移链含），心跳持续入库，但前端无趋势图 | ExecutorDetailPage 增 24h CPU/内存/并发折线图（轻量方案：recharts，已有 antd 生态） | 详情页可见资源趋势 |
+| FEAT-03 | P1 | **执行历史对比入口强化** | 已完成：执行列表支持多选后直接点击「对比」打开 `ExecutionCompare`，并补齐 params 字段展示 | 已完成：对 params/exitCode/duration/failureReason 做差异高亮，保留状态、时间、错误信息等既有对比项 | admin-web `executions-page` 回归覆盖两键打开对比、参数展示与关键差异高亮 |
+| FEAT-04 | P2 | **executor_metrics_history 数据消费** | 已完成：心跳保存 executor 当前指标后 best-effort 追加 `executor_metrics_history` 快照，读侧按 24h / 15min bucket 聚合 | 已完成：ExecutorDetailPage 已消费 `GET /executors/:id/metrics` 的 `history` 并展示 24h CPU/内存/并发折线图 | admin-api heartbeat 回归覆盖历史采样写入与 fail-open；admin-web 趋势图回归覆盖空态、旧响应兜底与三条折线 |
 | FEAT-05 | P2 | **执行产物（artifacts）通道** | 任务只能回传日志与 exitCode，无法上报文件（截图/报表/CSV） | executor 侧 artifacts 目录 + 回调清单（大小/哈希，复用包上传通道）；admin 侧 /uploads 鉴权下载；详情页产物列表 | RPA 示例任务可上传截图并在 UI 查看 |
 | FEAT-06 | P2 | **任务级维护窗口** | 调度无「停机窗口」概念，发布期定时任务照跑 | 任务/应用级 `maintenanceWindows`（cron 段），调度器触发前检查跳过（计入 skipped 指标） | 窗口内触发被跳过且可观测 |
 | FEAT-07 | P2 | **Webhook 出站事件**（系统事件 → 用户 webhook） | 入站 webhook（CI 触发部署）已完善，出站只有通知渠道 | 事件订阅表（execution.failed / deployment.completed / executor.offline…）+ HMAC 签名出站（复用 applications webhook 的签名算法）+ 重试与死信 | 订阅方收到签名正确的失败事件 |
@@ -181,7 +181,7 @@
 | FEAT-09 | P3 | **全局搜索 / 命令面板** | 18 个页面靠侧边栏导航，任务多时找任务/执行器低效 | ⌘K 命令面板：任务/执行器/应用/执行记录模糊搜索直达 | 键盘三击达任意任务详情 |
 | FEAT-10 | P3 | **通知模板变量** | 通知内容是固定模板拼串，无变量定制 | 渠道级模板（{{task}}/{{failedReason}}/{{logs 摘要}}），渲染沙箱限制 8KB | 模板渲染单测 + 真机外发 |
 | FEAT-11 | P3 | **任务运行手册（runbook）字段** | 任务失败后排障知识散落在团队 wiki | tasks 增加 markdown runbook 字段，失败通知/详情页展示 | 详情页可见 runbook 并随通知附链接 |
-| FEAT-12 | P3 | **registry-pypi 简单索引页 UI 化** | PyPI 私服只有 API 面 | `/simple/` HTML 索引（pip 官方协议已支持，补人类可读页面 + 包列表） | 浏览器可浏览私服包 |
+| FEAT-12 | P3 | **registry-pypi 简单索引页 UI 化** | 已完成：`apps/registry-pypi/main.py` 已提供需认证的人类可读 `/` 落地页、`/simple/` 包列表与包级版本/体积/时间展示，保持 PEP 503/pip 兼容，并覆盖 XSS 转义与缓存头测试 | `apps/registry-pypi/tests/test_registry.py` 定向覆盖 root/simple/package 三类 HTML 页、无外部资源、pip 锚点兼容与转义回归 |
 
 ---
 
@@ -262,7 +262,7 @@
 | ARCH-24 | P3 | **读写分离与只读副本** | 报表/列表查询与调度主链同库 | 可选 `DB_READ_REPLICA_URL`，列表类查询走只读副本（TypeORM replica 路由） | 单测 + 可选配置默认关闭 |
 | ARCH-25 | P3 | **插件化任务 runtime** | runtime 硬编码 node/python/shell 三类 | runtime 注册表协议（executor 上报 capabilities 已有字段基础）；新 runtime（如 deno/browser）零 admin 改动接入 | 文档 + 一个示例 runtime |
 | ARCH-26 | P2 | **前端状态与数据层升级** | zustand 仅 auth store，页面各自 useRequest 轮询，切页重复拉取 | 引入 TanStack Query（渐进：新页面先用）；统一缓存/重试/失效策略；SSE 数据并入缓存 | 重访页面零闪烁；请求去重可见 |
-| ARCH-27 | P3 | **配置中心收口** | env 直读散布（@Throttle 装饰器读 process.env 曾致死配置 W-22） | configuration.ts 全量注册审计（lint 规则禁止模块内直接读 process.env，白名单豁免） | 违规 lint 报错；配置项清单文档 |
+| ARCH-27 | P3 | **配置中心收口** | **已完成**：生产代码的 `process.env` 读取已收口到 `configuration.ts` / `env.ts`，ESLint 规则禁止业务模块裸读并对配置映射、模块加载期工具保留明确豁免；本轮 admin-api lint 与 typecheck 通过 | configuration.ts 全量注册审计（lint 规则禁止模块内直接读 process.env，白名单豁免） | 违规 lint 报错；配置项清单文档 |
 
 ---
 
@@ -311,10 +311,10 @@
 | QA-04 | P1 | **真机验证常态化** | 每轮 V 已成惯例，但矩阵未覆盖 | 建立「真机矩阵」checklist：Linux×PG16/Redis7 基线、Windows 全栈、macOS（DSK-01 后）、双 admin 实例、双执行器混布——每轮改动按触达面勾选 |
 | QA-05 | P2 | **并发压测专项**（BUG-19） | scripts/load-test 已有底子 + README | ① 场景：500 并发执行、1000 任务/分钟入队、SSE 500 连接、回调风暴 10k/min；② 产出容量白皮书（瓶颈定位：PG 连接池/BullMQ/回调 55mb 路由）；③ 性能回归基线进 CI 可选 job | 
 | QA-06 | P2 | **混沌/故障注入** | 无 | compose 演练脚本：Redis 宕（fail-open 路径）、PG 主从切换、执行器断网 30s 恢复、admin 滚动重启双实例——各场景断言数据零丢失/零重复（复用第五轮 Leader Election 验证资产） |
-| QA-07 | P2 | **契约测试（客户端包）** | 信封拆包教训（第八轮方法论）已在三端各修各的 | 建立共享契约 fixture 包（envelope/2xx 区间/错误体形态），CLI/MCP/node-sdk/py-sdk 四端消费同一测试向量，防再次漂移 |
+| QA-07 | P2 | **契约测试（客户端包）** | **已完成**：`packages/contract-fixtures/contract.json` 作为单一事实源，CLI/MCP/Node SDK/Python SDK 四端均消费共享向量并覆盖信封、2xx 区间与错误体形态；本轮四端定向回归全绿（32 + 30 + 30 + 33） | 建立共享契约 fixture 包（envelope/2xx 区间/错误体形态），CLI/MCP/node-sdk/py-sdk 四端消费同一测试向量，防再次漂移 | 四端共享 fixture 定向测试通过
 | QA-08 | P2 | **迁移演练自动化** | 迁移链双轮幂等 job 已有（空库+续跑） | 补第三态：**存量库跨 3 个版本升级演练**（v1.0.1→HEAD），CI 月度跑 | 
 | QA-09 | P3 | **安全回归用例固化** | 历轮审计修复散在各自 spec | 汇总「审计红线路径」清单（SSRF 六出站点/RBAC 全端点/注入面），一份 e2e 安全套件兜底 |
-| QA-10 | P3 | ** 性能基准** | 无 | 关键路径微基准（handleCallback 批量 100、storeLogLines 万行、dispatch 决策）防退化 |
+| QA-10 | P3 | **性能基准** | `scripts/micro-benchmark.mjs` 已建零依赖微基准 + `bench:micro`/`bench:micro:selftest` 根脚本入口 | 关键路径微基准（handleCallback 批量 100、storeLogLines 万行、dispatch 决策）防退化；可选 `--threshold-ms name=ms` 接入 CI |
 
 ---
 
@@ -340,12 +340,12 @@
 
 | 编号 | 级别 | 内容 | 说明 |
 |---|---|---|---|
-| DOC-01 | P1 | api-reference 增量机制 | 每轮 PR 模板加「API 变更？」检查项，杜绝文档滞后（历轮 N37 等多次补漏）；OpenAPI 生成（ARCH-23）后可自动同步端点表 |
-| DOC-02 | P1 | operator 手册补全 | operations.md 补：容量规划（QA-05 产出）、备份恢复演练步骤（含 pgBackRest 建议）、升级 runbook（QA-08 产出） |
-| DOC-03 | P2 | quickstart 视频化/沙箱 | demo 数据一键种子脚本（`pnpm demo:seed`：3 任务+2 执行器+示例失败记录），新用户 5 分钟看到完整 UI |
-| DOC-04 | P2 | 架构决策记录（ADR） | docs/adr/ 目录：把历轮关键决策（per-execution token、Leader Election 双保险、config-first 语义翻转史、bundle 同 commit 纪律）固化为 ADR-001~010 |
-| DOC-05 | P2 | CHANGELOG 自动化 | release-please 或 changesets：版本与变更日志从 conventional commits 生成，配合 release.yml |
-| DOC-06 | P3 | 教程系列 | 「从 0 到生产」四篇：第一个定时任务 → 私服依赖 → 多执行器扩容 → 告警接入值班 |
+| DOC-01 | P1 | api-reference 增量机制 | 已完成：`.github/PULL_REQUEST_TEMPLATE.md` 已包含「API 变更？」强制检查项，覆盖端点、Breaking 变更、环境变量与迁移号；OpenAPI 生成（ARCH-23）后可继续自动同步端点表 |
+| DOC-02 | P1 | operator 手册补全 | 已补：`operations.md` 覆盖备份恢复演练（含 pgBackRest 建议）、容量规划水位阈值、升级 runbook；QA-05 容量白皮书与 QA-08 跨 3 版本演练结果后续回填 |
+| DOC-03 | P2 | quickstart 视频化/沙箱 | 已补：`docs/quickstart.md` 接入 `pnpm demo:seed` 可选沙箱路径（3 个 demo 任务：fixed_rate 成功流、cron Python 样本、故意失败样本），新用户可快速看到执行记录/失败详情；视频化或在线沙箱后续追加 |
+| DOC-04 | P2 | 架构决策记录（ADR） | 已完成：`docs/adr/` 已固化 ADR-001~012，并补 `adr-template.md` 与索引写作规则；后续架构/契约决策按序号追加 |
+| DOC-05 | P2 | CHANGELOG 自动化 | 已完成：采用 release-please（`.github/workflows/release-please.yml` + `release-please-config.json` + manifest），从中文 conventional commits 生成 Release PR/CHANGELOG，裸 `vX.Y.Z` tag 继续衔接既有 `release.yml` 发布闸 |
+| DOC-06 | P3 | 教程系列 | 已完成：`docs/tutorials/` 已包含「从 0 到生产」四篇与索引（第一个定时任务 → 私服依赖 → 多执行器扩容 → 告警接入值班），并从 quickstart 下一步入口串联 |
 
 ---
 
@@ -410,8 +410,8 @@
 | BUG-20 | ARM64 multi-arch 镜像 | P3 | 0.3 轮 | §2.4 |
 | FEAT-01 | 通知静默规则持久化 + UI | P1 | 0.8 轮 | §3 |
 | FEAT-02 | 任务依赖 DAG 可视化 | P1 | 0.8 轮 | §3 |
-| FEAT-03 | 执行对比入口强化 | P1 | 0.2 轮 | §3 |
-| FEAT-04 | 执行器指标趋势图 | P2 | 0.4 轮 | §3 |
+| FEAT-03 | 执行对比入口强化 | P1 | done | §3 |
+| FEAT-04 | 执行器指标趋势图 | P2 | done | §3 |
 | FEAT-05 | 执行产物 artifacts 通道 | P2 | 1 轮 | §3 |
 | FEAT-06 | 任务维护窗口 | P2 | 0.5 轮 | §3 |
 | FEAT-07 | Webhook 出站事件 | P2 | 0.8 轮 | §3 |

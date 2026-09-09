@@ -1,5 +1,9 @@
 import { Test } from "@nestjs/testing";
-import { ForbiddenException, UnauthorizedException, ExecutionContext } from "@nestjs/common";
+import {
+  ForbiddenException,
+  UnauthorizedException,
+  ExecutionContext,
+} from "@nestjs/common";
 import { ApiKeyAuth } from "../api-key-auth.helper";
 import { ApiKeysService } from "../api-keys.service";
 import { ApiKey, ApiKeyScope } from "../entities/api-key.entity";
@@ -78,7 +82,10 @@ describe("NF-01 ApiKeyAuth — task:trigger 扩展域分流", () => {
   it("有效 key 无 task:trigger 词表（纯 readonly）+ 同端点 → 403（scope 提示文案）", async () => {
     svc.authenticate.mockResolvedValue({ apiKey: keyRow({ scopes: null }) });
     await expect(
-      auth.authenticate(makeContext("POST", "tasks/abc-123/trigger"), "acf_deadbeef"),
+      auth.authenticate(
+        makeContext("POST", "tasks/abc-123/trigger"),
+        "acf_deadbeef",
+      ),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 

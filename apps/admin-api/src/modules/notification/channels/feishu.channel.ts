@@ -85,7 +85,10 @@ export class FeishuChannel extends BaseChannel {
 
     // 可选加签 secret：override > saved > env（与 URL 同一解析链）。
     const secret =
-      override.secret || saved.secret || this.config.get<string>("notification.feishuSecret") || "";
+      override.secret ||
+      saved.secret ||
+      this.config.get<string>("notification.feishuSecret") ||
+      "";
     const signed = this.signSafely(secret, url);
 
     try {
@@ -105,9 +108,7 @@ export class FeishuChannel extends BaseChannel {
       this.logger.log(`[Feishu] sent: ${p.title}`);
       return "sent";
     } catch (error) {
-      this.logger.error(
-        `[Feishu] send failed after retries: ${error.message}`,
-      );
+      this.logger.error(`[Feishu] send failed after retries: ${error.message}`);
       return "failed";
     }
   }
