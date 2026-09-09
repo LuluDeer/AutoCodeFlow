@@ -9,7 +9,10 @@
 ## 状态快照
 
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
-- **本轮（2026-09-09 第三轮 Wave1 验收收口，主会话）**：
+- **本轮（2026-09-10 NF-02 直落，主会话）**：
+  - `03e23d1` **NF-02 执行编排 UI done**：TaskFormPage 上游依赖多选（纯逻辑层 task-dependencies.ts，空集显式 null 对齐 N28）+ DAG「触发整条链」按钮 + dashboard-ui04 时间炸弹测试修复（固定日期滚出 7 天窗实爆，改相对日期）；admin-web **538/538**（527 只增 +11）。
+  - 缩水声明：fail-fast 失败分支策略未做（需后端新列+迁移+调度语义变更，见 claims 板备注）。
+- **上轮（2026-09-09 第三轮 Wave1 验收收口，主会话）**：
   - **Wave1 四路员工子代理交付验收入库**：AUTH-01 多租户 Project 第一批（ff0e644，迁移 1790000000007~009，2137→2176 只增 +39）/ ARCH-24 读写分离（7210e3b+e5db222）/ DSK-02+03 Linux 打包+自动更新（c4a0fbc）/ ARCH-23 导出管道（1bd4d1c+00ef578）。
   - `1bd4d1c` **EventSubscriptionModule DI 解析期环根治**（AUTH-01 加模块改变 DI 求值序暴露的挂死）：两派发器改 ModuleRef 运行时懒取（构造器互注入+useFactory 别名=解析期环，@Optional 拦不住「解析中」）；同 commit 附 ARCH-23 导出脚本/e2e spec + multer/hono audit 抬升。
   - `00ef578` **ARCH-23 收口**：ci.yml api-types-drift job（重导出+重生成双 git diff 闸）+ admin-web openapi-typescript 生成入口；openapi.json（138 paths）与 api-types.ts（7052 行）生成物入库（.gitignore 反转）。
