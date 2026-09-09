@@ -17,6 +17,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ExecutorListPage from '../pages/ExecutorListPage';
 import { executorsApi } from '../api/executors';
 import { client } from '../api/client';
@@ -73,14 +74,19 @@ const makeExecutor = (over: Partial<Executor>): Executor => ({
 });
 
 function renderPage() {
+  // FEAT-17: ExecutorListPage 改用 TanStack Query——测试包 QueryClientProvider
+  // （executions-page.test 先例，retry:false）
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={['/executors']}>
-      <Routes>
-        <Route path="/executors" element={<ExecutorListPage />} />
-        <Route path="/executors/:id" element={<div>executor-detail-mock</div>} />
-        <Route path="/executors/install" element={<div>install-wizard-mock</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/executors']}>
+        <Routes>
+          <Route path="/executors" element={<ExecutorListPage />} />
+          <Route path="/executors/:id" element={<div>executor-detail-mock</div>} />
+          <Route path="/executors/install" element={<div>install-wizard-mock</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

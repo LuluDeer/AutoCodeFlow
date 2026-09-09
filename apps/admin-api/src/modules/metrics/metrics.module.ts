@@ -9,6 +9,8 @@ import { MetricsService } from "./metrics.service";
 import { PrometheusMetricsService } from "./prometheus-metrics.service";
 import { MetricsController } from "./metrics.controller";
 import { MetricsStreamController } from "./metrics-stream.controller";
+// FEAT-16：执行列表终态推送流（事件转发自 ARCH-21 DomainEventBus，零 DB 查询）
+import { ExecutionsStreamController } from "./executions-stream.controller";
 import { MetricsStreamSlotService } from "./metrics-stream-slot.service";
 import { SchedulerModule } from "../scheduler/scheduler.module";
 import { TaskModule } from "../task/task.module";
@@ -35,7 +37,11 @@ import { TaskModule } from "../task/task.module";
     PrometheusMetricsService,
     MetricsStreamSlotService,
   ],
-  controllers: [MetricsController, MetricsStreamController],
+  controllers: [
+    MetricsController,
+    MetricsStreamController,
+    ExecutionsStreamController,
+  ],
   exports: [MetricsService, PrometheusMetricsService],
 })
 export class MetricsModule {}

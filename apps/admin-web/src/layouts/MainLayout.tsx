@@ -197,6 +197,14 @@ export default function MainLayout() {
     }
   };
 
+  // UI-09：移动端（≤768px）侧边栏抽屉态——纯 CSS 媒体查询承载（见 index.css），
+  // 仅切换一个类名；桌面端 .mobile-sider-mask 恒 display:none，零影响。
+  const [mobileSiderOpen, setMobileSiderOpen] = useState(false);
+  // 路由变化后自动收起抽屉（手机选中菜单项即回到内容区）
+  useEffect(() => {
+    setMobileSiderOpen(false);
+  }, [location.pathname]);
+
   const selectedKey = '/' + location.pathname.split('/')[1];
 
   // Build breadcrumb items from the current path
@@ -274,7 +282,8 @@ export default function MainLayout() {
   const dateStr = currentTime.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    // UI-09：mobile-sider-open 挂根 Layout——CSS 媒体查询据此滑入侧边栏并显示遮罩
+    <Layout className={mobileSiderOpen ? 'mobile-sider-open' : undefined} style={{ minHeight: '100vh' }}>
       <Sider
         collapsible
         collapsed={collapsed}
@@ -374,6 +383,7 @@ export default function MainLayout() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            gap: 8,
             height: 56,
             position: 'sticky',
             top: 0,
@@ -381,15 +391,26 @@ export default function MainLayout() {
             boxShadow: 'var(--shadow-sm)',
           }}
         >
-          <Space size={12}>
+          {/* UI-09：移动端汉堡入口（≤768px 显示，桌面 display:none）——
+              手机值班场景侧边栏抽屉化后的唯一导航开关 */}
+          <Button
+            type="text"
+            className="mobile-menu-toggle"
+            aria-label="打开导航菜单"
+            data-testid="mobile-menu-toggle"
+            icon={mobileSiderOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
+            onClick={() => setMobileSiderOpen((v) => !v)}
+            style={{ fontSize: 18, color: token.colorTextSecondary }}
+          />
+          <Space size={12} className="header-breadcrumb">
             {pathSegments.length > 1 && (
               <Breadcrumb items={breadcrumbItems} style={{ fontSize: 13 }} />
             )}
           </Space>
 
           <Space size={4}>
-            {/* 时间显示 */}
-            <div style={{ textAlign: 'right', marginRight: 8, lineHeight: 1.3 }}>
+            {/* 时间显示（UI-09：≤768px 隐藏——头部仅留高频操作按钮） */}
+            <div className="header-time" style={{ textAlign: 'right', marginRight: 8, lineHeight: 1.3 }}>
               <div style={{ fontSize: 14, fontWeight: 600, color: token.colorText }}>{timeStr}</div>
               <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{dateStr}</div>
             </div>
@@ -477,6 +498,13 @@ export default function MainLayout() {
 
       {/* FEAT-09: 全局命令面板——⌘K/Ctrl+K 或头部搜索按钮唤起 */}
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+
+      {/* UI-09：移动端抽屉遮罩（≤768px 且抽屉展开时显示，点击收起） */}
+      <div
+        className="mobile-sider-mask"
+        data-testid="mobile-sider-mask"
+        onClick={() => setMobileSiderOpen(false)}
+      />
     </Layout>
   );
 }

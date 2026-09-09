@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskDetailPage from '../pages/TaskDetailPage';
 import { tasksApi } from '../api/tasks';
 import { taskTemplatesApi } from '../api/task-templates';
@@ -102,7 +103,11 @@ afterEach(() => {
 
 /** 打开「保存为模板」弹窗并等表单出现 */
 async function openTplModal() {
-  render(<TaskDetailPage />);
+  render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskDetailPage />
+      </QueryClientProvider>,
+    );
   fireEvent.click(await screen.findByTestId('save-as-template'));
   await screen.findByTestId('tpl-name-input');
 }

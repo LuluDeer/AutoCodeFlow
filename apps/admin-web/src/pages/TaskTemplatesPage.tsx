@@ -8,8 +8,8 @@ import {
   ApiOutlined, FieldTimeOutlined, CodeOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { useRequest } from 'ahooks';
 import { taskTemplatesApi, TaskTemplate } from '../api/task-templates';
+import { useTaskTemplates } from '../api/queries';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
@@ -43,9 +43,9 @@ export default function TaskTemplatesPage() {
   const nav = useNavigate();
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const { data: templates, loading, error, refresh } = useRequest(
-    () => taskTemplatesApi.list(),
-  );
+  // FEAT-17: useRequest 换 useTaskTemplates（模板删除后 refresh 走 refetch）。
+  const { data: templates, isLoading: loading, error, refetch } = useTaskTemplates();
+  const refresh = () => void refetch();
 
   const handleDelete = async (id: string) => {
     setDeletingId(id);

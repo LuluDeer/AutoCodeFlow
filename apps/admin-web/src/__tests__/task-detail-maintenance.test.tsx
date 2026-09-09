@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskDetailPage from '../pages/TaskDetailPage';
 import { tasksApi } from '../api/tasks';
 
@@ -91,7 +92,11 @@ describe('TaskDetailPage 维护窗口展示（FEAT-06）', () => {
       ],
     } as never);
 
-    render(<TaskDetailPage />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskDetailPage />
+      </QueryClientProvider>,
+    );
     expect(await screen.findByText('0 22 * * 5 → 0 6 * * 6（发布冻结）')).toBeTruthy();
     expect(screen.getByText('30 2 * * * → 0 4 * * *')).toBeTruthy();
     expect(screen.getByText('维护窗口')).toBeTruthy();
@@ -103,7 +108,11 @@ describe('TaskDetailPage 维护窗口展示（FEAT-06）', () => {
       maintenanceWindows: null,
     } as never);
 
-    render(<TaskDetailPage />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskDetailPage />
+      </QueryClientProvider>,
+    );
     // 等任务名出现（数据已加载完成）再断言负向
     // UI-03：任务名现同时出现于页头面包屑与标题，改用 getAllByText 计数 > 0
     expect((await screen.findAllByText('windowed-job')).length).toBeGreaterThan(0);
@@ -116,7 +125,11 @@ describe('TaskDetailPage 维护窗口展示（FEAT-06）', () => {
       maintenanceWindows: [],
     } as never);
 
-    render(<TaskDetailPage />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskDetailPage />
+      </QueryClientProvider>,
+    );
     // UI-03：任务名现同时出现于页头面包屑与标题，改用 findAllByText 计数 > 0
     await waitFor(() => expect(screen.getAllByText('windowed-job').length).toBeGreaterThan(0));
     expect(screen.queryByText('维护窗口')).toBeNull();

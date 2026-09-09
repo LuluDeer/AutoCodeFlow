@@ -3435,6 +3435,27 @@
         ]
       }
     },
+    "/executions/stream": {
+      "get": {
+        "description": "Server-Sent Events stream forwarding execution terminal events (execution.completed / execution.failed / execution.killed) from the in-process domain event bus. Payload: ExecutionTerminalEventPayload. Auth: JWT bearer header, or ?access_token= fallback.",
+        "operationId": "ExecutionsStreamController_stream",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Execution terminal-state SSE stream (FEAT-16)",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
     "/config": {
       "get": {
         "operationId": "ConfigController_findAll",

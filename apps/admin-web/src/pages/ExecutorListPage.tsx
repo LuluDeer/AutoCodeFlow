@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Table, Typography, Badge, Tag, Button, Input, Select, Space,
   Empty, Modal, notification, Progress, Tooltip, Alert,
@@ -7,9 +7,9 @@ import {
   SearchOutlined, FilterOutlined, ClockCircleOutlined, PlusCircleOutlined,
   DesktopOutlined,
 } from '@ant-design/icons';
-import { useRequest } from 'ahooks';
 import { useNavigate } from 'react-router-dom';
-import { executorsApi, Executor } from '../api/executors';
+import { type Executor } from '../api/executors';
+import { useExecutorsList, useExecutorGroups } from '../api/queries';
 import { client } from '../api/client';
 import { useAuthStore } from '../store/auth';
 import PageHeader from '../components/PageHeader';
@@ -33,36 +33,39 @@ export default function ExecutorListPage() {
   const isFirstLoad = useRef(true);
   const [notifApi, notifContextHolder] = notification.useNotification();
 
-  const { data, loading } = useRequest(executorsApi.list, {
-    pollingInterval: 30000,
-    pollingWhenHidden: false,
-    onSuccess: (executors: Executor[]) => {
-      if (isFirstLoad.current) {
-        executors.forEach((ex) => { prevStatusMap.current[ex.id] = ex.status; });
-        isFirstLoad.current = false;
-        return;
-      }
-      executors.forEach((ex) => {
-        const prev = prevStatusMap.current[ex.id];
-        if (prev !== undefined && prev !== ex.status) {
-          if (ex.status === 'online') {
-            notifApi.success({
-              message: `执行器上线：${ex.appName}`,
-              description: `${ex.address} 已恢复在线`,
-              placement: 'topRight', duration: 6,
-            });
-          } else if (ex.status === 'offline') {
-            notifApi.warning({
-              message: `执行器离线：${ex.appName}`,
-              description: `${ex.address} 已离线，请检查服务状态`,
-              placement: 'topRight', duration: 0,
-            });
-          }
+  // FEAT-17: TanStack Query 改造——useRequest(30s 轮询) 换 useExecutorsList
+  // （refetchInterval 承担轮询节奏；状态翻转通知改由 useEffect 监听数据变化，
+  // 语义与原 onSuccess 回调一致：首轮建基线不通知，之后翻转才弹）。
+  const { data, isLoading: loading } = useExecutorsList();
+
+  useEffect(() => {
+    if (!data) return;
+    const executors = data;
+    if (isFirstLoad.current) {
+      executors.forEach((ex) => { prevStatusMap.current[ex.id] = ex.status; });
+      isFirstLoad.current = false;
+      return;
+    }
+    executors.forEach((ex) => {
+      const prev = prevStatusMap.current[ex.id];
+      if (prev !== undefined && prev !== ex.status) {
+        if (ex.status === 'online') {
+          notifApi.success({
+            message: `执行器上线：${ex.appName}`,
+            description: `${ex.address} 已恢复在线`,
+            placement: 'topRight', duration: 6,
+          });
+        } else if (ex.status === 'offline') {
+          notifApi.warning({
+            message: `执行器离线：${ex.appName}`,
+            description: `${ex.address} 已离线，请检查服务状态`,
+            placement: 'topRight', duration: 0,
+          });
         }
-        prevStatusMap.current[ex.id] = ex.status;
-      });
-    },
-  });
+      }
+      prevStatusMap.current[ex.id] = ex.status;
+    });
+  }, [data, notifApi]);
 
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
@@ -77,7 +80,7 @@ export default function ExecutorListPage() {
   // UI-07 ③：批量选择（两视图共享选中集合）
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
 
-  const { data: groups } = useRequest(executorsApi.getGroups, { cacheKey: 'executor-groups' });
+  const { data: groups } = useExecutorGroups();
   const [installCmd, setInstallCmd] = useState<{ cmd: string } | null>(null);
 
   const fetchInstallCmd = async () => {

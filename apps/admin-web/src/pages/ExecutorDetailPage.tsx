@@ -4,7 +4,14 @@ import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, Dele
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useRequest } from 'ahooks';
+import { useQueryClient } from '@tanstack/react-query';
 import { executorsApi, type ExecutorExecution } from '../api/executors';
+import {
+  useExecutorDetail,
+  useExecutorMetrics,
+  useExecutorExecutions,
+  invalidateExecutorData,
+} from '../api/queries';
 import { getErrMsg } from '../utils/error';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
@@ -75,20 +82,21 @@ export default function ExecutorDetailPage() {
   const [rotateForm] = Form.useForm();
   const [removeForm] = Form.useForm();
 
-  const { data: executor, loading: loadingExecutor, error: executorError, refresh: refreshExecutor } = useRequest(
-    () => executorsApi.get(id!),
-    { ready: !!id, refreshDeps: [id] },
-  );
+  // FEAT-17: TanStack Query 改造——读侧三个 useRequest 换 queries.ts hooks
+  // （metrics 30s 轮询由 refetchInterval 承担；分页参数进 queryKey）。
+  const { data: executor, isLoading: loadingExecutor, error: executorError } = useExecutorDetail(id);
 
-  const { data: metrics, loading: loadingMetrics } = useRequest(
-    () => executorsApi.getMetrics(id!),
-    { ready: !!id, refreshDeps: [id], pollingInterval: 30000, pollingWhenHidden: false },
-  );
+  const { data: metrics, isLoading: loadingMetrics } = useExecutorMetrics(id);
 
-  const { data: executions, loading: loadingExecutions } = useRequest(
-    () => executorsApi.getExecutions(id!, { page: execPage, pageSize: 20 }),
-    { ready: !!id, refreshDeps: [id, execPage] },
-  );
+  const { data: executions, isLoading: loadingExecutions } = useExecutorExecutions(id, {
+    page: execPage,
+    pageSize: 20,
+  });
+
+  // 写后失效：原 useRequest refresh → invalidateExecutorData（执行器面 +
+  // 任务面联动；executor pinning/分组影响任务派发读面）。
+  const queryClient = useQueryClient();
+  const refreshExecutor = () => void invalidateExecutorData(queryClient);
 
   const { run: updateExecutor, loading: updating } = useRequest(
     (values) => executorsApi.update(id!, values),

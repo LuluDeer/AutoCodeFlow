@@ -33,7 +33,13 @@ export const SSE_QUERY_TOKEN_PARAM = "access_token";
 // UI-14 第一阶段：/metrics/stream（Dashboard 汇总流）同款回退——EventSource
 // 无法设置 Authorization 头，与 /logs/stream 共享 ?access_token= 先例
 // （type=access 限定仍由 validate() 强制，refresh token 无法借道）。
-const SSE_QUERY_TOKEN_PATH_SUFFIXES = ["/logs/stream", "/metrics/stream"];
+// FEAT-16：/executions/stream（执行列表终态推送流）同款回退——消费端与
+// /metrics/stream 同为 admin-web EventSource，鉴权形态保持一致。
+const SSE_QUERY_TOKEN_PATH_SUFFIXES = [
+  "/logs/stream",
+  "/metrics/stream",
+  "/executions/stream",
+];
 
 export function extractJwtFromRequest(req: Request): string | null {
   const headerToken = req?.headers

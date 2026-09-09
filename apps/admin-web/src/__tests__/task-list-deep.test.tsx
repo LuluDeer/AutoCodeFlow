@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskListPage from '../pages/TaskListPage';
 import { tasksApi, type Task } from '../api/tasks';
 
@@ -70,16 +71,21 @@ const makeTask = (over: Partial<Task> = {}): Task => ({
 });
 
 function renderPage() {
+  // FEAT-17: TaskListPage 改用 TanStack Query——测试包 QueryClientProvider
+  // （executions-page.test 先例，retry:false 防轮询重试噪音）
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={['/tasks']}>
-      <Routes>
-        <Route path="/tasks" element={<TaskListPage />} />
-        <Route path="/tasks/new" element={<div>task-form-mock</div>} />
-        <Route path="/task-templates" element={<div>templates-mock</div>} />
-        <Route path="/tasks/:id" element={<div>task-detail-mock</div>} />
-        <Route path="/tasks/:id/edit" element={<div>task-edit-mock</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<TaskListPage />} />
+          <Route path="/tasks/new" element={<div>task-form-mock</div>} />
+          <Route path="/task-templates" element={<div>templates-mock</div>} />
+          <Route path="/tasks/:id" element={<div>task-detail-mock</div>} />
+          <Route path="/tasks/:id/edit" element={<div>task-edit-mock</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

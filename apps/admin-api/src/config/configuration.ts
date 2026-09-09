@@ -100,6 +100,15 @@ export default () => ({
       10,
     ),
   },
+  // FEAT-16：执行列表终态推送流（GET /executions/stream）——事件驱动无固定
+  // 数据帧节奏，静默期可能远超反代 proxy_read_timeout；idlePing 即注释帧
+  // 周期（默认 30s，与 metrics/stream 的 15s 快照节奏相比事件流更安静）。
+  executionsStream: {
+    idlePingMs: parseInt(
+      process.env.EXECUTIONS_STREAM_IDLE_PING_MS || "30000",
+      10,
+    ),
+  },
   jwt: {
     // S4: fail-fast on weak/missing secrets — throw at startup rather than silently using defaults
     secret: (() => {
