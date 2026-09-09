@@ -1,0 +1,1 @@
+{"runtime":"python","entrypoint":"run.py","timeout":600,"tasks":[{"id":"mt1","name":"manifest-task-one","cron":"0 5 * * *"},{"id":"mt2"}]}

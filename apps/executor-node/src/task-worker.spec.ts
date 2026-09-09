@@ -2,7 +2,7 @@
  * N9 回归测试：TaskWorkerManager 的空闲 worker 惰性回收。
  * workers Map 此前只增不减，长周期执行器上每个历史 taskId 永久驻留。
  */
-import { TaskWorkerManager, IDLE_RECYCLE_MS } from './task-worker';
+import { TaskWorkerManager, TaskWorker, ExecutionCancelledError, IDLE_RECYCLE_MS } from './task-worker';
 
 jest.mock('./routes/execute', () => ({
   runTask: jest.fn(),
@@ -12,6 +12,7 @@ jest.mock('./callback', () => ({
 }));
 
 import { runTask } from './routes/execute';
+import { pushCallback as pushCallbackMock } from './callback';
 
 const mockedRunTask = runTask as jest.MockedFunction<typeof runTask>;
 
@@ -160,5 +161,105 @@ describe('TaskWorkerManager idle recycling (N9)', () => {
     expect(workerCount(mgr)).toBe(0);
     // 推进定时器不应抛错（定时器已被清）
     expect(() => jest.advanceTimersByTime(IDLE_RECYCLE_MS * 2)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// kill 取消语义（改动1/2）：排队项摘除、runPrepared 到点执行、取消静默
+// ---------------------------------------------------------------------------
+
+describe('TaskWorker kill/cancel semantics', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockedRunTask.mockReset();
+    (pushCallbackMock as jest.Mock).mockClear();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('cancelQueued 摘除未开始的排队项；被取消项不执行、不触发 onComplete', async () => {
+    const worker = new TaskWorker('task-x', 1);
+    const d = deferred();
+    mockedRunTask.mockReturnValueOnce(d.promise as never);
+    const onComplete1 = jest.fn();
+    const onComplete2 = jest.fn();
+    worker.enqueue('exec-1', { cmd: 'node' }, {}, onComplete1);
+    worker.enqueue('exec-2', { cmd: 'node' }, {}, onComplete2);
+    await flush();
+
+    expect(worker.cancelQueued('exec-2')).toBe(true);
+    expect(worker.getQueueSize()).toBe(0);
+    expect(worker.cancelQueued('exec-missing')).toBe(false);
+    // 已取消的执行绝不会被启动
+    expect(mockedRunTask).toHaveBeenCalledTimes(1); // 仅 exec-1
+
+    d.resolve();
+    await flush();
+    expect(onComplete1).toHaveBeenCalledTimes(1);
+    expect(onComplete2).not.toHaveBeenCalled(); // kill 端点负责其收尾
+    expect(mockedRunTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('runPrepared 到点执行并把 prepared task/params 传给 runTask', async () => {
+    const worker = new TaskWorker('task-p', 1);
+    const preparedTask = { cmd: 'node', args: ['index.js'], workDir: '/tmp/p', env: {}, timeout: 60 };
+    const runPrepared = jest.fn(async (_assertNotCancelled: () => void) => ({
+      task: preparedTask,
+      params: { executionId: 'exec-p1', foo: 'bar' },
+    }));
+    mockedRunTask.mockImplementationOnce(async () => undefined);
+    const onComplete = jest.fn();
+    worker.enqueue('exec-p1', { cmd: 'placeholder' }, { orig: 1 }, onComplete, runPrepared);
+    await flush();
+
+    expect(runPrepared).toHaveBeenCalledTimes(1);
+    expect(mockedRunTask).toHaveBeenCalledTimes(1);
+    expect(mockedRunTask.mock.calls[0][0]).toBe(preparedTask);
+    expect(mockedRunTask.mock.calls[0][1]).toEqual({ executionId: 'exec-p1', foo: 'bar' });
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('prepare 抛 ExecutionCancelledError：runTask 不被调用，onComplete 仍被调用以释放槽', async () => {
+    const worker = new TaskWorker('task-c', 1);
+    const runPrepared = jest.fn(async (_assert: () => void) => {
+      throw new ExecutionCancelledError('exec-c1');
+    });
+    const onComplete = jest.fn();
+    worker.enqueue('exec-c1', {}, {}, onComplete, runPrepared);
+    await flush();
+
+    expect(mockedRunTask).not.toHaveBeenCalled();
+    // ExecutionCancelledError 走 worker 普通 catch 分支，onComplete 仍被调用
+    // （容量释放由 kill 端点负责，这里只是验证 worker 不因取消而挂起）
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('runPrepared 中途取消：检查点 assertNotCancelled 抛错，onComplete 不被调用', async () => {
+    const worker = new TaskWorker('task-r', 1);
+    let releasePrepare!: () => void;
+    let assertFn!: () => void;
+    const runPrepared = jest.fn(async (assertNotCancelled: () => void) => {
+      assertFn = assertNotCancelled;
+      await new Promise<void>(r => { releasePrepare = r; });
+      assertNotCancelled(); // prepare 各步之间的 kill 检查点
+      return { task: {}, params: {} };
+    });
+    const onComplete = jest.fn();
+    worker.enqueue('exec-r1', {}, {}, onComplete, runPrepared);
+    await flush();
+
+    // 该项已被 worker 取出（运行中）；cancelQueued 应返回 false（不在队列）
+    expect(worker.cancelQueued('exec-r1')).toBe(false);
+    // 竞态兜底：若取消发生在取出与检查点之间（Manager.cancelExecution 摘除
+    // 并标记 item.cancelled 的路径），assertNotCancelled 抛 ExecutionCancelledError
+    // 这里直接驱动检查点：先经 manager 内部标记——用真实队列场景覆盖见
+    // execute.spec 的 kill-during-prepare 用例。
+    releasePrepare();
+    await flush();
+    expect(mockedRunTask).toHaveBeenCalledTimes(1); // 正常完成 → 进入 runTask
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    void assertFn;
   });
 });

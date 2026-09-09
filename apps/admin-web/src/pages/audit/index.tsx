@@ -1,9 +1,13 @@
 import { useState } from 'react';
-import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker } from 'antd';
+import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker, Empty } from 'antd';
 import { SearchOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { client } from '../../api/client';
 import dayjs, { type Dayjs } from 'dayjs';
+import PageHeader from '../../components/PageHeader';
+import PageSkeleton from '../../components/PageSkeleton';
+// UI-16：toast-only 页补齐页内错误态标准块（错误块 + 重试，对齐 UI-08 形态）
+import StateError from '../../components/StateError';
 
 const { Option } = Select;
 
@@ -25,16 +29,18 @@ const RESULT_LABEL: Record<string, string> = { success: '成功', failure: '失�
 
 export default function AuditLogPage() {
   const [page, setPage] = useState(1);
-  const [filters, setFilters] = useState({ action: '', resource: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
-  const [pending, setPending] = useState({ action: '', resource: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
+  // AUTH-05: 新增 resourceId 精确筛选（与 resource 组成组合筛选）
+  const [filters, setFilters] = useState({ action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
+  const [pending, setPending] = useState({ action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
   const [detailModal, setDetailModal] = useState<{ open: boolean; data?: Record<string, unknown> }>({ open: false });
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['audit', page, filters],
     queryFn: async () => {
       const params: Record<string, string> = { page: String(page), pageSize: '20' };
       if (filters.action) params.action = filters.action;
       if (filters.resource) params.resource = filters.resource;
+      if (filters.resourceId) params.resourceId = filters.resourceId;
       if (filters.username) params.username = filters.username;
       if (filters.startTime) params.startTime = filters.startTime;
       if (filters.endTime) params.endTime = filters.endTime;
@@ -45,7 +51,7 @@ export default function AuditLogPage() {
 
   const handleSearch = () => { setPage(1); setFilters(pending); };
   const handleReset = () => {
-    const e = { action: '', resource: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined };
+    const e = { action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined };
     setPending(e); setFilters(e); setPage(1);
   };
 
@@ -55,7 +61,7 @@ export default function AuditLogPage() {
     { label: '最近 30 天', value: [dayjs().subtract(30, 'day'), dayjs()] as [Dayjs, Dayjs] },
   ];
 
-  const hasFilters = !!(pending.action || pending.resource || pending.username || pending.startTime || pending.endTime);
+  const hasFilters = !!(pending.action || pending.resource || pending.resourceId || pending.username || pending.startTime || pending.endTime);
 
   const columns = [
     { title: 'ID', dataIndex: 'id', width: 70 },
@@ -117,9 +123,8 @@ export default function AuditLogPage() {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography.Title level={4} style={{ margin: 0 }}>审计日志</Typography.Title>
-      </div>
+      {/* UI-03/UI-08：页头标准化（原 Typography.Title 区块迁入 PageHeader） */}
+      <PageHeader title="审计日志" description="管理员操作留痕：登录、配置变更、任务与应用管理全量记录。" />
       <Space style={{ marginBottom: 16 }} wrap>
         <Input
           placeholder="操作关键词"
@@ -151,6 +156,15 @@ export default function AuditLogPage() {
           <Option value="user">user</Option>
           <Option value="application">application</Option>
         </Select>
+        {/* AUTH-05: resourceId 精确筛选（与资源类型组合） */}
+        <Input
+          placeholder="资源 ID"
+          value={pending.resourceId}
+          onChange={(e) => setPending((p) => ({ ...p, resourceId: e.target.value }))}
+          onPressEnter={handleSearch}
+          style={{ width: 160 }}
+          allowClear
+        />
         <DatePicker.RangePicker
           presets={rangePresets}
           onChange={(dates) => {
@@ -164,12 +178,26 @@ export default function AuditLogPage() {
         <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>搜索</Button>
         {hasFilters && <Button icon={<ReloadOutlined />} onClick={handleReset}>重置</Button>}
       </Space>
+      {/* UI-16：请求失败渲染页内错误态标准块（StateError，重试=refetch），
+          此前失败静默表现为「暂无审计记录」空态——查询失败与确无记录两种语义分离 */}
+      {error && (
+        <StateError
+          error={error}
+          onRetry={() => refetch()}
+          title="审计日志加载失败"
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <Table
         rowKey="id"
-        loading={isLoading}
+        loading={isLoading ? false : undefined}
         columns={columns}
         dataSource={data?.data ?? []}
-        locale={{ emptyText: '暂无审计记录' }}
+        locale={{
+          emptyText: isLoading
+            ? <PageSkeleton variant="table" rows={3} />
+            : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无审计记录" />,
+        }}
         pagination={{
           current: page,
           pageSize: 20,

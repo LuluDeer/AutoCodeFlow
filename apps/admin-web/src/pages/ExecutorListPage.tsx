@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Table, Typography, Badge, Tag, Button, Input, Select, Space,
   Empty, Modal, notification, Progress, Tooltip, Alert,
@@ -7,11 +7,18 @@ import {
   SearchOutlined, FilterOutlined, ClockCircleOutlined, PlusCircleOutlined,
   DesktopOutlined,
 } from '@ant-design/icons';
-import { useRequest } from 'ahooks';
 import { useNavigate } from 'react-router-dom';
-import { executorsApi, Executor } from '../api/executors';
+import { type Executor } from '../api/executors';
+import { useExecutorsList, useExecutorGroups } from '../api/queries';
 import { client } from '../api/client';
 import { useAuthStore } from '../store/auth';
+import PageHeader from '../components/PageHeader';
+// UI-07：视图切换 / 分组聚合条 / 卡片视图 / 批量操作条 / 实时状态
+import ViewToggle, { readViewMode, writeViewMode, type ExecutorViewMode } from '../components/executor/ViewToggle';
+import GroupFilterBar from '../components/executor/GroupFilterBar';
+import ExecutorCardGrid from '../components/executor/ExecutorCardGrid';
+import BatchActionBar from '../components/executor/BatchActionBar';
+import { useExecutorLive } from '../hooks/useExecutorLive';
 
 function heartbeatLabel(lastHeartbeat: string): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
@@ -26,35 +33,39 @@ export default function ExecutorListPage() {
   const isFirstLoad = useRef(true);
   const [notifApi, notifContextHolder] = notification.useNotification();
 
-  const { data, loading } = useRequest(executorsApi.list, {
-    pollingInterval: 30000,
-    onSuccess: (executors: Executor[]) => {
-      if (isFirstLoad.current) {
-        executors.forEach((ex) => { prevStatusMap.current[ex.id] = ex.status; });
-        isFirstLoad.current = false;
-        return;
-      }
-      executors.forEach((ex) => {
-        const prev = prevStatusMap.current[ex.id];
-        if (prev !== undefined && prev !== ex.status) {
-          if (ex.status === 'online') {
-            notifApi.success({
-              message: `执行器上线：${ex.appName}`,
-              description: `${ex.address} 已恢复在线`,
-              placement: 'topRight', duration: 6,
-            });
-          } else if (ex.status === 'offline') {
-            notifApi.warning({
-              message: `执行器离线：${ex.appName}`,
-              description: `${ex.address} 已离线，请检查服务状态`,
-              placement: 'topRight', duration: 0,
-            });
-          }
+  // FEAT-17: TanStack Query 改造——useRequest(30s 轮询) 换 useExecutorsList
+  // （refetchInterval 承担轮询节奏；状态翻转通知改由 useEffect 监听数据变化，
+  // 语义与原 onSuccess 回调一致：首轮建基线不通知，之后翻转才弹）。
+  const { data, isLoading: loading } = useExecutorsList();
+
+  useEffect(() => {
+    if (!data) return;
+    const executors = data;
+    if (isFirstLoad.current) {
+      executors.forEach((ex) => { prevStatusMap.current[ex.id] = ex.status; });
+      isFirstLoad.current = false;
+      return;
+    }
+    executors.forEach((ex) => {
+      const prev = prevStatusMap.current[ex.id];
+      if (prev !== undefined && prev !== ex.status) {
+        if (ex.status === 'online') {
+          notifApi.success({
+            message: `执行器上线：${ex.appName}`,
+            description: `${ex.address} 已恢复在线`,
+            placement: 'topRight', duration: 6,
+          });
+        } else if (ex.status === 'offline') {
+          notifApi.warning({
+            message: `执行器离线：${ex.appName}`,
+            description: `${ex.address} 已离线，请检查服务状态`,
+            placement: 'topRight', duration: 0,
+          });
         }
-        prevStatusMap.current[ex.id] = ex.status;
-      });
-    },
-  });
+      }
+      prevStatusMap.current[ex.id] = ex.status;
+    });
+  }, [data, notifApi]);
 
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
@@ -64,8 +75,12 @@ export default function ExecutorListPage() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [groupFilter, setGroupFilter] = useState<string | undefined>();
   const [installCmdModal, setInstallCmdModal] = useState(false);
+  // UI-07 ①：卡片/表格双视图（localStorage 记忆，读失败回退表格）
+  const [viewMode, setViewMode] = useState<ExecutorViewMode>(() => readViewMode(typeof localStorage !== 'undefined' ? localStorage : undefined));
+  // UI-07 ③：批量选择（两视图共享选中集合）
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
 
-  const { data: groups } = useRequest(executorsApi.getGroups, { cacheKey: 'executor-groups' });
+  const { data: groups } = useExecutorGroups();
   const [installCmd, setInstallCmd] = useState<{ cmd: string } | null>(null);
 
   const fetchInstallCmd = async () => {
@@ -79,7 +94,11 @@ export default function ExecutorListPage() {
   };
 
   // 稳定引用：data 未变时 executors 身份不变，避免下游 useMemo 每渲染失效
-  const executors: Executor[] = useMemo(() => data ?? [], [data]);
+  const polledExecutors: Executor[] = useMemo(() => data ?? [], [data]);
+
+  // UI-07 ④：/metrics/stream executors 段覆盖（状态/CPU/内存/任务数 3s 实时；
+  // 断线时覆盖层回退轮询快照——list 接口仍是数据源，SSE 只做覆盖加速）
+  const { executors, isLive } = useExecutorLive(polledExecutors);
 
   const hasLongOffline = useMemo(() => executors.some((e) => {
     if (e.status !== 'offline') return false;
@@ -99,6 +118,20 @@ export default function ExecutorListPage() {
 
   const hasFilters = !!(searchText || statusFilter || groupFilter);
   const onlineCount = executors.filter(e => e.status === 'online').length;
+
+  // UI-07 ③：选中执行器实体（批量操作条需要 status/appName/address）
+  const selectedExecutors = useMemo(
+    () => executors.filter((ex) => selectedRowKeys.includes(ex.id)),
+    [executors, selectedRowKeys],
+  );
+  const toggleSelect = (id: string, checked: boolean) => {
+    setSelectedRowKeys((prev) => (checked ? [...prev, id] : prev.filter((k) => k !== id)));
+  };
+
+  const handleViewChange = (mode: ExecutorViewMode) => {
+    setViewMode(mode);
+    writeViewMode(typeof localStorage !== 'undefined' ? localStorage : undefined, mode);
+  };
 
   const columns = [
     {
@@ -120,11 +153,20 @@ export default function ExecutorListPage() {
       dataIndex: 'status',
       key: 'status',
       width: 90,
-      render: (v: string) => (
-        <Badge
-          status={v === 'online' ? 'success' : v === 'busy' ? 'warning' : 'default'}
-          text={v === 'online' ? '在线' : v === 'busy' ? '忙碌' : '离线'}
-        />
+      render: (v: string, r: Executor) => (
+        <Space orientation="vertical" size={0}>
+          <Badge
+            status={v === 'online' ? 'success' : v === 'busy' ? 'warning' : 'default'}
+            text={v === 'online' ? '在线' : v === 'busy' ? '忙碌' : '离线'}
+          />
+          {/* U16: 死信积压仅 >0 时高亮（null=旧版未上报、0=无积压均不打扰，
+              三态细分见详情页活性上报区） */}
+          {r.deadLetterCount != null && r.deadLetterCount > 0 && (
+            <Tooltip title="回调持续失败已落盘执行器本地 dead-letter，需人工排查">
+              <Tag color="orange" style={{ marginInlineEnd: 0 }}>死信 {r.deadLetterCount}</Tag>
+            </Tooltip>
+          )}
+        </Space>
       ),
     },
     {
@@ -222,22 +264,33 @@ export default function ExecutorListPage() {
           closable
         />
       )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>执行器</Typography.Title>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            {onlineCount} / {executors.length} 台在线
-          </Typography.Text>
-        </div>
-        <Space>
-          {isAdmin && <Button onClick={() => navigate('/executors/install')}>安装向导</Button>}
-          {isAdmin && (
-            <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
-              快速添加
-            </Button>
-          )}
-        </Space>
-      </div>
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，安装向导/快速添加进 extra） */}
+      <PageHeader
+        title="执行器"
+        description={<>{onlineCount} / {executors.length} 台在线</>}
+        extra={
+          <Space wrap>
+            {/* UI-07 ④：SSE 连接状态点（live=实时，connecting/reconnecting=30s 轮询兜底） */}
+            <Tooltip
+              title={isLive
+                ? '实时状态已连接（/metrics/stream · 3s 推送）'
+                : '实时流未连接，正在按 30s 轮询刷新'}
+            >
+              <Badge
+                status={isLive ? 'processing' : 'warning'}
+                text={<Typography.Text type="secondary" style={{ fontSize: 12 }}>{isLive ? '实时' : '轮询'}</Typography.Text>}
+              />
+            </Tooltip>
+            <ViewToggle value={viewMode} onChange={handleViewChange} />
+            {isAdmin && <Button onClick={() => navigate('/executors/install')}>安装向导</Button>}
+            {isAdmin && (
+              <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
+                快速添加
+              </Button>
+            )}
+          </Space>
+        }
+      />
 
       <Space style={{ marginBottom: 16 }} wrap>
         <Input
@@ -279,28 +332,53 @@ export default function ExecutorListPage() {
         )}
       </Space>
 
-      <Table
-        rowKey="id"
-        columns={columns}
-        dataSource={filtered}
-        loading={loading}
-        pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
-        locale={{
-          emptyText: hasFilters ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配执行器">
-              <Button type="link" size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); }}>
-                清除筛选
-              </Button>
-            </Empty>
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行器">
-              {isAdmin && (
-                <Button type="primary" onClick={() => navigate('/executors/install')}>安装第一个执行器</Button>
-              )}
-            </Empty>
-          ),
-        }}
+      {/* UI-07 ②：分组聚合条（点击等价 groupFilter；全部执行器均无分组时整条隐藏） */}
+      <GroupFilterBar executors={executors} value={groupFilter} onChange={setGroupFilter} />
+
+      {/* UI-07 ③：批量操作条（ADMIN-only；两视图共享选中集合） */}
+      <BatchActionBar
+        selected={selectedExecutors}
+        isAdmin={isAdmin}
+        onDone={() => setSelectedRowKeys([])}
       />
+
+      {viewMode === 'card' ? (
+        <ExecutorCardGrid
+          executors={filtered}
+          selectedIds={selectedRowKeys}
+          onToggleSelect={toggleSelect}
+          onOpenDetail={(id) => navigate(`/executors/${id}`)}
+          isAdmin={isAdmin}
+          onReloadConfig={(ex) => setSelectedRowKeys([ex.id])}
+          onRotateToken={(ex) => setSelectedRowKeys([ex.id])}
+        />
+      ) : (
+        <Table
+          rowKey="id"
+          columns={columns}
+          dataSource={filtered}
+          loading={loading}
+          // UI-07 ③：表格多选（ADMIN 门控在操作条——非 admin 无操作条，
+          // 选中集合为空集，多选列对普通用户仅是筛选辅助，不暴露写入口）
+          rowSelection={{ selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys as string[]) }}
+          pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+          locale={{
+            emptyText: hasFilters ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配执行器">
+                <Button type="link" size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); }}>
+                  清除筛选
+                </Button>
+              </Empty>
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行器">
+                {isAdmin && (
+                  <Button type="primary" onClick={() => navigate('/executors/install')}>安装第一个执行器</Button>
+                )}
+              </Empty>
+            ),
+          }}
+        />
+      )}
 
       <Modal
         title="快速添加执行器"

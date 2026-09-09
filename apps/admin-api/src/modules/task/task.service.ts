@@ -6,6 +6,7 @@ import {
   ConflictException,
   ServiceUnavailableException,
   Inject,
+  Optional,
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -13,7 +14,9 @@ import {
   DataSource,
   ILike,
   In,
+  IsNull,
   Not,
+  Or,
   QueryFailedError,
   Repository,
 } from "typeorm";
@@ -42,8 +45,45 @@ import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
 import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { AiService } from "../ai/ai.service";
+// ARCH-30: on-demand 分析同走服务化封装（重试 + autoflow_ai_analysis_total
+// 指标 + fail-open），processor 直调点与手动分析点共用同一降级/观测策略。
+import { AiAnalysisService } from "../ai/ai-analysis.service";
 import { ExecutorService } from "../executor/executor.service";
+// ARCH-21: 领域事件总线——终态事件（execution.completed/failed）发布入口。
+// 主链由此与 NotificationService 彻底解耦（验收红线：本文件不再 import 它）。
+import { DomainEventBus } from "../../common/services/domain-event-bus.service";
+import {
+  DOMAIN_EVENTS,
+  ExecutionTerminalEventPayload,
+} from "../../common/events/domain-events";
+// ARCH-21: AuditService import 随注入移除（唯一消费方 notifyCallbackFailure 已迁监听器）。
 import { S3LogStorage } from "./log-storage/s3-log-storage";
+// SEC-02: 任务级 secrets 落库加密 / 读脱敏 / 派发解密的统一入口
+import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
+// AUTH-01: 默认项目 uuid（"default" 过滤映射目标，与迁移 1790000000008
+// 回填值共享同一常量出处 project.entity.ts）。
+import { DEFAULT_PROJECT_ID } from "../project/project.entity";
+// CORE-04: 超时策略归一化（DTO 边界之外的运行态兜底——编程式/旧数据形态）
+import {
+  normalizeTimeoutAction,
+  normalizeTimeoutWarnRatio,
+} from "./timeout-policy.util";
+// OBS-03: 日志行级别推断（纯函数）——写入落库 + S3 读取后过滤共用同一实现
+import { levelOfLine } from "./log-level.util";
+// CORE-02: 重试退避抖动——±20% 摊开同时刻重试，避免 thundering herd
+import { jitteredRetryDelayMs } from "./retry-backoff.util";
+// OBS-04: 执行时间线映射（纯函数）——report 端点与 mcp-server timeline 同语义
+import { buildExecutionTimeline } from "./execution-timeline.util";
+// OBS-04: execution_reports 当日聚合行读侧（写方为 MetricsService.generateReport）
+import { ExecutionReport } from "../metrics/entities/execution-report.entity";
+// 可观测性补齐轮：运行时计数器埋点入口（模块级纯内存自增，无模块环，
+// 见 metrics/runtime-metrics-entry.ts 注释）。
+import {
+  recordRuntime,
+  setRuntimeGauge,
+} from "../metrics/runtime-metrics-entry";
+// OBS-01: OpenTelemetry 追踪（@Global；OTEL_ENABLED=false 时全方法短路）
+import { TracingService } from "../../common/tracing/tracing.service";
 
 /**
  * Detects truncation markers inserted by executors when callback logs exceed
@@ -116,10 +156,46 @@ export class TaskService {
     const normalized = { ...dto } as T & {
       timeout?: number;
       timeoutSeconds?: number;
+      timeoutAction?: string | null;
+      timeoutWarnRatio?: number | null;
     };
     if (normalized.timeoutSeconds !== undefined) {
       normalized.timeout = normalized.timeoutSeconds;
       delete normalized.timeoutSeconds;
+    }
+    // CORE-04: 超时策略字段在持久化边界归一化。timeoutAction 缺省 undefined
+    // = PATCH 保留旧值（不写键）；显式 null = 回到缺省 kill（归一化为 null
+    // 落库，读路径 normalizeTimeoutAction 再兜底）。timeoutWarnRatio 非
+    // 0-90 整数一律归 null（未启用）——DTO @Min/@Max 之外的运行态防线。
+    if (normalized.timeoutAction !== undefined) {
+      normalized.timeoutAction =
+        normalized.timeoutAction === null
+          ? null
+          : normalizeTimeoutAction(normalized.timeoutAction);
+    }
+    if (normalized.timeoutWarnRatio !== undefined) {
+      normalized.timeoutWarnRatio = normalizeTimeoutWarnRatio(
+        normalized.timeoutWarnRatio,
+      );
+    }
+    // W-21: requirements reach `uv pip install` / `npm install` as argv on
+    // the executor. Reject option-shaped specs (`--index-url http://evil`
+    // would hijack the package index) and blank entries here, mirroring the
+    // executors' own guards so a bad spec 400s at create instead of burning a
+    // queued execution. Trim normalizes harmless surrounding whitespace.
+    if (Array.isArray(normalized.requirements)) {
+      normalized.requirements = normalized.requirements.map((raw) => {
+        const spec = typeof raw === "string" ? raw.trim() : raw;
+        if (typeof spec !== "string" || spec.length === 0) {
+          throw new BadRequestException("Task requirement must be non-empty");
+        }
+        if (spec.startsWith("-")) {
+          throw new BadRequestException(
+            `Invalid task requirement (options are not allowed): ${spec}`,
+          );
+        }
+        return spec;
+      });
     }
     // R6: 请求体自身两键齐全时直接拒绝（create 路径覆盖此洞）。update 的
     // PATCH 合并路径由 assertPinBroadcastExclusive 在合并后实体态兜底（N17）。
@@ -179,8 +255,34 @@ export class TaskService {
     @Inject(forwardRef(() => SchedulerService))
     private schedulerService: SchedulerService,
     private aiService: AiService,
+    // ARCH-30: AI 分析服务化封装（手动 analyzeExecution 路径消费）
+    private aiAnalysisService: AiAnalysisService,
     private configService: ConfigService,
+    // 跨 task↔executor 模块环的 provider 注入：模块级 forwardRef 配套
+    // （executor.module 注释）。
+    @Inject(forwardRef(() => ExecutorService))
     private executorService: ExecutorService,
+    // ARCH-21: 事件总线（@Global 模块恒提供）。@Optional 仅为既有单测装配
+    // 兼容（provider 缺失 → null → 终态事件静默不发，主链行为不变），
+    // 先例同 001/OBS-04 的 reportRepo。
+    @Optional()
+    private readonly eventBus: DomainEventBus | null,
+    // ARCH-21: AuditService 注入已随 notifyCallbackFailure 迁出删除——其在
+    // 本服务的唯一消费方（NOTIFICATION_FAILED 审计兜底）现由
+    // notification 模块 ExecutionEventsListener 持有。
+    // SEC-02: secrets 落库加密/读脱敏（providers 由 TaskModule 提供）
+    private secretsCrypto: SecretsCryptoService,
+    // OBS-01: OpenTelemetry 追踪（@Global 恒提供）。@Optional 仅为既有单测
+    // 装配兼容（provider 缺失 → null → 全方法短路，与 disabled 等价），
+    // 先例同 eventBus/reportRepo。
+    @Optional()
+    private tracing: TracingService | null,
+    // OBS-04: execution_reports 读侧（只读——写方在 MetricsService）。
+    // @Optional：既有单测模块（task.service.spec / s3 integration spec）
+    // 未提供该仓储时回退 null，零破坏——report 端点在缺失时返回 null 行。
+    @Optional()
+    @InjectRepository(ExecutionReport)
+    private reportRepo: Repository<ExecutionReport> | null,
   ) {}
 
   async create(dto: CreateTaskDto) {
@@ -188,6 +290,10 @@ export class TaskService {
       await this.checkCircularDependency(dto.id, dto.dependencies);
     }
     const normalized = this.normalizeTaskDto(dto);
+    // SEC-02: secrets 在持久化边界统一加密（key 未配置时降级明文并 warn）
+    normalized.secrets = this.secretsCrypto.encryptForStorage(
+      normalized.secrets,
+    ) as Record<string, unknown> | null | undefined;
     // R6: 客户端自带 id 时先查重——软删除行对普通 findOne 不可见但同样
     // 占用主键，必须 withDeleted；预检查之外，save 处仍兜底捕获 23505
     //（覆盖并发创建的 TOCTOU 窗口），两者都返回 409 而非裸 500。
@@ -203,7 +309,9 @@ export class TaskService {
       }
     }
     try {
-      return await this.taskRepo.save(this.taskRepo.create(normalized));
+      const saved = await this.taskRepo.save(this.taskRepo.create(normalized));
+      await this.saveVersion(saved.id, undefined, undefined, saved);
+      return saved;
     } catch (err) {
       if (isUniqueViolation(err)) {
         throw new ConflictException(
@@ -303,11 +411,25 @@ export class TaskService {
     if (p.name) where.name = ILike(`%${p.name}%`);
     if (p.runtime) where.runtime = p.runtime;
     if (p.applicationId) where.applicationId = p.applicationId;
+    // AUTH-01: projectId 过滤——"default" 映射为默认项目（未分配 NULL 行
+    // 一起归入默认项目视图，Or 处理）；具体 uuid 则精确匹配。
+    if (p.projectId) {
+      if (p.projectId === "default") {
+        where.projectId = Or(IsNull(), In([DEFAULT_PROJECT_ID]));
+      } else {
+        where.projectId = p.projectId;
+      }
+    }
     const [list, total] = await this.taskRepo.findAndCount({
       where,
       skip: (p.page - 1) * p.pageSize,
       take: p.pageSize,
       order: { createdAt: "DESC" },
+    });
+    // SEC-02: 列表响应 secrets 永久脱敏（叶子值回 ******，密文不外泄）
+    list.forEach((t) => {
+      t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
+        Record<string, unknown> | null | undefined;
     });
     return paginate(list, total, p.page, p.pageSize);
   }
@@ -317,12 +439,26 @@ export class TaskService {
       where: { id, status: Not(TaskStatus.DELETED) },
     });
     if (!t) throw new NotFoundException("Task not found");
+    // SEC-02: 详情响应同样脱敏；写路径（update）走独立归一化，不受影响
+    t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
+      Record<string, unknown> | null | undefined;
     return t;
   }
 
   async update(id: string, dto: UpdateTaskDto) {
     const t = await this.findOne(id);
-    const updated = Object.assign(t, this.normalizeTaskDto(dto));
+    const normalized = this.normalizeTaskDto(dto);
+    // SEC-02: PATCH 语义——secrets 缺省 = 保留旧值（不触碰既有列）；
+    // 显式 null / {} = 清空/替换。归一化在脱敏副本上做（findOne 已脱敏，
+    // DTO 未带 secrets 时不能把脱敏值当新值再加密一层）。
+    if (normalized.secrets !== undefined) {
+      normalized.secrets = this.secretsCrypto.encryptForStorage(
+        normalized.secrets,
+      ) as Record<string, unknown> | null | undefined;
+      t.secrets = normalized.secrets as Record<string, unknown> | null;
+    }
+    delete normalized.secrets;
+    const updated = Object.assign(t, normalized);
     // R7 (N17): PATCH 合并路径的互斥校验必须看合并后的实体态——请求体只带
     // executorId（已有任务 executeMode=broadcast）或只带 executeMode=broadcast
     // （已有任务已 pin）时，normalizeTaskDto 看不到另一半，会漏判产生
@@ -330,6 +466,7 @@ export class TaskService {
     // 被静默丢弃）。save 前兜底，消息与 create 路径一致。
     this.assertPinBroadcastExclusive(updated.executorId, updated.executeMode);
     const saved = await this.taskRepo.save(updated);
+    await this.saveVersion(saved.id, undefined, undefined, saved);
     // Stop old schedule, then re-register based on new status without waiting for reload
     this.schedulerService.stop(id);
     if (saved.status === TaskStatus.ACTIVE) {
@@ -342,7 +479,9 @@ export class TaskService {
     const t = await this.findOne(id);
     t.glueSource = source;
     if (language) t.glueLanguage = language;
-    return this.taskRepo.save(t);
+    const saved = await this.taskRepo.save(t);
+    await this.saveVersion(saved.id, undefined, undefined, saved);
+    return saved;
   }
 
   async remove(id: string) {
@@ -380,6 +519,13 @@ export class TaskService {
 
   async trigger(id: string, dto: TriggerTaskDto) {
     const task = await this.findOne(id);
+    // OBS-01: 追踪开启时生成 trace 根，traceId 落库（null=追踪未开启）。
+    const traceparent = this.tracing?.startTrace() ?? null;
+    const traceId = this.tracing?.extractContext(traceparent) ?? null;
+    const endSpan = this.tracing?.startSpan(traceId, "task.trigger", {
+      taskId: task.id,
+      taskName: task.name,
+    });
     const exec = await this.dataSource.transaction(async (manager) => {
       return manager.save(
         manager.create(TaskExecution, {
@@ -389,6 +535,7 @@ export class TaskService {
           params: dto.params ?? task.params,
           triggerType: "manual",
           taskVersion: task.currentVersion,
+          traceId: this.tracing?.isValidTraceId(traceId) ? traceId : null,
         }),
       );
     });
@@ -399,9 +546,14 @@ export class TaskService {
         {
           // Bull requires attempts >= 1; guard against maxRetry=0
           attempts: Math.max(1, task.maxRetry ?? 1),
+          // CORE-02: delay 预乘指数基座并加 ±20% 抖动（首次尝试 attempt=1）。
+          // 返回 0（retryDelay<=0）保持既有 backoff: undefined 不延迟语义。
           backoff:
             task.retryDelay > 0
-              ? { type: "exponential", delay: task.retryDelay * 1000 }
+              ? {
+                  type: "exponential",
+                  delay: jitteredRetryDelayMs(task.retryDelay, 1),
+                }
               : undefined,
           // N2: unify with scheduler.enqueue — always pass a normalized numeric
           // priority (DB stores the PG string enum; a raw label must never
@@ -409,10 +561,12 @@ export class TaskService {
           priority: normalizeTaskPriority(task.priority),
         },
       );
+      endSpan?.();
     } catch (err: unknown) {
       // P1: the PENDING row is already committed — without compensation it
       // would hang forever when Redis/the queue is down.
       const message = err instanceof Error ? err.message : String(err);
+      endSpan?.(message);
       await this.execRepo.update(exec.id, {
         status: ExecutionStatus.FAILED,
         endTime: new Date(),
@@ -422,6 +576,7 @@ export class TaskService {
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
       throw new Error(`Failed to enqueue execution: ${message}`);
     }
+    endSpan?.();
     return exec;
   }
 
@@ -622,10 +777,47 @@ export class TaskService {
     };
   }
 
-  async getExecution(id: string) {
-    const e = await this.execRepo.findOne({ where: { id } });
+  async getExecution(id: string, taskId?: string) {
+    const e = await this.execRepo.findOne({
+      where: taskId ? { id, taskId } : { id },
+    });
     if (!e) throw new NotFoundException("Execution not found");
     return e;
+  }
+
+  /**
+   * OBS-04: 执行报告端点读侧——单次响应合并三类数据，供详情页
+   * 「分析报告/时间线」Tab 一次拉取渲染：
+   *
+   * 1. execution：task_executions 行原样返回（含 createdAt/startTime/endTime/
+   *    duration/status/triggerType/executorAddress/aiAnalysis 等时间线与 AI
+   *    分析字段——时间线由前端从此行的时间戳列映射，保证与 DB 一致）；
+   * 2. timeline：与 mcp-server buildExecutionTimeline 同一语义的三段时刻
+   *    （created→started→finished；缺省时刻 at=null，前端显示「—」）；
+   * 3. report：metrics.execution_reports 当日聚合行（triggerDay=execution
+   *    createdAt 的本地日期）。该表由 MetricsService.generateReport 按"日"
+   *    聚合写入，与单次执行无外键关系，故只按日期粗粒度关联；无行时返回
+   *    report:null（前端降级渲染——本表写入方是手动触发的 today-report
+   *    读取路径，环境里常为空表，缺报告属正常态而非错误）。
+   */
+  async getExecutionReport(id: string, taskId?: string) {
+    const execution = await this.getExecution(id, taskId);
+    // execution_reports.triggerDay 是 DATE 列（无时间成分）：把执行的
+    // createdAt 截到本地零点做等值匹配，避免时区偏移导致查不到当日行。
+    // 仓储未注册（@Optional 回退）时同样返回 null——前端按"无报告"降级。
+    let report: ExecutionReport | null = null;
+    if (this.reportRepo) {
+      const day = new Date(execution.createdAt);
+      day.setHours(0, 0, 0, 0);
+      report = await this.reportRepo.findOne({
+        where: { triggerDay: day },
+      });
+    }
+    return {
+      execution,
+      timeline: buildExecutionTimeline(execution),
+      report: report ?? null,
+    };
   }
 
   /**
@@ -640,12 +832,33 @@ export class TaskService {
     const logContent =
       [exec.errorMessage, exec.logs].filter(Boolean).join("\n") || "(no logs)";
     const task = { name: exec.taskName, runtime: "unknown" };
-    exec.aiAnalysis = await this.aiService.analyzeFailure(task, logContent);
+    // ARCH-30: 走服务化封装（重试 1 次 + 指标 + 永不抛错）；空串结果原样
+    // 落库（前端按"无分析"降级渲染），与此前直调 AiService 的空串语义一致。
+    exec.aiAnalysis = await this.aiAnalysisService.analyzeFailure(
+      task,
+      logContent,
+    );
     await this.execRepo.save(exec);
     return exec;
   }
 
-  async getExecutionLogs(execId: string, fromLine = 0, limit = 500) {
+  /**
+   * Paged execution log fetch.
+   *
+   * OBS-03: `level`（可选，ERROR/WARN/INFO/DEBUG）为等值过滤：
+   * - DB 路径在 SQL 层下推（level = :level），与 fromLine/limit 同一语义；
+   * - totalLines / hasMore 按"过滤后"的行集计算——分页元数据必须描述
+   *   调用方实际能翻到的行，而不是全量行数（CODE-01 语义在过滤下的自然
+   *   延伸）；
+   * - level=null（未过滤）时行为与 OBS-03 之前完全一致；
+   * - 过滤时 level IS NULL 的行（存量行/推断不到的行 = 未知级别）不返回。
+   */
+  async getExecutionLogs(
+    execId: string,
+    fromLine = 0,
+    limit = 500,
+    level?: string | null,
+  ) {
     // Cap limit to prevent accidental memory exhaustion
     const safeLimit = Math.min(Math.max(1, limit), 2000);
     const exec = await this.execRepo.findOne({ where: { id: execId } });
@@ -658,7 +871,9 @@ export class TaskService {
         const s3 = this.resolveS3Storage();
         if (s3) {
           const stream = await s3.getStream(exec.logObjectKey);
-          const result = await paginateLogStream(stream, fromLine, safeLimit);
+          const result = await paginateLogStream(stream, fromLine, safeLimit, {
+            level: level ?? null,
+          });
           return result;
         }
       } catch (err: unknown) {
@@ -669,16 +884,32 @@ export class TaskService {
     }
     // N10: use typed logLineRepo instead of string-based getRepository
     // CODE-01: fetch true total in parallel so pagination metadata is accurate
+    // OBS-03: level 过滤在 SQL 层下推（level = :level）；未传 level 时查询
+    // 形态与 OBS-03 之前完全一致（行号游标 + 全量 count），存量行为不变。
+    const qb = this.logLineRepo
+      .createQueryBuilder("l")
+      .where("l.executionId = :id", { id: execId });
+    if (level) {
+      qb.andWhere("l.level = :level", { level });
+    } else {
+      qb.andWhere("l.lineNumber >= :from", { from: fromLine });
+    }
+    // OBS-03: level 过滤后行集不再按 lineNumber 连续，行号游标
+    // （lineNumber >= from）会让 fromLine += lines.length 的既有客户端翻页
+    // 契约产生重复/漏行——过滤模式下 fromLine 语义切换为"过滤后序列的
+    // 偏移量"（skip/OFFSET），与 S3 路径的读后过滤分页保持同一语义（见
+    // api-reference.md）。未传 level 时绝不触碰 skip（行为不变）。
+    const paged = qb
+      .orderBy("l.lineNumber", "ASC")
+      .select(["l.lineNumber", "l.content"])
+      .take(safeLimit);
     const [lines, totalLines] = await Promise.all([
-      this.logLineRepo
-        .createQueryBuilder("l")
-        .where("l.executionId = :id", { id: execId })
-        .andWhere("l.lineNumber >= :from", { from: fromLine })
-        .orderBy("l.lineNumber", "ASC")
-        .select(["l.lineNumber", "l.content"])
-        .take(safeLimit)
-        .getMany(),
-      this.logLineRepo.count({ where: { executionId: execId } }),
+      (level ? paged.skip(fromLine) : paged).getMany(),
+      // OBS-03: totalLines 与过滤语义一致——level 过滤时按 level 计数
+      // （分页元数据描述的是调用方能翻到的行集），未过滤时保持全量计数。
+      level
+        ? this.logLineRepo.count({ where: { executionId: execId, level } })
+        : this.logLineRepo.count({ where: { executionId: execId } }),
     ]);
     return {
       lines: lines.map((r) => r.content),
@@ -724,11 +955,15 @@ export class TaskService {
     const currentForExec = this.sseStreamsPerExecution.get(execId) ?? 0;
 
     if (currentForExec >= perExec) {
+      // 可观测性补齐：并发拒绝计数（autoflow_sse_streams_rejected_total）——
+      // 只在超限抛错路径记录，成功占用不计数。
+      recordRuntime("autoflow_sse_streams_rejected_total");
       throw new ServiceUnavailableException(
         `Too many concurrent log streams for execution ${execId} (max ${perExec})`,
       );
     }
     if (this.sseStreamsGlobal >= global) {
+      recordRuntime("autoflow_sse_streams_rejected_total");
       throw new ServiceUnavailableException(
         `Too many concurrent log streams server-wide (max ${global})`,
       );
@@ -736,6 +971,11 @@ export class TaskService {
 
     this.sseStreamsPerExecution.set(execId, currentForExec + 1);
     this.sseStreamsGlobal++;
+    // BUG-05：活跃流 gauge（瞬时值）——占用/释放两点同步写，渲染侧
+    // PrometheusMetricsService 读快照 set() 绝对值。limit 一并透出，
+    // 抓取方可直接算占用率 active/limit。
+    setRuntimeGauge("autoflow_sse_streams_active", this.sseStreamsGlobal);
+    setRuntimeGauge("autoflow_sse_streams_limit", global);
 
     let released = false;
     return () => {
@@ -745,6 +985,7 @@ export class TaskService {
       if (n <= 0) this.sseStreamsPerExecution.delete(execId);
       else this.sseStreamsPerExecution.set(execId, n);
       this.sseStreamsGlobal = Math.max(0, this.sseStreamsGlobal - 1);
+      setRuntimeGauge("autoflow_sse_streams_active", this.sseStreamsGlobal);
     };
   }
 
@@ -762,6 +1003,10 @@ export class TaskService {
     done: () => void,
     signal: AbortSignal,
     preAcquiredSlot?: () => void,
+    // QA3: raw-socket sink for SSE comment frames. The controller's `send`
+    // wraps content in `data:` frames; the idle heartbeat must bypass that
+    // wrapper so EventSource clients ignore the frame per the SSE spec.
+    ping?: () => void,
   ): Promise<void> {
     // TASK-008: 控制器通常会在写出 SSE 响应头之前预先占用槽位
     // （preAcquiredSlot），以便超限时能返回真正的 503；未传入时在此补占。
@@ -770,6 +1015,16 @@ export class TaskService {
     let s3FetchFailed = false;
     const POLL_INTERVAL = 1000; // ms
     const MAX_RUNTIME = 30 * 60 * 1000; // 30 min safety cap
+    // QA3: nginx proxy_read_timeout（默认 60s）会掐断空闲的 SSE 流——S3 存储
+    // 的执行在到达终态前可能整分钟无任何新行。空闲超过 15s 时写一条注释帧
+    // （": ping\n\n"）：SSE 规范要求客户端忽略注释行，因此 admin-web 的
+    // EventSource 解析不受影响，但反向代理会把连接视为活跃。
+    const IDLE_PING_INTERVAL = 15_000; // ms
+    let lastWriteAt = Date.now();
+    const write = (line: string) => {
+      lastWriteAt = Date.now();
+      send(line);
+    };
     const start = Date.now();
     const TERMINAL_STATUSES = [
       ExecutionStatus.SUCCESS,
@@ -795,7 +1050,7 @@ export class TaskService {
             if (s3) {
               const all = (await s3.get(exec.logObjectKey)).split("\n");
               for (const line of all.slice(nextLine)) {
-                send(line);
+                write(line);
               }
               nextLine = all.length;
             }
@@ -818,7 +1073,7 @@ export class TaskService {
         .getMany();
 
       for (const row of lines) {
-        send(row.content);
+        write(row.content);
         nextLine = row.lineNumber + 1;
       }
 
@@ -837,6 +1092,14 @@ export class TaskService {
       while (!signal.aborted && Date.now() - start < MAX_RUNTIME) {
         const finished = await flush();
         if (finished) break;
+        // QA3: idle heartbeat — checked inline in the polling loop instead of
+        // via a separate timer, so when the connection closes (signal aborts)
+        // the existing loop-exit path below tears the whole thing down with
+        // no extra handle left to clean up.
+        if (ping && Date.now() - lastWriteAt >= IDLE_PING_INTERVAL) {
+          ping();
+          lastWriteAt = Date.now();
+        }
         await new Promise<void>((resolve) => {
           const t = setTimeout(resolve, POLL_INTERVAL);
           signal.addEventListener(
@@ -893,9 +1156,13 @@ export class TaskService {
         {
           // Bull requires attempts >= 1; guard against maxRetry=0
           attempts: Math.max(1, task.maxRetry ?? 1),
+          // CORE-02: delay 预乘指数基座并加 ±20% 抖动（首次尝试 attempt=1）。
           backoff:
             task.retryDelay > 0
-              ? { type: "exponential", delay: task.retryDelay * 1000 }
+              ? {
+                  type: "exponential",
+                  delay: jitteredRetryDelayMs(task.retryDelay, 1),
+                }
               : undefined,
           // N2: normalized numeric priority (see trigger()).
           priority: normalizeTaskPriority(task.priority),
@@ -913,6 +1180,7 @@ export class TaskService {
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
       throw new Error(`Failed to enqueue execution: ${message}`);
     }
+    await this.saveVersion(task.id, undefined, undefined, task);
     // N11: re-schedule so active cron/fixed-rate tasks pick up the new commit immediately
     if (task.status === TaskStatus.ACTIVE) {
       await this.schedulerService.scheduleOne(task);
@@ -1101,11 +1369,23 @@ export class TaskService {
     const lines = typeof logs === "string" ? logs.split("\n") : logs;
     const append = opts.append === true;
     const s3 = this.resolveS3Storage();
+    // BUG-06 修复：S3 失败回退时的内容并集与指针收回。
+    // existing 在 try 外声明——append 模式在 put 前读取的既有内容是回退
+    // 路径唯一能拿到的"此前页面"，put 失败后必须并入 DB 回退，否则：
+    // - append：本页落 DB 成孤儿行（exec 行仍指 S3，S3 优先读取面永远
+    //   看不到它们）；
+    // - replace：旧 DB 行 + 旧 S3 对象都在，事务重写 DB 后指针仍指旧
+    //   对象，读取面永远看到 STALE 内容。
+    // 两种场景都在回退事务成功后把 exec 行指针收回 db，使 DB 恢复自洽；
+    // 残留的旧 S3 对象成为惰性垃圾（键按 executionId 确定性复用，后续
+    // 一次成功的 storeLogLines 会覆盖它），跨存储一致性边界见方法头注。
+    let existing: string | null = null;
+    let s3Failed = false;
     if (s3) {
       try {
         let content = lines.join("\n");
         if (append) {
-          const existing = await this.s3GetExistingLog(s3, executionId);
+          existing = await this.s3GetExistingLog(s3, executionId);
           if (existing !== null && existing.length > 0) {
             content = `${existing}\n${content}`;
           }
@@ -1120,30 +1400,47 @@ export class TaskService {
         });
         return;
       } catch (err: unknown) {
+        s3Failed = true;
         this.logger.warn(
           `S3 log upload failed for execution ${executionId} (${err instanceof Error ? err.message : String(err)}) — falling back to DB log lines`,
         );
       }
     }
-    // R4-P2: single transaction — the replace-delete and every chunk insert
-    // either all land or none do (append mode skips the delete but still
-    // needs the chunk inserts to be atomic against mid-flight failures).
-    const entities = lines.map((content, i) =>
+    // append 回退且此前内容在 S3：全量改写（existing + 本页），行号归零
+    const mergeExisting = append && s3Failed && existing !== null;
+    const fallbackLines =
+      mergeExisting && existing !== null
+        ? [...existing.split("\n"), ...lines]
+        : lines;
+    const fallbackReplace = !append || mergeExisting;
+    const fallbackStart = mergeExisting ? 0 : startLineNumber;
+    const entities = fallbackLines.map((content, i) =>
       this.logLineRepo.create({
         executionId,
-        lineNumber: startLineNumber + i,
+        lineNumber: fallbackStart + i,
         content,
+        // OBS-03: 每行推断级别落库（levelOfLine 纯文本推断——执行器侧
+        // stdout/stderr 已合流，回调不带流来源，无更强信号可用）；
+        // 推断不到为 null = 未知级别，level 过滤查询不返回。
+        level: levelOfLine(content),
       }),
     );
     const CHUNK = 500;
     await this.dataSource.transaction(async (manager) => {
-      if (!append) {
+      if (fallbackReplace) {
         await manager.delete(ExecutionLogLine, { executionId });
       }
       for (let i = 0; i < entities.length; i += CHUNK) {
         await manager.save(ExecutionLogLine, entities.slice(i, i + CHUNK));
       }
     });
+    if (s3Failed) {
+      // 事务成功后收回指针（顺序不可换：先改指针再写行会闪出"无行可读"窗口）
+      await this.execRepo.update(executionId, {
+        logStorage: "db",
+        logObjectKey: null,
+      });
+    }
   }
 
   /**
@@ -1182,8 +1479,10 @@ export class TaskService {
   ): Promise<boolean> {
     if (!executorAddress) return false;
     try {
-      const token =
-        this.configService.get<string>("executor.sharedToken") ?? "";
+      // DB-first via ExecutorService so rotation propagates to log backfill
+      // too — a raw env read would be rejected by the executor's own
+      // DB-first verification (same consistency rule as push/dispatch).
+      const token = await this.executorService.getSharedToken();
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const { default: axios } = await import("axios");
       const url = this.executorService.getExecutorUrl(
@@ -1240,6 +1539,130 @@ export class TaskService {
     }
   }
 
+  /**
+   * ARCH-21：终态落库（唯一 winner）之后发布领域事件，副作用与主链解耦。
+   *
+   * - SUCCESS → execution.completed；FAILED/TIMEOUT → execution.failed。
+   *   迁移前的「改动1」失败告警（notifyCallbackFailure 直调）现由
+   *   notification 模块 ExecutionEventsListener 订阅 execution.failed 复刻
+   *   同款语义（含 taskRepo 回查告警配置与 NOTIFICATION_FAILED 审计兜底）。
+   * - emit 时机 = 迁移前通知直调的时机（fan-out/日志持久化之前）：即便后续
+   *   步骤抛错被 catch 成 success:false（执行器会重试整批），事件也已派发
+   *   一次；重试回调走 affected=0 分支不再 emit——「每个失败执行一次告警」
+   *   的旧不变量原样保持。
+   * - fail-open：总线对监听器抛错只记日志（同步/异步都吞），绝不影响主链
+   *   结果（测试断言）；payload 带全监听器所需 id 级信息，实体配置由监听器
+   *   自行回查——common 层不反向依赖 task 实体（见 domain-events.ts）。
+   * - eventBus 为 null（@Optional 兜底）时静默跳过：主链行为与迁移前一致，
+   *   仅事件不发（既有旧单测装配兼容，先例 OBS-04 reportRepo）。
+   */
+  private emitTerminalEvent(
+    execution: TaskExecution,
+    status: ExecutionStatus,
+    failureReason: ExecutionFailureReason | null,
+    cb: { errorMessage?: string; logs?: string },
+    durationMs: number | null,
+    finishedAt: Date,
+  ): void {
+    if (!this.eventBus) return;
+    const payload: ExecutionTerminalEventPayload = {
+      executionId: execution.id,
+      taskId: execution.taskId ?? null,
+      taskName: execution.taskName ?? execution.taskId,
+      // ExecutionStatus 枚举值即小写字面量（"success"/"failed"/"timeout"），
+      // 载荷类型以字面量联合表达——common 层不 import task 实体（见上注）。
+      status: status as ExecutionTerminalEventPayload["status"],
+      failureReason: failureReason ?? null,
+      errorMessage: cb.errorMessage,
+      logs: cb.logs,
+      aiAnalysis: execution.aiAnalysis ?? null,
+      durationMs,
+      finishedAt: finishedAt.toISOString(),
+    };
+    // 总线自身契约即 fail-open（emit 永不外抛）；此 try/catch 是第二道保险丝，
+    // 保证「发布事件」这一新增步骤在任何意外实现下也绝不改变主链结果。
+    try {
+      this.eventBus.emit(
+        status === ExecutionStatus.SUCCESS
+          ? DOMAIN_EVENTS.EXECUTION_COMPLETED
+          : DOMAIN_EVENTS.EXECUTION_FAILED,
+        payload,
+      );
+    } catch {
+      /* never reached with DomainEventBus's fail-open contract */
+    }
+  }
+
+  /**
+   * 改动3：重复回调日志补写闭环。
+   *
+   * 背景：winner 分支的日志持久化在终态 UPDATE 之后——若 storeLogLines 抛错，
+   * item 返回 success:false → 执行器重试整批 → 重试落入 affected=0 分支并在此
+   * 提前返回，跳过日志持久化 → 该执行日志永久丢失。
+   *
+   * 因此在 affected=0 分支：当回调带 logs 且该 execution 的 logStorage /
+   * logObjectKey 仍为空（说明上一次 winner 未成功写入日志）时，补做一次持久化
+   * 再返回。无需区分是否 winner——storeLogLines 的 replace 语义本身幂等；持久化
+   * 失败仅 logger.warn，不改变重复回调既有的 success:true 幂等语义。
+   */
+  private async persistCallbackLogsIfMissing(
+    execution: TaskExecution,
+    cb: {
+      executionId: string;
+      logs?: string;
+      executorAddress?: string;
+    },
+  ): Promise<void> {
+    const logStoreMissing = !execution.logStorage && !execution.logObjectKey;
+    if (!cb.logs || !logStoreMissing) return;
+    try {
+      let stored = false;
+      if (LOG_TRUNCATION_MARKER.test(cb.logs)) {
+        stored = await this.backfillFullLogsFromExecutor(
+          execution,
+          execution.executorAddress || cb.executorAddress || "",
+        );
+      }
+      if (!stored) {
+        await this.storeLogLines(cb.executionId, cb.logs);
+      }
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Failed to backfill missing logs for execution ${cb.executionId} on duplicate callback (${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+  }
+
+  /**
+   * 改动5：kill 命中后，best-effort 通知执行器真正终止进程。
+   *
+   * 地址来源为库中实际值（RETURNING 结果，快照作兜底）；拿不到地址则跳过。
+   * 任何失败（离线 / 超时 / 404 / 网络错）一律吞掉并 logger.warn，绝不影响
+   * kill 的结果返回——执行器侧 /kill 返回 200=已终止或已结束、404=不在运行，
+   * 均无需回传给管理员。
+   *
+   * P2: HTTP 实现收敛至 ExecutorService.notifyExecutorKill（scheduler stale
+   * sweep re-enqueue 前的 kill 通知共用，避免两份逻辑）。本包装保留调用点
+   * 契约：空地址跳过、异常兜底吞掉。
+   */
+  private async notifyExecutorKill(
+    executionId: string,
+    executorAddress?: string | null,
+  ): Promise<void> {
+    if (!executorAddress) return;
+    try {
+      await this.executorService.notifyExecutorKill(
+        executionId,
+        executorAddress,
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Failed to notify executor ${executorAddress} to kill execution ${executionId}: ${message}`,
+      );
+    }
+  }
+
   async handleCallback(
     callbacks: Array<{
       executionId: string;
@@ -1250,6 +1673,8 @@ export class TaskService {
       failureReason?: ExecutionFailureReason;
       durationMs?: number;
       executorAddress?: string;
+      /** FEAT-05: 执行产物清单（可选，best-effort，随终态回调上报）。 */
+      artifacts?: Array<{ name: string; size: number; sha256: string }>;
     }>,
   ) {
     const results = [];
@@ -1259,6 +1684,10 @@ export class TaskService {
           where: { id: cb.executionId },
         });
         if (!execution) {
+          // 可观测性补齐：callback 业务结果分类计数（not_found）
+          recordRuntime("autoflow_callback_business_total", {
+            result: "not_found",
+          });
           results.push({
             executionId: cb.executionId,
             success: false,
@@ -1274,6 +1703,12 @@ export class TaskService {
           execution.executorAddress &&
           cb.executorAddress !== execution.executorAddress
         ) {
+          // 可观测性补齐：地址不符与缺地址分别归类计数
+          recordRuntime("autoflow_callback_business_total", {
+            result: cb.executorAddress
+              ? "address_mismatch"
+              : "address_mismatch_missing_address",
+          });
           results.push({
             executionId: cb.executionId,
             success: false,
@@ -1313,11 +1748,27 @@ export class TaskService {
             patch.errorMessage = cb.errorMessage;
           }
         }
+        // 改动2（可观测性补齐）：回调上报的原始退出码入库溯源（终态成败均
+        // 适用）。DTO 层已 @IsInt 校验，这里再运行态兜底（handleCallback 还有
+        // 内部调用方）：非整数按缺省处理，不写入 patch——绝不把已有值覆盖成 null。
+        if (typeof cb.exitCode === "number" && Number.isInteger(cb.exitCode)) {
+          patch.exitCode = cb.exitCode;
+        }
         if (cb.logs) {
           patch.logs = cb.logs;
         }
+        // FEAT-05: 产物清单落库（best-effort）。仅在回调上报非空清单时写入，
+        // 绝不在缺省时覆盖成 null——重复/兜底回调不会擦除先前已保存的清单。
+        if (Array.isArray(cb.artifacts) && cb.artifacts.length > 0) {
+          patch.artifacts = cb.artifacts;
+        }
 
         // R-P0-007: Exclude KILLED status to prevent callback from overwriting user-initiated kill
+        // 改动4: 携带 RETURNING——用库中实际 executorAddress 决定释放/回填目标。
+        // executorAddress 在 dispatch HTTP 返回后才落库（task.processor.ts），
+        // 秒级完成的执行其请求前快照 execution.executorAddress 仍为 null，用它
+        // 释放会 no-op 使 runningTaskCount 永久虚高；RETURNING 覆盖该落库窗口，
+        // 快照仅作 fallback（参照 scheduler.service 的 UPDATE ... RETURNING 模式）。
         const updated = await this.execRepo
           .createQueryBuilder()
           .update(TaskExecution)
@@ -1326,18 +1777,101 @@ export class TaskService {
           .andWhere("status IN (:...open)", {
             open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
           })
+          .returning(["id", "executorAddress"])
           .execute();
 
         if (!updated.affected) {
           // Already terminal (duplicate callback): report success without
           // releasing the slot again — the first writer already did.
+          // 改动3: 但若回调日志此前没落库（上一次 winner 在 storeLogLines 抛错、
+          // 整批重试回到此分支），仍补写日志后再返回，闭合"落库失败→日志永久丢失"。
+          const fresh = await this.execRepo.findOne({
+            where: { id: cb.executionId },
+          });
+          if (fresh) await this.persistCallbackLogsIfMissing(fresh, cb);
+          // 可观测性补齐：重复回调（已终态）业务分类计数；终态结果不计数——
+          // 执行结果 series 只在唯一 winner 的 UPDATE 命中处记录。
+          recordRuntime("autoflow_callback_business_total", {
+            result: "duplicate",
+          });
           results.push({ executionId: cb.executionId, success: true });
           continue;
         }
 
+        // 可观测性补齐：终态条件 UPDATE 命中（winner）——业务受理计数 +
+        // 按最终 status 记录执行结果（success/failed/timeout）。
+        recordRuntime("autoflow_callback_business_total", {
+          result: "accepted",
+        });
+        recordRuntime("autoflow_execution_result_total", {
+          status: patch.status,
+        });
+
+        // winner 行（RETURNING 结果）为权威：地址/日志持久化都以此为准。
+        const winnerRow = Array.isArray((updated as { raw?: unknown }).raw)
+          ? ((updated as { raw?: Array<{ executorAddress?: string | null }> })
+              .raw?.[0] ?? null)
+          : null;
+        const winnerAddress =
+          winnerRow?.executorAddress ?? execution.executorAddress;
+
         // Decrement executor runningTaskCount on task completion (success or
         // failure); exactly once thanks to the conditional update above.
-        await this.releaseExecutorSlot(execution.executorAddress);
+        // 改动4: 优先用 RETURNING 的库中实际地址，快照兜底。
+        await this.releaseExecutorSlot(winnerAddress);
+
+        // ARCH-21（原「改动1」解耦）：终态事件发布——旧的 FAILED/TIMEOUT
+        // 直调告警改为 execution.failed（notification 模块监听器复刻等价
+        // 语义），并在 SUCCESS 新增 execution.completed（本轮通知侧刻意不
+        // 订阅——旧路径成功本就不发通知；事件为 FEAT-07 出站 webhook 铺路）。
+        // 放在依赖 fan-out 与日志持久化之前，与旧直调时机点一致：确保即便
+        // 后续步骤抛错被 catch 成 success:false（执行器随后会重试整批），
+        // 事件也已发出一次；重试路径在 affected=0 分支不再 emit，恰好保持
+        // "每个失败执行一次告警"，与终态条件 UPDATE 的 winner 语义一致。
+        this.emitTerminalEvent(
+          execution,
+          patch.status as ExecutionStatus,
+          patch.failureReason ?? null,
+          cb,
+          patch.duration ?? null,
+          finishedAt,
+        );
+
+        // CORE-04: 超时终态落定后的动作兑现。执行器回调 failureReason=timeout
+        // （自身硬超时树杀后上报）且任务配置了非缺省 timeoutAction 时：
+        //  - notify_only：admin 不额外动作（告警已由上方改动1路径发出）——
+        //    显式 no-op 分支只是让语义可读；
+        //  - kill_retry：按任务既有重试预算 re-enqueue 一次新执行（与
+        //    executor-restart / stale sweep 共用 hasRetryBudget +
+        //    scheduleRetryAfterRecovery，fail-open：预算耗尽/入队失败仅记日志，
+        //    终态已落定不受影响）。kill（缺省/null）走到这里即无追加动作。
+        // 放在 winner 分支保证恰好一次（duplicate 回调在 affected=0 提前返回）。
+        if (patch.status === ExecutionStatus.TIMEOUT) {
+          const task = execution.taskId
+            ? await this.taskRepo.findOne({ where: { id: execution.taskId } })
+            : null;
+          const action = normalizeTimeoutAction(task?.timeoutAction);
+          if (action === "kill_retry" && task) {
+            this.logger.warn(
+              `CORE-04: timeout action kill_retry for execution ${execution.id} (task "${task.name}")`,
+            );
+            try {
+              await this.executorService.scheduleRetryAfterRecovery(
+                task,
+                execution,
+                "timeout_retry",
+              );
+            } catch (retryErr: unknown) {
+              const retryMsg =
+                retryErr instanceof Error ? retryErr.message : String(retryErr);
+              this.logger.warn(
+                `CORE-04: kill_retry re-enqueue failed for execution ${execution.id}: ${retryMsg} (terminal state preserved)`,
+              );
+            }
+          }
+          // notify_only：无追加 admin 动作——超时告警已发出（改动1 路径），
+          // 执行器侧树杀照常发生。此分支显式留空以承载语义。
+        }
 
         // R4-P0: dependency fan-out lives on the unique-winner path. The
         // worker's in-memory status can only be RUNNING/FAILED/TIMEOUT when
@@ -1360,8 +1894,8 @@ export class TaskService {
           let stored = false;
           if (LOG_TRUNCATION_MARKER.test(cb.logs)) {
             stored = await this.backfillFullLogsFromExecutor(
-              execution,
-              execution.executorAddress || cb.executorAddress,
+              { ...execution, executorAddress: winnerAddress ?? null },
+              winnerAddress ?? "",
             );
           }
           if (!stored) {
@@ -1371,6 +1905,9 @@ export class TaskService {
 
         results.push({ executionId: cb.executionId, success: true });
       } catch (error: unknown) {
+        // 可观测性补齐：per-item 异常兜底分支（如日志持久化抛错）——业务
+        // 分类计 error；执行结果不计数（终态可能已写入，由 winner 处计数）。
+        recordRuntime("autoflow_callback_business_total", { result: "error" });
         results.push({
           executionId: cb.executionId,
           success: false,
@@ -1385,8 +1922,10 @@ export class TaskService {
     taskId: string,
     createdBy?: string,
     description?: string,
+    taskSnapshot?: Task,
   ): Promise<TaskVersion> {
-    const task = await this.taskRepo.findOne({ where: { id: taskId } });
+    const task =
+      taskSnapshot ?? (await this.taskRepo.findOne({ where: { id: taskId } }));
     if (!task) {
       throw new NotFoundException("Task not found");
     }
@@ -1406,8 +1945,18 @@ export class TaskService {
       description: task.description,
       runtime: task.runtime,
       entrypoint: task.entrypoint,
+      // W-21: requirements must ride the snapshot, or a version rollback
+      // would silently drop the dependency set the rolled-back task needs.
+      requirements: task.requirements,
       params: task.params,
       timeout: task.timeout,
+      // CORE-04: 超时策略随快照——缺省时版本回滚不得静默重置为 null（否则
+      // "回滚到旧版本"会悄悄改变超时动作/预警配置）。
+      timeoutAction: task.timeoutAction,
+      timeoutWarnRatio: task.timeoutWarnRatio,
+      // CORE-05: 预估时长随快照——否则版本回滚会把已配置的预估静默重置
+      // （与上方超时策略两字段同一理由）。
+      estimatedDurationSec: task.estimatedDurationSec,
       maxRetry: task.maxRetry,
       retryDelay: task.retryDelay,
       retryableErrors: task.retryableErrors,
@@ -1423,6 +1972,8 @@ export class TaskService {
       gitRepo: task.gitRepo,
       gitBranch: task.gitBranch,
       gitCommit: task.gitCommit,
+      glueSource: task.glueSource,
+      glueLanguage: task.glueLanguage,
     };
 
     return this.versionRepo.save(
@@ -1465,7 +2016,9 @@ export class TaskService {
     Object.assign(task, version.snapshot);
     task.currentVersion = version.version;
 
-    return this.taskRepo.save(task);
+    const saved = await this.taskRepo.save(task);
+    await this.saveVersion(saved.id, undefined, undefined, saved);
+    return saved;
   }
 
   async compareVersions(
@@ -1506,6 +2059,43 @@ export class TaskService {
     return this.schedulerService.getStats();
   }
 
+  /**
+   * FEAT-18（ARCH-21 预留补发）：killExecution 的 KILLED 翻转落库后发布
+   * `execution.killed` 领域事件。
+   *
+   * - 时机：条件 UPDATE（status IN (PENDING,RUNNING)）命中（affected>0）之后，
+   *   即"已提交的既成事实"——与 ARCH-21 总线时序契约一致。
+   * - 载荷形状对齐 emitTerminalEvent 的 ExecutionTerminalEventPayload
+   *   （taskId/taskName/failureReason/durationMs/finishedAt），使 notification
+   *   listener 与 FEAT-07 出站派发器可复用同一条失败类消费路径。
+   * - fail-open：@Optional 注入的 eventBus 为 null 时静默跳过（既有单测装配
+   *   兼容，先例同 emitTerminalEvent）；emit 本身被总线兜底 + try/catch 二道
+   *   保险丝，绝不影响 kill 主链结果。
+   */
+  private emitKilledEvent(
+    execution: TaskExecution,
+    durationMs: number | null,
+    finishedAt: Date,
+  ): void {
+    if (!this.eventBus) return;
+    const payload: ExecutionTerminalEventPayload = {
+      executionId: execution.id,
+      taskId: execution.taskId ?? null,
+      taskName: execution.taskName ?? execution.taskId,
+      status: "killed",
+      failureReason: ExecutionFailureReason.KILLED,
+      errorMessage: "Manually terminated by administrator",
+      aiAnalysis: execution.aiAnalysis ?? null,
+      durationMs,
+      finishedAt: finishedAt.toISOString(),
+    };
+    try {
+      this.eventBus.emit(DOMAIN_EVENTS.EXECUTION_KILLED, payload);
+    } catch {
+      /* never reached with DomainEventBus's fail-open contract */
+    }
+  }
+
   /** Force-terminate a running execution */
   async killExecution(
     execId: string,
@@ -1536,6 +2126,10 @@ export class TaskService {
       .andWhere("status IN (:...open)", {
         open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
       })
+      // 改动4: RETURNING 取库中实际 executorAddress——快照 execution.executorAddress
+      // 可能因 dispatch 尚未落库而为 null，用它决定释放/终止目标会 no-op（槽位虚高、
+      // 执行器继续空跑）。参照 scheduler.service 既有 UPDATE ... RETURNING 模式。
+      .returning(["id", "executorAddress"])
       .execute();
 
     if (!result.affected || result.affected === 0) {
@@ -1544,7 +2138,23 @@ export class TaskService {
       );
     }
 
-    await this.releaseExecutorSlot(execution.executorAddress);
+    // FEAT-18: KILLED 终态已落库（UPDATE 命中 winner），发布 execution.killed。
+    // emit 在通知执行器/释放槽位之前——事件即既成事实，后续步骤全是 best-effort
+    // 副作用，任何失败都不回头改库（与 ARCH-21「落库后即 emit」时序契约一致）。
+    this.emitKilledEvent(execution, duration, now);
+
+    // 改动4: 优先用 RETURNING 的库中实际地址，快照作 fallback。
+    const killedRow = Array.isArray((result as { raw?: unknown }).raw)
+      ? ((result as { raw?: Array<{ executorAddress?: string | null }> })
+          .raw?.[0] ?? null)
+      : null;
+    const executorAddress =
+      killedRow?.executorAddress ?? execution.executorAddress ?? null;
+
+    await this.releaseExecutorSlot(executorAddress);
+    // 改动5: 通知执行器真正终止进程（best-effort；地址为空则跳过，
+    // 任何失败都在 notifyExecutorKill 内被吞掉）。
+    await this.notifyExecutorKill(execId, executorAddress);
     this.logger.warn(`Execution ${execId} has been manually terminated`);
     return { success: true, message: "Execution marked as terminated" };
   }
@@ -1556,22 +2166,42 @@ export class TaskService {
  * full line-array is ever materialized — only the slice the caller asked
  * for plus the running total. Lines themselves are short-lived; the total
  * count is exposed as `totalLines` so the caller can paginate further.
+ *
+ * OBS-03: opts.level（可选）启用级别过滤。S3 对象是纯 gzip 文本，级别未
+ * 随对象持久化，无法在存储层下推过滤——只能整流解码后逐行用 levelOfLine
+ * 重推断。取舍：正确性优先于数据量——MAX_LOG_BYTES（见 s3-log-storage）
+ * 已为解码体积兜底上限，重推断是 O(lines) 纯文本扫描，可接受；若未来
+ * 日志对象带侧车索引（level→line ranges）可再优化。
+ *
+ * level 过滤下 fromLine 的语义是"过滤后序列的偏移量"（与 DB 路径的
+ * OFFSET 模式一致）：被过滤掉的行不占用分页窗口，也不计入 totalLines——
+ * totalLines 是"过滤后总行数"，hasMore 由过滤后行集计算。未传 level 时
+ * 行为与 OBS-03 之前逐字节一致。
  */
 async function paginateLogStream(
   stream: Readable,
   fromLine: number,
   limit: number,
+  opts: { level?: string | null } = {},
 ): Promise<{ lines: string[]; totalLines: number; hasMore: boolean }> {
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
   const out: string[] = [];
-  let idx = 0;
+  let idx = 0; // physical line index (unfiltered)
+  let matched = 0; // OBS-03: lines surviving the level filter
   for await (const line of rl) {
-    if (idx >= fromLine && out.length < limit) out.push(line);
-    idx++;
+    if (opts.level) {
+      if (levelOfLine(line) !== opts.level) continue;
+      if (matched >= fromLine && out.length < limit) out.push(line);
+      matched++;
+    } else {
+      if (idx >= fromLine && out.length < limit) out.push(line);
+      idx++;
+    }
   }
+  const totalLines = opts.level ? matched : idx;
   return {
     lines: out,
-    totalLines: idx,
-    hasMore: fromLine + out.length < idx,
+    totalLines,
+    hasMore: fromLine + out.length < totalLines,
   };
 }

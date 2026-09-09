@@ -13,13 +13,19 @@ import TaskFormPage from '../pages/TaskFormPage';
 import {
   deriveExecutorMode,
   buildExecutorPayload,
+  applyRequirementsPayload,
 } from '../pages/executor-mode';
+import { applyMaintenanceWindowsPayload } from '../pages/maintenance-windows';
+import {
+  applyTimeoutPolicyPayload,
+  timeoutPolicyFormValues,
+} from '../pages/timeout-policy';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 
 // 隔离 api 层：底层 client 会拉起 axios 拦截器，测试只关心调用契约。
-vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn() } }));
+vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn(), list: vi.fn().mockResolvedValue({ items: [], total: 0 }) } }));
 vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
 }));
@@ -31,6 +37,8 @@ vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
   useParams: () => mockRouteParams,
   useSearchParams: () => [new URLSearchParams('')],
+  // UI-03：TaskFormPage 页头 PageHeader 面包屑消费 Link——mock 补齐导出（纯锚点桩）
+  Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
 }));
 
 // jsdom 缺失 antd 依赖的浏览器 API，先行补齐（对齐 settings.ai.test 先例）。
@@ -153,33 +161,29 @@ describe('buildExecutorPayload（提交 payload，N19 + R8/N28）', () => {
   });
 });
 
-describe('TaskFormPage 创建流程跨步骤提交 payload 完整性（P0 回归）', () => {
-  it('step 0 填写的 name/runtime/entrypoint 在 step 2 提交时仍存在于 POST payload', async () => {
-    // E2E 实证（e2e-full.spec.js 用例 25）：分步渲染卸载 step 0/1 的
-    // Form.Item 后，validateFields() 只返回当前挂载字段 → POST 缺 name → 400。
-    // 修复后 handleSubmit 用 getFieldsValue(true) 取全量 store 值。
+describe('TaskFormPage 创建流程提交 payload 完整性（P0 回归，UI-06 单页语义）', () => {
+  it('单页全挂载下直接提交：name/runtime/entrypoint 仍在 POST payload（不再依赖分步推进）', async () => {
+    // 历史（e2e-full.spec.js 用例 25）：分步渲染卸载 step 0/1 的 Form.Item 后
+    // validateFields() 只返回当前挂载字段 → POST 缺 name → 400。
+    // UI-06 重构为分区单页（全部 Form.Item 同时挂载），缺陷土壤消除；
+    // 本用例改单页语义：同屏填写后直接点提交，不再有「下一步」按钮。
     mockRouteParams = {}; // 创建态：无 :id
     vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
 
     render(<TaskFormPage />);
 
-    // step 0：填写核心必填（runtime 由 initialValues 默认 python）。
+    // 单页：直接填写核心必填（runtime 由 initialValues 默认 python）。
     const nameInput = await screen.findByPlaceholderText('daily-report');
     fireEvent.change(nameInput, { target: { value: 'my-task' } });
     fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
       target: { value: 'tasks/main.py' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /下一步：调度配置/ }));
-
-    // step 1：默认 manual 触发 + auto 调度，直接前进。
-    fireEvent.click(await screen.findByRole('button', { name: /下一步：参数配置/ }));
-
-    // step 2：提交创建。
-    fireEvent.click(await screen.findByRole('button', { name: /创建任务/ }));
+    // 直接提交（单页下不再有 step 推进）。
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
 
     await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
     const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
-    // P0 回归点：已卸载步骤的字段必须仍在 payload 中。
+    // P0 回归点：全部字段同挂载，payload 完整。
     expect(payload.name).toBe('my-task');
     expect(payload.runtime).toBe('python');
     expect(payload.entrypoint).toBe('tasks/main.py');
@@ -190,11 +194,11 @@ describe('TaskFormPage 创建流程跨步骤提交 payload 完整性（P0 回归
     expect(payload.executorGroup).toBeNull();
     expect(payload.executorTags).toBeNull();
     expect(payload.executeMode).toBe('single');
-  });
+  }, 15_000);
 });
 
-describe('TaskFormPage 编辑态加载 executorId → pinned 选择器', () => {
-  it('加载 executorId-pin 任务后，步骤 1 渲染绑定 executorId 的选择器', async () => {
+describe('TaskFormPage 编辑态加载 executorId → pinned 选择器（UI-06 单页语义）', () => {
+  it('加载 executorId-pin 任务后，单页直接渲染绑定 executorId 的选择器', async () => {
     vi.mocked(tasksApi.get).mockReset().mockResolvedValue({
       id: 'task-1',
       name: 'pinned-job',
@@ -209,14 +213,207 @@ describe('TaskFormPage 编辑态加载 executorId → pinned 选择器', () => {
     } as never);
 
     render(<TaskFormPage />);
-    // 等待加载态结束（loadingTask=false 后步骤 0 表单出现）。
-    const nextBtn = await screen.findByRole('button', { name: /下一步：调度配置/ });
-    fireEvent.click(nextBtn);
-    // 推进到步骤 1（触发 & 执行器）。
-    const step1Next = await screen.findByRole('button', { name: /下一步：参数配置/ });
-    expect(step1Next).toBeTruthy();
-    // pinned 模式才会渲染绑定 executorId 的选择器；executorId 命中列表项时
+    // 单页：无需推进步骤，pinned 选择器同屏渲染；executorId 命中列表项时
     // Select 展示选中项 label（appName + address），而非占位文案。
     expect(await screen.findByText(/node-a/)).toBeTruthy();
+  });
+});
+
+// W-21: requirements 提交序列化——trim/丢空 + 空集显式 null（PATCH 缺省=后端保留旧值，
+// 删除全部依赖必须发 null，复用 N28 教训）+ 字段未挂载（glue 任务）归一为 null。
+describe('applyRequirementsPayload（W-21）', () => {
+  it('逐条 trim 并丢弃空字符串项', () => {
+    const payload = applyRequirementsPayload({
+      requirements: ['  requests>=2.31  ', '', '  ', 'rich==13.7.1'],
+    });
+    expect(payload.requirements).toEqual(['requests>=2.31', 'rich==13.7.1']);
+  });
+
+  it('全部为空 → 显式 null（非缺省/[] 以外语义）', () => {
+    const payload = applyRequirementsPayload({
+      requirements: ['  ', ''],
+    });
+    expect(payload.requirements).toBeNull();
+  });
+
+  it('字段未挂载（glue 任务/undefined）→ 归一为 null', () => {
+    const payload = applyRequirementsPayload({ name: 't' });
+    expect(payload.requirements).toBeNull();
+  });
+
+  it('非字符串元素被丢弃（tags 模式理论不产出，防御性）', () => {
+    const payload = applyRequirementsPayload({
+      requirements: ['ok', 42, null],
+    });
+    expect(payload.requirements).toEqual(['ok']);
+  });
+
+  it('保留其它字段不变（仅接管 requirements）', () => {
+    const payload = applyRequirementsPayload({
+      name: 't',
+      executorId: 'e1',
+      requirements: ['flask'],
+    });
+    expect(payload.name).toBe('t');
+    expect(payload.executorId).toBe('e1');
+    expect(payload.requirements).toEqual(['flask']);
+  });
+});
+
+// FEAT-06: 维护窗口——提交序列化 + 组件级动态行增删与编辑回填。
+describe('applyMaintenanceWindowsPayload（FEAT-06）', () => {
+  it('trim cron/说明并丢弃全空幽灵行', () => {
+    const payload = applyMaintenanceWindowsPayload({
+      maintenanceWindows: [
+        { start: ' 30 2 * * * ', end: '0 4 * * * ', description: ' 发布冻结 ' },
+        { start: '', end: '' },
+        { start: undefined, end: undefined },
+      ],
+    });
+    expect(payload.maintenanceWindows).toEqual([
+      { start: '30 2 * * *', end: '0 4 * * *', description: '发布冻结' },
+    ]);
+  });
+
+  it('说明为空串/空白 → 归一为 undefined（后端 @IsOptional 语义）', () => {
+    const payload = applyMaintenanceWindowsPayload({
+      maintenanceWindows: [{ start: '0 1 * * *', end: '0 2 * * *', description: '  ' }],
+    });
+    expect(payload.maintenanceWindows).toEqual([{ start: '0 1 * * *', end: '0 2 * * *' }]);
+  });
+
+  it('空集/未挂载 → 显式 null（N28：PATCH 缺省=保留，删除全部须发 null）', () => {
+    expect(applyMaintenanceWindowsPayload({ maintenanceWindows: [] }).maintenanceWindows).toBeNull();
+    expect(applyMaintenanceWindowsPayload({}).maintenanceWindows).toBeNull();
+    expect(applyMaintenanceWindowsPayload({ name: 't' }).maintenanceWindows).toBeNull();
+  });
+
+  it('半填行保留（交给后端结构校验 400，不静默吞掉半截输入）', () => {
+    const payload = applyMaintenanceWindowsPayload({
+      maintenanceWindows: [{ start: '30 2 * * *', end: '' }],
+    });
+    expect(payload.maintenanceWindows).toEqual([{ start: '30 2 * * *', end: '' }]);
+  });
+});
+
+describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级，UI-06 单页语义）', () => {
+  it('添加行 → 填写 cron → 删除行：输入随行增删', async () => {
+    mockRouteParams = {}; // 创建态
+    render(<TaskFormPage />);
+
+    // 单页：维护窗口区块同屏可达，无需推进步骤。
+    const addButton = await screen.findByRole('button', { name: /添加维护窗口/ });
+    fireEvent.click(addButton);
+    const startInput = await screen.findByPlaceholderText('开始 Cron，如 30 2 * * *');
+    const endInput = screen.getByPlaceholderText('结束 Cron，如 0 4 * * *');
+    fireEvent.change(startInput, { target: { value: '30 2 * * *' } });
+    fireEvent.change(endInput, { target: { value: '0 4 * * *' } });
+
+    // 删除 → 输入消失
+    fireEvent.click(screen.getByRole('button', { name: /删除维护窗口 1/ }));
+    await vi.waitFor(() =>
+      expect(screen.queryByPlaceholderText('开始 Cron，如 30 2 * * *')).toBeNull(),
+    );
+  }, 15_000);
+
+  it('填写窗口后提交：payload.maintenanceWindows 带结构化数组', async () => {
+    mockRouteParams = {}; // 创建态
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+    render(<TaskFormPage />);
+
+    // 单页：同屏填写 name/entrypoint + 维护窗口后直接提交。
+    fireEvent.change(await screen.findByPlaceholderText('daily-report'), {
+      target: { value: 'mw-task' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /添加维护窗口/ }));
+    fireEvent.change(await screen.findByPlaceholderText('开始 Cron，如 30 2 * * *'), {
+      target: { value: '30 2 * * *' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('结束 Cron，如 0 4 * * *'), {
+      target: { value: '0 4 * * *' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+
+    await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect(payload.maintenanceWindows).toEqual([{ start: '30 2 * * *', end: '0 4 * * *' }]);
+  }, 15_000);
+
+  it('编辑态回填已有窗口：行输入带后端值', async () => {
+    vi.mocked(tasksApi.get).mockReset().mockResolvedValue({
+      id: 'task-1',
+      name: 'windowed-job',
+      runtime: 'python',
+      entrypoint: 'main.py',
+      triggerType: 'manual',
+      executeMode: 'single',
+      timeoutSeconds: 300,
+      maxRetry: 3,
+      params: {},
+      maintenanceWindows: [
+        { start: '0 22 * * 5', end: '0 6 * * 6', description: '发布冻结' },
+      ],
+    } as never);
+
+    render(<TaskFormPage />);
+    // 单页：回填行同屏可见，无需推进步骤。
+    expect(await screen.findByDisplayValue('0 22 * * 5')).toBeTruthy();
+    expect(screen.getByDisplayValue('0 6 * * 6')).toBeTruthy();
+    expect(screen.getByDisplayValue('发布冻结')).toBeTruthy();
+  });
+});
+
+// CORE-04: 超时策略分级——表单序列化纯逻辑（payload 归一 + 加载态映射）。
+// PATCH 语义（N28 同源）：timeoutAction undefined → null（回缺省 kill）；
+// timeoutWarnRatio 空串/undefined/非法 → null（真正关闭预警）。
+describe('applyTimeoutPolicyPayload（CORE-04）', () => {
+  it('合法值原样保留（三动作 + 0/90 边界阈值）', () => {
+    const a = applyTimeoutPolicyPayload({ timeoutAction: 'kill_retry', timeoutWarnRatio: 80 });
+    expect(a.timeoutAction).toBe('kill_retry');
+    expect(a.timeoutWarnRatio).toBe(80);
+    const b = applyTimeoutPolicyPayload({ timeoutAction: 'notify_only', timeoutWarnRatio: 0 });
+    expect(b.timeoutWarnRatio).toBe(0);
+    const c = applyTimeoutPolicyPayload({ timeoutAction: 'kill', timeoutWarnRatio: 90 });
+    expect(c.timeoutWarnRatio).toBe(90);
+  });
+
+  it('timeoutAction undefined（未挂载）→ null（回缺省 kill）', () => {
+    const payload = applyTimeoutPolicyPayload({ name: 't' });
+    expect(payload.timeoutAction).toBeNull();
+  });
+
+  it('timeoutWarnRatio 空串/undefined/非法/越界 → null（关闭预警）', () => {
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: '' }).timeoutWarnRatio).toBeNull();
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: undefined }).timeoutWarnRatio).toBeNull();
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: null }).timeoutWarnRatio).toBeNull();
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: 91 }).timeoutWarnRatio).toBeNull();
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: -1 }).timeoutWarnRatio).toBeNull();
+    expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: 12.5 }).timeoutWarnRatio).toBeNull();
+  });
+
+  it('保留其它字段不变（仅接管超时策略两字段）', () => {
+    const payload = applyTimeoutPolicyPayload({ name: 't', timeout: 600, executorId: 'e1' });
+    expect(payload.name).toBe('t');
+    expect(payload.timeout).toBe(600);
+    expect(payload.executorId).toBe('e1');
+  });
+});
+
+describe('timeoutPolicyFormValues（CORE-04 编辑态加载映射）', () => {
+  it('后端读回值映射到表单形态；未知/缺省动作归 kill', () => {
+    expect(timeoutPolicyFormValues({ timeoutAction: 'kill_retry', timeoutWarnRatio: 80 })).toEqual({
+      timeoutAction: 'kill_retry',
+      timeoutWarnRatio: 80,
+    });
+    expect(timeoutPolicyFormValues({ timeoutAction: 'notify_only' })).toEqual({
+      timeoutAction: 'notify_only',
+      timeoutWarnRatio: undefined,
+    });
+    expect(timeoutPolicyFormValues({ timeoutAction: null }).timeoutAction).toBe('kill');
+    expect(timeoutPolicyFormValues({}).timeoutAction).toBe('kill');
+    expect(timeoutPolicyFormValues({ timeoutWarnRatio: null }).timeoutWarnRatio).toBeUndefined();
   });
 });

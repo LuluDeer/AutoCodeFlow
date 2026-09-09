@@ -98,4 +98,23 @@ describe("jwt.strategy — extractJwtFromRequest (P1-6 SSE query token)", () => 
     const req = makeReq({ headers: {} });
     expect(extractJwtFromRequest(req)).toBeNull();
   });
+
+  // FEAT-16：/executions/stream（执行列表终态推送流）加入 query-token 白名单
+  it("accepts access_token on the /executions/stream SSE path (FEAT-16)", () => {
+    const req = makeReq({
+      headers: {},
+      originalUrl: "/api/executions/stream?access_token=jwt-value",
+      query: { [SSE_QUERY_TOKEN_PARAM]: "jwt-value" },
+    });
+    expect(extractJwtFromRequest(req)).toBe("jwt-value");
+  });
+
+  it("still rejects query token on other /executions subpaths", () => {
+    const req = makeReq({
+      headers: {},
+      originalUrl: "/api/executions/all?access_token=jwt-value",
+      query: { [SSE_QUERY_TOKEN_PARAM]: "jwt-value" },
+    });
+    expect(extractJwtFromRequest(req)).toBeNull();
+  });
 });

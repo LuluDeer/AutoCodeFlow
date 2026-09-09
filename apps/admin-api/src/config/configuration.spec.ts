@@ -128,6 +128,28 @@ describe("configuration (ARCH-004/005/006) throttle, redis tls, db synchronize",
     process.env.REDIS_TLS_REJECT_UNAUTHORIZED = "false";
     expect(loadConfig().redis.tlsRejectUnauthorized).toBe(false);
   });
+
+  // S5: optional Verdaccio service account for the registry proxy — unset
+  // keeps the anonymous behavior, set values surface under registry.npm.
+  it("S5: defaults the npm registry service account to empty (anonymous listing preserved)", () => {
+    delete process.env.NPM_REGISTRY_TOKEN;
+    delete process.env.NPM_REGISTRY_USER;
+    delete process.env.NPM_REGISTRY_PASS;
+    const cfg = loadConfig();
+    expect(cfg.registry.npm).toEqual({ token: "", user: "", pass: "" });
+  });
+
+  it("S5: maps NPM_REGISTRY_TOKEN / NPM_REGISTRY_USER / NPM_REGISTRY_PASS into registry.npm", () => {
+    process.env.NPM_REGISTRY_TOKEN = "t0k3n";
+    process.env.NPM_REGISTRY_USER = "svc";
+    process.env.NPM_REGISTRY_PASS = "svc-pass";
+    const cfg = loadConfig();
+    expect(cfg.registry.npm).toEqual({
+      token: "t0k3n",
+      user: "svc",
+      pass: "svc-pass",
+    });
+  });
 });
 
 describe("configuration (ARCH-001) CORS_ALLOWED_ORIGINS whitelist", () => {
@@ -207,5 +229,131 @@ describe("configuration (ARCH-001) CORS_ALLOWED_ORIGINS whitelist", () => {
     expect(loadConfig().cors.allowedOrigins).toEqual([
       "https://admin.example.com",
     ]);
+  });
+
+  // ARCH-27 (SEC-02 收编): production 下 CORS origin 必须是合法 http(s) URL
+  // —— 校验从 main.ts 收编到配置层 fail-fast。
+  it("rejects a production origin that is not a valid URL (moved from main.ts)", () => {
+    process.env = {
+      ...ORIGINAL_ENV,
+      ...STRONG_PRODUCTION_ENV,
+      CORS_ALLOWED_ORIGINS: "admin.example.com",
+    };
+    expect(() => loadConfig()).toThrow(
+      /must start with http:\/\/ or https:\/\//,
+    );
+  });
+
+  it("rejects a production origin that looks like a scheme but is not a URL", () => {
+    process.env = {
+      ...ORIGINAL_ENV,
+      ...STRONG_PRODUCTION_ENV,
+      CORS_ALLOWED_ORIGINS: "http://",
+    };
+    expect(() => loadConfig()).toThrow(/is not a valid URL/);
+  });
+});
+
+// ARCH-27（配置中心收口）: 此前存在读取点但未注册的 env 在 configuration.ts
+// 补映射后的行为钉子 —— 消费方一律经 ConfigService 读这些配置节。
+describe("configuration (ARCH-27) newly registered config sections", () => {
+  const ORIGINAL_ENV = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  afterEach(() => {
+    process.env = ORIGINAL_ENV;
+    jest.resetModules();
+  });
+
+  const loadConfig = () => {
+    let cfg: Record<string, any>;
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      cfg = require("./configuration").default();
+    });
+    return cfg!;
+  };
+
+  it("registers throttle.loginLimit from LOGIN_THROTTLE_LIMIT (default 20)", () => {
+    expect(loadConfig().throttle.loginLimit).toBe(20);
+    process.env.LOGIN_THROTTLE_LIMIT = "5";
+    expect(loadConfig().throttle.loginLimit).toBe(5);
+  });
+
+  it("SEC-09: registers throttle.enabled (default true; THROTTLE_ENABLED=false bypasses all rate limiting)", () => {
+    expect(loadConfig().throttle.enabled).toBe(true);
+    process.env.THROTTLE_ENABLED = "false";
+    expect(loadConfig().throttle.enabled).toBe(false);
+    delete process.env.THROTTLE_ENABLED;
+    expect(loadConfig().throttle.enabled).toBe(true);
+  });
+
+  it("SEC-09: registers throttle domain profiles (auth 10/min strict, ops 30/min default; env overridable)", () => {
+    const cfg = loadConfig();
+    expect(cfg.throttle.authLimit).toBe(10);
+    expect(cfg.throttle.authTtl).toBe(60000);
+    expect(cfg.throttle.opsLimit).toBe(30);
+    expect(cfg.throttle.opsTtl).toBe(60000);
+    process.env.THROTTLE_AUTH_LIMIT = "5";
+    process.env.THROTTLE_OPS_LIMIT = "100";
+    const overridden = loadConfig();
+    expect(overridden.throttle.authLimit).toBe(5);
+    expect(overridden.throttle.opsLimit).toBe(100);
+  });
+
+  it("registers app.requestTimeoutMs from REQUEST_TIMEOUT_MS (default 30000)", () => {
+    expect(loadConfig().app.requestTimeoutMs).toBe(30000);
+    process.env.REQUEST_TIMEOUT_MS = "45000";
+    expect(loadConfig().app.requestTimeoutMs).toBe(45000);
+  });
+
+  it("registers app.apiBaseUrl from API_BASE_URL (default empty = unset)", () => {
+    expect(loadConfig().app.apiBaseUrl).toBe("");
+    process.env.API_BASE_URL = "https://api.example.com";
+    expect(loadConfig().app.apiBaseUrl).toBe("https://api.example.com");
+  });
+
+  it("registers initialAdmin section (password default empty = skip seed)", () => {
+    // CI runner 环境可能自带 INITIAL_ADMIN_PASSWORD（e2e 侧配置）——用例语义是
+    // "env 缺省时默认空"，先剥离环境再断言，避免宿主环境泄漏进断言。
+    delete process.env.INITIAL_ADMIN_PASSWORD;
+    delete process.env.INITIAL_ADMIN_EMAIL;
+    const cfg = loadConfig();
+    expect(cfg.initialAdmin.password).toBe("");
+    expect(cfg.initialAdmin.email).toBe("admin@autoflow.local");
+    process.env.INITIAL_ADMIN_PASSWORD = "seed-secret";
+    process.env.INITIAL_ADMIN_EMAIL = "seed@example.com";
+    const overridden = loadConfig().initialAdmin;
+    expect(overridden.password).toBe("seed-secret");
+    expect(overridden.email).toBe("seed@example.com");
+  });
+
+  it("registers logRetention.days from LOG_RETENTION_DAYS (default 30)", () => {
+    expect(loadConfig().logRetention.days).toBe(30);
+    process.env.LOG_RETENTION_DAYS = "7";
+    expect(loadConfig().logRetention.days).toBe(7);
+  });
+
+  it("registers executor.allowPrivateNetwork from EXECUTOR_ALLOW_PRIVATE_NETWORK", () => {
+    expect(loadConfig().executor.allowPrivateNetwork).toBe(false);
+    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
+    expect(loadConfig().executor.allowPrivateNetwork).toBe(true);
+  });
+
+  it("registers app.trustProxy from TRUST_PROXY (default false)", () => {
+    expect(loadConfig().app.trustProxy).toBe(false);
+    process.env.TRUST_PROXY = "true";
+    expect(loadConfig().app.trustProxy).toBe(true);
+  });
+
+  it("registers app.hostname from HOSTNAME (fallback empty on Windows dev)", () => {
+    delete process.env.HOSTNAME;
+    expect(loadConfig().app.hostname).toBe("");
+    process.env.HOSTNAME = "container-7f3a";
+    expect(loadConfig().app.hostname).toBe("container-7f3a");
   });
 });

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Table, Button, Space, Tag, Modal, Form, Input, Select, Upload, message,
-  Popconfirm, Typography, Tooltip, Badge, Radio,
+  Popconfirm, Typography, Tooltip, Badge, Radio, Empty, Switch,
 } from 'antd';
 import {
   PlusOutlined, UploadOutlined, ReloadOutlined, GithubOutlined,
@@ -13,8 +13,27 @@ import { executorsApi } from '../api/executors';
 import { useNavigate } from 'react-router-dom';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
+import { useAuthStore, isAdminUser } from '../store/auth';
+import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
+import StateError from '../components/StateError';
 
 const { Text } = Typography;
+
+/** UI-08：首屏 Skeleton 渲染判据——初次加载（无数据）且未出错时以骨架屏替代表格 Spin */
+function shouldShowSkeleton(loading: boolean, error: unknown, count: number): boolean {
+  return loading && count === 0 && !error;
+}
+
+/**
+ * W3 RBAC（对齐 settings 页先例）：应用写面（创建/上传/编辑/删除/快速部署）
+ * 后端已全链 @Roles(ADMIN)，读面（列表/详情）登录即可。
+ * 普通用户：写按钮禁用并给出提示（读面保持可见），不发起会 403 的请求。
+ */
+function useIsAdmin() {
+  const user = useAuthStore((s) => s.user);
+  return isAdminUser(user);
+}
 
 const GIT_URL_RE = /^(https?:\/\/[\w.@:/~_-]+\.git|git@[\w.-]+:[\w./_-]+\.git)$/;
 
@@ -44,8 +63,11 @@ interface AppWithStats extends Application {
 
 export default function ApplicationListPage() {
   const nav = useNavigate();
+  const isAdmin = useIsAdmin();
   const [apps, setApps] = useState<AppWithStats[]>([]);
   const [loading, setLoading] = useState(false);
+  // UI-08：首屏加载失败不再只弹一次性 toast——记录错误并原位呈现「重试+复制」错误块
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [editingApp, setEditingApp] = useState<Application | null>(null);
@@ -61,6 +83,7 @@ export default function ApplicationListPage() {
 
   const fetchApps = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const data = await applicationsApi.list();
 
@@ -87,6 +110,7 @@ export default function ApplicationListPage() {
 
       setApps(enriched);
     } catch (err: unknown) {
+      setLoadError(err);
       message.error(getErrMsg(err, '加载应用列表失败'));
     } finally {
       setLoading(false);
@@ -285,23 +309,31 @@ export default function ApplicationListPage() {
           >
             详情
           </Button>
-          <Button
-            type="link"
-            size="small"
-            icon={<RocketOutlined />}
-            onClick={() => openQuickDeploy(record.id)}
-          >
-            新建部署
-          </Button>
-          <Button type="link" size="small" onClick={() => handleEdit(record)}>编辑</Button>
+          <Tooltip title={isAdmin ? '快速新建部署' : '仅管理员可部署应用'}>
+            <Button
+              type="link"
+              size="small"
+              icon={<RocketOutlined />}
+              onClick={() => openQuickDeploy(record.id)}
+              disabled={!isAdmin}
+            >
+              新建部署
+            </Button>
+          </Tooltip>
+          <Tooltip title={isAdmin ? '编辑' : '仅管理员可编辑应用'}>
+            <Button type="link" size="small" onClick={() => handleEdit(record)} disabled={!isAdmin}>编辑</Button>
+          </Tooltip>
           <Popconfirm
             title="确认删除此应用？"
             description="删除后无法恢复，请确认。"
             onConfirm={() => handleDelete(record.id)}
             okText="删除"
             okButtonProps={{ danger: true }}
+            disabled={!isAdmin}
           >
-            <Button type="link" size="small" danger>删除</Button>
+            <Tooltip title={isAdmin ? '删除' : '仅管理员可删除应用'}>
+              <Button type="link" size="small" danger disabled={!isAdmin}>删除</Button>
+            </Tooltip>
           </Popconfirm>
         </Space>
       ),
@@ -310,20 +342,32 @@ export default function ApplicationListPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Typography.Title level={4} style={{ margin: 0 }}>应用管理</Typography.Title>
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-            创建应用
-          </Button>
-          <Button icon={<UploadOutlined />} onClick={() => {
-            setUploadModalOpen(true);
-          }}>
-            上传 ZIP
-          </Button>
-          <Button icon={<ReloadOutlined />} onClick={fetchApps} loading={loading}>刷新</Button>
-        </Space>
-      </div>
+      {/* UI-03/UI-08：页头标准化（原 Typography.Title+操作区迁入 PageHeader） */}
+      <PageHeader
+        title="应用管理"
+        extra={
+          <>
+            <Tooltip title={isAdmin ? undefined : '仅管理员可创建应用'}>
+              <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate} disabled={!isAdmin}>
+                创建应用
+              </Button>
+            </Tooltip>
+            <Tooltip title={isAdmin ? undefined : '仅管理员可上传应用'}>
+              <Button icon={<UploadOutlined />} onClick={() => {
+                setUploadModalOpen(true);
+              }} disabled={!isAdmin}>
+                上传 ZIP
+              </Button>
+            </Tooltip>
+            <Button icon={<ReloadOutlined />} onClick={fetchApps} loading={loading}>刷新</Button>
+          </>
+        }
+      />
+
+      {/* UI-08：首屏错误态（重试+复制错误信息） */}
+      {loadError !== null && !loading && (
+        <StateError error={loadError} onRetry={fetchApps} style={{ marginBottom: 16 }} />
+      )}
 
       {/* 搜索/筛选栏 */}
       <Space style={{ marginBottom: 16 }} wrap>
@@ -375,8 +419,16 @@ export default function ApplicationListPage() {
         columns={columns}
         dataSource={filtered}
         rowKey="id"
-        loading={loading}
-        pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }}
+        loading={false}
+        locale={{
+          emptyText: shouldShowSkeleton(loading, loadError, apps.length)
+            ? <PageSkeleton variant="table" />
+            : (loadError
+              ? undefined
+              : (hasFilters
+                ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配应用" />
+                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无应用，点击右上角「创建应用」开始" />)),
+        }}
       />
 
       {/* Create/Edit Modal */}
@@ -498,6 +550,19 @@ export default function ApplicationListPage() {
             }}
           >
             <Input placeholder="src/tasks/index.js" />
+          </Form.Item>
+
+          {/* DEP-04: 部署审批流开关——开启后该应用的新部署需第二人批准才派发 */}
+          <Form.Item
+            name="approvalRequired"
+            label="部署审批"
+            valuePropName="checked"
+            tooltip={{
+              title: '开启后，该应用的新部署请求将冻结为「待审批」状态，需另一位管理员批准后才派发到执行器（第二人规则：提交者本人不能审批自己的请求）。',
+              icon: <InfoCircleOutlined />,
+            }}
+          >
+            <Switch checkedChildren="需审批" unCheckedChildren="直派" />
           </Form.Item>
         </Form>
       </Modal>

@@ -5,7 +5,7 @@ import { useAuthStore } from '../store/auth';
 const API_URL_INTERNAL = import.meta.env.VITE_API_URL_INTERNAL || '/api';
 const API_URL_EXTERNAL = import.meta.env.VITE_API_URL_EXTERNAL || '';
 
-function getApiBaseUrl(): string {
+export function getApiBaseUrl(): string {
   const useExternal = localStorage.getItem('autoflow_use_external_api') === 'true';
   if (useExternal && API_URL_EXTERNAL) {
     return API_URL_EXTERNAL;
@@ -79,6 +79,8 @@ async function tryRefreshToken(): Promise<string> {
     const accessToken: string = body.data?.accessToken ?? body.accessToken;
     const newRefresh: string | undefined = body.data?.refreshToken ?? body.refreshToken;
     if (!accessToken) throw new Error('Refresh response missing accessToken');
+    // Discard refresh results from a session that has logged out or changed.
+    if (useAuthStore.getState().refreshToken !== refreshToken) throw new Error('Auth session changed');
     setToken(accessToken);
     if (newRefresh) setRefreshToken(newRefresh);
     return accessToken;
@@ -100,6 +102,12 @@ client.interceptors.response.use(
   },
   async (err) => {
     const originalRequest = err.config;
+    // 401 跳登录时带上当前路由，登录成功后回跳（LoginPage 读 ?redirect=）
+    const redirectToLogin = () => {
+      const current = window.location.pathname + window.location.search;
+      const suffix = current && current !== '/login' ? `?redirect=${encodeURIComponent(current)}` : '';
+      window.location.href = `/login${suffix}`;
+    };
     // Avoid infinite retry loop on the refresh endpoint itself
     if (err.response?.status === 401 && !originalRequest._retried && !originalRequest.url?.includes('/auth/refresh')) {
       originalRequest._retried = true;
@@ -110,16 +118,17 @@ client.interceptors.response.use(
         return client(originalRequest);
       } catch {
         useAuthStore.getState().logout();
-        window.location.href = '/login';
+        redirectToLogin();
       }
     } else if (err.response?.status === 401) {
       useAuthStore.getState().logout();
-      window.location.href = '/login';
+      redirectToLogin();
     }
-    // Retry once on transient failures (network error or 5xx)
+    // Retry only safe methods: a failed response may still have caused side effects.
     if (!originalRequest._retryCount) originalRequest._retryCount = 0;
     const status = err.response?.status;
-    if (originalRequest._retryCount < 1 && (!err.response || (status >= 500 && status < 600))) {
+    const isSafeMethod = ['get', 'head', 'options'].includes((originalRequest.method || 'get').toLowerCase());
+    if (isSafeMethod && originalRequest._retryCount < 1 && (!err.response || (status >= 500 && status < 600))) {
       originalRequest._retryCount++;
       await new Promise<void>(resolve => setTimeout(resolve, 1000));
       return _client(originalRequest);

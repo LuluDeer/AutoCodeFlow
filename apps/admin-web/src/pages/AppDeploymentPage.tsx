@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Table, Button, Tag, Space, Typography, message, Modal, Select,
   Badge, Tooltip, Alert, Empty, Popconfirm, Form, Progress, Radio, Input,
@@ -6,7 +6,8 @@ import {
 import type { BadgeProps } from 'antd';
 import {
   RocketOutlined, StopOutlined, ReloadOutlined, PlusOutlined,
-  ThunderboltOutlined, UpCircleOutlined,
+  ThunderboltOutlined, UpCircleOutlined, CheckOutlined, CloseOutlined,
+  UndoOutlined,
 } from '@ant-design/icons';
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
 import { executorsApi, Executor } from '../api/executors';
@@ -22,6 +23,14 @@ const STATUS_CONFIG: Record<string, { color: string; label: string; badge: Badge
   failed: { color: 'red', label: '失败', badge: 'error' },
   pending: { color: 'orange', label: '等待中', badge: 'warning' },
   upgrading: { color: 'cyan', label: '升级中', badge: 'processing' },
+};
+
+/** DEP-04: 审批状态展示配置（null=非审批路径不渲染） */
+const APPROVAL_CONFIG: Record<string, { color: string; label: string }> = {
+  pending_approval: { color: 'gold', label: '待审批' },
+  approved: { color: 'green', label: '已批准' },
+  rejected: { color: 'red', label: '已拒绝' },
+  cancelled: { color: 'default', label: '已撤销' },
 };
 
 function ExecutorCard({ executor }: { executor: Executor }) {
@@ -60,26 +69,44 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [deployForm] = Form.useForm();
   const [runMode, setRunMode] = useState<'once' | 'daemon' | 'scheduled'>('once');
   // R5 RBAC：安装向导为 ADMIN-only，普通用户隐藏入口
+  // W3：部署写面（deploy/stop/upgrade/upgrade-all）后端已 @Roles(ADMIN)，按钮级禁用
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
+  const me = useAuthStore((s) => s.user);
+  // DEP-04: 拒绝理由 Modal（拒绝建议留痕；approve/cancel 无需理由）
+  const [rejectTarget, setRejectTarget] = useState<AppDeployment | null>(null);
+  const [rejectForm] = Form.useForm();
+  const [rejecting, setRejecting] = useState(false);
+  const [actingId, setActingId] = useState<string | null>(null);
 
+  // W7 竞态守卫：fetchAll 无取消机制，翻页/轮询并发时旧响应可覆盖新页数据。
+  // 每次调用自增 fetchSeq，仅最后一次请求允许 setState；cleanup（卸载或翻页）
+  // 置 cancelled，让已 in-flight 的旧响应在 resolve 后被丢弃。
+  const fetchSeq = useRef(0);
   const fetchAll = useCallback(async () => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
     try {
       const [deps, execs] = await Promise.all([
         deploymentsApi.list(applicationId, page),
         executorsApi.list(),
       ]);
+      if (seq !== fetchSeq.current) return; // 已有更新的请求/卸载，丢弃过期响应
       setDeployments(deps.data);
       setTotal(deps.total);
       setExecutors(execs);
     } catch (err: unknown) {
+      if (seq !== fetchSeq.current) return;
       message.error(getErrMsg(err, '加载失败'));
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   }, [applicationId, page]);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => {
+    fetchAll();
+    // W7：卸载/翻页时自增序号，让本 effect 发起的请求结果作废
+    return () => { const { current } = fetchSeq; fetchSeq.current = current + 1; };
+  }, [fetchAll]);
 
   // Auto-poll while any deployment is in progress
   useEffect(() => {
@@ -94,8 +121,13 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       const values = await deployForm.validateFields();
       setDeploying(true);
       // executorId: undefined => server auto-picks least loaded
-      await deploymentsApi.deploy(applicationId, { executorId: values.executorId || undefined, runMode: values.runMode || 'once', startCommand: values.startCommand });
-      message.success('部署已启动');
+      const created = await deploymentsApi.deploy(applicationId, { executorId: values.executorId || undefined, runMode: values.runMode || 'once', startCommand: values.startCommand });
+      // DEP-04: 开启审批流的应用，deploy 冻结为待审批行（后端未派发）
+      if (created?.approvalStatus === 'pending_approval') {
+        message.info('部署请求已提交审批，等待第二位管理员批准后才会派发');
+      } else {
+        message.success('部署已启动');
+      }
       setDeployModalOpen(false);
       deployForm.resetFields();
       setTimeout(fetchAll, 1500);
@@ -104,6 +136,51 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       message.error(getErrMsg(err, '部署失败'));
     } finally {
       setDeploying(false);
+    }
+  };
+
+  // DEP-04: 审批三动作（后端第二人规则兜底；前端对提交者本人禁用批准/拒绝）
+  const handleApprove = async (id: string) => {
+    setActingId(id);
+    try {
+      await deploymentsApi.approve(id);
+      message.success('已批准，部署开始派发');
+      fetchAll();
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '批准失败'));
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectTarget) return;
+    setRejecting(true);
+    try {
+      const values = await rejectForm.validateFields();
+      await deploymentsApi.reject(rejectTarget.id, values.reason || undefined);
+      message.success('已拒绝该部署请求');
+      setRejectTarget(null);
+      rejectForm.resetFields();
+      fetchAll();
+    } catch (err: unknown) {
+      if (isFormValidationError(err)) return;
+      message.error(getErrMsg(err, '拒绝失败'));
+    } finally {
+      setRejecting(false);
+    }
+  };
+
+  const handleCancel = async (id: string) => {
+    setActingId(id);
+    try {
+      await deploymentsApi.cancel(id);
+      message.success('已撤销部署请求');
+      fetchAll();
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, '撤销失败'));
+    } finally {
+      setActingId(null);
     }
   };
 
@@ -179,9 +256,19 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       title: '状态',
       dataIndex: 'status',
       width: 100,
-      render: (s: string) => {
+      render: (s: string, r: AppDeployment) => {
         const cfg = STATUS_CONFIG[s] || { color: 'default', label: s, badge: 'default' };
-        return <Badge status={cfg.badge} text={<Tag color={cfg.color} style={{ border: 'none', background: `${cfg.color}15` }}>{cfg.label}</Tag>} />;
+        return (
+          <Space direction="vertical" size={0}>
+            <Badge status={cfg.badge} text={<Tag color={cfg.color} style={{ border: 'none', background: `${cfg.color}15` }}>{cfg.label}</Tag>} />
+            {/* DEP-04: 审批状态徽标（待审批/已批准/已拒绝/已撤销） */}
+            {r.approvalStatus && APPROVAL_CONFIG[r.approvalStatus] && (
+              <Tag color={APPROVAL_CONFIG[r.approvalStatus].color} style={{ fontSize: 11 }}>
+                {APPROVAL_CONFIG[r.approvalStatus].label}
+              </Tag>
+            )}
+          </Space>
+        );
       },
     },
     {
@@ -217,39 +304,100 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     },
     {
       title: '操作',
-      width: 160,
-      render: (_: unknown, r: AppDeployment) => (
+      width: 200,
+      render: (_: unknown, r: AppDeployment) => {
+        // DEP-04: 待审批行——出口只有审批三动作（后端对 upgrade/stop 返回 409）
+        if (r.approvalStatus === 'pending_approval') {
+          const isRequester = me?.id != null && r.approvalMeta?.requestedBy != null && me.id === r.approvalMeta.requestedBy;
+          const requesterName = r.approvalMeta?.requestedByName;
+          const secondPersonHint = isAdmin
+            ? isRequester
+              ? '第二人规则：不能审批自己提交的部署请求'
+              : requesterName
+                ? `提交人：${requesterName}`
+                : undefined
+            : '仅管理员可审批';
+          return (
+            <Space size={4}>
+              <Tooltip title={secondPersonHint}>
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<CheckOutlined />}
+                  loading={actingId === r.id}
+                  disabled={!isAdmin || isRequester}
+                  onClick={() => handleApprove(r.id)}
+                >
+                  批准
+                </Button>
+              </Tooltip>
+              <Tooltip title={secondPersonHint}>
+                <Button
+                  size="small"
+                  danger
+                  icon={<CloseOutlined />}
+                  disabled={!isAdmin || isRequester}
+                  onClick={() => { rejectForm.resetFields(); setRejectTarget(r); }}
+                >
+                  拒绝
+                </Button>
+              </Tooltip>
+              {isRequester && (
+                <Popconfirm
+                  title="确认撤销自己的部署请求？"
+                  onConfirm={() => handleCancel(r.id)}
+                  okText="撤销"
+                >
+                  <Button size="small" icon={<UndoOutlined />} loading={actingId === r.id}>
+                    撤回
+                  </Button>
+                </Popconfirm>
+              )}
+            </Space>
+          );
+        }
+        return (
         <Space size={4}>
           {r.status === 'running' && (
-            <Button
-              size="small"
-              icon={<ReloadOutlined />}
-              onClick={() => handleUpgrade(r.id)}
->
-              升级
-            </Button>
+            <Tooltip title={isAdmin ? undefined : '仅管理员可升级部署'}>
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                onClick={() => handleUpgrade(r.id)}
+                disabled={!isAdmin}
+              >
+                升级
+              </Button>
+            </Tooltip>
           )}
           {(r.status === 'running' || r.status === 'deploying') && (
             <Popconfirm
               title="确认停止？"
               onConfirm={() => handleStop(r.id)}
               okText="停止" okButtonProps={{ danger: true }}
->
-              <Button size="small" danger icon={<StopOutlined />}>停止</Button>
+              disabled={!isAdmin}
+            >
+              <Tooltip title={isAdmin ? undefined : '仅管理员可停止部署'}>
+                <Button size="small" danger icon={<StopOutlined />} disabled={!isAdmin}>停止</Button>
+              </Tooltip>
             </Popconfirm>
           )}
           {(r.status === 'stopped' || r.status === 'failed') && (
-            <Button
-              size="small"
-              type="primary"
-              icon={<RocketOutlined />}
-              onClick={() => { deployForm.setFieldValue('executorId', r.executorId); setDeployModalOpen(true); }}
-            >
-              重新部署
-            </Button>
+            <Tooltip title={isAdmin ? undefined : '仅管理员可部署应用'}>
+              <Button
+                size="small"
+                type="primary"
+                icon={<RocketOutlined />}
+                onClick={() => { deployForm.setFieldValue('executorId', r.executorId); setDeployModalOpen(true); }}
+                disabled={!isAdmin}
+              >
+                重新部署
+              </Button>
+            </Tooltip>
           )}
         </Space>
-      ),
+        );
+      },
     },
   ];
 
@@ -272,24 +420,30 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
               description="将对所有运行中实例触发 git pull + 重启"
               onConfirm={handleUpgradeAll}
               okText="确认升级" okButtonProps={{ icon: <UpCircleOutlined /> }}
+              disabled={!isAdmin}
             >
-              <Button
-                icon={<UpCircleOutlined />}
-                loading={upgradingAll}
-                size="small"
-              >
-                升级所有
-              </Button>
+              <Tooltip title={isAdmin ? undefined : '仅管理员可升级部署'}>
+                <Button
+                  icon={<UpCircleOutlined />}
+                  loading={upgradingAll}
+                  size="small"
+                  disabled={!isAdmin}
+                >
+                  升级所有
+                </Button>
+              </Tooltip>
             </Popconfirm>
           )}
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={openDeployModal}
-            disabled={onlineExecutors.length === 0}
-          >
-            新建部署
-          </Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可部署应用'}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={openDeployModal}
+              disabled={onlineExecutors.length === 0 || !isAdmin}
+            >
+              新建部署
+            </Button>
+          </Tooltip>
         </Space>
       </div>
 
@@ -303,19 +457,35 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         />
       )}
 
+      {/* DEP-04: 审批待办提示（管理员视角；普通用户只读可见请求在等待） */}
+      {deployments.some(d => d.approvalStatus === 'pending_approval') && (
+        <Alert
+          type="warning"
+          showIcon
+          message={
+            isAdmin
+              ? `有 ${deployments.filter(d => d.approvalStatus === 'pending_approval').length} 个部署请求等待审批（第二人规则：提交者本人不能审批）`
+              : '有部署请求正在等待管理员审批，批准后才会派发到执行器'
+          }
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
       {deployments.length === 0 && !loading ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description="该应用尚未部署"
         >
-          <Button
-            type="primary"
-            icon={<RocketOutlined />}
-            onClick={openDeployModal}
-            disabled={onlineExecutors.length === 0}
-          >
-            立即部署
-          </Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可部署应用'}>
+            <Button
+              type="primary"
+              icon={<RocketOutlined />}
+              onClick={openDeployModal}
+              disabled={onlineExecutors.length === 0 || !isAdmin}
+            >
+              立即部署
+            </Button>
+          </Tooltip>
         </Empty>
       ) : (
         <Table
@@ -398,6 +568,32 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
             )}
           </div>
         )}
+      </Modal>
+
+      {/* DEP-04: 拒绝理由 Modal（reason 可选 ≤200，随审批留痕与审计落库） */}
+      <Modal
+        title="拒绝部署请求"
+        open={!!rejectTarget}
+        onOk={handleReject}
+        onCancel={() => setRejectTarget(null)}
+        confirmLoading={rejecting}
+        okText="确认拒绝"
+        okButtonProps={{ danger: true, icon: <CloseOutlined /> }}
+      >
+        {rejectTarget && (
+          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            拒绝后该部署请求将终止（不会派发到执行器 {rejectTarget.executorAddress}），提交人可重新发起。
+          </Text>
+        )}
+        <Form form={rejectForm} layout="vertical">
+          <Form.Item
+            name="reason"
+            label="拒绝理由（可选）"
+            rules={[{ max: 200, message: '理由不能超过 200 字' }]}
+          >
+            <Input.TextArea rows={3} maxLength={200} showCount placeholder="例如：未走变更评审" />
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   );

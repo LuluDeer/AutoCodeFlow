@@ -71,3 +71,29 @@ export function buildExecutorPayload(
   }
   return payload;
 }
+
+/**
+ * W-21: requirements 提交序列化（与 buildExecutorPayload 同层的纯逻辑，
+ * 独立可测）。表单控件是 antd Select tags 模式，值已是 string[]：
+ *  - 逐项 trim、丢空项（标签模式误触空格会产出 ""）；
+ *  - 空集必须**显式 null** 而非缺省/delete——后端 PATCH 是
+ *    Object.assign 语义（N28 教训：缺省字段=保留旧值），删除全部依赖
+ *    若不发 null 会"界面已清空、后端仍安装旧依赖"。
+ * 字段未挂载（glue 任务等不渲染该项）→ undefined 同样归一为 null，
+ * 与执行器端"glue 任务清零 requirements"的既有语义一致，无副作用。
+ */
+export function applyRequirementsPayload(
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  const payload = { ...values };
+  const raw = payload.requirements;
+  if (Array.isArray(raw)) {
+    const cleaned = raw
+      .map((r) => (typeof r === 'string' ? r.trim() : ''))
+      .filter((r) => r.length > 0);
+    payload.requirements = cleaned.length > 0 ? cleaned : null;
+  } else {
+    payload.requirements = null;
+  }
+  return payload;
+}

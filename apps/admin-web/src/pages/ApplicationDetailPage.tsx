@@ -9,17 +9,31 @@ import {
   RocketOutlined, RobotOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { applicationsApi, Application, VersionHistoryEntry } from '../api/applications';
+import { applicationsApi, Application, VersionHistoryEntry, AppReleaseRow } from '../api/applications';
 import { aiApi, AppHealthReport } from '../api/ai';
 import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+import { useAuthStore, isAdminUser } from '../store/auth';
+import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
+import StateError from '../components/StateError';
+
+/**
+ * W3 RBAC（对齐 settings 页先例）：应用详情页内的写操作——同步任务、保存应用设置、
+ * 回滚、AI 分析——后端已收紧为 @Roles(ADMIN)。普通用户按钮禁用并提示（读面保持可见）。
+ */
+function useIsAdmin() {
+  const user = useAuthStore((s) => s.user);
+  return isAdminUser(user);
+}
 
 // ─── AI Analysis Tab ────────────────────────────────────────────────────────────
 function AiAnalysisTab({ appId }: { appId: string }) {
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<AppHealthReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const isAdmin = useIsAdmin();
 
   const runAnalysis = useCallback(async () => {
     setLoading(true);
@@ -37,14 +51,20 @@ function AiAnalysisTab({ appId }: { appId: string }) {
   return (
     <Card
       title={<span><RobotOutlined /> AI 健康分析</span>}
-      extra={<Button icon={<ReloadOutlined />} onClick={runAnalysis} loading={loading}>重新分析</Button>}
+      extra={(
+        <Tooltip title={isAdmin ? undefined : '仅管理员可执行 AI 分析'}>
+          <Button icon={<ReloadOutlined />} onClick={runAnalysis} loading={loading} disabled={!isAdmin}>重新分析</Button>
+        </Tooltip>
+      )}
     >
       {!report && !loading && !error && (
         <Empty
           description="点击「重新分析」让 AI 分析该应用的健康状态"
           image={<RobotOutlined style={{ fontSize: 48, color: '#1677ff' }} />}
         >
-          <Button type="primary" icon={<RobotOutlined />} onClick={runAnalysis}>开始分析</Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可执行 AI 分析'}>
+            <Button type="primary" icon={<RobotOutlined />} onClick={runAnalysis} disabled={!isAdmin}>开始分析</Button>
+          </Tooltip>
         </Empty>
       )}
       {loading && <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="AI 分析中…" size="large" /></div>}
@@ -98,7 +118,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
   );
 }
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 const STATUS_COLORS: Record<string, string> = {
   active: 'green', deploying: 'blue', failed: 'red',
@@ -174,8 +194,10 @@ function OverviewTab({ app }: { app: Application }) {
           <Collapse ghost>
             <Collapse.Panel header="查看详情" key="manifest">
               <pre style={{
-                background: '#1e1e1e', color: '#d4d4d4', padding: 16,
+                // UI-02：清单 pre 块双主题（同 SSE 日志区变量）
+                background: 'var(--log-bg)', color: 'var(--log-text)', padding: 16,
                 borderRadius: 8, maxHeight: 300, overflow: 'auto', fontSize: 13,
+                fontFamily: 'var(--font-mono)',
               }}>
                 {JSON.stringify(app.manifest, null, 2)}
               </pre>
@@ -192,6 +214,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
   const nav = useNavigate();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
+  const isAdmin = useIsAdmin();
 
   const fetchTasks = useCallback(async () => {
     setLoading(true);
@@ -208,8 +231,8 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
       variant="borderless"
       extra={
         <Space>
-          <Tooltip title="重新解析 manifest.json 并注册任务">
-            <Button loading={syncing} icon={<SyncOutlined />} onClick={onSync} size="small">同步任务</Button>
+          <Tooltip title={isAdmin ? '重新解析 manifest.json 并注册任务' : '仅管理员可同步任务'}>
+            <Button loading={syncing} icon={<SyncOutlined />} onClick={onSync} size="small" disabled={!isAdmin}>同步任务</Button>
           </Tooltip>
           <Button type="primary" size="small" onClick={() => nav(`/tasks/new?applicationId=${appId}`)}>新建任务</Button>
           <Button icon={<ReloadOutlined />} size="small" onClick={fetchTasks}>刷新</Button>
@@ -253,6 +276,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
 function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Application) => void }) {
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
+  const isAdmin = useIsAdmin();
 
   useEffect(() => {
     form.setFieldsValue({
@@ -312,7 +336,9 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
           <Input placeholder="src/tasks/index.js" />
         </Form.Item>
         <Form.Item>
-          <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving}>保存修改</Button>
+          <Tooltip title={isAdmin ? undefined : '仅管理员可修改应用设置'}>
+            <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!isAdmin}>保存修改</Button>
+          </Tooltip>
         </Form.Item>
       </Form>
     </Card>
@@ -326,6 +352,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
   const [records, setRecords] = useState<VersionRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [rollingBack, setRollingBack] = useState<string | null>(null);
+  const isAdmin = useIsAdmin();
 
   const getVersionKey = (record: VersionRecord) => record.id ?? record.deploymentId ?? `${record.version ?? 'unknown'}-${record.commit ?? 'none'}-${record.createdAt ?? record.deployedAt ?? 'unknown'}`;
 
@@ -403,11 +430,11 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
               const rollbackDisabled = !!record.id && record.status !== 'released';
               if (isCurrent) return <Tag color="green">当前版本</Tag>;
               return (
-                <Tooltip title={rollbackDisabled ? '仅已发布版本可回滚' : undefined}>
+                <Tooltip title={rollbackDisabled ? '仅已发布版本可回滚' : !isAdmin ? '仅管理员可回滚' : undefined}>
                   <Button
                     size="small"
                     danger
-                    disabled={rollbackDisabled}
+                    disabled={rollbackDisabled || !isAdmin}
                     loading={rollingBack === key}
                     onClick={() => handleRollback(key, record.version)}
                   >
@@ -422,6 +449,133 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
         loading={loading} size="small"
         pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 个版本` }}
         locale={{ emptyText: '暂无版本历史' }}
+      />
+    </Card>
+  );
+}
+
+// ─── Releases（DEP-01 统一发布追溯）───────────────────────────────────────────
+const RELEASE_DEPLOY_STATUS_COLORS: Record<string, string> = {
+  running: 'green', stopped: 'default', failed: 'red', deploying: 'blue', upgrading: 'blue', pending: 'default',
+};
+const RELEASE_DEPLOY_STATUS_LABELS: Record<string, string> = {
+  pending: '等待中', deploying: '部署中', running: '运行中', stopped: '已停止', failed: '失败', upgrading: '升级中',
+};
+const RELEASE_TRIGGER_LABELS: Record<string, string> = {
+  upgrade: '滚动升级', manual: '手动部署', unknown: '未知',
+};
+
+function ReleasesTab({ app }: { app: Application }) {
+  const [rows, setRows] = useState<AppReleaseRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
+
+  const fetchReleases = useCallback(async (p: number) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await applicationsApi.getReleases(app.id, p, 20);
+      setRows(res.data ?? []);
+      setTotal(res.total ?? 0);
+      setPage(res.page ?? p);
+    } catch (err: unknown) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [app.id]);
+
+  useEffect(() => { fetchReleases(1); }, [fetchReleases]);
+
+  const columns = [
+    {
+      title: '版本', dataIndex: 'version', width: 150,
+      render: (v: string | null, r: AppReleaseRow) => (
+        <Space size={4}>
+          {v ? <Tag color="blue" data-testid="release-version">{v}</Tag> : <Tag>未知</Tag>}
+          {r.synthetic && (
+            <Tooltip title="该部署记录未保存版本快照（历史数据合成行）">
+              <Tag style={{ fontSize: 11 }}>合成</Tag>
+            </Tooltip>
+          )}
+          {r.deploymentCount > 1 && (
+            <Tooltip title={`该版本共部署 ${r.deploymentCount} 次`}>
+              <Tag color="default" style={{ fontSize: 11 }}>{r.deploymentCount}次</Tag>
+            </Tooltip>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: 'Commit', dataIndex: 'gitCommit', width: 110,
+      render: (v: string | null) => (v ? <Text code>{v.slice(0, 8)}</Text> : '-'),
+    },
+    {
+      title: '部署状态', dataIndex: 'deploymentStatus', width: 100,
+      render: (v: string | null) =>
+        v ? (
+          <Tag color={RELEASE_DEPLOY_STATUS_COLORS[v] || 'default'}>
+            {RELEASE_DEPLOY_STATUS_LABELS[v] || v}
+          </Tag>
+        ) : (
+          <Text type="secondary">未部署</Text>
+        ),
+    },
+    {
+      title: '触发方式', dataIndex: 'triggerType', width: 100,
+      render: (v: string | null) => (v ? <Tag>{RELEASE_TRIGGER_LABELS[v] || v}</Tag> : '-'),
+    },
+    { title: '执行器', dataIndex: 'executorAddress', ellipsis: true, render: (v: string | null) => v || '-' },
+    {
+      title: '部署时间', dataIndex: 'deployedAt', width: 170,
+      render: (v: string | null, r: AppReleaseRow) => {
+        const t = v ?? r.createdAt;
+        return t ? new Date(t).toLocaleString('zh-CN') : '-';
+      },
+    },
+    {
+      title: '操作人', dataIndex: 'operator', width: 110,
+      render: (v: string | null) =>
+        v ? v : (
+          <Tooltip title="当前所有写入路径均未记录部署操作人（application_versions.createdBy 未填充），来源扩展属后续任务">
+            <Text type="secondary">—</Text>
+          </Tooltip>
+        ),
+    },
+  ];
+
+  if (error) {
+    // UI-08：页内错误态标准块（重试 + 复制错误信息），整页不炸
+    return (
+      <Card variant="borderless">
+        <StateError
+          error={error}
+          onRetry={() => fetchReleases(1)}
+          title="加载版本追溯失败"
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={() => fetchReleases(page)}>刷新</Button>}>
+      <Table<AppReleaseRow>
+        rowKey={(r) => r.id ?? r.latestDeploymentId ?? `${r.version ?? 'unknown'}-${r.createdAt ?? 'none'}`}
+        columns={columns}
+        dataSource={rows}
+        loading={loading}
+        size="small"
+        data-testid="releases-table"
+        pagination={{
+          current: page,
+          pageSize: 20,
+          total,
+          showTotal: (t) => `共 ${t} 个版本`,
+          onChange: (p) => fetchReleases(p),
+        }}
+        locale={{ emptyText: '暂无发布记录（该应用还没有版本快照或部署历史）' }}
       />
     </Card>
   );
@@ -462,34 +616,27 @@ export default function ApplicationDetailPage() {
     finally { setSyncing(false); }
   };
 
-  if (loading) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
+  // UI-08：首屏加载以骨架屏替代裸 Spin
+  if (loading) return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
   if (!app) return <Empty description="应用不存在" />;
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/applications')}>返回</Button>
-        <Button icon={<ReloadOutlined />} onClick={fetchApp}>刷新</Button>
-      </Space>
-
-      <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
-        <Col>
-          <Space align="center">
-            {app.gitRepo && <GithubOutlined style={{ fontSize: 20 }} />}
-            <Title level={4} style={{ margin: 0 }}>{app.name}</Title>
-            <Tag color={STATUS_COLORS[app.status] || 'default'}>
-              {STATUS_LABELS[app.status] || app.status}
-            </Tag>
-            {app.gitBranch && <Tag>{app.gitBranch}</Tag>}
-            <Tag color="blue">{app.version}</Tag>
-          </Space>
-        </Col>
-        <Col>
-          <Button type="primary" icon={<RocketOutlined />} onClick={() => setSearchParams({ tab: 'deployments' })}>
-            新建部署
-          </Button>
-        </Col>
-      </Row>
+      {/* UI-03/UI-08：页头标准化（返回/刷新迁入 extra，面包屑声明二级层级） */}
+      <PageHeader
+        title={app.name}
+        description="应用配置、版本与部署管理"
+        breadcrumb={[{ title: '应用管理', to: '/applications' }, { title: app.name }]}
+        extra={
+          <>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/applications')}>返回</Button>
+            <Button icon={<ReloadOutlined />} onClick={fetchApp}>刷新</Button>
+            <Button type="primary" icon={<RocketOutlined />} onClick={() => setSearchParams({ tab: 'deployments' })}>
+              新建部署
+            </Button>
+          </>
+        }
+      />
 
       <Tabs
         activeKey={activeTab}
@@ -511,6 +658,12 @@ export default function ApplicationDetailPage() {
             key: 'versions',
             label: <span><HistoryOutlined /> 版本历史</span>,
             children: <VersionHistoryTab app={app} onAppReload={fetchApp} />,
+          },
+          // DEP-01：统一发布追溯（版本 × 最近一次部署一屏追溯）
+          {
+            key: 'releases',
+            label: <span><HistoryOutlined /> 版本追溯</span>,
+            children: <ReleasesTab app={app} />,
           },
           {
             key: 'settings',

@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   UseInterceptors,
   UploadedFile,
@@ -13,6 +14,7 @@ import {
   BadRequestException,
   UnauthorizedException,
   InternalServerErrorException,
+  ServiceUnavailableException,
   Headers,
   Req,
 } from "@nestjs/common";
@@ -26,18 +28,41 @@ import {
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { UserRole } from "../users/entities/user.entity";
 import { ApplicationService } from "./application.service";
 import { AppDeploymentService } from "./app-deployment.service";
+import { DeploymentTriggerType } from "./entities/app-deployment.entity";
 import {
   CreateApplicationDto,
   UpdateApplicationDto,
   UploadApplicationDto,
 } from "./dto/application.dto";
 import { AppReleaseWebhookDto } from "./dto/app-release-webhook.dto";
+import { ListReleasesQueryDto } from "./dto/app-release.dto";
+import { UpgradeAllDto } from "./dto/rollout.dto";
 import * as fs from "fs";
 import * as path from "path";
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Request } from "express";
+import { ConfigService } from "@nestjs/config";
+// SEC-09: 限流分域——upgrade-all/rollback 属集群干预写面，挂中档
+// OPS_THROTTLE（默认 30/min）。装饰器求值期读取属 ARCH-27 显式豁免
+//（见 src/config/throttle-profiles.ts 头注）。
+import { Throttle } from "@nestjs/throttler";
+import { OPS_THROTTLE } from "../../config/throttle-profiles";
+import {
+  ZipGuardError,
+  assertZipSafe,
+  resolveZipGuardLimits,
+} from "../../common/utils/zip-guard.util";
+import {
+  ClamdInfectionError,
+  ClamdUnavailableError,
+  isFailedVerdict,
+  scanBufferWithClamd,
+} from "../../common/utils/clamd-scan.util";
 
 @ApiTags("Application Management")
 @ApiBearerAuth()
@@ -56,12 +81,16 @@ export class ApplicationController {
   constructor(
     private readonly svc: ApplicationService,
     private readonly deploymentSvc: AppDeploymentService,
+    // ARCH-27: API_BASE_URL 经 ConfigService 读取（configuration.ts
+    // app.apiBaseUrl + Joi 注册），取代直读 process.env。
+    private readonly configService: ConfigService,
   ) {}
 
   @Get()
   @ApiOperation({ summary: "Get application list" })
-  findAll() {
-    return this.svc.findAll();
+  // AUTH-01: 可选 projectId 过滤（"default" = 默认项目视图，含未分配行）。
+  findAll(@Query("projectId") projectId?: string) {
+    return this.svc.findAll(projectId);
   }
 
   @Get(":id")
@@ -70,25 +99,38 @@ export class ApplicationController {
     return this.svc.findById(id);
   }
 
+  // R1: application lifecycle (create/update/delete) plus all deployment
+  // management routes below are admin-only — they mutate cluster-level
+  // state (deployments, versions, env vars, git refs) that affects every
+  // executor. Read endpoints (findAll/findById/version history) stay
+  // visible to any authenticated user; the env field on the read surface
+  // is masked the same way notification channel credentials are (see
+  // NotificationConfigService). The @Public() webhook is a CI machine
+  // endpoint with HMAC auth — RolesGuard finds no @Roles metadata on it
+  // and lets the request through after JwtAuthGuard's @Public opt-out.
   @Post()
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create application" })
   create(@Body() dto: CreateApplicationDto) {
     return this.svc.create(dto);
   }
 
   @Put(":id")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Update application" })
   update(@Param("id") id: string, @Body() dto: UpdateApplicationDto) {
     return this.svc.update(id, dto);
   }
 
   @Delete(":id")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Delete application" })
   remove(@Param("id") id: string) {
     return this.svc.remove(id);
   }
 
   @Post("upload")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Upload application package (zip)" })
   @ApiConsumes("multipart/form-data")
   @ApiBody({
@@ -130,23 +172,88 @@ export class ApplicationController {
       throw new BadRequestException("File is not a valid ZIP archive");
     }
 
-    // Save uploaded zip to persistent uploads directory (served as static files)
-    const uploadsDir = path.join(process.cwd(), "uploads", "packages");
-    if (!fs.existsSync(uploadsDir))
-      fs.mkdirSync(uploadsDir, { recursive: true });
-    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const filename = `${safeName}_${Date.now()}.zip`;
-    const zipPath = path.join(uploadsDir, filename);
-    fs.writeFileSync(zipPath, file.buffer);
+    // SEC-05: zip bomb guard — structural central-directory vetting BEFORE
+    // the archive is persisted or advertised to executors. Rejects
+    // high-ratio bombs / entry-count floods / oversized single files /
+    // oversized totals, with bounded nested-zip probing. Fail-closed: any
+    // parse anomaly (including an unreadable structure) is a rejection.
+    try {
+      assertZipSafe(
+        file.buffer,
+        resolveZipGuardLimits(this.configService.get("zipGuard")),
+      );
+    } catch (err: unknown) {
+      if (err instanceof ZipGuardError) {
+        this.logger.warn(
+          `Application package upload rejected by zip-guard [${err.violation}]: ${err.message}`,
+        );
+        throw new BadRequestException(
+          `Package rejected by zip-bomb guard (${err.violation})`,
+        );
+      }
+      throw err;
+    }
 
-    // Build a URL that the executor can use to download the package
+    // SEC-05: optional ClamAV scan hook. CLAMD_ENABLED=false (default) makes
+    // this a no-op. Fail-closed when enabled: an unreachable / timed-out /
+    // errored scanner REJECTS the upload (503) — absence of a verdict is
+    // never an allow. An infection is a 400 with a generic message (the
+    // signature name is logged server-side only).
+    try {
+      const verdict = await scanBufferWithClamd(
+        file.buffer,
+        {
+          enabled: this.configService.get<boolean>("clamd.enabled") === true,
+          host: this.configService.get<string>("clamd.host") || "127.0.0.1",
+          port: this.configService.get<number>("clamd.port") || 3310,
+          timeoutMs: this.configService.get<number>("clamd.timeoutMs") || 10000,
+        },
+        this.logger,
+      );
+      if (isFailedVerdict(verdict)) {
+        if (verdict.reason === "infected") {
+          this.logger.warn(
+            `Application package upload rejected: clamd infection ${verdict.detail}`,
+          );
+          throw new ClamdInfectionError(verdict.detail);
+        }
+        throw new ClamdUnavailableError(
+          verdict.reason === "timeout"
+            ? "timeout"
+            : verdict.reason === "error"
+              ? "error"
+              : "unreachable",
+          verdict.detail,
+        );
+      }
+    } catch (err: unknown) {
+      if (
+        err instanceof ClamdInfectionError ||
+        err instanceof ClamdUnavailableError
+      ) {
+        if (err instanceof ClamdInfectionError) {
+          throw new BadRequestException(
+            "Package rejected: antivirus scan detected a threat",
+          );
+        }
+        throw new ServiceUnavailableException(
+          "Package rejected: antivirus scan is unavailable (fail-closed)",
+        );
+      }
+      throw err;
+    }
+
     // APP-002: packageUrl 会被 executor 节点拉取。旧实现缺 API_BASE_URL 时静默
     // 回退 `http://localhost:PORT`，生成的 URL 在其它机器上不可达，问题被推迟到
     // 部署阶段才暴露。这里选择 fail-fast（使用时记 error 并抛 500）而非从请求
     // Host 推导：上传请求的 Host 可能是 CI 容器的 localhost 或反向代理地址，
     // 静默推导同样会存下不可达的 URL，只是把失败换个地方隐藏；显式报错能在
     // 上传这一步就把配置缺失暴露给调用方。
-    const apiBase = process.env.API_BASE_URL;
+    // R9b: the API_BASE_URL check runs BEFORE anything is written to disk —
+    // the old order (write file → check) leaked an orphan zip on every
+    // misconfigured upload.
+    // ARCH-27: 经 ConfigService 读 app.apiBaseUrl（原直读 process.env）。
+    const apiBase = this.configService.get<string>("app.apiBaseUrl");
     if (!apiBase) {
       this.logger.error(
         "API_BASE_URL is not configured — cannot build a package download URL reachable by executors. Set API_BASE_URL to the externally reachable base URL of this API and retry.",
@@ -155,24 +262,47 @@ export class ApplicationController {
         "API_BASE_URL is not configured; cannot build a package download URL",
       );
     }
+
+    // Save uploaded zip to persistent uploads directory (served as static files)
+    // R9b: async write (fs.promises.writeFile) — no 200 MB synchronous disk
+    // stall on the event loop; and any failure AFTER the write unlinks the
+    // freshly written file so a failed upsert cannot leave orphan zips.
+    const uploadsDir = path.join(process.cwd(), "uploads", "packages");
+    if (!fs.existsSync(uploadsDir))
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const filename = `${safeName}_${Date.now()}.zip`;
+    const zipPath = path.join(uploadsDir, filename);
+    await fs.promises.writeFile(zipPath, file.buffer);
     const packageUrl = `${apiBase}/uploads/packages/${filename}`;
 
     // Upsert the application record: create if not exists, update packageUrl if exists.
     // This makes upload idempotent and supports iterative releases.
-    const existing = await this.svc.findByName(name);
     let app;
-    if (existing) {
-      app = await this.svc.update(existing.id, {
-        packageUrl,
-        ...(runtime ? { runtime } : {}),
-      });
-    } else {
-      app = await this.svc.create({
-        name,
-        packageUrl,
-        runtime: runtime || "python",
-        version: "1.0.0",
-      });
+    try {
+      const existing = await this.svc.findByName(name);
+      if (existing) {
+        app = await this.svc.update(existing.id, {
+          packageUrl,
+          ...(runtime ? { runtime } : {}),
+        });
+      } else {
+        app = await this.svc.create({
+          name,
+          packageUrl,
+          runtime: runtime || "python",
+          version: "1.0.0",
+        });
+      }
+    } catch (err: unknown) {
+      // R9b: DB upsert failed after the file landed — best-effort unlink so
+      // the failed upload does not leave an orphan file behind.
+      try {
+        await fs.promises.unlink(zipPath);
+      } catch {
+        // best-effort
+      }
+      throw err;
     }
     return app;
   }
@@ -313,26 +443,61 @@ export class ApplicationController {
     return this.deploymentSvc.getVersionHistory(id);
   }
 
+  /**
+   * DEP-01 统一资源：版本 × 部署一屏追溯（每行 = 一次版本发布，聚合包地址/
+   * 最近一次部署时间、状态、触发方式、操作人）。只读端点，与 findAll/findById/
+   * versions 同权限面——任意认证用户可见（类级 JwtAuthGuard），不写入、不改 schema。
+   * 旧端点 GET /applications/:id/versions 与 GET /app-deployments 原样保留为
+   * 过渡期 alias（数据同源；过渡期结束另行任务收口）。
+   */
+  @Get(":id/releases")
+  @ApiOperation({
+    summary:
+      "List unified releases (version × latest deployment) for an application",
+    description:
+      "统一发布追溯视图：按版本聚合部署信息，分页默认 50、上限 200。",
+  })
+  listReleases(@Param("id") id: string, @Query() query: ListReleasesQueryDto) {
+    return this.deploymentSvc.getReleases(
+      id,
+      query.page ?? 1,
+      query.pageSize ?? 50,
+    );
+  }
+
+  // SEC-09: 中档限流（应用干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/upgrade-all")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Trigger all running instances to upgrade to latest version",
+    description:
+      "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；" +
+      "rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ " +
+      "健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；" +
+      "任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，" +
+      "admin-api 重启即暂停（行级 rolloutState=failed）。",
   })
-  async upgradeAll(@Param("id") id: string) {
-    await this.svc.findById(id);
-    const deployments = await this.deploymentSvc.findRunningByApp(id);
-    const results = await Promise.allSettled(
-      deployments.map((d) => this.deploymentSvc.upgrade(d.id)),
+  async upgradeAll(
+    @Param("id") id: string,
+    @Body() dto: UpgradeAllDto,
+    // FEAT-20: upgrade-all 逐行落 upgrade 语义 + 操作人用户名。
+    @CurrentUser() user: { id: number; username: string },
+  ) {
+    return this.deploymentSvc.upgradeAllWithRollout(
+      id,
+      dto?.rollout ?? null,
+      user
+        ? {
+            operator: user.username,
+            triggerType: DeploymentTriggerType.UPGRADE,
+          }
+        : undefined,
     );
-    const succeeded = results.filter((r) => r.status === "fulfilled").length;
-    return {
-      ok: true,
-      total: deployments.length,
-      succeeded,
-      failed: deployments.length - succeeded,
-    };
   }
 
   @Post(":id/sync-tasks")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Sync task registration from manifest.json",
     description: "Parse app manifest.json and auto-register task definitions",
@@ -343,6 +508,7 @@ export class ApplicationController {
   }
 
   @Post(":id/analyze")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "AI application health analysis",
     description:
@@ -352,7 +518,10 @@ export class ApplicationController {
     return this.svc.analyzeHealth(id);
   }
 
+  // SEC-09: 中档限流（应用干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/rollback/:deploymentId")
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Rollback application to historical version",
     description:
@@ -361,7 +530,18 @@ export class ApplicationController {
   async rollback(
     @Param("id") appId: string,
     @Param("deploymentId") deploymentId: string,
+    // FEAT-20: 回退链逐行落 rollback 语义 + 操作人用户名。
+    @CurrentUser() user: { id: number; username: string },
   ) {
-    return this.deploymentSvc.rollbackApplication(appId, deploymentId);
+    return this.deploymentSvc.rollbackApplication(
+      appId,
+      deploymentId,
+      user
+        ? {
+            operator: user.username,
+            triggerType: DeploymentTriggerType.ROLLBACK,
+          }
+        : undefined,
+    );
   }
 }

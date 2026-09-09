@@ -10,6 +10,9 @@ import { SKIP_TIMEOUT_KEY } from "../../../common/decorators/skip-timeout.decora
 describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
   const makeDeps = () => {
     const taskService = {
+      getExecution: jest
+        .fn()
+        .mockResolvedValue({ id: "exec-1", taskId: "task-1" }),
       acquireSseSlot: jest.fn().mockReturnValue(jest.fn()),
       streamExecutionLogs: jest.fn().mockResolvedValue(undefined),
     };
@@ -34,8 +37,9 @@ describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
     });
     res.setHeader.mockImplementation(() => order.push("header"));
 
-    await controller.streamLogs("exec-1", req, res);
+    await controller.streamLogs("task-1", "exec-1", req, res);
 
+    expect(taskService.getExecution).toHaveBeenCalledWith("exec-1", "task-1");
     expect(order[0]).toBe("acquire");
     expect(order).toContain("header");
   });
@@ -46,9 +50,9 @@ describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
       throw new ServiceUnavailableException("Too many concurrent log streams");
     });
 
-    await expect(controller.streamLogs("exec-1", req, res)).rejects.toThrow(
-      ServiceUnavailableException,
-    );
+    await expect(
+      controller.streamLogs("task-1", "exec-1", req, res),
+    ).rejects.toThrow(ServiceUnavailableException);
     // 响应头未写出 → 全局异常过滤器可以正常返回 503 JSON
     expect(res.setHeader).not.toHaveBeenCalled();
     expect(res.flushHeaders).not.toHaveBeenCalled();
@@ -59,7 +63,7 @@ describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
     const release = jest.fn();
     taskService.acquireSseSlot.mockReturnValue(release);
 
-    await controller.streamLogs("exec-1", req, res);
+    await controller.streamLogs("task-1", "exec-1", req, res);
 
     expect(taskService.streamExecutionLogs).toHaveBeenCalledWith(
       "exec-1",
@@ -67,8 +71,36 @@ describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
       expect.any(Function),
       expect.anything(),
       release,
+      // QA3: the raw ping sink is handed to the service as the 6th arg
+      expect.any(Function),
     );
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  // QA3: the idle keep-alive is a raw SSE comment frame — it must bypass the
+  // `data:` framing of `send` (EventSource ignores comment lines) and must
+  // never write onto an already-ended response.
+  it("QA3: the ping sink writes a raw comment frame and skips an ended response", async () => {
+    const { controller, taskService, req, res } = makeDeps();
+    await controller.streamLogs("task-1", "exec-1", req, res);
+
+    const call = taskService.streamExecutionLogs.mock.calls[0];
+    const send = call[1];
+    const ping = call[5];
+
+    // data frames keep the JSON framing
+    send("hello");
+    expect(res.write).toHaveBeenLastCalledWith(`data: "hello"\n\n`);
+    // ping is a bare comment frame
+    (res.write as jest.Mock).mockClear();
+    ping();
+    expect(res.write).toHaveBeenCalledWith(`: ping\n\n`);
+
+    // after done() ends the response, ping must be a no-op
+    (res.write as jest.Mock).mockClear();
+    res.writableEnded = true;
+    ping();
+    expect(res.write).not.toHaveBeenCalled();
   });
 
   it("releases the slot exactly once when the stream errors", async () => {
@@ -77,7 +109,7 @@ describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
     taskService.acquireSseSlot.mockReturnValue(release);
     taskService.streamExecutionLogs.mockRejectedValue(new Error("db down"));
 
-    await controller.streamLogs("exec-1", req, res);
+    await controller.streamLogs("task-1", "exec-1", req, res);
 
     expect(res.write).toHaveBeenCalledWith(
       expect.stringContaining("event: error"),

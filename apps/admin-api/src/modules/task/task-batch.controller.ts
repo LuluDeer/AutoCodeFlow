@@ -13,6 +13,11 @@ import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { TaskService } from "./task.service";
 import { BatchTaskIdsDto } from "./dto/batch-task.dto";
 import { AuditService } from "../audit/audit.service";
+// SEC-09: 限流分域——批量触发属触发写面，挂中档 OPS_THROTTLE（默认
+// 30/min，批量入口一次请求即派发 N 个执行，比单任务 trigger 更该限）。
+// 装饰器求值期读取属 ARCH-27 显式豁免（见 src/config/throttle-profiles.ts）。
+import { Throttle } from "@nestjs/throttler";
+import { OPS_THROTTLE } from "../../config/throttle-profiles";
 
 /**
  * Batch operations controller — separate controller to avoid :id param route conflicts
@@ -28,6 +33,7 @@ export class TaskBatchController {
     private readonly audit: AuditService,
   ) {}
 
+  @Throttle({ default: OPS_THROTTLE })
   @Post("trigger")
   @ApiOperation({
     summary: "Batch trigger tasks",

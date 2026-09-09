@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "nest build",
+    "build": "nest build -p tsconfig.build.json",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -19,6 +19,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "typecheck": "tsc --noEmit",
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli",
+    "swagger:export": "jest --config ./test/jest-e2e.json -t \"OpenAPI export\"",
     "migration:run": "npm run typeorm -- migration:run -d src/data-source.ts",
     "migration:revert": "npm run typeorm -- migration:revert -d src/data-source.ts",
     "migration:generate": "npm run typeorm -- migration:generate -d src/data-source.ts"
@@ -35,6 +36,7 @@
     "@nestjs/swagger": "^11.4.5",
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/typeorm": "^11.0.3",
+    "@opentelemetry/api": "^1.9.1",
     "@types/multer": "^2.1.0",
     "@types/redis": "^4.0.10",
     "axios": "^1.17.0",
@@ -42,6 +44,7 @@
     "bullmq": "^6.1.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.0",
+    "form-data": "^4.0.6",
     "helmet": "^8.2.0",
     "ioredis": "^5.3.2",
     "joi": "^18.2.1",
@@ -97,22 +100,30 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": [
-      "**/*.(t|j)s"
+      "**/*.(t|j)s",
+      "!main.ts",
+      "!app.module.ts",
+      "!data-source.ts",
+      "!config/configuration.ts",
+      "!common/filters/http-exception.filter.ts",
+      "!common/utils/shutdown-guard.util.ts",
+      "!migrations/**"
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node",
     "coverageThreshold": {
       "global": {
-        "branches": 58,
-        "functions": 56,
-        "lines": 69,
-        "statements": 68
+        "branches": 75,
+        "functions": 69,
+        "lines": 84,
+        "statements": 84
       }
     }
   },
   "overrides": {
     "@nestjs/swagger": {
       "js-yaml": "5.2.3"
-    }
+    },
+    "multer": "2.3.0"
   }
 }

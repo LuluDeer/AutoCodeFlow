@@ -1,8 +1,10 @@
 import "reflect-metadata";
 import { CallHandler, ExecutionContext } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
-import { Observable, firstValueFrom, timer } from "rxjs";
+import { ConfigService } from "@nestjs/config";
+import { firstValueFrom, timer } from "rxjs";
 import { mapTo } from "rxjs/operators";
+import { TimeoutInterceptor } from "./timeout.interceptor";
 import {
   SKIP_TIMEOUT_KEY,
   SkipTimeout,
@@ -13,22 +15,19 @@ import {
  * route — the SSE log stream was cut by the global 30 s timeout(). These
  * tests pin the interceptor's metadata-driven bypass so the exemption on
  * TaskController.streamLogs actually works.
+ *
+ * ARCH-27: the timeout budget is no longer a module-load-time
+ * process.env.REQUEST_TIMEOUT_MS read — it comes from ConfigService
+ * (app.requestTimeoutMs, registered in configuration.ts). Tests inject a
+ * stub ConfigService instead of mutating env before an isolateModules load.
  */
 
-// REQUEST_TIMEOUT_MS is read once at module load — set a short budget and
-// load the interceptor fresh through isolateModules so it picks it up.
-process.env.REQUEST_TIMEOUT_MS = "50";
-
-function loadInterceptor(): new (reflector: Reflector) => {
-  intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown>;
-} {
-  let ctor: any;
-  jest.isolateModules(() => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    ctor = require("../interceptors/timeout.interceptor").TimeoutInterceptor;
-  });
-  return ctor;
-}
+const makeConfig = (timeoutMs: number | undefined) =>
+  ({
+    get: jest.fn((key: string) =>
+      key === "app.requestTimeoutMs" ? timeoutMs : undefined,
+    ),
+  }) as unknown as ConfigService;
 
 class FixtureController {
   @SkipTimeout()
@@ -61,8 +60,7 @@ describe("TimeoutInterceptor — SKIP_TIMEOUT bypass", () => {
   });
 
   it("returns next.handle() untouched (no timeout pipe) for exempted handlers", () => {
-    const Interceptor = loadInterceptor();
-    const interceptor = new Interceptor(reflector);
+    const interceptor = new TimeoutInterceptor(reflector, makeConfig(50));
     const source$ = slowSource(10, "ok");
     const next: CallHandler = { handle: () => source$ };
 
@@ -76,8 +74,7 @@ describe("TimeoutInterceptor — SKIP_TIMEOUT bypass", () => {
   });
 
   it("wraps the observable (timeout applied) for handlers without metadata", () => {
-    const Interceptor = loadInterceptor();
-    const interceptor = new Interceptor(reflector);
+    const interceptor = new TimeoutInterceptor(reflector, makeConfig(50));
     const source$ = slowSource(10, "ok");
     const next: CallHandler = { handle: () => source$ };
 
@@ -90,16 +87,12 @@ describe("TimeoutInterceptor — SKIP_TIMEOUT bypass", () => {
   });
 
   it("aborts a slow non-exempt handler with RequestTimeoutException", async () => {
-    const Interceptor = loadInterceptor();
-    const interceptor = new Interceptor(reflector);
+    const interceptor = new TimeoutInterceptor(reflector, makeConfig(50));
     const result$ = interceptor.intercept(
       makeCtx(FixtureController.prototype.normal),
       { handle: () => slowSource(200, "late") },
     );
 
-    // isolateModules gives the interceptor its own copy of @nestjs/common,
-    // so instanceof against the outer import would fail despite the class
-    // being identical — assert the observable contract (name + 408) instead.
     await expect(
       firstValueFrom(result$).catch((e: any) => ({
         name: e?.constructor?.name,
@@ -109,13 +102,56 @@ describe("TimeoutInterceptor — SKIP_TIMEOUT bypass", () => {
   });
 
   it("lets a slow exempted handler (SSE-style stream) run past the timeout", async () => {
-    const Interceptor = loadInterceptor();
-    const interceptor = new Interceptor(reflector);
+    const interceptor = new TimeoutInterceptor(reflector, makeConfig(50));
     const result$ = interceptor.intercept(
       makeCtx(FixtureController.prototype.exempted),
       { handle: () => slowSource(120, "late") },
     );
 
     await expect(firstValueFrom(result$)).resolves.toBe("late");
+  });
+});
+
+describe("TimeoutInterceptor — timeout budget source (ARCH-27)", () => {
+  const reflector = new Reflector();
+
+  it("reads the budget from ConfigService via app.requestTimeoutMs", async () => {
+    const config = makeConfig(50);
+    const interceptor = new TimeoutInterceptor(reflector, config);
+    const result$ = interceptor.intercept(
+      makeCtx(FixtureController.prototype.normal),
+      {
+        handle: () => slowSource(200, "late"),
+      },
+    );
+
+    await expect(firstValueFrom(result$)).rejects.toMatchObject({
+      status: 408,
+    });
+    expect(config.get).toHaveBeenCalledWith("app.requestTimeoutMs");
+  });
+
+  it("falls back to the 30 s default when ConfigService has no value", () => {
+    // 无注入值时不能抛错（main.ts 兜底路径 / 裸构造场景）。
+    const interceptor = new TimeoutInterceptor(
+      reflector,
+      makeConfig(undefined),
+    );
+    const source$ = slowSource(10, "ok");
+    const next: CallHandler = { handle: () => source$ };
+    expect(() =>
+      interceptor.intercept(makeCtx(FixtureController.prototype.normal), next),
+    ).not.toThrow();
+  });
+
+  it("stays constructible without ConfigService (compat with bare `new`)", () => {
+    const interceptor = new TimeoutInterceptor(reflector);
+    const source$ = slowSource(10, "ok");
+    const next: CallHandler = { handle: () => source$ };
+    const result = interceptor.intercept(
+      makeCtx(FixtureController.prototype.normal),
+      next,
+    );
+    expect(result).not.toBe(source$);
   });
 });

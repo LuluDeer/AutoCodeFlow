@@ -38,9 +38,9 @@ describe("NotificationConfigService", () => {
   });
 
   describe("getAllChannels", () => {
-    it("should return all 5 default channels", () => {
+    it("should return all 6 default channels (NF-05: feishu joined)", () => {
       const channels = service.getAllChannels();
-      expect(channels).toHaveLength(5);
+      expect(channels).toHaveLength(6);
       const keys = channels.map((c) => c.key);
       expect(keys).toContain("email");
       expect(keys).toContain("slack");
@@ -48,6 +48,8 @@ describe("NotificationConfigService", () => {
       expect(keys).toContain("wecom");
       // N32 (round-9): webhook joined the PATCH-able enum (V2 §7.1 gap).
       expect(keys).toContain("webhook");
+      // NF-05: feishu（飞书自定义机器人）加入可配置枚举。
+      expect(keys).toContain("feishu");
     });
 
     it("should have all channels disabled by default", () => {
@@ -149,7 +151,17 @@ describe("NotificationConfigService", () => {
   // R8 (N29): testChannel must test the REQUESTED channel only, honor the
   // optional unsaved config override, and report the real per-channel result
   // instead of an unconditional success:true.
-  describe("testChannel (N29)", () => {
+  // R2: the override is now a request-scoped argument to the channel's
+  // send() — it is NEVER published to ChannelConfigStore. The old
+  // test-time publish/restore dance is gone.
+  describe("testChannel (N29 + R2)", () => {
+    // The new flow calls NotificationService.testChannel(payload, key,
+    // override) instead of sendToChannels. The spec mocks the dedicated
+    // method on the partial mock used by the test module.
+    const setTestChannel = (impl: (...args: unknown[]) => unknown) => {
+      (notificationService as any).testChannel = jest.fn(impl);
+    };
+
     it("should throw BadRequestException for unknown channel key", async () => {
       await expect(service.testChannel("telegram", {})).rejects.toThrow(
         BadRequestException,
@@ -160,24 +172,16 @@ describe("NotificationConfigService", () => {
     });
 
     it("returns success only when the channel reports 'sent', with results", async () => {
-      (notificationService.sendToChannels as jest.Mock).mockResolvedValue({
-        slack: "sent",
-      });
+      setTestChannel(async () => "sent");
       const result = await service.testChannel("slack", {});
       expect(result.success).toBe(true);
       expect(result.results).toEqual({ slack: "sent" });
-      // only the requested channel is exercised (no full sendAll fan-out)
-      expect(notificationService.sendToChannels).toHaveBeenCalledWith(
-        expect.objectContaining({ title: "AutoFlow Test Notification" }),
-        ["slack"],
-      );
+      // only the requested channel is exercised — no full sendAll fan-out
       expect(notificationService.sendAll).not.toHaveBeenCalled();
     });
 
     it("SSRF-blocked channel is reported as failure, not fake OK", async () => {
-      (notificationService.sendToChannels as jest.Mock).mockResolvedValue({
-        slack: "blocked",
-      });
+      setTestChannel(async () => "blocked");
       const result = await service.testChannel("slack", {});
       expect(result.success).toBe(false);
       expect(result.message).toContain("blocked");
@@ -185,9 +189,7 @@ describe("NotificationConfigService", () => {
     });
 
     it("failed channel is reported as failure", async () => {
-      (notificationService.sendToChannels as jest.Mock).mockResolvedValue({
-        wecom: "failed",
-      });
+      setTestChannel(async () => "failed");
       const result = await service.testChannel("wecom", {});
       expect(result.success).toBe(false);
       expect(result.message).toContain("failed");
@@ -195,70 +197,94 @@ describe("NotificationConfigService", () => {
     });
 
     it("unconfigured channel (skipped) is reported as failure", async () => {
-      (notificationService.sendToChannels as jest.Mock).mockResolvedValue({
-        email: "skipped",
-      });
+      setTestChannel(async () => "skipped");
       const result = await service.testChannel("email", {});
       expect(result.success).toBe(false);
       expect(result.message).toContain("not configured");
     });
 
-    it("sendToChannels throwing still degrades to success:false", async () => {
-      (notificationService.sendToChannels as jest.Mock).mockRejectedValue(
-        new Error("SMTP connection failed"),
-      );
+    it("testChannel throwing still degrades to success:false", async () => {
+      setTestChannel(async () => {
+        throw new Error("SMTP connection failed");
+      });
       const result = await service.testChannel("email", {});
       expect(result.success).toBe(false);
       expect(result.message).toContain("SMTP connection failed");
     });
 
-    it("optional config override is visible to the send path and restored afterwards", async () => {
-      const sendToChannels = notificationService.sendToChannels as jest.Mock;
-      let storeDuringSend: Record<string, string> | undefined;
-      sendToChannels.mockImplementation(
-        async (_p: unknown, channels: string[]) => {
-          if (channels[0] === "slack") storeDuringSend = store.get("slack");
-          return { slack: "sent" };
+    it("R2: optional config override is passed to the channel as request-scoped data, never written to the store", async () => {
+      let receivedOverride: Record<string, string> | undefined;
+      setTestChannel(
+        async (_p: unknown, _c: unknown, override?: Record<string, string>) => {
+          receivedOverride = override;
+          return "sent";
         },
       );
       const result = await service.testChannel("slack", {
         webhookUrl: "https://unsaved.example.com/hook",
       });
       expect(result.success).toBe(true);
-      expect(storeDuringSend).toEqual({
+      // The override reaches the channel as a call argument — NOT the store.
+      expect(receivedOverride).toEqual({
         webhookUrl: "https://unsaved.example.com/hook",
       });
-      // restored: the override did not persist (store holds the pre-test
-      // snapshot — the empty default seeded by loadFromEnv)
+      // store untouched: the empty default seeded by loadFromEnv.
       expect(store.get("slack")).toEqual({});
     });
 
-    it("override restores the previously saved config, and '***' keeps the stored secret", async () => {
+    it("R2: a '***' masked-echo override is filtered out before reaching the channel, preserving the saved secret", async () => {
       service.updateChannel("email", {
         config: { host: "smtp.saved.com", password: "real-secret" },
       });
-      const sendToChannels = notificationService.sendToChannels as jest.Mock;
-      let storeDuringSend: Record<string, string> | undefined;
-      sendToChannels.mockImplementation(
-        async (_p: unknown, channels: string[]) => {
-          if (channels[0] === "email") storeDuringSend = store.get("email");
-          return { email: "sent" };
+      let receivedOverride: Record<string, string> | undefined;
+      setTestChannel(
+        async (_p: unknown, _c: unknown, override?: Record<string, string>) => {
+          receivedOverride = override;
+          return "sent";
         },
       );
       await service.testChannel("email", {
         host: "smtp.unsaved.com",
         password: "***",
       });
-      // masked echo must not clobber the real secret during the test send
-      expect(storeDuringSend).toEqual({
-        host: "smtp.unsaved.com",
-        password: "real-secret",
-      });
-      // saved config fully restored afterwards
+      // override sent to channel has password stripped (echo would clobber
+      // the saved secret inside the channel's merge logic)
+      expect(receivedOverride).toEqual({ host: "smtp.unsaved.com" });
+      // the saved config was never touched
       expect(store.get("email")).toEqual({
         host: "smtp.saved.com",
         password: "real-secret",
       });
+    });
+
+    it("R2: a concurrent test does not poison the channel for other code paths", async () => {
+      // Two back-to-back tests with different overrides; the second must
+      // not see the first's value in the store.
+      setTestChannel(async () => "sent");
+      await service.testChannel("slack", {
+        webhookUrl: "https://first.example.com/hook",
+      });
+      await service.testChannel("slack", {
+        webhookUrl: "https://second.example.com/hook",
+      });
+      expect(store.get("slack")).toEqual({});
+      // the production send path (NotificationService.sendAll /
+      // sendToChannels) was never called from testChannel
+      expect(notificationService.sendAll).not.toHaveBeenCalled();
+    });
+
+    it("R2: when no override is supplied the channel is called with undefined and the store is not mutated", async () => {
+      let receivedOverride: unknown = "sentinel";
+      setTestChannel(
+        async (_p: unknown, _c: unknown, override?: Record<string, string>) => {
+          receivedOverride = override;
+          return "sent";
+        },
+      );
+      await service.testChannel("slack", {});
+      // no override → undefined passed; channels fall back to saved+env
+      expect(receivedOverride).toBeUndefined();
+      expect(store.get("slack")).toEqual({});
     });
   });
 
@@ -528,58 +554,51 @@ describe("NotificationConfigService", () => {
       });
     });
 
-    it("testChannel pins the disabled channel as enabled for the test send, then restores", async () => {
+    it("R2/N37: testChannel does not modify the store (override reaches the channel as a call argument, not via the store)", async () => {
       service.updateChannel("webhook", {
         config: { url: "https://saved.example.com/hook" },
       });
       expect(store.isEnabled("webhook")).toBe(false);
-      const sendToChannels = notificationService.sendToChannels as jest.Mock;
-      let enabledDuringSend: boolean | undefined;
-      let urlDuringSend: string | undefined;
-      sendToChannels.mockImplementation(
-        async (_p: unknown, channels: string[]) => {
-          if (channels[0] === "webhook") {
-            enabledDuringSend = store.isEnabled("webhook");
-            urlDuringSend = store.get("webhook")?.url;
-          }
-          return { webhook: "sent" };
+      let receivedOverride: Record<string, string> | undefined;
+      (notificationService as any).testChannel = jest.fn(
+        async (_p: unknown, _c: unknown, override?: Record<string, string>) => {
+          receivedOverride = override;
+          return "sent";
         },
       );
       const result = await service.testChannel("webhook", {});
       expect(result.success).toBe(true);
-      // the test button validates config BEFORE enabling — pinned live
-      expect(enabledDuringSend).toBe(true);
-      expect(urlDuringSend).toBe("https://saved.example.com/hook");
-      // restored: the disabled state (and saved config) are back
+      // The override is undefined (no admin-form body was supplied). The
+      // channel's WebhookChannel.send reads saved+enabled itself; this
+      // service no longer pins the enabled flag into the global store.
+      expect(receivedOverride).toBeUndefined();
+      // store was never mutated by the test send
       expect(store.isEnabled("webhook")).toBe(false);
       expect(store.get("webhook")).toEqual({
         url: "https://saved.example.com/hook",
       });
     });
 
-    it("testChannel override is published enabled and restores the prior pair", async () => {
+    it("R2/N37: an admin-form url override reaches the channel via the override argument, store stays clean", async () => {
       service.updateChannel("webhook", {
         enabled: true,
         config: { url: "https://saved.example.com/hook" },
       });
-      const sendToChannels = notificationService.sendToChannels as jest.Mock;
-      sendToChannels.mockImplementation(
-        async (_p: unknown, channels: string[]) => {
-          if (channels[0] === "webhook") {
-            expect(store.isEnabled("webhook")).toBe(true);
-            expect(store.get("webhook")).toEqual({
-              url: "https://unsaved.example.com/hook",
-            });
-          }
-          return { webhook: "sent" };
+      let receivedOverride: Record<string, string> | undefined;
+      (notificationService as any).testChannel = jest.fn(
+        async (_p: unknown, _c: unknown, override?: Record<string, string>) => {
+          receivedOverride = override;
+          return "sent";
         },
       );
       const result = await service.testChannel("webhook", {
         url: "https://unsaved.example.com/hook",
       });
       expect(result.success).toBe(true);
-      expect(sendToChannels).toHaveBeenCalled();
-      // restore puts back the saved config AND the enabled=true flag
+      expect(receivedOverride).toEqual({
+        url: "https://unsaved.example.com/hook",
+      });
+      // store is exactly what the admin PATCH-ed — override never written
       expect(store.isEnabled("webhook")).toBe(true);
       expect(store.get("webhook")).toEqual({
         url: "https://saved.example.com/hook",

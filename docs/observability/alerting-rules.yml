@@ -1,7 +1,14 @@
-# AutoCodeFlow — Prometheus 告警规则（第十轮观测）
+# AutoCodeFlow — Prometheus 告警规则（第十轮观测；OBS-02 第十六轮补注）
 #
 # 适用对象：apps/admin-api GET /api/metrics（Prometheus text exposition）。
 # series 名与 label 已与源码逐字核对（见 docs/observability/README.md 附录 A）。
+#
+# OBS-02（第十六轮）：本文件各规则的 `runbook` annotation 是面向 Grafana
+# UI 的相对路径链接。若告警经 Alertmanager 路由到平台通知渠道
+# （POST /api/alerts/webhook，配置样例见 README §3.5），消息中的 runbook
+# 段取自 `annotations.runbook_url`（或 labels.taskId 对应的 tasks.runbook）
+# ——值班场景建议把 `runbook:` 换成/加一行 `runbook_url:`（绝对 URL），
+# 让排障链接直达告警消息。
 #
 # 挂载方式（prometheus.yml）：
 #   rule_files:

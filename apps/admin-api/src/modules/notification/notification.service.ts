@@ -1,19 +1,33 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from "@nestjs/common";
 import { WecomChannel } from "./channels/wecom.channel";
 import { DingtalkChannel } from "./channels/dingtalk.channel";
 import { EmailChannel } from "./channels/email.channel";
 import { SlackChannel } from "./channels/slack.channel";
 import { WebhookChannel } from "./channels/webhook.channel";
+// NF-05: 飞书自定义机器人渠道（渠道白名单第六类，AlertChannel 同步扩展）
+import { FeishuChannel } from "./channels/feishu.channel";
+import { NotificationSilenceService } from "./notification-silence.service";
+import { ChannelConfigStore } from "./channel-config.store";
 import {
   ChannelDeliveryStatus,
   NotificationPayload,
 } from "./channels/base.channel";
+// 可观测性补齐轮：通知投递结果计数埋点入口（模块级纯内存自增，无模块环，
+// 见 metrics/runtime-metrics-entry.ts 注释）。
+import { recordRuntime } from "../metrics/runtime-metrics-entry";
+// FEAT-10: 渠道级模板渲染（单 pass 替换 + 8KB 上限 + 未知变量保留原文）
+import {
+  renderTemplate,
+  hasChannelTemplate,
+} from "../../common/utils/render-template.util";
 
 /** NOTIF-003: 静默规则数量上限，防止通过 API 无限添加导致内存缓慢泄漏。 */
 export const MAX_ALERT_SILENCES = 1000;
@@ -33,15 +47,23 @@ export enum AlertChannel {
   WECOM = "wecom",
   SLACK = "slack",
   WEBHOOK = "webhook",
+  // NF-05: 飞书自定义机器人（open.feishu.cn webhook，text payload + 可选加签）
+  FEISHU = "feishu",
 }
 
 export interface AlertSilence {
   id?: string;
+  /** FEAT-01：静默范围（默认 global，兼容存量内存态） */
+  scope?: "global" | "task" | "application";
+  /** FEAT-01：仅静默该渠道（空=全渠道） */
+  channelType?: string;
+  applicationId?: string;
   taskId?: string;
   level?: AlertLevel;
   durationMinutes: number;
   startTime?: Date;
   endTime?: Date;
+  reason?: string;
   createdAt?: Date;
 }
 
@@ -70,6 +92,18 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     private email: EmailChannel,
     private slack: SlackChannel,
     private webhook: WebhookChannel,
+    // NF-05: 飞书渠道（sendAll 第六路扇出；testChannel switch 同步）
+    private feishu: FeishuChannel,
+    // FEAT-01: 静默规则持久化写穿层——@Optional 保证存量测试模块与
+    // DB 不可用场景都降级回 NOTIF-003 的纯内存语义
+    @Optional()
+    @Inject(NotificationSilenceService)
+    private silenceStore?: NotificationSilenceService,
+    // FEAT-10: 渠道级模板读取源（与各渠道同源的 ChannelConfigStore 单例）。
+    // @Optional 先例同 silenceStore——存量测试模块未提供时模板整体旁路，
+    // 固定拼串行为不变。
+    @Optional()
+    private channelStore?: ChannelConfigStore,
   ) {}
 
   /**
@@ -111,6 +145,43 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       }
     }, SILENCE_CLEANUP_INTERVAL_MS);
     this.silenceCleanupTimer.unref();
+    // FEAT-01: 重启后从 DB 回灌生效中的静默（失败降级内存态）
+    void this.restoreSilencesFromStore();
+  }
+
+  /** FEAT-01: 把 DB 中生效中的静默回灌进内存 Map（重启存活的关键） */
+  private async restoreSilencesFromStore(): Promise<void> {
+    if (!this.silenceStore) return;
+    try {
+      const rows = await this.silenceStore.listActive();
+      let restored = 0;
+      for (const row of rows) {
+        if (this.silences.has(row.id)) continue;
+        this.silences.set(row.id, {
+          id: row.id,
+          scope: row.scope,
+          channelType: row.channelType ?? undefined,
+          applicationId: row.applicationId ?? undefined,
+          taskId: row.taskId ?? undefined,
+          level: (row.level as AlertLevel | null) ?? undefined,
+          reason: row.reason ?? undefined,
+          startTime: row.startTime ?? undefined,
+          endTime: row.endTime ?? undefined,
+          durationMinutes: row.durationMinutes ?? undefined,
+          createdAt: row.createdAt,
+        });
+        restored++;
+      }
+      if (restored > 0) {
+        this.logger.log(
+          `[silences] restored ${restored} persisted silence(s) from DB`,
+        );
+      }
+    } catch (e) {
+      this.logger.warn(
+        `[silences] DB restore failed (memory-only mode): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   onModuleDestroy() {
@@ -128,6 +199,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       AlertChannel.DINGTALK,
       AlertChannel.WECOM,
       AlertChannel.WEBHOOK,
+      AlertChannel.FEISHU,
     ];
     this.logger.log(
       `[sendAll] channels=${channels.join(",")} title=${payload.title} level=${payload.level} content=${this.buildContentDigest(payload.content)}`,
@@ -141,22 +213,50 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     channels: AlertChannel[],
     webhookUrl?: string,
   ): Promise<ChannelDeliveryResults> {
+    // FEAT-10: per-channel template rendering. When the sender attached a
+    // template variable table (vars) AND the target channel's saved config
+    // declares titleTemplate/contentTemplate, the channel's copy is rendered
+    // through the sandboxed renderer (single-pass replacement, 8KB output
+    // cap, unknown variables kept verbatim). Fail-open: any rendering error
+    // falls back to the original fixed strings with a warn — a broken
+    // template must never suppress or 500 a notification. Channels without
+    // templates receive the payload unchanged (zero breakage).
+    const rendered = this.applyChannelTemplates(payload, channels);
+
     const entries: Array<{
       name: string;
       promise: Promise<ChannelDeliveryStatus | void>;
     }> = [];
     if (channels.includes(AlertChannel.EMAIL))
-      entries.push({ name: "email", promise: this.email.send(payload) });
+      entries.push({
+        name: "email",
+        promise: this.email.send(rendered.email ?? payload),
+      });
     if (channels.includes(AlertChannel.SLACK))
-      entries.push({ name: "slack", promise: this.slack.send(payload) });
+      entries.push({
+        name: "slack",
+        promise: this.slack.send(rendered.slack ?? payload),
+      });
     if (channels.includes(AlertChannel.DINGTALK))
-      entries.push({ name: "dingtalk", promise: this.dingtalk.send(payload) });
+      entries.push({
+        name: "dingtalk",
+        promise: this.dingtalk.send(rendered.dingtalk ?? payload),
+      });
     if (channels.includes(AlertChannel.WECOM))
-      entries.push({ name: "wecom", promise: this.wecom.send(payload) });
+      entries.push({
+        name: "wecom",
+        promise: this.wecom.send(rendered.wecom ?? payload),
+      });
     if (channels.includes(AlertChannel.WEBHOOK))
       entries.push({
         name: "webhook",
-        promise: this.webhook.send(payload, webhookUrl),
+        promise: this.webhook.send(rendered.webhook ?? payload, webhookUrl),
+      });
+    // NF-05: 飞书渠道扇出（与既有五渠道同语义——rendered 优先，缺省原 payload）
+    if (channels.includes(AlertChannel.FEISHU))
+      entries.push({
+        name: "feishu",
+        promise: this.feishu.send(rendered.feishu ?? payload),
       });
 
     const results = await Promise.allSettled(entries.map((e) => e.promise));
@@ -167,6 +267,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     const failures: string[] = [];
     results.forEach((result, i) => {
       const name = entries[i].name;
+      // 可观测性补齐：per-channel 投递结果计数（success/failure）。判定口径：
+      // promise rejected（渠道异常）计 failure，其余（含 mocked/blocked——
+      // SSRF 拦截是策略结果而非投递故障）计 success。fail-open 语义不变：
+      // 只记计数，不影响返回值与控制流。
+      recordRuntime("autoflow_notification_delivery_total", {
+        channel: name,
+        result: result.status === "rejected" ? "failure" : "success",
+      });
       if (result.status === "rejected") {
         const msg =
           result.reason instanceof Error
@@ -195,6 +303,79 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       );
     }
     return delivery;
+  }
+
+  /**
+   * R2: dispatch exactly one channel's send() with an optional per-call
+   * config override. Used by NotificationConfigService.testChannel to
+   * validate unsaved admin-form values without publishing them to the
+   * global ChannelConfigStore. The override NEVER reaches
+   * sendToChannels / sendAll and therefore cannot affect any other
+   * in-flight or future notification.
+   *
+   * Fail-open posture preserved: an SSRF block returns "blocked" instead
+   * of throwing, matching the existing fan-out contract.
+   */
+  /**
+   * FEAT-10: build the per-channel rendered payload map. For each requested
+   * channel: if its saved config (ChannelConfigStore, published by
+   * PATCH /notification/channels/:key) has a non-empty titleTemplate and/or
+   * contentTemplate AND the payload carries `vars`, render a channel-local
+   * copy. Rendering is wrapped in try/catch — on failure the original
+   * payload is used and a warn is logged (fail-open). Payloads without
+   * `vars` (e.g. admin "test" sends) bypass templates entirely.
+   */
+  private applyChannelTemplates(
+    payload: NotificationPayload,
+    channels: AlertChannel[],
+  ): Record<AlertChannel, NotificationPayload> {
+    const out = {} as Record<AlertChannel, NotificationPayload>;
+    if (!payload.vars) return out;
+    for (const channel of channels) {
+      try {
+        const config = this.channelStore?.get(channel);
+        if (!hasChannelTemplate(config)) continue;
+        const next: NotificationPayload = { ...payload };
+        if (config!.titleTemplate) {
+          next.title = renderTemplate(config!.titleTemplate, payload.vars);
+        }
+        if (config!.contentTemplate) {
+          next.content = renderTemplate(config!.contentTemplate, payload.vars);
+        }
+        // 渲染后的渠道专属副本不再携带 vars（下游渠道不做二次渲染）
+        delete next.vars;
+        out[channel] = next;
+      } catch (e) {
+        this.logger.warn(
+          `[templates] rendering failed for channel ${channel} — falling back to the default content: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    return out;
+  }
+
+  async testChannel(
+    payload: NotificationPayload,
+    channel: AlertChannel,
+    configOverride?: Record<string, string>,
+  ): Promise<ChannelDeliveryStatus> {
+    switch (channel) {
+      case AlertChannel.EMAIL:
+        return this.email.send(payload, configOverride);
+      case AlertChannel.SLACK:
+        return this.slack.send(payload, configOverride);
+      case AlertChannel.DINGTALK:
+        return this.dingtalk.send(payload, configOverride);
+      case AlertChannel.WECOM:
+        return this.wecom.send(payload, configOverride);
+      case AlertChannel.WEBHOOK:
+        return this.webhook.send(payload, undefined, configOverride);
+      // NF-05: 飞书测试发送（R2 per-call override 语义与既有 webhook 渠道一致）
+      case AlertChannel.FEISHU:
+        return this.feishu.send(payload, configOverride);
+      default:
+        return "skipped";
+    }
   }
 
   isSilenced(taskId?: string, level?: AlertLevel): boolean {
@@ -240,10 +421,41 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.silences.set(id, newSilence);
+    // FEAT-01: 写穿持久化（异步、失败仅告警——内存态语义不受影响）
+    if (this.silenceStore) {
+      void this.silenceStore
+        .create({
+          scope: newSilence.scope ?? (newSilence.taskId ? "task" : "global"),
+          channelType: newSilence.channelType ?? null,
+          taskId: newSilence.taskId ?? null,
+          applicationId: newSilence.applicationId ?? null,
+          level: newSilence.level ?? null,
+          reason: newSilence.reason ?? null,
+          durationMinutes: newSilence.durationMinutes ?? null,
+          startTime: newSilence.startTime ?? null,
+          endTime: newSilence.endTime ?? null,
+        })
+        .then((row) => {
+          newSilence.id = row.id;
+        })
+        .catch((e) => {
+          this.logger.warn(
+            `[silences] DB persist failed (memory-only): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        });
+    }
     return id;
   }
 
   removeSilence(id: string): boolean {
+    // FEAT-01: 内存 + DB 双删（DB 删除失败不阻断内存语义）
+    if (this.silenceStore) {
+      void this.silenceStore.remove(id).catch((e) => {
+        this.logger.warn(
+          `[silences] DB remove failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+    }
     return this.silences.delete(id);
   }
 
@@ -254,6 +466,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
   cleanExpiredSilences(): number {
     const now = new Date();
     let removedCount = 0;
+    // FEAT-01: DB 侧过期行同步清扫（fire-and-forget，失败仅告警）
+    if (this.silenceStore) {
+      void this.silenceStore.cleanExpired(now).catch((e) => {
+        this.logger.warn(
+          `[silences] DB cleanup failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+    }
 
     for (const [id, silence] of this.silences) {
       if (silence.endTime && silence.endTime < now) {
@@ -283,6 +503,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       title: `[${level.toUpperCase()}] ${taskName}`,
       content: message,
       level,
+      // FEAT-10: template variables for channel-level content templates
+      vars: {
+        task: taskName,
+        taskName,
+        taskId: taskId ?? null,
+        level,
+        content: message,
+      },
     };
 
     if (channels && channels.length > 0) {
@@ -298,6 +526,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     error: string,
     aiAnalysis?: string,
     taskId?: string,
+    runbook?: string | null,
   ) {
     if (this.isSilenced(taskId, AlertLevel.ERROR)) {
       this.logger.debug(`Failure alert silenced for task ${taskName}`);
@@ -306,8 +535,19 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
 
     return this.sendAll({
       title: `Task failed: ${taskName}`,
-      content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}`,
+      content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}${runbook ? `\n\nRunbook:\n${runbook}` : ""}`,
       level: "error",
+      // FEAT-10: template variables for channel-level content templates
+      vars: {
+        task: taskName,
+        taskName,
+        taskId: taskId ?? null,
+        executionId: execId,
+        failedReason: error,
+        aiAnalysis: aiAnalysis ?? null,
+        runbook: runbook ?? null,
+        level: "error",
+      },
     });
   }
 
@@ -326,6 +566,15 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       title: `Task succeeded: ${taskName}`,
       content: `Execution ID: ${execId}\nDuration: ${durationMs}ms`,
       level: "info",
+      // FEAT-10: template variables for channel-level content templates
+      vars: {
+        task: taskName,
+        taskName,
+        taskId: taskId ?? null,
+        executionId: execId,
+        duration: durationMs,
+        level: "info",
+      },
     });
   }
 
@@ -344,6 +593,15 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       title: `Task timed out: ${taskName}`,
       content: `Execution ID: ${execId}\nTimeout: ${timeoutSec}s`,
       level: "warning",
+      // FEAT-10: template variables for channel-level content templates
+      vars: {
+        task: taskName,
+        taskName,
+        taskId: taskId ?? null,
+        executionId: execId,
+        failedReason: `timeout after ${timeoutSec}s`,
+        level: "warning",
+      },
     });
   }
 
@@ -381,22 +639,44 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     alarmEmail?: string,
     alarmChannels?: string[],
     webhookUrl?: string,
+    taskId?: string,
+    runbook?: string | null,
   ) {
     const taskChannels =
       (alarmChannels?.map((c) => c.toLowerCase()) as AlertChannel[]) || [];
 
-    if (this.isSilenced(undefined, AlertLevel.ERROR)) {
+    // 补传 taskId：修复原先 isSilenced(undefined,...) 使任务级静默窗口对本路径
+    // 失效的问题，与 notifyFailure 保持一致（taskId 缺省时行为不变）。
+    if (this.isSilenced(taskId, AlertLevel.ERROR)) {
       this.logger.debug(`Failure alert silenced for task ${taskName}`);
       return;
     }
 
     if (!alarmChannels || alarmChannels.length === 0) {
-      return this.notifyFailure(taskName, execId, error, aiAnalysis);
+      return this.notifyFailure(
+        taskName,
+        execId,
+        error,
+        aiAnalysis,
+        taskId,
+        runbook,
+      );
     }
     const payload: NotificationPayload = {
       title: `Task failed: ${taskName}`,
-      content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}${alarmEmail ? `\nRecipient: ${alarmEmail}` : ""}`,
+      content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}${alarmEmail ? `\nRecipient: ${alarmEmail}` : ""}${runbook ? `\n\nRunbook:\n${runbook}` : ""}`,
       level: "error",
+      // FEAT-10: template variables for channel-level content templates
+      vars: {
+        task: taskName,
+        taskName,
+        taskId: taskId ?? null,
+        executionId: execId,
+        failedReason: error,
+        aiAnalysis: aiAnalysis ?? null,
+        runbook: runbook ?? null,
+        level: "error",
+      },
     };
 
     return this.sendToChannels(payload, taskChannels, webhookUrl);

@@ -1,4 +1,6 @@
 import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 
 jest.mock('axios');
 jest.mock('../config', () => ({
@@ -246,5 +248,186 @@ describe('verifyToken — REQUIRE_TOKEN fail-closed mode', () => {
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({ error: expect.stringMatching(/REQUIRE_TOKEN/) }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyToken — Bearer authentication semantics.
+// Migrated from the removed routes/logs.ts legacy Bearer middleware (dead code
+// with two defects: a non-constant-time `token !== secret` and a fail-open
+// `next()` when no secret was configured). These cover the现役 /api gate's
+// contract — dynamic + static token acceptance, 401 on invalid / missing /
+// wrong-scheme / malformed bearer, and the timing-safe comparison. The
+// REQUIRE_TOKEN fail-closed 503 and the dev-mode passthrough already live in
+// the describe above.
+// ---------------------------------------------------------------------------
+describe('verifyToken — Bearer authentication (migrated)', () => {
+  // STATIC_TOKEN is captured when auth.ts loads, so config.token must be set
+  // BEFORE the dynamic import; axios is re-acquired after resetModules because
+  // the reset regenerates its automock (same pattern as `freshAuth` above).
+  async function loadVerify(opts: {
+    staticToken?: string;
+    adminResponse?: unknown;
+  } = {}) {
+    jest.resetModules();
+    const { config } = await import('../config');
+    (config as Record<string, any>).token = opts.staticToken ?? '';
+    const axiosDefault = ((await import('axios')) as any).default;
+    if (opts.adminResponse === undefined) {
+      axiosDefault.post.mockRejectedValue(new Error('admin unreachable'));
+    } else {
+      axiosDefault.post.mockResolvedValue(opts.adminResponse);
+    }
+    const { verifyToken } = await import('./auth');
+    return { verifyToken, post: axiosDefault.post as jest.Mock };
+  }
+
+  const dynEnvelope = (token: string) => ({
+    status: 201,
+    data: { code: 201, message: 'success', data: { token } },
+  });
+
+  it('accepts a valid dynamic token fetched from admin-api', async () => {
+    const { verifyToken } = await loadVerify({ adminResponse: dynEnvelope('dyn-abc') });
+    const next = jest.fn();
+    const res = makeRes();
+    await verifyToken({ headers: { authorization: 'Bearer dyn-abc' } } as any, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('accepts a valid static shared token', async () => {
+    const { verifyToken } = await loadVerify({ staticToken: 'static-xyz' });
+    const next = jest.fn();
+    const res = makeRes();
+    await verifyToken({ headers: { authorization: 'Bearer static-xyz' } } as any, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('accepts the dynamic token even when a static token is also configured', async () => {
+    const { verifyToken } = await loadVerify({
+      staticToken: 'stat-1',
+      adminResponse: dynEnvelope('dyn-1'),
+    });
+    const next = jest.fn();
+    await verifyToken({ headers: { authorization: 'Bearer dyn-1' } } as any, makeRes(), next);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an invalid token with 401 (same length, exercises timingSafeEqual)', async () => {
+    const { verifyToken } = await loadVerify({ staticToken: 'static-xyz' });
+    const next = jest.fn();
+    const res = makeRes();
+    await verifyToken({ headers: { authorization: 'Bearer static-yzz' } } as any, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.stringMatching(/Invalid or missing executor token/) }),
+    );
+  });
+
+  it('rejects a different-length token with 401 (length guard, no throw)', async () => {
+    const { verifyToken } = await loadVerify({ staticToken: 'a-long-static-token' });
+    const next = jest.fn();
+    const res = makeRes();
+    await verifyToken({ headers: { authorization: 'Bearer short' } } as any, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('rejects a missing Authorization header with 401', async () => {
+    const { verifyToken } = await loadVerify({ staticToken: 'static-xyz' });
+    const next = jest.fn();
+    const res = makeRes();
+    await verifyToken({ headers: {} } as any, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('rejects a non-Bearer scheme with 401', async () => {
+    const { verifyToken } = await loadVerify({ staticToken: 'static-xyz' });
+    const next = jest.fn();
+    const res = makeRes();
+    await verifyToken({ headers: { authorization: 'Basic static-xyz' } } as any, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('rejects a malformed single-part Authorization header with 401', async () => {
+    const { verifyToken } = await loadVerify({ staticToken: 'static-xyz' });
+    const next = jest.fn();
+    const res = makeRes();
+    await verifyToken({ headers: { authorization: 'static-xyz' } } as any, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('compares tokens with timingSafeEqual, never a plain !== (SEC regression)', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'auth.ts'), 'utf-8');
+    expect(src).toMatch(/timingSafeEqual/);
+    // The removed legacy middleware used `token !== secret`; guard against
+    // reintroducing a non-constant-time equality on the bearer token.
+    expect(src).not.toMatch(/token\s*!==?\s*(secret|STATIC_TOKEN)/);
+  });
+});
+
+// N41: fetchToken 成功后触发 onTokenAcquired 钩子——main.ts 用它在启动期
+// register 失败、token 链恢复后补一次带富元数据的重注册（/token side effect
+// 重建的行没有 type/capabilities/maxConcurrent/version）。钩子必须
+// fire-and-forget：监听器抛错不得影响 token 获取主流程。
+describe('setOnTokenAcquired — N41 register self-heal hook', () => {
+  async function freshAuth() {
+    jest.resetModules();
+    const axiosDefault = ((await import('axios')) as any).default;
+    const { getCurrentToken, setOnTokenAcquired } = await import('./auth');
+    return {
+      post: axiosDefault.post as jest.Mock,
+      getCurrentToken,
+      setOnTokenAcquired,
+    };
+  }
+
+  const flushAsync = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('fires the listener after a successful token fetch', async () => {
+    const { post, getCurrentToken, setOnTokenAcquired } = await freshAuth();
+    post.mockResolvedValue({
+      status: 201,
+      data: { code: 201, message: 'success', data: { token: 'healed-token' } },
+    });
+    const listener = jest.fn();
+    setOnTokenAcquired(listener);
+
+    await expect(getCurrentToken()).resolves.toBe('healed-token');
+    // 钩子是非阻塞的 fire-and-forget：让出微任务队列后再断言。
+    await flushAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire the listener when the fetch fails', async () => {
+    const { post, getCurrentToken, setOnTokenAcquired } = await freshAuth();
+    post.mockRejectedValue(new Error('admin unreachable'));
+    const listener = jest.fn();
+    setOnTokenAcquired(listener);
+
+    await expect(getCurrentToken()).resolves.toBeFalsy();
+    await flushAsync();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('listener errors are swallowed and never break the token flow', async () => {
+    const { post, getCurrentToken, setOnTokenAcquired } = await freshAuth();
+    post.mockResolvedValue({
+      status: 201,
+      data: { code: 201, message: 'success', data: { token: 'token-x' } },
+    });
+    setOnTokenAcquired(() => {
+      throw new Error('re-register boom');
+    });
+
+    // 主流程不受监听器异常影响（re-register 失败由监听器自担，下轮再试）。
+    await expect(getCurrentToken()).resolves.toBe('token-x');
+    await flushAsync();
   });
 });

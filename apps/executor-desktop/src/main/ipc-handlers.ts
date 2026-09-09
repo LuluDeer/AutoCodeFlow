@@ -1,14 +1,51 @@
-import { ipcMain } from 'electron';
+import { app, ipcMain } from 'electron';
 import * as http from 'http';
+import * as path from 'path';
 import { configStore, executorProcess, heartbeat, trayManager, windowManager } from './index';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
+import { checkForUpdates, quitAndInstall } from './updater';
+import {
+  checkPathWithinDomains,
+  hasAllowedLogExtension,
+  isValidExecutionId,
+} from './path-domain';
 import log from './logger';
+
+/**
+ * R13: the only directories renderer-supplied log paths may live under.
+ * Roots mirror where files are actually written:
+ *  - workDir/logs  — executor-node task logs (file-logger.ts)
+ *  - workDir/apps  — deployed app logs (routes/deploy.ts → <deployDir>/app.log)
+ *  - userData/logs — electron-log main.log (logger.ts)
+ */
+function getAllowedLogDomains(): string[] {
+  const domains: string[] = [];
+  const workDir = configStore.get('workDir') as string | undefined;
+  if (workDir) {
+    domains.push(path.join(workDir, 'logs'), path.join(workDir, 'apps'));
+  }
+  domains.push(path.join(app.getPath('userData'), 'logs'));
+  return domains;
+}
 
 export function registerIpcHandlers(): void {
   // ── 配置 ──────────────────────────────────────────────
-  ipcMain.handle('config:get', () => configStore.getAll());
+  // SEC-NEW-1: the token is never returned over IPC — the renderer gets a
+  // `******` mask (or '') and sends the mask back on save, which config-store
+  // maps to "keep the stored token".
+  ipcMain.handle('config:get', () => configStore.getAllMasked());
+
+  // BUG-12: the save face only accepts plain-object string|number|boolean
+  // values. An array (or nested object carrying getters) would otherwise
+  // reach electron-store's dot-notation setter and throw deep inside the
+  // store — reject the shape up front.
+  const isPlainConfig = (cfg: unknown): boolean =>
+    cfg !== null && typeof cfg === 'object' && !Array.isArray(cfg);
 
   ipcMain.handle('config:save', async (_event, cfg) => {
+    if (!isPlainConfig(cfg)) {
+      return { ok: false, error: 'invalid config payload' };
+    }
     configStore.save(cfg);
     log.info('Config saved via IPC');
     trayManager.rebuildMenu();
@@ -28,6 +65,9 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('config:save-and-close-wizard', async (_event, cfg) => {
+    if (!isPlainConfig(cfg)) {
+      return { ok: false, error: 'invalid config payload' };
+    }
     configStore.save({ ...cfg, configured: true });
     log.info('Wizard complete, config saved');
     windowManager.closeWizard();
@@ -61,10 +101,12 @@ export function registerIpcHandlers(): void {
     return { ok: true };
   });
 
+  // SEC-NEW-1: status payload returns the masked config for the same reason
+  // as config:get — the renderer must not receive the stored token.
   ipcMain.handle('executor:status', () => ({
     running: executorProcess.isRunning(),
     status: executorProcess.getStatus(),
-    config: configStore.getAll(),
+    config: configStore.getAllMasked(),
   }));
 
   // ── 开机自启 ──────────────────────────────────────────
@@ -74,6 +116,21 @@ export function registerIpcHandlers(): void {
     await setAutoLaunchEnabled(enable);
     configStore.save({ autoStart: enable });
     trayManager.rebuildMenu();
+    return { ok: true };
+  });
+
+  // ── 自动更新（DSK-03）─────────────────────────────────
+  // renderer 主动触发一次检查（设置页「检查更新」按钮）；dev 未打包时
+  // updater 未初始化，checkForUpdates 静默失败返回 ok:false。
+  ipcMain.handle('updater:check', async () => {
+    await checkForUpdates();
+    return { ok: true };
+  });
+
+  // 用户确认升级：下载完成后退出并安装（AppImage/deb 均由 electron-updater
+  // 按 resources/package-type 分派对应安装器）
+  ipcMain.handle('updater:install', () => {
+    quitAndInstall();
     return { ok: true };
   });
 
@@ -111,6 +168,13 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('log:read', (_event, executionId: string, fromLine: number = 0) => {
+    // R13: executionId is renderer-supplied — whitelist its charset first
+    // (same ^[A-Za-z0-9_-]+$ rule as admin-api heartbeat sanitization) so it
+    // can never carry ../ traversal, then domain-check the final path.
+    if (!isValidExecutionId(executionId)) {
+      log.warn(`log:read rejected invalid executionId: ${JSON.stringify(executionId)}`);
+      return { lines: [], totalLines: 0, error: 'invalid executionId' };
+    }
     const workDir = configStore.get('workDir') as string | undefined;
     if (!workDir) return { lines: [], totalLines: 0 };
     const fs = require('fs') as typeof import('fs');
@@ -120,9 +184,14 @@ export function registerIpcHandlers(): void {
     for (const d of tryDates) {
       const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
       const logFile = pathMod.join(workDir, 'logs', dateStr, `${executionId}.log`);
-      if (fs.existsSync(logFile)) {
+      const check = checkPathWithinDomains(logFile, getAllowedLogDomains());
+      if (!check.ok) {
+        return { lines: [], totalLines: 0, error: check.error };
+      }
+      const target = check.resolvedPath!;
+      if (fs.existsSync(target)) {
         try {
-          const content = fs.readFileSync(logFile, 'utf-8');
+          const content = fs.readFileSync(target, 'utf-8');
           const allLines = content.split('\n').filter((l: string) => l.length > 0);
           const totalLines = allLines.length;
           const lines = allLines.slice(fromLine);
@@ -171,8 +240,19 @@ export function registerIpcHandlers(): void {
 
   // 用系统默认程序打开指定日志文件
   ipcMain.handle('log:open-file', async (_event, filePath: string) => {
+    // R13: shell.openPath on Windows *executes* .bat/.lnk/.exe — the path
+    // must be inside an allowed log domain AND be a plain-text log file.
+    const check = checkPathWithinDomains(filePath, getAllowedLogDomains());
+    if (!check.ok) {
+      log.warn(`log:open-file rejected: ${filePath} (${check.error})`);
+      return { ok: false, error: check.error };
+    }
+    const target = check.resolvedPath!;
+    if (!hasAllowedLogExtension(target)) {
+      return { ok: false, error: '仅允许打开 .log/.txt 文件' };
+    }
     const { shell } = require('electron');
-    const err = await shell.openPath(filePath);
+    const err = await shell.openPath(target);
     return { ok: !err, error: err || undefined };
   });
 
@@ -219,10 +299,18 @@ export function registerIpcHandlers(): void {
 
   // 读取应用日志（支持分页，从 fromLine 开始）
   ipcMain.handle('apps:log:read', (_event, logPath: string, fromLine: number = 0) => {
+    // R13: logPath is renderer-supplied — constrain it to the allowed
+    // domains (legitimate values come from apps:list: workDir/apps/...).
+    const check = checkPathWithinDomains(logPath, getAllowedLogDomains());
+    if (!check.ok) {
+      log.warn(`apps:log:read rejected: ${logPath} (${check.error})`);
+      return { lines: [], totalLines: 0, error: check.error };
+    }
     const fs = require('fs') as typeof import('fs');
-    if (!fs.existsSync(logPath)) return { lines: [], totalLines: 0 };
+    const target = check.resolvedPath!;
+    if (!fs.existsSync(target)) return { lines: [], totalLines: 0 };
     try {
-      const content = fs.readFileSync(logPath, 'utf-8');
+      const content = fs.readFileSync(target, 'utf-8');
       const allLines = content.split('\n').filter((l: string) => l.length > 0);
       return { lines: allLines.slice(fromLine), totalLines: allLines.length };
     } catch { return { lines: [], totalLines: 0 }; }
@@ -277,11 +365,19 @@ function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: st
   return new Promise((resolve) => {
     try {
       const parsed = new URL(`${url}/api/health`);
-      const req = http.get(
+      // R24: pick the transport module and default port from the protocol —
+      // https used to be dialed over plain http:80 and always failed.
+      const isHttps = parsed.protocol === 'https:';
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        resolve({ ok: false, message: `不支持的协议: ${parsed.protocol}（仅支持 http/https）` });
+        return;
+      }
+      const transport = (isHttps ? require('https') : http) as typeof http;
+      const req = transport.get(
         {
           hostname: parsed.hostname,
-          port: parsed.port || 80,
-          path: parsed.pathname,
+          port: parsed.port || (isHttps ? 443 : 80),
+          path: `${parsed.pathname}${parsed.search}`,
           timeout: 5_000,
         },
         (res) => {

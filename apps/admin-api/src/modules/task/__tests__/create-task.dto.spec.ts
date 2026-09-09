@@ -113,4 +113,413 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
       expect(result.executorId).toBe(UUID_V4);
     });
   });
+
+  // W-21: requirements — the DTO boundary enforces STRUCTURE (array of
+  // non-empty strings, ≤50); the option-like-spec semantic guard lives in
+  // TaskService.normalizeTaskDto and the executors. UpdateTaskDto inherits
+  // every validator via PartialType.
+  describe("requirements validation (W-21)", () => {
+    it("accepts an array of pip/npm spec strings", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        requirements: [
+          "requests>=2.31",
+          "rich[markup]==13.7.1",
+          "django>=4,<5",
+        ],
+      });
+      expect(result.requirements).toEqual([
+        "requests>=2.31",
+        "rich[markup]==13.7.1",
+        "django>=4,<5",
+      ]);
+    });
+
+    it("stays optional", async () => {
+      const result = await validateCreate({ name: "t1", triggerType: "api" });
+      expect(result.requirements).toBeUndefined();
+    });
+
+    it("rejects a non-array value", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          requirements: "requests",
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects non-string elements", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          requirements: [123],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects empty-string elements", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          requirements: ["ok", ""],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects an over-cap array (>50)", async () => {
+      const many = Array.from({ length: 51 }, (_, i) => `pkg${i}`);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          requirements: many,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("UpdateTaskDto inherits the requirements validators", async () => {
+      const ok = await validateUpdate({ requirements: ["flask==3.0.0"] });
+      expect(ok.requirements).toEqual(["flask==3.0.0"]);
+      await expect(validateUpdate({ requirements: [42] })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  // TMO-02: the executor validates timeout ∈ 1..86400s (executor-node
+  // execute.ts). A larger value survives create/update, is dispatched, then 400s
+  // at the executor on EVERY attempt — so the bound must be enforced at the DTO
+  // too. timeout=0 means "no limit" and stays legal (executor substitutes its
+  // own default); timeoutSeconds normalizes to timeout in TaskService, so both
+  // fields carry the same @Max(86400). UpdateTaskDto inherits via PartialType.
+  describe("timeout upper bound (TMO-02)", () => {
+    it("accepts timeout=0 (unlimited still legal)", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        timeout: 0,
+      });
+      expect(result.timeout).toBe(0);
+    });
+
+    it("accepts a positive timeout within range", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        timeout: 3600,
+      });
+      expect(result.timeout).toBe(3600);
+    });
+
+    it("accepts timeout at the boundary (86400)", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        timeout: 86400,
+      });
+      expect(result.timeout).toBe(86400);
+    });
+
+    it("rejects a timeout over the executor cap (>86400) with 400", async () => {
+      await expect(
+        validateCreate({ name: "t1", triggerType: "api", timeout: 86401 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("still rejects a negative timeout", async () => {
+      await expect(
+        validateCreate({ name: "t1", triggerType: "api", timeout: -1 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("applies the same bound to timeoutSeconds (normalizes to timeout)", async () => {
+      const ok = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        timeoutSeconds: 86400,
+      });
+      expect(ok.timeoutSeconds).toBe(86400);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutSeconds: 999999,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("UpdateTaskDto inherits the timeout @Max validator", async () => {
+      await expect(validateUpdate({ timeout: 100000 })).rejects.toThrow(
+        BadRequestException,
+      );
+      const ok = await validateUpdate({ timeoutSeconds: 7200 });
+      expect(ok.timeoutSeconds).toBe(7200);
+    });
+  });
+
+  // FEAT-11: runbook — plain optional string (markdown). No structure
+  // validation by design; UpdateTaskDto inherits via PartialType.
+  describe("runbook validation (FEAT-11)", () => {
+    it("accepts a markdown runbook string", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        runbook: "## 排障步骤\n1. 检查依赖服务",
+      });
+      expect(result.runbook).toContain("排障步骤");
+    });
+
+    it("stays optional when absent", async () => {
+      const result = await validateCreate({ name: "t1", triggerType: "api" });
+      expect(result.runbook).toBeUndefined();
+    });
+
+    it("rejects non-string values", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          runbook: 42 as never,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // FEAT-06: maintenanceWindows — DTO boundary enforces STRUCTURE only
+  // (array of ≤10 {start,end} 5-field cron entries); the window-hit skip
+  // semantics live in scheduler.enqueue + maintenance-window.util.ts.
+  // UpdateTaskDto inherits every validator via PartialType. N28 PATCH
+  // semantics: field absent = keep old value; explicit null/[] = clear.
+  describe("maintenanceWindows validation (FEAT-06)", () => {
+    it("accepts an array of {start,end} windows", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "cron",
+        cronExpression: "*/5 * * * *",
+        maintenanceWindows: [
+          { start: "30 2 * * *", end: "0 4 * * *" },
+          { start: "0 22 * * 5", end: "0 6 * * 6", description: "发布冻结" },
+        ],
+      });
+      expect(result.maintenanceWindows).toHaveLength(2);
+      expect(result.maintenanceWindows![1].description).toBe("发布冻结");
+    });
+
+    it("stays optional when absent", async () => {
+      const result = await validateCreate({ name: "t1", triggerType: "api" });
+      expect(result.maintenanceWindows).toBeUndefined();
+    });
+
+    it("accepts explicit null (clear-all semantics for PATCH)", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        maintenanceWindows: null,
+      });
+      expect(result.maintenanceWindows).toBeNull();
+    });
+
+    it("accepts an empty array (clear-all semantics)", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        maintenanceWindows: [],
+      });
+      expect(result.maintenanceWindows).toEqual([]);
+    });
+
+    it("rejects a non-array value", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: { start: "30 2 * * *", end: "0 4 * * *" },
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects an item with an invalid start cron", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: [{ start: "not a cron", end: "0 4 * * *" }],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects an item with an invalid end cron (out of range minute)", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: [{ start: "30 2 * * *", end: "61 4 * * *" }],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects an item missing end", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: [{ start: "30 2 * * *" }],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects unknown props inside a window entry (forbidNonWhitelisted)", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: [
+            { start: "30 2 * * *", end: "0 4 * * *", cron: "x" },
+          ],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects an over-cap array (>10)", async () => {
+      const many = Array.from({ length: 11 }, () => ({
+        start: "30 2 * * *",
+        end: "0 4 * * *",
+      }));
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          maintenanceWindows: many,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("accepts exactly 10 entries (boundary)", async () => {
+      const ten = Array.from({ length: 10 }, () => ({
+        start: "30 2 * * *",
+        end: "0 4 * * *",
+      }));
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        maintenanceWindows: ten,
+      });
+      expect(result.maintenanceWindows).toHaveLength(10);
+    });
+
+    it("UpdateTaskDto inherits the maintenanceWindows validators", async () => {
+      const ok = await validateUpdate({
+        maintenanceWindows: [{ start: "0 22 * * 5", end: "0 6 * * 6" }],
+      });
+      expect(ok.maintenanceWindows).toHaveLength(1);
+      await expect(
+        validateUpdate({
+          maintenanceWindows: [{ start: "30 2 * * *" }],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // CORE-04: 超时策略分级——timeoutAction（三动作枚举）与 timeoutWarnRatio
+  // （0-90 整数）。UpdateTaskDto 经 PartialType 继承同一校验器。PATCH 语义
+  // 同 N28 家族：缺省 = 保留旧值；显式 null = 回缺省 kill / 关闭预警。
+  describe("timeout policy validation (CORE-04)", () => {
+    it("accepts each of the three timeout actions", async () => {
+      for (const action of ["kill", "kill_retry", "notify_only"]) {
+        const result = await validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutAction: action,
+        });
+        expect(result.timeoutAction).toBe(action);
+      }
+    });
+
+    it("rejects an unknown timeout action with 400", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutAction: "explode",
+        }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutAction: 42 as never,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("timeoutAction stays optional and accepts explicit null (reset-to-kill)", async () => {
+      const absent = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+      });
+      expect(absent.timeoutAction).toBeUndefined();
+      const nulled = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        timeoutAction: null,
+      });
+      expect(nulled.timeoutAction).toBeNull();
+    });
+
+    it("UpdateTaskDto inherits the timeoutAction validator", async () => {
+      const ok = await validateUpdate({ timeoutAction: "kill_retry" });
+      expect(ok.timeoutAction).toBe("kill_retry");
+      await expect(
+        validateUpdate({ timeoutAction: "kill-and-dance" }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("accepts timeoutWarnRatio within 0..90 (boundaries included)", async () => {
+      for (const ratio of [0, 50, 80, 90]) {
+        const result = await validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutWarnRatio: ratio,
+        });
+        expect(result.timeoutWarnRatio).toBe(ratio);
+      }
+    });
+
+    it("rejects timeoutWarnRatio out of range or non-integer with 400", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutWarnRatio: 91,
+        }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutWarnRatio: -1,
+        }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          timeoutWarnRatio: 12.5,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("UpdateTaskDto inherits the timeoutWarnRatio validator", async () => {
+      const ok = await validateUpdate({ timeoutWarnRatio: 80 });
+      expect(ok.timeoutWarnRatio).toBe(80);
+      await expect(validateUpdate({ timeoutWarnRatio: 101 })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
 });

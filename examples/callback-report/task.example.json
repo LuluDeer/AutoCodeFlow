@@ -1,0 +1,15 @@
+{
+  "id": "callback-report-demo",
+  "name": "SDK 回调示例（Python）",
+  "runtime": "python",
+  "entrypoint": "examples/callback-report/callback_report.py",
+  "cronExpression": "0 0 12 * * *",
+  "timeoutSeconds": 120,
+  "maxRetry": 1,
+  "retryDelay": 10,
+  "params": {
+    "mode": "success",
+    "source_url": "https://httpbin.org/status/200"
+  },
+  "requirements": ["autoflow-sdk"]
+}

@@ -5,6 +5,11 @@ export interface RunCommandOptions {
   env?: NodeJS.ProcessEnv;
   timeout?: number;
   shell?: boolean;
+  /** Abort signal: when fired the child's whole process tree is killed
+   *  immediately (the close handler then resolves with a non-zero status).
+   *  Used by the execution kill endpoint to break a prepare-phase
+   *  git/npm out of the 60–300s waits without a per-process hard kill. */
+  signal?: AbortSignal;
 }
 
 export interface RunCommandResult {
@@ -27,8 +32,15 @@ export function killProcessTree(child: ChildProcess, signal: NodeJS.Signals = 'S
     }
     try { child.kill(signal); } catch (_) { /* already dead */ }
   } else {
-    // Windows has no portable process-group kill via process.kill(-pid) —
-    // keep the parent-only kill (documented platform limitation).
+    // W-02/parity with executor-python: Node's child.kill on Windows only
+    // terminates the direct child (grandchildren linger). taskkill /T /F walks
+    // the pid tree so a killed task cannot orphan its own spawns.
+    // /F is forced (no graceful path exists for console trees on Windows).
+    try {
+      spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' });
+    } catch (_) {
+      /* taskkill unavailable — fall back to direct kill only */
+    }
     try { child.kill(signal); } catch (_) { /* already dead */ }
   }
 }
@@ -47,6 +59,11 @@ export function runCommand(
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    // W-24: guard the stdio sockets' 'error' event (see execute.ts runProcess).
+    // Without these, a failed spawn (ENOENT) emits an unhandled socket error
+    // that becomes an uncaughtException and kills the whole executor process.
+    child.stdout?.on('error', () => { /* surfaced via child 'error' handler */ });
+    child.stderr?.on('error', () => { /* surfaced via child 'error' handler */ });
     // Cap captured output so a chatty child cannot balloon executor memory.
     const CAP = 10 * 1024 * 1024;
     let stdout = '';
@@ -56,6 +73,20 @@ export function runCommand(
           killProcessTree(child, 'SIGKILL');
         }, opts.timeout)
       : null;
+    // Abort support (execution kill during prepare): killing the tree makes
+    // the child exit, the close handler below resolves — callers treat the
+    // non-zero status as the failure signal and re-check the abort flag.
+    const onAbort = () => {
+      killProcessTree(child, 'SIGKILL');
+    };
+    if (opts.signal) {
+      if (opts.signal.aborted) onAbort();
+      else opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
+    const clearWatchers = () => {
+      if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+    };
     child.stdout?.on('data', (d: Buffer) => {
       if (stdout.length < CAP) stdout += d.toString();
     });
@@ -63,11 +94,11 @@ export function runCommand(
       if (stderr.length < CAP) stderr += d.toString();
     });
     child.on('error', (err) => {
-      if (timer) clearTimeout(timer);
+      clearWatchers();
       resolve({ status: null, stdout, stderr: `${stderr}${err.message}` });
     });
     child.on('close', (code) => {
-      if (timer) clearTimeout(timer);
+      clearWatchers();
       resolve({ status: code, stdout, stderr });
     });
   });

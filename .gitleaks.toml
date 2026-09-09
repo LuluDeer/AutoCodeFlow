@@ -1,0 +1,32 @@
+# Gitleaks 配置（SEC-06）——扩展默认规则集，仅声明"放行"例外，不删减任何默认规则。
+# 工具：https://github.com/gitleaks/gitleaks
+#   · pre-commit hook：见 .pre-commit-config.yaml（repo: gitleaks/gitleaks，rev 固定）
+#   · CI job：.github/workflows/ci.yml 的 secret-scan（双保险：pre-commit 拦提交，
+#     CI 拦直推/历史面）
+# 本地全量扫描：gitleaks detect --source . --config .gitleaks.toml --verbose
+#
+# 例外原则：只 allowlist 明确的测试样例/文档演示假凭据（逐条注明理由），
+# 不做全局路径放行——宁可误报跑一次修，不放漏一个真 secret。
+
+[extend]
+# 继承 gitleaks 内置默认规则（aws/azure/gcp/slack/私钥/通用 token 等一百余条）
+useDefault = true
+
+[allowlist]
+description = "已审阅的测试样例与文档演示假凭据（逐条理由）"
+paths = '''(?i)(
+  # e2e/单测夹具：样例 JWT 形状字符串，非真实签发密钥
+  e2e-full\.spec\.js|
+  # 执行器测试样例 token（形如 xoxp-/sk- 的造数据）
+  apps/executor-node/src/__tests__/|
+  apps/executor-node/__tests__/|
+  # 文档中的占位符凭据（<...>/your-*/changeme/example 形态）
+  docs/.*\.md|
+  README\.md|
+  # CI 自身的测试 secret 值（test-jwt-secret-* 等，见 ci.yml env 注释）
+  \.github/workflows/ci\.yml
+)'''
+# 兜底：占位符标记的值一律放行（无论出现在哪个文件）
+regexes = [
+  '''(?i)(your[_-]?api[_-]?key|your[_-]?token|changeme|placeholder|<your-|dGVzdA==|admin123)''',
+]

@@ -2,6 +2,10 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
+import axios from 'axios';
+import { spawnSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { get, post, patch, del, formatApiError } from '../client';
 
 interface Task {
@@ -20,6 +24,12 @@ interface Execution {
   duration?: number;
   createdAt: string;
   aiAnalysis?: string;
+  // U11: aligned with admin-api task-execution.entity.ts — the executor
+  // callback records these on terminal executions; without them the CLI
+  // silently dropped the failure cause.
+  exitCode?: number | null;
+  failureReason?: string | null;
+  errorMessage?: string | null;
 }
 
 interface PaginatedTasks {
@@ -48,6 +58,7 @@ export function tasksCommand(): Command {
     .option('-k, --keyword <keyword>', 'Search by name (sent as the `name` query param)')
     .option('-p, --page <n>', 'Page number', '1')
     .option('-n, --page-size <n>', 'Items per page', '20')
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
     .action(async (opts) => {
       const spinner = ora('Fetching tasks…').start();
       try {
@@ -59,6 +70,11 @@ export function tasksCommand(): Command {
           name: opts.keyword,
         });
         spinner.stop();
+        if (opts.json) {
+          // ECO-02: --json —— CI/脚本消费面（信封已拆，直接可用负载）
+          console.log(JSON.stringify(data));
+          return;
+        }
         const table = new Table({
           head: ['ID', 'Name', 'Runtime', 'Status', 'Cron'],
           colWidths: [14, 30, 12, 10, 20],
@@ -136,8 +152,10 @@ export function tasksCommand(): Command {
         });
         spinner.stop();
         const table = new Table({
-          head: ['Exec ID', 'Status', 'Duration', 'Started'],
-          colWidths: [14, 12, 12, 25],
+          // U11: exitCode column — distinguishes "failed by callback
+          // report" (exit 0 / null) from "process died" (non-zero).
+          head: ['Exec ID', 'Status', 'Duration', 'Exit', 'Started'],
+          colWidths: [14, 12, 12, 6, 25],
           style: { head: ['cyan'] },
         });
         for (const e of data.list ?? []) {
@@ -145,6 +163,7 @@ export function tasksCommand(): Command {
             e.id.slice(0, 12),
             statusColor(e.status),
             e.duration ? `${e.duration}ms` : '-',
+            e.exitCode ?? '-',
             new Date(e.createdAt).toLocaleString(),
           ]);
         }
@@ -470,6 +489,79 @@ export function tasksCommand(): Command {
       }
     });
 
+  // ECO-02: acf task lint <file> —— 本地语法检查（node: 语法编译不执行；
+  // python: ast.parse；shell: bash -n）。上传 glue 前把语法错误挡在本地。
+  cmd
+    .command('lint <file>')
+    .description('Syntax-check a glue script locally (js/mjs/cjs/py/sh) without executing it')
+    .option('--language <lang>', 'Override language detection (node/python/shell)')
+    .action((file: string, opts: { language?: string }) => {
+      let source: string;
+      try {
+        source = fs.readFileSync(file, 'utf-8');
+      } catch {
+        console.error(chalk.red(`Cannot read file: ${file}`));
+        process.exit(1);
+      }
+      const ext = path.extname(file).toLowerCase();
+      const lang =
+        opts.language ??
+        (['.js', '.mjs', '.cjs'].includes(ext)
+          ? 'node'
+          : ext === '.py'
+            ? 'python'
+            : ['.sh', '.bash'].includes(ext)
+              ? 'shell'
+              : undefined);
+      if (!lang) {
+        console.error(chalk.red(`Cannot infer language from extension "${ext}" — pass --language node|python|shell`));
+        process.exit(1);
+      }
+      const ok = (msg: string) => {
+        console.log(chalk.green(`✔ ${file}: ${msg}`));
+        process.exit(0);
+      };
+      if (lang === 'node') {
+        try {
+          // new Function 编译函数体但不调用——纯语法检查，零执行副作用。
+          // 包裹 try/catch 形态的 glue 源码同样能被编译。
+          // eslint-disable-next-line no-new-func
+          new Function(source);
+        } catch (err) {
+          console.error(chalk.red(`✗ ${file}: syntax error`));
+          console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+          process.exit(1);
+        }
+        ok('syntax OK (node)');
+      } else if (lang === 'python') {
+        const py = ['python3', 'python'].find((bin) => {
+          const r = spawnSync(bin, ['--version'], { stdio: 'ignore' });
+          return r.status === 0;
+        });
+        if (!py) {
+          console.error(chalk.red('python not found on PATH — install Python 3 to lint python glue'));
+          process.exit(1);
+        }
+        const r = spawnSync(py, ['-c', `import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())`, file], {
+          stdio: 'pipe',
+        });
+        if (r.status !== 0) {
+          console.error(chalk.red(`✗ ${file}: syntax error`));
+          process.stderr.write(r.stderr?.toString() ?? '');
+          process.exit(1);
+        }
+        ok('syntax OK (python, ast.parse)');
+      } else {
+        const r = spawnSync('bash', ['-n', file], { stdio: 'pipe' });
+        if (r.status !== 0) {
+          console.error(chalk.red(`✗ ${file}: syntax error`));
+          process.stderr.write(r.stderr?.toString() ?? '');
+          process.exit(1);
+        }
+        ok('syntax OK (bash -n)');
+      }
+    });
+
   return cmd;
 }
 
@@ -489,6 +581,19 @@ async function pollExecution(execId: string): Promise<void> {
           spinner.succeed(`Execution ${exec.status} in ${exec.duration ?? '?'}ms`);
         } else {
           spinner.fail(`Execution ${exec.status}`);
+          // U11: surface the structured failure cause the executor reported
+          // (exitCode / failureReason) — previously only aiAnalysis printed,
+          // so a non-zero exit or timeout reason was invisible without
+          // digging through `acf task logs`.
+          if (exec.exitCode !== null && exec.exitCode !== undefined) {
+            console.log(chalk.yellow('  Exit code      :'), exec.exitCode);
+          }
+          if (exec.failureReason) {
+            console.log(chalk.yellow('  Failure reason :'), exec.failureReason);
+          }
+          if (exec.errorMessage) {
+            console.log(chalk.yellow('  Error          :'), exec.errorMessage);
+          }
           if (exec.aiAnalysis) {
             console.log(chalk.yellow('\nAI Analysis:'), exec.aiAnalysis);
           }
@@ -496,8 +601,16 @@ async function pollExecution(execId: string): Promise<void> {
         return;
       }
       spinner.text = `Status: ${exec.status}…`;
-    } catch {
-      // transient, keep polling
+    } catch (e: unknown) {
+      // 4xx（除 429）是确定性失败（token 失效/执行不存在等）——继续轮询只会
+      // 空转到 MAX_WAIT 并误报超时，掩盖真实错误；立即退出并透出后端消息。
+      const status = axios.isAxiosError(e) ? e.response?.status : undefined;
+      if (status && status >= 400 && status < 500 && status !== 429) {
+        spinner.fail('Waiting for execution failed');
+        console.error(chalk.red(formatApiError(e)));
+        process.exit(1);
+      }
+      // transient (network / 429 / 5xx), keep polling
     }
   }
   spinner.fail('Timed out waiting for execution');

@@ -20,6 +20,12 @@ import { TaskEnv } from './types';
  * address it registered with). `post()` to `/api/executions/callback`
  * auto-fills `executorAddress` on items that omit it, so task code never
  * has to hardcode an address that changes with redeployment.
+ *
+ * U14: admin-api wraps every response body in a `{ code, message, data }`
+ * envelope (global ResponseInterceptor). The request helpers unwrap it and
+ * resolve with the inner `data`, so `results`-style lookups on a callback
+ * response work; rejected requests get the envelope's `message` appended to
+ * the axios error message.
  */
 export class HttpClient {
   private readonly client?: AxiosInstance;
@@ -53,7 +59,10 @@ export class HttpClient {
         'are required.';
       return;
     }
-    this.client = axios.create({ baseURL });
+    // 10s default matches the python SDK (callback.py) so a hung admin-api
+    // can't stall the task process until the executor's timeout kill; callers
+    // can still override per-request via axios config.
+    this.client = axios.create({ baseURL, timeout: 10_000 });
 
     // Attach auth + trace headers on every outgoing request.
     this.client.interceptors.request.use((config) => {
@@ -63,6 +72,25 @@ export class HttpClient {
         config.headers['X-Trace-Id'] = this.traceId;
       }
       return config;
+    });
+
+    // U14: keep failure messages readable. admin-api errors arrive in the
+    // same `{ code, message, data }` envelope (HttpExceptionFilter); surface
+    // the server-side reason in the rejected Error instead of axios's bare
+    // "Request failed with status code 401".
+    this.client.interceptors.response.use(undefined, (error: unknown) => {
+      const data = (error as { response?: { data?: unknown } })?.response?.data;
+      const message =
+        data && typeof data === 'object'
+          ? (data as { message?: unknown }).message
+          : undefined;
+      if (typeof message === 'string' && message) {
+        const err = error as Error;
+        if (!err.message.includes(message)) {
+          err.message = `${err.message}: ${message}`;
+        }
+      }
+      return Promise.reject(error);
     });
   }
 
@@ -117,12 +145,35 @@ export class HttpClient {
     return this.client;
   }
 
+  /**
+   * U14: admin-api's global ResponseInterceptor wraps every successful body
+   * in a `{ code, message, data }` envelope. Unwrap it so callers get the
+   * actual payload — e.g. `POST /api/executions/callback` resolves to
+   * `{ results: [...] }` instead of the envelope (where the lookup used to
+   * come back `undefined`). Bodies that do not match the envelope shape are
+   * returned unchanged. Mirrors `unwrap_envelope` in the python SDK's
+   * callback.py.
+   */
+  private static unwrapEnvelope<T>(payload: unknown): T {
+    if (
+      payload !== null &&
+      typeof payload === 'object' &&
+      !Array.isArray(payload) &&
+      'code' in payload &&
+      'message' in payload &&
+      'data' in payload
+    ) {
+      return (payload as { data: T }).data;
+    }
+    return payload as T;
+  }
+
   async get<T = unknown>(
     url: string,
     config?: AxiosRequestConfig,
   ): Promise<T> {
     const response: AxiosResponse<T> = await this.requireEnabled().get<T>(url, config);
-    return response.data;
+    return HttpClient.unwrapEnvelope<T>(response.data);
   }
 
   async post<T = unknown>(
@@ -135,7 +186,7 @@ export class HttpClient {
       this.withExecutorAddress(url, data),
       config,
     );
-    return response.data;
+    return HttpClient.unwrapEnvelope<T>(response.data);
   }
 
   async put<T = unknown>(
@@ -148,7 +199,7 @@ export class HttpClient {
       data,
       config,
     );
-    return response.data;
+    return HttpClient.unwrapEnvelope<T>(response.data);
   }
 
   async delete<T = unknown>(
@@ -159,6 +210,6 @@ export class HttpClient {
       url,
       config,
     );
-    return response.data;
+    return HttpClient.unwrapEnvelope<T>(response.data);
   }
 }
