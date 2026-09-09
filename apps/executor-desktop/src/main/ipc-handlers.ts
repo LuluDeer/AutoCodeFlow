@@ -3,6 +3,7 @@ import * as http from 'http';
 import * as path from 'path';
 import { configStore, executorProcess, heartbeat, trayManager, windowManager } from './index';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
+import { checkForUpdates, quitAndInstall } from './updater';
 import {
   checkPathWithinDomains,
   hasAllowedLogExtension,
@@ -115,6 +116,21 @@ export function registerIpcHandlers(): void {
     await setAutoLaunchEnabled(enable);
     configStore.save({ autoStart: enable });
     trayManager.rebuildMenu();
+    return { ok: true };
+  });
+
+  // ── 自动更新（DSK-03）─────────────────────────────────
+  // renderer 主动触发一次检查（设置页「检查更新」按钮）；dev 未打包时
+  // updater 未初始化，checkForUpdates 静默失败返回 ok:false。
+  ipcMain.handle('updater:check', async () => {
+    await checkForUpdates();
+    return { ok: true };
+  });
+
+  // 用户确认升级：下载完成后退出并安装（AppImage/deb 均由 electron-updater
+  // 按 resources/package-type 分派对应安装器）
+  ipcMain.handle('updater:install', () => {
+    quitAndInstall();
     return { ok: true };
   });
 

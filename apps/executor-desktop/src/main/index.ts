@@ -6,6 +6,7 @@ import { TrayManager } from './tray';
 import { WindowManager } from './window-manager';
 import { registerIpcHandlers } from './ipc-handlers';
 import { getAutoLaunchEnabled, setAutoLaunchEnabled } from './autolaunch';
+import { initUpdater } from './updater';
 import log from './logger';
 
 // 单例导出，供 ipc-handlers 等模块使用
@@ -81,6 +82,15 @@ app.whenReady().then(async () => {
 
   // 注册所有 IPC handlers
   registerIpcHandlers();
+
+  // DSK-03：自动更新仅生产包启用（dev 下 electron-updater 无 app-update.yml
+  // 会报错；且开发期不应触发升级流程）。initUpdater 内部延迟 30s 检查、
+  // 失败静默，见 src/main/updater.ts。
+  if (app.isPackaged) {
+    initUpdater();
+  } else {
+    log.info('updater: skipped in unpackaged dev run');
+  }
 
   const cfg = configStore.getAll();
   if (!cfg.configured) {
