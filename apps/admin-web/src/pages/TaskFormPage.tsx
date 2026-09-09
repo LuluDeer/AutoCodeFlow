@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   deriveExecutorMode,
   buildExecutorPayload,
@@ -46,6 +46,10 @@ import {
   retryableErrorsFormValues,
   RETRYABLE_ERROR_OPTIONS,
 } from './retry-policy';
+import {
+  buildDependenciesPayload,
+  dependenciesFormValues,
+} from './task-dependencies';
 import PageHeader from '../components/PageHeader';
 
 const { Text } = Typography;
@@ -109,6 +113,9 @@ export default function TaskFormPage() {
   const [allTags, setAllTags] = useState<string[]>([]);
   const [executors, setExecutors] = useState<{ id: string; appName: string; address: string; status: string }[]>([]);
   const [apps, setApps] = useState<{ id: string; name: string }[]>([]);
+  // NF-02: 上游依赖选择——候选任务列表 + 名称快照（提交时重建 dependencies 映射）
+  const [taskOptions, setTaskOptions] = useState<{ id: string; name: string }[]>([]);
+  const depNameSnapshotRef = useRef<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [loadingTask, setLoadingTask] = useState(isEdit);
   const [showCronHelper, setShowCronHelper] = useState(false);
@@ -137,6 +144,10 @@ export default function TaskFormPage() {
     applicationsApi.list().then((data) =>
       setApps(data.map((a) => ({ id: a.id, name: a.name })))
     ).catch(() => message.warning('获取应用列表失败'));
+    // NF-02: 上游依赖候选（全量任务，取 id+name；编辑态在任务加载后过滤自身）
+    tasksApi.list({ page: 1, pageSize: 500 })
+      .then((data) => setTaskOptions(data.items.map((t) => ({ id: t.id, name: t.name }))))
+      .catch(() => message.warning('获取任务列表失败，上游依赖暂不可选'));
     if (appId) form.setFieldValue('applicationId', appId);
   }, [appId, form]);
 
@@ -178,6 +189,10 @@ export default function TaskFormPage() {
           // FEAT-11: markdown 运行手册
           runbook: task.runbook ?? '',
         });
+        // NF-02: 上游依赖回填（映射 → Select 值 + 名称快照供提交重建映射）
+        const dep = dependenciesFormValues(task.dependencies);
+        form.setFieldValue('upstreamDependencies', dep.selected);
+        depNameSnapshotRef.current = dep.nameSnapshot;
       })
       .catch(() => message.error('加载任务失败'))
       .finally(() => setLoadingTask(false));
@@ -239,6 +254,12 @@ export default function TaskFormPage() {
             applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
           ),
         ),
+      );
+      // NF-02: 上游依赖序列化（选中 taskId 列表 → {taskId: taskName} 映射；
+      // 空集显式 null——PATCH Object.assign 语义下缺省=保留旧依赖链）
+      payload.dependencies = buildDependenciesPayload(
+        values.upstreamDependencies as string[] | undefined,
+        depNameSnapshotRef.current,
       );
       if (isEdit && editId) {
         await tasksApi.update(editId, payload);
@@ -799,6 +820,33 @@ export default function TaskFormPage() {
                   <Select
                     style={{ width: 200 }}
                     options={TASK_PRIORITY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                  />
+                </Form.Item>
+
+                {/* NF-02: 上游依赖（编排）。后端 tasks.dependencies jsonb =
+                    Record<taskId, taskName>；上游全部最近执行 SUCCESS 时由
+                    admin-api 自动扇出触发本任务（triggerDependentTasks，
+                    环检测/深度上限在 create/update 侧强制）。 */}
+                <Form.Item
+                  name="upstreamDependencies"
+                  label="上游依赖（可选）"
+                  tooltip={{
+                    title:
+                      '选择上游任务后，本任务会在所有上游最近一次执行全部成功时被自动触发（链式编排）。保存时校验循环依赖与链深（上限 10）。手动触发不受依赖约束。',
+                    icon: <InfoCircleOutlined />,
+                  }}
+                >
+                  <Select
+                    mode="multiple"
+                    showSearch
+                    allowClear
+                    placeholder="选择上游任务（可多选，全部成功后自动触发本任务）"
+                    options={taskOptions
+                      .filter((t) => t.id !== editId)
+                      .map((t) => ({ value: t.id, label: t.name }))}
+                    filterOption={(input, opt) =>
+                      (opt?.label as string)?.toLowerCase().includes(input.toLowerCase())
+                    }
                   />
                 </Form.Item>
               </Card>
