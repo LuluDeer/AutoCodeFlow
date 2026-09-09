@@ -20,7 +20,11 @@ export const AppDataSource = new DataSource({
   username: getEnvVar("DB_USERNAME") || "autoflow",
   password: getEnvVar("DB_PASSWORD") || "",
   database: getEnvVar("DB_DATABASE") || "autoflow",
-  entities: [__dirname + "/modules/**/entities/*.entity{.ts,.js}"],
+  // 与 src/config/configuration.ts 运行面 glob（../**/*.entity）对齐：
+  // 模块根直放的实体（project/project.entity.ts、executor-package 同款）
+  // 也能被 CLI 引导路径加载，避免 AUTH-01 Task#project 反向关系因
+  // Project 实体元数据缺失而报 "Entity metadata not found"。
+  entities: [__dirname + "/modules/**/*.entity{.ts,.js}"],
   migrations: [__dirname + "/migrations/*{.ts,.js}"],
   synchronize: false,
   logging:

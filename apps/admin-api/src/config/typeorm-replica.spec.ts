@@ -56,7 +56,10 @@ describe("buildTypeOrmDataSourceOptions (ARCH-24 read replica)", () => {
       database: { ...baseConfig.database, readReplicaUrl: "" },
     });
     expect("replication" in options).toBe(false);
-    expect(options).toMatchObject({ type: "postgres", host: "db-primary.internal" });
+    expect(options).toMatchObject({
+      type: "postgres",
+      host: "db-primary.internal",
+    });
   });
 
   it("a3) keeps the rest of the options identical between both shapes (only connection block differs)", () => {
@@ -65,7 +68,8 @@ describe("buildTypeOrmDataSourceOptions (ARCH-24 read replica)", () => {
       ...baseConfig,
       database: {
         ...baseConfig.database,
-        readReplicaUrl: "postgres://readonly@db-replica.internal:5432/autocodeflow",
+        readReplicaUrl:
+          "postgres://readonly@db-replica.internal:5432/autocodeflow",
       },
     });
 
@@ -86,7 +90,8 @@ describe("buildTypeOrmDataSourceOptions (ARCH-24 read replica)", () => {
       ...baseConfig,
       database: {
         ...baseConfig.database,
-        readReplicaUrl: "postgres://readonly@db-replica.internal:5432/autocodeflow",
+        readReplicaUrl:
+          "postgres://readonly@db-replica.internal:5432/autocodeflow",
       },
     }) as {
       replication: {
@@ -125,18 +130,16 @@ describe("buildTypeOrmDataSourceOptions (ARCH-24 read replica)", () => {
 
 /**
  * c) Joi 注册面：app.module validationSchema 中 DB_READ_REPLICA_URL 为
- *    scheme 锁定（postgres/postgresql）的可选 uri。这里复刻同一 schema
- *    片段断言（app.module 不便直接实例化 ConfigModule 校验——
- *    validationSchema 属性本身可从 DynamicModule 元数据取出，但取
- *    imports 元数据依赖装饰器元信息的内部结构；改为钉住等价 schema
- *    的行为 + app.module.spec 已覆盖模块装配）。为避免漂移，从
- *    AppModule 的 ConfigModule 元数据中取出真实 schema 校验。
+ *    scheme 锁定（postgres/postgresql）的可选 uri。validationSchema 在
+ *    ConfigModule.forRoot 闭包内无法反射取出，故 app.module 把该 schema
+ *    抽为命名导出 DB_READ_REPLICA_URL_SCHEMA，此处直接 import 同一对象
+ *    断言——注册面与测试零漂移。
  */
 describe("DB_READ_REPLICA_URL Joi validation (ARCH-24)", () => {
   it("c1) rejects a non-postgres scheme URL (fail-fast on misconfiguration)", () => {
-    const schema = DB_READ_REPLICA_URL_SCHEMA;
-
-    const result = schema.validate("http://db-replica.internal:5432/autocodeflow");
+    const result = DB_READ_REPLICA_URL_SCHEMA.validate(
+      "http://db-replica.internal:5432/autocodeflow",
+    );
     expect(result.error).toBeDefined();
     expect(result.error!.message).toMatch(
       /scheme matching the postgres\|postgresql pattern/,
@@ -145,8 +148,7 @@ describe("DB_READ_REPLICA_URL Joi validation (ARCH-24)", () => {
 
   it("c2) rejects a bare host:port (must be a postgres:// URI)", () => {
     const result = DB_READ_REPLICA_URL_SCHEMA.validate(
-      { DB_READ_REPLICA_URL: "db-replica.internal:5432" },
-      { allowUnknown: true, abortEarly: false },
+      "db-replica.internal:5432",
     );
     expect(result.error).toBeDefined();
   });
