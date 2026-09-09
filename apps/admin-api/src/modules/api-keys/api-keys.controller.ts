@@ -51,8 +51,7 @@ export class CreateApiKeyDto {
     Array.isArray(value) ? value.join(" ") : String(value ?? ""),
   )
   @Contains("task:trigger", {
-    message:
-      "scopes 仅支持 task:trigger（空格分隔词表；当前无其他扩展域）",
+    message: "scopes 仅支持 task:trigger（空格分隔词表；当前无其他扩展域）",
   })
   @MaxLength(128)
   scopes?: string;

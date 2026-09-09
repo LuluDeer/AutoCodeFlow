@@ -47,7 +47,12 @@ describe("TaskController trigger — NF-01 API-Key 主体分流与审计", () =>
   it("JWT 主体：行为零变化——task.trigger 审计（userId/username）", async () => {
     const { controller, taskService, audit } = makeDeps();
 
-    await controller.trigger("task-1", { params: { k: "v" } } as any, jwtUser, req);
+    await controller.trigger(
+      "task-1",
+      { params: { k: "v" } } as any,
+      jwtUser,
+      req,
+    );
 
     expect(taskService.trigger).toHaveBeenCalledWith("task-1", {
       params: { k: "v" },

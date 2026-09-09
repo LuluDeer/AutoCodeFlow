@@ -1,10 +1,7 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import { Logger } from "@nestjs/common";
 import { AiService } from "../ai.service";
-import {
-  AiAnalysisService,
-  AI_ANALYSIS_RETRIES,
-} from "../ai-analysis.service";
+import { AiAnalysisService, AI_ANALYSIS_RETRIES } from "../ai-analysis.service";
 // ARCH-30: 指标断言入口（模块级快照，与本文件用例内 reset 配对）
 import {
   getRuntimeCountersSnapshot,
@@ -27,7 +24,10 @@ describe("AiAnalysisService (ARCH-30)", () => {
     jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [AiAnalysisService, { provide: AiService, useValue: aiService }],
+      providers: [
+        AiAnalysisService,
+        { provide: AiService, useValue: aiService },
+      ],
     }).compile();
 
     service = module.get(AiAnalysisService);

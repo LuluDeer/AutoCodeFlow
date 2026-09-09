@@ -165,7 +165,8 @@ export class NotificationConfigService {
       feishu.enabled = true;
       feishu.config = {
         webhookUrl:
-          this.configService.get<string>("notification.feishu.webhookUrl") || "",
+          this.configService.get<string>("notification.feishu.webhookUrl") ||
+          "",
         secret:
           this.configService.get<string>("notification.feishu.secret") || "",
       };

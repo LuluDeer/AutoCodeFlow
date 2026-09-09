@@ -117,7 +117,11 @@ describe("SEC-09 限流分域 — ThrottlerGuard 全链路行为", () => {
   it("严格档：AUTH_THROTTLE.limit 内放行、超过即 429（ThrottlerException）", async () => {
     const guard = await buildGuard();
     expect(AUTH_THROTTLE.limit).toBe(10); // 缺省契约：10/min
-    const [ok, throttled] = await driveWith(guard, AUTH_THROTTLE.limit, AUTH_THROTTLE.limit + 3);
+    const [ok, throttled] = await driveWith(
+      guard,
+      AUTH_THROTTLE.limit,
+      AUTH_THROTTLE.limit + 3,
+    );
     expect(ok).toBe(10);
     expect(throttled).toBe(3);
   });
@@ -125,7 +129,11 @@ describe("SEC-09 限流分域 — ThrottlerGuard 全链路行为", () => {
   it("中档：OPS_THROTTLE.limit 内放行、超过即 429；且比全局默认 60/min 收紧", async () => {
     const guard = await buildGuard();
     expect(OPS_THROTTLE.limit).toBe(30);
-    const [ok, throttled] = await driveWith(guard, OPS_THROTTLE.limit, OPS_THROTTLE.limit + 2);
+    const [ok, throttled] = await driveWith(
+      guard,
+      OPS_THROTTLE.limit,
+      OPS_THROTTLE.limit + 2,
+    );
     expect(ok).toBe(30);
     expect(throttled).toBe(2);
   });
@@ -147,19 +155,32 @@ describe("SEC-09 限流分域 — ThrottlerGuard 全链路行为", () => {
     const skipIf = () => cfg.get("throttle.enabled") === false;
     const guard = await buildGuard();
     // 对照组：skipIf 未挂上时 limit=1 的高敏档应产生 429
-    const [, throttledBaseline] = await driveWith(guard, 1, 10, { ip: "10.0.0.1", headers: {} });
+    const [, throttledBaseline] = await driveWith(guard, 1, 10, {
+      ip: "10.0.0.1",
+      headers: {},
+    });
     expect(throttledBaseline).toBeGreaterThan(0);
     // skipIf 注入 commonOptions（app.module 工厂产出形状）后全域旁路
     (guard as any).commonOptions.skipIf = skipIf;
-    const [ok2, throttled2] = await driveWith(guard, 1, 15, { ip: "10.0.0.2", headers: {} });
+    const [ok2, throttled2] = await driveWith(guard, 1, 15, {
+      ip: "10.0.0.2",
+      headers: {},
+    });
     expect(ok2).toBe(15);
     expect(throttled2).toBe(0);
   });
 
   it("SSE 豁免档：@SkipThrottle 语义（THROTTLER:SKIPdefault=true）→ guard 直接放行不计数", async () => {
     const guard = await buildGuard();
-    const skipStub: ReflectorStub = (key) => (key === "THROTTLER:SKIPdefault" ? true : undefined);
-    const [ok, throttled] = await driveWith(guard, 1, 50, { ip: "10.0.0.1", headers: {} }, skipStub);
+    const skipStub: ReflectorStub = (key) =>
+      key === "THROTTLER:SKIPdefault" ? true : undefined;
+    const [ok, throttled] = await driveWith(
+      guard,
+      1,
+      50,
+      { ip: "10.0.0.1", headers: {} },
+      skipStub,
+    );
     expect(ok).toBe(50);
     expect(throttled).toBe(0);
   });
