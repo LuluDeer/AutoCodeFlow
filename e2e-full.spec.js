@@ -1572,7 +1572,7 @@ test.describe('security-redline-rbac', () => {
     expect(whBad.status(), `webhook 坏 body 应 400（DTO 先行）: ${await whBad.text()}`).toBe(400);
     console.log('  ✓ 发版 webhook（坏 body）→ 400（DTO 校验先行）');
     const wh = await request.post(`${API}/api/applications/webhook`, {
-      data: { event: 'push', appName: 'e2e-rb-webhook', version: '1.0.0' },
+      data: { appName: 'e2e-rb-webhook', version: '1.0.0' },
     });
     // APP-001：签名缺失/无效/应用不存在统一 401（防应用名枚举）
     expect(wh.status(), `webhook 无签名应 401: ${await wh.text()}`).toBe(401);
