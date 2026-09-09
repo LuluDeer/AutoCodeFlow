@@ -87,6 +87,15 @@ export class Executor {
   /** Executor description. */
   @Column({ type: "text", nullable: true }) description: string | null;
 
+  /**
+   * AUTH-01（多租户 Project，第一批）：执行器归属项目（可空）。迁移
+   * 1790000000009 加列 + FK ON DELETE SET NULL + 索引。存量行不回填——
+   * 可空 = 未分配，语义上归默认项目视图。只加列不加关系（执行器注册/
+   * 心跳路径不感知项目，调度面后续批次消费）。
+   */
+  @Column({ type: "uuid", nullable: true })
+  projectId: string | null;
+
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;
 

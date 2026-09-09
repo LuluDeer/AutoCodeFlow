@@ -14,7 +14,9 @@ import {
   DataSource,
   ILike,
   In,
+  IsNull,
   Not,
+  Or,
   QueryFailedError,
   Repository,
 } from "typeorm";
@@ -58,6 +60,9 @@ import {
 import { S3LogStorage } from "./log-storage/s3-log-storage";
 // SEC-02: 任务级 secrets 落库加密 / 读脱敏 / 派发解密的统一入口
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
+// AUTH-01: 默认项目 uuid（"default" 过滤映射目标，与迁移 1790000000008
+// 回填值共享同一常量出处 project.entity.ts）。
+import { DEFAULT_PROJECT_ID } from "../project/project.entity";
 // CORE-04: 超时策略归一化（DTO 边界之外的运行态兜底——编程式/旧数据形态）
 import {
   normalizeTimeoutAction,
@@ -406,6 +411,15 @@ export class TaskService {
     if (p.name) where.name = ILike(`%${p.name}%`);
     if (p.runtime) where.runtime = p.runtime;
     if (p.applicationId) where.applicationId = p.applicationId;
+    // AUTH-01: projectId 过滤——"default" 映射为默认项目（未分配 NULL 行
+    // 一起归入默认项目视图，Or 处理）；具体 uuid 则精确匹配。
+    if (p.projectId) {
+      if (p.projectId === "default") {
+        where.projectId = Or(IsNull(), In([DEFAULT_PROJECT_ID]));
+      } else {
+        where.projectId = p.projectId;
+      }
+    }
     const [list, total] = await this.taskRepo.findAndCount({
       where,
       skip: (p.page - 1) * p.pageSize,

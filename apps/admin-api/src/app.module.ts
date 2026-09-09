@@ -8,7 +8,9 @@ import { APP_GUARD } from "@nestjs/core";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { RolesGuard } from "./common/guards/roles.guard";
 import * as Joi from "joi";
-import configuration from "./config/configuration";
+import configuration, {
+  buildTypeOrmDataSourceOptions,
+} from "./config/configuration";
 import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { TaskModule } from "./modules/task/task.module";
@@ -33,6 +35,8 @@ import { TracingModule } from "./common/tracing/tracing.module";
 import { TaskTemplateModule } from "./modules/task-template/task-template.module";
 // FEAT-07: 出站事件订阅（webhook 出站）——消费 DomainEventBus 事件派发签名回调。
 import { EventSubscriptionModule } from "./modules/event-subscriptions/event-subscription.module";
+// AUTH-01: 多租户 Project（第一批）——projects CRUD + 默认项目种子语义。
+import { ProjectsModule } from "./modules/project/projects.module";
 // AUTH-03: 限权 API Key（CI/CD 机器认证）——guard 分流消费 ApiKeysService。
 import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
 
@@ -74,6 +78,15 @@ import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
         // ARCH-006: explicit schema-synchronize switch (default false).
         // In production a value of "true" fails fast in configuration.ts.
         DB_SYNCHRONIZE: Joi.string().valid("true", "false").default("false"),
+        // ARCH-24: 可选只读副本连接串（postgres:// 或 postgresql://）。
+        // scheme 锁定 + 拒绝空串以外任意非 DB scheme（防误配 http(s)/mysql）。
+        // 留空（默认）= 读写分离关闭，TypeORM 保持单连接形态；配置后 SELECT
+        // 读面经驱动内建路由走 slaves，写面/事务/迁移恒走 master。形态构造
+        // 见 configuration.ts 的 buildTypeOrmDataSourceOptions（单测钉子）。
+        DB_READ_REPLICA_URL: Joi.string()
+          .uri({ scheme: ["postgres", "postgresql"] })
+          .allow("")
+          .optional(),
 
         // Redis
         REDIS_HOST: Joi.string().hostname().default("localhost"),
@@ -302,28 +315,34 @@ import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
 
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (cfg: ConfigService) => ({
-        type: "postgres",
-        host: cfg.get("database.host"),
-        port: cfg.get<number>("database.port"),
-        username: cfg.get("database.username"),
-        password: cfg.get("database.password"),
-        database: cfg.get("database.database"),
-        entities: [__dirname + "/**/*.entity{.ts,.js}"],
-        migrations: [__dirname + "/migrations/*{.ts,.js}"],
-        migrationsRun: cfg.get("app.nodeEnv") !== "development",
+      // ARCH-24: DataSource 配置构造收口到 configuration.ts 的
+      // buildTypeOrmDataSourceOptions（纯函数，含读写分离开关：
+      // DB_READ_REPLICA_URL 为空 = 旧版单连接形态；非空 = replication
+      // { master, slaves } 形态，SELECT 读面走 slaves，写面/迁移恒走
+      // master——路由语义与形态细节见该函数头注与 docs/deployment.md）。
+      // synchronize：configuration.ts 已按 DB_SYNCHRONIZE/NODE_ENV 收口
+      // （production fail-fast false），此处透传。
+      useFactory: (cfg: ConfigService) => {
+        const options = buildTypeOrmDataSourceOptions({
+          database: {
+            host: cfg.get("database.host"),
+            port: cfg.get<number>("database.port"),
+            username: cfg.get("database.username"),
+            password: cfg.get("database.password"),
+            database: cfg.get("database.database"),
+            poolSize: cfg.get<number>("database.poolSize"),
+            readReplicaUrl: cfg.get("database.readReplicaUrl"),
+          },
+          app: { nodeEnv: cfg.get("app.nodeEnv") },
+        });
         // ARCH-006: explicit DB_SYNCHRONIZE switch (default false) instead of
         // inferring from NODE_ENV; production additionally forces/fails-fast
         // false in configuration.ts regardless of the env value.
-        synchronize: cfg.get<boolean>("database.synchronize"),
-        logging: cfg.get("app.nodeEnv") === "development",
-        // PERF-04: PostgreSQL connection pool — default 10 is insufficient under concurrent load
-        extra: {
-          max: cfg.get<number>("database.poolSize"),
-          idleTimeoutMillis: 30000,
-          connectionTimeoutMillis: 5000,
-        },
-      }),
+        return {
+          ...options,
+          synchronize: cfg.get<boolean>("database.synchronize"),
+        };
+      },
       inject: [ConfigService],
     }),
 
@@ -399,6 +418,7 @@ import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
     TaskTemplateModule,
     EventSubscriptionModule,
     ApiKeysModule,
+    ProjectsModule,
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally

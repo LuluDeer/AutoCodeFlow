@@ -178,6 +178,21 @@ export class Task {
   @Column({ nullable: true }) applicationId: string;
 
   /**
+   * AUTH-01（多租户 Project，第一批）：任务归属项目（可空）。迁移
+   * 1790000000008 加列 + FK ON DELETE SET NULL + 索引，并把存量行回填到
+   * 默认项目（DEFAULT_PROJECT_ID，project.entity.ts）。NULL = 显式未分配，
+   * 列表过滤面按「IS NULL OR = 默认项目」归入默认项目视图（见
+   * task.service.findAll）。@ManyToOne 用字符串引用（与上方 Application
+   * 关系同款）避免与 project 模块循环导入。
+   */
+  @Column({ type: "uuid", nullable: true })
+  projectId: string | null;
+
+  @ManyToOne("Project", "tasks", { nullable: true, onDelete: "SET NULL" })
+  @JoinColumn({ name: "projectId" })
+  project: { id: string; name: string } | null;
+
+  /**
    * SEC-02: 任务级 secrets（凭据形态的键值对，独立于 params 的普通运行参数）。
    * 存储格式由 SEC_SECRETS_KEY 决定：配置 key 后所有叶子值为
    * `enc:v1:<iv>:<tag>:<ciphertext>`（AES-256-GCM，见 common/utils/

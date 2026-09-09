@@ -88,8 +88,9 @@ export class ApplicationController {
 
   @Get()
   @ApiOperation({ summary: "Get application list" })
-  findAll() {
-    return this.svc.findAll();
+  // AUTH-01: 可选 projectId 过滤（"default" = 默认项目视图，含未分配行）。
+  findAll(@Query("projectId") projectId?: string) {
+    return this.svc.findAll(projectId);
   }
 
   @Get(":id")

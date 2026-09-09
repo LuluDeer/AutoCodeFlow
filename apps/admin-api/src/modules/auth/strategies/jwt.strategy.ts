@@ -11,6 +11,13 @@ export interface JwtPayload {
   type?: string;
   /** SEC-03: session id — mirrors the refresh token jti this login issued. */
   sid?: string;
+  /**
+   * AUTH-01（多租户 Project，第一批）：可选项目上下文 claim。保守落地——
+   * sign 侧 base payload 本批不加（auth.service.generateTokens 不带
+   * projectId，签发行为零变化），claim 面先立契约：项目上下文后续经
+   * X-Project-Id header 注入时由该字段承接。validate() 不消费、不校验。
+   */
+  projectId?: string;
 }
 
 /**
