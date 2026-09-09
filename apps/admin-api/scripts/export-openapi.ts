@@ -40,8 +40,13 @@
  *    SwaggerModule.createDocument 的同一份装饰器元数据，契约不会分叉。
  *
  * 用法：
- *   cd apps/admin-api && npm run swagger:export    # 产物 ./openapi.json
- *   （根级等价入口：npm run openapi:export）
+ *   ⚠️ **已停用（2026-09-10）——勿再运行**。本脚本（ts-node 路径）对
+ *   @IsEnum 字段的装饰器元数据反射与 Jest 路径不一致（emit {"type":"object"}
+ *   而非 {"type":"string"}，CreateTaskDto 7 字段退化），两条导出路径产物
+ *   md5 不同曾致 CI api-types-drift 双红。canonical writer =
+ *   test/openapi-export.e2e-spec.ts（Jest，枚举类型质量更高），
+ *   `npm run swagger:export` 已委托该 spec。本文件仅留档其离线装配技巧
+ *   （manualInitialization / OfflineQueue stub / 0-paths fail-fast）。
  */
 import "reflect-metadata";
 import * as path from "path";

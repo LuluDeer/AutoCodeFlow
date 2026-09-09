@@ -6502,7 +6502,7 @@
   },
   "info": {
     "title": "AutoFlow Admin API",
-    "description": "AutoCodeFlow Admin API — exported by scripts/export-openapi.ts (ARCH-23). Single source of truth for generated frontend types (apps/admin-web gen:api-types) and the CI api-types-drift check. Regenerate with `npm run swagger:export` after any API contract change.",
+    "description": "AutoCodeFlow Admin API — exported by test/openapi-export.e2e-spec.ts (ARCH-23). Single source of truth for generated frontend types (apps/admin-web gen:api-types) and the CI api-types-drift check. Regenerate with `npm run swagger:export` after any API contract change.",
     "version": "1.0.0",
     "contact": {}
   },
@@ -6662,10 +6662,10 @@
             "type": "string"
           },
           "status": {
-            "type": "object"
+            "type": "string"
           },
           "triggerType": {
-            "type": "object"
+            "type": "string"
           },
           "cronExpression": {
             "type": "string"
@@ -6686,7 +6686,7 @@
             }
           },
           "runtime": {
-            "type": "object"
+            "type": "string"
           },
           "runtimeVersion": {
             "type": "string"
@@ -6761,16 +6761,16 @@
             }
           },
           "priority": {
-            "type": "object"
+            "type": "number"
           },
           "executeMode": {
-            "type": "object"
+            "type": "string"
           },
           "blockStrategy": {
-            "type": "object"
+            "type": "string"
           },
           "misfireStrategy": {
-            "type": "object"
+            "type": "string"
           },
           "alarmEmail": {
             "type": "string"
