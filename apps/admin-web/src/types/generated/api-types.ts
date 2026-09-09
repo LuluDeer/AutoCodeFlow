@@ -1510,6 +1510,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executions/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Execution terminal-state SSE stream (FEAT-16)
+         * @description Server-Sent Events stream forwarding execution terminal events (execution.completed / execution.failed / execution.killed) from the in-process domain event bus. Payload: ExecutionTerminalEventPayload. Auth: JWT bearer header, or ?access_token= fallback.
+         */
+        get: operations["ExecutionsStreamController_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/config": {
         parameters: {
             query?: never;
@@ -5165,6 +5185,23 @@ export interface operations {
         };
     };
     MetricsStreamController_stream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutionsStreamController_stream: {
         parameters: {
             query?: never;
             header?: never;

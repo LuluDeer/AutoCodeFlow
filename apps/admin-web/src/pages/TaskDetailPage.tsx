@@ -11,8 +11,15 @@ import {
   CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined, SaveOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useRequest } from 'ahooks';
+import { useQueryClient } from '@tanstack/react-query';
 import { tasksApi, TaskExecution } from '../api/tasks';
+import {
+  useSchedulerStats,
+  useTaskDetail,
+  useTaskExecutions,
+  useTaskStats,
+  invalidateTaskData,
+} from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
 import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg } from '../utils/error';
@@ -96,25 +103,25 @@ export default function TaskDetailPage() {
     }
   };
 
-  const { data: schedulerStats } = useRequest(
-    tasksApi.schedulerStats,
-    { pollingInterval: 30000, pollingWhenHidden: false },
-  );
+  // FEAT-17: TanStack Query 改造——四个 useRequest 换 queries.ts hooks：
+  // - schedulerStats：30s 轮询语义由 refetchInterval 承担（queries.ts 内声明）；
+  // - task/execs/stats：queryKey 带 id/分页参数（等价 ready+refreshDeps）；
+  // - 写后失效：refreshTask/refreshExecs 收口为 invalidateTaskData（任务面 +
+  //   执行面 + Dashboard 汇总联动，一处 invalidate 全站一致）。
+  const queryClient = useQueryClient();
+  const refreshTask = () => void invalidateTaskData(queryClient);
+  const refreshExecs = () => void invalidateTaskData(queryClient);
 
-  const { data: task, loading: taskLoading, error: taskError, refresh: refreshTask } = useRequest(
-    () => tasksApi.get(id!),
-    { ready: !!id, refreshDeps: [id] },
-  );
+  const { data: schedulerStats } = useSchedulerStats();
 
-  const { data: execData, loading: execLoading, refresh: refreshExecs } = useRequest(
-    () => tasksApi.executions(id!, { page: execPage, pageSize: 20 }),
-    { ready: !!id, refreshDeps: [id, execPage] },
-  );
+  const { data: task, isLoading: taskLoading, error: taskError } = useTaskDetail(id);
 
-  const { data: taskStats } = useRequest(
-    () => tasksApi.stats(id!),
-    { ready: !!id, refreshDeps: [id], pollingInterval: 60_000, pollingWhenHidden: false },
-  );
+  const { data: execData, isLoading: execLoading } = useTaskExecutions(id, {
+    page: execPage,
+    pageSize: 20,
+  });
+
+  const { data: taskStats } = useTaskStats(id);
 
   const executions: TaskExecution[] = execData?.items ?? [];
   const execTotal: number = execData?.total ?? 0;
@@ -203,6 +210,12 @@ export default function TaskDetailPage() {
   }
   if (!task) return <Empty description="任务不存在" />;
 
+  // UI-09：375px 可用性——关键列=状态/开始时间/错误/操作；触发/执行器/耗时为
+  // 次要列窄屏收起（CSS 侧 .ui09-hide-mobile 双保险），scroll.x 横向滚动兜底。
+  const hideOnMobile = {
+    onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+    onCell: () => ({ className: 'ui09-hide-mobile' }),
+  } as const;
   const execColumns = [
     {
       title: '状态', dataIndex: 'status', width: 90,
@@ -210,6 +223,7 @@ export default function TaskDetailPage() {
     },
     {
       title: '触发', dataIndex: 'triggerType', width: 80,
+      ...hideOnMobile,
       render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
     },
     {
@@ -231,6 +245,7 @@ export default function TaskDetailPage() {
     },
     {
       title: '耗时', dataIndex: 'duration', width: 80,
+      ...hideOnMobile,
       render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v)}</Text> : '-',
     },
     {
@@ -300,8 +315,9 @@ export default function TaskDetailPage() {
           </>
         }
       />
+      {/* UI-09：状态行 Tag 群窄屏换行（Space wrap） */}
       <div style={{ marginBottom: 16 }}>
-        <Space>
+        <Space wrap>
           <Badge
             status={isActive ? 'success' : isPaused ? 'warning' : 'default'}
             text={isActive ? '运行中' : isPaused ? '已暂停' : task.status}
@@ -524,6 +540,8 @@ export default function TaskDetailPage() {
                   dataSource={executions}
                   loading={execLoading}
                   size="small"
+                  // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ 横向滚动兜底（值班手机看失败原因）
+                  scroll={{ x: 620 }}
                   pagination={{
                     total: execTotal,
                     pageSize: 20,

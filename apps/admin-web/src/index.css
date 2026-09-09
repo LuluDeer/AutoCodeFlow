@@ -159,3 +159,82 @@ html[data-theme='dark'] mark.log-search-hit {
   background: #fbbf24;
   color: #1c1917;
 }
+
+/* ============================================================
+   UI-09：移动端适配（≤768px，值班工程师手机巡查场景）
+   —— 纯 CSS 媒体查询（无 JS 断点逻辑），桌面端零影响：
+   · 侧边栏 off-canvas 抽屉化 + 遮罩（.mobile-sider-open 由 MainLayout 挂载）
+   · 汉堡入口 .mobile-menu-toggle（桌面端 display:none 不渲染观感）
+   · 头部次要信息（时间/面包屑）隐藏
+   · 表格次要列 .ui09-hide-mobile 隐藏（onHeaderCell/onCell 双端挂类）
+   · 弹窗不超屏、触控目标 ≥40px
+   ============================================================ */
+/* 基础规则（桌面端）：汉堡与遮罩默认不显示（!important 压过 antd cssinjs 运行时注入的同权重规则） */
+.mobile-menu-toggle {
+  display: none !important;
+}
+.mobile-sider-mask {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  /* 头部：汉堡入口可见，时间/面包屑等次要信息隐藏（值班只留高频操作） */
+  .mobile-menu-toggle {
+    display: inline-flex !important;
+  }
+  .header-time,
+  .header-breadcrumb {
+    display: none;
+  }
+
+  /* 内容区与头部 padding 收紧（覆盖 antd 内联样式需 !important） */
+  .ant-layout-content {
+    padding: 12px !important;
+  }
+  .ant-layout-header {
+    padding: 0 12px !important;
+  }
+
+  /* 侧边栏抽屉化：fixed off-canvas，展开态滑入（MainLayout 通过 .mobile-sider-open 控制） */
+  .ant-layout-sider {
+    position: fixed !important;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+  }
+  .mobile-sider-open .ant-layout-sider {
+    transform: none;
+    box-shadow: var(--shadow-xl);
+  }
+  .mobile-sider-open .mobile-sider-mask {
+    display: block !important;
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  /* 表格次要列隐藏（值班关键列=名称/状态/时间/错误/操作，横向滚动兜底其余列） */
+  .ui09-hide-mobile {
+    display: none !important;
+  }
+
+  /* 触控目标 ≥40px：表格行内图标按钮放宽热区（375px 指端命中） */
+  .ant-table-tbody .ant-btn-icon-only {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  /* 弹窗不超屏（Modal 固定 width 兜底），内容超高内部滚动 */
+  .ant-modal {
+    max-width: calc(100vw - 16px) !important;
+    margin: 8px auto !important;
+  }
+  .ant-modal .ant-modal-content {
+    max-height: calc(100vh - 64px);
+    overflow: auto;
+  }
+}

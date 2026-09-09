@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { cloneElement } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ExecutorDetailPage from '../pages/ExecutorDetailPage';
 import { executorsApi } from '../api/executors';
 import { useAuthStore } from '../store/auth';
@@ -97,12 +98,16 @@ function makeHistory(n: number) {
 
 function renderPage() {
   // 必须挂 Route 才能让 useParams 拿到 :id（否则 ready=false 永不发请求）
+  // FEAT-17: ExecutorDetailPage 改用 TanStack Query——测试包 QueryClientProvider
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
+    <QueryClientProvider client={qc}>
     <MemoryRouter initialEntries={['/executors/executor-1']}>
       <Routes>
         <Route path="/executors/:id" element={<ExecutorDetailPage />} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskTemplatesPage from '../pages/TaskTemplatesPage';
 import { taskTemplatesApi } from '../api/task-templates';
 
@@ -59,7 +60,11 @@ describe('TaskTemplatesPage 错误态接入（UI-08）', () => {
       // 重试路径：第二次调用成功返回空列表
       .mockResolvedValueOnce([] as never);
 
-    render(<TaskTemplatesPage />);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskTemplatesPage />
+      </QueryClientProvider>,
+    );
 
     // 错误块呈现：标题 + 具体错误消息
     expect(await screen.findByTestId('state-error')).toBeTruthy();

@@ -14,6 +14,7 @@ import { useNavigate } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
 import { useExecutionsList, invalidateExecutionData } from '../api/queries';
+import { useExecutionsStream } from '../hooks/useExecutionsStream';
 import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
@@ -86,8 +87,14 @@ export default function ExecutionsPage() {
     endTime: timeRange?.[1]?.toISOString(),
   });
 
-  // 15s 轮询兜底：运行中行需要及时看到终态。标签页不可见时跳过请求
-  // （定时器保留，回到前台后下一拍即恢复——等价 pollingWhenHidden:false）。
+  // FEAT-16: 执行终态推送流——SSE live 时终态事件即时 invalidate 列表+汇总
+  // 缓存（<3s 刷新验收），断线时下方 15s 轮询兜底自动成为唯一新鲜度来源
+  // （对齐 DashboardPage：SSE 推送与轮询互斥共存，staleTime 内 refetch 去重）。
+  useExecutionsStream();
+
+  // 15s 轮询兜底：运行中行需要及时看到终态（SSE 断线时的降级路径）。
+  // 标签页不可见时跳过请求（定时器保留，回到前台后下一拍即恢复——
+  // 等价 pollingWhenHidden:false）。
   useEffect(() => {
     const timer = setInterval(() => {
       if (document.visibilityState === 'visible') void refetch();
@@ -108,6 +115,13 @@ export default function ExecutionsPage() {
     setPage(1);
   };
 
+  // UI-09：375px 可用性——关键列=任务/状态/开始时间/错误/操作（值班首查项），
+  // 触发方式/执行器/耗时为次要列窄屏收起（CSS 侧 .ui09-hide-mobile 双保险）；
+  // scroll.x 兜底横向滚动。onHeaderCell/onCell 挂类供媒体查询隐藏次要列。
+  const hideOnMobile = {
+    onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+    onCell: () => ({ className: 'ui09-hide-mobile' }),
+  } as const;
   const columns = [
     {
       title: '任务',
@@ -129,6 +143,7 @@ export default function ExecutionsPage() {
       title: '触发方式',
       dataIndex: 'triggerType',
       width: 90,
+      ...hideOnMobile,
       render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
     },
     {
@@ -136,6 +151,7 @@ export default function ExecutionsPage() {
       dataIndex: 'executorAddress',
       width: 160,
       ellipsis: true,
+      ...hideOnMobile,
       render: (v: string) => v
         ? <Tooltip title={v}><Text style={{ fontSize: 12 }}>{v}</Text></Tooltip>
         : <Text type="secondary" style={{ fontSize: 12 }}>-</Text>,
@@ -154,6 +170,7 @@ export default function ExecutionsPage() {
       title: '耗时',
       dataIndex: 'duration',
       width: 80,
+      ...hideOnMobile,
       render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v)}</Text> : '-',
     },
     {
@@ -203,7 +220,8 @@ export default function ExecutionsPage() {
         extra={<Button icon={<ReloadOutlined />} onClick={() => void refetch()}>刷新</Button>}
       />
 
-      <Space style={{ marginBottom: 16 }} wrap>
+      {/* UI-09：筛选区 wrap 堆叠（Space wrap 已有），输入/选择窄屏自适应宽度 */}
+      <Space style={{ marginBottom: 16 }} wrap className="ui09-filter-bar">
         {selectedIds.length > 0 && (
           <Button
             icon={<SwapOutlined />}
@@ -226,12 +244,12 @@ export default function ExecutionsPage() {
           value={search}
           onChange={e => { setSearch(e.target.value); setPage(1); }}
           allowClear
-          style={{ width: 200 }}
+          style={{ width: 200, maxWidth: '100%' }}
         />
         <Select
           placeholder="全部状态"
           allowClear
-          style={{ width: 120 }}
+          style={{ width: 120, maxWidth: '100%' }}
           value={statusFilter}
           onChange={v => { setStatusFilter(v); setPage(1); }}
           suffixIcon={<FilterOutlined />}
@@ -250,7 +268,7 @@ export default function ExecutionsPage() {
           value={executorFilter}
           onChange={e => { setExecutorFilter(e.target.value); setPage(1); }}
           allowClear
-          style={{ width: 180 }}
+          style={{ width: 180, maxWidth: '100%' }}
         />
         <RangePicker
           showTime
@@ -258,7 +276,7 @@ export default function ExecutionsPage() {
           placeholder={['开始时间', '结束时间']}
           value={timeRange}
           onChange={val => { setTimeRange(val as [Dayjs, Dayjs] | null); setPage(1); }}
-          style={{ width: 320 }}
+          style={{ width: 320, maxWidth: '100%' }}
         />
         {hasFilters && (
           <Button size="small" onClick={clearFilters}>清除筛选</Button>
@@ -270,6 +288,8 @@ export default function ExecutionsPage() {
         columns={columns}
         dataSource={executions}
         loading={loading}
+        // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
+        scroll={{ x: 640 }}
         rowSelection={{
           selectedRowKeys: selectedIds,
           onChange: (keys) => setSelectedIds(keys as string[]),

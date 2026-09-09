@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 // 隔离 api 层（对齐 execution-detail-sse.test 先例）。
@@ -74,11 +75,13 @@ async function renderPage(execution: Record<string, unknown>) {
   useAuthStore.getState().setAuth('tok-123', 'refresh-1', { id: 1, username: 'admin' });
   const { default: ExecutionDetailPage } = await import('../pages/ExecutionDetailPage');
   render(
-    <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
       <Routes>
         <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
       </Routes>
-    </MemoryRouter>,
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
   await vi.waitFor(() => expect(screen.getAllByText('nightly').length).toBeGreaterThan(0));
 }

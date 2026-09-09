@@ -13,6 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import { artifactsApi } from '../api/artifacts';
@@ -98,13 +99,17 @@ function mockExecution(overrides: Record<string, unknown> = {}) {
 }
 
 function renderPage(initialSearch = '') {
+  // FEAT-17: ExecutionDetailPage 改用 TanStack Query——测试包 QueryClientProvider
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[`/tasks/t1/executions/e1${initialSearch}`]}>
-      <LocationProbe />
-      <Routes>
-        <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[`/tasks/t1/executions/e1${initialSearch}`]}>
+        <LocationProbe />
+        <Routes>
+          <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

@@ -8,6 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import ExecutionDetailPage from '../pages/ExecutionDetailPage';
@@ -87,12 +88,14 @@ describe('ExecutionDetailPage 截断日志兜底（U2）', () => {
   it('截断标记出现时渲染"日志已截断"提示与"加载完整日志"按钮', async () => {
     mockExecution(TRUNCATED_LOGS);
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     expect(await screen.findByText(/日志已截断/)).toBeTruthy();
     expect(screen.getByRole('button', { name: /加载完整日志/ })).toBeTruthy();
   });
@@ -100,12 +103,14 @@ describe('ExecutionDetailPage 截断日志兜底（U2）', () => {
   it('无截断标记时不渲染提示与按钮', async () => {
     mockExecution('line-1\nline-2\n正常结束');
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     await screen.findByText(/正常结束/);
     expect(screen.queryByText(/日志已截断/)).toBeNull();
     expect(screen.queryByRole('button', { name: /加载完整日志/ })).toBeNull();
@@ -117,12 +122,14 @@ describe('ExecutionDetailPage 截断日志兜底（U2）', () => {
       .mockResolvedValueOnce({ lines: ['full-a', 'full-b'], totalLines: 3, hasMore: true } as never)
       .mockResolvedValueOnce({ lines: ['full-c'], totalLines: 3, hasMore: false } as never);
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     fireEvent.click(await screen.findByRole('button', { name: /加载完整日志/ }));
 
     await vi.waitFor(() => {
@@ -141,12 +148,14 @@ describe('ExecutionDetailPage 截断日志兜底（U2）', () => {
     mockExecution(TRUNCATED_LOGS);
     vi.mocked(tasksApi.executionLogs).mockRejectedValueOnce(new Error('executor unreachable'));
     render(
-      <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>
         <Routes>
           <Route path="/tasks/:taskId/executions/:execId" element={<ExecutionDetailPage />} />
         </Routes>
-      </MemoryRouter>,
-    );
+        </MemoryRouter>
+      </QueryClientProvider>,
+  );
     fireEvent.click(await screen.findByRole('button', { name: /加载完整日志/ }));
 
     expect(await screen.findByText(/executor unreachable/)).toBeTruthy();

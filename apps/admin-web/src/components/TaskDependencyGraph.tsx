@@ -9,9 +9,9 @@
 import { useMemo, useState } from 'react';
 import { Button, Empty, Spin, Tag, Typography, Alert, message } from 'antd';
 import { useNavigate } from 'react-router-dom';
-import { useRequest } from 'ahooks';
 import { ThunderboltOutlined } from '@ant-design/icons';
 import { tasksApi } from '../api/tasks';
+import { useAllTasksForDag } from '../api/queries';
 import { getErrMsg } from '../utils/error';
 import { buildDependencyGraph, type DagNode } from './dag-layout';
 
@@ -31,11 +31,9 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
   const nav = useNavigate();
   const [chainTriggering, setChainTriggering] = useState(false);
   // 名称/状态解析需要全量任务表；分页上限即闭包上限（500 足够，超出由
-  // truncated 提示）。
-  const { data, loading } = useRequest(
-    () => tasksApi.list({ page: 1, pageSize: 500 }),
-    { cacheKey: 'dag-all-tasks' },
-  );
+  // truncated 提示）。FEAT-17: useRequest(cacheKey) 换 useAllTasksForDag
+  // （同 queryKey 跨页合并 + 60s staleTime，等价原 cacheKey 语义）。
+  const { data, isLoading: loading } = useAllTasksForDag();
 
   const graph = useMemo(
     () =>

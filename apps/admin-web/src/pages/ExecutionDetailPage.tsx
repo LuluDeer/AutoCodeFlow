@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRequest } from 'ahooks';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
+import { useExecutionDetail, useTaskDetail } from '../api/queries';
 import { getApiBaseUrl } from '../api/client';
 import { getErrMsg } from '../utils/error';
 import { useAuthStore } from '../store/auth';
@@ -126,17 +127,15 @@ export default function ExecutionDetailPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = normalizeTabKey(searchParams.get('tab'));
 
-  const { data, refresh, loading, error } = useRequest(
-    () => tasksApi.execution(taskId!, execId!),
-    { pollingInterval: undefined, refreshDeps: [execId] },
-  );
+  // FEAT-17: 主执行数据换 useExecutionDetail（queryKey 带 taskId+execId，
+  // 等价 refreshDeps）；refresh 语义保留给 SSE done/断流轮询兜底调用方。
+  const { data, refetch: refresh, isLoading: loading, error } = useExecutionDetail(taskId, execId);
   const isLive = data?.status === 'running' || data?.status === 'pending';
 
   // ===== UI-05: 重试链数据（CORE-02 语义原样迁移，Card 移入「重试链」Tab）=====
-  const { data: taskData } = useRequest(() => tasksApi.get(taskId!), {
-    ready: !!taskId,
-    refreshDeps: [taskId],
-  });
+  // FEAT-17: 任务详情换 useTaskDetail；兄弟执行行保留 useRequest（一次性
+  // pageSize=100 大页拉取，无写后失效联动诉求，换装收益低——缩水声明）。
+  const { data: taskData } = useTaskDetail(taskId);
   const { data: siblingPage } = useRequest(
     () => tasksApi.executionsWithStatus(taskId!, { page: 1, pageSize: 100 }),
     { ready: !!taskId, refreshDeps: [taskId] },
@@ -393,7 +392,7 @@ export default function ExecutionDetailPage() {
         extra={
           <Space>
             <Button onClick={() => nav(`/tasks/${taskId}`)}>返回任务</Button>
-            <Button type="primary" icon={<SyncOutlined />} onClick={refresh}>重试</Button>
+            <Button type="primary" icon={<SyncOutlined />} onClick={() => void refresh()}>重试</Button>
           </Space>
         }
       />
@@ -489,7 +488,7 @@ export default function ExecutionDetailPage() {
                 AI 分析
               </Button>
             )}
-            <Button icon={<SyncOutlined />} onClick={refresh} loading={loading}>刷新</Button>
+            <Button icon={<SyncOutlined />} onClick={() => void refresh()} loading={loading}>刷新</Button>
           </>
         }
       />

@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ExecutorDetailPage from '../pages/ExecutorDetailPage';
 import { executorsApi } from '../api/executors';
 import { useAuthStore } from '../store/auth';
@@ -67,13 +68,17 @@ const emptyMetrics = {
 };
 
 function renderPage() {
+  // FEAT-17: ExecutorDetailPage 改用 TanStack Query——测试包 QueryClientProvider
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
+    <QueryClientProvider client={qc}>
     <MemoryRouter initialEntries={['/executors/executor-1']}>
       <Routes>
         <Route path="/executors/:id" element={<ExecutorDetailPage />} />
         <Route path="/executors" element={<div>executor-list-mock</div>} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
