@@ -1,701 +1,1855 @@
 {
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
-      }
-    ]
+ "annotations": {
+  "list": [
+   {
+    "builtIn": 1,
+    "datasource": {
+     "type": "grafana",
+     "uid": "-- Grafana --"
+    },
+    "enable": true,
+    "hide": true,
+    "iconColor": "rgba(0, 211, 255, 1)",
+    "name": "Annotations & Alerts",
+    "type": "dashboard"
+   }
+  ]
+ },
+ "description": "AutoCodeFlow admin-api 可观测性面板（第十轮）。series 与 apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts 逐字核对。注意：tick 耗时仅有 counter+gauge、无 histogram，p95 不可推导，面板以窗口均值 + last tick 呈现并在标题中如实标注。",
+ "editable": true,
+ "fiscalYearStartMonth": 0,
+ "graphTooltip": 1,
+ "id": null,
+ "links": [],
+ "panels": [
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 0
+   },
+   "id": 1,
+   "panels": [],
+   "title": "调度健康（Scheduler）",
+   "type": "row"
   },
-  "description": "AutoCodeFlow admin-api 可观测性面板（第十轮）。series 与 apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts 逐字核对。注意：tick 耗时仅有 counter+gauge、无 histogram，p95 不可推导，面板以窗口均值 + last tick 呈现并在标题中如实标注。",
-  "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 1,
-  "id": null,
-  "links": [],
-  "panels": [
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-      "id": 1,
-      "panels": [],
-      "title": "调度健康（Scheduler）",
-      "type": "row"
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "autoflow_scheduler_ticks_total 的每秒速率（按实例）。调度器每轮扫描 tick 计一次；速率归零≈调度停摆（见告警 AUTOFLOW_SCHEDULER_DOWN）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "reqps"
     },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "autoflow_scheduler_ticks_total 的每秒速率（按实例）。调度器每轮扫描 tick 计一次；速率归零≈调度停摆（见告警 AUTOFLOW_SCHEDULER_DOWN）。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": { "A": 1 }, "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [ { "color": "green", "value": null } ]
-          },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
-      "id": 101,
-      "options": {
-        "legend": { "calcs": [ "mean", "lastNotNull" ], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "sum by (instance) (rate(autoflow_scheduler_ticks_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Scheduler ticks rate（每秒 tick 数）",
-      "type": "timeseries"
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 0,
+    "y": 1
+   },
+   "id": 101,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "lastNotNull"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
     },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "如实标注：源码仅有 autoflow_scheduler_tick_duration_ms_total（counter，累计毫秒）与 autoflow_scheduler_last_tick_duration_ms（gauge，最近一次 tick 毫秒），无 histogram/bucket，p95 不可推导。本面板给出：① 窗口平均耗时 = rate(duration_total)/rate(ticks_total)；② 最近一次 tick 耗时（毛刺观测，近似窗口内最新样本）。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": { "A": 1 }, "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [ { "color": "green", "value": null } ]
-          },
-          "unit": "ms"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
-      "id": 102,
-      "options": {
-        "legend": { "calcs": [ "mean", "max", "lastNotNull" ], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "rate(autoflow_scheduler_tick_duration_ms_total{instance=~\"$instance\"}[$__rate_interval]) / rate(autoflow_scheduler_ticks_total{instance=~\"$instance\"}[$__rate_interval])",
-          "legendFormat": "avg window {{instance}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "autoflow_scheduler_last_tick_duration_ms{instance=~\"$instance\"}",
-          "legendFormat": "last tick {{instance}}",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Tick duration（窗口均值 + 最近一次；无 histogram，p95 不可得）",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "autoflow_scheduler_triggers_skipped_total{reason} 按原因堆叠。reason 取值（源码钉死）：lock_held / db_claim / inactive / block_strategy。lock_held 占比高通常是多实例去重锁正常竞争，无需告警。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 50,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": { "A": 1 }, "mode": "normal" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [ { "color": "green", "value": null } ]
-          },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
-      "id": 103,
-      "options": {
-        "legend": { "calcs": [ "mean", "lastNotNull" ], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "sum by (reason) (rate(autoflow_scheduler_triggers_skipped_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{reason}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Triggers skipped by reason（堆叠 rate）",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "autoflow_queue_depth{state} 按状态堆叠。state 取值（源码钉死）：waiting / active / delayed / failed / completed。Redis 不可读时全部置 0 且 autoflow_queue_up=0（见右侧 stat），此时深度曲线归零不代表队列真的空。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 50,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": { "A": 1 }, "mode": "normal" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [ { "color": "green", "value": null } ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 9 },
-      "id": 104,
-      "options": {
-        "legend": { "calcs": [ "lastNotNull", "max" ], "displayMode": "table", "placement": "right", "showLegend": true },
-        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "sum by (state) (autoflow_queue_depth{instance=~\"$instance\"})",
-          "legendFormat": "{{state}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Queue depth by state（BullMQ，堆叠）",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "autoflow_queue_up：1=BullMQ 队列计数可从 Redis 读取（绿），0=Redis 不可读（红）。取所有实例的 min——任一实例读不到即红。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [
-            {
-              "options": {
-                "0": { "color": "red", "index": 1, "text": "DOWN (Redis 不可读)" },
-                "1": { "color": "green", "index": 0, "text": "UP" }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 1 }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
-      "id": 105,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false },
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "min(autoflow_queue_up{instance=~\"$instance\"})",
-          "legendFormat": "queue_up",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Queue up（Redis 可读性）",
-      "type": "stat"
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
-      "id": 2,
-      "panels": [],
-      "title": "回调认证（Execution Callback Auth，第九轮 N32）",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "autoflow_execution_callback_auth_total{result} 按 result 的每秒速率（instant 表格）。result 七分类（源码钉死）：ok / v1_expired / v1_binding_mismatch / v1_bad_signature / legacy_shared_invalid / missing_token / bad_address。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [ { "color": "green", "value": null } ]
-          },
-          "unit": "reqps"
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "result" },
-            "properties": [ { "id": "custom.width", "value": 220 } ]
-          }
-        ]
-      },
-      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 18 },
-      "id": 201,
-      "options": {
-        "cellHeight": "sm",
-        "footer": { "countRows": false, "fields": "", "reducer": [ "sum" ], "show": false },
-        "showHeader": true
-      },
-      "pluginVersion": "11.0.0",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "sum by (result) (rate(autoflow_execution_callback_auth_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Callback auth rate by result（表）",
-      "transformations": [
-        { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "rate/s" } } }
-      ],
-      "type": "table"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "时间范围内七分类占比（increase 累计）。ok 之外的扇区即认证失败分类。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } },
-          "mappings": [],
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 9, "w": 8, "x": 8, "y": 18 },
-      "id": 202,
-      "options": {
-        "displayLabels": [ "name" ],
-        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "values": [ "value", "percent" ] },
-        "pieType": "donut",
-        "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false },
-        "tooltip": { "maxHeight": 600, "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "sum by (result) (increase(autoflow_execution_callback_auth_total{instance=~\"$instance\"}[$__range]))",
-          "instant": true,
-          "legendFormat": "{{result}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Callback auth 七分类占比（区间累计）",
-      "type": "piechart"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "非 ok 分类的累计计数绝对值（counter 原值，重启归零）。看异常分类的绝对增长与台阶位置；速率告警见 alerting-rules.yml。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": { "A": 1 }, "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [ { "color": "green", "value": null } ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 18 },
-      "id": 203,
-      "options": {
-        "legend": { "calcs": [ "lastNotNull", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "autoflow_execution_callback_auth_total{instance=~\"$instance\", result!=\"ok\"}",
-          "legendFormat": "{{result}} @ {{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "异常分类绝对值（result != ok，累计 counter）",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
-      "id": 3,
-      "panels": [],
-      "title": "进程资源（prom-client collectDefaultMetrics）",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "process_cpu_seconds_total（user+system 累计秒）的速率 ×100 = CPU 占用（单核百分比，可 >100）。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": { "A": 1 }, "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [ { "color": "green", "value": null } ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
-      "id": 301,
-      "options": {
-        "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "sum by (instance) (rate(process_cpu_seconds_total{instance=~\"$instance\"}[$__rate_interval])) * 100",
-          "legendFormat": "{{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Process CPU（单核 %）",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "RSS（process_resident_memory_bytes）与 V8 堆（nodejs_heap_size_used_bytes / nodejs_heap_size_total_bytes）。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": { "A": 1 }, "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [ { "color": "green", "value": null } ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 28 },
-      "id": 302,
-      "options": {
-        "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "process_resident_memory_bytes{instance=~\"$instance\"}",
-          "legendFormat": "RSS {{instance}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "nodejs_heap_size_used_bytes{instance=~\"$instance\"}",
-          "legendFormat": "heap used {{instance}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "nodejs_heap_size_total_bytes{instance=~\"$instance\"}",
-          "legendFormat": "heap total {{instance}}",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Memory（RSS / V8 heap）",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "nodejs_eventloop_lag_seconds（最近一次采样延迟）与 nodejs_eventloop_lag_p99_seconds（采样窗口 p99）。持续 >0.1s 说明事件循环饱和（如 render 串行化 + 抓取风暴）。",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": { "A": 1 }, "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [ { "color": "green", "value": null } ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
-      "id": 303,
-      "options": {
-        "legend": { "calcs": [ "mean", "max" ], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "maxHeight": 600, "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "nodejs_eventloop_lag_seconds{instance=~\"$instance\"}",
-          "legendFormat": "lag {{instance}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "nodejs_eventloop_lag_p99_seconds{instance=~\"$instance\"}",
-          "legendFormat": "lag p99 (window) {{instance}}",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Event loop lag",
-      "type": "timeseries"
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
     }
-  ],
-  "refresh": "30s",
-  "schemaVersion": 39,
-  "tags": [ "autoflow", "scheduler", "callback-auth", "prometheus" ],
-  "templating": {
-    "list": [
-      {
-        "current": {},
-        "hide": 0,
-        "includeAll": false,
-        "label": "数据源",
-        "multi": false,
-        "name": "datasource",
-        "options": [],
-        "query": "prometheus",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "type": "datasource"
-      },
-      {
-        "allValue": ".*",
-        "current": {},
-        "datasource": { "type": "prometheus", "uid": "${datasource}" },
-        "definition": "label_values(autoflow_queue_up, instance)",
-        "hide": 0,
-        "includeAll": true,
-        "label": "实例（admin-api target）",
-        "multi": true,
-        "name": "instance",
-        "options": [],
-        "query": { "qryType": 1, "query": "label_values(autoflow_queue_up, instance)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
-        "refresh": 2,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 1,
-        "type": "query"
-      }
-    ]
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "sum by (instance) (rate(autoflow_scheduler_ticks_total{instance=~\"$instance\"}[$__rate_interval]))",
+     "legendFormat": "{{instance}}",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "Scheduler ticks rate（每秒 tick 数）",
+   "type": "timeseries"
   },
-  "time": { "from": "now-6h", "to": "now" },
-  "timepicker": {},
-  "timezone": "",
-  "title": "AutoCodeFlow — 调度与回调认证可观测性",
-  "uid": "autoflow-obs-v1",
-  "version": 1,
-  "weekStart": ""
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "如实标注：源码仅有 autoflow_scheduler_tick_duration_ms_total（counter，累计毫秒）与 autoflow_scheduler_last_tick_duration_ms（gauge，最近一次 tick 毫秒），无 histogram/bucket，p95 不可推导。本面板给出：① 窗口平均耗时 = rate(duration_total)/rate(ticks_total)；② 最近一次 tick 耗时（毛刺观测，近似窗口内最新样本）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "ms"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 8,
+    "y": 1
+   },
+   "id": 102,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "rate(autoflow_scheduler_tick_duration_ms_total{instance=~\"$instance\"}[$__rate_interval]) / rate(autoflow_scheduler_ticks_total{instance=~\"$instance\"}[$__rate_interval])",
+     "legendFormat": "avg window {{instance}}",
+     "range": true,
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "autoflow_scheduler_last_tick_duration_ms{instance=~\"$instance\"}",
+     "legendFormat": "last tick {{instance}}",
+     "range": true,
+     "refId": "B"
+    }
+   ],
+   "title": "Tick duration（窗口均值 + 最近一次；无 histogram，p95 不可得）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "autoflow_scheduler_triggers_skipped_total{reason} 按原因堆叠。reason 取值（源码钉死）：lock_held / db_claim / inactive / block_strategy。lock_held 占比高通常是多实例去重锁正常竞争，无需告警。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 50,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "normal"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 16,
+    "y": 1
+   },
+   "id": 103,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "lastNotNull"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "sum by (reason) (rate(autoflow_scheduler_triggers_skipped_total{instance=~\"$instance\"}[$__rate_interval]))",
+     "legendFormat": "{{reason}}",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "Triggers skipped by reason（堆叠 rate）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "autoflow_queue_depth{state} 按状态堆叠。state 取值（源码钉死）：waiting / active / delayed / failed / completed。Redis 不可读时全部置 0 且 autoflow_queue_up=0（见右侧 stat），此时深度曲线归零不代表队列真的空。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 50,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "stepAfter",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "normal"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 16,
+    "x": 0,
+    "y": 9
+   },
+   "id": 104,
+   "options": {
+    "legend": {
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "right",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "sum by (state) (autoflow_queue_depth{instance=~\"$instance\"})",
+     "legendFormat": "{{state}}",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "Queue depth by state（BullMQ，堆叠）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "autoflow_queue_up：1=BullMQ 队列计数可从 Redis 读取（绿），0=Redis 不可读（红）。取所有实例的 min——任一实例读不到即红。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "mappings": [
+      {
+       "options": {
+        "0": {
+         "color": "red",
+         "index": 1,
+         "text": "DOWN (Redis 不可读)"
+        },
+        "1": {
+         "color": "green",
+         "index": 0,
+         "text": "UP"
+        }
+       },
+       "type": "value"
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 1
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 16,
+    "y": 9
+   },
+   "id": 105,
+   "options": {
+    "colorMode": "background",
+    "graphMode": "area",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "min(autoflow_queue_up{instance=~\"$instance\"})",
+     "legendFormat": "queue_up",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "Queue up（Redis 可读性）",
+   "type": "stat"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 17
+   },
+   "id": 2,
+   "panels": [],
+   "title": "回调认证（Execution Callback Auth，第九轮 N32）",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "autoflow_execution_callback_auth_total{result} 按 result 的每秒速率（instant 表格）。result 七分类（源码钉死）：ok / v1_expired / v1_binding_mismatch / v1_bad_signature / legacy_shared_invalid / missing_token / bad_address。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "reqps"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "result"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 220
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "h": 9,
+    "w": 8,
+    "x": 0,
+    "y": 18
+   },
+   "id": 201,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true
+   },
+   "pluginVersion": "11.0.0",
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "sum by (result) (rate(autoflow_execution_callback_auth_total{instance=~\"$instance\"}[$__rate_interval]))",
+     "format": "table",
+     "instant": true,
+     "legendFormat": "__auto",
+     "range": false,
+     "refId": "A"
+    }
+   ],
+   "title": "Callback auth rate by result（表）",
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {
+       "Time": true
+      },
+      "renameByName": {
+       "Value": "rate/s"
+      }
+     }
+    }
+   ],
+   "type": "table"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "时间范围内七分类占比（increase 累计）。ok 之外的扇区即认证失败分类。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      }
+     },
+     "mappings": [],
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 9,
+    "w": 8,
+    "x": 8,
+    "y": 18
+   },
+   "id": 202,
+   "options": {
+    "displayLabels": [
+     "name"
+    ],
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "showLegend": true,
+     "values": [
+      "value",
+      "percent"
+     ]
+    },
+    "pieType": "donut",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "single",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "sum by (result) (increase(autoflow_execution_callback_auth_total{instance=~\"$instance\"}[$__range]))",
+     "instant": true,
+     "legendFormat": "{{result}}",
+     "refId": "A"
+    }
+   ],
+   "title": "Callback auth 七分类占比（区间累计）",
+   "type": "piechart"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "非 ok 分类的累计计数绝对值（counter 原值，重启归零）。看异常分类的绝对增长与台阶位置；速率告警见 alerting-rules.yml。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "stepAfter",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 9,
+    "w": 8,
+    "x": 16,
+    "y": 18
+   },
+   "id": 203,
+   "options": {
+    "legend": {
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "autoflow_execution_callback_auth_total{instance=~\"$instance\", result!=\"ok\"}",
+     "legendFormat": "{{result}} @ {{instance}}",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "异常分类绝对值（result != ok，累计 counter）",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 27
+   },
+   "id": 3,
+   "panels": [],
+   "title": "进程资源（prom-client collectDefaultMetrics）",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "process_cpu_seconds_total（user+system 累计秒）的速率 ×100 = CPU 占用（单核百分比，可 >100）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "percent"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 0,
+    "y": 28
+   },
+   "id": 301,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "sum by (instance) (rate(process_cpu_seconds_total{instance=~\"$instance\"}[$__rate_interval])) * 100",
+     "legendFormat": "{{instance}}",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "Process CPU（单核 %）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "RSS（process_resident_memory_bytes）与 V8 堆（nodejs_heap_size_used_bytes / nodejs_heap_size_total_bytes）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "bytes"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 8,
+    "y": 28
+   },
+   "id": 302,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "process_resident_memory_bytes{instance=~\"$instance\"}",
+     "legendFormat": "RSS {{instance}}",
+     "range": true,
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "nodejs_heap_size_used_bytes{instance=~\"$instance\"}",
+     "legendFormat": "heap used {{instance}}",
+     "range": true,
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "nodejs_heap_size_total_bytes{instance=~\"$instance\"}",
+     "legendFormat": "heap total {{instance}}",
+     "range": true,
+     "refId": "C"
+    }
+   ],
+   "title": "Memory（RSS / V8 heap）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "nodejs_eventloop_lag_seconds（最近一次采样延迟）与 nodejs_eventloop_lag_p99_seconds（采样窗口 p99）。持续 >0.1s 说明事件循环饱和（如 render 串行化 + 抓取风暴）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 16,
+    "y": 28
+   },
+   "id": 303,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "nodejs_eventloop_lag_seconds{instance=~\"$instance\"}",
+     "legendFormat": "lag {{instance}}",
+     "range": true,
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "nodejs_eventloop_lag_p99_seconds{instance=~\"$instance\"}",
+     "legendFormat": "lag p99 (window) {{instance}}",
+     "range": true,
+     "refId": "B"
+    }
+   ],
+   "title": "Event loop lag",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 36
+   },
+   "id": 4,
+   "panels": [],
+   "title": "容量水位（Capacity，OBS-05）",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "PG 连接池水位四 series（OBS-05；取数路径 DataSource.driver.master = pg.Pool 实时计数，见 README 4.2）。active = 已借出连接（totalCount - idle），idle = 空闲，waiting = 排队等连接的请求（>0 持续 5m 即饱和，建议告警），max = 有效容量（DB_POOL_SIZE）。max==0 表示池句柄不可读（此时其余项一并置 0，不参与利用率告警）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "stepAfter",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 0,
+    "y": 37
+   },
+   "id": 401,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "lastNotNull",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "autoflow_db_pool_active_connections{instance=~\"$instance\"}",
+     "legendFormat": "active {{instance}}",
+     "range": true,
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "autoflow_db_pool_idle_connections{instance=~\"$instance\"}",
+     "legendFormat": "idle {{instance}}",
+     "range": true,
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "autoflow_db_pool_waiting_requests{instance=~\"$instance\"}",
+     "legendFormat": "waiting {{instance}}",
+     "range": true,
+     "refId": "C"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "autoflow_db_pool_max_connections{instance=~\"$instance\"}",
+     "legendFormat": "max {{instance}}",
+     "range": true,
+     "refId": "D"
+    }
+   ],
+   "title": "PG pool 水位（active/idle/waiting vs max）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "PG 连接池利用率水位 = Σ(active)/Σ(max)（所选实例合计）。阈值：80 黄（建议 active/max > 0.8 持续 5m 告警）、90 红。max==0（句柄不可读）时利用率显示 0%，请结合左侧面板 max 曲线判读。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "mappings": [],
+     "max": 100,
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 80
+       },
+       {
+        "color": "red",
+        "value": 90
+       }
+      ]
+     },
+     "unit": "percent"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 8,
+    "y": 37
+   },
+   "id": 402,
+   "options": {
+    "colorMode": "background",
+    "graphMode": "area",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "100 * sum(autoflow_db_pool_active_connections{instance=~\"$instance\"}) / clamp_min(sum(autoflow_db_pool_max_connections{instance=~\"$instance\"}), 1)",
+     "legendFormat": "pool utilization",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "PG pool 利用率（active/max %，阈值 80/90）",
+   "type": "stat"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "每执行器磁盘水位（OBS-05；executor 标签 = 唯一 address）。仅在线且心跳上报了 diskUsage 的执行器有 series（旧版执行器缺席而非 0）；DB 查询失败时保留上一轮值（略陈旧好过整组消失）。建议 >90 持续 10m 告警（黄色线为 80% 参考线）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "stepAfter",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "line"
+      }
+     },
+     "mappings": [],
+     "max": 100,
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 80
+       },
+       {
+        "color": "red",
+        "value": 90
+       }
+      ]
+     },
+     "unit": "percent"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 16,
+    "y": 37
+   },
+   "id": 403,
+   "options": {
+    "legend": {
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "autoflow_executor_disk_usage_percent{instance=~\"$instance\"}",
+     "legendFormat": "{{executor}}",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "Executor 磁盘水位（按执行器，阈值 80/90）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "SSE 日志流槽位水位（BUG-05，TASK-008 槽位注册表）。active = 本进程当前连接数；limit = 本实例上限（SSE_MAX_STREAMS_GLOBAL）。多实例容量 = 各实例 limit 线性叠加，占用率 Σ(active)/Σ(limit) > 0.8 持续 10m 建议关注（配合 autoflow_sse_streams_rejected_total 观察拒绝速率）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "stepAfter",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 0,
+    "y": 45
+   },
+   "id": 404,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "lastNotNull",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "autoflow_sse_streams_active{instance=~\"$instance\"}",
+     "legendFormat": "active {{instance}}",
+     "range": true,
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "autoflow_sse_streams_limit{instance=~\"$instance\"}",
+     "legendFormat": "limit {{instance}}",
+     "range": true,
+     "refId": "B"
+    }
+   ],
+   "title": "SSE 流水位（active vs limit）",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 53
+   },
+   "id": 5,
+   "panels": [],
+   "title": "调度延迟（CORE-06）",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "定时触发 fire→入队延迟分布（CORE-06；直方图源 = autoflow_scheduler_trigger_latency_ms_bucket，桶上界 10/50/100/250/500/1000/2500/5000ms，+Inf 收口）。P99 用 histogram_quantile(0.99, sum by (le, instance) (rate(bucket[5m]))) 区间插值；avg 用 sum/count 速率比。延迟含事件循环滞后 + findOne + 去重锁 + 入队全链。持续 > 1000ms 建议关注（事件循环拥塞/Redis/PG 抖动）；仅 cron/fixed_rate 触发计入（手动/API/依赖扇出不计）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "stepAfter",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 250
+       },
+       {
+        "color": "red",
+        "value": 1000
+       }
+      ]
+     },
+     "unit": "ms"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 16,
+    "x": 0,
+    "y": 54
+   },
+   "id": 501,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "lastNotNull",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(autoflow_scheduler_trigger_latency_ms_bucket{instance=~\"$instance\"}[5m])))",
+     "legendFormat": "P99 {{instance}}",
+     "range": true,
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "sum by (instance) (rate(autoflow_scheduler_trigger_latency_ms_sum{instance=~\"$instance\"}[5m])) / clamp_min(sum by (instance) (rate(autoflow_scheduler_trigger_latency_ms_count{instance=~\"$instance\"}[5m])), 1e-9)",
+     "legendFormat": "avg {{instance}}",
+     "range": true,
+     "refId": "B"
+    }
+   ],
+   "title": "调度延迟 P99 / 均值（fire→入队）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "最近一次触发延迟毛刺观测（gauge 性质：最后一次 fire→入队延迟，非窗口统计）。与左侧 P99 面板互补——P99 看趋势，本面板看最近一次触发是否出现尖刺。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 250
+       },
+       {
+        "color": "red",
+        "value": 1000
+       }
+      ]
+     },
+     "unit": "ms"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 16,
+    "y": 54
+   },
+   "id": 502,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "area",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "showPercentChange": false,
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "histogram_quantile(0.99, sum by (le, instance) (autoflow_scheduler_trigger_latency_ms_bucket{instance=~\"$instance\"}))",
+     "legendFormat": "P99 {{instance}}",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "调度延迟 P99（区间累计瞬时值）",
+   "type": "stat"
+  }
+ ],
+ "refresh": "30s",
+ "schemaVersion": 39,
+ "tags": [
+  "autoflow",
+  "scheduler",
+  "callback-auth",
+  "prometheus"
+ ],
+ "templating": {
+  "list": [
+   {
+    "current": {},
+    "hide": 0,
+    "includeAll": false,
+    "label": "数据源",
+    "multi": false,
+    "name": "datasource",
+    "options": [],
+    "query": "prometheus",
+    "refresh": 1,
+    "regex": "",
+    "skipUrlSync": false,
+    "type": "datasource"
+   },
+   {
+    "allValue": ".*",
+    "current": {},
+    "datasource": {
+     "type": "prometheus",
+     "uid": "${datasource}"
+    },
+    "definition": "label_values(autoflow_queue_up, instance)",
+    "hide": 0,
+    "includeAll": true,
+    "label": "实例（admin-api target）",
+    "multi": true,
+    "name": "instance",
+    "options": [],
+    "query": {
+     "qryType": 1,
+     "query": "label_values(autoflow_queue_up, instance)",
+     "refId": "PrometheusVariableQueryEditor-VariableQuery"
+    },
+    "refresh": 2,
+    "regex": "",
+    "skipUrlSync": false,
+    "sort": 1,
+    "type": "query"
+   }
+  ]
+ },
+ "time": {
+  "from": "now-6h",
+  "to": "now"
+ },
+ "timepicker": {},
+ "timezone": "",
+ "title": "AutoCodeFlow — 调度与回调认证可观测性",
+ "uid": "autoflow-obs-v1",
+ "version": 1,
+ "weekStart": ""
 }

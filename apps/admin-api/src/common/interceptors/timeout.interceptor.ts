@@ -6,21 +6,33 @@ import {
   RequestTimeoutException,
 } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
+import { ConfigService } from "@nestjs/config";
 import { Observable, throwError, TimeoutError } from "rxjs";
 import { catchError, timeout } from "rxjs/operators";
 import { SKIP_TIMEOUT_KEY } from "../decorators/skip-timeout.decorator";
 
-// OPS-07: Global request timeout — returns 408 instead of hanging forever.
-// Default 30 s; override per-deploy via REQUEST_TIMEOUT_MS env var.
-// Long-running routes (SSE / log streaming) opt out via @SkipTimeout().
-const REQUEST_TIMEOUT_MS = parseInt(
-  process.env.REQUEST_TIMEOUT_MS ?? "30000",
-  10,
-);
-
+/**
+ * OPS-07: Global request timeout — returns 408 instead of hanging forever.
+ * Default 30 s; override per-deploy via REQUEST_TIMEOUT_MS (registered in
+ * configuration.ts as app.requestTimeoutMs). Long-running routes (SSE /
+ * log streaming) opt out via @SkipTimeout().
+ *
+ * ARCH-27: previously the budget was read from process.env at MODULE-LOAD
+ * time (W-22 risk pattern — dead-config if env is injected later). Now the
+ * value comes from ConfigService at construction; main.ts resolves it from
+ * the app's DI container when installing this interceptor globally.
+ */
 @Injectable()
 export class TimeoutInterceptor implements NestInterceptor {
-  constructor(private readonly reflector: Reflector) {}
+  private readonly requestTimeoutMs: number;
+
+  constructor(
+    private readonly reflector: Reflector,
+    configService?: ConfigService,
+  ) {
+    this.requestTimeoutMs =
+      configService?.get<number>("app.requestTimeoutMs") ?? 30000;
+  }
 
   intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
     // Allow handlers decorated with @SkipTimeout() to bypass the limit.
@@ -32,7 +44,7 @@ export class TimeoutInterceptor implements NestInterceptor {
     if (skip) return next.handle();
 
     return next.handle().pipe(
-      timeout(REQUEST_TIMEOUT_MS),
+      timeout(this.requestTimeoutMs),
       catchError((err) =>
         err instanceof TimeoutError
           ? throwError(() => new RequestTimeoutException("Request timed out"))

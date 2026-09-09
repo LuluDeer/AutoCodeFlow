@@ -1,0 +1,112 @@
+{
+  "$schemaVersion": 1,
+  "$comment": "QA-07 shared contract vectors — single source of truth for the four client packages (acf-cli, mcp-server, autocodeflow-node-sdk, autoflow-sdk). Envelope source: apps/admin-api/src/common/interceptors/response.interceptor.ts. Vectors are append-only (published clients assert on old vectors); changing behavior is a breaking contract change -> bump $schemaVersion and ship all four ends together. See README.md for the full contract description and consumption instructions.",
+  "envelope": {
+    "full": {
+      "raw": {
+        "code": 200,
+        "message": "success",
+        "data": { "list": [], "total": 0 }
+      },
+      "unwrapped": { "list": [], "total": 0 }
+    },
+    "arrayData": {
+      "raw": { "code": 201, "message": "success", "data": [1, 2, 3] },
+      "unwrapped": [1, 2, 3]
+    },
+    "nullData": {
+      "raw": { "code": 200, "message": "success", "data": null },
+      "unwrapped": null
+    },
+    "non200SuccessCode": {
+      "raw": { "code": 201, "message": "success", "data": { "created": true } },
+      "unwrapped": { "created": true },
+      "$comment": "code mirrors HTTP status; 201 must unwrap exactly like 200"
+    }
+  },
+  "passthrough": {
+    "plainObject": {
+      "raw": { "data": "x", "extra": true },
+      "unwrapped": { "data": "x", "extra": true }
+    },
+    "plainString": {
+      "raw": "plain",
+      "unwrapped": "plain"
+    },
+    "emptyObject": {
+      "raw": {},
+      "unwrapped": {},
+      "$comment": "no data key at all -> not an envelope"
+    },
+    "arrayBody": {
+      "raw": [1, 2],
+      "unwrapped": [1, 2],
+      "$comment": "arrays are never envelopes (node-sdk rule; py dict-guard equivalent)"
+    }
+  },
+  "statusRange": {
+    "success": [200, 201, 202, 204],
+    "failure": [400, 401, 403, 404, 409, 429, 500, 502],
+    "$comment": "anything in success[] must resolve; anything in failure[] must throw/inspect body — no status-specific bypass"
+  },
+  "errorBody": [
+    {
+      "name": "envelope-style single message",
+      "raw": {
+        "code": 401,
+        "message": "Invalid or expired execution callback token",
+        "data": null
+      },
+      "detail": "Invalid or expired execution callback token"
+    },
+    {
+      "name": "nest-style single message",
+      "raw": {
+        "statusCode": 404,
+        "message": "Execution not found",
+        "error": "Not Found"
+      },
+      "detail": "Execution not found"
+    },
+    {
+      "name": "class-validator message array",
+      "raw": {
+        "statusCode": 400,
+        "message": [
+          "executionId must be a UUID",
+          "status must be one of the following values"
+        ],
+        "error": "Bad Request"
+      },
+      "detail": "executionId must be a UUID; status must be one of the following values"
+    },
+    {
+      "name": "error field fallback",
+      "raw": {
+        "statusCode": 500,
+        "message": "",
+        "error": "Internal Server Error"
+      },
+      "detail": "Internal Server Error"
+    },
+    {
+      "name": "no detail at all",
+      "raw": { "statusCode": 502 },
+      "detail": "",
+      "$comment": "empty detail -> callers must keep raw status/text, never swallow"
+    }
+  ],
+  "knownHeuristicEdge": {
+    "name": "code+message+data on an entity payload (full envelope shape)",
+    "raw": { "code": 0, "message": "y", "data": "x", "extra": 1 },
+    "unwrapped": "x",
+    "$comment": "documented edge: a payload carrying the FULL envelope shape (code+message+data) is indistinguishable from an envelope and is unwrapped by every end — entities must never carry all three keys. Strict form (node-sdk/py-sdk require all three; cli/mcp accept data+(code|message)) is the common denominator; changing it is a breaking contract change"
+  },
+  "knownDivergence": {
+    "name": "data+message WITHOUT code",
+    "raw": { "data": "x", "message": "y", "extra": 1 },
+    "cli_mcp_unwrapped": "x",
+    "node_py_unwrapped_preserved": { "data": "x", "message": "y", "extra": 1 },
+    "$comment": "QA-07 audit finding: cli/mcp use the looser data+(code|message) heuristic, node-sdk/py-sdk require the strict code+message+data triple. admin-api always sends code, so real traffic is unaffected. Do NOT rely on the loose form — flagged for future unification (breaking change requires four-end same-batch release)"
+  }
+}

@@ -25,7 +25,10 @@ import {
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
-import { AuthUser } from "../../common/interfaces/auth-user.interface";
+import {
+  AuthUser,
+  isApiKeyUser,
+} from "../../common/interfaces/auth-user.interface";
 import { TaskService } from "./task.service";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
@@ -35,10 +38,33 @@ import { BatchTaskIdsDto } from "./dto/batch-task.dto";
 import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
 import {
   AllExecutionsQueryDto,
+  ExecutionLogsQueryDto,
   TaskExecutionsQueryDto,
 } from "./dto/execution-query.dto";
 import { SkipTimeout } from "../../common/decorators/skip-timeout.decorator";
 import { AuditService } from "../audit/audit.service";
+// OBS-03: level 查询参数的值域常量（与实体列/迁移/DTO 共用口径）
+import { LOG_LEVEL_VALUES, type LogLevel } from "./log-level.util";
+// SEC-09: 限流分域——中档 OPS_THROTTLE（触发/执行干预写面）与 SSE 豁免
+// @SkipThrottle。装饰器求值期读取属 ARCH-27 显式豁免（W-22 同款，见
+// src/config/throttle-profiles.ts 头注）。
+import { SkipThrottle, Throttle } from "@nestjs/throttler";
+import { OPS_THROTTLE } from "../../config/throttle-profiles";
+
+/**
+ * OBS-03: level 查询参数的运行态兜底归一化（HTTP 边界已由全局
+ * ValidationPipe 对 ExecutionLogsQueryDto.level 的 @IsIn 枚举校验拦截
+ * 非法值为 400，且枚举严格大写；这里只为兼容大小写变体/防编程式调用方
+ * 把脏值送进 SQL）。非法值返回 undefined（= 不过滤），与"未传 level"
+ * 同一语义，绝不产生错误过滤结果。
+ */
+function parseLevelParam(level?: string): LogLevel | undefined {
+  if (!level) return undefined;
+  const normalized = level.toUpperCase();
+  return (LOG_LEVEL_VALUES as readonly string[]).includes(normalized)
+    ? (normalized as LogLevel)
+    : undefined;
+}
 
 @ApiTags("Task Management")
 @ApiBearerAuth("JWT")
@@ -143,6 +169,8 @@ export class TaskController {
     return this.taskService.findAll(p);
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post("batch/trigger")
   @ApiOperation({
     summary: "Batch trigger tasks",
@@ -325,15 +353,22 @@ export class TaskController {
     required: false,
     description: "Lines per page, default 500, max 2000",
   })
+  @ApiQuery({
+    name: "level",
+    required: false,
+    enum: LOG_LEVEL_VALUES,
+    description:
+      "Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count.",
+  })
   executionLogsByExecId(
     @Param("execId") execId: string,
-    @Query("fromLine") fromLine?: string,
-    @Query("limit") limit?: string,
+    @Query() query: ExecutionLogsQueryDto,
   ) {
     return this.taskService.getExecutionLogs(
       execId,
-      fromLine ? parseInt(fromLine, 10) || 0 : 0,
-      limit ? Math.min(parseInt(limit, 10) || 500, 2000) : 500,
+      query.fromLine ? parseInt(query.fromLine, 10) || 0 : 0,
+      query.limit ? Math.min(parseInt(query.limit, 10) || 500, 2000) : 500,
+      parseLevelParam(query.level),
     );
   }
 
@@ -478,11 +513,16 @@ export class TaskController {
     return result;
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/trigger")
   @ApiOperation({
     summary: "Manual trigger",
     description:
-      "Manually trigger task execution. Custom params can override task defaults.",
+      "Manually trigger task execution. Custom params can override task defaults. " +
+      "NF-01: 双凭据面——用户 JWT 或携带 task:trigger 扩展域的 API Key " +
+      "（Authorization: Bearer acf_...，guard 分流见 jwt-auth.guard/api-key-auth.helper）；" +
+      "响应契约与 JWT 面完全一致。",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiResponse({
@@ -507,6 +547,20 @@ export class TaskController {
     @Req() req: Request,
   ) {
     const result = await this.taskService.trigger(id, dto);
+    // NF-01: API-Key 主体（CI/脚本免登录触发）——execution 行 triggerType
+    // 已由 service 固定 manual；审计以 task.trigger_api 区分机器触发。
+    if (isApiKeyUser(user)) {
+      await this.audit.log({
+        userId: user.userId,
+        username: `api-key:${user.keyPrefix}`,
+        action: "task.trigger_api",
+        resource: "task",
+        resourceId: id,
+        detail: { apiKeyId: user.apiKeyId, taskId: id, scope: user.scope },
+        ip: req.ip,
+      });
+      return result;
+    }
     await this.audit.log({
       userId: user?.id,
       username: user?.username,
@@ -544,8 +598,21 @@ export class TaskController {
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
   @ApiResponse({ status: 404, description: "Execution record not found" })
-  execution(@Param("execId") execId: string) {
-    return this.taskService.getExecution(execId);
+  execution(@Param("id") id: string, @Param("execId") execId: string) {
+    return this.taskService.getExecution(execId, id);
+  }
+
+  @Get(":id/executions/:execId/report")
+  @ApiOperation({
+    summary: "Execution report + timeline",
+    description:
+      "OBS-04: one-shot payload for the execution detail 'analysis report / timeline' tab. Returns the execution row (timestamps drive the timeline), a created→started→finished timeline mapped from those DB timestamps, and the execution_reports daily aggregate row for the execution's day (report=null when absent — the frontend degrades gracefully).",
+  })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiResponse({ status: 404, description: "Execution record not found" })
+  executionReport(@Param("id") id: string, @Param("execId") execId: string) {
+    return this.taskService.getExecutionReport(execId, id);
   }
 
   @Get(":id/executions/:execId/logs")
@@ -566,18 +633,29 @@ export class TaskController {
     required: false,
     description: "Lines per page, default 500, max 2000",
   })
-  executionLogs(
+  @ApiQuery({
+    name: "level",
+    required: false,
+    enum: LOG_LEVEL_VALUES,
+    description:
+      "Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count.",
+  })
+  async executionLogs(
+    @Param("id") id: string,
     @Param("execId") execId: string,
-    @Query("fromLine") fromLine?: string,
-    @Query("limit") limit?: string,
+    @Query() query: ExecutionLogsQueryDto,
   ) {
+    await this.taskService.getExecution(execId, id);
     return this.taskService.getExecutionLogs(
       execId,
-      fromLine ? parseInt(fromLine, 10) || 0 : 0,
-      limit ? Math.min(parseInt(limit, 10) || 500, 2000) : 500,
+      query.fromLine ? parseInt(query.fromLine, 10) || 0 : 0,
+      query.limit ? Math.min(parseInt(query.limit, 10) || 500, 2000) : 500,
+      parseLevelParam(query.level),
     );
   }
 
+  // SEC-09: SSE 长连接豁免限流——建连不进计数窗口，防 Dashboard 自动重连被误杀（N8 流语义不变）
+  @SkipThrottle()
   @Get(":id/executions/:execId/logs/stream")
   @ApiOperation({
     summary: "Execution log SSE stream",
@@ -594,10 +672,13 @@ export class TaskController {
   // 路由若改为 @Sse()/return Observable 则会破坏流，必须保持 @Res() 直写。
   @SkipTimeout()
   async streamLogs(
+    @Param("id") id: string,
     @Param("execId") execId: string,
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
+    // 任务作用域必须在写出 SSE 响应头前校验，避免跨任务 execution 流泄露。
+    await this.taskService.getExecution(execId, id);
     // TASK-008: 在写出任何 SSE 响应头之前先占用并发槽位——超限时抛出的
     // ServiceUnavailableException 会被全局异常过滤器渲染为真正的 503，
     // 而不是半开的 SSE 流。
@@ -616,6 +697,17 @@ export class TaskController {
       const send = (line: string) => {
         res.write(`data: ${JSON.stringify(line)}\n\n`);
       };
+      // QA3: idle keep-alive sink — a raw SSE comment frame (": ping\n\n").
+      // Per the SSE spec clients ignore comment lines, so EventSource parsing
+      // in admin-web is unaffected; the frame just keeps proxies whose
+      // proxy_read_timeout is shorter than a silent execution from reaping
+      // the stream. Shares the raw socket with `send`, so it must not run
+      // after `done()` ends the response — the service only pings inside the
+      // polling loop, which exits before `done` is invoked.
+      const ping = () => {
+        if (res.writableEnded) return;
+        res.write(`: ping\n\n`);
+      };
       const done = () => {
         res.write(`event: done\ndata: [DONE]\n\n`);
         res.end();
@@ -628,6 +720,7 @@ export class TaskController {
           done,
           ac.signal,
           releaseSlot,
+          ping,
         );
       } catch {
         res.write(`event: error\ndata: stream error\n\n`);
@@ -640,6 +733,8 @@ export class TaskController {
     }
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/rollback")
   @ApiOperation({
     summary: "Git rollback",
@@ -679,6 +774,8 @@ export class TaskController {
     return result;
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/versions/:versionId/rollback")
   @ApiOperation({
     summary: "Version rollback",
@@ -735,6 +832,8 @@ export class TaskController {
     return this.taskService.compareVersions(id, versionId1, versionId2);
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/pause")
   @ApiOperation({
     summary: "Pause task",
@@ -762,6 +861,8 @@ export class TaskController {
     return result;
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/resume")
   @ApiOperation({
     summary: "Resume task",
@@ -798,10 +899,12 @@ export class TaskController {
   @ApiParam({ name: "execId", description: "Execution record ID" })
   @ApiResponse({ status: 200, description: "AI analysis result" })
   async analyzeExecution(
+    @Param("id") id: string,
     @Param("execId") execId: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
+    await this.taskService.getExecution(execId, id);
     const result = await this.taskService.analyzeExecution(execId);
     await this.audit.log({
       userId: user?.id,
@@ -814,6 +917,8 @@ export class TaskController {
     return result;
   }
 
+  // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
   @Post(":id/executions/:execId/kill")
   @ApiOperation({
     summary: "Cancel execution",
@@ -828,10 +933,12 @@ export class TaskController {
   })
   @ApiResponse({ status: 404, description: "Execution record not found" })
   async killExecution(
+    @Param("id") id: string,
     @Param("execId") execId: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
+    await this.taskService.getExecution(execId, id);
     const result = await this.taskService.killExecution(execId);
     await this.audit.log({
       userId: user?.id,

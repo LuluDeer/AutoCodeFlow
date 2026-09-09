@@ -48,6 +48,25 @@ docker compose ps
 
 ---
 
+## 可选：一键生成演示数据
+
+如果只是想快速看到完整 UI 流程，可以跳过手工创建，直接注入一组演示任务：
+
+```bash
+# 使用 .env 中的 INITIAL_ADMIN_PASSWORD；也可直接替换为你的管理员密码
+ACF_PASSWORD='Admin@123456' pnpm demo:seed
+```
+
+脚本会幂等创建 3 个 `demo-` 前缀任务：
+
+- `demo-hello-fixed`：每 15 秒固定频率执行，持续产生成功记录
+- `demo-cron-report`：每 5 分钟 Cron 执行，演示 Python glue 与时区配置
+- `demo-fragile`：故意失败的手动任务，用于查看失败分类、错误信息与执行详情
+
+默认会触发一次 Cron/失败样本；如只想建任务不触发，追加 `-- --skip-trigger`。卸载时在 UI 删除 `demo-` 前缀任务即可。
+
+---
+
 ## 第三步：创建第一个应用
 
 应用是任务的分组容器，建议按业务线或项目划分。
@@ -184,6 +203,7 @@ docker compose logs executor-node | grep '429\|throttle\|rate'
 
 ## 下一步
 
+- 🧭 [教程系列：从 0 到生产](./tutorials/) — 第一个定时任务、私服依赖、多执行器扩容、告警接入值班
 - 📖 [部署指南](./deployment.md) — 生产环境部署、HTTPS、反向代理配置
 - 🔧 [开发指南](./development.md) — 本地开发环境搭建、调试方法
 - 📦 [SDK 指南](./sdk-guide.md) — 脚本中使用私有包仓库

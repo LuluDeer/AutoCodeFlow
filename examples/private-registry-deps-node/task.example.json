@@ -1,0 +1,14 @@
+{
+  "id": "private-registry-deps-node-demo",
+  "name": "私服依赖示例（Node）",
+  "runtime": "node",
+  "entrypoint": "examples/private-registry-deps-node/private_dep_task.js",
+  "cronExpression": "0 0 3 * * *",
+  "timeoutSeconds": 600,
+  "maxRetry": 1,
+  "retryDelay": 30,
+  "params": {
+    "pkg_name": "@autocodeflow/sdk"
+  },
+  "requirements": ["@autocodeflow/sdk"]
+}

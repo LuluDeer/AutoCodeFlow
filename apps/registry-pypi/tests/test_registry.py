@@ -76,6 +76,32 @@ class TestAuth:
     def test_bad_credentials_rejected(self, client):
         resp = client.get("/simple/", auth=BAD_AUTH)
         assert resp.status_code == 401
+        assert resp.json() == {"detail": "Unauthorized"}
+        assert resp.headers["www-authenticate"] == "Basic"
+
+    @pytest.mark.parametrize("authorization", [
+        None,
+        "Bearer test-token",
+        "Basic",
+        "Basic ",
+        "Basic !!!not-base64!!!",
+        "Basic dGVz!dHVzZXI6dGVzdHBhc3M=",
+        "Basic " + __import__("base64").b64encode(b"missing-colon").decode(),
+        "Basic " + __import__("base64").b64encode("tést:testpass".encode()).decode(),
+        "Basic " + __import__("base64").b64encode(b":testpass").decode(),
+        "Basic " + __import__("base64").b64encode(b"testuser:").decode(),
+    ])
+    def test_malformed_basic_auth_matches_bad_credentials(self, client, authorization):
+        headers = {} if authorization is None else {"Authorization": authorization}
+        malformed = client.get("/simple/", headers=headers)
+        bad_credentials = client.get("/simple/", auth=BAD_AUTH)
+        assert malformed.status_code == bad_credentials.status_code == 401
+        assert malformed.json() == bad_credentials.json() == {"detail": "Unauthorized"}
+        assert malformed.headers["www-authenticate"] == bad_credentials.headers["www-authenticate"] == "Basic"
+
+    def test_valid_basic_auth_still_succeeds(self, client):
+        resp = client.get("/simple/", auth=AUTH)
+        assert resp.status_code == 200
 
 
 class TestSimpleIndex:
@@ -100,6 +126,36 @@ class TestSimpleIndex:
         assert "mypackage-1.0.0.whl" in resp.text
         # sha256 fragment must be present
         assert "sha256=" in resp.text
+
+    def test_package_index_shows_version_size_time(self, client):
+        # FEAT-12: 人类可读增强——版本/体积/时间行；锚点语义不变
+        client.post("/", auth=AUTH,
+                    data={"name": "richpkg", "version": "1.0.0"},
+                    files={"content": ("richpkg-1.0.0-py3-none-any.whl", b"w" * 2048, "application/octet-stream")})
+        resp = client.get("/simple/richpkg/", auth=AUTH)
+        assert resp.status_code == 200
+        # 版本聚合行存在
+        assert "1.0.0" in resp.text
+        # 体积（>1KB → KB 保留一位小数）
+        assert "2.0 KB" in resp.text
+        # UTC 时间戳行
+        assert "UTC" in resp.text
+        # PEP 503 兼容：锚点仍在且带 sha256
+        assert 'href="/packages/richpkg/richpkg-1.0.0-py3-none-any.whl#sha256=' in resp.text
+        # 计数行
+        assert "1 file" in resp.text and "1 version" in resp.text
+
+    def test_simple_index_shows_package_and_file_counts(self, client):
+        client.post("/", auth=AUTH,
+                    data={"name": "countpkg", "version": "0.2.0"},
+                    files={"content": ("countpkg-0.2.0.tar.gz", b"tar bytes", "application/octet-stream")})
+        resp = client.get("/simple/", auth=AUTH)
+        assert resp.status_code == 200
+        assert "countpkg" in resp.text
+        # 计数行（包数 + 文件数）
+        assert "package" in resp.text and "file" in resp.text
+        # PEP 503 兼容：包锚点仍以 /simple/{name}/ 结尾
+        assert 'href="/simple/countpkg/"' in resp.text
 
     def test_missing_package_returns_404(self, client):
         resp = client.get("/simple/nonexistent/", auth=AUTH)
@@ -392,3 +448,284 @@ class TestConcurrentUpload:
         assert artifact.read_bytes() == original
         assert artifact.with_name(artifact.name + ".sha256").read_text().strip() == \
             hashlib.sha256(original).hexdigest()
+
+
+class TestUploadSizeLimit:
+    """S10: direct uploads are capped at 50 MB (parity with the admin-api
+    proxy's multer limit). Exceeding it returns 413 and leaves no partial
+    artifact — neither the destination nor a leftover .upload temp file."""
+
+    def test_oversized_upload_rejected_413(self, client, tmp_packages_dir, monkeypatch):
+        import main as app_module
+        # Two chunks: the first fits, the second crosses the cumulative cap.
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES",
+                            app_module.HASH_CHUNK_SIZE + 1)
+        chunk = b"x" * app_module.HASH_CHUNK_SIZE
+        payload = chunk + chunk  # 2 MiB > 1 MiB + 1 cap
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "big-pkg", "version": "1.0"},
+                           files={"content": ("big-pkg-1.0.whl", payload,
+                                              "application/octet-stream")})
+        assert resp.status_code == 413
+
+    def test_oversized_upload_leaves_no_partial_file(self, client, tmp_packages_dir, monkeypatch):
+        import main as app_module
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES",
+                            app_module.HASH_CHUNK_SIZE + 1)
+        chunk = b"x" * app_module.HASH_CHUNK_SIZE
+        payload = chunk + chunk
+        client.post("/", auth=AUTH,
+                    data={"name": "big-pkg", "version": "1.0"},
+                    files={"content": ("big-pkg-1.0.whl", payload,
+                                       "application/octet-stream")})
+        # No published artifact, no sidecar, no .upload temp leftover.
+        pkg = tmp_packages_dir / "big-pkg"
+        assert not (pkg / "big-pkg-1.0.whl").exists()
+        assert not (pkg / "big-pkg-1.0.whl.sha256").exists()
+        leftovers = [f.name for f in pkg.iterdir()
+                     if f.name.endswith(".upload")]
+        assert leftovers == []
+        assert list(pkg.glob("*")) == [], \
+            "only the (pre-created) empty package dir may exist — no files"
+
+    def test_upload_just_under_limit_succeeds(self, client, tmp_packages_dir, monkeypatch):
+        """Boundary: a payload exactly at the cap must still be accepted
+        (cumulative total, not > cap)."""
+        import hashlib
+        import main as app_module
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES", 8)
+        payload = b"12345678"  # exactly 8 bytes == cap
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "edge-pkg", "version": "1.0"},
+                           files={"content": ("edge-pkg-1.0.whl", payload,
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+        artifact = tmp_packages_dir / "edge-pkg" / "edge-pkg-1.0.whl"
+        assert artifact.read_bytes() == payload
+        assert artifact.with_name(artifact.name + ".sha256").read_text().strip() == \
+            hashlib.sha256(payload).hexdigest()
+
+
+class TestEggRejected:
+    """S11: the .egg contract is removed from the registry to match the
+    admin-api proxy whitelist (.whl/.tar.gz/.zip only)."""
+
+    @pytest.mark.parametrize("path", ["/", "/upload"])
+    def test_egg_upload_rejected(self, client, path):
+        resp = client.post(path, auth=AUTH,
+                           data={"name": "legacy-egg", "version": "1.0"},
+                           files={"content": ("legacy-egg-1.0.egg", b"egg bytes",
+                                              "application/octet-stream")})
+        assert resp.status_code == 400
+
+    def test_all_still_accepted_formats_unchanged(self, client):
+        for fname in ("fmt-pkg-1.0.whl", "fmt-pkg-1.0.tar.gz", "fmt-pkg-1.0.zip"):
+            resp = client.post("/", auth=AUTH,
+                               data={"name": "fmt-pkg", "version": "1.0"},
+                               files={"content": (fname, b"fmt bytes",
+                                                  "application/octet-stream")})
+            assert resp.status_code == 200, fname
+
+
+class TestRootIndex:
+    """FEAT-12: GET / 人类可读落地页（HTML 索引 + 服务信息）。"""
+
+    def test_root_requires_auth(self, client):
+        # S9 一致性：索引面一律要求认证，/ 不应是匿名枚举入口
+        resp = client.get("/")
+        assert resp.status_code == 401
+
+    def test_root_returns_html_with_service_info(self, client):
+        resp = client.get("/", auth=AUTH)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "text/html; charset=utf-8"
+        # 服务信息：标题 + 简短说明 + pip 用法
+        assert "AutoFlow PyPI Registry" in resp.text
+        assert "PEP 503" in resp.text
+        assert "pip install" in resp.text
+
+    def test_root_lists_packages_with_links_to_simple(self, client):
+        client.post("/", auth=AUTH,
+                    data={"name": "homepage-pkg", "version": "1.0.0"},
+                    files={"content": ("homepage-pkg-1.0.0.whl", b"x",
+                                       "application/octet-stream")})
+        resp = client.get("/", auth=AUTH)
+        assert "homepage-pkg" in resp.text
+        assert 'href="/simple/homepage-pkg/"' in resp.text
+        # 包数量
+        assert "1 个包" in resp.text
+
+    def test_root_lists_packages_alphabetically(self, client):
+        for name, fname in (("beta-pkg", "beta-pkg-1.0.0.whl"),
+                            ("alpha-pkg", "alpha-pkg-1.0.0.whl")):
+            client.post("/", auth=AUTH,
+                        data={"name": name, "version": "1.0.0"},
+                        files={"content": (fname, b"x",
+                                           "application/octet-stream")})
+        resp = client.get("/", auth=AUTH)
+        assert resp.text.index("alpha-pkg") < resp.text.index("beta-pkg")
+
+    def test_root_empty_state(self, client):
+        resp = client.get("/", auth=AUTH)
+        assert resp.status_code == 200
+        assert "暂无" in resp.text
+
+    def test_root_no_external_resources(self, client):
+        """零外部资源：离线私服不得引用任何 CDN/远程脚本/字体。"""
+        client.post("/", auth=AUTH,
+                    data={"name": "offline-pkg", "version": "1.0.0"},
+                    files={"content": ("offline-pkg-1.0.0.whl", b"x",
+                                       "application/octet-stream")})
+        for path in ("/", "/simple/", "/simple/offline-pkg/"):
+            resp = client.get(path, auth=AUTH)
+            lower = resp.text.lower()
+            assert "<script" not in lower
+            assert "<link " not in lower
+            assert 'src="http' not in lower
+            assert "url(" not in lower
+            assert "cdn." not in lower
+
+    def test_index_pages_cache_headers(self, client):
+        # 缓存取舍：no-cache——索引必须在 CI 上传后立即可见，陈旧索引会让
+        # pip 漏掉刚推送的版本；页面为 KB 级静态拼装，回源代价可忽略。
+        client.post("/", auth=AUTH,
+                    data={"name": "cache-pkg", "version": "1.0.0"},
+                    files={"content": ("cache-pkg-1.0.0.whl", b"x",
+                                       "application/octet-stream")})
+        for path in ("/", "/simple/", "/simple/cache-pkg/"):
+            resp = client.get(path, auth=AUTH)
+            assert resp.headers["cache-control"] == "no-cache"
+
+    def test_index_pages_content_type(self, client):
+        client.post("/", auth=AUTH,
+                    data={"name": "ct-pkg", "version": "1.0.0"},
+                    files={"content": ("ct-pkg-1.0.0.whl", b"x",
+                                       "application/octet-stream")})
+        for path in ("/", "/simple/", "/simple/ct-pkg/"):
+            resp = client.get(path, auth=AUTH)
+            assert resp.headers["content-type"] == "text/html; charset=utf-8"
+
+
+class TestIndexEscaping:
+    """FEAT-12 XSS 加固：包名/文件名/版本号来自用户上传，normalize() 不剥离
+    <>&'" 等字符，HTML 输出必须全部转义。"""
+
+    def test_render_functions_escape_malicious_names(self):
+        # 单测注入：渲染层 escape 验证（不依赖文件系统对 <> 的支持，
+        # Windows 测试环境无法创建含 < 的目录名）
+        import main as app_module
+
+        html = app_module._render_root_index(
+            ['<script>alert("xss")</script>&pkg'], 3)
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+        assert 'href="/simple/&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;&amp;pkg/"' in html
+
+        html = app_module._render_simple_index(
+            ['<img src=x onerror=alert(1)>'], [1], 1)
+        assert "<img " not in html
+        assert "&lt;img" in html
+
+        html = app_module._render_package_index(
+            "evil&pkg",
+            [("1.0<2", '<script>alert(1)</script>-1.0.whl',
+              "a" * 64, "1 B", "2026-01-01 00:00")],
+            1, 1)
+        assert "<script>" not in html
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;-1.0.whl" in html
+        assert "#sha256=" + "a" * 64 in html  # sha256 为服务端计算的 hex，不受影响
+
+    def test_page_title_escapes_package_name(self, client, tmp_packages_dir):
+        # Windows/Linux 均合法的 & 注入：目录直接落盘（绕过上传层），
+        # GET /simple/x&y/ 的路径参数反射进 <h1>/<title> 时必须转义
+        pkg = tmp_packages_dir / "x&y"
+        pkg.mkdir()
+        (pkg / "x&y-1.0.0.zip").write_bytes(b"payload")
+        resp = client.get("/simple/x&y/", auth=AUTH)
+        assert resp.status_code == 200
+        assert "<title>Links for x&amp;y</title>" in resp.text
+        assert "<h1>Links for x&amp;y</h1>" in resp.text
+        # 未转义的原始形式不得出现在任何标题/文本位置
+        assert "Links for x&y<" not in resp.text
+
+    def test_index_escapes_uploaded_filenames(self, client):
+        # 文件名同样可控（上传层只校验扩展名）：& 必须转义
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "esc-pkg", "version": "1.0"},
+                           files={"content": ("esc-pkg-1.0-&.zip", b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+        page = client.get("/simple/esc-pkg/", auth=AUTH)
+        assert "esc-pkg-1.0-&amp;.zip" in page.text
+        # 锚点 href 仍完整（转义后的实体在属性内，pip/浏览器解析一致）
+        assert 'href="/packages/esc-pkg/esc-pkg-1.0-&amp;.zip#sha256=' in page.text
+        root = client.get("/", auth=AUTH)
+        assert "esc-pkg" in root.text
+        assert "esc-pkg-1.0-&" not in root.text  # 根页不含文件名，原始 & 不泄漏
+
+    def test_simple_index_escapes_package_names(self, client, tmp_packages_dir):
+        pkg = tmp_packages_dir / "a&b"
+        pkg.mkdir()
+        (pkg / "a&b-1.0.0.zip").write_bytes(b"payload")
+        resp = client.get("/simple/", auth=AUTH)
+        assert 'href="/simple/a&amp;b/">a&amp;b</a>' in resp.text
+
+    def test_root_escapes_package_names(self, client, tmp_packages_dir):
+        pkg = tmp_packages_dir / "a&b"
+        pkg.mkdir()
+        (pkg / "a&b-1.0.0.zip").write_bytes(b"payload")
+        resp = client.get("/", auth=AUTH)
+        assert 'href="/simple/a&amp;b/">a&amp;b</a>' in resp.text
+
+
+class TestPackageIndexPipCompat:
+    """FEAT-12 回归护栏：/simple/<name>/ 的锚点结构必须保持 pip 消费兼容
+    （admin-api parsePypiIndex 也按 <a> 锚点文本解析包名）。"""
+
+    def test_anchor_structure_survives_html_upgrade(self, client):
+        import hashlib
+        import re
+        payload = b"compat bytes"
+        client.post("/", auth=AUTH,
+                    data={"name": "compat-pkg", "version": "1.0.0"},
+                    files={"content": ("compat-pkg-1.0.0-py3-none-any.whl",
+                                       payload, "application/octet-stream")})
+        resp = client.get("/simple/compat-pkg/", auth=AUTH)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "text/html; charset=utf-8"
+        # pip 消费契约：href 指向 /packages/<file> 且带 sha256 片段
+        expected_sha = hashlib.sha256(payload).hexdigest()
+        assert (f'href="/packages/compat-pkg/compat-pkg-1.0.0-py3-none-any.whl'
+                f'#sha256={expected_sha}"') in resp.text
+        # 锚点文本仍为纯文件名（无内嵌标签），正则解析器可提取
+        m = re.search(r'<a[^>]*>([^<]+)</a>', resp.text)
+        assert m is not None
+        assert m.group(1) == "compat-pkg-1.0.0-py3-none-any.whl"
+
+    def test_simple_index_anchor_structure_survives_html_upgrade(self, client):
+        import re
+        client.post("/", auth=AUTH,
+                    data={"name": "compat-idx", "version": "1.0.0"},
+                    files={"content": ("compat-idx-1.0.0.whl", b"x",
+                                       "application/octet-stream")})
+        resp = client.get("/simple/", auth=AUTH)
+        assert 'href="/simple/compat-idx/"' in resp.text
+        m = re.search(r'<a[^>]*>([^<]+)</a>', resp.text)
+        assert m is not None
+        assert m.group(1) == "compat-idx"
+
+    def test_version_sort_survives_unparseable_version(self, client):
+        # 回归：此前 _version_key 对混合 int/str 段会抛 TypeError——文件名
+        # 解析不出版本号（得 "-"）与正常版本同页排序即 500
+        client.post("/", auth=AUTH,
+                    data={"name": "sort-pkg", "version": "1.0"},
+                    files={"content": ("sort-pkg-1.0.0.zip", b"x",
+                                       "application/octet-stream")})
+        client.post("/", auth=AUTH,
+                    data={"name": "sort-pkg", "version": "1.0"},
+                    files={"content": ("weird.zip", b"y",
+                                       "application/octet-stream")})
+        resp = client.get("/simple/sort-pkg/", auth=AUTH)
+        assert resp.status_code == 200
+        assert "1.0.0" in resp.text
+        assert "weird.zip" in resp.text

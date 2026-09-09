@@ -585,11 +585,17 @@ test('15. AI 配置检查 & Swagger API 文档', async ({ page }) => {
 });
 
 // ── 16. Prometheus 指标验证 ──────────────────────────────────────────────────
-test('16. Prometheus 指标端点', async ({ page }) => {
-  await page.goto('http://localhost:3105/metrics');
-  await page.waitForLoadState('networkidle').catch(() => {});
-  const text = await page.locator('body').innerText();
-  const hasMetrics = text.includes('# HELP') || text.includes('nodejs_') || text.includes('http_');
-  console.log(`  Prometheus 指标: ${hasMetrics ? '✓ 正常' : '✗ 未返回指标'}, 内容: ${text.slice(0, 200)}`);
-  await page.screenshot({ path: '/tmp/e2e-16-metrics.png', fullPage: false });
+test('16. Prometheus 指标端点', async ({ request }) => {
+  // W-13 (sync with e2e-full.spec.cjs): the endpoint is GET /api/metrics behind
+  // the JwtAuthGuard (metrics.controller.ts, R7); the old unauthenticated
+  // page.goto('/metrics') 404'd on every OS — a test bug, not a Windows issue.
+  const login = await request.post(`${API}/api/auth/login`, { data: { username: USER, password: PASS } });
+  const token = (await login.json())?.data?.accessToken;
+  const resp = await request.get(`${API}/api/metrics`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const text = await resp.text();
+  const hasMetrics = resp.status() === 200 && (text.includes('# HELP') || text.includes('nodejs_') || text.includes('autoflow_'));
+  console.log(`  Prometheus 指标: ${hasMetrics ? '✓ 正常' : '✗ 未返回指标'}, HTTP ${resp.status()}`);
+  expect(hasMetrics).toBe(true);
 });

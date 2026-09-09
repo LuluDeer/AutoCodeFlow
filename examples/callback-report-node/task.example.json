@@ -1,0 +1,14 @@
+{
+  "id": "callback-report-node-demo",
+  "name": "SDK 回调示例（Node）",
+  "runtime": "node",
+  "entrypoint": "examples/callback-report-node/callback_report.js",
+  "cronExpression": "0 0 12 * * *",
+  "timeoutSeconds": 120,
+  "maxRetry": 1,
+  "retryDelay": 10,
+  "params": {
+    "mode": "success"
+  },
+  "requirements": ["@autocodeflow/sdk"]
+}

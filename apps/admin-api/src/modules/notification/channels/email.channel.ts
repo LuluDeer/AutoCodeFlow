@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import * as nodemailer from "nodemailer";
 import {
   BaseChannel,
+  ChannelConfigOverride,
   ChannelDeliveryStatus,
   NotificationPayload,
 } from "./base.channel";
@@ -20,37 +21,60 @@ export class EmailChannel extends BaseChannel {
     super();
   }
 
-  async send(p: NotificationPayload): Promise<ChannelDeliveryStatus> {
-    // V1 (round-7): the SMTP config saved via PATCH /notification/channels/email
-    // takes precedence per field; env (EMAIL_*) is only the fallback default.
-    // The store holds RAW values (N11 masking applies to the read API only),
-    // so the real password reaches the transporter here.
+  async send(
+    p: NotificationPayload,
+    configOverride?: ChannelConfigOverride,
+  ): Promise<ChannelDeliveryStatus> {
+    // R2: per-call override merged over the saved+env resolution. The
+    // override never reaches ChannelConfigStore, so concurrent prod
+    // alerts can never see unsaved test data and the global send path
+    // cannot be silently rerouted by an in-flight test send.
     const saved = this.store.get("email") ?? {};
+    const override = configOverride ?? {};
     const host =
-      saved.host || this.config.get<string>("notification.email.host");
+      override.host ||
+      saved.host ||
+      this.config.get<string>("notification.email.host");
     const user =
-      saved.user || this.config.get<string>("notification.email.user");
-    const to = saved.to || this.config.get<string>("notification.email.to");
+      override.user ||
+      saved.user ||
+      this.config.get<string>("notification.email.user");
+    const to =
+      override.to ||
+      saved.to ||
+      this.config.get<string>("notification.email.to");
     // Q8: skip silently when email is not configured
     if (!host || !user || !to) return "skipped";
 
-    const savedPort = Number(saved.port);
+    const portSrc = override.port ?? saved.port;
+    const savedPort = Number(portSrc);
     const port =
-      saved.port && !Number.isNaN(savedPort)
+      portSrc && !Number.isNaN(savedPort)
         ? savedPort
         : (this.config.get<number>("notification.email.port") ?? 465);
+    const secureSrc = override.secure ?? saved.secure;
     const secure =
-      saved.secure !== undefined && saved.secure !== ""
-        ? saved.secure === "true"
+      secureSrc !== undefined && secureSrc !== ""
+        ? secureSrc === "true"
         : (this.config.get<boolean>("notification.email.secure") ?? true);
     // The config surface stores the SMTP password under `password`
     // (loadFromEnv / admin-web form); accept `pass` too for symmetry with env.
+    // R2 + N11: the override may legitimately be a masked echo ("***");
+    // when it is, fall through to the saved/env value instead of clobbering
+    // the real secret with the sentinel.
+    const overrideMasked =
+      typeof override.password === "string" && override.password === "***";
     const pass =
+      (!overrideMasked && override.password) ||
+      (!overrideMasked && override.pass) ||
       saved.password ||
       saved.pass ||
       this.config.get<string>("notification.email.pass");
     const from =
-      saved.from || this.config.get<string>("notification.email.from") || user;
+      override.from ||
+      saved.from ||
+      this.config.get<string>("notification.email.from") ||
+      user;
 
     const transporter = nodemailer.createTransport({
       host,

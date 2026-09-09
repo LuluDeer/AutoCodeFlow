@@ -61,4 +61,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('switch-tab', handler);
     return () => ipcRenderer.removeListener('switch-tab', handler);
   },
+
+  // 自动更新（DSK-03，主进程 → 渲染进程，单向推送；生产环境才启用）
+  checkForUpdate: () => ipcRenderer.invoke('updater:check'),
+  installUpdate: () => ipcRenderer.invoke('updater:install'),
+  onUpdateAvailable: (cb: (payload: { version: string; current: string; progress?: number }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: { version: string; current: string; progress?: number }) => cb(payload);
+    ipcRenderer.on('updater:available', handler);
+    return () => ipcRenderer.removeListener('updater:available', handler);
+  },
+  onUpdateDownloaded: (cb: (payload: { version: string }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: { version: string }) => cb(payload);
+    ipcRenderer.on('updater:downloaded', handler);
+    return () => ipcRenderer.removeListener('updater:downloaded', handler);
+  },
+  onUpdateError: (cb: (payload: { message: string }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: { message: string }) => cb(payload);
+    ipcRenderer.on('updater:error', handler);
+    return () => ipcRenderer.removeListener('updater:error', handler);
+  },
 });

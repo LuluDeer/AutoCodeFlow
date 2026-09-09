@@ -38,6 +38,20 @@ export function decrementRunning(): void {
 // For backward compatibility — use getRunningCount() directly for new code
 export const runningCount = getRunningCount;  // alias to the function
 
+// STALE-01: heartbeat enrichment providers. The live execution registry lives
+// in routes/execute.ts which already imports this module — importing back
+// would form a cycle, so the data owners register their getters here.
+let runningExecutionIdsProvider: () => string[] = () => [];
+let deadLetterCountProvider: () => number = () => 0;
+
+export function registerRunningExecutionIdsProvider(fn: () => string[]): void {
+  runningExecutionIdsProvider = fn;
+}
+
+export function registerDeadLetterCountProvider(fn: () => number): void {
+  deadLetterCountProvider = fn;
+}
+
 /**
  * Measure actual CPU usage by sampling cpu times over 500ms.
  * os.loadavg() always returns [0,0,0] on Windows, so we use this instead.
@@ -83,6 +97,14 @@ async function sendHeartbeat() {
       cpuUsage,
       memUsage,
       runningTaskCount: getRunningCount(),
+      // STALE-01: admin 的 stale sweep 据此跳过"回调只是迟到"（重试退避、
+      // 同任务排队）的执行，避免误判失败+提前释放容量；裁剪 200 封顶报文。
+      // deadLetterCount 暴露落盘回调积压，供运维感知长期断连。
+      runningExecutionIds: runningExecutionIdsProvider().slice(0, 200),
+      deadLetterCount: deadLetterCountProvider(),
+      // E9: 上报当前并发上限，admin 容量核算不再依赖注册期快照；读 config
+      // 对象属性，/config/reload 热更 maxConcurrentTasks 后下个心跳即回传新值。
+      maxConcurrentTasks: config.maxConcurrentTasks,
       restartedAt: executorStartedAt,
       startupId: executorStartupId,
     });
@@ -100,5 +122,22 @@ async function sendHeartbeat() {
 }
 
 export function startHeartbeat() {
-  return setInterval(sendHeartbeat, config.heartbeatIntervalSeconds * 1000);
+  // Poll once per second so hot-reloaded intervals take effect without
+  // rebuilding the timer; main.ts can still stop it with clearInterval.
+  let lastHeartbeatAt = Date.now();
+  let heartbeatInFlight = false;
+  return setInterval(async () => {
+    const intervalMs = config.heartbeatIntervalSeconds * 1000;
+    if (heartbeatInFlight || Date.now() - lastHeartbeatAt < intervalMs) {
+      return;
+    }
+
+    lastHeartbeatAt = Date.now();
+    heartbeatInFlight = true;
+    try {
+      await sendHeartbeat();
+    } finally {
+      heartbeatInFlight = false;
+    }
+  }, 1000);
 }

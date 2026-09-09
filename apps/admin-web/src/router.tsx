@@ -9,6 +9,7 @@ import PageFallback from './components/PageFallback';
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const TaskListPage = lazy(() => import('./pages/TaskListPage'));
+const TaskTemplatesPage = lazy(() => import('./pages/TaskTemplatesPage'));
 const TaskDetailPage = lazy(() => import('./pages/TaskDetailPage'));
 const TaskFormPage = lazy(() => import('./pages/TaskFormPage'));
 const ExecutionDetailPage = lazy(() => import('./pages/ExecutionDetailPage'));
@@ -41,6 +42,8 @@ export const router = createBrowserRouter(
         { path: '*', element: withSuspense(<NotFoundPage />) },
         { path: 'dashboard', element: withSuspense(<DashboardPage />) },
         { path: 'tasks', element: withSuspense(<TaskListPage />) },
+        // CORE-03: 任务模板（从模板一键克隆 config 生成任务草稿）
+        { path: 'task-templates', element: withSuspense(<TaskTemplatesPage />) },
         { path: 'tasks/new', element: withSuspense(<TaskFormPage />) },
         { path: 'tasks/:id', element: withSuspense(<TaskDetailPage />) },
         { path: 'tasks/:id/edit', element: withSuspense(<TaskFormPage />) },

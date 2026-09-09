@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-selftest",
+    "rootDir": "src/main",
+    "sourceMap": false
+  },
+  "include": [
+    "src/main/path-domain.ts",
+    "src/main/path-domain.selftest.ts",
+    "src/main/token-crypto.ts",
+    "src/main/token-crypto.selftest.ts",
+    "src/main/updater.selftest.ts"
+  ],
+  "exclude": []
+}

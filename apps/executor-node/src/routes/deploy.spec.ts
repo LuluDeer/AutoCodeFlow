@@ -2,6 +2,8 @@ import request from 'supertest';
 import express from 'express';
 import * as fs from 'fs';
 import * as http from 'http';
+import * as os from 'os';
+import * as path from 'path';
 import * as childProcess from 'child_process';
 import { EventEmitter } from 'events';
 import type { AddressInfo } from 'net';
@@ -27,6 +29,7 @@ import {
   buildDeploymentPaths,
   deployRouter,
   downloadPackage,
+  findUnsafeZipEntries,
   shouldReportProcessExit,
   suppressNextRestartExitReport,
 } from './deploy';
@@ -116,13 +119,15 @@ describe('restart exit reporting', () => {
 
 describe('versioned deployment paths', () => {
   it('builds immutable release paths and a current pointer', () => {
+    // W-03: production uses path.join, so assert with path.join too — the old
+    // hardcoded '/tmp/work/apps/...' forward-slash strings only held on POSIX.
     const paths = buildDeploymentPaths('/tmp/work', 'app-1', 'deploy-1', '1.2.0');
 
-    expect(paths.appRoot).toBe('/tmp/work/apps/app-1');
+    expect(paths.appRoot).toBe(path.join('/tmp/work', 'apps', 'app-1'));
     expect(paths.releaseKey).toBe('1.2.0-deploy-1');
-    expect(paths.finalReleaseDir).toBe('/tmp/work/apps/app-1/releases/1.2.0-deploy-1');
-    expect(paths.extractDir).toBe('/tmp/work/apps/app-1/tmp/1.2.0-deploy-1-extracting');
-    expect(paths.currentLink).toBe('/tmp/work/apps/app-1/current');
+    expect(paths.finalReleaseDir).toBe(path.join('/tmp/work', 'apps', 'app-1', 'releases', '1.2.0-deploy-1'));
+    expect(paths.extractDir).toBe(path.join('/tmp/work', 'apps', 'app-1', 'tmp', '1.2.0-deploy-1-extracting'));
+    expect(paths.currentLink).toBe(path.join('/tmp/work', 'apps', 'app-1', 'current'));
   });
 
   it('keeps same-version redeploys isolated by deployment id', () => {
@@ -136,7 +141,59 @@ describe('versioned deployment paths', () => {
     const paths = buildDeploymentPaths('/tmp/work', 'app-1', 'deploy-1', '../v1+build');
 
     expect(paths.releaseKey).toBe('v1-build-deploy-1');
-    expect(paths.finalReleaseDir).toBe('/tmp/work/apps/app-1/releases/v1-build-deploy-1');
+    expect(paths.finalReleaseDir).toBe(path.join('/tmp/work', 'apps', 'app-1', 'releases', 'v1-build-deploy-1'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S6: pure zip-entry traversal validator (platform-agnostic, so it runs the
+// same on win32 and POSIX — the win32 PowerShell listing branch feeds it the
+// exact same entry names the Linux `unzip -Z1` branch does).
+// ---------------------------------------------------------------------------
+describe('findUnsafeZipEntries', () => {
+  it('accepts a normal relative entry list', () => {
+    expect(
+      findUnsafeZipEntries(['index.js', 'src/app.ts', 'assets/logo.png', 'README.md']),
+    ).toEqual([]);
+  });
+
+  it('flags POSIX absolute paths', () => {
+    expect(findUnsafeZipEntries(['/etc/passwd'])).toEqual(['/etc/passwd']);
+  });
+
+  it('flags parent-directory traversal with forward slashes', () => {
+    expect(findUnsafeZipEntries(['../escape.txt'])).toEqual(['../escape.txt']);
+    expect(findUnsafeZipEntries(['a/../../b'])).toEqual(['a/../../b']);
+  });
+
+  it('flags traversal smuggled with backslashes (mixed separators)', () => {
+    expect(findUnsafeZipEntries(['..\\escape.txt'])).toEqual(['..\\escape.txt']);
+    expect(findUnsafeZipEntries(['a\\..\\..\\b'])).toEqual(['a\\..\\..\\b']);
+  });
+
+  it('flags Windows drive-letter and UNC absolute paths', () => {
+    expect(findUnsafeZipEntries(['C:\\Windows\\system32\\evil.dll'])).toEqual([
+      'C:\\Windows\\system32\\evil.dll',
+    ]);
+    expect(findUnsafeZipEntries(['D:/evil.txt'])).toEqual(['D:/evil.txt']);
+    expect(findUnsafeZipEntries(['\\\\server\\share\\evil.txt'])).toEqual([
+      '\\\\server\\share\\evil.txt',
+    ]);
+  });
+
+  it('returns every violating entry, preserving order', () => {
+    const unsafe = findUnsafeZipEntries([
+      'ok.txt',
+      '../a',
+      'also-ok/deep/file.js',
+      '/abs',
+    ]);
+    expect(unsafe).toEqual(['../a', '/abs']);
+  });
+
+  it('does not flag a filename that merely contains ".." without a segment boundary', () => {
+    // "a..b" is a single safe segment; only a standalone ".." segment escapes.
+    expect(findUnsafeZipEntries(['a..b', 'x...y', 'foo..bar.js'])).toEqual([]);
   });
 });
 
@@ -170,7 +227,9 @@ describe('downloadPackage authentication', () => {
     (mockFs.createWriteStream as jest.Mock).mockImplementation((p: string) =>
       actualFs.createWriteStream(p),
     );
-    const dest = `/tmp/acf-download-test-${Date.now()}.bin`;
+    // W-20: '/tmp/...' resolves to <cwd drive>:\tmp on Windows (absent on the
+    // GH runner → ENOENT). os.tmpdir() is the portable temp location.
+    const dest = path.join(os.tmpdir(), `acf-download-test-${Date.now()}.bin`);
     try {
       await downloadPackage(`http://127.0.0.1:${portA}/pkg.zip`, dest);
       expect(authHeaders).toEqual(['Bearer test-shared-token', undefined]);
@@ -200,7 +259,7 @@ describe('downloadPackage authentication', () => {
     (mockFs.createWriteStream as jest.Mock).mockImplementation((p: string) =>
       actualFs.createWriteStream(p),
     );
-    const dest = `/tmp/acf-download-test-notoken-${Date.now()}.bin`;
+    const dest = path.join(os.tmpdir(), `acf-download-test-notoken-${Date.now()}.bin`); // W-20
     try {
       await downloadPackage(`http://127.0.0.1:${port}/pkg.zip`, dest);
       expect(seenAuth).toBeUndefined();
@@ -271,6 +330,51 @@ describe('POST /api/deploy — async pipeline', () => {
     expect(mockCp.spawnSync).not.toHaveBeenCalled();
   });
 
+  it('passes the validated branch to git clone when one is specified', async () => {
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+    const res = await request(app)
+      .post('/api/deploy')
+      .send({ ...basePayload, gitBranch: 'release-1' });
+    expect(res.status).toBe(200);
+
+    await waitFor(() =>
+      (mockCp.spawn as jest.Mock).mock.calls.some(
+        (c: unknown[]) => (c[1] as string[])[0] === 'clone',
+      ),
+    );
+    const cloneCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+      (c: unknown[]) => (c[1] as string[])[0] === 'clone',
+    ) as [string, string[]];
+    const args = cloneCall[1];
+    const branchIdx = args.indexOf('--branch');
+    expect(branchIdx).toBeGreaterThan(-1);
+    expect(args[branchIdx + 1]).toBe('release-1');
+  });
+
+  it('omits --branch entirely when gitBranch is empty (clones remote default)', async () => {
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+    const res = await request(app)
+      .post('/api/deploy')
+      .send({ ...basePayload, gitBranch: '' });
+    expect(res.status).toBe(200);
+
+    await waitFor(() =>
+      (mockCp.spawn as jest.Mock).mock.calls.some(
+        (c: unknown[]) => (c[1] as string[])[0] === 'clone',
+      ),
+    );
+    const cloneCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+      (c: unknown[]) => (c[1] as string[])[0] === 'clone',
+    ) as [string, string[]];
+    const args = cloneCall[1];
+    // S12: an empty/undefined gitBranch must never reach git as a bad
+    // `--branch` argument — the flag is dropped so git clones the default HEAD.
+    expect(args).not.toContain('--branch');
+    expect(args).not.toContain('');
+    expect(args).toContain('https://example.com/repo.git');
+    expect(args[args.length - 1]).toBe('.');
+  });
+
   it('startApp env contains only whitelisted vars plus app envVars (no executor secrets)', async () => {
     process.env.EXECUTOR_SHARED_TOKEN = 'top-secret';
     process.env.EXECUTOR_SECRET = 'legacy-secret';
@@ -320,6 +424,10 @@ describe('POST /api/deploy — async pipeline', () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
     (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
 
+    // W-03: production spawns npm.cmd with shell:true on win32 (deploy.ts:92-96)
+    // — the test must look for the platform's command name.
+    const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
     try {
       const res = await request(app)
         .post('/api/deploy')
@@ -328,11 +436,11 @@ describe('POST /api/deploy — async pipeline', () => {
 
       await waitFor(() =>
         (mockCp.spawn as jest.Mock).mock.calls.some(
-          (c: unknown[]) => (c[0] as string) === 'npm',
+          (c: unknown[]) => (c[0] as string) === npmBin,
         ),
       );
       const npmCall = (mockCp.spawn as jest.Mock).mock.calls.find(
-        (c: unknown[]) => (c[0] as string) === 'npm',
+        (c: unknown[]) => (c[0] as string) === npmBin,
       );
       const env = (npmCall as [string, string[], { env: Record<string, string | undefined> }])[2].env;
       expect(env.EXECUTOR_SHARED_TOKEN).toBeUndefined();
@@ -343,7 +451,7 @@ describe('POST /api/deploy — async pipeline', () => {
     }
   });
 
-  it('app-stop kills the app process group (POSIX)', async () => {
+  it('app-stop kills the app process group (POSIX) / process tree via taskkill (win32)', async () => {
     const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
     (mockFs.existsSync as jest.Mock).mockReturnValue(true);
     (mockFs.createWriteStream as jest.Mock).mockReturnValue({
@@ -364,7 +472,17 @@ describe('POST /api/deploy — async pipeline', () => {
 
       const stopRes = await request(app).post('/api/app-stop').send({ deploymentId: 'deploy-async' });
       expect(stopRes.status).toBe(200);
-      expect(killSpy).toHaveBeenCalledWith(-5555, 'SIGTERM');
+      if (process.platform !== 'win32') {
+        expect(killSpy).toHaveBeenCalledWith(-5555, 'SIGTERM');
+      } else {
+        // W-03 (windows-findings): no negative-pid group kill on win32 —
+        // killProcessTree tree-kills via taskkill /T /F.
+        expect(mockCp.spawn).toHaveBeenCalledWith(
+          'taskkill',
+          ['/T', '/F', '/PID', '5555'],
+          expect.objectContaining({ stdio: 'ignore' }),
+        );
+      }
 
       // unblock pending timers by simulating exit
       child.emit('exit', 0);

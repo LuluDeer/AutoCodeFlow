@@ -10,7 +10,6 @@ import {
   Tag,
   Popconfirm,
   message,
-  Typography,
   Card,
   Row,
   Col,
@@ -24,9 +23,10 @@ import {
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, type User, type CreateUserDto, type UpdateUserDto } from '../api/users';
-import { getErrMsg } from '../utils/error';
+import { getErrMsg, isFormValidationError } from '../utils/error';
+import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
 
-const { Title } = Typography;
 const { Option } = Select;
 
 const ROLE_COLORS: Record<string, string> = {
@@ -144,18 +144,27 @@ export default function UserManagementPage() {
   );
 
   const handleCreateSubmit = useCallback(() => {
-    createForm.validateFields().then((values) => {
-      if (editing) {
-        const dto: UpdateUserDto = {
-          username: values.username,
-          email: values.email,
-          role: values.role,
-        };
-        updateMutation.mutate({ id: editing.id, dto });
-      } else {
-        createMutation.mutate(values as CreateUserDto);
-      }
-    });
+    // UI-15：validateFields 的 rejection 必须有消费方——校验失败由 Form 自带
+    // 红字呈现（isFormValidationError 分支静默），其余异常兜底 toast，
+    // 消除 QA-03 记录的 unhandled rejection 前科。
+    createForm
+      .validateFields()
+      .then((values) => {
+        if (editing) {
+          const dto: UpdateUserDto = {
+            username: values.username,
+            email: values.email,
+            role: values.role,
+          };
+          updateMutation.mutate({ id: editing.id, dto });
+        } else {
+          createMutation.mutate(values as CreateUserDto);
+        }
+      })
+      .catch((err: unknown) => {
+        if (isFormValidationError(err)) return;
+        message.error(getErrMsg(err, '提交失败，请检查表单后重试'));
+      });
   }, [createForm, editing, createMutation, updateMutation]);
 
   const handleResetPwd = useCallback(
@@ -168,13 +177,20 @@ export default function UserManagementPage() {
   );
 
   const handleResetPwdSubmit = useCallback(() => {
-    resetPwdForm.validateFields().then((values) => {
-      if (!resetPwdUser) return;
-      resetPwdMutation.mutate({
-        id: resetPwdUser.id,
-        password: values.newPassword,
+    // UI-15：同 handleCreateSubmit——校验 rejection 有消费方，非校验异常兜底 toast。
+    resetPwdForm
+      .validateFields()
+      .then((values) => {
+        if (!resetPwdUser) return;
+        resetPwdMutation.mutate({
+          id: resetPwdUser.id,
+          password: values.newPassword,
+        });
+      })
+      .catch((err: unknown) => {
+        if (isFormValidationError(err)) return;
+        message.error(getErrMsg(err, '提交失败，请检查表单后重试'));
       });
-    });
   }, [resetPwdForm, resetPwdUser, resetPwdMutation]);
 
   const columns = [
@@ -270,9 +286,8 @@ export default function UserManagementPage() {
 
   return (
     <div style={{ padding: '24px' }}>
-      <Title level={4} style={{ marginBottom: 16 }}>
-        用户管理
-      </Title>
+      {/* UI-03/UI-08：页头标准化（原 Title 区块迁入 PageHeader） */}
+      <PageHeader title="用户管理" description="账号、角色与密码管理（仅管理员）。" />
       <Card>
         <Row gutter={12} style={{ marginBottom: 16 }} align="middle">
           <Col flex="auto">
@@ -295,29 +310,30 @@ export default function UserManagementPage() {
             </Button>
           </Col>
         </Row>
-        <Table
-          rowKey="id"
-          columns={columns}
-          dataSource={filteredUsers}
-          loading={isLoading}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-            showTotal: (t) =>
-              `共 ${t.toLocaleString()} 条`,
-            onChange: (p, ps) => {
-              setPage(p);
-              setPageSize(ps);
-            },
-          }}
-          locale={{
-            emptyText: searchText
-              ? '没有匹配的用户'
-              : '暂无用户',
-          }}
-        />
+          <Table
+            rowKey="id"
+            columns={columns}
+            dataSource={filteredUsers}
+            loading={false}
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: true,
+              showTotal: (t) =>
+                `共 ${t.toLocaleString()} 条`,
+              onChange: (p, ps) => {
+                setPage(p);
+                setPageSize(ps);
+              },
+            }}
+            locale={{
+              // UI-08：首屏（无数据加载中）以骨架屏替代表格 Spin
+              emptyText: isLoading
+                ? <PageSkeleton variant="table" rows={4} />
+                : (searchText ? '没有匹配的用户' : '暂无用户'),
+            }}
+          />
       </Card>
 
       <Modal

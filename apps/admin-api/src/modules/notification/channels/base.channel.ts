@@ -2,6 +2,15 @@ export interface NotificationPayload {
   title: string;
   content: string;
   level?: "info" | "warning" | "error" | "critical";
+  /**
+   * FEAT-10: template variables for per-channel title/content templates
+   * (titleTemplate / contentTemplate in the channel's saved config). Only
+   * senders that know the alert context populate this — when present,
+   * NotificationService.sendToChannels renders each channel's copy through
+   * renderTemplate (single-pass, 8KB cap, fail-open). Absent → payloads flow
+   * to channels exactly as before (zero breakage).
+   */
+  vars?: Record<string, string | number | null | undefined>;
 }
 
 /**
@@ -22,9 +31,30 @@ export interface RetryConfig {
   backoffMultiplier: number;
 }
 
+/**
+ * R2: per-call unsaved config override. Channels accept this as a second
+ * argument to send(); it is merged over the saved+env resolution for the
+ * DURATION of one call only — never published to ChannelConfigStore, so
+ * concurrent prod alerts can never see unsaved test data and the global
+ * send path cannot be silently rerouted by an in-flight test send.
+ */
+export type ChannelConfigOverride = Record<string, string>;
+
 export abstract class BaseChannel {
   abstract name: string;
-  abstract send(payload: NotificationPayload): Promise<ChannelDeliveryStatus>;
+  abstract send(
+    payload: NotificationPayload,
+    configOverride?: ChannelConfigOverride,
+  ): Promise<ChannelDeliveryStatus>;
+
+  /** QA5: 3xx (redirect refused by the R3 maxRedirects:0 posture) and 4xx
+   *  are deterministic remote verdicts — retrying them only burns the
+   *  backoff budget. Only transport errors and 5xx are worth retrying. */
+  private static isDeterministicHttpReject(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } } | undefined)
+      ?.response?.status;
+    return typeof status === "number" && status < 500;
+  }
 
   protected async withRetry<T>(
     operation: () => Promise<T>,
@@ -43,6 +73,7 @@ export abstract class BaseChannel {
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
 
+        if (BaseChannel.isDeterministicHttpReject(error)) break;
         if (attempt < config.maxRetries) {
           await new Promise((resolve) => setTimeout(resolve, delay));
           delay *= config.backoffMultiplier;

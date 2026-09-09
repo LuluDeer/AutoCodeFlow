@@ -1,10 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vite + React + TS</title>
+    <title>AutoCodeFlow</title>
+    <!-- UI-02：DOM 解析前注入 data-theme，防首帧闪白（FOUC）。
+         键名与 src/theme/store.ts 的 persist 键一致。 -->
+    <script>
+      (function () {
+        try {
+          var raw = JSON.parse(localStorage.getItem('autoflow-theme') || '{}');
+          var m = (raw.state && raw.state.mode) || 'system';
+          var dark =
+            m === 'dark' ||
+            (m === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var e = document.documentElement;
+          e.setAttribute('data-theme', dark ? 'dark' : 'light');
+          e.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (err) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

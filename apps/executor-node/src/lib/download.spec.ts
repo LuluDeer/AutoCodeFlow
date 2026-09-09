@@ -51,6 +51,29 @@ async function expectFileGone(dest: string): Promise<void> {
 }
 
 describe('downloadFile (shared Bearer downloader)', () => {
+  it('routes an early stream-open failure (ENOENT parent dir) into the rejection, not an unhandled error event', async () => {
+    // dest 的父目录不存在 → createWriteStream 立即以 open 错误失败，而 HTTP
+    // 响应 50ms 后才到——错误事件发生时若不注册 'error' 监听器，会以 unhandled
+    // 'error' 逃逸（曾把同 worker 的无关测试打挂）。修复后必须落到 reject。
+    const server = http.createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200);
+        res.end('x');
+      }, 50);
+    });
+    const port = await listen(server);
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-dl-gone-'));
+    const badDest = path.join(base, 'missing-dir', 'pkg.bin');
+    try {
+      await expect(
+        downloadFile(`http://127.0.0.1:${port}/pkg.zip`, badDest),
+      ).rejects.toThrow(/ENOENT/);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it('sends the executor shared token as Bearer on the first request', async () => {
     const seen: Array<string | undefined> = [];
     const server = http.createServer((req, res) => {

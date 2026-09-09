@@ -10,6 +10,8 @@ import { AppDeploymentController } from "./app-deployment.controller";
 import { TaskModule } from "../task/task.module";
 import { ExecutorModule } from "../executor/executor.module";
 import { AiModule } from "../ai/ai.module";
+// DEP-04: 审批决策审计（deployment.approve/reject/cancel 留痕）。
+import { AuditModule } from "../audit/audit.module";
 
 @Module({
   imports: [
@@ -17,6 +19,7 @@ import { AiModule } from "../ai/ai.module";
     forwardRef(() => TaskModule),
     ExecutorModule,
     AiModule,
+    AuditModule,
   ],
   controllers: [ApplicationController, AppDeploymentController],
   providers: [ApplicationService, AppDeploymentService],

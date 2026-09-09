@@ -3,6 +3,8 @@ import {
   Logger,
   NotFoundException,
   ServiceUnavailableException,
+  Inject,
+  forwardRef,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectQueue } from "@nestjs/bullmq";
@@ -14,6 +16,7 @@ import { Repository, LessThan, In } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
 import { Executor, ExecutorStatus } from "./entities/executor.entity";
+import { ExecutorMetricsHistory } from "./entities/executor-metrics-history.entity";
 import {
   TaskExecution,
   ExecutionFailureReason,
@@ -24,6 +27,24 @@ import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
 import { SystemConfigService } from "../config/config.service";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+// SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
+import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
+// FEAT-07: executor.offline 出站事件（总线 @Global；Optional 注入先例 task.service）
+import {
+  DOMAIN_EVENTS,
+  ExecutorOfflineEventPayload,
+} from "../../common/events/domain-events";
+import { DomainEventBus } from "../../common/services/domain-event-bus.service";
+import { Optional } from "@nestjs/common";
+// CORE-02: 重试退避抖动——±20% 摊开同刻重试（recovery re-enqueue 路径）
+import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
+// CORE-05: 评分公式抽出（selectLeastLoaded / dispatch 双站点共享同一实现）
+import { computeExecutorLoadScore } from "./executor-score.util";
+import type { EstimatedDurations } from "./executor-score.util";
+// OBS-01: 派发链路追踪——dispatch span + traceparent 头透传执行器
+import { TracingService } from "../../common/tracing/tracing.service";
+// AUTH-05: 高危操作（rotate-token / 删除执行器）审计留痕
+import { AuditService } from "../audit/audit.service";
 
 @Injectable()
 export class ExecutorService {
@@ -96,12 +117,89 @@ export class ExecutorService {
     @InjectRepository(TaskExecution)
     private execRepo: Repository<TaskExecution>,
     @InjectRepository(Task) private taskRepo: Repository<Task>,
+    // FEAT-04: metrics-history pipeline. Heartbeat keeps the current executor
+    // row fresh and appends a best-effort snapshot for the 24h trend read side.
+    @InjectRepository(ExecutorMetricsHistory)
+    private metricsHistoryRepo: Repository<ExecutorMetricsHistory>,
     @InjectQueue("task-queue") private taskQueue: Queue,
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
     private readonly systemConfigService: SystemConfigService,
+    // SEC-02: dispatch 时解密 task.secrets（与 params 合并注入执行器 env）。
+    // 跨 task↔executor 模块环的 provider 注入：模块级 forwardRef 配套
+    // （executor.module 同位置注释）。
+    @Inject(forwardRef(() => SecretsCryptoService))
+    private readonly secretsCrypto: SecretsCryptoService,
+    // FEAT-07: executor.offline 出站事件发布（@Global 总线；@Optional 仅为
+    // 既有单测装配兼容——provider 缺失 → null → 事件静默不发，主链行为不变，
+    // 先例同 task.service 的 eventBus 注入）。
+    @Optional()
+    private readonly eventBus: DomainEventBus | null = null,
+    // OBS-01: 派发追踪（@Global 恒提供；disabled 时全短路零开销）。
+    // @Optional 仅为既有单测装配兼容（先例 eventBus）。
+    @Optional()
+    private readonly tracing: TracingService | null = null,
+    // AUTH-05: 高危操作审计（rotate-token / 删除执行器）。@Optional 与
+    // eventBus 同先例——存量单测未提供 AuditService 时降级为仅日志，主链
+    // 不变（审计 best-effort，log() 抛错也绝不影响业务结果）。
+    @Optional()
+    private readonly audit: AuditService | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
+  }
+
+  /**
+   * AUTH-05: best-effort audit write for high-risk executor operations.
+   * Never throws — an audit failure must not fail the operation itself
+   * (the operation already succeeded at this point). No operator identity is
+   * captured here on purpose: the admin surface (JWT principal) lives in the
+   * controller layer; the reason (when the caller supplied one) is recorded
+   * in detail.
+   */
+  private async auditHighRisk(
+    action: "executor.rotate_token" | "executor.delete",
+    executor: Pick<Executor, "id" | "address" | "appName">,
+    reason?: string,
+  ): Promise<void> {
+    if (!this.audit) return;
+    try {
+      await this.audit.log({
+        action,
+        resource: "executor",
+        resourceId: executor.id,
+        detail: {
+          address: executor.address,
+          appName: executor.appName,
+          ...(reason ? { reason } : {}),
+        },
+      });
+    } catch (e) {
+      this.logger.warn(
+        `audit write failed for ${action} on executor ${executor.id}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  /**
+   * FEAT-07: 状态落库后发布 executor.offline（fail-open——emit 抛错绝不改变
+   * 调用方结果；eventBus 为 null 时静默跳过）。载荷全为原始类型，与
+   * domain-events.ts 设计约束一致。
+   */
+  private emitExecutorOffline(
+    executor: Pick<Executor, "id" | "appName" | "address">,
+  ): void {
+    if (!this.eventBus) return;
+    const payload: ExecutorOfflineEventPayload = {
+      executorId: executor.id,
+      appName: executor.appName,
+      address: executor.address,
+      occurredAt: new Date().toISOString(),
+    };
+    try {
+      this.eventBus.emit(DOMAIN_EVENTS.EXECUTOR_OFFLINE, payload);
+    } catch {
+      /* bus contract is fail-open; second fuse */
+    }
   }
 
   public getExecutorUrl(address: string, path: string): string {
@@ -111,7 +209,13 @@ export class ExecutorService {
     return `${this.protocol}://${address}/${path}`;
   }
 
-  private async getSharedToken(): Promise<string> {
+  /**
+   * Resolve the executor shared credential for outbound requests (DB-first,
+   * env fallback). Every admin→executor call site must go through this
+   * resolver so a DB rotation propagates everywhere at once — a raw env read
+   * sends a stale credential the executor's DB-first verification rejects.
+   */
+  async getSharedToken(): Promise<string> {
     try {
       const cfg = await this.systemConfigService.findOne(
         "executor.sharedToken",
@@ -121,6 +225,37 @@ export class ExecutorService {
       // DB token is optional; fall back to environment/config-file value.
     }
     return this.configService.get<string>("executor.sharedToken") ?? "";
+  }
+
+  /**
+   * SEC-02: build the executor-bound `params` payload = execution params
+   * merged with decrypted task.secrets. Secrets WIN over params (a credential
+   * set at task level must not be shadowable by a per-trigger param of the
+   * same name — executors map every entry to AUTOFLOW_<KEY> env vars). The
+   * merged map lives only on the dispatch HTTP payload: it is never persisted
+   * back to TaskExecution.params, so plaintext never re-enters the database.
+   * A decryption failure (e.g. key missing/rotated away) surfaces as a
+   * dispatch error and the execution fails with a clear message instead of
+   * silently running without its credentials.
+   */
+  private buildDispatchParams(
+    task: Task,
+    execution: TaskExecution,
+  ): Record<string, unknown> {
+    const params = (execution.params ?? task.params ?? {}) as Record<
+      string,
+      unknown
+    >;
+    let decrypted: Record<string, unknown> | null | undefined;
+    try {
+      decrypted = this.secretsCrypto.decryptForDispatch(task.secrets);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Task secrets could not be decrypted for dispatch: ${message}`,
+      );
+    }
+    return { ...(params ?? {}), ...(decrypted ?? {}) };
   }
 
   private async releaseExecutorSlot(address?: string | null): Promise<void> {
@@ -161,20 +296,52 @@ export class ExecutorService {
     return false;
   }
 
-  private async scheduleRetryAfterRestart(
+  /**
+   * P2: 重试预算语义的唯一来源（BullMQ attempts 语义：maxRetry 为总尝试预算，
+   * retryCount 为已消耗的重试次数）。executor-restart 恢复路径与 scheduler
+   * stale sweep 共用——sweep 此前只置 FAILED 不 re-enqueue，而 task.processor
+   * 已将 RUNNING 移出 claimable，worker 崩溃型执行只能等 sweep 收敛，
+   * task.maxRetry>0 的任务实际拿不到任何重试。
+   */
+  private static retryBudgetExhausted(
     task: Task,
     execution: TaskExecution,
+  ): boolean {
+    const maxAttempts = Math.max(1, task.maxRetry ?? 1);
+    const nextRetryCount = (execution.retryCount ?? 0) + 1;
+    return nextRetryCount >= maxAttempts;
+  }
+
+  /**
+   * P2: 公开预算判定，供调用方把前置副作用（如 stale sweep 的 kill 通知）
+   * 门控在"确实会安排重试"之上。scheduleRetryAfterRecovery 内部仍会复查，
+   * 二者共享 retryBudgetExhausted，语义不会漂移。
+   */
+  hasRetryBudget(task: Task, execution: TaskExecution): boolean {
+    return !ExecutorService.retryBudgetExhausted(task, execution);
+  }
+
+  /**
+   * RUNNING→新 PENDING execution + 入队。executor-restart 恢复与 scheduler
+   * stale sweep（P2）共用的重试兑现模式：预算耗尽则静默跳过（只保留 FAILED）。
+   * fallbackTriggerType 仅在原执行未带 triggerType 时生效（restart 路径保持
+   * 既有 "executor_restart"；sweep 传 "stale_recovery" 便于溯源）。
+   */
+  async scheduleRetryAfterRecovery(
+    task: Task,
+    execution: TaskExecution,
+    fallbackTriggerType = "executor_restart",
   ): Promise<void> {
     const maxAttempts = Math.max(1, task.maxRetry ?? 1);
     const nextRetryCount = (execution.retryCount ?? 0) + 1;
-    if (nextRetryCount >= maxAttempts) return;
+    if (ExecutorService.retryBudgetExhausted(task, execution)) return;
 
     const retryExecution = this.execRepo.create({
       taskId: task.id,
       taskName: task.name,
       status: ExecutionStatus.PENDING,
       params: execution.params ?? task.params,
-      triggerType: execution.triggerType ?? "executor_restart",
+      triggerType: execution.triggerType ?? fallbackTriggerType,
       taskVersion: execution.taskVersion ?? task.currentVersion,
       retryCount: nextRetryCount,
     });
@@ -185,9 +352,15 @@ export class ExecutorService {
         { executionId: saved.id },
         {
           attempts: Math.max(1, maxAttempts - nextRetryCount),
+          // CORE-02: recovery 重试的 attempt 序号 = retryCount+1（该执行行
+          // 本身就是第 nextRetryCount 次重试的载体），delay 预乘指数基座并加
+          // ±20% 抖动；返回 0（retryDelay<=0）保持 backoff: undefined 语义。
           backoff:
             task.retryDelay > 0
-              ? { type: "exponential", delay: task.retryDelay * 1000 }
+              ? {
+                  type: "exponential",
+                  delay: jitteredRetryDelayMs(task.retryDelay, nextRetryCount),
+                }
               : undefined,
         },
       );
@@ -201,7 +374,35 @@ export class ExecutorService {
         );
       });
       this.logger.warn(
-        `Failed to enqueue restart retry for execution ${execution.id}: ${message}`,
+        `Failed to enqueue recovery retry for execution ${execution.id}: ${message}`,
+      );
+    }
+  }
+
+  /**
+   * P2: best-effort 通知执行器终止指定 execution（stale sweep re-enqueue 前
+   * 调用，防"执行器谎报/进程僵死但仍存活"场景下原进程与新执行双跑）。
+   * 实现自 task.service.notifyExecutorKill 收敛至此（kill 端点 node/python
+   * 两端均已就绪），TaskService 现委托本方法，避免两份逻辑。
+   * 契约：地址为空跳过；任何失败（离线/404/超时）仅 warn，绝不抛出。
+   */
+  async notifyExecutorKill(
+    executionId: string,
+    executorAddress?: string | null,
+  ): Promise<void> {
+    if (!executorAddress) return;
+    try {
+      const token = await this.getSharedToken();
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const url = this.getExecutorUrl(
+        executorAddress,
+        `api/executions/${executionId}/kill`,
+      );
+      await axios.post(url, {}, { headers, timeout: 3_000 });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Failed to notify executor ${executorAddress} to kill execution ${executionId}: ${message}`,
       );
     }
   }
@@ -248,7 +449,7 @@ export class ExecutorService {
       execution.logs = `${execution.logs || ""}\n[System] Executor restarted; execution marked as FAILED`;
       await this.execRepo.save(execution);
       await this.releaseExecutorSlot(execution.executorAddress);
-      if (task) await this.scheduleRetryAfterRestart(task, execution);
+      if (task) await this.scheduleRetryAfterRecovery(task, execution);
     }
     if (executionsToFail.length > 0) {
       this.logger.warn(
@@ -417,6 +618,61 @@ export class ExecutorService {
     return { executor, perExecutorToken };
   }
 
+  /**
+   * E9: 心跳采纳 maxConcurrentTasks 的取值域——正整数 1..10000。
+   * 越界/非整数/非数字一律视为未上报（不改 DB 值），防止执行器经心跳
+   * 写入荒谬容量饿死派发闸门（selectLeastLoaded 以该列判满）。
+   */
+  private static isAdoptableMaxConcurrentTasks(
+    value: unknown,
+  ): value is number {
+    return (
+      typeof value === "number" &&
+      Number.isInteger(value) &&
+      value >= 1 &&
+      value <= 10_000
+    );
+  }
+
+  /**
+   * U16: 心跳采纳 deadLetterCount 的取值域——非负整数 0..100000。
+   * 越界/非整数/非数字一律视为未上报（不改 DB 值），与 maxConcurrentTasks
+   * 采纳同模式：执行器上报面不可信，白名单字段必须先过范围校验再落列。
+   */
+  private static isAdoptableDeadLetterCount(value: unknown): value is number {
+    return (
+      typeof value === "number" &&
+      Number.isInteger(value) &&
+      value >= 0 &&
+      value <= 100_000
+    );
+  }
+
+  /**
+   * CONSISTENCY-02: heartbeat ingest for executor-node 上报的 runningExecutionIds。
+   * 输入为 executor 可控字段，须严格防御：非数组视为未上报（返回 null）；逐项仅
+   * 保留匹配安全字符集 [A-Za-z0-9_-] 的字符串（其余丢弃）；最多裁剪至 200 项。
+   * null 与 [] 语义不同——null = 旧版执行器未上报该字段（见实体注释），[] = 已
+   * 上报且当前空闲。
+   *
+   * 注意：此处字符集 ^[A-Za-z0-9_-]+$ 比执行器侧（executor-node 的 id 生成/
+   * 透传面）更窄，是刻意的防御面收窄——executionId 现为 UUID（仅十六进制 +
+   * '-'，天然落在该集合内），收窄不损失合法输入，却把心跳可写入的字符串
+   * 形态压到最小（防注入控制字符/超长垃圾项）。若未来 executionId 改用其他
+   * 格式，须同步复核此集合而不是盲目放宽。
+   */
+  private sanitizeRunningExecutionIds(value: unknown): string[] | null {
+    if (!Array.isArray(value)) return null;
+    const safe: string[] = [];
+    for (const item of value) {
+      if (typeof item === "string" && /^[A-Za-z0-9_-]+$/.test(item)) {
+        safe.push(item);
+        if (safe.length >= 200) break;
+      }
+    }
+    return safe;
+  }
+
   async heartbeat(
     address: string,
     metrics: {
@@ -429,6 +685,10 @@ export class ExecutorService {
       failedTaskCount?: number;
       restartedAt?: string | Date | null;
       startupId?: string | null;
+      runningExecutionIds?: string[] | null;
+      deadLetterCount?: number;
+      // E9: 执行器热更新容量上报（可选，正整数 1..10000，非法/缺失不改 DB）
+      maxConcurrentTasks?: number;
     },
   ) {
     const e = await this.repo.findOne({ where: { address } });
@@ -446,7 +706,12 @@ export class ExecutorService {
     const shouldRecoverMissingBaseline = Boolean(
       !didRestart && !hasStartupBaseline && incomingStartedAt,
     );
-    const { restartedAt: _r, startupId: _s, ...metricValues } = metrics;
+    const {
+      restartedAt: _r,
+      startupId: _s,
+      runningExecutionIds,
+      ...metricValues
+    } = metrics;
     if (didRestart) {
       await this.failRunningExecutionsAfterRestart(address);
     } else if (shouldRecoverMissingBaseline) {
@@ -459,9 +724,13 @@ export class ExecutorService {
     // F-2: assign metrics EXPLICITLY — never spread untrusted request fields
     // onto the entity. A spread would let a caller overwrite server-owned
     // columns such as tokenHash (persistent auth backdoor surviving shared-
-    // token rotation), the optimistic-lock version, maxConcurrentTasks or
-    // executorStartupId. Only the known metric columns below are writable via
-    // heartbeat.
+    // token rotation), the optimistic-lock version or executorStartupId.
+    // Only the known metric columns below are writable via heartbeat.
+    // E9 exception: maxConcurrentTasks is deliberately whitelisted so an
+    // executor that hot-updates its capacity is adopted without re-register;
+    // it goes through the range check below first (invalid → treated as
+    // not-reported, DB value untouched). U16 applies the same posture to
+    // deadLetterCount (non-negative integer 0..100000).
     const metricsWhitelist: Array<
       | "cpuUsage"
       | "memUsage"
@@ -470,6 +739,8 @@ export class ExecutorService {
       | "runningTaskCount"
       | "totalTaskCount"
       | "failedTaskCount"
+      | "maxConcurrentTasks"
+      | "deadLetterCount"
     > = [
       "cpuUsage",
       "memUsage",
@@ -478,7 +749,36 @@ export class ExecutorService {
       "runningTaskCount",
       "totalTaskCount",
       "failedTaskCount",
+      "maxConcurrentTasks",
+      "deadLetterCount",
     ];
+    if (
+      metricValues.maxConcurrentTasks !== undefined &&
+      !ExecutorService.isAdoptableMaxConcurrentTasks(
+        metricValues.maxConcurrentTasks,
+      )
+    ) {
+      this.logger.warn(
+        `Executor ${address} reported invalid maxConcurrentTasks=${String(
+          metricValues.maxConcurrentTasks,
+        )} (expected integer in 1..10000); keeping stored value`,
+      );
+      delete metricValues.maxConcurrentTasks;
+    }
+    // U16: deadLetterCount 采纳（node ab4971f / python 001 起上报）。非法值
+    // 视同未上报——从 metricValues 删除，DB 值不动，与上轮 maxConcurrentTasks
+    // 采纳同模式。
+    if (
+      metricValues.deadLetterCount !== undefined &&
+      !ExecutorService.isAdoptableDeadLetterCount(metricValues.deadLetterCount)
+    ) {
+      this.logger.warn(
+        `Executor ${address} reported invalid deadLetterCount=${String(
+          metricValues.deadLetterCount,
+        )} (expected integer in 0..100000); keeping stored value`,
+      );
+      delete metricValues.deadLetterCount;
+    }
     for (const key of metricsWhitelist) {
       if (metricValues[key] !== undefined) {
         (e as any)[key] = metricValues[key];
@@ -488,7 +788,45 @@ export class ExecutorService {
     e.lastHeartbeat = new Date();
     if (incomingStartedAt) e.executorStartedAt = incomingStartedAt;
     if (incomingStartupId) e.executorStartupId = incomingStartupId;
+
+    // CONSISTENCY-02: persist executor-node 的活性上报。缺省字段写 null
+    // （= 旧版执行器未上报，区别于 [] 的"已上报且空闲"）；仅在字段上报时才
+    // 覆盖，避免旧版心跳把新版已写入的活性集合擦回 null。deadLetterCount
+    // 经上方白名单校验后采纳落列（U16），>0 时仍保留告警。
+    if (runningExecutionIds !== undefined) {
+      e.runningExecutionIds =
+        this.sanitizeRunningExecutionIds(runningExecutionIds);
+    }
+    if (
+      typeof metricValues.deadLetterCount === "number" &&
+      Number.isFinite(metricValues.deadLetterCount) &&
+      metricValues.deadLetterCount > 0
+    ) {
+      this.logger.warn(
+        `Executor ${address} reported ${metricValues.deadLetterCount} dead-letter execution(s) awaiting callback retries`,
+      );
+    }
+
     const saved = await this.repo.save(e);
+    try {
+      await this.metricsHistoryRepo.save(
+        this.metricsHistoryRepo.create({
+          executorAddress: saved.address,
+          cpuUsage: saved.cpuUsage ?? null,
+          memUsage: saved.memUsage ?? null,
+          diskUsage: saved.diskUsage ?? null,
+          runningTaskCount: saved.runningTaskCount ?? 0,
+          totalTaskCount: saved.totalTaskCount ?? 0,
+          failedTaskCount: saved.failedTaskCount ?? 0,
+          avgExecutionTime: null,
+          uptimeSeconds: 0,
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `metrics history write failed for executor ${address}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     return saved;
   }
 
@@ -605,21 +943,24 @@ export class ExecutorService {
       );
     }
 
-    // Weighted scoring: 50% task load ratio, 25% CPU, 25% memory.
+    // Weighted scoring (see executor-score.util.ts for the formula and units):
+    // 50% task load ratio + 25% CPU + 25% memory + 10% long-task penalty
+    // (CORE-05: executors currently running long-estimated tasks score worse,
+    // so a long task is preferentially steered to the emptier executor).
     // Executors at or above max capacity are excluded before scoring.
-    const scored = candidates
-      .filter((e) => {
-        const max = e.maxConcurrentTasks ?? Infinity;
-        return e.runningTaskCount < max;
-      })
-      .map((e) => {
-        const max = e.maxConcurrentTasks ?? 10;
-        const loadScore = e.runningTaskCount / max;
-        const cpuScore = (e.cpuUsage ?? 0) / 100;
-        const memScore = (e.memUsage ?? 0) / 100;
-        const score = loadScore * 0.5 + cpuScore * 0.25 + memScore * 0.25;
-        return { executor: e, score };
-      })
+    const available = candidates.filter((e) => {
+      const max = e.maxConcurrentTasks ?? Infinity;
+      return e.runningTaskCount < max;
+    });
+    const estimatedDurations =
+      await this.estimatedDurationsByExecutor(available);
+    const scored = available
+      .map((e) => ({
+        executor: e,
+        score: computeExecutorLoadScore(e, {
+          estimatedDurations: estimatedDurations.get(e.address) ?? [],
+        }),
+      }))
       .sort((a, b) => a.score - b.score);
 
     if (scored.length === 0) {
@@ -628,6 +969,46 @@ export class ExecutorService {
       );
     }
     return scored[0].executor;
+  }
+
+  /**
+   * CORE-05: 批量读取候选执行器当前 RUNNING 任务的预估时长集合（秒）。
+   * 任何失败（查询异常/行丢失）按"无估时"降级 → longTaskPenalty=0，
+   * 评分退化为旧公式，调度永不因可观测性辅助面中断。
+   */
+  private async estimatedDurationsByExecutor(
+    executors: Executor[],
+  ): Promise<Map<string, EstimatedDurations>> {
+    const active = executors.filter((e) => e.runningTaskCount > 0);
+    if (active.length === 0) return new Map();
+
+    try {
+      const addresses = [...new Set(active.map((e) => e.address))];
+      const running = await this.execRepo.find({
+        where: {
+          executorAddress: In(addresses),
+          status: ExecutionStatus.RUNNING,
+        },
+        select: ["executorAddress", "taskId"],
+      });
+      if (running.length === 0) return new Map();
+
+      const ids = [...new Set(running.map((r) => r.taskId))];
+      const rows = await this.taskRepo.find({
+        where: { id: In(ids) },
+        select: ["id", "estimatedDurationSec"],
+      });
+      const byId = new Map(rows.map((r) => [r.id, r.estimatedDurationSec]));
+      const byAddress = new Map<string, EstimatedDurations>();
+      for (const row of running) {
+        const durations = byAddress.get(row.executorAddress) ?? [];
+        durations.push(byId.get(row.taskId) ?? null);
+        byAddress.set(row.executorAddress, durations);
+      }
+      return byAddress;
+    } catch {
+      return new Map();
+    }
   }
 
   async dispatch(task: Task, execution: TaskExecution) {
@@ -711,20 +1092,20 @@ export class ExecutorService {
       }
     }
 
-    // 3. Weighted scoring (load 50%+CPU 25%+mem 25%), try optimistic lock in order
-    const sorted = [...candidates].sort((a, b) => {
-      const maxA = a.maxConcurrentTasks ?? 10;
-      const maxB = b.maxConcurrentTasks ?? 10;
-      const scoreA =
-        (a.runningTaskCount / maxA) * 0.5 +
-        ((a.cpuUsage ?? 0) / 100) * 0.25 +
-        ((a.memUsage ?? 0) / 100) * 0.25;
-      const scoreB =
-        (b.runningTaskCount / maxB) * 0.5 +
-        ((b.cpuUsage ?? 0) / 100) * 0.25 +
-        ((b.memUsage ?? 0) / 100) * 0.25;
-      return scoreA - scoreB;
-    });
+    // 3. Weighted scoring via the shared CORE-05 formula (load 50% + CPU 25% +
+    // mem 25% + long-task penalty 10%, see executor-score.util.ts), try
+    // optimistic lock in order.
+    const estimatedDurations =
+      await this.estimatedDurationsByExecutor(candidates);
+    const withScores = candidates.map((c) => ({
+      executor: c,
+      score: computeExecutorLoadScore(c, {
+        estimatedDurations: estimatedDurations.get(c.address) ?? [],
+      }),
+    }));
+    const sorted = withScores
+      .sort((a, b) => a.score - b.score)
+      .map((s) => s.executor);
 
     // R-P0-006: Use optimistic locking with version to prevent TOCTOU race conditions
     let matched: Executor | null = null;
@@ -774,11 +1155,25 @@ export class ExecutorService {
       const sharedToken = await this.getSharedToken();
       const headers: Record<string, string> = {};
       if (sharedToken) headers["Authorization"] = `Bearer ${sharedToken}`;
+      // OBS-01: W3C traceparent 头透传执行器（disabled 时零头注入，语义为
+      // 无 trace——执行器侧 fail-open 读取）。traceId 已随 dispatch 前落库。
+      this.tracing?.injectContext(
+        headers,
+        this.buildExecutionTraceparent(execution),
+      );
+      const endSpan = this.tracing?.startSpan(
+        execution.traceId,
+        "dispatch.http",
+        { executor: matched.address, executionId: execution.id },
+      );
+      // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
+      const dispatchParams = this.buildDispatchParams(task, execution);
       const resp = await axios.post(
         url,
-        { executionId: execution.id, task, params: execution.params },
+        { executionId: execution.id, task, params: dispatchParams },
         { timeout: ((task.timeout || 300) + 10) * 1000, headers },
       );
+      endSpan?.();
       return resp.data;
     } catch (err: unknown) {
       // Rollback counter on dispatch failure to avoid leaks
@@ -788,8 +1183,24 @@ export class ExecutorService {
         .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
         .where("id = :id", { id: matched.id })
         .execute();
+      this.tracing
+        ?.startSpan(execution.traceId, "dispatch.http", {
+          executor: matched.address,
+          executionId: execution.id,
+        })
+        ?.call(this, err instanceof Error ? err.message : String(err));
       throw err;
     }
+  }
+
+  /**
+   * OBS-01: 由执行行上的 traceId 构造回传/透传 traceparent 头值。
+   * traceId 为 null（追踪未开启）或非法时返回 null——injectContext 不注入。
+   */
+  private buildExecutionTraceparent(
+    execution: Pick<TaskExecution, "traceId">,
+  ): string | null {
+    return this.tracing?.buildTraceparentFromTraceId(execution.traceId) ?? null;
   }
 
   /**
@@ -852,6 +1263,13 @@ export class ExecutorService {
     const broadcastHeaders: Record<string, string> = {};
     if (sharedToken)
       broadcastHeaders["Authorization"] = `Bearer ${sharedToken}`;
+    // OBS-01: 广播路径同样透传 traceparent（disabled 时零头注入）。
+    this.tracing?.injectContext(
+      broadcastHeaders,
+      this.buildExecutionTraceparent(execution),
+    );
+    // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
+    const dispatchParams = this.buildDispatchParams(task, execution);
 
     const results = await Promise.allSettled(
       candidates.map(async (executor) => {
@@ -864,7 +1282,7 @@ export class ExecutorService {
         await assertSafeExecutorUrl(dispatchUrl);
         const resp = await axios.post(
           dispatchUrl,
-          { executionId: execution.id, task, params: execution.params },
+          { executionId: execution.id, task, params: dispatchParams },
           {
             timeout: ((task.timeout || 300) + 10) * 1000,
             headers: broadcastHeaders,
@@ -954,18 +1372,31 @@ export class ExecutorService {
         const executor = executorMap.get(exec.executorAddress);
         if (executor && executor.status === ExecutorStatus.ONLINE) continue;
       }
-      exec.status = ExecutionStatus.FAILED;
-      exec.endTime = new Date();
-      exec.errorMessage =
-        "[System] Executor offline or task timed out, marked as failed by scheduler";
-      exec.logs =
-        (exec.logs || "") +
-        "\n[System] Execution timed out without callback, forcefully marked as FAILED";
-      await this.execRepo.save(exec);
-      await this.releaseExecutorSlot(exec.executorAddress);
-      this.logger.warn(
-        `Lost execution marked FAILED: execId=${exec.id}, taskId=${exec.taskId}`,
-      );
+      // DR-03: only the terminal-transition winner may release the slot;
+      // a callback or another scanner may have finished this stale candidate.
+      const result = await this.execRepo
+        .createQueryBuilder()
+        .update(TaskExecution)
+        .set({
+          status: ExecutionStatus.FAILED,
+          endTime: new Date(),
+          errorMessage:
+            "[System] Executor offline or task timed out, marked as failed by scheduler",
+          logs:
+            (exec.logs || "") +
+            "\n[System] Execution timed out without callback, forcefully marked as FAILED",
+        })
+        .where("id = :id AND status = :status", {
+          id: exec.id,
+          status: ExecutionStatus.RUNNING,
+        })
+        .execute();
+      if (result.affected && result.affected > 0) {
+        await this.releaseExecutorSlot(exec.executorAddress);
+        this.logger.warn(
+          `Lost execution marked FAILED: execId=${exec.id}, taskId=${exec.taskId}`,
+        );
+      }
     }
   }
 
@@ -1011,6 +1442,10 @@ export class ExecutorService {
       this.logger.warn(
         `Marked ${result.affected} executor(s) as OFFLINE due to heartbeat timeout (${timeoutMs}ms)`,
       );
+      // FEAT-07: 状态落库后发布 executor.offline（每台恰一次，与下方通知同扇出位）。
+      for (const exec of staleExecutors) {
+        this.emitExecutorOffline(exec);
+      }
       // Fire offline notifications — fire-and-forget, errors must not break the cron job
       for (const exec of staleExecutors) {
         this.notificationService
@@ -1042,8 +1477,10 @@ export class ExecutorService {
   /**
    * SEC-03: Issue a fresh per-executor token.
    * Returns the raw token once (caller must store it); only the bcrypt hash is persisted.
+   * AUTH-05: accepts an optional admin-supplied `reason` (≤200 chars, capped)
+   * that lands in the audit detail — the rotation itself is unchanged.
    */
-  async rotateToken(id: string): Promise<{ token: string }> {
+  async rotateToken(id: string, reason?: string): Promise<{ token: string }> {
     const executor = await this.repo.findOne({ where: { id } });
     if (!executor) throw new NotFoundException("Executor not found");
     const rawToken = randomBytes(32).toString("hex");
@@ -1076,6 +1513,9 @@ export class ExecutorService {
       issuedAt: Date.now(),
     });
     this.logger.log(`Rotated token for executor ${id} (${executor.address})`);
+    // AUTH-05: rotate-token is a high-risk operation — audit it (with the
+    // admin-supplied reason when present). Best-effort, after the mutation.
+    await this.auditHighRisk("executor.rotate_token", executor, reason);
     return { token: rawToken };
   }
 
@@ -1163,7 +1603,7 @@ export class ExecutorService {
    * Falls back to the legacy shared token for backward compatibility.
    */
   /** Admin: manually remove an executor record by ID */
-  async removeById(id: string): Promise<void> {
+  async removeById(id: string, reason?: string): Promise<void> {
     const executor = await this.repo.findOne({ where: { id } });
     if (!executor) throw new NotFoundException("Executor not found");
     await this.repo.remove(executor);
@@ -1171,6 +1611,9 @@ export class ExecutorService {
     // a re-registered address must get a fresh token, never the removed one.
     this.issuedTokenCache.delete(executor.address);
     this.logger.log(`Executor ${id} (${executor.address}) removed by admin`);
+    // AUTH-05: executor deletion is destructive — audit it (with the
+    // admin-supplied reason when present). Best-effort, after the mutation.
+    await this.auditHighRisk("executor.delete", executor, reason);
   }
 
   async validateExecutorToken(id: string, presented: string): Promise<boolean> {
@@ -1200,6 +1643,9 @@ export class ExecutorService {
     address: string,
     presented: string,
   ): Promise<boolean> {
+    // 真机冒烟（round-16）：无 Authorization 头的心跳（presented=undefined）
+    // 曾在 Buffer.from 处抛 500——未携带凭据就是未通过，直接 false（fail-closed）
+    if (!presented) return false;
     // F-5: positive-result cache — a repeated (address, token) pair within the
     // TTL skips the bcrypt compare entirely. Negative results are never cached
     // (a legitimate executor rotating its token must immediately succeed).
@@ -1334,17 +1780,17 @@ export class ExecutorService {
   /**
    * Generate install command for executor-node.
    * Returns a shell command the user can run on the target machine to install and start the executor.
-   * Values are read from the NestJS ConfigService (environment variables).
+   * URL comes from ConfigService; the shared token uses DB-first resolution.
    *
    * Note: this is the single handler for GET /executors/install-cmd. The former
    * install-cmd.controller.ts duplicated this route (unreachable — ExecutorController
    * registers first) and was removed; its shell-quoting protection was merged here.
    */
-  getInstallCmd(): {
+  async getInstallCmd(): Promise<{
     cmd: string;
     token: string;
     adminApiUrl: string;
-  } {
+  }> {
     const adminApiUrl = this.configService.get<string>("ADMIN_API_URL") || "";
     // R7 真机遗留观察①：ADMIN_API_URL 缺失时旧实现会生成
     // `curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''`
@@ -1354,8 +1800,8 @@ export class ExecutorService {
         "ADMIN_API_URL is not configured; cannot generate install command",
       );
     }
-    const sharedToken =
-      this.configService.get<string>("executor.sharedToken") || "";
+    // DR-01: honor DB rotations rather than handing out a stale env credential.
+    const sharedToken = await this.getSharedToken();
     // Shell-quote values to prevent word-splitting / injection when the user
     // copies the generated command into a shell (merged from install-cmd.controller).
     const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
@@ -1378,6 +1824,12 @@ export class ExecutorService {
       { status: ExecutorStatus.OFFLINE, lastHeartbeat: new Date() },
     );
     this.logger.log(`Executor ${address} marked as offline`);
+    // FEAT-07: 状态落库后发布 executor.offline（优雅停机路径）。
+    const exec = await this.repo.findOne({
+      where: { address },
+      select: ["id", "appName", "address"],
+    });
+    if (exec) this.emitExecutorOffline(exec);
   }
 
   /**
@@ -1391,6 +1843,8 @@ export class ExecutorService {
     this.logger.log(
       `Executor ${executor.address} set offline by admin (id=${id})`,
     );
+    // FEAT-07: 状态落库后发布 executor.offline（管理台置离线路径）。
+    this.emitExecutorOffline(saved);
     return saved;
   }
 
@@ -1413,6 +1867,12 @@ export class ExecutorService {
 
   /**
    * Get performance metrics for a specific executor.
+   *
+   * FEAT-04: the response now carries `history` — sampled resource-trend
+   * points for the last 24h, read from executor_metrics_history (populated by
+   * the executor-node heartbeat pipeline; see getExecutorMetricsHistory for
+   * the sampling/downsampling contract). Empty array when the executor has no
+   * history rows — the frontend renders an explicit empty state.
    */
   async getExecutorMetrics(id: string): Promise<{
     executor: { id: string; address: string; status: string };
@@ -1428,6 +1888,12 @@ export class ExecutorService {
       cpuUsage: number | null;
       memUsage: number | null;
     };
+    history: Array<{
+      timestamp: string;
+      cpuUsage: number | null;
+      memUsage: number | null;
+      runningTaskCount: number;
+    }>;
   }> {
     const executor = await this.findOne(id);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -1480,6 +1946,90 @@ export class ExecutorService {
         cpuUsage: executor.cpuUsage,
         memUsage: executor.memUsage,
       },
+      history: await this.getExecutorMetricsHistory(executor.address),
     };
+  }
+
+  // ── FEAT-04: executor metrics history (24h trend) ────────────────────────
+  // Sampling window: the most recent 24h of executor_metrics_history rows.
+  public static readonly METRICS_HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
+  // Downsampling strategy: fixed 15-minute time buckets aggregated with AVG —
+  // 24h / 900s = 96 buckets, structurally ≤ the 100-point cap, with full
+  // 24h window coverage regardless of heartbeat cadence (whereas even-stride
+  // point picking over a row-capped fetch would bias toward one window end).
+  public static readonly METRICS_HISTORY_BUCKET_SECONDS = 900;
+  // Hard LIMIT guard on the aggregate query as defense-in-depth; the bucket
+  // design already caps output at 96 rows.
+  public static readonly METRICS_HISTORY_QUERY_LIMIT = 500;
+
+  /**
+   * FEAT-04: read the last-24h resource trend samples (CPU / memory /
+   * running-task count) for one executor, aggregated into fixed 15-minute AVG
+   * buckets (≤96 points), ascending by timestamp.
+   *
+   * Data source: executor_metrics_history (best-effort snapshots appended by
+   * heartbeat after the current executor row is saved; compound index
+   * executorAddress + createdAt). AVG
+   * ignores NULLs: a bucket whose heartbeats never reported cpuUsage/memUsage
+   * yields null — the frontend draws a gap for those points (connectNulls).
+   * Returns an EMPTY array when the executor has no history rows (fresh
+   * executor or history pipeline not yet active) — the admin UI renders an
+   * explicit "no samples" empty state for that case.
+   *
+   * SQL note: bucket expressions use TypeORM property references
+   * (h.createdAt/h.cpuUsage → quoted physical columns, same pattern as the
+   * AVG(CASE WHEN e.duration ...) aggregate in getExecutorMetrics); the
+   * bucket divisor is a server-computed constant, never user input.
+   */
+  private async getExecutorMetricsHistory(address: string): Promise<
+    Array<{
+      timestamp: string;
+      cpuUsage: number | null;
+      memUsage: number | null;
+      runningTaskCount: number;
+    }>
+  > {
+    const bucketSeconds = ExecutorService.METRICS_HISTORY_BUCKET_SECONDS;
+    const since = new Date(
+      Date.now() - ExecutorService.METRICS_HISTORY_WINDOW_MS,
+    );
+    // Bucket start as epoch-seconds aligned to bucketSeconds; kept numeric
+    // (no to_timestamp) so the raw driver value parses identically everywhere.
+    const bucketExpr = `FLOOR(EXTRACT(EPOCH FROM h.createdAt) / ${bucketSeconds}) * ${bucketSeconds}`;
+    const rows: Array<Record<string, unknown>> = await this.metricsHistoryRepo
+      .createQueryBuilder("h")
+      .select(bucketExpr, "bucket")
+      .addSelect("AVG(h.cpuUsage)", "cpu")
+      .addSelect("AVG(h.memUsage)", "mem")
+      .addSelect("AVG(h.runningTaskCount)", "running")
+      .where("h.executorAddress = :address", { address })
+      .andWhere("h.createdAt > :since", { since })
+      .groupBy("bucket")
+      .orderBy("bucket", "ASC")
+      .limit(ExecutorService.METRICS_HISTORY_QUERY_LIMIT)
+      .getRawMany();
+
+    const toNumber = (v: unknown): number | null =>
+      v === null || v === undefined ? null : parseFloat(String(v));
+    const points: Array<{
+      timestamp: string;
+      cpuUsage: number | null;
+      memUsage: number | null;
+      runningTaskCount: number;
+    }> = [];
+    for (const row of rows) {
+      const bucketEpoch = parseFloat(String(row.bucket));
+      if (!Number.isFinite(bucketEpoch)) continue; // defensive: skip bad rows
+      const cpu = toNumber(row.cpu);
+      const mem = toNumber(row.mem);
+      const running = toNumber(row.running);
+      points.push({
+        timestamp: new Date(bucketEpoch * 1000).toISOString(),
+        cpuUsage: cpu === null ? null : Math.round(cpu * 10) / 10,
+        memUsage: mem === null ? null : Math.round(mem * 10) / 10,
+        runningTaskCount: running === null ? 0 : Math.round(running),
+      });
+    }
+    return points;
   }
 }

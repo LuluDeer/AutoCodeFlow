@@ -45,13 +45,41 @@ def get_process_info(process):
         return None
 
 
+def get_typed_param(ctx, key, default=None):
+    """
+    JSON 容错解析任务参数。
+
+    执行器把所有触发参数字符串化注入（AUTOFLOW_* 环境变量），python SDK
+    from_env 不做类型还原——operations 这类列表参数拿到的其实是字符串，
+    直接按列表迭代只会逐字符空转。尝试 json.loads 还原，失败则原样返回
+    字符串（对齐 Node 示例 getParam 的兜底语义）。
+    """
+    raw = ctx.get_param(key)
+    if raw is None:
+        return default
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+
+
 def main():
     ctx = TaskContext.from_env()
-    
-    # 获取任务参数
-    operations = ctx.get_param("operations", [])
-    timeout = ctx.get_param("timeout", 30)
-    output_dir = ctx.get_param("outputDir", f"/tmp/system_automation_{ctx.execution_id}")
+
+    # 获取任务参数（operations 列表 / timeout 数字经 JSON 容错解析还原，
+    # 见 helper 注释）
+    operations = get_typed_param(ctx, "operations", [])
+    if not isinstance(operations, list):
+        ctx.log.warning("operations 参数应为 JSON 数组，已按空列表处理")
+        operations = []
+    timeout = get_typed_param(ctx, "timeout", 30)
+    if not isinstance(timeout, (int, float)):
+        try:
+            timeout = float(timeout)
+        except (ValueError, TypeError):
+            ctx.log.warning(f"timeout 参数非法（{timeout!r}），已回退 30s")
+            timeout = 30
+    output_dir = get_typed_param(ctx, "outputDir", f"/tmp/system_automation_{ctx.execution_id}")
     
     ctx.log.info("开始系统集成自动化任务")
     
@@ -250,7 +278,7 @@ def main():
                     time.sleep(interval)
                 
                 result["metrics"] = metrics
-                result["duration": duration
+                result["duration"] = duration
                 result["sample_count"] = len(metrics)
                 
             elif op_type == "execute_command":

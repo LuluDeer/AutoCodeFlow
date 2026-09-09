@@ -49,6 +49,14 @@ describe("AiController (N11)", () => {
         Reflect.getMetadata(ROLES_KEY, AiController.prototype.saveConfig),
       ).toEqual([UserRole.ADMIN]);
     });
+
+    // R11: POST /ai/test performs a real outbound AI call with the saved
+    // config — same posture as the config routes.
+    it("testConfig is restricted to ADMIN", () => {
+      expect(
+        Reflect.getMetadata(ROLES_KEY, AiController.prototype.testConfig),
+      ).toEqual([UserRole.ADMIN]);
+    });
   });
 
   describe("RolesGuard semantics", () => {
@@ -74,6 +82,19 @@ describe("AiController (N11)", () => {
           ctxWith(AiController.prototype.saveConfig, UserRole.USER),
         ),
       ).toBe(false);
+    });
+
+    it("R11: plain user is denied on POST /ai/test (403); admin passes", () => {
+      expect(
+        guard.canActivate(
+          ctxWith(AiController.prototype.testConfig, UserRole.USER),
+        ),
+      ).toBe(false);
+      expect(
+        guard.canActivate(
+          ctxWith(AiController.prototype.testConfig, UserRole.ADMIN),
+        ),
+      ).toBe(true);
     });
 
     it("admin passes on GET/POST /ai/config (200 path)", () => {

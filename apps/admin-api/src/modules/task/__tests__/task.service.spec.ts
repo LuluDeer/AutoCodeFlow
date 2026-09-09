@@ -1,10 +1,11 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { DataSource, QueryFailedError } from "typeorm";
+import { DataSource, QueryFailedError, IsNull, Or, In } from "typeorm";
 import { getQueueToken } from "@nestjs/bullmq";
 import {
   BadRequestException,
   ConflictException,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from "@nestjs/common";
@@ -24,10 +25,39 @@ import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import { TaskVersion } from "../entities/task-version.entity";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { AiService } from "../../ai/ai.service";
+// ARCH-30: AI 分析服务化封装（analyzeExecution 路径 + DI 面）
+import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { ConfigService } from "@nestjs/config";
 import { ExecutorService } from "../../executor/executor.service";
+import { NotificationService } from "../../notification/notification.service";
+import { AuditService } from "../../audit/audit.service";
+// ARCH-21: 事件总线 mock——handleCallback 终态事件（execution.completed/
+// execution.failed）的发布断言打在此桩上；NotificationService 断言已随
+// notifyCallbackFailure 迁至 listener 等价 spec（execution-events.listener.spec）。
+import { DomainEventBus } from "../../../common/services/domain-event-bus.service";
+import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
+// SEC-02: secrets 加密服务（测试默认降级明文；加密/脱敏专项断言另有 spec）
+import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.service";
+// OBS-04（001 在途）：TaskService 新增注入的读侧实体（本 spec 仅注册空仓 provider）
+import { ExecutionReport } from "../../metrics/entities/execution-report.entity";
+// 可观测性补齐轮：运行时计数器模块级快照（埋点断言入口）
+import {
+  getRuntimeCountersSnapshot,
+  getRuntimeGaugesSnapshot,
+  resetRuntimeGauges,
+  resetRuntimeMetrics,
+} from "../../metrics/runtime-metrics-entry";
 
 jest.mock("axios");
+
+/** 读取运行时计数（模块级单调快照；afterEach 重置保证用例隔离） */
+const runtimeCount = (
+  name: string,
+  labels: Record<string, string> = {},
+): number =>
+  getRuntimeCountersSnapshot()
+    .get(name as never)
+    ?.get(JSON.stringify(labels)) ?? 0;
 
 const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
   const repo: Record<string, jest.Mock> = {
@@ -53,6 +83,9 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
       andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
+      // handleCallback / killExecution 的终态 UPDATE 现携带 RETURNING，
+      // 需可链式；execute 下方回填 raw 以模拟 PG 的 RETURNING 行。
+      returning: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([]),
       getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
       update: jest.fn().mockReturnThis(),
@@ -80,7 +113,19 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
           return { affected: 0 };
         }
         if (patch) Object.assign(entity, patch);
-        return { affected: 1 };
+        // 模拟 UPDATE ... RETURNING ["id","executorAddress"]：回填被更新行的
+        // id / executorAddress（取自当前实体快照），供释放槽位/日志回填读取。
+        return {
+          affected: 1,
+          raw: [
+            {
+              id: (entity as { id?: string }).id,
+              executorAddress:
+                (entity as { executorAddress?: string | null })
+                  .executorAddress ?? null,
+            },
+          ],
+        };
       }),
     };
     return qb;
@@ -102,8 +147,27 @@ describe("TaskService (__tests__)", () => {
     scheduleOne: jest.Mock;
     getStats: jest.Mock;
   };
+  // ARCH-21: 终态事件发布断言入口（DomainEventBus 桩）。
+  let eventBus: {
+    emit: jest.Mock;
+    on: jest.Mock;
+    off: jest.Mock;
+    listenerCount: jest.Mock;
+  };
+  // P2: kill 通知实现收敛至 ExecutorService.notifyExecutorKill，TaskService
+  // 侧只保留委托（空地址跳过 + 异常兜底），用例断言委托调用。
+  let executorServiceMock: {
+    getExecutorUrl: jest.Mock;
+    getSharedToken: jest.Mock;
+    notifyExecutorKill: jest.Mock;
+    // CORE-04: kill_retry re-enqueue
+    scheduleRetryAfterRecovery: jest.Mock;
+    hasRetryBudget: jest.Mock;
+  };
 
   beforeEach(async () => {
+    // 可观测性补齐轮：运行时计数是模块级进程内计数，跨用例显式重置
+    resetRuntimeMetrics();
     taskRepo = makeRepo();
     execRepo = makeRepo();
     logLineRepo = makeRepo();
@@ -143,6 +207,26 @@ describe("TaskService (__tests__)", () => {
       chat: jest.fn().mockResolvedValue(""),
     };
 
+    eventBus = {
+      emit: jest.fn().mockReturnValue(true),
+      on: jest.fn(),
+      off: jest.fn(),
+      listenerCount: jest.fn().mockReturnValue(0),
+    };
+    executorServiceMock = {
+      getExecutorUrl: jest
+        .fn()
+        .mockImplementation(
+          (_addr: string, p: string) => `http://executor:3001/${p}`,
+        ),
+      // 日志回填 token 现走 DB 优先的 getSharedToken（与 dispatch/push 一致）
+      getSharedToken: jest.fn().mockResolvedValue(""),
+      notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+      // CORE-04: kill_retry 经 scheduleRetryAfterRecovery re-enqueue
+      scheduleRetryAfterRecovery: jest.fn().mockResolvedValue(undefined),
+      hasRetryBudget: jest.fn().mockReturnValue(true),
+    };
+
     const module = await Test.createTestingModule({
       providers: [
         TaskService,
@@ -157,20 +241,25 @@ describe("TaskService (__tests__)", () => {
         { provide: DataSource, useValue: dataSource },
         { provide: SchedulerService, useValue: schedulerService },
         { provide: AiService, useValue: aiService },
+        { provide: AiAnalysisService, useValue: aiService },
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue("") },
         },
+        { provide: ExecutorService, useValue: executorServiceMock },
+        // ARCH-21: TaskService 不再注入 NotificationService/AuditService
+        // （notifyCallbackFailure 已迁 listener）；改为事件总线桩，终态
+        // 事件断言打在此处。
+        { provide: DomainEventBus, useValue: eventBus },
+        // SEC-02: 默认降级明文（key 空）——既有用例语义零变化
         {
-          provide: ExecutorService,
-          useValue: {
-            getExecutorUrl: jest
-              .fn()
-              .mockImplementation(
-                (_addr: string, p: string) => `http://executor:3001/${p}`,
-              ),
-          },
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
         },
+        // OBS-04（001 在途）：TaskService 新增 ExecutionReport 注入——本 spec
+        // 补空仓 provider 兜底（002/CORE-02 提交时工作区共存，147 例用例
+        // 因缺 provider 整套红；此 provider 为结构性兜底，不改变任何断言）。
+        { provide: getRepositoryToken(ExecutionReport), useValue: {} },
       ],
     }).compile();
 
@@ -212,6 +301,41 @@ describe("TaskService (__tests__)", () => {
         dependencies: { dep1: "task-a" },
       } as any;
       await expect(service.create(dto)).rejects.toThrow("Circular dependency");
+    });
+
+    // W-21: requirements normalization — trim specs, reject option-like and
+    // blank entries at create so they 400 instead of burning a queued exec.
+    describe("create requirements normalization (W-21)", () => {
+      it("trims each requirement spec", async () => {
+        taskRepo.create.mockImplementation((t: any) => t);
+        taskRepo.save.mockImplementation((t: any) =>
+          Promise.resolve({ id: "1", ...t }),
+        );
+        await service.create({
+          name: "t",
+          requirements: ["  requests>=2.31  ", " rich==13.7.1 "],
+        } as any);
+        expect(taskRepo.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            requirements: ["requests>=2.31", "rich==13.7.1"],
+          }),
+        );
+      });
+
+      it("rejects an option-like spec (leading dash)", async () => {
+        await expect(
+          service.create({
+            name: "t",
+            requirements: ["--index-url", "http://evil"],
+          } as any),
+        ).rejects.toThrow(/options are not allowed/);
+      });
+
+      it("rejects a blank requirement entry", async () => {
+        await expect(
+          service.create({ name: "t", requirements: ["  "] } as any),
+        ).rejects.toThrow(/non-empty/);
+      });
     });
 
     // R6: 客户端自带已存在 id 时返回 409，而非 PG 主键冲突裸 500
@@ -474,6 +598,44 @@ describe("TaskService (__tests__)", () => {
         "timeoutSeconds",
       );
     });
+
+    it("persists DTO configuration fields, snapshots them, then reloads an active schedule", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.ACTIVE,
+        timeout: 30,
+        glueSource: "old-source",
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+      await service.update("1", {
+        name: "new",
+        timeoutSeconds: 180,
+        glueSource: "new-source",
+      } as any);
+
+      expect(taskRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "new",
+          timeout: 180,
+          glueSource: "new-source",
+        }),
+      );
+      expect(versionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "1",
+          snapshot: expect.objectContaining({
+            name: "new",
+            timeout: 180,
+            glueSource: "new-source",
+          }),
+        }),
+      );
+      expect(schedulerService.stop).toHaveBeenCalledWith("1");
+      expect(schedulerService.scheduleOne).toHaveBeenCalledWith(task);
+    });
   });
 
   describe("updateGlue", () => {
@@ -493,6 +655,44 @@ describe("TaskService (__tests__)", () => {
       taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
       await service.updateGlue("1", "new-source");
       expect(task.glueLanguage).toBe("js");
+    });
+
+    it("only changes GLUE fields, snapshots them, and does not reload scheduling", async () => {
+      const task = {
+        id: "1",
+        name: "unchanged",
+        status: TaskStatus.ACTIVE,
+        glueSource: "old",
+        glueLanguage: "js",
+        timeout: 30,
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+      await (service.updateGlue as any)("1", "new-source", "python", {
+        name: "ignored",
+        timeout: 180,
+      });
+
+      expect(task).toEqual(
+        expect.objectContaining({
+          name: "unchanged",
+          timeout: 30,
+          glueSource: "new-source",
+          glueLanguage: "python",
+        }),
+      );
+      expect(versionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "1",
+          snapshot: expect.objectContaining({
+            glueSource: "new-source",
+            glueLanguage: "python",
+          }),
+        }),
+      );
+      expect(schedulerService.stop).not.toHaveBeenCalled();
+      expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
     });
   });
 
@@ -580,12 +780,20 @@ describe("TaskService (__tests__)", () => {
         "execute",
         { executionId: "exec-1" },
         // N2: enqueue options now always carry a normalized numeric priority
+        // CORE-02: delay 带 ±20% 抖动——断言落在 [4000, 6000] 区间
         {
           attempts: 3,
-          backoff: { type: "exponential", delay: 5_000 },
+          backoff: {
+            type: "exponential",
+            delay: expect.any(Number),
+          },
           priority: 2,
         },
       );
+      const opts = taskQueue.add.mock.calls[0][2];
+      expect(opts.backoff.delay).toBeGreaterThanOrEqual(4_000);
+      expect(opts.backoff.delay).toBeLessThanOrEqual(6_000);
+      expect(Number.isInteger(opts.backoff.delay)).toBe(true);
       expect(result).toEqual(exec);
     });
 
@@ -690,6 +898,32 @@ describe("TaskService (__tests__)", () => {
       await expect(service.getExecution("missing")).rejects.toThrow(
         NotFoundException,
       );
+    });
+
+    it("constrains a task-scoped lookup by execution and task IDs", async () => {
+      const exec = {
+        id: "exec-1",
+        taskId: "task-1",
+        status: ExecutionStatus.SUCCESS,
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      await expect(service.getExecution("exec-1", "task-1")).resolves.toEqual(
+        exec,
+      );
+      expect(execRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "exec-1", taskId: "task-1" },
+      });
+    });
+
+    it("returns NotFoundException when an execution belongs to another task", async () => {
+      execRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.getExecution("exec-1", "other-task"),
+      ).rejects.toThrow(NotFoundException);
+      expect(execRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "exec-1", taskId: "other-task" },
+      });
     });
   });
 
@@ -936,6 +1170,40 @@ describe("TaskService (__tests__)", () => {
       releases.slice(1).forEach((rel) => rel());
     });
 
+    // 可观测性补齐轮：拒绝计数只在超限抛 503 路径记录，成功占用不计数。
+    it("counts rejected streams to autoflow_sse_streams_rejected_total", () => {
+      const releases: Array<() => void> = [
+        service.acquireSseSlot("exec-cnt"),
+        service.acquireSseSlot("exec-cnt"),
+        service.acquireSseSlot("exec-cnt"),
+        service.acquireSseSlot("exec-cnt"),
+      ];
+      expect(runtimeCount("autoflow_sse_streams_rejected_total")).toBe(0);
+      expect(() => service.acquireSseSlot("exec-cnt")).toThrow(
+        ServiceUnavailableException,
+      );
+      expect(runtimeCount("autoflow_sse_streams_rejected_total")).toBe(1);
+      releases.forEach((rel) => rel());
+    });
+
+    // BUG-05：活跃流 gauge（瞬时值）——占用/释放两点同步写快照。
+    it("tracks autoflow_sse_streams_active/limit gauges across acquire and release", () => {
+      resetRuntimeGauges();
+      const gauge = (name: string): number =>
+        getRuntimeGaugesSnapshot().get(name as never) ?? 0;
+
+      const r1 = service.acquireSseSlot("exec-g1");
+      const r2 = service.acquireSseSlot("exec-g2");
+      expect(gauge("autoflow_sse_streams_active")).toBe(2);
+      expect(gauge("autoflow_sse_streams_limit")).toBe(64);
+
+      r1();
+      expect(gauge("autoflow_sse_streams_active")).toBe(1);
+      r2();
+      expect(gauge("autoflow_sse_streams_active")).toBe(0);
+      resetRuntimeGauges();
+    });
+
     it("releases the slot when the stream ends normally", async () => {
       execRepo.findOne.mockResolvedValue(flushableExec);
       const send = jest.fn();
@@ -996,6 +1264,132 @@ describe("TaskService (__tests__)", () => {
         service.streamExecutionLogs("exec-1", send, done, controller.signal),
       ).rejects.toThrow("db down");
       expect(() => service.acquireSseSlot("exec-1")).not.toThrow();
+    });
+  });
+
+  // QA3: SSE idle keep-alive — nginx proxy_read_timeout (default 60s) reaps
+  // a stream that writes nothing for >60s (S3-backed executions stay silent
+  // until terminal). The service must emit an SSE comment frame when idle
+  // and must NOT emit one while data frames are still flowing.
+  describe("SSE idle heartbeat (QA3)", () => {
+    const runningExec = { id: "exec-1", status: ExecutionStatus.RUNNING };
+
+    const mockNoLines = () => {
+      logLineRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      } as any);
+    };
+
+    it("writes one ping after the idle interval, and stops once the connection closes", async () => {
+      execRepo.findOne.mockResolvedValue(runningExec);
+      mockNoLines();
+
+      // Simulate a long-idle window: the service reads lastWriteAt/start at
+      // loop entry (first reads = 0), then every later read reports 20s —
+      // past IDLE_PING_INTERVAL (15s).
+      const nowSpy = jest
+        .spyOn(Date, "now")
+        .mockReturnValueOnce(0) // lastWriteAt init
+        .mockReturnValueOnce(0) // start
+        .mockReturnValue(20_000); // loop + idle-check reads
+      const ping = jest.fn();
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+
+      const promise = service.streamExecutionLogs(
+        "exec-1",
+        send,
+        done,
+        controller.signal,
+        undefined,
+        ping,
+      );
+      // Let one loop iteration (flush → idle ping check → poll sleep) run,
+      // then close the connection so the loop exits on the next check.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      controller.abort();
+      await promise;
+
+      expect(ping).toHaveBeenCalledTimes(1);
+      // The ping resets the idle clock: while the loop kept running (still
+      // pre-abort) no second ping fires within the same window.
+      expect(ping).not.toHaveBeenCalledTimes(2);
+      // After the connection closed, the loop is gone — no further pings fire
+      // even though the mocked clock still reports a fully idle stream.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(ping).toHaveBeenCalledTimes(1);
+      // No data frame was ever sent for a line-less stream.
+      expect(send).not.toHaveBeenCalled();
+      expect(done).toHaveBeenCalled();
+      nowSpy.mockRestore();
+    });
+
+    it("does not write a ping when new lines keep flowing", async () => {
+      execRepo.findOne.mockResolvedValue(runningExec);
+      logLineRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getMany: jest
+          .fn()
+          .mockResolvedValue([{ lineNumber: 0, content: "line0" }]),
+      } as any);
+
+      // Every Date.now() call returns the same value: each write() refreshes
+      // lastWriteAt, so elapsed idle time never crosses the 15s threshold.
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(1_000_000);
+      const ping = jest.fn();
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+
+      const promise = service.streamExecutionLogs(
+        "exec-1",
+        send,
+        done,
+        controller.signal,
+        undefined,
+        ping,
+      );
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      controller.abort();
+      await promise;
+
+      expect(send).toHaveBeenCalled();
+      expect(ping).not.toHaveBeenCalled();
+      nowSpy.mockRestore();
+    });
+
+    it("never pings when no ping sink is provided (backward compatible)", async () => {
+      execRepo.findOne.mockResolvedValue(runningExec);
+      mockNoLines();
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(20_000);
+      const send = jest.fn();
+      const done = jest.fn();
+      const controller = new AbortController();
+
+      // No 6th argument — legacy callers (and existing specs) keep working.
+      const promise = service.streamExecutionLogs(
+        "exec-1",
+        send,
+        done,
+        controller.signal,
+      );
+      await new Promise((r) => setImmediate(r));
+      controller.abort();
+      await promise;
+
+      expect(send).not.toHaveBeenCalled();
+      expect(done).toHaveBeenCalled();
+      nowSpy.mockRestore();
     });
   });
 
@@ -1075,12 +1469,16 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "rb-exec" },
+        // CORE-02: delay 带 ±20% 抖动——断言落在 [5600, 8400] 区间
         {
           attempts: 2,
-          backoff: { type: "exponential", delay: 7_000 },
+          backoff: { type: "exponential", delay: expect.any(Number) },
           priority: 2,
         },
       );
+      const rollbackOpts = taskQueue.add.mock.calls[0][2];
+      expect(rollbackOpts.backoff.delay).toBeGreaterThanOrEqual(5_600);
+      expect(rollbackOpts.backoff.delay).toBeLessThanOrEqual(8_400);
     });
 
     it("re-schedules active task after rollback", async () => {
@@ -1262,6 +1660,7 @@ describe("TaskService (__tests__)", () => {
         executionId: "e1",
         lineNumber: 1,
         content: "full-1",
+        level: null,
       });
     });
 
@@ -1289,6 +1688,7 @@ describe("TaskService (__tests__)", () => {
         executionId: "e1",
         lineNumber: 0,
         content: "head",
+        level: null,
       });
     });
 
@@ -1331,6 +1731,7 @@ describe("TaskService (__tests__)", () => {
         executionId: "e1",
         lineNumber: 4,
         content: "l4",
+        level: null,
       });
     });
 
@@ -1374,12 +1775,12 @@ describe("TaskService (__tests__)", () => {
       // All 6 lines persisted exactly once, with absolute line numbers.
       const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
       expect(created).toEqual([
-        { executionId: "e1", lineNumber: 0, content: "p0-a" },
-        { executionId: "e1", lineNumber: 1, content: "p0-b" },
-        { executionId: "e1", lineNumber: 2, content: "p1-a" },
-        { executionId: "e1", lineNumber: 3, content: "p1-b" },
-        { executionId: "e1", lineNumber: 4, content: "p2-a" },
-        { executionId: "e1", lineNumber: 5, content: "p2-b" },
+        { executionId: "e1", lineNumber: 0, content: "p0-a", level: null },
+        { executionId: "e1", lineNumber: 1, content: "p0-b", level: null },
+        { executionId: "e1", lineNumber: 2, content: "p1-a", level: null },
+        { executionId: "e1", lineNumber: 3, content: "p1-b", level: null },
+        { executionId: "e1", lineNumber: 4, content: "p2-a", level: null },
+        { executionId: "e1", lineNumber: 5, content: "p2-b", level: null },
       ]);
       expect(logLineRepo.save).toHaveBeenCalledTimes(3);
     });
@@ -1412,8 +1813,8 @@ describe("TaskService (__tests__)", () => {
       expect(logLineRepo.delete).toHaveBeenCalledTimes(1);
       const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
       expect(created).toEqual([
-        { executionId: "e1", lineNumber: 0, content: "only-0" },
-        { executionId: "e1", lineNumber: 1, content: "only-1" },
+        { executionId: "e1", lineNumber: 0, content: "only-0", level: null },
+        { executionId: "e1", lineNumber: 1, content: "only-1", level: null },
       ]);
     });
 
@@ -1441,6 +1842,7 @@ describe("TaskService (__tests__)", () => {
         executionId: "e1",
         lineNumber: 0,
         content: "line0",
+        level: null,
       });
     });
 
@@ -1451,6 +1853,177 @@ describe("TaskService (__tests__)", () => {
       ]);
       expect(result[0].success).toBe(false);
       expect(result[0].error).toMatch(/not found/i);
+    });
+
+    // 可观测性补齐轮（改动1+2）：handleCallback 的运行时计数埋点
+    // （业务结果分类 / 执行结果终态）与回调原始 exitCode 入库溯源。
+    describe("runtime metrics & exitCode persistence", () => {
+      it("counts winner callback as accepted + execution result by final status", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          { executionId: "e1", status: "success", durationMs: 5 },
+        ]);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "accepted",
+          }),
+        ).toBe(1);
+        expect(
+          runtimeCount("autoflow_execution_result_total", {
+            status: "success",
+          }),
+        ).toBe(1);
+        expect(
+          runtimeCount("autoflow_execution_result_total", { status: "failed" }),
+        ).toBe(0);
+      });
+
+      it("counts timeout terminal status distinctly", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "failed",
+            errorMessage: "Execution timed out",
+          },
+        ]);
+        expect(
+          runtimeCount("autoflow_execution_result_total", {
+            status: "timeout",
+          }),
+        ).toBe(1);
+      });
+
+      it("counts duplicate callbacks without recording execution results", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.SUCCESS, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        const result = await service.handleCallback([
+          { executionId: "e1", status: "success" },
+        ]);
+        expect(result[0].success).toBe(true);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "duplicate",
+          }),
+        ).toBe(1);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "accepted",
+          }),
+        ).toBe(0);
+        expect(
+          runtimeCount("autoflow_execution_result_total", {
+            status: "success",
+          }),
+        ).toBe(0);
+      });
+
+      it("counts not_found callbacks", async () => {
+        execRepo.findOne.mockResolvedValue(null);
+        await service.handleCallback([
+          { executionId: "ghost", status: "success" },
+        ]);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "not_found",
+          }),
+        ).toBe(1);
+      });
+
+      it("splits address mismatch vs missing callback address", async () => {
+        const exec = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: "executor-a:8002",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          { executionId: "e1", status: "success", executorAddress: "other:1" },
+        ]);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "address_mismatch",
+          }),
+        ).toBe(1);
+        await service.handleCallback([
+          { executionId: "e1", status: "success" },
+        ]);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "address_mismatch_missing_address",
+          }),
+        ).toBe(1);
+      });
+
+      it("counts error only when the post-transition path throws", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "x" };
+        execRepo.findOne.mockResolvedValue(exec);
+        logLineRepo.delete.mockRejectedValue(new Error("db exploded"));
+        const result = await service.handleCallback([
+          { executionId: "e1", status: "success", logs: "a\nb" },
+        ]);
+        expect(result[0].success).toBe(false);
+        expect(
+          runtimeCount("autoflow_callback_business_total", { result: "error" }),
+        ).toBe(1);
+        // winner 语义不变：终态 UPDATE 已命中 → accepted 与执行结果各计一次
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "accepted",
+          }),
+        ).toBe(1);
+        expect(
+          runtimeCount("autoflow_execution_result_total", {
+            status: "success",
+          }),
+        ).toBe(1);
+      });
+
+      it("persists integer exitCode on the terminal update", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "failed",
+            exitCode: 42,
+            errorMessage: "boom",
+          },
+        ]);
+        expect((exec as any).exitCode).toBe(42);
+      });
+
+      it("tolerates non-integer exitCode without overwriting stored value", async () => {
+        const exec = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+          exitCode: 7,
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        const result = await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "failed",
+            exitCode: 1.5,
+            errorMessage: "boom",
+          },
+        ]);
+        expect(result[0].success).toBe(true);
+        expect((exec as any).exitCode).toBe(7);
+      });
+
+      it("leaves exitCode untouched when callback omits it", async () => {
+        const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          { executionId: "e1", status: "success" },
+        ]);
+        expect("exitCode" in exec).toBe(false);
+      });
     });
 
     describe("dependency fan-out (R4-P0: moved from TaskProcessor to handleCallback)", () => {
@@ -1887,10 +2460,10 @@ describe("TaskService (__tests__)", () => {
         // All four lines persisted across the two transactions.
         const created = logLineRepo.create.mock.calls.map((c: any) => c[0]);
         expect(created).toEqual([
-          { executionId: "e1", lineNumber: 0, content: "p0-a" },
-          { executionId: "e1", lineNumber: 1, content: "p0-b" },
-          { executionId: "e1", lineNumber: 2, content: "p1-a" },
-          { executionId: "e1", lineNumber: 3, content: "p1-b" },
+          { executionId: "e1", lineNumber: 0, content: "p0-a", level: null },
+          { executionId: "e1", lineNumber: 1, content: "p0-b", level: null },
+          { executionId: "e1", lineNumber: 2, content: "p1-a", level: null },
+          { executionId: "e1", lineNumber: 3, content: "p1-b", level: null },
         ]);
       });
     });
@@ -1921,6 +2494,394 @@ describe("TaskService (__tests__)", () => {
       expect(execRepo.save).not.toHaveBeenCalled();
       expect(releaseSlotExecute).not.toHaveBeenCalled();
     });
+
+    // ARCH-21: 执行器回调真实终态发布领域事件（原「改动1」告警直调解耦；
+    // 通知语义等价性在 listener spec 断言，此处只验事件发布与主链无感）。
+    describe("execution terminal domain events (ARCH-21)", () => {
+      it("emits execution.failed on a FAILED callback with full listener payload", async () => {
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "nightly-etl",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue({
+          id: "t1",
+          alarmEmail: "ops@example.com",
+          alarmChannels: ["email", "slack"],
+        });
+
+        const result = await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "failed",
+            errorMessage: "Traceback: divide by zero",
+          },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+        const [event, payload] = eventBus.emit.mock.calls[0];
+        expect(event).toBe(DOMAIN_EVENTS.EXECUTION_FAILED);
+        expect(payload).toEqual(
+          expect.objectContaining({
+            executionId: "e1",
+            taskId: "t1",
+            taskName: "nightly-etl",
+            status: "failed",
+            // 推断分类与旧告警摘要同源（inferFailureReason：Traceback→script_error）
+            failureReason: "script_error",
+            errorMessage: "Traceback: divide by zero",
+            aiAnalysis: null,
+          }),
+        );
+        expect(typeof payload.finishedAt).toBe("string");
+        expect(Number.isFinite(Date.parse(payload.finishedAt))).toBe(true);
+        expect(typeof payload.durationMs).toBe("number");
+        // 红线：主链不再触达 NotificationService（本 describe 全程无该桩）。
+      });
+
+      it("emits execution.failed with status timeout on a TIMEOUT callback", async () => {
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue(null);
+
+        await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "failed",
+            errorMessage: "Execution timed out",
+          },
+        ]);
+
+        expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+        const [event, payload] = eventBus.emit.mock.calls[0];
+        expect(event).toBe(DOMAIN_EVENTS.EXECUTION_FAILED);
+        expect(payload.status).toBe("timeout");
+        expect(payload.failureReason).toBe("timeout");
+      });
+
+      it("emits execution.completed on a SUCCESS callback (and NOT execution.failed)", async () => {
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+
+        await service.handleCallback([
+          { executionId: "e1", status: "success" },
+        ]);
+
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+        const [event, payload] = eventBus.emit.mock.calls[0];
+        expect(event).toBe(DOMAIN_EVENTS.EXECUTION_COMPLETED);
+        expect(payload.status).toBe("success");
+        expect(payload.failureReason).toBeNull();
+      });
+
+      it("does NOT emit on a rejected callback (address mismatch / not found) or a duplicate winner", async () => {
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: "addr-1",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+
+        // 地址不符：UPDATE 前即拒绝——不 emit。
+        await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "success",
+            executorAddress: "other:9",
+          },
+        ]);
+        expect(eventBus.emit).not.toHaveBeenCalled();
+
+        // 首个 winner 回调：emit 一次。
+        await service.handleCallback([
+          { executionId: "e1", status: "success", executorAddress: "addr-1" },
+        ]);
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+
+        // 重复回调（行已终态，affected=0 分支）：不再 emit——保证
+        // 「每个终态恰好一个事件」与旧「每个失败执行一次告警」不变量一致。
+        exec.status = ExecutionStatus.SUCCESS;
+        await service.handleCallback([
+          { executionId: "e1", status: "success", executorAddress: "addr-1" },
+        ]);
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+      });
+
+      // CORE-04: 超时终态落定后的动作兑现——kill_retry re-enqueue /
+      // notify_only 显式 no-op / 缺省 kill 无追加动作 / re-enqueue 失败
+      // fail-open（终态已落定）。均断言在唯一 winner 分支恰好一次。
+      describe("timeout action (CORE-04)", () => {
+        const timeoutExec = (extra: Record<string, unknown> = {}) => ({
+          id: "e1",
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+          ...extra,
+        });
+        const timeoutCb = {
+          executionId: "e1",
+          status: "failed" as const,
+          failureReason: ExecutionFailureReason.TIMEOUT,
+          errorMessage: "Task timeout after 60s",
+        };
+
+        it("kill_retry: re-enqueues via scheduleRetryAfterRecovery with the timeout_retry trigger", async () => {
+          const exec = timeoutExec();
+          execRepo.findOne.mockResolvedValue(exec);
+          taskRepo.findOne.mockResolvedValue({
+            id: "t1",
+            name: "job",
+            timeoutAction: "kill_retry",
+            maxRetry: 3,
+          });
+
+          await service.handleCallback([timeoutCb]);
+
+          expect(execRepo.createQueryBuilder).toHaveBeenCalled();
+          expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).toHaveBeenCalledTimes(1);
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).toHaveBeenCalledWith(
+            expect.objectContaining({ id: "t1", timeoutAction: "kill_retry" }),
+            exec,
+            "timeout_retry",
+          );
+        });
+
+        it("notify_only: no re-enqueue, terminal TIMEOUT preserved, failure event still emitted once", async () => {
+          const exec = timeoutExec();
+          execRepo.findOne.mockResolvedValue(exec);
+          taskRepo.findOne.mockResolvedValue({
+            id: "t1",
+            name: "job",
+            timeoutAction: "notify_only",
+          });
+
+          const result = await service.handleCallback([timeoutCb]);
+
+          expect(result[0].success).toBe(true);
+          expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).not.toHaveBeenCalled();
+          // ARCH-21: 原「失败告警恰好一次」不变量以事件形式保持——
+          // execution.failed 在 TIMEOUT 终态 winner 上恰好 emit 一次。
+          expect(eventBus.emit).toHaveBeenCalledTimes(1);
+          expect(eventBus.emit.mock.calls[0][0]).toBe(
+            DOMAIN_EVENTS.EXECUTION_FAILED,
+          );
+        });
+
+        it("default kill (null action): no re-enqueue (existing behavior)", async () => {
+          execRepo.findOne.mockResolvedValue(timeoutExec());
+          taskRepo.findOne.mockResolvedValue({
+            id: "t1",
+            name: "job",
+            timeoutAction: null,
+          });
+
+          await service.handleCallback([timeoutCb]);
+
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).not.toHaveBeenCalled();
+        });
+
+        it("kill_retry is fail-open: a throwing re-enqueue still reports callback success", async () => {
+          jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+          const exec = timeoutExec();
+          execRepo.findOne.mockResolvedValue(exec);
+          taskRepo.findOne.mockResolvedValue({
+            id: "t1",
+            name: "job",
+            timeoutAction: "kill_retry",
+          });
+          executorServiceMock.scheduleRetryAfterRecovery.mockRejectedValue(
+            new Error("redis down"),
+          );
+
+          const result = await service.handleCallback([timeoutCb]);
+
+          expect(result[0].success).toBe(true);
+          expect(exec.status).toBe(ExecutionStatus.TIMEOUT);
+        });
+
+        it("duplicate (already terminal) callback does not re-enqueue twice", async () => {
+          // 首个 findOne 是读执行行（RUNNING），QB execute 模拟并发回调已写
+          // TIMEOUT 终态——重跑一次 handleCallback 前把行置为终态，affected=0
+          // 分支提前返回，scheduleRetryAfterRecovery 不得再次触发。
+          const exec = timeoutExec();
+          execRepo.findOne.mockResolvedValue(exec);
+          taskRepo.findOne.mockResolvedValue({
+            id: "t1",
+            name: "job",
+            timeoutAction: "kill_retry",
+          });
+          await service.handleCallback([timeoutCb]);
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).toHaveBeenCalledTimes(1);
+          // 第二次回调：行已是终态（makeRepo 的 QB execute 对 TERMINAL 状态
+          // 返回 affected=0），不得再 re-enqueue。
+          exec.status = ExecutionStatus.TIMEOUT;
+          await service.handleCallback([timeoutCb]);
+          expect(
+            executorServiceMock.scheduleRetryAfterRecovery,
+          ).toHaveBeenCalledTimes(1);
+        });
+      });
+
+      // ARCH-21 fail-open 组合证明：
+      // ① 总线级（domain-event-bus.service.spec）：监听器抛错/reject → emit
+      //    不外抛、其余监听器照常收派发；
+      // ② 主链级（本例）：即便 emit 意外抛错（模拟总线故障），handleCallback
+      //    结果与终态落库都不受影响（emitTerminalEvent 第二道保险丝）；
+      // ③ 通知失败写 NOTIFICATION_FAILED 审计的兜底语义随迁移进
+      //    listener 等价 spec（execution-events.listener.spec.ts）断言。
+      it("is fail-open: a throwing event bus emit cannot change the callback result", async () => {
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue(null);
+        eventBus.emit.mockImplementation(() => {
+          throw new Error("bus exploded");
+        });
+
+        const result = await service.handleCallback([
+          { executionId: "e1", status: "failed", errorMessage: "boom" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        expect(exec.status).toBe(ExecutionStatus.FAILED);
+      });
+    });
+
+    // 改动3: winner 日志落库失败后，重试回调补写日志的闭环。
+    it("persists logs on a retried callback when the first storeLogLines attempt failed (改动3)", async () => {
+      const makeExec = () => ({
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        logStorage: null,
+        logObjectKey: null,
+      });
+      const exec = makeExec();
+      execRepo.findOne.mockResolvedValue(exec);
+      // storeLogLines' DB write throws → winner catch returns success:false.
+      const realTx = dataSource.transaction;
+      dataSource.transaction.mockRejectedValueOnce(new Error("db blip"));
+
+      const first = await service.handleCallback([
+        { executionId: "e1", status: "success", logs: "l0\nl1" },
+      ]);
+      expect(first[0].success).toBe(false);
+
+      // Executor retries the whole batch: execution is already SUCCESS →
+      // affected=0 branch. The fresh re-read still shows logs unwritten, so the
+      // duplicate-callback path must persist them.
+      execRepo.findOne.mockImplementation(async () => makeExec());
+      dataSource.transaction = realTx;
+
+      const second = await service.handleCallback([
+        { executionId: "e1", status: "success", logs: "l0\nl1" },
+      ]);
+
+      expect(second[0].success).toBe(true);
+      expect(logLineRepo.create).toHaveBeenCalled();
+      expect(logLineRepo.save).toHaveBeenCalled();
+    });
+
+    it("does NOT re-persist logs on a duplicate callback once storage pointer exists (改动3 idempotent)", async () => {
+      const persisted = () => ({
+        id: "e1",
+        status: ExecutionStatus.SUCCESS,
+        logStorage: "db",
+        logObjectKey: null,
+      });
+      execRepo.findOne.mockResolvedValue(persisted());
+
+      const result = await service.handleCallback([
+        { executionId: "e1", status: "success", logs: "l0\nl1" },
+      ]);
+
+      expect(result[0].success).toBe(true);
+      expect(logLineRepo.save).not.toHaveBeenCalled();
+    });
+
+    // 改动4: 快照 executorAddress 为 null、库中实际有地址时仍按库值释放槽位。
+    it("releases the slot using the RETURNING executorAddress when the pre-callback snapshot is null (改动4)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: null,
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      // 模拟 dispatch 已把地址落库、但请求前快照尚未刷新：UPDATE ... RETURNING
+      // 返回库中实际地址。
+      execRepo.createQueryBuilder.mockReturnValue({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({
+          affected: 1,
+          raw: [{ id: "e1", executorAddress: "10.0.0.9:8002" }],
+        }),
+      } as any);
+
+      const whereArgs: Array<Record<string, unknown>> = [];
+      dataSource.createQueryBuilder.mockImplementation(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn((_sql: string, params: Record<string, unknown>) => {
+              whereArgs.push(params);
+              return {
+                execute: jest.fn().mockResolvedValue({ affected: 1 }),
+              };
+            }),
+          }) as any,
+      );
+
+      const result = await service.handleCallback([
+        { executionId: "e1", status: "success", durationMs: 100 },
+      ]);
+
+      expect(result[0].success).toBe(true);
+      // 快照为 null，本会 no-op；RETURNING 让释放落到库中实际地址。
+      expect(whereArgs).toEqual([{ addr: "10.0.0.9:8002" }]);
+    });
   });
 
   describe("saveVersion", () => {
@@ -1936,6 +2897,24 @@ describe("TaskService (__tests__)", () => {
       expect(versionRepo.create).toHaveBeenCalled();
     });
 
+    // W-21: the snapshot must carry requirements, or a version rollback would
+    // silently drop the dependency set the rolled-back task needs.
+    it("snapshot includes requirements (W-21)", async () => {
+      const task = {
+        id: "t1",
+        name: "task",
+        requirements: ["requests>=2.31"],
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      versionRepo.find.mockResolvedValue([]);
+      versionRepo.save.mockImplementation((v: any) =>
+        Promise.resolve({ id: "v1", ...v }),
+      );
+      await service.saveVersion("t1", "user", "with-deps");
+      const arg = versionRepo.create.mock.calls[0][0];
+      expect(arg.snapshot.requirements).toEqual(["requests>=2.31"]);
+    });
+
     it("throws NotFoundException when task not found", async () => {
       taskRepo.findOne.mockResolvedValue(null);
       await expect(service.saveVersion("missing")).rejects.toThrow(
@@ -1945,7 +2924,7 @@ describe("TaskService (__tests__)", () => {
   });
 
   describe("rollbackToVersion", () => {
-    it("applies version snapshot to task", async () => {
+    it("applies version snapshot to task and records the rollback result", async () => {
       const version = {
         id: "v1",
         taskId: "t1",
@@ -1959,6 +2938,15 @@ describe("TaskService (__tests__)", () => {
       const result = await service.rollbackToVersion("t1", "v1");
       expect(result.name).toBe("snapshot-name");
       expect(result.timeout).toBe(60);
+      expect(versionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "t1",
+          snapshot: expect.objectContaining({
+            name: "snapshot-name",
+            timeout: 60,
+          }),
+        }),
+      );
     });
 
     it("throws NotFoundException when version not found", async () => {
@@ -2051,6 +3039,151 @@ describe("TaskService (__tests__)", () => {
         BadRequestException,
       );
     });
+
+    // 改动5: kill 命中后通知执行器终止进程（best-effort）。
+    // P2: HTTP 实现已收敛至 ExecutorService.notifyExecutorKill（scheduler
+    // stale sweep 共用），本组用例断言 TaskService 侧的委托与调用点契约；
+    // 真实 HTTP 行为（URL/头/超时/吞异常）在 executor.service.spec 覆盖。
+    it("delegates the kill notification to ExecutorService after a successful kill (改动5)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:8002",
+        startTime: new Date(Date.now() - 1000),
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.killExecution("e1");
+
+      expect(result.success).toBe(true);
+      expect(executorServiceMock.notifyExecutorKill).toHaveBeenCalledWith(
+        "e1",
+        "10.0.0.9:8002",
+      );
+    });
+
+    it("still returns success and releases the slot when the kill notification fails (改动5 fail-safe)", async () => {
+      jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+      executorServiceMock.notifyExecutorKill.mockRejectedValue(
+        new Error("ECONNREFUSED"),
+      );
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:8002",
+        startTime: new Date(Date.now() - 1000),
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.killExecution("e1");
+
+      expect(result.success).toBe(true);
+      // 地址已释放（DB 侧），通知失败不回滚。
+      expect(releaseSlotExecute).toHaveBeenCalled();
+      jest.restoreAllMocks();
+    });
+
+    it("skips the kill notification when the executor address is unavailable (改动5)", async () => {
+      const exec = { id: "e1", status: ExecutionStatus.RUNNING };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.killExecution("e1");
+
+      expect(result.success).toBe(true);
+      expect(executorServiceMock.notifyExecutorKill).not.toHaveBeenCalled();
+    });
+
+    // FEAT-18: KILLED 终态落库后发布 execution.killed 领域事件（ARCH-21 预留
+    // 补发）。载荷形状对齐 execution.failed 的 ExecutionTerminalEventPayload。
+    it("emits execution.killed with terminal payload after a successful kill (FEAT-18)", async () => {
+      const exec = {
+        id: "e1",
+        taskId: "t1",
+        taskName: "nightly-etl",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:8002",
+        startTime: new Date(Date.now() - 5000),
+        aiAnalysis: null,
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      await service.killExecution("e1");
+
+      expect(eventBus.emit).toHaveBeenCalledTimes(1);
+      const [eventName, payload] = eventBus.emit.mock.calls[0];
+      expect(eventName).toBe(DOMAIN_EVENTS.EXECUTION_KILLED);
+      expect(payload).toEqual(
+        expect.objectContaining({
+          executionId: "e1",
+          taskId: "t1",
+          taskName: "nightly-etl",
+          status: "killed",
+          failureReason: ExecutionFailureReason.KILLED,
+          errorMessage: "Manually terminated by administrator",
+          finishedAt: expect.any(String),
+        }),
+      );
+      expect(typeof payload.durationMs).toBe("number");
+    });
+
+    it("does NOT emit execution.killed when the kill hits no row (terminal state)", async () => {
+      const exec = { id: "e3", status: ExecutionStatus.SUCCESS };
+      execRepo.findOne.mockResolvedValue(exec);
+      await expect(service.killExecution("e3")).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(eventBus.emit).not.toHaveBeenCalled();
+    });
+
+    it("still kills successfully when the event bus is absent (@Optional fail-open, FEAT-18)", async () => {
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          TaskService,
+          { provide: getRepositoryToken(Task), useValue: taskRepo },
+          { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+          {
+            provide: getRepositoryToken(ExecutionLogLine),
+            useValue: logLineRepo,
+          },
+          { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
+          { provide: getQueueToken("task-queue"), useValue: taskQueue },
+          { provide: DataSource, useValue: dataSource },
+          { provide: SchedulerService, useValue: schedulerService },
+          {
+            provide: AiService,
+            useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+          },
+          {
+            provide: AiAnalysisService,
+            useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+          },
+          {
+            provide: ConfigService,
+            useValue: { get: jest.fn().mockReturnValue("") },
+          },
+          { provide: ExecutorService, useValue: executorServiceMock },
+          // eventBus 缺席（@Optional → null）——主链行为不变，仅事件不发。
+          {
+            provide: SecretsCryptoService,
+            useValue: new SecretsCryptoService({ get: () => "" } as any),
+          },
+          { provide: getRepositoryToken(ExecutionReport), useValue: {} },
+        ],
+      }).compile();
+      const buslessService = moduleRef.get(TaskService);
+
+      const exec = {
+        id: "e1",
+        taskId: "t1",
+        taskName: "nightly-etl",
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 5000),
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await buslessService.killExecution("e1");
+      expect(result.success).toBe(true);
+    });
   });
 
   describe("getExecutionStats", () => {
@@ -2121,6 +3254,867 @@ describe("TaskService (__tests__)", () => {
       versionRepo.findOne.mockResolvedValue(null);
       await expect(service.deleteVersion("t1", "ghost")).rejects.toThrow(
         NotFoundException,
+      );
+    });
+  });
+});
+
+// ============================================================================
+// OBS-03: 执行日志结构化检索（level 列）
+//   - 写入抽取：storeLogLines 为每行推断 level 并落库（推断不到 → null）
+//   - 查询过滤：getExecutionLogs 的 level 参数在 SQL 层下推
+//   - 分页协调：level 过滤时 totalLines/hasMore 按过滤后行集计算
+//   - 兼容：无 level 参数时行为与引入前完全一致
+// ============================================================================
+
+/** makeLogQb：构造 getExecutionLogs 可链式 qb mock（含 skip/take） */
+function makeLogQb(rows: unknown[]) {
+  return {
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    take: jest.fn().mockReturnThis(),
+    skip: jest.fn().mockReturnThis(),
+    getMany: jest.fn().mockResolvedValue(rows),
+    getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
+  } as any;
+}
+
+describe("OBS-03: execution log level（写入抽取）", () => {
+  let service: TaskService;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let logLineRepo: ReturnType<typeof makeRepo>;
+
+  beforeEach(async () => {
+    resetRuntimeMetrics();
+    const taskRepo = makeRepo();
+    execRepo = makeRepo();
+    logLineRepo = makeRepo();
+    const versionRepo = makeRepo();
+    const releaseSlotExecute = jest.fn().mockResolvedValue({ affected: 1 });
+    const dataSource = {
+      transaction: jest.fn(async (fn: any) =>
+        fn({
+          delete: jest.fn(async (_t: unknown, c: unknown) =>
+            logLineRepo.delete(c as any),
+          ),
+          save: jest.fn(async (_t: unknown, rows: unknown) =>
+            logLineRepo.save(rows as any),
+          ),
+        }),
+      ),
+      createQueryBuilder: jest.fn(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: releaseSlotExecute,
+      })),
+    };
+
+    const module = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        {
+          provide: getRepositoryToken(ExecutionLogLine),
+          useValue: logLineRepo,
+        },
+        { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
+        { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+        { provide: DataSource, useValue: dataSource },
+        {
+          provide: SchedulerService,
+          useValue: {
+            stop: jest.fn(),
+            scheduleOne: jest.fn(),
+            getStats: jest.fn(),
+          },
+        },
+        {
+          provide: AiService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        {
+          provide: ExecutorService,
+          useValue: {
+            getExecutorUrl: jest.fn(
+              (_a: string, p: string) => `http://executor:3001/${p}`,
+            ),
+            getSharedToken: jest.fn().mockResolvedValue(""),
+            notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailureWithConfig: jest.fn().mockResolvedValue(undefined),
+            notifyFailure: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: AuditService, useValue: { log: jest.fn() } },
+        // SEC-02: 默认降级明文（key 空）——既有用例语义零变化
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+      ],
+    }).compile();
+
+    service = module.get(TaskService);
+  });
+
+  it("storeLogLines 按行推断 level 落库（括号/无括号/时间戳/未知形态）", async () => {
+    const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
+    execRepo.findOne.mockResolvedValue(exec);
+    execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+    await service.handleCallback([
+      {
+        executionId: "e1",
+        status: "success",
+        logs: "[ERROR] boom\nplain text\nerror: lower\n2024-01-01 10:00:00 [WARN] careful",
+      },
+    ]);
+    expect(logLineRepo.create).toHaveBeenCalledWith({
+      executionId: "e1",
+      lineNumber: 0,
+      content: "[ERROR] boom",
+      level: "ERROR",
+    });
+    expect(logLineRepo.create).toHaveBeenCalledWith({
+      executionId: "e1",
+      lineNumber: 1,
+      content: "plain text",
+      level: null,
+    });
+    expect(logLineRepo.create).toHaveBeenCalledWith({
+      executionId: "e1",
+      lineNumber: 2,
+      content: "error: lower",
+      level: "ERROR",
+    });
+    expect(logLineRepo.create).toHaveBeenCalledWith({
+      executionId: "e1",
+      lineNumber: 3,
+      content: "2024-01-01 10:00:00 [WARN] careful",
+      level: "WARN",
+    });
+  });
+});
+
+describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
+  let service: TaskService;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let logLineRepo: ReturnType<typeof makeRepo>;
+
+  beforeEach(async () => {
+    resetRuntimeMetrics();
+    const taskRepo = makeRepo();
+    execRepo = makeRepo();
+    logLineRepo = makeRepo();
+    const versionRepo = makeRepo();
+
+    const module = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        {
+          provide: getRepositoryToken(ExecutionLogLine),
+          useValue: logLineRepo,
+        },
+        { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
+        { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: jest.fn(),
+            createQueryBuilder: jest.fn(() => ({
+              update: jest.fn().mockReturnThis(),
+              set: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
+              execute: jest.fn().mockResolvedValue({ affected: 1 }),
+            })),
+          },
+        },
+        {
+          provide: SchedulerService,
+          useValue: {
+            stop: jest.fn(),
+            scheduleOne: jest.fn(),
+            getStats: jest.fn(),
+          },
+        },
+        {
+          provide: AiService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        {
+          provide: ExecutorService,
+          useValue: {
+            getExecutorUrl: jest.fn(
+              (_a: string, p: string) => `http://executor:3001/${p}`,
+            ),
+            getSharedToken: jest.fn().mockResolvedValue(""),
+            notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailureWithConfig: jest.fn().mockResolvedValue(undefined),
+            notifyFailure: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: AuditService, useValue: { log: jest.fn() } },
+        // SEC-02: 默认降级明文（key 空）——既有用例语义零变化
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+      ],
+    }).compile();
+
+    service = module.get(TaskService);
+  });
+
+  it("无 level 参数：保持既有行为（行号游标 + 全量 count），不触碰 skip", async () => {
+    execRepo.findOne.mockResolvedValue({ id: "exec-1" });
+    const qb = makeLogQb([{ lineNumber: 0, content: "line0" }]);
+    logLineRepo.createQueryBuilder.mockReturnValue(qb);
+    logLineRepo.count.mockResolvedValue(5);
+
+    const result = await service.getExecutionLogs("exec-1", 2, 100);
+
+    expect(qb.andWhere).toHaveBeenCalledWith("l.lineNumber >= :from", {
+      from: 2,
+    });
+    expect(qb.andWhere).not.toHaveBeenCalledWith("l.level = :level", {
+      level: expect.anything(),
+    });
+    expect(qb.skip).not.toHaveBeenCalled();
+    expect(logLineRepo.count).toHaveBeenCalledWith({
+      where: { executionId: "exec-1" },
+    });
+    expect(result).toEqual({
+      lines: ["line0"],
+      totalLines: 5,
+      hasMore: true,
+    });
+  });
+
+  it("level 参数：SQL 层下推等值过滤 + 过滤后偏移量翻页", async () => {
+    execRepo.findOne.mockResolvedValue({ id: "exec-1" });
+    const qb = makeLogQb([{ lineNumber: 7, content: "[ERROR] boom" }]);
+    logLineRepo.createQueryBuilder.mockReturnValue(qb);
+    logLineRepo.count.mockResolvedValue(9);
+
+    const result = await service.getExecutionLogs("exec-1", 2, 100, "ERROR");
+
+    expect(qb.andWhere).toHaveBeenCalledWith("l.level = :level", {
+      level: "ERROR",
+    });
+    expect(qb.andWhere).not.toHaveBeenCalledWith("l.lineNumber >= :from", {
+      from: expect.anything(),
+    });
+    // 过滤模式下 fromLine = 过滤后序列的偏移量（skip/OFFSET）
+    expect(qb.skip).toHaveBeenCalledWith(2);
+    // totalLines 按 level 过滤后计数（分页元数据描述过滤行集）
+    expect(logLineRepo.count).toHaveBeenCalledWith({
+      where: { executionId: "exec-1", level: "ERROR" },
+    });
+    expect(result).toEqual({
+      lines: ["[ERROR] boom"],
+      totalLines: 9,
+      hasMore: true, // fromLine(2) + 1 < 9
+    });
+  });
+
+  it("level 参数：最后一页 hasMore=false 与过滤 totalLines 协调", async () => {
+    execRepo.findOne.mockResolvedValue({ id: "exec-1" });
+    const qb = makeLogQb([
+      { lineNumber: 7, content: "[ERROR] a" },
+      { lineNumber: 11, content: "[ERROR] b" },
+    ]);
+    logLineRepo.createQueryBuilder.mockReturnValue(qb);
+    logLineRepo.count.mockResolvedValue(2);
+
+    const result = await service.getExecutionLogs("exec-1", 0, 100, "ERROR");
+
+    expect(result.hasMore).toBe(false); // 0 + 2 < 2 为假
+    expect(result.totalLines).toBe(2);
+    expect(result.lines).toEqual(["[ERROR] a", "[ERROR] b"]);
+  });
+
+  it("level=undefined 与显式 null 等价：都走无过滤路径（编程式调用兜底）", async () => {
+    execRepo.findOne.mockResolvedValue({ id: "exec-1" });
+    const qb = makeLogQb([]);
+    logLineRepo.createQueryBuilder.mockReturnValue(qb);
+    logLineRepo.count.mockResolvedValue(3);
+
+    await service.getExecutionLogs("exec-1", 0, 100, null);
+
+    expect(qb.andWhere).toHaveBeenCalledWith("l.lineNumber >= :from", {
+      from: 0,
+    });
+    expect(qb.skip).not.toHaveBeenCalled();
+    expect(logLineRepo.count).toHaveBeenCalledWith({
+      where: { executionId: "exec-1" },
+    });
+  });
+});
+
+// ============================================================================
+// QA-02 第二阶段（branches 冲 75）：task.service 剩余分支定向补测。
+// 范围：findAll/getAllExecutions 过滤分支、suggestSchedule 统计分支、
+// getExecutionStats 空/满矩阵、update 超时策略归一化、SSE 槽位配置解析、
+// saveVersion maxNum 分支、rollback enqueue 失败补偿。
+// 全部断言具体行为，无凑数弱断言。
+// ============================================================================
+
+describe("TaskService — QA-02 phase 2 branch gaps", () => {
+  let service: TaskService;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let logLineRepo: ReturnType<typeof makeRepo>;
+  let versionRepo: ReturnType<typeof makeRepo>;
+  let taskQueue: { add: jest.Mock };
+  let dataSource: { transaction: jest.Mock; createQueryBuilder: jest.Mock };
+  let aiService: {
+    analyzeFailure: jest.Mock;
+    chat: jest.Mock;
+    suggestSchedule: jest.Mock;
+  };
+
+  beforeEach(async () => {
+    resetRuntimeMetrics();
+    taskRepo = makeRepo();
+    execRepo = makeRepo();
+    // makeRepo 基础键不含 update——rollback 的 enqueue 失败补偿走 execRepo.update
+    execRepo.update = jest.fn().mockResolvedValue({ affected: 1 });
+    logLineRepo = makeRepo();
+    versionRepo = makeRepo();
+    taskQueue = { add: jest.fn().mockResolvedValue({}) };
+    const releaseSlotExecute = jest.fn().mockResolvedValue({ affected: 1 });
+    dataSource = {
+      transaction: jest.fn(async (fn: any) =>
+        fn({
+          delete: jest.fn(async (_t: unknown, c: unknown) =>
+            logLineRepo.delete(c as any),
+          ),
+          create: jest.fn((d: any) => d),
+          save: jest.fn(async (_t: unknown, rows: unknown) =>
+            logLineRepo.save(rows as any),
+          ),
+        }),
+      ),
+      createQueryBuilder: jest.fn(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: releaseSlotExecute,
+      })),
+    };
+    aiService = {
+      analyzeFailure: jest.fn().mockResolvedValue(""),
+      chat: jest.fn().mockResolvedValue(""),
+      suggestSchedule: jest.fn().mockResolvedValue({
+        suggestedCron: "0 3 * * *",
+        reasoning: "AI suggestion",
+        fallback: false,
+      }),
+    };
+
+    const module = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        {
+          provide: getRepositoryToken(ExecutionLogLine),
+          useValue: logLineRepo,
+        },
+        { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
+        { provide: getQueueToken("task-queue"), useValue: taskQueue },
+        { provide: DataSource, useValue: dataSource },
+        {
+          provide: SchedulerService,
+          useValue: {
+            stop: jest.fn(),
+            scheduleOne: jest.fn(),
+            getStats: jest.fn().mockReturnValue({}),
+          },
+        },
+        { provide: AiService, useValue: aiService },
+        { provide: AiAnalysisService, useValue: aiService },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        {
+          provide: ExecutorService,
+          useValue: {
+            getExecutorUrl: jest.fn(
+              (_a: string, p: string) => `http://executor:3001/${p}`,
+            ),
+            getSharedToken: jest.fn().mockResolvedValue(""),
+            notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+            scheduleRetryAfterRecovery: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: DomainEventBus, useValue: { emit: jest.fn() } },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+        { provide: getRepositoryToken(ExecutionReport), useValue: {} },
+      ],
+    }).compile();
+
+    service = module.get(TaskService);
+  });
+
+  describe("findAll — filter matrix", () => {
+    it("combines status/name/runtime/applicationId into the where clause", async () => {
+      taskRepo.findAndCount.mockResolvedValue([[], 0]);
+      await service.findAll({
+        status: "active",
+        name: "backup",
+        runtime: "python",
+        applicationId: "app-1",
+        page: 2,
+        pageSize: 20,
+      } as any);
+      const arg = taskRepo.findAndCount.mock.calls[0][0];
+      expect(arg.where).toEqual({
+        status: "active",
+        name: expect.anything(), // ILike
+        runtime: "python",
+        applicationId: "app-1",
+      });
+      expect(arg.skip).toBe(20);
+      expect(arg.take).toBe(20);
+    });
+
+    it("omits absent filters from the where clause", async () => {
+      taskRepo.findAndCount.mockResolvedValue([[], 0]);
+      await service.findAll({ page: 1, pageSize: 10 } as any);
+      const arg = taskRepo.findAndCount.mock.calls[0][0];
+      expect(Object.keys(arg.where)).toEqual(["status"]);
+    });
+
+    // AUTH-01: projectId 过滤——"default" 映射为 Or(IsNull, In([默认项目]))，
+    // 具体 uuid 精确匹配；不传时 projectId 不出现在 where。
+    describe("projectId filter (AUTH-01)", () => {
+      const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
+
+      it("projectId='default' → Or(IsNull(), In([默认项目]))", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[], 0]);
+        await service.findAll({
+          page: 1,
+          pageSize: 10,
+          projectId: "default",
+        } as any);
+        const arg = taskRepo.findAndCount.mock.calls[0][0];
+        expect(arg.where.projectId).toEqual(Or(IsNull(), In([DEFAULT_UUID])));
+      });
+
+      it("具体 uuid → 精确等值过滤", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[], 0]);
+        const pid = "33333333-3333-4333-8333-333333333333";
+        await service.findAll({
+          page: 1,
+          pageSize: 10,
+          projectId: pid,
+        } as any);
+        const arg = taskRepo.findAndCount.mock.calls[0][0];
+        expect(arg.where.projectId).toBe(pid);
+      });
+
+      it("不传 projectId → where 不含 projectId 键", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[], 0]);
+        await service.findAll({ page: 1, pageSize: 10 } as any);
+        const arg = taskRepo.findAndCount.mock.calls[0][0];
+        expect(arg.where).not.toHaveProperty("projectId");
+      });
+    });
+  });
+
+  describe("getAllExecutions — time-range filters and taskName coalescing", () => {
+    const makeQb = (rows: unknown[]) => ({
+      leftJoin: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([rows, rows.length]),
+    });
+
+    it("applies startTime/endTime range filters to the query", async () => {
+      const qb = makeQb([]);
+      execRepo.createQueryBuilder.mockReturnValue(qb as any);
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 10,
+        startTime: "2026-09-01T00:00:00Z",
+        endTime: "2026-09-02T00:00:00Z",
+      } as any);
+      const called = qb.andWhere.mock.calls.map((c: unknown[]) => c[0]);
+      expect(called).toContain("e.createdAt >= :startTime");
+      expect(called).toContain("e.createdAt <= :endTime");
+    });
+
+    it("keeps a missing taskName as null when no task row backfills it", async () => {
+      const qb = makeQb([{ id: "e1", taskId: "t1", taskName: null }]);
+      execRepo.createQueryBuilder.mockReturnValue(qb as any);
+      taskRepo.find.mockResolvedValue([]);
+      const result = await service.getAllExecutions({
+        page: 1,
+        pageSize: 10,
+      } as any);
+      expect(result.list[0].taskName).toBeNull();
+      // 回填批量查询确实发起（missingIds 非空分支；In() 包装为 FindOperator）
+      expect(taskRepo.find).toHaveBeenCalledTimes(1);
+      expect(taskRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ select: ["id", "name"] }),
+      );
+    });
+
+    it("prefers the row's own taskName over the backfilled map value", async () => {
+      const qb = makeQb([{ id: "e1", taskId: "t1", taskName: "Own Name" }]);
+      execRepo.createQueryBuilder.mockReturnValue(qb as any);
+      const result = await service.getAllExecutions({
+        page: 1,
+        pageSize: 10,
+      } as any);
+      expect(result.list[0].taskName).toBe("Own Name");
+      expect(taskRepo.find).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("suggestSchedule — statistics branches", () => {
+    it("computes success/failure counts, avg and p95 durations, and best hours", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "job",
+        cronExpression: "0 1 * * *",
+      });
+      const mk = (
+        status: string,
+        duration: number | null,
+        createdAt: Date,
+      ) => ({ id: `e-${Math.random()}`, status, duration, createdAt });
+      execRepo.find.mockResolvedValue([
+        mk("success", 100, new Date("2026-09-01T03:10:00Z")),
+        mk("success", 300, new Date("2026-09-02T03:20:00Z")),
+        mk("failed", 900, new Date("2026-09-03T07:00:00Z")),
+        mk("timeout", null, new Date("2026-09-04T07:30:00Z")),
+        mk("running", null, new Date("2026-09-05T09:00:00Z")),
+      ]);
+
+      await service.suggestSchedule("t1");
+
+      const stats = aiService.suggestSchedule.mock.calls[0][2];
+      expect(stats.total).toBe(5);
+      expect(stats.successes).toBe(2);
+      expect(stats.failures).toBe(2); // failed + timeout
+      expect(stats.avgDurationMs).toBe(Math.round((100 + 300 + 900) / 3));
+      // p95 over sorted durations [100,300,900] → index floor(3*0.95)=2 → 900
+      expect(stats.p95DurationMs).toBe(900);
+      expect(stats.bestHoursUtc).toContain(3);
+      expect(aiService.suggestSchedule.mock.calls[0][1]).toBe("0 1 * * *");
+    });
+
+    it("returns zeroed stats and a fallback cron when the task has no executions", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "empty-job",
+        cronExpression: null,
+      });
+      execRepo.find.mockResolvedValue([]);
+
+      await service.suggestSchedule("t1");
+
+      const stats = aiService.suggestSchedule.mock.calls[0][2];
+      expect(stats).toEqual({
+        total: 0,
+        successes: 0,
+        failures: 0,
+        avgDurationMs: 0,
+        p95DurationMs: 0,
+        bestHoursUtc: expect.any(Array),
+      });
+      expect(stats.bestHoursUtc).toHaveLength(3);
+      // currentCron null → 透传 null
+      expect(aiService.suggestSchedule.mock.calls[0][1]).toBeNull();
+    });
+
+    it("throws NotFoundException when the task does not exist", async () => {
+      taskRepo.findOne.mockResolvedValue(null);
+      await expect(service.suggestSchedule("ghost")).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe("getExecutionStats — success-rate branches", () => {
+    it("reports 0% success rate and avg duration when no recent run succeeded", async () => {
+      execRepo.find.mockResolvedValue([
+        { id: "e1", status: ExecutionStatus.FAILED, duration: 250 },
+        { id: "e2", status: ExecutionStatus.TIMEOUT, duration: 750 },
+      ]);
+      execRepo.count.mockResolvedValue(4);
+
+      const stats = await service.getExecutionStats("t1");
+      expect(stats.totalRuns).toBe(4);
+      expect(stats.successRate).toBe(0);
+      expect(stats.avgDuration).toBe(500); // round(250+750)/2
+    });
+
+    it("reports a partial success rate with one-decimal rounding", async () => {
+      execRepo.find.mockResolvedValue([
+        { id: "e1", status: ExecutionStatus.SUCCESS, duration: 100 },
+        { id: "e2", status: ExecutionStatus.FAILED, duration: null },
+        { id: "e3", status: ExecutionStatus.SUCCESS, duration: 300 },
+      ]);
+      execRepo.count.mockResolvedValue(3);
+
+      const stats = await service.getExecutionStats("t1");
+      expect(stats.successRate).toBe(66.7); // round(2/3*1000)/10
+      expect(stats.avgDuration).toBe(200);
+    });
+
+    it("reports 0% with zero avg when nothing ran", async () => {
+      execRepo.find.mockResolvedValue([]);
+      execRepo.count.mockResolvedValue(0);
+
+      const stats = await service.getExecutionStats("t1");
+      expect(stats.totalRuns).toBe(0);
+      expect(stats.successRate).toBe(0);
+      expect(stats.avgDuration).toBe(0);
+    });
+  });
+
+  describe("update — timeout policy normalization branches (CORE-04 runtime guard)", () => {
+    it("maps timeoutSeconds → timeout and normalizes an explicit null timeoutAction", async () => {
+      const existing = { id: "t1", name: "job", status: TaskStatus.PAUSED };
+      taskRepo.findOne.mockResolvedValue(existing);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+      await service.update("t1", {
+        timeoutSeconds: 42,
+        timeoutAction: null,
+        timeoutWarnRatio: 120 as unknown as number, // 运行态防线：越界归 null
+      } as any);
+
+      const saved = taskRepo.save.mock.calls[0][0];
+      expect(saved.timeout).toBe(42);
+      expect(saved.timeoutSeconds).toBeUndefined();
+      expect(saved.timeoutAction).toBeNull();
+      expect(saved.timeoutWarnRatio).toBeNull();
+    });
+
+    it("keeps a valid timeoutAction untouched and clamps warn ratio inside 0-90", async () => {
+      const existing = { id: "t1", name: "job", status: TaskStatus.PAUSED };
+      taskRepo.findOne.mockResolvedValue(existing);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+      await service.update("t1", {
+        timeoutAction: "kill_retry",
+        timeoutWarnRatio: 75,
+      } as any);
+
+      const saved = taskRepo.save.mock.calls[0][0];
+      expect(saved.timeoutAction).toBe("kill_retry");
+      expect(saved.timeoutWarnRatio).toBe(75);
+    });
+  });
+
+  describe("SSE slot config getters (TASK-008 runtime parsing)", () => {
+    it("accepts a string-form numeric config value for per-execution and global limits", async () => {
+      const configGet = jest.fn((key: string) => {
+        if (key === "sse.maxStreamsPerExecution") return "2";
+        if (key === "sse.maxStreamsGlobal") return "3";
+        return "";
+      });
+      // 重新装配仅改 config 的服务
+      const module = await Test.createTestingModule({
+        providers: [
+          TaskService,
+          { provide: getRepositoryToken(Task), useValue: makeRepo() },
+          { provide: getRepositoryToken(TaskExecution), useValue: makeRepo() },
+          {
+            provide: getRepositoryToken(ExecutionLogLine),
+            useValue: makeRepo(),
+          },
+          { provide: getRepositoryToken(TaskVersion), useValue: makeRepo() },
+          { provide: getQueueToken("task-queue"), useValue: taskQueue },
+          { provide: DataSource, useValue: dataSource },
+          {
+            provide: SchedulerService,
+            useValue: {
+              stop: jest.fn(),
+              scheduleOne: jest.fn(),
+              getStats: jest.fn(),
+            },
+          },
+          { provide: AiService, useValue: aiService },
+          { provide: AiAnalysisService, useValue: aiService },
+          { provide: ConfigService, useValue: { get: configGet } },
+          {
+            provide: ExecutorService,
+            useValue: { getSharedToken: jest.fn().mockResolvedValue("") },
+          },
+          { provide: DomainEventBus, useValue: { emit: jest.fn() } },
+          {
+            provide: SecretsCryptoService,
+            useValue: new SecretsCryptoService({ get: () => "" } as any),
+          },
+          { provide: getRepositoryToken(ExecutionReport), useValue: {} },
+        ],
+      }).compile();
+      const svc = module.get(TaskService);
+
+      const r1 = svc.acquireSseSlot("exec-1");
+      const r2 = svc.acquireSseSlot("exec-1");
+      // "2" 解析成功 → 上限 2：第 3 个 per-execution 拒绝
+      expect(() => svc.acquireSseSlot("exec-1")).toThrow(
+        ServiceUnavailableException,
+      );
+      r1();
+      r2();
+      // 全局上限 3：占满 3 个不同 exec
+      const g1 = svc.acquireSseSlot("a");
+      const g2 = svc.acquireSseSlot("b");
+      const g3 = svc.acquireSseSlot("c");
+      expect(() => svc.acquireSseSlot("d")).toThrow(
+        ServiceUnavailableException,
+      );
+      g1();
+      g2();
+      g3();
+    });
+  });
+
+  describe("saveVersion / rollback — numbering and compensation branches", () => {
+    it("saveVersion uses MAX+1 numbering and starts at v1 for a fresh task", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "job",
+        description: "d",
+      });
+      const qb = versionRepo.createQueryBuilder();
+      qb.getRawOne.mockResolvedValue({ maxNum: 0 });
+      versionRepo.createQueryBuilder.mockReturnValue(qb);
+      versionRepo.create.mockImplementation((d: any) => d);
+      versionRepo.save.mockImplementation((v: any) => Promise.resolve(v));
+
+      const version = await service.saveVersion("t1", "admin");
+      expect(version.version).toBe("v1");
+      expect(version.createdBy).toBe("admin");
+    });
+
+    it("saveVersion throws NotFoundException when the task is gone", async () => {
+      taskRepo.findOne.mockResolvedValue(null);
+      await expect(service.saveVersion("ghost")).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it("rollback compensates the PENDING row when the queue is down", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "job",
+        gitCommit: "old",
+        status: TaskStatus.ACTIVE,
+      });
+      // rollback 的事务形态：manager.save(Task, task) → manager.create →
+      // manager.save(create 结果) 返回执行行。
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({
+          save: jest.fn(async (_t: unknown, e: unknown) =>
+            (e as { id?: string })?.id
+              ? e
+              : { id: "rb-exec-1", status: "pending" },
+          ),
+          create: jest
+            .fn()
+            .mockReturnValue({ id: "rb-exec-1", status: "pending" }),
+        }),
+      );
+      taskQueue.add.mockRejectedValue(new Error("queue down"));
+
+      await expect(
+        service.rollback("t1", { gitCommit: "abc123" }),
+      ).rejects.toThrow("Failed to enqueue execution: queue down");
+
+      // 补偿：PENDING 行被写为 FAILED（makeRepo 默认 update mock 返回 affected:1）
+      expect(execRepo.update).toHaveBeenCalledWith(
+        "rb-exec-1",
+        expect.objectContaining({ status: ExecutionStatus.FAILED }),
+      );
+    });
+  });
+
+  describe("analyzeExecution / getExecution — lookup branches", () => {
+    it("getExecution constrains by taskId when provided", async () => {
+      execRepo.findOne.mockResolvedValue(null);
+      await expect(service.getExecution("exec-1", "task-1")).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(execRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "exec-1", taskId: "task-1" },
+      });
+    });
+
+    it("analyzeExecution feeds errorMessage+logs to the AI and persists the analysis", async () => {
+      const exec = {
+        id: "exec-1",
+        taskName: "job",
+        errorMessage: "boom",
+        logs: "trace",
+        aiAnalysis: null as string | null,
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      aiService.analyzeFailure.mockResolvedValue("AI: fix it");
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const result = await service.analyzeExecution("exec-1");
+      expect(aiService.analyzeFailure).toHaveBeenCalledWith(
+        { name: "job", runtime: "unknown" },
+        "boom\ntrace",
+      );
+      expect(result.aiAnalysis).toBe("AI: fix it");
+    });
+
+    it("analyzeExecution falls back to a placeholder when no logs exist", async () => {
+      const exec = { id: "exec-1", taskName: "job", aiAnalysis: null };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.analyzeExecution("exec-1");
+      expect(aiService.analyzeFailure).toHaveBeenCalledWith(
+        expect.anything(),
+        "(no logs)",
       );
     });
   });

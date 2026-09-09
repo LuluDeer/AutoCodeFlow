@@ -1,28 +1,47 @@
 import { useState } from 'react';
 import {
   Card, Descriptions, Tag, Typography, Button, Space, Table, Badge, Tabs,
-  Spin, Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert,
+  Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert, Result, Input,
 } from 'antd';
 import {
+  ApartmentOutlined,
   ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
   PlayCircleOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
   EyeOutlined, ClockCircleOutlined, StopOutlined, RobotOutlined, CodeOutlined,
-  CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined,
+  CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined, SaveOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useRequest } from 'ahooks';
+import { useQueryClient } from '@tanstack/react-query';
 import { tasksApi, TaskExecution } from '../api/tasks';
+import {
+  useSchedulerStats,
+  useTaskDetail,
+  useTaskExecutions,
+  useTaskStats,
+  invalidateTaskData,
+} from '../api/queries';
+import { taskTemplatesApi } from '../api/task-templates';
 import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg } from '../utils/error';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
+// CORE-03 收尾：保存为自定义模板的 config 白名单抽取
+import { extractTemplateConfigFromTask } from '../utils/task-template-extract';
 import GlueEditor from '../components/GlueEditor';
+import TaskDependencyGraph from '../components/TaskDependencyGraph';
+import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
+import ArtifactsList from '../components/ArtifactsList';
+// CORE-02: retryableErrors 中文文案映射（与表单选项同一来源）
+import { RETRYABLE_ERROR_OPTIONS } from './retry-policy';
+import PageHeader from '../components/PageHeader';
+import PageSkeleton from '../components/PageSkeleton';
 
 const { Text } = Typography;
 
-const STATUS_COLOR: Record<string, string> = {
-  pending: 'default', running: 'processing', success: 'green',
-  failed: 'red', timeout: 'orange', killed: 'volcano', cancelled: 'default',
+type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
+const STATUS_COLOR: Record<string, BadgeStatus> = {
+  pending: 'default', running: 'processing', success: 'success',
+  failed: 'error', timeout: 'warning', killed: 'error', cancelled: 'default',
 };
 const STATUS_LABEL: Record<string, string> = {
   pending: '等待中', running: '运行中', success: '成功',
@@ -39,6 +58,35 @@ export default function TaskDetailPage() {
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
   const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
   const [triggering, setTriggering] = useState(false);
+  const [killingId, setKillingId] = useState<string | null>(null);
+  const [toggleLoading, setToggleLoading] = useState(false);
+  // CORE-03 收尾：保存为自定义模板 Modal
+  const [tplModalOpen, setTplModalOpen] = useState(false);
+  const [tplForm] = Form.useForm<{ name: string; description?: string; category?: string }>();
+  const [tplSaving, setTplSaving] = useState(false);
+
+  const handleSaveAsTemplate = async () => {
+    if (!task) return;
+    try {
+      const values = await tplForm.validateFields();
+      setTplSaving(true);
+      await taskTemplatesApi.create({
+        name: values.name.trim(),
+        description: values.description?.trim() || undefined,
+        category: values.category?.trim() || undefined,
+        config: extractTemplateConfigFromTask(task),
+      });
+      message.success(`已保存为模板「${values.name.trim()}」，可在任务模板页查看`);
+      setTplModalOpen(false);
+    } catch (err: unknown) {
+      // validateFields 的 reject 是带 errorFields 的校验对象，不是请求错误——
+      // 仅对真正的请求失败弹 toast，表单校验错误由 Form 自带红字呈现。
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error(getErrMsg(err, '保存模板失败'));
+    } finally {
+      setTplSaving(false);
+    }
+  };
 
   const handleAiSuggest = async () => {
     if (!id) return;
@@ -55,25 +103,25 @@ export default function TaskDetailPage() {
     }
   };
 
-  const { data: schedulerStats } = useRequest(
-    tasksApi.schedulerStats,
-    { pollingInterval: 30000 },
-  );
+  // FEAT-17: TanStack Query 改造——四个 useRequest 换 queries.ts hooks：
+  // - schedulerStats：30s 轮询语义由 refetchInterval 承担（queries.ts 内声明）；
+  // - task/execs/stats：queryKey 带 id/分页参数（等价 ready+refreshDeps）；
+  // - 写后失效：refreshTask/refreshExecs 收口为 invalidateTaskData（任务面 +
+  //   执行面 + Dashboard 汇总联动，一处 invalidate 全站一致）。
+  const queryClient = useQueryClient();
+  const refreshTask = () => void invalidateTaskData(queryClient);
+  const refreshExecs = () => void invalidateTaskData(queryClient);
 
-  const { data: task, loading: taskLoading, refresh: refreshTask } = useRequest(
-    () => tasksApi.get(id!),
-    { ready: !!id, refreshDeps: [id] },
-  );
+  const { data: schedulerStats } = useSchedulerStats();
 
-  const { data: execData, loading: execLoading, refresh: refreshExecs } = useRequest(
-    () => tasksApi.executions(id!, { page: execPage, pageSize: 20 }),
-    { ready: !!id, refreshDeps: [id, execPage] },
-  );
+  const { data: task, isLoading: taskLoading, error: taskError } = useTaskDetail(id);
 
-  const { data: taskStats } = useRequest(
-    () => tasksApi.stats(id!),
-    { ready: !!id, refreshDeps: [id], pollingInterval: 60_000 },
-  );
+  const { data: execData, isLoading: execLoading } = useTaskExecutions(id, {
+    page: execPage,
+    pageSize: 20,
+  });
+
+  const { data: taskStats } = useTaskStats(id);
 
   const executions: TaskExecution[] = execData?.items ?? [];
   const execTotal: number = execData?.total ?? 0;
@@ -107,13 +155,19 @@ export default function TaskDetailPage() {
   };
 
   const handlePause = async () => {
+    if (toggleLoading) return;
+    setToggleLoading(true);
     try { await tasksApi.pause(id!); message.success('已暂停'); refreshTask(); }
     catch (err: unknown) { message.error(getErrMsg(err, '暂停失败')); }
+    finally { setToggleLoading(false); }
   };
 
   const handleResume = async () => {
+    if (toggleLoading) return;
+    setToggleLoading(true);
     try { await tasksApi.resume(id!); message.success('已恢复'); refreshTask(); }
     catch (err: unknown) { message.error(getErrMsg(err, '恢复失败')); }
+    finally { setToggleLoading(false); }
   };
 
   const handleDelete = async () => {
@@ -126,23 +180,50 @@ export default function TaskDetailPage() {
   };
 
   const handleKill = async (execId: string) => {
+    if (killingId) return;
+    setKillingId(execId);
     try {
       await tasksApi.killExecution(id!, execId);
       message.success('已终止');
       refreshExecs();
     } catch (err: unknown) { message.error(getErrMsg(err, '终止失败')); }
+    finally { setKillingId(null); }
   };
 
-  if (taskLoading && !task) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
+  // UI-08：首屏骨架屏替代裸 Spin
+  if (taskLoading && !task) return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
+  // U7: 请求失败 ≠ 任务不存在——错误态给重试入口，数据确空才显示 Empty
+  if (!task && taskError) {
+    return (
+      <Result
+        status="error"
+        title="任务详情加载失败"
+        subTitle={getErrMsg(taskError, '请求失败，请重试')}
+        extra={
+          <Space>
+            <Button onClick={() => nav('/tasks')}>返回任务列表</Button>
+            <Button type="primary" icon={<ReloadOutlined />} onClick={refreshTask}>重试</Button>
+          </Space>
+        }
+      />
+    );
+  }
   if (!task) return <Empty description="任务不存在" />;
 
+  // UI-09：375px 可用性——关键列=状态/开始时间/错误/操作；触发/执行器/耗时为
+  // 次要列窄屏收起（CSS 侧 .ui09-hide-mobile 双保险），scroll.x 横向滚动兜底。
+  const hideOnMobile = {
+    onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+    onCell: () => ({ className: 'ui09-hide-mobile' }),
+  } as const;
   const execColumns = [
     {
       title: '状态', dataIndex: 'status', width: 90,
-      render: (s: string) => <Badge status={STATUS_COLOR[s] as 'success' | 'error' | 'warning' | 'processing' | 'default'} text={STATUS_LABEL[s] || s} />,
+      render: (s: string) => <Badge status={STATUS_COLOR[s] ?? 'default'} text={STATUS_LABEL[s] || s} />,
     },
     {
       title: '触发', dataIndex: 'triggerType', width: 80,
+      ...hideOnMobile,
       render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
     },
     {
@@ -164,6 +245,7 @@ export default function TaskDetailPage() {
     },
     {
       title: '耗时', dataIndex: 'duration', width: 80,
+      ...hideOnMobile,
       render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v)}</Text> : '-',
     },
     {
@@ -175,10 +257,17 @@ export default function TaskDetailPage() {
       render: (_: unknown, r: TaskExecution) => (
         <Space size={2}>
           {r.status === 'running' && (
-            <Tooltip title="终止">
-              <Button type="text" size="small" danger icon={<StopOutlined />}
-                onClick={() => handleKill(r.id)} />
-            </Tooltip>
+            <Popconfirm
+              title="确认终止此执行？"
+              description="终止后执行将中断且不可恢复。"
+              onConfirm={() => handleKill(r.id)}
+              okText="终止" okButtonProps={{ danger: true }}
+            >
+              <Tooltip title="终止">
+                <Button type="text" size="small" danger icon={<StopOutlined />}
+                  loading={killingId === r.id} />
+              </Tooltip>
+            </Popconfirm>
           )}
           <Button type="link" size="small" icon={<EyeOutlined />}
             onClick={() => nav(`/tasks/${id}/executions/${r.id}`)}>详情</Button>
@@ -196,33 +285,50 @@ export default function TaskDetailPage() {
         <Button icon={<ArrowLeftOutlined />} onClick={() => nav('/tasks')}>返回</Button>
       </Space>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-        <div>
-          <Space align="center">
-            <Typography.Title level={4} style={{ margin: 0 }}>{task.name}</Typography.Title>
-            <Badge
-              status={isActive ? 'success' : isPaused ? 'warning' : 'default'}
-              text={isActive ? '运行中' : isPaused ? '已暂停' : task.status}
-            />
-          </Space>
-          {task.description && <Text type="secondary">{task.description}</Text>}
+      {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，面包屑语义=任务→详情（≤2 跳），
+          操作按钮整体进 extra；返回按钮与状态 Badge/调度 Tag 原样保留） */}
+      <PageHeader
+        title={task.name}
+        description={task.description}
+        breadcrumb={[
+          { title: '任务调度', to: '/tasks' },
+          { title: task.name },
+        ]}
+        extra={
+          <>
+            <Button icon={<ThunderboltOutlined />} type="primary" onClick={handleTrigger}>立即触发</Button>
+            {isActive && <Button icon={<PauseCircleOutlined />} loading={toggleLoading} disabled={toggleLoading} onClick={handlePause}>暂停</Button>}
+            {isPaused && <Button icon={<PlayCircleOutlined />} type="primary" loading={toggleLoading} disabled={toggleLoading} onClick={handleResume}>恢复</Button>}
+            <Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading}>AI 调度建议</Button>
+            {/* CORE-03 收尾：把当前任务配置固化为自定义模板（POST /task-templates） */}
+            <Button
+              icon={<SaveOutlined />}
+              data-testid="save-as-template"
+              onClick={() => { tplForm.setFieldsValue({ name: `${task.name} 模板` }); setTplModalOpen(true); }}
+            >
+              保存为模板
+            </Button>
+            <Button icon={<EditOutlined />} onClick={handleEdit}>编辑</Button>
+            <Popconfirm title="确认删除此任务？" onConfirm={handleDelete} okText="删除" okButtonProps={{ danger: true }}>
+              <Button icon={<DeleteOutlined />} danger>删除</Button>
+            </Popconfirm>
+          </>
+        }
+      />
+      {/* UI-09：状态行 Tag 群窄屏换行（Space wrap） */}
+      <div style={{ marginBottom: 16 }}>
+        <Space wrap>
+          <Badge
+            status={isActive ? 'success' : isPaused ? 'warning' : 'default'}
+            text={isActive ? '运行中' : isPaused ? '已暂停' : task.status}
+          />
           {schedulerStats && (
-            <Space size={4} style={{ marginTop: 4 }}>
+            <>
               <Tag style={{ fontSize: 11 }}>活跃定时器 {schedulerStats.activeTimers}</Tag>
               <Tag style={{ fontSize: 11 }}>Cron {schedulerStats.activeCronTasks}</Tag>
               <Tag color="processing" style={{ fontSize: 11 }}>运行中 {schedulerStats.runningTaskCount}</Tag>
-            </Space>
+            </>
           )}
-        </div>
-        <Space>
-          <Button icon={<ThunderboltOutlined />} type="primary" onClick={handleTrigger}>立即触发</Button>
-          {isActive && <Button icon={<PauseCircleOutlined />} onClick={handlePause}>暂停</Button>}
-          {isPaused && <Button icon={<PlayCircleOutlined />} type="primary" onClick={handleResume}>恢复</Button>}
-          <Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading}>AI 调度建议</Button>
-          <Button icon={<EditOutlined />} onClick={handleEdit}>编辑</Button>
-          <Popconfirm title="确认删除此任务？" onConfirm={handleDelete} okText="删除" okButtonProps={{ danger: true }}>
-            <Button icon={<DeleteOutlined />} danger>删除</Button>
-          </Popconfirm>
         </Space>
       </div>
 
@@ -242,9 +348,9 @@ export default function TaskDetailPage() {
             <Card size="small">
               <Statistic
                 title="成功率"
-                value={((taskStats.successRate ?? 0) * 100).toFixed(1)}
+                value={(taskStats.successRate ?? 0).toFixed(1)}
                 suffix="%"
-                styles={{ content: { color: (taskStats.successRate ?? 0) >= 0.95 ? '#52c41a' : (taskStats.successRate ?? 0) >= 0.8 ? '#fa8c16' : '#ff4d4f' } }}
+                styles={{ content: { color: (taskStats.successRate ?? 0) >= 95 ? '#52c41a' : (taskStats.successRate ?? 0) >= 80 ? '#fa8c16' : '#ff4d4f' } }}
                 prefix={<CheckCircleOutlined />}
               />
             </Card>
@@ -253,8 +359,8 @@ export default function TaskDetailPage() {
             <Card size="small">
               <Statistic
                 title="失败次数"
-                value={taskStats.totalRuns > 0 ? Math.round(taskStats.totalRuns * (1 - (taskStats.successRate ?? 0))) : 0}
-                styles={taskStats.totalRuns > 0 && taskStats.successRate < 1 ? { content: { color: '#ff4d4f' } } : undefined}
+                value={taskStats.totalRuns > 0 ? Number((taskStats.totalRuns * (1 - (taskStats.successRate ?? 0) / 100)).toFixed(1)) : 0}
+                styles={taskStats.totalRuns > 0 && (taskStats.successRate ?? 0) < 100 ? { content: { color: '#ff4d4f' } } : undefined}
                 prefix={<CloseCircleOutlined />}
               />
             </Card>
@@ -294,9 +400,68 @@ export default function TaskDetailPage() {
                           : `${task.fixedRate} 秒`}
                     </Descriptions.Item>
                   )}
+                  {/* FEAT-06: 任务级维护窗口（命中时调度计划触发被跳过） */}
+                  {task.maintenanceWindows && task.maintenanceWindows.length > 0 && (
+                    <Descriptions.Item label="维护窗口" span={2}>
+                      <Space size={[4, 4]} wrap>
+                        {task.maintenanceWindows.map((w, i) => (
+                          <Tag key={i} color="orange" style={{ fontFamily: 'monospace' }}>
+                            {`${w.start} → ${w.end}${w.description ? `（${w.description}）` : ''}`}
+                          </Tag>
+                        ))}
+                      </Space>
+                    </Descriptions.Item>
+                  )}
                   <Descriptions.Item label="入口文件">{task.entrypoint || '-'}</Descriptions.Item>
+                  {task.requirements && task.requirements.length > 0 && (
+                    <Descriptions.Item label="依赖包">
+                      <Space size={[4, 4]} wrap>
+                        {task.requirements.map((r) => <Tag key={r} color="blue">{r}</Tag>)}
+                      </Space>
+                    </Descriptions.Item>
+                  )}
+                  {/* FEAT-11: 运行手册（markdown 排障知识） */}
+                  {task.runbook && (
+                    <Descriptions.Item label="Runbook" span={2}>
+                      <Typography.Paragraph
+                        style={{ marginBottom: 0, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 12 }}
+                      >
+                        {task.runbook}
+                      </Typography.Paragraph>
+                    </Descriptions.Item>
+                  )}
                   <Descriptions.Item label="超时">{task.timeout ? `${task.timeout} 秒` : '-'}</Descriptions.Item>
+                  {/* CORE-04: 超时策略分级展示 */}
+                  <Descriptions.Item label="超时动作">
+                    {task.timeoutAction === 'kill_retry'
+                      ? '终止并重试'
+                      : task.timeoutAction === 'notify_only'
+                        ? '仅通知'
+                        : '终止（默认）'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="超时预警">
+                    {typeof task.timeoutWarnRatio === 'number'
+                      ? `超时时间的 ${task.timeoutWarnRatio}%`
+                      : '未启用'}
+                  </Descriptions.Item>
                   <Descriptions.Item label="最大重试">{task.maxRetry ?? 0} 次</Descriptions.Item>
+                  {/* CORE-02: 可重试错误类型白名单展示（null/[] = 全部可重试） */}
+                  <Descriptions.Item label="可重试错误类型" span={2}>
+                    {task.retryableErrors && task.retryableErrors.length > 0 ? (
+                      <Space size={[4, 4]} wrap>
+                        {task.retryableErrors.map((r) => (
+                          <Tag key={r} color="orange">
+                            {RETRYABLE_ERROR_OPTIONS.find((o) => o.value === r)?.label ?? r}
+                          </Tag>
+                        ))}
+                      </Space>
+                    ) : (
+                      <Text type="secondary">全部可重试（未配置白名单）</Text>
+                    )}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="优先级">
+                    <Tag color={priorityTag(task.priority).color}>{priorityTag(task.priority).label}</Tag>
+                  </Descriptions.Item>
                   <Descriptions.Item label="调度模式">
                     {task.executeMode === 'broadcast' ? '广播（所有节点）' : task.executeMode === 'single' ? '单节点' : task.executeMode || '自动'}
                   </Descriptions.Item>
@@ -337,6 +502,17 @@ export default function TaskDetailPage() {
             ),
           },
           {
+            key: 'deps',
+            label: (
+              <span><ApartmentOutlined /> 依赖 DAG</span>
+            ),
+            children: (
+              <Card>
+                <TaskDependencyGraph taskId={id!} />
+              </Card>
+            ),
+          },
+          {
             key: 'executions',
             label: (
               <span>
@@ -352,12 +528,20 @@ export default function TaskDetailPage() {
                   </Space>
                 }
               >
+                {/* FEAT-05（UI 半场）：最近一次执行的产物列表；无产物时组件返回 null，整段不渲染 */}
+                {executions.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <ArtifactsList execId={executions[0].id} />
+                  </div>
+                )}
                 <Table<TaskExecution>
                   rowKey="id"
                   columns={execColumns}
                   dataSource={executions}
                   loading={execLoading}
                   size="small"
+                  // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ 横向滚动兜底（值班手机看失败原因）
+                  scroll={{ x: 620 }}
                   pagination={{
                     total: execTotal,
                     pageSize: 20,
@@ -419,7 +603,7 @@ export default function TaskDetailPage() {
         width={560}
       >
         {aiLoading ? (
-          <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="AI 分析中…" /></div>
+          <div style={{ textAlign: 'center', padding: 40 }}><PageSkeleton variant="table" rows={2} /></div>
         ) : aiSuggestion ? (
           <div>
             <Descriptions size="small" column={1} bordered style={{ marginBottom: 16 }}>
@@ -435,6 +619,40 @@ export default function TaskDetailPage() {
             )}
           </div>
         ) : null}
+      </Modal>
+
+      {/* CORE-03 收尾：保存为自定义模板弹窗——config 由 extractTemplateConfigFromTask
+          白名单抽取（CreateTaskDto 子集，后端 forbidNonWhitelisted 校验），此处只填模板元信息 */}
+      <Modal
+        title={<Space><SaveOutlined /> 保存为自定义模板</Space>}
+        open={tplModalOpen}
+        onCancel={() => setTplModalOpen(false)}
+        onOk={handleSaveAsTemplate}
+        okText="保存模板"
+        okButtonProps={{ loading: tplSaving, 'data-testid': 'tpl-save-confirm' } as never}
+        cancelText="取消"
+        width={520}
+        destroyOnHidden
+      >
+        <Form form={tplForm} layout="vertical">
+          <Form.Item
+            name="name"
+            label="模板名称"
+            rules={[{ required: true, whitespace: true, message: '请输入模板名称' }]}
+          >
+            <Input placeholder="如：每日报表生成" maxLength={128} data-testid="tpl-name-input" />
+          </Form.Item>
+          <Form.Item name="description" label="描述（可选）">
+            <Input.TextArea rows={2} placeholder="模板用途说明" maxLength={500} data-testid="tpl-desc-input" />
+          </Form.Item>
+          <Form.Item name="category" label="分类（可选）">
+            <Input placeholder="如：备份 / 巡检 / 同步" maxLength={32} data-testid="tpl-category-input" />
+          </Form.Item>
+        </Form>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          将保存当前任务的完整配置（触发方式/运行时/超时/重试/参数等），不含名称与运行状态；
+          保存后可在「任务模板」页一键复用。
+        </Typography.Text>
       </Modal>
     </div>
   );

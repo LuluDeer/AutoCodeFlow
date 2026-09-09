@@ -32,9 +32,23 @@ curl http://localhost:4873/-/ping     # 期望 200 + {}
 | `max_body_size` | `100mb` | 发布包体积上限 |
 | `web.enabled` | `true` | 纯内网可置 `false` 关 Web UI（npm 协议不受影响） |
 | `listen` | `0.0.0.0:4873` | 容器内监听；对外暴露面在 compose `ports` / 防火墙收敛 |
+| compose `ports` | `127.0.0.1:4873:4873` | 默认仅宿主本机可访问；executor 走 Docker 内网服务名 |
+
+## 权限矩阵（BUG-16 复审）
+
+| 主体 | 操作 | 预期 | 配置依据 |
+|---|---|---|---|
+| Anonymous | ping / healthcheck | ✅ Allowed | Verdaccio `/-/ping` 用于 compose healthcheck，不暴露包内容 |
+| Anonymous | package metadata / tarball download | ❌ Denied | `packages.'**'.access = $authenticated` |
+| Anonymous | publish / unpublish | ❌ Denied | `packages.'**'.publish/unpublish = $authenticated` |
+| Authenticated user | package metadata / tarball download | ✅ Allowed | `@autoflow/*` 与 `**` 均要求 `$authenticated` |
+| Authenticated user | publish / unpublish | ✅ Allowed | 内部仓库按登录用户授权；如需分角色，后续接入外部 auth plugin |
+| Public npm fallback | cache missing public package | ✅ Authenticated only | `packages.'**'.proxy = npmjs`，但 access 仍先要求 `$authenticated` |
+
+上述边界由 `npm run test:registry-npm` 静态校验：禁止 `$all`/`$anonymous` 包权限，确认 token 过期时间、持久化 htpasswd、只读配置挂载与默认 loopback 端口绑定。
 
 加固建议（按需）：
-- 把 compose 的 `ports` 收紧为 `'127.0.0.1:4873:4873'` 或内网网段白名单；
+- 保持 compose 的 `ports` 为 `'127.0.0.1:4873:4873'`，确需外部发布时通过环境覆盖或反向代理显式开放；
 - 反向代理加 TLS 后，`listen` 可改为容器网络内地址；
 - 禁止自助注册：`auth.htpasswd.max_users: -1`，用户由运维离线写入 htpasswd。
 
