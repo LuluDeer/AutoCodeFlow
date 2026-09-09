@@ -40,6 +40,7 @@ import { Optional } from "@nestjs/common";
 import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 // CORE-05: 评分公式抽出（selectLeastLoaded / dispatch 双站点共享同一实现）
 import { computeExecutorLoadScore } from "./executor-score.util";
+import type { EstimatedDurations } from "./executor-score.util";
 // OBS-01: 派发链路追踪——dispatch span + traceparent 头透传执行器
 import { TracingService } from "../../common/tracing/tracing.service";
 // AUTH-05: 高危操作（rotate-token / 删除执行器）审计留痕
@@ -116,9 +117,8 @@ export class ExecutorService {
     @InjectRepository(TaskExecution)
     private execRepo: Repository<TaskExecution>,
     @InjectRepository(Task) private taskRepo: Repository<Task>,
-    // FEAT-04: metrics-history read side (24h trend sampling). The writer is
-    // external (executor-node heartbeat pipeline); the repository is read-only
-    // from this service's perspective.
+    // FEAT-04: metrics-history pipeline. Heartbeat keeps the current executor
+    // row fresh and appends a best-effort snapshot for the 24h trend read side.
     @InjectRepository(ExecutorMetricsHistory)
     private metricsHistoryRepo: Repository<ExecutorMetricsHistory>,
     @InjectQueue("task-queue") private taskQueue: Queue,
@@ -808,6 +808,25 @@ export class ExecutorService {
     }
 
     const saved = await this.repo.save(e);
+    try {
+      await this.metricsHistoryRepo.save(
+        this.metricsHistoryRepo.create({
+          executorAddress: saved.address,
+          cpuUsage: saved.cpuUsage ?? null,
+          memUsage: saved.memUsage ?? null,
+          diskUsage: saved.diskUsage ?? null,
+          runningTaskCount: saved.runningTaskCount ?? 0,
+          totalTaskCount: saved.totalTaskCount ?? 0,
+          failedTaskCount: saved.failedTaskCount ?? 0,
+          avgExecutionTime: null,
+          uptimeSeconds: 0,
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `metrics history write failed for executor ${address}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     return saved;
   }
 
@@ -929,21 +948,20 @@ export class ExecutorService {
     // (CORE-05: executors currently running long-estimated tasks score worse,
     // so a long task is preferentially steered to the emptier executor).
     // Executors at or above max capacity are excluded before scoring.
-    const scored = (
-      await Promise.all(
-        candidates
-          .filter((e) => {
-            const max = e.maxConcurrentTasks ?? Infinity;
-            return e.runningTaskCount < max;
-          })
-          .map(async (e) => ({
-            executor: e,
-            score: computeExecutorLoadScore(e, {
-              estimatedDurations: await this.estimatedDurationsFor(e),
-            }),
-          })),
-      )
-    ).sort((a, b) => a.score - b.score);
+    const available = candidates.filter((e) => {
+      const max = e.maxConcurrentTasks ?? Infinity;
+      return e.runningTaskCount < max;
+    });
+    const estimatedDurations =
+      await this.estimatedDurationsByExecutor(available);
+    const scored = available
+      .map((e) => ({
+        executor: e,
+        score: computeExecutorLoadScore(e, {
+          estimatedDurations: estimatedDurations.get(e.address) ?? [],
+        }),
+      }))
+      .sort((a, b) => a.score - b.score);
 
     if (scored.length === 0) {
       throw new ServiceUnavailableException(
@@ -954,31 +972,42 @@ export class ExecutorService {
   }
 
   /**
-   * CORE-05: 该执行器当前运行中任务的预估时长集合（秒）。批量按地址取
-   * RUNNING 执行行，只取 taskId → tasks.estimatedDurationSec 一跳。
+   * CORE-05: 批量读取候选执行器当前 RUNNING 任务的预估时长集合（秒）。
    * 任何失败（查询异常/行丢失）按"无估时"降级 → longTaskPenalty=0，
    * 评分退化为旧公式，调度永不因可观测性辅助面中断。
    */
-  private async estimatedDurationsFor(executor: Executor): Promise<number[]> {
-    if (executor.runningTaskCount <= 0) return [];
+  private async estimatedDurationsByExecutor(
+    executors: Executor[],
+  ): Promise<Map<string, EstimatedDurations>> {
+    const active = executors.filter((e) => e.runningTaskCount > 0);
+    if (active.length === 0) return new Map();
+
     try {
+      const addresses = [...new Set(active.map((e) => e.address))];
       const running = await this.execRepo.find({
         where: {
-          executorAddress: executor.address,
+          executorAddress: In(addresses),
           status: ExecutionStatus.RUNNING,
         },
-        select: ["taskId"],
+        select: ["executorAddress", "taskId"],
       });
-      if (running.length === 0) return [];
+      if (running.length === 0) return new Map();
+
       const ids = [...new Set(running.map((r) => r.taskId))];
       const rows = await this.taskRepo.find({
         where: { id: In(ids) },
         select: ["id", "estimatedDurationSec"],
       });
       const byId = new Map(rows.map((r) => [r.id, r.estimatedDurationSec]));
-      return running.map((r) => byId.get(r.taskId) ?? null);
+      const byAddress = new Map<string, EstimatedDurations>();
+      for (const row of running) {
+        const durations = byAddress.get(row.executorAddress) ?? [];
+        durations.push(byId.get(row.taskId) ?? null);
+        byAddress.set(row.executorAddress, durations);
+      }
+      return byAddress;
     } catch {
-      return [];
+      return new Map();
     }
   }
 
@@ -1066,14 +1095,14 @@ export class ExecutorService {
     // 3. Weighted scoring via the shared CORE-05 formula (load 50% + CPU 25% +
     // mem 25% + long-task penalty 10%, see executor-score.util.ts), try
     // optimistic lock in order.
-    const withScores = await Promise.all(
-      candidates.map(async (c) => ({
-        executor: c,
-        score: computeExecutorLoadScore(c, {
-          estimatedDurations: await this.estimatedDurationsFor(c),
-        }),
-      })),
-    );
+    const estimatedDurations =
+      await this.estimatedDurationsByExecutor(candidates);
+    const withScores = candidates.map((c) => ({
+      executor: c,
+      score: computeExecutorLoadScore(c, {
+        estimatedDurations: estimatedDurations.get(c.address) ?? [],
+      }),
+    }));
     const sorted = withScores
       .sort((a, b) => a.score - b.score)
       .map((s) => s.executor);
@@ -1938,8 +1967,9 @@ export class ExecutorService {
    * running-task count) for one executor, aggregated into fixed 15-minute AVG
    * buckets (≤96 points), ascending by timestamp.
    *
-   * Data source: executor_metrics_history (written by the executor-node
-   * heartbeat pipeline; compound index executorAddress + createdAt). AVG
+   * Data source: executor_metrics_history (best-effort snapshots appended by
+   * heartbeat after the current executor row is saved; compound index
+   * executorAddress + createdAt). AVG
    * ignores NULLs: a bucket whose heartbeats never reported cpuUsage/memUsage
    * yields null — the frontend draws a gap for those points (connectNulls).
    * Returns an EMPTY array when the executor has no history rows (fresh
