@@ -1,6 +1,6 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { DataSource, QueryFailedError } from "typeorm";
+import { DataSource, QueryFailedError, IsNull, Or, In } from "typeorm";
 import { getQueueToken } from "@nestjs/bullmq";
 import {
   BadRequestException,
@@ -3720,6 +3720,42 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       await service.findAll({ page: 1, pageSize: 10 } as any);
       const arg = taskRepo.findAndCount.mock.calls[0][0];
       expect(Object.keys(arg.where)).toEqual(["status"]);
+    });
+
+    // AUTH-01: projectId 过滤——"default" 映射为 Or(IsNull, In([默认项目]))，
+    // 具体 uuid 精确匹配；不传时 projectId 不出现在 where。
+    describe("projectId filter (AUTH-01)", () => {
+      const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
+
+      it("projectId='default' → Or(IsNull(), In([默认项目]))", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[], 0]);
+        await service.findAll({
+          page: 1,
+          pageSize: 10,
+          projectId: "default",
+        } as any);
+        const arg = taskRepo.findAndCount.mock.calls[0][0];
+        expect(arg.where.projectId).toEqual(Or(IsNull(), In([DEFAULT_UUID])));
+      });
+
+      it("具体 uuid → 精确等值过滤", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[], 0]);
+        const pid = "33333333-3333-4333-8333-333333333333";
+        await service.findAll({
+          page: 1,
+          pageSize: 10,
+          projectId: pid,
+        } as any);
+        const arg = taskRepo.findAndCount.mock.calls[0][0];
+        expect(arg.where.projectId).toBe(pid);
+      });
+
+      it("不传 projectId → where 不含 projectId 键", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[], 0]);
+        await service.findAll({ page: 1, pageSize: 10 } as any);
+        const arg = taskRepo.findAndCount.mock.calls[0][0];
+        expect(arg.where).not.toHaveProperty("projectId");
+      });
     });
   });
 
