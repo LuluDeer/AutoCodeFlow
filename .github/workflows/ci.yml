@@ -820,11 +820,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # ── SDK 文档站构建验证（ECO-05）────────────────────────────────
-  # 仅验证 packages/docs-site（VitePress）可构建——死链会 fail build
-  # （ignoreDeadLinks: false），build 绿即站点无死链、无白屏级错误。
-  # 不部署：托管位置（GitHub Pages / 平台自身）留后续决策，
-  # 见 packages/docs-site/README.md 与该站 release.md。
+  # ── SDK 文档站构建验证（ECO-05）+ 源头文档同步校验（DOC-09）──────
+  # ① DOC-09 sync-check：packages/docs-site 是仓库文档的镜像视图（版本号/
+  #    截断常量/failureReason 枚举/CallbackItemDto 字段/env 注入表/能力矩阵/
+  #    契约面七面机检），源头改了站点没同步时这里变红，人工按差异清单同步
+  #    （不做自动覆盖——站点侧的导航/链接重组痕迹会被覆盖破坏）。
+  # ② VitePress build：死链会 fail build（ignoreDeadLinks: false），build 绿
+  #    即站点无死链、无白屏级错误。
+  # 部署在独立 workflow docs-site-deploy.yml（仅 main push / 手动，P0-3），
+  # 本 job 只做验证，所有分支形态都跑。
   docs-site-build:
     runs-on: ubuntu-latest
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
@@ -836,6 +840,11 @@ jobs:
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: packages/docs-site/package-lock.json
+      # 零依赖 node 脚本，无需 npm ci 即可运行；selftest 用 tmp 沙箱验证判据本身
+      - name: Sync check (DOC-09)
+        run: |
+          node packages/docs-site/scripts/sync-check.mjs
+          node packages/docs-site/scripts/sync-check.selftest.mjs
       - run: npm ci
         working-directory: packages/docs-site
       - run: npm run build
