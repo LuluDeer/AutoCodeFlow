@@ -772,6 +772,46 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # ── DSK-02：Linux 桌面端打包闸（AppImage x64 + deb x64）──────────────
+  # 只构建出包并上传 artifact，不发布（publish 由 tag 触发的 release.yml /
+  # electron-builder publish 配置承接）。触发形态对齐 e2e-full-windows 等
+  # 重型 job：仅 PR / workflow_dispatch（build:executor 会重打 ncc bundle
+  # + electron 下载 + 三段构建，秒级 push 轮不值得每次付这个成本）。
+  # PUBLISH_FOR_PULL_REQUEST 未设 → electron-builder 在 PR 构建里跳过
+  # publish 步骤，无需 GH_TOKEN（electron-builder.yml publish 段只影响
+  # 打包生成的 app-update.yml 与发布上传，不阻塞出包）。
+  desktop-linux-bundle:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/executor-desktop/package-lock.json
+      - run: npm ci
+        working-directory: apps/executor-desktop
+      - name: Main-process selftests (incl. updater)
+        working-directory: apps/executor-desktop
+        run: npm run test:main
+      - name: Build AppImage + deb (x64)
+        working-directory: apps/executor-desktop
+        env:
+          # electron 二进制官方源被墙/慢时的镜像兜底；runner 上通常无需生效
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+        run: npm run dist:linux
+      - name: Upload Linux bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-bundles
+          path: |
+            apps/executor-desktop/dist-electron/*.AppImage
+            apps/executor-desktop/dist-electron/*.deb
+            apps/executor-desktop/dist-electron/latest-linux.yml
+          if-no-files-found: error
+          retention-days: 14
+
   # ── SDK 文档站构建验证（ECO-05）────────────────────────────────
   # 仅验证 packages/docs-site（VitePress）可构建——死链会 fail build
   # （ignoreDeadLinks: false），build 绿即站点无死链、无白屏级错误。
@@ -792,3 +832,77 @@ jobs:
         working-directory: packages/docs-site
       - run: npm run build
         working-directory: packages/docs-site
+
+  # ── ARCH-23：API 契约 → 前端类型 drift 拦截 ─────────────────────
+  # openapi.json（admin-api swagger:export 产物）与
+  # admin-web/src/types/generated/api-types.ts（openapi-typescript 产物）
+  # 都是「生成物入库」：改了 DTO/控制器装饰器而没重新导出+生成时，这里变红。
+  # 生成链需要 DB+Redis（export e2e 走完整 AppModule bootstrap），故挂
+  # service 容器，形态对齐 admin-api-test。
+  api-types-drift:
+    runs-on: ubuntu-latest
+    # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
+    if: github.event_name != 'schedule'
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: autoflow
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: autoflow_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: autoflow
+      DB_PASSWORD: test
+      DB_DATABASE: autoflow_test
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      JWT_SECRET: test-jwt-secret-32chars-long-here
+      JWT_REFRESH_SECRET: test-refresh-secret-32chars-long
+      EXECUTOR_SECRET: test-executor-secret
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/admin-api/package-lock.json
+            apps/admin-web/package-lock.json
+      - run: npm ci
+        working-directory: apps/admin-api
+      - run: npm ci
+        working-directory: apps/admin-web
+      # ① 重新导出 openapi.json → 与库内版本 diff（契约面 drift）
+      - name: Export OpenAPI and diff against committed openapi.json
+        run: |
+          npm run swagger:export
+          git diff --exit-code -- openapi.json || {
+            echo "::error::openapi.json 与装饰器元数据漂移——改了 API 契约请重跑 npm run swagger:export 并提交产物"
+            exit 1
+          }
+        working-directory: apps/admin-api
+      # ② 重新生成前端类型 → 与库内版本 diff（生成面 drift）
+      - name: Generate api-types and diff against committed api-types.ts
+        run: |
+          npm run gen:api-types
+          git diff --exit-code -- src/types/generated/api-types.ts || {
+            echo "::error::api-types.ts 与 openapi.json 漂移——请重跑 npm run gen:api-types 并提交产物"
+            exit 1
+          }
+        working-directory: apps/admin-web
