@@ -15,6 +15,10 @@ const PASS = 'admin123';
 
 // ── 登录辅助 ─────────────────────────────────────────────────────────────────
 async function login(page) {
+  // page.evaluate 回调在浏览器侧执行，Node 作用域的 API 常量不存在
+  // （CI 实爆 ReferenceError: API is not defined）。经 addInitScript 注入
+  // 全局，evaluate 内统一引用 window.__E2E_API__。
+  await page.addInitScript(([api]) => { window.__E2E_API__ = api; }, [API]);
   await page.goto(`${BASE}/login`);
   // Ant Design form — try multiple selector strategies
   const userInput = page.locator('input[id*="username"], input[placeholder*="用户名"], input[placeholder*="username"], input[name="username"]').first();
@@ -137,7 +141,7 @@ test('4. 手动触发任务 & 查看执行', async ({ page }) => {
 
   // 先通过 API 获取任务列表
   const token = await page.evaluate(async () => {
-    const r = await fetch(`${API}/api/auth/login`, {
+    const r = await fetch(`${window.__E2E_API__}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'admin123' }),
@@ -147,7 +151,7 @@ test('4. 手动触发任务 & 查看执行', async ({ page }) => {
   });
 
   const tasks = await page.evaluate(async (tok) => {
-    const r = await fetch(`${API}/api/tasks?page=1&pageSize=5`, {
+    const r = await fetch(`${window.__E2E_API__}/api/tasks?page=1&pageSize=5`, {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.json();
@@ -178,7 +182,7 @@ test('4. 手动触发任务 & 查看执行', async ({ page }) => {
       if (tasks?.data?.items?.length > 0) {
         const taskId = tasks.data.items[0].id;
         const trigResp = await page.evaluate(async ({ id, tok }) => {
-          const r = await fetch(`${API}/api/tasks/${id}/trigger`, {
+          const r = await fetch(`${window.__E2E_API__}/api/tasks/${id}/trigger`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
           });
@@ -223,14 +227,14 @@ test('5. 执行日志 — 列表与详情', async ({ page }) => {
     console.log('  ⚠ 暂无执行记录');
     // 通过 API 查验
     const token = await page.evaluate(async () => {
-      const r = await fetch(`${API}/api/auth/login`, {
+      const r = await fetch(`${window.__E2E_API__}/api/auth/login`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: 'admin', password: 'admin123' }),
       });
       return (await r.json()).data?.accessToken;
     });
     const execs = await page.evaluate(async (tok) => {
-      const r = await fetch(`${API}/api/task-executions?page=1&pageSize=5`, {
+      const r = await fetch(`${window.__E2E_API__}/api/task-executions?page=1&pageSize=5`, {
         headers: { Authorization: `Bearer ${tok}` },
       });
       return r.json();
@@ -310,14 +314,14 @@ test('8. 应用部署管理', async ({ page }) => {
   await login(page);
   // 获取应用列表
   const token = await page.evaluate(async () => {
-    const r = await fetch(`${API}/api/auth/login`, {
+    const r = await fetch(`${window.__E2E_API__}/api/auth/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'admin123' }),
     });
     return (await r.json()).data?.accessToken;
   });
   const apps = await page.evaluate(async (tok) => {
-    const r = await fetch(`${API}/api/applications?page=1&pageSize=5`, {
+    const r = await fetch(`${window.__E2E_API__}/api/applications?page=1&pageSize=5`, {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.json();
@@ -345,7 +349,7 @@ test('9. 并发调度状态查询', async ({ page, request }) => {
   // 先加载前端页面，使后续 page.evaluate 的 fetch 携带合法 Origin（CORS 白名单）
   await page.goto(BASE);
   const token = await page.evaluate(async () => {
-    const r = await fetch(`${API}/api/auth/login`, {
+    const r = await fetch(`${window.__E2E_API__}/api/auth/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'admin123' }),
     });
@@ -354,7 +358,7 @@ test('9. 并发调度状态查询', async ({ page, request }) => {
 
   // 获取任务列表
   const tasks = await page.evaluate(async (tok) => {
-    const r = await fetch(`${API}/api/tasks?page=1&pageSize=10`, {
+    const r = await fetch(`${window.__E2E_API__}/api/tasks?page=1&pageSize=10`, {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.json();
@@ -367,7 +371,7 @@ test('9. 并发调度状态查询', async ({ page, request }) => {
   const toTrigger = taskItems.slice(0, 3);
   const triggerResults = await page.evaluate(async ({ items, tok }) => {
     return Promise.all(items.map(t =>
-      fetch(`${API}/api/tasks/${t.id}/trigger`, {
+      fetch(`${window.__E2E_API__}/api/tasks/${t.id}/trigger`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
       }).then(r => r.json()).then(d => ({ id: t.id, name: t.name, result: d }))
@@ -381,7 +385,7 @@ test('9. 并发调度状态查询', async ({ page, request }) => {
   // 等待片刻后查看执行状态
   await page.waitForTimeout(3000);
   const execStatus = await page.evaluate(async (tok) => {
-    const r = await fetch(`${API}/api/task-executions?page=1&pageSize=10`, {
+    const r = await fetch(`${window.__E2E_API__}/api/task-executions?page=1&pageSize=10`, {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.json();
@@ -406,7 +410,7 @@ test('10. 中断/终止运行中的任务', async ({ page }) => {
   // 先加载前端页面，使后续 page.evaluate 的 fetch 携带合法 Origin（CORS 白名单）
   await page.goto(BASE);
   const token = await page.evaluate(async () => {
-    const r = await fetch(`${API}/api/auth/login`, {
+    const r = await fetch(`${window.__E2E_API__}/api/auth/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'admin123' }),
     });
@@ -415,7 +419,7 @@ test('10. 中断/终止运行中的任务', async ({ page }) => {
 
   // 查询运行中的执行
   const execStatus = await page.evaluate(async (tok) => {
-    const r = await fetch(`${API}/api/task-executions?status=running&page=1&pageSize=5`, {
+    const r = await fetch(`${window.__E2E_API__}/api/task-executions?status=running&page=1&pageSize=5`, {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.json();
@@ -428,7 +432,7 @@ test('10. 中断/终止运行中的任务', async ({ page }) => {
     const execId = runningItems[0].id;
     //尝试终止 API
     const killResp = await page.evaluate(async ({ id, tok }) => {
-      const r = await fetch(`${API}/api/task-executions/${id}/cancel`, {
+      const r = await fetch(`${window.__E2E_API__}/api/task-executions/${id}/cancel`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
       });
@@ -486,14 +490,14 @@ test('11. 任务启停控制', async ({ page }) => {
 
   // API 层面验证调度器状态
   const token = await page.evaluate(async () => {
-    const r = await fetch(`${API}/api/auth/login`, {
+    const r = await fetch(`${window.__E2E_API__}/api/auth/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'admin123' }),
     });
     return (await r.json()).data?.accessToken;
   });
   const schedulerStatus = await page.evaluate(async (tok) => {
-    const r = await fetch(`${API}/api/scheduler/status`, {
+    const r = await fetch(`${window.__E2E_API__}/api/scheduler/status`, {
       headers: { Authorization: `Bearer ${tok}` },
     });
     return r.ok ? r.json() : { status: r.status };
@@ -550,14 +554,14 @@ test('14. 审计日志', async ({ page }) => {
   if (!found) {
     console.log('  ⚠ 审计日志页面路径未知，通过 API 查询');
     const token = await page.evaluate(async () => {
-      const r = await fetch(`${API}/api/auth/login`, {
+      const r = await fetch(`${window.__E2E_API__}/api/auth/login`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: 'admin', password: 'admin123' }),
       });
       return (await r.json()).data?.accessToken;
     });
     const audit = await page.evaluate(async (tok) => {
-      const r = await fetch(`${API}/api/audit-logs?page=1&pageSize=5`, {
+      const r = await fetch(`${window.__E2E_API__}/api/audit-logs?page=1&pageSize=5`, {
         headers: { Authorization: `Bearer ${tok}` },
       });
       return r.ok ? r.json() : { status: r.status };
@@ -623,6 +627,7 @@ async function apiLogin(request, username = USER, password = PASS) {
 
 // 以指定账号 UI 登录（对齐既有 login 辅助的选择器风格）
 async function loginAs(page, username, password) {
+  await page.addInitScript(([api]) => { window.__E2E_API__ = api; }, [API]);
   await page.goto(`${BASE}/login`);
   const userInput = page.locator('input[id*="username"], input[placeholder*="用户名"], input[placeholder*="username"], input[name="username"]').first();
   const passInput = page.locator('input[type="password"]').first();
