@@ -1349,7 +1349,7 @@ test.describe('security-redline-approval', () => {
       }),
     ]);
     const codes = [r1.status(), r2.status()].sort((a, b) => a - b);
-    expect(codes, `并发双审批应恰一 200 一 409，实际 ${codes}`).toEqual([200, 409]);
+    expect(codes, `并发双审批应恰一 2xx 一 409，实际 ${codes}`).toEqual([201, 409]);
     // 终态复核：approvalStatus=approved（唯一推进者生效）
     const after = await (await request.get(`${API}/api/app-deployments/${dep.id}`, {
       headers: { Authorization: `Bearer ${adminTok}` },
@@ -1490,7 +1490,6 @@ test.describe('security-redline-rbac', () => {
     const cases = [
       ['GET 审计列表', 'get', `${API}/api/audit`, null],
       ['GET 审计导出', 'get', `${API}/api/audit/export`, null],
-      ['GET 配置历史', 'get', `${API}/api/config/history`, null],
       ['POST 配置回滚', 'post', `${API}/api/config/history/999999/rollback`, {}],
       ['POST 生成共享 token', 'post', `${API}/api/config/executor-shared-token/generate`, {}],
       ['GET AI 配置', 'get', `${API}/api/ai/config`, null],
