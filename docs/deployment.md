@@ -206,7 +206,15 @@ docker compose down
 # 强制重新构建镜像
 docker compose build --no-cache
 docker compose up -d
+
+# ARM64 / Apple Silicon 部署前核对 multi-arch manifest（发布镜像模式）
+docker buildx imagetools inspect <image>:<tag>
+docker compose pull && docker compose up -d
 ```
+
+CI 的 `docker-multiarch-build` job 只构建不推送，覆盖 `admin-api`、`executor-node`、
+`executor-python` 的 `linux/amd64,linux/arm64` 构建可达性；生产发布镜像接入后，应在
+发布闸保留 manifest inspect 与 ARM64 冒烟。
 
 ### 数据库操作
 
