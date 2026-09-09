@@ -1,6 +1,6 @@
 /**
  * CORE-05: dispatch / selectLeastLoaded 消费新 loadScore 的集成断言——
- * estimatedDurationsFor 取数契约、长任务倾向空闲执行器、查询失败降级。
+ * estimatedDurationsByExecutor 取数契约、长任务倾向空闲执行器、查询失败降级。
  * 复用 executor.service.spec 的 mock repo 结构（mk / makeRepo 同形态）。
  */
 import { Test } from "@nestjs/testing";
@@ -99,30 +99,43 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
 
   it("selectLeastLoaded：跑长任务的执行器被让位——数值更满但只有短任务的执行器胜出", async () => {
     executorRepo.find.mockResolvedValue([
-      mk({ id: "e-long", runningTaskCount: 3, maxConcurrentTasks: 10 }),
-      mk({ id: "e-short", runningTaskCount: 4, maxConcurrentTasks: 10 }),
+      mk({
+        id: "e-long",
+        address: "long:3105",
+        runningTaskCount: 3,
+        maxConcurrentTasks: 10,
+      }),
+      mk({
+        id: "e-short",
+        address: "short:3105",
+        runningTaskCount: 4,
+        maxConcurrentTasks: 10,
+      }),
     ]);
-    execRepo.find
+    execRepo.find.mockResolvedValue([
       // e-long 的 RUNNING 行 → 关联任务预估 3600s
-      .mockResolvedValueOnce([{ taskId: "t1" }])
+      { executorAddress: "long:3105", taskId: "t1" },
       // e-short 的 RUNNING 行 → 关联任务预估 60s
-      .mockResolvedValueOnce([{ taskId: "t2" }]);
-    taskRepo.find
-      .mockResolvedValueOnce([{ id: "t1", estimatedDurationSec: 3600 }])
-      .mockResolvedValueOnce([{ id: "t2", estimatedDurationSec: 60 }]);
+      { executorAddress: "short:3105", taskId: "t2" },
+    ]);
+    taskRepo.find.mockResolvedValue([
+      { id: "t1", estimatedDurationSec: 3600 },
+      { id: "t2", estimatedDurationSec: 60 },
+    ]);
 
     const chosen = await service.selectLeastLoaded();
     expect(chosen.id).toBe("e-short");
   });
 
-  it("estimatedDurationsFor 取数契约：按地址+RUNNING 查执行行、去重 taskId 批量查任务表", async () => {
+  it("estimatedDurationsByExecutor 取数契约：按地址批量查 RUNNING 行、去重 taskId 批量查任务表", async () => {
     executorRepo.find.mockResolvedValue([
       mk({ id: "e1", address: "a:1", runningTaskCount: 2 }),
+      mk({ id: "e2", address: "a:2", runningTaskCount: 3 }),
     ]);
     execRepo.find.mockResolvedValue([
-      { taskId: "t1" },
-      { taskId: "t1" },
-      { taskId: "t2" },
+      { executorAddress: "a:1", taskId: "t1" },
+      { executorAddress: "a:1", taskId: "t1" },
+      { executorAddress: "a:2", taskId: "t2" },
     ]);
     taskRepo.find.mockResolvedValue([
       { id: "t1", estimatedDurationSec: 120 },
@@ -130,16 +143,19 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
     ]);
 
     await service.selectLeastLoaded();
-    expect(execRepo.find).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { executorAddress: "a:1", status: ExecutionStatus.RUNNING },
-      }),
+    expect(execRepo.find).toHaveBeenCalledTimes(1);
+    const execArg = execRepo.find.mock.calls[0][0];
+    expect(execArg.select).toEqual(["executorAddress", "taskId"]);
+    expect(execArg.where.status).toBe(ExecutionStatus.RUNNING);
+    expect(execArg.where.executorAddress.value).toEqual(
+      expect.arrayContaining(["a:1", "a:2"]),
     );
-    // 批量查询携带去重后的 taskId 集合（In(...) FindOperator）
     expect(taskRepo.find).toHaveBeenCalledTimes(1);
-    const arg = taskRepo.find.mock.calls[0][0];
-    expect(arg.select).toEqual(["id", "estimatedDurationSec"]);
-    expect(arg.where.id.value).toEqual(expect.arrayContaining(["t1", "t2"]));
+    const taskArg = taskRepo.find.mock.calls[0][0];
+    expect(taskArg.select).toEqual(["id", "estimatedDurationSec"]);
+    expect(taskArg.where.id.value).toEqual(
+      expect.arrayContaining(["t1", "t2"]),
+    );
   });
 
   it("估时查询抛错时降级：选主照常返回（评分为旧公式，不中断调度）", async () => {
@@ -155,10 +171,22 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
 
   it("runningTaskCount=0 的执行器不做估时查询（无运行任务即无惩罚项）", async () => {
     executorRepo.find.mockResolvedValue([
-      mk({ id: "e-idle", runningTaskCount: 0, maxConcurrentTasks: 10 }),
-      mk({ id: "e-none", runningTaskCount: 1, maxConcurrentTasks: 10 }),
+      mk({
+        id: "e-idle",
+        address: "idle:3105",
+        runningTaskCount: 0,
+        maxConcurrentTasks: 10,
+      }),
+      mk({
+        id: "e-none",
+        address: "busy:3105",
+        runningTaskCount: 1,
+        maxConcurrentTasks: 10,
+      }),
     ]);
-    execRepo.find.mockResolvedValue([{ taskId: "t9" }]);
+    execRepo.find.mockResolvedValue([
+      { executorAddress: "busy:3105", taskId: "t9" },
+    ]);
     taskRepo.find.mockResolvedValue([{ id: "t9", estimatedDurationSec: 3600 }]);
 
     const chosen = await service.selectLeastLoaded();
@@ -186,12 +214,14 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
         memUsage: 0,
       }),
     ]);
-    execRepo.find
-      .mockResolvedValueOnce([{ taskId: "t1" }])
-      .mockResolvedValueOnce([{ taskId: "t2" }]);
-    taskRepo.find
-      .mockResolvedValueOnce([{ id: "t1", estimatedDurationSec: 7200 }])
-      .mockResolvedValueOnce([{ id: "t2", estimatedDurationSec: 30 }]);
+    execRepo.find.mockResolvedValue([
+      { executorAddress: "long:3105", taskId: "t1" },
+      { executorAddress: "short:3105", taskId: "t2" },
+    ]);
+    taskRepo.find.mockResolvedValue([
+      { id: "t1", estimatedDurationSec: 7200 },
+      { id: "t2", estimatedDurationSec: 30 },
+    ]);
 
     await service.dispatch(
       { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
