@@ -1,0 +1,65 @@
+# P0-3：SDK 文档站（packages/docs-site，VitePress）发布到 GitHub Pages。
+#
+# ── host 裁定（ADR 简记，全文见 packages/docs-site/README.md）──────────
+# 三候选：GitHub Pages / admin-web /docs/ 独立容器 / 静态托管。裁定 Pages：
+#   · 零服务器成本（admin-web 容器方案要占部署资源 + 挂反向代理路由）；
+#   · CI 已有 docs-site-build job 验证构建（死链 fail build），产物可信；
+#   · 仓库公开，Pages 无鉴权需求；文档站是纯静态 VitePress 产物。
+# base 路径：项目页 = https://<owner>.github.io/AutoCodeFlow/ 子路径，
+# .vitepress/config.mts 的 base: '/AutoCodeFlow/' 与之对齐（勿改两处之一）。
+#
+# ── 触发条件（与 ci.yml 的 push 面有意不同）────────────────────────────
+# 仅 main push 或手动 workflow_dispatch 触发部署；develop push 不部署——
+# 文档站非发布物，每次 develop push 都上 Pages 只会制造无意义噪音与
+# 部署历史污染。PR/push 的构建与死链验证仍由 ci.yml 的 docs-site-build 承担，
+# 本 workflow 不重复构建验证（部署前置信任 CI 绿）。
+#
+# 前置一次性配置（仓库管理员）：Settings → Pages → Source 选
+# 「GitHub Actions」（否则 deploy-pages 步骤会报 Pages not enabled）。
+name: Deploy Docs Site
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Pages 官方三件套所需最小权限：部署写 Pages + OIDC token 换取部署凭证
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一分支新部署取消旧跑；部署期间并发组互斥，防止 Pages 产物交错覆盖
+concurrency:
+  group: docs-site-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-site-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: packages/docs-site/package-lock.json
+      # drift 校验前置：站点内容与仓库源头文档（版本号/端点/契约面）漂移时
+      # 拦截部署（DOC-09，判据与 ci.yml docs-site-build 共用同一脚本）
+      - name: Docs site sync check (DOC-09)
+        run: |
+          node packages/docs-site/scripts/sync-check.mjs
+          node packages/docs-site/scripts/sync-check.selftest.mjs
+      - run: npm ci
+        working-directory: packages/docs-site
+      - run: npm run build
+        working-directory: packages/docs-site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/docs-site/.vitepress/dist
+      - id: deployment
+        uses: actions/deploy-pages@v4

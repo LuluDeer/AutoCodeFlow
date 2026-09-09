@@ -21,7 +21,7 @@ features:
     title: 双 SDK 完全对齐
     details: 回调契约（CallbackItemDto）、per-execution token 鉴权链、fail-closed 禁用语义逐项对齐——差异逐条留档，见能力矩阵。
     link: /capability-matrix
-    linkText: 查看 23 项逐项对照
+    linkText: 查看 22 项逐项对照
   - icon: 📦
     title: 两套参考任选
     details: Node.js（@autocodeflow/sdk，npm）与 Python（autoflow-sdk，PyPI）各自完整的安装、凭据 env、HTTP / 日志 / 回调 API 表。

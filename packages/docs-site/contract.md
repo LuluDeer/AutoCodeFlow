@@ -70,7 +70,9 @@ vectors = json.loads((pathlib.Path(__file__).parents[2] / "contract-fixtures" / 
 | `logs` | 阶段性摘要（截断 512 KB） |
 | `errorMessage` | 失败信息（截断 4 KB） |
 | `failureReason` | 失败分类枚举（py 客户端白名单校验；默认 `script_error`） |
+| `exitCode` | 进程退出码（可选，int） |
 | `durationMs` | 耗时毫秒 |
+| `artifacts` | 产物清单（FEAT-05，best-effort 至多 20 条，终态回调时落盘 manifest） |
 
 per-execution token（`AUTOFLOW_CALLBACK_TOKEN`）仅授权本 `executionId`
 的回调，越权或过期一律 401（fail-closed）；执行器共享 token 绝不进入
