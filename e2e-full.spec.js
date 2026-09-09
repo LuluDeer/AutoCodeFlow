@@ -14,11 +14,16 @@ const USER = 'admin';
 const PASS = 'admin123';
 
 // ── 登录辅助 ─────────────────────────────────────────────────────────────────
-async function login(page) {
-  // page.evaluate 回调在浏览器侧执行，Node 作用域的 API 常量不存在
-  // （CI 实爆 ReferenceError: API is not defined）。经 addInitScript 注入
-  // 全局，evaluate 内统一引用 window.__E2E_API__。
+// page.evaluate 回调在浏览器侧执行，Node 作用域的 API 常量不存在
+// （CI 实爆 ReferenceError: API is not defined）。经 addInitScript 注入
+// 全局，evaluate 内统一引用 window.__E2E_API__。任何先 goto 再 evaluate 的
+// 路径都必须先过本注入（login/loginAs 内部已调用）。
+async function injectApi(page) {
   await page.addInitScript(([api]) => { window.__E2E_API__ = api; }, [API]);
+}
+
+async function login(page) {
+  await injectApi(page);
   await page.goto(`${BASE}/login`);
   // Ant Design form — try multiple selector strategies
   const userInput = page.locator('input[id*="username"], input[placeholder*="用户名"], input[placeholder*="username"], input[name="username"]').first();
@@ -347,6 +352,7 @@ test('8. 应用部署管理', async ({ page }) => {
 // ── 9. 并发调度：同时触发多个任务，查看状态 ─────────────────────────────────
 test('9. 并发调度状态查询', async ({ page, request }) => {
   // 先加载前端页面，使后续 page.evaluate 的 fetch 携带合法 Origin（CORS 白名单）
+  await injectApi(page);
   await page.goto(BASE);
   const token = await page.evaluate(async () => {
     const r = await fetch(`${window.__E2E_API__}/api/auth/login`, {
@@ -408,6 +414,7 @@ test('9. 并发调度状态查询', async ({ page, request }) => {
 // ── 10. 中断正在运行的任务 ───────────────────────────────────────────────────
 test('10. 中断/终止运行中的任务', async ({ page }) => {
   // 先加载前端页面，使后续 page.evaluate 的 fetch 携带合法 Origin（CORS 白名单）
+  await injectApi(page);
   await page.goto(BASE);
   const token = await page.evaluate(async () => {
     const r = await fetch(`${window.__E2E_API__}/api/auth/login`, {
@@ -627,7 +634,7 @@ async function apiLogin(request, username = USER, password = PASS) {
 
 // 以指定账号 UI 登录（对齐既有 login 辅助的选择器风格）
 async function loginAs(page, username, password) {
-  await page.addInitScript(([api]) => { window.__E2E_API__ = api; }, [API]);
+  await injectApi(page);
   await page.goto(`${BASE}/login`);
   const userInput = page.locator('input[id*="username"], input[placeholder*="用户名"], input[placeholder*="username"], input[name="username"]').first();
   const passInput = page.locator('input[type="password"]').first();
