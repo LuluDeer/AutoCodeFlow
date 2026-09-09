@@ -411,6 +411,77 @@ bash scripts/chaos-drill.sh --scenario B --pause-seconds 30   # B 短断网变�
 
 ---
 
+## 升级 runbook
+
+> 本节为 DOC-02 operator 手册补全项：给生产值班提供可重复的升级流程。详细发版检查项见 `docs/release-checklist.md`；这里强调运维执行顺序、回滚边界与升级后观测。
+
+### 升级前准备
+
+1. **确认版本与窗口**：记录当前 git tag/commit、目标 tag/commit、计划维护窗口、回滚负责人。
+2. **冻结高风险操作**：暂停非必要批量任务、部署任务和人工触发，避免迁移窗口内产生难以归因的新执行记录。
+3. **备份必需对象**：至少完成 PostgreSQL 逻辑备份和 `.env` secrets 备份；如启用 S3 日志或上传包依赖容器内 `uploads/`，同步按「备份对象清单」导出。
+4. **核对环境变量**：对比 `.env.example` 与生产 `.env`，新增必填变量先补齐；新增安全开关保持默认值时要记录理由。
+5. **查看迁移状态**：
+
+```bash
+docker compose exec admin-api npm run migration:show
+```
+
+### 标准升级步骤
+
+```bash
+# 1. 拉取目标版本
+git fetch --tags origin
+git checkout <target-tag-or-commit>
+
+# 2. 重建并滚动启动应用容器
+docker compose pull
+docker compose up -d --build admin-api admin-web
+
+# 3. 执行迁移（迁移链按幂等约束设计，可安全续跑）
+docker compose exec admin-api npm run migration:run
+
+# 4. 重启执行器，使运行时配置和 artifact 版本收敛
+docker compose up -d --build executor-node executor-python
+```
+
+多 admin-api 实例部署时，先升级非 Leader 实例并确认健康，再切 Leader/流量；Redis Leader Election + DB 条件 claim 会保护调度唯一性，但维护窗口内仍建议避免人为批量触发。
+
+### 升级后验证
+
+- [ ] `docker compose ps` 全部关键服务 healthy。
+- [ ] `curl http://localhost:3105/health` 返回 healthy，`/api/health/services` 中 DB/Redis/queue 正常。
+- [ ] `docker compose exec admin-api npm run migration:show` 无待执行迁移。
+- [ ] 管理后台可登录，任务列表、执行器列表、执行详情可打开。
+- [ ] 手动触发一个低风险测试任务，执行记录进入终态且日志可读。
+- [ ] `/api/metrics` 可抓取，Grafana dashboard 无新增 target down / queue backlog / DB pool 饱和告警。
+- [ ] 如启用通知渠道，发送一条测试通知或触发低风险告警链路验证外发。
+
+### 回滚边界
+
+- **仅代码/UI 回滚**：若迁移未执行或确认迁移为向后兼容，可切回上一 tag 并 `docker compose up -d --build`。
+- **迁移已执行**：优先查迁移是否提供安全 `revert`；涉及数据结构收缩、加密信封、append-only 守卫等变更时，不要盲目 `migration:revert`，先在测试库用升级前备份演练。
+- **数据回滚**：只有在业务接受恢复到备份点、并确认会丢弃备份点之后的新任务/审计/执行记录时，才从 pg_dump 恢复。
+
+```bash
+# 代码回滚
+git checkout <previous-tag-or-commit>
+docker compose up -d --build admin-api admin-web executor-node executor-python
+
+# 迁移回滚（仅限已确认可逆迁移）
+docker compose exec admin-api npm run migration:revert
+
+# 极端情况：从备份恢复数据库
+gunzip -c /backup/autoflow/db_YYYYMMDD_HHMMSS.sql.gz \
+  | docker compose exec -T postgres psql -U autoflow autoflow
+```
+
+### 升级记录归档
+
+每次升级后归档：目标版本、迁移列表、备份路径、验证截图/日志、异常与回滚动作。存量库跨 3 个版本升级演练仍归 QA-08，演练结果应反哺本 runbook。
+
+---
+
 ## 故障排查
 
 ### 任务一直处于 `pending` 状态
@@ -496,34 +567,29 @@ find ./data/executor-logs -name '*.log' -mtime +90 -delete
 
 ### Prometheus 指标
 
-指标端点：`http://localhost:3105/metrics`
+指标端点：`http://localhost:3105/api/metrics`。该端点受 JWT 保护，Prometheus 不能长期写死 15 分钟 TTL 的普通 access token；推荐按 `docs/observability/README.md` 第 1 节配置内网反向代理或 token 刷新 sidecar。
 
 关键指标：
 
 | 指标名 | 说明 |
 |--------|------|
-| `autoflow_task_executions_total` | 任务执行总次数（按状态分类） |
-| `autoflow_task_execution_duration_seconds` | 任务执行耗时分布 |
-| `autoflow_executor_online_count` | 在线执行器数量 |
-| `autoflow_queue_waiting_count` | 等待执行的任务数 |
-| `process_resident_memory_bytes` | API 进程内存占用 |
+| `autoflow_scheduler_ticks_total` | 调度扫描 tick 次数；停增通常表示调度停摆 |
+| `autoflow_queue_depth{state="waiting"}` | BullMQ 等待队列深度；`>100` 持续 10m 为默认积压告警 |
+| `autoflow_db_pool_active_connections` / `autoflow_db_pool_max_connections` | PG 连接池水位，active/max 超过 80% 需关注 |
+| `autoflow_sse_streams_active` / `autoflow_sse_streams_limit` | SSE 日志流槽位水位；多实例按 Prometheus 的 instance 维度求和 |
+| `autoflow_execution_callback_auth_total{result}` | 执行回调认证结果分类，bad signature / shared invalid 应接近 0 |
+| `autoflow_scheduler_trigger_latency_ms_bucket` | 调度触发延迟直方图，用于 Grafana P99 面板 |
+| `process_resident_memory_bytes` | admin-api 进程 RSS 内存占用（默认指标开启时存在） |
 
-### 接入 Grafana（示例）
+### 接入 Grafana
 
-```yaml
-# 在 docker-compose.yml 中添加 Grafana
-services:
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    volumes:
-      - grafana-data:/var/lib/grafana
-```
+观测性资产在 `docs/observability/`：
 
-然后在 Grafana 中添加 Prometheus 数据源，地址填 `http://admin-api:3105/metrics`。
+- `grafana-dashboard.json`：可导入 dashboard，uid `autoflow-obs-v1`，覆盖调度健康、回调认证、进程资源、容量水位和调度延迟。
+- `alerting-rules.yml`：Prometheus 告警规则，包含 scheduler down、metrics target down、queue backlog、callback auth 异常等规则。
+- `README.md`：抓取鉴权、Grafana 导入、Alertmanager → 平台通知渠道路由和完整指标字典。
+
+Grafana 中添加 Prometheus 数据源后导入 dashboard JSON；多实例部署时按 `instance` 变量查看单实例，按 job 聚合查看整体水位。
 
 ### 通知告警配置
 
