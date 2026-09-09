@@ -13,7 +13,7 @@ import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 
-vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn() } }));
+vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn(), list: vi.fn().mockResolvedValue({ items: [], total: 0 }) } }));
 vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
 }));
