@@ -101,6 +101,7 @@ export interface TaskExecution {
   startTime?: string;
   endTime?: string;
   duration?: number;
+  params?: Record<string, unknown> | null;
   logs?: string;
   errorMessage?: string;
   failureReason?: string | null;
