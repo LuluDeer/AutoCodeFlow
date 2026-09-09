@@ -20,6 +20,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── BUG-20：ARM64 / multi-arch 镜像构建闸（只 build，不 push，不跑 e2e）────
+  docker-multiarch-build:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: admin-api
+            context: apps/admin-api
+          - name: executor-node
+            context: apps/executor-node
+          - name: executor-python
+            context: apps/executor-python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: autocodeflow/${{ matrix.image.name }}:ci
+
   # ── Node.js services & packages ──────────────────────────
   admin-api-test:
     runs-on: ubuntu-latest

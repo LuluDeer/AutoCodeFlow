@@ -72,6 +72,12 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
+ARM64 / Apple Silicon 部署前，确认 CI 的 `docker-multiarch-build` job 已对
+`admin-api`、`executor-node`、`executor-python` 完成 `linux/amd64,linux/arm64`
+构建校验。若使用发布镜像而非本地 build，先用
+`docker buildx imagetools inspect <image>:<tag>` 确认 manifest 同时包含 amd64/arm64，
+再在 ARM64 机器执行 `docker compose pull && docker compose up -d`。
+
 ### 2.3 执行数据库迁移
 
 ```bash
@@ -129,6 +135,10 @@ docker compose logs admin-web --tail=20
 git tag -a v1.x.x -m "release: v1.x.x"
 git push origin v1.x.x
 ```
+
+当前 tag 发布链路发布 npm/PyPI 包；Docker 镜像发布启用前，multi-arch 验收以 CI buildx
+构建通过和部署机本地/私有仓库镜像冒烟为准。若后续接入 GHCR/DockerHub，发布前必须保留
+`docker buildx imagetools inspect` manifest 核对步骤。
 
 ### 4.2 更新 CHANGELOG（可选）
 
