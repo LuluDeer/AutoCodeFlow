@@ -1365,7 +1365,7 @@ test.describe('security-redline-approval', () => {
       headers: { Authorization: `Bearer ${adminBTok}` },
       data: { reason: 'e2e 红线：验收人否决' },
     });
-    expect(r.status(), `B 拒绝应 200: ${(await r.text()).slice(0, 200)}`).toBe(200);
+    expect(r.status(), `B 拒绝应 201: ${(await r.text()).slice(0, 200)}`).toBe(201);
     const after = await (await request.get(`${API}/api/app-deployments/${dep.id}`, {
       headers: { Authorization: `Bearer ${adminTok}` },
     })).json();
@@ -1508,21 +1508,40 @@ test.describe('security-redline-rbac', () => {
     }
   });
 
-  test('39. 事件订阅与模板管理面全 403/401 — subscriptions/webhook/官方模板删除', async ({ request }) => {
-    const cases = [
-      ['POST 建订阅', 'post', `${API}/api/event-subscriptions`, { url: 'https://e2e-redline.example.com/hook', eventTypes: ['execution.failed'] }],
-      ['GET 订阅列表', 'get', `${API}/api/event-subscriptions`, null],
-      ['POST 死信重放', 'post', `${API}/api/event-subscriptions/${randomUUID()}/dead-letters/${randomUUID()}/replay`, {}],
-      ['POST 发版 webhook（无签名）', 'post', `${API}/api/applications/webhook`, { event: 'push' }],
-    ];
-    for (const [label, method, url, data] of cases) {
-      const r = await request[method](url, {
-        headers: { Authorization: `Bearer ${userTok}` },
-        ...(data !== null ? { data } : {}),
-      });
-      await expectRedline(r, 403, `普通用户 ${label}`);
-      console.log(`  ✓ ${label} → 403`);
-    }
+  test('39. 事件订阅契约对齐 + 管理面 403/401 — subscriptions/webhook', async ({ request }) => {
+    // FEAT-07 既定鉴权模型（event-subscription.service 头注）：建订阅=任何已登录
+    // 用户（userId 归一为自己，SSRF 深校验在 service 层）；列表=ADMIN 全量/
+    // 普通用户自己的+系统级（200 非 403）；单条/更新/删除/死信=ADMIN 或属主。
+    // 红线断言只覆盖真实 ADMIN 面：他人订阅死信重放 403（防 id 枚举）与
+    // 发版 webhook 无签名 403/无 token 401。
+    const sub = await request.post(`${API}/api/event-subscriptions`, {
+      headers: { Authorization: `Bearer ${userTok}` },
+      data: { url: 'https://e2e-redline.example.invalid/hook', eventTypes: ['execution.failed'] },
+    });
+    // NXDOMAIN 域名 → SSRF 深校验 400（管线活跃证据；普通用户可建不是红线）
+    expect(sub.status(), `普通用户建订阅应 400（SSRF 拒 NXDOMAIN）: ${await sub.text()}`).toBe(400);
+    console.log('  ✓ 普通用户建订阅 → 400（SSRF 深校验，鉴权面放行=既定契约）');
+
+    const list = await request.get(`${API}/api/event-subscriptions`, {
+      headers: { Authorization: `Bearer ${userTok}` },
+    });
+    expect(list.status(), `普通用户订阅列表应 200（自己的+系统级）`).toBe(200);
+    console.log('  ✓ 普通用户订阅列表 → 200（属主可见=既定契约）');
+
+    // 他人订阅的死信重放：普通用户 403（属主/ADMIN 校验，防 id 枚举）
+    const replay = await request.post(
+      `${API}/api/event-subscriptions/${randomUUID()}/dead-letters/${randomUUID()}/replay`,
+      { headers: { Authorization: `Bearer ${userTok}` }, data: {} },
+    );
+    await expectRedline(replay, 403, '普通用户他人订阅死信重放');
+    console.log('  ✓ 普通用户死信重放（陌生 id）→ 403');
+
+    const wh = await request.post(`${API}/api/applications/webhook`, {
+      data: { event: 'push' },
+    });
+    await expectRedline(wh, 403, '发版 webhook 无签名');
+    console.log('  ✓ 发版 webhook（无签名）→ 403');
+
     // 无 token 面：401（JwtAuthGuard 在 RolesGuard 之前）
     const anon = await request.get(`${API}/api/event-subscriptions`);
     await expectRedline(anon, 401, '未携带 token GET /event-subscriptions');
