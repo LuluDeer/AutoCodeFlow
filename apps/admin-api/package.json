@@ -19,6 +19,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "typecheck": "tsc --noEmit",
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli",
+    "swagger:export": "ts-node --transpile-only -r tsconfig-paths/register scripts/export-openapi.ts",
     "migration:run": "npm run typeorm -- migration:run -d src/data-source.ts",
     "migration:revert": "npm run typeorm -- migration:revert -d src/data-source.ts",
     "migration:generate": "npm run typeorm -- migration:generate -d src/data-source.ts"
@@ -122,6 +123,7 @@
   "overrides": {
     "@nestjs/swagger": {
       "js-yaml": "5.2.3"
-    }
+    },
+    "multer": "2.3.0"
   }
 }
