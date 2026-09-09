@@ -9,7 +9,13 @@
 ## 状态快照
 
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
-- **本轮（2026-09-10 NF-02 直落，主会话）**：
+- **本轮（2026-09-10 第四轮 Wave2：三路子代理 + ECO-04 发布演练，主会话）**：
+  - **CI 修复链（develop push 连红根治）**：api-types-drift 双红根因=openapi.json 双写入方（Jest e2e spec vs ts-node 脚本）md5 不一致——裁定 Jest 路径为 canonical writer，swagger:export 委托 e2e spec（a47e395）；nest build rootDir 回归（scripts/ 目录入编译面致 dist/src/main.js）→ tsconfig.build.json 排除（同 commit）；chromium 安装 flake（runner 自带 google-chrome apt 源 Hash Sum mismatch，deb822 格式 .sources 文件）→ 安装前禁源（63903ff+ab18c8c）；e2e 例 4/8/9/10 ReferenceError: API is not defined（page.evaluate 回调浏览器侧无 Node 作用域 API）→ addInitScript 注入 window.__E2E_API__ + evaluate 内 18 处改引用（a32486f+09b9506）；红线例 32/33/34/35/38/39 契约对齐（POST 默认 201 非 200/pending-inbox 是 GET/webhook @Public DTO 先行 400+签名缺失统一 401/订阅建读是登录面非 ADMIN 面/死信重放陌生 id 404 防枚举）（ede0093..067812a）。**e2e-full 现仅剩例 23/24**（UI-06 后 executorId 残留清理回归，QA-01 挂跟踪待真机复现）。
+  - **Wave2 三路子代理交付**：001=FEAT-16（GET /executions/stream SSE+useExecutionsStream+ExecutionsPage 事件驱动）+FEAT-17（queries.ts 扩 11 hooks 八面换装，保留面如实声明）；003=UI-09（三页响应式+MainLayout off-canvas 抽屉+8 例）；002=P0-3（docs-site GitHub Pages 发布管道+base 路径）+DOC-09（sync-check 七面机检+selftest 14/14，存量 4 项 drift 人工裁定同步）。3351eb9+0826b5d。
+  - **ECO-04 v1.1.0 发布演练全链 done**：develop→main 大合并（414 commit 零冲突）→ release-please 首跑 Release PR #1（三包 lockstep 1.0.1→1.1.0）→ 合并 → tag 重推触发 release.yml → **waiting=environment release 审批闸门（需用户在 Actions UI 批准）**。运维注记：Actions 权限已开（write+PR approve）；Pages 已 API 启用；**docs-site 已上线 https://luludeer.github.io/AutoCodeFlow/**（1.1.0）；lockfile name 债登记（node-sdk lock 内部旧名 @autoflow/sdk，publish 不受影响）。
+  - **基线**：admin-api **2193/2193** · admin-web **554/554** · docs-site build+sync-check 七面绿 · e2e-full 41/43（23/24 挂跟踪）。
+  - **待用户动作**：①GitHub Actions UI 批准 release environment（v1.1.0 三包发布）；②Settings→Pages 已 API 代启（无需动作）。
+- **上轮（2026-09-10 NF-02 直落，主会话）**：
   - `03e23d1` **NF-02 执行编排 UI done**：TaskFormPage 上游依赖多选（纯逻辑层 task-dependencies.ts，空集显式 null 对齐 N28）+ DAG「触发整条链」按钮 + dashboard-ui04 时间炸弹测试修复（固定日期滚出 7 天窗实爆，改相对日期）；admin-web **538/538**（527 只增 +11）。
   - 缩水声明：fail-fast 失败分支策略未做（需后端新列+迁移+调度语义变更，见 claims 板备注）。
 - **上轮（2026-09-09 第三轮 Wave1 验收收口，主会话）**：
