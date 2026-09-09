@@ -45,8 +45,49 @@ linux:
     - target: AppImage
       arch:
         - x64
+    - target: deb
+      arch:
+        - x64
   icon: assets/icon.png
   category: Utility
+  # DSK-02: maintainer/vendor 必填面——deb 的 control 字段缺省会回落 author，
+  # 显式写死避免依赖 package.json author 形态。
+  maintainer: AutoCodeFlow <dev@autocodeflow.io>
+  vendor: AutoCodeFlow
+  # DSK-02: .desktop 由 electron-builder 自动生成（Name=productName，
+  # Exec=/opt/<name>/<executableName>，图标走 hicolor），desktop.entry 显式
+  # 固定 StartupWMClass 便于窗口关联；可按需追加键值。
+  desktop:
+    entry:
+      StartupWMClass: AutoCodeFlow Executor
+  synopsis: AutoCodeFlow Executor Desktop Client
+  description: Desktop executor client for AutoCodeFlow. Registers with an
+    admin-api instance, runs ncc-bundled executor-node in-process, and reports
+    heartbeat/status via system tray.
+
+deb:
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libsecret-1-0
+    - libgbm1
+
+# DSK-03: GitHub Releases 更新源。repo 与 git remote (LuluDeer/AutoCodeFlow)
+# 对齐，electron-updater 检测 latest-linux.yml → AppImage 增量更新；deb 走
+# 手动升级（见 docs/deployment.md「桌面端自动更新」段）。
+# publish 行为（已核对 electron-builder 26 源码 PublishManager.js）：
+#   本地 dist（无 GH_TOKEN 且非 git tag CI）：isPublish=false，仅生成
+#   app-update.yml 资源文件，不上传不要求 token，构建照常出包；
+#   CI push tag：publish 隐式 onTag → 产物随 release.yml 发布到 Releases。
+publish:
+  provider: github
+  owner: LuluDeer
+  repo: AutoCodeFlow
 
 nsis:
   oneClick: false

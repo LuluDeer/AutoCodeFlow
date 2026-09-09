@@ -42,6 +42,33 @@ services:
           memory: 1G
           cpus: '0.5'
 
+  # ── 只读副本 (可选，profile: replica) — ARCH-24 ──────────────
+  # 启用: docker compose --profile replica up -d postgres-replica
+  # ⚠ 演示形态：此容器不真正做流复制——只起一个可连的空 PG 实例，供本地
+  #   联调 DB_READ_REPLICA_URL 的连接与查询路由（SELECT 走副本、写面走主库
+  #   的行为验证）；它不会自动同步主库数据。真实部署的读副本请用云 RDS
+  #   read replica 或 PG 流复制（primary_conninfo + standby.signal），
+  #   复制延迟/只读语义等注意点见 docs/deployment.md「读写分离（可选）」段。
+  # 联调方式：启动后把 admin-api 的 DB_READ_REPLICA_URL 设为
+  #   postgres://<POSTGRES_USER>@postgres-replica:5432/<DB_DATABASE>
+  postgres-replica:
+    image: postgres:16-alpine
+    profiles: ['replica']
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-autoflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE:-autoflow}
+    mem_limit: 512m
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-autoflow}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - autoflow-internal
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
