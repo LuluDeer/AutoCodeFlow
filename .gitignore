@@ -85,3 +85,4 @@ playwright-report/
 
 # 上传目录
 apps/admin-api/uploads/
+report.*.json

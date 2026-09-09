@@ -38,7 +38,6 @@ import { EventOutbox } from "./entities/event-outbox.entity";
 import { EventSubscriptionDeadLetter } from "./entities/event-subscription-dead-letter.entity";
 import {
   MAX_OUTBOX_ATTEMPTS,
-  OUTBOX_RETRY_BASE_DELAY_MS,
   outboxRetryDelayMs,
 } from "./event-subscription.util";
 
@@ -62,7 +61,11 @@ export const OUTBOUND_DISPATCHER_TOKEN = Symbol("OUTBOUND_DISPATCHER_TOKEN");
 interface OutboundDispatcherLike {
   deliverToSubscribers(
     eventName: string,
-    payload: { event: string; occurredAt: string; data: Record<string, unknown> },
+    payload: {
+      event: string;
+      occurredAt: string;
+      data: Record<string, unknown>;
+    },
   ): Promise<void>;
 }
 
@@ -175,8 +178,9 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       where: { enabled: true },
       select: ["id", "eventTypes"],
     });
-    const targets = subs.filter((s) =>
-      Array.isArray(s.eventTypes) && s.eventTypes.includes(row.eventType),
+    const targets = subs.filter(
+      (s) =>
+        Array.isArray(s.eventTypes) && s.eventTypes.includes(row.eventType),
     );
     if (targets.length === 0) {
       // 当前订阅集无匹配者：快速路径此刻同样无人可投——视为投递完毕，

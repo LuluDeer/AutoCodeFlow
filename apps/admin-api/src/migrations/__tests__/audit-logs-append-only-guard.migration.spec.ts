@@ -11,7 +11,10 @@ import { AuditLogsAppendOnlyGuard1790000000006 } from "../1790000000006-AuditLog
  */
 
 const MIGRATIONS_DIR = path.join(__dirname, "..");
-const FILE = path.join(MIGRATIONS_DIR, "1790000000006-AuditLogsAppendOnlyGuard.ts");
+const FILE = path.join(
+  MIGRATIONS_DIR,
+  "1790000000006-AuditLogsAppendOnlyGuard.ts",
+);
 
 describe("AuditLogsAppendOnlyGuard1790000000006（SEC-10）", () => {
   let sql: string;
@@ -71,7 +74,11 @@ describe("AuditLogsAppendOnlyGuard1790000000006（SEC-10）", () => {
   });
 
   it("幂等：down 亦为 IF EXISTS（重复 revert 无副作用）", () => {
-    const downQueries = sql.split("public async down")[1].match(/`[^`]+`/g)?.join("\n") ?? "";
+    const downQueries =
+      sql
+        .split("public async down")[1]
+        .match(/`[^`]+`/g)
+        ?.join("\n") ?? "";
     expect(downQueries.match(/DROP TRIGGER IF EXISTS/g)?.length).toBe(1);
     expect(downQueries.match(/DROP FUNCTION IF EXISTS/g)?.length).toBe(1);
   });

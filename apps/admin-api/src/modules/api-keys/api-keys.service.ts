@@ -1,7 +1,11 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { ApiKey, ApiKeyScope, parseApiKeyScopes } from "./entities/api-key.entity";
+import {
+  ApiKey,
+  ApiKeyScope,
+  parseApiKeyScopes,
+} from "./entities/api-key.entity";
 import { generateApiKey, hashApiKey } from "./api-key.util";
 import { AuditService } from "../audit/audit.service";
 
@@ -70,7 +74,9 @@ export class ApiKeysService {
         keyHash,
         scope: input.scope,
         // NF-01: normalized word list (whitespace-collapsed, trimmed).
-        scopes: input.scopes ? input.scopes.split(/\s+/).filter(Boolean).join(" ") : null,
+        scopes: input.scopes
+          ? input.scopes.split(/\s+/).filter(Boolean).join(" ")
+          : null,
         expiresAt,
       }),
     );

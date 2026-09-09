@@ -1,6 +1,7 @@
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import * as nodemailer from "nodemailer";
+import { createHmac } from "node:crypto";
 
 jest.mock("axios");
 jest.mock("nodemailer");
@@ -860,8 +861,7 @@ describe("FeishuChannel (NF-05)", () => {
     const body = (mockedAxios.post as jest.Mock).mock.calls[0][1];
     expect(body.timestamp).toBe("1700000000");
     // sign = base64(HMAC-SHA256(key="1700000000\nmy-secret", msg=""))
-    const expected = require("crypto")
-      .createHmac("sha256", "1700000000\nmy-secret")
+    const expected = createHmac("sha256", "1700000000\nmy-secret")
       .update("")
       .digest("base64");
     expect(body.sign).toBe(expected);

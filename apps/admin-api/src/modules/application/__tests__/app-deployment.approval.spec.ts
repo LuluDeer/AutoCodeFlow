@@ -86,14 +86,18 @@ describe("AppDeploymentService — DEP-04 审批流", () => {
       maskReadSurface: jest.fn((app: any) => app),
     };
     executorService = {
-      findOne: jest.fn().mockResolvedValue({ id: "exec-1", address: "executor:3001" }),
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: "exec-1", address: "executor:3001" }),
       // Mirror the real getExecutorUrl: bare host:port gets the http:// scheme.
       getExecutorUrl: jest.fn(
         (addr: string, p: string) =>
           `${addr.startsWith("http://") || addr.startsWith("https://") ? "" : "http://"}${addr}/${p}`,
       ),
       getSharedToken: jest.fn().mockResolvedValue(""),
-      selectLeastLoaded: jest.fn().mockResolvedValue({ id: "exec-1", address: "executor:3001" }),
+      selectLeastLoaded: jest
+        .fn()
+        .mockResolvedValue({ id: "exec-1", address: "executor:3001" }),
     };
     audit = { log: jest.fn().mockResolvedValue(undefined) };
 
@@ -101,10 +105,16 @@ describe("AppDeploymentService — DEP-04 审批流", () => {
       providers: [
         AppDeploymentService,
         { provide: getRepositoryToken(AppDeployment), useValue: repo },
-        { provide: getRepositoryToken(ApplicationVersion), useValue: makeRepo() },
+        {
+          provide: getRepositoryToken(ApplicationVersion),
+          useValue: makeRepo(),
+        },
         { provide: ApplicationService, useValue: appService },
         { provide: ExecutorService, useValue: executorService },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(undefined) },
+        },
         { provide: AuditService, useValue: audit },
       ],
     }).compile();

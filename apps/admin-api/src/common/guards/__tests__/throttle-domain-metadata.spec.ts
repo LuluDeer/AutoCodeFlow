@@ -1,4 +1,3 @@
-import { Test } from "@nestjs/testing";
 import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerGuard } from "@nestjs/throttler";
 import { ConfigService } from "@nestjs/config";
@@ -24,7 +23,8 @@ const TTL_KEY = "THROTTLER:TTLdefault";
 const SKIP_KEY = "THROTTLER:SKIPdefault";
 
 const meta = (target: object, prop: string) => {
-  const handler = Object.getOwnPropertyDescriptor(target, prop)?.value as object;
+  const handler = Object.getOwnPropertyDescriptor(target, prop)
+    ?.value as object;
   return {
     limit: Reflect.getMetadata(LIMIT_KEY, handler),
     ttl: Reflect.getMetadata(TTL_KEY, handler),
@@ -35,7 +35,13 @@ const meta = (target: object, prop: string) => {
 describe("SEC-09 分域档位元数据绑定", () => {
   it("auth 严格档：refresh + totp/*（setup/enable/disable/verify）= AUTH_THROTTLE（缺省 10/60s）", () => {
     const proto = AuthController.prototype;
-    for (const m of ["refreshToken", "totpSetup", "totpEnable", "totpDisable", "totpVerifyLogin"]) {
+    for (const m of [
+      "refreshToken",
+      "totpSetup",
+      "totpEnable",
+      "totpDisable",
+      "totpVerifyLogin",
+    ]) {
       const { limit, ttl, skip } = meta(proto, m);
       expect(limit).toBe(AUTH_THROTTLE.limit);
       expect(ttl).toBe(AUTH_THROTTLE.ttl);
@@ -75,7 +81,14 @@ describe("SEC-09 分域档位元数据绑定", () => {
 
   it("部署干预面中档：deploy/approve/reject/cancel/upgrade/stop/upgradeAll/rollback = OPS_THROTTLE", () => {
     const deployProto = AppDeploymentController.prototype;
-    for (const m of ["deploy", "approve", "reject", "cancel", "upgrade", "stop"]) {
+    for (const m of [
+      "deploy",
+      "approve",
+      "reject",
+      "cancel",
+      "upgrade",
+      "stop",
+    ]) {
       const { limit, skip } = meta(deployProto, m);
       expect(limit).toBe(OPS_THROTTLE.limit);
       expect(skip).toBeUndefined();
@@ -108,32 +121,50 @@ describe("SEC-09 分域档位元数据绑定", () => {
       useClass?: unknown;
     }>;
     expect(
-      providers.some((p) => p?.provide === APP_GUARD && p?.useClass === ThrottlerGuard),
+      providers.some(
+        (p) => p?.provide === APP_GUARD && p?.useClass === ThrottlerGuard,
+      ),
     ).toBe(true);
 
     // forRootAsync 工厂形状（复刻 app.module.spec 的 Bull 根配置检查法）
     const imports = Reflect.getMetadata("imports", AppModule) as Array<{
       module?: { name?: string };
-      providers?: Array<{ useFactory?: (...args: unknown[]) => unknown; inject?: unknown[] }>;
+      providers?: Array<{
+        useFactory?: (...args: unknown[]) => unknown;
+        inject?: unknown[];
+      }>;
     }>;
     const throttlerRoot = imports.find(
       (m) =>
         typeof m === "object" &&
         m !== null &&
-        (m as { module?: { name?: string } }).module?.name === "ThrottlerModule" &&
+        (m as { module?: { name?: string } }).module?.name ===
+          "ThrottlerModule" &&
         Array.isArray((m as { providers?: unknown[] }).providers),
     );
     expect(throttlerRoot).toBeDefined();
-    const factory = throttlerRoot!.providers!.find((p) => typeof p?.useFactory === "function");
+    const factory = throttlerRoot!.providers!.find(
+      (p) => typeof p?.useFactory === "function",
+    );
     expect(factory).toBeDefined();
     expect(factory!.inject).toEqual([ConfigService]);
 
     // 工厂产出：THROTTLE_ENABLED=false → skipIf()=true（全局旁路）；默认产出 ttl/limit 档位
-    const cfgOff = { get: (k: string) => (k === "throttle.enabled" ? false : 60) };
-    const optsOff = factory!.useFactory!(cfgOff) as { skipIf: () => boolean; throttlers: unknown[] };
+    const cfgOff = {
+      get: (k: string) => (k === "throttle.enabled" ? false : 60),
+    };
+    const optsOff = factory!.useFactory!(cfgOff) as {
+      skipIf: () => boolean;
+      throttlers: unknown[];
+    };
     expect(optsOff.skipIf()).toBe(true);
-    const cfgOn = { get: (k: string) => (k === "throttle.enabled" ? true : 60) };
-    const optsOn = factory!.useFactory!(cfgOn) as { skipIf: () => boolean; throttlers: unknown[] };
+    const cfgOn = {
+      get: (k: string) => (k === "throttle.enabled" ? true : 60),
+    };
+    const optsOn = factory!.useFactory!(cfgOn) as {
+      skipIf: () => boolean;
+      throttlers: unknown[];
+    };
     expect(optsOn.skipIf()).toBe(false);
     expect(optsOn.throttlers).toEqual([{ ttl: 60, limit: 60 }]);
   });

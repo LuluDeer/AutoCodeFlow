@@ -26,14 +26,7 @@ import {
   ApprovalActionDto,
 } from "./dto/app-deployment.dto";
 import { DeploymentApprovalStatus } from "./entities/app-deployment.entity";
-import {
-  IsOptional,
-  IsUUID,
-  IsInt,
-  Min,
-  Max,
-  IsEnum,
-} from "class-validator";
+import { IsOptional, IsUUID, IsInt, Min, Max, IsEnum } from "class-validator";
 import { Type } from "class-transformer";
 import { ApiPropertyOptional } from "@nestjs/swagger";
 // SEC-09: 限流分域——部署/审批/upgrade/stop 属集群干预写面，挂中档
@@ -211,12 +204,18 @@ export class AppDeploymentController {
   @Post(":id/upgrade")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Trigger overlay upgrade" })
-  upgrade(@Param("id") id: string, @CurrentUser() user: { id: number; username: string }) {
+  upgrade(
+    @Param("id") id: string,
+    @CurrentUser() user: { id: number; username: string },
+  ) {
     // FEAT-20: 升级动作落 upgrade 语义 + 操作人用户名。
     return this.svc.upgrade(
       id,
       user
-        ? { operator: user.username, triggerType: DeploymentTriggerType.UPGRADE }
+        ? {
+            operator: user.username,
+            triggerType: DeploymentTriggerType.UPGRADE,
+          }
         : undefined,
     );
   }

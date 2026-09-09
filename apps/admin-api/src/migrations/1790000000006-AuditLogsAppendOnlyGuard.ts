@@ -28,9 +28,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * TRIGGER）；重放/重复 up 均收敛到同一终态。函数 CREATE OR REPLACE。
  * 列名驼峰加引号对齐 TypeORM 默认命名策略。
  */
-export class AuditLogsAppendOnlyGuard1790000000006
-  implements MigrationInterface
-{
+export class AuditLogsAppendOnlyGuard1790000000006 implements MigrationInterface {
   name = "AuditLogsAppendOnlyGuard1790000000006";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

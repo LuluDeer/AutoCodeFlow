@@ -14,21 +14,19 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
-import { IsNull, LessThan } from "typeorm";
+import { IsNull } from "typeorm";
 import { EventSubscription } from "../entities/event-subscription.entity";
 import { EventSubscriptionDeadLetter } from "../entities/event-subscription-dead-letter.entity";
 import { EventOutbox } from "../entities/event-outbox.entity";
-import {
-  OutboundEventDispatcher as OutboundEventDispatcherClass,
-  OUTBOX_DISPATCHER_TOKEN,
-} from "../outbound-event-dispatcher.service";
 import {
   OutboxDispatcher,
   OUTBOUND_DISPATCHER_TOKEN,
   OUTBOX_SCAN_INTERVAL_MS,
 } from "../outbox-dispatcher.service";
-import { EventSubscriptionService } from "../event-subscription.service";
-import { MAX_OUTBOX_ATTEMPTS, outboxRetryDelayMs } from "../event-subscription.util";
+import {
+  MAX_OUTBOX_ATTEMPTS,
+  outboxRetryDelayMs,
+} from "../event-subscription.util";
 
 jest.mock("axios", () => ({
   __esModule: true,
@@ -203,8 +201,12 @@ describe("FEAT-19 OutboxDispatcher", () => {
       expect(where).toEqual({ id: row.id });
       expect(patch.attempts).toBe(3);
       const expected = before + outboxRetryDelayMs(3);
-      expect(patch.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(expected - 50);
-      expect(patch.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now() + outboxRetryDelayMs(3));
+      expect(patch.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(
+        expected - 50,
+      );
+      expect(patch.nextAttemptAt.getTime()).toBeLessThanOrEqual(
+        Date.now() + outboxRetryDelayMs(3),
+      );
     });
 
     it("无匹配订阅：不调派发面，行直接终态回写（防冷订阅集积压）", async () => {

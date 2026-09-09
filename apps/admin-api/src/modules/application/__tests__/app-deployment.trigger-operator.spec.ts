@@ -74,9 +74,7 @@ describe("AppDeploymentService — FEAT-20 triggerType/operator 落库", () => {
     };
     executorService = {
       findOne: jest.fn().mockResolvedValue(mockExecutor),
-      getExecutorUrl: jest.fn(
-        (addr: string, p: string) => `${addr}/${p}`,
-      ),
+      getExecutorUrl: jest.fn((addr: string, p: string) => `${addr}/${p}`),
       getSharedToken: jest.fn().mockResolvedValue(""),
       selectLeastLoaded: jest.fn().mockResolvedValue(mockExecutor),
     };
@@ -121,7 +119,10 @@ describe("AppDeploymentService — FEAT-20 triggerType/operator 落库", () => {
 
   it("deploy 审批分支（approvalRequired）同样落 manual + 提交人", async () => {
     repo.findOne.mockResolvedValue(null);
-    appService.findByIdRaw.mockResolvedValue({ ...mockApp, approvalRequired: true });
+    appService.findByIdRaw.mockResolvedValue({
+      ...mockApp,
+      approvalRequired: true,
+    });
 
     await service.deploy(
       "app-1",
@@ -170,11 +171,10 @@ describe("AppDeploymentService — FEAT-20 triggerType/operator 落库", () => {
       .spyOn(service, "upgrade")
       .mockResolvedValue(rows[0] as any);
 
-    await service.upgradeAllWithRollout(
-      "app-1",
-      null,
-      { operator: "carol", triggerType: DeploymentTriggerType.UPGRADE },
-    );
+    await service.upgradeAllWithRollout("app-1", null, {
+      operator: "carol",
+      triggerType: DeploymentTriggerType.UPGRADE,
+    });
 
     expect(upSpy).toHaveBeenCalledWith("d1", {
       operator: "carol",

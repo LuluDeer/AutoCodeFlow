@@ -387,8 +387,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       const deployedAt = latest?.deployedAt ?? latest?.createdAt ?? null;
       // FEAT-20: operator 取最近一次部署行持久化列（JWT 用户名）；
       // 存量行回退版本快照 createdBy（历史恒 null）。来源随命中面标注。
-      const operator =
-        latest?.operator ?? v.createdBy ?? null;
+      const operator = latest?.operator ?? v.createdBy ?? null;
       return {
         id: v.id,
         version: v.version,
@@ -405,9 +404,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         operatorSource: latest?.operator
           ? "deployments.operator"
           : "application_versions.createdBy",
-        operatorMissingReason: operator
-          ? ""
-          : RELEASE_OPERATOR_MISSING_REASON,
+        operatorMissingReason: operator ? "" : RELEASE_OPERATOR_MISSING_REASON,
         sourceDeploymentId: v.sourceDeploymentId ?? null,
         status: v.status,
         createdAt: v.createdAt ? new Date(v.createdAt).toISOString() : null,
@@ -575,10 +572,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         updateDto.manifest = snapshot.manifest as Record<string, any>;
 
       const updatedApp = await this.appService.update(appId, updateDto);
-      const result = await this.upgradeRunningDeployments(appId, trigger ?? {
-        operator: null,
-        triggerType: DeploymentTriggerType.ROLLBACK,
-      });
+      const result = await this.upgradeRunningDeployments(
+        appId,
+        trigger ?? {
+          operator: null,
+          triggerType: DeploymentTriggerType.ROLLBACK,
+        },
+      );
       return {
         ...result,
         rolledBackTo: version.version,
@@ -612,10 +612,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // response below). Rollbacks that must pin a package file should target
     // a version snapshot (which stores packageUrl in its snapshot payload).
     const updatedApp = await this.appService.update(appId, updateDto);
-    const result = await this.upgradeRunningDeployments(appId, trigger ?? {
-      operator: null,
-      triggerType: DeploymentTriggerType.ROLLBACK,
-    });
+    const result = await this.upgradeRunningDeployments(
+      appId,
+      trigger ?? {
+        operator: null,
+        triggerType: DeploymentTriggerType.ROLLBACK,
+      },
+    );
     return {
       ...result,
       rolledBackTo: target.deployedVersion,
@@ -804,8 +807,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // FEAT-20: 审批通过即实际派发动作——行覆写为 approval 语义 + 审批人。
     // （提交时的 manual 痕迹已被替换：该行的最终触发来源 = 让它真正
     // 发生的人。提交人仍可在 approvalMeta.requestedByName 追溯。）
-    deployment.triggerType = trigger?.triggerType ??
-      DeploymentTriggerType.APPROVAL;
+    deployment.triggerType =
+      trigger?.triggerType ?? DeploymentTriggerType.APPROVAL;
     deployment.operator = trigger?.operator ?? actor.name ?? null;
 
     // R1: the push sends the merged app+deployment env — raw entity only.
@@ -862,7 +865,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       `Deployment rejected by ${actor.name ?? "unknown"}` +
       (reason ? `: ${reason}` : "");
     deployment.approvalMeta = nextMeta;
-    await this.writeApprovalAudit("deployment.reject", deployment, actor, reason);
+    await this.writeApprovalAudit(
+      "deployment.reject",
+      deployment,
+      actor,
+      reason,
+    );
     return this.maskDeploymentForRead(deployment);
   }
 
@@ -875,7 +883,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const deployment = await this.findPendingApproval(deploymentId);
 
     const meta = deployment.approvalMeta ?? {};
-    if (meta.requestedBy != null && actor.id != null && meta.requestedBy !== actor.id) {
+    if (
+      meta.requestedBy != null &&
+      actor.id != null &&
+      meta.requestedBy !== actor.id
+    ) {
       throw new ForbiddenException(
         "Only the requester can cancel a pending deployment approval; " +
           "use reject instead",
@@ -921,8 +933,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   ): Promise<AppDeployment> {
     const deployment = await this.findByIdRaw(deploymentId);
     if (
-      deployment.approvalStatus !==
-      DeploymentApprovalStatus.PENDING_APPROVAL
+      deployment.approvalStatus !== DeploymentApprovalStatus.PENDING_APPROVAL
     ) {
       throw new ConflictException(
         `Deployment ${deploymentId} is not awaiting approval ` +
@@ -999,8 +1010,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // DEP-04: 待审批行从未被派发过，upgrade 语义（拉新版本重启）不适用；
     // 出口只有 approve/reject/cancel 三条审批动作。
     if (
-      deployment.approvalStatus ===
-      DeploymentApprovalStatus.PENDING_APPROVAL
+      deployment.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
     ) {
       throw new ConflictException(
         "Deployment is awaiting approval; approve or reject it first",
@@ -1038,8 +1048,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const deployment = await this.findByIdRaw(deploymentId);
     // DEP-04: 待审批行从未派发，对执行器发 stop 信号无意义；出口同 upgrade。
     if (
-      deployment.approvalStatus ===
-      DeploymentApprovalStatus.PENDING_APPROVAL
+      deployment.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
     ) {
       throw new ConflictException(
         "Deployment is awaiting approval; approve or reject it first",
