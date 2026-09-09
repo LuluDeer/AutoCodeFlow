@@ -262,6 +262,33 @@ INSTREAM 送 ClamAV 守护进程（docker 部署建议 `clamav/clamd` 镜像 + �
 `EICAR-STANDARD-ANTIVIRUS-TEST-FILE`）。开启前请确认 clamd 可达，否则
 上传通道整体拒绝。可用性优先于严格扫描的部署保持默认 `false` 即可。
 
+### 读写分离与只读副本（可选，ARCH-24，默认关闭）
+
+`DB_READ_REPLICA_URL`（可选，默认空 = **关闭**）为 admin-api 配置一个 PostgreSQL 只读副本连接串。未配置时 TypeORM 使用既有的单连接形态，行为与本节引入前**完全一致**；配置后 TypeORM 改用内建 replication 形态（`{ replication: { master, slaves } }`），**无需改动任何业务查询代码**——读写路由是驱动内建行为：
+
+- **走 slaves（副本）**：SELECT 读面——repository `find*` / `findOne*`、query builder `getMany/getManyAndCount/getRawMany` 等（TypeORM 0.3 的 `SelectQueryBuilder` 以 `defaultReplicationModeForReads()`（默认 `"slave"`）取连接）。
+- **恒走 master（主库）**：`save/update/delete/insert`、事务（`dataSource.transaction`）、迁移（`migrationsRun` → `MigrationExecutor` 以默认 master 模式取连接，**迁移永远写主库**）、事务内的 `SELECT ... FOR UPDATE`。
+- master/slaves 连接池共享同一 `extra` 池参数（`DB_POOL_SIZE` 等）；slave 凭据支持 `postgres://user:pass@host:port/db` 连接串（密码/SSL 参数经 URL 传递）。
+
+**何时值得开**：列表/聚合读压力成为主库瓶颈（大量执行日志查询、任务列表翻页）且已有（或计划建）热备副本时。单机或读写压力不大时**不建议开**——复制延迟带来的可见性代价通常大于收益（见下）。
+
+**如何配**：
+
+```bash
+# .env（admin-api 侧）
+DB_READ_REPLICA_URL=postgres://readonly@<replica-host>:5432/autocodeflow
+# 云 RDS：直接填 read replica endpoint；自建 PG：配置流复制后填备库地址
+# 本地联调（演示形态，不真正同步数据）：
+docker compose --profile replica up -d postgres-replica
+```
+
+**注意点**：
+
+1. **复制延迟与「创建后立即列表可见」**：异步流复制下，写入 master 后副本存在毫秒~秒级滞后。触发任务/创建应用后立即刷新列表，可能在副本上读不到刚写入的行。若业务要求强一致读，保持该配置关闭（默认）；或开启后把关键列表读改走主库（需代码介入，本实现未做）。
+2. **调度主链的结论——会走 slaves**：本实现是纯配置面，TypeORM 内建路由对所有 `find*`/`getMany` 生效，**scheduler 的轮询读（`taskRepo.find`/`execRepo.find` 等调度决策输入）同样会走副本**。调度写回（claim/状态机条件 UPDATE、入队）走 master 且多在事务内，正确性不受影响；但「刚落库的执行被下一轮 sweep 读到」存在副本滞后窗口。stale sweep 的条件 UPDATE 以 `WHERE status='PENDING'`（乐观条件）在 master 上执行，读到旧数据最多延迟一轮 sweep，不会覆盖新状态。延迟敏感场景建议将 `DB_READ_REPLICA_URL` 留空（保持默认关闭）。
+3. **副本必须是真只读/流复制形态**：云 RDS read replica 天然满足；自建用 `standby.signal` + `primary_conninfo`。compose 的 `postgres-replica`（`--profile replica`）**只是演示形态**（独立空实例，不自动同步主库数据），仅用于本地联调连接与路由行为。
+4. **迁移不写副本**：`migrationsRun`/手动迁移恒走 master；副本以只读身份跟随回放 WAL，请勿给应用配置带写权限的副本账号，避免误写。
+
 ### OTEL / Jaeger 分布式追踪（OBS-01）
 
 平台在 `OTEL_ENABLED=true` 时启用 admin-api → 执行器 → 回调的全链路 traceId 贯穿（W3C Trace Context）；**默认 `false`，开启与否不影响任何既有行为**（关闭时不生成 traceId、不加请求头、`task_executions.traceId` 保持 null）。trace-id 在触发/入队侧生成落库，dispatch 指令以 `traceparent` 头透传执行器并注入任务 env `AUTOFLOW_TRACE_ID`（任务代码可读），执行器终态回调回传同名头关联。管理台执行详情页在 traceId 有值时展示追踪标识与「复制 traceId」按钮。契约细节见 api-reference.md「Distributed Tracing」段。
@@ -387,6 +414,106 @@ docker compose restart admin-api
 - 检查各容器内存用量：`docker stats`
 - 适当调整 `docker-compose.yml` 中各服务的 `mem_limit` 配置
 - 建议生产环境至少配备 8 GB 内存
+
+---
+
+## Linux 桌面端（executor-desktop，DSK-02/DSK-03）
+
+> ⚠️ **状态标注**：打包配置已 CI 化（`.github/workflows/ci.yml` 的
+> `desktop-linux-bundle` job，PR / 手动触发时构建 AppImage + deb 并上传
+> artifact），但 **Ubuntu 22.04 真机验证待做**（本节安装/自启动/更新三项
+> 均按 electron-builder 26 + electron-updater 6.8.9 文档化行为编写）。
+
+### 安装
+
+两种产物形态（x64），按发行版习惯二选一：
+
+**AppImage（免安装，便携）**
+
+```bash
+chmod +x AutoCodeFlow.Executor-*.AppImage
+./AutoCodeFlow.Executor-*.AppImage
+```
+
+- 建议固定放置路径（如 `~/Applications/`）再运行——开机自启动条目会记录
+  AppImage 的**当前绝对路径**，事后挪动/重命名文件会使自启动失效（重新在
+  设置里开关一次自启动即可修复）。
+- 运行 AppImage 需要 FUSE2（`libfuse2`）。Ubuntu 22.04+ 默认可能未装：
+  `sudo apt install libfuse2`。
+
+**deb（系统集成）**
+
+```bash
+sudo dpkg -i autocodeflow-executor_*.deb
+# 缺依赖时补一次：
+sudo apt -f install
+```
+
+- deb 安装到 `/opt/AutoCodeFlow Executor/`，并写入
+  `/usr/share/applications/` 桌面入口与 hicolor 图标（electron-builder 自动
+  生成 `.desktop`）；菜单/启动器里显示为 "AutoCodeFlow Executor"。
+- Ubuntu 24+ 安装 AppArmor 提示时按发行版指引确认即可（electron-builder
+  已支持 per-target AppArmor profile，本仓当前未自定义）。
+
+### 开机自启动
+
+应用内设置（托盘菜单或配置页）打开「开机自启动」后：
+
+- 实现走 `auto-launch` 5.0.6：**Linux 上写入
+  `~/.config/autostart/AutoCodeFlow Executor.desktop`**（XDG Autostart 规范），
+  关闭即删除该文件。
+- 依赖桌面环境实现 XDG autostart（GNOME / KDE / XFCE 均支持）；纯 WM 用户
+  需自行确认会话管理器读取 `~/.config/autostart`。
+- deb 安装时自启动 Exec 指向 `/opt/...` 固定路径，升级后仍有效；AppImage
+  见上方路径提醒。
+
+### Ubuntu 信任注记（对应 Windows 的 Gatekeeper/SmartScreen）
+
+Ubuntu 无 Gatekeeper；对应关注点是 **apt/dpkg 签名与来源信任**：
+
+- 官方渠道为 GitHub Releases（tag 触发 release.yml 上传产物）；从 Releases
+  下载的 deb 是未签名的自发布包，`dpkg -i` 直接装，不经过 apt 签名校验。
+  请只从本仓库 Releases 页面下载，校验发布说明里的产物哈希（若提供）。
+- AppImage 首次运行如被文件管理器拦截（"untrusted application launcher"
+  提示），右键 → Properties → Allow executing（或终端 `chmod +x`）即可；
+  这是 GNOME 对可执行位 + 自定义 launcher 的常规提示，不是病毒告警。
+- 更严格环境可用 `AppArmor`/`bwrap` 沙箱运行 AppImage（本仓未做 snap/flatpak
+  封装，缩水声明）。
+
+### 桌面端自动更新（DSK-03）
+
+**双更新源**（优先级从高到低）：
+
+1. **通用 HTTP 源**：设置环境变量 `AUTOUPDATE_URL` 后优先生效，指向任何
+   提供 electron-builder 产物布局的静态服务器（`latest-linux.yml` +
+   `*.AppImage` / `*.deb`），适配 executor-packages / 私有化部署通道。
+2. **GitHub Releases**（默认）：未设置 `AUTOUPDATE_URL` 时使用
+   `electron-builder.yml` 的 `publish: { provider: github, owner: LuluDeer,
+   repo: AutoCodeFlow }`，检测 Releases 上的 `latest-linux.yml`。
+
+**版本流**：
+
+```
+git tag v<version> → push tag → release.yml（npm/PyPI 发布轨道）
+                     └→ electron-builder publish 配置使 desktop 构建在
+                        tag 轮把 AppImage/deb/latest-linux.yml 上传 Releases
+客户端：启动 30s 延迟检查 → 发现新版本 → 渲染层提示 → 用户确认下载
+      → 下载完成提示 → quitAndInstall（AppImage 原地替换 / deb 走 dpkg）
+```
+
+**行为细节**：
+
+- 仅生产包启用（`app.isPackaged` 守卫）；开发模式跳过更新检查。
+- `autoDownload=false`：检测到新版本只提示，不静默下载；离线/私服无网络/
+  检查失败一律静默（仅写主进程日志 `userData/logs/main.log`），不打扰用户。
+- **deb 更新**：electron-updater 6.x 依据包内 `resources/package-type`
+  自动分派 DebUpdater，`quitAndInstall` 会弹系统授权（pkexec/sudo）执行
+  dpkg 安装——无桌面授权代理的环境（纯 WM）建议手动升级。
+- **AppImage 更新**：原地替换运行中的 AppImage 文件，重启后生效。
+
+**回滚**：客户端自动更新不做降级。回滚 = 从 Releases 下载旧版本安装包
+重新安装（AppImage 覆盖回旧文件 / deb `dpkg -i` 旧包覆盖），配置存储在
+`~/.config/autocodeflow-executor/`（electron userData 目录），重装不丢配置。
 
 ---
 
