@@ -872,9 +872,45 @@ describe("ExecutorService (__tests__)", () => {
       await service.heartbeat("127.0.0.1:3105", {
         cpuUsage: 30,
         memUsage: 50,
+        diskUsage: 70,
         runningTaskCount: 1,
+        totalTaskCount: 10,
+        failedTaskCount: 2,
       });
       expect(executorRepo.save).toHaveBeenCalled();
+      expect(metricsHistoryRepo.create).toHaveBeenCalledWith({
+        executorAddress: "127.0.0.1:3105",
+        cpuUsage: 30,
+        memUsage: 50,
+        diskUsage: 70,
+        runningTaskCount: 1,
+        totalTaskCount: 10,
+        failedTaskCount: 2,
+        avgExecutionTime: null,
+        uptimeSeconds: 0,
+      });
+      expect(metricsHistoryRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ executorAddress: "127.0.0.1:3105" }),
+      );
+    });
+
+    it("does not fail heartbeat when metrics history snapshot write fails", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      metricsHistoryRepo.save.mockRejectedValue(new Error("history down"));
+      const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+      await expect(
+        service.heartbeat("127.0.0.1:3105", { cpuUsage: 30 }),
+      ).resolves.toMatchObject({ address: "127.0.0.1:3105" });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("metrics history write failed"),
+      );
+      warnSpy.mockRestore();
     });
 
     it("revives an OFFLINE executor on heartbeat", async () => {
