@@ -40,6 +40,8 @@
     "build:desktop": "cd apps/executor-desktop && npm run build",
     "build:docs-site": "cd packages/docs-site && npm run build",
     "bundle:executor": "cd apps/executor-desktop && bash scripts/bundle-executor.sh",
+    "openapi:export": "cd apps/admin-api && npm run swagger:export",
+    "gen:api-types": "cd apps/admin-web && npm run gen:api-types",
     "demo:seed": "node scripts/demo-seed.mjs",
     "demo:seed:selftest": "node scripts/demo-seed.selftest.mjs",
     "load-test": "node scripts/load-test.mjs",
