@@ -39,7 +39,8 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
       "args": ["/path/to/packages/mcp-server/dist/index.js"],
       "env": {
         "AUTOCODEFLOW_API_URL": "http://localhost:3105",
-        "AUTOCODEFLOW_API_TOKEN": "<your-jwt-token>"
+        "AUTOCODEFLOW_API_TOKEN": "<your-jwt-token>",
+        "AUTOCODEFLOW_API_REFRESH_TOKEN": "<optional-refresh-token>"
       }
     }
   }
@@ -51,4 +52,5 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AUTOCODEFLOW_API_URL` | `http://localhost:3105` | Admin API base URL |
-| `AUTOCODEFLOW_API_TOKEN` | — | JWT token (required) |
+| `AUTOCODEFLOW_API_TOKEN` | — | JWT token (required). The server exits on startup if this is missing, because every tool call would be rejected. |
+| `AUTOCODEFLOW_API_REFRESH_TOKEN` | — | Optional refresh token. When set, a 401 from non-`/auth/*` API calls triggers one in-memory refresh and replays the original request once; rotated refresh tokens are kept only for the process lifetime. |

@@ -214,6 +214,17 @@ class TestEnvelopeUnwrapping:
         assert make_client().report_success() is None
 
 
+class TestTransportFailures:
+    @respx.mock
+    def test_timeout_propagates_without_retry(self):
+        route = respx.post(URL).mock(side_effect=httpx.ReadTimeout("callback timed out"))
+
+        with pytest.raises(httpx.ReadTimeout, match="callback timed out"):
+            make_client(timeout=0.1).report_success()
+
+        assert route.call_count == 1
+
+
 class TestErrorReadability:
     @respx.mock
     def test_non_2xx_message_includes_envelope_message(self):

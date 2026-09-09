@@ -254,6 +254,31 @@ describe('HttpClient', () => {
       );
     });
 
+    it('keeps 403 permission errors readable without retrying or rewriting status', async () => {
+      new HttpClient(BASE_URL, TOKEN);
+      const onRejected = mockInstance.interceptors.response.use.mock.calls[0][1];
+      const error = Object.assign(new Error('Request failed with status code 403'), {
+        response: {
+          status: 403,
+          data: { code: 403, message: 'executor token cannot access this execution' },
+        },
+      });
+
+      await expect(onRejected(error)).rejects.toBe(error);
+      expect(error.message).toBe(
+        'Request failed with status code 403: executor token cannot access this execution',
+      );
+    });
+
+    it('does not retry SDK requests; axios errors propagate from the first attempt', async () => {
+      const timeout = new Error('timeout of 10000ms exceeded');
+      mockInstance.get.mockRejectedValueOnce(timeout);
+      const client = new HttpClient(BASE_URL, TOKEN);
+
+      await expect(client.get('/items')).rejects.toBe(timeout);
+      expect(mockInstance.get).toHaveBeenCalledTimes(1);
+    });
+
     it('error interceptor leaves non-envelope errors untouched', async () => {
       new HttpClient(BASE_URL, TOKEN);
       const onRejected = mockInstance.interceptors.response.use.mock.calls[0][1];

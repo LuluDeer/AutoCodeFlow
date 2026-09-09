@@ -86,7 +86,9 @@ const tasks = await http.get('/api/tasks');
 ```
 
 凭证缺失时构造不报错，但任何请求方法抛出带 `disabledReason` 的明确错误
-（N23 fail-closed 语义，与 Python `CallbackDisabledError` 对齐）。
+（N23 fail-closed 语义，与 Python `CallbackDisabledError` 对齐）。HTTP 调用由 axios
+的 10 秒超时控制；SDK 不做隐式重试，401/403/timeout 等错误会保留后端 message 后
+原样传播给任务代码，避免重复上报或重复触发外部副作用。
 
 ## 执行器注入的环境变量
 

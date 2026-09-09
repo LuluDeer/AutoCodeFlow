@@ -529,16 +529,18 @@ describe('acf audit list', () => {
 // login (P0 contract regression guard)
 // ---------------------------------------------------------------------------
 describe('acf login', () => {
-  it('reads accessToken (camelCase) from the login response', async () => {
-    const { setToken } = await import('../config');
-    const spy = vi.mocked(setToken);
+  it('reads accessToken/refreshToken (camelCase) from the login response', async () => {
+    const { setToken, setRefreshToken } = await import('../config');
+    const accessSpy = vi.mocked(setToken);
+    const refreshSpy = vi.mocked(setRefreshToken);
     mockedPost.mockResolvedValueOnce({ accessToken: 'jwt-abc', refreshToken: 'r1' });
     await run(loginCommand(), 'login --url http://localhost:9999 --user admin --password secret');
     expect(mockedPost).toHaveBeenCalledWith('/auth/login', {
       username: 'admin',
       password: 'secret',
     });
-    expect(spy).toHaveBeenCalledWith('jwt-abc');
+    expect(accessSpy).toHaveBeenCalledWith('jwt-abc');
+    expect(refreshSpy).toHaveBeenCalledWith('r1');
   });
 });
 
