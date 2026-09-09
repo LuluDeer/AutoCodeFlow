@@ -659,8 +659,13 @@ jobs:
         working-directory: apps/executor-node
       - run: npm ci
         working-directory: apps/admin-web
+      # runner 镜像自带的 google-chrome apt 源（dl.google.com）偶发 Hash Sum
+      # mismatch，会让 --with-deps 的 apt-get update 整体失败（2026-09-10
+      # 连续两轮实爆）。安装前禁用该源——playwright 系统依赖不含 chrome 本体。
       - name: Install chromium (+ system deps)
-        run: npx playwright install --with-deps chromium
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list || true
+          npx playwright install --with-deps chromium
         working-directory: apps/admin-web
       - name: Run 43-case full-chain e2e
         run: bash scripts/e2e-full.sh
