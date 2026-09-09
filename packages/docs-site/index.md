@@ -4,7 +4,7 @@ layout: home
 hero:
   name: AutoCodeFlow SDK
   text: 双语言任务开发工具包
-  tagline: Node.js 与 Python 双 SDK，同一回调契约、同一能力矩阵、同一发布节奏（lockstep 1.0.1）
+  tagline: Node.js 与 Python 双 SDK，同一回调契约、同一能力矩阵、同一发布节奏（lockstep 1.1.0）
   actions:
     - theme: brand
       text: 快速开始（5 分钟）
