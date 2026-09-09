@@ -661,10 +661,13 @@ jobs:
         working-directory: apps/admin-web
       # runner 镜像自带的 google-chrome apt 源（dl.google.com）偶发 Hash Sum
       # mismatch，会让 --with-deps 的 apt-get update 整体失败（2026-09-10
-      # 连续两轮实爆）。安装前禁用该源——playwright 系统依赖不含 chrome 本体。
+      # 连续三轮实爆）。安装前禁用该源——playwright 系统依赖不含 chrome 本体。
+      # 源文件在新镜像上是 deb822 格式的 google-chrome.sources（非 .list），
+      # 通配删除两种命名。
       - name: Install chromium (+ system deps)
         run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list || true
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/google-chrome.sources
           npx playwright install --with-deps chromium
         working-directory: apps/admin-web
       - name: Run 43-case full-chain e2e
