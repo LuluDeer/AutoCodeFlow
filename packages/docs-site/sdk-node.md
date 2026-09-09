@@ -14,7 +14,7 @@ npm install @autocodeflow/sdk
 ```
 
 包为 scoped 公开包（`publishConfig.access = "public"`），产物为 tsup 构建的
-CJS + ESM + d.ts（`dist/`）。当前版本 **1.0.1**（与 py SDK lockstep）。
+CJS + ESM + d.ts（`dist/`）。当前版本 **1.1.0**（与 py SDK lockstep）。
 
 ## TaskContext
 
