@@ -25,9 +25,8 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
-  Optional,
-  Inject,
 } from "@nestjs/common";
+import { ModuleRef } from "@nestjs/core";
 import { InjectRepository } from "@nestjs/typeorm";
 import { createHmac } from "node:crypto";
 import axios from "axios";
@@ -51,11 +50,13 @@ import {
 } from "./event-subscription.util";
 
 /**
- * FEAT-19 依赖方向说明：OutboxDispatcher（补投方）import 本类做构造器注入；
- * 本类对 OutboxDispatcher 只经 @Optional 注入令牌引用——**刻意不 import 其
- * 模块**（循环依赖会让 TS 的 design:paramtypes 在模块求值序的不利侧拿到
+ * FEAT-19 依赖方向说明：OutboxDispatcher（补投方）复用本类派发面；本类对
+ * OutboxDispatcher 只经令牌引用（OUTBOX_DISPATCHER_TOKEN，刻意不 import 其
+ * 模块——循环依赖会让 TS 的 design:paramtypes 在模块求值序的不利侧拿到
  * undefined，Nest 解析报错；先例/机理见 task.service↔executor.service 的
- * forwardRef 注释）。令牌在模块注册处手工构造，注入参数用 @Inject 显式绑定。
+ * forwardRef 注释）。**令牌不做构造器注入**（useFactory 别名互相等对方实体
+ * 会在 DI graph 上成解析期环，Nest 挂死）——改经 ModuleRef 运行时懒取，
+ * 首次用到 enqueue 才解析；令牌缺席按 null 降级（FEAT-07 原行为）。
  */
 export const OUTBOX_DISPATCHER_TOKEN = Symbol("OUTBOX_DISPATCHER_TOKEN");
 
@@ -72,21 +73,37 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
   private readonly busListeners: Array<
     [DomainEventName, (p: unknown) => unknown]
   > = [];
+  /** outbox 兜底面懒解析缓存：undefined=未解析，null=缺席。 */
+  private resolvedOutbox: OutboxDispatcherLike | null | undefined;
 
   constructor(
     private readonly bus: DomainEventBus,
     private readonly subService: EventSubscriptionService,
-    // FEAT-19: outbox 兜底——派发入口同步落 event_outbox（@Optional：极简单测
-    // 装配无 OutboxDispatcher 时跳过落库，快速路径行为不变）。令牌注入断开
-    // 与 OutboxDispatcher 的 import 环（见 OUTBOX_DISPATCHER_TOKEN 注释）。
-    @Optional()
-    @Inject(OUTBOX_DISPATCHER_TOKEN)
-    private readonly outbox: OutboxDispatcherLike | null,
+    private readonly moduleRef: ModuleRef,
     @InjectRepository(EventSubscription)
     private readonly subRepo: Repository<EventSubscription>,
     @InjectRepository(EventSubscriptionDeadLetter)
     private readonly deadLetterRepo: Repository<EventSubscriptionDeadLetter>,
   ) {}
+
+  /**
+   * 运行时懒取 outbox 兜底面（见类头注释：构造器注入令牌会成解析期环）。
+   * 经 ModuleRef 解析 OUTBOX_DISPATCHER_TOKEN（模块 useFactory 别名到真实
+   * OutboxDispatcher）；令牌缺席/取不到时按 null 降级（FEAT-07 原行为）。
+   */
+  private getOutbox(): OutboxDispatcherLike | null {
+    if (this.resolvedOutbox === undefined) {
+      try {
+        this.resolvedOutbox =
+          this.moduleRef?.get<OutboxDispatcherLike>(OUTBOX_DISPATCHER_TOKEN, {
+            strict: false,
+          }) ?? null;
+      } catch {
+        this.resolvedOutbox = null;
+      }
+    }
+    return this.resolvedOutbox;
+  }
 
   onModuleInit(): void {
     this.subscribe(DOMAIN_EVENTS.EXECUTION_COMPLETED);
@@ -140,8 +157,9 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     // 进程重启后由 OutboxDispatcher 扫描补投（at-least-once；落库失败仅记
     // 日志 fail-open，快速路径照常）。注意：快速路径成功 + outbox 也会被
     // 补投扫描再次投递 → 订阅方可能收到重复投递，必须幂等消费。
-    if (this.outbox) {
-      await this.outbox.enqueue(
+    const outbox = this.getOutbox();
+    if (outbox) {
+      await outbox.enqueue(
         eventName,
         payload as unknown as Record<string, unknown>,
       );
