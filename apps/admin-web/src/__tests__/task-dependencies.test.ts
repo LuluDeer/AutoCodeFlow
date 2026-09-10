@@ -5,9 +5,50 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  applyDependenciesPayload,
   buildDependenciesPayload,
   dependenciesFormValues,
 } from '../pages/task-dependencies';
+
+describe('applyDependenciesPayload（提交序列化 + 载体字段剥离）', () => {
+  it('写入 dependencies 映射并删除表单载体 upstreamDependencies', () => {
+    const out = applyDependenciesPayload(
+      {
+        name: 't',
+        runtime: 'node',
+        upstreamDependencies: ['a-uuid'],
+      },
+      { 'a-uuid': 'task-a' },
+    );
+    expect(out.dependencies).toEqual({ 'a-uuid': 'task-a' });
+    // 关键断言：载体键必须从请求体中消失（否则 forbidNonWhitelisted → 400）
+    expect('upstreamDependencies' in out).toBe(false);
+    expect(Object.keys(out)).not.toContain('upstreamDependencies');
+    expect(out.name).toBe('t');
+  });
+
+  it('空选中集（编辑态恒置 []）→ dependencies=null 且载体键消失', () => {
+    const out = applyDependenciesPayload(
+      { name: 't', upstreamDependencies: [] },
+      {},
+    );
+    expect(out.dependencies).toBeNull();
+    expect('upstreamDependencies' in out).toBe(false);
+  });
+
+  it('字段未挂载（undefined）→ dependencies=null 且不新增载体键', () => {
+    const out = applyDependenciesPayload({ name: 't' }, {});
+    expect(out.dependencies).toBeNull();
+    expect('upstreamDependencies' in out).toBe(false);
+  });
+
+  it('不修改入参对象（纯函数契约）', () => {
+    const values = { name: 't', upstreamDependencies: ['a-uuid'] };
+    applyDependenciesPayload(values, { 'a-uuid': 'task-a' });
+    expect(values.upstreamDependencies).toEqual(['a-uuid']);
+    expect('dependencies' in values).toBe(false);
+  });
+});
 
 describe('buildDependenciesPayload（提交序列化）', () => {
   it('选中 taskId 列表 → {taskId: taskName} 映射', () => {
