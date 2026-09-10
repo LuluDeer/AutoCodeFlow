@@ -6,6 +6,8 @@ declare const window: Window & {
     saveConfig: (cfg: Record<string, unknown>) => Promise<{ ok: boolean }>;
     testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
     getLocalIPs: () => Promise<string[]>;
+    getAutoLaunch: () => Promise<boolean>;
+    setAutoLaunch: (enable: boolean) => Promise<{ ok: boolean }>;
   };
 };
 
@@ -35,16 +37,32 @@ export default function ConfigPage() {
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [localIPs, setLocalIPs] = useState<string[]>([]);
   const [active, setActive] = useState<SectionId>('connection');
+  // DSK-04：开机自启走独立 IPC（autolaunch:get/set，即时生效，不经保存按钮），
+  // 与托盘菜单的「开机自启」复选框同源（setAutoLaunch 后主进程会 rebuildMenu）。
+  const [autoLaunch, setAutoLaunch] = useState(false);
 
   useEffect(() => {
     Promise.all([window.electronAPI.getConfig(), window.electronAPI.getLocalIPs()])
       .then(([cfg, ips]) => { setForm(cfg); setLocalIPs(ips); setLoaded(true); });
+    // 旧版 preload 可能未暴露 autolaunch 通道——容错降级为隐藏开关
+    if (typeof window.electronAPI.getAutoLaunch === 'function') {
+      window.electronAPI.getAutoLaunch().then(setAutoLaunch).catch(() => undefined);
+    }
   }, []);
 
   function set(key: string, value: unknown) {
     setForm((f) => ({ ...f, [key]: value }));
     setSaved(false);
     if (key === 'adminApiUrl') setTestResult(null);
+  }
+
+  async function toggleAutoLaunch(enable: boolean) {
+    setAutoLaunch(enable); // 乐观更新，失败由 catch 回滚
+    try {
+      await window.electronAPI.setAutoLaunch(enable);
+    } catch {
+      setAutoLaunch(!enable);
+    }
   }
 
   async function save() {
@@ -203,6 +221,28 @@ export default function ConfigPage() {
                 </div>
                 <Toggle id="autoStart" checked={Boolean(form.autoStartExecutor)}
                   onChange={(v) => set('autoStartExecutor', v)} />
+              </div>
+
+              <div className="cfg-toggle-card">
+                <div className="cfg-toggle-info">
+                  <strong>开机自动启动桌面端</strong>
+                  <span>登录系统后自动在后台启动（即时生效，无需保存）</span>
+                </div>
+                {typeof window.electronAPI.getAutoLaunch === 'function' ? (
+                  <Toggle id="autoLaunch" checked={autoLaunch}
+                    onChange={(v) => void toggleAutoLaunch(v)} />
+                ) : (
+                  <span style={{ color: 'var(--text-3)', fontSize: 12 }}>当前版本不支持</span>
+                )}
+              </div>
+
+              <div className="cfg-toggle-card">
+                <div className="cfg-toggle-info">
+                  <strong>系统通知</strong>
+                  <span>任务完成 / 失败 / 执行器离线时弹出系统通知</span>
+                </div>
+                <Toggle id="notifyEnabled" checked={form.notifyEnabled !== false}
+                  onChange={(v) => set('notifyEnabled', v)} />
               </div>
             </>
           )}

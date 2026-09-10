@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAutoLaunch: () => ipcRenderer.invoke('autolaunch:get'),
   setAutoLaunch: (enable: boolean) => ipcRenderer.invoke('autolaunch:set', enable),
 
+  // 系统通知开关（DSK-04：随 config:get/config:save 走，notifyEnabled 是
+  // AppConfig 常规布尔字段，无独立通道——preload 仅透传，不加新 IPC 面）
+
   // 网络工具
   getLocalIPs: () => ipcRenderer.invoke('network:local-ips'),
 

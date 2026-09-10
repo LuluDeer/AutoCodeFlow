@@ -1,7 +1,7 @@
 import { app, ipcMain } from 'electron';
 import * as http from 'http';
 import * as path from 'path';
-import { configStore, executorProcess, heartbeat, trayManager, windowManager } from './index';
+import { configStore, executorProcess, heartbeat, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
 import { checkForUpdates, quitAndInstall } from './updater';
 import {
@@ -49,6 +49,8 @@ export function registerIpcHandlers(): void {
     configStore.save(cfg);
     log.info('Config saved via IPC');
     trayManager.rebuildMenu();
+    // DSK-04：通知开关 / workDir 可能被改——热同步通知器（开关 + meta 轮询目录）
+    syncNotifierWithConfig();
     // 如果执行器正在运行，热重载配置（停止后用新配置重启）
     if (executorProcess.isRunning()) {
       try {
@@ -77,6 +79,8 @@ export function registerIpcHandlers(): void {
       heartbeat.start(cfg.executorPort);
     }
     trayManager.rebuildMenu();
+    // DSK-04：向导可能首设 workDir / notifyEnabled——同步通知器
+    syncNotifierWithConfig();
     return { ok: true };
   });
 
