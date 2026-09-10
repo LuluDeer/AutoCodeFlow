@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   ServiceUnavailableException,
   Inject,
   Optional,
@@ -31,6 +32,7 @@ import {
   ExecuteMode,
   normalizeTaskPriority,
 } from "./entities/task.entity";
+import { UserRole } from "../users/entities/user.entity";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -285,11 +287,38 @@ export class TaskService {
     private reportRepo: Repository<ExecutionReport> | null,
   ) {}
 
-  async create(dto: CreateTaskDto) {
+  /**
+   * NF-03（任务级 RBAC 预研）：写面属主守卫。三态语义：
+   * - ADMIN 全量放行；
+   * - 行 ownerUserId 为 NULL（无主/存量行）→ 仅 ADMIN（保守默认，方向安全）；
+   * - ownerUserId 非 NULL 且 ≠ 当前用户 → 403（悬垂 id 同样按非本人处理）。
+   * 只拦 update/remove 等配置写面；trigger 等执行类写面不在预研范围
+   * （见 NF-03 认领行缩水声明）。user 为 null（API-Key 主体等）按非 ADMIN。
+   */
+  assertCanWrite(
+    row: { ownerUserId: number | null },
+    user: { id: number; role: UserRole } | null | undefined,
+  ): void {
+    if (user?.role === UserRole.ADMIN) return;
+    if (row.ownerUserId === null) {
+      throw new ForbiddenException(
+        "This task has no owner (legacy row); only admins can modify it",
+      );
+    }
+    if (row.ownerUserId !== user?.id) {
+      throw new ForbiddenException("You do not own this task");
+    }
+  }
+
+  async create(dto: CreateTaskDto, user?: { id: number } | null) {
     if (dto.dependencies && Object.keys(dto.dependencies).length > 0) {
       await this.checkCircularDependency(dto.id, dto.dependencies);
     }
     const normalized = this.normalizeTaskDto(dto);
+    // NF-03: 创建即落 owner（含 ADMIN 创建——可追溯，也为 AUTH-02 读面预铺）。
+    // normalized 是 CreateTaskDto 形态，ownerUserId 在实体列上——save 前并入。
+    (normalized as unknown as Record<string, unknown>)["ownerUserId"] =
+      user?.id ?? null;
     // SEC-02: secrets 在持久化边界统一加密（key 未配置时降级明文并 warn）
     normalized.secrets = this.secretsCrypto.encryptForStorage(
       normalized.secrets,
@@ -445,8 +474,14 @@ export class TaskService {
     return t;
   }
 
-  async update(id: string, dto: UpdateTaskDto) {
+  async update(
+    id: string,
+    dto: UpdateTaskDto,
+    user?: { id: number; role: UserRole } | null,
+  ) {
     const t = await this.findOne(id);
+    // NF-03: 写面属主守卫（ADMIN 全量/属主自己/无主仅 ADMIN）
+    this.assertCanWrite(t, user);
     const normalized = this.normalizeTaskDto(dto);
     // SEC-02: PATCH 语义——secrets 缺省 = 保留旧值（不触碰既有列）；
     // 显式 null / {} = 清空/替换。归一化在脱敏副本上做（findOne 已脱敏，
@@ -484,8 +519,10 @@ export class TaskService {
     return saved;
   }
 
-  async remove(id: string) {
+  async remove(id: string, user?: { id: number; role: UserRole } | null) {
     const t = await this.findOne(id);
+    // NF-03: 写面属主守卫（同 update）
+    this.assertCanWrite(t, user);
     // Stop schedule immediately without waiting for reload
     this.schedulerService.stop(id);
     t.status = TaskStatus.DELETED;
