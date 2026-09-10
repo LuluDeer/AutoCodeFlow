@@ -2776,6 +2776,10 @@ export interface components {
             executorAppName?: string;
             executorGroup?: string;
             executorTags?: string[];
+            /** @description NF-04: executor affinity tags (OR semantics — an executor holding ANY of these tags is an eligible candidate; loadScore then picks within the matched set). In broadcast mode the fan-out narrows to executors matching the affinity tags. Orthogonal to executorTags (hard AND-subset capability requirement). PATCH: omit = keep; explicit null/[] = clear. */
+            executorAffinityTags?: string[];
+            /** @description NF-04: executor anti-affinity tags (exclusion semantics — an executor holding ANY of these tags is excluded). Applies to both single and broadcast dispatch; combined with affinity tags the matched set is filtered further. PATCH: omit = keep; explicit null/[] = clear. */
+            executorAntiAffinityTags?: string[];
             /** @description Pin the task to a specific executor: dispatch targets ONLY this executor (bypasses group/tags filtering); fails fast if it is offline. Mutually exclusive with executeMode=broadcast. */
             executorId?: string;
             glueSource?: string;
