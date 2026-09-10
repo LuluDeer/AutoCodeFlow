@@ -15,7 +15,7 @@
 | A-4 | install-cmd / install.sh 不再暴露共享凭据（DR-01 修复面），参数注入校验（N15 六注入零落盘） | install 相关 spec + install.sh 漂移守卫 |
 | A-5 | 登录枚举时序拉平（dummy bcrypt compare）+ 登录限流独立阈值 | auth spec；W-22 装饰器 env 死配置教训（main.ts 预载 .env） |
 | A-6 | refresh token 消费原子化（DR-07）+ logout 吊销（SEC-02） | auth.service spec |
-| A-7 | 客户端包凭据链：CLI 刷新自愈失败清凭据、MCP env 注入、双 SDK disabled 语义（SEC-01 复审） | acf-cli client.test / mcp-server api.test / sdk 测试 |
+| A-7 | 客户端包凭据链：CLI 刷新自愈失败清凭据、MCP env 注入、双 SDK disabled 语义（SEC-01 复审） | acf-cli client.test / mcp-server api.test / sdk 测试；SEC-01 v2 对账收口（docs/SEC-01-复审报告.md §三.1~3，2026-09-10 实跑 CLI 84/MCP 100/node-sdk 63/py-sdk 111 全绿） |
 
 ## 二、授权（RBAC）
 
@@ -82,9 +82,10 @@
 
 ## 七、待办缺口（复审中识别、尚未闭环）
 
-- SEC-NEW-1：desktop executorToken 明文落盘 → safeStorage 加密（docs/SEC-01-复审报告.md F12-1）。
-- registry-npm `someProp` 死键清理 + API JWT 60d 缩短评估（BUG-16 注记）。
+- ~~SEC-NEW-1：desktop executorToken 明文落盘 → safeStorage 加密~~（已闭环：SEC-NEW-1/8fe9fe1 + BUG-12/49a75bb，对账见 docs/SEC-01-复审报告.md §三.5，SEC-01 v2 2026-09-10 五模块全「已确认/已排除」收口）。
+- registry-npm `someProp` 死键清理 + API JWT 60d 缩短评估（BUG-16 注记，SEC-01 v2 承接未决；死键防漂移已由 scripts/registry-npm-config.selftest.mjs 静态断言守卫，但断言未覆盖死键本身）。
 - minio 链 3 moderate（上游未发版）——豁免归档，复查每轮 npm-audit job。
+- SEC-01 v2 新发现待裁定（只记录未修，见 docs/SEC-01-复审报告.md §四）：N-SEC01-v2-1 acf-cli 双 token 明文落盘（P3，与 A-7 凭据链相关）；N-SEC01-v2-2 desktop Linux 更新链无签名校验（Info，平台固有姿态）。
 
 ## 八、e2e 覆盖与人工专项分界（P0-1 收尾注记，2026-09-09）
 
