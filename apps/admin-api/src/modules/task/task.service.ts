@@ -493,6 +493,9 @@ export class TaskService {
       t.secrets = normalized.secrets as Record<string, unknown> | null;
     }
     delete normalized.secrets;
+    // NF-04: 亲和/反亲和为可空列，PATCH null 清除语义直接依赖 Object.assign
+    // 的透传（显式 null 覆盖旧数组 → 列落 NULL = 无约束）——normalizeTaskDto
+    // 不触碰这两个键；undefined（缺省）不会出现在合并结果上，旧值自然保留。
     const updated = Object.assign(t, normalized);
     // R7 (N17): PATCH 合并路径的互斥校验必须看合并后的实体态——请求体只带
     // executorId（已有任务 executeMode=broadcast）或只带 executeMode=broadcast

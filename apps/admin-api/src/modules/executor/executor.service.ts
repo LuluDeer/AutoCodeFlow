@@ -1074,6 +1074,38 @@ export class ExecutorService {
           });
         }
 
+        // 2.2b NF-04: affinity / anti-affinity tag constraints — applied
+        // BEFORE loadScore ordering (filter first, then pick by load; see the
+        // scoring step below). Both are nullable: null/[] = unconstrained, so
+        // legacy tasks take none of these branches and behavior is unchanged.
+        //   affinity = OR semantics: an executor holding ANY of the tags
+        //   qualifies (soft routing intent — loadScore still optimizes inside
+        //   the matched set); orthogonal to executorTags (2.2, hard AND
+        //   subset), both may be set on the same task.
+        if (task.executorAffinityTags && task.executorAffinityTags.length > 0) {
+          filtered = filtered.filter((e) => {
+            if (!e.tags) return false;
+            return task.executorAffinityTags!.some((tag) =>
+              e.tags!.includes(tag),
+            );
+          });
+        }
+        //   anti-affinity = exclusion semantics: an executor holding ANY of
+        //   the tags is dropped. Combined with affinity this yields the
+        //   intersection (affinity matches minus anti-affinity matches); with
+        //   no affinity it simply prunes the fleet.
+        if (
+          task.executorAntiAffinityTags &&
+          task.executorAntiAffinityTags.length > 0
+        ) {
+          filtered = filtered.filter((e) => {
+            if (!e.tags) return true;
+            return !task.executorAntiAffinityTags!.some((tag) =>
+              e.tags!.includes(tag),
+            );
+          });
+        }
+
         // 2.3 Filter by runtime/capabilities
         if (task.runtime) {
           filtered = filtered.filter((e) =>
@@ -1233,6 +1265,32 @@ export class ExecutorService {
         filtered = filtered.filter((e) => {
           if (!e.tags) return false;
           return task.executorTags!.every((tag) => e.tags!.includes(tag));
+        });
+      }
+      // NF-04: affinity / anti-affinity constraints on the broadcast path.
+      // Ruling (documented in docs/api-reference.md): broadcast + affinity
+      // NARROWS the fan-out to the executors holding any affinity tag — that
+      // is the whole point of the third dispatch state (pinning = exactly one,
+      // plain broadcast = everyone, broadcast+affinity = the matching subset,
+      // loadScore not consulted on this path). Broadcast + anti-affinity
+      // excludes matching executors as usual. Both no-ops when the columns are
+      // null/empty (default unchanged). An empty final candidate set throws
+      // the same "No online executors match..." error as the other filters.
+      if (task.executorAffinityTags && task.executorAffinityTags.length > 0) {
+        filtered = filtered.filter((e) => {
+          if (!e.tags) return false;
+          return task.executorAffinityTags!.some((tag) => e.tags!.includes(tag));
+        });
+      }
+      if (
+        task.executorAntiAffinityTags &&
+        task.executorAntiAffinityTags.length > 0
+      ) {
+        filtered = filtered.filter((e) => {
+          if (!e.tags) return true;
+          return !task.executorAntiAffinityTags!.some((tag) =>
+            e.tags!.includes(tag),
+          );
         });
       }
       if (task.runtime) {

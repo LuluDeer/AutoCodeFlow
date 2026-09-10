@@ -223,6 +223,39 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() executorAppName?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() executorGroup?: string;
   @ApiPropertyOptional() @IsArray() @IsOptional() executorTags?: string[];
+  /**
+   * NF-04: 标签亲和（可空字符串数组，OR 语义——执行器持有任一标签即命中
+   * 候选）。调度侧先按亲和/反亲和过滤候选、再按 CORE-05 loadScore 择优；
+   * broadcast 模式下广播收窄为命中亲和标签的执行器子集。与 executorTags
+   * （硬性能力 AND 子集）正交，可同配。校验对齐 executorTags（@IsArray +
+   * @IsString each）。
+   * PATCH 语义（N28）：缺省 = 保留旧值；显式 null / [] = 清除约束。
+   */
+  @ApiPropertyOptional({
+    description:
+      "NF-04: executor affinity tags (OR semantics — an executor holding ANY of these tags is an eligible candidate; loadScore then picks within the matched set). In broadcast mode the fan-out narrows to executors matching the affinity tags. Orthogonal to executorTags (hard AND-subset capability requirement). PATCH: omit = keep; explicit null/[] = clear.",
+    type: [String],
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  executorAffinityTags?: string[] | null;
+  /**
+   * NF-04: 标签反亲和（可空字符串数组，排除语义——执行器持有任一标签即被
+   * 排除）。单发与 broadcast 均生效；与亲和组合时先取亲和命中集再剔除
+   * 反亲和命中。PATCH 语义（N28）：缺省 = 保留旧值；显式 null / [] =
+   * 清除约束。null 透传路径：UpdateTaskDto 显式 null 经 Object.assign 落
+   * 实体列 → 调度侧 null = 无约束（见 update 注释）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "NF-04: executor anti-affinity tags (exclusion semantics — an executor holding ANY of these tags is excluded). Applies to both single and broadcast dispatch; combined with affinity tags the matched set is filtered further. PATCH: omit = keep; explicit null/[] = clear.",
+    type: [String],
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  executorAntiAffinityTags?: string[] | null;
   @ApiPropertyOptional({
     description:
       "Pin the task to a specific executor: dispatch targets ONLY this executor (bypasses group/tags filtering); fails fast if it is offline. Mutually exclusive with executeMode=broadcast.",
