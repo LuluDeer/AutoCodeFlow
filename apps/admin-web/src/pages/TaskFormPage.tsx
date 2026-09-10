@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   deriveExecutorMode,
   buildExecutorPayload,
+  affinityFormValues,
   applyRequirementsPayload,
 } from './executor-mode';
 import {
@@ -183,6 +184,10 @@ export default function TaskFormPage() {
           executorId: task.executorId ?? undefined,
           executorGroup: task.executorGroup,
           executorTags: task.executorTags,
+          // NF-04: affinity constraints must be mounted and hydrated in edit mode;
+          // otherwise the form submission would normalize absent values to null and
+          // silently clear constraints that were never shown to the user.
+          ...affinityFormValues(task),
           params: task.params ?? {},
           // FEAT-06: 维护窗口（null/缺省 → 空数组占位，添加行即编辑）
           maintenanceWindows: (task.maintenanceWindows ?? []).map((w) => ({ ...w })),
@@ -748,6 +753,54 @@ export default function TaskFormPage() {
                       />
                     </Form.Item>
                   </>
+                )}
+
+                {/* NF-04: affinity constraints are orthogonal to auto/group/broadcast
+                    and remain mounted in every mode so edit/save cannot clear a
+                    value merely because a mode-specific branch is not visible.
+                    Pinned dispatch bypasses all tag filters, so these controls are
+                    disabled there while their stored values are retained for a
+                    later switch back to a filtering mode. */}
+                <Form.Item
+                  name="executorAffinityTags"
+                  label="亲和标签"
+                  tooltip={{
+                    title: '执行器拥有任一标签即可命中；可与分组/执行器标签同时使用。自动调度与广播均生效。指定执行器模式不使用此约束。',
+                    icon: <InfoCircleOutlined />,
+                  }}
+                >
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    disabled={executorMode === 'pinned'}
+                    placeholder="选择亲和标签（可选，OR 关系）"
+                    options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="executorAntiAffinityTags"
+                  label="反亲和标签"
+                  tooltip={{
+                    title: '执行器拥有任一标签即排除；可与亲和标签同时使用。自动调度与广播均生效。指定执行器模式不使用此约束。',
+                    icon: <InfoCircleOutlined />,
+                  }}
+                >
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    disabled={executorMode === 'pinned'}
+                    placeholder="选择反亲和标签（可选，排除关系）"
+                    options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
+                  />
+                </Form.Item>
+                {executorMode === 'pinned' && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    title="指定执行器模式不使用亲和/反亲和约束；配置会保留，切回自动调度、分组或广播后继续生效"
+                    data-testid="pinned-affinity-disabled"
+                    style={{ marginBottom: 16 }}
+                  />
                 )}
 
                 {pinDisabledByBroadcast && (

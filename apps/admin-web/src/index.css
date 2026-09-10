@@ -238,3 +238,54 @@ html[data-theme='dark'] mark.log-search-hit {
     overflow: auto;
   }
 }
+
+/* ============================================================
+   UI-09 补齐：控制台 / 执行详情 两页 375px 专项（第五轮）
+   —— 与上一节同宽断点（≤768px），只追加新规则，桌面端零影响。
+   以下规则均为真实 375px Chromium 实测出的溢出点（实测数据见
+   交付报告），非预防性猜测。
+   ============================================================ */
+@media (max-width: 768px) {
+  /* KPI 卡 xs 两列并排时内容宽约 144px——统计值 28px 字号下十位数
+     （如 1,234,567,890）顶破卡片右边界。降字号 + 极端位数允许换行；
+     字号是行内样式，需 !important 覆盖。 */
+  .ui09-kpi-stat .ant-statistic-content {
+    font-size: 22px !important;
+    overflow-wrap: anywhere;
+  }
+
+  /* 长任务名面包屑：li 默认 min-width:auto 不收缩，实测不可断长名
+     （140 字符）把面包屑撑到 840px、内容区横向滚动。放行 flex 收缩
+     （页面根类作用域，避免影响其它页面）+ 省略号（title 保全文）。 */
+  .ui09-exec-detail .ant-breadcrumb li {
+    min-width: 0;
+    overflow: hidden;
+  }
+  .ui09-crumb-ellipsis {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 执行日志卡工具条（搜索/级别/复制/下载）最小宽约 448px > 卡头可用
+     349px，flex 项 min-width:auto 导致整块顶出内容区（实测右溢 110px）。
+     窄屏卡头改纵向堆叠：标题一行，工具条换行占满整行（Space 已带 wrap）。 */
+  .ui09-log-toolbar-card .ant-card-head-wrapper {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ui09-log-toolbar-card .ant-card-extra {
+    margin-inline-start: 0;
+    margin-bottom: 8px;
+  }
+
+  /* 参数 Tag：antd 默认 white-space:nowrap，长 URL/无空格值实测撑到
+     1173px 并带动内容区横向滚动。窄屏允许断行折行（!important 压过
+     antd cssinjs 运行时注入的同权重规则）。 */
+  .ui09-param-tag {
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+}

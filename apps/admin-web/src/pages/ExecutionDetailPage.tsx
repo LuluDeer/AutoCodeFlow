@@ -94,6 +94,12 @@ function normalizeTabKey(raw: string | null): TabKey {
   return (TAB_KEYS as readonly string[]).includes(raw || '') ? (raw as TabKey) : TAB_KEY_DEFAULT;
 }
 
+/** UI-09：执行信息 Descriptions 响应式列数（xs 单列 / sm 2 列 / md 3 列）。
+ *  跨列项（失败分类/错误信息）用 antd 的 span="filled" 占满整行——它按当前
+ *  列数动态取 span，避免窄屏 xs 单列时旧写法 span={3} 超出列数
+ *  （antd「Sum of column span not match column」警告 + 内容按 3 列宽撑破卡片）。 */
+export const UI09_DESCRIPTIONS_COLUMN = { xs: 1, sm: 2, md: 3 } as const;
+
 export default function ExecutionDetailPage() {
   const { taskId, execId } = useParams<{ taskId: string; execId: string }>();
   const nav = useNavigate();
@@ -421,7 +427,8 @@ export default function ExecutionDetailPage() {
   };
 
   return (
-    <div>
+    // UI-09：页面根类承载窄屏工具类作用域（面包屑收缩/工具条换行见 index.css）
+    <div className="ui09-exec-detail">
       {/* UI-03：页头标准化（面包屑/返回/状态标签/操作按钮迁入 PageHeader；
           终止/重新触发/AI 分析/刷新原样保留于 extra，语义不变） */}
       <PageHeader
@@ -429,7 +436,9 @@ export default function ExecutionDetailPage() {
         description={data?.taskName}
         breadcrumb={[
           { title: '执行记录', to: '/executions' },
-          { title: data?.taskName || '任务' },
+          // UI-09：超长不可断任务名（构建号/英文长名）会撑破面包屑（li
+          // min-width:auto 不收缩），窄屏由 .ui09-crumb-ellipsis 收敛为省略号
+          { title: <span className="ui09-crumb-ellipsis" title={data?.taskName}>{data?.taskName || '任务'}</span> },
           { title: '执行详情' },
         ]}
         extra={
@@ -513,7 +522,7 @@ export default function ExecutionDetailPage() {
 
       {/* UI-05: 信息卡保留 Tab 外顶部——执行状态/耗时/执行器常驻视野 */}
       <Card title="执行信息" style={{ marginBottom: 16 }}>
-        <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
+        <Descriptions column={UI09_DESCRIPTIONS_COLUMN} size="small">
           <Descriptions.Item label="任务名">
             <a onClick={() => nav(`/tasks/${taskId}`)}>{data?.taskName}</a>
           </Descriptions.Item>
@@ -570,7 +579,7 @@ export default function ExecutionDetailPage() {
             </Descriptions.Item>
           )}
           {failureReason && (
-            <Descriptions.Item label="失败分类" span={3}>
+            <Descriptions.Item label="失败分类" span={UI09_DESCRIPTIONS_COLUMN}>
               <Space>
                 <Tag color={failureReason.color}>{failureReason.label}</Tag>
                 <Text type="secondary">{failureReason.hint}</Text>
@@ -578,7 +587,7 @@ export default function ExecutionDetailPage() {
             </Descriptions.Item>
           )}
           {data?.errorMessage && (
-            <Descriptions.Item label="错误信息" span={3}>
+            <Descriptions.Item label="错误信息" span={UI09_DESCRIPTIONS_COLUMN}>
               <Text type="danger">{data.errorMessage}</Text>
             </Descriptions.Item>
           )}
@@ -662,9 +671,12 @@ export default function ExecutionDetailPage() {
                 )}
                 <Card
                   title="执行日志"
+                  className="ui09-log-toolbar-card"
                   styles={{ body: { paddingTop: 12 } }}
                   extra={
-                    <Space>
+                    // UI-09：工具条 5 个控件最小宽 ~448px > 375px 卡头——窄屏
+                    // 由 .ui09-log-toolbar-card 换行独占整行（见 index.css）
+                    <Space wrap className="ui09-log-toolbar">
                       {streaming && <Badge status="processing" text="实时推送" />}
                       {/* UI-05: 关键词搜索——前端对已加载行切分高亮，
                           防抖 300ms 生效；清空即恢复原渲染。 */}
@@ -913,9 +925,11 @@ export default function ExecutionDetailPage() {
               <>
                 <Card title="执行参数（任务默认参数快照）" style={{ marginBottom: 16 }}>
                   {taskData?.params && Object.keys(taskData.params).length > 0 ? (
+                    // UI-09：参数 Tag 含长 URL/无空格值时 nowrap（antd Tag 默认）
+                    // 会撑到上千像素——窄屏由 .ui09-param-tag 换行折行兜底
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                       {Object.entries(taskData.params).map(([k, v]) => (
-                        <Tag key={k} style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                        <Tag key={k} className="ui09-param-tag" style={{ fontFamily: 'monospace', fontSize: 12 }}>
                           {k} = {String(v)}
                         </Tag>
                       ))}
