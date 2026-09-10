@@ -127,5 +127,9 @@ curl -X POST -H "Authorization: Bearer <JWT>" \
 
 ## 5. 下一步
 
+> 需要一个待审批部署样本来练手审批收件箱？`pnpm demo:failure:seed`
+> 预置的 `demo-failure-gated` 应用（approvalRequired）自带一条
+> `pending_approval` 部署行，审批/驳回流程可直接演示。
+
 多台执行器跑起来后，故障面也随之变大——谁在半夜发现执行器掉线？→
 [教程 04 · 告警接入值班](./04-alerting-oncall)。
