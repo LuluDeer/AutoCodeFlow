@@ -118,6 +118,8 @@ round9/round10/round11 的 401 自愈演进说明：round10 落地的是 **execu
 | # | 严重度 | 模块 | 发现 | 建议方向 |
 |---|---|---|---|---|
 | N-SEC01-v2-1 | P3 | acf-cli | CLI 双 token（access+refresh）经 `conf` **明文落盘**于用户配置目录（`packages/acf-cli/src/config.ts:14-21`，`~/.config/acf-cli/config.json`）。与 F12-1 desktop 同型的 at-rest 面，且 refreshToken 是长期凭据（较 15m access token 更敏感）。ADR-012 范围仅桌面端；CLI 无 safeStorage 可用（Node 无原生 keyring）。 | 可评估 keytar/OS keyring 集成，或最低限度在 README 部署指引中注明 CI/定时场景优先 `ACF_TOKEN` env 注入而非 login 落盘。不阻塞验收，登记与否请主会话裁定。 |
+
+> **N-SEC01-v2-1 已闭环（SEC-NEW-4）**：按上表建议方向二落地——`config.ts` 落盘文件经 `conf.configFileMode` 以 `0600` 创建，存量组/其他可读文件在模块加载时由 `hardenConfigPermissions()` 一次性收紧为 `0600`（只改权限，不迁移/不删除凭据，chmod 失败静默降级）；`ACF_CONFIG_DIR` 提供目录覆盖（只读 home / 共享机器 / 测试）；CI/定时场景的 `ACF_API_URL`+`ACF_TOKEN`（+可选 `ACF_REFRESH_TOKEN`）env 注入面已在根 `README.md`「CLI 工具 (acf)」段文档化。加密落盘（keytar/OS keyring）留作后续评估——明文为纯 Node 无 keyring 的平台固有下限，`0600` 为当前最低限度可交付姿态。回归锚点见 `packages/acf-cli/src/__tests__/config-security.test.ts`。
 | N-SEC01-v2-2 | Info | executor-desktop | Linux 桌面自动更新链（DSK-03/c4a0fbc）**无代码签名校验**：electron-updater 在 Linux（AppImage/deb）不验包签名，完整性仅靠 latest-linux.yml sha512 + 更新源传输安全（github provider=HTTPS；generic 源=AUTOUPDATE_URL 部署者自担）。`autoDownload=false` 用户确认闸与版本回退兜底已在位。 | 平台固有姿态非缺陷；建议真机轮（deployment.md Ubuntu 段已有待验注记）在 runbook 中补一条「AUTOUPDATE_URL 必须指向部署者可信源」提示即可。 |
 
 **零「待办」级缺陷**。v1 两条 registry-npm 注记为 carried-forward 未决事项（非本轮新发现），见 §五。
