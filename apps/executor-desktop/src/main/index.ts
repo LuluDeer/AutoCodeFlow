@@ -7,6 +7,8 @@ import { WindowManager } from './window-manager';
 import { registerIpcHandlers } from './ipc-handlers';
 import { getAutoLaunchEnabled, setAutoLaunchEnabled } from './autolaunch';
 import { initUpdater } from './updater';
+import { Notifier } from './notifier';
+import * as path from 'path';
 import log from './logger';
 
 // 单例导出，供 ipc-handlers 等模块使用
@@ -15,6 +17,8 @@ export const executorProcess = new ExecutorProcess();
 export const heartbeat = new HeartbeatMonitor();
 export const trayManager = new TrayManager();
 export const windowManager = new WindowManager();
+// DSK-04：系统通知（任务终态 / 执行器离线）
+export const notifier = new Notifier();
 
 // 单实例锁：第二个进程启动时聚焦已有窗口
 if (!app.requestSingleInstanceLock()) {
@@ -67,18 +71,27 @@ app.whenReady().then(async () => {
   };
   trayManager.getAutoLaunch = () => configStore.get('autoStart');
 
-  // 执行器状态变化 → 同步托盘图标
+  // 执行器状态变化 → 同步托盘图标 + 系统通知（DSK-04：仅 offline 转移报）
   executorProcess.setStatusCallback((status) => {
     trayManager.setStatus(status);
+    notifier.onExecutorStatus(status);
   });
 
-  // 心跳结果 → 同步托盘图标
+  // 心跳结果 → 同步托盘图标 + 系统通知
   heartbeat.setCallback((status) => {
     trayManager.setStatus(status);
+    notifier.onExecutorStatus(status);
   });
 
   // 初始化托盘
   trayManager.init();
+
+  // DSK-04：系统通知初始化——开关读配置；点击通知聚焦状态窗口；
+  // 轮询 workDir/meta 捕获任务终态（executor-node writeExecMeta 落盘）。
+  notifier.onOpenStatusCallback = () => windowManager.focusOrOpenStatus();
+  notifier.setEnabled(configStore.get('notifyEnabled'));
+  const workDir = configStore.get('workDir');
+  notifier.startMetaPolling(workDir ? path.join(workDir, 'meta') : null);
 
   // 注册所有 IPC handlers
   registerIpcHandlers();
@@ -102,3 +115,12 @@ app.whenReady().then(async () => {
     heartbeat.start(cfg.executorPort);
   }
 });
+
+// DSK-04：配置保存后热同步通知开关与 meta 轮询目录（workDir 可能被改）。
+// 由 ipc-handlers 的 config:save 面调用，避免 ipc-handlers 反向 import index
+// 之外的模块知识。
+export function syncNotifierWithConfig(): void {
+  notifier.setEnabled(configStore.get('notifyEnabled'));
+  const workDir = configStore.get('workDir');
+  notifier.startMetaPolling(workDir ? path.join(workDir, 'meta') : null);
+}
