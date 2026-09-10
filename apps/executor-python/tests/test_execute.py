@@ -1565,3 +1565,140 @@ def test_run_and_callback_attaches_refined_reason_on_prepare_exception(monkeypat
     items = posted['json']
     assert items[0]['status'] == 'failed'
     assert items[0]['failureReason'] == 'dependency_install_failed'
+
+
+# ---------------------------------------------------------------------------
+# SEC-NEW-2: S7 gitRepo 私网守卫的 EXECUTOR_ALLOW_PRIVATE_NETWORK 开关
+# （镜像 admin-api safe-http.util.ts 同名变量；loopback 裁定见 ADR 注释）
+# ---------------------------------------------------------------------------
+
+def _git_repo_request(execution_id: str, git_repo: str):
+    from routers.execute import ExecuteRequest
+    return ExecuteRequest(
+        executionId=execution_id,
+        task={'runtime': 'python', 'entrypoint': 'main.py', 'gitRepo': git_repo},
+    )
+
+
+def test_s7_gitrepo_private_network_default_denied(tmp_path, monkeypatch):
+    """默认（allow_private_network=False）：RFC1918 与 loopback gitRepo 全拒——
+    SEC-NEW-2 前的现状回归，安全姿态零变化。"""
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
+
+    for i, repo in enumerate([
+        'https://10.1.2.3/gitlab/org/repo.git',        # 10/8
+        'https://172.16.0.7/gitlab/org/repo.git',      # 172.16/12 下界
+        'https://172.31.255.1/gitlab/org/repo.git',    # 172.16/12 上界
+        'https://192.168.1.10/gitlab/org/repo.git',    # 192.168/16
+        'https://localhost/gitlab/org/repo.git',       # loopback 主机名
+        'https://127.0.0.1/gitlab/org/repo.git',       # loopback IP
+    ]):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(run_task(_git_repo_request(f'exec-s7-def-{i}', repo)))
+        assert exc.value.status_code == 400
+        assert 'restricted address' in str(exc.value.detail), repo
+
+
+def test_s7_gitrepo_private_network_allowed_rfc1918(tmp_path, monkeypatch):
+    """开关开启：RFC1918 三段 gitRepo 放行（内网 GitLab 拓扑）。
+
+    放行路径后续会真正 clone，这里只断言 S7 不再 400——用不存在的
+    gitRepo 让守卫通过后的 clone 抛非 S7 的错误（HTTPException detail
+    为 git 失败而非 restricted address），或者更直接：monkeypatch
+    git_checkout_to 记录调用参数。"""
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+
+    seen = []
+
+    def fake_checkout(repo_url, ref, dest):
+        seen.append(repo_url)
+
+    monkeypatch.setattr(execute_module, 'git_checkout_to', fake_checkout)
+
+    for i, repo in enumerate([
+        'https://10.1.2.3/gitlab/org/repo.git',
+        'https://172.16.0.7/gitlab/org/repo.git',
+        'https://172.31.255.1/gitlab/org/repo.git',
+        'https://192.168.1.10/gitlab/org/repo.git',
+    ]):
+        asyncio.run(run_task(_git_repo_request(f'exec-s7-allow-{i}', repo)))
+        assert repo in seen, repo
+
+
+def test_s7_gitrepo_loopback_still_denied_with_switch_on(tmp_path, monkeypatch):
+    """loopback 裁定（对齐 admin-api assertSafeGitRepoUrl 的 git face 语义）：
+    EXECUTOR_ALLOW_PRIVATE_NETWORK=true 也**不放行** loopback——admin 侧
+    EXECUTOR_ALLOW_PRIVATE_NETWORK 只门控 assertSafeExecutorUrl（executor
+    地址 face），git face 对 127.0.0.0/8、::1 无条件拒绝，本守卫镜像之。"""
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+
+    for i, repo in enumerate([
+        'https://localhost/gitlab/org/repo.git',
+        'https://127.0.0.1/gitlab/org/repo.git',
+        'ssh://git@127.0.0.1:2222/org/repo.git',
+        'git@localhost:org/repo.git',
+    ]):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(run_task(_git_repo_request(f'exec-s7-lo-{i}', repo)))
+        assert exc.value.status_code == 400
+        assert 'restricted address' in str(exc.value.detail), repo
+
+
+def test_s7_gitrepo_public_unaffected_by_switch(tmp_path, monkeypatch):
+    """非私网 gitRepo 不受开关影响：默认与开启两种姿态下均正常走到
+    checkout（S7 不拦）。"""
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    seen = []
+
+    def fake_checkout(repo_url, ref, dest):
+        seen.append(repo_url)
+
+    monkeypatch.setattr(execute_module, 'git_checkout_to', fake_checkout)
+
+    public_repos = [
+        'https://example.com/org/repo.git',
+        'https://gitlab.example.internal/org/repo.git',
+        'ssh://git@git.example.com/org/repo.git',
+        'git@example.com:org/repo.git',
+    ]
+    for allow in (False, True):
+        monkeypatch.setattr(execute_module.settings, 'allow_private_network', allow)
+        seen.clear()
+        for i, repo in enumerate(public_repos):
+            asyncio.run(run_task(_git_repo_request(f'exec-s7-pub-{allow}-{i}', repo)))
+            assert repo in seen, repo
+
+
+def test_s7_gitrepo_scheme_whitelist_kept_under_switch(tmp_path, monkeypatch):
+    """scheme 白名单（http(s)/git@/ssh://）在开关开启时保持不变——
+    file:// 等任意 scheme 仍被 400。"""
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+
+    for i, repo in enumerate([
+        'file:///tmp/evil/repo.git',
+        'ftp://example.com/org/repo.git',
+        '/etc/evil',
+    ]):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(run_task(_git_repo_request(f'exec-s7-scheme-{i}', repo)))
+        assert exc.value.status_code == 400
+        assert 'scheme not allowed' in str(exc.value.detail), repo

@@ -1377,10 +1377,37 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         if not _re.match(r'^(https?://|git@|ssh://)', git_repo, _re.IGNORECASE):
             raise HTTPException(status_code=400, detail=f'gitRepo URL scheme not allowed: {git_repo}')
 
-        # S7: SSRF guard — block private IP addresses and localhost
+        # S7 (SEC-NEW-2): SSRF guard — block private IP addresses and localhost.
+        #
+        # ADR — EXECUTOR_ALLOW_PRIVATE_NETWORK 开关（镜像 admin-api 侧
+        # safe-http.util.ts 的同名变量）：
+        #   * 默认 False = 既有姿态零变化：RFC1918 私网（10/8、172.16/12、
+        #     192.168/16）、loopback（localhost、127.0.0.0/8）一律拒绝。
+        #   * True 时放行 RFC1918 私网——内网自建 GitLab/Gitea 是文档化
+        #     拓扑（executor 与 git 服务同内网），与 admin-api 侧
+        #     assertSafeExecutorUrl 的 private-lan 语义对齐。scheme 白名单
+        #     与下方其余校验（git ref 注入守卫）不受开关影响。
+        #   * loopback 裁定：**不随开关放行**。admin-api 侧的 git 守卫
+        #     assertSafeGitRepoUrl 对 loopback（127.0.0.0/8、::1）无条件
+        #     拒绝、不受 EXECUTOR_ALLOW_PRIVATE_NETWORK 影响（该开关只门控
+        #     assertSafeExecutorUrl 的 executor 地址 face；git face 始终
+        #     deny loopback/link-local/restricted）。本守卫镜像该 git-face
+        #     语义：即便开关开启，localhost/127.x 仍被拒绝——git clone 打
+        #     向执行器自身回环没有合法拓扑，只保留绕过成本。
+        #   * 字符串级判定沿用既有实现（无 DNS 解析）：『默认拒绝』下偏
+        #     保守（非 IP 形式但含私网字样的主机名会被误拒）；与 admin 侧
+        #     assertSafeGitRepoUrl 的 DNS 全答检查相比更弱，属已知差距，
+        #     依赖「gitRepo 由 admin 侧同款守卫前置校验后才下发」的链路
+        #     约定，不在此处扩大改动面。
         private_ip_pattern = r'(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
-        if _re.search(private_ip_pattern, git_repo, _re.IGNORECASE):
-            raise HTTPException(status_code=400, detail=f'gitRepo URL contains restricted address: {git_repo}')
+        if not settings.allow_private_network:
+            if _re.search(private_ip_pattern, git_repo, _re.IGNORECASE):
+                raise HTTPException(status_code=400, detail=f'gitRepo URL contains restricted address: {git_repo}')
+        else:
+            # 开关开启：放行 RFC1918，loopback 仍拒绝（见上方 ADR）。
+            loopback_pattern = r'(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
+            if _re.search(loopback_pattern, git_repo, _re.IGNORECASE):
+                raise HTTPException(status_code=400, detail=f'gitRepo URL contains restricted address: {git_repo}')
 
         ref = git_commit if git_commit else git_branch
         _validate_git_ref(ref)

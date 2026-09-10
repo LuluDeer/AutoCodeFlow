@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # R4-C P2: when true, an executor without a configured token refuses
     # /api/* requests (503) instead of the dev-mode allow-all behavior.
     require_token: bool = False
+    # SEC-NEW-2: S7 gitRepo SSRF 守卫的私网放行开关（与 admin-api 侧
+    # EXECUTOR_ALLOW_PRIVATE_NETWORK 同名镜像——同一变量在两侧语义对齐，
+    # 拓扑描述见 routers/execute.py S7 段 ADR 注释）。默认 False = 现状
+    # 安全姿态零变化（私网/loopback gitRepo 一律拒绝）。
+    allow_private_network: bool = False
     # E8: disk TTL reclamation (node file-logger.ts parity — there TTL days
     # = max(1, LOG_RETENTION_DAYS || 7) and the sweep runs every 6h; python
     # adds a deferred first sweep so a fresh boot doesn't scan+delete while
