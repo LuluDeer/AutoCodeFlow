@@ -85,7 +85,8 @@
 - ~~SEC-NEW-1：desktop executorToken 明文落盘 → safeStorage 加密~~（已闭环：SEC-NEW-1/8fe9fe1 + BUG-12/49a75bb，对账见 docs/SEC-01-复审报告.md §三.5，SEC-01 v2 2026-09-10 五模块全「已确认/已排除」收口）。
 - registry-npm `someProp` 死键清理 + API JWT 60d 缩短评估（BUG-16 注记，SEC-01 v2 承接未决；死键防漂移已由 scripts/registry-npm-config.selftest.mjs 静态断言守卫，但断言未覆盖死键本身）。
 - minio 链 3 moderate（上游未发版）——豁免归档，复查每轮 npm-audit job。
-- SEC-01 v2 新发现待裁定（只记录未修，见 docs/SEC-01-复审报告.md §四）：N-SEC01-v2-1 acf-cli 双 token 明文落盘（P3，与 A-7 凭据链相关）；N-SEC01-v2-2 desktop Linux 更新链无签名校验（Info，平台固有姿态）。
+- ~~N-SEC01-v2-1：acf-cli 双 token 明文落盘（P3，与 A-7 凭据链相关）~~（已闭环：config.ts 落盘文件 chmod 0600 + 存量 0644 自动收紧 + 环境变量注入面文档化，见 commit 与 packages/acf-cli/src/__tests__/config-security.test.ts；明文现状为纯 Node 无 keyring 的平台固有下限，加密落盘留 keytar 依赖评估）。
+- SEC-01 v2 新发现待裁定：N-SEC01-v2-2 desktop Linux 更新链无签名校验（Info，平台固有姿态）。
 
 ## 八、e2e 覆盖与人工专项分界（P0-1 收尾注记，2026-09-09）
 
