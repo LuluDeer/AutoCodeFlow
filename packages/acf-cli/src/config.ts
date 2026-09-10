@@ -2,8 +2,21 @@
 /**
  * Persistent config store for the ACF CLI.
  * Stores API URL and tokens in the user's config directory.
+ *
+ * SEC-NEW-4 (SEC-01 v2 / N-SEC01-v2-1): the on-disk store holds BOTH the
+ * short-lived access token and the long-lived refresh token, so at-rest
+ * protection matters. Node has no cross-platform OS keyring (unlike Electron's
+ * safeStorage — see ADR-012; acf-cli is plain Node, not Electron), so the CLI
+ * cannot encrypt at rest without pulling a native keytar dependency. The chosen
+ * minimum posture — explicitly allowed by docs/SEC-01-复审报告.md §四 — is:
+ *   1. the config file is created with 0600 (owner read/write only), and any
+ *      legacy group/world-readable file is repaired to 0600 on load;
+ *   2. credentials can be injected per-invocation via ACF_TOKEN /
+ *      ACF_REFRESH_TOKEN (URL via ACF_API_URL) without ever touching disk —
+ *      the recommended mode for CI / cron (see README "CLI 工具 (acf)").
  */
 import Conf from 'conf';
+import * as fs from 'fs';
 
 interface AcfConfig {
   apiUrl: string;
@@ -11,14 +24,55 @@ interface AcfConfig {
   refreshToken: string;
 }
 
+/** Owner-only (rw-------). Mirrors the private-credential intent of ADR-012. */
+const CONFIG_FILE_MODE = 0o600;
+
+/**
+ * Optional config-directory override (absolute path). Confined to tests and
+ * air-gapped CI, where ~/.config may be read-only or shared; unset in normal
+ * interactive use so conf keeps resolving the platform default directory.
+ */
+const configDir = process.env.ACF_CONFIG_DIR;
+
 const store = new Conf<AcfConfig>({
   projectName: 'acf-cli',
+  configFileMode: CONFIG_FILE_MODE,
+  ...(configDir ? { cwd: configDir } : {}),
   defaults: {
     apiUrl: 'http://localhost:3105',
     token: '',
     refreshToken: '',
   },
 });
+
+/** Absolute path of the on-disk config file (diagnostics / tests / showConfig). */
+export function getConfigPath(): string {
+  return store.path;
+}
+
+/**
+ * SEC-NEW-4: best-effort hardening of an existing config file to owner-only
+ * permissions. conf applies `configFileMode` when it *writes*, but it never
+ * rewrites a file it only *reads* — so installs created before this change keep
+ * their 0666/0644 mode unless we chmod once here (the store constructor does
+ * write a defaults-bearing file, so a fresh install is already 0600).
+ * Never throws: the chmod can legitimately fail (Windows ACL semantics,
+ * read-only mounts) and must not break the CLI. Credentials are never moved or
+ * deleted by this repair — only the file mode changes.
+ */
+export function hardenConfigPermissions(): void {
+  try {
+    if (!fs.existsSync(store.path)) return;
+    if ((fs.statSync(store.path).mode & 0o777) !== CONFIG_FILE_MODE) {
+      fs.chmodSync(store.path, CONFIG_FILE_MODE);
+    }
+  } catch {
+    // best-effort: leave the file as-is when the platform refuses the chmod.
+  }
+}
+
+// Run once at module load so every CLI invocation repairs a stale mode.
+hardenConfigPermissions();
 
 export function getApiUrl(): string {
   return process.env.ACF_API_URL || store.get('apiUrl');
