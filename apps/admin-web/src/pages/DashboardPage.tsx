@@ -146,13 +146,17 @@ export default function DashboardPage() {
 
       {/* KPI 卡片——UI-02：卡片底色接入 CSS 变量（双主题），强调色取 token 语义面。
           UI-08：首屏（无数据加载中）以骨架形态替代 Spin 包裹，刷新态仍原样 */}
+      {/* UI-09：KPI 卡 xs={12} 两列并排时内容宽仅 ~144px——十位数统计值按
+          28px 字号会溢出卡片（实测 1,234,567,890 顶出右边界），窄屏由
+          .ui09-kpi-stat 媒体查询降字号兜底（见 index.css） */}
       {summaryLoading && !s ? (
         <PageSkeleton variant="table" rows={3} />
       ) : (
-      <Row gutter={[16, 16]}>
+        <Row gutter={[16, 16]}>
           <Col xs={12} sm={6}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
+                className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>任务总数</Text>}
                 value={s?.totalTasks ?? '-'}
                 prefix={<RocketOutlined style={{ color: CHART_COLORS.cpu }} />}
@@ -164,6 +168,7 @@ export default function DashboardPage() {
           <Col xs={12} sm={6}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
+                className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>今日执行</Text>}
                 value={s?.todayRuns ?? totalExec}
                 prefix={<ThunderboltOutlined style={{ color: CHART_COLORS.success }} />}
@@ -176,6 +181,7 @@ export default function DashboardPage() {
           <Col xs={12} sm={6}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
+                className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>运行中</Text>}
                 value={runningCount}
                 prefix={<ClockCircleOutlined style={{ color: CHART_COLORS.concurrent }} />}
@@ -192,6 +198,7 @@ export default function DashboardPage() {
           <Col xs={12} sm={6}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
+                className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>在线执行器</Text>}
                 value={`${s?.onlineExecutors ?? '-'} / ${s?.totalExecutors ?? '-'}`}
                 prefix={<ApiOutlined style={{ color: CHART_COLORS.memory }} />}
