@@ -229,7 +229,7 @@
 | ARCH-28 workspace 统一 | P2 | unclaimed | 根 package.json + CI workflows | 决策+迁移，二期大项 |
 | ARCH-29 迁移号治理 | P2 | unclaimed | docs/PLAN-CLAIMS.md 常设段 + CI 校验 | 小任务，宜尽快 |
 | ARCH-30 AI 服务化 | P3 | unclaimed | admin-api notification 监听器 + ai 库接线 | ARCH-21 范围注记收口 |
-| ARCH-31 多实例矩阵 | P3 | unclaimed | 盘点文档 + silences/outbox Redis 化（如拍板） | 真机双实例 |
+| ARCH-31 多实例矩阵 | P3 | documented（矩阵稿见 docs/ARCH-MULTI-INSTANCE-MATRIX.md；Redis 化待拍板） | 盘点文档 + silences/outbox Redis 化（如拍板） | 真机双实例 |
 | UI-15 反馈一致性 | P2 | unclaimed | admin-web mutation 面盘点+统一 | QA-03 两处前科 |
 | UI-16 StateError 补齐 | P3 | unclaimed | admin-web toast-only 页 | UI-08 缩水项 |
 | QA-11 py 测试 strict | P2 | unclaimed | executor-python tests + CI | 小任务 |

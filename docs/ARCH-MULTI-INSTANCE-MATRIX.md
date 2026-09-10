@@ -1,0 +1,247 @@
+# ARCH-31：多 admin-api 实例兼容矩阵
+
+> 状态：审计盘点（unclaimed → documented）。范围：`apps/admin-api/src`。
+> 目的：盘点全部**进程内单例状态**，标注每一项在多实例（水平扩容 / 滚动重启 /
+> 无会话粘滞负载均衡）下的兼容性、失效后果与风险等级，并给出 outbox / silence
+> 两项的 Redis 化评估。
+>
+> 结论速览：调度链（Leader Election + DB claim）已多实例安全；**通知静默**、
+> **渠道配置**、**灰度批次**、**本地文件系统**四类仍是单实例假设，是水平扩容的
+> 主要约束。
+
+---
+
+## 1. 判定口径
+
+| 等级 | 含义 |
+| --- | --- |
+| 🟢 低 | 多实例语义正确或已显式降级为「按实例聚合」，无正确性损失 |
+| 🟡 中 | 多实例有可观测的偏差/重复/延迟，但有 DB 条件写或幂等兜底，不破坏数据正确性 |
+| 🔴 高 | 多实例破坏功能正确性（状态不一致 / 单写者假设被打破 / 数据丢失） |
+
+判定维度：① 状态是否跨进程共享；② 是否有 Redis/DB 兜底；③ 写入是否有原子
+claim；④ 路由到任意实例是否等价。
+
+---
+
+## 2. 兼容矩阵（总表）
+
+| # | 状态项 | 载体 | 跨进程共享 | 兜底 | 等级 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 调度定时器 `timers`/`cronTasks`/`runningTasks`/`schedulingTasks` | 进程内 Map/Set | 否 | Redis Leader + DB `claimTaskTrigger` | 🟢 低 |
+| 2 | 调度 Leader 身份 `isLeader`/`leaderLock` | 进程内 + Redis 锁 | 锁共享 | fail-open + 15s 校验 | 🟢 低 |
+| 3 | 通知静默 `NotificationService.silences` | 进程内 Map（热路径） | 否（DB 仅回灌） | DB `notification_silences` 写穿 | 🔴 高 |
+| 4 | 渠道配置 `ChannelConfigStore` / `NotificationConfigService.channelConfigs` | 进程内 Map | **否** | 无（env 回退） | 🔴 高 |
+| 5 | 灰度批次 `rolloutBatches` / `rolloutTimers` | 进程内 Map/Set | 否 | 行级 `rolloutState` + 重启 sweep | 🔴 高 |
+| 6 | 产物/包本地磁盘 `uploads/`、artifacts root | 本地 FS | 否（除非共享卷） | 无 | 🔴 高 |
+| 7 | FEAT-19 outbox 派发扫描 `OutboxDispatcher` | DB 表（共享） | 是 | DB 行状态 | 🟡 中 |
+| 8 | FEAT-07 快速路径重试 `pendingTimers` | 进程内 Set | 否 | outbox 兜底 | 🟡 中 |
+| 9 | 执行器令牌缓存（3 个 Map） | 进程内 Map | 否 | TTL 60s / rotate 逐实例清 | 🟡 中 |
+| 10 | 无 Leader 门禁的 `@Cron`（8 个） | 各实例并行 | 否 | 条件 UPDATE / 幂等 | 🟡 中 |
+| 11 | 运行时指标 `counters`/`gauges`、`SchedulerMetrics`、`ExecutionCallbackMetrics` | 进程内 / 模块级 | 否 | Prometheus per-target | 🟢 低 |
+| 12 | SSE 槽位 `sseStreams*` / `MetricsStreamSlotService.activeStreams` | 进程内计数 | 否 | 按实例线性叠加（已文档化） | 🟢 低 |
+| 13 | 领域事件总线 `DomainEventBus` | 进程内 EventEmitter | 否 | outbox 兜底跨进程 | 🟢 低 |
+| 14 | 维护窗口解析缓存 `PARSE_CACHE` | 模块级 Map | 否 | 纯函数确定性 | 🟢 低 |
+| 15 | `main.ts` `runningApp`/`shuttingDown`、`RedisLockService.client` | 进程内 | 否 | 无（本就 per-process） | 🟢 低 |
+
+---
+
+## 3. 逐项说明
+
+### 3.1 🟢 调度链（已多实例安全）
+
+**Leader Election**（`scheduler.service.ts:184-338`）：Redis 锁 `lock:scheduler:leader`，
+TTL 30s，`RedisLockService` watchdog 以 TTL/3 续期，另设 TTL/2 校验定时器，
+`extendLock` 失败即 demote 并清空本地全部 timer。非 Leader 节点不注册任何定时器
+（`reload`/`scheduleOne`/`checkMisfires`/`recoverStaleExecutions` 均有 `isLeader` 门）。
+
+**双保险**：跨进程去重退化为 `enqueue()` 内 Redis 触发锁（`renew:false`，TTL 即窗口）
++ DB 条件 claim `claimTaskTrigger`（`scheduler.service.ts:1046-1065`，`WHERE status=ACTIVE AND lastTriggerTime < windowStart`）——任一实例或旧 Leader 残余定时器重复触发都被第二道拦截。
+
+**降级语义**：Redis 完全不可用时 fail-open 按 Leader 运行（保调度不停摆），此时唯一
+保护是 DB claim。窗口期内可能出现旧 Leader 与新 Leader 并存的重复 tick，但 claim 兜底。
+> 注：fail-open 期间**每个实例都会成为 Leader**（各自 `isLeader=true`），跨进程去重
+> 完全依赖 DB claim；Redis 恢复后除首个持锁者外其余经 15s 重试 demote。
+
+`getStats()` 暴露 `isLeader` 与 pid/hostname 供多实例区分（`/metrics/scheduler`）。
+
+### 3.2 🔴 通知静默（主要缺口）
+
+`NotificationService.silences`（`notification.service.ts:86`）是**同步热路径**
+（`isSilenced` 在 `notify*` 各分支同步判定）。FEAT-01 引入了 DB 写穿
+（`NotificationSilenceService`）与**启动回灌**（`restoreSilencesFromStore`，仅
+`onModuleInit` 执行一次）。
+
+**多实例失效路径**：
+1. 静默规则经 API 打到实例 A → A 内存 Map + DB 各写一份；
+2. 实例 B 的内存 Map **不含**该规则；
+3. 后续告警若路由到 B，`isSilenced` 命中不到 → **告警不被静默**（B 只有在重启
+   回灌时才看到该行）。
+
+后果：静默失效（重复告警），不破坏数据正确性，但属于用户可见的功能不一致。
+`addSilence` 还以进程内 `silences.size` 判 1000 上限，DB 侧另有独立上限——两侧
+口径在多实例下不一致。
+
+### 3.3 🔴 渠道配置（无持久化）
+
+`ChannelConfigStore`（`channel-config.store.ts`）与
+`NotificationConfigService.channelConfigs`（`notification-config.service.ts:75`）均为
+**纯内存**，注释明确「In-memory by design for now … DB persistence is a follow-up」。
+`PATCH /notification/channels/:key` 只改**接收该请求的实例**的内存；渠道发送侧
+（`WebhookChannel.send` 等）按「saved config 优先、env 回退」解析，于是：
+
+- 在 A 保存的 webhookUrl/密钥**不会**在 B 生效 → B 上的通知走 env 或直接 skipped；
+- 多实例下配置面表现为「非确定性生效」，取决于请求落到哪台。
+
+### 3.4 🔴 灰度批次（单写者假设）
+
+`AppDeploymentService.rolloutBatches`（`app-deployment.service.ts:132`）与
+`rolloutTimers`（:134）是进程内批次状态；批次推进 tick（`scheduleRolloutTick`，:2028）
+运行在**创建批次的实例**上，行级状态落 `rolloutState`/`rolloutMeta`。
+
+**失效路径**：执行器心跳/确认（`notifyHeartbeatToRollout`）经负载均衡可能打到**非
+属主实例**——该实例内存里没有 `batch`，无法推进 canary 确认；属主实例只能靠硬超时
+（`ROLLOUT_BATCH_TIMEOUT_MS` 15min）收尾 → 灰度卡死/误判失败。`onModuleDestroy`
+直接丢弃进程内批次，重启后 `onModuleInit` 把 pending/probing 行标记 failed（人工重发）。
+
+### 3.5 🔴 本地文件系统
+
+- 执行器包：`executor-package.service.ts:38` `UPLOAD_DIR = process.cwd()/uploads/executor-packages`；
+- 产物：`artifacts` 模块的 artifact root（`ArtifactsRetentionService` 扫描本地 root）；
+- 产物清理 `@Cron("0 45 3 * * *")` 读本地目录。
+
+多实例若无共享卷，A 写入的包/产物 B 读不到；跨实例下载 404。需共享卷（NFS/对象存储）
+或在部署文档钉死。
+
+### 3.6 🟡 outbox 派发（跨进程共享表，但缺行级 claim）
+
+FEAT-19 `OutboxDispatcher`（`outbox-dispatcher.service.ts`）把 outbox 落 **DB 表**，
+OnModuleInit + 每 5s 扫描 `dispatchedAt IS NULL AND deadLettered=false`。表是跨进程共享的，
+但**每个实例都独立扫描同一批行**，且重入锁 `scanning` 只是**进程内** boolean——
+没有任何行级 claim（无 `SELECT … FOR UPDATE SKIP LOCKED`，也无条件 UPDATE 抢占）。
+
+**多实例后果**：同一行可能被两个实例同时在途补投 → 重复投递（at-least-once 语义
+允许重复，文档要求订阅方幂等），但重复度随实例数放大；`markDispatched` 也无条件
+（两实例都写 `dispatchedAt`，幂等但无排他）。
+
+快速路径侧（`OutboundEventDispatcher.dispatch`，:144-192）先 `outbox.enqueue` 再内存
+快照直投——**同一事件在一个实例上会被投两次**（快速路径一次 + 任一实例的 outbox 扫描
+一次），这是 FEAT-19 的既定取舍（文档已注明订阅方须幂等），多实例不改语义，只是
+重复窗口更宽。
+
+### 3.7 🟡 执行器令牌缓存（轮换延迟）
+
+`ExecutorService` 三个正缓存（`tokenValidationCache` / `callbackSecretCache` /
+`issuedTokenCache`，:63/:73/:110）均为进程内：
+
+- `rotateToken` 只 evict **本实例**的 `callbackSecretCache`/`issuedTokenCache`
+  （:1558-1559, :1670），其他实例的最长 60s 内仍以旧 hash 为 HMAC 候选 → 轮换窗口内
+  旧令牌短暂仍被接受（与单实例 F-5/N26 的取舍同源，多实例放大为「部分实例仍认旧」）；
+- `POST /executors/token` 的幂等复用（R9）也按实例命中：请求落到不同实例会再轮换一次
+  （冷启动语义，注释已承认无害）。
+
+### 3.8 🟡 未接 Leader 门禁的 `@Cron`
+
+`scheduler.service.ts` 的 `reload`/`recoverStaleExecutions` 有 `isLeader` 门；下列
+cron **没有**，每个实例并行执行（round4 复审已记 P2）：
+
+| 服务 | cron | 多实例影响 | 等级 |
+| --- | --- | --- | --- |
+| `executor.markStaleOffline` | `*/30 * * * * *` | 条件 UPDATE `status=ONLINE` 仅一赢家；赢家 `notifyExecutorOffline` + emit `executor.offline`，故通知/事件基本不重复 | 🟡 |
+| `executor.detectLostExecutions` | `0 */5 * * * *` | 条件 UPDATE `status=RUNNING` 仅一赢家，`:affected>0` 才 `releaseExecutorSlot`；并发仅增扫描负载 | 🟡 |
+| `executor.cleanupOldRecords` | `0 0 2 * * *` | 单条无界 DELETE，并发抢锁（幂等）| 🟡 |
+| `executor.cleanupOfflineExecutors` | `0 0 * * * *` | 幂等 DELETE | 🟢→🟡 |
+| `app-deployment.detectStuckDeployments` | `0 */2 * * * *` | 并发 `save` 同一 stuck 行（幂等但非原子） | 🟡 |
+| `log-retention.handleDailyCleanup` | `0 30 3 * * *` | DETACH/DROP + `CREATE … IF NOT EXISTS` 双保险；注释声明幂等 | 🟢→🟡 |
+| `auth.cleanupExpiredTokens` | `EVERY_DAY_AT_3AM` | 幂等 DELETE | 🟢 |
+| `audit.cleanupOldAuditLogs` | `0 5 2 * * *` | bypass 事务 DELETE，幂等 | 🟢 |
+
+影响集中在：重复告警（已由条件写收敛）、并发删除抢锁/长事务（`cleanupOldRecords`/
+`cleanupOldAuditLogs` 为**单条无界 DELETE**，多实例并发会放大 WAL 与锁竞争）。
+
+### 3.9 🟢 已按实例聚合的观测/容量
+
+- 运行时计数/仪表（`runtime-metrics-entry.ts` 模块级 `counters`/`gauges`，埋点
+  TaskService/NotificationService）、`SchedulerMetricsService`、
+  `ExecutionCallbackMetricsService`：per-process 单调计数，Prometheus per-target 抓取
+  天然按 instance 区分；
+- SSE 槽位 `TaskService.sseStreamsPerExecution/sseStreamsGlobal`（:969-970）与
+  `MetricsStreamSlotService.activeStreams`：进程内计数，多实例总容量 = 实例数 ×
+  上限（`SSE_MAX_STREAMS_GLOBAL` 默认 64 / `METRICS_STREAM_MAX_GLOBAL` 默认 32）——
+  已在 `operations.md`、`api-reference.md` 显式文档化。
+
+---
+
+## 4. outbox / silence Redis 化评估
+
+### 4.1 outbox 行级 claim（建议做，性价比高）
+
+**问题**：8 个实例 → 同一待投行最多 8 次并发补投。
+
+**方案 A（最小改动，推荐）**：扫描取行改为原子认领——
+`UPDATE event_outbox SET nextAttemptAt = now + lease WHERE id IN (
+   SELECT id FROM event_outbox WHERE dispatchedAt IS NULL AND deadLettered=false
+     AND (nextAttemptAt IS NULL OR nextAttemptAt < now)
+   ORDER BY createdAt LIMIT 50 FOR UPDATE SKIP LOCKED
+) RETURNING *`
+（注意 `nextAttemptAt` 当前语义是「退避指针」，需新增 `claimedAt`/`leaseUntil` 字段或
+复用为短租约 + 心跳，避免与退避语义混淆）。PG 的 `SKIP LOCKED` 让各实例取到不相交
+子集，天然分片。
+
+**方案 B（Redis 化）**：把待投队列搬进 Redis（如 BullMQ 已有依赖）——投递即入队，
+由 worker 消费，重试/退避交给队列。改动大（失去 DB 终态可查询性），需权衡。
+
+**成本/收益**：A 约 1 个迁移（加 `leaseUntil`）+ 扫描器改造，即可把重复投递从
+「×实例数」收敛到「DB 锁粒度允许的最小重复」；B 收益更大但需重做主链与可观测。
+建议先做 A。
+
+### 4.2 silence Redis 化（建议做，改善一致性）
+
+**问题**：`isSilenced` 是同步热路径，内存 Map 无法跨实例；DB 只在启动回灌。
+
+**方案 A（DB 读穿 + 短 TTL 缓存，推荐）**：保留内存 Map 作 L1，但 `isSilenced`
+命中前对「本进程最近未回灌」的窗口做**周期性增量回灌**（如每 30s 拉 `listActive`
+并 merge），或引入 `updatedAt` 游标做增量拉取。改动小、复用既有 `listActive`。
+
+**方案 B（Redis 为准）**：每条静默一个 `silence:<id>` key（带 TTL = endTime），
+`isSilenced` 走 Redis 读；`addSilence`/`removeSilence` 写 Redis + 发 pub/sub 通知
+各实例清 L1。一致性最好，引入 pub/sub 复杂度与 Redis 依赖（Redis 不可用时
+fail-open 回内存态，与 NOTIF-003 降级一致）。
+
+**决策建议**：短期 A（消除「新静默在别的实例上不生效」这一主缺口），长期若
+Redis 已是硬依赖则 B。`ChannelConfigStore` 同理——它甚至没有 DB 表，
+建议复用 `config` 模块的 `system_config`（已存在）持久化渠道配置，或走 B。
+
+---
+
+## 5. 水平扩容结论
+
+- **可安全多实例**：调度链（Leader + claim）、BullMQ worker、无状态读写 API、
+  观测端点（按 instance 聚合）。
+- **需共享存储**：产物/执行器包本地 FS（共享卷或对象存储）。
+- **需先改造**：通知静默（3.2）、渠道配置（3.3）、灰度批次（3.4）——三者是
+  「单实例内存态当共享态用」的典型。
+- **建议加固**：outbox 行级 claim（4.1）、`@Cron` 统一 Leader 门禁（3.8，可抽
+  `@LeaderOnly()` 装饰器复用 scheduler 的 `isLeader`/Redis 锁，fail-open 语义一致）。
+
+### 真机双实例验证清单（后续）
+
+1. 双实例下在 A 建静默，向 B 发告警，断言被静默（改造后）；
+2. 双实例下在 A PATCH 渠道配置，经 B 触发通知，断言用 A 保存的值；
+3. 双实例下执行一次 canary 部署，让心跳落到非属主实例，断言批次仍推进；
+4. 双实例下同一事件同时触发快速路径与 outbox，统计订阅方收到的投递次数（幂等验证）；
+5. `EXISTS lock:scheduler:leader` 全时只有一个持有者，逐个重启断言接管 < 60s。
+
+---
+
+## 6. 引用
+
+- `docs/adr/adr-002-scheduler-dual-guard.md` — 调度双保险决策
+- `docs/review_round4_concurrency.md` §P2 — 多实例 @Cron 无门禁（本矩阵重列并分级）
+- `docs/operations.md` §多实例与 SSE 容量 / §滚动升级
+- `docs/DEVELOPMENT-PLAN-2026-09H2.md` ARCH-31 条目
+- 源码：`scheduler.service.ts`、`redis-lock.service.ts`、`notification.service.ts`、
+  `notification-silence.service.ts`、`channel-config.store.ts`、`app-deployment.service.ts`、
+  `outbox-dispatcher.service.ts`、`outbound-event-dispatcher.service.ts`、
+  `executor.service.ts`、`task.service.ts`、`metrics-stream-slot.service.ts`、
+  `runtime-metrics-entry.ts`
