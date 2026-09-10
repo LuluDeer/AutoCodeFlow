@@ -93,6 +93,9 @@ return { message: msg, success: true };
 
 ## 6. 失败了怎么办
 
+> 想要一个现成的失败样本？`pnpm demo:failure:seed` 会预置一个故意失败的
+> `demo-failure-fragile` 任务（含失败分类与错误详情），无需手工构造。
+
 | 现象 | 排查 |
 |------|------|
 | 提示「无可用执行器」 | 「执行器」页看是否在线；注册后心跳同步约需 10-15 秒（见[快速上手常见问题](../quickstart.md#常见问题)） |

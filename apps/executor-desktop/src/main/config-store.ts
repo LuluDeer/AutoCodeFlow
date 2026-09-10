@@ -16,6 +16,8 @@ export interface AppConfig {
   maxConcurrentTasks: number;
   autoStart: boolean;
   autoStartExecutor: boolean;
+  /** DSK-04：系统通知开关（任务终态/执行器离线时弹系统通知）。 */
+  notifyEnabled: boolean;
   logLevel: 'info' | 'debug' | 'error';
 }
 
@@ -31,6 +33,8 @@ const schema = {
   maxConcurrentTasks: { type: 'number', default: 10 },
   autoStart: { type: 'boolean', default: false },
   autoStartExecutor: { type: 'boolean', default: true },
+  // DSK-04：系统通知默认开启（用户可在设置页关闭）
+  notifyEnabled: { type: 'boolean', default: true },
   logLevel: { type: 'string', default: 'info' },
 } as const;
 

@@ -14,7 +14,7 @@
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:linux": "npm run build && electron-builder --linux",
-    "test:main": "tsc -p tsconfig.selftest.json && node dist-selftest/path-domain.selftest.js && node dist-selftest/token-crypto.selftest.js && node dist-selftest/updater.selftest.js",
+    "test:main": "tsc -p tsconfig.selftest.json && node dist-selftest/path-domain.selftest.js && node dist-selftest/token-crypto.selftest.js && node dist-selftest/updater.selftest.js && node dist-selftest/notifier-rules.selftest.js",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

@@ -125,6 +125,12 @@ receivers:
 
 ## 5. 端到端验收（值班演练）
 
+> 想跳过手工造数据？`pnpm demo:failure:seed` 一键预置故障演练四件套
+> （失败任务 / runbook 任务 / 死信订阅 / 审批待办各一例，全部
+> `demo-failure-` 前缀、幂等可重跑，`--clean` 一键清理），详见
+> [运维手册·故障演练演示包](../operations.md#故障演练演示包demo-failure-seed)。
+> 下面手工路径与脚本预置等价，可用于理解每一步的机制。
+
 1. 停掉 Redis：`docker compose stop redis`；
 2. 等 Prometheus 抓取 + 规则评估（默认 1-2 个评估周期）；
 3. 预期链路：`AUTOFLOW_SCHEDULER_DOWN` firing → Alertmanager → 加签代理 →
