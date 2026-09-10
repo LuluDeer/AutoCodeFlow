@@ -5,10 +5,47 @@
 
 export type ExecutorMode = 'auto' | 'group' | 'pinned' | 'broadcast';
 
+/** NF-04：编辑态任务对象的亲和/反亲和字段。保留最小结构类型以避免
+ * 将表单纯逻辑层与完整 API 类型耦合。 */
+type AffinityTaskFields = {
+  executorAffinityTags?: string[] | null;
+  executorAntiAffinityTags?: string[] | null;
+};
+
+/**
+ * NF-04：亲和/反亲和标签归一为「非空数组 | 显式 null」。两列是可空
+ * simple-array，PATCH 语义为缺省=保留旧值、显式 null=清除（N28）。antd
+ * Select 清空后值可能是 undefined（未挂载/未触碰）或 []（点 clear），
+ * 两者都必须归一为 null，否则用户清空后旧约束仍在后端生效。
+ */
+export function normalizeAffinityTags(v: unknown): string[] | null {
+  return Array.isArray(v) && v.length > 0 ? (v as string[]) : null;
+}
+
+/**
+ * NF-04：后端任务 → 表单亲和/反亲和初值（编辑态回填）。数组原样回填；
+ * null/空数组归一 undefined（antd Form 空态），提交侧再由
+ * buildExecutorPayload 统一归一为显式 null。
+ * 入参为 unknown：调用方任务对象可能来自不同 API 载荷形态。
+ */
+export function affinityFormValues(task: unknown): {
+  executorAffinityTags?: string[];
+  executorAntiAffinityTags?: string[];
+} {
+  const t = (task ?? {}) as AffinityTaskFields;
+  const norm = (v?: string[] | null) => (v && v.length > 0 ? v : undefined);
+  return {
+    executorAffinityTags: norm(t.executorAffinityTags),
+    executorAntiAffinityTags: norm(t.executorAntiAffinityTags),
+  };
+}
+
 /**
  * 从后端任务映射到表单的执行器策略。优先级：
  * broadcast > executorId(真 pinning，后端 dispatch 唯一认可) > executorAppName
  * (legacy appName 语义，仍显示为 pinned 但需按 id 重选) > group/tags > auto。
+ * NF-04 亲和/反亲和不参与模式推导——它们是正交约束，auto/group/broadcast
+ * 下均可生效（见 buildExecutorPayload 注释）。
  */
 export function deriveExecutorMode(task: {
   executeMode?: string | null;
@@ -42,6 +79,18 @@ export function buildExecutorPayload(
   executorMode: ExecutorMode,
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = { ...values };
+  // NF-04: 亲和/反亲和是与执行器选择模式正交的调度约束，而非 group 模式
+  // 的限定字段——后端单发路径（auto/group）在 group/tags/runtime 过滤之后、
+  // loadScore 之前过滤候选（亲和 OR 命中 / 反亲和排除，executor.service.ts
+  // 2.2b 段）；broadcast 路径同样过滤，把广播收窄为命中亲和标签的子集
+  // （pinning=一台、普通广播=全部、广播+亲和=命中子集，即第三态价值）。
+  // 故 auto/group/broadcast 三模式保留其值；清空（undefined/[]）归一为
+  // 显式 null——PATCH 缺省=Object.assign 保留旧值（N28），不显式发 null 会
+  // 「界面已清空、后端仍生效」。
+  payload.executorAffinityTags = normalizeAffinityTags(payload.executorAffinityTags);
+  payload.executorAntiAffinityTags = normalizeAffinityTags(
+    payload.executorAntiAffinityTags,
+  );
   if (executorMode === 'broadcast') {
     payload.executeMode = 'broadcast';
     payload.executorId = null;
@@ -62,6 +111,10 @@ export function buildExecutorPayload(
     payload.executorAppName = null;
     payload.executorGroup = null;
     payload.executorTags = null;
+    // NF-04: pinned 分支在后端 dispatch 直接取 [pinned] 绕过一切过滤
+    // （executor.service.ts，含亲和/反亲和），所以两字段在 pinned 下不生效。
+    // API 仍允许保存两列，且 PATCH 缺省=保留；不要因为切到 pinned 就
+    // 擦除用户已配置的约束。控件在 pinned 下禁用，切回非 pinned 后约束可继续生效。
   } else {
     payload.executeMode = 'single';
     payload.executorId = null;
