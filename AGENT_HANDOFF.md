@@ -17,6 +17,7 @@
   - **基线**：admin-api **2193/2193** · admin-web **554/554** · docs-site build+sync-check 七面绿 · e2e-full 41/43（23/24 挂跟踪）。
   - **待用户动作**：①GitHub Actions UI 批准 release environment（v1.1.0 三包发布）；②Settings→Pages 已 API 代启（无需动作）。
   - **2a85b13 销账后 CI 补记（QEMU 抖动）**：2a85b13 为 docs-only（仅 AGENT_HANDOFF.md + docs/PLAN-CLAIMS.md，apps/executor-node 零改动），push 触发 CI run **34494055815** 时 docker-multiarch-build (executor-node) 在 build-push-action（linux/amd64,linux/arm64）步骤卡死 >13min（基线该 job ~2min，同 run 前一次全绿 run 34493150403 同 job 15:03:43→15:05:39），判定为 infra 抖动非代码问题（构建输入与 61abdfa 全绿态逐字节一致）。处置：cancel 该 run → `gh run rerun --failed` 重跑该 job（新 job 102954957370）→ 16:26:00→16:28:05 成功 2min05s。**run 34494055815 现全绿。**
+  - **ARCH-31 多实例兼容矩阵 done（盘点轮，零源码改动）**：新增 `docs/ARCH-MULTI-INSTANCE-MATRIX.md`——15 项进程内单例状态矩阵 + 风险分级（🟢/🟡/🔴）+ 逐项失效路径 + outbox 行级 claim / silence Redis 化方案评估 + 真机双实例验证清单 5 条。结论：调度链（Redis Leader + DB 条件 claim）已多实例安全；🔴 高 = 通知静默/渠道配置（无持久化）/灰度批次（单写者）/本地文件系统；🟡 中 = outbox 无行级 claim、执行器令牌缓存逐实例 TTL、8 个未接 Leader 门禁 @Cron。交叉引用挂 operations.md「横向扩容要点」；PLAN-CLAIMS ARCH-31 行置 done。**缩水声明**：silences/outbox 的 Redis 化代码实现未做（属拍板项），真机双实例验证留验。
 - **上轮（2026-09-10 NF-02 直落，主会话）**：
   - `03e23d1` **NF-02 执行编排 UI done**：TaskFormPage 上游依赖多选（纯逻辑层 task-dependencies.ts，空集显式 null 对齐 N28）+ DAG「触发整条链」按钮 + dashboard-ui04 时间炸弹测试修复（固定日期滚出 7 天窗实爆，改相对日期）；admin-web **538/538**（527 只增 +11）。
   - 缩水声明：fail-fast 失败分支策略未做（需后端新列+迁移+调度语义变更，见 claims 板备注）。

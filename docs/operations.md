@@ -327,6 +327,10 @@ series 名已与唯一注册处
 
 ### 横向扩容要点
 
+> 全部进程内单例状态的多实例兼容盘点与风险分级见
+> [`docs/ARCH-MULTI-INSTANCE-MATRIX.md`](./ARCH-MULTI-INSTANCE-MATRIX.md)
+> （调度链已安全；**通知静默 / 渠道配置 / 灰度批次 / 本地文件系统**为已知单实例约束）。
+
 - **admin-api 多实例与 SSE 容量**：SSE 流计数为**进程内** gauge（per-instance，进程重启
   归零），多实例 SSE 总容量 = 实例数 × `SSE_MAX_STREAMS_GLOBAL`（默认 64）线性叠加
   （占用率按 Σ(active)/Σ(limit) 计算）——该上限值**待压测确认**。每实例独立抓取
