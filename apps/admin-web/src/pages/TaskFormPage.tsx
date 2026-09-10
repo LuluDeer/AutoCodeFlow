@@ -47,7 +47,7 @@ import {
   RETRYABLE_ERROR_OPTIONS,
 } from './retry-policy';
 import {
-  buildDependenciesPayload,
+  applyDependenciesPayload,
   dependenciesFormValues,
 } from './task-dependencies';
 import PageHeader from '../components/PageHeader';
@@ -248,17 +248,18 @@ export default function TaskFormPage() {
     }
     setSaving(true);
     try {
-      const payload = applyRetryableErrorsPayload(
-        applyTimeoutPolicyPayload(
-          applyMaintenanceWindowsPayload(
-            applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
+      // QA-01：applyDependenciesPayload 必须包在最外层——它把表单载体字段
+      // upstreamDependencies（DTO 未声明，forbidNonWhitelisted 会判 400）转成
+      // DTO 声明的 dependencies 映射并删除载体键，须保证没有任何后续步骤再把
+      // 载体键带回请求体（内层 buildExecutorPayload 会整体展开 values）。
+      const payload = applyDependenciesPayload(
+        applyRetryableErrorsPayload(
+          applyTimeoutPolicyPayload(
+            applyMaintenanceWindowsPayload(
+              applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
+            ),
           ),
         ),
-      );
-      // NF-02: 上游依赖序列化（选中 taskId 列表 → {taskId: taskName} 映射；
-      // 空集显式 null——PATCH Object.assign 语义下缺省=保留旧依赖链）
-      payload.dependencies = buildDependenciesPayload(
-        values.upstreamDependencies as string[] | undefined,
         depNameSnapshotRef.current,
       );
       if (isEdit && editId) {

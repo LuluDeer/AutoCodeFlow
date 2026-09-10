@@ -859,7 +859,11 @@ test('23. executorId 残留清理 — 编辑页还原 pinned，切 broadcast 后
   await expect(page.locator('#executorId')).toHaveCount(0);
   const patchPromise = page.waitForResponse((r) => r.url().includes(`/api/tasks/${seeded.id}`) && r.request().method() === 'PATCH');
   await page.getByRole('button', { name: /保存更改/ }).click();
-  await patchPromise;
+  const patchResp = await patchPromise;
+  // QA-01 回归守卫：载体字段 upstreamDependencies 泄漏进 PATCH body 会被后端
+  // forbidNonWhitelisted 判 400，表现为「界面已切、服务端仍旧值」——必须在请求
+  // 处断言 200，否则失败会以 executeMode 断言超时（误导为 executeMode 缺陷）。
+  expect(patchResp.status(), 'PATCH 保存更改须 200（400=表单载体字段泄漏进 DTO 白名单）').toBe(200);
 
   // 服务端复核：broadcast 与 pin 互斥——executorId 显式清空（N17/N19）
   const finalTask = await apiGetTask(request, seeded.id);
@@ -891,7 +895,11 @@ test('24. executorId 残留清理 — 切 auto 提交后 executorId 显式置空
   await expect(page.locator('#executorId')).toHaveCount(0);
   const patchPromise = page.waitForResponse((r) => r.url().includes(`/api/tasks/${seeded.id}`) && r.request().method() === 'PATCH');
   await page.getByRole('button', { name: /保存更改/ }).click();
-  await patchPromise;
+  const patchResp = await patchPromise;
+  // QA-01 回归守卫：载体字段 upstreamDependencies 泄漏进 PATCH body 会被后端
+  // forbidNonWhitelisted 判 400，表现为「界面已切、服务端仍旧值」——必须在请求
+  // 处断言 200，否则失败会以 executeMode 断言超时（误导为 executeMode 缺陷）。
+  expect(patchResp.status(), 'PATCH 保存更改须 200（400=表单载体字段泄漏进 DTO 白名单）').toBe(200);
 
   const finalTask = await apiGetTask(request, seeded.id);
   expect(finalTask.executorId, 'auto 提交应清除残留 executorId').toBeNull();
