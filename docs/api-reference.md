@@ -378,6 +378,18 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | GET | `/tasks/:id` | 是 | 获取任务详情 |
 | PATCH | `/tasks/:id` | 是 | 更新任务配置 |
 | DELETE | `/tasks/:id` | 是 | 删除任务（运行中执行将被强制终止） |
+
+### 任务/应用属主写面守卫（NF-03 预研）
+
+`tasks` / `applications` 两表带 `ownerUserId`（创建者用户 id，响应面透出）：
+
+- **创建**：落当前用户 id（含 ADMIN 创建，可追溯）。
+- **写面（PATCH/DELETE 及应用 PUT/DELETE）三态守卫**：ADMIN 全量放行；
+  属主本人放行；其余（含 `ownerUserId=NULL` 的存量无主行、悬垂 id）→ `403`。
+- **NULL 语义**：存量行不回填，`ownerUserId=null` = 无主，仅 ADMIN 可改。
+- **范围**：仅配置写面；trigger 等执行类写面与读面过滤不在预研范围
+  （读面可见性矩阵归 AUTH-02 全量隔离）。
+- **机器面豁免**：发版 webhook（HMAC 鉴权）更新应用版本号不走属主守卫。
 | POST | `/tasks/:id/trigger` | 是 | 手动触发任务立即执行（可带自定义参数） |
 | POST | `/tasks/:id/pause` | 是 | 暂停任务（停止调度，不影响进行中的执行） |
 | POST | `/tasks/:id/resume` | 是 | 恢复任务调度 |

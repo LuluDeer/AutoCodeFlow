@@ -193,6 +193,15 @@ export class Task {
   project: { id: string; name: string } | null;
 
   /**
+   * NF-03（任务级 RBAC 预研）：创建者用户 id。NULL=无主（存量行不回填，
+   * 仅 ADMIN 可改）；非 NULL 时非 admin 用户只能改自己的（写面守卫在
+   * task.service.assertCanWrite）。不加 FK——用户删除后保留悬垂 id，
+   * 守卫按「≠当前用户」比较，悬垂语义=非本人 → 403，方向安全。
+   */
+  @Column({ type: "integer", nullable: true })
+  ownerUserId: number | null;
+
+  /**
    * SEC-02: 任务级 secrets（凭据形态的键值对，独立于 params 的普通运行参数）。
    * 存储格式由 SEC_SECRETS_KEY 决定：配置 key 后所有叶子值为
    * `enc:v1:<iv>:<tag>:<ciphertext>`（AES-256-GCM，见 common/utils/

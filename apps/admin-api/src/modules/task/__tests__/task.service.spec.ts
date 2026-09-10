@@ -271,7 +271,11 @@ describe("TaskService (__tests__)", () => {
       const dto = { name: "test-task" } as any;
       taskRepo.save.mockResolvedValue({ id: "1", ...dto });
       const result = await service.create(dto);
-      expect(taskRepo.create).toHaveBeenCalledWith(dto);
+      // NF-03: create 注入 ownerUserId（无 user 上下文 → null）
+      expect(taskRepo.create).toHaveBeenCalledWith({
+        ...dto,
+        ownerUserId: null,
+      });
       expect(taskRepo.save).toHaveBeenCalled();
       expect(result).toHaveProperty("id", "1");
     });
@@ -291,6 +295,7 @@ describe("TaskService (__tests__)", () => {
         name: "test-task",
         timeout: 120,
         timezone: "Asia/Shanghai",
+        ownerUserId: null,
       });
     });
 
