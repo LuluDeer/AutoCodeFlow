@@ -411,6 +411,32 @@ bash scripts/chaos-drill.sh --scenario B --pause-seconds 30   # B 短断网变�
 
 ---
 
+## 故障演练演示包（demo-failure-seed）
+
+chaos-drill 注入的是**基础设施故障**；要演练**应用层故障面**（失败任务、
+告警 runbook、事件订阅死信、部署审批待办），用 `scripts/demo-failure-seed.mjs`
+一键预置四件套（全部 `demo-failure-` 前缀，幂等可重跑）：
+
+```bash
+ACF_PASSWORD='Admin@123456' pnpm demo:failure:seed          # 预置 + 触发
+node scripts/demo-failure-seed.mjs --clean                  # 一键清理
+node scripts/demo-failure-seed.mjs --skip-trigger           # 只建不触发
+```
+
+| 四件套 | 资源 | 演练点 |
+|--------|------|--------|
+| ① 失败任务 | `demo-failure-fragile`（glue 故意 throw） | 执行记录 failed 终态 + failureReason 失败分类 + 重试链路 |
+| ② runbook | `demo-failure-runbook`（带 markdown runbook，FEAT-11） | 任务详情页 runbook 段；失败告警消息拼 `Runbook:` 内容 |
+| ③ 死信 | `demo-failure-deadend` 事件订阅（FEAT-07/19） | url 指向公网形状但不可达的 203.0.113.1（TEST-NET-3，可过 SSRF 校验、出站必败）→ 触发失败任务后 3 次重试退避（1s+2s）落 `event_subscription_dead_letters`，死信列表/手动重放可演示 |
+| ④ 审批待办 | `demo-failure-gated` 应用（approvalRequired，DEP-04） | 一次 deploy 冻结为 `pending_approval` 行（零派发），审批收件箱 approve/reject/cancel 全流程可演示 |
+
+教程四篇的演练点直接复用本包：失败样本见[教程 01 §6](tutorials/01-first-scheduled-task.md)、
+审批样例见[教程 03](tutorials/03-multi-executor-scaling.md)、告警/runbook/死信
+验收见[教程 04 §5](tutorials/04-alerting-oncall.md)。脚本逻辑自检：
+`pnpm demo:failure:seed:selftest`。
+
+---
+
 ## 升级 runbook
 
 > 本节为 DOC-02 operator 手册补全项：给生产值班提供可重复的升级流程。详细发版检查项见 `docs/release-checklist.md`；这里强调运维执行顺序、回滚边界与升级后观测。

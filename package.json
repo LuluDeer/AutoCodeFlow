@@ -44,6 +44,8 @@
     "gen:api-types": "cd apps/admin-web && npm run gen:api-types",
     "demo:seed": "node scripts/demo-seed.mjs",
     "demo:seed:selftest": "node scripts/demo-seed.selftest.mjs",
+    "demo:failure:seed": "node scripts/demo-failure-seed.mjs",
+    "demo:failure:seed:selftest": "node scripts/demo-failure-seed.selftest.mjs",
     "load-test": "node scripts/load-test.mjs",
     "bench:micro": "node scripts/micro-benchmark.mjs",
     "bench:micro:selftest": "node scripts/micro-benchmark.selftest.mjs"
