@@ -227,6 +227,28 @@ export class Task {
     string[] | null;
 
   /**
+   * NF-04: 标签亲和（可空 simple-array，null/[] = 无约束）。OR 语义——
+   * 执行器持有**任一**亲和标签即命中候选。与 executorTags（硬性能力要求，
+   * AND 子集语义）互补：亲和是「软路由意向」（派给 gpu 池*或*edge 池皆可），
+   * 由 loadScore 在命中集合内继续择优。过滤先于 loadScore 排序；候选为空
+   * 走既有「No online executors match the requested group/tags/runtime」
+   * 失败路径（processor 分类为 EXECUTOR_OFFLINE）。broadcast 模式下亲和
+   * 把广播收窄为「命中亲和标签的执行器子集」——这是第三态相对 pinning
+   * （唯一）与 broadcast（全体）的价值所在。默认 null 行为零变化。
+   */
+  @Column({ type: "simple-array", nullable: true }) executorAffinityTags:
+    string[] | null;
+
+  /**
+   * NF-04: 标签反亲和（可空 simple-array，null/[] = 无约束）。排除语义——
+   * 执行器持有**任一**反亲和标签即被排除。单发与 broadcast 均生效；
+   * 与亲和组合时先取亲和命中集再剔除反亲和命中（交集语义）。默认 null
+   * 行为零变化。
+   */
+  @Column({ type: "simple-array", nullable: true }) executorAntiAffinityTags:
+    string[] | null;
+
+  /**
    * Pinned executor: when set, dispatch targets ONLY this executor,
    * bypassing group/tags/runtime filtering. If it is offline or missing the
    * execution fails immediately (no fallback to the fleet). Plain column

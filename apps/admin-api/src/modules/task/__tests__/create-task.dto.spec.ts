@@ -428,8 +428,7 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
   // CORE-04: 超时策略分级——timeoutAction（三动作枚举）与 timeoutWarnRatio
   // （0-90 整数）。UpdateTaskDto 经 PartialType 继承同一校验器。PATCH 语义
   // 同 N28 家族：缺省 = 保留旧值；显式 null = 回缺省 kill / 关闭预警。
-  describe("timeout policy validation (CORE-04)", () => {
-    it("accepts each of the three timeout actions", async () => {
+  describe("timeout policy validation (CORE-04)", () => {    it("accepts each of the three timeout actions", async () => {
       for (const action of ["kill", "kill_retry", "notify_only"]) {
         const result = await validateCreate({
           name: "t1",
@@ -520,6 +519,98 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
       await expect(validateUpdate({ timeoutWarnRatio: 101 })).rejects.toThrow(
         BadRequestException,
       );
+    });
+  });
+
+  // NF-04: 标签亲和/反亲和——DTO 边界校验结构（@IsArray + @IsString each），
+  // 调度语义（OR 命中 / 排除 / broadcast 收窄）在 executor.service 过滤实现。
+  // UpdateTaskDto 经 PartialType 继承同一校验器；PATCH 语义同 N28 家族：
+  // 缺省 = 保留旧值；显式 null / [] = 清除约束。
+  describe("affinity / anti-affinity tag validation (NF-04)", () => {
+    it("accepts string arrays for both fields", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        executorAffinityTags: ["gpu", "edge"],
+        executorAntiAffinityTags: ["windows"],
+      });
+      expect(result.executorAffinityTags).toEqual(["gpu", "edge"]);
+      expect(result.executorAntiAffinityTags).toEqual(["windows"]);
+    });
+
+    it("stays optional when absent", async () => {
+      const result = await validateCreate({ name: "t1", triggerType: "api" });
+      expect(result.executorAffinityTags).toBeUndefined();
+      expect(result.executorAntiAffinityTags).toBeUndefined();
+    });
+
+    it("accepts explicit null (PATCH clear semantics)", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        executorAffinityTags: null,
+        executorAntiAffinityTags: null,
+      });
+      expect(result.executorAffinityTags).toBeNull();
+      expect(result.executorAntiAffinityTags).toBeNull();
+    });
+
+    it("accepts an empty array (clear semantics)", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        executorAffinityTags: [],
+      });
+      expect(result.executorAffinityTags).toEqual([]);
+    });
+
+    it("rejects a non-array value", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          executorAffinityTags: "gpu",
+        }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          executorAntiAffinityTags: { tag: "windows" },
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects non-string elements (illegal tag type 400)", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          executorAffinityTags: [123],
+        }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          executorAntiAffinityTags: [true],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("UpdateTaskDto inherits both validators (including null-passthrough)", async () => {
+      const ok = await validateUpdate({
+        executorAffinityTags: ["gpu"],
+        executorAntiAffinityTags: null,
+      });
+      expect(ok.executorAffinityTags).toEqual(["gpu"]);
+      expect(ok.executorAntiAffinityTags).toBeNull();
+      await expect(
+        validateUpdate({ executorAffinityTags: [42] }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        validateUpdate({ executorAntiAffinityTags: "windows" }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });
