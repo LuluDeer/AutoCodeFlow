@@ -16,6 +16,7 @@
   - **ECO-04 v1.1.0 发布演练全链 done**：develop→main 大合并（414 commit 零冲突）→ release-please 首跑 Release PR #1（三包 lockstep 1.0.1→1.1.0）→ 合并 → tag 重推触发 release.yml → **waiting=environment release 审批闸门（需用户在 Actions UI 批准）**。运维注记：Actions 权限已开（write+PR approve）；Pages 已 API 启用；**docs-site 已上线 https://luludeer.github.io/AutoCodeFlow/**（1.1.0）；lockfile name 债登记（node-sdk lock 内部旧名 @autoflow/sdk，publish 不受影响）。
   - **基线**：admin-api **2193/2193** · admin-web **554/554** · docs-site build+sync-check 七面绿 · e2e-full 41/43（23/24 挂跟踪）。
   - **待用户动作**：①GitHub Actions UI 批准 release environment（v1.1.0 三包发布）；②Settings→Pages 已 API 代启（无需动作）。
+  - **2a85b13 销账后 CI 补记（QEMU 抖动）**：2a85b13 为 docs-only（仅 AGENT_HANDOFF.md + docs/PLAN-CLAIMS.md，apps/executor-node 零改动），push 触发 CI run **34494055815** 时 docker-multiarch-build (executor-node) 在 build-push-action（linux/amd64,linux/arm64）步骤卡死 >13min（基线该 job ~2min，同 run 前一次全绿 run 34493150403 同 job 15:03:43→15:05:39），判定为 infra 抖动非代码问题（构建输入与 61abdfa 全绿态逐字节一致）。处置：cancel 该 run → `gh run rerun --failed` 重跑该 job（新 job 102954957370）→ 16:26:00→16:28:05 成功 2min05s。**run 34494055815 现全绿。**
 - **上轮（2026-09-10 NF-02 直落，主会话）**：
   - `03e23d1` **NF-02 执行编排 UI done**：TaskFormPage 上游依赖多选（纯逻辑层 task-dependencies.ts，空集显式 null 对齐 N28）+ DAG「触发整条链」按钮 + dashboard-ui04 时间炸弹测试修复（固定日期滚出 7 天窗实爆，改相对日期）；admin-web **538/538**（527 只增 +11）。
   - 缩水声明：fail-fast 失败分支策略未做（需后端新列+迁移+调度语义变更，见 claims 板备注）。
