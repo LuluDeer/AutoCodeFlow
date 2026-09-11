@@ -20,6 +20,7 @@ import { metricsApi, type MetricsSummary, type DailyTrend } from './metrics';
 import { tasksApi, type Task, type TaskExecution, type PageResult } from './tasks';
 import { executorsApi, type Executor, type ExecutorExecution, type ExecutorMetrics } from './executors';
 import { artifactsApi, type ExecutionArtifact } from './artifacts';
+import { type ExecutionReportPayload, executionReportsApi } from './execution-reports';
 import { taskTemplatesApi, type TaskTemplate } from './task-templates';
 
 // ── queryKey 工厂 ────────────────────────────────────────────────────────
@@ -55,6 +56,11 @@ export const queryKeys = {
       ['executions', 'byExecutor', executorId, params] as const,
     /** GET /tasks/executions/:execId/artifacts 执行产物清单 */
     artifacts: (execId: string) => ['executions', 'artifacts', execId] as const,
+    /** GET /tasks/:taskId/executions/:execId/report 执行报告 */
+    report: (taskId: string, execId: string) =>
+      ['executions', 'report', taskId, execId] as const,
+    /** GET /tasks/:taskId/executions 重试链兄弟执行列表 */
+    retryChain: (taskId: string) => ['executions', 'retry-chain', taskId] as const,
   },
   scheduler: {
     stats: ['scheduler', 'stats'] as const,
@@ -70,7 +76,7 @@ export const queryKeys = {
     }) => ['tasks', 'list', params] as const,
     detail: (id: string) => ['tasks', 'detail', id] as const,
     stats: (id: string) => ['tasks', 'stats', id] as const,
-    /** GET /tasks?page=1&pageSize=500 全量任务表（DAG 布局解析用） */
+    /** 分页聚合后的全量任务表（DAG 布局解析用） */
     allForDag: ['tasks', 'list', 'dag-all'] as const,
   },
   executors: {
@@ -162,7 +168,7 @@ export function useExecutionsList(params: {
 }): UseQueryResult<{ items: TaskExecution[]; total: number }> {
   return useQuery({
     queryKey: queryKeys.executions.list(params),
-    queryFn: () => tasksApi.allExecutions(params),
+    queryFn: ({ signal }) => tasksApi.allExecutions(params, signal),
     // 列表页用户主动翻页/筛选，参数变化即视为新数据——全局 staleTime 足够
   });
 }
@@ -189,7 +195,7 @@ export function useTasksList(params: {
 }): UseQueryResult<PageResult<Task>> {
   return useQuery({
     queryKey: queryKeys.tasks.list(params),
-    queryFn: () => tasksApi.list(params),
+    queryFn: ({ signal }) => tasksApi.list(params, signal),
   });
 }
 
@@ -197,7 +203,7 @@ export function useTasksList(params: {
 export function useTaskDetail(id: string | undefined): UseQueryResult<Task> {
   return useQuery({
     queryKey: queryKeys.tasks.detail(id ?? ''),
-    queryFn: () => tasksApi.get(id!),
+    queryFn: ({ signal }) => tasksApi.get(id!, signal),
     enabled: !!id,
   });
 }
@@ -212,7 +218,7 @@ export function useTaskStats(id: string | undefined): UseQueryResult<{
 }> {
   return useQuery({
     queryKey: queryKeys.tasks.stats(id ?? ''),
-    queryFn: () => tasksApi.stats(id!),
+    queryFn: ({ signal }) => tasksApi.stats(id!, signal),
     enabled: !!id,
     refetchInterval: 60_000,
   });
@@ -225,19 +231,19 @@ export function useTaskExecutions(
 ): UseQueryResult<PageResult<TaskExecution>> {
   return useQuery({
     queryKey: queryKeys.executions.byTask(taskId ?? '', params),
-    queryFn: () => tasksApi.executions(taskId!, params),
+    queryFn: ({ signal }) => tasksApi.executions(taskId!, params, signal),
     enabled: !!taskId,
   });
 }
 
-/** GET /tasks?page=1&pageSize=500 全量任务表（TaskDependencyGraph 布局解析）。
+/** 分页拉取全量任务表（TaskDependencyGraph 布局解析）。
  * 与分页列表共用 ['tasks','list'] 前缀——任务写操作 invalidate tasks.all
- * 时 DAG 缓存一并失效。 */
+ * 时 DAG 缓存一并失效；每页不超过后端 PaginationDto 的 100 上限。 */
 export function useAllTasksForDag(): UseQueryResult<PageResult<Task>> {
   return useQuery({
     queryKey: queryKeys.tasks.allForDag,
-    queryFn: () => tasksApi.list({ page: 1, pageSize: 500 }),
-    staleTime: 60_000, // 全量 500 行代价高，DAG 场景 60s 内直接复用
+    queryFn: ({ signal }) => tasksApi.listAll({}, signal),
+    staleTime: 60_000,
   });
 }
 
@@ -321,7 +327,7 @@ export function useExecutionDetail(
 ): UseQueryResult<TaskExecution> {
   return useQuery({
     queryKey: queryKeys.executions.detail(taskId ?? '', execId ?? ''),
-    queryFn: () => tasksApi.execution(taskId!, execId!),
+    queryFn: ({ signal }) => tasksApi.execution(taskId!, execId!, signal),
     enabled: !!taskId && !!execId,
   });
 }
@@ -334,8 +340,32 @@ export function useExecutionArtifacts(
 ): UseQueryResult<ExecutionArtifact[]> {
   return useQuery({
     queryKey: queryKeys.executions.artifacts(execId ?? ''),
-    queryFn: () => artifactsApi.listArtifacts(execId!),
+    queryFn: ({ signal }) => artifactsApi.listArtifacts(execId!, signal),
     enabled: enabled && !!execId,
+  });
+}
+
+/** GET /tasks/:taskId/executions 重试链兄弟执行列表。 */
+export function useExecutionRetryChain(
+  taskId: string | undefined,
+): UseQueryResult<PageResult<TaskExecution>> {
+  return useQuery({
+    queryKey: queryKeys.executions.retryChain(taskId ?? ''),
+    queryFn: ({ signal }) =>
+      tasksApi.executionsWithStatus(taskId!, { page: 1, pageSize: 100 }, signal),
+    enabled: !!taskId,
+  });
+}
+
+/** GET /tasks/:taskId/executions/:execId/report 执行报告与时间线。 */
+export function useExecutionReport(
+  taskId: string | undefined,
+  execId: string | undefined,
+): UseQueryResult<ExecutionReportPayload> {
+  return useQuery({
+    queryKey: queryKeys.executions.report(taskId ?? '', execId ?? ''),
+    queryFn: ({ signal }) => executionReportsApi.report(taskId!, execId!, signal),
+    enabled: !!taskId && !!execId,
   });
 }
 

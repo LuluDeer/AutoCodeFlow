@@ -101,12 +101,21 @@ export const executorsApi = {
     client.get('/config/executor-shared-token') as Promise<SharedTokenResult>,
   generateSharedToken: () =>
     client.post('/config/executor-shared-token/generate') as Promise<{ token: string }>,
-  list: () => client.get('/executors') as Promise<Executor[]>,
+  list: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/executors', { signal }) as Promise<Executor[]>
+      : client.get('/executors') as Promise<Executor[]>,
   get: (id: string) => client.get(`/executors/${id}`) as Promise<Executor>,
   update: (id: string, data: Partial<Executor>) =>
     client.patch(`/executors/${id}`, data) as Promise<Executor>,
-  getGroups: () => client.get('/executors/groups') as Promise<string[]>,
-  getTags: () => client.get('/executors/tags') as Promise<string[]>,
+  getGroups: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/executors/groups', { signal }) as Promise<string[]>
+      : client.get('/executors/groups') as Promise<string[]>,
+  getTags: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/executors/tags', { signal }) as Promise<string[]>
+      : client.get('/executors/tags') as Promise<string[]>,
   rotateToken: (id: string, reason?: string) =>
     client.post(`/executors/${id}/rotate-token`, reason ? { reason } : undefined) as Promise<{ token: string; expiresAt: string }>,
   /**

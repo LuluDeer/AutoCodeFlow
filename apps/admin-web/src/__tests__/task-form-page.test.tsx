@@ -25,7 +25,7 @@ import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 
 // 隔离 api 层：底层 client 会拉起 axios 拦截器，测试只关心调用契约。
-vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn(), list: vi.fn().mockResolvedValue({ items: [], total: 0 }) } }));
+vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn(), list: vi.fn(), listAll: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 }) } }));
 vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
 }));
@@ -73,6 +73,7 @@ beforeEach(() => {
   vi.mocked(executorsApi.getGroups).mockReset().mockResolvedValue([] as never);
   vi.mocked(executorsApi.getTags).mockReset().mockResolvedValue([] as never);
   vi.mocked(applicationsApi.list).mockReset().mockResolvedValue([] as never);
+  vi.mocked(tasksApi.listAll).mockReset().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 } as never);
 });
 
 afterEach(() => {
@@ -195,6 +196,39 @@ describe('TaskFormPage 创建流程提交 payload 完整性（P0 回归，UI-06 
     expect(payload.executorTags).toBeNull();
     expect(payload.executeMode).toBe('single');
   }, 15_000);
+});
+
+describe('TaskFormPage 请求生命周期', () => {
+  it('页面 GET 请求共享 AbortSignal，编辑请求卸载后不写入表单，也不提示旧请求错误', async () => {
+    let resolveTask: ((task: unknown) => void) | undefined;
+    vi.mocked(tasksApi.get).mockReset().mockImplementation(() => new Promise((resolve) => {
+      resolveTask = resolve;
+    }) as never);
+    const { unmount } = render(<TaskFormPage />);
+
+    await vi.waitFor(() => {
+      expect(executorsApi.getGroups).toHaveBeenCalledWith(expect.any(AbortSignal));
+      expect(executorsApi.getTags).toHaveBeenCalledWith(expect.any(AbortSignal));
+      expect(executorsApi.list).toHaveBeenCalledWith(expect.any(AbortSignal));
+      expect(applicationsApi.list).toHaveBeenCalledWith(expect.any(AbortSignal));
+      expect(tasksApi.listAll).toHaveBeenCalledWith({}, expect.any(AbortSignal));
+      expect(tasksApi.get).toHaveBeenCalledWith('task-1', expect.any(AbortSignal));
+    });
+    const requestSignal = vi.mocked(tasksApi.get).mock.calls[0][1];
+    expect(requestSignal).toBeInstanceOf(AbortSignal);
+
+    unmount();
+    expect(requestSignal?.aborted).toBe(true);
+    resolveTask?.({
+      id: 'task-1',
+      name: 'stale-task',
+      runtime: 'python',
+      entrypoint: 'main.py',
+      triggerType: 'manual',
+    });
+    await Promise.resolve();
+    expect(screen.queryByDisplayValue('stale-task')).toBeNull();
+  });
 });
 
 describe('TaskFormPage 编辑态加载 executorId → pinned 选择器（UI-06 单页语义）', () => {

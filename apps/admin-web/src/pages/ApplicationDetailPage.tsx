@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Descriptions, Badge, Card, Table, Button, Space, Tag, Typography, message, Modal, Spin, Empty,
   Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select, Statistic, Alert,
@@ -215,16 +215,43 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const isAdmin = useIsAdmin();
+  const requestControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
 
   const fetchTasks = useCallback(async () => {
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
     setLoading(true);
     try {
-      const res = await tasksApi.list({ page: 1, pageSize: 100, applicationId: appId });
-      setTasks(res.items ?? []);
-    } catch (err: unknown) { message.error(getErrMsg(err, '加载任务列表失败')); } finally { setLoading(false); }
+      const res = await tasksApi.list(
+        { page: 1, pageSize: 100, applicationId: appId },
+        controller.signal,
+      );
+      if (!controller.signal.aborted && mountedRef.current) {
+        setTasks(res.items ?? []);
+      }
+    } catch (err: unknown) {
+      if (!controller.signal.aborted && mountedRef.current) {
+        message.error(getErrMsg(err, '加载任务列表失败'));
+      }
+    } finally {
+      if (mountedRef.current && requestControllerRef.current === controller) {
+        requestControllerRef.current = null;
+        setLoading(false);
+      }
+    }
   }, [appId]);
 
-  useEffect(() => { fetchTasks(); }, [fetchTasks]);
+  useEffect(() => {
+    mountedRef.current = true;
+    fetchTasks();
+    return () => {
+      mountedRef.current = false;
+      requestControllerRef.current?.abort();
+      requestControllerRef.current = null;
+    };
+  }, [fetchTasks]);
 
   return (
     <Card

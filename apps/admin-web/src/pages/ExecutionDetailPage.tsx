@@ -1,10 +1,14 @@
 import { Card, Descriptions, Tag, Typography, Button, Space, Badge, message, Alert, Popconfirm, Result, Select, Input, Tabs } from 'antd';
 import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, FieldTimeOutlined, LinkOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useRequest } from 'ahooks';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
-import { useExecutionDetail, useTaskDetail } from '../api/queries';
+import {
+  useExecutionDetail,
+  useExecutionReport,
+  useExecutionRetryChain,
+  useTaskDetail,
+} from '../api/queries';
 import { getApiBaseUrl } from '../api/client';
 import { getErrMsg } from '../utils/error';
 import { useAuthStore } from '../store/auth';
@@ -16,7 +20,6 @@ import { buildLogSearchSegments, LOG_SEARCH_DEBOUNCE_MS } from '../utils/log-sea
 import { failureRunbookAction, FAILURE_CARD_STATUSES } from './failure-runbook';
 // OBS-04: 分析报告/时间线面板（核心展示逻辑独立成组件文件，便于单独测试）
 import ExecutionReportPanel from '../components/ExecutionReportPanel';
-import { executionReportsApi } from '../api/execution-reports';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 // FEAT-05 UI 半场：产物列表（003 产出组件，本任务作为「参数与产物」Tab 单点接入）
@@ -139,13 +142,10 @@ export default function ExecutionDetailPage() {
   const isLive = data?.status === 'running' || data?.status === 'pending';
 
   // ===== UI-05: 重试链数据（CORE-02 语义原样迁移，Card 移入「重试链」Tab）=====
-  // FEAT-17: 任务详情换 useTaskDetail；兄弟执行行保留 useRequest（一次性
-  // pageSize=100 大页拉取，无写后失效联动诉求，换装收益低——缩水声明）。
+  // FEAT-17: 任务详情与兄弟执行列表均由 Query 管理，切页/卸载时共享
+  // Query AbortSignal 取消底层 axios 请求。
   const { data: taskData } = useTaskDetail(taskId);
-  const { data: siblingPage } = useRequest(
-    () => tasksApi.executionsWithStatus(taskId!, { page: 1, pageSize: 100 }),
-    { ready: !!taskId, refreshDeps: [taskId] },
-  );
+  const { data: siblingPage } = useExecutionRetryChain(taskId);
   const siblings = useMemo(() => siblingPage?.items ?? [], [siblingPage]);
 
   const retryChain: RetryChainLink[] = useMemo(
@@ -158,20 +158,16 @@ export default function ExecutionDetailPage() {
   // ===== OBS-04: 分析报告 / 时间线 =====
   // 一次性拉取 report 端点（execution 行 + DB 时间戳映射的 timeline +
   // execution_reports 当日聚合行；缺行 report=null 属正常态，面板内降级）。
-  // 失败仅降级提示，不阻塞主视图；主执行数据刷新时同步刷新报告。
+  // Query 在路由切换/卸载时将 signal 传到底层 axios。
   const {
     data: reportPayload,
-    loading: reportLoading,
+    isLoading: reportLoading,
     error: reportErr,
-    refresh: refreshReport,
-  } = useRequest(() => executionReportsApi.report(taskId!, execId!), {
-    ready: !!taskId && !!execId,
-    refreshDeps: [taskId, execId],
-    onError: () => undefined,
-  });
+    refetch: refreshReport,
+  } = useExecutionReport(taskId, execId);
   const reportError = reportErr ? getErrMsg(reportErr, '报告数据加载失败') : null;
   useEffect(() => {
-    refreshReport();
+    void refreshReport();
   }, [data?.status, refreshReport]);
 
   // SSE log streaming when running
@@ -433,7 +429,13 @@ export default function ExecutionDetailPage() {
           终止/重新触发/AI 分析/刷新原样保留于 extra，语义不变） */}
       <PageHeader
         title="执行详情"
-        description={data?.taskName}
+        description={
+          data?.taskName ? (
+            <span className="ui09-pageheader-description" title={data.taskName}>
+              {data.taskName}
+            </span>
+          ) : undefined
+        }
         breadcrumb={[
           { title: '执行记录', to: '/executions' },
           // UI-09：超长不可断任务名（构建号/英文长名）会撑破面包屑（li

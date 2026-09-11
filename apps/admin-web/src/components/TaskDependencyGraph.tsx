@@ -13,6 +13,7 @@ import { ThunderboltOutlined } from '@ant-design/icons';
 import { tasksApi } from '../api/tasks';
 import { useAllTasksForDag } from '../api/queries';
 import { getErrMsg } from '../utils/error';
+import StateError from './StateError';
 import { buildDependencyGraph, type DagNode } from './dag-layout';
 
 const NODE_W = 176;
@@ -30,10 +31,9 @@ const STATUS_COLOR: Record<string, string> = {
 export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
   const nav = useNavigate();
   const [chainTriggering, setChainTriggering] = useState(false);
-  // 名称/状态解析需要全量任务表；分页上限即闭包上限（500 足够，超出由
-  // truncated 提示）。FEAT-17: useRequest(cacheKey) 换 useAllTasksForDag
-  // （同 queryKey 跨页合并 + 60s staleTime，等价原 cacheKey 语义）。
-  const { data, isLoading: loading } = useAllTasksForDag();
+  // 名称/状态解析需要全量任务表；useAllTasksForDag 会在后端 pageSize=100
+  // 上限内分页聚合，图自身仍由 buildDependencyGraph 的节点上限保护。
+  const { data, error, isLoading: loading, refetch } = useAllTasksForDag();
 
   const graph = useMemo(
     () =>
@@ -67,6 +67,16 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
 
   if (loading && !data) {
     return <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>;
+  }
+  if (error) {
+    return (
+      <StateError
+        error={error}
+        title="依赖图加载失败"
+        onRetry={() => void refetch()}
+        centered
+      />
+    );
   }
   if (!graph) {
     return (
