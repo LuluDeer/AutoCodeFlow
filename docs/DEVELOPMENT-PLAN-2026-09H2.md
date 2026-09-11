@@ -64,7 +64,7 @@
 
 ### 0.3 近期基线与治理事实（新计划的事实输入）
 
-- **迁移链**：最高时间戳 `1790000000012`（FEAT-19/ARCH-31 outbox lease follow-up）；新迁移已登记 ARCH-29 分配表。新任务占号前先 `ls apps/admin-api/src/migrations` + 认领板独占声明。
+- **迁移链**：最高时间戳 `1790000000013`（`CreateEventOutboxDeadLetters`，属于 FEAT-19-B/ARCH-31 follow-up）；outbox lease/dead-letter 代码已落地，但真实 PostgreSQL 迁移执行、多实例锁竞争/事务隔离仍 pending；新迁移已登记 ARCH-29 分配表。新任务占号前先 `ls apps/admin-api/src/migrations` + 认领板独占声明。
 - **coverage 地板**：admin-api 91.6/81.34/78.47/90.6（门槛 75/69/84/84）——QA-02 后已达标，新任务不得拉低。
 - **协作纪律**（历轮 3 次冲突沉淀，常设）：开工前 `git pull --rebase` + `git status` 盘点；未提交改动归其作者会话；`git add` 后立即 commit（dc82ac7 顺带提交事故教训）；executor-node src 改动与 bundle 同 commit（W-18 守卫）；RBAC 收紧前后端同批发布（N11/W2 教训）；API 变更走 PR 模板四查（DOC-01）。
 - **真机矩阵**：QA-04 已固化 VERIFY-MATRIX.md——按变更类型必跑；历轮 P0 前科（BullMQ priority 字符串 enum、迁移链断裂、分步表单 missing）均由真机轮抓出，mock 全绿 ≠ 能跑。
@@ -112,7 +112,7 @@
 | FEAT-16 | P3 | **EventSource 全站 SSE 化推广** | UI-14 仅 Dashboard 接流；Executions 列表 15s 轮询、执行器详情 30s 轮询保留 | 按 ARCH-26+UI-14 模式渐进：Executions 列表流+事件驱动推送（execution 终态主动 emit） | 切页零重复拉取；终态刷新 <3s |
 | FEAT-17 | P3 | **ARCH-26 TanStack Query 全站推广** | 基础设施+两示范页 done，剩 13 处 useRequest 轮询页面 | 逐页换 query hooks（TaskList/Executions 已示范），SSE 数据并入缓存 | 全站 staleTime 统一；写后 invalidate 面收口 |
 | FEAT-18 | P2 | **KILLED 终态领域事件补发** | ARCH-21 KILLED 未 emit（载荷类型预留）；FEAT-07 订阅方收不到被杀事件 | kill 链路落库后 emit execution.killed（或 folded failed+status）+ 订阅过滤适配 | kill 端点触发后订阅方收到事件 |
-| FEAT-19 | P2 | **跨进程 outbox（webhook at-least-once）** | 基础 outbox 表/派发器/FEAT-07 接线已落地；1790000000012 lease follow-up 已补 DB lease/row claim，真实 PostgreSQL 多实例竞争验证仍 pending | outbox 表+后台派发器（FEAT-07 死信表复用）+ DB lease/row claim，重启续投与多实例竞争验证 | 重启后在途订阅事件最终送达；真实 PostgreSQL 双实例竞争无重复 claim |
+| FEAT-19 | P2 | **跨进程 outbox（webhook at-least-once）** | 基础 outbox 表/派发器/FEAT-07 接线已落地；`1790000000012` lease 与 `1790000000013` `CreateEventOutboxDeadLetters`（FEAT-19-B/ARCH-31 follow-up）已补齐 outbox lease/dead-letter 代码；真实 PostgreSQL 迁移执行、多实例锁竞争/事务隔离仍 pending | outbox 表+后台派发器（FEAT-07 死信表复用）+ DB lease/row claim，重启续投与多实例竞争验证 | 重启后在途订阅事件最终送达；真实 PostgreSQL 双实例竞争无重复 claim |
 | FEAT-20 | P3 | **部署 triggerType 落库** | DEP-01 聚合行 triggerType 按 status 指纹推导，operator 恒 null | app_deployments 增 triggerType/operator 列（写入路径填充）+ 契约同步 | /releases 行 operator 真实可溯 |
 
 ---
