@@ -1028,7 +1028,8 @@ describe('buildNpmRcContent (改动3)', () => {
     );
     expect(npmCall).toBeTruthy();
     const opts = npmCall![2] as { cwd?: string; env?: Record<string, string | undefined> };
-    expect(opts.cwd).toBe('/tmp/test-workdir/exec-npm-cwd-isolation');
+    // W-20/Windows CI：cwd 是 workDir 的平台拼接结果，不能写死 POSIX 字面量
+    expect(opts.cwd).toBe(path.join(testConfig.workDir, 'exec-npm-cwd-isolation'));
     expect(opts.env?.npm_config_userconfig).not.toContain(opts.cwd!);
     expect(opts.env?.npm_config_userconfig).toMatch(/[\\/]autocodeflow-npm-[^\\/]+[\\/]\.npmrc$/);
   });
@@ -1057,12 +1058,12 @@ describe('buildNpmRcContent (改动3)', () => {
       const opts = npmCall![2] as { cwd?: string; env?: Record<string, string | undefined> };
       const env = opts.env!;
       expect(args).toContain('--ignore-scripts');
-      expect(opts.cwd).toBe('/tmp/test-workdir/exec-npm-env');
+      expect(opts.cwd).toBe(path.join(testConfig.workDir, 'exec-npm-env'));
       expect(env.PATH).toBeDefined();
       expect(env.HOME).toBeDefined();
       expect(env.npm_config_registry).toBe('http://verdaccio:4873/');
       expect(env.npm_config_userconfig).toMatch(/[\\/]autocodeflow-npm-[^\\/]+[\\/]\.npmrc$/);
-      expect(env.npm_config_userconfig).not.toContain('/tmp/test-workdir');
+      expect(env.npm_config_userconfig).not.toContain(opts.cwd!);
       expect(env.npm_config_globalconfig).toMatch(/[\\/]autocodeflow-npm-[^\\/]+[\\/]\.npm-globalrc$/);
       expect(env.npm_config_cache).toMatch(/\.node_modules[\\/]taskN[\\/]\.npm-cache$/);
       expect(env.NPM_REGISTRY_TOKEN).toBeUndefined();
