@@ -24,6 +24,9 @@ import SecuritySettings from './SecuritySettings';
 import ApiKeysSettings from './ApiKeysSettings';
 // FEAT-15: 事件订阅 Tab（webhook 出站事件 + 死信 replay），独立文件
 import EventSubscriptionsSettings from './EventSubscriptionsSettings';
+import { useTranslation } from 'react-i18next';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../../i18n';
 
 const { Text } = Typography;
 
@@ -45,6 +48,7 @@ function TokenSection() {
   const [tokenVisible, setTokenVisible] = useState(false);
   const qc = useQueryClient();
   const isAdmin = useIsAdmin();
+  const { t } = useTranslation();
 
   // R4 收紧矩阵：共享 Token 的读与生成为 ADMIN-only。
   // 非管理员不发起查询（GET 会 403），hooks 仍按固定顺序调用。
@@ -60,30 +64,30 @@ function TokenSection() {
     // UI-15：生成失败反馈（handleGenerate 的 onOk await 链会 reject，
     // 但 antd Modal.confirm 静默吞掉该 rejection——必须显式 onError）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '生成 Token 失败'));
+      message.error(getErrMsg(err, t('sysSettings.token.genFail')));
     },
   });
 
   const handleGenerate = () => {
     Modal.confirm({
-      title: '生成新的共享 Token',
-      content: '生成后，所有执行器需要使用新 Token 重新认证。确认继续？',
-      okText: '确认生成',
+      title: t('sysSettings.token.genTitle'),
+      content: t('sysSettings.token.genContent'),
+      okText: t('sysSettings.token.genOk'),
       okButtonProps: { danger: true },
       onOk: async () => {
         await generate();
-        message.success('新 Token 已生成');
+        message.success(t('sysSettings.token.genSuccess'));
       },
     });
   };
 
   if (!isAdmin) {
     return (
-      <Card title={<Space><KeyOutlined /> 执行器共享 Token</Space>} style={{ marginBottom: 16 }}>
+      <Card title={<Space><KeyOutlined /> {t('sysSettings.token.cardTitle')}</Space>} style={{ marginBottom: 16 }}>
         <Alert
           type="info"
-          title="仅管理员可查看和生成执行器共享 Token"
-          description="如需管理执行器共享 Token，请联系管理员。"
+          title={t('sysSettings.token.adminOnly')}
+          description={t('sysSettings.token.contactAdmin')}
           showIcon
         />
       </Card>
@@ -95,10 +99,10 @@ function TokenSection() {
   // UI-16：Token 读请求失败 → 页内错误块（重试=refetch）；此前失败只会停在一个空 Spin
   if (tokenError) {
     return (
-      <Card title={<Space><KeyOutlined /> 执行器共享 Token</Space>} style={{ marginBottom: 16 }}>
+      <Card title={<Space><KeyOutlined /> {t('sysSettings.token.cardTitle')}</Space>} style={{ marginBottom: 16 }}>
         <StateError
           error={tokenError}
-          title="执行器共享 Token 加载失败"
+          title={t('sysSettings.token.loadFail')}
           onRetry={() => { void refetchToken(); }}
         />
       </Card>
@@ -109,9 +113,9 @@ function TokenSection() {
   const hasToken = tokenResult?.hasToken ?? false;
 
   return (
-    <Card title={<Space><KeyOutlined /> 执行器共享 Token</Space>} style={{ marginBottom: 16 }}>
+    <Card title={<Space><KeyOutlined /> {t('sysSettings.token.cardTitle')}</Space>} style={{ marginBottom: 16 }}>
       <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-        执行器连接调度中心时需携带此 Token。首次使用需先生成。
+        {t('sysSettings.token.desc')}
       </Text>
 
       {hasToken ? (
@@ -131,19 +135,19 @@ function TokenSection() {
                 icon={<CopyOutlined />}
                 onClick={() => {
                   navigator.clipboard.writeText(token || '');
-                  message.success('已复制');
+                  message.success(t('sysSettings.token.copied'));
                 }}
               >
-                复制
+                {t('sysSettings.token.copy')}
               </Button>
             )}
           </Space>
           <Button danger loading={generating} onClick={handleGenerate} disabled={!isAdmin}>
-            重新生成 Token
+            {t('sysSettings.token.regenerate')}
           </Button>
           <Alert
             type="warning"
-            title="重新生成后，所有执行器需要更新 Token 才能继续工作"
+            title={t('sysSettings.token.regenerateWarning')}
             showIcon
           />
         </Space>
@@ -151,10 +155,10 @@ function TokenSection() {
         <Space orientation="vertical">
           <Alert
             type="info"
-            title="尚未生成执行器 Token，请先生成后再安装执行器"
+            title={t('sysSettings.token.notGenerated')}
             showIcon
           />
-          <Tooltip title={isAdmin ? undefined : '仅管理员可生成共享 Token'}>
+          <Tooltip title={isAdmin ? undefined : t('sysSettings.token.genAdminOnly')}>
             <Button
               type="primary"
               icon={<KeyOutlined />}
@@ -162,7 +166,7 @@ function TokenSection() {
               onClick={handleGenerate}
               disabled={!isAdmin}
             >
-              生成共享 Token
+              {t('sysSettings.token.generate')}
             </Button>
           </Tooltip>
         </Space>
@@ -181,17 +185,18 @@ interface EditModalProps {
 function EditModal({ record, onClose, onSaved }: EditModalProps) {
   const [form] = Form.useForm();
   const isNew = !record;
+  const { t } = useTranslation();
 
   const { mutateAsync: save, isPending } = useMutation({
     mutationFn: configApi.upsert,
     onSuccess: () => {
-      message.success(isNew ? '配置已添加' : '配置已更新');
+      message.success(isNew ? t('sysSettings.config.added') : t('sysSettings.config.updated'));
       onSaved();
     },
     // UI-15：保存失败反馈（Modal 保持打开由 handleOk await 链承担，
     // onError 补 toast 保证失败原因可见且不依赖调用形态）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, isNew ? '新增配置失败' : '更新配置失败'));
+      message.error(getErrMsg(err, isNew ? t('sysSettings.config.addFail') : t('sysSettings.config.updateFail')));
     },
   });
 
@@ -203,38 +208,38 @@ function EditModal({ record, onClose, onSaved }: EditModalProps) {
   return (
     <Modal
       open
-      title={isNew ? '新增配置项' : `编辑：${record?.key}`}
+      title={isNew ? t('sysSettings.modal.addTitle') : t('sysSettings.modal.editTitle', { key: record?.key })}
       onCancel={onClose}
       onOk={handleOk}
       confirmLoading={isPending}
-      okText="保存"
+      okText={t('sysSettings.save')}
     >
       <Form
         form={form}
         layout="vertical"
         initialValues={record ?? { valueType: 'string', isSecret: false }}
       >
-        <Form.Item name="key" label="配置键" rules={[{ required: true, message: '必填' }]}>
-          <Input disabled={!isNew} placeholder="例如：feature.darkMode" />
+        <Form.Item name="key" label={t('sysSettings.config.field.key')} rules={[{ required: true, message: t('sysSettings.required') }]}>
+          <Input disabled={!isNew} placeholder={t('sysSettings.config.field.keyPlaceholder')} />
         </Form.Item>
-        <Form.Item name="value" label="值" rules={[{ required: true, message: '必填' }]}>
+        <Form.Item name="value" label={t('sysSettings.config.field.value')} rules={[{ required: true, message: t('sysSettings.required') }]}>
           <Input.TextArea rows={3} />
         </Form.Item>
-        <Form.Item name="valueType" label="类型">
+        <Form.Item name="valueType" label={t('sysSettings.config.field.type')}>
           <Select options={[
-            { value: 'string', label: '字符串' },
-            { value: 'number', label: '数字' },
-            { value: 'boolean', label: '布尔' },
-            { value: 'json', label: 'JSON' },
+            { value: 'string', label: t('sysSettings.config.type.string') },
+            { value: 'number', label: t('sysSettings.config.type.number') },
+            { value: 'boolean', label: t('sysSettings.config.type.boolean') },
+            { value: 'json', label: t('sysSettings.config.type.json') },
           ]} />
         </Form.Item>
-        <Form.Item name="description" label="描述（可选）">
+        <Form.Item name="description" label={t('sysSettings.config.field.desc')}>
           <Input />
         </Form.Item>
-        <Form.Item name="tag" label="标签（可选）">
-          <Input placeholder="例如：feature / security" />
+        <Form.Item name="tag" label={t('sysSettings.config.field.tag')}>
+          <Input placeholder={t('sysSettings.config.field.tagPlaceholder')} />
         </Form.Item>
-        <Form.Item name="isSecret" label="敏感信息" valuePropName="checked">
+        <Form.Item name="isSecret" label={t('sysSettings.config.field.secret')} valuePropName="checked">
           <Switch />
         </Form.Item>
       </Form>
@@ -249,6 +254,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
     queryFn: () => configApi.getHistory({ key: configKey, pageSize: 50 }),
   });
   const isAdmin = useIsAdmin();
+  const { t } = useTranslation();
 
   const qc = useQueryClient();
   // FEAT-08：回滚目标 id 状态实现逐行 loading（多行不共用同一个 spinner）。
@@ -256,7 +262,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
   const { mutateAsync: rollback } = useMutation({
     mutationFn: (id: number) => configApi.rollback(id),
     onSuccess: () => {
-      message.success('已回滚');
+      message.success(t('sysSettings.history.rolledBack'));
       // 刷新当前配置读面 + 历史列表（回滚本身也会写一条 rollback 历史）
       qc.invalidateQueries({ queryKey: ['system-configs'] });
       qc.invalidateQueries({ queryKey: ['config-history', configKey] });
@@ -267,7 +273,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
     // UI-15：兜底 onError 补齐（与上方注记一致——统一 toast 已覆盖，
     // 显式 onError 保证不依赖 client 拦截器行为也必有反馈）。
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '回滚失败'));
+      message.error(getErrMsg(err, t('sysSettings.history.rollbackFail')));
     },
   });
 
@@ -279,14 +285,14 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
   };
 
   const cols: ColumnsType<ConfigHistory> = [
-    { title: '时间', dataIndex: 'createdAt', width: 170,
+    { title: t('sysSettings.history.col.time'), dataIndex: 'createdAt', width: 170,
       render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
-    { title: '操作者', dataIndex: 'username', width: 100, render: (v: string) => v ?? '系统' },
-    { title: '动作', dataIndex: 'action', width: 70,
-      render: (v: ConfigHistory['action']) => v === 'create' ? '创建'
-        : v === 'delete' ? '删除' : v === 'rollback' ? '回滚' : '修改' },
-    { title: '旧值', dataIndex: 'oldValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
-    { title: '新值', dataIndex: 'newValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
+    { title: t('sysSettings.history.col.operator'), dataIndex: 'username', width: 100, render: (v: string) => v ?? t('sysSettings.history.system') },
+    { title: t('sysSettings.history.col.action'), dataIndex: 'action', width: 70,
+      render: (v: ConfigHistory['action']) => v === 'create' ? t('sysSettings.history.action.create')
+        : v === 'delete' ? t('sysSettings.history.action.delete') : v === 'rollback' ? t('sysSettings.history.action.rollback') : t('sysSettings.history.action.update') },
+    { title: t('sysSettings.history.col.old'), dataIndex: 'oldValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
+    { title: t('sysSettings.history.col.new'), dataIndex: 'newValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '', width: 80,
       render: (_: unknown, row: ConfigHistory) => {
         if (!isAdmin) return null;
@@ -294,15 +300,15 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
         const disabled = row.oldValue == null;
         return (
           <Popconfirm
-            title="确认回滚到此版本？"
-            description={row.action === 'create' ? '该条目为创建动作，回滚将删除此配置项。' : undefined}
+            title={t('sysSettings.history.rollbackConfirm')}
+            description={row.action === 'create' ? t('sysSettings.history.rollbackCreateDesc') : undefined}
             onConfirm={() => handleRollback(row.id)}
-            okText="回滚"
+            okText={t('sysSettings.history.rollback')}
             okButtonProps={{ danger: true }}
             disabled={disabled}
           >
-            <Tooltip title={disabled ? '创建条目无可回滚的历史值' : undefined}>
-              <Button size="small" loading={rollingId === row.id} disabled={disabled}>回滚</Button>
+            <Tooltip title={disabled ? t('sysSettings.history.noRollbackValue') : undefined}>
+              <Button size="small" loading={rollingId === row.id} disabled={disabled}>{t('sysSettings.history.rollback')}</Button>
             </Tooltip>
           </Popconfirm>
         );
@@ -310,11 +316,11 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
   ];
 
   return (
-    <Modal open title={`变更历史：${configKey}`} onCancel={onClose} footer={null} width={720}>
+    <Modal open title={t('sysSettings.history.title', { key: configKey })} onCancel={onClose} footer={null} width={720}>
       {historyError ? (
         <StateError
           error={historyError}
-          title="变更历史加载失败"
+          title={t('sysSettings.history.loadFail')}
           onRetry={() => { void refetchHistory(); }}
         />
       ) : (
@@ -338,6 +344,7 @@ function SystemConfigTab() {
   const [historyKey, setHistoryKey] = useState<string | null>(null);
   const qc = useQueryClient();
   const isAdmin = useIsAdmin();
+  const { t } = useTranslation();
 
   const { data: configs, isLoading, refetch, error: configError } = useQuery({
     queryKey: ['system-configs'],
@@ -347,39 +354,39 @@ function SystemConfigTab() {
   const { mutateAsync: remove } = useMutation({
     mutationFn: configApi.remove,
     onSuccess: () => {
-      message.success('已删除');
+      message.success(t('sysSettings.config.deleted'));
       qc.invalidateQueries({ queryKey: ['system-configs'] });
     },
     // UI-15：删除失败反馈（对齐回滚 onError 形态）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '删除配置失败'));
+      message.error(getErrMsg(err, t('sysSettings.config.deleteFail')));
     },
   });
 
   const cols: ColumnsType<SystemConfig> = [
-    { title: '键', dataIndex: 'key', width: 220, ellipsis: true,
+    { title: t('sysSettings.config.col.key'), dataIndex: 'key', width: 220, ellipsis: true,
       render: (v: string) => <Text code style={{ fontSize: 12 }}>{v}</Text> },
-    { title: '值', dataIndex: 'value', ellipsis: true,
+    { title: t('sysSettings.config.col.value'), dataIndex: 'value', ellipsis: true,
       render: (v: string, r: SystemConfig) => r.isSecret
         ? <Text type="secondary">••••••</Text>
         : (v ?? <Text type="secondary">-</Text>) },
-    { title: '类型', dataIndex: 'valueType', width: 80,
+    { title: t('sysSettings.config.col.type'), dataIndex: 'valueType', width: 80,
       render: (v: string) => <Tag>{v}</Tag> },
-    { title: '标签', dataIndex: 'tag', width: 100,
+    { title: t('sysSettings.config.col.tag'), dataIndex: 'tag', width: 100,
       render: (v: string) => v ? <Tag color="blue">{v}</Tag> : null },
-    { title: '描述', dataIndex: 'description', ellipsis: true,
+    { title: t('sysSettings.config.col.desc'), dataIndex: 'description', ellipsis: true,
       render: (v: string) => v ? <Text type="secondary" style={{ fontSize: 12 }}>{v}</Text> : null },
     { title: '', width: 120,
       render: (_: unknown, row: SystemConfig) => (
         <Space size={4}>
-          <Tooltip title={isAdmin ? '编辑' : '仅管理员可编辑配置'}>
+          <Tooltip title={isAdmin ? t('sysSettings.config.edit') : t('sysSettings.config.editAdminOnly')}>
             <Button size="small" icon={<EditOutlined />} onClick={() => setEditTarget(row)} disabled={!isAdmin} />
           </Tooltip>
-          <Tooltip title="变更历史">
+          <Tooltip title={t('sysSettings.history.tooltip')}>
             <Button size="small" icon={<HistoryOutlined />} onClick={() => setHistoryKey(row.key)} />
           </Tooltip>
-          <Popconfirm title="确认删除此配置？" onConfirm={() => remove(row.key)} okText="删除" okButtonProps={{ danger: true }} disabled={!isAdmin}>
-            <Tooltip title={isAdmin ? '删除' : '仅管理员可删除配置'}>
+          <Popconfirm title={t('sysSettings.config.deleteConfirm')} onConfirm={() => remove(row.key)} okText={t('sysSettings.config.delete')} okButtonProps={{ danger: true }} disabled={!isAdmin}>
+            <Tooltip title={isAdmin ? t('sysSettings.config.delete') : t('sysSettings.config.deleteAdminOnly')}>
               <Button size="small" danger icon={<DeleteOutlined />} disabled={!isAdmin} />
             </Tooltip>
           </Popconfirm>
@@ -392,12 +399,12 @@ function SystemConfigTab() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-        <Text type="secondary">管理系统运行时配置项，支持热更新。敏感值（密钥等）显示为 ••••••</Text>
+        <Text type="secondary">{t('sysSettings.config.desc')}</Text>
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => refetch()}>刷新</Button>
-          <Tooltip title={isAdmin ? undefined : '仅管理员可新增配置'}>
+          <Button icon={<ReloadOutlined />} onClick={() => refetch()}>{t('sysSettings.refresh')}</Button>
+          <Tooltip title={isAdmin ? undefined : t('sysSettings.config.addAdminOnly')}>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditTarget('new')} disabled={!isAdmin}>
-              新增配置
+              {t('sysSettings.config.add')}
             </Button>
           </Tooltip>
         </Space>
@@ -406,7 +413,7 @@ function SystemConfigTab() {
       {configError ? (
         <StateError
           error={configError}
-          title="系统配置加载失败"
+          title={t('sysSettings.config.loadFail')}
           onRetry={() => { void refetch(); }}
         />
       ) : (
@@ -416,7 +423,7 @@ function SystemConfigTab() {
           rowKey="id"
           columns={cols}
           size="small"
-          pagination={{ pageSize: 20, showTotal: t => `共 ${t} 项` }}
+          pagination={{ pageSize: 20, showTotal: (n) => t('sysSettings.config.count', { count: n }) }}
         />
       )}
       {editTarget != null && (
@@ -443,6 +450,7 @@ function AiConfigTab() {
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const qc = useQueryClient();
   const isAdmin = useIsAdmin();
+  const { t } = useTranslation();
 
   // R6 收紧矩阵：GET /ai/config 为 ADMIN-only。
   // 非管理员不发起查询（GET 会 403），hooks 仍按固定顺序调用（同 TokenSection 模式）。
@@ -468,19 +476,19 @@ function AiConfigTab() {
   const { mutateAsync: save, isPending: saving } = useMutation({
     mutationFn: (vals: SaveAiConfigPayload) => aiApi.saveConfig(vals),
     onSuccess: () => {
-      message.success('AI 配置已保存');
+      message.success(t('sysSettings.ai.saved'));
       qc.invalidateQueries({ queryKey: ['ai-config'] });
     },
     // UI-15：保存失败反馈（handleSave await 链的 rejection 无人消费时兜底）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '保存 AI 配置失败'));
+      message.error(getErrMsg(err, t('sysSettings.ai.saveFail')));
     },
   });
 
   const { mutateAsync: test, isPending: testing } = useMutation({
     mutationFn: () => aiApi.testConfig(),
     onSuccess: (res) => setTestResult(res),
-    onError: () => setTestResult({ ok: false, message: '请求失败，请检查配置' }),
+    onError: () => setTestResult({ ok: false, message: t('sysSettings.ai.testFailMsg') }),
   });
   const provider = Form.useWatch('provider', form);
 
@@ -491,14 +499,14 @@ function AiConfigTab() {
       await save(vals as SaveAiConfigPayload);
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) return;
-      message.error(getErrMsg(err, '保存 AI 配置失败'));
+      message.error(getErrMsg(err, t('sysSettings.ai.saveFail')));
     }
   };
 
   const providerBadge = () => {
     if (!cfg) return null;
     const p = cfg.provider;
-    if (p === 'disabled') return <Badge status="default" text="未启用" />;
+    if (p === 'disabled') return <Badge status="default" text={t('sysSettings.ai.provider.disabled')} />;
     if (p === 'openai') return <Badge status="processing" text="OpenAI" color="green" />;
     if (p === 'ollama') return <Badge status="processing" text="Ollama" color="blue" />;
     return null;
@@ -510,8 +518,8 @@ function AiConfigTab() {
       <Alert
         type="info"
         showIcon
-        title="仅管理员可查看和配置 AI 分析"
-        description="AI 配置的读取与保存为管理员专用接口。如需开启或调整任务失败 AI 分析能力，请联系管理员。"
+        title={t('sysSettings.ai.adminOnly')}
+        description={t('sysSettings.ai.adminDetail')}
       />
     );
   }
@@ -519,7 +527,7 @@ function AiConfigTab() {
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
-        <Text type="secondary">配置任务失败时的 AI 分析能力，支持 OpenAI 及兼容接口和本地 Ollama。</Text>
+        <Text type="secondary">{t('sysSettings.ai.desc')}</Text>
         {providerBadge()}
       </div>
 
@@ -527,28 +535,28 @@ function AiConfigTab() {
         // UI-16：AI 配置读请求失败 → 页内错误块（重试=refetch），不落在永久 Spin 上
         <StateError
           error={cfgError}
-          title="AI 配置加载失败"
+          title={t('sysSettings.ai.loadFail')}
           onRetry={() => { void refetchCfg(); }}
         />
       ) : (
         <Form form={form} layout="vertical" initialValues={{ provider: 'disabled', openaiModel: 'gpt-4o-mini', openaiBaseUrl: 'https://api.openai.com/v1', ollamaHost: 'http://localhost:11434', ollamaModel: 'llama3' }}>
-          <Form.Item name="provider" label="AI 提供商" rules={[{ required: true }]}>
+          <Form.Item name="provider" label={t('sysSettings.ai.providerLabel')} rules={[{ required: true }]}>
             <Select
               options={[
-                { value: 'disabled', label: '禁用（不使用 AI 分析）' },
-                { value: 'openai', label: 'OpenAI / 兼容接口（如 DeepSeek、Qwen 等）' },
-                { value: 'ollama', label: 'Ollama（本地模型）' },
+                { value: 'disabled', label: t('sysSettings.ai.provider.disabledOption') },
+                { value: 'openai', label: t('sysSettings.ai.provider.openaiOption') },
+                { value: 'ollama', label: t('sysSettings.ai.provider.ollamaOption') },
               ]}
             />
           </Form.Item>
 
           {provider === 'openai' && (
             <>
-              <Divider plain style={{ fontSize: 12, color: '#888' }}>OpenAI 设置</Divider>
+              <Divider plain style={{ fontSize: 12, color: '#888' }}>{t('sysSettings.ai.openaiSection')}</Divider>
               <Form.Item
                 name="openaiBaseUrl"
                 label="API Base URL"
-                tooltip="可替换为 DeepSeek、Qwen 等兼容 OpenAI 格式的接口地址"
+                tooltip={t('sysSettings.ai.baseUrlTooltip')}
               >
                 <Input placeholder="https://api.openai.com/v1" />
               </Form.Item>
@@ -557,17 +565,17 @@ function AiConfigTab() {
                 label={
                   <Space>
                     API Key
-                    {cfg?.hasApiKey && <Tag color="green">已配置</Tag>}
+                    {cfg?.hasApiKey && <Tag color="green">{t('sysSettings.ai.configured')}</Tag>}
                   </Space>
                 }
-                tooltip="填写新值将覆盖已保存的 Key；留空则保持不变"
+                tooltip={t('sysSettings.ai.apiKeyTooltip')}
               >
                 <Input.Password
-                  placeholder={cfg?.hasApiKey ? '已配置，留空则不修改' : '输入 API Key'}
+                  placeholder={cfg?.hasApiKey ? t('sysSettings.ai.apiKeyConfiguredPlaceholder') : t('sysSettings.ai.apiKeyPlaceholder')}
                   visibilityToggle={{ visible: apiKeyVisible, onVisibleChange: setApiKeyVisible }}
                 />
               </Form.Item>
-              <Form.Item name="openaiModel" label="模型名称">
+              <Form.Item name="openaiModel" label={t('sysSettings.ai.modelLabel')}>
                 <Input placeholder="gpt-4o-mini" />
               </Form.Item>
             </>
@@ -575,11 +583,11 @@ function AiConfigTab() {
 
           {provider === 'ollama' && (
             <>
-              <Divider plain style={{ fontSize: 12, color: '#888' }}>Ollama 设置</Divider>
+              <Divider plain style={{ fontSize: 12, color: '#888' }}>{t('sysSettings.ai.ollamaSection')}</Divider>
               <Form.Item name="ollamaHost" label="Ollama Host">
                 <Input placeholder="http://localhost:11434" />
               </Form.Item>
-              <Form.Item name="ollamaModel" label="模型名称">
+              <Form.Item name="ollamaModel" label={t('sysSettings.ai.modelLabel')}>
                 <Input placeholder="llama3" />
               </Form.Item>
             </>
@@ -587,14 +595,14 @@ function AiConfigTab() {
 
           <Form.Item style={{ marginTop: 8 }}>
             <Space>
-              <Button type="primary" loading={saving} onClick={handleSave}>保存配置</Button>
+              <Button type="primary" loading={saving} onClick={handleSave}>{t('sysSettings.ai.save')}</Button>
               {provider !== 'disabled' && (
                 <Button
                   icon={<ThunderboltOutlined />}
                   loading={testing}
                   onClick={() => { setTestResult(null); test(); }}
                 >
-                  测试连通性
+                  {t('sysSettings.ai.test')}
                 </Button>
               )}
             </Space>
@@ -606,7 +614,7 @@ function AiConfigTab() {
         <Alert
           type={testResult.ok ? 'success' : 'error'}
           showIcon
-          title={testResult.ok ? 'AI 连接成功' : '连接失败'}
+          title={testResult.ok ? t('sysSettings.ai.testSuccess') : t('sysSettings.ai.testFailed')}
           description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: 12 }}>{testResult.message}</pre>}
           style={{ marginTop: 8 }}
           closable
@@ -618,7 +626,7 @@ function AiConfigTab() {
         <Alert
           type="info"
           showIcon
-          title="任务执行失败时，AI 会自动分析错误日志并给出修复建议，结果展示在执行详情页。"
+          title={t('sysSettings.ai.analysisNote')}
           style={{ marginTop: 16 }}
         />
       )}
@@ -629,41 +637,42 @@ function AiConfigTab() {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function SettingsPage() {
   const isAdmin = useIsAdmin();
+  const { t } = useTranslation();
 
   const tabs = [
     // R4 收紧矩阵：共享 Token 读/生成 ADMIN-only，非管理员直接不渲染该 Tab
     ...(isAdmin
-      ? [{ key: 'token', label: <Space><KeyOutlined />执行器 Token</Space>, children: <TokenSection /> }]
+      ? [{ key: 'token', label: <Space><KeyOutlined />{t('sysSettings.tab.token')}</Space>, children: <TokenSection /> }]
       : []),
     {
       key: 'ai',
-      label: <Space><RobotOutlined />AI 配置</Space>,
+      label: <Space><RobotOutlined />{t('sysSettings.tab.ai')}</Space>,
       children: <AiConfigTab />,
     },
     {
       key: 'config',
-      label: '系统配置',
+      label: t('sysSettings.tab.config'),
       children: <SystemConfigTab />,
     },
     // SEC-03: 安全设置（TOTP + 会话管理）——所有登录用户可用（仅涉及本人账号），
     // 置于末位 Tab：不改变既有 Tab 排序/默认激活行为（settings.ai 等既有测试依赖）
     {
       key: 'security',
-      label: <Space><SafetyCertificateOutlined />安全设置</Space>,
+      label: <Space><SafetyCertificateOutlined />{t('sysSettings.tab.security')}</Space>,
       children: <SecuritySettings />,
     },
     // AUTH-03: 限权 API Key 管理（CI/CD 机器认证）——所有登录用户管理本人 Key；
     // 放在安全设置之后，不改变既有 Tab 默认激活行为
     {
       key: 'api-keys',
-      label: <Space><ApiOutlined />API Keys</Space>,
+      label: <Space><ApiOutlined />{t('sysSettings.tab.apikeys')}</Space>,
       children: <ApiKeysSettings />,
     },
     // FEAT-15: 事件订阅（webhook 出站 + 死信 replay）——ADMIN 看全部、普通用户
     // 看自己的 + 系统级（后端读面语义），置于末位不改变既有 Tab 默认激活行为
     {
       key: 'event-subscriptions',
-      label: <Space><BellOutlined />事件订阅</Space>,
+      label: <Space><BellOutlined />{t('sysSettings.tab.events')}</Space>,
       children: <EventSubscriptionsSettings />,
     },
   ];
@@ -672,14 +681,14 @@ export default function SettingsPage() {
     <div style={{ maxWidth: 900 }}>
       {/* UI-03/UI-08：页头标准化（原 Title+描述迁入 PageHeader；非管理员提示保留页头下方） */}
       <PageHeader
-        title="系统设置"
-        description="配置调度中心的核心参数与运行时选项"
+        title={t('sysSettings.title')}
+        description={t('sysSettings.description')}
       />
       {!isAdmin && (
         <Alert
           type="info"
           showIcon
-          title="您以普通用户身份查看，写操作（配置修改、回滚）与 AI 配置仅管理员可用"
+          title={t('sysSettings.nonAdminTip')}
           style={{ marginBottom: 16 }}
         />
       )}

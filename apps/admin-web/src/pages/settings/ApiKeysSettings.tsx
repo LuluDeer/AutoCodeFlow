@@ -9,6 +9,9 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiKeysApi, ApiKeyView, ApiKeyScope, ApiKeyCreateResult } from '../../api/api-keys';
 import { getErrMsg } from '../../utils/error';
+import { useTranslation } from 'react-i18next';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../../i18n';
 import StateError from '../../components/StateError';
 import type { ColumnsType } from 'antd/es/table';
 
@@ -21,11 +24,11 @@ const { Text, Paragraph } = Typography;
  * 全部操作走 JWT（/api-keys 是 JWT-only 面，API Key 不能自管）。
  */
 
-const SCOPE_LABEL: Record<ApiKeyScope, string> = {
-  readonly: '只读（全部 GET）',
-  trigger: '只读 + 任务触发',
-  manage: '完全（除凭证管理）',
-};
+const SCOPE_LABELS = (t: (k: string) => string): Record<ApiKeyScope, string> => ({
+  readonly: t('apiKeys.scope.readonly'),
+  trigger: t('apiKeys.scope.trigger'),
+  manage: t('apiKeys.scope.manage'),
+});
 
 const SCOPE_COLOR: Record<ApiKeyScope, string> = {
   readonly: 'blue',
@@ -34,12 +37,15 @@ const SCOPE_COLOR: Record<ApiKeyScope, string> = {
 };
 
 /** 状态列纯函数（导出供测试）：吊销 > 过期 > 正常。 */
-export function apiKeyStatus(key: ApiKeyView): { label: string; color: string } {
-  if (key.revokedAt) return { label: '已吊销', color: 'red' };
+export function apiKeyStatus(
+  key: ApiKeyView,
+  t: (k: string) => string = (k) => k,
+): { label: string; color: string } {
+  if (key.revokedAt) return { label: t('apiKeys.status.revoked'), color: 'red' };
   if (key.expiresAt && new Date(key.expiresAt).getTime() <= Date.now()) {
-    return { label: '已过期', color: 'default' };
+    return { label: t('apiKeys.status.expired'), color: 'default' };
   }
-  return { label: '有效', color: 'green' };
+  return { label: t('apiKeys.status.active'), color: 'green' };
 }
 
 function formatDateTime(v: string | null): string {
@@ -52,14 +58,15 @@ function CreateResultModal(props: {
   result: ApiKeyCreateResult | null;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   if (!props.result) return null;
   return (
     <Modal
       open
-      title="API Key 已创建"
-      okText="我已保存好密钥"
-      cancelText="关闭"
+      title={t('apiKeys.result.title')}
+      okText={t('apiKeys.result.savedOk')}
+      cancelText={t('apiKeys.result.close')}
       onOk={props.onClose}
       onCancel={props.onClose}
       footer={[
@@ -67,33 +74,34 @@ function CreateResultModal(props: {
           navigator.clipboard?.writeText(props.result!.plaintext);
           setCopied(true);
         }}>
-          {copied ? '已复制' : '复制密钥'}
+          {copied ? t('apiKeys.result.copied') : t('apiKeys.result.copyKey')}
         </Button>,
-        <Button key="ok" type="primary" onClick={props.onClose}>我已保存好密钥</Button>,
+        <Button key="ok" type="primary" onClick={props.onClose}>{t('apiKeys.result.savedOk')}</Button>,
       ]}
     >
       <Alert
         type="warning"
         showIcon
         icon={<WarningOutlined />}
-        message="这是唯一一次显示机会"
-        description="出于安全考虑，服务端只保存密钥的 SHA-256 哈希，此明文密钥在关闭本窗口后无法再次查看。请立即复制并妥善保存。"
+        message={t('apiKeys.result.warnTitle')}
+        description={t('apiKeys.result.warnDesc')}
         style={{ marginBottom: 16 }}
       />
       <Paragraph code copyable={false} style={{ wordBreak: 'break-all' }}>
         {props.result.plaintext}
       </Paragraph>
       <Space>
-        <Text type="secondary">名称：</Text><Text>{props.result.name}</Text>
+        <Text type="secondary">{t('apiKeys.result.name')}</Text><Text>{props.result.name}</Text>
         <Text type="secondary">Scope：</Text>
-        <Tag color={SCOPE_COLOR[props.result.scope]}>{SCOPE_LABEL[props.result.scope]}</Tag>
-        <Text type="secondary">前缀：</Text><Text code>{props.result.keyPrefix}</Text>
+        <Tag color={SCOPE_COLOR[props.result.scope]}>{SCOPE_LABELS(t)[props.result.scope]}</Tag>
+        <Text type="secondary">{t('apiKeys.result.prefix')}</Text><Text code>{props.result.keyPrefix}</Text>
       </Space>
     </Modal>
   );
 }
 
 export default function ApiKeysSettings() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const [form] = Form.useForm();
   const [createOpen, setCreateOpen] = useState(false);
@@ -123,63 +131,63 @@ export default function ApiKeysSettings() {
     // 创建成功）。getErrMsg 取后端文案（client 拦截器会再叠一层全局 toast，
     // 但 mutation 层文案更贴动作语义，与 UserManagementPage 同形态）。
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '创建 API Key 失败'));
+      message.error(getErrMsg(err, t('apiKeys.createFail')));
     },
   });
 
   const revokeMut = useMutation({
     mutationFn: (id: number) => apiKeysApi.revoke(id),
     onSuccess: () => {
-      message.success('API Key 已吊销，使用该 Key 的请求将立即 401');
+      message.success(t('apiKeys.revokedMsg'));
       qc.invalidateQueries({ queryKey: ['api-keys'] });
     },
     // UI-15：吊销失败补 onError（QA-03 前科：此前失败静默，按钮 loading 复位
     // 但无任何提示）。文案走 getErrMsg（axios 错误取 response.data.message）。
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '吊销失败，请稍后重试'));
+      message.error(getErrMsg(err, t('apiKeys.revokeFail')));
     },
   });
 
   const columns: ColumnsType<ApiKeyView> = [
-    { title: '名称', dataIndex: 'name', key: 'name' },
+    { title: t('apiKeys.col.name'), dataIndex: 'name', key: 'name' },
     {
-      title: '密钥前缀', dataIndex: 'keyPrefix', key: 'keyPrefix',
+      title: t('apiKeys.col.keyPrefix'), dataIndex: 'keyPrefix', key: 'keyPrefix',
       render: (v: string) => <Text code>{v}…</Text>,
     },
     {
       title: 'Scope', dataIndex: 'scope', key: 'scope',
-      render: (v: ApiKeyScope) => <Tag color={SCOPE_COLOR[v]}>{SCOPE_LABEL[v]}</Tag>,
+      render: (v: ApiKeyScope) => <Tag color={SCOPE_COLOR[v]}>{SCOPE_LABELS(t)[v]}</Tag>,
     },
     {
-      title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt',
-      render: (v: string | null) => (v ? formatDateTime(v) : '永不过期'),
+      title: t('apiKeys.col.expiresAt'), dataIndex: 'expiresAt', key: 'expiresAt',
+      render: (v: string | null) => (v ? formatDateTime(v) : t('apiKeys.neverExpires')),
     },
     {
-      title: '最后使用', dataIndex: 'lastUsedAt', key: 'lastUsedAt',
+      title: t('apiKeys.col.lastUsed'), dataIndex: 'lastUsedAt', key: 'lastUsedAt',
       render: (v: string | null) => formatDateTime(v),
     },
     {
-      title: '状态', key: 'status',
+      title: t('apiKeys.col.status'), key: 'status',
       render: (_: unknown, record: ApiKeyView) => {
-        const s = apiKeyStatus(record);
+        const s = apiKeyStatus(record, t);
         return <Tag color={s.color}>{s.label}</Tag>;
       },
     },
     {
-      title: '操作', key: 'action',
+      title: t('apiKeys.col.actions'), key: 'action',
       render: (_: unknown, record: ApiKeyView) =>
         record.revokedAt ? (
           <Text type="secondary">—</Text>
         ) : (
           <Popconfirm
-            title="吊销后使用该 Key 的请求会立即收到 401，且无法恢复。确认吊销？"
-            okText="吊销"
+            title={t('apiKeys.revokeConfirm')}
+            okText={t('apiKeys.revoke')}
             okButtonProps={{ danger: true }}
             onConfirm={() => revokeMut.mutate(record.id)}
           >
             <Button size="small" danger data-testid={`apikey-revoke-${record.id}`}
               loading={revokeMut.isPending && revokeMut.variables === record.id}>
-              吊销
+              {t('apiKeys.revoke')}
             </Button>
           </Popconfirm>
         ),
@@ -188,10 +196,10 @@ export default function ApiKeysSettings() {
 
   return (
     <Card
-      title={<Space><ApiOutlined /> API Keys（限权机器凭证）</Space>}
+      title={<Space><ApiOutlined />{t('apiKeys.title')}</Space>}
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)} data-testid="apikey-create">
-          新建 API Key
+          {t('apiKeys.create')}
         </Button>
       }
     >
@@ -199,18 +207,17 @@ export default function ApiKeysSettings() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="用于 CI/CD 等机器场景调用本平台 API"
+        message={t('apiKeys.alertMessage')}
         description={
           <Text type="secondary">
-            请求头携带 <code>Authorization: Bearer acf_…</code>。scope 三级：只读 / 只读+任务触发 /
-            完全（凭证管理端点始终仅限用户登录态）。吊销立即生效。
+            {t('apiKeys.alertDescPrefix')}<code>Authorization: Bearer acf_…</code>{t('apiKeys.alertDescSuffix')}
           </Text>
         }
       />
       {keysError ? (
         <StateError
           error={keysError}
-          title="API Key 列表加载失败"
+          title={t('apiKeys.loadFail')}
           onRetry={() => { void refetchKeys(); }}
         />
       ) : (
@@ -227,8 +234,8 @@ export default function ApiKeysSettings() {
 
       <Modal
         open={createOpen}
-        title="新建 API Key"
-        okText="创建"
+        title={t('apiKeys.modal.title')}
+        okText={t('apiKeys.modal.ok')}
         confirmLoading={createMut.isPending}
         onCancel={() => setCreateOpen(false)}
         onOk={() => form.submit()}
@@ -241,26 +248,26 @@ export default function ApiKeysSettings() {
         >
           <Form.Item
             name="name"
-            label="名称"
-            rules={[{ required: true, message: '请输入名称' }, { max: 100 }]}
+            label={t('apiKeys.field.name')}
+            rules={[{ required: true, message: t('apiKeys.field.nameRequired') }, { max: 100 }]}
           >
-            <Input placeholder="如 ci-deploy" />
+            <Input placeholder={t('apiKeys.field.namePlaceholder')} />
           </Form.Item>
-          <Form.Item name="scope" label="权限范围" rules={[{ required: true }]}>
+          <Form.Item name="scope" label={t('apiKeys.field.scope')} rules={[{ required: true }]}>
             <Select
               options={[
-                { value: 'readonly', label: '只读（全部 GET）' },
-                { value: 'trigger', label: '只读 + 任务触发（CI/CD 推荐）' },
-                { value: 'manage', label: '完全（凭证管理除外）' },
+                { value: 'readonly', label: t('apiKeys.scopeOption.readonly') },
+                { value: 'trigger', label: t('apiKeys.scopeOption.trigger') },
+                { value: 'manage', label: t('apiKeys.scopeOption.manage') },
               ]}
             />
           </Form.Item>
           <Form.Item
             name="expiresInDays"
-            label="有效期（天，留空 = 永不过期）"
-            tooltip="到期后使用该 Key 的请求将返回 401"
+            label={t('apiKeys.field.expiresInDays')}
+            tooltip={t('apiKeys.field.expiresTooltip')}
           >
-            <InputNumber min={1} max={3650} style={{ width: '100%' }} placeholder="留空表示永不过期" />
+            <InputNumber min={1} max={3650} style={{ width: '100%' }} placeholder={t('apiKeys.field.expiresPlaceholder')} />
           </Form.Item>
         </Form>
       </Modal>
