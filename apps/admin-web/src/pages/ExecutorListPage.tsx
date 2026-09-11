@@ -8,6 +8,7 @@ import {
   DesktopOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { type Executor } from '../api/executors';
 import { useExecutorsList, useExecutorGroups } from '../api/queries';
 import { client } from '../api/client';
@@ -20,16 +21,20 @@ import GroupFilterBar from '../components/executor/GroupFilterBar';
 import ExecutorCardGrid from '../components/executor/ExecutorCardGrid';
 import BatchActionBar from '../components/executor/BatchActionBar';
 import { useExecutorLive } from '../hooks/useExecutorLive';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 
-function heartbeatLabel(lastHeartbeat: string): { text: string; color: string } {
+type TFunc = (k: string, opts?: Record<string, unknown>) => string;
+function heartbeatLabel(t: TFunc, lastHeartbeat: string): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
   const diffMin = diffMs / 60000;
-  if (diffMin < 2) return { color: '#52c41a', text: '刚刚' };
-  if (diffMin < 10) return { color: '#faad14', text: `${Math.floor(diffMin)} 分钟前` };
+  if (diffMin < 2) return { color: '#52c41a', text: t('execList.hb.justNow') };
+  if (diffMin < 10) return { color: '#faad14', text: t('execList.hb.minAgo', { min: Math.floor(diffMin) }) };
   return { color: '#ff4d4f', text: new Date(lastHeartbeat).toLocaleString('zh-CN') };
 }
 
 export default function ExecutorListPage() {
+  const { t } = useTranslation();
   const prevStatusMap = useRef<Record<string, string>>({});
   const isFirstLoad = useRef(true);
   const [notifApi, notifContextHolder] = notification.useNotification();
@@ -52,14 +57,14 @@ export default function ExecutorListPage() {
       if (prev !== undefined && prev !== ex.status) {
         if (ex.status === 'online') {
           notifApi.success({
-            message: `执行器上线：${ex.appName}`,
-            description: `${ex.address} 已恢复在线`,
+            message: t('execList.notify.online', { name: ex.appName }),
+            description: t('execList.notify.onlineDesc', { address: ex.address }),
             placement: 'topRight', duration: 6,
           });
         } else if (ex.status === 'offline') {
           notifApi.warning({
-            message: `执行器离线：${ex.appName}`,
-            description: `${ex.address} 已离线，请检查服务状态`,
+            message: t('execList.notify.offline', { name: ex.appName }),
+            description: t('execList.notify.offlineDesc', { address: ex.address }),
             placement: 'topRight', duration: 0,
           });
         }
@@ -90,7 +95,7 @@ export default function ExecutorListPage() {
       setInstallCmd(res);
       setInstallCmdModal(true);
     } catch {
-      Modal.error({ title: '获取安装命令失败', content: '请检查 admin-api 服务是否正常运行' });
+      Modal.error({ title: t('execList.installCmdFail.title'), content: t('execList.installCmdFail.content') });
     }
   };
 
@@ -136,7 +141,7 @@ export default function ExecutorListPage() {
 
   const columns = [
     {
-      title: '执行器',
+      title: t('execList.col.executor'),
       key: 'nameAddress',
       sorter: (a: Executor, b: Executor) => a.appName.localeCompare(b.appName),
       render: (_: unknown, r: Executor) => (
@@ -150,7 +155,7 @@ export default function ExecutorListPage() {
       ),
     },
     {
-      title: '状态',
+      title: t('execList.col.status'),
       dataIndex: 'status',
       key: 'status',
       width: 90,
@@ -158,42 +163,43 @@ export default function ExecutorListPage() {
         <Space orientation="vertical" size={0}>
           <Badge
             status={v === 'online' ? 'success' : v === 'busy' ? 'warning' : 'default'}
-            text={v === 'online' ? '在线' : v === 'busy' ? '忙碌' : '离线'}
+            text={v === 'online' ? t('execList.status.online') : v === 'busy' ? t('execList.status.busy') : t('execList.status.offline')}
           />
           {/* U16: 死信积压仅 >0 时高亮（null=旧版未上报、0=无积压均不打扰，
               三态细分见详情页活性上报区） */}
           {r.deadLetterCount != null && r.deadLetterCount > 0 && (
-            <Tooltip title="回调持续失败已落盘执行器本地 dead-letter，需人工排查">
-              <Tag color="orange" style={{ marginInlineEnd: 0 }}>死信 {r.deadLetterCount}</Tag>
+            <Tooltip title={t('execList.deadLetterTooltip')}>
+              <Tag color="orange" style={{ marginInlineEnd: 0 }}>{t('execList.deadLetter', { count: r.deadLetterCount })}</Tag>
             </Tooltip>
           )}
         </Space>
       ),
     },
     {
-      title: '分组 / 标签',
+      title: t('execList.col.groupTags'),
       key: 'groupTags',
       responsive: ['md'] as import('antd/es/_util/responsiveObserver').Breakpoint[],
       render: (_: unknown, r: Executor) => (
         <Space size={4} wrap>
           {r.groupName && <Tag color="geekblue">{r.groupName}</Tag>}
-          {r.tags?.map(t => <Tag key={t}>{t}</Tag>)}
+          {r.tags?.map(t2 => <Tag key={t2}>{t2}</Tag>)}
           {!r.groupName && !r.tags?.length && <Typography.Text type="secondary">-</Typography.Text>}
         </Space>
       ),
     },
     {
-      title: 'CPU / 内存 / 磁盘',
+      title: t('execList.col.resources'),
       key: 'resources',
       width: 160,
       responsive: ['lg'] as import('antd/es/_util/responsiveObserver').Breakpoint[],
       render: (_: unknown, r: Executor) => (
         <Space orientation="vertical" size={2}>
-          {(['CPU', '内存', '磁盘'] as const).map((label) => {
-            const val = label === 'CPU' ? (r.cpuUsage ?? 0)
-              : label === '内存' ? (r.memUsage ?? 0)
+          {([t('execList.res.cpu'), t('execList.res.mem'), t('execList.res.disk')] as const).map((label, idx) => {
+            const isDisk = idx === 2;
+            const val = idx === 0 ? (r.cpuUsage ?? 0)
+              : idx === 1 ? (r.memUsage ?? 0)
               : (r.diskUsage ?? 0);
-            if (label === '磁盘' && !r.diskUsage) return null;
+            if (isDisk && !r.diskUsage) return null;
             return (
               <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <Typography.Text style={{ fontSize: 11, width: 28 }}>{label}</Typography.Text>
@@ -211,13 +217,13 @@ export default function ExecutorListPage() {
       ),
     },
     {
-      title: '任务',
+      title: t('execList.col.tasks'),
       key: 'runningTaskCount',
       width: 80,
       render: (_: unknown, r: Executor) => {
         const running = r.runningTaskCount ?? 0;
         const max = r.maxConcurrentTasks;
-        const label = max != null ? `${running}/${max}任务` : `${running}任务`;
+        const label = max != null ? t('execList.tasks.both', { running, max }) : t('execList.tasks.only', { running });
         return (
           <Typography.Text strong style={{ color: running > 0 ? '#1677ff' : undefined }}>
             {label}
@@ -226,13 +232,13 @@ export default function ExecutorListPage() {
       },
     },
     {
-      title: '心跳',
+      title: t('execList.col.heartbeat'),
       dataIndex: 'lastHeartbeat',
       key: 'lastHeartbeat',
       width: 120,
       render: (v: string) => {
         if (!v) return '-';
-        const hb = heartbeatLabel(v);
+        const hb = heartbeatLabel(t, v);
         return (
           <Tooltip title={new Date(v).toLocaleString('zh-CN')}>
             <Space size={4}>
@@ -244,11 +250,11 @@ export default function ExecutorListPage() {
       },
     },
     {
-      title: '操作',
+      title: t('execList.col.action'),
       key: 'action',
       width: 70,
       render: (_: unknown, r: Executor) => (
-        <Button type="link" size="small" onClick={() => navigate(`/executors/${r.id}`)}>详情</Button>
+        <Button type="link" size="small" onClick={() => navigate(`/executors/${r.id}`)}>{t('execList.action.detail')}</Button>
       ),
     },
   ];
@@ -260,33 +266,31 @@ export default function ExecutorListPage() {
         <Alert
           type="warning"
           showIcon
-          title="有执行器离线超过5分钟，请检查"
+          title={t('execList.online.alert')}
           style={{ marginBottom: 16 }}
           closable
         />
       )}
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，安装向导/快速添加进 extra） */}
       <PageHeader
-        title="执行器"
-        description={<>{onlineCount} / {executors.length} 台在线</>}
+        title={t('execList.title')}
+        description={<>{t('execList.onlineSummary', { online: onlineCount, total: executors.length })}</>}
         extra={
           <Space wrap>
             {/* UI-07 ④：SSE 连接状态点（live=实时，connecting/reconnecting=30s 轮询兜底） */}
             <Tooltip
-              title={isLive
-                ? '实时状态已连接（/metrics/stream · 3s 推送）'
-                : '实时流未连接，正在按 30s 轮询刷新'}
+              title={isLive ? t('execList.liveTooltip') : t('execList.pollTooltip')}
             >
               <Badge
                 status={isLive ? 'processing' : 'warning'}
-                text={<Typography.Text type="secondary" style={{ fontSize: 12 }}>{isLive ? '实时' : '轮询'}</Typography.Text>}
+                text={<Typography.Text type="secondary" style={{ fontSize: 12 }}>{isLive ? t('execList.live') : t('execList.poll')}</Typography.Text>}
               />
             </Tooltip>
             <ViewToggle value={viewMode} onChange={handleViewChange} />
-            {isAdmin && <Button onClick={() => navigate('/executors/install')}>安装向导</Button>}
+            {isAdmin && <Button onClick={() => navigate('/executors/install')}>{t('execList.installWizard')}</Button>}
             {isAdmin && (
               <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
-                快速添加
+                {t('execList.quickAdd')}
               </Button>
             )}
           </Space>
@@ -295,27 +299,27 @@ export default function ExecutorListPage() {
 
       <Space style={{ marginBottom: 16 }} wrap>
         <Input
-          placeholder="搜索名称、地址、分组"
+          placeholder={t('execList.searchPlaceholder')}
           prefix={<SearchOutlined />}
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           allowClear style={{ width: 220 }}
         />
         <Select
-          placeholder="全部状态"
+          placeholder={t('execList.statusAll')}
           allowClear style={{ width: 120 }}
           value={statusFilter}
           onChange={(v) => setStatusFilter(v)}
           suffixIcon={<FilterOutlined />}
           options={[
-            { value: 'online', label: '在线' },
-            { value: 'offline', label: '离线' },
-            { value: 'busy', label: '忙碌' },
+            { value: 'online', label: t('execList.status.online') },
+            { value: 'offline', label: t('execList.status.offline') },
+            { value: 'busy', label: t('execList.status.busy') },
           ]}
         />
         {(groups ?? []).length > 0 && (
           <Select
-            placeholder="全部分组"
+            placeholder={t('execList.groupAll')}
             allowClear style={{ width: 130 }}
             value={groupFilter}
             onChange={(v) => setGroupFilter(v)}
@@ -324,11 +328,11 @@ export default function ExecutorListPage() {
           />
         )}
         {hasFilters && (
-          <Button size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); setGroupFilter(undefined); }}>清除筛选</Button>
+          <Button size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); setGroupFilter(undefined); }}>{t('execList.clearFilters')}</Button>
         )}
         {hasFilters && (
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            {filtered.length} / {executors.length} 条
+            {t('execList.count', { filtered: filtered.length, total: executors.length })}
           </Typography.Text>
         )}
       </Space>
@@ -349,7 +353,7 @@ export default function ExecutorListPage() {
       {error ? (
         <StateError
           error={error}
-          title="执行器列表加载失败"
+          title={t('execList.error.title')}
           onRetry={() => void refetch()}
           style={{ marginBottom: 16 }}
         />
@@ -374,18 +378,18 @@ export default function ExecutorListPage() {
           // UI-07 ③：表格多选（ADMIN 门控在操作条——非 admin 无操作条，
           // 选中集合为空集，多选列对普通用户仅是筛选辅助，不暴露写入口）
           rowSelection={{ selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys as string[]) }}
-          pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+          pagination={{ pageSize: 20, showTotal: (t2) => t('execList.table.count', { count: t2 }) }}
           locale={{
             emptyText: hasFilters ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配执行器">
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('execList.empty.noMatch')}>
                 <Button type="link" size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); }}>
-                  清除筛选
+                  {t('execList.clearFilters')}
                 </Button>
               </Empty>
             ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行器">
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('execList.empty.none')}>
                 {isAdmin && (
-                  <Button type="primary" onClick={() => navigate('/executors/install')}>安装第一个执行器</Button>
+                  <Button type="primary" onClick={() => navigate('/executors/install')}>{t('execList.empty.installFirst')}</Button>
                 )}
               </Empty>
             ),
@@ -394,16 +398,16 @@ export default function ExecutorListPage() {
       )}
 
       <Modal
-        title="快速添加执行器"
+        title={t('execList.quickAdd.title')}
         open={installCmdModal}
         onCancel={() => setInstallCmdModal(false)}
-        footer={<Button onClick={() => setInstallCmdModal(false)}>关闭</Button>}
+        footer={<Button onClick={() => setInstallCmdModal(false)}>{t('execList.close')}</Button>}
         width={640}
       >
         {installCmd && (
           <Space orientation="vertical" style={{ width: '100%' }} size={16}>
             <div>
-              <Typography.Text strong>安装并启动执行器</Typography.Text>
+              <Typography.Text strong>{t('execList.installRun')}</Typography.Text>
               <Typography.Paragraph
                 code copyable={{ text: installCmd.cmd }}
                 style={{ marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 6 }}
@@ -412,7 +416,7 @@ export default function ExecutorListPage() {
               </Typography.Paragraph>
             </div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              在目标机器上运行以上命令，执行器将自动注册并出现在列表中。
+              {t('execList.installHint')}
             </Typography.Text>
           </Space>
         )}
