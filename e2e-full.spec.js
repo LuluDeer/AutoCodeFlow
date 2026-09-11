@@ -1755,17 +1755,15 @@ test.describe('security-redline-ssrf', () => {
 //   ② 依赖确实落在 <workDir>/.node_modules/<taskId>/node_modules，内容来自私服 fixture；
 //   ③ 锁文件记录私服地址（证明来源不是公共 npm）；
 //   ④ 任务依赖目录内无 .npmrc（凭据不落任务树）。
-// 注意（2026-09-11 首次实跑结论）：本用例当前载体是 glueSource（glue-script 任务），
-// 而 admin-api 的 CreateTaskDto 明确「requirements ... Ignored by glue-script tasks」
-// → 依赖不会安装，执行必然 failed（glue require 报 MODULE_NOT_FOUND，已实测）。
-// 要闭环需换非 glue 载体：repoUrl（本地 git fixture）+ 相对 entrypoint，形态见
-// examples/private-registry-deps-node/task.example.json。故场景默认关闭
-// （E2E_PRIVATE_REGISTRY=1 才跑），CI/本地默认行为不受影响。
+// 载体选择结论（2026-09-11 三次实跑）：glue-script 任务按 DTO 设计忽略 requirements；
+// git 载体在真机不可行（executor SSRF 守卫仅放行 https?://|git@|ssh://，且拦 loopback/私网，
+// 见 execute.ts:363-376，属安全防线）→ 改用「非 glue 且无 git」载体，只验证安装段。
+// 场景默认关闭（E2E_PRIVATE_REGISTRY=1 才跑），CI/本地默认行为不受影响。
 test.describe('private-registry (BUG-18)', () => {
   test('44. 私服依赖由 executor 装到任务依赖目录，凭据不落任务树', async ({ request }) => {
     test.skip(
-      !process.env.E2E_NPM_REGISTRY_URL || !process.env.E2E_PRIVATE_DEP_REPO_URL,
-      '未启用私服场景（默认关闭；E2E_PRIVATE_REGISTRY=1 提供 registry + git 源码 fixture 才跑）',
+      !process.env.E2E_NPM_REGISTRY_URL,
+      '未启用私服场景（默认关闭；E2E_PRIVATE_REGISTRY=1 才跑）',
     );
     const fs = require('node:fs');
     const path = require('node:path');
@@ -1775,21 +1773,30 @@ test.describe('private-registry (BUG-18)', () => {
     const workRoot = process.env.E2E_WORK_DIR || '/tmp/acf-e2e-tasks';
 
     const executor = await getFirstOnlineExecutor(request);
-    // 载体必须非 glue：admin-api DTO 明确 requirements 对 glue-script 任务无效
-    // → 用 gitRepo（本地 bare 仓库 fixture）+ 仓库内相对 entrypoint。
+    // 载体刻意「既非 glue、也无 git」：
+    //  - glue 任务按 admin-api DTO 设计会忽略 requirements（实测确认）；
+    //  - git 任务在真机 fixture 下不可行：executor 的 SSRF 守卫只放行
+    //    https?://|git@|ssh:// 且拦截 loopback/私网（execute.ts:363-376，属安全防线，
+    //    python 侧对等），本地 file:// 仓库必被 400，且缺省 ref=main 与 git init
+    //    默认 master 也不匹配（需显式 gitBranch）。
+    // 于是本用例只验证 BUG-18 真正关心的那一段：**派发时 executor 是否用私服凭据
+    // 装好 requirements**（安装发生在运行之前，与源码是否存在无关）。entrypoint
+    // 缺失会让运行期失败——这是预期，故断言终态而非 success，证据落在文件系统产物上。
     const task = await apiCreateTask(request, {
       name: 'e2e-private-registry-' + Date.now().toString().slice(-6),
       triggerType: 'manual',
       runtime: 'node',
       entrypoint: 'index.js',
-      gitRepo: process.env.E2E_PRIVATE_DEP_REPO_URL,
       executorId: executor.id,
       requirements: [depSpec],
       maxRetry: 0,
     });
     await apiTriggerTask(request, task.id);
     const exec = await apiWaitExecution(request, task.id, 90000);
-    expect(exec.status, `执行未成功（安装链路失败会在此暴露）`).toBe('success');
+    expect(
+      ['success', 'failed', 'timeout', 'killed', 'cancelled'].includes(exec.status),
+      `执行未进入终态：${exec.status}`,
+    ).toBe(true);
 
     const depRoot = path.join(workRoot, '.node_modules', task.id);
     const depDir = path.join(depRoot, 'node_modules', ...depName.split('/'));
