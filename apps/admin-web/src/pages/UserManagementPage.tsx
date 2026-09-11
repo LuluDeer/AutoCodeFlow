@@ -25,6 +25,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, type User, type CreateUserDto, type UpdateUserDto } from '../api/users';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 import PageHeader from '../components/PageHeader';
+import StateError from '../components/StateError';
 import PageSkeleton from '../components/PageSkeleton';
 
 const { Option } = Select;
@@ -55,7 +56,7 @@ export default function UserManagementPage() {
   const [resetPwdUser, setResetPwdUser] = useState<UserWithActive | null>(null);
   const [resetPwdForm] = Form.useForm();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['users', page, pageSize],
     queryFn: () => usersApi.list(page, pageSize),
   });
@@ -310,6 +311,16 @@ export default function UserManagementPage() {
             </Button>
           </Col>
         </Row>
+        {/* UI-16：列表请求失败不再只弹 toast —— 页内原位呈现错误块 + 重试入口
+            （新建/禁用等 mutation 失败仍走 toast，语义不变） */}
+        {error ? (
+          <StateError
+            error={error}
+            title="用户列表加载失败"
+            onRetry={() => void refetch()}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
           <Table
             rowKey="id"
             columns={columns}
