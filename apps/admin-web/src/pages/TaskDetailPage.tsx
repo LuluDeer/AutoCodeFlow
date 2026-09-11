@@ -33,12 +33,23 @@ import TaskDependencyGraph from '../components/TaskDependencyGraph';
 import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 import ArtifactsList from '../components/ArtifactsList';
-// CORE-02: retryableErrors 中文文案映射（与表单选项同一来源）
-import { RETRYABLE_ERROR_OPTIONS } from './retry-policy';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 
 const { Text } = Typography;
+
+/** CORE-02: retryableErrors 展示文案走 i18n（复用 taskForm.retryable.* 键，未知值原样兜底） */
+const RETRYABLE_T_KEY: Record<string, string> = {
+  package_fetch_failed: 'taskForm.retryable.packageFetch',
+  dependency_install_failed: 'taskForm.retryable.dependencyInstall',
+  git_fetch_failed: 'taskForm.retryable.gitFetch',
+  runtime_missing: 'taskForm.retryable.runtimeMissing',
+  script_error: 'taskForm.retryable.scriptError',
+  timeout: 'taskForm.retryable.timeout',
+  executor_offline: 'taskForm.retryable.executorOffline',
+  executor_restart: 'taskForm.retryable.executorRestart',
+  unknown: 'taskForm.retryable.unknown',
+};
 
 type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
 const STATUS_COLOR: Record<string, BadgeStatus> = {
@@ -456,7 +467,7 @@ export default function TaskDetailPage() {
                       <Space size={[4, 4]} wrap>
                         {task.retryableErrors.map((r) => (
                           <Tag key={r} color="orange">
-                            {RETRYABLE_ERROR_OPTIONS.find((o) => o.value === r)?.label ?? r}
+                            {RETRYABLE_T_KEY[r] ? t(RETRYABLE_T_KEY[r]) : r}
                           </Tag>
                         ))}
                       </Space>
