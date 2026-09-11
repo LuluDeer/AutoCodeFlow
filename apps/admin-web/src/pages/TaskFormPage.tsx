@@ -52,13 +52,15 @@ import {
   dependenciesFormValues,
 } from './task-dependencies';
 import PageHeader from '../components/PageHeader';
+import { useTranslation } from 'react-i18next';
+import '../i18n';
 
 const { Text } = Typography;
 
-const TRIGGER_OPTIONS = [
-  { value: 'manual', label: '手动触发', desc: '只能通过界面或 API 手动触发' },
-  { value: 'cron', label: 'Cron 定时', desc: '使用 Cron 表达式设置复杂调度' },
-  { value: 'fixed_rate', label: '固定间隔', desc: '每隔固定时间自动执行一次' },
+const TRIGGER_OPTIONS = (t: (k: string) => string) => [
+  { value: 'manual', label: t('taskForm.trigger.manual'), desc: t('taskForm.trigger.manualDesc') },
+  { value: 'cron', label: t('taskForm.trigger.cron'), desc: t('taskForm.trigger.cronDesc') },
+  { value: 'fixed_rate', label: t('taskForm.trigger.fixedRate'), desc: t('taskForm.trigger.fixedRateDesc') },
 ];
 
 const RUNTIME_OPTIONS = [
@@ -68,37 +70,64 @@ const RUNTIME_OPTIONS = [
 ];
 
 // Executor dispatch modes exposed to the user
-const EXECUTOR_MODE_OPTIONS = [
+const EXECUTOR_MODE_OPTIONS = (t: (k: string) => string) => [
   {
     value: 'auto',
-    label: '自动调度',
-    desc: '系统自动选择负载最低的在线执行器',
+    label: t('taskForm.executor.auto'),
+    desc: t('taskForm.executor.autoDesc'),
     icon: <ClusterOutlined />,
   },
   {
     value: 'group',
-    label: '按分组/标签',
-    desc: '限定在指定分组或标签的执行器中自动调度',
+    label: t('taskForm.executor.group'),
+    desc: t('taskForm.executor.groupDesc'),
     icon: <ApartmentOutlined />,
   },
   {
     value: 'pinned',
-    label: '指定执行器',
-    desc: '固定到指定的执行器节点（按节点 ID 绑定）',
+    label: t('taskForm.executor.pinned'),
+    desc: t('taskForm.executor.pinnedDesc'),
     icon: <PushpinOutlined />,
   },
   {
     value: 'broadcast',
-    label: '广播（全部执行）',
-    desc: '所有在线执行器同时运行此任务',
+    label: t('taskForm.executor.broadcast'),
+    desc: t('taskForm.executor.broadcastDesc'),
     icon: <RocketOutlined />,
   },
 ];
+
+// CORE-02/CORE-04/priority：外部工具文件的选项 label 为中文，这里按 value 映射翻译
+const TIMEOUT_ACTION_LABELS = (t: (k: string) => string): Record<string, string> => ({
+  kill: t('taskForm.timeoutAction.kill'),
+  kill_retry: t('taskForm.timeoutAction.killRetry'),
+  notify_only: t('taskForm.timeoutAction.notifyOnly'),
+});
+
+const RETRYABLE_ERROR_LABELS = (t: (k: string) => string): Record<string, string> => ({
+  package_fetch_failed: t('taskForm.retryable.packageFetch'),
+  dependency_install_failed: t('taskForm.retryable.dependencyInstall'),
+  git_fetch_failed: t('taskForm.retryable.gitFetch'),
+  runtime_missing: t('taskForm.retryable.runtimeMissing'),
+  script_error: t('taskForm.retryable.scriptError'),
+  timeout: t('taskForm.retryable.timeout'),
+  executor_offline: t('taskForm.retryable.executorOffline'),
+  executor_restart: t('taskForm.retryable.executorRestart'),
+  unknown: t('taskForm.retryable.unknown'),
+});
+
+const PRIORITY_LABELS = (t: (k: string) => string): Record<string, string> => ({
+  1: t('taskForm.priority.low'),
+  2: t('taskForm.priority.normal'),
+  3: t('taskForm.priority.high'),
+  4: t('taskForm.priority.critical'),
+});
 
 // UI-06: 单页分区锚点。全部 Form.Item 同时挂载，锚点条只负责滚动定位。
 const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', 'sec-glue'] as const;
 
 export default function TaskFormPage() {
+  const { t } = useTranslation();
   const nav = useNavigate();
   const { id: editId } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
@@ -151,17 +180,17 @@ export default function TaskFormPage() {
         });
     };
 
-    run(executorsApi.getGroups(controller.signal), setGroups, '获取执行器分组失败');
-    run(executorsApi.getTags(controller.signal), setAllTags, '获取标签失败');
+    run(executorsApi.getGroups(controller.signal), setGroups, t('taskForm.load.groupFail'));
+    run(executorsApi.getTags(controller.signal), setAllTags, t('taskForm.load.tagsFail'));
     run(
       executorsApi.list(controller.signal),
       (data) => setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string, status: e.status as string }))),
-      '获取执行器列表失败',
+      t('taskForm.load.executorsFail'),
     );
     run(
       applicationsApi.list(controller.signal),
       (data) => setApps(data.map((a) => ({ id: a.id, name: a.name }))),
-      '获取应用列表失败',
+      t('taskForm.load.appsFail'),
     );
     // NF-02: 上游依赖候选（分页拉全，取 id+name；编辑态在任务加载后过滤自身）
     tasksApi
@@ -173,7 +202,7 @@ export default function TaskFormPage() {
       })
       .catch(() => {
         if (active && !controller.signal.aborted) {
-          message.warning('获取任务列表失败，上游依赖暂不可选');
+          message.warning(t('taskForm.load.tasksFail'));
         }
       });
     if (appId) form.setFieldValue('applicationId', appId);
@@ -182,7 +211,7 @@ export default function TaskFormPage() {
       active = false;
       controller.abort();
     };
-  }, [appId, form]);
+  }, [appId, form, t]);
 
   // Load existing task data when in edit mode
   useEffect(() => {
@@ -235,7 +264,7 @@ export default function TaskFormPage() {
         depNameSnapshotRef.current = dep.nameSnapshot;
       })
       .catch(() => {
-        if (active && !controller.signal.aborted) message.error('加载任务失败');
+        if (active && !controller.signal.aborted) message.error(t('taskForm.load.taskFailed'));
       })
       .finally(() => {
         if (active && !controller.signal.aborted) setLoadingTask(false);
@@ -245,7 +274,7 @@ export default function TaskFormPage() {
       active = false;
       controller.abort();
     };
-  }, [editId, form]);
+  }, [editId, form, t]);
 
   // CORE-03：创建态带 ?templateId= 时拉取模板，config 预填表单（显式字段仍可改；
   // name 一律由用户填写——模板 name 常含中文，不满足任务名 [a-z0-9_-] 约束）。
@@ -260,11 +289,11 @@ export default function TaskFormPage() {
         if (tpl.description) form.setFieldValue('description', tpl.description);
         setTriggerType(templateTriggerAndRuntime(tpl).triggerType);
       })
-      .catch(() => message.warning('加载任务模板失败，已使用空白表单'));
+      .catch(() => message.warning(t('taskForm.load.templateFailed')));
     return () => {
       cancelled = true;
     };
-  }, [templateId, isEdit, form]);
+  }, [templateId, isEdit, form, t]);
 
   // P0 (R8) 兜底保留为双保险：单页全挂载后 validateFields() 天然覆盖全部字段，
   // 以下 missing 收集逻辑在正常情况下永远为空集，仅作为防线存在。
@@ -278,33 +307,36 @@ export default function TaskFormPage() {
         const firstError = fields[0]?.errors?.[0];
         if (firstError) {
           setValidationAnnouncement(
-            `表单校验未通过：${firstError}${fields.length > 1 ? ` 等 ${fields.length} 项待修正` : ''}`,
+            t('taskForm.validate.failed', {
+              firstError,
+              more: fields.length > 1 ? t('taskForm.validate.more', { count: fields.length }) : '',
+            }),
           );
         }
         return;
       }
-      message.error(err instanceof Error ? err.message : '表单校验失败');
+      message.error(err instanceof Error ? err.message : t('taskForm.validate.fail'));
       return;
     }
     const values = form.getFieldsValue(true);
     const missing: { label: string; anchor: string }[] = [];
-    if (!values.name) missing.push({ label: '任务名称', anchor: SECTION_IDS[0] });
-    if (!values.runtime) missing.push({ label: '运行时', anchor: SECTION_IDS[0] });
-    if (!values.entrypoint) missing.push({ label: '入口文件', anchor: SECTION_IDS[0] });
+    if (!values.name) missing.push({ label: t('taskForm.field.name'), anchor: SECTION_IDS[0] });
+    if (!values.runtime) missing.push({ label: t('taskForm.field.runtime'), anchor: SECTION_IDS[0] });
+    if (!values.entrypoint) missing.push({ label: t('taskForm.field.entrypoint'), anchor: SECTION_IDS[0] });
     if (values.triggerType === 'cron' && !values.cronExpression) {
-      missing.push({ label: 'Cron 表达式', anchor: SECTION_IDS[1] });
+      missing.push({ label: t('taskForm.field.cron'), anchor: SECTION_IDS[1] });
     }
     if (values.triggerType === 'fixed_rate' && !values.fixedRate) {
-      missing.push({ label: '执行间隔', anchor: SECTION_IDS[1] });
+      missing.push({ label: t('taskForm.field.fixedRate'), anchor: SECTION_IDS[1] });
     }
     if (executorMode === 'pinned' && !values.executorId) {
-      missing.push({ label: '指定执行器', anchor: SECTION_IDS[2] });
+      missing.push({ label: t('taskForm.field.executorId'), anchor: SECTION_IDS[2] });
     }
     if (missing.length > 0) {
       const missingList = missing.map((m) => m.label).join('、');
-      message.error(`必填项缺失：${missingList}，请补全后重试`);
+      message.error(t('taskForm.missing', { list: missingList }));
       // UI-12：同步播报到 role="status" 区域（视觉路径=浮层 + 锚点滚动）
-      setValidationAnnouncement(`必填项缺失：${missingList}`);
+      setValidationAnnouncement(t('taskForm.missingShort', { list: missingList }));
       scrollToSection(missing[0].anchor);
       return;
     }
@@ -327,11 +359,11 @@ export default function TaskFormPage() {
       );
       if (isEdit && editId) {
         await tasksApi.update(editId, payload);
-        message.success('任务更新成功');
+        message.success(t('taskForm.submit.updated'));
         nav(`/tasks/${editId}`);
       } else {
         const created = await tasksApi.create(payload);
-        message.success('任务创建成功，可在下方编辑 Glue 脚本（可选）');
+        message.success(t('taskForm.submit.created'));
         setSavedRuntime(
           typeof payload.runtime === 'string' ? payload.runtime : 'python',
         );
@@ -340,7 +372,7 @@ export default function TaskFormPage() {
         setTimeout(() => scrollToSection(SECTION_IDS[4]), 50);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : (isEdit ? '更新失败' : '创建失败');
+      const msg = err instanceof Error ? err.message : (isEdit ? t('taskForm.submit.updateFail') : t('taskForm.submit.createFail'));
       message.error(msg);
     } finally {
       setSaving(false);
@@ -361,7 +393,7 @@ export default function TaskFormPage() {
       await form.validateFields();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(err instanceof Error ? err.message : '表单校验失败');
+      message.error(err instanceof Error ? err.message : t('taskForm.validate.fail'));
       return;
     }
     tplForm.setFieldsValue({
@@ -378,7 +410,7 @@ export default function TaskFormPage() {
       meta = await tplForm.validateFields();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, '保存模板失败'));
+      message.error(getErrMsg(err, t('taskForm.tpl.saveFail')));
       return;
     }
     const values = form.getFieldsValue(true);
@@ -390,13 +422,13 @@ export default function TaskFormPage() {
         category: meta.category?.trim() || undefined,
         config: templateConfigFromFormValues(values, buildExecutorPayload(values, executorMode)),
       });
-      message.success(`已保存为模板「${meta.name.trim()}」，可在任务模板页查看`);
+      message.success(t('taskForm.tpl.saved', { name: meta.name.trim() }));
       setTplModalOpen(false);
     } catch (err: unknown) {
       // validateFields 的 reject 是带 errorFields 的校验对象，不是请求错误——
       // 仅对真正的请求失败弹 toast，表单校验错误由 Form 自带红字呈现。
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, '保存模板失败'));
+      message.error(getErrMsg(err, t('taskForm.tpl.saveFail')));
     } finally {
       setTplSaving(false);
     }
@@ -406,15 +438,15 @@ export default function TaskFormPage() {
 
   const anchorItems = useMemo(
     () => [
-      { key: SECTION_IDS[0], href: `#${SECTION_IDS[0]}`, title: '基本配置' },
-      { key: SECTION_IDS[1], href: `#${SECTION_IDS[1]}`, title: '触发与告警' },
-      { key: SECTION_IDS[2], href: `#${SECTION_IDS[2]}`, title: '执行器策略' },
-      { key: SECTION_IDS[3], href: `#${SECTION_IDS[3]}`, title: '参数与运行手册' },
+      { key: SECTION_IDS[0], href: `#${SECTION_IDS[0]}`, title: t('taskForm.section.basic') },
+      { key: SECTION_IDS[1], href: `#${SECTION_IDS[1]}`, title: t('taskForm.section.trigger') },
+      { key: SECTION_IDS[2], href: `#${SECTION_IDS[2]}`, title: t('taskForm.section.executor') },
+      { key: SECTION_IDS[3], href: `#${SECTION_IDS[3]}`, title: t('taskForm.section.params') },
       ...(glueTaskId
-        ? [{ key: SECTION_IDS[4], href: `#${SECTION_IDS[4]}`, title: 'Glue 脚本' }]
+        ? [{ key: SECTION_IDS[4], href: `#${SECTION_IDS[4]}`, title: t('taskForm.section.glue') }]
         : []),
     ],
-    [glueTaskId],
+    [glueTaskId, t],
   );
 
   if (loadingTask) {
@@ -435,14 +467,14 @@ export default function TaskFormPage() {
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，面包屑语义=任务→新建/编辑；
           原返回按钮保留于 extra 首位，行为不变） */}
       <PageHeader
-        title={isEdit ? '编辑任务' : '创建任务'}
+        title={isEdit ? t('taskForm.title.edit') : t('taskForm.title.create')}
         breadcrumb={[
-          { title: '任务调度', to: '/tasks' },
-          { title: isEdit ? '编辑任务' : '新建任务' },
+          { title: t('taskForm.breadcrumb.tasks'), to: '/tasks' },
+          { title: isEdit ? t('taskForm.breadcrumb.edit') : t('taskForm.breadcrumb.new') },
         ]}
         extra={
           <Button icon={<ArrowLeftOutlined />} type="text" onClick={() => nav(-1)}>
-            返回
+            {t('taskForm.back')}
           </Button>
         }
       />
@@ -461,7 +493,7 @@ export default function TaskFormPage() {
             测试环境只断言锚点渲染与点击可滚，不测监听） */}
         <nav
           data-testid="task-form-anchor"
-          aria-label="表单分区导航"
+          aria-label={t('taskForm.anchorAria')}
           style={{
             width: 160,
             flexShrink: 0,
@@ -506,30 +538,30 @@ export default function TaskFormPage() {
             }}
           >
             {/* 分区一：基本配置（原 step 0） */}
-            <div id={SECTION_IDS[0]} data-testid="section-basic" role="region" aria-label="基本配置" style={{ scrollMarginTop: 88 }}>
-              <Typography.Title level={5} style={sectionTitleStyle}>基本配置</Typography.Title>
+            <div id={SECTION_IDS[0]} data-testid="section-basic" role="region" aria-label={t('taskForm.section.basic')} style={{ scrollMarginTop: 88 }}>
+              <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.basic')}</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
                 <Form.Item
                   name="name"
-                  label="任务名称"
+                  label={t('taskForm.field.name')}
                   rules={[
-                    { required: true, message: '请输入任务名称' },
-                    { pattern: /^[a-zA-Z0-9_-]+$/, message: '只允许字母、数字、下划线、连字符' },
+                    { required: true, message: t('taskForm.field.name.required') },
+                    { pattern: /^[a-zA-Z0-9_-]+$/, message: t('taskForm.field.name.pattern') },
                   ]}
-                  tooltip={{ title: isEdit ? '任务名称创建后不可更改' : '唯一标识，建议使用英文，如 daily-report', icon: <InfoCircleOutlined /> }}
+                  tooltip={{ title: isEdit ? t('taskForm.field.name.tooltipEdit') : t('taskForm.field.name.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
                   <Input placeholder="daily-report" disabled={isEdit} />
                 </Form.Item>
 
-                <Form.Item name="description" label="描述（可选）">
-                  <Input placeholder="简单说明这个任务做什么" />
+                <Form.Item name="description" label={t('taskForm.field.description.optional')}>
+                  <Input placeholder={t('taskForm.field.description.placeholder')} />
                 </Form.Item>
 
                 <Form.Item
                   name="runtime"
-                  label="运行时"
-                  rules={[{ required: true, message: '请选择运行时' }]}
-                  tooltip={{ title: '执行器节点需安装对应运行时', icon: <InfoCircleOutlined /> }}
+                  label={t('taskForm.field.runtime')}
+                  rules={[{ required: true, message: t('taskForm.field.runtime.required') }]}
+                  tooltip={{ title: t('taskForm.field.runtime.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
                   <Radio.Group optionType="button" buttonStyle="solid">
                     {RUNTIME_OPTIONS.map(o => (
@@ -540,9 +572,9 @@ export default function TaskFormPage() {
 
                 <Form.Item
                   name="entrypoint"
-                  label="入口文件"
-                  rules={[{ required: true, message: '请输入入口文件路径' }]}
-                  tooltip={{ title: '相对于仓库根目录的文件路径，如 tasks/main.py', icon: <InfoCircleOutlined /> }}
+                  label={t('taskForm.field.entrypoint')}
+                  rules={[{ required: true, message: t('taskForm.field.entrypoint.required') }]}
+                  tooltip={{ title: t('taskForm.field.entrypoint.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
                   <Input placeholder="tasks/main.py" />
                 </Form.Item>
@@ -551,16 +583,16 @@ export default function TaskFormPage() {
                     venv，node 任务由 executor-node 安装；glue 脚本任务不生效。 */}
                 <Form.Item
                   name="requirements"
-                  label="依赖包（可选）"
+                  label={t('taskForm.field.requirements')}
                   tooltip={{
                     title:
-                      '执行器运行前安装的依赖，回车逐条添加。python 运行时形如 requests>=2.31（per-task venv），node 运行时形如 left-pad@2.1.0；glue 脚本任务忽略此项',
+                      t('taskForm.field.requirements.tooltip'),
                     icon: <InfoCircleOutlined />,
                   }}
                 >
                   <Select
                     mode="tags"
-                    placeholder="requests>=2.31，回车添加"
+                    placeholder={t('taskForm.field.requirements.placeholder')}
                     open={false}
                     suffixIcon={null}
                     tokenSeparators={[]}
@@ -569,11 +601,11 @@ export default function TaskFormPage() {
 
                 <Form.Item
                   name="applicationId"
-                  label="关联应用（可选）"
-                  tooltip={{ title: '关联后可继承应用的代码仓库和配置', icon: <InfoCircleOutlined /> }}
+                  label={t('taskForm.field.applicationId')}
+                  tooltip={{ title: t('taskForm.field.applicationId.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
                   <Select
-                    placeholder="选择应用（可不关联）"
+                    placeholder={t('taskForm.field.applicationId.placeholder')}
                     allowClear
                     showSearch
                     options={apps.map(a => ({ value: a.id, label: a.name }))}
@@ -586,13 +618,13 @@ export default function TaskFormPage() {
             </div>
 
             {/* 分区二：触发与告警（原 step 1 上半 + step 2 告警/runbook/参数） */}
-            <div id={SECTION_IDS[1]} data-testid="section-trigger" role="region" aria-label="触发与告警" style={{ scrollMarginTop: 88 }}>
-              <Typography.Title level={5} style={sectionTitleStyle}>触发与告警</Typography.Title>
+            <div id={SECTION_IDS[1]} data-testid="section-trigger" role="region" aria-label={t('taskForm.section.trigger')} style={{ scrollMarginTop: 88 }}>
+              <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.trigger')}</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
-                <Form.Item name="triggerType" label="触发方式">
+                <Form.Item name="triggerType" label={t('taskForm.field.triggerType')}>
                   <Radio.Group>
                     <Space orientation="vertical">
-                      {TRIGGER_OPTIONS.map(o => (
+                      {TRIGGER_OPTIONS(t).map(o => (
                         <Radio key={o.value} value={o.value}>
                           <Space>
                             <span style={{ fontWeight: 500 }}>{o.label}</span>
@@ -607,23 +639,23 @@ export default function TaskFormPage() {
                 {triggerType === 'cron' && (
                   <Form.Item
                     name="cronExpression"
-                    label="Cron 表达式"
-                    rules={[{ required: true, message: '请输入 Cron 表达式' }]}
+                    label={t('taskForm.field.cron')}
+                    rules={[{ required: true, message: t('taskForm.field.cron.required') }]}
                     extra={
                       <Button type="link" size="small" onClick={() => setShowCronHelper(true)}>
-                        不会写？点击使用 Cron 辅助工具
+                        {t('taskForm.field.cron.helper')}
                       </Button>
                     }
                   >
-                    <Input placeholder="0 8 * * 1-5  (每周一至周五早8点)" style={{ fontFamily: 'monospace' }} />
+                    <Input placeholder={t('taskForm.field.cron.placeholder')} style={{ fontFamily: 'monospace' }} />
                   </Form.Item>
                 )}
 
                 {triggerType === 'cron' && (
                   <Form.Item
                     name="timezone"
-                    label="时区"
-                    tooltip={{ title: 'IANA 时区名称，例如 Asia/Shanghai；留空则使用服务端默认时区', icon: <InfoCircleOutlined /> }}
+                    label={t('taskForm.field.timezone')}
+                    tooltip={{ title: t('taskForm.field.timezone.tooltip'), icon: <InfoCircleOutlined /> }}
                   >
                     <Input placeholder="Asia/Shanghai" />
                   </Form.Item>
@@ -632,16 +664,16 @@ export default function TaskFormPage() {
                 {triggerType === 'fixed_rate' && (
                   <Form.Item
                     name="fixedRate"
-                    label="执行间隔"
-                    rules={[{ required: true, message: '请设置间隔时间' }]}
+                    label={t('taskForm.field.fixedRate')}
+                    rules={[{ required: true, message: t('taskForm.field.fixedRate.required') }]}
                   >
                     <InputNumber<number>
                       min={60}
                       step={60}
                       style={{ width: 200 }}
-                      formatter={v => v ? `${Math.floor(Number(v) / 60)} 分钟` : ''}
-                      parser={v => v ? Number(v.replace('分钟', '')) * 60 : 60}
-                      placeholder="60（秒）"
+                      formatter={v => v ? t('taskForm.field.fixedRate.minutes', { n: Math.floor(Number(v) / 60) }) : ''}
+                      parser={v => v ? Number(v.replace(t('taskForm.field.fixedRate.minuteUnit'), '')) * 60 : 60}
+                      placeholder={t('taskForm.field.fixedRate.placeholder')}
                     />
                   </Form.Item>
                 )}
@@ -662,8 +694,8 @@ export default function TaskFormPage() {
                 <div style={{ marginBottom: 8 }}>
                   <Space size={4}>
                     <ToolOutlined />
-                    <Typography.Text strong>维护窗口（可选）</Typography.Text>
-                    <Tooltip title="发布/停机时段保护：窗口内的计划触发（Cron、固定间隔、错失补偿）会被跳过并计入调度指标；手动触发不受影响。窗口在『开始 Cron』触达时刻开启、『结束 Cron』触达时刻关闭（半开区间）；窗口 Cron 按服务端本地时间评估。最多 10 条。">
+                    <Typography.Text strong>{t('taskForm.window.title')}</Typography.Text>
+                    <Tooltip title={t('taskForm.window.tooltip')}>
                       <InfoCircleOutlined style={{ color: '#1677ff' }} />
                     </Tooltip>
                   </Space>
@@ -677,30 +709,30 @@ export default function TaskFormPage() {
                             name={[field.name, 'start']}
                             noStyle
                             rules={[
-                              { required: true, message: '开始 Cron 必填' },
-                              { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: '需 5 字段 Cron（分 时 日 月 周）' },
+                              { required: true, message: t('taskForm.window.startRequired') },
+                              { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
                             ]}
                           >
-                            <Input placeholder="开始 Cron，如 30 2 * * *" style={{ width: 200, fontFamily: 'monospace' }} />
+                            <Input placeholder={t('taskForm.window.startPlaceholder')} style={{ width: 200, fontFamily: 'monospace' }} />
                           </Form.Item>
                           <Form.Item
                             name={[field.name, 'end']}
                             noStyle
                             rules={[
-                              { required: true, message: '结束 Cron 必填' },
-                              { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: '需 5 字段 Cron（分 时 日 月 周）' },
+                              { required: true, message: t('taskForm.window.endRequired') },
+                              { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
                             ]}
                           >
-                            <Input placeholder="结束 Cron，如 0 4 * * *" style={{ width: 200, fontFamily: 'monospace' }} />
+                            <Input placeholder={t('taskForm.window.endPlaceholder')} style={{ width: 200, fontFamily: 'monospace' }} />
                           </Form.Item>
                           <Form.Item name={[field.name, 'description']} noStyle>
-                            <Input placeholder="说明（可选）" style={{ width: 160 }} />
+                            <Input placeholder={t('taskForm.window.descPlaceholder')} style={{ width: 160 }} />
                           </Form.Item>
                           <Button
                             type="text"
                             danger
                             icon={<DeleteOutlined />}
-                            aria-label={`删除维护窗口 ${field.name + 1}`}
+                            aria-label={t('taskForm.window.deleteAria', { n: field.name + 1 })}
                             onClick={() => remove(field.name)}
                           />
                         </Space>
@@ -712,7 +744,7 @@ export default function TaskFormPage() {
                           onClick={() => add()}
                           disabled={fields.length >= MAINTENANCE_WINDOWS_MAX}
                         >
-                          添加维护窗口
+                          {t('taskForm.window.add')}
                         </Button>
                       </Form.Item>
                     </>
@@ -721,44 +753,44 @@ export default function TaskFormPage() {
 
                 <Divider style={{ margin: '20px 0 16px' }} />
                 <div style={{ marginBottom: 8 }}>
-                  <Typography.Text strong>告警配置</Typography.Text>
+                  <Typography.Text strong>{t('taskForm.alarm.title')}</Typography.Text>
                 </div>
                 <AlarmConfig />
 
                 <Divider style={{ margin: '20px 0 16px' }} />
                 <div style={{ marginBottom: 8 }}>
-                  <Typography.Text strong>运行手册（可选）</Typography.Text>
+                  <Typography.Text strong>{t('taskForm.runbook.title')}</Typography.Text>
                 </div>
                 <Form.Item
                   name="runbook"
-                  label="Runbook（markdown）"
-                  tooltip={{ title: '失败时的排障知识：详情页展示，失败通知附带；支持 markdown', icon: <InfoCircleOutlined /> }}
+                  label={t('taskForm.runbook.label')}
+                  tooltip={{ title: t('taskForm.runbook.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
                   <Input.TextArea
                     rows={6}
-                    placeholder={'## 排障步骤\n1. 检查依赖服务连通性\n2. 查看上游数据是否就绪\n## 升级路径\n值班群：@xxx'}
+                    placeholder={t('taskForm.runbook.placeholder')}
                   />
                 </Form.Item>
               </Card>
             </div>
 
             {/* 分区三：执行器策略与超时重试（原 step 1 下半） */}
-            <div id={SECTION_IDS[2]} data-testid="section-executor" role="region" aria-label="执行器策略" style={{ scrollMarginTop: 88 }}>
-              <Typography.Title level={5} style={sectionTitleStyle}>执行器策略</Typography.Title>
+            <div id={SECTION_IDS[2]} data-testid="section-executor" role="region" aria-label={t('taskForm.section.executor')} style={{ scrollMarginTop: 88 }}>
+              <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.executor')}</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
                 <Form.Item
                   label={
                     <Space size={4}>
-                      <span>执行器策略</span>
+                      <span>{t('taskForm.executor.strategy')}</span>
                       {(broadcastDisabledByPin || pinDisabledByBroadcast) && (
-                        <Tooltip title="N17 互斥：广播与指定执行器不能同时生效，切换模式后另一侧恢复可用">
+                        <Tooltip title={t('taskForm.executor.mutexTooltip')}>
                           <LockOutlined style={{ color: token.colorWarning }} data-testid="executor-mutex-lock" />
                         </Tooltip>
                       )}
                     </Space>
                   }
                   required
-                  tooltip={{ title: '控制任务如何分配到执行器节点', icon: <InfoCircleOutlined /> }}
+                  tooltip={{ title: t('taskForm.executor.strategyTooltip'), icon: <InfoCircleOutlined /> }}
                 >
                   <Radio.Group
                     value={executorMode}
@@ -766,7 +798,7 @@ export default function TaskFormPage() {
                     style={{ width: '100%' }}
                   >
                     <Space orientation="vertical" style={{ width: '100%' }}>
-                      {EXECUTOR_MODE_OPTIONS.map(o => (
+                      {EXECUTOR_MODE_OPTIONS(t).map(o => (
                         <Radio
                           key={o.value}
                           value={o.value}
@@ -785,7 +817,7 @@ export default function TaskFormPage() {
                             <span style={{ fontWeight: 500 }}>{o.label}</span>
                             <Text type="secondary" style={{ fontSize: 12 }}>
                               {o.value === 'broadcast' && broadcastDisabledByPin
-                                ? '与「指定执行器」互斥（N17），切回自动调度后可选'
+                                ? t('taskForm.executor.broadcastBlocked')
                                 : o.desc}
                             </Text>
                           </Space>
@@ -796,16 +828,16 @@ export default function TaskFormPage() {
                 </Form.Item>
 
                 {executorMode === 'pinned' && (
-                  <Form.Item name="executorId" label="指定执行器" required
-                    rules={[{ required: true, message: '请选择执行器' }]}
-                    tooltip={{ title: '任务只会派发到该执行器（按节点 ID 固定）；离线时执行将直接失败，不回退到其他节点', icon: <InfoCircleOutlined /> }}>
+                  <Form.Item name="executorId" label={t('taskForm.field.executorId')} required
+                    rules={[{ required: true, message: t('taskForm.field.executorId.required') }]}
+                    tooltip={{ title: t('taskForm.field.executorId.tooltip'), icon: <InfoCircleOutlined /> }}>
                     <Select
-                      placeholder="选择执行器节点"
+                      placeholder={t('taskForm.field.executorId.placeholder')}
                       showSearch
                       optionFilterProp="label"
                       options={executors.map(e => ({
                         value: e.id,
-                        label: `${e.appName}  (${e.address})${e.status === 'online' ? '' : ' [离线]'}`,
+                        label: `${e.appName}  (${e.address})${e.status === 'online' ? '' : ` ${t('taskForm.executor.offline')}`}`,
                       }))}
                     />
                   </Form.Item>
@@ -813,16 +845,16 @@ export default function TaskFormPage() {
 
                 {executorMode === 'group' && (
                   <>
-                    <Form.Item name="executorGroup" label="执行器分组"
-                      tooltip={{ title: '只有该分组内的执行器才会被选中', icon: <InfoCircleOutlined /> }}>
-                      <Select placeholder="选择分组（可选）" allowClear
+                    <Form.Item name="executorGroup" label={t('taskForm.field.executorGroup')}
+                      tooltip={{ title: t('taskForm.field.executorGroup.tooltip'), icon: <InfoCircleOutlined /> }}>
+                      <Select placeholder={t('taskForm.field.executorGroup.placeholder')} allowClear
                         options={groups.map(g => ({ value: g, label: g }))} />
                     </Form.Item>
-                    <Form.Item name="executorTags" label="执行器标签"
-                      tooltip={{ title: '执行器必须拥有所有选中标签才会被选中', icon: <InfoCircleOutlined /> }}>
+                    <Form.Item name="executorTags" label={t('taskForm.field.executorTags')}
+                      tooltip={{ title: t('taskForm.field.executorTags.tooltip'), icon: <InfoCircleOutlined /> }}>
                       <Select
                         mode="multiple"
-                        placeholder="选择标签（可选，多选表示AND关系）"
+                        placeholder={t('taskForm.field.executorTags.placeholder')}
                         allowClear
                         options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
                       />
@@ -838,9 +870,9 @@ export default function TaskFormPage() {
                     later switch back to a filtering mode. */}
                 <Form.Item
                   name="executorAffinityTags"
-                  label="亲和标签"
+                  label={t('taskForm.field.affinityTags')}
                   tooltip={{
-                    title: '执行器拥有任一标签即可命中；可与分组/执行器标签同时使用。自动调度与广播均生效。指定执行器模式不使用此约束。',
+                    title: t('taskForm.field.affinityTags.tooltip'),
                     icon: <InfoCircleOutlined />,
                   }}
                 >
@@ -848,15 +880,15 @@ export default function TaskFormPage() {
                     mode="multiple"
                     allowClear
                     disabled={executorMode === 'pinned'}
-                    placeholder="选择亲和标签（可选，OR 关系）"
+                    placeholder={t('taskForm.field.affinityTags.placeholder')}
                     options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
                   />
                 </Form.Item>
                 <Form.Item
                   name="executorAntiAffinityTags"
-                  label="反亲和标签"
+                  label={t('taskForm.field.antiAffinityTags')}
                   tooltip={{
-                    title: '执行器拥有任一标签即排除；可与亲和标签同时使用。自动调度与广播均生效。指定执行器模式不使用此约束。',
+                    title: t('taskForm.field.antiAffinityTags.tooltip'),
                     icon: <InfoCircleOutlined />,
                   }}
                 >
@@ -864,7 +896,7 @@ export default function TaskFormPage() {
                     mode="multiple"
                     allowClear
                     disabled={executorMode === 'pinned'}
-                    placeholder="选择反亲和标签（可选，排除关系）"
+                    placeholder={t('taskForm.field.antiAffinityTags.placeholder')}
                     options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
                   />
                 </Form.Item>
@@ -872,7 +904,7 @@ export default function TaskFormPage() {
                   <Alert
                     type="info"
                     showIcon
-                    title="指定执行器模式不使用亲和/反亲和约束；配置会保留，切回自动调度、分组或广播后继续生效"
+                    title={t('taskForm.alert.pinnedAffinity')}
                     data-testid="pinned-affinity-disabled"
                     style={{ marginBottom: 16 }}
                   />
@@ -883,14 +915,14 @@ export default function TaskFormPage() {
                     type="warning"
                     showIcon
                     data-testid="broadcast-pin-cleared"
-                    title="已切换到广播模式：此前选定的执行器将在提交时清空（互斥语义）"
+                    title={t('taskForm.alert.broadcastPin')}
                     style={{ marginBottom: 16 }}
                   />
                 )}
 
                 <Divider style={{ margin: '16px 0' }} />
 
-                <Form.Item name="timeout" label={<>超时时间 <Text type="secondary" style={{ fontSize: 12 }}>（秒）</Text></>}>
+                <Form.Item name="timeout" label={<>{t('taskForm.field.timeout')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.timeout.unit')}</Text></>}>
                   <InputNumber min={10} max={86400} style={{ width: 160 }} placeholder="300" />
                 </Form.Item>
 
@@ -900,13 +932,13 @@ export default function TaskFormPage() {
                     被执行器杀掉——并非"永不超时"）。 */}
                 <Form.Item
                   name="timeoutAction"
-                  label={<>超时动作 <Text type="secondary" style={{ fontSize: 12 }}>（到时后的处理方式）</Text></>}
+                  label={<>{t('taskForm.field.timeoutAction')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.timeoutAction.hint')}</Text></>}
                   initialValue="kill"
-                  tooltip={{ title: '终止：执行器杀掉进程树（默认）。终止并重试：杀掉后按最大尝试次数重新排队一次。仅通知：不额外下发终止指令，只发超时告警——进程仍会被执行器的硬超时终止。', icon: <InfoCircleOutlined /> }}
+                  tooltip={{ title: t('taskForm.field.timeoutAction.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
                   <Radio.Group optionType="button" buttonStyle="solid">
                     {TIMEOUT_ACTION_OPTIONS.map((o) => (
-                      <Radio.Button key={o.value} value={o.value}>{o.label}</Radio.Button>
+                      <Radio.Button key={o.value} value={o.value}>{TIMEOUT_ACTION_LABELS(t)[o.value] ?? o.label}</Radio.Button>
                     ))}
                   </Radio.Group>
                 </Form.Item>
@@ -915,17 +947,17 @@ export default function TaskFormPage() {
                     WARNING 通知（每个执行至多一次）。留空 = 不启用。 */}
                 <Form.Item
                   name="timeoutWarnRatio"
-                  label={<>超时预警阈值 <Text type="secondary" style={{ fontSize: 12 }}>（占超时时间的百分比，0-90；留空不预警）</Text></>}
-                  tooltip={{ title: '例如超时 600 秒、阈值 80：运行到 480 秒时发送一次超时预警通知，便于在硬超时前介入。', icon: <InfoCircleOutlined /> }}
+                  label={<>{t('taskForm.field.timeoutWarnRatio')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.timeoutWarnRatio.hint')}</Text></>}
+                  tooltip={{ title: t('taskForm.field.timeoutWarnRatio.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
-                  <InputNumber min={0} max={TIMEOUT_WARN_RATIO_MAX} style={{ width: 160 }} placeholder="如 80，留空不预警" />
+                  <InputNumber min={0} max={TIMEOUT_WARN_RATIO_MAX} style={{ width: 160 }} placeholder={t('taskForm.field.timeoutWarnRatio.placeholder')} />
                 </Form.Item>
 
-                <Form.Item name="maxRetry" label={<>最大尝试次数 <Text type="secondary" style={{ fontSize: 12 }}>（1 = 不重试）</Text></>}>
+                <Form.Item name="maxRetry" label={<>{t('taskForm.field.maxRetry')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.maxRetry.hint')}</Text></>}>
                   <InputNumber min={1} max={10} style={{ width: 120 }} />
                 </Form.Item>
 
-                <Form.Item name="retryDelay" label={<>重试延迟 <Text type="secondary" style={{ fontSize: 12 }}>（秒，0 = 不延迟；实际延迟带 ±20% 抖动以摊开重试洪峰）</Text></>}>
+                <Form.Item name="retryDelay" label={<>{t('taskForm.field.retryDelay')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.retryDelay.hint')}</Text></>}>
                   <InputNumber min={0} max={3600} style={{ width: 160 }} />
                 </Form.Item>
 
@@ -934,21 +966,21 @@ export default function TaskFormPage() {
                     会重试。timeout 类失败另有防双派发守卫，永不自动重试。 */}
                 <Form.Item
                   name="retryableErrors"
-                  label={<>可重试错误类型 <Text type="secondary" style={{ fontSize: 12 }}>（留空 = 全部可重试）</Text></>}
-                  tooltip={{ title: '仅勾选的错误类型会被自动重试（匹配错误消息或失败分类）。例如只勾选"执行器离线"，脚本错误将在第一次失败后直接终态，不再烧尽重试预算。', icon: <InfoCircleOutlined /> }}
+                  label={<>{t('taskForm.field.retryableErrors')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.retryableErrors.hint')}</Text></>}
+                  tooltip={{ title: t('taskForm.field.retryableErrors.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
                   <Select
                     mode="multiple"
                     allowClear
-                    placeholder="不选择 = 任何失败都按重试预算自动重试"
-                    options={RETRYABLE_ERROR_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                    placeholder={t('taskForm.field.retryableErrors.placeholder')}
+                    options={RETRYABLE_ERROR_OPTIONS.map((o) => ({ value: o.value, label: RETRYABLE_ERROR_LABELS(t)[o.value] ?? o.label }))}
                   />
                 </Form.Item>
 
-                <Form.Item name="priority" label={<>调度优先级 <Text type="secondary" style={{ fontSize: 12 }}>（BullMQ 队列优先出队；多任务拥塞时高优先行）</Text></>}>
+                <Form.Item name="priority" label={<>{t('taskForm.field.priority')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.priority.hint')}</Text></>}>
                   <Select
                     style={{ width: 200 }}
-                    options={TASK_PRIORITY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                    options={TASK_PRIORITY_OPTIONS.map((o) => ({ value: o.value, label: PRIORITY_LABELS(t)[String(o.value)] ?? o.label }))}
                   />
                 </Form.Item>
 
@@ -958,10 +990,10 @@ export default function TaskFormPage() {
                     环检测/深度上限在 create/update 侧强制）。 */}
                 <Form.Item
                   name="upstreamDependencies"
-                  label="上游依赖（可选）"
+                  label={t('taskForm.field.upstreamDependencies')}
                   tooltip={{
                     title:
-                      '选择上游任务后，本任务会在所有上游最近一次执行全部成功时被自动触发（链式编排）。保存时校验循环依赖与链深（上限 10）。手动触发不受依赖约束。',
+                      t('taskForm.field.upstreamDependencies.tooltip'),
                     icon: <InfoCircleOutlined />,
                   }}
                 >
@@ -969,7 +1001,7 @@ export default function TaskFormPage() {
                     mode="multiple"
                     showSearch
                     allowClear
-                    placeholder="选择上游任务（可多选，全部成功后自动触发本任务）"
+                    placeholder={t('taskForm.field.upstreamDependencies.placeholder')}
                     options={taskOptions
                       .filter((t) => t.id !== editId)
                       .map((t) => ({ value: t.id, label: t.name }))}
@@ -982,17 +1014,17 @@ export default function TaskFormPage() {
             </div>
 
             {/* 分区四：参数配置（原 step 2 上半） */}
-            <div id={SECTION_IDS[3]} data-testid="section-params" role="region" aria-label="参数与运行手册" style={{ scrollMarginTop: 88 }}>
-              <Typography.Title level={5} style={sectionTitleStyle}>参数与运行手册</Typography.Title>
+            <div id={SECTION_IDS[3]} data-testid="section-params" role="region" aria-label={t('taskForm.section.params')} style={{ scrollMarginTop: 88 }}>
+              <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.params')}</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
                 <Alert
                   type="info"
                   showIcon
-                  title="任务默认参数"
-                  description="以下参数会在每次执行时以环境变量 AUTOFLOW_<KEY> 的形式注入到任务中。触发时可传入同名参数覆盖默认值。"
+                  title={t('taskForm.params.alertTitle')}
+                  description={t('taskForm.params.alertDesc')}
                   style={{ marginBottom: 20 }}
                 />
-                <Form.Item name="params" label="默认参数">
+                <Form.Item name="params" label={t('taskForm.field.params')}>
                   <ParamsEditor />
                 </Form.Item>
               </Card>
@@ -1001,16 +1033,16 @@ export default function TaskFormPage() {
 
           {/* 分区五：Glue 脚本（原 step 3——创建后才有 taskId，保持既有行为语义：
               创建态在提交成功前不渲染 GlueEditor；编辑态 taskId 已存在直接可编） */}
-          <div id={SECTION_IDS[4]} data-testid="section-glue" role="region" aria-label="Glue 脚本" style={{ scrollMarginTop: 88 }}>
-            <Typography.Title level={5} style={sectionTitleStyle}>Glue 脚本（可选）</Typography.Title>
+          <div id={SECTION_IDS[4]} data-testid="section-glue" role="region" aria-label={t('taskForm.section.glue')} style={{ scrollMarginTop: 88 }}>
+            <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.glueTitle')}</Typography.Title>
             {glueTaskId ? (
               <Card style={{ marginBottom: 20 }}>
                 {!isEdit && createdTaskId && (
                   <Alert
                     type="success"
                     showIcon
-                    title="任务已创建成功！"
-                    description="你可以在下方编写 Glue 脚本（可选）。Glue 脚本是一段在执行器节点上直接运行的代码，无需关联代码仓库。"
+                    title={t('taskForm.glue.createdTitle')}
+                    description={t('taskForm.glue.createdDesc')}
                     style={{ marginBottom: 20 }}
                   />
                 )}
@@ -1020,17 +1052,16 @@ export default function TaskFormPage() {
                 />
                 <Divider />
                 <Space>
-                  <Button type="primary" onClick={() => nav(`/tasks/${glueTaskId}`)}>完成，前往任务详情</Button>
+                  <Button type="primary" onClick={() => nav(`/tasks/${glueTaskId}`)}>{t('taskForm.glue.done')}</Button>
                   {!isEdit && (
-                    <Button onClick={() => nav('/tasks')}>跳过，返回任务列表</Button>
+                    <Button onClick={() => nav('/tasks')}>{t('taskForm.glue.skip')}</Button>
                   )}
                 </Space>
               </Card>
             ) : (
               <Card style={{ marginBottom: 20 }}>
                 <Text type="secondary" data-testid="glue-locked-hint">
-                  Glue 脚本是一段在执行器节点上直接运行的代码，无需关联代码仓库。
-                  创建任务后即可在此编写。
+                  {t('taskForm.glue.lockedHint')}
                 </Text>
               </Card>
             )}
@@ -1057,12 +1088,12 @@ export default function TaskFormPage() {
                   data-testid="save-as-template"
                   onClick={openSaveAsTemplate}
                 >
-                  保存为模板
+                  {t('taskForm.saveAsTemplate')}
                 </Button>
               )}
               <Button type="primary" onClick={handleSubmit} loading={saving}
                 icon={<ThunderboltOutlined />}>
-                {isEdit ? '保存更改' : '创建任务'}
+                {isEdit ? t('taskForm.submit.saveChanges') : t('taskForm.submit.create')}
               </Button>
             </Space>
           </div>
@@ -1082,34 +1113,33 @@ export default function TaskFormPage() {
           白名单抽取（CreateTaskDto 子集，后端 forbidNonWhitelisted 校验），
           此处只填模板元信息（name/描述/分类）。 */}
       <Modal
-        title={<Space><SaveOutlined /> 保存为自定义模板</Space>}
+        title={<Space><SaveOutlined /> {t('taskForm.tpl.modalTitle')}</Space>}
         open={tplModalOpen}
         onCancel={() => setTplModalOpen(false)}
         onOk={handleSaveAsTemplate}
-        okText="保存模板"
+        okText={t('taskForm.tpl.save')}
         okButtonProps={{ loading: tplSaving, 'data-testid': 'tpl-save-confirm' } as never}
-        cancelText="取消"
+        cancelText={t('taskForm.tpl.cancel')}
         width={520}
         destroyOnHidden
       >
         <Form form={tplForm} layout="vertical">
           <Form.Item
             name="name"
-            label="模板名称"
-            rules={[{ required: true, whitespace: true, message: '请输入模板名称' }]}
+            label={t('taskForm.tpl.name')}
+            rules={[{ required: true, whitespace: true, message: t('taskForm.tpl.name.required') }]}
           >
-            <Input placeholder="如：每日报表生成" maxLength={128} data-testid="tpl-name-input" />
+            <Input placeholder={t('taskForm.tpl.name.placeholder')} maxLength={128} data-testid="tpl-name-input" />
           </Form.Item>
-          <Form.Item name="description" label="描述（可选）">
-            <Input.TextArea rows={2} placeholder="模板用途说明" maxLength={500} data-testid="tpl-desc-input" />
+          <Form.Item name="description" label={t('taskForm.tpl.description')}>
+            <Input.TextArea rows={2} placeholder={t('taskForm.tpl.description.placeholder')} maxLength={500} data-testid="tpl-desc-input" />
           </Form.Item>
-          <Form.Item name="category" label="分类（可选）">
-            <Input placeholder="如：备份 / 巡检 / 同步" maxLength={32} data-testid="tpl-category-input" />
+          <Form.Item name="category" label={t('taskForm.tpl.category')}>
+            <Input placeholder={t('taskForm.tpl.category.placeholder')} maxLength={32} data-testid="tpl-category-input" />
           </Form.Item>
         </Form>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          将以当前表单值保存模板配置（触发方式/运行时/超时/重试/参数等，不含关联应用）；
-          保存后可在「任务模板」页一键复用。
+          {t('taskForm.tpl.hint')}
         </Typography.Text>
       </Modal>
     </div>
