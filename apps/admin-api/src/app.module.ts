@@ -47,6 +47,8 @@ import { EventSubscriptionModule } from "./modules/event-subscriptions/event-sub
 import { ProjectsModule } from "./modules/project/projects.module";
 // AUTH-03: 限权 API Key（CI/CD 机器认证）——guard 分流消费 ApiKeysService。
 import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
+// ARCH-25: 任务 runtime 注册表（@Global 描述层，内置 python/node/shell）。
+import { RuntimeModule } from "./modules/runtime/runtime.module";
 
 @Module({
   imports: [
@@ -425,6 +427,7 @@ import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
     EventSubscriptionModule,
     ApiKeysModule,
     ProjectsModule,
+    RuntimeModule,
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally
