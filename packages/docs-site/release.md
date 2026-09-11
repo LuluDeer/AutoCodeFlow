@@ -40,6 +40,15 @@ git tag v1.1.1 && git push origin v1.1.1
 # 3) GitHub Actions → release.yml → version-guard → 人工 Approve → publish
 ```
 
+## tag 级联前提（2026-09-11 实测修正）
+
+release-please 打 tag 使用 `secrets.RELEASE_PLEASE_TOKEN || github.token`。GitHub
+抑制所有由 `GITHUB_TOKEN` 产生的事件（含 `on: push: tags`）以防递归，故**未配置
+`RELEASE_PLEASE_TOKEN` 时 tag 不会触发 release.yml**（实测：tag 已生成、Release
+流水线零 run）。因此需一次性配置仓库 secret `RELEASE_PLEASE_TOKEN`
+（fine-grained PAT：Contents read/write + Pull requests read/write）；未配置时的
+恢复路径是以人工凭据重推同名 tag（内容不变且尚未发布任何产物时安全）。
+
 ## 幂等与恢复
 
 - 版本号**一经发布即不可复用**：同版本重发 npm 必报 EP409、PyPI 必回

@@ -123,6 +123,16 @@ fail-closed 语义。能力对照如下：
    `python -m build` 结构校验），并经 GitHub
    `environment: release` 人工审批闸门。
 
+**tag 级联前提（2026-09-11 v1.1.1 实测修正）**：release-please 打 tag 使用
+`secrets.RELEASE_PLEASE_TOKEN || github.token`。GitHub 会抑制所有由 `GITHUB_TOKEN`
+产生的事件（含 `on: push: tags`）以防递归，因此**未配置 `RELEASE_PLEASE_TOKEN`
+时 tag 不会触发 release.yml**（实测：tag 已生成、Release 流水线零 run）。故：
+① 一次性配置仓库 secret `RELEASE_PLEASE_TOKEN`（fine-grained PAT：Contents
+read/write + Pull requests read/write）→ 此后 Release PR 合并即全自动发布；
+② 未配置时的恢复路径：以人工凭据重推同名 tag（内容不变、且**尚未发布任何产物**
+时安全）——`git push origin --delete vX.Y.Z` 后
+`git push origin <sha>:refs/tags/vX.Y.Z`。
+
 **幂等与恢复**：版本号一经发布即不可复用——同版本重发 npm 必报
 EP409、PyPI 必回 400（File already exists），发布链无覆盖逻辑。发布
 部分失败后的标准恢复路径是修复后 `gh run rerun <run-id> --failed`
