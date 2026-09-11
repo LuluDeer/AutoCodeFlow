@@ -18,8 +18,16 @@
  */
 import { toPriorityValue } from './priority';
 
-export function templateConfigFromFormValues(  values: Record<string, unknown>,
-  executor: { executeMode?: string | null; executorId?: string | null; executorGroup?: string | null; executorTags?: string[] | null } = {},
+export function templateConfigFromFormValues(
+  values: Record<string, unknown>,
+  executor: {
+    executeMode?: string | null;
+    executorId?: string | null;
+    executorGroup?: string | null;
+    executorTags?: string[] | null;
+    executorAffinityTags?: string[] | null;
+    executorAntiAffinityTags?: string[] | null;
+  } = {},
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const put = (key: string, value: unknown) => {
@@ -62,6 +70,15 @@ export function templateConfigFromFormValues(  values: Record<string, unknown>,
     put('executorGroup', executor.executorGroup);
     put('executorTags', executor.executorTags);
     if (Array.isArray(out.executorTags) && (out.executorTags as unknown[]).length === 0) delete out.executorTags;
+  }
+  // NF-04 亲和/反亲和是独立于执行器模式的调度约束，广播模式也需固化。
+  put('executorAffinityTags', executor.executorAffinityTags);
+  put('executorAntiAffinityTags', executor.executorAntiAffinityTags);
+  if (Array.isArray(out.executorAffinityTags) && (out.executorAffinityTags as unknown[]).length === 0) {
+    delete out.executorAffinityTags;
+  }
+  if (Array.isArray(out.executorAntiAffinityTags) && (out.executorAntiAffinityTags as unknown[]).length === 0) {
+    delete out.executorAntiAffinityTags;
   }
   put('runbook', values.runbook);
   if (typeof out.runbook === 'string' && out.runbook.length === 0) delete out.runbook;
