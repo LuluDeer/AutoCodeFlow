@@ -11,10 +11,15 @@ declare const window: Window & {
   };
 };
 
-function Toggle({ id, checked, onChange }: { id: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ id, label, checked, onChange }: {
+  id: string;
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <label className="toggle">
-      <input type="checkbox" id={id} checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <input type="checkbox" id={id} aria-label={label} checked={checked} onChange={(e) => onChange(e.target.checked)} />
       <div className="toggle-track"><div className="toggle-thumb" /></div>
     </label>
   );
@@ -79,7 +84,7 @@ export default function ConfigPage() {
   }
 
   if (!loaded) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#aeaeb2', fontSize: 13 }}>加载中...</div>
+    <div className="page-loading">加载中...</div>
   );
 
   const port = Number(form.executorPort || 8002);
@@ -122,7 +127,7 @@ export default function ConfigPage() {
                   <input className="input" placeholder="http://192.168.1.10:3001"
                     value={String(form.adminApiUrl || '')}
                     onChange={(e) => set('adminApiUrl', e.target.value)} />
-                  <button className="btn" onClick={test} disabled={testing} style={{ flexShrink: 0, minWidth: 84 }}>
+                  <button className="btn cfg-test-button" onClick={test} disabled={testing}>
                     {testing ? '测试中…' : '测试连接'}
                   </button>
                 </div>
@@ -173,11 +178,17 @@ export default function ConfigPage() {
                       const full = `${ip}:${port}`;
                       const sel = String(form.executorAddressPublic || '') === full;
                       return (
-                        <div key={ip} className={`ip-option${sel ? ' selected' : ''}`}
-                          onClick={() => set('executorAddressPublic', full)}>
+                        <button
+                          type="button"
+                          key={ip}
+                          className={`ip-option${sel ? ' selected' : ''}`}
+                          onClick={() => set('executorAddressPublic', full)}
+                          aria-pressed={sel}
+                          aria-label={`${full}${sel ? '，已选择' : '，使用此地址'}`}
+                        >
                           <span className="ip-addr">{full}</span>
                           <span className="ip-action">{sel ? '✓ 已选择' : '使用'}</span>
-                        </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -185,7 +196,7 @@ export default function ConfigPage() {
               )}
 
               <div className="info-banner">
-                <span style={{ fontSize: 15, flexShrink: 0 }}>💡</span>
+                <span className="info-banner-icon">💡</span>
                 <span>Admin 平台通过<strong>对外地址</strong>向本机推送任务。同局域网选上面的 IP 即可；跨网络或 NAT 环境需填外网 IP / 域名。</span>
               </div>
             </>
@@ -206,7 +217,7 @@ export default function ConfigPage() {
                 <span className="cfg-hint">在管理平台中显示的唯一名称，建议使用机器名或角色命名</span>
               </div>
 
-              <div className="cfg-field" style={{ maxWidth: 180 }}>
+              <div className="cfg-field cfg-field-narrow">
                 <label className="cfg-label">最大并发任务数</label>
                 <input className="input" type="number" min={1} max={100}
                   value={Number(form.maxConcurrentTasks || 10)}
@@ -219,7 +230,7 @@ export default function ConfigPage() {
                   <strong>启动时自动运行执行器</strong>
                   <span>打开桌面端后自动连接平台并开始接受任务</span>
                 </div>
-                <Toggle id="autoStart" checked={Boolean(form.autoStartExecutor)}
+                <Toggle id="autoStart" label="启动时自动运行执行器" checked={Boolean(form.autoStartExecutor)}
                   onChange={(v) => set('autoStartExecutor', v)} />
               </div>
 
@@ -229,10 +240,10 @@ export default function ConfigPage() {
                   <span>登录系统后自动在后台启动（即时生效，无需保存）</span>
                 </div>
                 {typeof window.electronAPI.getAutoLaunch === 'function' ? (
-                  <Toggle id="autoLaunch" checked={autoLaunch}
+                  <Toggle id="autoLaunch" label="开机自动启动桌面端" checked={autoLaunch}
                     onChange={(v) => void toggleAutoLaunch(v)} />
                 ) : (
-                  <span style={{ color: 'var(--text-3)', fontSize: 12 }}>当前版本不支持</span>
+                  <span className="unsupported-label">当前版本不支持</span>
                 )}
               </div>
 
@@ -241,7 +252,7 @@ export default function ConfigPage() {
                   <strong>系统通知</strong>
                   <span>任务完成 / 失败 / 执行器离线时弹出系统通知</span>
                 </div>
-                <Toggle id="notifyEnabled" checked={form.notifyEnabled !== false}
+                <Toggle id="notifyEnabled" label="系统通知" checked={form.notifyEnabled !== false}
                   onChange={(v) => set('notifyEnabled', v)} />
               </div>
             </>
