@@ -7,6 +7,9 @@
  * 色面：消费 theme/tokens CHART_COLORS 语义色（--chart-* 同源），双主题不破。
  */
 import { Line, LineChart, ResponsiveContainer, YAxis } from 'recharts';
+import { useTranslation } from 'react-i18next';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../../i18n';
 
 /** 迷你折线在 KPI 卡内的高度（px）——不参与响应式宽度 */
 export const SPARKLINE_HEIGHT = 36;
@@ -50,7 +53,7 @@ interface KpiSparklineProps {
   /** 是否有可绘制的数据（false → 渲染占位空态） */
   hasData: boolean;
   data: { day: string; value: number }[];
-  /** 空态占位文案（默认「暂无数据」） */
+  /** 空态占位文案（缺省走 i18n key kpiSpark.empty） */
   emptyText?: string;
 }
 
@@ -58,7 +61,8 @@ interface KpiSparklineProps {
  * KPI 卡内嵌迷你趋势线。jsdom/无布局环境下 ResponsiveContainer 拿不到宽度，
  * 以固定 height + width="99%" 兜底；测试经 mock ResponsiveContainer 注入尺寸。
  */
-export default function KpiSparkline({ color, hasData, data, emptyText = '暂无数据' }: KpiSparklineProps) {
+export default function KpiSparkline({ color, hasData, data, emptyText }: KpiSparklineProps) {
+  const { t } = useTranslation();
   if (!hasData || data.length === 0) {
     return (
       <div
@@ -73,7 +77,7 @@ export default function KpiSparkline({ color, hasData, data, emptyText = '暂无
           opacity: 0.7,
         }}
       >
-        {emptyText}
+        {emptyText ?? t('kpiSpark.empty')}
       </div>
     );
   }
