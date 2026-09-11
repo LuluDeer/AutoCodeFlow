@@ -237,12 +237,32 @@ YAML
         ( cd "$PRIV_TMP/pkg" && HOME="$PRIV_TMP/home" npm pack --silent --pack-destination "$PRIV_TMP" >/dev/null 2>&1 ) || true
         if HOME="$PRIV_TMP/home" npm publish "$PRIV_TMP/autoflow-e2e-private-dep-1.0.0.tgz" \
              --userconfig "$PRIV_RC" --registry "$PRIV_REGISTRY" --ignore-scripts >/dev/null 2>&1; then
+          # 源码 fixture：本地 bare 仓库（executor 用 git clone 拉取，无需起 git 服务）。
+          # 载体必须是「非 glue 任务」——admin-api DTO 明确 requirements 对 glue-script
+          # 任务无效，故以 gitRepo + 相对 entrypoint 承载（对齐 examples/private-registry-deps-node）。
+          PRIV_SRC="$PRIV_TMP/repo-src"
+          mkdir -p "$PRIV_SRC"
+          cat > "$PRIV_SRC/index.js" <<'JS'
+const dep = require('@autoflow/e2e-private-dep');
+console.log('PRIVATE_DEP_SOURCE=' + dep.source);
+JS
+          printf '{"name":"e2e-private-registry-fixture","version":"1.0.0"}\n' > "$PRIV_SRC/package.json"
+          (
+            cd "$PRIV_SRC"
+            git init -q
+            git -c user.email=e2e@example.invalid -c user.name=e2e add -A >/dev/null 2>&1
+            git -c user.email=e2e@example.invalid -c user.name=e2e commit -q -m fixture >/dev/null 2>&1
+          ) || true
+          git clone -q --bare "$PRIV_SRC" "$PRIV_TMP/repo.git" >/dev/null 2>&1 || true
+          if [[ -d "$PRIV_TMP/repo.git" ]]; then
+            export E2E_PRIVATE_DEP_REPO_URL="file://$PRIV_TMP/repo.git"
+          fi
           E2E_PRIVATE_REGISTRY_ENABLED=1
           export E2E_NPM_REGISTRY_URL="$PRIV_REGISTRY"
           export E2E_NPM_REGISTRY_TOKEN="$PRIV_TOKEN"
           export E2E_PRIVATE_DEP_NAME='@autoflow/e2e-private-dep'
           export E2E_PRIVATE_DEP_SPEC='@autoflow/e2e-private-dep@1.0.0'
-          echo "私服场景已启用：$PRIV_REGISTRY（fixture 已发布，executor 将以 NPM_REGISTRY_URL 指向它）"
+          echo "私服场景已启用：$PRIV_REGISTRY（fixture 已发布；git 源码 fixture=${E2E_PRIVATE_DEP_REPO_URL:-未就绪}）"
         else
           echo "⚠ 私服 fixture 发布失败，场景跳过（npm publish 退出码非 0）"
         fi
