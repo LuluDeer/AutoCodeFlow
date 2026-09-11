@@ -16,7 +16,7 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { DataSource } from "typeorm";
 import { EventSubscription } from "../entities/event-subscription.entity";
-import { EventSubscriptionDeadLetter } from "../entities/event-subscription-dead-letter.entity";
+import { EventOutboxDeadLetter } from "../entities/event-outbox-dead-letter.entity";
 import { EventOutbox } from "../entities/event-outbox.entity";
 import {
   OutboxDispatcher,
@@ -56,6 +56,17 @@ function makeRow(overrides: Partial<EventOutbox> = {}): EventOutbox {
 describe("FEAT-19 OutboxDispatcher", () => {
   const dataSourceMock = {
     query: jest.fn().mockResolvedValue([]),
+    /**
+     * 终态路径在事务内「先写死信、再条件 finalize」。mock 层无法回滚，
+     * 因此 manager 直接复用同两个 repo 桩，用例按「事务发生 + finalize 条件
+     * + 无二次回写」断言真实语义。
+     */
+    transaction: jest.fn(async (cb: (manager: unknown) => Promise<unknown>) =>
+      cb({
+        getRepository: (entity: unknown) =>
+          entity === EventOutbox ? outboxRepoMock : dlRepoMock,
+      }),
+    ),
   };
   const outboxRepoMock = {
     find: jest.fn().mockResolvedValue([]),
@@ -72,7 +83,12 @@ describe("FEAT-19 OutboxDispatcher", () => {
   };
   // deliverToSubscribers 的桩：默认成功；失败用例改 reject。
   const dispatcherMock = {
-    deliverToSubscribers: jest.fn().mockResolvedValue(undefined),
+    deliverToSubscribers: jest.fn().mockResolvedValue({
+      targetCount: 1,
+      deliveredCount: 1,
+      deadLetteredCount: 0,
+      deadLetterPersistenceFailures: 0,
+    }),
   };
   const configMock = {
     get: jest.fn((key: string) =>
@@ -86,6 +102,19 @@ describe("FEAT-19 OutboxDispatcher", () => {
     jest.clearAllMocks();
     dataSourceMock.query.mockReset();
     dataSourceMock.query.mockResolvedValue([]);
+    dataSourceMock.transaction.mockReset();
+    dataSourceMock.transaction.mockImplementation(async (work) =>
+      work({
+        getRepository: (entity: unknown) =>
+          entity === EventOutbox ? outboxRepoMock : dlRepoMock,
+      }),
+    );
+    dispatcherMock.deliverToSubscribers.mockResolvedValue({
+      targetCount: 1,
+      deliveredCount: 1,
+      deadLetteredCount: 0,
+      deadLetterPersistenceFailures: 0,
+    });
     const moduleRef = await Test.createTestingModule({
       providers: [
         OutboxDispatcher,
@@ -103,7 +132,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
           useValue: subRepoMock,
         },
         {
-          provide: getRepositoryToken(EventSubscriptionDeadLetter),
+          provide: getRepositoryToken(EventOutboxDeadLetter),
           useValue: dlRepoMock,
         },
       ],
@@ -282,7 +311,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
   });
 
   describe("死信阈值", () => {
-    it(`超过 ${MAX_OUTBOX_ATTEMPTS} 次：落 event_subscription_dead_letters + deadLettered 终态`, async () => {
+    it(`超过 ${MAX_OUTBOX_ATTEMPTS} 次：落 event_outbox_dead_letters + deadLettered 终态`, async () => {
       const row = makeRow({ attempts: MAX_OUTBOX_ATTEMPTS });
       dataSourceMock.query.mockResolvedValueOnce([row]);
       subRepoMock.find.mockResolvedValue([
@@ -294,9 +323,11 @@ describe("FEAT-19 OutboxDispatcher", () => {
       await outbox.scanOnce();
       expect(dlRepoMock.save).toHaveBeenCalledTimes(1);
       const dl = dlRepoMock.save.mock.calls[0][0];
+      expect(dl.outboxId).toBe(row.id);
       expect(dl.eventType).toBe("execution.failed");
       expect(dl.attempts).toBe(MAX_OUTBOX_ATTEMPTS + 1);
-      expect(dl.error).toContain("still down");
+      expect(dl.lastError).toContain("still down");
+      expect(dl.deadLetteredAt).toBeInstanceOf(Date);
       expect(outboxRepoMock.update).toHaveBeenCalledWith(
         expect.objectContaining({ id: row.id }),
         expect.objectContaining({ deadLettered: true, leaseToken: null }),
@@ -330,7 +361,32 @@ describe("FEAT-19 OutboxDispatcher", () => {
       );
     });
 
-    it("stale owner: finalize affected=0 时不写死信", async () => {
+    it("死信持久化失败：不标 dispatched，源行保持可重试", async () => {
+      const row = makeRow({ attempts: 0 });
+      dataSourceMock.query.mockResolvedValueOnce([row]);
+      subRepoMock.find.mockResolvedValue([
+        { id: "s1", eventTypes: ["execution.failed"] },
+      ]);
+      dispatcherMock.deliverToSubscribers.mockResolvedValueOnce({
+        targetCount: 1,
+        deliveredCount: 0,
+        deadLetteredCount: 1,
+        deadLetterPersistenceFailures: 1,
+      });
+      await outbox.scanOnce();
+      // 一旦回写 dispatchedAt，这条事件在订阅死信 API 里查不到 = 永久丢失。
+      expect(outboxRepoMock.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ id: row.id }),
+        expect.objectContaining({ dispatchedAt: expect.any(Date) }),
+      );
+      expect(outboxRepoMock.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: row.id }),
+        expect.objectContaining({ attempts: 1, leaseToken: null }),
+      );
+      expect(dlRepoMock.save).not.toHaveBeenCalled();
+    });
+
+    it("stale owner: finalize 未命中（affected≠1）时不把行置终态", async () => {
       const row = makeRow({
         attempts: MAX_OUTBOX_ATTEMPTS,
         leaseToken: "stale-token",
@@ -346,6 +402,10 @@ describe("FEAT-19 OutboxDispatcher", () => {
 
       await outbox.scanOnce();
 
+      // 死信写入与终态回写同处一个事务：finalize 未命中 → 事务回滚，
+      // 行保持可重试（mock 层以「事务发生 + finalize 条件带 stale-token +
+      // 无第二次回写」断言）。
+      expect(dataSourceMock.transaction).toHaveBeenCalledTimes(1);
       expect(outboxRepoMock.update).toHaveBeenCalledWith(
         expect.objectContaining({
           id: row.id,
@@ -353,10 +413,10 @@ describe("FEAT-19 OutboxDispatcher", () => {
         }),
         expect.objectContaining({ deadLettered: true }),
       );
-      expect(dlRepoMock.save).not.toHaveBeenCalled();
+      expect(outboxRepoMock.update).toHaveBeenCalledTimes(1);
     });
 
-    it("stale owner: finalize DB error 时不写死信", async () => {
+    it("stale owner: finalize 抛 DB 错误时行保持可重试（不静默吞事件）", async () => {
       const row = makeRow({
         attempts: MAX_OUTBOX_ATTEMPTS,
         leaseToken: "stale-token",
@@ -372,7 +432,13 @@ describe("FEAT-19 OutboxDispatcher", () => {
 
       await outbox.scanOnce();
 
-      expect(dlRepoMock.save).not.toHaveBeenCalled();
+      expect(dataSourceMock.transaction).toHaveBeenCalledTimes(1);
+      // 事务整体回滚 → 源行仍未派发、未终态，下轮扫描继续重试。
+      expect(outboxRepoMock.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ id: row.id }),
+        expect.objectContaining({ dispatchedAt: expect.any(Date) }),
+      );
+      expect(outboxRepoMock.update).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -402,7 +468,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
             useValue: subRepoMock,
           },
           {
-            provide: getRepositoryToken(EventSubscriptionDeadLetter),
+            provide: getRepositoryToken(EventOutboxDeadLetter),
             useValue: dlRepoMock,
           },
         ],
