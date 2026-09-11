@@ -9,6 +9,7 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip as RechartTooltip, Legend, ResponsiveContainer,
@@ -34,23 +35,27 @@ import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
 import DashboardEmptyGuide from '../components/dashboard/DashboardEmptyGuide';
 import { useMetricsStream, type MetricsStreamStatus } from '../hooks/useMetricsStream';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 
 const { Text } = Typography;
 
-/** UI-14: SSE 连接状态点——Badge 颜色/文案随连接态切换（导出供测试锚定） */
-export function streamStatusBadge(status: MetricsStreamStatus): { color: string; label: string } {
+/** UI-14: SSE 连接状态点——Badge 颜色/文案随连接态切换（导出供测试锚定；
+ *  UI-10：label 从 i18n key 取，由调用侧 t() 渲染） */
+export function streamStatusBadge(status: MetricsStreamStatus): { color: string; labelKey: string } {
   switch (status) {
     case 'live':
-      return { color: '#22c55e', label: '实时' };
+      return { color: '#22c55e', labelKey: 'dashboard.stream.live' };
     case 'reconnecting':
-      return { color: '#f59e0b', label: '重连中' };
+      return { color: '#f59e0b', labelKey: 'dashboard.stream.reconnecting' };
     default:
-      return { color: '#94a3b8', label: '连接中' };
+      return { color: '#94a3b8', labelKey: 'dashboard.stream.connecting' };
   }
 }
 
 export default function DashboardPage() {
   const nav = useNavigate();
+  const { t } = useTranslation();
   const [trendDays, setTrendDays] = useState<number>(7);
   // UI-02：图表双主题——网格线/轴文字随 data-theme 切换
   const isDark = useThemeStore(selectResolvedTheme) === 'dark';
@@ -120,15 +125,15 @@ export default function DashboardPage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，调度器健康 Tag/刷新进 extra） */}
       <PageHeader
-        title="控制台"
-        description="系统运行总览，每 30 秒自动刷新"
+        title={t('dashboard.title')}
+        description={t('dashboard.description')}
         extra={
           <>
             {/* UI-14: 汇总流连接状态点 */}
-            <Tooltip title={`汇总推送流（/metrics/stream）：${streamStatusBadge(streamStatus).label}`}>
+            <Tooltip title={t('dashboard.stream.tooltip', { status: t(streamStatusBadge(streamStatus).labelKey) })}>
               <Badge
                 color={streamStatusBadge(streamStatus).color}
-                text={<Text type="secondary" style={{ fontSize: 12 }}>{streamStatusBadge(streamStatus).label}</Text>}
+                text={<Text type="secondary" style={{ fontSize: 12 }}>{t(streamStatusBadge(streamStatus).labelKey)}</Text>}
                 data-testid="metrics-stream-status"
               />
             </Tooltip>
@@ -137,10 +142,10 @@ export default function DashboardPage() {
                 icon={schedulerStats.healthy ? <CheckCircleOutlined /> : <WarningOutlined />}
                 color={schedulerStats.healthy ? 'success' : 'warning'}
               >
-                调度器 {schedulerStats.healthy ? '健康' : '异常'} · {schedulerStats.totalScheduledTasks} 任务
+                {t('dashboard.scheduler', { state: t(schedulerStats.healthy ? 'dashboard.scheduler.healthy' : 'dashboard.scheduler.unhealthy'), count: schedulerStats.totalScheduledTasks })}
               </Tag>
             )}
-            <Button icon={<ReloadOutlined />} size="small" onClick={() => void refetchSummary()}>刷新</Button>
+            <Button icon={<ReloadOutlined />} size="small" onClick={() => void refetchSummary()}>{t('dashboard.refresh')}</Button>
           </>
         }
       />
@@ -150,7 +155,7 @@ export default function DashboardPage() {
       {dashboardError && (
         <StateError
           error={dashboardError}
-          title="控制台数据加载失败"
+          title={t('dashboard.error.title')}
           onRetry={() => {
             void refetchSummary();
             void refetchTrend();
@@ -176,7 +181,7 @@ export default function DashboardPage() {
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>任务总数</Text>}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.tasks')}</Text>}
                 value={s?.totalTasks ?? '-'}
                 prefix={<RocketOutlined style={{ color: CHART_COLORS.cpu }} />}
                 styles={{ content: { color: CHART_COLORS.cpu, fontSize: 28 } }}
@@ -188,7 +193,7 @@ export default function DashboardPage() {
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>今日执行</Text>}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.todayRuns')}</Text>}
                 value={s?.todayRuns ?? totalExec}
                 prefix={<ThunderboltOutlined style={{ color: CHART_COLORS.success }} />}
                 styles={{ content: { color: CHART_COLORS.success, fontSize: 28 } }}
@@ -201,7 +206,7 @@ export default function DashboardPage() {
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>运行中</Text>}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.running')}</Text>}
                 value={runningCount}
                 prefix={<ClockCircleOutlined style={{ color: CHART_COLORS.concurrent }} />}
                 styles={{ content: { color: runningCount > 0 ? CHART_COLORS.concurrent : 'var(--chart-axis-text)', fontSize: 28 } }}
@@ -218,7 +223,7 @@ export default function DashboardPage() {
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
                 className="ui09-kpi-stat"
-                title={<Text style={{ fontSize: 13 }}>在线执行器</Text>}
+                title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.onlineExecutors')}</Text>}
                 value={`${s?.onlineExecutors ?? '-'} / ${s?.totalExecutors ?? '-'}`}
                 prefix={<ApiOutlined style={{ color: CHART_COLORS.memory }} />}
                 styles={{ content: { color: CHART_COLORS.memory, fontSize: 28 } }}
@@ -233,7 +238,7 @@ export default function DashboardPage() {
         <Col xs={24} sm={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>执行成功率</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.successRate')}</Text>}
             style={{ borderRadius: 10 }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -247,11 +252,11 @@ export default function DashboardPage() {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                   <CheckCircleOutlined style={{ color: CHART_COLORS.success }} />
-                  <Text>成功 {s?.executions?.success ?? 0}</Text>
+                  <Text>{t('dashboard.success', { count: s?.executions?.success ?? 0 })}</Text>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <CloseCircleOutlined style={{ color: CHART_COLORS.failed }} />
-                  <Text>失败 {s?.executions?.failed ?? 0}</Text>
+                  <Text>{t('dashboard.failed', { count: s?.executions?.failed ?? 0 })}</Text>
                 </div>
               </div>
             </div>
@@ -262,7 +267,7 @@ export default function DashboardPage() {
         <Col xs={24} sm={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>平均执行时长</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.avgDuration')}</Text>}
             style={{ borderRadius: 10 }}
           >
             <div style={{ textAlign: 'center', paddingTop: 8 }}>
@@ -270,7 +275,7 @@ export default function DashboardPage() {
                 {formatDuration(s?.avgDurationMs)}
               </Text>
               <div style={{ marginTop: 8 }}>
-                <Text type="secondary" style={{ fontSize: 12 }}>基于近期全部执行记录</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>{t('dashboard.avgHint')}</Text>
               </div>
             </div>
           </Card>
@@ -280,7 +285,7 @@ export default function DashboardPage() {
       {/* 趋势图 */}
       <Card
         size="small" variant="borderless"
-        title={<Text strong style={{ fontSize: 14 }}>执行趋势</Text>}
+        title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.trend')}</Text>}
         style={{ borderRadius: 10 }}
         extra={
           <Segmented
@@ -288,9 +293,9 @@ export default function DashboardPage() {
             value={trendDays}
             onChange={v => setTrendDays(Number(v))}
             options={[
-              { label: '7天', value: 7 },
-              { label: '14天', value: 14 },
-              { label: '30天', value: 30 },
+              { label: t('dashboard.trend.7d'), value: 7 },
+              { label: t('dashboard.trend.14d'), value: 14 },
+              { label: t('dashboard.trend.30d'), value: 30 },
             ]}
           />
         }
@@ -316,7 +321,8 @@ export default function DashboardPage() {
               <XAxis dataKey="date" tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
               <YAxis tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} allowDecimals={false} />
               <RechartTooltip />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
+              {/* UI-10：Legend 标签经 formatter 走 i18n（dataKey 保持稳定中文键以匹配数据） */}
+              <Legend formatter={(value: string) => (value === '成功' ? t('dashboard.trend.success') : t('dashboard.trend.failed'))} wrapperStyle={{ fontSize: 12 }} />
               <Area type="monotone" dataKey="成功" stroke={CHART_COLORS.success} fill="url(#gradSuccess)" strokeWidth={2} />
               <Area type="monotone" dataKey="失败" stroke={CHART_COLORS.failed} fill="url(#gradFailed)" strokeWidth={2} />
             </AreaChart>
@@ -329,9 +335,9 @@ export default function DashboardPage() {
         <Col xs={24} lg={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>执行器资源</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.executors')}</Text>}
             style={{ borderRadius: 10 }}
-            extra={<a onClick={() => nav('/executors')} style={{ fontSize: 12 }}>全部</a>}
+            extra={<a onClick={() => nav('/executors')} style={{ fontSize: 12 }}>{t('dashboard.executors.all')}</a>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
             {execLoading && !executorStats ? (
@@ -344,7 +350,7 @@ export default function DashboardPage() {
         <Col xs={24} lg={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>调度延迟</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.schedulerLatency')}</Text>}
             style={{ borderRadius: 10 }}
           >
             <SchedulerLatencyCard metrics={schedMetrics} />
@@ -357,9 +363,9 @@ export default function DashboardPage() {
         <Col xs={24} lg={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>失败 Top 任务</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.failureTop')}</Text>}
             style={{ borderRadius: 10 }}
-            extra={<a onClick={() => nav('/executions?status=failed')} style={{ fontSize: 12 }}>全部失败</a>}
+            extra={<a onClick={() => nav('/executions?status=failed')} style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</a>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
             {failLoading && !failures ? (
@@ -372,9 +378,9 @@ export default function DashboardPage() {
         <Col xs={24} lg={12}>
           <Card
             size="small" variant="borderless"
-            title={<Text strong style={{ fontSize: 14 }}>最近失败</Text>}
+            title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.recentFailures')}</Text>}
             style={{ borderRadius: 10 }}
-            extra={<a onClick={() => nav('/executions')} style={{ fontSize: 12 }}>全部记录</a>}
+            extra={<a onClick={() => nav('/executions')} style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</a>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
             {failLoading && !failures ? (
@@ -385,7 +391,7 @@ export default function DashboardPage() {
                 <div style={{ textAlign: 'center', padding: '24px 0' }}>
                   <CheckCircleOutlined style={{ fontSize: 28, color: CHART_COLORS.success }} />
                   <div style={{ marginTop: 8 }}>
-                    <Text type="secondary">近期无失败记录</Text>
+                    <Text type="secondary">{t('dashboard.noFailures')}</Text>
                   </div>
                 </div>
               ) : (
@@ -411,7 +417,7 @@ export default function DashboardPage() {
                                 type="secondary"
                                 style={{ fontSize: 11, display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }}
                               >
-                                {f.errorMessage || '未知错误'}
+                                {f.errorMessage || t('dashboard.unknownError')}
                               </Text>
                             </Tooltip>
                             {/* U6: 消费后端 failureReason + exitCode */}
