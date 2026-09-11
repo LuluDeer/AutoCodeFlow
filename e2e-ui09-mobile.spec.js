@@ -53,6 +53,41 @@ async function firstExecutionId(request) {
   return null;
 }
 
+/** 库中无执行时，API 造一条最小 glue 任务并触发，轮询到终态后返回执行 id */
+async function seedExecution(request) {
+  const loginResp = await request.post(`${API}/api/auth/login`, { data: { username: USER, password: PASS } });
+  const token = (await loginResp.json()).data?.accessToken;
+  if (!token) return null;
+  const createResp = await request.post(`${API}/api/tasks`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: {
+      name: `ui09-mobile-exec-seed-${Date.now()}`,
+      triggerType: 'manual',
+      runtime: 'node',
+      entrypoint: 'index.js',
+      glueLanguage: 'javascript',
+      glueSource: "console.log('ui09 mobile walkthrough');",
+    },
+  });
+  const task = (await createResp.json()).data;
+  if (!task?.id) return null;
+  const triggerResp = await request.post(`${API}/api/tasks/${task.id}/trigger`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: {},
+  });
+  if (!triggerResp.ok()) return null;
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const r = await request.get(`${API}/api/tasks/${task.id}/executions?page=1&pageSize=5`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const item = (await r.json()).data?.items?.[0];
+    if (item?.id && ['success', 'failed', 'timeout', 'killed', 'cancelled'].includes(item.status)) return item.id;
+    await new Promise((res) => setTimeout(res, 1000));
+  }
+  return null;
+}
+
 test.describe('UI-09 移动端真机走查（375×812）', () => {
   test('45. Dashboard 在 375px 无横向溢出且 KPI 区可见', async ({ page }) => {
     await login(page);
@@ -64,8 +99,12 @@ test.describe('UI-09 移动端真机走查（375×812）', () => {
   });
 
   test('46. 执行详情在 375px 无横向溢出', async ({ page, request }) => {
-    const id = await firstExecutionId(request);
-    test.skip(!id, '库中暂无执行记录，跳过执行详情走查');
+    let id = await firstExecutionId(request);
+    if (!id) {
+      id = await seedExecution(request);
+      console.log(id ? `  · 库无执行，API seed 得 execution ${id}` : '  · seed 失败');
+    }
+    test.skip(!id, '通过 API seed 执行失败（任务创建/触发/终态任一步未就绪），跳过执行详情走查');
     await login(page);
     await page.goto(`${BASE}/executions/${id}`);
     await page.waitForTimeout(1500);
