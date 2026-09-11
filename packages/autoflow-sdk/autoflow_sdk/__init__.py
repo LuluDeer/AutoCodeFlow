@@ -6,7 +6,7 @@ from .callback import CallbackClient, CallbackDisabledError
 from .result import TaskResult
 from .models import ExecuteRequest, ExecuteResult, TaskConfig
 
-__version__ = "1.1.0"
+__version__ = "1.1.0"  # x-release-please-version
 __all__ = [
     "TaskContext", "get_logger", "HttpClient", "AsyncHttpClient", "HttpClientError",
     "TaskResult",

@@ -27,7 +27,7 @@ import {
 // ---------------------------------------------------------------------------
 const server = new McpServer({
   name: "autocodeflow",
-  version: "1.1.0",
+  version: "1.1.0", // x-release-please-version
 });
 
 registerTaskTools(server, apiRequest);
@@ -41,7 +41,7 @@ registerAuditTools(server, apiRequest);
 // CLI — argument handling for the bin entry (autocodeflow-mcp)
 // ---------------------------------------------------------------------------
 /** Server version, kept in sync with package.json (asserted by cli.test.ts). */
-export const VERSION = "1.1.0";
+export const VERSION = "1.1.0"; // x-release-please-version
 
 export interface CliDecision {
   /** 'run' starts the stdio MCP server; 'exit' prints `output` and exits. */
