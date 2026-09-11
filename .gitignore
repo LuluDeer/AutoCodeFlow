@@ -29,6 +29,7 @@ venv/
 # 编辑器和IDE
 .idea/
 .vscode/
+.codebuddy/
 *.swp
 *.swo
 .DS_Store
