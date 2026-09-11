@@ -35,6 +35,7 @@ jest.mock('../admin-client', () => ({
 }));
 
 import { updatePackageRouter } from './update-package';
+import * as downloadLib from '../lib/download';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 const mockCp = childProcess as jest.Mocked<typeof childProcess>;
@@ -90,6 +91,16 @@ async function waitForUpdateToSettle(app: express.Express): Promise<void> {
   }
   const res = await request(app).get('/api/update-package/status');
   expect(res.body.inProgress).toBe(false);
+}
+
+async function closeServer(server: http.Server): Promise<void> {
+  server.closeAllConnections?.();
+  await new Promise<void>((resolve, reject) =>
+    server.close((err) => {
+      if (err && (err as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') reject(err);
+      else resolve();
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -176,23 +187,37 @@ describe('POST /api/update-package — payload validation', () => {
   });
 
   it('accepts http: scheme in downloadUrl', async () => {
-    // Route accepts the URL; async download will start but is mocked out.
-    // We only care the status is not 400 at the validation stage.
-    const res = await request(app)
-      .post('/api/update-package')
-      .send({ packageId: 'pkg-002', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '2.0.0', checksum: 'b'.repeat(64) });
-    expect(res.status).toBe(200);
-    expect(res.body.accepted).toBe(true);
-    await waitForUpdateToSettle(app);
+    const downloadSpy = jest.spyOn(downloadLib, 'downloadFile').mockRejectedValue(
+      new Error('mocked download failure'),
+    );
+    try {
+      // Route accepts the URL; async download will start but is mocked out.
+      // We only care the status is not 400 at the validation stage.
+      const res = await request(app)
+        .post('/api/update-package')
+        .send({ packageId: 'pkg-002', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '2.0.0', checksum: 'b'.repeat(64) });
+      expect(res.status).toBe(200);
+      expect(res.body.accepted).toBe(true);
+      await waitForUpdateToSettle(app);
+    } finally {
+      downloadSpy.mockRestore();
+    }
   });
 
   it('accepts https: scheme in downloadUrl', async () => {
-    const res = await request(app)
-      .post('/api/update-package')
-      .send({ packageId: 'pkg-003', downloadUrl: 'https://127.0.0.1:1/pkg.zip', version: '3.0.0', checksum: 'c'.repeat(64) });
-    expect(res.status).toBe(200);
-    expect(res.body.accepted).toBe(true);
-    await waitForUpdateToSettle(app);
+    const downloadSpy = jest.spyOn(downloadLib, 'downloadFile').mockRejectedValue(
+      new Error('mocked download failure'),
+    );
+    try {
+      const res = await request(app)
+        .post('/api/update-package')
+        .send({ packageId: 'pkg-003', downloadUrl: 'https://127.0.0.1:1/pkg.zip', version: '3.0.0', checksum: 'c'.repeat(64) });
+      expect(res.status).toBe(200);
+      expect(res.body.accepted).toBe(true);
+      await waitForUpdateToSettle(app);
+    } finally {
+      downloadSpy.mockRestore();
+    }
   });
 });
 
@@ -324,7 +349,7 @@ describe('POST /api/update-package — download behaviour', () => {
       expect(actualFs.existsSync(path.join(tmpDir, '.pkg-updates', 'pkg-download-test.zip'))).toBe(true);
     } finally {
       spyCwd.mockRestore();
-      server.close();
+      await closeServer(server);
       actualFs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 20_000);
@@ -366,7 +391,7 @@ describe('POST /api/update-package — download behaviour', () => {
       expect(retry.status).not.toBe(409);
     } finally {
       spyCwd.mockRestore();
-      server.close();
+      await closeServer(server);
       actualFs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 20_000);

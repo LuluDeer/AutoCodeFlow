@@ -33,6 +33,7 @@ import {
   shouldReportProcessExit,
   suppressNextRestartExitReport,
 } from './deploy';
+import * as downloadLib from '../lib/download';
 import { buildChildEnv } from '../env-whitelist';
 
 const app = express();
@@ -41,6 +42,28 @@ app.use('/api', deployRouter);
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 const mockCp = childProcess as jest.Mocked<typeof childProcess>;
+
+async function closeServer(server: http.Server): Promise<void> {
+  server.closeAllConnections?.();
+  await new Promise<void>((resolve, reject) =>
+    server.close((err) => {
+      if (err && (err as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') reject(err);
+      else resolve();
+    }),
+  );
+}
+
+async function waitForDeploymentStatus(post: jest.Mock, status: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (post.mock.calls.some((call: unknown[]) =>
+      call[0] === '/api/app-deployments/heartbeat' && (call[1] as any).status === status,
+    )) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  expect(post.mock.calls.some((call: unknown[]) =>
+    call[0] === '/api/app-deployments/heartbeat' && (call[1] as any).status === status,
+  )).toBe(true);
+}
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -94,16 +117,25 @@ describe('POST /api/deploy validation', () => {
   });
 
   it('accepts safe ids with an http package URL', async () => {
-    const res = await request(app)
-      .post('/api/deploy')
-      .send({
-        ...basePayload,
-        gitRepo: null,
-        packageUrl: 'http://127.0.0.1:1/app.zip',
-      });
+    const { post } = require('../admin-client') as { post: jest.Mock };
+    const downloadSpy = jest.spyOn(downloadLib, 'downloadFile').mockRejectedValue(
+      new Error('mocked package download failure'),
+    );
+    try {
+      const res = await request(app)
+        .post('/api/deploy')
+        .send({
+          ...basePayload,
+          gitRepo: null,
+          packageUrl: 'http://127.0.0.1:1/app.zip',
+        });
 
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true, deploymentId: 'deploy-1' });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, deploymentId: 'deploy-1' });
+      await waitForDeploymentStatus(post, 'failed');
+    } finally {
+      downloadSpy.mockRestore();
+    }
   });
 });
 
@@ -235,8 +267,8 @@ describe('downloadPackage authentication', () => {
       expect(authHeaders).toEqual(['Bearer test-shared-token', undefined]);
       expect(actualFs.readFileSync(dest, 'utf8')).toBe('payload');
     } finally {
-      serverA.close();
-      serverB.close();
+      await closeServer(serverA);
+      await closeServer(serverB);
       try {
         actualFs.unlinkSync(dest);
       } catch {
@@ -265,7 +297,7 @@ describe('downloadPackage authentication', () => {
       expect(seenAuth).toBeUndefined();
     } finally {
       config.token = saved;
-      server.close();
+      await closeServer(server);
       try {
         actualFs.unlinkSync(dest);
       } catch {

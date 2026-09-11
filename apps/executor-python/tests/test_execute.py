@@ -8,6 +8,7 @@ output accumulation (P1), git cache salt (P2), callback retry/truncation,
 background-task references, uv hardening and P3 validators.
 """
 import asyncio
+import os
 import re
 import subprocess
 import sys
@@ -1017,6 +1018,130 @@ def test_execute_registers_background_task_reference(monkeypatch, auth_client):
     assert created
     assert execute_module._background_tasks, 'background task must be strongly referenced'
     execute_module._background_tasks.clear()
+
+
+# ---------------------------------------------------------------------------
+# BUG-18: dependency subprocess environment isolation
+# ---------------------------------------------------------------------------
+
+
+def test_build_install_env_is_minimal_and_preserves_runtime_paths(monkeypatch, tmp_path):
+    from routers import execute as execute_module
+
+    monkeypatch.setenv('PATH', '/runtime/bin')
+    monkeypatch.setenv('HOME', '/runtime/home')
+    monkeypatch.setenv('TMPDIR', '/runtime/tmp')
+    monkeypatch.setenv('EXECUTOR_SHARED_TOKEN', 'shared-sentinel')
+    monkeypatch.setenv('EXECUTOR_SECRET', 'executor-sentinel')
+    monkeypatch.setenv('NPM_REGISTRY_TOKEN', 'npm-sentinel')
+    monkeypatch.setenv('PIP_INDEX_URL', 'https://evil.example/simple')
+    monkeypatch.setenv('UV_INDEX', 'https://evil.example/simple')
+    monkeypatch.setenv('UV_CONFIG_FILE', '/tmp/host-uv.toml')
+    monkeypatch.setenv('PYPI_REGISTRY_URL', 'https://user:super-secret@evil.example/simple/')
+
+    env = execute_module._build_install_env(tmp_path / 'uv-cache')
+
+    assert env['PATH'] == '/runtime/bin'
+    assert env['HOME'] == '/runtime/home'
+    assert env['TMPDIR'] == '/runtime/tmp'
+    for secret in (
+        'EXECUTOR_SHARED_TOKEN', 'EXECUTOR_SECRET', 'NPM_REGISTRY_TOKEN',
+        'PIP_INDEX_URL', 'UV_INDEX', 'UV_CONFIG_FILE', 'PYPI_REGISTRY_URL',
+    ):
+        assert secret not in env
+    assert env['UV_CACHE_DIR'] == str(tmp_path / 'uv-cache')
+    assert env['UV_NO_CONFIG'] == '1'
+    assert env['PIP_CONFIG_FILE'] == os.devnull
+
+
+@pytest.mark.parametrize('registry_url', [
+    'https://user:password@registry.example/simple/',
+    'https://registry.example/simple/?token=secret',
+    'https://registry.example/simple/#secret',
+])
+def test_registry_url_rejects_credentials_query_and_fragment(registry_url):
+    from routers.execute import _validate_registry_url
+
+    with pytest.raises(RuntimeError, match='userinfo, query, or fragment'):
+        _validate_registry_url(registry_url)
+
+
+def test_registry_url_allows_safe_explicit_index():
+    from routers.execute import _validate_registry_url
+
+    assert _validate_registry_url('https://registry.example/simple/') == 'https://registry.example/simple/'
+    assert _validate_registry_url('http://registry-pypi:8003/simple/') == 'http://registry-pypi:8003/simple/'
+    assert _validate_registry_url('') == ''
+
+
+def test_registry_url_rejection_happens_before_uv_argv_or_logs(monkeypatch, tmp_path):
+    from routers import execute as execute_module
+
+    secret_url = 'https://user:super-secret@registry.example/simple/'
+    monkeypatch.setattr(execute_module.settings, 'pypi_registry_url', secret_url)
+    spawned = []
+
+    async def fake_exec(*args, **kwargs):
+        spawned.append(args)
+        raise AssertionError('uv must not spawn for credential-bearing registry URL')
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(execute_module.ensure_venv(tmp_path / '.venvs' / 'task-env', ['requests>=2']))
+    assert spawned == []
+    assert secret_url not in str(exc.value)
+
+
+def test_settings_registry_validation_does_not_echo_secret():
+    from config import Settings
+
+    secret_url = 'https://registry.example/simple/?token=super-secret'
+    with pytest.raises(ValueError) as exc:
+        Settings(_env_file=None, pypi_registry_url=secret_url)
+    assert 'super-secret' not in str(exc.value)
+
+
+def test_ensure_venv_passes_isolated_env_and_explicit_registry(monkeypatch, tmp_path):
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'pypi_registry_url', 'https://registry.example/simple/')
+    monkeypatch.setenv('EXECUTOR_SHARED_TOKEN', 'shared-sentinel')
+    monkeypatch.setenv('PIP_INDEX_URL', 'https://host.example/simple/')
+    calls = []
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b'', b''
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+    venv_dir = tmp_path / '.venvs' / 'task-env'
+    asyncio.run(execute_module.ensure_venv(venv_dir, ['requests>=2']))
+
+    assert len(calls) == 2
+    venv_args, venv_kwargs = calls[0]
+    pip_args, pip_kwargs = calls[1]
+    assert list(venv_args)[1:3] == ['venv', '--no-project']
+    assert '--index-url' in pip_args
+    assert pip_args[pip_args.index('--index-url') + 1] == 'https://registry.example/simple/'
+    for kwargs in (venv_kwargs, pip_kwargs):
+        env = kwargs['env']
+        assert env['PATH']
+        assert env['UV_NO_CONFIG'] == '1'
+        assert env['PIP_CONFIG_FILE'] == os.devnull
+        assert env.get('EXECUTOR_SHARED_TOKEN') is None
+        assert env.get('PIP_INDEX_URL') is None
 
 
 # ---------------------------------------------------------------------------
