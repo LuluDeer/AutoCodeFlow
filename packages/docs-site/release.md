@@ -3,15 +3,15 @@
 > 重组自 [docs/sdk-guide.md「版本与发布流程」](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/sdk-guide.md)
 > 与双 SDK README「版本与发布」节。
 
-## 版本矩阵（当前 1.1.0）
+## 版本矩阵（当前 1.1.1）
 
 三包走 **lockstep 单版本线**（版本号一致、同批发布）：
 
 | 包 | 注册表 | 当前版本 | 版本元数据单一来源 |
 |----|--------|---------|-------------------|
-| `@autocodeflow/sdk` | npm（scoped 公开包） | **1.1.0** | `packages/autocodeflow-node-sdk/package.json` |
-| `autoflow-sdk` | PyPI | **1.1.0** | `packages/autoflow-sdk/pyproject.toml`（+ `autoflow_sdk.__version__`） |
-| `autocodeflow-mcp-server` | npm | **1.1.0** | `packages/mcp-server/package.json` |
+| `@autocodeflow/sdk` | npm（scoped 公开包） | **1.1.1** | `packages/autocodeflow-node-sdk/package.json` |
+| `autoflow-sdk` | PyPI | **1.1.1** | `packages/autoflow-sdk/pyproject.toml`（+ `autoflow_sdk.__version__`） |
+| `autocodeflow-mcp-server` | npm | **1.1.1** | `packages/mcp-server/package.json` |
 
 > `acf-cli` 暂不发布：npm 上 `acf-cli` 名称已被第三方占用，需先改名
 > （如 `@autocodeflow/cli`——勿用 `@autoflow/*`，该 org 已被抢注）再加入
@@ -36,7 +36,7 @@
 ```bash
 # 1) 三包 version 同批 bump（package.json ×2 + pyproject.toml + __init__.py）
 # 2) 提交后打 tag
-git tag v1.1.0 && git push origin v1.1.0
+git tag v1.1.1 && git push origin v1.1.1
 # 3) GitHub Actions → release.yml → version-guard → 人工 Approve → publish
 ```
 
