@@ -1434,6 +1434,51 @@ test.describe('security-redline-approval', () => {
     await expectRedline(inbox, 403, '审批面 pending-inbox（GET）');
     console.log('  ✓ 审批面 pending-inbox（GET）→ 403');
   });
+
+  // ── P0-2：第二人 approve 成功 → 部署真实派发（攻击面之外的正向闭环）────────
+  // 现有 30~35 全部是失败/控制路径（403/409/401/冻结），本条补「第二人批准→
+  // 零派发冻结解除→部署行进入 deploy 链」的正向锚。断言不追求 executor 拉到
+  // 真实 git 源跑到 RUNNING（那需本地 git fixture + 写面放行，属部署轮），
+  // 而是钉死「approvalRequired 应用 deploy 零派发 / approve 后行离开 pending
+  // 且方向为部署」。
+  test('36. 第二人 approve — 批准后部署真实离开 pending 进入 push 链（正向闭环）', async ({ request }) => {
+    const appId = await createApprovalApp(request);
+    const dep = await createPendingDeployment(request, appId);
+    // 冻结期零派发：行 status 保持 pending（提交时已选定执行器但未推部署——
+    // 「零派发」语义是未触发 deploy 链，不是无执行器地址）
+    const frozen = await (await request.get(`${API}/api/app-deployments/${dep.id}`, {
+      headers: { Authorization: `Bearer ${adminTok}` },
+    })).json();
+    expect(frozen.data?.status).toBe('pending');
+    expect(frozen.data?.approvalStatus).toBe('pending_approval');
+
+    // 第二人（B）批准 → 201 + approved
+    const r = await request.post(`${API}/api/app-deployments/${dep.id}/approval/approve`, {
+      headers: { Authorization: `Bearer ${adminBTok}` },
+      data: { reason: 'e2e P0-2：第二人批准放行' },
+    });
+    expect(r.status(), `B approve 应 201: ${(await r.text()).slice(0, 200)}`).toBe(201);
+    const approved = (await r.json())?.data;
+    expect(approved.approvalStatus).toBe('approved');
+    expect(approved.approvalMeta?.actedByName, '审批痕迹应记第二人').toBe(ADMIN_B);
+
+    // approve 是 fire-and-forget 推 executor；轮询至行离开 pending（进入
+    // deploying/running/failed 任一，都证明冻结解除 + 部署链真实触发）
+    let pushed = null;
+    for (let i = 0; i < 30; i += 1) {
+      const cur = await (await request.get(`${API}/api/app-deployments/${dep.id}`, {
+        headers: { Authorization: `Bearer ${adminTok}` },
+      })).json();
+      const s = cur.data?.status;
+      if (s && s !== 'pending') {
+        pushed = cur.data;
+        break;
+      }
+      await new Promise((res) => setTimeout(res, 1000));
+    }
+    expect(pushed, 'approve 后部署行应在 30s 内离开 pending（真实派发）').toBeTruthy();
+    console.log(`  ✓ 第二人 approve → ${pushed.status}（approvalStatus=approved，部署脱离冻结）`);
+  });
 });
 
 // ── P0-1 红线②：RBAC 全端点（W2 @Roles(ADMIN) 收口）─────────────────────────
