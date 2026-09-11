@@ -18,6 +18,9 @@ import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
 import PageSkeleton from '../components/PageSkeleton';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 
 const { Text } = Typography;
 
@@ -64,6 +67,7 @@ function trendTooltipLabel(iso: string): string {
 }
 
 export default function ExecutorDetailPage() {
+  const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   // W2 对齐：管理写操作（编辑/配置热更新/设置离线/轮换 Token）后端已收紧
@@ -100,12 +104,12 @@ export default function ExecutorDetailPage() {
 
   const { run: updateExecutor, loading: updating } = useRequest(
     (values) => executorsApi.update(id!, values),
-    { manual: true, onSuccess: () => { message.success('更新成功'); setEditOpen(false); refreshExecutor(); } },
+    { manual: true, onSuccess: () => { message.success(t('executorDetail.updateSuccess')); setEditOpen(false); refreshExecutor(); } },
   );
 
   const { run: reloadConfig, loading: reloading } = useRequest(
     (values) => executorsApi.reloadConfig(id!, values),
-    { manual: true, onSuccess: () => { message.success('配置已推送'); setConfigOpen(false); } },
+    { manual: true, onSuccess: () => { message.success(t('executorDetail.configPushed')); setConfigOpen(false); } },
   );
 
   // AUTH-05 交接：轮换请求体携带可选 reason（≤200，审计 executor.rotate_token）
@@ -117,7 +121,7 @@ export default function ExecutorDetailPage() {
         setRotateOpen(false);
         rotateForm.resetFields();
         Modal.success({
-          title: '新Token（请妥善保存，关闭后不再显示）',
+          title: t('executorDetail.rotate.newTokenTitle'),
           content: (
             <Space>
               <Text code copyable={{ text: res.token }}>{res.token}</Text>
@@ -125,7 +129,7 @@ export default function ExecutorDetailPage() {
           ),
         });
       },
-      onError: (e) => { message.error(`轮换失败：${getErrMsg(e, '请重试')}`); },
+      onError: (e) => { message.error(t('executorDetail.rotate.rotateFail', { err: getErrMsg(e, t('executorDetail.retry')) })); },
     },
   );
 
@@ -135,10 +139,10 @@ export default function ExecutorDetailPage() {
     {
       manual: true,
       onSuccess: () => {
-        message.success('执行器已删除');
+        message.success(t('executorDetail.remove.removeSuccess'));
         navigate('/executors');
       },
-      onError: (e) => { message.error(`删除失败：${getErrMsg(e, '请重试')}`); },
+      onError: (e) => { message.error(t('executorDetail.remove.removeFail', { err: getErrMsg(e, t('executorDetail.retry')) })); },
     },
   );
 
@@ -146,8 +150,8 @@ export default function ExecutorDetailPage() {
     () => executorsApi.setOffline(id!),
     {
       manual: true,
-      onSuccess: () => { message.success('执行器已设置为离线'); refreshExecutor(); },
-      onError: (e) => { message.error(`设置失败：${e.message}`); },
+      onSuccess: () => { message.success(t('executorDetail.offline.offlineSuccess')); refreshExecutor(); },
+      onError: (e) => { message.error(t('executorDetail.offline.offlineFail', { err: e.message })); },
     },
   );
 
@@ -158,18 +162,18 @@ export default function ExecutorDetailPage() {
     return (
       <Result
         status="error"
-        title="执行器详情加载失败"
-        subTitle={getErrMsg(executorError, '请求失败，请重试')}
+        title={t('executorDetail.loadErrorTitle')}
+        subTitle={getErrMsg(executorError, t('executorDetail.loadErrorFallback'))}
         extra={
           <Space>
-            <Button onClick={() => navigate('/executors')}>返回执行器列表</Button>
-            <Button type="primary" icon={<ReloadOutlined />} onClick={refreshExecutor}>重试</Button>
+            <Button onClick={() => navigate('/executors')}>{t('executorDetail.backToList')}</Button>
+            <Button type="primary" icon={<ReloadOutlined />} onClick={refreshExecutor}>{t('executorDetail.retryBtn')}</Button>
           </Space>
         }
       />
     );
   }
-  if (!executor) return <div style={{ padding: 80 }}><Empty description="执行器不存在或已被删除" /></div>;
+  if (!executor) return <div style={{ padding: 80 }}><Empty description={t('executorDetail.notFound')} /></div>;
 
   const isOnline = executor.status === 'online';
   const maxConcurrent = executor.maxConcurrentTasks ?? 0;
@@ -194,28 +198,29 @@ export default function ExecutorDetailPage() {
   const heartbeatAbsolute = executor.lastHeartbeat ? new Date(executor.lastHeartbeat).toLocaleString() : '';
 
   type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
-  const STATUS_MAP: Record<string, { badge: BadgeStatus; label: string }> = {
-    pending:   { badge: 'default',    label: '等待中' },
-    running:   { badge: 'processing', label: '运行中' },
-    success:   { badge: 'success',    label: '成功'   },
-    failed:    { badge: 'error',      label: '失败'   },
-    timeout:   { badge: 'warning',    label: '超时'   },
-    killed:    { badge: 'error',      label: '已终止' },
-    cancelled: { badge: 'default',    label: '已取消' },
-  };
+  const STATUS_MAP = (t: (k: string) => string): Record<string, { badge: BadgeStatus; label: string }> => ({
+    pending:   { badge: 'default',    label: t('executorDetail.status.pending') },
+    running:   { badge: 'processing', label: t('executorDetail.status.running') },
+    success:   { badge: 'success',    label: t('executorDetail.status.success') },
+    failed:    { badge: 'error',      label: t('executorDetail.status.failed') },
+    timeout:   { badge: 'warning',    label: t('executorDetail.status.timeout') },
+    killed:    { badge: 'error',      label: t('executorDetail.status.killed') },
+    cancelled: { badge: 'default',    label: t('executorDetail.status.cancelled') },
+  });
+  const statusMap = STATUS_MAP(t);
   const execColumns = [
     // U10: 补任务名/退出码列，行点击直达执行详情页
-    { title: '任务', dataIndex: 'taskName', key: 'taskName', ellipsis: true, render: (v: string | undefined, r: ExecutorExecution) => (
+    { title: t('executorDetail.history.col.task'), dataIndex: 'taskName', key: 'taskName', ellipsis: true, render: (v: string | undefined, r: ExecutorExecution) => (
       <a onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${r.taskId}/executions/${r.id}`); }}>{v || r.taskId}</a>
     )},
-    { title: '状态', dataIndex: 'status', key: 'status', width: 90, render: (v: string) => {
-      const cfg = STATUS_MAP[v] || { badge: 'default' as BadgeStatus, label: v };
+    { title: t('executorDetail.history.col.status'), dataIndex: 'status', key: 'status', width: 90, render: (v: string) => {
+      const cfg = statusMap[v] || { badge: 'default' as BadgeStatus, label: v };
       return <Badge status={cfg.badge} text={cfg.label} />;
     }},
-    { title: '开始时间', dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '-' },
-    { title: '耗时', dataIndex: 'duration', key: 'duration', width: 90, render: (v: number) => v != null ? (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`) : '-' },
-    { title: '退出码', dataIndex: 'exitCode', key: 'exitCode', width: 80, render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-' },
-    { title: '错误', dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
+    { title: t('executorDetail.history.col.startTime'), dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '-' },
+    { title: t('executorDetail.history.col.duration'), dataIndex: 'duration', key: 'duration', width: 90, render: (v: number) => v != null ? (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`) : '-' },
+    { title: t('executorDetail.history.col.exitCode'), dataIndex: 'exitCode', key: 'exitCode', width: 80, render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-' },
+    { title: t('executorDetail.history.col.error'), dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
   ];
 
   return (
@@ -223,67 +228,67 @@ export default function ExecutorDetailPage() {
       <Breadcrumb
         style={{ marginBottom: 16 }}
         items={[
-          { title: <a onClick={() => navigate('/executors')}>执行器列表</a> },
+          { title: <a onClick={() => navigate('/executors')}>{t('executorDetail.breadcrumb.list')}</a> },
           { title: executor.appName },
         ]}
       />
 
       <Card
-        title="执行器详情"
+        title={t('executorDetail.title')}
         extra={
           isAdmin ? (
           <Space>
             <Button.Group>
-              <Button onClick={() => { editForm.setFieldsValue(executor); setEditOpen(true); }}>编辑</Button>
-              <Button onClick={() => setConfigOpen(true)}>配置热更新</Button>
+              <Button onClick={() => { editForm.setFieldsValue(executor); setEditOpen(true); }}>{t('executorDetail.edit')}</Button>
+              <Button onClick={() => setConfigOpen(true)}>{t('executorDetail.configHotReload')}</Button>
               <Button
                 danger
                 disabled={!isOnline}
                 loading={settingOffline}
                 onClick={() => {
                   Modal.confirm({
-                    title: '确认设置离线',
-                    content: '将该执行器标记为离线，正在运行的任务不会被中断。确认继续？',
-                    okText: '确认',
-                    cancelText: '取消',
+                    title: t('executorDetail.offline.confirmTitle'),
+                    content: t('executorDetail.offline.confirmContent'),
+                    okText: t('executorDetail.confirm'),
+                    cancelText: t('executorDetail.cancel'),
                     onOk: setOffline,
                   });
                 }}
               >
-                设置离线
+                {t('executorDetail.offline.setOffline')}
               </Button>
             </Button.Group>
-            <Tooltip title="轮换后旧Token 立即失效">
+            <Tooltip title={t('executorDetail.rotate.oldTokenInvalidTip')}>
               <Button
                 danger
                 icon={<CopyOutlined />}
                 onClick={() => { rotateForm.resetFields(); setRotateOpen(true); }}
-              >轮换 Token</Button>
+              >{t('executorDetail.rotate.rotateToken')}</Button>
             </Tooltip>
             {/* AUTH-05 交接：删除执行器入口（高危，与列表批量操作互补的单台形态） */}
-            <Tooltip title="删除后需执行器重新注册">
+            <Tooltip title={t('executorDetail.remove.reRegisterTip')}>
               <Button
                 danger
                 icon={<DeleteOutlined />}
                 onClick={() => { removeForm.resetFields(); setRemoveOpen(true); }}
-              >删除</Button>
+              >{t('executorDetail.remove.delete')}</Button>
             </Tooltip>
           </Space>
           ) : undefined
         }
       >
         <Descriptions column={3}>
-          <Descriptions.Item label="AppName">{executor.appName}</Descriptions.Item>
-          <Descriptions.Item label="地址">{executor.address}</Descriptions.Item>
-          <Descriptions.Item label="状态">
+          <Descriptions.Item label={t('executorDetail.field.appName')}>{executor.appName}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.address')}>{executor.address}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.status')}>
             <Badge status={isOnline ? 'success' : 'default'} text={executor.status} />
           </Descriptions.Item>
-          <Descriptions.Item label="类型">{executor.type || '-'}</Descriptions.Item>
-          <Descriptions.Item label="版本">{executor.executorVersion || '-'}</Descriptions.Item>
-          <Descriptions.Item label="分组">{executor.groupName || '-'}</Descriptions.Item>
-          <Descriptions.Item label="标签">{executor.tags?.join(', ') || '-'}</Descriptions.Item>
-          <Descriptions.Item label="最大并发">{executor.maxConcurrentTasks ?? '无限制'}</Descriptions.Item>
-          <Descriptions.Item label="最后心跳（进页快照）">
+          <Descriptions.Item label={t('executorDetail.field.type')}>{executor.type || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.version')}>{executor.executorVersion || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.group')}>{executor.groupName || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.tags')}>{executor.tags?.join(', ') || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.maxConcurrent')}>{executor.maxConcurrentTasks ?? t('executorDetail.unlimited')}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.lastHeartbeat')}>
             <Tooltip title={heartbeatAbsolute}>
               {heartbeatStale ? (
                 <Text style={{ color: '#fa8c16' }}>
@@ -295,14 +300,14 @@ export default function ExecutorDetailPage() {
               )}
             </Tooltip>
           </Descriptions.Item>
-          <Descriptions.Item label="描述" span={2}>{executor.description || '-'}</Descriptions.Item>
-          <Descriptions.Item label="运行中执行（活性上报 · 进页快照）">
+          <Descriptions.Item label={t('executorDetail.field.description')} span={2}>{executor.description || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.runningExecutions')}>
             {reportedIds === undefined || reportedIds === null ? (
-              <Tooltip title="该执行器版本未上报运行中执行列表，stale 扫描对其不启用活性跳过">
-                <Text type="secondary">未上报 <InfoCircleOutlined /></Text>
+              <Tooltip title={t('executorDetail.running.notReportedTip')}>
+                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined /></Text>
               </Tooltip>
             ) : reportedCount === 0 ? (
-              <Text type="secondary">0（空闲）</Text>
+              <Text type="secondary">{t('executorDetail.running.idle')}</Text>
             ) : (
               <Tooltip title={
                 <div style={{ maxHeight: 240, overflowY: 'auto' }}>
@@ -311,23 +316,23 @@ export default function ExecutorDetailPage() {
                   ))}
                 </div>
               }>
-                <Text>{reportedCount} 条 <InfoCircleOutlined /></Text>
+                <Text>{t('executorDetail.running.count', { count: reportedCount })} <InfoCircleOutlined /></Text>
               </Tooltip>
             )}
           </Descriptions.Item>
           {/* U16: 死信积压——回调持续失败的载荷落盘执行器本地 dead-letter */}
-          <Descriptions.Item label="死信积压（活性上报 · 进页快照）">
+          <Descriptions.Item label={t('executorDetail.field.deadLetter')}>
             {executor.deadLetterCount === undefined || executor.deadLetterCount === null ? (
-              <Tooltip title="该执行器版本未上报死信积压数（node ab4971f / python 001 起上报）">
-                <Text type="secondary">未上报 <InfoCircleOutlined /></Text>
+              <Tooltip title={t('executorDetail.deadLetter.notReportedTip')}>
+                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined /></Text>
               </Tooltip>
             ) : executor.deadLetterCount === 0 ? (
-              <Text type="success">0（无积压）</Text>
+              <Text type="success">{t('executorDetail.deadLetter.none')}</Text>
             ) : (
-              <Tooltip title="回调持续失败已落盘执行器本地 dead-letter，需人工排查">
+              <Tooltip title={t('executorDetail.deadLetter.tip')}>
                 <Text type="warning">
                   <WarningOutlined style={{ marginRight: 4 }} />
-                  {executor.deadLetterCount} 条待重试 <InfoCircleOutlined />
+                  {t('executorDetail.deadLetter.count', { count: executor.deadLetterCount })} <InfoCircleOutlined />
                 </Text>
               </Tooltip>
             )}
@@ -339,7 +344,7 @@ export default function ExecutorDetailPage() {
         <Alert
           type="warning"
           showIcon
-          message="执行器离线，以下指标为最后一次心跳的缓存数据，可能已过期"
+          message={t('executorDetail.offline.alert')}
           style={{ marginTop: 16 }}
         />
       )}
@@ -347,16 +352,16 @@ export default function ExecutorDetailPage() {
       <Row gutter={16} style={{ marginTop: 16 }}>
         <Col span={12}>
           <Card
-            title="实时资源使用"
+            title={t('executorDetail.live.title')}
             loading={loadingMetrics && !metrics}
-            extra={<Text type="secondary" style={{ fontSize: 12 }}>每 30s 轮询</Text>}
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.live.pollInterval')}</Text>}
           >
             <Row gutter={16}>
               {([
-                { title: 'CPU 使用率', value: liveCpu, warn: 60, danger: 80 },
-                { title: '内存使用率', value: liveMem, warn: 60, danger: 80 },
+                { title: t('executorDetail.live.cpu'), value: liveCpu, warn: 60, danger: 80 },
+                { title: t('executorDetail.live.memory'), value: liveMem, warn: 60, danger: 80 },
                 // diskUsage 不在 metrics 接口内：仍取进页快照
-                { title: '磁盘使用率', value: executor.diskUsage ?? 0, warn: 70, danger: 90 },
+                { title: t('executorDetail.live.disk'), value: executor.diskUsage ?? 0, warn: 70, danger: 90 },
               ] as const).map(({ title, value, warn, danger }) => (
                 <Col span={8} key={title}>
                   <Statistic title={title} value={value} suffix="%" precision={1} styles={{ content: { color: usageColor(value, warn, danger) } }} />
@@ -367,18 +372,18 @@ export default function ExecutorDetailPage() {
           </Card>
         </Col>
         <Col span={12}>
-          <Card title="性能统计（近7天）" loading={loadingMetrics && !metrics}>
+          <Card title={t('executorDetail.stats.title')} loading={loadingMetrics && !metrics}>
             {metrics ? (
               <Row gutter={16}>
-                <Col span={8}><Statistic title="总执行次数" value={metrics.sevenDayStats.totalExecutions} /></Col>
+                <Col span={8}><Statistic title={t('executorDetail.stats.totalExecutions')} value={metrics.sevenDayStats.totalExecutions} /></Col>
                 <Col span={8}>
-                  <Statistic title="成功率" value={metrics.sevenDayStats.successRate} suffix="%" styles={{ content: { color: '#3f8600' } }} precision={1} />
-                  <Text type="secondary" style={{ fontSize: 12 }}>成功 {metrics.sevenDayStats.successful} / 失败 {metrics.sevenDayStats.failed}</Text>
+                  <Statistic title={t('executorDetail.stats.successRate')} value={metrics.sevenDayStats.successRate} suffix="%" styles={{ content: { color: '#3f8600' } }} precision={1} />
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.stats.succFail', { succ: metrics.sevenDayStats.successful, fail: metrics.sevenDayStats.failed })}</Text>
                 </Col>
-                <Col span={8}><Statistic title="平均耗时" value={metrics.sevenDayStats.averageDurationMs} suffix="ms" precision={0} /></Col>
+                <Col span={8}><Statistic title={t('executorDetail.stats.avgDuration')} value={metrics.sevenDayStats.averageDurationMs} suffix="ms" precision={0} /></Col>
               </Row>
             ) : (
-              !loadingMetrics && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无性能数据，执行任务后将在此显示统计信息" />
+              !loadingMetrics && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.stats.empty')} />
             )}
           </Card>
         </Col>
@@ -388,13 +393,13 @@ export default function ExecutorDetailPage() {
           数据随 metrics 端点 30s 轮询顺带刷新（后端 15 分钟聚合桶，变化慢）；
           空数据显示显式空态（执行器新建或历史采样未启用时为常态）。 */}
       <Card
-        title="资源趋势（24h）"
+        title={t('executorDetail.resourceTrend')}
         style={{ marginTop: 16 }}
         loading={loadingMetrics && !metrics}
-        extra={<Text type="secondary" style={{ fontSize: 12 }}>15 分钟均值聚合 · 最多 96 点</Text>}
+        extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.resourceTrendExtra')}</Text>}
       >
         {historyPoints.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无历史采样" />
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.history.empty')} />
         ) : (
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={historyPoints} margin={{ top: 5, right: 8, left: 0, bottom: 0 }}>
@@ -413,8 +418,8 @@ export default function ExecutorDetailPage() {
               <RechartTooltip labelFormatter={(label) => trendTooltipLabel(String(label))} labelStyle={{ fontSize: 12 }} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Line yAxisId="pct" type="monotone" dataKey="cpuUsage" name="CPU %" stroke={CHART_COLORS.cpu} strokeWidth={1.5} dot={false} connectNulls />
-              <Line yAxisId="pct" type="monotone" dataKey="memUsage" name="内存 %" stroke={CHART_COLORS.memory} strokeWidth={1.5} dot={false} connectNulls />
-              <Line yAxisId="cnt" type="monotone" dataKey="runningTaskCount" name="并发任务" stroke={CHART_COLORS.concurrent} strokeWidth={1.5} dot={false} connectNulls />
+              <Line yAxisId="pct" type="monotone" dataKey="memUsage" name={t('executorDetail.trend.mem')} stroke={CHART_COLORS.memory} strokeWidth={1.5} dot={false} connectNulls />
+              <Line yAxisId="cnt" type="monotone" dataKey="runningTaskCount" name={t('executorDetail.trend.concurrent')} stroke={CHART_COLORS.concurrent} strokeWidth={1.5} dot={false} connectNulls />
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -423,26 +428,26 @@ export default function ExecutorDetailPage() {
       <Row gutter={16} style={{ marginTop: 16 }}>
         <Col span={8}>
           <Card>
-            <Statistic title="当前运行任务" value={runningCount} suffix={`/ ${executor.maxConcurrentTasks ?? '∞'}`} />
+            <Statistic title={t('executorDetail.currentRunning')} value={runningCount} suffix={`/ ${executor.maxConcurrentTasks ?? '∞'}`} />
             {maxConcurrent > 0 && (
               <Progress percent={runningPercent} showInfo={false} strokeColor={usageColor(runningPercent, 70, 90)} style={{ marginTop: 8 }} />
             )}
             {reportedCount != null && reportedCount !== runningCount && (
               <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-                活性上报 {reportedCount} 条，与运行计数 {runningCount} 不一致
+                {t('executorDetail.inconsistent', { reported: reportedCount, running: runningCount })}
               </Text>
             )}
           </Card>
         </Col>
         <Col span={8}>
-          <Card><Statistic title="总执行任务数" value={executor.totalTaskCount ?? 0} /></Card>
+          <Card><Statistic title={t('executorDetail.totalTasks')} value={executor.totalTaskCount ?? 0} /></Card>
         </Col>
         <Col span={8}>
-          <Card><Statistic title="失败任务数" value={executor.failedTaskCount ?? 0} styles={{ content: { color: '#cf1322' } }} /></Card>
+          <Card><Statistic title={t('executorDetail.failedTasks')} value={executor.failedTaskCount ?? 0} styles={{ content: { color: '#cf1322' } }} /></Card>
         </Col>
       </Row>
 
-      <Card title="历史任务执行" style={{ marginTop: 16 }}>
+      <Card title={t('executorDetail.historyTitle')} style={{ marginTop: 16 }}>
         <Table
           rowKey="id"
           columns={execColumns}
@@ -457,29 +462,29 @@ export default function ExecutorDetailPage() {
             pageSize: 20,
             current: execPage,
             onChange: (page) => setExecPage(page),
-            showTotal: (total) => `共${total} 条`,
+            showTotal: (total) => t('executorDetail.history.total', { total }),
           }}
-          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该执行器暂无历史执行记录" /> }}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.history.emptyList')} /> }}
         />
       </Card>
 
-      <Modal title="编辑执行器" open={editOpen} onCancel={() => setEditOpen(false)} onOk={() => editForm.submit()} confirmLoading={updating}>
+      <Modal title={t('executorDetail.editModal.title')} open={editOpen} onCancel={() => setEditOpen(false)} onOk={() => editForm.submit()} confirmLoading={updating}>
         <Form form={editForm} layout="vertical" onFinish={updateExecutor}>
-          <Form.Item name="groupName" label="分组名称"><Input /></Form.Item>
-          <Form.Item name="tags" label="标签" tooltip="输入标签名后按回车添加"><Select mode="tags" tokenSeparators={[',', ' ']} placeholder="输入后回车添加" /></Form.Item>
-          <Form.Item name="description" label="描述"><Input.TextArea /></Form.Item>
-          <Form.Item name="maxConcurrentTasks" label="最大并发数"><InputNumber min={1} /></Form.Item>
+          <Form.Item name="groupName" label={t('executorDetail.editModal.groupName')}><Input /></Form.Item>
+          <Form.Item name="tags" label={t('executorDetail.editModal.tags')} tooltip={t('executorDetail.editModal.tagsTip')}><Select mode="tags" tokenSeparators={[',', ' ']} placeholder={t('executorDetail.editModal.tagsPlaceholder')} /></Form.Item>
+          <Form.Item name="description" label={t('executorDetail.editModal.description')}><Input.TextArea /></Form.Item>
+          <Form.Item name="maxConcurrentTasks" label={t('executorDetail.editModal.maxConcurrent')}><InputNumber min={1} /></Form.Item>
         </Form>
       </Modal>
 
-      <Modal title="配置热更新" open={configOpen} onCancel={() => setConfigOpen(false)} onOk={() => configForm.submit()} confirmLoading={reloading}>
+      <Modal title={t('executorDetail.config.title')} open={configOpen} onCancel={() => setConfigOpen(false)} onOk={() => configForm.submit()} confirmLoading={reloading}>
         <Form form={configForm} layout="vertical" onFinish={reloadConfig}>
-          <Form.Item name="maxConcurrentTasks" label="最大并发数"><InputNumber min={1} /></Form.Item>
-          <Form.Item name="taskTimeoutSeconds" label="任务超时(秒)"><InputNumber min={1} /></Form.Item>
-          <Form.Item name="heartbeatIntervalSeconds" label="心跳间隔(秒)"><InputNumber min={5} /></Form.Item>
-          <Form.Item name="adminApiUrl" label="Admin API地址"><Input placeholder="默认 Admin API 地址" /></Form.Item>
-          <Form.Item name="adminApiUrlInternal" label="Admin API内部地址"><Input placeholder="执行器容器/内网访问地址" /></Form.Item>
-          <Form.Item name="adminApiUrlExternal" label="Admin API外部地址"><Input placeholder="执行器回调优先使用的公网地址" /></Form.Item>
+          <Form.Item name="maxConcurrentTasks" label={t('executorDetail.editModal.maxConcurrent')}><InputNumber min={1} /></Form.Item>
+          <Form.Item name="taskTimeoutSeconds" label={t('executorDetail.config.taskTimeout')}><InputNumber min={1} /></Form.Item>
+          <Form.Item name="heartbeatIntervalSeconds" label={t('executorDetail.config.heartbeatInterval')}><InputNumber min={5} /></Form.Item>
+          <Form.Item name="adminApiUrl" label={t('executorDetail.config.adminApiUrl')}><Input placeholder={t('executorDetail.config.adminApiUrlPlaceholder')} /></Form.Item>
+          <Form.Item name="adminApiUrlInternal" label={t('executorDetail.config.adminApiUrlInternal')}><Input placeholder={t('executorDetail.config.adminApiUrlInternalPlaceholder')} /></Form.Item>
+          <Form.Item name="adminApiUrlExternal" label={t('executorDetail.config.adminApiUrlExternal')}><Input placeholder={t('executorDetail.config.adminApiUrlExternalPlaceholder')} /></Form.Item>
         </Form>
       </Modal>
 
@@ -487,40 +492,40 @@ export default function ExecutorDetailPage() {
           可选 ≤200 随请求体发送写审计；批量版形态见 BatchActionBar，本单台版
           增强点 = reason 输入与超限校验） */}
       <Modal
-        title="确认轮换 Token"
+        title={t('executorDetail.rotate.confirmTitle')}
         open={rotateOpen}
         onCancel={() => setRotateOpen(false)}
         onOk={() => rotateForm.submit()}
         confirmLoading={rotating}
-        okText="确认轮换"
+        okText={t('executorDetail.rotate.confirmOk')}
         okButtonProps={{ danger: true }}
-        cancelText="取消"
+        cancelText={t('executorDetail.cancel')}
         width={520}
         destroyOnHidden
       >
         <Alert
           type="warning"
           showIcon
-          message="高危操作"
-          description="轮换后旧 Token 立即失效，该执行器将短暂重新注册后恢复连接（node/python 执行器在一个心跳间隔内自动对齐）。新 Token 仅在结果弹窗中展示一次。"
+          message={t('executorDetail.highrisk.title')}
+          description={t('executorDetail.rotate.desc')}
           style={{ marginBottom: 12 }}
         />
         <Descriptions size="small" column={1} style={{ marginBottom: 12 }}>
-          <Descriptions.Item label="执行器">{executor.appName}</Descriptions.Item>
-          <Descriptions.Item label="地址"><Text code>{executor.address}</Text></Descriptions.Item>
-          <Descriptions.Item label="影响">Token 将轮换，执行器短暂重新注册</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.executor')}>{executor.appName}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.address')}><Text code>{executor.address}</Text></Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.impact')}>{t('executorDetail.rotate.impactValue')}</Descriptions.Item>
         </Descriptions>
         <Form form={rotateForm} layout="vertical" onFinish={(v: { reason?: string }) => rotateToken(v.reason)}>
           <Form.Item
             name="reason"
-            label="操作原因（可选，记录到审计日志）"
-            rules={[{ max: MAX_REASON_LENGTH, message: `原因不能超过 ${MAX_REASON_LENGTH} 个字符` }]}
+            label={t('executorDetail.reasonLabel')}
+            rules={[{ max: MAX_REASON_LENGTH, message: t('executorDetail.reasonMax', { max: MAX_REASON_LENGTH }) }]}
           >
             <Input.TextArea
               rows={2}
               maxLength={MAX_REASON_LENGTH}
               showCount
-              placeholder="如：token 疑似泄露 / 例行轮换"
+              placeholder={t('executorDetail.rotate.reasonPlaceholder')}
             />
           </Form.Item>
         </Form>
@@ -528,40 +533,40 @@ export default function ExecutorDetailPage() {
 
       {/* AUTH-05 交接：删除执行器二次确认（删除不可恢复 + reason 可选写审计） */}
       <Modal
-        title="确认删除执行器"
+        title={t('executorDetail.remove.confirmTitle')}
         open={removeOpen}
         onCancel={() => setRemoveOpen(false)}
         onOk={() => removeForm.submit()}
         confirmLoading={removing}
-        okText="确认删除"
+        okText={t('executorDetail.remove.confirmOk')}
         okButtonProps={{ danger: true }}
-        cancelText="取消"
+        cancelText={t('executorDetail.cancel')}
         width={520}
         destroyOnHidden
       >
         <Alert
           type="warning"
           showIcon
-          message="高危操作 · 不可恢复"
-          description="删除后该执行器记录将永久移除，正在其上运行的任务不受影响但不再派发；执行器需重新注册才能恢复接入。"
+          message={t('executorDetail.highrisk.irreversible')}
+          description={t('executorDetail.remove.desc')}
           style={{ marginBottom: 12 }}
         />
         <Descriptions size="small" column={1} style={{ marginBottom: 12 }}>
-          <Descriptions.Item label="执行器">{executor.appName}</Descriptions.Item>
-          <Descriptions.Item label="地址"><Text code>{executor.address}</Text></Descriptions.Item>
-          <Descriptions.Item label="影响">执行器记录删除，需重新注册</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.executor')}>{executor.appName}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.address')}><Text code>{executor.address}</Text></Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.impact')}>{t('executorDetail.remove.impactValue')}</Descriptions.Item>
         </Descriptions>
         <Form form={removeForm} layout="vertical" onFinish={(v: { reason?: string }) => removeExecutor(v.reason)}>
           <Form.Item
             name="reason"
-            label="操作原因（可选，记录到审计日志）"
-            rules={[{ max: MAX_REASON_LENGTH, message: `原因不能超过 ${MAX_REASON_LENGTH} 个字符` }]}
+            label={t('executorDetail.reasonLabel')}
+            rules={[{ max: MAX_REASON_LENGTH, message: t('executorDetail.reasonMax', { max: MAX_REASON_LENGTH }) }]}
           >
             <Input.TextArea
               rows={2}
               maxLength={MAX_REASON_LENGTH}
               showCount
-              placeholder="如：主机已下线 / 迁移至新机器"
+              placeholder={t('executorDetail.remove.reasonPlaceholder')}
             />
           </Form.Item>
         </Form>

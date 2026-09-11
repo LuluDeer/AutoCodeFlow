@@ -36,22 +36,25 @@ import { useNavigate } from 'react-router-dom';
 import { executorPackagesApi, ExecutorPackage } from '../api/executor-packages';
 import { executorsApi, Executor, InstallCmdResult } from '../api/executors';
 import { getErrMsg } from '../utils/error';
+import { useTranslation, Trans } from 'react-i18next';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 
 const { Title, Text, Paragraph } = Typography;
 
-const PLATFORM_LABELS: Record<string, string> = {
-  linux_amd64: 'Linux (x86_64)',
-  linux_arm64: 'Linux (ARM64)',
-  darwin_amd64: 'macOS (Intel)',
-  darwin_arm64: 'macOS (Apple Silicon)',
-  windows_amd64: 'Windows (x86_64)',
-};
+const PLATFORM_LABELS = (t: (k: string) => string): Record<string, string> => ({
+  linux_amd64: t('install.platform.linux_amd64'),
+  linux_arm64: t('install.platform.linux_arm64'),
+  darwin_amd64: t('install.platform.darwin_amd64'),
+  darwin_arm64: t('install.platform.darwin_arm64'),
+  windows_amd64: t('install.platform.windows_amd64'),
+});
 
-const TYPE_LABELS: Record<string, string> = {
-  node: 'Node.js',
-  python: 'Python',
-  universal: '通用',
-};
+const TYPE_LABELS = (t: (k: string) => string): Record<string, string> => ({
+  node: t('install.type.node'),
+  python: t('install.type.python'),
+  universal: t('install.type.universal'),
+});
 
 const TYPE_COLORS: Record<string, string> = {
   node: 'green',
@@ -79,10 +82,11 @@ const CODE_BLOCK_STYLE: React.CSSProperties = {
 };
 
 function CodeBlock({ code, label }: { code: string; label: string }) {
+  const { t } = useTranslation();
   return (
     <div style={CODE_BLOCK_STYLE}>
       <span style={{ whiteSpace: 'pre-wrap' }}>{code}</span>
-      <Tooltip title="复制">
+      <Tooltip title={t('install.copy')}>
         <Button
           type="text"
           size="small"
@@ -91,9 +95,9 @@ function CodeBlock({ code, label }: { code: string; label: string }) {
           onClick={() =>
             navigator.clipboard
               .writeText(code)
-              .then(() => message.success(`已复制 ${label}`))
+              .then(() => message.success(t('install.copiedLabel', { label })))
           }
-          aria-label={`复制 ${label}`}
+          aria-label={t('install.copyLabel', { label })}
         />
       </Tooltip>
     </div>
@@ -114,6 +118,9 @@ function ReqRow({ label, note }: { label: string; note?: string }) {
 
 export default function ExecutorInstallWizardPage() {
   const navigate = useNavigate();
+  const { t } = useTranslation();
+  const platformLabels = PLATFORM_LABELS(t);
+  const typeLabels = TYPE_LABELS(t);
   const [currentStep, setCurrentStep] = useState(0);
 
   const [packages, setPackages] = useState<ExecutorPackage[]>([]);
@@ -148,10 +155,10 @@ export default function ExecutorInstallWizardPage() {
       .then((data) => setPackages(data))
       .catch((err: unknown) => {
         setPackagesError(err);
-        message.error('加载安装包列表失败，请检查 admin-api 服务');
+        message.error(t('install.loadPackagesFail'));
       })
       .finally(() => setLoadingPackages(false));
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void loadPackages();
@@ -175,7 +182,7 @@ export default function ExecutorInstallWizardPage() {
 
   const handleStep1Next = () => {
     if (!matchedPackage) {
-      message.warning('请先选择执行器类型和目标平台');
+      message.warning(t('install.selectFirst'));
       return;
     }
     setSelectedPackage(matchedPackage);
@@ -185,7 +192,7 @@ export default function ExecutorInstallWizardPage() {
       .then((r) => setSharedToken(r.token))
       .catch(() => {
         setSharedToken(null);
-        message.warning('获取共享 Token 失败，请手动生成');
+        message.warning(t('install.getTokenFail'));
       })
       .finally(() => setLoadingSharedToken(false));
     setCurrentStep(2);
@@ -201,7 +208,7 @@ export default function ExecutorInstallWizardPage() {
       setInstallCmd(result);
       setCurrentStep(3);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '获取安装命令失败，请重试'));
+      message.error(getErrMsg(err, t('install.getCmdFail')));
     } finally {
       setGeneratingCmd(false);
     }
@@ -293,17 +300,17 @@ export default function ExecutorInstallWizardPage() {
     <div>
       {/* UI-03/UI-08：页头标准化（返回按钮迁入 PageHeader extra，行为不变） */}
       <PageHeader
-        title="执行器安装向导"
-        description="按步骤完成系统要求检查、安装包选择、命令获取与安装验证。"
-        breadcrumb={[{ title: '执行器列表', to: '/executors' }, { title: '安装向导' }]}
+        title={t('install.title')}
+        description={t('install.description')}
+        breadcrumb={[{ title: t('install.breadcrumbList'), to: '/executors' }, { title: t('install.breadcrumbWizard') }]}
         extra={
           <Button
             icon={<ArrowLeftOutlined />}
             type="text"
             onClick={() => navigate('/executors')}
-            aria-label="返回执行器列表"
+            aria-label={t('install.back')}
           >
-            返回执行器列表
+            {t('install.back')}
           </Button>
         }
       />
@@ -312,7 +319,7 @@ export default function ExecutorInstallWizardPage() {
       {packagesError ? (
         <StateError
           error={packagesError}
-          title="安装包列表加载失败"
+          title={t('install.packagesLoadFail')}
           onRetry={() => { void loadPackages(); }}
           style={{ marginBottom: 24, maxWidth: 900 }}
         />
@@ -322,43 +329,43 @@ export default function ExecutorInstallWizardPage() {
         current={currentStep}
         style={{ marginBottom: 32, maxWidth: 900 }}
         items={[
-          { title: '系统要求', icon: <DesktopOutlined /> },
-          { title: '选择安装包', icon: <DownloadOutlined /> },
-          { title: '获取安装命令', icon: <KeyOutlined /> },
-          { title: '执行安装', icon: <CodeOutlined /> },
-          { title: '验证上线', icon: <CheckCircleOutlined /> },
+          { title: t('install.step1'), icon: <DesktopOutlined /> },
+          { title: t('install.step2'), icon: <DownloadOutlined /> },
+          { title: t('install.step3'), icon: <KeyOutlined /> },
+          { title: t('install.step4'), icon: <CodeOutlined /> },
+          { title: t('install.step5'), icon: <CheckCircleOutlined /> },
         ]}
       />
 
       {/* Step 0: 系统要求 */}
       {currentStep === 0 && (
         <Card style={{ maxWidth: 720 }}>
-          <Title level={5} style={{ marginTop: 0 }}>系统要求</Title>
+          <Title level={5} style={{ marginTop: 0 }}>{t('install.reqTitle')}</Title>
           <Paragraph type="secondary">
-            在开始安装前，请确认目标服务器满足以下要求：
+            {t('install.reqIntro')}
           </Paragraph>
 
           <div style={{ marginBottom: 20 }}>
-            <ReqRow label="Node.js 16+ 或 Python 3.8+" note="根据所选执行器类型" />
-            <ReqRow label="Git 2.0+" note="用于克隆仓库和版本管理" />
-            <ReqRow label="npx（随 Node.js 提供）" note="用于执行一键安装命令" />
-            <ReqRow label="网络连接" note={`能访问本平台 API：${adminApiUrl}`} />
-            <ReqRow label="sudo 权限（可选）" note="某些系统级安装可能需要" />
+            <ReqRow label={t('install.req1Label')} note={t('install.req1Note')} />
+            <ReqRow label={t('install.req2Label')} note={t('install.req2Note')} />
+            <ReqRow label={t('install.req3Label')} note={t('install.req3Note')} />
+            <ReqRow label={t('install.req4Label')} note={t('install.req4Note', { url: adminApiUrl })} />
+            <ReqRow label={t('install.req5Label')} note={t('install.req5Note')} />
           </div>
 
           <Alert
             type="info"
             showIcon
-            title="提示"
-            description="安装过程中会自动检测和配置环境，如遇问题请参考文档或联系管理员。"
+            title={t('install.tip')}
+            description={t('install.tipDesc')}
             style={{ marginBottom: 20 }}
           />
 
           <Divider />
           <Space>
-            <Button onClick={() => navigate('/executors')}>取消</Button>
+            <Button onClick={() => navigate('/executors')}>{t('install.cancel')}</Button>
             <Button type="primary" onClick={() => setCurrentStep(1)}>
-              下一步
+              {t('install.next')}
             </Button>
           </Space>
         </Card>
@@ -367,17 +374,17 @@ export default function ExecutorInstallWizardPage() {
       {/* Step 1: 选择安装包 */}
       {currentStep === 1 && (
         <Card style={{ maxWidth: 720 }}>
-          <Title level={5} style={{ marginTop: 0 }}>选择执行器类型与目标平台</Title>
+          <Title level={5} style={{ marginTop: 0 }}>{t('install.selectTitle')}</Title>
           <Paragraph type="secondary">
-            根据目标服务器的操作系统和所需执行器类型，选择对应的安装包。
+            {t('install.selectDesc')}
           </Paragraph>
 
 <Spin spinning={loadingPackages}>
             <Row gutter={[16, 16]}>
               <Col xs={24} sm={12}>
-                <Text strong style={{ display: 'block', marginBottom: 6 }}>执行器类型</Text>
+                <Text strong style={{ display: 'block', marginBottom: 6 }}>{t('install.type')}</Text>
                 <Select
-                  placeholder="请选择类型"
+                  placeholder={t('install.typePlaceholder')}
                   style={{ width: '100%' }}
                   value={selectedType}
                   onChange={(v) => { setSelectedType(v); setSelectedPlatform(undefined); }}
@@ -386,16 +393,16 @@ export default function ExecutorInstallWizardPage() {
                   {availableTypes.map((t) => (
                     <Select.Option key={t} value={t}>
                       <Tag color={TYPE_COLORS[t] ?? 'default'} style={{ marginRight: 0 }}>
-                        {TYPE_LABELS[t] ?? t}
+                        {typeLabels[t] ?? t}
                       </Tag>
                     </Select.Option>
                   ))}
                 </Select>
               </Col>
               <Col xs={24} sm={12}>
-                <Text strong style={{ display: 'block', marginBottom: 6 }}>目标平台</Text>
+                <Text strong style={{ display: 'block', marginBottom: 6 }}>{t('install.platform')}</Text>
                 <Select
-                  placeholder="请选择平台"
+                  placeholder={t('install.platformPlaceholder')}
                   style={{ width: '100%' }}
                   value={selectedPlatform}
                   onChange={setSelectedPlatform}
@@ -404,7 +411,7 @@ export default function ExecutorInstallWizardPage() {
                 >
                   {availablePlatforms.map((p) => (
                     <Select.Option key={p} value={p}>
-                      {PLATFORM_LABELS[p] ?? p}
+                      {platformLabels[p] ?? p}
                     </Select.Option>
                   ))}
                 </Select>
@@ -415,24 +422,24 @@ export default function ExecutorInstallWizardPage() {
               <Card
                 size="small"
                 style={{ marginTop: 20, background: '#fafafa' }}
-                title={<Text strong>已匹配安装包：{matchedPackage.name}</Text>}
+                title={<Text strong>{t('install.matchedTitle', { name: matchedPackage.name })}</Text>}
               >
                 <Row gutter={[16, 8]}>
                   <Col span={8}>
-                    <Text type="secondary">版本</Text>
+                    <Text type="secondary">{t('install.version')}</Text>
                     <div><Text strong>{matchedPackage.version}</Text></div>
                   </Col>
                   <Col span={8}>
-                    <Text type="secondary">文件大小</Text>
+                    <Text type="secondary">{t('install.fileSize')}</Text>
                     <div><Text strong>{formatBytes(matchedPackage.fileSize)}</Text></div>
                   </Col>
                   <Col span={8}>
-                    <Text type="secondary">下载次数</Text>
+                    <Text type="secondary">{t('install.downloadCount')}</Text>
                     <div><Text strong>{matchedPackage.downloadCount}</Text></div>
                   </Col>
 {matchedPackage.sha256 && (
                     <Col span={24}>
-                      <Text type="secondary">SHA256</Text>
+                      <Text type="secondary">{t('install.sha256')}</Text>
                       <div>
                         <Text code copyable style={{ fontSize: 12, wordBreak: 'break-all' }}>
                           {matchedPackage.sha256}
@@ -442,7 +449,7 @@ export default function ExecutorInstallWizardPage() {
                   )}
                   {matchedPackage.changelog && (
                     <Col span={24}>
-                      <Text type="secondary">更新日志</Text>
+                      <Text type="secondary">{t('install.changelog')}</Text>
                       <div><Text>{matchedPackage.changelog}</Text></div>
                     </Col>
                   )}
@@ -453,13 +460,13 @@ export default function ExecutorInstallWizardPage() {
             {!loadingPackages && packages.length === 0 && (
               <Alert
                 type="warning"
-                title="暂无可用安装包"
-                description="请先上传执行器安装包，再使用本向导。"
+                title={t('install.noPackages')}
+                description={t('install.noPackagesDesc')}
                 showIcon
                 style={{ marginTop: 16 }}
                 action={
                   <Button size="small" type="primary" onClick={() => navigate('/executors/packages')}>
-                    去上传安装包
+                    {t('install.upload')}
                   </Button>
                 }
               />
@@ -468,9 +475,9 @@ export default function ExecutorInstallWizardPage() {
 
           <Divider />
           <Space>
-            <Button onClick={() => setCurrentStep(0)}>上一步</Button>
+            <Button onClick={() => setCurrentStep(0)}>{t('install.prev')}</Button>
             <Button type="primary" disabled={!matchedPackage} onClick={handleStep1Next}>
-              下一步
+              {t('install.next')}
             </Button>
           </Space>
         </Card>
@@ -479,24 +486,24 @@ export default function ExecutorInstallWizardPage() {
       {/* Step 2: 获取安装命令 */}
       {currentStep === 2 && selectedPackage && (
         <Card style={{ maxWidth: 720 }}>
-          <Title level={5} style={{ marginTop: 0 }}>获取安装命令</Title>
+          <Title level={5} style={{ marginTop: 0 }}>{t('install.step3')}</Title>
           <Paragraph type="secondary">
-            平台将基于执行器共享 Token 生成官方安装命令，复制到目标服务器执行即可完成安装。
+            {t('install.getCmdDesc')}
           </Paragraph>
 
           <Card size="small" style={{ background: '#fafafa', marginBottom: 20 }}>
             <Row gutter={16}>
               <Col span={8}>
-                <Text type="secondary">安装包</Text>
+                <Text type="secondary">{t('install.package')}</Text>
                 <div><Text strong>{selectedPackage.name}</Text></div>
               </Col>
               <Col span={8}>
-                <Text type="secondary">版本</Text>
+                <Text type="secondary">{t('install.version')}</Text>
                 <div><Text strong>{selectedPackage.version}</Text></div>
               </Col>
               <Col span={8}>
-                <Text type="secondary">平台</Text>
-                <div><Text strong>{PLATFORM_LABELS[selectedPackage.platform] ?? selectedPackage.platform}</Text></div>
+                <Text type="secondary">{t('install.platformCol')}</Text>
+                <div><Text strong>{platformLabels[selectedPackage.platform] ?? selectedPackage.platform}</Text></div>
               </Col>
             </Row>
           </Card>
@@ -504,18 +511,18 @@ export default function ExecutorInstallWizardPage() {
           <Alert
             type="info"
             showIcon
-            title="安全提示"
-            description="安装命令中包含执行器共享 Token，仅限在受信任的目标服务器上执行，请勿泄露给他人。"
+            title={t('install.securityTip')}
+            description={t('install.securityTipDesc')}
             style={{ marginBottom: 20 }}
           />
 
           <Card
             size="small"
             style={{ background: '#fffbe6', border: '1px solid #ffe58f', marginBottom: 20 }}
-            title={<Space><KeyOutlined /><Text strong>执行器接入 Token（共享）</Text></Space>}
+            title={<Space><KeyOutlined /><Text strong>{t('install.tokenShared')}</Text></Space>}
           >
             <Paragraph type="secondary" style={{ marginBottom: 12 }}>
-              执行器启动时需通过 EXECUTOR_SHARED_TOKEN 携带此 Token 向调度中心注册，并用于任务回调鉴权；安装后可轮换为单执行器动态 Token。如尚未生成，请先在「系统设置」页面创建。
+              {t('install.tokenDesc')}
             </Paragraph>
 {loadingSharedToken ? (
               <Spin size="small" />
@@ -537,10 +544,10 @@ export default function ExecutorInstallWizardPage() {
                     icon={<CopyOutlined />}
                     onClick={() => {
                       navigator.clipboard.writeText(sharedToken);
-                      message.success('已复制 Token');
+                      message.success(t('install.copiedToken'));
                     }}
                   >
-                    复制
+                    {t('install.copy')}
                   </Button>
                 )}
               </Space>
@@ -548,21 +555,21 @@ export default function ExecutorInstallWizardPage() {
               <Alert
                 type="warning"
                 showIcon
-                title="尚未配置执行器共享 Token，请先前往「系统设置」页面生成 Token 后再安装执行器。"
+                title={t('install.tokenMissing')}
               />
             )}
           </Card>
 
           <Divider />
           <Space>
-            <Button onClick={() => setCurrentStep(1)}>上一步</Button>
+            <Button onClick={() => setCurrentStep(1)}>{t('install.prev')}</Button>
             <Button
               type="primary"
               icon={<KeyOutlined />}
               loading={generatingCmd}
               onClick={handleGenerateInstallCmd}
             >
-              获取安装命令
+              {t('install.getCmd')}
             </Button>
           </Space>
         </Card>
@@ -571,49 +578,49 @@ export default function ExecutorInstallWizardPage() {
       {/* Step 3: 执行安装 */}
       {currentStep === 3 && installCmd && (
         <Card style={{ maxWidth: 720 }}>
-          <Title level={5} style={{ marginTop: 0 }}>在目标服务器上执行安装</Title>
+          <Title level={5} style={{ marginTop: 0 }}>{t('install.step4Title')}</Title>
           <Paragraph type="secondary">
-            复制以下命令，在目标服务器终端中执行即可完成安装。
+            {t('install.step4Desc')}
           </Paragraph>
 
           <Alert
             type="success"
             showIcon
             icon={<CheckCircleOutlined />}
-            title="安装命令已生成"
-            description="命令中已包含调度中心地址与执行器共享 Token，请注意保密，不要泄露给他人。"
+            title={t('install.cmdGenerated')}
+            description={t('install.cmdGeneratedDesc')}
             style={{ marginBottom: 24 }}
           />
 
           <Space orientation="vertical" style={{ width: '100%' }} size={20}>
             <div>
               <Space style={{ marginBottom: 8 }}>
-                <Text strong>一键安装命令</Text>
-                <Tag color="green">推荐</Tag>
+                <Text strong>{t('install.oneClickCmd')}</Text>
+                <Tag color="green">{t('install.recommend')}</Tag>
               </Space>
-              <CodeBlock code={installCmd.cmd} label="安装命令" />
+              <CodeBlock code={installCmd.cmd} label={t('install.cmdLabel')} />
             </div>
 
             <div>
-              <Text strong style={{ display: 'block', marginBottom: 8 }}>环境变量配置参考</Text>
+              <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('install.envLabel')}</Text>
               <Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 13 }}>
-                安装命令会自动配置以下环境变量。如需手动配置或调试，请确保共享 Token 字段名使用 EXECUTOR_SHARED_TOKEN，并按部署网络填写可回调地址：
+                {t('install.envDesc')}
               </Paragraph>
-              <CodeBlock code={envVarBlock} label="环境变量" />
+              <CodeBlock code={envVarBlock} label={t('install.envBlockLabel')} />
             </div>
 
             <Alert
               type="warning"
               showIcon
-              title="注意"
-              description="请确保目标服务器已安装 Node.js 16+（npx 可用），且网络可以访问本平台的 API 地址。"
+              title={t('install.noteTitle')}
+              description={t('install.noteDesc')}
             />
           </Space>
 
 <Divider />
           <Space>
-            <Button icon={<DownloadOutlined />} onClick={handleReset}>重新安装</Button>
-            <Button type="primary" onClick={handleGoToStep4}>下一步：等待执行器上线</Button>
+            <Button icon={<DownloadOutlined />} onClick={handleReset}>{t('install.reinstall')}</Button>
+            <Button type="primary" onClick={handleGoToStep4}>{t('install.nextAwait')}</Button>
           </Space>
         </Card>
       )}
@@ -621,17 +628,17 @@ export default function ExecutorInstallWizardPage() {
       {/* Step 4: 验证执行器上线 */}
       {currentStep === 4 && (
         <Card style={{ maxWidth: 720 }}>
-          <Title level={5} style={{ marginTop: 0 }}>等待执行器上线</Title>
+          <Title level={5} style={{ marginTop: 0 }}>{t('install.step5Title')}</Title>
           <Paragraph type="secondary">
-            系统正在自动检测目标服务器上的执行器是否已成功注册并上线，每 5 秒轮询一次，最长等待 1 分钟。
+            {t('install.step5Desc')}
           </Paragraph>
 
           {polling && !foundExecutor && !pollTimedOut && (
             <div style={{ textAlign: 'center', padding: '40px 0' }}>
               <Spin size="large" indicator={<SyncOutlined spin style={{ fontSize: 48, color: '#1677ff' }} />} />
-              <div style={{ marginTop: 20, color: '#666', fontSize: 15 }}>正在等待执行器上线...</div>
+              <div style={{ marginTop: 20, color: '#666', fontSize: 15 }}>{t('install.awaiting')}</div>
               <div style={{ marginTop: 8, color: '#aaa', fontSize: 13 }}>
-                已等待 {elapsedSeconds} / 60 秒，每 5 秒检测一次
+                {t('install.elapsed', { seconds: elapsedSeconds })}
               </div>
             </div>
           )}
@@ -642,10 +649,10 @@ export default function ExecutorInstallWizardPage() {
                 type="success"
                 showIcon
                 icon={<CheckCircleOutlined />}
-                title="执行器已成功上线！"
+                title={t('install.onlineSuccess')}
                 description={
                   <span>
-                    检测到执行器：<strong>{foundExecutor.appName}</strong>（{foundExecutor.address}）已注册上线，安装成功。
+                    <Trans i18nKey="install.detected" values={{ appName: foundExecutor.appName, address: foundExecutor.address }}><strong>appName</strong></Trans>
                   </span>
                 }
                 style={{ marginBottom: 20 }}
@@ -653,7 +660,7 @@ export default function ExecutorInstallWizardPage() {
 <div style={{ textAlign: 'center', padding: '16px 0' }}>
                 <CheckCircleOutlined style={{ fontSize: 64, color: '#52c41a' }} />
                 <div style={{ marginTop: 12, fontSize: 18, fontWeight: 600, color: '#52c41a' }}>
-                  执行器已上线
+                  {t('install.onlineTitle')}
                 </div>
                 <div style={{ marginTop: 4, color: '#888' }}>
                   {foundExecutor.appName} · {foundExecutor.address}
@@ -668,20 +675,20 @@ export default function ExecutorInstallWizardPage() {
                 type="warning"
                 showIcon
                 icon={<CloseCircleOutlined />}
-                title="验证超时（60 秒）"
-                description="1 分钟内未检测到执行器上线，请参考以下排查步骤。"
+                title={t('install.timeoutTitle')}
+                description={t('install.timeoutDesc')}
                 style={{ marginBottom: 20 }}
               />
               <Card size="small" style={{ background: '#fffbe6', border: '1px solid #ffe58f' }}>
-                <Title level={5} style={{ marginTop: 0 }}>排查建议</Title>
+                <Title level={5} style={{ marginTop: 0 }}>{t('install.troubleTitle')}</Title>
                 <ul style={{ paddingLeft: 20, lineHeight: 2, margin: 0 }}>
-                  <li>确认安装命令已在目标服务器上执行完毕，且无报错</li>
-                  <li>检查目标服务器网络是否能访问本平台 API 地址</li>
-                  <li>安装脚本可能需要 <code>sudo</code> 权限，请以合适权限重试</li>
-                  <li>查看执行器进程日志排查启动失败原因</li>
-                  <li>确认执行器共享 Token 已通过 <code>EXECUTOR_SHARED_TOKEN</code> 正确配置</li>
-                  <li>确认 <code>EXECUTOR_ADDRESS_PUBLIC</code> 或执行器地址能被调度中心用于回调鉴权</li>
-                  <li>确认一键安装命令完整复制执行、无报错（命令包含共享 Token，请勿泄露）</li>
+                  <li>{t('install.trouble1')}</li>
+                  <li>{t('install.trouble2')}</li>
+                  <li><Trans i18nKey="install.trouble3"><code>sudo</code></Trans></li>
+                  <li>{t('install.trouble4')}</li>
+                  <li><Trans i18nKey="install.trouble5"><code>EXECUTOR_SHARED_TOKEN</code></Trans></li>
+                  <li><Trans i18nKey="install.trouble6"><code>EXECUTOR_ADDRESS_PUBLIC</code></Trans></li>
+                  <li>{t('install.trouble7')}</li>
                 </ul>
               </Card>
             </>
@@ -690,7 +697,7 @@ export default function ExecutorInstallWizardPage() {
           <Divider />
           <Space>
             {!foundExecutor && (
-              <Button onClick={() => { stopPolling(); setCurrentStep(3); }}>返回上一步</Button>
+              <Button onClick={() => { stopPolling(); setCurrentStep(3); }}>{t('install.prevStep')}</Button>
             )}
             {pollTimedOut && (
               <Button
@@ -699,14 +706,14 @@ export default function ExecutorInstallWizardPage() {
                   startPolling(now);
                 }}
               >
-                重新检测
+                {t('install.redetect')}
               </Button>
             )}
             <Button
               type="primary"
               onClick={() => navigate('/executors')}
             >
-              前往执行器列表
+              {t('install.gotoList')}
             </Button>
           </Space>
         </Card>
