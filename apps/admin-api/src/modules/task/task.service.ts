@@ -11,6 +11,7 @@ import {
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
+import { assertSafeGitRepoUrl } from "../../common/utils/safe-http.util";
 import {
   DataSource,
   ILike,
@@ -315,6 +316,13 @@ export class TaskService {
       await this.checkCircularDependency(dto.id, dto.dependencies);
     }
     const normalized = this.normalizeTaskDto(dto);
+    // SEC-NEW-2 对齐（W-21 后续）：git 源在**任务写面**即校验。executor 派发时只放行
+    // https?://|git@|ssh:// 且拒绝 loopback/私有网段（execute.ts:363-376，python 侧对等）
+    // ——此前 admin 不做同类校验，导致「任务创建成功、派发才 400」的两端不一致。
+    // 复用部署链同一实现（application.service 亦用 assertSafeGitRepoUrl）。
+    if (normalized.gitRepo) {
+      await assertSafeGitRepoUrl(normalized.gitRepo);
+    }
     // NF-03: 创建即落 owner（含 ADMIN 创建——可追溯，也为 AUTH-02 读面预铺）。
     // normalized 是 CreateTaskDto 形态，ownerUserId 在实体列上——save 前并入。
     (normalized as unknown as Record<string, unknown>)["ownerUserId"] =
@@ -483,6 +491,10 @@ export class TaskService {
     // NF-03: 写面属主守卫（ADMIN 全量/属主自己/无主仅 ADMIN）
     this.assertCanWrite(t, user);
     const normalized = this.normalizeTaskDto(dto);
+    // 同 create：PATCH 显式带 gitRepo 时即校验（缺省 = 保留旧值，不重复校验既有列）
+    if (normalized.gitRepo) {
+      await assertSafeGitRepoUrl(normalized.gitRepo);
+    }
     // SEC-02: PATCH 语义——secrets 缺省 = 保留旧值（不触碰既有列）；
     // 显式 null / {} = 清空/替换。归一化在脱敏副本上做（findOne 已脱敏，
     // DTO 未带 secrets 时不能把脱敏值当新值再加密一层）。
