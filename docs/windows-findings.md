@@ -298,3 +298,30 @@
 - 根因：用例 `set-offline`（DB 写）→ trigger → 派发检查之间，活着的 executor-node 按 30s 心跳把 status **无条件刷回 online**（`executor.service.heartbeat` → `status=ONLINE`，这是正确的存活性权威语义，产品不动）。窗口 ~2s/30s ≈ 6% 概率撞上心跳 tick → 任务被成功派发。
 - 修复（测试侧，`e2e-full.spec.js` 用例 27）：场景封装为可重跑单元（**每次新建任务**避免多执行排序假设），首轮拿到非 `failed` 即重试一次并打日志；首轮已消耗数秒、下一跳心跳远在水面外，二次撞车概率 ~0.4%。maxRetry=0 的"单次派发定局"语义保留。
 - 顺带：同用例 UI 段的 `finally { apiWaitExecutorOnline }` 心跳恢复逻辑与此修复正交，未动。
+
+---
+
+## 长尾清偿：全部 open 项终态核对（DOC-08，2026-09-11 第十一轮）
+
+> 历史文档到此已含 W-01~W-29 全部记录。以下按「仍 open 观感」的条目逐项核对当前代码/测试基线，给出终态定性——**除 2 项明确留产品决策外，其余全部清偿**。
+
+### 已清偿（修复代码已在库，本轮测试复核通过）
+
+| 原 open 观感条目 | 终态 |
+|---|---|
+| W-03（executor-node 5 例 POSIX 假设）| 测试平台化已完成：win32 分支断言 taskkill/proc.kill、`path.join` 构造期望、npm.cmd/npm 按平台——executor-node **273/273 全绿**（后续轮次基线，远超当时的 158，只增） |
+| W-05（executor-python 8 例测试平台化）| `python3`→`sys.executable`（execute.py L1609 实证）、`_build_shell_cmd` 平台化断言 + W-09a 归一化覆盖、shell 用例改平台原生脚本不再 skip——本机本轮 **247/247 全绿 0 skip** |
+| W-09（win32 cmd.exe work_dir 上下文 + Event loop 噪音）| 现象 A（cmd.exe CWD 语义）= P-6 归一化已修；现象 B（`Event loop is closed` 噪音）= QA-11 `_close_asyncio_loops` autouse fixture 已落（conftest.py L25 实证），严格 warnings 下零残留 |
+| W-08（python 测试依赖不在 requirements）| `requirements-dev.txt` 已补（executor-python / registry-pypi 两处均在库，本轮 ls 实证） |
+| W-07（mcp-server --help/--version 前打 token WARNING）| P-8 已修：token 告警移入 `main()`，纯查询路径输出干净（mcp 100/100 基线） |
+| W-12（e2e 基线未入库）/ W-13（16 例 metrics 断言错误）/ W-20（env 大小写 /tmp 路径）/ W-22（.env 装饰器死配置）/ W-24~26（stdlib 守卫/兜底/下载清理）| 全部 P-批已修 + 各自回归测试在位；e2e-full 今日 44/44、executor-node 273/273 复核通过 |
+| W-27/W-28（e2e 双平台 CI 门禁）| `e2e-full`（ubuntu）+ `e2e-full-windows`（PR/manual）job 均在 ci.yml，安全红线 14 例 + 正向用例 36 随队 |
+
+### 明确留产品决策（非缺陷，不阻塞）
+
+- **W-10（cmd.exe GBK 输出按 UTF-8 解码乱码）**：体验级；生产任务多为 node/python 自报 UTF-8，影响面小。彻底方案=win32 按 `GetOEMCP`/chcp 探测解码或约定任务 UTF-8——**产品决策项**，未强行改（保持原记录）。
+- **W-06（并行负载偶发 flaky 观察）**：多轮复跑均绿（含 Windows CI 多个 run），属于计时类概率观察；如需再加固可 `maxWorkers:1`，当前不阻塞。
+
+### 结论
+
+windows-findings 长尾（DOC-08）**清偿完毕**：可闭环代码面全部已修且由既有套件回归；剩余 2 项非缺陷留产品决策。后续 Windows 相关新发现请续写本文件并保持「现象→根因→修复→验证」四段式。
