@@ -54,7 +54,7 @@ export function retryDelayMs(failedAttempt: number): number {
 export const OUTBOX_RETRY_BASE_DELAY_MS = 5_000;
 /** outbox 补投退避封顶（毫秒）。 */
 export const OUTBOX_RETRY_MAX_DELAY_MS = 5 * 60_000;
-/** outbox 补投次数阈值：超过即落 event_subscription_dead_letters + 行终态。 */
+/** outbox 补投次数阈值：超过即落 event_outbox_dead_letters（迁移 1790000000013）+ 行终态。 */
 export const MAX_OUTBOX_ATTEMPTS = 20;
 
 /**

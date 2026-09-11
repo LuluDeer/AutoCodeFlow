@@ -286,9 +286,9 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       const persistenceFailures =
         aggregate?.deadLetterPersistenceFailures ?? 0;
       const aggregateSettled =
-        aggregate?.targetCount === 0 ||
-        (aggregate?.targetCount === settledTargetCount &&
-          persistenceFailures === 0);
+        persistenceFailures === 0 &&
+        (aggregate?.targetCount === 0 ||
+          aggregate?.targetCount === settledTargetCount);
       if (!aggregateSettled) {
         this.logger.warn(
           `Outbox row ${row.id} kept retryable: delivery aggregate is not settled ` +

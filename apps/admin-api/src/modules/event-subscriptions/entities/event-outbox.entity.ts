@@ -14,8 +14,8 @@ import {
  * 消费时机：OutboxDispatcher 启动 + 每 5s 扫描 dispatchedAt IS NULL 且
  * deadLettered=false 的行，逐行按既有派发语义（签名 POST + 退避重试）补投；
  * 成功回写 dispatchedAt；失败 attempts+1、nextAttemptAt 指数退避（封顶 5min），
- * 超过 MAX_OUTBOX_ATTEMPTS 落 event_subscription_dead_letters 并置
- * deadLettered=true（行终态）。
+ * 具体订阅投递终败由 event_subscription_dead_letters 承载；source-level outbox
+ * 终败落 event_outbox_dead_letters（迁移 1790000000013）并置 deadLettered=true（行终态）。
  *
  * at-least-once 语义：同一行可能在「成功回写 dispatchedAt 前」被多次投递
  * （并发扫描/重启窗口），订阅方必须幂等消费；eventId 仅作追踪键不作唯一约束。
@@ -61,7 +61,7 @@ export class EventOutbox {
   @Column({ type: "varchar", length: 64, nullable: true })
   leaseToken: string | null;
 
-  /** 超过阈值落死信后置 true（行终态，不再扫描）。 */
+  /** 超过阈值写入 event_outbox_dead_letters 后置 true（行终态，不再扫描）。 */
   @Column({ type: "boolean", default: false })
   deadLettered: boolean;
 
