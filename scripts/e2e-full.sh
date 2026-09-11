@@ -88,6 +88,13 @@ cleanup() {
   if [[ "$DOCKER_MODE" == "1" ]]; then
     docker rm -f "$PG_CONTAINER" "$REDIS_CONTAINER" >/dev/null 2>&1 || true
   fi
+  # BUG-18 私服场景：一次性 Verdaccio 容器与临时目录同样不落残留
+  if [[ -n "${PRIVATE_REGISTRY_CONTAINER:-}" ]]; then
+    docker rm -f "$PRIVATE_REGISTRY_CONTAINER" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${PRIV_TMP:-}" ]]; then
+    rm -rf "$PRIV_TMP" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -152,6 +159,103 @@ PIDS+=($!)
 wait_http "http://localhost:$PORT_API/api/health" 60 "admin-api" "$LOG_DIR/admin-api.log"
 echo "admin-api /api/health OK"
 
+# ── 可选：私服依赖场景（BUG-18 端到端；**默认关闭**）──────────────────────
+# E2E_PRIVATE_REGISTRY=1 启用 / 未设或 =0 关闭。启用时起一次性 Verdaccio、建临时
+# 用户/token、发布 fixture 包，并把 NPM_REGISTRY_URL/TOKEN 交给 executor-node。
+#
+# 已就绪：场景编排本身可用（verdaccio 起容器/发 fixture/传 env 全通）。
+# **已知阻塞（用例 44 暂不绿，故默认关闭）**：`requirements` 按 admin-api DTO 设计
+# 「Ignored by glue-script tasks」——用例 44 用 glueSource 载体，故依赖根本不会安装
+# （executor 侧无 .node_modules，glue require 报 MODULE_NOT_FOUND）。要真正闭环，需把
+# 载体换成非 glue 任务：`repoUrl` 拉取源码 + 相对 `entrypoint`（见
+# examples/private-registry-deps-node/task.example.json），需要一个本地 git fixture。
+# 该发现本身即 BUG-18 平台派发面此前未被覆盖的证据（先用例暴露，再换载体）。
+PRIVATE_REGISTRY_MODE="${E2E_PRIVATE_REGISTRY:-0}"
+PRIVATE_REGISTRY_CONTAINER=""
+PRIV_TMP=""
+E2E_PRIVATE_REGISTRY_ENABLED=0
+PRIV_IMAGE_OK=0
+if command -v docker >/dev/null 2>&1 && docker image inspect verdaccio/verdaccio:5 >/dev/null 2>&1; then
+  PRIV_IMAGE_OK=1
+fi
+if [[ "$PRIVATE_REGISTRY_MODE" != "0" ]] && { [[ "$PRIVATE_REGISTRY_MODE" == "1" ]] || [[ "$PRIV_IMAGE_OK" == "1" ]]; }; then
+  if [[ "$PRIV_IMAGE_OK" != "1" ]]; then
+    echo "⚠ E2E_PRIVATE_REGISTRY=1 但本地无 verdaccio/verdaccio:5 镜像，私服场景跳过"
+  else
+    PRIVATE_REGISTRY_CONTAINER="acf-e2e-verdaccio-$$"
+    PRIV_TMP="$(mktemp -d)"
+    mkdir -p "$PRIV_TMP/storage"
+    chmod 777 "$PRIV_TMP/storage"
+    : > "$PRIV_TMP/storage/htpasswd"
+    chmod 666 "$PRIV_TMP/storage/htpasswd"
+    cat > "$PRIV_TMP/config.yaml" <<'YAML'
+storage: /verdaccio/storage
+auth:
+  htpasswd:
+    file: /verdaccio/storage/htpasswd
+    max_users: 100
+packages:
+  '**':
+    access: $authenticated
+    publish: $authenticated
+    unpublish: $authenticated
+web:
+  enabled: false
+listen: 0.0.0.0:4873
+log: { type: stdout, format: pretty, level: warn }
+YAML
+    if docker run -d --rm --user "$(id -u):$(id -g)" --name "$PRIVATE_REGISTRY_CONTAINER" \
+        -p 127.0.0.1:0:4873 \
+        -v "$PRIV_TMP/storage:/verdaccio/storage" \
+        -v "$PRIV_TMP/config.yaml:/verdaccio/conf/config.yaml:ro" \
+        verdaccio/verdaccio:5 >"$PRIV_TMP/docker-run.log" 2>&1; then
+      # 端口映射在容器创建后可能尚未就绪：等待 docker port 有输出再取
+      PRIV_PORT=""
+      for _ in $(seq 1 30); do
+        PRIV_PORT="$(docker port "$PRIVATE_REGISTRY_CONTAINER" 4873/tcp 2>/dev/null | head -1 | sed 's/.*://')"
+        [[ -n "$PRIV_PORT" ]] && break
+        sleep 1
+      done
+      PRIV_REGISTRY="http://127.0.0.1:$PRIV_PORT/"
+      PRIV_READY=0
+      for _ in $(seq 1 60); do
+        if curl -sf "${PRIV_REGISTRY}-/ping" >/dev/null 2>&1; then PRIV_READY=1; break; fi
+        sleep 1
+      done
+      PRIV_USER_RESP="$(curl -sS -X PUT "${PRIV_REGISTRY}-/user/org.couchdb.user:e2e" \
+        -H 'Content-Type: application/json' \
+        -d '{"name":"e2e","password":"e2e-private-pass","email":"e2e@example.invalid"}' 2>&1 || true)"
+      # Verdaccio 返回美化 JSON（"token": "..."，冒号后有空格），故正则容忍空白
+      PRIV_TOKEN="$(printf '%s' "$PRIV_USER_RESP" | sed -n 's/.*"token":[[:space:]]*"\([^"]*\)".*/\1/p')"
+      if [[ -n "${PRIV_TOKEN:-}" ]]; then
+        PRIV_RC="$PRIV_TMP/auth.npmrc"
+        printf 'registry=%s\n@autoflow:registry=%s\n//127.0.0.1:%s/:_authToken=%s\n' \
+          "$PRIV_REGISTRY" "$PRIV_REGISTRY" "$PRIV_PORT" "$PRIV_TOKEN" > "$PRIV_RC"
+        mkdir -p "$PRIV_TMP/pkg"
+        echo '{ "name": "@autoflow/e2e-private-dep", "version": "1.0.0", "main": "index.js" }' > "$PRIV_TMP/pkg/package.json"
+        echo 'module.exports = { source: "e2e-private-registry" };' > "$PRIV_TMP/pkg/index.js"
+        ( cd "$PRIV_TMP/pkg" && HOME="$PRIV_TMP/home" npm pack --silent --pack-destination "$PRIV_TMP" >/dev/null 2>&1 ) || true
+        if HOME="$PRIV_TMP/home" npm publish "$PRIV_TMP/autoflow-e2e-private-dep-1.0.0.tgz" \
+             --userconfig "$PRIV_RC" --registry "$PRIV_REGISTRY" --ignore-scripts >/dev/null 2>&1; then
+          E2E_PRIVATE_REGISTRY_ENABLED=1
+          export E2E_NPM_REGISTRY_URL="$PRIV_REGISTRY"
+          export E2E_NPM_REGISTRY_TOKEN="$PRIV_TOKEN"
+          export E2E_PRIVATE_DEP_NAME='@autoflow/e2e-private-dep'
+          export E2E_PRIVATE_DEP_SPEC='@autoflow/e2e-private-dep@1.0.0'
+          echo "私服场景已启用：$PRIV_REGISTRY（fixture 已发布，executor 将以 NPM_REGISTRY_URL 指向它）"
+        else
+          echo "⚠ 私服 fixture 发布失败，场景跳过（npm publish 退出码非 0）"
+        fi
+      else
+        echo "⚠ 私服临时用户创建失败（token 为空；ready=$PRIV_READY port=${PRIV_PORT:-空} resp=$(printf '%s' "$PRIV_USER_RESP" | head -c 160 | tr '\n' ' ')），场景跳过"
+      fi
+    else
+      echo "⚠ 私服 Verdaccio 容器启动失败，场景跳过：$(tail -2 "$PRIV_TMP/docker-run.log" 2>/dev/null | tr '\n' ' ')"
+    fi
+  fi
+fi
+[[ "$E2E_PRIVATE_REGISTRY_ENABLED" == "1" ]] || echo "私服场景未启用（E2E_PRIVATE_REGISTRY=$PRIVATE_REGISTRY_MODE；用例 44 将跳过）"
+
 echo "══ [4/6] 启动 executor-node(:$PORT_EXECUTOR) ══"
 (
   cd apps/executor-node
@@ -163,6 +267,8 @@ echo "══ [4/6] 启动 executor-node(:$PORT_EXECUTOR) ══"
     EXECUTOR_ADDRESS=localhost:$PORT_EXECUTOR \
     ADMIN_API_URL=http://localhost:$PORT_API \
     WORK_DIR=$EXEC_WORK_DIR \
+    ${E2E_NPM_REGISTRY_URL:+NPM_REGISTRY_URL=$E2E_NPM_REGISTRY_URL} \
+    ${E2E_NPM_REGISTRY_TOKEN:+NPM_REGISTRY_TOKEN=$E2E_NPM_REGISTRY_TOKEN} \
     node dist/main.js
 ) >"$LOG_DIR/executor-node.log" 2>&1 &
 PIDS+=($!)

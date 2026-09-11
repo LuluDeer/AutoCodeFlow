@@ -1747,3 +1747,55 @@ test.describe('security-redline-ssrf', () => {
     console.log('  ✓ 未携带 token 建订阅 → 401');
   });
 });
+
+// ── BUG-18 端到端：私服依赖派发（e2e-full.sh 以 E2E_PRIVATE_REGISTRY 启用）──────
+// 任务经 admin-api 创建 → 平台派发 → executor 用私服凭据安装 requirements。
+// 此前只覆盖到「注册表侧直连私服」与「executor 单测」，本用例补上平台全链：
+//   ① 执行成功（安装失败会直接体现为 failed）；
+//   ② 依赖确实落在 <workDir>/.node_modules/<taskId>/node_modules，内容来自私服 fixture；
+//   ③ 锁文件记录私服地址（证明来源不是公共 npm）；
+//   ④ 任务依赖目录内无 .npmrc（凭据不落任务树）。
+// 注意（2026-09-11 首次实跑结论）：本用例当前载体是 glueSource（glue-script 任务），
+// 而 admin-api 的 CreateTaskDto 明确「requirements ... Ignored by glue-script tasks」
+// → 依赖不会安装，执行必然 failed（glue require 报 MODULE_NOT_FOUND，已实测）。
+// 要闭环需换非 glue 载体：repoUrl（本地 git fixture）+ 相对 entrypoint，形态见
+// examples/private-registry-deps-node/task.example.json。故场景默认关闭
+// （E2E_PRIVATE_REGISTRY=1 才跑），CI/本地默认行为不受影响。
+test.describe('private-registry (BUG-18)', () => {
+  test('44. 私服依赖由 executor 装到任务依赖目录，凭据不落任务树', async ({ request }) => {
+    test.skip(
+      !process.env.E2E_NPM_REGISTRY_URL,
+      '未启用私服场景（默认关闭；E2E_PRIVATE_REGISTRY=1 且需换非 glue 载体才可能通过）',
+    );
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const depName = process.env.E2E_PRIVATE_DEP_NAME || '@autoflow/e2e-private-dep';
+    const depSpec = process.env.E2E_PRIVATE_DEP_SPEC || `${depName}@1.0.0`;
+    const marker = 'e2e-private-registry';
+    const workRoot = process.env.E2E_WORK_DIR || '/tmp/acf-e2e-tasks';
+
+    const executor = await getFirstOnlineExecutor(request);
+    const task = await apiCreateTask(request, {
+      name: 'e2e-private-registry-' + Date.now().toString().slice(-6),
+      triggerType: 'manual',
+      runtime: 'node',
+      entrypoint: 'index.js',
+      executorId: executor.id,
+      requirements: [depSpec],
+      glueLanguage: 'javascript',
+      glueSource: `const dep = require('${depName}');\nconsole.log('PRIVATE_DEP_SOURCE=' + dep.source);\n`,
+      maxRetry: 0,
+    });
+    await apiTriggerTask(request, task.id);
+    const exec = await apiWaitExecution(request, task.id, 90000);
+    expect(exec.status, `执行未成功（安装链路失败会在此暴露）`).toBe('success');
+
+    const depRoot = path.join(workRoot, '.node_modules', task.id);
+    const depDir = path.join(depRoot, 'node_modules', ...depName.split('/'));
+    expect(fs.existsSync(path.join(depDir, 'index.js')), `依赖未落盘：${depDir}`).toBe(true);
+    expect(fs.readFileSync(path.join(depDir, 'index.js'), 'utf8')).toContain(marker);
+    expect(fs.readFileSync(path.join(depRoot, 'package-lock.json'), 'utf8')).toContain('127.0.0.1:');
+    expect(fs.existsSync(path.join(depRoot, '.npmrc')), '凭据 .npmrc 落进了任务依赖目录').toBe(false);
+    console.log(`  ✓ 私服依赖端到端：任务 ${task.id} 从 ${process.env.E2E_NPM_REGISTRY_URL} 安装成功`);
+  });
+});
