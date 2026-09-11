@@ -8,6 +8,7 @@ import {
   CopyOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
   CheckSquareOutlined, FileTextOutlined,
 } from '@ant-design/icons';
+import { Trans, useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { tasksApi, Task } from '../api/tasks';
@@ -18,20 +19,22 @@ import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 
 const { Text } = Typography;
 
 type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
-const STATUS_CONFIG: Record<string, { badge: BadgeStatus; label: string; color: string }> = {
-  active: { badge: 'success', label: '运行中', color: 'green' },
-  paused: { badge: 'warning', label: '已暂停', color: 'orange' },
-  inactive: { badge: 'default', label: '未激活', color: 'default' },
-  failed: { badge: 'error', label: '失败', color: 'red' },
-};
+const STATUS_CONFIG = (t: (k: string) => string): Record<string, { badge: BadgeStatus; label: string; color: string }> => ({
+  active: { badge: 'success', label: t('taskList.status.active'), color: 'green' },
+  paused: { badge: 'warning', label: t('taskList.status.paused'), color: 'orange' },
+  inactive: { badge: 'default', label: t('taskList.status.inactive'), color: 'default' },
+  failed: { badge: 'error', label: t('taskList.status.failed'), color: 'red' },
+});
 
-const TRIGGER_LABEL: Record<string, string> = {
-  manual: '手动', cron: 'Cron', fixed_rate: '定时', dependency: '依赖',
-};
+const TRIGGER_LABEL = (t: (k: string) => string): Record<string, string> => ({
+  manual: t('taskList.trigger.manual'), cron: t('taskList.trigger.cron'), fixed_rate: t('taskList.trigger.fixed_rate'), dependency: t('taskList.trigger.dependency'),
+});
 
 const TRIGGER_COLOR: Record<string, string> = {
   manual: 'default', cron: 'blue', fixed_rate: 'geekblue', dependency: 'purple',
@@ -39,6 +42,7 @@ const TRIGGER_COLOR: Record<string, string> = {
 
 export default function TaskListPage() {
   const nav = useNavigate();
+  const { t } = useTranslation();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [triggerFilter, setTriggerFilter] = useState<string | undefined>();
@@ -79,29 +83,29 @@ export default function TaskListPage() {
   const handleBatchTrigger = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
-    try { await tasksApi.batchTrigger(selectedRowKeys); message.success(`已触发 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, '批量触发失败')); }
+    try { await tasksApi.batchTrigger(selectedRowKeys); message.success(t('taskList.batchTriggered', { count: selectedRowKeys.length })); setSelectedRowKeys([]); refresh(); }
+    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchTriggerFail'))); }
     finally { setBatchLoading(false); }
   };
   const handleBatchPause = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
-    try { await tasksApi.batchPause(selectedRowKeys); message.success(`已暂停 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, '批量暂停失败')); }
+    try { await tasksApi.batchPause(selectedRowKeys); message.success(t('taskList.batchPaused', { count: selectedRowKeys.length })); setSelectedRowKeys([]); refresh(); }
+    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchPauseFail'))); }
     finally { setBatchLoading(false); }
   };
   const handleBatchResume = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
-    try { await tasksApi.batchResume(selectedRowKeys); message.success(`已恢复 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, '批量恢复失败')); }
+    try { await tasksApi.batchResume(selectedRowKeys); message.success(t('taskList.batchResumed', { count: selectedRowKeys.length })); setSelectedRowKeys([]); refresh(); }
+    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchResumeFail'))); }
     finally { setBatchLoading(false); }
   };
   const handleBatchDelete = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
-    try { await tasksApi.batchDelete(selectedRowKeys); message.success(`已删除 ${selectedRowKeys.length} 个任务`); setSelectedRowKeys([]); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, '批量删除失败')); }
+    try { await tasksApi.batchDelete(selectedRowKeys); message.success(t('taskList.batchDeleted', { count: selectedRowKeys.length })); setSelectedRowKeys([]); refresh(); }
+    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchDeleteFail'))); }
     finally { setBatchLoading(false); }
   };
 
@@ -120,11 +124,11 @@ export default function TaskListPage() {
         Object.entries(triggerParams).filter(([k]) => k.trim())
       );
       await tasksApi.trigger(triggerTarget.id, Object.keys(params).length > 0 ? params : undefined);
-      message.success(`已触发: ${triggerTarget.name}`);
+      message.success(t('taskList.triggered', { name: triggerTarget.name }));
       setTriggerTarget(null);
       setTimeout(refresh, 1000);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '触发失败'));
+      message.error(getErrMsg(err, t('taskList.triggerFail')));
     } finally {
       setTriggering(false);
     }
@@ -133,22 +137,22 @@ export default function TaskListPage() {
   const handlePause = async (id: string) => {
     if (togglingId) return;
     setTogglingId(id);
-    try { await tasksApi.pause(id); message.success('已暂停'); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, '暂停失败')); }
+    try { await tasksApi.pause(id); message.success(t('taskList.paused')); refresh(); }
+    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.pauseFail'))); }
     finally { setTogglingId(null); }
   };
 
   const handleResume = async (id: string) => {
     if (togglingId) return;
     setTogglingId(id);
-    try { await tasksApi.resume(id); message.success('已恢复'); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, '恢复失败')); }
+    try { await tasksApi.resume(id); message.success(t('taskList.resumed')); refresh(); }
+    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.resumeFail'))); }
     finally { setTogglingId(null); }
   };
 
   const handleDelete = async (id: string) => {
-    try { await tasksApi.delete(id); message.success('已删除'); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, '删除失败')); }
+    try { await tasksApi.delete(id); message.success(t('taskList.deleted')); refresh(); }
+    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.deleteFail'))); }
   };
 
   // CORE-03-lite：一键克隆——复制任务全部可编辑字段生成 "-copy-" 副本，
@@ -190,10 +194,10 @@ export default function TaskListPage() {
       };
       Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
       const created = await tasksApi.create(payload);
-      message.success(`已克隆为 ${cloneName}（参数与依赖引用原样复制）`);
+      message.success(t('taskList.cloned', { name: cloneName }));
       nav(`/tasks/${created.id}`);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '克隆失败'));
+      message.error(getErrMsg(err, t('taskList.cloneFail')));
     } finally {
       setCloningId(null);
     }
@@ -206,9 +210,11 @@ export default function TaskListPage() {
     onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
     onCell: () => ({ className: 'ui09-hide-mobile' }),
   } as const;
+  const statusConfig = STATUS_CONFIG(t);
+  const triggerLabel = TRIGGER_LABEL(t);
   const columns = [
     {
-      title: '任务名称',
+      title: t('taskList.col.name'),
       key: 'name',
       sorter: (a: Task, b: Task) => a.name.localeCompare(b.name),
       render: (_: unknown, r: Task) => (
@@ -219,35 +225,35 @@ export default function TaskListPage() {
       ),
     },
     {
-      title: '状态',
+      title: t('taskList.col.status'),
       dataIndex: 'status',
       width: 90,
       render: (s: string) => {
-        const cfg = STATUS_CONFIG[s] || { badge: 'default', label: s, color: 'default' };
+        const cfg = statusConfig[s] || { badge: 'default', label: s, color: 'default' };
         return <Badge status={cfg.badge} text={cfg.label} />;
       },
     },
     {
-      title: '触发方式',
+      title: t('taskList.col.trigger'),
       dataIndex: 'triggerType',
       width: 100,
       ...hideOnMobile,
       render: (v: string) => (
-        <Tag color={TRIGGER_COLOR[v] || 'default'}>{TRIGGER_LABEL[v] || v}</Tag>
+        <Tag color={TRIGGER_COLOR[v] || 'default'}>{triggerLabel[v] || v}</Tag>
       ),
     },
     {
-      title: '优先级',
+      title: t('taskList.col.priority'),
       key: 'priority',
       width: 80,
       ...hideOnMobile,
       render: (_: unknown, r: Task) => {
-        const t = priorityTag(r.priority);
-        return <Tag color={t.color}>{t.label}</Tag>;
+        const t2 = priorityTag(r.priority);
+        return <Tag color={t2.color}>{t2.label}</Tag>;
       },
     },
     {
-      title: '调度',
+      title: t('taskList.col.schedule'),
       key: 'schedule',
       width: 160,
       ...hideOnMobile,
@@ -257,44 +263,44 @@ export default function TaskListPage() {
         }
         if (r.triggerType === 'fixed_rate' && r.fixedRate) {
           const secs = r.fixedRate;
-          if (secs < 60) return <Text type="secondary" style={{ fontSize: 12 }}>每 {secs} 秒</Text>;
+          if (secs < 60) return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.schedule.sec', { sec: secs })}</Text>;
           const mins = Math.floor(secs / 60);
           const rem = secs % 60;
-          const label = rem > 0 ? `${mins} 分 ${rem} 秒` : `${mins} 分钟`;
-          return <Text type="secondary" style={{ fontSize: 12 }}>每 {label}</Text>;
+          const label = rem > 0 ? t('taskList.schedule.minSec', { min: mins, sec: rem }) : t('taskList.schedule.min', { min: mins });
+          return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.schedule.sec', { sec: label })}</Text>;
         }
-        return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+        return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
       },
     },
     {
-      title: '下次执行',
+      title: t('taskList.col.nextRun'),
       key: 'nextRun',
       width: 150,
       ...hideOnMobile,
       render: (_: unknown, r: Task) => {
-        if (r.status !== 'active') return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+        if (r.status !== 'active') return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
         if (r.triggerType === 'cron' && r.cronExpression) {
           return (
-            <Tooltip title="下次 Cron 触发时间">
-              <Tag color="blue" style={{ fontSize: 11 }}>Cron 计划中</Tag>
+            <Tooltip title={t('taskList.nextRun.cronTooltip')}>
+              <Tag color="blue" style={{ fontSize: 11 }}>{t('taskList.nextRun.cronScheduled')}</Tag>
             </Tooltip>
           );
         }
         if (r.triggerType === 'fixed_rate' && r.fixedRate) {
-          return <Tag color="geekblue" style={{ fontSize: 11 }}>定时运行中</Tag>;
+          return <Tag color="geekblue" style={{ fontSize: 11 }}>{t('taskList.nextRun.fixedRunning')}</Tag>;
         }
-        return <Text type="secondary" style={{ fontSize: 12 }}>手动触发</Text>;
+        return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.manual')}</Text>;
       },
     },
     {
-      title: '运行时',
+      title: t('taskList.col.runtime'),
       dataIndex: 'runtime',
       width: 80,
       ...hideOnMobile,
       render: (v: string) => v ? <Tag>{v}</Tag> : '-',
     },
     {
-      title: '启用',
+      title: t('taskList.col.enabled'),
       key: 'toggle',
       width: 70,
       render: (_: unknown, r: Task) => (
@@ -308,25 +314,25 @@ export default function TaskListPage() {
       ),
     },
     {
-      title: '操作',
+      title: t('taskList.col.actions'),
       key: 'actions',
       width: 160,
       render: (_: unknown, r: Task) => (
         <Space size={2}>
-          <Tooltip title="查看详情">
+          <Tooltip title={t('taskList.action.detail')}>
             <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => nav(`/tasks/${r.id}`)} />
           </Tooltip>
-          <Tooltip title="编辑">
+          <Tooltip title={t('taskList.action.edit')}>
             <Button type="text" size="small" icon={<EditOutlined />} onClick={() => nav(`/tasks/${r.id}/edit`)} />
           </Tooltip>
-          <Tooltip title="克隆（复制全部配置创建副本）">
+          <Tooltip title={t('taskList.action.clone')}>
             <Button
               type="text" size="small" icon={<CopyOutlined />}
               loading={cloningId === r.id}
               onClick={() => handleClone(r)}
             />
           </Tooltip>
-          <Tooltip title="立即执行">
+          <Tooltip title={t('taskList.action.trigger')}>
             <Button
               type="text" size="small" icon={<ThunderboltOutlined />}
               onClick={() => handleTrigger(r.id, r.name, r.params)}
@@ -334,11 +340,11 @@ export default function TaskListPage() {
             />
           </Tooltip>
           <Popconfirm
-            title="确认删除此任务？"
+            title={t('taskList.deleteConfirm')}
             onConfirm={() => handleDelete(r.id)}
-            okText="删除" okButtonProps={{ danger: true }}
+            okText={t('taskList.ok')} okButtonProps={{ danger: true }}
           >
-            <Tooltip title="删除">
+            <Tooltip title={t('taskList.action.delete')}>
               <Button type="text" size="small" icon={<DeleteOutlined />} danger />
             </Tooltip>
           </Popconfirm>
@@ -351,16 +357,16 @@ export default function TaskListPage() {
     <div>
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，操作按钮进 extra） */}
       <PageHeader
-        title="任务调度"
-        description={<>共 {total} 个任务</>}
+        title={t('taskList.title')}
+        description={t('taskList.total', { count: total })}
         extra={
           <>
             {/* CORE-03: 任务模板入口——从预置/自定义模板一键克隆 config */}
             <Button icon={<FileTextOutlined />} onClick={() => nav('/task-templates')}>
-              任务模板
+              {t('taskList.templates')}
             </Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => nav('/tasks/new')}>
-              创建任务
+              {t('taskList.create')}
             </Button>
           </>
         }
@@ -369,7 +375,7 @@ export default function TaskListPage() {
       {/* UI-09：筛选区 wrap 堆叠（Space wrap 已有），输入/选择窄屏自适应宽度 */}
       <Space style={{ marginBottom: 16 }} wrap className="ui09-filter-bar">
         <Input
-          placeholder="搜索任务名、描述"
+          placeholder={t('taskList.searchPlaceholder')}
           prefix={<SearchOutlined />}
           value={search}
           onChange={e => setSearch(e.target.value)}
@@ -377,37 +383,37 @@ export default function TaskListPage() {
           style={{ width: 220, maxWidth: '100%' }}
         />
         <Select
-          placeholder="全部状态"
+          placeholder={t('taskList.statusAll')}
           allowClear
           style={{ width: 110, maxWidth: '100%' }}
           value={statusFilter}
           onChange={setStatusFilter}
           suffixIcon={<FilterOutlined />}
           options={[
-            { value: 'active', label: '运行中' },
-            { value: 'paused', label: '已暂停' },
+            { value: 'active', label: t('taskList.status.active') },
+            { value: 'paused', label: t('taskList.status.paused') },
           ]}
         />
         <Select
-          placeholder="触发方式"
+          placeholder={t('taskList.triggerAll')}
           allowClear
           style={{ width: 120, maxWidth: '100%' }}
           value={triggerFilter}
           onChange={setTriggerFilter}
           options={[
-            { value: 'manual', label: '手动' },
-            { value: 'cron', label: 'Cron' },
-            { value: 'fixed_rate', label: '固定间隔' },
+            { value: 'manual', label: t('taskList.trigger.manual') },
+            { value: 'cron', label: t('taskList.trigger.cron') },
+            { value: 'fixed_rate', label: t('taskList.trigger.fixed_rate') },
           ]}
         />
         {hasFilters && (
           <Button size="small" onClick={() => { setSearch(''); setStatusFilter(undefined); setTriggerFilter(undefined); }}>
-            清除筛选
+            {t('taskList.clearFilters')}
           </Button>
         )}
         {hasFilters && (
           <Text type="secondary" style={{ fontSize: 13 }}>
-            共 {total} 条
+            {t('taskList.count', { count: total })}
           </Text>
         )}
       </Space>
@@ -415,37 +421,37 @@ export default function TaskListPage() {
       {selectedRowKeys.length > 0 && (
         <div style={{ background: '#e6f4ff', border: '1px solid #91caff', borderRadius: 6, padding: '8px 16px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <CheckSquareOutlined style={{ color: '#1677ff' }} />
-          <Text>已选 <strong>{selectedRowKeys.length}</strong> 项</Text>
-          <Button size="small" icon={<ThunderboltOutlined />} loading={batchLoading} disabled={batchLoading} onClick={handleBatchTrigger}>批量触发</Button>
-          <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchPause}>批量暂停</Button>
-          <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchResume}>批量恢复</Button>
-          <Popconfirm title={`确认删除 ${selectedRowKeys.length} 个任务？`} onConfirm={handleBatchDelete} okText="删除" okButtonProps={{ danger: true }}>
-            <Button size="small" danger icon={<DeleteOutlined />} loading={batchLoading} disabled={batchLoading}>批量删除</Button>
+          <Text><Trans i18nKey="taskList.selected" values={{ count: selectedRowKeys.length }}><strong>0</strong></Trans></Text>
+          <Button size="small" icon={<ThunderboltOutlined />} loading={batchLoading} disabled={batchLoading} onClick={handleBatchTrigger}>{t('taskList.batchTrigger')}</Button>
+          <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchPause}>{t('taskList.batchPause')}</Button>
+          <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchResume}>{t('taskList.batchResume')}</Button>
+          <Popconfirm title={t('taskList.batchTrigger.confirm', { count: selectedRowKeys.length })} onConfirm={handleBatchDelete} okText={t('taskList.ok')} okButtonProps={{ danger: true }}>
+            <Button size="small" danger icon={<DeleteOutlined />} loading={batchLoading} disabled={batchLoading}>{t('taskList.batchDelete')}</Button>
           </Popconfirm>
-          <Button size="small" disabled={batchLoading} onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+          <Button size="small" disabled={batchLoading} onClick={() => setSelectedRowKeys([])}>{t('taskList.cancelSelect')}</Button>
         </div>
       )}
 
       <Modal
-        title={<Space><ThunderboltOutlined /> 立即触发：{triggerTarget?.name}</Space>}
+        title={<Space><ThunderboltOutlined /> {t('taskList.triggerModal.title', { name: triggerTarget?.name })}</Space>}
         open={!!triggerTarget}
         onCancel={() => setTriggerTarget(null)}
         onOk={handleTriggerConfirm}
-        okText="触发"
+        okText={t('taskList.trigger')}
         okButtonProps={{ loading: triggering, icon: <ThunderboltOutlined /> }}
-        cancelText="取消"
+        cancelText={t('taskList.cancel')}
         width={520}
         destroyOnHidden
       >
         <Alert
           type="info"
           showIcon
-          title="运行时参数（可选）"
-          description="此处填写的参数会覆盖任务默认参数，以 AUTOFLOW_<KEY> 环境变量注入任务。留空则使用任务默认参数。"
+          title={t('taskList.triggerParams.title')}
+          description={t('taskList.triggerParams.desc')}
           style={{ marginBottom: 16 }}
         />
         <Form layout="vertical">
-          <Form.Item label="执行参数">
+          <Form.Item label={t('taskList.params.label')}>
             <ParamsEditor
               value={triggerParams}
               onChange={setTriggerParams}
@@ -459,7 +465,7 @@ export default function TaskListPage() {
       {error && (
         <StateError
           error={error}
-          title="任务列表加载失败"
+          title={t('taskList.error.title')}
           onRetry={() => void refetch()}
           style={{ marginBottom: 16 }}
         />
@@ -478,15 +484,15 @@ export default function TaskListPage() {
           current: page,
           pageSize,
           onChange: (p, ps) => { setPage(p); setPageSize(ps ?? 20); },
-          showTotal: (t) => `共 ${t} 条`,
+          showTotal: (t2) => t('taskList.count', { count: t2 }),
           showSizeChanger: true,
         }}
         locale={{
           emptyText: hasFilters
-            ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配任务" />
+            ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskList.empty.noMatch')} />
             : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无任务">
-                <Button type="primary" onClick={() => nav('/tasks/new')}>创建第一个任务</Button>
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskList.empty.none')}>
+                <Button type="primary" onClick={() => nav('/tasks/new')}>{t('taskList.empty.createFirst')}</Button>
               </Empty>
             ),
         }}
