@@ -834,6 +834,33 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # ── QA-12：desktop Electron 冒烟（Playwright _electron，3 例）─────────
+  # windows-latest：QA-12 的既定触发面即是 Windows（托盘/Linux 无托盘语义
+  # 差异大，Linux 侧已由 desktop-linux-bundle 的 test:main + 本机冒烟覆盖）。
+  # 只跑 PR / 手动：Electron GUI 启动在 runner 上有偶发显示层 flake，不进
+  # 每次 develop push（desktop-linux-bundle 同姿态）。
+  desktop-e2e-smoke:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/executor-desktop/package-lock.json
+      - run: npm ci
+        working-directory: apps/executor-desktop
+      - name: Build main + renderer + executor bundle
+        working-directory: apps/executor-desktop
+        run: npm run build
+      - name: Playwright _electron smoke (QA-12, 3 cases)
+        working-directory: apps/executor-desktop
+        env:
+          # Windows runner 无 X/显示抽象，electron 需要软件渲染兜底
+          ELECTRON_DISABLE_GPU: '1'
+        run: npm run test:e2e
+
   # ── SDK 文档站构建验证（ECO-05）+ 源头文档同步校验（DOC-09）──────
   # ① DOC-09 sync-check：packages/docs-site 是仓库文档的镜像视图（版本号/
   #    截断常量/failureReason 枚举/CallbackItemDto 字段/env 注入表/能力矩阵/
