@@ -1764,8 +1764,8 @@ test.describe('security-redline-ssrf', () => {
 test.describe('private-registry (BUG-18)', () => {
   test('44. 私服依赖由 executor 装到任务依赖目录，凭据不落任务树', async ({ request }) => {
     test.skip(
-      !process.env.E2E_NPM_REGISTRY_URL,
-      '未启用私服场景（默认关闭；E2E_PRIVATE_REGISTRY=1 且需换非 glue 载体才可能通过）',
+      !process.env.E2E_NPM_REGISTRY_URL || !process.env.E2E_PRIVATE_DEP_REPO_URL,
+      '未启用私服场景（默认关闭；E2E_PRIVATE_REGISTRY=1 提供 registry + git 源码 fixture 才跑）',
     );
     const fs = require('node:fs');
     const path = require('node:path');
@@ -1775,15 +1775,16 @@ test.describe('private-registry (BUG-18)', () => {
     const workRoot = process.env.E2E_WORK_DIR || '/tmp/acf-e2e-tasks';
 
     const executor = await getFirstOnlineExecutor(request);
+    // 载体必须非 glue：admin-api DTO 明确 requirements 对 glue-script 任务无效
+    // → 用 gitRepo（本地 bare 仓库 fixture）+ 仓库内相对 entrypoint。
     const task = await apiCreateTask(request, {
       name: 'e2e-private-registry-' + Date.now().toString().slice(-6),
       triggerType: 'manual',
       runtime: 'node',
       entrypoint: 'index.js',
+      gitRepo: process.env.E2E_PRIVATE_DEP_REPO_URL,
       executorId: executor.id,
       requirements: [depSpec],
-      glueLanguage: 'javascript',
-      glueSource: `const dep = require('${depName}');\nconsole.log('PRIVATE_DEP_SOURCE=' + dep.source);\n`,
       maxRetry: 0,
     });
     await apiTriggerTask(request, task.id);
