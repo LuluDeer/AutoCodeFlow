@@ -1,6 +1,17 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "include-component-in-tag": false,
+  "plugins": [
+    {
+      "type": "linked-versions",
+      "groupName": "autocodeflow",
+      "components": [
+        "autocodeflow-sdk",
+        "autocodeflow-mcp-server",
+        "autoflow-sdk"
+      ]
+    }
+  ],
   "packages": {
     "packages/autocodeflow-node-sdk": {
       "release-type": "node",
@@ -8,11 +19,17 @@
     },
     "packages/mcp-server": {
       "release-type": "node",
-      "component": "autocodeflow-mcp-server"
+      "component": "autocodeflow-mcp-server",
+      "extra-files": [
+        "src/index.ts"
+      ]
     },
     "packages/autoflow-sdk": {
       "release-type": "python",
-      "component": "autoflow-sdk"
+      "component": "autoflow-sdk",
+      "extra-files": [
+        "autoflow_sdk/__init__.py"
+      ]
     }
   }
 }
