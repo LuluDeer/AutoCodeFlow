@@ -65,6 +65,23 @@ export interface OutboxDispatcherLike {
   enqueue(eventType: string, payload: Record<string, unknown>): Promise<void>;
 }
 
+/**
+ * Aggregate outcome of one outbox redelivery pass.  A dead letter counts as
+ * settled only when its persistence succeeded; persistence failures remain
+ * explicitly visible to the outbox caller so the source row stays retryable.
+ */
+export interface DeliveryAggregate {
+  targetCount: number;
+  deliveredCount: number;
+  deadLetteredCount: number;
+  deadLetterPersistenceFailures: number;
+}
+
+type DeliveryOutcome =
+  | { kind: "delivered" }
+  | { kind: "dead-lettered" }
+  | { kind: "dead-letter-persistence-failure" };
+
 @Injectable()
 export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(OutboundEventDispatcher.name);
@@ -196,7 +213,7 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     sub: EventSubscription,
     eventName: string,
     payload: ReturnType<typeof buildEventPayload>,
-  ): Promise<void> {
+  ): Promise<DeliveryOutcome> {
     let lastError = "unknown error";
     for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
       if (attempt > 1) {
@@ -206,7 +223,7 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
       try {
         await this.deliverOnce(sub, eventName, payload);
         await this.safeRecordSuccess(sub);
-        return;
+        return { kind: "delivered" };
       } catch (err: unknown) {
         lastError = err instanceof Error ? err.message : String(err);
         this.logger.warn(
@@ -214,7 +231,7 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
         );
       }
     }
-    await this.parkDeadLetter(sub, eventName, payload, lastError);
+    return this.parkDeadLetter(sub, eventName, payload, lastError);
   }
 
   /** 单次投递：SSRF 复核（订阅 url 可能被并发 PATCH，出站前再验一次）→ 签名 POST。 */
@@ -282,17 +299,24 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** 终败：死信落库 + 订阅失败统计 + warn 日志（全部兜底，不再外抛）。 */
+  /**
+   * 终败：死信落库 + 订阅失败统计 + warn 日志。
+   *
+   * The persistence result is part of the outcome.  The outbox caller must not
+   * mark its source row dispatched when this write failed, otherwise the event
+   * would be lost while the subscription dead-letter API still has no record.
+   */
   private async parkDeadLetter(
     sub: EventSubscription,
     eventName: string,
     payload: ReturnType<typeof buildEventPayload>,
     lastError: string,
-  ): Promise<void> {
+  ): Promise<DeliveryOutcome> {
     const error = lastError.slice(0, 1024);
     this.logger.warn(
       `Outbound delivery to subscription ${sub.id} (${eventName}) dead-lettered after ${MAX_DELIVERY_ATTEMPTS} attempts: ${error}`,
     );
+    let persisted = false;
     try {
       await this.deadLetterRepo.save(
         this.deadLetterRepo.create({
@@ -303,6 +327,7 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
           attempts: MAX_DELIVERY_ATTEMPTS,
         }),
       );
+      persisted = true;
     } catch (err: unknown) {
       this.logger.error(
         `Failed to persist dead letter for subscription ${sub.id}: ${
@@ -319,6 +344,9 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
         }`,
       );
     }
+    return persisted
+      ? { kind: "dead-lettered" }
+      : { kind: "dead-letter-persistence-failure" };
   }
 
   // ─── FEAT-19: outbox 补投复用的派发面 ──────────────────────────────────────
@@ -335,7 +363,7 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
   async deliverToSubscribers(
     eventName: string,
     payload: ReturnType<typeof buildEventPayload>,
-  ): Promise<void> {
+  ): Promise<DeliveryAggregate> {
     let subs: EventSubscription[];
     try {
       subs = await this.subRepo.find({
@@ -352,10 +380,26 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     const targets = subs.filter((s) =>
       subscriptionMatches(s.eventTypes, eventName),
     );
-    if (targets.length === 0) return;
-    await Promise.all(
+    if (targets.length === 0) {
+      return {
+        targetCount: 0,
+        deliveredCount: 0,
+        deadLetteredCount: 0,
+        deadLetterPersistenceFailures: 0,
+      };
+    }
+    const outcomes = await Promise.all(
       targets.map((sub) => this.deliverWithRetries(sub, eventName, payload)),
     );
+    return {
+      targetCount: targets.length,
+      deliveredCount: outcomes.filter((o) => o.kind === "delivered").length,
+      deadLetteredCount: outcomes.filter((o) => o.kind === "dead-lettered")
+        .length,
+      deadLetterPersistenceFailures: outcomes.filter(
+        (o) => o.kind === "dead-letter-persistence-failure",
+      ).length,
+    };
   }
 
   // ─── replay（controller 经 service 校验属主后调用）──────────────────────────

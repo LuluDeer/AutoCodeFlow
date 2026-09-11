@@ -8,9 +8,14 @@
  *   返回），OnModuleInit 时 + 每 5s 扫描 dispatchedAt IS NULL 且
  *   deadLettered=false 的行，逐行补投；成功回写 dispatchedAt，失败
  *   attempts+1 + nextAttemptAt 指数退避（5s 基座封顶 5min），超过
- *   MAX_OUTBOX_ATTEMPTS 落 event_subscription_dead_letters 并置
+ *   MAX_OUTBOX_ATTEMPTS 落 event_outbox_dead_letters 并置
  *   deadLettered=true（行终态）。进程重启后扫描自然恢复——不丢任何已落库
  *   待投事件（at-least-once；订阅方须幂等）。
+ *
+ *   死信表选型：outbox 行按事件落库、逐行投给多个订阅，不属于任何单一订阅，
+ *   因此终态归档走独立的 event_outbox_dead_letters（无 subscriptionId FK），
+ *   不再复用 event_subscription_dead_letters 的哨兵 subscriptionId（PG 侧 FK
+ *   会拒收无主行，此前只能靠日志兜底）。
  *
  * 设计要点：
  * - 派发实现复用 OutboundEventDispatcher.deliverOnce（同签名/同 SSRF 复核/
@@ -34,7 +39,7 @@ import { DataSource, IsNull, MoreThan, Repository } from "typeorm";
 import { randomUUID } from "node:crypto";
 import { EventSubscription } from "./entities/event-subscription.entity";
 import { EventOutbox } from "./entities/event-outbox.entity";
-import { EventSubscriptionDeadLetter } from "./entities/event-subscription-dead-letter.entity";
+import { EventOutboxDeadLetter } from "./entities/event-outbox-dead-letter.entity";
 import {
   MAX_DELIVERY_ATTEMPTS,
   MAX_OUTBOX_ATTEMPTS,
@@ -83,6 +88,13 @@ if (OUTBOX_LEASE_MS <= OUTBOX_MAX_ROW_PROCESSING_MS) {
  */
 export const OUTBOUND_DISPATCHER_TOKEN = Symbol("OUTBOUND_DISPATCHER_TOKEN");
 
+class StaleOutboxOwnerError extends Error {
+  constructor() {
+    super("outbox lease lost before dead-letter finalization");
+    this.name = "StaleOutboxOwnerError";
+  }
+}
+
 /** OutboundEventDispatcher 的结构最小面（本服务消费的入口）。 */
 interface OutboundDispatcherLike {
   deliverToSubscribers(
@@ -92,7 +104,12 @@ interface OutboundDispatcherLike {
       occurredAt: string;
       data: Record<string, unknown>;
     },
-  ): Promise<void>;
+  ): Promise<{
+    targetCount: number;
+    deliveredCount: number;
+    deadLetteredCount: number;
+    deadLetterPersistenceFailures: number;
+  }>;
 }
 
 @Injectable()
@@ -113,8 +130,8 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     private readonly outboxRepo: Repository<EventOutbox>,
     @InjectRepository(EventSubscription)
     private readonly subRepo: Repository<EventSubscription>,
-    @InjectRepository(EventSubscriptionDeadLetter)
-    private readonly deadLetterRepo: Repository<EventSubscriptionDeadLetter>,
+    @InjectRepository(EventOutboxDeadLetter)
+    private readonly outboxDeadLetterRepo: Repository<EventOutboxDeadLetter>,
   ) {
     // ConfigService 缺席（极简单测装配）时按默认开启兜底。
     this.enabled =
@@ -256,10 +273,36 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     try {
       // 复用既有派发器（进程内重试语义含 SSRF 复核/退避/死信/统计）——
       // outbox 只负责「跨进程不丢」的兜底语义。
-      await dispatcher.deliverToSubscribers(
+      const aggregate = await dispatcher.deliverToSubscribers(
         row.eventType,
         row.payload as never,
       );
+      // Marking dispatched is only safe when every target is either delivered
+      // or represented by a reliably persisted subscription dead letter. A
+      // persistence failure (or an incomplete/malformed aggregate) keeps the
+      // source row retryable so the event cannot disappear silently.
+      const settledTargetCount =
+        (aggregate?.deliveredCount ?? 0) + (aggregate?.deadLetteredCount ?? 0);
+      const persistenceFailures =
+        aggregate?.deadLetterPersistenceFailures ?? 0;
+      const aggregateSettled =
+        aggregate?.targetCount === 0 ||
+        (aggregate?.targetCount === settledTargetCount &&
+          persistenceFailures === 0);
+      if (!aggregateSettled) {
+        this.logger.warn(
+          `Outbox row ${row.id} kept retryable: delivery aggregate is not settled ` +
+            `(targets=${aggregate?.targetCount ?? "unknown"}, settled=${settledTargetCount}, ` +
+            `persistenceFailures=${persistenceFailures})`,
+        );
+        await this.handleFailure(
+          row,
+          new Error(
+            `delivery aggregate unsettled (dead letter persistence failures: ${persistenceFailures})`,
+          ),
+        );
+        return;
+      }
       await this.markDispatched(row);
     } catch (err: unknown) {
       await this.handleFailure(row, err);
@@ -305,60 +348,51 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Outbox row ${row.id} (${row.eventType}) dead-lettered after ${attempts} attempts: ${message}`,
       );
-      // 终态回写与死信落库解耦：先收敛行（不再扫描），死信落库 best-effort
-      // ——dead_letters.subscriptionId 有 FK（哨兵 id 无对应订阅行时插入被
-      // 拒），若两者同 try，死信失败会拖住终态导致该行无限重投。
-      let finalized = false;
+      // Persist the independent outbox dead letter first. Only after that
+      // succeeds may the guarded source-row update make the event terminal.
+      // This intentionally leaves the row retryable when persistence fails.
       try {
-        const result = await this.outboxRepo.update(
-          {
-            id: row.id,
-            dispatchedAt: IsNull(),
-            deadLettered: false,
-            leaseToken: row.leaseToken,
-            leaseUntil: MoreThan(new Date()),
-          },
-          {
-            deadLettered: true,
-            attempts,
-            nextAttemptAt: null,
-            leaseUntil: null,
-            leaseToken: null,
-          },
-        );
-        finalized = result.affected === 1;
-        if (!finalized) {
-          this.logger.warn(
-            `Outbox row ${row.id} dead-letter finalize skipped: lease lost`,
+        await this.dataSource.transaction(async (manager) => {
+          await manager.getRepository(EventOutboxDeadLetter).save(
+            manager.getRepository(EventOutboxDeadLetter).create({
+              outboxId: row.id,
+              eventType: row.eventType,
+              payload: row.payload,
+              attempts,
+              lastError: message,
+              deadLetteredAt: new Date(),
+            }),
           );
+          const result = await manager.getRepository(EventOutbox).update(
+            {
+              id: row.id,
+              dispatchedAt: IsNull(),
+              deadLettered: false,
+              leaseToken: row.leaseToken,
+              leaseUntil: MoreThan(new Date()),
+            },
+            {
+              deadLettered: true,
+              attempts,
+              nextAttemptAt: null,
+              leaseUntil: null,
+              leaseToken: null,
+            },
+          );
+          if (result.affected !== 1) throw new StaleOutboxOwnerError();
+        });
+      } catch (dbErr: unknown) {
+        if (dbErr instanceof StaleOutboxOwnerError) {
+          this.logger.warn(`Outbox row ${row.id} dead-letter finalize skipped: lease lost`);
+          return;
         }
-      } catch (dbErr: unknown) {
         this.logger.error(
-          `Failed to finalize outbox row ${row.id}: ${
+          `Failed to persist/finalize outbox row ${row.id}: ${
             dbErr instanceof Error ? dbErr.message : String(dbErr)
           }`,
         );
-      }
-      // A stale owner must not create a dead letter after its token was
-      // replaced (or its lease expired). The guarded UPDATE is the ownership
-      // decision; only its single-row success authorizes the insert.
-      if (!finalized) return;
-      try {
-        await this.deadLetterRepo.save(
-          this.deadLetterRepo.create({
-            subscriptionId: OutboxDispatcher.OUTBOX_SUBSCRIPTION_ID,
-            eventType: row.eventType,
-            payload: row.payload,
-            error: message,
-            attempts,
-          }),
-        );
-      } catch (dbErr: unknown) {
-        this.logger.error(
-          `Failed to persist outbox dead letter for row ${row.id}: ${
-            dbErr instanceof Error ? dbErr.message : String(dbErr)
-          }`,
-        );
+        // The transaction rolls back both operations, leaving the source row
+        // retryable and allowing a later scan to retry the dead-letter write.
       }
       return;
     }
@@ -427,13 +461,4 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     return this.scanning;
   }
 
-  /**
-   * outbox 死信的归属标记：outbox 行不属于任何单一订阅（按事件落库，逐行
-   * 投给多个订阅），落 event_subscription_dead_letters 需要一个 subscriptionId
-   * ——用全零 uuid 哨兵（不在 FK 校验范围内则依赖调用方自行处理；PG 侧
-   * dead_letters 表有 FK，无对应订阅行时插入会被拒——落库失败仅记日志，
-   * outbox 行由 deadLettered 终态自行收敛，语义不受影响）。
-   */
-  static readonly OUTBOX_SUBSCRIPTION_ID =
-    "00000000-0000-4000-8000-000000000000";
 }
