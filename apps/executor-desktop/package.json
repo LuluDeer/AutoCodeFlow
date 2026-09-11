@@ -9,6 +9,7 @@
     "build:executor": "bash scripts/bundle-executor.sh",
     "build:main": "tsc -p tsconfig.json",
     "build:renderer": "vite build --config vite.renderer.config.ts",
+    "test:renderer": "node src/renderer/renderer.selftest.mjs",
     "build": "npm run build:executor && npm run build:main && npm run build:renderer",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
