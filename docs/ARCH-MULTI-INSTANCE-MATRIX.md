@@ -1,6 +1,6 @@
 # ARCH-31：多 admin-api 实例兼容矩阵
 
-> 状态：审计盘点（unclaimed → documented）。范围：`apps/admin-api/src`。
+> 状态：documented/blocked（盘点已完成；通知静默、渠道配置、灰度批次（rollout）、outbox 的多实例改造及对应真机验证未完成）。范围：`apps/admin-api/src`。
 > 目的：盘点全部**进程内单例状态**，标注每一项在多实例（水平扩容 / 滚动重启 /
 > 无会话粘滞负载均衡）下的兼容性、失效后果与风险等级，并给出 outbox / silence
 > 两项的 Redis 化评估。
@@ -8,6 +8,9 @@
 > 结论速览：调度链（Leader Election + DB claim）已多实例安全；**通知静默**、
 > **渠道配置**、**灰度批次**、**本地文件系统**四类仍是单实例假设，是水平扩容的
 > 主要约束。
+>
+> 本文保留已完成的盘点/评估事实，不代表多实例实现完成；后续按 silence、channel
+> config、rollout、outbox 四项拆分实现，并逐项执行双实例验证。
 
 ---
 
@@ -223,6 +226,15 @@ Redis 已是硬依赖则 B。`ChannelConfigStore` 同理——它甚至没有 DB
   「单实例内存态当共享态用」的典型。
 - **建议加固**：outbox 行级 claim（4.1）、`@Cron` 统一 Leader 门禁（3.8，可抽
   `@LeaderOnly()` 装饰器复用 scheduler 的 `isLeader`/Redis 锁，fail-open 语义一致）。
+
+### 后续实现拆分（均未完成）
+
+1. **silence**：先做 DB 增量读穿/短 TTL 回灌，必要时再做 Redis key + pub/sub 同步 L1；验证 A 建静默、B 告警仍被静默。
+2. **channel config**：为渠道配置补共享持久化（优先复用 `system_config`，或采用 Redis），再验证 A 保存、B 发送使用同一配置。
+3. **rollout**：把批次属主状态与心跳确认改为跨实例可协调的持久化/租约语义，覆盖非属主心跳、重启恢复与超时路径。
+4. **outbox**：先实现 DB 行级 claim/lease（或经拍板改为 Redis worker），再验证快速路径与补投的重复边界及订阅方幂等。
+
+以上拆分只登记后续实现与验证，不将当前盘点、方案评估或既有单实例安全项计为已完成。
 
 ### 真机双实例验证清单（后续）
 
