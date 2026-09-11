@@ -1,0 +1,41 @@
+/* ============================================================
+   UI-12：无障碍第一阶段——可见焦点样式与「跳到主要内容」链接
+
+   · 焦点环：antd 组件默认焦点表现不统一（部分图标按钮仅剩浏览器默认虚线），
+     统一为 2px 实线 + 2px 偏移，仅对 :focus-visible 生效（鼠标点击不出现
+     难看的残留焦点框）。
+   · 跳转链接：默认移出视口，聚焦时滑入——键盘用户可跳过整条侧边栏导航，
+     鼠标/触屏用户零感知。
+   · 作用域收敛在 .autoflow-layout：避免污染登录页等壳层之外的界面。
+   ============================================================ */
+
+.autoflow-layout .a11y-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 1100;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 14px;
+  line-height: 20px;
+  text-decoration: none;
+}
+
+.autoflow-layout .a11y-skip-link:focus,
+.autoflow-layout .a11y-skip-link:focus-visible {
+  left: 8px;
+  top: 8px;
+}
+
+.autoflow-layout :focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
+}
+
+/* 主内容 landmark 作为跳转落点被聚焦时不显示焦点框（它不是交互控件） */
+.autoflow-layout #main-content:focus,
+.autoflow-layout #main-content:focus-visible {
+  outline: none;
+}
