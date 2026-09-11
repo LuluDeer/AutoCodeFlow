@@ -30,20 +30,43 @@ import {
 import { ModuleRef } from "@nestjs/core";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
-import { IsNull, LessThan, Repository } from "typeorm";
+import { DataSource, IsNull, MoreThan, Repository } from "typeorm";
 import { randomUUID } from "node:crypto";
 import { EventSubscription } from "./entities/event-subscription.entity";
 import { EventOutbox } from "./entities/event-outbox.entity";
 import { EventSubscriptionDeadLetter } from "./entities/event-subscription-dead-letter.entity";
 import {
+  MAX_DELIVERY_ATTEMPTS,
   MAX_OUTBOX_ATTEMPTS,
+  OUTBOUND_TIMEOUT_MS,
   outboxRetryDelayMs,
+  retryDelayMs,
 } from "./event-subscription.util";
 
 /** 扫描间隔（毫秒）。 */
 export const OUTBOX_SCAN_INTERVAL_MS = 5_000;
-/** 单轮扫描最多取行数（防积压瞬间打满出站）。 */
-export const OUTBOX_BATCH_SIZE = 50;
+/**
+ * 单轮只 claim 一行：processRow 串行执行，而单行派发最坏是 3×10s HTTP
+ * timeout + 1s + 2s retry backoff = 33s。批量 claim 会让后续未开始的行共享
+ * 同一租约并在 60s 内过期，因此宁可让积压跨多个扫描周期，也不扩大重复投递窗。
+ */
+export const OUTBOX_BATCH_SIZE = 1;
+/**
+ * 单行在正常派发窗口内的最长时间：每个订阅的重试是串行的，但同一 outbox
+ * 行的多个订阅由 deliverToSubscribers 并行执行，因此时间上界不随订阅数相乘。
+ */
+export const OUTBOX_MAX_ROW_PROCESSING_MS =
+  MAX_DELIVERY_ATTEMPTS * OUTBOUND_TIMEOUT_MS +
+  retryDelayMs(1) +
+  retryDelayMs(2);
+/** 单行租约的有效期；过期后其它实例可安全回收。 */
+export const OUTBOX_LEASE_MS = 60_000;
+
+if (OUTBOX_LEASE_MS <= OUTBOX_MAX_ROW_PROCESSING_MS) {
+  throw new Error(
+    "OUTBOX_LEASE_MS must exceed the normal worst-case single-row processing window",
+  );
+}
 
 /**
  * FEAT-19 依赖方向说明（与 OUTBOX_DISPATCHER_TOKEN 对称）：OutboundEventDispatcher
@@ -85,6 +108,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly moduleRef: ModuleRef,
     private readonly configService: ConfigService,
+    private readonly dataSource: DataSource,
     @InjectRepository(EventOutbox)
     private readonly outboxRepo: Repository<EventOutbox>,
     @InjectRepository(EventSubscription)
@@ -151,25 +175,33 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     if (this.scanning) return 0;
     this.scanning = true;
     try {
-      // 应投 = 未派发 + 非死信 + （无退避指针 或 退避指针已到期）。
-      // TypeORM where 数组=OR 语义；每个分支自带 deadLettered=false 守卫。
+      // claim 必须在数据库内完成：单条 UPDATE/CTE 先用 FOR UPDATE
+      // SKIP LOCKED 选行再写租约，不能依赖进程内 scanning 互斥（多实例各自
+      // 都会进入此处）。活动租约被跳过，过期租约可由本轮回收。
       const now = new Date();
-      const rows = await this.outboxRepo.find({
-        where: [
-          {
-            dispatchedAt: IsNull(),
-            deadLettered: false,
-            nextAttemptAt: IsNull(),
-          },
-          {
-            dispatchedAt: IsNull(),
-            deadLettered: false,
-            nextAttemptAt: LessThan(now),
-          },
-        ],
-        order: { createdAt: "ASC" },
-        take: OUTBOX_BATCH_SIZE,
-      });
+      const leaseUntil = new Date(now.getTime() + OUTBOX_LEASE_MS);
+      const rows = (await this.dataSource.query(
+        `
+          WITH "claimable" AS (
+            SELECT "id"
+            FROM "event_outbox"
+            WHERE "dispatchedAt" IS NULL
+              AND "deadLettered" = false
+              AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= $1)
+              AND ("leaseUntil" IS NULL OR "leaseUntil" <= $1)
+            ORDER BY "createdAt" ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+          )
+          UPDATE "event_outbox" AS "outbox"
+          SET "leaseUntil" = $3,
+              "leaseToken" = md5(random()::text || clock_timestamp()::text)
+          FROM "claimable"
+          WHERE "outbox"."id" = "claimable"."id"
+          RETURNING "outbox".*
+        `,
+        [now, OUTBOX_BATCH_SIZE, leaseUntil],
+      )) as EventOutbox[];
       for (const row of rows) {
         try {
           await this.processRow(row);
@@ -234,12 +266,23 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** 成功（或无订阅）终态：回写 dispatchedAt、清退避指针。 */
+  /** 成功（或无订阅）终态：仅租约持有者可回写并释放租约。 */
   private async markDispatched(row: EventOutbox): Promise<void> {
     try {
       await this.outboxRepo.update(
-        { id: row.id },
-        { dispatchedAt: new Date(), nextAttemptAt: null },
+        {
+          id: row.id,
+          dispatchedAt: IsNull(),
+          deadLettered: false,
+          leaseToken: row.leaseToken,
+          leaseUntil: MoreThan(new Date()),
+        },
+        {
+          dispatchedAt: new Date(),
+          nextAttemptAt: null,
+          leaseUntil: null,
+          leaseToken: null,
+        },
       );
     } catch (err: unknown) {
       // 终态回写失败：行保持未派发 → 下轮重投（at-least-once 允许重复）。
@@ -265,11 +308,30 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       // 终态回写与死信落库解耦：先收敛行（不再扫描），死信落库 best-effort
       // ——dead_letters.subscriptionId 有 FK（哨兵 id 无对应订阅行时插入被
       // 拒），若两者同 try，死信失败会拖住终态导致该行无限重投。
+      let finalized = false;
       try {
-        await this.outboxRepo.update(
-          { id: row.id },
-          { deadLettered: true, attempts, nextAttemptAt: null },
+        const result = await this.outboxRepo.update(
+          {
+            id: row.id,
+            dispatchedAt: IsNull(),
+            deadLettered: false,
+            leaseToken: row.leaseToken,
+            leaseUntil: MoreThan(new Date()),
+          },
+          {
+            deadLettered: true,
+            attempts,
+            nextAttemptAt: null,
+            leaseUntil: null,
+            leaseToken: null,
+          },
         );
+        finalized = result.affected === 1;
+        if (!finalized) {
+          this.logger.warn(
+            `Outbox row ${row.id} dead-letter finalize skipped: lease lost`,
+          );
+        }
       } catch (dbErr: unknown) {
         this.logger.error(
           `Failed to finalize outbox row ${row.id}: ${
@@ -277,6 +339,10 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           }`,
         );
       }
+      // A stale owner must not create a dead letter after its token was
+      // replaced (or its lease expired). The guarded UPDATE is the ownership
+      // decision; only its single-row success authorizes the insert.
+      if (!finalized) return;
       try {
         await this.deadLetterRepo.save(
           this.deadLetterRepo.create({
@@ -299,10 +365,18 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     const delay = outboxRetryDelayMs(attempts);
     try {
       await this.outboxRepo.update(
-        { id: row.id },
+        {
+          id: row.id,
+          dispatchedAt: IsNull(),
+          deadLettered: false,
+          leaseToken: row.leaseToken,
+          leaseUntil: MoreThan(new Date()),
+        },
         {
           attempts,
           nextAttemptAt: new Date(Date.now() + delay),
+          leaseUntil: null,
+          leaseToken: null,
         },
       );
     } catch (dbErr: unknown) {
@@ -333,6 +407,8 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           dispatchedAt: null,
           attempts: 0,
           nextAttemptAt: null,
+          leaseUntil: null,
+          leaseToken: null,
           deadLettered: false,
         }),
       );
