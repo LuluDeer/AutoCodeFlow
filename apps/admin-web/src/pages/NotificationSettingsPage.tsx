@@ -8,6 +8,7 @@ import { silencesApi, type NotificationSilence, type CreateSilencePayload, type 
 import { getErrMsg } from '../utils/error';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
+import StateError from '../components/StateError';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -347,7 +348,7 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
   const scope: SilenceScope = Form.useWatch('scope', form) ?? 'global';
 
   // 仅在「静默规则」Tab 激活时拉取（useRequest ready），避免进入页面即发 ADMIN-only 请求
-  const { data: silences, loading, refresh } = useRequest(silencesApi.list, { ready: active });
+  const { data: silences, loading, refresh, error } = useRequest(silencesApi.list, { ready: active });
 
   const { run: createRule, loading: creating } = useRequest(
     async (payload: CreateSilencePayload) => {
@@ -472,15 +473,20 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
         </Form>
       </Card>
       <Card type="inner" title="静默规则列表" style={{ marginTop: 16 }}>
-        <Table
-          loading={loading}
-          dataSource={silences ?? []}
-          rowKey="id"
-          columns={cols}
-          size="small"
-          pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }}
-          locale={{ emptyText: '暂无静默规则' }}
-        />
+        {/* UI-16：列表请求失败 → 页内错误块（重试=refresh），不落「暂无静默规则」误导空态 */}
+        {error ? (
+          <StateError error={error} title="静默规则加载失败" onRetry={refresh} />
+        ) : (
+          <Table
+            loading={loading}
+            dataSource={silences ?? []}
+            rowKey="id"
+            columns={cols}
+            size="small"
+            pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }}
+            locale={{ emptyText: '暂无静默规则' }}
+          />
+        )}
       </Card>
     </div>
   );
@@ -494,7 +500,7 @@ export default function NotificationSettingsPage() {
   const user = useAuthStore((s) => s.user);
   const isAdmin = isAdminUser(user);
 
-  const { data: channels, loading, refresh } = useRequest(notificationApi.getChannels);
+  const { data: channels, loading, refresh, error: channelsError } = useRequest(notificationApi.getChannels);
   const channel = channels?.find((c) => c.key === activeTab);
 
   const { run: sendTest, loading: sending } = useRequest(
@@ -584,14 +590,21 @@ export default function NotificationSettingsPage() {
         title="通知设置"
         description="配置告警通知渠道（邮件/Slack/钉钉/企业微信）、静默规则与全局测试发送。"
       />
-      <Card loading={loading}>
-        {/* W1：ChannelConfigForm 自带渠道私有 form 与测试状态，切 Tab 无需 resetFields */}
-        <Tabs
-          activeKey={activeTab}
-          onChange={(k) => { setActiveTab(k); }}
-          items={tabItems2}
-        />
-      </Card>
+      {/* UI-16：渠道列表请求失败且无任何缓存数据 → 页内错误块（重试=refresh）；
+          此前失败会停在 Card loading 后的空白，用户既看不到原因也无重试入口。
+          已有缓存时（如刷新失败）保持展示旧数据，不打断阅读。 */}
+      {channelsError && !channels ? (
+        <StateError error={channelsError} title="通知渠道加载失败" onRetry={refresh} />
+      ) : (
+        <Card loading={loading}>
+          {/* W1：ChannelConfigForm 自带渠道私有 form 与测试状态，切 Tab 无需 resetFields */}
+          <Tabs
+            activeKey={activeTab}
+            onChange={(k) => { setActiveTab(k); }}
+            items={tabItems2}
+          />
+        </Card>
+      )}
 
       <Card title="全局测试" style={{ marginTop: 16 }}>
         <Form
