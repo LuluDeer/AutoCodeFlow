@@ -229,6 +229,39 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
     expect(axiosPost).not.toHaveBeenCalled();
   });
 
+  it("deliverToSubscribers：全成功返回目标/成功聚合", async () => {
+    subRepoMock.find.mockResolvedValue([
+      makeSub(),
+      makeSub({ id: "33333333-3333-4333-8333-333333333333" }),
+    ]);
+    const result = await dispatcher.deliverToSubscribers(
+      "execution.failed",
+      { event: "execution.failed", occurredAt: "t", data: {} },
+    );
+    expect(result).toEqual({
+      targetCount: 2,
+      deliveredCount: 2,
+      deadLetteredCount: 0,
+      deadLetterPersistenceFailures: 0,
+    });
+  });
+
+  it("deliverToSubscribers：无目标返回零聚合", async () => {
+    subRepoMock.find.mockResolvedValue([makeSub({ eventTypes: ["executor.offline"] })]);
+    await expect(
+      dispatcher.deliverToSubscribers("execution.failed", {
+        event: "execution.failed",
+        occurredAt: "t",
+        data: {},
+      }),
+    ).resolves.toEqual({
+      targetCount: 0,
+      deliveredCount: 0,
+      deadLetteredCount: 0,
+      deadLetterPersistenceFailures: 0,
+    });
+  });
+
   it("失败重试：最多 3 次尝试后死信落库 + 失败统计", async () => {
     jest.useFakeTimers();
     try {
@@ -247,6 +280,51 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
       expect(dl.attempts).toBe(3);
       expect(dl.error).toContain("ECONNREFUSED");
       expect(subServiceMock.recordDeliveryFailure).toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("deliverToSubscribers：全可靠死信返回 deadLettered 聚合", async () => {
+    jest.useFakeTimers();
+    try {
+      subRepoMock.find.mockResolvedValue([makeSub()]);
+      axiosPost.mockRejectedValue(new Error("down"));
+      const resultPromise = dispatcher.deliverToSubscribers("execution.failed", {
+        event: "execution.failed",
+        occurredAt: "t",
+        data: {},
+      });
+      await jest.runAllTimersAsync();
+      await expect(resultPromise).resolves.toEqual({
+        targetCount: 1,
+        deliveredCount: 0,
+        deadLetteredCount: 1,
+        deadLetterPersistenceFailures: 0,
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("deliverToSubscribers：死信写失败返回 persistence failure", async () => {
+    jest.useFakeTimers();
+    try {
+      subRepoMock.find.mockResolvedValue([makeSub()]);
+      axiosPost.mockRejectedValue(new Error("down"));
+      dlRepoMock.save.mockRejectedValueOnce(new Error("dead letter db down"));
+      const resultPromise = dispatcher.deliverToSubscribers("execution.failed", {
+        event: "execution.failed",
+        occurredAt: "t",
+        data: {},
+      });
+      await jest.runAllTimersAsync();
+      await expect(resultPromise).resolves.toEqual({
+        targetCount: 1,
+        deliveredCount: 0,
+        deadLetteredCount: 0,
+        deadLetterPersistenceFailures: 1,
+      });
     } finally {
       jest.useRealTimers();
     }

@@ -3,6 +3,7 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { EventSubscription } from "./entities/event-subscription.entity";
 import { EventSubscriptionDeadLetter } from "./entities/event-subscription-dead-letter.entity";
 import { EventOutbox } from "./entities/event-outbox.entity";
+import { EventOutboxDeadLetter } from "./entities/event-outbox-dead-letter.entity";
 import { EventSubscriptionService } from "./event-subscription.service";
 import { EventSubscriptionController } from "./event-subscription.controller";
 import {
@@ -35,6 +36,7 @@ import {
       EventSubscription,
       EventSubscriptionDeadLetter,
       EventOutbox,
+      EventOutboxDeadLetter,
     ]),
   ],
   controllers: [EventSubscriptionController],

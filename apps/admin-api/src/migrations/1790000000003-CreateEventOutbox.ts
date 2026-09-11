@@ -21,8 +21,9 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * - attempts int 默认 0：outbox 路径累计失败次数（指数退避基数）。
  * - nextAttemptAt timestamptz 可空：下次补投时刻（失败后 = now + 退避，
  *   封顶 5min）；扫描按它排序取应投行。
- * - deadLettered boolean 默认 false：超过 MAX_OUTBOX_ATTEMPTS 后落
- *   event_subscription_dead_letters 并置 true（行终态，不再扫描）。
+ * - deadLettered boolean 默认 false：source-level outbox 超过 MAX_OUTBOX_ATTEMPTS 后落
+ *   event_outbox_dead_letters（由迁移 1790000000013 创建）并置 true（行终态，
+ *   不再扫描）。具体订阅投递失败由 event_subscription_dead_letters 承载。
  *
  * 幂等：CREATE TABLE / INDEX IF NOT EXISTS；重复执行与 revert 重放均无副作用。
  * 列名驼峰加引号对齐 TypeORM 默认命名策略（先例：1789900000000-CreateEventSubscriptions）。

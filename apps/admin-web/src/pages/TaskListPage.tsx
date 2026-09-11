@@ -17,6 +17,7 @@ import { useDebounce } from '../hooks/useDebounce';
 import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 import PageHeader from '../components/PageHeader';
+import StateError from '../components/StateError';
 
 const { Text } = Typography;
 
@@ -54,7 +55,7 @@ export default function TaskListPage() {
   // 搜索防抖：输入框即时回显 search，列表查询跟随 debounced 值，避免每击键发请求
   const debouncedSearch = useDebounce(search);
 
-  const { data, isLoading: loading } = useTasksList({
+  const { data, isLoading: loading, error, refetch } = useTasksList({
     page,
     pageSize,
     name: debouncedSearch || undefined,
@@ -452,6 +453,17 @@ export default function TaskListPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      {/* UI-16：列表请求失败不再只弹 toast —— 页内原位呈现错误块 + 重试入口
+          （写操作失败仍走 toast，语义不变） */}
+      {error && (
+        <StateError
+          error={error}
+          title="任务列表加载失败"
+          onRetry={() => void refetch()}
+          style={{ marginBottom: 16 }}
+        />
+      )}
 
       <Table
         rowKey="id"

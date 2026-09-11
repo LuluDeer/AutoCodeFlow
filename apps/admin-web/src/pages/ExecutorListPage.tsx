@@ -13,6 +13,7 @@ import { useExecutorsList, useExecutorGroups } from '../api/queries';
 import { client } from '../api/client';
 import { useAuthStore } from '../store/auth';
 import PageHeader from '../components/PageHeader';
+import StateError from '../components/StateError';
 // UI-07：视图切换 / 分组聚合条 / 卡片视图 / 批量操作条 / 实时状态
 import ViewToggle, { readViewMode, writeViewMode, type ExecutorViewMode } from '../components/executor/ViewToggle';
 import GroupFilterBar from '../components/executor/GroupFilterBar';
@@ -36,7 +37,7 @@ export default function ExecutorListPage() {
   // FEAT-17: TanStack Query 改造——useRequest(30s 轮询) 换 useExecutorsList
   // （refetchInterval 承担轮询节奏；状态翻转通知改由 useEffect 监听数据变化，
   // 语义与原 onSuccess 回调一致：首轮建基线不通知，之后翻转才弹）。
-  const { data, isLoading: loading } = useExecutorsList();
+  const { data, isLoading: loading, error, refetch } = useExecutorsList();
 
   useEffect(() => {
     if (!data) return;
@@ -341,6 +342,18 @@ export default function ExecutorListPage() {
         isAdmin={isAdmin}
         onDone={() => setSelectedRowKeys([])}
       />
+
+      {/* UI-16：列表请求失败不再只弹 toast —— 页内原位呈现错误块 + 重试入口
+          （安装命令等写操作失败仍走 Modal.error，语义不变）。错误块与两种视图
+          并列，不塞进三元分支（三元每支只能有一个根元素）。 */}
+      {error ? (
+        <StateError
+          error={error}
+          title="执行器列表加载失败"
+          onRetry={() => void refetch()}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
 
       {viewMode === 'card' ? (
         <ExecutorCardGrid

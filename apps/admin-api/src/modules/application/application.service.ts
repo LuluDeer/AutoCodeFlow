@@ -3,12 +3,14 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
+  ForbiddenException,
   OnModuleInit,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ModuleRef } from "@nestjs/core";
 import { Repository, IsNull, Or, In } from "typeorm";
 import { Application, ApplicationStatus } from "./entities/application.entity";
+import { UserRole } from "../users/entities/user.entity";
 import {
   CreateApplicationDto,
   UpdateApplicationDto,
@@ -255,7 +257,30 @@ export class ApplicationService implements OnModuleInit {
       .getOne();
   }
 
-  async create(dto: CreateApplicationDto): Promise<Application> {
+  /**
+   * NF-03（任务级 RBAC 预研）：写面属主守卫。语义与 task.service.assertCanWrite
+   * 一致（ADMIN 全量 / 属主自己 / NULL 无主仅 ADMIN）。user 为 null（API-Key
+   * 主体等）按非 ADMIN。
+   */
+  assertCanWrite(
+    row: { ownerUserId: number | null },
+    user: { id: number; role: UserRole } | null | undefined,
+  ): void {
+    if (user?.role === UserRole.ADMIN) return;
+    if (row.ownerUserId === null) {
+      throw new ForbiddenException(
+        "This application has no owner (legacy row); only admins can modify it",
+      );
+    }
+    if (row.ownerUserId !== user?.id) {
+      throw new ForbiddenException("You do not own this application");
+    }
+  }
+
+  async create(
+    dto: CreateApplicationDto,
+    user?: { id: number } | null,
+  ): Promise<Application> {
     const existing = await this.findByName(dto.name);
     if (existing) {
       throw new ConflictException(`Application "${dto.name}" already exists`);
@@ -266,6 +291,8 @@ export class ApplicationService implements OnModuleInit {
       status: dto.gitRepo
         ? ApplicationStatus.DEPLOYING
         : ApplicationStatus.ACTIVE,
+      // NF-03: 创建即落 owner（含 ADMIN 创建——可追溯，为 AUTH-02 读面预铺）
+      ownerUserId: user?.id ?? null,
     });
     const saved = await this.repo.save(app);
     this.logger.log(`Application created: ${saved.name} (${saved.id})`);
@@ -287,7 +314,19 @@ export class ApplicationService implements OnModuleInit {
     return saved;
   }
 
-  async update(id: string, dto: UpdateApplicationDto): Promise<Application> {
+  async update(
+    id: string,
+    dto: UpdateApplicationDto,
+    user?: { id: number; role: UserRole } | null,
+    opts?: { systemBypass?: boolean },
+  ): Promise<Application> {
+    // NF-03: 写面属主守卫（先取原始行再校验，避免脱敏面误判）。
+    // systemBypass：机器面（发版 webhook HMAC 已鉴权）更新版本号不走
+    // 用户属主语义——webhook 是 @Public CI 通道，无 AuthUser 可言。
+    if (!opts?.systemBypass) {
+      const owned = await this.findByIdRaw(id);
+      this.assertCanWrite(owned, user);
+    }
     // R1: load the RAW row, never the masked findById() result — saving a
     // masked entity back would persist '***' over the real secret env
     // values (webhook version bumps and upload upserts both flow through
@@ -314,8 +353,13 @@ export class ApplicationService implements OnModuleInit {
     path.join(process.cwd(), "uploads", "packages"),
   );
 
-  async remove(id: string): Promise<void> {
+  async remove(
+    id: string,
+    user?: { id: number; role: UserRole } | null,
+  ): Promise<void> {
     const app = await this.findById(id);
+    // NF-03: 写面属主守卫（同 update）
+    this.assertCanWrite(app, user);
     await this.repo.remove(app);
     // R18/R9c: the application row may point at a locally served package
     // (uploads/packages/<file>.zip). The old remove() left that file behind,

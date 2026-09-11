@@ -74,6 +74,14 @@ export class Application {
   @Column({ type: "uuid", nullable: true })
   projectId: string | null;
 
+  /**
+   * NF-03（任务级 RBAC 预研）：创建者用户 id。语义与 tasks.ownerUserId
+   * 一致（NULL=无主仅 ADMIN 可改；写面守卫 application.service.assertCanWrite；
+   * 不加 FK，悬垂 id=非本人 → 403 方向安全）。
+   */
+  @Column({ type: "integer", nullable: true })
+  ownerUserId: number | null;
+
   @CreateDateColumn() createdAt: Date;
 
   @UpdateDateColumn() updatedAt: Date;

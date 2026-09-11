@@ -39,7 +39,7 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
   }
   return (
     <div className="copy-row">
-      <span className="copy-val" style={{ fontFamily: mono ? undefined : 'inherit' }}>{value || '—'}</span>
+      <span className={`copy-val${mono ? '' : ' copy-val-plain'}`}>{value || '—'}</span>
       {value && value !== '—' && (
         <button className={`copy-btn${copied ? ' copied' : ''}`} onClick={copy}>
           {copied ? '已复制 ✓' : '复制'}
@@ -172,7 +172,7 @@ function LogViewer({
             );
           })}
           {logs.length === 0 && (
-            <span style={{ color: '#666', fontStyle: 'italic' }}>等待日志输出...</span>
+            <span className="log-empty">等待日志输出...</span>
           )}
         </div>
 
@@ -181,7 +181,7 @@ function LogViewer({
           <div className="log-fs-files">
             <div className="log-fs-files-title">历史日志文件</div>
             {logFiles.length === 0
-              ? <div style={{ color: '#888', fontSize: 12, padding: '8px 0' }}>暂无日志文件</div>
+              ? <div className="log-files-empty">暂无日志文件</div>
               : logFiles.map((f) => (
                   <button
                     key={f.path}
@@ -289,7 +289,7 @@ export default function StatusWindow() {
         {/* 大状态卡 */}
         <div className="hero-card">
           <div className={`hero-orb ${status}`}>
-            <span style={{ color: '#fff', fontSize: 20 }}>{ORB_EMOJI[status]}</span>
+            <span className="hero-orb-symbol">{ORB_EMOJI[status]}</span>
           </div>
           <div className="hero-info">
             <div className="hero-name">{name}</div>
@@ -317,7 +317,7 @@ export default function StatusWindow() {
         <div className="info-grid">
           <div className="info-card">
             <div className="info-card-label">Admin API</div>
-            <div className="info-card-value" style={{ fontSize: 11, fontFamily: 'SF Mono, Menlo, monospace' }}>{apiUrl}</div>
+            <div className="info-card-value info-card-value-mono">{apiUrl}</div>
           </div>
           <div className="info-card">
             <div className="info-card-label">对外地址</div>
@@ -348,7 +348,7 @@ export default function StatusWindow() {
           </div>
           <div className="log-viewer" ref={logRef} onScroll={handleScroll}>
             {logs.length === 0
-              ? <span style={{ color: '#666', fontStyle: 'italic' }}>等待日志输出...</span>
+              ? <span className="log-empty">等待日志输出...</span>
               : logs.map((line, i) => (
                   <div key={i} className={`log-line ${classifyLog(line)}`}>{line}</div>
                 ))

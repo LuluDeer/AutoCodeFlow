@@ -22,7 +22,9 @@ vi.mock('../api/tasks', () => ({
   },
 }));
 vi.mock('../api/execution-reports', () => ({
-  executionReportsApi: { report: vi.fn() },
+  executionReportsApi: {
+    report: vi.fn().mockResolvedValue({ execution: {}, timeline: [], report: null }),
+  },
 }));
 vi.mock('../api/metrics', () => ({ metricsApi: {} }));
 

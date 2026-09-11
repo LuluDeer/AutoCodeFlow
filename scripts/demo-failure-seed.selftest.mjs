@@ -6,6 +6,7 @@
  */
 import assert from "node:assert/strict";
 import {
+  ALL_EXECUTIONS_PATH,
   DEFAULT_DEADEND_HOST,
   DEMO_FAILURE_PREFIX,
   approvalAppDef,
@@ -16,6 +17,7 @@ import {
   hasFailedExecution,
   hasPendingApproval,
   unwrap,
+  listAll,
 } from "./demo-failure-seed.mjs";
 
 let passed = 0;
@@ -81,10 +83,16 @@ test("deadLetterSubDef 参数化主机（--deadend-host 覆盖面）", () => {
   assert.equal(sub.url, "http://198.51.100.7/hooks/autoflow-drill");
 });
 
-test("审批应用：approvalRequired=true（DEP-04 冻结语义依据）", () => {
+test("审批应用 payload 满足 CreateApplicationDto 且 approvalRequired=true", () => {
   const app = approvalAppDef();
   assert.equal(app.name, "demo-failure-gated");
+  assert.equal(app.version, "1.0.0");
+  assert.equal(app.runtime, "node");
   assert.equal(app.approvalRequired, true);
+  for (const key of ["name", "version", "runtime"]) {
+    assert.equal(typeof app[key], "string");
+    assert.ok(app[key].trim().length > 0, `${key} must be non-empty`);
+  }
 });
 
 test("findExisting 命中同名资源（幂等复用依据）", () => {
@@ -124,6 +132,67 @@ test("unwrap 拆信封且非信封 passthrough", () => {
   assert.deepEqual(unwrap({ code: 0, message: "ok", data: { a: 1 } }), { a: 1 });
   assert.deepEqual(unwrap({ plain: true }), { plain: true });
 });
+
+// 模拟真实 admin-api 分页响应，验证路由、查询参数及后续幂等判定；不连接真实服务。
+{
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const executionPages = new Map([
+    [1, {
+      list: Array.from({ length: 100 }, (_, i) => ({
+        id: `e-${i}`,
+        taskId: i === 0 ? "fragile-1" : `task-${i}`,
+        status: i === 0 ? "failed" : "success",
+      })),
+      total: 101,
+      page: 1,
+      pageSize: 100,
+      totalPages: 2,
+    }],
+    [2, {
+      list: [{ id: "e-100", taskId: "task-100", status: "success" }],
+      total: 101,
+      page: 2,
+      pageSize: 100,
+      totalPages: 2,
+    }],
+  ]);
+  globalThis.fetch = async (url, options) => {
+    const requestUrl = new URL(url);
+    requests.push({ requestUrl, options });
+    const page = Number(requestUrl.searchParams.get("page"));
+    const payload = executionPages.get(page);
+    assert.ok(payload, `unexpected page ${page}`);
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ code: 0, message: "ok", data: payload }),
+    };
+  };
+  try {
+    const execs = await listAll("http://mock.admin", ALL_EXECUTIONS_PATH, "test-token");
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests.map(({ requestUrl }) => requestUrl.pathname), [
+      ALL_EXECUTIONS_PATH,
+      ALL_EXECUTIONS_PATH,
+    ]);
+    assert.deepEqual(
+      requests.map(({ requestUrl }) => [
+        requestUrl.searchParams.get("page"),
+        requestUrl.searchParams.get("pageSize"),
+      ]),
+      [["1", "100"], ["2", "100"]],
+    );
+    assert.equal(requests[0].options.headers.Authorization, "Bearer test-token");
+    assert.equal(execs.length, 101);
+    assert.equal(hasFailedExecution(execs, "fragile-1"), true);
+    assert.equal(hasFailedExecution(execs, "task-100"), false);
+    passed += 1;
+    console.log("  ok - 全局执行列表路由/分页模拟契约及失败幂等判定");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
 
 console.log(`\n${passed} assertions passed`);
 process.exit(0);
