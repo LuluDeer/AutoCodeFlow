@@ -268,6 +268,15 @@ html[data-theme='dark'] mark.log-search-hit {
     white-space: nowrap;
   }
 
+  /* 页头描述：PageHeader 内层允许收缩，任务名保留全文并可在任意字符处换行。 */
+  .ui09-exec-detail .ui09-pageheader-description {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
   /* 执行日志卡工具条（搜索/级别/复制/下载）最小宽约 448px > 卡头可用
      349px，flex 项 min-width:auto 导致整块顶出内容区（实测右溢 110px）。
      窄屏卡头改纵向堆叠：标题一行，工具条换行占满整行（Space 已带 wrap）。 */
