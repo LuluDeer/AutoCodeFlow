@@ -64,7 +64,7 @@
 
 ### 0.3 近期基线与治理事实（新计划的事实输入）
 
-- **迁移链**：最高时间戳 `1790000000002`（DEP-04 审批列）；`1789900000004/05`（ARCH-22 预留段）未使用。新任务占号前先 `ls apps/admin-api/src/migrations` + 认领板独占声明。
+- **迁移链**：最高时间戳 `1790000000012`（FEAT-19/ARCH-31 outbox lease follow-up）；新迁移已登记 ARCH-29 分配表。新任务占号前先 `ls apps/admin-api/src/migrations` + 认领板独占声明。
 - **coverage 地板**：admin-api 91.6/81.34/78.47/90.6（门槛 75/69/84/84）——QA-02 后已达标，新任务不得拉低。
 - **协作纪律**（历轮 3 次冲突沉淀，常设）：开工前 `git pull --rebase` + `git status` 盘点；未提交改动归其作者会话；`git add` 后立即 commit（dc82ac7 顺带提交事故教训）；executor-node src 改动与 bundle 同 commit（W-18 守卫）；RBAC 收紧前后端同批发布（N11/W2 教训）；API 变更走 PR 模板四查（DOC-01）。
 - **真机矩阵**：QA-04 已固化 VERIFY-MATRIX.md——按变更类型必跑；历轮 P0 前科（BullMQ priority 字符串 enum、迁移链断裂、分步表单 missing）均由真机轮抓出，mock 全绿 ≠ 能跑。
@@ -112,7 +112,7 @@
 | FEAT-16 | P3 | **EventSource 全站 SSE 化推广** | UI-14 仅 Dashboard 接流；Executions 列表 15s 轮询、执行器详情 30s 轮询保留 | 按 ARCH-26+UI-14 模式渐进：Executions 列表流+事件驱动推送（execution 终态主动 emit） | 切页零重复拉取；终态刷新 <3s |
 | FEAT-17 | P3 | **ARCH-26 TanStack Query 全站推广** | 基础设施+两示范页 done，剩 13 处 useRequest 轮询页面 | 逐页换 query hooks（TaskList/Executions 已示范），SSE 数据并入缓存 | 全站 staleTime 统一；写后 invalidate 面收口 |
 | FEAT-18 | P2 | **KILLED 终态领域事件补发** | ARCH-21 KILLED 未 emit（载荷类型预留）；FEAT-07 订阅方收不到被杀事件 | kill 链路落库后 emit execution.killed（或 folded failed+status）+ 订阅过滤适配 | kill 端点触发后订阅方收到事件 |
-| FEAT-19 | P2 | **跨进程 outbox（webhook at-least-once）** | FEAT-07 进程内 setTimeout 队列，重启丢在途，replay 人工补发 | outbox 表+后台派发器（FEAT-07 死信表复用），重启续投 | 重启后在途订阅事件最终送达（测试+真机断连重启） |
+| FEAT-19 | P2 | **跨进程 outbox（webhook at-least-once）** | 基础 outbox 表/派发器/FEAT-07 接线已落地；1790000000012 lease follow-up 已补 DB lease/row claim，真实 PostgreSQL 多实例竞争验证仍 pending | outbox 表+后台派发器（FEAT-07 死信表复用）+ DB lease/row claim，重启续投与多实例竞争验证 | 重启后在途订阅事件最终送达；真实 PostgreSQL 双实例竞争无重复 claim |
 | FEAT-20 | P3 | **部署 triggerType 落库** | DEP-01 聚合行 triggerType 按 status 指纹推导，operator 恒 null | app_deployments 增 triggerType/operator 列（写入路径填充）+ 契约同步 | /releases 行 operator 真实可溯 |
 
 ---
@@ -126,7 +126,7 @@
 | NF-01 | P2 | **任务级 API 触发 token** | 任务维度 `POST /api/tasks/:id/trigger` 带 per-task token（AUTH-03 API Key 之后），CI/脚本免登录触发；rate limit 复用 SEC-09 分域 | API Key 与任务 token 双通道真机触发成功；吊销立即 401 |
 | NF-02 | P2 | **执行编排（链式工作流 UI）** | 依赖 DAG 已可视（FEAT-02），缺「编排视图」——依赖创建/批量重跑/失败分支策略（continue/fail-fast）表单化 | 3 任务链从创建到依赖触发全 UI 操作；fail-fast 断言 |
 | NF-03 | P3 | **任务级 RBAC 预研** | AUTH-01 Project 隔离的前置轻量版：任务/应用 owner 字段+非 admin 只能改自己的（不迁移全域，先加列） | 非 admin 用户改他人任务 403；owner 可见性矩阵 |
-| NF-04 | P3 | **执行器标签调度增强** | tags 已有；补「标签亲和+反亲和」调度约束（broadcast/pinning 之外的第三态），loadScore 组合 | 双执行器标签约束真机各一例 |
+| NF-04 | P3 | **执行器标签调度增强** | **后端已完成；admin-web 表单半场已实现，待验收/认领收口**：亲和/反亲和字段与 payload 已接入当前工作区，尚未标 done；tags 已有；补「标签亲和+反亲和」调度约束（broadcast/pinning 之外的第三态），loadScore 组合 | 双执行器标签约束真机各一例；admin-web 半场验收后再销账 |
 | NF-05 | P3 | **通知渠道：Slack/飞书** | 渠道机制已有（webhook/钉钉/企业微信/mail），补 Slack incoming webhook + 飞书 bot 两渠道类型 + 模板变量复用 FEAT-10 | 两渠道真机实收消息 |
 | NF-06 | P2 | **MCP 写面扩容** | ECO-03 后 mcp 12+ 工具偏读面；补 update_task/pause_resume/retry_execution/deploy_app 四写工具（复用 ADMIN token 语义+二次确认文案） | 每工具单测+Claude Desktop 实测脚本 |
 | NF-07 | P3 | **acf-cli 执行器管理命令** | `acf exec tail` 已有；补 `acf executor list/rotate/offline`（对齐 W2 ADMIN 语义）+ `--json` 覆盖 | 三命令单测+真机 |
@@ -144,7 +144,7 @@
 | ARCH-28 | P2 | **根 lockfile/workspace 统一（二期）** | ARCH-20 已统一入口但保持 7 套独立 lockfile、no-hoisting；CI 各 job 重复 npm ci | 评估 pnpm workspace / turbo 缓存管道（含 docs-site），分批迁移，CI 时长对比报告 | 迁移后 test:all/typecheck:all 全绿+CI 时长下降量化 |
 | ARCH-29 | P2 | **迁移时间戳治理** | 迁移号已达 1790000000002，秒级时间戳空间趋紧且多会话撞号风险高（QA-08 前科） | ① 迁移号分配表入认领板常设段（当前占用：1789500000000-01/1789800000000-01/1789900000000-05/1790000000000-02）；② 评估递增序号策略 | 新迁移先查表占号；撞号 CI 拦截 |
 | ARCH-30 | P3 | **AI 分析服务化** | processor AI 直调保留（ARCH-21 范围注记）；ai 库调用失败静默 | AI 分析迁入事件监听器+失败重试队列+aiAnalysis 落库率指标 | handleCallback 零 AI 依赖；失败可观测 |
-| ARCH-31 | P3 | **多 admin 实例调度漂移审计** | Leader Election 双保险已稳，但多实例下 SSE 槽位/webhook 队列/内存 silences 语义分散 | 盘点全部进程内单例状态，产出「多实例兼容矩阵」文档+关键项（outbox/silence） Redis 化 | 矩阵文档+双实例真机验证一轮 |
+| ARCH-31 | P3 | **多 admin 实例调度漂移审计（documented/blocked）** | 盘点矩阵已完成，但 silence/channel config/rollout 与双实例真机验证未完成；outbox DB lease/row claim 代码已落地，真实 PostgreSQL 多实例竞争验证仍 pending；Leader Election 双保险已稳，SSE 槽位/webhook 队列语义仍分散 | 后续拆分 silence（跨实例读穿/Redis 同步）、channel config（共享持久化/Redis）、rollout（批次状态与心跳跨实例协调）；outbox 已补 DB 行级 claim/租约，继续做真实 PostgreSQL 双实例竞争验证 | 矩阵文档+真机双实例验证清单 5 条全部通过后再解除 blocked |
 
 ---
 
@@ -152,7 +152,7 @@
 
 | 编号 | 级别 | 内容 | 说明 | 验收 |
 |---|---|---|---|---|
-| UI-09 | P2 | 移动端适配 | Dashboard/执行列表/执行详情三页响应式（值班场景） | 三页 375px 宽可用；无横向滚动 |
+| UI-09 | P2 | 移动端适配（旧表格半场 + 当前补齐半场进行中） | 旧半场 @3351eb9 已覆盖执行列表/执行详情表格与 MainLayout；当前工作区补充 Dashboard/ExecutionDetail 适配代码与测试，尚未真实浏览器验收 | 三页 375px 宽真实浏览器可用；无横向滚动；验收完成后再销账 |
 | UI-10 | P2 | i18n 框架接入 ⚠️大 | react-i18next，zh-CN 为事实基准默认，语言文件按页面拆分；越晚成本越高 | 框架落地+首页/任务两页示范迁移；其余渐进 |
 | UI-12 | P3 | 键盘可达性与无障碍 | 焦点管理/aria 标签/对比度审计（UI-02 双主题已建基础） | axe 扫描 critical=0 |
 | UI-13 | P3 | desktop 渲染层对齐设计系统 | 自绘暗色 inline style 抽 CSS 变量，共享 design-system 令牌 | desktop 面板与 admin-web 视觉同源 |
@@ -166,7 +166,7 @@
 | 编号 | 级别 | 内容 | 现状 | 目标/验收 |
 |---|---|---|---|---|
 | QA-01 | P1 | E2E 场景扩展（随功能逐批入库） | 29 例基线 | +15 例：依赖 DAG 链路/通知真发(mailhog)/releases 回滚/API Key/静默规则/命令面板/灰度发布/artifacts/维护窗口/**审批流双人**（P0-2 产物收编） |
-| QA-05 | P2 | 并发压测专项（=BUG-19） | scripts/load-test 有底子 | 场景：500 并发执行/1000 任务每分钟入队/SSE 500 连接/回调风暴 10k 每分钟；产出容量白皮书+瓶颈定位；可选 CI 基线 job |
+| QA-05 | P2 | 并发压测专项（=BUG-19，claimed/未完成） | scripts/load-test 有底子，当前仍未完成容量验收 | 场景：500 并发执行/1000 任务每分钟入队/SSE 500 连接/回调风暴 10k 每分钟；产出容量白皮书+瓶颈定位；可选 CI 基线 job |
 | QA-08 | P2 | 跨版本迁移演练月度 job | 双轮幂等 job 已有 | 第三态：存量库跨 3 版本升级演练（v1.0.1→HEAD），CI 月度跑 |
 | QA-10 | P3 | 关键路径性能基准 | 无 | 微基准（handleCallback 批量 100/storeLogLines 万行/dispatch 决策/loadScore）防退化 |
 | QA-11 | P2 | **executor-python 测试稳健性收尾** | unraisable 修复已入库（86bf0ef）；deprecation 警告（Starlette testclient/anyio）仍在 | 评估 CI 加 `-W error::DeprecationWarning` 白名单模式，防第三方升级静默破坏 | CI 无 warning 噪声；strict 模式绿 |
@@ -201,7 +201,7 @@
 ## 10. 新增任务注册表（本期增量 · 认领板同步）
 
 > 本节为 **PLAN-CLAIMS.md 新增行**的镜像（H2 新编号段：P0-1~4 / FEAT-13~20 / NF-01~08 / ARCH-28~31 / UI-15~16 / QA-11~12 / SEC-10 / DOC-07~09）。
-> **沿用原编号的遗留 unclaimed（BUG-04/07/12/17/18/19/20、ECO-04、AUTH-01/02/04、DSK-01~05、ARCH-23/24/25、UI-09/10/12/13、QA-01/05/08/10、SEC-01/09、SEC-NEW-1~3、QA-09）不在此重复注册**——认领行以 PLAN-CLAIMS 总表原行为准，内容见本计划 §2~§9 各池。
+> **沿用原编号的遗留 unclaimed/claimed/in_progress（BUG-04/07/12/17/18/19/20、ECO-04、AUTH-01/02/04、DSK-01~05、ARCH-23/24/25、UI-09/10/12/13、QA-01/05/08/10、SEC-01/09、SEC-NEW-1~3、QA-09）不在此重复注册**——认领行以 PLAN-CLAIMS 总表原行为准，内容见本计划 §2~§9 各池。
 > 规则不变：认领=状态改 claimed + Owner + 文件足迹；完成=done + commit；足迹重叠不得并行。
 
 | 编号 | 优先级 | 状态 | 建议足迹 | 依赖/备注 |
@@ -221,7 +221,7 @@
 | NF-01 任务触发 token | P2 | unclaimed | admin-api task 模块 + 迁移 + 契约 | AUTH-03 后；SEC-09 配套 |
 | NF-02 编排 UI | P2 | unclaimed | admin-web 编排视图新页 + admin-api 依赖策略字段（可能零后端） | FEAT-02 DAG 组件复用 |
 | NF-03 任务 owner 预研 | P3 | unclaimed | admin-api task/application 实体加列 + guard + 迁移 | AUTH-01 前置侦察 |
-| NF-04 标签亲和调度 | P3 | unclaimed | admin-api scheduler/task DTO + 表单 | CORE-05 loadScore 组合 |
+| NF-04 标签亲和调度 | P3 | in_progress | 后端已完成（7494289）；admin-web 半场当前工作区已实现，待验收/认领收口 | 亲和/反亲和字段、表单双字段与 payload 已接入；CORE-05 loadScore 组合；未标 done |
 | NF-05 Slack/飞书渠道 | P3 | unclaimed | admin-api notification 渠道注册表 + settings UI | FEAT-10 模板复用 |
 | NF-06 MCP 写面 | P2 | unclaimed | packages/mcp-server | ADMIN token 语义 |
 | NF-07 CLI 执行器命令 | P3 | unclaimed | packages/acf-cli | W2 语义对齐 |
@@ -229,7 +229,7 @@
 | ARCH-28 workspace 统一 | P2 | unclaimed | 根 package.json + CI workflows | 决策+迁移，二期大项 |
 | ARCH-29 迁移号治理 | P2 | unclaimed | docs/PLAN-CLAIMS.md 常设段 + CI 校验 | 小任务，宜尽快 |
 | ARCH-30 AI 服务化 | P3 | unclaimed | admin-api notification 监听器 + ai 库接线 | ARCH-21 范围注记收口 |
-| ARCH-31 多实例矩阵 | P3 | documented（矩阵稿见 docs/ARCH-MULTI-INSTANCE-MATRIX.md；Redis 化待拍板） | 盘点文档 + silences/outbox Redis 化（如拍板） | 真机双实例 |
+| ARCH-31 多实例矩阵 | P3 | documented/blocked（矩阵稿见 docs/ARCH-MULTI-INSTANCE-MATRIX.md；整体多实例实现与验证未完成，保持 blocked） | 已完成盘点/评估；outbox DB lease/row claim 代码已落地但真实 PostgreSQL 多实例竞争验证 pending；后续仍需拆分 silence（跨实例读穿/Redis 同步）、channel config（共享持久化/Redis）、rollout（批次状态与心跳跨实例协调）并逐项双实例验证 | 真机双实例验证清单 5 条全部通过后再解除 blocked |
 | UI-15 反馈一致性 | P2 | unclaimed | admin-web mutation 面盘点+统一 | QA-03 两处前科 |
 | UI-16 StateError 补齐 | P3 | unclaimed | admin-web toast-only 页 | UI-08 缩水项 |
 | QA-11 py 测试 strict | P2 | unclaimed | executor-python tests + CI | 小任务 |
@@ -254,8 +254,8 @@
 | **21** | **压测与容量** | QA-05（=BUG-19）· QA-08（迁移月度 job）· DOC-07（升级 runbook）· BUG-18（私服 E2E，SEC-NEW-2 后） | 容量白皮书；月度演练绿 |
 | **22** | **架构二期启动** | ARCH-28（workspace/turbo 评估+迁移）· ARCH-30（AI 服务化）· ARCH-31（多实例矩阵） | CI 时长对比报告；矩阵文档 |
 | **23** | **平台扩展** | DSK-02（Linux 包）· DSK-03（自动更新）· DSK-05+BUG-20（ARM64，可同人）· BUG-20 | AppImage/deb 产包；multi-arch 镜像 |
-| **24** | **体验三期** | UI-09（移动三页）· UI-16（StateError 补齐）· UI-12（无障碍）· FEAT-16+17（SSE+Query 推广，可同人）· UI-13 | 三页 375px 可用；推广过半 |
-| **25** | **隔离预研** | NF-03（任务 owner 预研）· AUTH-01 拍板（scope/迁移三批方案 ADR）· NF-01（触发 token）· NF-04（标签亲和） | AUTH-01 ADR + 预研 spike |
+| **24** | **体验三期** | UI-09（移动三页，补齐半场待真实 375px 验收）· UI-16（StateError 补齐）· UI-12（无障碍）· FEAT-16+17（SSE+Query 推广，可同人）· UI-13 | 三页真实 375px 浏览器验收通过且无横向滚动；推广过半 |
+| **25** | **隔离预研** | NF-03（任务 owner 预研）· AUTH-01 拍板（scope/迁移三批方案 ADR）· NF-01（触发 token）· NF-04（标签亲和，后端完成/admin-web 半场待验收） | AUTH-01 ADR + 预研 spike；NF-04 admin-web 半场验收后再销账 |
 | **26** | **i18n + 大项落地** | UI-10（i18n 框架，⚠️大）· NF-02（编排 UI）· NF-05（Slack/飞书）· NF-08（demo 包）· DSK-04（desktop 体验） | i18n 基础设施落地 |
 | 滚动 | 长尾跟踪 | BUG-04（上游）/BUG-07（Windows 真机窗口）/BUG-17（24h SSE）/DSK-01（macOS 真机）/AUTH-02/04/ARCH-23/24/25（按需启动） | 随条件成熟逐轮认领 |
 
