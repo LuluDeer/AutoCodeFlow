@@ -10,6 +10,9 @@
  */
 import { Typography } from 'antd';
 import { ApiOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../../i18n';
 
 const { Text } = Typography;
 
@@ -84,13 +87,14 @@ function BarTrack({ label, usage }: { label: string; usage: number | null }) {
 
 /** 执行器资源热力条列表（每执行器一行：名称 + CPU 条 + 内存条） */
 export default function ExecutorHeatBars({ executors, onOpenExecutor }: ExecutorHeatBarsProps) {
+  const { t } = useTranslation();
   if (executors.length === 0) {
     return (
       <div
         data-testid="executor-heat-empty"
         style={{ textAlign: 'center', padding: '24px 0', color: 'var(--color-secondary)', fontSize: 12 }}
       >
-        暂无执行器
+        {t('heatBars.empty')}
       </div>
     );
   }
@@ -102,7 +106,10 @@ export default function ExecutorHeatBars({ executors, onOpenExecutor }: Executor
           data-testid="executor-heat-row"
           role="button"
           tabIndex={0}
-          title={`${ex.address} · ${ex.status === 'online' ? '在线' : ex.status === 'busy' ? '忙碌' : '离线'}`}
+          title={t('heatBars.rowTitle', {
+            address: ex.address,
+            status: t(ex.status === 'online' ? 'heatBars.status.online' : ex.status === 'busy' ? 'heatBars.status.busy' : 'heatBars.status.offline'),
+          })}
           onClick={() => onOpenExecutor(ex.id)}
           onKeyDown={e => {
             if (e.key === 'Enter' || e.key === ' ') onOpenExecutor(ex.id);
@@ -124,14 +131,14 @@ export default function ExecutorHeatBars({ executors, onOpenExecutor }: Executor
               {ex.appName}
             </Text>
             <Text type="secondary" style={{ fontSize: 11, flexShrink: 0 }}>
-              运行 {ex.runningTaskCount}
+              {t('heatBars.running', { count: ex.runningTaskCount })}
             </Text>
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
-            <BarTrack label="CPU" usage={ex.cpuUsage} />
+            <BarTrack label={t('heatBars.cpuLabel')} usage={ex.cpuUsage} />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
-            <BarTrack label="内存" usage={ex.memUsage} />
+            <BarTrack label={t('heatBars.memLabel')} usage={ex.memUsage} />
           </div>
         </div>
       ))}

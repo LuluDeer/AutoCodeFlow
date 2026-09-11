@@ -10,7 +10,10 @@
  */
 import { Typography } from 'antd';
 import { ThunderboltOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import { formatRelativeTime } from '../../utils/timeFormat';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../../i18n';
 
 const { Text } = Typography;
 
@@ -26,10 +29,12 @@ export interface FailureTopItem {
   lastError: string;
 }
 
-/** 按任务聚合失败记录：次数降序 → 最近失败时间降序；纯函数导出供测试 */
+/** 按任务聚合失败记录：次数降序 → 最近失败时间降序；纯函数导出供测试。
+ *  unknownError 为无错误原文时的兜底文案（由调用侧 t() 注入）。 */
 export function aggregateFailureTop(
   failures: { id: string; taskId: string; taskName: string; errorMessage: string; createdAt: string }[] | undefined,
   topN = 5,
+  unknownError: string = '未知错误',
 ): FailureTopItem[] {
   const byTask = new Map<string, FailureTopItem>();
   for (const f of failures ?? []) {
@@ -40,14 +45,14 @@ export function aggregateFailureTop(
         taskName: f.taskName,
         failCount: 1,
         lastFailedAt: f.createdAt,
-        lastError: f.errorMessage || '未知错误',
+        lastError: f.errorMessage || unknownError,
       });
       continue;
     }
     prev.failCount += 1;
     if (new Date(f.createdAt).getTime() > new Date(prev.lastFailedAt).getTime()) {
       prev.lastFailedAt = f.createdAt;
-      prev.lastError = f.errorMessage || '未知错误';
+      prev.lastError = f.errorMessage || unknownError;
     }
   }
   return Array.from(byTask.values())
@@ -72,14 +77,15 @@ interface FailureTopListProps {
 const ROW_GAP = 8;
 
 export default function FailureTopList({ failures, topN = 5, onOpenTask }: FailureTopListProps) {
-  const top = aggregateFailureTop(failures, topN);
+  const { t } = useTranslation();
+  const top = aggregateFailureTop(failures, topN, t('failureTop.unknown'));
   if (top.length === 0) {
     return (
       <div
         data-testid="failure-top-empty"
         style={{ textAlign: 'center', padding: '24px 0', color: 'var(--color-secondary)', fontSize: 12 }}
       >
-        近期无失败任务
+        {t('failureTop.empty')}
       </div>
     );
   }
@@ -129,7 +135,7 @@ export default function FailureTopList({ failures, topN = 5, onOpenTask }: Failu
               flexShrink: 0,
             }}
           >
-            {item.failCount} 次
+            {t('failureTop.count', { count: item.failCount })}
           </span>
           {/* 最近失败时间 */}
           <Text type="secondary" style={{ fontSize: 11, flexShrink: 0 }}>

@@ -7,6 +7,9 @@
  */
 import { Button, Empty, Typography } from 'antd';
 import { RocketOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../../i18n';
 
 const { Text } = Typography;
 
@@ -25,6 +28,7 @@ export function shouldShowEmptyGuide(totalTasks: number | undefined): boolean {
 }
 
 export default function DashboardEmptyGuide({ totalTasks, onCreateTask }: DashboardEmptyGuideProps) {
+  const { t } = useTranslation();
   if (!shouldShowEmptyGuide(totalTasks)) return null;
   return (
     <div
@@ -43,10 +47,10 @@ export default function DashboardEmptyGuide({ totalTasks, onCreateTask }: Dashbo
         description={
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <Text strong style={{ fontSize: 14 }}>
-              还没有任何任务
+              {t('dashGuide.title')}
             </Text>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              创建第一个任务后，这里将展示执行量、成功率与调度健康度总览
+              {t('dashGuide.subtitle')}
             </Text>
           </div>
         }
@@ -57,7 +61,7 @@ export default function DashboardEmptyGuide({ totalTasks, onCreateTask }: Dashbo
           icon={<RocketOutlined />}
           onClick={onCreateTask}
         >
-          创建第一个任务
+          {t('dashGuide.createFirst')}
         </Button>
       </Empty>
     </div>
