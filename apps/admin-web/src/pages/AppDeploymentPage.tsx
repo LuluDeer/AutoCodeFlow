@@ -12,6 +12,7 @@ import {
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
 import { executorsApi, Executor } from '../api/executors';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+import StateError from '../components/StateError';
 import { useAuthStore } from '../store/auth';
 
 const { Text } = Typography;
@@ -63,6 +64,8 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [page, setPage] = useState(1);
   const [executors, setExecutors] = useState<Executor[]>([]);
   const [loading, setLoading] = useState(false);
+  // UI-16：列表加载失败的错误态（页内呈现 + 重试入口，替代纯 toast）
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [upgradingAll, setUpgradingAll] = useState(false);
@@ -94,9 +97,12 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       setDeployments(deps.data);
       setTotal(deps.total);
       setExecutors(execs);
+      // UI-16：加载成功后清除上一次的页内错误态
+      setLoadError(null);
     } catch (err: unknown) {
       if (seq !== fetchSeq.current) return;
-      message.error(getErrMsg(err, '加载失败'));
+      // UI-16：列表加载失败改在页内呈现（含重试/复制），不再只弹一闪而过的 toast
+      setLoadError(err);
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
@@ -223,6 +229,10 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   };
 
   const onlineExecutors = executors.filter(e => e.status === 'online');
+  // DEP-04：待审批行数（审批待办 Alert 与状态徽标共用同一口径）
+  const pendingApprovalCount = deployments.filter(
+    d => d.approvalStatus === 'pending_approval',
+  ).length;
   // Executors already occupied by an active deployment of this application
   const occupiedExecutorIds = new Set(
     deployments
@@ -458,20 +468,29 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       )}
 
       {/* DEP-04: 审批待办提示（管理员视角；普通用户只读可见请求在等待） */}
-      {deployments.some(d => d.approvalStatus === 'pending_approval') && (
+      {pendingApprovalCount > 0 ? (
         <Alert
           type="warning"
           showIcon
           message={
             isAdmin
-              ? `有 ${deployments.filter(d => d.approvalStatus === 'pending_approval').length} 个部署请求等待审批（第二人规则：提交者本人不能审批）`
+              ? `有 ${pendingApprovalCount} 个部署请求等待审批（第二人规则：提交者本人不能审批）`
               : '有部署请求正在等待管理员审批，批准后才会派发到执行器'
           }
           style={{ marginBottom: 16 }}
         />
-      )}
+      ) : null}
 
-      {deployments.length === 0 && !loading ? (
+      {loadError ? (
+        <StateError
+          error={loadError}
+          title="部署列表加载失败"
+          onRetry={() => void fetchAll()}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
+
+      {deployments.length === 0 && !loading && !loadError ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description="该应用尚未部署"

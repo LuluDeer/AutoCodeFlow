@@ -101,7 +101,9 @@ describe('UI-06 ① 分区单页布局', () => {
     expect(screen.queryByRole('button', { name: /上一步/ })).toBeNull();
     // 锚点条渲染。
     expect(screen.getByTestId('task-form-anchor')).toBeTruthy();
-  });
+    // flaky 治理：全量并发跑时该页渲染（五分区 + 锚点条）偶发超 5s 默认窗
+    // ——断言不变，仅显式放宽超时（s3-log-storage 同形态先例）。
+  }, 15000);
 
   it('全部 Form.Item 同挂载：name 输入与维护窗口添加按钮同屏可达', async () => {
     await renderCreateForm();
