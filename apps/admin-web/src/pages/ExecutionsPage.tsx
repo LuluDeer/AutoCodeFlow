@@ -11,6 +11,7 @@ import type { Dayjs } from 'dayjs';
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
 import { useExecutionsList, invalidateExecutionData } from '../api/queries';
@@ -21,23 +22,26 @@ import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/tim
 import { ExecutionCompareModal, COMPARE_MAX } from '../components/ExecutionCompare';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
 
 type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
-const STATUS_MAP: Record<string, { badge: BadgeStatus; label: string }> = {
-  pending:   { badge: 'default',    label: '等待中' },
-  running:   { badge: 'processing', label: '运行中' },
-  success:   { badge: 'success',    label: '成功'   },
-  failed:    { badge: 'error',      label: '失败'   },
-  timeout:   { badge: 'warning',    label: '超时'   },
-  killed:    { badge: 'error',      label: '已终止' },
-  cancelled: { badge: 'default',    label: '已取消' },
-};
+const STATUS_MAP = (t: (k: string) => string): Record<string, { badge: BadgeStatus; label: string }> => ({
+  pending:   { badge: 'default',    label: t('execs.status.pending') },
+  running:   { badge: 'processing', label: t('execs.status.running') },
+  success:   { badge: 'success',    label: t('execs.status.success') },
+  failed:    { badge: 'error',      label: t('execs.status.failed') },
+  timeout:   { badge: 'warning',    label: t('execs.status.timeout') },
+  killed:    { badge: 'error',      label: t('execs.status.killed') },
+  cancelled: { badge: 'default',    label: t('execs.status.cancelled') },
+});
 
 export default function ExecutionsPage() {
   const nav = useNavigate();
+  const { t } = useTranslation();
   // ARCH-26: 写后失效句柄（kill 后 invalidate 执行列表+Dashboard 汇总缓存）
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
@@ -60,12 +64,12 @@ export default function ExecutionsPage() {
     setKillingId(r.id);
     try {
       await tasksApi.killExecution(r.taskId, r.id);
-      message.success('已发送终止信号');
+      message.success(t('execs.kill.success'));
       // ARCH-26: 写后失效——执行列表 + Dashboard 汇总面（queryKey 前缀化，
       // 一处 invalidate 同时刷新两个示范页的缓存）。
       await invalidateExecutionData(queryClient);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '终止失败'));
+      message.error(getErrMsg(err, t('execs.kill.fail')));
     } finally {
       setKillingId(null);
     }
@@ -123,32 +127,33 @@ export default function ExecutionsPage() {
     onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
     onCell: () => ({ className: 'ui09-hide-mobile' }),
   } as const;
+  const statusMap = STATUS_MAP(t);
   const columns = [
     {
-      title: '任务',
+      title: t('execs.col.task'),
       dataIndex: 'taskName',
       render: (name: string, r: TaskExecution) => (
         <a onClick={() => nav(`/tasks/${r.taskId}`)} style={{ fontWeight: 500 }}>{name || r.taskId}</a>
       ),
     },
     {
-      title: '状态',
+      title: t('execs.col.status'),
       dataIndex: 'status',
       width: 90,
       render: (s: string) => {
-        const cfg = STATUS_MAP[s] || { badge: 'default' as BadgeStatus, label: s };
+        const cfg = statusMap[s] || { badge: 'default' as BadgeStatus, label: s };
         return <Badge status={cfg.badge} text={cfg.label} />;
       },
     },
     {
-      title: '触发方式',
+      title: t('execs.col.trigger'),
       dataIndex: 'triggerType',
       width: 90,
       ...hideOnMobile,
       render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
     },
     {
-      title: '执行器',
+      title: t('execs.col.executor'),
       dataIndex: 'executorAddress',
       width: 160,
       ellipsis: true,
@@ -158,7 +163,7 @@ export default function ExecutionsPage() {
         : <Text type="secondary" style={{ fontSize: 12 }}>-</Text>,
     },
     {
-      title: '开始时间',
+      title: t('execs.col.startTime'),
       dataIndex: 'startTime',
       width: 130,
       render: (v: string) => v ? (
@@ -168,20 +173,20 @@ export default function ExecutionsPage() {
       ) : '-',
     },
     {
-      title: '耗时',
+      title: t('execs.col.duration'),
       dataIndex: 'duration',
       width: 80,
       ...hideOnMobile,
       render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v)}</Text> : '-',
     },
     {
-      title: '错误信息',
+      title: t('execs.col.error'),
       dataIndex: 'errorMessage',
       ellipsis: true,
       render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-',
     },
     {
-      title: '',
+      title: t('execs.col.action'),
       key: 'action',
       width: 100,
       render: (_: unknown, r: TaskExecution) => (
@@ -190,20 +195,20 @@ export default function ExecutionsPage() {
             type="link" size="small" icon={<EyeOutlined />}
             onClick={() => nav(`/tasks/${r.taskId}/executions/${r.id}`)}
           >
-            详情
+            {t('execs.action.detail')}
           </Button>
           {r.status === 'running' && (
             <Popconfirm
-              title="确认终止此执行？"
+              title={t('execs.killConfirm')}
               onConfirm={() => handleKill(r)}
-              okText="终止" okButtonProps={{ danger: true }}
+              okText={t('execs.action.kill')} okButtonProps={{ danger: true }}
             >
               <Button
                 type="link" size="small" danger
                 icon={<StopOutlined />}
                 loading={killingId === r.id}
               >
-                终止
+                {t('execs.action.kill')}
               </Button>
             </Popconfirm>
           )}
@@ -216,9 +221,9 @@ export default function ExecutionsPage() {
     <div>
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，刷新进 extra） */}
       <PageHeader
-        title="执行记录"
-        description="全部任务执行历史"
-        extra={<Button icon={<ReloadOutlined />} onClick={() => void refetch()}>刷新</Button>}
+        title={t('execs.title')}
+        description={t('execs.description')}
+        extra={<Button icon={<ReloadOutlined />} onClick={() => void refetch()}>{t('execs.refresh')}</Button>}
       />
 
       {/* UI-09：筛选区 wrap 堆叠（Space wrap 已有），输入/选择窄屏自适应宽度 */}
@@ -230,17 +235,17 @@ export default function ExecutionsPage() {
             disabled={selectedIds.length < 2}
             onClick={() => {
               if (selectedIds.length > COMPARE_MAX) {
-                message.warning(`最多对比 ${COMPARE_MAX} 条执行记录`);
+                message.warning(t('execs.compare.limit', { max: COMPARE_MAX }));
                 return;
               }
               setCompareOpen(true);
             }}
           >
-            对比 ({selectedIds.length})
+            {t('execs.compare', { count: selectedIds.length })}
           </Button>
         )}
         <Input
-          placeholder="搜索任务名"
+          placeholder={t('execs.searchPlaceholder')}
           prefix={<SearchOutlined />}
           value={search}
           onChange={e => { setSearch(e.target.value); setPage(1); }}
@@ -248,24 +253,24 @@ export default function ExecutionsPage() {
           style={{ width: 200, maxWidth: '100%' }}
         />
         <Select
-          placeholder="全部状态"
+          placeholder={t('execs.statusAll')}
           allowClear
           style={{ width: 120, maxWidth: '100%' }}
           value={statusFilter}
           onChange={v => { setStatusFilter(v); setPage(1); }}
           suffixIcon={<FilterOutlined />}
           options={[
-            { value: 'pending',   label: '等待中' },
-            { value: 'running',   label: '运行中' },
-            { value: 'success',   label: '成功'   },
-            { value: 'failed',    label: '失败'   },
-            { value: 'timeout',   label: '超时'   },
-            { value: 'killed',    label: '已终止' },
-            { value: 'cancelled', label: '已取消' },
+            { value: 'pending',   label: t('execs.status.pending') },
+            { value: 'running',   label: t('execs.status.running') },
+            { value: 'success',   label: t('execs.status.success') },
+            { value: 'failed',    label: t('execs.status.failed') },
+            { value: 'timeout',   label: t('execs.status.timeout') },
+            { value: 'killed',    label: t('execs.status.killed') },
+            { value: 'cancelled', label: t('execs.status.cancelled') },
           ]}
         />
         <Input
-          placeholder="执行器地址"
+          placeholder={t('execs.executorPlaceholder')}
           value={executorFilter}
           onChange={e => { setExecutorFilter(e.target.value); setPage(1); }}
           allowClear
@@ -274,13 +279,13 @@ export default function ExecutionsPage() {
         <RangePicker
           showTime
           format="MM-DD HH:mm"
-          placeholder={['开始时间', '结束时间']}
+          placeholder={[t('execs.timeStart'), t('execs.timeEnd')]}
           value={timeRange}
           onChange={val => { setTimeRange(val as [Dayjs, Dayjs] | null); setPage(1); }}
           style={{ width: 320, maxWidth: '100%' }}
         />
         {hasFilters && (
-          <Button size="small" onClick={clearFilters}>清除筛选</Button>
+          <Button size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
         )}
       </Space>
 
@@ -289,7 +294,7 @@ export default function ExecutionsPage() {
       {error ? (
         <StateError
           error={error}
-          title="执行记录加载失败"
+          title={t('execs.error.title')}
           onRetry={() => void refetch()}
           style={{ marginBottom: 16 }}
         />
@@ -311,11 +316,11 @@ export default function ExecutionsPage() {
           current: page,
           pageSize,
           onChange: (p, ps) => { setPage(p); setPageSize(ps ?? 20); },
-          showTotal: t => `共 ${t} 条`,
+          showTotal: t2 => t('execs.count', { count: t2 }),
           showSizeChanger: true,
         }}
         locale={{
-          emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行记录" />,
+          emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('execs.empty')} />,
         }}
       />
 
