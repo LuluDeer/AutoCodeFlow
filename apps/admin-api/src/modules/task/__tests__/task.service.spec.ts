@@ -308,6 +308,22 @@ describe("TaskService (__tests__)", () => {
       await expect(service.create(dto)).rejects.toThrow("Circular dependency");
     });
 
+    // SEC-NEW-2 对齐：git 源在任务**写面**即校验（executor 派发侧只放行
+    // https?://|git@|ssh:// 且拒 loopback/私网，此前 admin 不校验 → 创建成功、
+    // 派发才 400 的两端不一致）。
+    describe("create gitRepo guard (admin 写面)", () => {
+      it("拒绝 file:// 方案（executor 派发侧必 400，故创建即拦）", async () => {
+        taskRepo.create.mockImplementation((t: any) => t);
+        taskRepo.save.mockImplementation((t: any) =>
+          Promise.resolve({ id: "1", ...t }),
+        );
+        await expect(
+          service.create({ name: "t", gitRepo: "file:///tmp/repo.git" } as any),
+        ).rejects.toThrow();
+        expect(taskRepo.save).not.toHaveBeenCalled();
+      });
+    });
+
     // W-21: requirements normalization — trim specs, reject option-like and
     // blank entries at create so they 400 instead of burning a queued exec.
     describe("create requirements normalization (W-21)", () => {
