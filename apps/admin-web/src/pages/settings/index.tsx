@@ -17,6 +17,7 @@ import { getErrMsg } from '../../utils/error';
 import { useAuthStore, isAdminUser } from '../../store/auth';
 import type { ColumnsType } from 'antd/es/table';
 import PageHeader from '../../components/PageHeader';
+import StateError from '../../components/StateError';
 // SEC-03: 安全设置 Tab（TOTP 两步验证 + 登录会话管理），独立文件避免与其他 Tab 耦合
 import SecuritySettings from './SecuritySettings';
 // AUTH-03: API Keys Tab（限权机器凭证管理），独立文件
@@ -47,7 +48,7 @@ function TokenSection() {
 
   // R4 收紧矩阵：共享 Token 的读与生成为 ADMIN-only。
   // 非管理员不发起查询（GET 会 403），hooks 仍按固定顺序调用。
-  const { data: tokenResult, isLoading } = useQuery({
+  const { data: tokenResult, isLoading, error: tokenError, refetch: refetchToken } = useQuery({
     queryKey: ['executor-token'],
     queryFn: () => configApi.getExecutorToken(),
     enabled: isAdmin,
@@ -90,6 +91,19 @@ function TokenSection() {
   }
 
   if (isLoading) return <Spin />;
+
+  // UI-16：Token 读请求失败 → 页内错误块（重试=refetch）；此前失败只会停在一个空 Spin
+  if (tokenError) {
+    return (
+      <Card title={<Space><KeyOutlined /> 执行器共享 Token</Space>} style={{ marginBottom: 16 }}>
+        <StateError
+          error={tokenError}
+          title="执行器共享 Token 加载失败"
+          onRetry={() => { void refetchToken(); }}
+        />
+      </Card>
+    );
+  }
 
   const token = tokenResult?.token ?? null;
   const hasToken = tokenResult?.hasToken ?? false;
@@ -230,7 +244,7 @@ function EditModal({ record, onClose, onSaved }: EditModalProps) {
 
 // ─── Config History Drawer ────────────────────────────────────────────────────
 function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () => void }) {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error: historyError, refetch: refetchHistory } = useQuery({
     queryKey: ['config-history', configKey],
     queryFn: () => configApi.getHistory({ key: configKey, pageSize: 50 }),
   });
@@ -297,15 +311,23 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
 
   return (
     <Modal open title={`变更历史：${configKey}`} onCancel={onClose} footer={null} width={720}>
-      <Table
-        loading={isLoading}
-        dataSource={data?.data ?? []}
-        rowKey="id"
-        columns={cols}
-        size="small"
-        pagination={false}
-        scroll={{ y: 400 }}
-      />
+      {historyError ? (
+        <StateError
+          error={historyError}
+          title="变更历史加载失败"
+          onRetry={() => { void refetchHistory(); }}
+        />
+      ) : (
+        <Table
+          loading={isLoading}
+          dataSource={data?.data ?? []}
+          rowKey="id"
+          columns={cols}
+          size="small"
+          pagination={false}
+          scroll={{ y: 400 }}
+        />
+      )}
     </Modal>
   );
 }
@@ -317,7 +339,7 @@ function SystemConfigTab() {
   const qc = useQueryClient();
   const isAdmin = useIsAdmin();
 
-  const { data: configs, isLoading, refetch } = useQuery({
+  const { data: configs, isLoading, refetch, error: configError } = useQuery({
     queryKey: ['system-configs'],
     queryFn: () => configApi.findAll(),
   });
@@ -380,14 +402,23 @@ function SystemConfigTab() {
           </Tooltip>
         </Space>
       </div>
-      <Table
-        loading={isLoading}
-        dataSource={list}
-        rowKey="id"
-        columns={cols}
-        size="small"
-        pagination={{ pageSize: 20, showTotal: t => `共 ${t} 项` }}
-      />
+      {/* UI-16：配置列表请求失败 → 页内错误块（重试=refetch）；失败态不再落「暂无数据」空表 */}
+      {configError ? (
+        <StateError
+          error={configError}
+          title="系统配置加载失败"
+          onRetry={() => { void refetch(); }}
+        />
+      ) : (
+        <Table
+          loading={isLoading}
+          dataSource={list}
+          rowKey="id"
+          columns={cols}
+          size="small"
+          pagination={{ pageSize: 20, showTotal: t => `共 ${t} 项` }}
+        />
+      )}
       {editTarget != null && (
         <EditModal
           record={editTarget === 'new' ? null : editTarget}
@@ -415,7 +446,7 @@ function AiConfigTab() {
 
   // R6 收紧矩阵：GET /ai/config 为 ADMIN-only。
   // 非管理员不发起查询（GET 会 403），hooks 仍按固定顺序调用（同 TokenSection 模式）。
-  const { data: cfg, isLoading } = useQuery({
+  const { data: cfg, isLoading, error: cfgError, refetch: refetchCfg } = useQuery({
     queryKey: ['ai-config'],
     queryFn: () => aiApi.getConfig(),
     enabled: isAdmin,
@@ -492,7 +523,14 @@ function AiConfigTab() {
         {providerBadge()}
       </div>
 
-      {isLoading ? <Spin /> : (
+      {isLoading ? <Spin /> : cfgError ? (
+        // UI-16：AI 配置读请求失败 → 页内错误块（重试=refetch），不落在永久 Spin 上
+        <StateError
+          error={cfgError}
+          title="AI 配置加载失败"
+          onRetry={() => { void refetchCfg(); }}
+        />
+      ) : (
         <Form form={form} layout="vertical" initialValues={{ provider: 'disabled', openaiModel: 'gpt-4o-mini', openaiBaseUrl: 'https://api.openai.com/v1', ollamaHost: 'http://localhost:11434', ollamaModel: 'llama3' }}>
           <Form.Item name="provider" label="AI 提供商" rules={[{ required: true }]}>
             <Select
