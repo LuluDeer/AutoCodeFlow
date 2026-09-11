@@ -24,6 +24,7 @@ import {
 @Index("idx_event_outbox_dispatchedAt", ["dispatchedAt"])
 @Index("idx_event_outbox_nextAttemptAt", ["nextAttemptAt"])
 @Index("idx_event_outbox_eventId", ["eventId"])
+@Index("idx_event_outbox_leaseUntil", ["leaseUntil"])
 export class EventOutbox {
   @PrimaryGeneratedColumn("uuid")
   id: string;
@@ -51,6 +52,14 @@ export class EventOutbox {
   /** 下次补投时刻（失败后 = now + 指数退避，封顶 5min）。 */
   @Column({ type: "timestamptz", nullable: true })
   nextAttemptAt: Date | null;
+
+  /** 跨进程 claim 的租约截止时刻；NULL 表示当前没有租约。 */
+  @Column({ type: "timestamptz", nullable: true })
+  leaseUntil: Date | null;
+
+  /** 当前租约持有者的随机 token，防止过期持有者终结新租约。 */
+  @Column({ type: "varchar", length: 64, nullable: true })
+  leaseToken: string | null;
 
   /** 超过阈值落死信后置 true（行终态，不再扫描）。 */
   @Column({ type: "boolean", default: false })
