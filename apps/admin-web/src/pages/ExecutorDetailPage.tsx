@@ -27,15 +27,15 @@ const { Text } = Typography;
 /** AUTH-05 交接：高危操作 reason 上限（对齐 admin-api DTO 契约：≤200 字符） */
 const MAX_REASON_LENGTH = 200;
 
-function relativeTime(isoString: string): string {
+function relativeTime(isoString: string, t?: (k: string, o?: Record<string, unknown>) => string): string {
   const diff = Date.now() - new Date(isoString).getTime();
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds}秒前`;
+  if (seconds < 60) return t ? t('time.relative.justNow') : `${seconds}秒前`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}分钟前`;
+  if (minutes < 60) return t ? t('time.relative.minsAgo', { n: minutes }) : `${minutes}分钟前`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}小时前`;
-  return `${Math.floor(hours / 24)}天前`;
+  if (hours < 24) return t ? t('time.relative.hoursAgo', { n: hours }) : `${hours}小时前`;
+  return t ? t('time.relative.daysAgo', { n: Math.floor(hours / 24) }) : `${Math.floor(hours / 24)}天前`;
 }
 
 function isHeartbeatStale(isoString: string): boolean {
@@ -194,7 +194,7 @@ export default function ExecutorDetailPage() {
   const reportedCount = reportedIds?.length;
 
   const heartbeatStale = executor.lastHeartbeat ? isHeartbeatStale(executor.lastHeartbeat) : false;
-  const heartbeatText = executor.lastHeartbeat ? relativeTime(executor.lastHeartbeat) : '-';
+  const heartbeatText = executor.lastHeartbeat ? relativeTime(executor.lastHeartbeat, t) : '-';
   const heartbeatAbsolute = executor.lastHeartbeat ? new Date(executor.lastHeartbeat).toLocaleString() : '';
 
   type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';

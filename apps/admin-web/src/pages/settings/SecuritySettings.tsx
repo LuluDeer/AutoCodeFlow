@@ -18,17 +18,19 @@ import '../../i18n';
 
 const { Text } = Typography;
 
-/** SEC-03: 把 User-Agent 缩短为可读的浏览器/设备摘要。 */
-export function summarizeUserAgent(ua: string | null): string {
-  if (!ua) return '未知设备';
+/** SEC-03: 把 User-Agent 缩短为可读的浏览器/设备摘要。
+ *  t 可选：传参时走 i18n key（会话列表传 t）；缺省保持中文基线
+ * （security-settings.test.tsx 锚定 summarizeUserAgent('curl…')==='API 客户端'）。 */
+export function summarizeUserAgent(ua: string | null, t?: (k: string) => string): string {
+  if (!ua) return t ? t('security.device.unknown') : '未知设备';
   const browser =
     /Edg\//.test(ua) ? 'Edge'
     : /OPR\//.test(ua) ? 'Opera'
     : /Chrome\//.test(ua) ? 'Chrome'
     : /Safari\//.test(ua) && /Version\//.test(ua) ? 'Safari'
     : /Firefox\//.test(ua) ? 'Firefox'
-    : /curl|axios|node|python|Java/i.test(ua) ? 'API 客户端'
-    : '浏览器';
+    : /curl|axios|node|python|Java/i.test(ua) ? (t ? t('security.device.api') : 'API 客户端')
+    : (t ? t('security.device.browser') : '浏览器');
   const os =
     /Windows/i.test(ua) ? 'Windows'
     : /Android/i.test(ua) ? 'Android'
@@ -228,7 +230,7 @@ export function SessionsCard() {
       render: (v: string | null) => (
         <Space size={6}>
           <DesktopOutlined style={{ color: '#999' }} />
-          <span>{summarizeUserAgent(v)}</span>
+          <span>{summarizeUserAgent(v, t)}</span>
         </Space>
       ),
     },

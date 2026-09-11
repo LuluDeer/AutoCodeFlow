@@ -2083,4 +2083,8 @@ export default {
   'eventSub.eventType.executionFailed': '执行失败（execution.failed）',
   'eventSub.eventType.executorOffline': '执行器离线（executor.offline）',
   'eventSub.eventType.deploymentCompleted': '部署完成（deployment.completed）',
+
+  'security.device.unknown': '未知设备',
+  'security.device.api': 'API 客户端',
+  'security.device.browser': '浏览器',
 } as const;
