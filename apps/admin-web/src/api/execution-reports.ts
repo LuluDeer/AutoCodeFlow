@@ -47,6 +47,8 @@ export interface ExecutionReportPayload {
 }
 
 export const executionReportsApi = {
-  report: (taskId: string, execId: string) =>
-    client.get(`/tasks/${taskId}/executions/${execId}/report`) as Promise<ExecutionReportPayload>,
+  report: (taskId: string, execId: string, signal?: AbortSignal) =>
+    signal
+      ? client.get(`/tasks/${taskId}/executions/${execId}/report`, { signal }) as Promise<ExecutionReportPayload>
+      : client.get(`/tasks/${taskId}/executions/${execId}/report`) as Promise<ExecutionReportPayload>,
 };

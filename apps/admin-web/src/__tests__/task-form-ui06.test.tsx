@@ -16,7 +16,7 @@ import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 import { taskTemplatesApi } from '../api/task-templates';
 
-vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn(), list: vi.fn().mockResolvedValue({ items: [], total: 0 }) } }));
+vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn(), list: vi.fn(), listAll: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 }) } }));
 vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
 }));

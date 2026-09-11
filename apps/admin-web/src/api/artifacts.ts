@@ -21,10 +21,15 @@ export const artifactsApi = {
    * （GET /tasks/executions/:execId/artifacts，管理台 JWT 守卫）。
    * 返回裸数组 [{ name, size, sha256 }]（client 响应拦截器已剥信封）。
    */
-  listArtifacts: (execId: string) =>
-    client.get<ExecutionArtifact[]>(
-      `/tasks/executions/${execId}/artifacts`,
-    ) as Promise<ExecutionArtifact[]>,
+  listArtifacts: (execId: string, signal?: AbortSignal) =>
+    signal
+      ? client.get<ExecutionArtifact[]>(
+          `/tasks/executions/${execId}/artifacts`,
+          { signal },
+        ) as Promise<ExecutionArtifact[]>
+      : client.get<ExecutionArtifact[]>(
+          `/tasks/executions/${execId}/artifacts`,
+        ) as Promise<ExecutionArtifact[]>,
 
   /**
    * 下载单个产物并触发浏览器保存
@@ -51,6 +56,7 @@ export const artifactsApi = {
 };
 
 // Named exports for convenience（对齐 executor-packages.ts 的导出风格）
-export const listArtifacts = (execId: string) => artifactsApi.listArtifacts(execId);
+export const listArtifacts = (execId: string, signal?: AbortSignal) =>
+  artifactsApi.listArtifacts(execId, signal);
 export const downloadArtifact = (execId: string, name: string) =>
   artifactsApi.downloadArtifact(execId, name);
