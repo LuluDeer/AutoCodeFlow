@@ -17,6 +17,7 @@ import {
 } from '../../api/event-subscriptions';
 import type { ColumnsType } from 'antd/es/table';
 import { getErrMsg } from '../../utils/error';
+import StateError from '../../components/StateError';
 
 const { Text, Paragraph } = Typography;
 
@@ -112,7 +113,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
   }, [expandedId, subscriptions]);
   const [replayingId, setReplayingId] = useState<string | null>(null);
 
-  const { data: deadLetters, isLoading } = useQuery({
+  const { data: deadLetters, isLoading, error: deadLettersError, refetch: refetchDeadLetters } = useQuery({
     queryKey: ['event-dead-letters', expandedId],
     queryFn: () => eventSubscriptionsApi.listDeadLetters(expandedId as string, 1, 20),
     enabled: !!expandedId,
@@ -215,6 +216,13 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
       </Space>
       {isLoading ? (
         <Spin />
+      ) : deadLettersError ? (
+        // UI-16：死信读请求失败 → 页内错误块（重试=refetch），不落「暂无死信」误导空态
+        <StateError
+          error={deadLettersError}
+          title="死信列表加载失败"
+          onRetry={() => { void refetchDeadLetters(); }}
+        />
       ) : (
         <Table
           rowKey="id"
@@ -363,7 +371,8 @@ export default function EventSubscriptionsSettings() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<EventSubscription | null>(null);
 
-  const { data: subscriptions = [], isLoading } = useQuery({
+  // UI-16：读请求失败要页内可见（此前失败只留空表，与「尚无订阅」不可区分）
+  const { data: subscriptions = [], isLoading, error: subsError, refetch: refetchSubs } = useQuery({
     queryKey: ['event-subscriptions'],
     queryFn: eventSubscriptionsApi.list,
   });
@@ -479,15 +488,23 @@ export default function EventSubscriptionsSettings() {
           </Text>
         }
       />
-      <Table
-        rowKey="id"
-        size="small"
-        columns={columns}
-        dataSource={subscriptions}
-        loading={isLoading}
-        pagination={false}
-        data-testid="sub-table"
-      />
+      {subsError ? (
+        <StateError
+          error={subsError}
+          title="事件订阅列表加载失败"
+          onRetry={() => { void refetchSubs(); }}
+        />
+      ) : (
+        <Table
+          rowKey="id"
+          size="small"
+          columns={columns}
+          dataSource={subscriptions}
+          loading={isLoading}
+          pagination={false}
+          data-testid="sub-table"
+        />
+      )}
 
       <SubscriptionFormModal open={formOpen} editing={editing} onClose={() => setFormOpen(false)} />
 
