@@ -32,11 +32,11 @@ const DEFAULT_FORM: WizardForm = {
 const TOTAL_STEPS = 4;
 
 function Toggle({
-  id, checked, onChange,
-}: { id: string; checked: boolean; onChange: (v: boolean) => void }) {
+  id, label, checked, onChange,
+}: { id: string; label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <label className="toggle">
-      <input type="checkbox" id={id} checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <input type="checkbox" id={id} aria-label={label} checked={checked} onChange={(e) => onChange(e.target.checked)} />
       <div className="toggle-track"><div className="toggle-thumb" /></div>
     </label>
   );
@@ -197,7 +197,7 @@ function StepConnect({
               onChange={(e) => onUrlChange(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && url && onTest()}
             />
-            <button className="btn" onClick={onTest} disabled={!url || testing} style={{ flexShrink: 0 }}>
+            <button className="btn wizard-inline-button" onClick={onTest} disabled={!url || testing}>
               {testing ? '测试中...' : '测试'}
             </button>
           </div>
@@ -289,7 +289,7 @@ function StepExecutor({
               value={form.executorPort}
               onChange={(e) => handlePortChange(parseInt(e.target.value, 10))}
             />
-            <button className="btn" onClick={checkPort} disabled={!form.executorPort || checkingPort} style={{ flexShrink: 0 }}>
+            <button className="btn wizard-inline-button" onClick={checkPort} disabled={!form.executorPort || checkingPort}>
               {checkingPort ? '检测...' : '检测端口'}
             </button>
           </div>
@@ -308,24 +308,26 @@ function StepExecutor({
                 const full = `${ip}:${form.executorPort}`;
                 const sel = form.executorAddressPublic === full;
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={ip}
                     className={`ip-option${sel ? ' selected' : ''}`}
                     onClick={() => selectIP(ip)}
+                    aria-pressed={sel}
+                    aria-label={`${full}${sel ? '，已选择' : '，使用此地址'}`}
                   >
                     <span className="ip-option-addr">{full}</span>
                     <span className="ip-option-use">{sel ? '✓ 已选择' : '点击选用'}</span>
-                  </div>
+                  </button>
                 );
               })}
             </div>
           )}
           <input
-            className="input"
+            className={localIPs.length > 0 ? 'input wizard-address-input has-picker' : 'input wizard-address-input'}
             placeholder={`192.168.x.x:${form.executorPort}`}
             value={form.executorAddressPublic}
             onChange={(e) => onChange('executorAddressPublic', e.target.value)}
-            style={{ marginTop: localIPs.length > 0 ? 6 : 0 }}
           />
           <span className="hint">平台通过此地址向本机推送任务，需确保平台能访问到此 IP</span>
         </div>
@@ -383,14 +385,14 @@ function StepFinish({
         </div>
 
         <div className="toggle-row">
-          <Toggle id="autoStartExecutor" checked={form.autoStartExecutor} onChange={(v) => onChange('autoStartExecutor', v)} />
+          <Toggle id="autoStartExecutor" label="应用启动时自动运行执行器" checked={form.autoStartExecutor} onChange={(v) => onChange('autoStartExecutor', v)} />
           <div className="toggle-info">
             <strong>应用启动时自动运行执行器</strong>
             <span>打开 Executor 桌面端后自动连接平台</span>
           </div>
         </div>
         <div className="toggle-row">
-          <Toggle id="autoStart" checked={form.autoStart} onChange={(v) => onChange('autoStart', v)} />
+          <Toggle id="autoStart" label="开机自动启动" checked={form.autoStart} onChange={(v) => onChange('autoStart', v)} />
           <div className="toggle-info">
             <strong>开机自动启动</strong>
             <span>系统开机后自动运行 Executor</span>

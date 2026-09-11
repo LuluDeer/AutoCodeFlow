@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   deriveExecutorMode,
   buildExecutorPayload,
+  affinityFormValues,
   applyRequirementsPayload,
 } from './executor-mode';
 import {
@@ -47,7 +48,7 @@ import {
   RETRYABLE_ERROR_OPTIONS,
 } from './retry-policy';
 import {
-  buildDependenciesPayload,
+  applyDependenciesPayload,
   dependenciesFormValues,
 } from './task-dependencies';
 import PageHeader from '../components/PageHeader';
@@ -136,27 +137,60 @@ export default function TaskFormPage() {
   const { token } = theme.useToken();
 
   useEffect(() => {
-    executorsApi.getGroups().then(setGroups).catch(() => message.warning('获取执行器分组失败'));
-    executorsApi.getTags().then(setAllTags).catch(() => message.warning('获取标签失败'));
-    executorsApi.list().then((data) =>
-      setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string, status: e.status as string })))
-    ).catch(() => message.warning('获取执行器列表失败'));
-    applicationsApi.list().then((data) =>
-      setApps(data.map((a) => ({ id: a.id, name: a.name })))
-    ).catch(() => message.warning('获取应用列表失败'));
-    // NF-02: 上游依赖候选（全量任务，取 id+name；编辑态在任务加载后过滤自身）
-    tasksApi.list({ page: 1, pageSize: 500 })
-      .then((data) => setTaskOptions(data.items.map((t) => ({ id: t.id, name: t.name }))))
-      .catch(() => message.warning('获取任务列表失败，上游依赖暂不可选'));
+    let active = true;
+    const controller = new AbortController();
+    const run = <T,>(request: Promise<T>, onSuccess: (data: T) => void, warning: string) => {
+      request
+        .then((data) => {
+          if (active && !controller.signal.aborted) onSuccess(data);
+        })
+        .catch(() => {
+          if (active && !controller.signal.aborted) message.warning(warning);
+        });
+    };
+
+    run(executorsApi.getGroups(controller.signal), setGroups, '获取执行器分组失败');
+    run(executorsApi.getTags(controller.signal), setAllTags, '获取标签失败');
+    run(
+      executorsApi.list(controller.signal),
+      (data) => setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string, status: e.status as string }))),
+      '获取执行器列表失败',
+    );
+    run(
+      applicationsApi.list(controller.signal),
+      (data) => setApps(data.map((a) => ({ id: a.id, name: a.name }))),
+      '获取应用列表失败',
+    );
+    // NF-02: 上游依赖候选（分页拉全，取 id+name；编辑态在任务加载后过滤自身）
+    tasksApi
+      .listAll({}, controller.signal)
+      .then((data) => {
+        if (active && !controller.signal.aborted) {
+          setTaskOptions(data.items.map((t) => ({ id: t.id, name: t.name })));
+        }
+      })
+      .catch(() => {
+        if (active && !controller.signal.aborted) {
+          message.warning('获取任务列表失败，上游依赖暂不可选');
+        }
+      });
     if (appId) form.setFieldValue('applicationId', appId);
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [appId, form]);
 
   // Load existing task data when in edit mode
   useEffect(() => {
     if (!editId) return;
+    let active = true;
+    const controller = new AbortController();
     setLoadingTask(true);
-    tasksApi.get(editId)
+    tasksApi.get(editId, controller.signal)
       .then((task) => {
+        if (!active || controller.signal.aborted) return;
         const mode = deriveExecutorMode(task);
         setExecutorMode(mode);
         setTriggerType(task.triggerType || 'manual');
@@ -183,6 +217,10 @@ export default function TaskFormPage() {
           executorId: task.executorId ?? undefined,
           executorGroup: task.executorGroup,
           executorTags: task.executorTags,
+          // NF-04: affinity constraints must be mounted and hydrated in edit mode;
+          // otherwise the form submission would normalize absent values to null and
+          // silently clear constraints that were never shown to the user.
+          ...affinityFormValues(task),
           params: task.params ?? {},
           // FEAT-06: 维护窗口（null/缺省 → 空数组占位，添加行即编辑）
           maintenanceWindows: (task.maintenanceWindows ?? []).map((w) => ({ ...w })),
@@ -194,8 +232,17 @@ export default function TaskFormPage() {
         form.setFieldValue('upstreamDependencies', dep.selected);
         depNameSnapshotRef.current = dep.nameSnapshot;
       })
-      .catch(() => message.error('加载任务失败'))
-      .finally(() => setLoadingTask(false));
+      .catch(() => {
+        if (active && !controller.signal.aborted) message.error('加载任务失败');
+      })
+      .finally(() => {
+        if (active && !controller.signal.aborted) setLoadingTask(false);
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [editId, form]);
 
   // CORE-03：创建态带 ?templateId= 时拉取模板，config 预填表单（显式字段仍可改；
@@ -248,17 +295,18 @@ export default function TaskFormPage() {
     }
     setSaving(true);
     try {
-      const payload = applyRetryableErrorsPayload(
-        applyTimeoutPolicyPayload(
-          applyMaintenanceWindowsPayload(
-            applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
+      // QA-01：applyDependenciesPayload 必须包在最外层——它把表单载体字段
+      // upstreamDependencies（DTO 未声明，forbidNonWhitelisted 会判 400）转成
+      // DTO 声明的 dependencies 映射并删除载体键，须保证没有任何后续步骤再把
+      // 载体键带回请求体（内层 buildExecutorPayload 会整体展开 values）。
+      const payload = applyDependenciesPayload(
+        applyRetryableErrorsPayload(
+          applyTimeoutPolicyPayload(
+            applyMaintenanceWindowsPayload(
+              applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
+            ),
           ),
         ),
-      );
-      // NF-02: 上游依赖序列化（选中 taskId 列表 → {taskId: taskName} 映射；
-      // 空集显式 null——PATCH Object.assign 语义下缺省=保留旧依赖链）
-      payload.dependencies = buildDependenciesPayload(
-        values.upstreamDependencies as string[] | undefined,
         depNameSnapshotRef.current,
       );
       if (isEdit && editId) {
@@ -747,6 +795,54 @@ export default function TaskFormPage() {
                       />
                     </Form.Item>
                   </>
+                )}
+
+                {/* NF-04: affinity constraints are orthogonal to auto/group/broadcast
+                    and remain mounted in every mode so edit/save cannot clear a
+                    value merely because a mode-specific branch is not visible.
+                    Pinned dispatch bypasses all tag filters, so these controls are
+                    disabled there while their stored values are retained for a
+                    later switch back to a filtering mode. */}
+                <Form.Item
+                  name="executorAffinityTags"
+                  label="亲和标签"
+                  tooltip={{
+                    title: '执行器拥有任一标签即可命中；可与分组/执行器标签同时使用。自动调度与广播均生效。指定执行器模式不使用此约束。',
+                    icon: <InfoCircleOutlined />,
+                  }}
+                >
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    disabled={executorMode === 'pinned'}
+                    placeholder="选择亲和标签（可选，OR 关系）"
+                    options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="executorAntiAffinityTags"
+                  label="反亲和标签"
+                  tooltip={{
+                    title: '执行器拥有任一标签即排除；可与亲和标签同时使用。自动调度与广播均生效。指定执行器模式不使用此约束。',
+                    icon: <InfoCircleOutlined />,
+                  }}
+                >
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    disabled={executorMode === 'pinned'}
+                    placeholder="选择反亲和标签（可选，排除关系）"
+                    options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
+                  />
+                </Form.Item>
+                {executorMode === 'pinned' && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    title="指定执行器模式不使用亲和/反亲和约束；配置会保留，切回自动调度、分组或广播后继续生效"
+                    data-testid="pinned-affinity-disabled"
+                    style={{ marginBottom: 16 }}
+                  />
                 )}
 
                 {pinDisabledByBroadcast && (

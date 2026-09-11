@@ -40,6 +40,12 @@ const MENU_OPEN_KEYS_KEY = 'autoflow-menu-open-keys';
 // 默认展开「任务」「执行」两组（计划书指定），首次进入即见高频入口
 const DEFAULT_OPEN_KEYS = ['g-tasks', 'g-executions'];
 
+/**
+ * UI-12：壳层样式钩子。
+ * - autoflow-layout：焦点环样式的作用域根（规则见 src/styles/a11y-focus.css）；
+ * - a11y-skip-link：「跳到主要内容」链接，置于首个 Tab 位（样式同见该 CSS）。
+ */
+
 /** 读取持久化折叠态（非法值/缺席按未折叠处理） */
 export function readCollapsedPreference(): boolean {
   try {
@@ -205,6 +211,24 @@ export default function MainLayout() {
     setMobileSiderOpen(false);
   }, [location.pathname]);
 
+  // UI-12：抽屉展开时 Esc 收起并把焦点归还汉堡入口（键盘用户不必摸黑找遮罩）。
+  // 仅在抽屉展开期间挂载监听，避免与命令面板的 Esc 语义打架。
+  useEffect(() => {
+    if (!mobileSiderOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setMobileSiderOpen(false);
+      // 焦点归还触发元素（遮罩是本批改为 button 后的次选入口，首归还汉堡）
+      const trigger = document.querySelector<HTMLElement>('[data-testid="mobile-menu-toggle"]');
+      if (trigger && typeof trigger.focus === 'function') trigger.focus();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [mobileSiderOpen]);
+
+  // UI-12：用户菜单受控展开态——承载 aria-expanded（键盘可达 + 读屏可播报展开态）
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+
   const selectedKey = '/' + location.pathname.split('/')[1];
 
   // Build breadcrumb items from the current path
@@ -260,6 +284,8 @@ export default function MainLayout() {
   ];
 
   const handleUserMenu = async ({ key }: { key: string }) => {
+    // UI-12：受控态下菜单项点击需显式收起（退出登录会跳路由，此处兜住其余分支）
+    setUserMenuOpen(false);
     if (key === 'logout') {
       await logoutRemote();
       nav('/login');
@@ -283,7 +309,14 @@ export default function MainLayout() {
 
   return (
     // UI-09：mobile-sider-open 挂根 Layout——CSS 媒体查询据此滑入侧边栏并显示遮罩
-    <Layout className={mobileSiderOpen ? 'mobile-sider-open' : undefined} style={{ minHeight: '100vh' }}>
+    // UI-12：autoflow-layout 为焦点环样式的作用域根；skip-link 置于首位焦点
+    <Layout
+      className={['autoflow-layout', mobileSiderOpen ? 'mobile-sider-open' : ''].filter(Boolean).join(' ')}
+      style={{ minHeight: '100vh' }}
+    >
+      {/* UI-12：跳转链接——键盘用户首个 Tab 即可跳过整条侧边栏导航
+          （样式见 src/styles/a11y-focus.css，由 main.tsx 引入） */}
+      <a href="#main-content" className="a11y-skip-link">跳到主要内容</a>
       <Sider
         collapsible
         collapsed={collapsed}
@@ -296,18 +329,25 @@ export default function MainLayout() {
           boxShadow: 'var(--shadow-sm)',
         }}
       >
-        {/* Logo */}
-        <div
+        {/* Logo —— UI-12：原为裸 div + onClick（键盘不可达），改为原生 button，
+            Enter/Space 天然可达，aria-label 提供读屏名称 */}
+        <button
+          type="button"
+          aria-label="返回控制台"
+          data-testid="logo-home-button"
+          onClick={() => nav('/dashboard')}
           style={{
+            width: '100%',
             height: 56,
             display: 'flex',
             alignItems: 'center',
             padding: collapsed ? '0 24px' : '0 20px',
+            background: 'transparent',
+            border: 'none',
             borderBottom: `1px solid ${token.colorBorderSecondary}`,
             cursor: 'pointer',
             transition: 'padding 0.2s',
           }}
-          onClick={() => nav('/dashboard')}
         >
           <div
             style={{
@@ -333,19 +373,23 @@ export default function MainLayout() {
               AutoCodeFlow
             </Text>
           )}
-        </div>
+        </button>
 
-        <Menu
-          mode="inline"
-          selectedKeys={[selectedKey]}
-          openKeys={openKeys}
-          onOpenChange={setOpenKeys}
-          items={menuItemsWithTooltip}
-          onClick={({ key }) => nav(key)}
-          style={{ border: 'none', marginTop: 8, paddingBottom: 56 }}
-        />
+        {/* UI-12：侧边栏菜单包进 navigation landmark 并命名，读屏可直达主导航 */}
+        <nav aria-label="主导航">
+          <Menu
+            mode="inline"
+            selectedKeys={[selectedKey]}
+            openKeys={openKeys}
+            onOpenChange={setOpenKeys}
+            items={menuItemsWithTooltip}
+            onClick={({ key }) => nav(key)}
+            style={{ border: 'none', marginTop: 8, paddingBottom: 56 }}
+          />
+        </nav>
 
-        {/* 侧边栏底部折叠按钮 */}
+        {/* 侧边栏底部折叠按钮 —— UI-12：外层 div 的 onClick 与内层 Button 重复触发，
+            去掉外层点击（仅作布局容器），可访问名与展开态收敛到 Button 上 */}
         <div
           style={{
             position: 'absolute',
@@ -358,17 +402,18 @@ export default function MainLayout() {
             justifyContent: collapsed ? 'center' : 'flex-end',
             padding: collapsed ? 0 : '0 16px',
             borderTop: `1px solid ${token.colorBorderSecondary}`,
-            cursor: 'pointer',
             transition: 'all 0.2s',
           }}
-          onClick={() => setCollapsed(!collapsed)}
         >
           <Tooltip title={collapsed ? '展开菜单' : '收起菜单'} placement="right">
             <Button
               type="text"
               data-testid="sider-toggle"
+              aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+              aria-expanded={!collapsed}
               icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               style={{ fontSize: 15, color: token.colorTextSecondary }}
+              onClick={() => setCollapsed(!collapsed)}
             />
           </Tooltip>
         </div>
@@ -396,7 +441,8 @@ export default function MainLayout() {
           <Button
             type="text"
             className="mobile-menu-toggle"
-            aria-label="打开导航菜单"
+            aria-label={mobileSiderOpen ? '收起导航菜单' : '打开导航菜单'}
+            aria-expanded={mobileSiderOpen}
             data-testid="mobile-menu-toggle"
             icon={mobileSiderOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
             onClick={() => setMobileSiderOpen((v) => !v)}
@@ -409,8 +455,9 @@ export default function MainLayout() {
           </Space>
 
           <Space size={4}>
-            {/* 时间显示（UI-09：≤768px 隐藏——头部仅留高频操作按钮） */}
-            <div className="header-time" style={{ textAlign: 'right', marginRight: 8, lineHeight: 1.3 }}>
+            {/* 时间显示（UI-09：≤768px 隐藏——头部仅留高频操作按钮）
+                UI-12：纯装饰信息，对读屏隐藏（每分每秒变化会持续打断朗读） */}
+            <div className="header-time" aria-hidden="true" style={{ textAlign: 'right', marginRight: 8, lineHeight: 1.3 }}>
               <div style={{ fontSize: 14, fontWeight: 600, color: token.colorText }}>{timeStr}</div>
               <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{dateStr}</div>
             </div>
@@ -439,9 +486,14 @@ export default function MainLayout() {
               />
             </Tooltip>
 
-            {/* 帮助按钮 */}
+            {/* 帮助按钮 —— UI-12：纯图标按钮补可访问名（此前读屏只报「按钮」） */}
             <Tooltip title="帮助文档">
-              <Button type="text" icon={<QuestionCircleOutlined />} style={{ fontSize: 16, color: token.colorTextSecondary }} />
+              <Button
+                type="text"
+                icon={<QuestionCircleOutlined />}
+                aria-label="帮助文档"
+                style={{ fontSize: 16, color: token.colorTextSecondary }}
+              />
             </Tooltip>
 
             {/* 通知按钮：R6 起 /notifications 为 ADMIN-only（路由门控），
@@ -449,22 +501,42 @@ export default function MainLayout() {
             {isAdmin && (
               <Tooltip title="通知">
                 <Badge count={0} dot>
-                  <Button type="text" icon={<BellOutlined />} style={{ fontSize: 16 }} onClick={() => nav('/notifications')} />
+                  <Button
+                    type="text"
+                    icon={<BellOutlined />}
+                    aria-label="通知"
+                    style={{ fontSize: 16 }}
+                    onClick={() => nav('/notifications')}
+                  />
                 </Badge>
               </Tooltip>
             )}
 
             {/* 用户头像下拉 */}
             <Dropdown
+              open={userMenuOpen}
+              onOpenChange={setUserMenuOpen}
               menu={{ items: userMenuItems, onClick: handleUserMenu }}
               placement="bottomRight"
               trigger={['click']}
             >
-              <Space
+              {/* UI-12：触发器原为 <Space>（div）——非可聚焦元素，键盘用户根本打不开
+                  用户菜单。改为原生 button：可 Tab 聚焦、Enter/Space 激活，
+                  并用 aria-haspopup/aria-expanded 向读屏播报菜单展开态 */}
+              <button
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={userMenuOpen}
+                aria-label="用户菜单"
                 style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
                   cursor: 'pointer',
                   padding: '4px 8px',
                   borderRadius: 8,
+                  border: 'none',
+                  background: 'transparent',
                   transition: 'background 0.2s',
                 }}
                 className="user-dropdown-trigger"
@@ -479,12 +551,16 @@ export default function MainLayout() {
                   <div style={{ fontSize: 13, fontWeight: 500, color: token.colorText }}>{user?.username || '用户'}</div>
                   <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{user?.role === 'admin' ? '管理员' : '普通用户'}</div>
                 </div>
-              </Space>
+              </button>
             </Dropdown>
           </Space>
         </Header>
 
+        {/* UI-12：主内容 landmark——skip-link 的落点；tabIndex=-1 使其可编程聚焦
+            但不进入 Tab 序列 */}
         <Content
+          id="main-content"
+          tabIndex={-1}
           style={{
             padding: '20px 24px',
             background: token.colorBgLayout,
@@ -499,10 +575,15 @@ export default function MainLayout() {
       {/* FEAT-09: 全局命令面板——⌘K/Ctrl+K 或头部搜索按钮唤起 */}
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
 
-      {/* UI-09：移动端抽屉遮罩（≤768px 且抽屉展开时显示，点击收起） */}
-      <div
+      {/* UI-09：移动端抽屉遮罩（≤768px 且抽屉展开时显示，点击收起）
+          UI-12：原为裸 div + onClick（键盘不可达），改为原生 button——可聚焦、
+          Enter 收起抽屉；Esc 收起与焦点归还见上方 keydown effect */}
+      <button
+        type="button"
         className="mobile-sider-mask"
         data-testid="mobile-sider-mask"
+        aria-label="关闭导航菜单"
+        style={{ border: 'none', padding: 0 }}
         onClick={() => setMobileSiderOpen(false)}
       />
     </Layout>

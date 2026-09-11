@@ -65,7 +65,7 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
     const result = await controller.create(dto, user, req);
 
     expect(result).toEqual({ id: "task-1" });
-    expect(taskService.create).toHaveBeenCalledWith(dto);
+    expect(taskService.create).toHaveBeenCalledWith(dto, user);
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 7,
@@ -84,7 +84,7 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
 
     await controller.update("task-1", dto, user, req);
 
-    expect(taskService.update).toHaveBeenCalledWith("task-1", dto);
+    expect(taskService.update).toHaveBeenCalledWith("task-1", dto, user);
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: "task.update", resourceId: "task-1" }),
     );
@@ -125,7 +125,7 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
 
     await controller.remove("task-1", user, req);
 
-    expect(taskService.remove).toHaveBeenCalledWith("task-1");
+    expect(taskService.remove).toHaveBeenCalledWith("task-1", user);
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: "task.delete", resourceId: "task-1" }),
     );

@@ -8,9 +8,14 @@
  *   返回），OnModuleInit 时 + 每 5s 扫描 dispatchedAt IS NULL 且
  *   deadLettered=false 的行，逐行补投；成功回写 dispatchedAt，失败
  *   attempts+1 + nextAttemptAt 指数退避（5s 基座封顶 5min），超过
- *   MAX_OUTBOX_ATTEMPTS 落 event_subscription_dead_letters 并置
+ *   MAX_OUTBOX_ATTEMPTS 落 event_outbox_dead_letters 并置
  *   deadLettered=true（行终态）。进程重启后扫描自然恢复——不丢任何已落库
  *   待投事件（at-least-once；订阅方须幂等）。
+ *
+ *   死信表选型：outbox 行按事件落库、逐行投给多个订阅，不属于任何单一订阅，
+ *   因此终态归档走独立的 event_outbox_dead_letters（无 subscriptionId FK），
+ *   不再复用 event_subscription_dead_letters 的哨兵 subscriptionId（PG 侧 FK
+ *   会拒收无主行，此前只能靠日志兜底）。
  *
  * 设计要点：
  * - 派发实现复用 OutboundEventDispatcher.deliverOnce（同签名/同 SSRF 复核/
@@ -30,20 +35,43 @@ import {
 import { ModuleRef } from "@nestjs/core";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
-import { IsNull, LessThan, Repository } from "typeorm";
+import { DataSource, IsNull, MoreThan, Repository } from "typeorm";
 import { randomUUID } from "node:crypto";
 import { EventSubscription } from "./entities/event-subscription.entity";
 import { EventOutbox } from "./entities/event-outbox.entity";
-import { EventSubscriptionDeadLetter } from "./entities/event-subscription-dead-letter.entity";
+import { EventOutboxDeadLetter } from "./entities/event-outbox-dead-letter.entity";
 import {
+  MAX_DELIVERY_ATTEMPTS,
   MAX_OUTBOX_ATTEMPTS,
+  OUTBOUND_TIMEOUT_MS,
   outboxRetryDelayMs,
+  retryDelayMs,
 } from "./event-subscription.util";
 
 /** 扫描间隔（毫秒）。 */
 export const OUTBOX_SCAN_INTERVAL_MS = 5_000;
-/** 单轮扫描最多取行数（防积压瞬间打满出站）。 */
-export const OUTBOX_BATCH_SIZE = 50;
+/**
+ * 单轮只 claim 一行：processRow 串行执行，而单行派发最坏是 3×10s HTTP
+ * timeout + 1s + 2s retry backoff = 33s。批量 claim 会让后续未开始的行共享
+ * 同一租约并在 60s 内过期，因此宁可让积压跨多个扫描周期，也不扩大重复投递窗。
+ */
+export const OUTBOX_BATCH_SIZE = 1;
+/**
+ * 单行在正常派发窗口内的最长时间：每个订阅的重试是串行的，但同一 outbox
+ * 行的多个订阅由 deliverToSubscribers 并行执行，因此时间上界不随订阅数相乘。
+ */
+export const OUTBOX_MAX_ROW_PROCESSING_MS =
+  MAX_DELIVERY_ATTEMPTS * OUTBOUND_TIMEOUT_MS +
+  retryDelayMs(1) +
+  retryDelayMs(2);
+/** 单行租约的有效期；过期后其它实例可安全回收。 */
+export const OUTBOX_LEASE_MS = 60_000;
+
+if (OUTBOX_LEASE_MS <= OUTBOX_MAX_ROW_PROCESSING_MS) {
+  throw new Error(
+    "OUTBOX_LEASE_MS must exceed the normal worst-case single-row processing window",
+  );
+}
 
 /**
  * FEAT-19 依赖方向说明（与 OUTBOX_DISPATCHER_TOKEN 对称）：OutboundEventDispatcher
@@ -60,6 +88,13 @@ export const OUTBOX_BATCH_SIZE = 50;
  */
 export const OUTBOUND_DISPATCHER_TOKEN = Symbol("OUTBOUND_DISPATCHER_TOKEN");
 
+class StaleOutboxOwnerError extends Error {
+  constructor() {
+    super("outbox lease lost before dead-letter finalization");
+    this.name = "StaleOutboxOwnerError";
+  }
+}
+
 /** OutboundEventDispatcher 的结构最小面（本服务消费的入口）。 */
 interface OutboundDispatcherLike {
   deliverToSubscribers(
@@ -69,7 +104,12 @@ interface OutboundDispatcherLike {
       occurredAt: string;
       data: Record<string, unknown>;
     },
-  ): Promise<void>;
+  ): Promise<{
+    targetCount: number;
+    deliveredCount: number;
+    deadLetteredCount: number;
+    deadLetterPersistenceFailures: number;
+  }>;
 }
 
 @Injectable()
@@ -85,12 +125,13 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly moduleRef: ModuleRef,
     private readonly configService: ConfigService,
+    private readonly dataSource: DataSource,
     @InjectRepository(EventOutbox)
     private readonly outboxRepo: Repository<EventOutbox>,
     @InjectRepository(EventSubscription)
     private readonly subRepo: Repository<EventSubscription>,
-    @InjectRepository(EventSubscriptionDeadLetter)
-    private readonly deadLetterRepo: Repository<EventSubscriptionDeadLetter>,
+    @InjectRepository(EventOutboxDeadLetter)
+    private readonly outboxDeadLetterRepo: Repository<EventOutboxDeadLetter>,
   ) {
     // ConfigService 缺席（极简单测装配）时按默认开启兜底。
     this.enabled =
@@ -151,25 +192,33 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     if (this.scanning) return 0;
     this.scanning = true;
     try {
-      // 应投 = 未派发 + 非死信 + （无退避指针 或 退避指针已到期）。
-      // TypeORM where 数组=OR 语义；每个分支自带 deadLettered=false 守卫。
+      // claim 必须在数据库内完成：单条 UPDATE/CTE 先用 FOR UPDATE
+      // SKIP LOCKED 选行再写租约，不能依赖进程内 scanning 互斥（多实例各自
+      // 都会进入此处）。活动租约被跳过，过期租约可由本轮回收。
       const now = new Date();
-      const rows = await this.outboxRepo.find({
-        where: [
-          {
-            dispatchedAt: IsNull(),
-            deadLettered: false,
-            nextAttemptAt: IsNull(),
-          },
-          {
-            dispatchedAt: IsNull(),
-            deadLettered: false,
-            nextAttemptAt: LessThan(now),
-          },
-        ],
-        order: { createdAt: "ASC" },
-        take: OUTBOX_BATCH_SIZE,
-      });
+      const leaseUntil = new Date(now.getTime() + OUTBOX_LEASE_MS);
+      const rows = (await this.dataSource.query(
+        `
+          WITH "claimable" AS (
+            SELECT "id"
+            FROM "event_outbox"
+            WHERE "dispatchedAt" IS NULL
+              AND "deadLettered" = false
+              AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= $1)
+              AND ("leaseUntil" IS NULL OR "leaseUntil" <= $1)
+            ORDER BY "createdAt" ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+          )
+          UPDATE "event_outbox" AS "outbox"
+          SET "leaseUntil" = $3,
+              "leaseToken" = md5(random()::text || clock_timestamp()::text)
+          FROM "claimable"
+          WHERE "outbox"."id" = "claimable"."id"
+          RETURNING "outbox".*
+        `,
+        [now, OUTBOX_BATCH_SIZE, leaseUntil],
+      )) as EventOutbox[];
       for (const row of rows) {
         try {
           await this.processRow(row);
@@ -224,22 +273,59 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     try {
       // 复用既有派发器（进程内重试语义含 SSRF 复核/退避/死信/统计）——
       // outbox 只负责「跨进程不丢」的兜底语义。
-      await dispatcher.deliverToSubscribers(
+      const aggregate = await dispatcher.deliverToSubscribers(
         row.eventType,
         row.payload as never,
       );
+      // Marking dispatched is only safe when every target is either delivered
+      // or represented by a reliably persisted subscription dead letter. A
+      // persistence failure (or an incomplete/malformed aggregate) keeps the
+      // source row retryable so the event cannot disappear silently.
+      const settledTargetCount =
+        (aggregate?.deliveredCount ?? 0) + (aggregate?.deadLetteredCount ?? 0);
+      const persistenceFailures =
+        aggregate?.deadLetterPersistenceFailures ?? 0;
+      const aggregateSettled =
+        persistenceFailures === 0 &&
+        (aggregate?.targetCount === 0 ||
+          aggregate?.targetCount === settledTargetCount);
+      if (!aggregateSettled) {
+        this.logger.warn(
+          `Outbox row ${row.id} kept retryable: delivery aggregate is not settled ` +
+            `(targets=${aggregate?.targetCount ?? "unknown"}, settled=${settledTargetCount}, ` +
+            `persistenceFailures=${persistenceFailures})`,
+        );
+        await this.handleFailure(
+          row,
+          new Error(
+            `delivery aggregate unsettled (dead letter persistence failures: ${persistenceFailures})`,
+          ),
+        );
+        return;
+      }
       await this.markDispatched(row);
     } catch (err: unknown) {
       await this.handleFailure(row, err);
     }
   }
 
-  /** 成功（或无订阅）终态：回写 dispatchedAt、清退避指针。 */
+  /** 成功（或无订阅）终态：仅租约持有者可回写并释放租约。 */
   private async markDispatched(row: EventOutbox): Promise<void> {
     try {
       await this.outboxRepo.update(
-        { id: row.id },
-        { dispatchedAt: new Date(), nextAttemptAt: null },
+        {
+          id: row.id,
+          dispatchedAt: IsNull(),
+          deadLettered: false,
+          leaseToken: row.leaseToken,
+          leaseUntil: MoreThan(new Date()),
+        },
+        {
+          dispatchedAt: new Date(),
+          nextAttemptAt: null,
+          leaseUntil: null,
+          leaseToken: null,
+        },
       );
     } catch (err: unknown) {
       // 终态回写失败：行保持未派发 → 下轮重投（at-least-once 允许重复）。
@@ -262,47 +348,69 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Outbox row ${row.id} (${row.eventType}) dead-lettered after ${attempts} attempts: ${message}`,
       );
-      // 终态回写与死信落库解耦：先收敛行（不再扫描），死信落库 best-effort
-      // ——dead_letters.subscriptionId 有 FK（哨兵 id 无对应订阅行时插入被
-      // 拒），若两者同 try，死信失败会拖住终态导致该行无限重投。
+      // Persist the independent outbox dead letter first. Only after that
+      // succeeds may the guarded source-row update make the event terminal.
+      // This intentionally leaves the row retryable when persistence fails.
       try {
-        await this.outboxRepo.update(
-          { id: row.id },
-          { deadLettered: true, attempts, nextAttemptAt: null },
-        );
+        await this.dataSource.transaction(async (manager) => {
+          await manager.getRepository(EventOutboxDeadLetter).save(
+            manager.getRepository(EventOutboxDeadLetter).create({
+              outboxId: row.id,
+              eventType: row.eventType,
+              payload: row.payload,
+              attempts,
+              lastError: message,
+              deadLetteredAt: new Date(),
+            }),
+          );
+          const result = await manager.getRepository(EventOutbox).update(
+            {
+              id: row.id,
+              dispatchedAt: IsNull(),
+              deadLettered: false,
+              leaseToken: row.leaseToken,
+              leaseUntil: MoreThan(new Date()),
+            },
+            {
+              deadLettered: true,
+              attempts,
+              nextAttemptAt: null,
+              leaseUntil: null,
+              leaseToken: null,
+            },
+          );
+          if (result.affected !== 1) throw new StaleOutboxOwnerError();
+        });
       } catch (dbErr: unknown) {
+        if (dbErr instanceof StaleOutboxOwnerError) {
+          this.logger.warn(`Outbox row ${row.id} dead-letter finalize skipped: lease lost`);
+          return;
+        }
         this.logger.error(
-          `Failed to finalize outbox row ${row.id}: ${
+          `Failed to persist/finalize outbox row ${row.id}: ${
             dbErr instanceof Error ? dbErr.message : String(dbErr)
           }`,
         );
-      }
-      try {
-        await this.deadLetterRepo.save(
-          this.deadLetterRepo.create({
-            subscriptionId: OutboxDispatcher.OUTBOX_SUBSCRIPTION_ID,
-            eventType: row.eventType,
-            payload: row.payload,
-            error: message,
-            attempts,
-          }),
-        );
-      } catch (dbErr: unknown) {
-        this.logger.error(
-          `Failed to persist outbox dead letter for row ${row.id}: ${
-            dbErr instanceof Error ? dbErr.message : String(dbErr)
-          }`,
-        );
+        // The transaction rolls back both operations, leaving the source row
+        // retryable and allowing a later scan to retry the dead-letter write.
       }
       return;
     }
     const delay = outboxRetryDelayMs(attempts);
     try {
       await this.outboxRepo.update(
-        { id: row.id },
+        {
+          id: row.id,
+          dispatchedAt: IsNull(),
+          deadLettered: false,
+          leaseToken: row.leaseToken,
+          leaseUntil: MoreThan(new Date()),
+        },
         {
           attempts,
           nextAttemptAt: new Date(Date.now() + delay),
+          leaseUntil: null,
+          leaseToken: null,
         },
       );
     } catch (dbErr: unknown) {
@@ -333,6 +441,8 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           dispatchedAt: null,
           attempts: 0,
           nextAttemptAt: null,
+          leaseUntil: null,
+          leaseToken: null,
           deadLettered: false,
         }),
       );
@@ -351,13 +461,4 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     return this.scanning;
   }
 
-  /**
-   * outbox 死信的归属标记：outbox 行不属于任何单一订阅（按事件落库，逐行
-   * 投给多个订阅），落 event_subscription_dead_letters 需要一个 subscriptionId
-   * ——用全零 uuid 哨兵（不在 FK 校验范围内则依赖调用方自行处理；PG 侧
-   * dead_letters 表有 FK，无对应订阅行时插入会被拒——落库失败仅记日志，
-   * outbox 行由 deadLettered 终态自行收敛，语义不受影响）。
-   */
-  static readonly OUTBOX_SUBSCRIPTION_ID =
-    "00000000-0000-4000-8000-000000000000";
 }

@@ -3238,4 +3238,261 @@ describe("ExecutorService (__tests__)", () => {
       expect((service as any).tokenValidationCache).toBeDefined();
     });
   });
+
+  // ============================================================================
+  // NF-04: 任务标签亲和/反亲和调度约束——dispatch 候选过滤矩阵。
+  // 语义拍板（与 entity/DTO/迁移注释及 docs/api-reference.md 同步）：
+  //   - 亲和 executorAffinityTags = OR 语义（持有任一标签即命中）；
+  //   - 反亲和 executorAntiAffinityTags = 排除语义（持有任一标签即剔除）；
+  //   - 过滤先于 CORE-05 loadScore 排序（先筛再按负载选）；
+  //   - null/[] = 无约束，默认行为零变化；
+  //   - broadcast + 亲和 = 广播收窄为命中子集；broadcast + 反亲和照常剔除；
+  //   - 候选为空走既有 "No online executors match..." 失败路径。
+  // ============================================================================
+  describe("dispatch — affinity / anti-affinity tag constraints (NF-04)", () => {
+    const execution = { id: "exec-1", params: {} } as TaskExecution;
+
+    const mkExecutor = (id: string, address: string, tags: string[] | null) =>
+      ({
+        id,
+        address,
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        tags,
+        version: 1,
+      }) as any;
+
+    const mkTask = (over: Record<string, unknown>) =>
+      ({ id: "task-1", name: "t", timeout: 10, ...over }) as unknown as Task;
+
+    const dispatchedAddresses = () =>
+      mockedAxios.post.mock.calls.map((c) => c[0] as string);
+
+    beforeEach(() => {
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+    });
+
+    it("unconstrained task (both columns null) ignores the constraint filters entirely — zero behavior change", async () => {
+      const e = mkExecutor("e1", "a:1", null);
+      executorRepo.find.mockResolvedValue([e]);
+      await service.dispatch(mkTask({}), execution);
+      expect(dispatchedAddresses()[0]).toContain("a:1");
+    });
+
+    it("affinity (OR): executor holding ANY of the affinity tags is eligible", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e-gpu", "gpu:1", ["gpu"]),
+        mkExecutor("e-edge", "edge:1", ["edge"]),
+        mkExecutor("e-none", "none:1", ["misc"]),
+      ]);
+      await service.dispatch(
+        mkTask({ executorAffinityTags: ["gpu", "edge"] }),
+        execution,
+      );
+      // OR 命中前两个；loadScore 在命中集合内择优——两者 running 相同时
+      // 排序稳定，两个都可能是赢家，但 e-none 必须被排除。
+      const urls = dispatchedAddresses();
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).not.toContain("none:1");
+      expect(urls[0].includes("gpu:1") || urls[0].includes("edge:1")).toBe(
+        true,
+      );
+    });
+
+    it("affinity (OR): executor with no tags never matches an affinity constraint", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e-notags", "notags:1", null),
+      ]);
+      await expect(
+        service.dispatch(mkTask({ executorAffinityTags: ["gpu"] }), execution),
+      ).rejects.toThrow(
+        "No online executors match the requested group/tags/runtime",
+      );
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it("affinity miss on the whole fleet fails through the existing no-executor path", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e1", "a:1", ["misc"]),
+      ]);
+      await expect(
+        service.dispatch(mkTask({ executorAffinityTags: ["gpu"] }), execution),
+      ).rejects.toThrow(
+        "No online executors match the requested group/tags/runtime",
+      );
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it("anti-affinity: executors holding ANY of the tags are excluded", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e-windows", "win:1", ["windows"]),
+        mkExecutor("e-linux", "linux:1", ["linux"]),
+      ]);
+      await service.dispatch(
+        mkTask({ executorAntiAffinityTags: ["windows"] }),
+        execution,
+      );
+      const urls = dispatchedAddresses();
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toContain("linux:1");
+    });
+
+    it("anti-affinity excluding the entire fleet fails through the existing no-executor path", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e1", "a:1", ["windows"]),
+      ]);
+      await expect(
+        service.dispatch(
+          mkTask({ executorAntiAffinityTags: ["windows"] }),
+          execution,
+        ),
+      ).rejects.toThrow(
+        "No online executors match the requested group/tags/runtime",
+      );
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it("anti-affinity tolerates executors with no tags (nothing to exclude)", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e-notags", "notags:1", null),
+      ]);
+      await service.dispatch(
+        mkTask({ executorAntiAffinityTags: ["windows"] }),
+        execution,
+      );
+      expect(dispatchedAddresses()[0]).toContain("notags:1");
+    });
+
+    it("affinity ∩ anti-affinity: matched set is filtered further (intersection semantics)", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e-gpu-win", "gw:1", ["gpu", "windows"]),
+        mkExecutor("e-gpu", "g:1", ["gpu"]),
+        mkExecutor("e-edge", "e:1", ["edge"]),
+      ]);
+      await service.dispatch(
+        mkTask({
+          executorAffinityTags: ["gpu", "edge"],
+          executorAntiAffinityTags: ["windows"],
+        }),
+        execution,
+      );
+      const urls = dispatchedAddresses();
+      expect(urls).toHaveLength(1);
+      // gpu/edge 亲和命中 gw:1 与 g:1；反亲和剔除 gw:1 → 只剩 g:1
+      expect(urls[0]).toContain("g:1");
+    });
+
+    it("affinity filter runs BEFORE loadScore ordering: a busy matching executor loses to an idle matching one", async () => {
+      const busy = mkExecutor("e-match-busy", "busy:1", ["gpu"]);
+      const idle = mkExecutor("e-match-idle", "idle:1", ["gpu"]);
+      busy.runningTaskCount = 4;
+      busy.maxConcurrentTasks = 10;
+      busy.cpuUsage = 90;
+      busy.memUsage = 90;
+      idle.maxConcurrentTasks = 10;
+      executorRepo.find.mockResolvedValue([
+        busy,
+        mkExecutor("e-other-idle", "otheridle:1", ["misc"]),
+        idle,
+      ]);
+      // busy 命中亲和但满载，otheridle 完全空闲但不命中亲和。
+      // 若 loadScore 先于亲和过滤，otheridle 会胜出；先筛后选则 idle:1 胜。
+      await service.dispatch(
+        mkTask({ executorAffinityTags: ["gpu"] }),
+        execution,
+      );
+      const urls = dispatchedAddresses();
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toContain("idle:1");
+      expect(urls[0]).not.toContain("otheridle:1");
+    });
+
+    it("empty affinity array [] is treated as unconstrained (default unchanged)", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e1", "a:1", ["misc"]),
+      ]);
+      await service.dispatch(
+        mkTask({ executorAffinityTags: [], executorAntiAffinityTags: [] }),
+        execution,
+      );
+      expect(dispatchedAddresses()[0]).toContain("a:1");
+    });
+
+    it("broadcast + anti-affinity: executors holding the tag are excluded from the fan-out", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e1", "b1:1", ["linux"]),
+        mkExecutor("e2", "b2:1", ["windows"]),
+        mkExecutor("e3", "b3:1", null),
+      ]);
+      const results = await service.dispatchBroadcast(
+        mkTask({ executorAntiAffinityTags: ["windows"] }),
+        execution,
+      );
+      expect(results).toHaveLength(2);
+      const urls = dispatchedAddresses();
+      expect(urls).toHaveLength(2);
+      expect(urls.some((u) => u.includes("b2:1"))).toBe(false);
+    });
+
+    it("broadcast + affinity: fan-out NARROWS to the executors matching the affinity tags (third-state ruling)", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e1", "b1:1", ["gpu"]),
+        mkExecutor("e2", "b2:1", ["edge"]),
+        mkExecutor("e3", "b3:1", ["misc"]),
+        mkExecutor("e4", "b4:1", null),
+      ]);
+      const results = await service.dispatchBroadcast(
+        mkTask({ executorAffinityTags: ["gpu", "edge"] }),
+        execution,
+      );
+      // 裁定：broadcast 本为全体在线执行器，亲和把广播收窄为命中子集
+      // （pinning=唯一 / broadcast=全体 / broadcast+亲和=命中子集）。
+      expect(results).toHaveLength(2);
+      const urls = dispatchedAddresses();
+      expect(urls.some((u) => u.includes("b1:1"))).toBe(true);
+      expect(urls.some((u) => u.includes("b2:1"))).toBe(true);
+      expect(urls.some((u) => u.includes("b3:1"))).toBe(false);
+      expect(urls.some((u) => u.includes("b4:1"))).toBe(false);
+    });
+
+    it("broadcast with every candidate excluded by the constraints fails through the existing no-executor path", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor("e1", "b1:1", ["windows"]),
+      ]);
+      await expect(
+        service.dispatchBroadcast(
+          mkTask({ executorAffinityTags: ["gpu"] }),
+          execution,
+        ),
+      ).rejects.toThrow(
+        "No online executors match the requested group/tags/runtime",
+      );
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it("executorAppName branch bypasses the constraint filters (explicit single-target intent, same as group/tags)", async () => {
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          appName: "alpha",
+          address: "app:1",
+          status: ExecutorStatus.ONLINE,
+          runningTaskCount: 0,
+          tags: ["windows"],
+          version: 1,
+        } as any,
+      ]);
+      await service.dispatch(
+        mkTask({
+          executorAppName: "alpha",
+          executorAffinityTags: ["gpu"],
+          executorAntiAffinityTags: ["windows"],
+        }),
+        execution,
+      );
+      // appName 精确指定本就绕过 group/tags 过滤（既有语义），亲和约束
+      // 与 group/tags 同面处理，不额外收紧 appName 路径。
+      expect(dispatchedAddresses()[0]).toContain("app:1");
+    });
+  });
 });

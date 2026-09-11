@@ -4,6 +4,7 @@ import {
   ExecutionLogsQueryDto,
   TaskExecutionsQueryDto,
 } from "../dto/execution-query.dto";
+import { ListTasksQueryDto } from "../dto/list-tasks-query.dto";
 import { TaskController } from "../task.controller";
 
 /**
@@ -17,6 +18,26 @@ const pipe = new ValidationPipe({
   whitelist: true,
   forbidNonWhitelisted: true,
   transform: true,
+});
+
+describe("ListTasksQueryDto (GET /tasks)", () => {
+  const validate = (value: object) =>
+    pipe.transform(value, {
+      type: "query",
+      metatype: ListTasksQueryDto,
+    }) as Promise<ListTasksQueryDto>;
+
+  it("accepts the backend maximum pageSize=100", async () => {
+    const result = await validate({ page: "1", pageSize: "100" });
+    expect(result.page).toBe(1);
+    expect(result.pageSize).toBe(100);
+  });
+
+  it("rejects pageSize above the backend maximum", async () => {
+    await expect(validate({ page: "1", pageSize: "101" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
 });
 
 describe("TaskExecutionsQueryDto (GET /tasks/:id/executions)", () => {

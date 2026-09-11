@@ -100,7 +100,7 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
     <div className="log-fullscreen">
       <div className="log-fs-bar">
         <span className="log-fs-title">
-          {entry.appId} / <span style={{ fontSize: 11, opacity: 0.7 }}>{entry.deploymentId.slice(0, 8)}</span>
+          {entry.appId} / <span className="log-fs-deployment-id">{entry.deploymentId.slice(0, 8)}</span>
         </span>
         <div className="log-fs-search">
           <span className="log-fs-search-icon">🔍</span>
@@ -126,13 +126,13 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
       <div className="log-fs-body">
         <div className="log-viewer log-fs-content" ref={logRef} onScroll={handleScroll}>
           {loading && lines.length === 0 && (
-            <span style={{ color: '#666', fontStyle: 'italic' }}>加载中...</span>
+            <span className="log-empty">加载中...</span>
           )}
           {!loading && !entry.hasLog && (
-            <span style={{ color: '#666', fontStyle: 'italic' }}>暂无日志文件（app.log 不存在）</span>
+            <span className="log-empty">暂无日志文件（app.log 不存在）</span>
           )}
           {filtered.length === 0 && !loading && entry.hasLog && (
-            <span style={{ color: '#666', fontStyle: 'italic' }}>{q ? '无匹配结果' : '日志为空'}</span>
+            <span className="log-empty">{q ? '无匹配结果' : '日志为空'}</span>
           )}
           {filtered.map((line, i) => (
             <div key={i} className={`log-line ${classifyLog(line)}`}>{line}</div>
@@ -173,54 +173,39 @@ export default function AppsPage() {
 
   return (
     <div className="status-page">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <span style={{ fontWeight: 600, fontSize: 14 }}>本地已部署应用</span>
+      <div className="apps-toolbar">
+        <span className="apps-title">本地已部署应用</span>
         <button className="btn btn-sm" onClick={refresh} disabled={loading}>
           {loading ? '加载中...' : '↺ 刷新'}
         </button>
       </div>
 
       {apps.length === 0 && !loading && (
-        <div style={{ color: '#888', fontSize: 13, textAlign: 'center', padding: '40px 0' }}>
+        <div className="apps-empty">
           暂未发现本地部署的应用<br />
-          <span style={{ fontSize: 12 }}>需要先在管理后台创建并部署应用到本执行器</span>
+          <span>需要先在管理后台创建并部署应用到本执行器</span>
         </div>
       )}
 
       {Object.entries(grouped).map(([appId, entries]) => (
-        <div key={appId} style={{ marginBottom: 16 }}>
-          <div style={{
-            background: '#1c1c1e', borderRadius: 8, overflow: 'hidden',
-            border: '1px solid rgba(255,255,255,0.08)',
-          }}>
+        <div key={appId} className="app-group">
+          <div className="app-group-card">
             {/* App header */}
-            <div style={{
-              padding: '8px 12px',
-              background: 'rgba(255,255,255,0.04)',
-              borderBottom: '1px solid rgba(255,255,255,0.06)',
-              display: 'flex', alignItems: 'center', gap: 8,
-            }}>
-              <span style={{ fontSize: 14 }}>📦</span>
-              <span style={{ fontWeight: 600, fontSize: 13, fontFamily: 'SF Mono, Menlo, monospace' }}>{appId}</span>
-              <span style={{
-                marginLeft: 'auto', fontSize: 11, color: '#888',
-                background: 'rgba(255,255,255,0.06)', borderRadius: 4, padding: '2px 6px',
-              }}>
+            <div className="app-group-header">
+              <span className="app-group-icon">📦</span>
+              <span className="app-group-name">{appId}</span>
+              <span className="app-group-count">
                 {entries.length} 个部署
               </span>
             </div>
 
             {/* Deployment rows */}
             {entries.map(entry => (
-              <div key={entry.deploymentId} style={{
-                padding: '8px 12px',
-                borderBottom: '1px solid rgba(255,255,255,0.04)',
-                display: 'flex', alignItems: 'center', gap: 8,
-              }}>
-                <span style={{ fontSize: 11, color: '#888', fontFamily: 'SF Mono, Menlo, monospace', flex: 1 }}>
+              <div key={entry.deploymentId} className="app-deployment-row">
+                <span className="app-deployment-id">
                   {entry.deploymentId}
                 </span>
-                <div style={{ display: 'flex', gap: 6 }}>
+                <div className="app-deployment-actions">
                   {entry.hasLog ? (
                     <button
                       className="btn btn-sm btn-success"
@@ -229,7 +214,7 @@ export default function AppsPage() {
                       📄 查看日志
                     </button>
                   ) : (
-                    <span style={{ fontSize: 11, color: '#666' }}>无日志</span>
+                    <span className="app-no-log">无日志</span>
                   )}
                 </div>
               </div>

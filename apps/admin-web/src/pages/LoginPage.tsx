@@ -1,7 +1,7 @@
-import { Form, Input, Button, Typography, Card, message } from 'antd';
+import { Form, Input, Button, Typography, Card, Alert, message } from 'antd';
 import { UserOutlined, LockOutlined, ThunderboltOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { authApi } from '../api/auth';
 import { useAuthStore, type AuthUser } from '../store/auth';
 import { getErrMsg } from '../utils/error';
@@ -15,6 +15,14 @@ export default function LoginPage() {
   // SEC-03: TOTP 第二步状态——登录第一段返回 totpRequired 后进入动态码输入
   const [totpStage, setTotpStage] = useState(false);
   const [credentials, setCredentials] = useState({ username: '', password: '' });
+  // UI-12：登录/验证失败的页内错误块（role=alert）。此前失败只有一闪而过的
+  // toast——读屏用户看不到、低视力用户来不及读；页内常驻块可被重复阅读，
+  // 并在出现时接管焦点，键盘用户不必自行搜索「到底哪错了」。
+  const [formError, setFormError] = useState<string | null>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (formError) errorRef.current?.focus();
+  }, [formError]);
 
   const completeLogin = (res: { accessToken?: string; refreshToken?: string; user?: AuthUser }) => {
     if (!res.accessToken || !res.refreshToken) {
@@ -35,13 +43,15 @@ export default function LoginPage() {
       // 未启用 TOTP 用户路径零变化。
       if (res.totpRequired) {
         setCredentials({ username: values.username, password: values.password });
+        setFormError(null);
         setTotpStage(true);
         return;
       }
+      setFormError(null);
       completeLogin(res);
     } catch (err: unknown) {
-      const msg = getErrMsg(err, '用户名或密码错误');
-      message.error(msg);
+      // UI-12：错误落到页内 role=alert 块（替代瞬时 toast）
+      setFormError(getErrMsg(err, '用户名或密码错误'));
     } finally {
       setLoading(false);
     }
@@ -51,9 +61,11 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const res = await authApi.verifyLogin({ ...credentials, code: values.code });
+      setFormError(null);
       completeLogin(res);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '动态验证码错误'));
+      // UI-12：同上——动态码错误也落到页内 role=alert 块
+      setFormError(getErrMsg(err, '动态验证码错误'));
     } finally {
       setLoading(false);
     }
@@ -99,11 +111,36 @@ export default function LoginPage() {
           }}
           styles={{ body: { padding: 'clamp(20px, 5vw, 32px)' } }}
         >
-          <Title level={5} style={{ margin: '0 0 24px', color: '#333' }}>
+          {/* UI-12：表单标题与 Form 建立 aria-labelledby 关联——读屏进入表单时
+              先播报「登录账号/两步验证」，而不是孤立的一串输入框 */}
+          <Title
+            level={5}
+            id={totpStage ? 'login-form-title-totp' : 'login-form-title'}
+            style={{ margin: '0 0 24px', color: '#333' }}
+          >
             {totpStage ? '两步验证' : '登录账号'}
           </Title>
+          {/* UI-12：登录失败常驻错误块（role=alert 由 antd Alert 提供）。
+              外层 tabIndex=-1 使其可编程聚焦但不进 Tab 序列，失败时接管焦点。 */}
+          <div ref={errorRef} tabIndex={-1} style={{ outline: 'none' }}>
+            {formError && (
+              <Alert
+                type="error"
+                showIcon
+                title={formError}
+                closable
+                onClose={() => setFormError(null)}
+                style={{ marginBottom: 16 }}
+              />
+            )}
+          </div>
           {totpStage ? (
-            <Form layout="vertical" onFinish={handleTotpVerify} size="large">
+            <Form
+              layout="vertical"
+              onFinish={handleTotpVerify}
+              size="large"
+              aria-labelledby="login-form-title-totp"
+            >
               <Form.Item name="code" label="动态验证码" rules={[{ required: true, message: '请输入 6 位动态验证码' }]}>
                 <Input
                   prefix={<SafetyOutlined style={{ color: '#ccc' }} />}
@@ -133,7 +170,12 @@ export default function LoginPage() {
               </Form.Item>
             </Form>
           ) : (
-          <Form layout="vertical" onFinish={handleLogin} size="large">
+          <Form
+            layout="vertical"
+            onFinish={handleLogin}
+            size="large"
+            aria-labelledby="login-form-title"
+          >
             <Form.Item
               name="username"
               label="用户名"

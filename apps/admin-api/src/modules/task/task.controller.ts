@@ -106,7 +106,7 @@ export class TaskController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const result = await this.taskService.create(dto);
+    const result = await this.taskService.create(dto, user);
     await this.audit.log({
       userId: user?.id,
       username: user?.username,
@@ -438,7 +438,7 @@ export class TaskController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const result = await this.taskService.update(id, dto);
+    const result = await this.taskService.update(id, dto, user);
     await this.audit.log({
       userId: user?.id,
       username: user?.username,
@@ -501,7 +501,7 @@ export class TaskController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const result = await this.taskService.remove(id);
+    const result = await this.taskService.remove(id, user);
     await this.audit.log({
       userId: user?.id,
       username: user?.username,

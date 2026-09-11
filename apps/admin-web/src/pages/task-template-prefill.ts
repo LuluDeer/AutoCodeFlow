@@ -24,6 +24,15 @@ export function templateConfigToFormValues(
   pick('retryDelay');
   pick('priority');
   pick('params');
+  // NF-04：亲和/反亲和与执行器模式正交，模板预填时必须回写；旧模板
+  // 缺少字段时保持表单默认空态。与 affinityFormValues 一致，null/空数组
+  // 归一为未设置，避免 Select 收到空值占位。
+  const pickAffinity = (key: 'executorAffinityTags' | 'executorAntiAffinityTags') => {
+    const value = config[key];
+    if (Array.isArray(value) && value.length > 0) out[key] = value;
+  };
+  pickAffinity('executorAffinityTags');
+  pickAffinity('executorAntiAffinityTags');
   pick('timeoutAction');
   pick('timeoutWarnRatio');
   // timeoutSeconds（模板）→ timeout（表单字段名）
