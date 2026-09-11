@@ -1,20 +1,27 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
+import '../i18n';
 import { Modal, Space, Typography, Tag, Button, Divider, Input, Alert } from 'antd';
 import { ClockCircleOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
-const PRESETS = [
-  { label: '每分钟', value: '* * * * *', desc: '每分钟执行一次' },
-  { label: '每5分钟', value: '*/5 * * * *', desc: '每5分钟执行一次' },
-  { label: '每15分钟', value: '*/15 * * * *', desc: '每15分钟执行一次' },
-  { label: '每小时', value: '0 * * * *', desc: '每小时整点执行' },
-  { label: '每天早8点', value: '0 8 * * *', desc: '每天早上8点执行' },
-  { label: '每天零点', value: '0 0 * * *', desc: '每天凌晨0点执行' },
-  { label: '每周一早8点', value: '0 8 * * 1', desc: '每周一早上8点执行' },
-  { label: '工作日早9点', value: '0 9 * * 1-5', desc: '周一到周五早上9点执行' },
-  { label: '每月1号', value: '0 0 1 * *', desc: '每月1日零点执行' },
+/** 常用预设（文案走 i18n 键，组件内用 getPresets(t) 求值） */
+const PRESET_KEYS = [
+  { labelKey: 'cronHelper.preset.minutely.label', descKey: 'cronHelper.preset.minutely.desc', value: '* * * * *' },
+  { labelKey: 'cronHelper.preset.every5m.label', descKey: 'cronHelper.preset.every5m.desc', value: '*/5 * * * *' },
+  { labelKey: 'cronHelper.preset.every15m.label', descKey: 'cronHelper.preset.every15m.desc', value: '*/15 * * * *' },
+  { labelKey: 'cronHelper.preset.hourly.label', descKey: 'cronHelper.preset.hourly.desc', value: '0 * * * *' },
+  { labelKey: 'cronHelper.preset.daily8.label', descKey: 'cronHelper.preset.daily8.desc', value: '0 8 * * *' },
+  { labelKey: 'cronHelper.preset.midnight.label', descKey: 'cronHelper.preset.midnight.desc', value: '0 0 * * *' },
+  { labelKey: 'cronHelper.preset.weeklyMon8.label', descKey: 'cronHelper.preset.weeklyMon8.desc', value: '0 8 * * 1' },
+  { labelKey: 'cronHelper.preset.weekday9.label', descKey: 'cronHelper.preset.weekday9.desc', value: '0 9 * * 1-5' },
+  { labelKey: 'cronHelper.preset.monthly1.label', descKey: 'cronHelper.preset.monthly1.desc', value: '0 0 1 * *' },
 ];
+
+const getPresets = (t: TFunction) =>
+  PRESET_KEYS.map((p) => ({ label: t(p.labelKey), desc: t(p.descKey), value: p.value }));
 
 interface CronHelperProps {
   open?: boolean;
@@ -23,28 +30,30 @@ interface CronHelperProps {
 }
 
 export function CronHelper({ open, onClose, onSelect }: CronHelperProps) {
+  const { t } = useTranslation();
   const [selected, setSelected] = useState<string>('');
   const [custom, setCustom] = useState('');
+  const presets = getPresets(t);
   const current = custom || selected;
 
   return (
     <Modal
-      title={<Space><ClockCircleOutlined /> Cron 表达式辅助</Space>}
+      title={<Space><ClockCircleOutlined /> {t('cronHelper.title')}</Space>}
       open={open}
       onCancel={onClose}
       width={520}
       footer={
         <Space>
-          <Button onClick={onClose}>取消</Button>
+          <Button onClick={onClose}>{t('cronHelper.cancel')}</Button>
           <Button type="primary" disabled={!current} onClick={() => onSelect?.(current)}>
-            使用此表达式
+            {t('cronHelper.use')}
           </Button>
         </Space>
       }
     >
-      <Text type="secondary" style={{ fontSize: 13 }}>选择常用预设，或在下方输入自定义表达式。</Text>
+      <Text type="secondary" style={{ fontSize: 13 }}>{t('cronHelper.desc')}</Text>
       <div style={{ marginTop: 16, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        {PRESETS.map(p => (
+        {presets.map(p => (
           <Tag
             key={p.value}
             color={selected === p.value && !custom ? 'blue' : 'default'}
@@ -61,7 +70,7 @@ export function CronHelper({ open, onClose, onSelect }: CronHelperProps) {
             <Space>
               <Text code>{selected}</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {PRESETS.find(p => p.value === selected)?.desc}
+                {presets.find(p => p.value === selected)?.desc}
               </Text>
             </Space>
           }
@@ -69,20 +78,20 @@ export function CronHelper({ open, onClose, onSelect }: CronHelperProps) {
       )}
       <Divider style={{ margin: '16px 0' }} />
       <div>
-        <Text strong>自定义表达式</Text>
+        <Text strong>{t('cronHelper.customTitle')}</Text>
         <Input
           style={{ marginTop: 8, fontFamily: 'monospace' }}
-          placeholder="如：0 10 * * 1-5"
+          placeholder={t('cronHelper.customPlaceholder')}
           value={custom}
           onChange={e => { setCustom(e.target.value); setSelected(''); }}
         />
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
-          格式：分 时 日 月 周（0-59 0-23 1-31 1-12 0-7）
+          {t('cronHelper.format')}
         </Text>
       </div>
       {current && (
         <Alert type="success" style={{ marginTop: 12 }}
-          title={<span>将使用：<Text code>{current}</Text></span>}
+          title={<span>{t('cronHelper.usePrefix')}<Text code>{current}</Text></span>}
         />
       )}
     </Modal>

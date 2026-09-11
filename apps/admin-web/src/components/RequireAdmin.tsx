@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 import { Button, Result, Spin } from 'antd';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import '../i18n';
 import { useAuthStore, isAdminUser } from '../store/auth';
 
 /**
@@ -14,6 +16,7 @@ import { useAuthStore, isAdminUser } from '../store/auth';
  */
 export default function RequireAdmin({ children }: { children: ReactNode }) {
   const nav = useNavigate();
+  const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
 
   // role 未知：profile 仍在拉取中（或拉取失败），先显示加载态
@@ -30,10 +33,10 @@ export default function RequireAdmin({ children }: { children: ReactNode }) {
       <Result
         status="403"
         title="403"
-        subTitle="抱歉，您没有权限访问该页面，此页面仅管理员可见。"
+        subTitle={t('requireAdmin.subTitle')}
         extra={
           <Button type="primary" onClick={() => nav('/dashboard', { replace: true })}>
-            返回控制台
+            {t('requireAdmin.back')}
           </Button>
         }
       />
