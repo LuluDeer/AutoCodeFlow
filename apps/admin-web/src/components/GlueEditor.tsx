@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Select, Button, Space, message, Typography } from 'antd';
 import { Editor } from '@monaco-editor/react';
+import { useTranslation } from 'react-i18next';
+import '../i18n';
 import { tasksApi } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
 
@@ -21,6 +23,7 @@ interface GlueEditorProps {
 }
 
 export default function GlueEditor({ taskId, initialSource, initialLanguage, taskRuntime }: GlueEditorProps) {
+  const { t } = useTranslation();
   const [source, setSource] = useState(initialSource || '');
   const [language, setLanguage] = useState(initialLanguage || taskRuntime || 'python');
   const [saving, setSaving] = useState(false);
@@ -93,10 +96,10 @@ echo '{"status": "ok", "message": "Task completed successfully"}'
     setSaving(true);
     try {
       await tasksApi.updateGlue(taskId, source, language);
-      message.success('Glue script saved');
+      message.success(t('glueEditor.saveSuccess'));
       setDirty(false);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, 'Failed to save glue script'));
+      message.error(getErrMsg(err, t('glueEditor.saveFail')));
     } finally {
       setSaving(false);
     }
@@ -111,7 +114,7 @@ echo '{"status": "ok", "message": "Task completed successfully"}'
   return (
     <div>
       <Space style={{ marginBottom: 12 }}>
-        <Text strong>Glue 脚本编辑器</Text>
+        <Text strong>{t('glueEditor.title')}</Text>
         <Select
           value={language}
           onChange={(v) => { setLanguage(v); setDirty(true); }}
@@ -122,7 +125,7 @@ echo '{"status": "ok", "message": "Task completed successfully"}'
             { label: 'Shell', value: 'shell' },
           ]}
         />
-        <Button size="small" onClick={useTemplate}>使用模板</Button>
+        <Button size="small" onClick={useTemplate}>{t('glueEditor.useTemplate')}</Button>
         <Button
           type="primary"
           size="small"
@@ -130,9 +133,9 @@ echo '{"status": "ok", "message": "Task completed successfully"}'
           loading={saving}
           disabled={!dirty}
         >
-          保存脚本
+          {t('glueEditor.save')}
         </Button>
-        {dirty && <Text type="warning">有未保存的更改</Text>}
+        {dirty && <Text type="warning">{t('glueEditor.unsaved')}</Text>}
       </Space>
 
       <Editor

@@ -14,15 +14,19 @@ import { Card, Checkbox, Tag, Typography, Badge, Progress, Tooltip, Space, Butto
 import {
   DesktopOutlined, ClockCircleOutlined, SettingOutlined, KeyOutlined,
 } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import type { Executor } from '../../api/executors';
+import '../../i18n';
+
+type TFunc = (k: string, opts?: Record<string, unknown>) => string;
 
 const { Text } = Typography;
 
-function heartbeatLabel(lastHeartbeat: string): { text: string; color: string } {
+function heartbeatLabel(t: TFunc, lastHeartbeat: string): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
   const diffMin = diffMs / 60000;
-  if (diffMin < 2) return { color: '#52c41a', text: '刚刚' };
-  if (diffMin < 10) return { color: '#faad14', text: `${Math.floor(diffMin)} 分钟前` };
+  if (diffMin < 2) return { color: '#52c41a', text: t('execCard.hb.justNow') };
+  if (diffMin < 10) return { color: '#faad14', text: t('execCard.hb.minAgo', { min: Math.floor(diffMin) }) };
   return { color: '#ff4d4f', text: new Date(lastHeartbeat).toLocaleString('zh-CN') };
 }
 
@@ -30,8 +34,8 @@ function statusBadge(status: string): 'success' | 'warning' | 'default' {
   return status === 'online' ? 'success' : status === 'busy' ? 'warning' : 'default';
 }
 
-function statusText(status: string): string {
-  return status === 'online' ? '在线' : status === 'busy' ? '忙碌' : '离线';
+function statusText(t: TFunc, status: string): string {
+  return status === 'online' ? t('execCard.status.online') : status === 'busy' ? t('execCard.status.busy') : t('execCard.status.offline');
 }
 
 function usageStroke(v: number): string {
@@ -74,10 +78,11 @@ export interface ExecutorCardProps {
 export function ExecutorCard({
   executor: r, selected, onToggleSelect, onOpenDetail, isAdmin, onReloadConfig, onRotateToken,
 }: ExecutorCardProps) {
+  const { t } = useTranslation();
   const running = r.runningTaskCount ?? 0;
   const max = r.maxConcurrentTasks;
   const taskLabel = max != null ? `${running}/${max}` : `${running}`;
-  const hb = r.lastHeartbeat ? heartbeatLabel(r.lastHeartbeat) : null;
+  const hb = r.lastHeartbeat ? heartbeatLabel(t, r.lastHeartbeat) : null;
   const online = r.status === 'online';
 
   return (
@@ -90,7 +95,7 @@ export function ExecutorCard({
           <Checkbox
             checked={selected}
             onChange={(e) => onToggleSelect(r.id, e.target.checked)}
-            aria-label={`选择 ${r.appName}`}
+            aria-label={t('execCard.selectAria', { name: r.appName })}
           />
           <DesktopOutlined style={{ color: online ? '#52c41a' : '#d9d9d9' }} />
           <span
@@ -106,10 +111,10 @@ export function ExecutorCard({
       }
       extra={
         <Space size={4} wrap>
-          <Badge status={statusBadge(r.status)} text={statusText(r.status)} />
+          <Badge status={statusBadge(r.status)} text={statusText(t, r.status)} />
           {r.deadLetterCount != null && r.deadLetterCount > 0 && (
-            <Tooltip title="回调持续失败已落盘执行器本地 dead-letter，需人工排查">
-              <Tag color="orange" style={{ marginInlineEnd: 0 }}>死信 {r.deadLetterCount}</Tag>
+            <Tooltip title={t('execCard.deadLetterTip')}>
+              <Tag color="orange" style={{ marginInlineEnd: 0 }}>{t('execCard.deadLetter', { count: r.deadLetterCount })}</Tag>
             </Tooltip>
           )}
         </Space>
@@ -118,14 +123,14 @@ export function ExecutorCard({
       <Text type="secondary" style={{ fontSize: 12 }}>{r.address}</Text>
 
       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <ResourceRow label="CPU" value={r.cpuUsage} />
-        <ResourceRow label="内存" value={r.memUsage} />
-        {r.diskUsage != null && r.diskUsage > 0 && <ResourceRow label="磁盘" value={r.diskUsage} />}
+        <ResourceRow label={t('execCard.res.cpu')} value={r.cpuUsage} />
+        <ResourceRow label={t('execCard.res.mem')} value={r.memUsage} />
+        {r.diskUsage != null && r.diskUsage > 0 && <ResourceRow label={t('execCard.res.disk')} value={r.diskUsage} />}
       </div>
 
       <Space size={4} wrap style={{ marginTop: 8 }}>
         <Text strong style={{ color: running > 0 ? '#1677ff' : undefined }}>
-          {taskLabel} 任务
+          {t('execCard.tasks', { label: taskLabel })}
         </Text>
         {r.groupName && <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>{r.groupName}</Tag>}
         {r.tags?.map((t) => <Tag key={t} style={{ marginInlineEnd: 0 }}>{t}</Tag>)}
@@ -144,24 +149,24 @@ export function ExecutorCard({
             </Space>
           </Tooltip>
         ) : (
-          <Text type="secondary" style={{ fontSize: 12 }}>无心跳</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{t('execCard.noHeartbeat')}</Text>
         )}
         <Space size={0}>
-          <Button type="link" size="small" onClick={() => onOpenDetail(r.id)}>详情</Button>
+          <Button type="link" size="small" onClick={() => onOpenDetail(r.id)}>{t('execCard.detail')}</Button>
           {isAdmin && (
             <>
-              <Tooltip title={online ? '配置热更新' : '执行器离线，无法推送配置'}>
+              <Tooltip title={online ? t('execCard.reloadTip') : t('execCard.reloadOfflineTip')}>
                 <Button
                   type="link" size="small" icon={<SettingOutlined />}
                   disabled={!online}
-                  aria-label={`配置热更新 ${r.appName}`}
+                  aria-label={t('execCard.reloadAria', { name: r.appName })}
                   onClick={() => onReloadConfig?.(r)}
                 />
               </Tooltip>
-              <Tooltip title="轮换 Token（执行器将短暂重新注册）">
+              <Tooltip title={t('execCard.rotateTip')}>
                 <Button
                   type="link" size="small" danger icon={<KeyOutlined />}
-                  aria-label={`轮换 Token ${r.appName}`}
+                  aria-label={t('execCard.rotateAria', { name: r.appName })}
                   onClick={() => onRotateToken?.(r)}
                 />
               </Tooltip>
@@ -187,8 +192,9 @@ interface ExecutorCardGridProps {
 export function ExecutorCardGrid({
   executors, selectedIds, onToggleSelect, onOpenDetail, isAdmin, onReloadConfig, onRotateToken,
 }: ExecutorCardGridProps) {
+  const { t } = useTranslation();
   if (executors.length === 0) {
-    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配执行器" />;
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('execCard.empty')} />;
   }
   return (
     <div

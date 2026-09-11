@@ -10,8 +10,11 @@
  */
 import { Typography, Tooltip } from 'antd';
 import { FieldTimeOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import { formatDuration } from '../../utils/timeFormat';
 import type { SchedulerMetricsResponse } from '../../api/metrics';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../../i18n';
 
 const { Text } = Typography;
 
@@ -44,6 +47,7 @@ function LatencyStat({ label, value, color }: { label: React.ReactNode; value: n
 }
 
 export default function SchedulerLatencyCard({ metrics }: SchedulerLatencyCardProps) {
+  const { t } = useTranslation();
   const hasSamples = (metrics?.counters?.triggerLatencyCount ?? 0) > 0;
   const p99 = metrics?.derived?.p99TriggerLatencyMs;
   const avg = metrics?.derived?.avgTriggerLatencyMs;
@@ -53,7 +57,7 @@ export default function SchedulerLatencyCard({ metrics }: SchedulerLatencyCardPr
     <div data-testid="scheduler-latency-card" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <LatencyStat
         label={
-          <Tooltip title="定时触发 fire→入队延迟的 P99（桶插值估算，仅 fixed_rate/cron 任务计入）">
+          <Tooltip title={t('schedLatency.p99.tooltip')}>
             <span>
               P99 <FieldTimeOutlined style={{ fontSize: 11 }} />
             </span>
@@ -62,12 +66,12 @@ export default function SchedulerLatencyCard({ metrics }: SchedulerLatencyCardPr
         value={p99}
         color={latencyColor(p99)}
       />
-      <LatencyStat label="平均" value={avg} color={latencyColor(avg)} />
-      <LatencyStat label="最近一次" value={hasSamples ? last : null} color={latencyColor(last)} />
+      <LatencyStat label={t('schedLatency.avg')} value={avg} color={latencyColor(avg)} />
+      <LatencyStat label={t('schedLatency.last')} value={hasSamples ? last : null} color={latencyColor(last)} />
       <Text type="secondary" style={{ fontSize: 11 }}>
         {hasSamples
-          ? `样本 ${metrics?.counters?.triggerLatencyCount} 次 · 进程内计数器（重启清零）`
-          : '暂无定时触发样本（仅 fixed_rate/cron 任务计入）'}
+          ? t('schedLatency.samples', { count: metrics?.counters?.triggerLatencyCount })
+          : t('schedLatency.noSamples')}
       </Text>
     </div>
   );

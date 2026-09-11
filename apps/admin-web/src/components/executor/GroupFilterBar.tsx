@@ -13,6 +13,8 @@
  */
 import { useMemo } from 'react';
 import { Space, Tag, Typography } from 'antd';
+import { useTranslation } from 'react-i18next';
+import '../../i18n';
 
 export interface ExecutorGroupLike {
   id: string;
@@ -27,7 +29,7 @@ export interface GroupBucket {
 }
 
 /** 聚合分组桶：未分组兜底 + 计数；未分组恒末位、其余按名称 localeCompare */
-export function groupBuckets<T extends ExecutorGroupLike>(executors: T[]): GroupBucket[] {
+export function groupBuckets<T extends ExecutorGroupLike>(executors: T[], ungroupedLabel = '未分组'): GroupBucket[] {
   const counts = new Map<string, number>();
   for (const ex of executors) {
     const key = ex.groupName?.trim() || '';
@@ -35,7 +37,7 @@ export function groupBuckets<T extends ExecutorGroupLike>(executors: T[]): Group
   }
   const buckets = Array.from(counts.entries()).map(([key, count]) => ({
     key,
-    label: key || '未分组',
+    label: key || ungroupedLabel,
     count,
   }));
   buckets.sort((a, b) => {
@@ -53,22 +55,23 @@ interface GroupFilterBarProps {
 }
 
 export default function GroupFilterBar({ executors, value, onChange }: GroupFilterBarProps) {
-  const buckets = useMemo(() => groupBuckets(executors), [executors]);
+  const { t } = useTranslation();
+  const buckets = useMemo(() => groupBuckets(executors, t('groupFilter.ungrouped')), [executors, t]);
   // 全部执行器都无分组时整条隐藏（与既有 groupFilter Select 的「有分组才显示」策略一致）
   if (buckets.length === 0) return null;
   if (buckets.length === 1 && buckets[0].key === '') return null;
 
   return (
     <Space size={4} wrap style={{ marginBottom: 12 }} data-testid="executor-group-bar">
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>分组：</Typography.Text>
-      <Tag.CheckableTag checked={!value} onChange={() => onChange(undefined)}>全部</Tag.CheckableTag>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('groupFilter.label')}</Typography.Text>
+      <Tag.CheckableTag checked={!value} onChange={() => onChange(undefined)}>{t('groupFilter.all')}</Tag.CheckableTag>
       {buckets.map((b) => (
         <Tag.CheckableTag
           key={b.key || '__ungrouped__'}
           checked={value !== undefined && (b.key || '') === value}
           onChange={(checked) => onChange(checked ? (b.key || '') : undefined)}
         >
-          {b.label}（{b.count}）
+          {t('groupFilter.bucketCount', { label: b.label, count: b.count })}
         </Tag.CheckableTag>
       ))}
     </Space>
