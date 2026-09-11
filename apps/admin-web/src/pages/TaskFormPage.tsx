@@ -109,6 +109,8 @@ export default function TaskFormPage() {
 
   const [form] = Form.useForm();
   const [triggerType, setTriggerType] = useState('manual');
+  // UI-12：校验失败的读屏播报（antd message 是浮层，读屏不会回读）
+  const [validationAnnouncement, setValidationAnnouncement] = useState('');
   const [executorMode, setExecutorMode] = useState<'auto' | 'group' | 'pinned' | 'broadcast'>('auto');
   const [groups, setGroups] = useState<string[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -270,7 +272,17 @@ export default function TaskFormPage() {
     try {
       await form.validateFields();
     } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      if (err && typeof err === 'object' && 'errorFields' in err) {
+        // UI-12：antd 只在字段旁标红（读屏不主动播报），此处补一条可播报摘要
+        const fields = (err as { errorFields?: { errors?: string[] }[] }).errorFields ?? [];
+        const firstError = fields[0]?.errors?.[0];
+        if (firstError) {
+          setValidationAnnouncement(
+            `表单校验未通过：${firstError}${fields.length > 1 ? ` 等 ${fields.length} 项待修正` : ''}`,
+          );
+        }
+        return;
+      }
       message.error(err instanceof Error ? err.message : '表单校验失败');
       return;
     }
@@ -289,10 +301,14 @@ export default function TaskFormPage() {
       missing.push({ label: '指定执行器', anchor: SECTION_IDS[2] });
     }
     if (missing.length > 0) {
-      message.error(`必填项缺失：${missing.map((m) => m.label).join('、')}，请补全后重试`);
+      const missingList = missing.map((m) => m.label).join('、');
+      message.error(`必填项缺失：${missingList}，请补全后重试`);
+      // UI-12：同步播报到 role="status" 区域（视觉路径=浮层 + 锚点滚动）
+      setValidationAnnouncement(`必填项缺失：${missingList}`);
       scrollToSection(missing[0].anchor);
       return;
     }
+    setValidationAnnouncement('');
     setSaving(true);
     try {
       // QA-01：applyDependenciesPayload 必须包在最外层——它把表单载体字段
@@ -443,8 +459,9 @@ export default function TaskFormPage() {
       >
         {/* 左侧锚点条（jsdom 无布局，Anchor 原生滚动监听依赖 getBoundingClientRect——
             测试环境只断言锚点渲染与点击可滚，不测监听） */}
-        <div
+        <nav
           data-testid="task-form-anchor"
+          aria-label="表单分区导航"
           style={{
             width: 160,
             flexShrink: 0,
@@ -461,6 +478,22 @@ export default function TaskFormPage() {
               e.preventDefault();
             }}
           />
+        </nav>
+        {/* UI-12：校验失败播报通道（视觉隐藏；视觉反馈由 message + 锚点滚动承担） */}
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="task-form-validation-announcement"
+          style={{
+            position: 'absolute',
+            width: 1,
+            height: 1,
+            overflow: 'hidden',
+            clip: 'rect(0 0 0 0)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {validationAnnouncement}
         </div>
 
         <div style={{ flex: 1, minWidth: 0, maxWidth: 880 }}>
@@ -473,7 +506,7 @@ export default function TaskFormPage() {
             }}
           >
             {/* 分区一：基本配置（原 step 0） */}
-            <div id={SECTION_IDS[0]} data-testid="section-basic" style={{ scrollMarginTop: 88 }}>
+            <div id={SECTION_IDS[0]} data-testid="section-basic" role="region" aria-label="基本配置" style={{ scrollMarginTop: 88 }}>
               <Typography.Title level={5} style={sectionTitleStyle}>基本配置</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
                 <Form.Item
@@ -553,7 +586,7 @@ export default function TaskFormPage() {
             </div>
 
             {/* 分区二：触发与告警（原 step 1 上半 + step 2 告警/runbook/参数） */}
-            <div id={SECTION_IDS[1]} data-testid="section-trigger" style={{ scrollMarginTop: 88 }}>
+            <div id={SECTION_IDS[1]} data-testid="section-trigger" role="region" aria-label="触发与告警" style={{ scrollMarginTop: 88 }}>
               <Typography.Title level={5} style={sectionTitleStyle}>触发与告警</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
                 <Form.Item name="triggerType" label="触发方式">
@@ -710,7 +743,7 @@ export default function TaskFormPage() {
             </div>
 
             {/* 分区三：执行器策略与超时重试（原 step 1 下半） */}
-            <div id={SECTION_IDS[2]} data-testid="section-executor" style={{ scrollMarginTop: 88 }}>
+            <div id={SECTION_IDS[2]} data-testid="section-executor" role="region" aria-label="执行器策略" style={{ scrollMarginTop: 88 }}>
               <Typography.Title level={5} style={sectionTitleStyle}>执行器策略</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
                 <Form.Item
@@ -949,7 +982,7 @@ export default function TaskFormPage() {
             </div>
 
             {/* 分区四：参数配置（原 step 2 上半） */}
-            <div id={SECTION_IDS[3]} data-testid="section-params" style={{ scrollMarginTop: 88 }}>
+            <div id={SECTION_IDS[3]} data-testid="section-params" role="region" aria-label="参数与运行手册" style={{ scrollMarginTop: 88 }}>
               <Typography.Title level={5} style={sectionTitleStyle}>参数与运行手册</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
                 <Alert
@@ -968,7 +1001,7 @@ export default function TaskFormPage() {
 
           {/* 分区五：Glue 脚本（原 step 3——创建后才有 taskId，保持既有行为语义：
               创建态在提交成功前不渲染 GlueEditor；编辑态 taskId 已存在直接可编） */}
-          <div id={SECTION_IDS[4]} data-testid="section-glue" style={{ scrollMarginTop: 88 }}>
+          <div id={SECTION_IDS[4]} data-testid="section-glue" role="region" aria-label="Glue 脚本" style={{ scrollMarginTop: 88 }}>
             <Typography.Title level={5} style={sectionTitleStyle}>Glue 脚本（可选）</Typography.Title>
             {glueTaskId ? (
               <Card style={{ marginBottom: 20 }}>
