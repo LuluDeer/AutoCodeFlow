@@ -398,8 +398,17 @@ tag v* push ──→ 既有 release.yml：version-guard → environment 审批�
   校验 + 本节干跑说明代替；首次发布时观察：① Release PR 是否正确汇总
   conventional commits；② 合并后 tag 是否触发 release.yml；③ 根级
   `CHANGELOG.md` 是否生成（当前仓库无根级 CHANGELOG.md，追加式生成不覆盖历史）。
-- GITHUB_TOKEN 创建的 tag 会触发 `on: push: tags`；若首次运行发现 release.yml
-  未被触发（GitHub 事件级联策略调整），再评估改用 PAT。
+- **GITHUB_TOKEN 的 tag 不级联（2026-09-11 v1.1.1 实测确认，原假设已证伪）**：
+  GitHub 会抑制所有由 `GITHUB_TOKEN` 产生的事件（含 `on: push: tags`）以防递归，
+  故 release-please（默认 GITHUB_TOKEN）打出的 tag **不会触发** `release.yml`——实测
+  表现为「tag 已生成、Release 流水线零 run」。**必须**配置仓库 secret
+  `RELEASE_PLEASE_TOKEN`（fine-grained PAT：Contents read/write + Pull requests
+  read/write）后级联才成立；未配置时的恢复路径是人工重推同名 tag（内容不变且
+  尚未发布任何产物时安全），详见 `docs/sdk-guide.md`「版本与发布流程」。
+- **lockstep 需人工兜底**：`linked-versions` 插件只联动「本轮有候选发布的组件」，
+  无路径内提交的包会被跳过（v1.1.1 首跑即 node-sdk 被跳过）→ 合并 Release PR 前
+  人工核对该包 version/manifest 已对齐同值（本仓已在发布 PR 内补齐，见 §版本与
+  发布流程）。
 
 ## 项目结构
 
