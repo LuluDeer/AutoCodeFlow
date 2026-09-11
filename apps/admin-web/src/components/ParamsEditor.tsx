@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Button, Input, Space, Typography, Tooltip } from 'antd';
 import { PlusOutlined, DeleteOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
+import '../i18n';
 
 const { Text } = Typography;
 
@@ -19,6 +21,8 @@ interface ParamsEditorProps {
  * Renders as a list of key/value input pairs.
  */
 export default function ParamsEditor({ value, onChange }: ParamsEditorProps) {
+  const { t } = useTranslation();
+
   const toRows = (v?: Record<string, string>): ParamRow[] =>
     v ? Object.entries(v).map(([key, val]) => ({ key, value: String(val) })) : [];
 
@@ -53,20 +57,20 @@ export default function ParamsEditor({ value, onChange }: ParamsEditorProps) {
     <div>
       {rows.length === 0 && (
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-          暂无参数，点击下方添加
+          {t('paramsEditor.empty')}
         </Text>
       )}
       {rows.map((row, idx) => (
         <Space key={idx} style={{ display: 'flex', marginBottom: 6 }} align="baseline">
           <Input
-            placeholder="参数名"
+            placeholder={t('paramsEditor.keyPlaceholder')}
             value={row.key}
             onChange={e => update(idx, 'key', e.target.value)}
             style={{ width: 160, fontFamily: 'monospace' }}
           />
           <Text type="secondary">=</Text>
           <Input
-            placeholder="默认值"
+            placeholder={t('paramsEditor.valuePlaceholder')}
             value={row.value}
             onChange={e => update(idx, 'value', e.target.value)}
             style={{ width: 220 }}
@@ -87,9 +91,9 @@ export default function ParamsEditor({ value, onChange }: ParamsEditorProps) {
         onClick={add}
         style={{ marginTop: 4 }}
       >
-        添加参数
+        {t('paramsEditor.add')}
       </Button>
-      <Tooltip title="任务运行时可通过环境变量 AUTOFLOW_<KEY> 读取这些参数，触发时也可以覆盖">
+      <Tooltip title={t('paramsEditor.tooltip')}>
         <InfoCircleOutlined style={{ marginLeft: 8, color: '#8c8c8c', fontSize: 12 }} />
       </Tooltip>
     </div>

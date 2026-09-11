@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type { FallbackProps } from 'react-error-boundary';
 import { Button, Result, Space, Typography, message } from 'antd';
 import { ReloadOutlined, CopyOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
+import '../i18n';
 
 const { Text } = Typography;
 
@@ -43,10 +45,11 @@ export async function copyErrorText(text: string): Promise<boolean> {
  * （便于值班截图/贴群排障）。样式消费 antd 组件（双主题由 ConfigProvider 承担）。
  */
 export default function ErrorFallback({ error, resetErrorBoundary }: FallbackProps) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const err = error as Error | undefined;
   const errorText = [
-    err?.message ?? '未知错误',
+    err?.message ?? t('errorFallback.unknownError'),
     err?.stack ?? '',
   ]
     .filter(Boolean)
@@ -56,30 +59,30 @@ export default function ErrorFallback({ error, resetErrorBoundary }: FallbackPro
     const ok = await copyErrorText(errorText);
     if (ok) {
       setCopied(true);
-      message.success('错误信息已复制到剪贴板');
+      message.success(t('errorFallback.copySuccess'));
       // 短暂回显「已复制」后恢复按钮文案
       setTimeout(() => setCopied(false), 2000);
     } else {
-      message.error('复制失败，请手动截图错误信息');
+      message.error(t('errorFallback.copyFailed'));
     }
   };
 
   return (
     <Result
       status="error"
-      title="页面出错了"
+      title={t('errorFallback.title')}
       subTitle={
         <Text type="secondary" style={{ fontSize: 12 }}>
-          {err?.message ?? '未知错误'}
+          {err?.message ?? t('errorFallback.unknownError')}
         </Text>
       }
       extra={
         <Space wrap>
           <Button type="primary" icon={<ReloadOutlined />} onClick={resetErrorBoundary}>
-            重新加载
+            {t('errorFallback.reload')}
           </Button>
           <Button icon={copied ? undefined : <CopyOutlined />} onClick={handleCopy}>
-            {copied ? '已复制' : '复制错误信息'}
+            {copied ? t('errorFallback.copied') : t('errorFallback.copy')}
           </Button>
         </Space>
       }
