@@ -416,7 +416,7 @@ export default function ExecutionDetailPage() {
       }
     : undefined;
   // UI-05: 建议动作（未知键回退 unknown 兜底）
-  const runbookAction = failureRunbookAction(data?.failureReason);
+  const runbookAction = failureRunbookAction(data?.failureReason, t);
   const runbookText = taskData?.runbook || null;
 
   /** UI-05: Tab 切换写回 ?tab=（非法值 normalize 已兜底） */
@@ -551,7 +551,7 @@ export default function ExecutionDetailPage() {
             {data?.endTime ? formatDateTime(data.endTime) : '-'}
           </Descriptions.Item>
           <Descriptions.Item label={t('execDetail.field.duration')}>
-            {data?.duration != null ? formatDuration(data.duration) : '-'}
+            {data?.duration != null ? formatDuration(data.duration, t) : '-'}
           </Descriptions.Item>
           <Descriptions.Item label={t('execDetail.field.exitCode')}>
             {data?.exitCode != null ? (

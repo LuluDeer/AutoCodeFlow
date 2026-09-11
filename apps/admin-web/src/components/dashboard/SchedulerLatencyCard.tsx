@@ -33,14 +33,14 @@ interface SchedulerLatencyCardProps {
 }
 
 /** 三指标行：标签 + 值（formatDuration 复用既有工具） */
-function LatencyStat({ label, value, color }: { label: React.ReactNode; value: number | null | undefined; color?: string }) {
+function LatencyStat({ label, value, color, t }: { label: React.ReactNode; value: number | null | undefined; color?: string; t?: (k: string, o?: Record<string, unknown>) => string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
       <Text type="secondary" style={{ fontSize: 12 }}>
         {label}
       </Text>
       <Text style={{ fontSize: 13, fontWeight: 600, color: color ?? 'var(--color-foreground)' }}>
-        {value == null ? '—' : formatDuration(value)}
+        {value == null ? '—' : formatDuration(value, t)}
       </Text>
     </div>
   );
@@ -66,8 +66,8 @@ export default function SchedulerLatencyCard({ metrics }: SchedulerLatencyCardPr
         value={p99}
         color={latencyColor(p99)}
       />
-      <LatencyStat label={t('schedLatency.avg')} value={avg} color={latencyColor(avg)} />
-      <LatencyStat label={t('schedLatency.last')} value={hasSamples ? last : null} color={latencyColor(last)} />
+      <LatencyStat label={t('schedLatency.avg')} value={avg} color={latencyColor(avg)} t={t} />
+      <LatencyStat label={t('schedLatency.last')} value={hasSamples ? last : null} color={latencyColor(last)} t={t} />
       <Text type="secondary" style={{ fontSize: 11 }}>
         {hasSamples
           ? t('schedLatency.samples', { count: metrics?.counters?.triggerLatencyCount })

@@ -139,7 +139,7 @@ export default function FailureTopList({ failures, topN = 5, onOpenTask }: Failu
           </span>
           {/* 最近失败时间 */}
           <Text type="secondary" style={{ fontSize: 11, flexShrink: 0 }}>
-            {formatRelativeTime(item.lastFailedAt)}
+            {formatRelativeTime(item.lastFailedAt, t)}
           </Text>
         </div>
       ))}

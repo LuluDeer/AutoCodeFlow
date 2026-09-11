@@ -168,7 +168,7 @@ export default function ExecutionsPage() {
       width: 130,
       render: (v: string) => v ? (
         <Tooltip title={formatDateTime(v)}>
-          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v)}</Text>
+          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
         </Tooltip>
       ) : '-',
     },
@@ -177,7 +177,7 @@ export default function ExecutionsPage() {
       dataIndex: 'duration',
       width: 80,
       ...hideOnMobile,
-      render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v)}</Text> : '-',
+      render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v, t)}</Text> : '-',
     },
     {
       title: t('execs.col.error'),
