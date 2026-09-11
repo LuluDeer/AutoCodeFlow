@@ -105,7 +105,6 @@ beforeEach(() => {
   vi.mocked(executorsApi.getGroups).mockReset().mockResolvedValue([] as never);
   vi.mocked(executorsApi.getTags).mockReset().mockResolvedValue(TAGS as never);
   vi.mocked(applicationsApi.list).mockReset().mockResolvedValue([] as never);
-  vi.mocked(tasksApi.list).mockReset().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 500 } as never);
   const taskListAll = (tasksApi as unknown as { listAll?: ReturnType<typeof vi.fn> }).listAll;
   taskListAll?.mockReset().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 } as never);
   vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
