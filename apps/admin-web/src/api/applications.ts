@@ -119,7 +119,10 @@ export interface AppReleasesPage {
 }
 
 export const applicationsApi = {
-  list: () => client.get<Application[]>('/applications'),
+  list: (signal?: AbortSignal) =>
+    signal
+      ? client.get<Application[]>('/applications', { signal })
+      : client.get<Application[]>('/applications'),
   get: (id: string) => client.get<Application>(`/applications/${id}`),
   create: (data: Partial<Application>) => client.post<Application>('/applications', data),
   update: (id: string, data: Partial<Application>) =>

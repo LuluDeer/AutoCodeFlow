@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -196,8 +197,83 @@ def _get_callback_token() -> str:
     return settings.executor_shared_token or settings.executor_secret
 
 
-# uv executable path (prefer PATH; Dockerfile installs to /root/.cargo/bin/uv)
-UV_BIN = shutil.which('uv') or '/root/.local/bin/uv'
+# uv is installed by requirements.txt into /usr/local/bin in the image. Keep a
+# PATH lookup only: falling back to root's home would be unusable as appuser and
+# could accidentally select an unpinned host installation.
+UV_BIN = shutil.which('uv') or 'uv'
+
+
+def _validate_registry_url(value: str) -> str:
+    """Validate the explicit package index URL before passing it to uv.
+
+    Registry URLs are configuration, not task input. Userinfo, query strings,
+    and fragments can carry credentials or alter resolution while appearing in
+    argv and subprocess diagnostics. Credentials must be supplied by a future
+    controlled mechanism (for example a mounted uv keyring/config), never in
+    ``PYPI_REGISTRY_URL``.
+    """
+    if not isinstance(value, str):
+        raise RuntimeError('Invalid PYPI_REGISTRY_URL')
+    url = value.strip()
+    if not url:
+        return ''
+    try:
+        parsed = urlsplit(url)
+    except ValueError as exc:
+        raise RuntimeError('Invalid PYPI_REGISTRY_URL') from exc
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+        raise RuntimeError('PYPI_REGISTRY_URL must be an http(s) URL')
+    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+        raise RuntimeError(
+            'PYPI_REGISTRY_URL must not contain userinfo, query, or fragment; '
+            'provide registry credentials through a controlled credentials mechanism'
+        )
+    return url
+
+
+# Dependency installers must not inherit the executor process environment. In
+# particular, pip/uv honor PIP_* / UV_* variables and user config files, which
+# can contain host credentials or redirect package downloads. Keep only the
+# runtime paths and temp/cache locations required by uv. Registry selection is
+# passed explicitly with --index-url below.
+_INSTALL_ENV_KEYS = {
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'TMPDIR', 'TEMP', 'TMP', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+    'USERNAME', 'APPDATA', 'LOCALAPPDATA', 'SYSTEMROOT', 'WINDIR',
+    'COMSPEC', 'PATHEXT',
+}
+_INSTALL_ENV_DENYLIST = {
+    'EXECUTOR_SHARED_TOKEN', 'EXECUTOR_SECRET', 'EXECUTION_CALLBACK_SECRET',
+    'NPM_REGISTRY_TOKEN', 'PIP_INDEX_URL', 'PIP_EXTRA_INDEX_URL',
+    'PIP_TRUSTED_HOST', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_DEFAULT_INDEX',
+    'UV_INSECURE_HOST', 'UV_CONFIG_FILE', 'PYTHONPATH',
+}
+
+
+def _build_install_env(cache_dir: Path) -> dict[str, str]:
+    """Return the minimal environment for uv venv/pip subprocesses.
+
+    The task runtime has a separate, richer whitelist; dependency resolution is
+    more sensitive because uv/pip consume ambient config variables. Explicitly
+    retain only platform path/home/temp values plus an isolated cache and tell
+    uv not to consult any user/project configuration.
+    """
+    env: dict[str, str] = {}
+    if sys.platform == 'win32':
+        allowed = {key.upper() for key in _INSTALL_ENV_KEYS}
+        for key, value in os.environ.items():
+            if key.upper() in allowed and key.upper() not in _INSTALL_ENV_DENYLIST:
+                env[key.upper()] = value
+    else:
+        for key, value in os.environ.items():
+            if key in _INSTALL_ENV_KEYS and key not in _INSTALL_ENV_DENYLIST:
+                env[key] = value
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    env['UV_CACHE_DIR'] = str(cache_dir)
+    env['UV_NO_CONFIG'] = '1'
+    env['PIP_CONFIG_FILE'] = os.devnull
+    return env
+
 
 # Timeouts for the two uv phases (module-level so tests can shrink them)
 UV_VENV_TIMEOUT_SECONDS = 60
@@ -1261,7 +1337,7 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
         unregister_live_execution(req.executionId)
 
 
-async def _run_uv(args: list[str], timeout_seconds: float) -> tuple[int | None, str]:
+async def _run_uv(args: list[str], timeout_seconds: float, *, env: dict[str, str] | None = None) -> tuple[int | None, str]:
     """Run a uv subprocess with combined output captured.
 
     R4-C P2: plain `asyncio.wait_for(proc.communicate(), ...)` leaves the uv
@@ -1271,6 +1347,7 @@ async def _run_uv(args: list[str], timeout_seconds: float) -> tuple[int | None, 
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        env=env,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
@@ -1289,6 +1366,10 @@ async def _run_uv(args: list[str], timeout_seconds: float) -> tuple[int | None, 
 
 async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
     """Create/reuse a virtual environment with uv and install dependencies. Returns python executable path."""
+    # Validate before spawning even the venv phase. This keeps malformed or
+    # credential-bearing registry configuration out of every uv subprocess.
+    registry_url = _validate_registry_url(settings.pypi_registry_url)
+    install_env = _build_install_env(venv_dir.parent / '.uv-cache')
     # W-02 follow-up (windows-findings): venv layout is platform-specific —
     # win32 uses Scripts\python.exe, POSIX uses bin/python. The old hardcoded
     # bin/python made every requirements-bearing task fail on Windows.
@@ -1300,7 +1381,7 @@ async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
     if not venv_dir.exists():
         logger.info(f'Creating venv with uv: {venv_dir}')
         try:
-            code, out = await _run_uv([UV_BIN, 'venv', str(venv_dir)], UV_VENV_TIMEOUT_SECONDS)
+            code, out = await _run_uv([UV_BIN, 'venv', '--no-project', str(venv_dir)], UV_VENV_TIMEOUT_SECONDS, env=install_env)
         except asyncio.TimeoutError:
             # R4-C P2: a timed-out `uv venv` leaves a half-built directory behind;
             # the `if not venv_dir.exists()` check would then silently reuse the
@@ -1321,11 +1402,13 @@ async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
             UV_BIN, 'pip', 'install',
             '--python', str(python_bin),
         ]
-        # Use private PyPI registry if configured (e.g., for internal @autocodeflow packages)
-        if settings.pypi_registry_url:
-            install_args.extend(['--index-url', settings.pypi_registry_url])
+        # Use the explicitly configured credential-free private PyPI index.
+        # Validate again here because tests/config reloads may mutate settings
+        # after startup; never put a credential-bearing URL into uv argv.
+        if registry_url:
+            install_args.extend(['--index-url', registry_url])
         install_args.extend(requirements)
-        code, out = await _run_uv(install_args, UV_PIP_TIMEOUT_SECONDS)
+        code, out = await _run_uv(install_args, UV_PIP_TIMEOUT_SECONDS, env=install_env)
         if code != 0:
             raise RuntimeError(f'uv pip install failed: {_truncate_error_message(out)}')
 
@@ -1377,10 +1460,37 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         if not _re.match(r'^(https?://|git@|ssh://)', git_repo, _re.IGNORECASE):
             raise HTTPException(status_code=400, detail=f'gitRepo URL scheme not allowed: {git_repo}')
 
-        # S7: SSRF guard — block private IP addresses and localhost
+        # S7 (SEC-NEW-2): SSRF guard — block private IP addresses and localhost.
+        #
+        # ADR — EXECUTOR_ALLOW_PRIVATE_NETWORK 开关（镜像 admin-api 侧
+        # safe-http.util.ts 的同名变量）：
+        #   * 默认 False = 既有姿态零变化：RFC1918 私网（10/8、172.16/12、
+        #     192.168/16）、loopback（localhost、127.0.0.0/8）一律拒绝。
+        #   * True 时放行 RFC1918 私网——内网自建 GitLab/Gitea 是文档化
+        #     拓扑（executor 与 git 服务同内网），与 admin-api 侧
+        #     assertSafeExecutorUrl 的 private-lan 语义对齐。scheme 白名单
+        #     与下方其余校验（git ref 注入守卫）不受开关影响。
+        #   * loopback 裁定：**不随开关放行**。admin-api 侧的 git 守卫
+        #     assertSafeGitRepoUrl 对 loopback（127.0.0.0/8、::1）无条件
+        #     拒绝、不受 EXECUTOR_ALLOW_PRIVATE_NETWORK 影响（该开关只门控
+        #     assertSafeExecutorUrl 的 executor 地址 face；git face 始终
+        #     deny loopback/link-local/restricted）。本守卫镜像该 git-face
+        #     语义：即便开关开启，localhost/127.x 仍被拒绝——git clone 打
+        #     向执行器自身回环没有合法拓扑，只保留绕过成本。
+        #   * 字符串级判定沿用既有实现（无 DNS 解析）：『默认拒绝』下偏
+        #     保守（非 IP 形式但含私网字样的主机名会被误拒）；与 admin 侧
+        #     assertSafeGitRepoUrl 的 DNS 全答检查相比更弱，属已知差距，
+        #     依赖「gitRepo 由 admin 侧同款守卫前置校验后才下发」的链路
+        #     约定，不在此处扩大改动面。
         private_ip_pattern = r'(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
-        if _re.search(private_ip_pattern, git_repo, _re.IGNORECASE):
-            raise HTTPException(status_code=400, detail=f'gitRepo URL contains restricted address: {git_repo}')
+        if not settings.allow_private_network:
+            if _re.search(private_ip_pattern, git_repo, _re.IGNORECASE):
+                raise HTTPException(status_code=400, detail=f'gitRepo URL contains restricted address: {git_repo}')
+        else:
+            # 开关开启：放行 RFC1918，loopback 仍拒绝（见上方 ADR）。
+            loopback_pattern = r'(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
+            if _re.search(loopback_pattern, git_repo, _re.IGNORECASE):
+                raise HTTPException(status_code=400, detail=f'gitRepo URL contains restricted address: {git_repo}')
 
         ref = git_commit if git_commit else git_branch
         _validate_git_ref(ref)

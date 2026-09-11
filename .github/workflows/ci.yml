@@ -440,6 +440,20 @@ jobs:
           node scripts/check-migrations.mjs
           node scripts/check-migrations.selftest.mjs
 
+  # ── BUG-18：私服 npm/PyPI 契约闸（零依赖 node 脚本，无需 npm ci）──────
+  # live 模式（临时 PyPI uvicorn + 一次性 Verdaccio 容器）需 docker 与镜像，
+  # 只在本地/真机轮跑；CI 跑 --dry-run 的源码契约断言，防私服链路回归。
+  private-registry-contract:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Private registry contract checks
+        run: node scripts/bug18-private-registry-selftest.mjs --dry-run
+
   # ── Python services & packages ────────────────────────────
   executor-python-test:
     runs-on: ubuntu-latest

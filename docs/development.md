@@ -225,6 +225,47 @@ npm test
 npm run build
 ```
 
+### 任务 runtime 注册表（ARCH-25）
+
+runtime 的能力描述（glue 语言、依赖安装器、entrypoint 扩展名、承载执行器等）
+由单一事实源 `apps/admin-api/src/modules/runtime/` 提供，内置 `python` /
+`node` / `shell` 三项，`RuntimeModule` 为 `@Global`（任意模块可直接注入）：
+
+```ts
+import { TaskRuntimeRegistry } from "../runtime/task-runtime-registry.service";
+
+constructor(private readonly runtimes: TaskRuntimeRegistry) {}
+
+const shell = this.runtimes.get(TaskRuntime.SHELL); // → TaskRuntimeDefinition | null
+const all = this.runtimes.list();                   // → 副本快照
+```
+
+注册一个自定义 runtime（示例：deno，仅演示协议，未内置进生产）：
+
+```ts
+this.runtimes.register({
+  runtime: "deno" as TaskRuntime,
+  label: "Deno",
+  glueLanguage: "node",
+  dependencyInstaller: "none",
+  defaultEntrypointExtension: "ts",
+  defaultRuntimeVersion: null,
+  executorKind: "any",
+  description: "示例 runtime：演示第三方 runtime 的注册协议。",
+});
+// 同名已存在时需显式声明覆盖，否则抛错（防插件静默改写内置语义）：
+this.runtimes.register(definition, { override: true });
+```
+
+纪律（本阶段红线）：
+
+- 注册表是**描述层**：未知 runtime `get()` 返回 `null`（fail-open），任何消费方
+  都不得因注册表缺项而拒绝既有任务——避免把描述层变成新的准入闸门。
+- `TaskRuntime` 枚举与 DTO `@IsEnum` 校验**保持不变**，因此零迁移、零 openapi
+  变更；新增枚举值必须同步注册（spec 用「枚举值 ↔ 注册表键」一致性断言守住）。
+- executor 侧（executor-node/python）本阶段零触碰：runtime 的实际执行语义仍由
+  各执行器分支实现，注册表只描述能力。
+
 ## 代码规范
 
 ### 配置读取规约（ARCH-27，apps/admin-api）

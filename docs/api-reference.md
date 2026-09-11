@@ -378,6 +378,18 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | GET | `/tasks/:id` | 是 | 获取任务详情 |
 | PATCH | `/tasks/:id` | 是 | 更新任务配置 |
 | DELETE | `/tasks/:id` | 是 | 删除任务（运行中执行将被强制终止） |
+
+### 任务/应用属主写面守卫（NF-03 预研）
+
+`tasks` / `applications` 两表带 `ownerUserId`（创建者用户 id，响应面透出）：
+
+- **创建**：落当前用户 id（含 ADMIN 创建，可追溯）。
+- **写面（PATCH/DELETE 及应用 PUT/DELETE）三态守卫**：ADMIN 全量放行；
+  属主本人放行；其余（含 `ownerUserId=NULL` 的存量无主行、悬垂 id）→ `403`。
+- **NULL 语义**：存量行不回填，`ownerUserId=null` = 无主，仅 ADMIN 可改。
+- **范围**：仅配置写面；trigger 等执行类写面与读面过滤不在预研范围
+  （读面可见性矩阵归 AUTH-02 全量隔离）。
+- **机器面豁免**：发版 webhook（HMAC 鉴权）更新应用版本号不走属主守卫。
 | POST | `/tasks/:id/trigger` | 是 | 手动触发任务立即执行（可带自定义参数） |
 | POST | `/tasks/:id/pause` | 是 | 暂停任务（停止调度，不影响进行中的执行） |
 | POST | `/tasks/:id/resume` | 是 | 恢复任务调度 |
@@ -431,6 +443,8 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 - **退避抖动纯函数**：`apps/admin-api/src/modules/task/retry-backoff.util.ts` `jitteredRetryDelayMs(retryDelaySec, attempt, random?, ratio?)`，输出 `[base×0.8, base×1.2]` 内整数毫秒，`retryDelay<=0` 返回 `0`（调用方省略 backoff）。
 | `secrets` | object | 否 | 任务级凭据键值对（SEC-02，独立于 `params` 的普通运行参数）。**存储加密**：配置 `SEC_SECRETS_KEY` 后所有叶子值以 AES-256-GCM `enc:v1:<iv>:<tag>:<ciphertext>` 信封落库；未配置时降级明文并启动 warn 一次（零破坏升级路径）。**读取永久脱敏**：`GET /tasks`、`GET /tasks/:id` 响应中叶子值一律回 `******`（密文也不外泄），因此已保存的 secrets 不可经 API 回读。**派发语义**：执行时解密与 params 合并注入执行器 env（`AUTOFLOW_<KEY>`，与 params 同通道），同名键 secrets 覆盖 params；明文仅存在于派发 HTTPS 载荷与执行器内存，不落 `task_executions.params`。**PATCH 语义**：缺省 = 保留旧值，显式 `null` / `{}` = 清空/替换（整体替换，非按键合并）。存量行不做迁移加密——配置 key 后首次 update 自然转为密文 |
 | `executorId` | string (UUID) | 否 | 任务级 executor pinning（第六轮）：设置后调度**仅**派给该执行器，绕过 group/tags/runtime 过滤，但仍受其并发槽位上限约束；该执行器离线/不存在时执行直接置 FAILED（failureReason 分别为 `executor_offline` / `unknown`）。与 `executeMode=broadcast` 互斥，同时提供返回 400。`PATCH /tasks/:id` 按**合并后的任务态**校验该互斥（第七轮 N17）：为 broadcast 任务补 `executorId`、或将已 pin 任务改为 `broadcast` 同样返回 400；显式传 `executorId: null` 可清除 pinning |
+| `executorAffinityTags` | string[] | 否 | 执行器标签亲和（NF-04，第三态调度约束）：**OR 语义**——执行器持有**任一**亲和标签即成为派发候选，随后在命中集合内按 CORE-05 负载评分（loadScore）择优。与 `executorTags`（硬性能力要求，AND 子集语义）正交、可同配：先按 executorTags 剔除能力不达的执行器，再按亲和筛出意向集合。**调度顺序**：group/tags/亲和/反亲和过滤全部先于 loadScore 排序（先筛再按负载选）。**broadcast 组合**：broadcast 本为全体在线执行器，配亲和后广播**收窄为命中亲和标签的执行器子集**（pinning=唯一目标 / 纯 broadcast=全体 / broadcast+亲和=命中子集，此即第三态的价值）。候选过滤后为空时走既有「无可用执行器」失败路径（failureReason 归 `executor_offline`），不引入新失败状态。两列均设时为交集语义（亲和命中集再剔除反亲和命中）。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` / `[]` = 清除约束。默认 null = 无约束，存量任务行为零变化 |
+| `executorAntiAffinityTags` | string[] | 否 | 执行器标签反亲和（NF-04）：**排除语义**——执行器持有**任一**反亲和标签即被剔除出候选。单发与 broadcast 均生效（broadcast 配反亲和 = 全体在线执行器减去命中标签者）。与亲和组合时先取亲和命中集再剔除反亲和命中（交集）；无亲和时独立生效。**调度顺序**与候选为空语义同 `executorAffinityTags`（过滤先于 loadScore；候选空走既有失败路径）。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` / `[]` = 清除约束。默认 null = 无约束，存量任务行为零变化。**边界**：`executorId`（pinning）绕过包括亲和/反亲和在内的一切过滤（pinning 语义本就是"仅此一个"）；`executorAppName` 精确指定路径与 group/tags 同面，同样不做亲和过滤 |
 
 > 兼容说明：API 入参优先读取 `timeoutSeconds` 并落库到现有 `timeout` 字段；响应中可能同时包含历史字段 `timeout`。Python SDK 同时支持 snake_case（如 `timeout_seconds`、`retry_delay`、`max_retry`），Node/API wire format 推荐 camelCase。
 

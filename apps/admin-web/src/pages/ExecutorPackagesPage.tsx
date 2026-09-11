@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Table, Button, Input, Select, Space, Tag, Tooltip, Modal, Form,
   Upload, Checkbox, Alert, Typography, message, Badge, Card,
@@ -16,6 +16,7 @@ import { executorsApi } from '../api/executors';
 import { getErrMsg } from '../utils/error';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
+import StateError from '../components/StateError';
 import { Empty as AntEmpty } from 'antd';
 
 const { Text } = Typography;
@@ -45,11 +46,15 @@ export default function ExecutorPackagesPage() {
   const [rows, setRows] = useState<PkgRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 20;
+
+  // UI-16 竞态守卫：筛选、分页、刷新或重试快速重入时，仅最新请求允许更新列表状态。
+  const loadSeq = useRef(0);
 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForm] = Form.useForm();
@@ -64,7 +69,9 @@ export default function ExecutorPackagesPage() {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
+    setLoadError(null);
     try {
       const res = await listPackages({
         page, pageSize: PAGE_SIZE,
@@ -72,12 +79,24 @@ export default function ExecutorPackagesPage() {
         type: typeFilter || undefined,
         status: statusFilter || undefined,
       });
+      if (seq !== loadSeq.current) return;
       setRows(res.items.map(pkg => ({ ...pkg, status: pkg.isLatest ? 'active' : 'deprecated' })));
       setTotal(res.total);
-    } catch (err: unknown) { message.error(getErrMsg(err, '加载失败')); } finally { setLoading(false); }
+      setLoadError(null);
+    } catch (err: unknown) {
+      if (seq !== loadSeq.current) return;
+      setLoadError(err);
+      message.error(getErrMsg(err, '加载失败'));
+    } finally {
+      if (seq === loadSeq.current) setLoading(false);
+    }
   }, [page, search, typeFilter, statusFilter]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    // 与 AppDeploymentPage 对齐：依赖变化/卸载时作废本 effect 发起的旧请求。
+    return () => { loadSeq.current += 1; };
+  }, [load]);
 
   const handleUpload = async (values: Record<string, unknown>) => {
     const fileList = (values.file as { fileList?: { originFileObj: File }[] })?.fileList;
@@ -215,6 +234,15 @@ export default function ExecutorPackagesPage() {
         extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>上传新包</Button>}
       />
 
+      {loadError !== null && !loading && (
+        <StateError
+          error={loadError}
+          title="执行器包列表加载失败"
+          onRetry={load}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
       <Space style={{ marginBottom: 16 }} wrap>
         <Input.Search
           placeholder="搜索包名…" value={search} allowClear style={{ width: 200 }}
@@ -245,10 +273,12 @@ export default function ExecutorPackagesPage() {
           showTotal: t => `共 ${t} 条`,
         }}
         locale={{
-          // UI-08：首屏加载（无数据）以骨架屏替代表格 Spin；空态引导上传
+          // UI-08：首屏加载（无数据）以骨架屏替代表格 Spin；错误态不误显示空态
           emptyText: loading && rows.length === 0
             ? <PageSkeleton variant="table" rows={4} />
-            : <AntEmpty image={AntEmpty.PRESENTED_IMAGE_SIMPLE} description="暂无包，点击「上传新包」添加第一个" />,
+            : loadError
+              ? null
+              : <AntEmpty image={AntEmpty.PRESENTED_IMAGE_SIMPLE} description="暂无包，点击「上传新包」添加第一个" />,
         }}
       />
 

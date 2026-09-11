@@ -188,6 +188,8 @@ acf app list
 
 推荐使用 `acf login` 保存 access token 与 refresh token，CLI 会在普通 API 请求遇到 401 时自动刷新并重放一次。`--token` / `ACF_TOKEN` / `acf config set-token` 只适合短期 CI 调用；未配置 refresh token 时，access token 过期会快速失败并提示重新登录。
 
+**凭据落盘与 CI 建议（SEC-NEW-4）**：`acf login` 会把 access token 与长期 refresh token 明文写入用户配置目录（如 `~/.config/acf-cli/config.json`，`acf config show` 可打印实际路径）。CLI 无跨平台 OS keyring（纯 Node，非 Electron，不引入 keytar 原生依赖），因此采取**最低限度加固**：配置文件以 `0600`（仅属主可读写）创建，历史遗留的组/其他可读文件在下次启动时自动收紧为 `0600`（只改权限，不迁移、不删除凭据）。**CI / 定时任务等无人值守场景建议不要落盘**，改为按次注入环境变量：`ACF_API_URL` + `ACF_TOKEN`（`ACF_REFRESH_TOKEN` 可选，未设置时 access token 过期会快速失败并提示重新登录）。如需重定向凭据目录（只读 home / 共享机器 / 测试），可设 `ACF_CONFIG_DIR=<绝对路径>`。
+
 ### MCP Server
 
 让 Claude Desktop、Cursor 等 AI Agent 直接管理 AutoCodeFlow 任务与执行。暴露 12 个工具，支持任务 CRUD、手动触发、执行分析、调度建议等。

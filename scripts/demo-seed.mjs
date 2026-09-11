@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url";
 import process from "node:process";
 
 const DEMO_PREFIX = "demo-";
+export const API_PAGE_SIZE = 100;
 
 /** 纯函数：从任务列表里找同名演示任务（幂等复用的依据） */
 export function findExisting(tasks, name) {
@@ -76,6 +77,21 @@ throw new Error('demo intentional failure: check failureReason & error message')
   ];
 }
 
+/**
+ * 选择脚本应主动触发的演示任务，并按名称去重。
+ * fixed_rate 由调度器负责；其余演示任务每次运行脚本最多触发一次。
+ */
+export function triggerTargets(created) {
+  const seen = new Set();
+  return (created ?? []).filter((entry) => {
+    const name = entry?.def?.name;
+    const triggerType = entry?.def?.triggerType;
+    if (!name || !["manual", "cron"].includes(triggerType) || seen.has(name)) return false;
+    seen.add(name);
+    return true;
+  });
+}
+
 async function apiFetch(baseUrl, path, { method = "GET", token, body } = {}) {
   const res = await fetch(`${baseUrl.replace(/\/+$/, "")}${path}`, {
     method,
@@ -101,6 +117,129 @@ export function unwrap(raw) {
     return raw.data;
   }
   return raw;
+}
+
+/** 后端 PaginationDto 的 total/totalPages 共同决定需要读取的页数。 */
+export function pageCount(data, pageSize = API_PAGE_SIZE) {
+  if (!Number.isInteger(pageSize) || pageSize < 1) {
+    throw new Error("invalid pagination pageSize");
+  }
+  const total = Number(data?.total);
+  if (!Number.isInteger(total) || total < 0) {
+    throw new Error("paginated response missing valid total");
+  }
+  const expectedPages = Math.ceil(total / pageSize);
+  const reportedPages = Number(data?.totalPages);
+  if (!Number.isInteger(reportedPages) || reportedPages < 0 || reportedPages !== expectedPages) {
+    throw new Error(
+      `paginated response totalPages mismatch: expected ${expectedPages}, received ${String(data?.totalPages)}`,
+    );
+  }
+  if (data?.pageSize !== undefined && Number(data.pageSize) !== pageSize) {
+    throw new Error(
+      `paginated response pageSize mismatch: expected ${pageSize}, received ${String(data.pageSize)}`,
+    );
+  }
+  return expectedPages;
+}
+
+function pageItems(data) {
+  const items = Array.isArray(data) ? data : data?.items ?? data?.list ?? data?.data;
+  if (!Array.isArray(items)) {
+    throw new Error("paginated response missing items/list/data array");
+  }
+  return items;
+}
+
+function expectedItemsOnPage(total, totalPages, page) {
+  if (total === 0 && page === 1 && totalPages === 0) return 0;
+  if (page < 1 || page > totalPages) return null;
+  return page < totalPages ? API_PAGE_SIZE : total - API_PAGE_SIZE * (totalPages - 1);
+}
+
+function validatePage(data, requestedPage, expectedTotal, expectedTotalPages) {
+  const items = pageItems(data);
+  if (!Number.isInteger(Number(data?.page)) || Number(data.page) !== requestedPage) {
+    throw new Error(
+      `paginated response page mismatch: requested ${requestedPage}, received ${String(data?.page)}`,
+    );
+  }
+  if (!Number.isInteger(Number(data?.pageSize)) || Number(data.pageSize) !== API_PAGE_SIZE) {
+    throw new Error(
+      `paginated response pageSize mismatch: expected ${API_PAGE_SIZE}, received ${String(data?.pageSize)}`,
+    );
+  }
+  if (!Number.isInteger(Number(data?.total)) || Number(data.total) !== expectedTotal) {
+    throw new Error(
+      `paginated response total mismatch: expected ${expectedTotal}, received ${String(data?.total)}`,
+    );
+  }
+  if (!Number.isInteger(Number(data?.totalPages)) || Number(data.totalPages) !== expectedTotalPages) {
+    throw new Error(
+      `paginated response totalPages mismatch: expected ${expectedTotalPages}, received ${String(data?.totalPages)}`,
+    );
+  }
+  const expectedItems = expectedItemsOnPage(expectedTotal, expectedTotalPages, requestedPage);
+  if (expectedItems === null || items.length !== expectedItems) {
+    throw new Error(
+      `paginated response incomplete: page ${requestedPage} expected ${String(expectedItems)} items, received ${items.length}`,
+    );
+  }
+  return items;
+}
+
+/** 聚合分页结果，严格校验元数据、每页数量和全局唯一 id。 */
+export function aggregatePages(firstData, subsequentData) {
+  const firstTotal = Number(firstData?.total);
+  const totalPages = pageCount(firstData);
+  const firstItems = validatePage(firstData, 1, firstTotal, totalPages);
+  if (!Array.isArray(subsequentData) || subsequentData.length !== Math.max(0, totalPages - 1)) {
+    throw new Error(
+      `paginated response incomplete: expected ${Math.max(0, totalPages - 1)} subsequent pages, received ${String(subsequentData?.length)}`,
+    );
+  }
+  const allItems = [firstItems];
+  for (let index = 0; index < subsequentData.length; index += 1) {
+    allItems.push(validatePage(subsequentData[index], index + 2, firstTotal, totalPages));
+  }
+  const items = allItems.flat();
+  const ids = new Set();
+  for (const item of items) {
+    if (!item || typeof item.id !== "string" || item.id.length === 0) {
+      throw new Error("paginated response item missing valid id");
+    }
+    if (ids.has(item.id)) {
+      throw new Error(`paginated response duplicate id: ${item.id}`);
+    }
+    ids.add(item.id);
+  }
+  if (items.length !== firstTotal) {
+    throw new Error(`paginated response incomplete: expected ${firstTotal} items, received ${items.length}`);
+  }
+  return items;
+}
+
+/** 分页拉全资源；每次请求遵守后端 page-size 上限，不静默截断。 */
+export async function listAll(baseUrl, path, token, { paginated = true } = {}) {
+  const getPage = async (page) => {
+    const requestPath = paginated
+      ? `${path}${path.includes("?") ? "&" : "?"}page=${page}&pageSize=${API_PAGE_SIZE}`
+      : path;
+    const res = await apiFetch(baseUrl, requestPath, { token });
+    if (!res.ok) {
+      throw new Error(`GET ${path} failed (${res.status}): ${JSON.stringify(res.data).slice(0, 200)}`);
+    }
+    return unwrap(res.data);
+  };
+
+  const first = await getPage(1);
+  if (!paginated || Array.isArray(first)) return pageItems(first);
+
+  const pages = [];
+  for (let page = 2; page <= pageCount(first); page += 1) {
+    pages.push(await getPage(page));
+  }
+  return aggregatePages(first, pages);
 }
 
 async function main() {
@@ -135,8 +274,7 @@ async function main() {
   }
   console.log("[demo-seed] logged in");
 
-  const list = await apiFetch(baseUrl, "/api/tasks?page=1&pageSize=500", { token });
-  const existingTasks = unwrap(list.data)?.items ?? [];
+  const existingTasks = await listAll(baseUrl, "/api/tasks", token);
 
   const created = [];
   for (const def of demoTaskDefs()) {
@@ -161,19 +299,14 @@ async function main() {
   }
 
   if (!skipTrigger) {
-    for (const { def, id } of created) {
-      if (def.triggerType !== "manual" && def.triggerType !== "cron") continue;
+    // fixed_rate 由调度器自动跑；cron/manual 演示任务各只主动触发一次。
+    for (const { def, id } of triggerTargets(created)) {
       const res = await apiFetch(baseUrl, `/api/tasks/${id}/trigger`, {
         method: "POST",
         token,
         body: {},
       });
       console.log(`[demo-seed] triggered ${def.name}: ${res.ok ? "ok" : `failed (${res.status})`}`);
-    }
-    // fixed_rate 由调度器自动跑；manual 的 fragile 也触发一次拿失败样本
-    const fragile = created.find((c) => c.def.name === `${DEMO_PREFIX}fragile`);
-    if (fragile) {
-      await apiFetch(baseUrl, `/api/tasks/${fragile.id}/trigger`, { method: "POST", token, body: {} });
     }
   }
 

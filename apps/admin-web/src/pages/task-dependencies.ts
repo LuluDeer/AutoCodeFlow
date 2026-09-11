@@ -31,6 +31,32 @@ export function buildDependenciesPayload(
 }
 
 /**
+ * 提交序列化（完整版）：读取表单载体字段 upstreamDependencies（Select 值 =
+ * taskId 列表），写入 DTO 声明的 dependencies 映射，并**删除载体字段本身**。
+ *
+ * 删除载体是硬性要求（QA-01 / e2e 例 23-24 连红根因）：全局 ValidationPipe 开启
+ * whitelist + forbidNonWhitelisted，而 CreateTaskDto 只声明 dependencies、未声明
+ * upstreamDependencies。编辑态 setFieldValue 恒把该字段置为数组（无依赖时 []），
+ * 未删除则 PATCH 请求体携带未声明键 -> 后端 400 -> 前端弹「更新失败」，表现为
+ * 「界面已切换、服务端旧值不变」（例 23/24 的 executeMode 断言超时是次生症状）。
+ *
+ * 必须 delete 而非置 null/undefined：whitelist 按 Object.keys 判定键是否声明，
+ * 值为 null 的未声明键同样触发 400；只有 delete 才能让键彻底不出现在请求体里。
+ */
+export function applyDependenciesPayload(
+  values: Record<string, unknown>,
+  nameSnapshot: Record<string, string>,
+): Record<string, unknown> {
+  const payload = { ...values };
+  payload.dependencies = buildDependenciesPayload(
+    payload.upstreamDependencies as DependencySelection | undefined,
+    nameSnapshot,
+  );
+  delete payload.upstreamDependencies;
+  return payload;
+}
+
+/**
  * 编辑态回填：后端 dependencies 映射 → Select 值（taskId 列表）+ 名称快照
  * （供提交时重建映射，避免再拉一次任务列表）。
  */

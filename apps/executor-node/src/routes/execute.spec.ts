@@ -117,6 +117,8 @@ import { verifyToken } from '../middleware/auth';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 const mockCp = childProcess as jest.Mocked<typeof childProcess>;
+let mockTempNpmDirectoryNumber = 0;
+const mockNpmFiles = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -160,13 +162,26 @@ function okSpawn(code: number | null = 0) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockNpmFiles.clear();
   Atomics.store(_runningCountArr, 0, 0);
   delete process.env.EXECUTOR_SHARED_TOKEN;
   delete process.env.NPM_REGISTRY_TOKEN;
   (mockFs.existsSync as jest.Mock).mockReturnValue(false);
   (mockFs.mkdirSync as jest.Mock).mockReturnValue(undefined);
   (mockFs.chmodSync as jest.Mock).mockReturnValue(undefined);
-  (mockFs.writeFileSync as jest.Mock).mockReturnValue(undefined);
+  (mockFs.writeFileSync as jest.Mock).mockImplementation((fp: fs.PathLike) => {
+    const file = String(fp);
+    if (file.endsWith('.npmrc') || file.endsWith('.npm-globalrc')) mockNpmFiles.add(file);
+  });
+  (mockFs.mkdtempSync as jest.Mock).mockImplementation(() => `/tmp/autocodeflow-npm-${++mockTempNpmDirectoryNumber}`);
+  (mockFs.unlinkSync as jest.Mock).mockImplementation((file: fs.PathLike) => {
+    mockNpmFiles.delete(String(file));
+  });
+  (mockFs.rmSync as jest.Mock).mockImplementation((dir: fs.PathLike) => {
+    for (const file of [...mockNpmFiles]) {
+      if (file.startsWith(`${String(dir)}${path.sep}`)) mockNpmFiles.delete(file);
+    }
+  });
   (mockFs.lstatSync as jest.Mock).mockReturnValue({ isSymbolicLink: () => false });
   (mockFs.realpathSync as unknown as jest.Mock).mockImplementation((p: string) => p);
   // Reset config
@@ -860,8 +875,11 @@ describe('buildNpmRcContent (改动3)', () => {
     testConfig.npmRegistryToken = 'secret-token-xyz';
     (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
     const writtenNpmrc: string[] = [];
-    (mockFs.writeFileSync as jest.Mock).mockImplementation((fp: string, content: string) => {
-      if (String(fp).endsWith('.npmrc')) writtenNpmrc.push(content);
+    (mockFs.writeFileSync as jest.Mock).mockImplementation((fp: string, content: string | Buffer) => {
+      if (String(fp).endsWith('.npmrc')) {
+        writtenNpmrc.push(String(content));
+        mockNpmFiles.add(String(fp));
+      }
     });
     const res = await request(appNoAuth).post('/api/execute').send({
       executionId: 'exec-npmrc',
@@ -875,6 +893,187 @@ describe('buildNpmRcContent (改动3)', () => {
     const { logger } = require('../logger');
     for (const call of logger.info.mock.calls) {
       expect(String(call[0])).not.toContain('secret-token-xyz');
+    }
+  });
+
+  it('cleans token-bearing npm config after a successful install', async () => {
+    testConfig.npmRegistryUrl = 'http://verdaccio:4873/';
+    testConfig.npmRegistryToken = 'secret-token-success';
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
+
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-npm-success-cleanup',
+      task: { id: 'task-success', runtime: 'node', entrypoint: 'index.js', requirements: ['left-pad'] },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+
+    expect(mockNpmFiles.size).toBe(0);
+    expect((mockFs.unlinkSync as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect((mockFs.rmSync as jest.Mock).mock.calls.some(([dir]) => String(dir).includes('autocodeflow-npm-'))).toBe(true);
+  });
+
+  it('cleans token-bearing npm config when npm exits unsuccessfully', async () => {
+    testConfig.npmRegistryUrl = 'http://verdaccio:4873/';
+    testConfig.npmRegistryToken = 'secret-token-failure';
+    (mockCp.spawn as jest.Mock).mockReturnValue({
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn((event: string, cb: Function) => { if (event === 'data') cb(Buffer.from('401 Unauthorized')); }) },
+      on: jest.fn((event: string, cb: Function) => { if (event === 'close') setImmediate(() => cb(1)); }),
+      kill: jest.fn(),
+      pid: 4567,
+    });
+
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-npm-failure-cleanup',
+      task: { id: 'task-failure', runtime: 'node', entrypoint: 'index.js', requirements: ['left-pad'] },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+
+    expect(mockNpmFiles.size).toBe(0);
+    const failCall = (pushCallback as jest.Mock).mock.calls
+      .map(c => c[0])
+      .find(p => p.executionId === 'exec-npm-failure-cleanup' && p.status === 'failed');
+    expect(failCall?.errorMessage).toMatch(/Dependency installation failed/);
+  });
+
+  it('cleans token-bearing npm config after an npm timeout', async () => {
+    testConfig.npmRegistryUrl = 'http://verdaccio:4873/';
+    testConfig.npmRegistryToken = 'secret-token-timeout';
+    const pendingClose: Array<(code: number | null) => void> = [];
+    (mockCp.spawn as jest.Mock).mockImplementation(() => ({
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn((event: string, cb: Function) => { if (event === 'close') pendingClose.push(cb as (code: number | null) => void); }),
+      kill: jest.fn(),
+      pid: 5678,
+    }));
+
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-npm-timeout-cleanup',
+      task: { id: 'task-timeout', runtime: 'node', entrypoint: 'index.js', requirements: ['left-pad'] },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+    expect(mockNpmFiles.size).toBe(2);
+    expect(pendingClose).toHaveLength(1);
+
+    pendingClose[0](1);
+    await flushAsync();
+    expect(mockNpmFiles.size).toBe(0);
+  });
+
+  it('cleans token-bearing npm config when npm setup throws', async () => {
+    testConfig.npmRegistryUrl = 'http://verdaccio:4873/';
+    testConfig.npmRegistryToken = 'secret-token-exception';
+    (mockCp.spawn as jest.Mock).mockImplementation(() => {
+      throw new Error('npm spawn setup failed');
+    });
+
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-npm-exception-cleanup',
+      task: { id: 'task-exception', runtime: 'node', entrypoint: 'index.js', requirements: ['left-pad'] },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+
+    expect(mockNpmFiles.size).toBe(0);
+    const failCall = (pushCallback as jest.Mock).mock.calls
+      .map(c => c[0])
+      .find(p => p.executionId === 'exec-npm-exception-cleanup' && p.status === 'failed');
+    expect(failCall?.errorMessage).toMatch(/npm spawn setup failed/);
+  });
+
+  it('reports npm config cleanup failure instead of silently continuing', async () => {
+    testConfig.npmRegistryUrl = 'http://verdaccio:4873/';
+    testConfig.npmRegistryToken = 'secret-token-cleanup-error';
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
+    (mockFs.unlinkSync as jest.Mock).mockImplementation((file: fs.PathLike) => {
+      if (String(file).endsWith('.npmrc')) {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      }
+      mockNpmFiles.delete(String(file));
+    });
+
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-npm-cleanup-error',
+      task: { id: 'task-cleanup-error', runtime: 'node', entrypoint: 'index.js', requirements: ['left-pad'] },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+
+    const { logger } = require('../logger');
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Unable to remove temporary npm config'));
+    const failCall = (pushCallback as jest.Mock).mock.calls
+      .map(c => c[0])
+      .find(p => p.executionId === 'exec-npm-cleanup-error' && p.status === 'failed');
+    expect(failCall?.errorMessage).toMatch(/Unable to remove temporary npm config/);
+  });
+
+  it('does not place token config in the task runtime cwd', async () => {
+    testConfig.npmRegistryUrl = 'http://verdaccio:4873/';
+    testConfig.npmRegistryToken = 'secret-token-cwd';
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
+
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-npm-cwd-isolation',
+      task: { id: 'task-cwd', runtime: 'node', entrypoint: 'index.js', requirements: ['left-pad'] },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+
+    const npmCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+      (call: unknown[]) => call[0] === (process.platform === 'win32' ? 'npm.cmd' : 'npm'),
+    );
+    expect(npmCall).toBeTruthy();
+    const opts = npmCall![2] as { cwd?: string; env?: Record<string, string | undefined> };
+    // W-20/Windows CI：cwd 是 workDir 的平台拼接结果，不能写死 POSIX 字面量
+    expect(opts.cwd).toBe(path.join(testConfig.workDir, 'exec-npm-cwd-isolation'));
+    expect(opts.env?.npm_config_userconfig).not.toContain(opts.cwd!);
+    expect(opts.env?.npm_config_userconfig).toMatch(/[\\/]autocodeflow-npm-[^\\/]+[\\/]\.npmrc$/);
+  });
+
+  it('uses an isolated npm env and disables token-bearing lifecycle scripts', async () => {
+    testConfig.npmRegistryUrl = 'http://verdaccio:4873/';
+    testConfig.npmRegistryToken = 'secret-token-xyz';
+    process.env.NPM_REGISTRY_TOKEN = 'host-token';
+    process.env.EXECUTOR_SHARED_TOKEN = 'shared-secret';
+    process.env.EXECUTOR_SECRET = 'legacy-secret';
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
+
+    try {
+      const res = await request(appNoAuth).post('/api/execute').send({
+        executionId: 'exec-npm-env',
+        task: { id: 'taskN', runtime: 'node', entrypoint: 'index.js', requirements: ['left-pad'] },
+      });
+      expect(res.status).toBe(200);
+      await flushAsync();
+
+      const npmCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+        (call: unknown[]) => call[0] === (process.platform === 'win32' ? 'npm.cmd' : 'npm'),
+      );
+      expect(npmCall).toBeTruthy();
+      const args = npmCall![1] as string[];
+      const opts = npmCall![2] as { cwd?: string; env?: Record<string, string | undefined> };
+      const env = opts.env!;
+      expect(args).toContain('--ignore-scripts');
+      expect(opts.cwd).toBe(path.join(testConfig.workDir, 'exec-npm-env'));
+      expect(env.PATH).toBeDefined();
+      expect(env.HOME).toBeDefined();
+      expect(env.npm_config_registry).toBe('http://verdaccio:4873/');
+      expect(env.npm_config_userconfig).toMatch(/[\\/]autocodeflow-npm-[^\\/]+[\\/]\.npmrc$/);
+      expect(env.npm_config_userconfig).not.toContain(opts.cwd!);
+      expect(env.npm_config_globalconfig).toMatch(/[\\/]autocodeflow-npm-[^\\/]+[\\/]\.npm-globalrc$/);
+      expect(env.npm_config_cache).toMatch(/\.node_modules[\\/]taskN[\\/]\.npm-cache$/);
+      expect(env.NPM_REGISTRY_TOKEN).toBeUndefined();
+      expect(env.EXECUTOR_SHARED_TOKEN).toBeUndefined();
+      expect(env.EXECUTOR_SECRET).toBeUndefined();
+      expect(env.npm_config_authToken).toBeUndefined();
+    } finally {
+      delete process.env.NPM_REGISTRY_TOKEN;
+      delete process.env.EXECUTOR_SHARED_TOKEN;
+      delete process.env.EXECUTOR_SECRET;
     }
   });
 });

@@ -10,6 +10,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
 import { authApi, AuthSession } from '../../api/auth';
 import { getErrMsg } from '../../utils/error';
+import StateError from '../../components/StateError';
 import { useAuthStore } from '../../store/auth';
 
 const { Text } = Typography;
@@ -188,7 +189,7 @@ export function TotpCard() {
  */
 export function SessionsCard() {
   const qc = useQueryClient();
-  const { data: sessions, isLoading, refetch, isFetching } = useQuery({
+  const { data: sessions, isLoading, refetch, isFetching, error: sessionsError } = useQuery({
     queryKey: ['auth-sessions'],
     queryFn: authApi.listSessions,
   });
@@ -294,15 +295,24 @@ export function SessionsCard() {
         </Space>
       }
     >
-      <Table
-        loading={isLoading}
-        dataSource={sessions ?? []}
-        rowKey="id"
-        columns={cols}
-        size="small"
-        pagination={false}
-        locale={{ emptyText: '暂无活跃会话' }}
-      />
+      {sessionsError ? (
+        // UI-16：会话读请求失败 → 页内错误块（重试=refetch），不落「暂无活跃会话」误导空态
+        <StateError
+          error={sessionsError}
+          title="登录会话加载失败"
+          onRetry={() => { void refetch(); }}
+        />
+      ) : (
+        <Table
+          loading={isLoading}
+          dataSource={sessions ?? []}
+          rowKey="id"
+          columns={cols}
+          size="small"
+          pagination={false}
+          locale={{ emptyText: '暂无活跃会话' }}
+        />
+      )}
       <Descriptions column={1} size="small" style={{ marginTop: 12 }}>
         <Descriptions.Item label="说明">
           吊销后对应设备的刷新令牌立即失效（下次请求被要求重新登录）。

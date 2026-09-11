@@ -7,6 +7,8 @@ import { router } from './router';
 import ErrorFallback from './components/ErrorFallback';
 import { ThemedProviders, wireThemeSync } from './theme/ThemeProviders';
 import './index.css';
+// UI-12：可见焦点样式与「跳到主要内容」链接（独立于 index.css，避免与其在途改动冲突）
+import './styles/a11y-focus.css';
 
 /**
  * ARCH-26: TanStack Query 全局默认（渐进引入——新页面/改造页消费 src/api/queries.ts

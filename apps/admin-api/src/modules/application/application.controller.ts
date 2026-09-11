@@ -30,6 +30,7 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { UserRole } from "../users/entities/user.entity";
 import { ApplicationService } from "./application.service";
 import { AppDeploymentService } from "./app-deployment.service";
@@ -111,22 +112,30 @@ export class ApplicationController {
   @Post()
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create application" })
-  create(@Body() dto: CreateApplicationDto) {
-    return this.svc.create(dto);
+  create(
+    @Body() dto: CreateApplicationDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    // NF-03: 创建即落 owner（ADMIN 创建也落，可追溯）
+    return this.svc.create(dto, user);
   }
 
   @Put(":id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Update application" })
-  update(@Param("id") id: string, @Body() dto: UpdateApplicationDto) {
-    return this.svc.update(id, dto);
+  update(
+    @Param("id") id: string,
+    @Body() dto: UpdateApplicationDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.svc.update(id, dto, user);
   }
 
   @Delete(":id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Delete application" })
-  remove(@Param("id") id: string) {
-    return this.svc.remove(id);
+  remove(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.svc.remove(id, user);
   }
 
   @Post("upload")
@@ -399,11 +408,17 @@ export class ApplicationController {
     }
 
     // Update version / git metadata
-    const updatedApp = await this.svc.update(targetApp.id, {
-      version: dto.version,
-      ...(dto.gitCommit ? { gitCommit: dto.gitCommit } : {}),
-      ...(dto.gitBranch ? { gitBranch: dto.gitBranch } : {}),
-    });
+    const updatedApp = await this.svc.update(
+      targetApp.id,
+      {
+        version: dto.version,
+        ...(dto.gitCommit ? { gitCommit: dto.gitCommit } : {}),
+        ...(dto.gitBranch ? { gitBranch: dto.gitBranch } : {}),
+      },
+      undefined,
+      // NF-03: webhook 是 HMAC 鉴权的机器面，无 AuthUser——绕过用户属主守卫
+      { systemBypass: true },
+    );
     logger.log(
       `Release webhook: ${dto.appName} → v${dto.version} (commit=${dto.gitCommit?.slice(0, 8) ?? "n/a"})`,
     );

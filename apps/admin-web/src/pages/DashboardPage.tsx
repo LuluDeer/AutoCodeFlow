@@ -27,6 +27,7 @@ import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
+import StateError from '../components/StateError';
 import KpiSparkline, { buildSparklineData } from '../components/dashboard/KpiSparkline';
 import FailureTopList from '../components/dashboard/FailureTopList';
 import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
@@ -66,18 +67,18 @@ export default function DashboardPage() {
   // 写入 queryClient 缓存（setQueryData，见 useMetricsStream），连接活跃时
   // 免轮询；断线时 30s refetchInterval 兜底恢复轮询节奏（与 SSE 推送互斥共存）。
 
-  const { data: summary, isLoading: summaryLoading, refetch: refetchSummary } = useMetricsSummary();
+  const { data: summary, isLoading: summaryLoading, refetch: refetchSummary, error: summaryError } = useMetricsSummary();
 
-  const { data: trend, isLoading: trendLoading } = useMetricsTrend(trendDays);
+  const { data: trend, isLoading: trendLoading, refetch: refetchTrend, error: trendError } = useMetricsTrend(trendDays);
 
   // UI-04 ①：sparkline 用近 7 天趋势（含 24h；趋势图主卡共用一次请求，
   // days=1 时后端按日桶仅 1~2 点形状无意义，故 sparkline 取 7 天窗口）
   // queryKey 与主趋势卡 days=7 时自动合并为同一请求。
   const { data: sparkTrend } = useMetricsTrend(7);
 
-  const { data: executorStats, isLoading: execLoading } = useExecutorStats();
+  const { data: executorStats, isLoading: execLoading, refetch: refetchExecutors, error: execError } = useExecutorStats();
 
-  const { data: failures, isLoading: failLoading } = useRecentFailures();
+  const { data: failures, isLoading: failLoading, refetch: refetchFailures, error: failError } = useRecentFailures();
 
   // UI-04 ④：调度延迟卡数据源（既有 /metrics/scheduler，CORE-06 字段已在）
   const { data: schedulerMetrics } = useSchedulerMetrics();
@@ -97,6 +98,9 @@ export default function DashboardPage() {
   const successRate = s?.successRate ?? 0;
   const totalExec = s?.executions?.total ?? 0;
   const runningCount = s?.executions?.running ?? 0;
+
+  // UI-16：任一指标读请求失败即整页错误块（四路互斥/并存均可，取首个非空）
+  const dashboardError = summaryError ?? trendError ?? execError ?? failError;
 
   const failureList = (failures ?? []).slice(0, 8);
 
@@ -141,18 +145,37 @@ export default function DashboardPage() {
         }
       />
 
+      {/* UI-16：任一指标读请求失败 → 页内错误块（重试=全部 refetch）。
+          此前失败表现为各卡骨架/空数字，用户无从判断是「无数据」还是「加载失败」。 */}
+      {dashboardError && (
+        <StateError
+          error={dashboardError}
+          title="控制台数据加载失败"
+          onRetry={() => {
+            void refetchSummary();
+            void refetchTrend();
+            void refetchExecutors();
+            void refetchFailures();
+          }}
+        />
+      )}
+
       {/* UI-04 ⑤：空态引导——无任何任务时整页引导创建，替代空指标噪音 */}
       <DashboardEmptyGuide totalTasks={s?.totalTasks} onCreateTask={() => nav('/tasks/new')} />
 
       {/* KPI 卡片——UI-02：卡片底色接入 CSS 变量（双主题），强调色取 token 语义面。
           UI-08：首屏（无数据加载中）以骨架形态替代 Spin 包裹，刷新态仍原样 */}
+      {/* UI-09：KPI 卡 xs={12} 两列并排时内容宽仅 ~144px——十位数统计值按
+          28px 字号会溢出卡片（实测 1,234,567,890 顶出右边界），窄屏由
+          .ui09-kpi-stat 媒体查询降字号兜底（见 index.css） */}
       {summaryLoading && !s ? (
         <PageSkeleton variant="table" rows={3} />
       ) : (
-      <Row gutter={[16, 16]}>
+        <Row gutter={[16, 16]}>
           <Col xs={12} sm={6}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
+                className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>任务总数</Text>}
                 value={s?.totalTasks ?? '-'}
                 prefix={<RocketOutlined style={{ color: CHART_COLORS.cpu }} />}
@@ -164,6 +187,7 @@ export default function DashboardPage() {
           <Col xs={12} sm={6}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
+                className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>今日执行</Text>}
                 value={s?.todayRuns ?? totalExec}
                 prefix={<ThunderboltOutlined style={{ color: CHART_COLORS.success }} />}
@@ -176,6 +200,7 @@ export default function DashboardPage() {
           <Col xs={12} sm={6}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
+                className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>运行中</Text>}
                 value={runningCount}
                 prefix={<ClockCircleOutlined style={{ color: CHART_COLORS.concurrent }} />}
@@ -192,6 +217,7 @@ export default function DashboardPage() {
           <Col xs={12} sm={6}>
             <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
               <Statistic
+                className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>在线执行器</Text>}
                 value={`${s?.onlineExecutors ?? '-'} / ${s?.totalExecutors ?? '-'}`}
                 prefix={<ApiOutlined style={{ color: CHART_COLORS.memory }} />}

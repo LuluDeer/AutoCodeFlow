@@ -66,6 +66,10 @@ export interface Task {
   executorId?: string | null;
   executorGroup?: string | null;
   executorTags?: string[] | null;
+  /** NF-04: soft routing affinity; any matching executor tag is eligible. */
+  executorAffinityTags?: string[] | null;
+  /** NF-04: exclude executors carrying any of these tags. */
+  executorAntiAffinityTags?: string[] | null;
   dependencies?: Record<string, string> | null;
   /** FEAT-06: 维护窗口（null/[] = 未配置；表单未填写时提交 null 以清空） */
   maintenanceWindows?: MaintenanceWindow[] | null;
@@ -135,7 +139,35 @@ export interface PageResult<T> {
   total: number;
   page: number;
   pageSize: number;
+  totalPages?: number;
 }
+
+export type TaskListParams = {
+  page?: number;
+  pageSize?: number;
+  name?: string;
+  status?: string;
+  triggerType?: string;
+  runtime?: string;
+  applicationId?: string;
+};
+
+/** GET /tasks 的后端 pageSize 上限（PaginationDto.@Max(100)）。 */
+export const TASK_LIST_PAGE_SIZE = 100;
+
+/**
+ * Keep listAll from creating one promise/request per reported page. Six
+ * in-flight requests still make large lists reasonably fast without turning a
+ * malformed total into a request burst.
+ */
+export const TASK_LIST_PAGE_CONCURRENCY = 6;
+
+/**
+ * A task list of ten million records is already beyond what this page is able
+ * to render/use. This cap is only a malformed-total guard; it does not reduce
+ * the API's page size or affect normal large lists.
+ */
+export const TASK_LIST_MAX_PAGES = 100_000;
 
 /**
  * U2: GET /tasks/:id/executions/:execId/logs 响应形状
@@ -147,11 +179,174 @@ export interface ExecutionLogsPage {
   hasMore: boolean;
 }
 
+function taskListRequestConfig(params: TaskListParams | undefined, signal?: AbortSignal) {
+  return signal ? { params, signal } : { params };
+}
+
+function invalidTaskListResponse(reason: string): Error {
+  return new Error(`任务列表分页响应无效：${reason}`);
+}
+
+function throwIfTaskListAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason ?? new Error('任务列表请求已取消');
+}
+
+function validateTaskListPage(
+  result: PageResult<Task>,
+  expectedPage: number,
+  expectedTotal: number,
+  expectedTotalPages: number,
+): void {
+  if (!result || !Array.isArray(result.items)) {
+    throw invalidTaskListResponse(`第 ${expectedPage} 页缺少 items`);
+  }
+  if (result.page !== expectedPage) {
+    throw invalidTaskListResponse(
+      `请求第 ${expectedPage} 页却返回第 ${String(result.page)} 页`,
+    );
+  }
+  if (result.pageSize !== TASK_LIST_PAGE_SIZE) {
+    throw invalidTaskListResponse(
+      `第 ${expectedPage} 页 pageSize=${String(result.pageSize)}，应为 ${TASK_LIST_PAGE_SIZE}`,
+    );
+  }
+  if (result.total !== expectedTotal) {
+    throw invalidTaskListResponse(
+      `第 ${expectedPage} 页 total=${String(result.total)}，首请求 total=${expectedTotal}`,
+    );
+  }
+  if (result.totalPages !== undefined && result.totalPages !== expectedTotalPages) {
+    throw invalidTaskListResponse(
+      `第 ${expectedPage} 页 totalPages=${String(result.totalPages)}，应为 ${expectedTotalPages}`,
+    );
+  }
+  if (result.items.length > TASK_LIST_PAGE_SIZE) {
+    throw invalidTaskListResponse(
+      `第 ${expectedPage} 页返回 ${result.items.length} 条，超过 pageSize 上限`,
+    );
+  }
+}
+
+/**
+ * Fetch the complete task list without exceeding the backend page-size cap.
+ * Every response is checked before aggregation so a changing or malformed
+ * paginated response cannot silently produce a partial task list.
+ */
+async function listAllTasks(
+  params: Omit<TaskListParams, 'page' | 'pageSize'> = {},
+  signal?: AbortSignal,
+): Promise<PageResult<Task>> {
+  throwIfTaskListAborted(signal);
+  const first = await tasksApi.list(
+    { ...params, page: 1, pageSize: TASK_LIST_PAGE_SIZE },
+    signal,
+  );
+  throwIfTaskListAborted(signal);
+  if (!Number.isInteger(first.total) || first.total < 0) {
+    throw invalidTaskListResponse(`首请求 total=${String(first.total)} 无效`);
+  }
+  const expectedTotalPages = Math.ceil(first.total / TASK_LIST_PAGE_SIZE);
+  if (expectedTotalPages > TASK_LIST_MAX_PAGES) {
+    throw invalidTaskListResponse(
+      `total=${first.total} 需要 ${expectedTotalPages} 页，超过安全上限 ${TASK_LIST_MAX_PAGES}`,
+    );
+  }
+  if (
+    first.totalPages !== undefined &&
+    (!Number.isInteger(first.totalPages) || first.totalPages !== expectedTotalPages)
+  ) {
+    throw invalidTaskListResponse(
+      `total=${first.total} 应有 ${expectedTotalPages} 页，但返回 totalPages=${String(first.totalPages)}`,
+    );
+  }
+  validateTaskListPage(first, 1, first.total, expectedTotalPages);
+
+  if (expectedTotalPages === 0) {
+    if (first.items.length !== 0) {
+      throw invalidTaskListResponse('total=0 但首请求仍返回任务');
+    }
+    return { ...first, items: [], page: 1, pageSize: TASK_LIST_PAGE_SIZE, totalPages: 0 };
+  }
+
+  const pages: PageResult<Task>[] = [];
+  let nextPage = 2;
+  while (nextPage <= expectedTotalPages) {
+    throwIfTaskListAborted(signal);
+    const batchPages = Array.from(
+      { length: Math.min(TASK_LIST_PAGE_CONCURRENCY, expectedTotalPages - nextPage + 1) },
+      (_, index) => nextPage + index,
+    );
+    const batch = await Promise.all(
+      batchPages.map((page) => {
+        throwIfTaskListAborted(signal);
+        return tasksApi.list(
+          {
+            ...params,
+            page,
+            pageSize: TASK_LIST_PAGE_SIZE,
+          },
+          signal,
+        );
+      }),
+    );
+    throwIfTaskListAborted(signal);
+    pages.push(...batch);
+    nextPage += batchPages.length;
+  }
+  const allPages = [first, ...pages];
+  allPages.slice(1).forEach((page, index) => {
+    const expectedPage = index + 2;
+    validateTaskListPage(page, expectedPage, first.total, expectedTotalPages);
+  });
+
+  const expectedItemsOnPage = (page: number) =>
+    page < expectedTotalPages
+      ? TASK_LIST_PAGE_SIZE
+      : first.total - TASK_LIST_PAGE_SIZE * (expectedTotalPages - 1);
+  allPages.forEach((page, index) => {
+    const expectedPage = index + 1;
+    if (page.items.length !== expectedItemsOnPage(expectedPage)) {
+      throw invalidTaskListResponse(
+        `第 ${expectedPage} 页应有 ${expectedItemsOnPage(expectedPage)} 条，实际 ${page.items.length} 条，拒绝返回部分结果`,
+      );
+    }
+  });
+
+  const items = allPages.flatMap((page) => page.items);
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (!item || typeof item.id !== 'string' || item.id.length === 0) {
+      throw invalidTaskListResponse('任务缺少有效 id，无法校验重复或缺页');
+    }
+    if (ids.has(item.id)) {
+      throw invalidTaskListResponse(`任务 ${item.id} 在多个分页中重复出现`);
+    }
+    ids.add(item.id);
+  }
+  if (items.length !== first.total) {
+    throw invalidTaskListResponse(
+      `应返回 ${first.total} 条任务，实际聚合 ${items.length} 条，拒绝返回部分结果`,
+    );
+  }
+
+  return {
+    ...first,
+    items,
+    page: 1,
+    pageSize: TASK_LIST_PAGE_SIZE,
+    totalPages: expectedTotalPages,
+  };
+}
+
 export const tasksApi = {
-  list: (params?: { page?: number; pageSize?: number; name?: string; status?: string; triggerType?: string; runtime?: string; applicationId?: string }) =>
-    client.get('/tasks', { params }) as Promise<PageResult<Task>>,
-  get: (id: string) =>
-    client.get(`/tasks/${id}`) as Promise<Task>,
+  list: (params?: TaskListParams, signal?: AbortSignal) =>
+    client.get('/tasks', taskListRequestConfig(params, signal)) as Promise<PageResult<Task>>,
+  listAll: listAllTasks,
+  get: (id: string, signal?: AbortSignal) =>
+    signal
+      ? client.get(`/tasks/${id}`, { signal }) as Promise<Task>
+      : client.get(`/tasks/${id}`) as Promise<Task>,
   create: (data: Partial<Task>) =>
     client.post('/tasks', data) as Promise<Task>,
   update: (id: string, data: Partial<Task>) =>
@@ -159,17 +354,31 @@ export const tasksApi = {
   delete: (id: string) => client.delete(`/tasks/${id}`),
   trigger: (id: string, params?: Record<string, unknown>) =>
     client.post(`/tasks/${id}/trigger`, { params }),
-  executions: (id: string, p?: { page?: number; pageSize?: number }) =>
-    client.get(`/tasks/${id}/executions`, { params: p }) as Promise<PageResult<TaskExecution>>,
+  executions: (
+    id: string,
+    p?: { page?: number; pageSize?: number; status?: string },
+    signal?: AbortSignal,
+  ) =>
+    signal
+      ? client.get(`/tasks/${id}/executions`, { params: p, signal }) as Promise<PageResult<TaskExecution>>
+      : client.get(`/tasks/${id}/executions`, { params: p }) as Promise<PageResult<TaskExecution>>,
   /**
    * CORE-02: 按状态过滤拉取任务执行列表（复用 GET /tasks/:id/executions 的
    * 既有 status 查询参数，零新端点）。ExecutionDetailPage 重试链路段用它取
    * 同任务的兄弟执行行（retryCount 递增）拼装 attempt 链。
    */
-  executionsWithStatus: (id: string, p: { page: number; pageSize: number; status?: string }) =>
-    client.get(`/tasks/${id}/executions`, { params: p }) as Promise<PageResult<TaskExecution>>,
-  execution: (taskId: string, execId: string) =>
-    client.get(`/tasks/${taskId}/executions/${execId}`) as Promise<TaskExecution>,
+  executionsWithStatus: (
+    id: string,
+    p: { page: number; pageSize: number; status?: string },
+    signal?: AbortSignal,
+  ) =>
+    signal
+      ? client.get(`/tasks/${id}/executions`, { params: p, signal }) as Promise<PageResult<TaskExecution>>
+      : client.get(`/tasks/${id}/executions`, { params: p }) as Promise<PageResult<TaskExecution>>,
+  execution: (taskId: string, execId: string, signal?: AbortSignal) =>
+    signal
+      ? client.get(`/tasks/${taskId}/executions/${execId}`, { signal }) as Promise<TaskExecution>
+      : client.get(`/tasks/${taskId}/executions/${execId}`) as Promise<TaskExecution>,
   rollback: (id: string, gitCommit: string, params?: Record<string, unknown>) =>
     client.post(`/tasks/${id}/rollback`, { gitCommit, params }),
   rollbackToVersion: (taskId: string, versionId: string) =>
@@ -187,12 +396,19 @@ export const tasksApi = {
   batchPause: (taskIds: string[]) => client.post('/tasks/batch/pause', { taskIds }),
   batchResume: (taskIds: string[]) => client.post('/tasks/batch/resume', { taskIds }),
   batchDelete: (taskIds: string[]) => client.post('/tasks/batch/delete', { taskIds }),
-  stats: (id: string) =>
-    client.get(`/tasks/${id}/stats`) as Promise<{ recentExecutions: TaskExecution[]; successRate: number; avgDuration: number; totalRuns: number }>,
+  stats: (id: string, signal?: AbortSignal) =>
+    signal
+      ? client.get(`/tasks/${id}/stats`, { signal }) as Promise<{ recentExecutions: TaskExecution[]; successRate: number; avgDuration: number; totalRuns: number }>
+      : client.get(`/tasks/${id}/stats`) as Promise<{ recentExecutions: TaskExecution[]; successRate: number; avgDuration: number; totalRuns: number }>,
   updateGlue: (id: string, source: string, language?: string) =>
     client.put(`/tasks/${id}/glue`, { source, language }),
-  allExecutions: (params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string }) =>
-    client.get('/tasks/executions/all', { params }) as Promise<PageResult<TaskExecution>>,
+  allExecutions: (
+    params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string },
+    signal?: AbortSignal,
+  ) =>
+    signal
+      ? client.get('/tasks/executions/all', { params, signal }) as Promise<PageResult<TaskExecution>>
+      : client.get('/tasks/executions/all', { params }) as Promise<PageResult<TaskExecution>>,
   killExecution: (taskId: string, execId: string) =>
     client.post(`/tasks/${taskId}/executions/${execId}/kill`) as Promise<{ success: boolean; message: string }>,
   analyzeExecution: (taskId: string, execId: string) =>

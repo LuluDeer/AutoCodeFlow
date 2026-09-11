@@ -104,9 +104,13 @@ describe("ApplicationController webhook", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(svc.update).toHaveBeenCalledWith("app-1", {
-      version: "1.2.0",
-    });
+    // NF-03: webhook 机器面带 systemBypass（HMAC 已鉴权，无 AuthUser）
+    expect(svc.update).toHaveBeenCalledWith(
+      "app-1",
+      { version: "1.2.0" },
+      undefined,
+      { systemBypass: true },
+    );
   });
 
   it("rejects matching apps that do not have a webhook secret", async () => {
@@ -323,9 +327,13 @@ describe("ApplicationController webhook HTTP raw body", () => {
       .send(rawBody.toString())
       .expect(201);
 
-    expect(svc.update).toHaveBeenCalledWith("app-1", {
-      version: "1.2.0",
-    });
+    // NF-03: webhook 机器面带 systemBypass（HMAC 已鉴权，无 AuthUser）
+    expect(svc.update).toHaveBeenCalledWith(
+      "app-1",
+      { version: "1.2.0" },
+      undefined,
+      { systemBypass: true },
+    );
   });
 
   it("returns the same HTTP 401 body for unknown apps and bad signatures (APP-001)", async () => {

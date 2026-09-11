@@ -189,17 +189,38 @@ describe('ApplicationDetailPage 详情加载（QA-03 第二阶段）', () => {
 });
 
 describe('ApplicationDetailPage 关联任务 Tab（QA-03 第二阶段）', () => {
-  it('渲染关联任务列表（任务名/状态/触发）并带 applicationId 查询', async () => {
+  it('渲染关联任务列表（任务名/状态/触发）并带 applicationId 查询与 AbortSignal', async () => {
     renderPage();
     await screen.findAllByText('demo-app');
     fireEvent.click(screen.getByText('关联任务'));
     await waitFor(() => {
       expect(mockedTasks.list).toHaveBeenCalledWith(
         expect.objectContaining({ applicationId: 'app-1' }),
+        expect.any(AbortSignal),
       );
     });
     expect(screen.getAllByText(/demo\s*任务/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('运行中').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('关联任务请求在页签卸载后取消且不写入旧结果', async () => {
+    let resolveTasks: ((result: unknown) => void) | undefined;
+    mockedTasks.list.mockReset().mockImplementation((_params, signal) => new Promise((resolve) => {
+      resolveTasks = resolve;
+      expect(signal).toBeInstanceOf(AbortSignal);
+    }) as never);
+    const { unmount } = renderPage();
+    await screen.findAllByText('demo-app');
+    fireEvent.click(screen.getByText('关联任务'));
+    await waitFor(() => expect(mockedTasks.list).toHaveBeenCalledTimes(1));
+    const signal = mockedTasks.list.mock.calls[0][1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+
+    unmount();
+    expect(signal?.aborted).toBe(true);
+    resolveTasks?.({ items: [taskFixture], total: 1, page: 1, pageSize: 100 });
+    await Promise.resolve();
+    expect(screen.queryByText(/demo\s*任务/)).toBeNull();
   });
 
   it('ADMIN 可见「同步任务」按钮；成功后提示同步数量', async () => {

@@ -27,9 +27,12 @@
  */
 import { pathToFileURL } from "node:url";
 import process from "node:process";
+import { listAll as fetchAll } from "./demo-seed.mjs";
 
 /** 演练资源统一前缀（幂等查找与 --clean 的依据）。 */
 export const DEMO_FAILURE_PREFIX = "demo-failure-";
+/** 后端全局执行记录列表路由（TaskController 的真实 GET 端点）。 */
+export const ALL_EXECUTIONS_PATH = "/api/tasks/executions/all";
 
 /**
  * 死信端点主机裁定（NF-08 侦察结论）：
@@ -100,6 +103,8 @@ export function approvalAppDef() {
   return {
     name: `${DEMO_FAILURE_PREFIX}gated`,
     description: "[demo-failure] 审批门禁演示应用——部署需第二人审批（DEP-04）",
+    version: "1.0.0",
+    runtime: "node",
     approvalRequired: true,
   };
 }
@@ -153,14 +158,14 @@ async function apiFetch(baseUrl, path, { method = "GET", token, body } = {}) {
   return { status: res.status, ok: res.ok, data };
 }
 
-/** 分页拉全（/api/tasks、/api/executions 等分页端点的通用取面）。 */
-async function listAll(baseUrl, path, token, pageSize = 500) {
-  const res = await apiFetch(baseUrl, `${path}?page=1&pageSize=${pageSize}`, { token });
-  if (!res.ok) {
-    throw new Error(`GET ${path} failed (${res.status}): ${JSON.stringify(res.data).slice(0, 200)}`);
-  }
-  const data = unwrap(res.data);
-  return data?.items ?? data ?? [];
+/** 分页拉全（/api/tasks、/api/tasks/executions/all 等分页端点的通用取面）。 */
+const NON_PAGINATED_PATHS = new Set(["/api/event-subscriptions", "/api/applications"]);
+
+/** 列表端点按实际响应契约选择分页或一次性读取。 */
+export function listAll(baseUrl, path, token) {
+  return fetchAll(baseUrl, path, token, {
+    paginated: !NON_PAGINATED_PATHS.has(path),
+  });
 }
 
 async function main() {
@@ -292,7 +297,9 @@ async function main() {
 
   // ─── 触发面（--skip-trigger 跳过）：失败执行 / 死信 / 审批行 ─────────────
   if (!skipTrigger) {
-    const execs = await listAll(baseUrl, "/api/executions", token);
+    // GET /api/executions 不存在；全局执行记录真实端点是
+    // GET /api/tasks/executions/all，返回分页 { list/items, total, totalPages }。
+    const execs = await listAll(baseUrl, ALL_EXECUTIONS_PATH, token);
 
     // ① 失败执行：两个演练任务各触发一次（已有 failed 记录则跳过，幂等）。
     for (const def of failureTaskDefs()) {
