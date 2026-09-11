@@ -216,6 +216,14 @@ CI 的 `docker-multiarch-build` job 只构建不推送，覆盖 `admin-api`、`e
 `executor-python` 的 `linux/amd64,linux/arm64` 构建可达性；生产发布镜像接入后，应在
 发布闸保留 manifest inspect 与 ARM64 冒烟。
 
+> **本机核验记录（DSK-05，2026-09-11）**：安装 buildx 0.17.1 + QEMU binfmt（qemu-aarch64），
+> 建 `docker-container` builder（`--platform linux/amd64,linux/arm64`）后，三镜像
+> `docker buildx build --platform linux/amd64,linux/arm64` 全部构建通过（CI
+> `docker-multiarch-build` 同款形态：不 push 不 load，结果留 buildkit 缓存）。
+> 细节：Dockerfile 全 alpine/slim 无 native 编译依赖（node:22-alpine ×2 +
+> python:3.12-slim + uv 0.8.17），arm64 构建无交叉编译载荷；非 root
+> `adduser/APP_USER` 与 `uv venv --no-project` 探针两条 arm64 路径均已实际执行。
+
 ### 数据库操作
 
 ```bash
