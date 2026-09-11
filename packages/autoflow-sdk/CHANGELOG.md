@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.1.0...v1.1.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* **release:** release-please 固化 lockstep + 硬编码版本常量纳入 extra-files ([e67750e](https://github.com/LuluDeer/AutoCodeFlow/commit/e67750efbfa736410bd04820776b19dd1bf64931))
+* **release:** 回退未发布的 mcp-server 1.1.1 部分发布，恢复 1.1.0 lockstep ([5a98f10](https://github.com/LuluDeer/AutoCodeFlow/commit/5a98f10c144a76e9135e26bc5702b28037954153))
+
 ## [1.1.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.0.1...v1.1.0) (2026-09-09)
 
 
