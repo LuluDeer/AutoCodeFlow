@@ -6,7 +6,10 @@ import type { ColumnsType } from 'antd/es/table';
 import { client } from '../api/client';
 import { silencesApi, type NotificationSilence, type CreateSilencePayload, type SilenceScope } from '../api/notifications';
 import { getErrMsg } from '../utils/error';
+import { useTranslation } from 'react-i18next';
 import { useAuthStore, isAdminUser } from '../store/auth';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
 
@@ -37,18 +40,18 @@ const notificationApi = {
     client.post('/notification/test', data) as Promise<{ success: boolean; message: string }>,
 };
 
-const CHANNEL_CONFIG_FIELDS: Record<string, Array<{ key: string; label: string; placeholder?: string }>> = {
+const CHANNEL_CONFIG_FIELDS = (t: (k: string) => string): Record<string, Array<{ key: string; label: string; placeholder?: string }>> => ({
   email: [
     { key: 'host', label: 'SMTP Host', placeholder: 'smtp.example.com' },
     { key: 'port', label: 'SMTP Port', placeholder: '587' },
-    { key: 'user', label: '用户名' },
-    { key: 'password', label: '密码' },
-    { key: 'from', label: '发件人', placeholder: 'noreply@example.com' },
-    { key: 'to', label: '默认收件人', placeholder: 'admin@example.com' },
+    { key: 'user', label: t('notif.channel.field.user') },
+    { key: 'password', label: t('notif.channel.field.password') },
+    { key: 'from', label: t('notif.channel.field.from'), placeholder: 'noreply@example.com' },
+    { key: 'to', label: t('notif.channel.field.to'), placeholder: 'admin@example.com' },
   ],
   slack: [
     { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://hooks.slack.com/services/...' },
-    { key: 'channel', label: '默认频道', placeholder: '#alerts' },
+    { key: 'channel', label: t('notif.channel.field.channel'), placeholder: '#alerts' },
   ],
   dingtalk: [
     { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://oapi.dingtalk.com/robot/send?access_token=...' },
@@ -56,27 +59,28 @@ const CHANNEL_CONFIG_FIELDS: Record<string, Array<{ key: string; label: string; 
   wecom: [
     { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...' },
   ],
-};
+});
 
 // ─── FEAT-10: 渠道级通知模板 ────────────────────────────────────────────────
 // 模板以 titleTemplate / contentTemplate 两个可选 config 键存储（与渠道其它
 // 配置同走 PATCH /notification/channels/:key，零迁移）。留空 = 走系统固定
 // 拼串（零破坏）。变量占位符 {{var}}，未知变量保留原文，输出上限 8KB。
-const TEMPLATE_VAR_DOCS = [
-  ['{{task}} / {{taskName}}', '任务名称'],
-  ['{{executionId}}', '执行 ID'],
-  ['{{failedReason}}', '失败原因/错误摘要'],
-  ['{{logs}}', '日志摘要（失败路径）'],
-  ['{{duration}}', '执行时长（毫秒，成功路径）'],
-  ['{{runbook}}', '运行手册链接（若任务已配置）'],
-  ['{{level}}', '通知级别（info/warning/error）'],
-] as const;
+const TEMPLATE_VAR_DOCS = (t: (k: string) => string): Array<readonly [string, string]> => [
+  ['{{task}} / {{taskName}}', t('notif.template.var.taskName')],
+  ['{{executionId}}', t('notif.template.var.executionId')],
+  ['{{failedReason}}', t('notif.template.var.failedReason')],
+  ['{{logs}}', t('notif.template.var.logs')],
+  ['{{duration}}', t('notif.template.var.duration')],
+  ['{{runbook}}', t('notif.template.var.runbook')],
+  ['{{level}}', t('notif.template.var.level')],
+];
 
 function TemplateVarsTooltip() {
+  const { t } = useTranslation();
   return (
     <div>
-      <div>可用变量（占位符替换，未知变量保留原文，输出上限 8KB）：</div>
-      {TEMPLATE_VAR_DOCS.map(([v, d]) => (
+      <div>{t('notif.template.varsTooltip')}</div>
+      {TEMPLATE_VAR_DOCS(t).map(([v, d]) => (
         <div key={v}>
           <Typography.Text code style={{ fontSize: 12 }}>{v}</Typography.Text>
           {' '}
@@ -98,6 +102,7 @@ function ChannelTemplatePanel({
   onSaved: () => void;
 }) {
   const [form] = Form.useForm();
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(
     !config.titleTemplate && !config.contentTemplate,
   );
@@ -115,8 +120,8 @@ function ChannelTemplatePanel({
     // UI-15：模板保存失败反馈（ahooks useRequest manual onError）
     {
       manual: true,
-      onSuccess: () => { message.success('模板已保存'); onSaved(); },
-      onError: (err: unknown) => { message.error(getErrMsg(err, '保存模板失败')); },
+      onSuccess: () => { message.success(t('notif.template.saved')); onSaved(); },
+      onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.template.saveFail'))); },
     },
   );
 
@@ -124,15 +129,15 @@ function ChannelTemplatePanel({
     return (
       <Card
         type="inner"
-        title="消息模板（可选）"
+        title={t('notif.template.title')}
         style={{ marginTop: 16 }}
         extra={
           <Button type="link" size="small" onClick={() => setCollapsed(false)}>
-            展开
+            {t('notif.template.expand')}
           </Button>
         }
       >
-        <Text type="secondary">未配置模板 — 使用系统默认内容格式。</Text>
+        <Text type="secondary">{t('notif.template.notConfigured')}</Text>
       </Card>
     );
   }
@@ -142,7 +147,7 @@ function ChannelTemplatePanel({
       type="inner"
       title={
         <Space>
-          <span>消息模板（可选）</span>
+          <span>{t('notif.template.title')}</span>
           <Tooltip title={<TemplateVarsTooltip />}>
             <InfoCircleOutlined />
           </Tooltip>
@@ -151,7 +156,7 @@ function ChannelTemplatePanel({
       style={{ marginTop: 16 }}
       extra={
         <Button type="link" size="small" onClick={() => setCollapsed(true)}>
-          收起
+          {t('notif.template.collapse')}
         </Button>
       }
     >
@@ -168,7 +173,7 @@ function ChannelTemplatePanel({
           name="titleTemplate"
           label={
             <Space>
-              标题模板
+              {t('notif.template.titleLabel')}
               <Tooltip title={<TemplateVarsTooltip />}>
                 <InfoCircleOutlined />
               </Tooltip>
@@ -178,19 +183,19 @@ function ChannelTemplatePanel({
           <TextArea
             rows={2}
             maxLength={500}
-            placeholder={'例如：[{{level}}] 任务 {{taskName}} 执行失败'}
+            placeholder={t('notif.template.titlePlaceholder')}
           />
         </Form.Item>
-        <Form.Item name="contentTemplate" label="内容模板">
+        <Form.Item name="contentTemplate" label={t('notif.template.contentLabel')}>
           <TextArea
             rows={4}
             maxLength={8000}
-            placeholder={'例如：执行 {{executionId}} 失败：{{failedReason}}\n日志：{{logs}}'}
+            placeholder={t('notif.template.contentPlaceholder')}
           />
         </Form.Item>
         <Form.Item style={{ marginBottom: 0 }}>
           <Button type="primary" htmlType="submit" loading={saving}>
-            保存模板
+            {t('notif.template.save')}
           </Button>
         </Form.Item>
       </Form>
@@ -214,6 +219,7 @@ function ChannelConfigForm({
   onSaved: () => void;
 }) {
   const [form] = Form.useForm();
+  const { t } = useTranslation();
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const { run: updateChannel, loading: updating } = useRequest(
@@ -223,8 +229,8 @@ function ChannelConfigForm({
     // UI-15：渠道配置保存失败反馈
     {
       manual: true,
-      onSuccess: () => { message.success('保存成功'); onSaved(); },
-      onError: (err: unknown) => { message.error(getErrMsg(err, '保存失败')); },
+      onSuccess: () => { message.success(t('notif.channel.saved')); onSaved(); },
+      onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.channel.saveFail'))); },
     },
   );
 
@@ -238,13 +244,13 @@ function ChannelConfigForm({
     {
       manual: true,
       onError: (err: unknown) => {
-        message.error(getErrMsg(err, '发送测试请求失败'));
-        setTestResult({ success: false, message: getErrMsg(err, '发送测试请求失败'), channel: channelKey });
+        message.error(getErrMsg(err, t('notif.channel.testFail')));
+        setTestResult({ success: false, message: getErrMsg(err, t('notif.channel.testFail')), channel: channelKey });
       },
     },
   );
 
-  const fields = CHANNEL_CONFIG_FIELDS[channelKey] || [];
+  const fields = CHANNEL_CONFIG_FIELDS(t)[channelKey] || [];
 
   return (
     <div>
@@ -263,7 +269,7 @@ function ChannelConfigForm({
             label={f.label}
             rules={[
               f.key !== 'password'
-                ? { required: true, whitespace: true, message: `请输入 ${f.label}` }
+                ? { required: true, whitespace: true, message: t('notif.channel.requiredValue', { label: f.label }) }
                 : { required: false },
             ]}
           >
@@ -277,7 +283,7 @@ function ChannelConfigForm({
         <Form.Item>
           <Space orientation="vertical" style={{ width: '100%' }}>
             <Space>
-              <Button type="primary" htmlType="submit" loading={updating}>保存</Button>
+              <Button type="primary" htmlType="submit" loading={updating}>{t('notif.channel.save')}</Button>
               <Button
                 onClick={() => {
                   setTestResult(null);
@@ -285,7 +291,7 @@ function ChannelConfigForm({
                 }}
                 loading={testing}
               >
-                发送测试
+                {t('notif.channel.test')}
               </Button>
             </Space>
             {testResult && (
@@ -297,8 +303,8 @@ function ChannelConfigForm({
                 showIcon
                 title={
                   testResult.success
-                    ? `${testResult.channel ?? channelKey} 测试消息发送成功`
-                    : `测试失败：${testResult.message}`
+                    ? t('notif.channel.testSuccess', { channel: testResult.channel ?? channelKey })
+                    : t('notif.channel.testError', { msg: testResult.message })
                 }
                 closable
                 onClose={() => setTestResult(null)}
@@ -318,34 +324,34 @@ function ChannelConfigForm({
 //   生效窗口内（startTime<=now<=endTime），命中 taskId（为空=全部任务）与
 //   level（为空=全部级别）的告警在发送前即被丢弃——全渠道抑制，不区分渠道；
 //   scope=task/application 均以 taskId 判定，channelType 仅作范围记录。
-const CHANNEL_LABELS: Record<string, string> = {
-  email: '邮件',
+const CHANNEL_LABELS = (t: (k: string) => string): Record<string, string> => ({
+  email: t('notif.channel.email'),
   slack: 'Slack',
-  dingtalk: '钉钉',
-  wecom: '企业微信',
+  dingtalk: t('notif.channel.dingtalk'),
+  wecom: t('notif.channel.wecom'),
   webhook: 'Webhook',
-};
-
-function fmtEndTime(v: string | null): string {
-  return v ? new Date(v).toLocaleString('zh-CN') : '不过期';
-}
-
-/** 剩余时间；已过期或无界（endTime 为空）返回 null */
-function fmtRemaining(endTime: string | null): string | null {
-  if (!endTime) return null;
-  const mins = Math.floor((new Date(endTime).getTime() - Date.now()) / 60_000);
-  if (mins <= 0) return null;
-  const d = Math.floor(mins / 1440);
-  const h = Math.floor((mins % 1440) / 60);
-  const m = mins % 60;
-  if (d > 0) return `${d} 天 ${h} 小时`;
-  if (h > 0) return `${h} 小时 ${m} 分`;
-  return `${m} 分钟`;
-}
+});
 
 function SilenceRulesPanel({ active }: { active: boolean }) {
   const [form] = Form.useForm();
+  const { t } = useTranslation();
   const scope: SilenceScope = Form.useWatch('scope', form) ?? 'global';
+
+  const fmtEndTime = (v: string | null): string =>
+    v ? new Date(v).toLocaleString('zh-CN') : t('notif.silence.never');
+
+  /** 剩余时间；已过期或无界（endTime 为空）返回 null */
+  const fmtRemaining = (endTime: string | null): string | null => {
+    if (!endTime) return null;
+    const mins = Math.floor((new Date(endTime).getTime() - Date.now()) / 60_000);
+    if (mins <= 0) return null;
+    const d = Math.floor(mins / 1440);
+    const h = Math.floor((mins % 1440) / 60);
+    const m = mins % 60;
+    if (d > 0) return t('notif.silence.remain.dayHour', { d, h });
+    if (h > 0) return t('notif.silence.remain.hourMin', { h, m });
+    return t('notif.silence.remain.min', { m });
+  };
 
   // 仅在「静默规则」Tab 激活时拉取（useRequest ready），避免进入页面即发 ADMIN-only 请求
   const { data: silences, loading, refresh, error } = useRequest(silencesApi.list, { ready: active });
@@ -357,8 +363,8 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
     // UI-15：新建失败反馈
     {
       manual: true,
-      onSuccess: () => { message.success('静默规则已创建'); form.resetFields(); refresh(); },
-      onError: (err: unknown) => { message.error(getErrMsg(err, '创建静默规则失败')); },
+      onSuccess: () => { message.success(t('notif.silence.created')); form.resetFields(); refresh(); },
+      onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.silence.createFail'))); },
     },
   );
 
@@ -369,8 +375,8 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
     // UI-15：删除失败反馈
     {
       manual: true,
-      onSuccess: () => { message.success('静默规则已删除'); refresh(); },
-      onError: (err: unknown) => { message.error(getErrMsg(err, '删除静默规则失败')); },
+      onSuccess: () => { message.success(t('notif.silence.deleted')); refresh(); },
+      onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.silence.deleteFail'))); },
     },
   );
 
@@ -392,39 +398,39 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
   };
 
   const cols: ColumnsType<NotificationSilence> = [
-    { title: '维度', dataIndex: 'scope', width: 220,
+    { title: t('notif.silence.col.dimension'), dataIndex: 'scope', width: 220,
       render: (_: unknown, r: NotificationSilence) =>
         r.scope === 'global' ? (
-          <Tag color="purple">全局</Tag>
+          <Tag color="purple">{t('notif.silence.scope.global')}</Tag>
         ) : r.scope === 'task' ? (
-          <span>任务 <Typography.Text code style={{ fontSize: 12 }}>{r.taskId ?? '-'}</Typography.Text></span>
+          <span>{t('notif.silence.scope.task')} <Typography.Text code style={{ fontSize: 12 }}>{r.taskId ?? '-'}</Typography.Text></span>
         ) : (
-          <span>应用 <Typography.Text code style={{ fontSize: 12 }}>{r.applicationId ?? '-'}</Typography.Text></span>
+          <span>{t('notif.silence.scope.application')} <Typography.Text code style={{ fontSize: 12 }}>{r.applicationId ?? '-'}</Typography.Text></span>
         ) },
-    { title: '渠道', dataIndex: 'channelType', width: 100,
-      render: (v: string | null) => (v ? CHANNEL_LABELS[v] ?? v : '全部渠道') },
-    { title: '有效期至', dataIndex: 'endTime', width: 170, render: fmtEndTime },
-    { title: '剩余时间', dataIndex: 'endTime', width: 130,
+    { title: t('notif.silence.col.channel'), dataIndex: 'channelType', width: 100,
+      render: (v: string | null) => (v ? CHANNEL_LABELS(t)[v] ?? v : t('notif.silence.channel.all')) },
+    { title: t('notif.silence.col.endTime'), dataIndex: 'endTime', width: 170, render: fmtEndTime },
+    { title: t('notif.silence.col.remaining'), dataIndex: 'endTime', width: 130,
       render: (v: string | null) => {
         const remain = fmtRemaining(v);
         if (remain) return remain;
-        return v ? <Tag color="red">已过期</Tag> : <Typography.Text type="secondary">-</Typography.Text>;
+        return v ? <Tag color="red">{t('notif.silence.expired')}</Tag> : <Typography.Text type="secondary">-</Typography.Text>;
       } },
-    { title: '创建人', dataIndex: 'createdBy', width: 100,
+    { title: t('notif.silence.col.createdBy'), dataIndex: 'createdBy', width: 100,
       render: (v: string | null) => v ?? '-' },
-    { title: '说明', dataIndex: 'reason', ellipsis: true,
+    { title: t('notif.silence.col.reason'), dataIndex: 'reason', ellipsis: true,
       render: (v: string | null) => v ?? '-' },
     { title: '', width: 80,
       render: (_: unknown, r: NotificationSilence) => (
         // Popconfirm 删除，对齐 settings 页 SystemConfigTab 先例
         <Popconfirm
-          title="确认删除此静默规则？"
-          description="删除后对应告警将立即恢复推送。"
-          okText="删除"
+          title={t('notif.silence.deleteConfirm')}
+          description={t('notif.silence.deleteConfirmDesc')}
+          okText={t('notif.silence.delete')}
           okButtonProps={{ danger: true }}
           onConfirm={() => removeRule(r.id)}
         >
-          <Button size="small" danger>删除</Button>
+          <Button size="small" danger>{t('notif.silence.delete')}</Button>
         </Popconfirm>
       ) },
   ];
@@ -434,48 +440,45 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
       <Alert
         type="info"
         showIcon
-        title="静默生效期间，命中规则的告警将被抑制发送"
-        description={
-          '在有效期窗口内（生效中的规则在服务重启后仍保留），命中任务与级别的告警在发送前即被拦截、不会推送到任何通知渠道。' +
-          '匹配逻辑与后端发送判定一致：未指定任务 = 全部任务，级别为全部级别；静默命中时全渠道抑制，渠道字段仅作范围记录。'
-        }
+        title={t('notif.silence.alertTitle')}
+        description={t('notif.silence.alertDesc')}
       />
-      <Card type="inner" title="新建静默规则" style={{ marginTop: 16 }}>
+      <Card type="inner" title={t('notif.silence.createTitle')} style={{ marginTop: 16 }}>
         <Form form={form} layout="vertical" initialValues={{ scope: 'global' }} onFinish={onFinish}>
-          <Form.Item name="scope" label="静默维度" rules={[{ required: true, message: '请选择静默维度' }]}>
+          <Form.Item name="scope" label={t('notif.silence.scope.label')} rules={[{ required: true, message: t('notif.silence.scope.required') }]}>
             <Select
               options={[
-                { value: 'global', label: '全局（抑制所有任务的告警）' },
-                { value: 'task', label: '指定任务' },
-                { value: 'application', label: '指定应用' },
+                { value: 'global', label: t('notif.silence.scope.globalOption') },
+                { value: 'task', label: t('notif.silence.scope.taskOption') },
+                { value: 'application', label: t('notif.silence.scope.applicationOption') },
               ]}
             />
           </Form.Item>
           {scope === 'task' && (
-            <Form.Item name="taskId" label="任务 ID" rules={[{ required: true, whitespace: true, message: '请输入任务 ID' }]}>
-              <Input placeholder="任务 UUID（仅该任务的告警被静默）" />
+            <Form.Item name="taskId" label={t('notif.silence.taskId')} rules={[{ required: true, whitespace: true, message: t('notif.silence.taskId.required') }]}>
+              <Input placeholder={t('notif.silence.taskIdPlaceholder')} />
             </Form.Item>
           )}
           {scope === 'application' && (
-            <Form.Item name="applicationId" label="应用 ID" rules={[{ required: true, whitespace: true, message: '请输入应用 ID' }]}>
-              <Input placeholder="应用 UUID（该应用下任务的告警被静默）" />
+            <Form.Item name="applicationId" label={t('notif.silence.applicationId')} rules={[{ required: true, whitespace: true, message: t('notif.silence.applicationId.required') }]}>
+              <Input placeholder={t('notif.silence.applicationIdPlaceholder')} />
             </Form.Item>
           )}
-          <Form.Item name="durationMinutes" label="静默时长" rules={[{ required: true, message: '请输入静默时长' }]}>
-            <InputNumber min={1} precision={0} placeholder="如 30" addonAfter="分钟" style={{ width: 220 }} />
+          <Form.Item name="durationMinutes" label={t('notif.silence.duration')} rules={[{ required: true, message: t('notif.silence.duration.required') }]}>
+            <InputNumber min={1} precision={0} placeholder={t('notif.silence.durationPlaceholder')} addonAfter={t('notif.silence.minutes')} style={{ width: 220 }} />
           </Form.Item>
-          <Form.Item name="reason" label="说明（可选）">
-            <TextArea rows={2} maxLength={255} placeholder="静默原因，如：发布窗口、线上维护" />
+          <Form.Item name="reason" label={t('notif.silence.reason')}>
+            <TextArea rows={2} maxLength={255} placeholder={t('notif.silence.reasonPlaceholder')} />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" htmlType="submit" loading={creating}>新建静默规则</Button>
+            <Button type="primary" htmlType="submit" loading={creating}>{t('notif.silence.create')}</Button>
           </Form.Item>
         </Form>
       </Card>
-      <Card type="inner" title="静默规则列表" style={{ marginTop: 16 }}>
+      <Card type="inner" title={t('notif.silence.listTitle')} style={{ marginTop: 16 }}>
         {/* UI-16：列表请求失败 → 页内错误块（重试=refresh），不落「暂无静默规则」误导空态 */}
         {error ? (
-          <StateError error={error} title="静默规则加载失败" onRetry={refresh} />
+          <StateError error={error} title={t('notif.silence.loadFail')} onRetry={refresh} />
         ) : (
           <Table
             loading={loading}
@@ -483,8 +486,8 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
             rowKey="id"
             columns={cols}
             size="small"
-            pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }}
-            locale={{ emptyText: '暂无静默规则' }}
+            pagination={{ pageSize: 10, showTotal: (n) => t('notif.silence.count', { count: n }) }}
+            locale={{ emptyText: t('notif.silence.empty') }}
           />
         )}
       </Card>
@@ -495,6 +498,7 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
 export default function NotificationSettingsPage() {
   const [activeTab, setActiveTab] = useState('email');
   const [globalTestResult, setGlobalTestResult] = useState<TestResult | null>(null);
+  const { t } = useTranslation();
   // FEAT-01: 静默规则 CRUD 端点为 ADMIN-only，非管理员不渲染 Tab（零入口，
   // 对齐 settings 页 useIsAdmin 先例——不做无谓的 403 请求）
   const user = useAuthStore((s) => s.user);
@@ -513,7 +517,7 @@ export default function NotificationSettingsPage() {
     {
       manual: true,
       onError: (err: unknown) => {
-        setGlobalTestResult({ success: false, message: getErrMsg(err, '发送测试通知失败') });
+        setGlobalTestResult({ success: false, message: getErrMsg(err, t('notif.test.fail')) });
       },
     },
   );
@@ -523,11 +527,15 @@ export default function NotificationSettingsPage() {
       await notificationApi.updateChannel(activeTab, { enabled });
     } catch (err: unknown) {
       // UI-15：渠道启停失败反馈（此前失败静默，Switch 视觉状态与后端不一致且无提示）
-      message.error(getErrMsg(err, '更新渠道状态失败'));
+      message.error(getErrMsg(err, t('notif.channel.updateFail')));
       return;
     }
     refresh();
-    message.success(`已${enabled ? '启用' : '禁用'} ${channel?.name}`);
+    message.success(
+      enabled
+        ? t('notif.channel.enabled', { name: channel?.name })
+        : t('notif.channel.disabled', { name: channel?.name }),
+    );
   };
 
   const tabItems = channels?.map((c: NotificationChannel) => ({
@@ -535,13 +543,13 @@ export default function NotificationSettingsPage() {
     label: (
       <span>
         {c.name}
-        {c.enabled ? <Tag color="green" style={{ marginLeft: 8 }}>已启用</Tag> : <Tag style={{ marginLeft: 8 }}>已禁用</Tag>}
+        {c.enabled ? <Tag color="green" style={{ marginLeft: 8 }}>{t('notif.status.enabled')}</Tag> : <Tag style={{ marginLeft: 8 }}>{t('notif.status.disabled')}</Tag>}
       </span>
     ),
     children: (
       <div>
         <Space style={{ marginBottom: 16 }}>
-          <Text>启用此通知渠道：</Text>
+          <Text>{t('notif.channel.enablePrompt')}</Text>
           <Switch checked={c.enabled} onChange={handleEnableChange} />
         </Space>
         <Divider />
@@ -564,7 +572,7 @@ export default function NotificationSettingsPage() {
             />
           </>
         ) : (
-          <Alert title="此通知渠道已禁用，启用后可配置推送参数" type="info" showIcon />
+          <Alert title={t('notif.channel.disabledAlert')} type="info" showIcon />
         )}
       </div>
     ),
@@ -577,7 +585,7 @@ export default function NotificationSettingsPage() {
     ...(isAdmin
       ? [{
           key: 'silences',
-          label: '静默规则',
+          label: t('notif.silence.tabLabel'),
           children: <SilenceRulesPanel active={activeTab === 'silences'} />,
         }]
       : []),
@@ -587,14 +595,14 @@ export default function NotificationSettingsPage() {
     <div>
       {/* UI-03/UI-08：页头标准化（原 Typography.Title 区块迁入 PageHeader） */}
       <PageHeader
-        title="通知设置"
-        description="配置告警通知渠道（邮件/Slack/钉钉/企业微信）、静默规则与全局测试发送。"
+        title={t('notif.title')}
+        description={t('notif.description')}
       />
       {/* UI-16：渠道列表请求失败且无任何缓存数据 → 页内错误块（重试=refresh）；
           此前失败会停在 Card loading 后的空白，用户既看不到原因也无重试入口。
           已有缓存时（如刷新失败）保持展示旧数据，不打断阅读。 */}
       {channelsError && !channels ? (
-        <StateError error={channelsError} title="通知渠道加载失败" onRetry={refresh} />
+        <StateError error={channelsError} title={t('notif.channel.loadFail')} onRetry={refresh} />
       ) : (
         <Card loading={loading}>
           {/* W1：ChannelConfigForm 自带渠道私有 form 与测试状态，切 Tab 无需 resetFields */}
@@ -606,31 +614,31 @@ export default function NotificationSettingsPage() {
         </Card>
       )}
 
-      <Card title="全局测试" style={{ marginTop: 16 }}>
+      <Card title={t('notif.test.title')} style={{ marginTop: 16 }}>
         <Form
           layout="vertical"
           onFinish={(values) => { setGlobalTestResult(null); sendTest(values); }}
         >
-          <Form.Item name="channels" label="选择渠道" rules={[{ required: true, message: '请选择至少一个渠道' }]}>
+          <Form.Item name="channels" label={t('notif.test.channels')} rules={[{ required: true, message: t('notif.test.channelsRequired') }]}>
             <Checkbox.Group>
               <Space orientation="vertical">
-                <Checkbox value="email">邮件</Checkbox>
+                <Checkbox value="email">{t('notif.channel.email')}</Checkbox>
                 <Checkbox value="slack">Slack</Checkbox>
-                <Checkbox value="dingtalk">钉钉</Checkbox>
-                <Checkbox value="wecom">企业微信</Checkbox>
+                <Checkbox value="dingtalk">{t('notif.channel.dingtalk')}</Checkbox>
+                <Checkbox value="wecom">{t('notif.channel.wecom')}</Checkbox>
                 <Checkbox value="webhook">Webhook</Checkbox>
               </Space>
             </Checkbox.Group>
           </Form.Item>
-          <Form.Item name="title" label="标题" rules={[{ required: true }]}>
-            <Input placeholder="测试通知" />
+          <Form.Item name="title" label={t('notif.test.titleLabel')} rules={[{ required: true }]}>
+            <Input placeholder={t('notif.test.titlePlaceholder')} />
           </Form.Item>
-          <Form.Item name="content" label="内容" rules={[{ required: true }]}>
-            <TextArea rows={3} placeholder="这是一条测试通知..." />
+          <Form.Item name="content" label={t('notif.test.contentLabel')} rules={[{ required: true }]}>
+            <TextArea rows={3} placeholder={t('notif.test.contentPlaceholder')} />
           </Form.Item>
           <Form.Item>
             <Space orientation="vertical" style={{ width: '100%' }}>
-              <Button type="primary" htmlType="submit" loading={sending}>发送测试通知</Button>
+              <Button type="primary" htmlType="submit" loading={sending}>{t('notif.test.send')}</Button>
               {globalTestResult && (
                 <Alert
                   type={globalTestResult.success ? 'success' : 'error'}
@@ -640,8 +648,8 @@ export default function NotificationSettingsPage() {
                   showIcon
                   title={
                     globalTestResult.success
-                      ? '测试通知已发送到所选渠道'
-                      : `发送失败：${globalTestResult.message}`
+                      ? t('notif.test.sent')
+                      : t('notif.test.error', { msg: globalTestResult.message })
                   }
                   closable
                   onClose={() => setGlobalTestResult(null)}
