@@ -2073,4 +2073,8 @@ export default {
   'eventSub.eventType.executionFailed': 'Execution failed (execution.failed)',
   'eventSub.eventType.executorOffline': 'Executor offline (executor.offline)',
   'eventSub.eventType.deploymentCompleted': 'Deployment completed (deployment.completed)',
+
+  'security.device.unknown': 'Unknown device',
+  'security.device.api': 'API client',
+  'security.device.browser': 'Browser',
 } as const;
