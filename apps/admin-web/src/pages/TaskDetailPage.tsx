@@ -244,14 +244,14 @@ export default function TaskDetailPage() {
       title: t('taskDetail.col.startTime'), dataIndex: 'startTime', width: 140,
       render: (v: string) => v ? (
         <Tooltip title={formatDateTime(v)}>
-          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v)}</Text>
+          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
         </Tooltip>
       ) : '-',
     },
     {
       title: t('taskDetail.col.duration'), dataIndex: 'duration', width: 80,
       ...hideOnMobile,
-      render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v)}</Text> : '-',
+      render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v, t)}</Text> : '-',
     },
     {
       title: t('taskDetail.col.error'), dataIndex: 'errorMessage', ellipsis: true,
@@ -465,7 +465,7 @@ export default function TaskDetailPage() {
                     )}
                   </Descriptions.Item>
                   <Descriptions.Item label={t('taskDetail.field.priority')}>
-                    <Tag color={priorityTag(task.priority).color}>{priorityTag(task.priority).label}</Tag>
+                    <Tag color={priorityTag(task.priority, t).color}>{priorityTag(task.priority, t).label}</Tag>
                   </Descriptions.Item>
                   <Descriptions.Item label={t('taskDetail.field.executeMode')}>
                     {task.executeMode === 'broadcast' ? t('taskDetail.executeMode.broadcast') : task.executeMode === 'single' ? t('taskDetail.executeMode.single') : task.executeMode || t('taskDetail.executeMode.auto')}

@@ -31,6 +31,15 @@ export const TIMELINE_PHASE_LABEL: Record<TimelineEntry["phase"], string> = {
   finished: '终态 (terminal)',
 };
 
+/** i18n 工厂：传 t 时输出走 key；缺省返回中文基线（execution-timeline.test.ts 锚定）。 */
+export function TIMELINE_PHASE_LABELS(t: (k: string) => string): Record<TimelineEntry["phase"], string> {
+  return {
+    created: t('timeline.phase.created'),
+    started: t('timeline.phase.started'),
+    finished: t('timeline.phase.finished'),
+  };
+}
+
 function toIsoOrNull(value: string | null | undefined): string | null {
   if (value == null) return null;
   const d = new Date(value);

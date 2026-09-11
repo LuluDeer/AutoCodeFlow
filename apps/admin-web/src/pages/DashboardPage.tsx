@@ -272,7 +272,7 @@ export default function DashboardPage() {
           >
             <div style={{ textAlign: 'center', paddingTop: 8 }}>
               <Text style={{ fontSize: 32, fontWeight: 700, color: CHART_COLORS.cpu }}>
-                {formatDuration(s?.avgDurationMs)}
+                {formatDuration(s?.avgDurationMs, t)}
               </Text>
               <div style={{ marginTop: 8 }}>
                 <Text type="secondary" style={{ fontSize: 12 }}>{t('dashboard.avgHint')}</Text>
@@ -437,7 +437,7 @@ export default function DashboardPage() {
                             )}
                           </div>
                           <Text type="secondary" style={{ fontSize: 11, marginLeft: 8, whiteSpace: 'nowrap' }}>
-                            {formatDuration(f.duration)}
+                            {formatDuration(f.duration, t)}
                           </Text>
                         </div>
                       }
