@@ -405,3 +405,12 @@
   ③ **修「tag 不级联」根因（`4cbdffc`）**：实测证伪 workflow 注释的假设——GitHub 抑制所有 `GITHUB_TOKEN` 产生的事件（含 `on:push:tags`），release-please 默认 token 打的 tag **不触发** release.yml（现象：tag 已生成、Release 流水线零 run）。改 `token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}`（未配 secret 行为不回归）+ 三处文档写明**需配仓库 secret `RELEASE_PLEASE_TOKEN`**（fine-grained PAT：Contents R/W + Pull requests R/W）与未配置时的恢复路径（人工重推同名 tag）。本轮以人工凭据重推 tag 触发发布（内容不变、未发布任何产物，符合 N44 恢复纪律）。
   ④ **本机真机验证（用户授权本 ubuntu）**：**BUG-18 live 42 断言 / 0 跳过 / 0 清理失败**（真实 Verdaccio npm publish/install + 真实 uvicorn PyPI 认证上传/PEP503/幂等/篡改拒绝/pip 消费；脚本自陈未覆盖「真实 admin-api/executor compose 派发链路」）；**全链 e2e 43/43（1.7m）**（真实 PG16 + Redis7 + admin-api + executor-node + vite + chromium，含例 23/24）；desktop 主进程自检全绿（PR 上唯一红为 `Build AppImage + deb` 打包步骤，环境性且非门禁）。
   ⑤ **待办**：建议补 `RELEASE_PLEASE_TOKEN` secret 以实现全自动发布（本轮因 GITHUB_TOKEN 不级联、由人工重推 tag 触发）；`desktop-linux-bundle` 的 `Build AppImage + deb` 步骤疑似环境性失败待单独排查（不进门禁）。
+  **⑤-b 已办**：2026-09-11 用户已配 `RELEASE_PLEASE_TOKEN`（`gh secret list` 13:00 登记）；级联效果待下次「触及三包路径」的发布端到端确认（届时 tag 应自动触发 release.yml，无需人工重推）。
+
+- 2026-09-11 **第十轮（主会话）：全量接管 + 总推进分层**。
+  **接管事实**：用户确认「无其他 agent 在干」，本会话接管控板**全部未完成项**（下表各行的 owner 名义归属保留以反映历史足迹，实际执行归主会话；后续会话恢复并发前以本条为准）。
+  **分层（按可执行性）**：
+  - **A 类·本机可闭环（执行序）**：① **BUG-18 收尾**——给 `scripts/e2e-full.sh` 加「可选私服场景」（env 开关控制，不配则跳过），把「任务经 admin-api+DB 创建 → 派发 → 私服依赖安装」补上，闭环当前唯一缺口；② **UI-09**——375px 真机走查（复用 e2e 栈 + Playwright 视口断言，覆盖 DashboardPage/ExecutionDetailPage）；③ **QA-09**——把 SECURITY-REDLINE-CHECKLIST 六域红线转为 e2e 套件化断言（可分域逐批）；④ **QA-08**——跨版本迁移演练月度 job（旧版本→新版本 + schedule）；⑤ **QA-05/BUG-19**——`scripts/load-test.mjs` 实跑 + 容量白皮书（本机单节点数据，白皮书须标注为参考基线而非生产容量结论）；⑥ **QA-12**——executor-desktop Playwright `_electron` 冒烟（Linux 侧本地跑，Windows job 仍留 CI）；⑦ **DSK-05**——ARM64 镜像矩阵核验（buildx/QEMU 本机可跑，与 BUG-20 的 CI job 对齐）；⑧ **ARCH-31**——双 admin-api 实例 + 单 PG 的多实例真机验证（outbox lease/竞争行为）；⑨ **NF-04**——核对 admin-web 半场（affinity 双字段）是否已入库、补齐缺口；⑩ 大件排后单独立批：**UI-10**（i18n 框架，⚠️越晚越贵）、**UI-13**（desktop renderer CSS 变量同源）、**ARCH-25**（runtime 注册表收尾）、**AUTH-04**（OIDC SSO，可选）。
+  - **B 类·需特定环境/外部**：**BUG-07**（Windows 真机 detached 信号深验）→ 依赖 Windows 真机或已有 windows job 扩展；**DOC-08**（windows-findings 长尾）随 BUG-07 滚动；**DSK-01**（macOS 打包）→ 需 macOS 真机；**BUG-04**（minio 链 moderate）→ 跟踪项，等上游发版。
+  - **C 类·需产品/权限裁定**：**AUTH-02**（项目级角色细化 + NF-03 遗留 trigger/pause 写面归属）→ 依赖 AUTH-01 定稿与拍板后再动 rbac 面。
+  **纪律**：无人并发期间仍保持「一任务一提交 + 逐条变更日志」；每项完成即在对应行更新 status/commit/证据，避免后续会话重复劳动。
