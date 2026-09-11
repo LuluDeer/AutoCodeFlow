@@ -4,10 +4,13 @@ import { SearchOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { client } from '../../api/client';
 import dayjs, { type Dayjs } from 'dayjs';
+import { useTranslation } from 'react-i18next';
 import PageHeader from '../../components/PageHeader';
 import PageSkeleton from '../../components/PageSkeleton';
 // UI-16：toast-only 页补齐页内错误态标准块（错误块 + 重试，对齐 UI-08 形态）
 import StateError from '../../components/StateError';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../../i18n';
 
 const { Option } = Select;
 
@@ -25,9 +28,14 @@ export interface AuditLog {
 }
 
 const RESULT_COLOR: Record<string, string> = { success: 'green', failure: 'red' };
-const RESULT_LABEL: Record<string, string> = { success: '成功', failure: '失败' };
+const RESULT_LABELS = (t: (k: string) => string): Record<string, string> => ({
+  success: t('audit.result.success'),
+  failure: t('audit.result.failure'),
+});
 
 export default function AuditLogPage() {
+  const { t } = useTranslation();
+  const resultLabels = RESULT_LABELS(t);
   const [page, setPage] = useState(1);
   // AUTH-05: 新增 resourceId 精确筛选（与 resource 组成组合筛选）
   const [filters, setFilters] = useState({ action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
@@ -56,9 +64,9 @@ export default function AuditLogPage() {
   };
 
   const rangePresets = [
-    { label: '最近 1 天', value: [dayjs().subtract(1, 'day'), dayjs()] as [Dayjs, Dayjs] },
-    { label: '最近 7 天', value: [dayjs().subtract(7, 'day'), dayjs()] as [Dayjs, Dayjs] },
-    { label: '最近 30 天', value: [dayjs().subtract(30, 'day'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('audit.range.1d'), value: [dayjs().subtract(1, 'day'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('audit.range.7d'), value: [dayjs().subtract(7, 'day'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('audit.range.30d'), value: [dayjs().subtract(30, 'day'), dayjs()] as [Dayjs, Dayjs] },
   ];
 
   const hasFilters = !!(pending.action || pending.resource || pending.resourceId || pending.username || pending.startTime || pending.endTime);
@@ -66,7 +74,7 @@ export default function AuditLogPage() {
   const columns = [
     { title: 'ID', dataIndex: 'id', width: 70 },
     {
-      title: '操作人',
+      title: t('audit.col.operator'),
       dataIndex: 'username',
       width: 120,
       render: (v: string, r: AuditLog) => (
@@ -76,10 +84,10 @@ export default function AuditLogPage() {
         </Space>
       ),
     },
-    { title: '操作', dataIndex: 'action', width: 180 },
-    { title: '资源', dataIndex: 'resource', width: 120 },
+    { title: t('audit.col.action'), dataIndex: 'action', width: 180 },
+    { title: t('audit.col.resource'), dataIndex: 'resource', width: 120 },
     {
-      title: '资源ID',
+      title: t('audit.col.resourceId'),
       dataIndex: 'resourceId',
       width: 100,
       render: (v: string) => v ? (
@@ -91,15 +99,15 @@ export default function AuditLogPage() {
       ) : '-',
     },
     {
-      title: '结果',
+      title: t('audit.col.result'),
       dataIndex: 'result',
       width: 80,
       render: (v: string) => (
-        <Tag color={RESULT_COLOR[v] ?? 'default'}>{RESULT_LABEL[v] ?? v}</Tag>
+        <Tag color={RESULT_COLOR[v] ?? 'default'}>{resultLabels[v] ?? v}</Tag>
       ),
     },
     {
-      title: '详情',
+      title: t('audit.col.detail'),
       dataIndex: 'detail',
       width: 80,
       render: (v: Record<string, unknown>) => v && Object.keys(v).length > 0 ? (
@@ -109,12 +117,12 @@ export default function AuditLogPage() {
           icon={<EyeOutlined />}
           onClick={() => setDetailModal({ open: true, data: v })}
         >
-          查看
+          {t('audit.action.view')}
         </Button>
       ) : '-',
     },
     {
-      title: '时间',
+      title: t('audit.col.time'),
       dataIndex: 'createdAt',
       width: 180,
       render: (v: string) => new Date(v).toLocaleString('zh-CN'),
@@ -124,10 +132,10 @@ export default function AuditLogPage() {
   return (
     <div>
       {/* UI-03/UI-08：页头标准化（原 Typography.Title 区块迁入 PageHeader） */}
-      <PageHeader title="审计日志" description="管理员操作留痕：登录、配置变更、任务与应用管理全量记录。" />
+      <PageHeader title={t('audit.title')} description={t('audit.description')} />
       <Space style={{ marginBottom: 16 }} wrap>
         <Input
-          placeholder="操作关键词"
+          placeholder={t('audit.filter.keyword')}
           value={pending.action}
           onChange={(e) => setPending((p) => ({ ...p, action: e.target.value }))}
           onPressEnter={handleSearch}
@@ -136,7 +144,7 @@ export default function AuditLogPage() {
           prefix={<SearchOutlined />}
         />
         <Input
-          placeholder="操作人"
+          placeholder={t('audit.filter.operator')}
           value={pending.username}
           onChange={(e) => setPending((p) => ({ ...p, username: e.target.value }))}
           onPressEnter={handleSearch}
@@ -144,7 +152,7 @@ export default function AuditLogPage() {
           allowClear
         />
         <Select
-          placeholder="资源类型"
+          placeholder={t('audit.filter.resourceType')}
           value={pending.resource || undefined}
           onChange={(v) => setPending((p) => ({ ...p, resource: v ?? '' }))}
           allowClear
@@ -158,7 +166,7 @@ export default function AuditLogPage() {
         </Select>
         {/* AUTH-05: resourceId 精确筛选（与资源类型组合） */}
         <Input
-          placeholder="资源 ID"
+          placeholder={t('audit.filter.resourceId')}
           value={pending.resourceId}
           onChange={(e) => setPending((p) => ({ ...p, resourceId: e.target.value }))}
           onPressEnter={handleSearch}
@@ -175,8 +183,8 @@ export default function AuditLogPage() {
             }));
           }}
         />
-        <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>搜索</Button>
-        {hasFilters && <Button icon={<ReloadOutlined />} onClick={handleReset}>重置</Button>}
+        <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>{t('audit.action.search')}</Button>
+        {hasFilters && <Button icon={<ReloadOutlined />} onClick={handleReset}>{t('audit.action.reset')}</Button>}
       </Space>
       {/* UI-16：请求失败渲染页内错误态标准块（StateError，重试=refetch），
           此前失败静默表现为「暂无审计记录」空态——查询失败与确无记录两种语义分离 */}
@@ -184,7 +192,7 @@ export default function AuditLogPage() {
         <StateError
           error={error}
           onRetry={() => refetch()}
-          title="审计日志加载失败"
+          title={t('audit.error.title')}
           style={{ marginBottom: 16 }}
         />
       )}
@@ -196,19 +204,20 @@ export default function AuditLogPage() {
         locale={{
           emptyText: isLoading
             ? <PageSkeleton variant="table" rows={3} />
-            : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无审计记录" />,
+            : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('audit.empty')} />,
         }}
         pagination={{
           current: page,
           pageSize: 20,
           total: data?.total,
           onChange: setPage,
-          showTotal: (t) => `共 ${t} 条`,
+          showTotal: (totalCount: number) =>
+            t('audit.total', { count: totalCount }),
         }}
       />
 
       <Modal
-        title="详情"
+        title={t('audit.modal.detail')}
         open={detailModal.open}
         onCancel={() => setDetailModal({ open: false })}
         footer={null}
