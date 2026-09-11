@@ -60,6 +60,18 @@ function eventTypeLabel(v: string): string {
   return found ? found.value : v;
 }
 
+/** 事件目录 i18n key：Select 选项 label 走翻译，未知值原样兜底。 */
+const EVENT_TYPE_T_KEY: Record<string, string> = {
+  'execution.completed': 'eventSub.eventType.executionCompleted',
+  'execution.failed': 'eventSub.eventType.executionFailed',
+  'executor.offline': 'eventSub.eventType.executorOffline',
+  'deployment.completed': 'eventSub.eventType.deploymentCompleted',
+};
+
+function eventTypeLabelKey(v: string): string {
+  return EVENT_TYPE_T_KEY[v] ?? v;
+}
+
 function CreateResultModal(props: {
   result: EventSubscriptionCreateResult | null;
   onClose: () => void;
@@ -349,7 +361,7 @@ function SubscriptionFormModal(props: {
             <Select
               mode="multiple"
               placeholder={t('eventSub.field.eventTypesPlaceholder')}
-              options={EVENT_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              options={EVENT_TYPE_OPTIONS.map((o) => ({ value: o.value, label: t(eventTypeLabelKey(o.value)) }))}
             />
           </Form.Item>
           <Form.Item

@@ -248,7 +248,7 @@ export default function TaskListPage() {
       width: 80,
       ...hideOnMobile,
       render: (_: unknown, r: Task) => {
-        const t2 = priorityTag(r.priority);
+        const t2 = priorityTag(r.priority, t);
         return <Tag color={t2.color}>{t2.label}</Tag>;
       },
     },

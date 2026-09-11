@@ -294,7 +294,7 @@ export default function ApplicationListPage() {
       render: (_: unknown, record: AppWithStats) => (
         <Tooltip title={record.lastDeployedAt ? formatDateTime(record.lastDeployedAt) : t('appList.notDeployed')}>
           <Text type={record.lastDeployedAt ? undefined : 'secondary'}>
-            {formatRelativeTime(record.lastDeployedAt)}
+            {formatRelativeTime(record.lastDeployedAt, t)}
           </Text>
         </Tooltip>
       ),

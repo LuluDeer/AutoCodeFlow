@@ -62,13 +62,32 @@ export const FAILURE_RUNBOOK_ACTIONS: Record<string, FailureRunbookEntry> = {
 /**
  * 取分类的建议动作；未收录键（后端扩枚举而前端未同步时）回退 unknown 兜底，
  * 保证卡片在任意 failureReason 值下都有可展示内容。
+ * t 可选：传参时 action 走 i18n key（执行详情页传 t）；缺省保持中文基线
+ * （execution-detail-ui05.test.tsx 锚定 FAILURE_RUNBOOK_ACTIONS 逐键动作）。
  */
-export function failureRunbookAction(failureReason: string | null | undefined): FailureRunbookEntry {
-  if (failureReason && FAILURE_RUNBOOK_ACTIONS[failureReason]) {
-    return FAILURE_RUNBOOK_ACTIONS[failureReason];
-  }
-  return FAILURE_RUNBOOK_ACTIONS.unknown;
+export function failureRunbookAction(
+  failureReason: string | null | undefined,
+  t?: (k: string) => string,
+): FailureRunbookEntry {
+  const category =
+    failureReason && FAILURE_RUNBOOK_ACTIONS[failureReason] ? failureReason : 'unknown';
+  if (!t) return FAILURE_RUNBOOK_ACTIONS[category];
+  return { action: t(RUNBOOK_ACTION_T_KEY[category]) };
 }
+
+const RUNBOOK_ACTION_T_KEY: Record<string, string> = {
+  package_fetch_failed: 'runbook.packageFetch',
+  dependency_install_failed: 'runbook.dependencyInstall',
+  git_fetch_failed: 'runbook.gitFetch',
+  runtime_missing: 'runbook.runtimeMissing',
+  script_error: 'runbook.scriptError',
+  timeout: 'runbook.timeout',
+  executor_offline: 'runbook.executorOffline',
+  executor_restart: 'runbook.executorRestart',
+  stale_recovered: 'runbook.staleRecovered',
+  killed: 'runbook.killed',
+  unknown: 'runbook.unknown',
+};
 
 /** 失败定位卡片可见状态：failed / timeout（killed 无排障价值，不渲染） */
 export const FAILURE_CARD_STATUSES: readonly string[] = ['failed', 'timeout'];

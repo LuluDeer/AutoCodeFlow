@@ -21,7 +21,7 @@ import { useTranslation } from 'react-i18next';
 import '../i18n';
 import {
   buildExecutionTimeline,
-  TIMELINE_PHASE_LABEL,
+  TIMELINE_PHASE_LABELS,
   type TimelineSource,
 } from '../utils/execution-timeline';
 import { formatDateTime, formatDuration } from '../utils/timeFormat';
@@ -103,7 +103,7 @@ export default function ExecutionReportPanel({
             const isTerminal = e.phase === 'finished';
             const mark = isTerminal ? terminalMark(source.status) : { icon: undefined as React.ReactNode, color: undefined as string | undefined };
             return {
-              title: TIMELINE_PHASE_LABEL[e.phase],
+              title: TIMELINE_PHASE_LABELS(t)[e.phase],
               description: (
                 <span data-testid={`timeline-${e.phase}`}>
                   {e.at ? formatDateTime(e.at) : '—'}
@@ -121,7 +121,7 @@ export default function ExecutionReportPanel({
         {source.duration != null && (
           <div style={{ marginTop: 12 }}>
             <Text type="secondary">{t('reportPanel.dbDuration')}</Text>
-            <Text code>{formatDuration(source.duration)}</Text>
+            <Text code>{formatDuration(source.duration, t)}</Text>
           </div>
         )}
       </Card>
@@ -166,10 +166,10 @@ export default function ExecutionReportPanel({
             <Descriptions.Item label={t('reportPanel.col.cancelled')}>{report.cancelledCount}</Descriptions.Item>
             <Descriptions.Item label={t('reportPanel.col.running')}>{report.runningCount}</Descriptions.Item>
             <Descriptions.Item label={t('reportPanel.col.avgDuration')}>
-              {formatDuration(report.avgDurationMs)}
+              {formatDuration(report.avgDurationMs, t)}
             </Descriptions.Item>
             <Descriptions.Item label={t('reportPanel.col.maxDuration')}>
-              {formatDuration(report.maxDurationMs)}
+              {formatDuration(report.maxDurationMs, t)}
             </Descriptions.Item>
           </Descriptions>
         ) : (
