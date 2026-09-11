@@ -104,10 +104,10 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
       <div className="log-overlay-header">
         <div>
           <span className="log-overlay-title">{record.taskName}</span>
-          <span style={{ marginLeft: 8, color: 'var(--text-3)', fontSize: 11 }}>{record.executionId}</span>
+          <span className="log-overlay-id">{record.executionId}</span>
           {statusBadge(record.status)}
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div className="history-overlay-actions">
           <button className="btn btn-sm" onClick={() => {
             if (containerRef.current) {
               containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -117,12 +117,11 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
           <button className="btn btn-sm" onClick={onClose}>✕ 关闭</button>
         </div>
       </div>
-      <div className="log-viewer" ref={containerRef} onScroll={handleScroll}
-        style={{ flex: 1, borderRadius: '0 0 var(--radius-lg) var(--radius-lg)' }}>
+      <div className="log-viewer log-overlay-content" ref={containerRef} onScroll={handleScroll}>
         {loading && lines.length === 0
-          ? <span style={{ color: '#666', fontStyle: 'italic' }}>加载日志...</span>
+          ? <span className="log-empty">加载日志...</span>
           : lines.length === 0
-            ? <span style={{ color: '#666', fontStyle: 'italic' }}>暂无日志（日志文件可能尚未生成）</span>
+            ? <span className="log-empty">暂无日志（日志文件可能尚未生成）</span>
             : lines.map((line, i) => (
                 <div key={i} className={`log-line ${classifyLog(line)}`}>{line}</div>
               ))
@@ -187,7 +186,7 @@ export default function HistoryPage() {
     <div className="history-page">
       <div className="history-toolbar">
         <span className="history-title">历史执行记录</span>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div className="history-toolbar-actions">
           <button className="btn btn-sm" onClick={load}>↻ 刷新</button>
           <button className="btn btn-sm btn-danger-ghost" onClick={handleClear}>清除全部</button>
         </div>
@@ -210,14 +209,17 @@ export default function HistoryPage() {
             return (
               <div key={key} className="history-group">
                 {/* 应用头 */}
-                <div
+                <button
+                  type="button"
                   className={`history-group-header ${isOpen ? 'open' : ''}`}
                   onClick={() => setExpandedApp(isOpen ? null : key)}
+                  aria-expanded={isOpen}
+                  aria-controls={`history-runs-${key}`}
                 >
                   <div className="history-group-left">
                     <span className={`history-group-arrow ${isOpen ? 'open' : ''}`}>▶</span>
                     <span className="history-group-name">{group.label}</span>
-                    {hasRunning && <span className="badge badge-pending" style={{ fontSize: 10 }}>运行中</span>}
+                    {hasRunning && <span className="badge badge-pending badge-compact">运行中</span>}
                   </div>
                   <div className="history-group-meta">
                     <span className="history-stat success">{successCount} 成功</span>
@@ -225,11 +227,11 @@ export default function HistoryPage() {
                     <span className="history-stat total">{runCount} 次</span>
                     <span className="history-stat time">{formatTime(lastRun?.startTime)}</span>
                   </div>
-                </div>
+                </button>
 
                 {/* 执行记录列表 */}
                 {isOpen && (
-                  <div className="history-runs">
+                  <div id={`history-runs-${key}`} className="history-runs">
                     {group.runs.map((run, idx) => (
                       <div key={run.executionId} className="history-run-row">
                         <div className="history-run-left">
