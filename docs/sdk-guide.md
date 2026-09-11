@@ -113,7 +113,7 @@ fail-closed 语义。能力对照如下：
 ### 版本与发布流程
 
 三包（`@autocodeflow/sdk`、`autoflow-sdk`、`autocodeflow-mcp-server`）走
-**lockstep** 单版本线（当前 `1.1.0`）。发布只由 push tag `vX.Y.Z` 触发
+**lockstep** 单版本线（当前 `1.1.1`）。发布只由 push tag `vX.Y.Z` 触发
 [.github/workflows/release.yml](../.github/workflows/release.yml)：
 
 1. `version-guard`：校验 tag 与上述各包 `package.json` / `pyproject.toml` /

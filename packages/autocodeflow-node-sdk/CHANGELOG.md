@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.1.0...v1.1.1) (2026-09-11)
+
+
+### 说明
+
+* **lockstep 版本对齐**：本包本轮无行为变更，按 DOC-05 三包 lockstep 纪律与 `autocodeflow-mcp-server` / `autoflow-sdk` 同版本发布（本轮实际变更源为 mcp-server 的 VERSION 常量对齐修复 + release-please 配置固化）。
+
 ## [1.1.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.0.1...v1.1.0) (2026-09-09)
 
 
