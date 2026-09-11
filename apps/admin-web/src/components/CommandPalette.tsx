@@ -77,6 +77,29 @@ const EXECUTION_PAGE_SIZE = 5;
 /** 输入防抖毫秒数 */
 const DEBOUNCE_MS = 300;
 
+/**
+ * UI-12：无障碍锚点常量。
+ * - DIALOG_TITLE：弹层可访问名（antd Modal 自身已渲染 role="dialog" + aria-modal="true"，
+ *   但 closable 且无 title 时 dialog 无名——用仅读屏可见的标题补 aria-labelledby）；
+ * - LISTBOX_ID / OPTION_ID 前缀：组合框（combobox）与列表（listbox）的关联，
+ *   供 aria-controls / aria-activedescendant 指向，键盘上下键的移动要能被读屏播报。
+ */
+const DIALOG_TITLE = '全局搜索与命令面板';
+const LISTBOX_ID = 'command-palette-listbox';
+const OPTION_ID_PREFIX = 'command-palette-option-';
+/** 仅读屏可见（视觉上不占版面） */
+const SR_ONLY_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  margin: -1,
+  padding: 0,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+  borderWidth: 0,
+};
+
 type EntityKind = 'action' | 'task' | 'execution' | 'executor' | 'application';
 
 /** 分组渲染顺序：操作 → 任务 → 执行记录 → 执行器 → 应用 */
@@ -200,6 +223,8 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
   const listRef = useRef<HTMLDivElement>(null);
   const openRef = useRef(open);
   openRef.current = open;
+  /** UI-12：打开前的焦点宿主——关闭后要把焦点还回去，键盘用户不会「掉到 body」 */
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
 
   // 每次打开重置为全新搜索，并使上一轮在途请求失效
   useEffect(() => {
@@ -215,6 +240,21 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
     if (!open) return;
     const timer = window.setTimeout(() => inputRef.current?.focus(), 0);
     return () => window.clearTimeout(timer);
+  }, [open]);
+
+  // UI-12：焦点进入/归还。打开时记下焦点宿主（body 视为无宿主，不做无效归还），
+  // 关闭时归还——Esc、选中跳转、⌘K 再按三条关闭路径共用这一处。
+  useEffect(() => {
+    if (open) {
+      const active = document.activeElement as HTMLElement | null;
+      restoreFocusRef.current = active && active !== document.body ? active : null;
+      return;
+    }
+    const el = restoreFocusRef.current;
+    restoreFocusRef.current = null;
+    if (el && el !== document.body && document.contains(el) && typeof el.focus === 'function') {
+      el.focus();
+    }
   }, [open]);
 
   // 防抖 300ms 后并行请求四个列表端点；各路独立 catch —— 单组失败降级为
@@ -483,6 +523,7 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
                 <div
                   key={action.key}
                   role="option"
+                  id={`${OPTION_ID_PREFIX}${flatIdx}`}
                   aria-selected={active}
                   data-palette-index={flatIdx}
                   onClick={() => runStaticAction(action)}
@@ -562,6 +603,7 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
                 <div
                   key={item.key}
                   role="option"
+                  id={`${OPTION_ID_PREFIX}${flatIdx}`}
                   aria-selected={active}
                   data-palette-index={flatIdx}
                   onClick={() => go(section.kind, item)}
@@ -667,12 +709,23 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
     <Modal
       open={open}
       onCancel={() => onOpenChange(false)}
+      // UI-12：补可访问名——antd 已渲染 role="dialog" + aria-modal="true"，
+      // 但本弹层为 closable=false 且无 title，dialog 长期无名；sr-only 标题
+      // 只供读屏消费（antd 会据此设置 aria-labelledby），不占视觉版面。
+      title={<span id="command-palette-title" style={SR_ONLY_STYLE}>{DIALOG_TITLE}</span>}
+      // 打开动画结束后再补一次聚焦（与上面 setTimeout 兜底互为冗余，两条路径幂等）
+      afterOpenChange={(visible) => {
+        if (visible) inputRef.current?.focus();
+      }}
       footer={null}
       width={560}
       destroyOnHidden
       closable={false}
       style={{ top: 88 }}
-      styles={{ body: { paddingTop: 12 } }}
+      styles={{
+        header: { padding: 0, marginBottom: 0, background: 'transparent', borderBottom: 'none' },
+        body: { paddingTop: 12 },
+      }}
     >
       <Input
         ref={inputRef}
@@ -684,8 +737,24 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
         placeholder="搜索任务、执行记录、执行器、应用，或输入指令…"
         prefix={<SearchOutlined style={{ color: token.colorTextTertiary }} />}
         allowClear
+        // UI-12：组合框语义——读屏据此播报「可编辑组合框」，并把候选列表与
+        // 当前高亮项（aria-activedescendant）关联起来，↑↓ 移动可被感知。
+        aria-label="搜索任务、执行记录、执行器、应用"
+        role="combobox"
+        aria-expanded={flatItems.length > 0}
+        aria-controls={LISTBOX_ID}
+        aria-autocomplete="list"
+        aria-activedescendant={
+          flatItems.length > 0 ? `${OPTION_ID_PREFIX}${activeIndex}` : undefined
+        }
       />
-      <div ref={listRef} style={{ maxHeight: 380, overflowY: 'auto' }}>
+      <div
+        ref={listRef}
+        id={LISTBOX_ID}
+        role="listbox"
+        aria-label="搜索结果"
+        style={{ maxHeight: 380, overflowY: 'auto' }}
+      >
         {sections.map(renderSection)}
         {showGlobalEmpty && (
           <Text type="secondary" style={{ display: 'block', textAlign: 'center', padding: '16px 0', fontSize: 13 }}>
