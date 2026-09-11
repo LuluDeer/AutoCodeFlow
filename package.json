@@ -19,6 +19,8 @@
     "test:lib-db": "cd packages/autocodeflow-db && python -m pytest tests -q",
     "test:desktop": "cd apps/executor-desktop && npm run test:main && npm run test:renderer",
     "test:registry-npm": "node scripts/registry-npm-config.selftest.mjs",
+    "test:private-registry": "node scripts/bug18-private-registry-selftest.mjs --dry-run",
+    "test:private-registry:live": "node scripts/bug18-private-registry-selftest.mjs",
     "test:all": "npm run test:api && npm run test:node && npm run test:python && npm run test:web && npm run test:cli && npm run test:mcp && npm run test:pypi && npm run test:sdk-py && npm run test:node-sdk",
     "typecheck:api": "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json",
     "typecheck:node": "cd apps/executor-node && npx tsc --noEmit",

@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -196,8 +197,83 @@ def _get_callback_token() -> str:
     return settings.executor_shared_token or settings.executor_secret
 
 
-# uv executable path (prefer PATH; Dockerfile installs to /root/.cargo/bin/uv)
-UV_BIN = shutil.which('uv') or '/root/.local/bin/uv'
+# uv is installed by requirements.txt into /usr/local/bin in the image. Keep a
+# PATH lookup only: falling back to root's home would be unusable as appuser and
+# could accidentally select an unpinned host installation.
+UV_BIN = shutil.which('uv') or 'uv'
+
+
+def _validate_registry_url(value: str) -> str:
+    """Validate the explicit package index URL before passing it to uv.
+
+    Registry URLs are configuration, not task input. Userinfo, query strings,
+    and fragments can carry credentials or alter resolution while appearing in
+    argv and subprocess diagnostics. Credentials must be supplied by a future
+    controlled mechanism (for example a mounted uv keyring/config), never in
+    ``PYPI_REGISTRY_URL``.
+    """
+    if not isinstance(value, str):
+        raise RuntimeError('Invalid PYPI_REGISTRY_URL')
+    url = value.strip()
+    if not url:
+        return ''
+    try:
+        parsed = urlsplit(url)
+    except ValueError as exc:
+        raise RuntimeError('Invalid PYPI_REGISTRY_URL') from exc
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+        raise RuntimeError('PYPI_REGISTRY_URL must be an http(s) URL')
+    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+        raise RuntimeError(
+            'PYPI_REGISTRY_URL must not contain userinfo, query, or fragment; '
+            'provide registry credentials through a controlled credentials mechanism'
+        )
+    return url
+
+
+# Dependency installers must not inherit the executor process environment. In
+# particular, pip/uv honor PIP_* / UV_* variables and user config files, which
+# can contain host credentials or redirect package downloads. Keep only the
+# runtime paths and temp/cache locations required by uv. Registry selection is
+# passed explicitly with --index-url below.
+_INSTALL_ENV_KEYS = {
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'TMPDIR', 'TEMP', 'TMP', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+    'USERNAME', 'APPDATA', 'LOCALAPPDATA', 'SYSTEMROOT', 'WINDIR',
+    'COMSPEC', 'PATHEXT',
+}
+_INSTALL_ENV_DENYLIST = {
+    'EXECUTOR_SHARED_TOKEN', 'EXECUTOR_SECRET', 'EXECUTION_CALLBACK_SECRET',
+    'NPM_REGISTRY_TOKEN', 'PIP_INDEX_URL', 'PIP_EXTRA_INDEX_URL',
+    'PIP_TRUSTED_HOST', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_DEFAULT_INDEX',
+    'UV_INSECURE_HOST', 'UV_CONFIG_FILE', 'PYTHONPATH',
+}
+
+
+def _build_install_env(cache_dir: Path) -> dict[str, str]:
+    """Return the minimal environment for uv venv/pip subprocesses.
+
+    The task runtime has a separate, richer whitelist; dependency resolution is
+    more sensitive because uv/pip consume ambient config variables. Explicitly
+    retain only platform path/home/temp values plus an isolated cache and tell
+    uv not to consult any user/project configuration.
+    """
+    env: dict[str, str] = {}
+    if sys.platform == 'win32':
+        allowed = {key.upper() for key in _INSTALL_ENV_KEYS}
+        for key, value in os.environ.items():
+            if key.upper() in allowed and key.upper() not in _INSTALL_ENV_DENYLIST:
+                env[key.upper()] = value
+    else:
+        for key, value in os.environ.items():
+            if key in _INSTALL_ENV_KEYS and key not in _INSTALL_ENV_DENYLIST:
+                env[key] = value
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    env['UV_CACHE_DIR'] = str(cache_dir)
+    env['UV_NO_CONFIG'] = '1'
+    env['PIP_CONFIG_FILE'] = os.devnull
+    return env
+
 
 # Timeouts for the two uv phases (module-level so tests can shrink them)
 UV_VENV_TIMEOUT_SECONDS = 60
@@ -1261,7 +1337,7 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
         unregister_live_execution(req.executionId)
 
 
-async def _run_uv(args: list[str], timeout_seconds: float) -> tuple[int | None, str]:
+async def _run_uv(args: list[str], timeout_seconds: float, *, env: dict[str, str] | None = None) -> tuple[int | None, str]:
     """Run a uv subprocess with combined output captured.
 
     R4-C P2: plain `asyncio.wait_for(proc.communicate(), ...)` leaves the uv
@@ -1271,6 +1347,7 @@ async def _run_uv(args: list[str], timeout_seconds: float) -> tuple[int | None, 
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        env=env,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
@@ -1289,6 +1366,10 @@ async def _run_uv(args: list[str], timeout_seconds: float) -> tuple[int | None, 
 
 async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
     """Create/reuse a virtual environment with uv and install dependencies. Returns python executable path."""
+    # Validate before spawning even the venv phase. This keeps malformed or
+    # credential-bearing registry configuration out of every uv subprocess.
+    registry_url = _validate_registry_url(settings.pypi_registry_url)
+    install_env = _build_install_env(venv_dir.parent / '.uv-cache')
     # W-02 follow-up (windows-findings): venv layout is platform-specific —
     # win32 uses Scripts\python.exe, POSIX uses bin/python. The old hardcoded
     # bin/python made every requirements-bearing task fail on Windows.
@@ -1300,7 +1381,7 @@ async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
     if not venv_dir.exists():
         logger.info(f'Creating venv with uv: {venv_dir}')
         try:
-            code, out = await _run_uv([UV_BIN, 'venv', str(venv_dir)], UV_VENV_TIMEOUT_SECONDS)
+            code, out = await _run_uv([UV_BIN, 'venv', '--no-project', str(venv_dir)], UV_VENV_TIMEOUT_SECONDS, env=install_env)
         except asyncio.TimeoutError:
             # R4-C P2: a timed-out `uv venv` leaves a half-built directory behind;
             # the `if not venv_dir.exists()` check would then silently reuse the
@@ -1321,11 +1402,13 @@ async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
             UV_BIN, 'pip', 'install',
             '--python', str(python_bin),
         ]
-        # Use private PyPI registry if configured (e.g., for internal @autocodeflow packages)
-        if settings.pypi_registry_url:
-            install_args.extend(['--index-url', settings.pypi_registry_url])
+        # Use the explicitly configured credential-free private PyPI index.
+        # Validate again here because tests/config reloads may mutate settings
+        # after startup; never put a credential-bearing URL into uv argv.
+        if registry_url:
+            install_args.extend(['--index-url', registry_url])
         install_args.extend(requirements)
-        code, out = await _run_uv(install_args, UV_PIP_TIMEOUT_SECONDS)
+        code, out = await _run_uv(install_args, UV_PIP_TIMEOUT_SECONDS, env=install_env)
         if code != 0:
             raise RuntimeError(f'uv pip install failed: {_truncate_error_message(out)}')
 

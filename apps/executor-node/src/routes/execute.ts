@@ -3,6 +3,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { config } from '../config';
 import { logger } from '../logger';
 import {
@@ -704,21 +705,67 @@ async function prepareExecution(
     // 改动3: .npmrc 指向私服（@autoflow / @autocodeflow 双 scope 行）；
     // 配置了 NPM_REGISTRY_TOKEN 时追加 _authToken 行——registry-npm 对
     // '**' 的 access 是 $authenticated，匿名安装必 401。token 不打日志。
-    if (config.npmRegistryUrl) {
-      const npmrc = path.join(nodeModulesDir, '.npmrc');
-      fs.writeFileSync(npmrc, buildNpmRcContent(config.npmRegistryUrl, config.npmRegistryToken, actualRequirements));
-      logger.info(`Using npm registry: ${redactUrl(config.npmRegistryUrl)} for task ${taskId}`);
-    }
+    //
+    // The config is deliberately created in a fresh, mode-700 system temp
+    // directory rather than in the task cwd or the persistent node_modules
+    // cache. It exists only for the lifetime of the npm child and is removed
+    // in the callback's finally block after npm has exited. In particular,
+    // npm_config_userconfig must remain valid until runCommand observes the
+    // child's close event; deleting it before then races npm's config reads.
     const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const npmArgs = ['install', '--prefix', nodeModulesDir];
+    if (config.npmRegistryToken) {
+      // Keep the existing boundary: authenticated installs disable lifecycle
+      // scripts, so an install script cannot read npm_config_userconfig while
+      // the token-bearing file exists. This intentionally does not enable
+      // native/lifecycle dependencies; callers needing those must use a
+      // trusted package path rather than weakening this executor policy.
+      npmArgs.push('--ignore-scripts');
+    }
+    npmArgs.push(...actualRequirements);
     const installResult = await queueTaskInstall(
       taskId,
       async () => {
         if (entry.aborted) throw new ExecutionCancelledError(executionId);
-        return runCommand(
-          npmCmd,
-          ['install', '--prefix', nodeModulesDir, ...actualRequirements],
-          { timeout: 300_000, shell: process.platform === 'win32', signal },
+
+        const npmConfig = createTemporaryNpmConfig(
+          config.npmRegistryUrl,
+          config.npmRegistryToken,
+          actualRequirements,
         );
+        try {
+          if (config.npmRegistryUrl) {
+            logger.info(`Using npm registry: ${redactUrl(config.npmRegistryUrl)} for task ${taskId}`);
+          }
+          // npm itself must not reconstruct the executor's environment (or
+          // discover credentials via npm_config_*); only the runtime paths and
+          // the two temporary config paths are provided. The token remains in
+          // the config file, never in an environment variable.
+          const npmInstallEnv = buildChildEnv({
+            npm_config_userconfig: npmConfig.userconfig,
+            npm_config_globalconfig: npmConfig.globalconfig,
+            npm_config_registry: config.npmRegistryUrl || undefined,
+            npm_config_cache: path.join(nodeModulesDir, '.npm-cache'),
+            npm_config_prefix: nodeModulesDir,
+          });
+          return await runCommand(
+            npmCmd,
+            npmArgs,
+            {
+              cwd: workDir,
+              env: npmInstallEnv,
+              timeout: 300_000,
+              shell: process.platform === 'win32',
+              signal,
+            },
+          );
+        } finally {
+          // This runs after success, non-zero exit, timeout, abort, and a
+          // thrown spawn/config exception. A cleanup error is surfaced to the
+          // caller (and therefore the task callback) rather than silently
+          // leaving a credential behind.
+          removeTemporaryNpmConfig(npmConfig);
+        }
       },
       () => entry.aborted,
     );
@@ -883,6 +930,86 @@ export function buildNpmRcContent(
 function npmAuthUrlLine(registryUrl: string): string | null {
   const m = /^https?:\/\/(.+)$/i.exec(registryUrl.trim());
   return m ? `//${m[1]}` : null;
+}
+
+interface TemporaryNpmConfig {
+  directory: string;
+  userconfig: string;
+  globalconfig: string;
+}
+
+/**
+ * Create npm's config files outside the task tree. The userconfig can contain
+ * NPM_REGISTRY_TOKEN, so the directory and files are private and short-lived;
+ * callers must invoke removeTemporaryNpmConfig only after npm has exited.
+ */
+function createTemporaryNpmConfig(
+  registryUrl: string,
+  token: string | undefined,
+  requirements: string[],
+): TemporaryNpmConfig {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'autocodeflow-npm-'));
+  const npmConfig: TemporaryNpmConfig = {
+    directory,
+    userconfig: path.join(directory, '.npmrc'),
+    globalconfig: path.join(directory, '.npm-globalrc'),
+  };
+  try {
+    // Do not tolerate a permissive temp directory/file mode: a token must not
+    // become readable by another local user while npm is installing.
+    fs.chmodSync(directory, 0o700);
+    fs.writeFileSync(
+      npmConfig.userconfig,
+      registryUrl ? buildNpmRcContent(registryUrl, token, requirements) : '',
+      { encoding: 'utf8', mode: 0o600 },
+    );
+    fs.chmodSync(npmConfig.userconfig, 0o600);
+    // Pin npm's global config too, even when it is empty, so a user's global
+    // .npmrc cannot introduce another credential or override registry policy.
+    fs.writeFileSync(npmConfig.globalconfig, '', { encoding: 'utf8', mode: 0o600 });
+    fs.chmodSync(npmConfig.globalconfig, 0o600);
+    return npmConfig;
+  } catch (err) {
+    try {
+      removeTemporaryNpmConfig(npmConfig);
+    } catch (cleanupErr) {
+      throw new Error(
+        `Failed to create npm config and failed to clean it up: ${
+          cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+        }`,
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * Remove every temporary npm config artifact. Cleanup errors are deliberately
+ * fatal: silently continuing could leave a registry credential readable on a
+ * shared executor. The caller's finally block invokes this only after the npm
+ * child has emitted close, so no active child can still need the files.
+ */
+function removeTemporaryNpmConfig(npmConfig: TemporaryNpmConfig): void {
+  const errors: string[] = [];
+  for (const file of [npmConfig.userconfig, npmConfig.globalconfig]) {
+    try {
+      fs.unlinkSync(file);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'ENOENT') errors.push(`${file}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  try {
+    fs.rmSync(npmConfig.directory, { recursive: true, force: false });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') errors.push(`${npmConfig.directory}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (errors.length > 0) {
+    const message = `Unable to remove temporary npm config: ${errors.join('; ')}`;
+    logger.error(message);
+    throw new Error(message);
+  }
 }
 
 // ---------------------------------------------------------------------------
