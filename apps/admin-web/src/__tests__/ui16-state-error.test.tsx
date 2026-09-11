@@ -16,10 +16,15 @@ import AppDeploymentPage from '../pages/AppDeploymentPage';
 import { tasksApi } from '../api/tasks';
 import { deploymentsApi } from '../api/applications';
 import { executorsApi } from '../api/executors';
+import { usersApi } from '../api/users';
+import ExecutionsPage from '../pages/ExecutionsPage';
+import ExecutorListPage from '../pages/ExecutorListPage';
+import UserManagementPage from '../pages/UserManagementPage';
 
 vi.mock('../api/tasks', () => ({
   tasksApi: {
     list: vi.fn(),
+    allExecutions: vi.fn(),
     get: vi.fn(),
     create: vi.fn(),
     delete: vi.fn(),
@@ -45,7 +50,15 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { upgradeAll: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), getGroups: vi.fn() },
+}));
+vi.mock('../api/users', () => ({
+  usersApi: {
+    list: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    remove: vi.fn(),
+  },
 }));
 
 const g = globalThis as Record<string, unknown>;
@@ -72,6 +85,7 @@ if (!window.matchMedia) {
 const mockedTasks = vi.mocked(tasksApi, true);
 const mockedDeployments = vi.mocked(deploymentsApi, true);
 const mockedExecutors = vi.mocked(executorsApi, true);
+const mockedUsers = vi.mocked(usersApi, true);
 
 function renderWithQuery(ui: React.ReactNode) {
   const client = new QueryClient({
@@ -120,6 +134,42 @@ describe('UI-16 TaskListPage 页内错误态', () => {
     mockedTasks.list.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 });
     renderWithQuery(<TaskListPage />);
     await waitFor(() => expect(mockedTasks.list).toHaveBeenCalled());
+    expect(screen.queryByTestId('state-error')).toBeNull();
+  });
+});
+
+describe('UI-16 第二批：Executions / ExecutorList / UserManagement 页内错误态', () => {
+  it('ExecutionsPage：执行记录请求失败 → 页内错误块，标题指明数据块', async () => {
+    mockedTasks.allExecutions.mockRejectedValue(new Error('执行记录服务不可用'));
+    renderWithQuery(<ExecutionsPage />);
+    const alert = await screen.findByTestId('state-error');
+    expect(alert.getAttribute('role')).toBe('alert');
+    expect(screen.getByText('执行记录加载失败')).toBeTruthy();
+    expect(screen.getByText('执行记录服务不可用')).toBeTruthy();
+  });
+
+  it('ExecutorListPage：执行器列表请求失败 → 页内错误块 + 重试重发请求', async () => {
+    mockedExecutors.list.mockRejectedValueOnce(new Error('执行器服务 502'));
+    mockedExecutors.list.mockResolvedValueOnce([]);
+    renderWithQuery(<ExecutorListPage />);
+    await screen.findByTestId('state-error');
+    expect(screen.getByText('执行器列表加载失败')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /重试/ }));
+    await waitFor(() => expect(mockedExecutors.list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId('state-error')).toBeNull());
+  });
+
+  it('UserManagementPage：用户列表请求失败 → 页内错误块；成功时不渲染', async () => {
+    mockedUsers.list.mockRejectedValueOnce(new Error('用户服务 403'));
+    renderWithQuery(<UserManagementPage />);
+    await screen.findByTestId('state-error');
+    expect(screen.getByText('用户列表加载失败')).toBeTruthy();
+
+    cleanup();
+    mockedUsers.list.mockResolvedValue({ list: [], total: 0, page: 1, pageSize: 20 });
+    renderWithQuery(<UserManagementPage />);
+    await waitFor(() => expect(mockedUsers.list).toHaveBeenCalled());
     expect(screen.queryByTestId('state-error')).toBeNull();
   });
 });
