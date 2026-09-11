@@ -127,7 +127,7 @@ describe('ArtifactsList', () => {
         <ArtifactsList execId={EXEC_ID} />
       </QueryClientProvider>,
     );
-    await waitFor(() => expect(artifactsApi.listArtifacts).toHaveBeenCalledWith(EXEC_ID));
+    await waitFor(() => expect(artifactsApi.listArtifacts).toHaveBeenCalledWith(EXEC_ID, expect.any(AbortSignal)));
     expect(await screen.findByText('screenshot.png')).toBeTruthy();
     expect(screen.getByText('report.csv')).toBeTruthy();
   });

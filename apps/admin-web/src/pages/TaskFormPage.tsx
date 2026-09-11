@@ -137,27 +137,60 @@ export default function TaskFormPage() {
   const { token } = theme.useToken();
 
   useEffect(() => {
-    executorsApi.getGroups().then(setGroups).catch(() => message.warning('获取执行器分组失败'));
-    executorsApi.getTags().then(setAllTags).catch(() => message.warning('获取标签失败'));
-    executorsApi.list().then((data) =>
-      setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string, status: e.status as string })))
-    ).catch(() => message.warning('获取执行器列表失败'));
-    applicationsApi.list().then((data) =>
-      setApps(data.map((a) => ({ id: a.id, name: a.name })))
-    ).catch(() => message.warning('获取应用列表失败'));
-    // NF-02: 上游依赖候选（全量任务，取 id+name；编辑态在任务加载后过滤自身）
-    tasksApi.list({ page: 1, pageSize: 500 })
-      .then((data) => setTaskOptions(data.items.map((t) => ({ id: t.id, name: t.name }))))
-      .catch(() => message.warning('获取任务列表失败，上游依赖暂不可选'));
+    let active = true;
+    const controller = new AbortController();
+    const run = <T,>(request: Promise<T>, onSuccess: (data: T) => void, warning: string) => {
+      request
+        .then((data) => {
+          if (active && !controller.signal.aborted) onSuccess(data);
+        })
+        .catch(() => {
+          if (active && !controller.signal.aborted) message.warning(warning);
+        });
+    };
+
+    run(executorsApi.getGroups(controller.signal), setGroups, '获取执行器分组失败');
+    run(executorsApi.getTags(controller.signal), setAllTags, '获取标签失败');
+    run(
+      executorsApi.list(controller.signal),
+      (data) => setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string, status: e.status as string }))),
+      '获取执行器列表失败',
+    );
+    run(
+      applicationsApi.list(controller.signal),
+      (data) => setApps(data.map((a) => ({ id: a.id, name: a.name }))),
+      '获取应用列表失败',
+    );
+    // NF-02: 上游依赖候选（分页拉全，取 id+name；编辑态在任务加载后过滤自身）
+    tasksApi
+      .listAll({}, controller.signal)
+      .then((data) => {
+        if (active && !controller.signal.aborted) {
+          setTaskOptions(data.items.map((t) => ({ id: t.id, name: t.name })));
+        }
+      })
+      .catch(() => {
+        if (active && !controller.signal.aborted) {
+          message.warning('获取任务列表失败，上游依赖暂不可选');
+        }
+      });
     if (appId) form.setFieldValue('applicationId', appId);
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [appId, form]);
 
   // Load existing task data when in edit mode
   useEffect(() => {
     if (!editId) return;
+    let active = true;
+    const controller = new AbortController();
     setLoadingTask(true);
-    tasksApi.get(editId)
+    tasksApi.get(editId, controller.signal)
       .then((task) => {
+        if (!active || controller.signal.aborted) return;
         const mode = deriveExecutorMode(task);
         setExecutorMode(mode);
         setTriggerType(task.triggerType || 'manual');
@@ -199,8 +232,17 @@ export default function TaskFormPage() {
         form.setFieldValue('upstreamDependencies', dep.selected);
         depNameSnapshotRef.current = dep.nameSnapshot;
       })
-      .catch(() => message.error('加载任务失败'))
-      .finally(() => setLoadingTask(false));
+      .catch(() => {
+        if (active && !controller.signal.aborted) message.error('加载任务失败');
+      })
+      .finally(() => {
+        if (active && !controller.signal.aborted) setLoadingTask(false);
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [editId, form]);
 
   // CORE-03：创建态带 ?templateId= 时拉取模板，config 预填表单（显式字段仍可改；

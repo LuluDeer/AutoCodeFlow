@@ -12,7 +12,7 @@ import { tasksApi, type Task } from '../api/tasks';
 
 vi.mock('../api/tasks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/tasks')>();
-  return { ...actual, tasksApi: { ...actual.tasksApi, list: vi.fn(), batchTrigger: vi.fn() } };
+  return { ...actual, tasksApi: { ...actual.tasksApi, list: vi.fn(), listAll: vi.fn(), batchTrigger: vi.fn() } };
 });
 
 vi.mock('react-router-dom', async (importOriginal) => {
@@ -27,11 +27,12 @@ function task(id: string, name = id, deps?: Record<string, string>): Partial<Tas
 describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () => {
   beforeEach(() => {
     vi.mocked(tasksApi.list).mockReset();
+    vi.mocked(tasksApi.listAll).mockReset().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 } as never);
     vi.mocked(tasksApi.batchTrigger).mockReset();
   });
 
   it('有依赖链时渲染按钮，点击触发 batchTrigger 且携带图节点全集', async () => {
-    vi.mocked(tasksApi.list).mockResolvedValue({
+    vi.mocked(tasksApi.listAll).mockResolvedValue({
       items: [
         task('up', '上游'),
         task('cur', '当前', { d1: 'up' }),
@@ -39,7 +40,7 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
       ],
       total: 3,
       page: 1,
-      pageSize: 500,
+      pageSize: 100,
     } as never);
     vi.mocked(tasksApi.batchTrigger).mockResolvedValue([] as never);
 
@@ -61,11 +62,11 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
   });
 
   it('孤立任务（无上下游）按钮仍在且只含自身', async () => {
-    vi.mocked(tasksApi.list).mockResolvedValue({
+    vi.mocked(tasksApi.listAll).mockResolvedValue({
       items: [task('solo', '单任务')],
       total: 1,
       page: 1,
-      pageSize: 500,
+      pageSize: 100,
     } as never);
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -80,11 +81,11 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
   });
 
   it('batchTrigger 失败 → 错误消息透出不静默', async () => {
-    vi.mocked(tasksApi.list).mockResolvedValue({
+    vi.mocked(tasksApi.listAll).mockResolvedValue({
       items: [task('solo', '单任务')],
       total: 1,
       page: 1,
-      pageSize: 500,
+      pageSize: 100,
     } as never);
     // axios 形态错误（getErrMsg 优先取 response.data.message）
     vi.mocked(tasksApi.batchTrigger).mockRejectedValue({
@@ -102,5 +103,39 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
     await waitFor(() => {
       expect(screen.getAllByText(/boom|链式触发失败/).length).toBeGreaterThan(0);
     });
+  });
+
+  it('任务列表加载失败显示错误态与重试，而不是误报任务不存在', async () => {
+    vi.mocked(tasksApi.listAll).mockRejectedValue(new Error('network down'));
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter>
+        <TaskDependencyGraph taskId="missing" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByTestId('state-error')).toBeTruthy();
+    expect(screen.getByText('依赖图加载失败')).toBeTruthy();
+    expect(screen.queryByText('任务不存在或已删除，无法构建依赖图')).toBeNull();
+  });
+
+  it('列表成功但当前任务不存在时显示不存在，而不是加载失败', async () => {
+    vi.mocked(tasksApi.listAll).mockResolvedValue({
+      items: [task('other', '其他任务')],
+      total: 1,
+      page: 1,
+      pageSize: 100,
+    } as never);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter>
+        <TaskDependencyGraph taskId="missing" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText('任务不存在或已删除，无法构建依赖图')).toBeTruthy();
+    expect(screen.queryByTestId('state-error')).toBeNull();
   });
 });
