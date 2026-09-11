@@ -9,6 +9,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiKeysApi, ApiKeyView, ApiKeyScope, ApiKeyCreateResult } from '../../api/api-keys';
 import { getErrMsg } from '../../utils/error';
+import StateError from '../../components/StateError';
 import type { ColumnsType } from 'antd/es/table';
 
 const { Text, Paragraph } = Typography;
@@ -98,7 +99,8 @@ export default function ApiKeysSettings() {
   const [createOpen, setCreateOpen] = useState(false);
   const [created, setCreated] = useState<ApiKeyCreateResult | null>(null);
 
-  const { data: keys = [], isLoading } = useQuery({
+  // UI-16：读请求失败要页内可见（此前失败只留空表，与「尚未创建 Key」不可区分）
+  const { data: keys = [], isLoading, error: keysError, refetch: refetchKeys } = useQuery({
     queryKey: ['api-keys'],
     queryFn: apiKeysApi.list,
   });
@@ -205,15 +207,23 @@ export default function ApiKeysSettings() {
           </Text>
         }
       />
-      <Table
-        rowKey="id"
-        size="small"
-        columns={columns}
-        dataSource={keys}
-        loading={isLoading}
-        pagination={false}
-        data-testid="apikey-table"
-      />
+      {keysError ? (
+        <StateError
+          error={keysError}
+          title="API Key 列表加载失败"
+          onRetry={() => { void refetchKeys(); }}
+        />
+      ) : (
+        <Table
+          rowKey="id"
+          size="small"
+          columns={columns}
+          dataSource={keys}
+          loading={isLoading}
+          pagination={false}
+          data-testid="apikey-table"
+        />
+      )}
 
       <Modal
         open={createOpen}

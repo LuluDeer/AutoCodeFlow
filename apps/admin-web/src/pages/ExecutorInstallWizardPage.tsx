@@ -17,6 +17,7 @@ import {
   Input,
 } from 'antd';
 import PageHeader from '../components/PageHeader';
+import StateError from '../components/StateError';
 import {
   DownloadOutlined,
   CopyOutlined,
@@ -135,14 +136,26 @@ export default function ExecutorInstallWizardPage() {
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
+  // UI-16：安装包列表是向导的读入口，失败需页内可见并可重试（此前只有一闪而过的 toast，
+  // 步骤 2 的类型/平台选择会静默为空，用户以为「没有可用包」）。
+  const [packagesError, setPackagesError] = useState<unknown>(null);
+
+  const loadPackages = useCallback(() => {
     setLoadingPackages(true);
-    executorPackagesApi
+    setPackagesError(null);
+    return executorPackagesApi
       .listLatest()
       .then((data) => setPackages(data))
-      .catch(() => message.error('加载安装包列表失败，请检查 admin-api 服务'))
+      .catch((err: unknown) => {
+        setPackagesError(err);
+        message.error('加载安装包列表失败，请检查 admin-api 服务');
+      })
       .finally(() => setLoadingPackages(false));
   }, []);
+
+  useEffect(() => {
+    void loadPackages();
+  }, [loadPackages]);
 
   const availableTypes = Array.from(new Set(packages.map((p) => p.type)));
   const availablePlatforms = Array.from(
@@ -294,6 +307,16 @@ export default function ExecutorInstallWizardPage() {
           </Button>
         }
       />
+
+      {/* UI-16：安装包列表加载失败 → 页内错误块（重试=重新拉取），不进入必然失败的下一步 */}
+      {packagesError ? (
+        <StateError
+          error={packagesError}
+          title="安装包列表加载失败"
+          onRetry={() => { void loadPackages(); }}
+          style={{ marginBottom: 24, maxWidth: 900 }}
+        />
+      ) : null}
 
       <Steps
         current={currentStep}
