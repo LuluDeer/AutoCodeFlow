@@ -43,6 +43,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
+import '../i18n';
 import { Input, Modal, Typography, message, theme } from 'antd';
 import type { InputRef } from 'antd';
 import {
@@ -84,7 +87,6 @@ const DEBOUNCE_MS = 300;
  * - LISTBOX_ID / OPTION_ID 前缀：组合框（combobox）与列表（listbox）的关联，
  *   供 aria-controls / aria-activedescendant 指向，键盘上下键的移动要能被读屏播报。
  */
-const DIALOG_TITLE = '全局搜索与命令面板';
 const LISTBOX_ID = 'command-palette-listbox';
 const OPTION_ID_PREFIX = 'command-palette-option-';
 /** 仅读屏可见（视觉上不占版面） */
@@ -105,12 +107,21 @@ type EntityKind = 'action' | 'task' | 'execution' | 'executor' | 'application';
 /** 分组渲染顺序：操作 → 任务 → 执行记录 → 执行器 → 应用 */
 const GROUP_ORDER: EntityKind[] = ['action', 'task', 'execution', 'executor', 'application'];
 
-const GROUP_META: Record<EntityKind, { title: string; icon: ReactNode }> = {
-  action: { title: '操作', icon: <PlusOutlined /> },
-  task: { title: '任务', icon: <ThunderboltOutlined /> },
-  execution: { title: '执行记录', icon: <HistoryOutlined /> },
-  executor: { title: '执行器', icon: <ClusterOutlined /> },
-  application: { title: '应用', icon: <AppstoreOutlined /> },
+/** 分组图标（标题文案走 i18n 键，渲染处用 t() 求值） */
+const GROUP_ICON: Record<EntityKind, ReactNode> = {
+  action: <PlusOutlined />,
+  task: <ThunderboltOutlined />,
+  execution: <HistoryOutlined />,
+  executor: <ClusterOutlined />,
+  application: <AppstoreOutlined />,
+};
+
+const GROUP_TITLE_KEY: Record<EntityKind, string> = {
+  action: 'palette.group.action',
+  task: 'palette.group.task',
+  execution: 'palette.group.execution',
+  executor: 'palette.group.executor',
+  application: 'palette.group.application',
 };
 
 interface PaletteItem {
@@ -127,10 +138,16 @@ interface PaletteItem {
 /** UI-11 任务行内动作键 */
 type TaskActionKind = 'trigger' | 'pause' | 'resume';
 
-const TASK_ACTION_META: Record<TaskActionKind, { label: string; icon: ReactNode }> = {
-  trigger: { label: '触发', icon: <ThunderboltOutlined /> },
-  pause: { label: '暂停', icon: <PauseCircleOutlined /> },
-  resume: { label: '恢复', icon: <PlayCircleOutlined /> },
+const TASK_ACTION_ICON: Record<TaskActionKind, ReactNode> = {
+  trigger: <ThunderboltOutlined />,
+  pause: <PauseCircleOutlined />,
+  resume: <PlayCircleOutlined />,
+};
+
+const TASK_ACTION_LABEL_KEY: Record<TaskActionKind, string> = {
+  trigger: 'palette.action.trigger',
+  pause: 'palette.action.pause',
+  resume: 'palette.action.resume',
 };
 
 /** 静态动作（操作分组，始终可见） */
@@ -146,20 +163,20 @@ interface StaticAction {
   icon: ReactNode;
 }
 
-const STATIC_ACTIONS: StaticAction[] = [
+const getStaticActions = (t: TFunction): StaticAction[] => [
   {
     key: 'action-new-task',
     id: 'new-task',
-    title: '新建任务',
-    description: '跳转任务创建表单',
+    title: t('palette.action.createTask'),
+    description: t('palette.action.createTaskDesc'),
     to: '/tasks/new',
     icon: <PlusOutlined />,
   },
   {
     key: 'action-new-application',
     id: 'new-application',
-    title: '创建应用',
-    description: '前往应用列表（列表页内创建）',
+    title: t('palette.action.createApp'),
+    description: t('palette.action.createAppDesc'),
     to: '/applications',
     adminOnly: true,
     icon: <AppstoreOutlined />,
@@ -206,6 +223,7 @@ export interface CommandPaletteProps {
 }
 
 export default function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
+  const { t } = useTranslation();
   const nav = useNavigate();
   const { token } = theme.useToken();
   const user = useAuthStore((s) => s.user);
@@ -320,8 +338,8 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
 
   /** UI-11 静态动作按角色过滤（admin-only 项对普通用户隐藏，优于跳转后 403） */
   const visibleActions = useMemo(
-    () => STATIC_ACTIONS.filter((a) => !a.adminOnly || isAdmin),
-    [isAdmin],
+    () => getStaticActions(t).filter((a) => !a.adminOnly || isAdmin),
+    [isAdmin, t],
   );
 
   // 客户端包含匹配（小写化）已返回页数据，每组截断前 5 条，并计算扁平索引偏移
@@ -438,27 +456,27 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
     async (kind: TaskActionKind, item: PaletteItem) => {
       if (actingKey) return;
       setActingKey(item.key);
-      const label = TASK_ACTION_META[kind].label;
+      const label = t(TASK_ACTION_LABEL_KEY[kind]);
       try {
         if (kind === 'trigger') {
           await tasksApi.trigger(item.id);
-          message.success(`已触发: ${item.title}`);
+          message.success(t('palette.triggered', { name: item.title }));
         } else if (kind === 'pause') {
           await tasksApi.pause(item.id);
-          message.success('已暂停');
+          message.success(t('palette.paused'));
         } else {
           await tasksApi.resume(item.id);
-          message.success('已恢复');
+          message.success(t('palette.resumed'));
         }
         nav(`/tasks/${item.id}`);
         onOpenChange(false);
       } catch (err: unknown) {
-        message.error(getErrMsg(err, `${label}失败`));
+        message.error(getErrMsg(err, t('palette.actionFail', { action: label })));
       } finally {
         setActingKey(null);
       }
     },
-    [actingKey, nav, onOpenChange],
+    [actingKey, nav, onOpenChange, t],
   );
 
   // ⌘K / Ctrl+K 全局唤起/再按切换：window keydown，输入框焦点内同样生效
@@ -506,16 +524,17 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
   };
 
   const renderSection = (section: Section) => {
-    const meta = GROUP_META[section.kind];
+    const metaTitle = t(GROUP_TITLE_KEY[section.kind]);
+    const metaIcon = GROUP_ICON[section.kind];
     // 操作分组：静态动作始终可见（角色过滤后非空即渲染）
     if (section.kind === 'action') {
       if (!section.statics?.length) return null;
       return (
         <div key={section.kind} style={{ marginBottom: 4 }}>
           <Text type="secondary" style={{ fontSize: 12, paddingLeft: 4 }}>
-            {meta.icon} {meta.title}
+            {metaIcon} {metaTitle}
           </Text>
-          <div role="group" aria-label="快捷操作">
+          <div role="group" aria-label={t('palette.aria.quickAction')}>
             {section.statics.map((action, idx) => {
               const flatIdx = section.offset + idx;
               const active = flatIdx === activeIndex;
@@ -582,20 +601,20 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
     return (
       <div key={section.kind} style={{ marginBottom: 4 }}>
         <Text type="secondary" style={{ fontSize: 12, paddingLeft: 4 }}>
-          {meta.icon} {meta.title}
+          {metaIcon} {metaTitle}
         </Text>
         {res.status === 'loading' && (
           <Text type="secondary" style={{ display: 'block', padding: '4px 8px', fontSize: 12 }}>
-            搜索中…
+            {t('palette.searching')}
           </Text>
         )}
         {res.status === 'error' && (
           <Text type="warning" style={{ display: 'block', padding: '4px 8px', fontSize: 12 }}>
-            {meta.title}加载失败
+            {t('palette.loadFailed', { group: metaTitle })}
           </Text>
         )}
         {res.status === 'ok' && section.items.length > 0 && (
-          <div role="group" aria-label={`${meta.title}搜索结果`}>
+          <div role="group" aria-label={t('palette.aria.searchResults', { group: metaTitle })}>
             {section.items.map((item, idx) => {
               const flatIdx = section.offset + idx;
               const active = flatIdx === activeIndex;
@@ -619,7 +638,7 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
                   }}
                 >
                   <span style={{ fontSize: 15, color: token.colorPrimary, display: 'inline-flex' }}>
-                    {meta.icon}
+                    {metaIcon}
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span
@@ -653,17 +672,21 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
                   {section.kind === 'task' && isAdmin && item.actions && (
                     <span
                       role="group"
-                      aria-label={`${item.title}快捷动作`}
+                      aria-label={t('palette.aria.inlineActions', { name: item.title })}
                       onClick={(e) => e.stopPropagation()}
                       style={{ display: 'inline-flex', gap: 4, flexShrink: 0 }}
                     >
                       {item.actions.map((ak) => {
-                        const am = TASK_ACTION_META[ak];
+                        const amLabel = t(TASK_ACTION_LABEL_KEY[ak]);
+                        const amIcon = TASK_ACTION_ICON[ak];
                         return (
                           <button
                             key={ak}
                             type="button"
-                            aria-label={`${am.label}任务 ${item.title}`}
+                            aria-label={t('palette.aria.taskAction', {
+                              action: amLabel,
+                              name: item.title,
+                            })}
                             disabled={actingKey !== null && actingKey !== item.key}
                             onClick={() => runTaskAction(ak, item)}
                             style={{
@@ -680,8 +703,8 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
                               cursor: actingKey ? 'not-allowed' : 'pointer',
                             }}
                           >
-                            {am.icon}
-                            {am.label}
+                            {amIcon}
+                            {amLabel}
                           </button>
                         );
                       })}
@@ -712,7 +735,7 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
       // UI-12：补可访问名——antd 已渲染 role="dialog" + aria-modal="true"，
       // 但本弹层为 closable=false 且无 title，dialog 长期无名；sr-only 标题
       // 只供读屏消费（antd 会据此设置 aria-labelledby），不占视觉版面。
-      title={<span id="command-palette-title" style={SR_ONLY_STYLE}>{DIALOG_TITLE}</span>}
+      title={<span id="command-palette-title" style={SR_ONLY_STYLE}>{t('palette.dialogTitle')}</span>}
       // 打开动画结束后再补一次聚焦（与上面 setTimeout 兜底互为冗余，两条路径幂等）
       afterOpenChange={(visible) => {
         if (visible) inputRef.current?.focus();
@@ -734,12 +757,12 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
         value={keyword}
         onChange={(e) => setKeyword(e.target.value)}
         onKeyDown={onInputKeyDown}
-        placeholder="搜索任务、执行记录、执行器、应用，或输入指令…"
+        placeholder={t('palette.placeholder')}
         prefix={<SearchOutlined style={{ color: token.colorTextTertiary }} />}
         allowClear
         // UI-12：组合框语义——读屏据此播报「可编辑组合框」，并把候选列表与
         // 当前高亮项（aria-activedescendant）关联起来，↑↓ 移动可被感知。
-        aria-label="搜索任务、执行记录、执行器、应用"
+        aria-label={t('palette.aria.search')}
         role="combobox"
         aria-expanded={flatItems.length > 0}
         aria-controls={LISTBOX_ID}
@@ -752,13 +775,13 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
         ref={listRef}
         id={LISTBOX_ID}
         role="listbox"
-        aria-label="搜索结果"
+        aria-label={t('palette.aria.results')}
         style={{ maxHeight: 380, overflowY: 'auto' }}
       >
         {sections.map(renderSection)}
         {showGlobalEmpty && (
           <Text type="secondary" style={{ display: 'block', textAlign: 'center', padding: '16px 0', fontSize: 13 }}>
-            未找到匹配结果
+            {t('palette.noResults')}
           </Text>
         )}
       </div>
@@ -770,11 +793,11 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
           gap: 16,
         }}
       >
-        <Text type="secondary" style={{ fontSize: 12 }}>↑↓ 选择</Text>
-        <Text type="secondary" style={{ fontSize: 12 }}>Enter 跳转</Text>
-        <Text type="secondary" style={{ fontSize: 12 }}>Esc 关闭</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>{t('palette.hint.navigate')}</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>{t('palette.hint.enter')}</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>{t('palette.hint.esc')}</Text>
         <Text type="secondary" style={{ fontSize: 12, marginLeft: 'auto' }}>
-          任务行可悬停/键盘直达快捷动作
+          {t('palette.hint.inlineActions')}
         </Text>
       </div>
     </Modal>

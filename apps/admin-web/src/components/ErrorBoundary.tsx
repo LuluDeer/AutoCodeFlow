@@ -1,8 +1,11 @@
 import React from 'react';
 import { Button, Result, Typography } from 'antd';
 import { BugOutlined } from '@ant-design/icons';
+import { withTranslation } from 'react-i18next';
+import type { WithTranslation } from 'react-i18next';
+import '../i18n';
 
-interface Props {
+interface Props extends WithTranslation {
   children: React.ReactNode;
   fallback?: React.ReactNode;
 }
@@ -12,7 +15,7 @@ interface State {
   error?: Error;
 }
 
-export class ErrorBoundary extends React.Component<Props, State> {
+class ErrorBoundaryBase extends React.Component<Props, State> {
   state: State = { hasError: false };
 
   static getDerivedStateFromError(error: Error): State {
@@ -24,16 +27,17 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   render() {
+    const { t } = this.props;
     if (this.state.hasError) {
       if (this.props.fallback) return this.props.fallback;
       return (
         <Result
           icon={<BugOutlined style={{ color: '#ff4d4f' }} />}
           status="error"
-          title="页面出现异常"
+          title={t('errorBoundary.title')}
           subTitle={
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {this.state.error?.message ?? '未知错误'}
+              {this.state.error?.message ?? t('errorBoundary.unknownError')}
             </Typography.Text>
           }
           extra={
@@ -44,7 +48,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
                 window.location.reload();
               }}
             >
-              刷新页面
+              {t('errorBoundary.reload')}
             </Button>
           }
         />
@@ -54,4 +58,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 }
 
+const ErrorBoundary = withTranslation('errorBoundary')(ErrorBoundaryBase);
+
+export { ErrorBoundary };
 export default ErrorBoundary;
