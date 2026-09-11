@@ -20,6 +20,7 @@ import { useDebounce } from '../hooks/useDebounce';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 import { ExecutionCompareModal, COMPARE_MAX } from '../components/ExecutionCompare';
 import PageHeader from '../components/PageHeader';
+import StateError from '../components/StateError';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -77,7 +78,7 @@ export default function ExecutionsPage() {
   // 筛选参数进 queryKey（参数变化自动重取，等价 refreshDeps）；
   // staleTime 全局 30s 兜底切页缓存。15s 轮询由下方 refetchInterval useEffect
   // 承担（可见性判定与原 pollingWhenHidden:false 一致）。
-  const { data, isLoading: loading, refetch } = useExecutionsList({
+  const { data, isLoading: loading, error, refetch } = useExecutionsList({
     page,
     pageSize,
     status: statusFilter,
@@ -282,6 +283,17 @@ export default function ExecutionsPage() {
           <Button size="small" onClick={clearFilters}>清除筛选</Button>
         )}
       </Space>
+
+      {/* UI-16：列表请求失败不再只弹 toast —— 页内原位呈现错误块 + 重试入口
+          （写操作失败仍走 toast，语义不变） */}
+      {error ? (
+        <StateError
+          error={error}
+          title="执行记录加载失败"
+          onRetry={() => void refetch()}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
 
       <Table
         rowKey="id"
