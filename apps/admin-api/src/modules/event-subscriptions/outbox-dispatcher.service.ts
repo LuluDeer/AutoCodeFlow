@@ -431,10 +431,10 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   async enqueue(
     eventType: string,
     payload: Record<string, unknown>,
-  ): Promise<void> {
-    if (!this.enabled) return;
+  ): Promise<string | null> {
+    if (!this.enabled) return null;
     try {
-      await this.outboxRepo.save(
+      const saved = await this.outboxRepo.save(
         this.outboxRepo.create({
           eventId: `${eventType}:${randomUUID()}`.slice(0, 64),
           eventType,
@@ -447,6 +447,8 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           deadLettered: false,
         }),
       );
+      // 回传行 id：调用方（快速路径）全投成功时用它收口，避免补投扫描重复投递
+      return saved.id ?? null;
     } catch (err: unknown) {
       // 落库失败：outbox 兜底失效——只记日志（fail-open，快速路径已尽力）。
       this.logger.error(
@@ -454,6 +456,44 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           err instanceof Error ? err.message : String(err)
         }`,
       );
+      return null;
+    }
+  }
+
+  /**
+   * 快速路径收口（FEAT-19 补强）：把该 outbox 行标记为已投递。
+   *
+   * 为什么需要：事件到达时既走内存快速路径、又落 outbox 兜底行；兜底行只有
+   * 被收口或由扫描投递后才算结清——**不收口就等于每次成功事件都必然被补投
+   * 扫描再投一遍**（订阅方流量翻倍 + 幂等压力）。快速路径全部订阅投递成功后
+   * 调本方法把行结清，重复投递收敛为「部分失败/死信/租约竞态」三种情形。
+   *
+   * 并发安全：条件 UPDATE 带「无活跃租约」谓词——若补投扫描已 claim 该行
+   * （leaseToken 非空且未过期）就**不抢**，让扫描按自己的语义完成投递；此时
+   * 订阅方仍会收到一次重复（at-least-once，已在文档声明需幂等）。
+   * 幂等：已 `dispatchedAt` 的行 affected=0，重复调用无副作用。
+   */
+  async markFastPathDelivered(rowId: string): Promise<boolean> {
+    if (!this.enabled || !rowId) return false;
+    try {
+      const res = await this.outboxRepo
+        .createQueryBuilder()
+        .update(EventOutbox)
+        .set({ dispatchedAt: () => "now()" })
+        .where("id = :id", { id: rowId })
+        .andWhere('"dispatchedAt" IS NULL')
+        .andWhere('"deadLettered" = false')
+        .andWhere('("leaseUntil" IS NULL OR "leaseUntil" <= now())')
+        .execute();
+      return (res.affected ?? 0) > 0;
+    } catch (err: unknown) {
+      // 旁路 best-effort：收口失败只记日志，扫描照旧会（重复）投递一次
+      this.logger.warn(
+        `Failed to settle fast-path outbox row ${rowId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return false;
     }
   }
 

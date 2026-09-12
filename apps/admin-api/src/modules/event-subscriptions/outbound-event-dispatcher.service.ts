@@ -62,7 +62,20 @@ export const OUTBOX_DISPATCHER_TOKEN = Symbol("OUTBOX_DISPATCHER_TOKEN");
 
 /** OutboxDispatcher 的结构最小面（本类消费的入口），避免 import 其模块。 */
 export interface OutboxDispatcherLike {
-  enqueue(eventType: string, payload: Record<string, unknown>): Promise<void>;
+  /**
+   * 落一行 outbox（跨进程兜底）。返回**行 id**（落库失败/未启用时 null）——
+   * 快速路径全成功后用它收口该行，避免补投扫描再投一遍。
+   */
+  enqueue(
+    eventType: string,
+    payload: Record<string, unknown>,
+  ): Promise<string | null>;
+  /**
+   * 快速路径收口：把该行标记为已投递（`dispatchedAt`）。条件 UPDATE 保证
+   * 「无活跃租约」才收口——补投扫描正在处理这一行时不抢（此时重复投递仍是
+   * at-least-once 的既定语义）。可选：老实现缺席时退化为「照旧可能重复」。
+   */
+  markFastPathDelivered?(rowId: string): Promise<boolean>;
 }
 
 /**
@@ -172,11 +185,17 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     );
     // FEAT-19: 先落 outbox 再走内存快速路径——落库成功即事件"已接收"，
     // 进程重启后由 OutboxDispatcher 扫描补投（at-least-once；落库失败仅记
-    // 日志 fail-open，快速路径照常）。注意：快速路径成功 + outbox 也会被
-    // 补投扫描再次投递 → 订阅方可能收到重复投递，必须幂等消费。
+    // 日志 fail-open，快速路径照常）。
+    //
+    // 收口（本轮）：快速路径**全部订阅都投递成功**时，把 outbox 行标记为已
+    // 投递——否则补投扫描必然再投一遍（不是"可能重复"，而是**每次成功事件都
+    // 重复投一次**，订阅方平白承担双倍流量）。部分失败/死信时**不收口**：
+    // 这一行必须留给扫描重试，代价是已成功的订阅会再收一次（at-least-once
+    // 的既定语义，订阅方仍需幂等）。收口本身是旁路 best-effort，失败只记日志。
     const outbox = this.getOutbox();
+    let outboxRowId: string | null = null;
     if (outbox) {
-      await outbox.enqueue(
+      outboxRowId = await outbox.enqueue(
         eventName,
         payload as unknown as Record<string, unknown>,
       );
@@ -203,9 +222,21 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     this.logger.log(
       `Outbound event "${eventName}" → ${targets.length} subscription(s)`,
     );
-    await Promise.all(
+    const outcomes = await Promise.all(
       targets.map((sub) => this.deliverWithRetries(sub, eventName, payload)),
     );
+    // 全部订阅都投递成功才收口 outbox 行（见上注：部分失败必须留给扫描重试）
+    if (outboxRowId && outcomes.every((o) => o.kind === "delivered")) {
+      try {
+        await outbox?.markFastPathDelivered?.(outboxRowId);
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Outbox fast-path settle failed for row ${outboxRowId} (scan will redeliver): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   }
 
   /** 单订阅派发：首投 + 最多 3 次尝试指数退避 → 终败死信。 */

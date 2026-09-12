@@ -2765,7 +2765,9 @@ describe("ExecutorService (__tests__)", () => {
       const predicates = andWhere.mock.calls.map((c) => String(c[0]));
       expect(predicates.some((p) => /version/i.test(p))).toBe(false);
       // 容量与在线状态谓词必须仍在（原子不变量没有被顺手删掉）
-      expect(predicates.some((p) => /runningTaskCount" < :max/.test(p))).toBe(true);
+      expect(predicates.some((p) => /runningTaskCount" < :max/.test(p))).toBe(
+        true,
+      );
       expect(predicates.some((p) => /status = :status/.test(p))).toBe(true);
     });
 
