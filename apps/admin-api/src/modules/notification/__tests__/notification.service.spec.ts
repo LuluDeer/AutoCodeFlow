@@ -967,7 +967,9 @@ describe("NotificationService", () => {
         }),
       );
 
-      // DB 行落库（生成正式 id）→ 内存条目 id 被替换，无失败告警
+      // DB 行落库（生成正式 id）→ 内存条目记录 dbId，无失败告警。
+      // ARCH-31: 内存键保持 addSilence 返回给调用方的本地 id（管理台拿它去
+      // DELETE），DB 行 id 另存 dbId——否则「创建后立刻删除」在库里查不到行。
       const warnSpy = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});
@@ -977,7 +979,10 @@ describe("NotificationService", () => {
         expect.stringContaining("persist failed"),
       );
       warnSpy.mockRestore();
-      expect(svc.getSilences().map((s) => s.id)).toContain("db-row-1");
+      const persisted = svc.getSilences()[0];
+      expect(persisted.id).toBe(localId);
+      expect(persisted.dbId).toBe("db-row-1");
+      expect(persisted.persisted).toBe(true);
     });
 
     it("keeps memory semantics when the store create fails (warn, not throw)", async () => {
@@ -1016,7 +1021,8 @@ describe("NotificationService", () => {
       const id = svc.addSilence({ taskId: "t1", durationMinutes: 5 });
       await new Promise((r) => setImmediate(r));
       expect(svc.removeSilence(id)).toBe(true);
-      expect(remove).toHaveBeenCalledWith(id);
+      // ARCH-31: 删库走 DB 行 id（内存键是本地临时 id，库里查不到）
+      expect(remove).toHaveBeenCalledWith("db-1");
       expect(svc.getSilences()).toHaveLength(0);
 
       // store 删除失败 → 仅 warn，内存态不受影响（catch 异步落地，等一拍）
@@ -1142,6 +1148,135 @@ describe("NotificationService", () => {
           applicationId: "app-1",
         }),
       );
+    });
+  });
+
+  describe("ARCH-31 跨实例静默读穿刷新（多实例一致性）", () => {
+    const makeServiceWithStore = async (store: unknown) => {
+      const module = await Test.createTestingModule({
+        providers: [
+          NotificationService,
+          { provide: WecomChannel, useFactory: mockChannel },
+          { provide: DingtalkChannel, useFactory: mockChannel },
+          { provide: EmailChannel, useFactory: mockChannel },
+          { provide: SlackChannel, useFactory: mockChannel },
+          { provide: WebhookChannel, useFactory: mockChannel },
+          { provide: FeishuChannel, useFactory: mockChannel },
+          { provide: NotificationSilenceService, useValue: store },
+        ],
+      }).compile();
+      return module.get(NotificationService);
+    };
+
+    const activeRow = (over: Record<string, unknown> = {}) => ({
+      id: "db-row-1",
+      scope: "global",
+      channelType: null,
+      applicationId: null,
+      taskId: null,
+      level: null,
+      reason: null,
+      startTime: null,
+      endTime: new Date(Date.now() + 60_000),
+      durationMinutes: 10,
+      createdAt: new Date(),
+      ...over,
+    });
+
+    const noopStore = (listActive: unknown) => ({
+      listActive,
+      create: jest.fn().mockResolvedValue({ id: "db-1" }),
+      remove: jest.fn().mockResolvedValue(undefined),
+      cleanExpired: jest.fn().mockResolvedValue(0),
+    });
+
+    it("周期刷新把「另一个实例创建的静默」读进本实例（此前只有启动回灌一次）", async () => {
+      const svc = await makeServiceWithStore(
+        noopStore(jest.fn().mockResolvedValue([activeRow()])),
+      );
+      // 刷新前：本实例对该规则一无所知（多实例失效路径）
+      expect(svc.isSilenced()).toBe(false);
+
+      await (svc as any).syncSilencesFromStore();
+      expect(svc.isSilenced()).toBe(true);
+      expect(svc.getSilences()).toHaveLength(1);
+    });
+
+    it("刷新保留写穿在途的本地静默（还没拿到 DB id 的规则不被抖掉）", async () => {
+      let resolveCreate: (row: unknown) => void = () => {};
+      const svc = await makeServiceWithStore({
+        ...noopStore(jest.fn().mockResolvedValue([])),
+        create: jest.fn(
+          () =>
+            new Promise((resolve) => {
+              resolveCreate = resolve;
+            }),
+        ),
+      });
+      const id = svc.addSilence({ taskId: "t1", durationMinutes: 5 });
+
+      await (svc as any).syncSilencesFromStore();
+      expect(svc.getSilences().map((s) => s.id)).toEqual([id]);
+
+      resolveCreate({ id: "db-row-9" });
+      await new Promise((r) => setImmediate(r));
+      // 落库后再刷新：本地键与 DB 同源行去重，只剩一条且可继续删除
+      await (svc as any).syncSilencesFromStore();
+      expect(svc.getSilences()).toHaveLength(1);
+      expect(svc.getSilences()[0].id).toBe(id);
+      expect(svc.getSilences()[0].dbId).toBe("db-row-9");
+    });
+
+    it("刷新丢弃已被其他实例删除（或已过期）的静默——但仅在 DB 确认存在过之后", async () => {
+      let rows: unknown[] = [activeRow({ id: "db-removed" })];
+      const listActive = jest.fn().mockImplementation(async () => rows);
+      const create = jest.fn().mockResolvedValue({ id: "db-removed" });
+      const svc = await makeServiceWithStore({
+        ...noopStore(listActive),
+        create,
+      });
+      const id = svc.addSilence({ taskId: "t1", durationMinutes: 5 });
+      await new Promise((r) => setImmediate(r));
+
+      // 第一次刷新：DB 确认存在（去重后保留本地键，条目数不变）
+      await (svc as any).syncSilencesFromStore();
+      expect(svc.getSilences()).toHaveLength(1);
+      expect(svc.getSilences()[0].id).toBe(id);
+
+      // 另一个实例删除了该规则 → 下一次刷新丢弃
+      rows = [];
+      await (svc as any).syncSilencesFromStore();
+      expect(svc.getSilences()).toHaveLength(0);
+      expect(svc.removeSilence(id)).toBe(false);
+    });
+
+    it("刷新查询失败时保持内存态（不因 DB 抖动丢掉已生效的静默）", async () => {
+      const svc = await makeServiceWithStore(
+        noopStore(jest.fn().mockRejectedValue(new Error("pg down"))),
+      );
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      svc.addSilence({ taskId: "t1", durationMinutes: 5 });
+
+      await (svc as any).syncSilencesFromStore();
+      expect(svc.getSilences()).toHaveLength(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("DB sync failed"),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("启动回灌只补缺失行，不覆盖本地态（NOTIF-003 语义不变）", async () => {
+      const svc = await makeServiceWithStore(
+        noopStore(jest.fn().mockResolvedValue([activeRow({ id: "db-x" })])),
+      );
+      const localId = svc.addSilence({ taskId: "t1", durationMinutes: 5 });
+
+      await (svc as any).restoreSilencesFromStore();
+      const ids = svc.getSilences().map((s) => s.id);
+      expect(ids).toContain(localId);
+      expect(ids).toContain("db-x");
     });
   });
 });

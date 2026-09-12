@@ -17,6 +17,9 @@ import {
 } from '../../api/event-subscriptions';
 import type { ColumnsType } from 'antd/es/table';
 import { getErrMsg } from '../../utils/error';
+import { useTranslation } from 'react-i18next';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../../i18n';
 import StateError from '../../components/StateError';
 
 const { Text, Paragraph } = Typography;
@@ -33,19 +36,22 @@ const { Text, Paragraph } = Typography;
 const URL_PATTERN = /^https?:\/\/[^\s]+$/;
 
 /** 失败统计列纯函数（导出供测试）：连续失败 >0 展示红色统计，否则健康。 */
-export function subscriptionFailureStats(sub: EventSubscription): {
+export function subscriptionFailureStats(
+  sub: EventSubscription,
+  t: (k: string, opts?: Record<string, unknown>) => string = (k) => k,
+): {
   label: string;
   color: string;
   detail: string | null;
 } {
   if (sub.consecutiveFailures > 0) {
     return {
-      label: `连续失败 ${sub.consecutiveFailures} 次`,
+      label: t('eventSub.stats.failures', { count: sub.consecutiveFailures }),
       color: 'red',
       detail: sub.lastFailureError ?? sub.lastFailureAt ?? null,
     };
   }
-  return { label: '正常', color: 'green', detail: null };
+  return { label: t('eventSub.stats.healthy'), color: 'green', detail: null };
 }
 
 /** 事件类型值 → 短标签（未知事件名原样展示——契约只增不改，容忍新事件）。 */
@@ -54,17 +60,30 @@ function eventTypeLabel(v: string): string {
   return found ? found.value : v;
 }
 
+/** 事件目录 i18n key：Select 选项 label 走翻译，未知值原样兜底。 */
+const EVENT_TYPE_T_KEY: Record<string, string> = {
+  'execution.completed': 'eventSub.eventType.executionCompleted',
+  'execution.failed': 'eventSub.eventType.executionFailed',
+  'executor.offline': 'eventSub.eventType.executorOffline',
+  'deployment.completed': 'eventSub.eventType.deploymentCompleted',
+};
+
+function eventTypeLabelKey(v: string): string {
+  return EVENT_TYPE_T_KEY[v] ?? v;
+}
+
 function CreateResultModal(props: {
   result: EventSubscriptionCreateResult | null;
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const { t } = useTranslation();
   if (!props.result) return null;
   const secret = props.result.generatedSecret;
   return (
     <Modal
       open
-      title="订阅已创建"
+      title={t('eventSub.createResult.title')}
       onCancel={props.onClose}
       footer={[
         <Button key="copy" icon={undefined} onClick={() => {
@@ -73,9 +92,9 @@ function CreateResultModal(props: {
             setCopied(true);
           }
         }}>
-          {copied ? '已复制' : '复制密钥'}
+          {copied ? t('eventSub.createResult.copied') : t('eventSub.apiKey.copy')}
         </Button>,
-        <Button key="ok" type="primary" onClick={props.onClose}>我已保存好密钥</Button>,
+        <Button key="ok" type="primary" onClick={props.onClose}>{t('eventSub.createResult.saved')}</Button>,
       ]}
     >
       {secret ? (
@@ -83,8 +102,8 @@ function CreateResultModal(props: {
           <Alert
             type="warning"
             showIcon
-            message="签名密钥仅此一次显示"
-            description="服务端未收到自定义 secret，已代为生成。此密钥仅在本窗口显示一次，关闭后无法再次查看（读面恒为 ******），请立即复制并妥善保存——订阅方需用它校验 X-Hub-Signature-256 签名。"
+            message={t('eventSub.createResult.alertTitle')}
+            description={t('eventSub.createResult.alertDesc')}
             style={{ marginBottom: 16 }}
           />
           <Paragraph code copyable={false} style={{ wordBreak: 'break-all' }} data-testid="generated-secret">
@@ -92,10 +111,10 @@ function CreateResultModal(props: {
           </Paragraph>
         </>
       ) : (
-        <Alert type="success" showIcon message="订阅已创建" style={{ marginBottom: 16 }} />
+        <Alert type="success" showIcon message={t('eventSub.createResult.title')} style={{ marginBottom: 16 }} />
       )}
       <Space>
-        <Text type="secondary">URL：</Text>
+        <Text type="secondary">{t('eventSub.createResult.urlLabel')}</Text>
         <Text code>{props.result.subscription.url}</Text>
       </Space>
     </Modal>
@@ -105,6 +124,7 @@ function CreateResultModal(props: {
 /** 死信列表段：按订阅逐个拉取（属主/ADMIN 契约），只读 + replay。 */
 function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription[] }) {
   const qc = useQueryClient();
+  const { t } = useTranslation();
   // 默认展开第一个订阅；订阅列表异步到达前用兜底 effect 补设（useState 初值
   // 只在首渲染求值一次，列表后到时恒 null → 查询 enabled=false 永不拉取）。
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -124,9 +144,9 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
       eventSubscriptionsApi.replayDeadLetter(subId, dlId),
     onSuccess: (res) => {
       if (res.ok) {
-        message.success('重放成功，死信已删除');
+        message.success(t('eventSub.deadLetter.replaySuccess'));
       } else {
-        message.error(`重放失败：${res.error ?? '未知错误'}（死信保留，可再次重放）`);
+        message.error(t('eventSub.deadLetter.replayFail', { error: res.error ?? t('eventSub.unknownError') }));
       }
       qc.invalidateQueries({ queryKey: ['event-dead-letters'] });
       qc.invalidateQueries({ queryKey: ['event-subscriptions'] });
@@ -134,16 +154,16 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
     // UI-15：mutateAsync 的 rejection 已被 Modal.confirm onOk 消费（Promise 返回
     // 给确认弹窗），但为不依赖消费方形态，这里兜底 toast（双路径都有反馈）。
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '重放请求失败，死信保留可再次重放'));
+      message.error(getErrMsg(err, t('eventSub.deadLetter.replayReqFail')));
     },
   });
 
   const handleReplay = (subId: string, dl: EventSubscriptionDeadLetter) => {
     Modal.confirm({
-      title: '确认重放该死信？',
-      content: '将以订阅当前的 URL 与 secret 重新签名派发一次（不自动重试）。成功后死信删除，失败则保留可再次重放。',
-      okText: '重放',
-      cancelText: '取消',
+      title: t('eventSub.deadLetter.replayConfirm'),
+      content: t('eventSub.deadLetter.replayConfirmDesc'),
+      okText: t('eventSub.deadLetter.replay'),
+      cancelText: t('eventSub.cancel'),
       onOk: async () => {
         setReplayingId(dl.id);
         // UI-15：Modal.confirm onOk 返回的 Promise 会被确认弹层 await，
@@ -160,21 +180,21 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
   };
 
   const cols: ColumnsType<EventSubscriptionDeadLetter> = [
-    { title: '事件', dataIndex: 'eventType', width: 180, render: (v: string) => <Tag>{eventTypeLabel(v)}</Tag> },
+    { title: t('eventSub.deadLetter.col.event'), dataIndex: 'eventType', width: 180, render: (v: string) => <Tag>{eventTypeLabel(v)}</Tag> },
     {
-      title: '载荷', dataIndex: 'payload', ellipsis: true,
+      title: t('eventSub.deadLetter.col.payload'), dataIndex: 'payload', ellipsis: true,
       render: (v: Record<string, unknown>) => (
         <Text code style={{ fontSize: 12 }}>{JSON.stringify(v).slice(0, 80)}</Text>
       ),
     },
-    { title: '失败原因', dataIndex: 'error', ellipsis: true },
-    { title: '尝试次数', dataIndex: 'attempts', width: 90 },
+    { title: t('eventSub.deadLetter.col.error'), dataIndex: 'error', ellipsis: true },
+    { title: t('eventSub.deadLetter.col.attempts'), dataIndex: 'attempts', width: 90 },
     {
-      title: '时间', dataIndex: 'createdAt', width: 160,
+      title: t('eventSub.deadLetter.col.time'), dataIndex: 'createdAt', width: 160,
       render: (v: string) => (v ? new Date(v).toLocaleString('zh-CN') : '-'),
     },
     {
-      title: '操作', key: 'action', width: 90,
+      title: t('eventSub.deadLetter.col.action'), key: 'action', width: 90,
       render: (_: unknown, record: EventSubscriptionDeadLetter) => (
         <Button
           size="small"
@@ -183,7 +203,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
           loading={replayingId === record.id}
           onClick={() => expandedId && handleReplay(expandedId, record)}
         >
-          重放
+          {t('eventSub.deadLetter.replay')}
         </Button>
       ),
     },
@@ -196,9 +216,9 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
       <Divider style={{ margin: '8px 0 16px' }} />
       <div style={{ marginBottom: 8 }}>
         <Space>
-          <Text strong>死信队列</Text>
+          <Text strong>{t('eventSub.deadLetter.sectionTitle')}</Text>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            连续 3 次投递全败的事件整包落死信（进程内重试 1s/2s/4s 退避耗尽后），可手动重放补发
+            {t('eventSub.deadLetter.sectionDesc')}
           </Text>
         </Space>
       </div>
@@ -220,7 +240,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
         // UI-16：死信读请求失败 → 页内错误块（重试=refetch），不落「暂无死信」误导空态
         <StateError
           error={deadLettersError}
-          title="死信列表加载失败"
+          title={t('eventSub.deadLetter.loadFail')}
           onRetry={() => { void refetchDeadLetters(); }}
         />
       ) : (
@@ -232,7 +252,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
           loading={isLoading}
           pagination={false}
           data-testid="dead-letter-table"
-          locale={{ emptyText: '该订阅暂无死信（投递健康或已全部重放成功）' }}
+          locale={{ emptyText: t('eventSub.deadLetter.empty') }}
         />
       )}
     </>
@@ -245,6 +265,7 @@ function SubscriptionFormModal(props: {
   onClose: () => void;
 }) {
   const { open, editing, onClose } = props;
+  const { t } = useTranslation();
   const [form] = Form.useForm<{
     url: string;
     eventTypes: string[];
@@ -268,7 +289,7 @@ function SubscriptionFormModal(props: {
     // UI-15：创建失败反馈（Modal 保持打开由 handleOk 的 await 链路承担，
     // 这里补 toast 保证文案可见且不依赖调用形态）。
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '创建订阅失败，请检查 URL 与网络'));
+      message.error(getErrMsg(err, t('eventSub.createFail')));
     },
   });
   const [created, setCreated] = useState<EventSubscriptionCreateResult | null>(null);
@@ -282,13 +303,13 @@ function SubscriptionFormModal(props: {
         ...(values.enabled !== undefined ? { enabled: values.enabled } : {}),
       }),
     onSuccess: () => {
-      message.success('订阅已更新');
+      message.success(t('eventSub.updated'));
       onClose();
       qc.invalidateQueries({ queryKey: ['event-subscriptions'] });
     },
     // UI-15：更新失败反馈（SSRF 深校验 400 等后端文案经 getErrMsg 透出）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '更新订阅失败'));
+      message.error(getErrMsg(err, t('eventSub.updateFail')));
     },
   });
 
@@ -306,8 +327,8 @@ function SubscriptionFormModal(props: {
     <>
       <Modal
         open={open}
-        title={editing ? '编辑订阅' : '新建订阅'}
-        okText={editing ? '保存' : '创建'}
+        title={editing ? t('eventSub.modal.edit') : t('eventSub.modal.createTitle')}
+        okText={editing ? t('eventSub.modal.save') : t('eventSub.modal.createOk')}
         confirmLoading={createMut.isPending || updateMut.isPending}
         onCancel={onClose}
         onOk={handleOk}
@@ -323,40 +344,40 @@ function SubscriptionFormModal(props: {
         >
           <Form.Item
             name="url"
-            label="推送 URL"
+            label={t('eventSub.field.url')}
             rules={[
-              { required: true, message: '请输入推送 URL' },
-              { pattern: URL_PATTERN, message: '需为公网 http(s) 地址' },
+              { required: true, message: t('eventSub.field.urlRequired') },
+              { pattern: URL_PATTERN, message: t('eventSub.field.urlPattern') },
             ]}
-            tooltip="服务端会做 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据），非法地址返回 400"
+            tooltip={t('eventSub.field.urlTooltip')}
           >
             <Input placeholder="https://ci.example.com/hooks" data-testid="sub-url-input" />
           </Form.Item>
           <Form.Item
             name="eventTypes"
-            label="订阅事件（1-10 个）"
-            rules={[{ required: true, message: '请至少选择一个事件' }]}
+            label={t('eventSub.field.eventTypes')}
+            rules={[{ required: true, message: t('eventSub.field.eventTypesRequired') }]}
           >
             <Select
               mode="multiple"
-              placeholder="选择要订阅的平台事件"
-              options={EVENT_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              placeholder={t('eventSub.field.eventTypesPlaceholder')}
+              options={EVENT_TYPE_OPTIONS.map((o) => ({ value: o.value, label: t(eventTypeLabelKey(o.value)) }))}
             />
           </Form.Item>
           <Form.Item
             name="secret"
-            label={<>签名密钥 <Text type="secondary" style={{ fontSize: 12 }}>（可选）</Text></>}
-            rules={[{ min: 16, message: '至少 16 字符' }]}
-            tooltip="留空 = 服务端代生成 64 字符 hex，并在创建响应中一次性回显；填写则使用自定义密钥（≥16 字符）。编辑时留空 = 保持现有密钥不变。"
-            extra="订阅方用该密钥校验 X-Hub-Signature-256 签名（HMAC_SHA256(secret, `${timestamp}.${rawBody}`)）。"
+            label={<>{t('eventSub.field.secret')} <Text type="secondary" style={{ fontSize: 12 }}>{t('eventSub.field.secretOptional')}</Text></>}
+            rules={[{ min: 16, message: t('eventSub.field.secretMin') }]}
+            tooltip={t('eventSub.field.secretTooltip')}
+            extra={t('eventSub.field.secretExtra')}
           >
             <Input.Password
-              placeholder={editing ? '留空保持现有密钥不变' : '留空 = 服务端代生成'}
+              placeholder={editing ? t('eventSub.field.secretEditPlaceholder') : t('eventSub.field.secretCreatePlaceholder')}
               autoComplete="new-password"
               data-testid="sub-secret-input"
             />
           </Form.Item>
-          <Form.Item name="enabled" label="启用" valuePropName="checked">
+          <Form.Item name="enabled" label={t('eventSub.field.enabled')} valuePropName="checked">
             <Switch data-testid="sub-enabled-switch" />
           </Form.Item>
         </Form>
@@ -368,6 +389,7 @@ function SubscriptionFormModal(props: {
 
 export default function EventSubscriptionsSettings() {
   const qc = useQueryClient();
+  const { t } = useTranslation();
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<EventSubscription | null>(null);
 
@@ -381,39 +403,39 @@ export default function EventSubscriptionsSettings() {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       eventSubscriptionsApi.update(id, { enabled }),
     onSuccess: (_res, vars) => {
-      message.success(vars.enabled ? '订阅已启用' : '订阅已停用');
+      message.success(vars.enabled ? t('eventSub.enabled') : t('eventSub.disabled'));
       qc.invalidateQueries({ queryKey: ['event-subscriptions'] });
     },
     // UI-15：开关切换失败反馈（Switch 会自动回弹，但失败原因仍需可见）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '更新订阅状态失败'));
+      message.error(getErrMsg(err, t('eventSub.updateStatusFail')));
     },
   });
 
   const removeMut = useMutation({
     mutationFn: (id: string) => eventSubscriptionsApi.remove(id),
     onSuccess: () => {
-      message.success('订阅已删除（关联死信级联删除）');
+      message.success(t('eventSub.deleted'));
       qc.invalidateQueries({ queryKey: ['event-subscriptions'] });
     },
     // UI-15：删除失败反馈
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '删除订阅失败'));
+      message.error(getErrMsg(err, t('eventSub.deleteFail')));
     },
   });
 
   const columns: ColumnsType<EventSubscription> = [
     {
-      title: '事件类型', dataIndex: 'eventTypes', key: 'eventTypes',
+      title: t('eventSub.col.eventTypes'), dataIndex: 'eventTypes', key: 'eventTypes',
       render: (v: string[]) => (
         <Space size={4} wrap>
-          {(v ?? []).map((t) => <Tag key={t} data-testid="sub-event-type">{eventTypeLabel(t)}</Tag>)}
+          {(v ?? []).map((et) => <Tag key={et} data-testid="sub-event-type">{eventTypeLabel(et)}</Tag>)}
         </Space>
       ),
     },
     { title: 'URL', dataIndex: 'url', key: 'url', ellipsis: true, render: (v: string) => <Text code>{v}</Text> },
     {
-      title: '启用', dataIndex: 'enabled', key: 'enabled', width: 80,
+      title: t('eventSub.col.enabled'), dataIndex: 'enabled', key: 'enabled', width: 80,
       render: (v: boolean, record: EventSubscription) => (
         <Switch
           checked={v}
@@ -425,9 +447,9 @@ export default function EventSubscriptionsSettings() {
       ),
     },
     {
-      title: '投递状态', key: 'stats', width: 140,
+      title: t('eventSub.col.deliveryStatus'), key: 'stats', width: 140,
         render: (_: unknown, record: EventSubscription) => {
-          const s = subscriptionFailureStats(record);
+          const s = subscriptionFailureStats(record, t);
           return (
             <Tooltip title={s.detail ?? undefined}>
               <Tag color={s.color}>{s.label}</Tag>
@@ -436,7 +458,7 @@ export default function EventSubscriptionsSettings() {
         },
     },
     {
-      title: '操作', key: 'action', width: 130,
+      title: t('eventSub.col.action'), key: 'action', width: 130,
       render: (_: unknown, record: EventSubscription) => (
         <Space size={4}>
           <Button
@@ -445,12 +467,12 @@ export default function EventSubscriptionsSettings() {
             data-testid={`sub-edit-${record.id}`}
             onClick={() => { setEditing(record); setFormOpen(true); }}
           >
-            编辑
+            {t('eventSub.edit')}
           </Button>
           <Popconfirm
-            title="确认删除该订阅？"
-            description="删除后停止推送且关联死信级联删除，无法恢复。"
-            okText="删除"
+            title={t('eventSub.deleteConfirm')}
+            description={t('eventSub.deleteConfirmDesc')}
+            okText={t('eventSub.delete')}
             okButtonProps={{ danger: true }}
             onConfirm={() => removeMut.mutate(record.id)}
           >
@@ -463,7 +485,7 @@ export default function EventSubscriptionsSettings() {
 
   return (
     <Card
-      title={<Space><BellOutlined /> 事件订阅（Webhook 出站）</Space>}
+      title={<Space><BellOutlined /> {t('eventSub.title')}</Space>}
       extra={
         <Button
           type="primary"
@@ -471,7 +493,7 @@ export default function EventSubscriptionsSettings() {
           onClick={() => { setEditing(null); setFormOpen(true); }}
           data-testid="sub-create"
         >
-          新建订阅
+          {t('eventSub.create')}
         </Button>
       }
     >
@@ -479,19 +501,17 @@ export default function EventSubscriptionsSettings() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="平台事件可订阅后以签名 webhook 推送到外部端点（如 CI 在任务失败时触发流程）"
+        message={t('eventSub.alertMessage')}
         description={
           <Text type="secondary">
-            事件信封 {'{ event, occurredAt, data }'} 携带 X-AutoCodeFlow-Event / X-AutoCodeFlow-Timestamp /
-            X-Hub-Signature-256 三头（签名=HMAC_SHA256(secret, timestamp + '.' + 原始 body)）。投递超时 10s、
-            禁跟随重定向；失败按 1s/2s/4s 退避重试 3 次后落死信。secret 读面恒脱敏为 ******。
+            {t('eventSub.alertDesc')}
           </Text>
         }
       />
       {subsError ? (
         <StateError
           error={subsError}
-          title="事件订阅列表加载失败"
+          title={t('eventSub.loadFail')}
           onRetry={() => { void refetchSubs(); }}
         />
       ) : (

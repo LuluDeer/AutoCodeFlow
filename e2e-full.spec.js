@@ -1434,6 +1434,51 @@ test.describe('security-redline-approval', () => {
     await expectRedline(inbox, 403, '审批面 pending-inbox（GET）');
     console.log('  ✓ 审批面 pending-inbox（GET）→ 403');
   });
+
+  // ── P0-2：第二人 approve 成功 → 部署真实派发（攻击面之外的正向闭环）────────
+  // 现有 30~35 全部是失败/控制路径（403/409/401/冻结），本条补「第二人批准→
+  // 零派发冻结解除→部署行进入 deploy 链」的正向锚。断言不追求 executor 拉到
+  // 真实 git 源跑到 RUNNING（那需本地 git fixture + 写面放行，属部署轮），
+  // 而是钉死「approvalRequired 应用 deploy 零派发 / approve 后行离开 pending
+  // 且方向为部署」。
+  test('36. 第二人 approve — 批准后部署真实离开 pending 进入 push 链（正向闭环）', async ({ request }) => {
+    const appId = await createApprovalApp(request);
+    const dep = await createPendingDeployment(request, appId);
+    // 冻结期零派发：行 status 保持 pending（提交时已选定执行器但未推部署——
+    // 「零派发」语义是未触发 deploy 链，不是无执行器地址）
+    const frozen = await (await request.get(`${API}/api/app-deployments/${dep.id}`, {
+      headers: { Authorization: `Bearer ${adminTok}` },
+    })).json();
+    expect(frozen.data?.status).toBe('pending');
+    expect(frozen.data?.approvalStatus).toBe('pending_approval');
+
+    // 第二人（B）批准 → 201 + approved
+    const r = await request.post(`${API}/api/app-deployments/${dep.id}/approval/approve`, {
+      headers: { Authorization: `Bearer ${adminBTok}` },
+      data: { reason: 'e2e P0-2：第二人批准放行' },
+    });
+    expect(r.status(), `B approve 应 201: ${(await r.text()).slice(0, 200)}`).toBe(201);
+    const approved = (await r.json())?.data;
+    expect(approved.approvalStatus).toBe('approved');
+    expect(approved.approvalMeta?.actedByName, '审批痕迹应记第二人').toBe(ADMIN_B);
+
+    // approve 是 fire-and-forget 推 executor；轮询至行离开 pending（进入
+    // deploying/running/failed 任一，都证明冻结解除 + 部署链真实触发）
+    let pushed = null;
+    for (let i = 0; i < 30; i += 1) {
+      const cur = await (await request.get(`${API}/api/app-deployments/${dep.id}`, {
+        headers: { Authorization: `Bearer ${adminTok}` },
+      })).json();
+      const s = cur.data?.status;
+      if (s && s !== 'pending') {
+        pushed = cur.data;
+        break;
+      }
+      await new Promise((res) => setTimeout(res, 1000));
+    }
+    expect(pushed, 'approve 后部署行应在 30s 内离开 pending（真实派发）').toBeTruthy();
+    console.log(`  ✓ 第二人 approve → ${pushed.status}（approvalStatus=approved，部署脱离冻结）`);
+  });
 });
 
 // ── P0-1 红线②：RBAC 全端点（W2 @Roles(ADMIN) 收口）─────────────────────────
@@ -1745,5 +1790,65 @@ test.describe('security-redline-ssrf', () => {
     });
     await expectRedline(anon, 401, '未携带 token 建订阅');
     console.log('  ✓ 未携带 token 建订阅 → 401');
+  });
+});
+
+// ── BUG-18 端到端：私服依赖派发（e2e-full.sh 以 E2E_PRIVATE_REGISTRY 启用）──────
+// 任务经 admin-api 创建 → 平台派发 → executor 用私服凭据安装 requirements。
+// 此前只覆盖到「注册表侧直连私服」与「executor 单测」，本用例补上平台全链：
+//   ① 执行成功（安装失败会直接体现为 failed）；
+//   ② 依赖确实落在 <workDir>/.node_modules/<taskId>/node_modules，内容来自私服 fixture；
+//   ③ 锁文件记录私服地址（证明来源不是公共 npm）；
+//   ④ 任务依赖目录内无 .npmrc（凭据不落任务树）。
+// 载体选择结论（2026-09-11 三次实跑）：glue-script 任务按 DTO 设计忽略 requirements；
+// git 载体在真机不可行（executor SSRF 守卫仅放行 https?://|git@|ssh://，且拦 loopback/私网，
+// 见 execute.ts:363-376，属安全防线）→ 改用「非 glue 且无 git」载体，只验证安装段。
+// 场景默认关闭（E2E_PRIVATE_REGISTRY=1 才跑），CI/本地默认行为不受影响。
+test.describe('private-registry (BUG-18)', () => {
+  test('44. 私服依赖由 executor 装到任务依赖目录，凭据不落任务树', async ({ request }) => {
+    test.skip(
+      !process.env.E2E_NPM_REGISTRY_URL,
+      '未启用私服场景（默认关闭；E2E_PRIVATE_REGISTRY=1 才跑）',
+    );
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const depName = process.env.E2E_PRIVATE_DEP_NAME || '@autoflow/e2e-private-dep';
+    const depSpec = process.env.E2E_PRIVATE_DEP_SPEC || `${depName}@1.0.0`;
+    const marker = 'e2e-private-registry';
+    const workRoot = process.env.E2E_WORK_DIR || '/tmp/acf-e2e-tasks';
+
+    const executor = await getFirstOnlineExecutor(request);
+    // 载体刻意「既非 glue、也无 git」：
+    //  - glue 任务按 admin-api DTO 设计会忽略 requirements（实测确认）；
+    //  - git 任务在真机 fixture 下不可行：executor 的 SSRF 守卫只放行
+    //    https?://|git@|ssh:// 且拦截 loopback/私网（execute.ts:363-376，属安全防线，
+    //    python 侧对等），本地 file:// 仓库必被 400，且缺省 ref=main 与 git init
+    //    默认 master 也不匹配（需显式 gitBranch）。
+    // 于是本用例只验证 BUG-18 真正关心的那一段：**派发时 executor 是否用私服凭据
+    // 装好 requirements**（安装发生在运行之前，与源码是否存在无关）。entrypoint
+    // 缺失会让运行期失败——这是预期，故断言终态而非 success，证据落在文件系统产物上。
+    const task = await apiCreateTask(request, {
+      name: 'e2e-private-registry-' + Date.now().toString().slice(-6),
+      triggerType: 'manual',
+      runtime: 'node',
+      entrypoint: 'index.js',
+      executorId: executor.id,
+      requirements: [depSpec],
+      maxRetry: 0,
+    });
+    await apiTriggerTask(request, task.id);
+    const exec = await apiWaitExecution(request, task.id, 90000);
+    expect(
+      ['success', 'failed', 'timeout', 'killed', 'cancelled'].includes(exec.status),
+      `执行未进入终态：${exec.status}`,
+    ).toBe(true);
+
+    const depRoot = path.join(workRoot, '.node_modules', task.id);
+    const depDir = path.join(depRoot, 'node_modules', ...depName.split('/'));
+    expect(fs.existsSync(path.join(depDir, 'index.js')), `依赖未落盘：${depDir}`).toBe(true);
+    expect(fs.readFileSync(path.join(depDir, 'index.js'), 'utf8')).toContain(marker);
+    expect(fs.readFileSync(path.join(depRoot, 'package-lock.json'), 'utf8')).toContain('127.0.0.1:');
+    expect(fs.existsSync(path.join(depRoot, '.npmrc')), '凭据 .npmrc 落进了任务依赖目录').toBe(false);
+    console.log(`  ✓ 私服依赖端到端：任务 ${task.id} 从 ${process.env.E2E_NPM_REGISTRY_URL} 安装成功`);
   });
 });

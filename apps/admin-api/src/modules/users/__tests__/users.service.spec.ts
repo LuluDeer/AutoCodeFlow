@@ -155,6 +155,45 @@ describe("UsersService", () => {
       expect(configService.get).not.toHaveBeenCalled();
       expect(repo.save).not.toHaveBeenCalled();
     });
+
+    // ARCH-31: 空库 + 多实例同时引导 → 两个实例都看到 count=0，唯一索引只放行
+    // 一个赢家。此前输家直接抛出 23505 并中断进程启动（第二个副本起不来）。
+    it("seed race (ARCH-31): 输家遇到 23505 时核对已有用户后跳过，不中断启动", async () => {
+      repo.count
+        .mockResolvedValueOnce(0) // 启动检查：表空
+        .mockResolvedValueOnce(1); // 冲突后复核：另一个实例已种下
+      configService.get.mockImplementation((key: string) =>
+        key === "initialAdmin.password" ? "SeedPass1!" : undefined,
+      );
+      repo.save.mockRejectedValueOnce(
+        Object.assign(
+          new Error("duplicate key value violates unique constraint"),
+          {
+            code: "23505",
+          },
+        ),
+      );
+      const logSpy = jest
+        .spyOn((service as any).logger, "log")
+        .mockImplementation(() => {});
+
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining("another instance already seeded"),
+      );
+      logSpy.mockRestore();
+    });
+
+    it("seed race (ARCH-31): 非唯一冲突的异常照旧上抛（不吞真实故障）", async () => {
+      repo.count.mockResolvedValue(0);
+      configService.get.mockImplementation((key: string) =>
+        key === "initialAdmin.password" ? "SeedPass1!" : undefined,
+      );
+      repo.save.mockRejectedValueOnce(new Error("connection reset"));
+
+      await expect(service.onModuleInit()).rejects.toThrow("connection reset");
+    });
   });
 
   // R19: currentPassword is a verification-only field consumed by the

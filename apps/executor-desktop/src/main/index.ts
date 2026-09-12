@@ -12,6 +12,11 @@ import * as path from 'path';
 import log from './logger';
 
 // 单例导出，供 ipc-handlers 等模块使用
+// QA-12：e2e 隔离通道——冒烟用例经 env 覆盖 userData 指向临时目录，
+// 绝不触碰开发者真实配置；未设置时行为与旧版逐字节一致。
+if (process.env.ELECTRON_USER_DATA_DIR) {
+  app.setPath('userData', process.env.ELECTRON_USER_DATA_DIR);
+}
 export const configStore = new ConfigStore();
 export const executorProcess = new ExecutorProcess();
 export const heartbeat = new HeartbeatMonitor();

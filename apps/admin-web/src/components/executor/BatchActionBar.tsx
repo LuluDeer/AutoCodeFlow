@@ -14,9 +14,11 @@
 import { useState } from 'react';
 import { Alert, Button, Modal, Space, Typography, Tag, message } from 'antd';
 import { ControlOutlined, KeyOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import type { Executor } from '../../api/executors';
 import { executorsApi } from '../../api/executors';
 import { getErrMsg } from '../../utils/error';
+import '../../i18n';
 
 const { Text } = Typography;
 
@@ -39,6 +41,7 @@ export interface BatchSummary {
 export async function runBatch(
   executors: Executor[],
   action: (ex: Executor) => Promise<{ token?: string }>,
+  fallbackMsg?: string,
 ): Promise<BatchSummary> {
   const settled = await Promise.allSettled(
     executors.map(async (ex) => {
@@ -52,7 +55,7 @@ export async function runBatch(
       : {
           executor: executors[i],
           ok: false,
-          error: getErrMsg(r.reason, '操作失败'),
+          error: getErrMsg(r.reason, fallbackMsg),
         },
   );
   return {
@@ -70,6 +73,7 @@ interface BatchActionBarProps {
 }
 
 export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActionBarProps) {
+  const { t } = useTranslation();
   const [batchLoading, setBatchLoading] = useState(false);
   const [tokenResult, setTokenResult] = useState<BatchSummary | null>(null);
 
@@ -82,14 +86,14 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
 
   const finish = (summary: BatchSummary, okText: string) => {
     if (summary.failed === 0) {
-      message.success(`${okText}成功 ${summary.succeeded}/${summary.total} 台`);
+      message.success(t('batchAction.finish.success', { action: okText, ok: summary.succeeded, total: summary.total }));
     } else if (summary.succeeded === 0) {
-      message.error(`${okText}失败：${summary.outcomes.find((o) => !o.ok)?.error ?? '全部失败'}`);
+      message.error(t('batchAction.finish.fail', { action: okText, error: summary.outcomes.find((o) => !o.ok)?.error ?? t('batchAction.allFail') }));
     } else {
-      message.warning(`${okText}完成：成功 ${summary.succeeded} 台，失败 ${summary.failed} 台`);
+      message.warning(t('batchAction.finish.partial', { action: okText, ok: summary.succeeded, fail: summary.failed }));
       // 部分失败时逐台 error 反馈（成功台不重复打扰）
       summary.outcomes.filter((o) => !o.ok).forEach((o) => {
-        message.error(`${o.executor.appName}：${o.error}`);
+        message.error(t('batchAction.partFailItem', { name: o.executor.appName, error: o.error }));
       });
     }
     setBatchLoading(false);
@@ -98,24 +102,24 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
 
   const handleBatchReloadConfig = () => {
     if (batchLoading || online.length === 0) {
-      message.warning('所选执行器均不在线，无法推送配置');
+      message.warning(t('batchAction.noneOnline'));
       return;
     }
     Modal.confirm({
-      title: `批量配置热更新（${online.length} 台在线）`,
-      content: '将向所选在线执行器推送配置热更新请求（空配置=按服务端默认值重载）。离线执行器自动跳过。确认继续？',
-      okText: '确认推送',
-      cancelText: '取消',
+      title: t('batchAction.reloadConfirmTitle', { count: online.length }),
+      content: t('batchAction.reloadConfirmContent'),
+      okText: t('batchAction.confirmPush'),
+      cancelText: t('batchAction.cancel'),
       onOk: async () => {
         setBatchLoading(true);
         try {
           const summary = await runBatch(online, async (ex) => {
             await executorsApi.reloadConfig(ex.id, {});
             return {};
-          });
-          finish(summary, '批量配置热更新');
+          }, t('batchAction.operateFail'));
+          finish(summary, t('batchAction.batchReload'));
         } catch (err) {
-          message.error(getErrMsg(err, '批量配置热更新失败'));
+          message.error(getErrMsg(err, t('batchAction.reloadFail')));
           setBatchLoading(false);
         }
       },
@@ -125,15 +129,15 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
   const handleBatchRotateToken = () => {
     if (batchLoading) return;
     Modal.confirm({
-      title: `批量轮换 Token（${selected.length} 台）`,
+      title: t('batchAction.rotateConfirmTitle', { count: selected.length }),
       width: 560,
       content: (
         <div>
           <Alert
             type="warning"
             showIcon
-            message="高危操作"
-            description="轮换后旧 Token 立即失效，执行器将短暂重新注册后恢复连接。新 Token 仅在结果弹窗中展示一次。"
+            message={t('batchAction.highrisk.title')}
+            description={t('batchAction.highrisk.desc')}
             style={{ marginBottom: 12 }}
           />
           <div style={{ maxHeight: 200, overflowY: 'auto' }}>
@@ -141,26 +145,26 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
               <div key={ex.id} style={{ padding: '2px 0' }}>
                 <Text strong>{ex.appName}</Text>{' '}
                 <Text type="secondary" style={{ fontSize: 12 }}>{ex.address}</Text>{' '}
-                {ex.status !== 'online' && <Tag color="orange">离线</Tag>}
+                {ex.status !== 'online' && <Tag color="orange">{t('batchAction.offline')}</Tag>}
               </div>
             ))}
           </div>
         </div>
       ),
-      okText: '确认轮换',
+      okText: t('batchAction.confirmRotate'),
       okButtonProps: { danger: true },
-      cancelText: '取消',
+      cancelText: t('batchAction.cancel'),
       onOk: async () => {
         setBatchLoading(true);
         try {
-          const summary = await runBatch(selected, (ex) => executorsApi.rotateToken(ex.id));
+          const summary = await runBatch(selected, (ex) => executorsApi.rotateToken(ex.id), t('batchAction.operateFail'));
           if (summary.succeeded > 0) {
             // 新 token 一次性展示（关闭后不再显示——与单台轮换同语义）
             setTokenResult(summary);
           }
-          finish(summary, '批量 Token 轮换');
+          finish(summary, t('batchAction.batchRotate'));
         } catch (err) {
-          message.error(getErrMsg(err, '批量 Token 轮换失败'));
+          message.error(getErrMsg(err, t('batchAction.rotateFail')));
           setBatchLoading(false);
         }
       },
@@ -176,7 +180,7 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
         style={{ marginBottom: 12, padding: '6px 12px', background: '#fafafa', borderRadius: 6 }}
       >
         <Text type="secondary" style={{ fontSize: 12 }}>
-          已选 {selected.length} 台
+          {t('batchAction.selected', { count: selected.length })}
         </Text>
         <Button
           size="small"
@@ -185,7 +189,7 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
           disabled={batchLoading || online.length === 0}
           onClick={handleBatchReloadConfig}
         >
-          批量配置热更新
+          {t('batchAction.batchReload')}
         </Button>
         <Button
           size="small"
@@ -195,20 +199,20 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
           disabled={batchLoading}
           onClick={handleBatchRotateToken}
         >
-          批量轮换 Token
+          {t('batchAction.batchRotate')}
         </Button>
         {online.length < selected.length && (
           <Text type="warning" style={{ fontSize: 12 }}>
-            {online.length} 台在线（离线台仅可轮换 Token）
+            {t('batchAction.onlineHint', { count: online.length })}
           </Text>
         )}
       </Space>
 
       <Modal
-        title="批量轮换结果（新 Token 请妥善保存，关闭后不再显示）"
+        title={t('batchAction.rotateResultTitle')}
         open={tokenResult !== null}
         width={640}
-        footer={<Button type="primary" onClick={() => setTokenResult(null)}>我已保存，关闭</Button>}
+        footer={<Button type="primary" onClick={() => setTokenResult(null)}>{t('batchAction.savedClose')}</Button>}
         onCancel={() => setTokenResult(null)}
       >
         {tokenResult && (
@@ -220,9 +224,9 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
                   {o.ok ? (
                     o.token
                       ? <Text code copyable={{ text: o.token }} style={{ fontSize: 12 }}>{o.token.slice(0, 8)}…</Text>
-                      : <Text type="secondary">成功</Text>
+                      : <Text type="secondary">{t('batchAction.succeeded')}</Text>
                   ) : (
-                    <Tag color="red">失败：{o.error}</Tag>
+                    <Tag color="red">{t('batchAction.failedItem', { error: o.error })}</Tag>
                   )}
                 </Space>
               </div>

@@ -112,10 +112,7 @@ export class ApplicationController {
   @Post()
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create application" })
-  create(
-    @Body() dto: CreateApplicationDto,
-    @CurrentUser() user: AuthUser,
-  ) {
+  create(@Body() dto: CreateApplicationDto, @CurrentUser() user: AuthUser) {
     // NF-03: 创建即落 owner（ADMIN 创建也落，可追溯）
     return this.svc.create(dto, user);
   }

@@ -38,9 +38,21 @@ export function toPriorityValue(v: string | number | null | undefined): number {
   return 2; // 与后端 normalizeTaskPriority 的回退一致（NORMAL）
 }
 
-/** 列表/详情展示用：Tag 文案 + antd color */
-export function priorityTag(v: string | number | null | undefined): { label: string; color: string } {
+/** 列表/详情展示用：Tag 文案 + antd color。t 可选：传参时 label 走 i18n key，
+ *  缺省保持中文基线（priority.test.ts 锚定 '低'/'普通'/'高'/'紧急'）。 */
+export function priorityTag(
+  v: string | number | null | undefined,
+  t?: (k: string) => string,
+): { label: string; color: string } {
   const value = toPriorityValue(v);
   const opt = TASK_PRIORITY_OPTIONS.find((o) => o.value === value)!;
-  return { label: opt.label, color: opt.color };
+  if (!t) return { label: opt.label, color: opt.color };
+  return { label: t(PRIORITY_T_KEY[value]), color: opt.color };
 }
+
+const PRIORITY_T_KEY: Record<number, string> = {
+  1: 'priority.low',
+  2: 'priority.normal',
+  3: 'priority.high',
+  4: 'priority.critical',
+};

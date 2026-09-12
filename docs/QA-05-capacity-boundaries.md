@@ -1,8 +1,8 @@
-# QA-05 / BUG-19 容量与压测边界（第一阶段）
+# QA-05 / BUG-19 容量与压测边界（第三阶段：本机实跑参考基线）
 
-> **状态：当前实测边界与后续目标（截至 2026-09-11）**
->
-> 本文是第一阶段工具收口说明，不是容量验收报告。当前仓库只完成压测工具能力、自检和脚本语法验证；本阶段没有启动 compose，也没有声称已实测或通过 500 并发执行、1000 任务/分钟入队、SSE 500 连接、回调 10k/分钟。
+> **状态（2026-09-11 第十轮更新）**：
+> - **第二阶段**：压测编排脚本 `scripts/load-test-stack.sh` 就绪（PG/Redis→admin-api 空库迁移+三档限流显式放大→executor-node 注册 online→load-test.mjs 透传），selftest 26 组全绿。
+> - **第三阶段（本机实跑）**：本机（用户授权 ubuntu，单节点：admin-api + 1×executor-node + PG16 + Redis7）完成 **tasks / SSE** 两场景真实实测，找到 2 个真实问题（SSE abort 桥挂死、单 executor 乐观锁冲突居高），数据与发现如下。**标注：本机单节点参考基线，非生产容量结论**——生产形态（多执行器/多实例/反代/持久磁盘）不同，本表数字不得外推。
 
 ## 1. 范围与验收关系
 
@@ -100,3 +100,170 @@ node scripts/load-test.selftest.mjs
 ```
 
 两项均通过。HTTP 场景与容量目标未在本阶段运行；compose 真机数据、容量上限和容量白皮书待后续实验补录。
+
+## 7. 第三阶段实跑记录（本机单节点参考基线，2026-09-11）
+
+### 7.1 编排与前置
+
+运行入口统一为 `bash scripts/load-test-stack.sh <load-test args>`（`SKIP_DOCKER=1` 复用本机 PG/Redis）。栈内显式放大：`THROTTLE_LIMIT/LOGIN_THROTTLE_LIMIT/AUTH_THROTTLE/OPS_THROTTLE=10000`（容量档不把 SEC-09 分域限流当瓶颈，语义不变仅数值抬升）、`METRICS_STREAM_MAX_GLOBAL=128`。
+
+### 7.2 tasks 实测表（glue JS 轻任务，maxRetry=0，client rpm 1200/1000）
+
+| 档位 | 并发 | executor MAX_CONCURRENT | 成功率 | 终态 success/failed | p50/p95 | 尝试/完成吞吐 | 429 | 失败主因 |
+|---|---|---|---|---|---|---|---|---|
+| count=20 | 5 | 10（默认） | 75% | 15/5 | 17/19ms | 218/164 任务/分 | 0 | 全部 `No available executor (all at capacity or concurrency conflict)` |
+| count=100 | 25 | 10（默认） | 40% | 40/60 | 17/32ms | 975/390 任务/分 | 0 | 同上（60 例同因） |
+| count=100 | 25 | 40（`LT_MAX_CONCURRENT=40`） | 65% | 65/35 | 18/26ms | 955/621 任务/分 | 0 | 同上（35 例同因） |
+
+- **429 全程 0**：三档限流放大生效，且客户端 rpm 预算远低于服务端，说明瓶颈不在 API 限流。
+- **关键瓶颈定位（乐观锁冲突）**：`executor.service.ts` 派发用条件 UPDATE（`runningTaskCount+1` 且 `version=:version` 且 `runningTaskCount < max`）防 TOCTOU。**单个 executor 承接突发并发时，同一版本行的多个并发派发仅一个成功，其余版本冲突 → 全部候选耗尽 → 抛 "No available executor (all at capacity or concurrency conflict)"**。`maxRetry=0`（压测隔离重复执行判定）下这类冲突直接 failed，不重试。
+- **增益**：`MAX_CONCURRENT_TASKS` 10→40 使 100@25 档成功率 40%→65%（任务本来就秒级完成，冲突是主要损耗）；但**不降反升的失败数（60→35）说明仍受乐观锁串行化约束**——单执行器场景下这是固有调度语义，不是 executor 处理能力不足。生产缓解方向：多执行器 + 亲和分组摊薄版本行竞争；或业务任务显式 `maxRetry`（按 docs/DEVELOPMENT-PLAN 语义，冲突类错误应可重试而非一次终态失败）。
+- **清理与重复执行**：所有档清理成功 100%、重复执行违规 0、轮询超时 0——工具链自身无引入性污染。
+
+### 7.3 SSE 实测
+
+- 修复前（QA-05 实跑抓出）：`--scenario sse`（16 连接/8 并发/hold 15s）**挂死**——`ApiClient.request` 非 stream 路径在 fetch resolve（仅响应头到达）后 finally 拆掉 abort 桥，`child.abort()` 传导不进 fetch 的 body reader，`read()` 永不返回。**修复**（commit 36645c5）：`request()` 增 `stream` 选项，SSE 调用保留桥至调用方读完 body；纯函数 selftest 26 组无回归。
+- 修复后（本机）：4 连接/4 并发/hold 8s → **100% 保持至 hold 到期**（p50/p95 连接时长 8.00/8.01s，建连 12/15ms），主动关闭正常。
+- **说明**：SSE 槽位默认 32/metrics（本栈放大 128）；500 连接目标仍需要真实多实例 + 反代调优 + 槽位放大共同验证（见 §5），本机单节点数据不构成 500 连接结论。
+
+### 7.4 局限与后续
+
+- **未跑 callback 场景**（需真实 execution + 有效 v1 token fixture，见 README §1.3）与 **SSE 大连接数档**（需先定反代/槽位参数）。
+- 本机单节点：admin-api 与 executor 同机，资源水位互相影响，**不能外推生产容量**。
+- 未采集 PG/BullMQ/CPU 系列水位到可复用报告（load-test 报告为客户端观测；服务端侧需对接 Prometheus/日志做 §2 要求的水位图）。
+
+## 8. 第四阶段：瓶颈修复与复测（2026-09-12）
+
+§7.2 定位的「乐观锁冲突 = 失败主因」已作为 **BUG-22** 修复并复测。
+
+**修复**（`executor.service.dispatch` 占坑 UPDATE）：移除 `.andWhere("version = :version")`
+版本谓词。占坑的两个不变量（容量不超卖、目标仍在线）**本来就由同一条 UPDATE 的
+WHERE 原子保证**——`runningTaskCount < max` 与 `runningTaskCount + 1` 在同一行锁内
+求值，`status = ONLINE` 也在同一语句内复查。版本谓词的唯一效果是把**良性并发**
+变成硬失败：worker 并发 5 + 单执行器时，首个占坑把 version +1，其余并发全部
+affected=0，而候选只有一个 → 抛 "No available executor" → 执行直接 FAILED
+（`maxRetry=0` 时连重试兜底都没有）。失败消息同时纠正为
+`No available executor (all candidates are offline or at capacity)`，以区分
+「真的没容量/离线」与「并发冲突」（后者已不该存在）。
+
+**复测**（同机同栈，client rpm 600/400，glue 轻任务，maxRetry=0）：
+
+| 档位 | 并发 | executor MAX_CONCURRENT | 成功率 | 终态 success/failed | p50/p95 | 429 | 失败主因（日志核验） |
+|---|---|---|---|---|---|---|---|
+| 修复前 count=100 | 25 | 10（默认） | 40% | 40/60 | 17/32ms | 0 | 全部 `…concurrency conflict`（版本 CAS） |
+| 修复前 count=100 | 25 | 40 | 65% | 65/35 | 18/26ms | 0 | 同上 |
+| **修复后 count=100** | **25** | 10（默认） | 40% | 40/60 | 19/37ms | 0 | **0 例 conflict**；240 处 `…at capacity`（25 在途 > 10 槽位的真实容量饱和） |
+| **修复后 count=100** | **25** | **200（容量放开）** | **100%** | **100/0** | **20/26ms** | **0** | 无 |
+
+- **结论**：`MAX_CONCURRENT=10` 档成功率仍是 40%，但**失败主因已换**——日志核验
+  「concurrency conflict」出现 **0 次**（修复前该档 60 例失败全部是它），取而代之的
+  是真实的「at capacity」（25 并发在途 > 10 槽位）。容量放开到 200 后成功率
+  **100%、失败 0**：此前的损耗确实全部来自版本 CAS，而非 executor 处理能力、
+  队列或限流。
+- **能力边界（不变）**：executor 的 `MAX_CONCURRENT_TASKS` 仍是硬上限，在途超过
+  上限时派发会以「at capacity」失败——这与执行器容量语义一致。**生产建议**：
+  ① 按峰值在途配置 `MAX_CONCURRENT_TASKS` 并留余量；② 业务任务显式设
+  `maxRetry ≥ 2`（把「瞬时无容量」交给队列重试吸收，而非一次终态失败）；
+  ③ 多执行器 + 亲和分组摊薄单行竞争。
+- **顺带修复的工程陷阱**：`nest build` 的 `deleteOutDir=true` 在带批量删除保护的
+  环境里会**静默失败（退出码 0 但 dist 未刷新）**，导致压测/e2e 脚本拿旧产物跑
+  （现象：改了代码而结果完全不变）。`scripts/load-test-stack.sh` 与
+  `scripts/e2e-full.sh` 已追加 `npx tsc -p tsconfig.build.json` 兜底刷新产物。
+- **仍未完成（如实）**：500 并发 / 1000 RPM / SSE 500 连接 / 回调 10k 四档目标验收、
+  服务端 Prometheus 水位采集；QA-05/BUG-19 保持 claimed（参考基线 + 瓶颈修复，
+  非容量验收）。
+
+### 8.2 四档目标实测（§5 目标逐档，本机单节点，2026-09-12）
+
+统一入口 `bash scripts/load-test-stack.sh <args>`（PG16 + Redis7 + admin-api + 1×executor-node，
+glue 轻任务，`maxRetry=0`，服务端限流放大 10000）。
+
+| # | 目标档 | 实际参数 | 结果 | p50/p95 | 429 | 结论 |
+|---|---|---|---|---|---|---|
+| 1 | 单实例 500 并发执行 | `--count 500 --concurrency 500`，`LT_MAX_CONCURRENT=600` | **500/500 成功（100%）**，终态 success/failed 500/0 | 21/26ms | 0 | ✅ 达成 |
+| 2 | 1000 任务/分钟入队 | `--count 2000 --concurrency 300`，`LOAD_TEST_MAX_RPM=24000 / WRITE_RPM=2200` | **2000/2000 成功（100%）**，完成吞吐 **1321 任务/分钟**（超目标 32%） | 20/24ms | 0 | ✅ 达成 |
+| 3 | SSE 500 连接 | `--scenario sse --count 500 --concurrency 500 --sse-hold 30`，`LT_SSE_MAX_GLOBAL=700` | **500/500 成功（100%）**，hold 30s 全部保持到期 | 建连 594/724ms | 0 | ✅ 达成（直连 API；反代档见 §8.1 说明） |
+| 4 | 回调 10k/分钟 | `npm run test:qa05-callback-tier`（1000 真实 RUNNING 执行池 + 100×100 条批量回调） | **73189 条/分钟**（超目标 7.3×），100/100 批次 HTTP 成功，条目 0 失败；DB 核对 **1000 条终态=池大小** | — | 0 | ✅ 达成 |
+
+**口径与限定（务必随数字一起引用）**：
+
+- **吞吐是客户端观测**：load-test 的 `attempted/completed` 已除以工具总耗时（含轮询与
+  清理），且受 `--max-rpm/--write-rpm` 预算约束。第 1 档 500 并发耗时 182s（≈165 任务/分）
+  是被客户端 600/400 预算卡住，**不代表服务端只能跑 165/分**；第 2 档把预算放到
+  9000/1600 后升到 862/分、放到 24000/2200 并提高并发后到 **1321/分**——服务端全程
+  0 错误 0 限流，说明瓶颈在客户端预算与轮询节奏，不在平台。**引用时必须带参数**。
+- **第 4 档怎么跑的**（此前留空的原因已消除）：`callback` 场景原有的单 execution
+  口径确实只压幂等分支，故新写专用编排 `scripts/qa05-callback-tier-selftest.mjs`
+  （`npm run test:qa05-callback-tier`）：起探针执行器（接受派发、永不回报）把 1000 个
+  执行稳定钉在 RUNNING → 100 次批量请求 × 100 条（id 池内轮转）→ 每条 execution 的
+  **首条回调是真实终态 winner**，其余 9 条落幂等分支。判据不靠响应里的 success
+  （admin-api 对重复回调同样回 `success:true`），而是 **DB 核对**
+  `count(status='failed') == 1000 == 池大小` 且 `count(task_executions) == 1000`
+  （重复回调未派生重复执行行）。
+
+#### 8.2.1 顺带发现的部署风险：回调档限流按 IP 计（本轮修复为可配）
+
+第 4 档首跑（未提限流）暴露：`CALLBACK_THROTTLE` 原本**硬编码 60 请求/分钟/IP**，
+100 次批量请求里 60 次通过、**40 次 429**，即单源满批上限只有 **6000 条/分钟**——
+10k 档在单 IP 下**按设计不可达**。更关键的是生产含义：大量执行器常位于**同一出口
+IP**（NAT / 机房 NAT / 容器同宿主）之后，它们的回调速率是**叠加**的，很容易触顶；
+executor 侧有文件级重试（结果不丢），但上报被推迟，可能与应用侧 stale sweep 的
+「执行器失联 → 判失败」赛跑。
+
+**处置**：`CALLBACK_THROTTLE` 提为 env 可配（`THROTTLE_CALLBACK_LIMIT` /
+`THROTTLE_CALLBACK_TTL`，**默认仍 60，行为零变化**；解析复用
+`throttle-profiles.positiveInt` 单一实现），`.env.example` 内写明调参方式与
+「单 IP 条目上限 = limit × 100 / 分钟」的换算，以及「执行器数 × 批次数/分钟 × 安全系数」
+的建议。多执行器同出口 IP 的部署应显式调高该值。
+- **仍未采集**：服务端 Prometheus 水位（RSS/CPU/事件循环延迟/PG 连接池/BullMQ 深度）。
+  容量白皮书定稿前必须补，否则本表只是「客户端视角的通过率」。**QA-05/BUG-19 保持 claimed**。
+
+#### 8.2.2 服务端水位（本轮补上 RSS/CPU/连接池/事件循环）
+
+`load-test-stack.sh` 自带**服务端水位采样**（每 2s）：本地 `/proc` 取 RSS/CPU、
+`psql` 取 PG 连接、`redis-cli` 取 Redis 连接、并用登录 JWT 抓 admin-api 自身
+`/api/metrics`（Prometheus text）取连接池/事件循环延迟/堆/BullMQ 深度/调度 tick。
+采样明细落 CSV，随压测报告打印峰值。
+
+| 档位 | 峰值 RSS | 平均 CPU（单核） | PG / Redis 连接 | DB 池 active/idle/**waiting** | 事件循环延迟 | 堆占用 | BullMQ 深度 |
+|---|---|---|---|---|---|---|---|
+| 500 并发执行（100% 成功、p95 26ms） | 394 MB | 7.03% | 21 / 9 | 20 / 20 / **280** | **4.9 ms** | 226 MB | 0 |
+
+- **读法（本轮最有价值的一条）**：CPU 只吃单核 7%、事件循环延迟峰值 4.9ms、
+  BullMQ 深度 0 —— 但 **DB 连接池 waiting 峰值 280**（池上限 `DB_POOL_SIZE` 默认 20）。
+  即 500 并发下的真实瓶颈是**数据库连接池排队**，不是 CPU/内存/事件循环。
+  扩容建议因此明确：单实例提高 `DB_POOL_SIZE`（并与 PG `max_connections` 联动），
+  或横向加实例；单纯加 CPU 无用。
+- **仍未做**：经反代的 500 连接档（nginx SSE 形态）、多实例下的槽位分布、
+  长稳压测（BUG-19 的 24h 档）。
+
+**四档小结（2026-09-12）**：500 并发执行 / 1000 任务/分钟 / SSE 500 连接 / 回调 10k/分钟
+四档**全部达成**（均为本机单节点、直连 admin-api、glue 轻任务、`maxRetry=0`）。
+剩下的不是「能不能扛住」，而是「把服务端水位与多实例/反代形态补齐」：服务端
+Prometheus 快照、经反代的 500 连接档、多实例下的槽位分布，以及容量白皮书定稿。
+
+### 8.1 SSE 500 连接档（§5 目标之一，本轮实测达成）
+
+```bash
+LT_SSE_MAX_GLOBAL=700 bash scripts/load-test-stack.sh \
+  --scenario sse --count 500 --concurrency 500 --sse-hold 30
+```
+
+| 档位 | 连接/并发 | 槽位上限 | 结果 | 建连 p50/p95 | 429 |
+|---|---|---|---|---|---|
+| `/api/metrics/stream` | 500 / 500 | 700（`LT_SSE_MAX_GLOBAL`） | **500/500 成功（100%）**，hold 30s 全部保持到期 | 594ms / 724ms | 0 |
+
+- **结论（限定条件）**：本机单节点、**直连 admin-api**（未过反代）下，500 条并发 SSE
+  连接全部建立并保持到 hold 到期，槽位放大到 700 后无 503。反代层的长流语义由
+  `npm run test:nginx-sse`（19/19，含 24h 档入口）单独验证。
+- ~~仍需补的证据：① 经 nginx 的 500 连接档~~ → **已补齐（2026-09-12）**：
+  `NGINX_SSE_CONNS=500 npm run test:nginx-sse` 用 `infra/nginx/default.conf` **原件**
+  经真实 nginx 容器建 500 条 SSE 长流（executions/stream 与 metrics/stream 各半）：
+  **500/500 建连成功（1.04s 内）、hold 35s 后 500/500 存活、500/500 都有保活/数据帧、
+  RSS 仅 +14MB、批量断流后槽位回收干净**（套件 24/24 通过）。
+  *注*：hold 必须 > `EXECUTIONS_STREAM_IDLE_PING_MS`（默认 30s）——事件流无初始快照，
+  20s 档会出现「250/500 有帧」的假象（实测踩到，已固化进套件默认值）。
+- ~~仍需补的证据：① 多实例 + 反代路由下的槽位分布~~ → **已补齐（2026-09-12）**：`npm run test:arch31-multi-instance` 把 `METRICS_STREAM_MAX_GLOBAL` 压到 2 后实测：**同实例第 3 条连接收到 503、另一实例同一时刻仍可建流（各自独立计数）、断流后槽位释放干净**——即 **SSE 容量 = 实例数 × 每实例上限**，且某实例满时表现为 503（客户端应重连换实例，而非判定服务不可用）。套件 15→18 例全绿。
+- 仍需补的证据：① 24h 长稳档（BUG-19 未终结）；② 多主机网络拓扑（本机多进程≠多主机）。
+- **同批 tasks 档复测**（见上表）：100@25 容量放开后 100/100，此前失败主因（BUG-22）
+  已修。

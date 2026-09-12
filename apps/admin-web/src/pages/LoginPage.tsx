@@ -2,14 +2,19 @@ import { Form, Input, Button, Typography, Card, Alert, message } from 'antd';
 import { UserOutlined, LockOutlined, ThunderboltOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { authApi } from '../api/auth';
 import { useAuthStore, type AuthUser } from '../store/auth';
 import { getErrMsg } from '../utils/error';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 
 const { Title, Text } = Typography;
 
 export default function LoginPage() {
   const nav = useNavigate();
+  // UI-10：文案走 i18n key，中英切换即时生效（示范页；全站逐步迁移）
+  const { t } = useTranslation();
   const { setAuth } = useAuthStore();
   const [loading, setLoading] = useState(false);
   // SEC-03: TOTP 第二步状态——登录第一段返回 totpRequired 后进入动态码输入
@@ -26,7 +31,7 @@ export default function LoginPage() {
 
   const completeLogin = (res: { accessToken?: string; refreshToken?: string; user?: AuthUser }) => {
     if (!res.accessToken || !res.refreshToken) {
-      message.error('登录响应缺少凭据');
+      message.error(t('login.credentialsMissing'));
       return;
     }
     setAuth(res.accessToken, res.refreshToken, res.user ?? { id: 0, username: credentials.username });
@@ -51,7 +56,7 @@ export default function LoginPage() {
       completeLogin(res);
     } catch (err: unknown) {
       // UI-12：错误落到页内 role=alert 块（替代瞬时 toast）
-      setFormError(getErrMsg(err, '用户名或密码错误'));
+      setFormError(getErrMsg(err, t('login.badCredentials')));
     } finally {
       setLoading(false);
     }
@@ -65,7 +70,7 @@ export default function LoginPage() {
       completeLogin(res);
     } catch (err: unknown) {
       // UI-12：同上——动态码错误也落到页内 role=alert 块
-      setFormError(getErrMsg(err, '动态验证码错误'));
+      setFormError(getErrMsg(err, t('login.totpCode.invalid')));
     } finally {
       setLoading(false);
     }
@@ -100,7 +105,7 @@ export default function LoginPage() {
             <ThunderboltOutlined style={{ fontSize: 24, color: '#fff' }} />
           </div>
           <Title level={3} style={{ margin: 0, fontSize: 'clamp(20px, 5vw, 24px)' }}>AutoCodeFlow</Title>
-          <Text type="secondary">企业级任务调度平台</Text>
+          <Text type="secondary">{t('brand.tagline')}</Text>
         </div>
 
         <Card
@@ -118,7 +123,7 @@ export default function LoginPage() {
             id={totpStage ? 'login-form-title-totp' : 'login-form-title'}
             style={{ margin: '0 0 24px', color: '#333' }}
           >
-            {totpStage ? '两步验证' : '登录账号'}
+            {totpStage ? t('login.twoFactor') : t('login.account')}
           </Title>
           {/* UI-12：登录失败常驻错误块（role=alert 由 antd Alert 提供）。
               外层 tabIndex=-1 使其可编程聚焦但不进 Tab 序列，失败时接管焦点。 */}
@@ -141,14 +146,14 @@ export default function LoginPage() {
               size="large"
               aria-labelledby="login-form-title-totp"
             >
-              <Form.Item name="code" label="动态验证码" rules={[{ required: true, message: '请输入 6 位动态验证码' }]}>
+              <Form.Item name="code" label={t('login.totpCode')} rules={[{ required: true, message: t('login.totpCode.required') }]}>
                 <Input
                   prefix={<SafetyOutlined style={{ color: '#ccc' }} />}
-                  placeholder="6 位动态码"
+                  placeholder={t('login.totpCode.placeholder')}
                   autoFocus
                   maxLength={6}
                   inputMode="numeric"
-                  aria-label="动态验证码"
+                  aria-label={t('login.totpCode.aria')}
                 />
               </Form.Item>
               <Form.Item style={{ marginBottom: 0, marginTop: 8 }}>
@@ -165,7 +170,7 @@ export default function LoginPage() {
                     fontSize: 15,
                   }}
                 >
-                  验证并登录
+                  {t('login.verifySubmit')}
                 </Button>
               </Form.Item>
             </Form>
@@ -178,28 +183,28 @@ export default function LoginPage() {
           >
             <Form.Item
               name="username"
-              label="用户名"
-              rules={[{ required: true, message: '请输入用户名' }]}
+              label={t('login.username')}
+              rules={[{ required: true, message: t('login.username.required') }]}
             >
               <Input
                 prefix={<UserOutlined style={{ color: '#ccc' }} />}
-                placeholder="admin"
+                placeholder={t('login.username.placeholder')}
                 autoFocus
                 autoComplete="username"
-                aria-label="用户名"
+                aria-label={t('login.username.aria')}
               />
             </Form.Item>
 
             <Form.Item
               name="password"
-              label="密码"
-              rules={[{ required: true, message: '请输入密码' }]}
+              label={t('login.password')}
+              rules={[{ required: true, message: t('login.password.required') }]}
             >
               <Input.Password
                 prefix={<LockOutlined style={{ color: '#ccc' }} />}
-                placeholder="密码"
+                placeholder={t('login.password.placeholder')}
                 autoComplete="current-password"
-                aria-label="密码"
+                aria-label={t('login.password.aria')}
               />
             </Form.Item>
 
@@ -217,7 +222,7 @@ export default function LoginPage() {
                   fontSize: 15,
                 }}
               >
-                登录
+                {t('login.submit')}
               </Button>
             </Form.Item>
           </Form>
@@ -225,13 +230,13 @@ export default function LoginPage() {
 
           <div style={{ marginTop: 20, textAlign: 'center' }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              {totpStage ? '请打开验证器应用获取动态码' : '如忘记密码请联系管理员重置'}
+              {totpStage ? t('login.totpHint') : t('login.forgotHint')}
             </Text>
           </div>
         </Card>
 
         <div style={{ textAlign: 'center', marginTop: 24 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>AutoCodeFlow v1.0 · 企业版</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{t('brand.edition')}</Text>
         </div>
       </div>
     </div>

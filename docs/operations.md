@@ -308,8 +308,11 @@ curl -fsSL http://your-admin-api-host:3105/api/executors/install.sh \
 
 > 本节为 DOC-02 规划内容：水位指标与告警阈值提炼自
 > `docs/observability/README.md` 4.2 节（OBS-05 容量水位四件套）与
-> `docs/observability/alerting-rules.yml`。**容量白皮书（QA-05 并发压测专项）尚未产出**：
-> 下列阈值均为既有告警配置的既定值，涉及「容量上限」的数字均标注**待压测确认**。
+> `docs/observability/alerting-rules.yml`。**容量白皮书已产出：
+> [`docs/CAPACITY-WHITEPAPER.md`](./CAPACITY-WHITEPAPER.md)**（QA-05 并发压测专项，
+> 2026-09-12 真机实测：四档目标全部达成 + 服务端水位 + 瓶颈定位 + 调参清单 +
+> 扩容公式）。下列阈值与白皮书 §8 一致；白皮书未覆盖的场景（24h 长稳、多主机
+> 拓扑、真实业务时长分布）在该文 §10 逐条列出。
 
 ### 容量水位指标清单与建议告警阈值
 
@@ -372,6 +375,13 @@ SSE 500 连接、回调风暴等规划目标，以及 PG 连接池 / BullMQ / �
 **注入 → 断言 → 恢复 → 二次断言** 推进；退出码 = 失败场景数。场景语义均
 已对 `apps/admin-api/src` 实现核实（fail-open 判定、判离线阈值、Leader 锁
 TTL），脚本内注释标注了断言窗口与实现常量的对应关系。
+
+> **实测报告**：`docs/CHAOS-DRILL-REPORT.md`（2026-09-12）。本轮**修掉一个严重缺陷**：
+> 场景体原以管道子 shell 运行，`fail_scenario` 对 `FAILED` 的改动随子 shell 退出丢失，
+> 导致**任何失败都被静默报成通过**（已复现 A1 失败却打印「通过 1/失败 0」）；改为进程
+> 替换后计数正确（B 通过→正确计过、A 失败→正确计败）。场景 B（执行器断网判离线 70s /
+> 恢复 10s）已真机跑通；场景 A 因本环境只能取到 R5 旧镜像（Redis 客户端坏）而失败，
+> 当前源码 `health` 端点恒返回 200-with-degraded（已核实），需在当前镜像上重跑。
 
 ### 前置条件
 

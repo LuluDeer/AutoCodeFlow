@@ -2539,7 +2539,7 @@ describe("ExecutorService (__tests__)", () => {
     });
   });
 
-  describe("dispatch — filters, scoring and optimistic-lock retry (QA-02 phase 2)", () => {
+  describe("dispatch — filters, scoring and atomic slot reservation (QA-02 phase 2 / BUG-22)", () => {
     const execution = { id: "exec-1", params: {} } as TaskExecution;
 
     it("rejects with an appName-classified message when no executor has that appName", async () => {
@@ -2694,7 +2694,7 @@ describe("ExecutorService (__tests__)", () => {
       expect(mockedAxios.post.mock.calls[0][0]).toContain("second:2");
     });
 
-    it("throws when every candidate loses the optimistic-lock race (capacity full / version conflict)", async () => {
+    it("throws when every candidate is offline or at capacity", async () => {
       executorRepo.find.mockResolvedValue([
         {
           id: "e1",
@@ -2720,8 +2720,55 @@ describe("ExecutorService (__tests__)", () => {
           { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
           execution,
         ),
-      ).rejects.toThrow(/all at capacity or concurrency conflict/);
+      ).rejects.toThrow(/all candidates are offline or at capacity/);
       expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    // BUG-22（QA-05 压测暴露）：并发占坑**不得**因 version 漂移而失败。
+    // 旧实现 `.andWhere("version = :version")`：单执行器 + worker 并发 >1 时，
+    // 首个占坑把 version +1，其余并发的 CAS 全部 affected=0 → 候选人只有一个 →
+    // 抛 "No available executor" → 该执行直接 FAILED（maxRetry=0 无重试兜底）。
+    // 容量与在线状态本就由同一条 UPDATE 的 WHERE 原子保证，version 谓词冗余。
+    it("BUG-22: 并发占坑不因版本漂移失败，且 UPDATE 不再带 version 谓词", async () => {
+      // runningTaskCount=0 / max=4：容量尚有余量；version 故意给"已被别人推进过"的值
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          address: "busy:1",
+          status: ExecutorStatus.ONLINE,
+          runningTaskCount: 0,
+          maxConcurrentTasks: 4,
+          version: 42,
+        },
+      ]);
+      const andWhere = jest.fn().mockReturnThis();
+      executorRepo.createQueryBuilder.mockImplementation(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            andWhere,
+            execute: jest.fn().mockResolvedValue({ affected: 1 }),
+          }) as any,
+      );
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+      await expect(
+        service.dispatch(
+          { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+          execution,
+        ),
+      ).resolves.toEqual({ ok: true });
+
+      // 占坑 UPDATE 的谓词里不得出现版本比较（回归锁）
+      const predicates = andWhere.mock.calls.map((c) => String(c[0]));
+      expect(predicates.some((p) => /version/i.test(p))).toBe(false);
+      // 容量与在线状态谓词必须仍在（原子不变量没有被顺手删掉）
+      expect(predicates.some((p) => /runningTaskCount" < :max/.test(p))).toBe(
+        true,
+      );
+      expect(predicates.some((p) => /status = :status/.test(p))).toBe(true);
     });
 
     it("skips the capacity guard (1=1) for executors without maxConcurrentTasks", async () => {
@@ -3312,9 +3359,7 @@ describe("ExecutorService (__tests__)", () => {
     });
 
     it("affinity miss on the whole fleet fails through the existing no-executor path", async () => {
-      executorRepo.find.mockResolvedValue([
-        mkExecutor("e1", "a:1", ["misc"]),
-      ]);
+      executorRepo.find.mockResolvedValue([mkExecutor("e1", "a:1", ["misc"])]);
       await expect(
         service.dispatch(mkTask({ executorAffinityTags: ["gpu"] }), execution),
       ).rejects.toThrow(
@@ -3408,9 +3453,7 @@ describe("ExecutorService (__tests__)", () => {
     });
 
     it("empty affinity array [] is treated as unconstrained (default unchanged)", async () => {
-      executorRepo.find.mockResolvedValue([
-        mkExecutor("e1", "a:1", ["misc"]),
-      ]);
+      executorRepo.find.mockResolvedValue([mkExecutor("e1", "a:1", ["misc"])]);
       await service.dispatch(
         mkTask({ executorAffinityTags: [], executorAntiAffinityTags: [] }),
         execution,
