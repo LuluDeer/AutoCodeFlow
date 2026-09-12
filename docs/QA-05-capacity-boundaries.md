@@ -173,6 +173,33 @@ affected=0，而候选只有一个 → 抛 "No available executor" → 执行直
   服务端 Prometheus 水位采集；QA-05/BUG-19 保持 claimed（参考基线 + 瓶颈修复，
   非容量验收）。
 
+### 8.2 四档目标实测（§5 目标逐档，本机单节点，2026-09-12）
+
+统一入口 `bash scripts/load-test-stack.sh <args>`（PG16 + Redis7 + admin-api + 1×executor-node，
+glue 轻任务，`maxRetry=0`，服务端限流放大 10000）。
+
+| # | 目标档 | 实际参数 | 结果 | p50/p95 | 429 | 结论 |
+|---|---|---|---|---|---|---|
+| 1 | 单实例 500 并发执行 | `--count 500 --concurrency 500`，`LT_MAX_CONCURRENT=600` | **500/500 成功（100%）**，终态 success/failed 500/0 | 21/26ms | 0 | ✅ 达成 |
+| 2 | 1000 任务/分钟入队 | `--count 2000 --concurrency 300`，`LOAD_TEST_MAX_RPM=24000 / WRITE_RPM=2200` | **2000/2000 成功（100%）**，完成吞吐 **1321 任务/分钟**（超目标 32%） | 20/24ms | 0 | ✅ 达成 |
+| 3 | SSE 500 连接 | `--scenario sse --count 500 --concurrency 500 --sse-hold 30`，`LT_SSE_MAX_GLOBAL=700` | **500/500 成功（100%）**，hold 30s 全部保持到期 | 建连 594/724ms | 0 | ✅ 达成（直连 API；反代档见 §8.1 说明） |
+| 4 | 回调 10k/分钟 | 需真实 execution fixture + `v1.` token（或共享 token + `--callback-executor-address`） | 未跑 | — | — | ❌ 未完成 |
+
+**口径与限定（务必随数字一起引用）**：
+
+- **吞吐是客户端观测**：load-test 的 `attempted/completed` 已除以工具总耗时（含轮询与
+  清理），且受 `--max-rpm/--write-rpm` 预算约束。第 1 档 500 并发耗时 182s（≈165 任务/分）
+  是被客户端 600/400 预算卡住，**不代表服务端只能跑 165/分**；第 2 档把预算放到
+  9000/1600 后升到 862/分、放到 24000/2200 并提高并发后到 **1321/分**——服务端全程
+  0 错误 0 限流，说明瓶颈在客户端预算与轮询节奏，不在平台。**引用时必须带参数**。
+- **第 4 档为什么没跑**：`callback` 场景要求提供**真实** execution UUID + 有效凭据；
+  重复同一 execution 的请求只压到幂等分支，工具与文档都明确「不等于 10k 个真实完成
+  回调」。要真正达档需要先造 N 个真实 RUNNING 执行（探针执行器，做法见
+  `scripts/nginx-sse-selftest.mjs` 的 `startProbeExecutor`）再按批次打回调——工具已就绪，
+  编排未做，故如实留空而非用弱口径数字充数。
+- **仍未采集**：服务端 Prometheus 水位（RSS/CPU/事件循环延迟/PG 连接池/BullMQ 深度）。
+  容量白皮书定稿前必须补，否则本表只是「客户端视角的通过率」。**QA-05/BUG-19 保持 claimed**。
+
 ### 8.1 SSE 500 连接档（§5 目标之一，本轮实测达成）
 
 ```bash
