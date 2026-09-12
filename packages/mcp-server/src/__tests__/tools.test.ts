@@ -107,6 +107,11 @@ describe("tool registry surface", () => {
       "deploy_app",
       "upgrade_deployment",
       "stop_deployment",
+      // deployments — DEP-04 approval workflow
+      "list_pending_approvals",
+      "approve_deployment",
+      "reject_deployment",
+      "cancel_deployment",
       // executors
       "list_executors",
       "get_executor",
@@ -368,6 +373,74 @@ describe("stop_deployment", () => {
   it("POSTs /app-deployments/:id/stop", async () => {
     await tools.get("stop_deployment")!.handler({ deploymentId: "d1" });
     expect(call).toHaveBeenCalledWith("POST", "/app-deployments/d1/stop");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deployments — DEP-04 approval workflow
+// ---------------------------------------------------------------------------
+describe("list_pending_approvals", () => {
+  it("GETs /app-deployments/approvals/pending with page/pageSize and optional applicationId", async () => {
+    await tools
+      .get("list_pending_approvals")!
+      .handler({ page: 1, pageSize: 20 });
+    expect(call).toHaveBeenNthCalledWith(
+      1,
+      "GET",
+      "/app-deployments/approvals/pending?page=1&pageSize=20",
+    );
+    await tools
+      .get("list_pending_approvals")!
+      .handler({ page: 2, pageSize: 5, applicationId: "a1" });
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "GET",
+      "/app-deployments/approvals/pending?page=2&pageSize=5&applicationId=a1",
+    );
+  });
+});
+
+describe("approve_deployment", () => {
+  it("POSTs /app-deployments/:id/approval/approve (no body when reason omitted)", async () => {
+    await tools.get("approve_deployment")!.handler({ deploymentId: "d1" });
+    expect(call).toHaveBeenCalledWith(
+      "POST",
+      "/app-deployments/d1/approval/approve",
+      undefined,
+    );
+  });
+  it("sends the reason in the body when provided", async () => {
+    await tools
+      .get("approve_deployment")!
+      .handler({ deploymentId: "d1", reason: "ok" });
+    expect(call).toHaveBeenCalledWith(
+      "POST",
+      "/app-deployments/d1/approval/approve",
+      { reason: "ok" },
+    );
+  });
+});
+
+describe("reject_deployment", () => {
+  it("POSTs /app-deployments/:id/approval/reject with the reason", async () => {
+    await tools
+      .get("reject_deployment")!
+      .handler({ deploymentId: "d1", reason: "no" });
+    expect(call).toHaveBeenCalledWith(
+      "POST",
+      "/app-deployments/d1/approval/reject",
+      { reason: "no" },
+    );
+  });
+});
+
+describe("cancel_deployment", () => {
+  it("POSTs /app-deployments/:id/approval/cancel (no body)", async () => {
+    await tools.get("cancel_deployment")!.handler({ deploymentId: "d1" });
+    expect(call).toHaveBeenCalledWith(
+      "POST",
+      "/app-deployments/d1/approval/cancel",
+    );
   });
 });
 
