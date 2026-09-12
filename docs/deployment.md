@@ -149,21 +149,31 @@ SSE 能否存活**完全取决于代理层**（缓冲、读取超时、连接复
 用真实 nginx 跑一遍代理层门禁：
 
 ```bash
-npm run test:nginx-sse                                    # 默认 180s soak（约 3 分钟）
+npm run test:nginx-sse                                    # 默认 180s soak + 500 并发长流档
 NGINX_SOAK_SECONDS=86400 npm run test:nginx-sse           # 24h 长流（发布门禁/大版本上线前）
+NGINX_SSE_CONNS=0 npm run test:nginx-sse                  # 跳过 500 并发档（快速冒烟）
 ```
 
 脚本用 `infra/nginx/default.conf` **原件**（仅替换上游地址与监听端口）起真实 nginx
 容器，并自带**探针执行器**（接受派发但不回报结果 + 周期心跳）把执行稳定维持在
-RUNNING，从而让"专用 SSE 位置的长流"有真实载体。断言 19 项，重点：
+RUNNING，从而让"专用 SSE 位置的长流"有真实载体。断言 **24 项**，重点：
 
 - 流式语义：`text/event-stream` + 无 `Content-Length`（chunked）+ **首帧不迟滞**（缓冲开启时首帧会被攒到 buffer 满才下发，正是"日志不实时"的根因）；
 - 长流存活：专用位置日志流持续不断连（该位置 `proxy_read_timeout 1h`；通用位置仅 60s，soak 超过 60s 不断连即为专用位置生效的证据）、保活帧间隔 ≤ 45s；
 - 事件穿透：executor 回调 → 终态 winner → 领域事件 → `executions/stream` 帧经 nginx 到达订阅方，且日志流在终态后正常收尾；
-- 并发三条 SSE 互不干扰、长流期间普通请求延迟 < 5s、admin-api RSS 涨幅受控。
+- 并发长流：**500 条并发 SSE 经 nginx**（`NGINX_SSE_CONNS`，默认 500，0 跳过）建连率/存活率/保活帧均 ≥99%、RSS 涨幅受控、批量断流后槽位回收干净；三条代表性 SSE 并存互不干扰、长流期间普通请求延迟 < 5s。
 
-> 本机实测（2026-09-12）：`NGINX_SOAK_SECONDS=100` → **19/19 通过**。24h 档建议在
-> 目标环境（含真实执行器）跑一次，作为上线前门禁。
+> 本机实测（2026-09-12）：默认档 **24/24 通过**（含 500 并发长流：1.04s 建连、
+> 35s 后 500/500 存活且有帧、RSS +14MB）；`NGINX_SOAK_SECONDS=100` 长稳档 19/19。
+> 24h 档建议在目标环境（含真实执行器）跑一次，作为上线前门禁。
+>
+> **两个必读细节**（实测踩过）：
+> ① 并发长流的 hold 必须 > `EXECUTIONS_STREAM_IDLE_PING_MS`（默认 30s）——事件流
+> 无初始快照，短于该值会出现「一半连接零帧」的假象；
+> ② 并发数受 nginx `worker_connections` 与上游连接数共同约束（500 条客户端 + 500
+> 条 upstream ≈ 1000 连接）。默认镜像 `worker_connections 1024` 在 500 档可通过，
+> **更高并发（>1000 长连接）需显式调大 `worker_connections`/`worker_processes`**，
+> 否则表现为连接被拒而非应用报错。
 
 ## 裸机执行器安装（artifact 通道，第八轮 N24 根治）
 
