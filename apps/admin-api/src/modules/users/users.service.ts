@@ -15,6 +15,15 @@ import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
 
+/**
+ * ARCH-31: PG 唯一约束冲突（23505）判定——种子竞态里「输家」据此降级为跳过。
+ * 只认 driver 层的 code，不做错误消息匹配（防 PG 文案/版本漂移）。
+ */
+function isUniqueViolation(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  return code === "23505";
+}
+
 @Injectable()
 export class UsersService implements OnModuleInit {
   private readonly logger = new Logger(UsersService.name);
@@ -54,10 +63,27 @@ export class UsersService implements OnModuleInit {
       role: UserRole.ADMIN,
       isActive: true,
     });
-    await this.usersRepository.save(admin);
-    this.logger.log(
-      `Initial admin user created (username: admin, email: ${email})`,
-    );
+    try {
+      await this.usersRepository.save(admin);
+      this.logger.log(
+        `Initial admin user created (username: admin, email: ${email})`,
+      );
+    } catch (e: unknown) {
+      // ARCH-31: 启动期种子竞态——空库上多实例同时引导时都看到 count=0，
+      // 唯一索引只放行一个赢家，输家此前会吞到 23505 并**中断进程启动**
+      // （真实场景：全新环境一次性拉起多个副本，第二个副本起不来）。
+      // 输家核对「已有用户」后正常继续（种子是幂等的引导动作，不是业务写面）。
+      if (isUniqueViolation(e)) {
+        const now = await this.usersRepository.count();
+        if (now > 0) {
+          this.logger.log(
+            "Initial admin seed skipped — another instance already seeded the first user",
+          );
+          return;
+        }
+      }
+      throw e;
+    }
   }
 
   /**
