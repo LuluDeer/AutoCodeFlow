@@ -26,6 +26,8 @@ import {
 import { ExecutionCallbackMetricsService } from "./execution-callback-metrics.service";
 import { CallbackItemDto } from "./dto/execution-callback.dto";
 import { ExecutorService } from "../executor/executor.service";
+// QA-05：回调档限流提为可配（解析语义与 throttle-profiles 同源）
+import { positiveInt } from "../../config/throttle-profiles";
 // OBS-01: 回调链路追踪——执行器回传 traceparent 头关联（disabled 时短路）。
 import { TracingService } from "../../common/tracing/tracing.service";
 
@@ -40,7 +42,18 @@ import { TracingService } from "../../common/tracing/tracing.service";
  * 人操作面的 strict/ops 档位（回调速率由 executor 心跳节奏决定，档位收紧
  * 只会误杀；分域矩阵见 src/config/throttle-profiles.ts 头注）。
  */
-const CALLBACK_THROTTLE = { default: { limit: 60, ttl: 60_000 } };
+const CALLBACK_THROTTLE = {
+  default: {
+    // QA-05 回调档实测暴露：60/min 是**按 IP** 计的，而生产里大量执行器常位于
+    // 同一出口 IP（NAT/机房 NAT/容器同宿主）之后，回调速率叠加后极易触顶——
+    // 满批（100 条/请求）单 IP 上限 6000 条/分钟，10k 档根本达不到；执行器侧
+    // 有文件级重试（不丢结果，但上报被推迟，可能与 stale sweep 的失败判定赛跑）。
+    // 因此提为可配（默认仍 60，行为零变化）：多执行器同出口的部署按
+    // 「执行器数 × 批次数/分钟 × 安全系数」调高。
+    limit: positiveInt("THROTTLE_CALLBACK_LIMIT", 60),
+    ttl: positiveInt("THROTTLE_CALLBACK_TTL", 60_000),
+  },
+};
 
 @ApiTags("Execution Callback")
 @Controller("executions")
