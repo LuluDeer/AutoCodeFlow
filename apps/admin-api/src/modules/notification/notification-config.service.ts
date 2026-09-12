@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleInit,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NotificationService, AlertChannel } from "./notification.service";
 import { ChannelConfigStore } from "./channel-config.store";
@@ -13,7 +18,7 @@ export interface NotificationChannel {
 }
 
 @Injectable()
-export class NotificationConfigService {
+export class NotificationConfigService implements OnModuleInit {
   private logger = new Logger(NotificationConfigService.name);
 
   private channelDefaults: NotificationChannel[] = [
@@ -180,6 +185,44 @@ export class NotificationConfigService {
     }
   }
 
+  // -----------------------------------------------------------------------
+  // ARCH-31: 渠道配置跨实例共享（DB 写穿 + 读穿刷新）
+  // -----------------------------------------------------------------------
+
+  /**
+   * 启动与周期刷新：把 DB 中已保存的渠道配置灌回**两个**内存面——
+   * 读面 `channelConfigs`（GET/PATCH 响应源）与发送面 ChannelConfigStore。
+   * 只灌其中之一会出现「管理台看到 A、发送用 B」的错位。
+   *
+   * DB 缺席（@Optional 仓储未提供）或查询异常时静默 no-op，行为与
+   * 本轮之前完全一致（纯内存 + env 回退）。
+   */
+  async onModuleInit(): Promise<void> {
+    await this.hydrateFromPersisted();
+    this.store.registerRefreshTask(() => this.hydrateFromPersisted());
+  }
+
+  /**
+   * 从持久化层读穿刷新，返回**实际应用到已知渠道**的行数（0 = 无持久化层、
+   * 无行，或查询失败——`listPersisted` 内部已吞错并 warn，本方法绝不因 DB
+   * 抖动影响进程启动）。
+   */
+  async hydrateFromPersisted(): Promise<number> {
+    if (!this.store.isPersistent()) return 0;
+    const rows = await this.store.listPersisted();
+    let applied = 0;
+    for (const row of rows) {
+      const channel = this.channelConfigs.get(row.key);
+      if (!channel) continue; // 未知渠道键（枚举演进后的遗留行）不污染内存
+      channel.config = { ...row.config };
+      channel.enabled = row.enabled;
+      // 同步发送面（env 种子值让位于已保存值，与渠道解析顺序一致）
+      this.syncStore(row.key);
+      applied++;
+    }
+    return applied;
+  }
+
   getAllChannels(): NotificationChannel[] {
     return Array.from(this.channelConfigs.values()).map((c) =>
       this.maskChannel(c),
@@ -282,6 +325,11 @@ export class NotificationConfigService {
       // what the admin surface saved (read path stays masked).
       this.syncStore(key);
     }
+
+    // ARCH-31: 写穿持久化（fire-and-forget——updateChannel 保持同步语义，
+    // 内存态已生效；DB 写失败仅告警，不阻断管理台响应）。多实例下其余
+    // 实例在下一个刷新周期读穿到本次保存的值。
+    void this.store.persist(key, channel.config, channel.enabled);
 
     return this.maskChannel(channel);
   }

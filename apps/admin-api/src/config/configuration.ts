@@ -264,6 +264,15 @@ export default () => ({
       from: process.env.EMAIL_FROM || "autocodeflow@noreply.com",
       to: process.env.EMAIL_TO || "",
     },
+    // ARCH-31: 跨实例共享状态的读穿刷新周期（ms）——渠道配置与通知静默
+    // 此前是纯进程内 Map，多实例下「只在接收写请求的那个实例生效」。写穿
+    // DB 后各实例按周期读穿，一个周期内跨实例收敛（无需 Redis  pub/sub，
+    // 静默/渠道配置都是低频人写、高频热读，TTL 收敛是收益/成本最优解）。
+    channelConfigRefreshMs: parseInt(
+      process.env.CHANNEL_CONFIG_REFRESH_MS || "15000",
+      10,
+    ),
+    silenceRefreshMs: parseInt(process.env.SILENCE_REFRESH_MS || "15000", 10),
   },
   // ARCH-27: 初次部署 admin 种子账号（users.service onModuleInit）。
   // 此前 users.service 直读 process.env（未注册，审计缺口）；现注册后经
