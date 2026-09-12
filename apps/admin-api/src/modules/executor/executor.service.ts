@@ -1279,7 +1279,9 @@ export class ExecutorService {
       if (task.executorAffinityTags && task.executorAffinityTags.length > 0) {
         filtered = filtered.filter((e) => {
           if (!e.tags) return false;
-          return task.executorAffinityTags!.some((tag) => e.tags!.includes(tag));
+          return task.executorAffinityTags!.some((tag) =>
+            e.tags!.includes(tag),
+          );
         });
       }
       if (

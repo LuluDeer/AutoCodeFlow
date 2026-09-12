@@ -9,9 +9,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * retained as the parent so operators can correlate the terminal record with
  * its original event envelope.
  */
-export class CreateEventOutboxDeadLetters1790000000013
-  implements MigrationInterface
-{
+export class CreateEventOutboxDeadLetters1790000000013 implements MigrationInterface {
   name = "CreateEventOutboxDeadLetters1790000000013";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
@@ -48,8 +46,6 @@ export class CreateEventOutboxDeadLetters1790000000013
     await queryRunner.query(
       `DROP INDEX IF EXISTS "uq_event_outbox_dead_letters_outboxId"`,
     );
-    await queryRunner.query(
-      `DROP TABLE IF EXISTS "event_outbox_dead_letters"`,
-    );
+    await queryRunner.query(`DROP TABLE IF EXISTS "event_outbox_dead_letters"`);
   }
 }

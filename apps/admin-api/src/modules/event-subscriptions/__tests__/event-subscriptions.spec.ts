@@ -234,10 +234,11 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
       makeSub(),
       makeSub({ id: "33333333-3333-4333-8333-333333333333" }),
     ]);
-    const result = await dispatcher.deliverToSubscribers(
-      "execution.failed",
-      { event: "execution.failed", occurredAt: "t", data: {} },
-    );
+    const result = await dispatcher.deliverToSubscribers("execution.failed", {
+      event: "execution.failed",
+      occurredAt: "t",
+      data: {},
+    });
     expect(result).toEqual({
       targetCount: 2,
       deliveredCount: 2,
@@ -247,7 +248,9 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
   });
 
   it("deliverToSubscribers：无目标返回零聚合", async () => {
-    subRepoMock.find.mockResolvedValue([makeSub({ eventTypes: ["executor.offline"] })]);
+    subRepoMock.find.mockResolvedValue([
+      makeSub({ eventTypes: ["executor.offline"] }),
+    ]);
     await expect(
       dispatcher.deliverToSubscribers("execution.failed", {
         event: "execution.failed",
@@ -290,11 +293,14 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
     try {
       subRepoMock.find.mockResolvedValue([makeSub()]);
       axiosPost.mockRejectedValue(new Error("down"));
-      const resultPromise = dispatcher.deliverToSubscribers("execution.failed", {
-        event: "execution.failed",
-        occurredAt: "t",
-        data: {},
-      });
+      const resultPromise = dispatcher.deliverToSubscribers(
+        "execution.failed",
+        {
+          event: "execution.failed",
+          occurredAt: "t",
+          data: {},
+        },
+      );
       await jest.runAllTimersAsync();
       await expect(resultPromise).resolves.toEqual({
         targetCount: 1,
@@ -313,11 +319,14 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
       subRepoMock.find.mockResolvedValue([makeSub()]);
       axiosPost.mockRejectedValue(new Error("down"));
       dlRepoMock.save.mockRejectedValueOnce(new Error("dead letter db down"));
-      const resultPromise = dispatcher.deliverToSubscribers("execution.failed", {
-        event: "execution.failed",
-        occurredAt: "t",
-        data: {},
-      });
+      const resultPromise = dispatcher.deliverToSubscribers(
+        "execution.failed",
+        {
+          event: "execution.failed",
+          occurredAt: "t",
+          data: {},
+        },
+      );
       await jest.runAllTimersAsync();
       await expect(resultPromise).resolves.toEqual({
         targetCount: 1,
