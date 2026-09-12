@@ -188,8 +188,10 @@ OnModuleInit + 每 5s 扫描。claim **在数据库内完成**：单条
 （那一行必须留给扫描重试，已成功的订阅会再收一次）②与扫描的租约竞态 时出现。
 
 **残留多实例语义**：at-least-once 本身要求订阅方幂等（文档已声明）；重复度不再随
-实例数线性放大（claim 排他），但**真机双实例「同一事件不重复投递」的边界验证仍
-pending**（矩阵 §5 第 4 项）。
+实例数线性放大（claim 排他）。claim 的排他性已由真机并发套件验证（§5 第 4 项，
+`npm run test:arch31-outbox` 7/7）；「同一事件实际投递到 webhook 的次数」因订阅回调面
+禁止回环地址（SSRF 纪律）无法在本机离线闭环，需公网可达接收端——属交付验收，
+不改变 claim 侧结论。
 
 ### 3.7 🟡 执行器令牌缓存（轮换延迟）
 
@@ -322,7 +324,16 @@ fail-open 回内存态，与 NOTIF-003 降级一致）。
    （`rolloutMeta.heartbeatConfirmedAt` 落库），A 的 tick 据此提升其余台，
    **10 秒完成整批**（改造前只能卡到 15min 硬超时），终态两行均 `promoted`、
    零在途残留。该套件同时抓出并修掉两个真实缺陷（见 §3.4「真机抓到的两个缺陷」）。
-4. ⏸ outbox 快速路径/补投重复边界（依赖 outbox 行级 claim，代码未实现）。
+4. ✅ **outbox 行级 claim 的双实例竞争**（真机，2026-09-12）：`npm run test:arch31-outbox`
+   （`scripts/arch31-outbox-claim-selftest.mjs`）用**两个独立 PG 连接**并发执行
+   **从源码现取**的生产 claim CTE（批量/租约常量同样现取，实现改了这里自动跟随），
+   **7/7 通过**：①同轮零重叠（`FOR UPDATE SKIP LOCKED` 排他，50 行 × 12 轮并发）
+   ②两实例并行推进最终覆盖全部行（无永久饿死）③活动租约不被抢 ④租约过期（实例崩溃）
+   可被另一实例回收 ⑤已投递行不再被 claim。
+   *口径*：本项验的是**临界区 SQL 的排他性**（比 HTTP 端到端更贴近要害）——订阅回调面
+   走 `assertSafeHttpUrl`（回环直接拒绝，无测试开关），本机离线造不出可达接收端，
+   故不做「两个实例实际投 webhook」的端到端；投递侧的重复语义由 api-reference
+   声明的 at-least-once + 快速路径收口覆盖。
 5. ✅ **调度 Leader 单点性**：两实例 `/api/metrics/scheduler` 中恰一个
    `scheduler.isLeader=true`（pid 可区分）。
 
