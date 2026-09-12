@@ -172,3 +172,23 @@ affected=0，而候选只有一个 → 抛 "No available executor" → 执行直
 - **仍未完成（如实）**：500 并发 / 1000 RPM / SSE 500 连接 / 回调 10k 四档目标验收、
   服务端 Prometheus 水位采集；QA-05/BUG-19 保持 claimed（参考基线 + 瓶颈修复，
   非容量验收）。
+
+### 8.1 SSE 500 连接档（§5 目标之一，本轮实测达成）
+
+```bash
+LT_SSE_MAX_GLOBAL=700 bash scripts/load-test-stack.sh \
+  --scenario sse --count 500 --concurrency 500 --sse-hold 30
+```
+
+| 档位 | 连接/并发 | 槽位上限 | 结果 | 建连 p50/p95 | 429 |
+|---|---|---|---|---|---|
+| `/api/metrics/stream` | 500 / 500 | 700（`LT_SSE_MAX_GLOBAL`） | **500/500 成功（100%）**，hold 30s 全部保持到期 | 594ms / 724ms | 0 |
+
+- **结论（限定条件）**：本机单节点、**直连 admin-api**（未过反代）下，500 条并发 SSE
+  连接全部建立并保持到 hold 到期，槽位放大到 700 后无 503。反代层的长流语义由
+  `npm run test:nginx-sse`（19/19，含 24h 档入口）单独验证。
+- **仍需补的证据**：① 经 nginx 的 500 连接档（本机未跑，反代连接上限/worker_connections
+  未调优）；② 服务端 RSS/CPU/事件循环延迟水位（本轮只采了客户端观测；容量白皮书需要
+  服务端 Prometheus 快照）；③ 多实例 + 反代路由下的槽位分布。
+- **同批 tasks 档复测**（见上表）：100@25 容量放开后 100/100，此前失败主因（BUG-22）
+  已修。
