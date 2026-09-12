@@ -34,16 +34,32 @@ const CONFIG_FILE_MODE = 0o600;
  */
 const configDir = process.env.ACF_CONFIG_DIR;
 
-const store = new Conf<AcfConfig>({
-  projectName: 'acf-cli',
-  configFileMode: CONFIG_FILE_MODE,
-  ...(configDir ? { cwd: configDir } : {}),
-  defaults: {
-    apiUrl: 'http://localhost:3105',
-    token: '',
-    refreshToken: '',
-  },
-});
+/**
+ * Construct the config store. conf applies `configFileMode` while *writing* the
+ * defaults-bearing file at construction time; on platforms where that chmod is
+ * unsupported or momentarily blocked (Windows ACL semantics, parallel-load disk
+ * contention in tests, read-only mounts) the constructor can throw. Fall back to
+ * a mode-less store rather than crashing the CLI — `hardenConfigPermissions()`
+ * repairs the on-disk mode separately when the platform allows it.
+ */
+function createStore(): Conf<AcfConfig> {
+  const base = {
+    projectName: 'acf-cli',
+    ...(configDir ? { cwd: configDir } : {}),
+    defaults: {
+      apiUrl: 'http://localhost:3105',
+      token: '',
+      refreshToken: '',
+    },
+  };
+  try {
+    return new Conf<AcfConfig>({ ...base, configFileMode: CONFIG_FILE_MODE });
+  } catch {
+    return new Conf<AcfConfig>(base);
+  }
+}
+
+const store = createStore();
 
 /** Absolute path of the on-disk config file (diagnostics / tests / showConfig). */
 export function getConfigPath(): string {
