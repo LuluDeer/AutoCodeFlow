@@ -17,9 +17,11 @@ import {
   MinusCircleOutlined,
   CloseCircleOutlined,
 } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
+import '../i18n';
 import {
   buildExecutionTimeline,
-  TIMELINE_PHASE_LABEL,
+  TIMELINE_PHASE_LABELS,
   type TimelineSource,
 } from '../utils/execution-timeline';
 import { formatDateTime, formatDuration } from '../utils/timeFormat';
@@ -70,6 +72,7 @@ export default function ExecutionReportPanel({
   loadError,
   loading,
 }: ExecutionReportPanelProps) {
+  const { t } = useTranslation();
   const source: PanelSource = payload?.execution ?? {};
   const entries = buildExecutionTimeline(source);
   const step = currentStep(source);
@@ -78,7 +81,7 @@ export default function ExecutionReportPanel({
   return (
     <div data-testid="execution-report-panel">
       <Card
-        title="执行时间线"
+        title={t('reportPanel.title')}
         size="small"
         style={{ marginBottom: 16 }}
         loading={loading && !payload}
@@ -87,7 +90,7 @@ export default function ExecutionReportPanel({
           <Alert
             type="warning"
             showIcon
-            title="报告数据加载失败，时间线由执行详情字段本地映射"
+            title={t('reportPanel.loadFail')}
             description={loadError}
             style={{ marginBottom: 12 }}
           />
@@ -100,7 +103,7 @@ export default function ExecutionReportPanel({
             const isTerminal = e.phase === 'finished';
             const mark = isTerminal ? terminalMark(source.status) : { icon: undefined as React.ReactNode, color: undefined as string | undefined };
             return {
-              title: TIMELINE_PHASE_LABEL[e.phase],
+              title: TIMELINE_PHASE_LABELS(t)[e.phase],
               description: (
                 <span data-testid={`timeline-${e.phase}`}>
                   {e.at ? formatDateTime(e.at) : '—'}
@@ -117,14 +120,14 @@ export default function ExecutionReportPanel({
         />
         {source.duration != null && (
           <div style={{ marginTop: 12 }}>
-            <Text type="secondary">DB 记录耗时：</Text>
-            <Text code>{formatDuration(source.duration)}</Text>
+            <Text type="secondary">{t('reportPanel.dbDuration')}</Text>
+            <Text code>{formatDuration(source.duration, t)}</Text>
           </div>
         )}
       </Card>
 
       <Card
-        title="🤖 AI 故障分析"
+        title={t('reportPanel.aiTitle')}
         size="small"
         style={{ marginBottom: 16 }}
         styles={{ header: { background: 'linear-gradient(90deg, #e6f7ff, #f0f5ff)', color: '#1677ff' } }}
@@ -144,35 +147,35 @@ export default function ExecutionReportPanel({
           </pre>
         ) : (
           <Text type="secondary">
-            暂无 AI 分析——失败/超时执行可在详情页工具栏点击「AI 分析」生成。
+            {t('reportPanel.aiEmpty')}
           </Text>
         )}
       </Card>
 
-      <Card title="当日执行报告（execution_reports）" size="small">
+      <Card title={t('reportPanel.reportTitle')} size="small">
         {report ? (
           <Descriptions
             column={{ xs: 1, sm: 2, md: 4 }}
             size="small"
             data-testid="report-row"
           >
-            <Descriptions.Item label="报告日">{report.triggerDay}</Descriptions.Item>
-            <Descriptions.Item label="成功">{report.successCount}</Descriptions.Item>
-            <Descriptions.Item label="失败">{report.failCount}</Descriptions.Item>
-            <Descriptions.Item label="超时">{report.timeoutCount}</Descriptions.Item>
-            <Descriptions.Item label="取消">{report.cancelledCount}</Descriptions.Item>
-            <Descriptions.Item label="运行中">{report.runningCount}</Descriptions.Item>
-            <Descriptions.Item label="平均耗时">
-              {formatDuration(report.avgDurationMs)}
+            <Descriptions.Item label={t('reportPanel.col.reportDay')}>{report.triggerDay}</Descriptions.Item>
+            <Descriptions.Item label={t('reportPanel.col.success')}>{report.successCount}</Descriptions.Item>
+            <Descriptions.Item label={t('reportPanel.col.fail')}>{report.failCount}</Descriptions.Item>
+            <Descriptions.Item label={t('reportPanel.col.timeout')}>{report.timeoutCount}</Descriptions.Item>
+            <Descriptions.Item label={t('reportPanel.col.cancelled')}>{report.cancelledCount}</Descriptions.Item>
+            <Descriptions.Item label={t('reportPanel.col.running')}>{report.runningCount}</Descriptions.Item>
+            <Descriptions.Item label={t('reportPanel.col.avgDuration')}>
+              {formatDuration(report.avgDurationMs, t)}
             </Descriptions.Item>
-            <Descriptions.Item label="最长耗时">
-              {formatDuration(report.maxDurationMs)}
+            <Descriptions.Item label={t('reportPanel.col.maxDuration')}>
+              {formatDuration(report.maxDurationMs, t)}
             </Descriptions.Item>
           </Descriptions>
         ) : (
           <Text type="secondary" data-testid="report-empty">
-            当日暂无聚合报告——报告按天由平台统计任务生成，缺行属正常状态，不影响上方时间线与分析。
-          </Text>
+              {t('reportPanel.reportEmpty')}
+            </Text>
         )}
       </Card>
     </div>

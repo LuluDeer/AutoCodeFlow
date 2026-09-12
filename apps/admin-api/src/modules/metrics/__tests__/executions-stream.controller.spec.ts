@@ -143,9 +143,7 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
     expect(res.headers["Cache-Control"]).toBe("no-cache");
     expect(res.headers["X-Accel-Buffering"]).toBe("no");
     // 无快照帧：建连后（未 emit 事件前）零数据帧
-    expect(
-      parseFrames(res.writes).filter((f) => !f.comment),
-    ).toHaveLength(0);
+    expect(parseFrames(res.writes).filter((f) => !f.comment)).toHaveLength(0);
 
     (closeCb as () => void)();
     await done;

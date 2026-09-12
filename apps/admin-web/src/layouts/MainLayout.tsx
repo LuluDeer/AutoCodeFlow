@@ -23,12 +23,15 @@ import {
   DesktopOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../store/auth';
 import { authApi } from '../api/auth';
 import { logoutRemote } from '../api/logout';
 import CommandPalette from '../components/CommandPalette';
 import { useThemeStore } from '../theme/store';
 import type { ThemeMode } from '../theme/store';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -70,67 +73,71 @@ export function readMenuOpenKeys(validKeys: string[]): string[] {
 }
 
 // UI-02：主题三态切换按钮的图标/文案/aria 标签（light → dark → system 循环）
-const THEME_BUTTON_META: Record<ThemeMode, { icon: ReactNode; label: string; aria: string }> = {
-  light: { icon: <SunOutlined />, label: '亮色', aria: '切换主题（当前亮色，点击切换到暗色）' },
-  dark: { icon: <MoonOutlined />, label: '暗色', aria: '切换主题（当前暗色，点击切换为跟随系统）' },
-  system: { icon: <DesktopOutlined />, label: '跟随系统', aria: '切换主题（当前跟随系统，点击切换到亮色）' },
+// UI-10：文案/aria 从 i18n key 取（aria 含当前态描述，随语言与主题态变化）
+const THEME_BUTTON_META: Record<ThemeMode, { icon: ReactNode; labelKey: string; ariaKey: string }> = {
+  light: { icon: <SunOutlined />, labelKey: 'nav.theme.light', ariaKey: 'nav.theme.light.aria' },
+  dark: { icon: <MoonOutlined />, labelKey: 'nav.theme.dark', ariaKey: 'nav.theme.dark.aria' },
+  system: { icon: <DesktopOutlined />, labelKey: 'nav.theme.system', ariaKey: 'nav.theme.system.aria' },
 };
 
 // UI-03：菜单分组结构（新导航 IA：概览/任务/执行/执行器/应用/系统）——
 // 渲染时按角色过滤（R5 RBAC），分组键不带 '/'，页面键以路由开头。
 // 分组用 antd Menu 的 submenu 形态（非 type:'group'），保证分组可折叠/展开并持久化。
-const allMenuItems = [
-  {
-    key: 'g-overview',
-    icon: <DashboardOutlined />,
-    label: '概览',
-    children: [{ key: '/dashboard', icon: <DashboardOutlined />, label: '控制台' }],
-  },
-  {
-    key: 'g-tasks',
-    icon: <ThunderboltOutlined />,
-    label: '任务',
-    children: [
-      { key: '/tasks', icon: <ThunderboltOutlined />, label: '任务调度' },
-      { key: '/task-templates', icon: <FileTextOutlined />, label: '任务模板' },
-    ],
-  },
-  {
-    key: 'g-executions',
-    icon: <HistoryOutlined />,
-    label: '执行',
-    children: [{ key: '/executions', icon: <HistoryOutlined />, label: '执行记录' }],
-  },
-  {
-    key: 'g-executors',
-    icon: <ClusterOutlined />,
-    label: '执行器',
-    children: [
-      { key: '/executors', icon: <ClusterOutlined />, label: '执行器列表' },
-      { key: '/executor-packages', icon: <DatabaseOutlined />, label: '执行器包' },
-    ],
-  },
-  {
-    key: 'g-applications',
-    icon: <AppstoreOutlined />,
-    label: '应用',
-    children: [
-      { key: '/applications', icon: <AppstoreOutlined />, label: '应用管理' },
-      { key: '/registry', icon: <DatabaseOutlined />, label: '包注册中心' },
-    ],
-  },
-  {
-    key: 'g-system',
-    icon: <SettingOutlined />,
-    label: '系统',
-    children: [
-      { key: '/users', icon: <UserOutlined />, label: '用户管理' },
-      { key: '/notifications', icon: <BellOutlined />, label: '通知设置' },
-      { key: '/audit', icon: <AuditOutlined />, label: '审计日志' },
-      { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
-    ],
-  },
-];
+// UI-10：label 由 buildMenuItems(t) 在组件内构造（语言切换即时生效）。
+function buildMenuItems(t: (k: string) => string) {
+  return [
+    {
+      key: 'g-overview',
+      icon: <DashboardOutlined />,
+      label: t('nav.group.overview'),
+      children: [{ key: '/dashboard', icon: <DashboardOutlined />, label: t('nav.dashboard') }],
+    },
+    {
+      key: 'g-tasks',
+      icon: <ThunderboltOutlined />,
+      label: t('nav.group.tasks'),
+      children: [
+        { key: '/tasks', icon: <ThunderboltOutlined />, label: t('nav.tasks') },
+        { key: '/task-templates', icon: <FileTextOutlined />, label: t('nav.taskTemplates') },
+      ],
+    },
+    {
+      key: 'g-executions',
+      icon: <HistoryOutlined />,
+      label: t('nav.group.executions'),
+      children: [{ key: '/executions', icon: <HistoryOutlined />, label: t('nav.executions') }],
+    },
+    {
+      key: 'g-executors',
+      icon: <ClusterOutlined />,
+      label: t('nav.group.executors'),
+      children: [
+        { key: '/executors', icon: <ClusterOutlined />, label: t('nav.executors') },
+        { key: '/executor-packages', icon: <DatabaseOutlined />, label: t('nav.executorPackages') },
+      ],
+    },
+    {
+      key: 'g-applications',
+      icon: <AppstoreOutlined />,
+      label: t('nav.group.applications'),
+      children: [
+        { key: '/applications', icon: <AppstoreOutlined />, label: t('nav.applications') },
+        { key: '/registry', icon: <DatabaseOutlined />, label: t('nav.registry') },
+      ],
+    },
+    {
+      key: 'g-system',
+      icon: <SettingOutlined />,
+      label: t('nav.group.system'),
+      children: [
+        { key: '/users', icon: <UserOutlined />, label: t('nav.users') },
+        { key: '/notifications', icon: <BellOutlined />, label: t('nav.notifications') },
+        { key: '/audit', icon: <AuditOutlined />, label: t('nav.audit') },
+        { key: '/settings', icon: <SettingOutlined />, label: t('nav.settings') },
+      ],
+    },
+  ];
+}
 
 // ADMIN-only 菜单入口：普通用户不渲染（后端对应接口均 @Roles(ADMIN)）
 // R6：/notifications 收紧——GET/PATCH /notification/channels 为 ADMIN-only
@@ -139,6 +146,7 @@ const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', 
 export default function MainLayout() {
   const nav = useNavigate();
   const location = useLocation();
+  const { t } = useTranslation();
   const { user, setUser } = useAuthStore();
   const isAdmin = user?.role === 'admin';
   // UI-03：折叠态持久化到 localStorage（跨会话记忆用户偏好）
@@ -159,6 +167,8 @@ export default function MainLayout() {
   const themeMode = useThemeStore((s) => s.mode);
   const cycleThemeMode = useThemeStore((s) => s.cycleMode);
   const themeMeta = THEME_BUTTON_META[themeMode];
+  const themeLabel = t(themeMeta.labelKey);
+  const themeAria = t(themeMeta.ariaKey);
 
   // R5: 登录响应只含 token，role 需从 GET /auth/profile 补齐。
   // 覆盖两种场景：刚登录（store 里 user 为空）+ 旧 localStorage 会话（user 无 role）。
@@ -180,6 +190,8 @@ export default function MainLayout() {
   // 按角色过滤菜单：ADMIN-only 项对普通用户隐藏（UI-03：顶层恒为分组，逐层过滤）。
   // R6 回归守卫：isAdmin 放行条件必须在分组化改造后保留——无条件过滤会把
   // 「通知设置/用户管理/审计日志/执行器包」对管理员一并藏掉（e2e-17 实证）。
+  // UI-10：菜单项 label 经 t() 构造（语言切换即时生效）；过滤在构造后展开无关。
+  const allMenuItems = buildMenuItems(t);
   const menuItems = allMenuItems
     .map((group) => ({
       ...group,
@@ -231,23 +243,23 @@ export default function MainLayout() {
 
   const selectedKey = '/' + location.pathname.split('/')[1];
 
-  // Build breadcrumb items from the current path
+  // Build breadcrumb items from the current path（UI-10：名称走 i18n key）
   const ROUTE_NAMES: Record<string, string> = {
-    dashboard: '控制台',
-    applications: '应用管理',
-    tasks: '任务调度',
-    'task-templates': '任务模板',
-    executions: '执行记录',
-    executors: '执行器',
-    'executor-packages': '执行器包',
-    registry: '包注册中心',
-    users: '用户管理',
-    notifications: '通知设置',
-    audit: '审计日志',
-    settings: '系统设置',
-    install: '安装向导',
-    new: '新建',
-    edit: '编辑',
+    dashboard: t('nav.dashboard'),
+    applications: t('nav.applications'),
+    tasks: t('nav.tasks'),
+    'task-templates': t('nav.taskTemplates'),
+    executions: t('nav.executions'),
+    executors: t('nav.executors'),
+    'executor-packages': t('nav.executorPackages'),
+    registry: t('nav.registry'),
+    users: t('nav.users'),
+    notifications: t('nav.notifications'),
+    audit: t('nav.audit'),
+    settings: t('nav.settings'),
+    install: t('nav.install'),
+    new: t('nav.new'),
+    edit: t('nav.edit'),
   };
   const pathSegments = location.pathname.split('/').filter(Boolean);
   const breadcrumbItems = [
@@ -267,8 +279,8 @@ export default function MainLayout() {
       key: 'info',
       label: (
         <div style={{ padding: '4px 0' }}>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>{user?.username || '用户'}</div>
-          <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{user?.role === 'admin' ? '管理员' : '普通用户'}</div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{user?.username || t('nav.user')}</div>
+          <div style={{ fontSize: 12, color: token.colorTextTertiary }}>{user?.role === 'admin' ? t('nav.role.admin') : t('nav.role.user')}</div>
         </div>
       ),
       disabled: true,
@@ -278,7 +290,7 @@ export default function MainLayout() {
     {
       key: 'logout',
       icon: <LogoutOutlined />,
-      label: '退出登录',
+      label: t('nav.logout'),
       danger: true,
     },
   ];
@@ -316,7 +328,7 @@ export default function MainLayout() {
     >
       {/* UI-12：跳转链接——键盘用户首个 Tab 即可跳过整条侧边栏导航
           （样式见 src/styles/a11y-focus.css，由 main.tsx 引入） */}
-      <a href="#main-content" className="a11y-skip-link">跳到主要内容</a>
+      <a href="#main-content" className="a11y-skip-link">{t('nav.skipToContent')}</a>
       <Sider
         collapsible
         collapsed={collapsed}
@@ -333,7 +345,7 @@ export default function MainLayout() {
             Enter/Space 天然可达，aria-label 提供读屏名称 */}
         <button
           type="button"
-          aria-label="返回控制台"
+          aria-label={t('nav.logo.aria')}
           data-testid="logo-home-button"
           onClick={() => nav('/dashboard')}
           style={{
@@ -376,7 +388,7 @@ export default function MainLayout() {
         </button>
 
         {/* UI-12：侧边栏菜单包进 navigation landmark 并命名，读屏可直达主导航 */}
-        <nav aria-label="主导航">
+        <nav aria-label={t('nav.aria.main')}>
           <Menu
             mode="inline"
             selectedKeys={[selectedKey]}
@@ -405,11 +417,11 @@ export default function MainLayout() {
             transition: 'all 0.2s',
           }}
         >
-          <Tooltip title={collapsed ? '展开菜单' : '收起菜单'} placement="right">
+          <Tooltip title={collapsed ? t('nav.sider.expand') : t('nav.sider.collapse')} placement="right">
             <Button
               type="text"
               data-testid="sider-toggle"
-              aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+              aria-label={collapsed ? t('nav.sider.expand.aria') : t('nav.sider.collapse.aria')}
               aria-expanded={!collapsed}
               icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               style={{ fontSize: 15, color: token.colorTextSecondary }}
@@ -441,7 +453,7 @@ export default function MainLayout() {
           <Button
             type="text"
             className="mobile-menu-toggle"
-            aria-label={mobileSiderOpen ? '收起导航菜单' : '打开导航菜单'}
+            aria-label={mobileSiderOpen ? t('nav.mobile.close') : t('nav.mobile.open')}
             aria-expanded={mobileSiderOpen}
             data-testid="mobile-menu-toggle"
             icon={mobileSiderOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
@@ -464,11 +476,11 @@ export default function MainLayout() {
 
             {/* UI-02：明暗主题切换——light → dark → system 三态循环，
                 图标随当前态变化，aria-label 随态更新（可达性） */}
-            <Tooltip title={`主题：${themeMeta.label}（点击切换）`}>
+            <Tooltip title={t('nav.theme.tooltip', { label: themeLabel })}>
               <Button
                 type="text"
                 icon={themeMeta.icon}
-                aria-label={themeMeta.aria}
+                aria-label={themeAria}
                 data-testid="theme-toggle"
                 style={{ fontSize: 16, color: token.colorTextSecondary }}
                 onClick={cycleThemeMode}
@@ -480,18 +492,18 @@ export default function MainLayout() {
               <Button
                 type="text"
                 icon={<SearchOutlined />}
-                aria-label="全局搜索"
+                aria-label={t('nav.search.aria')}
                 style={{ fontSize: 16, color: token.colorTextSecondary }}
                 onClick={() => setPaletteOpen((v) => !v)}
               />
             </Tooltip>
 
             {/* 帮助按钮 —— UI-12：纯图标按钮补可访问名（此前读屏只报「按钮」） */}
-            <Tooltip title="帮助文档">
+            <Tooltip title={t('nav.help.aria')}>
               <Button
                 type="text"
                 icon={<QuestionCircleOutlined />}
-                aria-label="帮助文档"
+                aria-label={t('nav.help.aria')}
                 style={{ fontSize: 16, color: token.colorTextSecondary }}
               />
             </Tooltip>
@@ -499,12 +511,12 @@ export default function MainLayout() {
             {/* 通知按钮：R6 起 /notifications 为 ADMIN-only（路由门控），
                 对普通用户隐藏该快捷入口，避免点击后落入 403 页 */}
             {isAdmin && (
-              <Tooltip title="通知">
+              <Tooltip title={t('nav.notify.aria')}>
                 <Badge count={0} dot>
                   <Button
                     type="text"
                     icon={<BellOutlined />}
-                    aria-label="通知"
+                    aria-label={t('nav.notify.aria')}
                     style={{ fontSize: 16 }}
                     onClick={() => nav('/notifications')}
                   />
@@ -527,7 +539,7 @@ export default function MainLayout() {
                 type="button"
                 aria-haspopup="menu"
                 aria-expanded={userMenuOpen}
-                aria-label="用户菜单"
+                aria-label={t('nav.userMenu.aria')}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -548,8 +560,8 @@ export default function MainLayout() {
                   {user?.username?.[0]?.toUpperCase() || 'U'}
                 </Avatar>
                 <div style={{ lineHeight: 1.3 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: token.colorText }}>{user?.username || '用户'}</div>
-                  <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{user?.role === 'admin' ? '管理员' : '普通用户'}</div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: token.colorText }}>{user?.username || t('nav.user')}</div>
+                  <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{user?.role === 'admin' ? t('nav.role.admin') : t('nav.role.user')}</div>
                 </div>
               </button>
             </Dropdown>
@@ -582,7 +594,7 @@ export default function MainLayout() {
         type="button"
         className="mobile-sider-mask"
         data-testid="mobile-sider-mask"
-        aria-label="关闭导航菜单"
+        aria-label={t('nav.mobile.mask.aria')}
         style={{ border: 'none', padding: 0 }}
         onClick={() => setMobileSiderOpen(false)}
       />

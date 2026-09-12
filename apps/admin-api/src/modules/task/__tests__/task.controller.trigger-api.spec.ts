@@ -54,9 +54,12 @@ describe("TaskController trigger — NF-01 API-Key 主体分流与审计", () =>
       req,
     );
 
-    expect(taskService.trigger).toHaveBeenCalledWith("task-1", {
-      params: { k: "v" },
-    });
+    expect(taskService.trigger).toHaveBeenCalledWith(
+      "task-1",
+      { params: { k: "v" } },
+      // AUTH-02: 控制器把主体透传（执行类写面按项目角色判定）
+      expect.objectContaining({ id: 7 }),
+    );
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 7,
@@ -77,7 +80,11 @@ describe("TaskController trigger — NF-01 API-Key 主体分流与审计", () =>
       req,
     );
 
-    expect(taskService.trigger).toHaveBeenCalledWith("task-1", {});
+    expect(taskService.trigger).toHaveBeenCalledWith(
+      "task-1",
+      {},
+      apiKeyUser, // API-Key 主体同样原样透传（service 侧按非用户主体旁路）
+    );
     expect(result).toEqual({
       taskId: "task-1",
       executionId: "exec-9",

@@ -1,10 +1,20 @@
 import { BrowserWindow, app, screen } from 'electron';
 import * as path from 'path';
+import { existsSync } from 'fs';
 import log from './logger';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
-const RENDERER_INDEX = path.join(app.getAppPath(), 'dist', 'renderer', 'index.html');
+// QA-12：裸 electron 跑 e2e 时 getAppPath()===__dirname（dist/main），
+//   dist/renderer 是上一级 sibling；打包形态才是 <app>/dist/renderer。
+// 双路径探测取存在者——两种形态同一语义，无行为差异。
+function resolveRendererIndex(): string {
+  const preferred = path.join(app.getAppPath(), 'dist', 'renderer', 'index.html');
+  const adjacent = path.join(__dirname, '..', 'renderer', 'index.html');
+  return existsSync(preferred) ? preferred : adjacent;
+}
+
+const RENDERER_INDEX = resolveRendererIndex();
 
 /**
  * BUG-12: one hardened webPreferences block shared by every window.

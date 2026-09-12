@@ -542,7 +542,7 @@ class ApiClient {
   async request(
     method,
     path,
-    { body, auth = true, write = false, signal, rateLimit = true } = {},
+    { body, auth = true, write = false, signal, rateLimit = true, stream = false } = {},
   ) {
     const max429Retries = 5;
     let attempt = 0;
@@ -585,7 +585,10 @@ class ApiClient {
         throw error;
       } finally {
         clearTimeout(timer);
-        signal?.removeEventListener("abort", onAbort);
+        // SSE/流式场景：body 在响应头之后才传输，abort 桥必须保留到调用方
+        // 读完 body（其见 finally 里 cancel reader），否则由 QA-05 实测挂起
+        // （header 到达即拆桥 → child.abort() 传不进去 → read() 永不返回）。
+        if (!stream) signal?.removeEventListener("abort", onAbort);
       }
       if (response.status === 429 && attempt < max429Retries) {
         attempt += 1;
@@ -892,7 +895,12 @@ async function runSseConnection(client, opts, signal) {
   let connected = false;
   let headerMs = null;
   try {
-    const response = await client.request("GET", opts.ssePath, { signal: child.signal });
+    const response = await client.request("GET", opts.ssePath, {
+      signal: child.signal,
+      // QA-05：SSE 是流式 body——request() 拆桥只对非 stream 生效，
+      // 否则 header 到达后 child.abort() 传导不进 fetch，read() 永不返回挂死。
+      stream: true,
+    });
     if (!response.ok) {
       const text = await response.text();
       throw makeHttpError("GET", opts.ssePath, response.status, text);

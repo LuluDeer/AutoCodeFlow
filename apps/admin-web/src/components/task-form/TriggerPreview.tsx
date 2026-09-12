@@ -1,6 +1,8 @@
 import { useMemo } from 'react';
 import { Alert, Space, Spin, Tag, Typography } from 'antd';
 import { ClockCircleOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
+import '../../i18n';
 import {
   nextCronFireTimes,
   nextFixedRateFireTimes,
@@ -45,6 +47,7 @@ export default function TriggerPreview({
   timezone,
   now,
 }: TriggerPreviewProps) {
+  const { t } = useTranslation();
   // now 只在挂载/显式注入时求值：预览是「快照」语义，不随每次 render 漂移。
   const anchor = useMemo(() => now ?? new Date(), [now]);
 
@@ -60,7 +63,7 @@ export default function TriggerPreview({
       return {
         kind: 'cron' as const,
         times,
-        tzLabel: tz ?? '服务器默认时区（浏览器本地）',
+        tzLabel: tz ?? t('triggerPreview.tzFallbackLabel'),
       };
     }
     if (triggerType === 'fixed_rate') {
@@ -94,31 +97,33 @@ export default function TriggerPreview({
     >
       <Space size={6} wrap style={{ marginBottom: preview.times.length ? 6 : 0 }}>
         <ClockCircleOutlined style={{ color: '#1677ff' }} />
-        <Text strong style={{ fontSize: 13 }}>触发预览</Text>
+        <Text strong style={{ fontSize: 13 }}>{t('triggerPreview.title')}</Text>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          未来 {TRIGGER_PREVIEW_COUNT} 次
+          {t('triggerPreview.nextCount', { count: TRIGGER_PREVIEW_COUNT })}
           {preview.kind === 'cron' && (
-            <> · 时区：{preview.tzLabel}</>
+            <> · {t('triggerPreview.timezone', { tz: preview.tzLabel })}</>
           )}
-          {preview.kind === 'fixed_rate' && <> · 每隔 {fixedRate} 秒</>}
+          {preview.kind === 'fixed_rate' && (
+            <> · {t('triggerPreview.fixedRateEvery', { seconds: fixedRate })}</>
+          )}
         </Text>
       </Space>
 
       {preview.times.length > 0 ? (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {preview.times.map((t, i) => (
+          {preview.times.map((time, i) => (
             <Tag key={i} style={{ fontFamily: 'monospace', marginInlineEnd: 0 }}>
-              {formatFireTime(t, preview.kind === 'cron' ? timezone : null)}
+              {formatFireTime(time, preview.kind === 'cron' ? timezone : null)}
             </Tag>
           ))}
           {sparse && (
             <Text type="secondary" style={{ fontSize: 12, width: '100%' }}>
-              一年内可预见的触发不足 {TRIGGER_PREVIEW_COUNT} 次（稀疏调度）。
+              {t('triggerPreview.sparse', { count: TRIGGER_PREVIEW_COUNT })}
             </Text>
           )}
           {preview.kind === 'fixed_rate' && (
             <Text type="secondary" style={{ fontSize: 12, width: '100%' }}>
-              按「保存/触发时刻 + N×间隔」推算；实际触发受队列与维护窗口影响可能略有偏移。
+              {t('triggerPreview.fixedRateNote')}
             </Text>
           )}
         </div>
@@ -126,13 +131,13 @@ export default function TriggerPreview({
         <Alert
           type="warning"
           showIcon
-          title="暂无法预览：表达式无法解析或一年内无触发时刻"
+          title={t('triggerPreview.unparsable')}
           style={{ padding: '4px 12px' }}
         />
       ) : (
         <Text type="secondary" style={{ fontSize: 12 }}>
           <Spin size="small" style={{ marginRight: 6 }} />
-          等待输入…
+          {t('triggerPreview.empty')}
         </Text>
       )}
     </div>
