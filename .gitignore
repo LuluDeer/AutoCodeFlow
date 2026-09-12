@@ -93,3 +93,6 @@ playwright-report/
 # 上传目录
 apps/admin-api/uploads/
 report.*.json
+
+# 混沌演练临时 env（含口令，勿入库）
+.env.chaos
