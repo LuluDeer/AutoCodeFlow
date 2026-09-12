@@ -9,6 +9,8 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from "@nestjs/common";
+// ARCH-31: 批次活性租约的持有者标识（hostname:pid）
+import { hostname } from "os";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan, In } from "typeorm";
 import axios from "axios";
@@ -59,6 +61,17 @@ const ROLLOUT_TICK_MS = 5_000;
 /** DEP-02：批次生命周期硬上限（毫秒）——防 pending/probing 死循环挂批次。 */
 const ROLLOUT_BATCH_TIMEOUT_MS = 15 * 60_000;
 
+/**
+ * ARCH-31：批次活性租约宽限（毫秒）。批次持有实例每个 tick 刷新行上
+ * `rolloutMeta.leasedAt`；重启 sweep（onModuleInit）跳过租约仍新鲜的批次，
+ * 否则**滚动重启时新起的实例会把另一个实例正在推进的灰度直接标 failed**
+ * （DEP-02 的单实例假设在多实例下会主动破坏在途批次）。
+ */
+const ROLLOUT_LEASE_GRACE_MS = 60_000;
+
+/** ARCH-31：本实例标识（写入租约，便于日志与运维定位批次持有者）。 */
+const ROLLOUT_INSTANCE_ID = `${hostname()}:${process.pid}`;
+
 /** DEP-02/DEP-03：单个部署行在批次内的健康探测 + 自动回滚（进程内）。
  *  结构化批次状态（最低正确形态，复用 FEAT-07 dispatcher 的进程内
  *  setTimeout 队列模式）：批次本体在内存，行级状态落 rolloutState/
@@ -76,6 +89,14 @@ interface RolloutBatch {
   startedAt: number;
   timer: NodeJS.Timeout | null;
   tickTimer: NodeJS.Timeout | null;
+  /**
+   * ARCH-31: 已从 DB 痕迹重建的「只读上下文」——本实例不是批次持有者
+   * （心跳/回调落到了别的实例）。此类上下文不启定时器、不驱动探测与提升，
+   * 只做行级状态推进（probing）与带 claim 的失败终结。
+   */
+  hydrated?: boolean;
+  /** ARCH-31: 该批次中已启动过健康探测的部署行（探测由持有实例单点驱动）。 */
+  probedIds?: Set<string>;
 }
 
 /** R5: name of the partial unique index created by migration
@@ -1585,10 +1606,39 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       strategy: "canary" | "all";
       canaryIds: string[];
       promotedIds: string[];
+      /** ARCH-31: 同应用已有在途批次时的拒绝原因（跨实例互斥，非异常）。 */
+      blockedReason?: string;
     };
   }> {
     const deployments = await this.findRunningByApp(appId);
     const strategy = rollout?.strategy ?? "all";
+
+    // ARCH-31: 同应用并发批次守卫（跨实例）——DB 里若已有在途（pending/
+    // probing）的灰度行，说明另一个实例正在推进同一应用的批次，直接 409。
+    // 此前只有进程内 Map 判重，多实例下两个实例可同时对同一应用开灰度。
+    if (strategy === "canary" && deployments.length > 0) {
+      const inFlight = await this.findInFlightRolloutRows(appId);
+      if (inFlight.length > 0) {
+        const owner = (inFlight[0].rolloutMeta as Record<string, any> | null)
+          ?.leasedBy;
+        return {
+          ok: false,
+          total: deployments.length,
+          succeeded: 0,
+          failed: 0,
+          rollout: {
+            batchId: String(
+              (inFlight[0].rolloutMeta as Record<string, any> | null)
+                ?.batchId ?? "unknown",
+            ),
+            strategy: "canary",
+            canaryIds: [],
+            promotedIds: [],
+            blockedReason: `another rollout batch is in flight for this application (${inFlight.length} row(s) pending/probing${owner ? `, owner=${String(owner)}` : ""})`,
+          },
+        };
+      }
+    }
 
     // all 模式：逐字节保持既有 controller 内联实现（QA-02 spec 消费该形状）。
     if (strategy !== "canary" || deployments.length === 0) {
@@ -1628,6 +1678,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       startedAt: Date.now(),
       timer: null,
       tickTimer: null,
+      probedIds: new Set<string>(),
     };
     this.rolloutBatches.set(appId, batch);
 
@@ -1716,12 +1767,179 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
+  // -----------------------------------------------------------------------
+  // ARCH-31: 灰度批次的多实例一致性
+  // -----------------------------------------------------------------------
+
+  /** 该应用在途（pending/probing）的灰度行——跨实例可见的「批次是否已被占用」。 */
+  private async findInFlightRolloutRows(
+    appId: string,
+  ): Promise<AppDeployment[]> {
+    try {
+      const rows = await this.repo.find({
+        where: {
+          applicationId: appId,
+          rolloutState: In([RolloutState.PENDING, RolloutState.PROBING]),
+        },
+      });
+      // 客户端二次过滤：仓储 mock / 副本读面可能不带 where 语义，只有行上
+      // 真的处在在途态才算「批次被占用」（防御性，判定权归行状态本身）。
+      return rows.filter(
+        (r) =>
+          r.rolloutState === RolloutState.PENDING ||
+          r.rolloutState === RolloutState.PROBING,
+      );
+    } catch (err: unknown) {
+      // 查不到就当作没有在途批次（fail-open：宁可放行一次灰度，也不因一次
+      // 查询抖动永久拒绝该应用的升级）。
+      this.logger.warn(
+        `findInFlightRolloutRows failed for ${appId}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      return [];
+    }
+  }
+
+  /**
+   * 解析部署行所属批次：本实例持有的内存批次优先；否则**从 DB 痕迹重建一个
+   * 只读上下文**（hydrated=true），使落在非持有实例上的心跳/回调也能推进
+   * 行级状态——此前这些事件被静默丢弃（`if (!batch) return`），批次只能在
+   * 收到心跳的那个实例上前进，多实例下灰度大面积卡死。
+   *
+   * `hint` 用于廉价短路：行上没有任何批次痕迹时不做任何查询（心跳是高频
+   * 路径，绝不能为每个心跳多加一次 DB 往返）。
+   */
+  private async resolveRolloutBatch(
+    appId: string,
+    hint?: AppDeployment,
+  ): Promise<RolloutBatch | null> {
+    const owned = this.rolloutBatches.get(appId);
+    if (owned) return owned;
+    if (hint && !this.hasRolloutTrace(hint)) return null;
+    return this.hydrateRolloutBatch(appId);
+  }
+
+  /** 行上是否留有批次痕迹（rolloutState 在途，或曾有 batchId）。 */
+  private hasRolloutTrace(deployment: AppDeployment): boolean {
+    if (
+      deployment.rolloutState === RolloutState.PENDING ||
+      deployment.rolloutState === RolloutState.PROBING
+    ) {
+      return true;
+    }
+    const meta = deployment.rolloutMeta as Record<string, any> | null;
+    return !!meta?.batchId;
+  }
+
+  /** 从 DB 行痕迹重建批次上下文（不注册定时器、不驱动探测/提升）。 */
+  private async hydrateRolloutBatch(
+    appId: string,
+  ): Promise<RolloutBatch | null> {
+    try {
+      const rows = await this.findInFlightRolloutRows(appId);
+      if (rows.length === 0) return null;
+      const meta = (rows[0].rolloutMeta ?? {}) as Record<string, any>;
+      const roleOf = (r: AppDeployment) =>
+        (r.rolloutMeta as Record<string, any> | null)?.role;
+      return {
+        batchId: String(meta.batchId ?? `restored-${appId}`),
+        applicationId: appId,
+        strategy: "canary",
+        percentage:
+          typeof meta.percentage === "number"
+            ? meta.percentage
+            : ROLLOUT_DEFAULT_PERCENTAGE,
+        healthCheck: await this.resolveHealthCheck(appId),
+        upgradedIds: rows
+          .filter((r) => roleOf(r) !== "promoted")
+          .map((r) => r.id),
+        promotedIds: rows
+          .filter((r) => roleOf(r) === "promoted")
+          .map((r) => r.id),
+        startedAt: rows[0].updatedAt
+          ? new Date(rows[0].updatedAt).getTime()
+          : Date.now(),
+        timer: null,
+        tickTimer: null,
+        hydrated: true,
+        probedIds: new Set<string>(),
+      };
+    } catch (err: unknown) {
+      this.logger.warn(
+        `hydrateRolloutBatch failed for ${appId}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      return null;
+    }
+  }
+
+  /**
+   * 条件 UPDATE 认领：把仍处于在途态的行批量置为 `toState`，返回是否命中。
+   * 多实例下「谁先把在途行终结，谁负责后续补偿（自动回滚）」——未命中的
+   * 实例直接退出，避免两台实例对同一批执行器重复回滚。
+   */
+  private async claimRolloutRows(
+    ids: string[],
+    fromStates: RolloutState[],
+    toState: RolloutState,
+  ): Promise<boolean> {
+    if (ids.length === 0) return false;
+    try {
+      const result = await this.repo
+        .createQueryBuilder()
+        .update(AppDeployment)
+        .set({ rolloutState: toState })
+        .where("id IN (:...ids)", { ids })
+        .andWhere("rolloutState IN (:...fromStates)", { fromStates })
+        .execute();
+      return (result.affected ?? 0) > 0;
+    } catch (err: unknown) {
+      this.logger.warn(
+        `claimRolloutRows failed (fallback to proceed): ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      // 认领失败（DB 抖动）不阻断失败处理——宁可重复一次回滚，也不能
+      // 因为条件 UPDATE 异常而永久跳过自动回滚。
+      return true;
+    }
+  }
+
+  /** 刷新批次活性租约（滚动重启时新实例据此判断「有实例仍在推进」）。 */
+  private async touchRolloutLease(batch: RolloutBatch): Promise<void> {
+    const id = batch.upgradedIds[0];
+    if (!id) return;
+    try {
+      // 与 markRolloutState 同形态（findOne + save）：jsonb 列走 QueryBuilder
+      // 的 set() 会撞 TypeORM 的类型收窄，且本路径不需要原子性。
+      const row = await this.repo.findOne({ where: { id } });
+      if (!row) return;
+      row.rolloutMeta = {
+        ...((row.rolloutMeta as Record<string, any>) ?? {}),
+        ...this.lastRolloutMeta(batch),
+        leasedAt: new Date().toISOString(),
+        leasedBy: ROLLOUT_INSTANCE_ID,
+      };
+      await this.repo.save(row);
+    } catch {
+      // 租约刷新是尽力而为（失败仅影响滚动重启时的 sweep 判据）
+    }
+  }
+
+  private lastRolloutMeta(
+    batch: RolloutBatch,
+  ): Record<string, any> | undefined {
+    return { batchId: batch.batchId, strategy: batch.strategy };
+  }
+
   /** DEP-02：handleHeartbeat 钩子——批次在途时，RUNNING 确认把行推进到
    *  probing（健康探测阶段）。FAILED/STOPPED 上报直接判批次失败。 */
   private async notifyHeartbeatToRollout(
     deployment: AppDeployment,
   ): Promise<void> {
-    const batch = this.rolloutBatches.get(deployment.applicationId);
+    const batch = await this.resolveRolloutBatch(
+      deployment.applicationId,
+      deployment,
+    );
     if (!batch) return;
     if (batch.upgradedIds.includes(deployment.id)) {
       if (deployment.status === DeploymentStatus.RUNNING) {
@@ -1729,9 +1947,16 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           batchId: batch.batchId,
           role: "canary",
           heartbeatConfirmedAt: new Date().toISOString(),
+          ...(batch.hydrated ? {} : { leasedBy: ROLLOUT_INSTANCE_ID }),
         });
-        if (batch.healthCheck) {
-          void this.probeDeployment(batch, deployment.id);
+        // 探测与提升只由批次持有实例驱动（hydrated 上下文不持定时器、
+        // 不启探测，避免两个实例同时对同一批执行器推进）。
+        if (batch.healthCheck && !batch.hydrated) {
+          if (!batch.probedIds) batch.probedIds = new Set<string>();
+          if (!batch.probedIds.has(deployment.id)) {
+            batch.probedIds.add(deployment.id);
+            void this.probeDeployment(batch, deployment.id);
+          }
         }
         // 无健康声明：tick 引擎看到「pending 全部清空」即提升。
       } else if (
@@ -1777,6 +2002,22 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     failedId: string,
     reason: string,
   ): Promise<void> {
+    // ARCH-31: 条件 UPDATE 认领终结权——多实例下心跳/探测可能同时落到多个
+    // 实例，只有第一个把在途行置为 failed 的实例执行后续自动回滚，避免对
+    // 同一批执行器重复回滚（claim 未命中 = 别的实例已收尾）。
+    const claimed = await this.claimRolloutRows(
+      [failedId, ...batch.upgradedIds.filter((x) => x !== failedId)],
+      [RolloutState.PENDING, RolloutState.PROBING],
+      RolloutState.FAILED,
+    );
+    if (!claimed) {
+      this.logger.warn(
+        `Rollout batch ${batch.batchId} already terminated by another instance — skipping duplicate rollback (reason: ${reason})`,
+      );
+      this.clearBatchTimers(batch);
+      this.rolloutBatches.delete(batch.applicationId);
+      return;
+    }
     this.clearBatchTimers(batch);
     this.rolloutBatches.delete(batch.applicationId);
     const failedIds = batch.upgradedIds.filter((x) => x !== failedId);
@@ -2066,11 +2307,39 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       return;
     }
 
+    // ARCH-31: 批次已被其他实例终结（行全部落入 failed/rolled_back）→ 本实例
+    // 立即收尾，避免继续沿 promoteRest 推进一个已被判失败的批次。
+    const active = rows.some(
+      (r) =>
+        r.rolloutState === RolloutState.PENDING ||
+        r.rolloutState === RolloutState.PROBING ||
+        r.rolloutState === RolloutState.PROMOTED,
+    );
+    if (!active) {
+      this.clearBatchTimers(batch);
+      this.rolloutBatches.delete(appId);
+      this.logger.warn(
+        `Rollout batch ${batch.batchId} no longer active in DB — dropped from this instance`,
+      );
+      return;
+    }
+
     if (stillPending.length === 0) {
       if (!batch.healthCheck) {
         // 无健康声明：跳过探测直接提升。
         await this.promoteRest(batch);
         return;
+      }
+      // ARCH-31: 探测补驱——心跳若落在别的实例（只把行推进到 probing），
+      // 持有者实例的 tick 在此接管探测，避免该台永远停在 probing 直到硬超时。
+      for (const r of rows) {
+        if (
+          r.rolloutState === RolloutState.PROBING &&
+          !batch.probedIds?.has(r.id)
+        ) {
+          batch.probedIds?.add(r.id);
+          void this.probeDeployment(batch, r.id);
+        }
       }
       // 探测在心跳确认时各自启动（probeDeployment 窗口）；全部行已 promoted
       // 说明探测通过路径已收尾。probing 在途则继续等下一 tick。
@@ -2083,6 +2352,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       }
     }
 
+    // ARCH-31: 刷新活性租约（滚动重启时新起的实例据此保留在途批次）
+    await this.touchRolloutLease(batch);
     this.scheduleRolloutTick(appId, ROLLOUT_TICK_MS);
   }
 
@@ -2141,7 +2412,24 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         { rolloutState: RolloutState.PROBING },
       ],
     });
-    for (const d of stale) {
+    // ARCH-31: 跳过「别的实例仍在推进」的批次——滚动重启时新起的实例若
+    // 一律标 failed，会把另一个实例正在跑的灰度直接打断（多实例下的真实
+    // 破坏路径）。判据=行上 rolloutMeta.leasedAt 落在宽限窗内。
+    const now = Date.now();
+    const orphaned = stale.filter((d) => {
+      const meta = d.rolloutMeta as Record<string, any> | null;
+      const leasedAt = meta?.leasedAt ? Date.parse(String(meta.leasedAt)) : NaN;
+      return !(
+        Number.isFinite(leasedAt) && now - leasedAt < ROLLOUT_LEASE_GRACE_MS
+      );
+    });
+    const skipped = stale.length - orphaned.length;
+    if (skipped > 0) {
+      this.logger.log(
+        `Rollout restart sweep: skipped ${skipped} row(s) with a fresh lease (another instance is driving them)`,
+      );
+    }
+    for (const d of orphaned) {
       d.rolloutState = RolloutState.FAILED;
       d.rolloutMeta = {
         ...((d.rolloutMeta as Record<string, any>) ?? {}),
@@ -2149,11 +2437,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       };
       await this.repo.save(d);
     }
-    if (stale.length > 0) {
+    if (orphaned.length > 0) {
       this.logger.warn(
-        `Marked ${stale.length} interrupted rollout deployment(s) as failed after restart`,
+        `Marked ${orphaned.length} interrupted rollout deployment(s) as failed after restart`,
       );
     }
-    return stale.length;
+    return orphaned.length;
   }
 }
