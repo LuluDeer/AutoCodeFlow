@@ -558,7 +558,12 @@ run_scenario() { # <场景字母（已规范化，小写）>
   : >"$slog"
   SCENARIO_FAILED=0; SCENARIO_SKIPPED=0
   echo "════ 场景 ${s^^} 开始（$(date '+%F %T')，日志 $slog）════"
-  "scenario_${s}_body" 2>&1 | tee -a "$slog" || true
+  # 注意：场景体必须跑在「当前 shell」而非管道子 shell——早期实现用
+  # `scenario_${s}_body 2>&1 | tee` 会把体放进子 shell，导致 fail_scenario/
+  # skip_scenario 对 FAILED/SCENARIO_FAILED 的改动随子 shell 退出而丢失，
+  # 于是「任何失败都被静默吞掉、套件永远报通过」。改用进程替换（> >(tee)），
+  # 体仍在当前 shell 执行（变量改动可见），同时把 stdout+stderr 都落日志。
+  "scenario_${s}_body" > >(tee -a "$slog") 2> >(tee -a "$slog" >&2) || true
   if (( SCENARIO_SKIPPED == 1 )); then
     :  # skip_scenario 已输出说明
   elif (( SCENARIO_FAILED == 0 )); then
