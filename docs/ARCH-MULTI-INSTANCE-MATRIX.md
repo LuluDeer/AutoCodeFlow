@@ -155,21 +155,29 @@ PATCH 保存**写穿**（upsert），各实例按 `CHANNEL_CONFIG_REFRESH_MS`（
 多实例若无共享卷，A 写入的包/产物 B 读不到；跨实例下载 404。需共享卷（NFS/对象存储）
 或在部署文档钉死。
 
-### 3.6 🟡 outbox 派发（跨进程共享表，但缺行级 claim）
+### 3.6 🟡 outbox 派发（行级 claim + 租约已落地；剩快速路径收口）
+
+> **状态校正（2026-09-12）**：本节原先描述「缺行级 claim」已不成立——claim/租约在
+> 早前轮次（c01f477）已实现，本轮又补上快速路径收口。以下为**当前实际语义**。
 
 FEAT-19 `OutboxDispatcher`（`outbox-dispatcher.service.ts`）把 outbox 落 **DB 表**，
-OnModuleInit + 每 5s 扫描 `dispatchedAt IS NULL AND deadLettered=false`。表是跨进程共享的，
-但**每个实例都独立扫描同一批行**，且重入锁 `scanning` 只是**进程内** boolean——
-没有任何行级 claim（无 `SELECT … FOR UPDATE SKIP LOCKED`，也无条件 UPDATE 抢占）。
+OnModuleInit + 每 5s 扫描。claim **在数据库内完成**：单条
+`WITH claimable AS (… FOR UPDATE SKIP LOCKED) UPDATE … SET leaseUntil, leaseToken`
+原子选行 + 写租约——多实例各自扫描但**不会抢到同一行**；活动租约被跳过，过期租约
+（`OUTBOX_LEASE_MS` 60s，且构造期断言必须大于单行最坏处理窗口）可由其它实例回收。
+批次固定 1 行（`OUTBOX_BATCH_SIZE = 1`），避免批内行共享租约导致重复投递窗扩大。
+终态 finalize 条件 UPDATE 带 `leaseToken`/`leaseUntil` 守卫（`affected≠1` 抛
+`StaleOutboxOwnerError` 并整体回滚），死信落独立表后在**同一事务内**收口。
 
-**多实例后果**：同一行可能被两个实例同时在途补投 → 重复投递（at-least-once 语义
-允许重复，文档要求订阅方幂等），但重复度随实例数放大；`markDispatched` 也无条件
-（两实例都写 `dispatchedAt`，幂等但无排他）。
+**快速路径收口（本轮）**：快速路径对全部匹配订阅投递成功时，用
+`markFastPathDelivered(rowId)` 把兜底行直接标记已投递（条件 UPDATE，带「无活跃租约」
+谓词——补投扫描已在处理这一行时不抢）。此前不收口 ⇒ **每个成功事件都必然被扫描再投
+一遍**（不是"可能重复"），订阅方流量翻倍；现在重复投递仅在①部分订阅失败/死信
+（那一行必须留给扫描重试，已成功的订阅会再收一次）②与扫描的租约竞态 时出现。
 
-快速路径侧（`OutboundEventDispatcher.dispatch`，:144-192）先 `outbox.enqueue` 再内存
-快照直投——**同一事件在一个实例上会被投两次**（快速路径一次 + 任一实例的 outbox 扫描
-一次），这是 FEAT-19 的既定取舍（文档已注明订阅方须幂等），多实例不改语义，只是
-重复窗口更宽。
+**残留多实例语义**：at-least-once 本身要求订阅方幂等（文档已声明）；重复度不再随
+实例数线性放大（claim 排他），但**真机双实例「同一事件不重复投递」的边界验证仍
+pending**（矩阵 §5 第 4 项）。
 
 ### 3.7 🟡 执行器令牌缓存（轮换延迟）
 
@@ -277,9 +285,9 @@ fail-open 回内存态，与 NOTIF-003 降级一致）。
 1. ~~**silence**：DB 读穿/短 TTL 回灌~~ ✅ 本轮完成（3.2）；Redis key + pub/sub 同步 L1 为可选增强，未做。
 2. ~~**channel config**：补共享持久化~~ ✅ 本轮完成（独立表 1790000000014，见 3.3）。
 3. ~~**rollout**：批次属主状态与心跳确认改为跨实例可协调的持久化/租约语义~~ ✅ 本轮完成（3.4，含非属主心跳 hydration、失败 claim、并发互斥、活性租约）。
-4. **outbox**（未完成）：先实现 DB 行级 claim/lease（方案 A，`FOR UPDATE SKIP LOCKED`），再验证快速路径与补投的重复边界及订阅方幂等。
+4. ~~**outbox**：DB 行级 claim/lease~~ ✅ **claim/租约早前轮次已落地**（`FOR UPDATE SKIP LOCKED` + 60s 租约 + leaseToken 守卫，见 3.6），本轮补 **快速路径收口**（`markFastPathDelivered`，把「每个成功事件必然重复投递」收敛为「部分失败/租约竞态时才可能重复」）；**真机双实例的重复投递边界仍待验证**（§ 验证清单第 4 项）。
 
-以上 1~3 为**代码实现完成 + 单测覆盖**；真机双实例端到端验证仍 pending（见下）。
+以上 1~4 为**代码实现完成 + 单测覆盖**；真机双实例端到端验证按清单逐项执行（1/2/5 已验证，3/4 待）。
 
 ### 真机双实例验证清单
 
