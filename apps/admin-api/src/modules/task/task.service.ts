@@ -66,6 +66,8 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
 // AUTH-01: 默认项目 uuid（"default" 过滤映射目标，与迁移 1790000000008
 // 回填值共享同一常量出处 project.entity.ts）。
 import { DEFAULT_PROJECT_ID } from "../project/project.entity";
+// AUTH-02: 项目级角色（写面/执行类写面归属判定）
+import { ProjectAccessService } from "../project/project-access.service";
 // CORE-04: 超时策略归一化（DTO 边界之外的运行态兜底——编程式/旧数据形态）
 import {
   normalizeTimeoutAction,
@@ -286,6 +288,10 @@ export class TaskService {
     @Optional()
     @InjectRepository(ExecutionReport)
     private reportRepo: Repository<ExecutionReport> | null,
+    // AUTH-02: 项目级角色（ProjectAccessService）。@Optional 同上述先例——
+    // provider 缺失（单测装配）时整体旁路，写面判定逐字节保持既有行为。
+    @Optional()
+    private projectAccess: ProjectAccessService | null,
   ) {}
 
   /**
@@ -308,6 +314,59 @@ export class TaskService {
     }
     if (row.ownerUserId !== user?.id) {
       throw new ForbiddenException("You do not own this task");
+    }
+  }
+
+  /**
+   * AUTH-02: 在 NF-03 属主守卫之上叠加**项目角色放行**（只增放行、不收紧）。
+   *
+   * 项目 editor/admin 可写该项目内的任务——含他人创建的行与无主（存量）行，
+   * 这是团队协作形态的真实缺口（此前只有 ADMIN 与属主本人能改）。viewer 与
+   * 非成员维持「属主守卫」原判定，绝不因本方法新增任何拒绝。
+   * ProjectAccessService 缺席（单测/未接线）时与 assertCanWrite 完全等价。
+   */
+  async assertCanWriteProjectAware(
+    row: { ownerUserId: number | null; projectId?: string | null },
+    user: { id: number; role: UserRole } | null | undefined,
+  ): Promise<void> {
+    try {
+      this.assertCanWrite(row, user);
+      return;
+    } catch (e: unknown) {
+      if (!(e instanceof ForbiddenException)) throw e;
+      if (!this.projectAccess || !user?.id) throw e;
+      const allowed = await this.projectAccess.hasProjectRole(
+        user.id,
+        row.projectId ?? null,
+        "editor",
+      );
+      if (!allowed) throw e;
+    }
+  }
+
+  /**
+   * AUTH-02: 执行类写面（trigger/pause/resume）归属。
+   *
+   * 只做**显式只读**一种拒绝——项目 viewer 不得触发/暂停/恢复（viewer 的
+   * 定义即只读，这是角色模型唯一的硬约束点）；其余主体（ADMIN / 属主 /
+   * 非成员 / 未配置成员关系的场景）**维持既有行为**，不引入任何新的拒绝面
+   * （既有「任何登录用户可 trigger」的宽松语义需产品拍板后才收紧，见
+   * ADR-013 已知缺口）。
+   */
+  async assertCanOperate(
+    row: { ownerUserId: number | null; projectId?: string | null },
+    user: { id: number; role: UserRole } | null | undefined,
+  ): Promise<void> {
+    if (!this.projectAccess || !user?.id) return;
+    if (user.role === UserRole.ADMIN) return;
+    const role = await this.projectAccess.resolveRole(
+      user.id,
+      row.projectId ?? null,
+    );
+    if (role === "viewer") {
+      throw new ForbiddenException(
+        "Your role in this project is viewer (read-only); triggering or changing schedule state requires the editor role",
+      );
     }
   }
 
@@ -489,7 +548,7 @@ export class TaskService {
   ) {
     const t = await this.findOne(id);
     // NF-03: 写面属主守卫（ADMIN 全量/属主自己/无主仅 ADMIN）
-    this.assertCanWrite(t, user);
+    await this.assertCanWriteProjectAware(t, user);
     const normalized = this.normalizeTaskDto(dto);
     // 同 create：PATCH 显式带 gitRepo 时即校验（缺省 = 保留旧值，不重复校验既有列）
     if (normalized.gitRepo) {
@@ -537,7 +596,7 @@ export class TaskService {
   async remove(id: string, user?: { id: number; role: UserRole } | null) {
     const t = await this.findOne(id);
     // NF-03: 写面属主守卫（同 update）
-    this.assertCanWrite(t, user);
+    await this.assertCanWriteProjectAware(t, user);
     // Stop schedule immediately without waiting for reload
     this.schedulerService.stop(id);
     t.status = TaskStatus.DELETED;
@@ -548,8 +607,10 @@ export class TaskService {
     return { deleted: true };
   }
 
-  async pause(id: string) {
+  async pause(id: string, user?: { id: number; role: UserRole } | null) {
     const t = await this.findOne(id);
+    // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
+    await this.assertCanOperate(t, user);
     if (t.status === TaskStatus.PAUSED) {
       throw new BadRequestException("Task is already paused");
     }
@@ -558,8 +619,10 @@ export class TaskService {
     return this.taskRepo.save(t);
   }
 
-  async resume(id: string) {
+  async resume(id: string, user?: { id: number; role: UserRole } | null) {
     const t = await this.findOne(id);
+    // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
+    await this.assertCanOperate(t, user);
     if (t.status !== TaskStatus.PAUSED) {
       throw new BadRequestException("Task is not paused and cannot be resumed");
     }
@@ -569,8 +632,14 @@ export class TaskService {
     return t;
   }
 
-  async trigger(id: string, dto: TriggerTaskDto) {
+  async trigger(
+    id: string,
+    dto: TriggerTaskDto,
+    user?: { id: number; role: UserRole } | null,
+  ) {
     const task = await this.findOne(id);
+    // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
+    await this.assertCanOperate(task, user);
     // OBS-01: 追踪开启时生成 trace 根，traceId 落库（null=追踪未开启）。
     const traceparent = this.tracing?.startTrace() ?? null;
     const traceId = this.tracing?.extractContext(traceparent) ?? null;

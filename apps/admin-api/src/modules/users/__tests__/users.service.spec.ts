@@ -166,9 +166,12 @@ describe("UsersService", () => {
         key === "initialAdmin.password" ? "SeedPass1!" : undefined,
       );
       repo.save.mockRejectedValueOnce(
-        Object.assign(new Error("duplicate key value violates unique constraint"), {
-          code: "23505",
-        }),
+        Object.assign(
+          new Error("duplicate key value violates unique constraint"),
+          {
+            code: "23505",
+          },
+        ),
       );
       const logSpy = jest
         .spyOn((service as any).logger, "log")

@@ -194,7 +194,7 @@ export class TaskController {
     const results = await Promise.all(
       body.taskIds.map((id) =>
         this.taskService
-          .trigger(id, {})
+          .trigger(id, {}, user)
           .catch((err) => ({ id, error: err.message })),
       ),
     );
@@ -231,7 +231,9 @@ export class TaskController {
   ) {
     const results = await Promise.all(
       body.taskIds.map((id) =>
-        this.taskService.pause(id).catch((err) => ({ id, error: err.message })),
+        this.taskService
+          .pause(id, user)
+          .catch((err) => ({ id, error: err.message })),
       ),
     );
     await this.audit.log({
@@ -268,7 +270,7 @@ export class TaskController {
     const results = await Promise.all(
       body.taskIds.map((id) =>
         this.taskService
-          .resume(id)
+          .resume(id, user)
           .catch((err) => ({ id, error: err.message })),
       ),
     );
@@ -546,7 +548,7 @@ export class TaskController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const result = await this.taskService.trigger(id, dto);
+    const result = await this.taskService.trigger(id, dto, user);
     // NF-01: API-Key 主体（CI/脚本免登录触发）——execution 行 triggerType
     // 已由 service 固定 manual；审计以 task.trigger_api 区分机器触发。
     if (isApiKeyUser(user)) {
@@ -849,7 +851,7 @@ export class TaskController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const result = await this.taskService.pause(id);
+    const result = await this.taskService.pause(id, user);
     await this.audit.log({
       userId: user?.id,
       username: user?.username,
@@ -877,7 +879,7 @@ export class TaskController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const result = await this.taskService.resume(id);
+    const result = await this.taskService.resume(id, user);
     await this.audit.log({
       userId: user?.id,
       username: user?.username,

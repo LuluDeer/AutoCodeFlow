@@ -44,6 +44,8 @@ describe("TaskService.assertCanWrite（NF-03 属主矩阵）", () => {
       null as never,
       null as never,
       null as never,
+      // AUTH-02: ProjectAccessService（@Optional，缺席 = 旁路）
+      null as never,
     );
   });
 
@@ -92,5 +94,123 @@ describe("TaskService.assertCanWrite（NF-03 属主矩阵）", () => {
     expect(() => service.assertCanWrite({ ownerUserId: 9999 }, owner)).toThrow(
       "You do not own this task",
     );
+  });
+});
+
+/**
+ * AUTH-02：项目角色叠加面（只增放行、不收紧）+ 执行类写面 viewer 约束。
+ * 用可注入的 ProjectAccessService 桩构造第二个 service 实例。
+ */
+describe("TaskService 项目角色面（AUTH-02）", () => {
+  const makeServiceWithAccess = (
+    hasProjectRole: jest.Mock,
+    resolveRole: jest.Mock,
+  ) => {
+    const access = { hasProjectRole, resolveRole };
+    return new TaskService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      null as never,
+      null as never,
+      null as never,
+      access as never,
+    );
+  };
+
+  const plainUser = { id: 8, role: UserRole.USER };
+  const admin = { id: 1, role: UserRole.ADMIN };
+
+  it("assertCanWriteProjectAware：非属主 + 项目 editor → 放行（AUTH-02 的新增放行）", async () => {
+    const svc = makeServiceWithAccess(
+      jest.fn().mockResolvedValue(true),
+      jest.fn(),
+    );
+    await expect(
+      svc.assertCanWriteProjectAware(
+        { ownerUserId: 7, projectId: "p1" },
+        plainUser,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("assertCanWriteProjectAware：非属主 + 非成员 → 仍 403（放行面只增不减）", async () => {
+    const svc = makeServiceWithAccess(
+      jest.fn().mockResolvedValue(false),
+      jest.fn(),
+    );
+    await expect(
+      svc.assertCanWriteProjectAware(
+        { ownerUserId: 7, projectId: "p1" },
+        plainUser,
+      ),
+    ).rejects.toThrow("You do not own this task");
+  });
+
+  it("assertCanWriteProjectAware：无主存量行 + 项目 editor → 放行（团队可接管存量）", async () => {
+    const svc = makeServiceWithAccess(
+      jest.fn().mockResolvedValue(true),
+      jest.fn(),
+    );
+    await expect(
+      svc.assertCanWriteProjectAware({ ownerUserId: null }, plainUser),
+    ).resolves.toBeUndefined();
+  });
+
+  it("assertCanWriteProjectAware：ADMIN 短路，不查项目角色", async () => {
+    const has = jest.fn().mockResolvedValue(false);
+    const svc = makeServiceWithAccess(has, jest.fn());
+    await expect(
+      svc.assertCanWriteProjectAware({ ownerUserId: 7 }, admin),
+    ).resolves.toBeUndefined();
+    expect(has).not.toHaveBeenCalled();
+  });
+
+  it("assertCanOperate：项目 viewer → 403（viewer 即只读，角色模型唯一硬约束）", async () => {
+    const svc = makeServiceWithAccess(
+      jest.fn(),
+      jest.fn().mockResolvedValue("viewer"),
+    );
+    await expect(
+      svc.assertCanOperate({ ownerUserId: 7, projectId: "p1" }, plainUser),
+    ).rejects.toThrow("viewer");
+  });
+
+  it("assertCanOperate：viewer 之外（editor/无角色/ADMIN/无主体）一律维持既有行为", async () => {
+    const editorSvc = makeServiceWithAccess(
+      jest.fn(),
+      jest.fn().mockResolvedValue("editor"),
+    );
+    const noneSvc = makeServiceWithAccess(
+      jest.fn(),
+      jest.fn().mockResolvedValue(null),
+    );
+    const viewerSvc = makeServiceWithAccess(
+      jest.fn(),
+      jest.fn().mockResolvedValue("viewer"),
+    );
+    const row = { ownerUserId: 7, projectId: "p1" };
+
+    await expect(
+      editorSvc.assertCanOperate(row, plainUser),
+    ).resolves.toBeUndefined();
+    await expect(
+      noneSvc.assertCanOperate(row, plainUser),
+    ).resolves.toBeUndefined();
+    await expect(
+      viewerSvc.assertCanOperate(row, admin),
+    ).resolves.toBeUndefined();
+    await expect(
+      viewerSvc.assertCanOperate(row, null),
+    ).resolves.toBeUndefined();
   });
 });

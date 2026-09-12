@@ -128,6 +128,12 @@ export class ApplicationService implements OnModuleInit {
   private _taskService: import("../task/task.service").TaskService | null =
     null;
 
+  // AUTH-02: 项目级角色判定（lazy 解析，理由同 TaskService——避免与
+  // ProjectsModule 形成模块环；解析不到时整体旁路，写面判定保持既有行为）。
+  private _projectAccess:
+    import("../project/project-access.service").ProjectAccessService | null =
+    null;
+
   async onModuleInit() {
     // Lazy-resolve TaskService to avoid circular dependency with TaskModule
     try {
@@ -137,6 +143,15 @@ export class ApplicationService implements OnModuleInit {
       this.logger.warn(
         "TaskService not available — manifest auto-registration disabled",
       );
+    }
+    try {
+      const { ProjectAccessService } =
+        await import("../project/project-access.service");
+      this._projectAccess = this.moduleRef.get(ProjectAccessService, {
+        strict: false,
+      });
+    } catch {
+      this._projectAccess = null;
     }
   }
 
@@ -277,6 +292,31 @@ export class ApplicationService implements OnModuleInit {
     }
   }
 
+  /**
+   * AUTH-02: NF-03 属主守卫之上叠加项目角色放行（只增放行、不收紧）。
+   * 项目 editor/admin 可改该项目内的应用（含他人创建行与无主存量行）；
+   * viewer/非成员维持属主守卫原判定。ProjectAccessService 缺席时与
+   * assertCanWrite 完全等价。
+   */
+  async assertCanWriteProjectAware(
+    row: { ownerUserId: number | null; projectId?: string | null },
+    user: { id: number; role: UserRole } | null | undefined,
+  ): Promise<void> {
+    try {
+      this.assertCanWrite(row, user);
+      return;
+    } catch (e: unknown) {
+      if (!(e instanceof ForbiddenException)) throw e;
+      if (!this._projectAccess || !user?.id) throw e;
+      const allowed = await this._projectAccess.hasProjectRole(
+        user.id,
+        row.projectId ?? null,
+        "editor",
+      );
+      if (!allowed) throw e;
+    }
+  }
+
   async create(
     dto: CreateApplicationDto,
     user?: { id: number } | null,
@@ -325,7 +365,8 @@ export class ApplicationService implements OnModuleInit {
     // 用户属主语义——webhook 是 @Public CI 通道，无 AuthUser 可言。
     if (!opts?.systemBypass) {
       const owned = await this.findByIdRaw(id);
-      this.assertCanWrite(owned, user);
+      // AUTH-02: 项目 editor/admin 亦可改（只增放行）
+      await this.assertCanWriteProjectAware(owned, user);
     }
     // R1: load the RAW row, never the masked findById() result — saving a
     // masked entity back would persist '***' over the real secret env
@@ -358,8 +399,8 @@ export class ApplicationService implements OnModuleInit {
     user?: { id: number; role: UserRole } | null,
   ): Promise<void> {
     const app = await this.findById(id);
-    // NF-03: 写面属主守卫（同 update）
-    this.assertCanWrite(app, user);
+    // NF-03: 写面属主守卫（同 update）+ AUTH-02 项目角色放行
+    await this.assertCanWriteProjectAware(app, user);
     await this.repo.remove(app);
     // R18/R9c: the application row may point at a locally served package
     // (uploads/packages/<file>.zip). The old remove() left that file behind,
