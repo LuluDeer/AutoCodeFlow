@@ -110,6 +110,9 @@ function baseEnv(port) {
     LOGIN_THROTTLE_LIMIT: '10000',
     THROTTLE_LIMIT: '10000',
     // 加速：读穿周期 2s
+    // QA-05 收尾：全局流槽位压到 2，用于验证「槽位是每实例独立计数」
+    // （总容量 = 实例数 × 上限，而非全局共享）
+    METRICS_STREAM_MAX_GLOBAL: '2',
     SILENCE_REFRESH_MS: String(REFRESH_MS),
     CHANNEL_CONFIG_REFRESH_MS: String(REFRESH_MS),
   };
@@ -322,7 +325,43 @@ async function main() {
     `A.isLeader=${sA.body?.scheduler?.isLeader} (pid=${sA.body?.instance?.pid}) ` +
     `B.isLeader=${sB.body?.scheduler?.isLeader} (pid=${sB.body?.instance?.pid})`);
 
-  // ── [8] 清理静默/配置（不留垃圾数据）────────────────────────────────
+  // ── [8] ⑤ SSE 槽位分布：每实例独立计数（QA-05 收尾项）──────────────
+  // 生产含义：SSE 容量 = 实例数 × METRICS_STREAM_MAX_GLOBAL，某实例满时返回 503
+  // （客户端应重连换实例，而不是认为服务不可用）。这里把上限压到 2 来直接观测。
+  const openStream = async (port) => {
+    const ac = new AbortController();
+    try {
+      const res = await fetch(`http://localhost:${port}/api/metrics/stream`, {
+        headers: { authorization: `Bearer ${tokenA}`, accept: 'text/event-stream' },
+        signal: ac.signal,
+      });
+      return { status: res.status, ac };
+    } catch (e) {
+      return { status: 0, ac, error: e instanceof Error ? e.message : String(e) };
+    }
+  };
+
+  const a1 = await openStream(PORT_A);
+  const a2 = await openStream(PORT_A);
+  const a3 = await openStream(PORT_A); // 第 3 条：本实例槽位应已满
+  ok('⑤ 实例内槽位上限生效（第 3 条同实例连接收到 503）',
+    a1.status === 200 && a2.status === 200 && a3.status === 503,
+    `A 上三条依次 status=${a1.status}/${a2.status}/${a3.status}`);
+
+  const b1 = await openStream(PORT_B);
+  ok('⑤ 另一实例仍有独立槽位（容量 = 实例数 × 上限，非全局共享）',
+    b1.status === 200, `B 上第一条 status=${b1.status}`);
+
+  a1.ac.abort();
+  a2.ac.abort();
+  b1.ac.abort();
+  await sleep(1500);
+  const aAfter = await openStream(PORT_B);
+  ok('⑤ 断流后槽位释放干净（可立即重新建流）', aAfter.status === 200,
+    `释放后 status=${aAfter.status}`);
+  aAfter.ac.abort();
+
+  // ── [9] 清理静默/配置（不留垃圾数据）────────────────────────────────
   if (silenceId) {
     const del = await api(PORT_A, tokenA, 'DELETE', `/api/notification/silences/${silenceId}`);
     ok('A 删除静默后 B 内存态同步清空（forgetSilence 生效）', del.status === 200 || del.status === 204,
