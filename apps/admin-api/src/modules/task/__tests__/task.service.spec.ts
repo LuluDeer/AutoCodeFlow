@@ -308,6 +308,22 @@ describe("TaskService (__tests__)", () => {
       await expect(service.create(dto)).rejects.toThrow("Circular dependency");
     });
 
+    // SEC-NEW-2 对齐：git 源在任务**写面**即校验（executor 派发侧只放行
+    // https?://|git@|ssh:// 且拒 loopback/私网，此前 admin 不校验 → 创建成功、
+    // 派发才 400 的两端不一致）。
+    describe("create gitRepo guard (admin 写面)", () => {
+      it("拒绝 file:// 方案（executor 派发侧必 400，故创建即拦）", async () => {
+        taskRepo.create.mockImplementation((t: any) => t);
+        taskRepo.save.mockImplementation((t: any) =>
+          Promise.resolve({ id: "1", ...t }),
+        );
+        await expect(
+          service.create({ name: "t", gitRepo: "file:///tmp/repo.git" } as any),
+        ).rejects.toThrow();
+        expect(taskRepo.save).not.toHaveBeenCalled();
+      });
+    });
+
     // W-21: requirements normalization — trim specs, reject option-like and
     // blank entries at create so they 400 instead of burning a queued exec.
     describe("create requirements normalization (W-21)", () => {
@@ -2594,6 +2610,68 @@ describe("TaskService (__tests__)", () => {
         expect(event).toBe(DOMAIN_EVENTS.EXECUTION_COMPLETED);
         expect(payload.status).toBe("success");
         expect(payload.failureReason).toBeNull();
+      });
+
+      it("BUG-21: publishTerminalEventForDispatch 复用同一 payload 构造（派发失败终态也走领域事件）", () => {
+        const exec = {
+          id: "e9",
+          taskId: "t9",
+          taskName: "dispatch-failed-job",
+          status: ExecutionStatus.FAILED,
+          failureReason: ExecutionFailureReason.EXECUTOR_OFFLINE,
+          errorMessage:
+            "No online executors match the requested group/tags/runtime",
+          logs: "stack line",
+          startTime: new Date(Date.now() - 1500),
+          endTime: undefined,
+          duration: undefined,
+        } as never;
+
+        service.publishTerminalEventForDispatch(exec, {
+          errorMessage: "No online executors available",
+          logs: "stack line",
+        });
+
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+        const [event, payload] = eventBus.emit.mock.calls[0];
+        // FAILED → execution.failed（SUCCESS→completed 映射由既有用例覆盖）
+        expect(event).toBe(DOMAIN_EVENTS.EXECUTION_FAILED);
+        expect(payload.executionId).toBe("e9");
+        expect(payload.failureReason).toBe(
+          ExecutionFailureReason.EXECUTOR_OFFLINE,
+        );
+        expect(payload.errorMessage).toContain("No online executors");
+        // duration 缺失时按 startTime→finishedAt 计算（不为 null/NaN）
+        expect(typeof payload.durationMs).toBe("number");
+        expect(Number.isFinite(payload.durationMs as number)).toBe(true);
+        expect(typeof payload.finishedAt).toBe("string");
+      });
+
+      it("BUG-21: eventBus 缺席（@Optional）时静默跳过，不抛", () => {
+        const svc = new TaskService(
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          null as never,
+          null as never,
+          null as never,
+          null as never,
+          null as never,
+        );
+        expect(() =>
+          svc.publishTerminalEventForDispatch(
+            { id: "e1", status: ExecutionStatus.FAILED } as never,
+            { errorMessage: "x" },
+          ),
+        ).not.toThrow();
       });
 
       it("does NOT emit on a rejected callback (address mismatch / not found) or a duplicate winner", async () => {

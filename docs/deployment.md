@@ -143,6 +143,38 @@ docker compose ps
 
 Admin Web 容器内置 Nginx 是所有 `/api` 请求的统一入口，三条代理语义需要了解：`/api/` 前缀 location 使用**不带 URI** 的 `proxy_pass`，原样保留 `/api` 前缀（与 admin-api 的 `setGlobalPrefix("api")` 对齐，误写成尾斜杠形式会剥离前缀导致全量 404）；`client_max_body_size 510m` 为上传体积预留——执行器包最大 500MB、应用包 200MB、PyPI 代理包 50MB，nginx 默认 1m 会让大包上传直接 413；执行日志 SSE 流（`/api/tasks/<id>/executions/<execId>/logs/stream`）有专有正则 location（`proxy_read_timeout 1h`、`proxy_buffering off`），避免被通用 `/api/` 的 60s 读超时掐断，也不受上传体积语义影响。两份配置 `apps/admin-web/nginx.conf` 与 `infra/nginx/default.conf` 需保持同步。
 
+### 反代 SSE/长流验证（部署前必跑，BUG-17）
+
+SSE 能否存活**完全取决于代理层**（缓冲、读取超时、连接复用），应用侧单测覆盖不到。
+用真实 nginx 跑一遍代理层门禁：
+
+```bash
+npm run test:nginx-sse                                    # 默认 180s soak + 500 并发长流档
+NGINX_SOAK_SECONDS=86400 npm run test:nginx-sse           # 24h 长流（发布门禁/大版本上线前）
+NGINX_SSE_CONNS=0 npm run test:nginx-sse                  # 跳过 500 并发档（快速冒烟）
+```
+
+脚本用 `infra/nginx/default.conf` **原件**（仅替换上游地址与监听端口）起真实 nginx
+容器，并自带**探针执行器**（接受派发但不回报结果 + 周期心跳）把执行稳定维持在
+RUNNING，从而让"专用 SSE 位置的长流"有真实载体。断言 **24 项**，重点：
+
+- 流式语义：`text/event-stream` + 无 `Content-Length`（chunked）+ **首帧不迟滞**（缓冲开启时首帧会被攒到 buffer 满才下发，正是"日志不实时"的根因）；
+- 长流存活：专用位置日志流持续不断连（该位置 `proxy_read_timeout 1h`；通用位置仅 60s，soak 超过 60s 不断连即为专用位置生效的证据）、保活帧间隔 ≤ 45s；
+- 事件穿透：executor 回调 → 终态 winner → 领域事件 → `executions/stream` 帧经 nginx 到达订阅方，且日志流在终态后正常收尾；
+- 并发长流：**500 条并发 SSE 经 nginx**（`NGINX_SSE_CONNS`，默认 500，0 跳过）建连率/存活率/保活帧均 ≥99%、RSS 涨幅受控、批量断流后槽位回收干净；三条代表性 SSE 并存互不干扰、长流期间普通请求延迟 < 5s。
+
+> 本机实测（2026-09-12）：默认档 **24/24 通过**（含 500 并发长流：1.04s 建连、
+> 35s 后 500/500 存活且有帧、RSS +14MB）；`NGINX_SOAK_SECONDS=100` 长稳档 19/19。
+> 24h 档建议在目标环境（含真实执行器）跑一次，作为上线前门禁。
+>
+> **两个必读细节**（实测踩过）：
+> ① 并发长流的 hold 必须 > `EXECUTIONS_STREAM_IDLE_PING_MS`（默认 30s）——事件流
+> 无初始快照，短于该值会出现「一半连接零帧」的假象；
+> ② 并发数受 nginx `worker_connections` 与上游连接数共同约束（500 条客户端 + 500
+> 条 upstream ≈ 1000 连接）。默认镜像 `worker_connections 1024` 在 500 档可通过，
+> **更高并发（>1000 长连接）需显式调大 `worker_connections`/`worker_processes`**，
+> 否则表现为连接被拒而非应用报错。
+
 ## 裸机执行器安装（artifact 通道，第八轮 N24 根治）
 
 compose 栈之外的目标机（裸机/虚机）可用一键脚本安装 executor-node，安装
@@ -215,6 +247,14 @@ docker compose pull && docker compose up -d
 CI 的 `docker-multiarch-build` job 只构建不推送，覆盖 `admin-api`、`executor-node`、
 `executor-python` 的 `linux/amd64,linux/arm64` 构建可达性；生产发布镜像接入后，应在
 发布闸保留 manifest inspect 与 ARM64 冒烟。
+
+> **本机核验记录（DSK-05，2026-09-11）**：安装 buildx 0.17.1 + QEMU binfmt（qemu-aarch64），
+> 建 `docker-container` builder（`--platform linux/amd64,linux/arm64`）后，三镜像
+> `docker buildx build --platform linux/amd64,linux/arm64` 全部构建通过（CI
+> `docker-multiarch-build` 同款形态：不 push 不 load，结果留 buildkit 缓存）。
+> 细节：Dockerfile 全 alpine/slim 无 native 编译依赖（node:22-alpine ×2 +
+> python:3.12-slim + uv 0.8.17），arm64 构建无交叉编译载荷；非 root
+> `adduser/APP_USER` 与 `uv venv --no-project` 探针两条 arm64 路径均已实际执行。
 
 ### 数据库操作
 

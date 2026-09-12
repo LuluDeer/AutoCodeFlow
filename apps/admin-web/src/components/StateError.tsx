@@ -1,8 +1,10 @@
 import { Space, Typography, Button, message } from 'antd';
 import { CopyOutlined, ReloadOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { LIGHT_TOKENS, DARK_TOKENS } from '../theme/tokens';
 import { copyErrorText } from './ErrorFallback';
+import '../i18n';
 
 const { Text } = Typography;
 
@@ -27,10 +29,12 @@ export interface StateErrorProps {
 export default function StateError({
   error,
   onRetry,
-  title = '加载失败',
+  title,
   centered = false,
   style,
 }: StateErrorProps) {
+  const { t } = useTranslation();
+  const resolvedTitle = title ?? t('stateError.loadingFailed');
   const dark = useThemeStore(selectResolvedTheme) === 'dark';
   const border = dark ? DARK_TOKENS.border : LIGHT_TOKENS.border;
   const textSecondary = dark ? DARK_TOKENS.textSecondary : LIGHT_TOKENS.textSecondary;
@@ -40,12 +44,12 @@ export default function StateError({
       ? error.message
       : typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string'
         ? (error as { message: string }).message
-        : '请求失败，请稍后重试';
+        : t('stateError.requestFailed');
 
   const handleCopy = async () => {
     const ok = await copyErrorText(msg);
-    if (ok) message.success('错误信息已复制到剪贴板');
-    else message.error('复制失败，请手动截图错误信息');
+    if (ok) message.success(t('stateError.copySuccess'));
+    else message.error(t('stateError.copyFailed'));
   };
 
   return (
@@ -62,7 +66,7 @@ export default function StateError({
       }}
     >
       <Text type="danger" strong style={{ display: 'block', marginBottom: 4 }}>
-        {title}
+        {resolvedTitle}
       </Text>
       <Text type="secondary" style={{ fontSize: 12, wordBreak: 'break-all' }}>
         {msg}
@@ -71,11 +75,11 @@ export default function StateError({
         <Space style={{ marginTop: 12, display: centered ? 'flex' : undefined, justifyContent: centered ? 'center' : undefined }} wrap>
           {onRetry && (
             <Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>
-              重试
+              {t('stateError.retry')}
             </Button>
           )}
           <Button size="small" icon={<CopyOutlined />} onClick={handleCopy}>
-            复制错误信息
+            {t('stateError.copy')}
           </Button>
         </Space>
       )}

@@ -21,10 +21,7 @@ export type GlueLanguage = "python" | "node" | "shell";
 export type DependencyInstaller = "pip" | "npm" | "none";
 
 /** 承载该 runtime 的执行器类型（文档/排错提示，不做路由判定）。 */
-export type RuntimeExecutorKind =
-  | "executor-python"
-  | "executor-node"
-  | "any";
+export type RuntimeExecutorKind = "executor-python" | "executor-node" | "any";
 
 /** 一个 runtime 的完整能力描述。 */
 export interface TaskRuntimeDefinition {

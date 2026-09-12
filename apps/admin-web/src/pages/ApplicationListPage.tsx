@@ -11,12 +11,15 @@ import {
 import { applicationsApi, Application, deploymentsApi, AppDeployment } from '../api/applications';
 import { executorsApi } from '../api/executors';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 
 const { Text } = Typography;
 
@@ -49,11 +52,11 @@ const statusColors: Record<string, string> = {
   failed: 'red',
 };
 
-const statusLabels: Record<string, string> = {
-  active: '正常',
-  deploying: '部署中',
-  failed: '失败',
-};
+const statusLabels = (t: (k: string) => string): Record<string, string> => ({
+  active: t('appList.status.active'),
+  deploying: t('appList.status.deploying'),
+  failed: t('appList.status.failed'),
+});
 
 interface AppWithStats extends Application {
   runningCount: number;
@@ -63,6 +66,7 @@ interface AppWithStats extends Application {
 
 export default function ApplicationListPage() {
   const nav = useNavigate();
+  const { t } = useTranslation();
   const isAdmin = useIsAdmin();
   const [apps, setApps] = useState<AppWithStats[]>([]);
   const [loading, setLoading] = useState(false);
@@ -111,7 +115,7 @@ export default function ApplicationListPage() {
       setApps(enriched);
     } catch (err: unknown) {
       setLoadError(err);
-      message.error(getErrMsg(err, '加载应用列表失败'));
+      message.error(getErrMsg(err, t('appList.loadFail')));
     } finally {
       setLoading(false);
     }
@@ -145,10 +149,10 @@ export default function ApplicationListPage() {
   const handleDelete = async (id: string) => {
     try {
       await applicationsApi.delete(id);
-      message.success('应用已删除');
+      message.success(t('appList.deleted'));
       fetchApps();
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '删除失败'));
+      message.error(getErrMsg(err, t('appList.deleteFail')));
     }
   };
 
@@ -160,16 +164,16 @@ export default function ApplicationListPage() {
         // 带上会被全局 ValidationPipe（forbidNonWhitelisted）以 400 拒绝
         delete (values as { name?: string }).name;
         await applicationsApi.update(editingApp.id, values);
-        message.success('应用已更新');
+        message.success(t('appList.updated'));
       } else {
         await applicationsApi.create(values);
-        message.success('应用已创建');
+        message.success(t('appList.created'));
       }
       setModalOpen(false);
       fetchApps();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, '保存失败'));
+      message.error(getErrMsg(err, t('appList.saveFail')));
     }
   };
 
@@ -183,12 +187,12 @@ export default function ApplicationListPage() {
         formData.append('file', values.file.fileList[0].originFileObj);
       }
       await applicationsApi.upload(formData);
-      message.success('应用上传成功');
+      message.success(t('appList.uploaded'));
       setUploadModalOpen(false);
       fetchApps();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, '上传失败'));
+      message.error(getErrMsg(err, t('appList.uploadFail')));
     }
   };
 
@@ -201,7 +205,7 @@ export default function ApplicationListPage() {
       setQuickDeployExecutors(res.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })) ?? []);
     } catch {
       setQuickDeployExecutors([]);
-      message.warning('获取执行器列表失败，请检查网络连接');
+      message.warning(t('appList.executorListFail'));
     }
   };
 
@@ -215,12 +219,12 @@ export default function ApplicationListPage() {
         runMode: values.runMode,
         startCommand: values.runMode === 'daemon' ? values.startCommand : undefined,
       });
-      message.success('部署已创建');
+      message.success(t('appList.deployCreated'));
       setQuickDeployApp(null);
       fetchApps();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, '部署失败：请确认有在线执行器可用'));
+      message.error(getErrMsg(err, t('appList.deployFail')));
     } finally {
       setQuickDeploying(false);
     }
@@ -228,7 +232,7 @@ export default function ApplicationListPage() {
 
   const columns = [
     {
-      title: '名称',
+      title: t('appList.col.name'),
       dataIndex: 'name',
       key: 'name',
       sorter: (a: AppWithStats, b: AppWithStats) => a.name.localeCompare(b.name),
@@ -242,61 +246,61 @@ export default function ApplicationListPage() {
           </Space>
           {record.gitBranch && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              分支: {record.gitBranch}
+              {t('appList.branch', { branch: record.gitBranch })}
             </Text>
           )}
         </Space>
       ),
     },
     {
-      title: '版本',
+      title: t('appList.col.version'),
       dataIndex: 'version',
       key: 'version',
       width: 90,
       render: (v: string) => <Tag>{v}</Tag>,
     },
     {
-      title: '运行时',
+      title: t('appList.col.runtime'),
       dataIndex: 'runtime',
       key: 'runtime',
       width: 90,
       render: (v: string) => <Tag color="blue">{v}</Tag>,
     },
     {
-      title: '状态',
+      title: t('appList.col.status'),
       dataIndex: 'status',
       key: 'status',
       width: 100,
-      render: (s: string) => <Tag color={statusColors[s] || 'default'}>{statusLabels[s] || s}</Tag>,
+      render: (s: string) => <Tag color={statusColors[s] || 'default'}>{statusLabels(t)[s] || s}</Tag>,
     },
     {
-      title: '运行实例',
+      title: t('appList.col.instances'),
       key: 'deployStats',
       width: 130,
       render: (_: unknown, record: AppWithStats) => {
-        if (record.totalDeployments === 0) return <Text type="secondary">暂无部署</Text>;
+        if (record.totalDeployments === 0) return <Text type="secondary">{t('appList.noDeploy')}</Text>;
         return (
           <Space>
             <Badge status="processing" />
-            <Text>{record.runningCount} / {record.totalDeployments} 台运行中</Text>
+            <Text>{t('appList.runningInstances', { running: record.runningCount, total: record.totalDeployments })}</Text>
           </Space>
         );
       },
     },
     {
-      title: '最后部署',
+      title: t('appList.col.lastDeploy'),
       key: 'lastDeployedAt',
       width: 110,
       render: (_: unknown, record: AppWithStats) => (
-        <Tooltip title={record.lastDeployedAt ? formatDateTime(record.lastDeployedAt) : '尚未部署'}>
+        <Tooltip title={record.lastDeployedAt ? formatDateTime(record.lastDeployedAt) : t('appList.notDeployed')}>
           <Text type={record.lastDeployedAt ? undefined : 'secondary'}>
-            {formatRelativeTime(record.lastDeployedAt)}
+            {formatRelativeTime(record.lastDeployedAt, t)}
           </Text>
         </Tooltip>
       ),
     },
     {
-      title: '操作',
+      title: t('appList.col.actions'),
       key: 'actions',
       width: 210,
       render: (_: unknown, record: AppWithStats) => (
@@ -307,9 +311,9 @@ export default function ApplicationListPage() {
             icon={<EyeOutlined />}
             onClick={() => nav(`/applications/${record.id}`)}
           >
-            详情
+            {t('appList.action.detail')}
           </Button>
-          <Tooltip title={isAdmin ? '快速新建部署' : '仅管理员可部署应用'}>
+          <Tooltip title={isAdmin ? t('appList.deployHint') : t('appList.deployDisableHint')}>
             <Button
               type="link"
               size="small"
@@ -317,22 +321,22 @@ export default function ApplicationListPage() {
               onClick={() => openQuickDeploy(record.id)}
               disabled={!isAdmin}
             >
-              新建部署
+              {t('appList.action.deploy')}
             </Button>
           </Tooltip>
-          <Tooltip title={isAdmin ? '编辑' : '仅管理员可编辑应用'}>
-            <Button type="link" size="small" onClick={() => handleEdit(record)} disabled={!isAdmin}>编辑</Button>
+          <Tooltip title={isAdmin ? t('appList.editHint') : t('appList.editDisableHint')}>
+            <Button type="link" size="small" onClick={() => handleEdit(record)} disabled={!isAdmin}>{t('appList.action.edit')}</Button>
           </Tooltip>
           <Popconfirm
-            title="确认删除此应用？"
-            description="删除后无法恢复，请确认。"
+            title={t('appList.deleteConfirm')}
+            description={t('appList.deleteConfirmDesc')}
             onConfirm={() => handleDelete(record.id)}
-            okText="删除"
+            okText={t('appList.action.delete')}
             okButtonProps={{ danger: true }}
             disabled={!isAdmin}
           >
-            <Tooltip title={isAdmin ? '删除' : '仅管理员可删除应用'}>
-              <Button type="link" size="small" danger disabled={!isAdmin}>删除</Button>
+            <Tooltip title={isAdmin ? t('appList.deleteHint') : t('appList.deleteDisableHint')}>
+              <Button type="link" size="small" danger disabled={!isAdmin}>{t('appList.action.delete')}</Button>
             </Tooltip>
           </Popconfirm>
         </Space>
@@ -344,22 +348,22 @@ export default function ApplicationListPage() {
     <div>
       {/* UI-03/UI-08：页头标准化（原 Typography.Title+操作区迁入 PageHeader） */}
       <PageHeader
-        title="应用管理"
+        title={t('appList.title')}
         extra={
           <>
-            <Tooltip title={isAdmin ? undefined : '仅管理员可创建应用'}>
+            <Tooltip title={isAdmin ? undefined : t('appList.createDisableHint')}>
               <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate} disabled={!isAdmin}>
-                创建应用
+                {t('appList.create')}
               </Button>
             </Tooltip>
-            <Tooltip title={isAdmin ? undefined : '仅管理员可上传应用'}>
+            <Tooltip title={isAdmin ? undefined : t('appList.uploadDisableHint')}>
               <Button icon={<UploadOutlined />} onClick={() => {
                 setUploadModalOpen(true);
               }} disabled={!isAdmin}>
-                上传 ZIP
+                {t('appList.uploadZip')}
               </Button>
             </Tooltip>
-            <Button icon={<ReloadOutlined />} onClick={fetchApps} loading={loading}>刷新</Button>
+            <Button icon={<ReloadOutlined />} onClick={fetchApps} loading={loading}>{t('appList.refresh')}</Button>
           </>
         }
       />
@@ -372,7 +376,7 @@ export default function ApplicationListPage() {
       {/* 搜索/筛选栏 */}
       <Space style={{ marginBottom: 16 }} wrap>
         <Input
-          placeholder="搜索应用名、描述"
+          placeholder={t('appList.searchPlaceholder')}
           prefix={<SearchOutlined />}
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
@@ -380,20 +384,20 @@ export default function ApplicationListPage() {
           style={{ width: 220 }}
         />
         <Select
-          placeholder="状态筛选"
+          placeholder={t('appList.statusFilter')}
           allowClear
           style={{ width: 130 }}
           value={statusFilter}
           onChange={setStatusFilter}
           suffixIcon={<FilterOutlined />}
           options={[
-            { value: 'active', label: '正常' },
-            { value: 'deploying', label: '部署中' },
-            { value: 'failed', label: '失败' },
+            { value: 'active', label: t('appList.status.active') },
+            { value: 'deploying', label: t('appList.status.deploying') },
+            { value: 'failed', label: t('appList.status.failed') },
           ]}
         />
         <Select
-          placeholder="运行时"
+          placeholder={t('appList.runtimeFilter')}
           allowClear
           style={{ width: 120 }}
           value={runtimeFilter}
@@ -405,12 +409,12 @@ export default function ApplicationListPage() {
             size="small"
             onClick={() => { setSearchText(''); setStatusFilter(undefined); setRuntimeFilter(undefined); }}
           >
-            清除筛选
+            {t('appList.clearFilters')}
           </Button>
         )}
         {hasFilters && (
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            {filtered.length} / {apps.length} 条
+            {t('appList.count', { filtered: filtered.length, total: apps.length })}
           </Typography.Text>
         )}
       </Space>
@@ -426,14 +430,14 @@ export default function ApplicationListPage() {
             : (loadError
               ? undefined
               : (hasFilters
-                ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配应用" />
-                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无应用，点击右上角「创建应用」开始" />)),
+                ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('appList.empty.noMatch')} />
+                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('appList.empty.none')} />)),
         }}
       />
 
       {/* Create/Edit Modal */}
       <Modal
-        title={editingApp ? '编辑应用' : '创建应用'}
+        title={editingApp ? t('appList.modal.edit') : t('appList.modal.create')}
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
@@ -452,13 +456,13 @@ export default function ApplicationListPage() {
         <Form form={form} layout="vertical">
           <Form.Item
             name="name"
-            label="名称"
+            label={t('appList.field.name')}
             rules={[
-              { required: true, message: '请输入应用名称' },
-              { pattern: /^[a-zA-Z0-9_-]+$/, message: '只允许字母、数字、下划线和连字符' },
+              { required: true, message: t('appList.field.nameRequired') },
+              { pattern: /^[a-zA-Z0-9_-]+$/, message: t('appList.field.namePattern') },
             ]}
             tooltip={{
-              title: '全局唯一标识符，建议使用英文，如 order-service。只允许字母、数字、下划线、连字符。创建后不可修改。',
+              title: t('appList.field.nameTooltip'),
               icon: <InfoCircleOutlined />,
             }}
           >
@@ -467,22 +471,22 @@ export default function ApplicationListPage() {
 
           <Form.Item
             name="description"
-            label="描述"
+            label={t('appList.field.desc')}
             tooltip={{
-              title: '简要说明该应用的用途，方便团队成员快速了解。',
+              title: t('appList.field.descTooltip'),
               icon: <InfoCircleOutlined />,
             }}
           >
-            <Input.TextArea rows={2} placeholder="例如：负责订单处理的后端服务" />
+            <Input.TextArea rows={2} placeholder={t('appList.field.descPlaceholder')} />
           </Form.Item>
 
           <Space style={{ display: 'flex' }} size="middle">
             <Form.Item
               name="version"
-              label="版本"
-              rules={[{ required: true, message: '请填写版本号' }]}
+              label={t('appList.field.version')}
+              rules={[{ required: true, message: t('appList.field.versionRequired') }]}
               tooltip={{
-                title: '语义化版本号，如 1.0.0。通过 Webhook 触发时会自动更新此字段。',
+                title: t('appList.field.versionTooltip'),
                 icon: <InfoCircleOutlined />,
               }}
             >
@@ -490,10 +494,10 @@ export default function ApplicationListPage() {
             </Form.Item>
             <Form.Item
               name="runtime"
-              label="运行时"
-              rules={[{ required: true, message: '请选择运行时' }]}
+              label={t('appList.field.runtime')}
+              rules={[{ required: true, message: t('appList.field.runtimeRequired') }]}
               tooltip={{
-                title: '应用代码所使用的运行环境。执行器节点需已安装对应运行时。',
+                title: t('appList.field.runtimeTooltip'),
                 icon: <InfoCircleOutlined />,
               }}
             >
@@ -503,15 +507,15 @@ export default function ApplicationListPage() {
 
           <Form.Item
             name="gitRepo"
-            label="Git 仓库地址"
+            label={t('appList.field.gitRepo')}
             rules={[
               {
                 pattern: GIT_URL_RE,
-                message: '格式不正确，支持 HTTPS（https://github.com/org/repo.git）或 SSH（git@github.com:org/repo.git）',
+                message: t('appList.field.gitRepoPattern'),
               },
             ]}
             tooltip={{
-              title: '支持 HTTPS 格式（https://github.com/org/repo.git）和 SSH 格式（git@github.com:org/repo.git）。执行器拉取代码时使用。',
+              title: t('appList.field.gitRepoTooltip'),
               icon: <InfoCircleOutlined />,
             }}
           >
@@ -521,9 +525,9 @@ export default function ApplicationListPage() {
           <Space style={{ display: 'flex' }} size="middle">
             <Form.Item
               name="gitBranch"
-              label="Git 分支"
+              label={t('appList.field.gitBranch')}
               tooltip={{
-                title: '部署时默认拉取的分支，通常为 main 或 master。',
+                title: t('appList.field.gitBranchTooltip'),
                 icon: <InfoCircleOutlined />,
               }}
             >
@@ -531,9 +535,9 @@ export default function ApplicationListPage() {
             </Form.Item>
             <Form.Item
               name="gitCommit"
-              label="Git Commit"
+              label={t('appList.field.gitCommit')}
               tooltip={{
-                title: '锁定到特定 commit SHA，留空则使用分支最新提交。',
+                title: t('appList.field.gitCommitTooltip'),
                 icon: <InfoCircleOutlined />,
               }}
             >
@@ -543,9 +547,9 @@ export default function ApplicationListPage() {
 
           <Form.Item
             name="entrypoint"
-            label="入口文件"
+            label={t('appList.field.entrypoint')}
             tooltip={{
-              title: '应用主入口路径，相对于仓库根目录，如 src/tasks/index.js。manifest.json 中可覆盖此配置。',
+              title: t('appList.field.entrypointTooltip'),
               icon: <InfoCircleOutlined />,
             }}
           >
@@ -555,21 +559,21 @@ export default function ApplicationListPage() {
           {/* DEP-04: 部署审批流开关——开启后该应用的新部署需第二人批准才派发 */}
           <Form.Item
             name="approvalRequired"
-            label="部署审批"
+            label={t('appList.field.approvalRequired')}
             valuePropName="checked"
             tooltip={{
-              title: '开启后，该应用的新部署请求将冻结为「待审批」状态，需另一位管理员批准后才派发到执行器（第二人规则：提交者本人不能审批自己的请求）。',
+              title: t('appList.field.approvalRequiredTooltip'),
               icon: <InfoCircleOutlined />,
             }}
           >
-            <Switch checkedChildren="需审批" unCheckedChildren="直派" />
+            <Switch checkedChildren={t('appList.field.approvalOn')} unCheckedChildren={t('appList.field.approvalOff')} />
           </Form.Item>
         </Form>
       </Modal>
 
       {/* Upload Modal */}
       <Modal
-        title="上传应用"
+        title={t('appList.upload.title')}
         open={uploadModalOpen}
         onOk={handleUpload}
         onCancel={() => setUploadModalOpen(false)}
@@ -579,10 +583,10 @@ export default function ApplicationListPage() {
         <Form form={uploadForm} layout="vertical">
           <Form.Item
             name="name"
-            label="名称"
-            rules={[{ required: true, message: '请输入应用名称' }]}
+            label={t('appList.field.name')}
+            rules={[{ required: true, message: t('appList.field.nameRequired') }]}
             tooltip={{
-              title: '应用的唯一名称，建议与 ZIP 内 manifest.json 中的 appName 保持一致。',
+              title: t('appList.upload.nameTooltip'),
               icon: <InfoCircleOutlined />,
             }}
           >
@@ -590,10 +594,10 @@ export default function ApplicationListPage() {
           </Form.Item>
           <Form.Item
             name="runtime"
-            label="运行时"
+            label={t('appList.field.runtime')}
             initialValue="node"
             tooltip={{
-              title: '应用运行时环境，需与代码所依赖的环境一致。',
+              title: t('appList.upload.runtimeTooltip'),
               icon: <InfoCircleOutlined />,
             }}
           >
@@ -601,51 +605,51 @@ export default function ApplicationListPage() {
           </Form.Item>
           <Form.Item
             name="file"
-            label="ZIP 文件"
-            rules={[{ required: true, message: '请选择文件' }]}
+            label={t('appList.upload.zip')}
+            rules={[{ required: true, message: t('appList.upload.zipRequired') }]}
             valuePropName="fileList"
             tooltip={{
-              title: '将应用代码及 manifest.json 打包为 ZIP 后上传，执行器会自动解压并部署。',
+              title: t('appList.upload.zipTooltip'),
               icon: <InfoCircleOutlined />,
             }}
           >
             <Upload maxCount={1} beforeUpload={() => false} accept=".zip">
-              <Button icon={<UploadOutlined />}>选择 ZIP 文件</Button>
+              <Button icon={<UploadOutlined />}>{t('appList.upload.choose')}</Button>
             </Upload>
           </Form.Item>
         </Form>
       </Modal>
 
       <Modal
-        title="快速新建部署"
+        title={t('appList.deploy.title')}
         open={quickDeployApp !== null}
         onOk={handleQuickDeploy}
         onCancel={() => setQuickDeployApp(null)}
         confirmLoading={quickDeploying}
-        okText="创建部署"
-        cancelText="取消"
+        okText={t('appList.deploy.ok')}
+        cancelText={t('appList.deploy.cancel')}
         destroyOnHidden
       >
         <Form form={quickDeployForm} layout="vertical">
-          <Form.Item name="executorId" label="选择执行器">
+          <Form.Item name="executorId" label={t('appList.deploy.executor')}>
             <Select
-              placeholder="自动选择最空闲的执行器（推荐）"
+              placeholder={t('appList.deploy.executorPlaceholder')}
               allowClear
               options={quickDeployExecutors.map(e => ({ value: e.id, label: `${e.name} (${e.address})`, disabled: e.status !== 'online' }))}
-              notFoundContent="暂无可用执行器"
+              notFoundContent={t('appList.deploy.executorEmpty')}
             />
           </Form.Item>
-          <Form.Item name="runMode" label="运行模式" initialValue="once" rules={[{ required: true, message: '请选择运行模式' }]}>
+          <Form.Item name="runMode" label={t('appList.deploy.runMode')} initialValue="once" rules={[{ required: true, message: t('appList.deploy.runModeRequired') }]}>
             <Radio.Group>
-              <Radio value="once">单次执行</Radio>
-              <Radio value="daemon">常驻进程</Radio>
-              <Radio value="scheduled">定时任务</Radio>
+              <Radio value="once">{t('appList.deploy.modeOnce')}</Radio>
+              <Radio value="daemon">{t('appList.deploy.modeDaemon')}</Radio>
+              <Radio value="scheduled">{t('appList.deploy.modeScheduled')}</Radio>
             </Radio.Group>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.runMode !== cur.runMode}>
             {({ getFieldValue }) =>
               getFieldValue('runMode') === 'daemon' ? (
-                <Form.Item name="startCommand" label="启动命令" tooltip="常驻进程的启动命令，如 node dist/server.js">
+                <Form.Item name="startCommand" label={t('appList.deploy.startCommand')} tooltip={t('appList.deploy.startCommandTooltip')}>
                   <Input placeholder="node dist/server.js" />
                 </Form.Item>
               ) : null

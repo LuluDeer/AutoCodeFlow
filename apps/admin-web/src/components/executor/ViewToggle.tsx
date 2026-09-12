@@ -8,6 +8,8 @@
  */
 import { Segmented } from 'antd';
 import { AppstoreOutlined, BarsOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
+import '../../i18n';
 
 export type ExecutorViewMode = 'table' | 'card';
 
@@ -38,6 +40,7 @@ interface ViewToggleProps {
 }
 
 export default function ViewToggle({ value, onChange }: ViewToggleProps) {
+  const { t } = useTranslation();
   return (
     <Segmented
       data-testid="executor-view-toggle"
@@ -45,8 +48,8 @@ export default function ViewToggle({ value, onChange }: ViewToggleProps) {
       value={value}
       onChange={(v) => onChange(v as ExecutorViewMode)}
       options={[
-        { value: 'table', label: '表格', icon: <BarsOutlined /> },
-        { value: 'card', label: '卡片', icon: <AppstoreOutlined /> },
+        { value: 'table', label: t('viewToggle.table'), icon: <BarsOutlined /> },
+        { value: 'card', label: t('viewToggle.card'), icon: <AppstoreOutlined /> },
       ]}
     />
   );

@@ -96,9 +96,12 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
 
     await controller.trigger("task-1", dto, user, req);
 
-    expect(taskService.trigger).toHaveBeenCalledWith("task-1", {
-      params: { k: "v" },
-    });
+    expect(taskService.trigger).toHaveBeenCalledWith(
+      "task-1",
+      { params: { k: "v" } },
+      // AUTH-02: 控制器把主体透传给 service（执行类写面按项目角色判定）
+      expect.objectContaining({ id: 7 }),
+    );
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: "task.trigger", resourceId: "task-1" }),
     );
@@ -108,13 +111,19 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
     const { controller, taskService, audit } = makeDeps();
 
     await controller.pause("task-1", user, req);
-    expect(taskService.pause).toHaveBeenCalledWith("task-1");
+    expect(taskService.pause).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ id: 7 }),
+    );
     expect(audit.log).toHaveBeenLastCalledWith(
       expect.objectContaining({ action: "task.pause" }),
     );
 
     await controller.resume("task-1", user, req);
-    expect(taskService.resume).toHaveBeenCalledWith("task-1");
+    expect(taskService.resume).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ id: 7 }),
+    );
     expect(audit.log).toHaveBeenLastCalledWith(
       expect.objectContaining({ action: "task.resume" }),
     );

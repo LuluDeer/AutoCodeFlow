@@ -7,6 +7,7 @@ import {
   OnModuleInit,
   Optional,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { WecomChannel } from "./channels/wecom.channel";
 import { DingtalkChannel } from "./channels/dingtalk.channel";
 import { EmailChannel } from "./channels/email.channel";
@@ -33,6 +34,12 @@ import {
 export const MAX_ALERT_SILENCES = 1000;
 /** NOTIF-003: 过期静默规则的定时清理间隔。 */
 const SILENCE_CLEANUP_INTERVAL_MS = 60_000;
+/**
+ * ARCH-31: 静默规则的跨实例读穿刷新间隔（默认 15s）。静默是低频人写、高频
+ * 热读的状态，TTL 收敛（无需 Redis pub/sub）即可把「实例 A 创建的静默在
+ * 实例 B 不生效」的窗口压到秒级；周期可由 env `SILENCE_REFRESH_MS` 调整。
+ */
+const SILENCE_REFRESH_INTERVAL_MS = 15_000;
 
 export enum AlertLevel {
   INFO = "info",
@@ -65,6 +72,23 @@ export interface AlertSilence {
   endTime?: Date;
   reason?: string;
   createdAt?: Date;
+  /**
+   * ARCH-31: 该静默在 DB 中的行 id（写穿成功后回填）。内存 Map 的键始终是
+   * `addSilence()` 返回给调用方的那个 id（先例：管理台拿它去 DELETE），
+   * 故另存 DB id 供跨实例刷新去重与 `removeSilence` 定位 DB 行。
+   */
+  dbId?: string;
+  /**
+   * ARCH-31: 写穿状态。`false` = 已提交写穿但尚未拿到 DB id（在途或写失败），
+   * 周期刷新必须保留它（否则一条刚创建、还没落库的静默会被刷新抖掉）。
+   */
+  persisted?: boolean;
+  /**
+   * ARCH-31: 该规则是否已被任一周期刷新在 DB 中读到过。只有「确认存在过、
+   * 如今消失」才判定为其他实例删除/已过期从而丢弃——避免复制延迟把刚创建
+   * 的静默误删。
+   */
+  observedInDb?: boolean;
 }
 
 /**
@@ -85,6 +109,8 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
   // 静默丢失的最坏后果只是重复收到告警，不影响业务正确性。
   private silences: Map<string, AlertSilence> = new Map();
   private silenceCleanupTimer?: NodeJS.Timeout;
+  /** ARCH-31: 跨实例静默读穿刷新定时器（无持久化层时不启）。 */
+  private silenceRefreshTimer?: NodeJS.Timeout;
 
   constructor(
     private wecom: WecomChannel,
@@ -104,6 +130,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     // 固定拼串行为不变。
     @Optional()
     private channelStore?: ChannelConfigStore,
+    // ARCH-27/31: env 一律经 ConfigService；@Optional 同 silenceStore——
+    // 存量测试模块未提供时静默刷新周期回落默认值。
+    @Optional()
+    private readonly configService?: ConfigService,
   ) {}
 
   /**
@@ -147,9 +177,46 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     this.silenceCleanupTimer.unref();
     // FEAT-01: 重启后从 DB 回灌生效中的静默（失败降级内存态）
     void this.restoreSilencesFromStore();
+    // ARCH-31: 周期读穿刷新——多实例下「在实例 A 创建的静默」在一个刷新
+    // 周期内对实例 B 生效（此前只有 onModuleInit 回灌一次，B 永远看不到）。
+    if (this.silenceStore) {
+      const intervalMs = this.resolveSilenceRefreshMs();
+      this.silenceRefreshTimer = setInterval(() => {
+        void this.syncSilencesFromStore();
+      }, intervalMs);
+      this.silenceRefreshTimer.unref();
+    }
   }
 
-  /** FEAT-01: 把 DB 中生效中的静默回灌进内存 Map（重启存活的关键） */
+  /**
+   * ARCH-31: 静默刷新周期（ms）——`notification.silenceRefreshMs`（env
+   * `SILENCE_REFRESH_MS`），缺省/非法值回落 15s（下限 1s 防 DB 打爆）。
+   */
+  private resolveSilenceRefreshMs(): number {
+    const configured = this.configService?.get<number>(
+      "notification.silenceRefreshMs",
+    );
+    if (
+      typeof configured !== "number" ||
+      !Number.isFinite(configured) ||
+      configured < 1_000
+    ) {
+      return SILENCE_REFRESH_INTERVAL_MS;
+    }
+    return configured;
+  }
+
+  /**
+   * FEAT-01 + ARCH-31: 把 DB 中生效中的静默同步进内存 Map。
+   *
+   * - `initial=true`（启动回灌，NOTIF-003 语义）：只补缺失行，不动本地态；
+   * - `initial=false`（周期刷新）：DB 是跨实例唯一真相，覆盖式重建内存态，
+   *   但保留两类本地项——① 写穿在途/写失败（`persisted === false`）的刚创建
+   *   静默；② 键为本地临时 id、DB 行已存在的同一条规则（去重后保留本地键，
+   *   使 `addSilence()` 返回给管理台的 id 始终可用）。
+   *
+   * DB 缺席或查询异常时整体 no-op，保持 NOTIF-003 纯内存语义。
+   */
   private async restoreSilencesFromStore(): Promise<void> {
     if (!this.silenceStore) return;
     try {
@@ -157,19 +224,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       let restored = 0;
       for (const row of rows) {
         if (this.silences.has(row.id)) continue;
-        this.silences.set(row.id, {
-          id: row.id,
-          scope: row.scope,
-          channelType: row.channelType ?? undefined,
-          applicationId: row.applicationId ?? undefined,
-          taskId: row.taskId ?? undefined,
-          level: (row.level as AlertLevel | null) ?? undefined,
-          reason: row.reason ?? undefined,
-          startTime: row.startTime ?? undefined,
-          endTime: row.endTime ?? undefined,
-          durationMinutes: row.durationMinutes ?? undefined,
-          createdAt: row.createdAt,
-        });
+        this.silences.set(row.id, this.mapSilenceRow(row));
         restored++;
       }
       if (restored > 0) {
@@ -184,10 +239,80 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async syncSilencesFromStore(): Promise<void> {
+    if (!this.silenceStore) return;
+    try {
+      const rows = await this.silenceStore.listActive();
+      const next = new Map<string, AlertSilence>();
+      for (const row of rows) {
+        next.set(row.id, this.mapSilenceRow(row));
+      }
+      for (const [id, local] of this.silences) {
+        if (next.has(id)) continue;
+        // 本地临时键 + DB 同源行：去重后保留本地键（API 返回的 id 仍可删除）
+        if (local.dbId && next.has(local.dbId)) {
+          next.delete(local.dbId);
+          local.observedInDb = true;
+          next.set(id, local);
+          continue;
+        }
+        // 写穿在途（未拿到 DB id）或「已落库但尚未被任一刷新读到」：保留。
+        // 后者覆盖主从复制延迟 / 读己之写窗口——否则刚创建的静默会在下一次
+        // 刷新被自己抖掉。
+        if (local.persisted === false || local.observedInDb !== true) {
+          next.set(id, local);
+          continue;
+        }
+        // 其余（已被 DB 确认过、如今行已消失 = 其他实例删除或已过期）→ 丢弃
+      }
+      this.silences = next;
+    } catch (e) {
+      this.logger.warn(
+        `[silences] DB sync failed (memory-only mode): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  /** FEAT-01/ARCH-31: DB 行 → 内存静默对象（唯一映射点，防双写漂移）。 */
+  private mapSilenceRow(row: {
+    id: string;
+    scope: string;
+    channelType: string | null;
+    applicationId: string | null;
+    taskId: string | null;
+    level: string | null;
+    reason: string | null;
+    startTime: Date | null;
+    endTime: Date | null;
+    durationMinutes: number | null;
+    createdAt: Date;
+  }): AlertSilence {
+    return {
+      id: row.id,
+      dbId: row.id,
+      persisted: true,
+      observedInDb: true,
+      scope: row.scope as AlertSilence["scope"],
+      channelType: row.channelType ?? undefined,
+      applicationId: row.applicationId ?? undefined,
+      taskId: row.taskId ?? undefined,
+      level: (row.level as AlertLevel | null) ?? undefined,
+      reason: row.reason ?? undefined,
+      startTime: row.startTime ?? undefined,
+      endTime: row.endTime ?? undefined,
+      durationMinutes: row.durationMinutes ?? undefined,
+      createdAt: row.createdAt,
+    };
+  }
+
   onModuleDestroy() {
     if (this.silenceCleanupTimer) {
       clearInterval(this.silenceCleanupTimer);
       this.silenceCleanupTimer = undefined;
+    }
+    if (this.silenceRefreshTimer) {
+      clearInterval(this.silenceRefreshTimer);
+      this.silenceRefreshTimer = undefined;
     }
   }
 
@@ -412,6 +537,8 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       ...silence,
       id,
       createdAt: new Date(),
+      // ARCH-31: 写穿在途标记——周期刷新据此保留本地项（拿到 DB id 后转 true）
+      persisted: this.silenceStore ? false : undefined,
     };
 
     if (silence.durationMinutes > 0 && !silence.endTime) {
@@ -436,7 +563,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
           endTime: newSilence.endTime ?? null,
         })
         .then((row) => {
-          newSilence.id = row.id;
+          // ARCH-31: 记录 DB 行 id——removeSilence 据此删库、周期刷新据此
+          // 去重（内存键仍是返回给调用方的本地 id，故不换键）。
+          newSilence.dbId = row.id;
+          newSilence.persisted = true;
         })
         .catch((e) => {
           this.logger.warn(
@@ -447,10 +577,47 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     return id;
   }
 
+  /**
+   * ARCH-31/FEAT-01: 把「由 API 直接落库」的静默行同步进内存热路径。
+   *
+   * `POST /notification/silences` 此前只经 NotificationSilenceService 写 DB，
+   * 从不喂给 `isSilenced` 读的内存 Map——**规则要等进程重启回灌才生效**（单
+   * 实例亦然，属既存缺陷）。管理台创建后立刻 adopt，本实例即时生效；其余
+   * 实例在一个读穿刷新周期内生效。
+   */
+  adoptPersistedSilence(row: {
+    id: string;
+    scope: string;
+    channelType: string | null;
+    applicationId: string | null;
+    taskId: string | null;
+    level: string | null;
+    reason: string | null;
+    startTime: Date | null;
+    endTime: Date | null;
+    durationMinutes: number | null;
+    createdAt: Date;
+  }): AlertSilence {
+    const silence = this.mapSilenceRow(row);
+    this.silences.set(row.id, silence);
+    return silence;
+  }
+
+  /**
+   * ARCH-31: 只清内存态（用于 `DELETE /notification/silences/:id` 的双删——
+   * DB 行由 NotificationSilenceService 负责，这里避免重复删库）。
+   */
+  forgetSilence(id: string): boolean {
+    return this.silences.delete(id);
+  }
+
   removeSilence(id: string): boolean {
     // FEAT-01: 内存 + DB 双删（DB 删除失败不阻断内存语义）
     if (this.silenceStore) {
-      void this.silenceStore.remove(id).catch((e) => {
+      // ARCH-31: 用 DB 行 id 删库（内存键可能是本地临时 id，在库里查不到）
+      const existing = this.silences.get(id);
+      const dbId = existing?.dbId ?? id;
+      void this.silenceStore.remove(dbId).catch((e) => {
         this.logger.warn(
           `[silences] DB remove failed: ${e instanceof Error ? e.message : String(e)}`,
         );

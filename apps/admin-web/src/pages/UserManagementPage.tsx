@@ -24,9 +24,12 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, type User, type CreateUserDto, type UpdateUserDto } from '../api/users';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
 import PageSkeleton from '../components/PageSkeleton';
+// UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+import '../i18n';
 
 const { Option } = Select;
 
@@ -35,10 +38,10 @@ const ROLE_COLORS: Record<string, string> = {
   user: 'blue',
 };
 
-const ROLE_LABELS: Record<string, string> = {
-  admin: '管理员',
-  user: '普通用户',
-};
+const ROLE_LABELS = (t: (k: string) => string): Record<string, string> => ({
+  admin: t('users.role.admin'),
+  user: t('users.role.user'),
+});
 
 interface UserWithActive extends User {
   isActive?: boolean;
@@ -46,6 +49,7 @@ interface UserWithActive extends User {
 
 export default function UserManagementPage() {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
   const [searchText, setSearchText] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -55,6 +59,8 @@ export default function UserManagementPage() {
   const [resetPwdModalOpen, setResetPwdModalOpen] = useState(false);
   const [resetPwdUser, setResetPwdUser] = useState<UserWithActive | null>(null);
   const [resetPwdForm] = Form.useForm();
+
+  const roleLabels = ROLE_LABELS(t);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['users', page, pageSize],
@@ -77,13 +83,13 @@ export default function UserManagementPage() {
   const createMutation = useMutation({
     mutationFn: (dto: CreateUserDto) => usersApi.create(dto),
     onSuccess: () => {
-      message.success('用户创建成功');
+      message.success(t('users.created'));
       queryClient.invalidateQueries({ queryKey: ['users'] });
       setCreateModalOpen(false);
       createForm.resetFields();
     },
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '创建失败'));
+      message.error(getErrMsg(err, t('users.createFail')));
     },
   });
 
@@ -91,24 +97,24 @@ export default function UserManagementPage() {
     mutationFn: ({ id, dto }: { id: number; dto: UpdateUserDto }) =>
       usersApi.update(id, dto),
     onSuccess: () => {
-      message.success('更新成功');
+      message.success(t('users.updated'));
       queryClient.invalidateQueries({ queryKey: ['users'] });
       setCreateModalOpen(false);
       createForm.resetFields();
     },
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '更新失败'));
+      message.error(getErrMsg(err, t('users.updateFail')));
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => usersApi.remove(id),
     onSuccess: () => {
-      message.success('用户已删除');
+      message.success(t('users.deleted'));
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '删除失败'));
+      message.error(getErrMsg(err, t('users.deleteFail')));
     },
   });
 
@@ -116,12 +122,12 @@ export default function UserManagementPage() {
     mutationFn: ({ id, password }: { id: number; password: string }) =>
       usersApi.update(id, { password }),
     onSuccess: () => {
-      message.success('密码已重置');
+      message.success(t('users.pwdReset'));
       setResetPwdModalOpen(false);
       resetPwdForm.resetFields();
     },
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, '重置密码失败'));
+      message.error(getErrMsg(err, t('users.pwdResetFail')));
     },
   });
 
@@ -164,9 +170,9 @@ export default function UserManagementPage() {
       })
       .catch((err: unknown) => {
         if (isFormValidationError(err)) return;
-        message.error(getErrMsg(err, '提交失败，请检查表单后重试'));
+        message.error(getErrMsg(err, t('users.submitFail')));
       });
-  }, [createForm, editing, createMutation, updateMutation]);
+  }, [createForm, editing, createMutation, updateMutation, t]);
 
   const handleResetPwd = useCallback(
     (user: UserWithActive) => {
@@ -190,19 +196,19 @@ export default function UserManagementPage() {
       })
       .catch((err: unknown) => {
         if (isFormValidationError(err)) return;
-        message.error(getErrMsg(err, '提交失败，请检查表单后重试'));
+        message.error(getErrMsg(err, t('users.submitFail')));
       });
-  }, [resetPwdForm, resetPwdUser, resetPwdMutation]);
+  }, [resetPwdForm, resetPwdUser, resetPwdMutation, t]);
 
   const columns = [
     {
-      title: '用户名',
+      title: t('users.col.username'),
       dataIndex: 'username',
       key: 'username',
       render: (text: string) => <strong>{text}</strong>,
     },
     {
-      title: '邮箱',
+      title: t('users.col.email'),
       dataIndex: 'email',
       key: 'email',
       ellipsis: true,
@@ -210,30 +216,30 @@ export default function UserManagementPage() {
         text || <span style={{ color: '#bbb' }}>—</span>,
     },
     {
-      title: '角色',
+      title: t('users.col.role'),
       dataIndex: 'role',
       key: 'role',
       width: 100,
       render: (role: string) => (
         <Tag color={ROLE_COLORS[role] ?? 'default'}>
-          {ROLE_LABELS[role] ?? role}
+          {roleLabels[role] ?? role}
         </Tag>
       ),
     },
     {
-      title: '状态',
+      title: t('users.col.status'),
       dataIndex: 'isActive',
       key: 'isActive',
       width: 80,
       render: (isActive: boolean | undefined) =>
         isActive === false ? (
-          <Tag color="orange">已禁用</Tag>
+          <Tag color="orange">{t('users.status.disabled')}</Tag>
         ) : (
-          <Tag color="green">正常</Tag>
+          <Tag color="green">{t('users.status.active')}</Tag>
         ),
     },
     {
-      title: '创建时间',
+      title: t('users.col.createdAt'),
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 180,
@@ -243,7 +249,7 @@ export default function UserManagementPage() {
           : '—',
     },
     {
-      title: '操作',
+      title: t('users.col.actions'),
       key: 'actions',
       render: (_: unknown, record: UserWithActive) => (
         <Space size="small">
@@ -253,7 +259,7 @@ export default function UserManagementPage() {
             icon={<EditOutlined />}
             onClick={() => openEdit(record)}
           >
-            编辑
+            {t('users.action.edit')}
           </Button>
           <Button
             type="link"
@@ -261,14 +267,14 @@ export default function UserManagementPage() {
             icon={<LockOutlined />}
             onClick={() => handleResetPwd(record)}
           >
-            重置密码
+            {t('users.action.resetPwd')}
           </Button>
           <Popconfirm
-            title="确认删除"
-            description={`确定要删除用户「${record.username}」吗？此操作不可撤销。`}
+            title={t('users.deleteConfirm')}
+            description={t('users.deleteConfirmDesc', { name: record.username })}
             onConfirm={() => deleteMutation.mutate(record.id)}
-            okText="删除"
-            cancelText="取消"
+            okText={t('users.action.delete')}
+            cancelText={t('users.cancel')}
             okButtonProps={{ danger: true }}
           >
             <Button
@@ -277,7 +283,7 @@ export default function UserManagementPage() {
               danger
               icon={<DeleteOutlined />}
             >
-              删除
+              {t('users.action.delete')}
             </Button>
           </Popconfirm>
         </Space>
@@ -288,12 +294,12 @@ export default function UserManagementPage() {
   return (
     <div style={{ padding: '24px' }}>
       {/* UI-03/UI-08：页头标准化（原 Title 区块迁入 PageHeader） */}
-      <PageHeader title="用户管理" description="账号、角色与密码管理（仅管理员）。" />
+      <PageHeader title={t('users.title')} description={t('users.description')} />
       <Card>
         <Row gutter={12} style={{ marginBottom: 16 }} align="middle">
           <Col flex="auto">
             <Input
-              placeholder="搜索用户名或邮箱"
+              placeholder={t('users.searchPlaceholder')}
               prefix={<SearchOutlined />}
               allowClear
               value={searchText}
@@ -307,7 +313,7 @@ export default function UserManagementPage() {
               icon={<PlusOutlined />}
               onClick={openCreate}
             >
-              新建用户
+              {t('users.create')}
             </Button>
           </Col>
         </Row>
@@ -316,7 +322,7 @@ export default function UserManagementPage() {
         {error ? (
           <StateError
             error={error}
-            title="用户列表加载失败"
+            title={t('users.error.title')}
             onRetry={() => void refetch()}
             style={{ marginBottom: 16 }}
           />
@@ -331,8 +337,8 @@ export default function UserManagementPage() {
               pageSize,
               total,
               showSizeChanger: true,
-              showTotal: (t) =>
-                `共 ${t.toLocaleString()} 条`,
+              showTotal: (totalCount) =>
+                t('users.count', { count: totalCount }),
               onChange: (p, ps) => {
                 setPage(p);
                 setPageSize(ps);
@@ -342,13 +348,13 @@ export default function UserManagementPage() {
               // UI-08：首屏（无数据加载中）以骨架屏替代表格 Spin
               emptyText: isLoading
                 ? <PageSkeleton variant="table" rows={4} />
-                : (searchText ? '没有匹配的用户' : '暂无用户'),
+                : (searchText ? t('users.empty.noMatch') : t('users.empty.none')),
             }}
           />
       </Card>
 
       <Modal
-        title={editing ? '编辑用户' : '新建用户'}
+        title={editing ? t('users.modal.edit') : t('users.modal.create')}
         open={createModalOpen}
         onOk={handleCreateSubmit}
         onCancel={() => {
@@ -356,8 +362,8 @@ export default function UserManagementPage() {
           createForm.resetFields();
         }}
         confirmLoading={createMutation.isPending || updateMutation.isPending}
-        okText={editing ? '保存' : '创建'}
-        cancelText="取消"
+        okText={editing ? t('users.ok.save') : t('users.ok.create')}
+        cancelText={t('users.cancel')}
         destroyOnHidden
       >
         <Form
@@ -368,59 +374,59 @@ export default function UserManagementPage() {
         >
           <Form.Item
             name="username"
-            label="用户名"
+            label={t('users.field.username')}
             rules={[
-              { required: true, message: '请输入用户名' },
-              { min: 2, message: '用户名至少2个字符' },
+              { required: true, message: t('users.field.usernameRequired') },
+              { min: 2, message: t('users.field.usernameMin') },
             ]}
           >
-            <Input placeholder="请输入用户名" />
+            <Input placeholder={t('users.field.usernamePlaceholder')} />
           </Form.Item>
           {!editing && (
             <Form.Item
               name="password"
-              label="密码"
+              label={t('users.field.password')}
               rules={[
-                { required: true, message: '请输入密码' },
-                { min: 8, message: '密码至少8个字符' },
+                { required: true, message: t('users.field.passwordRequired') },
+                { min: 8, message: t('users.field.passwordMin') },
                 {
                   pattern: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z\d])/,
-                  message: '密码须包含大写字母、小写字母、数字和特殊符号',
+                  message: t('users.field.passwordPattern'),
                 },
               ]}
             >
               <Input.Password
-                placeholder="请输入密码"
+                placeholder={t('users.field.passwordPlaceholder')}
                 autoComplete="new-password"
               />
             </Form.Item>
           )}
           <Form.Item
             name="email"
-            label="邮箱"
+            label={t('users.field.email')}
             rules={
               editing
-                ? [{ type: 'email', message: '请输入有效邮箱' }]
+                ? [{ type: 'email', message: t('users.field.emailInvalid') }]
                 : []
             }
           >
-            <Input placeholder="选填" type="email" />
+            <Input placeholder={t('users.field.emailPlaceholder')} type="email" />
           </Form.Item>
           <Form.Item
             name="role"
-            label="角色"
+            label={t('users.field.role')}
             initialValue="user"
           >
             <Select>
-              <Option value="user">普通用户</Option>
-              <Option value="admin">管理员</Option>
+              <Option value="user">{t('users.role.user')}</Option>
+              <Option value="admin">{t('users.role.admin')}</Option>
             </Select>
           </Form.Item>
         </Form>
       </Modal>
 
       <Modal
-        title={`重置密码 — ${resetPwdUser?.username ?? ''}`}
+        title={t('users.resetPwd.title', { name: resetPwdUser?.username ?? '' })}
         open={resetPwdModalOpen}
         onOk={handleResetPwdSubmit}
         onCancel={() => {
@@ -428,8 +434,8 @@ export default function UserManagementPage() {
           resetPwdForm.resetFields();
         }}
         confirmLoading={resetPwdMutation.isPending}
-        okText="确认重置"
-        cancelText="取消"
+        okText={t('users.resetPwd.ok')}
+        cancelText={t('users.cancel')}
         destroyOnHidden
       >
         <Form
@@ -440,41 +446,41 @@ export default function UserManagementPage() {
         >
           <Form.Item
             name="newPassword"
-            label="新密码"
+            label={t('users.resetPwd.newPassword')}
             rules={[
-              { required: true, message: '请输入新密码' },
-              { min: 8, message: '密码至少8个字符' },
+              { required: true, message: t('users.resetPwd.newPasswordRequired') },
+              { min: 8, message: t('users.resetPwd.newPasswordMin') },
               {
                 pattern: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z\d])/,
-                message: '密码须包含大写字母、小写字母、数字和特殊符号',
+                message: t('users.field.passwordPattern'),
               },
             ]}
           >
             <Input.Password
-              placeholder="请输入新密码"
+              placeholder={t('users.resetPwd.newPasswordPlaceholder')}
               autoComplete="new-password"
             />
           </Form.Item>
           <Form.Item
             name="confirmPassword"
-            label="确认新密码"
+            label={t('users.resetPwd.confirm')}
             dependencies={['newPassword']}
             rules={[
-              { required: true, message: '请确认密码' },
+              { required: true, message: t('users.resetPwd.confirmRequired') },
               ({ getFieldValue }) => ({
                 validator(_, value) {
                   if (!value || getFieldValue('newPassword') === value) {
                     return Promise.resolve();
                   }
                   return Promise.reject(
-                    new Error('两次密码不一致'),
+                    new Error(t('users.resetPwd.mismatch')),
                   );
                 },
               }),
             ]}
           >
             <Input.Password
-              placeholder="再次输入新密码"
+              placeholder={t('users.resetPwd.confirmPlaceholder')}
               autoComplete="new-password"
             />
           </Form.Item>

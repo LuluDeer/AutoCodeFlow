@@ -6,6 +6,8 @@ import { NotificationConfigService } from "./notification-config.service";
 import { NotificationConfigController } from "./notification-config.controller";
 import { AlertsController } from "./alerts.controller"; // OBS-02
 import { NotificationSilence } from "./entities/notification-silence.entity";
+// ARCH-31: 渠道配置共享持久化载体（迁移 1790000000014）。
+import { NotificationChannelConfig } from "./entities/notification-channel-config.entity";
 import { NotificationSilenceService } from "./notification-silence.service";
 import { ChannelConfigStore } from "./channel-config.store";
 import { WecomChannel } from "./channels/wecom.channel";
@@ -27,7 +29,11 @@ import { ExecutionEventsListener } from "./execution-events.listener";
 @Module({
   imports: [
     ConfigModule,
-    TypeOrmModule.forFeature([NotificationSilence, Task]),
+    TypeOrmModule.forFeature([
+      NotificationSilence,
+      NotificationChannelConfig,
+      Task,
+    ]),
     AuditModule,
   ],
   controllers: [NotificationConfigController, AlertsController],

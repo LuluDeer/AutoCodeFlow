@@ -297,64 +297,37 @@ describe('acf task executions (N10)', () => {
 });
 
 describe('acf task trigger --wait (N10)', () => {
-  // run() 内部有动态 import('commander')，其微任务链需在 fake timers 下逐步
-  // 让出真实事件循环才能结算，随后轮询的 setTimeout 才会挂上。故用小步推进
-  // 直到 pending 落定，避免“一次性大步推进错过定时器注册”的竞态。
-  async function drain(pending: Promise<unknown>, maxMs = 20_000): Promise<void> {
-    let settled = false;
-    pending.then(
-      () => (settled = true),
-      () => (settled = true),
-    );
-    for (let t = 0; t < maxMs && !settled; t += 100) {
-      await vi.advanceTimersByTimeAsync(100);
-    }
-    await pending;
-  }
-
+  // 轮询用真实定时器：pollExecution 内部 sleep(2000) 真实等待，命中终态即返回。
+  // 不引入 vi.useFakeTimers()——fake-timer + 动态 import('commander') 的微任务链
+  // 在 CI runner 上会让 advanceTimersByTimeAsync 循环确定性挂死（success 终态
+  // 用例曾稳定吃满 120s 超时），真实 2s 轮询反而稳定（单测 2–4s，远低于 30s）。
   it('killed 是终态：轮询立即返回，不再空转到 MAX_WAIT', async () => {
-    vi.useFakeTimers();
-    try {
-      mockedPost.mockResolvedValueOnce({ id: 'x1', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
-      mockedGet.mockResolvedValue({ id: 'x1', status: 'killed', createdAt: '2026-01-01T00:00:00Z' });
-      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
-      expect(mockedGet).toHaveBeenCalledTimes(1);
-      expect(mockedGet).toHaveBeenCalledWith('/tasks/executions/x1');
-    } finally {
-      vi.useRealTimers();
-    }
+    mockedPost.mockResolvedValueOnce({ id: 'x1', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+    mockedGet.mockResolvedValue({ id: 'x1', status: 'killed', createdAt: '2026-01-01T00:00:00Z' });
+    await run(tasksCommand(), 'task trigger t1 --wait');
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+    expect(mockedGet).toHaveBeenCalledWith('/tasks/executions/x1');
   }, 30_000);
 
   it('success 终态同样立即返回（回归护栏）', async () => {
-    vi.useFakeTimers();
-    try {
-      mockedPost.mockResolvedValueOnce({ id: 'x2', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
-      mockedGet.mockResolvedValue({ id: 'x2', status: 'success', duration: 123, createdAt: '2026-01-01T00:00:00Z' });
-      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
-      expect(mockedGet).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    mockedPost.mockResolvedValueOnce({ id: 'x2', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+    mockedGet.mockResolvedValue({ id: 'x2', status: 'success', duration: 123, createdAt: '2026-01-01T00:00:00Z' });
+    await run(tasksCommand(), 'task trigger t1 --wait');
+    expect(mockedGet).toHaveBeenCalledTimes(1);
   }, 30_000);
 
   it('running→killed：非终态时继续轮询，命中 killed 后退出', async () => {
-    vi.useFakeTimers();
-    try {
-      mockedPost.mockResolvedValueOnce({ id: 'x3', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
-      mockedGet
-        .mockResolvedValueOnce({ id: 'x3', status: 'running', createdAt: '2026-01-01T00:00:00Z' })
-        .mockResolvedValueOnce({ id: 'x3', status: 'killed', createdAt: '2026-01-01T00:00:00Z' });
-      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
-      expect(mockedGet).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
+    mockedPost.mockResolvedValueOnce({ id: 'x3', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+    mockedGet
+      .mockResolvedValueOnce({ id: 'x3', status: 'running', createdAt: '2026-01-01T00:00:00Z' })
+      .mockResolvedValueOnce({ id: 'x3', status: 'killed', createdAt: '2026-01-01T00:00:00Z' });
+    await run(tasksCommand(), 'task trigger t1 --wait');
+    expect(mockedGet).toHaveBeenCalledTimes(2);
   }, 30_000);
 
   // U11: 失败终态必须透出执行器回调记录的 exitCode / failureReason /
   // errorMessage，不再只依赖 aiAnalysis。
   it('失败终态输出 exitCode/failureReason/errorMessage', async () => {
-    vi.useFakeTimers();
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       mockedPost.mockResolvedValueOnce({ id: 'x4', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
@@ -362,30 +335,27 @@ describe('acf task trigger --wait (N10)', () => {
         id: 'x4', status: 'failed', createdAt: '2026-01-01T00:00:00Z',
         exitCode: 3, failureReason: 'script_error', errorMessage: 'boom',
       });
-      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
+      await run(tasksCommand(), 'task trigger t1 --wait');
       const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
       expect(out).toMatch(/Exit code\s*:\s*3/);
       expect(out).toMatch(/Failure reason\s*:\s*script_error/);
       expect(out).toMatch(/Error\s*:\s*boom/);
     } finally {
       log.mockRestore();
-      vi.useRealTimers();
     }
   }, 30_000);
 
   it('exitCode/failureReason 缺失时不打印对应行（旧数据不显示 undefined）', async () => {
-    vi.useFakeTimers();
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       mockedPost.mockResolvedValueOnce({ id: 'x5', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
       mockedGet.mockResolvedValue({ id: 'x5', status: 'timeout', createdAt: '2026-01-01T00:00:00Z' });
-      await drain(run(tasksCommand(), 'task trigger t1 --wait'));
+      await run(tasksCommand(), 'task trigger t1 --wait');
       const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
       expect(out).not.toMatch(/Exit code/);
       expect(out).not.toMatch(/Failure reason/);
     } finally {
       log.mockRestore();
-      vi.useRealTimers();
     }
   }, 30_000);
 });

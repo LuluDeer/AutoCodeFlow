@@ -124,9 +124,12 @@ describe('AUTH-03 ApiKeysSettings', () => {
   });
 
   it('apiKeyStatus 纯函数：吊销 > 过期 > 有效', () => {
-    expect(apiKeyStatus(keyRow({ revokedAt: '2026-01-01T00:00:00Z' })).label).toBe('已吊销');
-    expect(apiKeyStatus(keyRow({ expiresAt: '2000-01-01T00:00:00Z' })).label).toBe('已过期');
-    expect(apiKeyStatus(keyRow()).label).toBe('有效');
+    // i18n 化后纯函数需注入 t；此用例关心状态判定顺序而非文案，用最小 stub
+    const t = (k: string): string =>
+      (({ 'apiKeys.status.revoked': '已吊销', 'apiKeys.status.expired': '已过期', 'apiKeys.status.active': '有效' }) as Record<string, string>)[k] ?? k;
+    expect(apiKeyStatus(keyRow({ revokedAt: '2026-01-01T00:00:00Z' }), t).label).toBe('已吊销');
+    expect(apiKeyStatus(keyRow({ expiresAt: '2000-01-01T00:00:00Z' }), t).label).toBe('已过期');
+    expect(apiKeyStatus(keyRow(), t).label).toBe('有效');
   });
 
   it('永不过期行显示「永不过期」，有 lastUsedAt 时展示时间', async () => {

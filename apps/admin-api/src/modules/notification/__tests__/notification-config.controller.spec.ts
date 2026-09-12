@@ -30,6 +30,10 @@ const mockConfigService = () => ({
 const mockNotificationService = () => ({
   sendAll: jest.fn().mockResolvedValue({}),
   sendToChannels: jest.fn().mockResolvedValue({}),
+  // ARCH-31: 静默 CRUD 必须同步内存热路径（isSilenced 读的是 NotificationService
+  // 的 Map，不是 DB）——此前只写 DB，规则要等重启回灌才生效。
+  adoptPersistedSilence: jest.fn(),
+  forgetSilence: jest.fn(),
 });
 
 const mockSilenceService = () => ({
@@ -42,6 +46,7 @@ describe("NotificationConfigController", () => {
   let controller: NotificationConfigController;
   let svc: ReturnType<typeof mockConfigService>;
   let notif: ReturnType<typeof mockNotificationService>;
+  let silence: ReturnType<typeof mockSilenceService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -56,6 +61,7 @@ describe("NotificationConfigController", () => {
     controller = module.get(NotificationConfigController);
     svc = module.get(NotificationConfigService);
     notif = module.get(NotificationService);
+    silence = module.get(NotificationSilenceService);
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -283,6 +289,44 @@ describe("NotificationConfigController", () => {
       expect(logged).toContain("API_KEY=[REDACTED]");
       expect(logged).not.toContain("sk-very-secret-value");
       expect(logged).not.toContain("abcdef0123456789abcdef0123456789");
+    });
+  });
+
+  describe("静默 CRUD 与内存热路径同步（ARCH-31）", () => {
+    it("createSilence：落库后 adopt 进 NotificationService（否则规则要等重启才生效）", async () => {
+      const row = {
+        id: "sil-uuid-1",
+        scope: "global" as const,
+        channelType: null,
+        applicationId: null,
+        taskId: null,
+        level: null,
+        reason: "maintenance",
+        startTime: null,
+        endTime: null,
+        durationMinutes: 60,
+        createdAt: new Date(),
+      };
+      (silence.create as jest.Mock).mockResolvedValue(row);
+
+      const result = await controller.createSilence({
+        scope: "global",
+        durationMinutes: 60,
+        reason: "maintenance",
+      });
+
+      expect(result).toBe(row);
+      expect(notif.adoptPersistedSilence).toHaveBeenCalledWith(row);
+    });
+
+    it("removeSilence：内存与 DB 双删（forgetSilence 只清内存，不重复删库）", async () => {
+      (silence.remove as jest.Mock).mockResolvedValue(true);
+
+      const result = await controller.removeSilence("sil-uuid-1");
+
+      expect(result).toBe(true);
+      expect(notif.forgetSilence).toHaveBeenCalledWith("sil-uuid-1");
+      expect(silence.remove).toHaveBeenCalledWith("sil-uuid-1");
     });
   });
 

@@ -31,8 +31,12 @@
  */
 import { getEnvVar } from "./env";
 
-/** 正整数 env 解析：非法/缺省回退 fallback（与 parseInt(...) || N 既有风格一致）。 */
-function positiveInt(name: string, fallback: number): number {
+/**
+ * 正整数 env 解析：非法/缺省回退 fallback（与 parseInt(...) || N 既有风格一致）。
+ * 导出供路由级限流档（如 execution-callback 的 CALLBACK_THROTTLE）复用同一解析
+ * 语义——两处各写一份会出现「非法值回退规则不一致」的漂移。
+ */
+export function positiveInt(name: string, fallback: number): number {
   const raw = getEnvVar(name);
   if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number(raw);

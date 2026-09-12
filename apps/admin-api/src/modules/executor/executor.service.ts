@@ -1139,19 +1139,32 @@ export class ExecutorService {
       .sort((a, b) => a.score - b.score)
       .map((s) => s.executor);
 
-    // R-P0-006: Use optimistic locking with version to prevent TOCTOU race conditions
+    // QA-05/BUG-22：这里原先是「版本 CAS 占坑」——`.andWhere("version = :version")`
+    // 用读取时的 version 做乐观锁。它把**良性并发**误判成失败：worker 并发 5 +
+    // 单执行器时，第一个占坑成功就把 version +1，其余并发请求的 CAS 全部 affected=0；
+    // 候选人只有一个 → 直接抛 "No available executor (all at capacity or
+    // concurrency conflict)" → 执行 FAILED（maxRetry=0 时没有任何重试兜底）。
+    // QA-05 本机实测：100 并发下成功率被此冲突主导（调大 MAX_CONCURRENT 只能
+    // 40%→65%，因为失败根因不是容量而是 CAS）。
+    //
+    // 关键事实：占坑的两个不变量**本来就由同一条 UPDATE 的 WHERE 原子保证**——
+    // ① 容量不超卖：`runningTaskCount < max` 与 `runningTaskCount + 1` 在同一条
+    //    SQL 里求值（行锁串行化）；
+    // ② 目标仍在线：`status = ONLINE` 同样在同一条 UPDATE 内复查（读取与写入之间
+    //    被置 OFFLINE 的行会被这条 UPDATE 挡掉）。
+    // 因此 version 谓词是**冗余**的，代价却是把并发占坑变成硬失败 —— 移除它，
+    // 不变量不变，失败面收敛为「真的没容量/真的离线」。
     let matched: Executor | null = null;
     for (const candidate of sorted) {
       const maxConcurrent = candidate.maxConcurrentTasks ?? Infinity;
 
-      // Attempt atomic increment with version check
+      // 原子占坑：容量与在线状态在同一条 UPDATE 内复查（无需版本谓词，见上注）
       const result = await this.repo
         .createQueryBuilder()
         .update(Executor)
         .set({ runningTaskCount: () => '"runningTaskCount" + 1' })
         .where("id = :id", { id: candidate.id })
         .andWhere("status = :status", { status: ExecutorStatus.ONLINE })
-        .andWhere("version = :version", { version: candidate.version })
         .andWhere(
           maxConcurrent === Infinity ? "1=1" : '"runningTaskCount" < :max',
           maxConcurrent === Infinity ? {} : { max: maxConcurrent },
@@ -1165,12 +1178,12 @@ export class ExecutorService {
         matched = candidate;
         break;
       }
-      // Version conflict or capacity full, try next candidate
+      // 该候选已满 / 已离线（并发占坑不再是失败来源）：试下一个候选
     }
 
     if (!matched)
       throw new Error(
-        "No available executor (all at capacity or concurrency conflict)",
+        "No available executor (all candidates are offline or at capacity)",
       );
 
     this.logger.log(
@@ -1279,7 +1292,9 @@ export class ExecutorService {
       if (task.executorAffinityTags && task.executorAffinityTags.length > 0) {
         filtered = filtered.filter((e) => {
           if (!e.tags) return false;
-          return task.executorAffinityTags!.some((tag) => e.tags!.includes(tag));
+          return task.executorAffinityTags!.some((tag) =>
+            e.tags!.includes(tag),
+          );
         });
       }
       if (

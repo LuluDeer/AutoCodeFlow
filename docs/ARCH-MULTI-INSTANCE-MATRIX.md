@@ -1,6 +1,10 @@
 # ARCH-31：多 admin-api 实例兼容矩阵
 
-> 状态：documented/blocked（盘点已完成；通知静默、渠道配置、灰度批次（rollout）、outbox 的多实例改造及对应真机验证未完成）。范围：`apps/admin-api/src`。
+> 状态：**部分实施（2026-09-12 本轮）**——通知静默（3.2）、渠道配置（3.3）、
+> 灰度批次（3.4）三项 🔴 已改造为「DB 为共享真相 + TTL 读穿 / 条件 UPDATE claim /
+> 活性租约」，等级降为 🟡（收敛窗口内仍有偏差，无写冲突）；outbox 行级 claim 仍
+> pending，本地文件系统（3.5）属部署形态约束（需共享卷）。
+> **真机双实例端到端验证尚未执行**，故整体仍不标 done。范围：`apps/admin-api/src`。
 > 目的：盘点全部**进程内单例状态**，标注每一项在多实例（水平扩容 / 滚动重启 /
 > 无会话粘滞负载均衡）下的兼容性、失效后果与风险等级，并给出 outbox / silence
 > 两项的 Redis 化评估。
@@ -33,9 +37,9 @@ claim；④ 路由到任意实例是否等价。
 | --- | --- | --- | --- | --- | --- |
 | 1 | 调度定时器 `timers`/`cronTasks`/`runningTasks`/`schedulingTasks` | 进程内 Map/Set | 否 | Redis Leader + DB `claimTaskTrigger` | 🟢 低 |
 | 2 | 调度 Leader 身份 `isLeader`/`leaderLock` | 进程内 + Redis 锁 | 锁共享 | fail-open + 15s 校验 | 🟢 低 |
-| 3 | 通知静默 `NotificationService.silences` | 进程内 Map（热路径） | 否（DB 仅回灌） | DB `notification_silences` 写穿 | 🔴 高 |
-| 4 | 渠道配置 `ChannelConfigStore` / `NotificationConfigService.channelConfigs` | 进程内 Map | **否** | 无（env 回退） | 🔴 高 |
-| 5 | 灰度批次 `rolloutBatches` / `rolloutTimers` | 进程内 Map/Set | 否 | 行级 `rolloutState` + 重启 sweep | 🔴 高 |
+| 3 | 通知静默 `NotificationService.silences` | 进程内 Map（热路径） | 否（DB 写穿 + **周期读穿**） | DB `notification_silences` 写穿 + 15s 读穿刷新 | 🟡 中（本轮改造） |
+| 4 | 渠道配置 `ChannelConfigStore` / `NotificationConfigService.channelConfigs` | 进程内 Map | **是**（新表 `notification_channel_configs` + 15s 读穿） | env 回退 | 🟡 中（本轮改造） |
+| 5 | 灰度批次 `rolloutBatches` / `rolloutTimers` | 进程内 Map/Set | 部分（行级状态 + 活性租约 + 失败 claim） | 行级 `rolloutState` + 条件 UPDATE claim + 租约 sweep | 🟡 中（本轮改造） |
 | 6 | 产物/包本地磁盘 `uploads/`、artifacts root | 本地 FS | 否（除非共享卷） | 无 | 🔴 高 |
 | 7 | FEAT-19 outbox 派发扫描 `OutboxDispatcher` | DB 表（共享） | 是 | DB 行状态 | 🟡 中 |
 | 8 | FEAT-07 快速路径重试 `pendingTimers` | 进程内 Set | 否 | outbox 兜底 | 🟡 中 |
@@ -85,6 +89,15 @@ TTL 30s，`RedisLockService` watchdog 以 TTL/3 续期，另设 TTL/2 校验定�
 `addSilence` 还以进程内 `silences.size` 判 1000 上限，DB 侧另有独立上限——两侧
 口径在多实例下不一致。
 
+**本轮改造（2026-09-12，🔴→🟡）**：`onModuleInit` 之外新增**周期读穿刷新**
+（`SILENCE_REFRESH_MS`，默认 15s），DB 为跨实例唯一真相，覆盖式重建内存 Map，
+保留三类本地项：① 写穿在途（未拿到 DB id）；② 已落库但尚未被任一刷新读到
+（覆盖主从复制延迟/读己之写窗口）；③ 本地临时键与 DB 同源行去重（内存键仍是
+`addSilence` 返回给管理台的 id，DELETE 才可用）。只有「DB 确认存在过、如今
+消失」才判为其他实例删除/已过期并丢弃。`removeSilence` 改按 `dbId` 删库（此前
+用本地临时 id 删库必然落空，只留一条 warn）。DB 缺席或查询异常时逐字节降级回
+NOTIF-003 纯内存语义。收敛窗口 ≤ 1 个刷新周期。
+
 ### 3.3 🔴 渠道配置（无持久化）
 
 `ChannelConfigStore`（`channel-config.store.ts`）与
@@ -95,6 +108,17 @@ TTL 30s，`RedisLockService` watchdog 以 TTL/3 续期，另设 TTL/2 校验定�
 
 - 在 A 保存的 webhookUrl/密钥**不会**在 B 生效 → B 上的通知走 env 或直接 skipped；
 - 多实例下配置面表现为「非确定性生效」，取决于请求落到哪台。
+
+**本轮改造（2026-09-12，🔴→🟡）**：新增共享持久化表 `notification_channel_configs`
+（迁移 `1790000000014`，`key` 主键 + `config` jsonb + `enabled` + `updatedAt`）。
+PATCH 保存**写穿**（upsert），各实例按 `CHANNEL_CONFIG_REFRESH_MS`（默认 15s）
+**读穿**并由 `NotificationConfigService.hydrateFromPersisted()` 同时刷新「读面
+`channelConfigs`」与「发送面 store」两个内存面（只刷其一会出现「管理台看到旧值、
+发送用新值」）。无仓储（DB 不可用/单测）时降级回纯内存语义。收敛窗口 ≤ 1 个
+刷新周期；渠道配置只有管理员写，DB 行即唯一真相，无写冲突。
+
+> 存储面说明：落库为 RAW 值（与 `system_config`、env 同姿态），脱敏只发生在
+> 控制器读面（N11/N32）；本表不被任何读面端点直接透出。
 
 ### 3.4 🔴 灰度批次（单写者假设）
 
@@ -107,6 +131,33 @@ TTL 30s，`RedisLockService` watchdog 以 TTL/3 续期，另设 TTL/2 校验定�
 （`ROLLOUT_BATCH_TIMEOUT_MS` 15min）收尾 → 灰度卡死/误判失败。`onModuleDestroy`
 直接丢弃进程内批次，重启后 `onModuleInit` 把 pending/probing 行标记 failed（人工重发）。
 
+**本轮改造（2026-09-12，🔴→🟡）**——四处：
+1. **心跳侧 hydration**：`resolveRolloutBatch()` 在本实例无内存批次时，从 DB 行痕迹
+   （`rolloutState IN (pending, probing)`）重建**只读上下文**，非属主实例也能把行
+   推进到 probing；无批次痕迹的行不做任何额外 DB 往返（心跳是高频路径）。
+2. **失败终结 claim**：`failBatch()` 先以条件 UPDATE（`WHERE rolloutState IN
+   (pending, probing)`）认领在途行，只有赢家执行自动回滚，杜绝两台实例对同一批
+   执行器重复回滚；未命中者只清本地批次并记 warn。
+3. **并发批次互斥**：`upgradeAllWithRollout`（canary）启动前查同应用是否已有在途
+   灰度行，命中则返回 `ok:false` + `blockedReason`（含持有者实例标识），不再出现
+   「两实例同时对同一应用开灰度」。
+4. **活性租约**：持有者每 tick 刷新行上 `rolloutMeta.leasedAt/leasedBy`；重启 sweep
+   跳过租约新鲜（`ROLLOUT_LEASE_GRACE_MS` 60s）的行——**滚动重启不再把另一个实例
+   正在推进的灰度直接标 failed**。探测与提升仍由持有者单点驱动（tick 补驱「心跳
+   落在别处」的 probing 行），tick 另加「批次已被其他实例终结则立即收尾」的判据。
+
+**真机抓到的两个缺陷（2026-09-12，`npm run test:arch31-rollout` 定位并修复）**：
+- **(a) 批次成功收尾不收口行态**：`finishBatch` 只清内存态，canary 命中的行
+  **永远停在 `probing`**（多实例互斥 `findInFlightRolloutRows` 因此把该应用永久
+  判定为「有批次在途」，**后续任何 canary 都被挡死**；滚动重启时 sweep 还会把
+  这条陈旧行误标 failed 制造噪音）。修复：`finishBatch` 增加 `settleRolloutRows`
+  （条件 UPDATE 把本批 pending/probing 行收口为 `promoted`，不覆盖 failed/
+  rolled_back 的真实失败痕迹）。
+- **(b) 提升轮后 owner 不再 tick**：无健康声明的分支在 `promoteRest` 后直接
+  `return` 且**未排下一次 tick** → 批次永远等不到 `finishBatch`（内存批次驻留、
+  日志无 finished、(a) 的收口也因此永远不执行）。修复：提升轮后若批次仍在内存
+  则继续刷新租约并排下一次 tick（收尾/被终结则停）。
+
 ### 3.5 🔴 本地文件系统
 
 - 执行器包：`executor-package.service.ts:38` `UPLOAD_DIR = process.cwd()/uploads/executor-packages`；
@@ -116,21 +167,31 @@ TTL 30s，`RedisLockService` watchdog 以 TTL/3 续期，另设 TTL/2 校验定�
 多实例若无共享卷，A 写入的包/产物 B 读不到；跨实例下载 404。需共享卷（NFS/对象存储）
 或在部署文档钉死。
 
-### 3.6 🟡 outbox 派发（跨进程共享表，但缺行级 claim）
+### 3.6 🟡 outbox 派发（行级 claim + 租约已落地；剩快速路径收口）
+
+> **状态校正（2026-09-12）**：本节原先描述「缺行级 claim」已不成立——claim/租约在
+> 早前轮次（c01f477）已实现，本轮又补上快速路径收口。以下为**当前实际语义**。
 
 FEAT-19 `OutboxDispatcher`（`outbox-dispatcher.service.ts`）把 outbox 落 **DB 表**，
-OnModuleInit + 每 5s 扫描 `dispatchedAt IS NULL AND deadLettered=false`。表是跨进程共享的，
-但**每个实例都独立扫描同一批行**，且重入锁 `scanning` 只是**进程内** boolean——
-没有任何行级 claim（无 `SELECT … FOR UPDATE SKIP LOCKED`，也无条件 UPDATE 抢占）。
+OnModuleInit + 每 5s 扫描。claim **在数据库内完成**：单条
+`WITH claimable AS (… FOR UPDATE SKIP LOCKED) UPDATE … SET leaseUntil, leaseToken`
+原子选行 + 写租约——多实例各自扫描但**不会抢到同一行**；活动租约被跳过，过期租约
+（`OUTBOX_LEASE_MS` 60s，且构造期断言必须大于单行最坏处理窗口）可由其它实例回收。
+批次固定 1 行（`OUTBOX_BATCH_SIZE = 1`），避免批内行共享租约导致重复投递窗扩大。
+终态 finalize 条件 UPDATE 带 `leaseToken`/`leaseUntil` 守卫（`affected≠1` 抛
+`StaleOutboxOwnerError` 并整体回滚），死信落独立表后在**同一事务内**收口。
 
-**多实例后果**：同一行可能被两个实例同时在途补投 → 重复投递（at-least-once 语义
-允许重复，文档要求订阅方幂等），但重复度随实例数放大；`markDispatched` 也无条件
-（两实例都写 `dispatchedAt`，幂等但无排他）。
+**快速路径收口（本轮）**：快速路径对全部匹配订阅投递成功时，用
+`markFastPathDelivered(rowId)` 把兜底行直接标记已投递（条件 UPDATE，带「无活跃租约」
+谓词——补投扫描已在处理这一行时不抢）。此前不收口 ⇒ **每个成功事件都必然被扫描再投
+一遍**（不是"可能重复"），订阅方流量翻倍；现在重复投递仅在①部分订阅失败/死信
+（那一行必须留给扫描重试，已成功的订阅会再收一次）②与扫描的租约竞态 时出现。
 
-快速路径侧（`OutboundEventDispatcher.dispatch`，:144-192）先 `outbox.enqueue` 再内存
-快照直投——**同一事件在一个实例上会被投两次**（快速路径一次 + 任一实例的 outbox 扫描
-一次），这是 FEAT-19 的既定取舍（文档已注明订阅方须幂等），多实例不改语义，只是
-重复窗口更宽。
+**残留多实例语义**：at-least-once 本身要求订阅方幂等（文档已声明）；重复度不再随
+实例数线性放大（claim 排他）。claim 的排他性已由真机并发套件验证（§5 第 4 项，
+`npm run test:arch31-outbox` 7/7）；「同一事件实际投递到 webhook 的次数」因订阅回调面
+禁止回环地址（SSRF 纪律）无法在本机离线闭环，需公网可达接收端——属交付验收，
+不改变 claim 侧结论。
 
 ### 3.7 🟡 执行器令牌缓存（轮换延迟）
 
@@ -211,9 +272,13 @@ cron **没有**，每个实例并行执行（round4 复审已记 P2）：
 各实例清 L1。一致性最好，引入 pub/sub 复杂度与 Redis 依赖（Redis 不可用时
 fail-open 回内存态，与 NOTIF-003 降级一致）。
 
-**决策建议**：短期 A（消除「新静默在别的实例上不生效」这一主缺口），长期若
-Redis 已是硬依赖则 B。`ChannelConfigStore` 同理——它甚至没有 DB 表，
-建议复用 `config` 模块的 `system_config`（已存在）持久化渠道配置，或走 B。
+**决策与落地**：本轮按方案 A 落地（周期读穿 + 本地 L1，见 3.2），Redis pub/sub
+（方案 B）留作后续可选——静默/渠道配置均为低频人写、高频热读，TTL 收敛已消除
+主缺口，引入 pub/sub 的收益不抵复杂度与 Redis 依赖。
+
+`ChannelConfigStore` 同理按 A 落地，但**未复用 `system_config`**：渠道配置是
+「按渠道键的对象 + enabled 开关 + RAW 机密」，塞进系统配置的 kv/掩码/历史面会
+与既有脱敏与回滚语义纠缠，故建独立表（见 3.3）。
 
 ---
 
@@ -222,27 +287,55 @@ Redis 已是硬依赖则 B。`ChannelConfigStore` 同理——它甚至没有 DB
 - **可安全多实例**：调度链（Leader + claim）、BullMQ worker、无状态读写 API、
   观测端点（按 instance 聚合）。
 - **需共享存储**：产物/执行器包本地 FS（共享卷或对象存储）。
-- **需先改造**：通知静默（3.2）、渠道配置（3.3）、灰度批次（3.4）——三者是
-  「单实例内存态当共享态用」的典型。
+- **已改造（本轮）**：通知静默（3.2）、渠道配置（3.3）、灰度批次（3.4）——三者
+  原是「单实例内存态当共享态用」的典型，现统一为「DB 共享真相 + 读穿/claim/租约」，
+  收敛窗口 ≤ 15s（灰度批次为事件驱动，无周期窗口）。
+- **待真机双实例验证**：见文末清单（1/2/3 项现已具备验证条件）。
 - **建议加固**：outbox 行级 claim（4.1）、`@Cron` 统一 Leader 门禁（3.8，可抽
   `@LeaderOnly()` 装饰器复用 scheduler 的 `isLeader`/Redis 锁，fail-open 语义一致）。
 
-### 后续实现拆分（均未完成）
+### 后续实现拆分
 
-1. **silence**：先做 DB 增量读穿/短 TTL 回灌，必要时再做 Redis key + pub/sub 同步 L1；验证 A 建静默、B 告警仍被静默。
-2. **channel config**：为渠道配置补共享持久化（优先复用 `system_config`，或采用 Redis），再验证 A 保存、B 发送使用同一配置。
-3. **rollout**：把批次属主状态与心跳确认改为跨实例可协调的持久化/租约语义，覆盖非属主心跳、重启恢复与超时路径。
-4. **outbox**：先实现 DB 行级 claim/lease（或经拍板改为 Redis worker），再验证快速路径与补投的重复边界及订阅方幂等。
+1. ~~**silence**：DB 读穿/短 TTL 回灌~~ ✅ 本轮完成（3.2）；Redis key + pub/sub 同步 L1 为可选增强，未做。
+2. ~~**channel config**：补共享持久化~~ ✅ 本轮完成（独立表 1790000000014，见 3.3）。
+3. ~~**rollout**：批次属主状态与心跳确认改为跨实例可协调的持久化/租约语义~~ ✅ 本轮完成（3.4，含非属主心跳 hydration、失败 claim、并发互斥、活性租约）。
+4. ~~**outbox**：DB 行级 claim/lease~~ ✅ **claim/租约早前轮次已落地**（`FOR UPDATE SKIP LOCKED` + 60s 租约 + leaseToken 守卫，见 3.6），本轮补 **快速路径收口**（`markFastPathDelivered`，把「每个成功事件必然重复投递」收敛为「部分失败/租约竞态时才可能重复」）；**真机双实例的重复投递边界仍待验证**（§ 验证清单第 4 项）。
 
-以上拆分只登记后续实现与验证，不将当前盘点、方案评估或既有单实例安全项计为已完成。
+以上 1~4 为**代码实现完成 + 单测覆盖**；真机双实例端到端验证按清单逐项执行（1/2/5 已验证，3/4 待）。
 
-### 真机双实例验证清单（后续）
+### 真机双实例验证清单
 
-1. 双实例下在 A 建静默，向 B 发告警，断言被静默（改造后）；
-2. 双实例下在 A PATCH 渠道配置，经 B 触发通知，断言用 A 保存的值；
-3. 双实例下执行一次 canary 部署，让心跳落到非属主实例，断言批次仍推进；
-4. 双实例下同一事件同时触发快速路径与 outbox，统计订阅方收到的投递次数（幂等验证）；
-5. `EXISTS lock:scheduler:leader` 全时只有一个持有者，逐个重启断言接管 < 60s。
+> 验证执行：2026-09-12 本机真机双实例（`npm run test:arch31-multi-instance`，
+> 两个真实 admin-api 进程共享同一 PG16 + Redis7 容器，空库迁移链真跑）。
+> **15/15 通过**（脚本退出码 0），逐项结论如下。
+
+1. ✅ **静默跨实例**：A 创建规则 → A 即时可见（adopt）、B 读面立即可见（DB 共享）、
+   经多次读穿刷新后 B 仍持有（刷新不抖动）。
+   *注：本项读面走 DB 层；内存热路径（`isSilenced` 翻转）由单测覆盖。*
+2. ✅ **渠道配置跨实例**：A PATCH 保存 webhook 配置 → A 本实例即时生效，
+   刷新前 B 仍是默认值（**实证了改造前多实例必然失效**），一个读穿周期后 B 读到
+   A 保存的值（🔴→🟡 核心断言成立）。
+3. ✅ **canary 心跳落非属主实例**（真机闭环，2026-09-12 补充）：新套件
+   `npm run test:arch31-rollout`（`scripts/arch31-rollout-cross-instance-selftest.mjs`）
+   起 **2 个 admin-api 实例 + 2 个真实 executor-node**（部署源是本机静态 zip，
+   免 git 依赖）：canary 从 A 发起（owner），**两台执行器的全部心跳/状态上报
+   都只打向 B**（结构性保证：executor 日志里的 `ADMIN_API_URL` 指向 B、且不含 A）。
+   结果 **20/20 通过**：B 经 hydration 把 canary 行推进 probing
+   （`rolloutMeta.heartbeatConfirmedAt` 落库），A 的 tick 据此提升其余台，
+   **10 秒完成整批**（改造前只能卡到 15min 硬超时），终态两行均 `promoted`、
+   零在途残留。该套件同时抓出并修掉两个真实缺陷（见 §3.4「真机抓到的两个缺陷」）。
+4. ✅ **outbox 行级 claim 的双实例竞争**（真机，2026-09-12）：`npm run test:arch31-outbox`
+   （`scripts/arch31-outbox-claim-selftest.mjs`）用**两个独立 PG 连接**并发执行
+   **从源码现取**的生产 claim CTE（批量/租约常量同样现取，实现改了这里自动跟随），
+   **7/7 通过**：①同轮零重叠（`FOR UPDATE SKIP LOCKED` 排他，50 行 × 12 轮并发）
+   ②两实例并行推进最终覆盖全部行（无永久饿死）③活动租约不被抢 ④租约过期（实例崩溃）
+   可被另一实例回收 ⑤已投递行不再被 claim。
+   *口径*：本项验的是**临界区 SQL 的排他性**（比 HTTP 端到端更贴近要害）——订阅回调面
+   走 `assertSafeHttpUrl`（回环直接拒绝，无测试开关），本机离线造不出可达接收端，
+   故不做「两个实例实际投 webhook」的端到端；投递侧的重复语义由 api-reference
+   声明的 at-least-once + 快速路径收口覆盖。
+5. ✅ **调度 Leader 单点性**：两实例 `/api/metrics/scheduler` 中恰一个
+   `scheduler.isLeader=true`（pid 可区分）。
 
 ---
 

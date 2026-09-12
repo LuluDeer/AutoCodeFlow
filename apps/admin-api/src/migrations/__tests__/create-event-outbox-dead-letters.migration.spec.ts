@@ -59,7 +59,7 @@ describe("CreateEventOutboxDeadLetters1790000000013", () => {
     const uniqueIndex = downPart.indexOf(
       "uq_event_outbox_dead_letters_outboxId",
     );
-    const table = downPart.indexOf('DROP TABLE IF EXISTS');
+    const table = downPart.indexOf("DROP TABLE IF EXISTS");
     expect(createdAtIndex).toBeGreaterThanOrEqual(0);
     expect(uniqueIndex).toBeGreaterThanOrEqual(0);
     expect(table).toBeGreaterThan(createdAtIndex);

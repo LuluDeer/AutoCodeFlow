@@ -11,6 +11,8 @@ import {
 } from '../api/queries';
 import { getApiBaseUrl } from '../api/client';
 import { getErrMsg } from '../utils/error';
+import { useTranslation } from 'react-i18next';
+import '../i18n';
 import { useAuthStore } from '../store/auth';
 import { formatDateTime, formatDuration } from '../utils/timeFormat';
 import { LOG_LEVEL_VALUES, logLineHighlightClass } from '../utils/logLevel';
@@ -29,35 +31,35 @@ import { buildRetryChain, nextPendingRetryAt, type RetryChainLink } from './retr
 
 const { Text } = Typography;
 
-const STATUS_MAP: Record<string, { color: string; label: string }> = {
-  pending: { color: 'default', label: '等待中' },
-  running: { color: 'processing', label: '运行中' },
-  success: { color: 'green', label: '成功' },
-  failed: { color: 'red', label: '失败' },
-  timeout: { color: 'orange', label: '超时' },
-  killed: { color: 'volcano', label: '已终止' },
-  cancelled: { color: 'default', label: '已取消' },
-};
+const STATUS_MAP = (t: (k: string) => string): Record<string, { color: string; label: string }> => ({
+  pending: { color: 'default', label: t('execDetail.status.pending') },
+  running: { color: 'processing', label: t('execDetail.status.running') },
+  success: { color: 'green', label: t('execDetail.status.success') },
+  failed: { color: 'red', label: t('execDetail.status.failed') },
+  timeout: { color: 'orange', label: t('execDetail.status.timeout') },
+  killed: { color: 'volcano', label: t('execDetail.status.killed') },
+  cancelled: { color: 'default', label: t('execDetail.status.cancelled') },
+});
 
-const TRIGGER_LABEL: Record<string, string> = {
-  manual: '手动触发', cron: 'Cron 定时', fixed_rate: '固定间隔',
-  dependency: '依赖触发', misfire: '补偿触发',
-};
+const TRIGGER_LABEL = (t: (k: string) => string): Record<string, string> => ({
+  manual: t('execDetail.trigger.manual'), cron: t('execDetail.trigger.cron'), fixed_rate: t('execDetail.trigger.fixedRate'),
+  dependency: t('execDetail.trigger.dependency'), misfire: t('execDetail.trigger.misfire'),
+});
 
-const FAILURE_REASON_MAP: Record<string, { color: string; label: string; hint: string }> = {
-  package_fetch_failed: { color: 'gold', label: '包拉取失败', hint: '检查代码仓库、依赖安装与网络连通性。' },
+const FAILURE_REASON_MAP = (t: (k: string) => string): Record<string, { color: string; label: string; hint: string }> => ({
+  package_fetch_failed: { color: 'gold', label: t('execDetail.failure.packageFetchFailed'), hint: t('execDetail.failure.packageFetchFailedHint') },
   // BUG-10 细化分类
-  git_fetch_failed: { color: 'gold', label: 'Git 拉取失败', hint: '检查 gitRepo 地址、凭据、分支/commit 是否存在与网络连通性。' },
-  dependency_install_failed: { color: 'gold', label: '依赖安装失败', hint: '检查 requirements 是否可解析、私服可达性与版本冲突。' },
-  runtime_missing: { color: 'gold', label: '运行时缺失', hint: '执行器缺少任务运行时（node/python/uv）——安装运行时或改派到支持该 runtime 的执行器。' },
-  script_error: { color: 'red', label: '脚本错误', hint: '检查任务脚本异常、退出码和运行时日志。' },
-  timeout: { color: 'orange', label: '执行超时', hint: '检查任务耗时并调整超时配置。' },
-  executor_offline: { color: 'volcano', label: '执行器离线', hint: '检查执行器在线状态、地址和网络。' },
-  executor_restart: { color: 'volcano', label: '执行器重启', hint: '执行器重启导致运行中任务中断，检查执行器重启原因并按需重试。' },
-  stale_recovered: { color: 'volcano', label: '失联回收', hint: '执行长时间无回调被中台回收；若任务仍有重试预算，中台已自动创建新执行（见同任务的后续执行）。' },
-  killed: { color: 'default', label: '手动终止', hint: '执行被管理员手动终止。' },
-  unknown: { color: 'default', label: '未知原因', hint: '查看错误信息和执行日志定位根因。' },
-};
+  git_fetch_failed: { color: 'gold', label: t('execDetail.failure.gitFetchFailed'), hint: t('execDetail.failure.gitFetchFailedHint') },
+  dependency_install_failed: { color: 'gold', label: t('execDetail.failure.dependencyInstallFailed'), hint: t('execDetail.failure.dependencyInstallFailedHint') },
+  runtime_missing: { color: 'gold', label: t('execDetail.failure.runtimeMissing'), hint: t('execDetail.failure.runtimeMissingHint') },
+  script_error: { color: 'red', label: t('execDetail.failure.scriptError'), hint: t('execDetail.failure.scriptErrorHint') },
+  timeout: { color: 'orange', label: t('execDetail.failure.timeout'), hint: t('execDetail.failure.timeoutHint') },
+  executor_offline: { color: 'volcano', label: t('execDetail.failure.executorOffline'), hint: t('execDetail.failure.executorOfflineHint') },
+  executor_restart: { color: 'volcano', label: t('execDetail.failure.executorRestart'), hint: t('execDetail.failure.executorRestartHint') },
+  stale_recovered: { color: 'volcano', label: t('execDetail.failure.staleRecovered'), hint: t('execDetail.failure.staleRecoveredHint') },
+  killed: { color: 'default', label: t('execDetail.failure.killed'), hint: t('execDetail.failure.killedHint') },
+  unknown: { color: 'default', label: t('execDetail.failure.unknown'), hint: t('execDetail.failure.unknownHint') },
+});
 
 // UI-05: 重试链状态 Tag（随重试链 Card 迁入重试 Tab，渲染逻辑与 CORE-02 一致）
 const RETRY_STATUS_COLOR: Record<string, string> = {
@@ -104,6 +106,10 @@ function normalizeTabKey(raw: string | null): TabKey {
 export const UI09_DESCRIPTIONS_COLUMN = { xs: 1, sm: 2, md: 3 } as const;
 
 export default function ExecutionDetailPage() {
+  const { t } = useTranslation();
+  const statusMap = STATUS_MAP(t);
+  const triggerLabels = TRIGGER_LABEL(t);
+  const failureReasonMap = FAILURE_REASON_MAP(t);
   const { taskId, execId } = useParams<{ taskId: string; execId: string }>();
   const nav = useNavigate();
   const logRef = useRef<HTMLPreElement>(null);
@@ -165,7 +171,7 @@ export default function ExecutionDetailPage() {
     error: reportErr,
     refetch: refreshReport,
   } = useExecutionReport(taskId, execId);
-  const reportError = reportErr ? getErrMsg(reportErr, '报告数据加载失败') : null;
+  const reportError = reportErr ? getErrMsg(reportErr, t('execDetail.reportLoadFail')) : null;
   useEffect(() => {
     void refreshReport();
   }, [data?.status, refreshReport]);
@@ -306,12 +312,12 @@ export default function ExecutionDetailPage() {
     try {
       const all = await fetchAllLogLines();
       if (all.length === 0) {
-        throw new Error('全量日志端点未返回日志行');
+        throw new Error(t('execDetail.fullLogsNoRows'));
       }
       setFullLogs(all.join('\n'));
-      message.success('已加载完整日志');
+      message.success(t('execDetail.fullLogsLoaded'));
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '加载完整日志失败'));
+      message.error(getErrMsg(err, t('execDetail.fullLogsLoadFail')));
     } finally {
       setLoadingFullLogs(false);
     }
@@ -344,7 +350,7 @@ export default function ExecutionDetailPage() {
     } catch (err: unknown) {
       if (levelFetchSeq.current !== seq) return;
       setFilteredLogs(null);
-      message.error(getErrMsg(err, '按级别过滤日志失败'));
+      message.error(getErrMsg(err, t('execDetail.levelFilterFail')));
     } finally {
       if (levelFetchSeq.current === seq) setLoadingFilteredLogs(false);
     }
@@ -354,10 +360,10 @@ export default function ExecutionDetailPage() {
     setKilling(true);
     try {
       await tasksApi.killExecution(taskId!, execId!);
-      message.success('执行已终止');
+      message.success(t('execDetail.killed'));
       refresh();
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '终止失败'));
+      message.error(getErrMsg(err, t('execDetail.killFail')));
     } finally {
       setKilling(false);
     }
@@ -367,10 +373,10 @@ export default function ExecutionDetailPage() {
     setRetrying(true);
     try {
       await tasksApi.trigger(taskId!);
-      message.success('已重新触发，新的执行记录将在任务详情中显示');
+      message.success(t('execDetail.retriggered'));
       nav(`/tasks/${taskId}`);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '触发失败'));
+      message.error(getErrMsg(err, t('execDetail.triggerFail')));
     } finally {
       setRetrying(false);
     }
@@ -389,28 +395,28 @@ export default function ExecutionDetailPage() {
     return (
       <Result
         status="error"
-        title="执行详情加载失败"
-        subTitle={getErrMsg(error, '请求失败，请重试')}
+        title={t('execDetail.loadErrorTitle')}
+        subTitle={getErrMsg(error, t('execDetail.loadErrorDesc'))}
         extra={
           <Space>
-            <Button onClick={() => nav(`/tasks/${taskId}`)}>返回任务</Button>
-            <Button type="primary" icon={<SyncOutlined />} onClick={() => void refresh()}>重试</Button>
+            <Button onClick={() => nav(`/tasks/${taskId}`)}>{t('execDetail.backToTask')}</Button>
+            <Button type="primary" icon={<SyncOutlined />} onClick={() => void refresh()}>{t('execDetail.retry')}</Button>
           </Space>
         }
       />
     );
   }
 
-  const status = STATUS_MAP[data?.status || ''] || { color: 'default', label: data?.status };
+  const status = statusMap[data?.status || ''] || { color: 'default', label: data?.status };
   const failureReason = data?.failureReason
-    ? FAILURE_REASON_MAP[data.failureReason] || {
+    ? failureReasonMap[data.failureReason] || {
         color: 'default',
         label: data.failureReason,
-        hint: '未识别的失败分类，请查看错误信息和执行日志。',
+        hint: t('execDetail.failure.unrecognizedHint'),
       }
     : undefined;
   // UI-05: 建议动作（未知键回退 unknown 兜底）
-  const runbookAction = failureRunbookAction(data?.failureReason);
+  const runbookAction = failureRunbookAction(data?.failureReason, t);
   const runbookText = taskData?.runbook || null;
 
   /** UI-05: Tab 切换写回 ?tab=（非法值 normalize 已兜底） */
@@ -428,7 +434,7 @@ export default function ExecutionDetailPage() {
       {/* UI-03：页头标准化（面包屑/返回/状态标签/操作按钮迁入 PageHeader；
           终止/重新触发/AI 分析/刷新原样保留于 extra，语义不变） */}
       <PageHeader
-        title="执行详情"
+        title={t('execDetail.title')}
         description={
           data?.taskName ? (
             <span className="ui09-pageheader-description" title={data.taskName}>
@@ -437,34 +443,34 @@ export default function ExecutionDetailPage() {
           ) : undefined
         }
         breadcrumb={[
-          { title: '执行记录', to: '/executions' },
+          { title: t('execDetail.breadcrumb.executions'), to: '/executions' },
           // UI-09：超长不可断任务名（构建号/英文长名）会撑破面包屑（li
           // min-width:auto 不收缩），窄屏由 .ui09-crumb-ellipsis 收敛为省略号
-          { title: <span className="ui09-crumb-ellipsis" title={data?.taskName}>{data?.taskName || '任务'}</span> },
-          { title: '执行详情' },
+          { title: <span className="ui09-crumb-ellipsis" title={data?.taskName}>{data?.taskName || t('execDetail.breadcrumb.taskFallback')}</span> },
+          { title: t('execDetail.title') },
         ]}
         extra={
           <>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => nav(`/tasks/${taskId}`)}>返回任务</Button>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => nav(`/tasks/${taskId}`)}>{t('execDetail.backToTask')}</Button>
             <Tag color={status.color} style={{ fontSize: 14, padding: '2px 10px' }}>
               {status.label}
             </Tag>
             {data?.status === 'running' && !streamDisconnected && (
-              <Badge status="processing" text={<Text type="secondary">实时更新中</Text>} />
+              <Badge status="processing" text={<Text type="secondary">{t('execDetail.liveUpdating')}</Text>} />
             )}
             {(data?.status === 'running' || data?.status === 'pending') && (
               <Popconfirm
-                title="确认终止此执行？"
-                description="终止后执行将中断且不可恢复。"
+                title={t('execDetail.killConfirmTitle')}
+                description={t('execDetail.killConfirmDesc')}
                 onConfirm={handleKill}
-                okText="终止" okButtonProps={{ danger: true }}
+                okText={t('execDetail.killAction')} okButtonProps={{ danger: true }}
               >
                 <Button
                   icon={<StopOutlined />}
                   danger
                   loading={killing}
                 >
-                  终止执行
+                  {t('execDetail.killButton')}
                 </Button>
               </Popconfirm>
             )}
@@ -476,7 +482,7 @@ export default function ExecutionDetailPage() {
                 loading={retrying}
                 onClick={handleRetry}
               >
-                重新触发
+                {t('execDetail.retrigger')}
               </Button>
             )}
             {(data?.status === 'failed' || data?.status === 'timeout') && (
@@ -487,19 +493,19 @@ export default function ExecutionDetailPage() {
                   setAnalyzing(true);
                   try {
                     await tasksApi.analyzeExecution(taskId!, execId!);
-                    message.success('AI 分析完成');
+                    message.success(t('execDetail.aiAnalyzeDone'));
                     refresh();
                   } catch (err: unknown) {
-                    message.error(getErrMsg(err, 'AI 分析失败'));
+                    message.error(getErrMsg(err, t('execDetail.aiAnalyzeFail')));
                   } finally {
                     setAnalyzing(false);
                   }
                 }}
               >
-                AI 分析
+                {t('execDetail.aiAnalyze')}
               </Button>
             )}
-            <Button icon={<SyncOutlined />} onClick={() => void refresh()} loading={loading}>刷新</Button>
+            <Button icon={<SyncOutlined />} onClick={() => void refresh()} loading={loading}>{t('execDetail.refresh')}</Button>
           </>
         }
       />
@@ -508,7 +514,7 @@ export default function ExecutionDetailPage() {
         <Alert
           type="warning"
           showIcon
-          title="实时日志流已断开，已切换为轮询刷新"
+          title={t('execDetail.streamDisconnected')}
           style={{ marginBottom: 16 }}
           action={
             <Button
@@ -516,38 +522,38 @@ export default function ExecutionDetailPage() {
               icon={<SyncOutlined />}
               onClick={() => { setStreamDisconnected(false); setReconnectKey((k) => k + 1); refresh(); }}
             >
-              重新连接
+              {t('execDetail.reconnect')}
             </Button>
           }
         />
       )}
 
       {/* UI-05: 信息卡保留 Tab 外顶部——执行状态/耗时/执行器常驻视野 */}
-      <Card title="执行信息" style={{ marginBottom: 16 }}>
+      <Card title={t('execDetail.card.info')} style={{ marginBottom: 16 }}>
         <Descriptions column={UI09_DESCRIPTIONS_COLUMN} size="small">
-          <Descriptions.Item label="任务名">
+          <Descriptions.Item label={t('execDetail.field.taskName')}>
             <a onClick={() => nav(`/tasks/${taskId}`)}>{data?.taskName}</a>
           </Descriptions.Item>
-          <Descriptions.Item label="触发方式">
-            {TRIGGER_LABEL[data?.triggerType || ''] ?? data?.triggerType ?? '-'}
+          <Descriptions.Item label={t('execDetail.field.trigger')}>
+            {triggerLabels[data?.triggerType || ''] ?? data?.triggerType ?? '-'}
           </Descriptions.Item>
-          <Descriptions.Item label="执行节点">
+          <Descriptions.Item label={t('execDetail.field.executor')}>
             {data?.executorAddress ? (
               <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{data.executorAddress}</span>
             ) : '-'}
           </Descriptions.Item>
-          <Descriptions.Item label="任务版本">{data?.taskVersion || '-'}</Descriptions.Item>
-          <Descriptions.Item label="重试次数">{data?.retryCount ?? 0}</Descriptions.Item>
-          <Descriptions.Item label="开始时间">
+          <Descriptions.Item label={t('execDetail.field.taskVersion')}>{data?.taskVersion || '-'}</Descriptions.Item>
+          <Descriptions.Item label={t('execDetail.field.retryCount')}>{data?.retryCount ?? 0}</Descriptions.Item>
+          <Descriptions.Item label={t('execDetail.field.startTime')}>
             {data?.startTime ? formatDateTime(data.startTime) : '-'}
           </Descriptions.Item>
-          <Descriptions.Item label="结束时间">
+          <Descriptions.Item label={t('execDetail.field.endTime')}>
             {data?.endTime ? formatDateTime(data.endTime) : '-'}
           </Descriptions.Item>
-          <Descriptions.Item label="耗时">
-            {data?.duration != null ? formatDuration(data.duration) : '-'}
+          <Descriptions.Item label={t('execDetail.field.duration')}>
+            {data?.duration != null ? formatDuration(data.duration, t) : '-'}
           </Descriptions.Item>
-          <Descriptions.Item label="退出码">
+          <Descriptions.Item label={t('execDetail.field.exitCode')}>
             {data?.exitCode != null ? (
               <Text type={data.exitCode !== 0 ? 'danger' : undefined} code>
                 {data.exitCode}
@@ -559,7 +565,7 @@ export default function ExecutionDetailPage() {
               追加 <a href={`${TRACE_BASE_URL}/search?service=autoflow&tags=${encodeURIComponent(`traceId=${data.traceId}`)}`}>。
               复制出的 trace-id 可直接粘贴到 Jaeger/Tempo 检索框。 */}
           {data?.traceId && (
-            <Descriptions.Item label="追踪 ID">
+            <Descriptions.Item label={t('execDetail.field.traceId')}>
               <Space size={4}>
                 <Text code style={{ fontSize: 12 }} data-testid="execution-trace-id">
                   {data.traceId}
@@ -568,12 +574,12 @@ export default function ExecutionDetailPage() {
                   type="text"
                   size="small"
                   icon={<CopyOutlined />}
-                  aria-label="复制 traceId"
+                  aria-label={t('execDetail.copyTraceId')}
                   data-testid="copy-trace-id"
                   onClick={() => {
                     navigator.clipboard.writeText(data.traceId!).then(
-                      () => message.success('traceId 已复制'),
-                      () => message.error('复制失败'),
+                      () => message.success(t('execDetail.traceIdCopied')),
+                      () => message.error(t('execDetail.copyFail')),
                     );
                   }}
                 />
@@ -581,7 +587,7 @@ export default function ExecutionDetailPage() {
             </Descriptions.Item>
           )}
           {failureReason && (
-            <Descriptions.Item label="失败分类" span={UI09_DESCRIPTIONS_COLUMN}>
+            <Descriptions.Item label={t('execDetail.field.failureCategory')} span={UI09_DESCRIPTIONS_COLUMN}>
               <Space>
                 <Tag color={failureReason.color}>{failureReason.label}</Tag>
                 <Text type="secondary">{failureReason.hint}</Text>
@@ -589,7 +595,7 @@ export default function ExecutionDetailPage() {
             </Descriptions.Item>
           )}
           {data?.errorMessage && (
-            <Descriptions.Item label="错误信息" span={UI09_DESCRIPTIONS_COLUMN}>
+            <Descriptions.Item label={t('execDetail.field.errorMessage')} span={UI09_DESCRIPTIONS_COLUMN}>
               <Text type="danger">{data.errorMessage}</Text>
             </Descriptions.Item>
           )}
@@ -604,7 +610,7 @@ export default function ExecutionDetailPage() {
         items={[
           {
             key: 'logs',
-            label: <span data-testid="tab-label-logs">执行日志</span>,
+            label: <span data-testid="tab-label-logs">{t('execDetail.tab.logs')}</span>,
             children: (
               <>
                 {/* UI-05: 失败定位卡片——failed/timeout 时置顶日志 Tab */}
@@ -618,12 +624,12 @@ export default function ExecutionDetailPage() {
                     description={
                       <div>
                         <div style={{ marginBottom: 4 }}>
-                          <Text strong>建议动作：</Text>
+                          <Text strong>{t('execDetail.failureSuggestedAction')}</Text>
                           <Text>{runbookAction.action}</Text>
                         </div>
                         {data?.errorMessage && (
                           <div style={{ marginBottom: 4 }}>
-                            <Text strong>错误信息：</Text>
+                            <Text strong>{t('execDetail.failureErrorMessage')}</Text>
                             <Text type="danger">{data.errorMessage}</Text>
                           </div>
                         )}
@@ -631,7 +637,7 @@ export default function ExecutionDetailPage() {
                           <div data-testid="failure-runbook" style={{ marginTop: 8 }}>
                             <Space size={4}>
                               <BookOutlined />
-                              <Text strong>Runbook</Text>
+                              <Text strong>{t('execDetail.runbookTitle')}</Text>
                             </Space>
                             <pre
                               style={{
@@ -657,7 +663,7 @@ export default function ExecutionDetailPage() {
                           style={{ padding: 0, marginTop: 4 }}
                           onClick={() => handleTabChange('report')}
                         >
-                          查看 AI 分析与时间线
+                          {t('execDetail.viewAiTimeline')}
                         </Button>
                       </div>
                     }
@@ -665,29 +671,29 @@ export default function ExecutionDetailPage() {
                     action={
                       data?.status === 'failed' ? (
                         <Button size="small" danger icon={<RedoOutlined />} onClick={handleRetry} loading={retrying}>
-                          重新触发
+                          {t('execDetail.retrigger')}
                         </Button>
                       ) : undefined
                     }
                   />
                 )}
                 <Card
-                  title="执行日志"
+                  title={t('execDetail.log.title')}
                   className="ui09-log-toolbar-card"
                   styles={{ body: { paddingTop: 12 } }}
                   extra={
                     // UI-09：工具条 5 个控件最小宽 ~448px > 375px 卡头——窄屏
                     // 由 .ui09-log-toolbar-card 换行独占整行（见 index.css）
                     <Space wrap className="ui09-log-toolbar">
-                      {streaming && <Badge status="processing" text="实时推送" />}
+                      {streaming && <Badge status="processing" text={t('execDetail.log.live')} />}
                       {/* UI-05: 关键词搜索——前端对已加载行切分高亮，
                           防抖 300ms 生效；清空即恢复原渲染。 */}
                       <Input
                         size="small"
                         allowClear
                         prefix={<SearchOutlined />}
-                        placeholder="搜索日志关键词"
-                        aria-label="日志搜索"
+                        placeholder={t('execDetail.log.searchPlaceholder')}
+                        aria-label={t('execDetail.log.searchAria')}
                         // data-testid 落在真实 <input> 上（allowClear 时 Input
                         // 根节点会包一层 span，取根会拿不到输入元素）
                         data-testid="log-search-input"
@@ -702,13 +708,13 @@ export default function ExecutionDetailPage() {
                       <Select<LogLevelFilter>
                         size="small"
                         style={{ minWidth: 112 }}
-                        aria-label="日志级别过滤"
+                        aria-label={t('execDetail.log.levelFilterAria')}
                         value={levelFilter}
                         loading={loadingFilteredLogs}
                         disabled={loadingFilteredLogs}
                         onChange={handleLevelFilterChange}
                         options={[
-                          { value: LOG_LEVEL_FILTER_ALL, label: '全部级别' },
+                          { value: LOG_LEVEL_FILTER_ALL, label: t('execDetail.log.levelAll') },
                           ...LOG_LEVEL_VALUES.map((lv) => ({ value: lv, label: lv })),
                         ]}
                       />
@@ -720,10 +726,10 @@ export default function ExecutionDetailPage() {
                           // 过滤生效时复制过滤视图，"全部"时复制当前展示内容
                           // （可能含 SSE 流缓冲）。需要全量请切回"全部"后复制。
                           navigator.clipboard.writeText(displayLogs);
-                          message.success('已复制');
+                          message.success(t('execDetail.log.copied'));
                         }}
                       >
-                        复制
+                        {t('execDetail.log.copy')}
                       </Button>
                       <Button
                         size="small"
@@ -741,7 +747,7 @@ export default function ExecutionDetailPage() {
                           URL.revokeObjectURL(url);
                         }}
                       >
-                        下载
+                        {t('execDetail.log.download')}
                       </Button>
                     </Space>
                   }
@@ -750,8 +756,8 @@ export default function ExecutionDetailPage() {
                     <Alert
                       type="warning"
                       showIcon
-                      title="日志已截断：回调载荷超过执行器上报上限，当前仅保留了截断片段"
-                      description="可从执行器侧持久化的全量日志分页加载完整内容；若仍失败请检查执行器可达性与本地日志文件。"
+                      title={t('execDetail.log.truncatedTitle')}
+                      description={t('execDetail.log.truncatedDesc')}
                       style={{ marginBottom: 12 }}
                       action={
                         <Button
@@ -760,7 +766,7 @@ export default function ExecutionDetailPage() {
                           loading={loadingFullLogs}
                           onClick={handleLoadFullLogs}
                         >
-                          加载完整日志
+                          {t('execDetail.log.loadFull')}
                         </Button>
                       }
                     />
@@ -770,8 +776,8 @@ export default function ExecutionDetailPage() {
                     <Alert
                       type="info"
                       showIcon
-                      title={`无 ${levelFilter} 级别日志`}
-                      description="当前执行未匹配到该级别的日志行，切换为全部级别可查看完整日志。"
+                      title={t('execDetail.log.noLevelLogs', { level: levelFilter })}
+                      description={t('execDetail.log.noLevelLogsDesc')}
                       style={{ marginBottom: 12 }}
                     />
                   )}
@@ -779,7 +785,7 @@ export default function ExecutionDetailPage() {
                     <Alert
                       type="info"
                       showIcon
-                      title={`未找到匹配「${activeKeyword}」的日志内容`}
+                      title={t('execDetail.log.noSearchHit', { keyword: activeKeyword })}
                       style={{ marginBottom: 12 }}
                     />
                   )}
@@ -813,12 +819,12 @@ export default function ExecutionDetailPage() {
           },
           {
             key: 'report',
-            label: <span data-testid="tab-label-report"><FieldTimeOutlined /> 时间线·报告</span>,
+            label: <span data-testid="tab-label-report"><FieldTimeOutlined /> {t('execDetail.tab.report')}</span>,
             children: (
               <>
                 {data?.aiAnalysis && (
                   <Card
-                    title="🤖 AI 故障分析"
+                    title={t('execDetail.report.aiAnalysisTitle')}
                     style={{ borderColor: '#1677ff', marginBottom: 16 }}
                     styles={{ header: { background: 'linear-gradient(90deg, #e6f7ff, #f0f5ff)', color: '#1677ff' } }}
                   >
@@ -840,21 +846,21 @@ export default function ExecutionDetailPage() {
           },
           {
             key: 'retry',
-            label: <span data-testid="tab-label-retry">重试链</span>,
+            label: <span data-testid="tab-label-retry">{t('execDetail.tab.retry')}</span>,
             children: (
               <>
                 {/* CORE-02: 重试链 Card 原样迁入（构建逻辑/展示字段零改动） */}
                 {retryChain.length > 0 && (
                   <Card
-                    title="重试链路"
+                    title={t('execDetail.retry.chainTitle')}
                     style={{ marginBottom: 16 }}
                     extra={
                       taskMaxRetry > 0 ? (
                         <Tag>
-                          重试预算：Attempt #{(data?.retryCount ?? 0) + 1} of {taskMaxRetry + 1}
+                          {t('execDetail.retry.budget', { attempt: (data?.retryCount ?? 0) + 1, total: taskMaxRetry + 1 })}
                           {taskMaxRetry - (data?.retryCount ?? 0) > 0
-                            ? `（剩余 ${taskMaxRetry - (data?.retryCount ?? 0)} 次重试）`
-                            : '（预算已耗尽）'}
+                            ? t('execDetail.retry.remaining', { count: taskMaxRetry - (data?.retryCount ?? 0) })
+                            : t('execDetail.retry.exhausted')}
                         </Tag>
                       ) : undefined
                     }
@@ -874,18 +880,18 @@ export default function ExecutionDetailPage() {
                       >
                         <Tag color={RETRY_STATUS_COLOR[link.status] || 'default'}>Attempt #{link.retryCount}</Tag>
                         {link.execId === data?.id ? (
-                          <Text strong>当前执行</Text>
+                          <Text strong>{t('execDetail.retry.currentExec')}</Text>
                         ) : (
                           <a onClick={() => nav(`/tasks/${taskId}/executions/${link.execId}`)}>
                             {link.execId.slice(0, 8)}…
                           </a>
                         )}
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          {link.triggerType ? TRIGGER_LABEL[link.triggerType] ?? link.triggerType : '-'}
+                          {link.triggerType ? triggerLabels[link.triggerType] ?? link.triggerType : '-'}
                           {link.executorAddress ? ` · ${link.executorAddress}` : ''}
                         </Text>
                         {link.failureReason && (
-                          <Tag>{FAILURE_REASON_MAP[link.failureReason]?.label ?? link.failureReason}</Tag>
+                          <Tag>{failureReasonMap[link.failureReason]?.label ?? link.failureReason}</Tag>
                         )}
                         {link.errorMessage && (
                           <Text type="danger" style={{ fontSize: 12 }} ellipsis>
@@ -899,21 +905,20 @@ export default function ExecutionDetailPage() {
                         type="info"
                         showIcon
                         style={{ marginTop: 12 }}
-                        title={`存在等待中的重试执行（Attempt #${pendingRetry.retryCount}）——按 retryDelay 指数退避+jitter 排队，到点自动开跑。`}
+                        title={t('execDetail.retry.pendingAlert', { attempt: pendingRetry.retryCount })}
                       />
                     )}
                   </Card>
                 )}
                 {retryChain.length === 0 && (
                   <Card>
-                    <Text type="secondary">本执行无关联的重试链（原始尝试，或兄弟执行行尚未拉取）。</Text>
+                    <Text type="secondary">{t('execDetail.retry.empty')}</Text>
                   </Card>
                 )}
                 {taskMaxRetry > 0 && (
                   <Card size="small">
                     <Text type="secondary">
-                      手动提前重试：任务详情页的「立即触发」可不经退避等待直接触发一次新执行
-                      （POST /tasks/:id/trigger 既有端点）。
+                      {t('execDetail.retry.manualHint')}
                     </Text>
                   </Card>
                 )}
@@ -922,10 +927,10 @@ export default function ExecutionDetailPage() {
           },
           {
             key: 'context',
-            label: <span data-testid="tab-label-context"><AppstoreOutlined /> 参数与产物</span>,
+            label: <span data-testid="tab-label-context"><AppstoreOutlined /> {t('execDetail.tab.context')}</span>,
             children: (
               <>
-                <Card title="执行参数（任务默认参数快照）" style={{ marginBottom: 16 }}>
+                <Card title={t('execDetail.context.paramsTitle')} style={{ marginBottom: 16 }}>
                   {taskData?.params && Object.keys(taskData.params).length > 0 ? (
                     // UI-09：参数 Tag 含长 URL/无空格值时 nowrap（antd Tag 默认）
                     // 会撑到上千像素——窄屏由 .ui09-param-tag 换行折行兜底
@@ -937,13 +942,13 @@ export default function ExecutionDetailPage() {
                       ))}
                     </div>
                   ) : (
-                    <Text type="secondary">本任务未配置默认参数（params）。</Text>
+                    <Text type="secondary">{t('execDetail.context.paramsEmpty')}</Text>
                   )}
                   {taskData?.runbook && (
                     <div style={{ marginTop: 12 }}>
                       <Space size={4}>
                         <BookOutlined />
-                        <Text strong>任务 Runbook</Text>
+                        <Text strong>{t('execDetail.context.runbookTitle')}</Text>
                       </Space>
                       <pre
                         style={{
@@ -965,7 +970,7 @@ export default function ExecutionDetailPage() {
                 </Card>
                 {/* FEAT-05 UI 半场（003）：产物列表组件单点接入——
                     空清单整段不渲染（组件内 return null），故外层不包空态。 */}
-                <Card title="执行产物">
+                <Card title={t('execDetail.context.artifactsTitle')}>
                   <ArtifactsList execId={execId!} />
                 </Card>
               </>

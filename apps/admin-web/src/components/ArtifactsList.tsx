@@ -10,6 +10,8 @@
 import { useState } from 'react';
 import { Button, List, Space, Spin, Typography, message } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
+import '../i18n';
 import { artifactsApi, ExecutionArtifact } from '../api/artifacts';
 import { useExecutionArtifacts } from '../api/queries';
 import { getErrMsg } from '../utils/error';
@@ -23,6 +25,7 @@ interface ArtifactsListProps {
 }
 
 export default function ArtifactsList({ execId, artifacts }: ArtifactsListProps) {
+  const { t } = useTranslation();
   const [busyName, setBusyName] = useState<string | null>(null);
 
   // 外部未提供清单时才自取数，避免与上层重复请求。
@@ -41,7 +44,7 @@ export default function ArtifactsList({ execId, artifacts }: ArtifactsListProps)
     try {
       await artifactsApi.downloadArtifact(execId, name);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, '产物下载失败'));
+      message.error(getErrMsg(err, t('artifacts.downloadFail')));
     } finally {
       setBusyName(null);
     }
@@ -62,7 +65,7 @@ export default function ArtifactsList({ execId, artifacts }: ArtifactsListProps)
   return (
     <div>
       <Typography.Text strong style={{ fontSize: 13 }}>
-        产物（{list.length}）
+        {t('artifacts.title', { count: list.length })}
       </Typography.Text>
       <List
         size="small"
@@ -76,12 +79,12 @@ export default function ArtifactsList({ execId, artifacts }: ArtifactsListProps)
                 type="link"
                 size="small"
                 icon={<DownloadOutlined />}
-                aria-label={`下载产物 ${a.name}`}
+                aria-label={t('artifacts.downloadAria', { name: a.name })}
                 loading={busyName === a.name}
                 disabled={busyName !== null && busyName !== a.name}
                 onClick={() => handleDownload(a.name)}
               >
-                下载
+                {t('artifacts.download')}
               </Button>,
             ]}
           >

@@ -428,7 +428,8 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
   // CORE-04: 超时策略分级——timeoutAction（三动作枚举）与 timeoutWarnRatio
   // （0-90 整数）。UpdateTaskDto 经 PartialType 继承同一校验器。PATCH 语义
   // 同 N28 家族：缺省 = 保留旧值；显式 null = 回缺省 kill / 关闭预警。
-  describe("timeout policy validation (CORE-04)", () => {    it("accepts each of the three timeout actions", async () => {
+  describe("timeout policy validation (CORE-04)", () => {
+    it("accepts each of the three timeout actions", async () => {
       for (const action of ["kill", "kill_retry", "notify_only"]) {
         const result = await validateCreate({
           name: "t1",

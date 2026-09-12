@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { Card, Table, Tag, Button, Space, Typography, Row, Col, Statistic, Modal, message } from 'antd';
+import { useTranslation } from 'react-i18next';
+import '../i18n';
 import { TaskExecution } from '../api/tasks';
 
 const { Text } = Typography;
@@ -44,11 +46,12 @@ interface ExecutionCompareModalProps {
  * 独立自带的旧入口（default export）保留兼容。
  */
 export function ExecutionCompareModal({ open, onClose, executions, compareIds }: ExecutionCompareModalProps) {
+  const { t } = useTranslation();
   const selectedExecutions = executions.filter(e => compareIds.includes(e.id));
   if (selectedExecutions.length === 0) return null;
 
   const cols = [
-    { title: '指标', dataIndex: 'metric', key: 'metric' },
+    { title: t('execCompare.col.metric'), dataIndex: 'metric', key: 'metric' },
     ...compareIds.map(id => {
       const exec = selectedExecutions.find(e => e.id === id);
       return {
@@ -77,22 +80,22 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
   ];
 
   const rows = [
-    { metric: '状态', key: 'status' },
-    { metric: '触发方式', key: 'triggerType' },
-    { metric: '任务版本', key: 'taskVersion' },
-    { metric: '重试次数', key: 'retryCount' },
-    { metric: '开始时间', key: 'startTime' },
-    { metric: '结束时间', key: 'endTime' },
-    { metric: '耗时', key: 'duration' },
-    { metric: '参数', key: 'params' },
-    { metric: '退出码', key: 'exitCode' },
-    { metric: '失败分类', key: 'failureReason' },
-    { metric: '错误信息', key: 'errorMessage' },
+    { metric: t('execCompare.metric.status'), key: 'status' },
+    { metric: t('execCompare.metric.triggerType'), key: 'triggerType' },
+    { metric: t('execCompare.metric.taskVersion'), key: 'taskVersion' },
+    { metric: t('execCompare.metric.retryCount'), key: 'retryCount' },
+    { metric: t('execCompare.metric.startTime'), key: 'startTime' },
+    { metric: t('execCompare.metric.endTime'), key: 'endTime' },
+    { metric: t('execCompare.metric.duration'), key: 'duration' },
+    { metric: t('execCompare.metric.params'), key: 'params' },
+    { metric: t('execCompare.metric.exitCode'), key: 'exitCode' },
+    { metric: t('execCompare.metric.failureReason'), key: 'failureReason' },
+    { metric: t('execCompare.metric.errorMessage'), key: 'errorMessage' },
   ];
 
   return (
     <Modal
-      title="执行对比"
+      title={t('execCompare.title')}
       open={open}
       onCancel={onClose}
       footer={null}
@@ -101,13 +104,13 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
       <Row gutter={16} style={{ marginBottom: 16 }}>
         {selectedExecutions.map((exec, idx) => (
           <Col span={24 / selectedExecutions.length} key={exec.id}>
-            <Card size="small" title={`执行 ${idx + 1}`}>
+            <Card size="small" title={t('execCompare.execTitle', { idx: idx + 1 })}>
               <Statistic
-                title="状态"
+                title={t('execCompare.stat.status')}
                 value={exec.status}
                 styles={{ content: { color: exec.status === 'success' ? '#3f8600' : exec.status === 'failed' ? '#cf1322' : '#1890ff', fontSize: 16 } }}
               />
-              <Statistic title="耗时" value={exec.duration ?? 0} suffix="ms" />
+              <Statistic title={t('execCompare.stat.duration')} value={exec.duration ?? 0} suffix="ms" />
             </Card>
           </Col>
         ))}
@@ -118,19 +121,20 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
 }
 
 export default function ExecutionCompare({ executions }: ExecutionCompareProps) {
+  const { t } = useTranslation();
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [compareOpen, setCompareOpen] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
 
   const columns = [
-    { title: '执行ID', dataIndex: 'id', key: 'id', width: 280, render: (v: string) => <Text copyable={{ text: v }}>{v.slice(0, 8)}...</Text> },
-    { title: '状态', dataIndex: 'status', key: 'status', render: (v: string) => {
+    { title: t('execCompare.table.id'), dataIndex: 'id', key: 'id', width: 280, render: (v: string) => <Text copyable={{ text: v }}>{v.slice(0, 8)}...</Text> },
+    { title: t('execCompare.table.status'), dataIndex: 'status', key: 'status', render: (v: string) => {
       const color = v === 'success' ? 'green' : v === 'failed' ? 'red' : v === 'running' ? 'blue' : 'default';
       return <Tag color={color}>{v}</Tag>;
     }},
-    { title: '触发方式', dataIndex: 'triggerType', key: 'triggerType' },
-    { title: '开始时间', dataIndex: 'startTime', key: 'startTime', render: (v: string) => v ? new Date(v).toLocaleString() : '-' },
-    { title: '耗时(ms)', dataIndex: 'duration', key: 'duration', render: (v: number) => v ?? '-' },
+    { title: t('execCompare.table.triggerType'), dataIndex: 'triggerType', key: 'triggerType' },
+    { title: t('execCompare.table.startTime'), dataIndex: 'startTime', key: 'startTime', render: (v: string) => v ? new Date(v).toLocaleString() : '-' },
+    { title: t('execCompare.table.duration'), dataIndex: 'duration', key: 'duration', render: (v: number) => v ?? '-' },
   ];
 
   const rowSelection = {
@@ -140,11 +144,11 @@ export default function ExecutionCompare({ executions }: ExecutionCompareProps) 
 
   const handleCompare = () => {
     if (selectedIds.length < 2) {
-      message.warning('请选择至少2条执行记录进行对比');
+      message.warning(t('execCompare.minSelect'));
       return;
     }
     if (selectedIds.length > COMPARE_MAX) {
-      message.warning(`最多对比${COMPARE_MAX}条执行记录`);
+      message.warning(t('execCompare.maxCompare', { max: COMPARE_MAX }));
       return;
     }
     setCompareIds(selectedIds);
@@ -154,9 +158,9 @@ export default function ExecutionCompare({ executions }: ExecutionCompareProps) 
   return (
     <>
       <Space style={{ marginBottom: 16 }}>
-        <Button onClick={() => setSelectedIds([])}>清除选择</Button>
+        <Button onClick={() => setSelectedIds([])}>{t('execCompare.clearSelection')}</Button>
         <Button type="primary" disabled={selectedIds.length < 2} onClick={handleCompare}>
-          对比 {selectedIds.length > 0 ? `(${selectedIds.length})` : ''}
+          {t('execCompare.compare')} {selectedIds.length > 0 ? `(${selectedIds.length})` : ''}
         </Button>
       </Space>
 

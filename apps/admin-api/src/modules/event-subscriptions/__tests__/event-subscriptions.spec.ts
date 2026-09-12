@@ -22,6 +22,7 @@ import { EventSubscriptionService } from "../event-subscription.service";
 import {
   OutboundEventDispatcher,
   OutboundEventDispatcher as Dispatcher,
+  OUTBOX_DISPATCHER_TOKEN,
 } from "../outbound-event-dispatcher.service";
 import {
   MAX_DELIVERY_ATTEMPTS,
@@ -229,15 +230,104 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
     expect(axiosPost).not.toHaveBeenCalled();
   });
 
+  // FEAT-19 补强：快速路径与 outbox 兜底行的收口语义。
+  // 背景：事件到达既走内存快速路径、又落 outbox 兜底行；兜底行只有被收口或由
+  // 补投扫描投递后才结清——不收口就是**每次成功事件都必然被再投一遍**。
+  describe("快速路径收口 outbox 行", () => {
+    const outboxMock = {
+      enqueue: jest.fn().mockResolvedValue("row-1"),
+      markFastPathDelivered: jest.fn().mockResolvedValue(true),
+    };
+
+    /** 用带 outbox 令牌的独立 testing module（默认模块刻意不提供该令牌）。 */
+    async function makeWithOutbox(): Promise<Dispatcher> {
+      const mod = await Test.createTestingModule({
+        providers: [
+          OutboundEventDispatcher,
+          DomainEventBus,
+          { provide: EventSubscriptionService, useValue: subServiceMock },
+          {
+            provide: getRepositoryToken(EventSubscription),
+            useValue: subRepoMock,
+          },
+          {
+            provide: getRepositoryToken(EventSubscriptionDeadLetter),
+            useValue: dlRepoMock,
+          },
+          { provide: OUTBOX_DISPATCHER_TOKEN, useValue: outboxMock },
+        ],
+      }).compile();
+      const d = mod.get(OutboundEventDispatcher);
+      d.onModuleInit();
+      return d;
+    }
+
+    beforeEach(() => {
+      outboxMock.enqueue.mockReset().mockResolvedValue("row-1");
+      outboxMock.markFastPathDelivered.mockReset().mockResolvedValue(true);
+    });
+
+    it("全部订阅投递成功 → 收口该 outbox 行（不再等补投扫描，重复投递收敛）", async () => {
+      subRepoMock.find.mockResolvedValue([makeSub()]);
+      axiosPost.mockResolvedValue({ status: 200 });
+      const d = await makeWithOutbox();
+      try {
+        // 直接 await 私有 dispatch：整条链路（enqueue → 扇出 → 收口）确定性收敛，
+        // 不依赖微任务计数的时序假设。
+        await (
+          d as unknown as { dispatch: (e: string, p: unknown) => Promise<void> }
+        ).dispatch(DOMAIN_EVENTS.EXECUTION_FAILED, { executionId: "e9" });
+        expect(outboxMock.enqueue).toHaveBeenCalled();
+        expect(outboxMock.markFastPathDelivered).toHaveBeenCalledWith("row-1");
+      } finally {
+        d.onModuleDestroy();
+      }
+    });
+
+    it("有订阅终败（死信）→ **不**收口（该行必须留给扫描重试）", async () => {
+      subRepoMock.find.mockResolvedValue([makeSub()]);
+      axiosPost.mockRejectedValue(new Error("hook 500"));
+      const d = await makeWithOutbox();
+      try {
+        // 直接 await 私有 dispatch：整条链路（enqueue → 扇出 → 收口）确定性收敛，
+        // 不依赖微任务计数的时序假设。
+        await (
+          d as unknown as { dispatch: (e: string, p: unknown) => Promise<void> }
+        ).dispatch(DOMAIN_EVENTS.EXECUTION_FAILED, { executionId: "e9" });
+        expect(outboxMock.markFastPathDelivered).not.toHaveBeenCalled();
+      } finally {
+        d.onModuleDestroy();
+      }
+    });
+
+    it("enqueue 落库失败（返回 null）→ 不触发收口且不外抛", async () => {
+      subRepoMock.find.mockResolvedValue([makeSub()]);
+      axiosPost.mockResolvedValue({ status: 200 });
+      outboxMock.enqueue.mockResolvedValue(null);
+      const d = await makeWithOutbox();
+      try {
+        // 直接 await 私有 dispatch：整条链路（enqueue → 扇出 → 收口）确定性收敛，
+        // 不依赖微任务计数的时序假设。
+        await (
+          d as unknown as { dispatch: (e: string, p: unknown) => Promise<void> }
+        ).dispatch(DOMAIN_EVENTS.EXECUTION_FAILED, { executionId: "e9" });
+        expect(outboxMock.markFastPathDelivered).not.toHaveBeenCalled();
+      } finally {
+        d.onModuleDestroy();
+      }
+    });
+  });
+
   it("deliverToSubscribers：全成功返回目标/成功聚合", async () => {
     subRepoMock.find.mockResolvedValue([
       makeSub(),
       makeSub({ id: "33333333-3333-4333-8333-333333333333" }),
     ]);
-    const result = await dispatcher.deliverToSubscribers(
-      "execution.failed",
-      { event: "execution.failed", occurredAt: "t", data: {} },
-    );
+    const result = await dispatcher.deliverToSubscribers("execution.failed", {
+      event: "execution.failed",
+      occurredAt: "t",
+      data: {},
+    });
     expect(result).toEqual({
       targetCount: 2,
       deliveredCount: 2,
@@ -247,7 +337,9 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
   });
 
   it("deliverToSubscribers：无目标返回零聚合", async () => {
-    subRepoMock.find.mockResolvedValue([makeSub({ eventTypes: ["executor.offline"] })]);
+    subRepoMock.find.mockResolvedValue([
+      makeSub({ eventTypes: ["executor.offline"] }),
+    ]);
     await expect(
       dispatcher.deliverToSubscribers("execution.failed", {
         event: "execution.failed",
@@ -290,11 +382,14 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
     try {
       subRepoMock.find.mockResolvedValue([makeSub()]);
       axiosPost.mockRejectedValue(new Error("down"));
-      const resultPromise = dispatcher.deliverToSubscribers("execution.failed", {
-        event: "execution.failed",
-        occurredAt: "t",
-        data: {},
-      });
+      const resultPromise = dispatcher.deliverToSubscribers(
+        "execution.failed",
+        {
+          event: "execution.failed",
+          occurredAt: "t",
+          data: {},
+        },
+      );
       await jest.runAllTimersAsync();
       await expect(resultPromise).resolves.toEqual({
         targetCount: 1,
@@ -313,11 +408,14 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
       subRepoMock.find.mockResolvedValue([makeSub()]);
       axiosPost.mockRejectedValue(new Error("down"));
       dlRepoMock.save.mockRejectedValueOnce(new Error("dead letter db down"));
-      const resultPromise = dispatcher.deliverToSubscribers("execution.failed", {
-        event: "execution.failed",
-        occurredAt: "t",
-        data: {},
-      });
+      const resultPromise = dispatcher.deliverToSubscribers(
+        "execution.failed",
+        {
+          event: "execution.failed",
+          occurredAt: "t",
+          data: {},
+        },
+      );
       await jest.runAllTimersAsync();
       await expect(resultPromise).resolves.toEqual({
         targetCount: 1,
