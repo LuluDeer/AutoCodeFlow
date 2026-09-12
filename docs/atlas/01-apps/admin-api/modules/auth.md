@@ -1,0 +1,83 @@
+# auth 模块 — 认证（登录 / JWT / refresh token / TOTP）
+
+> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/auth
+
+## 职责
+
+用户名密码登录、JWT access/refresh 双 token 签发与轮换、refresh token 持久化与吊销、TOTP 两步验证（2FA）、登录会话（session）管理。是全平台唯一签发用户凭证的模块。
+
+## 目录结构与关键文件
+
+```
+modules/auth/
+├── auth.module.ts            装配：PassportModule + JwtModule + UsersModule + AuditModule
+├── auth.controller.ts        @Controller("auth") 全部路由
+├── auth.service.ts           登录/刷新/TOTP/会话核心逻辑
+├── strategies/jwt.strategy.ts  passport-jwt 策略（全局 JwtAuthGuard 的底层）
+├── totp.util.ts              generateTotpSecret / totpVerify / buildOtpauthUrl
+├── entities/refresh-token.entity.ts  refresh_tokens 表（jti 唯一索引）
+└── dto/                      login / refresh-token / totp / revoke-session DTO
+```
+
+## 路由（controller 前缀 `auth`，实际路径带全局前缀 `/api/auth`）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | `/login` | `@Public()`，限流 `LOGIN_THROTTLE_LIMIT`（默认 20/min） | 返回 `{accessToken, refreshToken}`；TOTP 用户返回 `{totpRequired: true}` |
+| POST | `/refresh` | `@Public()`，严格档 AUTH_THROTTLE（默认 10/min） | token 轮换：旧 refresh token 先吊销再签发新对 |
+| POST | `/logout` | JWT | 吊销该用户全部 refresh token |
+| GET | `/profile` | JWT | 当前用户信息 |
+| POST | `/totp/setup` `/totp/enable` `/totp/disable` | JWT | 2FA 暂存/激活/关闭 |
+| POST | `/totp/verify` | `@Public()` | 2FA 第二因子登录（重新验密码 + 验码） |
+| GET | `/sessions` | JWT | 我的活跃会话列表（当前会话标记 `current`） |
+| DELETE | `/sessions/:id` | JWT | 吊销单个会话 |
+| POST | `/sessions/revoke-others` | JWT | 吊销除当前外的全部会话 |
+
+## 关键机制
+
+### token 模型（auth.service.generateTokens）
+
+```
+access token   : {sub, username, type:"access", sid:<jti>}  签名密钥 JWT_SECRET，
+                 有效期 JWT_EXPIRES_IN（默认 15m）
+refresh token  : {sub, username, type:"refresh", jti:<uuid>} 独立密钥 JWT_REFRESH_SECRET，
+                 有效期固定 30d；同一 jti 落库 refresh_tokens 表（revoked=false）
+轮换（refreshToken）: 用 JWT_REFRESH_SECRET 验签 → 要求 type=refresh 且必须有 jti
+                 → UPDATE refresh_tokens SET revoked=true（受影响 0 行 = 已吊销，401）
+                 → 校验用户仍 active → 签发新 token 对（DR-07：先消费后签发，fail-closed）
+```
+
+- access token 的 `sid` claim 就是本次登录的 refresh token jti，会话接口据此标记当前会话（SEC-03）。
+- `JwtStrategy.validate()` 强制 `type === "access"`，refresh token 无法冒充 access token；SSE 路由（`/logs/stream`、`/metrics/stream`、`/executions/stream`）允许 `?access_token=` 查询参数兜底（EventSource 无法带 Header）。
+- 每日 03:00 `@Cron` 清理过期 refresh token 行（`cleanupExpiredTokens`）。
+
+### 登录防爆破（与 users 模块联动）
+
+1. 锁定检查：`lockedUntil > now` 直接 401（不付 bcrypt 成本）。
+2. 未知用户也比对预计算的 `DUMMY_BCRYPT_HASH`（F-4，防用户名枚举的时序侧信道）。
+3. 失败计数：`UsersService.recordLoginFailure`（原子 UPDATE + RETURNING），5 次失败锁 15 分钟；成功登录 `resetLoginFailure`；锁过期后 `clearExpiredLock` 单条条件 UPDATE 清零（R10，防止"过期后一次失败即永久再锁"）。
+
+### TOTP（totp.util + user 实体字段）
+
+`setup` 只暂存 secret（`totpEnabled=false`）→ `enable` 验证一次有效码激活 → 登录返回 `{totpRequired:true}` 后调 `/totp/verify`（重新验证密码 + 验码，不能绕过锁定）→ `disable` 需要密码或有效 TOTP 码，仅凭 access token 不能关 2FA。
+
+## 与其他模块的关系
+
+- **依赖 [users.md](users.md)**：`UsersModule`（查用户、锁定计数、`saveUser` 持久化 TOTP 字段）。
+- **依赖 [audit.md](audit.md)**：login/logout/会话吊销写审计（fail-open）。
+- **被全局 guard 依赖**：`JwtStrategy` 是全局 `JwtAuthGuard`（common/guards）的 passport 底层；本模块 `exports: [AuthService, JwtModule]`。
+- **被 [admin-web](../../..) 前端消费**：登录页/令牌刷新/会话管理页面的后端。
+
+## 常见改动场景
+
+- **加一个新的登录后动作（如最后登录时间）**：改 `auth.service.login()` 成功路径；不要在 controller 里加——审计与锁定逻辑都在 service。
+- **调整 token 有效期**：access 走 `JWT_EXPIRES_IN`（env，Joi 默认 15m）；refresh 的 30d 硬编码在 `generateTokens`（两处：JWT `expiresIn` 与 `expiresAt` 落库），改时两处同步。
+- **加新的 auth 路由**：敏感写面挂 `@Throttle({ default: AUTH_THROTTLE })`（`src/config/throttle-profiles.ts`），新 scope/档位先看该文件分域矩阵；同时更新 [../../05-interfaces/README.md](../../../05-interfaces/README.md)（规划中）。
+- **给 user 实体加字段**：注意 [users.md](users.md) 的 User 实体 + 迁移（`npm run migration:generate`），`@Exclude()` 字段不会出现在任何响应。
+
+## 相关文档
+
+- 用户管理：[users.md](users.md)；API Key（另一条凭证线）：[api-keys.md](api-keys.md)
+- 审计：[audit.md](audit.md)；全局 guard 机制见 [../README.md](../README.md)
+- 安全模型全图：[../../04-flows/security-model.md](../../../04-flows/security-model.md)
+- 接口地图：[../../05-interfaces/README.md](../../../05-interfaces/README.md)（规划中）
