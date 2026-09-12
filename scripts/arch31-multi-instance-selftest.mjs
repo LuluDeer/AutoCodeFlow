@@ -338,7 +338,10 @@ function summary() {
   const failed = results.filter((r) => r.pass === false).length;
   const skipped = results.filter((r) => r.pass === null).length;
   console.log(`\n══ 汇总：${passed} 通过 / ${failed} 失败 / ${skipped} 跳过 ══`);
-  process.exitCode = failed > 0 ? 1 : 0;
+  // 显式退出：脚本里留着 http server / 子进程管道等句柄，只设 exitCode 时事件
+  // 循环可能不空（实测出现过脚本跑完仍挂 5h、连带子进程占端口），cleanup 由
+  // 'exit' 钩子统一执行。
+  process.exit(failed > 0 ? 1 : 0);
 }
 
 function cleanup() {
