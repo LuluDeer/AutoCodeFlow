@@ -577,6 +577,40 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     return id;
   }
 
+  /**
+   * ARCH-31/FEAT-01: 把「由 API 直接落库」的静默行同步进内存热路径。
+   *
+   * `POST /notification/silences` 此前只经 NotificationSilenceService 写 DB，
+   * 从不喂给 `isSilenced` 读的内存 Map——**规则要等进程重启回灌才生效**（单
+   * 实例亦然，属既存缺陷）。管理台创建后立刻 adopt，本实例即时生效；其余
+   * 实例在一个读穿刷新周期内生效。
+   */
+  adoptPersistedSilence(row: {
+    id: string;
+    scope: string;
+    channelType: string | null;
+    applicationId: string | null;
+    taskId: string | null;
+    level: string | null;
+    reason: string | null;
+    startTime: Date | null;
+    endTime: Date | null;
+    durationMinutes: number | null;
+    createdAt: Date;
+  }): AlertSilence {
+    const silence = this.mapSilenceRow(row);
+    this.silences.set(row.id, silence);
+    return silence;
+  }
+
+  /**
+   * ARCH-31: 只清内存态（用于 `DELETE /notification/silences/:id` 的双删——
+   * DB 行由 NotificationSilenceService 负责，这里避免重复删库）。
+   */
+  forgetSilence(id: string): boolean {
+    return this.silences.delete(id);
+  }
+
   removeSilence(id: string): boolean {
     // FEAT-01: 内存 + DB 双删（DB 删除失败不阻断内存语义）
     if (this.silenceStore) {
