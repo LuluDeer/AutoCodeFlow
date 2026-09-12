@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.1.1...v1.2.0) (2026-09-12)
+
+
+### 说明
+
+* **lockstep 版本对齐**：本包本轮无行为变更，按 DOC-05 三包 lockstep 纪律与 `autocodeflow-mcp-server` / `@autocodeflow/sdk` 同版本发布（本轮实际变更源为 MCP server 新增 DEP-04 部署审批工具组）。
+
 ## [1.1.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.1.0...v1.1.1) (2026-09-11)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.1.1...v1.2.0) (2026-09-12)
+
+
+### Features
+
+* **mcp:** expose DEP-04 deployment approval tools (list_pending_approvals/approve/reject/cancel) ([5e0e3b4](https://github.com/LuluDeer/AutoCodeFlow/commit/5e0e3b4d96a72c230c5f6f5e05893c686f175750))
+
 ## [1.1.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.1.0...v1.1.1) (2026-09-11)
 
 
