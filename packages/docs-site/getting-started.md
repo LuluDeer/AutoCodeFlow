@@ -12,7 +12,7 @@ AutoCodeFlow 的任务脚本由执行器以子进程运行：执行器注入环�
 ### 1. 安装
 
 ```bash
-pip install autoflow-sdk          # 当前 1.1.1，要求 Python ≥ 3.9
+pip install autoflow-sdk          # 当前 1.2.0，要求 Python ≥ 3.9
 # 或仓库内源码：pip install -e packages/autoflow-sdk
 ```
 
@@ -54,7 +54,7 @@ python tasks/fetch_data.py       # 未注入回调凭证 → 走降级分支
 ### 1. 安装
 
 ```bash
-npm install @autocodeflow/sdk    # 当前 1.1.1，要求 Node ≥ 18
+npm install @autocodeflow/sdk    # 当前 1.2.0，要求 Node ≥ 18
 ```
 
 平台任务形态下无需手工安装：entrypoint（打包）任务在

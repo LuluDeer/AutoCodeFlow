@@ -1,5 +1,5 @@
 {
-  "packages/autocodeflow-node-sdk": "1.1.1",
+  "packages/autocodeflow-node-sdk": "1.2.0",
   "packages/mcp-server": "1.2.0",
-  "packages/autoflow-sdk": "1.1.1"
+  "packages/autoflow-sdk": "1.2.0"
 }
