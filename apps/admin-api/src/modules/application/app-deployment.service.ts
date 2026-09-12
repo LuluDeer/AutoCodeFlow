@@ -1981,17 +1981,57 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         role: "promoted",
       });
       batch.promotedIds = batch.promotedIds.filter((x) => x !== deployment.id);
-      if (batch.promotedIds.length === 0) this.finishBatch(batch.applicationId);
+      if (batch.promotedIds.length === 0)
+        await this.finishBatch(batch.applicationId);
     }
   }
 
-  /** 提升轮结束：清批次内存态（行上 promoted 痕迹保留供读面）。 */
-  private finishBatch(appId: string): void {
+  /** 提升轮结束：清批次内存态 + **行态收口**（行上 promoted 痕迹保留供读面）。 */
+  private async finishBatch(appId: string): Promise<void> {
     const batch = this.rolloutBatches.get(appId);
     if (!batch) return;
     this.clearBatchTimers(batch);
     this.rolloutBatches.delete(appId);
+    // ARCH-31 真机验证抓到的缺陷（跨实例灰度套件）：此前只清内存态，canary
+    // 命中台的行**永远停在 probing**——①findInFlightRolloutRows 因此把该应用
+    // 永久判定为「有批次在途」，后续任何 canary 都被互斥挡死（blockedReason
+    // 一直存在）；②滚动重启时 sweep 会把这条陈旧在途行误标 failed（噪音）。
+    // 收口为 promoted（终态），只动 pending/probing，不覆盖 failed/rolled_back
+    // 的真实失败痕迹。
+    await this.settleRolloutRows(
+      [...batch.upgradedIds, ...batch.promotedIds],
+      RolloutState.PROMOTED,
+    );
     this.logger.log(`Rollout batch ${batch.batchId} finished (promoted all)`);
+  }
+
+  /**
+   * 把给定行的**在途态**（pending/probing）收口到终态 state。
+   * 条件 UPDATE 只命在途行：已 failed/rolled_back/promoted 的行不受影响，
+   * 重复调用幂等。DB 抖动只记 warn（收口是收尾动作，失败不改变批次结论）。
+   */
+  private async settleRolloutRows(
+    ids: string[],
+    state: RolloutState,
+  ): Promise<void> {
+    if (ids.length === 0) return;
+    try {
+      await this.repo
+        .createQueryBuilder()
+        .update(AppDeployment)
+        .set({ rolloutState: state })
+        .where("id IN (:...ids)", { ids })
+        .andWhere("rolloutState IN (:...from)", {
+          from: [RolloutState.PENDING, RolloutState.PROBING],
+        })
+        .execute();
+    } catch (err: unknown) {
+      this.logger.warn(
+        `settleRolloutRows(${state}) failed (rows keep in-flight state): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /** DEP-02：批次失败——暂停批次 + 对已升级（含 probing）台自动回滚 +
@@ -2234,7 +2274,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  其心跳确认（RUNNING→promoted）由 notifyHeartbeatToRollout 处理。 */
   private async promoteRest(batch: RolloutBatch): Promise<void> {
     if (batch.promotedIds.length === 0) {
-      this.finishBatch(batch.applicationId);
+      await this.finishBatch(batch.applicationId);
       return;
     }
     const promoteIds = [...batch.promotedIds];
@@ -2328,6 +2368,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       if (!batch.healthCheck) {
         // 无健康声明：跳过探测直接提升。
         await this.promoteRest(batch);
+        // ARCH-31 真机验证抓到的缺陷（跨实例灰度套件）：此前这里直接 return，
+        // **不再排下一次 tick**——提升轮把其余台 upgrade 出去后，批次再也没有
+        // 机会调用 finishBatch：内存批次永久驻留、A 日志永不出现 finished、
+        // canary 命中台永远停在 probing（随后被互斥判定「有批次在途」挡死该应用
+        // 的后续灰度）。提升轮不是终点：还要等 promote 台的心跳确认并在下一次
+        // tick 收尾，故此处继续排 tick（已收尾/已被终结则不再排）。
+        if (!this.rolloutBatches.has(appId)) return;
+        await this.touchRolloutLease(batch);
+        this.scheduleRolloutTick(appId, ROLLOUT_TICK_MS);
         return;
       }
       // ARCH-31: 探测补驱——心跳若落在别的实例（只把行推进到 probing），
@@ -2347,7 +2396,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         (r) => r.rolloutState === RolloutState.PROMOTED,
       );
       if (promoted.length === rows.length) {
-        this.finishBatch(appId);
+        await this.finishBatch(appId);
         return;
       }
     }

@@ -289,4 +289,78 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
     expect(saved[0].id).toBe("d2");
     expect(saved[0].rolloutState).toBe(RolloutState.FAILED);
   });
+
+  /**
+   * 真机跨实例灰度套件抓到的缺陷：批次成功收尾（finishBatch）只清内存态，
+   * **canary 命中台的行永远停在 probing**。后果不只是读面难看：
+   * findInFlightRolloutRows 会把该应用永久判定为「有批次在途」，后续任何
+   * canary 都被互斥挡死（blockedReason 永远存在）；滚动重启时 sweep 还会把
+   * 这条陈旧行误标 failed。
+   */
+  describe("批次成功收尾的行态收口（finishBatch）", () => {
+    const seedBatch = (upgradedIds: string[], promotedIds: string[] = []) => {
+      (service as any).rolloutBatches.set("app-1", {
+        batchId: "batch-1",
+        applicationId: "app-1",
+        strategy: "canary",
+        percentage: 50,
+        healthCheck: null,
+        upgradedIds: [...upgradedIds],
+        promotedIds: [...promotedIds],
+        startedAt: Date.now(),
+        timer: null,
+        tickTimer: null,
+        probedIds: new Set<string>(),
+      });
+    };
+
+    it("收尾把本批在途行置 promoted（只动 pending/probing，不覆盖失败痕迹）", async () => {
+      const qb = qbMock(1);
+      (repo as any).createQueryBuilder = jest.fn(() => qb);
+      seedBatch(["d1"], ["d2"]);
+
+      await (service as any).finishBatch("app-1");
+
+      expect(qb.set).toHaveBeenCalledWith({
+        rolloutState: RolloutState.PROMOTED,
+      });
+      expect(qb.where).toHaveBeenCalledWith("id IN (:...ids)", {
+        ids: ["d1", "d2"],
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith("rolloutState IN (:...from)", {
+        from: [RolloutState.PENDING, RolloutState.PROBING],
+      });
+      expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+    });
+
+    it("无内存批次时收尾是 no-op（不触库）", async () => {
+      const spy = jest.fn();
+      (repo as any).createQueryBuilder = spy;
+
+      await (service as any).finishBatch("app-1");
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("收口失败只记 warn 不外抛（收尾动作不改变批次结论）", async () => {
+      const qb = qbMock(1);
+      qb.execute.mockRejectedValueOnce(new Error("db down"));
+      (repo as any).createQueryBuilder = jest.fn(() => qb);
+      seedBatch(["d1"]);
+
+      await expect(
+        (service as any).finishBatch("app-1"),
+      ).resolves.toBeUndefined();
+      expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+    });
+
+    it("空 id 列表不触库（幂等）", async () => {
+      const spy = jest.fn();
+      (repo as any).createQueryBuilder = spy;
+
+      await (service as any).settleRolloutRows([], RolloutState.PROMOTED);
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
 });
