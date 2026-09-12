@@ -256,8 +256,13 @@ LT_SSE_MAX_GLOBAL=700 bash scripts/load-test-stack.sh \
 - **结论（限定条件）**：本机单节点、**直连 admin-api**（未过反代）下，500 条并发 SSE
   连接全部建立并保持到 hold 到期，槽位放大到 700 后无 503。反代层的长流语义由
   `npm run test:nginx-sse`（19/19，含 24h 档入口）单独验证。
-- **仍需补的证据**：① 经 nginx 的 500 连接档（本机未跑，反代连接上限/worker_connections
-  未调优）；② 服务端 RSS/CPU/事件循环延迟水位（本轮只采了客户端观测；容量白皮书需要
-  服务端 Prometheus 快照）；③ 多实例 + 反代路由下的槽位分布。
+- ~~仍需补的证据：① 经 nginx 的 500 连接档~~ → **已补齐（2026-09-12）**：
+  `NGINX_SSE_CONNS=500 npm run test:nginx-sse` 用 `infra/nginx/default.conf` **原件**
+  经真实 nginx 容器建 500 条 SSE 长流（executions/stream 与 metrics/stream 各半）：
+  **500/500 建连成功（1.04s 内）、hold 35s 后 500/500 存活、500/500 都有保活/数据帧、
+  RSS 仅 +14MB、批量断流后槽位回收干净**（套件 24/24 通过）。
+  *注*：hold 必须 > `EXECUTIONS_STREAM_IDLE_PING_MS`（默认 30s）——事件流无初始快照，
+  20s 档会出现「250/500 有帧」的假象（实测踩到，已固化进套件默认值）。
+- 仍需补的证据：① 多实例 + 反代路由下的槽位分布；② 24h 长稳档（BUG-19）。
 - **同批 tasks 档复测**（见上表）：100@25 容量放开后 100/100，此前失败主因（BUG-22）
   已修。
