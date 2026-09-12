@@ -23,6 +23,7 @@
     "test:private-registry:live": "node scripts/bug18-private-registry-selftest.mjs",
     "test:private-registry:dispatch": "node scripts/bug18-private-registry-dispatch-selftest.mjs",
     "test:arch31-multi-instance": "node scripts/arch31-multi-instance-selftest.mjs",
+    "test:nginx-sse": "node scripts/nginx-sse-selftest.mjs",
     "test:all": "npm run test:api && npm run test:node && npm run test:python && npm run test:web && npm run test:cli && npm run test:mcp && npm run test:pypi && npm run test:sdk-py && npm run test:node-sdk",
     "typecheck:api": "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json",
     "typecheck:node": "cd apps/executor-node && npx tsc --noEmit",

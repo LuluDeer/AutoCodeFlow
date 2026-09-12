@@ -1677,6 +1677,44 @@ export class TaskService {
    * - eventBus 为 null（@Optional 兜底）时静默跳过：主链行为与迁移前一致，
    *   仅事件不发（既有旧单测装配兼容，先例 OBS-04 reportRepo）。
    */
+  /**
+   * BUG-21（由 nginx SSE 真机验证暴露）：**派发失败**终态的领域事件发布出口。
+   *
+   * 背景：execution.completed/failed 一直只由回调路径（handleCallback）发布。
+   * 派发阶段就失败的执行（执行器离线 / 无匹配执行器 / 派发超时——即 executor
+   * 根本没接单的场景）在 processor 里直接写终态 + 直调通知，**从不发领域
+   * 事件**，导致三类消费者全部漏掉这类失败：
+   *   - `GET /api/executions/stream`（Dashboard 终态加速流）
+   *   - FEAT-07 出站 webhook（event_subscriptions 订阅 execution.failed）
+   *   - ARCH-21 的 notification 订阅者（processor 的直调绕过了统一语义）
+   *
+   * 现在 processor 在**终态落库成功后**调用本方法，通知改由订阅者统一发出
+   * （顺带修掉直调版本 taskId 传 undefined 的字段缺失）。payload 构造复用
+   * emitTerminalEvent，避免两处实现漂移。
+   *
+   * 幂等边界：只在「最后一次尝试 + 终态落库成功」时调用（processor 侧把关）；
+   * 与回调路径不会双发——派发失败的执行不可能再收到回调。
+   */
+  publishTerminalEventForDispatch(
+    execution: TaskExecution,
+    cb: { errorMessage?: string; logs?: string },
+  ): void {
+    const finishedAt = execution.endTime ?? new Date();
+    const durationMs =
+      execution.duration ??
+      (execution.startTime
+        ? finishedAt.getTime() - execution.startTime.getTime()
+        : null);
+    this.emitTerminalEvent(
+      execution,
+      execution.status,
+      execution.failureReason ?? null,
+      cb,
+      durationMs,
+      finishedAt,
+    );
+  }
+
   private emitTerminalEvent(
     execution: TaskExecution,
     status: ExecutionStatus,
