@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "autoflow-sdk"
 # 发布版本与 git tag（vX.Y.Z）及 @autocodeflow/sdk 保持 lockstep，
 # 由 .github/workflows/release.yml 的版本一致性守卫强制校验。
-version = "1.1.1"
+version = "1.2.0"
 description = "AutoCodeFlow Python SDK — base utilities for task execution"
 readme = "README.md"
 license = { text = "MIT" }

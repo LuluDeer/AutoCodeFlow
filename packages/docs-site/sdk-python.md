@@ -11,7 +11,7 @@ AutoCodeFlow 任务执行器（executor-python）侧的 Python SDK：提供任�
 ## 安装
 
 ```bash
-pip install autoflow-sdk                     # 当前 1.1.1，要求 Python ≥ 3.9
+pip install autoflow-sdk                     # 当前 1.2.0，要求 Python ≥ 3.9
 # 内网私有 registry（apps/registry-pypi）：
 pip install --index-url http://<registry-pypi-host>/simple autoflow-sdk
 ```
@@ -141,7 +141,7 @@ config = TaskConfig(
 
 `TaskContext`、`get_logger`、`HttpClient`、`AsyncHttpClient`、`HttpClientError`、
 `TaskResult`、`ExecuteRequest`、`ExecuteResult`、`TaskConfig`、`CallbackClient`、
-`CallbackDisabledError`（`autoflow_sdk.__version__` 当前 `1.1.1`）。
+`CallbackDisabledError`（`autoflow_sdk.__version__` 当前 `1.2.0`）。
 
 ## 下一步
 
