@@ -72,12 +72,51 @@ LT_ENV=(
 
 PIDS=()
 cleanup() {
+  # 服务端水位采样器（若在跑）先收尾，避免它继续写文件
+  if [[ -n "${SAMPLER_PID:-}" ]]; then kill "$SAMPLER_PID" 2>/dev/null || true; fi
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
   sleep 1
   for p in "${PIDS[@]:-}"; do kill -9 "$p" 2>/dev/null || true; done
   if [[ "$DOCKER_MODE" == "1" ]]; then
     docker rm -f "$PG_CONTAINER" "$REDIS_CONTAINER" >/dev/null 2>&1 || true
   fi
+}
+
+# ── 服务端水位采样（QA-05 §2「资源与观测」要求的最小实现）────────────────
+# 客户端报告只是「通过率」，容量白皮书还需要服务端水位。这里每 2s 采一次
+# admin-api 进程的 RSS 与 CPU 时间，产出 max/avg；不依赖 Prometheus 抓取
+# （压测栈没有 scrape 侧），也不需要鉴权。
+start_server_sampler() { # start_server_sampler <pid> <输出文件>
+  local pid="$1" out="$2"
+  (
+    local prev_ticks="" prev_ts="" max_rss=0 sum_cpu=0 n=0
+    while kill -0 "$pid" 2>/dev/null; do
+      local rss ticks ts
+      rss=$(awk '/VmRSS/{print $2}' "/proc/$pid/status" 2>/dev/null || echo 0)
+      ticks=$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null || echo "")
+      ts=$(date +%s%3N)
+      [[ -n "$rss" && "$rss" -gt "$max_rss" ]] && max_rss="$rss"
+      if [[ -n "$prev_ticks" && -n "$ticks" && "$ticks" -ge "$prev_ticks" ]]; then
+        local dt_ms=$((ts - prev_ts))
+        if [[ $dt_ms -gt 0 ]]; then
+          # USER_HZ=100（Linux 默认）：ticks→秒 → CPU% = Δcpu_秒 / Δt
+          sum_cpu=$(awk -v s="$sum_cpu" -v d="$((ticks - prev_ticks))" -v dt="$dt_ms" \
+            'BEGIN{printf "%.6f", s + (d/100)/(dt/1000)}')
+          n=$((n + 1))
+        fi
+      fi
+      prev_ticks="$ticks"; prev_ts="$ts"
+      echo "$ts,$rss,$(awk -v c="$sum_cpu" -v n="$n" 'BEGIN{printf "%.4f", (n>0? c/n:0)}')" >>"$out"
+      sleep 2
+    done
+    local avg="0"
+    [[ $n -gt 0 ]] && avg=$(awk -v c="$sum_cpu" -v n="$n" 'BEGIN{printf "%.2f", (c/n)*100}')
+    {
+      echo "── admin-api 服务端水位（采样 ${n} 次，间隔 2s）──"
+      echo "峰值 RSS: $((max_rss / 1024)) MB   平均 CPU: ${avg}%（单核百分比）"
+    } >>"$out"
+  ) &
+  SAMPLER_PID=$!
 }
 trap cleanup EXIT INT TERM
 
@@ -184,6 +223,12 @@ done
 echo "executor-node 已注册 online"
 
 echo "══ [5/5] load-test.mjs（参数透传）══"
+# 服务端水位采样：admin-api 是 PIDS[0]（先启动）；采样文件随报告一起打印
+SERVER_METRICS_FILE="$LOG_DIR/server-metrics.csv"
+if [[ -n "${PIDS[0]:-}" ]]; then
+  echo "timestamp_ms,rss_kb,avg_cpu_percent" >"$SERVER_METRICS_FILE"
+  start_server_sampler "${PIDS[0]}" "$SERVER_METRICS_FILE"
+fi
 set +e
 # 追加默认的容量档位限速（CLI 可覆盖：脚本只透传 "$@" 前先拼默认值，
 # 重复参数按 load-test 的后到优先语义覆盖；默认 600/400 远高于回归默认 55/40）
@@ -198,6 +243,26 @@ RC=$?
 set -e
 echo "── load-test 报告 ──" >&2
 cat "$LOG_DIR/load-test.log" >&2 || true
+
+# 服务端水位（等采样器落完最后一次统计）
+if [[ -n "${SAMPLER_PID:-}" ]]; then
+  kill "$SAMPLER_PID" 2>/dev/null || true
+  wait "$SAMPLER_PID" 2>/dev/null || true
+  SAMPLER_PID=""
+fi
+if [[ -f "$SERVER_METRICS_FILE" ]]; then
+  # 采样器被 SIGTERM 收尾时来不及打汇总行——直接从 CSV 现算（最后一行的
+  # avg_cpu_percent 已是全窗口累计均值，RSS 取列最大值）。
+  AGG=$(awk -F, 'NR>1 && $2 ~ /^[0-9]+$/ {
+      n++;
+      if ($2 > maxrss) maxrss = $2;
+      last = $3;
+    } END { printf "%d %.2f %d", maxrss/1024, last*100, n }' "$SERVER_METRICS_FILE")
+  read -r PEAK_MB AVG_CPU SAMPLES <<<"$AGG"
+  echo "── 服务端水位（admin-api 进程，采样 ${SAMPLES} 次 / 间隔 2s）──" >&2
+  echo "峰值 RSS: ${PEAK_MB} MB   平均 CPU: ${AVG_CPU}%（单核百分比）" >&2
+  echo "（原始采样：$SERVER_METRICS_FILE）" >&2
+fi
 
 if [[ $RC == 0 ]]; then
   echo "✓ load-test 通过（日志目录：$LOG_DIR；压测库：$DB_NAME）"
