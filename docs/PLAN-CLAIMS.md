@@ -239,6 +239,7 @@
 | 1790000000012 | AddEventOutboxLeases | FEAT-19 / ARCH-31 outbox lease follow-up | 本轮登记并已落盘；DB lease/row claim 代码已落地，真实 PostgreSQL 多实例竞争验证 pending |
 | 1790000000013 | CreateEventOutboxDeadLetters | FEAT-19-B | 本轮登记并已落盘（outbox 终态死信表，outboxId 唯一 + FK CASCADE） |
 | 1790000000014 | CreateNotificationChannelConfigs | ARCH-31 | 本轮登记并已落盘（渠道配置共享持久化：key 主键 + config jsonb + enabled） |
+| 1790000000015 | CreateProjectMembers | AUTH-02 | 本轮登记并已落盘（项目成员表：userId/taskId/role 三档角色 + 唯一约束 + 索引；写面放行与 trigger/pause 归属随 AUTH-02 落地） |
 
 ## 变更日志
 
