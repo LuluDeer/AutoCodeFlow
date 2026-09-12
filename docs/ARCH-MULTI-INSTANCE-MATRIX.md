@@ -146,6 +146,18 @@ PATCH 保存**写穿**（upsert），各实例按 `CHANNEL_CONFIG_REFRESH_MS`（
    正在推进的灰度直接标 failed**。探测与提升仍由持有者单点驱动（tick 补驱「心跳
    落在别处」的 probing 行），tick 另加「批次已被其他实例终结则立即收尾」的判据。
 
+**真机抓到的两个缺陷（2026-09-12，`npm run test:arch31-rollout` 定位并修复）**：
+- **(a) 批次成功收尾不收口行态**：`finishBatch` 只清内存态，canary 命中的行
+  **永远停在 `probing`**（多实例互斥 `findInFlightRolloutRows` 因此把该应用永久
+  判定为「有批次在途」，**后续任何 canary 都被挡死**；滚动重启时 sweep 还会把
+  这条陈旧行误标 failed 制造噪音）。修复：`finishBatch` 增加 `settleRolloutRows`
+  （条件 UPDATE 把本批 pending/probing 行收口为 `promoted`，不覆盖 failed/
+  rolled_back 的真实失败痕迹）。
+- **(b) 提升轮后 owner 不再 tick**：无健康声明的分支在 `promoteRest` 后直接
+  `return` 且**未排下一次 tick** → 批次永远等不到 `finishBatch`（内存批次驻留、
+  日志无 finished、(a) 的收口也因此永远不执行）。修复：提升轮后若批次仍在内存
+  则继续刷新租约并排下一次 tick（收尾/被终结则停）。
+
 ### 3.5 🔴 本地文件系统
 
 - 执行器包：`executor-package.service.ts:38` `UPLOAD_DIR = process.cwd()/uploads/executor-packages`；
@@ -301,8 +313,15 @@ fail-open 回内存态，与 NOTIF-003 降级一致）。
 2. ✅ **渠道配置跨实例**：A PATCH 保存 webhook 配置 → A 本实例即时生效，
    刷新前 B 仍是默认值（**实证了改造前多实例必然失效**），一个读穿周期后 B 读到
    A 保存的值（🔴→🟡 核心断言成立）。
-3. ⏸ **canary 心跳落非属主实例**：本轮验证到「B 可跨实例接收 canary 升级请求、
-   互斥判据走 DB」，但真实灰度推进需执行器 + 应用 + 可达 git 源，留部署轮。
+3. ✅ **canary 心跳落非属主实例**（真机闭环，2026-09-12 补充）：新套件
+   `npm run test:arch31-rollout`（`scripts/arch31-rollout-cross-instance-selftest.mjs`）
+   起 **2 个 admin-api 实例 + 2 个真实 executor-node**（部署源是本机静态 zip，
+   免 git 依赖）：canary 从 A 发起（owner），**两台执行器的全部心跳/状态上报
+   都只打向 B**（结构性保证：executor 日志里的 `ADMIN_API_URL` 指向 B、且不含 A）。
+   结果 **20/20 通过**：B 经 hydration 把 canary 行推进 probing
+   （`rolloutMeta.heartbeatConfirmedAt` 落库），A 的 tick 据此提升其余台，
+   **10 秒完成整批**（改造前只能卡到 15min 硬超时），终态两行均 `promoted`、
+   零在途残留。该套件同时抓出并修掉两个真实缺陷（见 §3.4「真机抓到的两个缺陷」）。
 4. ⏸ outbox 快速路径/补投重复边界（依赖 outbox 行级 claim，代码未实现）。
 5. ✅ **调度 Leader 单点性**：两实例 `/api/metrics/scheduler` 中恰一个
    `scheduler.isLeader=true`（pid 可区分）。
