@@ -73,6 +73,15 @@ describe("FEAT-19 OutboxDispatcher", () => {
     save: jest.fn().mockImplementation((x) => Promise.resolve(x)),
     create: jest.fn((x) => x),
     update: jest.fn().mockResolvedValue({ affected: 1 }),
+    // markFastPathDelivered 走 QueryBuilder（条件 UPDATE）；默认 affected=0
+    // （= 不该收口），用例按需 mockImplementationOnce 改判定。
+    createQueryBuilder: jest.fn(() => ({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 0 }),
+    })),
   };
   const subRepoMock = {
     find: jest.fn().mockResolvedValue([]),
@@ -163,15 +172,88 @@ describe("FEAT-19 OutboxDispatcher", () => {
       expect(outboxRepoMock.save).toHaveBeenCalledTimes(1);
     });
 
-    it("落库失败仅记日志 fail-open（不外抛）", async () => {
+    it("落库失败仅记日志 fail-open（不外抛，回传 null 供调用方跳过收口）", async () => {
       outboxRepoMock.save.mockRejectedValueOnce(new Error("db down"));
       await expect(
         outbox.enqueue("execution.failed", { event: "execution.failed" }),
-      ).resolves.toBeUndefined();
+      ).resolves.toBeNull();
       outboxRepoMock.save.mockRejectedValueOnce(new Error("db down"));
-      await expect(
-        outbox.enqueue("execution.failed", {}),
-      ).resolves.toBeUndefined();
+      await expect(outbox.enqueue("execution.failed", {})).resolves.toBeNull();
+    });
+
+    it("落库成功回传行 id（快速路径用它收口，避免补投扫描重复投递）", async () => {
+      outboxRepoMock.save.mockResolvedValueOnce({ id: "row-1" });
+      await expect(outbox.enqueue("execution.failed", {})).resolves.toBe(
+        "row-1",
+      );
+    });
+  });
+
+  describe("markFastPathDelivered（快速路径收口）", () => {
+    it("条件 UPDATE 收口：置 dispatchedAt，且带「未投递 + 未死信 + 无活跃租约」谓词", async () => {
+      const andWhere = jest.fn().mockReturnThis();
+      const execute = jest.fn().mockResolvedValue({ affected: 1 });
+      outboxRepoMock.createQueryBuilder.mockImplementationOnce(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            andWhere,
+            execute,
+          }) as never,
+      );
+
+      await expect(outbox.markFastPathDelivered("row-1")).resolves.toBe(true);
+
+      const predicates = andWhere.mock.calls.map((c) => String(c[0]));
+      expect(predicates.some((p) => /"dispatchedAt" IS NULL/.test(p))).toBe(
+        true,
+      );
+      expect(predicates.some((p) => /"deadLettered" = false/.test(p))).toBe(
+        true,
+      );
+      // 关键：补投扫描已 claim（租约活跃）时不抢这一行
+      expect(
+        predicates.some((p) =>
+          /"leaseUntil" IS NULL OR "leaseUntil" <= now\(\)/.test(p),
+        ),
+      ).toBe(true);
+    });
+
+    it("激活租约/已投递 → affected=0 返回 false（留给扫描投递，重复由订阅方幂等吸收）", async () => {
+      outboxRepoMock.createQueryBuilder.mockImplementationOnce(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            andWhere: jest.fn().mockReturnThis(),
+            execute: jest.fn().mockResolvedValue({ affected: 0 }),
+          }) as never,
+      );
+      await expect(outbox.markFastPathDelivered("row-1")).resolves.toBe(false);
+    });
+
+    it("空 id → 直接 false，不触库", async () => {
+      const spy = jest.spyOn(outboxRepoMock, "createQueryBuilder");
+      await expect(outbox.markFastPathDelivered("")).resolves.toBe(false);
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it("DB 异常 → warn 兜底返回 false（旁路 best-effort，不外抛）", async () => {
+      outboxRepoMock.createQueryBuilder.mockImplementationOnce(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            andWhere: jest.fn().mockReturnThis(),
+            execute: jest.fn().mockRejectedValue(new Error("db down")),
+          }) as never,
+      );
+      await expect(outbox.markFastPathDelivered("row-1")).resolves.toBe(false);
     });
   });
 
