@@ -308,8 +308,11 @@ curl -fsSL http://your-admin-api-host:3105/api/executors/install.sh \
 
 > 本节为 DOC-02 规划内容：水位指标与告警阈值提炼自
 > `docs/observability/README.md` 4.2 节（OBS-05 容量水位四件套）与
-> `docs/observability/alerting-rules.yml`。**容量白皮书（QA-05 并发压测专项）尚未产出**：
-> 下列阈值均为既有告警配置的既定值，涉及「容量上限」的数字均标注**待压测确认**。
+> `docs/observability/alerting-rules.yml`。**容量白皮书已产出：
+> [`docs/CAPACITY-WHITEPAPER.md`](./CAPACITY-WHITEPAPER.md)**（QA-05 并发压测专项，
+> 2026-09-12 真机实测：四档目标全部达成 + 服务端水位 + 瓶颈定位 + 调参清单 +
+> 扩容公式）。下列阈值与白皮书 §8 一致；白皮书未覆盖的场景（24h 长稳、多主机
+> 拓扑、真实业务时长分布）在该文 §10 逐条列出。
 
 ### 容量水位指标清单与建议告警阈值
 
