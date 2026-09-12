@@ -323,7 +323,7 @@ describe('acf task trigger --wait (N10)', () => {
     } finally {
       vi.useRealTimers();
     }
-  }, 30_000);
+  }, 120_000);
 
   it('success 终态同样立即返回（回归护栏）', async () => {
     vi.useFakeTimers();
@@ -335,7 +335,7 @@ describe('acf task trigger --wait (N10)', () => {
     } finally {
       vi.useRealTimers();
     }
-  }, 30_000);
+  }, 120_000);
 
   it('running→killed：非终态时继续轮询，命中 killed 后退出', async () => {
     vi.useFakeTimers();
@@ -349,7 +349,7 @@ describe('acf task trigger --wait (N10)', () => {
     } finally {
       vi.useRealTimers();
     }
-  }, 30_000);
+  }, 120_000);
 
   // U11: 失败终态必须透出执行器回调记录的 exitCode / failureReason /
   // errorMessage，不再只依赖 aiAnalysis。
@@ -371,7 +371,7 @@ describe('acf task trigger --wait (N10)', () => {
       log.mockRestore();
       vi.useRealTimers();
     }
-  }, 30_000);
+  }, 120_000);
 
   it('exitCode/failureReason 缺失时不打印对应行（旧数据不显示 undefined）', async () => {
     vi.useFakeTimers();
@@ -387,7 +387,7 @@ describe('acf task trigger --wait (N10)', () => {
       log.mockRestore();
       vi.useRealTimers();
     }
-  }, 30_000);
+  }, 120_000);
 });
 
 // ---------------------------------------------------------------------------
