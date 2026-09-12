@@ -26,10 +26,16 @@ describe("UpdateTaskDto/CreateTaskDto vs 表单负载（upstreamDependencies 泄
   });
 
   const validateUpdate = (value: object) =>
-    pipe.transform(value, { type: "body", metatype: UpdateTaskDto }) as Promise<UpdateTaskDto>;
+    pipe.transform(value, {
+      type: "body",
+      metatype: UpdateTaskDto,
+    }) as Promise<UpdateTaskDto>;
 
   const validateCreate = (value: object) =>
-    pipe.transform(value, { type: "body", metatype: CreateTaskDto }) as Promise<CreateTaskDto>;
+    pipe.transform(value, {
+      type: "body",
+      metatype: CreateTaskDto,
+    }) as Promise<CreateTaskDto>;
 
   // 编辑页实际提交的字段形状（TaskFormPage 表单 + buildExecutorPayload + apply*）
   const formShaped = {

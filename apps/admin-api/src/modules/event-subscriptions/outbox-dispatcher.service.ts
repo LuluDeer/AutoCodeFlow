@@ -283,8 +283,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       // source row retryable so the event cannot disappear silently.
       const settledTargetCount =
         (aggregate?.deliveredCount ?? 0) + (aggregate?.deadLetteredCount ?? 0);
-      const persistenceFailures =
-        aggregate?.deadLetterPersistenceFailures ?? 0;
+      const persistenceFailures = aggregate?.deadLetterPersistenceFailures ?? 0;
       const aggregateSettled =
         persistenceFailures === 0 &&
         (aggregate?.targetCount === 0 ||
@@ -383,7 +382,9 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
         });
       } catch (dbErr: unknown) {
         if (dbErr instanceof StaleOutboxOwnerError) {
-          this.logger.warn(`Outbox row ${row.id} dead-letter finalize skipped: lease lost`);
+          this.logger.warn(
+            `Outbox row ${row.id} dead-letter finalize skipped: lease lost`,
+          );
           return;
         }
         this.logger.error(
@@ -460,5 +461,4 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   isScanning(): boolean {
     return this.scanning;
   }
-
 }
