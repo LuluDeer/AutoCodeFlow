@@ -161,7 +161,7 @@ export class NotificationConfigController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create a notification silence" })
   @ApiResponse({ status: 201, description: "Created silence" })
-  createSilence(
+  async createSilence(
     @Body()
     body: {
       scope: "global" | "task" | "application";
@@ -173,13 +173,20 @@ export class NotificationConfigController {
       durationMinutes?: number;
     },
   ) {
-    return this.silenceService.create(body);
+    const row = await this.silenceService.create(body);
+    // ARCH-31: 同步进 NotificationService 的内存热路径——此前只落 DB，
+    // isSilenced 看不到本规则（要等进程重启回灌才生效）。
+    this.notificationService.adoptPersistedSilence(row);
+    return row;
   }
 
   @Delete("silences/:id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Remove a notification silence" })
-  removeSilence(@Param("id") id: string) {
+  async removeSilence(@Param("id") id: string) {
+    // ARCH-31: 内存 + DB 双删（内存态由 NotificationService 持有，DB 行由
+    // silenceService 负责——forgetSilence 只清内存，避免重复删库）。
+    this.notificationService.forgetSilence(id);
     return this.silenceService.remove(id);
   }
 }
