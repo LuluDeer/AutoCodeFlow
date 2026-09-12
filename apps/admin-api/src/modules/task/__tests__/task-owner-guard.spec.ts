@@ -82,17 +82,15 @@ describe("TaskService.assertCanWrite（NF-03 属主矩阵）", () => {
   });
 
   it("user 为 null/undefined（API-Key 主体）按非 ADMIN → 403", () => {
-    expect(() =>
-      service.assertCanWrite({ ownerUserId: 7 }, null),
-    ).toThrow();
+    expect(() => service.assertCanWrite({ ownerUserId: 7 }, null)).toThrow();
     expect(() =>
       service.assertCanWrite({ ownerUserId: null }, undefined),
     ).toThrow();
   });
 
   it("悬垂 ownerUserId（用户已删除，id 不存在）≠ 当前用户 → 403（方向安全）", () => {
-    expect(() =>
-      service.assertCanWrite({ ownerUserId: 9999 }, owner),
-    ).toThrow("You do not own this task");
+    expect(() => service.assertCanWrite({ ownerUserId: 9999 }, owner)).toThrow(
+      "You do not own this task",
+    );
   });
 });

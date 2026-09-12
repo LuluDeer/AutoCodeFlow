@@ -3312,9 +3312,7 @@ describe("ExecutorService (__tests__)", () => {
     });
 
     it("affinity miss on the whole fleet fails through the existing no-executor path", async () => {
-      executorRepo.find.mockResolvedValue([
-        mkExecutor("e1", "a:1", ["misc"]),
-      ]);
+      executorRepo.find.mockResolvedValue([mkExecutor("e1", "a:1", ["misc"])]);
       await expect(
         service.dispatch(mkTask({ executorAffinityTags: ["gpu"] }), execution),
       ).rejects.toThrow(
@@ -3408,9 +3406,7 @@ describe("ExecutorService (__tests__)", () => {
     });
 
     it("empty affinity array [] is treated as unconstrained (default unchanged)", async () => {
-      executorRepo.find.mockResolvedValue([
-        mkExecutor("e1", "a:1", ["misc"]),
-      ]);
+      executorRepo.find.mockResolvedValue([mkExecutor("e1", "a:1", ["misc"])]);
       await service.dispatch(
         mkTask({ executorAffinityTags: [], executorAntiAffinityTags: [] }),
         execution,
