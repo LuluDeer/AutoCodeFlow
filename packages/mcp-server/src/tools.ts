@@ -891,6 +891,104 @@ export function registerDeploymentTools(
       return JSON_CONTENT(data);
     },
   );
+
+  // ---- DEP-04 approval workflow --------------------------------------------
+  // deploy_application/deploy_app can freeze a deployment at
+  // approvalStatus=pending_approval (nothing dispatched). These tools close
+  // the loop so an MCP user can list the queue and act on a pending row
+  // without leaving the agent (second-person rule enforced server-side).
+
+  server.tool(
+    "list_pending_approvals",
+    "List deployments awaiting approval (DEP-04 queue, ADMIN only). Returns rows with approvalStatus=pending_approval; each row's id feeds approve_deployment / reject_deployment / cancel_deployment.",
+    {
+      applicationId: z.string().optional().describe("Filter by application ID"),
+      page: z
+        .number()
+        .int()
+        .min(1)
+        .default(1)
+        .describe("Page number (default 1)"),
+      pageSize: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .default(20)
+        .describe("Items per page (default 20)"),
+    },
+    async ({ applicationId, page, pageSize }) => {
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(pageSize),
+        ...(applicationId ? { applicationId } : {}),
+      });
+      const data = await call<unknown>(
+        "GET",
+        `/app-deployments/approvals/pending?${params}`,
+      );
+      return JSON_CONTENT(data);
+    },
+  );
+
+  server.tool(
+    "approve_deployment",
+    "Approve a pending deployment (DEP-04). Approving dispatches it to the executor. Second-person rule: the approver must differ from the requester, otherwise the API returns an error. ADMIN only.",
+    {
+      deploymentId: z.string().describe("Pending deployment ID to approve"),
+      reason: z
+        .string()
+        .max(200)
+        .optional()
+        .describe("Optional decision reason (≤200 chars), recorded in audit"),
+    },
+    async ({ deploymentId, reason }) => {
+      const body = reason !== undefined ? { reason } : undefined;
+      const data = await call<unknown>(
+        "POST",
+        `/app-deployments/${deploymentId}/approval/approve`,
+        body,
+      );
+      return JSON_CONTENT(data);
+    },
+  );
+
+  server.tool(
+    "reject_deployment",
+    "Reject a pending deployment (DEP-04). The deployment is never dispatched. Second-person rule applies; ADMIN only.",
+    {
+      deploymentId: z.string().describe("Pending deployment ID to reject"),
+      reason: z
+        .string()
+        .max(200)
+        .optional()
+        .describe("Optional decision reason (≤200 chars), recorded in audit"),
+    },
+    async ({ deploymentId, reason }) => {
+      const body = reason !== undefined ? { reason } : undefined;
+      const data = await call<unknown>(
+        "POST",
+        `/app-deployments/${deploymentId}/approval/reject`,
+        body,
+      );
+      return JSON_CONTENT(data);
+    },
+  );
+
+  server.tool(
+    "cancel_deployment",
+    "Cancel own pending deployment request (DEP-04). Requester-only exit: the user who triggered the deployment may withdraw it before anyone approves.",
+    {
+      deploymentId: z.string().describe("Pending deployment ID to cancel"),
+    },
+    async ({ deploymentId }) => {
+      const data = await call<unknown>(
+        "POST",
+        `/app-deployments/${deploymentId}/approval/cancel`,
+      );
+      return JSON_CONTENT(data);
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
