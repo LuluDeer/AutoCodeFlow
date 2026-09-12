@@ -188,6 +188,13 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         // NF-05: 飞书自定义机器人（可选；secret 为加签密钥，非 URL 类不加 uri 校验）
         FEISHU_WEBHOOK: Joi.string().uri().allow("").optional(),
         FEISHU_SECRET: Joi.string().allow("").optional(),
+        // ARCH-31: 跨实例共享状态读穿刷新周期（ms）——渠道配置 / 通知静默。
+        // 下限 1000ms（服务内另有兜底回落），缺省 15000。
+        CHANNEL_CONFIG_REFRESH_MS: Joi.number()
+          .integer()
+          .min(1000)
+          .default(15000),
+        SILENCE_REFRESH_MS: Joi.number().integer().min(1000).default(15000),
 
         // R7: Prometheus exposition endpoint (GET /api/metrics) switches.
         // Defaults true; semantics in configuration.ts (metrics.prometheus).
