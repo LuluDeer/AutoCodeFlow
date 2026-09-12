@@ -922,6 +922,30 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 
 **列表过滤参数（projectId）**：`GET /tasks` 与 `GET /applications` 均支持可选 `projectId` 查询参数——传字面量 `default` 表示默认项目视图（`projectId IS NULL OR projectId = 默认 uuid` 一起命中，用 Or 处理）；传具体项目 uuid 则精确过滤；不传时行为与既往一致（全量列表）。
 
+### 项目成员与角色（AUTH-02）
+
+角色模型见 `docs/adr/adr-013-project-roles.md`：三档 `viewer`（只读，执行类写面拒绝）/ `editor`（项目内任务与应用读写 + trigger/pause/resume）/ `admin`（项目内全权）。全局 ADMIN 恒全量放行，不查成员表。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/projects/me/roles` | 是 | 当前用户在各项目中的角色（`{userId, isAdmin, memberships[]}`，admin-web 据此渲染可用项目） |
+| GET | `/projects/:id/members` | 是 | 成员列表；ADMIN 任意项目可读，普通用户限**自己所属项目**，默认项目恒可读 |
+| POST | `/projects/:id/members` | 是（ADMIN） | 新增或改角色（`{userId, role}`，(projectId,userId) 唯一，重复即改角色） |
+| PATCH | `/projects/:id/members/:userId` | 是（ADMIN） | 改角色（成员不存在 → 404） |
+| DELETE | `/projects/:id/members/:userId` | 是（ADMIN） | 移除成员（返回 `{deleted}`） |
+
+**角色对写面的影响**
+
+| 场景 | 判定 |
+|---|---|
+| 任务/应用的 PATCH·DELETE | ADMIN ✅ / 属主 ✅ / **项目角色 ≥ editor ✅** / 其余 403（无主存量行同样可由项目 editor 接管） |
+| 任务的 trigger / pause / resume（含批量） | ADMIN ✅ / 属主 ✅ / editor ✅ / **viewer 403** / 非成员维持既有宽松语义 |
+| 未分配 projectId 的资源 | 按默认项目判定 |
+| ProjectAccessService 未接线 / 无用户主体（API-Key） | 整体旁路（等价于 AUTH-02 之前） |
+| 角色查询 DB 抖动 | fail-open 视为非成员 + `warn`（不 500、不误放行） |
+
+> 已知缺口（需产品拍板后方可收紧）：**非成员用户仍可 trigger/pause/resume 任意任务**——这是 AUTH-02 之前就存在的宽松语义，单方面收紧属破坏性变更，详见 ADR-013。
+
 ---
 
 ## 静态资源 — /uploads（应用包下载）
