@@ -86,3 +86,21 @@
   角色细分、admin-web 权限门控 UI。
 - **需真机/外部条件**：DSK-01（macOS 打包）、BUG-07（Windows detached 信号）、
   AUTH-04（OIDC SSO，可选）、BUG-04（minio 上游）。
+
+## 8. 本轮踩到并固化的工程教训（供后续会话省时间）
+
+1. **`nest build` 在该环境下静默失败**（`deleteOutDir=true` 的 dist 清理被批量删除
+   保护拦下，退出码仍为 0）→ 编排脚本会拿**旧产物**跑。已在 `load-test-stack.sh` /
+   `e2e-full.sh` 追加 `npx tsc -p tsconfig.build.json` 兜底；自建验证脚本一律直接用 tsc。
+2. **子进程清理必须对进程组下手**：admin-api 优雅关停最长 15s，父进程直接退出会留
+   孤儿进程占端口（实测污染下一次运行）。三个真机脚本统一改为 `detached` +
+   进程组 SIGTERM→SIGKILL，并在 `summary()` 末尾 **显式 `process.exit()`**
+   （事件循环里有 http server/管道句柄，只设 `exitCode` 可能不退出——曾出现脚本
+   挂 5h 连带子进程占端口）。
+3. **端口随机化**：验证脚本默认在 15000-25000 随机取端口，并在开跑前自愈清理
+   同名残留容器，避免「上一次跑崩留下的容器占端口」。
+4. **admin-web 全量 vitest 在有重负载并行时会假失败**：本轮 4 个文件 7 例
+   `Test timed out in 5000ms`，单独重跑**全绿**（机器同时跑着压测栈）。判定：
+   资源竞争型超时，不是代码回归——重跑对照后再下结论。
+5. **回调限流按 IP 计**（见 QA-05 §8.2.1）：压测 429 不是「客户端太猛」，而是
+   服务端设计边界；生产多执行器同出口 IP 时需显式调 `THROTTLE_CALLBACK_LIMIT`。
