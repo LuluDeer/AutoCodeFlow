@@ -2612,6 +2612,68 @@ describe("TaskService (__tests__)", () => {
         expect(payload.failureReason).toBeNull();
       });
 
+      it("BUG-21: publishTerminalEventForDispatch 复用同一 payload 构造（派发失败终态也走领域事件）", () => {
+        const exec = {
+          id: "e9",
+          taskId: "t9",
+          taskName: "dispatch-failed-job",
+          status: ExecutionStatus.FAILED,
+          failureReason: ExecutionFailureReason.EXECUTOR_OFFLINE,
+          errorMessage:
+            "No online executors match the requested group/tags/runtime",
+          logs: "stack line",
+          startTime: new Date(Date.now() - 1500),
+          endTime: undefined,
+          duration: undefined,
+        } as never;
+
+        service.publishTerminalEventForDispatch(exec, {
+          errorMessage: "No online executors available",
+          logs: "stack line",
+        });
+
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+        const [event, payload] = eventBus.emit.mock.calls[0];
+        // FAILED → execution.failed（SUCCESS→completed 映射由既有用例覆盖）
+        expect(event).toBe(DOMAIN_EVENTS.EXECUTION_FAILED);
+        expect(payload.executionId).toBe("e9");
+        expect(payload.failureReason).toBe(
+          ExecutionFailureReason.EXECUTOR_OFFLINE,
+        );
+        expect(payload.errorMessage).toContain("No online executors");
+        // duration 缺失时按 startTime→finishedAt 计算（不为 null/NaN）
+        expect(typeof payload.durationMs).toBe("number");
+        expect(Number.isFinite(payload.durationMs as number)).toBe(true);
+        expect(typeof payload.finishedAt).toBe("string");
+      });
+
+      it("BUG-21: eventBus 缺席（@Optional）时静默跳过，不抛", () => {
+        const svc = new TaskService(
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          null as never,
+          null as never,
+          null as never,
+          null as never,
+          null as never,
+        );
+        expect(() =>
+          svc.publishTerminalEventForDispatch(
+            { id: "e1", status: ExecutionStatus.FAILED } as never,
+            { errorMessage: "x" },
+          ),
+        ).not.toThrow();
+      });
+
       it("does NOT emit on a rejected callback (address mismatch / not found) or a duplicate winner", async () => {
         const exec = {
           id: "e1",

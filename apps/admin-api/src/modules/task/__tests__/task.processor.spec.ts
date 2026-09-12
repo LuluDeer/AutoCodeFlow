@@ -70,7 +70,10 @@ describe("TaskProcessor", () => {
     Pick<NotificationService, "notifyFailureWithConfig">
   >;
   let auditService: { log: jest.Mock };
-  let taskService: { trigger: jest.Mock };
+  let taskService: {
+    trigger: jest.Mock;
+    publishTerminalEventForDispatch: jest.Mock;
+  };
   let dataSource: ReturnType<typeof makeDataSource>;
 
   const task = {
@@ -98,7 +101,11 @@ describe("TaskProcessor", () => {
       notifyFailureWithConfig: jest.fn().mockResolvedValue(undefined),
     };
     auditService = { log: jest.fn().mockResolvedValue(undefined) };
-    taskService = { trigger: jest.fn().mockResolvedValue(undefined) };
+    taskService = {
+      trigger: jest.fn().mockResolvedValue(undefined),
+      // BUG-21: 派发失败终态的事件发布出口（真实现由 processor 在终态落库后调用）
+      publishTerminalEventForDispatch: jest.fn().mockResolvedValue(undefined),
+    };
     dataSource = makeDataSource();
 
     const module = await Test.createTestingModule({
@@ -170,6 +177,81 @@ describe("TaskProcessor", () => {
     expect(live.failureReason).toBe(
       ExecutionFailureReason.PACKAGE_FETCH_FAILED,
     );
+  });
+
+  // BUG-21（nginx SSE 真机验证暴露）：派发阶段失败此前**不发领域事件**，
+  // Dashboard 终态流 / FEAT-07 出站 webhook / notification 订阅者三方全漏。
+  describe("BUG-21 派发失败终态的领域事件", () => {
+    it("最后一次尝试（默认 attempts=1）→ 终态落库后发布事件，携带失败详情", async () => {
+      executorService.dispatch.mockRejectedValue(new Error("exec failed"));
+
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.toThrow("exec failed");
+
+      expect(taskService.publishTerminalEventForDispatch).toHaveBeenCalledTimes(
+        1,
+      );
+      const [execArg, cbArg] =
+        taskService.publishTerminalEventForDispatch.mock.calls[0];
+      expect(execArg.status).toBe(ExecutionStatus.FAILED);
+      expect(cbArg.errorMessage).toContain("exec failed");
+      expect(cbArg.logs).toContain("exec failed");
+    });
+
+    it("非最后一次尝试 → 不发事件（等重试结果，避免告警/事件风暴）", async () => {
+      executorService.dispatch.mockRejectedValue(new Error("exec failed"));
+
+      await expect(
+        processor.handle({
+          data: { executionId: "exec-1" },
+          attemptsMade: 0,
+          opts: { attempts: 3 },
+        } as any),
+      ).rejects.toThrow("exec failed");
+
+      expect(
+        taskService.publishTerminalEventForDispatch,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("终态未落库（affected=0，被回调/杀掉抢先终态化）→ 不发事件（由赢家发布）", async () => {
+      executorService.dispatch.mockRejectedValue(new Error("exec failed"));
+      const queryRunner = dataSource.createQueryRunner.mock.results[0]?.value;
+      if (queryRunner) {
+        (
+          queryRunner.manager.createQueryBuilder as jest.Mock
+        ).mock.results[0].value.execute.mockResolvedValue({ affected: 0 });
+      } else {
+        // 首次调用发生在 handle 内部——预先钉死 execute 的返回
+        (
+          dataSource.createQueryRunner as unknown as jest.Mock
+        ).mockImplementation(() => ({
+          connect: jest.fn().mockResolvedValue(undefined),
+          startTransaction: jest.fn().mockResolvedValue(undefined),
+          commitTransaction: jest.fn().mockResolvedValue(undefined),
+          rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+          release: jest.fn().mockResolvedValue(undefined),
+          manager: {
+            createQueryBuilder: jest.fn(() => ({
+              update: jest.fn().mockReturnThis(),
+              set: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
+              andWhere: jest.fn().mockReturnThis(),
+              execute: jest.fn().mockResolvedValue({ affected: 0 }),
+            })),
+          },
+        }));
+      }
+
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.toThrow("exec failed");
+
+      expect(
+        taskService.publishTerminalEventForDispatch,
+      ).not.toHaveBeenCalled();
+    });
   });
 
   it("returns early if execution not found", async () => {

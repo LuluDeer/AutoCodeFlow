@@ -143,6 +143,28 @@ docker compose ps
 
 Admin Web 容器内置 Nginx 是所有 `/api` 请求的统一入口，三条代理语义需要了解：`/api/` 前缀 location 使用**不带 URI** 的 `proxy_pass`，原样保留 `/api` 前缀（与 admin-api 的 `setGlobalPrefix("api")` 对齐，误写成尾斜杠形式会剥离前缀导致全量 404）；`client_max_body_size 510m` 为上传体积预留——执行器包最大 500MB、应用包 200MB、PyPI 代理包 50MB，nginx 默认 1m 会让大包上传直接 413；执行日志 SSE 流（`/api/tasks/<id>/executions/<execId>/logs/stream`）有专有正则 location（`proxy_read_timeout 1h`、`proxy_buffering off`），避免被通用 `/api/` 的 60s 读超时掐断，也不受上传体积语义影响。两份配置 `apps/admin-web/nginx.conf` 与 `infra/nginx/default.conf` 需保持同步。
 
+### 反代 SSE/长流验证（部署前必跑，BUG-17）
+
+SSE 能否存活**完全取决于代理层**（缓冲、读取超时、连接复用），应用侧单测覆盖不到。
+用真实 nginx 跑一遍代理层门禁：
+
+```bash
+npm run test:nginx-sse                                    # 默认 180s soak（约 3 分钟）
+NGINX_SOAK_SECONDS=86400 npm run test:nginx-sse           # 24h 长流（发布门禁/大版本上线前）
+```
+
+脚本用 `infra/nginx/default.conf` **原件**（仅替换上游地址与监听端口）起真实 nginx
+容器，并自带**探针执行器**（接受派发但不回报结果 + 周期心跳）把执行稳定维持在
+RUNNING，从而让"专用 SSE 位置的长流"有真实载体。断言 19 项，重点：
+
+- 流式语义：`text/event-stream` + 无 `Content-Length`（chunked）+ **首帧不迟滞**（缓冲开启时首帧会被攒到 buffer 满才下发，正是"日志不实时"的根因）；
+- 长流存活：专用位置日志流持续不断连（该位置 `proxy_read_timeout 1h`；通用位置仅 60s，soak 超过 60s 不断连即为专用位置生效的证据）、保活帧间隔 ≤ 45s；
+- 事件穿透：executor 回调 → 终态 winner → 领域事件 → `executions/stream` 帧经 nginx 到达订阅方，且日志流在终态后正常收尾；
+- 并发三条 SSE 互不干扰、长流期间普通请求延迟 < 5s、admin-api RSS 涨幅受控。
+
+> 本机实测（2026-09-12）：`NGINX_SOAK_SECONDS=100` → **19/19 通过**。24h 档建议在
+> 目标环境（含真实执行器）跑一次，作为上线前门禁。
+
 ## 裸机执行器安装（artifact 通道，第八轮 N24 根治）
 
 compose 栈之外的目标机（裸机/虚机）可用一键脚本安装 executor-node，安装
