@@ -131,3 +131,44 @@ node scripts/load-test.selftest.mjs
 - **未跑 callback 场景**（需真实 execution + 有效 v1 token fixture，见 README §1.3）与 **SSE 大连接数档**（需先定反代/槽位参数）。
 - 本机单节点：admin-api 与 executor 同机，资源水位互相影响，**不能外推生产容量**。
 - 未采集 PG/BullMQ/CPU 系列水位到可复用报告（load-test 报告为客户端观测；服务端侧需对接 Prometheus/日志做 §2 要求的水位图）。
+
+## 8. 第四阶段：瓶颈修复与复测（2026-09-12）
+
+§7.2 定位的「乐观锁冲突 = 失败主因」已作为 **BUG-22** 修复并复测。
+
+**修复**（`executor.service.dispatch` 占坑 UPDATE）：移除 `.andWhere("version = :version")`
+版本谓词。占坑的两个不变量（容量不超卖、目标仍在线）**本来就由同一条 UPDATE 的
+WHERE 原子保证**——`runningTaskCount < max` 与 `runningTaskCount + 1` 在同一行锁内
+求值，`status = ONLINE` 也在同一语句内复查。版本谓词的唯一效果是把**良性并发**
+变成硬失败：worker 并发 5 + 单执行器时，首个占坑把 version +1，其余并发全部
+affected=0，而候选只有一个 → 抛 "No available executor" → 执行直接 FAILED
+（`maxRetry=0` 时连重试兜底都没有）。失败消息同时纠正为
+`No available executor (all candidates are offline or at capacity)`，以区分
+「真的没容量/离线」与「并发冲突」（后者已不该存在）。
+
+**复测**（同机同栈，client rpm 600/400，glue 轻任务，maxRetry=0）：
+
+| 档位 | 并发 | executor MAX_CONCURRENT | 成功率 | 终态 success/failed | p50/p95 | 429 | 失败主因（日志核验） |
+|---|---|---|---|---|---|---|---|
+| 修复前 count=100 | 25 | 10（默认） | 40% | 40/60 | 17/32ms | 0 | 全部 `…concurrency conflict`（版本 CAS） |
+| 修复前 count=100 | 25 | 40 | 65% | 65/35 | 18/26ms | 0 | 同上 |
+| **修复后 count=100** | **25** | 10（默认） | 40% | 40/60 | 19/37ms | 0 | **0 例 conflict**；240 处 `…at capacity`（25 在途 > 10 槽位的真实容量饱和） |
+| **修复后 count=100** | **25** | **200（容量放开）** | **100%** | **100/0** | **20/26ms** | **0** | 无 |
+
+- **结论**：`MAX_CONCURRENT=10` 档成功率仍是 40%，但**失败主因已换**——日志核验
+  「concurrency conflict」出现 **0 次**（修复前该档 60 例失败全部是它），取而代之的
+  是真实的「at capacity」（25 并发在途 > 10 槽位）。容量放开到 200 后成功率
+  **100%、失败 0**：此前的损耗确实全部来自版本 CAS，而非 executor 处理能力、
+  队列或限流。
+- **能力边界（不变）**：executor 的 `MAX_CONCURRENT_TASKS` 仍是硬上限，在途超过
+  上限时派发会以「at capacity」失败——这与执行器容量语义一致。**生产建议**：
+  ① 按峰值在途配置 `MAX_CONCURRENT_TASKS` 并留余量；② 业务任务显式设
+  `maxRetry ≥ 2`（把「瞬时无容量」交给队列重试吸收，而非一次终态失败）；
+  ③ 多执行器 + 亲和分组摊薄单行竞争。
+- **顺带修复的工程陷阱**：`nest build` 的 `deleteOutDir=true` 在带批量删除保护的
+  环境里会**静默失败（退出码 0 但 dist 未刷新）**，导致压测/e2e 脚本拿旧产物跑
+  （现象：改了代码而结果完全不变）。`scripts/load-test-stack.sh` 与
+  `scripts/e2e-full.sh` 已追加 `npx tsc -p tsconfig.build.json` 兜底刷新产物。
+- **仍未完成（如实）**：500 并发 / 1000 RPM / SSE 500 连接 / 回调 10k 四档目标验收、
+  服务端 Prometheus 水位采集；QA-05/BUG-19 保持 claimed（参考基线 + 瓶颈修复，
+  非容量验收）。

@@ -128,7 +128,13 @@ echo "══ [2/5] admin-api 构建 + 空库迁移链 ══"
 (
   cd apps/admin-api
   [[ -d node_modules ]] || { echo "admin-api/node_modules 缺失，npm ci"; npm ci; }
-  npm run build >/dev/null
+  # 产物新鲜度兜底（本轮实测踩到）：nest build 配了 deleteOutDir=true，在带
+  # 「批量删除保护」的环境里清理 dist 会被拦，构建**静默失败但退出码 0**，脚本
+  # 于是拿旧 dist 继续跑（现象：改了代码，压测/e2e 结果却完全不变）。
+  # 先按项目脚本构建（与 CI 一致），再用 tsc 兜底刷一遍（nest-cli.json 无
+  # assets，两者产物等价）。
+  npm run build >/dev/null || true
+  npx tsc -p tsconfig.build.json
   env "${LT_ENV[@]}" npm run migration:run
 ) >"$LOG_DIR/admin-api-build.log" 2>&1 \
   || fail_with_log "$LOG_DIR/admin-api-build.log" "admin-api 构建/迁移失败"

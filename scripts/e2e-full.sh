@@ -145,7 +145,11 @@ echo "══ [2/6] admin-api 构建 + 空库迁移链 ══"
 (
   cd apps/admin-api
   [[ -d node_modules ]] || { echo "admin-api/node_modules 缺失，npm ci"; npm ci; }
-  npm run build >/dev/null
+  # 产物新鲜度兜底（同 load-test-stack.sh）：nest build 的 deleteOutDir 在带
+  # 「批量删除保护」的环境里会静默失败（退出码 0 但 dist 未刷新）→ 脚本会拿旧
+  # 产物继续跑。追加 tsc 兜底刷新（nest-cli.json 无 assets，产物等价）。
+  npm run build >/dev/null || true
+  npx tsc -p tsconfig.build.json
   env "${E2E_ENV[@]}" npm run migration:run
 ) >"$LOG_DIR/admin-api-build.log" 2>&1 \
   || fail_with_log "$LOG_DIR/admin-api-build.log" "admin-api 构建/迁移失败"
