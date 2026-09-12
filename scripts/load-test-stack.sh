@@ -82,20 +82,34 @@ cleanup() {
   fi
 }
 
-# ── 服务端水位采样（QA-05 §2「资源与观测」要求的最小实现）────────────────
-# 客户端报告只是「通过率」，容量白皮书还需要服务端水位。这里每 2s 采一次
-# admin-api 进程的 RSS 与 CPU 时间，产出 max/avg；不依赖 Prometheus 抓取
-# （压测栈没有 scrape 侧），也不需要鉴权。
+# ── 服务端水位采样（QA-05 §2「资源与观测」）──────────────────────────────
+# 客户端报告只是「通过率」，容量白皮书还需要服务端水位。采样列（每 2s）：
+#   ts,rss_kb,cpu_avg,pg_conns,redis_clients,pool_active,pool_idle,pool_waiting,
+#   elv_lag_s,heap_mb,queue_depth,sched_last_tick_ms
+# 数据来源：本地 /proc（RSS/CPU，无需鉴权） + PG psql + redis-cli +
+# admin-api 自身 /api/metrics（Prometheus text，需 JWT——采样器自行登录一次）。
+# 任一来源不可用时该列写空，不中断采样。
 start_server_sampler() { # start_server_sampler <pid> <输出文件>
   local pid="$1" out="$2"
+  local api_port="${PORT_API:-3105}"
   (
-    local prev_ticks="" prev_ts="" max_rss=0 sum_cpu=0 n=0
+    local prev_ticks="" prev_ts="" sum_cpu=0 n=0
+    local token=""
+    for _ in $(seq 1 30); do
+      token=$(curl -sf -X POST "http://localhost:$api_port/api/auth/login" \
+        -H 'Content-Type: application/json' \
+        -d '{"username":"admin","password":"admin123"}' \
+        | grep -o '"accessToken":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+      [[ -n "$token" ]] && break
+      sleep 1
+    done
+    local metrics_file="$LOG_DIR/prom-metrics-last.txt"
+
     while kill -0 "$pid" 2>/dev/null; do
-      local rss ticks ts
+      local rss ticks ts cpu_now pg redis pool_active pool_idle pool_waiting elv heap qdepth stick
       rss=$(awk '/VmRSS/{print $2}' "/proc/$pid/status" 2>/dev/null || echo 0)
       ticks=$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null || echo "")
       ts=$(date +%s%3N)
-      [[ -n "$rss" && "$rss" -gt "$max_rss" ]] && max_rss="$rss"
       if [[ -n "$prev_ticks" && -n "$ticks" && "$ticks" -ge "$prev_ticks" ]]; then
         local dt_ms=$((ts - prev_ts))
         if [[ $dt_ms -gt 0 ]]; then
@@ -106,15 +120,40 @@ start_server_sampler() { # start_server_sampler <pid> <输出文件>
         fi
       fi
       prev_ticks="$ticks"; prev_ts="$ts"
-      echo "$ts,$rss,$(awk -v c="$sum_cpu" -v n="$n" 'BEGIN{printf "%.4f", (n>0? c/n:0)}')" >>"$out"
+      cpu_now=$(awk -v c="$sum_cpu" -v n="$n" 'BEGIN{printf "%.4f", (n>0? c/n:0)}')
+
+      # PG 连接数（本库）
+      if [[ "$DOCKER_MODE" == "1" ]]; then
+        pg=$(docker exec "$PG_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -t -A \
+          -c "select count(*) from pg_stat_activity where datname='$DB_NAME'" 2>/dev/null || echo "")
+      else
+        pg=$(PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$PG_PORT" -U "$DB_USER" -d "$DB_NAME" -t -A \
+          -c "select count(*) from pg_stat_activity where datname='$DB_NAME'" 2>/dev/null || echo "")
+      fi
+      # Redis 连接数
+      if [[ "$DOCKER_MODE" == "1" ]]; then
+        redis=$(docker exec "$REDIS_CONTAINER" redis-cli info clients 2>/dev/null \
+          | awk -F: '/connected_clients/{print $2}' | tr -d '\r' || echo "")
+      else
+        redis=$(redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ${REDIS_PASS:+-a "$REDIS_PASS"} info clients 2>/dev/null \
+          | awk -F: '/connected_clients/{print $2}' | tr -d '\r' || echo "")
+      fi
+      # admin-api 自身指标（Prometheus text）
+      if [[ -n "$token" ]] && curl -sf "http://localhost:$api_port/api/metrics" \
+        -H "Authorization: Bearer $token" -o "$metrics_file"; then
+        pool_active=$(awk '/^autoflow_db_pool_active_connections/{print $2}' "$metrics_file" | head -1)
+        pool_idle=$(awk '/^autoflow_db_pool_idle_connections/{print $2}' "$metrics_file" | head -1)
+        pool_waiting=$(awk '/^autoflow_db_pool_waiting_requests/{print $2}' "$metrics_file" | head -1)
+        elv=$(awk '/^nodejs_eventloop_lag_seconds/{print $2}' "$metrics_file" | head -1)
+        heap=$(awk '/^nodejs_heap_size_used_bytes/{print $2}' "$metrics_file" | head -1)
+        qdepth=$(awk '/^autoflow_queue_depth/{print $2}' "$metrics_file" | head -1)
+        stick=$(awk '/^autoflow_scheduler_last_tick_duration_ms/{print $2}' "$metrics_file" | head -1)
+        [[ -n "$heap" ]] && heap=$(awk -v b="$heap" 'BEGIN{printf "%.1f", b/1048576}')
+      fi
+
+      echo "$ts,$rss,$cpu_now,${pg:-},${redis:-},${pool_active:-},${pool_idle:-},${pool_waiting:-},${elv:-},${heap:-},${qdepth:-},${stick:-}" >>"$out"
       sleep 2
     done
-    local avg="0"
-    [[ $n -gt 0 ]] && avg=$(awk -v c="$sum_cpu" -v n="$n" 'BEGIN{printf "%.2f", (c/n)*100}')
-    {
-      echo "── admin-api 服务端水位（采样 ${n} 次，间隔 2s）──"
-      echo "峰值 RSS: $((max_rss / 1024)) MB   平均 CPU: ${avg}%（单核百分比）"
-    } >>"$out"
   ) &
   SAMPLER_PID=$!
 }
@@ -251,17 +290,28 @@ if [[ -n "${SAMPLER_PID:-}" ]]; then
   SAMPLER_PID=""
 fi
 if [[ -f "$SERVER_METRICS_FILE" ]]; then
-  # 采样器被 SIGTERM 收尾时来不及打汇总行——直接从 CSV 现算（最后一行的
-  # avg_cpu_percent 已是全窗口累计均值，RSS 取列最大值）。
-  AGG=$(awk -F, 'NR>1 && $2 ~ /^[0-9]+$/ {
+  # 采样器被 SIGTERM 收尾时来不及打汇总行——直接从 CSV 现算（第 3 列已是全窗口
+  # 累计均值，其余列取最大值；空单元格自然被数值比较忽略）。
+  echo "── 服务端水位（admin-api，每 2s 采样）──" >&2
+  awk -F, 'NR>1 && $2 ~ /^[0-9]+$/ {
       n++;
       if ($2 > maxrss) maxrss = $2;
-      last = $3;
-    } END { printf "%d %.2f %d", maxrss/1024, last*100, n }' "$SERVER_METRICS_FILE")
-  read -r PEAK_MB AVG_CPU SAMPLES <<<"$AGG"
-  echo "── 服务端水位（admin-api 进程，采样 ${SAMPLES} 次 / 间隔 2s）──" >&2
-  echo "峰值 RSS: ${PEAK_MB} MB   平均 CPU: ${AVG_CPU}%（单核百分比）" >&2
-  echo "（原始采样：$SERVER_METRICS_FILE）" >&2
+      lastcpu = $3;
+      if ($4+0 > pg) pg = $4+0;
+      if ($5+0 > rd) rd = $5+0;
+      if ($6+0 > pa) pa = $6+0;
+      if ($7+0 > pim) pim = $7+0;
+      if ($8+0 > pw) pw = $8+0;
+      if ($9+0 > elv) elv = $9+0;
+      if ($10+0 > heap) heap = $10+0;
+      if ($11+0 > qd) qd = $11+0;
+      if ($12+0 > tick) tick = $12+0;
+    } END {
+      printf "峰值 RSS: %d MB   平均 CPU: %.2f%%（单核）   采样 %d 次\n", maxrss/1024, lastcpu*100, n;
+      printf "PG 连接峰值: %d   Redis 连接峰值: %d   DB 连接池 active/idle/waiting 峰值: %d/%d/%d\n", pg, rd, pa, pim, pw;
+      printf "事件循环延迟峰值: %.4f s   堆占用峰值: %.1f MB   BullMQ 队列深度峰值: %d   调度 tick 峰值: %.1f ms\n", elv, heap, qd, tick;
+    }' "$SERVER_METRICS_FILE" >&2
+  echo "（原始采样 CSV：$SERVER_METRICS_FILE） " >&2
 fi
 
 if [[ $RC == 0 ]]; then
