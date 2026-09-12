@@ -117,6 +117,13 @@ export class TaskProcessor extends WorkerHost {
     exec.status = ExecutionStatus.RUNNING;
     exec.startTime = startTime;
 
+    // BUG-21：派发阶段失败的终态事件（最后一次尝试时装配，落库成功后发布）。
+    let pendingTerminalEvent: { errorMessage?: string; logs?: string } | null =
+      null;
+    // 本次尝试是否真的把终态写进了库（affected>0）——事件只对应真实持久化的
+    // 终态；被别的写入者抢先终态化时由赢家负责发布。
+    let terminalPersisted = false;
+
     try {
       // Broadcast mode: dispatch to all online executors
       // Single mode: dispatch to the executor with lowest load
@@ -187,36 +194,14 @@ export class TaskProcessor extends WorkerHost {
       }
       this.logger.error(`Task ${task.id} failed: ${errMsg}`);
       if (isLastAttempt) {
-        try {
-          await this.notificationService.notifyFailureWithConfig(
-            task.name,
-            exec.id,
-            errMsg,
-            exec.aiAnalysis,
-            task.alarmEmail,
-            task.alarmChannels,
-            undefined,
-            undefined,
-            task.runbook,
-          );
-        } catch (notifyErr: unknown) {
-          // B-08: record notification failure to audit log so it is not silently discarded
-          const notifyErrMsg =
-            notifyErr instanceof Error ? notifyErr.message : String(notifyErr);
-          this.logger.error(
-            `Notification failed for execution ${exec.id}: ${notifyErrMsg}`,
-          );
-          try {
-            await this.auditService.log({
-              action: "NOTIFICATION_FAILED",
-              resource: "task_execution",
-              resourceId: exec.id,
-              detail: { task: task.name, error: notifyErrMsg },
-            });
-          } catch {
-            /* audit is best-effort */
-          }
-        }
+        // BUG-21（nginx SSE 真机验证暴露）：这里原先**直调**通知，既不发布
+        // 领域事件也不复用 ARCH-21 的统一订阅者——于是「派发阶段失败」
+        // （执行器离线/无匹配执行器/派发超时，executor 根本没接单）的终态
+        // 对 Dashboard 终态流与 FEAT-07 出站 webhook 完全不可见。
+        // 现改为：最后尝试的**终态落库成功后**发布 execution.failed 事件，
+        // 通知由 notification 模块的 ExecutionEventsListener 统一发出（含
+        // NOTIFICATION_FAILED 审计兜底），单一语义出口。
+        pendingTerminalEvent = { errorMessage: errMsg, logs: errStack };
       }
       // Q1: rethrow so BullMQ retries apply — except dispatch timeouts: the
       // executor may still be running the task, so a retry would dispatch the
@@ -296,7 +281,7 @@ export class TaskProcessor extends WorkerHost {
       };
 
       try {
-        await queryRunner.manager
+        const persisted = await queryRunner.manager
           .createQueryBuilder()
           .update(TaskExecution)
           .set(ownedPatch)
@@ -305,6 +290,7 @@ export class TaskProcessor extends WorkerHost {
             writable: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
           })
           .execute();
+        if (persisted.affected) terminalPersisted = true;
         await queryRunner.commitTransaction();
         this.logger.debug(
           `Successfully saved execution ${exec.id} final state in transaction`,
@@ -341,6 +327,7 @@ export class TaskProcessor extends WorkerHost {
               })
               .execute();
             if (repaired.affected) {
+              terminalPersisted = true;
               this.logger.log(
                 `Repaired execution ${exec.id} state after transaction failure`,
               );
@@ -370,6 +357,27 @@ export class TaskProcessor extends WorkerHost {
       // here (SUCCESS is written exclusively by the callback's conditional
       // UPDATE), so the former `exec.status === SUCCESS` trigger in this
       // finally block was dead code and dependency chains never fired.
+
+      // BUG-21: 派发失败的最后一次尝试 → 终态**落库成功之后**发布领域事件
+      // （Dashboard 终态流 / 出站 webhook / 通知订阅者三方一致可见）。
+      // 落库失败（事务回滚且修复也没成功）时不发——事件必须对应真实持久化
+      // 的终态，否则消费者会读到不存在的失败。
+      if (pendingTerminalEvent && terminalPersisted) {
+        // 事件是旁路：任何意外都不得改变主链结果（尤其不能在 finally 里
+        // 抛出而掩盖原始的派发失败异常）。
+        try {
+          this.taskService.publishTerminalEventForDispatch(
+            exec,
+            pendingTerminalEvent,
+          );
+        } catch (emitErr: unknown) {
+          this.logger.warn(
+            `Failed to publish dispatch-failure event for execution ${exec.id}: ${
+              emitErr instanceof Error ? emitErr.message : String(emitErr)
+            }`,
+          );
+        }
+      }
     }
   }
 }
