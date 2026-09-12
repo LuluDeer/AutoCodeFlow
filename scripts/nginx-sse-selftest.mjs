@@ -67,6 +67,12 @@ const MAX_PING_GAP_MS = 45_000;
 const FIRST_FRAME_BUDGET_MS = 25_000;
 /** 长流期间 admin-api RSS 涨幅上限（MB）。 */
 const RSS_GROWTH_LIMIT_MB = 200;
+/** 反代并发长流档：并发连接数（0 = 跳过该档）。 */
+const PROXY_SSE_CONNS = Number(process.env.NGINX_SSE_CONNS || 500);
+/** 并发长流的保持时长（秒）。必须 > executions/stream 的 idle ping 间隔（默认
+ *  30s，EXECUTIONS_STREAM_IDLE_PING_MS）——事件流是事件驱动、无初始快照，短于
+ *  该间隔时那一半连接必然零帧（实测 20s 档正是 250/500 有帧）。 */
+const PROXY_SSE_HOLD_S = Number(process.env.NGINX_SSE_HOLD || 35);
 
 const ADMIN = { username: 'admin', password: 'admin123' };
 
@@ -126,6 +132,9 @@ function baseEnv(port) {
     AI_PROVIDER: 'disabled',
     LOGIN_THROTTLE_LIMIT: '10000',
     THROTTLE_LIMIT: '10000',
+    // 反代并发长流档：全局流槽位（metrics/stream 与 executions/stream 共享）
+    // 必须抬到并发数之上，否则测到的是应用槽位 503 而不是代理层行为。
+    METRICS_STREAM_MAX_GLOBAL: String(Math.max(64, Number(process.env.NGINX_SSE_CONNS || 500) + 64)),
   };
 }
 
@@ -488,6 +497,12 @@ async function main() {
   ok('② 首帧不迟滞（缓冲会攒够 buffer 才下发 → 实时日志体验受损）',
     logsStream.firstFrameAt > 0 && logsStream.firstFrameAt - logsStream.startedAt < FIRST_FRAME_BUDGET_MS,
     `firstFrame Δ=${logsStream.firstFrameAt - logsStream.startedAt}ms（预算 ${FIRST_FRAME_BUDGET_MS}ms）`);
+
+  if (SOAK_SECONDS < 20) {
+    // 短档（smoke）：首帧断言在执行刚起跑时无意义，显式降级为跳过而非误判失败
+    results[results.length - 1] = { name: '② 首帧不迟滞', pass: null };
+    console.log('- ② 首帧不迟滞（跳过：soak < 20s，短档下执行可能尚未产生首帧）');
+  }
   ok('⑤ 并发长流全程共存（三条 SSE 互不干扰）',
     !termStream.error && !metricsStream.error && termStream.status === 200 && metricsStream.status === 200,
     `term(ended=${termStream.ended} err=${termStream.error}) metrics(ended=${metricsStream.ended} err=${metricsStream.error})`);
@@ -539,8 +554,66 @@ async function main() {
   const after = await fetch(`http://localhost:${PROXY_PORT}/api/health`);
   ok('断流后服务正常（连接与槽位回收干净）', after.ok, `status=${after.status}`);
 
+  // ── [9] ⑧ 反代并发长流档（QA-05 缺口：经 nginx 的 500 连接形态）────────
+  // 生产拓扑里 nginx 在应用前面，应用侧扛得住不等于代理层扛得住：nginx 的
+  // worker_connections、upstream keepalive、limit_conn 都可能先到顶。这里按
+  // 并发建流 → 保持 → 断言建连率/存活率/保活帧/槽位回收，并打印水位。
+  if (PROXY_SSE_CONNS > 0) {
+    const rssBefore = Math.round(rssKb(apiChild.pid) / 1024);
+    const streams = [];
+    const urlFor = (i) =>
+      i % 2 === 0
+        ? `http://localhost:${PROXY_PORT}/api/executions/stream`
+        : `http://localhost:${PROXY_PORT}/api/metrics/stream`;
+    const openStart = Date.now();
+    for (let i = 0; i < PROXY_SSE_CONNS; i += 1) {
+      streams.push(openSse(urlFor(i), token));
+    }
+    await Promise.allSettled(streams.map((s) => s.ready));
+    const openMs = Date.now() - openStart;
+
+    const statusCount = new Map();
+    for (const s of streams) {
+      statusCount.set(s.status ?? 0, (statusCount.get(s.status ?? 0) ?? 0) + 1);
+    }
+    const established = streams.filter(
+      (s) => s.status === 200 && (s.headers?.get?.('content-type') || '').includes('text/event-stream'),
+    ).length;
+
+    await sleep(PROXY_SSE_HOLD_S * 1000);
+    const alive = streams.filter((s) => !s.ended && !s.error).length;
+    const withFrames = streams.filter((s) => s.frames > 0).length;
+    const rssAfter = Math.round(rssKb(apiChild.pid) / 1024);
+
+    console.log(
+      `  反代并发长流：${PROXY_SSE_CONNS} 条 / 建连 ${openMs}ms / 状态分布 ${JSON.stringify(
+        Object.fromEntries(statusCount),
+      )} / 存活 ${alive} / 有帧 ${withFrames} / RSS ${rssBefore}→${rssAfter} MB`,
+    );
+    ok(`⑧ 经 nginx 建立 ${PROXY_SSE_CONNS} 条 SSE 长流（建连率 ≥99%）`,
+      established >= Math.floor(PROXY_SSE_CONNS * 0.99),
+      `established=${established}/${PROXY_SSE_CONNS} status=${JSON.stringify(Object.fromEntries(statusCount))}`);
+    ok(`⑧ 保持 ${PROXY_SSE_HOLD_S}s 后存活率 ≥99%（代理未提前掐断）`,
+      alive >= Math.floor(PROXY_SSE_CONNS * 0.99), `alive=${alive}/${PROXY_SSE_CONNS}`);
+    ok('⑧ 长流全程有保活/数据帧到达（字节真的在流，不是死连接）',
+      withFrames >= Math.floor(PROXY_SSE_CONNS * 0.9), `withFrames=${withFrames}/${PROXY_SSE_CONNS}`);
+    ok('⑧ 500 并发长流下 admin-api RSS 增幅在阈值内（无连接级泄漏）',
+      rssAfter - rssBefore <= RSS_GROWTH_LIMIT_MB, `ΔRSS=${rssAfter - rssBefore} MB（上限 ${RSS_GROWTH_LIMIT_MB}）`);
+
+    for (const s of streams) s.stop();
+    await sleep(3000);
+    // 槽位回收：关掉整批后应能重新建连（不残留占满全局槽位）
+    const recheck = openSse(`http://localhost:${PROXY_PORT}/api/metrics/stream`, token);
+    await Promise.race([recheck.ready, sleep(10_000)]);
+    ok('⑧ 批量断流后槽位回收干净（可立即重新建流）',
+      recheck.status === 200, `status=${recheck.status}`);
+    recheck.stop();
+    await sleep(500);
+  }
+
   summary();
 }
+
 
 function summary() {
   const passed = results.filter((r) => r.pass === true).length;
