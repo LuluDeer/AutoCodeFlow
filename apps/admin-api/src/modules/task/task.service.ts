@@ -541,12 +541,43 @@ export class TaskService {
     return t;
   }
 
+  /**
+   * R-01: 写路径专用取数——返回**未经 maskForResponse 脱敏**的原始实体
+   * （secrets 保持库中密文/明文原值），status 过滤与 findOne 完全一致
+   * （排除 DELETED）。凡把 findOne() 的脱敏结果直接 save 回库的写路径，
+   * 都会把字面量 "******" 整体覆盖到真实 secrets 上（不可逆损毁）——
+   * 与 application.service R1 同型修复：写面一律走本方法取数，返回体
+   * 再统一经 maskSecretsForResponse 脱敏（读面 findOne 保持脱敏不变）。
+   */
+  private async findByIdRaw(id: string): Promise<Task> {
+    const t = await this.taskRepo.findOne({
+      where: { id, status: Not(TaskStatus.DELETED) },
+    });
+    if (!t) throw new NotFoundException("Task not found");
+    return t;
+  }
+
+  /**
+   * R-01: 写路径返回体统一脱敏——写路径内部消费 RAW 行（findByIdRaw），
+   * HTTP 面返回前把 secrets 掩码回 ******，响应契约与既往（消费脱敏副本
+   * 时的偶然结果）逐字节一致。
+   */
+  private maskSecretsForResponse<
+    T extends { secrets?: Record<string, unknown> | null | undefined },
+  >(t: T): T {
+    t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
+      Record<string, unknown> | null | undefined;
+    return t;
+  }
+
   async update(
     id: string,
     dto: UpdateTaskDto,
     user?: { id: number; role: UserRole } | null,
   ) {
-    const t = await this.findOne(id);
+    // R-01: 写路径走 RAW 取数——findOne 的脱敏副本一旦 save 回库，会把
+    // "******" 字面量覆盖到真实 secrets（PATCH 不带 secrets 时必现）。
+    const t = await this.findByIdRaw(id);
     // NF-03: 写面属主守卫（ADMIN 全量/属主自己/无主仅 ADMIN）
     await this.assertCanWriteProjectAware(t, user);
     const normalized = this.normalizeTaskDto(dto);
@@ -554,9 +585,8 @@ export class TaskService {
     if (normalized.gitRepo) {
       await assertSafeGitRepoUrl(normalized.gitRepo);
     }
-    // SEC-02: PATCH 语义——secrets 缺省 = 保留旧值（不触碰既有列）；
-    // 显式 null / {} = 清空/替换。归一化在脱敏副本上做（findOne 已脱敏，
-    // DTO 未带 secrets 时不能把脱敏值当新值再加密一层）。
+    // SEC-02: PATCH 语义——secrets 缺省 = 保留旧值（不触碰既有列；R-01:
+    // 保留的是 RAW 原值而非掩码副本）；显式 null / {} = 清空/替换。
     if (normalized.secrets !== undefined) {
       normalized.secrets = this.secretsCrypto.encryptForStorage(
         normalized.secrets,
@@ -581,20 +611,31 @@ export class TaskService {
     if (saved.status === TaskStatus.ACTIVE) {
       await this.schedulerService.scheduleOne(saved);
     }
-    return saved;
+    // R-01: 返回体统一脱敏（内部消费 RAW 行，响应面语义与既往一致）
+    return this.maskSecretsForResponse(saved);
   }
 
-  async updateGlue(id: string, source: string, language?: string) {
-    const t = await this.findOne(id);
+  async updateGlue(
+    id: string,
+    source: string,
+    language?: string,
+    user?: { id: number; role: UserRole } | null,
+  ) {
+    // R-01: RAW 取数（findOne 的掩码副本 save 回库 = secrets 不可逆损毁）
+    const t = await this.findByIdRaw(id);
+    // R-03: 写面归属守卫（镜像 update/remove 口径）——updateGlue 等价于
+    // 改写任务执行的代码，此前完全绕过归属守卫。
+    await this.assertCanWriteProjectAware(t, user);
     t.glueSource = source;
     if (language) t.glueLanguage = language;
     const saved = await this.taskRepo.save(t);
     await this.saveVersion(saved.id, undefined, undefined, saved);
-    return saved;
+    return this.maskSecretsForResponse(saved);
   }
 
   async remove(id: string, user?: { id: number; role: UserRole } | null) {
-    const t = await this.findOne(id);
+    // R-01: RAW 取数——软删落库同样不得把掩码副本写进 secrets 列
+    const t = await this.findByIdRaw(id);
     // NF-03: 写面属主守卫（同 update）
     await this.assertCanWriteProjectAware(t, user);
     // Stop schedule immediately without waiting for reload
@@ -608,7 +649,9 @@ export class TaskService {
   }
 
   async pause(id: string, user?: { id: number; role: UserRole } | null) {
-    const t = await this.findOne(id);
+    // R-01: RAW 取数——暂停落库会把实体整体 UPDATE 回库，脱敏副本同样
+    // 会把 "******" 覆盖到真实 secrets（每次 pause/resume 必现）。
+    const t = await this.findByIdRaw(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(t, user);
     if (t.status === TaskStatus.PAUSED) {
@@ -616,11 +659,13 @@ export class TaskService {
     }
     this.schedulerService.stop(id);
     t.status = TaskStatus.PAUSED;
-    return this.taskRepo.save(t);
+    const saved = await this.taskRepo.save(t);
+    return this.maskSecretsForResponse(saved);
   }
 
   async resume(id: string, user?: { id: number; role: UserRole } | null) {
-    const t = await this.findOne(id);
+    // R-01: RAW 取数（同 pause）
+    const t = await this.findByIdRaw(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(t, user);
     if (t.status !== TaskStatus.PAUSED) {
@@ -629,7 +674,7 @@ export class TaskService {
     t.status = TaskStatus.ACTIVE;
     await this.taskRepo.save(t);
     await this.schedulerService.scheduleOne(t);
-    return t;
+    return this.maskSecretsForResponse(t);
   }
 
   async trigger(
@@ -1248,8 +1293,16 @@ export class TaskService {
   async rollback(
     id: string,
     dto: { gitCommit: string; params?: Record<string, any> },
+    user?: { id: number; role: UserRole } | null,
   ) {
-    const task = await this.findOne(id);
+    // R-01: RAW 取数——事务内 manager.save(Task, task) 消费该实体，
+    // findOne 的掩码副本会把 "******" 整体落库。
+    const task = await this.findByIdRaw(id);
+    // R-03: 写面归属守卫（镜像 update 口径——rollback 改写 gitCommit）。
+    // rollback 同时触发执行，叠加执行类写面同一口径的 assertCanOperate
+    // （仅拒绝项目 viewer，不为执行面新增更严语义）。
+    await this.assertCanWriteProjectAware(task, user);
+    await this.assertCanOperate(task, user);
     const prevCommit = task.gitCommit;
 
     const exec = await this.dataSource.transaction(async (manager) => {
@@ -2164,13 +2217,21 @@ export class TaskService {
     return version;
   }
 
-  async rollbackToVersion(taskId: string, versionId: string): Promise<Task> {
+  async rollbackToVersion(
+    taskId: string,
+    versionId: string,
+    user?: { id: number; role: UserRole } | null,
+  ): Promise<Task> {
     const version = await this.getVersion(taskId, versionId);
 
     const task = await this.taskRepo.findOne({ where: { id: taskId } });
     if (!task) {
       throw new NotFoundException("Task not found");
     }
+
+    // R-03: 写面归属守卫（镜像 update 口径）。本路径直接以 repo 查询取
+    // RAW 实体（无脱敏，快照亦不含 secrets），无 R-01 掩码回写问题。
+    await this.assertCanWriteProjectAware(task, user);
 
     Object.assign(task, version.snapshot);
     task.currentVersion = version.version;

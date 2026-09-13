@@ -1,5 +1,5 @@
 import { Test } from "@nestjs/testing";
-import { UnauthorizedException } from "@nestjs/common";
+import { NotFoundException, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
@@ -23,6 +23,7 @@ describe("AuthService (__tests__)", () => {
       UsersService,
       | "findByUsername"
       | "findById"
+      | "findByIdOrNull"
       | "recordLoginFailure"
       | "resetLoginFailure"
       | "clearExpiredLock"
@@ -36,7 +37,14 @@ describe("AuthService (__tests__)", () => {
   beforeEach(async () => {
     usersService = {
       findByUsername: jest.fn(),
-      findById: jest.fn(),
+      // R-04: refreshToken 走 findByIdOrNull（null = 用户已删除）。findById
+      // 保留为抛 404 的守卫桩：若实现回退到 findById，refreshToken 会以
+      // NotFoundException（404）爆出而非 401，用例即红——钉住「401 而非
+      // 404」的存在性泄漏语义。
+      findById: jest.fn().mockImplementation((id: number) => {
+        throw new NotFoundException(`User #${id} not found`);
+      }),
+      findByIdOrNull: jest.fn(),
       recordLoginFailure: jest.fn().mockResolvedValue(undefined),
       resetLoginFailure: jest.fn().mockResolvedValue(undefined),
       clearExpiredLock: jest.fn().mockResolvedValue(true),
@@ -212,7 +220,7 @@ describe("AuthService (__tests__)", () => {
         jti: "valid-jti-uuid",
       } as any);
       refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
-      usersService.findById.mockResolvedValue(mockUser as any);
+      usersService.findByIdOrNull.mockResolvedValue(mockUser as any);
       const result = await service.refreshToken("valid-token");
       expect(result).toHaveProperty("accessToken");
       expect(result).toHaveProperty("refreshToken");
@@ -249,17 +257,23 @@ describe("AuthService (__tests__)", () => {
       );
     });
 
-    it("throws if user is not found after token verification", async () => {
+    // R-04: 已删除用户仍持有效 refresh token 时必须 401（UnauthorizedException），
+    // 而非经 findById 泄漏 404 "User #N not found"（存在性 + 数字 id 泄漏）。
+    it("R-04: deleted user (findByIdOrNull → null) gets 401, never the 404 from findById", async () => {
       jwtService.verify.mockReturnValue({
         sub: 99,
         username: "ghost",
         type: "refresh",
         jti: mockJti,
       } as any);
-      usersService.findById.mockResolvedValue(null as any);
+      usersService.findByIdOrNull.mockResolvedValue(null as any);
       await expect(service.refreshToken("valid-token")).rejects.toThrow(
         UnauthorizedException,
       );
+      expect(usersService.findByIdOrNull).toHaveBeenCalledWith(99);
+      // 404 泄漏面（findById）必须保持零调用
+      expect(usersService.findById).not.toHaveBeenCalled();
+      expect(jwtService.sign).not.toHaveBeenCalled();
     });
 
     it("SEC-02: throws when jti token record is not found in DB", async () => {
@@ -295,7 +309,7 @@ describe("AuthService (__tests__)", () => {
         type: "refresh",
         jti: mockJti,
       } as any);
-      usersService.findById.mockResolvedValue(mockUser as any);
+      usersService.findByIdOrNull.mockResolvedValue(mockUser as any);
       refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
       await service.refreshToken("good-token");
       expect(refreshTokenRepo.update).toHaveBeenCalledWith(
@@ -313,7 +327,7 @@ describe("AuthService (__tests__)", () => {
         type: "refresh",
         jti: mockJti,
       });
-      usersService.findById.mockResolvedValue(mockUser as any);
+      usersService.findByIdOrNull.mockResolvedValue(mockUser as any);
     });
 
     it("allows only one concurrent refresh of the same jti", async () => {
@@ -330,7 +344,7 @@ describe("AuthService (__tests__)", () => {
         status: "rejected",
         reason: new UnauthorizedException("Refresh token has been revoked"),
       });
-      expect(usersService.findById).toHaveBeenCalledTimes(1);
+      expect(usersService.findByIdOrNull).toHaveBeenCalledTimes(1);
       expect(generate).toHaveBeenCalledTimes(1);
       expect(refreshTokenRepo.update).toHaveBeenCalledTimes(2);
       expect(refreshTokenRepo.update).toHaveBeenCalledWith(
@@ -344,12 +358,12 @@ describe("AuthService (__tests__)", () => {
       await expect(service.refreshToken("token")).rejects.toThrow(
         "Refresh token has been revoked",
       );
-      expect(usersService.findById).not.toHaveBeenCalled();
+      expect(usersService.findByIdOrNull).not.toHaveBeenCalled();
       expect(jwtService.sign).not.toHaveBeenCalled();
     });
 
     it("rejects an inactive user after consuming the token", async () => {
-      usersService.findById.mockResolvedValue({
+      usersService.findByIdOrNull.mockResolvedValue({
         ...mockUser,
         isActive: false,
       } as any);
@@ -357,7 +371,7 @@ describe("AuthService (__tests__)", () => {
         UnauthorizedException,
       );
       expect(refreshTokenRepo.update).toHaveBeenCalledTimes(1);
-      expect(usersService.findById).toHaveBeenCalledWith(1);
+      expect(usersService.findByIdOrNull).toHaveBeenCalledWith(1);
       expect(jwtService.sign).not.toHaveBeenCalled();
     });
 
@@ -374,7 +388,7 @@ describe("AuthService (__tests__)", () => {
       await expect(service.refreshToken("token")).rejects.toThrow(
         "Refresh token has been revoked",
       );
-      expect(usersService.findById).toHaveBeenCalledTimes(1);
+      expect(usersService.findByIdOrNull).toHaveBeenCalledTimes(1);
       expect(jwtService.sign).toHaveBeenCalledTimes(1);
     });
 
@@ -396,7 +410,7 @@ describe("AuthService (__tests__)", () => {
           UnauthorizedException,
         );
         expect(refreshTokenRepo.update).not.toHaveBeenCalled();
-        expect(usersService.findById).not.toHaveBeenCalled();
+        expect(usersService.findByIdOrNull).not.toHaveBeenCalled();
         expect(jwtService.sign).not.toHaveBeenCalled();
       },
     );
@@ -455,7 +469,7 @@ describe("AuthService (__tests__)", () => {
         jti: mockJti,
       } as any);
       refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
-      usersService.findById.mockResolvedValue({
+      usersService.findByIdOrNull.mockResolvedValue({
         ...mockUser,
         sessionVersion: 7,
       } as any);
