@@ -24,8 +24,8 @@ modules/config/
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
 | GET | `/config` | JWT | 全部条目；支持 `?prefix=`、`?tag=` 过滤；`isSecret` 条目 value 掩码为 `***` |
-| GET | `/config/history` | JWT | 变更历史（分页，secret 键的新旧值掩码） |
-| GET | `/config/history/:key` | JWT | 单键历史（同样掩码） |
+| GET | `/config/history` | JWT | 变更历史（分页；新旧值掩码：行级 `isSecret` 与 secret 键推断取并集，WIKI-OPT-2） |
+| GET | `/config/history/:key` | JWT | 单键历史（同上行级掩码） |
 | POST | `/config/history/:id/rollback` | `@Roles(ADMIN)` | 回滚到历史版本（`ParseIntPipe` 校验 id） |
 | POST | `/config/executor-shared-token/generate` | `@Roles(ADMIN)` | 生成/轮换 64 hex 执行器共享 token（落库 `executor.sharedToken`，isSecret） |
 | GET | `/config/executor-shared-token` | `@Roles(ADMIN)` | 明文返回当前共享 token（唯一明文出口） |
@@ -46,15 +46,21 @@ upsert(dto, {userId, username, ipAddress})
     （S3：admin-web 回显掩码后保存不能把真值覆盖成 "***"）
   → validateConfig：按 valueType（string/number/boolean/json）校验值合法
   → repo.upsert（conflictPaths: ["key"]，值未变则跳过更新）
-  → recordHistory：写 config_history（action=create|update，新旧值 + 操作人 + IP）
-remove → 先记 action=delete 历史 → repo.remove
-rollback(historyId) → 按 action 分派：update/create 恢复旧值；delete 恢复被删条目；
-  回滚本身再写一条 action=rollback 的历史（FEAT-08）
+  → recordHistory：写 config_history（action=create|update，新旧值 +
+    valueType/isSecret 元数据快照 + 操作人 + IP，WIKI-OPT-2）
+remove → 先记 action=delete 历史（含被删行 valueType/isSecret）→ repo.remove
+rollback(historyId) → 按 action 分派：update/create 恢复旧值；delete 恢复被删条目
+  （行已删除时 valueType/isSecret 优先取历史行持久化的元数据，存量 NULL 行
+  回退默认 "string"/false，WIKI-OPT-2）；回滚本身再写一条 action=rollback 的
+  历史（FEAT-08）
+batchUpsert(items) → **单数据库事务**承载整批（每条的配置写入 + 历史写入，
+  事务内一律走事务级 manager 仓储），任一项失败整体回滚不留部分写入
+  （WIKI-OPT-2；单条 upsert 保持原语义不强制事务）
 ```
 
 ### 掩码规则
 
-读面（findAll/findOne/history）对 `isSecret` 条目统一 `***`；写面靠上面的 sentinel 语义保留真值。`getSecretKeys()` 供 history 路由做键级掩码。
+读面（findAll/findOne）对 `isSecret` 条目统一 `***`；写面靠上面的 sentinel 语义保留真值。历史读面（history 两路由）自 WIKI-OPT-2 起**按行级保密掩码**：历史行持久化的 `isSecret=true`（迁移 `1790000000016`）逐行掩码，与 `getSecretKeys()` 的键级推断取并集——防配置被删除或取消 secret 标记后历史暴露旧机密值；存量旧行（isSecret 为 NULL=元数据不可知）沿用键级推断，行为不回归。
 
 ## 与其他模块的关系
 

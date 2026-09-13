@@ -38,7 +38,24 @@ export class SystemConfigService {
     dto: UpsertConfigDto,
     options?: HistoryOptions,
   ): Promise<SystemConfig> {
-    const existing = await this.repo.findOneBy({ key: dto.key });
+    // 单条 upsert 保持原语义（走外部仓储，不强制事务）；batchUpsert 的事务
+    // 路径复用同一实现但传入事务级仓储（WIKI-OPT-2）。
+    return this.upsertInStores(this.repo, this.historyRepo, dto, options);
+  }
+
+  /**
+   * WIKI-OPT-2: 单条 upsert 的实际实现，两个仓储由调用方注入——upsert()
+   * 传外部（非事务）仓储，batchUpsert() 传事务级 manager.getRepository(...)。
+   * 事务路径严禁混用外部 this.repo/this.historyRepo（外部连接不参与事务
+   * 回滚，会留下部分写入）。
+   */
+  private async upsertInStores(
+    repo: Repository<SystemConfig>,
+    historyRepo: Repository<ConfigHistory>,
+    dto: UpsertConfigDto,
+    options?: HistoryOptions,
+  ): Promise<SystemConfig> {
+    const existing = await repo.findOneBy({ key: dto.key });
     const action = existing ? "update" : "create";
 
     // S3: the read surface masks secret values to '***' (ConfigController
@@ -58,7 +75,7 @@ export class SystemConfigService {
     // the preserved real value may well be).
     await this.validateConfig({ ...dto, value });
 
-    await this.repo.upsert(
+    await repo.upsert(
       {
         key: dto.key,
         value,
@@ -69,16 +86,20 @@ export class SystemConfigService {
       { conflictPaths: ["key"], skipUpdateIfNoValuesChanged: true },
     );
 
-    await this.recordHistory({
+    await this.recordHistory(historyRepo, {
       configKey: dto.key,
       oldValue: existing?.value,
       newValue: value,
       description: dto.description,
+      // WIKI-OPT-2: 历史行持久化落库后的最终元数据（与上方 repo.upsert
+      // 写入值一致），供回滚恢复与读面行级保密使用。
+      valueType: dto.valueType ?? "string",
+      isSecret,
       action,
       ...options,
     });
 
-    return this.repo.findOneBy({ key: dto.key });
+    return repo.findOneBy({ key: dto.key });
   }
 
   async remove(
@@ -88,11 +109,15 @@ export class SystemConfigService {
     const config = await this.repo.findOneBy({ key });
     if (!config) throw new NotFoundException(`Config key "${key}" not found`);
 
-    await this.recordHistory({
+    await this.recordHistory(this.historyRepo, {
       configKey: key,
       oldValue: config.value,
       newValue: null,
       description: config.description,
+      // WIKI-OPT-2: 记被删配置行的原元数据（行删除后回滚可如实在原，
+      // 读面行级保密也依赖它）。
+      valueType: config.valueType,
+      isSecret: config.isSecret,
       action: "delete",
       ...options,
     });
@@ -101,23 +126,40 @@ export class SystemConfigService {
     return { deleted: true };
   }
 
+  /**
+   * WIKI-OPT-2: 批量 upsert 事务化——整批（每条的配置写入 + 历史写入）
+   * 包在单个数据库事务内，任一项失败整体回滚并向上抛错，不再留下部分写入
+   * （wiki page-19 评审：此前 for 循环顺序调用 upsert 无原子性）。
+   * 事务内一律走事务级 manager.getRepository(...)，不混用外部 this.repo。
+   * 单条 upsert() 保持原语义（不强制也走事务）。
+   */
   async batchUpsert(
     items: UpsertConfig[],
     options?: HistoryOptions,
   ): Promise<SystemConfig[]> {
-    const results: SystemConfig[] = [];
-    for (const item of items) {
-      const dto: UpsertConfigDto = {
-        key: item.key,
-        value: item.value,
-        description: item.description,
-        valueType: item.valueType,
-        isSecret: item.isSecret,
-      };
-      const result = await this.upsert(dto, options);
-      results.push(result);
-    }
-    return results;
+    return this.repo.manager.transaction(async (manager) => {
+      const txConfigRepo = manager.getRepository(SystemConfig);
+      const txHistoryRepo = manager.getRepository(ConfigHistory);
+      const results: SystemConfig[] = [];
+      for (const item of items) {
+        const dto: UpsertConfigDto = {
+          key: item.key,
+          value: item.value,
+          description: item.description,
+          valueType: item.valueType,
+          isSecret: item.isSecret,
+        };
+        results.push(
+          await this.upsertInStores(
+            txConfigRepo,
+            txHistoryRepo,
+            dto,
+            options,
+          ),
+        );
+      }
+      return results;
+    });
   }
 
   async getHistory(
@@ -147,11 +189,14 @@ export class SystemConfigService {
    * 掩码哨兵语义（S3 延伸场景，已核实写历史代码）：
    * - upsert 在 recordHistory 之前已把 '***' 哨兵解析为库中现值（isSecret 且
    *   existing 存在时），因此 config_history 落库的 old/new 是真实值；'***'
-   *   掩码只出现在控制器读取面（getHistory/findOne 等对 secret 键的出参）。
+   *   掩码只出现在控制器读取面（getHistory/findOne 等出参；历史读面自
+   *   WIKI-OPT-2 起按历史行持久化的 isSecret 行级掩码，存量 NULL 行沿用
+   *   「按当前配置行 isSecret」的键级推断）。
    * - 所以本方法从库里读到的 history.oldValue 就是历史真实值，可直接回写。
    * - 防御性守卫：若库里 oldValue 本身就是 '***'（只可能来自 S3 修复前的旧行、
-   *   或"创建 secret 项时直接提交掩码"的边缘写入），且该键当前 isSecret，则
-   *   拒绝回滚 —— 把掩码当真实值写回配置正是 S3 数据破坏的回滚版镜像。
+   *   或"创建 secret 项时直接提交掩码"的边缘写入），且该键当前 isSecret
+   *   （行已删除时取历史行持久化的 isSecret，WIKI-OPT-2），则拒绝回滚 ——
+   *   把掩码当真实值写回配置正是 S3 数据破坏的回滚版镜像。
    *
    * 语义矩阵：
    * - 条目不存在 → 404；
@@ -161,9 +206,11 @@ export class SystemConfigService {
    * - action=delete（oldValue 为被删时的真实值，可能为 null）→ 按 oldValue
    *   重建该键；
    * - 其余（update 且 oldValue 非空）→ 把值写回 oldValue，仅回滚值本身：
-   *   行仍在时保留其当前 description/valueType/isSecret（历史行不记录这些
-   *   元数据），行已删除时以历史行记录的 description 重建、valueType/isSecret
-   *   不可知按默认值落库。
+   *   行仍在时保留其当前 description/valueType/isSecret（不覆盖现状）；
+   *   行已删除时以历史行记录的 description 重建，valueType/isSecret 优先
+   *   取历史行持久化的元数据（迁移 1790000000016 起 recordHistory 落值，
+   *   WIKI-OPT-2），存量旧行（NULL=元数据不可知）才回退默认值
+   *   "string"/false。
    *
    * 每次回滚本身写一条 action='rollback' 的历史（含操作者 userId/username/
    * ipAddress）。不走 this.upsert() 是因为它会再落一条 'update'/'create' 历史、
@@ -180,11 +227,14 @@ export class SystemConfigService {
     if (history.action === "create") {
       const existing = await this.repo.findOneBy({ key: history.configKey });
       if (existing) {
-        await this.recordHistory({
+        await this.recordHistory(this.historyRepo, {
           configKey: history.configKey,
           oldValue: existing.value,
           newValue: null,
           description: existing.description,
+          // WIKI-OPT-2: 记被删（回滚到创建前）配置行的原元数据。
+          valueType: existing.valueType,
+          isSecret: existing.isSecret,
           action: "rollback",
           ...options,
         });
@@ -201,7 +251,10 @@ export class SystemConfigService {
 
     const current = await this.repo.findOneBy({ key: history.configKey });
 
-    if (history.oldValue === "***" && current?.isSecret) {
+    if (
+      history.oldValue === "***" &&
+      (current?.isSecret || history.isSecret === true)
+    ) {
       throw new BadRequestException(
         `History record "${historyId}" only holds the '***' mask for secret key "${history.configKey}"; refusing to write the mask back as a real value`,
       );
@@ -211,8 +264,13 @@ export class SystemConfigService {
       key: history.configKey,
       value: history.oldValue,
       description: current ? current.description : history.description,
-      valueType: current ? current.valueType : "string",
-      isSecret: current ? current.isSecret : false,
+      // WIKI-OPT-2: 行已删除时优先取历史行持久化的元数据（迁移
+      // 1790000000016 起 recordHistory 落值）；存量旧行（NULL=元数据
+      // 不可知）才回退默认值。行仍在时保持现行为（保留当前行元数据）。
+      valueType: current
+        ? current.valueType
+        : (history.valueType ?? "string"),
+      isSecret: current ? current.isSecret : (history.isSecret ?? false),
     };
 
     // 与 upsert 同一套校验与同一写入形态（conflictPaths +
@@ -230,11 +288,14 @@ export class SystemConfigService {
       { conflictPaths: ["key"], skipUpdateIfNoValuesChanged: true },
     );
 
-    await this.recordHistory({
+    await this.recordHistory(this.historyRepo, {
       configKey: history.configKey,
       oldValue: current?.value ?? null,
       newValue: history.oldValue,
       description: dto.description,
+      // WIKI-OPT-2: 记回滚后落库的最终元数据（与上方 upsert 写入值一致）。
+      valueType: dto.valueType ?? "string",
+      isSecret: dto.isSecret ?? false,
       action: "rollback",
       ...options,
     });
@@ -270,27 +331,37 @@ export class SystemConfigService {
     }
   }
 
-  private async recordHistory(data: {
-    configKey: string;
-    oldValue: string | null;
-    newValue: string | null;
-    description?: string;
-    action: "create" | "update" | "delete" | "rollback";
-    userId?: string;
-    username?: string;
-    ipAddress?: string;
-  }): Promise<void> {
-    const history = this.historyRepo.create({
+  private async recordHistory(
+    historyRepo: Repository<ConfigHistory>,
+    data: {
+      configKey: string;
+      oldValue: string | null;
+      newValue: string | null;
+      description?: string;
+      // WIKI-OPT-2: 历史行持久化的元数据快照——upsert 路径记落库后的最终
+      // 值，remove 路径记被删配置行的原值，rollback 路径记回滚后的值；
+      // 不传落 NULL（元数据不可知，存量旧行语义）。
+      valueType?: string | null;
+      isSecret?: boolean | null;
+      action: "create" | "update" | "delete" | "rollback";
+      userId?: string;
+      username?: string;
+      ipAddress?: string;
+    },
+  ): Promise<void> {
+    const history = historyRepo.create({
       configKey: data.configKey,
       oldValue: data.oldValue,
       newValue: data.newValue,
       description: data.description,
+      valueType: data.valueType ?? null,
+      isSecret: data.isSecret ?? null,
       action: data.action,
       userId: data.userId,
       username: data.username,
       ipAddress: data.ipAddress,
     });
-    await this.historyRepo.save(history);
+    await historyRepo.save(history);
   }
 
   async getByPrefix(prefix: string): Promise<SystemConfig[]> {

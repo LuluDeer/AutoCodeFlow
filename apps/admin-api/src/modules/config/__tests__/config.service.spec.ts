@@ -13,6 +13,10 @@ const mockRepo = () => ({
   save: jest.fn(),
   create: jest.fn(),
   createQueryBuilder: jest.fn(),
+  // WIKI-OPT-2: batchUpsert 事务化经 repo.manager.transaction 承载
+  manager: {
+    transaction: jest.fn(),
+  },
 });
 
 const mockHistoryRepo = () => ({
@@ -255,6 +259,42 @@ describe("SystemConfigService", () => {
         expect.anything(),
       );
     });
+
+    // WIKI-OPT-2: 历史行持久化元数据快照——upsert 路径记落库后的最终值。
+    it("WIKI-OPT-2: 历史行记录落库后的 valueType/isSecret 终值（缺省回退 string/false）", async () => {
+      await service.upsert(baseDto);
+      expect(historyRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "create",
+          valueType: "string",
+          isSecret: false,
+        }),
+      );
+    });
+
+    it("WIKI-OPT-2: 显式 valueType/isSecret 随 upsert 落进历史行", async () => {
+      repo.findOneBy.mockReset();
+      repo.findOneBy
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          key: "k-num",
+          value: "42",
+        } as SystemConfig);
+      repo.upsert.mockResolvedValue(undefined);
+      historyRepo.create.mockImplementation((d) => d);
+      historyRepo.save.mockResolvedValue({});
+
+      await service.upsert({
+        key: "k-num",
+        value: "42",
+        valueType: "number",
+        isSecret: false,
+      });
+
+      expect(historyRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ valueType: "number", isSecret: false }),
+      );
+    });
   });
 
   describe("remove", () => {
@@ -273,6 +313,31 @@ describe("SystemConfigService", () => {
       repo.findOneBy.mockResolvedValue(null);
       await expect(service.remove("missing")).rejects.toThrow(
         NotFoundException,
+      );
+    });
+
+    // WIKI-OPT-2: delete 历史行记录被删配置行的原元数据（回滚可如实在原）。
+    it("WIKI-OPT-2: delete 历史行记录被删配置行的 valueType/isSecret", async () => {
+      const config = {
+        key: "k1",
+        value: "v1",
+        valueType: "json",
+        isSecret: true,
+      } as SystemConfig;
+      repo.findOneBy.mockResolvedValue(config);
+      repo.remove.mockResolvedValue(undefined);
+      historyRepo.create.mockImplementation((d) => d);
+      historyRepo.save.mockResolvedValue({});
+
+      await service.remove("k1");
+
+      expect(historyRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "delete",
+          oldValue: "v1",
+          valueType: "json",
+          isSecret: true,
+        }),
       );
     });
   });
@@ -516,6 +581,199 @@ describe("SystemConfigService", () => {
       expect(repo.upsert).not.toHaveBeenCalled();
       expect(historyRepo.save).not.toHaveBeenCalled();
     });
+
+    // WIKI-OPT-2: 已删配置回滚的元数据保真——历史行持久化了 valueType/
+    // isSecret 时优先采用，存量旧行（NULL=不可知）才回退默认值。
+    it("WIKI-OPT-2: 已删配置回滚——历史行有元数据时优先采用（不再落默认值 string/false）", async () => {
+      const history = {
+        id: 10,
+        configKey: "k-meta",
+        oldValue: '{"a":1}',
+        description: "orig-desc",
+        valueType: "json",
+        isSecret: true,
+        action: "delete",
+      };
+      historyRepo.findOneBy.mockResolvedValue(history);
+      repo.findOneBy
+        .mockResolvedValueOnce(null) // 行已删除
+        .mockResolvedValueOnce({
+          key: "k-meta",
+          value: '{"a":1}',
+        } as SystemConfig);
+      repo.upsert.mockResolvedValue(undefined);
+      historyRepo.create.mockImplementation((d) => d);
+      historyRepo.save.mockResolvedValue({});
+
+      await service.rollback(10);
+
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: "k-meta",
+          value: '{"a":1}',
+          description: "orig-desc",
+          valueType: "json",
+          isSecret: true,
+        }),
+        expect.anything(),
+      );
+      // 回滚自身的历史行也记录回滚后的最终元数据
+      expect(historyRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "rollback",
+          valueType: "json",
+          isSecret: true,
+        }),
+      );
+    });
+
+    it("WIKI-OPT-2: 已删配置回滚——存量旧行（历史行元数据 NULL）回退默认值 string/false", async () => {
+      const history = {
+        id: 11,
+        configKey: "k-legacy",
+        oldValue: "restored",
+        description: "orig-desc",
+        valueType: null,
+        isSecret: null,
+        action: "delete",
+      };
+      historyRepo.findOneBy.mockResolvedValue(history);
+      repo.findOneBy
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          key: "k-legacy",
+          value: "restored",
+        } as SystemConfig);
+      repo.upsert.mockResolvedValue(undefined);
+      historyRepo.create.mockImplementation((d) => d);
+      historyRepo.save.mockResolvedValue({});
+
+      await service.rollback(11);
+
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          valueType: "string",
+          isSecret: false,
+        }),
+        expect.anything(),
+      );
+      expect(historyRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ valueType: "string", isSecret: false }),
+      );
+    });
+
+    it("WIKI-OPT-2: 行仍在时保留当前行元数据（历史行元数据不覆盖现状）", async () => {
+      const history = {
+        id: 12,
+        configKey: "k-live",
+        oldValue: "old",
+        valueType: "json",
+        isSecret: true,
+        action: "update",
+      };
+      historyRepo.findOneBy.mockResolvedValue(history);
+      repo.findOneBy
+        .mockResolvedValueOnce({
+          key: "k-live",
+          value: "new",
+          description: "current-desc",
+          valueType: "string",
+          isSecret: false,
+        } as SystemConfig)
+        .mockResolvedValueOnce({
+          key: "k-live",
+          value: "old",
+        } as SystemConfig);
+      repo.upsert.mockResolvedValue(undefined);
+      historyRepo.create.mockImplementation((d) => d);
+      historyRepo.save.mockResolvedValue({});
+
+      await service.rollback(12);
+
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          description: "current-desc",
+          valueType: "string",
+          isSecret: false,
+        }),
+        expect.anything(),
+      );
+    });
+
+    it("WIKI-OPT-2: 行已删除且历史行标记 isSecret 时，'***' oldValue 同样拒绝回滚（行级守卫延伸）", async () => {
+      const history = {
+        id: 13,
+        configKey: "k-gone-secret",
+        oldValue: "***",
+        isSecret: true,
+        action: "update",
+      };
+      historyRepo.findOneBy.mockResolvedValue(history);
+      repo.findOneBy.mockResolvedValue(null); // 行已删除
+
+      await expect(service.rollback(13)).rejects.toThrow(BadRequestException);
+      expect(repo.upsert).not.toHaveBeenCalled();
+      expect(historyRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("WIKI-OPT-2: 行已删除且历史行 isSecret=false 时，'***' 是字面值可回滚", async () => {
+      const history = {
+        id: 14,
+        configKey: "k-literal",
+        oldValue: "***",
+        isSecret: false,
+        action: "update",
+      };
+      historyRepo.findOneBy.mockResolvedValue(history);
+      repo.findOneBy
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          key: "k-literal",
+          value: "***",
+        } as SystemConfig);
+      repo.upsert.mockResolvedValue(undefined);
+      historyRepo.create.mockImplementation((d) => d);
+      historyRepo.save.mockResolvedValue({});
+
+      await expect(service.rollback(14)).resolves.toBeDefined();
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ value: "***", isSecret: false }),
+        expect.anything(),
+      );
+    });
+
+    it("WIKI-OPT-2: create 回滚（删除条目）的历史行记录被删行的 valueType/isSecret", async () => {
+      const history = {
+        id: 15,
+        configKey: "k-new2",
+        oldValue: null,
+        action: "create",
+      };
+      historyRepo.findOneBy.mockResolvedValue(history);
+      const existing = {
+        key: "k-new2",
+        value: "true",
+        description: "d",
+        valueType: "boolean",
+        isSecret: false,
+      } as SystemConfig;
+      repo.findOneBy.mockResolvedValue(existing);
+      repo.remove.mockResolvedValue(undefined);
+      historyRepo.create.mockImplementation((d) => d);
+      historyRepo.save.mockResolvedValue({});
+
+      const result = await service.rollback(15);
+
+      expect(result).toEqual({ deleted: true });
+      expect(historyRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "rollback",
+          oldValue: "true",
+          valueType: "boolean",
+          isSecret: false,
+        }),
+      );
+    });
   });
 
   describe("getHistory", () => {
@@ -609,22 +867,104 @@ describe("SystemConfigService", () => {
   });
 
   describe("batchUpsert", () => {
-    it("should upsert each item and return results", async () => {
-      repo.findOneBy.mockResolvedValue(null);
-      repo.upsert.mockResolvedValue(undefined);
-      historyRepo.create.mockImplementation((d) => d);
-      historyRepo.save.mockResolvedValue({});
-      repo.findOneBy
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ key: "k1", value: "v1" } as SystemConfig)
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ key: "k2", value: "v2" } as SystemConfig);
-      const items = [
+    // WIKI-OPT-2: batchUpsert 事务化——写入全部经事务级 manager 仓储。
+    // 回调收到独立的 tx 仓储 mock（getRepository 按实体分流），外部
+    // this.repo/this.historyRepo 全程零写入。
+    const makeTxEm = () => {
+      const txConfigRepo = {
+        findOneBy: jest.fn(),
+        upsert: jest.fn(),
+      };
+      const txHistoryRepo = {
+        create: jest.fn((d) => d),
+        save: jest.fn(),
+      };
+      const em = {
+        getRepository: jest.fn((entity) =>
+          entity === SystemConfig ? txConfigRepo : txHistoryRepo,
+        ),
+      };
+      return { em, txConfigRepo, txHistoryRepo };
+    };
+
+    it("should upsert each item inside one transaction and return results", async () => {
+      const { em, txConfigRepo, txHistoryRepo } = makeTxEm();
+      txConfigRepo.findOneBy
+        .mockResolvedValueOnce(null) // k1 existing lookup
+        .mockResolvedValueOnce({ key: "k1", value: "v1" } as SystemConfig) // k1 final read
+        .mockResolvedValueOnce(null) // k2 existing lookup
+        .mockResolvedValueOnce({ key: "k2", value: "v2" } as SystemConfig); // k2 final read
+      txConfigRepo.upsert.mockResolvedValue(undefined);
+      txHistoryRepo.save.mockResolvedValue({});
+      repo.manager.transaction.mockImplementation(async (cb) => cb(em));
+
+      const result = await service.batchUpsert([
         { key: "k1", value: "v1" },
         { key: "k2", value: "v2" },
-      ];
-      const result = await service.batchUpsert(items);
+      ]);
+
       expect(result).toHaveLength(2);
+      expect(txConfigRepo.upsert).toHaveBeenCalledTimes(2);
+      expect(txHistoryRepo.save).toHaveBeenCalledTimes(2);
+      // 不混用外部仓储
+      expect(repo.upsert).not.toHaveBeenCalled();
+      expect(historyRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("WIKI-OPT-2: 中途失败整体回滚——错误上抛、事务回调以异常收场（触发 ROLLBACK）、外部仓储零残留", async () => {
+      const { em, txConfigRepo, txHistoryRepo } = makeTxEm();
+      txConfigRepo.findOneBy.mockResolvedValue(null);
+      txConfigRepo.upsert.mockResolvedValue(undefined);
+      // 第 1 条历史写入成功、第 2 条失败 → 整批必须失败
+      txHistoryRepo.save
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error("tx boom"));
+      let rolledBack = false;
+      repo.manager.transaction.mockImplementation(async (cb) => {
+        try {
+          return await cb(em);
+        } catch (e) {
+          // 模拟真实事务管理器：回调 reject 即 ROLLBACK
+          rolledBack = true;
+          throw e;
+        }
+      });
+
+      await expect(
+        service.batchUpsert([
+          { key: "k1", value: "v1" },
+          { key: "k2", value: "v2" },
+        ]),
+      ).rejects.toThrow("tx boom");
+
+      expect(rolledBack).toBe(true);
+      // 全部写入都落在事务级仓储上（含失败前已完成的第 1 条）
+      expect(txConfigRepo.upsert).toHaveBeenCalledTimes(2);
+      expect(txHistoryRepo.save).toHaveBeenCalledTimes(2);
+      // 外部仓储零写入 → 失败批次不留任何部分写入
+      expect(repo.upsert).not.toHaveBeenCalled();
+      expect(historyRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("WIKI-OPT-2: 校验失败同样令整批失败（第二个 item 非法 json，第一条不外泄）", async () => {
+      const { em, txConfigRepo, txHistoryRepo } = makeTxEm();
+      txConfigRepo.findOneBy.mockResolvedValue(null);
+      txConfigRepo.upsert.mockResolvedValue(undefined);
+      txHistoryRepo.save.mockResolvedValue({});
+      repo.manager.transaction.mockImplementation(async (cb) => cb(em));
+
+      await expect(
+        service.batchUpsert([
+          { key: "ok", value: "v" },
+          { key: "bad", value: "not-json", valueType: "json" },
+        ]),
+      ).rejects.toThrow(BadRequestException);
+
+      // 第一条的写入只发生在事务内，事务整体回滚 → 无残留
+      expect(txConfigRepo.upsert).toHaveBeenCalledTimes(1);
+      expect(txHistoryRepo.save).toHaveBeenCalledTimes(1);
+      expect(repo.upsert).not.toHaveBeenCalled();
+      expect(historyRepo.save).not.toHaveBeenCalled();
     });
   });
 });
