@@ -24,7 +24,7 @@
 | `executorAddress` | varchar nullable | 承接执行的执行器地址（按 address 关联，非 FK） |
 | `logs` | text nullable | 旧版整段日志（日志分表后仅小体量/回填场景使用） |
 | `logStorage` | varchar nullable，default `'db'` | 日志明细存放位置：`'db'`（[execution_log_lines](execution-log-line.md)）或 `'s3'` |
-| `logObjectKey` | varchar nullable | `logStorage='s3'` 时的 gzip 对象 key |
+| `logObjectKey` | varchar nullable | `logStorage='s3'` 时的 gzip 对象 key；过期终态执行由 `S3LogObjectRetentionService` 每日 03:35 回收对象后守卫清空本指针（`WHERE id AND logObjectKey`） |
 | `result` | jsonb nullable | 执行结果负载 |
 | `params` | jsonb nullable | 本次执行的参数快照（task.params + 触发覆盖；secrets 不落库） |
 | `startTime` / `endTime` | timestamptz nullable | 起止时间 |

@@ -40,8 +40,11 @@ export const DEFAULT_LOG_PARTITION_ENABLED = true;
  *
  * 范围说明：本服务只清理数据库行。LOG_STORAGE_DRIVER=s3 时完整日志对象
  * 外置到 MinIO/S3（log-storage/s3-log-storage.ts，execution-logs/*.log.gz），
- * 外置对象不属于本服务的清理范围，应由对象存储的 bucket lifecycle 策略
- * 或后续专门任务处理，否则 S3 侧仍会无限累积。
+ * 外置对象不属于本服务的清理范围——对象侧保留期回收由姊妹服务
+ * `S3LogObjectRetentionService`（s3-log-object-retention.service.ts，
+ * WIKI-LOG-S3GC）承担：每日 03:35 按 task_executions 的过期 s3 指针批量
+ * remove 对象并清空 logObjectKey，与本服务同源 logRetention.days 配置；
+ * bucket lifecycle 策略仍可作为运维侧的补充兜底。
  *
  * 注册方式：由 TaskModule providers 装配；@Cron 由 SchedulerModule 中的
  * ScheduleModule.forRoot() 通过全局 DiscoveryService 扫描注册。
