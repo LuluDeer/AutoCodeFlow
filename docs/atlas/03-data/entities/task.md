@@ -1,6 +1,6 @@
 # Task 实体（tasks 表）— 任务定义
 
-> 所属: docs/atlas/03-data · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/task/entities/task.entity.ts
+> 所属: docs/atlas/03-data · 最后核对: 2026-09-14 · 对应代码: apps/admin-api/src/modules/task/entities/task.entity.ts
 
 ## 所属模块与源文件
 
@@ -34,7 +34,7 @@
 | `maxRetry` | int，default 3 | 重试预算 |
 | `retryDelay` | int，default 0 | 重试延迟秒数（BullMQ 指数退避基座） |
 | `retryableErrors` | simple-array nullable | RETRY-01：可重试失败白名单（对 errorMessage/failureReason 做大小写不敏感子串匹配）；空/NULL=全部重试；`timeout` 永不重试 |
-| `blockStrategy` | PG enum，default `serial` | `serial` / `discard` / `cover_early`（调度重叠策略） |
+| `blockStrategy` | PG enum，default `serial` | `serial` / `discard` / `cover_early`（调度重叠策略）；`cover_early` 的 PG enum 值已由迁移 `1790000000020` 补齐（PK-01——InitialSchema 缺值，此前迁移构建库上命中即 22P02） |
 | `misfireStrategy` | PG enum，default `ignore` | `ignore` / `fire_once` |
 | `priority` | PG enum `task_priority_enum`（label: low/normal/high/critical），default `normal`，**带列级 transformer** | 见下方"priority 双形态"说明 |
 | `executeMode` | PG enum，default `single` | `single` / `broadcast`；与 `executorId` pinning 互斥（service 层校验） |

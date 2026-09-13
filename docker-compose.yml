@@ -103,7 +103,9 @@ services:
     mem_limit: 768m
     cpus: '1.0'
     ports:
-      - '3105:3105'
+      # E-03: loopback-only——admin-api 宿主面仅本机可路由（其余端口同款写法）；
+      # 执行器回程走内网 ADMIN_API_URL=http://admin-api:3105，不依赖宿主映射
+      - '127.0.0.1:3105:3105'
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       DB_HOST: postgres
@@ -128,7 +130,11 @@ services:
       LOG_STORAGE_ACCESS_KEY: ${LOG_STORAGE_ACCESS_KEY:-autoflow}
       LOG_STORAGE_SECRET_KEY: ${LOG_STORAGE_SECRET_KEY:-}
       LOG_STORAGE_USE_SSL: ${LOG_STORAGE_USE_SSL:-false}
-      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-Admin@123456}
+      # E-03: 无缺省值——:? 语法强制 .env 显式注入（未设置/为空时 compose
+      # 解析即报错，不再带缺省口令起服务）；弱口令/短口令由 configuration.ts
+      # 生产 fail-fast 拒启。非 compose 部署未设置该变量时跳过初始管理员
+      # 种子（users.service 既有行为）
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?set INITIAL_ADMIN_PASSWORD in .env}
       INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-admin@autoflow.local}
     depends_on:
       postgres:

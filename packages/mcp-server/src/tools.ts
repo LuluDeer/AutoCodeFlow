@@ -1209,7 +1209,7 @@ export function registerObservabilityTools(
   // ---- get_scheduler_health -------------------------------------------------
   server.tool(
     "get_scheduler_health",
-    "Scheduler health snapshot: leader identity + election state, BullMQ queue depths (waiting/active/delayed/failed — null means Redis unreachable), tick rate, trigger counters and the P99 trigger latency distribution. First stop when triggers stop firing or pile up.",
+    "Scheduler health snapshot: leader identity + election state, BullMQ queue depths (waiting/active/delayed/failed — null means Redis unreachable, in which case healthy=false and a degraded note explains why), tick rate, trigger counters and the P99 trigger latency distribution. First stop when triggers stop firing or pile up.",
     {},
     async () => {
       const data = await call<Record<string, unknown>>(
@@ -1220,11 +1220,19 @@ export function registerObservabilityTools(
       const counters = m.counters ?? {};
       const derived = m.derived ?? {};
       const queue = m.queue ?? {};
+      // PK-05: 缺数值（null/undefined，即 Redis 不可达）不能默认健康——
+      // 显式判 false 并带 degraded 说明；failed<100 才算健康。
+      const failedDepth =
+        typeof queue.failed === "number" ? queue.failed : null;
+      const healthy = failedDepth !== null && failedDepth < 100;
       return JSON_CONTENT({
-        healthy:
-          queue.failed === 0 || typeof queue.failed !== "number"
-            ? true
-            : queue.failed < 100,
+        healthy,
+        ...(failedDepth === null
+          ? {
+              degraded:
+                "queue metrics unavailable (Redis unreachable?) — cannot assess queue depth health",
+            }
+          : {}),
         leader: m.scheduler ?? null,
         instance: m.instance ?? null,
         queue,

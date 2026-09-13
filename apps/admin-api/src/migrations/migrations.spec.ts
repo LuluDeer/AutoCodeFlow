@@ -199,5 +199,32 @@ if (
       );
       expect(sql).toContain('DROP COLUMN IF EXISTS "level"');
     });
+
+    // PK-01（DEEP_REVIEW 0ef3bbe）：PG enum 值域与 TS 枚举对齐——
+    // task_blockstrategy_enum 补 cover_early / execution_status_enum 补 cancelled。
+    it("PK-01: enum 补值迁移存在、可解析且含两条 ADD VALUE IF NOT EXISTS", () => {
+      const m = migrationFiles().find((f) =>
+        /-AddCoverEarlyAndCancelledEnumValues\.ts$/.test(f.file),
+      );
+      expect(m).toBeDefined();
+      // 排序基线：晚于此前的最新迁移（1790000000019 dispatchMode），保证顺序确定
+      expect(Number(m!.stamp)).toBeGreaterThan(1790000000019);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require(path.join(MIGRATIONS_DIR, m!.file));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const proto = Object.values(mod)[0] as any;
+      const instance = new proto();
+      expect(instance.name).toBe(proto.name);
+      expect(proto.name).toBe(`AddCoverEarlyAndCancelledEnumValues${m!.stamp}`);
+      expect(typeof instance.up).toBe("function");
+      expect(typeof instance.down).toBe("function");
+      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, m!.file), "utf8");
+      expect(sql).toContain(
+        `ALTER TYPE "task_blockstrategy_enum" ADD VALUE IF NOT EXISTS 'cover_early'`,
+      );
+      expect(sql).toContain(
+        `ALTER TYPE "execution_status_enum" ADD VALUE IF NOT EXISTS 'cancelled'`,
+      );
+    });
   });
 }

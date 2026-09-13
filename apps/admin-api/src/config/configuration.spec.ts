@@ -32,6 +32,13 @@ describe("configuration production secret validation", () => {
       "change_me_to_a_random_token_16chars",
       /EXECUTOR_SECRET/,
     ],
+    // E-03: .env.example 的初始管理员口令占位值同样必须被生产 fail-fast
+    // 拒绝——占位值与 weakValues 名单的耦合在此钉住（改占位需同步改名单）
+    [
+      "INITIAL_ADMIN_PASSWORD",
+      "change_me_immediately",
+      /INITIAL_ADMIN_PASSWORD/,
+    ],
   ])(
     "rejects the .env.example placeholder for %s in production",
     (name, value, expectedError) => {
@@ -45,6 +52,52 @@ describe("configuration production secret validation", () => {
       }).toThrow(expectedError);
     },
   );
+
+  // E-03: INITIAL_ADMIN_PASSWORD 弱值 fail-fast（compose 缺省口令已移除，
+  // 配置层兜底——仅在该值存在时校验，未设置 = 跳过种子放行）
+  const rejectAdminPassword = (value: string) => {
+    process.env.INITIAL_ADMIN_PASSWORD = value;
+    expect(() => {
+      jest.isolateModules(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("./configuration");
+      });
+    }).toThrow(/INITIAL_ADMIN_PASSWORD/);
+  };
+
+  it("E-03: rejects the removed compose default Admin@123456 in production", () => {
+    rejectAdminPassword("Admin@123456");
+  });
+
+  it("E-03: rejects known weak initial admin passwords in production", () => {
+    rejectAdminPassword("change_me_immediately");
+    rejectAdminPassword("admin123");
+    rejectAdminPassword("12345678");
+  });
+
+  it("E-03: rejects short (<8 chars) initial admin passwords in production", () => {
+    rejectAdminPassword("Adm@1");
+  });
+
+  it("E-03: allows an unset INITIAL_ADMIN_PASSWORD in production (skip seed)", () => {
+    delete process.env.INITIAL_ADMIN_PASSWORD;
+    expect(() => {
+      jest.isolateModules(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("./configuration");
+      });
+    }).not.toThrow();
+  });
+
+  it("E-03: allows a strong initial admin password in production", () => {
+    process.env.INITIAL_ADMIN_PASSWORD = "R7#kQz2vLp9$Wm4xTb3n";
+    expect(() => {
+      jest.isolateModules(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("./configuration");
+      });
+    }).not.toThrow();
+  });
 });
 
 describe("configuration (ARCH-004/005/006) throttle, redis tls, db synchronize", () => {

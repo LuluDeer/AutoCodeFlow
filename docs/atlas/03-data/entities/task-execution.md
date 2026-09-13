@@ -1,6 +1,6 @@
 # TaskExecution 实体（task_executions 表）— 执行实例
 
-> 所属: docs/atlas/03-data · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/task/entities/task-execution.entity.ts
+> 所属: docs/atlas/03-data · 最后核对: 2026-09-14 · 对应代码: apps/admin-api/src/modules/task/entities/task-execution.entity.ts
 
 ## 所属模块与源文件
 
@@ -20,7 +20,7 @@
 |---|---|---|
 | `taskId` | uuid NOT NULL | FK → `tasks.id`（见"索引与约束"），任务删除时级联 |
 | `taskName` | varchar NOT NULL | 冗余快照（任务改名/删除后执行记录仍可读） |
-| `status` | PG enum `ExecutionStatus`，default `pending` | **值域 7 个**：`pending` / `running` / `success` / `failed` / `timeout` / `killed` / `cancelled` |
+| `status` | PG enum `ExecutionStatus`，default `pending` | **值域 7 个**：`pending` / `running` / `success` / `failed` / `timeout` / `killed` / `cancelled`；`cancelled` 的 PG enum 值已由迁移 `1790000000020` 补齐（PK-01——InitialSchema 缺值，此前迁移构建库上写 `cancelled` 即 22P02，如 `cover_early` 重叠取消路径） |
 | `executorAddress` | varchar nullable | 承接执行的执行器地址（按 address 关联，非 FK） |
 | `logs` | text nullable | 旧版整段日志（日志分表后仅小体量/回填场景使用） |
 | `logStorage` | varchar nullable，default `'db'` | 日志明细存放位置：`'db'`（[execution_log_lines](execution-log-line.md)）或 `'s3'` |

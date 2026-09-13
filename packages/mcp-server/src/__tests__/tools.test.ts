@@ -817,7 +817,7 @@ describe("get_scheduler_health", () => {
     expect(out.triggerLatency.p99Ms).toBe(50);
   });
 
-  it("flags unhealthy when the failed queue depth is large and still works with a null queue (Redis down)", async () => {
+  it("flags unhealthy when the failed queue depth is large and treats a null queue (Redis down) as unhealthy", async () => {
     call.mockResolvedValueOnce({
       counters: {},
       derived: {},
@@ -831,6 +831,8 @@ describe("get_scheduler_health", () => {
     });
     const out = parse(await tools.get("get_scheduler_health")!.handler({}));
     expect(out.healthy).toBe(false);
+    // PK-05: Redis 不可达 → 队列指标全 null，不得默认健康——
+    // healthy=false + degraded 说明字段（此前测试固化了 healthy=true 的错误行为）
     call.mockResolvedValueOnce({
       counters: {},
       derived: {},
@@ -843,7 +845,29 @@ describe("get_scheduler_health", () => {
       },
     });
     const out2 = parse(await tools.get("get_scheduler_health")!.handler({}));
-    expect(out2.healthy).toBe(true);
+    expect(out2.healthy).toBe(false);
+    expect(out2.degraded).toMatch(/queue metrics unavailable/i);
+    expect(out2.degraded).toMatch(/Redis/i);
+  });
+
+  it("stays healthy with small failed depth and flags large-but-numeric depth (PK-05 normal bands)", async () => {
+    call.mockResolvedValueOnce({
+      counters: {},
+      derived: {},
+      queue: { waiting: 1, active: 1, delayed: 0, failed: 50, completed: 10 },
+    });
+    const out = parse(await tools.get("get_scheduler_health")!.handler({}));
+    expect(out.healthy).toBe(true);
+    expect(out.degraded).toBeUndefined();
+
+    call.mockResolvedValueOnce({
+      counters: {},
+      derived: {},
+      queue: { waiting: 1, active: 1, delayed: 0, failed: 150, completed: 10 },
+    });
+    const outHigh = parse(await tools.get("get_scheduler_health")!.handler({}));
+    expect(outHigh.healthy).toBe(false);
+    expect(outHigh.degraded).toBeUndefined();
   });
 });
 
