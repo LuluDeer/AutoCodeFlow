@@ -146,9 +146,12 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
 
     await controller.rollback("task-1", dto, user, req);
 
-    expect(taskService.rollback).toHaveBeenCalledWith("task-1", {
-      gitCommit: "abc123",
-    });
+    // R-03: rollback 属配置写面，user 必须透传 service（归属守卫在 service 侧）
+    expect(taskService.rollback).toHaveBeenCalledWith(
+      "task-1",
+      { gitCommit: "abc123" },
+      user,
+    );
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "task.rollback",
@@ -161,7 +164,12 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
     const { controller, taskService } = makeDeps();
 
     await controller.rollbackToVersion("task-1", "v-2", user, req);
-    expect(taskService.rollbackToVersion).toHaveBeenCalledWith("task-1", "v-2");
+    // R-03: user 必须透传 service（归属守卫在 service 侧）
+    expect(taskService.rollbackToVersion).toHaveBeenCalledWith(
+      "task-1",
+      "v-2",
+      user,
+    );
 
     await controller.getVersions("task-1");
     expect(taskService.getVersions).toHaveBeenCalledWith("task-1");
@@ -281,10 +289,12 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
       user,
       req,
     );
+    // R-03: updateGlue 属代码写面，user 必须透传 service（归属守卫在 service 侧）
     expect(taskService.updateGlue).toHaveBeenCalledWith(
       "task-1",
       "print(1)",
       "python",
+      user,
     );
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: "task.updateGlue" }),

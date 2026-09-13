@@ -52,8 +52,10 @@ export class TaskBatchController {
   ) {
     const results = await Promise.all(
       body.taskIds.map((id) =>
+        // R-02: 透传 user（对照 TaskController.batchTrigger 的正确写法）——
+        // 漏传时 service 侧 user 为 undefined，viewer/ADMIN 判定失真。
         this.taskService
-          .trigger(id, {})
+          .trigger(id, {}, user)
           .catch((err) => ({ id, error: err.message })),
       ),
     );
@@ -82,7 +84,10 @@ export class TaskBatchController {
   ) {
     const results = await Promise.all(
       body.taskIds.map((id) =>
-        this.taskService.pause(id).catch((err) => ({ id, error: err.message })),
+        // R-02: 透传 user（对照 TaskController.batchPause 的正确写法）
+        this.taskService
+          .pause(id, user)
+          .catch((err) => ({ id, error: err.message })),
       ),
     );
     await this.audit.log({
@@ -110,8 +115,9 @@ export class TaskBatchController {
   ) {
     const results = await Promise.all(
       body.taskIds.map((id) =>
+        // R-02: 透传 user（对照 TaskController.batchResume 的正确写法）
         this.taskService
-          .resume(id)
+          .resume(id, user)
           .catch((err) => ({ id, error: err.message })),
       ),
     );
@@ -140,8 +146,10 @@ export class TaskBatchController {
   ) {
     const results = await Promise.all(
       body.taskIds.map((id) =>
+        // R-02: 透传 user——漏传时 assertCanWrite 的 ADMIN/属主判定双双
+        // 不成立，批量删除对所有人恒 403（错误被 .catch 吞成 {id,error}）。
         this.taskService
-          .remove(id)
+          .remove(id, user)
           .catch((err) => ({ id, error: err.message })),
       ),
     );

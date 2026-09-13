@@ -290,7 +290,9 @@ export class AuthService {
     // DR-07: consume once before issuing; deliberately fail closed if user
     // validation or issuance fails, so the old token cannot be replayed.
 
-    const user = await this.usersService.findById(payload.sub);
+    // R-04: findByIdOrNull — a deleted user's still-valid refresh token must
+    // 401 here, never leak a 404 "User #N not found" via findById.
+    const user = await this.usersService.findByIdOrNull(payload.sub);
     if (!user || !user.isActive) throw new UnauthorizedException();
     return this.generateTokens(user);
   }
