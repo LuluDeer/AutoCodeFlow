@@ -85,8 +85,12 @@ jobs:
       # 含本 workflow 的 docs 同步）才会触发本 step——release-please v4
       # 的 github-release 依赖 run 事件扫描 manifest；纯 Release PR 合并
       # 本身（merge commit push 到 main）**就是**一次 push main，天然触发。
+      # release-pr 在「有已合并未打 tag 的 Release PR」状态下会 abort（v1.2.0
+      # 实测）——不能让它的非零退出跳过本 step，否则 tag 永远建不出来；
+      # github-release 本身幂等（无事可做时 no-op），always 执行是安全的。
       - uses: googleapis/release-please-action@v4
         id: github-release
+        if: ${{ !cancelled() }}
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
