@@ -95,13 +95,35 @@ describe("unwrap", () => {
     });
   });
 
-  it("strips an envelope that only has data+message", () => {
-    expect(unwrap({ message: "ok", data: [1, 2] })).toEqual([1, 2]);
+  it("unwraps code 0 too — 0 is a valid numeric code (full-shape entity edge)", () => {
+    expect(unwrap({ code: 0, message: "y", data: "x", extra: 1 })).toBe("x");
+  });
+
+  it("strips an envelope that carries only a numeric code (message optional)", () => {
+    expect(unwrap({ code: 200, data: { a: 1 } })).toEqual({ a: 1 });
+  });
+
+  it("returns an entity with data+message but no numeric code unchanged (WIKI-OPT-4)", () => {
+    // 旧判据 data+(code|message) 会把这种实体误解包截断成 data 值；
+    // 收紧后 message 不再作为判据，实体原样透传（回归锁）。
+    const entity = { data: { id: "e1" }, message: "x" };
+    expect(unwrap(entity)).toEqual(entity);
+  });
+
+  it("does not treat a non-numeric code as an envelope", () => {
+    // typeof code !== 'number'（如字符串 "200"）→ 不满足信封判据，原样返回。
+    const entity = { data: "x", code: "200" };
+    expect(unwrap(entity)).toEqual(entity);
   });
 
   it("passes through non-envelope payloads", () => {
     const raw = { data: "x", extra: true };
     expect(unwrap(raw)).toEqual(raw);
+    // WIKI-OPT-4: an entity carrying BOTH data and message but no numeric
+    // code is no longer mistaken for an envelope — returned as-is instead of
+    // being truncated to its data value (the old heuristic edge).
+    const entity = { data: "x", message: "y", extra: 1 };
+    expect(unwrap(entity)).toEqual(entity);
     expect(unwrap("plain")).toBe("plain");
   });
 
@@ -418,9 +440,13 @@ describe("contract-fixtures (QA-07 shared vectors)", () => {
     );
   });
 
-  it("knownDivergence: cli/mcp loose heuristic unwraps data+message without code (flagged for unification)", () => {
+  it("knownDivergence: cli tightened to numeric-code unwrap — data+message without code is preserved (aligns with mcp/node/py)", () => {
+    // WIKI-OPT-4：cli 弃用 fixture 记录的 data+(code|message) 宽松判据
+    //（cli_mcp_unwrapped 描述的是旧行为），改为数值 code 判据——该向量
+    // 原样保留，与 mcp/node/py 语义一致。fixture 为 append-only 共享契约，
+    // 故用其 node_py 向量断言 cli 的新行为。
     expect(unwrap(contract.knownDivergence.raw)).toEqual(
-      contract.knownDivergence.cli_mcp_unwrapped,
+      contract.knownDivergence.node_py_unwrapped_preserved,
     );
   });
 
