@@ -1,0 +1,37 @@
+# docker-compose.ha.yml — admin-api 多副本（HA）部署 override（DEP-HA-1）
+#
+# 前置：多实例行为一致性已由 ARCH-31 闭环并真机验证
+#       （npm run test:arch31-multi-instance 15/15、test:arch31-outbox-dup 13/13：
+#        渠道配置 DB 读穿、调度 Leader 恰一持有者、灰度租约、outbox 去重）。
+#
+# 用法（要求 Docker Compose v2.24+，即支持 !reset 标签）：
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admin-api=2
+# 回到单副本：
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admin-api=1
+#   （或直接 docker compose up -d，不带本 override）
+#
+# 为什么需要本 override：
+#   1. admin-api 基线发布宿主端口 3105:3105 —— --scale 出的第二副本端口必冲
+#      突，本文件用 ports: !reset [] 清空直连端口，流量统一经 admin-web 内置
+#      nginx 反代（infra/nginx/default.conf 已改 resolver 运行时再解析，多
+#      副本轮询，见 DEP-HA-1）。
+#   2. /uploads（应用包/执行器 artifact 上传）默认落容器本地盘 —— 多副本下
+#      经实例 A 上传的包对实例 B 不可见。本文件给两个副本挂同一命名卷
+#      admin_uploads:/app/uploads 保持一致性。
+#   3. 执行日志：LOG_STORAGE_DRIVER=db（默认）存 PG，多副本天然一致；如切
+#      s3 驱动（minio profile）同样共享，无额外动作。
+#
+# 约束与建议（详见 docs/deployment.md「多副本（HA）部署」段）：
+#   - 调度 Leader 恰一：cron 调度由 ARCH-31 Leader 选举保证不会双跑；
+#   - 限流计数器（THROTTLE_*）为进程内存态，多副本下按实例独立计数——
+#     若依赖精确限流阈值，建议入口层（云 LB/网关）做统一限流；
+#   - 多副本只解决 admin-api 无状态层的水平扩展；nginx/admin-web 仍为单点，
+#     高可用入口请用云 LB 或 K8s Ingress 前置。
+services:
+  admin-api:
+    ports: !reset []
+    volumes:
+      - admin_uploads:/app/uploads
+
+volumes:
+  admin_uploads:

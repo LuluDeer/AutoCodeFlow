@@ -90,6 +90,12 @@ services:
 
   # ── Core Services ──────────────────────────────────────
   admin-api:
+    # DEP-HA-1 多副本：本服务可 --scale admin-api=N 水平扩展（多实例行为一致
+    # 性由 ARCH-31 保证）。扩容必须配合 docker-compose.ha.yml override 使用
+    # （清空宿主端口防冲突 + 共享 uploads 卷）：
+    #   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admin-api=2
+    # 入口流量统一走 admin-web 内置 nginx（infra/nginx/default.conf 为运行时
+    # 再解析，自动轮询多副本）。约束见 docs/deployment.md「多副本（HA）部署」。
     build:
       context: ./apps/admin-api
       dockerfile: Dockerfile
