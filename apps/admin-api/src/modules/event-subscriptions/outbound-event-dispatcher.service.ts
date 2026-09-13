@@ -31,6 +31,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { createHmac } from "node:crypto";
 import axios from "axios";
 import { Repository } from "typeorm";
+import { ConfigService } from "@nestjs/config";
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 import {
   DOMAIN_EVENTS,
@@ -110,6 +111,7 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     private readonly bus: DomainEventBus,
     private readonly subService: EventSubscriptionService,
     private readonly moduleRef: ModuleRef,
+    private readonly config: ConfigService,
     @InjectRepository(EventSubscription)
     private readonly subRepo: Repository<EventSubscription>,
     @InjectRepository(EventSubscriptionDeadLetter)
@@ -136,6 +138,12 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
+    // 幂等护栏：本实例经 OUTBOUND_DISPATCHER_TOKEN useFactory 别名后在同一
+    // 模块的 provider 表里挂了两个 wrapper，Nest 生命周期迭代器对每个暴露
+    // onModuleInit 的 wrapper 都会调一次——重复 init 会把总线监听器注册翻倍
+    // （后果：每个出站事件被派发两次、outbox 行双写，test:arch31-outbox-dup
+    // 真机实证）。二次 init 在此短路。
+    if (this.busListeners.length > 0) return;
     this.subscribe(DOMAIN_EVENTS.EXECUTION_COMPLETED);
     this.subscribe(DOMAIN_EVENTS.EXECUTION_FAILED);
     // FEAT-07 补的发布点：executor.service 三路 OFFLINE 翻转 /
@@ -272,7 +280,13 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     payload: ReturnType<typeof buildEventPayload>,
   ): Promise<void> {
     try {
-      await assertSafeHttpUrl(sub.url);
+      // ARCH-31（2026-09-13）: 出站前 SSRF 复核带私网豁免开关（与订阅创建/
+      // 更新校验同源 eventWebhook.allowPrivateNetwork——开关关闭时内网 url
+      // 在创建面就会被拒，此处兜底并发 PATCH 进来的内网地址）。
+      await assertSafeHttpUrl(sub.url, {
+        allowPrivateNetwork:
+          this.config.get<boolean>("eventWebhook.allowPrivateNetwork") === true,
+      });
     } catch (err: unknown) {
       // 订阅 url 被 SSRF 拒：确定性失败，重试无意义，直接终败。
       throw new Error(

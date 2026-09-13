@@ -24,13 +24,30 @@ import {
   UpdateProjectDto,
   UpsertProjectMemberDto,
   UpdateProjectMemberDto,
+  ProjectViewRow,
 } from "./project.dto";
 import { Project, DEFAULT_PROJECT_ID } from "./project.entity";
+import type { ProjectRole } from "./entities/project-member.entity";
 import type { ProjectMemberView } from "./project-access.service";
 
 /**
+ * 实体行 → 列表视图（附当前主体的成员角色）。纯函数，供 findAll 拼装。
+ */
+function toProjectView(row: Project, myRole: ProjectRole | null): ProjectViewRow {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    myRole,
+  };
+}
+
+/**
  * AUTH-01（多租户 Project，第一批后端）：
- * GET /projects 全员可读（任何登录用户都需要选项目上下文）；
+ * GET /projects 见下方 findAll（AUTH-02 后续改为按成员过滤的读面）；
+ * GET /projects/:id 保持全员可读（名称/描述非敏感资源）；
  * POST/PATCH/DELETE 仅 ADMIN——项目是租户边界资源，写面收紧到管理员，
  * 与 Users 模块的 RolesGuard 形态一致。
  */
@@ -42,9 +59,38 @@ export class ProjectsController {
     private readonly access: ProjectAccessService,
   ) {}
 
+  /**
+   * AUTH-02 后续（项目列表按成员过滤读面）：
+   * - ADMIN：全量项目；
+   * - 普通用户：仅「默认项目 ∪ 自己是成员的项目」——普通用户的项目上下文
+   *   选择面不应泄露其他租户项目的存在（ADR-013 读面过滤裁定）；
+   * - 每行附 `myRole`（非成员 null；ADMIN 主体也如实标注其成员行角色）。
+   *
+   * 这是读面的**有意收紧**（此前全员可读全量列表），写面不受影响——
+   * 「只增放行不收紧」原则约束的是写面判定；读面过滤是第十三轮「下轮建议④」
+   * 钦点的 AUTH-02 收尾项。仓库内无其他消费方（admin-web/CLI/MCP 此前
+   * 均未调用 /projects），无兼容性破坏面。
+   */
   @Get()
-  async findAll(): Promise<Project[]> {
-    return this.service.findAll();
+  async findAll(
+    @CurrentUser() user: { id: number; role: UserRole } | undefined,
+  ): Promise<ProjectViewRow[]> {
+    const [projects, memberships] = await Promise.all([
+      this.service.findAll(),
+      user?.id
+        ? this.access.listRolesForUser(user.id)
+        : Promise.resolve([] as ProjectMemberView[]),
+    ]);
+    const roleByProject = new Map(
+      memberships.map((m) => [m.projectId, m.role]),
+    );
+    const isAdmin = user?.role === UserRole.ADMIN;
+    return projects
+      .filter(
+        (p) =>
+          isAdmin || p.id === DEFAULT_PROJECT_ID || roleByProject.has(p.id),
+      )
+      .map((p) => toProjectView(p, roleByProject.get(p.id) ?? null));
   }
 
   @Get(":id")

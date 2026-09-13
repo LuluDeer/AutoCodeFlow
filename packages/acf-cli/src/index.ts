@@ -27,13 +27,14 @@ import { executorsCommand } from './commands/executors';
 import { deployCommand } from './commands/deploy';
 import { auditCommand } from './commands/audit';
 import { execCommand } from './commands/exec';
+import { projectsCommand } from './commands/projects';
 import { showConfig, setApiUrl, setToken } from './config';
 
 const program = new Command();
 
 program
   .name('acf')
-  .description('AutoCodeFlow CLI — manage tasks, executions and applications')
+  .description('AutoCodeFlow CLI — manage tasks, executions, applications and projects')
   .version('1.0.0');
 
 // Global options that override stored config
@@ -55,6 +56,7 @@ program.addCommand(executorsCommand());
 program.addCommand(deployCommand());
 program.addCommand(auditCommand());
 program.addCommand(execCommand());
+program.addCommand(projectsCommand());
 
 // acf config show / set
 const configCmd = new Command('config').description('View or update CLI configuration');

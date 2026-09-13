@@ -41,7 +41,10 @@ export class DingtalkChannel extends BaseChannel {
     // instead of raising, matching the WebhookChannel behavior.
     // V2: report the block instead of swallowing it silently.
     try {
-      await assertSafeHttpUrl(url);
+      await assertSafeHttpUrl(url, {
+        allowPrivateNetwork:
+          this.config.get<boolean>("notification.allowPrivateNetwork") === true,
+      });
     } catch (err: unknown) {
       this.logger.warn(
         `[Dingtalk] SSRF-blocked URL ${url}: ${err instanceof Error ? err.message : String(err)}`,
