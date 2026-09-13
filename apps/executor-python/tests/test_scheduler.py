@@ -274,9 +274,12 @@ class TestVersionDriftWarning:
 
     @pytest.mark.asyncio
     async def test_warn_helper_throttles_to_one_per_window(self, monkeypatch):
-        # 不用 caplog：其捕获依赖 logger 传播链，CI/本地 logging 配置差异曾致
-        # 假红——直接 patch logger.warning 记录调用，与传播配置解耦。
+        # 时钟注入：time.monotonic() 基点随进程/机器而异（CI runner 新启动
+        # 时仅数秒——`now - 0.0 < 600s` 会让首次告警也被节流，本机开机久则
+        # 侥幸通过，曾致本地绿 CI 红的假阴性）。固定 now 与 clock 注入后
+        # 断言与运行环境解耦；不用 caplog（传播链配置差异同理）。
         import scheduler as scheduler_module
+        monkeypatch.setattr(scheduler_module.time, 'monotonic', lambda: 1_000_000.0)
         monkeypatch.setattr(scheduler_module, '_last_version_drift_warn_at', 0.0)
         warns: list = []
         monkeypatch.setattr(
