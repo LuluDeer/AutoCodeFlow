@@ -883,7 +883,21 @@ export class ExecutorService {
   findAll() {
     // Cap the result set: an admin UI listing does not need every historical executor.
     // Use pagination if the UI needs more — the ExecutorListPage supports filters/search.
-    return this.repo.find({ order: { createdAt: "DESC" }, take: 500 });
+    //
+    // UI-17: 逐行计算 versionCompliant（EXE-VER-1 门禁 EXECUTOR_MIN_VERSION 的
+    // 读面投影）——执行器版本存于 register/心跳，下限在中心端配置，合规态是
+    // 两者的派生值，不落库（列不加、心跳响应已有回显，此处供列表 UI 展示）。
+    // 门禁关 / 执行器未上报版本 → true（isVersionCompliant 宽松语义）。
+    const minVersion =
+      this.configService.get<string>("executor.minVersion") || "";
+    return this.repo
+      .find({ order: { createdAt: "DESC" }, take: 500 })
+      .then((rows) =>
+        rows.map((e) => ({
+          ...e,
+          versionCompliant: isVersionCompliant(e.executorVersion, minVersion),
+        })),
+      );
   }
 
   async findOne(id: string): Promise<Executor> {
