@@ -6509,9 +6509,7 @@ export interface operations {
     ExecutorPackageController_pushResult: {
         parameters: {
             query?: never;
-            header: {
-                authorization: string;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };

@@ -27,10 +27,9 @@ import { verifyExecutorToken } from "../../../common/utils/verify-executor-token
 const mockedVerify = jest.mocked(verifyExecutorToken);
 // Real util logic for the end-to-end suite below (the file-level jest.mock
 // replaces the module for the delegation suite above).
-const actualUtil =
-  jest.requireActual<
-    typeof import("../../../common/utils/verify-executor-token.util")
-  >("../../../common/utils/verify-executor-token.util");
+const actualUtil = jest.requireActual<
+  typeof import("../../../common/utils/verify-executor-token.util")
+>("../../../common/utils/verify-executor-token.util");
 
 const makeContext = (authorization?: string): ExecutionContext =>
   ({
@@ -54,9 +53,7 @@ describe("ExecutorSharedTokenGuard (delegation to verifyExecutorToken)", () => {
   it("passes the raw authorization header and both services through verbatim", async () => {
     mockedVerify.mockResolvedValue(undefined);
     const header = "Bearer db-token";
-    await expect(
-      guard.canActivate(makeContext(header)),
-    ).resolves.toBe(true);
+    await expect(guard.canActivate(makeContext(header))).resolves.toBe(true);
     expect(mockedVerify).toHaveBeenCalledTimes(1);
     expect(mockedVerify).toHaveBeenCalledWith(
       header,
@@ -67,9 +64,7 @@ describe("ExecutorSharedTokenGuard (delegation to verifyExecutorToken)", () => {
 
   it("forwards a missing header as undefined (same as the former @Headers param)", async () => {
     mockedVerify.mockResolvedValue(undefined);
-    await expect(guard.canActivate(makeContext(undefined))).resolves.toBe(
-      true,
-    );
+    await expect(guard.canActivate(makeContext(undefined))).resolves.toBe(true);
     expect(mockedVerify).toHaveBeenCalledWith(
       undefined,
       configService,
@@ -131,22 +126,27 @@ describe("ExecutorSharedTokenGuard (real util end-to-end semantics)", () => {
   });
 
   it("rejects an invalid token with the util's exact 401 message", async () => {
-    const guard = buildGuard({ findOne: jest.fn().mockRejectedValue(new Error()) });
-    await expect(guard.canActivate(makeContext("Bearer wrong-token"))).rejects
-      .toMatchObject({
-        status: 401,
-        message: "Invalid executor token",
-      });
+    const guard = buildGuard({
+      findOne: jest.fn().mockRejectedValue(new Error()),
+    });
+    await expect(
+      guard.canActivate(makeContext("Bearer wrong-token")),
+    ).rejects.toMatchObject({
+      status: 401,
+      message: "Invalid executor token",
+    });
   });
 
   it("rejects a missing authorization header with 401 Invalid executor token", async () => {
-    const guard = buildGuard({ findOne: jest.fn().mockRejectedValue(new Error()) });
-    await expect(guard.canActivate(makeContext(undefined))).rejects.toMatchObject(
-      {
-        status: 401,
-        message: "Invalid executor token",
-      },
-    );
+    const guard = buildGuard({
+      findOne: jest.fn().mockRejectedValue(new Error()),
+    });
+    await expect(
+      guard.canActivate(makeContext(undefined)),
+    ).rejects.toMatchObject({
+      status: 401,
+      message: "Invalid executor token",
+    });
   });
 
   it("fails closed when no shared token is configured at all", async () => {
@@ -154,11 +154,12 @@ describe("ExecutorSharedTokenGuard (real util end-to-end semantics)", () => {
       { findOne: jest.fn().mockRejectedValue(new Error("key not found")) },
       {},
     );
-    await expect(guard.canActivate(makeContext("Bearer anything"))).rejects
-      .toMatchObject({
-        status: 401,
-        message:
-          "Executor shared token is not configured; refusing unauthenticated executor access",
-      });
+    await expect(
+      guard.canActivate(makeContext("Bearer anything")),
+    ).rejects.toMatchObject({
+      status: 401,
+      message:
+        "Executor shared token is not configured; refusing unauthenticated executor access",
+    });
   });
 });

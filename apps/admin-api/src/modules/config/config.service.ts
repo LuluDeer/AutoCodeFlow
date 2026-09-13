@@ -150,12 +150,7 @@ export class SystemConfigService {
           isSecret: item.isSecret,
         };
         results.push(
-          await this.upsertInStores(
-            txConfigRepo,
-            txHistoryRepo,
-            dto,
-            options,
-          ),
+          await this.upsertInStores(txConfigRepo, txHistoryRepo, dto, options),
         );
       }
       return results;
@@ -267,9 +262,7 @@ export class SystemConfigService {
       // WIKI-OPT-2: 行已删除时优先取历史行持久化的元数据（迁移
       // 1790000000018 起 recordHistory 落值）；存量旧行（NULL=元数据
       // 不可知）才回退默认值。行仍在时保持现行为（保留当前行元数据）。
-      valueType: current
-        ? current.valueType
-        : (history.valueType ?? "string"),
+      valueType: current ? current.valueType : (history.valueType ?? "string"),
       isSecret: current ? current.isSecret : (history.isSecret ?? false),
     };
 

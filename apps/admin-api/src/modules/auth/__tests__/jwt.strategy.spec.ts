@@ -127,7 +127,9 @@ describe("jwt.strategy — extractJwtFromRequest (P1-6 SSE query token)", () => 
 describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
   const buildStrategy = () => {
     const usersService = { findById: jest.fn() };
-    const configService = { get: jest.fn().mockReturnValue("unit-test-secret") };
+    const configService = {
+      get: jest.fn().mockReturnValue("unit-test-secret"),
+    };
     const strategy = new JwtStrategy(
       configService as never,
       usersService as never,

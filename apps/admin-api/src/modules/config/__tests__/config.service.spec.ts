@@ -274,12 +274,10 @@ describe("SystemConfigService", () => {
 
     it("WIKI-OPT-2: 显式 valueType/isSecret 随 upsert 落进历史行", async () => {
       repo.findOneBy.mockReset();
-      repo.findOneBy
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({
-          key: "k-num",
-          value: "42",
-        } as SystemConfig);
+      repo.findOneBy.mockResolvedValueOnce(null).mockResolvedValueOnce({
+        key: "k-num",
+        value: "42",
+      } as SystemConfig);
       repo.upsert.mockResolvedValue(undefined);
       historyRepo.create.mockImplementation((d) => d);
       historyRepo.save.mockResolvedValue({});
@@ -638,12 +636,10 @@ describe("SystemConfigService", () => {
         action: "delete",
       };
       historyRepo.findOneBy.mockResolvedValue(history);
-      repo.findOneBy
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({
-          key: "k-legacy",
-          value: "restored",
-        } as SystemConfig);
+      repo.findOneBy.mockResolvedValueOnce(null).mockResolvedValueOnce({
+        key: "k-legacy",
+        value: "restored",
+      } as SystemConfig);
       repo.upsert.mockResolvedValue(undefined);
       historyRepo.create.mockImplementation((d) => d);
       historyRepo.save.mockResolvedValue({});
@@ -725,12 +721,10 @@ describe("SystemConfigService", () => {
         action: "update",
       };
       historyRepo.findOneBy.mockResolvedValue(history);
-      repo.findOneBy
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({
-          key: "k-literal",
-          value: "***",
-        } as SystemConfig);
+      repo.findOneBy.mockResolvedValueOnce(null).mockResolvedValueOnce({
+        key: "k-literal",
+        value: "***",
+      } as SystemConfig);
       repo.upsert.mockResolvedValue(undefined);
       historyRepo.create.mockImplementation((d) => d);
       historyRepo.save.mockResolvedValue({});

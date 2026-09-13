@@ -103,7 +103,7 @@ echo '{"status": "ok", "message": "Task completed successfully"}'
     } finally {
       setSaving(false);
     }
-  }, [taskId, source, language]);
+  }, [taskId, source, language, t]);
 
   const useTemplate = () => {
     const tpl = defaultTemplates[language] || defaultTemplates.python;

@@ -1,8 +1,4 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-} from "@nestjs/common";
+import { CanActivate, ExecutionContext, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import { SystemConfigService } from "../config/config.service";
@@ -34,12 +30,13 @@ export class ExecutorSharedTokenGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<{ headers?: {} }>();
+    const request = context.switchToHttp().getRequest<{
+      headers?: Record<string, string | string[] | undefined>;
+    }>();
     // Express lowercases header keys, so this is the same value the handler's
     // former `@Headers("authorization")` parameter received.
     const authorization = request.headers?.["authorization"] as
-      | string
-      | undefined;
+      string | undefined;
     // Delegates entirely to the shared util: whatever it throws (401 with its
     // exact message) propagates unchanged; success means the token matched.
     await verifyExecutorToken(

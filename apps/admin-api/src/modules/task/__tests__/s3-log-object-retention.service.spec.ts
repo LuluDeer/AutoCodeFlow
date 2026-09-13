@@ -129,9 +129,8 @@ describe("S3LogObjectRetentionService", () => {
       );
       const now = new Date("2026-09-13T19:35:00.000Z");
       await service.cleanupExpiredObjects(now);
-      const endTimeCall = repo.qbs[0].andWhere.mock.calls.find(
-        (c: unknown[]) =>
-          String(c[0]).includes("COALESCE(e.endTime, e.createdAt)"),
+      const endTimeCall = repo.qbs[0].andWhere.mock.calls.find((c: unknown[]) =>
+        String(c[0]).includes("COALESCE(e.endTime, e.createdAt)"),
       );
       expect(endTimeCall![1].cutoff.getTime()).toBe(
         now.getTime() - 7 * 86_400_000,
@@ -241,9 +240,8 @@ describe("S3LogObjectRetentionService", () => {
     });
 
     it("keyset 分页：下一批查询以上一批最后一行 id 为游标，首批无游标", async () => {
-      const batch1 = Array.from(
-        { length: S3_LOG_OBJECT_BATCH_SIZE },
-        (_, i) => row(i),
+      const batch1 = Array.from({ length: S3_LOG_OBJECT_BATCH_SIZE }, (_, i) =>
+        row(i),
       );
       repo.batches.push(batch1, [row(1000)]);
 
@@ -276,9 +274,8 @@ describe("S3LogObjectRetentionService", () => {
       // 每轮 getMany 都取满批 → 永不自然终止，只能靠轮数上限刹车
       for (let r = 0; r < S3_LOG_OBJECT_MAX_ROUNDS + 3; r++) {
         repo.batches.push(
-          Array.from(
-            { length: S3_LOG_OBJECT_BATCH_SIZE },
-            (_, i) => row(r * 1000 + i),
+          Array.from({ length: S3_LOG_OBJECT_BATCH_SIZE }, (_, i) =>
+            row(r * 1000 + i),
           ),
         );
       }
@@ -287,9 +284,7 @@ describe("S3LogObjectRetentionService", () => {
 
       expect(repo.qbs).toHaveLength(S3_LOG_OBJECT_MAX_ROUNDS);
       expect(total).toBe(S3_LOG_OBJECT_MAX_ROUNDS * S3_LOG_OBJECT_BATCH_SIZE);
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("轮数上限"),
-      );
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("轮数上限"));
       warnSpy.mockRestore();
     });
   });

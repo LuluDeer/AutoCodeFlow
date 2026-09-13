@@ -289,8 +289,7 @@ export default () => ({
     // Alertmanager/IM 机器人代理）场景。默认 false 零行为变化；云元数据恒拒。
     // 五个 webhook 类渠道（wecom/dingtalk/slack/feishu/webhook）共用此开关；
     // email 通道走 SMTP 不经 HTTP SSRF 闸，不受影响。
-    allowPrivateNetwork:
-      process.env.NOTIF_ALLOW_PRIVATE_NETWORK === "true",
+    allowPrivateNetwork: process.env.NOTIF_ALLOW_PRIVATE_NETWORK === "true",
     wecomWebhook: process.env.WECOM_WEBHOOK || "",
     dingtalkWebhook: process.env.DINGTALK_WEBHOOK || "",
     slackWebhook: process.env.SLACK_WEBHOOK || "",
