@@ -15,7 +15,7 @@ if (!globalThis.crypto) {
 import express from 'express';
 import * as http from 'http';
 import { spawnSync } from 'child_process';
-import { config } from './config';
+import { config, EXECUTOR_VERSION } from './config';
 import { logger } from './logger';
 import { executorStartedAt, executorStartupId, getRunningCount, startHeartbeat } from './scheduler';
 import { startCallbackThread, stopCallbackThread } from './callback';
@@ -83,7 +83,9 @@ async function registerExecutor(): Promise<boolean> {
       groupName: config.groupName || undefined,
       address: config.executorAddressPublic || config.executorAddress,
       type: 'node',
-      version: '1.0.0',
+      // EXE-VER-1: 版本上报单源 EXECUTOR_VERSION（心跳同源）；
+      // 中心端 EXECUTOR_MIN_VERSION 门禁按此判定，低于下限 403。
+      version: EXECUTOR_VERSION,
       // Legacy field kept for backwards compatibility
       capabilities: runtimes,
       // Structured capability fields
@@ -105,8 +107,14 @@ async function registerExecutor(): Promise<boolean> {
     return true;
   } catch (err: any) {
     registerSucceeded = false;
+    // EXE-VER-1: 门禁 403 时把服务端报文（含 minVersion 与升级指引）透传到
+    // 执行器日志——只看 axios 的 "status code 403" 无法定位版本问题。
+    const serverMessage =
+      err?.response?.data?.message ?? err?.response?.data?.error;
     logger.warn(
-      `Register failed (will re-register with rich metadata on next token acquisition): ${err.message}`,
+      `Register failed (will re-register with rich metadata on next token acquisition): ${
+        serverMessage ? `${err.message} — ${serverMessage}` : err.message
+      }`,
     );
     return false;
   }

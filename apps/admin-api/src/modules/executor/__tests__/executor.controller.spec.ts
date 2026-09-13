@@ -889,6 +889,9 @@ describe("ExecutorController", () => {
   });
 
   describe("POST /executors/heartbeat — R9 tokenHash echo", () => {
+    // EXE-VER-1: heartbeat 现读 executor.minVersion 回显合规态 —— 提供 get 返回
+    // 空串（门禁关）的 ConfigService 桩，保证既有回显断言语义不变。
+    const gateOffConfig = { get: jest.fn().mockReturnValue("") };
     it("echoes the current stored tokenHash alongside the heartbeat result", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
@@ -899,7 +902,7 @@ describe("ExecutorController", () => {
       };
       const controller = new ExecutorController(
         svc as any,
-        {} as ConfigService,
+        gateOffConfig as any,
         {} as any,
       );
 
@@ -929,7 +932,7 @@ describe("ExecutorController", () => {
       };
       const controller = new ExecutorController(
         svc as any,
-        {} as ConfigService,
+        { get: jest.fn().mockReturnValue("") } as any,
         {} as any,
       );
 
@@ -941,6 +944,85 @@ describe("ExecutorController", () => {
       expect(svc.heartbeat).toHaveBeenCalledWith(
         "10.0.0.9:3002",
         expect.objectContaining({ maxConcurrentTasks: 12 }),
+      );
+    });
+
+    // EXE-VER-1: heartbeat 响应回显版本合规态（EXECUTOR_MIN_VERSION）
+    it("echoes minVersion/versionCompliant=false when the reported version is below the gate", async () => {
+      const svc = {
+        validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        heartbeat: jest
+          .fn()
+          .mockResolvedValue({ address: "10.0.0.9:3002", status: "online" }),
+        getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+      };
+      const config = { get: jest.fn().mockReturnValue("1.3.0") };
+      const controller = new ExecutorController(
+        svc as any,
+        config as any,
+        {} as any,
+      );
+
+      const result = await controller.heartbeat(
+        { address: "10.0.0.9:3002", version: "1.2.0" },
+        "Bearer per-executor-token",
+      );
+
+      expect(result).toMatchObject({
+        minVersion: "1.3.0",
+        versionCompliant: false,
+      });
+    });
+
+    it("echoes minVersion=null/versionCompliant=true when the gate is off (additive, legacy consumers unaffected)", async () => {
+      const svc = {
+        validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        heartbeat: jest
+          .fn()
+          .mockResolvedValue({ address: "10.0.0.9:3002", status: "online" }),
+        getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+      };
+      const config = { get: jest.fn().mockReturnValue("") };
+      const controller = new ExecutorController(
+        svc as any,
+        config as any,
+        {} as any,
+      );
+
+      const result = await controller.heartbeat(
+        { address: "10.0.0.9:3002", cpuUsage: 1 },
+        "Bearer per-executor-token",
+      );
+
+      expect(result).toMatchObject({
+        minVersion: null,
+        versionCompliant: true,
+      });
+    });
+
+    it("does not forward version to the service (not persisted)", async () => {
+      const svc = {
+        validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        heartbeat: jest
+          .fn()
+          .mockResolvedValue({ address: "10.0.0.9:3002", status: "online" }),
+        getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+      };
+      const config = { get: jest.fn().mockReturnValue("1.3.0") };
+      const controller = new ExecutorController(
+        svc as any,
+        config as any,
+        {} as any,
+      );
+
+      await controller.heartbeat(
+        { address: "10.0.0.9:3002", version: "1.2.0" },
+        "Bearer per-executor-token",
+      );
+
+      expect(svc.heartbeat).toHaveBeenCalledWith(
+        "10.0.0.9:3002",
+        expect.not.objectContaining({ version: expect.anything() }),
       );
     });
   });
