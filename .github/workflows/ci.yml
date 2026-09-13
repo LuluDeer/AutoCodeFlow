@@ -22,8 +22,14 @@ concurrency:
 jobs:
   # ── BUG-20：ARM64 / multi-arch 镜像构建闸（只 build，不 push，不跑 e2e）────
   docker-multiarch-build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # R22 根治（2026-09-13）：QEMU 模拟 arm64 是本 job 反复卡死/45min 超时的
+    # 根源（admin-api 依赖树最大，QEMU 下 npm ci 慢到像挂死，已发生 5+ 次）。
+    # 改用 GitHub **原生 arm64 runner**（ubuntu-24.04-arm，public repo 免费）
+    # 双 job 并行各构建单平台——无模拟层，每个 job ~2-4min，无 QEMU 偶发挂死。
+    # 验证语义不变：双架构各自真实构建（本 job push:false，仅验证 Dockerfile
+    # 双架构可构建，发布形态见 release/部署文档）。
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
@@ -35,20 +41,27 @@ jobs:
             context: apps/executor-node
           - name: executor-python
             context: apps/executor-python
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        platform:
+          - linux/amd64
+          - linux/arm64
+        exclude:
+          - runner: ubuntu-latest
+            platform: linux/arm64
+          - runner: ubuntu-24.04-arm
+            platform: linux/amd64
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.image.context }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: false
-          tags: autocodeflow/${{ matrix.image.name }}:ci
-          # R22（CI annotations 优化）：GitHub Actions 层缓存——多架构构建
-          # 曾因冷缓存 45min 超时（run 34756273615）；基线热缓存 ~2-6min。
-          cache-from: type=gha,scope=multiarch-${{ matrix.image.name }}
-          cache-to: type=gha,mode=max,scope=multiarch-${{ matrix.image.name }}
+          tags: autocodeflow/${{ matrix.image.name }}:ci-${{ matrix.runner }}
+          # gha 层缓存按 镜像×平台 分 scope：原生构建层缓存命中率高
+          cache-from: type=gha,scope=multiarch-${{ matrix.image.name }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=multiarch-${{ matrix.image.name }}-${{ matrix.platform }}
 
   # ── Node.js services & packages ──────────────────────────
   admin-api-test:
