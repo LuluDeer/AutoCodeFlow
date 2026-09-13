@@ -4,6 +4,7 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import {
   NotFoundException,
   ServiceUnavailableException,
+  ForbiddenException,
   Logger,
 } from "@nestjs/common";
 import { ExecutorService } from "../executor.service";
@@ -604,6 +605,134 @@ describe("ExecutorService (__tests__)", () => {
 
       expect(perExecutorToken).toBe("first-token");
       expect(rotateSpy).toHaveBeenCalled();
+    });
+  });
+
+  // EXE-VER-1: EXECUTOR_MIN_VERSION 最低版本门禁 —— 低于下限 403（零副作用），
+  // 未上报/畸形版本放行（不锁死存量），门禁关（默认空串）行为逐字节不变。
+  describe("registerExecutor — EXE-VER-1 最低版本门禁", () => {
+    const makeQbRepo = (prior: any) =>
+      makeRepo({
+        createQueryBuilder: jest.fn(() => ({
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(prior),
+        })),
+      });
+    const gateConfig = (minVersion: string) =>
+      configService.get.mockImplementation((key: string) =>
+        key === "executor.minVersion" ? minVersion : "http",
+      );
+
+    it("门禁关（默认空串）：低版本照常注册，行为不变", async () => {
+      gateConfig("");
+      const repo = makeQbRepo(null);
+      repo.findOne.mockResolvedValue(null);
+      repo.save.mockImplementation((e: any) =>
+        Promise.resolve({ ...e, id: "e1" }),
+      );
+      const svc = await makeServiceWithRepo(repo);
+      jest.spyOn(svc, "rotateToken").mockResolvedValue({ token: "t" });
+
+      const { executor } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+        version: "0.0.1",
+      });
+      expect(executor.id).toBe("e1");
+    });
+
+    it("门禁开：version 低于下限 → 403，不落库不发 token", async () => {
+      gateConfig("1.3.0");
+      const repo = makeQbRepo(null);
+      repo.findOne.mockResolvedValue(null);
+      const svc = await makeServiceWithRepo(repo);
+      const rotateSpy = jest.spyOn(svc, "rotateToken");
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+
+      await expect(
+        svc.registerExecutor({
+          appName: "node",
+          address: "10.0.0.9:3002",
+          version: "1.2.9",
+        }),
+      ).rejects.toThrow(ForbiddenException);
+      await expect(
+        svc.registerExecutor({
+          appName: "node",
+          address: "10.0.0.9:3002",
+          version: "1.2.9",
+        }),
+      ).rejects.toThrow("below the required minimum 1.3.0");
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(rotateSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it("门禁开：version 等于/高于下限放行", async () => {
+      gateConfig("1.3.0");
+      for (const version of ["1.3.0", "1.4", "2.0.0.1"]) {
+        const repo = makeQbRepo(null);
+        repo.findOne.mockResolvedValue(null);
+        repo.save.mockImplementation((e: any) =>
+          Promise.resolve({ ...e, id: "e1" }),
+        );
+        const svc = await makeServiceWithRepo(repo);
+        jest.spyOn(svc, "rotateToken").mockResolvedValue({ token: "t" });
+
+        const { executor } = await svc.registerExecutor({
+          appName: "node",
+          address: "10.0.0.9:3002",
+          version,
+        });
+        expect(executor.id).toBe("e1");
+      }
+    });
+
+    it("门禁开：未上报 version 的存量执行器放行 + warn 一次", async () => {
+      gateConfig("1.3.0");
+      const repo = makeQbRepo(null);
+      repo.findOne.mockResolvedValue(null);
+      repo.save.mockImplementation((e: any) =>
+        Promise.resolve({ ...e, id: "e1" }),
+      );
+      const svc = await makeServiceWithRepo(repo);
+      jest.spyOn(svc, "rotateToken").mockResolvedValue({ token: "t" });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+
+      const { executor } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+      });
+      expect(executor.id).toBe("e1");
+      // 按消息过滤：Logger.prototype spy 会捕到测试模块自身的告警噪音
+      const gateWarns = warnSpy.mock.calls.filter((c) =>
+        String(c[0]).includes("did not report a version"),
+      );
+      expect(gateWarns).toHaveLength(1);
+      expect(gateWarns[0][0]).toContain("10.0.0.9:3002");
+    });
+
+    it("门禁开：畸形 version（NaN）按合规放行，不锁死执行器", async () => {
+      gateConfig("1.3.0");
+      const repo = makeQbRepo(null);
+      repo.findOne.mockResolvedValue(null);
+      repo.save.mockImplementation((e: any) =>
+        Promise.resolve({ ...e, id: "e1" }),
+      );
+      const svc = await makeServiceWithRepo(repo);
+      jest.spyOn(svc, "rotateToken").mockResolvedValue({ token: "t" });
+
+      const { executor } = await svc.registerExecutor({
+        appName: "node",
+        address: "10.0.0.9:3002",
+        version: "not-a-version",
+      });
+      expect(executor.id).toBe("e1");
     });
   });
 
