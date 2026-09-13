@@ -10,7 +10,7 @@
 
 ## 表名
 
-`config_history`（`@Entity("config_history")`，InitialSchema 迁移 `1717473142678` 建表；`action` 扩值由迁移 `1789000000001` 承载；`valueType`/`isSecret` 两列由迁移 `1790000000016` 承载）
+`config_history`（`@Entity("config_history")`，InitialSchema 迁移 `1717473142678` 建表；`action` 扩值由迁移 `1789000000001` 承载；`valueType`/`isSecret` 两列由迁移 `1790000000018` 承载）
 
 ## 字段表
 

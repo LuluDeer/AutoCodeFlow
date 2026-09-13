@@ -54,9 +54,9 @@ npm run typeorm             # ts-node -r tsconfig-paths/register ./node_modules/
 | 事件/审批 | `1789900000000`、`1790000000003/0012/0013` | 事件订阅、event outbox + 租约 + 死信 |
 | 多租户 AUTH-01 | `1790000000007` ~ `1790000000015` | `projects`、task/executor/package 加 `projectId`、`project_members` |
 | 审计加固 | `1790000000006-AuditLogsAppendOnlyGuard` | `audit_logs` append-only 触发器（SEC-10） |
-| 配置历史强化 | `1790000000016-AddConfigHistoryMetadata` | `config_history` 加 `valueType`/`isSecret` 两可空列（WIKI-OPT-2）——历史行元数据快照，回滚恢复类型/敏感标记 + 读面行级掩码；NULL=元数据不可知零破坏升级 |
+| OIDC SSO | `1790000000016-AddUsersOidcSub`（AUTH-04，已随 v1.3.0 发布） | `users` 加 `oidcSub` 可空列 + 唯一部分索引——IdP sub 稳定身份绑定；存量行不回填，本地登录路径零变化 |
 | 会话撤销 | `1790000000017-AddUserSessionVersion` | `users` 加 `sessionVersion` INTEGER NOT NULL DEFAULT 0（WIKI-AUTH-REVOC）——用户级会话版本，logout/改密原子 +1，access token 的 `ver` claim 失配即在途令牌 401；存量旧行取 0、无 ver 的旧令牌兼容放行 |
-| OIDC SSO | `1790000000018-AddUsersOidcSub`（当前最新；原登记 1790000000016，2026-09-13 主控解合并时因与本表 AddConfigHistoryMetadata 撞号重编号，内容零变化） | `users` 加 `oidcSub` 可空列 + 唯一部分索引（AUTH-04）——IdP sub 稳定身份绑定；存量行不回填，本地登录路径零变化 |
+| 配置历史强化 | `1790000000018-AddConfigHistoryMetadata`（当前最新；原登记 1790000000016，因与已发布的 AUTH-04 迁移撞号于 2026-09-13 重编号，内容零变化） | `config_history` 加 `valueType`/`isSecret` 两可空列（WIKI-OPT-2）——历史行元数据快照，回滚恢复类型/敏感标记 + 读面行级掩码；NULL=元数据不可知零破坏升级 |
 
 完整清单以 `ls apps/admin-api/src/migrations` 为准（63 个）。
 

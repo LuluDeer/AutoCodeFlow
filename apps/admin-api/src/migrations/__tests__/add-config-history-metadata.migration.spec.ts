@@ -1,9 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
-import { AddConfigHistoryMetadata1790000000016 } from "../1790000000016-AddConfigHistoryMetadata";
+import { AddConfigHistoryMetadata1790000000018 } from "../1790000000018-AddConfigHistoryMetadata";
 
 /**
- * WIKI-OPT-2: 迁移 1790000000016 结构断言（无真机 PG 的单测环境约定——
+ * WIKI-OPT-2: 迁移 1790000000018 结构断言（无真机 PG 的单测环境约定——
  * SQL 文本逐段断言，先例 add-deployment-rollout-columns.migration.spec）。
  * migrations.spec.ts 已覆盖时间戳唯一/类名一致性全目录约束。
  */
@@ -11,20 +11,20 @@ import { AddConfigHistoryMetadata1790000000016 } from "../1790000000016-AddConfi
 const MIGRATIONS_DIR = path.join(__dirname, "..");
 const FILE = path.join(
   MIGRATIONS_DIR,
-  "1790000000016-AddConfigHistoryMetadata.ts",
+  "1790000000018-AddConfigHistoryMetadata.ts",
 );
 
-describe("AddConfigHistoryMetadata1790000000016（WIKI-OPT-2）", () => {
+describe("AddConfigHistoryMetadata1790000000018（WIKI-OPT-2）", () => {
   let sql: string;
-  let migration: AddConfigHistoryMetadata1790000000016;
+  let migration: AddConfigHistoryMetadata1790000000018;
 
   beforeAll(() => {
     sql = fs.readFileSync(FILE, "utf8");
-    migration = new AddConfigHistoryMetadata1790000000016();
+    migration = new AddConfigHistoryMetadata1790000000018();
   });
 
   it("可被 TypeORM 解析（name/up/down 契约）", () => {
-    expect(migration.name).toBe("AddConfigHistoryMetadata1790000000016");
+    expect(migration.name).toBe("AddConfigHistoryMetadata1790000000018");
     expect(typeof migration.up).toBe("function");
     expect(typeof migration.down).toBe("function");
   });

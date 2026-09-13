@@ -31,7 +31,7 @@ TOTP）」；Auth 模块（SEC-02/03）已有成熟的 JWT 对签发、refresh �
    state（防跨流程注入）；所有比较走 timingSafeEqual。
 
 4. **身份绑定三级**（ADR 核心裁定）：
-   - ① `users.oidcSub` 精确匹配（迁移 1790000000018，可空 + 唯一部分索引）；
+   - ① `users.oidcSub` 精确匹配（迁移 1790000000016，可空 + 唯一部分索引）；
    - ② username 声明匹配（`OIDC_USERNAME_CLAIM`，默认 preferred_username）
      且未绑定 → **首登写入 sub 完成绑定**；已绑定其他 sub → 拒绝（不静默
      换绑，防账号接管）；

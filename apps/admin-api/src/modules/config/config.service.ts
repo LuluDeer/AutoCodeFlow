@@ -208,7 +208,7 @@ export class SystemConfigService {
    * - 其余（update 且 oldValue 非空）→ 把值写回 oldValue，仅回滚值本身：
    *   行仍在时保留其当前 description/valueType/isSecret（不覆盖现状）；
    *   行已删除时以历史行记录的 description 重建，valueType/isSecret 优先
-   *   取历史行持久化的元数据（迁移 1790000000016 起 recordHistory 落值，
+   *   取历史行持久化的元数据（迁移 1790000000018 起 recordHistory 落值，
    *   WIKI-OPT-2），存量旧行（NULL=元数据不可知）才回退默认值
    *   "string"/false。
    *
@@ -265,7 +265,7 @@ export class SystemConfigService {
       value: history.oldValue,
       description: current ? current.description : history.description,
       // WIKI-OPT-2: 行已删除时优先取历史行持久化的元数据（迁移
-      // 1790000000016 起 recordHistory 落值）；存量旧行（NULL=元数据
+      // 1790000000018 起 recordHistory 落值）；存量旧行（NULL=元数据
       // 不可知）才回退默认值。行仍在时保持现行为（保留当前行元数据）。
       valueType: current
         ? current.valueType

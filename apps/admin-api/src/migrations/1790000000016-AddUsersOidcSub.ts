@@ -14,8 +14,8 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * 幂等：列与索引均带 IF NOT EXISTS 守卫，down 完整回滚。
  */
-export class AddUsersOidcSub1790000000018 implements MigrationInterface {
-  name = "AddUsersOidcSub1790000000018";
+export class AddUsersOidcSub1790000000016 implements MigrationInterface {
+  name = "AddUsersOidcSub1790000000016";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

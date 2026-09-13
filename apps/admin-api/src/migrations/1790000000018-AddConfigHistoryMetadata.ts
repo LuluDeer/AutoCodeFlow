@@ -17,8 +17,8 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * 幂等：IF [NOT] EXISTS 写法，重复执行与 revert 重放均无副作用。
  */
-export class AddConfigHistoryMetadata1790000000016 implements MigrationInterface {
-  name = "AddConfigHistoryMetadata1790000000016";
+export class AddConfigHistoryMetadata1790000000018 implements MigrationInterface {
+  name = "AddConfigHistoryMetadata1790000000018";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
