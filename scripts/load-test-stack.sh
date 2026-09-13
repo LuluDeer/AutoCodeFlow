@@ -68,6 +68,10 @@ LT_ENV=(
   "THROTTLE_AUTH_LIMIT=10000"
   "THROTTLE_OPS_LIMIT=10000"
   "METRICS_STREAM_MAX_GLOBAL=${LT_SSE_MAX_GLOBAL:-128}"
+  # QA-05 第四阶段（回调档）：CALLBACK_THROTTLE 默认 60/min/IP——多执行器同出
+  # 口或压测场景必然触顶（满批 100 条/请求 → 单 IP 上限 6000 条/分钟）。栈内
+  # 显式放大，压的是 DB/幂等水位而非限流（服务端限流分域已有专项测试）。
+  "THROTTLE_CALLBACK_LIMIT=${LT_CB_THROTTLE:-600}"
 )
 
 PIDS=()

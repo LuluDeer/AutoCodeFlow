@@ -267,3 +267,24 @@ LT_SSE_MAX_GLOBAL=700 bash scripts/load-test-stack.sh \
 - 仍需补的证据：① 24h 长稳档（BUG-19 未终结）；② 多主机网络拓扑（本机多进程≠多主机）。
 - **同批 tasks 档复测**（见上表）：100@25 容量放开后 100/100，此前失败主因（BUG-22）
   已修。
+
+## 8. 第四阶段实跑记录（四档目标全数通过，2026-09-14）
+
+> **环境（与第三阶段同款单节点参考基线，非生产容量结论）**：ubuntu 本机，admin-api 单实例 + 1×executor-node + PG16 + Redis7（docker 一次性容器，空库迁移链真跑）；栈内放大：三档限流 10000 + `THROTTLE_CALLBACK_LIMIT=600`（回调档新增）+ `METRICS_STREAM_MAX_GLOBAL=600`（SSE 档）+ `LT_MAX_CONCURRENT=600`（tasks 档）+ `DB_POOL_SIZE=60`（回调档）。
+
+| 目标档 | 实测 | 结果 | 关键数字 |
+|---|---|---|---|
+| 1000 任务/分钟入队 | tasks count=200 @50 并发（供给 1223/min） | ✅ | 100% 成功（200/200）、完成吞吐 1223/min、p50/p95 20/29ms、429=0、重复执行违规 0 |
+| 单实例 500 并发执行 | tasks count=500 @100 并发 | ✅ | 100% 成功（500/500）、p50/p95 20/25ms、429=0、清理 500/500 |
+| SSE 500 连接 | sse count=500 @100 并发、hold 20s | ✅ | 500/500 全部保持到期（100%）、建连 p50/p95 133/218ms、服务端 CPU 6.7% |
+| 回调 10k/分钟 | callback 100 条/批，实测持续 580 请求（58000 条）| ✅ | **完成吞吐 90181 条/分钟**（目标 10k 的 9 倍）、100% 成功、429=0 |
+
+### 8.1 本阶段定位的真实问题（均已修复/落实）
+
+1. **客户端 max-rpm 聚合预算钳制 callback 档**（工具文档级）：`--max-rpm`（默认 55）对**所有**请求生效、写请求同时消耗 read+write 两个预算——只抬 `--callback-rate` 会被 max-rpm 默认值钳到 ~60 请求/分钟（实测 120/240/无限三组全部钉在 1 req/s，与服务端无关）。已在 load-test.README.md 的 `--callback-rate` 行显著标注，压高吞吐 callback 档必须同时抬 `--max-rpm`。
+2. **per-execution 回调 token 有效期**（操作纪律级）：token 为 stateless HMAC（`v1.<executionId>.<expiresAt>.<hmac>`），载荷生成后未续期导致压测中途到期（401 被归 auth 类）——长时压测须按窗口续签 token。工具行为正确（fail-open 分类、100% 可解释）。
+3. **`load-test-stack.sh` 补 `THROTTLE_CALLBACK_LIMIT` 放大**（本轮落实，默认 `LT_CB_THROTTLE=600`）：CALLBACK_THROTTLE 默认 60/min/IP 下满批（100 条/请求）单 IP 上限 6000 条/分钟，回调档无法达 10k 目标；栈内显式放大后压 DB/幂等水位而非限流。
+
+### 8.2 与生产形态的边界（沿用第三阶段声明）
+
+单节点基线证明的是**软件栈自身的吞吐能力与正确性**（调度/派发/回调幂等/SSE 槽位在单实例上不是 10k/分钟目标的瓶颈）；生产容量结论仍需多执行器、多实例（ARCH-31）、反代（BUG-17 SSE 位置）与持久磁盘下按 §2 前置清单另行实验。四档通过后 QA-05 的「工具边界 → 本机实跑」两阶段闭环，容量白皮书（CAPACITY-WHITEPAPER.md）可引用本表作为单实例参考基线。
