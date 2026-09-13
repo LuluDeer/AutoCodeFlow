@@ -1530,6 +1530,34 @@ describe("ExecutorService (__tests__)", () => {
       const result = await service.findAll();
       expect(result).toHaveLength(2);
     });
+
+    // UI-17: 读面投影 versionCompliant（EXE-VER-1 门禁 × 执行器版本）
+    it("projects versionCompliant per row (gate on: below-min false, ok true, missing true)", async () => {
+      configService.get.mockImplementation((key: string) =>
+        key === "executor.minVersion" ? "1.3.0" : "http",
+      );
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", executorVersion: "1.2.0" },
+        { id: "e2", executorVersion: "1.3.1" },
+        { id: "e3" }, // 未上报版本（存量）→ 宽松放行
+      ]);
+
+      const rows: any[] = await service.findAll();
+
+      expect(rows.map((r) => r.versionCompliant)).toEqual([false, true, true]);
+    });
+
+    it("gate off (default): every row compliant", async () => {
+      configService.get.mockImplementation((key: string) =>
+        key === "executor.minVersion" ? "" : "http",
+      );
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", executorVersion: "0.0.1" },
+      ]);
+
+      const rows: any[] = await service.findAll();
+      expect(rows[0].versionCompliant).toBe(true);
+    });
   });
 
   describe("findOne", () => {

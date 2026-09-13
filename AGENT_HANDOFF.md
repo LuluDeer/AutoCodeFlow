@@ -3,12 +3,13 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-13（**ARCH-32 执行器 pull 模式派发（NAT 回连）**：多层 NAT 场景经用户确认转正，长轮询拉取与 push 并存逐执行器选择，真机自检 9/9 证明零入站依赖；此前同日部署成熟度收尾 EXE-VER-1/DEP-HA-1）。此前同日：CI 卡死根治 + annotations 清零（multiarch 原生 arm64 runner，v1.3.0 已发布）、AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、发布就绪度。
+更新时间：2026-09-14（**UI-17 执行器列表双徽标**：pull 模式徽标 + 版本合规态进列表——EXE-VER-1/ARCH-32 的配套 UI 收口；此前 ARCH-32 pull 派发 NAT 回连、部署成熟度收尾 EXE-VER-1/DEP-HA-1）。此前同日：CI 卡死根治 + annotations 清零（multiarch 原生 arm64 runner，v1.3.0 已发布）、AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、发布就绪度。
 当前分支：`develop`
 
 ## 状态快照
 
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
+- **本轮（2026-09-14 UI-17 执行器列表双徽标，主会话）**：EXE-VER-1/ARCH-32 配套 UI 收口（handoff 上轮建议③①两小件同批，子代理第 3 次 reasoning-level-missing 全量直落）。① **admin-api 读面**：findAll 逐行投影 `versionCompliant`（isVersionCompliant(executorVersion, EXECUTOR_MIN_VERSION) 派生值不落库；门禁关/未上报版本恒 true）——中心端下限是配置、执行器版本在行上，合规态是两者的派生，读面计算最简且零迁移；② **admin-web**：ExecutorListPage status 列追加两枚条件 Tag——pull 执行器紫色「Pull 回连」（默认 push 不渲染防噪，U16 死信同款纪律）+ versionCompliant===false 火橙色「版本过低」（tooltip 提示升级、不引用具体下限值——minVersion 未从接口下发，避免再扩契约）；zh/en 各 4 key；api/executors.ts Executor 接口补两可选字段（旧快照兼容）；③ **测试**：admin-api +2（findAll 投影矩阵）= **2498/2498** · admin-web 新 executor-list-badges +3（pull 渲染/缺省不渲染、合规两态、双 Tag 并存）= **662/662** + tsc -b 0 错 + lint 0 error（27 warnings 全存量，stash 对照确认）。**基线**：admin-api 2498 · admin-web 662 · executor-node 279 · executor-python 253 · develop 领先 origin 6 commit（待 push）。**下轮建议**：① push 时机由用户定（本批 6 commit 含 ARCH-32/EXE-VER-1/DEP-HA-1/UI-17 四任务）；② 生产真机项不变（QA-05 24h、BUG-07、DSK-01）；③ 可选拓展：批量操作条对 pull 执行器禁用 reload-config 类入站推送（当前对其静默失败可接受，产品级优化）。
 - **本轮（2026-09-13 ARCH-32 执行器 pull 模式派发（NAT 回连），主会话）**。背景：部署成熟度评估第 5 项（跨 NAT 执行器不可达）经用户确认「多层 NAT 场景存在」后转正立项。裁定 ADR-015：**长轮询拉取**（弃 WebSocket 反连——与 DEP-HA-1 多副本轮询冲突需 sticky/实例注册表；长轮询每请求独立、任意副本可应答、复用既有出站通道）。
   - **核心形态**：执行器 `EXECUTOR_PULL_MODE=true` 注册自报 `dispatchMode=pull`（迁移 1790000000019 默认 push 零影响）；调度侧全部既有选择语义不变（pinning/appName/group/tags/亲和/loadScore/原子占坑），仅传输层分支——占坑成功后 LPUSH 派发载荷（含 traceparent/pushedAt）到 Redis `acf:pull:{executorId}`；执行器空闲槽位时长轮询 `POST /executors/pull`（服务端 500ms 间隔 RPOP、waitMs 钳位 ≤55s、per-executor token 鉴权）取件走既有 acceptExecution/回调链。never-pulled 兜底=载荷 TTL 丢弃 + 既有 stale sweep，零新增后台任务；广播逐台入队；长轮询任意 admin 副本可应答（与 DEP-HA-1 天然兼容）。
   - **真机实测发现的关键缺陷**：executor-node admin-client post 硬编码 10s 超时，必然误杀 25s 服务端等待窗口（现象=拉取请求全部 timeout，载荷永远取不到）——新增 `postLong`（40s，覆盖窗口+余量且 < 反代 60s 读超时），其余调用维持 10s。

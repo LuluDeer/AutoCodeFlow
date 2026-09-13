@@ -172,6 +172,18 @@ export default function ExecutorListPage() {
               <Tag color="orange" style={{ marginInlineEnd: 0 }}>{t('execList.deadLetter', { count: r.deadLetterCount })}</Tag>
             </Tooltip>
           )}
+          {/* UI-17: pull 模式徽标（默认 push 不渲染防噪，U16 死信同款纪律） */}
+          {r.dispatchMode === 'pull' && (
+            <Tooltip title={t('execList.pullModeTooltip')}>
+              <Tag color="purple" style={{ marginInlineEnd: 0 }}>{t('execList.pullMode')}</Tag>
+            </Tooltip>
+          )}
+          {/* UI-17: 版本合规态（EXE-VER-1 门禁读面投影，true/undefined 不渲染） */}
+          {r.versionCompliant === false && (
+            <Tooltip title={t('execList.versionDriftTooltip')}>
+              <Tag color="volcano" style={{ marginInlineEnd: 0 }}>{t('execList.versionDrift')}</Tag>
+            </Tooltip>
+          )}
         </Space>
       ),
     },
