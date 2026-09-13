@@ -155,6 +155,44 @@ describe("AiService", () => {
       expect(result).toBe("");
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
+
+    // ARCH-31（2026-09-13）: AI_ALLOW_PRIVATE_NETWORK=true 显式放开内网目标
+    // （历史缺口：文档宣称支持本地 Ollama，但默认 SSRF 姿态把 localhost 也拒了）。
+    it("ai.allowPrivateNetwork=true 放行 loopback Ollama（本地自建部署）", async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === "ai.provider") return "ollama";
+        if (key === "ai.ollamaHost") return "http://127.0.0.1:11434";
+        if (key === "ai.ollamaModel") return "llama3";
+        if (key === "ai.allowPrivateNetwork") return true;
+        return defaultVal;
+      });
+
+      mockedAxios.post = jest
+        .fn()
+        .mockResolvedValue({ data: { response: "Ollama analysis" } });
+
+      await service.analyzeFailure({ name: "t", runtime: "python" }, "err");
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        "http://127.0.0.1:11434/api/generate",
+        expect.anything(),
+        expect.objectContaining({ maxRedirects: 0 }),
+      );
+    });
+
+    it("ai.allowPrivateNetwork=true 时云元数据地址仍恒拒", async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === "ai.provider") return "ollama";
+        if (key === "ai.ollamaHost") return "http://169.254.169.254/";
+        if (key === "ai.allowPrivateNetwork") return true;
+        return defaultVal;
+      });
+      const result = await service.analyzeFailure(
+        { name: "t", runtime: "python" },
+        "err",
+      );
+      expect(result).toBe("");
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
   });
 
   // R3: assertSafeHttpUrl only validates the first hop — both provider

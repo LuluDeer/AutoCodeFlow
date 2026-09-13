@@ -39,7 +39,10 @@ export class SlackChannel extends BaseChannel {
     // F-3: SSRF chokepoint (NOTIF-001), fail-open like WebhookChannel.
     // V2: report the block instead of swallowing it silently.
     try {
-      await assertSafeHttpUrl(webhook);
+      await assertSafeHttpUrl(webhook, {
+        allowPrivateNetwork:
+          this.config.get<boolean>("notification.allowPrivateNetwork") === true,
+      });
     } catch (err: unknown) {
       this.logger.warn(
         `[Slack] SSRF-blocked URL ${webhook}: ${err instanceof Error ? err.message : String(err)}`,

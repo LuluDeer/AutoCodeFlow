@@ -429,6 +429,18 @@ export class AuthService {
   }
 
   /**
+   * AUTH-04: OIDC SSO 令牌签发出口——与本地登录同一 generateTokens 通路
+   * （同一 JWT 声明结构 / refresh 持久化 / 会话管理语义），仅入口不同：
+   * SSO 身份已在 OidcService 完成 IdP 验签与账号定位，此处不再触密码面。
+   */
+  async issueTokensForOidcUser(
+    user: { id: number; username: string },
+    meta?: { userAgent?: string | null; ip?: string | null },
+  ) {
+    return this.generateTokens(user, meta);
+  }
+
+  /**
    * SEC-02: Daily cleanup of expired refresh token rows to keep the table lean.
    * Runs at 03:00 every day.
    */

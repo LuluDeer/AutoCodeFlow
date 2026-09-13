@@ -26,6 +26,7 @@
 | [ADR-010](./adr-010-db-claim-dedup-window.md) | 触发去重窗口的语义：TTL 即窗口（renew:false） | Accepted |
 | [ADR-011](./adr-011-domain-event-bus.md) | 进程内领域事件总线——执行终态副作用与回调主链解耦（ARCH-21，FEAT-07 基座） | Accepted |
 | [ADR-012](./adr-012-executor-token-safestorage.md) | executorToken safeStorage 加密——三平台差异、basic_text 降级姿态与存量迁移（P0-4） | Accepted |
+| [ADR-014](adr-014-oidc-sso.md) | OIDC SSO 单点登录（授权码模式 / 无状态 state / oidcSub 三级绑定 / JIT 开关） | AUTH-04 | 2026-09-13 |
 
 ## DOC-04 覆盖状态
 

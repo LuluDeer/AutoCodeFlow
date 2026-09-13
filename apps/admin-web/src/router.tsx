@@ -8,6 +8,7 @@ import PageFallback from './components/PageFallback';
 
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
+const SsoCompletePage = lazy(() => import('./pages/SsoCompletePage'));
 const TaskListPage = lazy(() => import('./pages/TaskListPage'));
 const TaskTemplatesPage = lazy(() => import('./pages/TaskTemplatesPage'));
 const TaskDetailPage = lazy(() => import('./pages/TaskDetailPage'));
@@ -26,6 +27,7 @@ const AuditLogPage = lazy(() => import('./pages/audit/index'));
 const ApplicationListPage = lazy(() => import('./pages/ApplicationListPage'));
 const ApplicationDetailPage = lazy(() => import('./pages/ApplicationDetailPage'));
 const ExecutionsPage = lazy(() => import('./pages/ExecutionsPage'));
+const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
 
 const withSuspense = (children: ReactNode) => (
   <Suspense fallback={<PageFallback />}>{children}</Suspense>
@@ -34,6 +36,8 @@ const withSuspense = (children: ReactNode) => (
 export const router = createBrowserRouter(
   [
     { path: '/login', element: withSuspense(<LoginPage />) },
+    // AUTH-04：OIDC 回调落地页（公开，token 经 #fragment 回传）
+    { path: '/auth/sso/complete', element: withSuspense(<SsoCompletePage />) },
     {
       path: '/',
       element: <PrivateRoute><MainLayout /></PrivateRoute>,
@@ -61,6 +65,7 @@ export const router = createBrowserRouter(
         { path: 'notifications', element: <RequireAdmin>{withSuspense(<NotificationSettingsPage />)}</RequireAdmin> },
         { path: 'audit', element: <RequireAdmin>{withSuspense(<AuditLogPage />)}</RequireAdmin> },
         { path: 'applications', element: withSuspense(<ApplicationListPage />) },
+        { path: 'projects', element: withSuspense(<ProjectsPage />) },
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },
         { path: 'executor-packages', element: <RequireAdmin>{withSuspense(<ExecutorPackagesPage />)}</RequireAdmin> },
       ],
