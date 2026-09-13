@@ -188,6 +188,10 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         OIDC_ALLOW_PRIVATE_NETWORK: Joi.string()
           .valid("true", "false")
           .default("false"),
+        // R17: 通知渠道（webhook 类五渠道共用）私网豁免，语义同上
+        NOTIF_ALLOW_PRIVATE_NETWORK: Joi.string()
+          .valid("true", "false")
+          .default("false"),
         // ARCH-31（2026-09-13）: AI 出站私网豁免。默认 false = 既有 SSRF 姿态
         // 零变化（assertSafeHttpUrl 拒一切非 public，本地 Ollama 的默认
         // localhost:11434 也被拒）；true 放行 loopback/restricted/private-lan
