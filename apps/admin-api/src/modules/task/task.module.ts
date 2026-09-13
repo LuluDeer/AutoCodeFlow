@@ -15,6 +15,7 @@ import { TaskVersion } from "./entities/task-version.entity";
 // forFeature 只取连接与元数据，无运行时依赖环；MetricsModule 同样只注册）
 import { ExecutionReport } from "../metrics/entities/execution-report.entity";
 import { LogRetentionCleanupService } from "./log-retention/log-retention-cleanup.service"; // Stream D/DB-002
+import { S3LogObjectRetentionService } from "./log-retention/s3-log-object-retention.service"; // WIKI-LOG-S3GC
 import { ExecutorModule } from "../executor/executor.module";
 import { AiModule } from "../ai/ai.module";
 import { NotificationModule } from "../notification/notification.module";
@@ -56,6 +57,9 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
     // SEC-02: secrets 加密服务（Key 生命周期：env SEC_SECRETS_KEY，未配置降级明文）
     SecretsCryptoService,
     LogRetentionCleanupService,
+    // WIKI-LOG-S3GC: S3 日志对象保留期回收（每日 03:35，与 03:30 DB 行清理
+    // / 03:45 产物清理错峰——独立 cron 入口互不阻塞）
+    S3LogObjectRetentionService,
     // N32: callback 401 分类计数（controller 埋点，MetricsModule 的
     // Prometheus 抓取端读取快照——单一实例经 exports 共享）。
     ExecutionCallbackMetricsService,

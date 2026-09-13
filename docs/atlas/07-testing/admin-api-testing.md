@@ -59,7 +59,7 @@ npm run test:e2e -- -t "OpenAPI export"   # 等价根目录 npm run swagger:expo
 | `modules/task/__tests__/execution-callback.controller.spec.ts` + `execution-callback-token.util.spec.ts` | 回调入口鉴权 token、幂等落库（[execution-callback](../04-flows/execution-callback.md)） |
 | `modules/task/__tests__/task-owner-guard.spec.ts` | 任务属主守卫（普通用户只能改/删自己的任务，NF-03） |
 | `modules/task/__tests__/task.controller.trigger-api.spec.ts` | 触发 API 语义（pinned/广播等模式入参） |
-| `modules/task/__tests__/log-partition.util.spec.ts` + `log-retention-cleanup.service.spec.ts` | 日志分区与保留清理（防日志表无限膨胀） |
+| `modules/task/__tests__/log-partition.util.spec.ts` + `log-retention-cleanup.service.spec.ts` + `s3-log-object-retention.service.spec.ts` | 日志分区与保留清理 + S3 日志对象回收（防日志表/对象存储无限膨胀） |
 | `modules/executor/__tests__/executor.controller.security.spec.ts` + `executor.service.security.spec.ts` | 执行器身份/密钥面：rotate-token、reload-config 等写面防线 |
 | `modules/api-keys/__tests__/api-key-auth.spec.ts` + `api-key-task-trigger.spec.ts` | API Key 认证链与 scope 限定（只能触发任务，不能进管理面） |
 | `modules/application/__tests__/app-deployment.approval.spec.ts` | DEP-04 审批流：pending_approval、第二人规则、原子认领（[approval-flow](../04-flows/approval-flow.md)） |
