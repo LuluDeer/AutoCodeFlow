@@ -25,7 +25,7 @@
  *   （非 win32 → 显式 skip 退出 0；CI 仅在 windows runner 上真跑）
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync, openSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -192,10 +192,10 @@ async function main() {
 
       // windowsHide: true —— executor runProcess win32 分支的同参形态（P-9）
       const taskErrFile = path.join(tmp, 'task.stderr');
-      writeFileSync(taskErrFile, '');
+      const taskErrFd = openSync(taskErrFile, 'a');
       const task = spawn(process.execPath, [taskJs], {
         windowsHide: true,
-        stdio: ['ignore', 'ignore', 'ignore'],
+        stdio: ['ignore', 'ignore', taskErrFd],
         env: { ...process.env, B07_ALIVE_FILE: aliveFile, B07_GRAND_FILE: grandFile },
       });
       let taskSpawnError = '';
