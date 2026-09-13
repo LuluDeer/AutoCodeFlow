@@ -20,8 +20,6 @@ security:
     jwt:
       sign:
         expiresIn: 60d
-      verify:
-        someProp: []
   web:
     sign:
       expiresIn: 7d
