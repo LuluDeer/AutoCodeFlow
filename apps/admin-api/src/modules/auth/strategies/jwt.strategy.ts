@@ -89,7 +89,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (payload.type !== "access") {
       throw new UnauthorizedException("Invalid token type");
     }
-    const user = await this.usersService.findById(payload.sub);
+    // R-04: findByIdOrNull — a token belonging to a deleted user must 401
+    // ("User not found"), never 404 via findById (presence/id disclosure).
+    // With the null-returning lookup the guard below is finally live code.
+    const user = await this.usersService.findByIdOrNull(payload.sub);
     if (!user) throw new UnauthorizedException("User not found");
     // S1: reject disabled accounts even when their JWT is still valid
     if (!user.isActive) throw new UnauthorizedException("Account is disabled");

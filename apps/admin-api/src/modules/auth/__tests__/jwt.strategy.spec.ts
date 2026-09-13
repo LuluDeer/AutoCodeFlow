@@ -1,5 +1,5 @@
 import type { Request } from "express";
-import { UnauthorizedException } from "@nestjs/common";
+import { NotFoundException, UnauthorizedException } from "@nestjs/common";
 import {
   extractJwtFromRequest,
   JwtStrategy,
@@ -126,7 +126,16 @@ describe("jwt.strategy — extractJwtFromRequest (P1-6 SSE query token)", () => 
 // 快照失配即「会话已撤销」。存量旧令牌无 ver claim → 兼容放行。
 describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
   const buildStrategy = () => {
-    const usersService = { findById: jest.fn() };
+    // R-04: validate 消费 findByIdOrNull（null = 用户已删除）——mock 同时
+    // 保留 findById 并令其抛 404：若实现回退到 findById，用例会以
+    // NotFoundException（404）而非 UnauthorizedException（401）失败，
+    // 精确钉住「401 而非 404」的存在性泄漏语义。
+    const usersService = {
+      findById: jest.fn().mockImplementation((id: number) => {
+        throw new NotFoundException(`User #${id} not found`);
+      }),
+      findByIdOrNull: jest.fn(),
+    };
     const configService = {
       get: jest.fn().mockReturnValue("unit-test-secret"),
     };
@@ -146,7 +155,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
 
   it("ver 与库中 sessionVersion 匹配 → 放行", async () => {
     const { strategy, usersService } = buildStrategy();
-    usersService.findById.mockResolvedValue(activeUser(3) as never);
+    usersService.findByIdOrNull.mockResolvedValue(activeUser(3) as never);
 
     await expect(
       strategy.validate({
@@ -160,7 +169,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
 
   it("ver 与库中 sessionVersion 不匹配（logout/改密后）→ 401 Session has been revoked", async () => {
     const { strategy, usersService } = buildStrategy();
-    usersService.findById.mockResolvedValue(activeUser(4) as never);
+    usersService.findByIdOrNull.mockResolvedValue(activeUser(4) as never);
 
     await expect(
       strategy.validate({
@@ -174,7 +183,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
 
   it("无 ver claim 的存量旧令牌 → 兼容放行（到期自然失效，不被新逻辑立即打死）", async () => {
     const { strategy, usersService } = buildStrategy();
-    usersService.findById.mockResolvedValue(activeUser(0) as never);
+    usersService.findByIdOrNull.mockResolvedValue(activeUser(0) as never);
 
     await expect(
       strategy.validate({ sub: 1, username: "alice", type: "access" }),
@@ -183,7 +192,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
 
   it("isActive 校验仍先于会话版本校验（停用账号维持既有 401 语义）", async () => {
     const { strategy, usersService } = buildStrategy();
-    usersService.findById.mockResolvedValue({
+    usersService.findByIdOrNull.mockResolvedValue({
       ...activeUser(3),
       isActive: false,
     } as never);
@@ -196,5 +205,25 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
         ver: 3,
       }),
     ).rejects.toThrow(new UnauthorizedException("Account is disabled"));
+  });
+
+  // R-04: H-3 半修复的收口——已删除用户仍持有效 access token 时必须 401
+  //（UnauthorizedException），而不是经 findById 泄漏 404 "User #N not
+  // found"（存在性 + 数字 id 泄漏）。findByIdOrNull 返回 null 是唯一取数路径。
+  it("R-04: 已删除用户（findByIdOrNull → null）的有效令牌 → 401 User not found，不走 404 的 findById", async () => {
+    const { strategy, usersService } = buildStrategy();
+    usersService.findByIdOrNull.mockResolvedValue(null as never);
+
+    await expect(
+      strategy.validate({
+        sub: 1,
+        username: "alice",
+        type: "access",
+        ver: 3,
+      }),
+    ).rejects.toThrow(new UnauthorizedException("User not found"));
+    expect(usersService.findByIdOrNull).toHaveBeenCalledWith(1);
+    // 404 泄漏面（findById）必须保持零调用
+    expect(usersService.findById).not.toHaveBeenCalled();
   });
 });

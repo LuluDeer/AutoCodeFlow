@@ -5,12 +5,17 @@ import { getQueueToken } from "@nestjs/bullmq";
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { TaskService } from "../task.service";
 import { MAX_DEPENDENCY_EXECUTION_SCAN } from "../task.service";
+// AUTH-02: R-03 接线矩阵需要 ProjectAccessService 在场（项目角色维度）
+import { ProjectAccessService } from "../../project/project-access.service";
+// NF-03: R-03 矩阵的主体角色
+import { UserRole } from "../../users/entities/user.entity";
 import {
   Task,
   TaskStatus,
@@ -714,6 +719,129 @@ describe("TaskService (__tests__)", () => {
       );
       expect(schedulerService.stop).not.toHaveBeenCalled();
       expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
+    });
+  });
+
+  // ==========================================================================
+  // R-01（P0）：写路径掩码回写回归。findOne 返回的脱敏副本（{"KEY":"******"}）
+  // 一旦被 save 回库，真实 secrets 被字面量掩码不可逆覆盖——任何不带 secrets
+  // 的 PATCH / updateGlue / rollback 都会触发。修复后写路径一律走 findByIdRaw
+  //（RAW 行），响应面再经 maskSecretsForResponse 统一脱敏。
+  // 有效性前提：SEC-02 降级桩下 maskForResponse 与 key 无关、仍产出掩码
+  //（maskSecretsObject 是纯形状变换）——因此旧实现（findOne → save）在下列
+  // 「落库值 == RAW 原值」断言下必红。
+  // ==========================================================================
+  describe("R-01: 写路径 RAW 取数（脱敏副本不得回写库）", () => {
+    const RAW_SECRETS = { API_KEY: "raw-cipher-or-plain-value" };
+    const MASKED = { API_KEY: "******" };
+
+    /**
+     * save 落库参数快照。maskSecretsForResponse 在 save 之后**原地**改写
+     * 返回体的 secrets，而 jest.mock.calls 只保存引用——直接断言 calls 会
+     * 读到响应脱敏后的值。在 save 执行点拍 JSON 深拷贝才是「落库瞬间」的列值。
+     */
+    const captureTaskRepoSaves = () => {
+      const persisted: Array<Record<string, any>> = [];
+      taskRepo.save.mockImplementation((t: any) => {
+        persisted.push({
+          ...t,
+          secrets:
+            t.secrets && typeof t.secrets === "object"
+              ? JSON.parse(JSON.stringify(t.secrets))
+              : t.secrets,
+        });
+        return Promise.resolve(t);
+      });
+      return persisted;
+    };
+
+    it("update：PATCH 不带 secrets → 落库 secrets 与原值逐字节一致（非掩码），响应仍脱敏", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        secrets: { ...RAW_SECRETS },
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      const persisted = captureTaskRepoSaves();
+
+      const result: any = await service.update("1", { name: "new" } as any);
+
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0].secrets).toEqual(RAW_SECRETS);
+      expect(persisted[0].secrets).not.toEqual(MASKED);
+      // 响应面契约保持：HTTP 返回体仍是掩码形态（明文/密文不外泄）
+      expect(result.secrets).toEqual(MASKED);
+    });
+
+    it("update：PATCH 显式带 secrets → 新值生效（降级桩明文透传落库）", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        secrets: { ...RAW_SECRETS },
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      const persisted = captureTaskRepoSaves();
+
+      const result: any = await service.update("1", {
+        secrets: { API_KEY: "brand-new-value" },
+      } as any);
+
+      expect(persisted[0].secrets).toEqual({ API_KEY: "brand-new-value" });
+      expect(persisted[0].secrets).not.toEqual(RAW_SECRETS);
+      expect(result.secrets).toEqual(MASKED);
+    });
+
+    it("updateGlue：只改 GLUE 字段 → 落库 secrets 保持 RAW 原值（非掩码）", async () => {
+      const task = {
+        id: "1",
+        name: "t",
+        glueSource: "old",
+        secrets: { ...RAW_SECRETS },
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      const persisted = captureTaskRepoSaves();
+
+      const result: any = await service.updateGlue("1", "new-source", "python");
+
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0].glueSource).toBe("new-source");
+      expect(persisted[0].secrets).toEqual(RAW_SECRETS);
+      expect(persisted[0].secrets).not.toEqual(MASKED);
+      expect(result.secrets).toEqual(MASKED);
+    });
+
+    it("rollback：事务内 manager.save(Task, task) → secrets 保持 RAW 原值（非掩码）", async () => {
+      const task = {
+        id: "1",
+        name: "test",
+        gitCommit: "old-sha",
+        params: {},
+        secrets: { ...RAW_SECRETS },
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      const persisted: Array<Record<string, any>> = [];
+      dataSource.transaction.mockImplementation((fn: any) =>
+        fn({
+          // manager.save(Task, task)（两参）与 manager.save(exec)（单参）共用此桩
+          save: jest.fn(async (...args: any[]) => {
+            const row = args.length >= 2 ? args[1] : args[0];
+            if (row && typeof row === "object") {
+              persisted.push(JSON.parse(JSON.stringify(row)));
+            }
+            return row;
+          }),
+          create: jest.fn().mockReturnValue({ id: "rb-exec" }),
+        }),
+      );
+
+      await service.rollback("1", { gitCommit: "new-sha" });
+
+      expect(persisted).toHaveLength(2);
+      expect(persisted[0].gitCommit).toBe("new-sha");
+      expect(persisted[0].secrets).toEqual(RAW_SECRETS);
+      expect(persisted[0].secrets).not.toEqual(MASKED);
     });
   });
 
@@ -3339,6 +3467,176 @@ describe("TaskService (__tests__)", () => {
         NotFoundException,
       );
     });
+  });
+});
+
+// ============================================================================
+// R-03（P1）：updateGlue / rollback / rollbackToVersion 写面归属守卫接线矩阵。
+// 守卫函数本身已在 task-owner-guard.spec.ts 隔离验证；本组钉住「service 方法
+// 确实调用了守卫」（修复前三个配置/代码写面完全绕过 NF-03/AUTH-02）。
+// 装配含 ProjectAccessService 桩——覆盖项目角色维度（属主兼任项目 viewer →
+// rollback 403，证明 assertCanOperate 亦被接线）。
+// ============================================================================
+describe("R-03: updateGlue/rollback/rollbackToVersion 归属守卫接线", () => {
+  let service: TaskService;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let versionRepo: ReturnType<typeof makeRepo>;
+  let taskQueue: { add: jest.Mock };
+  let dataSource: { transaction: jest.Mock };
+  let schedulerService: { stop: jest.Mock; scheduleOne: jest.Mock };
+  let access: { hasProjectRole: jest.Mock; resolveRole: jest.Mock };
+
+  const admin = { id: 1, role: UserRole.ADMIN };
+  const owner = { id: 7, role: UserRole.USER };
+  const other = { id: 8, role: UserRole.USER };
+
+  /** NF-03 语义下的属主行（owner=7，挂在项目 p1 下） */
+  const ownedRow = (overrides: Record<string, unknown> = {}) => ({
+    id: "t1",
+    name: "t",
+    ownerUserId: 7,
+    projectId: "p1",
+    ...overrides,
+  });
+
+  beforeEach(async () => {
+    resetRuntimeMetrics();
+    taskRepo = makeRepo();
+    versionRepo = makeRepo();
+    taskQueue = { add: jest.fn().mockResolvedValue({}) };
+    dataSource = {
+      transaction: jest.fn(async (fn: any) =>
+        fn({
+          save: jest.fn(async (...args: any[]) =>
+            args.length >= 2 ? args[1] : args[0],
+          ),
+          create: jest.fn().mockReturnValue({ id: "rb-exec" }),
+        }),
+      ),
+    };
+    schedulerService = {
+      stop: jest.fn(),
+      scheduleOne: jest.fn().mockResolvedValue(undefined),
+    };
+    access = {
+      hasProjectRole: jest.fn().mockResolvedValue(false),
+      resolveRole: jest.fn().mockResolvedValue(null),
+    };
+
+    const module = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: makeRepo() },
+        {
+          provide: getRepositoryToken(ExecutionLogLine),
+          useValue: makeRepo(),
+        },
+        { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
+        { provide: getQueueToken("task-queue"), useValue: taskQueue },
+        { provide: DataSource, useValue: dataSource },
+        { provide: SchedulerService, useValue: schedulerService },
+        {
+          provide: AiService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        { provide: ExecutorService, useValue: {} },
+        {
+          provide: DomainEventBus,
+          useValue: {
+            emit: jest.fn(),
+            on: jest.fn(),
+            off: jest.fn(),
+            listenerCount: jest.fn().mockReturnValue(0),
+          },
+        },
+        // SEC-02: 降级明文桩（与主 harness 口径一致）
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+        { provide: getRepositoryToken(ExecutionReport), useValue: {} },
+        // AUTH-02: 项目角色桩（主 harness 缺席 → null 旁路；此处必须在场）
+        { provide: ProjectAccessService, useValue: access },
+      ],
+    }).compile();
+
+    service = module.get(TaskService);
+  });
+
+  it("updateGlue：ADMIN 全量放行 → 落库保存", async () => {
+    taskRepo.findOne.mockResolvedValue(ownedRow({ glueSource: "old" }));
+    taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+    await expect(
+      service.updateGlue("t1", "new-source", "python", admin),
+    ).resolves.toMatchObject({ glueSource: "new-source" });
+    expect(taskRepo.save).toHaveBeenCalledTimes(1);
+  });
+
+  it("updateGlue：属主放行 → 落库保存", async () => {
+    taskRepo.findOne.mockResolvedValue(ownedRow({ glueSource: "old" }));
+    taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+    await expect(
+      service.updateGlue("t1", "new-source", undefined, owner),
+    ).resolves.toBeDefined();
+    expect(taskRepo.save).toHaveBeenCalledTimes(1);
+  });
+
+  it("updateGlue：其他用户 → 403，且不落库", async () => {
+    taskRepo.findOne.mockResolvedValue(ownedRow({ glueSource: "old" }));
+    await expect(
+      service.updateGlue("t1", "evil-source", undefined, other),
+    ).rejects.toThrow(ForbiddenException);
+    expect(taskRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("rollback：其他用户 → 403，事务与入队都不发生", async () => {
+    taskRepo.findOne.mockResolvedValue(ownedRow({ gitCommit: "old-sha" }));
+    await expect(
+      service.rollback("t1", { gitCommit: "evil-sha" }, other),
+    ).rejects.toThrow(ForbiddenException);
+    expect(dataSource.transaction).not.toHaveBeenCalled();
+    expect(taskQueue.add).not.toHaveBeenCalled();
+  });
+
+  it("rollbackToVersion：其他用户 → 403 不落库；ADMIN 放行且快照生效", async () => {
+    const version = {
+      id: "v1",
+      taskId: "t1",
+      version: "v1",
+      snapshot: { name: "snapshot-name" },
+    };
+    versionRepo.findOne.mockResolvedValue(version);
+    taskRepo.findOne.mockResolvedValue(ownedRow({ name: "current" }));
+    taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+    await expect(service.rollbackToVersion("t1", "v1", other)).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(taskRepo.save).not.toHaveBeenCalled();
+
+    await expect(
+      service.rollbackToVersion("t1", "v1", admin),
+    ).resolves.toMatchObject({ name: "snapshot-name" });
+    expect(taskRepo.save).toHaveBeenCalledTimes(1);
+  });
+
+  it("rollback：属主兼任项目 viewer → 403（assertCanOperate 接线生效）", async () => {
+    taskRepo.findOne.mockResolvedValue(ownedRow({ gitCommit: "old-sha" }));
+    access.resolveRole.mockResolvedValue("viewer");
+    await expect(
+      service.rollback("t1", { gitCommit: "new-sha" }, owner),
+    ).rejects.toThrow(/viewer/);
+    expect(dataSource.transaction).not.toHaveBeenCalled();
+    expect(taskQueue.add).not.toHaveBeenCalled();
   });
 });
 

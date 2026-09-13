@@ -144,10 +144,12 @@ export class UsersService implements OnModuleInit {
   }
 
   /**
-   * H-3: callers that need to differentiate between "missing user" and
+   * H-3 / R-04: callers that need to differentiate between "missing user" and
    * "denied access" should use this — a 404 would leak that the user
-   * previously existed. Auth flow paths keep using findById() so they can
-   * still produce a clean UnauthorizedException for invalid tokens.
+   * previously existed. The auth flow paths (jwt.strategy.validate and
+   * auth.service.refreshToken) call THIS method and translate null into a
+   * clean UnauthorizedException themselves (findById would surface a 404
+   * "User #N not found" for tokens of deleted users — presence disclosure).
    */
   async findByIdOrNull(
     id: number,

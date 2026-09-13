@@ -52,6 +52,8 @@ describe("TaskBatchController", () => {
       const result = await controller.batchTrigger(body, adminUser, mockReq);
 
       expect(taskSvc.trigger).toHaveBeenCalledTimes(2);
+      // R-02: user 必须透传 service（漏传时属主/角色判定恒失真）
+      expect(taskSvc.trigger).toHaveBeenCalledWith("t1", {}, adminUser);
       expect(result).toHaveLength(2);
       expect(auditSvc.log).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -83,7 +85,8 @@ describe("TaskBatchController", () => {
     it("pauses all tasks and logs audit", async () => {
       taskSvc.pause.mockResolvedValue(undefined);
       await controller.batchPause({ taskIds: ["t1"] }, adminUser, mockReq);
-      expect(taskSvc.pause).toHaveBeenCalledWith("t1");
+      // R-02: user 必须透传 service
+      expect(taskSvc.pause).toHaveBeenCalledWith("t1", adminUser);
       expect(auditSvc.log).toHaveBeenCalledWith(
         expect.objectContaining({ action: "task.batch_pause" }),
       );
@@ -109,6 +112,8 @@ describe("TaskBatchController", () => {
         mockReq,
       );
       expect(taskSvc.resume).toHaveBeenCalledTimes(2);
+      // R-02: user 必须透传 service
+      expect(taskSvc.resume).toHaveBeenCalledWith("t1", adminUser);
       expect(auditSvc.log).toHaveBeenCalledWith(
         expect.objectContaining({ action: "task.batch_resume" }),
       );
@@ -119,7 +124,9 @@ describe("TaskBatchController", () => {
     it("deletes all tasks and logs audit", async () => {
       taskSvc.remove.mockResolvedValue(undefined);
       await controller.batchDelete({ taskIds: ["t1"] }, adminUser, mockReq);
-      expect(taskSvc.remove).toHaveBeenCalledWith("t1");
+      // R-02: user 必须透传 service——漏传时 assertCanWrite 的 ADMIN/属主
+      // 判定双双不成立，批量删除对所有人恒 403
+      expect(taskSvc.remove).toHaveBeenCalledWith("t1", adminUser);
       expect(auditSvc.log).toHaveBeenCalledWith(
         expect.objectContaining({ action: "task.batch_delete" }),
       );

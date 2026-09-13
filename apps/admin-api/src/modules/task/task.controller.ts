@@ -307,8 +307,10 @@ export class TaskController {
   ) {
     const results = await Promise.all(
       body.taskIds.map((id) =>
+        // R-02: 透传 user——漏传时 assertCanWrite 的 ADMIN/属主判定双双
+        // 不成立，批量删除对所有人恒 403（错误被 .catch 吞成 {id,error}）。
         this.taskService
-          .remove(id)
+          .remove(id, user)
           .catch((err) => ({ id, error: err.message })),
       ),
     );
@@ -473,10 +475,12 @@ export class TaskController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
+    // R-03: 透传 user——updateGlue 属配置/代码写面，service 侧做归属守卫
     const result = await this.taskService.updateGlue(
       id,
       body.source,
       body.language,
+      user,
     );
     await this.audit.log({
       userId: user?.id,
@@ -763,7 +767,8 @@ export class TaskController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const result = await this.taskService.rollback(id, dto);
+    // R-03: 透传 user——rollback 属配置写面（并触发执行），service 侧做归属守卫
+    const result = await this.taskService.rollback(id, dto, user);
     await this.audit.log({
       userId: user?.id,
       username: user?.username,
@@ -793,7 +798,12 @@ export class TaskController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const result = await this.taskService.rollbackToVersion(id, versionId);
+    // R-03: 透传 user——rollbackToVersion 整体覆盖任务配置，service 侧做归属守卫
+    const result = await this.taskService.rollbackToVersion(
+      id,
+      versionId,
+      user,
+    );
     await this.audit.log({
       userId: user?.id,
       username: user?.username,
