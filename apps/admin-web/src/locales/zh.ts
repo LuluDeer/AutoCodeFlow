@@ -523,7 +523,7 @@ export default {
   'notFound.backHome': '返回首页',
 
   'notif.title': '通知设置',
-  'notif.description': '配置告警通知渠道（邮件/Slack/钉钉/企业微信）、静默规则与全局测试发送。',
+  'notif.description': '配置告警通知渠道（邮件/Slack/钉钉/企业微信/飞书/自定义 webhook）、静默规则与全局测试发送。',
   'notif.status.enabled': '已启用',
   'notif.status.disabled': '已禁用',
   'notif.channel.email': '邮件',

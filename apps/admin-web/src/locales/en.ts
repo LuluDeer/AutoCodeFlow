@@ -513,7 +513,7 @@ export default {
   'notFound.backHome': 'Back to Home',
 
   'notif.title': 'Notification Settings',
-  'notif.description': 'Configure alert notification channels (email / Slack / DingTalk / WeCom), silence rules and global test sending.',
+  'notif.description': 'Configure alert notification channels (email / Slack / DingTalk / WeCom / Feishu / generic webhook), silence rules and global test sending.',
   'notif.status.enabled': 'Enabled',
   'notif.status.disabled': 'Disabled',
   'notif.channel.email': 'Email',
