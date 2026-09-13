@@ -1,10 +1,10 @@
 # 迁移机制（TypeORM Migrations）
 
-> 所属: docs/atlas/03-data · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/migrations/ · apps/admin-api/src/data-source.ts
+> 所属: docs/atlas/03-data · 最后核对: 2026-09-14 · 对应代码: apps/admin-api/src/migrations/ · apps/admin-api/src/data-source.ts
 
 ## 目录与命名
 
-- 目录：`apps/admin-api/src/migrations/`，当前 **63 个迁移文件**（另有 `migrations.spec.ts` 与 `__tests__/`）。
+- 目录：`apps/admin-api/src/migrations/`，当前 **65 个迁移文件**（另有 `migrations.spec.ts` 与 `__tests__/`）。
 - 命名：`<13位毫秒时间戳>-<PascalCase名称>.ts`，如 `1790000000008-AddTaskProjectId.ts`。TypeORM（0.3.x）按类名末尾 13 位 timestamp 排序执行，类名必须形如 `AddTaskProjectId1790000000008`。
 - 时间戳分两代：`17174731426xx` 系列（InitialSchema 时期，约 20 个）与 `178xx…/179xx…` 系列（后续演进），连续编号，无重复（有 spec 守卫，见下）。
 
@@ -56,9 +56,11 @@ npm run typeorm             # ts-node -r tsconfig-paths/register ./node_modules/
 | 审计加固 | `1790000000006-AuditLogsAppendOnlyGuard` | `audit_logs` append-only 触发器（SEC-10） |
 | OIDC SSO | `1790000000016-AddUsersOidcSub`（AUTH-04，已随 v1.3.0 发布） | `users` 加 `oidcSub` 可空列 + 唯一部分索引——IdP sub 稳定身份绑定；存量行不回填，本地登录路径零变化 |
 | 会话撤销 | `1790000000017-AddUserSessionVersion` | `users` 加 `sessionVersion` INTEGER NOT NULL DEFAULT 0（WIKI-AUTH-REVOC）——用户级会话版本，logout/改密原子 +1，access token 的 `ver` claim 失配即在途令牌 401；存量旧行取 0、无 ver 的旧令牌兼容放行 |
-| 配置历史强化 | `1790000000018-AddConfigHistoryMetadata`（当前最新；原登记 1790000000016，因与已发布的 AUTH-04 迁移撞号于 2026-09-13 重编号，内容零变化） | `config_history` 加 `valueType`/`isSecret` 两可空列（WIKI-OPT-2）——历史行元数据快照，回滚恢复类型/敏感标记 + 读面行级掩码；NULL=元数据不可知零破坏升级 |
+| 配置历史强化 | `1790000000018-AddConfigHistoryMetadata`（原登记 1790000000016，因与已发布的 AUTH-04 迁移撞号于 2026-09-13 重编号，内容零变化） | `config_history` 加 `valueType`/`isSecret` 两可空列（WIKI-OPT-2）——历史行元数据快照，回滚恢复类型/敏感标记 + 读面行级掩码；NULL=元数据不可知零破坏升级 |
+| 执行器 pull 派发 | `1790000000019-AddExecutorDispatchMode`（ARCH-32） | `executors` 加 `dispatchMode` varchar(16) NOT NULL DEFAULT 'push'（幂等 IF [NOT] EXISTS）——pull 模式执行器 register 上报时写 'pull' |
+| enum 补值 | `1790000000020-AddCoverEarlyAndCancelledEnumValues`（**当前最新**；PK-01/DR-FIX-ALL） | PG enum 与 TS 枚举对齐：`task_blockstrategy_enum` 补 `cover_early`、`execution_status_enum` 补 `cancelled`（均 `ADD VALUE IF NOT EXISTS` 幂等）；PG 不支持删 enum 值，down 为 no-op |
 
-完整清单以 `ls apps/admin-api/src/migrations` 为准（63 个）。
+完整清单以 `ls apps/admin-api/src/migrations` 为准（65 个）。
 
 ## 常见改动场景：怎么加一个迁移
 
