@@ -891,3 +891,91 @@ describe("FeishuChannel (NF-05)", () => {
     expect(postConfig).toEqual(expect.objectContaining({ maxRedirects: 0 }));
   });
 });
+
+// ────────────────────────────────────────────────────────────
+// R17: NOTIF_ALLOW_PRIVATE_NETWORK 渠道私网豁免（五渠道共用开关）
+// ────────────────────────────────────────────────────────────
+describe("notification channels — allowPrivateNetwork option (R17)", () => {
+  const loopback = "http://127.0.0.1:19999/hook";
+  const payload = { title: "T", content: "C" };
+
+  it("webhook 渠道：开关开启 → loopback URL 不再 blocked 且真实派发", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new WebhookChannel(
+      makeStore(),
+      makeConfig({ "notification.allowPrivateNetwork": true }),
+    );
+    await expect(channel.send(payload, loopback)).resolves.toBe("sent");
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      loopback,
+      expect.anything(),
+      expect.objectContaining({ maxRedirects: 0 }),
+    );
+  });
+
+  it("webhook 渠道：缺省（config 缺席）→ 默认拒绝内网（姿态零变化）", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new WebhookChannel(makeStore());
+    await expect(channel.send(payload, loopback)).resolves.toBe("blocked");
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it("dingtalk 渠道：开关开启 → loopback URL 派发", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new DingtalkChannel(
+      makeConfig({
+        "notification.allowPrivateNetwork": true,
+        "notification.dingtalkWebhook": loopback,
+      }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("sent");
+  });
+
+  it("slack 渠道：开关开启 → loopback URL 派发", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new SlackChannel(
+      makeConfig({
+        "notification.allowPrivateNetwork": true,
+        "notification.slackWebhook": loopback,
+      }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("sent");
+  });
+
+  it("wecom 渠道：开关开启 → loopback URL 派发", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new WecomChannel(
+      makeConfig({
+        "notification.allowPrivateNetwork": true,
+        "notification.wecomWebhook": loopback,
+      }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("sent");
+  });
+
+  it("feishu 渠道：开关开启 → loopback URL 派发", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new FeishuChannel(
+      makeConfig({
+        "notification.allowPrivateNetwork": true,
+        "notification.feishuWebhook": loopback,
+      }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("sent");
+  });
+
+  it("云元数据地址在开关开启下仍恒拒（任一渠道代表性断言）", async () => {
+    const channel = new DingtalkChannel(
+      makeConfig({
+        "notification.allowPrivateNetwork": true,
+        "notification.dingtalkWebhook": "http://169.254.169.254/hook",
+      }),
+      makeStore(),
+    );
+    await expect(channel.send(payload)).resolves.toBe("blocked");
+  });
+});

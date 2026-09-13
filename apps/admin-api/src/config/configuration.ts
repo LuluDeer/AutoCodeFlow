@@ -137,6 +137,33 @@ export default () => ({
     })(),
     expiresIn: process.env.JWT_EXPIRES_IN || "15m",
   },
+  // AUTH-04: OIDC SSO（授权码模式，confidential client）。默认 disabled——
+  // 不配置任何 OIDC_* env 的存量部署行为逐字节不变。
+  oidc: {
+    enabled: process.env.OIDC_ENABLED === "true",
+    issuer: process.env.OIDC_ISSUER || "",
+    clientId: process.env.OIDC_CLIENT_ID || "",
+    clientSecret: process.env.OIDC_CLIENT_SECRET || "",
+    // callback 全 URL：{API_BASE}/auth/oidc/callback，须与 IdP 注册一致
+    redirectUri: process.env.OIDC_REDIRECT_URI || "",
+    scopes: process.env.OIDC_SCOPES || "openid profile email",
+    // 身份显示名来源声明；sub 恒为绑定主键
+    usernameClaim: process.env.OIDC_USERNAME_CLAIM || "preferred_username",
+    // R20（ADR-014 修订）: 组→角色映射，**仅在 JIT 自动建号时生效**——
+    // 已绑定/存量账号的角色由平台管理员管理，IdP 侧组变化不会反向改写
+    // （防提权打架）。空（默认）= 一律 USER，行为与 R16 一致。
+    groupsClaim: process.env.OIDC_GROUPS_CLAIM || "groups",
+    adminGroups: process.env.OIDC_ADMIN_GROUPS || "",
+    // JIT 自动建号（默认关）：开启后未知用户首登自动建 USER 账号；
+    // 关闭时仅允许「管理员预建同名账号 → 首登绑定」显式链路
+    autoProvision: process.env.OIDC_AUTO_PROVISION === "true",
+    // 颁发令牌后浏览器落地的完整 URL（#fragment 携带 token，不进服务器日志）
+    webRedirectUrl:
+      process.env.OIDC_WEB_REDIRECT_URL ||
+      "http://localhost:5173/auth/sso/complete",
+    // 同机/内网 IdP（如本机 Keycloak）需显式放行（云元数据仍恒拒）
+    allowPrivateNetwork: process.env.OIDC_ALLOW_PRIVATE_NETWORK === "true",
+  },
   redis: {
     host: process.env.REDIS_HOST || "localhost",
     port: parseInt(process.env.REDIS_PORT, 10) || 6379,
@@ -161,6 +188,15 @@ export default () => ({
     openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
     ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
     ollamaModel: process.env.OLLAMA_MODEL || "llama3",
+    // ARCH-31（2026-09-13）: AI 出站私网豁免（语义见 app.module Joi 段注记）。
+    // 默认 false 零行为变化——本地 Ollama（默认 localhost:11434）需显式开启。
+    allowPrivateNetwork: process.env.AI_ALLOW_PRIVATE_NETWORK === "true",
+  },
+  // ARCH-31（2026-09-13）: 事件订阅 webhook 出站私网豁免（订阅创建/更新校验
+  // 与 outbox 派发前复核共用此开关）。默认 false 零行为变化。
+  eventWebhook: {
+    allowPrivateNetwork:
+      process.env.EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK === "true",
   },
   executor: {
     heartbeatInterval:
@@ -249,6 +285,12 @@ export default () => ({
     },
   },
   notification: {
+    // ARCH-31/R17（2026-09-13）: 通知出站私网豁免——企业内网自建网关（内网
+    // Alertmanager/IM 机器人代理）场景。默认 false 零行为变化；云元数据恒拒。
+    // 五个 webhook 类渠道（wecom/dingtalk/slack/feishu/webhook）共用此开关；
+    // email 通道走 SMTP 不经 HTTP SSRF 闸，不受影响。
+    allowPrivateNetwork:
+      process.env.NOTIF_ALLOW_PRIVATE_NETWORK === "true",
     wecomWebhook: process.env.WECOM_WEBHOOK || "",
     dingtalkWebhook: process.env.DINGTALK_WEBHOOK || "",
     slackWebhook: process.env.SLACK_WEBHOOK || "",

@@ -75,7 +75,10 @@ export class FeishuChannel extends BaseChannel {
     // F-3: SSRF chokepoint (NOTIF-001), fail-open like WebhookChannel /
     // dingtalk / wecom / slack. V2: report the block instead of swallowing.
     try {
-      await assertSafeHttpUrl(url);
+      await assertSafeHttpUrl(url, {
+        allowPrivateNetwork:
+          this.config.get<boolean>("notification.allowPrivateNetwork") === true,
+      });
     } catch (err: unknown) {
       this.logger.warn(
         `[Feishu] SSRF-blocked URL ${url}: ${err instanceof Error ? err.message : String(err)}`,

@@ -220,7 +220,12 @@ export class AiService {
     // AI-001: refuse SSRF (private/loopback/link-local/cloud-metadata) for
     // admin-configured AI base URLs. The check is the same as the webhook
     // channel — both stem from config-driven outbound HTTP.
-    await assertSafeHttpUrl(baseUrl);
+    // ARCH-31（2026-09-13）: AI_ALLOW_PRIVATE_NETWORK=true 时放开内网目标
+    // （同姿态：link-local 云元数据恒拒），默认 false 零行为变化。
+    await assertSafeHttpUrl(baseUrl, {
+      allowPrivateNetwork:
+        this.config.get<boolean>("ai.allowPrivateNetwork") === true,
+    });
     const r = await axios.post(
       `${baseUrl}/chat/completions`,
       {
@@ -244,7 +249,15 @@ export class AiService {
   private async callOllama(prompt: string) {
     const host = await this.getAiConfig("ollamaHost", "http://localhost:11434");
     // AI-001: SSRF guard for self-hosted Ollama.
-    await assertSafeHttpUrl(host);
+    // ARCH-31（2026-09-13）: 默认姿态拒一切非 public——本地 Ollama 的默认
+    // localhost:11434 也被拒（历史缺口：文档宣称支持本地 Ollama 但闸门不放行）。
+    // AI_ALLOW_PRIVATE_NETWORK=true 显式放开 loopback/restricted/private-lan
+    // （同机自建部署），link-local 云元数据仍恒拒。开关为 env 级部署配置，
+    // 不进 DB 系统配置（与 EXECUTOR_ALLOW_PRIVATE_NETWORK 同形态）。
+    await assertSafeHttpUrl(host, {
+      allowPrivateNetwork:
+        this.config.get<boolean>("ai.allowPrivateNetwork") === true,
+    });
     const model = await this.getAiConfig("ollamaModel", "llama3");
     const r = await axios.post(
       `${host}/api/generate`,
