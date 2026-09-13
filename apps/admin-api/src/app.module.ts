@@ -346,7 +346,10 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         HEALTH_QUEUE_FAILED_MAX: Joi.number().integer().min(1).default(100),
         HEALTH_QUEUE_DELAYED_MAX: Joi.number().integer().min(1).default(500),
         HEALTH_QUEUE_WAITING_MAX: Joi.number().integer().min(1).default(1000),
-        HEALTH_EXECUTOR_ONLINE_RATIO_MIN: Joi.number().min(0).max(1).default(0.5),
+        HEALTH_EXECUTOR_ONLINE_RATIO_MIN: Joi.number()
+          .min(0)
+          .max(1)
+          .default(0.5),
         HEALTH_CACHE_TTL_MS: Joi.number().integer().min(0).default(0),
       }),
       // Only validate in production and test environments

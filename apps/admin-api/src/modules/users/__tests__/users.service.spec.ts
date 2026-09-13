@@ -241,7 +241,11 @@ describe("UsersService", () => {
         sessionVersion: 2,
       });
       await service.update(1, { password: "PlainPass1!" } as any);
-      expect(repo.increment).toHaveBeenCalledWith({ id: 1 }, "sessionVersion", 1);
+      expect(repo.increment).toHaveBeenCalledWith(
+        { id: 1 },
+        "sessionVersion",
+        1,
+      );
     });
 
     it("不带 password 的更新不 bump", async () => {
