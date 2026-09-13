@@ -861,6 +861,11 @@ jobs:
           cache-dependency-path: apps/executor-desktop/package-lock.json
       - run: npm ci
         working-directory: apps/executor-desktop
+      # bundle-executor.sh 的 ncc 会对 executor-node 全项目（tsconfig include）
+      # 类型检查——必须先装其依赖（axios/@types/jest 等），否则 373 错全灭
+      # （desktop-linux-bundle 自 v1.3.0 起的「既有红」真实根因）。
+      - run: npm ci
+        working-directory: apps/executor-node
       - name: Main-process selftests (incl. updater)
         working-directory: apps/executor-desktop
         run: npm run test:main
@@ -901,6 +906,9 @@ jobs:
           cache-dependency-path: apps/executor-desktop/package-lock.json
       - run: npm ci
         working-directory: apps/executor-desktop
+      # 同 linux bundle：ncc 全项目类型检查需要 executor-node 依赖在位
+      - run: npm ci
+        working-directory: apps/executor-node
       - name: Main-process selftests
         working-directory: apps/executor-desktop
         run: npm run test:main
@@ -939,6 +947,9 @@ jobs:
           cache-dependency-path: apps/executor-desktop/package-lock.json
       - run: npm ci
         working-directory: apps/executor-desktop
+      # build:executor 的 ncc 全项目类型检查需要 executor-node 依赖在位
+      - run: npm ci
+        working-directory: apps/executor-node
       - name: Build main + renderer + executor bundle
         working-directory: apps/executor-desktop
         run: npm run build
