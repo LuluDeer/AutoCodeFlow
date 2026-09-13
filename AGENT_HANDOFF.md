@@ -3,12 +3,19 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-13（**部署成熟度收尾：EXE-VER-1 执行器版本门禁 + DEP-HA-1 多副本部署配方**，主会话直落——子代理平台两次派发均 reasoning-level-missing，按降级纪律实施）。此前同日：CI 卡死根治 + annotations 清零（multiarch 原生 arm64 runner，v1.3.0 已发布）、AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、发布就绪度。
+更新时间：2026-09-13（**ARCH-32 执行器 pull 模式派发（NAT 回连）**：多层 NAT 场景经用户确认转正，长轮询拉取与 push 并存逐执行器选择，真机自检 9/9 证明零入站依赖；此前同日部署成熟度收尾 EXE-VER-1/DEP-HA-1）。此前同日：CI 卡死根治 + annotations 清零（multiarch 原生 arm64 runner，v1.3.0 已发布）、AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、发布就绪度。
 当前分支：`develop`
 
 ## 状态快照
 
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
+- **本轮（2026-09-13 ARCH-32 执行器 pull 模式派发（NAT 回连），主会话）**。背景：部署成熟度评估第 5 项（跨 NAT 执行器不可达）经用户确认「多层 NAT 场景存在」后转正立项。裁定 ADR-015：**长轮询拉取**（弃 WebSocket 反连——与 DEP-HA-1 多副本轮询冲突需 sticky/实例注册表；长轮询每请求独立、任意副本可应答、复用既有出站通道）。
+  - **核心形态**：执行器 `EXECUTOR_PULL_MODE=true` 注册自报 `dispatchMode=pull`（迁移 1790000000019 默认 push 零影响）；调度侧全部既有选择语义不变（pinning/appName/group/tags/亲和/loadScore/原子占坑），仅传输层分支——占坑成功后 LPUSH 派发载荷（含 traceparent/pushedAt）到 Redis `acf:pull:{executorId}`；执行器空闲槽位时长轮询 `POST /executors/pull`（服务端 500ms 间隔 RPOP、waitMs 钳位 ≤55s、per-executor token 鉴权）取件走既有 acceptExecution/回调链。never-pulled 兜底=载荷 TTL 丢弃 + 既有 stale sweep，零新增后台任务；广播逐台入队；长轮询任意 admin 副本可应答（与 DEP-HA-1 天然兼容）。
+  - **真机实测发现的关键缺陷**：executor-node admin-client post 硬编码 10s 超时，必然误杀 25s 服务端等待窗口（现象=拉取请求全部 timeout，载荷永远取不到）——新增 `postLong`（40s，覆盖窗口+余量且 < 反代 60s 读超时），其余调用维持 10s。
+  - **领取核心双端抽取**：node `acceptExecution`（routes/execute.ts 校验/容量/登记主体，HTTP 路由退化为薄适配层）/ python `accept_execution`（+ExecutionRejected）——HTTP 与 pull 两入口共用同一路径杜绝漂移；node 领取被拒补发 failed 回调防 admin 僵尸 RUNNING 行；python pull 循环延迟导入防 scheduler↔routers 模块环。
+  - **真机自检 `npm run test:pull-dispatch` 9/9**：执行器地址设 `unreachable-nat-host.invalid:9999`（push 必失败）跑通注册→触发→入队→取件→glue 执行→回调 **SUCCESS**——成功本身即零入站依赖的证明；result 携带 `dispatchMode=pull/status=queued` 传输分支证据。
+  - **基线与状态**：admin-api **2496/2496**（2479 基线只增 +17：pull 队列 5/dispatch 分支 3/pull 端点 5/迁移结构 4 等）+ tsc/eslint 0 错 · executor-node **279/279**（+4）· executor-python **253/253**（+3）· develop 领先 origin 5 commit（待 push）。
+  - **下轮建议**：① admin-web 执行器列表展示 dispatchMode 徽标（列已在读面）；② 生产真机项不变（QA-05 24h、BUG-07、DSK-01）；③ EXE-VER-1 回显的版本合规态进 admin-web 列表徽标（两小件可同批）。
 - **本轮（2026-09-13 部署成熟度收尾批次：EXE-VER-1 + DEP-HA-1 + 文档卫生，主会话）**。背景：主会话完成「中台部署 + 分布式多平台执行器安装/配置/连接」两线成熟度评估（结论=核心链路已达可交付成熟阶段；评估识别的三项可落地优化经用户拍板「可你自己安排」后本轮实施；跨 NAT pull 模式回连与需真机项评估为暂不立项）。子代理平台两次派发均失败（reasoning-level-missing）→ 主会话直落。
   - **`eb5b64e` EXE-VER-1 执行器最低版本门禁 + 版本漂移提醒 done**：新 env `EXECUTOR_MIN_VERSION`（默认空=关，零行为变化；Joi 点分数字 1~4 段）——① register 时执行器 version 低于下限 403（落 service 层 registerExecutor 顶部、先于落库/发 token 副作用；报文含 minVersion+升级指引「重跑 install-cmd/换 artifact」；未上报版本的存量执行器放行+warn 不锁死；畸形版本 NaN→放行防锁死机队）；② heartbeat 请求体增可选 version（不落库），响应加法回显 minVersion/versionCompliant（门禁关=null/true，旧消费方无感）；③ 两端执行器新增单源常量 EXECUTOR_VERSION（register+心跳共用），消费回显打 10 分钟节流漂移 warn；node register catch 透传服务端报文（原日志只见 axios 403 无法定位版本问题）；④ 零依赖版本比较 util（不引 semver）。**测试**：admin-api **2479/2479**（2458 基线只增 +21：util 13/门禁矩阵 5/回显 3）+ tsc/eslint 0 错 · executor-node **275/275**（+2）· executor-python **250/250**（+3）。
   - **`30801d2` DEP-HA-1 admin-api 多副本部署配方 done**（ARCH-31 行为已闭环但无菜谱的收口）：① infra/nginx/default.conf 三处 proxy_pass（通用 /api/、SSE 专用位置、socket.io）全改「resolver 127.0.0.11 valid=10s + server 级 set 变量」运行时再解析——**SSE 位置同改是关键点**：静态 proxy_pass 启动期解析后永久缓存单 IP，HA 下长流钉死地址；X-Upstream 取证头 always；② 新 docker-compose.ha.yml override（`ports: !reset []` 清空 3105 宿主端口防 scale 冲突 + 共享卷 admin_uploads:/app/uploads 保 uploads 一致性；要求 Compose v2.24+）；③ 新真机自检 `npm run test:ha-compose` **4/4 本机全绿**（admin-api 桩 --scale 2 + 真实 conf 原件，20 请求命中 2 副本 12:8；不构建 admin-api 镜像——多实例行为由 arch31 套件覆盖，职责分离）；④ deployment.md 尾部「多副本（HA）部署」段（步骤/nginx 行为/约束表/升级回滚）+ 环境变量表 EXECUTOR_MIN_VERSION 行 + compose admin-api 头注扩容指引；nginx -t 与 compose config 双校验绿。
