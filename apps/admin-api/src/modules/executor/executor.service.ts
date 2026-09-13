@@ -15,7 +15,11 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan, In } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
-import { Executor, ExecutorStatus, ExecutorType } from "./entities/executor.entity";
+import {
+  Executor,
+  ExecutorStatus,
+  ExecutorType,
+} from "./entities/executor.entity";
 import { ExecutorMetricsHistory } from "./entities/executor-metrics-history.entity";
 import {
   TaskExecution,
@@ -36,6 +40,9 @@ import {
 } from "../../common/events/domain-events";
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 import { Optional } from "@nestjs/common";
+// ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional 同 eventBus 先例——
+// 既有单测直接 new 装配时 gate 缺席 → null → 门禁不生效）。
+import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
 // CORE-02: 重试退避抖动——±20% 摊开同刻重试（recovery re-enqueue 路径）
 import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 // CORE-05: 评分公式抽出（selectLeastLoaded / dispatch 双站点共享同一实现）
@@ -144,6 +151,10 @@ export class ExecutorService {
     // 不变（审计 best-effort，log() 抛错也绝不影响业务结果）。
     @Optional()
     private readonly audit: AuditService | null = null,
+    // ARCH-31 §5: 多实例下 @Cron 维护任务仅 cron Leader 执行（@Global 恒提供；
+    // @Optional 仅为既有单测装配兼容，先例 eventBus/tracing）。
+    @Optional()
+    private readonly leaderGate: LeaderGateService | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
   }
@@ -782,7 +793,10 @@ export class ExecutorService {
     // metricsWhitelist 的键全部对应 Executor 的数值指标列（Pick<Executor, …>
     // 为纯上转型断言）——写入经由该视图而非 `(e as any)`，保持类型面精确；
     // 运行时行为与原逐键直写完全一致。
-    const writableMetrics = e as Pick<Executor, (typeof metricsWhitelist)[number]>;
+    const writableMetrics = e as Pick<
+      Executor,
+      (typeof metricsWhitelist)[number]
+    >;
     for (const key of metricsWhitelist) {
       if (metricValues[key] !== undefined) {
         writableMetrics[key] = metricValues[key];
@@ -1399,6 +1413,8 @@ export class ExecutorService {
   /** Scan every 5 min for RUNNING executions that timed out with offline executor to prevent zombie tasks */
   @Cron("0 */5 * * * *")
   async detectLostExecutions() {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行（下同，详见 LeaderGateService）
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     // N12: use a 5-min broad threshold so any task older than the minimum buffer
     // is considered for per-execution checks (real timeout logic is applied per-row below).
     // A 24-hour threshold was too large — tasks with short timeouts were left as zombie
@@ -1480,6 +1496,7 @@ export class ExecutorService {
   /** Q7: Daily at 2am, clean up old execution records (90d) and audit logs (180d) to prevent DB bloat */
   @Cron("0 0 2 * * *")
   async cleanupOldRecords(): Promise<void> {
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
     const execResult = await this.execRepo.delete({
       createdAt: LessThan(ninetyDaysAgo),
@@ -1494,6 +1511,7 @@ export class ExecutorService {
   /** Auto-scan every 30s, mark executors with expired heartbeat as OFFLINE */
   @Cron("*/30 * * * * *")
   async markStaleOffline() {
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     // Calculate timeout using configured heartbeat interval and timeout multiplier
     const heartbeatInterval =
       this.configService.get<number>("executor.heartbeatInterval") || 30000;
@@ -1539,6 +1557,7 @@ export class ExecutorService {
   /** Run hourly, clean up executor records offline for more than 7 days */
   @Cron("0 0 * * * *")
   async cleanupOfflineExecutors() {
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const result = await this.repo.delete({
       status: ExecutorStatus.OFFLINE,

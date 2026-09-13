@@ -27,6 +27,9 @@ import { ApplicationVersion } from "./entities/application-version.entity";
 import { Application } from "./entities/application.entity";
 import { ApplicationService } from "./application.service";
 import { ExecutorService } from "../executor/executor.service";
+// ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional 同 eventBus/audit 先例——
+// 既有单测直接 new 装配时 gate 缺席 → null → 门禁不生效）。
+import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 import {
   CreateDeploymentDto,
@@ -169,6 +172,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // DEP-04: 审批留痕（@Optional 同上——存量 spec 未提供 AuditService 兼容）。
     @Optional()
     private readonly audit: AuditService | null = null,
+    // ARCH-31 §5: 多实例下 @Cron 维护任务仅 cron Leader 执行（@Global 恒提供；
+    // @Optional 仅为既有单测装配兼容，先例 eventBus/audit）。
+    @Optional()
+    private readonly leaderGate: LeaderGateService | null = null,
   ) {}
 
   /** Build auth headers for executor requests. Must resolve through
@@ -1541,6 +1548,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  safely above any legitimate hold. */
   @Cron("0 */2 * * * *")
   async detectStuckDeployments(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
     const stuck = await this.repo.find({

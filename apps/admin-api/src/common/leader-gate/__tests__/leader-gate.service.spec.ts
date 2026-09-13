@@ -5,6 +5,12 @@ import {
   LeaderGateService,
 } from "../leader-gate.service";
 import { Lock, RedisLockService } from "../../services/redis-lock.service";
+import { Repository } from "typeorm";
+import { JwtService } from "@nestjs/jwt";
+import { ConfigService } from "@nestjs/config";
+import { AuthService } from "../../../modules/auth/auth.service";
+import { UsersService } from "../../../modules/users/users.service";
+import { RefreshToken } from "../../../modules/auth/entities/refresh-token.entity";
 
 /** 构造一个已获取的锁句柄（release 可断言） */
 function makeLock(overrides: Partial<Lock> = {}): Lock {
@@ -31,7 +37,9 @@ function makeLockService(): LockServiceMock {
   return { service, acquireLock, extendLock };
 }
 
-async function initGate(lockService: RedisLockService): Promise<LeaderGateService> {
+async function initGate(
+  lockService: RedisLockService,
+): Promise<LeaderGateService> {
   const gate = new LeaderGateService(lockService);
   await gate.onModuleInit();
   return gate;
@@ -126,7 +134,9 @@ describe("LeaderGateService（ARCH-31 §5 cron 维护任务统一 Leader 门禁�
       expect(gate.isLeader).toBe(false);
       expect(lock.release).toHaveBeenCalledTimes(1);
       // demote 后保留竞选重试：下一周期再次竞选
-      lockMock.acquireLock.mockResolvedValueOnce(makeLock({ lockId: "lock-id-2" }));
+      lockMock.acquireLock.mockResolvedValueOnce(
+        makeLock({ lockId: "lock-id-2" }),
+      );
       await jest.advanceTimersByTimeAsync(CRON_LEADER_RETRY_MS);
       expect(lockMock.acquireLock).toHaveBeenCalledTimes(2);
       expect(gate.isLeader).toBe(true);
@@ -177,6 +187,57 @@ describe("LeaderGateService（ARCH-31 §5 cron 维护任务统一 Leader 门禁�
       await jest.advanceTimersByTimeAsync(CRON_LEADER_RETRY_MS * 10);
 
       expect(lockMock.acquireLock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("代表性 service 门禁行为（@Cron 第一行 guard 契约）", () => {
+    // 用 AuthService.cleanupExpiredTokens 作代表：门禁写在 @Cron 方法体
+    // 第一行 `if (this.leaderGate && !this.leaderGate.isLeader) return;`，
+    // 全部 10 处门禁 @Cron 同构（仅注入与底层动作不同）。
+    const makeAuthRepo = () =>
+      ({
+        delete: jest.fn().mockResolvedValue({ affected: 1 }),
+      }) as unknown as Repository<RefreshToken>;
+
+    const makeAuthService = (
+      repo: Repository<RefreshToken>,
+      leaderGate: LeaderGateService | null,
+    ): AuthService =>
+      new AuthService(
+        {} as UsersService,
+        {} as JwtService,
+        {} as ConfigService,
+        repo,
+        leaderGate,
+      );
+
+    it("follower gate（isLeader=false）→ 底层动作不执行", async () => {
+      const repo = makeAuthRepo();
+      const followerGate = { isLeader: false } as LeaderGateService;
+      const service = makeAuthService(repo, followerGate);
+
+      await service.cleanupExpiredTokens();
+
+      expect(repo.delete).not.toHaveBeenCalled();
+    });
+
+    it("leader gate（isLeader=true）→ 底层动作执行", async () => {
+      const repo = makeAuthRepo();
+      const leaderGate = { isLeader: true } as LeaderGateService;
+      const service = makeAuthService(repo, leaderGate);
+
+      await service.cleanupExpiredTokens();
+
+      expect(repo.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it("gate 缺席（null，既有单测直接 new 装配）→ 门禁不生效，动作照常执行（锁既有行为）", async () => {
+      const repo = makeAuthRepo();
+      const service = makeAuthService(repo, null);
+
+      await service.cleanupExpiredTokens();
+
+      expect(repo.delete).toHaveBeenCalledTimes(1);
     });
   });
 });

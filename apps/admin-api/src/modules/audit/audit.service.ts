@@ -1,8 +1,16 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, Repository, LessThan } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import { AuditLog } from "./entities/audit-log.entity";
+// ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
+// 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
+import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
 
 /**
  * SEC-10: append-only 语义开关——迁移 1790000000006 给 audit_logs 加了
@@ -33,6 +41,9 @@ export class AuditService {
     @InjectRepository(AuditLog)
     private readonly repo: Repository<AuditLog>,
     private readonly dataSource: DataSource,
+    // ARCH-31 §5: 多实例下 @Cron 维护任务仅 cron Leader 执行（@Global 恒提供）。
+    @Optional()
+    private readonly leaderGate: LeaderGateService | null = null,
   ) {}
 
   /**
@@ -63,6 +74,8 @@ export class AuditService {
   /** Q7: Daily at 2:05am, clean up audit logs older than 180 days */
   @Cron("0 5 2 * * *")
   async cleanupOldAuditLogs(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     const oneEightyDaysAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
     // SEC-10: 走 bypass 事务（append-only 触发器唯一放行点），替代原
     // 直连 repo.delete（迁移 1790000000006 后会被触发器拒绝）。
