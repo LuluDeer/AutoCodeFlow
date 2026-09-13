@@ -46,6 +46,18 @@
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | POST | `/auth/login` | 否 | 用户名密码登录，返回 `accessToken` 与 `refreshToken`（camelCase；独立限流，默认 20 次/分钟）。**TOTP 已启用用户**返回 `200 + {"totpRequired": true}`（不发 token，见下） |
+
+### OIDC SSO（AUTH-04，可选，默认关闭）
+
+授权码模式（confidential client，server-side code exchange）。配置与开启条件见 `deployment.md` 与 ADR-014；`OIDC_ENABLED=false` 时以下端点除 status 外返回 404/错误落地。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/auth/oidc/status` | 否 | 返回 `{enabled}`——登录页据此显示 SSO 入口 |
+| GET | `/auth/oidc/login` | 否 | 生成 state/nonce（HMAC 签名放 HttpOnly cookie，10 分钟时效）→ 302 到 IdP authorize。disabled 404 |
+| GET | `/auth/oidc/callback` | 否 | 校验 cookie 签名与 query state 双向一致 → code 换 token → ID Token RS256 验签（JWKS）+ iss/aud/exp/nonce 校验 → 身份定位（`oidcSub` 精确 → username 首登绑定 → JIT 建号开关）→ 302 回前端落地页，**token 在 URL `#fragment`**（不进服务器/代理日志）；任何失败 302 带 `#error=<code>`（稳定码：`state_invalid`/`nonce_invalid`/`signature_invalid`/`account_not_linked`/`account_disabled`/`sso_failed` 等） |
+
+**身份绑定与建号**：`users.oidcSub`（迁移 1790000000016，可空 + 唯一部分索引）存 IdP `sub` 稳定标识；`OIDC_AUTO_PROVISION=false`（默认）时未知身份拒绝（管理员预建同名账号后首登绑定），`=true` 时 JIT 建号（USER 角色、随机占位密码——SSO 账号不走密码登录）。 组→角色映射（R20）：`OIDC_ADMIN_GROUPS` 命中即在建号时授 ADMIN（默认空=恒 USER），仅作用于 JIT 建号，已绑定账号角色由平台管理员管理（ADR-014 修订）。
 | POST | `/auth/totp/verify` | 否 | SEC-03 TOTP 登录第二步：username+password+code 复验后签发 `accessToken`/`refreshToken`（限流 10 次/分钟；错码计入登录失败锁定计数） |
 | POST | `/auth/refresh` | 否 | 使用 refresh_token 刷新 access_token（限流 10 次/分钟） |
 | POST | `/auth/logout` | 是 | 登出，吊销当前用户全部 refresh_token |
@@ -711,7 +723,7 @@ Alertmanager 侧 route/receiver 配置样例与加签提示见 `docs/observabili
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | GET | `/event-subscriptions` | 是 | 列出订阅：ADMIN 看全部；普通用户看自己的 + 系统级（`userId=null`）。`secret` 恒脱敏为 `******` |
-| POST | `/event-subscriptions` | 是 | 新建订阅。body: `{ url（必填，公网 http(s)）, eventTypes（1-10 个，取值=上表事件名）, secret?（≥16 字符；省略则服务端生成 64 字符 hex 并在**本次响应** `generatedSecret` 字段一次性回显） }`。url 经 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据）→ 400 |
+| POST | `/event-subscriptions` | 是 | 新建订阅。body: `{ url（必填，公网 http(s)）, eventTypes（1-10 个，取值=上表事件名）, secret?（≥16 字符；省略则服务端生成 64 字符 hex 并在**本次响应** `generatedSecret` 字段一次性回显） }`。url 经 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据）→ 400。ARCH-31：`EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true` 时放行 loopback/restricted/private-LAN（云元数据恒拒），默认 false 姿态不变 |
 | PATCH | `/event-subscriptions/:id` | 是 | 更新（属主/ADMIN）。body: `{ enabled?, url?, eventTypes?, secret? }`（url 变更时再次 SSRF 校验） |
 | DELETE | `/event-subscriptions/:id` | 是 | 删除订阅（属主/ADMIN），死信级联删除（FK ON DELETE CASCADE） |
 | GET | `/event-subscriptions/:id/dead-letters` | 是 | 死信分页列表（属主/ADMIN）。`page` 默认 1，`limit` 默认 20、最大 100。行含 `eventType` / `payload`（发送时完整载荷）/ `error`（末次失败摘要）/ `attempts` / `createdAt` |
@@ -909,8 +921,8 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/projects` | 是 | 项目列表（全员可读，按 createdAt ASC） |
-| GET | `/projects/:id` | 是 | 项目详情 |
+| GET | `/projects` | 是 | 项目列表（按 createdAt ASC；**AUTH-02 后续读面过滤**：ADMIN 全量，普通用户仅「默认项目 ∪ 自己是成员的项目」；每行附 `myRole`——当前主体在该项目的角色，非成员 null） |
+| GET | `/projects/:id` | 是 | 项目详情（详情不过滤，读面收紧仅限列表，见 ADR-013 §6） |
 | POST | `/projects` | 是（ADMIN） | 创建项目 |
 | PATCH | `/projects/:id` | 是（ADMIN） | 更新项目（默认项目仅允许改 description） |
 | DELETE | `/projects/:id` | 是（ADMIN） | 删除项目（默认项目被拦截，404） |

@@ -200,6 +200,49 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
     });
   });
 
+  // ARCH-31（2026-09-13）: opts.allowPrivateNetwork 私网豁免矩阵——镜像
+  // assertSafeExecutorUrl 的开关姿态（loopback/restricted/private-lan 放行，
+  // link-local 云元数据与 reserved 恒拒），缺省行为零变化。
+  describe("assertSafeHttpUrl — allowPrivateNetwork option (ARCH-31)", () => {
+    it("default (no opts) keeps the blanket posture — loopback/private-LAN refused", async () => {
+      await expect(assertSafeHttpUrl("http://127.0.0.1:9000")).rejects.toThrow(
+        /deny list/,
+      );
+      await expect(assertSafeHttpUrl("http://10.0.0.5/admin")).rejects.toThrow(
+        /deny list/,
+      );
+    });
+
+    it("allow=true admits loopback / CGNAT benchmark / private-LAN targets", async () => {
+      const allow = { allowPrivateNetwork: true };
+      await expect(
+        assertSafeHttpUrl("http://127.0.0.1:11434", allow),
+      ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertSafeHttpUrl("http://[::1]:9000", allow),
+      ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertSafeHttpUrl("http://100.64.0.1/webhook", allow),
+      ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertSafeHttpUrl("http://198.18.0.1:9999/webhook", allow),
+      ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertSafeHttpUrl("http://10.0.0.5/admin", allow),
+      ).resolves.toBeInstanceOf(URL);
+    });
+
+    it("allow=true still refuses link-local cloud-metadata and reserved classes", async () => {
+      const allow = { allowPrivateNetwork: true };
+      await expect(
+        assertSafeHttpUrl("http://169.254.169.254/latest", allow),
+      ).rejects.toThrow(/deny list/);
+      await expect(
+        assertSafeHttpUrl("http://0.0.0.0:9000", allow),
+      ).rejects.toThrow(/deny list/);
+    });
+  });
+
   it("existing webhook/AI policy (assertSafeHttpUrl) is unchanged — private LAN stays blocked there", async () => {
     await expect(assertSafeHttpUrl("http://10.0.0.5/admin")).rejects.toThrow();
     await expect(assertSafeHttpUrl("http://127.0.0.1:9000")).rejects.toThrow();

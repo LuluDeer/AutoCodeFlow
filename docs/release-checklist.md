@@ -140,7 +140,22 @@ git push origin v1.x.x
 构建通过和部署机本地/私有仓库镜像冒烟为准。若后续接入 GHCR/DockerHub，发布前必须保留
 `docker buildx imagetools inspect` manifest 核对步骤。
 
-### 4.2 更新 CHANGELOG（可选）
+### 4.2 包发布（release-please 管道，R19 修复后全自动）
+
+npm/PyPI 包发布**不走**上节人工 tag——走 release-please 管道：
+`push main → Release PR（三包 lockstep bump）→ 合并 Release PR（即一次
+push main）→ 自动打 tag v* → 触发 release.yml（version-guard + environment
+审批 + npm/PyPI publish）`。
+
+**v1.3.0 起的验证点（R19 修复：补 `command: github-release` step 后首次实测）**：
+- [ ] Actions「Release Please」run 中出现 `github-release` step 且成功；
+- [ ] tag `v*` 由该 step 自动创建，且**自动**触发「Release」workflow；
+- [ ] 全程无需人工重推 tag（人工路径降为兜底：见 sdk-guide「版本与发布流程」
+  恢复段——仅当管道失败且需换 tag 指向时使用）；
+- [ ] 若 abort（「untagged, merged release PRs outstanding」）复现：备选方案
+  = Release PR 改用 squash 合并后重跑，并回写 development.md。
+
+### 4.3 更新 CHANGELOG（可选）
 
 在 `CHANGELOG.md`（如有）记录本次变更，格式：
 

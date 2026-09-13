@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
+import { ConfigService } from "@nestjs/config";
 import { Repository } from "typeorm";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
@@ -42,7 +43,20 @@ export class EventSubscriptionService {
     private readonly subRepo: Repository<EventSubscription>,
     @InjectRepository(EventSubscriptionDeadLetter)
     private readonly deadLetterRepo: Repository<EventSubscriptionDeadLetter>,
+    private readonly config: ConfigService,
   ) {}
+
+  /**
+   * ARCH-31（2026-09-13）: SSRF 私网豁免开关（创建/更新校验与出站复核共用）。
+   * 默认 false = 既有姿态零变化；true 放行 loopback/restricted/private-lan，
+   * link-local 云元数据恒拒（语义见 assertSafeHttpUrl opts 注记）。
+   */
+  private ssrfOpts(): { allowPrivateNetwork: boolean } {
+    return {
+      allowPrivateNetwork:
+        this.config.get<boolean>("eventWebhook.allowPrivateNetwork") === true,
+    };
+  }
 
   private isAdmin(user: AuthUser): boolean {
     return user.role === "admin";
@@ -60,7 +74,7 @@ export class EventSubscriptionService {
     user: AuthUser,
   ): Promise<{ subscription: EventSubscription; generatedSecret?: string }> {
     // SSRF 深校验（DNS 解析逐地址拒内网）——形状校验已在 DTO 层完成。
-    await assertSafeHttpUrl(dto.url);
+    await assertSafeHttpUrl(dto.url, this.ssrfOpts());
 
     const count = await this.subRepo.count();
     if (count >= MAX_EVENT_SUBSCRIPTIONS) {
@@ -131,7 +145,7 @@ export class EventSubscriptionService {
     this.assertCanManage(sub, user);
 
     if (dto.url !== undefined && dto.url !== sub.url) {
-      await assertSafeHttpUrl(dto.url);
+      await assertSafeHttpUrl(dto.url, this.ssrfOpts());
       sub.url = dto.url;
     }
     if (dto.eventTypes !== undefined) {

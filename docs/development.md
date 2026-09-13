@@ -398,6 +398,21 @@ tag v* push ──→ 既有 release.yml：version-guard → environment 审批�
   校验 + 本节干跑说明代替；首次发布时观察：① Release PR 是否正确汇总
   conventional commits；② 合并后 tag 是否触发 release.yml；③ 根级
   `CHANGELOG.md` 是否生成（当前仓库无根级 CHANGELOG.md，追加式生成不覆盖历史）。
+
+### v1.2.0 遗留排查：tag 需人工推的根因与修复（2026-09-13）
+
+- **现象回顾**：v1.1.1 与 v1.2.0 的 Release PR 合并后 release-please 均不自动
+  打 tag（v1.2.0 run `34705535091` abort「untagged, merged release PRs
+  outstanding」），两次都以人工重推 tag 收尾。
+- **根因（第十五轮遗留建议的定位结论）**：release-please-action@v4 把命令
+  拆为 `release-pr`（默认）与 `github-release` 两个命令——本 workflow 只配了
+  默认 step，**从未运行 github-release**，因此永远无人创建 tag。此前假设的
+  「merge commit 形态导致 merged-PR 检测失败」是次级因素，不是根因。
+- **修复**：release-please.yml 补第二个 step（`command: github-release`，同
+  PAT/config/manifest）。Release PR 合并（其 merge commit 即一次 push main）
+  触发 workflow → github-release step 打 tag `v*` → PAT 解决 tag 级联 →
+  release.yml 全链自动。v1.3.0 发布时按此验证；若 abort 复现，备选方案为
+  Release PR 改用 squash 合并。
 - **GITHUB_TOKEN 的 tag 不级联（2026-09-11 v1.1.1 实测确认，原假设已证伪）**：
   GitHub 会抑制所有由 `GITHUB_TOKEN` 产生的事件（含 `on: push: tags`）以防递归，
   故 release-please（默认 GITHUB_TOKEN）打出的 tag **不会触发** `release.yml`——实测
