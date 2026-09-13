@@ -74,6 +74,7 @@ security_opt:
 | `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | SSRF 防护回环/私网出站白名单开关；同机部署（admin-api 与执行器都在本机）必须设 `true` |
 | `AI_ALLOW_PRIVATE_NETWORK` | `false` | AI 出站私网豁免（ARCH-31）：默认 false 时本地 Ollama（localhost:11434）也被 SSRF 闸拒绝；true 放行 loopback/restricted/private-LAN，云元数据恒拒 |
 | `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK` | `false` | 事件订阅 webhook 私网豁免（ARCH-31）：订阅校验与派发复核共用；事件订阅普通用户可建，开启即信任所有登录用户可向内网发 webhook，生产建议 false |
+| `NOTIF_ALLOW_PRIVATE_NETWORK` | `false` | 通知渠道私网豁免（R17）：企业微信/钉钉/Slack/飞书/自定义 webhook 五渠道共用；内网自建网关需 true，云元数据恒拒；email 走 SMTP 不受影响 |
 | `OIDC_ENABLED` | `false` | OIDC SSO 总开关（AUTH-04，ADR-014）：false 时 SSO 端点关闭、本地密码登录零变化；OIDC_* 其余键见 `.env.example` 与「OIDC SSO」段 |
 | `OIDC_AUTO_PROVISION` | `false` | SSO JIT 自动建号开关：true 时未知 IdP 用户首登自动建 USER 账号；生产建议保持 false（管理员预建同名账号 → 首登绑定） |
 | `OIDC_ALLOW_PRIVATE_NETWORK` | `false` | IdP 私网豁免：自建内网 Keycloak/Entra 网关需 true（云元数据段恒拒） |
