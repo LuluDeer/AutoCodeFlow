@@ -27,6 +27,12 @@ export class HealthController {
           redis: { status: "healthy" },
           queue: { status: "healthy", size: 0 },
           executors: { status: "healthy", onlineCount: 3, totalCount: 3 },
+          tasks: {
+            status: "healthy",
+            activeCount: 8,
+            totalCount: 10,
+            runningCount: 2,
+          },
           scheduler: { status: "healthy" },
         },
         metrics: {
@@ -42,6 +48,7 @@ export class HealthController {
           { name: "redis", status: "healthy" },
           { name: "queue", status: "healthy" },
           { name: "executors", status: "healthy" },
+          { name: "tasks", status: "healthy" },
           { name: "scheduler", status: "healthy" },
         ],
       },

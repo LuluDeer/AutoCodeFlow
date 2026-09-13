@@ -59,7 +59,7 @@ modules/health/
 - **排查"executors 显示异常"**：onlineCount 来自 `ExecutorStatus.ONLINE` 的行数，先看执行器心跳是否超时（心跳窗口参数 `EXECUTOR_HEARTBEAT_*`，见 [../README.md](../README.md)），而不是 health 本身。
 - **排查"整体 unhealthy 但看不出哪项坏"**：看 `components[]`（6 项全聚合，tasks 也在内）的 message 字段——单项检查失败已全部转为组件详情，不会再出现整体 500。
 
-## 全量响应示例（以 service 返回为准；controller 的 Swagger example 暂未列 tasks 项，openapi.json 为提交的生成物、未随本次同步）
+## 全量响应示例（以 service 返回为准；controller 的 Swagger example 与 openapi.json 已同步列全 6 个组件——此前 tasks 缺席的偏差已在 R23 收敛）
 
 ```json
 {

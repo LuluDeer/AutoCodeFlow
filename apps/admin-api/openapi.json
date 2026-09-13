@@ -4220,6 +4220,12 @@
                         "onlineCount": 3,
                         "totalCount": 3
                       },
+                      "tasks": {
+                        "status": "healthy",
+                        "activeCount": 8,
+                        "totalCount": 10,
+                        "runningCount": 2
+                      },
                       "scheduler": {
                         "status": "healthy"
                       }
@@ -4247,6 +4253,10 @@
                       },
                       {
                         "name": "executors",
+                        "status": "healthy"
+                      },
+                      {
+                        "name": "tasks",
                         "status": "healthy"
                       },
                       {
