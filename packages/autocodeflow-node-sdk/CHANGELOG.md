@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.2.0...v1.3.0) (2026-09-13)
+
+
+### Features
+
+* **auth:** AUTH-04 OIDC SSO 单点登录——授权码模式 + 无状态 state + oidcSub 三级身份绑定 + JIT 建号开关（含组→角色映射，仅 JIT 建号生效）([584b45e](https://github.com/LuluDeer/AutoCodeFlow/commit/584b45e), [82c70c6](https://github.com/LuluDeer/AutoCodeFlow/commit/82c70c6))
+* **auth:** AUTH-02 后续——项目列表按成员过滤读面 + admin-web 项目管理页（ADR-013 §6）([14fc883](https://github.com/LuluDeer/AutoCodeFlow/commit/14fc883))
+* **notification:** R17 通知渠道出站私网豁免开关——NOTIF_ALLOW_PRIVATE_NETWORK（五渠道共用）([c7ef8eb](https://github.com/LuluDeer/AutoCodeFlow/commit/c7ef8eb))
+* **mcp,cli:** R18 项目域消费——MCP 只读三工具 + acf project 只读命令 ([6b42f54](https://github.com/LuluDeer/AutoCodeFlow/commit/6b42f54))
+
+
+### Bug Fixes
+
+* **admin-api:** R15 出站 SSRF 私网豁免开关 + 双 wrapper 双 init 导致 webhook 事件双投的生产级缺陷修复（真机套件 test:arch31-outbox-dup 实证）([e4bed26](https://github.com/LuluDeer/AutoCodeFlow/commit/e4bed26))
+
+
+### 本轮实际变更源
+
+三包本包内无行为变更，lockstep 版本对齐随平台 v1.3.0（详见根仓库 AGENT_HANDOFF 第十五~二十一轮）。
+
 ## [1.2.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.1.1...v1.2.0) (2026-09-12)
 
 
