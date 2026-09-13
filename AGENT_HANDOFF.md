@@ -3,12 +3,16 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-13（**第二十~二十一轮连推**：R20 SSO 组→角色映射（仅 JIT 建号，ADR-014 修订）；R21 发布就绪度（checklist/sdk-guide 同步 + version-guard 干跑 PASS）。此前同日第十七~十九轮：R17 通知渠道私网豁免；R18 MCP/CLI 项目域消费；R19 release-please「tag 需人工推」根因修复（补 github-release step）。此前第十六轮：AUTH-04 OIDC SSO 全栈 + 真机自检 13/13。更早见 git 历史。）
+更新时间：2026-09-13（**v1.3.0 发布完成**：AUTH-04 OIDC SSO + R15~R21 全部产物发布，三包 npm/PyPI 上架 + 双冒烟通过；发布轮实测发现 R19 修复方向无效（command input 在 v4 不存在）已如实修正记录，tag 仍走人工兜底）。此前同日第十五~二十一轮：AUTH-02-B 项目读面过滤、ARCH-31 双投缺陷修复、AI/Ollama loopback 修复、AUTH-04 OIDC SSO、通知渠道豁免、MCP/CLI 项目域消费、发布就绪度。更早见 git 历史。
 当前分支：`develop`
 
 ## 状态快照
 
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
+- **发布轮（2026-09-13 v1.3.0：R15~R21 七轮产物发布，主会话）**：
+  - **发布物**：push develop（12 commit）→ main 合并（e974e23）→ **Release PR #5（人工开）合并** → 人工 tag v1.3.0 → release.yml run 34755702543 全绿（version-guard 7s ✓ / publish-pypi ✓ / publish-npm ×2 ✓，无 environment 审批等待）→ **npm autocodeflow-mcp-server@1.3.0 / npm @autocodeflow/sdk@1.3.0 / PyPI autoflow-sdk 1.3.0 三包上架**；冒烟：npx mcp-server@1.3.0 --version=1.3.0（VERSION 常量同步验证）、PyPI venv 真装 1.3.0；GitHub Release 对象已建。
+  - **⚠️ R19 修复方向证伪（如实修正）**：实测发现 `command` 是 release-please-action@v4 的**无效 input**（run 34755386601 warning 列出合法 inputs 无 command；两个 step 实际都跑默认 manifest 模式）——R19「补 github-release step」方案无效，tag 自动化未打通。发布轮连环实测定位出真正的三层阻断：① v1.2.0 人工 tag 时**缺 GitHub Release 对象**（release-please 以 GitHub Releases 为「已发布」事实源，缺失即状态机卡死）→ 已补建（gh release create v1.2.0 --verify-tag）恢复状态机；② 历史非规范 merge 标题（"Merge develop — handoff…"）触发 conventional 解析错误（unexpected token at 1:6）→「No user facing commits found since 96b4679」——5 个 feat commit 被吞，release-please 拒绝开 PR；③ release-please 只认 bot 形态（head=release-please--branches--main）的 Release PR，手工 PR 不被状态机接纳。**处置**：按 v1.1.1/v1.2.0 先例人工开 Release PR #5（三包 lockstep bump + CHANGELOG×3 + DOC-09 六页声明同步，e3f0016）+ 人工 tag。workflow 已回退无效的 command input 写法（保留双 step 形态无害；若未来要自动化，方向=修 gh 页面 merge 习惯或升级 action 或接受人工 tag 兜底）。
+  - **遗留**：① release-please 自动化仍以人工 tag 兜底收尾（三层阻断中②是根治点：main 上 merge commit 标题需规范或改 squash 合并习惯，涉及协作流程变更，留产品/运维拍板）；② docs/release-checklist.md 的 v1.3.0 验证点已按实测结果回写（github-release step 未达预期，人工路径仍为主路径）。
 - **本轮（2026-09-13 第二十~二十一轮：SSO 组映射 + 发布就绪度，主会话直落）**：
   - **`82c70c6` R20 SSO 组→角色映射 done（ADR-014 修订）**：`OIDC_GROUPS_CLAIM`（默认 groups）+ `OIDC_ADMIN_GROUPS`（逗号清单，默认空）——**仅 JIT 建号时生效**：命中清单建 ADMIN，否则 USER，清单空恒 USER。安全边界（刻意不做）：已绑定/存量账号角色不随 IdP 组反向改写（防 IdP 误配提权与「IdP 降级 vs 平台提权」打架）；ADMIN 自动化生效需 AUTO_PROVISION 与 ADMIN_GROUPS 双开关同时显式开。validateIdToken 归一组声明（数组/单字符串）。测试 +4（默认/命中/缺失/存量不改写），admin-api **2389/2389**。
   - **`e039d12` R21 发布就绪度 done**：release-checklist.md 区分「部署锚点 tag」与「包发布管道」并增补 v1.3.0 起的 github-release step 实测 checklist（自动 tag/自动触发/人工降兜底/abort 备选）；sdk-guide 恢复路径补 R19 注记；**version-guard 本地干跑 PASS**（模拟 tag v1.2.0，5 处 version 一致）；sync-check 七面绿。
