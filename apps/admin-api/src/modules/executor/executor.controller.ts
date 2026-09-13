@@ -5,6 +5,7 @@ import {
   Body,
   UseGuards,
   UnauthorizedException,
+  ServiceUnavailableException,
   Headers,
   Param,
   Patch,
@@ -15,6 +16,8 @@ import {
   Res,
   NotFoundException,
   Logger,
+  Optional,
+  Inject,
 } from "@nestjs/common";
 import { Response } from "express";
 import { existsSync, readFileSync } from "fs";
@@ -42,6 +45,8 @@ import { verifyExecutorToken } from "../../common/utils/verify-executor-token.ut
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 // EXE-VER-1: heartbeat 响应回显版本合规态（EXECUTOR_MIN_VERSION）
 import { isVersionCompliant } from "./version-compare.util";
+// ARCH-32: pull 派发长轮询端点（ADR-015）
+import { ExecutorPullService } from "./executor-pull.service";
 // BUG-01：401 重签重试可观测计数——走 runtime-metrics 模块级入口（与
 // TaskService / NotificationService 的埋点方式一致，无模块环、零 DI 接线），
 // 由 PrometheusMetricsService 的 render 快照模式渲染为
@@ -82,6 +87,11 @@ export class ExecutorController {
     private readonly svc: ExecutorService,
     private readonly configService: ConfigService,
     private readonly systemConfigService: SystemConfigService,
+    // ARCH-32: @Optional + 默认值同 eventBus/audit 先例——存量单测三参
+    // 构造不破，pull 端点运行时显式守卫。
+    @Optional()
+    @Inject(ExecutorPullService)
+    private readonly pullService: ExecutorPullService | null = null,
   ) {}
 
   @Public()
@@ -135,6 +145,9 @@ export class ExecutorController {
       description?: string | null;
       restartedAt?: string | null;
       startupId?: string | null;
+      // ARCH-32: 派发模式自报（'push' | 'pull'，缺省 push；白名单校验在
+      // service 侧——枚举外值一律落回 push）。
+      dispatchMode?: string;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -161,6 +174,7 @@ export class ExecutorController {
       description: body.description,
       restartedAt: body.restartedAt,
       startupId: body.startupId,
+      dispatchMode: body.dispatchMode,
     };
     // N4: register + token issuance is idempotent per (address, startupId) —
     // a duplicate register from the SAME process life (same startupId, no
@@ -277,6 +291,55 @@ export class ExecutorController {
       minVersion: minVersion || null,
       versionCompliant: isVersionCompliant(body.version, minVersion),
     };
+  }
+
+  @Public()
+  // ARCH-32: 机器拉取面与 heartbeat 同理豁免分域档位——长轮询空闲态
+  // ~2.4/min/执行器（25s 窗口阻塞在服务端），全局默认档兜底即可
+  // （分域矩阵见 src/config/throttle-profiles.ts 头注）。
+  @Post("pull")
+  @ApiOperation({
+    summary: "Pull dispatch payloads (long-poll)",
+    description:
+      "ARCH-32: pull-mode executors (NAT-bound, no inbound reachability) long-poll this endpoint to receive dispatch payloads. Blocks up to waitMs (server-clamped) and returns { task } — null when nothing queued.",
+  })
+  @ApiResponse({ status: 200, description: "Dispatch payload or empty" })
+  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  async pullDispatch(
+    @Body()
+    body: {
+      address: string;
+      // 客户端期望的等待窗口；服务端按 EXECUTOR_PULL_WAIT_MS 钳位
+      // （上限 55s，低于反代通用 60s 读超时）。
+      waitMs?: number;
+    },
+    @Headers("authorization") auth: string,
+  ) {
+    const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
+    const isValid = await this.svc.validateTokenByAddress(body.address, token);
+    if (!isValid) {
+      throw new UnauthorizedException("Invalid executor token");
+    }
+    if (!this.pullService) {
+      throw new ServiceUnavailableException(
+        "Pull dispatch unavailable: ExecutorPullService not wired",
+      );
+    }
+    const executor = await this.svc.findByAddress(body.address);
+    if (!executor) {
+      throw new NotFoundException("Executor not found");
+    }
+    const maxWait =
+      this.configService.get<number>("executor.pullWaitMs") ?? 25000;
+    const waitMs = Math.max(
+      0,
+      Math.min(Number(body.waitMs ?? maxWait), maxWait),
+    );
+    const payload =
+      executor.dispatchMode === "pull"
+        ? await this.pullService.pull(executor.id, waitMs)
+        : null;
+    return { task: payload ?? null, dispatchMode: executor.dispatchMode };
   }
 
   @ApiBearerAuth("JWT")

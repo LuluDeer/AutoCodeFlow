@@ -208,6 +208,11 @@ export default () => ({
     // minVersion/versionCompliant 供执行器侧漂移告警。比较语义见
     // modules/executor/version-compare.util.ts（畸形版本号放行不锁死）。
     minVersion: process.env.EXECUTOR_MIN_VERSION || "",
+    // ARCH-32（ADR-015）：pull 派发长轮询参数。wait = /executors/pull 服务端
+    // 等待窗口（须 < 反代 60s 读超时）；ttl = 队列载荷过期丢弃阈值（执行器
+    // 长期不拉取时由既有 stale sweep 收敛执行行，队列只负责卫生丢弃）。
+    pullWaitMs: parseInt(process.env.EXECUTOR_PULL_WAIT_MS || "25000", 10),
+    pullTtlMs: parseInt(process.env.EXECUTOR_PULL_TTL_MS || "900000", 10),
     // ARCH-27: SSRF 豁免开关在此统一注册 —— 运行时消费方
     // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
     // 不再直读 process.env。

@@ -723,10 +723,22 @@ async def await_background_tasks_after_kill(timeout_seconds: float | None = None
     return len(done)
 
 
-@router.post('/execute', dependencies=[Depends(verify_token)])
-async def execute(req: ExecuteRequest, request: Request = None):
+class ExecutionRejected(Exception):
+    """ARCH-32: 领取被拒（容量/重复领取）。HTTP 路由映射为 HTTPException；
+    pull 循环映射为 failed 回调——两条入口共用同一领取核心（node
+    acceptExecution 对齐），语义不漂移。"""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+def accept_execution(req: ExecuteRequest, traceparent: Optional[str] = None) -> dict:
+    """领取核心：容量预检 + 重复领取守卫 + 登记 + 后台执行（原 POST /execute
+    主体；ARCH-32 抽取供 pull 循环复用）。被拒抛 ExecutionRejected。"""
     if sched.get_running_count() >= settings.max_concurrent_tasks:
-        raise HTTPException(status_code=429, detail='Executor is at capacity')
+        raise ExecutionRejected(429, 'Executor is at capacity')
 
     # E7: duplicate-accept guard (node execute.ts:339-342 parity) — a still
     # live (queued/prepare/running) executionId must never be accepted twice:
@@ -735,19 +747,17 @@ async def execute(req: ExecuteRequest, request: Request = None):
     # an execution whose first attempt is merely slow, not lost).
     entry = register_live_execution(req.executionId)
     if entry is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f'Execution {req.executionId} is already active on this executor',
+        raise ExecutionRejected(
+            400,
+            f'Execution {req.executionId} is already active on this executor',
         )
 
-    # OBS-01: 记录 admin 派发请求的 W3C traceparent 头（缺省=无追踪），
-    # 注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。
-    if request is not None:
-        traceparent_header = request.headers.get('traceparent')
-        if traceparent_header:
-            entry.traceparent = traceparent_header
-            logger.info('Execution %s trace: %s', req.executionId,
-                        traceparent_header.split('-')[1] if '-' in traceparent_header else 'malformed')
+    # OBS-01: 记录派发载荷的 W3C traceparent（HTTP 路由取请求头、pull 路径取
+    # 载荷字段；缺省=无追踪），注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。
+    if traceparent:
+        entry.traceparent = traceparent
+        logger.info('Execution %s trace: %s', req.executionId,
+                    traceparent.split('-')[1] if '-' in traceparent else 'malformed')
 
     sched.increment_running()
     bg_task = asyncio.create_task(_run_and_callback(req, entry))
@@ -758,6 +768,37 @@ async def execute(req: ExecuteRequest, request: Request = None):
         'executionId': req.executionId,
         'executorAddress': _executor_callback_address(),
     }
+
+
+@router.post('/execute', dependencies=[Depends(verify_token)])
+async def execute(req: ExecuteRequest, request: Request = None):
+    tp = request.headers.get('traceparent') if request is not None else None
+    try:
+        return accept_execution(req, tp)
+    except ExecutionRejected as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+async def reject_pulled_execution(execution_id: str, reason: str,
+                                  traceparent: Optional[str] = None) -> None:
+    """ARCH-32: pull 载荷领取被拒时补发 failed 回调——admin 侧不留僵尸
+    RUNNING 行（既有 stale sweep 之前先收敛；fail-open 不抛出）。"""
+    try:
+        token = await get_current_token()
+        await _send_callback_with_retry(
+            build_admin_api_url('/executions/callback'),
+            {
+                'executionId': execution_id,
+                'status': 'failed',
+                'errorMessage': f'Executor rejected pulled dispatch: {reason}',
+                **({'traceparent': traceparent} if traceparent else {}),
+            },
+            token,
+        )
+        logger.warning('Pulled execution %s rejected: %s', execution_id, reason)
+    except Exception as exc:  # pragma: no cover - best-effort 收敛
+        logger.warning('Failed to send rejection callback for %s: %s',
+                       execution_id, exc)
 
 
 async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str]) -> bool:

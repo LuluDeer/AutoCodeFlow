@@ -154,7 +154,7 @@ function queueTaskInstall<T>(taskId: string, job: () => Promise<T>, isAborted: (
 
 export const executeRouter = Router();
 
-interface ExecuteRequest {
+export interface ExecuteRequest {
   executionId: string;
   task: {
     id?: string;
@@ -311,15 +311,22 @@ registerDeadLetterCountProvider(getDeadLetterCount);
 // 后台（改动2）。同步 prepare 时 clone(120s)+fetch(60s)+install(300s) 会
 // 超过 admin 侧 dispatch HTTP 超时（(task.timeout+10)s），导致 admin 把
 // 超时误判为 TIMEOUT 终态而执行器随后成功回调被丢弃、容量计数失真。
+//
+// ARCH-32: 校验/领取核心抽为 acceptExecution —— HTTP 路由与 pull 循环
+// （pull.ts，NAT 内执行器经长轮询取件）共用同一条路径，杜绝双实现漂移。
+// 返回 { status, payload }；HTTP 路由是薄适配层（写响应），pull 循环对
+// 非 200 结果补发 failed 回调（admin 侧不留僵尸 RUNNING 行）。
 // ---------------------------------------------------------------------------
-executeRouter.post('/execute', (req: Request, res: Response) => {
+export function acceptExecution(
+  body: ExecuteRequest,
+  traceparent?: string,
+): { status: number; payload: Record<string, unknown> } {
   // BUG-03: Use atomic operations to prevent race conditions in capacity checking
   // Atomically increment counter first, then check if over capacity
   const current = Atomics.add(getRunningCountArray(), 0, 1);
   if (current >= config.maxConcurrentTasks) {
     Atomics.sub(getRunningCountArray(), 0, 1);
-    res.status(429).json({ error: 'Executor is at capacity' });
-    return;
+    return { status: 429, payload: { error: 'Executor is at capacity' } };
   }
 
   let entry: ExecutionEntry | null = null;
@@ -327,34 +334,29 @@ executeRouter.post('/execute', (req: Request, res: Response) => {
   const reject = (status: number, error: string) => {
     if (entry) entry.release();
     else Atomics.sub(getRunningCountArray(), 0, 1);
-    res.status(status).json({ error });
+    return { status, payload: { error } };
   };
 
   try {
-    const body = req.body as ExecuteRequest;
     const executionId = body?.executionId;
     const params = body?.params;
 
     if (!executionId || !body.task) {
-      reject(400, 'executionId and task are required');
-      return;
+      return reject(400, 'executionId and task are required');
     }
     if (!isSafeExecutionIdSegment(executionId)) {
-      reject(400, 'Invalid executionId: path traversal detected');
-      return;
+      return reject(400, 'Invalid executionId: path traversal detected');
     }
     // 重复领取守卫：同一 execution 仍在运行（含排队）时不得二次领取——
     // 二次 Atomics.add 与首个并发路径叠加会失真/双释放。
     if (liveExecutions.has(executionId)) {
-      reject(400, `Execution ${executionId} is already active on this executor`);
-      return;
+      return reject(400, `Execution ${executionId} is already active on this executor`);
     }
 
     const workDir = path.join(config.workDir, executionId);
     const guardError = validateExecutionWorkDir(workDir, config.workDir);
     if (guardError) {
-      reject(400, guardError);
-      return;
+      return reject(400, guardError);
     }
 
     // 廉价同步校验（纯字符串检查，防注入/防误配置，语义与原实现一致）：
@@ -365,22 +367,19 @@ executeRouter.post('/execute', (req: Request, res: Response) => {
       // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
       const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
       if (!allowedGitPattern.test(gitRepo)) {
-        reject(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
-        return;
+        return reject(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
       }
       // S7: SSRF guard — block private IP addresses and localhost
       const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
       if (privateIpPattern.test(gitRepo)) {
-        reject(400, `gitRepo URL contains restricted address: ${gitRepo}`);
-        return;
+        return reject(400, `gitRepo URL contains restricted address: ${gitRepo}`);
       }
       const ref = (body.task.gitCommit || body.task.gitBranch || 'main') as string;
       // git checkout uses array args (no shell injection), but an option-like
       // ref (`-b`, `--orphan`) would still be parsed as a flag by git — same
       // guard deploy.ts applies to its checkout path.
       if (/^-/.test(ref)) {
-        reject(400, `Invalid git ref: ${ref}`);
-        return;
+        return reject(400, `Invalid git ref: ${ref}`);
       }
     }
     // S16: validate each package name against npm naming rules before any
@@ -389,8 +388,7 @@ executeRouter.post('/execute', (req: Request, res: Response) => {
     const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
     for (const pkg of reqs) {
       if (!npmNameRe.test(pkg)) {
-        reject(400, `Invalid npm package name: ${pkg}`);
-        return;
+        return reject(400, `Invalid npm package name: ${pkg}`);
       }
     }
     // timeout=0 表示不限时（admin 侧 task.entity/scheduler 语义，改动4）——
@@ -398,40 +396,45 @@ executeRouter.post('/execute', (req: Request, res: Response) => {
     const rawTimeout = body.task.timeout;
     const timeout = rawTimeout === 0 ? 0 : (rawTimeout as number) || config.taskTimeoutSeconds;
     if (timeout !== 0 && (!Number.isFinite(timeout) || timeout < 1 || timeout > 86_400)) {
-      reject(400, `Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
-      return;
+      return reject(400, `Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
     }
     // Glue 语言的字符串校验是同步 400 语义（与原实现一致），语言支持性判定
     // 依赖 runtime（可能被 manifest 覆盖），留在后台 prepare。
     const glueSource = (body.task.glueSource as string | undefined) || (body.task.glue_source as string | undefined);
     if (glueSource !== undefined && typeof glueSource !== 'string') {
-      reject(400, 'glueSource must be a string');
-      return;
+      return reject(400, 'glueSource must be a string');
     }
 
     // 登记 + 立即 accepted。prepare（clone/checkout、依赖安装）与 spawn
     // 在后台执行（经 worker 按 taskId 串行，见 dispatch）。
     entry = createExecutionEntry(executionId, String(body.task.id || executionId));
     liveExecutions.set(executionId, entry);
-    // OBS-01: 记录 admin 派发请求的 W3C traceparent 头（缺省=无追踪），
-    // 后续注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。
-    const traceparentHeader = req.headers['traceparent'];
-    if (typeof traceparentHeader === 'string' && traceparentHeader) {
-      entry.traceparent = traceparentHeader;
-      logger.info(`Execution ${executionId} trace: ${traceparentHeader.split('-')[1] ?? 'malformed'}`);
+    // OBS-01: 记录派发载荷的 W3C traceparent（HTTP 路由取请求头、pull 路径
+    // 取载荷字段；缺省=无追踪），后续注入任务 env AUTOFLOW_TRACE_ID 并随回
+    // 调回传关联。
+    if (traceparent) {
+      entry.traceparent = traceparent;
+      logger.info(`Execution ${executionId} trace: ${traceparent.split('-')[1] ?? 'malformed'}`);
     }
 
     void startExecutionInBackground(executionId, body, params, entry);
 
     // 响应体与旧实现逐字一致——admin 对 2xx 的处理不变。
-    res.json({ status: 'accepted', executionId });
+    return { status: 200, payload: { status: 'accepted', executionId } };
   } catch (err) {
-    // Express 4 does not await async handlers: a synchronous throw below the
-    // capacity reservation must not hang the request or leak the slot.
-    if (!res.headersSent) {
-      reject(500, err instanceof Error ? err.message : 'Internal executor error');
-    }
+    // 同步 throw（容量预留之后）不得泄漏槽位——reject 内部幂等释放。
+    return reject(500, err instanceof Error ? err.message : 'Internal executor error');
   }
+}
+
+executeRouter.post('/execute', (req: Request, res: Response) => {
+  const body = req.body as ExecuteRequest;
+  const tpHeader = req.headers['traceparent'];
+  const result = acceptExecution(
+    body,
+    typeof tpHeader === 'string' ? tpHeader : undefined,
+  );
+  res.status(result.status).json(result.payload);
 });
 
 /**
@@ -1097,7 +1100,7 @@ function truncateCallbackLogs(logs?: string): string | undefined {
   return `${logs.slice(0, CALLBACK_LOG_HEAD_LENGTH)}${marker}${tailLength > 0 ? logs.slice(-tailLength) : ''}`;
 }
 
-function truncateCallbackErrorMessage(message?: string): string | undefined {
+export function truncateCallbackErrorMessage(message?: string): string | undefined {
   if (typeof message !== 'string' || message.length <= CALLBACK_ERROR_MESSAGE_MAX_LENGTH) {
     return message;
   }

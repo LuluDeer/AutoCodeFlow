@@ -29,6 +29,7 @@ import {
 import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
 import { adoptExecutorTokenHash } from './admin-envelope';
 import { taskWorkerManager } from './task-worker';
+import { startPullLoop } from './pull';
 import { killRunningTaskProcesses } from './routes/execute';
 import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
@@ -86,6 +87,8 @@ async function registerExecutor(): Promise<boolean> {
       // EXE-VER-1: 版本上报单源 EXECUTOR_VERSION（心跳同源）；
       // 中心端 EXECUTOR_MIN_VERSION 门禁按此判定，低于下限 403。
       version: EXECUTOR_VERSION,
+      // ARCH-32: 派发模式自报（pull = NAT 内零入站，经长轮询取件）
+      dispatchMode: config.pullMode ? 'pull' : 'push',
       // Legacy field kept for backwards compatibility
       capabilities: runtimes,
       // Structured capability fields
@@ -257,6 +260,12 @@ const server = app.listen(config.port, async () => {
     setOnTokenAcquired(maybeReRegister);
     await registerExecutor();
     heartbeatInterval = startHeartbeat();
+    // ARCH-32: pull 模式取件循环（与 push 模式互斥不冲突——push 由 admin
+    // 入站 POST 驱动，pull 循环只拉取队列；两种来源共用 acceptExecution）。
+    if (config.pullMode) {
+      startPullLoop();
+      logger.info('Pull dispatch mode enabled (EXECUTOR_PULL_MODE=true) — no inbound reachability required');
+    }
     startCallbackThread();
     startLogCleanup(config.logRetentionDays || 7);
     // Disk reclamation for task workdirs / git caches / downloaded packages /

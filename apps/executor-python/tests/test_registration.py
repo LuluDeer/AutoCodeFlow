@@ -48,6 +48,8 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
         'type': 'python',
         'version': '1.0.0',
         'capabilities': ['python', 'shell'],
+        # ARCH-32: 派发模式自报（默认 push）
+        'dispatchMode': 'push',
         'maxConcurrentTasks': 7,
         'restartedAt': executor_started_at,
         'startupId': executor_startup_id,
