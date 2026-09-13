@@ -25,7 +25,7 @@
  *   （非 win32 → 显式 skip 退出 0；CI 仅在 windows runner 上真跑）
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -191,12 +191,30 @@ async function main() {
         .replaceAll('${process.env.B07_GRAND_FILE}', JSON.stringify(grandFile)));
 
       // windowsHide: true —— executor runProcess win32 分支的同参形态（P-9）
+      const taskErrFile = path.join(tmp, 'task.stderr');
+      writeFileSync(taskErrFile, '');
       const task = spawn(process.execPath, [taskJs], {
         windowsHide: true,
-        stdio: 'ignore',
+        stdio: ['ignore', 'ignore', 'ignore'],
         env: { ...process.env, B07_ALIVE_FILE: aliveFile, B07_GRAND_FILE: grandFile },
       });
-      await waitFor(() => existsSync(aliveFile), 10_000, 'task alive marker');
+      let taskSpawnError = '';
+      task.on('error', (e) => {
+        taskSpawnError = e.message;
+        appendFileSync(taskErrFile, `spawn error: ${e.message}\n`);
+      });
+      task.on('exit', (code, sig) => {
+        appendFileSync(taskErrFile, `exit: code=${code} signal=${sig}\n`);
+      });
+      try {
+        await waitFor(() => existsSync(aliveFile), 20_000, 'task alive marker');
+      } catch (err) {
+        const stderrDump = existsSync(taskErrFile) ? readFileSync(taskErrFile, 'utf8') : '(no stderr file)';
+        ok('② P-7 taskkill /T /F 树杀（父+detached 孙全灭）', false,
+          `task never wrote alive marker in 20s; spawnError=${taskSpawnError || 'none'}; stderr=${stderrDump.slice(0, 400)}`);
+        try { spawnSync('taskkill', ['/PID', String(task.pid), '/T', '/F'], { stdio: 'ignore' }); } catch (_) {}
+        return summary();
+      }
       await waitFor(() => existsSync(grandFile), 10_000, 'detached grandchild alive marker');
 
       // killProcessTree win32 分支的同一实现：taskkill /T /F（整树强杀）
