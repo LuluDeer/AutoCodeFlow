@@ -5647,16 +5647,7 @@
     "/executor-packages/push-result": {
       "post": {
         "operationId": "ExecutorPackageController_pushResult",
-        "parameters": [
-          {
-            "name": "authorization",
-            "required": true,
-            "in": "header",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+        "parameters": [],
         "requestBody": {
           "required": true,
           "content": {

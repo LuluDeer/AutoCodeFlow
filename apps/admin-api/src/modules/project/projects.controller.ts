@@ -33,7 +33,10 @@ import type { ProjectMemberView } from "./project-access.service";
 /**
  * 实体行 → 列表视图（附当前主体的成员角色）。纯函数，供 findAll 拼装。
  */
-function toProjectView(row: Project, myRole: ProjectRole | null): ProjectViewRow {
+function toProjectView(
+  row: Project,
+  myRole: ProjectRole | null,
+): ProjectViewRow {
   return {
     id: row.id,
     name: row.name,
