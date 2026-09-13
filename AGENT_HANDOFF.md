@@ -3,7 +3,6 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-<<<<<<< HEAD
 更新时间：2026-09-13（**CI 卡死根治 + annotations 清零**：multiarch 弃 QEMU 改原生 arm64 runner 双 job 并行——同位卡死 5+ 次的根因消除，arm64 admin-api 45min+ → 76s；三处 CI 红灯修复 + deprecated actions 升级；v1.3.0 已发布）。此前同日第十五~二十一轮：AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、通知豁免、项目域消费、发布就绪度。
 当前分支：`develop`
 
