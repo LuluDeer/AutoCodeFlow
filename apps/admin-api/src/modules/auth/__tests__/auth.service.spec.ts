@@ -26,6 +26,7 @@ describe("AuthService (__tests__)", () => {
       | "recordLoginFailure"
       | "resetLoginFailure"
       | "clearExpiredLock"
+      | "bumpSessionVersion"
     >
   >;
   let jwtService: jest.Mocked<Pick<JwtService, "sign" | "verify">>;
@@ -39,6 +40,7 @@ describe("AuthService (__tests__)", () => {
       recordLoginFailure: jest.fn().mockResolvedValue(undefined),
       resetLoginFailure: jest.fn().mockResolvedValue(undefined),
       clearExpiredLock: jest.fn().mockResolvedValue(true),
+      bumpSessionVersion: jest.fn().mockResolvedValue(undefined),
     };
     jwtService = {
       sign: jest.fn().mockReturnValue("signed-token"),
@@ -407,6 +409,63 @@ describe("AuthService (__tests__)", () => {
         { userId: 1, revoked: false },
         { revoked: true },
       );
+    });
+
+    it("WIKI-AUTH-REVOC: logout 先原子 bump 会话版本再吊销 refresh（在途 access token 即刻失配 401）", async () => {
+      await service.revokeAllForUser(1);
+      expect(usersService.bumpSessionVersion).toHaveBeenCalledWith(1);
+      // Ordering: bump happens BEFORE the refresh-token revocation — the
+      // access-token surface is cut first; either order is correct, this
+      // pins the implementation.
+      const bumpCall = (usersService.bumpSessionVersion as jest.Mock).mock
+        .invocationCallOrder[0];
+      const revokeCall = (refreshTokenRepo.update as jest.Mock).mock
+        .invocationCallOrder[0];
+      expect(bumpCall).toBeLessThan(revokeCall);
+    });
+  });
+
+  // WIKI-AUTH-REVOC: token 签发单点（login / refresh 汇聚 generateTokens）
+  // 携带 ver = sessionVersion 签发时快照。
+  describe("generateTokens ver claim (WIKI-AUTH-REVOC)", () => {
+    it("login 签发的 access/refresh token 均携带 ver 快照", async () => {
+      usersService.findByUsername.mockResolvedValue({
+        ...mockUser,
+        sessionVersion: 3,
+      } as any);
+      jest.spyOn(bcrypt, "compare").mockResolvedValue(true as never);
+
+      await service.login({ username: "admin", password: "pass" });
+
+      const accessCall = jwtService.sign.mock.calls.find(
+        (c: any[]) => c[0]?.type === "access",
+      );
+      const refreshCall = jwtService.sign.mock.calls.find(
+        (c: any[]) => c[0]?.type === "refresh",
+      );
+      expect(accessCall?.[0]).toMatchObject({ sub: 1, ver: 3 });
+      expect(refreshCall?.[0]).toMatchObject({ sub: 1, ver: 3 });
+    });
+
+    it("refresh 轮换签发的新 token 携带最新 sessionVersion", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+        jti: mockJti,
+      } as any);
+      refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
+      usersService.findById.mockResolvedValue({
+        ...mockUser,
+        sessionVersion: 7,
+      } as any);
+
+      await service.refreshToken("valid-token");
+
+      const accessCall = jwtService.sign.mock.calls.find(
+        (c: any[]) => c[0]?.type === "access",
+      );
+      expect(accessCall?.[0]).toMatchObject({ ver: 7 });
     });
   });
 
