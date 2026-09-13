@@ -24,6 +24,7 @@ import {
   registerExecutorTools,
   registerObservabilityTools,
   registerAuditTools,
+  registerProjectTools,
   buildExecutionTimeline,
   TASK_TEMPLATES,
 } from "../tools";
@@ -35,6 +36,7 @@ const registerFns = [
   registerExecutorTools,
   registerObservabilityTools,
   registerAuditTools,
+  registerProjectTools,
 ];
 
 function setup(): {
@@ -120,6 +122,10 @@ describe("tool registry surface", () => {
       "get_execution_timeline",
       "list_dead_letters",
       "get_scheduler_health",
+      // AUTH-02-B（R18）: projects read-only trio
+      "list_projects",
+      "get_project_members",
+      "get_my_project_roles",
       // audit
       "list_audit_logs",
     ];
@@ -1014,5 +1020,41 @@ describe("tool handler output", () => {
       .handler({ page: 1, pageSize: 20 });
     expect(result.content[0].type).toBe("text");
     expect(parse(result)).toEqual({ list: [{ id: "t1" }], total: 1 });
+  });
+});
+
+
+// ────────────────────────────────────────────────────────────
+// AUTH-02-B（R18）: project tools — read-only trio
+// ────────────────────────────────────────────────────────────
+describe("project tools (read-only)", () => {
+  it("list_projects hits GET /projects and returns the filtered view", async () => {
+    call.mockResolvedValueOnce([
+      { id: "p-default", name: "Default", myRole: null },
+      { id: "p1", name: "Alpha", myRole: "editor" },
+    ]);
+    await tools.get("list_projects")!.handler({});
+    const [method, path] = call.mock.calls[0];
+    expect(method).toBe("GET");
+    expect(path).toBe("/projects");
+  });
+
+  it("get_project_members hits GET /projects/:id/members", async () => {
+    await tools.get("get_project_members")!.handler({ projectId: "p1" });
+    const [method, path] = call.mock.calls[0];
+    expect(method).toBe("GET");
+    expect(path).toBe("/projects/p1/members");
+  });
+
+  it("get_my_project_roles hits GET /projects/me/roles", async () => {
+    call.mockResolvedValueOnce({
+      userId: 7,
+      isAdmin: false,
+      memberships: [{ projectId: "p1", role: "viewer" }],
+    });
+    await tools.get("get_my_project_roles")!.handler({});
+    const [method, path] = call.mock.calls[0];
+    expect(method).toBe("GET");
+    expect(path).toBe("/projects/me/roles");
   });
 });

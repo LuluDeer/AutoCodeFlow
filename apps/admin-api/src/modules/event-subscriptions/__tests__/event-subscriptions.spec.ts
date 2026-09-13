@@ -10,6 +10,7 @@
  * - CRUD：url SSRF 拒内网、secret 脱敏、属主校验。
  */
 import { Test } from "@nestjs/testing";
+import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { BadRequestException, ForbiddenException } from "@nestjs/common";
 import { createHmac } from "node:crypto";
@@ -163,6 +164,10 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
           useValue: subRepoMock,
         },
         {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(false) },
+        },
+        {
           provide: getRepositoryToken(EventSubscriptionDeadLetter),
           useValue: dlRepoMock,
         },
@@ -249,6 +254,10 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
           {
             provide: getRepositoryToken(EventSubscription),
             useValue: subRepoMock,
+          },
+          {
+            provide: ConfigService,
+            useValue: { get: jest.fn().mockReturnValue(false) },
           },
           {
             provide: getRepositoryToken(EventSubscriptionDeadLetter),
@@ -529,6 +538,10 @@ describe("FEAT-07 EventSubscriptionService", () => {
           useValue: subRepoMock,
         },
         {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(false) },
+        },
+        {
           provide: getRepositoryToken(EventSubscriptionDeadLetter),
           useValue: dlRepoMock,
         },
@@ -602,6 +615,56 @@ describe("FEAT-07 EventSubscriptionService", () => {
       { url: "https://new.example.com/hook" },
       plainUser,
     );
-    expect(assertSafe).toHaveBeenCalledWith("https://new.example.com/hook");
+    expect(assertSafe).toHaveBeenCalledWith("https://new.example.com/hook", {
+      allowPrivateNetwork: false,
+    });
+  });
+});
+
+/**
+ * ARCH-31 真机回归锁（test:arch31-outbox-dup 实证暴露）：
+ * OutboundEventDispatcher 经 OUTBOUND_DISPATCHER_TOKEN useFactory 别名后挂在
+ * 两个 provider wrapper 下，Nest 生命周期曾对其 onModuleInit 调用两次 → 总线
+ * 监听器翻倍 → 每个出站事件被派发两次、outbox 行双写。此处锁定幂等契约：
+ * 同一实例重复 init 只注册一轮监听器，destroy 后清空。
+ */
+describe("OutboundEventDispatcher 生命周期幂等（双 wrapper 回归锁）", () => {
+  const makeDispatcher = () => {
+    const bus = new DomainEventBus();
+    const dispatcher = new OutboundEventDispatcher(
+      bus,
+      {} as never,
+      { get: () => null } as never,
+      { get: () => false } as never,
+      { find: jest.fn().mockResolvedValue([]) } as never,
+      {} as never,
+    );
+    return { bus, dispatcher };
+  };
+
+  it("重复 onModuleInit 只注册一轮监听器，destroy 后清空", () => {
+    const { bus, dispatcher } = makeDispatcher();
+    dispatcher.onModuleInit();
+    // 双 wrapper 形态下 Nest 会对同一实例再调一次
+    dispatcher.onModuleInit();
+
+    for (const ev of [
+      DOMAIN_EVENTS.EXECUTION_COMPLETED,
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      DOMAIN_EVENTS.EXECUTOR_OFFLINE,
+      DOMAIN_EVENTS.DEPLOYMENT_COMPLETED,
+    ]) {
+      expect(bus.listenerCount(ev)).toBe(1);
+    }
+
+    dispatcher.onModuleDestroy();
+    for (const ev of [
+      DOMAIN_EVENTS.EXECUTION_COMPLETED,
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      DOMAIN_EVENTS.EXECUTOR_OFFLINE,
+      DOMAIN_EVENTS.DEPLOYMENT_COMPLETED,
+    ]) {
+      expect(bus.listenerCount(ev)).toBe(0);
+    }
   });
 });

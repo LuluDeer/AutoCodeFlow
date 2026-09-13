@@ -61,6 +61,13 @@ export class User {
   @Column({ default: 0 })
   sessionVersion: number;
 
+  // AUTH-04: OIDC IdP 的稳定身份标识（sub 声明）。可空：本地密码登录用户
+  // 恒为 NULL；首次 SSO 登录按 username 匹配成功后写入绑定。唯一部分索引
+  // （WHERE NOT NULL）保证一个 sub 至多绑定一个账号。
+  @Column({ nullable: true, type: "varchar", length: 255 })
+  @Exclude()
+  oidcSub: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 
