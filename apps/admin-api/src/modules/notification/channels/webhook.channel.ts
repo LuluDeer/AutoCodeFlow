@@ -1,4 +1,5 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import {
   BaseChannel,
@@ -14,7 +15,13 @@ export class WebhookChannel extends BaseChannel {
   name = "webhook";
   private logger = new Logger(WebhookChannel.name);
 
-  constructor(private store: ChannelConfigStore) {
+  constructor(
+    private store: ChannelConfigStore,
+    // R17: 通知出站私网豁免开关（与 wecom/dingtalk/slack/feishu 同源）。
+    // @Optional：存量测试模块无 ConfigService 时按 undefined（=开关关）降级，
+    // 生产行为不受影响。
+    @Optional() private config?: ConfigService,
+  ) {
     super();
   }
 
@@ -54,7 +61,11 @@ export class WebhookChannel extends BaseChannel {
     const url_ = webhookUrl;
     // V2: report the block instead of swallowing it silently.
     try {
-      await assertSafeHttpUrl(url_);
+      await assertSafeHttpUrl(url_, {
+        allowPrivateNetwork:
+          this.config?.get<boolean>("notification.allowPrivateNetwork") ===
+          true,
+      });
     } catch (err: unknown) {
       this.logger.warn(
         `[Webhook] SSRF-blocked URL ${url_}: ${err instanceof Error ? err.message : String(err)}`,
