@@ -17,6 +17,7 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   delete: jest.fn().mockResolvedValue({ affected: 0 }),
   remove: jest.fn(),
   update: jest.fn().mockResolvedValue({ affected: 1 }),
+  increment: jest.fn().mockResolvedValue({ affected: 1, generatedMaps: [] }),
   createQueryBuilder: jest.fn(),
   ...overrides,
 });
@@ -226,6 +227,52 @@ describe("UsersService", () => {
       expect(bcrypt.hash).toHaveBeenCalledWith("PlainPass1!", 12);
       const saved = repo.save.mock.calls[0][0];
       expect(saved.password).toBe("hashed-password");
+    });
+  });
+
+  // WIKI-AUTH-REVOC: 改密成功后原子 bump 会话版本——该用户所有在途 access
+  // token 的 ver 快照失配即 401（含管理员重置他人密码的场景）。
+  describe("update — sessionVersion bump (WIKI-AUTH-REVOC)", () => {
+    it("带 password 改密成功后原子 bump sessionVersion", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "u",
+        password: "old",
+        sessionVersion: 2,
+      });
+      await service.update(1, { password: "PlainPass1!" } as any);
+      expect(repo.increment).toHaveBeenCalledWith({ id: 1 }, "sessionVersion", 1);
+    });
+
+    it("不带 password 的更新不 bump", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "u",
+        password: "old",
+        sessionVersion: 2,
+      });
+      await service.update(1, { email: "new@example.com" } as any);
+      expect(repo.increment).not.toHaveBeenCalled();
+    });
+
+    it("save 失败（改密未生效）不 bump，不误伤在途会话", async () => {
+      repo.findOne.mockResolvedValue({ id: 1, username: "u", password: "old" });
+      repo.save.mockRejectedValueOnce(new Error("db down"));
+      await expect(
+        service.update(1, { password: "PlainPass1!" } as any),
+      ).rejects.toThrow("db down");
+      expect(repo.increment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("bumpSessionVersion (WIKI-AUTH-REVOC)", () => {
+    it("原子自增（repo.increment 单条 UPDATE，无读改写）", async () => {
+      await service.bumpSessionVersion(7);
+      expect(repo.increment).toHaveBeenCalledWith(
+        { id: 7 },
+        "sessionVersion",
+        1,
+      );
     });
   });
 

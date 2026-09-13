@@ -18,6 +18,14 @@ export interface JwtPayload {
    * X-Project-Id header 注入时由该字段承接。validate() 不消费、不校验。
    */
   projectId?: string;
+  /**
+   * WIKI-AUTH-REVOC: 会话版本快照——签发时刻 user.sessionVersion（logout /
+   * 改密时原子 +1）。validate() 与库中当前值比对，不一致 = 令牌签发后该用户
+   * 已 logout / 改密 → 401（"Session has been revoked"），在途访问令牌即时
+   * 失效。无 ver 的存量旧令牌（本特性部署前签发）按「到期自然失效」兼容
+   * 放行，不被新逻辑立即打死。
+   */
+  ver?: number;
 }
 
 /**
@@ -85,6 +93,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!user) throw new UnauthorizedException("User not found");
     // S1: reject disabled accounts even when their JWT is still valid
     if (!user.isActive) throw new UnauthorizedException("Account is disabled");
+    // WIKI-AUTH-REVOC: 会话版本比对——payload.ver 是签发时刻快照，库中
+    // sessionVersion 在 logout / 改密时原子 +1，不一致即「令牌签发后该用户
+    // 的会话已被撤销」。存量旧令牌无 ver claim（undefined）→ 跳过比对，
+    // 维持「到期自然失效」的兼容语义（部署前签发的令牌零破坏）。
+    if (payload.ver !== undefined && payload.ver !== user.sessionVersion) {
+      throw new UnauthorizedException("Session has been revoked");
+    }
     return user;
   }
 }

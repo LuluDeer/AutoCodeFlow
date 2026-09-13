@@ -178,7 +178,16 @@ export class UsersService implements OnModuleInit {
       updateUserDto.password = await bcrypt.hash(updateUserDto.password, 12);
     }
     Object.assign(user, updateUserDto);
-    return this.usersRepository.save(user);
+    const saved = await this.usersRepository.save(user);
+    // WIKI-AUTH-REVOC: 改密成功后原子 bump 会话版本——该用户所有在途
+    // access token 的 ver 快照失配即 401（含管理员重置他人密码的场景）。
+    // 放在 save 成功之后：改密失败（校验/落库异常）不误伤在途会话。
+    // 返回实体中的 sessionVersion 为 bump 前快照（响应展示无消费方，语义
+    // 以签发时重新读取的库中值为准）。
+    if (updateUserDto.password) {
+      await this.bumpSessionVersion(id);
+    }
+    return saved;
   }
 
   async remove(id: number) {
@@ -274,5 +283,16 @@ export class UsersService implements OnModuleInit {
       loginFailCount: 0,
       lockedUntil: null,
     });
+  }
+
+  /**
+   * WIKI-AUTH-REVOC: 原子 bump 用户级会话版本（sessionVersion + 1）。
+   * 单条 UPDATE 列自增（repo.increment），不做读改写——并发 logout/改密
+   * 不会互相覆盖 bump 次数。调用点：logout（auth.service.revokeAllForUser）
+   * 与改密（update 携带 password）。bump 后该用户所有在途 access token 的
+   * ver 快照与库中失配，jwt.strategy.validate() 即刻 401。
+   */
+  async bumpSessionVersion(userId: number): Promise<void> {
+    await this.usersRepository.increment({ id: userId }, "sessionVersion", 1);
   }
 }
