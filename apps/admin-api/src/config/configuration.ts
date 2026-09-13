@@ -161,6 +161,15 @@ export default () => ({
     openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
     ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
     ollamaModel: process.env.OLLAMA_MODEL || "llama3",
+    // ARCH-31（2026-09-13）: AI 出站私网豁免（语义见 app.module Joi 段注记）。
+    // 默认 false 零行为变化——本地 Ollama（默认 localhost:11434）需显式开启。
+    allowPrivateNetwork: process.env.AI_ALLOW_PRIVATE_NETWORK === "true",
+  },
+  // ARCH-31（2026-09-13）: 事件订阅 webhook 出站私网豁免（订阅创建/更新校验
+  // 与 outbox 派发前复核共用此开关）。默认 false 零行为变化。
+  eventWebhook: {
+    allowPrivateNetwork:
+      process.env.EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK === "true",
   },
   executor: {
     heartbeatInterval:
