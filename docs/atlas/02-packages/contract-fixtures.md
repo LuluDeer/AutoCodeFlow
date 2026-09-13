@@ -25,7 +25,7 @@
 | `statusRange` | success: [200,201,202,204]、failure: [400,401,403,404,409,429,500,502] |
 | `errorBody` | 5 条错误体向量（信封式 message、message 数组、error 字段等） |
 | `knownHeuristicEdge` | 已知边界：载荷带**完整** `code+message+data` 三元组会被所有端当信封拆掉——实体载荷绝不能同时携带这三个键 |
-| `knownDivergence` | 已知分歧：`data+message` **无** `code` 时，cli/mcp 用宽松启发式拆出 `data`，node/py SDK 要求严格 `code+message+data` 三元组故原样保留——admin-api 真实流量恒带 `code`，故不受影响 |
+| `knownDivergence` | 已知分歧（2026-09-13 起收敛）：`data+message` **无** `code` 时，cli 仍用宽松启发式拆出 `data`；mcp 已收紧为「`data` 键 + `code` 为数值」判定（对齐 ResponseInterceptor 的 code 恒数值），对此向量与 node/py SDK 一致原样保留——admin-api 真实流量恒带数值 `code`，故不受影响 |
 
 ## 被谁消费（以代码核实）
 
