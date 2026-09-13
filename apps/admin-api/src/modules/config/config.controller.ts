@@ -56,9 +56,14 @@ export class ConfigController {
     const limit = query?.pageSize ?? 20;
     const result = await this.configService.getHistory(query?.key, page, limit);
     // Mask secret values in history records.
+    // WIKI-OPT-2: 行级保密优先——历史行持久化的 isSecret=true（迁移
+    // 1790000000016）时无论该键当前是否仍标记 secret 都掩码，防配置被
+    // 删除或取消 secret 标记后历史读面暴露旧机密值；存量旧行（isSecret
+    // 为 NULL=元数据不可知）沿用既有「按当前配置行 isSecret」的键级推断，
+    // 行为不回归。
     const secretKeys = await this.configService.getSecretKeys();
     result.data = result.data.map((h) =>
-      secretKeys.has(h.configKey)
+      h.isSecret === true || secretKeys.has(h.configKey)
         ? {
             ...h,
             oldValue: h.oldValue != null ? "***" : null,
@@ -79,14 +84,18 @@ export class ConfigController {
     const limit = pagination?.pageSize ?? 20;
     const result = await this.configService.getHistory(key, page, limit);
     // Check if this key is marked secret and mask values accordingly.
+    // WIKI-OPT-2: 同 getHistory 的行级保密语义——历史行 isSecret=true 逐行
+    // 掩码（与键级推断取并集），存量 NULL 行沿用键级推断。
     const secretKeys = await this.configService.getSecretKeys();
-    if (secretKeys.has(key)) {
-      result.data = result.data.map((h) => ({
-        ...h,
-        oldValue: h.oldValue != null ? "***" : null,
-        newValue: h.newValue != null ? "***" : null,
-      }));
-    }
+    result.data = result.data.map((h) =>
+      h.isSecret === true || secretKeys.has(key)
+        ? {
+            ...h,
+            oldValue: h.oldValue != null ? "***" : null,
+            newValue: h.newValue != null ? "***" : null,
+          }
+        : h,
+    );
     return result;
   }
 
