@@ -31,6 +31,25 @@ export interface Executor {
    * >0 表示回调持续失败、载荷已落盘执行器本地 dead-letter，需人工排查。
    */
   deadLetterCount?: number | null;
+  /**
+
+   * ARCH-32: 派发模式。'pull' = NAT 内执行器（长轮询取件，零入站依赖）；
+
+   * 'push' = 默认（中心端入站 POST）。缺省视为 push（旧快照兼容）。
+
+   */
+
+  dispatchMode?: 'push' | 'pull';
+
+  /**
+
+   * EXE-VER-1/UI-17: EXECUTOR_MIN_VERSION 门禁的读面投影——执行器版本低于
+
+   * 中心端下限时 false；门禁关/未上报版本恒 true（旧快照缺省 true）。
+
+   */
+
+  versionCompliant?: boolean;
 }
 
 export interface ExecutorMetrics {
