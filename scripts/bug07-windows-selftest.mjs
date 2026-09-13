@@ -29,6 +29,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+const REPO_ROOT = path.resolve(import.meta.dirname ?? '.', '..');
 const isWin = process.platform === 'win32';
 const results = [];
 const ok = (name, passed, detail = '') => {
@@ -162,24 +163,21 @@ async function main() {
         skip('①a P-10 SIGBREAK 跨进程投递', `console 事件在此环境不可达（${delivery}）——真实操作员按键路径无法在 CI 复现；处理器链路由 ①b 自投递 + R14 真机记录背书`);
       }
 
-      // ①b 优雅链处理器验证（恒可跑）：SIGINT 自投递——Node on Windows 可
-      // 模拟投递的真实信号，走完「信号到达 → handler → 收尾标记 → 优雅退出」
-      // 全链（executor main.ts 对 SIGINT/SIGBREAK 注册同一 gracefulShutdown）。
+      // ①b P-10 回归守卫（源级，恒可跑、跨平台确定性）：Windows 上 Node 的
+      // process.kill 只能模拟 SIGINT/SIGTERM/SIGKILL（SIGBREAK 投递 ENOSYS，
+      // 自投递经 GCTE 亦不可达——CI 三轮实证），信号「投递」无法在 CI 复现；
+      // 可守护的部分 = main.ts 的 SIGBREAK/SIGINT 注册不回退（删除任一
+      // handler 会让本断言红）。投递语义由 R14 真机 CTRL_BREAK 实测背书。
       {
-        const selfFile = path.join(tmp, 'graceful-self.done');
-        const selfChild = spawn(process.execPath, [target], {
-          windowsHide: true,
-          stdio: 'ignore',
-          env: { ...process.env, B07_DONE_FILE: selfFile, B07_SELF_SIGNAL: 'SIGINT' },
-        });
-        await waitFor(() => existsSync(selfFile), 10_000, 'self-SIGINT graceful marker');
-        await sleep(300); // 等退出
-        const selfAlive = spawnSync('powershell', ['-NoProfile', '-Command',
-          `if (Get-Process -Id ${selfChild.pid} -ErrorAction SilentlyContinue) { 'True' } else { 'False' }`],
-          { encoding: 'utf8' }).stdout.trim();
-        ok('①b P-10 优雅链处理器（SIGINT 自投递：handler→收尾→优雅退出）',
-          readFileSync(selfFile, 'utf8') === 'graceful-int' && selfAlive === 'False',
-          `marker=${readFileSync(selfFile, 'utf8')}, alive-after=${selfAlive}`);
+        const mainSrc = readFileSync(
+          path.join(REPO_ROOT, 'apps', 'executor-node', 'src', 'main.ts'),
+          'utf8',
+        );
+        const hasBreak = /process\.on\(['"]SIGBREAK['"], \(\) => gracefulShutdown/.test(mainSrc);
+        const hasInt = /process\.on\(['"]SIGINT['"], \(\) => gracefulShutdown/.test(mainSrc);
+        ok('①b P-10 SIGBREAK/SIGINT 优雅退出注册（源级回归守卫）',
+          hasBreak && hasInt,
+          `SIGBREAK=${hasBreak}, SIGINT=${hasInt}`);
       }
     }
 
