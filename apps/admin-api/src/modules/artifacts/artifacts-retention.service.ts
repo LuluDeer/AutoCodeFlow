@@ -1,9 +1,12 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { ConfigService } from "@nestjs/config";
 import * as fs from "fs";
 import * as path from "path";
 import { getArtifactRootDir } from "./artifacts.constants";
+// ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
+// 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
+import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
 
 /**
  * FEAT-05：执行产物 TTL 清理（搭车日志保留期策略）。
@@ -20,7 +23,12 @@ import { getArtifactRootDir } from "./artifacts.constants";
 export class ArtifactsRetentionService {
   private readonly logger = new Logger(ArtifactsRetentionService.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    // ARCH-31 §5: 多实例下 @Cron 维护任务仅 cron Leader 执行（@Global 恒提供）。
+    @Optional()
+    private readonly leaderGate: LeaderGateService | null = null,
+  ) {}
 
   private resolveRetentionDays(): number {
     const parsed = this.configService.get<number>("logRetention.days");
@@ -32,6 +40,8 @@ export class ArtifactsRetentionService {
 
   @Cron("0 45 3 * * *")
   async handleDailyCleanup(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行（下同，详见 LeaderGateService）
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     try {
       const removed = await this.cleanupExpiredArtifacts();
       if (removed > 0) {
