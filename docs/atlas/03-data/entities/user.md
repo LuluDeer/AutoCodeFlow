@@ -27,6 +27,7 @@
 | `lockedUntil` | timestamp nullable | SEC-05：锁定截止时刻（迁移 `1717473142681`；注意是 **timestamp** 非 timestamptz） |
 | `totpSecret` | varchar(64) nullable，`@Exclude()` | SEC-03：TOTP Base32 密钥；setup 后 enable 前处于「暂存未启用态」（迁移 `1789800000001-AddUserTotpAndSessionMeta`） |
 | `totpEnabled` | boolean，default `false` | SEC-03：用户级 2FA opt-in 开关（`false` 保持登录路径不变） |
+| `sessionVersion` | int，default `0` | WIKI-AUTH-REVOC：用户级会话版本（迁移 `1790000000017-AddUserSessionVersion`）——logout（`AuthService.revokeAllForUser`）与改密（`UsersService.update` 携带 password 时）原子 +1；access token 签发时快照进 `ver` claim，`jwt.strategy.validate()` 比对失配即 401（"Session has been revoked"），在途访问令牌即时失效 |
 | `createdAt` / `updatedAt` | timestamp | `@CreateDateColumn` / `@UpdateDateColumn` |
 
 ## 索引与约束

@@ -38,9 +38,9 @@ modules/auth/
 ### token 模型（auth.service.generateTokens）
 
 ```
-access token   : {sub, username, type:"access", sid:<jti>}  签名密钥 JWT_SECRET，
+access token   : {sub, username, type:"access", sid:<jti>, ver:<sessionVersion>} 签名密钥 JWT_SECRET，
                  有效期 JWT_EXPIRES_IN（默认 15m）
-refresh token  : {sub, username, type:"refresh", jti:<uuid>} 独立密钥 JWT_REFRESH_SECRET，
+refresh token  : {sub, username, type:"refresh", jti:<uuid>, ver:<sessionVersion>} 独立密钥 JWT_REFRESH_SECRET，
                  有效期固定 30d；同一 jti 落库 refresh_tokens 表（revoked=false）
 轮换（refreshToken）: 用 JWT_REFRESH_SECRET 验签 → 要求 type=refresh 且必须有 jti
                  → UPDATE refresh_tokens SET revoked=true（受影响 0 行 = 已吊销，401）
@@ -50,6 +50,16 @@ refresh token  : {sub, username, type:"refresh", jti:<uuid>} 独立密钥 JWT_RE
 - access token 的 `sid` claim 就是本次登录的 refresh token jti，会话接口据此标记当前会话（SEC-03）。
 - `JwtStrategy.validate()` 强制 `type === "access"`，refresh token 无法冒充 access token；SSE 路由（`/logs/stream`、`/metrics/stream`、`/executions/stream`）允许 `?access_token=` 查询参数兜底（EventSource 无法带 Header）。
 - 每日 03:00 `@Cron` 清理过期 refresh token 行（`cleanupExpiredTokens`）。
+
+### 会话撤销·用户级会话版本（WIKI-AUTH-REVOC）
+
+access JWT 在有效期内本无法撤销（logout 只吊销 refresh token，在途 access token 活到自然过期）。引入 `users.sessionVersion`（迁移 `1790000000017`）后实现即时失效：
+
+- **签发**：`generateTokens`（登录 / TOTP 二阶段 / refresh 轮换的唯一单点）把 `user.sessionVersion` 快照进 `ver` claim，access/refresh 同点携带。
+- **校验**：`jwt.strategy.validate()` 每请求本就 `findById` 加载用户（检查 isActive），顺手比对 `payload.ver` 与库中 `sessionVersion`——不一致即 401 `"Session has been revoked"`，近零增量查询成本。
+- **bump 点（原子自增，无读改写）**：① logout → `AuthService.revokeAllForUser`（先 `UsersService.bumpSessionVersion` 再吊销 refresh，先断 access 面）；② 改密 → `UsersService.update` 携带 password 时（save 成功后 bump，含自改与管理员重置；失败不误伤在途会话）。注意 `revokeOtherSessions` 保留当前会话的路径**不** bump（会误杀当前 access token），只有全量吊销语义才 bump。
+- **向后兼容**：部署前签发的存量令牌无 `ver` claim（undefined）→ 跳过比对，维持「到期自然失效」，零破坏升级。重新登录后新令牌带新 ver 正常使用。
+- **不在范围**：管理员停用（`isActive=false` 已有 isActive 校验兜底）、TOTP 变更、单会话级联撤销（刷新令牌族）。
 
 ### 登录防爆破（与 users 模块联动）
 
@@ -63,7 +73,7 @@ refresh token  : {sub, username, type:"refresh", jti:<uuid>} 独立密钥 JWT_RE
 
 ## 与其他模块的关系
 
-- **依赖 [users.md](users.md)**：`UsersModule`（查用户、锁定计数、`saveUser` 持久化 TOTP 字段）。
+- **依赖 [users.md](users.md)**：`UsersModule`（查用户、锁定计数、`saveUser` 持久化 TOTP 字段、`bumpSessionVersion` 会话版本原子自增）。
 - **依赖 [audit.md](audit.md)**：login/logout/会话吊销写审计（fail-open）。
 - **被全局 guard 依赖**：`JwtStrategy` 是全局 `JwtAuthGuard`（common/guards）的 passport 底层；本模块 `exports: [AuthService, JwtModule]`。
 - **被 [admin-web](../../..) 前端消费**：登录页/令牌刷新/会话管理页面的后端。

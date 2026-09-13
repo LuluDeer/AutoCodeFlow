@@ -4,7 +4,7 @@
 
 ## 目录与命名
 
-- 目录：`apps/admin-api/src/migrations/`，当前 **61 个迁移文件**（另有 `migrations.spec.ts` 与 `__tests__/`）。
+- 目录：`apps/admin-api/src/migrations/`，当前 **62 个迁移文件**（另有 `migrations.spec.ts` 与 `__tests__/`）。
 - 命名：`<13位毫秒时间戳>-<PascalCase名称>.ts`，如 `1790000000008-AddTaskProjectId.ts`。TypeORM（0.3.x）按类名末尾 13 位 timestamp 排序执行，类名必须形如 `AddTaskProjectId1790000000008`。
 - 时间戳分两代：`17174731426xx` 系列（InitialSchema 时期，约 20 个）与 `178xx…/179xx…` 系列（后续演进），连续编号，无重复（有 spec 守卫，见下）。
 
@@ -54,9 +54,10 @@ npm run typeorm             # ts-node -r tsconfig-paths/register ./node_modules/
 | 事件/审批 | `1789900000000`、`1790000000003/0012/0013` | 事件订阅、event outbox + 租约 + 死信 |
 | 多租户 AUTH-01 | `1790000000007` ~ `1790000000015` | `projects`、task/executor/package 加 `projectId`、`project_members` |
 | 审计加固 | `1790000000006-AuditLogsAppendOnlyGuard` | `audit_logs` append-only 触发器（SEC-10） |
-| 配置历史强化 | `1790000000016-AddConfigHistoryMetadata`（当前最新） | `config_history` 加 `valueType`/`isSecret` 两可空列（WIKI-OPT-2）——历史行元数据快照，回滚恢复类型/敏感标记 + 读面行级掩码；NULL=元数据不可知零破坏升级 |
+| 配置历史强化 | `1790000000016-AddConfigHistoryMetadata` | `config_history` 加 `valueType`/`isSecret` 两可空列（WIKI-OPT-2）——历史行元数据快照，回滚恢复类型/敏感标记 + 读面行级掩码；NULL=元数据不可知零破坏升级 |
+| 会话撤销 | `1790000000017-AddUserSessionVersion`（当前最新） | `users` 加 `sessionVersion` INTEGER NOT NULL DEFAULT 0（WIKI-AUTH-REVOC）——用户级会话版本，logout/改密原子 +1，access token 的 `ver` claim 失配即在途令牌 401；存量旧行取 0、无 ver 的旧令牌兼容放行 |
 
-完整清单以 `ls apps/admin-api/src/migrations` 为准（61 个）。
+完整清单以 `ls apps/admin-api/src/migrations` 为准（62 个）。
 
 ## 常见改动场景：怎么加一个迁移
 
