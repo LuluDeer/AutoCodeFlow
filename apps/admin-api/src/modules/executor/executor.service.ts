@@ -15,7 +15,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan, In } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
-import { Executor, ExecutorStatus } from "./entities/executor.entity";
+import { Executor, ExecutorStatus, ExecutorType } from "./entities/executor.entity";
 import { ExecutorMetricsHistory } from "./entities/executor-metrics-history.entity";
 import {
   TaskExecution,
@@ -503,7 +503,7 @@ export class ExecutorService {
       e = this.repo.create({
         appName: data.appName,
         address: data.address,
-        type: data.type as any,
+        type: data.type as ExecutorType,
         executorVersion: data.version,
         capabilities: capabilities,
         maxConcurrentTasks: maxConcurrentTasks,
@@ -529,7 +529,7 @@ export class ExecutorService {
       return saved;
     }
     // Update mutable fields on re-registration (whitelisted per-field only)
-    if (data.type) e.type = data.type as any;
+    if (data.type) e.type = data.type as ExecutorType;
     if (data.appName) e.appName = data.appName;
     if (data.version) e.executorVersion = data.version;
     if (capabilities) e.capabilities = capabilities;
@@ -779,9 +779,13 @@ export class ExecutorService {
       );
       delete metricValues.deadLetterCount;
     }
+    // metricsWhitelist 的键全部对应 Executor 的数值指标列（Pick<Executor, …>
+    // 为纯上转型断言）——写入经由该视图而非 `(e as any)`，保持类型面精确；
+    // 运行时行为与原逐键直写完全一致。
+    const writableMetrics = e as Pick<Executor, (typeof metricsWhitelist)[number]>;
     for (const key of metricsWhitelist) {
       if (metricValues[key] !== undefined) {
-        (e as any)[key] = metricValues[key];
+        writableMetrics[key] = metricValues[key];
       }
     }
     e.status = ExecutorStatus.ONLINE;
