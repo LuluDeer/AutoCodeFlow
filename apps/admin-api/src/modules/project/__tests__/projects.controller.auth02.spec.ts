@@ -98,4 +98,87 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
       memberships: [],
     });
   });
+
+  // ---------------------------------------------------------------------
+  // AUTH-02 后续：项目列表按成员过滤读面（findAll）。
+  // ---------------------------------------------------------------------
+
+  const proj = (id: string, name: string) => ({
+    id,
+    name,
+    description: null,
+    createdAt: new Date("2026-09-01T00:00:00Z"),
+    updatedAt: new Date("2026-09-01T00:00:00Z"),
+  });
+
+  it("findAll：ADMIN 全量可见，且如实标注自己的成员角色", async () => {
+    const { controller, service, access } = makeController();
+    service.findAll.mockResolvedValue([
+      proj(DEFAULT_PROJECT_ID, "Default"),
+      proj("p1", "Alpha"),
+      proj("p2", "Beta"),
+    ]);
+    access.listRolesForUser.mockResolvedValue([
+      {
+        id: "m1",
+        projectId: "p1",
+        userId: 1,
+        role: "viewer",
+        createdAt: new Date(),
+      },
+    ]);
+
+    const rows = await controller.findAll(admin);
+    expect(rows.map((r) => r.id)).toEqual([DEFAULT_PROJECT_ID, "p1", "p2"]);
+    expect(rows.find((r) => r.id === "p1")?.myRole).toBe("viewer");
+    expect(rows.find((r) => r.id === "p2")?.myRole).toBeNull();
+  });
+
+  it("findAll：普通用户非成员 → 仅默认项目（myRole null）", async () => {
+    const { controller, service, access } = makeController();
+    service.findAll.mockResolvedValue([
+      proj(DEFAULT_PROJECT_ID, "Default"),
+      proj("p1", "Alpha"),
+      proj("p2", "Beta"),
+    ]);
+    access.listRolesForUser.mockResolvedValue([]);
+
+    const rows = await controller.findAll(user);
+    expect(rows.map((r) => r.id)).toEqual([DEFAULT_PROJECT_ID]);
+    expect(rows[0].myRole).toBeNull();
+  });
+
+  it("findAll：普通用户成员 → 默认项目 ∪ 成员项目，成员行 myRole 对应", async () => {
+    const { controller, service, access } = makeController();
+    service.findAll.mockResolvedValue([
+      proj(DEFAULT_PROJECT_ID, "Default"),
+      proj("p1", "Alpha"),
+      proj("p2", "Beta"),
+    ]);
+    access.listRolesForUser.mockResolvedValue([
+      {
+        id: "m2",
+        projectId: "p2",
+        userId: 7,
+        role: "editor",
+        createdAt: new Date(),
+      },
+    ]);
+
+    const rows = await controller.findAll(user);
+    expect(rows.map((r) => r.id)).toEqual([DEFAULT_PROJECT_ID, "p2"]);
+    expect(rows.find((r) => r.id === "p2")?.myRole).toBe("editor");
+    expect(rows.find((r) => r.id === DEFAULT_PROJECT_ID)?.myRole).toBeNull();
+  });
+
+  it("findAll：无主体（JWT 缺失的极端形态）→ 按非成员过滤兜底", async () => {
+    const { controller, service } = makeController();
+    service.findAll.mockResolvedValue([
+      proj(DEFAULT_PROJECT_ID, "Default"),
+      proj("p1", "Alpha"),
+    ]);
+
+    const rows = await controller.findAll(undefined);
+    expect(rows.map((r) => r.id)).toEqual([DEFAULT_PROJECT_ID]);
+  });
 });

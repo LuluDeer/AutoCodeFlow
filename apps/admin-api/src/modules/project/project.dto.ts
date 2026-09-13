@@ -6,7 +6,7 @@ import {
   MaxLength,
   MinLength,
 } from "class-validator";
-import { PROJECT_ROLES } from "./entities/project-member.entity";
+import { PROJECT_ROLES, ProjectRole } from "./entities/project-member.entity";
 
 /**
  * AUTH-01：Projects 模块 DTO。name 唯一性由 DB unique index 兜底
@@ -50,4 +50,22 @@ export class UpsertProjectMemberDto {
 export class UpdateProjectMemberDto {
   @IsIn(PROJECT_ROLES as unknown as string[])
   role: (typeof PROJECT_ROLES)[number];
+}
+
+/**
+ * AUTH-02 后续：项目列表行视图（GET /projects 响应）。
+ *
+ * 相比 Project 实体多一个 `myRole`——当前请求主体在该项目的成员角色，
+ * 非成员（含 ADMIN 主体的非成员行）为 null。admin-web 用它渲染「我的角色」
+ * 徽标与写面门控；读面过滤语义见 projects.controller.findAll。
+ * 形态对齐 DEP-01 AppReleaseRow 先例：响应视图行用 interface（该端点
+ * 历史上无 swagger response schema，零 openapi 漂移）。
+ */
+export interface ProjectViewRow {
+  id: string;
+  name: string;
+  description: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  myRole: ProjectRole | null;
 }

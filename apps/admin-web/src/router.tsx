@@ -26,6 +26,7 @@ const AuditLogPage = lazy(() => import('./pages/audit/index'));
 const ApplicationListPage = lazy(() => import('./pages/ApplicationListPage'));
 const ApplicationDetailPage = lazy(() => import('./pages/ApplicationDetailPage'));
 const ExecutionsPage = lazy(() => import('./pages/ExecutionsPage'));
+const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
 
 const withSuspense = (children: ReactNode) => (
   <Suspense fallback={<PageFallback />}>{children}</Suspense>
@@ -61,6 +62,7 @@ export const router = createBrowserRouter(
         { path: 'notifications', element: <RequireAdmin>{withSuspense(<NotificationSettingsPage />)}</RequireAdmin> },
         { path: 'audit', element: <RequireAdmin>{withSuspense(<AuditLogPage />)}</RequireAdmin> },
         { path: 'applications', element: withSuspense(<ApplicationListPage />) },
+        { path: 'projects', element: withSuspense(<ProjectsPage />) },
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },
         { path: 'executor-packages', element: <RequireAdmin>{withSuspense(<ExecutorPackagesPage />)}</RequireAdmin> },
       ],

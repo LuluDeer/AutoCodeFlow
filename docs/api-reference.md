@@ -909,8 +909,8 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/projects` | 是 | 项目列表（全员可读，按 createdAt ASC） |
-| GET | `/projects/:id` | 是 | 项目详情 |
+| GET | `/projects` | 是 | 项目列表（按 createdAt ASC；**AUTH-02 后续读面过滤**：ADMIN 全量，普通用户仅「默认项目 ∪ 自己是成员的项目」；每行附 `myRole`——当前主体在该项目的角色，非成员 null） |
+| GET | `/projects/:id` | 是 | 项目详情（详情不过滤，读面收紧仅限列表，见 ADR-013 §6） |
 | POST | `/projects` | 是（ADMIN） | 创建项目 |
 | PATCH | `/projects/:id` | 是（ADMIN） | 更新项目（默认项目仅允许改 description） |
 | DELETE | `/projects/:id` | 是（ADMIN） | 删除项目（默认项目被拦截，404） |
