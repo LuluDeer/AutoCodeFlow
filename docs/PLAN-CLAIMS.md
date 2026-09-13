@@ -413,6 +413,7 @@
   ⑤ **待办**：建议补 `RELEASE_PLEASE_TOKEN` secret 以实现全自动发布（本轮因 GITHUB_TOKEN 不级联、由人工重推 tag 触发）；`desktop-linux-bundle` 的 `Build AppImage + deb` 步骤疑似环境性失败待单独排查（不进门禁）。
   **⑤-b 已办**：2026-09-11 用户已配 `RELEASE_PLEASE_TOKEN`（`gh secret list` 13:00 登记）；级联效果待下次「触及三包路径」的发布端到端确认（届时 tag 应自动触发 release.yml，无需人工重推）。
 
+- 2026-09-13 **第十七~十九轮（主会话）：三连快轮**。R17 `c7ef8eb` 通知渠道私网豁免开关（NOTIF_ALLOW_PRIVATE_NETWORK 五渠道共用，channels.spec +7，admin-api 2385）；R18 `6b42f54` 项目域生态消费（MCP registerProjectTools 只读三工具 100→108 + acf project list/members 89→93，写面刻意不进自动化面）；R19 `26e41f3` release-please 补 github-release step——定位「tag 需人工推」真正根因（v4 拆分命令、原 workflow 缺 github-release step），v1.3.0 发布轮实测。三轮均主会话直落（子代理平台 reasoning-level-missing 故障持续）。
 - 2026-09-11 **第十轮（主会话）：全量接管 + 总推进分层**。
   **接管事实**：用户确认「无其他 agent 在干」，本会话接管控板**全部未完成项**（下表各行的 owner 名义归属保留以反映历史足迹，实际执行归主会话；后续会话恢复并发前以本条为准）。
   **分层（按可执行性）**：
