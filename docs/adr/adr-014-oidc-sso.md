@@ -62,6 +62,18 @@ TOTP）」；Auth 模块（SEC-02/03）已有成熟的 JWT 对签发、refresh �
   IdP 路由）；不做 SCIM/组同步——角色仍是平台侧管理（SSO 用户恒 USER，
   提权走管理员）。
 
+### 修订（2026-09-13，R20）：组→角色映射
+
+- 新增 `OIDC_GROUPS_CLAIM`（默认 `groups`）与 `OIDC_ADMIN_GROUPS`（逗号分隔
+  清单，默认空）：**仅在 JIT 自动建号时生效**——命中清单内任一组即建 ADMIN
+  账号，否则 USER；清单为空恒 USER（与未配置一致）。
+- 明确不做的两件事（安全边界）：① 已绑定/存量账号的**角色不随 IdP 组变化
+  反向改写**——角色由平台管理员管理，避免 IdP 侧误配直接提权、也避免
+  「IdP 降级 vs 平台管理员提权」的打架；② 绑定（sub 写入）仍只在首登时
+  发生，不随组变化重绑。
+- 生效前提仍是 `OIDC_AUTO_PROVISION=true`——两个开关必须**同时显式打开**
+  才可能出现 SSO 自动建出的 ADMIN，进一步压缩误配置面。
+
 ## 验证
 
 - 单测 24 例（oidc.service.spec 17 + oidc.controller.spec 7）：真 RS256

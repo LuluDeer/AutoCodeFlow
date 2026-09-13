@@ -57,7 +57,7 @@
 | GET | `/auth/oidc/login` | 否 | 生成 state/nonce（HMAC 签名放 HttpOnly cookie，10 分钟时效）→ 302 到 IdP authorize。disabled 404 |
 | GET | `/auth/oidc/callback` | 否 | 校验 cookie 签名与 query state 双向一致 → code 换 token → ID Token RS256 验签（JWKS）+ iss/aud/exp/nonce 校验 → 身份定位（`oidcSub` 精确 → username 首登绑定 → JIT 建号开关）→ 302 回前端落地页，**token 在 URL `#fragment`**（不进服务器/代理日志）；任何失败 302 带 `#error=<code>`（稳定码：`state_invalid`/`nonce_invalid`/`signature_invalid`/`account_not_linked`/`account_disabled`/`sso_failed` 等） |
 
-**身份绑定与建号**：`users.oidcSub`（迁移 1790000000016，可空 + 唯一部分索引）存 IdP `sub` 稳定标识；`OIDC_AUTO_PROVISION=false`（默认）时未知身份拒绝（管理员预建同名账号后首登绑定），`=true` 时 JIT 建号（USER 角色、随机占位密码——SSO 账号不走密码登录）。
+**身份绑定与建号**：`users.oidcSub`（迁移 1790000000016，可空 + 唯一部分索引）存 IdP `sub` 稳定标识；`OIDC_AUTO_PROVISION=false`（默认）时未知身份拒绝（管理员预建同名账号后首登绑定），`=true` 时 JIT 建号（USER 角色、随机占位密码——SSO 账号不走密码登录）。 组→角色映射（R20）：`OIDC_ADMIN_GROUPS` 命中即在建号时授 ADMIN（默认空=恒 USER），仅作用于 JIT 建号，已绑定账号角色由平台管理员管理（ADR-014 修订）。
 | POST | `/auth/totp/verify` | 否 | SEC-03 TOTP 登录第二步：username+password+code 复验后签发 `accessToken`/`refreshToken`（限流 10 次/分钟；错码计入登录失败锁定计数） |
 | POST | `/auth/refresh` | 否 | 使用 refresh_token 刷新 access_token（限流 10 次/分钟） |
 | POST | `/auth/logout` | 是 | 登出，吊销当前用户全部 refresh_token |
