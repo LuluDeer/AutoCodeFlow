@@ -6,7 +6,7 @@
 
 - 模块：[task 模块](../../01-apps/admin-api/modules/task.md)（`apps/admin-api/src/modules/task/`，日志保留子目录 `task/log-retention/`）
 - 源文件：`apps/admin-api/src/modules/task/entities/execution-log-line.entity.ts`
-- 配套工具：`task/log-retention/log-partition.util.ts`、`LogRetentionCleanupService`、`task/log-level.util.ts`
+- 配套工具：`task/log-retention/log-partition.util.ts`、`LogRetentionCleanupService`（DB 行清理）、`S3LogObjectRetentionService`（s3 模式下本表无行的执行，其外置对象按指针回收）、`task/log-level.util.ts`
 
 ## 表名
 
@@ -50,7 +50,7 @@
 ## 生命周期与写入方
 
 - **写入**：`TaskService.storeLogLines`（回调/日志上报链路，先按 `executionId` delete 再分块 save——覆盖式写入，[回调上报](../../04-flows/execution-callback.md)）。注意：`LOG_STORAGE_DRIVER=s3` 且上传成功时**不写 DB 行**（仅回填 `logObjectKey` 指针）。
-- **删除**：`LogRetentionCleanupService` 按保留期 `LOG_RETENTION_DAYS`（默认 30 天）清理：分区 DETACH 为主、分批 DELETE 为辅；`TaskService.storeLogLines` 覆盖写时也会按 executionId 删旧行。
+- **删除**：`LogRetentionCleanupService` 按保留期 `LOG_RETENTION_DAYS`（默认 30 天）清理：分区 DETACH 为主、分批 DELETE 为辅；`TaskService.storeLogLines` 覆盖写时也会按 executionId 删旧行。s3 模式下本表**不落行**的执行，其外置 gzip 对象由 `S3LogObjectRetentionService` 每日 03:35 按 `task_executions.logObjectKey` 指针回收（同源保留期、仅终态执行，见 [task-execution](task-execution.md)）——对象存储侧不再随历史执行无限累积。
 - **读取**：执行日志分页接口（按 executionId + 可选 level，ORDER BY lineNumber）。
 
 ## 常见改动场景

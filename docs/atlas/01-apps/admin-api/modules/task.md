@@ -28,7 +28,8 @@ modules/task/
 │   ├── execution-log-line.entity.ts execution_log_lines 表（lineNumber + level 复合索引）
 │   └── task-version.entity.ts      task_versions 表（config 快照）
 ├── log-storage/s3-log-storage.ts   MinIO/S3 gzip 日志对象（LOG_STORAGE_DRIVER=s3 时启用）
-└── log-retention/                  每日 03:30 过期日志行分批删除（LOG_RETENTION_DAYS，默认 30）
+└── log-retention/                  保留期清理：03:30 DB 行（分区 DETACH 主/DELETE 兜底）
+                                    + 03:35 S3 日志对象回收（LOG_RETENTION_DAYS，默认 30）
 ```
 
 ## 关键机制
@@ -60,6 +61,7 @@ TaskService.handleCallback：地址比对 → winner 条件 UPDATE（open 状态
 - **双派发护栏**：`failureReason=timeout` 时 processor 抛 `UnrecoverableError`（BullMQ 不再重试，执行器可能仍在跑）；`task.retryableErrors` 非空时按 allow-list 过滤重试。
 - **回调鉴权**：per-address bcrypt token（60s 正缓存）→ 共享 token 兜底（单执行器批次）→ 或 `v1.<executionId>.<expiresAt>.<hmac>` 一次性令牌（任务进程持有 `AUTOFLOW_CALLBACK_TOKEN`，绝不接触共享 token）。限流 `THROTTLE_CALLBACK_LIMIT`（默认 60/min/IP）。
 - **日志双通道**：`LOG_STORAGE_DRIVER=s3` 时写 gzip 对象 `execution-logs/<execId>.log.gz`（上限 100MB 解压）；S3 失败回退 DB 行并把 `logStorage` 指针收回 `db`（BUG-06）。读取按行流式分页（`fromLine`/`limit`≤2000/`level` SQL 下推）。
+- **S3 日志对象保留回收（WIKI-LOG-S3GC）**：`S3LogObjectRetentionService` 每日 03:35（与 03:30 DB 行清理、03:45 产物清理错峰）按 task_executions 的过期 s3 指针（`logStorage='s3'` + `logObjectKey` 非空 + 终态 + `COALESCE(endTime, createdAt)` 早于保留期截止）keyset 分页批量 `S3LogStorage.remove`，成功后**带守卫**清空 `logObjectKey`（`WHERE id AND logObjectKey`，防并发误清）；单行失败 fail-open 跳过等下轮 cron，非 s3 驱动整段 no-op。S3 成功路径不落 DB 行（对象回收的过期信号只能来自 task_executions），本服务兜住对象存储无限累积风险，bucket lifecycle 策略仍可作运维侧补充兜底。
 - **SSE 并发闸门**：`acquireSseSlot` 两级上限（`SSE_MAX_STREAMS_PER_EXECUTION` 默认 4、`SSE_MAX_STREAMS_GLOBAL` 默认 64），超限 503；SSE 路由 `@SkipThrottle()` + `@SkipTimeout()`。
 - **任务级 secrets**：`SEC_SECRETS_KEY` 配置后 AES-256-GCM 加密落库（`enc:v1:...`），API 脱敏回传，派发时解密注入执行器 env（`AUTOFLOW_<KEY>`），明文不二次入库（SEC-02）。
 
