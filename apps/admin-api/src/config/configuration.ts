@@ -149,6 +149,11 @@ export default () => ({
     scopes: process.env.OIDC_SCOPES || "openid profile email",
     // 身份显示名来源声明；sub 恒为绑定主键
     usernameClaim: process.env.OIDC_USERNAME_CLAIM || "preferred_username",
+    // R20（ADR-014 修订）: 组→角色映射，**仅在 JIT 自动建号时生效**——
+    // 已绑定/存量账号的角色由平台管理员管理，IdP 侧组变化不会反向改写
+    // （防提权打架）。空（默认）= 一律 USER，行为与 R16 一致。
+    groupsClaim: process.env.OIDC_GROUPS_CLAIM || "groups",
+    adminGroups: process.env.OIDC_ADMIN_GROUPS || "",
     // JIT 自动建号（默认关）：开启后未知用户首登自动建 USER 账号；
     // 关闭时仅允许「管理员预建同名账号 → 首登绑定」显式链路
     autoProvision: process.env.OIDC_AUTO_PROVISION === "true",

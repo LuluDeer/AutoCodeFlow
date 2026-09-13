@@ -66,6 +66,8 @@ export interface OidcProfile {
   sub: string;
   username: string;
   email: string | null;
+  /** 组声明归一（数组/单字符串 → string[]；用于 JIT 角色映射，R20）。 */
+  groups: string[];
 }
 
 const DISCOVERY_TTL_MS = 60 * 60 * 1000;
@@ -109,6 +111,8 @@ export class OidcService {
       scopes: this.config.get<string>("oidc.scopes") ?? "openid profile email",
       usernameClaim:
         this.config.get<string>("oidc.usernameClaim") ?? "preferred_username",
+      groupsClaim: this.config.get<string>("oidc.groupsClaim") ?? "groups",
+      adminGroups: this.config.get<string>("oidc.adminGroups") ?? "",
       autoProvision: this.config.get<boolean>("oidc.autoProvision") === true,
       webRedirectUrl: this.config.get<string>("oidc.webRedirectUrl") ?? "",
       allowPrivateNetwork:
@@ -369,14 +373,38 @@ export class OidcService {
         `OIDC id_token missing sub or username claim '${cfg.usernameClaim}'`,
       );
     }
+    const rawGroups = claims[cfg.groupsClaim];
+    const groups = Array.isArray(rawGroups)
+      ? rawGroups.filter((g): g is string => typeof g === "string")
+      : typeof rawGroups === "string"
+        ? [rawGroups]
+        : [];
     return {
       sub,
       username,
       email: typeof claims.email === "string" ? claims.email : null,
+      groups,
     };
   }
 
   // ── 身份定位与令牌签发 ───────────────────────────────────────────────
+
+  /**
+   * R20（ADR-014 修订）: 组→角色映射，**仅在 JIT 建号时调用**——
+   * 已绑定/存量账号的角色由平台管理员管理，IdP 侧组变化不会反向改写
+   * （防提权打架与「最后一个 admin 被降级」类竞态）。`OIDC_ADMIN_GROUPS`
+   * 为空（默认）时恒 USER，行为与未配置一致；命中清单内任一组即 ADMIN。
+   */
+  private roleFromGroups(groups: string[]): UserRole {
+    const adminGroups = (this.oidcConfig().adminGroups || "")
+      .split(",")
+      .map((g) => g.trim())
+      .filter(Boolean);
+    if (adminGroups.length === 0) return UserRole.USER;
+    return groups.some((g) => adminGroups.includes(g))
+      ? UserRole.ADMIN
+      : UserRole.USER;
+  }
 
   /**
    * 身份定位三级：oidcSub 精确匹配 → username 声明匹配（首登绑定 sub）→
@@ -413,6 +441,7 @@ export class OidcService {
     }
     // ③ JIT 自动建号（默认关）
     if (this.config.get<boolean>("oidc.autoProvision") === true) {
+      const provisionedRole = this.roleFromGroups(profile.groups);
       // 随机 32 字节占位密码：SSO 用户永远不走密码登录。直接 repo.create
       // 绕过 UsersService.create 的密码强度校验——占位密码不参与任何认证面，
       // 校验规则（混合字符集）对它没有意义，也不应成为 JIT 建号的失败模式
@@ -421,7 +450,7 @@ export class OidcService {
         username: profile.username,
         email: profile.email ?? `${profile.sub}@oidc.local.invalid`,
         password: placeholderPassword,
-        role: UserRole.USER,
+        role: provisionedRole,
         isActive: true,
         oidcSub: profile.sub,
       });

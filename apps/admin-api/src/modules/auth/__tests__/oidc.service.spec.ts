@@ -290,6 +290,7 @@ describe("OidcService — 身份定位与 JIT 建号", () => {
     sub: "sub-abc-123",
     username: "alice",
     email: "alice@example.com",
+    groups: [],
   };
 
   it("sub 精确命中 → 直接返回", async () => {
@@ -367,6 +368,69 @@ describe("OidcService — 身份定位与 JIT 建号", () => {
     await expect(service.resolveAndBindUser(profile)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
+  });
+});
+
+describe("OidcService — 组→角色映射（R20，仅 JIT 建号时生效）", () => {
+  const profile = (groups: string[]) => ({
+    sub: "sub-new-1",
+    username: "bob",
+    email: null,
+    groups,
+  });
+
+  it("OIDC_ADMIN_GROUPS 未配置（默认空）→ 建号恒 USER", async () => {
+    const { service, usersRepo } = makeService({ "oidc.autoProvision": true });
+    usersRepo.findOne.mockResolvedValue(null);
+    await service.resolveAndBindUser(profile(["platform-admins"]));
+    expect(usersRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "user" }),
+    );
+  });
+
+  it("命中 OIDC_ADMIN_GROUPS 清单内组 → 建号即 ADMIN", async () => {
+    const { service, usersRepo } = makeService({
+      "oidc.autoProvision": true,
+      "oidc.adminGroups": "platform-admins, sre",
+    });
+    usersRepo.findOne.mockResolvedValue(null);
+    await service.resolveAndBindUser(profile(["sre"]));
+    expect(usersRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "admin" }),
+    );
+  });
+
+  it("组不在清单 → USER；组声明缺失 → USER", async () => {
+    const { service, usersRepo } = makeService({
+      "oidc.autoProvision": true,
+      "oidc.adminGroups": "platform-admins",
+    });
+    usersRepo.findOne.mockResolvedValue(null);
+    await service.resolveAndBindUser(profile(["devs"]));
+    expect(usersRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "user" }),
+    );
+    await service.resolveAndBindUser(profile([]));
+    expect(usersRepo.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({ role: "user" }),
+    );
+  });
+
+  it("已绑定账号不在映射作用域：IdP 组变化不改写存量角色", async () => {
+    const { service, usersRepo } = makeService({
+      "oidc.adminGroups": "platform-admins",
+    });
+    // sub 命中的既有 USER 账号，即便其在 admin 组也不被提权/降级
+    usersRepo.findOne.mockResolvedValue({
+      id: 9,
+      username: "carol",
+      role: "user",
+      isActive: true,
+      oidcSub: "sub-new-1",
+    });
+    const user = await service.resolveAndBindUser(profile(["platform-admins"]));
+    expect(user.role).toBe("user");
+    expect(usersRepo.save).not.toHaveBeenCalled();
   });
 });
 

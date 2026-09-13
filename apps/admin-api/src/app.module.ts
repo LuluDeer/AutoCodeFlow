@@ -181,6 +181,8 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         OIDC_REDIRECT_URI: Joi.string().uri().allow("").optional(),
         OIDC_SCOPES: Joi.string().allow("").optional(),
         OIDC_USERNAME_CLAIM: Joi.string().allow("").optional(),
+        OIDC_GROUPS_CLAIM: Joi.string().allow("").optional(),
+        OIDC_ADMIN_GROUPS: Joi.string().allow("").optional(),
         OIDC_AUTO_PROVISION: Joi.string()
           .valid("true", "false")
           .default("false"),
