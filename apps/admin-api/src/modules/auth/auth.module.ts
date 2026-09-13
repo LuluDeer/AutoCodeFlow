@@ -9,6 +9,9 @@ import { JwtStrategy } from "./strategies/jwt.strategy";
 import { UsersModule } from "../users/users.module";
 import { AuditModule } from "../audit/audit.module";
 import { RefreshToken } from "./entities/refresh-token.entity";
+import { User } from "../users/entities/user.entity";
+import { OidcService } from "./oidc.service";
+import { OidcController } from "./oidc.controller";
 
 @Module({
   imports: [
@@ -26,10 +29,11 @@ import { RefreshToken } from "./entities/refresh-token.entity";
     UsersModule,
     AuditModule,
     // SEC-02: register RefreshToken entity for persistence
-    TypeOrmModule.forFeature([RefreshToken]),
+    // AUTH-04: User entity for OidcService identity resolution/provisioning
+    TypeOrmModule.forFeature([RefreshToken, User]),
   ],
-  controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
+  controllers: [AuthController, OidcController],
+  providers: [AuthService, JwtStrategy, OidcService],
   exports: [AuthService, JwtModule],
 })
 export class AuthModule {}

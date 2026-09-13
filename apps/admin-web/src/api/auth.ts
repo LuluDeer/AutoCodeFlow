@@ -24,6 +24,9 @@ export interface TotpSetupResult {
 }
 
 export const authApi = {
+  /** AUTH-04：登录页据此决定是否显示「SSO 登录」按钮（公开端点） */
+  oidcStatus: () =>
+    client.get('/auth/oidc/status') as Promise<{ enabled: boolean }>,
   login: (data: { username: string; password: string }) =>
     client.post('/auth/login', data) as Promise<LoginResult>,
   refresh: (refreshToken: string) =>

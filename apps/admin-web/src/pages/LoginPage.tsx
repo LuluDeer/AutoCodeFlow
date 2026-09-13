@@ -4,6 +4,8 @@ import { useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { authApi } from '../api/auth';
+// AUTH-04：SSO 整页跳转需与 axios client 同源 base（不走 client 实例）
+import { getApiBaseUrl } from '../api/client';
 import { useAuthStore, type AuthUser } from '../store/auth';
 import { getErrMsg } from '../utils/error';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -24,10 +26,18 @@ export default function LoginPage() {
   // toast——读屏用户看不到、低视力用户来不及读；页内常驻块可被重复阅读，
   // 并在出现时接管焦点，键盘用户不必自行搜索「到底哪错了」。
   const [formError, setFormError] = useState<string | null>(null);
+  // AUTH-04：SSO 可用性（公开端点，失败静默——登录页不因它阻塞）
+  const [ssoEnabled, setSsoEnabled] = useState(false);
   const errorRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (formError) errorRef.current?.focus();
   }, [formError]);
+  useEffect(() => {
+    authApi
+      .oidcStatus()
+      .then((r) => setSsoEnabled(!!r.enabled))
+      .catch(() => setSsoEnabled(false));
+  }, []);
 
   const completeLogin = (res: { accessToken?: string; refreshToken?: string; user?: AuthUser }) => {
     if (!res.accessToken || !res.refreshToken) {
@@ -226,6 +236,22 @@ export default function LoginPage() {
               </Button>
             </Form.Item>
           </Form>
+          )}
+
+          {/* AUTH-04：SSO 入口——仅后端启用 OIDC 且非 TOTP 第二步时展示。
+              整页跳转（非 axios）：回调是 302 链，token 经 #fragment 回传 */}
+          {!totpStage && ssoEnabled && (
+            <div style={{ marginTop: 16 }}>
+              <Button
+                block
+                style={{ height: 44, borderRadius: 10, fontSize: 15 }}
+                onClick={() => {
+                  window.location.href = `${getApiBaseUrl()}/auth/oidc/login`;
+                }}
+              >
+                {t('login.sso')}
+              </Button>
+            </div>
           )}
 
           <div style={{ marginTop: 20, textAlign: 'center' }}>

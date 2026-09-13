@@ -67,12 +67,28 @@ AUTH-01 落地了 Project 实体与 `tasks/applications.projectId`，但**没有
 - 团队协作：项目 editor/admin 可互改项目内资源，无主存量行可被项目成员接管。
 - 权限可表达：viewer 提供真正的只读席位（如观察者/审计视角）。
 - 新增 API：`GET/POST/PATCH/DELETE /projects/:id/members`、`GET /projects/me/roles`。
-- 未做：项目列表按成员过滤（读面仍全员可见）、项目内 executor/package 的角色细分、
-  「仅成员可执行」收紧开关——均登记为后续。
+- 未做：项目内 executor/package 的角色细分、「仅成员可执行」收紧开关——均登记为后续。
+  （原「未做：项目列表按成员过滤」已由 2026-09-13 读面过滤裁定兑现，见下。）
+
+### 6. 读面过滤（2026-09-13 追加裁定：AUTH-02 后续）
+
+`GET /projects` 从「全员可读全量列表」收紧为按主体过滤：
+
+- **ADMIN**：全量项目；
+- **普通用户**：仅「默认项目 ∪ 自己是成员的项目」——普通用户的项目上下文
+  选择面不应泄露其他租户项目的存在；
+- 每行附 `myRole`（该主体在此项目的成员角色，非成员 null；ADMIN 主体也如实
+  标注，供前端渲染「我的角色」徽标）。
+
+裁定依据：①「只增放行不收紧」原则约束的是**写面**判定；读面过滤不改变任何
+写面结果，只收窄信息暴露面。②仓库内此端点在收窄前无任何消费方
+（admin-web/CLI/MCP 均未调用），无兼容性破坏面。③`GET /projects/:id`
+详情保持全员可读——名称/描述非敏感，列表过滤已满足「不泄露项目存在性」的
+诉求边界；若未来出现详情枚举风险再单独收紧。
 
 ## 验证
 
 - 单测：`project-access.service.spec`（角色/档位/抖动/CRUD）、
-  `projects.controller.auth02.spec`（RBAC 姿态与默认项目例外）、
+  `projects.controller.auth02.spec`（RBAC 姿态与默认项目例外 + 读面过滤矩阵）、
   `task-owner-guard.spec`（项目放行矩阵 + viewer 拒绝）、迁移结构断言。
 - 真机：项目成员读写链路随 `apps/admin-api` 集成 e2e 覆盖（admin-api 2326 例全绿）。
