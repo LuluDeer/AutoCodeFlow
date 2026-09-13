@@ -66,7 +66,7 @@ node scripts/load-test.mjs \
 | `--duration` | - | 按秒派发，时间到后不再创建新工作单元，但等待在途任务收尾 |
 | `--max-rpm` | `55` | 所有压测请求的总预算/分钟（读写均受此约束） |
 | `--write-rpm` | `40` | 压测写请求预算/分钟（`--create-rate` 为兼容别名） |
-| `--callback-rate` | - | callback 写请求预算/分钟；缺省复用 `--write-rpm` |
+| `--callback-rate` | - | callback 写请求预算/分钟；缺省复用 `--write-rpm`。**注意：`--max-rpm` 是所有请求的总预算且写请求同时消耗两者——callback 档要跑高吞吐必须同时抬 `--max-rpm`（QA-05 第四阶段实测：只抬 callback-rate 会被 max-rpm=55 默认值钳到 ~60 请求/分钟）** |
 | `--request-timeout` | `30` | 单个 HTTP 请求超时（秒） |
 | `--poll-interval` | `1000` | tasks 轮询基础间隔（毫秒） |
 | `--task-timeout` | `180` | tasks 单 execution 等待终态超时（秒） |

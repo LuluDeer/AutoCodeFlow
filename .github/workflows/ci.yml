@@ -637,6 +637,12 @@ jobs:
       - name: Unit tests (jest / vitest)
         working-directory: ${{ matrix.project }}
         run: npm test
+      # BUG-07：detached/信号进程级深验（P-7 树杀 / P-9 windowsHide / P-10
+      # SIGBREAK 优雅链）——真实进程树断言，非 win32 runner 上 skip 退 0；
+      # 本 job（windows-latest）每次 push 自动真跑，替代 R14 一次性真机窗口。
+      - name: BUG-07 detached/signal process-level selftest
+        if: matrix.project == 'apps/executor-node'
+        run: node scripts/bug07-windows-selftest.mjs
 
   windows-admin-web:
     runs-on: windows-latest
@@ -872,6 +878,46 @@ jobs:
             apps/executor-desktop/dist-electron/*.AppImage
             apps/executor-desktop/dist-electron/*.deb
             apps/executor-desktop/dist-electron/latest-linux.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── DSK-01：desktop macOS 打包（GitHub 托管 macos runner 即真机环境）──
+  # electron-builder.yml mac 段（dmg x64+arm64 + icns）与 dist:mac script 已
+  # 就绪，本 job 补「真实 macOS 打包执行 + 产物落 artifact」——此前缺的只是
+  # 运行环境。无 Apple 开发者签名的公共验证形态：CSC_IDENTITY_AUTO_DISCOVERY
+  # =false 跳过 codesign（正式分发签名属产品发布流程，另行拍板）；产物冒烟 =
+  # electron-builder 打包成功即 dmg/zip 结构完整（builder 自身校验）。
+  # 只跑 PR / 手动（与 desktop-linux-bundle 同姿态，GUI 无关、打包重）。
+  desktop-macos-bundle:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/executor-desktop/package-lock.json
+      - run: npm ci
+        working-directory: apps/executor-desktop
+      - name: Main-process selftests
+        working-directory: apps/executor-desktop
+        run: npm run test:main
+      - name: Build macOS dmg + zip (x64 + arm64)
+        working-directory: apps/executor-desktop
+        env:
+          # 无 Apple Developer ID 的 CI 形态：显式跳过 codesign/notarize
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist:mac
+      - name: Upload macOS bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-bundles
+          path: |
+            apps/executor-desktop/dist-electron/*.dmg
+            apps/executor-desktop/dist-electron/*.zip
+            apps/executor-desktop/dist-electron/latest-mac.yml
           if-no-files-found: error
           retention-days: 14
 
