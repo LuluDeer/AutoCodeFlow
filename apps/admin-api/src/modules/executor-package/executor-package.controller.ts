@@ -45,6 +45,7 @@ import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { ExecutorPackageService } from "./executor-package.service";
 import { PACKAGE_UPLOAD_TMP_DIR } from "./executor-package.service";
+import { ExecutorSharedTokenGuard } from "./executor-shared-token.guard";
 import { ExecutorService } from "../executor/executor.service";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -313,18 +314,22 @@ export class ExecutorPackageController {
    * Callback endpoint called by executor-node after download to report result.
    * This endpoint does not require JWT auth (executor-node has no user login),
    * but requires shared token for machine-to-machine verification.
-   * Temporarily using @UseGuards(JwtAuthGuard) for consistency; can be changed to SharedTokenGuard later.
+   * WIKI-PKG-GUARD: the shared-token check lives in the method-level
+   * ExecutorSharedTokenGuard below (it delegates to the same
+   * verify-executor-token.util, so acceptance semantics and 401 responses are
+   * byte-for-byte identical to the former inline call in this handler).
    *
    * R4 F-1: @Public() bypasses JwtAuthGuard. The class-level @Roles(ADMIN)
    * would otherwise be inherited by the global RolesGuard and reject the
    * machine caller (no req.user), so this route carries an empty @Roles()
-   * override — the executor shared token verified below remains the only
-   * gate (machine-to-machine semantics kept).
+   * override — the ExecutorSharedTokenGuard remains the only gate
+   * (machine-to-machine semantics kept).
    */
   @Public()
   // Empty @Roles() resets the class-level ADMIN requirement for this
-  // machine-to-machine callback; access is gated by the shared token check.
+  // machine-to-machine callback; access is gated by the shared token guard.
   @Roles()
+  @UseGuards(ExecutorSharedTokenGuard)
   @Post("push-result")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -345,18 +350,12 @@ export class ExecutorPackageController {
   })
   @ApiResponse({ status: 200, description: "Callback recorded" })
   async pushResult(
-    @Headers("authorization") auth: string | undefined,
     @Body("packageId") packageId: string,
     @Body("executorId") executorId: string,
     @Body("status") status: "downloaded" | "failed",
     @Body("version") version?: string,
     @Body("error") error?: string,
   ): Promise<{ ok: boolean }> {
-    await verifyExecutorToken(
-      auth,
-      this.configService,
-      this.systemConfigService,
-    );
     this.logger.log(
       `Push result: package=${packageId} executor=${executorId} status=${status}${
         error ? ` error=${error}` : ""

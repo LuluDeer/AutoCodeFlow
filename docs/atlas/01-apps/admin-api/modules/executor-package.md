@@ -12,6 +12,7 @@
 modules/executor-package/
 ├── executor-package.module.ts    装配：TypeOrmModule.forFeature(ExecutorPackage)
 ├── executor-package.controller.ts @Controller("executor-packages")，类级 @Roles(ADMIN)
+├── executor-shared-token.guard.ts push-result 专用共享令牌守卫（WIKI-PKG-GUARD）
 ├── executor-package.service.ts    上传校验/落盘/推送（约 600 行）
 ├── executor-package.entity.ts     executor_packages 表（name+version+type 唯一索引）
 ├── dto/executor-package.dto.ts    Create/Update/Query DTO
@@ -29,7 +30,7 @@ modules/executor-package/
 | PATCH | `/:id`、`/:id/deprecate`、`/:id/activate` | ADMIN | 元信息更新 / 状态流转（`active`↔`deprecated`） |
 | DELETE | `/:id` | ADMIN | 删 DB 行并 unlink 磁盘文件（best-effort） |
 | GET | `/:id/download` | `@Public()` + 空 `@Roles()`（Bearer 执行器 token 或 `?token=`） | 流式下载（`stream.pipeline`，500MB 不进堆） |
-| POST | `/push-result` | `@Public()` + 空 `@Roles()` | 执行器推送结果回执（追加进 `pushHistory` jsonb） |
+| POST | `/push-result` | `@Public()` + 空 `@Roles()` + 方法级 `ExecutorSharedTokenGuard` | 执行器推送结果回执（追加进 `pushHistory` jsonb） |
 | POST | `/:id/push` | ADMIN | 推送到在线执行器（`executorIds` 空则全体 ONLINE） |
 
 ## 关键机制
@@ -48,6 +49,10 @@ multipart file（diskStorage → upload-tmp）
 ```
 
 启动时 `onModuleInit` 清扫 `upload-tmp` 内超过 1 小时的遗留临时文件（QA9：崩溃/中断上传的孤儿）。
+
+### push-result 共享令牌守卫（WIKI-PKG-GUARD）
+
+`POST /push-result` 是 executor-node 的机器回调入口，无用户登录态。鉴权由方法级 `ExecutorSharedTokenGuard` 承担：路由保持 `@Public()` + 空 `@Roles()`（JwtAuthGuard/RolesGuard 行为不变），守卫在 Nest 守卫管线内读取 `authorization` 头后**原样委托** `common/utils/verify-executor-token.util.ts` 的 `verifyExecutorToken`（DB 令牌优先、env 回退、timingSafeEqual、fail-closed），自身不复刻第二套校验——放行/401 语义与旧内联调用逐字节等价。download 端点的双凭据逻辑（共享令牌 OR 管理员 JWT）不在守卫范围，仍内联于 handler。
 
 ### 推送（pushToExecutors）
 
