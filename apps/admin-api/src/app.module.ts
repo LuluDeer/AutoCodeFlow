@@ -171,6 +171,23 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         OPENAI_MODEL: Joi.string().default("gpt-4o-mini"),
         OLLAMA_HOST: Joi.string().uri().default("http://localhost:11434"),
         OLLAMA_MODEL: Joi.string().default("llama3"),
+
+        // AUTH-04: OIDC SSO（授权码模式）。全部可选——OIDC_ENABLED=false 时
+        // 其余键不生效，存量部署零变化。
+        OIDC_ENABLED: Joi.string().valid("true", "false").default("false"),
+        OIDC_ISSUER: Joi.string().uri().allow("").optional(),
+        OIDC_CLIENT_ID: Joi.string().allow("").optional(),
+        OIDC_CLIENT_SECRET: Joi.string().allow("").optional(),
+        OIDC_REDIRECT_URI: Joi.string().uri().allow("").optional(),
+        OIDC_SCOPES: Joi.string().allow("").optional(),
+        OIDC_USERNAME_CLAIM: Joi.string().allow("").optional(),
+        OIDC_AUTO_PROVISION: Joi.string()
+          .valid("true", "false")
+          .default("false"),
+        OIDC_WEB_REDIRECT_URL: Joi.string().uri().allow("").optional(),
+        OIDC_ALLOW_PRIVATE_NETWORK: Joi.string()
+          .valid("true", "false")
+          .default("false"),
         // ARCH-31（2026-09-13）: AI 出站私网豁免。默认 false = 既有 SSRF 姿态
         // 零变化（assertSafeHttpUrl 拒一切非 public，本地 Ollama 的默认
         // localhost:11434 也被拒）；true 放行 loopback/restricted/private-lan

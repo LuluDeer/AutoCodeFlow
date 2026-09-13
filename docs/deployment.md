@@ -74,6 +74,9 @@ security_opt:
 | `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | SSRF 防护回环/私网出站白名单开关；同机部署（admin-api 与执行器都在本机）必须设 `true` |
 | `AI_ALLOW_PRIVATE_NETWORK` | `false` | AI 出站私网豁免（ARCH-31）：默认 false 时本地 Ollama（localhost:11434）也被 SSRF 闸拒绝；true 放行 loopback/restricted/private-LAN，云元数据恒拒 |
 | `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK` | `false` | 事件订阅 webhook 私网豁免（ARCH-31）：订阅校验与派发复核共用；事件订阅普通用户可建，开启即信任所有登录用户可向内网发 webhook，生产建议 false |
+| `OIDC_ENABLED` | `false` | OIDC SSO 总开关（AUTH-04，ADR-014）：false 时 SSO 端点关闭、本地密码登录零变化；OIDC_* 其余键见 `.env.example` 与「OIDC SSO」段 |
+| `OIDC_AUTO_PROVISION` | `false` | SSO JIT 自动建号开关：true 时未知 IdP 用户首登自动建 USER 账号；生产建议保持 false（管理员预建同名账号 → 首登绑定） |
+| `OIDC_ALLOW_PRIVATE_NETWORK` | `false` | IdP 私网豁免：自建内网 Keycloak/Entra 网关需 true（云元数据段恒拒） |
 | `EXECUTION_CALLBACK_SECRET` | - | 执行回调 token 的 HMAC 密钥（可选，≥16 字符；缺省回落 `EXECUTOR_SECRET`，两侧须同源） |
 | `NPM_REGISTRY_TOKEN`（或 `NPM_REGISTRY_USER`/`NPM_REGISTRY_PASS`） | - | npm registry 服务账号/预签发 token（registry-npm 全量要求认证，不配置则 admin 的 npm 包列表为空） |
 | `REGISTRY_UPLOAD_TIMEOUT_MS` | `60000` | registry 上传代理超时（毫秒，慢链路可调大） |
@@ -616,3 +619,21 @@ node dist\main.js
 - 任务日志文件以 UTF-8 读取；cmd 子进程的 GBK 中文输出会乱码但不影响执行（W-10）。
 - executor-desktop（Electron）在 Windows 的打包验证见路线图 R16。
 - 服务化 admin-api 用 `pm2`（`ecosystem.config.js`）或任务计划程序自启 + 失败重启均可。
+
+## OIDC SSO（单点登录，AUTH-04 / ADR-014）
+
+企业 IdP（Keycloak / Entra ID / Okta 等）接入，授权码模式（confidential client）。默认关闭，开启步骤：
+
+1. **IdP 侧注册客户端**：类型=confidential；Redirect URI = `{API_BASE}/auth/oidc/callback`（如 `https://acf.example.com/api/auth/oidc/callback`）；Scope 至少 `openid` + 用户名声明（默认取 `preferred_username`，可用 `OIDC_USERNAME_CLAIM` 更换）。
+2. **平台侧配置**：`OIDC_ENABLED=true` + `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_REDIRECT_URI`（完整清单见 `.env.example`），重启 admin-api。discovery 从 `{issuer}/.well-known/openid-configuration` 自动拉取（进程内缓存 1h）。
+3. **账号绑定策略**（关键安全拍板，见 ADR-014）：
+   - `OIDC_AUTO_PROVISION=false`（默认，生产推荐）：未知 IdP 身份登录被拒；管理员先在「用户管理」建**同名**账号，该用户首次 SSO 登录时自动写入 `oidcSub` 绑定；
+   - `OIDC_AUTO_PROVISION=true`：未知身份首登自动建 USER 账号（占位随机密码，该账号不走密码登录）；适合全员开通场景。
+4. **前端**：登录页在 `GET /auth/oidc/status` 返回 enabled 时自动出现「企业账号（SSO）登录」按钮，回调落地页 `/auth/sso/complete` 完成 token 注入。
+
+**部署注意**：
+- IdP 在同机/内网（如本机 Keycloak）：需 `OIDC_ALLOW_PRIVATE_NETWORK=true`（SSRF 态势默认拒内网出站，云元数据段恒拒）；
+- 反代需放行 `/api/auth/oidc/*` 且**不得缓存** callback 响应；token 仅经 `#fragment` 回传前端，不会出现在访问日志；
+- 多实例部署无需共享会话存储：state/nonce 为 HMAC 签名 cookie（密钥复用 `JWT_REFRESH_SECRET`），任一实例均可独立完成回调校验；
+- SSO 与 TOTP 正交：IdP 侧 MFA 责任面由 IdP 承担，平台侧 TOTP 仍只作用于密码登录。
+
