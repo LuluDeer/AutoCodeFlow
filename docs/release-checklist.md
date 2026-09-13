@@ -147,13 +147,16 @@ npm/PyPI 包发布**不走**上节人工 tag——走 release-please 管道：
 push main）→ 自动打 tag v* → 触发 release.yml（version-guard + environment
 审批 + npm/PyPI publish）`。
 
-**v1.3.0 起的验证点（R19 修复：补 `command: github-release` step 后首次实测）**：
-- [ ] Actions「Release Please」run 中出现 `github-release` step 且成功；
-- [ ] tag `v*` 由该 step 自动创建，且**自动**触发「Release」workflow；
-- [ ] 全程无需人工重推 tag（人工路径降为兜底：见 sdk-guide「版本与发布流程」
-  恢复段——仅当管道失败且需换 tag 指向时使用）；
-- [ ] 若 abort（「untagged, merged release PRs outstanding」）复现：备选方案
-  = Release PR 改用 squash 合并后重跑，并回写 development.md。
+**v1.3.0 实测结论（2026-09-13，修正预期）**：自动打 tag **未打通**——
+`command: github-release` 是 v4 的无效 input（被忽略）；状态机另有三层阻断
+（v1.2.0 缺 GitHub Release 对象（已补建）/ 非规范 merge 标题解析错误吞 feat
+遍历 / 手工 PR 不被接纳）。当前**人工 tag 仍是主路径**：
+- [ ] Release PR 合并后，人工 `git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z`；
+- [ ] tag push 自动触发「Release」workflow（version-guard → publish）✓ 已实测可靠；
+- [ ] 发布后**必须建 GitHub Release 对象**（`gh release create vX.Y.Z --verify-tag`），
+  否则状态机卡 outstanding（v1.2.0 缺口的教训）；
+- [ ] 自动化若要重启：方向 = main 上 merge commit 标题规范化（或 squash 合并习惯）
+  + release-please 状态机修复，涉及协作流程变更需拍板。
 
 ### 4.3 更新 CHANGELOG（可选）
 
