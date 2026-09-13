@@ -273,34 +273,42 @@ class TestVersionDriftWarning:
         assert body['version'] == scheduler_module.EXECUTOR_VERSION
 
     @pytest.mark.asyncio
-    async def test_warn_helper_throttles_to_one_per_window(self, monkeypatch, caplog):
-        import logging
+    async def test_warn_helper_throttles_to_one_per_window(self, monkeypatch):
+        # 不用 caplog：其捕获依赖 logger 传播链，CI/本地 logging 配置差异曾致
+        # 假红——直接 patch logger.warning 记录调用，与传播配置解耦。
         import scheduler as scheduler_module
         monkeypatch.setattr(scheduler_module, '_last_version_drift_warn_at', 0.0)
+        warns: list = []
+        monkeypatch.setattr(
+            scheduler_module.logger, 'warning',
+            lambda msg, *a, **k: warns.append(msg % a if a else msg),
+        )
         payload = {'versionCompliant': False, 'minVersion': '1.3.0'}
 
-        with caplog.at_level(logging.WARNING, logger='scheduler'):
-            scheduler_module._warn_version_drift_if_noncompliant(payload)
-            scheduler_module._warn_version_drift_if_noncompliant(payload)
-            # 超过节流窗（重置节流时间戳）→ 允许下一条
-            monkeypatch.setattr(scheduler_module, '_last_version_drift_warn_at', 0.0)
-            scheduler_module._warn_version_drift_if_noncompliant(payload)
+        scheduler_module._warn_version_drift_if_noncompliant(payload)
+        scheduler_module._warn_version_drift_if_noncompliant(payload)
+        # 超过节流窗（重置节流时间戳）→ 允许下一条
+        monkeypatch.setattr(scheduler_module, '_last_version_drift_warn_at', 0.0)
+        scheduler_module._warn_version_drift_if_noncompliant(payload)
 
-        drift = [r for r in caplog.records if 'Version drift' in r.message]
+        drift = [w for w in warns if 'Version drift' in w]
         assert len(drift) == 2
-        assert '1.3.0' in drift[0].getMessage()
+        assert '1.3.0' in drift[0]
 
     @pytest.mark.asyncio
-    async def test_compliant_or_unshaped_payloads_never_warn(self, monkeypatch, caplog):
-        import logging
+    async def test_compliant_or_unshaped_payloads_never_warn(self, monkeypatch):
         import scheduler as scheduler_module
         monkeypatch.setattr(scheduler_module, '_last_version_drift_warn_at', 0.0)
+        warns: list = []
+        monkeypatch.setattr(
+            scheduler_module.logger, 'warning',
+            lambda msg, *a, **k: warns.append(msg % a if a else msg),
+        )
 
-        with caplog.at_level(logging.WARNING, logger='scheduler'):
-            for payload in (None, {}, {'versionCompliant': True, 'minVersion': '1.3.0'}):
-                scheduler_module._warn_version_drift_if_noncompliant(payload)
+        for payload in (None, {}, {'versionCompliant': True, 'minVersion': '1.3.0'}):
+            scheduler_module._warn_version_drift_if_noncompliant(payload)
 
-        assert not [r for r in caplog.records if 'Version drift' in r.message]
+        assert not [w for w in warns if 'Version drift' in w]
 
 
 class TestPullDispatch:
