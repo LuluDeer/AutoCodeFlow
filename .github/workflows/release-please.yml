@@ -72,27 +72,12 @@ jobs:
           # 显式指向 manifest 文件（缺省同为 release-please-manifest.json，
           # 写明以减少隐式约定）
           manifest-file: release-please-manifest.json
-      # ── Step 2：github-release（为已合并的 Release PR 打 tag v* + 建
-      # GitHub Release）────────────────────────────────────────────────
-      # **v1.1.1/v1.2.0 均需人工推 tag 的根因（2026-09-13 第十九轮定位）**：
-      # release-please-action@v4 把默认命令拆为 release-pr / github-release
-      # 两个命令，本 workflow 原先只有默认（release-pr）——Release PR 合并后
-      # 永远无人创建 tag v*，只能人工重推（v1.1.1 `4cbdffc` 只解决了 token
-      # 级联，没解决「谁创建 tag」）。补上本 step 后：Release PR 合并 → 下次
-      # push main 自动打 tag → PAT 已解决 tag 级联触发 release.yml →
-      # 发布全链自动（version-guard 仍在 tag 触发时兜底一致性）。
-      # 口径（如实）：合并 Release PR 后需再一次 push main（任何 commit，
-      # 含本 workflow 的 docs 同步）才会触发本 step——release-please v4
-      # 的 github-release 依赖 run 事件扫描 manifest；纯 Release PR 合并
-      # 本身（merge commit push 到 main）**就是**一次 push main，天然触发。
-      # release-pr 在「有已合并未打 tag 的 Release PR」状态下会 abort（v1.2.0
-      # 实测）——不能让它的非零退出跳过本 step，否则 tag 永远建不出来；
-      # github-release 本身幂等（无事可做时 no-op），always 执行是安全的。
-      - uses: googleapis/release-please-action@v4
-        id: github-release
-        if: ${{ !cancelled() }}
-        with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
-          config-file: release-please-config.json
-          manifest-file: release-please-manifest.json
-          command: github-release
+      # **v1.3.0 发布轮实测结论（2026-09-13，修正 R19 的错误假设）**：
+      # 曾尝试在此补 `command: github-release` 第二 step，实测被 action 拒绝
+      # （v4 合法 inputs 不含 command——run 34755386601 的 warning 列出了全集），
+      # 该方案无效；且状态机另有三层阻断：① v1.2.0 缺 GitHub Release 对象
+      # （已补建，release-please 以 GitHub Releases 为「已发布」事实源）；
+      # ② 非规范 merge 标题触发 conventional 解析错误吞掉 feat 遍历；
+      # ③ 非 bot 形态（head 分支）的 Release PR 不被状态机接纳。
+      # **当前发布形态：Release PR（人工/状态机）合并 + 人工 tag 兜底**，
+      # 详见 docs/release-checklist.md「包发布」段与 AGENT_HANDOFF v1.3.0 段。
