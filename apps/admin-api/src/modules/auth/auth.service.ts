@@ -288,8 +288,18 @@ export class AuthService {
     return this.generateTokens(user);
   }
 
-  /** SEC-02: Revoke all active refresh tokens for a user (called on logout). */
+  /**
+   * SEC-02: Revoke all active refresh tokens for a user (called on logout).
+   *
+   * WIKI-AUTH-REVOC: 同时原子 bump users.sessionVersion——该用户所有在途
+   * access token 的 ver 快照随即与库中失配，jwt.strategy.validate() 即刻
+   * 401（logout 后访问令牌即时失效，不再等自然过期）。bump 与 refresh 吊销
+   * 的先后不影响正确性（先 bump 即先断 access 面）。原子自增、无读改写。
+   * 注：revokeOtherSessions 保留当前会话的路径不经此处（bump 会误杀当前
+   * access token），只有「全量吊销」语义才 bump。
+   */
   async revokeAllForUser(userId: number): Promise<void> {
+    await this.usersService.bumpSessionVersion(userId);
     await this.refreshTokenRepo.update(
       { userId, revoked: false },
       { revoked: true },
@@ -362,12 +372,29 @@ export class AuthService {
     return { revoked: -1 }; // -1 = "all including current" sentinel
   }
 
+  /**
+   * Token issuance single point — login / TOTP second stage / refresh all
+   * converge here, so any claim added to `base` reaches every issuance path.
+   *
+   * WIKI-AUTH-REVOC: token 额外携带 ver claim = user.sessionVersion（签发
+   * 时刻快照），jwt.strategy.validate() 据此实现 logout/改密后的访问令牌
+   * 即时撤销。调用方传入完整用户实体，sessionVersion 天然携带；个别调用
+   * 方（单测桩）缺失该字段时 JSON 序列化落掉 undefined——等同存量「无
+   * ver」令牌的兼容形态，生产实体经迁移 1790000000017 后恒有值。
+   */
   private async generateTokens(
-    user: { id: number; username: string },
+    user: { id: number; username: string; sessionVersion?: number },
     meta?: { userAgent?: string | null; ip?: string | null },
   ) {
     // S2: include 'type' claim and use separate secrets for access/refresh tokens
-    const base: JwtPayload = { sub: user.id, username: user.username };
+    const base: JwtPayload = {
+      sub: user.id,
+      username: user.username,
+      // WIKI-AUTH-REVOC: 会话版本快照进 base payload——access/refresh 两类
+      // token 同点携带；access 侧 validate() 消费，refresh 侧仅随行不校验
+      // （refresh 校验走「吊销表 + 重新加载用户」，签发经本单点自然带新值）。
+      ver: user.sessionVersion,
+    };
 
     // SEC-02: attach a unique jti to each refresh token for revocation tracking
     const jti = randomUUID();

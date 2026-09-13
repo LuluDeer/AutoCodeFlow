@@ -46,6 +46,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       | "resetLoginFailure"
       | "clearExpiredLock"
       | "saveUser"
+      | "bumpSessionVersion"
     >
   >;
   let jwtService: jest.Mocked<Pick<JwtService, "sign" | "verify">>;
@@ -70,6 +71,9 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       resetLoginFailure: jest.fn().mockResolvedValue(undefined),
       clearExpiredLock: jest.fn().mockResolvedValue(true),
       saveUser: jest.fn().mockImplementation(async (u: any) => u),
+      // WIKI-AUTH-REVOC: revoke-others without sid degenerates to
+      // revokeAllForUser which now bumps the session version.
+      bumpSessionVersion: jest.fn().mockResolvedValue(undefined),
     };
     jwtService = {
       sign: jest.fn().mockReturnValue("signed-token"),

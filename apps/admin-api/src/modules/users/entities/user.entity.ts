@@ -53,6 +53,14 @@ export class User {
   @Column({ default: false })
   totpEnabled: boolean;
 
+  // WIKI-AUTH-REVOC: 用户级会话版本——logout（revokeAllForUser）与改密
+  // （users.service.update 携带 password 时）原子 +1；access token 签发时把
+  // 该值快照进 ver claim，jwt.strategy.validate() 比对不一致即 401
+  // （"Session has been revoked"），实现注销/改密后在途访问令牌即时失效。
+  // 存量旧行经迁移 1790000000017 取 0；无 ver claim 的旧令牌兼容放行。
+  @Column({ default: 0 })
+  sessionVersion: number;
+
   @CreateDateColumn()
   createdAt: Date;
 

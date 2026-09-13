@@ -1,6 +1,8 @@
 import type { Request } from "express";
+import { UnauthorizedException } from "@nestjs/common";
 import {
   extractJwtFromRequest,
+  JwtStrategy,
   SSE_QUERY_TOKEN_PARAM,
 } from "../strategies/jwt.strategy";
 
@@ -116,5 +118,81 @@ describe("jwt.strategy — extractJwtFromRequest (P1-6 SSE query token)", () => 
       query: { [SSE_QUERY_TOKEN_PARAM]: "jwt-value" },
     });
     expect(extractJwtFromRequest(req)).toBeNull();
+  });
+});
+
+// ─── WIKI-AUTH-REVOC: 会话版本校验（validate） ─────────────────────────────
+// ver 是签发时刻 sessionVersion 的快照；logout/改密会把库中版本原子 +1，
+// 快照失配即「会话已撤销」。存量旧令牌无 ver claim → 兼容放行。
+describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
+  const buildStrategy = () => {
+    const usersService = { findById: jest.fn() };
+    const configService = { get: jest.fn().mockReturnValue("unit-test-secret") };
+    const strategy = new JwtStrategy(
+      configService as never,
+      usersService as never,
+    );
+    return { strategy, usersService };
+  };
+
+  const activeUser = (sessionVersion: number) => ({
+    id: 1,
+    username: "alice",
+    isActive: true,
+    sessionVersion,
+  });
+
+  it("ver 与库中 sessionVersion 匹配 → 放行", async () => {
+    const { strategy, usersService } = buildStrategy();
+    usersService.findById.mockResolvedValue(activeUser(3) as never);
+
+    await expect(
+      strategy.validate({
+        sub: 1,
+        username: "alice",
+        type: "access",
+        ver: 3,
+      }),
+    ).resolves.toMatchObject({ id: 1, sessionVersion: 3 });
+  });
+
+  it("ver 与库中 sessionVersion 不匹配（logout/改密后）→ 401 Session has been revoked", async () => {
+    const { strategy, usersService } = buildStrategy();
+    usersService.findById.mockResolvedValue(activeUser(4) as never);
+
+    await expect(
+      strategy.validate({
+        sub: 1,
+        username: "alice",
+        type: "access",
+        ver: 3,
+      }),
+    ).rejects.toThrow(new UnauthorizedException("Session has been revoked"));
+  });
+
+  it("无 ver claim 的存量旧令牌 → 兼容放行（到期自然失效，不被新逻辑立即打死）", async () => {
+    const { strategy, usersService } = buildStrategy();
+    usersService.findById.mockResolvedValue(activeUser(0) as never);
+
+    await expect(
+      strategy.validate({ sub: 1, username: "alice", type: "access" }),
+    ).resolves.toMatchObject({ id: 1 });
+  });
+
+  it("isActive 校验仍先于会话版本校验（停用账号维持既有 401 语义）", async () => {
+    const { strategy, usersService } = buildStrategy();
+    usersService.findById.mockResolvedValue({
+      ...activeUser(3),
+      isActive: false,
+    } as never);
+
+    await expect(
+      strategy.validate({
+        sub: 1,
+        username: "alice",
+        type: "access",
+        ver: 3,
+      }),
+    ).rejects.toThrow(new UnauthorizedException("Account is disabled"));
   });
 });
