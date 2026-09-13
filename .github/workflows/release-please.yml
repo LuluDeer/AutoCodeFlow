@@ -56,7 +56,9 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      # ── Step 1：release-pr（开/更新 Release PR）─────────────────────
       - uses: googleapis/release-please-action@v4
+        id: release-pr
         with:
           # token：**必须用 PAT**（仓库 secret `RELEASE_PLEASE_TOKEN`），否则
           # release-please 用 GITHUB_TOKEN 创建的 tag 不会级联触发 release.yml
@@ -70,3 +72,23 @@ jobs:
           # 显式指向 manifest 文件（缺省同为 release-please-manifest.json，
           # 写明以减少隐式约定）
           manifest-file: release-please-manifest.json
+      # ── Step 2：github-release（为已合并的 Release PR 打 tag v* + 建
+      # GitHub Release）────────────────────────────────────────────────
+      # **v1.1.1/v1.2.0 均需人工推 tag 的根因（2026-09-13 第十九轮定位）**：
+      # release-please-action@v4 把默认命令拆为 release-pr / github-release
+      # 两个命令，本 workflow 原先只有默认（release-pr）——Release PR 合并后
+      # 永远无人创建 tag v*，只能人工重推（v1.1.1 `4cbdffc` 只解决了 token
+      # 级联，没解决「谁创建 tag」）。补上本 step 后：Release PR 合并 → 下次
+      # push main 自动打 tag → PAT 已解决 tag 级联触发 release.yml →
+      # 发布全链自动（version-guard 仍在 tag 触发时兜底一致性）。
+      # 口径（如实）：合并 Release PR 后需再一次 push main（任何 commit，
+      # 含本 workflow 的 docs 同步）才会触发本 step——release-please v4
+      # 的 github-release 依赖 run 事件扫描 manifest；纯 Release PR 合并
+      # 本身（merge commit push 到 main）**就是**一次 push main，天然触发。
+      - uses: googleapis/release-please-action@v4
+        id: github-release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: release-please-manifest.json
+          command: github-release
