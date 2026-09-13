@@ -348,6 +348,73 @@
         ]
       }
     },
+    "/auth/oidc/status": {
+      "get": {
+        "operationId": "OidcController_status",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Oidc"
+        ]
+      }
+    },
+    "/auth/oidc/login": {
+      "get": {
+        "operationId": "OidcController_login",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Oidc"
+        ]
+      }
+    },
+    "/auth/oidc/callback": {
+      "get": {
+        "operationId": "OidcController_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Oidc"
+        ]
+      }
+    },
     "/users": {
       "post": {
         "operationId": "UsersController_create",

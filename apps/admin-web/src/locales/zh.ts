@@ -27,6 +27,18 @@ export default {
   'login.totpCode.invalid': '动态验证码错误',
   'login.totpHint': '请打开验证器应用获取动态码',
   'login.forgotHint': '如忘记密码请联系管理员重置',
+  'login.sso': '使用企业账号（SSO）登录',
+  // AUTH-04：OIDC 回调落地页
+  'sso.title': '单点登录',
+  'sso.completing': '正在完成登录…',
+  'sso.backToLogin': '返回登录页',
+  'sso.error.state': '登录会话已失效或超时，请重新发起 SSO 登录',
+  'sso.error.nonce': '安全校验未通过（会话不匹配），请重新发起 SSO 登录',
+  'sso.error.signature': '身份提供方返回的凭据校验失败，请联系管理员检查 SSO 配置',
+  'sso.error.notLinked': '当前企业账号未绑定任何平台账号——请联系管理员创建同名账号，或在系统配置中开启自动建号',
+  'sso.error.disabled': '该账号已被禁用',
+  'sso.error.missing': '回调参数缺失，请从登录页重新发起',
+  'sso.error.generic': '单点登录失败，请重试或联系管理员',
 
   // ── 全局导航 / 壳层（MainLayout）──
   'nav.skipToContent': '跳到主要内容',

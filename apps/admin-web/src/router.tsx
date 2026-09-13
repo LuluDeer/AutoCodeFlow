@@ -8,6 +8,7 @@ import PageFallback from './components/PageFallback';
 
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
+const SsoCompletePage = lazy(() => import('./pages/SsoCompletePage'));
 const TaskListPage = lazy(() => import('./pages/TaskListPage'));
 const TaskTemplatesPage = lazy(() => import('./pages/TaskTemplatesPage'));
 const TaskDetailPage = lazy(() => import('./pages/TaskDetailPage'));
@@ -35,6 +36,8 @@ const withSuspense = (children: ReactNode) => (
 export const router = createBrowserRouter(
   [
     { path: '/login', element: withSuspense(<LoginPage />) },
+    // AUTH-04：OIDC 回调落地页（公开，token 经 #fragment 回传）
+    { path: '/auth/sso/complete', element: withSuspense(<SsoCompletePage />) },
     {
       path: '/',
       element: <PrivateRoute><MainLayout /></PrivateRoute>,

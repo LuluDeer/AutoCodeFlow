@@ -22,6 +22,8 @@ import { useAuthStore } from '../store/auth';
 
 vi.mock('../api/auth', () => ({
   authApi: {
+    // AUTH-04：登录页 SSO 开关探测（默认关闭，不渲染 SSO 按钮）
+    oidcStatus: vi.fn().mockResolvedValue({ enabled: false }),
     login: vi.fn(),
     verifyLogin: vi.fn(),
     me: vi.fn(),
