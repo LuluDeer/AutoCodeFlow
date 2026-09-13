@@ -12,7 +12,7 @@ import httpx
 from routers import execute, health, logs, config as config_router
 import maintenance
 from admin_api import build_admin_api_url, check_admin_api_connectivity, get_admin_api_base_url
-from config import settings
+from config import settings, EXECUTOR_VERSION
 from scheduler import heartbeat_task, get_running_count, executor_started_at, executor_startup_id
 from auth import (
     get_current_token,
@@ -173,7 +173,9 @@ def _register_payload() -> dict:
         'appName': settings.app_name,
         'address': settings.executor_address_public or settings.executor_address,
         'type': 'python',
-        'version': '1.0.0',
+        # EXE-VER-1: 版本上报单源 EXECUTOR_VERSION（心跳同源）；中心端
+        # EXECUTOR_MIN_VERSION 门禁按此判定，低于下限 403。
+        'version': EXECUTOR_VERSION,
         'capabilities': ['python', 'shell'],
         'maxConcurrentTasks': settings.max_concurrent_tasks,
         'restartedAt': executor_started_at,

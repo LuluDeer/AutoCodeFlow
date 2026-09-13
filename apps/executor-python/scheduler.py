@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import time
 import uuid
 import httpx
 import threading
+from typing import Any
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -11,7 +13,7 @@ from tenacity import (
     before_sleep_log,
 )
 from admin_api import build_admin_api_url, get_admin_api_base_url
-from config import settings
+from config import settings, EXECUTOR_VERSION
 import psutil
 from auth import get_current_token, adopt_executor_token_hash, request_with_self_heal
 
@@ -21,6 +23,33 @@ logger = logging.getLogger(__name__)
 # (auth.py needs it for POST /token and cannot import scheduler.py — cycle).
 # Re-exported here so existing importers (main.py, tests) keep working.
 from startup_identity import executor_started_at, executor_startup_id  # noqa: F401
+
+# EXE-VER-1: 版本漂移告警节流（node scheduler.ts warnVersionDriftThrottled 对齐）
+# —— 同一次不合规期最多每 10 分钟 warning 一条，防 30s 心跳刷屏。
+_VERSION_DRIFT_WARN_INTERVAL_SECONDS = 10 * 60
+_last_version_drift_warn_at = 0.0
+
+
+def _warn_version_drift_if_noncompliant(payload: Any) -> None:
+    """中心端 EXECUTOR_MIN_VERSION 门禁开启且本执行器版本低于下限时，心跳响应
+    回显 ``versionCompliant: false`` —— 据此打漂移告警日志；升级执行器（重装
+    artifact）后响应回到 true，日志自然静默。门禁关闭时回显恒 true，零开销。
+    """
+    global _last_version_drift_warn_at
+    if not isinstance(payload, dict) or payload.get('versionCompliant') is not False:
+        return
+    now = time.monotonic()
+    if now - _last_version_drift_warn_at < _VERSION_DRIFT_WARN_INTERVAL_SECONDS:
+        return
+    _last_version_drift_warn_at = now
+    logger.warning(
+        'Version drift: executor %s is below the admin-required minimum %s '
+        '(EXECUTOR_MIN_VERSION). New task dispatch may be refused for this '
+        'executor — upgrade by re-running the install command or downloading '
+        'the latest executor artifact.',
+        EXECUTOR_VERSION, payload.get('minVersion'),
+    )
+
 
 # Global count of currently-running tasks with thread-safe operations
 running_count = 0
@@ -139,6 +168,9 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
             'deadLetterCount': max(0, int(_dead_letter_count_provider())),
             'restartedAt': executor_started_at,
             'startupId': executor_startup_id,
+            # EXE-VER-1: 版本随心跳上报（node scheduler.ts 对齐，可选字段）；
+            # 中心端 EXECUTOR_MIN_VERSION 门禁开启时在响应回显合规态（下方消费）。
+            'version': EXECUTOR_VERSION,
         },
         timeout=5,
     )
@@ -149,7 +181,10 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
     # per-execution callback-token HMAC key follows admin-side rotations
     # instead of going stale (picked up within heartbeatIntervalSeconds).
     try:
-        adopt_executor_token_hash(response.json())
+        payload = response.json()
+        adopt_executor_token_hash(payload)
+        # EXE-VER-1: 版本漂移提醒（同一响应包络内消费 versionCompliant）。
+        _warn_version_drift_if_noncompliant(payload)
     except Exception:  # pragma: no cover - non-JSON / empty admin bodies
         pass
 

@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   ServiceUnavailableException,
+  ForbiddenException,
   Inject,
   forwardRef,
 } from "@nestjs/common";
@@ -27,6 +28,8 @@ import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
 import { SystemConfigService } from "../config/config.service";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+// EXE-VER-1: 最低版本门禁（register 403）——比较与合规语义见 util 头注
+import { isVersionCompliant } from "./version-compare.util";
 // SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // FEAT-07: executor.offline 出站事件（总线 @Global；Optional 注入先例 task.service）
@@ -587,6 +590,28 @@ export class ExecutorService {
     restartedAt?: string | Date | null;
     startupId?: string | null;
   }): Promise<{ executor: Executor; perExecutorToken: string | null }> {
+    // EXE-VER-1: 最低版本门禁。EXECUTOR_MIN_VERSION 非空时，执行器上报的
+    // version 低于下限 → 403（报文含下限与升级指引），且发生在任何落库/
+    // 发 token 副作用之前。未上报 version 的存量旧执行器放行 + warn（不
+    // 锁死存量）；isVersionCompliant 对畸形版本号也放行（NaN 语义）。
+    // 门禁关（默认空串）时此块整体短路，行为逐字节不变。
+    const minVersion =
+      this.configService.get<string>("executor.minVersion") || "";
+    if (
+      minVersion &&
+      data.version &&
+      !isVersionCompliant(data.version, minVersion)
+    ) {
+      throw new ForbiddenException(
+        `Executor version ${data.version} is below the required minimum ${minVersion} (EXECUTOR_MIN_VERSION). ` +
+          `Upgrade the executor: re-run the install wizard / install-cmd, or download the latest executor artifact.`,
+      );
+    }
+    if (minVersion && !data.version) {
+      this.logger.warn(
+        `Register from ${data.address} did not report a version; EXECUTOR_MIN_VERSION=${minVersion} cannot be enforced for it (legacy executor allowed)`,
+      );
+    }
     // Capture the pre-register row: register() overwrites executorStartupId
     // and the row's tokenHash is select:false, so read it explicitly here.
     const prior = await this.repo

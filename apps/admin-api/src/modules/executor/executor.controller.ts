@@ -40,6 +40,8 @@ import axios from "axios";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+// EXE-VER-1: heartbeat 响应回显版本合规态（EXECUTOR_MIN_VERSION）
+import { isVersionCompliant } from "./version-compare.util";
 // BUG-01：401 重签重试可观测计数——走 runtime-metrics 模块级入口（与
 // TaskService / NotificationService 的埋点方式一致，无模块环、零 DI 接线），
 // 由 PrometheusMetricsService 的 render 快照模式渲染为
@@ -224,6 +226,9 @@ export class ExecutorController {
       // E9: 执行器热更新容量后随心跳上报（可选；范围校验在 service 侧，
       // 非法/缺失不改 DB 值）。
       maxConcurrentTasks?: number;
+      // EXE-VER-1: 执行器版本随心跳上报（可选；不落库，仅用于
+      // EXECUTOR_MIN_VERSION 门禁开启时在响应中回显合规态）。
+      version?: string;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -261,7 +266,17 @@ export class ExecutorController {
     // per-execution callback HMAC secret follows admin-side rotations
     // (admin-UI rotate-token, register-time issuance) without a re-register.
     const tokenHash = await this.svc.getCallbackSecretByAddress(body.address);
-    return { ...saved, tokenHash };
+    // EXE-VER-1: 回显版本合规态。门禁关（EXECUTOR_MIN_VERSION 空）时
+    // minVersion=null / versionCompliant=true（加法字段，旧消费方无感）；
+    // 门禁开时执行器侧据此打版本漂移告警。version 不落库。
+    const minVersion =
+      this.configService.get<string>("executor.minVersion") || "";
+    return {
+      ...saved,
+      tokenHash,
+      minVersion: minVersion || null,
+      versionCompliant: isVersionCompliant(body.version, minVersion),
+    };
   }
 
   @ApiBearerAuth("JWT")

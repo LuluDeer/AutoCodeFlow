@@ -1,11 +1,11 @@
 import * as os from 'os';
 import { randomUUID } from 'crypto';
-import { config } from './config';
+import { config, EXECUTOR_VERSION } from './config';
 import { logger } from './logger';
 import { post } from './admin-client';
 import { recordHeartbeat } from './heartbeat-state';
 import { executorStartedAt, executorStartupId } from './startup-identity';
-import { adoptExecutorTokenHash } from './admin-envelope';
+import { adoptExecutorTokenHash, unwrapAdminResponseData } from './admin-envelope';
 
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
 // SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
@@ -81,6 +81,25 @@ async function measureCpuUsage(): Promise<number> {
   });
 }
 
+// EXE-VER-1: 版本漂移告警节流状态——同一次不合规期最多每 10 分钟 warn 一条。
+const VERSION_DRIFT_WARN_INTERVAL_MS = 10 * 60 * 1000;
+let lastVersionDriftWarnAt = 0;
+
+function warnVersionDriftThrottled(minVersion: string): void {
+  const now = Date.now();
+  if (now - lastVersionDriftWarnAt < VERSION_DRIFT_WARN_INTERVAL_MS) return;
+  lastVersionDriftWarnAt = now;
+  logger.warn(
+    `Version drift: executor ${EXECUTOR_VERSION} is below the admin-required minimum ${minVersion} ` +
+      `(EXECUTOR_MIN_VERSION). New task dispatch may be refused for this executor — ` +
+      `upgrade by re-running the install command or downloading the latest executor artifact.`,
+  );
+}
+
+export function resetVersionDriftWarnStateForTest(): void {
+  lastVersionDriftWarnAt = 0;
+}
+
 async function sendHeartbeat() {
   try {
     const cpuUsage = await measureCpuUsage();
@@ -107,12 +126,22 @@ async function sendHeartbeat() {
       maxConcurrentTasks: config.maxConcurrentTasks,
       restartedAt: executorStartedAt,
       startupId: executorStartupId,
+      // EXE-VER-1: 版本随心跳上报（可选字段），中心端 EXECUTOR_MIN_VERSION
+      // 门禁开启时在响应中回显 versionCompliant（见下方消费）。
+      version: EXECUTOR_VERSION,
     });
     // R9 (round-8 P1 W3): the heartbeat response echoes admin's current
     // stored tokenHash (same adoption as register/POST /token), so the
     // per-execution callback HMAC secret stays in sync with admin-side
     // rotations without waiting for a re-register.
     adoptExecutorTokenHash(resp?.data);
+    // EXE-VER-1: 版本漂移提醒——门禁开启且本执行器版本低于下限时，admin 在
+    // 响应里回显 versionCompliant=false。10 分钟节流防 30s 心跳刷屏；升级
+    // 执行器（重装 artifact）后响应回到 true，日志自然静默。
+    const heartbeatPayload = unwrapAdminResponseData(resp?.data);
+    if (heartbeatPayload && heartbeatPayload.versionCompliant === false) {
+      warnVersionDriftThrottled(String(heartbeatPayload.minVersion ?? ''));
+    }
     logger.info(`[${traceId}] Heartbeat succeeded`);
     recordHeartbeat(true);
   } catch (err: unknown) {

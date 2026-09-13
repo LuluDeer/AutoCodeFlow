@@ -1,4 +1,5 @@
 jest.mock('./config', () => ({
+  EXECUTOR_VERSION: '1.0.0',
   config: {
     heartbeatIntervalSeconds: 12,
     maxConcurrentTasks: 10,
@@ -74,6 +75,52 @@ describe('scheduler', () => {
     registerRunningExecutionIdsProvider(() => []);
     await jest.advanceTimersByTimeAsync(12_000);
     expect(post.mock.calls.at(-1)![1].runningExecutionIds).toEqual([]);
+
+    clearInterval(timer);
+  });
+
+  // EXE-VER-1: 心跳体携带版本 + 版本漂移提醒（versionCompliant=false 时
+  // 节流 warn，10 分钟一条；合规后自然静默）。
+  it('reports EXECUTOR_VERSION in the heartbeat body', async () => {
+    jest.useFakeTimers();
+    const { startHeartbeat } = require('./scheduler');
+    const timer = startHeartbeat();
+
+    await jest.advanceTimersByTimeAsync(12_000);
+    expect(post.mock.calls.at(-1)![1].version).toBe('1.0.0');
+
+    clearInterval(timer);
+  });
+
+  it('warns on versionCompliant=false (throttled to one per 10 min) and stays silent once compliant', async () => {
+    jest.useFakeTimers();
+    const { startHeartbeat, resetVersionDriftWarnStateForTest } = require('./scheduler');
+    const { logger } = require('./logger');
+    resetVersionDriftWarnStateForTest();
+    post.mockResolvedValue({ data: { versionCompliant: false, minVersion: '1.3.0' } });
+    const driftWarns = () =>
+      logger.warn.mock.calls.filter((c: unknown[]) => String(c[0]).includes('Version drift')).length;
+    const timer = startHeartbeat();
+
+    await jest.advanceTimersByTimeAsync(12_000);
+    expect(driftWarns()).toBe(1);
+    const firstWarn = logger.warn.mock.calls.find(
+      (c: unknown[]) => String(c[0]).includes('Version drift'),
+    )![0];
+    expect(firstWarn).toContain('1.3.0');
+
+    // 仍在节流窗内的心跳不重复告警
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(driftWarns()).toBe(1);
+
+    // 超过 10 分钟节流窗 → 允许下一条
+    await jest.advanceTimersByTimeAsync(10 * 60_000 + 15_000);
+    expect(driftWarns()).toBe(2);
+
+    // 响应恢复合规（versionCompliant 缺省/true）→ 不再告警
+    post.mockResolvedValue({ data: {} });
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(driftWarns()).toBe(2);
 
     clearInterval(timer);
   });

@@ -84,3 +84,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# EXE-VER-1: 执行器版本上报源（main._register_payload 与 scheduler 心跳共用，
+# 单一定义处）。升级执行器 = 重新安装 / 重跑 install-cmd，版本随之跟进；
+# 中心端 EXECUTOR_MIN_VERSION 门禁按此值判定（低于下限 register 403）。
+EXECUTOR_VERSION = '1.0.0'

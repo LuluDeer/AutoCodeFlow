@@ -48,3 +48,8 @@ export const config = {
   // so per-node `--secret` deployments can verify task-side callbacks.
   executorTokenHash: '',
 };
+
+// EXE-VER-1: 执行器版本上报源（register 与心跳共用，单一定义处）。
+// 升级执行器 = 重新安装 artifact / 重跑 install-cmd，版本随之跟进；
+// 中心端 EXECUTOR_MIN_VERSION 门禁按此值判定（低于下限 register 403）。
+export const EXECUTOR_VERSION = '1.0.0';

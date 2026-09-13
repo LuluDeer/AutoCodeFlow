@@ -78,6 +78,12 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           .integer()
           .min(1)
           .default(3),
+        // EXE-VER-1: 执行器最低版本门禁（可选，空=关闭，零行为变化）。
+        // 点分数字 1~4 段；configuration.ts executor.minVersion 消费。
+        EXECUTOR_MIN_VERSION: Joi.string()
+          .allow("")
+          .optional()
+          .pattern(/^\d{1,9}(\.\d{1,9}){0,3}$/),
 
         // Database
         DB_HOST: Joi.string().hostname().default("localhost"),

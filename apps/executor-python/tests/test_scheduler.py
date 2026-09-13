@@ -253,3 +253,51 @@ class TestHeartbeatRunningExecutionIds:
         body = await self._capture_body(mock_client)
 
         assert len(body['runningExecutionIds']) == 200
+
+
+class TestVersionDriftWarning:
+    """EXE-VER-1: 中心端 EXECUTOR_MIN_VERSION 门禁开启且本执行器版本低于下限时，
+    心跳响应回显 versionCompliant=false —— 执行器据此打节流告警（10 分钟一条）；
+    门禁关闭时回显恒 true，零开销零告警。"""
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_body_carries_executor_version(self):
+        import scheduler as scheduler_module
+        response = create_mock_response(200)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=response)
+
+        await _send_heartbeat(mock_client, 'test-token')
+
+        body = mock_client.post.call_args.kwargs['json']
+        assert body['version'] == scheduler_module.EXECUTOR_VERSION
+
+    @pytest.mark.asyncio
+    async def test_warn_helper_throttles_to_one_per_window(self, monkeypatch, caplog):
+        import logging
+        import scheduler as scheduler_module
+        monkeypatch.setattr(scheduler_module, '_last_version_drift_warn_at', 0.0)
+        payload = {'versionCompliant': False, 'minVersion': '1.3.0'}
+
+        with caplog.at_level(logging.WARNING, logger='scheduler'):
+            scheduler_module._warn_version_drift_if_noncompliant(payload)
+            scheduler_module._warn_version_drift_if_noncompliant(payload)
+            # 超过节流窗（重置节流时间戳）→ 允许下一条
+            monkeypatch.setattr(scheduler_module, '_last_version_drift_warn_at', 0.0)
+            scheduler_module._warn_version_drift_if_noncompliant(payload)
+
+        drift = [r for r in caplog.records if 'Version drift' in r.message]
+        assert len(drift) == 2
+        assert '1.3.0' in drift[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_compliant_or_unshaped_payloads_never_warn(self, monkeypatch, caplog):
+        import logging
+        import scheduler as scheduler_module
+        monkeypatch.setattr(scheduler_module, '_last_version_drift_warn_at', 0.0)
+
+        with caplog.at_level(logging.WARNING, logger='scheduler'):
+            for payload in (None, {}, {'versionCompliant': True, 'minVersion': '1.3.0'}):
+                scheduler_module._warn_version_drift_if_noncompliant(payload)
+
+        assert not [r for r in caplog.records if 'Version drift' in r.message]

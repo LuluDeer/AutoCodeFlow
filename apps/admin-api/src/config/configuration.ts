@@ -203,6 +203,11 @@ export default () => ({
       parseInt(process.env.EXECUTOR_HEARTBEAT_INTERVAL, 10) || 30000,
     heartbeatTimeoutMultiplier:
       parseInt(process.env.EXECUTOR_HEARTBEAT_TIMEOUT_MULTIPLIER, 10) || 3,
+    // EXE-VER-1: 执行器最低版本门禁 —— 空（默认）= 关闭，零行为变化。
+    // 开启后 register 的 version 低于下限则 403；heartbeat 响应回显
+    // minVersion/versionCompliant 供执行器侧漂移告警。比较语义见
+    // modules/executor/version-compare.util.ts（畸形版本号放行不锁死）。
+    minVersion: process.env.EXECUTOR_MIN_VERSION || "",
     // ARCH-27: SSRF 豁免开关在此统一注册 —— 运行时消费方
     // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
     // 不再直读 process.env。
