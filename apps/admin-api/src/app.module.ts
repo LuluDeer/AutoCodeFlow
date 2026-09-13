@@ -298,6 +298,17 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         // 默认 false——零开销零行为变化（span 生成短路）；true 时 traceId
         // 贯穿 + W3C traceparent 透传（@opentelemetry/api-only 方案）。
         OTEL_ENABLED: Joi.string().valid("true", "false").default("false"),
+
+        // WIKI-OPT-1: 健康检查判定阈值与全量响应缓存（configuration.ts
+        // health 节，health.service 构造器经 ConfigService 读取）。队列积压
+        // 三项阈值默认与原硬编码一致（failed>100 / delayed>500 /
+        // waiting>1000 → degraded）；执行器在线比例下限默认 0.5（0~1）；
+        // 缓存 TTL 默认 0 = 关闭（getFullHealth 行为与未缓存完全一致）。
+        HEALTH_QUEUE_FAILED_MAX: Joi.number().integer().min(1).default(100),
+        HEALTH_QUEUE_DELAYED_MAX: Joi.number().integer().min(1).default(500),
+        HEALTH_QUEUE_WAITING_MAX: Joi.number().integer().min(1).default(1000),
+        HEALTH_EXECUTOR_ONLINE_RATIO_MIN: Joi.number().min(0).max(1).default(0.5),
+        HEALTH_CACHE_TTL_MS: Joi.number().integer().min(0).default(0),
       }),
       // Only validate in production and test environments
       validationOptions: {
