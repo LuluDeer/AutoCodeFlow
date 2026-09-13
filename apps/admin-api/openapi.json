@@ -2339,6 +2339,34 @@
         ]
       }
     },
+    "/executors/pull": {
+      "post": {
+        "description": "ARCH-32: pull-mode executors (NAT-bound, no inbound reachability) long-poll this endpoint to receive dispatch payloads. Blocks up to waitMs (server-clamped) and returns { task } — null when nothing queued.",
+        "operationId": "ExecutorController_pullDispatch",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dispatch payload or empty"
+          },
+          "401": {
+            "description": "Invalid executor token"
+          }
+        },
+        "summary": "Pull dispatch payloads (long-poll)",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
     "/executors": {
       "get": {
         "description": "Get list of all executors including online status, group, and tags.",

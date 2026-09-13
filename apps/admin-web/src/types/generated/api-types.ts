@@ -995,6 +995,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executors/pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pull dispatch payloads (long-poll)
+         * @description ARCH-32: pull-mode executors (NAT-bound, no inbound reachability) long-poll this endpoint to receive dispatch payloads. Blocks up to waitMs (server-clamped) and returns { task } — null when nothing queued.
+         */
+        post: operations["ExecutorController_pullDispatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executors": {
         parameters: {
             query?: never;
@@ -4553,6 +4573,33 @@ export interface operations {
         };
         responses: {
             /** @description Heartbeat updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid executor token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_pullDispatch: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dispatch payload or empty */
             200: {
                 headers: {
                     [name: string]: unknown;
