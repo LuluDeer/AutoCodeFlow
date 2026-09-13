@@ -290,6 +290,7 @@
 | 1790000000017 | AddUserSessionVersion | WIKI-AUTH-REVOC | 已落盘（`b0ceb56`；users 增 sessionVersion int NOT NULL DEFAULT 0，幂等 ADD/DROP COLUMN IF [NOT] EXISTS；配 add-user-session-version.migration.spec 结构断言） |
 | 1790000000018 | AddConfigHistoryMetadata | WIKI-OPT-2 | 已落盘（`aa3d2e0`；config_history 增 valueType/isSecret 两可空列，均 nullable；存量行 NULL=元数据不可知，读面/回滚沿用旧推断零破坏升级；幂等 IF [NOT] EXISTS）。**编号注记**：原登记 1790000000016，2026-09-13 主控发现与远端 AUTH-04 已随 v1.3.0 发布的 AddUsersOidcSub 撞号——因远端迁移已发布而本迁移从未发布，重编号本迁移为 1790000000018（文件/类名/spec/注释同步），升级路径零孤儿记录 |
 | 1790000000019 | AddExecutorDispatchMode | ARCH-32 | 本声明占用（executors 增 dispatchMode varchar(16) NOT NULL DEFAULT 'push'；幂等 IF [NOT] EXISTS；结构 spec 同批） |
+| 1790000000020 | AddCoverEarlyAndCancelledEnumValues | DR-FIX-ALL（PK-01） | 本声明占用（task_blockstrategy_enum 补 'cover_early' / execution_status_enum 补 'cancelled'，ADD VALUE IF NOT EXISTS 幂等；PG 不支持删 enum 值，down 为 no-op；migrations.spec 目录守护 + PK-01 结构 pin 同批） |
 
 ## 变更日志
 

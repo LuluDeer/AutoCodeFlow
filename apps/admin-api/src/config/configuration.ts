@@ -327,7 +327,8 @@ export default () => ({
   },
   // ARCH-27: 初次部署 admin 种子账号（users.service onModuleInit）。
   // 此前 users.service 直读 process.env（未注册，审计缺口）；现注册后经
-  // ConfigService 读取。INITIAL_ADMIN_PASSWORD 仅弱值告警（见文件尾）。
+  // ConfigService 读取。INITIAL_ADMIN_PASSWORD 生产弱值/短口令 fail-fast
+  // （E-03，此前仅 console.warn，见文件尾）。
   initialAdmin: {
     password: process.env.INITIAL_ADMIN_PASSWORD || "",
     email: process.env.INITIAL_ADMIN_EMAIL || "admin@autoflow.local",
@@ -599,12 +600,25 @@ if (process.env.NODE_ENV === "production") {
     );
   }
 
-  // Validate initial admin password is changed (ARCH-27: seed 逻辑已注册至
-  // initialAdmin 节，users.service 经 ConfigService 读取)
+  // E-03: INITIAL_ADMIN_PASSWORD 弱值 fail-fast —— 仅在该值存在时校验。
+  // 未设置（空串）放行，与 users.service「未设置即跳过初始管理员种子」的
+  // 既有行为兼容（此时不创建 admin 账号）；一旦设置了弱口令（含 compose
+  // 曾内置的缺省 Admin@123456 与 .env.example 旧占位 change_me_immediately）
+  // 或短口令（<8 字符）则拒绝启动，防止新部署以可预测口令暴露在可路由网络。
   const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD ?? "";
-  if (weakValues.has(initialAdminPassword)) {
-    console.warn(
-      "[AutoFlow] WARNING: INITIAL_ADMIN_PASSWORD is using a weak default. Change it immediately after first deployment.",
-    );
+  if (initialAdminPassword.length > 0) {
+    const weakAdminPasswords = new Set([
+      ...weakValues,
+      "Admin@123456", // docker-compose.yml 旧缺省口令
+      "12345678",
+    ]);
+    if (
+      weakAdminPasswords.has(initialAdminPassword) ||
+      initialAdminPassword.length < 8
+    ) {
+      throw new Error(
+        "[AutoFlow] INITIAL_ADMIN_PASSWORD must be a strong value (>=8 chars, not a weak/known default) in production — leave it unset to skip initial admin seeding",
+      );
+    }
   }
 }

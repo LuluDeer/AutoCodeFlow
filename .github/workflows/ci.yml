@@ -534,9 +534,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pytest pytest-asyncio httpx respx
-      - run: pip install -e . 2>/dev/null || pip install .
+      # PK-04/E-14：安装失败必须红——此前 continue-on-error: true 会掩盖打包
+      # 回归（pyproject 语法/依赖声明错误时测试步骤空跑仍绿）
+      - run: pip install -e .
         working-directory: packages/${{ matrix.package }}
-        continue-on-error: true
       - run: python -m pytest tests/ --tb=short
         working-directory: packages/${{ matrix.package }}
 
