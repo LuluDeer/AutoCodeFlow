@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  Optional,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
@@ -15,6 +16,9 @@ import { LoginDto } from "./dto/login.dto";
 import { JwtPayload } from "./strategies/jwt.strategy";
 import { RefreshToken } from "./entities/refresh-token.entity";
 import { generateTotpSecret, totpVerify, buildOtpauthUrl } from "./totp.util";
+// ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
+// 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
+import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
 
 /**
  * F-4: bcrypt hash of a throw-away password, pre-computed offline (cost 12).
@@ -34,6 +38,9 @@ export class AuthService {
     private configService: ConfigService,
     @InjectRepository(RefreshToken)
     private refreshTokenRepo: Repository<RefreshToken>,
+    // ARCH-31 §5: 多实例下 @Cron 维护任务仅 cron Leader 执行（@Global 恒提供）。
+    @Optional()
+    private readonly leaderGate: LeaderGateService | null = null,
   ) {}
 
   /** Max consecutive failures before lockout. */
@@ -446,6 +453,8 @@ export class AuthService {
    */
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async cleanupExpiredTokens(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     await this.refreshTokenRepo.delete({ expiresAt: LessThan(new Date()) });
   }
 }
