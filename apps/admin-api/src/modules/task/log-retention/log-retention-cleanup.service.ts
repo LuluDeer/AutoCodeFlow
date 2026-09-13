@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -9,6 +9,9 @@ import {
   partitionRangeFor,
   parsePartitionUpperBound,
 } from "./log-partition.util";
+// ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
+// 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
+import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
 
 /** 默认日志保留天数（可经 LOG_RETENTION_DAYS 覆盖） */
 export const DEFAULT_LOG_RETENTION_DAYS = 30;
@@ -59,11 +62,16 @@ export class LogRetentionCleanupService {
     // ARCH-27: 保留期配置经 ConfigService 读取（configuration.ts
     // logRetention.days + Joi LOG_RETENTION_DAYS），取代直读 process.env。
     private readonly configService: ConfigService,
+    // ARCH-31 §5: 多实例下 @Cron 维护任务仅 cron Leader 执行（@Global 恒提供）。
+    @Optional()
+    private readonly leaderGate: LeaderGateService | null = null,
   ) {}
 
   /** 每日定时入口；清理失败只记日志，等下一轮 cron 重试，不影响主流程 */
   @Cron(LOG_RETENTION_CRON)
   async handleDailyCleanup(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     try {
       const deleted = await this.cleanupExpiredLines();
       if (deleted > 0) {
