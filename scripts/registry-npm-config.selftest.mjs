@@ -65,6 +65,7 @@ assert(!/^\s*(access|publish|unpublish):\s*\$anonymous\b/m.test(config), 'Packag
 assert(config.includes('file: /verdaccio/storage/htpasswd'), 'htpasswd must live in persistent storage');
 assert(config.includes('expiresIn: 60d'), 'API token lifetime must be explicit');
 assert(config.includes('expiresIn: 7d'), 'Web token lifetime must be explicit');
+assert(!config.includes('someProp'), 'jwt verify must not carry dead keys');
 
 assert(compose.includes("- '127.0.0.1:4873:4873'"), 'registry-npm host port must bind to 127.0.0.1 by default');
 assert(compose.includes('./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro'), 'config.yaml must be mounted read-only');

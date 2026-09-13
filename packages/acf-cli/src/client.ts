@@ -27,6 +27,13 @@ export function resetClient(): void {
 // successful response in `{ code, message, data }`. Mirror admin-web's
 // client and strip that envelope so callers can keep using `data.list`,
 // `data.total`, etc. without unwrapping manually.
+//
+// 判据（WIKI-OPT-4 收紧，对齐 mcp-server）：raw 是对象 且 含 `data` 键
+// 且 `code` 为数值。理由：ResponseInterceptor 的信封 `code` 恒为数值
+// （`response.statusCode ?? 200`）、`message` 恒为字符串 "success"，因此
+// 「数值 code」即可精确识别信封，`message` 的存在不再作为判据——旧的
+// data+(code|message) 宽松启发式会把自带 data+message 字段（无 code）的
+// 业务实体误解包，整个实体被截断成它的 data 值；收紧后这类实体原样透传。
 export function unwrap<T>(raw: unknown): T {
   if (
     raw &&
@@ -34,7 +41,7 @@ export function unwrap<T>(raw: unknown): T {
     "data" in (raw as Record<string, unknown>)
   ) {
     const envelope = raw as { code?: unknown; data?: unknown };
-    if ("code" in envelope || "message" in envelope) {
+    if (typeof envelope.code === "number") {
       return (envelope.data ?? (null as unknown)) as T;
     }
   }

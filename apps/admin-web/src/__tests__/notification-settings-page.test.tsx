@@ -272,3 +272,58 @@ describe('FEAT-10 渠道消息模板', () => {
     expect(titleArea.value).toBe('[{{level}}] {{task}}');
   });
 });
+
+// ─── NF-05 UI 半场：飞书 / 自定义 webhook 渠道配置面 ─────────────────────────
+// 后端 channelDefaults 已有 6 渠道；此处验证管理台对 feishu（config 形状
+// `{ webhookUrl, secret? }`，secret 可选）与 webhook（config 形状 `{ url }`）
+// 两个渠道渲染出可编辑配置表单，以及全局测试发送面板出现飞书选项。
+describe('NF-05 飞书与 webhook 渠道配置面', () => {
+  const singleChannel = (channel: (typeof channelsFixture)[number]) => {
+    mockedClient.get.mockImplementation((url: string) => {
+      if (String(url) === '/notification/channels') return Promise.resolve([channel]);
+      return Promise.resolve([]);
+    });
+  };
+
+  it('feishu Tab 渲染 Webhook URL 与加签密钥输入，加签密钥可留空保存', async () => {
+    singleChannel({ key: 'feishu', name: 'Feishu', enabled: true, config: {}, description: '飞书自定义机器人' });
+    render(<NotificationSettingsPage />);
+    // fixture 只含飞书渠道，而 activeTab 默认 'email' —— 先点击 Tab 挂载面板
+    fireEvent.click(await screen.findByRole('tab', { name: /Feishu/ }));
+
+    // 两个配置输入均可经 label 查到；webhookUrl 带飞书官方前缀占位符
+    const webhookUrl = (await screen.findByLabelText('Webhook URL')) as HTMLInputElement;
+    expect(webhookUrl.placeholder).toBe('https://open.feishu.cn/open-apis/bot/v2/hook/...');
+    expect(screen.getByLabelText('加签密钥')).toBeTruthy();
+
+    // secret 为可选字段（后端加签密钥可选）：仅填 webhookUrl 即可保存
+    fireEvent.change(webhookUrl, { target: { value: 'https://open.feishu.cn/open-apis/bot/v2/hook/abc' } });
+    fireEvent.click(findBtn(document.body, '保存')!);
+    await waitFor(() => {
+      expect(mockedClient.patch).toHaveBeenCalledWith(
+        '/notification/channels/feishu',
+        expect.objectContaining({
+          config: expect.objectContaining({ webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/abc' }),
+        }),
+      );
+    });
+  });
+
+  it('webhook Tab 渲染 URL 输入（config 形状对齐后端 `{ url }`）', async () => {
+    singleChannel({ key: 'webhook', name: 'Webhook', enabled: true, config: {}, description: '通用 HTTP webhook' });
+    render(<NotificationSettingsPage />);
+    fireEvent.click(await screen.findByRole('tab', { name: /Webhook/ }));
+
+    const url = (await screen.findByLabelText('URL')) as HTMLInputElement;
+    expect(url.placeholder).toBe('https://example.com/hooks/...');
+  });
+
+  it('全局测试发送面板出现飞书渠道选项（value=feishu）', async () => {
+    render(<NotificationSettingsPage />);
+    await screen.findByText('启用此通知渠道：');
+
+    const feishu = screen.getByLabelText('飞书') as HTMLInputElement;
+    expect(feishu.type).toBe('checkbox');
+    expect(feishu.value).toBe('feishu');
+  });
+});

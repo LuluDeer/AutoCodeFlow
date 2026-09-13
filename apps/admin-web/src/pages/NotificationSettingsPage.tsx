@@ -59,6 +59,17 @@ const CHANNEL_CONFIG_FIELDS = (t: (k: string) => string): Record<string, Array<{
   wecom: [
     { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...' },
   ],
+  // NF-05 UI 半场：webhook / feishu 两渠道的 config 形状与后端 channelDefaults
+  // 对齐——webhook 存 `{ url }`（N32）；feishu 存 `{ webhookUrl, secret? }`
+  // （secret 为可选加签密钥，读面被后端按 secret 类字段掩码为 '***'，与
+  // password 同走免必填 + 密文输入，见 ChannelConfigForm 的 secret 豁免）。
+  webhook: [
+    { key: 'url', label: 'URL', placeholder: 'https://example.com/hooks/...' },
+  ],
+  feishu: [
+    { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://open.feishu.cn/open-apis/bot/v2/hook/...' },
+    { key: 'secret', label: t('notif.channel.field.secret') },
+  ],
 });
 
 // ─── FEAT-10: 渠道级通知模板 ────────────────────────────────────────────────
@@ -268,12 +279,14 @@ function ChannelConfigForm({
             name={f.key}
             label={f.label}
             rules={[
-              f.key !== 'password'
-                ? { required: true, whitespace: true, message: t('notif.channel.requiredValue', { label: f.label }) }
-                : { required: false },
+              // password 与 feishu secret 同为机密类字段（secret 读面被后端掩
+              // 码为 '***' 且后端语义可选）→ 免必填 + Input.Password；其余字段必填。
+              ['password', 'secret'].includes(f.key)
+                ? { required: false }
+                : { required: true, whitespace: true, message: t('notif.channel.requiredValue', { label: f.label }) }
             ]}
           >
-            {f.key === 'password' ? (
+            {['password', 'secret'].includes(f.key) ? (
               <Input.Password placeholder={f.placeholder} />
             ) : (
               <Input placeholder={f.placeholder} />
@@ -330,6 +343,8 @@ const CHANNEL_LABELS = (t: (k: string) => string): Record<string, string> => ({
   dingtalk: t('notif.channel.dingtalk'),
   wecom: t('notif.channel.wecom'),
   webhook: 'Webhook',
+  // NF-05: 飞书渠道徽标（静默规则 channelType 列回显用）
+  feishu: t('notif.channel.feishu'),
 });
 
 function SilenceRulesPanel({ active }: { active: boolean }) {
@@ -627,6 +642,8 @@ export default function NotificationSettingsPage() {
                 <Checkbox value="dingtalk">{t('notif.channel.dingtalk')}</Checkbox>
                 <Checkbox value="wecom">{t('notif.channel.wecom')}</Checkbox>
                 <Checkbox value="webhook">Webhook</Checkbox>
+                {/* NF-05: 飞书加入全局测试发送渠道枚举（与后端一致） */}
+                <Checkbox value="feishu">{t('notif.channel.feishu')}</Checkbox>
               </Space>
             </Checkbox.Group>
           </Form.Item>
