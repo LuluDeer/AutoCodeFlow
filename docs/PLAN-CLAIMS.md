@@ -174,6 +174,17 @@
 | DOC-08 | P3 | done | 主会话（第十一轮） | 2026-09-11 | docs/windows-findings.md（长尾清偿终态段） | 第十一轮 | **done**：windows-findings 长尾逐项终态核对——W-03/W-05（测试平台化）本机复核 executor-python **247/247 0 skip**、executor-node 273/273；W-08 requirements-dev.txt 两处实证；W-09B loop 噪音由 QA-11 conftest 修复；W-07/12/13/20/22/24~26/27/28 均 P-批修复在位。**留产品决策 2 项（非缺陷）**：W-10（GBK 解码，体验级）、W-06（flaky 观察，复跑全绿）。无代码改动 |
 | DOC-09 | P3 | done | 第四轮 002（员工子代理，与 P0-3 同批）+ 主会话验收 | 2026-09-10 | packages/docs-site 构建脚本（同步仓库 docs→站点） | 0826b5d | **done**：sync-check.mjs 零依赖七面机检（版本号/截断常量/枚举/DTO 字段/env 表/矩阵行数/契约面），drift exit 1+差异清单，只校验不覆盖；selftest 14/14；挂 docs-site-build+deploy 双闸；存量 4 项 drift 人工裁定同步（contract.md 补 exitCode/artifacts、23→22 项纠正）后七面绿 |
 
+## Wiki 优化批次（2026-09-13 · 来源 repo-wiki 53 篇页面提取的扩展点/优化建议）
+
+> 本段任务源自 repo-wiki（基于 9b4aec6 生成）明确提出的可落地优化项，非 H2 计划存量；四项文件足迹互不重叠，可并行。
+
+| 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
+|---|---|---|---|---|---|---|---|
+| WIKI-OPT-1 | P2 | in_progress | orch-wiki-1 | 2026-09-13 | admin-api src/modules/health/** + configuration.ts + app.module.ts(Joi 段) + docs/atlas 对应页 | | **健康检查硬化**（wiki page-21）：① checkTasks()/checkExecutors() 补 try/catch（当前任一 reject 会击穿 getFullHealth 的 Promise.all，应转 unhealthy 组件详情）；② 队列积压阈值（failed>100/delayed>500/waiting>1000）与执行器在线比例 0.5 抽为配置项（Joi+configuration+ConfigService 消费，wiki page-1 扩展点 2 纪律）；③ getFullHealth 短 TTL 缓存（默认 0=关闭，行为不变，探针风暴防护可选）；④ 测试只增 |
+| WIKI-OPT-2 | P2 | in_progress | orch-wiki-2 | 2026-09-13 | admin-api src/modules/config/** + 迁移 1790000000016 + docs/atlas 对应页 | | **配置历史强化**（wiki page-19）：① batchUpsert 纳入数据库事务（当前循环顺序执行无原子性）；② config_history 增 valueType/isSecret 两可空列（迁移 1790000000016），recordHistory 落值；③ rollback 对已删除配置从历史行恢复 valueType/isSecret（存量 NULL 行回退现默认值）；④ 历史读面按行级 isSecret 掩码 old/new 值（防删除/取消 secret 后暴露旧值），存量 NULL 行沿用当前配置表面推断；⑤ 迁移登记分配表+结构 spec；⑥ 测试只增 |
+| WIKI-OPT-3 | P3 | in_progress | orch-wiki-3 | 2026-09-13 | admin-api src/modules/ai/** + docs/atlas 对应页 | | **AI 调度建议 cron 校验前置**（wiki page-40 扩展点 3）：suggestSchedule 对 AI 返回的 suggestedCron 用 node-cron validate（与 maintenance-window.util 同源）校验，非法→warn+fallback（currentCron || "0 * * * *"，fallback: true），防止非法 cron 落库后调度注册崩溃；测试只增 |
+| WIKI-OPT-4 | P3 | in_progress | orch-wiki-4 | 2026-09-13 | packages/mcp-server/src/api.ts + __tests__/api.test.ts + docs/atlas 对应页 | | **MCP unwrap 收紧**（wiki page-52 已知兼容边界）：当前 data+(code OR message) 即判 envelope，业务实体自带 data+message 字段会被截断误解包；收紧为要求 code 为数值（对齐 ResponseInterceptor 的 code=statusCode 恒数值），message 字符串校验保留为辅助；既有记录该边界的测试同步改写为新语义；测试只增 |
+
 ## 迁移时间戳分配表（ARCH-29 常设段）
 
 > 单一事实源：apps/admin-api/src/migrations/ 的时间戳分配。**新增迁移前先在此登记，再建文件**；分配规则=在盘最大时间戳 +1（不跳号、不段预留），撞号/漏登由 CI `check-migrations` 拦截（scripts/check-migrations.mjs，自检 scripts/check-migrations.selftest.mjs）。时间戳即 Date.now() 毫秒段，与既有序一致。
@@ -240,6 +251,7 @@
 | 1790000000013 | CreateEventOutboxDeadLetters | FEAT-19-B | 本轮登记并已落盘（outbox 终态死信表，outboxId 唯一 + FK CASCADE） |
 | 1790000000014 | CreateNotificationChannelConfigs | ARCH-31 | 本轮登记并已落盘（渠道配置共享持久化：key 主键 + config jsonb + enabled） |
 | 1790000000015 | CreateProjectMembers | AUTH-02 | 本轮登记并已落盘（项目成员表：userId/taskId/role 三档角色 + 唯一约束 + 索引；写面放行与 trigger/pause 归属随 AUTH-02 落地） |
+| 1790000000016 | AddConfigHistoryMetadata | WIKI-OPT-2 | 本轮登记（config_history 增 valueType/isSecret 两可空列），WIKI-OPT-2 落盘后改注"已落盘" |
 
 ## 变更日志
 
