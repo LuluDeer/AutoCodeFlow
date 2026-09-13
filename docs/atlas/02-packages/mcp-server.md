@@ -28,7 +28,7 @@ packages/mcp-server/
   - `AUTOCODEFLOW_API_URL`（默认 `http://localhost:3105`）；
   - `AUTOCODEFLOW_API_TOKEN`（**必填**，缺失直接退出 exit 1，W-07）；
   - `AUTOCODEFLOW_API_REFRESH_TOKEN`（可选）：401 时单飞 `POST /auth/refresh` 换发并重放一次，新 refreshToken 只存内存（BUG-14 自愈；进程重启重新注入）。
-- 每次 API 调用 30s 超时（N12）；成功响应剥掉 admin-api 全局 `{code,message,data}` 信封。
+- 每次 API 调用 30s 超时（N12）；成功响应剥掉 admin-api 全局 `{code,message,data}` 信封。unwrap 判据（WIKI-OPT-4 收紧）：对象含 `data` 键且 `code` 为**数值**即视为信封（对齐 ResponseInterceptor 的 `code` 恒为 `statusCode ?? 200`）；`message` 不再作为判据——实体自带 data+message 而无数值 code 时原样透传，不再被误解包截断成 data 值。
 - bin 入口支持 `--help` / `--version`；无参即启动 stdio server。
 
 ## 工具清单（40 个，自 src/tools.ts 的 server.tool() 逐个核实）
