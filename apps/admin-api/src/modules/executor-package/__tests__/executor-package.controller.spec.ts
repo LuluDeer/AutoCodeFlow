@@ -44,6 +44,7 @@ describe("ExecutorPackageController download HTTP contract", () => {
   const service = {
     openPackageFile,
     findOne: jest.fn().mockResolvedValue(pkg),
+    update: jest.fn().mockResolvedValue(pkg),
     configService: config,
     logger: { log: jest.fn(), warn: jest.fn() },
     pushToExecutors: ExecutorPackageService.prototype.pushToExecutors,
@@ -82,6 +83,7 @@ describe("ExecutorPackageController download HTTP contract", () => {
     jest.clearAllMocks();
     systemConfig.findOne.mockResolvedValue({ value: "db-token" });
     openPackageFile.mockResolvedValue(streamPayload());
+    service.update.mockResolvedValue(pkg);
   });
   afterAll(async () => {
     await app.close();
@@ -156,6 +158,60 @@ describe("ExecutorPackageController download HTTP contract", () => {
       .set("Authorization", options.headers.Authorization)
       .expect(200);
     expect(response.body).toEqual(buffer);
+  });
+
+  // WIKI-PKG-GUARD: push-result authenticates through the method-level
+  // ExecutorSharedTokenGuard (same verifyExecutorToken util). These HTTP
+  // contract tests run against the real class-level JwtAuthGuard/RolesGuard
+  // plus the new guard, pinning the machine-callback semantics end to end.
+  describe("push-result via ExecutorSharedTokenGuard (WIKI-PKG-GUARD)", () => {
+    const pushPath = "/api/executor-packages/push-result";
+    const payload = {
+      packageId: id,
+      executorId: "exec-1",
+      status: "downloaded",
+      version: "2.0.0",
+    };
+
+    it("accepts the DB shared token and records push history", async () => {
+      const response = await request(app.getHttpServer())
+        .post(pushPath)
+        .set("Authorization", "Bearer db-token")
+        .send(payload)
+        .expect(200);
+      expect(response.body).toEqual({ ok: true });
+      expect(service.update).toHaveBeenCalledWith(
+        id,
+        expect.objectContaining({
+          pushHistory: [
+            expect.objectContaining({
+              executorId: "exec-1",
+              status: "downloaded",
+              version: "2.0.0",
+            }),
+          ],
+        }),
+      );
+    });
+
+    it("rejects an invalid shared token with the util's exact 401 body", async () => {
+      const response = await request(app.getHttpServer())
+        .post(pushPath)
+        .set("Authorization", "Bearer wrong-token")
+        .send(payload)
+        .expect(401);
+      expect(response.body.message).toBe("Invalid executor token");
+      expect(service.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a missing authorization header with 401", async () => {
+      const response = await request(app.getHttpServer())
+        .post(pushPath)
+        .send(payload)
+        .expect(401);
+      expect(response.body.message).toBe("Invalid executor token");
+      expect(service.update).not.toHaveBeenCalled();
+    });
   });
 
   // R9: the upload must use multer diskStorage into the service temp dir and
