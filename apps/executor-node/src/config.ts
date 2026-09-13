@@ -47,6 +47,10 @@ export const config = {
   // used as the HMAC source secret when EXECUTION_CALLBACK_SECRET is unset,
   // so per-node `--secret` deployments can verify task-side callbacks.
   executorTokenHash: '',
+  // ARCH-32（ADR-015）: pull 派发模式——true 时执行器不依赖入站可达（NAT 内
+  // 部署），改经 POST /executors/pull 长轮询取件；register 自报 dispatchMode
+  // 'pull'，admin 侧据此走队列传输分支。默认 false = push 行为逐字节不变。
+  pullMode: process.env.EXECUTOR_PULL_MODE === 'true',
 };
 
 // EXE-VER-1: 执行器版本上报源（register 与心跳共用，单一定义处）。

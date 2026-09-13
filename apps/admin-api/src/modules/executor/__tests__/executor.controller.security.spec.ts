@@ -159,6 +159,8 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           "appName",
           "capabilities",
           "description",
+          // ARCH-32: 派发模式自报随白名单透传（service 侧枚举外值落回 push）
+          "dispatchMode",
           "groupName",
           "maxConcurrent",
           "maxConcurrentTasks",

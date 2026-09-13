@@ -685,3 +685,31 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admi
 | 会话/令牌 | JWT 无状态校验 + OIDC state 为 HMAC 签名 cookie，多副本无需共享会话存储 |
 | 入口单点 | nginx/admin-web 仍为单容器；入口级高可用用云 LB 或 K8s Ingress 前置 |
 | 升级 | 拉新镜像后 `up -d --scale admin-api=2` 逐副本替换；迁移在副本启动时幂等执行，多副本同刻启动由「空库多实例种子竞态」防护兜底 |
+
+## 执行器 pull 派发模式（NAT 回连，ARCH-32 / ADR-015）
+
+默认 **push** 派发要求执行器接受中心端入站连接。执行器位于多层 NAT 内（无公网 IP、不可端口映射）时，设 **pull 模式**即可零入站接入：执行器只用出站连接（长轮询取件 + 心跳 + 回调，同一方向），只要出站能访问中心端 URL（心跳已要求）即可收任务。
+
+### 使用步骤
+
+```bash
+# 1. 执行器侧：启动时设 EXECUTOR_PULL_MODE=true（executor-node / executor-python 同名变量）
+#    重启后重注册自动上报 dispatchMode=pull，管理台执行器列表可见
+# 2. 中心端（可选调参，默认即工作）：
+#    EXECUTOR_PULL_WAIT_MS=25000   # 长轮询等待窗口，须 < 反代 60s 读超时
+#    EXECUTOR_PULL_TTL_MS=900000   # 队列载荷过期丢弃阈值（15min）
+# 3. 触发任务：调度侧选择语义（分组/标签/亲和/loadScore/占坑）与 push 完全一致
+```
+
+### 语义与边界
+
+| 项 | 说明 |
+|---|---|
+| 选择语义 | 与 push 逐字节一致——仅传输层分支：占坑成功后载荷入 Redis 队列 `acf:pull:{executorId}`，执行器长轮询取走 |
+| 派发时延 | 执行器空闲即挂长轮询（25s 窗口），载荷入队后 ≤500ms 被取走 |
+| 零行为变化 | 不设 `EXECUTOR_PULL_MODE` 的执行器默认 push，存量部署不受影响 |
+| 多副本（HA） | 队列在共享 Redis，任意 admin-api 副本可应答拉取——与 DEP-HA-1 轮询负载均衡天然兼容 |
+| never-pulled 兜底 | 执行器长期不拉取：载荷超 TTL 丢弃；执行行由既有 stale sweep 收敛（失败→重试预算） |
+| kill 通知 | `notifyExecutorKill`（best-effort 入站）对 NAT 执行器不可达——执行器自身硬超时仍是真正的超时防线，属既有 fail-open 语义 |
+| 广播/钉死 | broadcast 对 pull 执行器逐台入队；pinning 到 pull 执行器同样生效 |
+| 真机验证 | `npm run test:pull-dispatch`——执行器地址设不可达值跑通触发→取件→执行→回调全链（9/9），成功本身即零入站依赖的证明 |

@@ -84,6 +84,14 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           .allow("")
           .optional()
           .pattern(/^\d{1,9}(\.\d{1,9}){0,3}$/),
+        // ARCH-32: pull 派发长轮询参数（configuration.ts executor 节消费）。
+        // wait 上限 55s —— 须低于反代/网关通用 60s 读超时（SSE 专用位置除外）。
+        EXECUTOR_PULL_WAIT_MS: Joi.number()
+          .integer()
+          .min(0)
+          .max(55000)
+          .default(25000),
+        EXECUTOR_PULL_TTL_MS: Joi.number().integer().min(1000).default(900000),
 
         // Database
         DB_HOST: Joi.string().hostname().default("localhost"),
