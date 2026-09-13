@@ -3,12 +3,17 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-13（**第十七~十九轮连推**：R17 通知渠道私网豁免开关；R18 MCP/CLI 项目域只读消费；R19 release-please「tag 需人工推」真正根因修复=补 github-release step。此前同日第十六轮：AUTH-04 OIDC SSO 全栈（授权码/无状态 state/oidcSub 三级绑定/JIT 开关 + 真机自检 13/13）。此前第十五轮：AUTH-02-B 项目读面过滤+管理页 + ARCH-31 双投缺陷修复 + AI/Ollama loopback 修复。更早见 git 历史。）
+更新时间：2026-09-13（**第二十~二十一轮连推**：R20 SSO 组→角色映射（仅 JIT 建号，ADR-014 修订）；R21 发布就绪度（checklist/sdk-guide 同步 + version-guard 干跑 PASS）。此前同日第十七~十九轮：R17 通知渠道私网豁免；R18 MCP/CLI 项目域消费；R19 release-please「tag 需人工推」根因修复（补 github-release step）。此前第十六轮：AUTH-04 OIDC SSO 全栈 + 真机自检 13/13。更早见 git 历史。）
 当前分支：`develop`
 
 ## 状态快照
 
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
+- **本轮（2026-09-13 第二十~二十一轮：SSO 组映射 + 发布就绪度，主会话直落）**：
+  - **`82c70c6` R20 SSO 组→角色映射 done（ADR-014 修订）**：`OIDC_GROUPS_CLAIM`（默认 groups）+ `OIDC_ADMIN_GROUPS`（逗号清单，默认空）——**仅 JIT 建号时生效**：命中清单建 ADMIN，否则 USER，清单空恒 USER。安全边界（刻意不做）：已绑定/存量账号角色不随 IdP 组反向改写（防 IdP 误配提权与「IdP 降级 vs 平台提权」打架）；ADMIN 自动化生效需 AUTO_PROVISION 与 ADMIN_GROUPS 双开关同时显式开。validateIdToken 归一组声明（数组/单字符串）。测试 +4（默认/命中/缺失/存量不改写），admin-api **2389/2389**。
+  - **`e039d12` R21 发布就绪度 done**：release-checklist.md 区分「部署锚点 tag」与「包发布管道」并增补 v1.3.0 起的 github-release step 实测 checklist（自动 tag/自动触发/人工降兜底/abort 备选）；sdk-guide 恢复路径补 R19 注记；**version-guard 本地干跑 PASS**（模拟 tag v1.2.0，5 处 version 一致）；sync-check 七面绿。
+  - **基线**：admin-api 2389 · admin-web 659 · mcp-server 108 · acf-cli 93 · docs-site build+sync-check 绿。develop 领先 origin **11 commit**（R15~R21 七轮产物，待 push）。
+  - **下轮建议**：① **v1.3.0 发布轮（最高优先）**：push develop → develop→main → Release PR 合并实测 R19 github-release step 全自动链（version-guard 干跑已 PASS）；② 生产真机项不变（QA-05 24h/BUG-07/DSK-01）；③ 拓展候选（按需）：SDK 层项目域消费、SCIM/组同步深水区（ADR-014 已注记不做，除非产品要求）。
 - **本轮（2026-09-13 第十七~十九轮连推：通知渠道豁免 + 项目域生态消费 + 发布管道根因修复，主会话直落）**：
   - **`c7ef8eb` R17 通知渠道私网豁免开关 done**：`NOTIF_ALLOW_PRIVATE_NETWORK`（默认 false 零行为变化）——企业微信/钉钉/Slack/飞书/自定义 webhook 五渠道共用（内网自建网关场景，第十五轮 deployment.md 注记的扩展项兑现）；email 走 SMTP 不受影响；webhook 渠道 ConfigService @Optional 注入（存量测试装配零改动）。channels.spec +7（54→61，含元数据恒拒代表性断言），admin-api 全量 **2385/2385**。
   - **`6b42f54` R18 项目域生态消费 done**：mcp-server 新 registerProjectTools 只读三工具（list_projects——描述写明读面过滤与 myRole 能力预检语义 / get_project_members / get_my_project_roles；成员写面 ADMIN-only 刻意不在自动化面暴露）mcp 100→**108**；acf-cli 新 `acf project list|members`（表格+--json 双形态、myRole 着色）acf-cli 89→**93**。
