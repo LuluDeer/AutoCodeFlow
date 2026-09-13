@@ -57,7 +57,7 @@ export class ConfigController {
     const result = await this.configService.getHistory(query?.key, page, limit);
     // Mask secret values in history records.
     // WIKI-OPT-2: 行级保密优先——历史行持久化的 isSecret=true（迁移
-    // 1790000000016）时无论该键当前是否仍标记 secret 都掩码，防配置被
+    // 1790000000018）时无论该键当前是否仍标记 secret 都掩码，防配置被
     // 删除或取消 secret 标记后历史读面暴露旧机密值；存量旧行（isSecret
     // 为 NULL=元数据不可知）沿用既有「按当前配置行 isSecret」的键级推断，
     // 行为不回归。
