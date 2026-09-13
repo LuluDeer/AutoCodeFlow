@@ -301,3 +301,89 @@ class TestVersionDriftWarning:
                 scheduler_module._warn_version_drift_if_noncompliant(payload)
 
         assert not [r for r in caplog.records if 'Version drift' in r.message]
+
+
+class TestPullDispatch:
+    """ARCH-32（ADR-015）: pull 派发循环——空闲时长轮询取件，载荷走与 push
+    完全相同的 accept_execution；被拒不静默（补发 failed 回调）。"""
+
+    async def _run_loop_briefly(self, seconds=1.4):
+        import scheduler as scheduler_module
+        task = asyncio.create_task(scheduler_module.pull_task())
+        await asyncio.sleep(seconds)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_pull_loop_delivers_payload_to_accept_execution(self, monkeypatch):
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok',
+                  'data': {'task': {'executionId': 'exec-77', 'task': {'id': 't1'},
+                                    'params': {}, 'traceparent': '00-trace-span-01'}}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+
+        async def fake_heal(client, method, url, **kwargs):
+            assert kwargs.get('json', {}).get('waitMs') == 25000
+            return resp
+
+        monkeypatch.setattr(scheduler_module, 'request_with_self_heal', fake_heal)
+        calls = {}
+
+        def fake_accept(req, tp=None):
+            calls['req'] = req
+            calls['tp'] = tp
+            return {'status': 'accepted'}
+
+        monkeypatch.setattr(execute_module, 'accept_execution', fake_accept)
+
+        await self._run_loop_briefly()
+
+        assert calls['req'].executionId == 'exec-77'
+        assert calls['tp'] == '00-trace-span-01'
+
+    @pytest.mark.asyncio
+    async def test_pull_loop_rejection_sends_failed_callback(self, monkeypatch):
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok',
+                  'data': {'task': {'executionId': 'exec-78', 'task': {'id': 't1'}}}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+
+        async def fake_heal(client, method, url, **kwargs):
+            return resp
+
+        monkeypatch.setattr(scheduler_module, 'request_with_self_heal', fake_heal)
+
+        def fake_accept(req, tp=None):
+            raise execute_module.ExecutionRejected(400, 'already active')
+
+        monkeypatch.setattr(execute_module, 'accept_execution', fake_accept)
+        rejections = []
+        monkeypatch.setattr(execute_module, 'reject_pulled_execution',
+                            lambda eid, reason, tp=None: rejections.append((eid, reason)))
+
+        await self._run_loop_briefly()
+
+        assert rejections == [('exec-78', 'already active')]
+
+    @pytest.mark.asyncio
+    async def test_pull_loop_skips_polling_at_capacity(self, monkeypatch):
+        import scheduler as scheduler_module
+        monkeypatch.setattr(scheduler_module.settings, 'max_concurrent_tasks', 0)
+
+        async def fail_heal(client, method, url, **kwargs):
+            raise AssertionError('must not poll at capacity')
+
+        monkeypatch.setattr(scheduler_module, 'request_with_self_heal', fail_heal)
+
+        await self._run_loop_briefly(0.6)

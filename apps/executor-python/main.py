@@ -13,7 +13,7 @@ from routers import execute, health, logs, config as config_router
 import maintenance
 from admin_api import build_admin_api_url, check_admin_api_connectivity, get_admin_api_base_url
 from config import settings, EXECUTOR_VERSION
-from scheduler import heartbeat_task, get_running_count, executor_started_at, executor_startup_id
+from scheduler import heartbeat_task, get_running_count, executor_started_at, executor_startup_id, pull_task
 from auth import (
     get_current_token,
     get_static_token,
@@ -96,6 +96,11 @@ async def lifespan(app: FastAPI):
     _register_succeeded = await register_executor()
     # Start heartbeat background task
     _heartbeat_task = asyncio.create_task(heartbeat_task())
+    # ARCH-32: pull 模式取件循环（与 push 互不冲突——两种来源共用
+    # accept_execution 领取核心与回调通道）。
+    if settings.executor_pull_mode:
+        _pull_task = asyncio.create_task(pull_task())
+        logger.info('Pull dispatch mode enabled (EXECUTOR_PULL_MODE=true) — no inbound reachability required')
     # E2: background replay of persisted callbacks (node startCallbackThread).
     # The retry task's sweep keeps the deadLetterCount heartbeat field fresh.
     execute.start_callback_retry_task()
@@ -176,6 +181,8 @@ def _register_payload() -> dict:
         # EXE-VER-1: 版本上报单源 EXECUTOR_VERSION（心跳同源）；中心端
         # EXECUTOR_MIN_VERSION 门禁按此判定，低于下限 403。
         'version': EXECUTOR_VERSION,
+        # ARCH-32: 派发模式自报（pull = NAT 内零入站，经长轮询取件）
+        'dispatchMode': 'pull' if settings.executor_pull_mode else 'push',
         'capabilities': ['python', 'shell'],
         'maxConcurrentTasks': settings.max_concurrent_tasks,
         'restartedAt': executor_started_at,

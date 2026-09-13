@@ -3,6 +3,8 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { BullModule } from "@nestjs/bullmq";
 import { ExecutorController } from "./executor.controller";
 import { ExecutorService } from "./executor.service";
+// ARCH-32: pull 模式派发队列（Redis per-executor List，ADR-015）
+import { ExecutorPullService } from "./executor-pull.service";
 import { Executor } from "./entities/executor.entity";
 // FEAT-04: metrics history read side for GET /executors/:id/metrics `history`
 import { ExecutorMetricsHistory } from "./entities/executor-metrics-history.entity";
@@ -44,7 +46,7 @@ import { AuditModule } from "../audit/audit.module";
   // 其 shell 转义实现合并进 ExecutorService.getInstallCmd()。
   controllers: [ExecutorController],
   // ConfigService is global (ConfigModule.forRoot isGlobal:true) so no extra import needed
-  providers: [ExecutorService],
+  providers: [ExecutorService, ExecutorPullService],
   exports: [ExecutorService],
 })
 export class ExecutorModule {}

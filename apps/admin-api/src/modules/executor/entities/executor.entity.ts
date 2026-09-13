@@ -36,6 +36,13 @@ export class Executor {
   @Column({ type: "enum", enum: ExecutorType, default: ExecutorType.PYTHON })
   type: ExecutorType;
   @Column({ nullable: true }) executorVersion: string;
+  /**
+   * ARCH-32（ADR-015）：派发模式。'push'（默认）= 中心端向执行器 address 发
+   * 入站 POST；'pull' = 执行器长轮询 POST /executors/pull 取任务（NAT 内执行
+   * 器零入站依赖）。由执行器 register 上报写入（dispatch() 据此走传输分支）。
+   */
+  @Column({ type: "varchar", length: 16, default: "push" }) dispatchMode:
+    "push" | "pull";
   @Column({ type: "simple-array", nullable: true }) capabilities: string[];
   @Column({ nullable: true }) lastHeartbeat: Date;
   @Column({ nullable: true }) executorStartedAt: Date | null;

@@ -106,6 +106,7 @@ async function performRequest<T = any>(
   data?: Record<string, any>,
   retryCount: number = adminUrls.length,
   extraHeaders?: Record<string, string>,
+  timeoutMs: number = 10_000,
 ): Promise<AxiosResponse<T>> {
   const headers = extraHeaders
     ? { ...buildAuthHeaders(token), ...extraHeaders }
@@ -115,7 +116,8 @@ async function performRequest<T = any>(
     try {
       const client: AxiosInstance = axios.create({
         baseURL: adminUrls[currentIndex],
-        timeout: 10_000,
+        // ARCH-32: 可选长超时（pull 长轮询服务端阻塞 25s；其余调用维持 10s）
+        timeout: timeoutMs,
         headers,
       });
 
@@ -154,10 +156,11 @@ export async function request<T = any>(
   retryCount: number = adminUrls.length,
   tokenMode: TokenMode = 'current',
   extraHeaders?: Record<string, string>,
+  timeoutMs: number = 10_000,
 ): Promise<AxiosResponse<T>> {
   const token = tokenMode === 'static' ? getStaticToken() : await getCurrentToken();
   try {
-    return await performRequest<T>(token, method, path, data, retryCount, extraHeaders);
+    return await performRequest<T>(token, method, path, data, retryCount, extraHeaders, timeoutMs);
   } catch (error) {
     // R10 (round-10 gap #3): stale-credential self-heal. A 401 on a
     // dynamic-token request means admin-api rotated our per-executor token
@@ -179,7 +182,7 @@ export async function request<T = any>(
     if (tokenMode === 'current' && isUnauthorized(error)) {
       const fresh = await forceTokenRefresh();
       if (fresh && fresh !== token) {
-        return performRequest<T>(fresh, method, path, data, retryCount, extraHeaders);
+        return performRequest<T>(fresh, method, path, data, retryCount, extraHeaders, timeoutMs);
       }
     }
     throw error;
@@ -196,6 +199,19 @@ export async function post<T = any>(
   extraHeaders?: Record<string, string>,
 ): Promise<AxiosResponse<T>> {
   return request('post', path, data, adminUrls.length, 'current', extraHeaders);
+}
+
+/**
+ * ARCH-32: 长轮询专用 POST —— 服务端 /executors/pull 会阻塞至多
+ * EXECUTOR_PULL_WAIT_MS（默认 25s），10s 默认超时必然误杀；40s 覆盖
+ * 25s 窗口 + 余量，且小于反代通用 60s 读超时。
+ */
+export async function postLong<T = any>(
+  path: string,
+  data?: Record<string, any>,
+  timeoutMs = 40_000,
+): Promise<AxiosResponse<T>> {
+  return request('post', path, data, adminUrls.length, 'current', undefined, timeoutMs);
 }
 
 export async function postWithStaticToken<T = any>(path: string, data?: Record<string, any>): Promise<AxiosResponse<T>> {

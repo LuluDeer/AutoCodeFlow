@@ -1628,6 +1628,63 @@ describe("ExecutorService (__tests__)", () => {
       triggerType: "manual",
     } as unknown as Task;
 
+    // ARCH-32（ADR-015）: pull 执行器传输分支——占坑语义不变，载荷入队而非 POST。
+    const pullExecutor = {
+      ...executor,
+      id: "e-pull",
+      dispatchMode: "pull" as const,
+    };
+
+    it("pull 执行器：载荷入队（不 POST），返回 queued 形态", async () => {
+      executorRepo.find.mockResolvedValue([pullExecutor]);
+      const enqueue = jest.fn().mockResolvedValue(undefined);
+      (service as unknown as { pullService: unknown }).pullService = {
+        enqueue,
+      };
+
+      const result = await service.dispatch(task, execution);
+
+      expect(result).toMatchObject({
+        status: "queued",
+        executionId: "exec-1",
+        dispatchMode: "pull",
+      });
+      expect(enqueue).toHaveBeenCalledWith(
+        "e-pull",
+        expect.objectContaining({
+          executionId: "exec-1",
+          task: expect.objectContaining({ id: "task-1" }),
+          params: expect.anything(),
+        }),
+      );
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+      (service as unknown as { pullService: unknown }).pullService = null;
+    });
+
+    it("pull 执行器：入队失败回滚占坑并按既有失败语义抛错", async () => {
+      executorRepo.find.mockResolvedValue([pullExecutor]);
+      (service as unknown as { pullService: unknown }).pullService = {
+        enqueue: jest.fn().mockRejectedValue(new Error("redis down")),
+      };
+
+      await expect(service.dispatch(task, execution)).rejects.toThrow(
+        "redis down",
+      );
+      // 回滚占坑：GREATEST 更新被执行（与 push 失败路径共用）
+      expect(executorRepo.createQueryBuilder).toHaveBeenCalled();
+      (service as unknown as { pullService: unknown }).pullService = null;
+    });
+
+    it("pull 分支在 ExecutorPullService 未装配时显式抛错（不静默丢任务）", async () => {
+      executorRepo.find.mockResolvedValue([pullExecutor]);
+      (service as unknown as { pullService: unknown }).pullService = null;
+
+      await expect(service.dispatch(task, execution)).rejects.toThrow(
+        "Pull dispatch unavailable",
+      );
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
     it("dispatches to an online executor and returns response data", async () => {
       executorRepo.find.mockResolvedValue([executor]);
       mockedAxios.post.mockResolvedValue({

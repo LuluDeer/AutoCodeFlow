@@ -30,6 +30,8 @@ import { SystemConfigService } from "../config/config.service";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 // EXE-VER-1: 最低版本门禁（register 403）——比较与合规语义见 util 头注
 import { isVersionCompliant } from "./version-compare.util";
+// ARCH-32: pull 模式派发队列（ADR-015）——NAT 内执行器零入站回连
+import { ExecutorPullService } from "./executor-pull.service";
 // SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // FEAT-07: executor.offline 出站事件（总线 @Global；Optional 注入先例 task.service）
@@ -147,6 +149,10 @@ export class ExecutorService {
     // 不变（审计 best-effort，log() 抛错也绝不影响业务结果）。
     @Optional()
     private readonly audit: AuditService | null = null,
+    // ARCH-32: pull 模式派发队列（ADR-015）。@Optional 同先例——存量单测
+    // 装配未提供时为 null；pull 分支显式守卫抛错（不静默丢任务）。
+    @Optional()
+    private readonly pullService: ExecutorPullService | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
   }
@@ -463,6 +469,15 @@ export class ExecutorService {
     return executionsToFail.length;
   }
 
+  /**
+   * ARCH-32: 按地址取执行器行（pull 端点解析队列归属 executorId 用）。
+   * 地址是 register/heartbeat 的身份键（与 validateTokenByAddress 同源），
+   * id 才是稳定的队列键——地址可漂移（重注册换网），id 不变。
+   */
+  async findByAddress(address: string): Promise<Executor | null> {
+    return this.repo.findOne({ where: { address } });
+  }
+
   async register(data: {
     appName: string;
     address: string;
@@ -477,6 +492,7 @@ export class ExecutorService {
     description?: string | null;
     restartedAt?: string | Date | null;
     startupId?: string | null;
+    dispatchMode?: string;
   }) {
     let e: Executor | null = await this.repo.findOne({
       where: { address: data.address },
@@ -515,6 +531,9 @@ export class ExecutorService {
         description: data.description,
         executorStartedAt: incomingStartedAt ?? undefined,
         executorStartupId: incomingStartupId ?? undefined,
+        // ARCH-32: 派发模式（ADR-015）——仅接受 'pull'；缺省/非法 → undefined
+        // → 列默认 'push'。执行器自报面不可信，枚举外值一律落回 push。
+        dispatchMode: data.dispatchMode === "pull" ? "pull" : undefined,
         status: ExecutorStatus.ONLINE,
         lastHeartbeat: new Date(),
       } as Partial<Executor>);
@@ -541,6 +560,11 @@ export class ExecutorService {
     if (data.groupName !== undefined) e.groupName = data.groupName;
     if (data.tags !== undefined) e.tags = data.tags;
     if (data.description !== undefined) e.description = data.description;
+    // ARCH-32: pull↔push 切换随重注册生效（执行器改 EXECUTOR_PULL_MODE 后
+    // 重启即触发 didRestart 路径）。
+    if (data.dispatchMode === "push" || data.dispatchMode === "pull") {
+      e.dispatchMode = data.dispatchMode;
+    }
     if (didRestart) {
       await this.failRunningExecutionsAfterRestart(data.address);
       // R-P0-008: Reset runningTaskCount to 0 after executor restart
@@ -589,6 +613,7 @@ export class ExecutorService {
     description?: string | null;
     restartedAt?: string | Date | null;
     startupId?: string | null;
+    dispatchMode?: string;
   }): Promise<{ executor: Executor; perExecutorToken: string | null }> {
     // EXE-VER-1: 最低版本门禁。EXECUTOR_MIN_VERSION 非空时，执行器上报的
     // version 低于下限 → 403（报文含下限与升级指引），且发生在任何落库/
@@ -1217,6 +1242,48 @@ export class ExecutorService {
     execution.executorAddress = matched.address;
 
     try {
+      // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
+      const dispatchParams = this.buildDispatchParams(task, execution);
+      // OBS-01: W3C traceparent（disabled 时零注入，语义为无 trace）。
+      const traceHeaders: Record<string, string> = {};
+      this.tracing?.injectContext(
+        traceHeaders,
+        this.buildExecutionTraceparent(execution),
+      );
+
+      // ARCH-32（ADR-015）: pull 模式传输分支——占坑/选择语义与 push 完全
+      // 一致（上方同一条 UPDATE），仅把「入站 POST」换成「Redis 队列入队 +
+      // 执行器长轮询取件」。入队失败走下方同一 catch（回滚占坑 + 重试语义）。
+      if (matched.dispatchMode === "pull") {
+        if (!this.pullService) {
+          throw new Error(
+            "Pull dispatch unavailable: ExecutorPullService not wired",
+          );
+        }
+        const endPullSpan = this.tracing?.startSpan(
+          execution.traceId,
+          "dispatch.pull",
+          { executor: matched.id, executionId: execution.id },
+        );
+        await this.pullService.enqueue(matched.id, {
+          executionId: execution.id,
+          task,
+          params: dispatchParams,
+          // push 经 HTTP 头携带 traceparent；pull 只能并入载荷本体，
+          // 执行器侧 pull 循环以同语义注入 AUTOFLOW_TRACE_ID。
+          traceparent: traceHeaders["traceparent"],
+        });
+        endPullSpan?.();
+        this.logger.log(
+          `Dispatching task "${task.name}" to pull executor ${matched.id} (${matched.address}) via pull queue`,
+        );
+        return {
+          status: "queued",
+          executionId: execution.id,
+          dispatchMode: "pull",
+        };
+      }
+
       // F-3: SSRF guard — the address is executor-controlled (register/heartbeat),
       // so block metadata/loopback/link-local targets before sending the
       // authenticated request. A blocked address rolls back the slot below.
@@ -1225,19 +1292,14 @@ export class ExecutorService {
       const sharedToken = await this.getSharedToken();
       const headers: Record<string, string> = {};
       if (sharedToken) headers["Authorization"] = `Bearer ${sharedToken}`;
-      // OBS-01: W3C traceparent 头透传执行器（disabled 时零头注入，语义为
-      // 无 trace——执行器侧 fail-open 读取）。traceId 已随 dispatch 前落库。
-      this.tracing?.injectContext(
-        headers,
-        this.buildExecutionTraceparent(execution),
-      );
+      if (traceHeaders["traceparent"]) {
+        headers["traceparent"] = traceHeaders["traceparent"];
+      }
       const endSpan = this.tracing?.startSpan(
         execution.traceId,
         "dispatch.http",
         { executor: matched.address, executionId: execution.id },
       );
-      // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
-      const dispatchParams = this.buildDispatchParams(task, execution);
       const resp = await axios.post(
         url,
         { executionId: execution.id, task, params: dispatchParams },
@@ -1371,6 +1433,24 @@ export class ExecutorService {
 
     const results = await Promise.allSettled(
       candidates.map(async (executor) => {
+        // ARCH-32（ADR-015）: pull 执行器入队（不拨入站连接），其余走 push。
+        if (executor.dispatchMode === "pull") {
+          if (!this.pullService) {
+            throw new Error(
+              "Pull dispatch unavailable: ExecutorPullService not wired",
+            );
+          }
+          await this.pullService.enqueue(executor.id, {
+            executionId: execution.id,
+            task,
+            params: dispatchParams,
+            traceparent: broadcastHeaders["traceparent"],
+          });
+          return {
+            executor: executor.address,
+            result: { status: "queued", dispatchMode: "pull" },
+          };
+        }
         const dispatchUrl = this.getExecutorUrl(
           executor.address,
           "api/execute",

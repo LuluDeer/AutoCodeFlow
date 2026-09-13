@@ -29,6 +29,7 @@
     "test:oidc-sso": "node scripts/oidc-sso-selftest.mjs",
     "test:nginx-sse": "node scripts/nginx-sse-selftest.mjs",
     "test:ha-compose": "node scripts/ha-compose-selftest.mjs",
+    "test:pull-dispatch": "node scripts/pull-dispatch-selftest.mjs",
     "test:qa05-callback-tier": "node scripts/qa05-callback-tier-selftest.mjs",
     "test:all": "npm run test:api && npm run test:node && npm run test:python && npm run test:web && npm run test:cli && npm run test:mcp && npm run test:pypi && npm run test:sdk-py && npm run test:node-sdk",
     "typecheck:api": "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json",

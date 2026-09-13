@@ -1,6 +1,7 @@
 import axios from "axios";
 import {
   UnauthorizedException,
+  ServiceUnavailableException,
   NotFoundException,
   Logger,
 } from "@nestjs/common";
@@ -997,6 +998,104 @@ describe("ExecutorController", () => {
       expect(result).toMatchObject({
         minVersion: null,
         versionCompliant: true,
+      });
+    });
+
+    // ARCH-32（ADR-015）: POST /executors/pull 长轮询端点
+    describe("POST /executors/pull — 长轮询派发", () => {
+      const makeSvc = (dispatchMode: string) => ({
+        validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        findByAddress: jest.fn().mockResolvedValue({
+          id: "e-pull",
+          address: "nat:9999",
+          dispatchMode,
+        }),
+      });
+
+      it("pull 执行器：返回队列载荷", async () => {
+        const svc = makeSvc("pull");
+        const payload = { executionId: "exec-9", task: {}, params: {} };
+        const pullService = { pull: jest.fn().mockResolvedValue(payload) };
+        const controller = new ExecutorController(
+          svc as any,
+          { get: jest.fn().mockReturnValue("25000") } as any,
+          {} as any,
+          pullService as any,
+        );
+
+        const result = await controller.pullDispatch(
+          { address: "nat:9999" },
+          "Bearer token",
+        );
+
+        expect(result).toEqual({ task: payload, dispatchMode: "pull" });
+        expect(pullService.pull).toHaveBeenCalledWith("e-pull", 25000);
+      });
+
+      it("waitMs 按服务端上限钳位（EXECUTOR_PULL_WAIT_MS）", async () => {
+        const svc = makeSvc("pull");
+        const pullService = { pull: jest.fn().mockResolvedValue(null) };
+        const controller = new ExecutorController(
+          svc as any,
+          { get: jest.fn().mockReturnValue("25000") } as any,
+          {} as any,
+          pullService as any,
+        );
+
+        await controller.pullDispatch(
+          { address: "nat:9999", waitMs: 999_999 },
+          "Bearer token",
+        );
+
+        expect(pullService.pull).toHaveBeenCalledWith("e-pull", 25000);
+      });
+
+      it("push 执行器轮询：返回空载荷且不触队列", async () => {
+        const svc = makeSvc("push");
+        const pullService = { pull: jest.fn() };
+        const controller = new ExecutorController(
+          svc as any,
+          { get: jest.fn().mockReturnValue("25000") } as any,
+          {} as any,
+          pullService as any,
+        );
+
+        const result = await controller.pullDispatch(
+          { address: "nat:9999" },
+          "Bearer token",
+        );
+
+        expect(result).toEqual({ task: null, dispatchMode: "push" });
+        expect(pullService.pull).not.toHaveBeenCalled();
+      });
+
+      it("无效令牌 401", async () => {
+        const svc = makeSvc("pull");
+        svc.validateTokenByAddress.mockResolvedValue(false);
+        const controller = new ExecutorController(
+          svc as any,
+          {} as any,
+          {} as any,
+          { pull: jest.fn() } as any,
+        );
+
+        await expect(
+          controller.pullDispatch({ address: "nat:9999" }, "Bearer bad"),
+        ).rejects.toThrow(UnauthorizedException);
+      });
+
+      it("ExecutorPullService 未装配 503（显式失败不静默）", async () => {
+        const svc = makeSvc("pull");
+        const controller = new ExecutorController(
+          svc as any,
+          {} as any,
+          {} as any,
+          null,
+        );
+
+        await expect(
+          controller.pullDispatch({ address: "nat:9999" }, "Bearer token"),
+        ).rejects.toThrow(ServiceUnavailableException);
       });
     });
 

@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     executor_secret: str = ''
     work_dir: str = '/tmp/autocodeflow/tasks'
     max_concurrent_tasks: int = 10
+    # ARCH-32（ADR-015）: pull 派发模式——true 时执行器不依赖入站可达（NAT 内
+    # 部署），改经 POST /executors/pull 长轮询取件；register 自报 dispatchMode
+    # 'pull'，admin 侧据此走队列传输分支。默认 False = push 行为逐字节不变。
+    executor_pull_mode: bool = False
     task_timeout_seconds: int = 300  # Default task timeout (5 minutes)
     heartbeat_interval_seconds: int = 30  # Heartbeat interval
     pypi_registry_url: str = ''  # Optional credential-free private PyPI index URL

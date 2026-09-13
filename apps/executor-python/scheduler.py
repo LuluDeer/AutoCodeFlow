@@ -189,6 +189,63 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
         pass
 
 
+async def pull_task() -> None:
+    """ARCH-32（ADR-015）: pull 派发循环——EXECUTOR_PULL_MODE=true 时由 main
+    启动。空闲槽位时向 admin 发长轮询（服务端阻塞至多 25s），取到载荷即走
+    与 push 完全相同的 accept_execution 领取路径与回调通道；被拒不静默（补
+    发 failed 回调收敛 admin 侧执行行）。延迟导入 routers.execute 避免
+    scheduler↔routers 模块环（execute 反向 import sched）。"""
+    # 函数内延迟导入：routers.execute 模块级 import sched，模块级反向引入
+    # 会成环（import 顺序敏感）；ExecuteRequest 一并在延迟段导入。
+    from routers.execute import (
+        accept_execution,
+        reject_pulled_execution,
+        ExecutionRejected,
+        ExecuteRequest,
+    )
+    from auth import _unwrap_envelope
+
+    while True:
+        await asyncio.sleep(1)
+        try:
+            if get_running_count() >= settings.max_concurrent_tasks:
+                continue
+            token = await get_current_token()
+            async with httpx.AsyncClient(trust_env=False) as client:
+                response = await request_with_self_heal(
+                    client,
+                    'post',
+                    build_admin_api_url('/executors/pull'),
+                    token=token,
+                    json={
+                        'address': settings.executor_address_public or settings.executor_address,
+                        'waitMs': 25000,
+                    },
+                    timeout=35,
+                )
+            response.raise_for_status()
+            try:
+                data = _unwrap_envelope(response.json()) or {}
+            except Exception:  # pragma: no cover - non-JSON / empty admin bodies
+                continue
+            task = data.get('task')
+            if not isinstance(task, dict) or not task.get('executionId'):
+                continue
+
+            execution_id = str(task['executionId'])
+            traceparent = task.get('traceparent')
+            logger.info('Pulled execution %s from admin pull queue', execution_id)
+            body = {k: v for k, v in task.items() if k != 'traceparent'}
+            req = ExecuteRequest(**body)
+            try:
+                accept_execution(req, traceparent if isinstance(traceparent, str) else None)
+            except ExecutionRejected as e:
+                await reject_pulled_execution(execution_id, e.detail,
+                                              traceparent if isinstance(traceparent, str) else None)
+        except Exception as e:
+            logger.warning('Pull failed: %s', e)
+
+
 async def heartbeat_task() -> None:
     while True:
         try:
