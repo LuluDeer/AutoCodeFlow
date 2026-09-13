@@ -52,16 +52,17 @@ jobs:
             platform: linux/amd64
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
+      # 不用 setup-buildx-action（docker-container driver）：它要拉
+      # moby/buildkit:buildx-stable-1 镜像，Docker Hub 偶发 connection reset
+      # 会直接打红 CI（run 34761485353 实测）。单平台原生构建用 runner 自带
+      # 的 docker driver 即可，buildkit 容器镜像拉取点彻底消失；代价是
+      # type=gha 层缓存不可用——原生构建本来就快（~86s），冷构建可接受。
       - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.image.context }}
           platforms: ${{ matrix.platform }}
           push: false
           tags: autocodeflow/${{ matrix.image.name }}:ci-${{ matrix.runner }}
-          # gha 层缓存按 镜像×平台 分 scope：原生构建层缓存命中率高
-          cache-from: type=gha,scope=multiarch-${{ matrix.image.name }}-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=multiarch-${{ matrix.image.name }}-${{ matrix.platform }}
 
   # ── Node.js services & packages ──────────────────────────
   admin-api-test:
