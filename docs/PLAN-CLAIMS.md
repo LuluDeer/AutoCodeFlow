@@ -241,6 +241,7 @@
 | 1790000000013 | CreateEventOutboxDeadLetters | FEAT-19-B | 本轮登记并已落盘（outbox 终态死信表，outboxId 唯一 + FK CASCADE） |
 | 1790000000014 | CreateNotificationChannelConfigs | ARCH-31 | 本轮登记并已落盘（渠道配置共享持久化：key 主键 + config jsonb + enabled） |
 | 1790000000015 | CreateProjectMembers | AUTH-02 | 本轮登记并已落盘（项目成员表：userId/taskId/role 三档角色 + 唯一约束 + 索引；写面放行与 trigger/pause 归属随 AUTH-02 落地） |
+| 1790000000016 | AddUsersOidcSub | AUTH-04（OIDC SSO） | 本轮登记并已落盘（users.oidcSub 可空 + 唯一索引：IdP sub 稳定身份绑定；存量行不回填，本地登录路径零变化） |
 
 ## 变更日志
 

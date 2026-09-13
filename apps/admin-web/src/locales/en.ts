@@ -25,6 +25,18 @@ export default {
   'login.totpCode.invalid': 'Incorrect verification code',
   'login.totpHint': 'Open your authenticator app for the code',
   'login.forgotHint': 'Forgot password? Contact an administrator to reset it',
+  'login.sso': 'Sign in with enterprise SSO',
+  // AUTH-04: OIDC callback landing page
+  'sso.title': 'Single Sign-On',
+  'sso.completing': 'Completing sign-in…',
+  'sso.backToLogin': 'Back to login',
+  'sso.error.state': 'Your sign-in session expired or is invalid. Please start SSO again.',
+  'sso.error.nonce': 'Security check failed (session mismatch). Please start SSO again.',
+  'sso.error.signature': 'The credential from your identity provider failed validation. Contact your administrator.',
+  'sso.error.notLinked': 'This enterprise account is not linked to any platform account. Ask an administrator to create a matching username, or enable auto-provisioning.',
+  'sso.error.disabled': 'This account has been disabled.',
+  'sso.error.missing': 'Callback parameters are missing. Please start from the login page.',
+  'sso.error.generic': 'Single sign-on failed. Please retry or contact your administrator.',
 
   'nav.skipToContent': 'Skip to main content',
   'nav.aria.main': 'Main navigation',

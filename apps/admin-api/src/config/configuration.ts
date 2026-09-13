@@ -137,6 +137,28 @@ export default () => ({
     })(),
     expiresIn: process.env.JWT_EXPIRES_IN || "15m",
   },
+  // AUTH-04: OIDC SSO（授权码模式，confidential client）。默认 disabled——
+  // 不配置任何 OIDC_* env 的存量部署行为逐字节不变。
+  oidc: {
+    enabled: process.env.OIDC_ENABLED === "true",
+    issuer: process.env.OIDC_ISSUER || "",
+    clientId: process.env.OIDC_CLIENT_ID || "",
+    clientSecret: process.env.OIDC_CLIENT_SECRET || "",
+    // callback 全 URL：{API_BASE}/auth/oidc/callback，须与 IdP 注册一致
+    redirectUri: process.env.OIDC_REDIRECT_URI || "",
+    scopes: process.env.OIDC_SCOPES || "openid profile email",
+    // 身份显示名来源声明；sub 恒为绑定主键
+    usernameClaim: process.env.OIDC_USERNAME_CLAIM || "preferred_username",
+    // JIT 自动建号（默认关）：开启后未知用户首登自动建 USER 账号；
+    // 关闭时仅允许「管理员预建同名账号 → 首登绑定」显式链路
+    autoProvision: process.env.OIDC_AUTO_PROVISION === "true",
+    // 颁发令牌后浏览器落地的完整 URL（#fragment 携带 token，不进服务器日志）
+    webRedirectUrl:
+      process.env.OIDC_WEB_REDIRECT_URL ||
+      "http://localhost:5173/auth/sso/complete",
+    // 同机/内网 IdP（如本机 Keycloak）需显式放行（云元数据仍恒拒）
+    allowPrivateNetwork: process.env.OIDC_ALLOW_PRIVATE_NETWORK === "true",
+  },
   redis: {
     host: process.env.REDIS_HOST || "localhost",
     port: parseInt(process.env.REDIS_PORT, 10) || 6379,
