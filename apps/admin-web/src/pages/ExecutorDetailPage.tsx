@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result } from 'antd';
+import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result, Tag } from 'antd';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -240,7 +240,10 @@ export default function ExecutorDetailPage() {
           <Space>
             <Button.Group>
               <Button onClick={() => { editForm.setFieldsValue(executor); setEditOpen(true); }}>{t('executorDetail.edit')}</Button>
-              <Button onClick={() => setConfigOpen(true)}>{t('executorDetail.configHotReload')}</Button>
+              {/* UI-18: pull 模式执行器（ARCH-32）不可入站推送——入口禁用 */}
+              <Tooltip title={executor.dispatchMode === 'pull' ? t('executorDetail.config.pullDisabledTooltip') : undefined}>
+                <Button disabled={executor.dispatchMode === 'pull'} onClick={() => setConfigOpen(true)}>{t('executorDetail.configHotReload')}</Button>
+              </Tooltip>
               <Button
                 danger
                 disabled={!isOnline}
@@ -285,6 +288,12 @@ export default function ExecutorDetailPage() {
           </Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.type')}>{executor.type || '-'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.version')}>{executor.executorVersion || '-'}</Descriptions.Item>
+          {/* UI-17/ARCH-32: 派发模式（pull = NAT 内零入站，长轮询取件） */}
+          <Descriptions.Item label={t('executorDetail.field.dispatchMode')}>
+            {executor.dispatchMode === 'pull'
+              ? <Tag color="purple">{t('executorDetail.dispatchMode.pull')}</Tag>
+              : <Tag>{t('executorDetail.dispatchMode.push')}</Tag>}
+          </Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.group')}>{executor.groupName || '-'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.tags')}>{executor.tags?.join(', ') || '-'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.maxConcurrent')}>{executor.maxConcurrentTasks ?? t('executorDetail.unlimited')}</Descriptions.Item>

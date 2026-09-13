@@ -105,15 +105,25 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
       message.warning(t('batchAction.noneOnline'));
       return;
     }
+    // UI-18: reload-config 是 admin→执行器入站 POST，pull 模式执行器（ARCH-32，
+    // NAT 内零入站可达）必然失败——从批量目标中剔除，全为 pull 时直接提示。
+    const pushable = online.filter((ex) => ex.dispatchMode !== 'pull');
+    const skippedPull = online.length - pushable.length;
+    if (pushable.length === 0) {
+      message.warning(t('batchAction.reloadPullOnly'));
+      return;
+    }
     Modal.confirm({
-      title: t('batchAction.reloadConfirmTitle', { count: online.length }),
-      content: t('batchAction.reloadConfirmContent'),
+      title: t('batchAction.reloadConfirmTitle', { count: pushable.length }),
+      content: skippedPull > 0
+        ? `${t('batchAction.reloadConfirmContent')} ${t('batchAction.reloadSkipPull', { count: skippedPull })}`
+        : t('batchAction.reloadConfirmContent'),
       okText: t('batchAction.confirmPush'),
       cancelText: t('batchAction.cancel'),
       onOk: async () => {
         setBatchLoading(true);
         try {
-          const summary = await runBatch(online, async (ex) => {
+          const summary = await runBatch(pushable, async (ex) => {
             await executorsApi.reloadConfig(ex.id, {});
             return {};
           }, t('batchAction.operateFail'));
