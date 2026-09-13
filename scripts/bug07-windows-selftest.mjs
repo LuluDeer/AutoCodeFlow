@@ -89,7 +89,7 @@ const alive = ${'process.env.B07_ALIVE_FILE'};
 const grandFile = ${'process.env.B07_GRAND_FILE'};
 fs.writeFileSync(alive, 'up');
 // detached 孙进程（进程组独立——executor 任务场景的真实形态，P-7 的对象）
-const grand = spawn('node', ['-e', '// bug07-grand-probe\nrequire("fs").writeFileSync(process.env.B07_GRAND_FILE, "up"); setInterval(() => {}, 1000);'], {
+const grand = spawn('node', ['-e', 'function bug07GrandProbe() {} ; require("fs").writeFileSync(process.env.B07_GRAND_FILE, "up"); setInterval(bug07GrandProbe, 1000);'], {
   detached: true,
   stdio: 'ignore',
   env: { ...process.env },
@@ -233,7 +233,7 @@ async function main() {
       // （不依赖 PID：孙进程的 -e 脚本里没有写哨兵逻辑，这里改用 powershell 按
       //  命令行特征查询 grandchild 是否存活）
       const probe = spawnSync('powershell', ['-NoProfile', '-Command',
-        `@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*bug07-grand-probe*' }).Count`],
+        `@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*bug07GrandProbe*' }).Count`],
         { encoding: 'utf8' });
       const grandCount = parseInt((probe.stdout || '0').trim(), 10);
 
