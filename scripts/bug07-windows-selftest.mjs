@@ -70,11 +70,12 @@ process.on('SIGBREAK', () => {
   process.exit(0);
 });
 process.on('SIGINT', () => { fs.writeFileSync(done, 'graceful-int'); process.exit(0); });
-// B07_SELF_KILL=1：自投递变体（process.kill(self) 的 console 事件经 Node
-// 信号分发回到本进程处理器）——处理器链路（注册→收尾→优雅退出）的真实
-// OS 信号验证，任何 win32 环境恒可跑；跨进程投递见主流程降级链。
-if (process.env.B07_SELF_KILL === '1') {
-  setTimeout(() => process.kill(process.pid, 'SIGBREAK'), 300);
+// B07_SELF_SIGNAL=SIGINT：自投递变体。Node on Windows 只模拟
+// SIGINT/SIGTERM/SIGKILL 的 process.kill 投递（SIGBREAK 不可投递——ENOSYS，
+// 真实送达=控制台键盘事件），故处理器链路验证用 SIGINT（main.ts 同注册
+// 同一 graceful 链）以真实 OS 信号走完 handler→收尾→优雅退出。
+if (process.env.B07_SELF_SIGNAL) {
+  setTimeout(() => process.kill(process.pid, process.env.B07_SELF_SIGNAL), 300);
 }
 setInterval(() => {}, 1000);
 `;
@@ -142,7 +143,7 @@ async function main() {
       let delivered = signaled;
       if (signaled) {
         try {
-          await waitFor(() => existsSync(doneFile), 10_000, 'SIGBREAK graceful marker');
+          await waitFor(() => existsSync(doneFile), 5_000, 'SIGBREAK graceful marker');
         } catch (_) {
           // kill() 返回 true ≠ 事件可达（libuv 不上抛 GenerateConsoleCtrlEvent
           // 失败）——10s 无收尾标记即判不可达，硬杀清理后降级 skip。
@@ -161,24 +162,23 @@ async function main() {
         skip('①a P-10 SIGBREAK 跨进程投递', `console 事件在此环境不可达（${delivery}）——真实操作员按键路径无法在 CI 复现；处理器链路由 ①b 自投递 + R14 真机记录背书`);
       }
 
-      // ①b 自投递变体（恒可跑）：处理器链路的真实 OS 信号验证
+      // ①b 优雅链处理器验证（恒可跑）：SIGINT 自投递——Node on Windows 可
+      // 模拟投递的真实信号，走完「信号到达 → handler → 收尾标记 → 优雅退出」
+      // 全链（executor main.ts 对 SIGINT/SIGBREAK 注册同一 gracefulShutdown）。
       {
         const selfFile = path.join(tmp, 'graceful-self.done');
-        writeFileSync(target, gracefulTarget
-          .replaceAll('${process.env.B07_DONE_FILE}', JSON.stringify(selfFile))
-          .replace('B07_SELF_KILL', 'B07_SELF_KILL'));
         const selfChild = spawn(process.execPath, [target], {
           windowsHide: true,
           stdio: 'ignore',
-          env: { ...process.env, B07_DONE_FILE: selfFile, B07_SELF_KILL: '1' },
+          env: { ...process.env, B07_DONE_FILE: selfFile, B07_SELF_SIGNAL: 'SIGINT' },
         });
-        await waitFor(() => existsSync(selfFile), 10_000, 'self-SIGBREAK graceful marker');
+        await waitFor(() => existsSync(selfFile), 10_000, 'self-SIGINT graceful marker');
         await sleep(300); // 等退出
         const selfAlive = spawnSync('powershell', ['-NoProfile', '-Command',
           `if (Get-Process -Id ${selfChild.pid} -ErrorAction SilentlyContinue) { 'True' } else { 'False' }`],
           { encoding: 'utf8' }).stdout.trim();
-        ok('①b P-10 SIGBREAK 处理器链路（自投递：handler→收尾→优雅退出）',
-          readFileSync(selfFile, 'utf8') === 'graceful' && selfAlive === 'False',
+        ok('①b P-10 优雅链处理器（SIGINT 自投递：handler→收尾→优雅退出）',
+          readFileSync(selfFile, 'utf8') === 'graceful-int' && selfAlive === 'False',
           `marker=${readFileSync(selfFile, 'utf8')}, alive-after=${selfAlive}`);
       }
     }

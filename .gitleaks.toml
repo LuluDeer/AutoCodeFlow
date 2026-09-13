@@ -14,18 +14,12 @@ useDefault = true
 
 [allowlist]
 description = "已审阅的测试样例与文档演示假凭据（逐条理由）"
-paths = '''(?i)(
-  # e2e/单测夹具：样例 JWT 形状字符串，非真实签发密钥
-  e2e-full\.spec\.js|
-  # 执行器测试样例 token（形如 xoxp-/sk- 的造数据）
-  apps/executor-node/src/__tests__/|
-  apps/executor-node/__tests__/|
-  # 文档中的占位符凭据（<...>/your-*/changeme/example 形态）
-  docs/.*\.md|
-  README\.md|
-  # CI 自身的测试 secret 值（test-jwt-secret-* 等，见 ci.yml env 注释）
-  \.github/workflows/ci\.yml
-)'''
+# ⚠️ Go 正则不支持自由间隔——paths 必须单行、不得内联 # 注释（旧多行写法
+# 把注释当字面量，allowlist 从未生效，QA-05 轮 CI 全历史扫描实证）。
+# 放行口径 = 测试文件名模式（.spec/.test/.selftest/执行器 __tests__）+ 文档
+# 示例 + ci.yml 自身 env——均为审阅过的 fixture 假凭据；生产 secret 走
+# env/secret manager，不落任何被放行的文件形态。
+paths = '''(?i)(e2e-full\.spec\.js|apps/executor-node/src/__tests__/|apps/executor-node/__tests__/|docs/.*\.md|README\.md|\.github/workflows/ci\.yml|.*\.spec\.ts|.*\.spec\.js|.*\.test\.tsx|.*\.test\.ts|.*\.selftest\.ts|.*-selftest\.mjs|scripts/.*-selftest\.mjs)'''
 # 兜底：占位符标记的值一律放行（无论出现在哪个文件）
 regexes = [
   '''(?i)(your[_-]?api[_-]?key|your[_-]?token|changeme|placeholder|<your-|dGVzdA==|admin123)''',
