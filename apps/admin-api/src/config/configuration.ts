@@ -345,6 +345,26 @@ export default () => ({
   tracing: {
     enabled: process.env.OTEL_ENABLED === "true",
   },
+  // WIKI-OPT-1: 健康检查判定阈值与全量响应缓存（health.service 经
+  // ConfigService 读取）。队列积压三项阈值与执行器在线比例下限此前
+  // 硬编码于 checkQueue/checkExecutors，默认值与原硬编码一致（行为不变）；
+  // cacheTtlMs 为 getFullHealth 短 TTL 缓存窗口，默认 0 = 关闭（与未缓存
+  // 行为完全一致，live/ready 探针不受影响）。
+  health: {
+    queueFailedMax: parseInt(process.env.HEALTH_QUEUE_FAILED_MAX || "100", 10),
+    queueDelayedMax: parseInt(
+      process.env.HEALTH_QUEUE_DELAYED_MAX || "500",
+      10,
+    ),
+    queueWaitingMax: parseInt(
+      process.env.HEALTH_QUEUE_WAITING_MAX || "1000",
+      10,
+    ),
+    executorOnlineRatioMin: parseFloat(
+      process.env.HEALTH_EXECUTOR_ONLINE_RATIO_MIN || "0.5",
+    ),
+    cacheTtlMs: parseInt(process.env.HEALTH_CACHE_TTL_MS || "0", 10),
+  },
 });
 
 /**
