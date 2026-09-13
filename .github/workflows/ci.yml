@@ -874,7 +874,8 @@ jobs:
         env:
           # electron 二进制官方源被墙/慢时的镜像兜底；runner 上通常无需生效
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
-        run: npm run dist:linux
+        # 同 mac：CI 只产构件不发布（repository 字段触发的默认 publisher）
+        run: npm run dist:linux -- --publish never
       - name: Upload Linux bundles
         uses: actions/upload-artifact@v4
         with:
@@ -917,7 +918,9 @@ jobs:
         env:
           # 无 Apple Developer ID 的 CI 形态：显式跳过 codesign/notarize
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run dist:mac
+        # CI 只产构件不发布：electron-builder 检测到 package.json repository
+        # 会默认走 GitHub publisher（缺 GH_TOKEN 即炸）——显式 never。
+        run: npm run dist:mac -- --publish never
       - name: Upload macOS bundles
         uses: actions/upload-artifact@v4
         with:
