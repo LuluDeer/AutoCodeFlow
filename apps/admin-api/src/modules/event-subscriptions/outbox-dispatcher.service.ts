@@ -160,6 +160,11 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
+    // 幂等护栏：本实例经 OUTBOX_DISPATCHER_TOKEN useFactory 别名后挂在两个
+    // provider wrapper 下，Nest 生命周期会对每个 wrapper 各调一次 onModuleInit
+    // ——不设防会让扫描定时器双份（旧句柄被覆盖但仍在跑，claim 白白竞争一倍）。
+    // 已启动（或显式 disabled 后被二次 init）时直接短路。
+    if (this.scanTimer) return;
     if (!this.enabled) {
       this.logger.log(
         "Outbox dispatcher disabled (EVENT_OUTBOX_ENABLED=false)",

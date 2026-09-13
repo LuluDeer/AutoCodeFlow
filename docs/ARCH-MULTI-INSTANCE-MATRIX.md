@@ -299,7 +299,7 @@ fail-open 回内存态，与 NOTIF-003 降级一致）。
 1. ~~**silence**：DB 读穿/短 TTL 回灌~~ ✅ 本轮完成（3.2）；Redis key + pub/sub 同步 L1 为可选增强，未做。
 2. ~~**channel config**：补共享持久化~~ ✅ 本轮完成（独立表 1790000000014，见 3.3）。
 3. ~~**rollout**：批次属主状态与心跳确认改为跨实例可协调的持久化/租约语义~~ ✅ 本轮完成（3.4，含非属主心跳 hydration、失败 claim、并发互斥、活性租约）。
-4. ~~**outbox**：DB 行级 claim/lease~~ ✅ **claim/租约早前轮次已落地**（`FOR UPDATE SKIP LOCKED` + 60s 租约 + leaseToken 守卫，见 3.6），本轮补 **快速路径收口**（`markFastPathDelivered`，把「每个成功事件必然重复投递」收敛为「部分失败/租约竞态时才可能重复」）；**真机双实例的重复投递边界仍待验证**（§ 验证清单第 4 项）。
+4. ~~**outbox**：DB 行级 claim/lease~~ ✅ **claim/租约早前轮次已落地**（`FOR UPDATE SKIP LOCKED` + 60s 租约 + leaseToken 守卫，见 3.6），本轮补 **快速路径收口**（`markFastPathDelivered`，把「每个成功事件必然重复投递」收敛为「部分失败/租约竞态时才可能重复」）；**真机双实例的重复投递边界已于 2026-09-13 端到端验证**（见清单第 4 项补充），验证中抓出并修掉「useFactory 别名双 wrapper 导致 onModuleInit 双跑 → 事件双投」的生产级缺陷。
 
 以上 1~4 为**代码实现完成 + 单测覆盖**；真机双实例端到端验证按清单逐项执行（1/2/5 已验证，3/4 待）。
 
@@ -330,10 +330,18 @@ fail-open 回内存态，与 NOTIF-003 降级一致）。
    **7/7 通过**：①同轮零重叠（`FOR UPDATE SKIP LOCKED` 排他，50 行 × 12 轮并发）
    ②两实例并行推进最终覆盖全部行（无永久饿死）③活动租约不被抢 ④租约过期（实例崩溃）
    可被另一实例回收 ⑤已投递行不再被 claim。
-   *口径*：本项验的是**临界区 SQL 的排他性**（比 HTTP 端到端更贴近要害）——订阅回调面
-   走 `assertSafeHttpUrl`（回环直接拒绝，无测试开关），本机离线造不出可达接收端，
-   故不做「两个实例实际投 webhook」的端到端；投递侧的重复语义由 api-reference
-   声明的 at-least-once + 快速路径收口覆盖。
+   *口径*：本项验的是**临界区 SQL 的排他性**（比 HTTP 端到端更贴近要害）。
+   *端到端闭环（2026-09-13）*：`EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true` 开关落地后
+   loopback 订阅 URL 可达，新套件 `npm run test:arch31-outbox-dup`
+   （`scripts/arch31-outbox-duplication-selftest.mjs`）起两个真实 admin-api + loopback
+   HTTP 接收端，制造 5 个派发失败终态执行（无执行器在线 → BUG-21 修复后发
+   execution.failed 事件），断言每订阅恰 5 条投递 / 签名头齐备 / ≥2 个补投周期后零重复 /
+   outbox 全部结清——**13/13 通过**。**首跑抓出生产级缺陷并已修复**：
+   `OUTBOUND_DISPATCHER_TOKEN`/`OUTBOX_DISPATCHER_TOKEN` 的 useFactory 别名让同一实例
+   挂在两个 provider wrapper 下，Nest 生命周期对每个暴露 onModuleInit 的 wrapper 各调
+   一次 → 总线监听器翻倍 → 每个事件被派发两次、outbox 行双写（修复前每订阅收 10 条）；
+   修复 = 两个派发器 onModuleInit 幂等护栏（busListeners/scanTimer 已在即短路），并补
+   「重复 init 不重复注册」单测回归锁（event-subscriptions.spec）。
 5. ✅ **调度 Leader 单点性**：两实例 `/api/metrics/scheduler` 中恰一个
    `scheduler.isLeader=true`（pid 可区分）。
 

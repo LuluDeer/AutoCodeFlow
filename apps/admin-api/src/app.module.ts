@@ -171,6 +171,22 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         OPENAI_MODEL: Joi.string().default("gpt-4o-mini"),
         OLLAMA_HOST: Joi.string().uri().default("http://localhost:11434"),
         OLLAMA_MODEL: Joi.string().default("llama3"),
+        // ARCH-31（2026-09-13）: AI 出站私网豁免。默认 false = 既有 SSRF 姿态
+        // 零变化（assertSafeHttpUrl 拒一切非 public，本地 Ollama 的默认
+        // localhost:11434 也被拒）；true 放行 loopback/restricted/private-lan
+        // （同机自建 Ollama / Tailscale 端点），link-local 云元数据仍恒拒。
+        // AI 配置面为 ADMIN-only，信任边界与 executor 开关一致。
+        AI_ALLOW_PRIVATE_NETWORK: Joi.string()
+          .valid("true", "false")
+          .default("false"),
+        // ARCH-31（2026-09-13）: 事件订阅 webhook 私网豁免。默认 false = 既有
+        // 姿态零变化；true 放行 loopback/restricted/private-lan（内网接收端，
+        // 如多实例重复投递自检的 loopback 接收器）。注意：事件订阅普通用户
+        // 可建——开启即信任所有登录用户可让平台向内网 endpoint 发 HTTP
+        // （签名 webhook），生产环境默认关闭。
+        EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK: Joi.string()
+          .valid("true", "false")
+          .default("false"),
 
         // Email (optional)
         EMAIL_HOST: Joi.string().allow("").optional(),

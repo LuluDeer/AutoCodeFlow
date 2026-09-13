@@ -120,8 +120,22 @@ export function normalizeIpForClassification(addr: string): string {
  *
  * SEC-04: the deny set is the unified SSRF_DENY_HOST_PATTERNS table via
  * classifyAddressRisk ("deny every non-public class" posture).
+ *
+ * AUTH/ARCH-31（2026-09-13）：可选 `opts.allowPrivateNetwork` 放开内网目标，
+ * 语义镜像 assertSafeExecutorUrl 的 EXECUTOR_ALLOW_PRIVATE_NETWORK 姿态：
+ *  - 恒拒：link-local（169.254.169.254 云元数据在段内——凭据外泄经典目标）、
+ *    reserved/unspecified；
+ *  - 开关开启才放行：loopback（127.0.0.1/::1，同机自建服务如本地 Ollama）、
+ *    restricted（198.18/15 benchmark 与 100.64/10 CGNAT/Tailscale）、
+ *    private-lan（10/8、172.16/12、192.168/16、IPv6 ULA）。
+ * 缺省（不传 opts）行为与既往逐字节一致：除 public 外全拒。
+ * 开关由调用方从 ConfigService 读取传入（本函数保持无 DI 纯函数形态，
+ * env 直读收口在 src/config/env.ts）。
  */
-export async function assertSafeHttpUrl(rawUrl: string): Promise<URL> {
+export async function assertSafeHttpUrl(
+  rawUrl: string,
+  opts?: { allowPrivateNetwork?: boolean },
+): Promise<URL> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -141,9 +155,19 @@ export async function assertSafeHttpUrl(rawUrl: string): Promise<URL> {
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (!host) throw new BadRequestException("URL missing hostname");
 
+  const allowPrivateNetwork = opts?.allowPrivateNetwork === true;
+
+  // 默认姿态（SEC-04）：除 public 全拒。开关开启时镜像 assertSafeExecutorUrl
+  // 姿态：loopback/restricted/private-lan 放行，link-local（云元数据）与
+  // reserved 恒拒。报错文案保持默认路径历史措辞（既有 spec 逐字匹配）。
+  const allowedRisk = (risk: AddressRisk | null): boolean =>
+    risk === "public" ||
+    (allowPrivateNetwork &&
+      (risk === "private-lan" || risk === "loopback" || risk === "restricted"));
+
   // If the host is an IP literal we can decide synchronously.
   if (isIP(host)) {
-    if (isBlockedAddress(host)) {
+    if (!allowedRisk(classifyAddressRisk(host))) {
       throw new BadRequestException(
         `URL host ${host} is on the deny list (private/loopback/link-local/benchmark/CGNAT)`,
       );
@@ -163,21 +187,13 @@ export async function assertSafeHttpUrl(rawUrl: string): Promise<URL> {
     throw new BadRequestException(`URL host ${host} did not resolve`);
   }
   for (const a of addrs) {
-    if (isBlockedAddress(a.address)) {
+    if (!allowedRisk(classifyAddressRisk(a.address))) {
       throw new BadRequestException(
         `URL host ${host} resolves to a blocked address (${a.address})`,
       );
     }
   }
   return url;
-}
-
-function isBlockedAddress(addr: string): boolean {
-  // SEC-04: the webhook/AI posture denies EVERY non-public risk class —
-  // derived from the shared classifier (SSRF_DENY_HOST_PATTERNS) so it can
-  // no longer drift from the executor/git guards segment by segment.
-  const risk = classifyAddressRisk(addr);
-  return risk !== null && risk !== "public";
 }
 
 /**
