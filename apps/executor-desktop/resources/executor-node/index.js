@@ -46157,6 +46157,7 @@ exports.checkAdminApiConnectivity = checkAdminApiConnectivity;
 exports.request = request;
 exports.get = get;
 exports.post = post;
+exports.postLong = postLong;
 exports.postWithStaticToken = postWithStaticToken;
 exports.put = put;
 exports.del = del;
@@ -46232,7 +46233,7 @@ function buildAuthHeaders(token) {
 function isUnauthorized(error) {
     return error?.response?.status === 401;
 }
-async function performRequest(token, method, path, data, retryCount = adminUrls.length, extraHeaders) {
+async function performRequest(token, method, path, data, retryCount = adminUrls.length, extraHeaders, timeoutMs = 10000) {
     const headers = extraHeaders
         ? { ...buildAuthHeaders(token), ...extraHeaders }
         : buildAuthHeaders(token);
@@ -46240,7 +46241,8 @@ async function performRequest(token, method, path, data, retryCount = adminUrls.
         try {
             const client = axios_1.default.create({
                 baseURL: adminUrls[currentIndex],
-                timeout: 10000,
+                // ARCH-32: 可选长超时（pull 长轮询服务端阻塞 25s；其余调用维持 10s）
+                timeout: timeoutMs,
                 headers,
             });
             const response = await client.request({
@@ -46269,10 +46271,10 @@ async function performRequest(token, method, path, data, retryCount = adminUrls.
     }
     throw new Error('Request failed after all retries');
 }
-async function request(method, path, data, retryCount = adminUrls.length, tokenMode = 'current', extraHeaders) {
+async function request(method, path, data, retryCount = adminUrls.length, tokenMode = 'current', extraHeaders, timeoutMs = 10000) {
     const token = tokenMode === 'static' ? (0, auth_1.getStaticToken)() : await (0, auth_1.getCurrentToken)();
     try {
-        return await performRequest(token, method, path, data, retryCount, extraHeaders);
+        return await performRequest(token, method, path, data, retryCount, extraHeaders, timeoutMs);
     }
     catch (error) {
         // R10 (round-10 gap #3): stale-credential self-heal. A 401 on a
@@ -46295,7 +46297,7 @@ async function request(method, path, data, retryCount = adminUrls.length, tokenM
         if (tokenMode === 'current' && isUnauthorized(error)) {
             const fresh = await (0, auth_1.forceTokenRefresh)();
             if (fresh && fresh !== token) {
-                return performRequest(fresh, method, path, data, retryCount, extraHeaders);
+                return performRequest(fresh, method, path, data, retryCount, extraHeaders, timeoutMs);
             }
         }
         throw error;
@@ -46306,6 +46308,14 @@ async function get(path) {
 }
 async function post(path, data, extraHeaders) {
     return request('post', path, data, adminUrls.length, 'current', extraHeaders);
+}
+/**
+ * ARCH-32: 长轮询专用 POST —— 服务端 /executors/pull 会阻塞至多
+ * EXECUTOR_PULL_WAIT_MS（默认 25s），10s 默认超时必然误杀；40s 覆盖
+ * 25s 窗口 + 余量，且小于反代通用 60s 读超时。
+ */
+async function postLong(path, data, timeoutMs = 40000) {
+    return request('post', path, data, adminUrls.length, 'current', undefined, timeoutMs);
 }
 async function postWithStaticToken(path, data) {
     return request('post', path, data, adminUrls.length, 'static');
@@ -46909,7 +46919,7 @@ function getPendingCallbackCount() {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.config = void 0;
+exports.EXECUTOR_VERSION = exports.config = void 0;
 const adminApiUrl = process.env.ADMIN_API_URL || 'http://admin-api:3105';
 const adminApiUrlInternal = process.env.ADMIN_API_URL_INTERNAL || adminApiUrl;
 const configuredAdminApiUrls = (process.env.ADMIN_API_URLS || '')
@@ -46959,7 +46969,15 @@ exports.config = {
     // used as the HMAC source secret when EXECUTION_CALLBACK_SECRET is unset,
     // so per-node `--secret` deployments can verify task-side callbacks.
     executorTokenHash: '',
+    // ARCH-32（ADR-015）: pull 派发模式——true 时执行器不依赖入站可达（NAT 内
+    // 部署），改经 POST /executors/pull 长轮询取件；register 自报 dispatchMode
+    // 'pull'，admin 侧据此走队列传输分支。默认 false = push 行为逐字节不变。
+    pullMode: process.env.EXECUTOR_PULL_MODE === 'true',
 };
+// EXE-VER-1: 执行器版本上报源（register 与心跳共用，单一定义处）。
+// 升级执行器 = 重新安装 artifact / 重跑 install-cmd，版本随之跟进；
+// 中心端 EXECUTOR_MIN_VERSION 门禁按此值判定（低于下限 register 403）。
+exports.EXECUTOR_VERSION = '1.0.0';
 
 
 /***/ }),
@@ -47955,6 +47973,7 @@ const file_logger_1 = __nccwpck_require__(4723);
 const admin_client_1 = __nccwpck_require__(6609);
 const admin_envelope_1 = __nccwpck_require__(4138);
 const task_worker_1 = __nccwpck_require__(8404);
+const pull_1 = __nccwpck_require__(6611);
 const execute_1 = __nccwpck_require__(8690);
 const health_1 = __nccwpck_require__(6067);
 const execute_2 = __nccwpck_require__(8690);
@@ -48002,7 +48021,11 @@ async function registerExecutor() {
             groupName: config_1.config.groupName || undefined,
             address: config_1.config.executorAddressPublic || config_1.config.executorAddress,
             type: 'node',
-            version: '1.0.0',
+            // EXE-VER-1: 版本上报单源 EXECUTOR_VERSION（心跳同源）；
+            // 中心端 EXECUTOR_MIN_VERSION 门禁按此判定，低于下限 403。
+            version: config_1.EXECUTOR_VERSION,
+            // ARCH-32: 派发模式自报（pull = NAT 内零入站，经长轮询取件）
+            dispatchMode: config_1.config.pullMode ? 'pull' : 'push',
             // Legacy field kept for backwards compatibility
             capabilities: runtimes,
             // Structured capability fields
@@ -48025,7 +48048,10 @@ async function registerExecutor() {
     }
     catch (err) {
         registerSucceeded = false;
-        logger_1.logger.warn(`Register failed (will re-register with rich metadata on next token acquisition): ${err.message}`);
+        // EXE-VER-1: 门禁 403 时把服务端报文（含 minVersion 与升级指引）透传到
+        // 执行器日志——只看 axios 的 "status code 403" 无法定位版本问题。
+        const serverMessage = err?.response?.data?.message ?? err?.response?.data?.error;
+        logger_1.logger.warn(`Register failed (will re-register with rich metadata on next token acquisition): ${serverMessage ? `${err.message} — ${serverMessage}` : err.message}`);
         return false;
     }
 }
@@ -48150,6 +48176,12 @@ const server = app.listen(config_1.config.port, async () => {
         (0, auth_1.setOnTokenAcquired)(maybeReRegister);
         await registerExecutor();
         heartbeatInterval = (0, scheduler_1.startHeartbeat)();
+        // ARCH-32: pull 模式取件循环（与 push 模式互斥不冲突——push 由 admin
+        // 入站 POST 驱动，pull 循环只拉取队列；两种来源共用 acceptExecution）。
+        if (config_1.config.pullMode) {
+            (0, pull_1.startPullLoop)();
+            logger_1.logger.info('Pull dispatch mode enabled (EXECUTOR_PULL_MODE=true) — no inbound reachability required');
+        }
         (0, callback_1.startCallbackThread)();
         (0, file_logger_1.startLogCleanup)(config_1.config.logRetentionDays || 7);
         // Disk reclamation for task workdirs / git caches / downloaded packages /
@@ -48451,6 +48483,82 @@ async function forceTokenRefresh() {
     tokenExpiresAt = null;
     await refreshTokenIfNeeded();
     return dynamicToken;
+}
+
+
+/***/ }),
+
+/***/ 6611:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.pullOnce = pullOnce;
+exports.startPullLoop = startPullLoop;
+const config_1 = __nccwpck_require__(3650);
+const logger_1 = __nccwpck_require__(6888);
+const admin_client_1 = __nccwpck_require__(6609);
+const admin_envelope_1 = __nccwpck_require__(4138);
+const scheduler_1 = __nccwpck_require__(1415);
+const execute_1 = __nccwpck_require__(8690);
+const callback_1 = __nccwpck_require__(4915);
+/**
+ * ARCH-32（ADR-015）：pull 模式派发循环——NAT 内执行器的零入站取件通道。
+ *
+ * push 模式由 admin 主动 POST /api/execute；pull 模式下执行器在有空闲并发
+ * 槽位时向 admin 发起长轮询（POST /executors/pull，服务端阻塞至多
+ * EXECUTOR_PULL_WAIT_MS），从响应载荷中取任务，随后走与 push 完全相同的
+ * acceptExecution 领取路径与回调通道。除「谁发起连接」外，两种模式在执行
+ * 器侧的执行/回调语义逐字节一致。
+ *
+ * 节奏：1s 心跳节拍检查空闲槽位 + pullInFlight 单飞——空闲时即一轮长轮询
+ * （服务端挂 25s），无任务则空转返回；有任务立即领取并继续下一轮。
+ */
+let pullInFlight = false;
+async function pullOnce() {
+    if (pullInFlight)
+        return;
+    pullInFlight = true;
+    try {
+        const resp = await (0, admin_client_1.postLong)('/api/executors/pull', {
+            address: config_1.config.executorAddressPublic || config_1.config.executorAddress,
+            waitMs: 25000,
+        });
+        const payload = (0, admin_envelope_1.unwrapAdminResponseData)(resp?.data);
+        const task = payload?.task;
+        if (!task || !task.executionId)
+            return;
+        logger_1.logger.info(`Pulled execution ${task.executionId} from admin pull queue`);
+        const { traceparent, ...body } = task;
+        const accepted = (0, execute_1.acceptExecution)(body, traceparent);
+        if (accepted.status !== 200) {
+            // 领取被拒（容量竞态/校验失败）：补发 failed 回调，admin 侧不留僵尸
+            // RUNNING 行（stale sweep 之前先收敛）。
+            const error = typeof accepted.payload.error === 'string'
+                ? accepted.payload.error
+                : `HTTP ${accepted.status}`;
+            logger_1.logger.warn(`Pulled execution ${task.executionId} rejected (HTTP ${accepted.status}): ${error}`);
+            (0, callback_1.pushCallback)({
+                executionId: task.executionId,
+                status: 'failed',
+                errorMessage: (0, execute_1.truncateCallbackErrorMessage)(`Executor rejected pulled dispatch: ${error}`),
+            });
+        }
+    }
+    catch (err) {
+        logger_1.logger.warn(`Pull failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    finally {
+        pullInFlight = false;
+    }
+}
+function startPullLoop() {
+    return setInterval(() => {
+        if ((0, scheduler_1.getRunningCount)() < config_1.config.maxConcurrentTasks) {
+            void pullOnce();
+        }
+    }, 1000);
 }
 
 
@@ -49289,9 +49397,11 @@ exports.gitCheckoutTo = gitCheckoutTo;
 exports.validateExecutionWorkDir = validateExecutionWorkDir;
 exports.executionExists = executionExists;
 exports.listActiveExecutionIds = listActiveExecutionIds;
+exports.acceptExecution = acceptExecution;
 exports.prepareFailureReason = prepareFailureReason;
 exports.dispatchExecutionToWorker = dispatchExecutionToWorker;
 exports.buildNpmRcContent = buildNpmRcContent;
+exports.truncateCallbackErrorMessage = truncateCallbackErrorMessage;
 exports.killRunningTaskProcesses = killRunningTaskProcesses;
 exports.runTask = runTask;
 const express_1 = __nccwpck_require__(925);
@@ -49538,15 +49648,19 @@ function listActiveExecutionIds() {
 // 后台（改动2）。同步 prepare 时 clone(120s)+fetch(60s)+install(300s) 会
 // 超过 admin 侧 dispatch HTTP 超时（(task.timeout+10)s），导致 admin 把
 // 超时误判为 TIMEOUT 终态而执行器随后成功回调被丢弃、容量计数失真。
+//
+// ARCH-32: 校验/领取核心抽为 acceptExecution —— HTTP 路由与 pull 循环
+// （pull.ts，NAT 内执行器经长轮询取件）共用同一条路径，杜绝双实现漂移。
+// 返回 { status, payload }；HTTP 路由是薄适配层（写响应），pull 循环对
+// 非 200 结果补发 failed 回调（admin 侧不留僵尸 RUNNING 行）。
 // ---------------------------------------------------------------------------
-exports.executeRouter.post('/execute', (req, res) => {
+function acceptExecution(body, traceparent) {
     // BUG-03: Use atomic operations to prevent race conditions in capacity checking
     // Atomically increment counter first, then check if over capacity
     const current = Atomics.add((0, scheduler_1.getRunningCountArray)(), 0, 1);
     if (current >= config_1.config.maxConcurrentTasks) {
         Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
-        res.status(429).json({ error: 'Executor is at capacity' });
-        return;
+        return { status: 429, payload: { error: 'Executor is at capacity' } };
     }
     let entry = null;
     /** 同步拒绝路径：释放容量（幂等）。 */
@@ -49555,31 +49669,26 @@ exports.executeRouter.post('/execute', (req, res) => {
             entry.release();
         else
             Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
-        res.status(status).json({ error });
+        return { status, payload: { error } };
     };
     try {
-        const body = req.body;
         const executionId = body?.executionId;
         const params = body?.params;
         if (!executionId || !body.task) {
-            reject(400, 'executionId and task are required');
-            return;
+            return reject(400, 'executionId and task are required');
         }
         if (!isSafeExecutionIdSegment(executionId)) {
-            reject(400, 'Invalid executionId: path traversal detected');
-            return;
+            return reject(400, 'Invalid executionId: path traversal detected');
         }
         // 重复领取守卫：同一 execution 仍在运行（含排队）时不得二次领取——
         // 二次 Atomics.add 与首个并发路径叠加会失真/双释放。
         if (liveExecutions.has(executionId)) {
-            reject(400, `Execution ${executionId} is already active on this executor`);
-            return;
+            return reject(400, `Execution ${executionId} is already active on this executor`);
         }
         const workDir = path.join(config_1.config.workDir, executionId);
         const guardError = validateExecutionWorkDir(workDir, config_1.config.workDir);
         if (guardError) {
-            reject(400, guardError);
-            return;
+            return reject(400, guardError);
         }
         // 廉价同步校验（纯字符串检查，防注入/防误配置，语义与原实现一致）：
         // 后台化后若仍走失败回调，admin 侧 execution 尚未置 running 会丢弃回调，
@@ -49589,22 +49698,19 @@ exports.executeRouter.post('/execute', (req, res) => {
             // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
             const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
             if (!allowedGitPattern.test(gitRepo)) {
-                reject(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
-                return;
+                return reject(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
             }
             // S7: SSRF guard — block private IP addresses and localhost
             const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
             if (privateIpPattern.test(gitRepo)) {
-                reject(400, `gitRepo URL contains restricted address: ${gitRepo}`);
-                return;
+                return reject(400, `gitRepo URL contains restricted address: ${gitRepo}`);
             }
             const ref = (body.task.gitCommit || body.task.gitBranch || 'main');
             // git checkout uses array args (no shell injection), but an option-like
             // ref (`-b`, `--orphan`) would still be parsed as a flag by git — same
             // guard deploy.ts applies to its checkout path.
             if (/^-/.test(ref)) {
-                reject(400, `Invalid git ref: ${ref}`);
-                return;
+                return reject(400, `Invalid git ref: ${ref}`);
             }
         }
         // S16: validate each package name against npm naming rules before any
@@ -49613,8 +49719,7 @@ exports.executeRouter.post('/execute', (req, res) => {
         const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
         for (const pkg of reqs) {
             if (!npmNameRe.test(pkg)) {
-                reject(400, `Invalid npm package name: ${pkg}`);
-                return;
+                return reject(400, `Invalid npm package name: ${pkg}`);
             }
         }
         // timeout=0 表示不限时（admin 侧 task.entity/scheduler 语义，改动4）——
@@ -49622,38 +49727,39 @@ exports.executeRouter.post('/execute', (req, res) => {
         const rawTimeout = body.task.timeout;
         const timeout = rawTimeout === 0 ? 0 : rawTimeout || config_1.config.taskTimeoutSeconds;
         if (timeout !== 0 && (!Number.isFinite(timeout) || timeout < 1 || timeout > 86400)) {
-            reject(400, `Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
-            return;
+            return reject(400, `Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
         }
         // Glue 语言的字符串校验是同步 400 语义（与原实现一致），语言支持性判定
         // 依赖 runtime（可能被 manifest 覆盖），留在后台 prepare。
         const glueSource = body.task.glueSource || body.task.glue_source;
         if (glueSource !== undefined && typeof glueSource !== 'string') {
-            reject(400, 'glueSource must be a string');
-            return;
+            return reject(400, 'glueSource must be a string');
         }
         // 登记 + 立即 accepted。prepare（clone/checkout、依赖安装）与 spawn
         // 在后台执行（经 worker 按 taskId 串行，见 dispatch）。
         entry = createExecutionEntry(executionId, String(body.task.id || executionId));
         liveExecutions.set(executionId, entry);
-        // OBS-01: 记录 admin 派发请求的 W3C traceparent 头（缺省=无追踪），
-        // 后续注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。
-        const traceparentHeader = req.headers['traceparent'];
-        if (typeof traceparentHeader === 'string' && traceparentHeader) {
-            entry.traceparent = traceparentHeader;
-            logger_1.logger.info(`Execution ${executionId} trace: ${traceparentHeader.split('-')[1] ?? 'malformed'}`);
+        // OBS-01: 记录派发载荷的 W3C traceparent（HTTP 路由取请求头、pull 路径
+        // 取载荷字段；缺省=无追踪），后续注入任务 env AUTOFLOW_TRACE_ID 并随回
+        // 调回传关联。
+        if (traceparent) {
+            entry.traceparent = traceparent;
+            logger_1.logger.info(`Execution ${executionId} trace: ${traceparent.split('-')[1] ?? 'malformed'}`);
         }
         void startExecutionInBackground(executionId, body, params, entry);
         // 响应体与旧实现逐字一致——admin 对 2xx 的处理不变。
-        res.json({ status: 'accepted', executionId });
+        return { status: 200, payload: { status: 'accepted', executionId } };
     }
     catch (err) {
-        // Express 4 does not await async handlers: a synchronous throw below the
-        // capacity reservation must not hang the request or leak the slot.
-        if (!res.headersSent) {
-            reject(500, err instanceof Error ? err.message : 'Internal executor error');
-        }
+        // 同步 throw（容量预留之后）不得泄漏槽位——reject 内部幂等释放。
+        return reject(500, err instanceof Error ? err.message : 'Internal executor error');
     }
+}
+exports.executeRouter.post('/execute', (req, res) => {
+    const body = req.body;
+    const tpHeader = req.headers['traceparent'];
+    const result = acceptExecution(body, typeof tpHeader === 'string' ? tpHeader : undefined);
+    res.status(result.status).json(result.payload);
 });
 /**
  * 后台启动：先做与 worker 无关的前置（mkdir/chmod + 二次 symlink 检查），
@@ -51161,6 +51267,7 @@ exports.incrementRunning = incrementRunning;
 exports.decrementRunning = decrementRunning;
 exports.registerRunningExecutionIdsProvider = registerRunningExecutionIdsProvider;
 exports.registerDeadLetterCountProvider = registerDeadLetterCountProvider;
+exports.resetVersionDriftWarnStateForTest = resetVersionDriftWarnStateForTest;
 exports.startHeartbeat = startHeartbeat;
 const os = __importStar(__nccwpck_require__(857));
 const crypto_1 = __nccwpck_require__(6982);
@@ -51229,6 +51336,21 @@ async function measureCpuUsage() {
         }, 500);
     });
 }
+// EXE-VER-1: 版本漂移告警节流状态——同一次不合规期最多每 10 分钟 warn 一条。
+const VERSION_DRIFT_WARN_INTERVAL_MS = 10 * 60 * 1000;
+let lastVersionDriftWarnAt = 0;
+function warnVersionDriftThrottled(minVersion) {
+    const now = Date.now();
+    if (now - lastVersionDriftWarnAt < VERSION_DRIFT_WARN_INTERVAL_MS)
+        return;
+    lastVersionDriftWarnAt = now;
+    logger_1.logger.warn(`Version drift: executor ${config_1.EXECUTOR_VERSION} is below the admin-required minimum ${minVersion} ` +
+        `(EXECUTOR_MIN_VERSION). New task dispatch may be refused for this executor — ` +
+        `upgrade by re-running the install command or downloading the latest executor artifact.`);
+}
+function resetVersionDriftWarnStateForTest() {
+    lastVersionDriftWarnAt = 0;
+}
 async function sendHeartbeat() {
     try {
         const cpuUsage = await measureCpuUsage();
@@ -51253,12 +51375,22 @@ async function sendHeartbeat() {
             maxConcurrentTasks: config_1.config.maxConcurrentTasks,
             restartedAt: startup_identity_1.executorStartedAt,
             startupId: startup_identity_1.executorStartupId,
+            // EXE-VER-1: 版本随心跳上报（可选字段），中心端 EXECUTOR_MIN_VERSION
+            // 门禁开启时在响应中回显 versionCompliant（见下方消费）。
+            version: config_1.EXECUTOR_VERSION,
         });
         // R9 (round-8 P1 W3): the heartbeat response echoes admin's current
         // stored tokenHash (same adoption as register/POST /token), so the
         // per-execution callback HMAC secret stays in sync with admin-side
         // rotations without waiting for a re-register.
         (0, admin_envelope_1.adoptExecutorTokenHash)(resp?.data);
+        // EXE-VER-1: 版本漂移提醒——门禁开启且本执行器版本低于下限时，admin 在
+        // 响应里回显 versionCompliant=false。10 分钟节流防 30s 心跳刷屏；升级
+        // 执行器（重装 artifact）后响应回到 true，日志自然静默。
+        const heartbeatPayload = (0, admin_envelope_1.unwrapAdminResponseData)(resp?.data);
+        if (heartbeatPayload && heartbeatPayload.versionCompliant === false) {
+            warnVersionDriftThrottled(String(heartbeatPayload.minVersion ?? ''));
+        }
         logger_1.logger.info(`[${traceId}] Heartbeat succeeded`);
         (0, heartbeat_state_1.recordHeartbeat)(true);
     }
