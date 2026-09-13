@@ -3,13 +3,18 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-<<<<<<< HEAD
-更新时间：2026-09-13（**CI 卡死根治 + annotations 清零**：multiarch 弃 QEMU 改原生 arm64 runner 双 job 并行——同位卡死 5+ 次的根因消除，arm64 admin-api 45min+ → 76s；三处 CI 红灯修复 + deprecated actions 升级；v1.3.0 已发布）。此前同日第十五~二十一轮：AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、通知豁免、项目域消费、发布就绪度。
+更新时间：2026-09-13（**部署成熟度收尾：EXE-VER-1 执行器版本门禁 + DEP-HA-1 多副本部署配方**，主会话直落——子代理平台两次派发均 reasoning-level-missing，按降级纪律实施）。此前同日：CI 卡死根治 + annotations 清零（multiarch 原生 arm64 runner，v1.3.0 已发布）、AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、发布就绪度。
 当前分支：`develop`
 
 ## 状态快照
 
 - **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
+- **本轮（2026-09-13 部署成熟度收尾批次：EXE-VER-1 + DEP-HA-1 + 文档卫生，主会话）**。背景：主会话完成「中台部署 + 分布式多平台执行器安装/配置/连接」两线成熟度评估（结论=核心链路已达可交付成熟阶段；评估识别的三项可落地优化经用户拍板「可你自己安排」后本轮实施；跨 NAT pull 模式回连与需真机项评估为暂不立项）。子代理平台两次派发均失败（reasoning-level-missing）→ 主会话直落。
+  - **`eb5b64e` EXE-VER-1 执行器最低版本门禁 + 版本漂移提醒 done**：新 env `EXECUTOR_MIN_VERSION`（默认空=关，零行为变化；Joi 点分数字 1~4 段）——① register 时执行器 version 低于下限 403（落 service 层 registerExecutor 顶部、先于落库/发 token 副作用；报文含 minVersion+升级指引「重跑 install-cmd/换 artifact」；未上报版本的存量执行器放行+warn 不锁死；畸形版本 NaN→放行防锁死机队）；② heartbeat 请求体增可选 version（不落库），响应加法回显 minVersion/versionCompliant（门禁关=null/true，旧消费方无感）；③ 两端执行器新增单源常量 EXECUTOR_VERSION（register+心跳共用），消费回显打 10 分钟节流漂移 warn；node register catch 透传服务端报文（原日志只见 axios 403 无法定位版本问题）；④ 零依赖版本比较 util（不引 semver）。**测试**：admin-api **2479/2479**（2458 基线只增 +21：util 13/门禁矩阵 5/回显 3）+ tsc/eslint 0 错 · executor-node **275/275**（+2）· executor-python **250/250**（+3）。
+  - **`30801d2` DEP-HA-1 admin-api 多副本部署配方 done**（ARCH-31 行为已闭环但无菜谱的收口）：① infra/nginx/default.conf 三处 proxy_pass（通用 /api/、SSE 专用位置、socket.io）全改「resolver 127.0.0.11 valid=10s + server 级 set 变量」运行时再解析——**SSE 位置同改是关键点**：静态 proxy_pass 启动期解析后永久缓存单 IP，HA 下长流钉死地址；X-Upstream 取证头 always；② 新 docker-compose.ha.yml override（`ports: !reset []` 清空 3105 宿主端口防 scale 冲突 + 共享卷 admin_uploads:/app/uploads 保 uploads 一致性；要求 Compose v2.24+）；③ 新真机自检 `npm run test:ha-compose` **4/4 本机全绿**（admin-api 桩 --scale 2 + 真实 conf 原件，20 请求命中 2 副本 12:8；不构建 admin-api 镜像——多实例行为由 arch31 套件覆盖，职责分离）；④ deployment.md 尾部「多副本（HA）部署」段（步骤/nginx 行为/约束表/升级回滚）+ 环境变量表 EXECUTOR_MIN_VERSION 行 + compose admin-api 头注扩容指引；nginx -t 与 compose config 双校验绿。
+  - **AGENT_HANDOFF.md 冲突标记清理**：v1.3.0 收编合并遗留的孤儿 `<<<<<<< HEAD`（已提交入库）删除。
+  - **基线与状态**：admin-api 2479 · admin-web 659（未触碰）· executor-node 275 · executor-python 250 · develop 领先 origin 3 commit（待 push）。
+  - **下轮建议**：① 跨 NAT 执行器 pull 模式回连（评估第 5 项）仅在出现跨网执行器接入需求时立项，否则过度工程；② 生产真机项不变（QA-05 24h、BUG-07、DSK-01）；③ 可选小件：执行器版本合规态进 admin-web 列表徽标（EXE-VER-1 回显字段已就绪，需读面透出 executorVersion 对比）。
 - **本轮（2026-09-13 CI 治理：annotations 3 errors/23 warnings 排查 + multiarch 卡死根治，主会话）**。**追加实测（74cb6ec）**：原生 arm64 方案上线后出现一次新红灯——setup-buildx 拉 moby/buildkit 镜像遇 Docker Hub connection reset（第三方网络瞬断，run 34761485357）。最终形态：**弃 setup-buildx-action（docker-container driver），单平台原生构建改用 runner 自带 docker driver**——buildkit 镜像拉取点彻底消失（零 Docker Hub 依赖，除基础镜像层），type=gha 缓存随之移除（docker driver 不支持；原生构建 ~86s 冷构建可接受）。复测 run 34761893176：6/6 全绿，arm64 admin-api 秒级区间，CI multiarch 从此无第三方镜像源依赖。
   - **3 errors 根因与修复（6b04da3）**：① admin-api-test 红 = lint error（并行会话新文件 executor-shared-token.guard.ts 的 `{}` 空对象类型撞 no-empty-object-type）→ Record 精确类型；② api-types-drift 红 = 远端 pushResult 改 guard 形态后未重导出 → 重导出 openapi/api-types（authorization header 参数移除为有意契约变化）；③ multiarch (executor-node) 45min 超时 → 初步加 gha 缓存。GlueEditor useCallback 缺 t 依赖一并修复；deprecated actions 升级（qemu/buildx/build-push/gitleaks v4/v4/v7/v3）；admin-web 659 / admin-api 2458（并入并行会话新测试）全绿。
   - **`42c4559` multiarch 卡死根治（用户报「同位卡死 5+ 次、重跑偶发能过」）**：根因 = **QEMU 模拟 arm64**——admin-api 依赖树最大，QEMU 下 npm ci 慢到像挂死（非死锁，是模拟性能抖动，重跑偶发过）。彻底方案 = 弃 QEMU，改 **GitHub 原生 arm64 runner**（ubuntu-24.04-arm，public repo 免费）+ ubuntu-latest 双 job 并行各构建单平台，matrix exclude 保证 镜像×平台 恰 6 job（fail-fast: false），timeout 显式 20min，gha 缓存按 镜像×平台 分 scope。**实测（run 34761164921）：6/6 全绿，arm64 admin-api 76 秒**（此前 45min+ 卡死），最慢 job 86 秒，全程无 QEMU 无偶发挂死——同一处卡死的根因级消除。

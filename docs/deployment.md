@@ -72,6 +72,7 @@ security_opt:
 | `LOGIN_THROTTLE_LIMIT` | `20` | 登录接口限流（默认 20/分钟，生产建议 5） |
 | `STALE_RECOVERY_RETRY_ENABLED` | `true` | stale sweep 兑现重试预算开关（`false` 恢复旧行为：只置 FAILED 不重试） |
 | `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | SSRF 防护回环/私网出站白名单开关；同机部署（admin-api 与执行器都在本机）必须设 `true` |
+| `EXECUTOR_MIN_VERSION` | （空） | 执行器最低版本门禁（EXE-VER-1）：点分数字 1~4 段（如 `1.3.0`），空=关闭零行为变化。开启后 register 的 version 低于下限被拒 403（报文含升级指引），未上报版本的存量执行器放行；heartbeat 响应回显 `minVersion`/`versionCompliant`，执行器侧打版本漂移告警日志（10 分钟节流） |
 | `AI_ALLOW_PRIVATE_NETWORK` | `false` | AI 出站私网豁免（ARCH-31）：默认 false 时本地 Ollama（localhost:11434）也被 SSRF 闸拒绝；true 放行 loopback/restricted/private-LAN，云元数据恒拒 |
 | `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK` | `false` | 事件订阅 webhook 私网豁免（ARCH-31）：订阅校验与派发复核共用；事件订阅普通用户可建，开启即信任所有登录用户可向内网发 webhook，生产建议 false |
 | `NOTIF_ALLOW_PRIVATE_NETWORK` | `false` | 通知渠道私网豁免（R17）：企业微信/钉钉/Slack/飞书/自定义 webhook 五渠道共用；内网自建网关需 true，云元数据恒拒；email 走 SMTP 不受影响 |
@@ -640,3 +641,47 @@ node dist\main.js
 - 多实例部署无需共享会话存储：state/nonce 为 HMAC 签名 cookie（密钥复用 `JWT_REFRESH_SECRET`），任一实例均可独立完成回调校验；
 - SSO 与 TOTP 正交：IdP 侧 MFA 责任面由 IdP 承担，平台侧 TOTP 仍只作用于密码登录。
 
+
+## 多副本（HA）部署（DEP-HA-1）
+
+admin-api 无状态层支持水平扩展：多实例行为一致性（渠道配置落库读穿、调度 Leader 恰一、灰度租约、outbox 恰一次派发）已由 ARCH-31 闭环并真机验证（`npm run test:arch31-multi-instance` 15/15、`npm run test:arch31-outbox-dup` 13/13）。本段给出部署菜谱与约束。
+
+### 何时需要
+
+- 单实例 CPU/内存水位长期偏高（任务派发、回调写入、SSE 推送为的主要负载）；
+- 滚动重启不中断服务（一台重启时另一台继续接流量）。
+
+### 步骤
+
+```bash
+# 1. 多副本启动（--scale 指定副本数；override 负责清空宿主端口 + 共享 uploads 卷）
+docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admin-api=2
+
+# 2. 验证：经 admin-web（nginx）访问，请求应轮询命中两个副本
+curl -si http://localhost/api/health | grep -i x-upstream   # X-Upstream 取证头显示实际命中的容器
+npm run test:ha-compose                                     # 真机自检：多副本轮询断言（4/4）
+
+# 3. 回到单副本
+docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admin-api=1
+```
+
+要求 Docker Compose v2.24+（`docker-compose.ha.yml` 使用 `ports: !reset []` 清空基线的 `3105:3105` 宿主端口发布——多副本共用宿主端口必冲突，流量统一走 admin-web 内置 nginx 反代）。
+
+### nginx 侧行为（infra/nginx/default.conf，DEP-HA-1 已改）
+
+- 上游为「变量 + 运行时再解析」形态：`resolver 127.0.0.11 valid=10s`（Docker 内嵌 DNS）+ `set $admin_api_upstream admin-api:3105`，三个 proxy_pass 位置（通用 `/api/`、SSE 专用位置、`/socket.io/`）全部走变量；
+- `--scale` 出的多副本容器 = 服务名多条 A 记录，nginx 每请求轮询命中（自检实测 20 请求命中 2 副本，12:8）；容器重建 IP 漂移后 10s 内收敛，**滚动重启无需重启代理**；
+- 响应带 `X-Upstream: <ip>:3105` 取证头（`always`，内网信息），排障可定位实例、自检据此断言轮询；
+- 单副本部署行为不变（一条 A 记录 = 原直连语义）。
+
+### 约束与建议
+
+| 项 | 说明 |
+|---|---|
+| 调度 Leader 恰一 | cron 调度由 ARCH-31 Leader 选举保证不会双跑，无需运维动作 |
+| 限流计数器 | `THROTTLE_*` 为进程内存态，多副本按实例独立计数；依赖精确限流阈值时建议入口层（云 LB/网关）统一限流 |
+| uploads 一致性 | override 已为两副本挂同一命名卷 `admin_uploads:/app/uploads`；经实例 A 上传的应用包/artifact 对实例 B 可见 |
+| 执行日志 | `LOG_STORAGE_DRIVER=db`（默认）存 PG 天然一致；切 `s3`（minio profile）同样共享 |
+| 会话/令牌 | JWT 无状态校验 + OIDC state 为 HMAC 签名 cookie，多副本无需共享会话存储 |
+| 入口单点 | nginx/admin-web 仍为单容器；入口级高可用用云 LB 或 K8s Ingress 前置 |
+| 升级 | 拉新镜像后 `up -d --scale admin-api=2` 逐副本替换；迁移在副本启动时幂等执行，多副本同刻启动由「空库多实例种子竞态」防护兜底 |
