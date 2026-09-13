@@ -40,6 +40,10 @@ import { DomainEventModule } from "./common/services/domain-event-bus.service";
 // OBS-01: OpenTelemetry 追踪（@Global——埋点在 task/scheduler/executor/
 // execution-callback 多处；OTEL_ENABLED=false 时 TracingService 全短路）。
 import { TracingModule } from "./common/tracing/tracing.module";
+// ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Global——无门禁 @Cron 在
+// executor/task/application/artifacts/audit/auth 多模块，经 LeaderGateService
+// 只读 isLeader 短路；Redis 不可用时 fail-open，与 scheduler:leader 选举相互独立）。
+import { LeaderGateModule } from "./common/leader-gate/leader-gate.module";
 import { TaskTemplateModule } from "./modules/task-template/task-template.module";
 // FEAT-07: 出站事件订阅（webhook 出站）——消费 DomainEventBus 事件派发签名回调。
 import { EventSubscriptionModule } from "./modules/event-subscriptions/event-subscription.module";
@@ -483,6 +487,7 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
     ArtifactsModule,
     DomainEventModule,
     TracingModule,
+    LeaderGateModule,
     TaskTemplateModule,
     EventSubscriptionModule,
     ApiKeysModule,

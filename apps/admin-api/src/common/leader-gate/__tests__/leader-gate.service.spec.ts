@@ -1,0 +1,182 @@
+import {
+  CRON_LEADER_LOCK_KEY,
+  CRON_LEADER_RETRY_MS,
+  CRON_LEADER_TTL_MS,
+  LeaderGateService,
+} from "../leader-gate.service";
+import { Lock, RedisLockService } from "../../services/redis-lock.service";
+
+/** 构造一个已获取的锁句柄（release 可断言） */
+function makeLock(overrides: Partial<Lock> = {}): Lock {
+  return {
+    key: CRON_LEADER_LOCK_KEY,
+    lockId: "cron-leader-lock-id-1",
+    ttlMs: CRON_LEADER_TTL_MS,
+    released: false,
+    release: jest.fn().mockResolvedValue(true),
+    ...overrides,
+  };
+}
+
+interface LockServiceMock {
+  service: RedisLockService;
+  acquireLock: jest.Mock;
+  extendLock: jest.Mock;
+}
+
+function makeLockService(): LockServiceMock {
+  const acquireLock = jest.fn();
+  const extendLock = jest.fn();
+  const service = { acquireLock, extendLock } as unknown as RedisLockService;
+  return { service, acquireLock, extendLock };
+}
+
+async function initGate(lockService: RedisLockService): Promise<LeaderGateService> {
+  const gate = new LeaderGateService(lockService);
+  await gate.onModuleInit();
+  return gate;
+}
+
+describe("LeaderGateService（ARCH-31 §5 cron 维护任务统一 Leader 门禁）", () => {
+  let lockMock: LockServiceMock;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    lockMock = makeLockService();
+  });
+
+  afterEach(async () => {
+    // 逐用例兜底清理，防止定时器跨用例泄漏（无锁的 gate 释放无副作用）
+    await Promise.resolve();
+    jest.useRealTimers();
+  });
+
+  describe("竞选（acquireLock）", () => {
+    it("acquire 成功 → isLeader=true，锁参数为独立 key cron:leader + TTL 30s", async () => {
+      lockMock.acquireLock.mockResolvedValue(makeLock());
+
+      const gate = await initGate(lockMock.service);
+
+      expect(gate.isLeader).toBe(true);
+      expect(lockMock.acquireLock).toHaveBeenCalledWith(
+        CRON_LEADER_LOCK_KEY,
+        CRON_LEADER_TTL_MS,
+      );
+      expect(CRON_LEADER_LOCK_KEY).toBe("cron:leader");
+    });
+
+    it("acquire 返回 null（锁被其他实例持有）→ 保持 follower 且安排竞选重试；重试到点后再次竞选", async () => {
+      lockMock.acquireLock.mockResolvedValueOnce(null);
+
+      const gate = await initGate(lockMock.service);
+
+      expect(gate.isLeader).toBe(false);
+      expect(lockMock.acquireLock).toHaveBeenCalledTimes(1);
+
+      // 重试周期到点后再次竞选，此次拿到锁 → 升级为 Leader
+      lockMock.acquireLock.mockResolvedValueOnce(makeLock());
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_RETRY_MS);
+
+      expect(lockMock.acquireLock).toHaveBeenCalledTimes(2);
+      expect(gate.isLeader).toBe(true);
+    });
+
+    it("acquire 抛错（Redis 不可用）→ fail-open 按 Leader 运行，且保留竞选重试", async () => {
+      lockMock.acquireLock.mockRejectedValue(new Error("redis down"));
+
+      const gate = await initGate(lockMock.service);
+
+      expect(gate.isLeader).toBe(true);
+      expect(lockMock.acquireLock).toHaveBeenCalledTimes(1);
+
+      // fail-open Leader 周期性重试：Redis 恢复且锁已被其他实例真正持有 → 让位
+      lockMock.acquireLock.mockResolvedValueOnce(null);
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_RETRY_MS);
+
+      expect(lockMock.acquireLock).toHaveBeenCalledTimes(2);
+      expect(gate.isLeader).toBe(false);
+    });
+
+    it("fail-open Leader 后补拿真实锁成功 → 无缝转为持锁 Leader（不重复打 acquired 日志路径）", async () => {
+      lockMock.acquireLock.mockRejectedValue(new Error("redis down"));
+      const gate = await initGate(lockMock.service);
+      expect(gate.isLeader).toBe(true);
+
+      lockMock.acquireLock.mockResolvedValueOnce(makeLock());
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_RETRY_MS);
+
+      expect(gate.isLeader).toBe(true);
+      // 后续 extendLock 校验定时器已就位（用 TTL/2 处的一次校验证明）
+      lockMock.extendLock.mockResolvedValue(true);
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
+      expect(lockMock.extendLock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("Leader 租约校验（extendLock）", () => {
+    it("extendLock 返回 false（锁已易主）→ demote、释放本地锁句柄并安排重试", async () => {
+      const lock = makeLock();
+      lockMock.acquireLock.mockResolvedValue(lock);
+      const gate = await initGate(lockMock.service);
+      expect(gate.isLeader).toBe(true);
+
+      lockMock.extendLock.mockResolvedValue(false);
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
+
+      expect(gate.isLeader).toBe(false);
+      expect(lock.release).toHaveBeenCalledTimes(1);
+      // demote 后保留竞选重试：下一周期再次竞选
+      lockMock.acquireLock.mockResolvedValueOnce(makeLock({ lockId: "lock-id-2" }));
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_RETRY_MS);
+      expect(lockMock.acquireLock).toHaveBeenCalledTimes(2);
+      expect(gate.isLeader).toBe(true);
+    });
+
+    it("extendLock 抛错（Redis 抖动）→ 保留租约，下个校验周期再判定", async () => {
+      const lock = makeLock();
+      lockMock.acquireLock.mockResolvedValue(lock);
+      const gate = await initGate(lockMock.service);
+
+      lockMock.extendLock.mockRejectedValueOnce(new Error("timeout"));
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
+      expect(gate.isLeader).toBe(true);
+
+      // 下一周期恢复 → 校验通过仍为 Leader
+      lockMock.extendLock.mockResolvedValueOnce(true);
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
+      expect(gate.isLeader).toBe(true);
+      expect(lockMock.extendLock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("销毁（onModuleDestroy）", () => {
+    it("持锁 Leader 销毁：释放锁、清空身份，重试/校验定时器不再触发", async () => {
+      const lock = makeLock();
+      lockMock.acquireLock.mockResolvedValue(lock);
+      const gate = await initGate(lockMock.service);
+      expect(gate.isLeader).toBe(true);
+
+      await gate.onModuleDestroy();
+
+      expect(gate.isLeader).toBe(false);
+      expect(lock.release).toHaveBeenCalledTimes(1);
+
+      const callsAtDestroy = lockMock.acquireLock.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS * 10);
+      expect(lockMock.acquireLock.mock.calls.length).toBe(callsAtDestroy);
+      expect(lockMock.extendLock).not.toHaveBeenCalled();
+    });
+
+    it("follower 销毁：待发的竞选重试定时器被清除，不再发起 acquire", async () => {
+      lockMock.acquireLock.mockResolvedValue(null);
+      const gate = await initGate(lockMock.service);
+      expect(gate.isLeader).toBe(false);
+      expect(lockMock.acquireLock).toHaveBeenCalledTimes(1);
+
+      await gate.onModuleDestroy();
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_RETRY_MS * 10);
+
+      expect(lockMock.acquireLock).toHaveBeenCalledTimes(1);
+    });
+  });
+});
