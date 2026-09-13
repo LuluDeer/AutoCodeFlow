@@ -1,20 +1,28 @@
 # ARCH-31：多 admin-api 实例兼容矩阵
 
-> 状态：**部分实施（2026-09-12 本轮）**——通知静默（3.2）、渠道配置（3.3）、
-> 灰度批次（3.4）三项 🔴 已改造为「DB 为共享真相 + TTL 读穿 / 条件 UPDATE claim /
-> 活性租约」，等级降为 🟡（收敛窗口内仍有偏差，无写冲突）；outbox 行级 claim 仍
-> pending，本地文件系统（3.5）属部署形态约束（需共享卷）。
-> **真机双实例端到端验证尚未执行**，故整体仍不标 done。范围：`apps/admin-api/src`。
+> 状态：**部分实施（2026-09-12 本轮改造 + 2026-09-13 口径更新）**——通知静默（3.2）、
+> 渠道配置（3.3）、灰度批次（3.4）三项 🔴 已改造为「DB 为共享真相 + TTL 读穿 /
+> 条件 UPDATE claim / 活性租约」，等级降为 🟡（收敛窗口内仍有偏差，无写冲突）；
+> outbox 行级 claim/租约已落地并经真机双实例验证（3.6）；本地文件系统（3.5）属
+> 部署形态约束（需共享卷）。
+> **真机双实例端到端验证（docker 双进程共享 PG/Redis）已逐项通过**（文末清单 5/5 ✅，
+> 含灰度心跳跨实例 20/20、outbox 重复投递边界 13/13，2026-09-12~13）；整体仍不标
+> done 的保留项以文内实际仍为 🟡/🔴 的条目为准：本地文件系统共享卷（3.5 🔴）、
+> 令牌缓存 Redis 化（3.7 🟡）、快速路径重试 pendingTimers（总表 #8 🟡），另多主机
+> （跨机）拓扑尚留验。范围：`apps/admin-api/src`。
 > 目的：盘点全部**进程内单例状态**，标注每一项在多实例（水平扩容 / 滚动重启 /
 > 无会话粘滞负载均衡）下的兼容性、失效后果与风险等级，并给出 outbox / silence
 > 两项的 Redis 化评估。
 >
-> 结论速览：调度链（Leader Election + DB claim）已多实例安全；**通知静默**、
-> **渠道配置**、**灰度批次**、**本地文件系统**四类仍是单实例假设，是水平扩容的
-> 主要约束。
+> 结论速览：调度链（Leader Election + DB claim）已多实例安全；通知静默、渠道配置、
+> 灰度批次、outbox 四类已改造为「DB 共享真相 + 读穿/claim/租约」并经真机双实例
+> 端到端验证；无 Leader 门禁的 @Cron（3.8）已于 2026-09-13 经独立 `cron:leader`
+> 选举统一收口（🟡→🟢）；**本地文件系统**（需共享卷）仍是水平扩容的主要部署约束，
+> 令牌缓存（3.7）等剩余 🟡 项按 §5 建议继续加固。
 >
-> 本文保留已完成的盘点/评估事实，不代表多实例实现完成；后续按 silence、channel
-> config、rollout、outbox 四项拆分实现，并逐项执行双实例验证。
+> 本文保留历轮盘点/评估与验证事实；silence、channel config、rollout、outbox 四项
+> 拆分实现与逐项双实例验证均已完成（见 §5「后续实现拆分」与文末清单），剩余加固
+> 项见 §5。
 
 ---
 
@@ -44,7 +52,7 @@ claim；④ 路由到任意实例是否等价。
 | 7 | FEAT-19 outbox 派发扫描 `OutboxDispatcher` | DB 表（共享） | 是 | DB 行状态 | 🟡 中 |
 | 8 | FEAT-07 快速路径重试 `pendingTimers` | 进程内 Set | 否 | outbox 兜底 | 🟡 中 |
 | 9 | 执行器令牌缓存（3 个 Map） | 进程内 Map | 否 | TTL 60s / rotate 逐实例清 | 🟡 中 |
-| 10 | 无 Leader 门禁的 `@Cron`（8 个） | 各实例并行 | 否 | 条件 UPDATE / 幂等 | 🟡 中 |
+| 10 | 无 Leader 门禁的 `@Cron`（原 8 个） | ~~各实例并行~~ 已由 `LeaderGateService`（`cron:leader`）门禁收口（3.8，2026-09-13） | 锁共享 | fail-open + 15s 校验 | 🟢 低（已收口） |
 | 11 | 运行时指标 `counters`/`gauges`、`SchedulerMetrics`、`ExecutionCallbackMetrics` | 进程内 / 模块级 | 否 | Prometheus per-target | 🟢 低 |
 | 12 | SSE 槽位 `sseStreams*` / `MetricsStreamSlotService.activeStreams` | 进程内计数 | 否 | 按实例线性叠加（已文档化） | 🟢 低 |
 | 13 | 领域事件总线 `DomainEventBus` | 进程内 EventEmitter | 否 | outbox 兜底跨进程 | 🟢 低 |
@@ -204,12 +212,13 @@ OnModuleInit + 每 5s 扫描。claim **在数据库内完成**：单条
 - `POST /executors/token` 的幂等复用（R9）也按实例命中：请求落到不同实例会再轮换一次
   （冷启动语义，注释已承认无害）。
 
-### 3.8 🟡 未接 Leader 门禁的 `@Cron`
+### 3.8 ✅ 已收口（2026-09-13）：`@Cron` 统一 Leader 门禁
 
-`scheduler.service.ts` 的 `reload`/`recoverStaleExecutions` 有 `isLeader` 门；下列
-cron **没有**，每个实例并行执行（round4 复审已记 P2）：
+原状（round4 复审 P2）：`scheduler.service.ts` 的 `reload`/`recoverStaleExecutions`
+自带 `isLeader` 门，下列 cron **没有**，每个实例并行执行。2026-09-13 已统一接入
+`LeaderGateService` 门禁（下表原状列保留作盘点记录）：
 
-| 服务 | cron | 多实例影响 | 等级 |
+| 服务 | cron | 原多实例影响（已由门禁消除） | 原等级 |
 | --- | --- | --- | --- |
 | `executor.markStaleOffline` | `*/30 * * * * *` | 条件 UPDATE `status=ONLINE` 仅一赢家；赢家 `notifyExecutorOffline` + emit `executor.offline`，故通知/事件基本不重复 | 🟡 |
 | `executor.detectLostExecutions` | `0 */5 * * * *` | 条件 UPDATE `status=RUNNING` 仅一赢家，`:affected>0` 才 `releaseExecutorSlot`；并发仅增扫描负载 | 🟡 |
@@ -219,9 +228,30 @@ cron **没有**，每个实例并行执行（round4 复审已记 P2）：
 | `log-retention.handleDailyCleanup` | `0 30 3 * * *` | DETACH/DROP + `CREATE … IF NOT EXISTS` 双保险；注释声明幂等 | 🟢→🟡 |
 | `auth.cleanupExpiredTokens` | `EVERY_DAY_AT_3AM` | 幂等 DELETE | 🟢 |
 | `audit.cleanupOldAuditLogs` | `0 5 2 * * *` | bypass 事务 DELETE，幂等 | 🟢 |
+| `artifacts-retention.handleDailyCleanup` | `0 45 3 * * *` | 幂等 rm -rf（原表漏列，本轮 grep 复核补齐） | 🟢→🟡 |
+| `s3-log-object-retention.handleDailyObjectCleanup` | `0 35 3 * * *` | keyset 分页 + 带守卫清指针，幂等（WIKI-LOG-S3GC 新增，原表漏列） | 🟢→🟡 |
 
-影响集中在：重复告警（已由条件写收敛）、并发删除抢锁/长事务（`cleanupOldRecords`/
-`cleanupOldAuditLogs` 为**单条无界 DELETE**，多实例并发会放大 WAL 与锁竞争）。
+**收口实现（`common/leader-gate/`，新增 `LeaderGateService` + @Global
+`LeaderGateModule`）**：
+
+- **独立锁 key `cron:leader`**（实际 Redis key `lock:cron:leader`，TTL 30s 同款），
+  **与调度器选举的 `scheduler:leader` 相互独立**——两套选举各自竞选/续期/demote，
+  互不感知；因此 **cron Leader 与调度 Leader 可能落在不同实例**，这是有意为之：
+  两类任务均为幂等清扫，调度触发另有 `task:trigger:*` Redis 锁 + DB claim 双保险，
+  Leader 身份不同不产生任何正确性影响，仅避免共享一把锁时一方 demote 波及另一方。
+- 门禁形态：10 处 @Cron 方法体第一行
+  `if (this.leaderGate && !this.leaderGate.isLeader) return;`（只门禁 @Cron 本体，
+  onModuleInit 直调与业务逻辑不动）；gate 经 `@Optional()` 注入，缺席 → null →
+  门禁不生效（既有单测直接 new 装配零破坏，先例同 TracingService）。
+- 选举/维持语义与 SchedulerService TASK-006 同款：`acquireLock` 成功即 Leader
+  （watchdog TTL/3 续期）+ TTL/2 校验定时器用 `extendLock` 探测归属，失败即 demote
+  并进入 15s 竞选重试循环；非 Leader 周期重试竞选。
+- **fail-open 语义**：Redis 完全不可用（acquireLock 抛错）时按 Leader 运行，与
+  scheduler 同款——幂等维护任务不因 Redis 故障整体停摆；fail-open 期间多实例短暂
+  双 Leader 的代价只是重复执行幂等清扫，无正确性影响；Redis 恢复后由重试循环补拿
+  真实锁或让位于已持锁实例。
+- `onModuleDestroy` 停止竞选/校验定时器并 best-effort 释放锁，加快 failover。
+- 零新增配置（.env.example 不动）。
 
 ### 3.9 🟢 已按实例聚合的观测/容量
 
@@ -290,9 +320,10 @@ fail-open 回内存态，与 NOTIF-003 降级一致）。
 - **已改造（本轮）**：通知静默（3.2）、渠道配置（3.3）、灰度批次（3.4）——三者
   原是「单实例内存态当共享态用」的典型，现统一为「DB 共享真相 + 读穿/claim/租约」，
   收敛窗口 ≤ 15s（灰度批次为事件驱动，无周期窗口）。
-- **待真机双实例验证**：见文末清单（1/2/3 项现已具备验证条件）。
-- **建议加固**：outbox 行级 claim（4.1）、`@Cron` 统一 Leader 门禁（3.8，可抽
-  `@LeaderOnly()` 装饰器复用 scheduler 的 `isLeader`/Redis 锁，fail-open 语义一致）。
+- **真机双实例验证**：文末清单 5/5 已逐项通过（2026-09-12~13）；多主机（跨机）拓扑尚留验。
+- **已收口（2026-09-13）**：`@Cron` 统一 Leader 门禁（3.8）——独立 `cron:leader`
+  选举（`LeaderGateService`，10 处 @Cron 方法体第一行门禁，fail-open 语义与
+  scheduler 一致）；outbox 行级 claim（4.1 方案 A）已落地并经双实例验证（见 3.6）。
 
 ### 后续实现拆分
 
@@ -300,8 +331,9 @@ fail-open 回内存态，与 NOTIF-003 降级一致）。
 2. ~~**channel config**：补共享持久化~~ ✅ 本轮完成（独立表 1790000000014，见 3.3）。
 3. ~~**rollout**：批次属主状态与心跳确认改为跨实例可协调的持久化/租约语义~~ ✅ 本轮完成（3.4，含非属主心跳 hydration、失败 claim、并发互斥、活性租约）。
 4. ~~**outbox**：DB 行级 claim/lease~~ ✅ **claim/租约早前轮次已落地**（`FOR UPDATE SKIP LOCKED` + 60s 租约 + leaseToken 守卫，见 3.6），本轮补 **快速路径收口**（`markFastPathDelivered`，把「每个成功事件必然重复投递」收敛为「部分失败/租约竞态时才可能重复」）；**真机双实例的重复投递边界已于 2026-09-13 端到端验证**（见清单第 4 项补充），验证中抓出并修掉「useFactory 别名双 wrapper 导致 onModuleInit 双跑 → 事件双投」的生产级缺陷。
+5. ~~**@Cron 统一 Leader 门禁**：独立 `cron:leader` 选举~~ ✅ 2026-09-13 完成（3.8，`LeaderGateService` + @Global `LeaderGateModule`，10 处 @Cron 接入；单测覆盖竞选/重试/fail-open/demote/销毁与代表性 service 门禁行为）。
 
-以上 1~4 为**代码实现完成 + 单测覆盖**；真机双实例端到端验证按清单逐项执行（1/2/5 已验证，3/4 待）。
+以上 1~5 为**代码实现完成 + 单测覆盖**；真机双实例端到端验证已按清单逐项执行完毕——清单 5/5 ✅（1/2/5 于 2026-09-12、3 于 2026-09-12 补充、4 的重复投递端到端闭环于 2026-09-13），多主机（跨机）拓扑留验。
 
 ### 真机双实例验证清单
 

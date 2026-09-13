@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -9,6 +9,9 @@ import {
 } from "../entities/task-execution.entity";
 import { S3LogStorage } from "../log-storage/s3-log-storage";
 import { DEFAULT_LOG_RETENTION_DAYS } from "./log-retention-cleanup.service";
+// ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
+// 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
+import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
 
 /** 每日 03:35 对象回收（6 段 cron；与 DB 日志行清理 03:30 / 产物清理 03:45
  *  错峰——独立 cron 入口互不阻塞，单边慢/失败不影响另两边） */
@@ -82,11 +85,16 @@ export class S3LogObjectRetentionService {
     @InjectRepository(TaskExecution)
     private readonly execRepo: Repository<TaskExecution>,
     private readonly configService: ConfigService,
+    // ARCH-31 §5: 多实例下 @Cron 维护任务仅 cron Leader 执行（@Global 恒提供）。
+    @Optional()
+    private readonly leaderGate: LeaderGateService | null = null,
   ) {}
 
   /** 每日定时入口；回收失败只记日志，等下一轮 cron 重试，不影响主流程 */
   @Cron(S3_LOG_OBJECT_RETENTION_CRON)
   async handleDailyObjectCleanup(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     try {
       const removed = await this.cleanupExpiredObjects();
       if (removed > 0) {
