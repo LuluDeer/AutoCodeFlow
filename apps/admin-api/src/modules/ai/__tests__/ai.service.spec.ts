@@ -296,6 +296,84 @@ describe("AiService", () => {
       );
       warnSpy.mockRestore();
     });
+
+    // WIKI-OPT-3: cron 校验前置——AI 返回的 suggestedCron 非法时不得透出，
+    // 服务层直接回退并标记 fallback（防止前端采纳落库后调度注册崩溃）。
+    describe("cron validation (WIKI-OPT-3)", () => {
+      const stats = {
+        total: 10,
+        successes: 8,
+        failures: 2,
+        avgDurationMs: 500,
+        p95DurationMs: 900,
+        bestHoursUtc: [2, 3],
+      };
+
+      function mockOpenAiJsonResponse(content: string) {
+        configService.get.mockImplementation(
+          (key: string, defaultVal?: any) => {
+            if (key === "ai.provider") return "openai";
+            if (key === "ai.openaiApiKey") return "test-key";
+            return defaultVal;
+          },
+        );
+        mockedAxios.post = jest.fn().mockResolvedValue({
+          data: { choices: [{ message: { content } }] },
+        });
+      }
+
+      it("should fall back to currentCron with fallback flag when AI returns invalid cron", async () => {
+        mockOpenAiJsonResponse(
+          '{"suggestedCron":"every 5 minutes","reasoning":"Runs often"}',
+        );
+        const warnSpy = jest
+          .spyOn(Logger.prototype, "warn")
+          .mockImplementation(() => {});
+        const result = await service.suggestSchedule(
+          "my-task",
+          "*/10 * * * *",
+          stats,
+        );
+        expect(result.suggestedCron).toBe("*/10 * * * *");
+        expect(result.reasoning).toBe("AI returned invalid cron expression.");
+        expect(result.fallback).toBe(true);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("invalid cron"),
+        );
+        warnSpy.mockRestore();
+      });
+
+      it("should fall back to default hourly cron when AI returns invalid cron and there is no currentCron", async () => {
+        mockOpenAiJsonResponse(
+          '{"suggestedCron":"every 5 minutes","reasoning":"Runs often"}',
+        );
+        const warnSpy = jest
+          .spyOn(Logger.prototype, "warn")
+          .mockImplementation(() => {});
+        const result = await service.suggestSchedule("my-task", null, stats);
+        expect(result.suggestedCron).toBe("0 * * * *");
+        expect(result.fallback).toBe(true);
+        warnSpy.mockRestore();
+      });
+
+      it("should return AI suggestion as-is when the cron is valid", async () => {
+        mockOpenAiJsonResponse(
+          '{"suggestedCron":"0 * * * *","reasoning":"Hourly is fine"}',
+        );
+        const warnSpy = jest
+          .spyOn(Logger.prototype, "warn")
+          .mockImplementation(() => {});
+        const result = await service.suggestSchedule(
+          "my-task",
+          "*/5 * * * *",
+          stats,
+        );
+        expect(result.suggestedCron).toBe("0 * * * *");
+        expect(result.reasoning).toBe("Hourly is fine");
+        expect(result.fallback).toBeUndefined();
+        warnSpy.mockRestore();
+      });
+    });
   });
 
   describe("analyzeAppHealth", () => {

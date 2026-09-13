@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
+import * as nodeCron from "node-cron";
 import { SystemConfigService } from "../config/config.service";
 import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
 
@@ -62,6 +63,11 @@ export class AiService {
    * Dedicated prompt for schedule suggestion.
    * Returns a JSON object: { suggestedCron: string, reasoning: string }
    * so the caller can reliably parse it without regex hacks.
+   * WIKI-OPT-3: the AI-returned cron is validated with node-cron.validate
+   * (same implementation as scheduler registration); an invalid suggestion
+   * never leaves this method — it falls back to the current cron (or the
+   * default "0 * * * *") with `fallback: true`, so an unparseable /
+   * hallucinated expression cannot reach the DB and crash scheduling.
    */
   async suggestSchedule(
     taskName: string,
@@ -107,7 +113,24 @@ export class AiService {
         suggestedCron: string;
         reasoning: string;
       };
-      if (parsed.suggestedCron && parsed.reasoning) return parsed;
+      if (parsed.suggestedCron && parsed.reasoning) {
+        // WIKI-OPT-3: cron 校验前置到服务层——AI 偶发返回非 5 字段 cron
+        // （如 "every 5 minutes"）若原样透出，前端采纳落库后调度注册会
+        // 崩溃。用 node-cron.validate 把关（与 scheduler 注册 /
+        // maintenance-window util 同一实现，行为不漂移）；非法 → warn +
+        // 回退当前值，并保留 fallback 标记语义（调用方据此区分 AI 建议与回退）。
+        if (!nodeCron.validate(parsed.suggestedCron)) {
+          this.logger.warn(
+            `suggestSchedule: AI returned invalid cron expression: "${parsed.suggestedCron}"`,
+          );
+          return {
+            suggestedCron: currentCron || "0 * * * *",
+            reasoning: "AI returned invalid cron expression.",
+            fallback: true,
+          };
+        }
+        return parsed;
+      }
       // AI-002: JSON 合法但字段缺失——同样视为解析失败并记 warn
       this.logger.warn(
         `suggestSchedule: AI response missing required fields (suggestedCron/reasoning)`,

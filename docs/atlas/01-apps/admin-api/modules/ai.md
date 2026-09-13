@@ -47,7 +47,7 @@ TaskProcessor（派发失败最后一次尝试）/ TaskService.analyzeExecution�
 
 ### 排程建议（suggestSchedule）
 
-`TaskService.suggestSchedule` 聚合执行统计（成功率、均值/P95 时长、成功率最高的 UTC 小时）→ AiService 构造 prompt 要求**只回 JSON** `{suggestedCron, reasoning}` → 剥 markdown 围栏后解析。解析失败或字段缺失：记 warn 并返回 `{suggestedCron: 当前值或 "0 * * * *", reasoning: "AI provider not configured.", fallback: true}`（AI-002：显式 fallback 标记，前端可区分「AI 建议」与「回退」）。暴露为 `POST /api/tasks/:id/suggest-schedule`（见 [task](task.md)）。
+`TaskService.suggestSchedule` 聚合执行统计（成功率、均值/P95 时长、成功率最高的 UTC 小时）→ AiService 构造 prompt 要求**只回 JSON** `{suggestedCron, reasoning}` → 剥 markdown 围栏后解析。JSON 解析失败或字段缺失：记 warn 并返回 `{suggestedCron: 当前值或 "0 * * * *", fallback: true}`（AI-002：显式 fallback 标记，前端可区分「AI 建议」与「回退」）。AI 返回的 `suggestedCron` 在服务层经 `node-cron.validate` 前置校验（WIKI-OPT-3，与调度器注册 / maintenance-window util 同一实现）：非法（如 "every 5 minutes"）→ 记 warn 并回退当前值（`fallback: true`，reasoning 为 "AI returned invalid cron expression."），非法 cron 永不透出落库。暴露为 `POST /api/tasks/:id/suggest-schedule`（见 [task](task.md)）。
 
 ## 配置解析优先级（getAiConfig）
 
