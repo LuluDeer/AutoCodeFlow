@@ -42,7 +42,9 @@ let mockSearch = '';
 let mockSearchParamsCache: URLSearchParams | null = null;
 let mockSearchParamsCacheKey = '';
 // F-04：suggestCron 用例需要观察 setSearchParams（清参 + replace 导航）。
-let mockSetSearchParams = vi.fn((next: URLSearchParams, _opts?: { replace?: boolean }) => {
+// 断言只需 next（清参结果），opts(replace) 不影响观察值——故实现不接收第二参，
+// 避免 `_opts` 未使用触发 @typescript-eslint/no-unused-vars（CI lint 门禁）。
+let mockSetSearchParams = vi.fn((next: URLSearchParams) => {
   mockSearch = next.toString();
 });
 vi.mock('react-router-dom', () => ({
@@ -88,7 +90,7 @@ beforeEach(() => {
   mockSearch = '';
   mockSearchParamsCache = null;
   mockSearchParamsCacheKey = '';
-  mockSetSearchParams = vi.fn((next: URLSearchParams, _opts?: { replace?: boolean }) => {
+  mockSetSearchParams = vi.fn((next: URLSearchParams) => {
     mockSearch = next.toString();
   });
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([

@@ -154,7 +154,7 @@ describe('callback persistence — batch sharding and dead-letter', () => {
     for (const p of persisted) {
       expect(p.items.every(item => item.executionId.startsWith('exec-'))).toBe(true);
     }
-  });
+  }, 30_000);
 
   it('stops re-sending a persistently failing file after the retry cap (dead-letter)', async () => {
     post.mockResolvedValue({ status: 500 });
@@ -180,7 +180,10 @@ describe('callback persistence — batch sharding and dead-letter', () => {
     );
     expect(items[0].executionId).toBe('exec-poison');
     expect(liveCallbackFiles()).toHaveLength(0);
-  }, 15_000);
+    // E-05 把 CALLBACK_FILE_MAX_RETRIES 提到 150 后，本用例需真实跑满
+    // 150+20 轮 sweep（每轮含落盘 + 读盘 + JSON 解析）。单机空闲约 3s，
+    // 但并发/CI 2 核实测会突破 15s → 假红（Exceeded timeout）。给足预算。
+  }, 60_000);
 
   it('records retries in the .meta counter and cleans both files when a retry succeeds', async () => {
     post.mockResolvedValue({ status: 500 });
