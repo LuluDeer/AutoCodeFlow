@@ -12,6 +12,13 @@ import { useMetricsStream, reconnectBackoffMs } from '../hooks/useMetricsStream'
 import { queryKeys } from '../api/queries';
 import { useAuthStore } from '../store/auth';
 
+// A5：SSE 建流前先向后端换一枚 30s 短效票据（access token 不再进 URL）。
+// 这里把换票桩成固定值，断言行相应改为断言 `?ticket=`。
+vi.mock('../api/sse', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/sse')>();
+  return { ...actual, fetchSseTicket: vi.fn().mockResolvedValue('test-token') };
+});
+
 // ── 纯函数：重连退避 ─────────────────────────────────────────────────────
 
 describe('reconnectBackoffMs 退避节奏', () => {
@@ -74,7 +81,7 @@ describe('useMetricsStream 流行为', () => {
     vi.useRealTimers();
   });
 
-  it('建立连接：URL 指向 /metrics/stream 且携带 ?access_token=（logs/stream 先例）', async () => {
+  it('建立连接：URL 指向 /metrics/stream 且携带 ?ticket=（logs/stream 先例）', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={qc}>
@@ -84,7 +91,7 @@ describe('useMetricsStream 流行为', () => {
     await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
     const es = FakeEventSource.instances[0];
     expect(es.url).toContain('/metrics/stream');
-    expect(es.url).toContain('access_token=');
+    expect(es.url).toContain('ticket=');
     expect(es.url).toContain(encodeURIComponent('test-token'));
   });
 
@@ -140,6 +147,8 @@ describe('useMetricsStream 流行为', () => {
         <StreamStatusProbe />
       </QueryClientProvider>,
     );
+    // A5：建流前先换票（异步）→ 断言前需冲刷微任务
+    await act(async () => {});
     expect(FakeEventSource.instances.length).toBe(1);
     const first = FakeEventSource.instances[0];
     act(() => {
@@ -149,6 +158,7 @@ describe('useMetricsStream 流行为', () => {
     act(() => {
       vi.advanceTimersByTime(3_100);
     });
+    await act(async () => {});
     expect(FakeEventSource.instances.length).toBe(2);
     // 二次失败 → 6s 退避
     act(() => {
@@ -157,6 +167,7 @@ describe('useMetricsStream 流行为', () => {
     act(() => {
       vi.advanceTimersByTime(6_100);
     });
+    await act(async () => {});
     expect(FakeEventSource.instances.length).toBe(3);
   });
 
@@ -168,6 +179,7 @@ describe('useMetricsStream 流行为', () => {
         <StreamStatusProbe />
       </QueryClientProvider>,
     );
+    await act(async () => {});
     expect(FakeEventSource.instances.length).toBe(1);
     const es = FakeEventSource.instances[0];
     // 先触发错误（挂起重连定时器），再卸载
@@ -178,6 +190,7 @@ describe('useMetricsStream 流行为', () => {
     act(() => {
       vi.advanceTimersByTime(60_000);
     });
+    await act(async () => {});
     expect(FakeEventSource.instances.length).toBe(1); // 无新实例
     expect(es.closed).toBe(true);
   });

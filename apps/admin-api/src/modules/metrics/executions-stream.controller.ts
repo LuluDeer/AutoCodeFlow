@@ -70,7 +70,8 @@ export class ExecutionsStreamController {
       "Server-Sent Events stream forwarding execution terminal events " +
       "(execution.completed / execution.failed / execution.killed) from the " +
       "in-process domain event bus. Payload: ExecutionTerminalEventPayload. " +
-      "Auth: JWT bearer header, or ?access_token= fallback.",
+      "Auth: JWT bearer header, or ?ticket= short-lived SSE ticket " +
+      "(POST /auth/sse-ticket, 30s TTL) — EventSource cannot set headers.",
   })
   @SkipTimeout()
   async stream(@Req() req: Request, @Res() res: Response): Promise<void> {

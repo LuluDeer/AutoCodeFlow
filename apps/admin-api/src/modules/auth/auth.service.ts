@@ -13,7 +13,8 @@ import { randomUUID } from "crypto";
 import * as bcrypt from "bcrypt";
 import { UsersService } from "../users/users.service";
 import { LoginDto } from "./dto/login.dto";
-import { JwtPayload } from "./strategies/jwt.strategy";
+import { JwtPayload, SSE_TICKET_TTL_SECONDS } from "./strategies/jwt.strategy";
+import { SseTicketResponseDto } from "./dto/sse-ticket.dto";
 import { RefreshToken } from "./entities/refresh-token.entity";
 import { generateTotpSecret, totpVerify, buildOtpauthUrl } from "./totp.util";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
@@ -401,6 +402,48 @@ export class AuthService {
    * 方（单测桩）缺失该字段时 JSON 序列化落掉 undefined——等同存量「无
    * ver」令牌的兼容形态，生产实体经迁移 1790000000017 后恒有值。
    */
+  /**
+   * A5（DEEP_REVIEW §七 A5）：签发一枚 SSE 专用短效票据。
+   *
+   * 与 access token 的差别（三条，构成收窄的全部理由）：
+   *   ① TTL 30s 而非 15min——写进 nginx access log / 浏览器历史 / Referer 的
+   *      东西，有效期应当以秒计；
+   *   ② type=sse_ticket —— jwt.strategy 只在三条 /stream 路由上读取它，
+   *      拿到也开不了任何 REST 端点（extractJwtFromRequest 的路径门 + validate
+   *      的类型门双重限制）；
+   *   ③ 不落库、不参与刷新——它是 access token 的**派生物**而非替代品，
+   *      过期即弃，前端每次建流（含自动重连）都重新换一枚。
+   *
+   * 与 generateTokens 共用 base claim（含 ver 会话版本快照）⇒ 用户登出或改密
+   * 后已签发的票据同样即时失效。
+   *
+   * 未做「单次使用」（评审原稿提到）：那需要在建流路径上引入 Redis 共享状态，
+   * 等于把 SSE 的可用性与 Redis 绑定；而票据本身已是 30s + 路径受限，日志泄漏
+   * 场景（事后读取）本就拿不到有效凭据。此处如实登记为残差。
+   */
+  issueSseTicket(user: {
+    id: number;
+    username: string;
+    sessionVersion?: number;
+  }): SseTicketResponseDto {
+    const ticket = this.jwtService.sign(
+      {
+        sub: user.id,
+        username: user.username,
+        ver: user.sessionVersion,
+        type: "sse_ticket",
+        jti: randomUUID(),
+      },
+      { expiresIn: `${SSE_TICKET_TTL_SECONDS}s` as any },
+    );
+    return {
+      ticket,
+      expiresAt: new Date(
+        Date.now() + SSE_TICKET_TTL_SECONDS * 1000,
+      ).toISOString(),
+    };
+  }
+
   private async generateTokens(
     user: { id: number; username: string; sessionVersion?: number },
     meta?: { userAgent?: string | null; ip?: string | null },

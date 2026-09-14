@@ -150,7 +150,7 @@ POST /api/auth/login
 
 面向 CI/CD 等机器场景的限权凭证：`Authorization: Bearer acf_<64 hex>`（`acf_` 前缀 + 32 字节随机数的 hex）。服务端只保存 SHA-256 哈希，**明文仅在创建响应回显一次**，此后无法查看。
 
-**与 JWT 并列的认证方式**：全局认证 guard 按凭证形态分流——`acf_` 前缀走 API Key 校验链（哈希查找 → 未吊销 → 未过期 → scope 判定），其余 Bearer 凭证维持 JWT 校验（含 SSE 日志流的 `?access_token=` 查询串回退，不受影响）。`@Public` 机器端点（executor callback/心跳/发版 webhook 等）不走本认证，维持既有鉴权。
+**与 JWT 并列的认证方式**：全局认证 guard 按凭证形态分流——`acf_` 前缀走 API Key 校验链（哈希查找 → 未吊销 → 未过期 → scope 判定），其余 Bearer 凭证维持 JWT 校验（含 SSE 流的 `?ticket=` 短效票据回退，不受影响）。`@Public` 机器端点（executor callback/心跳/发版 webhook 等）不走本认证，维持既有鉴权。
 
 **scope 三级矩阵**（403 文案带 scope 提示）：
 
@@ -506,7 +506,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 - 响应为 `text/event-stream`，日志行以 `data:` 事件下发，结束时发送 `event: done` + `[DONE]`
 - 两级并发上限：**单 execution 最多 4 个并发连接，全局最多 64 个**；超限在写出任何 SSE 响应头之前直接返回 **503**（不会产生半开的流）
 - 客户端断开（连接 close）即释放槽位
-- EventSource 无法携带请求头：**仅本日志流路径**支持 query 参数 `?access_token=<JWT>` 认证（第四轮起；type=access 强制，refresh token 不可用；其它路径的 query token 一律拒绝）
+- EventSource 无法携带请求头：**仅本日志流路径**支持 query 参数 `?ticket=<票据>` 认证（A5 起：票据由 `POST /auth/sse-ticket` 签发，30s TTL、type=sse_ticket；其它路径与其它 type 一律拒绝。更早的 `?access_token=<JWT>` 通道已撤销——它等价于把 15 分钟的全权令牌写进 nginx 日志）
 
 ---
 
@@ -804,7 +804,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 
 - **快照载荷**：每拍一帧 `data:` 事件，JSON 结构 `{ summary, executors, scheduler, errors }`——`summary` = `GET /metrics/summary` 同构载荷；`executors` = `GET /metrics/executors` 数组；`scheduler` = `GET /metrics/scheduler` 同构载荷（含队列深度）；`errors` 为本拍查询失败降级段名（如 `["summary"]`，对应段为 `null`，流不终止——观测链 fail-open）。任一段查询失败时额外发一帧 `event: error`（`{failed, at}`）
 - **终止**：客户端断开或服务端关停时发送 `event: done` 后结束；空闲超过 `METRICS_STREAM_IDLE_PING_MS`（默认 15000）发送 `: ping` 注释帧保活反向代理（SSE 规范要求客户端忽略注释行）
-- **认证**：JWT bearer 头，或 **`?access_token=<JWT>` 查询串回退**（EventSource 无法自定义请求头；与 `/logs/stream` 共享白名单机制，`type=access` 强制，refresh token 不可用；其它路径的 query token 一律拒绝）
+- **认证**：JWT bearer 头，或 **`?ticket=<票据>` 查询串回退**（EventSource 无法自定义请求头；与 `/logs/stream` 共享白名单机制。票据由 `POST /auth/sse-ticket` 签发，30s TTL、`type=sse_ticket`；其它路径与其它 type 一律拒绝）
 - **容量**：独立于日志流的并发槽位，**全局默认 32**（`METRICS_STREAM_MAX_GLOBAL` 可覆盖）；超限在写出任何 SSE 头之前直接返回 **503**。Prometheus series `autoflow_metrics_streams_active` / `autoflow_metrics_streams_limit`（BUG-05 同款 runtime gauge，进程内瞬时值，多实例按 instance 聚合）
 - **节奏**：`METRICS_STREAM_INTERVAL_MS`（默认 3000，快照间隔）/ `METRICS_STREAM_IDLE_PING_MS`（默认 15000）。快照为直读查询（非事件驱动），interval 越小 DB 压力越大——该流定位为 Dashboard 级客户端数（浏览器 Tab），不宜做大规模 fan-out
 - **消费方**：admin-web DashboardPage（`useMetricsStream`，断线按 3s×2^n 封顶 30s 退避重连，快照写 TanStack Query 缓存）

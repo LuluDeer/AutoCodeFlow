@@ -36,7 +36,7 @@ modules/metrics/
 | GET | `/api/metrics/failures` | 最近失败列表 |
 | GET | `/api/metrics/scheduler` | 调度可观测性（tick/trigger 计数 + 队列深度，R4-§5.5） |
 
-**流控制器**（JWT 鉴权，支持 `?access_token=` 查询参数兜底——EventSource 无法带 Header，见 [auth.md](auth.md)）：
+**流控制器**（JWT 鉴权，支持 `?ticket=` 短效票据兜底——EventSource 无法带 Header，见 [auth.md](auth.md)）：
 
 | 控制器 | 路由 | 数据源 |
 |---|---|---|
@@ -75,7 +75,7 @@ modules/metrics/
 
 - **新增业务指标**：先在埋点侧（runtime-metrics-entry 或 SchedulerMetricsService）落计数，再在 `prometheus-metrics.service` 注册 Counter/Gauge 并在 render 处映射；勿直接在热路径调 prom-client。
 - **加查询接口**：放 `metrics.controller`（类级 JwtAuthGuard 已兜底）；大数据量聚合记得像 trend 一样做参数上限。
-- **加 SSE 流**：抄 executions-stream 的 `@Res()` 直写 + `?access_token=` 兜底 + 并发槽位三板斧；不要用 `@Sse()` 装饰器（会破全局 ResponseInterceptor）。
+- **加 SSE 流**：抄 executions-stream 的 `@Res()` 直写 + `?ticket=` 短效票据兜底 + 并发槽位三板斧；不要用 `@Sse()` 装饰器（会破全局 ResponseInterceptor）。
 - **多实例部署**：每个实例暴露自己的进程内计数，Prometheus 按 per-target 抓取区分；不想重复暴露可 `METRICS_PROMETHEUS_ENABLED=false` 关掉部分实例。
 
 ## 相关文档

@@ -78,6 +78,46 @@ describe("AuthService (__tests__)", () => {
     service = module.get(AuthService);
   });
 
+  // ─── A5：SSE 短效票据 ────────────────────────────────────────────────────
+  describe("issueSseTicket (A5)", () => {
+    const sseUser = { id: 7, username: "bob", sessionVersion: 2 };
+
+    it("签发 type=sse_ticket、30s TTL 的票据，并带上 ver 会话版本快照", () => {
+      const result = service.issueSseTicket(sseUser);
+
+      expect(result.ticket).toBe("signed-token");
+      const calls = jwtService.sign.mock.calls;
+      const [payload, options] = calls[calls.length - 1] as [
+        Record<string, unknown>,
+        { expiresIn: string },
+      ];
+      expect(payload.type).toBe("sse_ticket");
+      expect(payload.sub).toBe(7);
+      expect(payload.username).toBe("bob");
+      // 与 access token 共用 ver 快照 ⇒ 登出/改密后已签发票据同样即时失效
+      expect(payload.ver).toBe(2);
+      expect(payload.jti).toBeDefined();
+      expect(options.expiresIn).toBe("30s");
+    });
+
+    it("A5 语义守卫：有效期必须远短于 access token（15m），否则本改动失去意义", () => {
+      const before = Date.now();
+      const { expiresAt } = service.issueSseTicket(sseUser);
+      const ttlMs = new Date(expiresAt).getTime() - before;
+      // 关键是上界：若有人把 TTL 抬回分钟级（等于把长效令牌重新写进 URL），
+      // 此例必须转红——这正是 A5 要防的退化。
+      expect(ttlMs).toBeGreaterThan(25_000);
+      expect(ttlMs).toBeLessThan(60_000);
+    });
+
+    it("不落库、不触碰 refresh token 表（票据是派生物，不是会话）", () => {
+      refreshTokenRepo.save.mockClear();
+      service.issueSseTicket(sseUser);
+      expect(refreshTokenRepo.save).not.toHaveBeenCalled();
+      expect(refreshTokenRepo.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe("login", () => {
     it("returns accessToken and refreshToken on valid credentials", async () => {
       usersService.findByUsername.mockResolvedValue(mockUser as any);

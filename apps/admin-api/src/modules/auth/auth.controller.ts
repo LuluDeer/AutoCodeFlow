@@ -14,6 +14,7 @@ import {
   ApiOperation,
   ApiBearerAuth,
   ApiResponse,
+  ApiCreatedResponse,
 } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
 import { Request } from "express";
@@ -22,6 +23,7 @@ import { AuditService } from "../audit/audit.service";
 import { LoginDto } from "./dto/login.dto";
 import { RefreshTokenDto } from "./dto/refresh-token.dto";
 import { TotpCodeDto, TotpVerifyDto } from "./dto/totp.dto";
+import { SseTicketResponseDto } from "./dto/sse-ticket.dto";
 import { Public } from "../../common/decorators/public.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -185,6 +187,29 @@ export class AuthController {
         this.logger.warn(`audit log failed on logout: ${err}`),
       );
     return { success: true };
+  }
+
+  // A5（DEEP_REVIEW §七 A5）：SSE 短效票据换取端点。
+  // EventSource 不能带 Authorization 头，此前前端把 access token（15min）
+  // 直接拼进 `?access_token=`；现在改为先经本端点（常规 bearer 头）换一枚
+  // 30 秒有效、且只能在三条 /stream 路由上使用的专用票据。
+  @UseGuards(JwtAuthGuard)
+  @WriteGuard("sse-ticket", { scope: "authenticated" })
+  @Post("sse-ticket")
+  @ApiBearerAuth("JWT")
+  @ApiOperation({
+    summary: "Issue a short-lived SSE ticket",
+    description:
+      "Exchange the current session for a 30-second, path-restricted ticket used " +
+      "as ?ticket= on the SSE stream routes (EventSource cannot set headers).",
+  })
+  @ApiCreatedResponse({
+    description: "Ticket issued",
+    type: SseTicketResponseDto,
+  })
+  @ApiResponse({ status: 401, description: "Unauthenticated" })
+  issueSseTicket(@CurrentUser() user: AuthUser) {
+    return this.authService.issueSseTicket(user);
   }
 
   @UseGuards(JwtAuthGuard)

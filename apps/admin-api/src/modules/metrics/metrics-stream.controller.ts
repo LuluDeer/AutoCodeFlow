@@ -25,7 +25,7 @@ import { MetricsStreamSlotService } from "./metrics-stream-slot.service";
  *   （logs/stream N8 先例——否则 TimeoutInterceptor 以 TimeoutError 掐断流，
  *   HttpExceptionFilter 会对已写出 SSE 头的响应再 status(408).json()）。
  * - 鉴权：类级 JwtAuthGuard 与 /metrics/* 其余端点一致；EventSource 无法带
- *   Authorization 头的回退走 ?access_token=（jwt.strategy SSE_QUERY_TOKEN_
+ *   Authorization 头的回退走 ?ticket=（jwt.strategy SSE_TICKET_
  *   PATH_SUFFIXES 需含 /metrics/stream，见该文件 UI-14 注记）。
  * - 容量：MetricsStreamSlotService 独立槽位（默认 32，METRICS_STREAM_MAX_
  *   GLOBAL 覆盖），占用在写 SSE 头之前（超限渲染为真 503），释放幂等 +
@@ -72,7 +72,8 @@ export class MetricsStreamController {
     summary: "Dashboard summary SSE stream (UI-14 phase 1)",
     description:
       "Server-Sent Events stream pushing a snapshot every ~3s: { summary, executors, scheduler } " +
-      "(+ error frames on degraded queries). Auth: JWT bearer header, or ?access_token= fallback. " +
+      "(+ error frames on degraded queries). Auth: JWT bearer header, or ?ticket= short-lived " +
+      "SSE ticket (POST /auth/sse-ticket, 30s TTL) — EventSource cannot set headers. " +
       "Concurrency: METRICS_STREAM_MAX_GLOBAL slots per instance (503 when full).",
   })
   @SkipTimeout()

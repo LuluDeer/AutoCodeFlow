@@ -48,7 +48,7 @@ refresh token  : {sub, username, type:"refresh", jti:<uuid>, ver:<sessionVersion
 ```
 
 - access token 的 `sid` claim 就是本次登录的 refresh token jti，会话接口据此标记当前会话（SEC-03）。
-- `JwtStrategy.validate()` 强制 `type === "access"`，refresh token 无法冒充 access token；SSE 路由（`/logs/stream`、`/metrics/stream`、`/executions/stream`）允许 `?access_token=` 查询参数兜底（EventSource 无法带 Header）。
+- `JwtStrategy.validate()` 强制 `type` ∈ {`access`, `sse_ticket`}，refresh token 无法冒充；SSE 路由（`/logs/stream`、`/metrics/stream`、`/executions/stream`）允许 `?ticket=` 短效票据兜底（EventSource 无法带 Header；票据由 `POST /auth/sse-ticket` 签发，30s TTL。A5 起旧的 `?access_token=` 通道已撤销）。
 - 每日 03:00 `@Cron` 清理过期 refresh token 行（`cleanupExpiredTokens`）。
 
 ### 会话撤销·用户级会话版本（WIKI-AUTH-REVOC）

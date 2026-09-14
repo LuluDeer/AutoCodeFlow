@@ -9,6 +9,13 @@ import { cleanup, render } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
+// A5：SSE 建流前先向后端换一枚 30s 短效票据（access token 不再进 URL）。
+// 这里把换票桩成固定值，断言行相应改为断言 `?ticket=`。
+vi.mock('../api/sse', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/sse')>();
+  return { ...actual, fetchSseTicket: vi.fn().mockResolvedValue('tok-123') };
+});
+
 const INTERNAL = 'http://internal.test:3105';
 const EXTERNAL = 'https://external.test/api';
 
@@ -122,7 +129,7 @@ describe('ExecutionDetailPage SSE 与 API 同源（U1）', () => {
     expect(apiBase).toBe(INTERNAL);
     expect(url.startsWith(`${INTERNAL}/tasks/t1/executions/e1/logs/stream`)).toBe(true);
     expect(url).not.toContain(EXTERNAL);
-    expect(url).toContain('access_token=tok-123');
+    expect(url).toContain('ticket=tok-123');
   }, 30_000);
 
   it('外网开关开启：EventSource 随 getApiBaseUrl 切到外网 base', async () => {
