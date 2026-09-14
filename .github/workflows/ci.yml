@@ -503,6 +503,23 @@ jobs:
           node scripts/check-consumer-routes.mjs --selftest
           node scripts/check-consumer-routes.mjs
 
+  # ── A3：executor-protocol 的 zod / pydantic 双生成产物漂移闸 ──────────
+  # packages/executor-protocol/protocol.json 的 schemas 段是单一事实源，两侧
+  # 生成物随源码同 commit（与 ADR-005 bundle 产物同款纪律）。本 job 重跑生成器
+  # 并 git diff 兜底：改了 protocol.json 却没重跑生成 → 红。
+  executor-protocol-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Regenerate zod + pydantic from protocol.json
+        run: npm run gen:protocol
+      - name: Fail on generated-artifact drift
+        run: git diff --exit-code -- apps/executor-node/src/generated apps/executor-python/generated
+
   # ── BUG-18：私服 npm/PyPI 契约闸（零依赖 node 脚本，无需 npm ci）──────
   # live 模式（临时 PyPI uvicorn + 一次性 Verdaccio 容器）需 docker 与镜像，
   # 只在本地/真机轮跑；CI 跑 --dry-run 的源码契约断言，防私服链路回归。
