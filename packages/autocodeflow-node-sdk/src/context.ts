@@ -159,6 +159,20 @@ export class TaskContext {
   // ------------------------------------------------------------------ result builders
 
   /**
+   * Flush the collected logs into a TaskResult-shaped field set.
+   *
+   * PK-24: `logger.getLogs()` is a bounded ring (see TaskLogger.MAX_ENTRIES);
+   * when the ring evicted entries the result carries a `logsDropped` hint so
+   * the truncation is observable instead of silent — semantics aligned with
+   * the logger's `droppedCount`.
+   */
+  private flushLogs(): Pick<TaskResult, 'logs' | 'logsDropped'> {
+    const logs = this.logger.getLogs();
+    const dropped = this.logger.droppedCount;
+    return dropped > 0 ? { logs, logsDropped: dropped } : { logs };
+  }
+
+  /**
    * Build a successful `TaskResult`, automatically attaching collected logs.
    */
   success(
@@ -169,7 +183,7 @@ export class TaskContext {
       success: true,
       ...(message !== undefined ? { message } : {}),
       ...(output !== undefined ? { output } : {}),
-      logs: this.logger.getLogs(),
+      ...this.flushLogs(),
     };
   }
 
@@ -184,7 +198,7 @@ export class TaskContext {
       success: false,
       ...(message !== undefined ? { message } : {}),
       ...(output !== undefined ? { output } : {}),
-      logs: this.logger.getLogs(),
+      ...this.flushLogs(),
     };
   }
 

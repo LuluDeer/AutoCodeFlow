@@ -10,7 +10,14 @@ class TestTaskConfig:
         assert tc.timeoutSeconds == 300
         assert tc.requirements == []
         assert tc.gitBranch == "main"
-        assert tc.blockStrategy == "SERIAL"
+        # PK-23: 默认值必须是 admin 值域的有效枚举形态（小写）
+        assert tc.blockStrategy == "serial"
+
+    def test_block_strategy_default_is_valid_admin_enum_form(self):
+        """PK-23 回归钉：默认值若为大写 'SERIAL'，执行器按字面透传会
+        与 admin 值域（serial/discard/cover_early）错配。"""
+        tc = TaskConfig()
+        assert tc.blockStrategy in ("serial", "discard", "cover_early")
 
     def test_custom_fields(self):
         tc = TaskConfig(id="t1", name="my-task", runtime="node", timeout=60)

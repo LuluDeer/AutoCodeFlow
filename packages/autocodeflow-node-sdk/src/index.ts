@@ -1,9 +1,9 @@
 /**
- * @autoflow/sdk — AutoCodeFlow Node.js TypeScript SDK
+ * @autocodeflow/sdk — AutoCodeFlow Node.js TypeScript SDK
  *
  * Quick start:
  * ```ts
- * import { TaskContext } from '@autoflow/sdk';
+ * import { TaskContext } from '@autocodeflow/sdk';
  *
  * const ctx = TaskContext.fromEnv();
  * ctx.logger.info('Task started', { executionId: ctx.executionId });
