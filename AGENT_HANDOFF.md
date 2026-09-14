@@ -3,11 +3,24 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-14（**剩余任务池清偿完成**：BUG-07 Windows 深验 CI 化 3/3 真跑绿（迭代 5 轮）、DSK-01 macOS 打包 CI 绿、QA-05 四档全通过（回调档 90k 条/分）、linux-bundle「既有红」与 secret-scan allowlist 双根治、BUG-04 跟踪结论更新；仅剩需产品拍板项与文档化 flake）。此前同日：CI 卡死根治 + annotations 清零（multiarch 原生 arm64 runner，v1.3.0 已发布）、AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、发布就绪度。
+更新时间：2026-09-14（**CI 迭代全绿**：`gh` 看 action 报错 → 逐类根治 8 commit，run 34854946055 = 48 job / 44 success + 4 skipped + 0 failure；8 类问题中 4 类为轮1~7 新增测试「从未在 CI 执行过」的首跑暴露。此前同日：**剩余任务池清偿完成**：BUG-07 Windows 深验 CI 化 3/3 真跑绿（迭代 5 轮）、DSK-01 macOS 打包 CI 绿、QA-05 四档全通过（回调档 90k 条/分）、linux-bundle「既有红」与 secret-scan allowlist 双根治、BUG-04 跟踪结论更新；仅剩需产品拍板项与文档化 flake）。此前同日：CI 卡死根治 + annotations 清零（multiarch 原生 arm64 runner，v1.3.0 已发布）、AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、发布就绪度。
 当前分支：`develop`
 
 ## 状态快照
 
+- **本轮（2026-09-14 CI 迭代：`gh` 看 action 报错 → 逐类根治，8 commit，run 34854946055 全绿，主控）**：用户指令「gh看action的报错 解决」。轮1~7 的 7 个批次此前一直**只在本地跑过、从未推送**，因此 CI 从未执行过其中的新增测试——首跑一次性暴露 8 类问题（**4 类是轮1~7 新增测试的自报绿从未被 CI 验证过**）。逐轮 push→`gh run list`→`gh run view --job <id> --log-failed`→根因修复，8 commit 收口：
+  - **`69d8a47` admin-api-test**：ARCH-001 用例组重建 `process.env` 时用 `ORIGINAL_ENV` 继承，CI job 级弱口令 `admin123` 漏进生产 fail-fast 断言。修复=`STRONG_PRODUCTION_ENV` 补 `INITIAL_ADMIN_PASSWORD`。**教训：jest 里重建 env 必须显式覆盖 job 级变量，不能靠 `ORIGINAL_ENV` 兜底。**
+  - **`f989627` selftests 建库竞态**：`database "autoflow_arch31o_…" does not exist`。根因=**官方 Postgres 镜像 entrypoint 在 initdb 阶段先起临时服务（`listen_addresses=''`）**，容器内 socket 版 `pg_isready` 此时即返回 0，`CREATE DATABASE` 落在窗口内失败且未检查返回码。修复=新 `scripts/pg-provision.lib.mjs`（**host TCP 就绪 + 有界重试 + 检查返回码**），7 个 selftest 接入。
+  - **`776c70e` desktop-bundle-drift**：manifest `executor-node-bundle.sha256` 陈旧。重打回填（`4e100f37…`）。
+  - **`e05b714` docker-multiarch-build ×2**：`Cannot find module '/scripts/gen-install-script-content.mjs'`。根因=镜像构建上下文是 `apps/admin-api`，`../../scripts` 解析成 `/scripts` 不存在。修复=上下文内薄包装 `apps/admin-api/scripts/prebuild-install-script.mjs`。
+  - **`c595645` executor-node-test E-27 单飞失效（真 race 非 flaky）**：现象 `Received: 4`（应 ≤2），本地 8 跑 1 红。根因=等待者复用在途刷新的判据用**时间戳**，而该时间戳取自 `performTokenRefresh()` 开头捕获的 `now`，早于任何等待者入场——只有"刷新启动与等待者入场落在同一毫秒"才成立，跨毫秒边界全体 fall-through，N 个并发 401 各自再发一次 `/token`。修复=**单调序号 `refreshFetchSeq`**（每次真实 fetch 成功自增）+ 用例重复 25 轮放大边界；**已反证有牙**（临时把 `>` 改 `<`，第 1 轮即报 4 次）。同 commit 顺带：`EXECUTOR_ALLOW_PRIVATE_NETWORK` 取值兼容 `1`（此前注释/报错都写 `=1` 而实现只认 `'true'`，文档-实现分叉）+ config.spec 补 7 条取值矩阵。
+  - **`bf4d572` e2e-full 两例稳定红**：ⅰ 用例 45——`@Post("pull")` 缺 `@HttpCode` 默认回 201，与端点自身 `@ApiResponse(200)` 及用例判定矛盾 → 显式 200；ⅱ 用例 46——`rotateToken()` 未驱逐 F-5 `tokenValidationCache`（键 `sha256(address|token)`，TTL 60s，仅缓存正结果），被撤销旧 token 仍命中正缓存，有 60s 失效窗口 → 缓存值结构改带 `address`，新增 `evictTokenValidationsFor(address)`，`rotateToken()`/`removeById()` 均调用。同 commit：`.eslintrc.js` 把 E-38 生成物 `install-script.content.ts` 加进 `ignorePatterns`（`lint --fix` 会用 prettier 改写生成物，而守卫在另一个 job 校验——本会话第二次撞到，这次根治）。
+  - **`92515c2` selftests arch31-rollout（statuses=failed,failed）**：SSRF 豁免只给了 admin-api 实例，**执行器进程没有**，而真正去下载部署包 zip 的是执行器（部署包源是回环静态服务器）。修复=执行器 env 补 `EXECUTOR_ALLOW_PRIVATE_NETWORK: 'true'`；已直接实测 dist 产物复现拒绝与放行两态。
+  - **`6735083` selftests nginx-sse（502）**：DEP-HA-1 把 conf 上游改成变量形态（`set $admin_api_upstream admin-api:3105` + `resolver 127.0.0.11`），selftest 的替换正则仍匹配旧形态 → 未替换 → 走 Docker DNS resolver，host 网络下不可达。修复=替换 token 改 `admin-api:3105` 并换成 IP 字面量，断言同步改判变量形态。
+  - **结论（权威核对）**：run **`34854946055` @ `6735083`** = 48 job，**44 success + 4 skipped + 0 failure**。关键 job 全绿：`admin-api-test`、`executor-node-test`、`e2e-full`、`selftests`（10 脚本串行全过，含此前从未执行过的 pull-dispatch / qa05-callback-tier / oidc-sso / nginx-sse / ha-compose / registry-npm）、`desktop-bundle-drift`、`docker-multiarch-build`。4 个 skipped 为 push 事件下的既有门控（PR/dispatch 触发）：`desktop-linux-bundle`、`desktop-macos-bundle`、`desktop-e2e-smoke`、`e2e-full-windows`。
+  - **方法论沉淀（重要）**：① **「提交没推送 → CI 没跑过 → 新测试的自报绿是假的」**——8 个问题里 4 个（selftests 的 rollout / nginx-sse、e2e-full 的用例 45/46）都是轮1~7 新增、从未在 CI 执行过的测试首跑暴露。② **selftests 是串行 10 脚本，前一个红后面不跑**，必须预期逐轮暴露、勿一次改多脚本赌运气。③ **判断 job 清单必须用 `gh run view --json jobs --jq`**——文本输出会被 `head` 截断导致漏报失败 job（本会话已踩坑）。④ 判定真红/假红先看失败类型：`Exceeded timeout` = 预算问题，断言失败 = 真回归。
+  - **本机测试基线**：executor-node 23 套件 **329/329**（+7）+ tsc 0 + lint 0；admin-api 162 套件 **2604** 用例（+2），本机 2603 绿 + 1 例为沙箱 `node-safe-delete-shim` 拦 `fs.unlinkSync` 制造的**假红**（`application.service.spec.ts:617` 的 `finally` 抛错被记成失败，断言其实通过；CI 无此 shim）。
+  - **下轮建议**：① 生产真机项不变（QA-05 24h 长稳、多主机拓扑）；② §七 20 个架构方向（A1~A6 优先）为季度级演进；③ `desktop-e2e-smoke` 在 windows runner 的「Process failed to launch」仍为 v1.2.0 起文档化的既有现象（PR-only 非门禁），留 QA-12 CI 形态专项。
 - **本轮（2026-09-14 DEEP_REVIEW 修复编排 轮1~7 全量独立复核 + 测试可靠性收口，主控）**：承接 `67cad65`（轮7 = P3 打磨 56 项，批次 4 收官）后，对 HEAD 做了一次**不采信自报数字**的全量独立回归。**结论：DEEP_REVIEW 编号修复项（R-*/F-*/E-*/PK-*）轮1~7 全部清偿，批次关闭**（`docs/PLAN-CLAIMS.md` 的 DR-FIX-ALL 已置 `done`）。
   - **全量验证（本机实测）**：admin-api **162 套件 2602/2602** + `tsc` 0 错 · executor-node **23 套件 322/322** · executor-python **305/305** · admin-web **83 文件 725/725** + `tsc -b` 0 错 · desktop `tsc` 0 + renderer selftest 绿 · mcp **113** · acf-cli **97+1skip** · node-sdk **69** · python 五包 **112/31/34/21/19**（autoflow-sdk / http / ai / notify / db，隔离 venv）· registry-pypi **84** · check-migrations **68** 唯一（下一可用 1790000000024）+ selftest 绿 · enum-drift **13/13** · openapi↔api-types **零漂移**（重跑 `gen:api-types` 无 diff，R-18 `maxItems:500` 已落）。
   - **复核新发现并修复 4 处「超时假红」测试缺陷（非代码回归，此前各轮自报均为绿）**：① executor-node `scheduler.spec` 版本漂移用例——假时钟需推进 600+ 拍，空闲 <1s 但并发下破 5s 默认上限（显式 30s 预算 + 原因注释）；② `callback.sharding.spec` 死信用例——E-05 把 `CALLBACK_FILE_MAX_RETRIES` 由 60 提到 150 后循环变 170 轮，15s 上限不足（提到 60s + 注释）；③ admin-web `execution-detail-trace.test.tsx` **首个用例承担惰性 `await import()` 的整张 ExecutionDetailPage 依赖图转译**（实测 19.5s 撞 20s 上限）→ 导入提升至模块顶层后 **19.5s → 0.8s**（根因级修复）；④ `notification-silences.test.tsx` 首渲染 ~2s 撞默认 5s（文件级 `vi.setConfig({ testTimeout: 20_000 })`）。
@@ -520,6 +533,15 @@ cd packages/mcp-server && npx tsc --noEmit
 | 12 | 桌面执行器跨平台 | ⬜ 未验证 |
 
 ## 下一步建议（按优先级）
+
+> **当前（2026-09-14）**：CI 已全绿（run 34854946055 = 48 job / 44 success + 4 skipped + 0 failure），工作区干净，`develop` 已推送至 `6735083`。剩余项如下：
+>
+> 1. **需产品拍板（不可代劳）**：ADR-013 非成员 trigger 收紧、release-please main 合并习惯、API JWT 60d 缩短评估、desktop Linux 更新链签名。
+> 2. **需真机/长稳环境**：QA-05 24h 长稳、多主机拓扑、macOS/Windows/ARM64 部署、通知渠道实测、私有 npm/PyPI 仓库集成。
+> 3. **架构演进（季度级）**：§七 20 个架构方向（A1~A6 优先），可另立任务。
+> 4. **QA-12 CI 形态专项**：`desktop-e2e-smoke` 在 windows runner 的「Process failed to launch」（v1.2.0 起文档化，PR-only 非门禁）。
+>
+> 以下为历史轮次遗留清单（保留供追溯）：
 
 > 第九轮交接 6 项中 5 项已在第十轮完成。以下为第十轮后剩余：
 
