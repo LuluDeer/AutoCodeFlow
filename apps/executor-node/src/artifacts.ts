@@ -109,7 +109,17 @@ async function uploadOne(
     form.append('file', new Blob([buf]), item.name);
     const headers: Record<string, string> = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    const resp = await fetch(url, { method: 'PUT', headers, body: form });
+    // E-06: 产物上传加 60s 超时（对照 python artifacts.py:162 的 timeout=30）。
+    // node 选 60s 是给大产物更宽裕窗口——上传走 executor→admin 内网，30s 对
+    // 数百 MB 产物偏紧；python 侧 30s 因 uv 包缓存通常更小。用 AbortSignal.timeout
+    // 而非 setTimeout+AbortController（语义等价、更简洁）：60s 内无响应即抛
+    // AbortError，被下方 catch 吞掉并跳过该产物（best-effort，不阻塞主流程）。
+    const resp = await fetch(url, {
+      method: 'PUT',
+      headers,
+      body: form,
+      signal: AbortSignal.timeout(60_000),
+    });
     if (resp.ok) return true;
     logger.warn(`artifacts: 上传 ${item.name} 返回 HTTP ${resp.status}（跳过）`);
     return false;

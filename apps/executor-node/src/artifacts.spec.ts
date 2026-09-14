@@ -76,6 +76,7 @@ describe('artifacts.gatherArtifacts', () => {
   });
   afterEach(() => {
     (global as any).fetch = origFetch;
+    jest.restoreAllMocks();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -115,5 +116,26 @@ describe('artifacts.gatherArtifacts', () => {
     const url = fetchMock.mock.calls[0][0] as string;
     expect(url).toContain('http://admin:3105/api/executions/e/artifacts/x.txt');
     expect(url).not.toContain('/api/api');
+  });
+
+  it('E-06: 上传 60s 超时后 best-effort 跳过，不永久挂起', async () => {
+    writeArt(tmp, 'big.bin', Buffer.from('payload'));
+    // fetch 永挂起——只有 AbortSignal 触发才能跳出 await
+    fetchMock.mockImplementation((_url: string, opts: any) =>
+      new Promise((_resolve, reject) => {
+        const sig: AbortSignal | undefined = opts?.signal;
+        if (!sig) return;
+        if (sig.aborted) { reject(new Error('The operation was aborted')); return; }
+        sig.addEventListener('abort', () => reject(new Error('The operation was aborted')), { once: true });
+      }),
+    );
+    // 把硬编码 60s 注入成"立即中止"，避免真等 60s（测试不影响真实代码路径）
+    const timeoutSpy = jest
+      .spyOn(AbortSignal, 'timeout')
+      .mockImplementation((_ms?: number) => AbortSignal.abort());
+    const r = await gatherArtifacts('exec-1', tmp, 'http://admin:3105', 'tok');
+    expect(r).toEqual([]); // 超时 → 跳过该产物（best-effort，不阻塞主流程）
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    timeoutSpy.mockRestore();
   });
 });

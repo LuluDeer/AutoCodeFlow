@@ -195,6 +195,22 @@ const PROTECTED_WORKDIR_NAMES = new Set([
   'logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps',
 ]);
 
+// E-08: active-execution guard for the workdir sweep. The set of live
+// executions (and their taskIds used for .git_cache / .node_modules shards) is
+// owned by routes/execute — to avoid a circular import (file-logger is already
+// imported by execute.ts) we accept a provider that execute registers at load
+// time (mirrors scheduler's provider pattern).
+// fail-safe: if the provider throws or returns nothing, the sweep deletes
+// NOTHING (liveness unknown) — aligned with python maintenance._live_workdir_names.
+export interface ActiveWorkdirSet {
+  executionIds: Set<string>;
+  taskIds: Set<string>;
+}
+let activeWorkdirProvider: () => ActiveWorkdirSet = () => ({ executionIds: new Set(), taskIds: new Set() });
+export function registerActiveWorkdirProvider(fn: () => ActiveWorkdirSet): void {
+  activeWorkdirProvider = fn;
+}
+
 function removePath(target: string): boolean {
   try {
     fs.rmSync(target, { recursive: true, force: true });
@@ -287,11 +303,36 @@ export function cleanupWorkDir(
   let deadLetters = 0;
   let orphanMetaFiles = 0;
 
+  // E-08: 活跃执行保护——liveness 未知（provider 抛错/返回空）时删 Nothing
+  // （fail-safe，对齐 python maintenance._live_workdir_names）；否则跳过活跃
+  // executionId 的工作目录及其关联的 .node_modules/.git_cache 分片（按 taskId）。
+  let active: ActiveWorkdirSet | null = null;
+  try {
+    const probe = activeWorkdirProvider();
+    if (probe && probe.executionIds instanceof Set && probe.taskIds instanceof Set) {
+      active = probe;
+    }
+  } catch {
+    active = null;
+  }
+  if (active === null) {
+    logger.warn(
+      'cleanupWorkDir: active execution probe unavailable (liveness unknown) — ' +
+      'skipping all deletions (fail-safe)',
+    );
+    return { workDirs: 0, caches: 0, packages: 0, deadLetters: 0, orphanMetaFiles: 0 };
+  }
+  const activeExecIds = active.executionIds;
+  const activeTaskIds = active.taskIds;
+
   try {
     // 1. Task workdirs: any top-level entry that is not infrastructure.
     const baseEntries = fs.readdirSync(config.workDir, { withFileTypes: true });
     for (const entry of baseEntries) {
       if (PROTECTED_WORKDIR_NAMES.has(entry.name)) continue;
+      // E-08: 跳过仍在运行（活跃）的 execution 工作目录——drain/关机期间其目录
+      // mtime 可能已超 TTL，误删会破坏正在跑的任务（对照 python fail-safe）。
+      if (activeExecIds.has(entry.name)) continue;
       const full = path.join(config.workDir, entry.name);
       try {
         const stat = fs.statSync(full);
@@ -301,9 +342,28 @@ export function cleanupWorkDir(
       } catch { /* raced — skip */ }
     }
 
-    // 2. Shared caches (.git_cache, .node_modules): drop entries unused past TTL.
+    // 2. Shared caches (.git_cache, .node_modules): drop entries unused past TTL
+    //    —但永远不删活跃 task 的分片（活跃任务正在用，删了会让它在下次依赖安装
+    //    时全量重装或失败；liveness 未知已被上面的 fail-safe 拦下）。
     for (const cacheDirName of ['.git_cache', '.node_modules']) {
-      caches += removeOlderThan(path.join(config.workDir, cacheDirName), cutoff);
+      const cacheBase = path.join(config.workDir, cacheDirName);
+      let subEntries: fs.Dirent[];
+      try {
+        subEntries = fs.readdirSync(cacheBase, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const sub of subEntries) {
+        const subTarget = path.join(cacheBase, sub.name);
+        // E-08: 活跃分片保护——taskId 命中的 .git_cache/.node_modules 子目录保留。
+        if (sub.isDirectory() && activeTaskIds.has(sub.name)) continue;
+        try {
+          const stat = fs.statSync(subTarget);
+          if (stat.mtimeMs < cutoff) {
+            if (removePath(subTarget)) caches++;
+          }
+        } catch { /* raced — skip */ }
+      }
     }
 
     // 3. Downloaded packages: keep only the newest few regardless of age.

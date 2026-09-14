@@ -55,6 +55,18 @@ def test_execute_missing_task_returns_422(auth_client):
     assert response.status_code == 422
 
 
+def test_execute_requirements_not_array_returns_400(auth_client):
+    """E-19: requirements 误传字符串必须被同步 400 拒绝（不再逐字符当包名
+    迭代安装——node execute.ts 同源修复）。"""
+    response = auth_client.post('/api/execute', json={
+        'executionId': 'exec-req-array',
+        'task': {'name': 'noop', 'runtime': 'python', 'requirements': 'lodash'},
+    })
+    assert response.status_code == 400
+    detail = (response.json().get('detail') or '').lower()
+    assert 'array' in detail or 'requirements' in detail
+
+
 # ---------------------------------------------------------------------------
 # Accepted + callback protocol
 # ---------------------------------------------------------------------------

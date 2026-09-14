@@ -9,6 +9,8 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
+    wait_combine,
+    wait_random,
     retry_if_exception_type,
     before_sleep_log,
 )
@@ -149,7 +151,12 @@ def _heartbeat_retry_exhausted(retry_state):
 
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=8),
+    # E-44: 心跳重试叠加随机抖动（0~2s），避免多 executor 在相同 admin 恢复
+    # 窗口后同步重试（惊群）；与 node/execute 回调退避的 (0.5+random) 抖动同源。
+    wait=wait_combine(
+        wait_exponential(multiplier=1, min=1, max=8),
+        wait_random(min=0, max=2),
+    ),
     retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException, httpx.TransportError, OSError)),
     before_sleep=before_sleep_log(logger, logging.WARNING),
     retry_error_callback=_heartbeat_retry_exhausted,
