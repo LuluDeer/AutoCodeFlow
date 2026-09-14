@@ -115,6 +115,37 @@
         ]
       }
     },
+    "/auth/sse-ticket": {
+      "post": {
+        "description": "Exchange the current session for a 30-second, path-restricted ticket used as ?ticket= on the SSE stream routes (EventSource cannot set headers).",
+        "operationId": "AuthController_issueSseTicket",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "Ticket issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SseTicketResponseDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Issue a short-lived SSE ticket",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/auth/profile": {
       "get": {
         "description": "Return basic info of the current logged-in user including ID, username, and roles.",
@@ -3578,7 +3609,7 @@
     },
     "/metrics/stream": {
       "get": {
-        "description": "Server-Sent Events stream pushing a snapshot every ~3s: { summary, executors, scheduler } (+ error frames on degraded queries). Auth: JWT bearer header, or ?access_token= fallback. Concurrency: METRICS_STREAM_MAX_GLOBAL slots per instance (503 when full).",
+        "description": "Server-Sent Events stream pushing a snapshot every ~3s: { summary, executors, scheduler } (+ error frames on degraded queries). Auth: JWT bearer header, or ?ticket= short-lived SSE ticket (POST /auth/sse-ticket, 30s TTL) — EventSource cannot set headers. Concurrency: METRICS_STREAM_MAX_GLOBAL slots per instance (503 when full).",
         "operationId": "MetricsStreamController_stream",
         "parameters": [],
         "responses": {
@@ -3599,7 +3630,7 @@
     },
     "/executions/stream": {
       "get": {
-        "description": "Server-Sent Events stream forwarding execution terminal events (execution.completed / execution.failed / execution.killed) from the in-process domain event bus. Payload: ExecutionTerminalEventPayload. Auth: JWT bearer header, or ?access_token= fallback.",
+        "description": "Server-Sent Events stream forwarding execution terminal events (execution.completed / execution.failed / execution.killed) from the in-process domain event bus. Payload: ExecutionTerminalEventPayload. Auth: JWT bearer header, or ?ticket= short-lived SSE ticket (POST /auth/sse-ticket, 30s TTL) — EventSource cannot set headers.",
         "operationId": "ExecutionsStreamController_stream",
         "parameters": [],
         "responses": {
@@ -6939,6 +6970,23 @@
         },
         "required": [
           "refreshToken"
+        ]
+      },
+      "SseTicketResponseDto": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "string",
+            "description": "SSE 专用短效票据；作为 ?ticket= 查询串使用，30 秒后失效，且只在三条 /stream 路由上被读取"
+          },
+          "expiresAt": {
+            "type": "string",
+            "description": "票据过期时间（ISO 8601）"
+          }
+        },
+        "required": [
+          "ticket",
+          "expiresAt"
         ]
       },
       "TotpCodeDto": {

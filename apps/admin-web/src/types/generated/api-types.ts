@@ -64,6 +64,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/sse-ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue a short-lived SSE ticket
+         * @description Exchange the current session for a 30-second, path-restricted ticket used as ?ticket= on the SSE stream routes (EventSource cannot set headers).
+         */
+        post: operations["AuthController_issueSseTicket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/profile": {
         parameters: {
             query?: never;
@@ -1591,7 +1611,7 @@ export interface paths {
         };
         /**
          * Dashboard summary SSE stream (UI-14 phase 1)
-         * @description Server-Sent Events stream pushing a snapshot every ~3s: { summary, executors, scheduler } (+ error frames on degraded queries). Auth: JWT bearer header, or ?access_token= fallback. Concurrency: METRICS_STREAM_MAX_GLOBAL slots per instance (503 when full).
+         * @description Server-Sent Events stream pushing a snapshot every ~3s: { summary, executors, scheduler } (+ error frames on degraded queries). Auth: JWT bearer header, or ?ticket= short-lived SSE ticket (POST /auth/sse-ticket, 30s TTL) — EventSource cannot set headers. Concurrency: METRICS_STREAM_MAX_GLOBAL slots per instance (503 when full).
          */
         get: operations["MetricsStreamController_stream"];
         put?: never;
@@ -1611,7 +1631,7 @@ export interface paths {
         };
         /**
          * Execution terminal-state SSE stream (FEAT-16)
-         * @description Server-Sent Events stream forwarding execution terminal events (execution.completed / execution.failed / execution.killed) from the in-process domain event bus. Payload: ExecutionTerminalEventPayload. Auth: JWT bearer header, or ?access_token= fallback.
+         * @description Server-Sent Events stream forwarding execution terminal events (execution.completed / execution.failed / execution.killed) from the in-process domain event bus. Payload: ExecutionTerminalEventPayload. Auth: JWT bearer header, or ?ticket= short-lived SSE ticket (POST /auth/sse-ticket, 30s TTL) — EventSource cannot set headers.
          */
         get: operations["ExecutionsStreamController_stream"];
         put?: never;
@@ -2823,6 +2843,12 @@ export interface components {
         RefreshTokenDto: {
             refreshToken: string;
         };
+        SseTicketResponseDto: {
+            /** @description SSE 专用短效票据；作为 ?ticket= 查询串使用，30 秒后失效，且只在三条 /stream 路由上被读取 */
+            ticket: string;
+            /** @description 票据过期时间（ISO 8601） */
+            expiresAt: string;
+        };
         TotpCodeDto: {
             /**
              * @description 6 位 TOTP 动态验证码
@@ -3718,6 +3744,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_issueSseTicket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ticket issued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SseTicketResponseDto"];
                 };
             };
             /** @description Unauthenticated */
