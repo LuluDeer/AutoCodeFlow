@@ -287,6 +287,11 @@ async function main() {
         EXECUTOR_SECRET,
         WORK_DIR: execWork,
         MAX_CONCURRENT_TASKS: '10',
+        // 部署包源是回环静态服务器（http://127.0.0.1:PORT_STATIC/app.zip），
+        // 而下载链的 SSRF 闸默认拒绝 loopback——**必须给执行器进程**这个开关，
+        // 只给 admin-api 不够：真正去下载 zip 的是执行器，不是 admin-api。
+        // 缺这一项时部署会以 failed 收场（rollout selftest 首跑即撞到）。
+        EXECUTOR_ALLOW_PRIVATE_NETWORK: 'true',
       },
       stdio: ['ignore', out, out],
       detached: true,
