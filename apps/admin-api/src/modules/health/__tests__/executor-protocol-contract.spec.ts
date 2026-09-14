@@ -142,15 +142,17 @@ describe("A3 执行器协议契约（admin-api 侧）", () => {
         declared: 86400,
         unbounded: false,
       });
-      // 越界值由 admin 侧 DTO 拦截（@Min(0) @Max(86400)）；执行器侧的纵深防御
-      // 策略两端尚未一致（node reject / python clamp），契约如实标记为 admin 拦截。
+      // 越界值由 admin 侧 DTO 拦截（@Min(0) @Max(86400)）。执行器侧的纵深防御
+      // 策略 A3-C 起**两端一致**：此前只有 node 拒绝、python 静默 clamp，契约如实
+      // 标为 `rejectedBy: "admin-api"`；把生成的 schema 接进两侧 /execute 之后
+      // 两端都拒绝，故这里改为三方共同拦截（改回单方拦截会红）。
       expect(byName["above-max-rejected-at-admin"]).toMatchObject({
         declared: 86401,
-        rejectedBy: "admin-api",
+        rejectedBy: "admin-api, executor-node, executor-python",
       });
       expect(byName["negative-rejected-at-admin"]).toMatchObject({
         declared: -1,
-        rejectedBy: "admin-api",
+        rejectedBy: "admin-api, executor-node, executor-python",
       });
     });
   });
