@@ -43,6 +43,26 @@ export enum ExecutionFailureReason {
 }
 
 /**
+ * A3（DEEP_REVIEW §七 · executor-protocol）：**执行器可上报**的 failureReason
+ * 子集 = 全集 − admin 内部专用。
+ *
+ * `stale_recovered` 是 admin 的 stale sweep 在赢得 RUNNING→FAILED 条件 UPDATE
+ * 时写入的可溯源标记，**语义上只有 admin 才该写**（执行器无从得知自己的执行是
+ * 被谁终态化的）。此前回调 DTO 用 `@IsIn(Object.values(ExecutionFailureReason))`
+ * ——用的是全集，等于允许执行器上报一个它不该产生的取值。
+ *
+ * 取值清单由 `packages/executor-protocol/protocol.json` 单一事实源钉死（三端
+ * 各自断言与本常量一致），此处只做类型安全的派生。
+ */
+export const ADMIN_INTERNAL_FAILURE_REASONS: readonly ExecutionFailureReason[] =
+  [ExecutionFailureReason.STALE_RECOVERED];
+
+export const EXECUTOR_REPORTABLE_FAILURE_REASONS: readonly ExecutionFailureReason[] =
+  Object.values(ExecutionFailureReason).filter(
+    (reason) => !ADMIN_INTERNAL_FAILURE_REASONS.includes(reason),
+  );
+
+/**
  * FEAT-05：单个执行产物（artifact）的清单条目。执行器在任务工作目录下约定
  * `artifacts/` 收集文件，任务结束回调随清单（name/size/sha256）上报，文件字节
  * 单独 PUT 上传到 admin 的 uploads/artifacts/<execId>/ 目录。清单是 best-effort

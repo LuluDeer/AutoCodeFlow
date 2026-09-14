@@ -406,6 +406,8 @@ export class HealthService {
   async getReadiness(): Promise<{
     status: "ready" | "not_ready";
     timestamp: string;
+    /** A3: 不就绪时的原因（非空字符串）——运维要能直接从探针响应看出为什么。 */
+    reason?: string;
     checks: Array<{ name: string; status: "pass" | "fail" }>;
   }> {
     const [db, redis] = await Promise.all([
@@ -418,9 +420,14 @@ export class HealthService {
       { name: "redis", status: redis.status === "healthy" ? "pass" : "fail" },
     ];
 
+    const failed = checks.filter((c) => c.status === "fail").map((c) => c.name);
+
     return {
-      status: checks.every((c) => c.status === "pass") ? "ready" : "not_ready",
+      status: failed.length === 0 ? "ready" : "not_ready",
       timestamp: new Date().toISOString(),
+      ...(failed.length > 0
+        ? { reason: `Unhealthy dependencies: ${failed.join(", ")}` }
+        : {}),
       checks,
     };
   }

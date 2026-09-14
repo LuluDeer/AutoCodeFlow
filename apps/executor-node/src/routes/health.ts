@@ -148,8 +148,21 @@ healthRouter.get('/health/ready', async (_req: Request, res: Response) => {
   const cpuUsage = sampleCpuPercent();
   const memUsage = ((totalMem - freeMem) / totalMem) * 100;
 
-  if (cpuUsage >= 90 || memUsage >= 90) {
-    res.status(503).json({ status: 'unready', reason: 'Resource usage too high' });
+  // A3（executor-protocol）：判定维度与 python 侧对齐为「资源 + admin 连通性」。
+  // 此前 node 只看资源、python 只看 admin 连通性——各缺一块：node 在 admin 不可达
+  // 时照样报 ready（回调发不出去却继续接任务），python 在 CPU 打满时照样报 ready。
+  // 状态码与 payload 形状三方统一（ready→200 / not_ready→503，见 protocol.json）。
+  const reachable = await checkAdminApi();
+  setAdminApiReachable(reachable);
+
+  if (!reachable) {
+    const adminUrl = new URL(config.adminApiUrlInternal || config.adminApiUrl || 'http://localhost:3000');
+    res.status(503).json({
+      status: 'not_ready',
+      reason: `admin-api unreachable (${buildAdminHealthPath(adminUrl)})`,
+    });
+  } else if (cpuUsage >= 90 || memUsage >= 90) {
+    res.status(503).json({ status: 'not_ready', reason: 'Resource usage too high' });
   } else {
     res.status(200).json({ status: 'ready' });
   }

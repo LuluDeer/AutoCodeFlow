@@ -1,7 +1,8 @@
+import json
+import pathlib
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import HTTPException
 
 from config import settings
 from routers import health as health_module
@@ -66,12 +67,14 @@ async def test_readiness_failure_reports_normalized_admin_url(monkeypatch):
     monkeypatch.setattr(settings, 'admin_api_url_external', '')
     monkeypatch.setattr(health_module, '_check_admin_api', AsyncMock(return_value=False))
 
-    with pytest.raises(HTTPException) as exc:
-        await health_module.readiness()
+    # A3: 不再抛 HTTPException——它会把载荷包进 {"detail": {...}}，与 executor-node
+    # 的扁平载荷、以及契约「payload 外不得再包一层自定义键」冲突。改为直接返回
+    # JSONResponse，状态码与形状三端一致。
+    resp = await health_module.readiness()
 
-    assert exc.value.status_code == 503
-    assert exc.value.detail == {
-        'status': 'unready',
+    assert resp.status_code == 503
+    assert json.loads(resp.body) == {
+        'status': 'not_ready',
         'reason': 'admin-api unreachable',
         'adminApiUrl': 'http://admin.local/api',
     }
@@ -95,7 +98,7 @@ def test_readiness_canonical_path_ready(client, monkeypatch):
     assert body['adminApiReachable'] is True
 
 
-def test_readiness_canonical_path_unready_when_admin_unreachable(client, monkeypatch):
+def test_readiness_canonical_path_not_ready_when_admin_unreachable(client, monkeypatch):
     monkeypatch.setattr(settings, 'admin_api_url', 'http://admin.local')
     monkeypatch.setattr(settings, 'admin_api_url_internal', '')
     monkeypatch.setattr(settings, 'admin_api_url_external', '')
@@ -103,8 +106,17 @@ def test_readiness_canonical_path_unready_when_admin_unreachable(client, monkeyp
 
     resp = client.get('/health/ready')
 
+    # A3: 载荷扁平（不再包在 'detail' 里），status 值域统一为 not_ready。
     assert resp.status_code == 503
-    assert resp.json()['detail']['status'] == 'unready'
+    body = resp.json()
+    assert body['status'] == 'not_ready'
+    assert body['reason'] == 'admin-api unreachable'
+
+
+# ---------------------------------------------------------------------------
+# A3（executor-protocol）：三方共享契约的 python 侧断言在
+# tests/test_executor_protocol_contract.py——三端加载同一份 protocol.json。
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize('path', ['/health/ready', '/health/readiness'])
