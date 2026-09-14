@@ -113,5 +113,21 @@
     "cli_mcp_unwrapped": "x",
     "node_py_unwrapped_preserved": { "data": "x", "message": "y", "extra": 1 },
     "$comment": "2026-09-14 (PK-06/PK-07 unification, all four ends): cli/mcp tightened to the numeric-code criterion (2026-09-13, WIKI-OPT-4) and node-sdk/py-sdk now match — the envelope test everywhere is 'data key present + code is a number', so this payload (no code key at all) is preserved unchanged by EVERY end. The cli_mcp_unwrapped key above is a historical archive of the pre-2026-09-13 loose heuristic and no longer describes any shipped client. Divergence is closed; see passthrough.stringCodeEnvelope for the pinned string-code vector"
+  }  ,
+  "channelList": {
+    "$comment": "A4 (DEEP_REVIEW 0ef3bbe): canonical set of notification channel ids. Source of truth in admin-api is the AlertChannel enum (apps/admin-api/src/modules/notification/notification.service.ts); the six channel classes under channels/*.channel.ts each declare their own \"name\" and admin-web's AlarmConfig carries yet another hand-written option list. Three independent copies drifted: feishu existed in the enum and in NotificationSettingsPage but was MISSING from AlarmConfig's selector (a real defect found while landing this section). This vector pins all copies to one set.",
+    "channels": [
+      "email",
+      "slack",
+      "dingtalk",
+      "wecom",
+      "webhook",
+      "feishu"
+    ],
+    "$consumers": [
+      "apps/admin-api/src/modules/notification/__tests__/channel-list-contract.spec.ts (AlertChannel enum + channel class names)",
+      "apps/admin-web/src/__tests__/alarm-config-channels.test.tsx (AlarmConfig selector options)"
+    ]
   }
+
 }
