@@ -2063,6 +2063,7 @@ export default {
   'alarmConfig.channel.option.dingtalk': '钉钉',
   'alarmConfig.channel.option.wecom': '企业微信',
   'alarmConfig.channel.option.webhook': 'Webhook',
+  'alarmConfig.channel.option.feishu': '飞书',
   'alarmConfig.field.channels': '告警渠道',
   'alarmConfig.field.emails': '告警邮件接收人',
   'alarmConfig.emailRule': '请输入有效的邮件地址',
