@@ -3,11 +3,20 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-14（**ARCH-A4 契约单一事实源收口 done**：新增 `scripts/check-consumer-routes.mjs` 把「mcp-server / acf-cli 硬编码的 73 条路由必须存在于 openapi」变成 CI 判据（此前改路由在这两侧**完全静默**）；`contract-fixtures` 增 `channelList` 并把通知渠道的三份手写清单机检到一处——**实测已漂：任务表单告警渠道选择器缺 `feishu`**（后端能发、前端选不中），已修；admin-api 2636/2636（+4）、admin-web 728/728（+3）。此前同日：**ARCH-A3 done**（新建 `packages/executor-protocol/protocol.json`，把「注释里的 parity」变成「红在 CI」；修掉 admin `/api/health/ready` **恒返 200**、readiness 判定维度两端各缺一块、failureReason 允许上报 admin 内部专用的 `stale_recovered` 三处真实不一致；CI run `34876211696` 全绿）、**ARCH-A1 done**（run `34868480667` 全绿）
+更新时间：2026-09-14（**ARCH-A5 SSE 短效票据 done**：三条 SSE 长连接此前把 access token（15min）拼进 `?access_token=`——查询串进 nginx 日志/浏览器历史/Referer，等于把 15 分钟全权令牌写进日志；现改由 `POST /auth/sse-ticket` 签发 30s、`type=sse_ticket` 的专用票据，建流前现换（重连也换新票），**旧 `?access_token=` 通道整体撤销**。admin-api 2643/2643（+7）、admin-web 733（新增 5 例专项）；反证有牙。此前同日：**ARCH-A4 done**（路由面快照守卫 + channelList 分发，run `34879813270` 全绿）、**ARCH-A3 done**（执行器协议契约化最小切片）、**ARCH-A1 done**（执行状态机收口））
 当前分支：`develop`
 
 ## 状态快照
 
+- **本轮（2026-09-14 用户授权「剩下的全部推进」→ ARCH-A5 SSE 短效票据，主控）**：A4 收口并推全绿后，按评审 §七做 A5 的**后半程**（前半 `createSseClient` 单一实现已由 F-08 落地）。
+  - **问题（评审点名的 P2 已知风险）**：EventSource 不支持自定义请求头，三条 SSE 长连接（`/metrics/stream`、`/executions/stream`、`/logs/stream`）此前直接把 **access token（15min TTL）** 拼进 `?access_token=`。查询串会被 nginx access log、浏览器历史、Referer 记录——等于把一枚 15 分钟有效的**全权**令牌写进日志。
+  - **形态**：新增 `POST /auth/sse-ticket`（常规 bearer 头）签发 **30s TTL、`type=sse_ticket`** 的专用票据。与 access token 共用 `ver` 会话版本快照 ⇒ 登出/改密后已签发票据即时失效；不落库、不参与刷新，是 access token 的**派生物**而非替代品。**两道门**：`extractJwtFromRequest` 只在三条 `/stream` 路径后缀上读取 `?ticket=`（路径门）；`validate` 的类型门只放行 `access` / `sse_ticket`（类型门）——refresh token 不能借道，票据也开不了任何 REST 端点。
+  - **关键取舍：旧 `?access_token=` 通道整体撤销**，而不是并行新增一条 ticket 通道。留着它等于泄漏面一点没缩小（谁都能继续用老方式）。撤销是**破坏性变更**，但三个消费方全在 admin-web 内、本轮一并迁移，无外部使用方。
+  - **admin-web 侧的三条新失败模式（本改动引入，必须钉住）**：建流从同步变异步后——① **重连必须换新票**（票据仅 30s，复用旧值必然 401）；② **换票失败**（401/网络）与断线同处理：退避重试，而不是建一个必然失败的连接；③ **换票期间组件卸载**要丢弃票据、不建流（否则泄漏一条幽灵长连接）。已由新增 `sse-client-ticket.test.ts` 5 例钉住。
+  - **验收**：admin-api **167 套件 2643/2643**（+7）+ tsc 0 + eslint 0；admin-web **733 用例**（新增 5 例专项）+ `tsc -b` 0 + eslint 0。**反证有牙**：把 `access_token` 加回查询串白名单 → 「旧通道已撤销」两例立即红；把 TTL 抬回分钟级 → 「有效期必须 < 60s」语义守卫红。
+  - **踩坑**：① admin-web 三个既有 SSE 测试原本**同步**断言 `FakeEventSource.instances.length`，改异步后全绿变红——需在各 `advanceTimersByTime` 之后补 `await act(async () => {})` 冲刷微任务；② 后台跑全量 vitest 时**不要同时改被测文件**（本轮因此误报 2 例红，事后单独复跑全绿）。
+  - **残差（如实）**：① **未做「单次使用」**（评审原稿提到）——需要在建流路径引入 Redis 共享状态，等于把 SSE 可用性与 Redis 绑定；而票据已是 30s + 路径受限，日志泄漏（事后读取）本就拿不到有效凭据。取舍与理由写进了 `api/sse.ts` 与 `auth.service.ts` 注释；② 长期路线（`fetch()` + `ReadableStream` 自实现 SSE 客户端、彻底消除「凭据入 URL」）未做——F-08 已把三套实现合并为 `createSseClient`，届时只需换建连方式；③ openapi/api-types 产物按「CI drift 日志回填」流程同步（本机无 PG/Redis）。
+  - **下轮建议**：① A6 回调可靠性分层（`GET /executors/:address/terminal-states` 对账端点 + 死信对账，同样需走 CI 回填产物）；② A3 完整形态（schema 化）；③ A2-B（`assertCanWrite` 提为守卫内强制）。生产真机项不变。
 - **本轮（2026-09-14 用户授权「剩下的全部推进」→ ARCH-A4 契约单一事实源收口，主控）**：A1/A3 已收口并推全绿，接着做评审 §七 A4。**先核查评审给的 6 个子项，发现 4 项此前已由 PK-02/PK-03/PK-15 落地**（nest-cli 已启用 `@nestjs/swagger/plugin`、Update* DTO 已换 `PartialType(CreateXxxDto)`、Executor 端点已 DTO 化、`openapi-empty-schema-whitelist.json` + `api-types-drift` job 已在 CI 拦空 schema）——**不重复造轮子**，只做剩余 2 项。
   - **① mcp/CLI 路由面快照守卫**（新 `scripts/check-consumer-routes.mjs` + CI `consumer-routes` job + `npm run test:consumer-routes`）：admin-api 有 148 条 openapi 路径，而 mcp-server 与 acf-cli 各自**硬编码**了 73 条路由字符串，**两者零编译期耦合**（不用生成的 api-types、也不 import admin-api）。后果是 admin-api 改一次路由在 admin-web 侧会红（`api-types-drift` 闸），在 mcp/CLI 侧却**完全静默**——只有用户真调用那个 MCP 工具 / CLI 子命令时才 404，且 404 会被信封拆包层吞成空错误体。
     - **两个设计要点**：① 路径模板归一——`${taskId}` 与 openapi 的 `{id}` 都替换成 `{}`，**参数名不同不算漂移**（否则会满屏误报）；② **扫描器自身带规模下界**（关键）——正则一旦因源码风格变化匹配不到东西，「0 条路由 → 0 条缺失」是**永真断言**，守卫会静默失效。故每个来源设下界（mcp ≥20 / cli ≥25），低于下界直接判失败：**宁可红也不能假装绿**。当前 mcp 39 条 + cli 34 条全部命中。
