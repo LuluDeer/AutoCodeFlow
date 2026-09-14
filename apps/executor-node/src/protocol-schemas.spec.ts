@@ -1,4 +1,5 @@
-import protocol from "../../../packages/executor-protocol/protocol.json";
+import { existsSync, readFileSync } from "node:fs";
+import * as path from "node:path";
 import { isSafeExecutionIdSegment } from "./routes/execute";
 import {
   TaskConfigSchema,
@@ -7,6 +8,32 @@ import {
   ConfigReloadResponseSchema,
   HealthReadyResponseSchema,
 } from "./generated/protocol.schemas";
+
+const PROTOCOL_RELATIVE = path.join(
+  "packages",
+  "executor-protocol",
+  "protocol.json",
+);
+
+function findRepoRoot(from: string): string {
+  let dir = from;
+  for (let i = 0; i < 12; i++) {
+    if (existsSync(path.join(dir, PROTOCOL_RELATIVE))) return dir;
+    dir = path.dirname(dir);
+  }
+  throw new Error(`executor-protocol/protocol.json not found above ${from}`);
+}
+
+/**
+ * 刻意不用 `import protocol from "../../../packages/executor-protocol/protocol.json"`：
+ * executor-node 的 Docker 构建上下文只含 `apps/executor-node/`，`resolveJsonModule`
+ * 会把仓库根的 packages/ 拉进 tsc 编译图 → TS2307（docker-multiarch-build 红）。
+ * 这里与 `__tests__/executor-protocol-contract.spec.ts` 走同一条「运行期按路径向上
+ * 找仓库根」的加载方式：构建期不跨出 app 目录，测试期仍与 python 侧读同一份文件。
+ */
+const protocol = JSON.parse(
+  readFileSync(path.join(findRepoRoot(__dirname), PROTOCOL_RELATIVE), "utf-8"),
+);
 
 /**
  * A3（DEEP_REVIEW 0ef3bbe §七）完整形态：executor-protocol 的 **zod 侧**向量断言。
