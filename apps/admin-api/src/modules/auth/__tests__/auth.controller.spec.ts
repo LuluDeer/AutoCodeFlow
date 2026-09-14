@@ -142,4 +142,28 @@ describe("AuthController", () => {
       expect(result).toBe(adminUser);
     });
   });
+
+  // R-22（DEEP_REVIEW 0ef3bbe）: login Swagger 文案与实际限流值同源。
+  // 旧文案硬编码 "Max5 attempts per minute"，与 LOGIN_THROTTLE_LIMIT 实际值
+  // （默认 20/min）漂移；现 description 内插同一常量。此处钉住「文案里的数字
+  // == @Throttle 真正生效的 limit」，防再次漂移。
+  describe("R-22: login Swagger 文案与实际限流值同源", () => {
+    const SWAGGER_OPERATION_META = "swagger/apiOperation";
+    const LIMIT_KEY = "THROTTLER:LIMITdefault";
+
+    it("description 的 attempts/min 数字 = login 路由 @Throttle limit", () => {
+      const handler = (
+        AuthController.prototype as unknown as Record<string, unknown>
+      ).login as object;
+      const op = Reflect.getMetadata(SWAGGER_OPERATION_META, handler) as {
+        description?: string;
+      };
+      const limit = Reflect.getMetadata(LIMIT_KEY, handler) as number;
+      expect(op).toBeDefined();
+      expect(typeof limit).toBe("number");
+      expect(op.description).toContain(`Max ${limit} attempts per minute`);
+      // 回归守卫：旧的硬编码 5/min 文案不得复现
+      expect(op.description).not.toContain("Max5");
+    });
+  });
 });

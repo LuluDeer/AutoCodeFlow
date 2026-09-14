@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-# 根级 43 例 Playwright e2e 全链编排（CI 与本地同一入口）
+# 根级 47 例 Playwright e2e 全链编排（CI 与本地同一入口）
 #
 # 链路：PG + Redis → admin-api(:3105) → executor-node(:8002 注册在线)
-#       → admin-web vite(:5176) → 根级 e2e-full.spec.js（43 例，chromium）
+#       → admin-web vite(:5176) → 根级 e2e-full.spec.js（47 例，chromium）
+#
+# E-45（DEEP_REVIEW 0ef3bbe）：新增 45/46 两例——pull 模式协议面（register(pull)
+# → 空轮询 → 触发 → 长轮询取件，ARCH-32）与 token 轮换自愈（旧 token 401 /
+# 新 token 可用 / POST /executors/token 取回可用凭据，AUTH-05）。两例均注册
+# 一次性执行器（随机回环地址，finally 删除），不干扰本脚本注册的在跑执行器；
+# 共享 token 读 E2E_EXECUTOR_SECRET（本脚本固定 test-executor-secret），
+# 不可用时 spec 侧 test.skip。
 #
 # 前置：bash + docker + node>=20 + apps/*/node_modules 已安装
 #       （CI job 与本脚本各自保证；playwright chromium 由脚本兜底 install）
@@ -390,10 +397,13 @@ PIDS+=($!)
 wait_http "http://localhost:$PORT_WEB/" 60 "admin-web" "$LOG_DIR/admin-web.log"
 echo "vite OK"
 
-echo "══ [6/6] Playwright 43 例（根级 spec + 根级 config）══"
+echo "══ [6/6] Playwright 47 例（根级 spec + 根级 config）══"
 cd apps/admin-web
 npx playwright install chromium >/dev/null 2>&1 || true
 set +e
+# E-45：把执行器共享 token 传给 spec（45/46 两例注册一次性执行器要用）；
+# 与上面启动 executor-node 时的 EXECUTOR_SECRET 同值，避免两处漂移。
+E2E_EXECUTOR_SECRET="${E2E_EXECUTOR_SECRET:-test-executor-secret}" \
 NODE_PATH="$(pwd)/node_modules" npx playwright test \
   --config=../../playwright.e2e.config.js \
   "$@"

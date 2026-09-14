@@ -1,6 +1,7 @@
 import request from 'supertest';
 import express from 'express';
 import * as http from 'http';
+import * as os from 'os';
 
 const mockConfig = {
   adminApiUrl: 'http://admin-public:3105',
@@ -24,6 +25,8 @@ import {
   buildAdminHealthRequestOptions,
   checkAdminApi,
   healthRouter,
+  resetCpuSampleForTest,
+  sampleCpuPercent,
 } from './health';
 
 function listen(server: http.Server): Promise<number> {
@@ -134,5 +137,98 @@ describe('health route admin API probing', () => {
     expect(res.body.adminApiReachable).toBe(true);
     expect(res.body.appName).toBe('test-executor');
     expect(requestedPaths).toEqual(['/api/health']);
+  });
+});
+
+// E-20（DEEP_REVIEW 0ef3bbe）：探针端点与 Windows 指标口径。
+describe('health probes (E-20)', () => {
+  function buildApp(): express.Express {
+    const app = express();
+    app.use('/', healthRouter);
+    return app;
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    resetCpuSampleForTest();
+  });
+
+  it('serves the canonical liveness/readiness paths (/health/live, /health/ready)', async () => {
+    const app = buildApp();
+
+    const live = await request(app).get('/health/live');
+    expect(live.status).toBe(200);
+    expect(live.text).toBe('OK');
+
+    const ready = await request(app).get('/health/ready');
+    // 200 ready / 503 unready 都合法（取决于跑测试的机器负载），但路径必须存在
+    // 且载荷是二者之一——旧实现的漂移路径（python 用 /health/readiness）在这里 404。
+    expect([200, 503]).toContain(ready.status);
+    expect(['ready', 'unready']).toContain(ready.body.status);
+  });
+
+  it('derives CPU% from os.cpus() time deltas — cross-platform, unlike loadavg (Windows≡0)', () => {
+    // loadavg() 在 Windows 恒为 [0,0,0]（旧实现因此把 CPU 恒报 0）。本测试用
+    // 合成 cpus() 时间片证明取值走的是「相邻采样差分」而不是 loadavg。
+    // os.cpus 在现代 Node 上是不可重定义属性（jest.spyOn 会抛），因此采样器
+    // 接受一个注入的 reader。
+    const cpu = (busy: number, idle: number) => [{
+      model: 'x', speed: 1,
+      times: { user: busy, nice: 0, sys: 0, idle, irq: 0 },
+    }] as unknown as os.CpuInfo[];
+
+    let current = cpu(100, 100);
+    const readCpus = () => current;
+
+    resetCpuSampleForTest();
+    expect(sampleCpuPercent(readCpus)).toBe(0); // 首个采样只建立基线
+
+    current = cpu(150, 150); // Δbusy=50, Δtotal=100
+    expect(sampleCpuPercent(readCpus)).toBeCloseTo(50, 5);
+
+    current = cpu(200, 200); // Δbusy=50, Δtotal=100
+    expect(sampleCpuPercent(readCpus)).toBeCloseTo(50, 5);
+  });
+
+  it('clamps the CPU sample to 100 and never goes negative on a clock reset', () => {
+    const cpu = (busy: number, idle: number) => [{
+      model: 'x', speed: 1,
+      times: { user: busy, nice: 0, sys: 0, idle, irq: 0 },
+    }] as unknown as os.CpuInfo[];
+
+    let current = cpu(1000, 1000);
+    const readCpus = () => current;
+
+    resetCpuSampleForTest();
+    sampleCpuPercent(readCpus);
+    // 时间片回绕（Δtotal <= 0）不得产出 NaN/负值
+    current = cpu(0, 0);
+    const value = sampleCpuPercent(readCpus);
+    expect(Number.isFinite(value)).toBe(true);
+    expect(value).toBeGreaterThanOrEqual(0);
+    expect(value).toBeLessThanOrEqual(100);
+  });
+
+  it('reports diskUsage as a percentage or null — never the old -1 sentinel', async () => {
+    const res = await request(buildApp()).get('/health');
+
+    expect(res.status).toBe(200);
+    if (res.body.diskUsage !== null) {
+      expect(typeof res.body.diskUsage).toBe('number');
+      expect(res.body.diskUsage).toBeGreaterThanOrEqual(0);
+    }
+    expect(res.body.diskUsage).not.toBe(-1);
+    expect(typeof res.body.cpuUsage).toBe('number');
+    expect(res.body.cpuUsage).toBeGreaterThanOrEqual(0);
+    expect(res.body.cpuUsage).toBeLessThanOrEqual(100);
+  });
+
+  it('keeps the degraded verdict consistent with the reported metrics (null disk must not degrade)', async () => {
+    const res = await request(buildApp()).get('/health');
+    const { cpuUsage, memUsage, diskUsage } = res.body;
+
+    const expectedHealthy =
+      cpuUsage < 80 && memUsage < 80 && (diskUsage === null || diskUsage < 90);
+    expect(res.body.status).toBe(expectedHealthy ? 'healthy' : 'degraded');
   });
 });

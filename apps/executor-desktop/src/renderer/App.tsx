@@ -6,16 +6,18 @@ import AppsPage from './pages/AppsPage';
 
 type Tab = 'status' | 'config' | 'history' | 'apps';
 
+// F-21（DEEP_REVIEW 0ef3bbe）：React.lazy 必须在模块顶层创建，避免每次 App 渲染
+// 生成新组件类型导致 Wizard 子树在 StrictMode 双渲染或未来加 state 时反复重挂、输入丢失。
+// 动态 import 本身仍保留代码分割（避免与 ConfigPage 等形成循环依赖）。
+const Wizard = React.lazy(() => import('./pages/Wizard'));
+
 export default function App() {
   // 根据 URL hash 判断是 wizard 还是主窗口
   const hash = window.location.hash.replace('#', '');
 
   if (hash === 'wizard') {
-    // 动态加载 Wizard，避免循环依赖
-    const Wizard = React.lazy(() => import('./pages/Wizard'));
     return (
         <React.Suspense fallback={<div className="app-loading" role="status" aria-live="polite">Loading...</div>}>
-
         <Wizard />
       </React.Suspense>
     );

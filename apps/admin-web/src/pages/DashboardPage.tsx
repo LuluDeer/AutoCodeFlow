@@ -8,7 +8,7 @@ import {
   ClockCircleOutlined, RocketOutlined, ApiOutlined, ReloadOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
@@ -337,7 +337,7 @@ export default function DashboardPage() {
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.executors')}</Text>}
             style={{ borderRadius: 10 }}
-            extra={<a onClick={() => nav('/executors')} style={{ fontSize: 12 }}>{t('dashboard.executors.all')}</a>}
+            extra={<Link to="/executors" style={{ fontSize: 12 }}>{t('dashboard.executors.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
             {execLoading && !executorStats ? (
@@ -365,7 +365,7 @@ export default function DashboardPage() {
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.failureTop')}</Text>}
             style={{ borderRadius: 10 }}
-            extra={<a onClick={() => nav('/executions?status=failed')} style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</a>}
+            extra={<Link to="/executions?status=failed" style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
             {failLoading && !failures ? (
@@ -380,7 +380,7 @@ export default function DashboardPage() {
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.recentFailures')}</Text>}
             style={{ borderRadius: 10 }}
-            extra={<a onClick={() => nav('/executions')} style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</a>}
+            extra={<Link to="/executions" style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
             {failLoading && !failures ? (
@@ -406,12 +406,13 @@ export default function DashboardPage() {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             {/* U6: 直接链到执行详情页，失败溯源一步到位 */}
-                            <a
-                              onClick={() => nav(`/tasks/${f.taskId}/executions/${f.id}`)}
+                            {/* F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href） */}
+                            <Link
+                              to={`/tasks/${f.taskId}/executions/${f.id}`}
                               style={{ fontSize: 12, fontWeight: 500, display: 'block' }}
                             >
                               {f.taskName}
-                            </a>
+                            </Link>
                             <Tooltip title={f.errorMessage}>
                               <Text
                                 type="secondary"

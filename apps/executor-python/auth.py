@@ -36,6 +36,13 @@ def get_static_token() -> str | None:
     """Get the shared bootstrap token for initial executor registration."""
     return _get_static_token() or None
 
+
+def has_dynamic_token() -> bool:
+    # E-42（DEEP_REVIEW 0ef3bbe）：/health 探针需要区分「静态 bootstrap token 已配置」
+    # 与「动态（/token 下发）token 当前是否持有」——旧 health 只读静态 env，动态链路
+    # 坏掉时探针仍报 tokenValid=true，运维无法从探针发现 token 轮换/自愈故障。
+    return bool(_dynamic_token)
+
 # Dynamic token storage (refreshed periodically)
 _dynamic_token = None
 _token_expires_at = None
@@ -48,6 +55,21 @@ _token_refresh_interval = 30 * 60  # 30 minutes
 # (not wall-clock) to stay immune to system time changes.
 _token_fetch_failed_at = 0.0  # type: float
 _TOKEN_FETCH_BACKOFF_SECONDS = 30.0
+
+# E-27（DEEP_REVIEW 0ef3bbe）：并发刷新去重——token 过期瞬间的一批并发
+# verify_token/get_current_token 旧实现各自走 _refresh_token_if_needed，各自发一次
+# POST /token。用模块级 asyncio.Lock 把「判定 + _fetch_token」串行化：第一个调用者
+# 持锁刷新并更新 _token_expires_at，其余并发调用者排队进锁后重读 _token_expires_at
+# 已在未来 30min 窗口内，直接 return，不再发请求。锁惰性创建（绑定到首次运行它的
+# 事件循环，兼容 uvicorn 单 loop）。
+_refresh_lock: Optional[asyncio.Lock] = None
+
+
+def _get_refresh_lock() -> asyncio.Lock:
+    global _refresh_lock
+    if _refresh_lock is None:
+        _refresh_lock = asyncio.Lock()
+    return _refresh_lock
 
 # R9 (round-9, W3 parity with executor-node admin-envelope.ts): the
 # executor's CURRENT stored tokenHash, as echoed by admin-api on register,
@@ -197,26 +219,29 @@ async def _fetch_token() -> Optional[str]:
 async def _refresh_token_if_needed() -> None:
     """Refresh token if expired or about to expire."""
     global _dynamic_token, _token_expires_at, _token_fetch_failed_at
-    # E-11 (parity with executor-node middleware/auth.ts TOKEN_FETCH_BACKOFF_MS):
-    # after a failed /token fetch, back off for 30s so admin-api being
-    # unreachable does not make every inbound /api request block on a ~10s
-    # fetch timeout. Clock is monotonic (not wall-clock) — immune to system
-    # time changes.
-    now_mono = time.monotonic()
-    if _token_fetch_failed_at and (now_mono - _token_fetch_failed_at) < _TOKEN_FETCH_BACKOFF_SECONDS:
-        return
-    now = datetime.now(timezone.utc)
-    # Refresh if no token, expired, or within 5 minutes of expiration
-    if _token_expires_at is None or now >= _token_expires_at - timedelta(minutes=5):
-        new_token = await _fetch_token()
-        if new_token:
-            _dynamic_token = new_token
-            _token_expires_at = now + timedelta(seconds=_token_refresh_interval)
-            _token_fetch_failed_at = 0.0  # E-11: 成功重置退避计时
-        else:
-            # E-11: 失败计时——退避期内 inbound 请求跳过刷新，避免每请求一发
-            # 10s 超时炮灰（admin 不可达时 verify_token 每请求走 refresh 链）。
-            _token_fetch_failed_at = now_mono
+    # E-27: 整段「判定 + _fetch_token」持锁执行——并发调用者串行进锁，第一个
+    # 刷新后 _token_expires_at 落到未来 30min，后续进锁者重读后直接 return。
+    async with _get_refresh_lock():
+        # E-11 (parity with executor-node middleware/auth.ts TOKEN_FETCH_BACKOFF_MS):
+        # after a failed /token fetch, back off for 30s so admin-api being
+        # unreachable does not make every inbound /api request block on a ~10s
+        # fetch timeout. Clock is monotonic (not wall-clock) — immune to system
+        # time changes.
+        now_mono = time.monotonic()
+        if _token_fetch_failed_at and (now_mono - _token_fetch_failed_at) < _TOKEN_FETCH_BACKOFF_SECONDS:
+            return
+        now = datetime.now(timezone.utc)
+        # Refresh if no token, expired, or within 5 minutes of expiration
+        if _token_expires_at is None or now >= _token_expires_at - timedelta(minutes=5):
+            new_token = await _fetch_token()
+            if new_token:
+                _dynamic_token = new_token
+                _token_expires_at = now + timedelta(seconds=_token_refresh_interval)
+                _token_fetch_failed_at = 0.0  # E-11: 成功重置退避计时
+            else:
+                # E-11: 失败计时——退避期内 inbound 请求跳过刷新，避免每请求一发
+                # 10s 超时炮灰（admin 不可达时 verify_token 每请求走 refresh 链）。
+                _token_fetch_failed_at = now_mono
 
 
 def require_token_enabled() -> bool:
@@ -263,8 +288,13 @@ async def verify_token(authorization: str = Header(default='')) -> None:
         return
     
     scheme, _, token = authorization.partition(' ')
+    # E-24（DEEP_REVIEW 0ef3bbe）：hmac.compare_digest 对 str/str 要求纯 ASCII，
+    # 非 ASCII Bearer（如 "Bearer 密码"）会抛 TypeError → FastAPI 500，污染错误率
+    # 指标（应为 401）。统一改 bytes 比较：非 ASCII token 自然编码后比对不上即 401，
+    # 不再抛异常。与 node middleware/auth.ts 的 Buffer + timingSafeEqual 口径对齐。
+    token_bytes = token.encode('utf-8')
     token_valid = scheme.lower() == 'bearer' and any(
-        hmac.compare_digest(token, vt) for vt in valid_tokens
+        hmac.compare_digest(token_bytes, vt.encode('utf-8')) for vt in valid_tokens
     )
     if not token_valid:
         raise HTTPException(

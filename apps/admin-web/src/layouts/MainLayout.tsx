@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, memo, type ReactNode } from 'react';
-import { Layout, Menu, Avatar, Dropdown, Badge, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
 import {
   DashboardOutlined,
   AppstoreOutlined,
@@ -17,7 +17,6 @@ import {
   TeamOutlined,
   DatabaseOutlined,
   HomeOutlined,
-  QuestionCircleOutlined,
   SearchOutlined,
   SunOutlined,
   MoonOutlined,
@@ -29,6 +28,7 @@ import { useAuthStore } from '../store/auth';
 import { authApi } from '../api/auth';
 import { logoutRemote } from '../api/logout';
 import CommandPalette from '../components/CommandPalette';
+import { isMacPlatform, searchShortcutHint } from './shortcut-hint';
 import { useThemeStore } from '../theme/store';
 import type { ThemeMode } from '../theme/store';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -43,6 +43,16 @@ const SIDER_COLLAPSED_KEY = 'autoflow-sider-collapsed';
 const MENU_OPEN_KEYS_KEY = 'autoflow-menu-open-keys';
 // 默认展开「任务」「执行」两组（计划书指定），首次进入即见高频入口
 const DEFAULT_OPEN_KEYS = ['g-tasks', 'g-executions'];
+
+// F-25（DEEP_REVIEW 0ef3bbe）：按平台动态显示搜索快捷键（Mac ⌘K / 其他 Ctrl K），
+// 与 CommandPalette 实际监听的 metaKey||ctrlKey 保持一致。判定逻辑抽到
+// layouts/shortcut-hint.ts 纯函数（双平台分支可单测——jsdom 只能覆盖其中一个）。
+const SEARCH_SHORTCUT_HINT = searchShortcutHint(
+  isMacPlatform(
+    typeof navigator !== 'undefined' ? navigator.platform : '',
+    typeof navigator !== 'undefined' ? navigator.userAgent : '',
+  ),
+);
 
 /**
  * UI-12：壳层样式钩子。
@@ -519,7 +529,8 @@ export default function MainLayout() {
             </Tooltip>
 
             {/* FEAT-09: 全局搜索入口——点击行为与 ⌘K/Ctrl+K 一致（再按切换） */}
-            <Tooltip title="Ctrl K">
+            {/* F-25（DEEP_REVIEW 0ef3bbe）：tooltip 按平台动态显示 ⌘K / Ctrl K */}
+            <Tooltip title={SEARCH_SHORTCUT_HINT}>
               <Button
                 type="text"
                 icon={<SearchOutlined />}
@@ -529,29 +540,22 @@ export default function MainLayout() {
               />
             </Tooltip>
 
-            {/* 帮助按钮 —— UI-12：纯图标按钮补可访问名（此前读屏只报「按钮」） */}
-            <Tooltip title={t('nav.help.aria')}>
-              <Button
-                type="text"
-                icon={<QuestionCircleOutlined />}
-                aria-label={t('nav.help.aria')}
-                style={{ fontSize: 16, color: token.colorTextSecondary }}
-              />
-            </Tooltip>
+            {/* F-24（DEEP_REVIEW 0ef3bbe）：原帮助按钮无 onClick（纯摆设、有 aria-label 却无行为），
+                且项目无文档/关于落地页——按评审建议移除该占位按钮，避免误导。 */}
 
             {/* 通知按钮：R6 起 /notifications 为 ADMIN-only（路由门控），
                 对普通用户隐藏该快捷入口，避免点击后落入 403 页 */}
             {isAdmin && (
               <Tooltip title={t('nav.notify.aria')}>
-                <Badge count={0} dot>
-                  <Button
-                    type="text"
-                    icon={<BellOutlined />}
-                    aria-label={t('nav.notify.aria')}
-                    style={{ fontSize: 16 }}
-                    onClick={() => nav('/notifications')}
-                  />
-                </Badge>
+                {/* F-24（DEEP_REVIEW 0ef3bbe）：原 <Badge count={0} dot> 恒亮红点为占位死 UI
+                    （dot 忽略 count，永远显示红点），移除 Badge 包裹，保留可跳转 Bell 按钮 */}
+                <Button
+                  type="text"
+                  icon={<BellOutlined />}
+                  aria-label={t('nav.notify.aria')}
+                  style={{ fontSize: 16 }}
+                  onClick={() => nav('/notifications')}
+                />
               </Tooltip>
             )}
 

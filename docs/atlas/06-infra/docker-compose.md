@@ -43,14 +43,14 @@ docker compose --profile minio up -d     # 追加可选服务（replica/minio/ja
 - 卷 `executor_node_data:/data/tasks`；depends_on admin-api healthy；healthcheck wget `http://localhost:8002/health`。
 
 ### registry-pypi
-- build `./apps/registry-pypi`；端口 `127.0.0.1:8003:8003`；env `REGISTRY_USER/PASS`、`PYPI_API_KEY`、`PACKAGES_DIR=/data/packages`；卷 `pypi_data`；healthcheck urllib 打本机 `/health`。
+- build `./apps/registry-pypi`；端口 `127.0.0.1:8003:8003`；env `REGISTRY_USER/PASS`、`PACKAGES_DIR=/data/packages`；卷 `pypi_data`；healthcheck urllib 打本机 `/health`。
 
 ### registry-npm
 - 镜像 `verdaccio/verdaccio:5`；端口 `127.0.0.1:4873:4873`；卷 `npm_data:/verdaccio/storage` + `./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro`。
 - healthcheck 必须打 **`http://127.0.0.1:4873/-/ping`**——verdaccio 5 只监听 IPv4，容器内 `localhost` 先解析 `::1` 导致恒 unhealthy（R8 实爆）。
 
 ### minio（profile: `minio`）
-- 镜像 `minio/minio:latest`，`command: server /data --console-address ':9001'`；端口 `127.0.0.1:9000`、`127.0.0.1:9001`；卷 `minio_data`。
+- 镜像 `minio/minio:RELEASE.2024-10-13T13-34-11Z`（E-34：pin 具体 RELEASE tag，不再浮动 `latest`；该 tag 仍带 Web 控制台），`command: server /data --console-address ':9001'`；端口 `127.0.0.1:9000`、`127.0.0.1:9001`；卷 `minio_data`。
 - `MINIO_ROOT_PASSWORD` **无默认值**（缺失即启动失败）。启用后把 admin-api 的 `LOG_STORAGE_DRIVER=s3`；注意 bucket 生命周期需自行配置（admin 侧清理不覆盖外置对象）。
 
 ### jaeger（profile: `jaeger`，OBS-01）

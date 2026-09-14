@@ -166,6 +166,19 @@ export class ExecutorService {
     private readonly pullService: ExecutorPullService | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
+    // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional（事件总线 / 高危审计）缺失时
+    // 一次性 warn，使静默降级在日志面可见——eventBus 缺失则 executor.offline
+    // 事件静默不发；audit 缺失则 rotate-token 等高危操作审计静默不写。
+    if (!this.eventBus) {
+      this.logger.warn(
+        "R-26: DomainEventBus 未装配——executor.offline 事件将静默不发",
+      );
+    }
+    if (!this.audit) {
+      this.logger.warn(
+        "R-26: AuditService 未装配——executor 高危操作审计将静默不写",
+      );
+    }
   }
 
   /**
@@ -1747,36 +1760,47 @@ export class ExecutorService {
     const timeoutMs = heartbeatInterval * timeoutMultiplier;
     const cutoff = new Date(Date.now() - timeoutMs);
 
-    // Query before update to capture names/addresses for offline notifications
-    const staleExecutors = await this.repo.find({
-      where: { status: ExecutorStatus.ONLINE, lastHeartbeat: LessThan(cutoff) },
-      select: ["id", "appName", "address"],
-    });
+    // R-30（DEEP_REVIEW 0ef3bbe）: 消除查询/更新间隙的误发。旧实现先 find 快照
+    // staleExecutors，再 repo.update（同条件重查，行级正确），最后事件/通知循环
+    // 遍历的是**先查的快照**——间隙内补了心跳（lastHeartbeat 新于 cutoff）的
+    // 执行器虽不被 UPDATE 命中，仍会收到 executor.offline 事件与通知。改为
+    // 条件 UPDATE ... RETURNING：原子地拿到真正发生 ONLINE→OFFLINE 跃迁的行，
+    // 事件/通知只对这部分扇出（与 scheduler COVER_EARLY 的条件 UPDATE+RETURNING
+    // 同型），间隙误发从结构上消失。
+    const result = await this.repo
+      .createQueryBuilder()
+      .update(Executor)
+      .set({ status: ExecutorStatus.OFFLINE })
+      .where('status = :status AND "lastHeartbeat" < :cutoff', {
+        status: ExecutorStatus.ONLINE,
+        cutoff,
+      })
+      .returning(["id", "appName", "address"])
+      .execute();
 
-    if (staleExecutors.length === 0) return;
+    const transitioned = (result.raw ?? []) as Array<{
+      id: string;
+      appName: string;
+      address: string;
+    }>;
+    if (transitioned.length === 0) return;
 
-    const result = await this.repo.update(
-      { status: ExecutorStatus.ONLINE, lastHeartbeat: LessThan(cutoff) },
-      { status: ExecutorStatus.OFFLINE },
+    this.logger.warn(
+      `Marked ${transitioned.length} executor(s) as OFFLINE due to heartbeat timeout (${timeoutMs}ms)`,
     );
-    if (result.affected && result.affected > 0) {
-      this.logger.warn(
-        `Marked ${result.affected} executor(s) as OFFLINE due to heartbeat timeout (${timeoutMs}ms)`,
-      );
-      // FEAT-07: 状态落库后发布 executor.offline（每台恰一次，与下方通知同扇出位）。
-      for (const exec of staleExecutors) {
-        this.emitExecutorOffline(exec);
-      }
-      // Fire offline notifications — fire-and-forget, errors must not break the cron job
-      for (const exec of staleExecutors) {
-        this.notificationService
-          .notifyExecutorOffline(exec.appName, exec.address)
-          .catch((e: Error) =>
-            this.logger.error(
-              `Failed to send offline notification for ${exec.address}: ${e.message}`,
-            ),
-          );
-      }
+    // FEAT-07: 状态落库后发布 executor.offline（每台恰一次，与下方通知同扇出位）。
+    for (const exec of transitioned) {
+      this.emitExecutorOffline(exec);
+    }
+    // Fire offline notifications — fire-and-forget, errors must not break the cron job
+    for (const exec of transitioned) {
+      this.notificationService
+        .notifyExecutorOffline(exec.appName, exec.address)
+        .catch((e: Error) =>
+          this.logger.error(
+            `Failed to send offline notification for ${exec.address}: ${e.message}`,
+          ),
+        );
     }
   }
 

@@ -173,7 +173,7 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
         value: token,
         isSecret: true,
       }),
-      { userId: "1", username: "admin", ipAddress: "10.1.1.1" },
+      { userId: 1, username: "admin", ipAddress: "10.1.1.1" },
     );
   });
 
@@ -183,19 +183,19 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
     await controller.upsert({ key: "k", value: "v" } as any, admin, req);
     expect(service.upsert).toHaveBeenCalledWith(
       { key: "k", value: "v" },
-      { userId: "1", username: "admin", ipAddress: "10.1.1.1" },
+      { userId: 1, username: "admin", ipAddress: "10.1.1.1" },
     );
 
     await controller.batchUpsert([{ key: "k" }] as any, admin, req);
     expect(service.batchUpsert).toHaveBeenCalledWith([{ key: "k" }], {
-      userId: "1",
+      userId: 1,
       username: "admin",
       ipAddress: "10.1.1.1",
     });
 
     await controller.remove("k", admin, req);
     expect(service.remove).toHaveBeenCalledWith("k", {
-      userId: "1",
+      userId: 1,
       username: "admin",
       ipAddress: "10.1.1.1",
     });
@@ -206,7 +206,7 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
 
     await controller.rollback(7, admin, req);
     expect(service.rollback).toHaveBeenCalledWith(7, {
-      userId: "1",
+      userId: 1,
       username: "admin",
       ipAddress: "10.1.1.1",
     });

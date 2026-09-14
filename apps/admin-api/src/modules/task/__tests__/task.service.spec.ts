@@ -169,6 +169,10 @@ describe("TaskService (__tests__)", () => {
     scheduleRetryAfterRecovery: jest.Mock;
     hasRetryBudget: jest.Mock;
   };
+  // R-28（DEEP_REVIEW 0ef3bbe）: 依赖触发系统动作审计桩。存量用例不断言该桩；
+  // 仅供 R-28 用例断言 audit.log 的系统动作落点（audit 为 @Optional，缺 provider
+  // 时为 null 并触发 R-26 warn——此处显式提供以覆盖审计分支）。
+  let auditMock: { log: jest.Mock };
 
   beforeEach(async () => {
     // 可观测性补齐轮：运行时计数是模块级进程内计数，跨用例显式重置
@@ -231,6 +235,8 @@ describe("TaskService (__tests__)", () => {
       scheduleRetryAfterRecovery: jest.fn().mockResolvedValue(undefined),
       hasRetryBudget: jest.fn().mockReturnValue(true),
     };
+    // R-28: 依赖触发系统动作审计桩（默认 resolve，best-effort 路径）
+    auditMock = { log: jest.fn().mockResolvedValue(undefined) };
 
     const module = await Test.createTestingModule({
       providers: [
@@ -256,6 +262,8 @@ describe("TaskService (__tests__)", () => {
         // （notifyCallbackFailure 已迁 listener）；改为事件总线桩，终态
         // 事件断言打在此处。
         { provide: DomainEventBus, useValue: eventBus },
+        // R-28: 依赖触发系统动作审计（@Optional 依赖）——显式提供以覆盖审计分支。
+        { provide: AuditService, useValue: auditMock },
         // SEC-02: 默认降级明文（key 空）——既有用例语义零变化
         {
           provide: SecretsCryptoService,
@@ -548,8 +556,8 @@ describe("TaskService (__tests__)", () => {
       taskRepo.findAndCount.mockResolvedValue([tasks, 2]);
       const result = await service.findAll({ page: 1, pageSize: 10 });
       expect(result).toHaveProperty("total", 2);
-      expect(result.list).toHaveLength(2);
-      expect(result.items).toBe(result.list);
+      // R-21（DEFERRED-CROSS-SCOPE）: 双键保留，此处断言 canonical items
+      expect(result.items).toHaveLength(2);
     });
 
     it("passes name ILike filter when name param is provided", async () => {
@@ -1096,8 +1104,8 @@ describe("TaskService (__tests__)", () => {
       execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
       const result = await service.getAllExecutions({ page: 1, pageSize: 10 });
       expect(result).toHaveProperty("total", 2);
-      expect(result.list).toHaveLength(2);
-      expect(result.items).toBe(result.list);
+      // R-21（DEFERRED-CROSS-SCOPE）: 双键保留，此处断言 canonical items
+      expect(result.items).toHaveLength(2);
       // DB-003: 页查询只执行一次 getManyAndCount（不再 getRawAndEntities/getCount 双份开销）
       expect(qbMock.getManyAndCount).toHaveBeenCalledTimes(1);
       expect(qbMock.getRawAndEntities).not.toHaveBeenCalled();
@@ -1130,10 +1138,10 @@ describe("TaskService (__tests__)", () => {
       expect(findArgs.where.id).toEqual(
         expect.objectContaining({ _value: ["t1"] }),
       );
-      expect(result.list[0].taskName).toBe("Task One");
-      expect(result.list[1].taskName).toBe("Task One");
+      expect(result.items[0].taskName).toBe("Task One");
+      expect(result.items[1].taskName).toBe("Task One");
       // 行自身已有 taskName 的不做回填覆盖
-      expect(result.list[2].taskName).toBe("inline-name");
+      expect(result.items[2].taskName).toBe("inline-name");
     });
 
     it("applies status and taskId filters", async () => {
@@ -2364,6 +2372,63 @@ describe("TaskService (__tests__)", () => {
         );
       });
 
+      // R-28（DEEP_REVIEW 0ef3bbe）: 依赖触发的两条系统性缺口回归——
+      // ① execution.triggerType 旧实现经 this.trigger(task.id, {}) 误记为
+      //    "manual"，应为 "dependency"（下游据此区分手动/依赖来源）；
+      // ② 依赖触发无 user 主体、绕过控制器审计，须补系统动作审计。
+      it("R-28: 依赖触发落库 triggerType='dependency' 并写系统审计", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        const depQb = setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        taskQueue.add.mockResolvedValue({});
+
+        // 捕获依赖触发链路落库的执行行（trigger() 经 transaction.manager.create）
+        const created: Array<Record<string, unknown>> = [];
+        dataSource.transaction.mockImplementation((fn: any) =>
+          fn({
+            create: jest.fn((_entity: unknown, payload: unknown) => {
+              created.push(payload as Record<string, unknown>);
+              return { id: "down-exec-1", status: "pending" };
+            }),
+            save: jest
+              .fn()
+              .mockResolvedValue({ id: "down-exec-1", status: "pending" }),
+          }),
+        );
+
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        // 依赖确实被触发（claim + 入队）
+        expect(depQb.update).toHaveBeenCalled();
+        expect(taskQueue.add).toHaveBeenCalledTimes(1);
+        // ① triggerType 记为 dependency（旧实现为 manual）
+        expect(created.some((p) => p.triggerType === "dependency")).toBe(true);
+        expect(created.every((p) => p.triggerType !== "manual")).toBe(true);
+        // ② 系统动作审计写入（无 user 主体 → username=system:dependency）
+        expect(auditMock.log).toHaveBeenCalledWith(
+          expect.objectContaining({
+            username: "system:dependency",
+            action: "task.trigger_dependency",
+            resource: "task",
+            resourceId: "t-downstream",
+            detail: expect.objectContaining({
+              triggerType: "dependency",
+              upstreamTaskId: "t-upstream",
+            }),
+          }),
+        );
+      });
+
       it("R4-P3: claims the downstream via a short-window conditional UPDATE on lastTriggerTime before triggering", async () => {
         const exec = {
           id: "e-dep",
@@ -2905,6 +2970,8 @@ describe("TaskService (__tests__)", () => {
           null as never,
           null as never,
           null as never,
+          null as never,
+          // R-28: 新增 @Optional audit 构造参数
           null as never,
         );
         expect(() =>
@@ -4285,7 +4352,7 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
         page: 1,
         pageSize: 10,
       } as any);
-      expect(result.list[0].taskName).toBeNull();
+      expect(result.items[0].taskName).toBeNull();
       // 回填批量查询确实发起（missingIds 非空分支；In() 包装为 FindOperator）
       expect(taskRepo.find).toHaveBeenCalledTimes(1);
       expect(taskRepo.find).toHaveBeenCalledWith(
@@ -4300,7 +4367,7 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
         page: 1,
         pageSize: 10,
       } as any);
-      expect(result.list[0].taskName).toBe("Own Name");
+      expect(result.items[0].taskName).toBe("Own Name");
       expect(taskRepo.find).not.toHaveBeenCalled();
     });
   });
@@ -4611,5 +4678,67 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
         "(no logs)",
       );
     });
+  });
+});
+
+// R-26（DEEP_REVIEW 0ef3bbe）: @Optional 关键依赖缺失时的静默降级可观测性。
+// 生产装配下 DomainEventBus / AuditService 由 @Global 模块恒提供；仅单测/降级
+// 装配可能缺失。构造器对缺失项各 warn 一次，使「终态事件不发」「依赖触发审计
+// 不写」这两条静默降级路径在日志面可见——不改变任何业务行为。
+describe("R-26: @Optional 关键依赖缺失可观测性（TaskService）", () => {
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    warnSpy = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  const buildService = (opts: {
+    eventBus: unknown;
+    audit: unknown;
+  }): TaskService =>
+    new TaskService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      opts.eventBus as never, // eventBus（@Optional）
+      {} as never, // secretsCrypto
+      null as never, // tracing（@Optional）
+      null as never, // reportRepo（@Optional）
+      null as never, // projectAccess（@Optional）
+      opts.audit as never, // audit（@Optional）
+    );
+
+  const r26Messages = (): string[] =>
+    warnSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes("R-26"));
+
+  it("eventBus/audit 缺失时各 warn 一次，且不抛", () => {
+    expect(() =>
+      buildService({ eventBus: null, audit: null }),
+    ).not.toThrow();
+    const msgs = r26Messages();
+    expect(msgs).toHaveLength(2);
+    expect(msgs.some((m) => m.includes("DomainEventBus"))).toBe(true);
+    expect(msgs.some((m) => m.includes("AuditService"))).toBe(true);
+  });
+
+  it("依赖齐备时不产生任何 R-26 warn", () => {
+    buildService({ eventBus: { emit: jest.fn() }, audit: { log: jest.fn() } });
+    expect(r26Messages()).toHaveLength(0);
   });
 });

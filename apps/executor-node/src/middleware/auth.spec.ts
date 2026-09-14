@@ -431,3 +431,83 @@ describe('setOnTokenAcquired — N41 register self-heal hook', () => {
     await flushAsync();
   });
 });
+
+// E-27（DEEP_REVIEW 0ef3bbe）：token 刷新 in-flight 去重。旧实现里 token 过期
+// 瞬间的一批并发调用（心跳 + 每个入站 /api 请求都走 verifyToken）各自发一次
+// POST /token——既是并发放大，也让整批调用各自多等一个 RTT。
+describe('E-27 concurrent refresh single-flight', () => {
+  async function freshAuth() {
+    jest.resetModules();
+    const axiosDefault = ((await import('axios')) as any).default;
+    const { getCurrentToken, forceTokenRefresh } = await import('./auth');
+    return { post: axiosDefault.post as jest.Mock, getCurrentToken, forceTokenRefresh };
+  }
+
+  it('fires exactly one POST /token for N concurrent callers with an expired token', async () => {
+    const { post, getCurrentToken } = await freshAuth();
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    post.mockImplementation(async () => {
+      await held; // 把 /token 挂在飞行中，让所有调用者堆在同一扇门前
+      return { status: 201, data: { code: 201, message: 'ok', data: { token: 'single-flight' } } };
+    });
+
+    const pending = Promise.all([
+      getCurrentToken(),
+      getCurrentToken(),
+      getCurrentToken(),
+      getCurrentToken(),
+      getCurrentToken(),
+    ]);
+    // 让第一批调用推进到 await（此时 in-flight 门已建立）
+    await new Promise((r) => setImmediate(r));
+    release();
+
+    await expect(pending).resolves.toEqual(Array(5).fill('single-flight'));
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the in-flight gate after settling so a later refresh still fetches', async () => {
+    const { post, getCurrentToken, forceTokenRefresh } = await freshAuth();
+    post.mockResolvedValue({
+      status: 201,
+      data: { code: 201, message: 'ok', data: { token: 'first' } },
+    });
+    await expect(getCurrentToken()).resolves.toBe('first');
+    expect(post).toHaveBeenCalledTimes(1);
+
+    // 强制刷新（R10 自愈路径）必须还能真的再发一次——去重门不得永久卡住
+    post.mockResolvedValue({
+      status: 201,
+      data: { code: 201, message: 'ok', data: { token: 'second' } },
+    });
+    await expect(forceTokenRefresh()).resolves.toBe('second');
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+
+  it('concurrent forceTokenRefresh callers do not stack extra /token requests', async () => {
+    const { post, getCurrentToken, forceTokenRefresh } = await freshAuth();
+    post.mockResolvedValue({
+      status: 201,
+      data: { code: 201, message: 'ok', data: { token: 'cached' } },
+    });
+    await getCurrentToken();
+    expect(post).toHaveBeenCalledTimes(1);
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    post.mockImplementation(async () => {
+      await held;
+      return { status: 201, data: { code: 201, message: 'ok', data: { token: 'healed' } } };
+    });
+
+    const pending = Promise.all([forceTokenRefresh(), forceTokenRefresh(), forceTokenRefresh()]);
+    await new Promise((r) => setImmediate(r));
+    release();
+    await pending;
+
+    // 并发自愈不放大：一次成功刷新 + 至多一次追赶刷新，绝不 3 次
+    expect((post as jest.Mock).mock.calls.length).toBeLessThanOrEqual(2);
+  });
+});

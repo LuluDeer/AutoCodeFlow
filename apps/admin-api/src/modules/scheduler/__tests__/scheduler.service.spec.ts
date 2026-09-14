@@ -594,9 +594,11 @@ describe("SchedulerService", () => {
 
       const result = await service.enqueue(task, "manual");
       expect(result).toEqual(exec);
+      // R-29（DEEP_REVIEW 0ef3bbe）: 入队载荷瘦身为 { executionId }——不再携带
+      // 整行 task（processor 从 DB 按 executionId 重读，载荷里的 task 是死重量）。
       expect(queue.add).toHaveBeenCalledWith(
         "execute",
-        { executionId: "exec-1", task },
+        { executionId: "exec-1" },
         expect.any(Object),
       );
       // P1: not released on success either — TTL-based dedup, see enqueue.
@@ -1796,9 +1798,10 @@ describe("SchedulerService", () => {
 
         await service.enqueue(task, "cron");
 
+        // R-29: 载荷仅 { executionId }（无 task 整行）
         expect(queue.add).toHaveBeenCalledWith(
           "execute",
-          { executionId: "exec-1", task },
+          { executionId: "exec-1" },
           expect.objectContaining({ priority: expected }),
         );
         expect(typeof queue.add.mock.calls[0][2].priority).toBe("number");

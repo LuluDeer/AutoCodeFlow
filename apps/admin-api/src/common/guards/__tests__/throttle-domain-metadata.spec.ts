@@ -73,6 +73,23 @@ describe("SEC-09 分域档位元数据绑定", () => {
     }
   });
 
+  // R-17（DEEP_REVIEW 0ef3bbe）: 批量 pause/resume/delete 与 batchTrigger 同属
+  // 批量干预写面，此前漏挂分域档位——回归守卫钉住四端点档位一致。
+  it("R-17 task 批量干预面：batchTrigger/batchPause/batchResume/batchDelete = OPS_THROTTLE", () => {
+    const proto = TaskController.prototype;
+    for (const m of [
+      "batchTrigger",
+      "batchPause",
+      "batchResume",
+      "batchDelete",
+    ]) {
+      const { limit, ttl, skip } = meta(proto, m);
+      expect(limit).toBe(OPS_THROTTLE.limit);
+      expect(ttl).toBe(OPS_THROTTLE.ttl);
+      expect(skip).toBeUndefined();
+    }
+  });
+
   it("tasks-batch 中档：batchTrigger = OPS_THROTTLE", () => {
     const { limit, ttl } = meta(TaskBatchController.prototype, "batchTrigger");
     expect(limit).toBe(OPS_THROTTLE.limit);

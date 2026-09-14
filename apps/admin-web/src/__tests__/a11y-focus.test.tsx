@@ -183,13 +183,15 @@ describe('UI-12 MainLayout — 焦点管理与 aria', () => {
     expect(nav.querySelector('.ant-menu')).toBeTruthy();
   });
 
-  it('头部图标按钮全部具备可访问名（主题/搜索/帮助/通知/用户菜单）', () => {
+  it('头部图标按钮全部具备可访问名（主题/搜索/通知/用户菜单）', () => {
     renderLayout();
     expect(screen.getByRole('button', { name: /切换主题/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: '全局搜索' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '帮助文档' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '通知' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '用户菜单' })).toBeTruthy();
+    // F-24（DEEP_REVIEW 0ef3bbe）：无 onClick 的「帮助文档」占位按钮已移除——
+    // 头部不再存在任何点了没反应的死 UI。
+    expect(screen.queryByRole('button', { name: '帮助文档' })).toBeNull();
   });
 
   it('页面内不存在无名称按钮（防回归：新增纯图标按钮必须带 aria-label）', () => {

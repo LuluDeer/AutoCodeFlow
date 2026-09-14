@@ -12,6 +12,8 @@ import { useTranslation } from 'react-i18next';
 import { type Executor } from '../api/executors';
 import { useExecutorsList, useExecutorGroups } from '../api/queries';
 import { client } from '../api/client';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../utils/locale';
 import { useAuthStore } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
@@ -32,7 +34,7 @@ function heartbeatLabel(t: TFunc, lastHeartbeat: string, token: AntdToken): { te
   const diffMin = diffMs / 60000;
   if (diffMin < 2) return { color: token.colorSuccess, text: t('execList.hb.justNow') };
   if (diffMin < 10) return { color: token.colorWarning, text: t('execList.hb.minAgo', { min: Math.floor(diffMin) }) };
-  return { color: token.colorError, text: new Date(lastHeartbeat).toLocaleString('zh-CN') };
+  return { color: token.colorError, text: new Date(lastHeartbeat).toLocaleString(currentLocale()) };
 }
 
 export default function ExecutorListPage() {
@@ -256,7 +258,7 @@ export default function ExecutorListPage() {
         if (!v) return '-';
         const hb = heartbeatLabel(t, v, token);
         return (
-          <Tooltip title={new Date(v).toLocaleString('zh-CN')}>
+          <Tooltip title={new Date(v).toLocaleString(currentLocale())}>
             <Space size={4}>
               <ClockCircleOutlined style={{ color: hb.color }} />
               <Typography.Text style={{ color: hb.color, fontSize: 12 }}>{hb.text}</Typography.Text>

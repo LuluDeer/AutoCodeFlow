@@ -72,6 +72,39 @@ function venvBins(venvDir: string): { python: string; pip: string } {
   };
 }
 
+/** E-40（DEEP_REVIEW 0ef3bbe）：.env 行构造——dotenv 解析模型是「一行一个
+ *  KEY=VALUE」，旧实现 `${k}=${v}` 裸拼接时，值里一个内嵌 `\nEVIL=1` 就会
+ *  给被部署应用凭空注入一个额外环境变量（.env 是该应用唯一的配置入口），
+ *  值里的引号/反斜杠同样会被 dotenv 解析成另一种值。
+ *  加固方式（键值两层）：
+ *   - 键名白名单 `[A-Za-z_][A-Za-z0-9_]*`——不匹配的键直接不写入 .env 并
+ *     warn（不抛错：env 另经 buildChildEnv 注入子进程，.env 只是重启后的
+ *     持久化副本，因此拒绝写一行坏行比让整次部署失败更小代价）；
+ *   - 值统一双引号包裹并转义 `\` `"` CR LF——dotenv 对双引号值的转义语义
+ *     是通行子集，`\n` 还原为换行而非分隔新行，换行注入被彻底关闭。 */
+const DOTENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function formatDotenvValue(value: string): string {
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+  return `"${escaped}"`;
+}
+
+export function buildDotenvContent(envVars: Record<string, string>): string {
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(envVars)) {
+    if (!DOTENV_KEY_RE.test(key)) {
+      logger.warn(`[deploy] Skipping invalid .env key name: ${JSON.stringify(key)}`);
+      continue;
+    }
+    lines.push(`${key}=${formatDotenvValue(String(value))}`);
+  }
+  return lines.join('\n');
+}
+
 /** Install dependencies for the given deployment directory. Async — the
  *  previous spawnSync calls froze the event loop for up to 5 minutes
  *  (npm/pip installs), stopping heartbeats, /health and every API. */
@@ -673,7 +706,8 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
 
       // Write .env file for the app before publishing the release.
       if (Object.keys(envVars).length > 0) {
-        const envContent = Object.entries(envVars).map(([k, v]) => `${k}=${v}`).join('\n');
+        // E-40: escaped/quoted k=v lines — see buildDotenvContent.
+        const envContent = buildDotenvContent(envVars);
         fs.writeFileSync(path.join(paths.extractDir, '.env'), envContent, { encoding: 'utf-8', mode: 0o600 });
       }
 

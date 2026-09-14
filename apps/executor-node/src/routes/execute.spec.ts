@@ -114,7 +114,7 @@ jest.mock('../task-worker', () => {
 // ---------------------------------------------------------------------------
 
 import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, BoundedLogBuffer } from './execute';
-import { buildNpmRcContent, executionExists } from './execute';
+import { buildNpmRcContent, executionExists, quoteShellArgForPlatform } from './execute';
 import { pushCallback } from '../callback';
 import { taskWorkerManager } from '../task-worker';
 import { config as testConfig } from '../config';
@@ -1330,5 +1330,68 @@ describe('POST /api/execute — kill during prepare (改动2)', () => {
     // 二次 kill → 404（已出表）
     const again = await request(appNoAuth).post('/api/executions/exec-kill-post-dequeue/kill');
     expect(again.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E-26（DEEP_REVIEW 0ef3bbe）：win32 shell:true 下 npm --prefix 的路径引号。
+// 旧实现把 nodeModulesDir 原样塞进 argv；WORK_DIR 含空格时 cmd.exe 会把
+// `--prefix C:\My Tasks\nm` 拆成两个 token，npm 把后半段当成要安装的包名。
+// ---------------------------------------------------------------------------
+describe('E-26 npm --prefix quoting under shell:true', () => {
+  it('quoteShellArgForPlatform: quotes only on win32 and only when needed', () => {
+    // win32：含空白/shell 元字符必须包引号，否则 cmd.exe 重新分词
+    expect(quoteShellArgForPlatform('/tmp/My Tasks/nm', 'win32')).toBe('"/tmp/My Tasks/nm"');
+    expect(quoteShellArgForPlatform('C:\\a&b', 'win32')).toBe('"C:\\a&b"');
+    expect(quoteShellArgForPlatform('C:\\a|b', 'win32')).toBe('"C:\\a|b"');
+    // win32：无空白/元字符保持原样（不引入无谓引号）
+    expect(quoteShellArgForPlatform('C:\\tasks\\nm', 'win32')).toBe('C:\\tasks\\nm');
+    // POSIX：shell:false，参数直传 execve——加引号会变成路径的一部分
+    expect(quoteShellArgForPlatform('/tmp/My Tasks/nm', 'linux')).toBe('/tmp/My Tasks/nm');
+    expect(quoteShellArgForPlatform('/tmp/My Tasks/nm', 'darwin')).toBe('/tmp/My Tasks/nm');
+  });
+
+  it('passes a quoted --prefix when WORK_DIR contains a space', async () => {
+    // E-26：本 spec 顶层 jest.mock('../config') 将 config 换成普通对象属性，
+    // 其 workDir 不响应 process.env.WORK_DIR。直接覆盖 mock 的 workDir 为
+    // 含空格路径，等价于真实 config.workDir getter 读到含空格 WORK_DIR
+    // （Windows 上很常见：C:\My Tasks / C:\Program Files\...）。
+    const { config } = jest.requireMock('../config');
+    const originalWorkDir = config.workDir;
+    config.workDir = '/tmp/My Tasks';
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, onComplete?: () => void, runPrepared?: any) => {
+        if (runPrepared) await runPrepared(() => undefined);
+        if (onComplete) onComplete();
+      },
+    );
+
+    try {
+      const res = await request(appNoAuth).post('/api/execute').send({
+        executionId: 'exec-prefix-space',
+        task: { id: 'taskSp', runtime: 'node', entrypoint: 'index.js', requirements: ['left-pad'] },
+      });
+      expect(res.status).toBe(200);
+      await flushAsync();
+
+      const npmCall = (mockCp.spawn as jest.Mock).mock.calls.find((c) =>
+        String(c[0]).includes('npm'),
+      );
+      expect(npmCall).toBeTruthy();
+      const args = npmCall![1] as string[];
+      const prefixIdx = args.indexOf('--prefix');
+      expect(prefixIdx).toBeGreaterThanOrEqual(0);
+
+      const rawPrefix = path.join('/tmp/My Tasks', '.node_modules', 'taskSp');
+      expect(args[prefixIdx + 1]).toBe(quoteShellArgForPlatform(rawPrefix));
+      // 回归护栏：win32 下不得再把含空格的路径裸传（旧行为）
+      if (process.platform === 'win32') {
+        expect(args[prefixIdx + 1]).not.toBe(rawPrefix);
+        expect(args[prefixIdx + 1]).toBe(`"${rawPrefix}"`);
+      }
+    } finally {
+      config.workDir = originalWorkDir;
+    }
   });
 });

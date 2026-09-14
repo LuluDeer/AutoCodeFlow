@@ -1,12 +1,29 @@
 /// <reference types="vitest" />
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import dotenv from 'dotenv';
+// F-30（DEEP_REVIEW 0ef3bbe）：首帧主题脚本的单一来源。
+import { THEME_INIT_SCRIPT } from './src/theme/tokens.ts';
 
 dotenv.config();
 
+/**
+ * F-30（DEEP_REVIEW 0ef3bbe）：index.html 曾内联一份手写的首帧主题脚本，与
+ * src/theme/tokens.ts 的 THEME_INIT_SCRIPT 构成双事实源（改一处漏一处即 FOUC
+ * 回归）。现收敛为单一来源：脚本正文只存在于 tokens.ts，构建/开发期由本插件
+ * 注入 <head> 末尾（injectTo:'head'，与原先内联位置等价——DOM 解析前执行）。
+ */
+export function themeInitPlugin(): Plugin {
+  return {
+    name: 'autoflow-theme-init',
+    transformIndexHtml() {
+      return [{ tag: 'script', children: THEME_INIT_SCRIPT, injectTo: 'head' }];
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), themeInitPlugin()],
   resolve: {
     // F-01：monaco-editor 0.53 的 package.json 无 main/exports（仅 module），
     // 显式补上 module 解析条件——vitest 会把 resolve.mainFields 重置为 []，
@@ -51,10 +68,9 @@ export default defineConfig({
       },
     },
   },
-  define: {
-    'process.env.VITE_API_URL_INTERNAL': JSON.stringify(process.env.VITE_API_URL_INTERNAL || 'http://localhost:3105'),
-    'process.env.VITE_API_URL_EXTERNAL': JSON.stringify(process.env.VITE_API_URL_EXTERNAL || ''),
-  },
+  // F-31（DEEP_REVIEW 0ef3bbe）：原 define 块把 process.env.VITE_API_URL_* 注入代码，但
+  // 全仓消费方一律走 import.meta.env.VITE_API_URL_*（client.ts:5-6 等），该 define 无任何
+  // 消费方，属死配置，已删除（.env 经 Vite 自动暴露给 import.meta.env 即可）。
   test: {
     environment: 'jsdom',
     globals: true,

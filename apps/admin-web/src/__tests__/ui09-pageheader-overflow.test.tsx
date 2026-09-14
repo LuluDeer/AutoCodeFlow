@@ -14,7 +14,7 @@ vi.mock('../api/tasks', () => ({
     trigger: vi.fn(),
     analyzeExecution: vi.fn(),
     get: vi.fn(),
-    executionsWithStatus: vi.fn(),
+    executions: vi.fn(),
   },
 }));
 
@@ -65,7 +65,7 @@ beforeEach(() => {
     maxRetry: 0,
     params: {},
   } as never);
-  vi.mocked(tasksApi.executionsWithStatus).mockResolvedValue({
+  vi.mocked(tasksApi.executions).mockResolvedValue({
     items: [{ id: 'e1', retryCount: 0, status: 'success' }],
     total: 1,
     page: 1,

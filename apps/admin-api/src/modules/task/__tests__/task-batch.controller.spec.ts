@@ -182,4 +182,104 @@ describe("TaskBatchController", () => {
       expect(prefix).toBe("tasks-batch");
     });
   });
+
+  // R-27（DEEP_REVIEW 0ef3bbe）: 行为级断言——旧测试只断言「调用了 service」，
+  // 把 R-01/R-02 类缺陷（结果被吞、审计漏记 id、跨方法错接）固化。这里钉住
+  // 控制器的真实可观察行为：① 结果数组按输入顺序对齐（成功项原样透传 service
+  // 返回值，失败项包成 {id,error}）；② 审计 detail.taskIds 为全量输入列表且
+  // 透传 req.ip；③ 每个 id 路由到正确的 service 方法（不跨接）。
+  describe("R-27: 批量端点行为级断言（非仅委托断言）", () => {
+    it("batchTrigger 结果按输入顺序对齐：成功项原样透传、失败项包错误", async () => {
+      taskSvc.trigger
+        .mockResolvedValueOnce({ id: "exec-A" })
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValueOnce({ id: "exec-C" });
+
+      const result = await controller.batchTrigger(
+        { taskIds: ["t1", "t2", "t3"] },
+        adminUser,
+        mockReq,
+      );
+
+      // 顺序对齐 + 成功值原样透传（不被二次包装）+ 失败项错误文本原样带出
+      expect(result[0]).toEqual({ id: "exec-A" });
+      expect(result[1]).toEqual({ id: "t2", error: "boom" });
+      expect(result[2]).toEqual({ id: "exec-C" });
+      // R-27: user 主体逐 id 透传（不被丢弃/错接）；trigger 中位为 TriggerTaskDto
+      expect(taskSvc.trigger).toHaveBeenNthCalledWith(1, "t1", {}, adminUser);
+      expect(taskSvc.trigger).toHaveBeenNthCalledWith(2, "t2", {}, adminUser);
+      expect(taskSvc.trigger).toHaveBeenNthCalledWith(3, "t3", {}, adminUser);
+    });
+
+    it("batchPause 混合结果：成功项返回 service 真值，失败项包 {id,error}", async () => {
+      taskSvc.pause
+        .mockResolvedValueOnce({ paused: true })
+        .mockRejectedValueOnce(new Error("already paused"));
+
+      const result = await controller.batchPause(
+        { taskIds: ["ok", "bad"] },
+        adminUser,
+        mockReq,
+      );
+
+      expect(result[0]).toEqual({ paused: true });
+      expect(result[1]).toEqual({ id: "bad", error: "already paused" });
+      // 每 id 都命中 pause 方法（不错接到 trigger/resume/remove）
+      expect(taskSvc.pause).toHaveBeenCalledWith("ok", adminUser);
+      expect(taskSvc.pause).toHaveBeenCalledWith("bad", adminUser);
+      expect(taskSvc.trigger).not.toHaveBeenCalled();
+      expect(taskSvc.resume).not.toHaveBeenCalled();
+      expect(taskSvc.remove).not.toHaveBeenCalled();
+    });
+
+    it("batchResume 结果原样透传，且审计记录全量 taskIds + req.ip", async () => {
+      taskSvc.resume.mockResolvedValue({ resumed: true });
+
+      await controller.batchResume(
+        { taskIds: ["r1", "r2", "r3"] },
+        adminUser,
+        mockReq,
+      );
+
+      // 审计不漏记/截断 id，且 req.ip 透传
+      expect(auditSvc.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "task.batch_resume",
+          detail: { taskIds: ["r1", "r2", "r3"] },
+          ip: "10.0.0.1",
+          userId: 1,
+          username: "admin",
+        }),
+      );
+      // R-27: user 主体逐 id 透传
+      expect(taskSvc.resume).toHaveBeenNthCalledWith(1, "r1", adminUser);
+      expect(taskSvc.resume).toHaveBeenNthCalledWith(2, "r2", adminUser);
+      expect(taskSvc.resume).toHaveBeenNthCalledWith(3, "r3", adminUser);
+    });
+
+    it("batchDelete 部分失败时审计仍记录全部 id（含失败项）", async () => {
+      taskSvc.remove
+        .mockRejectedValueOnce(new Error("in use"))
+        .mockResolvedValueOnce(undefined);
+
+      const result = await controller.batchDelete(
+        { taskIds: ["d1", "d2"] },
+        adminUser,
+        mockReq,
+      );
+
+      expect(result[0]).toEqual({ id: "d1", error: "in use" });
+      expect(result[1]).toBeUndefined();
+      // 即使 d1 失败，审计仍记全量 d1+d2（不漏失败 id）
+      expect(auditSvc.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "task.batch_delete",
+          detail: { taskIds: ["d1", "d2"] },
+        }),
+      );
+      // R-27: user 主体逐 id 透传（含失败项）
+      expect(taskSvc.remove).toHaveBeenNthCalledWith(1, "d1", adminUser);
+      expect(taskSvc.remove).toHaveBeenNthCalledWith(2, "d2", adminUser);
+    });
+  });
 });

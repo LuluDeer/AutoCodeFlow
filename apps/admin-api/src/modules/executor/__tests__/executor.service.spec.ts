@@ -2627,24 +2627,43 @@ describe("ExecutorService (__tests__)", () => {
   });
 
   describe("markStaleOffline", () => {
-    it("marks heartbeat-timeout executors as OFFLINE", async () => {
+    // R-30（DEEP_REVIEW 0ef3bbe）: markStaleOffline 由「find 快照 + repo.update +
+    // 遍历快照扇出」改为「条件 UPDATE ... RETURNING + 遍历真实跃迁行扇出」。
+    // 事件/通知只对真正 ONLINE→OFFLINE 的行发出——更新间隙内已恢复心跳的执行器
+    // 不在 RETURNING 结果里，不再被误发。此处以一次性 QB 桩注入跃迁行。
+    const stubTransition = (
+      rows: Array<{ id: string; appName: string; address: string }>,
+      affected = rows.length,
+    ) => {
+      const qb = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected, raw: rows }),
+      };
+      executorRepo.createQueryBuilder.mockReturnValueOnce(qb as any);
+      return qb;
+    };
+
+    it("marks heartbeat-timeout executors as OFFLINE via conditional UPDATE + RETURNING", async () => {
       configService.get
         .mockReturnValueOnce(30000) // heartbeatInterval
         .mockReturnValueOnce(3); // timeoutMultiplier
-      // find() must return stale executors so the early-return guard is skipped
-      executorRepo.find.mockResolvedValue([
+      const qb = stubTransition([
         { id: "exec-1", appName: "app", address: "http://host" },
       ]);
-      executorRepo.update.mockResolvedValue({ affected: 1 });
       await service.markStaleOffline();
-      expect(executorRepo.update).toHaveBeenCalledWith(
+      expect(qb.set).toHaveBeenCalledWith({ status: ExecutorStatus.OFFLINE });
+      expect(qb.where).toHaveBeenCalledWith(
+        expect.stringContaining("status = :status"),
         expect.objectContaining({ status: ExecutorStatus.ONLINE }),
-        { status: ExecutorStatus.OFFLINE },
       );
+      expect(qb.returning).toHaveBeenCalledWith(["id", "appName", "address"]);
     });
 
     // FEAT-07 发布点：状态落库后 emit executor.offline，每台恰一次。
-    it("emits executor.offline once per stale executor after the status write", async () => {
+    it("emits executor.offline once per transitioned executor after the status write", async () => {
       resetRuntimeGauges();
       configService.get.mockReturnValueOnce(30000).mockReturnValueOnce(3);
       const stale = {
@@ -2652,8 +2671,7 @@ describe("ExecutorService (__tests__)", () => {
         appName: "stale-app",
         address: "10.0.0.5:3002",
       };
-      executorRepo.find.mockResolvedValue([stale]);
-      executorRepo.update.mockResolvedValue({ affected: 1 });
+      stubTransition([stale]);
       const bus = { emit: jest.fn() };
       (service as unknown as { eventBus: unknown }).eventBus = bus;
 
@@ -2676,12 +2694,50 @@ describe("ExecutorService (__tests__)", () => {
       ).toHaveBeenCalledWith("stale-app", "10.0.0.5:3002");
     });
 
+    // R-30: 更新间隙内已恢复心跳的执行器不被 UPDATE 命中 → 不进 RETURNING →
+    // 不误发离线事件/通知（旧实现的快照扇出会把已恢复者一并误发）。
+    it("R-30: 间隙内已恢复的执行器不在 RETURNING 结果中则不扇出（只对真实跃迁行扇出）", async () => {
+      configService.get.mockReturnValueOnce(30000).mockReturnValueOnce(3);
+      // RETURNING 仅返回真正跃迁的行（已恢复的执行器不在其中）
+      stubTransition([
+        { id: "exec-still-stale", appName: "stale", address: "10.0.0.9:3002" },
+      ]);
+      const bus = { emit: jest.fn() };
+      (service as unknown as { eventBus: unknown }).eventBus = bus;
+      const notify = (service as any).notificationService
+        .notifyExecutorOffline as jest.Mock;
+
+      await service.markStaleOffline();
+
+      expect(bus.emit).toHaveBeenCalledTimes(1);
+      expect(bus.emit).toHaveBeenCalledWith(
+        DOMAIN_EVENTS.EXECUTOR_OFFLINE,
+        expect.objectContaining({ executorId: "exec-still-stale" }),
+      );
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenCalledWith("stale", "10.0.0.9:3002");
+    });
+
+    it("R-30: RETURNING 零跃迁行时不发事件/通知", async () => {
+      configService.get.mockReturnValueOnce(30000).mockReturnValueOnce(3);
+      stubTransition([], 0);
+      const bus = { emit: jest.fn() };
+      (service as unknown as { eventBus: unknown }).eventBus = bus;
+
+      await service.markStaleOffline();
+
+      expect(bus.emit).not.toHaveBeenCalled();
+      expect(
+        (service as any).notificationService.notifyExecutorOffline,
+      ).not.toHaveBeenCalled();
+    });
+
     it("emit failure is fail-open — markStaleOffline still resolves", async () => {
       configService.get.mockReturnValueOnce(30000).mockReturnValueOnce(3);
-      executorRepo.find.mockResolvedValue([
+      stubTransition([
         { id: "exec-9", appName: "a", address: "10.0.0.5:3002" },
       ]);
-      executorRepo.update.mockResolvedValue({ affected: 1 });
       const bus = {
         emit: jest.fn(() => {
           throw new Error("bus exploded");
@@ -2690,7 +2746,7 @@ describe("ExecutorService (__tests__)", () => {
       (service as unknown as { eventBus: unknown }).eventBus = bus;
 
       await expect(service.markStaleOffline()).resolves.toBeUndefined();
-      expect(executorRepo.update).toHaveBeenCalled();
+      expect(bus.emit).toHaveBeenCalled();
     });
   });
 
@@ -3901,5 +3957,64 @@ describe("ExecutorService (__tests__)", () => {
       // 与 group/tags 同面处理，不额外收紧 appName 路径。
       expect(dispatchedAddresses()[0]).toContain("app:1");
     });
+  });
+});
+
+// R-26（DEEP_REVIEW 0ef3bbe）: @Optional 关键依赖缺失时的静默降级可观测性。
+// 生产装配下 DomainEventBus / AuditService 由 @Global 模块恒提供；构造器对
+// 缺失项各 warn 一次——「executor.offline 事件静默不发」「rotate-token 等高危
+// 操作审计静默不写」两条降级路径因此可见。不改变任何业务行为。
+describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", () => {
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    warnSpy = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  const buildService = (opts: {
+    eventBus: unknown;
+    audit: unknown;
+  }): ExecutorService =>
+    new ExecutorService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { get: jest.fn().mockReturnValue("http") } as never, // configService
+      {} as never, // notificationService
+      {} as never, // systemConfigService
+      {} as never, // secretsCrypto
+      opts.eventBus as never, // eventBus（@Optional）
+      null as never, // tracing（@Optional）
+      opts.audit as never, // audit（@Optional）
+      null as never, // leaderGate（@Optional）
+      null as never, // pullService（@Optional）
+    );
+
+  const r26Messages = (): string[] =>
+    warnSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes("R-26"));
+
+  it("eventBus/audit 缺失时各 warn 一次，且不抛", () => {
+    expect(() =>
+      buildService({ eventBus: null, audit: null }),
+    ).not.toThrow();
+    const msgs = r26Messages();
+    expect(msgs).toHaveLength(2);
+    expect(msgs.some((m) => m.includes("DomainEventBus"))).toBe(true);
+    expect(msgs.some((m) => m.includes("AuditService"))).toBe(true);
+  });
+
+  it("依赖齐备时不产生任何 R-26 warn", () => {
+    buildService({ eventBus: { emit: jest.fn() }, audit: { log: jest.fn() } });
+    expect(r26Messages()).toHaveLength(0);
   });
 });

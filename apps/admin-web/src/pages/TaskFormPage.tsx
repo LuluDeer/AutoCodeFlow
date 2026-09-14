@@ -54,6 +54,8 @@ import {
   applyDependenciesPayload,
   dependenciesFormValues,
 } from './task-dependencies';
+// F-28（DEEP_REVIEW 0ef3bbe）：fixed_rate 输入框的分钟/秒换算纯逻辑层
+import { fixedRateToMinutesLabel, parseFixedRateSeconds } from './fixed-rate';
 import PageHeader from '../components/PageHeader';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
@@ -418,11 +420,9 @@ export default function TaskFormPage() {
       message.error(err instanceof Error ? err.message : t('taskForm.validate.fail'));
       return;
     }
-    tplForm.setFieldsValue({
-      name: form.getFieldValue('description')
-        ? undefined
-        : undefined, // name 由用户填写（表单 name 是任务标识，常不满足模板命名习惯）
-    });
+    // F-28（DEEP_REVIEW 0ef3bbe）：原为 `name: cond ? undefined : undefined` 死三元
+    // （两分支同值），整段删除——模板名一律留给用户填写（表单 name 是任务标识，
+    // 常不满足模板命名习惯）；弹窗 destroyOnHidden 已保证每次打开都是空表单。
     setTplModalOpen(true);
   };
 
@@ -693,8 +693,12 @@ export default function TaskFormPage() {
                       min={60}
                       step={60}
                       style={{ width: 200 }}
-                      formatter={v => v ? t('taskForm.field.fixedRate.minutes', { n: Math.floor(Number(v) / 60) }) : ''}
-                      parser={v => v ? Number(v.replace(t('taskForm.field.fixedRate.minuteUnit'), '')) * 60 : 60}
+                      formatter={v => v ? t('taskForm.field.fixedRate.minutes', { n: fixedRateToMinutesLabel(Number(v)) }) : ''}
+                      // F-28（DEEP_REVIEW 0ef3bbe）：原 parser 用 t('taskForm.field.fixedRate.minuteUnit')
+                      // 的**翻译文本**做 String.replace 反解数字——文案一变（如英文 "minutes"）或
+                      // 语序变化即解析成 NaN，属"解析依赖 i18n 文案"的坏味道。现改走
+                      // pages/fixed-rate.ts 的与语言无关数字抽取（纯函数，已单测）。
+                      parser={(v) => parseFixedRateSeconds(v)}
                       placeholder={t('taskForm.field.fixedRate.placeholder')}
                     />
                   </Form.Item>
@@ -1140,7 +1144,7 @@ export default function TaskFormPage() {
         onCancel={() => setTplModalOpen(false)}
         onOk={handleSaveAsTemplate}
         okText={t('taskForm.tpl.save')}
-        okButtonProps={{ loading: tplSaving, 'data-testid': 'tpl-save-confirm' } as never}
+        okButtonProps={{ loading: tplSaving, 'data-testid': 'tpl-save-confirm' }}
         cancelText={t('taskForm.tpl.cancel')}
         width={520}
         destroyOnHidden

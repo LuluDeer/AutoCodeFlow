@@ -13,7 +13,7 @@ import {
 import type { components } from '../types/generated/api-types';
 import { Trans, useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { tasksApi, Task } from '../api/tasks';
 import { useTasksList, invalidateTaskData } from '../api/queries';
 import { getErrMsg } from '../utils/error';
@@ -238,7 +238,8 @@ export default function TaskListPage() {
       sorter: (a: Task, b: Task) => a.name.localeCompare(b.name),
       render: (_: unknown, r: Task) => (
         <Space orientation="vertical" size={0}>
-          <a onClick={() => nav(`/tasks/${r.id}`)} style={{ fontWeight: 500 }}>{r.name}</a>
+          {/* F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href） */}
+          <Link to={`/tasks/${r.id}`} style={{ fontWeight: 500 }}>{r.name}</Link>
           {r.description && <Text type="secondary" style={{ fontSize: 12 }}>{r.description}</Text>}
         </Space>
       ),

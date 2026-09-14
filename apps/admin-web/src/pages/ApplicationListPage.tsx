@@ -10,7 +10,7 @@ import {
 } from '@ant-design/icons';
 import { applicationsApi, Application, deploymentsApi, AppDeployment } from '../api/applications';
 import { executorsApi } from '../api/executors';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
@@ -240,9 +240,10 @@ export default function ApplicationListPage() {
         <Space orientation="vertical" size={0}>
           <Space>
             {record.gitRepo && <GithubOutlined />}
-            <a onClick={() => nav(`/applications/${record.id}`)}>
+            {/* F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href） */}
+            <Link to={`/applications/${record.id}`}>
               <Text strong>{name}</Text>
-            </a>
+            </Link>
           </Space>
           {record.gitBranch && (
             <Text type="secondary" style={{ fontSize: 12 }}>

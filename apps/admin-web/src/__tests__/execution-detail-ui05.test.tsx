@@ -30,7 +30,7 @@ vi.mock('../api/tasks', () => ({
     trigger: vi.fn(),
     analyzeExecution: vi.fn(),
     get: vi.fn(),
-    executionsWithStatus: vi.fn(),
+    executions: vi.fn(),
   },
 }));
 
@@ -92,7 +92,7 @@ function mockExecution(overrides: Record<string, unknown> = {}) {
   vi.mocked(tasksApi.get).mockReset().mockResolvedValue({
     id: 't1', maxRetry: 3, retryDelay: 5, params: { region: 'cn-north', shards: 4 },
   } as never);
-  vi.mocked(tasksApi.executionsWithStatus).mockReset().mockResolvedValue({
+  vi.mocked(tasksApi.executions).mockReset().mockResolvedValue({
     items: [{ id: 'e1', retryCount: 0, status: 'failed' }], total: 1, page: 1, pageSize: 100,
   } as never);
   vi.mocked(tasksApi.executionLogs).mockReset();
@@ -158,7 +158,7 @@ describe('UI-05: Tab 化信息架构', () => {
 
   it('?tab=retry 初始直达：重试链 Tab 渲染（复用既有 mock 单行链）', async () => {
     renderPage('?tab=retry');
-    // 既有 mock 的 executionsWithStatus 返回单行链（retryCount=0）→ 渲染链路而非空占位
+    // 既有 mock 的 executions 返回单行链（retryCount=0）→ 渲染链路而非空占位
     await vi.waitFor(() => {
       expect(document.body.textContent).toContain('重试链路');
     });

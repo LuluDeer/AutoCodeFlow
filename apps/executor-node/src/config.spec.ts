@@ -124,3 +124,33 @@ describe('executor-node config npmRegistryToken (改动3)', () => {
     expect(config.npmRegistryToken).toBe('verdaccio-token');
   });
 });
+
+// E-37（DEEP_REVIEW 0ef3bbe）：版本号双事实源收敛——EXECUTOR_VERSION 不再是
+// 手写常量，而是运行时从本包清单读取。本测试把「上报值 == package.json version」
+// 钉成不变量：任何一处单独改版都会在这里红。
+describe('executor-node EXECUTOR_VERSION single source (E-37)', () => {
+  it('equals package.json version (no second hand-maintained copy)', async () => {
+    const { EXECUTOR_VERSION } = await import('./config');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const pkg = require('../package.json') as { version?: string };
+
+    expect(pkg.version).toBeTruthy();
+    expect(EXECUTOR_VERSION).toBe(pkg.version);
+    expect(EXECUTOR_VERSION).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it('is read from the manifest, not hardcoded — the module has no version literal', async () => {
+    // 反证：把清单换成另一个版本时上报值必须跟着变。直接改文件不现实，因此
+    // 用 jest 的模块注册表把 ../package.json 替换成桩，再重新 require config。
+    jest.resetModules();
+    jest.doMock('../package.json', () => ({ version: '9.9.9' }));
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { EXECUTOR_VERSION } = require('./config') as { EXECUTOR_VERSION: string };
+      expect(EXECUTOR_VERSION).toBe('9.9.9');
+    } finally {
+      jest.dontMock('../package.json');
+      jest.resetModules();
+    }
+  });
+});

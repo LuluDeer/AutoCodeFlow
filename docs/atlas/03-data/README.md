@@ -4,7 +4,7 @@
 
 ## 一句话定位
 
-AutoCodeFlow 的持久层是 **PostgreSQL + TypeORM 0.3**：26 个实体分散在 admin-api 各模块（`apps/admin-api/src/modules/*/entities/*.entity.ts`，两个例外在模块根），schema 全部由 `apps/admin-api/src/migrations/`（61 个迁移）演进，`synchronize` 恒关闭。Redis 仅承载 BullMQ 队列与缓存，不在本文档范围。
+AutoCodeFlow 的持久层是 **PostgreSQL + TypeORM 0.3**：26 个实体分散在 admin-api 各模块（`apps/admin-api/src/modules/*/entities/*.entity.ts`，两个例外在模块根），schema 全部由 `apps/admin-api/src/migrations/`（迁移数**以 `ls apps/admin-api/src/migrations` 为准**，当前 68 个）演进，`synchronize` 恒关闭。Redis 仅承载 BullMQ 队列与缓存，不在本文档范围。
 
 ## 数据库与连接配置（以代码为准）
 
@@ -116,7 +116,7 @@ applications ◄─applicationId─ [tasks]      (ManyToOne SET NULL, 无 DB FK)
 
 ## 迁移机制
 
-见 [migrations.md](migrations.md)：命名规范（13 位时间戳 + 类名后缀一致）、执行命令（`npm run migration:run|revert|generate -d src/data-source.ts`）、`migrations.spec.ts` 守护（无重复 timestamp/严格递增/幂等抽查）、60 个迁移的分期节点、加迁移的标准动作。
+见 [migrations.md](migrations.md)：命名规范（13 位时间戳 + 类名后缀一致）、执行命令（`npm run migration:run|revert|generate -d src/data-source.ts`）、`migrations.spec.ts` 守护（无重复 timestamp/严格递增/幂等抽查）、迁移的分期节点（数量以 `ls` 为准）、加迁移的标准动作。
 
 ## 阅读路线
 

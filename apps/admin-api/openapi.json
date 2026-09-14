@@ -3,7 +3,7 @@
   "paths": {
     "/auth/login": {
       "post": {
-        "description": "Login with username and password, returns Access Token and Refresh Token. Max5 attempts per minute.",
+        "description": "Login with username and password, returns Access Token and Refresh Token. Max 20 attempts per minute.",
         "operationId": "AuthController_login",
         "parameters": [],
         "requestBody": {
@@ -7429,7 +7429,8 @@
         "type": "object",
         "properties": {
           "taskIds": {
-            "description": "Task ID list",
+            "description": "Task ID list (1..500 uuids)",
+            "maxItems": 500,
             "example": [
               "uuid-1",
               "uuid-2"

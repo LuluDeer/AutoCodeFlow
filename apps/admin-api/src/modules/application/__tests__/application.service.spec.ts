@@ -656,7 +656,7 @@ describe("ApplicationService", () => {
         env: { API_KEY: "sk" },
       });
       const findAll = jest.fn().mockResolvedValue({
-        list: [
+        items: [
           { id: "t1", name: "healthy" },
           { id: "t2", name: "critical" },
         ],
@@ -690,7 +690,7 @@ describe("ApplicationService", () => {
     it("falls back to neutral stats (100% / 0ms) when every task stats lookup fails", async () => {
       appRepo.findOne.mockResolvedValue({ id: "app-1", name: "my-app" });
       const findAll = jest.fn().mockResolvedValue({
-        list: [{ id: "t1", name: "never-ran" }],
+        items: [{ id: "t1", name: "never-ran" }],
       });
       const stats = jest
         .fn()
@@ -707,7 +707,7 @@ describe("ApplicationService", () => {
     it("renders a degraded analysis string when the AI returns empty", async () => {
       appRepo.findOne.mockResolvedValue({ id: "app-1", name: "my-app" });
       (service as any)._taskService = {
-        findAll: jest.fn().mockResolvedValue({ list: [] }),
+        findAll: jest.fn().mockResolvedValue({ items: [] }),
       };
       (service as any).aiService.analyzeAppHealth = jest
         .fn()

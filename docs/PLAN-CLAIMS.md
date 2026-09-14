@@ -293,6 +293,7 @@
 | 1790000000020 | AddCoverEarlyAndCancelledEnumValues | DR-FIX-ALL（PK-01） | 本声明占用（task_blockstrategy_enum 补 'cover_early' / execution_status_enum 补 'cancelled'，ADD VALUE IF NOT EXISTS 幂等；PG 不支持删 enum 值，down 为 no-op；migrations.spec 目录守护 + PK-01 结构 pin 同批） |
 | 1790000000021 | AddTaskVersionsUniqueIndex | DR-FIX-ALL（PK-11） | 本声明占用（task_versions 补 (taskId,version) 唯一索引 ux_task_versions_taskId_version；存量重复行先按 (createdAt,id) 确定性去重——ROW_NUMBER 先例 1789000000000，无重复时为 no-op；顺带回收被唯一索引覆盖的旧非唯一索引 idx_task_versions_taskId_version；幂等 IF [NOT] EXISTS；结构 spec 同批） |
 | 1790000000022 | AddAuditAndRefreshTokenQueryIndexes | DR-FIX-ALL（PK-16） | 本声明占用（audit_logs(action,createdAt) 复合索引 + refresh_tokens(userId)、refresh_tokens(expiresAt) 两个普通索引，CREATE/DROP INDEX IF [NOT] EXISTS 幂等，命名对齐 1717473142683 风格；结构 spec 同批） |
+| 1790000000023 | AlterConfigHistoryUserIdToInteger | DR-FIX-ALL（PK-21） | 本声明占用（config_history."userId" 由 VARCHAR ALTER 为 INTEGER，USING "userId"::integer——写面自始即 String(user.id) 数字串/NULL，可安全转换；实体 userId:number|null 同步；非零迁移情形：DB 事实原为 VARCHAR，非 PK-10 零迁移先例；down 回退 VARCHAR ::text） |
 
 ## 变更日志
 

@@ -92,6 +92,42 @@ class TestFenceParsingNoNewline:
         assert AIAnalyzer._strip_code_fence("```json\n{}\n") == "{}"  # no closing fence
 
 
+class TestNonJsonEdgePaths:
+    """PK-29（DEEP_REVIEW 0ef3bbe）：_parse_response 的非 JSON / 半 JSON 边界。
+    此前只覆盖合法 JSON、标准围栏、纯字符串；模型经常在 JSON 前后套自然语言、
+    把 confidence 序列化成字符串、或返回空/纯 markdown——这些路径此前零断言。"""
+
+    def test_prose_before_fenced_json_falls_back_gracefully(self):
+        """Prose 包在 fence 外时 _strip_code_fence 只去 fence、不去外散文——
+        json.loads 失败走 fallback（summary=截断原文、confidence 0），不抛。"""
+        wrapped = (
+            "Sure, here is the diagnosis:\n"
+            + "```json\n"
+            + GOOD_RESPONSE
+            + "\n```\nHope that helps!"
+        )
+        result = AIAnalyzer._parse_response(wrapped)
+        assert result.confidence == 0.0
+        assert "Sure, here is the diagnosis" in result.summary
+
+    def test_confidence_as_string_is_coerced_to_float(self):
+        text = json.dumps({"summary": "x", "root_cause": "y", "confidence": "0.77"})
+        result = AIAnalyzer._parse_response(text)
+        assert result.confidence == 0.77
+
+    def test_empty_response_falls_back_gracefully(self):
+        result = AIAnalyzer._parse_response("")
+        assert result.confidence == 0.0
+        assert result.summary == ""
+
+    def test_json_array_body_is_not_dict_falls_back(self):
+        # 模型偶发返回 [...] 而非 {...}：此前 obj.get 抛 AttributeError 逃逸；
+        # PK-29 修复后非 dict 落入 fallback，不再未捕获异常。
+        result = AIAnalyzer._parse_response("[1, 2, 3]")
+        assert result.confidence == 0.0
+        assert "1, 2, 3" in result.raw_response
+
+
 class TestBuildEndpointBaseUrl:
     """R22a: base_url unified to base semantics (openaiBaseUrl convention)."""
 

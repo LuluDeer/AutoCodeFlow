@@ -1,8 +1,9 @@
 # docker-compose.yml  —  完整部署（生产 / staging / CI）
 # 所有机密信息通过环境变量注入，请先复制 .env.example 为 .env 并填写。
 # 本地开发仅启动基础设施请改用 infra/docker-compose.yml。
-
-version: '3.9'
+#
+# E-34（DEEP_REVIEW 0ef3bbe）：删除 `version:` 字段——Compose V2 已弃用它并告警，
+# 文件本身即 compose 规范（V2 不再需要 version 声明）。
 
 networks:
   # 内部网络，服务间通信
@@ -193,7 +194,10 @@ services:
   # 使 execution-logs/ 前缀对象与 LOG_RETENTION_DAYS 同步过期，否则 minio_data
   # 卷无限增长，操作步骤见 docs/operations.md「S3/MinIO 日志对象生命周期」。
   minio:
-    image: minio/minio:latest
+    # E-34（DEEP_REVIEW 0ef3bbe）：旧 latest 浮动 tag 使日志存储组件升级不可复现
+    # （其余服务均 pin：postgres:16-alpine / redis:7）。pin 到具体 RELEASE tag，
+    # 升级走显式 bump。
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
     profiles: ['minio']
     restart: unless-stopped
     command: server /data --console-address ':9001'
@@ -348,7 +352,9 @@ services:
     environment:
       REGISTRY_USER: ${REGISTRY_USER:-admin}
       REGISTRY_PASS: ${REGISTRY_PASS}
-      PYPI_API_KEY: ${PYPI_API_KEY}
+      # E-34（DEEP_REVIEW 0ef3bbe）：旧 PYPI_API_KEY 是死配置——registry-pypi main.py
+      # 从未读取它（grep 实证 0 处），鉴权只有 Basic（REGISTRY_USER/PASS）。保留会让运维
+      # 误以为存在 token 鉴权通道。删除；将来若补 token 鉴权再连同 main.py 实现一并加回。
       PACKAGES_DIR: /data/packages
     volumes:
       - pypi_data:/data/packages

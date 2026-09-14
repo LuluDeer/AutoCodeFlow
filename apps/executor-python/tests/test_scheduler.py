@@ -513,3 +513,46 @@ class TestPullDispatch:
         monkeypatch.setattr(scheduler_module, 'request_with_self_heal', fail_heal)
 
         await self._run_loop_briefly(0.6)
+
+
+# ---------------------------------------------------------------------------
+# E-37（DEEP_REVIEW 0ef3bbe）：执行器版本号双事实源收敛。
+# python 侧 config.EXECUTOR_VERSION 是唯一常量源；main.py 的 FastAPI version
+# 与 register/心跳上报都必须复用它，不得再各写一个字面量。
+# ---------------------------------------------------------------------------
+
+
+def test_executor_version_is_the_single_source_for_the_fastapi_app():
+    import main as main_module
+    from config import EXECUTOR_VERSION
+
+    assert main_module.app.version == EXECUTOR_VERSION
+
+
+def test_executor_version_looks_like_a_release_version():
+    from config import EXECUTOR_VERSION
+
+    # 中心端 EXECUTOR_MIN_VERSION 门禁按点分数字比较（畸形值会被判为不合规），
+    # 因此常量必须是 x.y.z 形态而不是占位符。
+    assert isinstance(EXECUTOR_VERSION, str)
+    assert EXECUTOR_VERSION.count('.') == 2
+    assert all(part.isdigit() for part in EXECUTOR_VERSION.split('.')), EXECUTOR_VERSION
+
+
+def test_register_and_heartbeat_report_the_same_version():
+    """register 与心跳必须同源上报（EXE-VER-1 的单一上报源约定）。"""
+    import inspect
+
+    import main as main_module
+    import scheduler as scheduler_module
+
+    # E-37（DEEP_REVIEW 0ef3bbe）：注册载荷经 _register_payload() 组装（其内部
+    # 与心跳均从 config.EXECUTOR_VERSION 取版本）。断言同源即可，不要求字面量
+    # 出现在 register_executor 函数体内——注册与心跳都绑定同一 config 常量。
+    register_payload_src = inspect.getsource(main_module._register_payload)
+    register_src = inspect.getsource(main_module.register_executor)
+    heartbeat_src = inspect.getsource(scheduler_module)
+
+    assert 'EXECUTOR_VERSION' in register_payload_src  # 注册载荷单源
+    assert '_register_payload' in register_src  # register 经该 helper 上报
+    assert 'EXECUTOR_VERSION' in heartbeat_src  # 心跳同源

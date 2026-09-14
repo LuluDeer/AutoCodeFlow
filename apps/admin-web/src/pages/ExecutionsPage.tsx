@@ -10,7 +10,7 @@ import {
 import type { Dayjs } from 'dayjs';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
@@ -133,7 +133,8 @@ export default function ExecutionsPage() {
       title: t('execs.col.task'),
       dataIndex: 'taskName',
       render: (name: string, r: TaskExecution) => (
-        <a onClick={() => nav(`/tasks/${r.taskId}`)} style={{ fontWeight: 500 }}>{name || r.taskId}</a>
+        // F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href）
+        <Link to={`/tasks/${r.taskId}`} style={{ fontWeight: 500 }}>{name || r.taskId}</Link>
       ),
     },
     {

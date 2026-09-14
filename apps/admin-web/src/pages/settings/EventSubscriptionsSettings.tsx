@@ -17,6 +17,8 @@ import {
 } from '../../api/event-subscriptions';
 import type { ColumnsType } from 'antd/es/table';
 import { getErrMsg } from '../../utils/error';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../../utils/locale';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
@@ -191,7 +193,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
     { title: t('eventSub.deadLetter.col.attempts'), dataIndex: 'attempts', width: 90 },
     {
       title: t('eventSub.deadLetter.col.time'), dataIndex: 'createdAt', width: 160,
-      render: (v: string) => (v ? new Date(v).toLocaleString('zh-CN') : '-'),
+      render: (v: string) => (v ? new Date(v).toLocaleString(currentLocale()) : '-'),
     },
     {
       title: t('eventSub.deadLetter.col.action'), key: 'action', width: 90,

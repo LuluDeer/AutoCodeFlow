@@ -124,6 +124,9 @@ client.interceptors.response.use(
       useAuthStore.getState().logout();
       redirectToLogin();
     }
+    // F-32（DEEP_REVIEW 0ef3bbe）：本层是全站**唯一**的重试层（安全方法 1 次、1s 退避）。
+    // TanStack Query 侧已显式 retry:false（见 api/queryClient.ts），避免"axios 1 次 ×
+    // Query 2 次"叠加成一次失败 6 发请求 + 多条重复 toast。
     // Retry only safe methods: a failed response may still have caused side effects.
     if (!originalRequest._retryCount) originalRequest._retryCount = 0;
     const status = err.response?.status;

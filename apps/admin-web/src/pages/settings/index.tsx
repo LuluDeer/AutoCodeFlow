@@ -14,6 +14,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
 import { getErrMsg } from '../../utils/error';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../../utils/locale';
 import { copyText } from '../../utils/clipboard';
 import { useAuthStore, isAdminUser } from '../../store/auth';
 import type { ColumnsType } from 'antd/es/table';
@@ -289,7 +291,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
 
   const cols: ColumnsType<ConfigHistory> = [
     { title: t('sysSettings.history.col.time'), dataIndex: 'createdAt', width: 170,
-      render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
+      render: (v: string) => v ? new Date(v).toLocaleString(currentLocale()) : '-' },
     { title: t('sysSettings.history.col.operator'), dataIndex: 'username', width: 100, render: (v: string) => v ?? t('sysSettings.history.system') },
     { title: t('sysSettings.history.col.action'), dataIndex: 'action', width: 70,
       render: (v: ConfigHistory['action']) => v === 'create' ? t('sysSettings.history.action.create')

@@ -40,6 +40,26 @@ function redactUrl(u: string): string {
   return u.replace(/\/\/[^/@]+@/, '//***@');
 }
 
+/**
+ * E-26（DEEP_REVIEW 0ef3bbe）：cmd.exe 下的参数引号。
+ *
+ * `runCommand` 在 win32 用 `spawn(cmd, args, { shell: true })`，Node 会把
+ * argv 按 `join(' ')` 拼成一条命令行交给 cmd.exe——**不会**替参数加引号。
+ * 于是 `--prefix C:\My Tasks\nm` 被拆成两个 token：npm 读到 `--prefix C:\My`
+ * 并把 `Tasks\nm` 当成要安装的包名（安装错位，任务随后 MODULE_NOT_FOUND）。
+ *
+ * 只在 win32 且参数含空白/shell 元字符时用双引号包裹（cmd.exe 会还原成一个
+ * token）；POSIX 侧 shell:false，参数原样传给 execve，加引号反而会变成路径的
+ * 一部分。平台作为参数传入以便单测覆盖两种形态。
+ */
+export function quoteShellArgForPlatform(
+  arg: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== 'win32') return arg;
+  return /[\s"&^|<>()]/.test(arg) ? `"${arg}"` : arg;
+}
+
 const gitCacheQueues = new Map<string, Promise<unknown>>();
 
 /** Serialize first-time clones per repo — concurrent executions of the same
@@ -773,7 +793,13 @@ async function prepareExecution(
     // npm_config_userconfig must remain valid until runCommand observes the
     // child's close event; deleting it before then races npm's config reads.
     const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const npmArgs = ['install', '--prefix', nodeModulesDir];
+    // E-26（DEEP_REVIEW 0ef3bbe）：win32 下 runCommand 用 spawn(cmd, args,
+    // {shell:true})——Node 按 join(' ') 拼 cmd 命令行且不对 args 加引号。当
+    // WORK_DIR 含空格（如 C:\My Tasks\...）时，`--prefix C:\My Tasks\...` 被
+    // cmd.exe 拆成 `--prefix C:\My` + 把 `Tasks\...` 当成要安装的包名，安装错位。
+    // 对含空格/shell 元字符的路径参数显式包裹双引号（cmd.exe 还原为一个 token）。
+    // 包名已由 npmNameRe 校验（不含空格），无需加引号。
+    const npmArgs = ['install', '--prefix', quoteShellArgForPlatform(nodeModulesDir)];
     if (config.npmRegistryToken) {
       // Keep the existing boundary: authenticated installs disable lifecycle
       // scripts, so an install script cannot read npm_config_userconfig while

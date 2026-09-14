@@ -3,6 +3,9 @@ import { Card, Table, Tag, Button, Space, Typography, Row, Col, Statistic, Modal
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { TaskExecution } from '../api/tasks';
+// F-35（DEEP_REVIEW 0ef3bbe）：时长格式统一走 utils/timeFormat（含小时档），
+// 删除本文件内与 ExecutorDetailPage 逐字节重复的内联实现。
+import { formatDurationShort } from '../utils/timeFormat';
 
 const { Text } = Typography;
 
@@ -13,7 +16,7 @@ function formatCompareValue(key: string, val: unknown): string {
     return val ? new Date(String(val)).toLocaleString() : '-';
   }
   if (key === 'duration' && typeof val === 'number') {
-    return val >= 1000 ? `${(val / 1000).toFixed(1)}s` : `${val}ms`;
+    return formatDurationShort(val);
   }
   if (val === null || val === undefined || val === '') return '-';
   if (typeof val === 'object') return JSON.stringify(val, null, 2);

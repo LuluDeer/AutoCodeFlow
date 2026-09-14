@@ -46,6 +46,8 @@ describe("TaskService.assertCanWrite（NF-03 属主矩阵）", () => {
       null as never,
       // AUTH-02: ProjectAccessService（@Optional，缺席 = 旁路）
       null as never,
+      // R-28: AuditService（@Optional，缺席 = 依赖触发审计旁路）
+      null as never,
     );
   });
 
@@ -124,6 +126,8 @@ describe("TaskService 项目角色面（AUTH-02）", () => {
       null as never,
       null as never,
       access as never,
+      // R-28: AuditService（@Optional，缺席 = 依赖触发审计旁路）
+      null as never,
     );
   };
 

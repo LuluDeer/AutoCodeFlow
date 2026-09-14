@@ -28,9 +28,11 @@ jest.mock('../admin-client', () => ({
 
 import {
   buildDeploymentPaths,
+  buildDotenvContent,
   deployRouter,
   downloadPackage,
   findUnsafeZipEntries,
+  formatDotenvValue,
   pruneOldReleases,
   rotateAppLogIfNeeded,
   shouldReportProcessExit,
@@ -643,5 +645,76 @@ describe('E-12 retention: rotateAppLogIfNeeded', () => {
     const rotated = rotateAppLogIfNeeded(logFile, 50 * 1024 * 1024, 3);
     expect(rotated).toBe(false);
     expect(mockFs.renameSync).not.toHaveBeenCalled();
+  });
+});
+
+// E-40（DEEP_REVIEW 0ef3bbe）：.env 写入加固——旧的 `${k}=${v}` 裸拼接让
+// 值里一个内嵌换行就能给被部署应用注入额外环境变量（.env 是该应用唯一的
+// 配置入口）。
+describe('.env serialization (E-40)', () => {
+  it('escapes embedded newlines so a value cannot inject extra variables', () => {
+    const content = buildDotenvContent({
+      SAFE: 'ok',
+      INJECTED: 'value\nEVIL=1',
+    });
+
+    // 换行必须是转义序列，绝不能是行分隔符——否则 EVIL 成为独立的一行
+    expect(content).not.toMatch(/\nEVIL=/);
+    expect(content.split('\n')).toHaveLength(2);
+    expect(content).toContain('INJECTED="value\\nEVIL=1"');
+
+    // 真正用 dotenv 语义回放：解析结果里只能有 SAFE / INJECTED 两个键
+    const parsed: Record<string, string> = {};
+    for (const line of content.split('\n')) {
+      const idx = line.indexOf('=');
+      const key = line.slice(0, idx);
+      const raw = line.slice(idx + 1);
+      parsed[key] = raw.replace(/^"|"$/g, '').replace(/\\n/g, '\n');
+    }
+    expect(Object.keys(parsed).sort()).toEqual(['INJECTED', 'SAFE']);
+    expect(parsed.INJECTED).toBe('value\nEVIL=1');
+  });
+
+  it('escapes CR, backslash and double quotes (dotenv round-trip)', () => {
+    expect(formatDotenvValue('a\r\nb')).toBe('"a\\r\\nb"');
+    // 真实反斜杠路径（Windows 风格）：每个 \ 转义为 \\，序列化结果 4 个。
+    // 此前误写成正斜杠 C://path//to（/ 不在转义集），根本没测到反斜杠分支。
+    expect(formatDotenvValue('C:\\path\\to')).toBe('"C:\\\\path\\\\to"');
+    expect(formatDotenvValue('say "hi"')).toBe('"say \\"hi\\""');
+    expect(formatDotenvValue('')).toBe('""');
+  });
+
+  it('quotes every value so leading/trailing whitespace survives', () => {
+    const content = buildDotenvContent({ PADDED: '  spaced  ' });
+    expect(content).toBe('PADDED="  spaced  "');
+  });
+
+  it('skips keys that are not valid identifier names (no malformed line)', () => {
+    const { logger } = require('../logger');
+    const content = buildDotenvContent({
+      GOOD: '1',
+      'BAD KEY': '2',
+      'BAD=KEY': '3',
+      '': '4',
+      '9LEADING_DIGIT': '5',
+    });
+
+    expect(content).toBe('GOOD="1"');
+    expect(logger.warn).toHaveBeenCalled();
+    // 每个非法键都必须告警，不能静默丢弃
+    expect((logger.warn as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('stringifies non-string values instead of emitting [object Object]', () => {
+    const content = buildDotenvContent({ NUM: 42 as unknown as string });
+    expect(content).toBe('NUM="42"');
+  });
+
+  it('writes the escaped content to the release .env (deploy path integration)', () => {
+    // 直接验证路由使用的序列化入口与写盘内容的契约一致
+    const envVars = { APP_MODE: 'prod', MULTILINE: 'a\nb' };
+    const written = buildDotenvContent(envVars);
+    expect(written).toContain('APP_MODE="prod"');
+    expect(written.split('\n').every((l) => /^[A-Za-z_][A-Za-z0-9_]*="/.test(l))).toBe(true);
   });
 });

@@ -72,6 +72,7 @@ describe('config reload route', () => {
         'heartbeatIntervalSeconds',
         'adminApiUrl',
       ],
+      ignoredFields: [],
     });
     expect(mockConfig.maxConcurrentTasks).toBe(4);
     expect(mockConfig.taskTimeoutSeconds).toBe(120);
@@ -94,6 +95,7 @@ describe('config reload route', () => {
       success: true,
       message: 'Updated 3 field(s)',
       updatedFields: ['adminApiUrl', 'adminApiUrlInternal', 'adminApiUrlExternal'],
+      ignoredFields: [],
     });
     expect(mockConfig.adminApiUrl).toBe('http://public-admin:3105/api');
     expect(mockConfig.adminApiUrlInternal).toBe('http://internal-admin:3105/api');

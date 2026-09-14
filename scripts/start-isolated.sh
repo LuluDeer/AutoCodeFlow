@@ -2,7 +2,9 @@
 # AutoCodeFlow 隔离启动脚本
 # 不影响本机已有的 MySQL 和 Redis 服务
 
-set -e
+# E-36（DEEP_REVIEW 0ef3bbe）：脚本补 -u/pipefail——未定义变量不再静默为空，
+# 管道中途失败不再被吞。
+set -euo pipefail
 
 # 颜色定义
 RED='\033[0;31m'

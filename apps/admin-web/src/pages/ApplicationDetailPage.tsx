@@ -8,7 +8,7 @@ import {
   SaveOutlined, HistoryOutlined,
   RocketOutlined, RobotOutlined,
 } from '@ant-design/icons';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { applicationsApi, Application, VersionHistoryEntry, AppReleaseRow } from '../api/applications';
 import { aiApi, AppHealthReport } from '../api/ai';
 import { tasksApi, Task } from '../api/tasks';
@@ -16,6 +16,8 @@ import AppDeploymentPage from './AppDeploymentPage';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../utils/locale';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
@@ -175,10 +177,10 @@ function OverviewTab({ app }: { app: Application }) {
             <Descriptions.Item label={t('appDetail.field.entrypoint')}><Text code>{app.entrypoint}</Text></Descriptions.Item>
           )}
           <Descriptions.Item label={t('appDetail.field.createdAt')}>
-            {app.createdAt ? new Date(app.createdAt).toLocaleString('zh-CN') : '-'}
+            {app.createdAt ? new Date(app.createdAt).toLocaleString(currentLocale()) : '-'}
           </Descriptions.Item>
           <Descriptions.Item label={t('appDetail.field.updatedAt')}>
-            {app.updatedAt ? new Date(app.updatedAt).toLocaleString('zh-CN') : '-'}
+            {app.updatedAt ? new Date(app.updatedAt).toLocaleString(currentLocale()) : '-'}
           </Descriptions.Item>
         </Descriptions>
 
@@ -283,7 +285,9 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
             {
               title: t('appDetail.tasks.col.name'),
               dataIndex: 'name',
-              render: (n: string, r: Task) => <a onClick={() => nav(`/tasks/${r.id}`)}>{n}</a>,
+              // F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href（键盘不可达/读屏不识别），
+              // 改 react-router <Link>——渲染真实 href + SPA 跳转，视觉/行为不变。
+              render: (n: string, r: Task) => <Link to={`/tasks/${r.id}`}>{n}</Link>,
             },
             {
               title: t('appDetail.tasks.col.status'), dataIndex: 'status', width: 100,
@@ -452,7 +456,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
             title: t('appDetail.col.deployedAt'), dataIndex: 'deployedAt', width: 170,
             render: (_: string | null, r: VersionRecord) => {
               const deployedAt = r.createdAt ?? r.deployedAt;
-              return deployedAt ? new Date(deployedAt).toLocaleString('zh-CN') : '-';
+              return deployedAt ? new Date(deployedAt).toLocaleString(currentLocale()) : '-';
             },
           },
           {
@@ -569,7 +573,7 @@ function ReleasesTab({ app }: { app: Application }) {
       title: t('appDetail.col.deployedAt'), dataIndex: 'deployedAt', width: 170,
       render: (v: string | null, r: AppReleaseRow) => {
         const time = v ?? r.createdAt;
-        return time ? new Date(time).toLocaleString('zh-CN') : '-';
+        return time ? new Date(time).toLocaleString(currentLocale()) : '-';
       },
     },
     {

@@ -1,7 +1,7 @@
 import { Card, Descriptions, Tag, Typography, Button, Space, Badge, message, Alert, Popconfirm, Result, Select, Input, Tabs, theme } from 'antd';
 import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, FieldTimeOutlined, LinkOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import {
   useExecutionDetail,
@@ -577,7 +577,8 @@ export default function ExecutionDetailPage() {
       <Card title={t('execDetail.card.info')} style={{ marginBottom: 16 }}>
         <Descriptions column={UI09_DESCRIPTIONS_COLUMN} size="small">
           <Descriptions.Item label={t('execDetail.field.taskName')}>
-            <a onClick={() => nav(`/tasks/${taskId}`)}>{data?.taskName}</a>
+            {/* F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href） */}
+            <Link to={`/tasks/${taskId}`}>{data?.taskName}</Link>
           </Descriptions.Item>
           <Descriptions.Item label={t('execDetail.field.trigger')}>
             {triggerLabels[data?.triggerType || ''] ?? data?.triggerType ?? '-'}
@@ -929,9 +930,9 @@ export default function ExecutionDetailPage() {
                         {link.execId === data?.id ? (
                           <Text strong>{t('execDetail.retry.currentExec')}</Text>
                         ) : (
-                          <a onClick={() => nav(`/tasks/${taskId}/executions/${link.execId}`)}>
+                          <Link to={`/tasks/${taskId}/executions/${link.execId}`}>
                             {link.execId.slice(0, 8)}…
-                          </a>
+                          </Link>
                         )}
                         <Text type="secondary" style={{ fontSize: 12 }}>
                           {link.triggerType ? triggerLabels[link.triggerType] ?? link.triggerType : '-'}

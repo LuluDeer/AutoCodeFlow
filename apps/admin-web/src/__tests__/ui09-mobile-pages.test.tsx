@@ -41,14 +41,14 @@ vi.mock('../api/metrics', async (importOriginal) => {
 const mockedMetrics = vi.mocked(metricsApi, true);
 
 // tasksApi 同时服务 DashboardPage（schedulerStats）与 ExecutionDetailPage
-// （execution/get/executionsWithStatus），一次 mock 覆盖两页用到的面。
+// （execution/get/executions），一次 mock 覆盖两页用到的面。
 vi.mock('../api/tasks', () => ({
   tasksApi: {
     schedulerStats: vi.fn(),
     execution: vi.fn(),
     executionLogs: vi.fn(),
     get: vi.fn(),
-    executionsWithStatus: vi.fn(),
+    executions: vi.fn(),
     killExecution: vi.fn(),
     trigger: vi.fn(),
     analyzeExecution: vi.fn(),
@@ -204,7 +204,7 @@ beforeEach(() => {
   } as never);
   mockedTasks.execution.mockResolvedValue(execFixture as never);
   mockedTasks.get.mockResolvedValue(taskFixture as never);
-  mockedTasks.executionsWithStatus.mockResolvedValue({
+  mockedTasks.executions.mockResolvedValue({
     items: [{ id: 'e1', retryCount: 0, status: 'failed' }],
     total: 1,
     page: 1,

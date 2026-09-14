@@ -1,6 +1,12 @@
-import { app, ipcMain } from 'electron';
+// F-37（DEEP_REVIEW 0ef3bbe）：fs/path/os/net/https 等模块统一在模块顶层 import，
+// 不再在各 handler 函数体内 require（main 进程无打包懒加载收益，纯历史遗留噪音）。
+import { app, ipcMain, shell, BrowserWindow } from 'electron';
 import * as http from 'http';
+import * as https from 'https';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as net from 'net';
 import { configStore, executorProcess, heartbeat, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
 import { checkForUpdates, quitAndInstall } from './updater';
@@ -142,14 +148,13 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('history:get', () => {
     const workDir = configStore.get('workDir') as string | undefined;
     if (!workDir) return [];
-    const metaDir = require('path').join(workDir, 'meta');
-    const fs = require('fs') as typeof import('fs');
+    const metaDir = path.join(workDir, 'meta');
     if (!fs.existsSync(metaDir)) return [];
     try {
       const files = fs.readdirSync(metaDir).filter((f: string) => f.endsWith('.json'));
       const records = files.map((f: string) => {
         try {
-          return JSON.parse(fs.readFileSync(require('path').join(metaDir, f), 'utf-8'));
+          return JSON.parse(fs.readFileSync(path.join(metaDir, f), 'utf-8'));
         } catch { return null; }
       }).filter(Boolean);
       // sort by startTime desc
@@ -161,12 +166,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('history:clear', () => {
     const workDir = configStore.get('workDir') as string | undefined;
     if (!workDir) return { ok: false };
-    const metaDir = require('path').join(workDir, 'meta');
-    const fs = require('fs') as typeof import('fs');
+    const metaDir = path.join(workDir, 'meta');
     if (!fs.existsSync(metaDir)) return { ok: true };
     try {
       const files = fs.readdirSync(metaDir).filter((f: string) => f.endsWith('.json'));
-      files.forEach((f: string) => fs.unlinkSync(require('path').join(metaDir, f)));
+      files.forEach((f: string) => fs.unlinkSync(path.join(metaDir, f)));
       return { ok: true };
     } catch (e: any) { return { ok: false, error: e.message }; }
   });
@@ -181,13 +185,11 @@ export function registerIpcHandlers(): void {
     }
     const workDir = configStore.get('workDir') as string | undefined;
     if (!workDir) return { lines: [], totalLines: 0 };
-    const fs = require('fs') as typeof import('fs');
-    const pathMod = require('path');
     // look in today's dir and yesterday's dir
     const tryDates = [new Date(), new Date(Date.now() - 86400000)];
     for (const d of tryDates) {
       const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      const logFile = pathMod.join(workDir, 'logs', dateStr, `${executionId}.log`);
+      const logFile = path.join(workDir, 'logs', dateStr, `${executionId}.log`);
       const check = checkPathWithinDomains(logFile, getAllowedLogDomains());
       if (!check.ok) {
         return { lines: [], totalLines: 0, error: check.error };
@@ -209,13 +211,10 @@ export function registerIpcHandlers(): void {
   // ── 日志文件管理 ───────────────────────────────────────
   // 列出过往日志文件（按天分组，含 main.log）
   ipcMain.handle('log:list-files', () => {
-    const fs = require('fs') as typeof import('fs');
-    const pathMod = require('path');
-    const { app: electronApp } = require('electron');
     const result: Array<{ label: string; path: string; date: string }> = [];
 
     // main.log
-    const mainLog = pathMod.join(electronApp.getPath('userData'), 'logs', 'main.log');
+    const mainLog = path.join(app.getPath('userData'), 'logs', 'main.log');
     if (fs.existsSync(mainLog)) {
       result.push({ label: '主进程日志 (main.log)', path: mainLog, date: '' });
     }
@@ -223,7 +222,7 @@ export function registerIpcHandlers(): void {
     // 任务日志：workDir/logs/YYYY-MM-DD/
     const workDir = configStore.get('workDir') as string | undefined;
     if (workDir) {
-      const logsDir = pathMod.join(workDir, 'logs');
+      const logsDir = path.join(workDir, 'logs');
       if (fs.existsSync(logsDir)) {
         const days = fs.readdirSync(logsDir)
           .filter((d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d))
@@ -231,10 +230,10 @@ export function registerIpcHandlers(): void {
           .reverse()
           .slice(0, 30); // 最近 30 天
         for (const day of days) {
-          const dayDir = pathMod.join(logsDir, day);
+          const dayDir = path.join(logsDir, day);
           const files = fs.readdirSync(dayDir).filter((f: string) => f.endsWith('.log'));
           for (const f of files) {
-            result.push({ label: `${day} / ${f}`, path: pathMod.join(dayDir, f), date: day });
+            result.push({ label: `${day} / ${f}`, path: path.join(dayDir, f), date: day });
           }
         }
       }
@@ -255,7 +254,6 @@ export function registerIpcHandlers(): void {
     if (!hasAllowedLogExtension(target)) {
       return { ok: false, error: '仅允许打开 .log/.txt 文件' };
     }
-    const { shell } = require('electron');
     const err = await shell.openPath(target);
     return { ok: !err, error: err || undefined };
   });
@@ -263,11 +261,9 @@ export function registerIpcHandlers(): void {
   // ── 已部署应用 ─────────────────────────────────────────
   // 列出本地所有已部署的应用（workDir/apps/<appId>/<deploymentId>/）
   ipcMain.handle('apps:list', () => {
-    const fs = require('fs') as typeof import('fs');
-    const pathMod = require('path');
     const workDir = configStore.get('workDir') as string | undefined;
     if (!workDir) return [];
-    const appsDir = pathMod.join(workDir, 'apps');
+    const appsDir = path.join(workDir, 'apps');
     if (!fs.existsSync(appsDir)) return [];
     const result: Array<{
       appId: string;
@@ -278,16 +274,16 @@ export function registerIpcHandlers(): void {
     }> = [];
     try {
       const appIds = fs.readdirSync(appsDir).filter((d: string) =>
-        fs.statSync(pathMod.join(appsDir, d)).isDirectory()
+        fs.statSync(path.join(appsDir, d)).isDirectory()
       );
       for (const appId of appIds) {
-        const appDir = pathMod.join(appsDir, appId);
+        const appDir = path.join(appsDir, appId);
         const deploymentIds = fs.readdirSync(appDir).filter((d: string) =>
-          fs.statSync(pathMod.join(appDir, d)).isDirectory()
+          fs.statSync(path.join(appDir, d)).isDirectory()
         );
         for (const deploymentId of deploymentIds) {
-          const deployDir = pathMod.join(appDir, deploymentId);
-          const logPath = pathMod.join(deployDir, 'app.log');
+          const deployDir = path.join(appDir, deploymentId);
+          const logPath = path.join(deployDir, 'app.log');
           result.push({
             appId,
             deploymentId,
@@ -310,7 +306,6 @@ export function registerIpcHandlers(): void {
       log.warn(`apps:log:read rejected: ${logPath} (${check.error})`);
       return { lines: [], totalLines: 0, error: check.error };
     }
-    const fs = require('fs') as typeof import('fs');
     const target = check.resolvedPath!;
     if (!fs.existsSync(target)) return { lines: [], totalLines: 0 };
     try {
@@ -323,16 +318,15 @@ export function registerIpcHandlers(): void {
   // 网络工具 ──────────────────────────────────────────
   // 无边框窗口控制
   ipcMain.handle('window:minimize', (event) => {
-    const win = require('electron').BrowserWindow.fromWebContents(event.sender);
+    const win = BrowserWindow.fromWebContents(event.sender);
     win?.minimize();
   });
   ipcMain.handle('window:close', (event) => {
-    const win = require('electron').BrowserWindow.fromWebContents(event.sender);
+    const win = BrowserWindow.fromWebContents(event.sender);
     win?.close();
   });
 
   ipcMain.handle('network:local-ips', () => {
-    const os = require('os');
     const interfaces = os.networkInterfaces();
     const ips: string[] = [];
     for (const iface of Object.values(interfaces) as any[]) {
@@ -348,7 +342,6 @@ export function registerIpcHandlers(): void {
 
 function checkPortAvailable(port: number): Promise<{ available: boolean; message: string }> {
   return new Promise((resolve) => {
-    const net = require('net');
     const server = net.createServer();
     server.once('error', (err: any) => {
       if (err.code === 'EADDRINUSE') {
@@ -376,7 +369,7 @@ function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: st
         resolve({ ok: false, message: `不支持的协议: ${parsed.protocol}（仅支持 http/https）` });
         return;
       }
-      const transport = (isHttps ? require('https') : http) as typeof http;
+      const transport = (isHttps ? https : http) as typeof http;
       const req = transport.get(
         {
           hostname: parsed.hostname,

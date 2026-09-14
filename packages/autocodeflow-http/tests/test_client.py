@@ -282,6 +282,77 @@ class TestPk09ConnectionReuse:
         assert not client._client.is_closed
         await client.aclose()
 
+    @pytest.mark.asyncio
+    async def test_aclose_releases_client_and_allows_lazy_rebuild(self, respx_mock):
+        """PK-29：aclose() 必须真正关闭并清空实例级 client，之后请求惰性重建。
+
+        此前只在一个用例末尾调用 aclose() 收尾，从未断言其效果——连接池释放
+        与「关闭后再用」这条最容易被误改的生命周期路径零覆盖。
+        """
+        respx_mock.get("http://api.example.com/a").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        respx_mock.get("http://api.example.com/b").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(max_retries=0),
+        )
+        await client.get("/a")
+        first_client = client._client
+        assert first_client is not None
+
+        await client.aclose()
+        # 已关闭且引用被清空（不是留着一个 is_closed 的僵尸实例）
+        assert first_client.is_closed
+        assert client._client is None
+
+        # 关闭后再次请求 → 惰性重建一个**新的** client，功能不受影响
+        resp = await client.get("/b")
+        assert resp.status_code == 200
+        assert client._client is not None
+        assert client._client is not first_client
+        assert not client._client.is_closed
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_aclose_is_idempotent_and_safe_before_any_request(self):
+        """PK-29：未发过请求就 aclose() 不应报错；重复 aclose() 也幂等。"""
+        client = AutoFlowHttpClient(base_url="http://api.example.com")
+        assert client._client is None
+        # 从未建过 client —— 直接关停是 no-op，不得抛异常
+        await client.aclose()
+        assert client._client is None
+        # 重复关停同样安全
+        await client.aclose()
+        assert client._client is None
+
+    @pytest.mark.asyncio
+    async def test_get_client_rebuilds_when_externally_closed(self, respx_mock):
+        """PK-29：底层 client 被外部关闭时，_get_client() 应重建而非复用死连接。"""
+        respx_mock.get("http://api.example.com/a").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        respx_mock.get("http://api.example.com/b").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(max_retries=0),
+        )
+        await client.get("/a")
+        stale = client._client
+        # 绕过 aclose() 直接关掉底层实例（模拟外部/超时导致的关闭）
+        await stale.aclose()
+
+        rebuilt = client._get_client()
+        assert rebuilt is not stale
+        assert not rebuilt.is_closed
+        # 重建后的 client 仍能正常发请求
+        assert (await client.get("/b")).status_code == 200
+        await client.aclose()
+
 
 class TestPk09HalfOpenConcurrency:
     """PK-09(2): half-open 探测同时只允许 1 个在飞。"""

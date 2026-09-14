@@ -15,7 +15,7 @@ export interface paths {
         put?: never;
         /**
          * User login
-         * @description Login with username and password, returns Access Token and Refresh Token. Max5 attempts per minute.
+         * @description Login with username and password, returns Access Token and Refresh Token. Max 20 attempts per minute.
          */
         post: operations["AuthController_login"];
         delete?: never;
@@ -3043,7 +3043,7 @@ export interface components {
         };
         BatchTaskIdsDto: {
             /**
-             * @description Task ID list
+             * @description Task ID list (1..500 uuids)
              * @example [
              *       "uuid-1",
              *       "uuid-2"

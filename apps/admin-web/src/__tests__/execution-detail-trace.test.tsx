@@ -18,7 +18,7 @@ vi.mock('../api/tasks', () => ({
     trigger: vi.fn(),
     analyzeExecution: vi.fn(),
     get: vi.fn(),
-    executionsWithStatus: vi.fn(),
+    executions: vi.fn(),
   },
 }));
 vi.mock('../api/execution-reports', () => ({
@@ -70,7 +70,7 @@ function makeExecution(overrides: Record<string, unknown> = {}) {
 async function renderPage(execution: Record<string, unknown>) {
   vi.mocked(tasksApi.execution).mockResolvedValue(execution as never);
   vi.mocked(tasksApi.get).mockResolvedValue({ id: 't1', maxRetry: 3, retryDelay: 5 } as never);
-  vi.mocked(tasksApi.executionsWithStatus).mockResolvedValue({
+  vi.mocked(tasksApi.executions).mockResolvedValue({
     items: [{ id: 'e1', retryCount: 0, status: 'success' }], total: 1, page: 1, pageSize: 100,
   } as never);
   const { useAuthStore } = await import('../store/auth');

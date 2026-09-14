@@ -485,7 +485,9 @@ export class ApplicationService implements OnModuleInit {
         page: 1,
         pageSize: 100,
       } as any);
-      tasks = (result.list || result) as Array<{ id: string; name: string }>;
+      // R-21（DEFERRED-CROSS-SCOPE）: paginate 双键保留（list/items 并存），
+      // 此处读 canonical items（范围外 packages/acf-cli 仍读 list，故不收敛）。
+      tasks = (result.items || result) as Array<{ id: string; name: string }>;
     }
 
     // Gather stats for each task concurrently

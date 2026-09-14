@@ -52,6 +52,11 @@ import { AiService } from "../ai/ai.service";
 // 指标 + fail-open），processor 直调点与手动分析点共用同一降级/观测策略。
 import { AiAnalysisService } from "../ai/ai-analysis.service";
 import { ExecutorService } from "../executor/executor.service";
+// R-28（DEEP_REVIEW 0ef3bbe）: 依赖触发链路补审计。TaskService 此前不注入
+// AuditService（notifyCallbackFailure 审计已迁 listener）；此处仅为「依赖触发
+// 无 user 主体、绕过控制器审计」的系统动作补 best-effort 审计。@Optional 与
+// eventBus/projectAccess 同先例——存量单测未提供时降级 null，主链不变。
+import { AuditService } from "../audit/audit.service";
 // ARCH-21: 领域事件总线——终态事件（execution.completed/failed）发布入口。
 // 主链由此与 NotificationService 彻底解耦（验收红线：本文件不再 import 它）。
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
@@ -292,7 +297,25 @@ export class TaskService {
     // provider 缺失（单测装配）时整体旁路，写面判定逐字节保持既有行为。
     @Optional()
     private projectAccess: ProjectAccessService | null,
-  ) {}
+    // R-28: 依赖触发系统动作审计（@Optional，先例 eventBus/projectAccess）。
+    @Optional()
+    private readonly audit: AuditService | null,
+  ) {
+    // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional 依赖缺失时降级不可观测——
+    // 事件总线/审计静默缺失会让终态事件不发、依赖触发审计不写。生产装配下这些
+    // @Global provider 恒在；此处仅在缺失时一次性 warn，使静默降级在日志面可见
+    // （每进程一次，不刷屏；单测装配缺 provider 时同样命中该观测面）。
+    if (!this.eventBus) {
+      this.logger.warn(
+        "R-26: DomainEventBus 未装配——终态事件将静默不发（检查事件总线模块是否注册）",
+      );
+    }
+    if (!this.audit) {
+      this.logger.warn(
+        "R-26: AuditService 未装配——依赖触发系统动作审计将静默不写（检查 AuditModule 是否导出）",
+      );
+    }
+  }
 
   /**
    * NF-03（任务级 RBAC 预研）：写面属主守卫。三态语义：
@@ -681,6 +704,11 @@ export class TaskService {
     id: string,
     dto: TriggerTaskDto,
     user?: { id: number; role: UserRole } | null,
+    // R-28（DEEP_REVIEW 0ef3bbe）: triggerType 覆盖——依赖触发链路（
+    // triggerDependentTasks）此前经 this.trigger(id, {}) 把 execution.triggerType
+    // 错记为 "manual"。默认仍 "manual"（手动/控制器/API-Key 路径不变），
+    // 依赖触发方传入 "dependency"。
+    triggerTypeOverride?: string,
   ) {
     const task = await this.findOne(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
@@ -699,7 +727,8 @@ export class TaskService {
           taskName: task.name,
           status: ExecutionStatus.PENDING,
           params: dto.params ?? task.params,
-          triggerType: "manual",
+          // R-28: 默认 manual；依赖触发方传入 "dependency"。
+          triggerType: triggerTypeOverride ?? "manual",
           taskVersion: task.currentVersion,
           traceId: this.tracing?.isValidTraceId(traceId) ? traceId : null,
         }),
@@ -1445,7 +1474,31 @@ export class TaskService {
         this.logger.log(
           `All dependencies satisfied for task ${task.id}, triggering`,
         );
-        await this.trigger(task.id, {});
+        // R-28（DEEP_REVIEW 0ef3bbe）: 依赖触发链路补审计日志，triggerType 记为
+        // "dependency" 而非 "manual"——旧实现 this.trigger(task.id, {}) 使下游执行
+        // 行 triggerType 错记 manual、且因无 user 主体绕过控制器审计。这里：
+        // ① 透传 triggerType="dependency"；② best-effort 写一条系统审计（无 user
+        // 主体，username 标 system:dependency；审计自身抛错绝不影响主链触发）。
+        await this.trigger(task.id, {}, null, "dependency");
+        try {
+          await this.audit?.log({
+            username: "system:dependency",
+            action: "task.trigger_dependency",
+            resource: "task",
+            resourceId: task.id,
+            detail: {
+              triggerType: "dependency",
+              upstreamTaskId: completedTaskId,
+              dependencyTaskIds: Object.values(task.dependencies ?? {}),
+            },
+          });
+        } catch (auditErr) {
+          this.logger.warn(
+            `R-28: dependency-trigger audit write failed for task ${task.id} (best-effort, ignored): ${
+              auditErr instanceof Error ? auditErr.message : String(auditErr)
+            }`,
+          );
+        }
       }
     } catch (err) {
       this.logger.error(

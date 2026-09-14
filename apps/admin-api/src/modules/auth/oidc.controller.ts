@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Res } from "@nestjs/common";
+import { Controller, Get, Query, Res, Logger } from "@nestjs/common";
 import { Response } from "express";
 import { Public } from "../../common/decorators/public.decorator";
 import { OidcService, OIDC_STATE_COOKIE } from "./oidc.service";
@@ -30,6 +30,10 @@ function mapCallbackError(message: string): string {
  */
 @Controller("auth/oidc")
 export class OidcController {
+  // R-23（DEEP_REVIEW 0ef3bbe）: 改用 Nest Logger 收口——原 console.warn 游离于
+  // 本仓 ARCH-27 日志纪律之外，丢失 trace-id 上下文且不进统一日志管道。
+  private readonly logger = new Logger(OidcController.name);
+
   constructor(private readonly oidc: OidcService) {}
 
   @Public()
@@ -57,8 +61,8 @@ export class OidcController {
       res.redirect(302, redirectUrl);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      // eslint-disable-next-line no-console
-      console.warn(`[OIDC] login failed: ${message}`);
+      // R-23: Nest Logger 收口（原 console.warn）
+      this.logger.warn(`[OIDC] login failed: ${message}`);
       res.status(502).json({ message: "OIDC login failed" });
     }
   }
@@ -114,8 +118,8 @@ export class OidcController {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       // 细节只进日志，浏览器侧仅收稳定错误码
-      // eslint-disable-next-line no-console
-      console.warn(`[OIDC] callback failed: ${message}`);
+      // R-23: Nest Logger 收口（原 console.warn）
+      this.logger.warn(`[OIDC] callback failed: ${message}`);
       fail(mapCallbackError(message));
     }
   }

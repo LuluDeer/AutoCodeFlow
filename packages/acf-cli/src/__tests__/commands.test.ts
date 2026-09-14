@@ -512,6 +512,53 @@ describe('acf login', () => {
     expect(accessSpy).toHaveBeenCalledWith('jwt-abc');
     expect(refreshSpy).toHaveBeenCalledWith('r1');
   });
+
+  // PK-27（DEEP_REVIEW 0ef3bbe）：--password 明文会进 ps/shell history，新增
+  // ACF_PASSWORD env 通道（不进 argv）+ 使用 --password 时向 stderr 告警。
+  it('reads the password from ACF_PASSWORD env when --password is absent', async () => {
+    const prev = process.env.ACF_PASSWORD;
+    process.env.ACF_PASSWORD = 'env-secret';
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      mockedPost.mockResolvedValueOnce({ accessToken: 'jwt-env', refreshToken: 'r2' });
+      await run(loginCommand(), 'login --url http://localhost:9999 --user admin');
+      expect(mockedPost).toHaveBeenCalledWith('/auth/login', {
+        username: 'admin',
+        password: 'env-secret',
+      });
+      // env 通道不该打「明文泄漏」告警
+      expect(stderrSpy).not.toHaveBeenCalled();
+    } finally {
+      stderrSpy.mockRestore();
+      if (prev === undefined) delete process.env.ACF_PASSWORD;
+      else process.env.ACF_PASSWORD = prev;
+    }
+  });
+
+  it('prefers --password over ACF_PASSWORD and warns about the leak surface', async () => {
+    const prev = process.env.ACF_PASSWORD;
+    process.env.ACF_PASSWORD = 'env-secret';
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      mockedPost.mockResolvedValueOnce({ accessToken: 'jwt-flag', refreshToken: 'r3' });
+      await run(
+        loginCommand(),
+        'login --url http://localhost:9999 --user admin --password flag-secret',
+      );
+      expect(mockedPost).toHaveBeenCalledWith('/auth/login', {
+        username: 'admin',
+        password: 'flag-secret',
+      });
+      // 必须显式告警（提示改用 ACF_PASSWORD）
+      const warned = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(warned).toContain('--password');
+      expect(warned).toContain('ACF_PASSWORD');
+    } finally {
+      stderrSpy.mockRestore();
+      if (prev === undefined) delete process.env.ACF_PASSWORD;
+      else process.env.ACF_PASSWORD = prev;
+    }
+  });
 });
 
 // ECO-02: --json 输出面（CI 消费）——payload 不经表格直出

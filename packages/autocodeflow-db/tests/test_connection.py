@@ -255,3 +255,62 @@ class TestDisposeEngine:
 
         assert mock_create_engine.call_count == 2
         dispose_engine(cfg)
+
+
+class TestRealSqliteSessionLifecycle:
+    """PK-29（DEEP_REVIEW 0ef3bbe）：此前 session 生命周期全部 mock create_engine，
+    DatabaseSession 的 commit/rollback/close 分支只断言 mock 调用、无真实行为。
+    这里用 sqlite 文件引擎跑真实会话，验证：正常退出真 commit、异常真 rollback、
+    最终真 close（连接归还池）。"""
+
+    def _make_file_config(self, tmp_path) -> DatabaseConfig:
+        # sqlite 文件库走 QueuePool，接受 pool_size/max_overflow（与 PG 一致），
+        # 避免内存库 SingletonThreadPool 拒收池参数。
+        db_file = tmp_path / "lc.db"
+        return DatabaseConfig(url=f"sqlite:///{db_file}")
+
+    def test_real_session_commits_and_persists(self, tmp_path):
+        from sqlalchemy import text
+
+        cfg = self._make_file_config(tmp_path)
+        db = DatabaseSession(cfg)
+        # 建表 + 插入并正常退出 → 应 commit
+        with db.session() as sess:
+            sess.execute(text("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)"))
+            sess.execute(text("INSERT INTO t (id, v) VALUES (1, 'one')"))
+        # 新会话应能读到已提交的行
+        with db.session() as sess:
+            row = sess.execute(text("SELECT v FROM t WHERE id = 1")).one()
+            assert row[0] == "one"
+        cfg.dispose()
+
+    def test_real_session_rolls_back_on_exception(self, tmp_path):
+        from sqlalchemy import text
+
+        cfg = self._make_file_config(tmp_path)
+        db = DatabaseSession(cfg)
+        with db.session() as sess:
+            sess.execute(text("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)"))
+            sess.execute(text("INSERT INTO t (id, v) VALUES (1, 'one')"))
+        # 第二次会话：插入后抛异常 → 应整体回滚，表里仍只有 1 行
+        with pytest.raises(RuntimeError):
+            with db.session() as sess:
+                sess.execute(text("INSERT INTO t (id, v) VALUES (2, 'two')"))
+                raise RuntimeError("boom — rollback please")
+        with db.session() as sess:
+            count = sess.execute(text("SELECT COUNT(*) FROM t")).scalar()
+            assert count == 1  # 第二条未落库
+        cfg.dispose()
+
+    def test_real_session_closes_after_use(self, tmp_path):
+        from sqlalchemy import text
+
+        cfg = self._make_file_config(tmp_path)
+        db = DatabaseSession(cfg)
+        # 连续多次 session() 进出不应泄漏连接（文件库 QueuePool）
+        with db.session() as sess:
+            sess.execute(text("CREATE TABLE t (id INTEGER PRIMARY KEY)"))
+        for _ in range(3):
+            with db.session() as sess:
+                sess.execute(text("SELECT 1")).scalar()
+        cfg.dispose()

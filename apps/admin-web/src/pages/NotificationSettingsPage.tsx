@@ -6,6 +6,8 @@ import type { ColumnsType } from 'antd/es/table';
 import { client } from '../api/client';
 import { silencesApi, type NotificationSilence, type CreateSilencePayload, type SilenceScope } from '../api/notifications';
 import { getErrMsg } from '../utils/error';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../utils/locale';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore, isAdminUser } from '../store/auth';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -351,7 +353,7 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
   const scope: SilenceScope = Form.useWatch('scope', form) ?? 'global';
 
   const fmtEndTime = (v: string | null): string =>
-    v ? new Date(v).toLocaleString('zh-CN') : t('notif.silence.never');
+    v ? new Date(v).toLocaleString(currentLocale()) : t('notif.silence.never');
 
   /** 剩余时间；已过期或无界（endTime 为空）返回 null */
   const fmtRemaining = (endTime: string | null): string | null => {

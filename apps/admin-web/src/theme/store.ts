@@ -6,7 +6,8 @@ import { persist, createJSONStorage } from 'zustand/middleware';
  *
  * 三态：'light' | 'dark' | 'system'（system=跟随 prefers-color-scheme，
  * 并监听系统变化实时生效）。持久化到 localStorage `autoflow-theme`，
- * 与 index.html 头部的 THEME_INIT_SCRIPT 约定同一键名（防首帧闪白）。
+ * 与 theme/tokens.ts 的 THEME_INIT_SCRIPT（经 vite 插件注入 index.html
+ * 头部，防首帧闪白）约定同一键名。
  *
  * resolvedMode 是消费方（main.tsx 的 algorithm 选择、index.css 的
  * data-theme 同步）唯一应依赖的推导值；mode 是用户意愿。
