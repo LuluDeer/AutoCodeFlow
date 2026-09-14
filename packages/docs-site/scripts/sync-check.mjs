@@ -124,7 +124,14 @@ export function checkTruncationConstants() {
   return { errors, constants: { nodeErr, nodeLogs, pyErr, pyLogs } };
 }
 
-// ── 判据 ③：failureReason 枚举（admin DTO ↔ py 白名单 ↔ 站点「九类」表述）──
+// ── 判据 ③：failureReason 枚举（契约 ↔ admin 枚举 ↔ py 白名单 ↔ 站点「九类」表述）──
+//
+// A3（DEEP_REVIEW §七）：语义从「admin 枚举 == py 白名单」变为
+// **「py 白名单 == 枚举 − admin 内部专用」**——`stale_recovered` 由 admin 的 stale
+// sweep 写入、语义上只有 admin 才该写，执行器/SDK 上报它会被 admin 的 @IsIn 拒绝
+// （且一个非法取值会拒掉**整批**回调）。单一事实源是
+// `packages/executor-protocol/protocol.json`（四方共载），本判据此处顺带把契约与
+// 枚举、白名单三方对齐也纳入机检。
 export function checkFailureReasonEnum() {
   const errors = [];
   const entity = readRepo("apps/admin-api/src/modules/task/entities/task-execution.entity.ts");
@@ -142,14 +149,43 @@ export function checkFailureReasonEnum() {
     return { errors, enumCount: enumValues.length };
   }
   const whitelist = [...whitelistBody.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+
+  // ① 契约 ↔ admin 枚举：全集必须逐值一致
+  const protocol = JSON.parse(readRepo("packages/executor-protocol/protocol.json"));
+  const all = protocol.failureReason.all ?? [];
+  const reportable = protocol.failureReason.executorReportable ?? [];
+  const internal = protocol.failureReason.adminInternalOnly ?? [];
+
   for (const v of enumValues) {
+    if (!all.includes(v)) {
+      errors.push(`契约 failureReason.all 缺枚举值 ${v}（枚举已扩类——同步 packages/executor-protocol/protocol.json）`);
+    }
+  }
+  for (const v of all) {
+    if (!enumValues.includes(v)) {
+      errors.push(`契约 failureReason.all 含枚举不存在的值 ${v}（契约与 admin 枚举漂移）`);
+    }
+  }
+
+  // ② 契约 ↔ py 白名单：白名单必须等于**可上报子集**
+  for (const v of reportable) {
     if (!whitelist.includes(v)) {
-      errors.push(`py SDK 白名单缺枚举值 ${v}（admin DTO @IsIn 会拒绝，客户端却放行）`);
+      errors.push(`py SDK 白名单缺可上报值 ${v}（客户端会误拒合法值）`);
     }
   }
   for (const v of whitelist) {
-    if (!enumValues.includes(v)) {
-      errors.push(`py SDK 白名单含 admin 枚举不存在的值 ${v}（客户端会误拒合法值）`);
+    if (!reportable.includes(v)) {
+      errors.push(`py SDK 白名单含非可上报值 ${v}（客户端放行，但 admin DTO @IsIn 已收窄为可上报子集，会拒掉整批回调）`);
+    }
+  }
+
+  // ③ 契约自洽：内部专用 ⊆ 全集，且与可上报子集互斥
+  for (const v of internal) {
+    if (!all.includes(v)) {
+      errors.push(`契约 adminInternalOnly 含全集不存在的值 ${v}`);
+    }
+    if (reportable.includes(v)) {
+      errors.push(`契约自相矛盾：${v} 同时出现在 adminInternalOnly 与 executorReportable`);
     }
   }
   // 站点表述「BUG-10 九类」——枚举扩类时该数字表述必须同步

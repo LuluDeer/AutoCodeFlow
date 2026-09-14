@@ -43,9 +43,10 @@
    [packages/contract-fixtures/contract.json](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/packages/contract-fixtures/contract.json)
    的 `knownDivergence`（admin-api 恒发 code，真实流量不受影响，
    四端统一需 breaking release）。详见[契约页](./contract)。
-3. **failureReason 校验位置**：py 在客户端抛 `ValueError`（白名单含
-   BUG-10 九类枚举），node 交由服务端 DTO 校验。任务代码建议两侧都只用
-   文档化枚举值。
+3. **failureReason 校验位置**：py 在客户端抛 `ValueError`（白名单 = 执行器
+   可上报子集 10 项；admin 全集 11 项，其中 `stale_recovered` 为 admin 内部
+   专用、上报方不得使用——契约见 `packages/executor-protocol/protocol.json`），
+   node 交由服务端 DTO 校验。任务代码建议两侧都只用文档化枚举值。
 4. **缺变量行为**：node `fromEnv` 抛错 / py `from_env` 兜底 `"unknown"`。
    这是唯一的「失败模式」分歧；执行器恒注入三变量，实际执行不受影响，
    仅影响手工裸跑脚本的行为。
