@@ -143,9 +143,10 @@
           "description": "deprecated：snake_case 别名"
         },
         "requirements": {
-          "type": "array",
+          "type": ["array", "null"],
           "items": { "type": "string" },
-          "default": []
+          "default": [],
+          "description": "**必须接受 null**：admin 的 `Task.requirements` 是 `jsonb NULL` 列（task.entity.ts），任务没配依赖时派发载荷里就是字面 null——A3-C 首版把这里写成了不含 null 的纯 array 类型，CI 的 selftests（pull 全链路真派发）当场红：Expected array, received null。null 与缺省同义，都当空数组；两侧执行器的既有手检也是这么判的（非 undefined 且非 null 才校验）。"
         },
         "gitRepo": { "type": ["string", "null"] },
         "gitBranch": { "type": ["string", "null"] },
@@ -205,7 +206,14 @@
   "schemaVectors": {
     "$comment": "每个 schema 的合法/非法样本，三端加载**同一份**断言。invalid 除 payload 外必须给出 expectErrorPath——只断言『被拒绝』而不断言『为什么被拒绝』会退化成永真断言（任一字段拼错都会红，那就谁都能红）。path 为数组，zod 的 issue.path 与 pydantic 的 error.loc 同形。",
     "TaskConfig": {
-      "valid": [{}, { "runtime": "python", "timeoutSeconds": 0 }],
+      "valid": [
+        {},
+        { "runtime": "python", "timeoutSeconds": 0 },
+        {
+          "requirements": null,
+          "$comment": "A3-C 回归：admin 的任务实体 requirements 是 nullable jsonb，无依赖时派发字面 null。首版协议写成纯 array，CI selftests 的 pull 全链路真派发当场红——这条向量就是那次事故钉在这里的。"
+        }
+      ],
       "invalid": [
         {
           "name": "timeoutSeconds-below-min",

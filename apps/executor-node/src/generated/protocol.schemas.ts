@@ -17,7 +17,7 @@ export const TaskConfigSchema = z.object({
   "timeout": z.number().int().min(0).max(86400).nullable().optional(),
   "timeoutSeconds": z.number().int().min(0).max(86400).nullable().optional(),
   "timeout_seconds": z.number().int().nullable().optional(),
-  "requirements": z.array(z.string()).default([]),
+  "requirements": z.array(z.string()).nullable().default([]),
   "gitRepo": z.string().nullable().optional(),
   "gitBranch": z.string().nullable().optional(),
   "gitCommit": z.string().nullable().optional(),
