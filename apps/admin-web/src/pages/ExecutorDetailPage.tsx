@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result, Tag, theme } from 'antd';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
@@ -12,6 +12,11 @@ import {
   invalidateExecutorData,
 } from '../api/queries';
 import { getErrMsg } from '../utils/error';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源 currentLocale() + 统一相对时间 formatRelativeTime()
+import { currentLocale } from '../utils/locale';
+import { formatRelativeTime, formatDurationShort } from '../utils/timeFormat';
+// F-36（DEEP_REVIEW 0ef3bbe）：编辑弹窗字段白名单（回填/提交都不再整体快照透传）。
+import { executorEditFormValues, pickExecutorEditPayload, type ExecutorEditValues } from './executor-edit';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
@@ -26,16 +31,9 @@ const { Text } = Typography;
 /** AUTH-05 交接：高危操作 reason 上限（对齐 admin-api DTO 契约：≤200 字符） */
 const MAX_REASON_LENGTH = 200;
 
-function relativeTime(isoString: string, t?: (k: string, o?: Record<string, unknown>) => string): string {
-  const diff = Date.now() - new Date(isoString).getTime();
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return t ? t('time.relative.justNow') : `${seconds}秒前`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return t ? t('time.relative.minsAgo', { n: minutes }) : `${minutes}分钟前`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return t ? t('time.relative.hoursAgo', { n: hours }) : `${hours}小时前`;
-  return t ? t('time.relative.daysAgo', { n: Math.floor(hours / 24) }) : `${Math.floor(hours / 24)}天前`;
-}
+// F-26（DEEP_REVIEW 0ef3bbe）：原此处自写的 relativeTime() 已删除——与
+// utils/timeFormat.ts 的 formatRelativeTime() 语义重复，且无 key 回退时输出中文硬编码；
+// 统一改用 formatRelativeTime（见 line 206 heartbeatText）。
 
 function isHeartbeatStale(isoString: string): boolean {
   return Date.now() - new Date(isoString).getTime() > 5 * 60 * 1000;
@@ -63,8 +61,8 @@ function trendTooltipLabel(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso;
   const sameDay = d.toDateString() === new Date().toDateString();
   return sameDay
-    ? d.toLocaleTimeString('zh-CN', { hour12: false })
-    : d.toLocaleString('zh-CN', { hour12: false });
+    ? d.toLocaleTimeString(currentLocale(), { hour12: false })
+    : d.toLocaleString(currentLocale(), { hour12: false });
 }
 
 export default function ExecutorDetailPage() {
@@ -109,10 +107,12 @@ export default function ExecutorDetailPage() {
   // Query useMutation（项目主栈）。onSuccess/onError 与原 useRequest 语义一一对应，
   // 写后失效仍走 invalidateExecutorData。
   const updateExecMut = useMutation({
-    mutationFn: (values: Record<string, unknown>) => executorsApi.update(id!, values),
+    mutationFn: (values: ExecutorEditValues) => executorsApi.update(id!, values),
     onSuccess: () => { message.success(t('executorDetail.updateSuccess')); setEditOpen(false); refreshExecutor(); },
   });
-  const updateExecutor = (values: Record<string, unknown>) => updateExecMut.mutate(values);
+  // F-36（DEEP_REVIEW 0ef3bbe）：onFinish 提交前按白名单裁剪——只发可编辑字段，
+  // 不把整行 executor 快照（id/status/lastHeartbeat/cpuUsage 等只读/敏感字段）回传。
+  const updateExecutor = (values: Record<string, unknown>) => updateExecMut.mutate(pickExecutorEditPayload(values));
   const updating = updateExecMut.isPending;
 
   const reloadConfigMut = useMutation({
@@ -201,7 +201,7 @@ export default function ExecutorDetailPage() {
   const reportedCount = reportedIds?.length;
 
   const heartbeatStale = executor.lastHeartbeat ? isHeartbeatStale(executor.lastHeartbeat) : false;
-  const heartbeatText = executor.lastHeartbeat ? relativeTime(executor.lastHeartbeat, t) : '-';
+  const heartbeatText = executor.lastHeartbeat ? formatRelativeTime(executor.lastHeartbeat, t) : '-';
   const heartbeatAbsolute = executor.lastHeartbeat ? new Date(executor.lastHeartbeat).toLocaleString() : '';
 
   type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
@@ -218,14 +218,18 @@ export default function ExecutorDetailPage() {
   const execColumns = [
     // U10: 补任务名/退出码列，行点击直达执行详情页
     { title: t('executorDetail.history.col.task'), dataIndex: 'taskName', key: 'taskName', ellipsis: true, render: (v: string | undefined, r: ExecutorExecution) => (
-      <a onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${r.taskId}/executions/${r.id}`); }}>{v || r.taskId}</a>
+      // F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href——键盘不可达、读屏不识别；
+      // 改 react-router <Link>（渲染真实 href、SPA 跳转，行为/视觉不变），保留行点击
+      // 的 stopPropagation 避免双跳。
+      <Link to={`/tasks/${r.taskId}/executions/${r.id}`} onClick={(e) => e.stopPropagation()}>{v || r.taskId}</Link>
     )},
     { title: t('executorDetail.history.col.status'), dataIndex: 'status', key: 'status', width: 90, render: (v: string) => {
       const cfg = statusMap[v] || { badge: 'default' as BadgeStatus, label: v };
       return <Badge status={cfg.badge} text={cfg.label} />;
     }},
-    { title: t('executorDetail.history.col.startTime'), dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '-' },
-    { title: t('executorDetail.history.col.duration'), dataIndex: 'duration', key: 'duration', width: 90, render: (v: number) => v != null ? (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`) : '-' },
+    { title: t('executorDetail.history.col.startTime'), dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? new Date(v).toLocaleString(currentLocale(), { hour12: false }) : '-' },
+    // F-35（DEEP_REVIEW 0ef3bbe）：时长格式统一走 formatDurationShort（含小时档）
+    { title: t('executorDetail.history.col.duration'), dataIndex: 'duration', key: 'duration', width: 90, render: (v: number) => formatDurationShort(v) },
     { title: t('executorDetail.history.col.exitCode'), dataIndex: 'exitCode', key: 'exitCode', width: 80, render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-' },
     { title: t('executorDetail.history.col.error'), dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
   ];
@@ -235,7 +239,7 @@ export default function ExecutorDetailPage() {
       <Breadcrumb
         style={{ marginBottom: 16 }}
         items={[
-          { title: <a onClick={() => navigate('/executors')}>{t('executorDetail.breadcrumb.list')}</a> },
+          { title: <Link to="/executors">{t('executorDetail.breadcrumb.list')}</Link> },
           { title: executor.appName },
         ]}
       />
@@ -246,7 +250,7 @@ export default function ExecutorDetailPage() {
           isAdmin ? (
           <Space>
             <Button.Group>
-              <Button onClick={() => { editForm.setFieldsValue(executor); setEditOpen(true); }}>{t('executorDetail.edit')}</Button>
+              <Button onClick={() => { editForm.setFieldsValue(executorEditFormValues(executor)); setEditOpen(true); }}>{t('executorDetail.edit')}</Button>
               {/* UI-18: pull 模式执行器（ARCH-32）不可入站推送——入口禁用 */}
               <Tooltip title={executor.dispatchMode === 'pull' ? t('executorDetail.config.pullDisabledTooltip') : undefined}>
                 <Button disabled={executor.dispatchMode === 'pull'} onClick={() => setConfigOpen(true)}>{t('executorDetail.configHotReload')}</Button>

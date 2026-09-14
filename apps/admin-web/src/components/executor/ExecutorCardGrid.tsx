@@ -16,6 +16,8 @@ import {
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { Executor } from '../../api/executors';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../../utils/locale';
 import '../../i18n';
 
 type TFunc = (k: string, opts?: Record<string, unknown>) => string;
@@ -29,7 +31,7 @@ function heartbeatLabel(t: TFunc, lastHeartbeat: string, token: AntdToken): { te
   const diffMin = diffMs / 60000;
   if (diffMin < 2) return { color: token.colorSuccess, text: t('execCard.hb.justNow') };
   if (diffMin < 10) return { color: token.colorWarning, text: t('execCard.hb.minAgo', { min: Math.floor(diffMin) }) };
-  return { color: token.colorError, text: new Date(lastHeartbeat).toLocaleString('zh-CN') };
+  return { color: token.colorError, text: new Date(lastHeartbeat).toLocaleString(currentLocale()) };
 }
 
 function statusBadge(status: string): 'success' | 'warning' | 'default' {
@@ -147,7 +149,7 @@ export function ExecutorCard({
         }}
       >
         {hb ? (
-          <Tooltip title={new Date(r.lastHeartbeat).toLocaleString('zh-CN')}>
+          <Tooltip title={new Date(r.lastHeartbeat).toLocaleString(currentLocale())}>
             <Space size={4}>
               <ClockCircleOutlined style={{ color: hb.color }} />
               <Text style={{ color: hb.color, fontSize: 12 }}>{hb.text}</Text>

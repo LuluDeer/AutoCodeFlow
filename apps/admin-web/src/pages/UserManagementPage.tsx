@@ -25,6 +25,8 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, type User, type CreateUserDto, type UpdateUserDto } from '../api/users';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../utils/locale';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
@@ -248,7 +250,7 @@ export default function UserManagementPage() {
       width: 180,
       render: (v: string) =>
         v
-          ? new Date(v).toLocaleString('zh-CN', { hour12: false })
+          ? new Date(v).toLocaleString(currentLocale(), { hour12: false })
           : '—',
     },
     {

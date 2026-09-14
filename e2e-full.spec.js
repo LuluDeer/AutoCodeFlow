@@ -1852,3 +1852,187 @@ test.describe('private-registry (BUG-18)', () => {
     console.log(`  ✓ 私服依赖端到端：任务 ${task.id} 从 ${process.env.E2E_NPM_REGISTRY_URL} 安装成功`);
   });
 });
+
+// ══ E-45（DEEP_REVIEW 0ef3bbe）：pull 模式 / token 轮换自愈 e2e 缺口补齐 ══
+//
+// 背景：既有 e2e 只覆盖 push 模式执行器（脚本以 push 注册 executor-node），
+// pull 模式（ARCH-32，NAT 内零入站）与 token 轮换（AUTH-05）此前只有单测 /
+// 自检脚本（scripts/pull-dispatch-selftest.mjs）覆盖，无 e2e 断言。本两例补
+// 最有价值的切片：**pull 的「入队 → 长轮询取件」协议面**与**轮换后旧凭据立即
+// 失效 / 新凭据可用 / 自愈通道可取回可用凭据**。
+//
+// ⚠ 未实跑说明：本机无 PG/Redis/admin-api 栈，两例仅完成静态编写与语法校验，
+//   未真机执行。运行前提与既有 e2e 同栈：scripts/e2e-full.sh（PG + Redis +
+//   admin-api:3105 + executor-node:8002）。两例都用**一次性注册的执行器**
+//   （随机地址，finally 删除），不干扰脚本注册的在跑执行器。
+//   共享 token 取 E2E_EXECUTOR_SECRET（e2e-full.sh 固定为 test-executor-secret）；
+//   注册不可用时 `test.skip` 显式跳过，不误报失败。
+//
+// 未覆盖（列入清单，见报告）：artifacts 上传全链（需 MinIO/S3 profile）、
+//   回调死信重放（需真实执行器 + admin 滚动重启注入）、pull 执行器**真跑**
+//   （需以 dispatchMode=pull 起一个 executor-node 进程，属 scripts/pull-dispatch-selftest.mjs 的形态）。
+
+const E2E_SHARED_TOKEN = process.env.E2E_EXECUTOR_SECRET || 'test-executor-secret';
+
+// 注册一次性执行器（随机回环地址），返回 register 响应；不修改任何既有执行器。
+async function apiRegisterThrowawayExecutor(request, { dispatchMode, runtime = 'node' }) {
+  const stamp = `${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 900 + 100)}`;
+  const address = `127.0.0.1:${20000 + Math.floor(Math.random() * 20000)}`;
+  const appName = `e2e-${dispatchMode}-${stamp}`;
+  const startupId = `e2e-${dispatchMode}-${stamp}`;
+  const r = await request.post(`${API}/api/executors/register`, {
+    headers: { Authorization: `Bearer ${E2E_SHARED_TOKEN}` },
+    data: { appName, address, runtime: [runtime], dispatchMode, maxConcurrentTasks: 2, startupId },
+  });
+  const body = await r.json().catch(() => ({}));
+  return { status: r.status(), address, appName, startupId, data: body?.data, raw: body };
+}
+
+async function apiDeleteExecutor(request, id) {
+  const tok = await apiLogin(request);
+  // DELETE /executors/:id 为 204（@HttpCode(NO_CONTENT)）；失败不阻断用例收尾。
+  await request.delete(`${API}/api/executors/${id}`, {
+    headers: { Authorization: `Bearer ${tok}` },
+  }).catch(() => undefined);
+}
+
+async function apiHeartbeat(request, address, token) {
+  return request.post(`${API}/api/executors/heartbeat`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { address, status: 'online' },
+  });
+}
+
+test.describe('pull-dispatch (ARCH-32)', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  test('45. pull 模式 — register(pull) → 空轮询 → 触发派发 → 长轮询取件（载荷对上真实执行行）', async ({ request }) => {
+    const reg = await apiRegisterThrowawayExecutor(request, { dispatchMode: 'pull' });
+    test.skip(
+      reg.status !== 200 && reg.status !== 201,
+      `无法注册 pull 执行器（共享 token 不可用？status=${reg.status}）：${JSON.stringify(reg.raw).slice(0, 200)}`,
+    );
+    const execId = reg.data?.id;
+    const token = reg.data?.perExecutorToken;
+    expect(execId, 'register 未返回执行器 id').toBeTruthy();
+    expect(token, 'register 未返回 perExecutorToken').toBeTruthy();
+
+    try {
+      // ① 空轮询：waitMs=0 立即返回 —— dispatchMode 回显 pull 且 task=null
+      const empty = await request.post(`${API}/api/executors/pull`, {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { address: reg.address, waitMs: 0 },
+      });
+      expect(empty.status()).toBe(200);
+      const emptyBody = await empty.json();
+      expect(emptyBody.data.dispatchMode).toBe('pull');
+      expect(emptyBody.data.task).toBeNull();
+      console.log('  ✓ pull 空轮询：dispatchMode=pull 且 task=null');
+
+      // ② 非法 token 打 pull → 401（凭据闸在取件之前）
+      const badAuth = await request.post(`${API}/api/executors/pull`, {
+        headers: { Authorization: 'Bearer definitely-not-a-valid-token' },
+        data: { address: reg.address, waitMs: 0 },
+      });
+      expect(badAuth.status()).toBe(401);
+
+      // ③ 建任务并 pin 到该 pull 执行器 → 触发（调度侧入队而非 push 拨号）
+      const task = await apiCreateTask(request, {
+        name: `e2e-pull-${Date.now().toString().slice(-6)}`,
+        triggerType: 'manual',
+        runtime: 'node',
+        entrypoint: 'index.js',
+        executorId: execId,
+        maxRetry: 0,
+      });
+      await apiTriggerTask(request, task.id);
+
+      // ④ 长轮询取件：载荷形如 { executionId, task, params, pushedAt, schemaVersion }
+      let payload = null;
+      for (let i = 0; i < 30 && !payload; i++) {
+        const r = await request.post(`${API}/api/executors/pull`, {
+          headers: { Authorization: `Bearer ${token}` },
+          data: { address: reg.address, waitMs: 1000 },
+        });
+        if (r.status() === 200) payload = (await r.json()).data?.task ?? null;
+        if (!payload) await new Promise((res) => setTimeout(res, 300));
+      }
+      expect(payload, 'pull 长轮询未取到派发载荷（调度侧未入队？）').not.toBeNull();
+      expect(payload.executionId, 'pull 载荷缺 executionId').toBeTruthy();
+      // PK-14：派发载荷顶层带 schemaVersion（载荷形状演进的机器可辨标记）
+      expect(payload.schemaVersion, 'pull 载荷缺 schemaVersion（PK-14）').toBeTruthy();
+
+      // ⑤ 载荷 executionId 必须对上真实执行行——证明取到的是本次派发而非幽灵载荷。
+      //    注意：本用例不真跑执行器（无回调），执行行会停在 queued/running，
+      //    由既有 stale sweep 收敛；这里只做身份对账，不等待终态。
+      const tok = await apiLogin(request);
+      const listResp = await request.get(`${API}/api/tasks/${task.id}/executions?page=1&pageSize=5`, {
+        headers: { Authorization: `Bearer ${tok}` },
+      });
+      const items = (await listResp.json()).data?.items || [];
+      expect(items.length, '任务无执行行').toBeGreaterThan(0);
+      expect(items[0].id, 'pull 载荷 executionId 与最新执行行不一致').toBe(payload.executionId);
+      console.log(`  ✓ pull 取件成功：executionId=${payload.executionId}，执行行状态=${items[0].status}`);
+    } finally {
+      await apiDeleteExecutor(request, execId);
+    }
+  });
+});
+
+test.describe('token-rotation (AUTH-05)', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  test('46. token 轮换自愈 — 旧 token 立即 401 / 新 token 可用 / /executors/token 取回可用凭据', async ({ request }) => {
+    const reg = await apiRegisterThrowawayExecutor(request, { dispatchMode: 'push' });
+    test.skip(
+      reg.status !== 200 && reg.status !== 201,
+      `无法注册执行器（共享 token 不可用？status=${reg.status}）：${JSON.stringify(reg.raw).slice(0, 200)}`,
+    );
+    const execId = reg.data?.id;
+    const t1 = reg.data?.perExecutorToken;
+    expect(execId, 'register 未返回执行器 id').toBeTruthy();
+    expect(t1, 'register 未返回 perExecutorToken').toBeTruthy();
+
+    try {
+      // ① 注册签发的 per-executor token 可用于心跳
+      const hb1 = await apiHeartbeat(request, reg.address, t1);
+      expect([200, 201], `注册 token 心跳失败：${hb1.status()}`).toContain(hb1.status());
+
+      // ② admin 轮换（AUTH-05；ADMIN-only，响应含明文新 token，仅此一次）
+      const tok = await apiLogin(request);
+      const rot = await request.post(`${API}/api/executors/${execId}/rotate-token`, {
+        headers: { Authorization: `Bearer ${tok}` },
+        data: { reason: 'e2e token rotation drill' },
+      });
+      expect([200, 201], `rotate-token 失败：${rot.status()}`).toContain(rot.status());
+      const t2 = (await rot.json()).data?.token;
+      expect(t2, 'rotate-token 未返回新 token').toBeTruthy();
+      expect(t2).not.toBe(t1);
+
+      // ③ 旧 token 立即失效（rotateToken 已驱逐该 address 的正缓存条目）
+      const hbOld = await apiHeartbeat(request, reg.address, t1);
+      expect(hbOld.status(), '旧 token 轮换后仍被接受').toBe(401);
+
+      // ④ 新 token 立即可用（无需重启执行器）
+      const hbNew = await apiHeartbeat(request, reg.address, t2);
+      expect([200, 201], `新 token 心跳失败：${hbNew.status()}`).toContain(hbNew.status());
+
+      // ⑤ 自愈通道：执行器可用共享 token 打 POST /executors/token 取回可用凭据
+      //    （同一 startupId 幂等——重取不轮换，正是执行器侧 token 刷新的路径）。
+      const selfHeal = await request.post(`${API}/api/executors/token`, {
+        headers: { Authorization: `Bearer ${E2E_SHARED_TOKEN}` },
+        data: { address: reg.address, appName: reg.appName, startupId: reg.startupId },
+      });
+      expect([200, 201], `自愈取 token 失败：${selfHeal.status()}`).toContain(selfHeal.status());
+      const healBody = await selfHeal.json();
+      const t3 = healBody?.token ?? healBody?.data?.token;
+      expect(t3, '/executors/token 未返回 token').toBeTruthy();
+      const hb3 = await apiHeartbeat(request, reg.address, t3);
+      expect([200, 201], `自愈取回的 token 心跳失败：${hb3.status()}`).toContain(hb3.status());
+      console.log('  ✓ token 轮换：旧 401 / 新 200 / 自愈通道取回可用凭据');
+    } finally {
+      await apiDeleteExecutor(request, execId);
+    }
+  });
+});
+

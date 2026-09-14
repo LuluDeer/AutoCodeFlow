@@ -14,6 +14,8 @@ import {
 } from '../api/executor-packages';
 import { executorsApi } from '../api/executors';
 import { getErrMsg } from '../utils/error';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../utils/locale';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
@@ -204,7 +206,7 @@ export default function ExecutorPackagesPage() {
     },
     {
       title: t('execPkg.col.createdAt'), dataIndex: 'createdAt', width: 160,
-      render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+      render: (v: string) => new Date(v).toLocaleString(currentLocale()),
     },
     { title: t('execPkg.col.uploadedBy'), dataIndex: 'uploadedBy', width: 100, render: (v?: string) => v ?? '-' },
     {

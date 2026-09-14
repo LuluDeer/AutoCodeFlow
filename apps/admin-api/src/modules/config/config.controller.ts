@@ -112,7 +112,7 @@ export class ConfigController {
     @Req() req: Request,
   ) {
     return this.configService.rollback(id, {
-      userId: user?.id != null ? String(user.id) : undefined,
+      userId: user?.id != null ? user.id : undefined, // PK-21（DEEP_REVIEW 0ef3bbe）：直传 integer，不再 String()
       username: user?.username,
       ipAddress: req.ip,
     });
@@ -138,7 +138,7 @@ export class ConfigController {
         isSecret: true,
       },
       {
-        userId: user?.id != null ? String(user.id) : undefined,
+        userId: user?.id != null ? user.id : undefined, // PK-21（DEEP_REVIEW 0ef3bbe）：直传 integer，不再 String()
         username: user?.username,
         ipAddress: req.ip,
       },
@@ -179,7 +179,7 @@ export class ConfigController {
     @Req() req: Request,
   ) {
     return this.configService.upsert(dto, {
-      userId: user?.id != null ? String(user.id) : undefined,
+      userId: user?.id != null ? user.id : undefined, // PK-21（DEEP_REVIEW 0ef3bbe）：直传 integer，不再 String()
       username: user?.username,
       ipAddress: req.ip,
     });
@@ -195,7 +195,7 @@ export class ConfigController {
     @Req() req: Request,
   ) {
     return this.configService.batchUpsert(items, {
-      userId: user?.id != null ? String(user.id) : undefined,
+      userId: user?.id != null ? user.id : undefined, // PK-21（DEEP_REVIEW 0ef3bbe）：直传 integer，不再 String()
       username: user?.username,
       ipAddress: req.ip,
     });
@@ -211,7 +211,7 @@ export class ConfigController {
     @Req() req: Request,
   ) {
     return this.configService.remove(key, {
-      userId: user?.id != null ? String(user.id) : undefined,
+      userId: user?.id != null ? user.id : undefined, // PK-21（DEEP_REVIEW 0ef3bbe）：直传 integer，不再 String()
       username: user?.username,
       ipAddress: req.ip,
     });

@@ -1,8 +1,26 @@
 /**
  * POST /api/update-package
  *
- * Receive package push instructions from admin-api, download the new executor package, and trigger self-update.
- * Update strategy: download to temp dir -> verify SHA-256 -> extract and replace -> send confirmation callback
+ * Receive package push instructions from admin-api, download the new executor
+ * package, verify its SHA-256, and report the result back to admin-api.
+ *
+ * E-43（DEEP_REVIEW 0ef3bbe）：本模块**不做自更新**。旧头注释自称
+ * "extract and replace → self-update"，而实现只把制品落盘到
+ * `<cwd>/.pkg-updates/<packageId>.<zip|tar.gz>` 后上报 `downloaded`——文案
+ * 与行为不符，运维/UI 会以为执行器已就地升级（admin-web 推送弹窗同样写着
+ * "完成自动更新"）。
+ *
+ * 取舍：本次只把**语义修正为与行为一致**（download-only），不实现真正的
+ * 解包替换 + 重启。理由与风险：
+ *  1) 就地替换自身运行目录需要「换码 + 重启 + 失败回滚」三段式，执行器当前
+ *     没有 rollback 通道，一次坏制品会把整机队升级成不可用（P3 打磨项承担
+ *     不起）；
+ *  2) 制品格式无约定：downloadUrl 只区分 .tar/.zip，没有「执行器安装布局」
+ *     契约（入口、依赖、bundle 形态都未定义），解包即替换等于猜；
+ *  3) admin-api 的 push-result 契约（executor-package.controller.ts:345）
+ *     只有 downloaded/failed 两个状态，本身也未表达「已应用」。
+ *  真实升级仍走既有部署流水线：重新安装 artifact / 重跑 install-cmd。
+ *  响应新增 `mode: 'download-only'` 让调用方（运维脚本/UI）可机器判定。
  */
 import { Router, Request, Response } from 'express';
 import * as path from 'path';
@@ -91,8 +109,14 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
   updateInProgress = true;
   logger.info(`[update-package] Received update request: ${body.name}@${body.version} from ${body.downloadUrl}`);
 
-  // Respond immediately — the actual update runs async
-  res.json({ accepted: true, message: `Update to ${body.name}@${body.version} accepted, downloading...` });
+  // Respond immediately — the actual update runs async. E-43: `mode` states
+  // the real capability (download-only, no in-place apply) so an operator or
+  // UI never reads "accepted" as "already upgraded".
+  res.json({
+    accepted: true,
+    mode: 'download-only',
+    message: `Update to ${body.name}@${body.version} accepted, downloading (the executor downloads and verifies the package only; applying it is the deployment pipeline's job)...`,
+  });
 
   // Run async so the HTTP response is sent before we potentially restart
   setImmediate(async () => {

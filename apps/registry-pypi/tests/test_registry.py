@@ -776,3 +776,173 @@ class TestFailClosedCredentials:
         import main as app_module
         assert app_module.REGISTRY_USER == "customuser"
         assert app_module.REGISTRY_PASS == "custompass"
+
+
+# ---------------------------------------------------------------------------
+# E-39（DEEP_REVIEW 0ef3bbe）：CORS 从 allow_origins=["*"] 收紧为显式白名单
+# （env REGISTRY_CORS_ORIGINS），未配置时不挂 CORS 中间件。
+# ---------------------------------------------------------------------------
+
+
+class TestCorsLockdownE39:
+    """Basic-auth 接口配 `*` 收益为零（浏览器不会跨域携带 Basic 凭据），却把
+    预检面开放给任意站点；pip/twine 根本不走 CORS。"""
+
+    @staticmethod
+    def _fresh_client(monkeypatch, tmp_path, origins):
+        pkg = tmp_path / "packages"
+        pkg.mkdir(exist_ok=True)
+        monkeypatch.setenv("PACKAGES_DIR", str(pkg))
+        monkeypatch.setenv("REGISTRY_USER", "testuser")
+        monkeypatch.setenv("REGISTRY_PASS", "testpass")
+        if origins is None:
+            monkeypatch.delenv("REGISTRY_CORS_ORIGINS", raising=False)
+        else:
+            monkeypatch.setenv("REGISTRY_CORS_ORIGINS", origins)
+        import sys
+        sys.modules.pop("main", None)
+        import main as app_module
+        app_module.PACKAGES_DIR = pkg
+        app_module.REGISTRY_USER = "testuser"
+        app_module.REGISTRY_PASS = "testpass"
+        return TestClient(app_module.app)
+
+    def test_no_cors_headers_when_unconfigured(self, monkeypatch, tmp_path):
+        client = self._fresh_client(monkeypatch, tmp_path, None)
+
+        resp = client.get("/health", headers={"Origin": "http://evil.example"})
+
+        assert "access-control-allow-origin" not in {k.lower() for k in resp.headers}
+
+    def test_wildcard_origin_is_never_emitted(self, monkeypatch, tmp_path):
+        client = self._fresh_client(monkeypatch, tmp_path, None)
+
+        resp = client.options("/simple/", headers={
+            "Origin": "http://evil.example",
+            "Access-Control-Request-Method": "GET",
+        })
+
+        assert resp.headers.get("access-control-allow-origin") != "*"
+
+    def test_allowlisted_origin_is_echoed(self, monkeypatch, tmp_path):
+        client = self._fresh_client(monkeypatch, tmp_path, "http://localhost:5176")
+
+        resp = client.options("/simple/", headers={
+            "Origin": "http://localhost:5176",
+            "Access-Control-Request-Method": "GET",
+        })
+
+        assert resp.headers.get("access-control-allow-origin") == "http://localhost:5176"
+
+    def test_non_allowlisted_origin_is_refused(self, monkeypatch, tmp_path):
+        client = self._fresh_client(monkeypatch, tmp_path, "http://localhost:5176")
+
+        resp = client.options("/simple/", headers={
+            "Origin": "http://evil.example",
+            "Access-Control-Request-Method": "GET",
+        })
+
+        assert resp.headers.get("access-control-allow-origin") is None
+
+    def test_multiple_origins_are_parsed_and_trimmed(self, monkeypatch, tmp_path):
+        client = self._fresh_client(
+            monkeypatch, tmp_path, " http://localhost:5176 , http://localhost:4173 ")
+
+        for origin in ("http://localhost:5176", "http://localhost:4173"):
+            resp = client.options("/simple/", headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+            })
+            assert resp.headers.get("access-control-allow-origin") == origin
+
+
+# ---------------------------------------------------------------------------
+# E-39（续）：POST / 是唯一实现（twine 契约），/upload 是它的薄 alias——
+# 鉴权、格式白名单、体积上限、sha256 sidecar、409 防覆盖必须完全一致。
+# ---------------------------------------------------------------------------
+
+
+class TestUploadEndpointAliasE39:
+    def test_both_endpoints_share_the_response_shape(self, client):
+        root = client.post("/", auth=AUTH,
+                           data={"name": "alias-a", "version": "1.0.0"},
+                           files={"content": ("alias-a-1.0.0.whl", b"a-bytes",
+                                              "application/octet-stream")})
+        alias = client.post("/upload", auth=AUTH,
+                            data={"name": "alias-b", "version": "1.0.0"},
+                            files={"content": ("alias-b-1.0.0.whl", b"b-bytes",
+                                               "application/octet-stream")})
+
+        assert root.status_code == alias.status_code == 200
+        assert set(root.json()) == set(alias.json()) == {"message", "package", "version"}
+        assert root.json()["message"] == "Uploaded alias-a-1.0.0.whl"
+        assert alias.json()["message"] == "Uploaded alias-b-1.0.0.whl"
+
+    def test_alias_requires_the_same_auth(self, client):
+        resp = client.post("/upload", data={"name": "pkg", "version": "1.0"},
+                           files={"content": ("pkg-1.0.whl", b"data",
+                                              "application/octet-stream")})
+
+        assert resp.status_code == 401
+        assert resp.json() == {"detail": "Unauthorized"}
+
+    def test_alias_rejects_non_basic_schemes(self, client):
+        resp = client.post("/upload", headers={"Authorization": "Bearer nope"},
+                           data={"name": "pkg", "version": "1.0"},
+                           files={"content": ("pkg-1.0.whl", b"data",
+                                              "application/octet-stream")})
+
+        assert resp.status_code == 401
+
+    def test_alias_shares_the_size_cap(self, client, tmp_path, monkeypatch):
+        import main as app_module
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES", 4)
+
+        resp = client.post("/upload", auth=AUTH,
+                           data={"name": "big-alias", "version": "1.0"},
+                           files={"content": ("big-alias-1.0.whl", b"123456789",
+                                              "application/octet-stream")})
+
+        assert resp.status_code == 413
+
+    def test_alias_shares_the_format_whitelist(self, client):
+        resp = client.post("/upload", auth=AUTH,
+                           data={"name": "fmt-alias", "version": "1.0"},
+                           files={"content": ("fmt-alias-1.0.egg", b"egg",
+                                              "application/octet-stream")})
+
+        assert resp.status_code == 400
+        assert "Invalid package format" in resp.json()["detail"]
+
+    def test_alias_writes_the_same_sidecar_and_index_entry(self, client, tmp_packages_dir):
+        import hashlib
+        payload = b"alias sidecar bytes"
+        resp = client.post("/upload", auth=AUTH,
+                           data={"name": "alias-sc", "version": "2.0.0"},
+                           files={"content": ("alias-sc-2.0.0.whl", payload,
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+
+        sidecar = tmp_packages_dir / "alias-sc" / "alias-sc-2.0.0.whl.sha256"
+        assert sidecar.read_text().strip() == hashlib.sha256(payload).hexdigest()
+        index = client.get("/simple/alias-sc/", auth=AUTH)
+        assert f"#sha256={hashlib.sha256(payload).hexdigest()}" in index.text
+
+    def test_alias_and_root_are_the_same_resource(self, client, tmp_packages_dir):
+        """同一 (name, filename) 先走 / 再走 /upload：命中同一个 409 防覆盖闸，
+        证明两个路径写的是同一份存储而不是两套逻辑。"""
+        payload = b"same artifact"
+        assert client.post("/", auth=AUTH,
+                           data={"name": "alias-same", "version": "1.0.0"},
+                           files={"content": ("alias-same-1.0.0.whl", payload,
+                                              "application/octet-stream")}).status_code == 200
+
+        resp = client.post("/upload", auth=AUTH,
+                           data={"name": "alias-same", "version": "1.0.0"},
+                           files={"content": ("alias-same-1.0.0.whl", b"different",
+                                              "application/octet-stream")})
+
+        assert resp.status_code == 409
+        assert "sha256" in resp.json()["detail"]
+        artifact = tmp_packages_dir / "alias-same" / "alias-same-1.0.0.whl"
+        assert artifact.read_bytes() == payload

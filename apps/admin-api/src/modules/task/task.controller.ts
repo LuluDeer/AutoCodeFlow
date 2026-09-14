@@ -213,6 +213,10 @@ export class TaskController {
     return results;
   }
 
+  // R-17（DEEP_REVIEW 0ef3bbe）: 与 batch/trigger 同档补 OPS_THROTTLE 分域限流——
+  // pause/resume/delete 同为「触发/执行干预写面」，SEC-09 分域矩阵归中档 30/min，
+  // 此前三端点漏挂导致批量写面脱离限流窗口。
+  @Throttle({ default: OPS_THROTTLE })
   @Post("batch/pause")
   @ApiOperation({
     summary: "Batch pause tasks",
@@ -251,6 +255,8 @@ export class TaskController {
     return results;
   }
 
+  // R-17（DEEP_REVIEW 0ef3bbe）: 同 batch/pause——批量 resume 补 OPS_THROTTLE 分域限流。
+  @Throttle({ default: OPS_THROTTLE })
   @Post("batch/resume")
   @ApiOperation({
     summary: "Batch resume tasks",
@@ -289,6 +295,8 @@ export class TaskController {
     return results;
   }
 
+  // R-17（DEEP_REVIEW 0ef3bbe）: 同 batch/pause——批量 delete 补 OPS_THROTTLE 分域限流。
+  @Throttle({ default: OPS_THROTTLE })
   @Post("batch/delete")
   @ApiOperation({
     summary: "Batch delete tasks",

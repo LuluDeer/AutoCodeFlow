@@ -487,6 +487,18 @@ input:focus-visible,
 
 .hero-controls { display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* F-22（DEEP_REVIEW 0ef3bbe）：启动/停止失败页内错误条 */
+.hero-error {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--red-bg);
+  border: 1px solid var(--red);
+  color: #f48771;
+  font-size: 12px;
+  word-break: break-word;
+}
+
 /* 信息网格 */
 .info-grid {
   display: grid;

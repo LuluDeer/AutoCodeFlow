@@ -94,7 +94,10 @@ export class AuthController {
   @ApiOperation({
     summary: "User login",
     description:
-      "Login with username and password, returns Access Token and Refresh Token. Max5 attempts per minute.",
+      // R-22（DEEP_REVIEW 0ef3bbe）: Swagger 文案与实际限流值对齐——文案直接
+      // 内插 LOGIN_THROTTLE_LIMIT（本文件顶部，默认 20/min，env 可覆盖），
+      // 杜绝再次漂移。旧文案硬编码 "Max5 attempts per minute" 与实际 20 不符。
+      `Login with username and password, returns Access Token and Refresh Token. Max ${LOGIN_THROTTLE_LIMIT} attempts per minute.`,
   })
   @ApiResponse({
     status: 200,

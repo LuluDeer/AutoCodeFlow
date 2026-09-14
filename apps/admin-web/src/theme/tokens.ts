@@ -103,5 +103,10 @@ export const LOG_PANEL_COLORS = {
   dark: { bg: DESIGN_TOKENS.backgroundDark, text: DESIGN_TOKENS.foregroundOnDark },
 } as const;
 
-/** index.html 初始主题脚本：DOM 解析前注入 data-theme，防首帧闪白（FOUC）。 */
+/**
+ * F-30（DEEP_REVIEW 0ef3bbe）：首帧主题脚本的**唯一**来源——DOM 解析前注入
+ * data-theme，防首帧闪白（FOUC）。index.html 不再内联手写副本，由
+ * vite.config.ts 的 themeInitPlugin（transformIndexHtml）在构建/开发期把本
+ * 常量注入 <head> 末尾，避免两处手写漂移。持久化键名与 theme/store.ts 一致。
+ */
 export const THEME_INIT_SCRIPT = `(function(){try{var t=JSON.parse(localStorage.getItem('autoflow-theme')||'{}').state&&JSON.parse(localStorage.getItem('autoflow-theme')||'{}').state.mode;var m=t||'system';var d=m==='dark'||(m==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);var e=document.documentElement;e.setAttribute('data-theme',d?'dark':'light');e.style.colorScheme=d?'dark':'light';}catch(e){}})();`;

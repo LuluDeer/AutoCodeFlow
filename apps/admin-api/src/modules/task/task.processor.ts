@@ -15,8 +15,11 @@ import { ExecutorService } from "../executor/executor.service";
 // ARCH-30: AI 分析直调迁出——processor 经 AiAnalysisService 调用（封装
 // 重试 + autoflow_ai_analysis_total 指标 + fail-open 降级），不再直连 AiService。
 import { AiAnalysisService } from "../ai/ai-analysis.service";
-import { NotificationService } from "../notification/notification.service";
-import { AuditService } from "../audit/audit.service";
+// R-20（DEEP_REVIEW 0ef3bbe）: NotificationService / AuditService 注入已移除——
+// BUG-21 把直调迁出到 notification 模块 ExecutionEventsListener 后，本类对二者
+// 的引用归零（grep notificationService\. / auditService\. 0 命中），属死依赖与
+// 遗留模块耦合。终态事件改由 taskService.publishTerminalEventForDispatch 经
+// 事件总线统一发布。
 import { TaskService } from "./task.service";
 
 // PERF-P3a: worker 并发 1→5，消除队头阻塞（一个慢 dispatch HTTP 不再卡住
@@ -39,9 +42,7 @@ export class TaskProcessor extends WorkerHost {
     @Inject(forwardRef(() => ExecutorService))
     private executorService: ExecutorService,
     private aiAnalysisService: AiAnalysisService,
-    private notificationService: NotificationService,
     private configService: ConfigService,
-    private auditService: AuditService,
     @Inject(forwardRef(() => TaskService)) private taskService: TaskService,
     @InjectQueue("task-queue") private taskQueue: Queue,
     private dataSource: DataSource,

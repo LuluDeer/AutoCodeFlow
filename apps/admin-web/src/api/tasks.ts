@@ -25,11 +25,9 @@ export interface MaintenanceWindow {
  */
 export type TimeoutAction = 'kill' | 'kill_retry' | 'notify_only';
 
-export const TIMEOUT_ACTION_OPTIONS: { value: TimeoutAction; label: string }[] = [
-  { value: 'kill', label: '终止（默认）' },
-  { value: 'kill_retry', label: '终止并重试' },
-  { value: 'notify_only', label: '仅通知' },
-];
+// F-29（DEEP_REVIEW 0ef3bbe）：原此处的 TIMEOUT_ACTION_OPTIONS（中文 label 硬编码）已删除——
+// UI 实际消费的是 pages/timeout-policy.ts 的同名导出（TaskFormPage.tsx:46 引自该模块），
+// api 层这份 label 无任何消费方，属重复死代码。
 
 export interface Task {
   id: string;
@@ -365,19 +363,9 @@ export const tasksApi = {
     signal
       ? client.get(`/tasks/${id}/executions`, { params: p, signal }) as Promise<PageResult<TaskExecution>>
       : client.get(`/tasks/${id}/executions`, { params: p }) as Promise<PageResult<TaskExecution>>,
-  /**
-   * CORE-02: 按状态过滤拉取任务执行列表（复用 GET /tasks/:id/executions 的
-   * 既有 status 查询参数，零新端点）。ExecutionDetailPage 重试链路段用它取
-   * 同任务的兄弟执行行（retryCount 递增）拼装 attempt 链。
-   */
-  executionsWithStatus: (
-    id: string,
-    p: { page: number; pageSize: number; status?: string },
-    signal?: AbortSignal,
-  ) =>
-    signal
-      ? client.get(`/tasks/${id}/executions`, { params: p, signal }) as Promise<PageResult<TaskExecution>>
-      : client.get(`/tasks/${id}/executions`, { params: p }) as Promise<PageResult<TaskExecution>>,
+  // F-29（DEEP_REVIEW 0ef3bbe）：原 executionsWithStatus 与上方 executions 逐字节相同
+  // （同 GET /tasks/:id/executions），已删除；唯一调用方 queries.ts useExecutionRetryChain
+  // 改用 executions 传 status/page/pageSize。
   execution: (taskId: string, execId: string, signal?: AbortSignal) =>
     signal
       ? client.get(`/tasks/${taskId}/executions/${execId}`, { signal }) as Promise<TaskExecution>

@@ -46,7 +46,6 @@ curl http://localhost:4873/-/ping          # 期望 200 + {}
 | 变量 | 缺省 | 用途 |
 |------|------|------|
 | `REGISTRY_USER` / `REGISTRY_PASS` | `admin` / `change_me` | registry-pypi 的 Basic Auth（简单索引 `/simple/` 也要求鉴权，S9） |
-| `PYPI_API_KEY` | 空 | 预留 |
 | `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` | 空 | verdaccio 用户 |
 
 > 端口仅绑定 `127.0.0.1`：执行器走 compose 内部网络（`http://registry-pypi:8003`

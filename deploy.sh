@@ -1,6 +1,8 @@
 #!/bin/bash
 
-set -e
+# E-36（DEEP_REVIEW 0ef3bbe）：根级脚本补 -u/pipefail——未定义变量不再静默为空
+# （.env 缺键时 PGPASSWORD="" 不致空口令尝试），管道中途失败不再被吞。
+set -euo pipefail
 
 # AutoFlow 部署脚本
 # Usage: ./deploy.sh [options]
@@ -73,10 +75,19 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-if ! command -v docker-compose &> /dev/null; then
-    echo -e "${RED}错误: Docker Compose 未安装，请先安装 Docker Compose${NC}"
-    exit 1
-fi
+# E-28（DEEP_REVIEW 0ef3bbe）：docker-compose v1 独立二进制 2023 年起 EOL，现代
+# Docker Desktop/Engine 只带 `docker compose` v2 插件。统一 helper：优先 v2 插件，
+# 回退 v1 独立二进制（兼容老环境）。脚本内不再硬编码 v1 命令。
+compose() {
+    if docker compose version &> /dev/null; then
+        docker compose "$@"
+    elif command -v docker-compose &> /dev/null; then
+        docker-compose "$@"
+    else
+        echo -e "${RED}错误: Docker Compose 未安装（需要 `docker compose` v2 插件或 docker-compose v1）${NC}"
+        exit 1
+    fi
+}
 
 # 设置环境变量
 export NODE_ENV="$ENV"
@@ -88,20 +99,20 @@ echo -e "${YELLOW}后台运行: $DETACH${NC}"
 
 # 停止现有服务
 echo -e "${YELLOW}停止现有服务...${NC}"
-docker-compose down
+compose down
 
 # 如果需要构建
 if [ "$BUILD" = true ]; then
     echo -e "${YELLOW}构建 Docker 镜像...${NC}"
-    docker-compose build --no-cache
+    compose build --no-cache
 fi
 
 # 启动服务
 echo -e "${YELLOW}启动服务...${NC}"
 if [ "$DETACH" = true ]; then
-    docker-compose up -d
+    compose up -d
 else
-    docker-compose up
+    compose up
 fi
 
 # 等待服务启动
@@ -110,19 +121,20 @@ sleep 30
 
 # 检查服务状态
 echo -e "${YELLOW}检查服务状态...${NC}"
-docker-compose ps
+compose ps
 
 # 检查健康状态
 echo -e "${YELLOW}检查健康状态...${NC}"
-# S2: admin-api 全局前缀 api，健康端点为 /api/health/live（QA1: 该端点返回
-# {"status":"healthy"} JSON，断言 healthy 而非 OK）
-if curl -s http://localhost:3105/api/health | grep -q "healthy"; then
+# E-28（DEEP_REVIEW 0ef3bbe）：健康检查端点统一为 /api/health/live（admin-api
+# 全局前缀 api，liveness 端点返回 {"status":"healthy"} JSON）——旧实现打
+# /api/health 与 S2 注释声明的 /api/health/live 漂移，现对齐。
+if curl -fsS http://localhost:3105/api/health/live | grep -q "healthy"; then
     echo -e "${GREEN}✅ 所有服务启动成功！${NC}"
     echo -e "${GREEN}管理后台: http://localhost${NC}"
     echo -e "${GREEN}API 文档: http://localhost:3105/api/docs${NC}"
 else
     echo -e "${RED}❌ 服务启动失败，请检查日志${NC}"
-    docker-compose logs admin-api
+    compose logs admin-api
     exit 1
 fi
 

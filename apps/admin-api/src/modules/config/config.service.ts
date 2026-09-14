@@ -10,7 +10,8 @@ import { ConfigHistory } from "./entities/config-history.entity";
 import { UpsertConfigDto } from "./dto/upsert-config.dto";
 
 interface HistoryOptions {
-  userId?: string;
+  // PK-21（DEEP_REVIEW 0ef3bbe）：userId 对齐全库 integer 形态
+  userId?: number;
   username?: string;
   ipAddress?: string;
 }
@@ -337,7 +338,8 @@ export class SystemConfigService {
       valueType?: string | null;
       isSecret?: boolean | null;
       action: "create" | "update" | "delete" | "rollback";
-      userId?: string;
+      // PK-21（DEEP_REVIEW 0ef3bbe）：userId integer 对齐
+      userId?: number;
       username?: string;
       ipAddress?: string;
     },

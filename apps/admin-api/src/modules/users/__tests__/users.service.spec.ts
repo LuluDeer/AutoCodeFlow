@@ -102,7 +102,8 @@ describe("UsersService", () => {
     it("should return paginated users", async () => {
       repo.findAndCount.mockResolvedValue([[{ id: 1, username: "test" }], 1]);
       const result = await service.findAll({ page: 1, pageSize: 10 });
-      expect(result.list).toHaveLength(1);
+      // R-21（DEFERRED-CROSS-SCOPE）: 双键保留，此处断言 canonical items
+      expect(result.items).toHaveLength(1);
       expect(result.total).toBe(1);
     });
   });

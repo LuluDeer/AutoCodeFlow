@@ -2080,6 +2080,7 @@ export default {
   'time.relative.daysAgo': '{{n}} days ago',
   'time.duration.sec': '{{n}}s',
   'time.duration.minSec': '{{n}}m {{s}}s',
+  'time.duration.hourMin': '{{h}}h {{m}}m',
   'priority.low': 'Low',
   'priority.normal': 'Normal',
   'priority.high': 'High',

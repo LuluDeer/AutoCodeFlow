@@ -860,6 +860,12 @@ async def reject_pulled_execution(execution_id: str, reason: str,
             {
                 'executionId': execution_id,
                 'status': 'failed',
+                # E-42（DEEP_REVIEW 0ef3bbe）：pull 领取被拒（容量竞态/429）的 failed
+                # 回调旧版不发 failureReason，admin 侧靠 inferFailureReason 兜底。
+                # 该场景既非 killed 也非某类 prepare 失败，枚举里最诚实的中性值是
+                # 'unknown'（ExecutionFailureReason.UNKNOWN）；显式上报让 admin 端
+                # 无需再猜，观测口径与 node 侧对齐。
+                'failureReason': 'unknown',
                 'errorMessage': f'Executor rejected pulled dispatch: {reason}',
                 **({'traceparent': traceparent} if traceparent else {}),
             },
@@ -878,11 +884,10 @@ def _callback_retry_sleep_seconds(attempt: int, rng: Callable[[], float] = rando
 
 
 async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str]) -> bool:
-    traceparent_headers: dict = {}
-    if payload.get('traceparent'):
-        # OBS-01: 回传 traceparent 头（admin execution-callback.controller
-        # 解析关联）；头与载荷字段同值，载荷字段 admin DTO whitelist 剥离。
-        traceparent_headers = {'traceparent': payload['traceparent']}
+    # E-23（DEEP_REVIEW 0ef3bbe）：docstring 必须是函数体第一条语句才是真正的
+    # __doc__——旧实现把它写在 traceparent 两条语句之后，沦为无意义字符串表达式，
+    # __doc__ 为 None、IDE/help 不显示。现将 docstring 上移到 def 下一行，traceparent
+    # 逻辑后移。
     """POST the execution callback with bounded retries.
 
     R4-C P2: the original fired exactly one request and only logged transport
@@ -900,6 +905,11 @@ async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str
     bounded retry loop like any other transient failure. The 3-attempt +
     exponential-backoff shape is unchanged.
     """
+    traceparent_headers: dict = {}
+    if payload.get('traceparent'):
+        # OBS-01: 回传 traceparent 头（admin execution-callback.controller
+        # 解析关联）；头与载荷字段同值，载荷字段 admin DTO whitelist 剥离。
+        traceparent_headers = {'traceparent': payload['traceparent']}
     last_error: Exception | None = None
     for attempt in range(1, CALLBACK_RETRY_ATTEMPTS + 1):
         try:
@@ -1680,8 +1690,13 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     env = _build_child_env()
     # inject task-scoped context
     env['EXECUTION_ID'] = req.executionId
-    env['TASK_ID'] = str(task.get('id', ''))
-    env['TASK_NAME'] = task.get('name', '')
+    # E-42（DEEP_REVIEW 0ef3bbe）：task.id/name 可能是非 str（上游 DTO 误传数字/
+    # 对象）——env dict 的值要求 str，非 str 进 subprocess env 构造时抛 TypeError，
+    # 任务失败原因难定位。显式 str() 兜底；用 `or ''` 而不是 dict 默认值，是为了
+    # 与 node `String(task.id || '')` / `String(task.name || '')` 逐字对齐：显式
+    # null/0/false 在两侧都收敛成空串，而不是 python 的 'None'/'0'/'False'。
+    env['TASK_ID'] = str(task.get('id') or '')
+    env['TASK_NAME'] = str(task.get('name') or '')
     if req.params:
         for k, v in req.params.items():
             env[f'AUTOFLOW_{k.upper()}'] = str(v)

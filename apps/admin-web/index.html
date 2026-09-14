@@ -6,21 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AutoCodeFlow</title>
     <!-- UI-02：DOM 解析前注入 data-theme，防首帧闪白（FOUC）。
-         键名与 src/theme/store.ts 的 persist 键一致。 -->
-    <script>
-      (function () {
-        try {
-          var raw = JSON.parse(localStorage.getItem('autoflow-theme') || '{}');
-          var m = (raw.state && raw.state.mode) || 'system';
-          var dark =
-            m === 'dark' ||
-            (m === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-          var e = document.documentElement;
-          e.setAttribute('data-theme', dark ? 'dark' : 'light');
-          e.style.colorScheme = dark ? 'dark' : 'light';
-        } catch (err) {}
-      })();
-    </script>
+         F-30（DEEP_REVIEW 0ef3bbe）：脚本正文收敛为单一来源 src/theme/tokens.ts 的
+         THEME_INIT_SCRIPT，由 vite.config.ts 的 themeInitPlugin 在构建/开发期注入本位置
+         （原先此处的手写副本已删除，避免双事实源漂移）。键名与 src/theme/store.ts 一致。 -->
   </head>
   <body>
     <div id="root"></div>

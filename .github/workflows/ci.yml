@@ -475,6 +475,13 @@ jobs:
         run: |
           node scripts/check-enum-drift.mjs --selftest
           node scripts/check-enum-drift.mjs
+      # E-38（DEEP_REVIEW 0ef3bbe）：install.sh 单一事实源守卫——content.ts 由
+      # scripts/install.sh 构建期生成。这里重跑生成器后用 git diff --exit-code 校验
+      # 已提交产物与源同步：只改了 install.sh 忘了重生 content.ts（或反之）即红。
+      - name: install.sh <-> install-script.content.ts sync guard (E-38)
+        run: |
+          node scripts/gen-install-script-content.mjs
+          git diff --exit-code -- apps/admin-api/src/modules/executor/install-script.content.ts
 
   # ── BUG-18：私服 npm/PyPI 契约闸（零依赖 node 脚本，无需 npm ci）──────
   # live 模式（临时 PyPI uvicorn + 一次性 Verdaccio 容器）需 docker 与镜像，

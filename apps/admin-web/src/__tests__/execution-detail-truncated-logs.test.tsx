@@ -14,7 +14,7 @@ import { tasksApi } from '../api/tasks';
 import ExecutionDetailPage from '../pages/ExecutionDetailPage';
 
 // 隔离 api 层：只关心 execution / executionLogs 两个调用契约。
-// CORE-02: 详情页新增消费 get / executionsWithStatus——mock 补齐防 TypeError。
+// CORE-02: 详情页新增消费 get / executions——mock 补齐防 TypeError。
 vi.mock('../api/tasks', () => ({
   tasksApi: {
     execution: vi.fn(),
@@ -23,7 +23,7 @@ vi.mock('../api/tasks', () => ({
     trigger: vi.fn(),
     analyzeExecution: vi.fn(),
     get: vi.fn(),
-    executionsWithStatus: vi.fn(),
+    executions: vi.fn(),
   },
 }));
 
@@ -70,7 +70,7 @@ function mockExecution(logs: string) {
   vi.mocked(tasksApi.get).mockReset().mockResolvedValue({
     id: 't1', maxRetry: 3, retryDelay: 5,
   } as never);
-  vi.mocked(tasksApi.executionsWithStatus).mockReset().mockResolvedValue({
+  vi.mocked(tasksApi.executions).mockReset().mockResolvedValue({
     items: [{ id: 'e1', retryCount: 0, status: 'failed' }], total: 1, page: 1, pageSize: 100,
   } as never);
 }

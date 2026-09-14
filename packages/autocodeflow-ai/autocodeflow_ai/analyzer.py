@@ -246,6 +246,13 @@ JSON:"""
             # Extract JSON from response (may have markdown fences)
             text = AIAnalyzer._strip_code_fence(text.strip())
             obj = json.loads(text)
+            # PK-29（DEEP_REVIEW 0ef3bbe）：模型偶发返回 JSON 数组/标量而非对象
+            # （如 "[1,2,3]"）——此前 obj.get 抛 AttributeError 逃逸出本函数，
+            # 把"解析失败"升级成未捕获异常。非 dict 一律走 fallback。
+            if not isinstance(obj, dict):
+                raise ValueError(
+                    f"AI response is not a JSON object (got {type(obj).__name__})"
+                )
             return AnalysisResult(
                 summary=obj.get("summary", ""),
                 root_cause=obj.get("root_cause", ""),
@@ -253,6 +260,6 @@ JSON:"""
                 confidence=float(obj.get("confidence", 0)),
                 raw_response=text,
             )
-        except (json.JSONDecodeError, KeyError, ValueError, IndexError) as e:
+        except (json.JSONDecodeError, KeyError, ValueError, IndexError, AttributeError) as e:
             logger.warning(f"Failed to parse AI response: {e}")
             return AnalysisResult(summary=text[:500], raw_response=text)

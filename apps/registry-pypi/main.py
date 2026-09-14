@@ -25,13 +25,25 @@ import secrets
 
 app = FastAPI(title="AutoFlow PyPI Registry", version="1.0.0")
 
-# Allow admin-web (and any other frontend) to call the upload endpoint directly
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
-)
+# E-39（DEEP_REVIEW 0ef3bbe）：CORS 收紧——原 allow_origins=["*"] 对本服务收益
+# 为零：pip/twine 不是浏览器、不走 CORS；浏览器也不会跨域自动携带 Basic 凭据
+# （且本服务索引面 S9 起一律要求认证）。通配来源唯一实际效果是把预检面开放给
+# 任意站点，属净负债。改为显式来源白名单（env REGISTRY_CORS_ORIGINS，逗号
+# 分隔）；**未配置时不挂 CORS 中间件**——生产是 admin-web 经 nginx 同源 / 经
+# admin-api 代理（apps/admin-web/src/api/registry.ts 注释与 uploadPypiPackage
+# 均走代理），本就不需要 CORS 响应头。
+_CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("REGISTRY_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if _CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_CORS_ORIGINS,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
 
 
 # Use PACKAGES_DIR env var; default to a local ./packages dir for dev convenience
@@ -374,7 +386,14 @@ async def upload_package(
     version: str = Form(...),
     _user: str = Depends(verify_auth),
 ):
-    """twine-compatible upload endpoint."""
+    """Canonical upload endpoint — the twine/pip wire contract.
+
+    twine posts a multipart form to the index root, so ``POST /`` is the only
+    path a stock client can reach. E-39: this is the single implementation;
+    ``POST /upload`` is a thin deprecated alias over it (see below), not a
+    second code path — auth, format whitelist, 50 MB cap, sha256 sidecar and
+    the 409 no-overwrite guard are shared verbatim.
+    """
     # N14: strip directory components to prevent path traversal via filename
     filename = Path(content.filename).name if content.filename else ""
     if not filename:
@@ -450,5 +469,12 @@ async def upload_package_alt(
     version: str = Form(...),
     _user: str = Depends(verify_auth),
 ):
-    """Alternative upload endpoint."""
+    """Deprecated alias of ``POST /`` (E-39).
+
+    Kept for one release so existing admin-api proxy routes / scripts that
+    target ``/upload`` keep working; it delegates to :func:`upload_package`
+    with no semantic difference. New integrations must use ``POST /``
+    (twine-compatible). Removal is a breaking change for those callers and
+    therefore belongs to a documented release, not this cleanup.
+    """
     return await upload_package(content=content, name=name, version=version, _user=_user)

@@ -117,7 +117,17 @@ async function fetchToken(): Promise<string | null> {
   return null;
 }
 
-async function refreshTokenIfNeeded(): Promise<void> {
+// E-27（DEEP_REVIEW 0ef3bbe）：并发刷新去重——token 过期瞬间的一批并发回调/心跳
+// 旧实现各自独立走 refreshTokenIfNeeded，各自发一次 POST /token（最多 N 次并发
+// 放大 + 多余延迟）。模块级 in-flight promise 复用：第一个调用者执行实际刷新，其余
+// 并发调用者 await 同一 promise，只发一次 /token，全体等待同一结果。
+let refreshInFlight: Promise<void> | null = null;
+// E-27: 最近一次真实 fetch（POST /token）成功的时刻。forceTokenRefresh 的
+// 等待者据此判断"在途刷新是否真的 fetch 过"——forced 刷新必 fetch；scheduled
+// 刷新可能因 token 未过期/退避中决定不 fetch。
+let lastSuccessfulRefreshAt: number | null = null;
+
+async function performTokenRefresh(): Promise<void> {
   const now = new Date();
   // Back off after a failed fetch — without this every request hangs for
   // the 10s fetch timeout while admin-api is unreachable.
@@ -134,9 +144,25 @@ async function refreshTokenIfNeeded(): Promise<void> {
       dynamicToken = newToken;
       tokenExpiresAt = new Date(now.getTime() + TOKEN_REFRESH_INTERVAL);
       tokenFetchFailedAt = null;
+      lastSuccessfulRefreshAt = now.getTime();
     } else {
       tokenFetchFailedAt = now.getTime();
     }
+  }
+}
+
+async function refreshTokenIfNeeded(): Promise<void> {
+  // E-27: a refresh is already underway — await the SAME result instead of
+  // firing a duplicate POST /token.
+  if (refreshInFlight) {
+    await refreshInFlight;
+    return;
+  }
+  refreshInFlight = performTokenRefresh();
+  try {
+    await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
   }
 }
 
@@ -204,13 +230,39 @@ export async function getCurrentToken(): Promise<string | null> {
  *
  * Storm guards: the TOKEN_FETCH_BACKOFF_MS from the last FAILED fetch still
  * applies (admin unreachable / wrong shared token → this degrades to a no-op
- * returning the current token, and the caller must not retry), and
- * admin-api's issueToken is idempotent per (address, startupId), so several
- * concurrent 401s re-fetching at once all converge on the SAME token instead
- * of rotating.
+ * returning the current token, and the caller must not retry). E-27 adds an
+ * in-flight gate: concurrent 401s share ONE POST /token instead of each
+ * fanning out its own, and admin-api's issueToken is idempotent per
+ * (address, startupId) so every caller converges on the SAME token rather
+ * than rotating.
  */
 export async function forceTokenRefresh(): Promise<string | null> {
+  // E-27: join any in-flight refresh (scheduled or forced) instead of stacking
+  // another POST /token behind it — the same gate that dedups the per-request
+  // path must cover the 401-heal path, otherwise N concurrent 401s still fan
+  // out into N fetches.
+  if (refreshInFlight) {
+    const waitedSince = Date.now();
+    await refreshInFlight;
+    // 等待期间若发生过一次真实 fetch（forced 刷新必 fetch；scheduled 刷新
+    // 可能因 token 未过期/退避中决定不 fetch），其结果正是我们需要的——直接
+    // 复用，避免并发 N 个 401 在等待结束后各自再发 N 次 /token（修复前
+    // 等待者 fall-through 会各自再刷一次，N 并发放大为 N 次请求）。
+    if (lastSuccessfulRefreshAt !== null && lastSuccessfulRefreshAt >= waitedSince) {
+      return dynamicToken;
+    }
+  }
+  // A *forced* refresh started by another 401 handler while we waited is
+  // exactly the fetch we wanted (tokenExpiresAt was cleared for it), so reuse
+  // its outcome. If what settled was only a scheduled refresh that decided NOT
+  // to fetch, the token is still the rotated-out one — fall through and force
+  // our own, which is the whole point of the self-heal.
   tokenExpiresAt = null;
-  await refreshTokenIfNeeded();
+  refreshInFlight = performTokenRefresh();
+  try {
+    await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
+  }
   return dynamicToken;
 }

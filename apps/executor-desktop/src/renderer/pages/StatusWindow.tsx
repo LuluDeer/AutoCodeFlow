@@ -225,6 +225,8 @@ export default function StatusWindow() {
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [logs, setLogs] = useState<string[]>([]);
   const [acting, setActing] = useState(false);
+  // F-22（DEEP_REVIEW 0ef3bbe）：IPC reject 时页内展示错误，避免按钮永久 disabled 且用户无感知
+  const [actionError, setActionError] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
@@ -253,15 +255,29 @@ export default function StatusWindow() {
     }
   }, [logs]);
 
+  // F-22（DEEP_REVIEW 0ef3bbe）：启动/停止 IPC 包 try/finally，reject 时按钮 disabled
+  // 状态必须恢复，否则只能重启应用；失败原因落到页内错误条。
   async function handleStart() {
     setActing(true);
-    await window.electronAPI.startExecutor();
-    setActing(false);
+    setActionError(null);
+    try {
+      await window.electronAPI.startExecutor();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActing(false);
+    }
   }
   async function handleStop() {
     setActing(true);
-    await window.electronAPI.stopExecutor();
-    setActing(false);
+    setActionError(null);
+    try {
+      await window.electronAPI.stopExecutor();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActing(false);
+    }
   }
   function handleScroll() {
     if (!logRef.current) return;
@@ -310,6 +326,10 @@ export default function StatusWindow() {
                 {statusLoaded ? STATUS_LABEL[status] : '加载中...'}
               </span>
             </div>
+            {actionError && (
+              // F-22（DEEP_REVIEW 0ef3bbe）：启动/停止失败的页内错误条（桌面端无 toast 体系）
+              <div className="hero-error" role="alert">{actionError}</div>
+            )}
           </div>
         </div>
 

@@ -241,6 +241,27 @@ class TestNotifyWebhookChannel:
         assert body["webhookUrl"] == "https://example.com/hook"
         assert body["level"] == "error"
 
+    @pytest.mark.asyncio
+    async def test_channels_and_webhook_url_coexist_in_payload(self, respx_mock):
+        """PK-29（DEEP_REVIEW 0ef3bbe）：channels（非 webhook）与 webhookUrl 同传
+        时两个字段都必须进 payload——服务端据此同时走渠道列表 + 自定义 webhook，
+        此前只验过 webhook 单渠道或仅 webhookUrl 两种单一形态。"""
+        route = respx_mock.post("http://localhost:3105/api/notification/send").mock(
+            return_value=httpx.Response(200, json={"success": True})
+        )
+        client = NotifyClient(admin_api_url="http://localhost:3105")
+        result = await client.notify(
+            "my-task",
+            "both channels and a per-request hook",
+            channels=[NotifyChannel.SLACK, NotifyChannel.FEISHU],
+            webhook_url="https://hooks.example.com/relay",
+        )
+        assert result is True
+        import json
+        body = json.loads(route.calls.last.request.content)
+        assert body["channels"] == ["slack", "feishu"]
+        assert body["webhookUrl"] == "https://hooks.example.com/relay"
+
 
 class TestFeishuChannel:
     """PK-12: 服务端 NF-05 已支持 feishu 渠道，SDK 枚举同步。"""

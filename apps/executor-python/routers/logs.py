@@ -37,7 +37,19 @@ def get_execution_logs(
     if not log_file.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Log file not found')
 
-    all_lines = log_file.read_text(encoding='utf-8', errors='replace').splitlines()
-    total = len(all_lines)
-    sliced = all_lines[fromLine:fromLine + limit]
-    return LogsResponse(lines=sliced, totalLines=total, hasMore=fromLine + len(sliced) < total)
+    # E-21（DEEP_REVIEW 0ef3bbe）：旧实现 read_text().splitlines() 把整份日志（上限
+    # 64MB，MAX_LOG_FILE_BYTES）每请求全量读入内存并 splitlines（~3x 峰值内存），
+    # admin LOG-01 回填按 2000 行/页翻页——每页请求都重读整个 64MB。改为按行流式
+    # 迭代（Python buffered IO，逐行 yield，永不整文件驻留内存），语义与 node
+    # routes/logs.ts pageLogLines 完全对齐：整文件走一遍以维持 totalLines 正确，
+    # 但只缓存落在 [fromLine, fromLine+limit) 窗口内的行。
+    total = 0
+    window: list[str] = []
+    with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+        for raw in f:
+            # rl.on('line') 按 '\n' 切并去掉换行符；splitlines 还会吞末尾 '\r'。
+            line = raw.rstrip('\r\n')
+            if fromLine <= total < fromLine + limit:
+                window.append(line)
+            total += 1
+    return LogsResponse(lines=window, totalLines=total, hasMore=fromLine + len(window) < total)

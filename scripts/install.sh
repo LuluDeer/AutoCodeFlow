@@ -27,7 +27,11 @@ RUNTIME="node"        # node | python | universal
 WORK_DIR="/var/lib/autoflow/tasks"
 INSTALL_DIR="/opt/autoflow-executor"
 SERVICE_NAME="autoflow-executor"
-NODE_VERSION="20"
+# E-31（DEEP_REVIEW 0ef3bbe）：旧值 "20" 与本文件头注「安装 Node.js 24.x」矛盾，
+# 且 node 20 已入弃用周期（CI ci.yml 全部 setup-node pin 在 24，lockfile 由 npm 11
+# 生成、node 20 自带 npm 10 解析行为不同）。统一为 24，与头注/CI 对齐；仍可用环境
+# 变量 EXECUTOR_NODE_VERSION 覆盖（如临时回退验证）。
+NODE_VERSION="${EXECUTOR_NODE_VERSION:-24}"
 
 # ── 参数解析 ─────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do

@@ -3,6 +3,8 @@ import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, D
 import { SearchOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { client } from '../../api/client';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../../utils/locale';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../../components/PageHeader';
@@ -127,7 +129,7 @@ export default function AuditLogPage() {
       title: t('audit.col.time'),
       dataIndex: 'createdAt',
       width: 180,
-      render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+      render: (v: string) => new Date(v).toLocaleString(currentLocale()),
     },
   ];
 
