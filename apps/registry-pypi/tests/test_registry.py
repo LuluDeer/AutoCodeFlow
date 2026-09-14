@@ -729,3 +729,50 @@ class TestPackageIndexPipCompat:
         assert resp.status_code == 200
         assert "1.0.0" in resp.text
         assert "weird.zip" in resp.text
+
+
+# E-10（DEEP_REVIEW 0ef3bbe）：fail-closed 凭据守卫——未配置 REGISTRY_PASS
+# 或仍用内置默认弱口令时拒绝启动（sys.exit(1)），而非 warn-and-continue。
+class TestFailClosedCredentials:
+    def test_exits_when_no_registry_pass(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("REGISTRY_PASS", raising=False)
+        monkeypatch.delenv("ALLOW_DEFAULT_CREDS", raising=False)
+        monkeypatch.setenv("REGISTRY_USER", "autoflow")
+        monkeypatch.setenv("PACKAGES_DIR", str(tmp_path))
+        import sys
+        sys.modules.pop("main", None)
+        with pytest.raises(SystemExit) as exc_info:
+            import main  # noqa: F401
+        assert exc_info.value.code == 1
+
+    def test_exits_when_default_credentials(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("REGISTRY_USER", "autoflow")
+        monkeypatch.setenv("REGISTRY_PASS", "autoflow123")
+        monkeypatch.delenv("ALLOW_DEFAULT_CREDS", raising=False)
+        monkeypatch.setenv("PACKAGES_DIR", str(tmp_path))
+        import sys
+        sys.modules.pop("main", None)
+        with pytest.raises(SystemExit) as exc_info:
+            import main  # noqa: F401
+        assert exc_info.value.code == 1
+
+    def test_starts_with_allow_default_creds(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("REGISTRY_USER", "autoflow")
+        monkeypatch.setenv("REGISTRY_PASS", "autoflow123")
+        monkeypatch.setenv("ALLOW_DEFAULT_CREDS", "1")
+        monkeypatch.setenv("PACKAGES_DIR", str(tmp_path))
+        import sys
+        sys.modules.pop("main", None)
+        import main as app_module
+        assert app_module.REGISTRY_PASS == "autoflow123"
+
+    def test_starts_with_custom_credentials(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("REGISTRY_USER", "customuser")
+        monkeypatch.setenv("REGISTRY_PASS", "custompass")
+        monkeypatch.delenv("ALLOW_DEFAULT_CREDS", raising=False)
+        monkeypatch.setenv("PACKAGES_DIR", str(tmp_path))
+        import sys
+        sys.modules.pop("main", None)
+        import main as app_module
+        assert app_module.REGISTRY_USER == "customuser"
+        assert app_module.REGISTRY_PASS == "custompass"

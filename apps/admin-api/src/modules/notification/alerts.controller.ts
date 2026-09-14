@@ -10,7 +10,7 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from "@nestjs/common";
-import { ApiExcludeEndpoint } from "@nestjs/swagger";
+import { ApiBody, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Request } from "express";
 import { createHmac, timingSafeEqual } from "crypto";
 import { ConfigService } from "@nestjs/config";
@@ -24,6 +24,7 @@ import {
   AlertmanagerWebhookPayload,
   mapAlertmanagerPayload,
 } from "./alert-webhook.mapping";
+import { AlertmanagerWebhookDto } from "./dto/alertmanager-webhook.dto";
 
 /**
  * OBS-02: Alertmanager webhook 入站路由——把 Grafana/Alertmanager 的告警
@@ -45,6 +46,7 @@ import {
  * 的重试风暴放大为 API 故障——notifications 的 fan-out 层已保证单渠道
  * 失败不抛出）。
  */
+@ApiTags("Alerts")
 @Controller("alerts")
 export class AlertsController {
   private logger = new Logger(AlertsController.name);
@@ -128,9 +130,20 @@ export class AlertsController {
    * notificationService.sendToChannels 全渠道扇出（渠道配置复用系统既有
    * 通知渠道，不新建渠道类型）。firing → level=error，全 resolved → info。
    */
+  // PK-19（DEEP_REVIEW 0ef3bbe）: 此前 @ApiExcludeEndpoint 把本路由从 openapi
+  // 整体抹掉（外部集成方无法从契约发现 Alertmanager 回调地址）。改为显式
+  // @ApiTags/@ApiOperation/@ApiBody 出现在 openapi 中——@Public + HMAC 鉴权
+  // 不影响文档化（签名纪律见类注释，仍由 ALERT_WEBHOOK_SECRET 保护）。
   @Public()
   @Post("webhook")
-  @ApiExcludeEndpoint()
+  @ApiOperation({
+    summary: "Alertmanager v2 webhook receiver",
+    description:
+      "入站 Alertmanager v2 告警回调。HMAC-SHA256 over `${timestamp}.${rawBody}`，需携带 " +
+      "X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。" +
+      "alerts[] 为空数组返回 400。",
+  })
+  @ApiBody({ type: AlertmanagerWebhookDto, description: "Alertmanager v2 webhook body" })
   async webhook(
     @Body() payload: AlertmanagerWebhookPayload,
     @Headers("x-hub-signature-256") signature?: string,

@@ -705,8 +705,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Git rollback
-         * @description Rollback task to a specific Git commit. Only applies to Git-type tasks.
+         * Git rollback (by commit SHA)
+         * @description 把任务回滚到指定 gitCommit 指向的**代码版本**（仅 Git 类任务适用）。与 /tasks/:id/versions/:versionId/rollback（按任务配置快照回滚）本质不同：本端点动的是仓库代码 checkout 到该 commit，非任务配置。对照表见 docs/rollback-semantics.md。
          */
         post: operations["TaskController_rollback"];
         delete?: never;
@@ -725,8 +725,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Version rollback
-         * @description Rollback task config to a specific historical version.
+         * Version rollback (by task config snapshot)
+         * @description 把任务**配置**整体回滚到指定历史版本快照（:versionId 路径参数）。与 /tasks/:id/rollback（按 gitCommit 回滚代码）本质不同：本端点动的是任务配置快照，不 checkout 仓库代码。对照表见 docs/rollback-semantics.md。
          */
         post: operations["TaskController_rollbackToVersion"];
         delete?: never;
@@ -865,8 +865,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch trigger tasks
-         * @description Trigger multiple tasks. Partial failures do not affect other tasks.
+         * Batch trigger tasks (deprecated)
+         * @deprecated
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/trigger（同 body/响应/审计）。Trigger multiple tasks. Partial failures do not affect other tasks.
          */
         post: operations["TaskBatchController_batchTrigger"];
         delete?: never;
@@ -885,8 +886,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch pause tasks
-         * @description Pause multiple tasks. Partial failures do not affect other tasks.
+         * Batch pause tasks (deprecated)
+         * @deprecated
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/pause（同 body/响应/审计）。Pause multiple tasks. Partial failures do not affect other tasks.
          */
         post: operations["TaskBatchController_batchPause"];
         delete?: never;
@@ -905,8 +907,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch resume tasks
-         * @description Resume multiple tasks. Partial failures do not affect other tasks.
+         * Batch resume tasks (deprecated)
+         * @deprecated
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/resume（同 body/响应/审计）。Resume multiple tasks. Partial failures do not affect other tasks.
          */
         post: operations["TaskBatchController_batchResume"];
         delete?: never;
@@ -925,8 +928,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch delete tasks
-         * @description Delete multiple tasks. Partial failures do not affect other tasks.
+         * Batch delete tasks (deprecated)
+         * @deprecated
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/delete（同 body/响应/审计）。Delete multiple tasks. Partial failures do not affect other tasks.
          */
         post: operations["TaskBatchController_batchDelete"];
         delete?: never;
@@ -1423,6 +1427,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/alerts/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Alertmanager v2 webhook receiver
+         * @description 入站 Alertmanager v2 告警回调。HMAC-SHA256 over `${timestamp}.${rawBody}`，需携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。alerts[] 为空数组返回 400。
+         */
+        post: operations["AlertsController_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ai/config": {
         parameters: {
             query?: never;
@@ -1781,10 +1805,30 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Full health check
-         * @description Check health of all core services including database, Redis, message queue, executors, and scheduler. Returns detailed health status and metrics.
+         * Basic health check
+         * @description Public health check. Returns only the overall status (healthy/degraded/unhealthy) and timestamp. Detailed metrics (executor count, queue depth, task counts) are available at GET /health/detailed (requires JWT).
          */
         get: operations["HealthController_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health/detailed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Detailed health check (authenticated)
+         * @description Full detailed health status and metrics including database, Redis, message queue, executors, and scheduler. Requires JWT authentication. Use GET /health for the public status-only endpoint.
+         */
+        get: operations["HealthController_detailed"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1841,8 +1885,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Service status
-         * @description Get health status details for each core service.
+         * Service status (authenticated)
+         * @description Get health status details for each core service. Requires JWT authentication.
          */
         get: operations["HealthController_services"];
         put?: never;
@@ -1861,8 +1905,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * System metrics
-         * @description Get key system metrics including task count, executor count, queue size, etc.
+         * System metrics (authenticated)
+         * @description Get key system metrics including task count, executor count, queue size, etc. Requires JWT authentication.
          */
         get: operations["HealthController_metrics"];
         put?: never;
@@ -2955,6 +2999,18 @@ export interface components {
             /** @description FEAT-05: execution artifacts manifest (best-effort, max 20 entries). File bytes are uploaded separately via the artifact upload endpoint; the manifest is persisted to task_executions.artifacts on the terminal callback. */
             artifacts?: components["schemas"]["ArtifactManifestItemDto"][];
         };
+        ExecutorPullDto: {
+            /**
+             * @description 执行器注册地址（与心跳一致）
+             * @example http://10.0.0.5:9100
+             */
+            address: string;
+            /**
+             * @description 客户端期望的长轮询等待窗口（毫秒）；服务端按 EXECUTOR_PULL_WAIT_MS 钳位（上限 55s）
+             * @example 25000
+             */
+            waitMs?: number;
+        };
         SendNotificationDto: {
             /**
              * @default info
@@ -2986,6 +3042,93 @@ export interface components {
             results: {
                 [key: string]: "sent" | "blocked" | "failed" | "skipped";
             };
+        };
+        CreateSilenceDto: {
+            /**
+             * @description 静默范围：global=全渠道；task=单任务；application=单应用
+             * @example task
+             * @enum {string}
+             */
+            scope: "global" | "task" | "application";
+            /** @description 仅静默该渠道类型（wechat/dingtalk/slack/email）；空 = 全部渠道 */
+            channelType?: string;
+            /** @description scope=task 时必填：任务 UUID */
+            taskId?: string;
+            /** @description scope=application 时必填：应用 UUID */
+            applicationId?: string;
+            /** @description 仅静默该级别及以下（info/warning/error/critical）；空 = 全部级别 */
+            level?: string;
+            /** @description 静默原因（审计记录用） */
+            reason?: string;
+            /**
+             * @description 静默时长（分钟）；缺省走系统默认 TTL
+             * @example 60
+             */
+            durationMinutes?: number;
+        };
+        AlertmanagerAlertDto: {
+            /**
+             * @description 告警状态 firing/resolved
+             * @example firing
+             */
+            status?: string;
+            /**
+             * @description 告警标签（含 alertname/labels.taskId 等）
+             * @example {
+             *       "alertname": "HighCPU",
+             *       "taskId": "uuid"
+             *     }
+             */
+            labels?: Record<string, never>;
+            /**
+             * @description 告警注解（含 runbook_url 惯例）
+             * @example {
+             *       "summary": "CPU > 90%"
+             *     }
+             */
+            annotations?: Record<string, never>;
+            /**
+             * @description 开始时间（ISO 字符串原样透出）
+             * @example 2026-09-14T06:00:00Z
+             */
+            startsAt?: string;
+            /**
+             * @description 结束时间（resolved 时）
+             * @example 2026-09-14T06:05:00Z
+             */
+            endsAt?: string;
+            /**
+             * @description 告警生成器 URL
+             * @example http://grafana/alert/1
+             */
+            generatorURL?: string;
+            /** @description 告警指纹（去重用） */
+            fingerprint?: string;
+        };
+        AlertmanagerWebhookDto: {
+            /**
+             * @description Alertmanager webhook 协议版本
+             * @example 4
+             */
+            version?: string;
+            /** @description 告警分组键 */
+            groupKey?: string;
+            /** @description 截断的告警条数 */
+            truncatedAlerts?: number;
+            /** @description 组级状态 firing/resolved */
+            status?: string;
+            /** @description 接收方名称 */
+            receiver?: string;
+            /** @description 组公共标签 */
+            groupLabels?: Record<string, never>;
+            /** @description 公共标签 */
+            commonLabels?: Record<string, never>;
+            /** @description 公共注解 */
+            commonAnnotations?: Record<string, never>;
+            /** @description Alertmanager 外部 URL */
+            externalURL?: string;
+            /** @description 告警列表（空数组被控制器 400 拒绝） */
+            alerts?: components["schemas"]["AlertmanagerAlertDto"][];
         };
         SaveAiConfigDto: Record<string, never>;
         UpsertConfigDto: {
@@ -3100,6 +3243,16 @@ export interface components {
             config: {
                 [key: string]: unknown;
             };
+        };
+        InstantiateTaskOverlayDto: {
+            /**
+             * @description 覆盖字段（与 CreateTaskDto 同形状；显式字段胜出模板默认）。至少需 name。
+             * @example {
+             *       "name": "prod-deploy",
+             *       "schedule": "0 2 * * *"
+             *     }
+             */
+            overlay?: Record<string, never>;
         };
         EventSubscription: Record<string, never>;
         CreateEventSubscriptionDto: {
@@ -4198,7 +4351,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description 无请求体——回滚目标即 :versionId 路径参数 */
+        requestBody?: {
+            content: {
+                "application/json": string;
+            };
+        };
         responses: {
             /** @description Rollback successful */
             200: {
@@ -4597,7 +4755,12 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Pull 长轮询请求体 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecutorPullDto"];
+            };
+        };
         responses: {
             /** @description Dispatch payload or empty */
             200: {
@@ -5191,7 +5354,12 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description 静默规则创建体 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSilenceDto"];
+            };
+        };
         responses: {
             /** @description Created silence */
             201: {
@@ -5214,6 +5382,31 @@ export interface operations {
         requestBody?: never;
         responses: {
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AlertsController_webhook: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-hub-signature-256": string;
+                "x-autocodeflow-timestamp": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Alertmanager v2 webhook body */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertmanagerWebhookDto"];
+            };
+        };
+        responses: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5721,6 +5914,26 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Health check result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    HealthController_detailed: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Detailed health check result */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6902,7 +7115,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description 模板覆盖体（自由字段，合并后校验 CreateTaskDto） */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InstantiateTaskOverlayDto"];
+            };
+        };
         responses: {
             /** @description Created task */
             201: {

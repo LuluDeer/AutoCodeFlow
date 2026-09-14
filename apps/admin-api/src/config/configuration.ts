@@ -18,7 +18,9 @@ import { parseAllowedOrigins } from "../common/utils/cors-origin.util";
  * 4. Joi 未注册但本文件读取的 env 属于审计缺口，发现即补注册
  *    （ARCH-27 已补：LOGIN_THROTTLE_LIMIT、REQUEST_TIMEOUT_MS、
  *    INITIAL_ADMIN_PASSWORD/EMAIL、LOG_RETENTION_DAYS、API_BASE_URL、
- *    APP_PROTOCOL、DB_POOL_SIZE、EXECUTOR_HEARTBEAT_*、LOG_STORAGE_*）。
+ *    APP_PROTOCOL、DB_POOL_SIZE、EXECUTOR_HEARTBEAT_*、LOG_STORAGE_*、
+ *    R-12: ADMIN_API_URL→app.adminApiUrl、NPM_REGISTRY_URL→registry.npm.url、
+ *    METRICS_STREAM_*、EXECUTIONS_STREAM_IDLE_PING_MS）。
  */
 export default () => ({
   app: {
@@ -32,6 +34,14 @@ export default () => ({
     // ARCH-27: 对外可达的基础 URL —— application.controller 生成 executor
     // 可拉取的 packageUrl 时 fail-fast 校验所需，此前未注册（审计缺口）。
     apiBaseUrl: process.env.API_BASE_URL || "",
+    // R-12（DEEP_REVIEW 0ef3bbe）: 执行器可回连的 Admin API 对外基址。此前由
+    // executor.service.getInstallCmd / executor-package.service.push 经
+    // configService.get("ADMIN_API_URL") 裸读——既未在本文件映射也未在 Joi
+    // 注册，靠 ConfigService 的 process.env 回退兜住；env 名 typo 时静默取空，
+    // install-cmd / package-push 运行时才 503。现收编到 app 节：空 = 未配置，
+    // 运行时在相关端点 fail-fast 503（行为不变）；Joi 注册后配置值若非法
+    // （非 http(s) URL）启动即拒绝。
+    adminApiUrl: process.env.ADMIN_API_URL || "",
     // ARCH-27: TRUST_PROXY 在此登记注册（Joi 已有 schema）。main.ts 仍在
     // bootstrap 期直读（豁免，见 main.ts 头部），注册用于文档化与后续收口。
     trustProxy: process.env.TRUST_PROXY === "true",
@@ -289,6 +299,12 @@ export default () => ({
   // anonymous behavior.
   registry: {
     npm: {
+      // R-12（DEEP_REVIEW 0ef3bbe）: Verdaccio registry 基址。此前
+      // registry.controller 经 config.get("NPM_REGISTRY_URL") 裸读（其注释
+      // 失实声称"registered as optional ... in the Joi schema"，实际仅注册了
+      // TOKEN/USER/PASS 三个键）。现收编到 registry.npm.url；默认
+      // http://localhost:4873 与旧 controller 回退逐字节一致。
+      url: process.env.NPM_REGISTRY_URL || "http://localhost:4873",
       token: process.env.NPM_REGISTRY_TOKEN || "",
       user: process.env.NPM_REGISTRY_USER || "",
       pass: process.env.NPM_REGISTRY_PASS || "",

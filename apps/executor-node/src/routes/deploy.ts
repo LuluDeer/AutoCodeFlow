@@ -8,6 +8,7 @@ import { post } from '../admin-client';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
 import { downloadFile } from '../lib/download';
+import { assertSafeHttpUrl } from '../lib/ssrf-guard';
 import { isSafePathSegment } from '../safe-path';
 import { guardZipOrThrow } from '../zip-guard';
 
@@ -253,9 +254,12 @@ function validatePackageUrl(packageUrl: string): string | null {
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return `packageUrl scheme not allowed: ${parsed.protocol}. Only http and https are permitted.`;
     }
+    // E-04（DEEP_REVIEW 0ef3bbe）：SSRF 闸——fail-closed 拒绝 loopback/私网/
+    // link-local（含 169.254.169.254 云元数据）。与 execute.ts 的 gitRepo 闸对齐。
+    assertSafeHttpUrl(packageUrl);
     return null;
-  } catch {
-    return 'packageUrl is not a valid URL';
+  } catch (e) {
+    return e instanceof Error ? e.message : 'packageUrl is not a valid URL';
   }
 }
 

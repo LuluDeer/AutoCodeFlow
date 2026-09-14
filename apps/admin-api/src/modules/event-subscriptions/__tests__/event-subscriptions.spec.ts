@@ -196,6 +196,9 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
     const [url, body, config] = axiosPost.mock.calls[0];
     expect(url).toBe("https://ci.example.com/hooks");
     expect(config.headers["X-AutoCodeFlow-Event"]).toBe("execution.failed");
+    // PK-14: 信封体与 HTTP 头均携带 schemaVersion（= EVENT_SCHEMA_VERSION）。
+    expect(JSON.parse(body).schemaVersion).toBe(1);
+    expect(config.headers["X-AutoCodeFlow-Event-Version"]).toBe("1");
     const ts = config.headers["X-AutoCodeFlow-Timestamp"];
     expect(String(Number(ts))).toBe(ts);
     const expected =

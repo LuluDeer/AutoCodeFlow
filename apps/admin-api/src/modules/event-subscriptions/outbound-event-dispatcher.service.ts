@@ -36,6 +36,7 @@ import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 import {
   DOMAIN_EVENTS,
   DomainEventName,
+  EVENT_SCHEMA_VERSION,
 } from "../../common/events/domain-events";
 import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
 import { EventSubscription } from "./entities/event-subscription.entity";
@@ -313,6 +314,9 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
       headers: {
         "Content-Type": "application/json",
         "X-AutoCodeFlow-Event": eventName,
+        // PK-14: 载荷 schema 主版本（与信封体 schemaVersion 同值），订阅方
+        // 据此在 HTTP 头层快速识别载荷形状演进，无需先解 body。
+        "X-AutoCodeFlow-Event-Version": String(payload.schemaVersion ?? EVENT_SCHEMA_VERSION),
         "X-AutoCodeFlow-Timestamp": timestamp,
         "X-Hub-Signature-256": signature,
       },

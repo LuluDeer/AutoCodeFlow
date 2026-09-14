@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, memo, type ReactNode } from 'react';
 import { Layout, Menu, Avatar, Dropdown, Badge, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
 import {
   DashboardOutlined,
@@ -145,6 +145,34 @@ function buildMenuItems(t: (k: string) => string) {
 // R6：/notifications 收紧——GET/PATCH /notification/channels 为 ADMIN-only
 const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications']);
 
+// F-12（DEEP_REVIEW 0ef3bbe）: 实时时钟提取为独立 memoized 子组件。
+// 此前 setInterval 每秒触发 MainLayout 整棵组件树重渲；现在时钟自管 state
+// 和 interval，只自身每秒重渲，不波及父 Layout。locale 从 i18n.language
+// 动态获取（不再硬编码 zh-CN）。
+const Clock = memo(function Clock({
+  colorText,
+  colorTextSecondary,
+}: {
+  colorText: string;
+  colorTextSecondary: string;
+}) {
+  const { i18n } = useTranslation();
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const locale = i18n.language || 'zh-CN';
+  const timeStr = now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+  const dateStr = now.toLocaleDateString(locale, { month: 'long', day: 'numeric', weekday: 'short' });
+  return (
+    <div className="header-time" aria-hidden="true" style={{ textAlign: 'right', marginRight: 8, lineHeight: 1.3 }}>
+      <div style={{ fontSize: 14, fontWeight: 600, color: colorText }}>{timeStr}</div>
+      <div style={{ fontSize: 11, color: colorTextSecondary }}>{dateStr}</div>
+    </div>
+  );
+});
+
 export default function MainLayout() {
   const nav = useNavigate();
   const location = useLocation();
@@ -161,7 +189,6 @@ export default function MainLayout() {
       /* 隐私模式等 localStorage 不可用时静默降级为会话内记忆 */
     }
   };
-  const [currentTime, setCurrentTime] = useState(new Date());
   // FEAT-09: 全局命令面板（⌘K / Ctrl+K 唤起，头部搜索按钮同快捷键行为）
   const [paletteOpen, setPaletteOpen] = useState(false);
   const { token } = theme.useToken();
@@ -183,11 +210,8 @@ export default function MainLayout() {
     }
   }, [user?.role, setUser, user]);
 
-  // 实时时钟
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  // F-12: 实时时钟已提取为 <Clock /> 独立 memoized 组件（自管 setInterval），
+  // 不再在此处维护 currentTime state，避免每秒重渲整个 Layout。
 
   // 按角色过滤菜单：ADMIN-only 项对普通用户隐藏（UI-03：顶层恒为分组，逐层过滤）。
   // R6 回归守卫：isAdmin 放行条件必须在分组化改造后保留——无条件过滤会把
@@ -318,9 +342,6 @@ export default function MainLayout() {
         })),
       }))
     : menuItems;
-
-  const timeStr = currentTime.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  const dateStr = currentTime.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
 
   return (
     // UI-09：mobile-sider-open 挂根 Layout——CSS 媒体查询据此滑入侧边栏并显示遮罩
@@ -471,11 +492,9 @@ export default function MainLayout() {
 
           <Space size={4}>
             {/* 时间显示（UI-09：≤768px 隐藏——头部仅留高频操作按钮）
-                UI-12：纯装饰信息，对读屏隐藏（每分每秒变化会持续打断朗读） */}
-            <div className="header-time" aria-hidden="true" style={{ textAlign: 'right', marginRight: 8, lineHeight: 1.3 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: token.colorText }}>{timeStr}</div>
-              <div style={{ fontSize: 11, color: token.colorTextSecondary }}>{dateStr}</div>
-            </div>
+                UI-12：纯装饰信息，对读屏隐藏（每分每秒变化会持续打断朗读）
+                F-12：提取为 memoized <Clock />，自管 setInterval 不波及父 Layout */}
+            <Clock colorText={token.colorText} colorTextSecondary={token.colorTextSecondary} />
 
             {/* UI-02：明暗主题切换——light → dark → system 三态循环，
                 图标随当前态变化，aria-label 随态更新（可达性） */}

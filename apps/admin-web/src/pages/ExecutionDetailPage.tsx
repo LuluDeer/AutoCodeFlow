@@ -10,6 +10,7 @@ import {
   useTaskDetail,
 } from '../api/queries';
 import { getApiBaseUrl } from '../api/client';
+import { buildSseUrl } from '../api/sse';
 import { getErrMsg } from '../utils/error';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
@@ -85,6 +86,10 @@ const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
 const LOG_PAGE_LIMIT = 2000;
 // 兜底页数上限，与后端 backfill MAX_PAGES 对齐，防 hasMore 异常导致死循环
 const LOG_MAX_PAGES = 200;
+// F-11（DEEP_REVIEW 0ef3bbe）: "加载完整日志"行数上限。此前最多 200 页 × 2000
+// 行 = 40 万行，全量 join('\n') 产生巨型字符串导致内存/CPU 峰值。10 万行上限
+// 将峰值内存降到原来 1/4；超过时提示用户用下载按钮查看完整日志。
+const FULL_LOGS_MAX_LINES = 100_000;
 // OBS-03: 级别过滤下拉——'ALL' 表示不过滤（不带 level，行为与之前完全一致）
 const LOG_LEVEL_FILTER_ALL = 'ALL';
 type LogLevelFilter = typeof LOG_LEVEL_FILTER_ALL | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
@@ -180,9 +185,9 @@ export default function ExecutionDetailPage() {
   useEffect(() => {
     if (data?.status !== 'running' && data?.status !== 'pending') return;
     const base = getSseBase().replace(/\/$/, '');
-    const url = `${base}/tasks/${taskId}/executions/${execId}/logs/stream`;
+    // F-05（DEEP_REVIEW 0ef3bbe）：token 注入统一走 buildSseUrl（含安全取舍注释）
     // EventSource 无法设置请求头；后端仅对日志流路由支持 access_token 查询参数鉴权
-    const es = new EventSource(url + (token ? `?access_token=${encodeURIComponent(token)}` : ''));
+    const es = new EventSource(buildSseUrl(base, `/tasks/${taskId}/executions/${execId}/logs/stream`, token));
     setStreaming(true);
     setStreamDisconnected(false);
     setStreamLines([]);
@@ -287,9 +292,13 @@ export default function ExecutionDetailPage() {
    * （收到的行数即过滤后已消费的偏移量），与后端 hasMore =
    * fromLine + lines.length < totalLines（过滤后计数）自洽。
    */
-  const fetchAllLogLines = async (level?: string): Promise<string[]> => {
+  const fetchAllLogLines = async (
+    level?: string,
+    maxLines?: number,
+  ): Promise<{ lines: string[]; truncated: boolean }> => {
     const all: string[] = [];
     let fromLine = 0;
+    let truncated = false;
     for (let page = 0; page < LOG_MAX_PAGES; page++) {
       const resp = await tasksApi.executionLogs(
         taskId!, execId!,
@@ -299,23 +308,37 @@ export default function ExecutionDetailPage() {
       if (lines.length === 0) break;
       all.push(...lines);
       fromLine += lines.length;
+      // F-11: 行数上限保护——超过 maxLines 即停拉，避免全量 join 巨型字符串
+      if (maxLines !== undefined && all.length >= maxLines) {
+        truncated = true;
+        all.length = maxLines;
+        break;
+      }
       if (!resp?.hasMore) break;
     }
-    return all;
+    return { lines: all, truncated };
   };
 
   // U2: 回调日志被执行器截断时，从全量日志端点按行分页拉全（后端 limit 上限
   // 2000/页，hasMore 驱动翻页）。成功替换显示与复制/下载内容；失败 toast 保留现状。
+  // F-11: 行数超过 FULL_LOGS_MAX_LINES 时停拉并提示"日志过大，建议下载查看"。
   const handleLoadFullLogs = async () => {
     if (!taskId || !execId) return;
     setLoadingFullLogs(true);
     try {
-      const all = await fetchAllLogLines();
+      const { lines: all, truncated } = await fetchAllLogLines(
+        undefined,
+        FULL_LOGS_MAX_LINES,
+      );
       if (all.length === 0) {
         throw new Error(t('execDetail.fullLogsNoRows'));
       }
       setFullLogs(all.join('\n'));
-      message.success(t('execDetail.fullLogsLoaded'));
+      if (truncated) {
+        message.warning(t('execDetail.fullLogsTooLarge'));
+      } else {
+        message.success(t('execDetail.fullLogsLoaded'));
+      }
     } catch (err: unknown) {
       message.error(getErrMsg(err, t('execDetail.fullLogsLoadFail')));
     } finally {
@@ -344,7 +367,7 @@ export default function ExecutionDetailPage() {
     if (!taskId || !execId) return;
     setLoadingFilteredLogs(true);
     try {
-      const all = await fetchAllLogLines(value);
+      const { lines: all } = await fetchAllLogLines(value, FULL_LOGS_MAX_LINES);
       if (levelFetchSeq.current !== seq) return;
       setFilteredLogs(all.join('\n'));
     } catch (err: unknown) {

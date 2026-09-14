@@ -17,6 +17,7 @@ jest.mock('../config', () => ({
     executorAddress: 'localhost:8002',
     executorId: '',
     token: 'test-shared-token',
+    allowPrivateNetwork: true,
   },
 }));
 jest.mock('../logger', () => ({
@@ -38,7 +39,7 @@ import { updatePackageRouter } from './update-package';
 import * as downloadLib from '../lib/download';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
-const mockCp = childProcess as jest.Mocked<typeof childProcess>;
+const _mockCp = childProcess as jest.Mocked<typeof childProcess>;
 
 const TEST_TOKEN = 'test-secret-token';
 
@@ -311,7 +312,7 @@ describe('POST /api/update-package — download behaviour', () => {
     const tmpDir = actualFs.mkdtempSync(path.join(require('os').tmpdir(), 'acf-up-'));
 
     // Redirect process.cwd() so .pkg-updates lands in the temp dir
-    const realCwd = process.cwd();
+    const _realCwd = process.cwd();
     const spyCwd = jest.spyOn(process, 'cwd').mockReturnValue(tmpDir);
     try {
       post.mockResolvedValue({ data: {} });

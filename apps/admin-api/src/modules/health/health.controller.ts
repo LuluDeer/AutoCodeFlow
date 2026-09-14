@@ -8,16 +8,48 @@ import { Public } from "../../common/decorators/public.decorator";
 export class HealthController {
   constructor(private readonly healthService: HealthService) {}
 
+  /**
+   * R-25（DEEP_REVIEW 0ef3bbe）：公开健康端点仅返回整体 status + timestamp，
+   * 不再暴露 executor 在线数、队列深度、任务计数等内部运维指标——未认证用户
+   * 可借此枚举集群规模与容量。详细指标移至需鉴权的 /health/detailed 端点。
+   * LB 探活请使用 /health/live 与 /health/ready（已最小化）。
+   */
   @Public()
   @Get()
   @ApiOperation({
-    summary: "Full health check",
+    summary: "Basic health check",
     description:
-      "Check health of all core services including database, Redis, message queue, executors, and scheduler. Returns detailed health status and metrics.",
+      "Public health check. Returns only the overall status (healthy/degraded/unhealthy) and timestamp. " +
+      "Detailed metrics (executor count, queue depth, task counts) are available at GET /health/detailed (requires JWT).",
   })
   @ApiResponse({
     status: 200,
     description: "Health check result",
+    schema: {
+      example: {
+        status: "healthy",
+        timestamp: "2024-01-01T12:00:00Z",
+      },
+    },
+  })
+  async health() {
+    return this.healthService.getPublicHealth();
+  }
+
+  /**
+   * R-25（DEEP_REVIEW 0ef3bbe）：详细健康指标端点——需 JWT 鉴权（无 @Public）。
+   * 包含 db/redis/queue/executors/tasks/scheduler 五组件详情与 metrics。
+   */
+  @Get("detailed")
+  @ApiOperation({
+    summary: "Detailed health check (authenticated)",
+    description:
+      "Full detailed health status and metrics including database, Redis, message queue, executors, and scheduler. " +
+      "Requires JWT authentication. Use GET /health for the public status-only endpoint.",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Detailed health check result",
     schema: {
       example: {
         status: "healthy",
@@ -54,7 +86,7 @@ export class HealthController {
       },
     },
   })
-  async health() {
+  async detailed() {
     return this.healthService.getFullHealth();
   }
 
@@ -101,11 +133,12 @@ export class HealthController {
     return this.healthService.getReadiness();
   }
 
-  @Public()
+  // R-25（DEEP_REVIEW 0ef3bbe）：services/metrics 端点移除 @Public——
+  // 它们暴露 executor 在线数、队列深度等内部指标，需 JWT 鉴权。
   @Get("services")
   @ApiOperation({
-    summary: "Service status",
-    description: "Get health status details for each core service.",
+    summary: "Service status (authenticated)",
+    description: "Get health status details for each core service. Requires JWT authentication.",
   })
   @ApiResponse({
     status: 200,
@@ -131,12 +164,13 @@ export class HealthController {
     return { database: db, redis, queue, executors, scheduler };
   }
 
-  @Public()
+  // R-25（DEEP_REVIEW 0ef3bbe）：metrics 端点移除 @Public——
+  // 暴露队列深度/executor 在线数，需 JWT 鉴权。
   @Get("metrics")
   @ApiOperation({
-    summary: "System metrics",
+    summary: "System metrics (authenticated)",
     description:
-      "Get key system metrics including task count, executor count, queue size, etc.",
+      "Get key system metrics including task count, executor count, queue size, etc. Requires JWT authentication.",
   })
   @ApiResponse({
     status: 200,

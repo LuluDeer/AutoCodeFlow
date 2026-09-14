@@ -1011,6 +1011,69 @@ describe("SchedulerService", () => {
       );
     });
 
+    // R-10（DEEP_REVIEW 0ef3bbe）: PENDING sweep 必须下推 SQL 级 cutoff（createdAt
+    // < grace cutoff）和 take（批量上限），避免恢复期数万行 PENDING 全量进内存。
+    it("R-10: PENDING sweep query carries SQL cutoff (createdAt<grace) and take limit", async () => {
+      await makeLeader();
+      execRepo.find
+        .mockResolvedValueOnce([]) // RUNNING scan empty
+        .mockResolvedValueOnce([]); // PENDING scan empty → 单批即停
+      taskRepo.find.mockResolvedValue([]); // N5 cutoff probe
+
+      const before = Date.now();
+      await service.recoverStaleExecutions();
+
+      // 第二个 find 调用是 PENDING sweep（第一个是 RUNNING scan）
+      const pendingFindArgs = execRepo.find.mock.calls[1][0] as {
+        where: { status: string; createdAt: { value: Date; type: string } };
+        take: number;
+      };
+      expect(pendingFindArgs.where.status).toBe(ExecutionStatus.PENDING);
+      expect(pendingFindArgs.where.createdAt.type).toBe("lessThan");
+      // grace = 10 min → cutoff ≈ now - 10min
+      const cutoff = pendingFindArgs.where.createdAt.value.getTime();
+      expect(cutoff).toBeLessThanOrEqual(before - 9 * 60 * 1000);
+      expect(cutoff).toBeGreaterThan(before - 11 * 60 * 1000);
+      // take 批量上限
+      expect(pendingFindArgs.take).toBeGreaterThan(0);
+      expect(pendingFindArgs.take).toBeLessThanOrEqual(1000);
+    });
+
+    it("R-10: PENDING sweep loops batches until a partial batch is returned", async () => {
+      await makeLeader();
+      // 第一批满批（1000 行）→ 继续；第二批 500 行（< 1000）→ 停
+      const batch1 = Array.from({ length: 1000 }, (_, i) => ({
+        id: `p1-${i}`,
+        status: ExecutionStatus.PENDING,
+        createdAt: new Date(Date.now() - 30 * 60 * 1000),
+      }));
+      const batch2 = Array.from({ length: 500 }, (_, i) => ({
+        id: `p2-${i}`,
+        status: ExecutionStatus.PENDING,
+        createdAt: new Date(Date.now() - 30 * 60 * 1000),
+      }));
+      execRepo.find
+        .mockResolvedValueOnce([]) // RUNNING scan
+        .mockResolvedValueOnce(batch1) // PENDING batch 1
+        .mockResolvedValueOnce(batch2); // PENDING batch 2
+      taskRepo.find.mockResolvedValue([]);
+      const pendingQb = makeUpdateQb({
+        affected: 1500,
+        raw: batch1.concat(batch2),
+      });
+      execRepo.createQueryBuilder.mockReturnValue(pendingQb);
+
+      await service.recoverStaleExecutions();
+
+      // PENDING find 共调用 2 次（RUNNING scan 是第 1 次，不在此列）
+      const pendingFindCalls = execRepo.find.mock.calls.slice(1);
+      expect(pendingFindCalls.length).toBe(2);
+      // 两次都带 take 上限
+      for (const call of pendingFindCalls) {
+        expect((call[0] as { take: number }).take).toBeGreaterThan(0);
+      }
+    });
+
     it("does nothing when no running executions exist", async () => {
       await makeLeader();
       execRepo.find.mockResolvedValue([]);
@@ -1462,6 +1525,87 @@ describe("SchedulerService", () => {
       // 重试编排失败被吞掉，恢复事务仍已完成
       expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalled();
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    // R-15（DEEP_REVIEW 0ef3bbe）: 大规模恢复时 kill 必须并发批量，不能串行
+    // 3s/行阻塞 cron tick。验证多 recovered 行全部发出 kill + retry，且单
+    // 个 kill 失败不影响其他行。
+    it("R-15: recovered rows are killed and retried in concurrent batches", async () => {
+      await makeLeader();
+      // 3 个崩溃行 → 同一批内并发 kill+retry
+      const execs = [
+        crashExec({ id: "exec-a", executorAddress: "host-a:3002" }),
+        crashExec({ id: "exec-b", executorAddress: "host-b:3002" }),
+        crashExec({ id: "exec-c", executorAddress: "host-c:3002" }),
+      ];
+      const tasks = execs.map((e) =>
+        makeTask({ id: e.taskId, timeout: 0, maxRetry: 3 }),
+      );
+      execRepo.find
+        .mockResolvedValueOnce(execs as any[]) // RUNNING scan
+        .mockResolvedValueOnce([]); // PENDING sweep
+      taskRepo.find.mockResolvedValue([]);
+      taskRepo.findBy.mockResolvedValue(tasks);
+      // 条件 UPDATE RETURNING 命中全部 3 行
+      const updateQb = makeUpdateQb({
+        affected: 3,
+        raw: execs.map((e) => ({
+          id: e.id,
+          executorAddress: e.executorAddress,
+        })),
+      });
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({ createQueryBuilder: () => updateQb }),
+      );
+
+      await service.recoverStaleExecutions();
+
+      // 3 行全部发出 kill
+      expect(executorService.notifyExecutorKill).toHaveBeenCalledTimes(3);
+      // 3 行全部调度 retry
+      expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalledTimes(3);
+      // 每个 exec 的 kill 都被调用
+      for (const e of execs) {
+        expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
+          e.id,
+          e.executorAddress,
+        );
+      }
+    });
+
+    it("R-15: one executor's kill failure does not block other rows' retry", async () => {
+      await makeLeader();
+      const execA = crashExec({ id: "exec-a", executorAddress: "host-a:3002" });
+      const execB = crashExec({ id: "exec-b", executorAddress: "host-b:3002" });
+      const taskA = makeTask({ id: "task-1", timeout: 0, maxRetry: 3 });
+      const taskB = makeTask({ id: "task-1", timeout: 0, maxRetry: 3 });
+      execRepo.find
+        .mockResolvedValueOnce([execA, execB] as any[])
+        .mockResolvedValueOnce([]);
+      taskRepo.find.mockResolvedValue([]);
+      taskRepo.findBy.mockResolvedValue([taskA, taskB]);
+      const updateQb = makeUpdateQb({
+        affected: 2,
+        raw: [
+          { id: "exec-a", executorAddress: "host-a:3002" },
+          { id: "exec-b", executorAddress: "host-b:3002" },
+        ],
+      });
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({ createQueryBuilder: () => updateQb }),
+      );
+      // host-a kill 抛错（内部已 catch 仅 warn，但模拟 executorService 抛出）
+      executorService.notifyExecutorKill.mockImplementation(
+        async (execId: string) => {
+          if (execId === "exec-a") throw new Error("offline");
+        },
+      );
+
+      await service.recoverStaleExecutions();
+
+      // 两行 retry 都被调度（exec-a 的 kill 失败不阻塞其 retry，exec-b 正常）
+      expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalledTimes(2);
+      expect(executorService.notifyExecutorKill).toHaveBeenCalledTimes(2);
     });
   });
 
