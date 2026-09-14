@@ -2,7 +2,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { config } from './config';
 import { logger } from './logger';
-import { post } from './admin-client';
+// A6: 对账端点走 admin-client 的 get（自动带 per-executor 令牌 + failover），
+// 响应是 admin ResponseInterceptor 的 {code,message,data} 信封，需 unwrap。
+import { post, get } from './admin-client';
+import { unwrapAdminResponseData } from './admin-envelope';
+import {
+  DEAD_LETTER_SIDECAR_SUFFIX,
+  deadLetterPayloadName,
+} from './dead-letter-sidecar';
 
 /** Structured failure reason — the **runtime-available** list the type is derived
  *  from, so the A3 contract spec can assert it against
@@ -187,13 +194,87 @@ function persistFailedCallbacks(requests: CallbackRequest[]): void {
   }
 }
 
+/**
+ * A6（DEEP_REVIEW §七）：死信侧车。
+ *
+ * 死信目录此前只有 payload 文件本身——**没有任何地方记录它为什么进来**。于
+ * 是「admin 长时间不可达导致重发预算耗尽」（admin 恢复后值得重发）和「载荷
+ * 本身是毒丸」（重发永远失败）在磁盘上无法区分，二者只能一律等人来看。
+ *
+ * 侧车就是这份缺失的上下文：`poison` 决定对账时能不能重发，`requeues` 决定
+ * 还能救几次，`deadLetteredAt` 是对账水印的起点。
+ *
+ * 它**不是**回调：getDeadLetterCount / 保留扫描都只数 payload（见 file-logger
+ * 的排除逻辑），侧车不进「积压了多少条没送出去的回调」这个运维指标。
+ */
+interface DeadLetterMeta {
+  reason: string;
+  /** true = 载荷本身不可送达（超大/坏 JSON），重发无意义，只能等人来看。 */
+  poison: boolean;
+  deadLetteredAt: number;
+  /** 该文件被对账重新入队过几次（跨轮保存，见 writeRetryCount）。 */
+  requeues: number;
+}
+
+function readDeadLetterMeta(payloadPath: string): DeadLetterMeta | null {
+  try {
+    const raw = fs.readFileSync(payloadPath + DEAD_LETTER_SIDECAR_SUFFIX, 'utf-8');
+    const m = JSON.parse(raw) as Partial<DeadLetterMeta>;
+    return {
+      reason: typeof m.reason === 'string' ? m.reason : 'unknown',
+      poison: m.poison === true,
+      deadLetteredAt: typeof m.deadLetteredAt === 'number' ? m.deadLetteredAt : 0,
+      requeues:
+        typeof m.requeues === 'number' && m.requeues >= 0 ? m.requeues : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeDeadLetterMeta(payloadPath: string, meta: DeadLetterMeta): void {
+  try {
+    fs.writeFileSync(
+      payloadPath + DEAD_LETTER_SIDECAR_SUFFIX,
+      JSON.stringify(meta),
+      'utf-8',
+    );
+  } catch {
+    /* 侧车写不进去只影响对账精度，不影响 payload 本身 */
+  }
+}
+
+function removeDeadLetterMeta(payloadPath: string): void {
+  try {
+    fs.unlinkSync(payloadPath + DEAD_LETTER_SIDECAR_SUFFIX);
+  } catch {
+    /* already gone */
+  }
+}
+
 /** Move a permanently-failed callback file to the dead-letter directory so
  *  the retry loop stops resending it every second (network + log churn) but
- *  the payloads remain on disk for manual inspection/replay. */
-function deadLetterCallbackFile(filepath: string, reason: string): void {
+ *  the payloads remain on disk for manual inspection/replay.
+ *
+ *  A6: `poison` 标记载荷本身是否不可送达——它决定对账能不能把文件救回重发
+ *  队列（见 reconcileDeadLetters）。 */
+function deadLetterCallbackFile(
+  filepath: string,
+  reason: string,
+  poison = false,
+): void {
+  // requeues 由 live meta 携带（重新入队时写入），跨「死信→重发→再死信」
+  // 循环继承，救回次数才不会被无限重置。
+  const requeues = readRetryMeta(filepath).deadLetterRequeues || 0;
   try {
     const target = path.join(getDeadLetterDir(), path.basename(filepath));
     fs.renameSync(filepath, target);
+    writeDeadLetterMeta(target, {
+      reason,
+      poison,
+      deadLetteredAt: Date.now(),
+      requeues,
+    });
     logger.warn(
       `Callback file ${path.basename(filepath)} moved to dead-letter after ${reason}; manual replay required`,
     );
@@ -211,17 +292,30 @@ function deadLetterCallbackFile(filepath: string, reason: string): void {
 
 /** E-05: 读取持久化回调的 .meta：重试轮数 + 上次尝试时间戳（updatedAt，缺省
  *  回退 persistedAt）。上次尝试时间戳驱动下方指数退避门控，避免每秒重发。 */
-function readRetryMeta(filepath: string): { retries: number; updatedAt: number } {
+function readRetryMeta(filepath: string): {
+  retries: number;
+  updatedAt: number;
+  deadLetterRequeues: number;
+} {
   try {
     const raw = fs.readFileSync(`${filepath}.meta`, 'utf-8');
-    const meta = JSON.parse(raw) as { retries?: number; updatedAt?: number; persistedAt?: number };
+    const meta = JSON.parse(raw) as {
+      retries?: number;
+      updatedAt?: number;
+      persistedAt?: number;
+      deadLetterRequeues?: number;
+    };
     const retries = typeof meta.retries === 'number' && meta.retries >= 0 ? meta.retries : 0;
     const updatedAt =
       typeof meta.updatedAt === 'number' ? meta.updatedAt
         : (typeof meta.persistedAt === 'number' ? meta.persistedAt : 0);
-    return { retries, updatedAt };
+    const requeues =
+      typeof meta.deadLetterRequeues === 'number' && meta.deadLetterRequeues >= 0
+        ? meta.deadLetterRequeues
+        : 0;
+    return { retries, updatedAt, deadLetterRequeues: requeues };
   } catch {
-    return { retries: 0, updatedAt: 0 };
+    return { retries: 0, updatedAt: 0, deadLetterRequeues: 0 };
   }
 }
 
@@ -229,9 +323,24 @@ function _readRetryCount(filepath: string): number {
   return readRetryMeta(filepath).retries;
 }
 
-function writeRetryCount(filepath: string, retries: number): void {
+function writeRetryCount(
+  filepath: string,
+  retries: number,
+  deadLetterRequeues?: number,
+): void {
   try {
-    fs.writeFileSync(`${filepath}.meta`, JSON.stringify({ retries, updatedAt: Date.now() }), 'utf-8');
+    // A6: 未显式给出时保留原值——重新入队路径只改 retries，不能顺手把
+    // 「已经被救过几次」抹掉（那会让毒丸文件无限往返）。
+    const prev = readRetryMeta(filepath).deadLetterRequeues;
+    fs.writeFileSync(
+      `${filepath}.meta`,
+      JSON.stringify({
+        retries,
+        updatedAt: Date.now(),
+        deadLetterRequeues: deadLetterRequeues ?? prev,
+      }),
+      'utf-8',
+    );
   } catch (error: unknown) {
     logger.warn(`Failed to update retry counter for ${filepath}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -254,11 +363,12 @@ async function retryFailedCallbacks(): Promise<void> {
         const meta = readRetryMeta(filepath);
         const retries = meta.retries;
         if (retries >= CALLBACK_FILE_MAX_RETRIES) {
-          deadLetterCallbackFile(filepath, `${retries} failed retry rounds`);
+          // A6: poison=false —— admin 恢复后这份回调仍可能救得回来。
+          deadLetterCallbackFile(filepath, `${retries} failed retry rounds`, false);
           continue;
         }
         if (fs.statSync(filepath).size > CALLBACK_FILE_MAX_SIZE_BYTES) {
-          deadLetterCallbackFile(filepath, 'oversized payload');
+          deadLetterCallbackFile(filepath, 'oversized payload', true);
           continue;
         }
         // E-05: 指数退避门控（见上方常量注释）。轮数上限只防毒丸文件；时长预算
@@ -282,7 +392,7 @@ async function retryFailedCallbacks(): Promise<void> {
         } else {
           const next = retries + 1;
           if (next >= CALLBACK_FILE_MAX_RETRIES) {
-            deadLetterCallbackFile(filepath, `${next} failed retry rounds`);
+            deadLetterCallbackFile(filepath, `${next} failed retry rounds`, false);
           } else {
             writeRetryCount(filepath, next);
           }
@@ -291,7 +401,7 @@ async function retryFailedCallbacks(): Promise<void> {
         // Corrupt/unparseable poison files would never succeed — dead-letter
         // them instead of burning a re-send every second forever.
         if (error instanceof SyntaxError) {
-          deadLetterCallbackFile(filepath, 'corrupt payload');
+          deadLetterCallbackFile(filepath, 'corrupt payload', true);
           continue;
         }
         logger.warn(`Failed to retry callback file ${file}: ${error instanceof Error ? error.message : String(error)}`);
@@ -300,6 +410,276 @@ async function retryFailedCallbacks(): Promise<void> {
   } catch (error: unknown) {
     logger.error(`Error during callback retry: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// A6（DEEP_REVIEW §七）：死信目录定期对账
+//
+// 死信此前是**单向终点**：文件进去就再也出不来，只能靠人发现。但两类死信的
+// 处置其实完全相反——
+//
+//   ① 重发预算耗尽（E-05，约 24h）：典型成因是 admin 长时间不可达。admin 恢复
+//      后该执行可能仍是 RUNNING（admin 的 stale sweep 要等执行器心跳超时才跑），
+//      此时**回调是 admin 唯一能得知结果、并释放执行器槽位的通道**，重发有价值。
+//   ② 毒丸（>64MB / 坏 JSON）：重发永远失败，只等人来看。
+//
+// 区分二者必须问 admin「这条执行终态了没有」—— GET /executors/:address/
+// terminal-states 就是这个问句。对账据此分三层处置：终态→删；未终态且非毒丸
+// →重新入队重发；未终态但毒丸或救回次数用尽→保留待人工。
+//
+// 设计约束（都是踩过的坑，改这里前请先读）：
+//   - **零死信则零请求**：健康执行器不产生任何额外流量，对账不是新的心跳。
+//   - **取不到就什么都不做**：admin 不可达 / 响应形状不对时一律原样返回，
+//     绝不能把「没拿到终态清单」误读成「都没终态」然后一股脑重发（那会把
+//     毒丸文件重新推回重发队列，白烧一轮 24h 预算）。
+//   - **救回次数有上限**：执行行若在 admin 侧已被删除，永远查不到终态，没有
+//     上限会让文件在 死信→重发→再死信 之间无限往返。
+// ---------------------------------------------------------------------------
+
+/** 对账周期。死信是低频事件（要耗尽 24h 重发预算才产生），没必要秒级问。 */
+export const DEAD_LETTER_RECONCILE_INTERVAL_MS = 10 * 60 * 1000;
+/** 单份死信最多被救回几次。3 次 ≈ 3 个重发预算期，足够覆盖反复断连。 */
+export const DEAD_LETTER_MAX_REQUEUES = 3;
+/** since 水印向前多看的余量，吸收 admin↔执行器时钟偏差（偏一点就漏行）。 */
+export const DEAD_LETTER_SINCE_SKEW_MS = 5 * 60 * 1000;
+/** 与 admin 侧 TERMINAL_STATES_MAX_LOOKBACK_MS 对齐的上界。 */
+export const DEAD_LETTER_MAX_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+/** 单页条数（与 admin 默认页一致）。 */
+export const DEAD_LETTER_RECONCILE_LIMIT = 500;
+/** 超过此大小的死信不解析：它多半就是"超大载荷"死信本身，为拿一个
+ *  executionId 去 JSON.parse 几十 MB 不划算（秒级 + 百 MB 内存）。留给人工。 */
+const DEAD_LETTER_MAX_PARSE_BYTES = 8 * 1024 * 1024;
+
+export interface DeadLetterReconcileResult {
+  scanned: number;
+  /** admin 已终态 → 回调作废，删除。 */
+  deleted: number;
+  /** admin 仍未终态 + 非毒丸 → 重新入队重发。 */
+  requeued: number;
+  /** 毒丸或救回次数用尽 → 保留待人工。 */
+  kept: number;
+  /** 无 payload 的孤儿侧车清理数（payload 被 TTL 清掉了）。 */
+  orphans: number;
+  /** 太大不解析 / 取不到 executionId / 文件操作失败。 */
+  skipped: number;
+  /** admin 返回的终态条数；-1 = 这一轮没取到（不可达或形状不对），未做任何处置。 */
+  fetched: number;
+  hasMore: boolean;
+}
+
+interface TerminalStatesPayload {
+  items: string[];
+  hasMore: boolean;
+}
+
+/** 拉取终态清单。拿不到（不可达 / 形状不对）返回 null——调用方据此整体放弃，
+ *  **绝不**退化成"空清单"。 */
+async function fetchTerminalStates(
+  address: string,
+  since: number,
+): Promise<TerminalStatesPayload | null> {
+  const url =
+    `/api/executors/${encodeURIComponent(address)}/terminal-states` +
+    `?since=${encodeURIComponent(new Date(since).toISOString())}` +
+    `&limit=${DEAD_LETTER_RECONCILE_LIMIT}`;
+  const response = await untilDeadline(
+    // 包一层：get() 若同步抛错（mock / 早期失败）也要走 reject 而不是炸栈。
+    Promise.resolve().then(() => get<Record<string, unknown>>(url)),
+    null,
+  );
+  if (!response) return null;
+  const payload = unwrapAdminResponseData(response.data);
+  const items = (payload as { items?: unknown } | null)?.items;
+  if (!Array.isArray(items)) return null;
+  const ids = items
+    .map((it) => (it as { executionId?: unknown })?.executionId)
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+  return {
+    items: ids,
+    hasMore: (payload as { hasMore?: unknown } | null)?.hasMore === true,
+  };
+}
+
+/**
+ * 对账一轮。见上方块注释的三条设计约束。
+ */
+export async function reconcileDeadLetters(): Promise<DeadLetterReconcileResult> {
+  const result: DeadLetterReconcileResult = {
+    scanned: 0,
+    deleted: 0,
+    requeued: 0,
+    kept: 0,
+    orphans: 0,
+    skipped: 0,
+    fetched: -1,
+    hasMore: false,
+  };
+
+  let deadDir: string;
+  let entries: string[];
+  try {
+    // 刻意**不**用 getDeadLetterDir()：那会 mkdir。对账是只读动作，在没有
+    // 死信的健康执行器上不该凭空造出一个空目录（既有单测断言 callbacks/ 下
+    // 除 payload 外没有别的条目，见 callback.spec "drains entries queued at
+    // stop"）。目录不存在就是「零死信」，直接返回。
+    deadDir = path.join(config.workDir, 'callbacks', 'dead-letter');
+    entries = fs.readdirSync(deadDir);
+  } catch {
+    return result;
+  }
+
+  const payloads = entries.filter(
+    (f) =>
+      f.startsWith('callback-') &&
+      f.endsWith('.json') &&
+      deadLetterPayloadName(f) === null,
+  );
+  const payloadSet = new Set(payloads);
+
+  // 孤儿侧车：payload 已被 TTL 清理（file-logger 的 removeOlderThan 只认
+  // files，不认识侧车），侧车会一直留着。
+  for (const f of entries) {
+    const owner = deadLetterPayloadName(f);
+    if (owner === null) continue;
+    if (payloadSet.has(owner)) continue;
+    try {
+      fs.unlinkSync(path.join(deadDir, f));
+      result.orphans++;
+    } catch {
+      /* raced */
+    }
+  }
+
+  // 健康路径：没有死信就一个请求都不发。
+  if (payloads.length === 0) return result;
+
+  type Item = {
+    file: string;
+    ids: string[];
+    poison: boolean;
+    requeues: number;
+  };
+  const items: Item[] = [];
+  let oldest = Date.now();
+  for (const file of payloads) {
+    const fp = path.join(deadDir, file);
+    let mtime = Date.now();
+    let size = 0;
+    try {
+      const st = fs.statSync(fp);
+      mtime = Math.floor(st.mtimeMs);
+      size = st.size;
+    } catch {
+      continue;
+    }
+    const meta = readDeadLetterMeta(fp);
+    result.scanned++;
+    // 侧车缺失（老版本执行器留下的死信）时用文件 mtime 当水印起点——比
+    // "当作刚刚死信"保守得多，能覆盖到它真正的时间窗。
+    oldest = Math.min(oldest, meta?.deadLetteredAt || mtime);
+
+    if (size > DEAD_LETTER_MAX_PARSE_BYTES) {
+      result.skipped++;
+      continue;
+    }
+    let ids: string[] = [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(fp, 'utf-8')) as unknown;
+      if (Array.isArray(parsed)) {
+        ids = parsed
+          .map((x) => (x as { executionId?: unknown })?.executionId)
+          .filter((v): v is string => typeof v === 'string' && v.length > 0);
+      }
+    } catch {
+      // 坏 JSON —— 毒丸，解析不出 executionId 就无从对账，留给人工。
+    }
+    if (ids.length === 0) {
+      result.skipped++;
+      continue;
+    }
+    items.push({
+      file,
+      ids,
+      poison: meta?.poison ?? false,
+      requeues: meta?.requeues ?? 0,
+    });
+  }
+  if (items.length === 0) return result;
+
+  const since = Math.max(
+    oldest - DEAD_LETTER_SINCE_SKEW_MS,
+    Date.now() - DEAD_LETTER_MAX_LOOKBACK_MS,
+  );
+  const address = config.executorAddressPublic || config.executorAddress;
+
+  let terminal: Set<string>;
+  try {
+    const fetched = await fetchTerminalStates(address, since);
+    if (!fetched) {
+      logger.warn(
+        'Dead-letter reconciliation skipped: could not read terminal states from admin; dead-letter files left untouched',
+      );
+      return result;
+    }
+    terminal = new Set(fetched.items);
+    result.fetched = terminal.size;
+    result.hasMore = fetched.hasMore;
+    if (fetched.hasMore) {
+      logger.warn(
+        `Dead-letter reconciliation got a partial page (${terminal.size} terminal states, hasMore=true); remaining files handled next round`,
+      );
+    }
+  } catch (error: unknown) {
+    logger.warn(
+      `Dead-letter reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return result;
+  }
+
+  for (const item of items) {
+    const fp = path.join(deadDir, item.file);
+    if (item.ids.every((id) => terminal.has(id))) {
+      // admin 早有终态 —— 这份回调再发一次也只是被幂等丢弃，删掉。
+      try {
+        fs.unlinkSync(fp);
+        removeDeadLetterMeta(fp);
+        result.deleted++;
+        logger.info(
+          `Dead-letter ${item.file} dropped: admin already recorded a terminal state`,
+        );
+      } catch (error: unknown) {
+        result.skipped++;
+        logger.warn(
+          `Failed to drop reconciled dead-letter ${item.file}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      continue;
+    }
+
+    if (!item.poison && item.requeues < DEAD_LETTER_MAX_REQUEUES) {
+      // admin 仍未终态：回调是它唯一的结果通道，救回重发队列。轮数归零 →
+      // 重新走完整的 24h 时长预算；requeues+1 写进 meta，下一轮死信侧车继承。
+      try {
+        const live = path.join(getCallbackDir(), item.file);
+        fs.renameSync(fp, live);
+        removeDeadLetterMeta(fp);
+        writeRetryCount(live, 0, item.requeues + 1);
+        result.requeued++;
+        logger.warn(
+          `Dead-letter ${item.file} re-queued for retry (attempt ${item.requeues + 1}/${DEAD_LETTER_MAX_REQUEUES}): admin has no terminal state yet`,
+        );
+      } catch (error: unknown) {
+        result.skipped++;
+        logger.warn(
+          `Failed to re-queue dead-letter ${item.file}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      continue;
+    }
+
+    result.kept++;
+  }
+  return result;
 }
 
 async function processCallbacksWithBackoff(requests: CallbackRequest[]): Promise<void> {
@@ -332,6 +712,16 @@ async function processCallbacksWithBackoff(requests: CallbackRequest[]): Promise
   }
 }
 
+// A6: 死信对账的节流状态（常量见上方 A6 段）。lastDeadLetterReconcileAt=0 →
+// 线程启动后的第一轮就会对账一次（启动时往往正有上一轮运行留下的死信）。
+let lastDeadLetterReconcileAt = 0;
+let deadLetterReconcileInFlight = false;
+let deadLetterReconcileIntervalMs = DEAD_LETTER_RECONCILE_INTERVAL_MS;
+/** 测试用：把对账周期注入为 0 以强制每轮都对账。 */
+export function setDeadLetterReconcileIntervalMs(ms: number): void {
+  deadLetterReconcileIntervalMs = ms;
+}
+
 async function processCallbacks(): Promise<void> {
   while (!stopped || callbackQueue.length > 0) {
     try {
@@ -342,6 +732,26 @@ async function processCallbacks(): Promise<void> {
       }
 
       await retryFailedCallbacks();
+
+      // A6: 死信对账——低频（默认 10min）、只读、失败无副作用。stopped 时不跑：
+      // 停机排空期间不该再发起新的 admin 请求。
+      if (
+        !stopped &&
+        !deadLetterReconcileInFlight &&
+        Date.now() - lastDeadLetterReconcileAt >= deadLetterReconcileIntervalMs
+      ) {
+        deadLetterReconcileInFlight = true;
+        lastDeadLetterReconcileAt = Date.now();
+        try {
+          await reconcileDeadLetters();
+        } catch (error: unknown) {
+          logger.warn(
+            `Dead-letter reconciliation error: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        } finally {
+          deadLetterReconcileInFlight = false;
+        }
+      }
     } catch (error: unknown) {
       logger.error(`Callback thread error: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -357,6 +767,8 @@ export function startCallbackThread(): void {
   stopped = false;
   stopPromise = null;
   drainExpired = false;
+  // A6: 重置对账节流——重开的线程应该立刻对一次账，而不是继承上次的时点。
+  lastDeadLetterReconcileAt = 0;
   logger.info('Starting callback thread');
   callbackLoopPromise = processCallbacks().catch(error => {
     logger.error(`Callback thread stopped unexpectedly: ${error instanceof Error ? error.message : String(error)}`);

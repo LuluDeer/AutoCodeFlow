@@ -1010,14 +1010,84 @@ def _dead_letter_dir() -> Path:
     return d
 
 
+# ---------------------------------------------------------------------------
+# A6（DEEP_REVIEW §七）：死信目录定期对账（executor-node callback.ts 同语义）
+#
+# 死信此前是单向终点：文件进去就再也出不来。但两类死信的处置完全相反——
+#   ① 重发预算耗尽（E-05，约 24h）：典型成因是 admin 长时间不可达。admin 恢复
+#      后该执行可能仍是 RUNNING（admin 的 stale sweep 要等执行器心跳超时才跑），
+#      此时回调是 admin 唯一能得知结果、并释放执行器槽位的通道，重发有价值。
+#   ② 毒丸（>64MB / 坏 JSON）：重发永远失败，只等人来看。
+# 区分二者必须问 admin「这条执行终态了没有」——GET /executors/:address/
+# terminal-states 就是这个问句。处置分三层：终态→删；未终态且非毒丸→重发；
+# 未终态但毒丸或救回次数用尽→保留待人工。
+#
+# 三条设计约束（与 node 侧一致，改这里前先读 node 的同名块注释）：
+#   - 零死信则零请求：健康执行器不产生额外流量。
+#   - 取不到就什么都不做：绝不把「没拿到终态清单」误读成「都没终态」。
+#   - 救回次数有上限，否则执行行被删时会无限往返。
+# ---------------------------------------------------------------------------
+
+# 侧车后缀与 executor-node 的 src/dead-letter-sidecar.ts 保持一致：两端写同一
+# 份磁盘布局，运维拿同一套命令即可排查。
+DEAD_LETTER_SIDECAR_SUFFIX = '.deadletter.json'
+DEAD_LETTER_RECONCILE_INTERVAL_SECONDS = 600.0
+DEAD_LETTER_MAX_REQUEUES = 3
+DEAD_LETTER_SINCE_SKEW_SECONDS = 300.0
+DEAD_LETTER_MAX_LOOKBACK_SECONDS = 30 * 24 * 3600.0
+DEAD_LETTER_RECONCILE_LIMIT = 500
+# 超过此大小的死信不解析：多半就是「超大载荷」死信本身，为拿一个 executionId
+# 去 parse 几十 MB 不划算。留给人工。
+_DEAD_LETTER_MAX_PARSE_BYTES = 8 * 1024 * 1024
+
+
+def _read_dead_letter_meta(payload_path: Path) -> Optional[dict]:
+    """读死信侧车。缺失/损坏返回 None（对账据此退化为保守处置）。"""
+    try:
+        raw = json.loads(
+            payload_path.with_name(payload_path.name + DEAD_LETTER_SIDECAR_SUFFIX
+                                   ).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    requeues = raw.get('requeues')
+    return {
+        'reason': raw.get('reason') if isinstance(raw.get('reason'), str) else 'unknown',
+        'poison': raw.get('poison') is True,
+        'deadLetteredAt': raw.get('deadLetteredAt') if isinstance(raw.get('deadLetteredAt'), (int, float)) else 0,
+        'requeues': int(requeues) if isinstance(requeues, (int, float)) and requeues >= 0 else 0,
+    }
+
+
+def _write_dead_letter_meta(payload_path: Path, meta: dict) -> None:
+    try:
+        payload_path.with_name(payload_path.name + DEAD_LETTER_SIDECAR_SUFFIX).write_text(
+            json.dumps(meta), encoding='utf-8')
+    except OSError:
+        pass  # 侧车写不进去只影响对账精度，不影响 payload 本身
+
+
+def _remove_dead_letter_meta(payload_path: Path) -> None:
+    try:
+        payload_path.with_name(payload_path.name + DEAD_LETTER_SIDECAR_SUFFIX).unlink()
+    except OSError:
+        pass
+
+
 def _refresh_dead_letter_count() -> None:
     """Recount dead-letter files and stamp the cache. QA9: this is the only
     cache maintenance point — every dead-letter move happens inside
     retry_persisted_callbacks, which ends with this refresh on each sweep
     (1s cadence), so a separate invalidate hook had no reachable call site
-    and was removed."""
+    and was removed.
+
+    A6: **排除 `.deadletter.json` 侧车**。上报的是「积压了多少条没送出去的
+    回调」，侧车不是回调——不排除的话这个运维指标会凭空翻倍，而翻倍恰恰会
+    掩盖对账的真实效果（对账删 payload 时连带删侧车，指标本该降一半）。"""
     try:
-        count = sum(1 for p in _dead_letter_dir().iterdir() if p.is_file())
+        count = sum(1 for p in _dead_letter_dir().iterdir()
+                    if p.is_file() and not p.name.endswith(DEAD_LETTER_SIDECAR_SUFFIX))
     except OSError:
         count = 0
     _dead_letter_count_cache[0] = count
@@ -1083,14 +1153,32 @@ def _persist_failed_callback(payload: dict, url: str) -> Optional[Path]:
         return None
 
 
-def _write_retry_count(filepath: Path, retries: int) -> None:
+def _write_retry_count(filepath: Path, retries: int,
+                       dead_letter_requeues: Optional[int] = None) -> None:
     """Bump the .meta retry counter. ``updatedAt`` doubles as the
-    last-attempt timestamp for the per-file replay backoff gate."""
+    last-attempt timestamp for the per-file replay backoff gate.
+
+    A6: ``deadLetterRequeues`` 未显式给出时**保留原值**——对账重新入队只改
+    retries，不能顺手把「已经被救过几次」抹掉（那样毒丸文件会无限往返）。"""
     try:
+        if dead_letter_requeues is None:
+            dead_letter_requeues = _read_retry_meta(filepath).get('deadLetterRequeues', 0)
         filepath.with_name(filepath.name + '.meta').write_text(
-            json.dumps({'retries': retries, 'updatedAt': int(time.time() * 1000)}), encoding='utf-8')
+            json.dumps({'retries': retries,
+                        'updatedAt': int(time.time() * 1000),
+                        'deadLetterRequeues': dead_letter_requeues}), encoding='utf-8')
     except OSError as exc:
         logger.warning('Failed to update retry counter for %s: %s', filepath, exc)
+
+
+def _read_retry_meta(filepath: Path) -> dict:
+    """A6: 读 .meta 的原始 dict（retries / updatedAt / deadLetterRequeues）。
+    缺失或损坏一律回落为空 dict——调用方已有各自的兜底。"""
+    try:
+        raw = json.loads(filepath.with_name(filepath.name + '.meta').read_text(encoding='utf-8'))
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _replay_backoff_elapsed(filepath: Path, meta: dict, retries: int) -> bool:
@@ -1119,15 +1207,32 @@ def _replay_backoff_elapsed(filepath: Path, meta: dict, retries: int) -> bool:
     return (now_ms - last_attempt_ms) >= gate_ms
 
 
-def _dead_letter_callback_file(filepath: Path, reason: str) -> None:
+def _dead_letter_callback_file(filepath: Path, reason: str, poison: bool = False) -> None:
     """Move a permanently-failed callback file to dead-letter/ (node parity):
     the retry loop stops resending it, but the payload stays on disk for
-    manual inspection/replay."""
+    manual inspection/replay.
+
+    A6: ``poison`` 标记载荷本身是否不可送达（超大 / 坏 JSON）——它决定对账
+    能不能把文件救回重发队列（见 ``reconcile_dead_letter_files``）。同时在
+    payload 旁写一个侧车，记下 reason / poison / 时间 / 已被救回次数。"""
+    requeues = _read_retry_meta(filepath).get('deadLetterRequeues') or 0
+    try:
+        requeues = int(requeues)
+    except (TypeError, ValueError):
+        requeues = 0
     try:
         target = _dead_letter_dir() / filepath.name
         if target.exists():
             target.unlink()
+        # requeues 由 live .meta 携带（重新入队时写入），跨「死信→重发→再死信」
+        # 循环继承，救回次数才不会被无限重置。
         filepath.rename(target)
+        _write_dead_letter_meta(target, {
+            'reason': reason,
+            'poison': bool(poison),
+            'deadLetteredAt': int(time.time() * 1000),
+            'requeues': requeues,
+        })
         logger.warning('Callback file %s moved to dead-letter after %s; manual replay required',
                        filepath.name, reason)
     except OSError as exc:
@@ -1184,10 +1289,10 @@ async def retry_persisted_callbacks() -> int:
             if not isinstance(retries, int) or retries < 0:
                 retries = 0
             if retries >= CALLBACK_FILE_MAX_RETRIES:
-                _dead_letter_callback_file(filepath, f'{retries} failed retry rounds')
+                _dead_letter_callback_file(filepath, f'{retries} failed retry rounds', False)
                 continue
             if filepath.stat().st_size > CALLBACK_FILE_MAX_SIZE_BYTES:
-                _dead_letter_callback_file(filepath, 'oversized payload')
+                _dead_letter_callback_file(filepath, 'oversized payload', True)
                 continue
 
             # Parse + validate BEFORE the backoff gate: a corrupt/poison file
@@ -1216,7 +1321,7 @@ async def retry_persisted_callbacks() -> int:
                 next_retries = retries + 1
                 _write_retry_count(filepath, next_retries)
                 if next_retries >= CALLBACK_FILE_MAX_RETRIES:
-                    _dead_letter_callback_file(filepath, f'{next_retries} failed retry rounds')
+                    _dead_letter_callback_file(filepath, f'{next_retries} failed retry rounds', False)
                 continue
             delivered += 1
             filepath.unlink()
@@ -1228,11 +1333,193 @@ async def retry_persisted_callbacks() -> int:
         except (ValueError, json.JSONDecodeError):
             # Corrupt/unparseable poison files would never succeed —
             # dead-letter them instead of burning a re-send forever.
-            _dead_letter_callback_file(filepath, 'corrupt payload')
+            _dead_letter_callback_file(filepath, 'corrupt payload', True)
         except OSError as exc:
             logger.warning('Failed to retry callback file %s: %s', filepath.name, exc)
     _refresh_dead_letter_count()
     return delivered
+
+
+async def _fetch_terminal_states(address: str, since_ms: float) -> Optional[set]:
+    """问 admin「这些执行终态了没有」。
+
+    返回已终态的 executionId 集合；**拿不到（不可达 / 响应形状不对）返回
+    None**——调用方据此整体放弃本轮，绝不退化成「空集合」（那等于说"都没
+    终态"，会把毒丸文件一股脑推回重发队列）。"""
+    from urllib.parse import quote, urlencode
+
+    since_iso = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(since_ms / 1000))
+    path = (f'/executors/{quote(address, safe="")}/terminal-states?'
+            + urlencode({'since': since_iso, 'limit': DEAD_LETTER_RECONCILE_LIMIT}))
+    token = await get_current_token() or _get_callback_token()
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await request_with_self_heal(
+            client, 'get', build_admin_api_url(path), token=token)
+    if response.status_code >= 400:
+        logger.warning('Terminal-states reconciled failed: HTTP %s', response.status_code)
+        return None
+    from auth import _unwrap_envelope
+    try:
+        payload = _unwrap_envelope(response.json())
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    items = payload.get('items')
+    if not isinstance(items, list):
+        logger.warning('Terminal-states response has no items array — treating as unavailable')
+        return None
+    terminal = {it.get('executionId') for it in items
+                if isinstance(it, dict) and isinstance(it.get('executionId'), str)}
+    if payload.get('hasMore') is True:
+        logger.warning('Terminal-states page is partial (%d items, hasMore=true); '
+                       'remaining dead-letter files handled next round', len(terminal))
+    return terminal
+
+
+async def reconcile_dead_letter_files() -> dict:
+    """对账一轮死信目录。返回处置计数（与 node reconcileDeadLetters 同形）。
+
+    见上方块注释的三条设计约束。零死信时一个请求都不发。"""
+    result = {'scanned': 0, 'deleted': 0, 'requeued': 0, 'kept': 0,
+              'orphans': 0, 'skipped': 0, 'fetched': -1, 'hasMore': False}
+    dead_dir = Path(settings.work_dir) / 'callbacks' / 'dead-letter'
+    try:
+        entries = list(dead_dir.iterdir())
+    except OSError:
+        return result  # 目录不存在 = 零死信（刻意不 mkdir：只读动作不造目录）
+
+    payloads = [p for p in entries
+                if p.is_file() and p.name.startswith('callback-')
+                and p.name.endswith('.json')
+                and not p.name.endswith(DEAD_LETTER_SIDECAR_SUFFIX)]
+    payload_names = {p.name for p in payloads}
+
+    # 孤儿侧车：payload 已被 TTL 清理（maintenance 的 sweep 不认识侧车）。
+    for entry in entries:
+        if not entry.name.endswith(DEAD_LETTER_SIDECAR_SUFFIX):
+            continue
+        owner = entry.name[:-len(DEAD_LETTER_SIDECAR_SUFFIX)]
+        if owner in payload_names:
+            continue
+        try:
+            entry.unlink()
+            result['orphans'] += 1
+        except OSError:
+            pass
+    if not payloads:
+        return result  # 健康路径：零死信 → 零请求
+
+    items = []
+    oldest_ms = time.time() * 1000
+    for payload in payloads:
+        try:
+            stat = payload.stat()
+        except OSError:
+            continue
+        meta = _read_dead_letter_meta(payload)
+        result['scanned'] += 1
+        # 侧车缺失（老版本留下的死信）时用文件 mtime 当水印起点。
+        oldest_ms = min(oldest_ms, (meta or {}).get('deadLetteredAt') or stat.st_mtime * 1000)
+        if stat.st_size > _DEAD_LETTER_MAX_PARSE_BYTES:
+            result['skipped'] += 1
+            continue
+        try:
+            data = json.loads(payload.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            result['skipped'] += 1
+            continue
+        if isinstance(data, dict):
+            data = data.get('payloads')
+        if not isinstance(data, list):
+            result['skipped'] += 1
+            continue
+        ids = [row.get('executionId') for row in data
+               if isinstance(row, dict) and isinstance(row.get('executionId'), str)]
+        if not ids:
+            result['skipped'] += 1
+            continue
+        items.append({'path': payload, 'ids': ids,
+                      'poison': bool((meta or {}).get('poison')),
+                      'requeues': int((meta or {}).get('requeues') or 0)})
+    if not items:
+        return result
+
+    since_ms = max(oldest_ms - DEAD_LETTER_SINCE_SKEW_SECONDS * 1000,
+                   time.time() * 1000 - DEAD_LETTER_MAX_LOOKBACK_SECONDS * 1000)
+    address = settings.executor_address_public or settings.executor_address
+    try:
+        terminal = await _fetch_terminal_states(address, since_ms)
+    except Exception as exc:  # 对账失败绝不能影响重发主循环
+        logger.warning('Dead-letter reconciliation failed: %s', exc)
+        return result
+    if terminal is None:
+        logger.warning('Dead-letter reconciliation skipped: terminal states unavailable; '
+                       'dead-letter files left untouched')
+        return result
+    result['fetched'] = len(terminal)
+
+    for item in items:
+        path = item['path']
+        if all(execution_id in terminal for execution_id in item['ids']):
+            # admin 早有终态 —— 再发一次也只会被幂等丢弃。
+            try:
+                path.unlink()
+                _remove_dead_letter_meta(path)
+                result['deleted'] += 1
+                logger.info('Dead-letter %s dropped: admin already recorded a terminal state',
+                            path.name)
+            except OSError as exc:
+                result['skipped'] += 1
+                logger.warning('Failed to drop reconciled dead-letter %s: %s', path.name, exc)
+            continue
+
+        if not item['poison'] and item['requeues'] < DEAD_LETTER_MAX_REQUEUES:
+            # admin 仍未终态：回调是它唯一的结果通道，救回重发队列。
+            try:
+                live = _callback_dir() / path.name
+                path.rename(live)
+                _remove_dead_letter_meta(path)
+                _write_retry_count(live, 0, item['requeues'] + 1)
+                result['requeued'] += 1
+                logger.warning('Dead-letter %s re-queued for retry (attempt %d/%d): '
+                               'admin has no terminal state yet',
+                               path.name, item['requeues'] + 1, DEAD_LETTER_MAX_REQUEUES)
+            except OSError as exc:
+                result['skipped'] += 1
+                logger.warning('Failed to re-queue dead-letter %s: %s', path.name, exc)
+            continue
+
+        result['kept'] += 1
+    _refresh_dead_letter_count()
+    return result
+
+
+_dead_letter_reconcile_state = {'last': 0.0, 'in_flight': False,
+                                'interval': DEAD_LETTER_RECONCILE_INTERVAL_SECONDS}
+
+
+def set_dead_letter_reconcile_interval(seconds: float) -> None:
+    """测试用：把对账周期注入为 0 以强制每轮都对账。"""
+    _dead_letter_reconcile_state['interval'] = seconds
+
+
+async def _maybe_reconcile_dead_letters() -> None:
+    """A6: 死信对账的节流入口（低频、只读、失败无副作用）。停机排空期间不跑——
+    那时不该再发起新的 admin 请求。"""
+    state = _dead_letter_reconcile_state
+    if _callback_retry_stop.is_set() or state['in_flight']:
+        return
+    if time.monotonic() - state['last'] < state['interval']:
+        return
+    state['in_flight'] = True
+    state['last'] = time.monotonic()
+    try:
+        await reconcile_dead_letter_files()
+    except Exception as exc:  # 对账失败绝不能影响重发主循环
+        logger.warning('Dead-letter reconciliation error: %s', exc)
+    finally:
+        state['in_flight'] = False
 
 
 async def callback_retry_task() -> None:
@@ -1245,6 +1532,8 @@ async def callback_retry_task() -> None:
         while not _callback_retry_stop.is_set():
             try:
                 await retry_persisted_callbacks()
+                # A6: 死信对账（默认 10min 一次；零死信时零请求）
+                await _maybe_reconcile_dead_letters()
             except Exception as exc:  # never let the sweep die
                 logger.error('Callback retry error: %s', exc)
             if _callback_retry_stop.is_set():

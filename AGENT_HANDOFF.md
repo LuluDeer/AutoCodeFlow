@@ -3,7 +3,7 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-14（**ARCH-A5 SSE 短效票据 done**：三条 SSE 长连接此前把 access token（15min）拼进 `?access_token=`——查询串进 nginx 日志/浏览器历史/Referer，等于把 15 分钟全权令牌写进日志；现改由 `POST /auth/sse-ticket` 签发 30s、`type=sse_ticket` 的专用票据，建流前现换（重连也换新票），**旧 `?access_token=` 通道整体撤销**。admin-api 2643/2643（+7）、admin-web 733（新增 5 例专项）；反证有牙。此前同日：**ARCH-A4 done**（路由面快照守卫 + channelList 分发，run `34879813270` 全绿）、**ARCH-A3 done**（执行器协议契约化最小切片）、**ARCH-A1 done**（执行状态机收口））
+更新时间：2026-09-14（**ARCH-A6 回调可靠性分层 done**：死信目录此前是单向终点，且磁盘上不记录死信原因——「admin 长时间不可达导致重发预算耗尽」（恢复后值得重发）与「载荷本身是毒丸」（重发永远失败）无法区分。现由 admin 新增只读对账端点 `GET /executors/:address/terminal-states`，执行器落盘时写 `.deadletter.json` 侧车记 poison/救回次数，按「终态→删 / 未终态非毒丸→重发 / 毒丸或次数用尽→人工」三层处置；零死信零请求、取不到就什么都不动、救回次数有上限。admin-api 新增 19 例、executor-node 360/360、executor-python 330。此前同日：**ARCH-A5 SSE 短效票据 done**：三条 SSE 长连接此前把 access token（15min）拼进 `?access_token=`——查询串进 nginx 日志/浏览器历史/Referer，等于把 15 分钟全权令牌写进日志；现改由 `POST /auth/sse-ticket` 签发 30s、`type=sse_ticket` 的专用票据，建流前现换（重连也换新票），**旧 `?access_token=` 通道整体撤销**。admin-api 2643/2643（+7）、admin-web 733（新增 5 例专项）；反证有牙。此前同日：**ARCH-A4 done**（路由面快照守卫 + channelList 分发，run `34879813270` 全绿）、**ARCH-A3 done**（执行器协议契约化最小切片）、**ARCH-A1 done**（执行状态机收口））
 当前分支：`develop`
 
 ## 状态快照
@@ -17,6 +17,20 @@
   - **踩坑**：① admin-web 三个既有 SSE 测试原本**同步**断言 `FakeEventSource.instances.length`，改异步后全绿变红——需在各 `advanceTimersByTime` 之后补 `await act(async () => {})` 冲刷微任务；② 后台跑全量 vitest 时**不要同时改被测文件**（本轮因此误报 2 例红，事后单独复跑全绿）。
   - **残差（如实）**：① **未做「单次使用」**（评审原稿提到）——需要在建流路径引入 Redis 共享状态，等于把 SSE 可用性与 Redis 绑定；而票据已是 30s + 路径受限，日志泄漏（事后读取）本就拿不到有效凭据。取舍与理由写进了 `api/sse.ts` 与 `auth.service.ts` 注释；② 长期路线（`fetch()` + `ReadableStream` 自实现 SSE 客户端、彻底消除「凭据入 URL」）未做——F-08 已把三套实现合并为 `createSseClient`，届时只需换建连方式；③ openapi/api-types 产物按「CI drift 日志回填」流程同步（本机无 PG/Redis）。
   - **下轮建议**：① A6 回调可靠性分层（`GET /executors/:address/terminal-states` 对账端点 + 死信对账，同样需走 CI 回填产物）；② A3 完整形态（schema 化）；③ A2-B（`assertCanWrite` 提为守卫内强制）。生产真机项不变。
+- **本轮（2026-09-14 用户授权「剩下的全部推进」→ ARCH-A6 回调可靠性分层，主控）**：评审 §七六个优先方向的**最后一项**。
+  - **先核查再动手（与 A4 同款教训）**：评审给的三个子项里，「重试预算改时长型（24h TTL）+ 毒丸轮数上限」**已由 E-05 落地**（node `CALLBACK_FILE_MAX_RETRIES = 150` + base 5s / cap 600s 指数退避 ≈ 24.0h；python 侧 base 1s ≈ 23.6h），不重复造轮子。真正缺的是**对账**。
+  - **问题**：死信目录此前是**单向终点**——文件进去就再也出不来，且**磁盘上不记录它为什么进来**。于是两类死信长得一模一样，处置却完全相反：
+    - ① **重发预算耗尽**（约 24h）：典型成因是 admin 长时间不可达（滚动升级 / 网络分区）。admin 恢复后**很可能仍值得重发**——若 admin 还没把该执行终态化（stale sweep 要等执行器心跳超时才跑），回调是它唯一能得知结果、并释放执行器槽位的通道。
+    - ② **毒丸**（> 64MB / 坏 JSON）：重发永远失败，只等人来看。
+  - **形态（三端共载）**：
+    - admin-api 新增**只读**对账端点 `GET /executors/:address/terminal-states?since=&limit=`（`@Public()` + `@WriteGuard(scope:'token')` + `validateTokenByAddress`，与 heartbeat/pull 同款机器面）。返回已终态执行清单，按终态时间**升序**（便于按水印增量消费）；水印列是 `COALESCE(endTime, createdAt)`（endTime 在部分终态路径下可为 NULL）；`since` 缺省 24h、最老钳到 30 天；`limit` 默认 500 上限 2000；额外回 `hasMore` 与 `serverTime`（供执行器校正时钟偏差后再算 since）。
+    - **严格只读**：不改执行行、不释放槽位、不写审计——多一条写状态的路就多一处状态机分叉，A1 收口白做。对账只是让执行器**不再做无用功**。
+    - 执行器落盘死信时写 `.deadletter.json` **侧车**（reason / poison / deadLetteredAt / requeues），对账据此分三层：**终态→删**；**未终态 + 非毒丸→重新入队**（轮数归零重走 24h 预算、救回次数 +1，上限 3）；**未终态但毒丸或救回次数用尽→保留待人工**。node（`callback.ts` + 新 `dead-letter-sidecar.ts`）与 python（`routers/execute.py`）同语义、**同磁盘布局**。
+  - **三条设计约束（都写进了代码注释，改前请读）**：① **零死信则零请求**——健康执行器不产生任何额外流量，对账不是新的心跳；② **取不到就什么都不做**——admin 不可达 / 响应形状不对时原样返回，**绝不**把「没拿到终态清单」退化成「都没终态」（那会把毒丸一股脑推回重发队列，白烧一轮 24h 预算）；③ **救回次数有上限**——执行行若已被删除，永远查不到终态，没上限会在「死信→重发→再死信」之间无限往返。
+  - **验收**：admin-api 新增 19 例（终态集合与 `execution-terminal.ts` 同源、hasMore 截断、limit 钳位、空令牌 fail-closed、since 非法/过老回退）；executor-node **360/360**（新增 17 例对账专项 + file-logger 2 例侧车口径）；executor-python **330**（新增 18 例）+ 修正 3 处既有用例的 `glob('callback-*.json')`（侧车会被同一个 glob 命中）。tsc 0 / eslint 0。
+  - **踩坑**：① **侧车会让 `getDeadLetterCount` 翻倍**——上报的是「积压了多少条没送出去的回调」，侧车不是回调；node `getDeadLetterCount` 与 python `_refresh_dead_letter_count` 都要排除它，`file-logger` 的 `removeOlderThan` 还得加 `exclude` 选项，否则 `MAX_DEAD_LETTER_FILES` 的保留名额被侧车吃掉一半（实测 52 份死信只留 25 份）。② `reconcileDeadLetters()` **不能用 `getDeadLetterDir()`**（会 mkdir）——只读动作会在零死信的健康执行器上凭空造出一个空目录，触发既有断言。③ **`npm run build:executor`（Git Bash）会把 ncc 产物写到 `E://e//softwareData//...` 幻影目录**：脚本用 `pwd` 得到 `/e/softwareData/...`，node 把它当相对路径解析。正确姿势是 `cd apps/executor-node && ../executor-desktop/node_modules/.bin/ncc build src/main.ts -o ../executor-desktop/resources/executor-node --source-map --no-cache`（**相对路径，与 CI 同款**），再手动回填 `apps/executor-desktop/executor-node-bundle.sha256`。
+  - **残差（如实）**：① 超过 8MB 的死信**不解析**（为一个 executionId 去 parse 几十 MB 不划算），超大载荷死信只能人工清理；② `hasMore=true` 时只处置已拿到的那部分，其余等下一轮（收敛依赖「删掉的文件不再进下一轮窗口」）；③ openapi / api-types 产物仍走 CI drift 回填（本机无 PG/Redis）。
+  - **下轮建议**：① A3 完整形态（ExecuteRequest / ConfigReload / 运维端点的 zod + pydantic 双生成 schema）；② A2-B（`assertCanWrite` 提为守卫内强制，真正实现「缺省拒绝」）。生产真机项不变（QA-05 24h 长稳、多主机拓扑、desktop-e2e-smoke windows runner）。
 - **本轮（2026-09-14 用户授权「剩下的全部推进」→ ARCH-A4 契约单一事实源收口，主控）**：A1/A3 已收口并推全绿，接着做评审 §七 A4。**先核查评审给的 6 个子项，发现 4 项此前已由 PK-02/PK-03/PK-15 落地**（nest-cli 已启用 `@nestjs/swagger/plugin`、Update* DTO 已换 `PartialType(CreateXxxDto)`、Executor 端点已 DTO 化、`openapi-empty-schema-whitelist.json` + `api-types-drift` job 已在 CI 拦空 schema）——**不重复造轮子**，只做剩余 2 项。
   - **① mcp/CLI 路由面快照守卫**（新 `scripts/check-consumer-routes.mjs` + CI `consumer-routes` job + `npm run test:consumer-routes`）：admin-api 有 148 条 openapi 路径，而 mcp-server 与 acf-cli 各自**硬编码**了 73 条路由字符串，**两者零编译期耦合**（不用生成的 api-types、也不 import admin-api）。后果是 admin-api 改一次路由在 admin-web 侧会红（`api-types-drift` 闸），在 mcp/CLI 侧却**完全静默**——只有用户真调用那个 MCP 工具 / CLI 子命令时才 404，且 404 会被信封拆包层吞成空错误体。
     - **两个设计要点**：① 路径模板归一——`${taskId}` 与 openapi 的 `{id}` 都替换成 `{}`，**参数名不同不算漂移**（否则会满屏误报）；② **扫描器自身带规模下界**（关键）——正则一旦因源码风格变化匹配不到东西，「0 条路由 → 0 条缺失」是**永真断言**，守卫会静默失效。故每个来源设下界（mcp ≥20 / cli ≥25），低于下界直接判失败：**宁可红也不能假装绿**。当前 mcp 39 条 + cli 34 条全部命中。
@@ -587,7 +601,7 @@ cd packages/mcp-server && npx tsc --noEmit
 
 > **当前（2026-09-14）**：ARCH-A2 已 done。剩余项如下：
 >
-> 1. **架构演进（季度级，唯一成规模）**：§七 20 个架构方向——**A2 / A1 / A3（最小切片）已 done（均 2026-09-14）**，剩余 A4 契约单一事实源 / A5 SSE 客户端统一 / A6 回调可靠性分层，各 1~2 轮；A3 完整形态（ExecuteRequest/ConfigReload/运维端点的 schema 化）另计。
+> 1. **架构演进（季度级，唯一成规模）**：§七 20 个架构方向——**A1 / A2 / A3（最小切片）/ A4 / A5 / A6 已 done（均 2026-09-14）**——§七六个优先方向全部收口，剩余 A3 完整形态（schema 化）与 A2-B；A3 完整形态（ExecuteRequest/ConfigReload/运维端点的 schema 化）另计。
 > 2. **A2-B（A2 的加强件）**：把 service 内的 `assertCanWrite` 提升为守卫内强制，真正实现「缺省拒绝」（当前 `@WriteGuard` 只是契约式声明，拦不住 service 忘记写归属校验）。需先统一各资源域的 id 解析方式。
 > 3. **需产品拍板（不可代劳）**：ADR-013 非成员 trigger 收紧、release-please main 合并习惯、API JWT 60d 缩短评估、desktop Linux 更新链签名。
 > 4. **需真机/长稳环境**：QA-05 24h 长稳、多主机（跨机）拓扑、macOS/Windows/ARM64 部署、通知渠道实测、私有 npm/PyPI 仓库集成。

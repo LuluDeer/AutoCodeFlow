@@ -59,6 +59,12 @@ import { ExecutorPullService } from "./executor-pull.service";
 // autoflow_push_auth_retry_total{result} series。
 import { recordRuntime } from "../metrics/runtime-metrics-entry";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+// A6（DEEP_REVIEW §七）: 死信对账端点的响应契约 + 窗口上界常量。
+import { TerminalStatesResponseDto } from "./dto/executor-terminal-states.dto";
+import {
+  TERMINAL_STATES_MAX_LOOKBACK_MS,
+  TERMINAL_STATES_DEFAULT_LOOKBACK_MS,
+} from "./executor.service";
 
 /**
  * R11: true when the executor answered a reload-config push with an HTTP 401
@@ -354,6 +360,86 @@ export class ExecutorController {
         ? await this.pullService.pull(executor.id, waitMs)
         : null;
     return { task: payload ?? null, dispatchMode: executor.dispatchMode };
+  }
+
+  @Public()
+  // A6: 与 heartbeat/pull 同属执行器机器面——对账由执行器后台循环按固定间隔
+  // 拉取（默认 10 分钟级，且本地无死信时完全不发请求），多执行器共享出口 IP
+  // 时按 IP 计数的 strict/ops 档位同样会误杀，故沿用全局默认档兜底。
+  @WriteGuard("executor", {
+    scope: "token",
+    reason: "执行器持 per-executor 令牌对账本地死信回调（A6），非用户会话面",
+  })
+  @Get(":address/terminal-states")
+  @ApiOperation({
+    summary: "Reconcile terminal execution states (read-only)",
+    description:
+      "A6 (DEEP_REVIEW): read-only reconciliation view for the executor's local " +
+      "callback dead-letter directory. Returns executions on this executor that have " +
+      "already reached a TERMINAL state (success/failed/timeout/killed/cancelled), " +
+      "ordered ascending by terminal time so the caller can consume it as a watermark " +
+      "stream. The executor uses it to tier dead-letter handling: a dead-lettered " +
+      "callback whose execution is terminal is moot (delete it); one whose execution " +
+      "is still open and whose dead-letter reason was retry-budget exhaustion is worth " +
+      "re-queuing; poison payloads (oversized/corrupt) stay for manual inspection. " +
+      "Strictly read-only — it mutates nothing, releases no slots and writes no audit; " +
+      "all state changes still flow through the existing callback/terminal paths.",
+  })
+  @ApiParam({
+    name: "address",
+    description: "Executor registration address (same value as heartbeat)",
+  })
+  @ApiQuery({
+    name: "since",
+    required: false,
+    description:
+      "ISO-8601 watermark; only executions whose terminal time (COALESCE(endTime, createdAt)) " +
+      "is >= since are returned. Defaults to the last 24h; clamped to 30 days.",
+    example: "2026-09-14T08:00:00.000Z",
+  })
+  @ApiQuery({
+    name: "limit",
+    required: false,
+    description:
+      "Page size (1..2000, default 500). hasMore=true means more rows remain.",
+    example: 500,
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Terminal-state page",
+    type: TerminalStatesResponseDto,
+  })
+  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  async getTerminalStates(
+    @Param("address") address: string,
+    @Query("since") since?: string,
+    @Query("limit") limit?: string,
+    @Headers("authorization") auth?: string,
+  ) {
+    const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
+    const isValid = await this.svc.validateTokenByAddress(address, token);
+    if (!isValid) {
+      throw new UnauthorizedException("Invalid executor token");
+    }
+    const parsedLimit = Number(limit);
+    return this.svc.getTerminalStates(address, {
+      since: this.parseTerminalSince(since),
+      limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+    });
+  }
+
+  /** since 解析：非法/缺失回退 24h，过老钳到 30 天上界（理由见 service 常量注释）。 */
+  private parseTerminalSince(since?: string): Date {
+    const now = Date.now();
+    if (since) {
+      const parsed = Date.parse(since);
+      if (!Number.isNaN(parsed)) {
+        return new Date(
+          Math.max(parsed, now - TERMINAL_STATES_MAX_LOOKBACK_MS),
+        );
+      }
+    }
+    return new Date(now - TERMINAL_STATES_DEFAULT_LOOKBACK_MS);
   }
 
   @ApiBearerAuth("JWT")
