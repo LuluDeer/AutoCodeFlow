@@ -2210,7 +2210,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       await assertSafeExecutorUrl(url);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      await this.failBatch(batch, deploymentId, `health probe URL refused: ${msg}`);
+      await this.failBatch(
+        batch,
+        deploymentId,
+        `health probe URL refused: ${msg}`,
+      );
       return;
     }
     const attempts = hc.failThreshold;

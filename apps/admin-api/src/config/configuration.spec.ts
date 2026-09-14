@@ -432,9 +432,7 @@ describe("configuration (ARCH-27) newly registered config sections", () => {
     delete process.env.NPM_REGISTRY_URL;
     expect(loadConfig().registry.npm.url).toBe("http://localhost:4873");
     process.env.NPM_REGISTRY_URL = "http://registry.internal:4873";
-    expect(loadConfig().registry.npm.url).toBe(
-      "http://registry.internal:4873",
-    );
+    expect(loadConfig().registry.npm.url).toBe("http://registry.internal:4873");
   });
 
   it("R-12: registers metricsStream section with defaults (maxGlobal 32 / interval 3000 / idlePing 15000)", () => {

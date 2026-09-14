@@ -1,10 +1,5 @@
 import { ApiProperty } from "@nestjs/swagger";
-import {
-  IsArray,
-  IsUUID,
-  ArrayMinSize,
-  ArrayMaxSize,
-} from "class-validator";
+import { IsArray, IsUUID, ArrayMinSize, ArrayMaxSize } from "class-validator";
 
 // R-18（DEEP_REVIEW 0ef3bbe）: 批量任务 ID 列表的单次上限。批量端点用
 // Promise.all 并发触发/暂停/删除——无界数组会让一次请求携数千 uuid 炸开成

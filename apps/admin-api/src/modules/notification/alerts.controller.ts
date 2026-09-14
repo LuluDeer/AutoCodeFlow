@@ -143,7 +143,10 @@ export class AlertsController {
       "X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。" +
       "alerts[] 为空数组返回 400。",
   })
-  @ApiBody({ type: AlertmanagerWebhookDto, description: "Alertmanager v2 webhook body" })
+  @ApiBody({
+    type: AlertmanagerWebhookDto,
+    description: "Alertmanager v2 webhook body",
+  })
   async webhook(
     @Body() payload: AlertmanagerWebhookPayload,
     @Headers("x-hub-signature-256") signature?: string,

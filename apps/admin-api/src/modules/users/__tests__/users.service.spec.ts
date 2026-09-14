@@ -413,9 +413,7 @@ describe("UsersService", () => {
 
     it("throws NotFound when the target row vanished", async () => {
       repo.findOne.mockResolvedValue(null);
-      await expect(service.remove(42, 1)).rejects.toThrow(
-        "User #42 not found",
-      );
+      await expect(service.remove(42, 1)).rejects.toThrow("User #42 not found");
       expect(repo.remove).not.toHaveBeenCalled();
     });
 

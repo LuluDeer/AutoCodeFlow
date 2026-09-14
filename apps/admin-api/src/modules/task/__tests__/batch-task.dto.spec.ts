@@ -34,13 +34,14 @@ describe("BatchTaskIdsDto (R-18 ArrayMaxSize)", () => {
   });
 
   it("rejects an empty list (ArrayMinSize(1))", async () => {
-    await expect(validate({ taskIds: [] })).rejects.toThrow(BadRequestException);
+    await expect(validate({ taskIds: [] })).rejects.toThrow(
+      BadRequestException,
+    );
   });
 
   it("rejects a list above the hard cap with 400", async () => {
-    const ids = Array.from(
-      { length: BATCH_TASK_IDS_MAX_SIZE + 1 },
-      (_, i) => uuid(i),
+    const ids = Array.from({ length: BATCH_TASK_IDS_MAX_SIZE + 1 }, (_, i) =>
+      uuid(i),
     );
     await expect(validate({ taskIds: ids })).rejects.toThrow(
       BadRequestException,
@@ -48,9 +49,8 @@ describe("BatchTaskIdsDto (R-18 ArrayMaxSize)", () => {
   });
 
   it("accepts exactly the hard cap (boundary)", async () => {
-    const ids = Array.from(
-      { length: BATCH_TASK_IDS_MAX_SIZE },
-      (_, i) => uuid(i),
+    const ids = Array.from({ length: BATCH_TASK_IDS_MAX_SIZE }, (_, i) =>
+      uuid(i),
     );
     const result = await validate({ taskIds: ids });
     expect(result.taskIds).toHaveLength(BATCH_TASK_IDS_MAX_SIZE);

@@ -188,8 +188,14 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         // / executions idlePing 30000ms）。
         METRICS_STREAM_MAX_GLOBAL: Joi.number().integer().min(1).default(32),
         METRICS_STREAM_INTERVAL_MS: Joi.number().integer().min(1).default(3000),
-        METRICS_STREAM_IDLE_PING_MS: Joi.number().integer().min(1).default(15000),
-        EXECUTIONS_STREAM_IDLE_PING_MS: Joi.number().integer().min(1).default(30000),
+        METRICS_STREAM_IDLE_PING_MS: Joi.number()
+          .integer()
+          .min(1)
+          .default(15000),
+        EXECUTIONS_STREAM_IDLE_PING_MS: Joi.number()
+          .integer()
+          .min(1)
+          .default(30000),
 
         // AI (optional)
         AI_PROVIDER: Joi.string()
