@@ -20,6 +20,8 @@ import {
 import { DEFAULT_PROJECT_ID } from "../project/project.entity";
 import { spawn } from "child_process";
 import { assertSafeGitRepoUrl } from "../../common/utils/safe-http.util";
+// A2-B: 属主校验的运行时证据落点
+import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -281,6 +283,8 @@ export class ApplicationService implements OnModuleInit {
     row: { ownerUserId: number | null },
     user: { id: number; role: UserRole } | null | undefined,
   ): void {
+    // A2-B: 先落证再判定（同 task.service.assertCanWrite）。
+    recordOwnershipAssertion("application", "write");
     if (user?.role === UserRole.ADMIN) return;
     if (row.ownerUserId === null) {
       throw new ForbiddenException(

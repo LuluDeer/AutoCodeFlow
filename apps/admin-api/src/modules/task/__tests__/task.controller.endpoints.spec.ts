@@ -189,7 +189,8 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
 
     // 任务作用域校验必须先于 kill（防跨任务 execution 操纵）
     expect(taskService.getExecution).toHaveBeenCalledWith("exec-1", "task-1");
-    expect(taskService.killExecution).toHaveBeenCalledWith("exec-1");
+    // A2-B: user 必须透传（此前未传，属主校验无从执行）
+    expect(taskService.killExecution).toHaveBeenCalledWith("exec-1", user);
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "task.killExecution",
@@ -274,11 +275,12 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
     await controller.getStats("task-1");
     expect(taskService.getExecutionStats).toHaveBeenCalledWith("task-1");
 
-    await controller.suggestSchedule("task-1");
-    expect(taskService.suggestSchedule).toHaveBeenCalledWith("task-1");
+    // A2-B: suggestSchedule 现需 user 才能执行属主校验
+    await controller.suggestSchedule("task-1", user);
+    expect(taskService.suggestSchedule).toHaveBeenCalledWith("task-1", user);
 
     await controller.analyzeExecution("task-1", "exec-1", user, req);
-    expect(taskService.analyzeExecution).toHaveBeenCalledWith("exec-1");
+    expect(taskService.analyzeExecution).toHaveBeenCalledWith("exec-1", user);
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: "task.analyzeExecution" }),
     );

@@ -3,11 +3,23 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-14（**ARCH-A6 回调可靠性分层 done**：死信目录此前是单向终点，且磁盘上不记录死信原因——「admin 长时间不可达导致重发预算耗尽」（恢复后值得重发）与「载荷本身是毒丸」（重发永远失败）无法区分。现由 admin 新增只读对账端点 `GET /executors/:address/terminal-states`，执行器落盘时写 `.deadletter.json` 侧车记 poison/救回次数，按「终态→删 / 未终态非毒丸→重发 / 毒丸或次数用尽→人工」三层处置；零死信零请求、取不到就什么都不动、救回次数有上限。admin-api 2662（+19）、executor-node 360/360、executor-python 330；CI run `34893061056` **全绿**（49 job / 0 failure，`desktop-bundle-drift` 亦绿——bundle 哈希与 CI 离线重打一致）。此前同日：**ARCH-A5 SSE 短效票据 done**：三条 SSE 长连接此前把 access token（15min）拼进 `?access_token=`——查询串进 nginx 日志/浏览器历史/Referer，等于把 15 分钟全权令牌写进日志；现改由 `POST /auth/sse-ticket` 签发 30s、`type=sse_ticket` 的专用票据，建流前现换（重连也换新票），**旧 `?access_token=` 通道整体撤销**。admin-api 2643/2643（+7）、admin-web 733（新增 5 例专项）；反证有牙。此前同日：**ARCH-A4 done**（路由面快照守卫 + channelList 分发，run `34879813270` 全绿）、**ARCH-A3 done**（执行器协议契约化最小切片）、**ARCH-A1 done**（执行状态机收口））
+更新时间：2026-09-14（**ARCH-A2-B 写面授权缺省拒绝 done**：A2 只把「写端点的授权形态」做成了**声明**（漏声明会让 CI 红），但声明 `ownership` 之后**没有任何机制强制真的去校验**——service 里忘了调 `assertCanWrite` 照样全绿，评审 §1.2 点名的 updateGlue/rollback 类漂移会以同样形态再发。现由 **ALS 断言证据通道 + 全局 `WriteGuardEnforcementInterceptor`** 把声明升级为**运行时强制**：端点成功返回前若拿不出对应种类的断言证据，直接 500（缺省拒绝）。强制一开就暴露出真实漂移：① `trigger`/`pause`/`resume`（含三处批量端点）只做 `assertCanOperate`（**仅拒绝项目 viewer，不是属主校验**）→ 新增 `project-role` scope 如实登记（ADR-013：属主收紧待产品拍板），并要求 reason；② `killExecution` / `analyzeExecution` / `suggestSchedule` **完全无属主校验**（任意登录用户可终止/分析他人任务的执行）→ 补上与 `update` 同档的属主守卫。admin-api **2694 例**（+32）；**反证有牙**：删掉 service 里一行落证调用 → 4 例立即转红。此前同日：**ARCH-A6 回调可靠性分层 done**：死信目录此前是单向终点，且磁盘上不记录死信原因——「admin 长时间不可达导致重发预算耗尽」（恢复后值得重发）与「载荷本身是毒丸」（重发永远失败）无法区分。现由 admin 新增只读对账端点 `GET /executors/:address/terminal-states`，执行器落盘时写 `.deadletter.json` 侧车记 poison/救回次数，按「终态→删 / 未终态非毒丸→重发 / 毒丸或次数用尽→人工」三层处置；零死信零请求、取不到就什么都不动、救回次数有上限。admin-api 2662（+19）、executor-node 360/360、executor-python 330；CI run `34893061056` **全绿**（49 job / 0 failure，`desktop-bundle-drift` 亦绿——bundle 哈希与 CI 离线重打一致）。此前同日：**ARCH-A5 SSE 短效票据 done**：三条 SSE 长连接此前把 access token（15min）拼进 `?access_token=`——查询串进 nginx 日志/浏览器历史/Referer，等于把 15 分钟全权令牌写进日志；现改由 `POST /auth/sse-ticket` 签发 30s、`type=sse_ticket` 的专用票据，建流前现换（重连也换新票），**旧 `?access_token=` 通道整体撤销**。admin-api 2643/2643（+7）、admin-web 733（新增 5 例专项）；反证有牙。此前同日：**ARCH-A4 done**（路由面快照守卫 + channelList 分发，run `34879813270` 全绿）、**ARCH-A3 done**（执行器协议契约化最小切片）、**ARCH-A1 done**（执行状态机收口））
 当前分支：`develop`
 
 ## 状态快照
 
+- **本轮（2026-09-14 用户授权「剩下的全部推进」→ ARCH-A2-B 写面授权缺省拒绝，主控）**：§七六个优先方向全收口后，回到 A2 自己的残差——**声明不是强制**。
+  - **问题（A2 落地时就已如实登记）**：`@WriteGuard("task", { scope: "ownership" })` 是**纯元数据**。漏声明会被穷举扫描抓住，但**声明了 ownership 却没人在 service 里调 `assertCanWrite`**，扫描照样全绿——「缺省拒绝」并没有实现，只是把文档写进了装饰器。
+  - **形态（两层，缺一不可）**：① **落证**：真正的校验函数（`task.service.assertCanWrite` / `assertCanOperate`、`application.service.assertCanWrite`、`event-subscription.service.assertCanManage`）在执行时向 `AsyncLocalStorage` 作用域落一条 `resource:kind` 证据（**先落证再判定**——ADMIN 放行同样是授权决策；作用域外为 no-op，定时任务不受影响）；② **核对**：全局 `WriteGuardEnforcementInterceptor` 读取声明，在端点**成功返回前**核对证据，缺证直接 500。
+  - **两个刻意的语义选择**：① **只在成功路径核对**——属主校验失败本身抛 403，不能被改写成 500（否则真实拒绝原因被吞、前端拿不到「你不是属主」；参数校验 400 同理，此时没走到属主校验是正常时序）；② **用 500 而不是 403**——这是装配/实现缺陷而非客户端错误，必须在监控里被看见，不能被当成普通 403 吞掉。
+  - **一个易踩的实现坑**：必须在 `runOwnershipScope()` 回调**内部订阅**上游 Observable（用 `new Observable(s => run(() => next.handle().subscribe(s)))`）。只在回调里**创建** Observable 的话，handler 的真实执行落在 ALS 作用域之外，证据全丢、全端点假红。已由「异步 handler 中落证同样有效」一例钉住。
+  - **强制开出来的真实漂移（本轮最大价值）**：22 处 `ownership` 声明逐端点核对后——
+    - `trigger` / `pause` / `resume`（`TaskController` 三处 + `batch/*` 三处 + `TaskBatchController` 三处，共 9）只调 `assertCanOperate`（**只显式拒绝项目 viewer，不校验属主**）。这不是 ownership，是「这里**没有**属主校验」的既成事实（ADR-013：「任何登录用户可 trigger」的宽松语义待产品拍板后才收紧）→ 新增 `project-role` scope 如实登记，并强制给 reason 说明为什么不收紧（避免拿 ownership 当同义词糊弄）。
+    - `killExecution` / `analyzeExecution` / `suggestSchedule` **一处属主校验都没有**：任意登录用户可终止他人任务的执行、可对他人执行跑 AI 分析、可拉他人任务历史做排期建议。这三个端点的声明本来就是 `ownership`，故**按声明补上校验**（`assertCanWriteExecution`：execution → 所属 task 行 → 属主判定；`taskId` 缺失时 403 而非放行）。
+  - **验收**：admin-api **170 套件 2694/2694**（+32：拦截器行为 13 + 落证反证 8 + 越权专项 8 + 扫描对账 3）+ tsc 0 + eslint 0。
+  - **反证有牙（三层）**：① 删掉 `task.service.assertCanWrite` 里那一行 `recordOwnershipAssertion` → 落证 spec 3 例 + 声明/落证对账 1 例**立即转红**（实测）；② 合成控制器上「未落证→500」「错 resource→500」「只落 operate 证不能冒充 ownership→500」逐条钉住；③ 声明/落证对账对扫描器自身带规模下界（≥4 个落证方），防「扫不到东西」的永真断言。
+  - **残差（如实）**：① **只覆盖 HTTP 请求面**——定时任务/进程启动逻辑不在 ALS 作用域内，落证是 no-op、拦截器也不参与（这类路径的授权需另立机制）；② `project-role` 九个端点的**属主收紧仍未做**（ADR-013 待产品拍板，本轮只做到「如实声明 + 运行时强制」）；③ `authenticated` / `token` / `public` 三种 scope 仍只有声明层约束，没有运行时强制（前者的「已登录」由全局 `JwtAuthGuard` 保证，后两者的凭据校验在各端点内，形态差异大暂不统一）；④ `RegistryController.uploadPypiPackage`（A2 轮已登记）仍为「任意已登录用户可传 PyPI 包」。
+  - **下轮建议**：① A3 完整形态（ExecuteRequest / ConfigReload / 运维端点的 zod + pydantic 双生成 schema，仓库目前无 zod 依赖，需新引入）；② 把 `authenticated` scope 也纳入运行时强制（需先统一 API-Key 主体的 `req.user` 形态）；③ 生产真机项不变（QA-05 24h 长稳、多主机拓扑、desktop-e2e-smoke windows runner）。
 - **本轮（2026-09-14 用户授权「剩下的全部推进」→ ARCH-A5 SSE 短效票据，主控）**：A4 收口并推全绿后，按评审 §七做 A5 的**后半程**（前半 `createSseClient` 单一实现已由 F-08 落地）。
   - **问题（评审点名的 P2 已知风险）**：EventSource 不支持自定义请求头，三条 SSE 长连接（`/metrics/stream`、`/executions/stream`、`/logs/stream`）此前直接把 **access token（15min TTL）** 拼进 `?access_token=`。查询串会被 nginx access log、浏览器历史、Referer 记录——等于把一枚 15 分钟有效的**全权**令牌写进日志。
   - **形态**：新增 `POST /auth/sse-ticket`（常规 bearer 头）签发 **30s TTL、`type=sse_ticket`** 的专用票据。与 access token 共用 `ver` 会话版本快照 ⇒ 登出/改密后已签发票据即时失效；不落库、不参与刷新，是 access token 的**派生物**而非替代品。**两道门**：`extractJwtFromRequest` 只在三条 `/stream` 路径后缀上读取 `?ticket=`（路径门）；`validate` 的类型门只放行 `access` / `sse_ticket`（类型门）——refresh token 不能借道，票据也开不了任何 REST 端点。
@@ -599,10 +611,10 @@ cd packages/mcp-server && npx tsc --noEmit
 
 ## 下一步建议（按优先级）
 
-> **当前（2026-09-14）**：ARCH-A2 已 done。剩余项如下：
+> **当前（2026-09-14）**：ARCH-A2 与 **A2-B 均已 done**。剩余项如下：
 >
-> 1. **架构演进（季度级，唯一成规模）**：§七 20 个架构方向——**A1 / A2 / A3（最小切片）/ A4 / A5 / A6 已 done（均 2026-09-14）**——§七六个优先方向全部收口，剩余 A3 完整形态（schema 化）与 A2-B；A3 完整形态（ExecuteRequest/ConfigReload/运维端点的 schema 化）另计。
-> 2. **A2-B（A2 的加强件）**：把 service 内的 `assertCanWrite` 提升为守卫内强制，真正实现「缺省拒绝」（当前 `@WriteGuard` 只是契约式声明，拦不住 service 忘记写归属校验）。需先统一各资源域的 id 解析方式。
+> 1. **架构演进（季度级，唯一成规模）**：§七 20 个架构方向——**A1 / A2 / A3（最小切片）/ A4 / A5 / A6 已 done，A2-B 亦已 done（均 2026-09-14）**——§七六个优先方向全部收口且 A2 的「声明→强制」闭环完成；剩余 **A3 完整形态**（ExecuteRequest/ConfigReload/运维端点的 zod + pydantic 双生成 schema）。注意：仓库 `packages/*` 与 `apps/*` 的 package.json 中**目前没有任何 zod 依赖**，需新引入。
+> 2. **（原 A2-B，已 done）** ~~把 `assertCanWrite` 提升为守卫内强制~~：已由 ALS 断言证据通道 + `WriteGuardEnforcementInterceptor` 落地（声明 `ownership`/`project-role` 的写端点拿不出证据即 500）。顺带修出两处真实漂移：`trigger`/`pause`/`resume` 只做项目角色校验→改声明 `project-role`；`killExecution`/`analyzeExecution`/`suggestSchedule` 无属主校验→补上。剩余的是 ADR-013 待拍板的「project-role 是否收紧为 ownership」。
 > 3. **需产品拍板（不可代劳）**：ADR-013 非成员 trigger 收紧、release-please main 合并习惯、API JWT 60d 缩短评估、desktop Linux 更新链签名。
 > 4. **需真机/长稳环境**：QA-05 24h 长稳、多主机（跨机）拓扑、macOS/Windows/ARM64 部署、通知渠道实测、私有 npm/PyPI 仓库集成。
 > 5. **QA-12 CI 形态专项**：`desktop-e2e-smoke` 在 windows runner 的「Process failed to launch」（v1.2.0 起文档化，PR-only 非门禁）。

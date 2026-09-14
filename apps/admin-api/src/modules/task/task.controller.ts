@@ -177,7 +177,11 @@ export class TaskController {
   // 已标记 deprecated——两套实现调用同一 TaskService 方法、同 body/响应/审计，
   // 无逻辑漂移；待前端/SDK 全量切换后删除 deprecated 控制器。
   @Throttle({ default: OPS_THROTTLE })
-  @WriteGuard("task", { scope: "ownership" })
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
+  })
   @Post("batch/trigger")
   @ApiOperation({
     summary: "Batch trigger tasks",
@@ -220,7 +224,11 @@ export class TaskController {
   // pause/resume/delete 同为「触发/执行干预写面」，SEC-09 分域矩阵归中档 30/min，
   // 此前三端点漏挂导致批量写面脱离限流窗口。
   @Throttle({ default: OPS_THROTTLE })
-  @WriteGuard("task", { scope: "ownership" })
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
+  })
   @Post("batch/pause")
   @ApiOperation({
     summary: "Batch pause tasks",
@@ -261,7 +269,11 @@ export class TaskController {
 
   // R-17（DEEP_REVIEW 0ef3bbe）: 同 batch/pause——批量 resume 补 OPS_THROTTLE 分域限流。
   @Throttle({ default: OPS_THROTTLE })
-  @WriteGuard("task", { scope: "ownership" })
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
+  })
   @Post("batch/resume")
   @ApiOperation({
     summary: "Batch resume tasks",
@@ -430,8 +442,12 @@ export class TaskController {
       "Analyze execution history and return an AI-recommended cron expression with reasoning",
   })
   @ApiParam({ name: "id", description: "Task ID" })
-  async suggestSchedule(@Param("id") id: string) {
-    return this.taskService.suggestSchedule(id);
+  // A2-B: 透传 user——本端点声明 scope='ownership'，属主校验现由 service 执行。
+  async suggestSchedule(
+    @Param("id") id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.taskService.suggestSchedule(id, user);
   }
 
   @Get(":id")
@@ -543,7 +559,11 @@ export class TaskController {
 
   // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
   @Throttle({ default: OPS_THROTTLE })
-  @WriteGuard("task", { scope: "ownership" })
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
+  })
   @Post(":id/trigger")
   @ApiOperation({
     summary: "Manual trigger",
@@ -890,7 +910,11 @@ export class TaskController {
 
   // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
   @Throttle({ default: OPS_THROTTLE })
-  @WriteGuard("task", { scope: "ownership" })
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
+  })
   @Post(":id/pause")
   @ApiOperation({
     summary: "Pause task",
@@ -920,7 +944,11 @@ export class TaskController {
 
   // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
   @Throttle({ default: OPS_THROTTLE })
-  @WriteGuard("task", { scope: "ownership" })
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
+  })
   @Post(":id/resume")
   @ApiOperation({
     summary: "Resume task",
@@ -964,7 +992,8 @@ export class TaskController {
     @Req() req: Request,
   ) {
     await this.taskService.getExecution(execId, id);
-    const result = await this.taskService.analyzeExecution(execId);
+    // A2-B: 透传 user（此前未传，属主校验无从执行）。
+    const result = await this.taskService.analyzeExecution(execId, user);
     await this.audit.log({
       userId: user?.id,
       username: user?.username,
@@ -999,7 +1028,8 @@ export class TaskController {
     @Req() req: Request,
   ) {
     await this.taskService.getExecution(execId, id);
-    const result = await this.taskService.killExecution(execId);
+    // A2-B: 透传 user（此前未传，属主校验无从执行）。
+    const result = await this.taskService.killExecution(execId, user);
     await this.audit.log({
       userId: user?.id,
       username: user?.username,
