@@ -4,7 +4,7 @@
 
 ## 目录与命名
 
-- 目录：`apps/admin-api/src/migrations/`，当前 **65 个迁移文件**（另有 `migrations.spec.ts` 与 `__tests__/`）。
+- 目录：`apps/admin-api/src/migrations/`，当前 **67 个迁移文件**（另有 `migrations.spec.ts` 与 `__tests__/`）。
 - 命名：`<13位毫秒时间戳>-<PascalCase名称>.ts`，如 `1790000000008-AddTaskProjectId.ts`。TypeORM（0.3.x）按类名末尾 13 位 timestamp 排序执行，类名必须形如 `AddTaskProjectId1790000000008`。
 - 时间戳分两代：`17174731426xx` 系列（InitialSchema 时期，约 20 个）与 `178xx…/179xx…` 系列（后续演进），连续编号，无重复（有 spec 守卫，见下）。
 
@@ -58,9 +58,11 @@ npm run typeorm             # ts-node -r tsconfig-paths/register ./node_modules/
 | 会话撤销 | `1790000000017-AddUserSessionVersion` | `users` 加 `sessionVersion` INTEGER NOT NULL DEFAULT 0（WIKI-AUTH-REVOC）——用户级会话版本，logout/改密原子 +1，access token 的 `ver` claim 失配即在途令牌 401；存量旧行取 0、无 ver 的旧令牌兼容放行 |
 | 配置历史强化 | `1790000000018-AddConfigHistoryMetadata`（原登记 1790000000016，因与已发布的 AUTH-04 迁移撞号于 2026-09-13 重编号，内容零变化） | `config_history` 加 `valueType`/`isSecret` 两可空列（WIKI-OPT-2）——历史行元数据快照，回滚恢复类型/敏感标记 + 读面行级掩码；NULL=元数据不可知零破坏升级 |
 | 执行器 pull 派发 | `1790000000019-AddExecutorDispatchMode`（ARCH-32） | `executors` 加 `dispatchMode` varchar(16) NOT NULL DEFAULT 'push'（幂等 IF [NOT] EXISTS）——pull 模式执行器 register 上报时写 'pull' |
-| enum 补值 | `1790000000020-AddCoverEarlyAndCancelledEnumValues`（**当前最新**；PK-01/DR-FIX-ALL） | PG enum 与 TS 枚举对齐：`task_blockstrategy_enum` 补 `cover_early`、`execution_status_enum` 补 `cancelled`（均 `ADD VALUE IF NOT EXISTS` 幂等）；PG 不支持删 enum 值，down 为 no-op |
+| enum 补值 | `1790000000020-AddCoverEarlyAndCancelledEnumValues`（PK-01/DR-FIX-ALL） | PG enum 与 TS 枚举对齐：`task_blockstrategy_enum` 补 `cover_early`、`execution_status_enum` 补 `cancelled`（均 `ADD VALUE IF NOT EXISTS` 幂等）；PG 不支持删 enum 值，down 为 no-op |
+| task_versions 唯一约束 | `1790000000021-AddTaskVersionsUniqueIndex`（**当前最新**之一；PK-11/DR-FIX-ALL） | `task_versions` 补 (taskId, version) 唯一索引 `ux_task_versions_taskId_version`——并发 saveVersion 的 MAX+1 竞态可产生重复版本行；存量重复行先按 (createdAt, id) 确定性去重（ROW_NUMBER 先例 1789000000000，无重复时 no-op），顺带回收被唯一索引覆盖的旧非唯一索引 `idx_task_versions_taskId_version` |
+| audit/refresh 查询面索引 | `1790000000022-AddAuditAndRefreshTokenQueryIndexes`（**当前最新**之一；PK-16/DR-FIX-ALL） | `audit_logs(action, createdAt)` 复合索引（过滤+排序一索两用）+ `refresh_tokens(userId)`、`refresh_tokens(expiresAt)` 两个普通索引（会话列表查询与过期清理免全表扫）；幂等 `CREATE/DROP INDEX IF [NOT] EXISTS` |
 
-完整清单以 `ls apps/admin-api/src/migrations` 为准（65 个）。
+完整清单以 `ls apps/admin-api/src/migrations` 为准（67 个）。
 
 ## 常见改动场景：怎么加一个迁移
 

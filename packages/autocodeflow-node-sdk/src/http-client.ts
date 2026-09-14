@@ -151,7 +151,18 @@ export class HttpClient {
    * actual payload — e.g. `POST /api/executions/callback` resolves to
    * `{ results: [...] }` instead of the envelope (where the lookup used to
    * come back `undefined`). Bodies that do not match the envelope shape are
-   * returned unchanged. Mirrors `unwrap_envelope` in the python SDK's
+   * returned unchanged.
+   *
+   * PK-06 (DEEP_REVIEW 0ef3bbe): criterion unified with acf-cli / mcp-server
+   * — "payload is an object, has a `data` key, and `code` is a number".
+   * Rationale: the ResponseInterceptor's envelope `code` is always numeric
+   * (`response.statusCode ?? 200`), so a numeric `code` identifies the
+   * envelope precisely; the presence of `message` is no longer part of the
+   * test. The old strict-triple check treated a string `code` (e.g.
+   * `{code:"200",message:"x",data:{...}}` — a third-party payload that just
+   * happens to carry all three keys) as an envelope and unwrapped it, while
+   * cli/mcp passed it through — the same payload unwrapped differently on
+   * different ends. Mirrors `unwrap_envelope` in the python SDK's
    * callback.py.
    */
   private static unwrapEnvelope<T>(payload: unknown): T {
@@ -159,11 +170,11 @@ export class HttpClient {
       payload !== null &&
       typeof payload === 'object' &&
       !Array.isArray(payload) &&
-      'code' in payload &&
-      'message' in payload &&
-      'data' in payload
+      'data' in payload &&
+      typeof (payload as { code?: unknown }).code === 'number'
     ) {
-      return (payload as { data: T }).data;
+      return ((payload as { code?: unknown; data?: unknown }).data ??
+        (null as unknown)) as T;
     }
     return payload as T;
   }

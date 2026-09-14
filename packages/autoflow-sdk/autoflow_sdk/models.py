@@ -11,14 +11,23 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class TaskConfig(BaseModel):
-    """Describes the task to be executed."""
+    """Describes the task to be executed.
+
+    Timeout fields (PK-23 declaration — the model validator below keeps
+    all three in sync):
+    - ``timeoutSeconds`` is the canonical wire field (camelCase, matches
+      the admin-api/executor protocol);
+    - ``timeout`` (legacy default-carrying) and ``timeout_seconds``
+      (snake_case alias) are **deprecated** — kept for backward
+      compatibility, normalized into ``timeoutSeconds`` on construction.
+    """
     id: Optional[str] = None
     name: Optional[str] = None
     runtime: str = 'python'
     entrypoint: Optional[str] = None
-    timeout: int = 300
-    timeoutSeconds: Optional[int] = None
-    timeout_seconds: Optional[int] = None
+    timeout: int = 300  # deprecated: legacy fallback, see class docstring
+    timeoutSeconds: Optional[int] = None  # canonical timeout field (seconds)
+    timeout_seconds: Optional[int] = None  # deprecated: snake_case alias
     timezone: Optional[str] = None
     maxRetry: Optional[int] = None
     max_retry: Optional[int] = None
@@ -28,7 +37,9 @@ class TaskConfig(BaseModel):
     gitRepo: Optional[str] = None
     gitBranch: Optional[str] = 'main'
     gitCommit: Optional[str] = None
-    blockStrategy: Optional[str] = 'SERIAL'
+    # PK-23: admin 值域是小写（serial/discard/cover_early），默认值必须
+    # 是有效枚举形态——'SERIAL' 大写形态执行器按字面透传会错配。
+    blockStrategy: Optional[str] = 'serial'
     alarmEmail: Optional[str] = None
     alarmChannels: List[str] = Field(default_factory=list)
 

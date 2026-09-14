@@ -760,21 +760,21 @@ describe("list_dead_letters", () => {
       data: [
         {
           id: "a",
-          name: "A",
+          appName: "A",
           address: "x:1",
           status: "online",
           deadLetterCount: 3,
         },
         {
           id: "b",
-          name: "B",
+          appName: "B",
           address: "x:2",
           status: "online",
           deadLetterCount: 9,
         },
         {
           id: "c",
-          name: "C",
+          appName: "C",
           address: "x:3",
           status: "offline",
           deadLetterCount: null,
@@ -787,6 +787,16 @@ describe("list_dead_letters", () => {
     expect(out.executors[0].executorId).toBe("b");
     expect(out.executors[0].deadLetterCount).toBe(9);
     expect(out.executors[2].deadLetterCount).toBeNull();
+  });
+
+  it("PK-18: reads the executor appName field (entity has no name) into the output name", async () => {
+    // 回归钉：GET /executors 返回行透传实体字段，只有 appName 没有
+    // name——旧代码读 r["name"] 恒为 undefined，工具输出 name 永远为空。
+    call.mockResolvedValueOnce({
+      data: [{ id: "a", appName: "edge-runner", deadLetterCount: 1 }],
+    });
+    const out = parse(await tools.get("list_dead_letters")!.handler({}));
+    expect(out.executors[0].name).toBe("edge-runner");
   });
 
   it("accepts a bare array envelope (older deployments) and counts missing as 0", async () => {

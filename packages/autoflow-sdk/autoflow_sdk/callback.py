@@ -75,12 +75,22 @@ def unwrap_envelope(payload: Any) -> Any:
     envelope and see nothing (U14). Bodies that do not look like the
     envelope (proxies, tests, future non-enveloped endpoints) are returned
     unchanged.
+
+    PK-06 (DEEP_REVIEW 0ef3bbe): criterion unified with acf-cli /
+    mcp-server / node-sdk — "payload is a dict, has a ``data`` key, and
+    ``code`` is a number". The interceptor's ``code`` is always numeric
+    (``response.statusCode ?? 200``), so a numeric ``code`` identifies the
+    envelope precisely; the presence of ``message`` is no longer part of
+    the test. A string-``code`` payload (e.g. ``{"code":"200","message":"x",
+    "data":{...}}`` — a third-party body that merely carries the three keys)
+    is passed through unchanged instead of being unwrapped, so the same
+    payload now behaves identically on all four client ends.
     """
     if (
         isinstance(payload, dict)
-        and "code" in payload
-        and "message" in payload
         and "data" in payload
+        and isinstance(payload.get("code"), int)
+        and not isinstance(payload.get("code"), bool)
     ):
         return payload["data"]
     return payload

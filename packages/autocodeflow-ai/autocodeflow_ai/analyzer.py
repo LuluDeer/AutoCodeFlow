@@ -2,13 +2,22 @@
 
 Provides AI-powered analysis of task execution results, error diagnosis,
 and natural language data summarization.
+
+PK-17 (DEEP_REVIEW 0ef3bbe): task logs and error text routinely contain
+connection strings / token fragments. ``AIAnalyzer`` accepts an optional
+``redactor`` callable that is applied to every log/error chunk before it
+leaves the process; with ``redactor=None`` the raw text is sent unchanged
+(behaviour preserved for existing callers — but see the constructor
+warning). An ``openai`` run without an ``api_key`` now fails fast with
+``ValueError`` instead of emitting a literal ``Authorization: Bearer None``
+header, and the prompt templates forbid echoing credentials back.
 """
 from __future__ import annotations
 
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +47,13 @@ class AIAnalyzer:
             logs="...",
         )
         print(result.root_cause)
+
+    PK-17: ``redactor`` — optional ``Callable[[str], str]`` applied to
+    every task log / error text before it is sent to the AI endpoint,
+    e.g. ``redactor=lambda s: mask_secrets(s)``. Without a redactor the
+    raw text (which may contain leaked secrets) is transmitted verbatim
+    to a third-party endpoint — supply one whenever the logs are not
+    guaranteed secret-free.
     """
 
     #: URL suffix that completes a chat-completions endpoint. ``base_url``
@@ -46,28 +62,48 @@ class AIAnalyzer:
     #: endpoint (legacy form); the base form is normalized automatically.
     _CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
 
+    #: PK-17: outbound hygiene clause appended to every prompt template.
+    _NO_CREDENTIALS_ECHO_CLAUSE = (
+        "Security: do not repeat, quote or echo back any credentials, "
+        "API keys, tokens, passwords or connection strings from the "
+        "materials above in your output."
+    )
+
     def __init__(
         self,
         provider: str = "openai",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
+        redactor: Optional[Callable[[str], str]] = None,
     ):
         self.provider = provider
         self.api_key = api_key
         self.base_url = base_url
         self.model = model or ("gpt-3.5-turbo" if provider == "openai" else "llama3")
+        self.redactor = redactor
+
+    def _redact(self, text: str) -> str:
+        """Apply the outbound redaction hook (PK-17); no-op when unset."""
+        if self.redactor is None:
+            return text
+        return self.redactor(text)
 
     async def analyze_error(
         self, task_name: str, error_message: str, logs: str = ""
     ) -> AnalysisResult:
         """Analyze a task execution error and provide root cause and suggestions."""
+        # PK-17: redact error/log text before it leaves the process.
+        error_message = self._redact(error_message)
+        logs = self._redact(logs)
         prompt = f"""Analyze the following task execution error for "{task_name}":
 
 Error: {error_message}
 
 Logs:
 {logs[:4000] if logs else "(no logs)"}
+
+{self._NO_CREDENTIALS_ECHO_CLAUSE}
 
 Respond in JSON format with:
 - "summary": brief summary of what happened
@@ -93,11 +129,15 @@ JSON:"""
         self, task_name: str, logs: str, question: str = "Summarize key events"
     ) -> AnalysisResult:
         """Analyze execution logs and answer questions about them."""
+        # PK-17: redact log text before it leaves the process.
+        logs = self._redact(logs)
         prompt = f"""Analyze the following execution logs for task "{task_name}":
 
 {logs[:4000]}
 
 Question: {question}
+
+{self._NO_CREDENTIALS_ECHO_CLAUSE}
 
 Respond in JSON format with:
 - "summary": answer to the question
@@ -119,6 +159,15 @@ JSON:"""
         import httpx
 
         if self.provider == "openai":
+            # PK-17: fail fast on a missing key instead of transmitting a
+            # literal "Authorization: Bearer None" header that turns a
+            # configuration mistake into a confusing server-side 401.
+            if not self.api_key:
+                raise ValueError(
+                    "openai provider requires api_key — refusing to send an "
+                    "'Authorization: Bearer None' header; configure the key "
+                    "or switch provider (e.g. provider='ollama')"
+                )
             url = self._build_endpoint(self.base_url or "https://api.openai.com/v1")
             headers = {
                 "Content-Type": "application/json",

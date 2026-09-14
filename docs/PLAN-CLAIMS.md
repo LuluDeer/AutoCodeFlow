@@ -291,6 +291,8 @@
 | 1790000000018 | AddConfigHistoryMetadata | WIKI-OPT-2 | 已落盘（`aa3d2e0`；config_history 增 valueType/isSecret 两可空列，均 nullable；存量行 NULL=元数据不可知，读面/回滚沿用旧推断零破坏升级；幂等 IF [NOT] EXISTS）。**编号注记**：原登记 1790000000016，2026-09-13 主控发现与远端 AUTH-04 已随 v1.3.0 发布的 AddUsersOidcSub 撞号——因远端迁移已发布而本迁移从未发布，重编号本迁移为 1790000000018（文件/类名/spec/注释同步），升级路径零孤儿记录 |
 | 1790000000019 | AddExecutorDispatchMode | ARCH-32 | 本声明占用（executors 增 dispatchMode varchar(16) NOT NULL DEFAULT 'push'；幂等 IF [NOT] EXISTS；结构 spec 同批） |
 | 1790000000020 | AddCoverEarlyAndCancelledEnumValues | DR-FIX-ALL（PK-01） | 本声明占用（task_blockstrategy_enum 补 'cover_early' / execution_status_enum 补 'cancelled'，ADD VALUE IF NOT EXISTS 幂等；PG 不支持删 enum 值，down 为 no-op；migrations.spec 目录守护 + PK-01 结构 pin 同批） |
+| 1790000000021 | AddTaskVersionsUniqueIndex | DR-FIX-ALL（PK-11） | 本声明占用（task_versions 补 (taskId,version) 唯一索引 ux_task_versions_taskId_version；存量重复行先按 (createdAt,id) 确定性去重——ROW_NUMBER 先例 1789000000000，无重复时为 no-op；顺带回收被唯一索引覆盖的旧非唯一索引 idx_task_versions_taskId_version；幂等 IF [NOT] EXISTS；结构 spec 同批） |
+| 1790000000022 | AddAuditAndRefreshTokenQueryIndexes | DR-FIX-ALL（PK-16） | 本声明占用（audit_logs(action,createdAt) 复合索引 + refresh_tokens(userId)、refresh_tokens(expiresAt) 两个普通索引，CREATE/DROP INDEX IF [NOT] EXISTS 幂等，命名对齐 1717473142683 风格；结构 spec 同批） |
 
 ## 变更日志
 

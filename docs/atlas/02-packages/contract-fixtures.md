@@ -21,11 +21,11 @@
 |---|---|
 | `$schemaVersion` | `1`（破坏性契约变更时 bump） |
 | `envelope` | full / arrayData / nullData / non200SuccessCode（201 必须与 200 同样拆包） |
-| `passthrough` | plainObject / plainString / emptyObject / arrayBody |
+| `passthrough` | plainObject / plainString / emptyObject / arrayBody / stringCodeEnvelope（PK-06 统一后追加：字符串 `code` 不是信封，四端一致透传） |
 | `statusRange` | success: [200,201,202,204]、failure: [400,401,403,404,409,429,500,502] |
 | `errorBody` | 5 条错误体向量（信封式 message、message 数组、error 字段等） |
-| `knownHeuristicEdge` | 已知边界：载荷带**完整** `code+message+data` 三元组会被所有端当信封拆掉——实体载荷绝不能同时携带这三个键 |
-| `knownDivergence` | 已知分歧（2026-09-13 起收敛）：`data+message` **无** `code` 时，cli 仍用宽松启发式拆出 `data`；mcp 已收紧为「`data` 键 + `code` 为数值」判定（对齐 ResponseInterceptor 的 code 恒数值），对此向量与 node/py SDK 一致原样保留——admin-api 真实流量恒带数值 `code`，故不受影响 |
+| `knownHeuristicEdge` | 已知边界：载荷带**完整** `code+message+data` 三元组会被所有端当信封拆掉——实体载荷绝不能同时携带这三个键（PK-06 统一后判据为「`data` 键 + `code` 数值」，`message` 不再参与判定） |
+| `knownDivergence` | **已收敛，条目降级为历史档案**（PK-06 统一批次，2026-09-14）：cli/mcp 2026-09-13（WIKI-OPT-4）收紧为「`data` 键 + `code` 数值」，node/py SDK 2026-09-14 同批跟进——四端判据现完全一致，`data+message` 无 `code` 的载荷四端一致原样保留。向量里 `cli_mcp_unwrapped` 键记录的是收紧前 cli/mcp 宽松启发式的旧行为，已无在发客户端如此表现；测试现统一断言 `node_py_unwrapped_preserved`（四端同值） |
 
 ## 被谁消费（以代码核实）
 
@@ -42,7 +42,7 @@
 
 - **只能追加向量，不能修改既有向量**——已发布的客户端包按旧向量断言，改旧向量等于判历史版本"违约"。
 - 改动信封/错误体**行为本身**属于破坏性契约变更：先改 admin-api 源头 + 本文件 `$schemaVersion`，四端**同批**发布（正好落在三包 lockstep 发布线上，见 [包生态总览](README.md)）。
-- `knownDivergence` 里的分歧是有意保留并记录在案的，不要"顺手统一"——统一它同样是一次契约变更。
+- ~~`knownDivergence` 里的分歧是有意保留并记录在案的，不要"顺手统一"——统一它同样是一次契约变更。~~ **已按上述纪律完成统一**（PK-06，2026-09-14，node/py SDK 与已收紧的 cli/mcp 同批对齐，向量仅追加未修改）；条目降级为历史档案。
 
 ## 契约要点展开（读向量前先理解）
 
@@ -50,7 +50,7 @@
 - **为什么 `non200SuccessCode` 重要**：admin-api 的 `code` 字段镜像 HTTP 状态码，201/202/204 也走信封；若客户端只认 `code===200` 会把创建类响应当失败。
 - **数组防线**：`arrayBody` 向量钉住"数组永远不是信封"——早期某端实现曾对数组做 `data in body` 判断而出错。
 - **knownHeuristicEdge 的工程含义**：任何 REST 载荷只要同时带 `code+message+data` 三键就会被四端一致拆包；这不是 bug 而是启发式的固有模糊性，用"实体不得携带全三元组"的纪律规避（admin-api 的实体字段名遵守该约定）。
-- **knownDivergence 的工程含义**：宽松启发式（cli/mcp：`data`+(code|message) 即拆）与严格三元组（双 SDK）只在 `data+message` 无 `code` 的构造载荷上表现不同；真实流量恒有 `code`，两派等价。向量里两条路径的期望值都写死了（`cli_mcp_unwrapped` / `node_py_unwrapped_preserved`），测试各自取用。
+- **knownDivergence 的工程含义（历史）**：统一（2026-09-14）前，宽松启发式（cli/mcp 旧版：`data`+(code|message) 即拆）与严格三元组（双 SDK 旧版：三键齐备才拆）只在 `data+message` 无 `code` 的构造载荷上表现不同；真实流量恒有 `code`，两派等价。统一后判据为「`data` 键 + `code` 数值」，该载荷四端一致保留——向量保留在案供考古，测试统一断言 `node_py_unwrapped_preserved`。
 
 ## 消费方式速查（README.md 原文）
 

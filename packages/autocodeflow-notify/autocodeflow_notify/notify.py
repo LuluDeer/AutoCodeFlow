@@ -15,11 +15,19 @@ logger = logging.getLogger(__name__)
 
 
 class NotifyChannel(str, Enum):
+    """Official channel table for task authors (PK-12).
+
+    Must mirror the server-side ``AlertChannel`` enum in
+    apps/admin-api/src/modules/notification/notification.service.ts —
+    FEISHU added there by NF-05 (飞书自定义机器人).
+    """
+
     EMAIL = "email"
     DINGTALK = "dingtalk"
     WECOM = "wecom"
     SLACK = "slack"
     WEBHOOK = "webhook"
+    FEISHU = "feishu"
 
 
 def _body_digest(body: str, limit: int = 200) -> str:
