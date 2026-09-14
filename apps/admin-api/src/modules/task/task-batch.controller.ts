@@ -18,6 +18,7 @@ import { AuditService } from "../audit/audit.service";
 // 装饰器求值期读取属 ARCH-27 显式豁免（见 src/config/throttle-profiles.ts）。
 import { Throttle } from "@nestjs/throttler";
 import { OPS_THROTTLE } from "../../config/throttle-profiles";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 /**
  * Batch operations controller — separate controller to avoid :id param route conflicts.
@@ -44,6 +45,7 @@ export class TaskBatchController {
   ) {}
 
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post("trigger")
   @ApiOperation({
     summary: "Batch trigger tasks (deprecated)",
@@ -82,6 +84,7 @@ export class TaskBatchController {
     return results;
   }
 
+  @WriteGuard("task", { scope: "ownership" })
   @Post("pause")
   @ApiOperation({
     summary: "Batch pause tasks (deprecated)",
@@ -115,6 +118,7 @@ export class TaskBatchController {
     return results;
   }
 
+  @WriteGuard("task", { scope: "ownership" })
   @Post("resume")
   @ApiOperation({
     summary: "Batch resume tasks (deprecated)",
@@ -148,6 +152,7 @@ export class TaskBatchController {
     return results;
   }
 
+  @WriteGuard("task", { scope: "ownership" })
   @Post("delete")
   @ApiOperation({
     summary: "Batch delete tasks (deprecated)",

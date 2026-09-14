@@ -33,6 +33,7 @@ import {
   ListDeadLettersQueryDto,
   UpdateEventSubscriptionDto,
 } from "./dto/event-subscription.dto";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 /**
  * FEAT-07: 出站事件订阅端点（全部走全局 JwtAuthGuard）。
@@ -73,6 +74,7 @@ export class EventSubscriptionController {
     return this.svc.findAll(req.user);
   }
 
+  @WriteGuard("event-subscription", { scope: "authenticated" })
   @Post()
   @ApiOperation({
     summary: "Create an outbound event subscription",
@@ -93,6 +95,7 @@ export class EventSubscriptionController {
     return this.svc.create(dto, req.user);
   }
 
+  @WriteGuard("event-subscription", { scope: "ownership" })
   @Patch(":id")
   @ApiOperation({
     summary:
@@ -114,6 +117,7 @@ export class EventSubscriptionController {
     return this.svc.update(id, dto, req.user);
   }
 
+  @WriteGuard("event-subscription", { scope: "ownership" })
   @Delete(":id")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Delete a subscription (dead letters cascade)" })
@@ -143,6 +147,7 @@ export class EventSubscriptionController {
     return this.svc.listDeadLetters(id, req.user, q.page, q.limit);
   }
 
+  @WriteGuard("event-subscription", { scope: "ownership" })
   @Post(":id/dead-letters/:dlId/replay")
   @ApiOperation({
     summary:

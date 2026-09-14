@@ -55,6 +55,7 @@ import {
 } from "./dto/executor-package.dto";
 import { ExecutorPackage } from "./executor-package.entity";
 import { UserRole } from "../users/entities/user.entity";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 /**
  * QA10: build a header-safe Content-Disposition value. The filename comes
@@ -330,6 +331,10 @@ export class ExecutorPackageController {
   // machine-to-machine callback; access is gated by the shared token guard.
   @Roles()
   @UseGuards(ExecutorSharedTokenGuard)
+  @WriteGuard("executor-package", {
+    scope: "token",
+    reason: "执行器持共享令牌（ExecutorSharedTokenGuard）上报部署结果",
+  })
   @Post("push-result")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({

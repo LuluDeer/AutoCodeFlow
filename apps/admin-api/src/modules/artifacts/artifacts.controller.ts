@@ -27,6 +27,7 @@ import { Public } from "../../common/decorators/public.decorator";
 import { buildContentDisposition } from "../executor-package/executor-package.controller";
 import { ArtifactsService } from "./artifacts.service";
 import { MAX_ARTIFACT_SIZE_BYTES } from "./artifacts.constants";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 /**
  * FEAT-05：执行产物通道。
@@ -48,6 +49,10 @@ export class ArtifactsController {
   constructor(private readonly svc: ArtifactsService) {}
 
   @Public()
+  @WriteGuard("artifact", {
+    scope: "token",
+    reason: "执行器持 per-execution 回调令牌上传产物",
+  })
   @Put("executions/:execId/artifacts/:name")
   @ApiOperation({
     summary: "Upload one execution artifact (executor-to-admin, best-effort)",

@@ -20,6 +20,7 @@ import * as http from "http";
 // undefined at runtime ("form_data_1.default is not a constructor"). Use the
 // namespace import (same pattern as `import * as Joi` in app.module.ts).
 import * as FormData from "form-data";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 @UseGuards(JwtAuthGuard)
 @Controller("registry")
@@ -268,6 +269,7 @@ export class RegistryController {
   /** Allowed PyPI package extensions */
   private static readonly ALLOWED_PYPI_EXTS = [".whl", ".tar.gz", ".zip"];
 
+  @WriteGuard("registry-package", { scope: "authenticated" })
   @Post("pypi/upload")
   // Limit uploads to 50 MB; multer enforces this before the handler runs
   @UseInterceptors(

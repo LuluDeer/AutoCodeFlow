@@ -32,6 +32,7 @@ import {
 // PK-19: createSilence 请求体 Swagger 文档 DTO（运行时 @Body() 仍为内联对象类型）。
 import { CreateSilenceDto } from "./dto/create-silence.dto";
 import { NotificationPayload } from "./channels/base.channel";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 @ApiTags("Notification Config")
 @ApiBearerAuth("JWT")
@@ -115,6 +116,7 @@ export class NotificationConfigController {
    * callback — but the caller is no longer blind to SSRF blocks or send
    * errors that used to be visible only in server logs.
    */
+  @WriteGuard("notification", { scope: "authenticated" })
   @Post("send")
   @ApiOperation({ summary: "Send notification from task code (SDK)" })
   @ApiResponse({

@@ -30,6 +30,7 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import type { Request } from "express";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 export class CreateApiKeyDto {
   @IsString()
@@ -84,6 +85,7 @@ export class ApiKeysController {
     return this.apiKeysService.listForUser(user.id);
   }
 
+  @WriteGuard("api-key", { scope: "authenticated" })
   @Post()
   @ApiOperation({
     summary: "Create an API Key",
@@ -112,6 +114,7 @@ export class ApiKeysController {
   }
 
   /** Soft-revoke (kept for REST semantics symmetry with the sessions API). */
+  @WriteGuard("api-key", { scope: "authenticated" })
   @Delete(":id")
   @ApiOperation({ summary: "Revoke (soft-delete) my API Key" })
   async revoke(
@@ -130,6 +133,7 @@ export class ApiKeysController {
   }
 
   /** Explicit revoke alias (idempotent — re-revoking returns the row). */
+  @WriteGuard("api-key", { scope: "authenticated" })
   @Post(":id/revoke")
   @ApiOperation({ summary: "Revoke my API Key (explicit alias, idempotent)" })
   async revokeAlias(

@@ -34,6 +34,7 @@ import { ApiPropertyOptional } from "@nestjs/swagger";
 //（见 src/config/throttle-profiles.ts 头注；heartbeat @Public 机器回调不挂档位）。
 import { Throttle } from "@nestjs/throttler";
 import { OPS_THROTTLE } from "../../config/throttle-profiles";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 class ListDeploymentsQueryDto {
   @ApiPropertyOptional({ description: "Filter by application ID" })
@@ -235,6 +236,10 @@ export class AppDeploymentController {
    * per-executor bcrypt token (or legacy shared token fallback).
    */
   @Public()
+  @WriteGuard("deployment", {
+    scope: "token",
+    reason: "执行器持 X-Executor-Token 上报应用运行态（机器面，非用户会话）",
+  })
   @Post("heartbeat")
   @ApiOperation({
     summary: "Executor reports app runtime status (requires X-Executor-Token)",

@@ -64,6 +64,7 @@ import {
   isFailedVerdict,
   scanBufferWithClamd,
 } from "../../common/utils/clamd-scan.util";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 @ApiTags("Application Management")
 @ApiBearerAuth()
@@ -314,6 +315,11 @@ export class ApplicationController {
   }
 
   @Public()
+  @WriteGuard("application", {
+    scope: "public",
+    reason:
+      "外部 CI/git 触发部署，凭 per-application webhook secret 做 HMAC 校验",
+  })
   @Post("webhook")
   @ApiOperation({
     summary: "Version release webhook",

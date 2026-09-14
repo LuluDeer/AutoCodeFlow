@@ -30,6 +30,7 @@ import { ExecutorService } from "../executor/executor.service";
 import { positiveInt } from "../../config/throttle-profiles";
 // OBS-01: 回调链路追踪——执行器回传 traceparent 头关联（disabled 时短路）。
 import { TracingService } from "../../common/tracing/tracing.service";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 /**
  * F-5: this controller used to be fully @SkipThrottle()'d — an unauthenticated
@@ -73,6 +74,10 @@ export class ExecutionCallbackController {
     private readonly tracing: TracingService | null,
   ) {}
 
+  @WriteGuard("execution", {
+    scope: "token",
+    reason: "执行器持 per-execution HMAC 令牌回调执行结果",
+  })
   @Post("callback")
   @Public()
   // F-5: relaxed-but-finite rate limit (see CALLBACK_THROTTLE above).

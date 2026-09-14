@@ -58,6 +58,7 @@ import { ExecutorPullService } from "./executor-pull.service";
 // 由 PrometheusMetricsService 的 render 快照模式渲染为
 // autoflow_push_auth_retry_total{result} series。
 import { recordRuntime } from "../metrics/runtime-metrics-entry";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 /**
  * R11: true when the executor answered a reload-config push with an HTTP 401
@@ -101,6 +102,10 @@ export class ExecutorController {
   ) {}
 
   @Public()
+  @WriteGuard("executor", {
+    scope: "token",
+    reason: "执行器持静态共享令牌注册（机器面，非用户会话）",
+  })
   @Post("register")
   @ApiOperation({
     summary: "Register executor",
@@ -201,6 +206,10 @@ export class ExecutorController {
   // 决定（默认 30s = 2/min/执行器），多执行器共享出口 IP 时按 IP 计数的
   // strict/ops 档位会误杀心跳；本路由保持全局默认档兜底（分域矩阵见
   // src/config/throttle-profiles.ts 头注）。
+  @WriteGuard("executor", {
+    scope: "token",
+    reason: "执行器持 per-executor 令牌上报心跳",
+  })
   @Post("heartbeat")
   @ApiOperation({
     summary: "Heartbeat report",
@@ -290,6 +299,10 @@ export class ExecutorController {
   // ARCH-32: 机器拉取面与 heartbeat 同理豁免分域档位——长轮询空闲态
   // ~2.4/min/执行器（25s 窗口阻塞在服务端），全局默认档兜底即可
   // （分域矩阵见 src/config/throttle-profiles.ts 头注）。
+  @WriteGuard("executor", {
+    scope: "token",
+    reason: "执行器持 per-executor 令牌长轮询取件（ARCH-32）",
+  })
   @Post("pull")
   // ARCH-32：这是「取件」语义（长轮询读载荷），不是资源创建——Nest 的 @Post
   // 默认回 201，会让客户端把它当新建处理，也与本端点的 @ApiResponse({status:200})
@@ -808,6 +821,10 @@ export class ExecutorController {
   }
 
   @Public()
+  @WriteGuard("executor", {
+    scope: "token",
+    reason: "执行器持静态共享令牌换取 per-executor 令牌",
+  })
   @Post("token")
   @ApiOperation({
     summary: "Get dynamic token",
@@ -858,6 +875,10 @@ export class ExecutorController {
   }
 
   @Public()
+  @WriteGuard("executor", {
+    scope: "token",
+    reason: "执行器持 per-executor 令牌上报下线",
+  })
   @Post("offline")
   @ApiOperation({
     summary: "Executor offline notification",
