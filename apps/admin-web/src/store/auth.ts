@@ -46,9 +46,14 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'autoflow-auth',
       storage: createJSONStorage(() => localStorage),
-      // Persist token, refreshToken, and user so the first request after a page
-      // reload carries a valid Authorization header without needing a refresh round-trip.
-      // The access token is short-lived; the 401→refresh path still handles expiry.
+      // F-06（DEEP_REVIEW @0ef3bbe）：现状注释（不改运行时行为）——token 与
+      // refreshToken 均持久化在 localStorage，页面刷新后的首个请求即可携带有效
+      // Authorization 头，无需先走一次 refresh 往返；access token 短效，
+      // 过期仍由 401→refresh 链路兜底。
+      // 安全权衡：localStorage 可被 XSS 读取（token/refreshToken 泄露面大于
+      // HttpOnly Cookie）。后续方向：迁移到 HttpOnly Cookie（Set-Cookie + CSRF
+      // 防护，后端 /auth/refresh 改读 Cookie），前端仅保留非敏感 user 摘要；
+      // 该迁移涉及 admin-api 认证链路，不在本次前端注释修正范围内。
       partialize: (state) => ({ token: state.token, refreshToken: state.refreshToken, user: state.user }),
       onRehydrateStorage: () => (state) => {
         state?.setHasHydrated(true);

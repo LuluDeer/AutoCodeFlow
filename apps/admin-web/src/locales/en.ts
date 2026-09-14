@@ -1696,6 +1696,8 @@ export default {
   'taskForm.load.tasksFail': 'Failed to fetch task list; upstream dependencies unavailable',
   'taskForm.load.taskFailed': 'Failed to load task',
   'taskForm.load.templateFailed': 'Failed to load task template; using a blank form',
+  // F-04: toast after landing on the edit page via "Apply Suggested Cron"
+  'taskForm.suggestCronApplied': 'AI suggested cron applied: {{cron}}. It takes effect after saving the task.',
   'taskForm.validate.failed': 'Form validation failed: {{firstError}}{{more}}',
   'taskForm.validate.more': ' and {{count}} more item(s) need fixing',
   'taskForm.validate.fail': 'Form validation failed',

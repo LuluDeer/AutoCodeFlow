@@ -1706,6 +1706,8 @@ export default {
   'taskForm.load.tasksFail': '获取任务列表失败，上游依赖暂不可选',
   'taskForm.load.taskFailed': '加载任务失败',
   'taskForm.load.templateFailed': '加载任务模板失败，已使用空白表单',
+  // F-04: 详情页「应用建议 Cron」跳转编辑页后的提示（suggestCron 已写入表单）
+  'taskForm.suggestCronApplied': '已应用 AI 建议 Cron：{{cron}}，保存任务后生效',
   'taskForm.validate.failed': '表单校验未通过：{{firstError}}{{more}}',
   'taskForm.validate.more': ' 等 {{count}} 项待修正',
   'taskForm.validate.fail': '表单校验失败',

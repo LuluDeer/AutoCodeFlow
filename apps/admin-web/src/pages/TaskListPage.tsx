@@ -157,6 +157,9 @@ export default function TaskListPage() {
 
   // CORE-03-lite：一键克隆——复制任务全部可编辑字段生成 "-copy-" 副本，
   // 服务端字段（id/createdAt/status 等）不回传；glue 源码一并复制。
+  // F-03（DEEP_REVIEW @0ef3bbe）：补齐此前丢失的 6 类可编辑字段
+  // （timeoutAction/timeoutWarnRatio/maintenanceWindows/runbook/
+  // executorAffinityTags/executorAntiAffinityTags），undefined 由下方统一剔除。
   const [cloningId, setCloningId] = useState<string | null>(null);
   const handleClone = async (r: Task) => {
     if (cloningId) return;
@@ -175,16 +178,25 @@ export default function TaskListPage() {
         timezone: src.timezone,
         fixedRate: src.fixedRate,
         timeout: src.timeoutSeconds ?? src.timeout,
+        // CORE-04: 超时策略（F-03：此前克隆丢字段，副本静默退回默认 kill/无预警）
+        timeoutAction: src.timeoutAction,
+        timeoutWarnRatio: src.timeoutWarnRatio,
         maxRetry: src.maxRetry,
         retryDelay: src.retryDelay,
         retryableErrors: src.retryableErrors,
         priority: typeof src.priority === 'number' ? src.priority : undefined,
         params: src.params,
+        // FEAT-06/FEAT-11: 维护窗口与运行手册（F-03：此前克隆丢字段）
+        maintenanceWindows: src.maintenanceWindows,
+        runbook: src.runbook,
         dependencies: src.dependencies,
         executeMode: src.executeMode,
         executorId: src.executorId,
         executorGroup: src.executorGroup,
         executorTags: src.executorTags,
+        // NF-04: 软路由亲和/反亲和标签（F-03：此前克隆丢字段）
+        executorAffinityTags: src.executorAffinityTags,
+        executorAntiAffinityTags: src.executorAntiAffinityTags,
         gitRepo: src.gitRepo,
         gitBranch: src.gitBranch,
         gitCommit: src.gitCommit,

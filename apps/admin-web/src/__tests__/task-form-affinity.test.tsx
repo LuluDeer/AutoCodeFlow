@@ -31,6 +31,8 @@ vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
 }));
 vi.mock('../api/applications', () => ({ applicationsApi: { list: vi.fn() } }));
+// F-01 配套：GlueEditor 重依赖（monaco）裁剪（策略同 task-form-ui06 等文件）。
+vi.mock('../components/GlueEditor', () => ({ default: () => <div data-testid="glue-editor" /> }));
 
 let mockRouteParams: { id?: string } = {};
 vi.mock('react-router-dom', () => ({

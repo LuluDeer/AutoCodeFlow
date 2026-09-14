@@ -130,10 +130,13 @@ export default function TaskFormPage() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const { id: editId } = useParams<{ id: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const appId = searchParams.get('applicationId');
   // CORE-03：创建态带 ?templateId= 时，拉取模板 config 预填表单（显式可改）。
   const templateId = searchParams.get('templateId');
+  // F-04（DEEP_REVIEW @0ef3bbe）：详情页「应用建议 Cron」带 ?suggestCron= 跳转
+  // 编辑页（此前全仓无消费方=死链）。
+  const suggestCron = searchParams.get('suggestCron');
   const isEdit = !!editId;
 
   const [form] = Form.useForm();
@@ -294,6 +297,20 @@ export default function TaskFormPage() {
       cancelled = true;
     };
   }, [templateId, isEdit, form, t]);
+
+  // F-04（DEEP_REVIEW @0ef3bbe）：AI 建议 Cron 应用——编辑态必须等任务回填
+  // 完成后再覆盖 cronExpression，否则任务加载 effect 会用库内旧值盖掉建议值；
+  // 创建态挂载即应用。cron 值不再二次校验（服务层 WIKI-OPT-3 已校验）。
+  // 应用后立即清除 URL 参数（replace 导航，不新增历史记录），防止刷新后重复应用。
+  useEffect(() => {
+    if (!suggestCron) return;
+    if (isEdit && loadingTask) return;
+    form.setFieldValue('cronExpression', suggestCron);
+    message.info(t('taskForm.suggestCronApplied', { cron: suggestCron }));
+    const next = new URLSearchParams(searchParams);
+    next.delete('suggestCron');
+    setSearchParams(next, { replace: true });
+  }, [suggestCron, isEdit, loadingTask, form, searchParams, setSearchParams, t]);
 
   // P0 (R8) 兜底保留为双保险：单页全挂载后 validateFields() 天然覆盖全部字段，
   // 以下 missing 收集逻辑在正常情况下永远为空集，仅作为防线存在。

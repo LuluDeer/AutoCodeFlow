@@ -1,10 +1,20 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Select, Button, Space, message, Typography } from 'antd';
-import { Editor } from '@monaco-editor/react';
+import { Editor, loader } from '@monaco-editor/react';
+import * as monaco from 'monaco-editor';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
+// F-01（DEEP_REVIEW @0ef3bbe）：Monaco 本地化——此前未配置本地 monaco，
+// @monaco-editor/react 默认从 jsdelivr CDN 动态加载，内网/离线部署下编辑器
+// 永远 loading。这里注入本地 monaco 实例（worker 装配见 ./monaco-setup.ts，
+// 必须先于首次 Editor 挂载执行，故以模块副作用导入）。
+import './monaco-setup';
 import { tasksApi } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
+
+// 就地启用本地 monaco（模块级一次性配置；后续 loader.init() 直接解析到该实例，
+// 不再发起任何 CDN 请求）。
+loader.config({ monaco });
 
 const { Text } = Typography;
 
