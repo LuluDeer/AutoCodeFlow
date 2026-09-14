@@ -110,6 +110,35 @@ def test_rejected_execution_leaves_no_live_entry(idle_executor):
 # ---------------------------------------------------------------------------
 
 
+def test_null_requirements_is_accepted(idle_executor, monkeypatch):
+    """A3-C 回归：admin 的 `Task.requirements` 是 **nullable jsonb** 列，任务没配
+    依赖时派发载荷里就是字面 `None`。
+
+    首版协议把该字段写成纯 `list`（不接受 null），本地 26 个 spec 全绿，但 CI 的
+    **selftests（pull 全链路真派发）**当场红：`task.requirements: Expected array,
+    received null`。这就是「协议必须描述真实载荷、不能描述想象中的载荷」——
+    补进协议后同时成为一条 valid 向量（两侧 protocol-schemas spec 都会断言）。
+    """
+    created: list = []
+
+    def fake_create_task(coro):
+        created.append(coro)
+        coro.close()
+        return MagicMock()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_task', fake_create_task)
+
+    eid = 'exec-null-requirements'
+    req = execute_module.ExecuteRequest(
+        executionId=eid, task={'runtime': 'python', 'requirements': None}
+    )
+    try:
+        result = execute_module.accept_execution(req)
+        assert result['status'] == 'accepted'
+    finally:
+        execute_module.unregister_live_execution(eid)
+
+
 def test_valid_vector_is_accepted(idle_executor, monkeypatch):
     """只断言拒绝会退化成「什么都拒」——必须有一条合法载荷确实被接受。"""
     created: list = []

@@ -20,4 +20,7 @@
 #     比对）。仅加导出也改变 ncc 的运行时导出图，故产物哈希随之变化（ADR-005）。
 #   - 5f54799d…：A3-C 把生成的 zod schema 接进 /execute 运行时校验，产物因此
 #     内联了 zod（2111kB → 2275kB）。这是内嵌执行器首次引入第三方运行时依赖。
-5f54799dd1946ff57396b15e3402c660ed9b9a84d6b127f23c6baef675bb1eab  index.js
+#   - a41b3e7d…：A3-C 修 `TaskConfig.requirements` 必须接受 null（admin 的任务
+#     实体该列是 nullable jsonb，无依赖任务派发字面 null；首版写成纯 array 被
+#     CI selftests 的 pull 全链路真派发抓到）。
+a41b3e7dad9185ee4ded1c6f9f48852469e7e2897c68f4888d36945e314f2179  index.js

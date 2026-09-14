@@ -22,7 +22,7 @@ class TaskConfig(BaseModel):
     timeout: int | None = Field(ge=0, le=86400, default=None)
     timeoutSeconds: int | None = Field(ge=0, le=86400, default=None)
     timeout_seconds: int | None = Field(default=None)
-    requirements: list[str] = Field(default_factory=list)
+    requirements: list[str] | None = Field(default_factory=list)
     gitRepo: str | None = Field(default=None)
     gitBranch: str | None = Field(default=None)
     gitCommit: str | None = Field(default=None)
