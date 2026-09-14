@@ -1936,6 +1936,45 @@ describe("ExecutorService (__tests__)", () => {
       const results = await service.dispatchBroadcast(task, execution);
       expect(results).toHaveLength(1);
     });
+
+    // R-06（DEEP_REVIEW 0ef3bbe）: broadcast 占坑——每个被接受（fulfilled）的
+    // 目标执行器 runningTaskCount 必须原子 +1，广播负载才对容量闸门可见；派发失败
+    // 的执行器不得占坑（否则从未接单却被计数）。
+    it("R-06: increments runningTaskCount by 1 for each ACCEPTED broadcast target only", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "host1:3002", status: ExecutorStatus.ONLINE },
+        { id: "e2", address: "host2:3002", status: ExecutorStatus.ONLINE },
+        { id: "e3", address: "host3:3002", status: ExecutorStatus.ONLINE },
+      ]);
+      // e1 与 e2 接单成功（fulfilled）；e3 派发失败（rejected）→ 不应占坑
+      mockedAxios.post
+        .mockResolvedValueOnce({ data: { ok: true } })
+        .mockResolvedValueOnce({ data: { ok: true } })
+        .mockRejectedValueOnce(new Error("host3 down"));
+
+      await service.dispatchBroadcast(task, execution);
+
+      // 找出用于 runningTaskCount 占坑的 UPDATE 链（set 里带 runningTaskCount 函数）
+      const occupancyUpdates = executorRepo.createQueryBuilder.mock.results
+        .map((r: any) => r.value)
+        .filter((qb: any) =>
+          qb.set.mock.calls.some(
+            (c: any[]) =>
+              c[0] &&
+              typeof c[0].runningTaskCount === "function" &&
+              /runningTaskCount"\s*\+\s*1/.test(String(c[0].runningTaskCount)),
+          ),
+        );
+      // 仅 2 个被接受执行器占坑（e3 派发失败 → 不占）
+      expect(occupancyUpdates).toHaveLength(2);
+      const occupiedIds = occupancyUpdates.flatMap((qb: any) =>
+        qb.where.mock.calls
+          .filter((c: any[]) => c[0] === "id = :id")
+          .map((c: any[]) => c[1].id),
+      );
+      expect(occupiedIds.sort()).toEqual(["e1", "e2"]);
+      expect(occupiedIds).not.toContain("e3");
+    });
   });
 
   describe("markOffline", () => {

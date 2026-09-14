@@ -53,7 +53,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
   let configService: jest.Mocked<Pick<ConfigService, "get">>;
   let refreshTokenRepo: any;
 
-  const makeUser = (over: Partial<typeof baseUser> = {}) => ({
+  const makeUser = (over: Record<string, any> = {}) => ({
     ...baseUser,
     ...over,
   });
@@ -143,8 +143,8 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
   // ─── totp verify login ────────────────────────────────────────────────────
 
   describe("totpVerifyLogin (SEC-03)", () => {
-    const totpUser = () =>
-      makeUser({ totpSecret: FIXED_SECRET, totpEnabled: true });
+    const totpUser = (over: Record<string, any> = {}) =>
+      makeUser({ totpSecret: FIXED_SECRET, totpEnabled: true, ...over });
 
     it("issues tokens for username+password+valid code", async () => {
       usersService.findByUsername.mockResolvedValue(totpUser() as any);
@@ -206,6 +206,76 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
           code: goodCode(),
         }),
       ).rejects.toThrow("TOTP is not enabled");
+    });
+
+    // R-05（DEEP_REVIEW 0ef3bbe）: the TOTP second-factor path must mirror
+    // login()'s R10 behavior — clear an EXPIRED lock before any failure is
+    // recorded, otherwise a non-UI client that calls /auth/totp/verify
+    // directly keeps loginFailCount stuck at MAX_FAIL and one fresh failure
+    // immediately re-locks for another 15-minute window.
+    it("R-05: expired lock + wrong TOTP code clears the lock BEFORE recording the new failure", async () => {
+      usersService.findByUsername.mockResolvedValue(
+        totpUser({
+          loginFailCount: 5,
+          lockedUntil: new Date(Date.now() - 60_000),
+        }) as any,
+      );
+      await expect(
+        service.totpVerifyLogin({
+          username: "alice",
+          password: "p",
+          code: badCode(),
+        }),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(usersService.clearExpiredLock).toHaveBeenCalledWith(1);
+      const resetCall = (usersService.clearExpiredLock as jest.Mock).mock
+        .invocationCallOrder[0];
+      const failCall = (usersService.recordLoginFailure as jest.Mock).mock
+        .invocationCallOrder[0];
+      expect(resetCall).toBeLessThan(failCall);
+    });
+
+    it("R-05: an ACTIVE lock is fast-failed without touching clearExpiredLock", async () => {
+      usersService.findByUsername.mockResolvedValue(
+        totpUser({
+          lockedUntil: new Date(Date.now() + 10 * 60_000),
+        }) as any,
+      );
+      await expect(
+        service.totpVerifyLogin({
+          username: "alice",
+          password: "p",
+          code: goodCode(),
+        }),
+      ).rejects.toThrow(/Account locked/);
+      expect(usersService.clearExpiredLock).not.toHaveBeenCalled();
+      expect(usersService.recordLoginFailure).not.toHaveBeenCalled();
+    });
+
+    it("R-05: expired lock + valid credentials clears the lock on the TOTP path too", async () => {
+      usersService.findByUsername.mockResolvedValue(
+        totpUser({
+          loginFailCount: 5,
+          lockedUntil: new Date(Date.now() - 60_000),
+        }) as any,
+      );
+      const result = await service.totpVerifyLogin({
+        username: "alice",
+        password: "p",
+        code: goodCode(),
+      });
+      expect(result).toHaveProperty("accessToken");
+      expect(usersService.clearExpiredLock).toHaveBeenCalledWith(1);
+    });
+
+    it("R-05: user without any lock never touches clearExpiredLock on the TOTP path", async () => {
+      usersService.findByUsername.mockResolvedValue(totpUser() as any);
+      await service.totpVerifyLogin({
+        username: "alice",
+        password: "p",
+        code: goodCode(),
+      });
+      expect(usersService.clearExpiredLock).not.toHaveBeenCalled();
     });
   });
 

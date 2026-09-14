@@ -1,6 +1,7 @@
 // UI-10 English copy. Keys mirror zh.ts exactly (see zh.ts for structure).
 // Missing keys fall back to zh via i18next fallbackLng.
 export default {
+  'common.copyFailed': 'Copy failed — check clipboard permissions',
   'brand.tagline': 'Enterprise task orchestration platform',
   'brand.edition': 'AutoCodeFlow v1.0 · Enterprise',
 
@@ -1621,6 +1622,7 @@ export default {
   'execDetail.log.levelAll': 'All levels',
   'execDetail.log.copied': 'Copied',
   'execDetail.log.copy': 'Copy',
+  'execDetail.log.copyFailed': 'Copy failed — check clipboard permissions',
   'execDetail.log.download': 'Download',
   'execDetail.log.truncatedTitle': 'Logs truncated: the callback payload exceeded the executor reporting limit; only the truncated fragment is kept',
   'execDetail.log.truncatedDesc': 'Full content can be paged in from the executor-side persisted logs; if it still fails, check executor reachability and local log files.',

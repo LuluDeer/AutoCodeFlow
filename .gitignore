@@ -96,3 +96,12 @@ report.*.json
 
 # 混沌演练临时 env（含口令，勿入库）
 .env.chaos
+
+# F-19（DEEP_REVIEW 0ef3bbe）：executor-desktop 内嵌 executor-node 的 ncc bundle 出库。
+# 产物（index.js / sourcemap-register.js / *.map，约 2.1MB）不再入库，由
+# `npm run build:executor`（本地）或 CI desktop-* bundle job 打包前重打。
+# 期望哈希跟踪在 apps/executor-desktop/executor-node-bundle.sha256（drift guard 把守）。
+apps/executor-desktop/resources/executor-node/
+
+dump.rdb
+

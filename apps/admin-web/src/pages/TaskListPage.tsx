@@ -1,13 +1,16 @@
 import { useState } from 'react';
 import {
   Table, Button, Tag, Space, Typography, message, Input, Select,
-  Badge, Popconfirm, Tooltip, Empty, Switch, Modal, Form, Alert,
+  Badge, Popconfirm, Tooltip, Empty, Switch, Modal, Form, Alert, theme,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
   CopyOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
   CheckSquareOutlined, FileTextOutlined,
 } from '@ant-design/icons';
+// PK-02（DEEP_REVIEW 0ef3bbe）：clone payload 经 Object.keys 删除 undefined 后
+// 类型变宽，create 调用点显式断言为生成的 CreateTaskDto。
+import type { components } from '../types/generated/api-types';
 import { Trans, useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
@@ -43,6 +46,8 @@ const TRIGGER_COLOR: Record<string, string> = {
 export default function TaskListPage() {
   const nav = useNavigate();
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：主色/淡色背景走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [triggerFilter, setTriggerFilter] = useState<string | undefined>();
@@ -205,7 +210,9 @@ export default function TaskListPage() {
         applicationId: src.applicationId,
       };
       Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
-      const created = await tasksApi.create(payload);
+      const created = await tasksApi.create(
+        payload as components["schemas"]["CreateTaskDto"],
+      );
       message.success(t('taskList.cloned', { name: cloneName }));
       nav(`/tasks/${created.id}`);
     } catch (err: unknown) {
@@ -348,7 +355,7 @@ export default function TaskListPage() {
             <Button
               type="text" size="small" icon={<ThunderboltOutlined />}
               onClick={() => handleTrigger(r.id, r.name, r.params)}
-              style={{ color: '#1677ff' }}
+              style={{ color: token.colorPrimary }}
             />
           </Tooltip>
           <Popconfirm
@@ -431,8 +438,8 @@ export default function TaskListPage() {
       </Space>
 
       {selectedRowKeys.length > 0 && (
-        <div style={{ background: '#e6f4ff', border: '1px solid #91caff', borderRadius: 6, padding: '8px 16px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <CheckSquareOutlined style={{ color: '#1677ff' }} />
+        <div style={{ background: token.colorPrimaryBg, border: `1px solid ${token.colorPrimaryBorder}`, borderRadius: 6, padding: '8px 16px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <CheckSquareOutlined style={{ color: token.colorPrimary }} />
           <Text><Trans i18nKey="taskList.selected" values={{ count: selectedRowKeys.length }}><strong>0</strong></Trans></Text>
           <Button size="small" icon={<ThunderboltOutlined />} loading={batchLoading} disabled={batchLoading} onClick={handleBatchTrigger}>{t('taskList.batchTrigger')}</Button>
           <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchPause}>{t('taskList.batchPause')}</Button>

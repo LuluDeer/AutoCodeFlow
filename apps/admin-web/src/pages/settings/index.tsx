@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   Card, Input, Button, Space, message, Typography, Tag, Alert,
   Switch, Modal, Tabs, Table, Form, Select, Tooltip, Popconfirm,
-  Spin, Divider, Badge,
+  Spin, Divider, Badge, theme,
 } from 'antd';
 import {
   KeyOutlined, CopyOutlined, EyeOutlined, EyeInvisibleOutlined,
@@ -14,6 +14,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
 import { getErrMsg } from '../../utils/error';
+import { copyText } from '../../utils/clipboard';
 import { useAuthStore, isAdminUser } from '../../store/auth';
 import type { ColumnsType } from 'antd/es/table';
 import PageHeader from '../../components/PageHeader';
@@ -133,9 +134,11 @@ function TokenSection() {
             {tokenVisible && (
               <Button
                 icon={<CopyOutlined />}
-                onClick={() => {
-                  navigator.clipboard.writeText(token || '');
-                  message.success(t('sysSettings.token.copied'));
+                onClick={async () => {
+                  // F-18（DEEP_REVIEW 0ef3bbe）：补错误处理——失败不弹成功提示。
+                  const ok = await copyText(token || '');
+                  if (ok) message.success(t('sysSettings.token.copied'));
+                  else message.error(t('common.copyFailed'));
                 }}
               >
                 {t('sysSettings.token.copy')}
@@ -451,6 +454,8 @@ function AiConfigTab() {
   const qc = useQueryClient();
   const isAdmin = useIsAdmin();
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：分隔文字次要色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
 
   // R6 收紧矩阵：GET /ai/config 为 ADMIN-only。
   // 非管理员不发起查询（GET 会 403），hooks 仍按固定顺序调用（同 TokenSection 模式）。
@@ -552,7 +557,7 @@ function AiConfigTab() {
 
           {provider === 'openai' && (
             <>
-              <Divider plain style={{ fontSize: 12, color: '#888' }}>{t('sysSettings.ai.openaiSection')}</Divider>
+              <Divider plain style={{ fontSize: 12, color: token.colorTextTertiary }}>{t('sysSettings.ai.openaiSection')}</Divider>
               <Form.Item
                 name="openaiBaseUrl"
                 label="API Base URL"
@@ -583,7 +588,7 @@ function AiConfigTab() {
 
           {provider === 'ollama' && (
             <>
-              <Divider plain style={{ fontSize: 12, color: '#888' }}>{t('sysSettings.ai.ollamaSection')}</Divider>
+              <Divider plain style={{ fontSize: 12, color: token.colorTextTertiary }}>{t('sysSettings.ai.ollamaSection')}</Divider>
               <Form.Item name="ollamaHost" label="Ollama Host">
                 <Input placeholder="http://localhost:11434" />
               </Form.Item>

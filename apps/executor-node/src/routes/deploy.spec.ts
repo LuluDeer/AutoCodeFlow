@@ -31,6 +31,8 @@ import {
   deployRouter,
   downloadPackage,
   findUnsafeZipEntries,
+  pruneOldReleases,
+  rotateAppLogIfNeeded,
   shouldReportProcessExit,
   suppressNextRestartExitReport,
 } from './deploy';
@@ -522,5 +524,124 @@ describe('POST /api/deploy — async pipeline', () => {
     } finally {
       killSpy.mockRestore();
     }
+  });
+});
+
+// E-12（DEEP_REVIEW 0ef3bbe）: releases 历史与 app.log 永不回收的 retention。
+describe('E-12 retention: pruneOldReleases', () => {
+  const releasesDir = '/tmp/work/apps/app-1/releases';
+  const currentLink = '/tmp/work/apps/app-1/current';
+
+  function dirent(name: string) {
+    return { name, isDirectory: () => true } as fs.Dirent;
+  }
+
+  it('keeps current + newest N-1 and deletes the oldest releases', () => {
+    // 6 releases; current = rel-3 (newest, just deployed). mtime 越晚越新。
+    const mtimes: Record<string, number> = {
+      'rel-1': 100,
+      'rel-2': 200,
+      'rel-4': 300,
+      'rel-5': 400,
+      'rel-6': 500,
+      'rel-3': 900, // current
+    };
+    (mockFs.existsSync as jest.Mock).mockImplementation((p: string) => {
+      if (p === releasesDir) return true;
+      if (p === currentLink) return true;
+      return false;
+    });
+    (mockFs.lstatSync as jest.Mock).mockReturnValue({
+      isSymbolicLink: () => true,
+    } as any);
+    (mockFs.readlinkSync as jest.Mock).mockReturnValue(
+      path.join(releasesDir, 'rel-3'),
+    );
+    (mockFs.readdirSync as jest.Mock).mockReturnValue(
+      Object.keys(mtimes).map(dirent),
+    );
+    (mockFs.statSync as jest.Mock).mockImplementation((p: string) => ({
+      mtimeMs: mtimes[path.basename(p as string)] ?? 0,
+    }));
+    (mockFs.rmSync as jest.Mock).mockReturnValue(undefined);
+
+    const removed = pruneOldReleases(releasesDir, currentLink, 5);
+
+    // keepCount=5 → 保留 current(rel-3) + 最新 4 个其他（rel-6/rel-5/rel-4/rel-2）
+    // 共 5 个；最旧的 rel-1 被删。
+    expect(removed).toEqual([path.join(releasesDir, 'rel-1')]);
+    expect(mockFs.rmSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('never deletes the current release even if it is not the newest', () => {
+    // current 指向 rel-1（回滚到旧版本），即便 rel-1 mtime 最旧也必须保留。
+    const mtimes: Record<string, number> = {
+      'rel-1': 100, // current (oldest)
+      'rel-2': 200,
+      'rel-3': 300,
+      'rel-4': 400,
+      'rel-5': 500,
+    };
+    (mockFs.existsSync as jest.Mock).mockImplementation((p: string) =>
+      p === releasesDir || p === currentLink ? true : false,
+    );
+    (mockFs.lstatSync as jest.Mock).mockReturnValue({
+      isSymbolicLink: () => true,
+    } as any);
+    (mockFs.readlinkSync as jest.Mock).mockReturnValue(
+      path.join(releasesDir, 'rel-1'),
+    );
+    (mockFs.readdirSync as jest.Mock).mockReturnValue(
+      Object.keys(mtimes).map(dirent),
+    );
+    (mockFs.statSync as jest.Mock).mockImplementation((p: string) => ({
+      mtimeMs: mtimes[path.basename(p as string)] ?? 0,
+    }));
+    (mockFs.rmSync as jest.Mock).mockReturnValue(undefined);
+
+    const removed = pruneOldReleases(releasesDir, currentLink, 3);
+
+    // keepCount=3 → 保留 current(rel-1) + 最新 2 个（rel-5/rel-4）；删 rel-3/rel-2。
+    expect(removed.sort()).toEqual(
+      [path.join(releasesDir, 'rel-2'), path.join(releasesDir, 'rel-3')].sort(),
+    );
+    expect(removed).not.toContain(path.join(releasesDir, 'rel-1'));
+  });
+
+  it('is a no-op when releases dir does not exist', () => {
+    (mockFs.existsSync as jest.Mock).mockReturnValue(false);
+    const removed = pruneOldReleases(releasesDir, currentLink, 5);
+    expect(removed).toEqual([]);
+    expect(mockFs.rmSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('E-12 retention: rotateAppLogIfNeeded', () => {
+  const logFile = '/app/releases/current/app.log';
+
+  it('rotates app.log → .1 → .2 → .3 when over the size cap', () => {
+    (mockFs.existsSync as jest.Mock).mockImplementation((p: string) =>
+      p === logFile || p === `${logFile}.1` || p === `${logFile}.2` ? true : false,
+    );
+    (mockFs.statSync as jest.Mock).mockReturnValue({ size: 60 * 1024 * 1024 });
+    (mockFs.renameSync as jest.Mock).mockReturnValue(undefined);
+    (mockFs.rmSync as jest.Mock).mockReturnValue(undefined);
+
+    const rotated = rotateAppLogIfNeeded(logFile, 50 * 1024 * 1024, 3);
+    expect(rotated).toBe(true);
+    // 已有 .1/.2 备份：整条链 .2→.3、.1→.2、app.log→.1
+    expect(mockFs.renameSync).toHaveBeenCalledWith(`${logFile}.2`, `${logFile}.3`);
+    expect(mockFs.renameSync).toHaveBeenCalledWith(`${logFile}.1`, `${logFile}.2`);
+    expect(mockFs.renameSync).toHaveBeenCalledWith(logFile, `${logFile}.1`);
+  });
+
+  it('does nothing when app.log is under the size cap', () => {
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockFs.statSync as jest.Mock).mockReturnValue({ size: 1024 });
+    (mockFs.renameSync as jest.Mock).mockReturnValue(undefined);
+
+    const rotated = rotateAppLogIfNeeded(logFile, 50 * 1024 * 1024, 3);
+    expect(rotated).toBe(false);
+    expect(mockFs.renameSync).not.toHaveBeenCalled();
   });
 });

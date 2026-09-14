@@ -1,12 +1,9 @@
 import { useState } from 'react';
-import {
-  Tabs, Table, Button, Upload, Form, Input, Modal, message, Space,
-  Typography, Tag, Empty, Card,
-} from 'antd';
+import { Card, Tabs, Table, Button, Upload, Form, Input, Modal, message, Space, Typography, Tag, Empty, theme } from 'antd';
 import {
   UploadOutlined, ReloadOutlined, CodeOutlined, InboxOutlined,
 } from '@ant-design/icons';
-import { useRequest } from 'ahooks';
+import { useQuery } from '@tanstack/react-query';
 import { registryApi } from '../api/registry';
 import { getErrMsg } from '../utils/error';
 import { useTranslation } from 'react-i18next';
@@ -21,11 +18,16 @@ const { Text, Paragraph } = Typography;
 // ─── PyPI tab ────────────────────────────────────────────────────────────────
 function PypiTab() {
   const { t } = useTranslation();
+  const { token } = theme.useToken(); // F-15（DEEP_REVIEW 0ef3bbe）
   const [uploadOpen, setUploadOpen] = useState(false);
   const [form] = Form.useForm();
   const [uploading, setUploading] = useState(false);
 
-  const { data: packages = [], loading, error, refresh } = useRequest(registryApi.listPypiPackages);
+  // F-16（DEEP_REVIEW 0ef3bbe）：ahooks useRequest → TanStack Query useQuery（主栈统一）。
+  const { data: packages = [], isLoading: loading, error, refetch: refresh } = useQuery({
+    queryKey: ['registry', 'pypi'],
+    queryFn: registryApi.listPypiPackages,
+  });
 
   const handleUpload = async (values: { name: string; version: string; file: { fileList?: { originFileObj?: File }[] } }) => {
     const fileObj: File | undefined = values.file?.fileList?.[0]?.originFileObj;
@@ -64,10 +66,10 @@ function PypiTab() {
     <div>
       <Space style={{ marginBottom: 16 }} wrap>
         <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>{t('registry.upload')}</Button>
-        <Button icon={<ReloadOutlined />} onClick={refresh}>{t('registry.refresh')}</Button>
+        <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>{t('registry.refresh')}</Button>
       </Space>
 
-      <Card size="small" style={{ marginBottom: 16, background: '#f6ffed', border: '1px solid #b7eb8f' }}>
+      <Card size="small" style={{ marginBottom: 16, background: token.colorSuccessBg, border: `1px solid ${token.colorSuccessBorder}` }}>
         <Paragraph style={{ margin: 0 }}>
           <Text strong>{t('registry.pypiHint')}</Text>
         </Paragraph>
@@ -142,8 +144,13 @@ function PypiTab() {
 // ─── NPM tab ─────────────────────────────────────────────────────────────────
 function NpmTab() {
   const { t } = useTranslation();
+  const { token } = theme.useToken(); // F-15（DEEP_REVIEW 0ef3bbe）
   const [publishOpen, setPublishOpen] = useState(false);
-  const { data: packages = [], loading, error, refresh } = useRequest(registryApi.listNpmPackages);
+  // F-16（DEEP_REVIEW 0ef3bbe）：ahooks useRequest → TanStack Query useQuery（主栈统一）。
+  const { data: packages = [], isLoading: loading, error, refetch: refresh } = useQuery({
+    queryKey: ['registry', 'npm'],
+    queryFn: registryApi.listNpmPackages,
+  });
 
   const columns = [
     { title: t('registry.col.name'), dataIndex: 'name', key: 'name', render: (n: string) => <Text code>{n}</Text> },
@@ -166,10 +173,10 @@ function NpmTab() {
     <div>
       <Space style={{ marginBottom: 16 }} wrap>
         <Button type="primary" icon={<CodeOutlined />} onClick={() => setPublishOpen(true)}>{t('registry.publish')}</Button>
-        <Button icon={<ReloadOutlined />} onClick={refresh}>{t('registry.refresh')}</Button>
+        <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>{t('registry.refresh')}</Button>
       </Space>
 
-      <Card size="small" style={{ marginBottom: 16, background: '#e6f7ff', border: '1px solid #91d5ff' }}>
+      <Card size="small" style={{ marginBottom: 16, background: token.colorPrimaryBg, border: `1px solid ${token.colorPrimaryBorder}` }}>
         <Paragraph style={{ margin: 0 }}>
           <Text strong>{t('registry.npmHint')}</Text>
         </Paragraph>

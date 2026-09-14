@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import NotificationSettingsPage from '../pages/NotificationSettingsPage';
 import { client } from '../api/client';
 import { useAuthStore } from '../store/auth';
@@ -115,9 +116,19 @@ afterEach(() => {
   cleanup();
 });
 
+// F-16（DEEP_REVIEW 0ef3bbe）：SilenceRulesPanel 迁 TanStack Query，测试需包 Provider。
+function renderPage() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <NotificationSettingsPage />
+    </QueryClientProvider>,
+  );
+}
+
 /** 管理员路径：渲染页面并进入「静默规则」Tab（等待列表数据渲染） */
 async function openSilencesTab() {
-  render(<NotificationSettingsPage />);
+  renderPage();
   fireEvent.click(await screen.findByRole('tab', { name: /静默规则/ }));
   await screen.findByText('发布窗口静默'); // 列表数据已渲染
 }
@@ -275,7 +286,7 @@ describe('静默规则失败反馈（UI-15）', () => {
 describe('非管理员零入口（FEAT-01）', () => {
   it('非 admin 不渲染「静默规则」Tab，也不发起 silences 请求', async () => {
     useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
-    render(<NotificationSettingsPage />);
+    renderPage();
 
     // 等渠道 Tab 加载完成（页面就绪的信号）
     await screen.findByRole('tab', { name: /邮件/ });

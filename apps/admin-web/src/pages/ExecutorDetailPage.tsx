@@ -1,10 +1,9 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result, Tag } from 'antd';
+import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result, Tag, theme } from 'antd';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
-import { useRequest } from 'ahooks';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, useMutation } from '@tanstack/react-query';
 import { executorsApi, type ExecutorExecution } from '../api/executors';
 import {
   useExecutorDetail,
@@ -42,11 +41,13 @@ function isHeartbeatStale(isoString: string): boolean {
   return Date.now() - new Date(isoString).getTime() > 5 * 60 * 1000;
 }
 
-/** Returns Ant Design token color based on usage percent and thresholds */
-function usageColor(value: number, warn =60, danger = 80): string {
-  if (value >= danger) return '#cf1322';
-  if (value >= warn) return '#faad14';
-  return '#3f8600';
+/** Returns Ant Design token color based on usage percent and thresholds.
+ * F-15（DEEP_REVIEW 0ef3bbe）：语义色改由 antd token 提供（双主题自适应）。 */
+type AntdToken = ReturnType<typeof theme.useToken>['token'];
+function usageColor(token: AntdToken, value: number, warn = 60, danger = 80): string {
+  if (value >= danger) return token.colorError;
+  if (value >= warn) return token.colorWarning;
+  return token.colorSuccess;
 }
 
 /** FEAT-04: 折线图 X 轴刻度——按小时:分钟显示（样本桶距 15 分钟起） */
@@ -68,6 +69,8 @@ function trendTooltipLabel(iso: string): string {
 
 export default function ExecutorDetailPage() {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：语义色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   // W2 对齐：管理写操作（编辑/配置热更新/设置离线/轮换 Token）后端已收紧
@@ -102,58 +105,62 @@ export default function ExecutorDetailPage() {
   const queryClient = useQueryClient();
   const refreshExecutor = () => void invalidateExecutorData(queryClient);
 
-  const { run: updateExecutor, loading: updating } = useRequest(
-    (values) => executorsApi.update(id!, values),
-    { manual: true, onSuccess: () => { message.success(t('executorDetail.updateSuccess')); setEditOpen(false); refreshExecutor(); } },
-  );
+  // F-16（DEEP_REVIEW 0ef3bbe）：写操作从 ahooks useRequest 统一迁到 TanStack
+  // Query useMutation（项目主栈）。onSuccess/onError 与原 useRequest 语义一一对应，
+  // 写后失效仍走 invalidateExecutorData。
+  const updateExecMut = useMutation({
+    mutationFn: (values: Record<string, unknown>) => executorsApi.update(id!, values),
+    onSuccess: () => { message.success(t('executorDetail.updateSuccess')); setEditOpen(false); refreshExecutor(); },
+  });
+  const updateExecutor = (values: Record<string, unknown>) => updateExecMut.mutate(values);
+  const updating = updateExecMut.isPending;
 
-  const { run: reloadConfig, loading: reloading } = useRequest(
-    (values) => executorsApi.reloadConfig(id!, values),
-    { manual: true, onSuccess: () => { message.success(t('executorDetail.configPushed')); setConfigOpen(false); } },
-  );
+  const reloadConfigMut = useMutation({
+    mutationFn: (values: Record<string, unknown>) => executorsApi.reloadConfig(id!, values),
+    onSuccess: () => { message.success(t('executorDetail.configPushed')); setConfigOpen(false); },
+  });
+  const reloadConfig = (values: Record<string, unknown>) => reloadConfigMut.mutate(values);
+  const reloading = reloadConfigMut.isPending;
 
   // AUTH-05 交接：轮换请求体携带可选 reason（≤200，审计 executor.rotate_token）
-  const { run: rotateToken, loading: rotating } = useRequest(
-    (reason?: string) => executorsApi.rotateToken(id!, reason?.trim() || undefined),
-    {
-      manual: true,
-      onSuccess: (res) => {
-        setRotateOpen(false);
-        rotateForm.resetFields();
-        Modal.success({
-          title: t('executorDetail.rotate.newTokenTitle'),
-          content: (
-            <Space>
-              <Text code copyable={{ text: res.token }}>{res.token}</Text>
-            </Space>
-          ),
-        });
-      },
-      onError: (e) => { message.error(t('executorDetail.rotate.rotateFail', { err: getErrMsg(e, t('executorDetail.retry')) })); },
+  const rotateTokenMut = useMutation({
+    mutationFn: (reason?: string) => executorsApi.rotateToken(id!, reason?.trim() || undefined),
+    onSuccess: (res) => {
+      setRotateOpen(false);
+      rotateForm.resetFields();
+      Modal.success({
+        title: t('executorDetail.rotate.newTokenTitle'),
+        content: (
+          <Space>
+            <Text code copyable={{ text: res.token }}>{res.token}</Text>
+          </Space>
+        ),
+      });
     },
-  );
+    onError: (e) => { message.error(t('executorDetail.rotate.rotateFail', { err: getErrMsg(e, t('executorDetail.retry')) })); },
+  });
+  const rotateToken = (reason?: string) => rotateTokenMut.mutate(reason);
+  const rotating = rotateTokenMut.isPending;
 
   // AUTH-05 交接：删除执行器（此前前端无删除入口）。reason 可选随 body 写审计
-  const { run: removeExecutor, loading: removing } = useRequest(
-    (reason?: string) => executorsApi.remove(id!, reason?.trim() || undefined),
-    {
-      manual: true,
-      onSuccess: () => {
-        message.success(t('executorDetail.remove.removeSuccess'));
-        navigate('/executors');
-      },
-      onError: (e) => { message.error(t('executorDetail.remove.removeFail', { err: getErrMsg(e, t('executorDetail.retry')) })); },
+  const removeExecMut = useMutation({
+    mutationFn: (reason?: string) => executorsApi.remove(id!, reason?.trim() || undefined),
+    onSuccess: () => {
+      message.success(t('executorDetail.remove.removeSuccess'));
+      navigate('/executors');
     },
-  );
+    onError: (e) => { message.error(t('executorDetail.remove.removeFail', { err: getErrMsg(e, t('executorDetail.retry')) })); },
+  });
+  const removeExecutor = (reason?: string) => removeExecMut.mutate(reason);
+  const removing = removeExecMut.isPending;
 
-  const { run: setOffline, loading: settingOffline } = useRequest(
-    () => executorsApi.setOffline(id!),
-    {
-      manual: true,
-      onSuccess: () => { message.success(t('executorDetail.offline.offlineSuccess')); refreshExecutor(); },
-      onError: (e) => { message.error(t('executorDetail.offline.offlineFail', { err: e.message })); },
-    },
-  );
+  const setOfflineMut = useMutation({
+    mutationFn: () => executorsApi.setOffline(id!),
+    onSuccess: () => { message.success(t('executorDetail.offline.offlineSuccess')); refreshExecutor(); },
+    onError: (e) => { message.error(t('executorDetail.offline.offlineFail', { err: e.message })); },
+  });
+  const setOffline = () => setOfflineMut.mutate();
+  const settingOffline = setOfflineMut.isPending;
 
   // UI-08：首屏骨架屏替代裸 Spin
   if (loadingExecutor && !executor) return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
@@ -300,7 +307,7 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item label={t('executorDetail.field.lastHeartbeat')}>
             <Tooltip title={heartbeatAbsolute}>
               {heartbeatStale ? (
-                <Text style={{ color: '#fa8c16' }}>
+                <Text style={{ color: token.colorWarning }}>
                   <WarningOutlined style={{ marginRight: 4 }} />
                   {heartbeatText}
                 </Text>
@@ -373,8 +380,8 @@ export default function ExecutorDetailPage() {
                 { title: t('executorDetail.live.disk'), value: executor.diskUsage ?? 0, warn: 70, danger: 90 },
               ] as const).map(({ title, value, warn, danger }) => (
                 <Col span={8} key={title}>
-                  <Statistic title={title} value={value} suffix="%" precision={1} styles={{ content: { color: usageColor(value, warn, danger) } }} />
-                  <Progress percent={Math.round(value)} showInfo={false} strokeColor={usageColor(value, warn, danger)} style={{ marginTop: 8 }} />
+                  <Statistic title={title} value={value} suffix="%" precision={1} styles={{ content: { color: usageColor(token, value, warn, danger) } }} />
+                  <Progress percent={Math.round(value)} showInfo={false} strokeColor={usageColor(token, value, warn, danger)} style={{ marginTop: 8 }} />
                 </Col>
               ))}
             </Row>
@@ -386,7 +393,7 @@ export default function ExecutorDetailPage() {
               <Row gutter={16}>
                 <Col span={8}><Statistic title={t('executorDetail.stats.totalExecutions')} value={metrics.sevenDayStats.totalExecutions} /></Col>
                 <Col span={8}>
-                  <Statistic title={t('executorDetail.stats.successRate')} value={metrics.sevenDayStats.successRate} suffix="%" styles={{ content: { color: '#3f8600' } }} precision={1} />
+                  <Statistic title={t('executorDetail.stats.successRate')} value={metrics.sevenDayStats.successRate} suffix="%" styles={{ content: { color: token.colorSuccess } }} precision={1} />
                   <Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.stats.succFail', { succ: metrics.sevenDayStats.successful, fail: metrics.sevenDayStats.failed })}</Text>
                 </Col>
                 <Col span={8}><Statistic title={t('executorDetail.stats.avgDuration')} value={metrics.sevenDayStats.averageDurationMs} suffix="ms" precision={0} /></Col>
@@ -439,7 +446,7 @@ export default function ExecutorDetailPage() {
           <Card>
             <Statistic title={t('executorDetail.currentRunning')} value={runningCount} suffix={`/ ${executor.maxConcurrentTasks ?? '∞'}`} />
             {maxConcurrent > 0 && (
-              <Progress percent={runningPercent} showInfo={false} strokeColor={usageColor(runningPercent, 70, 90)} style={{ marginTop: 8 }} />
+              <Progress percent={runningPercent} showInfo={false} strokeColor={usageColor(token, runningPercent, 70, 90)} style={{ marginTop: 8 }} />
             )}
             {reportedCount != null && reportedCount !== runningCount && (
               <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
@@ -452,7 +459,7 @@ export default function ExecutorDetailPage() {
           <Card><Statistic title={t('executorDetail.totalTasks')} value={executor.totalTaskCount ?? 0} /></Card>
         </Col>
         <Col span={8}>
-          <Card><Statistic title={t('executorDetail.failedTasks')} value={executor.failedTaskCount ?? 0} styles={{ content: { color: '#cf1322' } }} /></Card>
+          <Card><Statistic title={t('executorDetail.failedTasks')} value={executor.failedTaskCount ?? 0} styles={{ content: { color: token.colorError } }} /></Card>
         </Col>
       </Row>
 

@@ -1,0 +1,15 @@
+# F-19（DEEP_REVIEW 0ef3bbe）：executor-desktop 内嵌 executor-node ncc bundle 的期望 SHA-256。
+#
+# 背景：resources/executor-node/index.js（约 2.1MB / 5 万行）原先是入库产物，与
+# apps/executor-node 源码构成双源，漏打即漂移。出库后：产物本身不再入库（见
+# .gitignore），仓库只跟踪这一份「期望哈希」清单；CI 跑的是已提交树，故本值
+# 对应「HEAD 源码经 ncc 0.44 重打的字节确定性产物」。
+#
+# 维护规则（遵 ADR-005：源码改动与产物同 commit）：
+#   1. 改完 apps/executor-node/src 后，在 apps/executor-desktop 跑：
+#        npm run build:executor   （= scripts/bundle-executor.sh，ncc 重打）
+#   2. 计算新产物哈希并回填本文件第二行：
+#        sha256sum resources/executor-node/index.js
+#   3. 与源码改动同 commit 提交。
+# CI 的 desktop-bundle-drift job 离线 ncc 重打后比对 actual == expected，不一致即红。
+f58b6d832a109708c2635ef1d023e0c9a4f158979a0ab18d5596086b1dd609d1  index.js

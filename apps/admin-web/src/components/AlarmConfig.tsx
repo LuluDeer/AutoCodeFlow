@@ -1,4 +1,4 @@
-import { Form, Input, Select, Space, Typography, Tooltip } from 'antd';
+import { Form, Input, Select, Space, Typography, Tooltip, theme } from 'antd';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
@@ -12,6 +12,8 @@ const { Text } = Typography;
  */
 export default function AlarmConfig() {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：三级图标色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
 
   const ALARM_CHANNEL_OPTIONS = [
     { value: 'email', label: t('alarmConfig.channel.option.email') },
@@ -33,7 +35,7 @@ export default function AlarmConfig() {
           <Space size={4}>
             {t('alarmConfig.field.channels')}
             <Tooltip title={t('alarmConfig.channelTooltip')}>
-              <InfoCircleOutlined style={{ color: '#8c8c8c', fontSize: 12 }} />
+              <InfoCircleOutlined style={{ color: token.colorTextTertiary, fontSize: 12 }} />
             </Tooltip>
           </Space>
         }

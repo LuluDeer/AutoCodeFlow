@@ -1,4 +1,4 @@
-import { Card, Descriptions, Tag, Typography, Button, Space, Badge, message, Alert, Popconfirm, Result, Select, Input, Tabs } from 'antd';
+import { Card, Descriptions, Tag, Typography, Button, Space, Badge, message, Alert, Popconfirm, Result, Select, Input, Tabs, theme } from 'antd';
 import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, FieldTimeOutlined, LinkOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
@@ -10,8 +10,9 @@ import {
   useTaskDetail,
 } from '../api/queries';
 import { getApiBaseUrl } from '../api/client';
-import { buildSseUrl } from '../api/sse';
+import { createSseClient } from '../api/sse-client';
 import { getErrMsg } from '../utils/error';
+import { copyText } from '../utils/clipboard';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { useAuthStore } from '../store/auth';
@@ -112,6 +113,8 @@ export const UI09_DESCRIPTIONS_COLUMN = { xs: 1, sm: 2, md: 3 } as const;
 
 export default function ExecutionDetailPage() {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：语义色/边框走 antd token，暗色主题自适应。
+  const { token: antdToken } = theme.useToken();
   const statusMap = STATUS_MAP(t);
   const triggerLabels = TRIGGER_LABEL(t);
   const failureReasonMap = FAILURE_REASON_MAP(t);
@@ -177,41 +180,60 @@ export default function ExecutionDetailPage() {
     refetch: refreshReport,
   } = useExecutionReport(taskId, execId);
   const reportError = reportErr ? getErrMsg(reportErr, t('execDetail.reportLoadFail')) : null;
+  // F-17（DEEP_REVIEW 0ef3bbe）：修复挂载即双发 report。useExecutionReport 的
+  // useQuery 已在挂载时首取一次；旧 effect 在 deps 里无条件 refreshReport()，
+  // mount 即再发一废请求。现用 ref 跳过首帧（prevStatus 初始 undefined），
+  // 仅在执行状态真正变化时重拉 report（running→success 等）。
+  const prevReportStatusRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    void refreshReport();
+    const status = data?.status;
+    if (prevReportStatusRef.current === undefined) {
+      prevReportStatusRef.current = status;
+      return;
+    }
+    if (prevReportStatusRef.current !== status) {
+      prevReportStatusRef.current = status;
+      void refreshReport();
+    }
   }, [data?.status, refreshReport]);
 
   // SSE log streaming when running
+  // F-08（DEEP_REVIEW 0ef3bbe）：自建 EventSource 收敛到统一 createSseClient 工厂
+  // （与 useMetricsStream / useExecutionsStream 同源）。日志流断线不自动重连——
+  // 标记断流后交由下方轮询兜底，避免与轮询重复打。
   useEffect(() => {
     if (data?.status !== 'running' && data?.status !== 'pending') return;
-    const base = getSseBase().replace(/\/$/, '');
-    // F-05（DEEP_REVIEW 0ef3bbe）：token 注入统一走 buildSseUrl（含安全取舍注释）
-    // EventSource 无法设置请求头；后端仅对日志流路由支持 access_token 查询参数鉴权
-    const es = new EventSource(buildSseUrl(base, `/tasks/${taskId}/executions/${execId}/logs/stream`, token));
     setStreaming(true);
     setStreamDisconnected(false);
     setStreamLines([]);
-    es.onmessage = (e) => {
-      try {
-        const line = JSON.parse(e.data) as string;
-        setStreamLines((prev) => (prev ? [...prev, line] : [line]));
-      } catch { /* ignore malformed */ }
-    };
-    es.addEventListener('done', () => {
-      es.close();
-      setStreaming(false);
-      setStreamDisconnected(false);
-      refresh(); // final status refresh
+    let client: { close: () => void } | null = null;
+    client = createSseClient({
+      baseUrl: getSseBase(),
+      path: `/tasks/${taskId}/executions/${execId}/logs/stream`,
+      token,
+      reconnect: false,
+      onMessage: (e) => {
+        try {
+          const line = JSON.parse(e.data) as string;
+          setStreamLines((prev) => (prev ? [...prev, line] : [line]));
+        } catch { /* ignore malformed */ }
+      },
+      events: {
+        done: () => {
+          client?.close();
+          setStreaming(false);
+          setStreamDisconnected(false);
+          refresh(); // final status refresh
+        },
+        error: () => {
+          client?.close();
+          setStreaming(false);
+          // 执行仍未终态：标记断流，交由轮询兜底并提示用户
+          if (data?.status === 'running' || data?.status === 'pending') setStreamDisconnected(true);
+        },
+      },
     });
-    const handleStreamError = () => {
-      es.close();
-      setStreaming(false);
-      // 执行仍未终态：标记断流，交由轮询兜底并提示用户
-      if (data?.status === 'running' || data?.status === 'pending') setStreamDisconnected(true);
-    };
-    es.addEventListener('error', handleStreamError);
-    es.onerror = handleStreamError;
-    return () => { es.close(); setStreaming(false); };
+    return () => { client?.close(); setStreaming(false); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.status, execId, taskId, reconnectKey]);
 
@@ -744,12 +766,14 @@ export default function ExecutionDetailPage() {
                       <Button
                         size="small"
                         icon={<CopyOutlined />}
-                        onClick={() => {
+                          onClick={async () => {
                           // OBS-03 取舍：复制反映"当前视图"（所见即所得）——级别
                           // 过滤生效时复制过滤视图，"全部"时复制当前展示内容
                           // （可能含 SSE 流缓冲）。需要全量请切回"全部"后复制。
-                          navigator.clipboard.writeText(displayLogs);
-                          message.success(t('execDetail.log.copied'));
+                          // F-18（DEEP_REVIEW 0ef3bbe）：补错误处理——失败不弹成功提示。
+                          const ok = await copyText(displayLogs);
+                          if (ok) message.success(t('execDetail.log.copied'));
+                          else message.error(t('execDetail.log.copyFailed'));
                         }}
                       >
                         {t('execDetail.log.copy')}
@@ -848,8 +872,8 @@ export default function ExecutionDetailPage() {
                 {data?.aiAnalysis && (
                   <Card
                     title={t('execDetail.report.aiAnalysisTitle')}
-                    style={{ borderColor: '#1677ff', marginBottom: 16 }}
-                    styles={{ header: { background: 'linear-gradient(90deg, #e6f7ff, #f0f5ff)', color: '#1677ff' } }}
+                    style={{ borderColor: antdToken.colorPrimary, marginBottom: 16 }}
+                    styles={{ header: { background: `linear-gradient(90deg, ${antdToken.colorPrimaryBg}, ${antdToken.colorPrimaryBgHover})`, color: antdToken.colorPrimary } }}
                   >
                     <Text style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.8 }}>
                       {data.aiAnalysis}
@@ -897,7 +921,7 @@ export default function ExecutionDetailPage() {
                           alignItems: 'center',
                           gap: 8,
                           padding: '6px 0',
-                          borderBottom: '1px solid var(--color-border, #f0f0f0)',
+                          borderBottom: `1px solid ${antdToken.colorBorderSecondary}`,
                           flexWrap: 'wrap',
                         }}
                       >

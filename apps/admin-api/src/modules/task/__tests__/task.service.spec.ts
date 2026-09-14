@@ -1669,6 +1669,95 @@ describe("TaskService (__tests__)", () => {
       expect(result[0].success).toBe(true);
     });
 
+    // R-06（DEEP_REVIEW 0ef3bbe）: 广播执行的占坑释放。广播 dispatch 对每个目标
+    // 执行器 runningTaskCount +1，但执行行 executorAddress 恒为 null——winner 分支
+    // 的 releaseExecutorSlot(winnerAddress=null) 早退 no-op。钉住：按任务
+    // executeMode 判定广播后，首个回调（winner）按其上报地址释放一坑，其余执行器
+    // 的重复回调（affected=0）也按各自上报地址释放自己的那坑，N 个执行器回调恰好 -N。
+    it("R-06: broadcast execution releases one slot per reporting executor across winner + duplicate callbacks", async () => {
+      const exec = {
+        id: "e-b",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: null, // 广播执行：库中执行器地址恒为 null
+        taskId: "task-b",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      taskRepo.findOne.mockResolvedValue({
+        id: "task-b",
+        executeMode: "broadcast",
+      });
+      releaseSlotExecute.mockClear();
+
+      // 回调 1：hostA 命中终态 UPDATE（winner），释放 hostA 的坑
+      await service.handleCallback([
+        {
+          executionId: "e-b",
+          status: "success",
+          executorAddress: "hostA:1",
+          durationMs: 10,
+        },
+      ]);
+      // 回调 2：hostB 已被 hostA 终态化（affected=0 重复回调），仍按 hostB 地址释放
+      await service.handleCallback([
+        {
+          executionId: "e-b",
+          status: "success",
+          executorAddress: "hostB:2",
+          durationMs: 20,
+        },
+      ]);
+
+      // releaseExecutorSlot 经 dataSource 建链；收集所有按地址释放的 addr
+      const releasedAddrs = dataSource.createQueryBuilder.mock.results
+        .map((r: any) => r.value)
+        .flatMap((qb: any) =>
+          qb.where.mock.calls
+            .filter((c: any[]) => c[0] === "address = :addr")
+            .map((c: any[]) => c[1].addr),
+        );
+      expect(releasedAddrs).toContain("hostA:1");
+      expect(releasedAddrs).toContain("hostB:2");
+      expect(releasedAddrs.length).toBe(2); // 每执行器恰好一坑，不多不少
+    });
+
+    it("R-06: single-cast execution is NOT double-released (winner release unchanged)", async () => {
+      const exec = {
+        id: "e-s",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "hostS:9",
+        taskId: "task-s",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      taskRepo.findOne.mockResolvedValue({
+        id: "task-s",
+        executeMode: "single",
+      });
+      releaseSlotExecute.mockClear();
+
+      await service.handleCallback([
+        {
+          executionId: "e-s",
+          status: "success",
+          executorAddress: "hostS:9",
+          durationMs: 10,
+        },
+      ]);
+
+      const releasedAddrs = dataSource.createQueryBuilder.mock.results
+        .map((r: any) => r.value)
+        .flatMap((qb: any) =>
+          qb.where.mock.calls
+            .filter((c: any[]) => c[0] === "address = :addr")
+            .map((c: any[]) => c[1].addr),
+        );
+      // 单播仅 winner 释放一次；executorAddress 非空 → 不进广播分支
+      expect(releasedAddrs).toEqual(["hostS:9"]);
+    });
+
     it("marks execution as FAILED and stores errorMessage", async () => {
       const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
       execRepo.findOne.mockResolvedValue(exec);
