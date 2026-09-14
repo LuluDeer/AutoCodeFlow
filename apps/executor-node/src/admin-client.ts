@@ -1,5 +1,4 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
-import { config } from './config';
 import { logger } from './logger';
 import { getCurrentToken, getStaticToken, forceTokenRefresh } from './middleware/auth';
 import { normalizeAdminApiBaseUrl } from './admin-api-url';

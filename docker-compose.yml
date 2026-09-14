@@ -237,6 +237,9 @@ services:
     environment:
       APP_NAME: executor-python-1
       PORT: 8001
+      # E-25（DEEP_REVIEW 0ef3bbe）：容器内必须监听 0.0.0.0 才能被其他容器
+      # 通过 Docker 网络访问；裸机默认已收为 127.0.0.1。
+      BIND_ADDRESS: 0.0.0.0
       # S9: fail closed (503) instead of dev-mode allow-all when no token is
       # configured; admin-api holds the same EXECUTOR_SECRET below.
       REQUIRE_TOKEN: 'true'
@@ -289,6 +292,9 @@ services:
     environment:
       APP_NAME: executor-node-1
       PORT: 8002
+      # E-25（DEEP_REVIEW 0ef3bbe）：容器内必须监听 0.0.0.0 才能被其他容器
+      # 通过 Docker 网络访问；裸机默认已收为 127.0.0.1。
+      BIND_ADDRESS: 0.0.0.0
       # S9: fail closed (503) instead of dev-mode allow-all when no token is
       # configured; admin-api holds the same EXECUTOR_SECRET below.
       REQUIRE_TOKEN: 'true'
@@ -346,6 +352,14 @@ services:
       PACKAGES_DIR: /data/packages
     volumes:
       - pypi_data:/data/packages
+    # E-10（DEEP_REVIEW 0ef3bbe）：基础加固——只读根文件系统 + no-new-privileges
+    # + cap_drop ALL。包写入目录挂载为 volume 可写。
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ['ALL']
+    tmpfs:
+      - /tmp
     healthcheck:
       test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:8003/health")']
       interval: 30s

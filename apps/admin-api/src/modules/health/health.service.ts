@@ -386,6 +386,19 @@ export class HealthService {
     };
   }
 
+  /**
+   * R-25（DEEP_REVIEW 0ef3bbe）：公开健康端点的精简响应——只返回整体
+   * status + timestamp，不暴露 executor 在线数、队列深度、任务计数等
+   * 内部运维指标。详细指标走需鉴权的 getFullHealth()。
+   */
+  async getPublicHealth(): Promise<{
+    status: "healthy" | "degraded" | "unhealthy";
+    timestamp: string;
+  }> {
+    const full = await this.getFullHealth();
+    return { status: full.status, timestamp: full.timestamp };
+  }
+
   async getLiveness(): Promise<{ status: "healthy" }> {
     return { status: "healthy" };
   }

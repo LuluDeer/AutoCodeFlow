@@ -1294,7 +1294,7 @@ describe('POST /api/execute — kill during prepare (改动2)', () => {
     // 轮到执行：prepare 开始装依赖（spawn 挂起不退出）；取消错误静默吞掉，
     // finally 照常 onComplete（真实 TaskWorker 同款语义）
     let prepError: any;
-    const prep = (async () => {
+    const _prep = (async () => {
       try {
         await captured.runPrepared!(() => undefined);
       } catch (err: any) {

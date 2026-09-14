@@ -457,27 +457,44 @@ export class ExecutorService {
     const tasks =
       taskIds.length > 0 ? await this.taskRepo.findBy({ id: In(taskIds) }) : [];
     const taskMap = new Map(tasks.map((t) => [t.id, t]));
+    let failedCount = 0;
+    let errorCount = 0;
     for (const execution of executionsToFail) {
       const task = execution.taskId
         ? (taskMap.get(execution.taskId) ?? null)
         : null;
-      execution.status = ExecutionStatus.FAILED;
-      execution.endTime = new Date();
-      execution.failureReason = ExecutionFailureReason.EXECUTOR_RESTART;
-      execution.errorMessage =
-        "[System] Executor restarted before reporting completion";
-      execution.logs = `${execution.logs || ""}\n[System] Executor restarted; execution marked as FAILED`;
-      await this.execRepo.save(execution);
-      await this.releaseExecutorSlot(execution.executorAddress);
-      if (task) await this.scheduleRetryAfterRecovery(task, execution);
+      // R-11（DEEP_REVIEW 0ef3bbe）：逐行 try/catch 异常隔离——单行乐观锁冲突
+      // （OptimisticLockVersionMismatchError）或其他 DB 异常不得击穿整个
+      // register/heartbeat 流程（否则心跳 500 → 执行器被连锁判离线）。
+      // 失败行留给 stale sweep 收敛；异常计数超阈值时整体 warn。
+      try {
+        execution.status = ExecutionStatus.FAILED;
+        execution.endTime = new Date();
+        execution.failureReason = ExecutionFailureReason.EXECUTOR_RESTART;
+        execution.errorMessage =
+          "[System] Executor restarted before reporting completion";
+        execution.logs = `${execution.logs || ""}\n[System] Executor restarted; execution marked as FAILED`;
+        await this.execRepo.save(execution);
+        await this.releaseExecutorSlot(execution.executorAddress);
+        if (task) await this.scheduleRetryAfterRecovery(task, execution);
+        failedCount++;
+      } catch (err: unknown) {
+        errorCount++;
+        this.logger.warn(
+          `R-11: Failed to mark execution ${execution.id} as FAILED after restart ` +
+          `(executor=${executorAddress}): ${err instanceof Error ? err.message : String(err)}. ` +
+          `Stale sweep will pick it up.`,
+        );
+      }
     }
     if (executionsToFail.length > 0) {
       this.logger.warn(
-        `Marked ${executionsToFail.length} running execution(s) as FAILED after executor restart: ${executorAddress}`,
+        `Marked ${failedCount}/${executionsToFail.length} running execution(s) as FAILED after executor restart: ${executorAddress}` +
+        (errorCount > 0 ? ` (${errorCount} row(s) had errors and will be retried by stale sweep)` : ""),
       );
     }
     // R-P0-009: Return the count of failed executions for caller to adjust runningTaskCount
-    return executionsToFail.length;
+    return failedCount;
   }
 
   /**
@@ -1627,6 +1644,75 @@ export class ExecutorService {
     }
   }
 
+  // R-09（DEEP_REVIEW 0ef3bbe）: executor_metrics_history 无 retention——每执行器
+  // 每 30s 心跳写一行（2,880 行/天/执行器），全仓此前无任何清理机制，同类表
+  // （audit_logs / execution_log_lines / artifacts）均有 retention。对齐既有
+  // 模式（log-retention-cleanup / artifacts-retention）：每日 cron + LeaderGate，
+  // 保留期复用 logRetention.days（默认 30 天，可经 LOG_RETENTION_DAYS 配置）。
+  // 分批 DELETE（id IN (SELECT ... LIMIT 批大小)）循环直至单批不足批大小，
+  // 避免长事务锁表；多实例并发删除幂等。
+  private static readonly METRICS_RETENTION_BATCH_SIZE = 5000;
+
+  /** R-09: 每日 03:15 清理超期 executor_metrics_history 行（保留期同日志） */
+  @Cron("0 15 3 * * *")
+  async cleanupMetricsHistory(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
+    try {
+      const deleted = await this.cleanupExpiredMetricsHistory();
+      if (deleted > 0) {
+        this.logger.log(`R-09: 清理 ${deleted} 行过期执行器指标历史`);
+      }
+    } catch (err) {
+      this.logger.error(
+        `R-09: 执行器指标历史 retention 清理失败: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * R-09: 删除 createdAt 早于保留期截止的指标历史行，返回清理总行数。
+   * now 可注入以便测试。分批 DELETE 对齐 log-retention-cleanup 的
+   * cleanupExpiredLinesByDelete 模式。
+   */
+  async cleanupExpiredMetricsHistory(now: Date = new Date()): Promise<number> {
+    const retentionDays = this.resolveMetricsRetentionDays();
+    const cutoff = new Date(
+      now.getTime() - retentionDays * 86_400_000,
+    );
+    let totalDeleted = 0;
+    let batchDeleted = 0;
+    do {
+      const result = await this.metricsHistoryRepo
+        .createQueryBuilder()
+        .delete()
+        .where(
+          `"id" IN (
+            SELECT "victim"."id" FROM "executor_metrics_history" "victim"
+            WHERE "victim"."createdAt" < :cutoff
+            ORDER BY "victim"."id"
+            LIMIT :batchSize
+          )`,
+          { cutoff, batchSize: ExecutorService.METRICS_RETENTION_BATCH_SIZE },
+        )
+        .execute();
+      batchDeleted = result.affected ?? 0;
+      totalDeleted += batchDeleted;
+    } while (batchDeleted >= ExecutorService.METRICS_RETENTION_BATCH_SIZE);
+    return totalDeleted;
+  }
+
+  /** R-09: 解析保留期（复用 logRetention.days，对齐 artifacts-retention 口径） */
+  private resolveMetricsRetentionDays(): number {
+    const parsed = this.configService.get<number>("logRetention.days");
+    if (typeof parsed === "number" && Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+    return 30;
+  }
+
   /** Auto-scan every 30s, mark executors with expired heartbeat as OFFLINE */
   @Cron("*/30 * * * * *")
   async markStaleOffline() {
@@ -2006,7 +2092,10 @@ export class ExecutorService {
     token: string;
     adminApiUrl: string;
   }> {
-    const adminApiUrl = this.configService.get<string>("ADMIN_API_URL") || "";
+    // R-12（DEEP_REVIEW 0ef3bbe）: 改读映射节 app.adminApiUrl（此前裸读
+    // configService.get("ADMIN_API_URL") 绕过配置中心）。
+    const adminApiUrl =
+      this.configService.get<string>("app.adminApiUrl") || "";
     // R7 真机遗留观察①：ADMIN_API_URL 缺失时旧实现会生成
     // `curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''`
     // ——相对路径 + 空 api-url 的裸机不可用命令。宁可 503 也不返回废命令。

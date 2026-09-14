@@ -2081,6 +2081,30 @@ describe("TaskService (__tests__)", () => {
         ).toBe(1);
       });
 
+      // R-16（DEEP_REVIEW 0ef3bbe）：未派发（PENDING + executorAddress=null）
+      // 的 execution 回报终态必须被拒绝——派发落库前窗口防状态篡改。
+      it("R-16: rejects terminal callback for a not-yet-dispatched (PENDING) execution", async () => {
+        const exec = {
+          id: "e-pending",
+          status: ExecutionStatus.PENDING,
+          executorAddress: null,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        const result = await service.handleCallback([
+          { executionId: "e-pending", status: "success", executorAddress: "attacker:9999" },
+        ]);
+        expect(result[0].success).toBe(false);
+        expect(result[0].error).toMatch(/not been dispatched yet/i);
+        // 终态 UPDATE 不得执行（状态保持 PENDING）
+        expect(exec.status).toBe(ExecutionStatus.PENDING);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "not_dispatched",
+          }),
+        ).toBe(1);
+      });
+
       it("splits address mismatch vs missing callback address", async () => {
         const exec = {
           id: "e1",

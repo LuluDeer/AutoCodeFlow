@@ -1562,6 +1562,7 @@ export default {
   'execDetail.fullLogsNoRows': '全量日志端点未返回日志行',
   'execDetail.fullLogsLoaded': '已加载完整日志',
   'execDetail.fullLogsLoadFail': '加载完整日志失败',
+  'execDetail.fullLogsTooLarge': '日志超过 10 万行，仅加载前 10 万行，请使用下载按钮查看完整日志',
   'execDetail.levelFilterFail': '按级别过滤日志失败',
   'execDetail.status.pending': '等待中',
   'execDetail.status.running': '运行中',

@@ -43,15 +43,20 @@ export class RegistryController {
   }
 
   private get npmUrl(): string {
+    // R-12（DEEP_REVIEW 0ef3bbe）: 改读映射节 registry.npm.url（此前裸读
+    // config.get("NPM_REGISTRY_URL") 绕过配置中心；其下注释曾失实声称该 URL
+    // 已在 Joi 注册，实际仅注册了 TOKEN/USER/PASS）。默认值由 configuration.ts
+    // 回退 http://localhost:4873，与旧回退逐字节一致。
     return (
-      this.config.get<string>("NPM_REGISTRY_URL") || "http://localhost:4873"
+      this.config.get<string>("registry.npm.url") || "http://localhost:4873"
     );
   }
 
   // S5: optional Verdaccio service account (configuration.ts: registry.npm,
-  // registered as optional NPM_REGISTRY_* env vars in the Joi schema). When
-  // configured, the proxy authenticates before pulling the package list; when
-  // unset the previous anonymous behavior is kept.
+  // registered as NPM_REGISTRY_TOKEN/USER/PASS in the Joi schema; R-12 起
+  // NPM_REGISTRY_URL 亦补注册并映射到 registry.npm.url). When configured, the
+  // proxy authenticates before pulling the package list; when unset the previous
+  // anonymous behavior is kept.
   private get npmUser(): string {
     return (
       this.config.get<string>("registry.npm.user") ||

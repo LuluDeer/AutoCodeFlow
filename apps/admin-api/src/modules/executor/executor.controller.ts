@@ -41,6 +41,8 @@ import { INSTALL_SCRIPT } from "./install-script.content";
 import { SystemConfigService } from "../config/config.service";
 import axios from "axios";
 import { PaginationDto } from "../../common/dto/pagination.dto";
+// PK-19: pull 端点请求体 Swagger 文档 DTO（运行时 @Body() 仍为内联类型）。
+import { ExecutorPullDto } from "./dto/executor-pull.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 // EXE-VER-1: heartbeat 响应回显版本合规态（EXECUTOR_MIN_VERSION）
@@ -305,6 +307,10 @@ export class ExecutorController {
   })
   @ApiResponse({ status: 200, description: "Dispatch payload or empty" })
   @ApiResponse({ status: 401, description: "Invalid executor token" })
+  // PK-19（DEEP_REVIEW 0ef3bbe）: 此前 pull 端点用内联类型无 @ApiBody，openapi
+  // 缺 requestBody。补 @ApiBody({ type: ExecutorPullDto })（运行时 @Body() 类型
+  // 不变，纯文档）。
+  @ApiBody({ type: ExecutorPullDto, description: "Pull 长轮询请求体" })
   async pullDispatch(
     @Body()
     body: {

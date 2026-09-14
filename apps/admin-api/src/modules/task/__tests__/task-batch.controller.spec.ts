@@ -146,4 +146,40 @@ describe("TaskBatchController", () => {
       expect(result[1]).toBeUndefined();
     });
   });
+
+  // PK-20（DEEP_REVIEW 0ef3bbe）: 双事实源收敛——/tasks-batch/* 已标记 deprecated，
+  // canonical 主路由为 /tasks/batch/*（TaskController 内）。两套实现调用同一
+  // TaskService 方法（trigger/pause/resume/remove，user 透传两处一致，见上方
+  // R-02 断言）。此处钉住 deprecated 标记不被误删。
+  describe("PK-20: /tasks-batch/* 双事实源收敛（deprecated 标记）", () => {
+    const SWAGGER_OPERATION_META = "swagger/apiOperation";
+    const methods: Array<keyof TaskBatchController> = [
+      "batchTrigger",
+      "batchPause",
+      "batchResume",
+      "batchDelete",
+    ];
+
+    it("四个批量端点的 @ApiOperation 均标记 deprecated: true", () => {
+      for (const m of methods) {
+        const meta = Reflect.getMetadata(
+          SWAGGER_OPERATION_META,
+          (
+            TaskBatchController.prototype as unknown as Record<string, unknown>
+          )[m],
+        ) as { deprecated?: boolean; summary?: string };
+        expect(meta).toBeDefined();
+        expect(meta!.deprecated).toBe(true);
+        expect(meta!.summary).toContain("deprecated");
+      }
+    });
+
+    it("控制器路由前缀为 tasks-batch（deprecated 家族，勿删路由）", () => {
+      const prefix = Reflect.getMetadata(
+        "path",
+        TaskBatchController,
+      ) as string;
+      expect(prefix).toBe("tasks-batch");
+    });
+  });
 });

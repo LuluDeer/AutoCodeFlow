@@ -3,6 +3,8 @@ import { getMetadataStorage } from "class-validator";
 import { User } from "../users/entities/user.entity";
 import { SystemConfig } from "../config/entities/system-config.entity";
 import { ExecutionLogLine } from "../task/entities/execution-log-line.entity";
+import { TaskExecution } from "../task/entities/task-execution.entity";
+import { ExecutorPackage } from "../executor-package/executor-package.entity";
 import { ApplicationVersion } from "../application/entities/application-version.entity";
 
 /**
@@ -75,5 +77,68 @@ describe("DB-002: ExecutionLogLine.createdAt", () => {
       .indices.filter((i) => i.target === ExecutionLogLine)
       .find((i) => i.columns.length === 1 && i.columns[0] === "createdAt");
     expect(index).toBeDefined();
+  });
+});
+
+/**
+ * PK-10（DEEP_REVIEW 0ef3bbe）实体↔DB 元数据漂移三连回归：
+ * (1) fileSize bigint 运行时 string → 列级 transformer 数值化；
+ * (2) task_executions→tasks FK 实体 onDelete SET NULL ↔ 迁移 CASCADE；
+ * (3) execution_log_lines 分区表联合 PK (id, createdAt) 实体不知情。
+ * 用 getMetadataArgsStorage 钉住装饰器产物——migration:generate 不会再被漂移元数据误导。
+ */
+describe("PK-10 (1): ExecutorPackage.fileSize bigint → number transformer", () => {
+  it("fileSize 列声明 type bigint 且带 read 端 transformer（string→number）", () => {
+    const column = getMetadataArgsStorage()
+      .columns.filter((c) => c.target === ExecutorPackage)
+      .find((c) => c.propertyName === "fileSize");
+    expect(column).toBeDefined();
+    expect(column!.options.type).toBe("bigint");
+    expect(column!.options.transformer).toBeDefined();
+    const transformer = column!.options
+      .transformer as unknown as {
+      to: (v?: number) => number | undefined;
+      from: (v?: string | number) => number;
+    };
+    // node-pg 对 int8 读回为 string：from 必须把 "12345" → 12345。
+    expect(transformer.from("12345")).toBe(12345);
+    // number 原样透传；null/undefined 回退 0。
+    expect(transformer.from(9876)).toBe(9876);
+    expect(transformer.from(undefined)).toBe(0);
+    // to 透传（写路径 number 原样绑定）。
+    expect(transformer.to(42)).toBe(42);
+  });
+});
+
+describe("PK-10 (2): TaskExecution.task FK onDelete 对齐 DB 迁移 CASCADE", () => {
+  it("TaskExecution → Task 关系 onDelete === 'CASCADE'（迁移 1717473142679 事实）", () => {
+    const relation = getMetadataArgsStorage()
+      .relations.filter((r) => r.target === TaskExecution)
+      .find((r) => r.propertyName === "task");
+    expect(relation).toBeDefined();
+    // 曾为 "SET NULL"——列 NOT NULL 下删任务即外键报错。以迁移为准钉死 CASCADE。
+    expect(relation!.options.onDelete).toBe("CASCADE");
+  });
+});
+
+describe("PK-10 (3): ExecutionLogLine 联合 PK (id, createdAt) 对齐分区表", () => {
+  it("id 为 primary generated（SERIAL）", () => {
+    const column = getMetadataArgsStorage()
+      .columns.filter((c) => c.target === ExecutionLogLine)
+      .find((c) => c.propertyName === "id");
+    expect(column).toBeDefined();
+    expect(column!.options.primary).toBe(true);
+    expect(column!.mode).toBe("regular");
+  });
+
+  it("createdAt 同时是 createDate 且是联合主键列（分区键）", () => {
+    const column = getMetadataArgsStorage()
+      .columns.filter((c) => c.target === ExecutionLogLine)
+      .find((c) => c.propertyName === "createdAt");
+    expect(column).toBeDefined();
+    expect(column!.mode).toBe("createDate");
+    // 迁移 1789900000002 的 PK_execution_log_lines = (id, createdAt)：
+    // @CreateDateColumn({ primary: true }) 让 createDate 列同时进 primaryColumns。
+    expect(column!.options.primary).toBe(true);
   });
 });

@@ -209,8 +209,14 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
   it("S5: logs in with the configured service account and lists packages", async () => {
     const controller = new RegistryController(
       new ConfigService({
-        NPM_REGISTRY_URL: `http://127.0.0.1:${port}`,
-        registry: { npm: { user: "svc", pass: "svc-pass", token: "" } },
+        registry: {
+          npm: {
+            url: `http://127.0.0.1:${port}`,
+            user: "svc",
+            pass: "svc-pass",
+            token: "",
+          },
+        },
       }),
     );
 
@@ -231,8 +237,14 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
   it("S5: keeps the previous anonymous behavior (empty list) when no credentials are configured", async () => {
     const controller = new RegistryController(
       new ConfigService({
-        NPM_REGISTRY_URL: `http://127.0.0.1:${port}`,
-        registry: { npm: { user: "", pass: "", token: "" } },
+        registry: {
+          npm: {
+            url: `http://127.0.0.1:${port}`,
+            user: "",
+            pass: "",
+            token: "",
+          },
+        },
       }),
     );
     (controller as unknown as { logger: Record<string, jest.Mock> }).logger = {
@@ -257,8 +269,14 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
   it("S5: uses a pre-issued token directly without a login round-trip", async () => {
     const controller = new RegistryController(
       new ConfigService({
-        NPM_REGISTRY_URL: `http://127.0.0.1:${port}`,
-        registry: { npm: { user: "", pass: "", token: "svc-token" } },
+        registry: {
+          npm: {
+            url: `http://127.0.0.1:${port}`,
+            user: "",
+            pass: "",
+            token: "svc-token",
+          },
+        },
       }),
     );
 
@@ -277,8 +295,14 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
   it("S5: falls back to the empty-list behavior when the configured credentials are rejected", async () => {
     const controller = new RegistryController(
       new ConfigService({
-        NPM_REGISTRY_URL: `http://127.0.0.1:${port}`,
-        registry: { npm: { user: "svc", pass: "wrong", token: "" } },
+        registry: {
+          npm: {
+            url: `http://127.0.0.1:${port}`,
+            user: "svc",
+            pass: "wrong",
+            token: "",
+          },
+        },
       }),
     );
 

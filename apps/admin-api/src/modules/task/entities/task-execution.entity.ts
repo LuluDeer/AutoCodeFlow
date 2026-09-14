@@ -77,7 +77,11 @@ export class TaskExecution {
   })
   status: ExecutionStatus;
 
-  @ManyToOne("Task", "taskExecutions", { onDelete: "SET NULL", nullable: true })
+  // PK-10（DEEP_REVIEW 0ef3bbe）: FK 语义对齐 DB 迁移。迁移 1717473142679 实际为
+  // `ON DELETE CASCADE`（taskId 列 NOT NULL，删任务级联删执行行），此前实体误声明
+  // onDelete: "SET NULL"——一次 migration:generate 就会把 CASCADE 翻成 SET NULL
+  // （列 NOT NULL，删任务即外键报错）。以迁移为准修正实体为 CASCADE。
+  @ManyToOne("Task", "taskExecutions", { onDelete: "CASCADE", nullable: true })
   @JoinColumn({ name: "taskId" })
   task: Task | null;
   @Column({ nullable: true }) executorAddress: string;
