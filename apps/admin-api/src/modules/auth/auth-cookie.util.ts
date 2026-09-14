@@ -80,5 +80,7 @@ export function readRefreshToken(
       }
     }
   }
-  return typeof bodyToken === "string" && bodyToken.length > 0 ? bodyToken : null;
+  return typeof bodyToken === "string" && bodyToken.length > 0
+    ? bodyToken
+    : null;
 }

@@ -95,8 +95,7 @@ describe("PK-10 (1): ExecutorPackage.fileSize bigint → number transformer", ()
     expect(column).toBeDefined();
     expect(column!.options.type).toBe("bigint");
     expect(column!.options.transformer).toBeDefined();
-    const transformer = column!.options
-      .transformer as unknown as {
+    const transformer = column!.options.transformer as unknown as {
       to: (v?: number) => number | undefined;
       from: (v?: string | number) => number;
     };

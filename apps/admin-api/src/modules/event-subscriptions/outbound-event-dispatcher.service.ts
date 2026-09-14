@@ -316,7 +316,9 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
         "X-AutoCodeFlow-Event": eventName,
         // PK-14: 载荷 schema 主版本（与信封体 schemaVersion 同值），订阅方
         // 据此在 HTTP 头层快速识别载荷形状演进，无需先解 body。
-        "X-AutoCodeFlow-Event-Version": String(payload.schemaVersion ?? EVENT_SCHEMA_VERSION),
+        "X-AutoCodeFlow-Event-Version": String(
+          payload.schemaVersion ?? EVENT_SCHEMA_VERSION,
+        ),
         "X-AutoCodeFlow-Timestamp": timestamp,
         "X-Hub-Signature-256": signature,
       },

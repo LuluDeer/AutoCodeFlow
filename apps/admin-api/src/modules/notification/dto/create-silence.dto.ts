@@ -15,7 +15,10 @@ export class CreateSilenceDto {
   })
   scope: "global" | "task" | "application";
 
-  @ApiPropertyOptional({ description: "仅静默该渠道类型（wechat/dingtalk/slack/email）；空 = 全部渠道" })
+  @ApiPropertyOptional({
+    description:
+      "仅静默该渠道类型（wechat/dingtalk/slack/email）；空 = 全部渠道",
+  })
   channelType?: string;
 
   @ApiPropertyOptional({ description: "scope=task 时必填：任务 UUID" })
@@ -24,12 +27,18 @@ export class CreateSilenceDto {
   @ApiPropertyOptional({ description: "scope=application 时必填：应用 UUID" })
   applicationId?: string;
 
-  @ApiPropertyOptional({ description: "仅静默该级别及以下（info/warning/error/critical）；空 = 全部级别" })
+  @ApiPropertyOptional({
+    description:
+      "仅静默该级别及以下（info/warning/error/critical）；空 = 全部级别",
+  })
   level?: string;
 
   @ApiPropertyOptional({ description: "静默原因（审计记录用）" })
   reason?: string;
 
-  @ApiPropertyOptional({ description: "静默时长（分钟）；缺省走系统默认 TTL", example: 60 })
+  @ApiPropertyOptional({
+    description: "静默时长（分钟）；缺省走系统默认 TTL",
+    example: 60,
+  })
   durationMinutes?: number;
 }

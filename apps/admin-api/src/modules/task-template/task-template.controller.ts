@@ -105,7 +105,10 @@ export class TaskTemplateController {
   // PK-19（DEEP_REVIEW 0ef3bbe）: 此前 instantiate 用 Record<string, unknown> 无
   // @ApiBody，openapi 缺 requestBody。补 @ApiBody({ type: InstantiateTaskOverlayDto })
   //（运行时 @Body() 类型不变，自由 overlay 不被 whitelist 拦截）。
-  @ApiBody({ type: InstantiateTaskOverlayDto, description: "模板覆盖体（自由字段，合并后校验 CreateTaskDto）" })
+  @ApiBody({
+    type: InstantiateTaskOverlayDto,
+    description: "模板覆盖体（自由字段，合并后校验 CreateTaskDto）",
+  })
   instantiate(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() body: Record<string, unknown>,

@@ -495,15 +495,17 @@ export class ExecutorService {
         errorCount++;
         this.logger.warn(
           `R-11: Failed to mark execution ${execution.id} as FAILED after restart ` +
-          `(executor=${executorAddress}): ${err instanceof Error ? err.message : String(err)}. ` +
-          `Stale sweep will pick it up.`,
+            `(executor=${executorAddress}): ${err instanceof Error ? err.message : String(err)}. ` +
+            `Stale sweep will pick it up.`,
         );
       }
     }
     if (executionsToFail.length > 0) {
       this.logger.warn(
         `Marked ${failedCount}/${executionsToFail.length} running execution(s) as FAILED after executor restart: ${executorAddress}` +
-        (errorCount > 0 ? ` (${errorCount} row(s) had errors and will be retried by stale sweep)` : ""),
+          (errorCount > 0
+            ? ` (${errorCount} row(s) had errors and will be retried by stale sweep)`
+            : ""),
       );
     }
     // R-P0-009: Return the count of failed executions for caller to adjust runningTaskCount
@@ -1713,9 +1715,7 @@ export class ExecutorService {
    */
   async cleanupExpiredMetricsHistory(now: Date = new Date()): Promise<number> {
     const retentionDays = this.resolveMetricsRetentionDays();
-    const cutoff = new Date(
-      now.getTime() - retentionDays * 86_400_000,
-    );
+    const cutoff = new Date(now.getTime() - retentionDays * 86_400_000);
     let totalDeleted = 0;
     let batchDeleted = 0;
     do {
@@ -2139,8 +2139,7 @@ export class ExecutorService {
   }> {
     // R-12（DEEP_REVIEW 0ef3bbe）: 改读映射节 app.adminApiUrl（此前裸读
     // configService.get("ADMIN_API_URL") 绕过配置中心）。
-    const adminApiUrl =
-      this.configService.get<string>("app.adminApiUrl") || "";
+    const adminApiUrl = this.configService.get<string>("app.adminApiUrl") || "";
     // R7 真机遗留观察①：ADMIN_API_URL 缺失时旧实现会生成
     // `curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''`
     // ——相对路径 + 空 api-url 的裸机不可用命令。宁可 503 也不返回废命令。

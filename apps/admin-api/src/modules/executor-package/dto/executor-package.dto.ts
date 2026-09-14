@@ -13,11 +13,7 @@ import {
   ExecutorPackageStatus,
 } from "../executor-package.entity";
 import { PaginationDto } from "../../../common/dto/pagination.dto";
-import {
-  ApiProperty,
-  ApiPropertyOptional,
-  PartialType,
-} from "@nestjs/swagger";
+import { ApiProperty, ApiPropertyOptional, PartialType } from "@nestjs/swagger";
 
 export class CreateExecutorPackageDto {
   @ApiProperty({ description: "Package name", maxLength: 255 })
@@ -58,7 +54,9 @@ export class CreateExecutorPackageDto {
 }
 
 // PK-02（DEEP_REVIEW 0ef3bbe）: 手写 Optional 字段改为 PartialType(CreateExecutorPackageDto)。
-export class UpdateExecutorPackageDto extends PartialType(CreateExecutorPackageDto) {
+export class UpdateExecutorPackageDto extends PartialType(
+  CreateExecutorPackageDto,
+) {
   @ApiPropertyOptional({ description: "File path", maxLength: 1024 })
   @IsOptional()
   @IsString()
@@ -72,7 +70,10 @@ export class UpdateExecutorPackageDto extends PartialType(CreateExecutorPackageD
   @Type(() => Number)
   fileSize?: number;
 
-  @ApiPropertyOptional({ description: "Package status", enum: ExecutorPackageStatus })
+  @ApiPropertyOptional({
+    description: "Package status",
+    enum: ExecutorPackageStatus,
+  })
   @IsOptional()
   @IsEnum(ExecutorPackageStatus)
   status?: ExecutorPackageStatus;

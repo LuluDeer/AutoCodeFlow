@@ -19,9 +19,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *   报错（fail-fast）——这是期望行为：存量脏数据不应被静默吞掉。
  * down：回退为 VARCHAR（用 ::text 反向转换）。
  */
-export class AlterConfigHistoryUserIdToInteger1790000000023
-  implements MigrationInterface
-{
+export class AlterConfigHistoryUserIdToInteger1790000000023 implements MigrationInterface {
   name = "AlterConfigHistoryUserIdToInteger1790000000023";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
