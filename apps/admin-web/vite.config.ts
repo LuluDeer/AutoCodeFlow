@@ -77,6 +77,13 @@ export default defineConfig({
     setupFiles: [],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['e2e/**', '**/e2e/**', '**/*.e2e.{ts,tsx,js,cjs}'],
+    // DEEP_REVIEW 轮7 验证发现（2026-09-14）：本套件为 jsdom + antd 重型页面，
+    // 83 文件全量跑时单文件 transform/import 累计达数百秒，首个渲染用例实测
+    // 0.3~2s（空闲）→ 并发下 >5s，vitest 默认 5s 上限会产出**超时假红**
+    // （同一 HEAD 实测：空闲 2 红 / 中等负载 14 红 / 高负载 31 红，全部为
+    // Exceeded timeout 而非断言失败；抬至 30s 后 83/83、725/725 全绿）。
+    // 故显式给足预算；真正挂死的用例仍会在 30s 处失败，不会静默。
+    testTimeout: 30_000,
     server: {
       deps: {
         // F-01：monaco-editor 0.53 的 package.json 无 main/exports（仅 module），

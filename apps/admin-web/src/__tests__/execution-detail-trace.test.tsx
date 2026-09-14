@@ -54,6 +54,11 @@ const TRACE_ID = '4bf92f3577b34da6a3ce929d0e0e4736';
 
 const { tasksApi } = await import('../api/tasks');
 
+// 惰性 import 会把 ExecutionDetailPage 整张依赖图的转译成本记在「首个用例」的
+// 超时预算里（本机实测首个用例 ~19.5s，紧贴 20s 上限，并发/CI 下必假红）。
+// 提到模块顶层后该成本落在收集期，不计入用例超时。
+const { default: ExecutionDetailPage } = await import('../pages/ExecutionDetailPage');
+
 function makeExecution(overrides: Record<string, unknown> = {}) {
   return {
     id: 'e1',
@@ -75,7 +80,6 @@ async function renderPage(execution: Record<string, unknown>) {
   } as never);
   const { useAuthStore } = await import('../store/auth');
   useAuthStore.getState().setAuth('tok-123', 'refresh-1', { id: 1, username: 'admin' });
-  const { default: ExecutionDetailPage } = await import('../pages/ExecutionDetailPage');
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <MemoryRouter initialEntries={['/tasks/t1/executions/e1']}>

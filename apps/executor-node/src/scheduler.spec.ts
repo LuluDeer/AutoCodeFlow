@@ -92,6 +92,9 @@ describe('scheduler', () => {
     clearInterval(timer);
   });
 
+  // 注：本用例需推进 >10 分钟假时钟（心跳间隔 1s → 600+ 拍异步 tick），
+  // 单机空闲时 <1s，但在 CI 2 核/并发跑测时实测会突破 jest 默认 5s 上限
+  // （表现：Exceeded timeout，而非断言失败）。故显式给足预算，避免假红。
   it('warns on versionCompliant=false (throttled to one per 10 min) and stays silent once compliant', async () => {
     jest.useFakeTimers();
     const { startHeartbeat, resetVersionDriftWarnStateForTest } = require('./scheduler');
@@ -123,5 +126,5 @@ describe('scheduler', () => {
     expect(driftWarns()).toBe(2);
 
     clearInterval(timer);
-  });
+  }, 30_000);
 });
