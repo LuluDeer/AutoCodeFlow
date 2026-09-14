@@ -1,7 +1,7 @@
 /**
  * UI-14 第一阶段：Dashboard 汇总流客户端（GET /metrics/stream）。
  *
- * 与 ExecutionDetailPage 的日志流消费同款模式（EventSource + ?access_token=
+ * 与 ExecutionDetailPage 的日志流消费同款模式（EventSource + ?ticket= 短效票据（A5）
  * 查询串回退——jwt.strategy 白名单含 /metrics/stream），差异点：
  * - 长驻连接：Dashboard 挂载期间常开，非 running 态条件建立；
  * - 自动重连：EventSource 原生 onerror 后浏览器会自动重连，但 token 过期等
@@ -59,7 +59,6 @@ export function useMetricsStream({ enabled = true }: UseMetricsStreamOptions = {
     const client = createSseClient({
       baseUrl: getApiBaseUrl(),
       path: '/metrics/stream',
-      token,
       onStatus: setStatus,
       onMessage: (e) => {
         try {

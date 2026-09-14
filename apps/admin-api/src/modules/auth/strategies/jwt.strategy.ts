@@ -29,21 +29,35 @@ export interface JwtPayload {
 }
 
 /**
- * P1-6 (contract): EventSource cannot set Authorization headers, so the
- * admin-web SSE log stream appends the JWT to the URL as `?access_token=`.
- * Query strings are logged by proxies and leak into referers, so a query
- * token is accepted ONLY on the execution log-stream route(s) and ONLY for
- * type=access tokens — every other route must keep using the bearer header.
+ * A5（DEEP_REVIEW §七 A5）：SSE 凭据从「长效 access token 入 URL」改为
+ * **短效一次性 ticket**。
+ *
+ * 背景：EventSource API 不支持自定义请求头，浏览器原生 SSE 只能通过 URL 查询串
+ * 传递凭据。此前三条 SSE 长连接直接把 **access token（15min TTL）** 放进
+ * `?access_token=` —— 查询串会被 nginx access log、浏览器历史、Referer 记录，
+ * 等于把一枚 15 分钟有效的全权令牌写进日志（P2 已知风险，两端注释均已记录）。
+ *
+ * 现在：前端先 `POST /auth/sse-ticket`（常规 Authorization 头）换一枚
+ * **30s TTL、type=sse_ticket** 的专用票据，再 `?ticket=` 建流。泄漏面从
+ * 「15 分钟全权访问令牌」降为「30 秒内、且只能开这三条流之一的专用票据」；
+ * 且 `?access_token=` 通道**整体撤销**（不再接受），从结构上关掉旧泄漏面。
+ *
+ * 约束（由 extractJwtFromRequest + validate 两处共同强制）：
+ *   - ticket 只在三条 SSE 路径后缀上被读取（其他路由一律只认 Authorization 头）；
+ *   - ticket 的 type 必须是 `sse_ticket`，access/refresh 令牌不能借道；
+ *   - ticket 仍然过 usersService 的「用户存在 + 未禁用 + 会话未撤销」三重校验。
  */
-export const SSE_QUERY_TOKEN_PARAM = "access_token";
+export const SSE_TICKET_PARAM = "ticket";
 
-/** Path suffixes on which the `access_token` query parameter is accepted. */
+/** SSE 票据的存活时间（秒）。 */
+export const SSE_TICKET_TTL_SECONDS = 30;
+
+/** Path suffixes on which the `ticket` query parameter is accepted. */
 // UI-14 第一阶段：/metrics/stream（Dashboard 汇总流）同款回退——EventSource
-// 无法设置 Authorization 头，与 /logs/stream 共享 ?access_token= 先例
-// （type=access 限定仍由 validate() 强制，refresh token 无法借道）。
+// 无法设置 Authorization 头，与 /logs/stream 共享先例。
 // FEAT-16：/executions/stream（执行列表终态推送流）同款回退——消费端与
 // /metrics/stream 同为 admin-web EventSource，鉴权形态保持一致。
-const SSE_QUERY_TOKEN_PATH_SUFFIXES = [
+export const SSE_TICKET_PATH_SUFFIXES = [
   "/logs/stream",
   "/metrics/stream",
   "/executions/stream",
@@ -55,15 +69,18 @@ export function extractJwtFromRequest(req: Request): string | null {
     : null;
   if (headerToken) return headerToken;
 
-  // Query-token fallback: restricted to the SSE log-stream paths.
+  // A5: SSE ticket fallback — restricted to the SSE stream paths. Note that
+  // the legacy `?access_token=` channel is intentionally GONE: accepting it
+  // again would reintroduce a 15-minute full-privilege token in access logs.
   const url = (req as any)?.originalUrl ?? (req as any)?.url ?? "";
   const path = typeof url === "string" ? url.split("?")[0] : "";
-  const isStreamPath = SSE_QUERY_TOKEN_PATH_SUFFIXES.some((suffix) =>
+  const isStreamPath = SSE_TICKET_PATH_SUFFIXES.some((suffix) =>
     path.endsWith(suffix),
   );
   if (!isStreamPath) return null;
 
-  const queryToken = (req as any)?.query?.[SSE_QUERY_TOKEN_PARAM];
+  const queryToken = (req as any)?.query?.[SSE_TICKET_PARAM];
+  // 数组形态（?ticket=a&ticket=b）一律拒绝——防 HTTP 参数污染。
   return typeof queryToken === "string" && queryToken.length > 0
     ? queryToken
     : null;
@@ -83,10 +100,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload) {
-    // SEC-001: require the 'access' type marker — tokens that omit `type`
-    // are old-format or attacker-crafted and must be rejected. This also
-    // guarantees a refresh token can never be smuggled in via ?access_token=.
-    if (payload.type !== "access") {
+    // SEC-001: require an explicit type marker — tokens that omit `type` are
+    // old-format or attacker-crafted and must be rejected. A5: `sse_ticket`
+    // is the only other accepted type; it is only ever *read* on the three
+    // SSE stream paths (see extractJwtFromRequest), so a ticket can never be
+    // replayed against a normal REST route.
+    if (payload.type !== "access" && payload.type !== "sse_ticket") {
       throw new UnauthorizedException("Invalid token type");
     }
     // R-04: findByIdOrNull — a token belonging to a deleted user must 401
