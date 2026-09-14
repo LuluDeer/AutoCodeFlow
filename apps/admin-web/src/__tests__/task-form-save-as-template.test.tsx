@@ -21,6 +21,8 @@ vi.mock('../api/applications', () => ({ applicationsApi: { list: vi.fn() } }));
 vi.mock('../api/task-templates', () => ({
   taskTemplatesApi: { list: vi.fn(), get: vi.fn(), create: vi.fn(), remove: vi.fn(), instantiate: vi.fn() },
 }));
+// F-01 配套：GlueEditor 重依赖（monaco）裁剪（策略同 task-form-ui06 等文件）。
+vi.mock('../components/GlueEditor', () => ({ default: () => <div data-testid="glue-editor" /> }));
 
 // 路由参数可切换：默认创建态；编辑态用例置 { id: 'task-1' }。
 let mockRouteParams: { id?: string } = {};
