@@ -4,9 +4,12 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { BullModule } from "@nestjs/bullmq";
 import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
-import { APP_GUARD } from "@nestjs/core";
+import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { RolesGuard } from "./common/guards/roles.guard";
+// A2-B（DEEP_REVIEW 0ef3bbe §七）：@WriteGuard 的 ownership / project-role 声明
+// 由本拦截器运行时强制——拿不出断言证据的写端点直接 500（缺省拒绝）。
+import { WriteGuardEnforcementInterceptor } from "./common/guards/write-guard-enforcement.interceptor";
 import * as Joi from "joi";
 import configuration, {
   buildTypeOrmDataSourceOptions,
@@ -545,6 +548,9 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
     // authenticated user; @Public() routes carry no @Roles metadata and are
     // therefore unaffected. Enforcement is opt-in per route via @Roles(...).
     { provide: APP_GUARD, useClass: RolesGuard },
+    // A2-B: 写面授权**缺省拒绝**——本拦截器不依赖任何人记得在 service 里调
+    // assertCanWrite；调了会落证，没落证的 ownership/project-role 写端点一律 500。
+    { provide: APP_INTERCEPTOR, useClass: WriteGuardEnforcementInterceptor },
   ],
 })
 export class AppModule implements NestModule {

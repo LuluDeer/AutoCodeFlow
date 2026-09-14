@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import { RequestMethod } from "@nestjs/common";
 import { METHOD_METADATA } from "@nestjs/common/constants";
 import { ROLES_KEY } from "../../decorators/roles.decorator";
@@ -91,6 +93,7 @@ const WRITE_METHODS: ReadonlySet<RequestMethod> = new Set([
 
 const VALID_SCOPES: ReadonlySet<WriteScope> = new Set<WriteScope>([
   "ownership",
+  "project-role",
   "authenticated",
   "token",
   "public",
@@ -145,6 +148,48 @@ function collectWriteEndpoints(): WriteEndpoint[] {
         writeGuard: Reflect.getMetadata(WRITE_GUARD_KEY, handler) as
           WriteGuardMetadata | undefined,
       });
+    }
+  }
+  return out;
+}
+
+/**
+ * A2-B：落证方扫描。
+ *
+ * `ownership` / `project-role` 的运行时强制靠 service 里的
+ * `recordOwnershipAssertion(resource, kind)` 落证。声明与落证是两处代码，
+ * 必须互相咬合：声明了一个 resource 却没人落证 = 该端点上线即 500；落证被删
+ * 而声明还在 = 同。故在此做静态对账（与 A6/A5 同款「扫描型守卫必须自带规模
+ * 下界」纪律——扫不到东西时不能变成永真断言）。
+ */
+const SRC_ROOT = path.resolve(__dirname, "../../..");
+
+function collectSourceFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "__tests__" || entry.name === "node_modules") continue;
+      collectSourceFiles(full, out);
+    } else if (
+      entry.name.endsWith(".ts") &&
+      !entry.name.endsWith(".spec.ts") &&
+      !entry.name.endsWith(".d.ts")
+    ) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+const RECORDER_RE =
+  /recordOwnershipAssertion\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)/g;
+
+function collectRecorders(): Set<string> {
+  const out = new Set<string>();
+  for (const file of collectSourceFiles(SRC_ROOT)) {
+    const text = fs.readFileSync(file, "utf8");
+    for (const m of text.matchAll(RECORDER_RE)) {
+      out.add(`${m[1]}:${m[2]}`);
     }
   }
   return out;
@@ -216,6 +261,15 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
           `${e.id}: scope='${g.scope}' 不得是 @Public()（应为 token/public 之一）`,
         );
       }
+
+      // A2-B: ownership 与 project-role 的区分是**语义**区分，不是改名游戏——
+      // project-role 只拒绝项目 viewer（ADR-013：属主收紧待产品拍板），把它
+      // 标成 ownership 会让「已做属主校验」变成假声明。故要求给出 reason 说明。
+      if (g.scope === "project-role" && !g.reason?.trim()) {
+        violations.push(
+          `${e.id}: scope='project-role' 必须给出 reason（说明为何此处只做项目角色校验）`,
+        );
+      }
     }
     expect(violations).toEqual([]);
   });
@@ -259,6 +313,94 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
         "ExecutorController.pullDispatch",
         "ExecutorController.register",
         "ExecutorPackageController.pushResult",
+      ].sort(),
+    );
+  });
+
+  it("ownership 端点清单钉死（A2-B：这些端点被运行时强制，改动须显式复核）", () => {
+    // A2-B 起，scope='ownership' 不再只是文档——WriteGuardEnforcementInterceptor
+    // 会要求端点真的落过属主断言证据（缺证据直接 500）。因此「某个端点是不是
+    // ownership」变成了一个**行为开关**，不再允许顺手改：清单变更必须同时改
+    // 这里，并说明属主校验由谁执行。
+    const ids = endpoints
+      .filter((e) => e.writeGuard?.scope === "ownership")
+      .map((e) => e.id)
+      .sort();
+
+    expect(ids).toEqual(
+      [
+        "EventSubscriptionController.remove",
+        "EventSubscriptionController.replay",
+        "EventSubscriptionController.update",
+        "TaskBatchController.batchDelete",
+        "TaskController.analyzeExecution",
+        "TaskController.batchDelete",
+        "TaskController.killExecution",
+        "TaskController.remove",
+        "TaskController.rollback",
+        "TaskController.rollbackToVersion",
+        "TaskController.suggestSchedule",
+        "TaskController.update",
+        "TaskController.updateGlue",
+      ].sort(),
+    );
+  });
+
+  it("声明与落证对账：每个受强制的 resource 都真的有对应种类的落证方", () => {
+    // A2-B: 声明 ownership 却没人落 'write' 证 → 该端点上线即 500；反向删掉
+    // service 里的落证调用而保留声明 → 同样 500。本断言让这两种漂移在 CI 就红。
+    const recorders = collectRecorders();
+    // 规模下界：扫描器一旦失效（路径/正则写错）会静默变永真断言
+    expect(recorders.size).toBeGreaterThanOrEqual(4);
+    expect([...recorders].sort()).toEqual(
+      expect.arrayContaining([
+        "application:write",
+        "event-subscription:write",
+        "task:operate",
+        "task:write",
+      ]),
+    );
+
+    const missing = endpoints
+      .filter((e) => e.writeGuard?.scope === "ownership")
+      .filter((e) => !recorders.has(`${e.writeGuard!.resource}:write`))
+      .map(
+        (e) =>
+          `${e.id}: 声明 ownership(resource='${e.writeGuard!.resource}') 但源码中无对应的 write 落证方`,
+      )
+      .concat(
+        endpoints
+          .filter((e) => e.writeGuard?.scope === "project-role")
+          .filter((e) => !recorders.has(`${e.writeGuard!.resource}:operate`))
+          .map(
+            (e) =>
+              `${e.id}: 声明 project-role(resource='${e.writeGuard!.resource}') 但源码中无对应的 operate 落证方`,
+          ),
+      );
+
+    expect(missing).toEqual([]);
+  });
+
+  it("project-role 端点清单钉死（弱于 ownership：只拒 viewer，不校验属主）", () => {
+    // 与上一断言同源：这里登记的是「已确认**没有**属主校验」的执行类写面
+    // （ADR-013：trigger/pause/resume 的宽松语义待产品拍板后收紧）。新端点
+    // 挂上 project-role 会让本断言红，强制说明为什么此处不做属主校验。
+    const ids = endpoints
+      .filter((e) => e.writeGuard?.scope === "project-role")
+      .map((e) => e.id)
+      .sort();
+
+    expect(ids).toEqual(
+      [
+        "TaskBatchController.batchPause",
+        "TaskBatchController.batchResume",
+        "TaskBatchController.batchTrigger",
+        "TaskController.batchPause",
+        "TaskController.batchResume",
+        "TaskController.batchTrigger",
+        "TaskController.pause",
+        "TaskController.resume",
+        "TaskController.trigger",
       ].sort(),
     );
   });
