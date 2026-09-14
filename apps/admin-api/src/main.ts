@@ -83,12 +83,15 @@ async function bootstrap() {
   // P2: the execution callback batch legitimately exceeds the 1 MB global
   // cap (100 items × up to 512 KB of logs each) — parse that route with a
   // dedicated larger limit first; body-parser skips already-parsed bodies.
+  // R-08（DEEP_REVIEW 0ef3bbe）：verify 里直接引用 body-parser 的 buf，不再
+  // Buffer.from 拷贝一份——该路由上限 55MB，此前每请求峰值内存 = 解析对象 +
+  // 55MB rawBody 副本 ×2。buf 不会被 body-parser 复用/改写，引用安全。
   app.use(
     "/api/executions/callback",
     express.json({
       limit: "55mb",
       verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
-        req.rawBody = Buffer.from(buf);
+        req.rawBody = buf;
       },
     }),
   );

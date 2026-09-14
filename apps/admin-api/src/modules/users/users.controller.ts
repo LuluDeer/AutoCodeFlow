@@ -150,7 +150,8 @@ export class UsersController {
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const result = await this.usersService.remove(id);
+    // R-14: 透传发起者——服务层据此拒绝自删（并保留最后一名管理员）。
+    const result = await this.usersService.remove(id, user?.id);
     await this.audit.log({
       userId: user?.id,
       username: user?.username,

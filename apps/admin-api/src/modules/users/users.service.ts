@@ -11,6 +11,7 @@ import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
 import { User, UserRole } from "./entities/user.entity";
+import { RefreshToken } from "../auth/entities/refresh-token.entity";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
@@ -31,6 +32,9 @@ export class UsersService implements OnModuleInit {
   constructor(
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
+    // R-14: 删除用户时一并回收其 refresh_tokens（见 remove()）。
+    @InjectRepository(RefreshToken)
+    private readonly refreshTokenRepository: Repository<RefreshToken>,
     // ARCH-27: 种子账号配置经 ConfigService 读取（configuration.ts
     // initialAdmin 节 + Joi INITIAL_ADMIN_PASSWORD / INITIAL_ADMIN_EMAIL），
     // 取代原先 onModuleInit 直读 process.env 的模式。
@@ -192,10 +196,49 @@ export class UsersService implements OnModuleInit {
     return saved;
   }
 
-  async remove(id: number) {
-    const user = await this.findById(id);
-    await this.usersRepository.remove(user);
-    return { deleted: true };
+  /**
+   * R-14（DEEP_REVIEW 0ef3bbe）：删除用户的三重守卫 + 凭据回收。
+   *
+   *  - **自删拒绝**：管理员删掉自己会让当前会话立刻失效（WIKI-AUTH-REVOC 后
+   *    改密/注销即 bump），且极易顺带删掉最后一名管理员而把平台锁死。
+   *  - **最后一名管理员拒绝**：删后平台再无管理面主体（ADR-013 的 ADMIN 是唯一
+   *    全量放行角色），只能直连 DB 修复——不可恢复操作必须前置拒绝。
+   *  - **回收 refresh_tokens**：R-04 已让删除后的 refresh 路径 401
+   *    （findByIdOrNull 缺行即拒），此处清行属凭据卫生——不把长期有效的孤儿
+   *    令牌行留在库里（也避免会话列表/清理任务扫到悬空 userId）。
+   *
+   * 并发：判定与删除在同一事务内，且对管理员行集合 `SELECT ... FOR UPDATE`，
+   * 两个并发请求同时删掉仅剩的两名管理员时后到者会在锁上等待并看到 count=1
+   * 而拒绝（单纯 count 检查在 READ COMMITTED 下会双双通过）。
+   *
+   * @param actingUserId 发起删除的主体 id（controller 必传 AuthUser.id）——
+   *   自删判定依据；缺省（内部/测试调用）跳过自删判定，最后管理员与令牌回收
+   *   守卫仍然生效。
+   */
+  async remove(id: number, actingUserId?: number) {
+    if (actingUserId !== undefined && actingUserId === id) {
+      throw new BadRequestException("Cannot delete your own account");
+    }
+    return this.usersRepository.manager.transaction(async (manager) => {
+      const users = manager.getRepository(User);
+      const target = await users.findOne({ where: { id } });
+      if (!target) throw new NotFoundException(`User #${id} not found`);
+      if (target.role === UserRole.ADMIN) {
+        const admins = await users
+          .createQueryBuilder("u")
+          .setLock("pessimistic_write")
+          .where("u.role = :role", { role: UserRole.ADMIN })
+          .getMany();
+        if (admins.length <= 1) {
+          throw new BadRequestException(
+            "Cannot delete the last administrator",
+          );
+        }
+      }
+      await manager.getRepository(RefreshToken).delete({ userId: id });
+      await users.remove(target);
+      return { deleted: true };
+    });
   }
 
   /**

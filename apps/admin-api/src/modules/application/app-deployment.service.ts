@@ -2199,6 +2199,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       );
       return;
     }
+    // R-07（DEEP_REVIEW 0ef3bbe）：探针是 admin→执行器侧的出站请求，且主机名
+    // 来自执行器自报地址（register/heartbeat 可注入）——此前未过 SSRF 策略，
+    // 构成「管理员写入 manifest 端口/路径 + 投毒执行器地址」的内网盲探 oracle
+    // （2xx-4xx 即判定端口存活，可枚举内网服务）。此处与 deploy/stop/dispatch
+    // 走同一套 assertSafeExecutorUrl（loopback/云元数据/restricted 恒拒，
+    // private-LAN 放行、EXECUTOR_ALLOW_PRIVATE_NETWORK 可豁免 loopback），
+    // 与同文件 deploy 面姿态对齐。拒绝时 fail-closed 直接判批次失败，不盲探。
+    try {
+      await assertSafeExecutorUrl(url);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await this.failBatch(batch, deploymentId, `health probe URL refused: ${msg}`);
+      return;
+    }
     const attempts = hc.failThreshold;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       const ok = await this.probeOnce(url, hc.timeoutMs);
