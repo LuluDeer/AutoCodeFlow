@@ -351,8 +351,10 @@ export function useExecutionRetryChain(
 ): UseQueryResult<PageResult<TaskExecution>> {
   return useQuery({
     queryKey: queryKeys.executions.retryChain(taskId ?? ''),
+    // F-29（DEEP_REVIEW 0ef3bbe）：原调用 tasksApi.executionsWithStatus（与 executions
+    // 逐字节重复），统一改用 executions 传 status/page/pageSize。
     queryFn: ({ signal }) =>
-      tasksApi.executionsWithStatus(taskId!, { page: 1, pageSize: 100 }, signal),
+      tasksApi.executions(taskId!, { page: 1, pageSize: 100 }, signal),
     enabled: !!taskId,
   });
 }

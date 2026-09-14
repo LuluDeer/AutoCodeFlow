@@ -1,6 +1,8 @@
 #!/bin/bash
 
-set -e
+# E-36（DEEP_REVIEW 0ef3bbe）：根级脚本补 -u/pipefail——未定义变量不再静默为空，
+# 管道中途失败不再被吞。既有 `pkill ... || true` 容错不受 -e 影响。
+set -euo pipefail
 
 # ── AutoFlow 开发环境快速启动脚本 ─────────────────────────────
 # Usage: ./dev.sh [command]

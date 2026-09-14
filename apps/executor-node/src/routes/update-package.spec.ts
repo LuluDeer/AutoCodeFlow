@@ -220,6 +220,30 @@ describe('POST /api/update-package — payload validation', () => {
       downloadSpy.mockRestore();
     }
   });
+
+  // E-43（DEEP_REVIEW 0ef3bbe）：本端点只下载+校验，不就地替换/重启。响应必须
+  // 把这个能力边界说清楚（旧头注释自称 "extract and replace → self-update"，
+  // 与实现不符，运维/UI 会误以为已升级）。
+  it('E-43: declares download-only semantics instead of an in-place self-update', async () => {
+    const downloadSpy = jest.spyOn(downloadLib, 'downloadFile').mockRejectedValue(
+      new Error('mocked download failure'),
+    );
+    try {
+      const res = await request(app)
+        .post('/api/update-package')
+        .send({ packageId: 'pkg-e43', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '5.0.0', checksum: 'e'.repeat(64) });
+
+      expect(res.status).toBe(200);
+      expect(res.body.accepted).toBe(true);
+      expect(res.body.mode).toBe('download-only');
+      // 文案不得再暗示已就地应用/重启；必须点明「只下载」
+      expect(res.body.message).toMatch(/download/i);
+      expect(res.body.message).not.toMatch(/self-?update|restart|replaced|applied/i);
+      await waitForUpdateToSettle(app);
+    } finally {
+      downloadSpy.mockRestore();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

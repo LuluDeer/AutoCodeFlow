@@ -1,6 +1,8 @@
 #!/bin/bash
 
-set -e
+# E-36（DEEP_REVIEW 0ef3bbe）：根级脚本补 -u/pipefail——未定义变量不再静默为空
+# （.env 缺键时 PGPASSWORD="" 不致空口令尝试），管道中途失败不再被吞。
+set -euo pipefail
 
 # AutoFlow 数据库初始化脚本
 # Usage: ./init-db.sh [options]
@@ -61,14 +63,14 @@ echo -e "${GREEN}PostgreSQL 连接成功${NC}"
 
 # 创建数据库表
 echo -e "${YELLOW}创建数据库表...${NC}"
-cd apps/admin-api && npx typeorm migration:run
-
-if [ $? -eq 0 ]; then
-    echo -e "${GREEN}数据库表创建成功${NC}"
-else
-    echo -e "${RED}数据库表创建失败${NC}"
-    exit 1
-fi
+# E-29（DEEP_REVIEW 0ef3bbe）：旧实现裸 `npx typeorm migration:run` 不带 -d，
+# typeorm 0.3 CLI 找不到 data-source（仓库无 ormconfig 约定文件）——迁移实际失效。
+# 改用 admin-api package.json 的规范脚本 `npm run migration:run`（内部
+# `ts-node -r tsconfig-paths/register typeorm/cli migration:run -d src/data-source.ts`）。
+# 同时删除 set -e 下的死分支 `if [ $? -eq 0 ]`：迁移失败时 set -e 已直接退出，
+# else 永不到达，旧代码误导维护者以为有失败兜底。
+cd apps/admin-api && npm run migration:run
+echo -e "${GREEN}数据库表创建成功${NC}"
 
 cd ../..
 
@@ -148,14 +150,12 @@ async function createAdmin() {
 createAdmin();
 '
 
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}管理员用户创建成功${NC}"
-        echo -e "${YELLOW}用户名: admin${NC}"
-        echo -e "${YELLOW}密码: ${INITIAL_ADMIN_PASSWORD:-admin123}${NC}"
-    else
-        echo -e "${RED}管理员用户创建失败${NC}"
-        exit 1
-    fi
+    # E-29（DEEP_REVIEW 0ef3bbe）：旧实现把初始管理员密码明文回显到终端（并进
+    # CI/部署日志）——口令泄露面。改为只提示创建成功，密码不回显：它来自
+    # INITIAL_ADMIN_PASSWORD 环境变量（运维自有），或通过 admin-api 首登改密/重置
+    # 流程获取。set -e 已保证失败时直接退出，无需死分支 if [ $? -eq 0 ]。
+    echo -e "${GREEN}管理员用户创建成功${NC}"
+    echo -e "${YELLOW}用户名: admin（密码来自 INITIAL_ADMIN_PASSWORD 环境变量，未回显；首登后请立即改密）${NC}"
 fi
 
 echo -e "${GREEN}========== AutoFlow 数据库初始化完成 ==========${NC}"

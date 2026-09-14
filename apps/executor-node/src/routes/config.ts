@@ -43,11 +43,37 @@ interface ConfigReloadResponse {
   success: boolean;
   message: string;
   updatedFields: string[];
+  /** E-22: request keys this endpoint does not understand. Reported instead of
+   *  silently dropped — a typo'd/unsupported field used to come back as
+   *  `success: true` with an empty update list, which reads as "applied". */
+  ignoredFields: string[];
+}
+
+/** Every key /config/reload actually honours (both workDir spellings). */
+const KNOWN_CONFIG_FIELDS = new Set([
+  'maxConcurrentTasks',
+  'taskTimeoutSeconds',
+  'heartbeatIntervalSeconds',
+  'adminApiUrl',
+  'adminApiUrlInternal',
+  'adminApiUrlExternal',
+  'adminApiUrls',
+  'workDir',
+  'WORK_DIR',
+]);
+
+function collectIgnoredFields(body: unknown): string[] {
+  if (body === null || typeof body !== 'object') return [];
+  return Object.keys(body as Record<string, unknown>)
+    .filter((key) => !KNOWN_CONFIG_FIELDS.has(key))
+    .sort();
 }
 
 configRouter.post('/config/reload', async (req: Request, res: Response) => {
   const body = req.body as ConfigReloadRequest;
   const updatedFields: string[] = [];
+  // E-22: surface unrecognised keys rather than silently returning success.
+  const ignoredFields = collectIgnoredFields(req.body);
 
   try {
     if (body.maxConcurrentTasks !== undefined) {
@@ -165,8 +191,19 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
       initAdminClients(config.adminApiUrls);
     }
 
+    if (ignoredFields.length > 0) {
+      logger.warn(`Config reload ignored unsupported field(s): ${ignoredFields.join(', ')}`);
+    }
+
     if (updatedFields.length === 0) {
-      res.json({ success: true, message: 'No fields to update', updatedFields: [] } as ConfigReloadResponse);
+      res.json({
+        success: true,
+        message: ignoredFields.length > 0
+          ? `No fields to update (ignored unsupported field(s): ${ignoredFields.join(', ')})`
+          : 'No fields to update',
+        updatedFields: [],
+        ignoredFields,
+      } as ConfigReloadResponse);
       return;
     }
 
@@ -174,6 +211,7 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
       success: true,
       message: `Updated ${updatedFields.length} field(s)`,
       updatedFields,
+      ignoredFields,
     } as ConfigReloadResponse);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

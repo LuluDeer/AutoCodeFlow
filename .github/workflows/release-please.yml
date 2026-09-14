@@ -56,6 +56,21 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      # ── Step 0：fail-fast 前置闸（E-35）──────────────────────────────
+      # 旧形态用 `secrets.RELEASE_PLEASE_TOKEN || github.token` 回落：未配 secret
+      # 时 Release PR/Release 照建，但 tag 不级联 release.yml（npm/PyPI 发布）
+      # 且无任何工作流级报错——发布链路静默断开（v1.1.1 已实爆）。发布链的缺省
+      # 必须是显式失败，不是静默降级。这里在调用 action 前先判定 secret 存在性。
+      - name: Require RELEASE_PLEASE_TOKEN
+        env:
+          TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::RELEASE_PLEASE_TOKEN secret 未配置——release-please 用 github.token 生成的 tag 不会级联触发 release.yml（GitHub 抑制 GITHUB_TOKEN 产生的事件），npm/PyPI 发布会静默不发生。"
+            echo "::error::修复：在仓库 Settings → Secrets and variables → Actions 配置 RELEASE_PLEASE_TOKEN（PAT，需 contents:write + pull-requests:write），或改用人工 tag 兜底流程（见 docs/release-checklist.md「包发布」段）。"
+            exit 1
+          fi
+          echo "RELEASE_PLEASE_TOKEN 已配置，继续。"
       # ── Step 1：release-pr（开/更新 Release PR）─────────────────────
       - uses: googleapis/release-please-action@v4
         id: release-pr
@@ -64,10 +79,9 @@ jobs:
           # release-please 用 GITHUB_TOKEN 创建的 tag 不会级联触发 release.yml
           # ——GitHub 抑制所有由 GITHUB_TOKEN 产生的事件（含 on:push:tags）以防
           # 递归，本仓 2026-09-11 v1.1.1 实测：tag 已生成、release.yml 零 run。
-          # 未配置该 secret 时回落 `github.token`：Release PR/Release 仍可建，
-          # 但 tag 不级联，需人工重推 tag 触发发布（恢复路径见
-          # docs/sdk-guide.md「版本与发布流程」）。
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          # E-35：不再回落 `github.token`（fail-unsafe）——缺失时由上方 Step 0
+          # 显式失败；人工 tag 兜底流程见 docs/release-checklist.md「包发布」段。
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           # 显式指向 manifest 文件（缺省同为 release-please-manifest.json，
           # 写明以减少隐式约定）

@@ -42,8 +42,11 @@ export class ConfigHistory {
   @Column()
   action: "create" | "update" | "delete" | "rollback";
 
+  // PK-21（DEEP_REVIEW 0ef3bbe）：与全库其余 userId（users.id / audit_logs /
+  // project_members / api_keys / refresh_tokens 的 integer）对齐；DB 列由
+  // 迁移 1790000000024 从 VARCHAR ALTER 为 integer。
   @Column({ nullable: true })
-  userId: string;
+  userId: number | null;
 
   @Column({ nullable: true })
   username: string;

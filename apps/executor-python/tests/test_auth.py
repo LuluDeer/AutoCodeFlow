@@ -72,6 +72,46 @@ def test_correct_token_not_401(auth_client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# E-24（DEEP_REVIEW 0ef3bbe）：非 ASCII Bearer token 必须返回 401，不得因
+# hmac.compare_digest(str, str) 对非 ASCII 抛 TypeError → 500。
+# ---------------------------------------------------------------------------
+
+class TestNonAsciiBearerE24:
+    @pytest.mark.asyncio
+    async def test_non_ascii_bearer_returns_401_not_500(self, monkeypatch):
+        """E-24: Authorization: Bearer 含非 ASCII（如中文/Emoji）时，verify_token
+        应判 401，而不是让 hmac.compare_digest 抛 TypeError 冒泡成 500。"""
+        # 静态 token 走真 env（_get_static_token 读 env 优先）
+        monkeypatch.setenv('EXECUTOR_SHARED_TOKEN', 'correct-secret')
+        monkeypatch.setattr(auth_module, '_dynamic_token', None)
+        # 跳过动态刷新（避免触网），直接进 Bearer 比对分支
+        monkeypatch.setattr(auth_module, '_refresh_token_if_needed', AsyncMock(return_value=None))
+
+        with pytest.raises(HTTPException) as exc:
+            await auth_module.verify_token('Bearer 密码🔑')
+        assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_ascii_bearer_still_works(self, monkeypatch):
+        """回归：ASCII 正确 token 仍通过（bytes 改造不破坏既有路径）。"""
+        monkeypatch.setenv('EXECUTOR_SHARED_TOKEN', 'correct-secret')
+        monkeypatch.setattr(auth_module, '_dynamic_token', None)
+        monkeypatch.setattr(auth_module, '_refresh_token_if_needed', AsyncMock(return_value=None))
+        # 正确 token 不应抛
+        await auth_module.verify_token('Bearer correct-secret')
+
+    @pytest.mark.asyncio
+    async def test_ascii_wrong_bearer_401(self, monkeypatch):
+        """回归：ASCII 错误 token 仍 401。"""
+        monkeypatch.setenv('EXECUTOR_SHARED_TOKEN', 'correct-secret')
+        monkeypatch.setattr(auth_module, '_dynamic_token', None)
+        monkeypatch.setattr(auth_module, '_refresh_token_if_needed', AsyncMock(return_value=None))
+        with pytest.raises(HTTPException) as exc:
+            await auth_module.verify_token('Bearer wrong-token')
+        assert exc.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
 # R4-C P2: unconfigured token must be able to fail closed (REQUIRE_TOKEN)
 # ---------------------------------------------------------------------------
 
@@ -409,3 +449,41 @@ class TestTokenRefreshBackoffE11:
         await auth_module._refresh_token_if_needed()
         assert fetch.await_count == 1
         assert auth_module._token_fetch_failed_at == 0.0, 'success must reset backoff'
+
+
+# ---------------------------------------------------------------------------
+# E-45（DEEP_REVIEW 0ef3bbe）：token 轮换自愈关键路径的并发去重回归——
+# 旧 E-27 前，token 过期瞬间一批并发 verify_token 各自发一次 POST /token。
+# 这里直接对「并发刷新只发一次 /token」这个行为级不变量做断言。
+# ---------------------------------------------------------------------------
+
+class TestConcurrentRefreshDedupE45:
+    @pytest.mark.asyncio
+    async def test_concurrent_refresh_fetches_only_once(self, monkeypatch):
+        """E-45/E-27: N 个并发 _refresh_token_if_needed 只触发一次 _fetch_token。"""
+        fetch = AsyncMock(return_value='dyn-token')
+        monkeypatch.setattr(auth_module, '_fetch_token', fetch)
+        monkeypatch.setattr(auth_module, '_token_expires_at', None)
+        monkeypatch.setattr(auth_module, '_dynamic_token', None)
+        monkeypatch.setattr(auth_module, '_token_fetch_failed_at', 0.0)
+
+        # 并发触发 10 个刷新（模拟 token 过期瞬间一批并发回调/心跳）
+        await asyncio.gather(*[auth_module._refresh_token_if_needed() for _ in range(10)])
+
+        assert fetch.await_count == 1, f'concurrent refresh must dedup to one fetch, got {fetch.await_count}'
+        assert auth_module._dynamic_token == 'dyn-token'
+        assert auth_module._token_expires_at is not None
+
+    @pytest.mark.asyncio
+    async def test_subsequent_refresh_after_window_skips(self, monkeypatch):
+        """E-45: 已刷新后（expiry 在未来 30min 窗口内）再调用不重复 fetch。"""
+        fetch = AsyncMock(return_value='dyn-token')
+        monkeypatch.setattr(auth_module, '_fetch_token', fetch)
+        monkeypatch.setattr(auth_module, '_token_expires_at', None)
+        monkeypatch.setattr(auth_module, '_dynamic_token', None)
+        monkeypatch.setattr(auth_module, '_token_fetch_failed_at', 0.0)
+
+        await auth_module._refresh_token_if_needed()
+        await auth_module._refresh_token_if_needed()
+        await auth_module._refresh_token_if_needed()
+        assert fetch.await_count == 1

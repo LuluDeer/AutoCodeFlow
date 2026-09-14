@@ -1,10 +1,11 @@
 # autocodeflow-db — 数据库连接助手库
 
-> 所属: docs/atlas/02-packages/python-libs · 最后核对: 2026-09-13 · 对应代码: packages/autocodeflow-db
+<!-- PK-25（DEEP_REVIEW 0ef3bbe）：DATABASE_URL env 注入经 PK-08 已落地（from_env/dispose_engine/pool_recycle），API 面同步源码 -->
+> 所属: docs/atlas/02-packages/python-libs · 最后核对: 2026-09-14 · 对应代码: packages/autocodeflow-db
 
 ## 职责
 
-PyPI 包 `autocodeflow-db`（v0.1.0，Python >= 3.10）：给任务脚本提供一个**极薄的 SQLAlchemy 会话工厂**——统一连接参数（连接池大小、overflow、echo）、统一"正常提交 / 异常回滚 / 最终关闭"的会话生命周期。它不做 ORM 模型定义、不做迁移，只是让任务里的 DB 访问有结构化的入口。
+PyPI 包 `autocodeflow-db`（版本以 pyproject.toml 为准，当前 0.1.0；Python >= 3.10）：给任务脚本提供一个**极薄的 SQLAlchemy 会话工厂**——统一连接参数（连接池大小、overflow、echo、pool_recycle）、统一"正常提交 / 异常回滚 / 最终关闭"的会话生命周期。它不做 ORM 模型定义、不做迁移，只是让任务里的 DB 访问有结构化的入口。
 
 依赖（pyproject.toml 核实）：`sqlalchemy>=2.0`、`psycopg2-binary>=2.9`（PostgreSQL 驱动；其他数据库需自行装对应驱动）。
 
@@ -14,8 +15,8 @@ PyPI 包 `autocodeflow-db`（v0.1.0，Python >= 3.10）：给任务脚本提供�
 packages/autocodeflow-db/
 ├── pyproject.toml
 ├── autocodeflow_db/
-│   ├── __init__.py          导出 DatabaseConfig / DatabaseSession / get_session；__version__ = "0.1.0"
-│   └── connection.py        全部实现（约 70 行）
+│   ├── __init__.py          导出 DatabaseConfig / DatabaseSession / get_session / dispose_engine；__version__ = "0.1.0"
+│   └── connection.py        全部实现（PK-08 后约 150 行）
 └── tests/
     └── test_connection.py
 ```
@@ -27,14 +28,19 @@ packages/autocodeflow-db/
 ```python
 @dataclass
 class DatabaseConfig:
-    url: str = "postgresql://localhost:5432/autocodeflow"  # 无默认凭据，生产走 DATABASE_URL env
+    url: str = "postgresql://localhost:5432/autocodeflow"  # 无默认凭据，生产走 DATABASE_URL env / from_env()
     pool_size: int = 5
     pool_overflow: int = 10
     echo: bool = False
-    def build(self) -> tuple[Engine, sessionmaker]   # 惰性建 engine + sessionmaker（缓存复用）
+    pool_recycle: int = 1800                              # PK-08：空闲连接主动回收
+    def build(self) -> tuple[Engine, sessionmaker]        # 惰性建 engine + sessionmaker（缓存复用，pool_pre_ping=True）
+    def dispose(self) -> None                              # 关闭连接池；后续 build() 重建
+    @classmethod
+    def from_env(cls) -> "DatabaseConfig"                  # PK-08：读 DATABASE_URL env，空则回落无凭据默认 url
 ```
 
 - `url` 默认值**不含任何凭据**（源码注释明确）；实际连接串应由任务参数或 `DATABASE_URL` 环境变量注入，避免把密码写进任务代码。
+- **DATABASE_URL env 注入已落地（PK-08）**：`DatabaseConfig.from_env()` 读 `DATABASE_URL`；`get_session()` 不传参时经模块级 `_default_config()` 走 `from_env()`——env 未设/为空时回落无凭据本地默认 url（连不上 fail-fast，不猜账号）。`dispose_engine()` 是任务进程退出前的显式关停钩子（传 config 关指定引擎；传 None 关模块级默认并重置）。
 
 ### DatabaseSession / get_session
 
@@ -45,10 +51,11 @@ class DatabaseSession:
     def session(self) -> Generator[Session, None, None]
 
 def get_session(config: Optional[DatabaseConfig] = None) -> DatabaseSession
+def dispose_engine(config: Optional[DatabaseConfig] = None) -> None   # PK-08：进程退出前显式关停
 ```
 
 - `session()` 是唯一的用法入口：进入时从 sessionmaker 取新 Session；**正常退出自动 `commit()`，异常自动 `rollback()` 并 re-raise，最终 `close()`**——任务脚本不需要手写事务样板。
-- `DatabaseConfig.build()` 带内部缓存（`_engine`/`_session_factory` 惰性初始化后复用），同一 config 实例多次 `get_session()` 不会重复建引擎；连接池默认 `pool_size=5`、`max_overflow=10`。
+- `DatabaseConfig.build()` 带内部缓存（`_engine`/`_session_factory` 惰性初始化后复用），同一 config 实例多次 `get_session()` 不会重复建引擎；连接池默认 `pool_size=5`、`max_overflow=10`，并开 `pool_pre_ping=True` + `pool_recycle=1800s`（PK-08，长任务不捡服务端已关的空闲连接）。
 
 ### 典型用法（源码 docstring 语义）
 

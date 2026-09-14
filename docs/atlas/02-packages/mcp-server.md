@@ -1,10 +1,11 @@
 # mcp-server — AI Agent 的 MCP 入口
 
-> 所属: docs/atlas/02-packages · 最后核对: 2026-09-13 · 对应代码: packages/mcp-server
+<!-- PK-25（DEEP_REVIEW 0ef3bbe）：版本号不写死，以 package.json 为准；工具组数/工具数以 src/tools.ts 实际 server.tool() 为准 -->
+> 所属: docs/atlas/02-packages · 最后核对: 2026-09-14 · 对应代码: packages/mcp-server
 
 ## 职责
 
-npm 包 `autocodeflow-mcp-server`（v1.2.0，bin `autocodeflow-mcp`）：把 AutoCodeFlow 的任务/执行/应用/部署/执行器/审计能力以 **MCP（Model Context Protocol）工具**形式暴露给 Claude、Cursor 等 AI Agent。本质是 admin-api REST 的一个"带语义包装"的客户端——每个工具做参数校验、端点调用、信封拆包与错误翻译，不含任何调度/执行逻辑。
+npm 包 `autocodeflow-mcp-server`（bin `autocodeflow-mcp`；版本以 `packages/mcp-server/package.json` 为准，当前 1.3.0）：把 AutoCodeFlow 的任务/执行/应用/部署/执行器/审计/项目能力以 **MCP（Model Context Protocol）工具**形式暴露给 Claude、Cursor 等 AI Agent。本质是 admin-api REST 的一个"带语义包装"的客户端——每个工具做参数校验、端点调用、信封拆包与错误翻译，不含任何调度/执行逻辑。
 
 依赖（package.json 核实）：`@modelcontextprotocol/sdk 1.30.0`、`node-fetch 3.3.2`、zod；engines `node>=20`。测试 vitest（根目录 `npm run test:mcp`）。
 
@@ -14,7 +15,7 @@ npm 包 `autocodeflow-mcp-server`（v1.2.0，bin `autocodeflow-mcp`）：把 Aut
 packages/mcp-server/
 ├── package.json        bin: autocodeflow-mcp → dist/index.js
 ├── src/
-│   ├── index.ts        McpServer 装配 + 注册 6 组工具 + bin CLI（--help/--version）
+│   ├── index.ts        McpServer 装配 + 注册 7 组工具（task/application/deployment/executor/observability/audit/project） + bin CLI（--help/--version）
 │   │                   VERSION 常量带 x-release-please-version 标记（lockstep 同步点）
 │   ├── api.ts          apiRequest：Bearer 头、30s 超时、401 自愈刷新、信封 unwrap、错误翻译
 │   ├── tools.ts        全部工具注册 + TASK_TEMPLATES + buildExecutionTimeline
@@ -31,7 +32,7 @@ packages/mcp-server/
 - 每次 API 调用 30s 超时（N12）；成功响应剥掉 admin-api 全局 `{code,message,data}` 信封。unwrap 判据（WIKI-OPT-4 收紧）：对象含 `data` 键且 `code` 为**数值**即视为信封（对齐 ResponseInterceptor 的 `code` 恒为 `statusCode ?? 200`）；`message` 不再作为判据——实体自带 data+message 而无数值 code 时原样透传，不再被误解包截断成 data 值。
 - bin 入口支持 `--help` / `--version`；无参即启动 stdio server。
 
-## 工具清单（40 个，自 src/tools.ts 的 server.tool() 逐个核实）
+## 工具清单（43 个，自 src/tools.ts 的 server.tool() 逐个核实）
 
 **任务组 registerTaskTools（18）**
 
@@ -60,6 +61,8 @@ packages/mcp-server/
 **执行器组（3）**：`list_executors` `get_executor` `get_executor_metrics`。
 **可观测组（3）**：`get_execution_timeline`（OBS-04：created→started→finished + 失败分诊卡）、`list_dead_letters`（按执行器聚合回调死信积压）、`get_scheduler_health`（leader、BullMQ 队列深度、P99 触发延迟）。
 **审计组（1）**：`list_audit_logs`（page/pageSize/action/resource/userId/username/startTime/endTime，字段白名单外 400）。
+
+**项目组 registerProjectTools（3）**：`list_projects`（当前凭据可见项目，每行带 myRole 供写前能力判断）、`get_project_members`（projectId，列 userId+role）、`get_my_project_roles`（返回 { userId, isAdmin, memberships:[{ projectId, role }] }，用于能力感知自动化——viewer 项目跳过写操作）。
 
 ## TASK_TEMPLATES 与 admin-api 官方模板的对齐
 

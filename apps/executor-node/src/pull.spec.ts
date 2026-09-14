@@ -113,6 +113,9 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     expect(cb).toMatchObject({
       executionId: 'exec-10',
       status: 'failed',
+      // E-42（DEEP_REVIEW 0ef3bbe）parity：拒绝发生在 accept 之前的校验阶段，
+      // 显式上报 'unknown'（枚举成员）而非留空让 admin 从 errorMessage 猜。
+      failureReason: 'unknown',
     });
     expect(String(cb.errorMessage)).toContain('Invalid npm package name');
     // 预留已释放，账本归零

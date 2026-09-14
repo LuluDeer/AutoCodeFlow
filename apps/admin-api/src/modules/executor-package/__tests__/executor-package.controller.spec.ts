@@ -35,7 +35,11 @@ describe("ExecutorPackageController download HTTP contract", () => {
   const config = new ConfigService({
     "jwt.secret": secret,
     "executor.sharedToken": "env-token",
-    ADMIN_API_URL: "http://admin:3002/api/",
+    // R-12（DEEP_REVIEW 0ef3bbe）：pushToExecutors 改读映射节 app.adminApiUrl
+    // （经 configuration.ts 的 ADMIN_API_URL→app.adminApiUrl），裸平键不再命中。
+    // 本 spec 原先只提供平键 ADMIN_API_URL，导致基线（HEAD）该用例 503 红——
+    // 此处对齐为嵌套键（值不变）。
+    "app.adminApiUrl": "http://admin:3002/api/",
   });
   const systemConfig = { findOne: jest.fn() };
   // R9: the download route consumes the streaming openPackageFile contract

@@ -1033,9 +1033,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         priority: normalizeTaskPriority(task.priority),
       };
       try {
+        // R-29（DEEP_REVIEW 0ef3bbe）: 入队载荷瘦身——只传 executionId。
+        // 旧实现把整行 task entity（含 params/secrets 密文）序列化进 Redis，
+        // 但 processor 统一从 DB 按 executionId 重读 task（task.processor.ts
+        // 仅解构 job.data.executionId），载荷里的 task 是死重量且把密文驻留
+        // Redis 数据面。trigger/rollback 入队本就只传 { executionId }，此处对齐。
         await this.queue.add(
           "execute",
-          { executionId: exec.id, task },
+          { executionId: exec.id },
           queueOptions,
         );
       } catch (err: unknown) {

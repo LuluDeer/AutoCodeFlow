@@ -2091,6 +2091,7 @@ export default {
   'time.relative.daysAgo': '{{n}}天前',
   'time.duration.sec': '{{n}}秒',
   'time.duration.minSec': '{{n}}分{{s}}秒',
+  'time.duration.hourMin': '{{h}}小时{{m}}分',
   'priority.low': '低',
   'priority.normal': '普通',
   'priority.high': '高',

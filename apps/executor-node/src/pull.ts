@@ -99,6 +99,13 @@ export async function pullOnce(): Promise<void> {
       pushCallback({
         executionId: task.executionId,
         status: 'failed',
+        // E-42（DEEP_REVIEW 0ef3bbe）parity：这条拒绝发生在 accept 之前的
+        // 校验/登记阶段（400 等），既不是拉取失败也不是运行失败——admin 的
+        // inferFailureReason 只能从 errorMessage 猜。显式上报 'unknown'
+        // （ExecutionFailureReason 枚举成员），与 executor-python
+        // reject_pulled_execution 的同一路径口径一致。429 那条瞬态路径已在
+        // 上方提前 return，不回调（见 E-01）。
+        failureReason: 'unknown',
         errorMessage: truncateCallbackErrorMessage(
           `Executor rejected pulled dispatch: ${error}`,
         ),

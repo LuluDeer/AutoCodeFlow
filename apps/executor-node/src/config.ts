@@ -1,3 +1,5 @@
+import pkg from '../package.json';
+
 const adminApiUrl = process.env.ADMIN_API_URL || 'http://admin-api:3105';
 const adminApiUrlInternal = process.env.ADMIN_API_URL_INTERNAL || adminApiUrl;
 const configuredAdminApiUrls = (process.env.ADMIN_API_URLS || '')
@@ -63,4 +65,24 @@ export const config = {
 // EXE-VER-1: 执行器版本上报源（register 与心跳共用，单一定义处）。
 // 升级执行器 = 重新安装 artifact / 重跑 install-cmd，版本随之跟进；
 // 中心端 EXECUTOR_MIN_VERSION 门禁按此值判定（低于下限 register 403）。
-export const EXECUTOR_VERSION = '1.0.0';
+//
+// E-37（DEEP_REVIEW 0ef3bbe）：单一来源收敛——旧实现把 '1.0.0' 硬编码在这里，
+// 与 package.json 的 "version" 各自维护，属双事实源：改一处即静默漂移，而
+// 中心端 EXECUTOR_MIN_VERSION 门禁正是按这个上报值判机队合规性，漂移会让门禁
+// 判错。现改为运行时从本包清单读取：
+//   - tsc 交付（dist/config.js）：`../package.json` 即 apps/executor-node/package.json；
+//   - ncc 单文件交付（apps/executor-desktop/scripts/bundle-executor.sh 产出
+//     resources/executor-node/index.js，目录内没有 package.json 伴生文件）：
+//     构建期由 ncc 把该 JSON 内联进 bundle，运行时不依赖文件系统。
+// 因此两种交付形态同源，升级只需改 package.json 一处。
+function readPackageVersion(): string {
+  // 静态 import 在编译/ncc 打包期即把 package.json 内联进来（resolveJsonModule 已开），
+  // 不运行时 fs 读盘；保留对值形态的防御性校验。
+  const version = (pkg as { version?: unknown }).version;
+  if (typeof version === 'string' && version) return version;
+  // Deliberately lower than any real release: with EXECUTOR_MIN_VERSION set the
+  // register gate rejects this loudly instead of reporting a plausible version.
+  return '0.0.0';
+}
+
+export const EXECUTOR_VERSION = readPackageVersion();

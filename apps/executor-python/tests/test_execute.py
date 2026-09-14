@@ -1997,3 +1997,78 @@ def test_s7_gitrepo_scheme_whitelist_kept_under_switch(tmp_path, monkeypatch):
             asyncio.run(run_task(_git_repo_request(f'exec-s7-scheme-{i}', repo)))
         assert exc.value.status_code == 400
         assert 'scheme not allowed' in str(exc.value.detail), repo
+
+
+# ---------------------------------------------------------------------------
+# E-45（DEEP_REVIEW 0ef3bbe）：pull 领取被拒回调的 failureReason 行为级回归
+# ---------------------------------------------------------------------------
+
+def test_reject_pulled_execution_callback_carries_failure_reason(monkeypatch):
+    """E-42/E-45: pull 领取被拒（容量竞态）的 failed 回调必须显式带
+    failureReason（旧版不发，admin 端靠 inferFailureReason 兜底，观测口径模糊）。"""
+    from unittest.mock import AsyncMock
+    from routers import execute as execute_module
+
+    captured = {}
+
+    async def fake_send(url, payload, token):
+        captured['url'] = url
+        captured['payload'] = payload
+
+    monkeypatch.setattr(execute_module, '_send_callback_with_retry', fake_send)
+    monkeypatch.setattr(execute_module, 'get_current_token', AsyncMock(return_value='tok'))
+
+    asyncio.run(execute_module.reject_pulled_execution(
+        'exec-reject-1', 'no capacity', traceparent='trc-1'))
+
+    assert captured['payload']['executionId'] == 'exec-reject-1'
+    assert captured['payload']['status'] == 'failed'
+    assert captured['payload']['failureReason'] == 'unknown'
+    assert captured['payload']['traceparent'] == 'trc-1'
+    assert 'Executor rejected' in captured['payload']['errorMessage']
+
+
+# ---------------------------------------------------------------------------
+# E-42（DEEP_REVIEW 0ef3bbe）②：TASK_NAME 必须显式 str()——上游 DTO 误传
+# 数字/对象时，非 str 值会让 subprocess env 构造抛 TypeError，任务失败原因
+# 难定位（node 侧用 String(task.name || '')）。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('raw_name,expected', [
+    (12345, '12345'),
+    (True, 'True'),
+    (None, ''),      # node `String(task.name || '')` 对齐：falsy → 空串
+    (0, ''),         # 同上
+    ('plain', 'plain'),
+])
+def test_task_name_is_coerced_to_str_in_child_env(monkeypatch, tmp_path, raw_name, expected):
+    import asyncio
+
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    captured: dict = {}
+
+    class Stop(Exception):
+        pass
+
+    async def fake_spawn(*cmd, **kwargs):
+        captured.update(kwargs)
+        raise Stop('spawn intercepted')
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_spawn)
+
+    req = execute_module.ExecuteRequest(
+        executionId='exec-taskname',
+        task={'name': raw_name, 'runtime': 'python', 'script': 'pass'},
+    )
+    try:
+        asyncio.run(execute_module.run_task(req))
+    except Stop:
+        pass
+
+    assert 'env' in captured, 'spawn was never reached — test wiring is wrong'
+    assert captured['env']['TASK_NAME'] == expected
+    # 同一口径：TASK_ID 也必须是 str
+    assert isinstance(captured['env']['TASK_ID'], str)

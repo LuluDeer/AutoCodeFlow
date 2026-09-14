@@ -16,6 +16,9 @@
  * 展示文本用 Intl.DateTimeFormat（IANA tz）渲染所选时区的时刻。
  */
 
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from './locale';
+
 /**
  * 5 字段 cron 结构正则（分 时 日 月 周）：星号、数字、范围、步进及逗号组合。
  * DTO 的 @Matches 是其「无逗号」子集（逗号组合在 DTO 层会被拒——CronHelper
@@ -224,7 +227,7 @@ export function formatFireTime(
 ): string {
   const tz = validateTimezone(timezone);
   try {
-    return new Intl.DateTimeFormat('zh-CN', {
+    return new Intl.DateTimeFormat(currentLocale(), {
       timeZone: tz ?? undefined,
       month: '2-digit',
       day: '2-digit',

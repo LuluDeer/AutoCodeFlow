@@ -71,7 +71,7 @@
 | `NPM_REGISTRY_URL` / `PYPI_REGISTRY_URL` | 空=官方源 | 私服地址（compose 内默认注入 `http://registry-npm:4873`、`http://registry-pypi:8003/simple/`） |
 | `NPM_REGISTRY_TOKEN` / `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` | 空 | S5 私服服务账号；token 优先于 user/pass |
 | `REGISTRY_UPLOAD_TIMEOUT_MS` | `60000` | registry 上传代理超时 |
-| `REGISTRY_USER` / `REGISTRY_PASS` / `PYPI_API_KEY` | `admin` / change_me / 空 | registry-pypi 服务自身凭证 |
+| `REGISTRY_USER` / `REGISTRY_PASS` | `admin` / change_me | registry-pypi 服务自身凭证（仅 Basic Auth；E-34 起无 `PYPI_API_KEY`） |
 
 ## AI 集成
 

@@ -24,6 +24,8 @@ import { taskTemplatesApi } from '../api/task-templates';
 import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg } from '../utils/error';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
+// F-27（DEEP_REVIEW 0ef3bbe）：失败次数派生（纯函数，保证整数）
+import { failedRunCount } from './task-stats';
 // CORE-03 收尾：保存为自定义模板的 config 白名单抽取
 import { extractTemplateConfigFromTask } from '../utils/task-template-extract';
 import { useTranslation } from 'react-i18next';
@@ -377,7 +379,11 @@ export default function TaskDetailPage() {
             <Card size="small">
               <Statistic
                 title={t('taskDetail.stats.failed')}
-                value={taskStats.totalRuns > 0 ? Number((taskStats.totalRuns * (1 - (taskStats.successRate ?? 0) / 100)).toFixed(1)) : 0}
+                // F-27（DEEP_REVIEW 0ef3bbe）：失败次数必须是整数——原实现按
+                // totalRuns × (1 - successRate/100) 直接 toFixed(1)，成功率为
+                // 四舍五入值时会出现「失败 1.4 次」的语义错误。现走 pages/task-stats.ts
+                // 的 failedRunCount（Math.round 归一，纯函数已单测）。
+                value={failedRunCount(taskStats.totalRuns ?? 0, taskStats.successRate ?? 0)}
                 styles={taskStats.totalRuns > 0 && (taskStats.successRate ?? 0) < 100 ? { content: { color: token.colorError } } : undefined}
                 prefix={<CloseCircleOutlined />}
               />
@@ -647,7 +653,7 @@ export default function TaskDetailPage() {
         onCancel={() => setTplModalOpen(false)}
         onOk={handleSaveAsTemplate}
         okText={t('taskDetail.tpl.ok')}
-        okButtonProps={{ loading: tplSaving, 'data-testid': 'tpl-save-confirm' } as never}
+        okButtonProps={{ loading: tplSaving, 'data-testid': 'tpl-save-confirm' }}
         cancelText={t('taskDetail.cancel')}
         width={520}
         destroyOnHidden

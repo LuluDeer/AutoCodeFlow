@@ -10,6 +10,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
 import { authApi, AuthSession } from '../../api/auth';
 import { getErrMsg } from '../../utils/error';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../../utils/locale';
 import StateError from '../../components/StateError';
 import { useAuthStore } from '../../store/auth';
 import { useTranslation } from 'react-i18next';
@@ -242,7 +244,7 @@ export function SessionsCard() {
     },
     {
       title: t('security.session.col.loginTime'), dataIndex: 'createdAt', width: 170,
-      render: (v: string) => (v ? new Date(v).toLocaleString('zh-CN') : '-'),
+      render: (v: string) => (v ? new Date(v).toLocaleString(currentLocale()) : '-'),
     },
     {
       title: t('security.session.col.current'), dataIndex: 'current', width: 80,

@@ -12,6 +12,8 @@ import {
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
 import { executorsApi, Executor } from '../api/executors';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
+import { currentLocale } from '../utils/locale';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import StateError from '../components/StateError';
@@ -95,6 +97,25 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   // 每次调用自增 fetchSeq，仅最后一次请求允许 setState；cleanup（卸载或翻页）
   // 置 cancelled，让已 in-flight 的旧响应在 resolve 后被丢弃。
   const fetchSeq = useRef(0);
+
+  // F-34（DEEP_REVIEW 0ef3bbe）：轮询拍只拉**部署列表**——执行器清单（下拉候选
+  // 与占用判断）在秒级轮询窗口内几乎不变，原先每 3s 全量 GET /executors 属浪费；
+  // 且后台拍不置 loading，避免表格 spinner 每 3s 闪一次。
+  const fetchDeployments = useCallback(async () => {
+    const seq = ++fetchSeq.current;
+    try {
+      const deps = await deploymentsApi.list(applicationId, page);
+      if (seq !== fetchSeq.current) return; // 已有更新的请求/卸载，丢弃过期响应
+      setDeployments(deps.data);
+      setTotal(deps.total);
+      // UI-16：加载成功后清除上一次的页内错误态
+      setLoadError(null);
+    } catch (err: unknown) {
+      if (seq !== fetchSeq.current) return;
+      setLoadError(err);
+    }
+  }, [applicationId, page]);
+
   const fetchAll = useCallback(async () => {
     const seq = ++fetchSeq.current;
     setLoading(true);
@@ -128,9 +149,14 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   useEffect(() => {
     const inProgress = deployments.some(d => d.status === 'deploying' || d.status === 'upgrading' || d.status === 'pending');
     if (!inProgress) return;
-    const timer = setInterval(() => { fetchAll(); }, 3000);
+    const timer = setInterval(() => {
+      // F-34（DEEP_REVIEW 0ef3bbe）：标签页不可见时跳过本拍请求（对齐
+      // ExecutionsPage 15s 兜底轮询的 document.visibilityState 守卫——
+      // 定时器保留，回到前台后下一拍自动恢复），避免后台 Tab 空转打接口。
+      if (document.visibilityState === 'visible') void fetchDeployments();
+    }, 3000);
     return () => clearInterval(timer);
-  }, [deployments, fetchAll]);
+  }, [deployments, fetchDeployments]);
 
   const handleDeploy = async () => {
     try {
@@ -316,7 +342,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         const mins = Math.floor(diff / 60000);
         const text = mins < 1 ? t('appDeploy.time.justNow') : mins < 60 ? t('appDeploy.time.minutesAgo', { mins }) : t('appDeploy.time.hoursAgo', { hours: Math.floor(mins / 60) });
         return (
-          <Tooltip title={new Date(d).toLocaleString('zh-CN')}>
+          <Tooltip title={new Date(d).toLocaleString(currentLocale())}>
             <Text type="secondary" style={{ fontSize: 12 }}>{text}</Text>
           </Tooltip>
         );

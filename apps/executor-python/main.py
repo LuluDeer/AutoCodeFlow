@@ -288,7 +288,11 @@ async def maybe_re_register() -> None:
 
 app = FastAPI(
     title='AutoFlow Python Executor',
-    version='1.0.0',
+    # E-37（DEEP_REVIEW 0ef3bbe）：FastAPI version 旧硬编码 '1.0.0' 与 config.py
+    # EXECUTOR_VERSION 双事实源——register/心跳上报用 config 常量，OpenAPI title 用
+    # 这里的字面量，升级时易漏改。现复用 config.EXECUTOR_VERSION（本侧唯一常量源），
+    # 与 node 侧 readPackageVersion 同源语义对齐。
+    version=EXECUTOR_VERSION,
     lifespan=lifespan,
 )
 
