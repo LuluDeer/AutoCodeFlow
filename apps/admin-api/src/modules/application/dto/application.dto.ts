@@ -37,8 +37,14 @@ export class CreateApplicationDto {
   @ApiPropertyOptional() @IsOptional() @IsString() gitRepo?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() gitBranch?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() gitCommit?: string;
-  @ApiPropertyOptional({ type: Object }) @IsOptional() @IsObject() manifest?: Record<string, any>;
-  @ApiPropertyOptional({ type: Object }) @IsOptional() @IsObject() env?: Record<string, string>;
+  @ApiPropertyOptional({ type: Object })
+  @IsOptional()
+  @IsObject()
+  manifest?: Record<string, any>;
+  @ApiPropertyOptional({ type: Object }) @IsOptional() @IsObject() env?: Record<
+    string,
+    string
+  >;
   @ApiPropertyOptional() @IsOptional() @IsString() entrypoint?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() packageUrl?: string;
 
@@ -55,8 +61,13 @@ export class CreateApplicationDto {
 
 // PK-02（DEEP_REVIEW 0ef3bbe）: 手写 Optional 字段改为 PartialType(CreateApplicationDto)。
 export class UpdateApplicationDto extends PartialType(CreateApplicationDto) {
-  @ApiPropertyOptional({ description: "Application status", enum: ApplicationStatus })
-  @IsOptional() @IsEnum(ApplicationStatus) status?: ApplicationStatus;
+  @ApiPropertyOptional({
+    description: "Application status",
+    enum: ApplicationStatus,
+  })
+  @IsOptional()
+  @IsEnum(ApplicationStatus)
+  status?: ApplicationStatus;
 
   /** HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable. */
   @ApiPropertyOptional({
@@ -64,7 +75,10 @@ export class UpdateApplicationDto extends PartialType(CreateApplicationDto) {
       "HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable.",
     maxLength: 256,
   })
-  @IsOptional() @IsString() @MaxLength(256) webhookSecret?: string;
+  @IsOptional()
+  @IsString()
+  @MaxLength(256)
+  webhookSecret?: string;
 }
 
 /**

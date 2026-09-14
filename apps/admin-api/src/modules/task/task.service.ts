@@ -1306,10 +1306,7 @@ export class TaskService {
           idlePolls++;
           if (idlePolls > IDLE_BACKOFF_THRESHOLD) {
             // 指数退避，上限 IDLE_BACKOFF_MAX_INTERVAL
-            pollWait = Math.min(
-              pollWait * 2,
-              IDLE_BACKOFF_MAX_INTERVAL,
-            );
+            pollWait = Math.min(pollWait * 2, IDLE_BACKOFF_MAX_INTERVAL);
           }
         }
         // QA3: idle heartbeat — checked inline in the polling loop instead of
@@ -2001,7 +1998,7 @@ export class TaskService {
           });
           this.logger.warn(
             `R-16: Rejected terminal callback for execution ${cb.executionId} ` +
-            `which has not been dispatched yet (executorAddress is null).`,
+              `which has not been dispatched yet (executorAddress is null).`,
           );
           results.push({
             executionId: cb.executionId,

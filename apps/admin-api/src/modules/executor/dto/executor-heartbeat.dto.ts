@@ -9,13 +9,19 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
  * forbidNonWhitelisted 400 路径；指标白名单在 controller/service 侧显式裁剪。
  */
 export class ExecutorHeartbeatDto {
-  @ApiProperty({ description: "Executor registration address", example: "192.168.1.100:3002" })
+  @ApiProperty({
+    description: "Executor registration address",
+    example: "192.168.1.100:3002",
+  })
   address: string;
 
   @ApiPropertyOptional({ description: "CPU usage percentage", example: 45.5 })
   cpuUsage?: number;
 
-  @ApiPropertyOptional({ description: "Memory usage percentage", example: 62.3 })
+  @ApiPropertyOptional({
+    description: "Memory usage percentage",
+    example: 62.3,
+  })
   memUsage?: number;
 
   @ApiPropertyOptional({ description: "Disk usage percentage", example: 70.0 })
@@ -24,7 +30,10 @@ export class ExecutorHeartbeatDto {
   @ApiPropertyOptional({ description: "Network latency in ms", example: 2 })
   networkLatency?: number;
 
-  @ApiPropertyOptional({ description: "Number of currently running tasks", example: 3 })
+  @ApiPropertyOptional({
+    description: "Number of currently running tasks",
+    example: 3,
+  })
   runningTaskCount?: number;
 
   @ApiPropertyOptional({ description: "Total tasks executed", example: 150 })
@@ -64,7 +73,8 @@ export class ExecutorHeartbeatDto {
   maxConcurrentTasks?: number;
 
   @ApiPropertyOptional({
-    description: "EXE-VER-1: Executor version (for min-version gate echo, not persisted)",
+    description:
+      "EXE-VER-1: Executor version (for min-version gate echo, not persisted)",
     example: "1.0.0",
   })
   version?: string;

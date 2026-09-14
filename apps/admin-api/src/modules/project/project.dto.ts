@@ -42,7 +42,9 @@ export class UpsertProjectMemberDto {
 }
 
 /** AUTH-02：仅改角色（成员必须已存在）。PK-02: 改用 PartialType(UpsertProjectMemberDto)。 */
-export class UpdateProjectMemberDto extends PartialType(UpsertProjectMemberDto) {}
+export class UpdateProjectMemberDto extends PartialType(
+  UpsertProjectMemberDto,
+) {}
 
 /**
  * AUTH-02 后续：项目列表行视图（GET /projects 响应）。

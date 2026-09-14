@@ -2803,7 +2803,9 @@ describe("ExecutorService (__tests__)", () => {
   describe("getInstallCmd", () => {
     it("uses the DB token instead of the env token", async () => {
       configService.get.mockImplementation((key) =>
-        key === "app.adminApiUrl" ? "https://admin.example.com" : "old-env-token",
+        key === "app.adminApiUrl"
+          ? "https://admin.example.com"
+          : "old-env-token",
       );
       const lookup = jest
         .spyOn((service as any).systemConfigService, "findOne")
@@ -4004,9 +4006,7 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
       .filter((m) => m.includes("R-26"));
 
   it("eventBus/audit 缺失时各 warn 一次，且不抛", () => {
-    expect(() =>
-      buildService({ eventBus: null, audit: null }),
-    ).not.toThrow();
+    expect(() => buildService({ eventBus: null, audit: null })).not.toThrow();
     const msgs = r26Messages();
     expect(msgs).toHaveLength(2);
     expect(msgs.some((m) => m.includes("DomainEventBus"))).toBe(true);

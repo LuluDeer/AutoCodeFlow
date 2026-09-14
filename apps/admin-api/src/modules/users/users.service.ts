@@ -230,9 +230,7 @@ export class UsersService implements OnModuleInit {
           .where("u.role = :role", { role: UserRole.ADMIN })
           .getMany();
         if (admins.length <= 1) {
-          throw new BadRequestException(
-            "Cannot delete the last administrator",
-          );
+          throw new BadRequestException("Cannot delete the last administrator");
         }
       }
       await manager.getRepository(RefreshToken).delete({ userId: id });

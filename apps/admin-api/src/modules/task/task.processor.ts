@@ -273,111 +273,114 @@ export class TaskProcessor extends WorkerHost {
       }
 
       if (txReady) {
-      // P0: persist only worker-owned fields via a conditional update — a
-      // concurrent callback or kill may have already written a terminal
-      // state, which the worker must never overwrite. Built once so the
-      // repair path below reuses the exact same guarded patch (REPAIR-01).
-      const ownedPatch: Partial<TaskExecution> = {
-        status: exec.status,
-        ...(exec.executorAddress !== undefined
-          ? { executorAddress: exec.executorAddress }
-          : {}),
-        ...(exec.result !== undefined ? { result: exec.result } : {}),
-        ...(exec.logs !== undefined ? { logs: exec.logs } : {}),
-        ...(exec.errorMessage !== undefined
-          ? { errorMessage: exec.errorMessage }
-          : {}),
-        ...(exec.failureReason !== undefined
-          ? { failureReason: exec.failureReason }
-          : {}),
-        ...(exec.aiAnalysis !== undefined
-          ? { aiAnalysis: exec.aiAnalysis }
-          : {}),
-        ...(exec.endTime ? { endTime: exec.endTime } : {}),
-        ...(exec.duration !== undefined ? { duration: exec.duration } : {}),
-      };
+        // P0: persist only worker-owned fields via a conditional update — a
+        // concurrent callback or kill may have already written a terminal
+        // state, which the worker must never overwrite. Built once so the
+        // repair path below reuses the exact same guarded patch (REPAIR-01).
+        const ownedPatch: Partial<TaskExecution> = {
+          status: exec.status,
+          ...(exec.executorAddress !== undefined
+            ? { executorAddress: exec.executorAddress }
+            : {}),
+          ...(exec.result !== undefined ? { result: exec.result } : {}),
+          ...(exec.logs !== undefined ? { logs: exec.logs } : {}),
+          ...(exec.errorMessage !== undefined
+            ? { errorMessage: exec.errorMessage }
+            : {}),
+          ...(exec.failureReason !== undefined
+            ? { failureReason: exec.failureReason }
+            : {}),
+          ...(exec.aiAnalysis !== undefined
+            ? { aiAnalysis: exec.aiAnalysis }
+            : {}),
+          ...(exec.endTime ? { endTime: exec.endTime } : {}),
+          ...(exec.duration !== undefined ? { duration: exec.duration } : {}),
+        };
 
-      try {
-        const persisted = await queryRunner.manager
-          .createQueryBuilder()
-          .update(TaskExecution)
-          .set(ownedPatch)
-          .where("id = :id", { id: exec.id })
-          .andWhere("status IN (:...writable)", {
-            writable: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
-          })
-          .execute();
-        if (persisted.affected) terminalPersisted = true;
-        await queryRunner.commitTransaction();
-        this.logger.debug(
-          `Successfully saved execution ${exec.id} final state in transaction`,
-        );
-      } catch (saveErr) {
-        await queryRunner.rollbackTransaction();
-        this.logger.error(
-          `Failed to save execution ${exec.id} final state, transaction rolled back`,
-          saveErr,
-        );
-
-        // Attempt to repair state in a separate transaction
         try {
-          const repairRunner = this.dataSource.createQueryRunner();
-          // R-13: 与主 runner 同型——connect/startTransaction 包入 try，失败即释放
-          // 连接（否则泄漏），再抛给外层 repairAttemptErr 兜底。
-          let repairReady = false;
-          try {
-            await repairRunner.connect();
-            await repairRunner.startTransaction();
-            repairReady = true;
-          } catch (setupErr) {
-            await repairRunner.release().catch(() => undefined);
-            throw setupErr;
-          }
-
-          if (repairReady)
-          try {
-            // REPAIR-01: use the same conditional UPDATE as the primary write
-            // instead of findOne→check→save — the check/save pair had a TOCTOU
-            // window (a callback could flip the row to a terminal state between
-            // them) and save() ran through @VersionColumn optimistic locking,
-            // which threw an exception and got swallowed when it lost that
-            // race. The `status IN (pending, running)` guard plus an affected
-            // check makes the repair atomic and can never clobber a terminal
-            // state written concurrently.
-            const repaired = await repairRunner.manager
-              .createQueryBuilder()
-              .update(TaskExecution)
-              .set(ownedPatch)
-              .where("id = :id", { id: exec.id })
-              .andWhere("status IN (:...writable)", {
-                writable: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
-              })
-              .execute();
-            if (repaired.affected) {
-              terminalPersisted = true;
-              this.logger.log(
-                `Repaired execution ${exec.id} state after transaction failure`,
-              );
-            }
-            await repairRunner.commitTransaction();
-          } catch (repairErr) {
-            await repairRunner.rollbackTransaction();
-            this.logger.error(
-              `Failed to repair execution ${exec.id} state`,
-              repairErr,
-            );
-          } finally {
-            await repairRunner.release();
-          }
-        } catch (repairAttemptErr) {
-          this.logger.error(
-            `Failed to attempt repair for execution ${exec.id}`,
-            repairAttemptErr,
+          const persisted = await queryRunner.manager
+            .createQueryBuilder()
+            .update(TaskExecution)
+            .set(ownedPatch)
+            .where("id = :id", { id: exec.id })
+            .andWhere("status IN (:...writable)", {
+              writable: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+            })
+            .execute();
+          if (persisted.affected) terminalPersisted = true;
+          await queryRunner.commitTransaction();
+          this.logger.debug(
+            `Successfully saved execution ${exec.id} final state in transaction`,
           );
+        } catch (saveErr) {
+          await queryRunner.rollbackTransaction();
+          this.logger.error(
+            `Failed to save execution ${exec.id} final state, transaction rolled back`,
+            saveErr,
+          );
+
+          // Attempt to repair state in a separate transaction
+          try {
+            const repairRunner = this.dataSource.createQueryRunner();
+            // R-13: 与主 runner 同型——connect/startTransaction 包入 try，失败即释放
+            // 连接（否则泄漏），再抛给外层 repairAttemptErr 兜底。
+            let repairReady = false;
+            try {
+              await repairRunner.connect();
+              await repairRunner.startTransaction();
+              repairReady = true;
+            } catch (setupErr) {
+              await repairRunner.release().catch(() => undefined);
+              throw setupErr;
+            }
+
+            if (repairReady)
+              try {
+                // REPAIR-01: use the same conditional UPDATE as the primary write
+                // instead of findOne→check→save — the check/save pair had a TOCTOU
+                // window (a callback could flip the row to a terminal state between
+                // them) and save() ran through @VersionColumn optimistic locking,
+                // which threw an exception and got swallowed when it lost that
+                // race. The `status IN (pending, running)` guard plus an affected
+                // check makes the repair atomic and can never clobber a terminal
+                // state written concurrently.
+                const repaired = await repairRunner.manager
+                  .createQueryBuilder()
+                  .update(TaskExecution)
+                  .set(ownedPatch)
+                  .where("id = :id", { id: exec.id })
+                  .andWhere("status IN (:...writable)", {
+                    writable: [
+                      ExecutionStatus.PENDING,
+                      ExecutionStatus.RUNNING,
+                    ],
+                  })
+                  .execute();
+                if (repaired.affected) {
+                  terminalPersisted = true;
+                  this.logger.log(
+                    `Repaired execution ${exec.id} state after transaction failure`,
+                  );
+                }
+                await repairRunner.commitTransaction();
+              } catch (repairErr) {
+                await repairRunner.rollbackTransaction();
+                this.logger.error(
+                  `Failed to repair execution ${exec.id} state`,
+                  repairErr,
+                );
+              } finally {
+                await repairRunner.release();
+              }
+          } catch (repairAttemptErr) {
+            this.logger.error(
+              `Failed to attempt repair for execution ${exec.id}`,
+              repairAttemptErr,
+            );
+          }
+        } finally {
+          await queryRunner.release();
         }
-      } finally {
-        await queryRunner.release();
-      }
       } // end if (txReady) — R-13: connect/startTransaction 失败时跳过持久化
 
       // R4-P0: dependency fan-out moved to TaskService.handleCallback — the

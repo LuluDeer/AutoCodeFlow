@@ -9,7 +9,10 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
  * 长轮询请求体误入 forbidNonWhitelisted 400 路径。
  */
 export class ExecutorPullDto {
-  @ApiProperty({ description: "执行器注册地址（与心跳一致）", example: "http://10.0.0.5:9100" })
+  @ApiProperty({
+    description: "执行器注册地址（与心跳一致）",
+    example: "http://10.0.0.5:9100",
+  })
   address: string;
 
   @ApiPropertyOptional({

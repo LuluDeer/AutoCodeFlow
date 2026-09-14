@@ -9,10 +9,16 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
  * forbidNonWhitelisted 400 路径；字段白名单在 controller/service 侧显式裁剪。
  */
 export class ExecutorRegisterDto {
-  @ApiProperty({ description: "Executor application name", example: "executor-node" })
+  @ApiProperty({
+    description: "Executor application name",
+    example: "executor-node",
+  })
   appName: string;
 
-  @ApiProperty({ description: "Executor registration address", example: "192.168.1.100:3002" })
+  @ApiProperty({
+    description: "Executor registration address",
+    example: "192.168.1.100:3002",
+  })
   address: string;
 
   @ApiPropertyOptional({ description: "Executor type", example: "node" })
@@ -38,10 +44,17 @@ export class ExecutorRegisterDto {
   @ApiPropertyOptional({ description: "Max concurrent tasks", example: 10 })
   maxConcurrentTasks?: number;
 
-  @ApiPropertyOptional({ description: "Max concurrent (legacy alias)", example: 10 })
+  @ApiPropertyOptional({
+    description: "Max concurrent (legacy alias)",
+    example: 10,
+  })
   maxConcurrent?: number;
 
-  @ApiPropertyOptional({ description: "Executor group name", example: "production", nullable: true })
+  @ApiPropertyOptional({
+    description: "Executor group name",
+    example: "production",
+    nullable: true,
+  })
   groupName?: string | null;
 
   @ApiPropertyOptional({
@@ -67,7 +80,8 @@ export class ExecutorRegisterDto {
   restartedAt?: string | null;
 
   @ApiPropertyOptional({
-    description: "Startup ID (process life identifier for idempotent re-registration)",
+    description:
+      "Startup ID (process life identifier for idempotent re-registration)",
     example: "uuid-of-this-executor-process-life",
     nullable: true,
   })

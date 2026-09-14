@@ -138,7 +138,8 @@ export class HealthController {
   @Get("services")
   @ApiOperation({
     summary: "Service status (authenticated)",
-    description: "Get health status details for each core service. Requires JWT authentication.",
+    description:
+      "Get health status details for each core service. Requires JWT authentication.",
   })
   @ApiResponse({
     status: 200,

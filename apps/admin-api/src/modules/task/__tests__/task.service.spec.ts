@@ -2189,7 +2189,11 @@ describe("TaskService (__tests__)", () => {
         };
         execRepo.findOne.mockResolvedValue(exec);
         const result = await service.handleCallback([
-          { executionId: "e-pending", status: "success", executorAddress: "attacker:9999" },
+          {
+            executionId: "e-pending",
+            status: "success",
+            executorAddress: "attacker:9999",
+          },
         ]);
         expect(result[0].success).toBe(false);
         expect(result[0].error).toMatch(/not been dispatched yet/i);
@@ -4728,9 +4732,7 @@ describe("R-26: @Optional 关键依赖缺失可观测性（TaskService）", () =
       .filter((m) => m.includes("R-26"));
 
   it("eventBus/audit 缺失时各 warn 一次，且不抛", () => {
-    expect(() =>
-      buildService({ eventBus: null, audit: null }),
-    ).not.toThrow();
+    expect(() => buildService({ eventBus: null, audit: null })).not.toThrow();
     const msgs = r26Messages();
     expect(msgs).toHaveLength(2);
     expect(msgs.some((m) => m.includes("DomainEventBus"))).toBe(true);

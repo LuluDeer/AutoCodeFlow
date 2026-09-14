@@ -566,7 +566,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
       // 1) 并发释放全部槽位（DB 快操作，无 HTTP）
       await Promise.allSettled(
-        recoveredRows.map((row) => this.releaseExecutorSlot(row.executorAddress)),
+        recoveredRows.map((row) =>
+          this.releaseExecutorSlot(row.executorAddress),
+        ),
       );
       for (const row of recoveredRows) {
         this.logger.warn(`REC-01: execution ${row.id} recovered as FAILED`);
@@ -591,13 +593,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       }
 
       // 3) 分批并发 kill→retry：每批内并发，批间串行，限制同时在飞的 HTTP 数。
-      for (let i = 0; i < retryables.length; i += STALE_RECOVERY_KILL_CONCURRENCY) {
-        const batch = retryables.slice(
-          i,
-          i + STALE_RECOVERY_KILL_CONCURRENCY,
-        );
+      for (
+        let i = 0;
+        i < retryables.length;
+        i += STALE_RECOVERY_KILL_CONCURRENCY
+      ) {
+        const batch = retryables.slice(i, i + STALE_RECOVERY_KILL_CONCURRENCY);
         await Promise.allSettled(
-          batch.map(async ({ id, exec, task }) => {
+          batch.map(async ({ exec, task }) => {
             // kill 必须在 re-enqueue 之前：防"执行器谎报/进程僵死但仍存活"场景下
             // 原进程与新执行双跑。best-effort——离线/404/超时不阻塞重试。
             try {
@@ -671,7 +674,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         .returning(["id"])
         .execute();
       const batchRecovered = ((result.raw ?? []) as unknown[]).length;
-      recoveredPending += batchRecovered > 0 ? batchRecovered : result.affected ?? 0;
+      recoveredPending +=
+        batchRecovered > 0 ? batchRecovered : (result.affected ?? 0);
       // 这批捞满了但一条都没真正命中（竞态：并发回调已写终态）→ 再捞一次
       // 推进游标；否则若本批未捞满说明已无更多 stale PENDING，退出。
       if (stalePendingIds.length < PENDING_SWEEP_BATCH_SIZE) break;
@@ -1038,11 +1042,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         // 但 processor 统一从 DB 按 executionId 重读 task（task.processor.ts
         // 仅解构 job.data.executionId），载荷里的 task 是死重量且把密文驻留
         // Redis 数据面。trigger/rollback 入队本就只传 { executionId }，此处对齐。
-        await this.queue.add(
-          "execute",
-          { executionId: exec.id },
-          queueOptions,
-        );
+        await this.queue.add("execute", { executionId: exec.id }, queueOptions);
       } catch (err: unknown) {
         // P1: compensate the committed PENDING row so it cannot hang forever
         const message = err instanceof Error ? err.message : String(err);

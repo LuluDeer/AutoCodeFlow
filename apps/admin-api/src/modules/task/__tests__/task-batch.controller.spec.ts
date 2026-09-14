@@ -164,9 +164,9 @@ describe("TaskBatchController", () => {
       for (const m of methods) {
         const meta = Reflect.getMetadata(
           SWAGGER_OPERATION_META,
-          (
-            TaskBatchController.prototype as unknown as Record<string, unknown>
-          )[m],
+          (TaskBatchController.prototype as unknown as Record<string, unknown>)[
+            m
+          ],
         ) as { deprecated?: boolean; summary?: string };
         expect(meta).toBeDefined();
         expect(meta!.deprecated).toBe(true);
@@ -175,10 +175,7 @@ describe("TaskBatchController", () => {
     });
 
     it("控制器路由前缀为 tasks-batch（deprecated 家族，勿删路由）", () => {
-      const prefix = Reflect.getMetadata(
-        "path",
-        TaskBatchController,
-      ) as string;
+      const prefix = Reflect.getMetadata("path", TaskBatchController) as string;
       expect(prefix).toBe("tasks-batch");
     });
   });

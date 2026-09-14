@@ -361,7 +361,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         .mockResolvedValue(deployments[0]);
       mockApp.manifest = { healthCheck: { path: "/health", port: 8080 } };
       // 执行器地址由执行器自报（register/heartbeat 可注入）——解析到云元数据
-      mockedLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
+      mockedLookup.mockResolvedValue([
+        { address: "169.254.169.254", family: 4 },
+      ]);
 
       await service.upgradeAllWithRollout("app-1", {
         strategy: "canary",
@@ -380,8 +382,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       const failedRows = repo.save.mock.calls
         .map(([e]: any[]) => e)
         .filter(
-          (e: any) =>
-            e.id === "d1" && e.rolloutState === RolloutState.FAILED,
+          (e: any) => e.id === "d1" && e.rolloutState === RolloutState.FAILED,
         );
       // save 收到的是同一被就地改写的行对象，故按 ≥1 断言（存在即已落 FAILED）。
       expect(failedRows.length).toBeGreaterThanOrEqual(1);

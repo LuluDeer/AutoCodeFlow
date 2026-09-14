@@ -33,7 +33,8 @@
 export const EVENT_SCHEMA_VERSION = 1 as const;
 
 /** 事件名常量（集中导出，emit/on 两侧统一引用，禁止裸字符串）。 */
-export const DOMAIN_EVENTS = {  /** 执行以 SUCCESS 终态落库（唯一 winner 之后，恰好一次）。 */
+export const DOMAIN_EVENTS = {
+  /** 执行以 SUCCESS 终态落库（唯一 winner 之后，恰好一次）。 */
   EXECUTION_COMPLETED: "execution.completed",
   /** 执行以失败类终态落库（FAILED/TIMEOUT，唯一 winner 之后）。 */
   EXECUTION_FAILED: "execution.failed",

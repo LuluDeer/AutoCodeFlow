@@ -1565,7 +1565,9 @@ describe("SchedulerService", () => {
       // 3 行全部发出 kill
       expect(executorService.notifyExecutorKill).toHaveBeenCalledTimes(3);
       // 3 行全部调度 retry
-      expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalledTimes(3);
+      expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalledTimes(
+        3,
+      );
       // 每个 exec 的 kill 都被调用
       for (const e of execs) {
         expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
@@ -1606,7 +1608,9 @@ describe("SchedulerService", () => {
       await service.recoverStaleExecutions();
 
       // 两行 retry 都被调度（exec-a 的 kill 失败不阻塞其 retry，exec-b 正常）
-      expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalledTimes(2);
+      expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalledTimes(
+        2,
+      );
       expect(executorService.notifyExecutorKill).toHaveBeenCalledTimes(2);
     });
   });

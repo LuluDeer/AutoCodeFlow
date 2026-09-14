@@ -819,7 +819,10 @@ export class TaskController {
   // 数）——显式 @ApiBody({ required: false }) 在 openapi 中钉住"无 body"语义，
   // 避免被误判为遗漏 requestBody。与 /tasks/:id/rollback（gitCommit）的区别见
   // docs/rollback-semantics.md（PK-31）。
-  @ApiBody({ required: false, description: "无请求体——回滚目标即 :versionId 路径参数" })
+  @ApiBody({
+    required: false,
+    description: "无请求体——回滚目标即 :versionId 路径参数",
+  })
   async rollbackToVersion(
     @Param("id") id: string,
     @Param("versionId") versionId: string,
