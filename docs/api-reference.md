@@ -518,6 +518,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | POST | `/executors/heartbeat` | 否* | 执行器心跳上报（携带 `restartedAt`/`startupId` 用于重启收敛）。可选指标字段：`cpuUsage` / `memUsage` / `diskUsage` / `networkLatency` / `runningTaskCount` / `totalTaskCount` / `failedTaskCount` / `runningExecutionIds`（≤200，`null`=旧版未上报）/ `deadLetterCount`（回调死信积压数，**0..100000** 非负整数，`null`=旧版执行器未上报该字段（区别于 `0`：已上报且无积压），`>0` 表示回调持续失败、载荷已落盘执行器本地 dead-letter）/ `maxConcurrentTasks`（1..10000 容量热更新）。服务端对白名单外字段静默丢弃（防 mass-assignment），非法取值不落库 |
 | POST | `/executors/token` | 否* | 执行器以注册凭证换取专属 Token。**副作用（register-on-token）**：若该 `address` 尚无执行器行（典型场景：compose 启动竞态下 register 失败——register 不会自动重试，heartbeat 对未知地址返回 404 也不建行），本端点会补建仅含 `address`/`appName` 的瘦行：`type`/`capabilities`/`maxConcurrentTasks`/`executorVersion` 等富元数据缺失（runtime 过滤对空 capabilities 全放行，故竞态窗口内该执行器可能被选中执行任意 runtime 任务），直到执行器进程重启重新 register 才补齐 |
 | POST | `/executors/offline` | 否* | 执行器主动下线 |
+| GET | `/executors/:address/terminal-states` | 否* | **A6 死信对账（只读）**：返回该执行器上**已终态**的执行清单（`items[].{executionId,status,endedAt}` + `hasMore` + `serverTime`），按终态时间升序，供执行器核对本地回调死信目录。query：`since`（ISO-8601 水印，只回终态时间 `COALESCE(endTime, createdAt) >= since` 的行；缺省/非法回退 24h，最老钳到 30 天）、`limit`（1..2000，默认 500）。执行器据此分三层处置：命中清单→删死信；未命中且死信原因是重发预算耗尽→重新入队重发；未命中且是毒丸（超大/坏 JSON）或救回次数用尽→保留待人工。**严格只读**：不改执行行、不释放槽位、不写审计 |
 | GET | `/executors` | 是 | 查询执行器列表（含在线状态） |
 | GET | `/executors/groups` | 是 | 执行器分组列表 |
 | GET | `/executors/tags` | 是 | 执行器标签列表 |

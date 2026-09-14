@@ -283,9 +283,17 @@ def test_retry_failure_increments_meta_and_exhaustion_dead_letters(monkeypatch, 
     # final failed round crosses the budget -> dead-letter
     asyncio.run(execute_module.retry_persisted_callbacks())
     dead_letter = tmp_path / 'callbacks' / 'dead-letter'
-    moved = list(dead_letter.glob('callback-*.json'))
+    # A6: 死信目录里每份 payload 伴一个 .deadletter.json 侧车——glob 要排除它，
+    # 否则「积压条数」会被侧车污染（get_dead_letter_count 同理）。
+    moved = [p for p in dead_letter.glob('callback-*.json')
+             if not p.name.endswith(execute_module.DEAD_LETTER_SIDECAR_SUFFIX)]
     assert len(moved) == 1
     assert json.loads(moved[0].read_text())['payloads'][0]['executionId'] == 'exec-dl'
+    # A6: 侧车记下死信原因与毒丸标记——重发预算耗尽不是毒丸，对账可以救回重发。
+    sidecar = json.loads(
+        (dead_letter / (moved[0].name + execute_module.DEAD_LETTER_SIDECAR_SUFFIX)).read_text())
+    assert sidecar['poison'] is False
+    assert 'failed retry rounds' in sidecar['reason']
     # no stranded meta either in callbacks/ or dead-letter/
     assert not payload_file.with_name(payload_file.name + '.meta').exists()
     assert list(dead_letter.glob('*.meta')) == []
@@ -312,7 +320,15 @@ def test_retry_dead_letters_corrupt_payload(monkeypatch, tmp_path):
     asyncio.run(execute_module.retry_persisted_callbacks())
 
     assert not poison.exists()
-    assert list((callback_dir / 'dead-letter').glob('callback-*.json')) == [callback_dir / 'dead-letter' / poison.name]
+    moved = [p for p in (callback_dir / 'dead-letter').glob('callback-*.json')
+             if not p.name.endswith(execute_module.DEAD_LETTER_SIDECAR_SUFFIX)]
+    assert moved == [callback_dir / 'dead-letter' / poison.name]
+    # A6: 坏 JSON 是毒丸——重发永远失败，对账只能等它终态后删除，不能救回重发。
+    sidecar = json.loads(
+        (callback_dir / 'dead-letter'
+         / (poison.name + execute_module.DEAD_LETTER_SIDECAR_SUFFIX)).read_text())
+    assert sidecar['poison'] is True
+    assert sidecar['reason'] == 'corrupt payload'
 
 
 def test_retry_dead_letters_oversized_payload(monkeypatch, tmp_path):
@@ -447,7 +463,8 @@ def test_callback_retry_budget_threshold_and_cap(monkeypatch, tmp_path):
         {'executionId': 'exec-budget'}, 'http://admin.local/api/executions/callback')
     for _ in range(execute_module.CALLBACK_FILE_MAX_RETRIES):
         asyncio.run(execute_module.retry_persisted_callbacks())
-    moved = list((tmp_path / 'callbacks' / 'dead-letter').glob('callback-*.json'))
+    moved = [p for p in (tmp_path / 'callbacks' / 'dead-letter').glob('callback-*.json')
+             if not p.name.endswith(execute_module.DEAD_LETTER_SIDECAR_SUFFIX)]
     assert len(moved) == 1
     assert not payload_file.exists()
     assert execute_module.get_dead_letter_count() == 1

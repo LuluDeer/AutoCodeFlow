@@ -28,7 +28,12 @@ import {
   ExecutionStatus,
 } from "../task/entities/task-execution.entity";
 // A1: 终态跃迁的单一入口（纯函数，零 DI，不引入 task↔executor 模块耦合）。
-import { transitionToTerminal } from "../task/execution-terminal";
+// A6: 同文件再取终态集合常量——对账端点必须与跃迁门用同一份定义，否则「门里
+// 认的终态」和「对账回的终态」会各自漂移。
+import {
+  transitionToTerminal,
+  TERMINAL_EXECUTION_STATUSES,
+} from "../task/execution-terminal";
 import { Task } from "../task/entities/task.entity";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
@@ -59,6 +64,29 @@ import type { EstimatedDurations } from "./executor-score.util";
 import { TracingService } from "../../common/tracing/tracing.service";
 // AUTH-05: 高危操作（rotate-token / 删除执行器）审计留痕
 import { AuditService } from "../audit/audit.service";
+// A6: 对账端点响应契约（三端共载，见 DTO 头注）
+import type { TerminalStatesResponseDto } from "./dto/executor-terminal-states.dto";
+
+/**
+ * A6（DEEP_REVIEW §七）：死信对账窗口的上界。
+ *
+ * 对账是**执行器主动拉**的：一台执行器在死信堆积时会反复来问。若不设上界，
+ * 一个写坏的 since（或一台时钟错乱的执行器）就能让 admin 去扫整张
+ * task_executions。30 天足够覆盖最长场景——死信文件本身会被执行器侧 TTL
+ * 清理（node: removeOlderThan；python: _cleanup_dead_letter_files），活不过
+ * 30 天。超过上界的 since 被**钳到**上界（不是报错）：对账是尽力而为的
+ * 后台动作，因为参数写错就让整个对账停摆比多扫一点更糟。
+ */
+export const TERMINAL_STATES_MAX_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+/** 单页默认/最大条数。hasMore=true 时执行器下一轮继续取。 */
+export const TERMINAL_STATES_DEFAULT_LIMIT = 500;
+export const TERMINAL_STATES_MAX_LIMIT = 2000;
+/**
+ * since 缺省/非法时的回退窗口。取 24h 是为了与 E-05 的重发预算同量级：比一个
+ * 预算期更早终态的执行，其死信文件在执行器侧早已被 TTL 清理（node
+ * removeOlderThan / python _cleanup_dead_letter_files），对账它没有意义。
+ */
+export const TERMINAL_STATES_DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class ExecutorService {
@@ -2252,6 +2280,71 @@ export class ExecutorService {
       skip: (pagination.page - 1) * pagination.pageSize,
     });
     return { total, items };
+  }
+
+  /**
+   * A6（DEEP_REVIEW §七）：回调可靠性分层——死信对账的**只读**视图。
+   *
+   * 为什么需要它：执行器本地死信目录里躺着两类文件，在磁盘上长得一模一样，
+   * 但处置方式完全相反——
+   *
+   *   ① 重发预算耗尽（E-05：约 24h 时长预算 / 150 轮）。典型成因是 admin
+   *      长时间不可达（滚动升级、网络分区）。admin 恢复后这类**很可能仍值得
+   *      重发**：如果 admin 还没把该执行终态化（它的 stale sweep 只在执行器
+   *      心跳超时后才跑），回调是 admin 唯一能得知结果、释放执行器槽位的通道。
+   *   ② 载荷本身是毒丸（> 64MB / 坏 JSON）。重发永远失败，只等人来看。
+   *
+   * 区分二者必须问 admin：这条执行到底终态了没有。执行器据此分三层处置——
+   *   命中本清单 → 回调已无意义（admin 早有终态），删死信；
+   *   未命中 且 死信原因是① → 重新入队重发；
+   *   未命中 且 死信原因是② → 保留待人工（重发是纯浪费）。
+   *
+   * 端点形态刻意只读：它不改任何执行行、不释放槽位、不写审计。真正的状态
+   * 变更仍然只经由既有的回调/终态路径发生——对账只是让执行器**不再做无用功**，
+   * 不是新增一条写状态的路（多一条写路径就多一处分叉的状态机，A1 收口白做）。
+   *
+   * @param address 执行器地址（路由参数，已过令牌校验）
+   * @param since   水印：只回终态时间 >= since 的行
+   * @param limit   单页条数（钳到 [1, TERMINAL_STATES_MAX_LIMIT]）
+   */
+  async getTerminalStates(
+    address: string,
+    opts: { since: Date; limit?: number },
+  ): Promise<TerminalStatesResponseDto> {
+    const limit = Math.min(
+      Math.max(1, Math.floor(opts.limit ?? TERMINAL_STATES_DEFAULT_LIMIT)),
+      TERMINAL_STATES_MAX_LIMIT,
+    );
+    // 多取一条用于判定 hasMore，不返回给调用方。
+    const rows = await this.execRepo
+      .createQueryBuilder("e")
+      .select(["e.id", "e.status", "e.endTime", "e.createdAt"])
+      .where("e.executorAddress = :address", { address })
+      .andWhere("e.status IN (:...statuses)", {
+        statuses: TERMINAL_EXECUTION_STATUSES as readonly ExecutionStatus[],
+      })
+      // 水印列用 COALESCE(endTime, createdAt)：endTime 是终态落库时间，但部分
+      // 终态路径下可能为 NULL（如未启动即被取消），此时行仍应被对账看见——
+      // 否则执行器会永远等一条不会到来的终态记录。判据与
+      // s3-log-object-retention 的保留扫描一致。
+      .andWhere("COALESCE(e.endTime, e.createdAt) >= :since", {
+        since: opts.since,
+      })
+      .orderBy("COALESCE(e.endTime, e.createdAt)", "ASC")
+      .take(limit + 1)
+      .getMany();
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    return {
+      items: page.map((r) => ({
+        executionId: r.id,
+        status: r.status,
+        endedAt: (r.endTime ?? r.createdAt)?.toISOString(),
+      })),
+      hasMore,
+      serverTime: new Date().toISOString(),
+    };
   }
 
   /**

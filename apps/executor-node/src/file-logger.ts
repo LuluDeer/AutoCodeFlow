@@ -2,6 +2,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { config } from './config';
 import { logger } from './logger';
+// A6: 死信侧车后缀（死信计数与保留扫描都要排除它，见 getDeadLetterCount）
+import {
+  deadLetterPayloadName,
+  DEAD_LETTER_SIDECAR_EXCLUDE_RE,
+} from './dead-letter-sidecar';
 
 // E10: logsDir 惰性解析（与 callback.ts 的 getCallbackDir 同构）——每次访问
 // 经 config.workDir（读 process.env 的 getter）重算，/config/reload 热更
@@ -223,7 +228,17 @@ function removePath(target: string): boolean {
   }
 }
 
-function removeOlderThan(dir: string, cutoffMs: number, options: { keepNewest?: number; directoryNames?: RegExp; filesOnly?: boolean } = {}): number {
+function removeOlderThan(
+  dir: string,
+  cutoffMs: number,
+  options: {
+    keepNewest?: number;
+    directoryNames?: RegExp;
+    filesOnly?: boolean;
+    /** A6: 名字匹配者既不占 keepNewest 名额，也照常按 cutoff 删除。 */
+    exclude?: RegExp;
+  } = {},
+): number {
   let deleted = 0;
   let entries: fs.Dirent[];
   try {
@@ -239,6 +254,20 @@ function removeOlderThan(dir: string, cutoffMs: number, options: { keepNewest?: 
     // toward keepNewest nor recursively removed (it is not a callback payload).
     if (options.filesOnly && entry.isDirectory()) continue;
     if (options.directoryNames && entry.isDirectory() && !options.directoryNames.test(entry.name)) continue;
+    // A6: 排除项不进 withMtime → 不占 keepNewest 名额，也不被保留（任由
+    // cutoff 判定）。用于死信侧车：它必须与自己的 payload 同生共死，但不该
+    // 把 keepNewest 的额度吃掉一半。
+    if (options.exclude && options.exclude.test(entry.name)) {
+      const excludedPath = path.join(dir, entry.name);
+      try {
+        if (fs.statSync(excludedPath).mtimeMs < cutoffMs) {
+          if (removePath(excludedPath)) deleted++;
+        }
+      } catch {
+        /* raced — skip */
+      }
+      continue;
+    }
     try {
       const stat = fs.statSync(path.join(dir, entry.name));
       withMtime.push({ name: entry.name, isDir: entry.isDirectory(), mtime: stat.mtimeMs });
@@ -375,9 +404,12 @@ export function cleanupWorkDir(
     //    filesOnly (E12): mirrors getDeadLetterCount's file-only semantics —
     //    a stray subdirectory is neither counted toward keepNewest nor
     //    recursively deleted here.
+    //    exclude (A6): 侧车不占 keepNewest 名额，否则保留额度会被侧车吃掉
+    //    一半（每份死信 payload 旁恰好一个侧车）。
     deadLetters = removeOlderThan(path.join(config.workDir, 'callbacks', 'dead-letter'), cutoff, {
       keepNewest: MAX_DEAD_LETTER_FILES,
       filesOnly: true,
+      exclude: DEAD_LETTER_SIDECAR_EXCLUDE_RE,
     });
 
     // 5. E13: reclaim orphan `.meta` files stranded in the callbacks/ top level.
@@ -403,14 +435,21 @@ const ORPHAN_META_TTL_MS = 24 * 60 * 60 * 1000;
  *  regular files are counted — the dead-letter retention sweep in
  *  cleanupWorkDir runs with filesOnly (E12), so it too only ever removes
  *  files: a stray subdirectory neither inflates the reported backlog nor gets
- *  reclaimed by that sweep. */
+ *  reclaimed by that sweep.
+ *
+ *  A6: **排除 `.deadletter.json` 侧车**。A6 起每份死信 payload 旁多了一个记录
+ *  死信原因/时间/救回次数的侧车文件，二者一一对应。上报的是「积压了多少条没
+ *  送出去的回调」，侧车不是回调——不排除的话这个运维指标会凭空翻倍，而翻倍
+ *  恰恰会掩盖对账的真实效果（对账删 payload 时会连带删侧车，指标该降一半）。
+ */
 export function getDeadLetterCount(): number {
   try {
     return fs
       .readdirSync(path.join(config.workDir, 'callbacks', 'dead-letter'), {
         withFileTypes: true,
       })
-      .filter((d) => d.isFile()).length;
+      .filter((d) => d.isFile() && deadLetterPayloadName(d.name) === null)
+      .length;
   } catch {
     return 0;
   }

@@ -439,4 +439,44 @@ describe('getDeadLetterCount (heartbeat backlog gauge)', () => {
     });
     expect(fl.getDeadLetterCount()).toBe(0);
   });
+
+  // A6: 侧车与 payload 一一对应。若侧车也占 keepNewest 名额，MAX_DEAD_LETTER_FILES
+  // 的实际保留量会腰斩（50 个名额里一半是侧车）。
+  it('A6: 保留扫描里侧车不占 keepNewest 名额', () => {
+    const deadDir = path.join(dir, 'callbacks', 'dead-letter');
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.mkdirSync(deadDir, { recursive: true });
+    // 52 份死信，每份一个 payload + 一个侧车，全部超期。
+    for (let i = 0; i < 52; i++) {
+      for (const name of [`callback-${i}.json`, `callback-${i}.json.deadletter.json`]) {
+        const p = path.join(deadDir, name);
+        fs.writeFileSync(p, '[]');
+        const t = new Date(oldDate.getTime() - i * 1000); // i 越大越旧
+        fs.utimesSync(p, t, t);
+      }
+    }
+
+    const result = fl.cleanupWorkDir(7);
+    // 删除 = 超出 keepNewest 的 2 份 payload + 全部 52 个侧车。
+    expect(result.deadLetters).toBe(54);
+    // 关键判据：保留下来的 payload 仍是 MAX_DEAD_LETTER_FILES(50) 份，不是 25 份。
+    const remainingPayloads = fs
+      .readdirSync(deadDir)
+      .filter((f) => !f.endsWith('.deadletter.json'));
+    expect(remainingPayloads).toHaveLength(50);
+  });
+
+  // A6: 每份死信 payload 旁都有一个 .deadletter.json 侧车。指标含义是「积压了
+  // 多少条没送出去的回调」，侧车不是回调——不排除就会凭空翻倍，而翻倍会掩盖
+  // 对账的真实效果（对账删 payload 时连带删侧车，指标本该降一半）。
+  it('A6: 排除 .deadletter.json 侧车——一份死信只算一条积压', () => {
+    const deadDir = path.join(dir, 'callbacks', 'dead-letter');
+    fs.mkdirSync(deadDir, { recursive: true });
+    fs.writeFileSync(path.join(deadDir, 'a.json'), '[]');
+    fs.writeFileSync(path.join(deadDir, 'a.json.deadletter.json'), '{}');
+    fs.writeFileSync(path.join(deadDir, 'b.json'), '[]');
+    fs.writeFileSync(path.join(deadDir, 'b.json.deadletter.json'), '{}');
+
+    expect(fl.getDeadLetterCount()).toBe(2);
+  });
 });
