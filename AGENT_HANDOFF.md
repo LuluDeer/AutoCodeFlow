@@ -3,11 +3,18 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-14（**CI 迭代全绿**：`gh` 看 action 报错 → 逐类根治 8 commit，run 34854946055 = 48 job / 44 success + 4 skipped + 0 failure；8 类问题中 4 类为轮1~7 新增测试「从未在 CI 执行过」的首跑暴露。此前同日：**剩余任务池清偿完成**：BUG-07 Windows 深验 CI 化 3/3 真跑绿（迭代 5 轮）、DSK-01 macOS 打包 CI 绿、QA-05 四档全通过（回调档 90k 条/分）、linux-bundle「既有红」与 secret-scan allowlist 双根治、BUG-04 跟踪结论更新；仅剩需产品拍板项与文档化 flake）。此前同日：CI 卡死根治 + annotations 清零（multiarch 原生 arm64 runner，v1.3.0 已发布）、AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、发布就绪度。
+更新时间：2026-09-14（**ARCH-A2 写面守卫装饰器化 done**：`@WriteGuard` + 穷举扫描 spec 覆盖 25 控制器 98 个写端点，扫出并为 53 个「从未声明过授权形态」的写端点补齐声明；admin-api 2610/2610 +6。同批：E-07 残差收口（停机 abort 在飞长轮询，executor-node 333/333 +4）、nginx-sse RSS 阈值根治（改为按连接数缩放）、认领板卫生。此前同日：**CI 迭代全绿**：`gh` 看 action 报错 → 逐类根治 8 commit，run 34854946055 = 48 job / 44 success + 4 skipped + 0 failure；8 类问题中 4 类为轮1~7 新增测试「从未在 CI 执行过」的首跑暴露。此前同日：**剩余任务池清偿完成**：BUG-07 Windows 深验 CI 化 3/3 真跑绿（迭代 5 轮）、DSK-01 macOS 打包 CI 绿、QA-05 四档全通过（回调档 90k 条/分）、linux-bundle「既有红」与 secret-scan allowlist 双根治、BUG-04 跟踪结论更新；仅剩需产品拍板项与文档化 flake）。此前同日：CI 卡死根治 + annotations 清零（multiarch 原生 arm64 runner，v1.3.0 已发布）、AUTH-04 OIDC SSO、项目读面过滤、双投缺陷修复、发布就绪度。
 当前分支：`develop`
 
 ## 状态快照
 
+- **本轮（2026-09-14 盘点「还有什么要推进」→ E-07 残差收口 + A2 写面守卫装饰器化 + nginx-sse 阈值根治，4 commit，主控）**：用户问「继续看看还有什么要推进的」。先做全盘核查（认领板 + DEEP_REVIEW §七）得到结论：**唯一成规模的剩余工作是 §七 20 个架构方向（A1~A6 优先）**，其余为需外部条件项（真机/长稳/拍板）。用户选定 **A2**。
+  - **`9d11578` E-07 残差收口（停机 abort 在飞长轮询）**：DR-FIX-ALL 声明的两项残差之一。此前停机只 `clearInterval`，**在飞的那轮长轮询（服务端阻塞至多 25s）仍在飞**——窗口末端带回的任务在 drain 阶段照样被 `acceptExecution` 领取执行，与「停机第一步停止取件」相悖，进程也多挂至多 25s。修：`admin-client` 的 `request`/`performRequest`/`postLong` 增可选 `signal` 并在**取消时短路**（不 failover 重试——同一个已 aborted 的 signal 会立刻再拒一次、白烧 500ms 退避 ×N；不记 warn）；`pull.ts` 每轮建 `AbortController`，`stopPullLoop()` 从「只 clearInterval」改为「clearInterval + abort 在飞请求」，finally 摘除句柄、catch 对 abort 记 info（预期中止，不污染告警面）。**这不是美化是真缺陷**——关掉了「停机后仍会接新任务」的窗口。验收：executor-node **333/333（+4）** + tsc 0 + eslint 0；**反证有牙**（注释掉 `abort()` → 对应用例立即红，且暴露悬挂会污染后续用例 → 已给测试加兜底定时器使未来回归「只红不瘫」）。ADR-005：`executor-node/src` 改动后按 CI 同款命令重打 desktop bundle，manifest 回填 `fd472155…`。
+  - **`89b408d` ARCH-A2 写面守卫装饰器化 done**（DEEP_REVIEW §七 A2，评审 §1.2 第 2 条根治项）：根因是**归属守卫在 service 内手工调用、缺「缺省拒绝」机制**，R-02/R-03 类漂移必然再发。形态=新 `@WriteGuard(resource, { scope, reason? })` **纯元数据**装饰器（不改运行时行为）+ **穷举扫描 spec**（`write-guard-coverage.spec.ts`）：遍历 25 个控制器、用 Nest 真实元数据键（METHOD_METADATA）识别 **98 个写端点**，逐个断言授权形态已显式声明（`@Roles` 非空 **或** `@WriteGuard`）；scope 与 `@Public()` 必须自洽（token/public→必须 `@Public()` 且 reason 非空；ownership/authenticated→不得 `@Public()`）；两者不得共存；免 JWT 端点清单（14 个 token/public）钉死，新增即红。**扫描器自身带守卫**（关键）：① prototype getter 在原型上访问会因 this 无依赖抛错（`ExecutionsStreamController.idlePingMs`）→ 只取「数据属性且值为函数」；② 元数据键写错会造成「扫不到任何东西」的**永真断言** → 断言规模下界 + 抽样钉住已知端点。**扫出 53 个写端点从未声明过授权形态**（正是评审点名的面）：逐端点核实真实授权模型后补声明——ownership 31（task 15 / task-batch 4 / event-subscription 3 等）/ authenticated 8（api-keys 3 / auth 5 / registry.uploadPypiPackage / task-template 3 / users.update / task.create）/ token 9（executor 5 / execution-callback 1 / artifacts.upload 1 / app-deployment.heartbeat 1 / executor-package.pushResult 1）/ public 5（application.webhook + alerts.webhook + auth 登录三步）。验收：admin-api **163 套件 2610/2610**（2604 基线只增 +6 = 本扫描测试）+ tsc 0 + eslint 0；反证有牙（移除 `UsersController.update` 一处声明 → 立即红并精确点名）。**残差（如实）**：① 声明是**契约不是强制**——`@WriteGuard('x', {scope:'ownership'})` 拦不住 service 忘记写归属校验；根治需 A2-B（把 `assertCanWrite` 提升为守卫内强制），要先统一各资源域的 id 解析方式，本轮不做；② `RegistryController.uploadPypiPackage` 实测为「任意已登录用户可传 PyPI 包」（无 @Roles 无属主校验）——按**现状如实声明**并写进审计清单，加固属 §七「registry 面收敛」方向。**高效做法沉淀**：核实 53 个端点的授权模型时，先用脚本导出「装饰器行 + 方法签名」的紧凑清单（比逐个打开文件快一个数量级），再只对不确定的几个读 handler/服务实现。
+  - **`ff3d8ee` nginx-sse selftest 红灯根治**：run 34857560563 报 ΔRSS=206MB 撞固定上限 200MB。**先自证本轮无任何 admin-api 代码改动**→判定阈值本身有问题。根因=**阈值与可配负载无关**：`NGINX_SSE_CONNS` 可配（默认 500）而上限写死 200MB，等于把「连接数」当「泄漏」测（1000 条必红、100 条形同虚设），且 500 条档只剩 3% 余量（实测 412KB/连接），GC 时机噪声即可越界。改为**按连接推导**（512KB/连接 + 32MB 固定余量 → 默认 282MB），实测基线与推导写进注释；⑦ soak 档（连接数固定 3）仍用 200MB 绝对值，**未被顺手放宽**。
+  - **`3ed4e29` 认领板卫生**：DR-FIX-ALL 行两处 E-07 残差注记标记已闭环；QA-05/BUG-19 备注早已写「四档全部达成 + 白皮书产出」但状态仍 `claimed`——补「状态澄清」句（交付面 done，claimed 仅因剩余项 24h 长稳 / 多主机拓扑属生产真机验证），防后续会话误判为未交付。
+  - **本轮环境新知**：`gh run watch` 会因代理断连报 `EOF` 并 exit 1，**这不是 CI 失败**，判据要回到 `gh run view <id> --json status,conclusion` 重查（本轮一次误报）。
+  - **下轮建议**：① A2-B（把 `assertCanWrite` 提为守卫内强制，真正实现「缺省拒绝」）；② A1 执行状态机收口；③ A3 执行器协议契约化最小切片（timeout=0 / readiness）；④ 生产真机项不变（QA-05 24h、多主机拓扑）。
 - **本轮（2026-09-14 CI 迭代：`gh` 看 action 报错 → 逐类根治，8 commit，run 34854946055 全绿，主控）**：用户指令「gh看action的报错 解决」。轮1~7 的 7 个批次此前一直**只在本地跑过、从未推送**，因此 CI 从未执行过其中的新增测试——首跑一次性暴露 8 类问题（**4 类是轮1~7 新增测试的自报绿从未被 CI 验证过**）。逐轮 push→`gh run list`→`gh run view --job <id> --log-failed`→根因修复，8 commit 收口：
   - **`69d8a47` admin-api-test**：ARCH-001 用例组重建 `process.env` 时用 `ORIGINAL_ENV` 继承，CI job 级弱口令 `admin123` 漏进生产 fail-fast 断言。修复=`STRONG_PRODUCTION_ENV` 补 `INITIAL_ADMIN_PASSWORD`。**教训：jest 里重建 env 必须显式覆盖 job 级变量，不能靠 `ORIGINAL_ENV` 兜底。**
   - **`f989627` selftests 建库竞态**：`database "autoflow_arch31o_…" does not exist`。根因=**官方 Postgres 镜像 entrypoint 在 initdb 阶段先起临时服务（`listen_addresses=''`）**，容器内 socket 版 `pg_isready` 此时即返回 0，`CREATE DATABASE` 落在窗口内失败且未检查返回码。修复=新 `scripts/pg-provision.lib.mjs`（**host TCP 就绪 + 有界重试 + 检查返回码**），7 个 selftest 接入。
@@ -534,12 +541,14 @@ cd packages/mcp-server && npx tsc --noEmit
 
 ## 下一步建议（按优先级）
 
-> **当前（2026-09-14）**：CI 已全绿（run 34854946055 = 48 job / 44 success + 4 skipped + 0 failure），工作区干净，`develop` 已推送至 `6735083`。剩余项如下：
+> **当前（2026-09-14）**：ARCH-A2 已 done。剩余项如下：
 >
-> 1. **需产品拍板（不可代劳）**：ADR-013 非成员 trigger 收紧、release-please main 合并习惯、API JWT 60d 缩短评估、desktop Linux 更新链签名。
-> 2. **需真机/长稳环境**：QA-05 24h 长稳、多主机拓扑、macOS/Windows/ARM64 部署、通知渠道实测、私有 npm/PyPI 仓库集成。
-> 3. **架构演进（季度级）**：§七 20 个架构方向（A1~A6 优先），可另立任务。
-> 4. **QA-12 CI 形态专项**：`desktop-e2e-smoke` 在 windows runner 的「Process failed to launch」（v1.2.0 起文档化，PR-only 非门禁）。
+> 1. **架构演进（季度级，唯一成规模）**：§七 20 个架构方向——**A2 已 done（2026-09-14）**，剩余 A1 执行状态机收口 / A3 执行器协议契约化 / A4 契约单一事实源 / A5 SSE 客户端统一 / A6 回调可靠性分层，各 1~2 轮。
+> 2. **A2-B（A2 的加强件）**：把 service 内的 `assertCanWrite` 提升为守卫内强制，真正实现「缺省拒绝」（当前 `@WriteGuard` 只是契约式声明，拦不住 service 忘记写归属校验）。需先统一各资源域的 id 解析方式。
+> 3. **需产品拍板（不可代劳）**：ADR-013 非成员 trigger 收紧、release-please main 合并习惯、API JWT 60d 缩短评估、desktop Linux 更新链签名。
+> 4. **需真机/长稳环境**：QA-05 24h 长稳、多主机（跨机）拓扑、macOS/Windows/ARM64 部署、通知渠道实测、私有 npm/PyPI 仓库集成。
+> 5. **QA-12 CI 形态专项**：`desktop-e2e-smoke` 在 windows runner 的「Process failed to launch」（v1.2.0 起文档化，PR-only 非门禁）。
+> 6. **已知面（A2 审计发现，未立项）**：`RegistryController.uploadPypiPackage` 为「任意已登录用户可传 PyPI 包」——属 §七「registry 面收敛（pypi 加固 + token 鉴权）」方向。
 >
 > 以下为历史轮次遗留清单（保留供追溯）：
 
