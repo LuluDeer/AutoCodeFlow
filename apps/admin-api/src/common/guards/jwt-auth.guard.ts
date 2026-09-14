@@ -77,7 +77,7 @@ export function isJwtOnlyPath(normalizedPath: string): boolean {
  *   (sha256 lookup + expiry/revocation + scope enforcement, req.user =
  *   { type:'apiKey', userId, scope, ... }).
  * - anything else → the original passport-jwt flow, unchanged
- *   (SSE ?access_token= query fallback included via the strategy extractor).
+ *   (SSE ?ticket= short-lived ticket fallback included via the strategy extractor).
  *
  * The API-Key branch logic is injected as `apiKeyAuth` (provided by
  * ApiKeysModule) so this guard keeps zero TypeORM/direct-repo coupling and

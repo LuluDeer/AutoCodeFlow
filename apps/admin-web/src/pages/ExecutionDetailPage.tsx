@@ -15,7 +15,6 @@ import { getErrMsg } from '../utils/error';
 import { copyText } from '../utils/clipboard';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
-import { useAuthStore } from '../store/auth';
 import { formatDateTime, formatDuration } from '../utils/timeFormat';
 import { LOG_LEVEL_VALUES, logLineHighlightClass } from '../utils/logLevel';
 // UI-05: 搜索高亮分段（纯函数）+ 防抖常量
@@ -143,7 +142,6 @@ export default function ExecutionDetailPage() {
   // 防抖后生效触发分段重算（大日志逐键重切分代价高）。
   const [inputKeyword, setInputKeyword] = useState('');
   const [activeKeyword, setActiveKeyword] = useState('');
-  const token = useAuthStore((s) => s.token);
 
   // UI-05: Tab 记忆走 searchParams（?tab=），与 ApplicationDetailPage 同款；
   // 页面自身路由无 hash 语义冲突，选实现稳的 searchParams 方案。
@@ -210,7 +208,6 @@ export default function ExecutionDetailPage() {
     client = createSseClient({
       baseUrl: getSseBase(),
       path: `/tasks/${taskId}/executions/${execId}/logs/stream`,
-      token,
       reconnect: false,
       onMessage: (e) => {
         try {

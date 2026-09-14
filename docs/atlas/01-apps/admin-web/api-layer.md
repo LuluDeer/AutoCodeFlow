@@ -92,7 +92,7 @@ client.interceptors.request.use((config) => {
 
 1. **listAllTasks 分页聚合**（tasks.ts）：pageSize 固定 100（后端 PaginationDto 上限）、并发 6、安全上限 100,000 页；每页响应逐项校验（page/pageSize/total/totalPages/条数/重复 id/缺页），任何不一致整体抛错、拒绝返回部分结果——DAG 布局消费的"全量任务表"不允许静默残缺。
 2. **blob 下载**：产物与安装包的下载端点在 JwtAuthGuard 之后且 JWT 只认 Authorization 头，`<a href>` 直链会 401 → 统一 `client.get<Blob>(..., { responseType: 'blob' })` + objectURL 触发保存（artifacts.ts 与 executor-packages.ts 同款写法）。
-3. **SSE 鉴权**：EventSource 无法带请求头，后端对 `/metrics/stream`、`/executions/stream`、日志流路由支持 `?access_token=` 查询参数鉴权（hooks 层消费，见 [store-and-hooks.md](store-and-hooks.md)）。
+3. **SSE 鉴权**：EventSource 无法带请求头，后端对 `/metrics/stream`、`/executions/stream`、日志流路由支持 `?ticket=` 短效票据鉴权——建流前先 `POST /auth/sse-ticket` 换一枚 30s 票据（A5；`createSseClient` 已内置换票与重连换票，见 [store-and-hooks.md](store-and-hooks.md)）。
 
 ## 与其他文档的关系
 

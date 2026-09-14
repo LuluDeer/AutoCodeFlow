@@ -13,7 +13,7 @@
  * 消费方只写「事件语义」（onMessage / events / onStatus），不再各自实现重连。
  */
 
-import { buildSseUrl } from './sse';
+import { buildSseUrl, fetchSseTicket } from './sse';
 
 export type SseClientStatus = 'connecting' | 'live' | 'reconnecting';
 
@@ -36,8 +36,11 @@ export interface CreateSseClientOptions {
   baseUrl: string;
   /** SSE 路径，如 /metrics/stream */
   path: string;
-  /** 当前 access token（可选；无则不带 query） */
-  token?: string | null;
+  /**
+   * 换票函数（可注入，测试桩用）。默认走 `POST /auth/sse-ticket`：
+   * A5 之后 access token 不再进 URL，建流前现换一枚 30s 的专用票据。
+   */
+  fetchTicket?: () => Promise<string>;
   /** 默认 message 帧回调 */
   onMessage?: (e: MessageEvent) => void;
   /** 具名 SSE 事件帧（如 done / execution.completed） */
@@ -65,7 +68,7 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
   const {
     baseUrl,
     path,
-    token,
+    fetchTicket = fetchSseTicket,
     onMessage,
     events,
     onStatus,
@@ -73,8 +76,6 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     base,
     cap,
   } = options;
-
-  const url = buildSseUrl(baseUrl, path, token);
 
   if (typeof EventSource === 'undefined') {
     onStatus?.('connecting');
@@ -93,10 +94,37 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     }
   };
 
-  const connect = () => {
+  /** 换票失败或断线后的统一退避重试（A5：换票是一次网络请求，可能失败）。 */
+  const scheduleReconnect = () => {
+    if (closed) return;
+    if (!reconnect) {
+      onStatus?.('reconnecting');
+      return;
+    }
+    const delay = sseReconnectBackoffMs(attempt, base, cap);
+    attempt += 1;
+    onStatus?.('reconnecting');
+    clearTimer();
+    timer = setTimeout(() => void connect(), delay);
+  };
+
+  const connect = async () => {
     if (closed) return;
     onStatus?.(attempt === 0 ? 'connecting' : 'reconnecting');
-    es = new EventSource(url);
+
+    // A5：每次建流（含重连）都现换一枚 30s 票据——票据短效，不能复用旧值。
+    let ticket: string;
+    try {
+      ticket = await fetchTicket();
+    } catch {
+      // 换票失败（401 / 网络 / 后端未就绪）与断线同处理：退避重连。
+      scheduleReconnect();
+      return;
+    }
+    // 换票期间被 close（组件卸载）→ 丢弃票据，不再建流。
+    if (closed) return;
+
+    es = new EventSource(buildSseUrl(baseUrl, path, ticket));
 
     es.onopen = () => {
       attempt = 0;
@@ -115,20 +143,11 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     es.onerror = () => {
       es?.close();
       es = null;
-      if (closed) return;
-      if (!reconnect) {
-        onStatus?.('reconnecting');
-        return;
-      }
-      const delay = sseReconnectBackoffMs(attempt, base, cap);
-      attempt += 1;
-      onStatus?.('reconnecting');
-      clearTimer();
-      timer = setTimeout(connect, delay);
+      scheduleReconnect();
     };
   };
 
-  connect();
+  void connect();
 
   return {
     close() {

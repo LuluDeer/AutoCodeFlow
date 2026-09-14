@@ -1,7 +1,7 @@
 /**
  * FEAT-16：执行列表终态推送流客户端（GET /executions/stream）。
  *
- * 与 useMetricsStream（UI-14）同款模式：EventSource + ?access_token= 查询串
+ * 与 useMetricsStream（UI-14）同款模式：EventSource + ?ticket= 短效票据（A5）
  * 回退（jwt.strategy 白名单含 /executions/stream）、断线 3s×2^n 封顶 30s
  * 手动重建、连接状态外露。差异点：
  * - 事件驱动：服务端按领域事件名（execution.completed/failed/killed）发
@@ -86,7 +86,6 @@ export function useExecutionsStream({
     const client = createSseClient({
       baseUrl: getApiBaseUrl(),
       path: '/executions/stream',
-      token,
       onStatus: setStatus,
       events,
     });
