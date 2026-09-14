@@ -346,5 +346,72 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
       expect(keys[0]).not.toContain(rawToken);
       expect(keys[0]).not.toContain("host:3002");
     });
+
+    // e2e 用例 46（AUTH-05）：rotate-token 之后旧 token 必须【立即】401。
+    // 修复前 rotateToken 只驱逐了 callbackSecretCache，F-5 正缓存里
+    // sha256(address|旧token) 那条仍然有效，于是旧 token 在
+    // TOKEN_CACHE_TTL_MS（60s）内继续被接受——「撤销凭据」名不副实。
+    it("rotateToken evicts the address's positive entries so the old token is rejected at once", async () => {
+      await hashReady();
+      const qb = executorRepo.createQueryBuilder() as any;
+      const spy = jest.spyOn(bcrypt, "compare");
+
+      // 旧凭据先验一次 → 进正缓存（第二次本会命中缓存、跳过 bcrypt）
+      expect(await service.validateTokenByAddress("host:3002", rawToken)).toBe(
+        true,
+      );
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      executorRepo.findOne.mockResolvedValue({
+        id: "e1",
+        address: "host:3002",
+        tokenHash: "$2b$12$old",
+      });
+      executorRepo.save.mockImplementation((e: any) => {
+        // 轮换把新哈希写回库：此后 getOne 必须返回它，旧 token 才该被拒
+        qb.getOne.mockResolvedValue({
+          address: "host:3002",
+          tokenHash: e.tokenHash,
+        });
+        return Promise.resolve(e);
+      });
+      await service.rotateToken("e1");
+
+      // 缓存条目必须没了：旧 token 重新走 bcrypt 且被拒（无共享 token 兜底）
+      configService.get.mockReturnValue("");
+      expect(await service.validateTokenByAddress("host:3002", rawToken)).toBe(
+        false,
+      );
+      expect(spy).toHaveBeenCalledTimes(2);
+      spy.mockRestore();
+    });
+
+    it("rotation only evicts the rotated address, not the rest of the fleet", async () => {
+      await hashReady();
+      const spy = jest.spyOn(bcrypt, "compare");
+
+      expect(await service.validateTokenByAddress("host:3002", rawToken)).toBe(
+        true,
+      );
+      expect(await service.validateTokenByAddress("host:3003", rawToken)).toBe(
+        true,
+      );
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      executorRepo.findOne.mockResolvedValue({
+        id: "e1",
+        address: "host:3002",
+        tokenHash: "$2b$12$old",
+      });
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.rotateToken("e1");
+
+      // 未被轮换的 host:3003 仍是缓存命中，不再消耗 bcrypt
+      expect(await service.validateTokenByAddress("host:3003", rawToken)).toBe(
+        true,
+      );
+      expect(spy).toHaveBeenCalledTimes(2);
+      spy.mockRestore();
+    });
   });
 });
