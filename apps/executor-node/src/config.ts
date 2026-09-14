@@ -57,9 +57,13 @@ export const config = {
   // 'pull'，admin 侧据此走队列传输分支。默认 false = push 行为逐字节不变。
   pullMode: process.env.EXECUTOR_PULL_MODE === 'true',
   // E-04（DEEP_REVIEW 0ef3bbe）：SSRF 逃生阀——默认 false（fail-closed）。
-  // 设为 1 时 deploy/update-package/download 三条链允许访问 loopback/私网/
+  // 设为 true 时 deploy/update-package/download 三条链允许访问 loopback/私网/
   // link-local 地址。仅在容器内联调用 admin-api 本机等合法内网场景使用。
-  allowPrivateNetwork: process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK === 'true',
+  // 兼容 `1`：旧注释与 SSRF 报错文案都写的是 `=1`，若只认 'true' 会形成
+  // 「照报错提示设置却不生效」的陷阱，故两种写法都放行。
+  allowPrivateNetwork: ['true', '1'].includes(
+    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK ?? '',
+  ),
 };
 
 // EXE-VER-1: 执行器版本上报源（register 与心跳共用，单一定义处）。

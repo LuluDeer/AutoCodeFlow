@@ -6,7 +6,7 @@
  *
  * - 默认拒绝 loopback、RFC1918 私网、link-local（含 169.254.169.254 云元数据）、
  *   IPv6 UDA/link-local；
- * - `EXECUTOR_ALLOW_PRIVATE_NETWORK=1` 显式逃生（容器内联调用 admin-api 本机
+ * - `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（`1` 亦兼容）显式逃生（容器内联调用 admin-api 本机
  *   等合法内网场景需显式选择）；
  * - redirect 链递归调用 downloadFile 时也经过同一闸。
  */
@@ -108,7 +108,7 @@ export function assertSafeHttpUrl(url: string, options: SsrfGuardOptions = {}): 
     throw new Error(
       `URL targets restricted network address: ${host}. ` +
       'Private/loopback/link-local addresses are blocked. ' +
-      'Set EXECUTOR_ALLOW_PRIVATE_NETWORK=1 to override (not recommended for production).',
+      'Set EXECUTOR_ALLOW_PRIVATE_NETWORK=true (or 1) to override (not recommended for production).',
     );
   }
 }

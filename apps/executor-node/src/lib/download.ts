@@ -8,7 +8,7 @@
  *  downloadUrl 由 admin-api 下发，首跳指向 admin-api 本机（内网拉包），
  *  携带 EXECUTOR_SHARED_TOKEN 完成 admin-api 的 Bearer 校验。跨跳（redirect）
  *  已在下方 strip。SSRF 闸在入口处 fail-closed（assertSafeHttpUrl），
- *  EXECUTOR_ALLOW_PRIVATE_NETWORK=1 可显式逃生。 */
+ *  EXECUTOR_ALLOW_PRIVATE_NETWORK=true（`1` 亦兼容）可显式逃生。 */
 
 import * as fs from 'fs';
 import { config } from '../config';
@@ -80,7 +80,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
   return new Promise((resolve, reject) => {
     // E-04（DEEP_REVIEW 0ef3bbe）：SSRF 闸——fail-closed，拒绝 loopback/私网/
     // link-local（含云元数据）。redirect 递归也经过同一闸（nextUrl 传入时
-    // 同样被校验）。EXECUTOR_ALLOW_PRIVATE_NETWORK=1 可显式逃生。
+    // 同样被校验）。EXECUTOR_ALLOW_PRIVATE_NETWORK=true（`1` 亦兼容）可显式逃生。
     try {
       assertSafeHttpUrl(url);
     } catch (e) {
