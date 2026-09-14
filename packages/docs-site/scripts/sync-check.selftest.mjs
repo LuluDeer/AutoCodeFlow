@@ -74,6 +74,15 @@ VALID_FAILURE_REASONS = frozenset({
   "packages/contract-fixtures/README.md":
     '成功响应一律 `{ code, message: "success", data }`；非信封形态的 body 原样返回；200..299 一律按成功处理；`message`(string) 提取。',
   "packages/contract-fixtures/contract.json": JSON.stringify({ $schemaVersion: 3 }),
+  // A3：failureReason 的单一事实源（admin 枚举 / py 白名单 / 站点均与之对齐）
+  "packages/executor-protocol/protocol.json": JSON.stringify({
+    $schemaVersion: 1,
+    failureReason: {
+      all: ["script_error", "timeout", "killed"],
+      adminInternalOnly: [],
+      executorReportable: ["script_error", "timeout", "killed"],
+    },
+  }),
   "packages/docs-site/sdk-node.md": `当前版本 **${V}**（与 py SDK lockstep）`,
   "packages/docs-site/sdk-python.md": `pip install autoflow-sdk # 当前 ${V}`,
   "packages/docs-site/getting-started.md": `npm install @autocodeflow/sdk # 当前 ${V}
@@ -191,6 +200,96 @@ VALID_FAILURE_REASONS = frozenset({
   const results = mod.runAllChecks();
   const en = results.find((r) => r.name === "failureReason 枚举");
   assert("枚举漂移：py 白名单幽灵值被拦截", en.errors.some((e) => e.includes("ghost_reason")));
+  cleanup();
+}
+
+// ── 用例 4b（A3）：admin 内部专用语义——白名单必须等于「全集 − 内部专用」──
+{
+  // 契约声明 stale_recovered 为 admin 内部专用；py 白名单同步移除 → 应全绿
+  const files = {
+    ...baseline,
+    "apps/admin-api/src/modules/task/entities/task-execution.entity.ts": `export enum ExecutionFailureReason {
+  SCRIPT_ERROR = "script_error",
+  TIMEOUT = "timeout",
+  KILLED = "killed",
+  STALE_RECOVERED = "stale_recovered",
+}
+`,
+    "packages/executor-protocol/protocol.json": JSON.stringify({
+      $schemaVersion: 1,
+      failureReason: {
+        all: ["script_error", "timeout", "killed", "stale_recovered"],
+        adminInternalOnly: ["stale_recovered"],
+        executorReportable: ["script_error", "timeout", "killed"],
+      },
+    }),
+  };
+  const { mod, cleanup } = await loadSandbox(files);
+  const results = mod.runAllChecks();
+  const en = results.find((r) => r.name === "failureReason 枚举");
+  assert("A3：白名单 == 全集 − 内部专用 时放行", en.errors.length === 0);
+  cleanup();
+}
+{
+  // 反过来：契约已声明内部专用，但 py 白名单仍含它 → 必须红（客户端放行、
+  // admin @IsIn 拒，且会拒掉整批回调）
+  const files = {
+    ...baseline,
+    "apps/admin-api/src/modules/task/entities/task-execution.entity.ts": `export enum ExecutionFailureReason {
+  SCRIPT_ERROR = "script_error",
+  TIMEOUT = "timeout",
+  KILLED = "killed",
+  STALE_RECOVERED = "stale_recovered",
+}
+`,
+    "packages/executor-protocol/protocol.json": JSON.stringify({
+      $schemaVersion: 1,
+      failureReason: {
+        all: ["script_error", "timeout", "killed", "stale_recovered"],
+        adminInternalOnly: ["stale_recovered"],
+        executorReportable: ["script_error", "timeout", "killed"],
+      },
+    }),
+    "packages/autoflow-sdk/autoflow_sdk/callback.py": `ERROR_MESSAGE_MAX_LENGTH = 4096
+LOGS_MAX_LENGTH = 512_000
+VALID_FAILURE_REASONS = frozenset({
+    "script_error",
+    "timeout",
+    "killed",
+    "stale_recovered",
+})
+`,
+  };
+  const { mod, cleanup } = await loadSandbox(files);
+  const results = mod.runAllChecks();
+  const en = results.find((r) => r.name === "failureReason 枚举");
+  assert("A3：py 白名单残留 admin 内部专用值被拦截", en.errors.some((e) => e.includes("stale_recovered")));
+  cleanup();
+}
+{
+  // 契约自身与 admin 枚举漂移（枚举加了值、契约 all 没跟）→ 必须红
+  const files = {
+    ...baseline,
+    "apps/admin-api/src/modules/task/entities/task-execution.entity.ts": `export enum ExecutionFailureReason {
+  SCRIPT_ERROR = "script_error",
+  TIMEOUT = "timeout",
+  KILLED = "killed",
+  NEW_REASON = "new_reason",
+}
+`,
+    "packages/executor-protocol/protocol.json": JSON.stringify({
+      $schemaVersion: 1,
+      failureReason: {
+        all: ["script_error", "timeout", "killed"],
+        adminInternalOnly: [],
+        executorReportable: ["script_error", "timeout", "killed"],
+      },
+    }),
+  };
+  const { mod, cleanup } = await loadSandbox(files);
+  const results = mod.runAllChecks();
+  const en = results.find((r) => r.name === "failureReason 枚举");
+  assert("A3：契约 all 落后于 admin 枚举被拦截", en.errors.some((e) => e.includes("new_reason")));
   cleanup();
 }
 

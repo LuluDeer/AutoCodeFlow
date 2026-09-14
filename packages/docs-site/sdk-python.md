@@ -44,7 +44,7 @@ ctx = TaskContext.from_env()
 | `ctx.callback.enabled` | 凭证齐备为 `True`；旧版执行器下任何上报调用抛 `CallbackDisabledError`（fail-closed，原因含缺失变量名） |
 | `ctx.callback.report(items)` | 批量 POST `CallbackItemDto[]`；`executionId` / `executorAddress` 自动补齐（显式书写不覆盖）；返回**已解包** envelope `data`（`{results: [...]}`） |
 | `ctx.report_success(summary=None, duration_ms=None)` | 成功上报便捷方法；`summary` 进回调项 `logs`（截断 512 KB） |
-| `ctx.report_failure(error, summary=None, duration_ms=None, failure_reason="script_error")` | 失败上报；`error` 字符串化截断 4 KB；`failure_reason` **客户端白名单校验**（非法抛 `ValueError`，枚举含 BUG-10 九类） |
+| `ctx.report_failure(error, summary=None, duration_ms=None, failure_reason="script_error")` | 失败上报；`error` 字符串化截断 4 KB；`failure_reason` **客户端白名单校验**（非法抛 `ValueError`；白名单 = 执行器可上报子集 10 项 = admin 全集 11 项 − admin 内部专用的 `stale_recovered`，见 `packages/executor-protocol/protocol.json`） |
 | `ERROR_MESSAGE_MAX_LENGTH` / `LOGS_MAX_LENGTH` | 模块常量 `4096` / `512_000` |
 | 默认超时 | 10 s |
 | 重试 | **无自动重试**（BUG-15 复审坐实「从未有过」） |
