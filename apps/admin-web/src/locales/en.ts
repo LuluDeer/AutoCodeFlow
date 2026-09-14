@@ -2052,6 +2052,7 @@ export default {
   'alarmConfig.channel.option.dingtalk': 'DingTalk',
   'alarmConfig.channel.option.wecom': 'WeCom',
   'alarmConfig.channel.option.webhook': 'Webhook',
+  'alarmConfig.channel.option.feishu': 'Feishu',
   'alarmConfig.field.channels': 'Alarm channels',
   'alarmConfig.field.emails': 'Alarm email recipients',
   'alarmConfig.emailRule': 'Please enter a valid email address',

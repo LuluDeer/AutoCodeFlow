@@ -483,6 +483,26 @@ jobs:
           node scripts/gen-install-script-content.mjs
           git diff --exit-code -- apps/admin-api/src/modules/executor/install-script.content.ts
 
+  # ── A4（DEEP_REVIEW §七）：消费方路由面快照守卫（零依赖 node 脚本）──────
+  # mcp-server 与 acf-cli 各自硬编码 70+ 条 admin-api 路由字符串，与 openapi
+  # 之间没有任何编译期耦合（它们不用生成的 api-types）。admin-api 改路由在
+  # admin-web 侧会红（api-types-drift 闸），在 mcp/CLI 侧却完全静默——只有
+  # 用户真调用那个工具/子命令时才 404，且 404 会被信封拆包层吞成空错误体。
+  # 本闸把「用到的每条路由都必须存在于 openapi.json」变成 CI 判据。
+  # openapi.json 是已提交产物，故无需 npm ci / PG / Redis。
+  consumer-routes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Consumer route snapshot guard (A4)
+        run: |
+          node scripts/check-consumer-routes.mjs --selftest
+          node scripts/check-consumer-routes.mjs
+
   # ── BUG-18：私服 npm/PyPI 契约闸（零依赖 node 脚本，无需 npm ci）──────
   # live 模式（临时 PyPI uvicorn + 一次性 Verdaccio 容器）需 docker 与镜像，
   # 只在本地/真机轮跑；CI 跑 --dry-run 的源码契约断言，防私服链路回归。
