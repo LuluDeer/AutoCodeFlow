@@ -1,0 +1,19 @@
+{
+  "$comment": "PK-15 (DEEP_REVIEW 0ef3bbe) empty-schema whitelist — named components.schemas in apps/admin-api/openapi.json that are type:object with an EMPTY properties object (example-only / no documented fields). Guarded by the api-types-drift job in .github/workflows/ci.yml: any schema found empty that is NOT listed here fails CI. This file freezes the CURRENT measured set (14 names, 2026-09-14) to stop the list from growing; the underlying PK-02 defect (DTOs missing @ApiProperty decorators so the export emits empty schemas) must be fixed at the source — once PK-02 lands, empty this whitelist (leaving []) and the guard enforces zero empty schemas.",
+  "whitelist": [
+    "Object",
+    "UpdateUserDto",
+    "UpdateTaskDto",
+    "SaveAiConfigDto",
+    "UpdateApplicationDto",
+    "RolloutStrategyDto",
+    "UpdateExecutorPackageDto",
+    "TaskTemplate",
+    "EventSubscription",
+    "CreateApiKeyDto",
+    "CreateProjectDto",
+    "UpdateProjectDto",
+    "UpsertProjectMemberDto",
+    "UpdateProjectMemberDto"
+  ]
+}

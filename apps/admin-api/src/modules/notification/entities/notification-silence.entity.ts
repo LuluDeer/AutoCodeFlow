@@ -30,7 +30,7 @@ export class NotificationSilence {
   @Column({ type: "varchar", length: 16, default: "global" })
   scope: SilenceScope;
 
-  /** 空 = 全渠道；否则 email/slack/dingtalk/wecom/webhook */
+  /** 空 = 全渠道；否则 email/slack/dingtalk/wecom/webhook/feishu（NF-05） */
   @Column({ type: "varchar", length: 32, nullable: true })
   channelType: string | null;
 

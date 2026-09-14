@@ -1,5 +1,6 @@
 import { TaskContext } from '../context';
 import { ERROR_MESSAGE_MAX_LENGTH, LOGS_MAX_LENGTH } from '../context';
+import { TaskLogger } from '../logger';
 import { TaskEnv } from '../types';
 
 const baseEnv: TaskEnv = {
@@ -57,6 +58,41 @@ describe('TaskContext', () => {
       const result = ctx.failure('something went wrong');
       expect(result.success).toBe(false);
       expect(result.message).toBe('something went wrong');
+    });
+  });
+
+  describe('PK-24 — logs ring-buffer semantics in results', () => {
+    it('result carries no logsDropped hint while the ring is below the cap', () => {
+      const ctx = TaskContext.create(baseEnv);
+      ctx.logger.info('hello');
+      const result = ctx.success('done');
+      expect(result.logs).toHaveLength(1);
+      expect(result).not.toHaveProperty('logsDropped');
+    });
+
+    it('result surfaces a logsDropped hint once the ring overflows', () => {
+      const ctx = TaskContext.create(baseEnv);
+      const total = TaskLogger.MAX_ENTRIES + 10;
+      for (let i = 0; i < total; i++) {
+        ctx.logger.info(`line-${i}`);
+      }
+      const result = ctx.success('done');
+      expect(result.logs).toHaveLength(TaskLogger.MAX_ENTRIES);
+      expect(result.logsDropped).toBe(10);
+      // 保留的是最新尾部
+      expect(result.logs![0].message).toBe(`line-${10}`);
+    });
+
+    it('failure() reports the same logsDropped semantics', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = TaskContext.create(baseEnv);
+      for (let i = 0; i < TaskLogger.MAX_ENTRIES + 1; i++) {
+        ctx.logger.warn(`w-${i}`);
+      }
+      const result = ctx.failure('boom');
+      expect(result.logsDropped).toBe(1);
+      expect(result.logs).toHaveLength(TaskLogger.MAX_ENTRIES);
+      warnSpy.mockRestore();
     });
   });
 

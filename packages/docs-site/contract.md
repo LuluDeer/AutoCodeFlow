@@ -46,10 +46,18 @@ vectors = json.loads((pathlib.Path(__file__).parents[2] / "contract-fixtures" / 
 
 ## 已知分歧（knownDivergence）
 
-`contract.json` 的 `knownDivergence` 条目留档一处差异：cli/mcp 用宽松的
-`data+(code|message)` 启发式拆包，node-sdk/py-sdk 要求严格的
-`code+message+data` 三元组。**admin-api 恒发 code，真实流量不受影响**；
-不要依赖宽松形态——四端统一属破坏性契约变更，需同批发版。
+**该分歧已于 2026-09-14（PK-06 统一批次）关闭。** 统一后四端（acf-cli /
+mcp-server / autocodeflow-node-sdk / autoflow-sdk）的信封拆包判据一致：
+**载荷是对象、含 `data` 键、且 `code` 为数值**（对齐 admin-api
+ResponseInterceptor 的 `code = statusCode ?? 200` 恒数值语义），
+`message` 是否存在不再参与判定。
+
+- 字符串 `code`（如 `{code:"200",message:"x",data:{...}}`）不是信封，
+  四端一致原样透传——由 `passthrough.stringCodeEnvelope` 向量钉住。
+- `knownDivergence` 条目保留为历史档案：其 `cli_mcp_unwrapped` 键记录的
+  是 2026-09-13 之前 cli/mcp 宽松启发式（`data+(code|message)` 即拆）的
+  旧行为，已无任何在发客户端如此表现；`data+message` 无 `code` 的载荷
+  现在四端一致保留。
 
 ## 修改纪律
 

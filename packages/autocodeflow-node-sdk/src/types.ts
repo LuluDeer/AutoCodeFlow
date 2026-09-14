@@ -64,6 +64,12 @@ export interface TaskResult {
   message?: string;
   /** Arbitrary structured output produced by the task */
   output?: Record<string, unknown>;
-  /** Logs collected during execution */
+  /** Logs collected during execution (bounded ring, see TaskLogger.MAX_ENTRIES) */
   logs?: LogEntry[];
+  /**
+   * PK-24: number of log entries evicted by the logger's ring-buffer cap
+   * before the result was built. Present only when > 0 — `logs` holds the
+   * retained tail, not the full history.
+   */
+  logsDropped?: number;
 }

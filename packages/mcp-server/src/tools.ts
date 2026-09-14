@@ -1187,7 +1187,9 @@ export function registerObservabilityTools(
           const deadLetterCount = r["deadLetterCount"];
           return {
             executorId: String(r["id"] ?? ""),
-            name: r["name"],
+            // PK-18: 执行器实体字段是 appName（无 name），旧代码读
+            // r["name"] 恒为 undefined——工具输出 name 永远为空。
+            name: r["appName"],
             address: r["address"],
             status: r["status"],
             deadLetterCount:

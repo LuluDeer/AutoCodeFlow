@@ -15,6 +15,21 @@ class TestNotifyChannel:
         assert NotifyChannel.WECOM == "wecom"
         assert NotifyChannel.SLACK == "slack"
         assert NotifyChannel.WEBHOOK == "webhook"
+        # PK-12: 服务端 AlertChannel（NF-05）已含 feishu，SDK 枚举同步
+        assert NotifyChannel.FEISHU == "feishu"
+
+    def test_channel_enum_matches_server_alert_channel(self):
+        # 渠道全集对照 admin-api notification.service.ts 的 AlertChannel
+        # （email/dingtalk/wecom/slack/webhook/feishu）——SDK 枚举是任务
+        # 作者唯一的"官方渠道表"，不得落后服务端。
+        assert {c.value for c in NotifyChannel} == {
+            "email",
+            "dingtalk",
+            "wecom",
+            "slack",
+            "webhook",
+            "feishu",
+        }
 
 
 class TestNotifyClient:
@@ -225,3 +240,21 @@ class TestNotifyWebhookChannel:
         body = json.loads(route.calls.last.request.content)
         assert body["webhookUrl"] == "https://example.com/hook"
         assert body["level"] == "error"
+
+
+class TestFeishuChannel:
+    """PK-12: 服务端 NF-05 已支持 feishu 渠道，SDK 枚举同步。"""
+
+    @pytest.mark.asyncio
+    async def test_feishu_channel_serializes_to_payload(self, respx_mock):
+        route = respx_mock.post("http://localhost:3105/api/notification/send").mock(
+            return_value=httpx.Response(200, json={"success": True})
+        )
+        client = NotifyClient(admin_api_url="http://localhost:3105")
+        result = await client.notify(
+            "my-task", "feishu msg", channels=[NotifyChannel.FEISHU]
+        )
+        assert result is True
+        import json
+        body = json.loads(route.calls.last.request.content)
+        assert body["channels"] == ["feishu"]

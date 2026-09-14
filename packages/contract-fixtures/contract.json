@@ -42,6 +42,11 @@
       "raw": [1, 2],
       "unwrapped": [1, 2],
       "$comment": "arrays are never envelopes (node-sdk rule; py dict-guard equivalent)"
+    },
+    "stringCodeEnvelope": {
+      "raw": { "code": "200", "message": "x", "data": { "list": [], "total": 0 } },
+      "unwrapped": { "code": "200", "message": "x", "data": { "list": [], "total": 0 } },
+      "$comment": "PK-06 unification (2026-09-14, all four ends): the envelope code is always numeric (ResponseInterceptor statusCode ?? 200) — a STRING code is not an envelope. A payload carrying code+message+data with a string code is a business body and must pass through unchanged. Append-only vector pinning the unified 'data key present + numeric code' criterion"
     }
   },
   "statusRange": {
@@ -100,13 +105,13 @@
     "name": "code+message+data on an entity payload (full envelope shape)",
     "raw": { "code": 0, "message": "y", "data": "x", "extra": 1 },
     "unwrapped": "x",
-    "$comment": "documented edge: a payload carrying the FULL envelope shape (code+message+data) is indistinguishable from an envelope and is unwrapped by every end — entities must never carry all three keys. Strict form (node-sdk/py-sdk require all three; cli/mcp accept data+(code|message)) is the common denominator; changing it is a breaking contract change"
+    "$comment": "documented edge: a payload carrying the FULL envelope shape (code+message+data) is indistinguishable from an envelope and is unwrapped by every end — entities must never carry all three keys. Unified criterion since PK-06 (2026-09-14, all four ends): 'data key present + numeric code' (message no longer tested; string code passes through — see passthrough.stringCodeEnvelope); changing it is a breaking contract change"
   },
   "knownDivergence": {
     "name": "data+message WITHOUT code",
     "raw": { "data": "x", "message": "y", "extra": 1 },
     "cli_mcp_unwrapped": "x",
     "node_py_unwrapped_preserved": { "data": "x", "message": "y", "extra": 1 },
-    "$comment": "QA-07 audit finding: cli/mcp use the looser data+(code|message) heuristic, node-sdk/py-sdk require the strict code+message+data triple. admin-api always sends code, so real traffic is unaffected. Do NOT rely on the loose form — flagged for future unification (breaking change requires four-end same-batch release)"
+    "$comment": "2026-09-14 (PK-06/PK-07 unification, all four ends): cli/mcp tightened to the numeric-code criterion (2026-09-13, WIKI-OPT-4) and node-sdk/py-sdk now match — the envelope test everywhere is 'data key present + code is a number', so this payload (no code key at all) is preserved unchanged by EVERY end. The cli_mcp_unwrapped key above is a historical archive of the pre-2026-09-13 loose heuristic and no longer describes any shipped client. Divergence is closed; see passthrough.stringCodeEnvelope for the pinned string-code vector"
   }
 }

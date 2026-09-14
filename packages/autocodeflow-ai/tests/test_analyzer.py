@@ -251,3 +251,96 @@ class TestAIAnalyzerNetwork:
         # The error is caught by analyze_error's except block — returns a safe fallback
         assert result.summary == "AI analysis unavailable"
         assert result.confidence == 0.0
+
+
+class TestPK17SensitiveOutbound:
+    """PK-17: 敏感外发治理——脱敏钩子 / 缺 key fail-fast / prompt 凭据约束。"""
+
+    @pytest.mark.asyncio
+    async def test_redactor_masks_logs_and_error_before_outbound(self, respx_mock):
+        route = respx_mock.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": GOOD_RESPONSE}}]}
+            )
+        )
+
+        def mask(text: str) -> str:
+            return text.replace("postgres://user:hunter2@db/x", "[REDACTED]")
+
+        analyzer = AIAnalyzer(
+            provider="openai", api_key="sk-test", redactor=mask
+        )
+        await analyzer.analyze_error(
+            task_name="task",
+            error_message="failed to reach postgres://user:hunter2@db/x",
+            logs="boot ok; conn=postgres://user:hunter2@db/x",
+        )
+        assert route.called
+        body = json.loads(route.calls.last.request.content)
+        outbound = body["messages"][0]["content"]
+        assert "hunter2" not in outbound
+        assert outbound.count("[REDACTED]") == 2
+
+    @pytest.mark.asyncio
+    async def test_redactor_none_keeps_raw_text_outbound(self, respx_mock):
+        """redactor=None 时行为不变（原文出站，向后兼容）。"""
+        route = respx_mock.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": GOOD_RESPONSE}}]}
+            )
+        )
+        analyzer = AIAnalyzer(provider="openai", api_key="sk-test")
+        await analyzer.analyze_logs(
+            task_name="task", logs="token=abcd1234", question="what happened"
+        )
+        assert route.called
+        body = json.loads(route.calls.last.request.content)
+        outbound = body["messages"][0]["content"]
+        assert "token=abcd1234" in outbound
+
+    @pytest.mark.asyncio
+    async def test_openai_without_api_key_raises_value_error_not_bearer_none(
+        self, respx_mock
+    ):
+        route = respx_mock.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        analyzer = AIAnalyzer(provider="openai", api_key=None)
+        with pytest.raises(ValueError) as excinfo:
+            await analyzer._call_ai("ping")
+        assert "api_key" in str(excinfo.value)
+        # 不应发出任何 HTTP 请求（更不能带 Bearer None）
+        assert not route.called
+
+    @pytest.mark.asyncio
+    async def test_analyze_error_swallows_missing_api_key_as_unavailable(self):
+        """analyze_error 的 fail-open 语义保持：缺 key 不再发 Bearer None，
+        而是走既有异常兜底返回 'AI analysis unavailable'。"""
+        analyzer = AIAnalyzer(provider="openai", api_key="")
+        result = await analyzer.analyze_error(
+            task_name="task", error_message="boom", logs="log"
+        )
+        assert result.summary == "AI analysis unavailable"
+        assert result.confidence == 0.0
+
+    @pytest.mark.asyncio
+    async def test_prompt_templates_forbid_echoing_credentials(self, respx_mock):
+        for route_path in (
+            "https://api.openai.com/v1/chat/completions",
+        ):
+            respx_mock.post(route_path).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"choices": [{"message": {"content": GOOD_RESPONSE}}]},
+                )
+            )
+        analyzer = AIAnalyzer(provider="openai", api_key="sk-test")
+        await analyzer.analyze_error(task_name="t", error_message="e", logs="l")
+        await analyzer.analyze_logs(task_name="t", logs="l")
+        contents = [
+            json.loads(c.request.content)["messages"][0]["content"]
+            for c in respx_mock.calls
+        ]
+        assert len(contents) == 2
+        for outbound in contents:
+            assert "do not repeat, quote or echo back any credentials" in outbound

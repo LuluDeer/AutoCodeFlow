@@ -105,3 +105,49 @@ describe('TaskLogger', () => {
     });
   });
 });
+
+describe('TaskLogger ring buffer (PK-24)', () => {
+  let infoSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    infoSpy.mockRestore();
+  });
+
+  it('retains at most MAX_ENTRIES (1000) entries and drops the oldest', () => {
+    const logger = new TaskLogger();
+    for (let i = 0; i < TaskLogger.MAX_ENTRIES + 250; i++) {
+      logger.info(`line-${i}`);
+    }
+    const logs = logger.getLogs();
+    expect(logs).toHaveLength(TaskLogger.MAX_ENTRIES);
+    // 保留的是最新的尾部，最老的 250 条被挤出
+    expect(logs[0].message).toBe(`line-${250}`);
+    expect(logs[logs.length - 1].message).toBe(`line-${1000 + 249}`);
+  });
+
+  it('counts every evicted entry in droppedCount', () => {
+    const logger = new TaskLogger();
+    expect(logger.droppedCount).toBe(0);
+    for (let i = 0; i < 1200; i++) {
+      logger.info(`m-${i}`);
+    }
+    expect(logger.droppedCount).toBe(200);
+    logger.clear();
+    // 显式 clear 是主动丢弃，不计入环形溢出
+    expect(logger.droppedCount).toBe(200);
+    expect(logger.getLogs()).toHaveLength(0);
+  });
+
+  it('getLogs is unchanged (copy semantics) below the cap', () => {
+    const logger = new TaskLogger();
+    logger.info('only one');
+    expect(logger.droppedCount).toBe(0);
+    const logs = logger.getLogs();
+    logs.push({ timestamp: 'x', level: 'info', message: 'mutated' });
+    expect(logger.getLogs()).toHaveLength(1);
+  });
+});

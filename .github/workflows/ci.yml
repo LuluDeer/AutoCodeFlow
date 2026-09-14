@@ -485,6 +485,45 @@ jobs:
       - name: Private registry contract checks
         run: node scripts/bug18-private-registry-selftest.mjs --dry-run
 
+  # ── E-13：行为自检脚本进 CI（此前 10 个自检脚本只靠本地手跑）──────
+  # HA compose（docker-compose.ha.yml）、ARCH-31 多实例/outbox、pull 派发、
+  # 回调分层（QA-05）、OIDC SSO、nginx SSE、npm registry 配置——这些行为
+  # 保证此前从未在任何 workflow 中运行。脚本自带环境分级：runner 有 docker
+  # 时真跑全链（admin-api/executor-node 由脚本内部 npx tsc 自建、PG 用脚本
+  # 自拉容器），无 docker/psql 时显式 skip 退出 0（不虚报）。
+  # 依赖注记：arch31-outbox 自检从 apps/admin-api require('pg')，docker 路径
+  # 会自建 admin-api/executor-node——故先装两处依赖。
+  selftests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/admin-api/package-lock.json
+            apps/executor-node/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/admin-api
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/executor-node
+      # 串跑（任一失败即红）：脚本名与根 package.json scripts 一一对应
+      - name: Behavior selftests (serial)
+        run: |
+          npm run test:arch31-multi-instance
+          npm run test:arch31-outbox
+          npm run test:arch31-outbox-dup
+          npm run test:arch31-rollout
+          npm run test:pull-dispatch
+          npm run test:qa05-callback-tier
+          npm run test:oidc-sso
+          npm run test:nginx-sse
+          npm run test:ha-compose
+          npm run test:registry-npm
+
   # ── Python services & packages ────────────────────────────
   executor-python-test:
     runs-on: ubuntu-latest
@@ -1069,3 +1108,12 @@ jobs:
             exit 1
           }
         working-directory: apps/admin-web
+      # ③ PK-15 部分：空 schema 盲区守卫——重生成永远确定性地复现空 schema
+      # （"生成物↔生成物" diff 拦不住 DTO 漏装饰器），故对 components.schemas
+      # 中 type:object 且 properties 为空的具名 schema 做白名单守卫：超出
+      # scripts/openapi-empty-schema-whitelist.json 即红。
+      # PK-02（空 schema DTO 补 @ApiProperty 装饰器）落地后清空白名单，
+      # 守卫即升级为"零空 schema"。
+      - name: Empty-schema guard against whitelist (PK-15)
+        run: |
+          node -e "const fs=require('fs');const doc=JSON.parse(fs.readFileSync('apps/admin-api/openapi.json','utf8'));const wl=JSON.parse(fs.readFileSync('scripts/openapi-empty-schema-whitelist.json','utf8')).whitelist;const empty=Object.entries(doc.components?.schemas??{}).filter(([n,s])=>s&&s.type==='object'&&s.properties&&Object.keys(s.properties).length===0&&!s.allOf&&!s.anyOf&&!s.oneOf).map(([n])=>n);const extra=empty.filter(n=>!wl.includes(n));if(extra.length){console.error('::error:: openapi.json 出现白名单外的空 object schema（PK-02 未落地前禁止新增）: '+extra.join(', ')+' —— 补 DTO @ApiProperty 装饰器，或（PK-02 落地后）清空 scripts/openapi-empty-schema-whitelist.json');process.exit(1);}console.log('empty-schema guard ok: '+empty.length+' empty / '+Object.keys(doc.components?.schemas??{}).length+' schemas, all whitelisted');"
