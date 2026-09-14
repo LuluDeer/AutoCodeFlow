@@ -30,13 +30,31 @@ vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
 }));
 vi.mock('../api/applications', () => ({ applicationsApi: { list: vi.fn() } }));
+// F-01 配套：GlueEditor 重依赖（monaco）裁剪，策略同 task-form-ui06/task-save-as-template
+// 等文件——组件级测试不加载真实 monaco（jsdom 缺 queryCommandSupported 等浏览器 API）。
+vi.mock('../components/GlueEditor', () => ({ default: () => <div data-testid="glue-editor" /> }));
 // 路由参数可切换：默认编辑态（id='task-1'）；创建态用例置为 {}。
-// mock 工厂在测试执行期才调用 useParams，届时变量已初始化。
+// mock 工厂在测试执行期才调用 useParams/useSearchParams，届时变量已初始化。
 let mockRouteParams: { id?: string } = { id: 'task-1' };
+let mockSearch = '';
+// useSearchParams 返回值按 mockSearch 内容缓存（真路由在 setSearchParams 后
+// 返回更新后的参数对象；不变则稳定引用），避免每次渲染新对象误触 effect 依赖。
+let mockSearchParamsCache: URLSearchParams | null = null;
+let mockSearchParamsCacheKey = '';
+// F-04：suggestCron 用例需要观察 setSearchParams（清参 + replace 导航）。
+let mockSetSearchParams = vi.fn((next: URLSearchParams, _opts?: { replace?: boolean }) => {
+  mockSearch = next.toString();
+});
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
   useParams: () => mockRouteParams,
-  useSearchParams: () => [new URLSearchParams('')],
+  useSearchParams: () => {
+    if (mockSearch !== mockSearchParamsCacheKey || !mockSearchParamsCache) {
+      mockSearchParamsCacheKey = mockSearch;
+      mockSearchParamsCache = new URLSearchParams(mockSearch);
+    }
+    return [mockSearchParamsCache, mockSetSearchParams];
+  },
   // UI-03：TaskFormPage 页头 PageHeader 面包屑消费 Link——mock 补齐导出（纯锚点桩）
   Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
 }));
@@ -67,6 +85,12 @@ const PIN_UUID = '550e8400-e29b-41d4-a716-446655440000';
 
 beforeEach(() => {
   mockRouteParams = { id: 'task-1' };
+  mockSearch = '';
+  mockSearchParamsCache = null;
+  mockSearchParamsCacheKey = '';
+  mockSetSearchParams = vi.fn((next: URLSearchParams, _opts?: { replace?: boolean }) => {
+    mockSearch = next.toString();
+  });
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([
     { id: PIN_UUID, appName: 'node-a', address: '10.0.0.1:3001', status: 'online' },
   ] as never);
@@ -450,4 +474,65 @@ describe('timeoutPolicyFormValues（CORE-04 编辑态加载映射）', () => {
     expect(timeoutPolicyFormValues({}).timeoutAction).toBe('kill');
     expect(timeoutPolicyFormValues({ timeoutWarnRatio: null }).timeoutWarnRatio).toBeUndefined();
   });
+});
+
+// F-04（DEEP_REVIEW @0ef3bbe）：详情页「应用建议 Cron」→ /tasks/:id/edit?suggestCron=...
+// 此前全仓无消费方（死链）。回归覆盖：编辑态等任务回填完成后建议值覆盖库内旧值、
+// i18n toast、URL 参数以 replace 清除（防刷新重复应用）、创建态挂载即应用。
+describe('TaskFormPage suggestCron（F-04 AI 建议 Cron 死链修复）', () => {
+  it('编辑态带 ?suggestCron=：任务回填完成后建议值覆盖 cronExpression，URL 参数被清除（replace）', async () => {
+    mockRouteParams = { id: 'task-1' };
+    mockSearch = `suggestCron=${encodeURIComponent('0 */2 * * *')}`;
+    vi.mocked(tasksApi.get).mockReset().mockResolvedValue({
+      id: 'task-1',
+      name: 'ai-cron-job',
+      runtime: 'python',
+      entrypoint: 'main.py',
+      triggerType: 'cron',
+      // 库内旧值——若建议值未在回填后应用，displayValue 会停在旧值上
+      cronExpression: '0 2 * * *',
+      timeoutSeconds: 300,
+      maxRetry: 3,
+    } as never);
+
+    render(<TaskFormPage />);
+
+    // cron 字段（triggerType=cron）渲染建议值而非库内旧值
+    expect(await screen.findByDisplayValue('0 */2 * * *')).toBeTruthy();
+    expect(screen.queryByDisplayValue('0 2 * * *')).toBeNull();
+
+    // URL 清参：suggestCron 被移除且走 replace 导航（不新增历史记录）
+    await vi.waitFor(() => expect(mockSetSearchParams).toHaveBeenCalledTimes(1));
+    const [nextParams, opts] = mockSetSearchParams.mock.calls[0] as unknown as [
+      URLSearchParams,
+      { replace?: boolean },
+    ];
+    expect(nextParams.get('suggestCron')).toBeNull();
+    expect(opts).toEqual({ replace: true });
+    expect(mockSearch).not.toContain('suggestCron');
+
+    // i18n toast（zh 默认 locale）
+    expect(await screen.findByText('已应用 AI 建议 Cron：0 */2 * * *，保存任务后生效')).toBeTruthy();
+  }, 15_000);
+
+  it('创建态带 ?suggestCron=：挂载即应用（toast + 清参各一次，cron 字段未挂载也不报错）', async () => {
+    mockRouteParams = {}; // 创建态：无 :id
+    mockSearch = `suggestCron=${encodeURIComponent('30 7 * * 1')}`;
+    vi.mocked(tasksApi.get).mockReset();
+
+    render(<TaskFormPage />);
+
+    // 创建态 triggerType=manual，cronExpression 字段未挂载——setFieldValue 仍写入
+    // 表单 store（preserve），以 toast 断言应用行为
+    expect(await screen.findByText('已应用 AI 建议 Cron：30 7 * * 1，保存任务后生效')).toBeTruthy();
+    await vi.waitFor(() => expect(mockSetSearchParams).toHaveBeenCalledTimes(1));
+    const [nextParams, opts] = mockSetSearchParams.mock.calls[0] as unknown as [
+      URLSearchParams,
+      { replace?: boolean },
+    ];
+    expect(nextParams.get('suggestCron')).toBeNull();
+    expect(opts).toEqual({ replace: true });
+    // 创建态不应发起任务详情请求
+    expect(tasksApi.get).not.toHaveBeenCalled();
+  }, 15_000);
 });

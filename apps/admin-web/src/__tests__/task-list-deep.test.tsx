@@ -265,6 +265,13 @@ describe('TaskListPage 克隆链路（QA-03 第二阶段）', () => {
       glueSource: 'return 42;',
       glueLanguage: 'js',
       description: '源任务描述',
+      // F-03：此前克隆丢字段的 6 类可编辑字段——断言副本与源任务一致
+      timeoutAction: 'kill_retry',
+      timeoutWarnRatio: 75,
+      maintenanceWindows: [{ start: '0 22 * * 5', end: '0 6 * * 6', description: '发布冻结' }],
+      runbook: '失败先看 executor 日志',
+      executorAffinityTags: ['gpu'],
+      executorAntiAffinityTags: ['windows'],
     });
     mockedTasks.list.mockResolvedValue({ items: [src], total: 1, page: 1, pageSize: 20 });
     mockedTasks.get.mockResolvedValue(src);
@@ -283,11 +290,50 @@ describe('TaskListPage 克隆链路（QA-03 第二阶段）', () => {
     expect(payload.glueSource).toBe('return 42;');
     expect(payload.description).toBe('源任务描述');
     expect(payload.triggerType).toBe('cron');
+    // F-03 回归点：6 类字段随克隆进入 payload 且与源任务一致
+    expect(payload.timeoutAction).toBe('kill_retry');
+    expect(payload.timeoutWarnRatio).toBe(75);
+    expect(payload.maintenanceWindows).toEqual([
+      { start: '0 22 * * 5', end: '0 6 * * 6', description: '发布冻结' },
+    ]);
+    expect(payload.runbook).toBe('失败先看 executor 日志');
+    expect(payload.executorAffinityTags).toEqual(['gpu']);
+    expect(payload.executorAntiAffinityTags).toEqual(['windows']);
     // 服务端字段不回传（clone 载荷只含可编辑字段）
     expect(payload.id).toBeUndefined();
     expect(payload.status).toBeUndefined();
     // 成功后导航新任务详情
     await waitFor(() => expect(screen.getByText('task-detail-mock')).toBeTruthy());
+  });
+
+  it('克隆（F-03）：源任务 6 类字段缺省时 payload 不含 undefined 残留（剔除后不回传服务端字段）', async () => {
+    const src = makeTask({
+      id: 'task-8',
+      name: '最小任务',
+      // 不设置 timeoutAction/timeoutWarnRatio/maintenanceWindows/runbook/
+      // executorAffinityTags/executorAntiAffinityTags → undefined 被统一剔除
+    });
+    mockedTasks.list.mockResolvedValue({ items: [src], total: 1, page: 1, pageSize: 20 });
+    mockedTasks.get.mockResolvedValue(src);
+    mockedTasks.create.mockResolvedValue(makeTask({ id: 'task-new-2', name: '最小任务-copy-1234' }));
+    renderPage();
+    await screen.findAllByText(/最小任务/);
+    const cloneBtn = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.querySelector('.anticon-copy'),
+    ) as HTMLButtonElement | undefined;
+    expect(cloneBtn).toBeTruthy();
+    fireEvent.click(cloneBtn!);
+
+    await waitFor(() => expect(mockedTasks.create).toHaveBeenCalled());
+    const payload = mockedTasks.create.mock.calls[0][0] as Record<string, unknown>;
+    // undefined 字段被既有清理逻辑剔除（不发给后端），而不是以 undefined 形态残留
+    expect('timeoutAction' in payload).toBe(false);
+    expect('timeoutWarnRatio' in payload).toBe(false);
+    expect('maintenanceWindows' in payload).toBe(false);
+    expect('runbook' in payload).toBe(false);
+    expect('executorAffinityTags' in payload).toBe(false);
+    expect('executorAntiAffinityTags' in payload).toBe(false);
+    expect(payload.name).toMatch(/^最小任务-copy-\d{4}$/);
   });
 
   it('克隆失败（get 拒绝）→ 错误 toast 且不调 create 不导航', async () => {
